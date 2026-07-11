@@ -36,6 +36,7 @@ except Exception:
 PY
 )"
 TOK="${creds%%$'\t'*}"
+PROXY="${creds#*$'\t'}"; [ "$PROXY" = "$creds" ] && PROXY=""
 [ -n "$TOK" ] || { echo "нет активной подписки с токеном — рефреш пропущен (значения без изменений)"; exit 0; }
 
 LOG="$(mktemp)"; TMPCFG="$(mktemp -d)"; echo '{"theme":"dark"}' > "$TMPCFG/settings.json"
@@ -68,7 +69,9 @@ srv = ThreadingHTTPServer(('127.0.0.1', int(sys.argv[1])), H); srv.timeout = 25;
 PY
 LPID=$!
 sleep 1
-# claude под agents, направлен на локальный логгер (без прокси — localhost)
+# claude под agents → локальный логгер, БЕЗ прокси (localhost). Работает для токенов,
+# валидируемых с IP сервера; для строго IP-locked захват identity/beta не выйдет — не беда,
+# UA всё равно возьмём из --version, а identity/beta останутся текущими (не сломается).
 runuser -u "$RUN_USER" -- env CLAUDE_CODE_OAUTH_TOKEN="$TOK" \
     ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT" CLAUDE_CONFIG_DIR="$TMPCFG" \
     timeout 25 "$CLAUDE" -p "hi" --model haiku >/dev/null 2>&1 || true
@@ -80,18 +83,21 @@ VER="$(sed -n 's/^VER=//p' "$LOG" | head -1)"
 BETA_RAW="$(sed -n 's/^BETA=//p' "$LOG" | head -1)"
 IDENT="$(sed -n 's/^IDENT=//p' "$LOG" | head -1)"
 rm -rf "$LOG" "$TMPCFG"
-# только oauth-бета(ы) — behavior-changing бету на прозрачных клиентов НЕ форсим
-BETA="$(printf '%s' "$BETA_RAW" | tr ',' '\n' | grep -i oauth | paste -sd, -)"
+BETA="$(printf '%s' "$BETA_RAW" | tr ',' '\n' | grep -i oauth | paste -sd, -)"   # только oauth-бета
 
-[ -n "$UA" ] && [ -n "$BETA" ] && [ -n "$IDENT" ] || { echo "захват не удался — значения без изменений"; exit 0; }
+# UA — НАДЁЖНО из версии установленного claude (не требует токена/сети)
+CLI_VER="$("$CLAUDE" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+[ -n "$UA" ] || { [ -n "$CLI_VER" ] && UA="claude-cli/$CLI_VER (external, sdk-cli)"; }
+
+[ -n "$UA" ] || { echo "не удалось определить даже UA — значения без изменений"; exit 0; }
 
 touch "$CONFIG_ENV"
 set_kv() { grep -v "^$1=" "$CONFIG_ENV" > "$CONFIG_ENV.tmp" 2>/dev/null || true; echo "$1=$2" >> "$CONFIG_ENV.tmp"; mv "$CONFIG_ENV.tmp" "$CONFIG_ENV"; }
-set_kv CLAUDE_API_UA "$UA"
-set_kv CLAUDE_API_ANTHROPIC_VERSION "$VER"
-set_kv CLAUDE_API_BETA "$BETA"
-set_kv CLAUDE_API_IDENTITY "$IDENT"
+set_kv CLAUDE_API_UA "$UA"                                    # всегда актуально
+[ -n "$VER" ]   && set_kv CLAUDE_API_ANTHROPIC_VERSION "$VER" # best-effort (если захват удался)
+[ -n "$BETA" ]  && set_kv CLAUDE_API_BETA "$BETA"
+[ -n "$IDENT" ] && set_kv CLAUDE_API_IDENTITY "$IDENT"
 chown "$RUN_USER":"$RUN_USER" "$CONFIG_ENV" 2>/dev/null || true
-echo "актуализировано: UA='$UA' VER='$VER' BETA='$BETA' IDENT='$IDENT'"
+echo "актуализировано: UA='$UA' VER='${VER:-(деф)}' BETA='${BETA:-(деф)}' IDENT='${IDENT:+снят}${IDENT:-(деф)}'"
 systemctl restart claude-api 2>/dev/null && echo "claude-api перезапущен" \
     || echo "(claude-api не как сервис — применится при следующем старте)"
