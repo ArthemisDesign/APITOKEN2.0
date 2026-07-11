@@ -8,6 +8,7 @@ members = [
     "crates/pool",
     "crates/forward",
     "crates/server",
+    "crates/metering",
 ]
 
 [profile.release]

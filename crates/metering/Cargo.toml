@@ -1,0 +1,11 @@
+[package]
+name = "metering"
+version = "0.1.0"
+edition = "2021"
+description = "Точный подсчёт токенов → USD-эквивалент. Ни один токен не проходит мимо счёта."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde_json = "1"
