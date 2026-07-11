@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # claude-api — минимальный раннер "подписка → API": берёт живую подписку из ПУЛА
-# и выполняет запрос через CLI `claude` на её квоте. Standalone, читает СВОЙ реестр
-# (SUB_CFG_DIR), никак не связан с основным флотом.
+# (свой реестр, SUB_CFG_DIR) и выполняет запрос через CLI `claude` на её квоте.
+# Standalone, никак не связан с основным флотом.
 #   usage: claude-api [--sub <email>] [--model <m>] <prompt…>
 set -uo pipefail
 CFG="${SUB_CFG_DIR:-$HOME/.config/claude-api}"
@@ -16,13 +16,24 @@ while [ $# -gt 0 ]; do case "$1" in
 esac; done
 PROMPT="$*"
 [ -n "$PROMPT" ] || { echo "usage: claude-api [--sub <email>] [--model <m>] <prompt>" >&2; exit 1; }
-[ -f "$DB" ] || { echo "нет реестра $DB — добавь подписку: scripts/subscription.sh add <email> <proxy>" >&2; exit 2; }
-# выбор подписки: явная --sub, иначе активная (subs_meta.active), иначе первая active
-row=$(sqlite3 -separator "|" "$DB" "
-  SELECT email,profile_dir,token_file,proxy FROM subs
-  WHERE status='active'${SUB:+ AND email='$SUB'}
-  ORDER BY (email=(SELECT v FROM subs_meta WHERE k='active')) DESC, added_ts ASC LIMIT 1;" 2>/dev/null)
-[ -n "$row" ] || { echo "нет активной подписки в пуле" >&2; exit 2; }
+[ -f "$DB" ] || { echo "нет реестра $DB — добавь: scripts/subscription.sh add <email> <proxy>" >&2; exit 2; }
+# Выбор подписки через python3 (sqlite3-CLI может отсутствовать; как в subscription.sh).
+row=$(python3 - "$DB" "$SUB" <<'PY'
+import sqlite3, sys
+db  = sys.argv[1]; sub = sys.argv[2] if len(sys.argv) > 2 else ""
+c = sqlite3.connect(db); active = ""
+try:
+    r = c.execute("SELECT v FROM subs_meta WHERE k='active'").fetchone()
+    active = r[0] if r else ""
+except Exception: pass
+q = "SELECT email,profile_dir,token_file,proxy FROM subs WHERE status='active'"; args = []
+if sub: q += " AND email=?"; args.append(sub)
+q += " ORDER BY (email=?) DESC, added_ts ASC LIMIT 1"; args.append(active)
+r = c.execute(q, args).fetchone()
+if r: print("|".join((x or "") for x in r))
+PY
+)
+[ -n "$row" ] || { echo "нет активной подписки в пуле ($DB)" >&2; exit 2; }
 IFS="|" read -r email pdir tfile proxy <<<"$row"
 tok=""; [ -f "$tfile" ] && tok="$(cat "$tfile")"
 echo ">> подписка: $email (профиль $pdir)" >&2
