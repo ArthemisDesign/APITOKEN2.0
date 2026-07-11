@@ -11,6 +11,7 @@
 
 use crate::meter::{MeterCtx, TeeMeter};
 use crate::state::AppState;
+use crate::upstream::{limits_from_headers, Limits};
 use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, Method, StatusCode};
@@ -191,7 +192,11 @@ pub async fn forward(
 
         let client = match app.clients.get(&sub.proxy) {
             Ok(c) => c,
-            Err(e) => { last = err_response(StatusCode::BAD_GATEWAY, "api_error", &format!("proxy: {e}")); continue; }
+            Err(e) => {
+                app.pool.mark_cooling(&sub.email, 10); // битый прокси → cooling + −1 in-flight
+                last = err_response(StatusCode::BAD_GATEWAY, "api_error", &format!("proxy: {e}"));
+                continue;
+            }
         };
 
         let mut rb = client.request(method.clone(), &url)
@@ -216,11 +221,22 @@ pub async fn forward(
 
         let st = resp.status();
         let code = st.as_u16();
+
+        // ПАССИВНЫЙ сбор лимитов из боевого ответа: свежий util/reset без лишних запросов
+        // (обновляет polled_ts → активный поллер сам перестаёт трогать «живые» подписки).
+        let lim = limits_from_headers(resp.headers());
+        if lim.has_util() {
+            app.pool.set_util(&sub.email, lim.util5h, lim.util7d, lim.status.clone(),
+                              lim.reset5h, lim.reset7d);
+        }
+
         let rotate = code == 429 || code == 401 || code == 403 || code == 408
             || code == 409 || code == 425 || st.is_server_error();
         if rotate {
-            let secs = retry_after(&resp).unwrap_or(app.cfg.cool_secs);
-            app.pool.mark_cooling(&sub.email, if code == 429 { secs } else { 10 });
+            let secs = if code == 429 {
+                cool_secs_429(&resp, &lim, pool::now(), app.cfg.cool_secs)
+            } else { 10 };
+            app.pool.mark_cooling(&sub.email, secs);
             eprintln!("↻ ротация: {} вернул {} — cooling {}s", sub.email, code, secs);
             last = err_response(st, "overloaded_error", &format!("upstream {code} via {}", sub.email));
             continue;
@@ -254,18 +270,23 @@ fn is_event_stream(resp: &reqwest::Response) -> bool {
         .unwrap_or(false)
 }
 
-fn retry_after(resp: &reqwest::Response) -> Option<i64> {
-    let h = resp.headers();
-    if let Some(v) = h.get("retry-after").and_then(|v| v.to_str().ok()) {
-        if let Ok(secs) = v.trim().parse::<i64>() { return Some(secs.max(1)); }
-    }
-    if let Some(v) = h.get("anthropic-ratelimit-unified-5h-reset").and_then(|v| v.to_str().ok()) {
-        if let Ok(ts) = v.trim().parse::<f64>() {
-            let d = ts as i64 - pool::now();
-            if d > 0 { return Some(d); }
-        }
-    }
-    None
+/// Явный заголовок `Retry-After` (самый авторитетный хинт — Anthropic сам говорит, когда можно).
+fn retry_after_header(resp: &reqwest::Response) -> Option<i64> {
+    let v = resp.headers().get("retry-after")?.to_str().ok()?;
+    v.trim().parse::<i64>().ok().map(|s| s.max(1))
+}
+
+/// Секунды до сброса ОКНА-виновника: если недельное окно почти выбрано (util7d≥0.98) — студим
+/// до reset7d (это могут быть дни, и это ПРАВИЛЬНО — иначе ретраим впустую), иначе до reset5h.
+fn window_cool(lim: &Limits, now: i64) -> Option<i64> {
+    let fut = |t: Option<i64>| t.filter(|x| *x > now).map(|x| (x - now).max(1));
+    let (r5, r7) = (fut(lim.reset5h), fut(lim.reset7d));
+    if lim.util7d.unwrap_or(0.0) >= 0.98 { r7.or(r5) } else { r5.or(r7) }
+}
+
+/// Сколько студить подписку при 429: Retry-After → окно-виновник → дефолт.
+fn cool_secs_429(resp: &reqwest::Response, lim: &Limits, now: i64, default: i64) -> i64 {
+    retry_after_header(resp).or_else(|| window_cool(lim, now)).unwrap_or(default)
 }
 
 /// Отдать ответ апстрима клиенту байт-в-байт (стримом — работает и для SSE).

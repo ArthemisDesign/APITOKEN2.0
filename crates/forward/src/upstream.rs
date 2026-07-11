@@ -49,6 +49,37 @@ fn int(h: &reqwest::header::HeaderMap, name: &str) -> Option<i64> {
     h.get(name)?.to_str().ok()?.trim().parse::<f64>().ok().map(|x| x as i64)
 }
 
+/// Снимок лимитов из unified-заголовков (без HTTP-кода). Приходят на КАЖДЫЙ ответ
+/// api.anthropic.com — и на боевой, и на 429 — поэтому вытаскиваем их из реального
+/// трафика бесплатно, а активный поллинг оставляем только для простаивающих подписок.
+#[derive(Clone, Debug, Default)]
+pub struct Limits {
+    pub util5h: Option<f64>,
+    pub util7d: Option<f64>,
+    pub status: Option<String>,
+    pub reset5h: Option<i64>,
+    pub reset7d: Option<i64>,
+}
+
+/// Разобрать unified-ratelimit из заголовков ответа.
+pub fn limits_from_headers(h: &reqwest::header::HeaderMap) -> Limits {
+    Limits {
+        util5h: util(h, "anthropic-ratelimit-unified-5h-utilization"),
+        util7d: util(h, "anthropic-ratelimit-unified-7d-utilization"),
+        status: h.get("anthropic-ratelimit-unified-status")
+            .and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
+        reset5h: int(h, "anthropic-ratelimit-unified-5h-reset"),
+        reset7d: int(h, "anthropic-ratelimit-unified-7d-reset"),
+    }
+}
+
+impl Limits {
+    /// Есть ли хоть какое-то полезное значение утилизации (иначе не трогаем состояние пула).
+    pub fn has_util(&self) -> bool {
+        self.util5h.is_some() || self.util7d.is_some()
+    }
+}
+
 pub struct PollResult {
     pub util5h: Option<f64>,
     pub util7d: Option<f64>,
@@ -123,14 +154,9 @@ pub async fn poll_sub(client: &Client, cfg: &ProxyConfig, token: &str) -> Option
         .timeout(Duration::from_secs(25))
         .send().await.ok()?;
     let http = resp.status().as_u16();
-    let h = resp.headers();
+    let l = limits_from_headers(resp.headers());
     Some(PollResult {
-        util5h: util(h, "anthropic-ratelimit-unified-5h-utilization"),
-        util7d: util(h, "anthropic-ratelimit-unified-7d-utilization"),
-        status: h.get("anthropic-ratelimit-unified-status")
-            .and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
-        reset5h: int(h, "anthropic-ratelimit-unified-5h-reset"),
-        reset7d: int(h, "anthropic-ratelimit-unified-7d-reset"),
-        http,
+        util5h: l.util5h, util7d: l.util7d, status: l.status,
+        reset5h: l.reset5h, reset7d: l.reset7d, http,
     })
 }

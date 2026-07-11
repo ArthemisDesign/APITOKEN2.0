@@ -17,8 +17,17 @@
 `cost_with_multiplier` → `Billing::deduct`. 4xx/ошибки/ротация НЕ тарифицируются.
 
 **Что внутри:** `ProxyConfig`, `AppState`, `Clients` (кэш http-клиентов по прокси),
-`poll_sub` (чтение ratelimit-заголовков), `detect_plan` (тариф из /api/oauth/profile),
-`forward` (axum-хендлер), `authed`.
+`limits_from_headers`/`Limits` (unified-ratelimit из ответа), `poll_sub` (активный опрос idle),
+`detect_plan` (тариф из /api/oauth/profile), `forward` (axum-хендлер), `authed`.
+
+**Ротация/лимиты (устойчивость пула):**
+- **Пассивный сбор:** на КАЖДОМ ответе апстрима вытаскиваем unified-ratelimit (`limits_from_headers`)
+  → `pool.set_util`. Так util/reset всегда свежи из боевого трафика; активный `poll_sub` (server)
+  добивает лишь простаивающие подписки (обновлённый `polled_ts` сам это гейтит). Экономит квоту.
+- **429 → правильное окно:** `cool_secs_429` = `Retry-After` (авторитетно) → окно-виновник
+  (`util7d≥0.98` → до `reset7d`, иначе до `reset5h`) → дефолт. Не студим на 5h, если выбит 7d.
+- Битый прокси → `mark_cooling(10)` (cooling + −1 in-flight). Каждый `mark_used` в цикле ротации
+  парен с `mark_ok`/`mark_cooling`.
 
 **Инварианты прозрачности (критично — не ломать):**
 1. Ответ апстрима отдаётся клиенту **байт-в-байт** (включая SSE-стрим). Не буферизировать,
