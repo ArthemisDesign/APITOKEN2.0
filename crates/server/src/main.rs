@@ -15,7 +15,7 @@ mod poller;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use config::Settings;
-use forward::{AppState, Clients};
+use forward::{detect_plan, AppState, Clients, PlanDetect};
 use pool::Pool;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -64,6 +64,10 @@ enum SubOp {
     Proxy { email: String, proxy: String },
     /// Сменить флот (dev | prod | ...)
     Fleet { email: String, fleet: String },
+    /// Задать тариф вручную (pro | max5 | max20)
+    SetPlan { email: String, plan: String },
+    /// Определить тариф из /api/oauth/profile (без email — все без тарифа)
+    DetectPlan { email: Option<String> },
 }
 
 #[tokio::main]
@@ -71,35 +75,72 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd.unwrap_or(Cmd::Serve) {
         Cmd::Serve => serve().await,
-        Cmd::Sub { op } => sub_cmd(op),
+        Cmd::Sub { op } => sub_cmd(op).await,
     }
 }
 
-fn sub_cmd(op: SubOp) -> Result<()> {
+/// Определить тариф подписки (профиль Anthropic через её прокси) и записать в реестр.
+/// Возвращает человекочитаемую строку итога.
+async fn detect_and_store(s: &Settings, email: &str) -> String {
+    let conn = match registry::open(&s.db_path) { Ok(c) => c, Err(e) => return format!("db: {e}") };
+    let (tok, proxy) = match registry::get_creds(&conn, email) {
+        Ok(Some(c)) => c,
+        Ok(None) => return "нет токена".into(),
+        Err(e) => return format!("db: {e}"),
+    };
+    let clients = Clients::new(&s.proxy);
+    let client = match clients.get(&proxy) { Ok(c) => c, Err(e) => return format!("proxy: {e}") };
+    match detect_plan(&client, &s.proxy, &tok).await {
+        PlanDetect::Plan(p) => {
+            let _ = registry::set_plan(&conn, email, &p);
+            format!("тариф: {p}")
+        }
+        PlanDetect::NoScope =>
+            "тариф: noscope (у токена нет scope user:profile — задай вручную: sub set-plan)".into(),
+        PlanDetect::Err(e) => format!("тариф: не определён ({e})"),
+    }
+}
+
+async fn sub_cmd(op: SubOp) -> Result<()> {
     let s = Settings::from_env();
     let conn = registry::open(&s.db_path)?;
     match op {
         SubOp::Add { email, token, proxy, fleet } => {
             registry::add(&conn, &email, &token, &proxy, &fleet)?;
-            println!("✓ добавлена {email} (fleet={fleet}, proxy={})", if proxy.is_empty() { "—" } else { &proxy });
+            let plan = detect_and_store(&s, &email).await;   // авто-детект тарифа
+            println!("✓ добавлена {email} (fleet={fleet}, proxy={}) · {plan}",
+                if proxy.is_empty() { "—" } else { &proxy });
         }
         SubOp::AddFile { email, token_file, proxy, fleet } => {
             registry::add_file(&conn, &email, &token_file, &proxy, &fleet)?;
-            println!("✓ добавлена {email} (token_file={token_file}, fleet={fleet})");
+            let plan = detect_and_store(&s, &email).await;   // авто-детект тарифа
+            println!("✓ добавлена {email} (token_file={token_file}, fleet={fleet}) · {plan}");
         }
         SubOp::List => {
             let rows = registry::list(&conn)?;
             if rows.is_empty() { println!("(подписок нет) · БД: {}", s.db_path); return Ok(()); }
-            for (email, status, fleet, has_tok, proxy) in rows {
-                println!("{email}\tstatus={status}\tfleet={fleet}\ttoken={}\tproxy={}",
-                    if has_tok { "есть" } else { "НЕТ" },
-                    if proxy.is_empty() { "—" } else { &proxy });
+            for r in rows {
+                println!("{}\tstatus={}\tfleet={}\tplan={}\ttoken={}\tproxy={}",
+                    r.email, r.status, r.fleet,
+                    if r.plan.is_empty() { "—" } else { &r.plan },
+                    if r.has_token { "есть" } else { "НЕТ" },
+                    if r.proxy.is_empty() { "—" } else { &r.proxy });
             }
         }
         SubOp::Rm { email } => { println!("удалено строк: {}", registry::remove(&conn, &email)?); }
         SubOp::Status { email, status } => { println!("обновлено: {}", registry::set_status(&conn, &email, &status)?); }
         SubOp::Proxy { email, proxy } => { println!("обновлено: {}", registry::set_proxy(&conn, &email, &proxy)?); }
         SubOp::Fleet { email, fleet } => { println!("обновлено: {}", registry::set_fleet(&conn, &email, &fleet)?); }
+        SubOp::SetPlan { email, plan } => { println!("обновлено: {} (plan={plan})", registry::set_plan(&conn, &email, &plan)?); }
+        SubOp::DetectPlan { email } => {
+            let targets: Vec<String> = match email {
+                Some(e) => vec![e],
+                None => registry::list(&conn)?.into_iter()
+                    .filter(|r| r.plan.is_empty()).map(|r| r.email).collect(),
+            };
+            if targets.is_empty() { println!("нечего определять (у всех тариф уже задан)"); }
+            for e in targets { println!("{e} → {}", detect_and_store(&s, &e).await); }
+        }
     }
     Ok(())
 }

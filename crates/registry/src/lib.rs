@@ -25,6 +25,7 @@ const COLS: &[(&str, &str)] = &[
     ("token", "TEXT"),
     ("token_file", "TEXT"),
     ("proxy", "TEXT"),
+    ("plan", "TEXT"),
     ("status", "TEXT"),
     ("fleet", "TEXT"),
     ("added_ts", "INTEGER"),
@@ -41,7 +42,7 @@ pub fn open(path: &str) -> Result<Connection> {
     c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
     c.execute(
         "CREATE TABLE IF NOT EXISTS subs(email TEXT PRIMARY KEY, token TEXT, token_file TEXT, \
-         proxy TEXT, status TEXT DEFAULT 'active', fleet TEXT DEFAULT 'prod', \
+         proxy TEXT, plan TEXT DEFAULT '', status TEXT DEFAULT 'active', fleet TEXT DEFAULT 'prod', \
          added_ts INTEGER, added TEXT)",
         [],
     )?;
@@ -139,6 +140,26 @@ pub fn add_file(conn: &Connection, email: &str, token_file: &str, proxy: &str, f
 pub fn set_status(conn: &Connection, email: &str, status: &str) -> Result<usize> {
     Ok(conn.execute("UPDATE subs SET status=?1 WHERE email=?2", rusqlite::params![status, email])?)
 }
+pub fn set_plan(conn: &Connection, email: &str, plan: &str) -> Result<usize> {
+    Ok(conn.execute("UPDATE subs SET plan=?1 WHERE email=?2", rusqlite::params![plan, email])?)
+}
+
+/// (разрешённый токен, proxy) для одной подписки (любого статуса) — для детекта тарифа.
+pub fn get_creds(conn: &Connection, email: &str) -> Result<Option<(String, String)>> {
+    let row = conn.query_row(
+        "SELECT token, token_file, proxy FROM subs WHERE email=?1",
+        rusqlite::params![email],
+        |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?)),
+    );
+    match row {
+        Ok((token, token_file, proxy)) => {
+            let tok = resolve_token(token, token_file);
+            if tok.is_empty() { Ok(None) } else { Ok(Some((tok, proxy.unwrap_or_default()))) }
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
 pub fn set_proxy(conn: &Connection, email: &str, proxy: &str) -> Result<usize> {
     Ok(conn.execute("UPDATE subs SET proxy=?1 WHERE email=?2", rusqlite::params![proxy, email])?)
 }
@@ -149,21 +170,31 @@ pub fn remove(conn: &Connection, email: &str) -> Result<usize> {
     Ok(conn.execute("DELETE FROM subs WHERE email=?1", rusqlite::params![email])?)
 }
 
-/// Список для CLI (без утечки токена — только флаг наличия).
-pub fn list(conn: &Connection) -> Result<Vec<(String, String, String, bool, String)>> {
+/// Строка списка для CLI (без утечки токена — только флаг наличия).
+pub struct SubRow {
+    pub email: String,
+    pub status: String,
+    pub fleet: String,
+    pub plan: String,
+    pub has_token: bool,
+    pub proxy: String,
+}
+
+pub fn list(conn: &Connection) -> Result<Vec<SubRow>> {
     let mut stmt = conn.prepare(
-        "SELECT email, COALESCE(status,'active'), COALESCE(fleet,'prod'), \
+        "SELECT email, COALESCE(status,'active'), COALESCE(fleet,'prod'), COALESCE(plan,''), \
          COALESCE(NULLIF(token,''), NULLIF(token_file,'')), COALESCE(proxy,'') \
          FROM subs ORDER BY COALESCE(added_ts,0)",
     )?;
     let rows = stmt.query_map([], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, Option<String>>(3)?.map(|s| !s.is_empty()).unwrap_or(false),
-            r.get::<_, String>(4)?,
-        ))
+        Ok(SubRow {
+            email: r.get::<_, String>(0)?,
+            status: r.get::<_, String>(1)?,
+            fleet: r.get::<_, String>(2)?,
+            plan: r.get::<_, String>(3)?,
+            has_token: r.get::<_, Option<String>>(4)?.map(|s| !s.is_empty()).unwrap_or(false),
+            proxy: r.get::<_, String>(5)?,
+        })
     })?;
     Ok(rows.filter_map(|x| x.ok()).collect())
 }

@@ -11,7 +11,8 @@
 - Конфиг получает готовым: [`ProxyConfig`] наполняет `server::config`.
 
 **Что внутри:** `ProxyConfig`, `AppState`, `Clients` (кэш http-клиентов по прокси),
-`poll_sub` (чтение ratelimit-заголовков), `forward` (axum-хендлер), `authed`.
+`poll_sub` (чтение ratelimit-заголовков), `detect_plan` (тариф из /api/oauth/profile),
+`forward` (axum-хендлер), `authed`.
 
 **Инварианты прозрачности (критично — не ломать):**
 1. Ответ апстрима отдаётся клиенту **байт-в-байт** (включая SSE-стрим). Не буферизировать,

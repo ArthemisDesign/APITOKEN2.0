@@ -58,6 +58,52 @@ pub struct PollResult {
     pub http: u16,
 }
 
+/// Результат детекта тарифа подписки.
+pub enum PlanDetect {
+    Plan(String),   // "pro" | "max5" | "max20"
+    NoScope,        // 403 — у токена нет scope user:profile (частый случай setup-token)
+    Err(String),    // сеть/парсинг/неизвестный тариф
+}
+
+/// Определить тариф подписки — как это делает Claude Code: GET /api/oauth/profile с Bearer
+/// подписки (через её прокси). Только Authorization+Content-Type, GET, БЕЗ anthropic-beta.
+/// user:inference-only токен профиль не отдаёт (403) → NoScope.
+pub async fn detect_plan(client: &Client, cfg: &ProxyConfig, token: &str) -> PlanDetect {
+    let url = format!("{}/api/oauth/profile", cfg.upstream.trim_end_matches('/'));
+    let resp = match client.get(&url)
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .timeout(Duration::from_secs(20))
+        .send().await
+    {
+        Ok(r) => r,
+        Err(e) => return PlanDetect::Err(format!("net:{e}")),
+    };
+    let code = resp.status().as_u16();
+    if code == 403 { return PlanDetect::NoScope; }
+    if code != 200 { return PlanDetect::Err(format!("http{code}")); }
+    let v: serde_json::Value = match resp.json().await {
+        Ok(v) => v, Err(e) => return PlanDetect::Err(format!("badjson:{e}")),
+    };
+    let acc = &v["account"];
+    let org = &v["organization"];
+    let tier = org["rate_limit_tier"].as_str().unwrap_or("");
+    let otype = org["organization_type"].as_str().unwrap_or("");
+    let has_max = acc["has_claude_max"].as_bool().unwrap_or(false);
+    let has_pro = acc["has_claude_pro"].as_bool().unwrap_or(false);
+    if has_max || otype == "claude_max" || tier.starts_with("default_claude_max") {
+        return PlanDetect::Plan(match tier {
+            "default_claude_max_20x" => "max20",
+            "default_claude_max_5x" => "max5",
+            _ => "max5", // редкий Max без явного tier — консервативно
+        }.to_string());
+    }
+    if has_pro || otype == "claude_pro" || tier == "default_claude_pro" {
+        return PlanDetect::Plan("pro".to_string());
+    }
+    PlanDetect::Err(format!("unknown:{}", if otype.is_empty() { tier } else { otype }))
+}
+
 /// Минимальный запрос → читаем unified-ratelimit из ЗАГОЛОВКОВ (приходят и на 400/429).
 /// Идентичность Claude Code включена, чтобы запрос был валиден и вернул реальные лимиты.
 pub async fn poll_sub(client: &Client, cfg: &ProxyConfig, token: &str) -> Option<PollResult> {

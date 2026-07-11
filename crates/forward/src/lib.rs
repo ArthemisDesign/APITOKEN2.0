@@ -16,4 +16,4 @@ mod upstream;
 pub use config::{ProxyConfig, CLAUDE_CODE_IDENTITY};
 pub use proxy::{authed, forward};
 pub use state::AppState;
-pub use upstream::{poll_sub, Clients, PollResult};
+pub use upstream::{detect_plan, poll_sub, Clients, PlanDetect, PollResult};

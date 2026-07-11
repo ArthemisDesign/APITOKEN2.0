@@ -14,5 +14,8 @@
 - Токен разрешается из колонки `token` (inline) ИЛИ файла `token_file`. Совместимость с
   исторической `subscriptions.db` держим мягкой миграцией колонок (`ALTER TABLE … ADD COLUMN`).
 - Токены/прокси — секреты: не логировать, `list()` отдаёт лишь флаг наличия токена.
+- Тариф (`plan`: pro|max5|max20) ХРАНИМ здесь (`set_plan`, колонка `plan`), но НЕ детектим —
+  детект сетевой, живёт в `forward::detect_plan`, вызывается из `server`. `get_creds` отдаёт
+  (token, proxy) для этого детекта.
 
 **Проверка:** `cargo build -p registry`. Ручной прогон CRUD — через бинарь: `claude-api sub add/list/...`.

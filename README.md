@@ -57,12 +57,24 @@ export SUB_CFG_DIR=/srv/claude-api/data      # где лежит subscriptions.d
 claude-api sub add account-a@example.com --token 'sk-ant-oat01-…' --proxy http://user:pass@1.2.3.4:8080 --fleet prod
 claude-api sub add-file account-b@example.com --token-file ~/.claude-b/oauth_token --proxy 5.6.7.8:8080
 
-claude-api sub list                          # список (без утечки токена)
+claude-api sub list                          # список (тариф в колонке plan, без утечки токена)
 claude-api sub status account-a@example.com paused   # active|paused|disabled
 claude-api sub proxy  account-a@example.com http://…  # сменить прокси
 claude-api sub fleet  account-a@example.com dev       # сменить флот
 claude-api sub rm     account-a@example.com
 ```
+
+**Тариф подписки (pro / max5 / max20).** Определяется автоматически при `add`/`add-file` —
+запросом `GET /api/oauth/profile` токеном подписки (как это делает Claude Code). Команды:
+
+```bash
+claude-api sub detect-plan [account-a@example.com]   # определить тариф (без email — все без тарифа)
+claude-api sub set-plan account-a@example.com max20  # задать вручную (фолбэк)
+```
+
+> ⚠️ Токены от `claude setup-token` (их выпускает бот покупки) бывают со scope только
+> `user:inference` — тогда профиль отвечает `403` и авто-детект даёт `noscope`. Тариф в этом
+> случае ставится вручную (`set-plan`) или подтянется после перелогина токена (scope `user:profile`).
 
 БД совместима с исторической `subscriptions.db` (недостающие колонки доливаются мягкой миграцией).
 
