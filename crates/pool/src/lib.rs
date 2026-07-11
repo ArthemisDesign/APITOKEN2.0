@@ -38,8 +38,16 @@ const CALIB_MIN_DELTA: f64 = 0.03;
 /// сдвигаем якорь. Сброс окна (util упал ниже якоря) → пере-заякориваемся без калибровки.
 const CALIB_MAX_JUMP: f64 = 4.0;     // одно наблюдение не двигает cap больше чем в 4× (стабильность)
 
-fn calib_window(anchor: &mut f64, spent_anchor: &mut f64, cap: &mut f64,
+fn calib_window(seeded: &mut bool, anchor: &mut f64, spent_anchor: &mut f64, cap: &mut f64,
                 new_util: f64, spent_total: f64, calib_n: &mut u32) {
+    if !*seeded {
+        // первое наблюдение: засеваем якорь реальным util (а не 0), чтобы первый интервал
+        // калибровки мерил от фактического старта окна, а не от нуля.
+        *seeded = true;
+        *anchor = new_util;
+        *spent_anchor = spent_total;
+        return;
+    }
     if new_util + 1e-9 < *anchor {
         // сброс окна: util упал ниже якоря → пере-заякориваемся без калибровки
         *anchor = new_util;
@@ -113,6 +121,10 @@ pub struct Live {
     pub spent5_anchor_usd: f64,
     pub util7_anchor: f64,
     pub spent7_anchor_usd: f64,
+    /// Засеян ли якорь окна первым наблюдением. Без этого при СТАРТЕ посреди окна (util≠0, а
+    /// расход с 0) первый интервал калибровки грязный (мерил бы от 0 вместо реального util).
+    pub seed5: bool,
+    pub seed7: bool,
     /// Сколько раз реально калибровали (>0 → cap измерен, а не прайор).
     pub calib_n: u32,
 }
@@ -240,13 +252,13 @@ impl Pool {
         // пере-заякориваемся без калибровки.
         let spent_total = l.spent_total_usd;
         if let Some(n5) = u5 {
-            calib_window(&mut l.util5_anchor, &mut l.spent5_anchor_usd, &mut l.cap5h_usd,
-                         n5, spent_total, &mut l.calib_n);
+            calib_window(&mut l.seed5, &mut l.util5_anchor, &mut l.spent5_anchor_usd,
+                         &mut l.cap5h_usd, n5, spent_total, &mut l.calib_n);
         }
         if let Some(n7) = u7 {
             let mut ignore = 0; // 7d не увеличивает calib_n (флаг «калибровано» ведём по 5h)
-            calib_window(&mut l.util7_anchor, &mut l.spent7_anchor_usd, &mut l.cap7d_usd,
-                         n7, spent_total, &mut ignore);
+            calib_window(&mut l.seed7, &mut l.util7_anchor, &mut l.spent7_anchor_usd,
+                         &mut l.cap7d_usd, n7, spent_total, &mut ignore);
         }
         // якорь «живой» утилизации = состояние на момент этого заголовка
         l.spent_at_header_usd = spent_total;
