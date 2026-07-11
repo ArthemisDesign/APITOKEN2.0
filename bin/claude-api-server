@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# claude-api-server — поднять HTTP-сервер над пулом подписок (пул как сетевой API).
+# Читает config.env из $SUB_CFG_DIR (как bin/claude-api), затем стартует server/app.py.
+#   usage: claude-api-server            (host/port/ключи — из env, см. server/app.py)
+set -uo pipefail
+SELF="$(cd "$(dirname "$0")/.." && pwd)"
+CFG="${SUB_CFG_DIR:-$HOME/.config/claude-api}"
+[ -f "$CFG/config.env" ] && . "$CFG/config.env"
+export SUB_CFG_DIR="$CFG"
+exec python3 "$SELF/server/app.py"

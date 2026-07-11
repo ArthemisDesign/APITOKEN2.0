@@ -122,16 +122,22 @@ subscription.sh list                                # список подпис�
 ## 6. Структура репозитория
 
 ```
-bin/claude-api                      — РАННЕР: запрос к нейросети на квоте подписки (Opus 4.8, выбор модели, учёт токенов)
+bin/claude-api                      — CLI-РАННЕР: запрос на квоте активной подписки (Opus 4.8, выбор модели, учёт токенов)
+bin/claude-api-server               — ЗАПУСК HTTP-сервера (пул как сетевой API)
+server/app.py                       — HTTP-СЕРВЕР: /run, /v1/messages, /pool, /health; авто-ротация при 429
+lib/pool.py                         — ПУЛ-СЕЛЕКТОР: выбор наименее загруженной подписки + поллер лимитов + cooling
 lib/cost.py                         — учёт токенов + USD-эквивалент (по-модельные цены, порт из движка)
 scripts/subscription.sh            — CLI реестра + OAuth-логин под прокси
+docs/HTTP_API.md                    — сетевой API: эндпоинты, авторизация, распределение
 docs/CLAUDE_AUTH_PROFILES.md        — механизм авторизации (OAuth, CLAUDE_CONFIG_DIR, релогин)
-docs/POOL_SELECTION.md              — как оркестратор выбирает подписку на ход (из движка)
+docs/POOL_SELECTION.md              — как пул выбирает подписку на ход + ротация (lib/pool.py)
 docs/COST.md                        — цены $/Mtoken + формула USD-эквивалента
 schema/subscriptions.example.json   — пример структуры реестра (без секретов)
 schema/subscriptions.schema.sql     — схема таблицы пула (SQLite)
-config.env.example                  — конфиг по умолчанию (модель, пути)
+config.env.example                  — конфиг по умолчанию (модель, пути, сервер)
+server.env.example                  — секреты сервера (ключи API), вне репо
 tools/auth_token_bot/               — конфиг-пример бота пополнения пула
+systemd/claude-api-server.service   — сервис-юнит HTTP-сервера
 systemd/claude-auth-bot.service     — сервис-юнит бота
 ```
 
@@ -161,7 +167,27 @@ bin/claude-api --sub account-a@example.com --model claude-haiku-4-5-20251001 "2+
 Добавить новую подписку в СВОЙ реестр — тот же `subscription.sh add <email> <proxy>`
 (при `SUB_CFG_DIR`, указывающем на проект). Дальше `activate`/`refresh`/`ping` — как обычно.
 
-## 8. Безопасность
+## 8. Сетевой API (HTTP-сервер поверх пула)
+
+CLI-раннер берёт **одну активную** подписку. HTTP-сервер (`server/app.py`) отдаёт **весь пул**
+по сети: на каждый запрос выбирает наименее загруженную живую подписку, при 429 — авто-ротация
+на следующую; фоновый поллер держит утилизацию окон свежей. Полный справочник — [`docs/HTTP_API.md`](docs/HTTP_API.md).
+
+```bash
+export SUB_CFG_DIR=/srv/claude-api/data
+export CLAUDE_API_KEYS="длинный-случайный-ключ"     # ПУСТО = только с 127.0.0.1
+bin/claude-api-server                                # http://0.0.0.0:8787
+
+curl -s -X POST http://127.0.0.1:8787/run \
+  -H "Authorization: Bearer $CLAUDE_API_KEYS" \
+  -d '{"prompt":"2+2?","model":"claude-opus-4-8"}'
+# → {"result":"4","sub":"account-a@example.com","usd":0.0012,"attempts":1,...}
+```
+
+Эндпоинты: `POST /run`, `POST /v1/messages` (Anthropic-совместимый шим), `GET /pool`, `GET /health`.
+Под systemd — [`systemd/claude-api-server.service`](systemd/claude-api-server.service).
+
+## 9. Безопасность
 
 **В репозиторий не попадают:** токены (`.credentials.json`), реальные `subscriptions.json`/`.db`,
 прокси с паролями, email-аккаунты, `*.env`, `*.gpg`. Всё это в `.gitignore`. Здесь только **код,

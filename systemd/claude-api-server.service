@@ -1,0 +1,25 @@
+# HTTP-сервер «пул подписок → сетевой API». Держит пул-селектор + фоновый поллер
+# лимитов, слушает порт (деф. 8787). Конфиг — /srv/claude-api/data/config.env
+# (SUB_CFG_DIR) + переменные ниже. Логи: journalctl -u claude-api-server -f
+[Unit]
+Description=claude-api HTTP server (subscription pool as network API)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agents
+Group=agents
+Environment=SUB_CFG_DIR=/srv/claude-api/data
+Environment=CLAUDE_BIN=/srv/agents/.local/bin/claude
+Environment=CLAUDE_API_HOST=0.0.0.0
+Environment=CLAUDE_API_PORT=8787
+# Ключи API (через запятую). ПУСТО = сервер принимает ТОЛЬКО с 127.0.0.1.
+# Реальные ключи класть в EnvironmentFile (вне репо), НЕ сюда:
+EnvironmentFile=-/srv/claude-api/data/server.env
+ExecStart=/srv/claude-api/bin/claude-api-server
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
