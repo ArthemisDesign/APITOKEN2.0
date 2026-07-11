@@ -14,7 +14,8 @@
 
 **Что внутри:**
 - `config.rs` — `Settings` (db_path/bind/fleet + `ProxyConfig`) из env.
-- `http.rs` — роутер: `/health`, `/pool` (управляющие) + fallback на `forward::forward`.
+- `http.rs` — роутер: `/health`, `/pool`, `/balance`, `/capacity` (управляющие) + `/panel`
+  (живой HTML-дашборд ёмкости, `panel.html` через include_str!) + fallback на `forward::forward`.
 - `poller.rs` — `reload_loop` (перечитать реестр), `poll_loop` (опрос лимитов через `forward::poll_sub`).
 - `main.rs` — clap CLI: `serve` и `sub add/add-file/list/rm/status/proxy/fleet`.
 

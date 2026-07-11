@@ -13,13 +13,64 @@ use forward::{authed, client_key, forward, AppState};
 use serde_json::json;
 use std::net::SocketAddr;
 
+/// Живой дашборд ёмкости (self-contained HTML; данные тянет с /capacity тем же origin).
+const PANEL_HTML: &str = include_str!("panel.html");
+
 pub fn router(app: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/pool", get(pool_status))
         .route("/balance", get(balance))
+        .route("/capacity", get(capacity))
+        .route("/panel", get(panel))
         .fallback(forward)
         .with_state(app)
+}
+
+/// Отдать HTML-панель (без авторизации — это только UI; данные /capacity требуют ключ,
+/// который панель спрашивает у пользователя и хранит в его браузере).
+async fn panel() -> Response {
+    ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")], PANEL_HTML).into_response()
+}
+
+/// Доступная ёмкость пула в USD real-API-эквиваленте на горизонты 1ч/5ч/1д/7д.
+/// По каждой подписке + суммарно по флоту. Считается на лету (без обращений к Anthropic).
+async fn capacity(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if !authed(&app, &headers, &peer) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response();
+    }
+    let caps = app.pool.capacity();
+    let round = |x: f64| (x * 100.0).round() / 100.0; // 2 знака
+    let (mut a1, mut a5, mut a1d, mut a7d) = (0.0, 0.0, 0.0, 0.0);
+    let mut all_calibrated = true;
+    let subs: Vec<_> = caps.iter().map(|c| {
+        a1 += c.avail_1h_usd; a5 += c.avail_5h_usd; a1d += c.avail_1d_usd; a7d += c.avail_7d_usd;
+        if !c.calibrated { all_calibrated = false; }
+        json!({
+            "email": c.email,
+            "calibrated": c.calibrated,
+            "util5h": round(c.util5h), "util7d": round(c.util7d),
+            "reset5h_in": c.reset5h_in, "reset7d_in": c.reset7d_in,
+            "cap5h_usd": round(c.cap5h_usd), "cap7d_usd": round(c.cap7d_usd),
+            "rem5h_usd": round(c.rem5h_usd), "rem7d_usd": round(c.rem7d_usd),
+            "avail_1h_usd": round(c.avail_1h_usd), "avail_5h_usd": round(c.avail_5h_usd),
+            "avail_1d_usd": round(c.avail_1d_usd), "avail_7d_usd": round(c.avail_7d_usd),
+            "status": c.status, "cooling": c.cooling,
+        })
+    }).collect();
+    Json(json!({
+        "now": pool::now(),
+        "subs": subs.len(),
+        "calibrated": all_calibrated,   // false → хотя бы одна подписка ещё на прайоре
+        "available_usd": {              // суммарно по флоту, USD real-API-эквивалента
+            "next_1h": round(a1), "next_5h": round(a5), "next_1d": round(a1d), "next_7d": round(a7d),
+        },
+        "per_sub": subs,
+    })).into_response()
 }
 
 async fn health(State(app): State<AppState>) -> Json<serde_json::Value> {

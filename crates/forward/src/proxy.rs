@@ -9,7 +9,7 @@
 //!   4) при 429/5xx/протухшем токене — cooling и ротация на следующую подписку;
 //!   5) ответ (включая SSE-стрим) отдаём клиенту байт-в-байт.
 
-use crate::meter::{MeterCtx, TeeMeter};
+use crate::meter::{BillCtx, MeterCtx, TeeMeter};
 use crate::state::AppState;
 use crate::upstream::{limits_from_headers, Limits};
 use axum::body::Body;
@@ -244,18 +244,24 @@ pub async fn forward(
 
         // успех или клиентская ошибка запроса (одинакова на любой подписке) → отдаём как есть
         app.pool.mark_ok(&sub.email);
-        // тарифицируем ТОЛЬКО успешный ответ метерного ключа (4xx/ошибки не списываем)
-        let meter = match &authz {
-            Authz::Metered { key, mult_bp } if st.is_success() => {
-                app.billing.clone().map(|billing| MeterCtx {
-                    billing,
-                    key: key.clone(),
-                    model: model.clone(),
-                    mult_bp: *mult_bp,
-                    is_sse: is_event_stream(&resp),
-                })
-            }
-            _ => None,
+        // на УСПЕХЕ всегда меряем ответ: расход подписки → калибровка пула; для метерного
+        // ключа дополнительно списываем с баланса. 4xx/ошибки не меряем (реального расхода нет).
+        let meter = if st.is_success() {
+            let bill = match &authz {
+                Authz::Metered { key, mult_bp } => app.billing.clone().map(|billing| BillCtx {
+                    billing, key: key.clone(), mult_bp: *mult_bp,
+                }),
+                _ => None,
+            };
+            Some(MeterCtx {
+                pool: app.pool.clone(),
+                email: sub.email.clone(),
+                model: model.clone(),
+                is_sse: is_event_stream(&resp),
+                bill,
+            })
+        } else {
+            None
         };
         return stream_back(st, resp, meter);
     }

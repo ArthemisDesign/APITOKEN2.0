@@ -9,9 +9,19 @@
 - Опрос лимитов (сеть) и форвардинг — НЕ здесь, это `forward`. Сюда приходят уже готовые
   значения утилизации через `set_util(...)`.
 
-**Что внутри:** `Pool` (Mutex-состояние), `Live` (util5h/util7d/reset5h/reset7d/status/cooling/
-last_used/inflight), `pick(exclude, allow_full)`, `mark_used/mark_ok/mark_cooling`, `cool`,
-`set_util`, `snapshot`.
+**Что внутри:** `Pool` (Mutex-состояние + прайоры ёмкости), `Live` (util/reset/status/cooling/
+inflight + калибровка: cap5h_usd/cap7d_usd/spent_total/якоря), `pick`, `mark_used/mark_ok/
+mark_cooling`, `cool`, `set_util`, `record_spend`, `capacity`, `snapshot`.
+
+**Калибровка ёмкости (USD real-API) и доступность:**
+- Anthropic НЕ даёт абсолютный размер окна — только долю (util) и reset. Абсолют вычисляем:
+  `record_spend` копит монотонный реальный расход; `set_util` на каждом заголовке калибрует
+  `cap = ΔUSD/Δutil` (EMA) — якоря на окно двигаются, только когда Δutil перерос порог (мелкие
+  шаги накапливаются, ничего не теряется). До первой калибровки — прайор под Max 20x (env-tunable).
+- `capacity()` — чистая математика: «живая» util = заголовок + расход_с_тех_пор/cap (rollover
+  после reset); остаток окна = cap·(1−util); доступность на горизонте H (квота, не rate — окно
+  наливается заново): `min(rem5h + n5·cap5h, rem7d + n7·cap7d)`, n = число сбросов в (now, now+H].
+  Суммируется по флоту для любого числа подписок. `calibrated` флаг = была ли реальная калибровка.
 
 **Инварианты логики выбора:**
 - Окна лимитов — источник истины Anthropic (unified-заголовки). Разные точки отсчёта 5h/7d НЕ

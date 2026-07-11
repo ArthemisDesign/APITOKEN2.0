@@ -7,6 +7,7 @@
 
 use bytes::Bytes;
 use futures_util::Stream;
+use pool::Pool;
 use registry::Billing;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -14,13 +15,22 @@ use std::task::{Context, Poll};
 
 type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
 
-/// Всё, что нужно, чтобы старифицировать один ответ на завершении стрима.
-pub struct MeterCtx {
+/// Опциональное списание с ключа клиента (только для метерных ключей).
+pub struct BillCtx {
     pub billing: Arc<Billing>,
     pub key: String,
-    pub model: String,
     pub mult_bp: i64,
+}
+
+/// Что нужно, чтобы обработать один успешный ответ на завершении стрима. Делаем ВСЕГДА
+/// (для калибровки ёмкости окна нужен расход ЛЮБОГО запроса, включая админский), а списание
+/// с баланса — опционально (`bill`), только для метерных ключей.
+pub struct MeterCtx {
+    pub pool: Arc<Pool>,
+    pub email: String, // подписка, которая обслужила запрос (для record_spend/калибровки)
+    pub model: String,
     pub is_sse: bool,
+    pub bill: Option<BillCtx>,
 }
 
 /// Копим до 32 МиБ тела для парсинга usage. Реальный ответ (даже 128k output) — сильно меньше;
@@ -47,22 +57,27 @@ impl TeeMeter {
             metering::usage_from_response_json(&self.acc)
         };
         if usage.is_zero() {
-            return; // нечего тарифицировать (напр. не-messages ответ)
+            return; // нечего учитывать (напр. не-messages ответ)
         }
-        let charge = metering::cost_with_multiplier(&usage, &ctx.model, ctx.mult_bp);
-        let charge_i64 = charge.clamp(0, i64::MAX as i128) as i64;
-        let newbal = ctx.billing.deduct(&ctx.key, charge_i64);
-        // лог без утечки ключа: только последние 4 символа
-        let tail: String = {
-            let s = ctx.key.as_str();
-            s[s.len().saturating_sub(4)..].to_string()
-        };
-        eprintln!(
-            "💵 ключ …{tail}: −{} [{}] → баланс {}",
-            metering::nano_to_usd_string(charge),
-            if ctx.model.is_empty() { "?" } else { &ctx.model },
-            newbal.map(|b| metering::nano_to_usd_string(b as i128)).unwrap_or_else(|| "?".into()),
-        );
+        // реальная стоимость (×1.0, до наценки) — один раз, для калибровки И для списания
+        let real = metering::cost_nanodollars(&usage, &metering::model_prices(&ctx.model));
+
+        // 1) ВСЕГДА: расход подписки → пул (калибровка ёмкости окна + живая утилизация)
+        ctx.pool.record_spend(&ctx.email, real);
+
+        // 2) ОПЦИОНАЛЬНО: списание с баланса метерного ключа (real × наценка)
+        if let Some(b) = ctx.bill {
+            let charge = metering::apply_multiplier(real, b.mult_bp);
+            let charge_i64 = charge.clamp(0, i64::MAX as i128) as i64;
+            let newbal = b.billing.deduct(&b.key, charge_i64);
+            let tail: String = { let s = b.key.as_str(); s[s.len().saturating_sub(4)..].to_string() };
+            eprintln!(
+                "💵 ключ …{tail}: −{} [{}] → баланс {}",
+                metering::nano_to_usd_string(charge),
+                if ctx.model.is_empty() { "?" } else { &ctx.model },
+                newbal.map(|b| metering::nano_to_usd_string(b as i128)).unwrap_or_else(|| "?".into()),
+            );
+        }
     }
 }
 
