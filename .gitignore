@@ -1,0 +1,14 @@
+# СЕКРЕТЫ — никогда в репозиторий
+*.env
+!*.env.example
+*.gpg
+subscriptions.json
+subscriptions.db
+subscriptions.db-*
+active_profile
+active_proxy
+.credentials.json
+*.token
+*.fifo
+.claude-*/
+secrets*

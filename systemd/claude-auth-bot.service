@@ -1,0 +1,29 @@
+# systemd-юнит для auth_token_bot (Rust). Нейросеть НЕ нужна: claude CLI — это
+# OAuth-утилита для setup-token, не модель. Выплаты USDT встроены в бинарь (alloy).
+# Сам бот — Rust-бинарь из repo CLAUDE_SETUP_TOKEN_BOT (собрать: cargo build --release).
+# Установка:
+#   # 1) ОДИН раз поднять зависимости (claude CLI) + расшифровать env на голом сервере:
+#   AGENTS_SECRETS_PASSPHRASE=… /opt/AgentsCloningFork/scripts/auth_bot_bootstrap.sh
+#   # 2) положи env в /etc/agents/auth_bot.env (chmod 600, owner = User ниже)
+#   # 3) положи собранный бинарь auth_token_bot_rs рядом (см. ExecStart)
+#   sudo cp claude-auth-bot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now claude-auth-bot
+#   journalctl -u claude-auth-bot -f
+[Unit]
+Description=Claude setup-token onboarding Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agent
+EnvironmentFile=/etc/agents/auth_bot.env
+ExecStart=/opt/AgentsCloningFork/tools/auth_token_bot/auth_token_bot_rs
+Restart=always
+RestartSec=5
+# мягкий хардненинг
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

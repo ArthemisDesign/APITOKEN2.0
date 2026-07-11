@@ -1,0 +1,13 @@
+# Ротация общего токена каждые 20 мин (был launchd StartInterval 1200).
+# Установка: sudo cp token-refresh.{service,timer} /etc/systemd/system/
+#            sudo systemctl enable --now token-refresh.timer
+[Unit]
+Description=Refresh shared OAuth token every 20 minutes
+
+[Timer]
+OnBootSec=300
+OnUnitActiveSec=1200
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

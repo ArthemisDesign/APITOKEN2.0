@@ -1,0 +1,12 @@
+# Проверка ёмкости продаж подписок каждые 30 минут.
+# Установка: apply_infra.sh ставит юнит и включает таймер (см. блок enable ниже).
+[Unit]
+Description=Check subscription sales capacity every 30 minutes
+
+[Timer]
+OnBootSec=600
+OnUnitActiveSec=1800
+AccuracySec=1m
+
+[Install]
+WantedBy=timers.target

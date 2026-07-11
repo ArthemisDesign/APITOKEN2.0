@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# claude-api — минимальный раннер "подписка → API": берёт живую подписку из ПУЛА
+# и выполняет запрос через CLI `claude` на её квоте. Standalone, читает СВОЙ реестр
+# (SUB_CFG_DIR), никак не связан с основным флотом.
+#   usage: claude-api [--sub <email>] [--model <m>] <prompt…>
+set -uo pipefail
+CFG="${SUB_CFG_DIR:-$HOME/.config/claude-api}"
+DB="$CFG/subscriptions.db"
+CLAUDE="${CLAUDE_BIN:-$HOME/.local/bin/claude}"
+MODEL="${CLAUDE_API_MODEL:-}"; SUB=""
+while [ $# -gt 0 ]; do case "$1" in
+  --sub)   SUB="${2:-}"; shift 2;;
+  --model) MODEL="${2:-}"; shift 2;;
+  -h|--help) echo "usage: claude-api [--sub <email>] [--model <m>] <prompt>"; exit 0;;
+  --) shift; break;;  *) break;;
+esac; done
+PROMPT="$*"
+[ -n "$PROMPT" ] || { echo "usage: claude-api [--sub <email>] [--model <m>] <prompt>" >&2; exit 1; }
+[ -f "$DB" ] || { echo "нет реестра $DB — добавь подписку: scripts/subscription.sh add <email> <proxy>" >&2; exit 2; }
+# выбор подписки: явная --sub, иначе активная (subs_meta.active), иначе первая active
+row=$(sqlite3 -separator "|" "$DB" "
+  SELECT email,profile_dir,token_file,proxy FROM subs
+  WHERE status='active'${SUB:+ AND email='$SUB'}
+  ORDER BY (email=(SELECT v FROM subs_meta WHERE k='active')) DESC, added_ts ASC LIMIT 1;" 2>/dev/null)
+[ -n "$row" ] || { echo "нет активной подписки в пуле" >&2; exit 2; }
+IFS="|" read -r email pdir tfile proxy <<<"$row"
+tok=""; [ -f "$tfile" ] && tok="$(cat "$tfile")"
+echo ">> подписка: $email (профиль $pdir)" >&2
+CLAUDE_CONFIG_DIR="$pdir" \
+  ${tok:+CLAUDE_CODE_OAUTH_TOKEN="$tok"} \
+  ${proxy:+HTTPS_PROXY="$proxy" HTTP_PROXY="$proxy"} \
+  "$CLAUDE" -p "$PROMPT" ${MODEL:+--model "$MODEL"}
