@@ -325,6 +325,17 @@ data: {\"type\":\"message_delta\",\"delta\":{},\"usage\":{\"output_tokens\":37}}
     }
 
     #[test]
+    fn client_pays_9_percent_of_real_api() {
+        // Бизнес-правило владельца: клиент платит 9% от реального USD-эквивалента API (×0.09,
+        // mult_bp=900), независимо от модели. Реальные $1000 API → клиент тратит ровно $90.
+        let real = 1000i128 * NANO_PER_USD;                 // $1000 реального API
+        assert_eq!(apply_multiplier(real, 900), 90 * NANO_PER_USD); // $90 «нашего»
+        // на реальном usage: 1M выходных токенов Opus = $25 API → клиент платит $2.25
+        let u = Usage { output_tokens: 1_000_000, ..Default::default() };
+        assert_eq!(cost_with_multiplier(&u, "claude-opus-4-8", 900), 2_250_000_000); // $2.25
+    }
+
+    #[test]
     fn usd_string_format() {
         assert_eq!(nano_to_usd_string(25_000), "$0.000025");
         assert_eq!(nano_to_usd_string(2_780_000_000), "$2.780000");
