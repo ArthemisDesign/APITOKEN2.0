@@ -22,8 +22,10 @@ import sqlite3, sys, os
 db = sys.argv[1]
 try:
     c = sqlite3.connect(db)
+    cols = {r[1] for r in c.execute("PRAGMA table_info(subs)")}   # устойчиво к обеим схемам
+    tok_sel = "token" if "token" in cols else "'' AS token"
     for email, tok, tf, proxy in c.execute(
-            "SELECT email, token, token_file, proxy FROM subs WHERE COALESCE(status,'active')='active'"):
+            f"SELECT email, {tok_sel}, token_file, proxy FROM subs WHERE COALESCE(status,'active')='active'"):
         t = (tok or "").strip()
         if not t and tf and os.path.exists(tf):
             t = open(tf).read().strip()
