@@ -254,7 +254,7 @@ pub async fn forward(
             || code == 409 || code == 425 || st.is_server_error();
         if rotate {
             let secs = if code == 429 {
-                cool_secs_429(&resp, &lim, pool::now(), app.cfg.cool_secs)
+                cool_secs_429(&resp, &lim, pool::now())
             } else { 10 };
             app.pool.mark_cooling(&sub.email, secs);
             eprintln!("↻ ротация: {} вернул {} — cooling {}s", sub.email, code, secs);
@@ -312,17 +312,25 @@ fn retry_after_header(resp: &reqwest::Response) -> Option<i64> {
     v.trim().parse::<i64>().ok().map(|s| s.max(1))
 }
 
-/// Секунды до сброса ОКНА-виновника: если недельное окно почти выбрано (util7d≥0.98) — студим
-/// до reset7d (это могут быть дни, и это ПРАВИЛЬНО — иначе ретраим впустую), иначе до reset5h.
+/// Короткий cooldown при небурстовом/транзиентном 429 (лимит запросов-в-минуту чистится быстро).
+const BURST_COOL_SECS: i64 = 20;
+
+/// Секунды до сброса ОКНА-виновника — ТОЛЬКО если это реально квотный 429 (окно у потолка):
+/// недельное почти выбрано (util7d≥0.95) → до reset7d (могут быть дни, и это правильно), либо
+/// 5h у потолка → до reset5h. Если НИ ОДНО окно не близко к потолку — это НЕ квотный 429
+/// (burst/иной лимит), студить до reset нельзя (можно на часы зря) → None → короткий дефолт.
 fn window_cool(lim: &Limits, now: i64) -> Option<i64> {
     let fut = |t: Option<i64>| t.filter(|x| *x > now).map(|x| (x - now).max(1));
-    let (r5, r7) = (fut(lim.reset5h), fut(lim.reset7d));
-    if lim.util7d.unwrap_or(0.0) >= 0.98 { r7.or(r5) } else { r5.or(r7) }
+    let (u5, u7) = (lim.util5h.unwrap_or(0.0), lim.util7d.unwrap_or(0.0));
+    if u7 >= 0.95 { return fut(lim.reset7d).or_else(|| fut(lim.reset5h)); }
+    if u5 >= 0.95 { return fut(lim.reset5h).or_else(|| fut(lim.reset7d)); }
+    None
 }
 
-/// Сколько студить подписку при 429: Retry-After → окно-виновник → дефолт.
-fn cool_secs_429(resp: &reqwest::Response, lim: &Limits, now: i64, default: i64) -> i64 {
-    retry_after_header(resp).or_else(|| window_cool(lim, now)).unwrap_or(default)
+/// Сколько студить при 429: Retry-After (авторитетно) → окно-виновник (если квота выбита) →
+/// короткий burst-дефолт (транзиентный лимит запросов/мин).
+fn cool_secs_429(resp: &reqwest::Response, lim: &Limits, now: i64) -> i64 {
+    retry_after_header(resp).or_else(|| window_cool(lim, now)).unwrap_or(BURST_COOL_SECS)
 }
 
 /// Отдать ответ апстрима клиенту байт-в-байт (стримом — работает и для SSE).

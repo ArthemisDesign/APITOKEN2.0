@@ -29,7 +29,9 @@ const WIN7_SECS: i64 = 7 * 86400;
 const PRIOR_CAP5H_USD: f64 = 50.0;
 const PRIOR_CAP7D_USD: f64 = 1500.0;
 const CALIB_ALPHA: f64 = 0.3;        // вес нового наблюдения в EMA
-const CALIB_MIN_DELTA: f64 = 0.01;   // не калибруем на Δutil < 1% (шум)
+// Калибруем только на Δutil ≥ 3%: util в заголовках Anthropic ЛАГАЕТ (сразу после расхода
+// занижен) и квантован ~1% — на мелком Δutil cap раздувается. Больший порог = чище от лага.
+const CALIB_MIN_DELTA: f64 = 0.03;
 
 /// Один шаг калибровки окна. Копим интервал (util_anchor→new_util) против расхода
 /// (spent_anchor→spent_total); когда Δutil перерос порог — ёмкость = ΔUSD/Δutil (EMA),
