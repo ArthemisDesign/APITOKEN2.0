@@ -1,3 +1,6 @@
+# Rust
+/target/
+
 # СЕКРЕТЫ — никогда в репозиторий
 *.env
 !*.env.example

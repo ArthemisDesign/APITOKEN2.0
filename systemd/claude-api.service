@@ -1,0 +1,22 @@
+# Прозрачный /v1 API поверх пула Claude-подписок (Rust). Слушает порт (деф. 8787),
+# форвардит на api.anthropic.com на квоте подписок с ротацией по лимитам.
+# Логи: journalctl -u claude-api -f
+[Unit]
+Description=claude-api — subscription pool as transparent Anthropic /v1 API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agents
+Group=agents
+Environment=SUB_CFG_DIR=/srv/claude-api/data
+# Общий конфиг (модель/порт/пул) и ОТДЕЛЬНО секреты (ключи API):
+EnvironmentFile=-/srv/claude-api/data/config.env
+EnvironmentFile=-/srv/claude-api/data/server.env
+ExecStart=/srv/claude-api/target/release/claude-api serve
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
