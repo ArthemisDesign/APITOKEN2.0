@@ -12,7 +12,7 @@ mod config;
 mod http;
 mod poller;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use config::Settings;
 use forward::{detect_plan, AppState, Clients, PlanDetect};
@@ -36,6 +36,33 @@ enum Cmd {
         #[command(subcommand)]
         op: SubOp,
     },
+    /// Управление ключами клиентов (баланс в USD-эквиваленте)
+    Key {
+        #[command(subcommand)]
+        op: KeyOp,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeyOp {
+    /// Выпустить ключ с балансом (USD). Без --key ключ генерится и печатается ОДИН раз.
+    Issue {
+        #[arg(long)] usd: f64,
+        /// Наценка × 10000 (900 = ×0.09). По умолчанию — из CLAUDE_API_MULT_BP.
+        #[arg(long)] mult_bp: Option<i64>,
+        /// Задать ключ явно (иначе сгенерируется sk-pool-…).
+        #[arg(long)] key: Option<String>,
+    },
+    /// Пополнить баланс ключа на USD (можно отрицательное — коррекция).
+    Topup { key: String, #[arg(long)] usd: f64 },
+    /// Показать баланс/потрачено по ключу.
+    Balance { key: String },
+    /// Список ключей (ключ маскируется).
+    List,
+    /// Заблокировать ключ.
+    Disable { key: String },
+    /// Разблокировать ключ.
+    Enable { key: String },
 }
 
 #[derive(Subcommand)]
@@ -81,7 +108,83 @@ async fn main() -> Result<()> {
     match cli.cmd.unwrap_or(Cmd::Serve) {
         Cmd::Serve => serve().await,
         Cmd::Sub { op } => sub_cmd(op).await,
+        Cmd::Key { op } => key_cmd(op),
     }
+}
+
+/// USD → нанодоллары (округление до ближайшего нано; f64 достаточно на этапе ВЫПУСКА,
+/// в отличие от поштучного подсчёта, где всё целочисленно).
+fn usd_to_nano(usd: f64) -> i64 {
+    (usd * 1e9).round() as i64
+}
+
+/// Нанодоллары (i64) → "$X.XXXXXX" через движок metering.
+fn usd_str(nano: i64) -> String {
+    metering::nano_to_usd_string(nano as i128)
+}
+
+/// Маска ключа для листинга: sk-pool-abc…wxyz (не печатаем целиком).
+fn mask_key(k: &str) -> String {
+    if k.len() <= 12 {
+        return format!("{}…", &k[..k.len().min(4)]);
+    }
+    format!("{}…{}", &k[..8], &k[k.len() - 4..])
+}
+
+/// Сгенерировать ключ из /dev/urandom (ровно 24 байта → hex): sk-pool-<48hex>.
+/// ВАЖНО: читаем фиксированный буфер (`read_exact`), а не весь файл — /dev/urandom бесконечен.
+fn gen_key() -> Result<String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open("/dev/urandom").context("открыть /dev/urandom")?;
+    let mut buf = [0u8; 24];
+    f.read_exact(&mut buf).context("прочитать /dev/urandom")?;
+    let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
+    Ok(format!("sk-pool-{hex}"))
+}
+
+fn key_cmd(op: KeyOp) -> Result<()> {
+    let s = Settings::from_env();
+    let conn = registry::open(&s.db_path)?;
+    match op {
+        KeyOp::Issue { usd, mult_bp, key } => {
+            let key = match key { Some(k) => k, None => gen_key()? };
+            let mult = mult_bp.unwrap_or(s.mult_bp);
+            registry::key_issue(&conn, &key, usd_to_nano(usd), mult)?;
+            let mult_x = mult as f64 / 10000.0;
+            println!("✓ ключ выпущен: {key}");
+            println!("  баланс: {}  ·  наценка ×{mult_x}  ·  = {} реального API",
+                usd_str(usd_to_nano(usd)),
+                usd_str(usd_to_nano(usd / mult_x.max(f64::MIN_POSITIVE))));
+        }
+        KeyOp::Topup { key, usd } => {
+            match registry::key_topup(&conn, &key, usd_to_nano(usd))? {
+                Some(bal) => println!("✓ баланс: {}", usd_str(bal)),
+                None => println!("ключ не найден: {}", mask_key(&key)),
+            }
+        }
+        KeyOp::Balance { key } => match registry::key_get(&conn, &key)? {
+            Some(r) => println!("{}\tбаланс={}\tпотрачено={}\tнаценка=×{}\tstatus={}",
+                mask_key(&r.key),
+                usd_str(r.balance_nano),
+                usd_str(r.spent_nano),
+                r.mult_bp as f64 / 10000.0, r.status),
+            None => println!("ключ не найден: {}", mask_key(&key)),
+        },
+        KeyOp::List => {
+            let rows = registry::key_list(&conn)?;
+            if rows.is_empty() { println!("(ключей нет) · БД: {}", s.db_path); return Ok(()); }
+            for r in rows {
+                println!("{}\tбаланс={}\tпотрачено={}\tнаценка=×{}\tstatus={}",
+                    mask_key(&r.key),
+                    usd_str(r.balance_nano),
+                    usd_str(r.spent_nano),
+                    r.mult_bp as f64 / 10000.0, r.status);
+            }
+        }
+        KeyOp::Disable { key } => println!("обновлено: {}", registry::key_set_status(&conn, &key, "disabled")?),
+        KeyOp::Enable { key } => println!("обновлено: {}", registry::key_set_status(&conn, &key, "active")?),
+    }
+    Ok(())
 }
 
 /// Определить тариф подписки (профиль Anthropic через её прокси) и записать в реестр.
@@ -167,10 +270,17 @@ async fn serve() -> Result<()> {
     drop(conn);
     let n = subs.len();
 
+    let billing = if s.billing {
+        Some(Arc::new(registry::Billing::open(&s.db_path)?))
+    } else {
+        None
+    };
+
     let app = AppState {
         cfg: Arc::new(s.proxy.clone()),
         pool: Arc::new(Pool::new(subs, s.proxy.util_cap)),
         clients: Arc::new(Clients::new(&s.proxy)),
+        billing,
     };
 
     tokio::spawn(poller::reload_loop(app.clone(), s.db_path.clone(), s.fleet.clone()));

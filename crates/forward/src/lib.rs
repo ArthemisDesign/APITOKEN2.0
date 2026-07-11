@@ -9,11 +9,12 @@
 //! эндпоинтов — это делает крейт `server` (композиция).
 
 mod config;
+mod meter;
 mod proxy;
 mod state;
 mod upstream;
 
 pub use config::{ProxyConfig, CLAUDE_CODE_IDENTITY};
-pub use proxy::{authed, forward};
+pub use proxy::{authed, client_key, forward};
 pub use state::AppState;
 pub use upstream::{detect_plan, poll_sub, Clients, PlanDetect, PollResult};

@@ -9,6 +9,7 @@
 //!   4) при 429/5xx/протухшем токене — cooling и ротация на следующую подписку;
 //!   5) ответ (включая SSE-стрим) отдаём клиенту байт-в-байт.
 
+use crate::meter::{MeterCtx, TeeMeter};
 use crate::state::AppState;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
@@ -35,7 +36,9 @@ fn skip_resp_header(name: &str) -> bool {
         | "keep-alive" | "proxy-connection" | "upgrade" | "te" | "trailer")
 }
 
-fn client_key(headers: &HeaderMap) -> Option<String> {
+/// Клиентский ключ из запроса (x-api-key либо Bearer). Публично — используется и в `server`
+/// для эндпоинта `/balance`.
+pub fn client_key(headers: &HeaderMap) -> Option<String> {
     if let Some(v) = headers.get("x-api-key").and_then(|v| v.to_str().ok()) {
         return Some(v.trim().to_string());
     }
@@ -44,6 +47,7 @@ fn client_key(headers: &HeaderMap) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
+/// Админ-доступ (env-ключи `CLAUDE_API_KEYS` или localhost, если ключи не заданы). Без биллинга.
 pub fn authed(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> bool {
     if app.cfg.api_keys.is_empty() {
         return peer.ip().is_loopback();
@@ -52,6 +56,34 @@ pub fn authed(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> bool {
         Some(k) => app.cfg.api_keys.iter().any(|x| x == &k),
         None => false,
     }
+}
+
+/// Результат авторизации запроса.
+enum Authz {
+    /// Админ (env-ключ/localhost) — без тарификации.
+    Admin,
+    /// Ключ клиента с балансом — тарифицируем ответ и списываем.
+    Metered { key: String, mult_bp: i64 },
+    /// Ключ есть, но баланс ≤ 0.
+    PaymentRequired,
+    /// Ключ неизвестен/заблокирован.
+    Unauthorized,
+}
+
+/// Приоритет: сначала биллинг-ключ (из таблицы api_keys), иначе — админ (env/localhost).
+fn authorize(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> Authz {
+    if let (Some(billing), Some(k)) = (&app.billing, client_key(headers)) {
+        if let Some(row) = billing.get(&k) {
+            if row.status != "active" {
+                return Authz::Unauthorized;
+            }
+            if row.balance_nano <= 0 {
+                return Authz::PaymentRequired;
+            }
+            return Authz::Metered { key: k, mult_bp: row.mult_bp };
+        }
+    }
+    if authed(app, headers, peer) { Authz::Admin } else { Authz::Unauthorized }
 }
 
 /// Anthropic-подобная ошибка (чтобы SDK-клиент видел привычную форму).
@@ -113,8 +145,14 @@ pub async fn forward(
     req: axum::extract::Request,
 ) -> Response {
     let (parts, body) = req.into_parts();
-    if !authed(&app, &parts.headers, &peer) {
-        return err_response(StatusCode::UNAUTHORIZED, "authentication_error", "invalid api key");
+    let authz = authorize(&app, &parts.headers, &peer);
+    match authz {
+        Authz::Unauthorized =>
+            return err_response(StatusCode::UNAUTHORIZED, "authentication_error", "invalid api key"),
+        Authz::PaymentRequired =>
+            return err_response(StatusCode::PAYMENT_REQUIRED, "invalid_request_error",
+                                "insufficient balance — top up your key"),
+        Authz::Admin | Authz::Metered { .. } => {}
     }
     let method: Method = parts.method.clone();
     let pq = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
@@ -125,13 +163,14 @@ pub async fn forward(
         Err(_) => return err_response(StatusCode::BAD_REQUEST, "invalid_request_error", "body read error"),
     };
 
-    // тело: инжектим identity в JSON messages-запрос (иначе токен подписки не пустят)
+    // тело: один парс — вытаскиваем модель (для тарификации) и инжектим identity
+    // (иначе токен подписки не пустят на /v1/messages).
     let mut body_bytes = raw.to_vec();
-    if app.cfg.inject_identity {
-        if let Ok(mut v) = serde_json::from_slice::<Value>(&raw) {
-            if inject_identity(&mut v, &app.cfg.identity) {
-                if let Ok(b) = serde_json::to_vec(&v) { body_bytes = b; }
-            }
+    let mut model = String::new();
+    if let Ok(mut v) = serde_json::from_slice::<Value>(&raw) {
+        model = v.get("model").and_then(Value::as_str).unwrap_or("").to_string();
+        if app.cfg.inject_identity && inject_identity(&mut v, &app.cfg.identity) {
+            if let Ok(b) = serde_json::to_vec(&v) { body_bytes = b; }
         }
     }
 
@@ -189,9 +228,30 @@ pub async fn forward(
 
         // успех или клиентская ошибка запроса (одинакова на любой подписке) → отдаём как есть
         app.pool.mark_ok(&sub.email);
-        return stream_back(st, resp);
+        // тарифицируем ТОЛЬКО успешный ответ метерного ключа (4xx/ошибки не списываем)
+        let meter = match &authz {
+            Authz::Metered { key, mult_bp } if st.is_success() => {
+                app.billing.clone().map(|billing| MeterCtx {
+                    billing,
+                    key: key.clone(),
+                    model: model.clone(),
+                    mult_bp: *mult_bp,
+                    is_sse: is_event_stream(&resp),
+                })
+            }
+            _ => None,
+        };
+        return stream_back(st, resp, meter);
     }
     last
+}
+
+/// Ответ — SSE-стрим? (по content-type). Определяет способ парсинга usage.
+fn is_event_stream(resp: &reqwest::Response) -> bool {
+    resp.headers().get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|c| c.contains("text/event-stream"))
+        .unwrap_or(false)
 }
 
 fn retry_after(resp: &reqwest::Response) -> Option<i64> {
@@ -209,7 +269,9 @@ fn retry_after(resp: &reqwest::Response) -> Option<i64> {
 }
 
 /// Отдать ответ апстрима клиенту байт-в-байт (стримом — работает и для SSE).
-fn stream_back(st: StatusCode, resp: reqwest::Response) -> Response {
+/// Если задан `meter` — оборачиваем тело в tee-метеринг: клиент получает те же байты,
+/// а на завершении стрима списываем стоимость с ключа (тело клиенту НЕ задерживается).
+fn stream_back(st: StatusCode, resp: reqwest::Response, meter: Option<MeterCtx>) -> Response {
     let mut builder = Response::builder().status(st);
     for (name, value) in resp.headers().iter() {
         if !skip_resp_header(name.as_str()) {
@@ -219,7 +281,11 @@ fn stream_back(st: StatusCode, resp: reqwest::Response) -> Response {
     let stream = resp.bytes_stream().map(|chunk| {
         chunk.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
     });
-    builder.body(Body::from_stream(stream)).unwrap_or_else(|_| {
+    let body = match meter {
+        Some(ctx) => Body::from_stream(TeeMeter::new(Box::pin(stream), ctx)),
+        None => Body::from_stream(stream),
+    };
+    builder.body(body).unwrap_or_else(|_| {
         err_response(StatusCode::INTERNAL_SERVER_ERROR, "api_error", "response build error")
     })
 }

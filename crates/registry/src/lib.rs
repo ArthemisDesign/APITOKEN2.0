@@ -10,6 +10,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::fs;
+use std::sync::Mutex;
 
 /// Рантайм-запись подписки с УЖЕ разрешённым токеном (inline или из файла).
 #[derive(Clone, Debug)]
@@ -50,6 +51,14 @@ pub fn open(path: &str) -> Result<Connection> {
     for (name, ty) in COLS {
         let _ = c.execute(&format!("ALTER TABLE subs ADD COLUMN {name} {ty}"), []);
     }
+    // Биллинг: ключи клиентов с балансом в нанодолларах (1 USD = 1e9 нано). i64 INTEGER
+    // вмещает до ~$9.2 млрд — с запасом. balance может уйти в минус (тогда ключ блокируется).
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS api_keys(key TEXT PRIMARY KEY, balance_nano INTEGER NOT NULL DEFAULT 0, \
+         spent_nano INTEGER NOT NULL DEFAULT 0, mult_bp INTEGER NOT NULL DEFAULT 900, \
+         status TEXT NOT NULL DEFAULT 'active', created_ts INTEGER, created TEXT)",
+        [],
+    )?;
     Ok(c)
 }
 
@@ -205,6 +214,119 @@ pub fn list(conn: &Connection) -> Result<Vec<SubRow>> {
         })
     })?;
     Ok(rows.filter_map(|x| x.ok()).collect())
+}
+
+// ── Биллинг: ключи клиентов с USD-балансом (нанодоллары) ─────────────────────
+//
+// Слой хранения: только персист+CRUD баланса. САМ подсчёт стоимости (токены→нано) —
+// в крейте `metering`; сюда приходит уже готовая сумма списания в нано. Границы держим:
+// registry не знает про цены/токены, только про целые нанодоллары на ключе.
+
+/// Строка ключа (баланс/потрачено — в нанодолларах; mult_bp — наценка × 10000).
+#[derive(Clone, Debug)]
+pub struct KeyRow {
+    pub key: String,
+    pub balance_nano: i64,
+    pub spent_nano: i64,
+    pub mult_bp: i64,
+    pub status: String,
+}
+
+/// Выпустить/перевыпустить ключ с балансом (перевыпуск СБРАСЫВАЕТ баланс на новый).
+pub fn key_issue(conn: &Connection, key: &str, balance_nano: i64, mult_bp: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO api_keys(key, balance_nano, spent_nano, mult_bp, status, created_ts, created) \
+         VALUES(?1, ?2, 0, ?3, 'active', ?4, ?5) \
+         ON CONFLICT(key) DO UPDATE SET balance_nano=excluded.balance_nano, mult_bp=excluded.mult_bp, status='active'",
+        rusqlite::params![key, balance_nano, mult_bp, now(), chrono_like(now())],
+    )?;
+    Ok(())
+}
+
+/// Пополнить баланс (add_nano может быть отрицательным для ручной коррекции).
+/// Возвращает новый баланс или None, если ключа нет.
+pub fn key_topup(conn: &Connection, key: &str, add_nano: i64) -> Result<Option<i64>> {
+    let n = conn.execute(
+        "UPDATE api_keys SET balance_nano = balance_nano + ?1 WHERE key = ?2",
+        rusqlite::params![add_nano, key],
+    )?;
+    if n == 0 { return Ok(None); }
+    Ok(Some(conn.query_row(
+        "SELECT balance_nano FROM api_keys WHERE key=?1",
+        rusqlite::params![key], |r| r.get::<_, i64>(0))?))
+}
+
+/// Списать стоимость запроса: баланс −charge, потрачено +charge (одной атомарной командой).
+/// Возвращает новый баланс или None, если ключа нет. Баланс может уйти в минус — тогда
+/// следующий запрос отбивается 402 (гонка двух запросов на грани нуля даёт лёгкий минус).
+pub fn key_deduct(conn: &Connection, key: &str, charge_nano: i64) -> Result<Option<i64>> {
+    let n = conn.execute(
+        "UPDATE api_keys SET balance_nano = balance_nano - ?1, spent_nano = spent_nano + ?1 WHERE key = ?2",
+        rusqlite::params![charge_nano, key],
+    )?;
+    if n == 0 { return Ok(None); }
+    Ok(Some(conn.query_row(
+        "SELECT balance_nano FROM api_keys WHERE key=?1",
+        rusqlite::params![key], |r| r.get::<_, i64>(0))?))
+}
+
+/// Прочитать ключ (для авторизации/`/balance`).
+pub fn key_get(conn: &Connection, key: &str) -> Result<Option<KeyRow>> {
+    let row = conn.query_row(
+        "SELECT key, balance_nano, spent_nano, mult_bp, COALESCE(status,'active') FROM api_keys WHERE key=?1",
+        rusqlite::params![key],
+        |r| Ok(KeyRow {
+            key: r.get::<_, String>(0)?,
+            balance_nano: r.get::<_, i64>(1)?,
+            spent_nano: r.get::<_, i64>(2)?,
+            mult_bp: r.get::<_, i64>(3)?,
+            status: r.get::<_, String>(4)?,
+        }),
+    );
+    match row {
+        Ok(k) => Ok(Some(k)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn key_set_status(conn: &Connection, key: &str, status: &str) -> Result<usize> {
+    Ok(conn.execute("UPDATE api_keys SET status=?1 WHERE key=?2", rusqlite::params![status, key])?)
+}
+
+/// Все ключи (для CLI-листинга; ключ маскируется на стороне вывода).
+pub fn key_list(conn: &Connection) -> Result<Vec<KeyRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT key, balance_nano, spent_nano, mult_bp, COALESCE(status,'active') \
+         FROM api_keys ORDER BY COALESCE(created_ts,0)")?;
+    let rows = stmt.query_map([], |r| Ok(KeyRow {
+        key: r.get::<_, String>(0)?,
+        balance_nano: r.get::<_, i64>(1)?,
+        spent_nano: r.get::<_, i64>(2)?,
+        mult_bp: r.get::<_, i64>(3)?,
+        status: r.get::<_, String>(4)?,
+    }))?;
+    Ok(rows.filter_map(|x| x.ok()).collect())
+}
+
+/// Обёртка для запросного пути сервера: одно долгоживущее соединение под мьютексом.
+/// Списание идёт синхронно (быстрый UPDATE по WAL, без удержания через await).
+pub struct Billing {
+    conn: Mutex<Connection>,
+}
+
+impl Billing {
+    pub fn open(path: &str) -> Result<Billing> {
+        Ok(Billing { conn: Mutex::new(open(path)?) })
+    }
+    /// Прочитать ключ (None при ошибке/отсутствии).
+    pub fn get(&self, key: &str) -> Option<KeyRow> {
+        self.conn.lock().ok().and_then(|c| key_get(&c, key).ok().flatten())
+    }
+    /// Списать сумму, вернуть новый баланс (None если ключа нет/ошибка).
+    pub fn deduct(&self, key: &str, charge_nano: i64) -> Option<i64> {
+        self.conn.lock().ok().and_then(|c| key_deduct(&c, key, charge_nano).ok().flatten())
+    }
 }
 
 /// Простая UTC-строка YYYY-MM-DD HH:MM без внешних крейтов (для колонки `added`).

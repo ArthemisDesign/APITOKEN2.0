@@ -3,6 +3,7 @@
 use crate::config::ProxyConfig;
 use crate::upstream::Clients;
 use pool::Pool;
+use registry::Billing;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -10,4 +11,6 @@ pub struct AppState {
     pub cfg: Arc<ProxyConfig>,
     pub pool: Arc<Pool>,
     pub clients: Arc<Clients>,
+    /// Биллинг ключей клиентов. `None` → биллинг выключен (только env-ключи/localhost).
+    pub billing: Option<Arc<Billing>>,
 }

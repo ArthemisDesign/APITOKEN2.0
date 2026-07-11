@@ -8,6 +8,8 @@ pub struct Settings {
     pub db_path: String,
     pub bind: String,
     pub fleet: Option<String>,
+    pub billing: bool,       // включён ли учёт баланса ключей (таблица api_keys)
+    pub mult_bp: i64,        // дефолтная наценка для `key issue` (× 10000; 900 = ×0.09)
     pub proxy: ProxyConfig,
 }
 
@@ -35,6 +37,9 @@ impl Settings {
             db_path,
             bind: format!("{host}:{port}"),
             fleet: ev("SUBS_FLEET").filter(|f| f != "all"),
+            billing: ev_bool("CLAUDE_API_BILLING", true),
+            // Наценка по умолчанию: клиент платит 20% от реального API-эквивалента (×0.20).
+            mult_bp: ev("CLAUDE_API_MULT_BP").and_then(|s| s.parse().ok()).unwrap_or(2000),
             proxy: ProxyConfig {
                 api_keys,
                 upstream: ev_or("CLAUDE_API_UPSTREAM", "https://api.anthropic.com"),
