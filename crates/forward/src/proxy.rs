@@ -65,22 +65,31 @@ fn err_response(code: StatusCode, kind: &str, msg: &str) -> Response {
 }
 
 /// Инжект Claude Code identity первым system-блоком (если его там ещё нет).
+/// Первый system-блок уже несёт Claude-Code-идентичность? (billing-header/identity — как шлёт
+/// САМ Claude Code). Тогда повторно инжектить не надо — иначе получим двойную identity.
+fn is_cc_marker(text: &str) -> bool {
+    text.starts_with("x-anthropic-billing-header:")
+        || text.starts_with("You are Claude Code")
+        || text.starts_with("You are a Claude agent")
+}
+
 fn inject_identity(v: &mut Value, identity: &str) -> bool {
     let obj = match v.as_object_mut() { Some(o) => o, None => return false };
     if !obj.contains_key("messages") { return false; } // не messages-запрос — не трогаем
     match obj.get("system").cloned() {
         None => { obj.insert("system".into(), serde_json::json!([{"type":"text","text":identity}])); }
         Some(Value::String(s)) => {
+            if is_cc_marker(&s) { return false; }       // клиент прислал identity строкой — не дублируем
             obj.insert("system".into(),
                 serde_json::json!([{"type":"text","text":identity},{"type":"text","text":s}]));
         }
         Some(Value::Array(mut arr)) => {
-            let first_ok = arr.first()
-                .and_then(|b| b.get("text")).and_then(|t| t.as_str()) == Some(identity);
-            if !first_ok {
-                arr.insert(0, serde_json::json!({"type":"text","text":identity}));
-                obj.insert("system".into(), Value::Array(arr));
-            } else { return false; }
+            let first_cc = arr.first()
+                .and_then(|b| b.get("text")).and_then(|t| t.as_str())
+                .map(is_cc_marker).unwrap_or(false);
+            if first_cc { return false; }               // уже Claude-Code-запрос (напр. сам Claude Code)
+            arr.insert(0, serde_json::json!({"type":"text","text":identity}));
+            obj.insert("system".into(), Value::Array(arr));
         }
         _ => return false,
     }
