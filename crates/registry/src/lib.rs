@@ -170,6 +170,14 @@ pub fn remove(conn: &Connection, email: &str) -> Result<usize> {
     Ok(conn.execute("DELETE FROM subs WHERE email=?1", rusqlite::params![email])?)
 }
 
+/// Удалить ВСЕ подписки (опционально только одного флота). Возвращает число удалённых.
+pub fn clear(conn: &Connection, fleet: Option<&str>) -> Result<usize> {
+    Ok(match fleet {
+        Some(f) => conn.execute("DELETE FROM subs WHERE COALESCE(fleet,'prod')=?1", rusqlite::params![f])?,
+        None => conn.execute("DELETE FROM subs", [])?,
+    })
+}
+
 /// Строка списка для CLI (без утечки токена — только флаг наличия).
 pub struct SubRow {
     pub email: String,

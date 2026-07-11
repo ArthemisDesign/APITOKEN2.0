@@ -58,6 +58,11 @@ enum SubOp {
     List,
     /// Удалить подписку
     Rm { email: String },
+    /// Удалить ВСЕ подписки (нужен --yes; --fleet ограничивает флотом)
+    Clear {
+        #[arg(long)] yes: bool,
+        #[arg(long)] fleet: Option<String>,
+    },
     /// Сменить статус (active | paused | disabled)
     Status { email: String, status: String },
     /// Сменить прокси
@@ -128,6 +133,16 @@ async fn sub_cmd(op: SubOp) -> Result<()> {
             }
         }
         SubOp::Rm { email } => { println!("удалено строк: {}", registry::remove(&conn, &email)?); }
+        SubOp::Clear { yes, fleet } => {
+            if !yes {
+                let n = registry::list(&conn)?.len();
+                println!("⚠️  удалит ВСЕ подписки{} — {n} шт. Повтори с --yes для подтверждения.",
+                    fleet.as_deref().map(|f| format!(" флота {f}")).unwrap_or_default());
+            } else {
+                let n = registry::clear(&conn, fleet.as_deref())?;
+                println!("✓ удалено подписок: {n}{}", fleet.as_deref().map(|f| format!(" (флот {f})")).unwrap_or_default());
+            }
+        }
         SubOp::Status { email, status } => { println!("обновлено: {}", registry::set_status(&conn, &email, &status)?); }
         SubOp::Proxy { email, proxy } => { println!("обновлено: {}", registry::set_proxy(&conn, &email, &proxy)?); }
         SubOp::Fleet { email, fleet } => { println!("обновлено: {}", registry::set_fleet(&conn, &email, &fleet)?); }
