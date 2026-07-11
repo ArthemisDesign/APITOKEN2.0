@@ -20,6 +20,7 @@ pub struct BillCtx {
     pub billing: Arc<Billing>,
     pub key: String,
     pub mult_bp: i64,
+    pub hold: i64, // зарезервированный при допуске потолок — закрываем его фактической стоимостью
 }
 
 /// Что нужно, чтобы обработать один успешный ответ на завершении стрима. Делаем ВСЕГДА
@@ -65,12 +66,18 @@ impl TeeMeter {
         // 1) ВСЕГДА: расход подписки → пул (калибровка ёмкости окна + живая утилизация)
         ctx.pool.record_spend(&ctx.email, real);
 
-        // 2) ОПЦИОНАЛЬНО: списание с баланса метерного ключа (real × наценка)
+        // 2) ОПЦИОНАЛЬНО: закрыть резерв метерного ключа фактической стоимостью (real × наценка).
+        // settle возвращает hold и списывает actual — итог по паре reserve→settle = −actual.
         if let Some(b) = ctx.bill {
             let charge = metering::apply_multiplier(real, b.mult_bp);
             let charge_i64 = charge.clamp(0, i64::MAX as i128) as i64;
-            let newbal = b.billing.deduct(&b.key, charge_i64);
-            let tail: String = { let s = b.key.as_str(); s[s.len().saturating_sub(4)..].to_string() };
+            let newbal = b.billing.settle(&b.key, b.hold, charge_i64);
+            // хвост ключа для лога — по символам (не байтами: срез не на границе char паникует)
+            let tail: String = {
+                let mut t: Vec<char> = b.key.chars().rev().take(4).collect();
+                t.reverse();
+                t.into_iter().collect()
+            };
             eprintln!(
                 "💵 ключ …{tail}: −{} [{}] → баланс {}",
                 metering::nano_to_usd_string(charge),

@@ -164,14 +164,34 @@ pub async fn forward(
         Err(_) => return err_response(StatusCode::BAD_REQUEST, "invalid_request_error", "body read error"),
     };
 
-    // тело: один парс — вытаскиваем модель (для тарификации) и инжектим identity
-    // (иначе токен подписки не пустят на /v1/messages).
+    // тело: один парс — вытаскиваем модель + max_tokens (для тарификации/резерва) и инжектим
+    // identity (иначе токен подписки не пустят на /v1/messages).
     let mut body_bytes = raw.to_vec();
     let mut model = String::new();
+    let mut max_tokens: u64 = 0;
     if let Ok(mut v) = serde_json::from_slice::<Value>(&raw) {
         model = v.get("model").and_then(Value::as_str).unwrap_or("").to_string();
+        max_tokens = v.get("max_tokens").and_then(Value::as_u64).unwrap_or(0);
         if app.cfg.inject_identity && inject_identity(&mut v, &app.cfg.identity) {
             if let Ok(b) = serde_json::to_vec(&v) { body_bytes = b; }
+        }
+    }
+
+    // РЕЗЕРВ баланса метерного ключа: атомарно списываем ПОТОЛОК стоимости запроса до начала
+    // обслуживания. Устраняет гонку (конкурентные запросы не уводят баланс в минус), актуальную
+    // стоимость закрываем в finalize (settle). Потолок: max_tokens по цене output + оценка
+    // входа по САМОЙ дорогой входной ставке (cache_write_1h) — гарантирует actual ≤ hold.
+    let mut reserved: Option<(String, i64)> = None;
+    if let (Authz::Metered { key, mult_bp }, Some(billing)) = (&authz, &app.billing) {
+        let p = metering::model_prices(&model);
+        let mt = if max_tokens > 0 { max_tokens } else { 4096 } as i128;
+        let input_est = (raw.len() as i128 / 3).max(1); // грубая ВЕРХНЯЯ оценка токенов входа
+        let ceiling = mt * p.output + input_est * p.cache_write_1h;
+        let hold = metering::apply_multiplier(ceiling, *mult_bp).clamp(0, i64::MAX as i128) as i64;
+        match billing.reserve(key, hold) {
+            Some(_) => reserved = Some((key.clone(), hold)),
+            None => return err_response(StatusCode::PAYMENT_REQUIRED, "invalid_request_error",
+                                        "insufficient balance for this request — top up your key"),
         }
     }
 
@@ -245,12 +265,13 @@ pub async fn forward(
         // успех или клиентская ошибка запроса (одинакова на любой подписке) → отдаём как есть
         app.pool.mark_ok(&sub.email);
         // на УСПЕХЕ всегда меряем ответ: расход подписки → калибровка пула; для метерного
-        // ключа дополнительно списываем с баланса. 4xx/ошибки не меряем (реального расхода нет).
+        // ключа finalize закрывает резерв фактической стоимостью. 4xx не меряем — резерв возвращаем.
         let meter = if st.is_success() {
-            let bill = match &authz {
-                Authz::Metered { key, mult_bp } => app.billing.clone().map(|billing| BillCtx {
-                    billing, key: key.clone(), mult_bp: *mult_bp,
-                }),
+            let bill = match (&authz, reserved.take()) {
+                (Authz::Metered { key, mult_bp }, Some((_, hold))) =>
+                    app.billing.clone().map(|billing| BillCtx {
+                        billing, key: key.clone(), mult_bp: *mult_bp, hold,
+                    }),
                 _ => None,
             };
             Some(MeterCtx {
@@ -261,11 +282,20 @@ pub async fn forward(
                 bill,
             })
         } else {
+            release_hold(&app, reserved.take()); // клиентская 4xx: вернуть зарезервированное
             None
         };
         return stream_back(st, resp, meter);
     }
+    release_hold(&app, reserved.take()); // ни одна подписка не отдала успех → вернуть резерв
     last
+}
+
+/// Вернуть зарезервированный hold целиком (actual=0), если запрос не дошёл до тарификации.
+fn release_hold(app: &AppState, reserved: Option<(String, i64)>) {
+    if let (Some((key, hold)), Some(billing)) = (reserved, &app.billing) {
+        billing.settle(&key, hold, 0);
+    }
 }
 
 /// Ответ — SSE-стрим? (по content-type). Определяет способ парсинга usage.

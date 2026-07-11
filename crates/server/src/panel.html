@@ -60,6 +60,7 @@
 <div id="app"></div>
 <script>
 const $=(h)=>{const t=document.createElement('template');t.innerHTML=h.trim();return t.content.firstChild};
+const esc=(s)=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmtUsd=(x)=>'$'+(x??0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtDur=(s)=>{s=Math.max(0,s|0);const d=s/86400|0,h=(s%86400)/3600|0,m=(s%3600)/60|0;
   return d?`${d}д ${h}ч`:h?`${h}ч ${m}м`:`${m}м`};
@@ -108,7 +109,7 @@ function render(d,err){
     const b=(u)=>{const p=Math.min(100,Math.round(u*100));const cl=p>=95?'max':p>=70?'hi':'';
       return `<div class="bar"><i class="${cl}" style="width:${p}%"></i></div><span class="pct">${p}%</span>`};
     return `<tr>
-      <td class="l"><span class="dot ${st}"></span>${c.email}${c.calibrated?'':' <span class="muted">(калибр…)</span>'}</td>
+      <td class="l"><span class="dot ${st}"></span>${esc(c.email)}${c.calibrated?'':' <span class="muted">(калибр…)</span>'}</td>
       <td><div style="display:flex;align-items:center;justify-content:flex-end">${b(c.util5h)}</div></td>
       <td class="muted">${fmtDur(c.reset5h_in)}</td>
       <td><div style="display:flex;align-items:center;justify-content:flex-end">${b(c.util7d)}</div></td>

@@ -34,22 +34,32 @@ const CALIB_MIN_DELTA: f64 = 0.01;   // не калибруем на Δutil < 1%
 /// Один шаг калибровки окна. Копим интервал (util_anchor→new_util) против расхода
 /// (spent_anchor→spent_total); когда Δutil перерос порог — ёмкость = ΔUSD/Δutil (EMA),
 /// сдвигаем якорь. Сброс окна (util упал ниже якоря) → пере-заякориваемся без калибровки.
+const CALIB_MAX_JUMP: f64 = 4.0;     // одно наблюдение не двигает cap больше чем в 4× (стабильность)
+
 fn calib_window(anchor: &mut f64, spent_anchor: &mut f64, cap: &mut f64,
                 new_util: f64, spent_total: f64, calib_n: &mut u32) {
     if new_util + 1e-9 < *anchor {
+        // сброс окна: util упал ниже якоря → пере-заякориваемся без калибровки
         *anchor = new_util;
         *spent_anchor = spent_total;
         return;
     }
     let d = new_util - *anchor;
+    if d < CALIB_MIN_DELTA {
+        return; // Δutil ещё мал — копим (якорь НЕ двигаем, ΔUSD не теряется)
+    }
     let du = spent_total - *spent_anchor;
-    if d >= CALIB_MIN_DELTA && du > 0.0 {
-        let obs = du / d;
+    if du > 0.0 {
+        // ёмкость = ΔUSD/Δutil; клампим, чтобы шумный квантованный шаг не швырнул cap
+        let mut obs = du / d;
+        if *cap > 0.0 { obs = obs.clamp(*cap / CALIB_MAX_JUMP, *cap * CALIB_MAX_JUMP); }
         *cap = if *cap > 0.0 { *cap * (1.0 - CALIB_ALPHA) + obs * CALIB_ALPHA } else { obs };
-        *anchor = new_util;
-        *spent_anchor = spent_total;
         *calib_n += 1;
     }
+    // util перерос порог — пере-заякориваемся В ЛЮБОМ случае (даже если ΔUSD=0: это скачок
+    // базовой линии — чужой трафик/рестарт, а не наш расход; иначе якорь застревал бы на нуле).
+    *anchor = new_util;
+    *spent_anchor = spent_total;
 }
 
 /// Снимок доступности по подписке (USD real-API-эквивалента) на разные горизонты.
@@ -274,9 +284,12 @@ impl Pool {
             let rem5 = cap5 * (1.0 - u5);
             let rem7 = cap7 * (1.0 - u7);
 
-            // сколько сбросов окна попадает в (now, now+H] — окно наливается заново (квота, не rate)
+            // сколько сбросов окна попадает в (now, now+H] — окно наливается заново (квота, не rate).
+            // reset мог УЖЕ пройти (idle-подписка) — нормализуем к следующему будущему сбросу,
+            // иначе считали бы прошлые сбросы как будущие и завышали доступность.
             let resets = |reset: i64, win: i64, h: i64| -> i64 {
-                if reset > now + h { 0 } else { 1 + (now + h - reset) / win }
+                let next = if reset >= now { reset } else { reset + ((now - reset) / win + 1) * win };
+                if next > now + h { 0 } else { 1 + (now + h - next) / win }
             };
             let avail = |h: i64| -> f64 {
                 let a5 = rem5 + resets(er5, WIN5_SECS, h) as f64 * cap5;

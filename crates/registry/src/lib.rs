@@ -257,12 +257,43 @@ pub fn key_topup(conn: &Connection, key: &str, add_nano: i64) -> Result<Option<i
 }
 
 /// Списать стоимость запроса: баланс −charge, потрачено +charge (одной атомарной командой).
-/// Возвращает новый баланс или None, если ключа нет. Баланс может уйти в минус — тогда
-/// следующий запрос отбивается 402 (гонка двух запросов на грани нуля даёт лёгкий минус).
+/// Возвращает новый баланс или None, если ключа нет.
 pub fn key_deduct(conn: &Connection, key: &str, charge_nano: i64) -> Result<Option<i64>> {
     let n = conn.execute(
         "UPDATE api_keys SET balance_nano = balance_nano - ?1, spent_nano = spent_nano + ?1 WHERE key = ?2",
         rusqlite::params![charge_nano, key],
+    )?;
+    if n == 0 { return Ok(None); }
+    Ok(Some(conn.query_row(
+        "SELECT balance_nano FROM api_keys WHERE key=?1",
+        rusqlite::params![key], |r| r.get::<_, i64>(0))?))
+}
+
+/// АТОМАРНО зарезервировать `hold_nano` (оценку максимальной стоимости запроса), если баланс
+/// покрывает и ключ активен. Устраняет гонку: конкурентные запросы каждый вычитает свой hold →
+/// суммарно нельзя превысить баланс. Возвращает новый баланс (после резерва) или None, если
+/// не хватает / ключ не активен / не найден.
+pub fn key_reserve(conn: &Connection, key: &str, hold_nano: i64) -> Result<Option<i64>> {
+    let hold = hold_nano.max(0);
+    let n = conn.execute(
+        "UPDATE api_keys SET balance_nano = balance_nano - ?1 \
+         WHERE key = ?2 AND status = 'active' AND balance_nano >= ?1",
+        rusqlite::params![hold, key],
+    )?;
+    if n == 0 { return Ok(None); }
+    Ok(Some(conn.query_row(
+        "SELECT balance_nano FROM api_keys WHERE key=?1",
+        rusqlite::params![key], |r| r.get::<_, i64>(0))?))
+}
+
+/// Закрыть резерв: вернуть hold и списать фактическую стоимость (`actual_nano`), потрачено +actual.
+/// Итог по паре reserve→settle: баланс −actual, spent +actual. Возвращает новый баланс.
+pub fn key_settle(conn: &Connection, key: &str, hold_nano: i64, actual_nano: i64) -> Result<Option<i64>> {
+    let (hold, actual) = (hold_nano.max(0), actual_nano.max(0));
+    let n = conn.execute(
+        "UPDATE api_keys SET balance_nano = balance_nano + ?1 - ?2, spent_nano = spent_nano + ?2 \
+         WHERE key = ?3",
+        rusqlite::params![hold, actual, key],
     )?;
     if n == 0 { return Ok(None); }
     Ok(Some(conn.query_row(
@@ -319,13 +350,66 @@ impl Billing {
     pub fn open(path: &str) -> Result<Billing> {
         Ok(Billing { conn: Mutex::new(open(path)?) })
     }
+    /// Восстанавливаем ОТРАВЛЕННЫЙ мьютекс (into_inner), а не «падаем открыто»: на денежном
+    /// пути безопаснее продолжить учёт, чем молча обслуживать бесплатно после чужой паники.
+    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    }
     /// Прочитать ключ (None при ошибке/отсутствии).
     pub fn get(&self, key: &str) -> Option<KeyRow> {
-        self.conn.lock().ok().and_then(|c| key_get(&c, key).ok().flatten())
+        key_get(&self.conn(), key).ok().flatten()
     }
-    /// Списать сумму, вернуть новый баланс (None если ключа нет/ошибка).
+    /// Зарезервировать hold (атомарно). None → не хватает/не активен/нет ключа.
+    pub fn reserve(&self, key: &str, hold_nano: i64) -> Option<i64> {
+        key_reserve(&self.conn(), key, hold_nano).ok().flatten()
+    }
+    /// Закрыть резерв фактической стоимостью, вернуть новый баланс.
+    pub fn settle(&self, key: &str, hold_nano: i64, actual_nano: i64) -> Option<i64> {
+        key_settle(&self.conn(), key, hold_nano, actual_nano).ok().flatten()
+    }
+    /// Прямое списание (для путей без резерва). None если ключа нет/ошибка.
     pub fn deduct(&self, key: &str, charge_nano: i64) -> Option<i64> {
-        self.conn.lock().ok().and_then(|c| key_deduct(&c, key, charge_nano).ok().flatten())
+        key_deduct(&self.conn(), key, charge_nano).ok().flatten()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn db() -> Connection { open(":memory:").unwrap() }
+
+    /// reserve атомарно гейтит по балансу; settle сводит пару к −actual, +actual в spent.
+    #[test]
+    fn reserve_gates_and_settle_nets_to_actual() {
+        let c = db();
+        key_issue(&c, "k", 1_000_000_000, 2000).unwrap(); // $1.00
+        assert_eq!(key_reserve(&c, "k", 600_000_000).unwrap(), Some(400_000_000)); // резерв $0.60
+        assert_eq!(key_reserve(&c, "k", 600_000_000).unwrap(), None);              // $0.40 < $0.60 → отказ
+        // settle actual $0.10: баланс += 0.60 − 0.10 = +0.50 → $0.90, spent = $0.10
+        assert_eq!(key_settle(&c, "k", 600_000_000, 100_000_000).unwrap(), Some(900_000_000));
+        let row = key_get(&c, "k").unwrap().unwrap();
+        assert_eq!(row.balance_nano, 900_000_000);
+        assert_eq!(row.spent_nano, 100_000_000);
+    }
+
+    /// release (settle с actual=0) возвращает резерв полностью.
+    #[test]
+    fn reserve_release_refunds_fully() {
+        let c = db();
+        key_issue(&c, "k", 500_000_000, 2000).unwrap();
+        key_reserve(&c, "k", 200_000_000).unwrap();
+        key_settle(&c, "k", 200_000_000, 0).unwrap();
+        assert_eq!(key_get(&c, "k").unwrap().unwrap().balance_nano, 500_000_000);
+    }
+
+    /// заблокированный ключ не резервируется.
+    #[test]
+    fn reserve_rejects_disabled_key() {
+        let c = db();
+        key_issue(&c, "k", 1_000_000_000, 2000).unwrap();
+        key_set_status(&c, "k", "disabled").unwrap();
+        assert_eq!(key_reserve(&c, "k", 1).unwrap(), None);
     }
 }
 
