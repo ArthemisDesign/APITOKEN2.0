@@ -1,9 +1,13 @@
-//! Пул подписок (пункт 2): объединение + логика ротации.
-//! Держит текущий список подписок (обновляется из БД фоном) и волатильное состояние
-//! по каждой (утилизация окон 5h/7d, cooling, last_used). На каждый ход отдаёт
+//! # pool — пул подписок + ротация (пункт 2)
+//!
+//! Держит текущий список подписок (обновляется из БД фоном сервером) и волатильное
+//! состояние по каждой (утилизация окон 5h/7d, cooling, last_used). На каждый ход отдаёт
 //! наименее загруженную живую подписку; при 429 — cooling и следующая.
+//!
+//! **Границы крейта:** чистая in-memory логика выбора и состояния. НИКАКОЙ сети/HTTP/БД.
+//! Зависит только от `registry` (тип [`Sub`]). Опрос лимитов и форвардинг — крейтом выше.
 
-use crate::db::Sub;
+use registry::Sub;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -91,7 +95,7 @@ impl Pool {
         l.last_used = now();
     }
 
-    /// Circuit-breaker при 429. secs=None → дефолтный cool из конфига (передаётся снаружи).
+    /// Circuit-breaker при 429: студим подписку на `secs` секунд.
     pub fn mark_cooling(&self, email: &str, secs: i64) {
         let mut g = self.inner.lock().unwrap();
         let l = g.live.entry(email.to_string()).or_default();

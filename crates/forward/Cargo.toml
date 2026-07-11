@@ -1,0 +1,17 @@
+[package]
+name = "forward"
+version = "0.1.0"
+edition = "2021"
+description = "Прозрачный форвардинг /v1/* на api.anthropic.com на квоте подписок пула"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+registry = { path = "../registry" }
+pool = { path = "../pool" }
+axum = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls", "json", "socks", "http2"] }
+serde_json = "1"
+futures-util = "0.3"
+bytes = "1"

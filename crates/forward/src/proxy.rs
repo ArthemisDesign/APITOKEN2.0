@@ -67,7 +67,7 @@ fn err_response(code: StatusCode, kind: &str, msg: &str) -> Response {
 /// Инжект Claude Code identity первым system-блоком (если его там ещё нет).
 fn inject_identity(v: &mut Value, identity: &str) -> bool {
     let obj = match v.as_object_mut() { Some(o) => o, None => return false };
-    if !obj.contains_key("messages") { return false; }   // не messages-запрос — не трогаем
+    if !obj.contains_key("messages") { return false; } // не messages-запрос — не трогаем
     match obj.get("system").cloned() {
         None => { obj.insert("system".into(), serde_json::json!([{"type":"text","text":identity}])); }
         Some(Value::String(s)) => {
@@ -192,7 +192,7 @@ fn retry_after(resp: &reqwest::Response) -> Option<i64> {
     }
     if let Some(v) = h.get("anthropic-ratelimit-unified-5h-reset").and_then(|v| v.to_str().ok()) {
         if let Ok(ts) = v.trim().parse::<f64>() {
-            let d = ts as i64 - crate::pool::now();
+            let d = ts as i64 - pool::now();
             if d > 0 { return Some(d); }
         }
     }

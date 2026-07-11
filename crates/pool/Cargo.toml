@@ -1,0 +1,11 @@
+[package]
+name = "pool"
+version = "0.1.0"
+edition = "2021"
+description = "Пул подписок + логика ротации (наименее загруженная, cooling при 429)"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+registry = { path = "../registry" }

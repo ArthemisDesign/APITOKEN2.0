@@ -1,8 +1,6 @@
 //! Фоновые задачи: (1) перечитывание реестра из БД, (2) опрос лимитов подписок.
 
-use crate::state::AppState;
-use crate::upstream::poll_sub;
-use crate::{db, pool};
+use forward::{poll_sub, AppState};
 use std::time::Duration;
 
 /// Адаптивный интервал опроса: горячие подписки опрашиваем чаще.
@@ -11,11 +9,11 @@ fn poll_interval(l: &pool::Live) -> i64 {
     if u >= 0.7 { 12 } else if u >= 0.3 { 30 } else { 60 }
 }
 
-/// Раз в reload_secs перечитываем subs из БД (подхватываем добавленные/убранные подписки).
-pub async fn reload_loop(app: AppState) {
+/// Раз в 30с перечитываем subs из БД (подхватываем добавленные/убранные подписки).
+pub async fn reload_loop(app: AppState, db_path: String, fleet: Option<String>) {
     loop {
-        if let Ok(conn) = db::open(&app.cfg.db_path) {
-            if let Ok(subs) = db::load_active(&conn, app.cfg.fleet.as_deref()) {
+        if let Ok(conn) = registry::open(&db_path) {
+            if let Ok(subs) = registry::load_active(&conn, fleet.as_deref()) {
                 app.pool.replace_subs(subs);
             }
         }

@@ -1,16 +1,15 @@
 //! HTTP-роутер: наши управляющие эндпоинты + прозрачный форвардинг всего остального.
 //!
-//!   GET /health            — жив ли сервер (без авторизации)
-//!   GET /pool              — статус пула (util/cooling, без секретов)
-//!   *                      — форвардинг на api.anthropic.com (см. proxy::forward)
+//!   GET /health   — жив ли сервер (без авторизации)
+//!   GET /pool     — статус пула (util/cooling, без секретов)
+//!   *             — форвардинг на api.anthropic.com (см. forward::forward)
 
-use crate::proxy::{authed, forward};
-use crate::state::AppState;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use axum::Router;
+use forward::{authed, forward, AppState};
 use serde_json::json;
 use std::net::SocketAddr;
 
@@ -39,8 +38,8 @@ async fn pool_status(
     if !authed(&app, &headers, &peer) {
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response();
     }
-    let now = crate::pool::now();
-    let pool: Vec<_> = app.pool.snapshot().into_iter().map(|(s, l)| json!({
+    let now = pool::now();
+    let list: Vec<_> = app.pool.snapshot().into_iter().map(|(s, l)| json!({
         "email": s.email,
         "fleet": s.fleet,
         "proxy": !s.proxy.is_empty(),
@@ -52,5 +51,5 @@ async fn pool_status(
         "last_used": l.last_used,
         "polled_ts": l.polled_ts,
     })).collect();
-    Json(json!({"pool": pool, "cap": app.cfg.util_cap, "poller": app.cfg.poll})).into_response()
+    Json(json!({"pool": list, "cap": app.cfg.util_cap, "poller": app.cfg.poll})).into_response()
 }

@@ -1,7 +1,11 @@
-//! Реестр подписок (пункт 1) — SQLite. Источник истины: таблица `subs`.
-//! Совместим с исторической subscriptions.db (мягкая миграция недостающих колонок).
-//! Для форвардинг-прокси подписке нужны только: OAuth-токен + прокси (+ флот/статус).
-//! Токен берём из колонки `token` (inline) либо из файла `token_file`.
+//! # registry — реестр подписок (пункт 1)
+//!
+//! Источник истины пула: таблица `subs` в SQLite. Для форвардинг-прокси подписке нужны
+//! только OAuth-токен + прокси (+ статус/флот). Токен берётся из колонки `token` (inline)
+//! либо из файла `token_file`. Совместим с исторической subscriptions.db (мягкая миграция).
+//!
+//! **Границы крейта:** только хранение/чтение подписок. НИКАКОЙ сети, HTTP, логики пула.
+//! Зависит лишь от rusqlite/anyhow. Ниже по стеку зависеть не от кого.
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
@@ -11,8 +15,8 @@ use std::fs;
 #[derive(Clone, Debug)]
 pub struct Sub {
     pub email: String,
-    pub token: String,   // OAuth Bearer подписки (секрет)
-    pub proxy: String,   // http://user:pass@ip:port ("" = без прокси)
+    pub token: String, // OAuth Bearer подписки (секрет)
+    pub proxy: String, // http://user:pass@ip:port ("" = без прокси)
     pub fleet: String,
 }
 
@@ -29,7 +33,9 @@ const COLS: &[(&str, &str)] = &[
 
 pub fn open(path: &str) -> Result<Connection> {
     if let Some(dir) = std::path::Path::new(path).parent() {
-        if !dir.as_os_str().is_empty() { let _ = fs::create_dir_all(dir); }
+        if !dir.as_os_str().is_empty() {
+            let _ = fs::create_dir_all(dir);
+        }
     }
     let c = Connection::open(path).with_context(|| format!("открыть БД {path}"))?;
     c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
@@ -48,14 +54,24 @@ pub fn open(path: &str) -> Result<Connection> {
 
 fn now() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn resolve_token(inline: Option<String>, token_file: Option<String>) -> String {
-    if let Some(t) = inline { let t = t.trim().to_string(); if !t.is_empty() { return t; } }
+    if let Some(t) = inline {
+        let t = t.trim().to_string();
+        if !t.is_empty() {
+            return t;
+        }
+    }
     if let Some(f) = token_file {
         if !f.trim().is_empty() {
-            if let Ok(s) = fs::read_to_string(f.trim()) { return s.trim().to_string(); }
+            if let Ok(s) = fs::read_to_string(f.trim()) {
+                return s.trim().to_string();
+            }
         }
     }
     String::new()
@@ -80,10 +96,18 @@ pub fn load_active(conn: &Connection, fleet: Option<&str>) -> Result<Vec<Sub>> {
     let mut out = Vec::new();
     for row in rows {
         let (email, token, token_file, proxy, status, sfleet) = row?;
-        if status != "active" { continue; }
-        if let Some(f) = fleet { if f != sfleet { continue; } }
+        if status != "active" {
+            continue;
+        }
+        if let Some(f) = fleet {
+            if f != sfleet {
+                continue;
+            }
+        }
         let tok = resolve_token(token, token_file);
-        if tok.is_empty() { continue; }
+        if tok.is_empty() {
+            continue;
+        }
         out.push(Sub { email, token: tok, proxy: proxy.unwrap_or_default(), fleet: sfleet });
     }
     Ok(out)
@@ -96,10 +120,7 @@ pub fn add(conn: &Connection, email: &str, token: &str, proxy: &str, fleet: &str
          VALUES(?1, ?2, ?3, 'active', ?4, ?5, ?6) \
          ON CONFLICT(email) DO UPDATE SET token=excluded.token, proxy=excluded.proxy, \
          status='active', fleet=excluded.fleet",
-        rusqlite::params![
-            email, token, proxy, fleet, now(),
-            chrono_like(now())
-        ],
+        rusqlite::params![email, token, proxy, fleet, now(), chrono_like(now())],
     )?;
     Ok(())
 }
@@ -149,7 +170,6 @@ pub fn list(conn: &Connection) -> Result<Vec<(String, String, String, bool, Stri
 
 /// Простая UTC-строка YYYY-MM-DD HH:MM без внешних крейтов (для колонки `added`).
 fn chrono_like(ts: i64) -> String {
-    // дней от эпохи → григорианская дата (алгоритм Howard Hinnant)
     let days = ts.div_euclid(86400);
     let secs = ts.rem_euclid(86400);
     let (h, mi) = (secs / 3600, (secs % 3600) / 60);

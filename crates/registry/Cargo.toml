@@ -1,0 +1,12 @@
+[package]
+name = "registry"
+version = "0.1.0"
+edition = "2021"
+description = "Реестр Claude-подписок (SQLite) — источник истины пула"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+anyhow = "1"

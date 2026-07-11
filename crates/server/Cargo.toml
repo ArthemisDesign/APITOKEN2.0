@@ -1,0 +1,19 @@
+[package]
+name = "claude-api"
+version = "0.1.0"
+edition = "2021"
+description = "Композиция: CLI реестра + HTTP-сервер (пул подписок как прозрачный /v1 API)"
+
+[[bin]]
+name = "claude-api"
+path = "src/main.rs"
+
+[dependencies]
+registry = { path = "../registry" }
+pool = { path = "../pool" }
+forward = { path = "../forward" }
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+serde_json = "1"

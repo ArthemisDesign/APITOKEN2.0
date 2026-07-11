@@ -24,17 +24,19 @@ Anthropic не пускает OAuth-токены подписок на `/v1/mess
 
 ---
 
-## Из чего состоит
+## Из чего состоит (Cargo workspace)
 
-| Модуль | Роль |
-|---|---|
-| `src/db.rs` | **Реестр подписок** (SQLite `subs`): email, OAuth-токен, прокси, статус, флот |
-| `src/pool.rs` | **Пул + ротация**: выбор наименее загруженной, cooling при 429, состояние лимитов |
-| `src/upstream.rs` | Кэш http-клиентов по прокси + **поллер лимитов** (`anthropic-ratelimit-*`) |
-| `src/proxy.rs` | **Прозрачный форвардинг** `/v1/*`: инжект identity, ротация, стрим байт-в-байт |
-| `src/server.rs` | Роутер: `/health`, `/pool` + fallback-форвардинг |
-| `src/poller.rs` | Фон: перечитывание реестра из БД + опрос лимитов |
-| `src/config.rs` | Конфиг из окружения (всё с дефолтами) |
+Слои — только вниз: `registry ← pool ← forward ← server`. Карта — [`ARCHITECTURE.md`](ARCHITECTURE.md),
+правила для агентов — [`CLAUDE.md`](CLAUDE.md), модель веток — [`BRANCHES.md`](BRANCHES.md).
+
+| Крейт | Роль | Ветка-владелец |
+|---|---|---|
+| `crates/registry` | **Реестр подписок** (SQLite `subs`): email, OAuth-токен, прокси, статус, флот | `comp/registry` |
+| `crates/pool` | **Пул + ротация**: выбор наименее загруженной, cooling при 429, состояние лимитов | `comp/pool` |
+| `crates/forward` | **Прозрачный форвардинг** `/v1/*`: инжект identity, поллер лимитов, ротация, стрим | `comp/forward` |
+| `crates/server` | **Композиция** (bin `claude-api`): env-конфиг, CLI, роутер `/health`+`/pool`, фоновые циклы | `comp/server` |
+
+У каждого крейта — свой `CLAUDE.md` с локальными границами (Claude Code читает их автоматически).
 
 ---
 
