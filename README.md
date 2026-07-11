@@ -122,11 +122,15 @@ subscription.sh list                                # список подпис�
 ## 6. Структура репозитория
 
 ```
+bin/claude-api                      — РАННЕР: запрос к нейросети на квоте подписки (Opus 4.8, выбор модели, учёт токенов)
+lib/cost.py                         — учёт токенов + USD-эквивалент (по-модельные цены, порт из движка)
 scripts/subscription.sh            — CLI реестра + OAuth-логин под прокси
 docs/CLAUDE_AUTH_PROFILES.md        — механизм авторизации (OAuth, CLAUDE_CONFIG_DIR, релогин)
 docs/POOL_SELECTION.md              — как оркестратор выбирает подписку на ход (из движка)
+docs/COST.md                        — цены $/Mtoken + формула USD-эквивалента
 schema/subscriptions.example.json   — пример структуры реестра (без секретов)
 schema/subscriptions.schema.sql     — схема таблицы пула (SQLite)
+config.env.example                  — конфиг по умолчанию (модель, пути)
 tools/auth_token_bot/               — конфиг-пример бота пополнения пула
 systemd/claude-auth-bot.service     — сервис-юнит бота
 ```
