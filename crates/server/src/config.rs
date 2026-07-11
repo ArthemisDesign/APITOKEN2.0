@@ -45,7 +45,8 @@ impl Settings {
                 inject_identity: ev_bool("CLAUDE_API_INJECT_IDENTITY", true),
                 identity: ev_or("CLAUDE_API_IDENTITY", CLAUDE_CODE_IDENTITY),
                 default_beta: ev_or("CLAUDE_API_BETA", "oauth-2025-04-20"),
-                user_agent: ev_or("CLAUDE_API_UA", "claude-cli/2.1.0 (external, cli)"),
+                // Дефолт-fallback; актуальное значение — env CLAUDE_API_UA (авто-рефреш скриптом).
+                user_agent: ev_or("CLAUDE_API_UA", "claude-cli/2.1.195 (external, sdk-cli)"),
                 anthropic_version: ev_or("CLAUDE_API_ANTHROPIC_VERSION", "2023-06-01"),
                 connect_timeout: ev("CLAUDE_API_CONNECT_TIMEOUT").and_then(|s| s.parse().ok()).unwrap_or(30),
             },

@@ -1,0 +1,12 @@
+# Актуализация значений прикладного слоя (UA/beta/identity/version) с живого claude CLI.
+# Дёргается claude-api-fingerprint.timer. Логи: journalctl -u claude-api-fingerprint
+[Unit]
+Description=claude-api — refresh Claude Code fingerprint values into config.env
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Под root: нужно писать config.env и рестартить claude-api; claude внутри — под agents.
+Environment=SUB_CFG_DIR=/srv/claude-api/data
+Environment=CLAUDE_BIN=/srv/agents/.local/bin/claude
+ExecStart=/bin/bash /srv/claude-api/tools/refresh-fingerprint.sh

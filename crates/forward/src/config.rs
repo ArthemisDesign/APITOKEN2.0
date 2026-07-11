@@ -1,10 +1,12 @@
 //! Конфиг форвардинга — то, что нужно прокси/поллеру. Наполняется крейтом `server`
 //! из окружения (композиция). Сам forward env не читает — только принимает готовое.
 
-/// Системный блок-идентичность Claude Code. Anthropic пускает OAuth-токены подписок
-/// (Max/Pro) на /v1/messages, только если ПЕРВЫЙ system-блок запроса ровно такой.
-/// Поэтому под капотом мы его инжектим (см. proxy.rs) — для КЛИЕНТА протокол не меняется.
-pub const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
+/// Системный блок-идентичность Claude Code (значение по УМОЛЧАНИЮ / fallback). Anthropic
+/// пускает OAuth-токены подписок на /v1/messages при валидном Claude-Code-подобном инжекте.
+/// АКТУАЛЬНОЕ значение подтягивается из env `CLAUDE_API_IDENTITY`, которое авто-обновляет
+/// `tools/refresh-fingerprint.sh` (снимает с живого claude CLI) — чтобы не протухало.
+/// Снято с Claude Code 2.1.195 (2026-07-11).
+pub const CLAUDE_CODE_IDENTITY: &str = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 
 #[derive(Clone, Debug)]
 pub struct ProxyConfig {

@@ -1,0 +1,11 @@
+# Раз в день актуализируем значения прикладного слоя (чтобы не протухали при апдейтах Claude Code).
+[Unit]
+Description=Daily refresh of claude-api fingerprint values
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target
