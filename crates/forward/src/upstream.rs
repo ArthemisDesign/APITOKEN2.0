@@ -19,7 +19,7 @@ fn email_seed(email: &str) -> u64 {
 /// наверняка существовали → правдоподобный разброс между персонами без смены major.minor.
 fn vary_patch(base: &str, seed: u64, spread: u32) -> String {
     if spread <= 1 { return base.to_string(); }
-    for token in base.split(|c: char| matches!(c, ' ' | '/' | '(' | ')' | ',')) {
+    for token in base.split([' ', '/', '(', ')', ',']) {
         let parts: Vec<&str> = token.split('.').collect();
         if parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) {
             if let (Ok(maj), Ok(min), Ok(patch)) =
@@ -103,44 +103,6 @@ pub struct Limits {
     pub status: Option<String>,
     pub reset5h: Option<i64>,
     pub reset7d: Option<i64>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn vary_patch_stable_per_email_varied_across() {
-        let base = "claude-cli/2.1.195 (external, sdk-cli)";
-        let a = vary_patch(base, email_seed("alice@x.io"), 8);
-        let b = vary_patch(base, email_seed("bob@x.io"), 8);
-        // стабильность: тот же email → тот же UA
-        assert_eq!(a, vary_patch(base, email_seed("alice@x.io"), 8));
-        // major.minor не меняются, суффикс на месте
-        assert!(a.starts_with("claude-cli/2.1.") && a.ends_with("(external, sdk-cli)"), "a={a}");
-        // patch в окне [187..=195]
-        let patch: u32 = a.split('/').nth(1).unwrap().split_whitespace().next().unwrap()
-            .split('.').nth(2).unwrap().parse().unwrap();
-        assert!((187..=195).contains(&patch), "patch={patch}");
-        // хотя бы иногда различаются (для этих двух seeds — да)
-        let _ = b;
-    }
-
-    #[test]
-    fn vary_patch_disabled_when_spread_low() {
-        let base = "claude-cli/2.1.195 (external, sdk-cli)";
-        assert_eq!(vary_patch(base, 12345, 1), base);
-        assert_eq!(vary_patch(base, 12345, 0), base);
-    }
-
-    /// Разброс реально раскидывает флот по нескольким UA (не все в один).
-    #[test]
-    fn vary_patch_spreads_fleet() {
-        let base = "claude-cli/2.1.195 (external, sdk-cli)";
-        let mut seen = std::collections::HashSet::new();
-        for i in 0..50 { seen.insert(vary_patch(base, email_seed(&format!("u{i}@x.io")), 8)); }
-        assert!(seen.len() >= 3, "флот должен разложиться по UA, got {}", seen.len());
-    }
 }
 
 /// Разобрать unified-ratelimit из заголовков ответа.
@@ -243,4 +205,38 @@ pub async fn poll_sub(client: &Client, cfg: &ProxyConfig, token: &str, ua: &str)
         util5h: l.util5h, util7d: l.util7d, status: l.status,
         reset5h: l.reset5h, reset7d: l.reset7d, http,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vary_patch_stable_per_email_varied_across() {
+        let base = "claude-cli/2.1.195 (external, sdk-cli)";
+        let a = vary_patch(base, email_seed("alice@x.io"), 8);
+        // стабильность: тот же email → тот же UA
+        assert_eq!(a, vary_patch(base, email_seed("alice@x.io"), 8));
+        // major.minor не меняются, суффикс на месте
+        assert!(a.starts_with("claude-cli/2.1.") && a.ends_with("(external, sdk-cli)"), "a={a}");
+        let patch: u32 = a.split('/').nth(1).unwrap().split_whitespace().next().unwrap()
+            .split('.').nth(2).unwrap().parse().unwrap();
+        assert!((187..=195).contains(&patch), "patch={patch}");
+    }
+
+    #[test]
+    fn vary_patch_disabled_when_spread_low() {
+        let base = "claude-cli/2.1.195 (external, sdk-cli)";
+        assert_eq!(vary_patch(base, 12345, 1), base);
+        assert_eq!(vary_patch(base, 12345, 0), base);
+    }
+
+    /// Разброс реально раскидывает флот по нескольким UA (не все в один).
+    #[test]
+    fn vary_patch_spreads_fleet() {
+        let base = "claude-cli/2.1.195 (external, sdk-cli)";
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..50 { seen.insert(vary_patch(base, email_seed(&format!("u{i}@x.io")), 8)); }
+        assert!(seen.len() >= 3, "флот должен разложиться по UA, got {}", seen.len());
+    }
 }

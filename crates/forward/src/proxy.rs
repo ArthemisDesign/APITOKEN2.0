@@ -428,7 +428,7 @@ fn stream_back(st: StatusCode, resp: reqwest::Response, meter: Option<MeterCtx>)
         }
     }
     let stream = resp.bytes_stream().map(|chunk| {
-        chunk.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        chunk.map_err(std::io::Error::other)
     });
     let body = match meter {
         Some(ctx) => Body::from_stream(TeeMeter::new(Box::pin(stream), ctx)),

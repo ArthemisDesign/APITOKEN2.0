@@ -267,6 +267,7 @@ impl Pool {
     }
 
     pub fn len(&self) -> usize { self.inner.lock().unwrap().subs.len() }
+    pub fn is_empty(&self) -> bool { self.inner.lock().unwrap().subs.is_empty() }
 
     /// Наименее загруженная живая подписка не из `exclude` (для ретраев ротации/спилла).
     /// allow_full=true → пускаем до 100% (приоритетные ходы), иначе потолок util_cap.
