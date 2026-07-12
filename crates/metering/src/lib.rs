@@ -68,6 +68,11 @@ pub fn model_prices(model: &str) -> Prices {
         input: nano(inp), cache_read: nano(cr), cache_write_5m: nano(cw5),
         cache_write_1h: nano(cw1), output: nano(out),
     };
+    // Fable 5 / Mythos 5 — самые дорогие текущие модели ($10/$50). ДОЛЖНЫ идти до дефолта,
+    // иначе считались бы как Opus 4.8 ($5/$25) — недосписание вдвое (теряем деньги).
+    if m.contains("fable") || m.contains("mythos") {
+        return p(10000, 1000, 12500, 20000, 50000);      // $10 / 1.0 / 12.5 / 20 / 50
+    }
     if m.contains("sonnet-5") || m == "claude-sonnet-5" {
         return p(3000, 300, 3750, 6000, 15000);          // $3 / 0.30 / 3.75 / 6 / 15
     }
@@ -226,6 +231,12 @@ mod tests {
         assert_eq!(cost_nanodollars(&Usage{cache_read_tokens:1_000_000,..Default::default()}, &h35), 80_000_000);
         // Sonnet 5: 1M output $15
         assert_eq!(cost_nanodollars(&Usage{output_tokens:1_000_000,..Default::default()}, &model_prices("claude-sonnet-5")), 15*NANO_PER_USD);
+        // Fable 5 / Mythos 5: 1M output = $50, 1M input = $10 (НЕ дефолт Opus)
+        let fable = model_prices("claude-fable-5");
+        assert_eq!(cost_nanodollars(&Usage{output_tokens:1_000_000,..Default::default()}, &fable), 50*NANO_PER_USD);
+        assert_eq!(cost_nanodollars(&Usage{input_tokens:1_000_000,..Default::default()}, &fable), 10*NANO_PER_USD);
+        assert_eq!(model_prices("claude-mythos-5"), fable);
+        assert_ne!(fable, opus); // не свалилось в дефолт
         // неизвестная модель → дефолт Opus 4.8
         assert_eq!(model_prices("что-то-непонятное"), opus);
     }
