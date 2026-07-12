@@ -35,8 +35,9 @@ fn next_probe_at(live: &pool::Live) -> i64 {
 pub async fn reload_loop(app: AppState, db_path: String, fleet: Option<String>, poke: Arc<Notify>) {
     let mut prev: HashSet<String> = HashSet::new();
     loop {
-        if let Ok(conn) = registry::open(&db_path) {
-            if let Ok(subs) = registry::load_active(&conn, fleet.as_deref()) {
+        match registry::open(&db_path).and_then(|c| registry::load_active(&c, fleet.as_deref())) {
+            Err(e) => eprintln!("⚠ reload реестра не удался (держим прежний список): {e}"),
+            Ok(subs) => {
                 let cur: HashSet<String> = subs.iter().map(|s| s.email.clone()).collect();
                 let membership_changed = cur != prev;
                 // ВСЕГДА заменяем: подхватываем смену token/proxy того же email (внешняя
@@ -96,8 +97,12 @@ pub async fn persist_loop(app: AppState, db_path: String, poke: Arc<Notify>) {
         }
         let rows = app.pool.export_state();
         if rows.is_empty() { continue; }
-        if let Ok(conn) = registry::open(&db_path) {
-            let _ = registry::save_pool_state(&conn, &rows);
+        // durability реальна только если запись прошла — сбои НЕ глотаем (иначе бан не переживёт рестарт)
+        match registry::open(&db_path) {
+            Ok(conn) => if let Err(e) = registry::save_pool_state(&conn, &rows) {
+                eprintln!("⚠ персист состояния пула не удался: {e}");
+            },
+            Err(e) => eprintln!("⚠ персист: открыть БД не удалось: {e}"),
         }
     }
 }

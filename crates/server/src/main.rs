@@ -296,10 +296,24 @@ async fn serve() -> Result<()> {
             app.pool.import_state(rows);
             if n > 0 { eprintln!("восстановлено состояние пула: {n} подписок"); }
         }
+        // Реконсиляция осиротевших резервов — ТОЛЬКО если НЕ обнаружен другой живой инстанс. Иначе
+        // при перекрытии деплоя (старый ещё дренирует стримы с живыми резервами) вернули бы ЧУЖИЕ
+        // холды → двойное зачисление на settle старого инстанса. Детект по PID-lockfile + /proc.
         if s.billing {
-            match registry::reconcile_reservations(&conn) {
-                Ok(n) if n > 0 => eprintln!("реконсиляция резервов: возвращено {n} ключам (краш-остатки)"),
-                _ => {}
+            let lockpath = format!("{}.lock", s.db_path);
+            let other_alive = std::fs::read_to_string(&lockpath).ok()
+                .and_then(|p| p.trim().parse::<u32>().ok())
+                .map(|pid| std::path::Path::new(&format!("/proc/{pid}")).exists())
+                .unwrap_or(false);
+            let _ = std::fs::write(&lockpath, std::process::id().to_string());
+            if other_alive {
+                eprintln!("⚠ обнаружен другой живой инстанс — ПРОПУСКАЮ reconcile резервов (защита денег)");
+            } else {
+                match registry::reconcile_reservations(&conn) {
+                    Ok(n) if n > 0 => eprintln!("реконсиляция резервов: возвращено {n} ключам (краш-остатки)"),
+                    Err(e) => eprintln!("⚠ reconcile резервов не удался: {e}"),
+                    _ => {}
+                }
             }
         }
     }
@@ -339,8 +353,11 @@ async fn serve() -> Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     eprintln!("graceful shutdown: дренаж завершён, финальный флаш состояния пула");
-    if let Ok(conn) = registry::open(&flush_db) {
-        let _ = registry::save_pool_state(&conn, &flush_app.pool.export_state());
+    match registry::open(&flush_db) {
+        Ok(conn) => if let Err(e) = registry::save_pool_state(&conn, &flush_app.pool.export_state()) {
+            eprintln!("⚠ финальный флаш не удался: {e}");
+        },
+        Err(e) => eprintln!("⚠ финальный флаш: открыть БД не удалось: {e}"),
     }
     Ok(())
 }
