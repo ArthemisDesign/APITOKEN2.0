@@ -98,7 +98,12 @@ fn plan_scale(plan: &str) -> f64 {
         "max20" => 1.0,
         "max5" => 0.25, // 5x/20x
         "pro" => 0.05,  // 1x/20x
-        _ => 1.0,       // неизвестно → консервативно как Max20 (калибровка уточнит)
+        // Неизвестный тариф → КОНСЕРВАТИВНО (как Max5), НЕ как Max20. Прайор — лишь оценка до первой
+        // калибровки; ошибка в БОЛЬШУЮ сторону опаснее: place_best переоценит свободную ёмкость и
+        // нальёт туда сессии → 429-шторм на реально-меньшей подписке (ban-signal, кластер — ровно то,
+        // чего избегаем). Недооценка же лишь слегка недогружает Max20 на пару часов (калибровка
+        // выправит). Авторитетно — явный `sub set-plan` (detect-plan даёт noscope на sub-токенах).
+        _ => 0.25,
     }
 }
 const CALIB_ALPHA: f64 = 0.3;        // вес нового наблюдения в EMA
@@ -340,15 +345,28 @@ impl Pool {
     }
 
     /// Заменить список подписок (из БД), сохранив волатильное состояние существующих.
+    /// ВАЖНО: подписку, которая временно выпала из ростера (смена статуса/флота, удаление токена)
+    /// и может вернуться, НЕ теряем в cooling — иначе бан (на минуты/дни) молча сбрасывался бы, и
+    /// следующий `route`/`pick` слал бы живой трафик обратно на отлимиченный аккаунт (429-шторм).
+    /// `import_state` работает только на старте, reload `pool_state` не перечитывает — поэтому
+    /// удерживаем cooling здесь, в памяти. Протухший cooling отсеется на следующем replace_subs.
     pub fn replace_subs(&self, subs: Vec<Sub>) {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let keep: HashSet<String> = subs.iter().map(|s| s.email.clone()).collect();
-        g.live.retain(|k, _| keep.contains(k));
+        let now = now();
+        g.live.retain(|k, v| keep.contains(k) || v.cooling_until > now);
         g.subs = subs;
     }
 
     pub fn len(&self) -> usize { self.inner.lock().unwrap_or_else(|e| e.into_inner()).subs.len() }
     pub fn is_empty(&self) -> bool { self.inner.lock().unwrap_or_else(|e| e.into_inner()).subs.is_empty() }
+
+    /// Подписка сейчас в cooling? Быстрый отбой в forward: если `route`/`pick` вернули cooling-персону
+    /// (значит НЕТ ни одной не-cooling), нельзя слать на неё живой трафик — будет свежий 429 (ban-signal).
+    pub fn is_cooling(&self, email: &str) -> bool {
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        is_cooling(&g, email, now())
+    }
 
     /// Наименее загруженная живая подписка не из `exclude` (для ретраев ротации/спилла).
     /// allow_full=true → до 100% (приоритетные ходы), иначе per-подписочный запас (`self.reserve`).
@@ -556,7 +574,10 @@ impl Pool {
             // reset мог УЖЕ пройти (idle-подписка) — нормализуем к следующему будущему сбросу,
             // иначе считали бы прошлые сбросы как будущие и завышали доступность.
             let resets = |reset: i64, win: i64, h: i64| -> i64 {
-                let next = if reset >= now { reset } else { reset + ((now - reset) / win + 1) * win };
+                // Строгое `>`: при reset==now окно уже считается сброшенным в `live` (now>=reset → rem
+                // полное), поэтому ЭТУ точку нельзя ещё раз считать будущим сбросом — иначе одно окно
+                // учтено дважды. Нормализуем к следующему сбросу (now+win), согласованно с `live`.
+                let next = if reset > now { reset } else { reset + ((now - reset) / win + 1) * win };
                 if next > now + h { 0 } else { 1 + (now + h - next) / win }
             };
             let avail = |h: i64| -> f64 {
@@ -692,6 +713,37 @@ mod tests {
         // b: 5h чуть занят, окно ещё живо
         p.set_util("b", Some(0.20), Some(0.0), None, Some(future), None);
         assert_eq!(picked(&p), "a"); // a свежая после сброса, несмотря на util5h=0.99
+    }
+
+    /// Неизвестный тариф → консервативный прайор (НЕ Max20), чтобы не переоценить ёмкость → 429-шторм.
+    #[test]
+    fn plan_scale_unknown_is_conservative() {
+        assert_eq!(plan_scale("max20"), 1.0);
+        assert!(plan_scale("") < 1.0, "unknown не должен быть Max20");
+        assert!(plan_scale("нечто") < 1.0);
+        assert_eq!(plan_scale(""), plan_scale("max5")); // консервативно = как Max5
+    }
+
+    /// Весь флот в cooling: pick НЕ зависает (вернёт подписку), но `is_cooling` это распознаёт —
+    /// forward по нему делает быстрый 429+soonest_ready, а не шлёт живой трафик на лимитированный аккаунт.
+    #[test]
+    fn all_cooling_detected_for_fast_reject() {
+        let p = pool(&["a", "b"]);
+        p.mark_cooling("a", 300);
+        p.mark_cooling("b", 300);
+        let picked = p.pick(&none(), false).expect("pick не зависает даже когда все cooling");
+        assert!(p.is_cooling(&picked.email), "is_cooling обязан видеть, что pick вернул cooling-подписку");
+        assert!(p.soonest_ready().is_some(), "есть время до готовности для Retry-After");
+    }
+
+    /// Бан (cooling) переживает выпадение подписки из ростера и его обновление (флап) — иначе
+    /// вернувшийся трафик полетел бы на забаненный аккаунт (429-шторм).
+    #[test]
+    fn cooling_survives_roster_flap() {
+        let p = pool(&["a", "b"]);
+        p.mark_cooling("a", 3600);
+        p.replace_subs(vec![sub("b")]);          // "a" выпала из активного набора
+        assert!(p.is_cooling("a"), "cooling пережил replace_subs (бан не забыт)");
     }
 
     /// Cooling исключает подписку, пока есть живая альтернатива.

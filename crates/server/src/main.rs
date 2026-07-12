@@ -302,11 +302,21 @@ async fn serve() -> Result<()> {
         // холды → двойное зачисление на settle старого инстанса. Детект по PID-lockfile + /proc.
         if s.billing {
             let lockpath = format!("{}.lock", s.db_path);
+            let me = std::process::id();
+            let our_comm = std::fs::read_to_string("/proc/self/comm").unwrap_or_default();
+            let our_comm = our_comm.trim().to_string();
+            // «Живой другой инстанс» = PID из лока занят ТЕМ ЖЕ бинарём (не просто существует /proc/pid):
+            // иначе переиспользование PID чужим процессом дало бы ложный «alive» → reconcile пропущен →
+            // осиротевшие резервы застряли бы до следующего чистого рестарта. Сверяем comm и исключаем
+            // собственный PID (reuse нашего же PID при рестарте).
             let other_alive = std::fs::read_to_string(&lockpath).ok()
                 .and_then(|p| p.trim().parse::<u32>().ok())
-                .map(|pid| std::path::Path::new(&format!("/proc/{pid}")).exists())
+                .filter(|&pid| pid != me)
+                .map(|pid| std::fs::read_to_string(format!("/proc/{pid}/comm"))
+                    .map(|c| !our_comm.is_empty() && c.trim() == our_comm)
+                    .unwrap_or(false))
                 .unwrap_or(false);
-            let _ = std::fs::write(&lockpath, std::process::id().to_string());
+            let _ = std::fs::write(&lockpath, me.to_string());
             if other_alive {
                 eprintln!("⚠ обнаружен другой живой инстанс — ПРОПУСКАЮ reconcile резервов (защита денег)");
             } else {

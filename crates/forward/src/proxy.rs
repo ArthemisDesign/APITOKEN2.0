@@ -288,9 +288,12 @@ pub async fn forward(
         let p = metering::model_prices(&model);
         let mt = if max_tokens > 0 { max_tokens } else { 4096 } as i128;
         // ВЕРХНЯЯ оценка входа: тело клиента + инжект-identity (тоже биллится Anthropic), по самой
-        // дорогой входной ставке. + буфер на web_search — чтобы actual ≤ hold держалось и при
-        // ответе у потолка max_tokens с несколькими поисками (иначе гейт баланса можно пробить).
-        let input_est = ((raw.len() + app.cfg.identity.len()) as i128 / 3).max(1);
+        // дорогой входной ставке (cache_write_1h = 2× input). + буфер на web_search — чтобы actual ≤ hold
+        // держалось и при ответе у потолка max_tokens с несколькими поисками (иначе гейт баланса пробить).
+        // Делитель /2 (не /3): токенов ВСЕГДА ≤ байт (токен = ≥1 символ = ≥1 байт), а резерв идёт по
+        // ставке 2× → `bytes/2 · 2× = bytes` покрывает жёсткий верхний предел токенов при ЛЮБОЙ плотности
+        // ввода (CJK/base64), где прежний /3 (покрытие 0.667 ток/байт) можно было пробить малым max_tokens.
+        let input_est = ((raw.len() + app.cfg.identity.len()) as i128 / 2).max(1);
         let web_buf = 5 * metering::WEB_SEARCH_NANO;
         let ceiling = mt * p.output + input_est * p.cache_write_1h + web_buf;
         let hold = metering::apply_multiplier(ceiling, *mult_bp).clamp(0, i64::MAX as i128) as i64;
@@ -346,6 +349,16 @@ pub async fn forward(
             Some(s) => s,
             None => break,
         };
+        // route/pick отдали cooling-персону → значит НЕТ ни одной не-cooling (весь оставшийся флот за
+        // лимитом). НЕ шлём живой клиентский трафик на отлимиченный аккаунт: это гарантированный свежий
+        // 429 (ban-signal + «автоматный» кластер, ровно то, чего избегаем). Быстрый прозрачный отбой
+        // клиенту с точным Retry-After = soonest_ready (он откатится сам). hold вернёт hold_guard на return.
+        if app.pool.is_cooling(&sub.email) {
+            Metrics::inc(&app.metrics.exhausted);
+            let retry = app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs);
+            return err_retry(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error",
+                             "all subscriptions are rate-limited — retry shortly", retry);
+        }
         attempt += 1;
         tried.insert(sub.email.clone());
         app.pool.mark_used(&sub.email);

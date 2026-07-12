@@ -40,7 +40,9 @@ impl Breaker {
     /// Зафиксировать backend-фейл подписки `email` (5xx/timeout/сетевой). Размыкаем, только если в
     /// окне зафейлило ≥ `DISTINCT_THRESHOLD` РАЗНЫХ подписок (признак аутейджа апстрима, а не одной прокси).
     pub fn record_fail(&self, now: i64, email: &str) {
-        let mut g = self.inner.lock().unwrap();
+        // poison-tolerant, как pool/keylimiter/billing: паника под держанием лока НЕ должна навсегда
+        // ронять горячий путь (open_for зовётся на КАЖДЫЙ запрос → иначе один poison = вечный отказ).
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         g.fails.retain(|(t, _)| now - t < WINDOW);
         g.fails.push((now, email.to_string()));
         let distinct: HashSet<&str> = g.fails.iter().map(|(_, e)| e.as_str()).collect();
@@ -52,7 +54,7 @@ impl Breaker {
 
     /// Здоровый ответ апстрима → окно фейлов сбрасываем (half-open восстановление).
     pub fn record_ok(&self, now: i64) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if g.open_until <= now && !g.fails.is_empty() {
             g.fails.clear();
         }
@@ -60,7 +62,7 @@ impl Breaker {
 
     /// Разомкнут? → `Some(секунд до замыкания)` для `Retry-After`; иначе `None`.
     pub fn open_for(&self, now: i64) -> Option<i64> {
-        let g = self.inner.lock().unwrap();
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if g.open_until > now { Some((g.open_until - now).max(1)) } else { None }
     }
 }
