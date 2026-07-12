@@ -28,8 +28,9 @@ const BODY_LIMIT: usize = 64 * 1024 * 1024;
 fn skip_req_header(name: &str) -> bool {
     matches!(name,
         "host" | "content-length" | "connection" | "authorization" | "x-api-key"
-        | "anthropic-beta" | "anthropic-version" | "accept-encoding" | "transfer-encoding"
-        | "upgrade" | "proxy-connection" | "proxy-authorization" | "keep-alive" | "te" | "trailer")
+        | "anthropic-beta" | "anthropic-version" | "user-agent" | "accept-encoding"
+        | "transfer-encoding" | "upgrade" | "proxy-connection" | "proxy-authorization"
+        | "keep-alive" | "te" | "trailer")
 }
 // Hop-by-hop заголовки апстрима, которые не отдаём клиенту (тело стримим чанками).
 fn skip_resp_header(name: &str) -> bool {
@@ -246,10 +247,14 @@ pub async fn forward(
             }
         };
 
+        // per-persona UA: стабильный для подписки, но различный между подписками (антифингерпринт
+        // флота). Клиентский user-agent НЕ пробрасываем (см. skip_req_header) — отпечаток наш.
+        let ua = crate::upstream::persona_ua(&app.cfg, &sub.email);
         let mut rb = client.request(method.clone(), &url)
             .header("authorization", format!("Bearer {}", sub.token))
             .header("anthropic-version", &version)
-            .header("anthropic-beta", &beta);
+            .header("anthropic-beta", &beta)
+            .header("user-agent", &ua);
         for (name, value) in parts.headers.iter() {
             let n = name.as_str();
             if !skip_req_header(n) { rb = rb.header(n, value.as_bytes()); }

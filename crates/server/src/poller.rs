@@ -31,7 +31,8 @@ pub async fn poll_loop(app: AppState) {
         for (sub, live) in snap {
             if now - live.polled_ts < poll_interval(&live) { continue; }
             let client = match app.clients.get(&sub.proxy) { Ok(c) => c, Err(_) => continue };
-            if let Some(r) = poll_sub(&client, &app.cfg, &sub.token).await {
+            let ua = forward::persona_ua(&app.cfg, &sub.email);
+            if let Some(r) = poll_sub(&client, &app.cfg, &sub.token, &ua).await {
                 app.pool.set_util(&sub.email, r.util5h, r.util7d, r.status.clone(), r.reset5h, r.reset7d);
                 if r.http == 429 {
                     // студим до сброса ОКНА-виновника: недельное почти выбрано → до reset7d (дни),

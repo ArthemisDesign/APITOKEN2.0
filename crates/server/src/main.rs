@@ -198,7 +198,8 @@ async fn detect_and_store(s: &Settings, email: &str) -> String {
     };
     let clients = Clients::new(&s.proxy);
     let client = match clients.get(&proxy) { Ok(c) => c, Err(e) => return format!("proxy: {e}") };
-    match detect_plan(&client, &s.proxy, &tok).await {
+    let ua = forward::persona_ua(&s.proxy, email);
+    match detect_plan(&client, &s.proxy, &tok, &ua).await {
         PlanDetect::Plan(p) => {
             let _ = registry::set_plan(&conn, email, &p);
             format!("тариф: {p}")

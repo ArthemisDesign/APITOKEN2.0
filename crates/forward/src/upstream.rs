@@ -4,8 +4,46 @@
 use crate::config::ProxyConfig;
 use reqwest::Client;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
 use std::time::Duration;
+
+/// Детерминированный seed персоны из email (стабилен во времени и между рестартами).
+fn email_seed(email: &str) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    email.hash(&mut h);
+    h.finish()
+}
+
+/// Понизить patch-версию первого токена вида `A.B.C` в UA на `seed % spread`. patch-релизы почти
+/// наверняка существовали → правдоподобный разброс между персонами без смены major.minor.
+fn vary_patch(base: &str, seed: u64, spread: u32) -> String {
+    if spread <= 1 { return base.to_string(); }
+    for token in base.split(|c: char| matches!(c, ' ' | '/' | '(' | ')' | ',')) {
+        let parts: Vec<&str> = token.split('.').collect();
+        if parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) {
+            if let (Ok(maj), Ok(min), Ok(patch)) =
+                (parts[0].parse::<u32>(), parts[1].parse::<u32>(), parts[2].parse::<u32>())
+            {
+                let newpatch = patch.saturating_sub((seed % spread as u64) as u32);
+                return base.replacen(token, &format!("{maj}.{min}.{newpatch}"), 1);
+            }
+        }
+    }
+    base.to_string()
+}
+
+/// **Per-persona UA:** стабильный во времени для подписки, но различный между подписками.
+/// Пул задан списком (`user_agents` len>1) → пиним один по hash(email); иначе варьируем patch
+/// базового UA на `ua_spread`. Флот из одинаковых UA сам по себе — отпечаток; это его убирает.
+pub fn persona_ua(cfg: &ProxyConfig, email: &str) -> String {
+    let seed = email_seed(email);
+    if cfg.user_agents.len() > 1 {
+        return cfg.user_agents[(seed as usize) % cfg.user_agents.len()].clone();
+    }
+    let base = cfg.user_agents.first().cloned().unwrap_or_else(|| cfg.user_agent.clone());
+    vary_patch(&base, seed, cfg.ua_spread)
+}
 
 /// Кэш http-клиентов: один клиент на строку прокси (переиспользуем пулы соединений).
 pub struct Clients {
@@ -61,6 +99,44 @@ pub struct Limits {
     pub reset7d: Option<i64>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vary_patch_stable_per_email_varied_across() {
+        let base = "claude-cli/2.1.195 (external, sdk-cli)";
+        let a = vary_patch(base, email_seed("alice@x.io"), 8);
+        let b = vary_patch(base, email_seed("bob@x.io"), 8);
+        // стабильность: тот же email → тот же UA
+        assert_eq!(a, vary_patch(base, email_seed("alice@x.io"), 8));
+        // major.minor не меняются, суффикс на месте
+        assert!(a.starts_with("claude-cli/2.1.") && a.ends_with("(external, sdk-cli)"), "a={a}");
+        // patch в окне [187..=195]
+        let patch: u32 = a.split('/').nth(1).unwrap().split_whitespace().next().unwrap()
+            .split('.').nth(2).unwrap().parse().unwrap();
+        assert!((187..=195).contains(&patch), "patch={patch}");
+        // хотя бы иногда различаются (для этих двух seeds — да)
+        let _ = b;
+    }
+
+    #[test]
+    fn vary_patch_disabled_when_spread_low() {
+        let base = "claude-cli/2.1.195 (external, sdk-cli)";
+        assert_eq!(vary_patch(base, 12345, 1), base);
+        assert_eq!(vary_patch(base, 12345, 0), base);
+    }
+
+    /// Разброс реально раскидывает флот по нескольким UA (не все в один).
+    #[test]
+    fn vary_patch_spreads_fleet() {
+        let base = "claude-cli/2.1.195 (external, sdk-cli)";
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..50 { seen.insert(vary_patch(base, email_seed(&format!("u{i}@x.io")), 8)); }
+        assert!(seen.len() >= 3, "флот должен разложиться по UA, got {}", seen.len());
+    }
+}
+
 /// Разобрать unified-ratelimit из заголовков ответа.
 pub fn limits_from_headers(h: &reqwest::header::HeaderMap) -> Limits {
     Limits {
@@ -99,11 +175,12 @@ pub enum PlanDetect {
 /// Определить тариф подписки — как это делает Claude Code: GET /api/oauth/profile с Bearer
 /// подписки (через её прокси). Только Authorization+Content-Type, GET, БЕЗ anthropic-beta.
 /// user:inference-only токен профиль не отдаёт (403) → NoScope.
-pub async fn detect_plan(client: &Client, cfg: &ProxyConfig, token: &str) -> PlanDetect {
+pub async fn detect_plan(client: &Client, cfg: &ProxyConfig, token: &str, ua: &str) -> PlanDetect {
     let url = format!("{}/api/oauth/profile", cfg.upstream.trim_end_matches('/'));
     let resp = match client.get(&url)
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
+        .header("user-agent", ua)
         .timeout(Duration::from_secs(20))
         .send().await
     {
@@ -137,7 +214,7 @@ pub async fn detect_plan(client: &Client, cfg: &ProxyConfig, token: &str) -> Pla
 
 /// Минимальный запрос → читаем unified-ratelimit из ЗАГОЛОВКОВ (приходят и на 400/429).
 /// Идентичность Claude Code включена, чтобы запрос был валиден и вернул реальные лимиты.
-pub async fn poll_sub(client: &Client, cfg: &ProxyConfig, token: &str) -> Option<PollResult> {
+pub async fn poll_sub(client: &Client, cfg: &ProxyConfig, token: &str, ua: &str) -> Option<PollResult> {
     let body = serde_json::json!({
         "model": "claude-haiku-4-5-20251001",
         "max_tokens": 1,
@@ -150,6 +227,7 @@ pub async fn poll_sub(client: &Client, cfg: &ProxyConfig, token: &str) -> Option
         .header("anthropic-version", &cfg.anthropic_version)
         .header("anthropic-beta", &cfg.default_beta)
         .header("content-type", "application/json")
+        .header("user-agent", ua) // per-persona UA — здоровье персоны идёт с тем же отпечатком, что и бой
         .json(&body)
         .timeout(Duration::from_secs(25))
         .send().await.ok()?;

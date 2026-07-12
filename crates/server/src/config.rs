@@ -56,7 +56,13 @@ impl Settings {
                 identity: ev_or("CLAUDE_API_IDENTITY", CLAUDE_CODE_IDENTITY),
                 default_beta: ev_or("CLAUDE_API_BETA", "oauth-2025-04-20"),
                 // Дефолт-fallback; актуальное значение — env CLAUDE_API_UA (авто-рефреш скриптом).
+                // CLAUDE_API_UA можно задать СПИСКОМ через запятую (пул реальных UA) — тогда каждая
+                // персона пинит один. Иначе один UA + разброс patch-версии между персонами (ниже).
                 user_agent: ev_or("CLAUDE_API_UA", "claude-cli/2.1.195 (external, sdk-cli)"),
+                user_agents: ev_or("CLAUDE_API_UA", "claude-cli/2.1.195 (external, sdk-cli)")
+                    .split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+                // Разброс patch-версии UA между персонами (антифингерпринт флота). 0/1 → выключено.
+                ua_spread: ev("CLAUDE_API_UA_SPREAD").and_then(|s| s.parse().ok()).unwrap_or(8),
                 anthropic_version: ev_or("CLAUDE_API_ANTHROPIC_VERSION", "2023-06-01"),
                 connect_timeout: ev("CLAUDE_API_CONNECT_TIMEOUT").and_then(|s| s.parse().ok()).unwrap_or(30),
             },

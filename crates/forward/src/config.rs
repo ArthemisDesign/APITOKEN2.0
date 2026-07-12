@@ -19,7 +19,14 @@ pub struct ProxyConfig {
     pub inject_identity: bool,     // инжектить Claude Code identity в system
     pub identity: String,          // сама строка идентичности
     pub default_beta: String,      // anthropic-beta, добавляемый к клиентским
-    pub user_agent: String,        // UA, которым представляемся апстриму
+    pub user_agent: String,        // UA-fallback (client-level default; поллер/детект)
+    /// Пул реальных UA. len>1 → каждая персона пинит один (hash(email)%len). len≤1 → берём его
+    /// как базу и варьируем patch-версию на `ua_spread` (см. `persona_ua`). Флот из байт-в-байт
+    /// одинаковых UA — сам по себе отпечаток; персональный стабильный UA убирает эту аномалию.
+    pub user_agents: Vec<String>,
+    /// Разброс patch-версии claude-cli в UA между персонами (0/1 = выключено). patch-релизы почти
+    /// наверняка существовали → правдоподобно. Для гарантии реальности — задай `user_agents` списком.
+    pub ua_spread: u32,
     pub anthropic_version: String, // деф. anthropic-version, если клиент не прислал
     pub connect_timeout: u64,      // сек на установку соединения с апстримом/прокси
 }
