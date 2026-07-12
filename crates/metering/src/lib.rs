@@ -13,7 +13,7 @@
 use serde_json::Value;
 
 pub const NANO_PER_USD: i128 = 1_000_000_000;
-const WEB_SEARCH_NANO: i128 = 10_000_000; // $0.01 за web_search-запрос
+pub const WEB_SEARCH_NANO: i128 = 10_000_000; // $0.01 за web_search-запрос
 
 /// Токены запроса по корзинам (u64 — точные счётчики, ничего не теряем).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

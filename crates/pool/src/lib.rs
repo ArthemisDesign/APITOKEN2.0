@@ -98,6 +98,9 @@ const CALIB_MIN_DELTA: f64 = 0.03;
 /// (spent_anchor→spent_total); когда Δutil перерос порог — ёмкость = ΔUSD/Δutil (EMA),
 /// сдвигаем якорь. Сброс окна (util упал ниже якоря) → пере-заякориваемся без калибровки.
 const CALIB_MAX_JUMP: f64 = 4.0;     // одно наблюдение не двигает cap больше чем в 4× (стабильность)
+/// Минимальная доля Δutil, которую должен объяснять НАШ расход, чтобы калибровать (иначе util
+/// раздут чужим использованием аккаунта → не портим cap, только ре-заякориваемся).
+const CALIB_MIN_SHARE: f64 = 0.5;
 
 fn calib_window(seeded: &mut bool, anchor: &mut f64, spent_anchor: &mut f64, cap: &mut f64,
                 new_util: f64, spent_total: f64, calib_n: &mut u32) {
@@ -121,11 +124,18 @@ fn calib_window(seeded: &mut bool, anchor: &mut f64, spent_anchor: &mut f64, cap
     }
     let du = spent_total - *spent_anchor;
     if du > 0.0 {
-        // ёмкость = ΔUSD/Δutil; клампим, чтобы шумный квантованный шаг не швырнул cap
-        let mut obs = du / d;
-        if *cap > 0.0 { obs = obs.clamp(*cap / CALIB_MAX_JUMP, *cap * CALIB_MAX_JUMP); }
-        *cap = if *cap > 0.0 { *cap * (1.0 - CALIB_ALPHA) + obs * CALIB_ALPHA } else { obs };
-        *calib_n += 1;
+        // Защита от ЧУЖОГО использования аккаунта (подписка — живой Max владельца): util мог вырасти
+        // из-за его расхода, а не нашего. Калибруем ТОЛЬКО если наш ΔUSD объясняет заметную долю
+        // Δutil при текущем cap (иначе obs=du/d занижает cap, аккаунт недоиспользуется). До первой
+        // калибровки (cap≤0, бутстрап) — пускаем всегда.
+        let ours_explains = *cap <= 0.0 || du >= d * *cap * CALIB_MIN_SHARE;
+        if ours_explains {
+            // ёмкость = ΔUSD/Δutil; клампим, чтобы шумный квантованный шаг не швырнул cap
+            let mut obs = du / d;
+            if *cap > 0.0 { obs = obs.clamp(*cap / CALIB_MAX_JUMP, *cap * CALIB_MAX_JUMP); }
+            *cap = if *cap > 0.0 { *cap * (1.0 - CALIB_ALPHA) + obs * CALIB_ALPHA } else { obs };
+            *calib_n += 1;
+        }
     }
     // util перерос порог — пере-заякориваемся В ЛЮБОМ случае (даже если ΔUSD=0: это скачок
     // базовой линии — чужой трафик/рестарт, а не наш расход; иначе якорь застревал бы на нуле).
@@ -310,27 +320,27 @@ impl Pool {
 
     /// Поставить хук durable-изменений (вызывается на cooling-переходах). Server → poke персиста.
     pub fn set_on_change(&self, f: Arc<dyn Fn() + Send + Sync>) {
-        *self.on_change.lock().unwrap() = Some(f);
+        *self.on_change.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
     }
     fn signal_change(&self) {
-        if let Some(f) = self.on_change.lock().unwrap().as_ref() { f(); }
+        if let Some(f) = self.on_change.lock().unwrap_or_else(|e| e.into_inner()).as_ref() { f(); }
     }
 
     /// Заменить список подписок (из БД), сохранив волатильное состояние существующих.
     pub fn replace_subs(&self, subs: Vec<Sub>) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let keep: HashSet<String> = subs.iter().map(|s| s.email.clone()).collect();
         g.live.retain(|k, _| keep.contains(k));
         g.subs = subs;
     }
 
-    pub fn len(&self) -> usize { self.inner.lock().unwrap().subs.len() }
-    pub fn is_empty(&self) -> bool { self.inner.lock().unwrap().subs.is_empty() }
+    pub fn len(&self) -> usize { self.inner.lock().unwrap_or_else(|e| e.into_inner()).subs.len() }
+    pub fn is_empty(&self) -> bool { self.inner.lock().unwrap_or_else(|e| e.into_inner()).subs.is_empty() }
 
     /// Наименее загруженная живая подписка не из `exclude` (для ретраев ротации/спилла).
     /// allow_full=true → до 100% (приоритетные ходы), иначе per-подписочный запас (`self.reserve`).
     pub fn pick(&self, exclude: &HashSet<String>, allow_full: bool) -> Option<Sub> {
-        let g = self.inner.lock().unwrap();
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let rsv = if allow_full { Reserve::FULL } else { self.reserve };
         select_best(&g, exclude, now(), &rsv)
     }
@@ -347,7 +357,7 @@ impl Pool {
     ///
     /// Ретраи ПОСЛЕ 429/5xx идут не сюда, а в [`pick`] (дом уже исключён через `tried`).
     pub fn route(&self, session: u64) -> Option<Sub> {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let now = now();
         let rsv = self.reserve;
         let (p5, p7) = (self.prior5h_usd, self.prior7d_usd);
@@ -399,7 +409,7 @@ impl Pool {
 
     /// Взяли подписку в работу (pick): отметить время и +1 в in-flight.
     pub fn mark_used(&self, email: &str) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let l = g.live.entry(email.to_string()).or_default();
         l.last_used = now();
         l.inflight += 1;
@@ -409,7 +419,7 @@ impl Pool {
     /// владеет вызывающий (в forward — `InflightGuard`/`end_stream`), чтобы не было двойного учёта.
     /// Годится и для успеха (стрим ещё течёт), и для клиентской 4xx (подписка ни при чём).
     pub fn mark_healthy(&self, email: &str) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let l = g.live.entry(email.to_string()).or_default();
         if l.cooling_until <= now() { l.cooling_until = 0; }
         l.last_used = now();
@@ -418,7 +428,7 @@ impl Pool {
     /// Стрим ответа завершён или оборван клиентом → освобождаем слот конкуррентности персоны.
     /// Парен с `mark_used`+`mark_healthy` (успех); вызывается из tee-метеринга forward. Клампится в 0.
     pub fn end_stream(&self, email: &str) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let l = g.live.entry(email.to_string()).or_default();
         l.inflight = (l.inflight - 1).max(0);
         l.last_used = now();
@@ -429,7 +439,7 @@ impl Pool {
     /// отмену запроса. Сигналит durable-изменение (персист бана).
     pub fn mark_cooling(&self, email: &str, secs: i64) {
         {
-            let mut g = self.inner.lock().unwrap();
+            let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             g.live.entry(email.to_string()).or_default().cooling_until = now() + secs.max(1);
         }
         self.signal_change();
@@ -438,7 +448,7 @@ impl Pool {
     /// Студить БЕЗ трогания in-flight — для фонового поллера (он не делал `mark_used`).
     pub fn cool(&self, email: &str, secs: i64) {
         {
-            let mut g = self.inner.lock().unwrap();
+            let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             g.live.entry(email.to_string()).or_default().cooling_until = now() + secs.max(1);
         }
         self.signal_change();
@@ -448,7 +458,7 @@ impl Pool {
     /// `mark_used`. Зовётся из `InflightGuard::drop` в forward на ЛЮБОМ не-стриминговом исходе попытки
     /// (ошибка/ротация/4xx/отмена запроса) — так декремент ровно один и не теряется при cancel future.
     pub fn mark_done(&self, email: &str) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let l = g.live.entry(email.to_string()).or_default();
         l.inflight = (l.inflight - 1).max(0);
     }
@@ -456,7 +466,7 @@ impl Pool {
     /// Через сколько секунд освободится ближайшая остывающая подписка (для `Retry-After` при
     /// исчерпании пула). None → остывающих нет.
     pub fn soonest_ready(&self) -> Option<i64> {
-        let g = self.inner.lock().unwrap();
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let now = now();
         g.live.values()
             .map(|l| l.cooling_until - now)
@@ -467,14 +477,14 @@ impl Pool {
     /// Учесть реальный расход запроса (USD real-API, ×1.0 до наценки) — монотонно.
     /// Питает калибровку ёмкости окон и «живую» утилизацию. Вызывается из tee-метеринга forward.
     pub fn record_spend(&self, email: &str, real_nano: i128) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let l = g.live.entry(email.to_string()).or_default();
         l.spent_total_usd += (real_nano as f64) / 1e9;
     }
 
     pub fn set_util(&self, email: &str, u5: Option<f64>, u7: Option<f64>,
                     status: Option<String>, r5: Option<i64>, r7: Option<i64>) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let l = g.live.entry(email.to_string()).or_default();
 
         // КАЛИБРОВКА ёмкости окон: cap = ΔUSD/Δutil. Якоря на окно двигаем только когда Δutil
@@ -504,7 +514,7 @@ impl Pool {
     /// Доступность по каждой подписке (USD real-API-эквивалента) на горизонты 1ч/5ч/1д/7д.
     /// Чистая математика над состоянием — пересчитывается на каждый вызов, без сети.
     pub fn capacity(&self) -> Vec<Cap> {
-        let g = self.inner.lock().unwrap();
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let now = now();
         let (p5, p7) = (self.prior5h_usd, self.prior7d_usd);
         g.subs.iter().map(|s| {
@@ -561,20 +571,20 @@ impl Pool {
 
     /// Снапшот для /pool (без секретов) + список подписок для поллера.
     pub fn snapshot(&self) -> Vec<(Sub, Live)> {
-        let g = self.inner.lock().unwrap();
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         g.subs.iter().map(|s| (s.clone(), g.live.get(&s.email).cloned().unwrap_or_default())).collect()
     }
 
     /// Счётчики исходов роутинга (наблюдаемость `/metrics`).
     pub fn route_stats(&self) -> RouteStats {
-        let g = self.inner.lock().unwrap();
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         RouteStats { pin: g.route_pin, spill: g.route_spill, place: g.route_place }
     }
 
     /// Суммарный in-flight по флоту (gauge) + число остывающих (для `/metrics`; утечку слота
     /// сразу видно по монотонному росту in-flight при простое).
     pub fn gauges(&self) -> (i64, usize) {
-        let g = self.inner.lock().unwrap();
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let now = now();
         let inflight: i64 = g.live.values().map(|l| l.inflight).sum();
         let cooling = g.live.values().filter(|l| l.cooling_until > now).count();
@@ -583,7 +593,7 @@ impl Pool {
 
     /// Экспорт durable-состояния для персиста (по текущим подпискам).
     pub fn export_state(&self) -> Vec<registry::PoolStateRow> {
-        let g = self.inner.lock().unwrap();
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         g.subs.iter().filter_map(|s| {
             let l = g.live.get(&s.email)?;
             Some(registry::PoolStateRow {
@@ -605,7 +615,7 @@ impl Pool {
     /// cooling (если ещё в будущем — бан на дни переживает рестарт), калибровку ёмкости, spent, util/
     /// reset; засеваем якоря калибровки восстановленной точкой, чтобы продолжить, а не мерить с нуля.
     pub fn import_state(&self, rows: Vec<registry::PoolStateRow>) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let now = now();
         let known: HashSet<String> = g.subs.iter().map(|s| s.email.clone()).collect();
         for r in rows {
@@ -624,6 +634,12 @@ impl Pool {
             // засеять якоря калибровки восстановленной точкой (продолжаем EMA, не мерим с нуля)
             l.seed5 = true; l.util5_anchor = r.util5h; l.spent5_anchor_usd = r.spent_total_usd;
             l.seed7 = true; l.util7_anchor = r.util7d; l.spent7_anchor_usd = r.spent_total_usd;
+            // разбросать «свежесть» по подпискам, чтобы поллер не пробил весь восстановленный флот
+            // разом на старте (иначе все polled_ts==0 → залповый probe со всех IP).
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            r.email.hash(&mut h);
+            l.polled_ts = now - (h.finish() % 240) as i64;
+            l.last_used = now;
         }
     }
 }
