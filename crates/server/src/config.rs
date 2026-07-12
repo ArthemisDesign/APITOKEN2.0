@@ -25,6 +25,25 @@ fn ev_or(k: &str, d: &str) -> String { ev(k).unwrap_or_else(|| d.to_string()) }
 fn ev_bool(k: &str, d: bool) -> bool {
     match ev(k) { Some(v) => !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"), None => d }
 }
+/// UA-список из env. Разделитель `|`, а НЕ `,`: реальный UA Claude Code содержит запятую
+/// (`(external, sdk-cli)`), split(',') порвал бы одиночный UA на фрагменты → битый UA всему флоту.
+fn split_ua_list(s: &str) -> Vec<String> {
+    s.split('|').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
+}
+/// Доля [0,1] из env с КЛАМПОМ + предупреждением при выходе за диапазон. Частая ошибка оператора:
+/// `RESERVE_7D=3` (имел в виду 3%) → 3.0 → «резерв 300%» → пул считается исчерпанным → отказы всем.
+/// Кламп страхует деньги/ёмкость; не-число → дефолт (с логом, не тихо).
+fn ev_frac(k: &str, d: f64) -> f64 {
+    match ev(k) { None => d, Some(v) => clamp_frac(k, &v, d) }
+}
+/// Чистая логика ev_frac (тестируемая без env): парс доли + кламп/предупреждение.
+fn clamp_frac(k: &str, v: &str, d: f64) -> f64 {
+    match v.parse::<f64>() {
+        Ok(x) if (0.0..=1.0).contains(&x) => x,
+        Ok(x) => { eprintln!("⚠ {k}={x} вне [0,1] — кламплю (это ДОЛЯ окна, не проценты)"); x.clamp(0.0, 1.0) }
+        Err(_) => { eprintln!("⚠ {k}={v:?} не число — беру дефолт {d}"); d }
+    }
+}
 
 impl Settings {
     pub fn from_env() -> Self {
@@ -53,9 +72,9 @@ impl Settings {
             cap7d_usd: ev("CLAUDE_API_CAP7D_USD").and_then(|s| s.parse().ok()).unwrap_or(0.0),
             // Запас окон (headroom) с джиттером: бережём 10%/3%, порог отсечения слегка разный по
             // подпискам, чтобы флот не резался на одном проценте (антифингерпринт).
-            reserve5h: ev("CLAUDE_API_RESERVE_5H").and_then(|s| s.parse().ok()).unwrap_or(0.10),
-            reserve7d: ev("CLAUDE_API_RESERVE_7D").and_then(|s| s.parse().ok()).unwrap_or(0.03),
-            reserve_jitter: ev("CLAUDE_API_RESERVE_JITTER").and_then(|s| s.parse().ok()).unwrap_or(0.02),
+            reserve5h: ev_frac("CLAUDE_API_RESERVE_5H", 0.10),
+            reserve7d: ev_frac("CLAUDE_API_RESERVE_7D", 0.03),
+            reserve_jitter: ev_frac("CLAUDE_API_RESERVE_JITTER", 0.02),
             proxy: ProxyConfig {
                 api_keys,
                 trust_loopback,
@@ -63,23 +82,50 @@ impl Settings {
                 max_tries: ev("CLAUDE_API_MAX_TRIES").and_then(|s| s.parse().ok()).unwrap_or(3),
                 // Fair-share: потолок одновременных запросов на клиентский ключ (кит не набивает флот).
                 max_inflight_per_key: ev("CLAUDE_API_MAX_INFLIGHT_PER_KEY").and_then(|s| s.parse().ok()).unwrap_or(20),
-                util_cap: ev("CLAUDE_API_UTIL_CAP").and_then(|s| s.parse().ok()).unwrap_or(0.95),
+                util_cap: ev_frac("CLAUDE_API_UTIL_CAP", 0.95),
                 cool_secs: ev("CLAUDE_API_COOL_SECS").and_then(|s| s.parse().ok()).unwrap_or(300),
                 poll: ev_bool("CLAUDE_API_POLL", true),
                 inject_identity: ev_bool("CLAUDE_API_INJECT_IDENTITY", true),
                 identity: ev_or("CLAUDE_API_IDENTITY", CLAUDE_CODE_IDENTITY),
                 default_beta: ev_or("CLAUDE_API_BETA", "oauth-2025-04-20"),
                 // Дефолт-fallback; актуальное значение — env CLAUDE_API_UA (авто-рефреш скриптом).
-                // CLAUDE_API_UA можно задать СПИСКОМ через запятую (пул реальных UA) — тогда каждая
-                // персона пинит один. Иначе один UA + разброс patch-версии между персонами (ниже).
+                // CLAUDE_API_UA можно задать СПИСКОМ через `|` (пул реальных UA) — тогда каждая персона
+                // пинит один. Иначе один UA + разброс patch-версии между персонами (ниже).
+                // ВАЖНО: разделитель `|`, а НЕ `,` — реальный UA Claude Code содержит запятую
+                // (`(external, sdk-cli)`), и split(',') порвал бы дефолт на фрагменты → битый UA флоту.
                 user_agent: ev_or("CLAUDE_API_UA", "claude-cli/2.1.195 (external, sdk-cli)"),
-                user_agents: ev_or("CLAUDE_API_UA", "claude-cli/2.1.195 (external, sdk-cli)")
-                    .split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+                user_agents: split_ua_list(&ev_or("CLAUDE_API_UA", "claude-cli/2.1.195 (external, sdk-cli)")),
                 // Разброс patch-версии UA между персонами (антифингерпринт флота). 0/1 → выключено.
                 ua_spread: ev("CLAUDE_API_UA_SPREAD").and_then(|s| s.parse().ok()).unwrap_or(8),
                 anthropic_version: ev_or("CLAUDE_API_ANTHROPIC_VERSION", "2023-06-01"),
                 connect_timeout: ev("CLAUDE_API_CONNECT_TIMEOUT").and_then(|s| s.parse().ok()).unwrap_or(30),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ua_list_default_stays_single_not_fragments() {
+        // Регресс CRIT-бага: дефолтный UA содержит запятую — split должен дать ОДИН UA, не фрагменты.
+        let v = split_ua_list("claude-cli/2.1.195 (external, sdk-cli)");
+        assert_eq!(v.len(), 1, "запятая в UA не должна рвать его на куски");
+        assert_eq!(v[0], "claude-cli/2.1.195 (external, sdk-cli)");
+        // Пул задаётся через '|'
+        assert_eq!(split_ua_list("a/1.0|b/2.0|c/3.0").len(), 3);
+        assert!(split_ua_list("").is_empty());
+        assert!(split_ua_list("  |  ").is_empty()); // пустые куски отфильтрованы
+    }
+
+    #[test]
+    fn frac_clamps_percent_typo_and_rejects_garbage() {
+        assert_eq!(clamp_frac("k", "0.03", 0.5), 0.03);   // норм доля
+        assert_eq!(clamp_frac("k", "3", 0.5), 1.0);       // «3» (проценты вместо доли) → кламп в 1.0
+        assert_eq!(clamp_frac("k", "-1", 0.5), 0.0);      // отрицательное → 0
+        assert_eq!(clamp_frac("k", "хлам", 0.5), 0.5);    // не число → дефолт
+        assert_eq!(clamp_frac("k", "0,1", 0.5), 0.5);     // запятая-десятичная (опечатка) → дефолт
     }
 }

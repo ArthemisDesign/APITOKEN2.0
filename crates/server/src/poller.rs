@@ -25,8 +25,13 @@ const PROBE_CONCURRENCY: usize = 16;
 const MAX_SLEEP: i64 = 300;
 
 /// Когда подписка «созреет» для активного probe. `polled_ts==0` (никогда не опрошена) → сейчас.
+/// Пока подписка в COOLING — её состояние АВТОРИТЕТНО (reset вычислен локально, quarantine активен),
+/// probe не нужен и ВРЕДЕН: долбил бы забаненный (401/403) аккаунт внутри 900с-карантина каждые 300с
+/// (амплификация бан-сигнала) или слал бы трафик на 429-лимитированный на дни. Поэтому не probe-им до
+/// конца cooling — тогда и обновим liveness. `max` держит инвариант единой точки (due-фильтр == сон).
 fn next_probe_at(live: &pool::Live) -> i64 {
-    if live.polled_ts == 0 { 0 } else { live.polled_ts + LIVENESS_INTERVAL }
+    let base = if live.polled_ts == 0 { 0 } else { live.polled_ts + LIVENESS_INTERVAL };
+    base.max(live.cooling_until)
 }
 
 /// Перечитывание реестра: подхватываем добавленные/убранные подписки. Спит 30с (локальная БД,
@@ -135,5 +140,22 @@ pub async fn poll_loop(app: AppState, poke: Arc<Notify>) {
             _ = tokio::time::sleep(Duration::from_secs(sleep_s as u64)) => {}
             _ = poke.notified() => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cooling_sub_is_not_due_for_probe() {
+        let now = pool::now();
+        let mut l = pool::Live { polled_ts: now - LIVENESS_INTERVAL - 10, ..Default::default() };
+        // простаивающая (не cooling) давно опрошена → созрела
+        assert!(next_probe_at(&l) <= now, "idle-подписка должна созреть для liveness-probe");
+        // в cooling → НЕ probe-им до конца cooling (не долбим забаненный/лимитированный аккаунт)
+        l.cooling_until = now + 500;
+        assert_eq!(next_probe_at(&l), now + 500, "probe откладывается до конца cooling");
+        assert!(next_probe_at(&l) > now);
     }
 }
