@@ -61,14 +61,20 @@ impl Clients {
         }
     }
 
-    /// Клиент для данного прокси ("" = напрямую). Без общего timeout — иначе рвал бы стримы;
-    /// ограничиваем только установку соединения.
+    /// Клиент для данного прокси ("" = напрямую). Без общего request-timeout — иначе рвал бы стримы.
+    /// Liveness обеспечиваем СОБЫТИЙНО, а не ожиданием большого idle-таймаута: HTTP/2 keep-alive PING
+    /// непрерывно проверяет соединение (в т.ч. на простое), TCP keep-alive — на уровне сокета. Мёртвое
+    /// соединение (чёрная дыра) обнаруживается в момент неответа PING, а не по выжиданию таймаута.
     pub fn get(&self, proxy: &str) -> reqwest::Result<Client> {
         if let Some(c) = self.map.lock().unwrap().get(proxy) { return Ok(c.clone()); }
         let mut b = Client::builder()
             .connect_timeout(Duration::from_secs(self.connect_timeout))
             .user_agent(&self.user_agent)
-            .pool_idle_timeout(Duration::from_secs(90));
+            .pool_idle_timeout(Duration::from_secs(90))
+            .tcp_keepalive(Duration::from_secs(60))
+            .http2_keep_alive_interval(Duration::from_secs(30))   // PING каждые 30с…
+            .http2_keep_alive_timeout(Duration::from_secs(20))    // …нет ответа за 20с → соединение мёртво
+            .http2_keep_alive_while_idle(true);                   // проверять и на простое (idle-стрим/пул)
         if !proxy.is_empty() {
             b = b.proxy(reqwest::Proxy::all(proxy)?);
         }
