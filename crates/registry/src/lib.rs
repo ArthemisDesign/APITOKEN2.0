@@ -458,6 +458,30 @@ impl Billing {
     pub fn deduct(&self, key: &str, charge_nano: i64) -> Option<i64> {
         key_deduct(&self.conn(), key, charge_nano).ok().flatten()
     }
+    /// Агрегаты по всем ключам (для наблюдаемости трат в /metrics). Авторитетно из БД одним SUM.
+    pub fn totals(&self) -> BillingTotals { billing_totals(&self.conn()) }
+}
+
+/// Агрегаты биллинга по всем клиентским ключам (нанодоллары).
+#[derive(Clone, Debug, Default)]
+pub struct BillingTotals {
+    pub balance_nano: i64,   // суммарный остаток на ключах (клиентский флоат)
+    pub spent_nano: i64,     // суммарно списано за всё время
+    pub reserved_nano: i64,  // сейчас в незакрытых резервах (in-flight холды)
+    pub active_keys: i64,    // активных метерных ключей
+}
+
+/// Суммы по api_keys одним запросом (источник истины — БД). Ошибка → нули.
+pub fn billing_totals(conn: &Connection) -> BillingTotals {
+    conn.query_row(
+        "SELECT COALESCE(SUM(balance_nano),0), COALESCE(SUM(spent_nano),0), \
+         COALESCE(SUM(reserved_nano),0), COALESCE(SUM(CASE WHEN COALESCE(status,'active')='active' \
+         THEN 1 ELSE 0 END),0) FROM api_keys",
+        [], |r| Ok(BillingTotals {
+            balance_nano: r.get(0)?, spent_nano: r.get(1)?,
+            reserved_nano: r.get(2)?, active_keys: r.get(3)?,
+        }),
+    ).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -485,6 +509,25 @@ mod tests {
         assert_eq!(got[0].cooling_until, 222222);
         assert!((got[0].cap5h_usd - 50.0).abs() < 1e-9);
         assert_eq!(got[0].calib_n, 4);
+    }
+
+    /// Агрегаты трат (для /metrics): суммы баланса/потрачено/резерва и число активных ключей.
+    #[test]
+    fn billing_totals_aggregates_across_keys() {
+        let c = db();
+        key_issue(&c, "sk-1", 5_000_000_000, 10000).unwrap();  // $5
+        key_issue(&c, "sk-2", 3_000_000_000, 10000).unwrap();  // $3
+        // на sk-1: резерв $1 → списание $0.4 (settle) → баланс $4.6, spent $0.4, reserved 0
+        key_reserve(&c, "sk-1", 1_000_000_000).unwrap();
+        key_settle(&c, "sk-1", 1_000_000_000, 400_000_000).unwrap();
+        // на sk-2: висящий резерв $0.5 (in-flight)
+        key_reserve(&c, "sk-2", 500_000_000).unwrap();
+        key_set_status(&c, "sk-2", "disabled").unwrap(); // 1 активный останется (sk-1)
+        let t = billing_totals(&c);
+        assert_eq!(t.balance_nano, 4_600_000_000 + 2_500_000_000); // $4.6 + $2.5
+        assert_eq!(t.spent_nano, 400_000_000);                     // $0.4
+        assert_eq!(t.reserved_nano, 500_000_000);                  // $0.5 висит
+        assert_eq!(t.active_keys, 1);                              // sk-2 отключён
     }
 
     /// Реконсиляция возвращает осиротевший при краше резерв обратно в баланс (идемпотентно).

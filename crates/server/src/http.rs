@@ -62,6 +62,22 @@ async fn metrics(
         g(&m.breaker_rejects), g(&m.exhausted), g(&m.key_throttled),
         rs.pin, rs.spill, rs.place, inflight, app.pool.len(), cooling, breaker_open,
     );
+    // Наблюдаемость трат: агрегаты по клиентским ключам (USD) — только когда биллинг включён.
+    // Авторитетно из БД одним SUM. Даёт «сколько клиенты потратили / держат / зарезервировано».
+    let body = match &app.billing {
+        Some(b) => {
+            let t = b.totals();
+            let usd = |n: i64| n as f64 / 1e9;
+            format!(
+                "{body}# TYPE claude_api_client_balance_usd gauge\nclaude_api_client_balance_usd {:.6}\n\
+                 # TYPE claude_api_billed_usd_total counter\nclaude_api_billed_usd_total {:.6}\n\
+                 # TYPE claude_api_reserved_usd gauge\nclaude_api_reserved_usd {:.6}\n\
+                 # TYPE claude_api_metered_keys gauge\nclaude_api_metered_keys {}\n",
+                usd(t.balance_nano), usd(t.spent_nano), usd(t.reserved_nano), t.active_keys,
+            )
+        }
+        None => body,
+    };
     ([(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")], body).into_response()
 }
 
