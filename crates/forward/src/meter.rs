@@ -56,7 +56,13 @@ impl TeeMeter {
         // Делаем ПЕРВЫМ и безусловно, даже если usage пустой (иначе in-flight подтёк бы).
         ctx.pool.end_stream(&ctx.email);
         let usage = if ctx.is_sse {
-            metering::usage_from_sse(&String::from_utf8_lossy(&self.acc))
+            let s = String::from_utf8_lossy(&self.acc);
+            // ошибка ВНУТРИ стрима после 200 (overloaded посреди генерации) — HTTP-код её не отражал,
+            // ротация уже невозможна; логируем, чтобы не была «тихой» (клиент получил её байт-в-байт).
+            if metering::sse_has_error(&s) {
+                eprintln!("⚠ SSE-error после 200 на {} — стрим нёс error-евент", ctx.email);
+            }
+            metering::usage_from_sse(&s)
         } else {
             metering::usage_from_response_json(&self.acc)
         };

@@ -153,6 +153,21 @@ pub fn usage_from_value(u: &Value) -> Usage {
     }
 }
 
+/// Был ли в SSE-потоке `error`-евент (Anthropic шлёт `event: error` / `{"type":"error"}` ПОСЛЕ 200,
+/// напр. overloaded посреди генерации). HTTP-статус этого не отражает — детект по телу, чтобы такой
+/// сбой не оставался «тихим» (логируется в forward, ротация уже невозможна — стрим пошёл).
+pub fn sse_has_error(sse: &str) -> bool {
+    for raw in sse.lines() {
+        let line = raw.trim_start();
+        let json = match line.strip_prefix("data:") { Some(r) => r.trim(), None => continue };
+        if json.is_empty() || json == "[DONE]" { continue; }
+        if let Ok(v) = serde_json::from_str::<Value>(json) {
+            if v.get("type").and_then(Value::as_str) == Some("error") { return true; }
+        }
+    }
+    false
+}
+
 /// Из полного JSON-ответа (не-стрим): берём объект `usage`.
 pub fn usage_from_response_json(body: &[u8]) -> Usage {
     match serde_json::from_slice::<Value>(body) {
@@ -316,6 +331,15 @@ data: {\"type\":\"message_delta\",\"delta\":{},\"usage\":{\"output_tokens\":37}}
         assert_eq!(u.input_tokens, 100);
         assert_eq!(u.cache_read_tokens, 50);
         assert_eq!(u.output_tokens, 37);
+    }
+
+    #[test]
+    fn sse_error_event_detected() {
+        let ok = "event: message_stop\ndata: {\"type\":\"message_stop\"}";
+        assert!(!sse_has_error(ok));
+        let err = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}";
+        assert!(sse_has_error(err));
+        assert!(!sse_has_error("")); // пусто — не ошибка
     }
 
     #[test]
