@@ -16,7 +16,11 @@
 - `config.rs` — `Settings` (db_path/bind/fleet + `ProxyConfig`) из env.
 - `http.rs` — роутер: `/health`, `/pool`, `/balance`, `/capacity` (управляющие) + `/panel`
   (живой HTML-дашборд ёмкости, `panel.html` через include_str!) + fallback на `forward::forward`.
-- `poller.rs` — `reload_loop` (перечитать реестр), `poll_loop` (опрос лимитов через `forward::poll_sub`).
+- `poller.rs` — СОБЫТИЙНЫЕ циклы: `reload_loop` (перечитать реестр; будит поллер `Notify` при
+  изменении флота) + `poll_loop` (liveness-only probe созревших подписок конкурентно, затем сон
+  РОВНО до ближайшего due-времени или до `poke`). Фиксированного тика нет: reset вычисляется
+  локально, а не поллится; под боевым трафиком `polled_ts` свеж (пассивный сбор в forward) → активный
+  probe не срабатывает. `LIVENESS_INTERVAL` — как редко пинговать простаивающую (проверка живости токена).
 - `main.rs` — clap CLI: `serve` и `sub add/add-file/list/rm/status/proxy/fleet`.
 
 **Инварианты:**

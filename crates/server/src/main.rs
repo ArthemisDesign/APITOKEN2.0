@@ -285,10 +285,11 @@ async fn serve() -> Result<()> {
         breaker: Arc::new(forward::Breaker::new()),
     };
 
-    tokio::spawn(poller::reload_loop(app.clone(), s.db_path.clone(), s.fleet.clone()));
+    let poke = std::sync::Arc::new(tokio::sync::Notify::new());
+    tokio::spawn(poller::reload_loop(app.clone(), s.db_path.clone(), s.fleet.clone(), poke.clone()));
     if s.proxy.poll {
-        tokio::spawn(poller::poll_loop(app.clone()));
-        eprintln!("поллер лимитов: включён");
+        tokio::spawn(poller::poll_loop(app.clone(), poke.clone()));
+        eprintln!("поллер лимитов: событийный (liveness-only)");
     }
     if s.proxy.api_keys.is_empty() {
         eprintln!("⚠️  CLAUDE_API_KEYS не заданы — сервер принимает ТОЛЬКО с 127.0.0.1");
