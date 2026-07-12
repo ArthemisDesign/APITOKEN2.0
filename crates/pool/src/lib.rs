@@ -343,18 +343,9 @@ impl Pool {
         l.inflight += 1;
     }
 
-    pub fn mark_ok(&self, email: &str) {
-        let mut g = self.inner.lock().unwrap();
-        let l = g.live.entry(email.to_string()).or_default();
-        if l.cooling_until <= now() { l.cooling_until = 0; }
-        l.last_used = now();
-        l.inflight = (l.inflight - 1).max(0);
-    }
-
-    /// Успешный ответ, но стрим ещё ТЕЧЁТ: подписка здорова (снять cooling, обновить last_used),
-    /// НО in-flight НЕ трогаем — слот конкуррентности держится всю жизнь стрима и снимается в
-    /// [`end_stream`]. Так конвейер/placement видят реальную параллельную нагрузку персоны, а не
-    /// «0 сразу после заголовков» (иначе на аккаунт наваливалась бы куча параллельных генераций).
+    /// Подписка здорова: снять истёкший cooling, обновить last_used. In-flight НЕ трогаем — слотом
+    /// владеет вызывающий (в forward — `InflightGuard`/`end_stream`), чтобы не было двойного учёта.
+    /// Годится и для успеха (стрим ещё течёт), и для клиентской 4xx (подписка ни при чём).
     pub fn mark_healthy(&self, email: &str) {
         let mut g = self.inner.lock().unwrap();
         let l = g.live.entry(email.to_string()).or_default();
@@ -371,14 +362,13 @@ impl Pool {
         l.last_used = now();
     }
 
-    /// Circuit-breaker из ФОРВАРДА: студим на `secs` и завершаем попытку → −1 in-flight.
-    /// (Парен с `mark_used`; клампится в 0.) Сигналит durable-изменение (персист бана).
+    /// Circuit-breaker из ФОРВАРДА: студим подписку на `secs`. In-flight НЕ трогаем — слот закрывает
+    /// `InflightGuard` (или `end_stream`) в forward, чтобы декремент был ровно один и переживал даже
+    /// отмену запроса. Сигналит durable-изменение (персист бана).
     pub fn mark_cooling(&self, email: &str, secs: i64) {
         {
             let mut g = self.inner.lock().unwrap();
-            let l = g.live.entry(email.to_string()).or_default();
-            l.cooling_until = now() + secs.max(1);
-            l.inflight = (l.inflight - 1).max(0);
+            g.live.entry(email.to_string()).or_default().cooling_until = now() + secs.max(1);
         }
         self.signal_change();
     }
@@ -392,9 +382,9 @@ impl Pool {
         self.signal_change();
     }
 
-    /// Освободить слот конкуррентности БЕЗ cooling — для backend-fault (5xx/timeout апстрима: вина
-    /// api.anthropic.com, а не подписки; студить подписку было бы неверно — она здорова). Парен с
-    /// `mark_used`, клампится в 0.
+    /// Канонический релиз слота конкуррентности (−1, клампится в 0), БЕЗ cooling/last_used. Парен с
+    /// `mark_used`. Зовётся из `InflightGuard::drop` в forward на ЛЮБОМ не-стриминговом исходе попытки
+    /// (ошибка/ротация/4xx/отмена запроса) — так декремент ровно один и не теряется при cancel future.
     pub fn mark_done(&self, email: &str) {
         let mut g = self.inner.lock().unwrap();
         let l = g.live.entry(email.to_string()).or_default();

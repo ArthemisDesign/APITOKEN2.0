@@ -21,6 +21,44 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
+use std::sync::Arc;
+
+/// Гард слота конкуррентности персоны. На ЛЮБОМ не-стриминговом исходе попытки (ошибка/ротация/4xx)
+/// и — главное — при ОТМЕНЕ запроса (клиент отключился, future хендлера дропнут на await) декрементит
+/// in-flight ровно один раз. Разоружается на успехе: слот переходит стриму и снимается в `end_stream`.
+/// Без этого гарда `mark_used(+1)` при отмене НЕ откатывался бы → inflight персоны копится до рестарта.
+struct InflightGuard {
+    pool: Arc<pool::Pool>,
+    email: String,
+    armed: bool,
+}
+impl InflightGuard {
+    fn new(pool: Arc<pool::Pool>, email: String) -> Self { Self { pool, email, armed: true } }
+    fn disarm(&mut self) { self.armed = false; }
+}
+impl Drop for InflightGuard {
+    fn drop(&mut self) { if self.armed { self.pool.mark_done(&self.email); } }
+}
+
+/// Гард резерва баланса. На любом не-успешном исходе И при отмене запроса возвращает удержанный
+/// hold клиенту (`settle` с actual=0). Разоружается на успехе — там hold закрывает tee-метеринг
+/// фактической стоимостью. Без гарда отмена запроса НАВСЕГДА списывала бы удержанное (деньги клиента).
+struct HoldGuard {
+    billing: Option<Arc<registry::Billing>>,
+    key: String,
+    hold: i64,
+    armed: bool,
+}
+impl HoldGuard {
+    fn disarm(&mut self) { self.armed = false; }
+}
+impl Drop for HoldGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Some(b) = &self.billing { b.settle(&self.key, self.hold, 0); }
+        }
+    }
+}
 
 const BODY_LIMIT: usize = 64 * 1024 * 1024;
 
@@ -229,6 +267,11 @@ pub async fn forward(
                                         "insufficient balance for this request — top up your key"),
         }
     }
+    // Гард резерва: на любом не-успешном исходе И при отмене запроса вернёт hold клиенту.
+    // Разоружим на успехе — там hold закрывает tee-метеринг. Снимает утечку денег при disconnect.
+    let mut hold_guard = reserved.as_ref().map(|(k, h)| HoldGuard {
+        billing: app.billing.clone(), key: k.clone(), hold: *h, armed: true,
+    });
 
     let version = parts.headers.get("anthropic-version")
         .and_then(|v| v.to_str().ok()).unwrap_or(&app.cfg.anthropic_version).to_string();
@@ -237,13 +280,17 @@ pub async fn forward(
         &app.cfg.default_beta);
 
     // Circuit breaker разомкнут (брауноут апстрима) → быстрый отбой, НЕ веерим по всему пулу.
+    // Резерв вернёт `hold_guard` на return.
     if let Some(retry) = app.breaker.open_for(pool::now()) {
-        release_hold(&app, reserved.take());
         return err_retry(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error",
                          "upstream temporarily unavailable", retry);
     }
 
     let mut tried: HashSet<String> = HashSet::new();
+    // Один запрос вносит в breaker максимум ОДИН backend-фейл (не `max_tries`): иначе poison-запрос
+    // (500 на каждой подписке) в одиночку размыкал бы глобальный breaker и клал сервис всем. Реальный
+    // аутейдж тилит breaker числом РАЗНЫХ запросов, а не веером одного.
+    let mut backend_fail_recorded = false;
     let mut last = err_response(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error",
                                "no subscriptions available in pool");
 
@@ -260,11 +307,14 @@ pub async fn forward(
         };
         tried.insert(sub.email.clone());
         app.pool.mark_used(&sub.email);
+        // Гард слота: закроет in-flight на ЛЮБОМ выходе из итерации (continue/return/ОТМЕНА запроса).
+        // Разоружим только на успехе (слот перейдёт стриму). mark_cooling/mark_healthy in-flight не трогают.
+        let mut guard = InflightGuard::new(app.pool.clone(), sub.email.clone());
 
         let client = match app.clients.get(&sub.proxy) {
             Ok(c) => c,
             Err(e) => {
-                app.pool.mark_cooling(&sub.email, 10); // битый прокси → cooling + −1 in-flight
+                app.pool.mark_cooling(&sub.email, 10); // битый прокси → cooling (слот закроет guard)
                 last = err_response(StatusCode::BAD_GATEWAY, "api_error", &format!("proxy: {e}"));
                 continue;
             }
@@ -290,7 +340,7 @@ pub async fn forward(
                 // сетевой сбой: мог быть локальный прокси (короткий cooling подписки), а мог —
                 // общий апстрим-аутейдж (тогда фейлят все прокси → брейкер разомкнётся).
                 app.pool.mark_cooling(&sub.email, 15);
-                app.breaker.record_fail(pool::now());
+                if !backend_fail_recorded { app.breaker.record_fail(pool::now()); backend_fail_recorded = true; }
                 last = err_response(StatusCode::BAD_GATEWAY, "api_error",
                                     &format!("upstream via {}: {e}", sub.email));
                 continue;
@@ -326,9 +376,9 @@ pub async fn forward(
             continue;
         }
         if st.is_server_error() || code == 408 || code == 409 || code == 425 {
-            // вина АПСТРИМА, не подписки: слот освобождаем БЕЗ cooling, кормим circuit breaker
-            app.pool.mark_done(&sub.email);
-            app.breaker.record_fail(now);
+            // вина АПСТРИМА, не подписки: НЕ студим подписку (слот закроет guard), кормим breaker
+            // максимум раз на запрос (анти-DoS от poison-запроса).
+            if !backend_fail_recorded { app.breaker.record_fail(now); backend_fail_recorded = true; }
             eprintln!("↻ ротация: {} вернул {} — backend-fault (breaker+)", sub.email, code);
             last = err_response(st, "overloaded_error", &format!("upstream {code} via {}", sub.email));
             continue;
@@ -341,7 +391,9 @@ pub async fn forward(
         // finalize закрывает резерв фактической стоимостью; и там же `end_stream` снимает слот
         // конкуррентности. 4xx не меряем — резерв возвращаем, слот освобождаем сразу.
         let meter = if st.is_success() {
-            app.pool.mark_healthy(&sub.email); // здорова; in-flight держим на всю жизнь стрима
+            app.pool.mark_healthy(&sub.email);
+            guard.disarm();                                   // слот переходит стриму (end_stream)
+            if let Some(g) = hold_guard.as_mut() { g.disarm(); } // hold закроет tee-метеринг фактикой
             let bill = match (&authz, reserved.take()) {
                 (Authz::Metered { key, mult_bp }, Some((_, hold))) =>
                     app.billing.clone().map(|billing| BillCtx {
@@ -357,28 +409,21 @@ pub async fn forward(
                 bill,
             })
         } else {
-            app.pool.mark_ok(&sub.email);        // клиентская 4xx: слот освобождаем сразу
-            release_hold(&app, reserved.take()); // и вернуть зарезервированное
+            // клиентская 4xx: подписка ни при чём. Слот закроет guard, резерв — hold_guard (на return).
+            app.pool.mark_healthy(&sub.email);
             None
         };
         return stream_back(st, resp, meter);
     }
-    release_hold(&app, reserved.take()); // ни одна подписка не отдала успех → вернуть резерв
     // Пробовали подписки, но все за лимитом/недоступны → прозрачный 429 + Retry-After (клиент
     // откатится сам, как от настоящего Anthropic). Пул реально пуст → отдаём исходный 503.
+    // Резерв вернёт `hold_guard` на return; слот последней попытки уже закрыл её `guard`.
     if tried.is_empty() {
         last
     } else {
         let retry = app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs);
         err_retry(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error",
                   "all subscriptions are rate-limited — retry shortly", retry)
-    }
-}
-
-/// Вернуть зарезервированный hold целиком (actual=0), если запрос не дошёл до тарификации.
-fn release_hold(app: &AppState, reserved: Option<(String, i64)>) {
-    if let (Some((key, hold)), Some(billing)) = (reserved, &app.billing) {
-        billing.settle(&key, hold, 0);
     }
 }
 
