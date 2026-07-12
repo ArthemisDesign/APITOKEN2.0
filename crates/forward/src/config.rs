@@ -18,6 +18,9 @@ pub struct ProxyConfig {
     pub trust_loopback: bool,
     pub upstream: String,          // база апстрима (https://api.anthropic.com)
     pub max_tries: usize,          // попыток ротации при 429/5xx
+    /// Fair-share: потолок ОДНОВРЕМЕННЫХ запросов на клиентский (метерный) ключ. Чтобы один «кит»
+    /// в рамках своего баланса не набивал весь флот и не оставлял остальных на 429. 0 = без лимита.
+    pub max_inflight_per_key: u32,
     pub util_cap: f64,             // клиентский потолок утилизации окна (для /pool)
     pub cool_secs: i64,            // cooling при 429 без известного reset
     pub poll: bool,                // включён ли фоновый поллер (для /pool)
