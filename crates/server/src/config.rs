@@ -12,6 +12,9 @@ pub struct Settings {
     pub mult_bp: i64,        // дефолтная наценка для `key issue` (× 10000; 900 = ×0.09)
     pub cap5h_usd: f64,      // прайор ёмкости 5h окна (USD; 0 → дефолт пула под Max 20x)
     pub cap7d_usd: f64,      // прайор ёмкости 7d окна
+    pub reserve5h: f64,      // запас 5h-окна (доля; деф 0.10 = бережём 10%)
+    pub reserve7d: f64,      // запас 7d-окна (доля; деф 0.03)
+    pub reserve_jitter: f64, // ± разброс порога между подписками (антифингерпринт; деф 0.02)
     pub proxy: ProxyConfig,
 }
 
@@ -48,6 +51,11 @@ impl Settings {
             // Прайоры ёмкости окон (0 → дефолт пула под Max 20x; калибровка их уточняет).
             cap5h_usd: ev("CLAUDE_API_CAP5H_USD").and_then(|s| s.parse().ok()).unwrap_or(0.0),
             cap7d_usd: ev("CLAUDE_API_CAP7D_USD").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+            // Запас окон (headroom) с джиттером: бережём 10%/3%, порог отсечения слегка разный по
+            // подпискам, чтобы флот не резался на одном проценте (антифингерпринт).
+            reserve5h: ev("CLAUDE_API_RESERVE_5H").and_then(|s| s.parse().ok()).unwrap_or(0.10),
+            reserve7d: ev("CLAUDE_API_RESERVE_7D").and_then(|s| s.parse().ok()).unwrap_or(0.03),
+            reserve_jitter: ev("CLAUDE_API_RESERVE_JITTER").and_then(|s| s.parse().ok()).unwrap_or(0.02),
             proxy: ProxyConfig {
                 api_keys,
                 trust_loopback,

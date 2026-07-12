@@ -279,7 +279,9 @@ async fn serve() -> Result<()> {
 
     let app = AppState {
         cfg: Arc::new(s.proxy.clone()),
-        pool: Arc::new(Pool::new(subs, s.proxy.util_cap, s.cap5h_usd, s.cap7d_usd)),
+        pool: Arc::new(Pool::new(subs,
+            pool::Reserve::new(s.reserve5h, s.reserve7d, s.reserve_jitter),
+            s.cap5h_usd, s.cap7d_usd)),
         clients: Arc::new(Clients::new(&s.proxy)),
         billing,
         breaker: Arc::new(forward::Breaker::new()),

@@ -10,8 +10,46 @@
 use registry::Sub;
 use std::cmp::Ordering::Equal;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// **Запас окна на подписку** (headroom): не роутим сверх `1 − base`, оставляя буфер, чтобы (а) не
+/// доводить окно до 100% (меньше 429), (б) не выглядеть как автомат, максящий квоту под ноль. Порог
+/// джиттерится детерминированно по email — весь флот НЕ режется на одном и том же проценте (это само
+/// по себе было бы отличительным знаком). Стабилен во времени для подписки (как и per-persona UA).
+#[derive(Clone, Copy, Debug)]
+pub struct Reserve {
+    pub base5h: f64, // доля 5h-окна в запасе (деф 0.10)
+    pub base7d: f64, // доля 7d-окна в запасе (деф 0.03)
+    pub jitter: f64, // ± разброс порога между подписками (деф 0.02)
+}
+
+impl Default for Reserve {
+    fn default() -> Self { Reserve { base5h: 0.10, base7d: 0.03, jitter: 0.02 } }
+}
+
+impl Reserve {
+    /// Без запаса (для ослабления фильтра «не зависать»: под пиком дотягиваем до 100%, чем 429 клиенту).
+    pub const FULL: Reserve = Reserve { base5h: 0.0, base7d: 0.0, jitter: 0.0 };
+    pub fn new(base5h: f64, base7d: f64, jitter: f64) -> Self { Reserve { base5h, base7d, jitter } }
+
+    /// Эффективные потолки (cap5h, cap7d) для подписки: `1 − (base ± jitter)`. Джиттер детерминирован
+    /// по (email, окно) → стабилен во времени, но у каждой подписки свой порог и по 5h, и по 7d.
+    fn caps(&self, email: &str) -> (f64, f64) {
+        let jit = |salt: u8| -> f64 {
+            if self.jitter <= 0.0 { return 0.0; }
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            email.hash(&mut h);
+            salt.hash(&mut h);
+            let r = (h.finish() % 2001) as f64 / 1000.0 - 1.0; // равномерно в [-1, 1]
+            r * self.jitter
+        };
+        let c5 = (1.0 - (self.base5h + jit(5))).clamp(0.5, 1.0);
+        let c7 = (1.0 - (self.base7d + jit(7))).clamp(0.5, 1.0);
+        (c5, c7)
+    }
+}
 
 pub fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
@@ -191,13 +229,14 @@ fn inflight_of(g: &Inner, e: &str) -> i64 {
 /// Ротационный выбор (для ретраев/спилла): наименее загруженная живая подписка не из `exclude`.
 /// Стратегия: беречь недельный бюджет (7d) → размазывать 5h → «предупреждённые» ниже → меньше
 /// in-flight → LRU. Фильтры ослабляются постепенно (пул НИКОГДА не зависает).
-fn select_best(g: &Inner, exclude: &HashSet<String>, now: i64, cap: f64) -> Option<Sub> {
+fn select_best(g: &Inner, exclude: &HashSet<String>, now: i64, rsv: &Reserve) -> Option<Sub> {
     let cands: Vec<&Sub> = g.subs.iter().filter(|s| !exclude.contains(&s.email)).collect();
     if cands.is_empty() { return None; }
     let not_cool: Vec<&Sub> = cands.iter().copied().filter(|s| !is_cooling(g, &s.email, now)).collect();
     let stage1: Vec<&Sub> = if not_cool.is_empty() { cands } else { not_cool };
     let ready: Vec<&Sub> = stage1.iter().copied()
-        .filter(|s| eff_util(g, &s.email, 7, now) < cap && eff_util(g, &s.email, 5, now) < cap)
+        .filter(|s| { let (c5, c7) = rsv.caps(&s.email);
+            eff_util(g, &s.email, 7, now) < c7 && eff_util(g, &s.email, 5, now) < c5 })
         .collect();
     let mut poolv: Vec<&Sub> = if ready.is_empty() { stage1 } else { ready };
     let warn = |e: &str| g.live.get(e).map(|l| l.status.contains("warning")).unwrap_or(false);
@@ -217,7 +256,7 @@ fn select_best(g: &Inner, exclude: &HashSet<String>, now: i64, cap: f64) -> Opti
 /// Так новые сессии наливаются в самые пустые аккаунты, но не сверх человеческого конверта; когда
 /// эмптейший упёрся в конверт — перелив на следующий по ёмкости. Никого под конвертом → не зависаем
 /// (обычный `select_best`, эффект — краткая деградация естественности под пиком).
-fn place_best(g: &Inner, now: i64, cap: f64, p5: f64, p7: f64) -> Option<Sub> {
+fn place_best(g: &Inner, now: i64, rsv: &Reserve, p5: f64, p7: f64) -> Option<Sub> {
     let free = |s: &Sub| -> f64 {
         let l = g.live.get(&s.email);
         let cap5 = l.map(|l| l.cap5h_usd).filter(|c| *c > 0.0).unwrap_or(p5);
@@ -225,23 +264,25 @@ fn place_best(g: &Inner, now: i64, cap: f64, p5: f64, p7: f64) -> Option<Sub> {
         (cap5 * (1.0 - eff_util(g, &s.email, 5, now))).min(cap7 * (1.0 - eff_util(g, &s.email, 7, now)))
     };
     let lru = |e: &str| g.live.get(e).map(|l| l.last_used).unwrap_or(0);
-    let eligible = g.subs.iter().filter(|s|
+    let eligible = g.subs.iter().filter(|s| {
+        let (c5, c7) = rsv.caps(&s.email);
         !is_cooling(g, &s.email, now)
-        && eff_util(g, &s.email, 7, now) < cap && eff_util(g, &s.email, 5, now) < cap
-        && inflight_of(g, &s.email) < MAX_INFLIGHT);
+            && eff_util(g, &s.email, 7, now) < c7 && eff_util(g, &s.email, 5, now) < c5
+            && inflight_of(g, &s.email) < MAX_INFLIGHT
+    });
     let best = eligible.max_by(|a, b|
         free(a).partial_cmp(&free(b)).unwrap_or(Equal)                    // больше свободной ёмкости
             .then(inflight_of(g, &b.email).cmp(&inflight_of(g, &a.email)))// при равенстве — меньше in-flight (веер)
             .then(lru(&b.email).cmp(&lru(&a.email))));                    // затем давнее использование
     match best {
         Some(s) => Some(s.clone()),
-        None => select_best(g, &HashSet::new(), now, 1.0), // все за конвертом → не зависаем
+        None => select_best(g, &HashSet::new(), now, &Reserve::FULL), // все за конвертом → не зависаем
     }
 }
 
 pub struct Pool {
     inner: Mutex<Inner>,
-    util_cap: f64,
+    reserve: Reserve, // per-подписочный запас окон (headroom + антифингерпринт-джиттер)
     prior5h_usd: f64, // прайор ёмкости 5h окна до калибровки (env, деф под Max 20x)
     prior7d_usd: f64, // прайор ёмкости 7d окна
     /// Хук «durable-состояние изменилось» (cooling). Server ставит его, чтобы тут же персистить
@@ -251,15 +292,16 @@ pub struct Pool {
 }
 
 impl Pool {
-    /// `prior5h/prior7d` — стартовые оценки ёмкости окон (USD real-API). До первой калибровки
-    /// цифры считаются по ним; дальше — по измеренной ёмкости. 0 → дефолтные Max-20x-прайоры.
-    pub fn new(subs: Vec<Sub>, util_cap: f64, prior5h: f64, prior7d: f64) -> Self {
+    /// `prior5h/prior7d` — стартовые оценки ёмкости окон (USD real-API). `reserve` — per-подписочный
+    /// запас окон с джиттером (см. [`Reserve`]). До первой калибровки цифры по прайорам, дальше — по
+    /// измеренной ёмкости.
+    pub fn new(subs: Vec<Sub>, reserve: Reserve, prior5h: f64, prior7d: f64) -> Self {
         Pool {
             inner: Mutex::new(Inner {
                 subs, live: HashMap::new(), bindings: HashMap::new(),
                 route_pin: 0, route_spill: 0, route_place: 0,
             }),
-            util_cap,
+            reserve,
             prior5h_usd: if prior5h > 0.0 { prior5h } else { PRIOR_CAP5H_USD },
             prior7d_usd: if prior7d > 0.0 { prior7d } else { PRIOR_CAP7D_USD },
             on_change: Mutex::new(None),
@@ -286,11 +328,11 @@ impl Pool {
     pub fn is_empty(&self) -> bool { self.inner.lock().unwrap().subs.is_empty() }
 
     /// Наименее загруженная живая подписка не из `exclude` (для ретраев ротации/спилла).
-    /// allow_full=true → пускаем до 100% (приоритетные ходы), иначе потолок util_cap.
+    /// allow_full=true → до 100% (приоритетные ходы), иначе per-подписочный запас (`self.reserve`).
     pub fn pick(&self, exclude: &HashSet<String>, allow_full: bool) -> Option<Sub> {
         let g = self.inner.lock().unwrap();
-        let cap = if allow_full { 1.0 } else { self.util_cap };
-        select_best(&g, exclude, now(), cap)
+        let rsv = if allow_full { Reserve::FULL } else { self.reserve };
+        select_best(&g, exclude, now(), &rsv)
     }
 
     /// **Cache-first роутинг сессии** (первая попытка запроса). Держит диалог на «домашней» персоне,
@@ -307,7 +349,7 @@ impl Pool {
     pub fn route(&self, session: u64) -> Option<Sub> {
         let mut g = self.inner.lock().unwrap();
         let now = now();
-        let cap = self.util_cap;
+        let rsv = self.reserve;
         let (p5, p7) = (self.prior5h_usd, self.prior7d_usd);
 
         // берём привязку как owned-значения → отпускаем borrow таблицы, дальше свободно мутируем g
@@ -318,7 +360,8 @@ impl Pool {
                 let cooling = g.live.get(&home).map(|l| l.cooling_until).unwrap_or(0);
                 let (e5, e7) = (eff_util(&g, &home, 5, now), eff_util(&g, &home, 7, now));
                 let deep_cooling = cooling > now && cooling - now >= REBIND_AFTER;
-                let over_cap = e5 >= cap || e7 >= cap;
+                let (c5, c7) = rsv.caps(&home);
+                let over_cap = e5 >= c5 || e7 >= c7;
                 if !deep_cooling && !over_cap {
                     // дом всё ещё «наш» — кэш тёплый; либо пин, либо кратковременный спилл
                     if let Some(b) = g.bindings.get_mut(&session) { b.last_seen = now; }
@@ -330,7 +373,7 @@ impl Pool {
                     // временно занят → спилл ЭТОГО запроса, дом за сессией сохраняем
                     g.route_spill += 1;
                     let ex: HashSet<String> = std::iter::once(home.clone()).collect();
-                    return select_best(&g, &ex, now, cap)
+                    return select_best(&g, &ex, now, &rsv)
                         .or_else(|| g.subs.iter().find(|s| s.email == home).cloned());
                 }
                 // deep_cooling || over_cap → пере-привязка ниже
@@ -338,7 +381,7 @@ impl Pool {
         }
 
         // новая сессия или пере-привязка → capacity-weighted placement, записать дом
-        let chosen = place_best(&g, now, cap, p5, p7)?;
+        let chosen = place_best(&g, now, &rsv, p5, p7)?;
         g.route_place += 1;
         if g.bindings.len() >= BINDINGS_CAP {
             let cutoff = now - AFFINITY_TTL;
@@ -593,7 +636,8 @@ mod tests {
         Sub { email: email.into(), token: "t".into(), proxy: String::new(), fleet: "prod".into() }
     }
     fn pool(emails: &[&str]) -> Pool {
-        Pool::new(emails.iter().map(|e| sub(e)).collect(), 0.95, 50.0, 1500.0)
+        // запас 0.05/0.05 без джиттера → потолки окон 0.95 (детерминизм, как со старым util_cap).
+        Pool::new(emails.iter().map(|e| sub(e)).collect(), Reserve::new(0.05, 0.05, 0.0), 50.0, 1500.0)
     }
     fn none() -> HashSet<String> { HashSet::new() }
     fn picked(p: &Pool) -> String { p.pick(&none(), false).unwrap().email }
@@ -789,6 +833,30 @@ mod tests {
         p.mark_cooling("a", 60);
         p.cool("a", 60);
         assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    /// Запас окна: подписку выше порога (1−base) не выбираем, пока есть под порогом.
+    #[test]
+    fn reserve_keeps_headroom() {
+        // запас 5h=10% (порог 0.90), без джиттера
+        let p = Pool::new(vec![sub("a"), sub("b")], Reserve::new(0.10, 0.03, 0.0), 50.0, 1500.0);
+        p.set_util("a", Some(0.93), Some(0.10), None, None, None); // 5h за запасом (>0.90)
+        p.set_util("b", Some(0.50), Some(0.10), None, None, None); // под запасом
+        assert_eq!(picked(&p), "b"); // a бережём (headroom), берём b
+    }
+
+    /// Джиттер: порог отсечения различается между подписками (флот не режется на одном проценте).
+    #[test]
+    fn reserve_jitter_varies_thresholds() {
+        let r = Reserve::new(0.10, 0.03, 0.02);
+        let mut caps5 = std::collections::HashSet::new();
+        for i in 0..50 { caps5.insert(format!("{:.4}", r.caps(&format!("u{i}@x.io")).0)); }
+        assert!(caps5.len() >= 5, "пороги 5h должны различаться по флоту, got {}", caps5.len());
+        // все в разумном коридоре 1−(0.10±0.02) = [0.88, 0.92]
+        for i in 0..50 {
+            let c5 = r.caps(&format!("u{i}@x.io")).0;
+            assert!((0.87..=0.93).contains(&c5), "cap5={c5}");
+        }
     }
 
     /// До калибровки — прайор (Max 20x), помечено calibrated=false.

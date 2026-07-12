@@ -299,10 +299,16 @@ pub async fn forward(
     let mut last = err_response(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error",
                                "no subscriptions available in pool");
 
-    for attempt in 0..app.cfg.max_tries.max(1) {
-        // Первая попытка — cache-first роутинг сессии (пин на тёплый дом / capacity-weighted
-        // placement / спилл при кратком давлении — всё внутри `route`). Ретраи после 429/5xx идут
-        // load-based `pick` (дом уже в `tried`, ищем живую замену — при этом привязка сессии цела).
+    // Бюджет: ошибки ПОДПИСКИ (429/401/403 — бан/лимит конкретного аккаунта) НЕ тратят попытки,
+    // крутимся дальше по флоту (клиенту такая ошибка идти не должна, пока есть здоровые подписки).
+    // Бюджет `max_tries` тратят только BACKEND-фейлы (5xx/сеть — вероятный аутейдж апстрима). Верхний
+    // предел итераций = «весь флот + запас» (пул сам исключает уже cooling/tried → быстро сходится).
+    let hard_cap = app.pool.len().max(1) + 2;
+    let mut attempt = 0usize;
+    let mut backend_tries = 0usize;
+    while attempt < hard_cap {
+        // Первая попытка — cache-first роутинг сессии (пин/placement/спилл в `route`). Дальше —
+        // load-based `pick` (дом/пробованные уже в `tried`; cooling-подписки пул исключает сам).
         let sub = match session.filter(|_| attempt == 0)
             .and_then(|s| app.pool.route(s))
             .or_else(|| app.pool.pick(&tried, false))
@@ -310,6 +316,7 @@ pub async fn forward(
             Some(s) => s,
             None => break,
         };
+        attempt += 1;
         tried.insert(sub.email.clone());
         app.pool.mark_used(&sub.email);
         // Гард слота: закроет in-flight на ЛЮБОМ выходе из итерации (continue/return/ОТМЕНА запроса).
@@ -343,11 +350,13 @@ pub async fn forward(
             Ok(r) => r,
             Err(e) => {
                 // сетевой сбой: мог быть локальный прокси (короткий cooling подписки), а мог —
-                // общий апстрим-аутейдж (тогда фейлят все прокси → брейкер разомкнётся).
+                // общий апстрим-аутейдж (тогда фейлят все прокси → брейкер разомкнётся). Тратит бюджет.
                 app.pool.mark_cooling(&sub.email, 15);
                 if !backend_fail_recorded { app.breaker.record_fail(pool::now()); backend_fail_recorded = true; }
                 last = err_response(StatusCode::BAD_GATEWAY, "api_error",
                                     &format!("upstream via {}: {e}", sub.email));
+                backend_tries += 1;
+                if backend_tries >= app.cfg.max_tries.max(1) { break; }
                 continue;
             }
         };
@@ -389,6 +398,8 @@ pub async fn forward(
             if !backend_fail_recorded { app.breaker.record_fail(now); backend_fail_recorded = true; }
             eprintln!("↻ ротация: {} вернул {} — backend-fault (breaker+)", sub.email, code);
             last = err_response(st, "overloaded_error", &format!("upstream {code} via {}", sub.email));
+            backend_tries += 1;                                    // backend тратит бюджет (аутейдж)
+            if backend_tries >= app.cfg.max_tries.max(1) { break; }
             continue;
         }
         // 2xx/клиентская 4xx → апстрим здоров: сбрасываем окно фейлов брейкера
@@ -423,12 +434,16 @@ pub async fn forward(
         };
         return stream_back(st, resp, meter);
     }
-    // Пробовали подписки, но все за лимитом/недоступны → прозрачный 429 + Retry-After (клиент
-    // откатится сам, как от настоящего Anthropic). Пул реально пуст → отдаём исходный 503.
     // Резерв вернёт `hold_guard` на return; слот последней попытки уже закрыл её `guard`.
-    if tried.is_empty() {
+    if backend_tries >= app.cfg.max_tries.max(1) {
+        // упёрлись в бюджет backend-фейлов → это аутейдж апстрима, отдаём последнюю upstream-ошибку
+        // (breaker уже накапливает — скоро разомкнётся и будет быстрый отбой).
         last
+    } else if tried.is_empty() {
+        last // пул реально пуст
     } else {
+        // перебрали подписки, но все за лимитом → прозрачный 429 + Retry-After (клиент откатится сам).
+        // Именно это, а НЕ ошибка отдельной забаненной/лимитированной подписки, уходит клиенту.
         Metrics::inc(&app.metrics.exhausted);
         let retry = app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs);
         err_retry(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error",
