@@ -73,25 +73,32 @@ pub fn model_prices(model: &str) -> Prices {
     if m.contains("fable") || m.contains("mythos") {
         return p(10000, 1000, 12500, 20000, 50000);      // $10 / 1.0 / 12.5 / 20 / 50
     }
-    if m.contains("sonnet-5") || m == "claude-sonnet-5" {
-        return p(3000, 300, 3750, 6000, 15000);          // $3 / 0.30 / 3.75 / 6 / 15
-    }
+    // Opus: 4.5–4.8 = $5/$25; Opus 3 / 4.0 / 4.1 = $15/$75 (старший тариф). Opus 4.0 приходит как
+    // date-id `claude-opus-4-20250514` или голым алиасом — обе формы матчим ЯВНО: подстрока
+    // "opus-4-0" их НЕ ловит (после `opus-4-` идёт `2`), падали бы в дефолт $5 = недосписание втрое.
     if m.contains("opus-4-8") || m.contains("opus-4-7") || m.contains("opus-4-6") || m.contains("opus-4-5") {
         return p(5000, 500, 6250, 10000, 25000);         // $5 / 0.50 / 6.25 / 10 / 25
     }
-    if m.contains("opus-4-1") || m.contains("opus-4-0") || m == "claude-opus-4" {
+    if m.contains("opus-4-1") || m == "claude-opus-4-20250514" || m == "claude-opus-4"
+        || m.contains("opus-3") || m.contains("3-opus") {
         return p(15000, 1500, 18750, 30000, 75000);      // $15 / 1.50 / 18.75 / 30 / 75
     }
-    if m.contains("sonnet-4") {
-        return p(3000, 300, 3750, 6000, 15000);          // Sonnet 4 = как Sonnet 5
+    // Все поколения Sonnet (3 / 3.5 / 3.7 / 4 / 4.6 / 5) исторически $3/$15 — один тариф на семейство.
+    if m.contains("sonnet") {
+        return p(3000, 300, 3750, 6000, 15000);          // $3 / 0.30 / 3.75 / 6 / 15
     }
-    if m.contains("haiku-4-5") {
-        return p(1000, 100, 1250, 2000, 5000);           // $1 / 0.10 / 1.25 / 2 / 5
+    // Haiku тарифицируется ПОКОЛЕННО (цены росли): 4.5 = $1, 3.5 = $0.80, 3 = $0.25. Обе схемы
+    // именования (haiku-3-5 и 3-5-haiku). "3-5" проверяем ДО общего Haiku 3 (подстроки пересекаются).
+    if m.contains("haiku") {
+        if m.contains("haiku-4-5") {
+            return p(1000, 100, 1250, 2000, 5000);       // $1 / 0.10 / 1.25 / 2 / 5
+        }
+        if m.contains("haiku-3-5") || m.contains("3-5-haiku") {
+            return p(800, 80, 1000, 1600, 4000);         // $0.80 / 0.08 / 1.0 / 1.60 / 4
+        }
+        return p(250, 25, 313, 500, 1250);               // Haiku 3 = $0.25 / 0.025 / 0.3125→313 / 0.50 / 1.25
     }
-    if m.contains("haiku-3-5") {
-        return p(800, 80, 1000, 1600, 4000);             // $0.80 / 0.08 / 1.0 / 1.60 / 4
-    }
-    p(5000, 500, 6250, 10000, 25000)                     // дефолт = Opus 4.8
+    p(5000, 500, 6250, 10000, 25000)                     // дефолт = Opus 4.8 (неизвестная новая модель)
 }
 
 /// Стоимость usage в **нанодолларах** (i128 — переполнения исключены). Каждая корзина
@@ -176,6 +183,27 @@ pub fn usage_from_response_json(body: &[u8]) -> Usage {
     }
 }
 
+/// Модель из НЕ-стримового ответа (`model` верхнего уровня) — авторитетный сервёный id.
+/// Тарификация по нему точнее, чем по запросу: клиент мог прислать алиас/`-latest`, апстрим
+/// резолвит в конкретную датированную модель, и именно она возвращается в теле ответа.
+pub fn model_from_response_json(body: &[u8]) -> Option<String> {
+    serde_json::from_slice::<Value>(body).ok()?
+        .get("model").and_then(Value::as_str).map(str::to_string)
+}
+
+/// Модель из SSE-потока (`message_start.message.model`) — авторитетный сервёный id (см. выше).
+pub fn model_from_sse(sse: &str) -> Option<String> {
+    for raw in sse.lines() {
+        let json = match raw.trim_start().strip_prefix("data:") { Some(r) => r.trim(), None => continue };
+        if json.is_empty() || json == "[DONE]" { continue; }
+        let v: Value = match serde_json::from_str(json) { Ok(v) => v, Err(_) => continue };
+        if let Some(m) = v.get("message").and_then(|m| m.get("model")).and_then(Value::as_str) {
+            return Some(m.to_string());
+        }
+    }
+    None
+}
+
 /// Из накопленного SSE-потока. input/cache — из `message_start`; output — из ПОСЛЕДНЕГО
 /// `message_delta` (там output_tokens кумулятивный). web-search — из delta, если есть.
 pub fn usage_from_sse(sse: &str) -> Usage {
@@ -254,6 +282,43 @@ mod tests {
         assert_ne!(fable, opus); // не свалилось в дефолт
         // неизвестная модель → дефолт Opus 4.8
         assert_eq!(model_prices("что-то-непонятное"), opus);
+    }
+
+    #[test]
+    fn model_matcher_covers_real_ids() {
+        let out1m = |m: &str| cost_nanodollars(
+            &Usage { output_tokens: 1_000_000, ..Default::default() }, &model_prices(m));
+        // Opus 4.0 date-id и голый алиас = $75/M (НЕ дефолт $25) — иначе недосписание втрое.
+        assert_eq!(out1m("claude-opus-4-20250514"), 75 * NANO_PER_USD);
+        assert_eq!(out1m("claude-opus-4"), 75 * NANO_PER_USD);
+        assert_eq!(out1m("claude-opus-4-1-20250805"), 75 * NANO_PER_USD); // 4.1 тоже $75
+        assert_eq!(out1m("claude-3-opus-20240229"), 75 * NANO_PER_USD);   // Opus 3 legacy
+        // Opus 4.5–4.8 = $25/M
+        assert_eq!(out1m("claude-opus-4-8"), 25 * NANO_PER_USD);
+        assert_eq!(out1m("claude-opus-4-5"), 25 * NANO_PER_USD);
+        // Sonnet любого поколения = $15/M (обе схемы именования)
+        for s in ["claude-sonnet-5", "claude-sonnet-4-6", "claude-3-5-sonnet-20241022",
+                  "claude-3-7-sonnet-20250219", "claude-3-sonnet-20240229"] {
+            assert_eq!(out1m(s), 15 * NANO_PER_USD, "sonnet {s}");
+        }
+        // Haiku поколенно: 4.5=$5, 3.5=$4, 3=$1.25
+        assert_eq!(out1m("claude-haiku-4-5-20251001"), 5 * NANO_PER_USD);
+        assert_eq!(out1m("claude-3-5-haiku-20241022"), 4 * NANO_PER_USD); // альт-схема, НЕ дефолт
+        assert_eq!(out1m("claude-3-haiku-20240307"), 1_250_000_000);      // $1.25
+    }
+
+    #[test]
+    fn model_extracted_from_response() {
+        // не-стрим: top-level model
+        let body = br#"{"model":"claude-opus-4-20250514","usage":{"output_tokens":1}}"#;
+        assert_eq!(model_from_response_json(body).as_deref(), Some("claude-opus-4-20250514"));
+        // SSE: message_start.message.model
+        let sse = "event: message_start\n\
+                   data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-haiku-4-5\",\"usage\":{\"input_tokens\":1}}}\n\n";
+        assert_eq!(model_from_sse(sse).as_deref(), Some("claude-haiku-4-5"));
+        // мусор → None (фолбэк на модель запроса в meter.rs)
+        assert_eq!(model_from_response_json(b"not json"), None);
+        assert_eq!(model_from_sse("event: ping\n\n"), None);
     }
 
     #[test]

@@ -288,15 +288,20 @@ pub fn key_deduct(conn: &Connection, key: &str, charge_nano: i64) -> Result<Opti
 /// при краше процесса `reconcile_reservations` на старте вернёт их в баланс. Возвращает новый баланс.
 pub fn key_reserve(conn: &Connection, key: &str, hold_nano: i64) -> Result<Option<i64>> {
     let hold = hold_nano.max(0);
-    let n = conn.execute(
+    // ОДНО атомарное `UPDATE ... RETURNING`: списание hold и возврат нового баланса — единая операция.
+    // Раздельные UPDATE+SELECT давали окно: если SELECT падал после коммита UPDATE, баланс уже списан
+    // и reserved_nano поднят, а вызывающий получал None → 402 клиенту БЕЗ HoldGuard → осиротевший
+    // резерв до рестарта. RETURNING такого окна не оставляет: либо всё, либо ничего.
+    match conn.query_row(
         "UPDATE api_keys SET balance_nano = balance_nano - ?1, reserved_nano = reserved_nano + ?1 \
-         WHERE key = ?2 AND status = 'active' AND balance_nano >= ?1",
+         WHERE key = ?2 AND status = 'active' AND balance_nano >= ?1 RETURNING balance_nano",
         rusqlite::params![hold, key],
-    )?;
-    if n == 0 { return Ok(None); }
-    Ok(Some(conn.query_row(
-        "SELECT balance_nano FROM api_keys WHERE key=?1",
-        rusqlite::params![key], |r| r.get::<_, i64>(0))?))
+        |r| r.get::<_, i64>(0),
+    ) {
+        Ok(bal) => Ok(Some(bal)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None), // не хватило баланса / ключ неактивен
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Закрыть резерв: вернуть hold и списать фактическую стоимость (`actual_nano`), потрачено +actual,

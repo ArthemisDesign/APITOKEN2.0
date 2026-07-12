@@ -55,22 +55,26 @@ impl TeeMeter {
         // стрим завершён/оборван → освободить слот конкуррентности персоны (парен с mark_used).
         // Делаем ПЕРВЫМ и безусловно, даже если usage пустой (иначе in-flight подтёк бы).
         ctx.pool.end_stream(&ctx.email);
-        let usage = if ctx.is_sse {
+        let (usage, served_model) = if ctx.is_sse {
             let s = String::from_utf8_lossy(&self.acc);
             // ошибка ВНУТРИ стрима после 200 (overloaded посреди генерации) — HTTP-код её не отражал,
             // ротация уже невозможна; логируем, чтобы не была «тихой» (клиент получил её байт-в-байт).
             if metering::sse_has_error(&s) {
                 eprintln!("⚠ SSE-error после 200 на {} — стрим нёс error-евент", ctx.email);
             }
-            metering::usage_from_sse(&s)
+            (metering::usage_from_sse(&s), metering::model_from_sse(&s))
         } else {
-            metering::usage_from_response_json(&self.acc)
+            (metering::usage_from_response_json(&self.acc), metering::model_from_response_json(&self.acc))
         };
+        // Тарифицируем по МОДЕЛИ ИЗ ОТВЕТА (авторитетный сервёный id): клиент мог прислать алиас или
+        // `-latest`, апстрим резолвит в конкретную датированную модель — считать надо по НЕЙ. Фолбэк —
+        // модель запроса (ctx.model), если ответ модель не отдал.
+        let price_model = served_model.as_deref().filter(|m| !m.is_empty()).unwrap_or(&ctx.model);
         // Реальная стоимость (×1.0, до наценки). 0, если usage нет — count_tokens/models/любой 200
         // без usage/обрыв до message_start. ВАЖНО: даже при 0 нельзя просто выйти — иначе hold висел
         // бы в reserved_nano до рестарта (тихая утечка баланса клиента на штатном count_tokens).
         let real = if usage.is_zero() { 0 } else {
-            metering::cost_nanodollars(&usage, &metering::model_prices(&ctx.model))
+            metering::cost_nanodollars(&usage, &metering::model_prices(price_model))
         };
 
         // расход в пул только когда он реально был (0 калибровку не двигает)
@@ -92,7 +96,7 @@ impl TeeMeter {
                 eprintln!(
                     "💵 ключ …{tail}: −{} [{}] → баланс {}",
                     metering::nano_to_usd_string(charge),
-                    if ctx.model.is_empty() { "?" } else { &ctx.model },
+                    if price_model.is_empty() { "?" } else { price_model },
                     newbal.map(|b| metering::nano_to_usd_string(b as i128)).unwrap_or_else(|| "?".into()),
                 );
             }
