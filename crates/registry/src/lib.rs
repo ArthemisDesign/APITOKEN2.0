@@ -19,6 +19,7 @@ pub struct Sub {
     pub token: String, // OAuth Bearer подписки (секрет)
     pub proxy: String, // http://user:pass@ip:port ("" = без прокси)
     pub fleet: String,
+    pub plan: String,  // pro|max5|max20 (детект) — для per-sub прайора ёмкости в pool ("" = неизвестно)
 }
 
 const COLS: &[(&str, &str)] = &[
@@ -101,8 +102,8 @@ fn resolve_token(inline: Option<String>, token_file: Option<String>) -> String {
 /// Активные подписки нужного флота, у которых есть непустой токен.
 pub fn load_active(conn: &Connection, fleet: Option<&str>) -> Result<Vec<Sub>> {
     let mut stmt = conn.prepare(
-        "SELECT email, token, token_file, proxy, COALESCE(status,'active'), COALESCE(fleet,'prod') \
-         FROM subs",
+        "SELECT email, token, token_file, proxy, COALESCE(status,'active'), COALESCE(fleet,'prod'), \
+         COALESCE(plan,'') FROM subs",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok((
@@ -112,11 +113,12 @@ pub fn load_active(conn: &Connection, fleet: Option<&str>) -> Result<Vec<Sub>> {
             r.get::<_, Option<String>>(3)?,
             r.get::<_, String>(4)?,
             r.get::<_, String>(5)?,
+            r.get::<_, String>(6)?,
         ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (email, token, token_file, proxy, status, sfleet) = row?;
+        let (email, token, token_file, proxy, status, sfleet, plan) = row?;
         if status != "active" {
             continue;
         }
@@ -129,7 +131,7 @@ pub fn load_active(conn: &Connection, fleet: Option<&str>) -> Result<Vec<Sub>> {
         if tok.is_empty() {
             continue;
         }
-        out.push(Sub { email, token: tok, proxy: proxy.unwrap_or_default(), fleet: sfleet });
+        out.push(Sub { email, token: tok, proxy: proxy.unwrap_or_default(), fleet: sfleet, plan });
     }
     Ok(out)
 }

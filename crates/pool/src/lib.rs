@@ -89,6 +89,18 @@ const WIN7_SECS: i64 = 7 * 86400;
 /// недельного потолка → недельное окно связывает (реалистично для 20x).
 const PRIOR_CAP5H_USD: f64 = 50.0;
 const PRIOR_CAP7D_USD: f64 = 1500.0;
+
+/// Множитель прайора ёмкости по тарифу (относительно Max 20x = 1.0). Прайоры заданы под Max 20x;
+/// Pro/Max5 имеют кратно меньшие окна (5x/20x — кратность над Pro → Pro≈1, Max5≈5, Max20≈20). До
+/// первой калибровки это убирает ПЕРЕоценку Pro/Max5-подписок (иначе их переливают → 429-штормы).
+fn plan_scale(plan: &str) -> f64 {
+    match plan {
+        "max20" => 1.0,
+        "max5" => 0.25, // 5x/20x
+        "pro" => 0.05,  // 1x/20x
+        _ => 1.0,       // неизвестно → консервативно как Max20 (калибровка уточнит)
+    }
+}
 const CALIB_ALPHA: f64 = 0.3;        // вес нового наблюдения в EMA
 // Калибруем только на Δutil ≥ 3%: util в заголовках Anthropic ЛАГАЕТ (сразу после расхода
 // занижен) и квантован ~1% — на мелком Δutil cap раздувается. Больший порог = чище от лага.
@@ -269,8 +281,9 @@ fn select_best(g: &Inner, exclude: &HashSet<String>, now: i64, rsv: &Reserve) ->
 fn place_best(g: &Inner, now: i64, rsv: &Reserve, p5: f64, p7: f64) -> Option<Sub> {
     let free = |s: &Sub| -> f64 {
         let l = g.live.get(&s.email);
-        let cap5 = l.map(|l| l.cap5h_usd).filter(|c| *c > 0.0).unwrap_or(p5);
-        let cap7 = l.map(|l| l.cap7d_usd).filter(|c| *c > 0.0).unwrap_or(p7);
+        let sc = plan_scale(&s.plan); // прайор по тарифу (Pro/Max5 меньше Max20) до калибровки
+        let cap5 = l.map(|l| l.cap5h_usd).filter(|c| *c > 0.0).unwrap_or(p5 * sc);
+        let cap7 = l.map(|l| l.cap7d_usd).filter(|c| *c > 0.0).unwrap_or(p7 * sc);
         (cap5 * (1.0 - eff_util(g, &s.email, 5, now))).min(cap7 * (1.0 - eff_util(g, &s.email, 7, now)))
     };
     let lru = |e: &str| g.live.get(e).map(|l| l.last_used).unwrap_or(0);
@@ -519,8 +532,9 @@ impl Pool {
         let (p5, p7) = (self.prior5h_usd, self.prior7d_usd);
         g.subs.iter().map(|s| {
             let l = g.live.get(&s.email).cloned().unwrap_or_default();
-            let cap5 = if l.cap5h_usd > 0.0 { l.cap5h_usd } else { p5 };
-            let cap7 = if l.cap7d_usd > 0.0 { l.cap7d_usd } else { p7 };
+            let sc = plan_scale(&s.plan); // прайор масштабируем по тарифу (Pro/Max5 меньше Max20)
+            let cap5 = if l.cap5h_usd > 0.0 { l.cap5h_usd } else { p5 * sc };
+            let cap7 = if l.cap7d_usd > 0.0 { l.cap7d_usd } else { p7 * sc };
 
             // эффективный reset: если ещё не наблюдали заголовок — считаем, что окно сбросится
             // через полный период от now (нейтральная оценка, чтобы горизонты не схлопывались).
@@ -649,7 +663,7 @@ mod tests {
     use super::*;
 
     fn sub(email: &str) -> Sub {
-        Sub { email: email.into(), token: "t".into(), proxy: String::new(), fleet: "prod".into() }
+        Sub { email: email.into(), token: "t".into(), proxy: String::new(), fleet: "prod".into(), plan: "max20".into() }
     }
     fn pool(emails: &[&str]) -> Pool {
         // запас 0.05/0.05 без джиттера → потолки окон 0.95 (детерминизм, как со старым util_cap).
@@ -836,6 +850,23 @@ mod tests {
         assert!(c.calibrated, "калибровка восстановлена");
         assert!((c.cap5h_usd - 50.0).abs() < 1e-6, "cap5={}", c.cap5h_usd);
         assert!(p2.soonest_ready().map(|s| s > 0).unwrap_or(false), "cooling пережил рестарт");
+    }
+
+    /// Тариф масштабирует прайор ёмкости: Pro-подписка до калибровки НЕ считается как Max20.
+    #[test]
+    fn plan_scales_prior_capacity() {
+        let mk = |e: &str, plan: &str| Sub {
+            email: e.into(), token: "t".into(), proxy: String::new(), fleet: "prod".into(), plan: plan.into(),
+        };
+        let p = Pool::new(vec![mk("pro@x", "pro"), mk("m20@x", "max20")],
+                          Reserve::new(0.05, 0.05, 0.0), 50.0, 1500.0);
+        let caps = p.capacity();
+        let pro = caps.iter().find(|c| c.email == "pro@x").unwrap();
+        let m20 = caps.iter().find(|c| c.email == "m20@x").unwrap();
+        assert!((pro.cap7d_usd - 75.0).abs() < 1e-6, "pro cap7={} (=1500×0.05)", pro.cap7d_usd);
+        assert!((m20.cap7d_usd - 1500.0).abs() < 1e-6, "m20 cap7={}", m20.cap7d_usd);
+        // новая сессия садится на Max20 (там больше реальной свободной ёмкости)
+        assert_eq!(p.route(1).unwrap().email, "m20@x");
     }
 
     /// on_change хук зовётся на cooling (write-through триггер).
