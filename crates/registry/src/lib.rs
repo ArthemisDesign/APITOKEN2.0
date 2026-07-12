@@ -56,9 +56,12 @@ pub fn open(path: &str) -> Result<Connection> {
     c.execute(
         "CREATE TABLE IF NOT EXISTS api_keys(key TEXT PRIMARY KEY, balance_nano INTEGER NOT NULL DEFAULT 0, \
          spent_nano INTEGER NOT NULL DEFAULT 0, mult_bp INTEGER NOT NULL DEFAULT 900, \
-         status TEXT NOT NULL DEFAULT 'active', created_ts INTEGER, created TEXT)",
+         status TEXT NOT NULL DEFAULT 'active', created_ts INTEGER, created TEXT, \
+         reserved_nano INTEGER NOT NULL DEFAULT 0)",
         [],
     )?;
+    // Мягкая миграция: колонка учёта незакрытых резервов (леджер крах-безопасности).
+    let _ = c.execute("ALTER TABLE api_keys ADD COLUMN reserved_nano INTEGER NOT NULL DEFAULT 0", []);
     // Персист волатильного состояния пула (переживание рестарта): cooling (бан на дни не должен
     // забываться при деплое) + калибровка ёмкости (дорого переучивать) + spent/util/reset.
     c.execute(
@@ -279,12 +282,12 @@ pub fn key_deduct(conn: &Connection, key: &str, charge_nano: i64) -> Result<Opti
 
 /// АТОМАРНО зарезервировать `hold_nano` (оценку максимальной стоимости запроса), если баланс
 /// покрывает и ключ активен. Устраняет гонку: конкурентные запросы каждый вычитает свой hold →
-/// суммарно нельзя превысить баланс. Возвращает новый баланс (после резерва) или None, если
-/// не хватает / ключ не активен / не найден.
+/// суммарно нельзя превысить баланс. Держим сумму незакрытых резервов в `reserved_nano` (леджер):
+/// при краше процесса `reconcile_reservations` на старте вернёт их в баланс. Возвращает новый баланс.
 pub fn key_reserve(conn: &Connection, key: &str, hold_nano: i64) -> Result<Option<i64>> {
     let hold = hold_nano.max(0);
     let n = conn.execute(
-        "UPDATE api_keys SET balance_nano = balance_nano - ?1 \
+        "UPDATE api_keys SET balance_nano = balance_nano - ?1, reserved_nano = reserved_nano + ?1 \
          WHERE key = ?2 AND status = 'active' AND balance_nano >= ?1",
         rusqlite::params![hold, key],
     )?;
@@ -294,19 +297,32 @@ pub fn key_reserve(conn: &Connection, key: &str, hold_nano: i64) -> Result<Optio
         rusqlite::params![key], |r| r.get::<_, i64>(0))?))
 }
 
-/// Закрыть резерв: вернуть hold и списать фактическую стоимость (`actual_nano`), потрачено +actual.
-/// Итог по паре reserve→settle: баланс −actual, spent +actual. Возвращает новый баланс.
+/// Закрыть резерв: вернуть hold и списать фактическую стоимость (`actual_nano`), потрачено +actual,
+/// снять hold с леджера незакрытых резервов. Итог по паре reserve→settle: баланс −actual, spent
+/// +actual, reserved 0. Возвращает новый баланс.
 pub fn key_settle(conn: &Connection, key: &str, hold_nano: i64, actual_nano: i64) -> Result<Option<i64>> {
     let (hold, actual) = (hold_nano.max(0), actual_nano.max(0));
     let n = conn.execute(
-        "UPDATE api_keys SET balance_nano = balance_nano + ?1 - ?2, spent_nano = spent_nano + ?2 \
-         WHERE key = ?3",
+        "UPDATE api_keys SET balance_nano = balance_nano + ?1 - ?2, spent_nano = spent_nano + ?2, \
+         reserved_nano = reserved_nano - ?1 WHERE key = ?3",
         rusqlite::params![hold, actual, key],
     )?;
     if n == 0 { return Ok(None); }
     Ok(Some(conn.query_row(
         "SELECT balance_nano FROM api_keys WHERE key=?1",
         rusqlite::params![key], |r| r.get::<_, i64>(0))?))
+}
+
+/// Реконсиляция незакрытых резервов на СТАРТЕ. Краш процесса между `reserve` и `settle` оставляет
+/// hold вычтенным из баланса, но `reserved_nano` его помнит. На свежем старте запросов в полёте нет,
+/// поэтому любой ненулевой `reserved_nano` = осиротевший hold → возвращаем в баланс. Возвращает
+/// число ключей, которым вернули резерв. Вызывать ОДИН раз до начала обслуживания.
+pub fn reconcile_reservations(conn: &Connection) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE api_keys SET balance_nano = balance_nano + reserved_nano, reserved_nano = 0 \
+         WHERE reserved_nano != 0",
+        [],
+    )?)
 }
 
 /// Прочитать ключ (для авторизации/`/balance`).
@@ -462,6 +478,18 @@ mod tests {
         assert_eq!(got[0].cooling_until, 222222);
         assert!((got[0].cap5h_usd - 50.0).abs() < 1e-9);
         assert_eq!(got[0].calib_n, 4);
+    }
+
+    /// Реконсиляция возвращает осиротевший при краше резерв обратно в баланс (идемпотентно).
+    #[test]
+    fn reconcile_refunds_orphaned_reservations() {
+        let c = db();
+        key_issue(&c, "k", 1_000_000_000, 2000).unwrap();
+        key_reserve(&c, "k", 600_000_000).unwrap(); // «краш» до settle: balance 0.40, reserved 0.60
+        assert_eq!(key_get(&c, "k").unwrap().unwrap().balance_nano, 400_000_000);
+        assert_eq!(reconcile_reservations(&c).unwrap(), 1);
+        assert_eq!(key_get(&c, "k").unwrap().unwrap().balance_nano, 1_000_000_000); // возвращено
+        assert_eq!(reconcile_reservations(&c).unwrap(), 0); // повторно — no-op
     }
 
     /// reserve атомарно гейтит по балансу; settle сводит пару к −actual, +actual в spent.

@@ -38,10 +38,14 @@ pub async fn reload_loop(app: AppState, db_path: String, fleet: Option<String>, 
         if let Ok(conn) = registry::open(&db_path) {
             if let Ok(subs) = registry::load_active(&conn, fleet.as_deref()) {
                 let cur: HashSet<String> = subs.iter().map(|s| s.email.clone()).collect();
-                if cur != prev {
+                let membership_changed = cur != prev;
+                // ВСЕГДА заменяем: подхватываем смену token/proxy того же email (внешняя
+                // перепровизия authbot/CLI на живом сервере) — иначе держали бы протухший до рестарта.
+                // replace_subs сохраняет volatile-состояние существующих (retain по email).
+                app.pool.replace_subs(subs);
+                if membership_changed {
                     prev = cur;
-                    app.pool.replace_subs(subs);
-                    poke.notify_one(); // флот изменился → поллер проснётся и probe-нёт новых
+                    poke.notify_one(); // состав изменился → поллер probe-нёт новых
                 }
             }
         }

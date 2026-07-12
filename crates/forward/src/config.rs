@@ -10,7 +10,12 @@ pub const CLAUDE_CODE_IDENTITY: &str = "You are a Claude agent, built on Anthrop
 
 #[derive(Clone, Debug)]
 pub struct ProxyConfig {
-    pub api_keys: Vec<String>,     // ключи НАШЕГО API (пусто → только localhost)
+    pub api_keys: Vec<String>,     // ключи НАШЕГО API (пусто → см. trust_loopback)
+    /// Доверять ли loopback-пиру как админу при ПУСТЫХ `api_keys`. true ТОЛЬКО когда сервер
+    /// слушает loopback-интерфейс. При bind на 0.0.0.0/публичный IP — false: за реверс-прокси
+    /// (nginx) peer виден как 127.0.0.1, и доверие loopback открыло бы аноним-админ + бесплатный
+    /// форвардинг. На экспонированном bind без `api_keys` сервер отклоняет всё (безопасный дефолт).
+    pub trust_loopback: bool,
     pub upstream: String,          // база апстрима (https://api.anthropic.com)
     pub max_tries: usize,          // попыток ротации при 429/5xx
     pub util_cap: f64,             // клиентский потолок утилизации окна (для /pool)

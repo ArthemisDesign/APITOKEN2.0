@@ -285,12 +285,19 @@ async fn serve() -> Result<()> {
         breaker: Arc::new(forward::Breaker::new()),
     };
 
-    // Восстановить durable-состояние пула (cooling/калибровка) — бан на дни переживает деплой.
+    // Восстановить durable-состояние пула (cooling/калибровка) — бан на дни переживает деплой;
+    // и реконсилить осиротевшие при краше резервы баланса обратно клиентам.
     if let Ok(conn) = registry::open(&s.db_path) {
         if let Ok(rows) = registry::load_pool_state(&conn) {
             let n = rows.len();
             app.pool.import_state(rows);
             if n > 0 { eprintln!("восстановлено состояние пула: {n} подписок"); }
+        }
+        if s.billing {
+            match registry::reconcile_reservations(&conn) {
+                Ok(n) if n > 0 => eprintln!("реконсиляция резервов: возвращено {n} ключам (краш-остатки)"),
+                _ => {}
+            }
         }
     }
 
@@ -309,13 +316,43 @@ async fn serve() -> Result<()> {
         eprintln!("поллер лимитов: событийный (liveness-only)");
     }
     if s.proxy.api_keys.is_empty() {
-        eprintln!("⚠️  CLAUDE_API_KEYS не заданы — сервер принимает ТОЛЬКО с 127.0.0.1");
+        if s.proxy.trust_loopback {
+            eprintln!("⚠️  CLAUDE_API_KEYS не заданы — админ ТОЛЬКО с loopback (bind {})", s.bind);
+        } else {
+            eprintln!("🛑 CLAUDE_API_KEYS не заданы, а bind {} НЕ loopback — сервер ОТКЛОНЯЕТ все \
+                       запросы (за реверс-прокси peer виден как 127.0.0.1). Задай CLAUDE_API_KEYS.", s.bind);
+        }
     }
 
     let listener = tokio::net::TcpListener::bind(&s.bind).await?;
     eprintln!("claude-api слушает http://{}  (подписок: {n}, апстрим {}, реестр {})",
         s.bind, s.proxy.upstream, s.db_path);
+    // Graceful shutdown: на SIGTERM (деплой) / SIGINT axum ДОЖДЁТСЯ завершения in-flight стримов
+    // (их HoldGuard/tee-метеринг корректно закроют резервы — не теряем деньги на деплое), затем —
+    // финальный флаш состояния пула (свежая калибровка/cooling переживут рестарт без потери до 120с).
+    let flush_app = app.clone();
+    let flush_db = s.db_path.clone();
     axum::serve(listener, http::router(app).into_make_service_with_connect_info::<SocketAddr>())
+        .with_graceful_shutdown(shutdown_signal())
         .await?;
+    eprintln!("graceful shutdown: дренаж завершён, финальный флаш состояния пула");
+    if let Ok(conn) = registry::open(&flush_db) {
+        let _ = registry::save_pool_state(&conn, &flush_app.pool.export_state());
+    }
     Ok(())
+}
+
+/// Ждать сигнала завершения: SIGINT (Ctrl-C) или SIGTERM (деплой/systemd stop).
+async fn shutdown_signal() {
+    let ctrl_c = async { let _ = tokio::signal::ctrl_c().await; };
+    #[cfg(unix)]
+    let term = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => { s.recv().await; }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let term = std::future::pending::<()>();
+    tokio::select! { _ = ctrl_c => {}, _ = term => {} }
 }

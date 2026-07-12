@@ -103,10 +103,12 @@ fn session_key(headers: &HeaderMap, v: &Value) -> Option<u64> {
     Some(h.finish())
 }
 
-/// Админ-доступ (env-ключи `CLAUDE_API_KEYS` или localhost, если ключи не заданы). Без биллинга.
+/// Админ-доступ: env-ключи `CLAUDE_API_KEYS`, либо loopback-пир ТОЛЬКО если `trust_loopback`
+/// (сервер реально слушает loopback). За реверс-прокси (bind 0.0.0.0) trust_loopback=false →
+/// пустые ключи означают «отклонять всё», а не «доверять любому 127.0.0.1». Без биллинга.
 pub fn authed(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> bool {
     if app.cfg.api_keys.is_empty() {
-        return peer.ip().is_loopback();
+        return app.cfg.trust_loopback && peer.ip().is_loopback();
     }
     match client_key(headers) {
         Some(k) => app.cfg.api_keys.iter().any(|x| x == &k),

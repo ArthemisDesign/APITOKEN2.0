@@ -32,6 +32,9 @@ impl Settings {
         let db_path = ev("SUBS_DB").unwrap_or_else(|| format!("{cfg_dir}/subscriptions.db"));
         let host = ev_or("CLAUDE_API_HOST", "0.0.0.0");
         let port = ev_or("CLAUDE_API_PORT", "8787");
+        // Доверять loopback-админу только когда РЕАЛЬНО слушаем loopback (иначе за реверс-прокси
+        // все пиры видны как 127.0.0.1 → аноним-админ). Экспонированный bind требует CLAUDE_API_KEYS.
+        let trust_loopback = matches!(host.as_str(), "127.0.0.1" | "::1" | "localhost");
         let api_keys = ev("CLAUDE_API_KEYS").map(|s| {
             s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
         }).unwrap_or_default();
@@ -47,6 +50,7 @@ impl Settings {
             cap7d_usd: ev("CLAUDE_API_CAP7D_USD").and_then(|s| s.parse().ok()).unwrap_or(0.0),
             proxy: ProxyConfig {
                 api_keys,
+                trust_loopback,
                 upstream: ev_or("CLAUDE_API_UPSTREAM", "https://api.anthropic.com"),
                 max_tries: ev("CLAUDE_API_MAX_TRIES").and_then(|s| s.parse().ok()).unwrap_or(3),
                 util_cap: ev("CLAUDE_API_UTIL_CAP").and_then(|s| s.parse().ok()).unwrap_or(0.95),
