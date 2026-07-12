@@ -13,6 +13,10 @@
   принимает готовую сумму списания. `deduct` атомарен (balance−charge, spent+charge одной командой).
 - Публичный тип [`Sub`] (email/token/proxy/fleet) — контракт для `pool`/`forward`. Меняешь его —
   проверь оба потребителя.
+- **Персист состояния пула (таблица `pool_state`)** — тоже здесь: `PoolStateRow` (примитивы, registry
+  не знает типов `pool`) + `save_pool_state`/`load_pool_state`. Хранит durable-состояние (cooling/
+  калибровка/spent/util/reset) для переживания рестарта. Логику решает `pool` (export/import), registry
+  лишь пишет/читает готовые строки.
 
 **Инварианты:**
 - Токен разрешается из колонки `token` (inline) ИЛИ файла `token_file`. Совместимость с

@@ -10,7 +10,7 @@
 use registry::Sub;
 use std::cmp::Ordering::Equal;
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn now() -> i64 {
@@ -231,6 +231,10 @@ pub struct Pool {
     util_cap: f64,
     prior5h_usd: f64, // прайор ёмкости 5h окна до калибровки (env, деф под Max 20x)
     prior7d_usd: f64, // прайор ёмкости 7d окна
+    /// Хук «durable-состояние изменилось» (cooling). Server ставит его, чтобы тут же персистить
+    /// (write-through: бан переживает рестарт немедленно). Pool остаётся чистым — зовёт opaque Fn,
+    /// без tokio/БД. Не зовём на калибровке (слишком часто) — она едет на safety-flush + cooling-флашах.
+    on_change: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Pool {
@@ -242,7 +246,16 @@ impl Pool {
             util_cap,
             prior5h_usd: if prior5h > 0.0 { prior5h } else { PRIOR_CAP5H_USD },
             prior7d_usd: if prior7d > 0.0 { prior7d } else { PRIOR_CAP7D_USD },
+            on_change: Mutex::new(None),
         }
+    }
+
+    /// Поставить хук durable-изменений (вызывается на cooling-переходах). Server → poke персиста.
+    pub fn set_on_change(&self, f: Arc<dyn Fn() + Send + Sync>) {
+        *self.on_change.lock().unwrap() = Some(f);
+    }
+    fn signal_change(&self) {
+        if let Some(f) = self.on_change.lock().unwrap().as_ref() { f(); }
     }
 
     /// Заменить список подписок (из БД), сохранив волатильное состояние существующих.
@@ -358,18 +371,24 @@ impl Pool {
     }
 
     /// Circuit-breaker из ФОРВАРДА: студим на `secs` и завершаем попытку → −1 in-flight.
-    /// (Парен с `mark_used`; клампится в 0.)
+    /// (Парен с `mark_used`; клампится в 0.) Сигналит durable-изменение (персист бана).
     pub fn mark_cooling(&self, email: &str, secs: i64) {
-        let mut g = self.inner.lock().unwrap();
-        let l = g.live.entry(email.to_string()).or_default();
-        l.cooling_until = now() + secs.max(1);
-        l.inflight = (l.inflight - 1).max(0);
+        {
+            let mut g = self.inner.lock().unwrap();
+            let l = g.live.entry(email.to_string()).or_default();
+            l.cooling_until = now() + secs.max(1);
+            l.inflight = (l.inflight - 1).max(0);
+        }
+        self.signal_change();
     }
 
     /// Студить БЕЗ трогания in-flight — для фонового поллера (он не делал `mark_used`).
     pub fn cool(&self, email: &str, secs: i64) {
-        let mut g = self.inner.lock().unwrap();
-        g.live.entry(email.to_string()).or_default().cooling_until = now() + secs.max(1);
+        {
+            let mut g = self.inner.lock().unwrap();
+            g.live.entry(email.to_string()).or_default().cooling_until = now() + secs.max(1);
+        }
+        self.signal_change();
     }
 
     /// Освободить слот конкуррентности БЕЗ cooling — для backend-fault (5xx/timeout апстрима: вина
@@ -491,6 +510,52 @@ impl Pool {
     pub fn snapshot(&self) -> Vec<(Sub, Live)> {
         let g = self.inner.lock().unwrap();
         g.subs.iter().map(|s| (s.clone(), g.live.get(&s.email).cloned().unwrap_or_default())).collect()
+    }
+
+    /// Экспорт durable-состояния для персиста (по текущим подпискам).
+    pub fn export_state(&self) -> Vec<registry::PoolStateRow> {
+        let g = self.inner.lock().unwrap();
+        g.subs.iter().filter_map(|s| {
+            let l = g.live.get(&s.email)?;
+            Some(registry::PoolStateRow {
+                email: s.email.clone(),
+                cooling_until: l.cooling_until,
+                cap5h_usd: l.cap5h_usd,
+                cap7d_usd: l.cap7d_usd,
+                spent_total_usd: l.spent_total_usd,
+                util5h: l.util5h,
+                util7d: l.util7d,
+                reset5h: l.reset5h,
+                reset7d: l.reset7d,
+                calib_n: l.calib_n as i64,
+            })
+        }).collect()
+    }
+
+    /// Восстановить состояние на старте (после build пула из реестра). Возвращаем только осмысленное:
+    /// cooling (если ещё в будущем — бан на дни переживает рестарт), калибровку ёмкости, spent, util/
+    /// reset; засеваем якоря калибровки восстановленной точкой, чтобы продолжить, а не мерить с нуля.
+    pub fn import_state(&self, rows: Vec<registry::PoolStateRow>) {
+        let mut g = self.inner.lock().unwrap();
+        let now = now();
+        let known: HashSet<String> = g.subs.iter().map(|s| s.email.clone()).collect();
+        for r in rows {
+            if !known.contains(&r.email) { continue; } // подписки уже нет — не воскрешаем
+            let l = g.live.entry(r.email.clone()).or_default();
+            if r.cooling_until > now { l.cooling_until = r.cooling_until; }
+            if r.cap5h_usd > 0.0 { l.cap5h_usd = r.cap5h_usd; }
+            if r.cap7d_usd > 0.0 { l.cap7d_usd = r.cap7d_usd; }
+            l.spent_total_usd = r.spent_total_usd;
+            l.spent_at_header_usd = r.spent_total_usd;
+            l.util5h = r.util5h;
+            l.util7d = r.util7d;
+            l.reset5h = r.reset5h;
+            l.reset7d = r.reset7d;
+            l.calib_n = r.calib_n.max(0) as u32;
+            // засеять якоря калибровки восстановленной точкой (продолжаем EMA, не мерим с нуля)
+            l.seed5 = true; l.util5_anchor = r.util5h; l.spent5_anchor_usd = r.spent_total_usd;
+            l.seed7 = true; l.util7_anchor = r.util7d; l.spent7_anchor_usd = r.spent_total_usd;
+        }
     }
 }
 
@@ -665,6 +730,39 @@ mod tests {
             seen.insert(e);
         }
         assert!(seen.len() >= 3, "сессии должны разложиться по флоту, got {}", seen.len());
+    }
+
+    /// Персист: export→import переносит cooling и калибровку через «рестарт».
+    #[test]
+    fn export_import_preserves_cooling_and_calibration() {
+        let p = pool(&["a"]);
+        let f5 = now() + WIN5_SECS;
+        let f7 = now() + WIN7_SECS;
+        p.set_util("a", Some(0.0), Some(0.0), None, Some(f5), Some(f7)); // якорь
+        p.record_spend("a", 5 * 1_000_000_000);
+        p.set_util("a", Some(0.10), Some(0.004), None, Some(f5), Some(f7)); // cap5 → $50
+        p.mark_cooling("a", 3600);
+        let rows = p.export_state();
+        // «рестарт» — новый пул восстанавливает состояние
+        let p2 = pool(&["a"]);
+        p2.import_state(rows);
+        let c = &p2.capacity()[0];
+        assert!(c.calibrated, "калибровка восстановлена");
+        assert!((c.cap5h_usd - 50.0).abs() < 1e-6, "cap5={}", c.cap5h_usd);
+        assert!(p2.soonest_ready().map(|s| s > 0).unwrap_or(false), "cooling пережил рестарт");
+    }
+
+    /// on_change хук зовётся на cooling (write-through триггер).
+    #[test]
+    fn cooling_fires_on_change_hook() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let p = pool(&["a"]);
+        let hits = Arc::new(AtomicU32::new(0));
+        let h = hits.clone();
+        p.set_on_change(Arc::new(move || { h.fetch_add(1, Ordering::SeqCst); }));
+        p.mark_cooling("a", 60);
+        p.cool("a", 60);
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
     }
 
     /// До калибровки — прайор (Max 20x), помечено calibrated=false.

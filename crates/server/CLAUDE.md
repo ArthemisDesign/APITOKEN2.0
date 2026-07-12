@@ -21,6 +21,8 @@
   РОВНО до ближайшего due-времени или до `poke`). Фиксированного тика нет: reset вычисляется
   локально, а не поллится; под боевым трафиком `polled_ts` свеж (пассивный сбор в forward) → активный
   probe не срабатывает. `LIVENESS_INTERVAL` — как редко пинговать простаивающую (проверка живости токена).
+  `persist_loop` — write-through персист состояния пула по событию cooling (`pool.on_change` → `Notify`)
+  + редкий safety-flush; на старте `serve` восстанавливает состояние через `pool.import_state`.
 - `main.rs` — clap CLI: `serve` и `sub add/add-file/list/rm/status/proxy/fleet`.
 
 **Инварианты:**

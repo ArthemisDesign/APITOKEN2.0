@@ -285,6 +285,23 @@ async fn serve() -> Result<()> {
         breaker: Arc::new(forward::Breaker::new()),
     };
 
+    // Восстановить durable-состояние пула (cooling/калибровка) — бан на дни переживает деплой.
+    if let Ok(conn) = registry::open(&s.db_path) {
+        if let Ok(rows) = registry::load_pool_state(&conn) {
+            let n = rows.len();
+            app.pool.import_state(rows);
+            if n > 0 { eprintln!("восстановлено состояние пула: {n} подписок"); }
+        }
+    }
+
+    // Write-through персист: pool сигналит cooling → poke → persist_loop пишет (плюс safety-flush).
+    let persist_poke = std::sync::Arc::new(tokio::sync::Notify::new());
+    {
+        let pk = persist_poke.clone();
+        app.pool.set_on_change(std::sync::Arc::new(move || pk.notify_one()));
+    }
+    tokio::spawn(poller::persist_loop(app.clone(), s.db_path.clone(), persist_poke));
+
     let poke = std::sync::Arc::new(tokio::sync::Notify::new());
     tokio::spawn(poller::reload_loop(app.clone(), s.db_path.clone(), s.fleet.clone(), poke.clone()));
     if s.proxy.poll {

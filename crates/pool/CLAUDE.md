@@ -29,6 +29,13 @@ status/cooling/inflight + калибровка), `route` (cache-first плани
 Инвариант «пул не зависает» сохранён (фильтры ослабляются, placement падает на `select_best`).
 session-ключ (хэш кэшируемого префикса: client-key + system + messages[0]) считает `forward`.
 
+**Персист (переживание рестарта):** `export_state`/`import_state` (через `registry::PoolStateRow`)
+переносят durable-состояние — cooling (бан на дни не забывается при деплое), калибровку ёмкости,
+spent/util/reset. `import_state` восстанавливает cooling только если ещё в будущем, засеивает якоря
+калибровки восстановленной точкой. Write-through триггер — хук `set_on_change` (opaque `Fn`, БЕЗ
+tokio/БД — чистота слоя): зовётся на cooling-переходах (`mark_cooling`/`cool`), server вешает на него
+poke персиста. Калибровка хук НЕ дёргает (частая) — едет на cooling-флашах + safety-flush сервера.
+
 **In-flight = слот конкуррентности на всю жизнь стрима:** `mark_used` (+1 на pick) → на успехе
 `mark_healthy` (снять cooling, in-flight НЕ трогать) → `end_stream` (−1) из tee-метеринга forward на
 завершении/обрыве стрима. 4xx → `mark_ok` (−1 сразу). Так `place_best`/`select_best` видят реальную

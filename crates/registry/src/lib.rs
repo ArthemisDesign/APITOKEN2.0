@@ -59,6 +59,14 @@ pub fn open(path: &str) -> Result<Connection> {
          status TEXT NOT NULL DEFAULT 'active', created_ts INTEGER, created TEXT)",
         [],
     )?;
+    // Персист волатильного состояния пула (переживание рестарта): cooling (бан на дни не должен
+    // забываться при деплое) + калибровка ёмкости (дорого переучивать) + spent/util/reset.
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS pool_state(email TEXT PRIMARY KEY, cooling_until INTEGER, \
+         cap5h REAL, cap7d REAL, spent_total REAL, util5 REAL, util7 REAL, \
+         reset5 INTEGER, reset7 INTEGER, calib_n INTEGER, updated_ts INTEGER)",
+        [],
+    )?;
     Ok(c)
 }
 
@@ -340,6 +348,62 @@ pub fn key_list(conn: &Connection) -> Result<Vec<KeyRow>> {
     Ok(rows.filter_map(|x| x.ok()).collect())
 }
 
+/// Строка персиста состояния пула (по подписке). Примитивы — registry не знает типов `pool`.
+#[derive(Clone, Debug, Default)]
+pub struct PoolStateRow {
+    pub email: String,
+    pub cooling_until: i64,
+    pub cap5h_usd: f64,
+    pub cap7d_usd: f64,
+    pub spent_total_usd: f64,
+    pub util5h: f64,
+    pub util7d: f64,
+    pub reset5h: i64,
+    pub reset7d: i64,
+    pub calib_n: i64,
+}
+
+/// Сохранить снимок состояния пула (upsert по email). Одной транзакцией — атомарно и быстро.
+pub fn save_pool_state(conn: &Connection, rows: &[PoolStateRow]) -> Result<()> {
+    let ts = now();
+    conn.execute_batch("BEGIN")?;
+    {
+        let mut stmt = conn.prepare(
+            "INSERT INTO pool_state(email, cooling_until, cap5h, cap7d, spent_total, util5, util7, \
+             reset5, reset7, calib_n, updated_ts) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) \
+             ON CONFLICT(email) DO UPDATE SET cooling_until=excluded.cooling_until, cap5h=excluded.cap5h, \
+             cap7d=excluded.cap7d, spent_total=excluded.spent_total, util5=excluded.util5, \
+             util7=excluded.util7, reset5=excluded.reset5, reset7=excluded.reset7, \
+             calib_n=excluded.calib_n, updated_ts=excluded.updated_ts")?;
+        for r in rows {
+            stmt.execute(rusqlite::params![r.email, r.cooling_until, r.cap5h_usd, r.cap7d_usd,
+                r.spent_total_usd, r.util5h, r.util7d, r.reset5h, r.reset7d, r.calib_n, ts])?;
+        }
+    }
+    conn.execute_batch("COMMIT")?;
+    Ok(())
+}
+
+/// Прочитать сохранённое состояние пула (для восстановления на старте).
+pub fn load_pool_state(conn: &Connection) -> Result<Vec<PoolStateRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT email, cooling_until, cap5h, cap7d, spent_total, util5, util7, reset5, reset7, calib_n \
+         FROM pool_state")?;
+    let rows = stmt.query_map([], |r| Ok(PoolStateRow {
+        email: r.get(0)?,
+        cooling_until: r.get(1)?,
+        cap5h_usd: r.get(2)?,
+        cap7d_usd: r.get(3)?,
+        spent_total_usd: r.get(4)?,
+        util5h: r.get(5)?,
+        util7d: r.get(6)?,
+        reset5h: r.get(7)?,
+        reset7d: r.get(8)?,
+        calib_n: r.get(9)?,
+    }))?;
+    Ok(rows.filter_map(|x| x.ok()).collect())
+}
+
 /// Обёртка для запросного пути сервера: одно долгоживущее соединение под мьютексом.
 /// Списание идёт синхронно (быстрый UPDATE по WAL, без удержания через await).
 pub struct Billing {
@@ -378,6 +442,27 @@ mod tests {
     use super::*;
 
     fn db() -> Connection { open(":memory:").unwrap() }
+
+    /// Персист состояния пула: save→load переносит cooling/калибровку (upsert по email).
+    #[test]
+    fn pool_state_save_load_roundtrip() {
+        let c = db();
+        let rows = vec![PoolStateRow {
+            email: "a@x.io".into(), cooling_until: 123456, cap5h_usd: 50.0, cap7d_usd: 1500.0,
+            spent_total_usd: 12.5, util5h: 0.3, util7d: 0.1, reset5h: 999, reset7d: 888, calib_n: 4,
+        }];
+        save_pool_state(&c, &rows).unwrap();
+        // повторный save (upsert) не дублирует и обновляет
+        let mut r2 = rows.clone();
+        r2[0].cooling_until = 222222;
+        save_pool_state(&c, &r2).unwrap();
+        let got = load_pool_state(&c).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].email, "a@x.io");
+        assert_eq!(got[0].cooling_until, 222222);
+        assert!((got[0].cap5h_usd - 50.0).abs() < 1e-9);
+        assert_eq!(got[0].calib_n, 4);
+    }
 
     /// reserve атомарно гейтит по балансу; settle сводит пару к −actual, +actual в spent.
     #[test]

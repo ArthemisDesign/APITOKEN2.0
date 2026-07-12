@@ -76,6 +76,28 @@ async fn probe(app: &AppState, sub: &Sub) {
     }
 }
 
+/// Safety-flush персиста (сек): калибровка, изменившаяся БЕЗ cooling, всё же осядет.
+const PERSIST_SAFETY: u64 = 120;
+/// Коалесцируем всплеск cooling-событий перед записью (сек).
+const PERSIST_DEBOUNCE: u64 = 1;
+
+/// Персист состояния пула: **write-through по событию** cooling (`poke` из `pool.on_change`) —
+/// бан переживает рестарт почти сразу; плюс редкий safety-flush для калибровки. Не фиксированный
+/// снапшот «раз в N»: под тишиной (нет cooling) пишем лишь раз в `PERSIST_SAFETY`.
+pub async fn persist_loop(app: AppState, db_path: String, poke: Arc<Notify>) {
+    loop {
+        tokio::select! {
+            _ = poke.notified() => { tokio::time::sleep(Duration::from_secs(PERSIST_DEBOUNCE)).await; }
+            _ = tokio::time::sleep(Duration::from_secs(PERSIST_SAFETY)) => {}
+        }
+        let rows = app.pool.export_state();
+        if rows.is_empty() { continue; }
+        if let Ok(conn) = registry::open(&db_path) {
+            let _ = registry::save_pool_state(&conn, &rows);
+        }
+    }
+}
+
 /// Событийный liveness-поллер: probe-ит созревшие подписки конкурентно, затем спит РОВНО до
 /// ближайшего due-времени (или до `poke` при изменении флота). Фиксированного тика нет.
 pub async fn poll_loop(app: AppState, poke: Arc<Notify>) {
