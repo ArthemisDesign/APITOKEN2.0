@@ -61,6 +61,8 @@ impl Settings {
                 trust_loopback,
                 upstream: ev_or("CLAUDE_API_UPSTREAM", "https://api.anthropic.com"),
                 max_tries: ev("CLAUDE_API_MAX_TRIES").and_then(|s| s.parse().ok()).unwrap_or(3),
+                // Fair-share: потолок одновременных запросов на клиентский ключ (кит не набивает флот).
+                max_inflight_per_key: ev("CLAUDE_API_MAX_INFLIGHT_PER_KEY").and_then(|s| s.parse().ok()).unwrap_or(20),
                 util_cap: ev("CLAUDE_API_UTIL_CAP").and_then(|s| s.parse().ok()).unwrap_or(0.95),
                 cool_secs: ev("CLAUDE_API_COOL_SECS").and_then(|s| s.parse().ok()).unwrap_or(300),
                 poll: ev_bool("CLAUDE_API_POLL", true),

@@ -61,6 +61,16 @@ impl Drop for HoldGuard {
     }
 }
 
+/// Гард fair-share-слота ключа: освобождает счётчик одновременных запросов ключа на выходе из
+/// `forward` (любой исход + отмена запроса). Живёт всю обработку запроса.
+struct KeyGuard {
+    limiter: Arc<crate::keylimiter::KeyLimiter>,
+    key: String,
+}
+impl Drop for KeyGuard {
+    fn drop(&mut self) { self.limiter.release(&self.key); }
+}
+
 const BODY_LIMIT: usize = 64 * 1024 * 1024;
 
 // Заголовки клиента, которые НЕ пробрасываем апстриму (перезаписываем или служебные).
@@ -232,6 +242,18 @@ pub async fn forward(
         Authz::Admin | Authz::Metered { .. } => {}
     }
     Metrics::inc(&app.metrics.requests);
+    // fair-share: не даём одному метерному ключу набить флот бёрстом одновременных запросов.
+    // Слот держится всю обработку (гард освобождает на любом исходе/отмене). Админ — без лимита.
+    let _key_guard = if let Authz::Metered { key, .. } = &authz {
+        if !app.key_limiter.try_acquire(key, app.cfg.max_inflight_per_key) {
+            Metrics::inc(&app.metrics.key_throttled);
+            return err_retry(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error",
+                             "too many concurrent requests — slow down", 1);
+        }
+        Some(KeyGuard { limiter: app.key_limiter.clone(), key: key.clone() })
+    } else {
+        None
+    };
     let method: Method = parts.method.clone();
     let pq = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
     let url = format!("{}{}", app.cfg.upstream.trim_end_matches('/'), pq);

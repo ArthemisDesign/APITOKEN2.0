@@ -50,6 +50,7 @@ async fn metrics(
          # TYPE claude_api_upstream_5xx_total counter\nclaude_api_upstream_5xx_total {}\n\
          # TYPE claude_api_breaker_rejects_total counter\nclaude_api_breaker_rejects_total {}\n\
          # TYPE claude_api_exhausted_total counter\nclaude_api_exhausted_total {}\n\
+         # TYPE claude_api_key_throttled_total counter\nclaude_api_key_throttled_total {}\n\
          # TYPE claude_api_route_pin_total counter\nclaude_api_route_pin_total {}\n\
          # TYPE claude_api_route_spill_total counter\nclaude_api_route_spill_total {}\n\
          # TYPE claude_api_route_place_total counter\nclaude_api_route_place_total {}\n\
@@ -58,7 +59,7 @@ async fn metrics(
          # TYPE claude_api_cooling gauge\nclaude_api_cooling {}\n\
          # TYPE claude_api_breaker_open gauge\nclaude_api_breaker_open {}\n",
         g(&m.requests), g(&m.upstream_429), g(&m.upstream_auth), g(&m.upstream_5xx),
-        g(&m.breaker_rejects), g(&m.exhausted),
+        g(&m.breaker_rejects), g(&m.exhausted), g(&m.key_throttled),
         rs.pin, rs.spill, rs.place, inflight, app.pool.len(), cooling, breaker_open,
     );
     ([(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")], body).into_response()

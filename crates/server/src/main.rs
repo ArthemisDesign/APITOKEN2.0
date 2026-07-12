@@ -286,6 +286,7 @@ async fn serve() -> Result<()> {
         billing,
         breaker: Arc::new(forward::Breaker::new()),
         metrics: Arc::new(forward::Metrics::new()),
+        key_limiter: Arc::new(forward::KeyLimiter::new()),
     };
 
     // Восстановить durable-состояние пула (cooling/калибровка) — бан на дни переживает деплой;

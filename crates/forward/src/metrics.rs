@@ -10,6 +10,7 @@ pub struct Metrics {
     pub upstream_5xx: AtomicU64,    // backend-fault (5xx/408/409/425)
     pub breaker_rejects: AtomicU64, // отбито разомкнутым circuit breaker
     pub exhausted: AtomicU64,       // исчерпание пула (все за лимитом) → 429+Retry-After
+    pub key_throttled: AtomicU64,   // отбито fair-share (кит превысил потолок одновременных)
 }
 
 impl Metrics {

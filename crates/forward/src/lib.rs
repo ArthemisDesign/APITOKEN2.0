@@ -10,6 +10,7 @@
 
 mod breaker;
 mod config;
+mod keylimiter;
 mod meter;
 mod metrics;
 mod proxy;
@@ -18,6 +19,7 @@ mod upstream;
 
 pub use breaker::Breaker;
 pub use config::{ProxyConfig, CLAUDE_CODE_IDENTITY};
+pub use keylimiter::KeyLimiter;
 pub use metrics::Metrics;
 pub use proxy::{authed, client_key, forward};
 pub use state::AppState;

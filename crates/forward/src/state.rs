@@ -2,6 +2,7 @@
 
 use crate::breaker::Breaker;
 use crate::config::ProxyConfig;
+use crate::keylimiter::KeyLimiter;
 use crate::metrics::Metrics;
 use crate::upstream::Clients;
 use pool::Pool;
@@ -19,4 +20,6 @@ pub struct AppState {
     pub breaker: Arc<Breaker>,
     /// Счётчики форвардинга для `/metrics`.
     pub metrics: Arc<Metrics>,
+    /// Fair-share: счётчик одновременных запросов на клиентский ключ (кит не набивает флот).
+    pub key_limiter: Arc<KeyLimiter>,
 }
