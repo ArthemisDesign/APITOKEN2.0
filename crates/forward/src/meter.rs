@@ -52,6 +52,9 @@ impl TeeMeter {
 
     fn finalize(&mut self) {
         let ctx = match self.ctx.take() { Some(c) => c, None => return };
+        // стрим завершён/оборван → освободить слот конкуррентности персоны (парен с mark_used).
+        // Делаем ПЕРВЫМ и безусловно, даже если usage пустой (иначе in-flight подтёк бы).
+        ctx.pool.end_stream(&ctx.email);
         let usage = if ctx.is_sse {
             metering::usage_from_sse(&String::from_utf8_lossy(&self.acc))
         } else {

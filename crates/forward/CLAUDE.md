@@ -20,12 +20,14 @@
 `limits_from_headers`/`Limits` (unified-ratelimit из ответа), `poll_sub` (активный опрос idle),
 `detect_plan` (тариф из /api/oauth/profile), `forward` (axum-хендлер), `authed`.
 
-**Sticky-роутинг (cache-affinity):** `session_key(headers, body)` = хэш(клиентский ключ + `messages[0]`)
-— стабильный id диалога (первое сообщение не меняется от хода к ходу). Считается ДО инжекта identity
-(по исходному контенту клиента). Первая попытка цикла = `pool.pick_sticky(session)` → «домашняя»
-подписка сессии (весь диалог на одном аккаунте: prompt-cache hit + паттерн одного юзера). Дом
-недоступен/уже пробован → `pick_sticky` вернёт None, падаем на load-based `pool.pick`. Ретраи (после
-429) всегда load-based (дом уже в `tried`). Не messages-запрос → `session=None`, сразу load-based.
+**Cache-first роутинг сессии:** `session_key(headers, body)` = хэш кэшируемого префикса (клиентский
+ключ + `system` + `messages[0]`) — стабильный id диалога (большой статический префикс живёт в
+prompt-cache и не меняется от хода к ходу). Считается ДО инжекта identity (по исходному контенту).
+Первая попытка цикла = `pool.route(session)` → пин на тёплый дом / capacity-weighted placement /
+спилл при кратком давлении (вся логика в pool). Ретраи после 429/5xx → load-based `pool.pick` (дом
+уже в `tried`, привязка сессии цела). Не messages-запрос → `session=None`, сразу load-based.
+In-flight держится всю жизнь стрима: успех → `mark_healthy`, `end_stream` из tee-метеринга (`meter.rs`)
+снимает слот на завершении/обрыве; 4xx → `mark_ok`.
 
 **Ротация/лимиты (устойчивость пула):**
 - **Пассивный сбор:** на КАЖДОМ ответе апстрима вытаскиваем unified-ratelimit (`limits_from_headers`)

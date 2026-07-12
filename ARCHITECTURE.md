@@ -11,8 +11,9 @@
   server::http (роутер) ── авторизует клиента, отдаёт fallback ──►  forward::forward
                                                                         │
   forward: инжект Claude Code identity + oauth-заголовки,               │
-          pool::pick_sticky → «домашняя» подписка сессии (cache-hit),   │
-          при недоступности → pool::pick (наименее загруженная),        │
+          pool::route → cache-first: пин сессии на «домашнюю» персону   │
+          (cache-hit) / capacity-weighted placement / спилл; ретраи →   │
+          pool::pick (наименее загруженная),                            │
           Bearer подписки + её прокси                                   ▼
                                                             api.anthropic.com
                                                                         │
@@ -35,7 +36,7 @@
                 ▼
 ┌────────────────────────────────────────────────────────────┐
 │ pool  — пул + ротация (in-memory)                          │
-│   Pool · Live · pick · pick_sticky · mark_* · set_util · … │
+│   Pool · Live · route · pick · place_best · mark_* · …     │
 └───────────────┬────────────────────────────────────────────┘
                 ▼
 ┌────────────────────────────────────────────────────────────┐

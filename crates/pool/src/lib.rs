@@ -8,8 +8,8 @@
 //! Зависит только от `registry` (тип [`Sub`]). Опрос лимитов и форвардинг — крейтом выше.
 
 use registry::Sub;
+use std::cmp::Ordering::Equal;
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,14 +17,26 @@ pub fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
-/// Rendezvous/HRW-вес пары (сессия, подписка). «Домашняя» подписка сессии = максимальный вес.
-/// Свойство HRW: при добавлении/выбытии подписки перекладывается лишь доля сессий выбывшей, а не
-/// весь маппинг — диалоги держатся своих аккаунтов даже при изменении флота (в отличие от `hash%N`).
-fn hrw(session: u64, email: &str) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    session.hash(&mut h);
-    email.hash(&mut h);
-    h.finish()
+// ── Cache-first планировщик: сессии → персоны ────────────────────────────────
+// Единица планирования — СЕССИЯ (диалог), а не запрос. Сессия привязывается к «домашней»
+// подписке-персоне на всё время жизни prompt-кэша: пока запросы идут — сидит на одном аккаунте
+// (кэш префикса тёплый → повторный ввод ~10% цены; трафик выглядит как один связный юзер).
+/// Сессия липнет к дому, пока запросы приходят не реже этого интервала (покрывает 1h prompt-cache).
+/// Простой дольше → кэш всё равно остыл, привязку можно свободно пересобрать (rebind бесплатен).
+const AFFINITY_TTL: i64 = 3600;
+/// Дом остывает дольше этого → сессию ПЕРЕ-привязываем (глубокий бан/лимит: держаться нет смысла).
+/// Короче (бёрст-cooling) или просто занят → спилл ОДНОГО запроса, дом за сессией СОХРАНЯЕМ.
+const REBIND_AFTER: i64 = 60;
+/// Потолок параллельных запросов на персону — «человеческий конверт» (живой юзер не крутит 20
+/// стримов разом) + защита аккаунта от загона в лимит. Гейтит placement и переводит пин в спилл.
+const MAX_INFLIGHT: i64 = 6;
+/// Потолок таблицы привязок (память). Переполнение → вытесняем самые старые по last_seen.
+const BINDINGS_CAP: usize = 100_000;
+
+/// Привязка сессии к дому-персоне: где живёт и когда последний раз обслуживалась.
+struct Binding {
+    email: String,
+    last_seen: i64,
 }
 
 // ── Калибровка ёмкости окон (USD real-API за полное окно) ────────────────────
@@ -143,6 +155,75 @@ pub struct Live {
 struct Inner {
     subs: Vec<Sub>,
     live: HashMap<String, Live>,
+    /// Таблица привязок сессия→персона (cache-first). Растёт по активным сессиям, ограничена
+    /// `BINDINGS_CAP`; протухшие (idle > AFFINITY_TTL) вытесняются лениво при вставке.
+    bindings: HashMap<u64, Binding>,
+}
+
+fn is_cooling(g: &Inner, e: &str, now: i64) -> bool {
+    g.live.get(e).map(|l| l.cooling_until > now).unwrap_or(false)
+}
+/// Эффективная утилизация окна с учётом сброса: reset уже прошёл → окно обнулилось (util ~0),
+/// даже если поллер/трафик ещё не обновили число.
+fn eff_util(g: &Inner, e: &str, w: u8, now: i64) -> f64 {
+    g.live.get(e).map(|l| {
+        let (util, reset) = if w == 7 { (l.util7d, l.reset7d) } else { (l.util5h, l.reset5h) };
+        if reset != 0 && now >= reset { 0.0 } else { util }
+    }).unwrap_or(0.0)
+}
+fn inflight_of(g: &Inner, e: &str) -> i64 {
+    g.live.get(e).map(|l| l.inflight).unwrap_or(0)
+}
+
+/// Ротационный выбор (для ретраев/спилла): наименее загруженная живая подписка не из `exclude`.
+/// Стратегия: беречь недельный бюджет (7d) → размазывать 5h → «предупреждённые» ниже → меньше
+/// in-flight → LRU. Фильтры ослабляются постепенно (пул НИКОГДА не зависает).
+fn select_best(g: &Inner, exclude: &HashSet<String>, now: i64, cap: f64) -> Option<Sub> {
+    let cands: Vec<&Sub> = g.subs.iter().filter(|s| !exclude.contains(&s.email)).collect();
+    if cands.is_empty() { return None; }
+    let not_cool: Vec<&Sub> = cands.iter().copied().filter(|s| !is_cooling(g, &s.email, now)).collect();
+    let stage1: Vec<&Sub> = if not_cool.is_empty() { cands } else { not_cool };
+    let ready: Vec<&Sub> = stage1.iter().copied()
+        .filter(|s| eff_util(g, &s.email, 7, now) < cap && eff_util(g, &s.email, 5, now) < cap)
+        .collect();
+    let mut poolv: Vec<&Sub> = if ready.is_empty() { stage1 } else { ready };
+    let warn = |e: &str| g.live.get(e).map(|l| l.status.contains("warning")).unwrap_or(false);
+    let lru = |e: &str| g.live.get(e).map(|l| l.last_used).unwrap_or(0);
+    poolv.sort_by(|a, b| {
+        eff_util(g, &a.email, 7, now).partial_cmp(&eff_util(g, &b.email, 7, now)).unwrap_or(Equal)
+            .then(eff_util(g, &a.email, 5, now).partial_cmp(&eff_util(g, &b.email, 5, now)).unwrap_or(Equal))
+            .then(warn(&a.email).cmp(&warn(&b.email)))
+            .then(inflight_of(g, &a.email).cmp(&inflight_of(g, &b.email)))
+            .then(lru(&a.email).cmp(&lru(&b.email)))
+    });
+    poolv.first().map(|s| (*s).clone())
+}
+
+/// Capacity-weighted placement НОВОЙ сессии: среди здоровых персон под потолком util И под
+/// конвертом конкуррентности (`inflight < MAX_INFLIGHT`) — та, где больше свободной ёмкости (USD).
+/// Так новые сессии наливаются в самые пустые аккаунты, но не сверх человеческого конверта; когда
+/// эмптейший упёрся в конверт — перелив на следующий по ёмкости. Никого под конвертом → не зависаем
+/// (обычный `select_best`, эффект — краткая деградация естественности под пиком).
+fn place_best(g: &Inner, now: i64, cap: f64, p5: f64, p7: f64) -> Option<Sub> {
+    let free = |s: &Sub| -> f64 {
+        let l = g.live.get(&s.email);
+        let cap5 = l.map(|l| l.cap5h_usd).filter(|c| *c > 0.0).unwrap_or(p5);
+        let cap7 = l.map(|l| l.cap7d_usd).filter(|c| *c > 0.0).unwrap_or(p7);
+        (cap5 * (1.0 - eff_util(g, &s.email, 5, now))).min(cap7 * (1.0 - eff_util(g, &s.email, 7, now)))
+    };
+    let lru = |e: &str| g.live.get(e).map(|l| l.last_used).unwrap_or(0);
+    let eligible = g.subs.iter().filter(|s|
+        !is_cooling(g, &s.email, now)
+        && eff_util(g, &s.email, 7, now) < cap && eff_util(g, &s.email, 5, now) < cap
+        && inflight_of(g, &s.email) < MAX_INFLIGHT);
+    let best = eligible.max_by(|a, b|
+        free(a).partial_cmp(&free(b)).unwrap_or(Equal)                    // больше свободной ёмкости
+            .then(inflight_of(g, &b.email).cmp(&inflight_of(g, &a.email)))// при равенстве — меньше in-flight (веер)
+            .then(lru(&b.email).cmp(&lru(&a.email))));                    // затем давнее использование
+    match best {
+        Some(s) => Some(s.clone()),
+        None => select_best(g, &HashSet::new(), now, 1.0), // все за конвертом → не зависаем
+    }
 }
 
 pub struct Pool {
@@ -157,7 +238,7 @@ impl Pool {
     /// цифры считаются по ним; дальше — по измеренной ёмкости. 0 → дефолтные Max-20x-прайоры.
     pub fn new(subs: Vec<Sub>, util_cap: f64, prior5h: f64, prior7d: f64) -> Self {
         Pool {
-            inner: Mutex::new(Inner { subs, live: HashMap::new() }),
+            inner: Mutex::new(Inner { subs, live: HashMap::new(), bindings: HashMap::new() }),
             util_cap,
             prior5h_usd: if prior5h > 0.0 { prior5h } else { PRIOR_CAP5H_USD },
             prior7d_usd: if prior7d > 0.0 { prior7d } else { PRIOR_CAP7D_USD },
@@ -174,72 +255,70 @@ impl Pool {
 
     pub fn len(&self) -> usize { self.inner.lock().unwrap().subs.len() }
 
-    /// Наименее загруженная живая подписка не из `exclude`.
+    /// Наименее загруженная живая подписка не из `exclude` (для ретраев ротации/спилла).
     /// allow_full=true → пускаем до 100% (приоритетные ходы), иначе потолок util_cap.
     pub fn pick(&self, exclude: &HashSet<String>, allow_full: bool) -> Option<Sub> {
         let g = self.inner.lock().unwrap();
-        let now = now();
         let cap = if allow_full { 1.0 } else { self.util_cap };
-        let candidates: Vec<&Sub> = g.subs.iter().filter(|s| !exclude.contains(&s.email)).collect();
-        if candidates.is_empty() { return None; }
-
-        let cool = |e: &str| g.live.get(e).map(|l| l.cooling_until > now).unwrap_or(false);
-        // Эффективная утилизация с УЧЁТОМ обнуления окна: если reset уже прошёл, окно
-        // обнулилось (util снова ~0), даже если поллер ещё не обновил число.
-        let eff = |e: &str, w: u8| g.live.get(e).map(|l| {
-            let (util, reset) = if w == 7 { (l.util7d, l.reset7d) } else { (l.util5h, l.reset5h) };
-            if reset != 0 && now >= reset { 0.0 } else { util }
-        }).unwrap_or(0.0);
-        let warn = |e: &str| g.live.get(e).map(|l| l.status.contains("warning")).unwrap_or(false);
-        let inflight = |e: &str| g.live.get(e).map(|l| l.inflight).unwrap_or(0);
-        let lru = |e: &str| g.live.get(e).map(|l| l.last_used).unwrap_or(0);
-
-        // 1) не остывающие; 2) под потолком — с постепенным ослаблением фильтра
-        let not_cool: Vec<&&Sub> = candidates.iter().filter(|s| !cool(&s.email)).collect();
-        let stage1: Vec<&&Sub> = if not_cool.is_empty() { candidates.iter().collect() } else { not_cool };
-        let ready: Vec<&&Sub> = stage1.iter()
-            .filter(|s| eff(&s.email, 7) < cap && eff(&s.email, 5) < cap).cloned().collect();
-        let mut pool: Vec<&&Sub> = if ready.is_empty() { stage1 } else { ready };
-
-        // Стратегия: беречь недельный бюджет (7d) → размазывать 5h → «предупреждённые» ниже →
-        // меньше in-flight (веер параллельных) → давнее использование (LRU).
-        pool.sort_by(|a, b| {
-            let (ea, eb) = (&a.email, &b.email);
-            eff(ea, 7).partial_cmp(&eff(eb, 7)).unwrap_or(std::cmp::Ordering::Equal)
-                .then(eff(ea, 5).partial_cmp(&eff(eb, 5)).unwrap_or(std::cmp::Ordering::Equal))
-                .then(warn(ea).cmp(&warn(eb)))          // false (allowed) < true (allowed_warning)
-                .then(inflight(ea).cmp(&inflight(eb)))
-                .then(lru(ea).cmp(&lru(eb)))
-        });
-        pool.first().map(|s| (***s).clone())
+        select_best(&g, exclude, now(), cap)
     }
 
-    /// Sticky-выбор по сессии (HRW-хэш): консистентно отдаёт **одну и ту же** живую подписку для
-    /// диалога — так вся история садится на один аккаунт → prompt-cache hit (повторный префикс
-    /// стоит ~10%) и трафик аккаунта выглядит как один связный юзер, а не веер чужих запросов.
+    /// **Cache-first роутинг сессии** (первая попытка запроса). Держит диалог на «домашней» персоне,
+    /// пока жив prompt-кэш, и раскладывает новые сессии по флоту с учётом ёмкости и конверта:
     ///
-    /// Возвращает подписку ТОЛЬКО если она здорова (не в `exclude`, не cooling, окна под потолком);
-    /// иначе `None` — и вызывающий падает на обычный load-based [`pick`]. Аффинити — предпочтение,
-    /// не жёсткая привязка: под давлением (домашняя горячая/остывает) диалог переливается на пул,
-    /// а как только дом освободится — снова липнет к нему (HRW детерминирован). Пул не зависает.
-    pub fn pick_sticky(&self, session: u64, exclude: &HashSet<String>, allow_full: bool) -> Option<Sub> {
-        let g = self.inner.lock().unwrap();
+    /// 1. Есть свежая привязка к здоровому дому → **пин** (кэш тёплый, паттерн одного юзера).
+    /// 2. Дом «ещё наш» (кэш не остыл, не в глубоком бане, под потолком), но временно занят
+    ///    (бёрст-cooling < REBIND_AFTER или in-flight ≥ конверта) → **спилл одного запроса** на пул,
+    ///    привязку СОХРАНЯЕМ — следующий запрос вернётся на тёплый дом.
+    /// 3. Дом глубоко недоступен (cooling ≥ REBIND_AFTER / за потолком / выбыл) или привязки нет /
+    ///    протухла → **(пере)привязка**: capacity-weighted placement новой персоны + запись.
+    ///
+    /// Ретраи ПОСЛЕ 429/5xx идут не сюда, а в [`pick`] (дом уже исключён через `tried`).
+    pub fn route(&self, session: u64) -> Option<Sub> {
+        let mut g = self.inner.lock().unwrap();
         let now = now();
-        let cap = if allow_full { 1.0 } else { self.util_cap };
-        let cool = |e: &str| g.live.get(e).map(|l| l.cooling_until > now).unwrap_or(false);
-        // та же «эффективная» утилизация с учётом сброса окна, что и в pick
-        let eff = |e: &str, w: u8| g.live.get(e).map(|l| {
-            let (util, reset) = if w == 7 { (l.util7d, l.reset7d) } else { (l.util5h, l.reset5h) };
-            if reset != 0 && now >= reset { 0.0 } else { util }
-        }).unwrap_or(0.0);
-        // среди ЗДОРОВЫХ кандидатов берём с максимальным HRW-весом → детерминированный «дом» сессии.
-        // Дом горячий/остыл → выпадает из фильтра, HRW сам выберет стабильный «запасной дом»
-        // (тоже детерминированно), сохраняя частичную локальность кэша на резервном аккаунте.
-        g.subs.iter()
-            .filter(|s| !exclude.contains(&s.email) && !cool(&s.email)
-                        && eff(&s.email, 7) < cap && eff(&s.email, 5) < cap)
-            .max_by_key(|s| hrw(session, &s.email))
-            .cloned()
+        let cap = self.util_cap;
+        let (p5, p7) = (self.prior5h_usd, self.prior7d_usd);
+
+        // берём привязку как owned-значения → отпускаем borrow таблицы, дальше свободно мутируем g
+        if let Some((home, last_seen)) = g.bindings.get(&session).map(|b| (b.email.clone(), b.last_seen)) {
+            let fresh = now - last_seen < AFFINITY_TTL;
+            let exists = g.subs.iter().any(|s| s.email == home);
+            if fresh && exists {
+                let cooling = g.live.get(&home).map(|l| l.cooling_until).unwrap_or(0);
+                let (e5, e7) = (eff_util(&g, &home, 5, now), eff_util(&g, &home, 7, now));
+                let deep_cooling = cooling > now && cooling - now >= REBIND_AFTER;
+                let over_cap = e5 >= cap || e7 >= cap;
+                if !deep_cooling && !over_cap {
+                    // дом всё ещё «наш» — кэш тёплый; либо пин, либо кратковременный спилл
+                    if let Some(b) = g.bindings.get_mut(&session) { b.last_seen = now; }
+                    let busy = cooling > now || inflight_of(&g, &home) >= MAX_INFLIGHT;
+                    if !busy {
+                        return g.subs.iter().find(|s| s.email == home).cloned(); // ПИН
+                    }
+                    // временно занят → спилл ЭТОГО запроса, дом за сессией сохраняем
+                    let ex: HashSet<String> = std::iter::once(home.clone()).collect();
+                    return select_best(&g, &ex, now, cap)
+                        .or_else(|| g.subs.iter().find(|s| s.email == home).cloned());
+                }
+                // deep_cooling || over_cap → пере-привязка ниже
+            }
+        }
+
+        // новая сессия или пере-привязка → capacity-weighted placement, записать дом
+        let chosen = place_best(&g, now, cap, p5, p7)?;
+        if g.bindings.len() >= BINDINGS_CAP {
+            let cutoff = now - AFFINITY_TTL;
+            g.bindings.retain(|_, b| b.last_seen >= cutoff); // сперва протухшие
+            if g.bindings.len() >= BINDINGS_CAP {
+                // всё ещё полно (все свежие) — грубо срезаем половину самых старых
+                let mut v: Vec<(u64, i64)> = g.bindings.iter().map(|(k, b)| (*k, b.last_seen)).collect();
+                v.sort_by_key(|(_, t)| *t);
+                for (k, _) in v.into_iter().take(BINDINGS_CAP / 2) { g.bindings.remove(&k); }
+            }
+        }
+        g.bindings.insert(session, Binding { email: chosen.email.clone(), last_seen: now });
+        Some(chosen)
     }
 
     /// Взяли подписку в работу (pick): отметить время и +1 в in-flight.
@@ -256,6 +335,26 @@ impl Pool {
         if l.cooling_until <= now() { l.cooling_until = 0; }
         l.last_used = now();
         l.inflight = (l.inflight - 1).max(0);
+    }
+
+    /// Успешный ответ, но стрим ещё ТЕЧЁТ: подписка здорова (снять cooling, обновить last_used),
+    /// НО in-flight НЕ трогаем — слот конкуррентности держится всю жизнь стрима и снимается в
+    /// [`end_stream`]. Так конвейер/placement видят реальную параллельную нагрузку персоны, а не
+    /// «0 сразу после заголовков» (иначе на аккаунт наваливалась бы куча параллельных генераций).
+    pub fn mark_healthy(&self, email: &str) {
+        let mut g = self.inner.lock().unwrap();
+        let l = g.live.entry(email.to_string()).or_default();
+        if l.cooling_until <= now() { l.cooling_until = 0; }
+        l.last_used = now();
+    }
+
+    /// Стрим ответа завершён или оборван клиентом → освобождаем слот конкуррентности персоны.
+    /// Парен с `mark_used`+`mark_healthy` (успех); вызывается из tee-метеринга forward. Клампится в 0.
+    pub fn end_stream(&self, email: &str) {
+        let mut g = self.inner.lock().unwrap();
+        let l = g.live.entry(email.to_string()).or_default();
+        l.inflight = (l.inflight - 1).max(0);
+        l.last_used = now();
     }
 
     /// Circuit-breaker из ФОРВАРДА: студим на `secs` и завершаем попытку → −1 in-flight.
@@ -475,35 +574,77 @@ mod tests {
         assert!((before - after - 10.0).abs() < 0.5, "before={before} after={after}");
     }
 
-    /// Sticky: одна сессия консистентно попадает на одну «домашнюю» подписку, пока та жива.
+    /// Cache-first: сессия липнет к своему дому, пока тот здоров (кэш тёплый).
     #[test]
-    fn sticky_is_consistent_per_session() {
+    fn route_pins_session_to_home() {
         let p = pool(&["a", "b", "c", "d"]);
         for e in ["a", "b", "c", "d"] { p.set_util(e, Some(0.1), Some(0.1), None, None, None); }
         let s = 123456789u64;
-        let home = p.pick_sticky(s, &none(), false).unwrap().email;
-        for _ in 0..10 { assert_eq!(p.pick_sticky(s, &none(), false).unwrap().email, home); }
+        let home = p.route(s).unwrap().email;
+        for _ in 0..10 { assert_eq!(p.route(s).unwrap().email, home); }
     }
 
-    /// Sticky под давлением: домашняя cooling → None (вызывающий уходит на load-based pick).
+    /// Placement новой сессии — capacity-weighted: садим на персону с бóльшим свободным окном.
     #[test]
-    fn sticky_yields_when_home_unavailable() {
-        let p = pool(&["a"]);
-        p.set_util("a", Some(0.1), Some(0.1), None, None, None);
-        let s = 42u64;
-        assert!(p.pick_sticky(s, &none(), false).is_some());
-        p.mark_cooling("a", 300);
-        assert!(p.pick_sticky(s, &none(), false).is_none()); // единственная cooling → None
+    fn route_places_new_session_by_capacity() {
+        let p = pool(&["a", "b"]);
+        p.set_util("a", Some(0.80), Some(0.80), None, None, None); // мало свободного
+        p.set_util("b", Some(0.10), Some(0.10), None, None, None); // много свободного
+        assert_eq!(p.route(555).unwrap().email, "b");
     }
 
-    /// Разные сессии раскладываются по разным домам (HRW-спред → нагрузка распределена по флоту).
+    /// Конверт конкуррентности: эмптейший дом упёрся в MAX_INFLIGHT → новая сессия уходит на другой.
     #[test]
-    fn sticky_spreads_sessions_across_fleet() {
+    fn route_placement_respects_concurrency_envelope() {
+        let p = pool(&["a", "b"]);
+        p.set_util("a", Some(0.05), Some(0.05), None, None, None); // эмптейший…
+        p.set_util("b", Some(0.20), Some(0.20), None, None, None);
+        for _ in 0..MAX_INFLIGHT { p.mark_used("a"); }             // …но забит до конверта
+        assert_eq!(p.route(777).unwrap().email, "b");
+    }
+
+    /// Временно занятый дом (in-flight ≥ конверта) → спилл ОДНОГО запроса, привязка сохраняется;
+    /// как только слоты освободились — сессия возвращается на тёплый дом.
+    #[test]
+    fn route_spills_but_keeps_home_when_busy() {
+        let p = pool(&["a", "b"]);
+        p.set_util("a", Some(0.05), Some(0.05), None, None, None);
+        p.set_util("b", Some(0.20), Some(0.20), None, None, None);
+        let s = 999u64;
+        let home = p.route(s).unwrap().email;         // сел на эмптейший (a)
+        for _ in 0..MAX_INFLIGHT { p.mark_used(&home); } // забили дом до конверта
+        let spilled = p.route(s).unwrap().email;
+        assert_ne!(spilled, home, "занятый дом → спилл на другой");
+        for _ in 0..MAX_INFLIGHT { p.end_stream(&home); } // слоты освободились
+        assert_eq!(p.route(s).unwrap().email, home, "вернулись на тёплый дом");
+    }
+
+    /// Глубокий cooling дома (≥ REBIND_AFTER) → сессия ПЕРЕ-привязывается на здоровую персону.
+    #[test]
+    fn route_rebinds_on_deep_cooling() {
+        let p = pool(&["a", "b"]);
+        for e in ["a", "b"] { p.set_util(e, Some(0.1), Some(0.1), None, None, None); }
+        let s = 314u64;
+        let home = p.route(s).unwrap().email;
+        p.mark_cooling(&home, 300);                    // глубокий бан
+        let rebound = p.route(s).unwrap().email;
+        assert_ne!(rebound, home, "глубокий cooling → пере-привязка");
+        assert_eq!(p.route(s).unwrap().email, rebound, "новая привязка стабильна");
+    }
+
+    /// Разные сессии раскладываются по флоту (нагрузка распределена, а не в одну персону).
+    #[test]
+    fn route_spreads_sessions_across_fleet() {
         let p = pool(&["a", "b", "c", "d"]);
         for e in ["a", "b", "c", "d"] { p.set_util(e, Some(0.1), Some(0.1), None, None, None); }
         let mut seen = HashSet::new();
-        for s in 0..200u64 { seen.insert(p.pick_sticky(s, &none(), false).unwrap().email); }
-        assert!(seen.len() >= 3, "HRW должен разложить сессии по флоту, got {}", seen.len());
+        for s in 0..200u64 {
+            let e = p.route(s).unwrap().email;
+            // симулируем короткую параллельную нагрузку, чтобы конверт раскидывал placement
+            p.mark_used(&e);
+            seen.insert(e);
+        }
+        assert!(seen.len() >= 3, "сессии должны разложиться по флоту, got {}", seen.len());
     }
 
     /// До калибровки — прайор (Max 20x), помечено calibrated=false.

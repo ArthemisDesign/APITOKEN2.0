@@ -49,15 +49,17 @@ pub fn client_key(headers: &HeaderMap) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-/// Стабильный идентификатор «сессии» диалога для sticky-роутинга (crate `pool`): клиентский ключ
-/// + якорь диалога. Якорь = ПЕРВОЕ сообщение (`messages[0]`) — оно не меняется от хода к ходу (диалог
-/// растёт добавлением в хвост), поэтому вся история консистентно липнет к одной подписке → prompt-cache
-/// hit + естественный паттерн одного юзера. `None` → не messages-запрос: sticky не нужен, идём load-based.
-/// Считаем ДО инжекта identity — по исходному контенту клиента, чтобы наш system-блок не влиял на якорь.
+/// Идентификатор «сессии» диалога для cache-first роутинга (`pool::route`). Якорь = стабильный
+/// **кэшируемый префикс**: клиентский ключ + `system` + ПЕРВОЕ сообщение (`messages[0]`). Именно этот
+/// большой статический префикс живёт в prompt-cache и НЕ меняется от хода к ходу (диалог растёт в
+/// хвост) — поэтому вся история консистентно садится на одну персону → cache-hit + паттерн одного
+/// юзера. `None` → не messages-запрос: роутинг сессии не нужен, идём load-based [`pool::pick`].
+/// Считаем ДО инжекта identity — по исходному контенту клиента (наш system-блок якорь не смещает).
 fn session_key(headers: &HeaderMap, v: &Value) -> Option<u64> {
     let first = v.get("messages").and_then(Value::as_array).and_then(|m| m.first())?;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     if let Some(k) = client_key(headers) { k.hash(&mut h); }
+    if let Some(sys) = v.get("system") { sys.to_string().hash(&mut h); } // кэшируемый статический префикс
     first.to_string().hash(&mut h);
     Some(h.finish())
 }
@@ -222,11 +224,11 @@ pub async fn forward(
                                "no subscriptions available in pool");
 
     for attempt in 0..app.cfg.max_tries.max(1) {
-        // Первая попытка — sticky «домашняя» подписка сессии (cache-affinity + естественный паттерн).
-        // Дом горячий/остывает/уже пробован → pick_sticky вернёт None и падаем на load-based pick.
-        // Ретраи (после 429 на доме) всегда идут load-based: дом уже в `tried`, ищем живую замену.
+        // Первая попытка — cache-first роутинг сессии (пин на тёплый дом / capacity-weighted
+        // placement / спилл при кратком давлении — всё внутри `route`). Ретраи после 429/5xx идут
+        // load-based `pick` (дом уже в `tried`, ищем живую замену — при этом привязка сессии цела).
         let sub = match session.filter(|_| attempt == 0)
-            .and_then(|s| app.pool.pick_sticky(s, &tried, false))
+            .and_then(|s| app.pool.route(s))
             .or_else(|| app.pool.pick(&tried, false))
         {
             Some(s) => s,
@@ -287,11 +289,12 @@ pub async fn forward(
             continue;
         }
 
-        // успех или клиентская ошибка запроса (одинакова на любой подписке) → отдаём как есть
-        app.pool.mark_ok(&sub.email);
-        // на УСПЕХЕ всегда меряем ответ: расход подписки → калибровка пула; для метерного
-        // ключа finalize закрывает резерв фактической стоимостью. 4xx не меряем — резерв возвращаем.
+        // успех или клиентская ошибка запроса (одинакова на любой подписке) → отдаём как есть.
+        // На УСПЕХЕ всегда меряем ответ: расход подписки → калибровка пула; для метерного ключа
+        // finalize закрывает резерв фактической стоимостью; и там же `end_stream` снимает слот
+        // конкуррентности. 4xx не меряем — резерв возвращаем, слот освобождаем сразу.
         let meter = if st.is_success() {
+            app.pool.mark_healthy(&sub.email); // здорова; in-flight держим на всю жизнь стрима
             let bill = match (&authz, reserved.take()) {
                 (Authz::Metered { key, mult_bp }, Some((_, hold))) =>
                     app.billing.clone().map(|billing| BillCtx {
@@ -307,7 +310,8 @@ pub async fn forward(
                 bill,
             })
         } else {
-            release_hold(&app, reserved.take()); // клиентская 4xx: вернуть зарезервированное
+            app.pool.mark_ok(&sub.email);        // клиентская 4xx: слот освобождаем сразу
+            release_hold(&app, reserved.take()); // и вернуть зарезервированное
             None
         };
         return stream_back(st, resp, meter);
