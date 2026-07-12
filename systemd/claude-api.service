@@ -17,6 +17,18 @@ EnvironmentFile=-/srv/claude-api/data/server.env
 ExecStart=/srv/claude-api/target/release/claude-api serve
 Restart=on-failure
 RestartSec=3
+# Graceful shutdown: сервер по SIGTERM дренирует in-flight стримы (см. serve()). Даём время дотечь
+# длинным генерациям и сделать финальный флаш состояния, иначе systemd убьёт SIGKILL на дефолтных 90с.
+KillSignal=SIGTERM
+TimeoutStopSec=600
+# Базовый hardening (сервис не пишет никуда, кроме своей data-папки):
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/srv/claude-api/data
+# Крыша по памяти (bindings/live ограничены, но страхуемся от рантайм-аномалий):
+MemoryMax=2G
 
 [Install]
 WantedBy=multi-user.target
