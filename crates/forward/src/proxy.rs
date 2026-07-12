@@ -71,11 +71,17 @@ fn skip_req_header(name: &str) -> bool {
         | "transfer-encoding" | "upgrade" | "proxy-connection" | "proxy-authorization"
         | "keep-alive" | "te" | "trailer")
 }
-// Hop-by-hop заголовки апстрима, которые не отдаём клиенту (тело стримим чанками).
+// Заголовки апстрима, которые НЕ отдаём клиенту: hop-by-hop + per-ПОДПИСОЧНЫЕ ratelimit/идентити.
+// `anthropic-ratelimit-*` отражают состояние НАШЕЙ подписки (утилизация/reset пула) — отдавать их
+// клиенту (а) раскрывает, что это пул, (б) даёт «прыгающий» несогласованный лимит при ротации.
+// Аналогично режем org/account-идентифицирующие, различающиеся между подписками (корреляция аккаунта).
 fn skip_resp_header(name: &str) -> bool {
     matches!(name,
         "connection" | "transfer-encoding" | "content-length" | "content-encoding"
         | "keep-alive" | "proxy-connection" | "upgrade" | "te" | "trailer")
+        || name.starts_with("anthropic-ratelimit")
+        || name.starts_with("anthropic-organization")
+        || name == "anthropic-account-id"
 }
 
 /// Клиентский ключ из запроса (x-api-key либо Bearer). Публично — используется и в `server`
@@ -144,10 +150,6 @@ fn authorize(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> Authz {
     }
     if authed(app, headers, peer) { Authz::Admin } else { Authz::Unauthorized }
 }
-
-/// 401/403 = мёртвый/битый OAuth-токен подписки — НЕ транзиент. Студим надолго (не 10с), чтобы не
-/// долбить забаненный аккаунт раз в 10с (ban-signal) и не жечь слот попытки. Ждёт refresh токена.
-const AUTH_QUARANTINE: i64 = 900;
 
 /// Anthropic-подобная ошибка (чтобы SDK-клиент видел привычную форму).
 fn err_response(code: StatusCode, kind: &str, msg: &str) -> Response {
@@ -262,8 +264,12 @@ pub async fn forward(
     if let (Authz::Metered { key, mult_bp }, Some(billing)) = (&authz, &app.billing) {
         let p = metering::model_prices(&model);
         let mt = if max_tokens > 0 { max_tokens } else { 4096 } as i128;
-        let input_est = (raw.len() as i128 / 3).max(1); // грубая ВЕРХНЯЯ оценка токенов входа
-        let ceiling = mt * p.output + input_est * p.cache_write_1h;
+        // ВЕРХНЯЯ оценка входа: тело клиента + инжект-identity (тоже биллится Anthropic), по самой
+        // дорогой входной ставке. + буфер на web_search — чтобы actual ≤ hold держалось и при
+        // ответе у потолка max_tokens с несколькими поисками (иначе гейт баланса можно пробить).
+        let input_est = ((raw.len() + app.cfg.identity.len()) as i128 / 3).max(1);
+        let web_buf = 5 * metering::WEB_SEARCH_NANO;
+        let ceiling = mt * p.output + input_est * p.cache_write_1h + web_buf;
         let hold = metering::apply_multiplier(ceiling, *mult_bp).clamp(0, i64::MAX as i128) as i64;
         match billing.reserve(key, hold) {
             Some(_) => reserved = Some((key.clone(), hold)),
@@ -306,6 +312,7 @@ pub async fn forward(
     let hard_cap = app.pool.len().max(1) + 2;
     let mut attempt = 0usize;
     let mut backend_tries = 0usize;
+    let mut auth_tries = 0usize; // 401/403: возможно вина запроса клиента, а не токена — см. ниже
     while attempt < hard_cap {
         // Первая попытка — cache-first роутинг сессии (пин/placement/спилл в `route`). Дальше —
         // load-based `pick` (дом/пробованные уже в `tried`; cooling-подписки пул исключает сам).
@@ -327,7 +334,8 @@ pub async fn forward(
             Ok(c) => c,
             Err(e) => {
                 app.pool.mark_cooling(&sub.email, 10); // битый прокси → cooling (слот закроет guard)
-                last = err_response(StatusCode::BAD_GATEWAY, "api_error", &format!("proxy: {e}"));
+                eprintln!("⚠ прокси {}: {e}", sub.email); // детали ТОЛЬКО в лог (не клиенту)
+                last = err_response(StatusCode::BAD_GATEWAY, "api_error", "upstream connection error");
                 continue;
             }
         };
@@ -353,8 +361,8 @@ pub async fn forward(
                 // общий апстрим-аутейдж (тогда фейлят все прокси → брейкер разомкнётся). Тратит бюджет.
                 app.pool.mark_cooling(&sub.email, 15);
                 if !backend_fail_recorded { app.breaker.record_fail(pool::now()); backend_fail_recorded = true; }
-                last = err_response(StatusCode::BAD_GATEWAY, "api_error",
-                                    &format!("upstream via {}: {e}", sub.email));
+                eprintln!("⚠ upstream {}: {e}", sub.email); // детали (email/сеть) ТОЛЬКО в лог
+                last = err_response(StatusCode::BAD_GATEWAY, "api_error", "upstream unavailable");
                 backend_tries += 1;
                 if backend_tries >= app.cfg.max_tries.max(1) { break; }
                 continue;
@@ -380,16 +388,24 @@ pub async fn forward(
             let secs = cool_secs_429(&resp, &lim, now);
             app.pool.mark_cooling(&sub.email, secs);
             eprintln!("↻ ротация: {} вернул 429 — cooling {}s", sub.email, secs);
-            last = err_response(st, "overloaded_error", &format!("upstream 429 via {}", sub.email));
+            last = err_response(st, "overloaded_error", "upstream rate-limited"); // без email клиенту
             continue;
         }
         if code == 401 || code == 403 {
-            // мёртвый/битый токен подписки — НЕ транзиент: длинный карантин (не 10с), ждёт refresh
+            // 401/403 может быть виной ЗАПРОСА клиента (недоступная модель/бета/путь), а НЕ мёртвого
+            // токена. НЕ студим подписку здесь: иначе один crafted-запрос выстудил бы весь пул на
+            // AUTH_QUARANTINE (DoS). Дохлый токен ловит ПОЛЛЕР чистым probe (там карантин). Ротируем
+            // ограниченно, чтобы исключить единичный дохлый токен; если повторилось на другой подписке
+            // — детерминировано → это запрос клиента → отдаём НАСТОЯЩИЙ ответ апстрима прозрачно.
             Metrics::inc(&app.metrics.upstream_auth);
-            app.pool.mark_cooling(&sub.email, AUTH_QUARANTINE);
-            eprintln!("⚠ auth {} на {} — карантин {}s (нужен refresh токена)", code, sub.email, AUTH_QUARANTINE);
-            last = err_response(st, "overloaded_error", &format!("upstream {code} via {}", sub.email));
-            continue;
+            auth_tries += 1;
+            eprintln!("auth {} на {} (попытка {}) — НЕ студим (возможно вина запроса)", code, sub.email, auth_tries);
+            if auth_tries < 2 && attempt < hard_cap {
+                last = err_response(st, "overloaded_error", "upstream unavailable");
+                continue; // единичный 401/403 — вдруг дохлый токен: пробуем другую подписку без cooling
+            }
+            app.pool.mark_healthy(&sub.email);          // повтор на разных подписках → вина запроса
+            return stream_back(st, resp, None);          // прозрачно отдаём реальный 401/403 клиенту
         }
         if st.is_server_error() || code == 408 || code == 409 || code == 425 {
             // вина АПСТРИМА, не подписки: НЕ студим подписку (слот закроет guard), кормим breaker
@@ -397,7 +413,7 @@ pub async fn forward(
             Metrics::inc(&app.metrics.upstream_5xx);
             if !backend_fail_recorded { app.breaker.record_fail(now); backend_fail_recorded = true; }
             eprintln!("↻ ротация: {} вернул {} — backend-fault (breaker+)", sub.email, code);
-            last = err_response(st, "overloaded_error", &format!("upstream {code} via {}", sub.email));
+            last = err_response(st, "overloaded_error", "upstream unavailable"); // без email клиенту
             backend_tries += 1;                                    // backend тратит бюджет (аутейдж)
             if backend_tries >= app.cfg.max_tries.max(1) { break; }
             continue;

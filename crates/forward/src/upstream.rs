@@ -72,6 +72,9 @@ impl Clients {
             .user_agent(&self.user_agent)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Duration::from_secs(60))
+            .read_timeout(Duration::from_secs(120))               // idle между чтениями: ловит «подключился
+            //   но молчит» до первого байта И зависший посреди стрима; сбрасывается на каждом чтении,
+            //   поэтому живой поток данных (в т.ч. SSE с ping-ами Anthropic) не рвёт.
             .http2_keep_alive_interval(Duration::from_secs(30))   // PING каждые 30с…
             .http2_keep_alive_timeout(Duration::from_secs(20))    // …нет ответа за 20с → соединение мёртво
             .http2_keep_alive_while_idle(true);                   // проверять и на простое (idle-стрим/пул)

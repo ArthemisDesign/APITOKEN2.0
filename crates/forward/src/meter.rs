@@ -60,33 +60,36 @@ impl TeeMeter {
         } else {
             metering::usage_from_response_json(&self.acc)
         };
-        if usage.is_zero() {
-            return; // нечего учитывать (напр. не-messages ответ)
-        }
-        // реальная стоимость (×1.0, до наценки) — один раз, для калибровки И для списания
-        let real = metering::cost_nanodollars(&usage, &metering::model_prices(&ctx.model));
+        // Реальная стоимость (×1.0, до наценки). 0, если usage нет — count_tokens/models/любой 200
+        // без usage/обрыв до message_start. ВАЖНО: даже при 0 нельзя просто выйти — иначе hold висел
+        // бы в reserved_nano до рестарта (тихая утечка баланса клиента на штатном count_tokens).
+        let real = if usage.is_zero() { 0 } else {
+            metering::cost_nanodollars(&usage, &metering::model_prices(&ctx.model))
+        };
 
-        // 1) ВСЕГДА: расход подписки → пул (калибровка ёмкости окна + живая утилизация)
-        ctx.pool.record_spend(&ctx.email, real);
+        // расход в пул только когда он реально был (0 калибровку не двигает)
+        if real > 0 { ctx.pool.record_spend(&ctx.email, real); }
 
-        // 2) ОПЦИОНАЛЬНО: закрыть резерв метерного ключа фактической стоимостью (real × наценка).
-        // settle возвращает hold и списывает actual — итог по паре reserve→settle = −actual.
+        // Резерв метерного ключа закрываем ВСЕГДА: actual = charge (0 при usage=0 → полный возврат
+        // hold). settle возвращает hold и списывает actual → итог по паре reserve→settle = −actual.
         if let Some(b) = ctx.bill {
-            let charge = metering::apply_multiplier(real, b.mult_bp);
+            let charge = if real > 0 { metering::apply_multiplier(real, b.mult_bp) } else { 0 };
             let charge_i64 = charge.clamp(0, i64::MAX as i128) as i64;
             let newbal = b.billing.settle(&b.key, b.hold, charge_i64);
-            // хвост ключа для лога — по символам (не байтами: срез не на границе char паникует)
-            let tail: String = {
-                let mut t: Vec<char> = b.key.chars().rev().take(4).collect();
-                t.reverse();
-                t.into_iter().collect()
-            };
-            eprintln!(
-                "💵 ключ …{tail}: −{} [{}] → баланс {}",
-                metering::nano_to_usd_string(charge),
-                if ctx.model.is_empty() { "?" } else { &ctx.model },
-                newbal.map(|b| metering::nano_to_usd_string(b as i128)).unwrap_or_else(|| "?".into()),
-            );
+            if charge_i64 > 0 {
+                // хвост ключа для лога — по символам (не байтами: срез не на границе char паникует)
+                let tail: String = {
+                    let mut t: Vec<char> = b.key.chars().rev().take(4).collect();
+                    t.reverse();
+                    t.into_iter().collect()
+                };
+                eprintln!(
+                    "💵 ключ …{tail}: −{} [{}] → баланс {}",
+                    metering::nano_to_usd_string(charge),
+                    if ctx.model.is_empty() { "?" } else { &ctx.model },
+                    newbal.map(|b| metering::nano_to_usd_string(b as i128)).unwrap_or_else(|| "?".into()),
+                );
+            }
         }
     }
 }
