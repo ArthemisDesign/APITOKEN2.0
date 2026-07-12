@@ -158,6 +158,19 @@ struct Inner {
     /// Таблица привязок сессия→персона (cache-first). Растёт по активным сессиям, ограничена
     /// `BINDINGS_CAP`; протухшие (idle > AFFINITY_TTL) вытесняются лениво при вставке.
     bindings: HashMap<u64, Binding>,
+    // Счётчики исходов route (наблюдаемость): pin = cache-hit (сессия на тёплом доме),
+    // spill = дом занят, place = новая/пере-привязка. pin/(pin+place) ≈ доля cache-hit.
+    route_pin: u64,
+    route_spill: u64,
+    route_place: u64,
+}
+
+/// Счётчики исходов роутинга сессий (для `/metrics`).
+#[derive(Clone, Default, Debug)]
+pub struct RouteStats {
+    pub pin: u64,
+    pub spill: u64,
+    pub place: u64,
 }
 
 fn is_cooling(g: &Inner, e: &str, now: i64) -> bool {
@@ -242,7 +255,10 @@ impl Pool {
     /// цифры считаются по ним; дальше — по измеренной ёмкости. 0 → дефолтные Max-20x-прайоры.
     pub fn new(subs: Vec<Sub>, util_cap: f64, prior5h: f64, prior7d: f64) -> Self {
         Pool {
-            inner: Mutex::new(Inner { subs, live: HashMap::new(), bindings: HashMap::new() }),
+            inner: Mutex::new(Inner {
+                subs, live: HashMap::new(), bindings: HashMap::new(),
+                route_pin: 0, route_spill: 0, route_place: 0,
+            }),
             util_cap,
             prior5h_usd: if prior5h > 0.0 { prior5h } else { PRIOR_CAP5H_USD },
             prior7d_usd: if prior7d > 0.0 { prior7d } else { PRIOR_CAP7D_USD },
@@ -308,9 +324,11 @@ impl Pool {
                     if let Some(b) = g.bindings.get_mut(&session) { b.last_seen = now; }
                     let busy = cooling > now || inflight_of(&g, &home) >= MAX_INFLIGHT;
                     if !busy {
-                        return g.subs.iter().find(|s| s.email == home).cloned(); // ПИН
+                        g.route_pin += 1;
+                        return g.subs.iter().find(|s| s.email == home).cloned(); // ПИН (cache-hit)
                     }
                     // временно занят → спилл ЭТОГО запроса, дом за сессией сохраняем
+                    g.route_spill += 1;
                     let ex: HashSet<String> = std::iter::once(home.clone()).collect();
                     return select_best(&g, &ex, now, cap)
                         .or_else(|| g.subs.iter().find(|s| s.email == home).cloned());
@@ -321,6 +339,7 @@ impl Pool {
 
         // новая сессия или пере-привязка → capacity-weighted placement, записать дом
         let chosen = place_best(&g, now, cap, p5, p7)?;
+        g.route_place += 1;
         if g.bindings.len() >= BINDINGS_CAP {
             let cutoff = now - AFFINITY_TTL;
             g.bindings.retain(|_, b| b.last_seen >= cutoff); // сперва протухшие
@@ -501,6 +520,22 @@ impl Pool {
     pub fn snapshot(&self) -> Vec<(Sub, Live)> {
         let g = self.inner.lock().unwrap();
         g.subs.iter().map(|s| (s.clone(), g.live.get(&s.email).cloned().unwrap_or_default())).collect()
+    }
+
+    /// Счётчики исходов роутинга (наблюдаемость `/metrics`).
+    pub fn route_stats(&self) -> RouteStats {
+        let g = self.inner.lock().unwrap();
+        RouteStats { pin: g.route_pin, spill: g.route_spill, place: g.route_place }
+    }
+
+    /// Суммарный in-flight по флоту (gauge) + число остывающих (для `/metrics`; утечку слота
+    /// сразу видно по монотонному росту in-flight при простое).
+    pub fn gauges(&self) -> (i64, usize) {
+        let g = self.inner.lock().unwrap();
+        let now = now();
+        let inflight: i64 = g.live.values().map(|l| l.inflight).sum();
+        let cooling = g.live.values().filter(|l| l.cooling_until > now).count();
+        (inflight, cooling)
     }
 
     /// Экспорт durable-состояния для персиста (по текущим подпискам).

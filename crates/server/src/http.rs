@@ -9,7 +9,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use axum::Router;
-use forward::{authed, client_key, forward, AppState};
+use forward::{authed, client_key, forward, AppState, Metrics};
 use serde_json::json;
 use std::net::SocketAddr;
 
@@ -22,9 +22,46 @@ pub fn router(app: AppState) -> Router {
         .route("/pool", get(pool_status))
         .route("/balance", get(balance))
         .route("/capacity", get(capacity))
+        .route("/metrics", get(metrics))
         .route("/panel", get(panel))
         .fallback(forward)
         .with_state(app)
+}
+
+/// Prometheus-метрики (admin-авторизация). Ключевое: `route_pin/place` = доля cache-hit,
+/// `inflight` (растёт при простое → утечка слота), 429/auth/5xx, состояние circuit breaker.
+async fn metrics(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if !authed(&app, &headers, &peer) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let m = &app.metrics;
+    let rs = app.pool.route_stats();
+    let (inflight, cooling) = app.pool.gauges();
+    let breaker_open = app.breaker.open_for(pool::now()).is_some() as u8;
+    let g = |c| Metrics::get(c);
+    let body = format!(
+        "# TYPE claude_api_requests_total counter\nclaude_api_requests_total {}\n\
+         # TYPE claude_api_upstream_429_total counter\nclaude_api_upstream_429_total {}\n\
+         # TYPE claude_api_upstream_auth_total counter\nclaude_api_upstream_auth_total {}\n\
+         # TYPE claude_api_upstream_5xx_total counter\nclaude_api_upstream_5xx_total {}\n\
+         # TYPE claude_api_breaker_rejects_total counter\nclaude_api_breaker_rejects_total {}\n\
+         # TYPE claude_api_exhausted_total counter\nclaude_api_exhausted_total {}\n\
+         # TYPE claude_api_route_pin_total counter\nclaude_api_route_pin_total {}\n\
+         # TYPE claude_api_route_spill_total counter\nclaude_api_route_spill_total {}\n\
+         # TYPE claude_api_route_place_total counter\nclaude_api_route_place_total {}\n\
+         # TYPE claude_api_inflight gauge\nclaude_api_inflight {}\n\
+         # TYPE claude_api_subs gauge\nclaude_api_subs {}\n\
+         # TYPE claude_api_cooling gauge\nclaude_api_cooling {}\n\
+         # TYPE claude_api_breaker_open gauge\nclaude_api_breaker_open {}\n",
+        g(&m.requests), g(&m.upstream_429), g(&m.upstream_auth), g(&m.upstream_5xx),
+        g(&m.breaker_rejects), g(&m.exhausted),
+        rs.pin, rs.spill, rs.place, inflight, app.pool.len(), cooling, breaker_open,
+    );
+    ([(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")], body).into_response()
 }
 
 /// Отдать HTML-панель (без авторизации — это только UI; данные /capacity требуют ключ,

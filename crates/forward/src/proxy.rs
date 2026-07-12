@@ -10,6 +10,7 @@
 //!   5) ответ (включая SSE-стрим) отдаём клиенту байт-в-байт.
 
 use crate::meter::{BillCtx, MeterCtx, TeeMeter};
+use crate::metrics::Metrics;
 use crate::state::AppState;
 use crate::upstream::{limits_from_headers, Limits};
 use axum::body::Body;
@@ -228,6 +229,7 @@ pub async fn forward(
                                 "insufficient balance — top up your key"),
         Authz::Admin | Authz::Metered { .. } => {}
     }
+    Metrics::inc(&app.metrics.requests);
     let method: Method = parts.method.clone();
     let pq = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
     let url = format!("{}{}", app.cfg.upstream.trim_end_matches('/'), pq);
@@ -284,6 +286,7 @@ pub async fn forward(
     // Circuit breaker разомкнут (брауноут апстрима) → быстрый отбой, НЕ веерим по всему пулу.
     // Резерв вернёт `hold_guard` на return.
     if let Some(retry) = app.breaker.open_for(pool::now()) {
+        Metrics::inc(&app.metrics.breaker_rejects);
         return err_retry(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error",
                          "upstream temporarily unavailable", retry);
     }
@@ -364,6 +367,7 @@ pub async fn forward(
         // Классификация вины (важно: НЕ студить подписку за чужую вину):
         if code == 429 {
             // квота подписки: студим до сброса окна-виновника (см. cool_secs_429)
+            Metrics::inc(&app.metrics.upstream_429);
             let secs = cool_secs_429(&resp, &lim, now);
             app.pool.mark_cooling(&sub.email, secs);
             eprintln!("↻ ротация: {} вернул 429 — cooling {}s", sub.email, secs);
@@ -372,6 +376,7 @@ pub async fn forward(
         }
         if code == 401 || code == 403 {
             // мёртвый/битый токен подписки — НЕ транзиент: длинный карантин (не 10с), ждёт refresh
+            Metrics::inc(&app.metrics.upstream_auth);
             app.pool.mark_cooling(&sub.email, AUTH_QUARANTINE);
             eprintln!("⚠ auth {} на {} — карантин {}s (нужен refresh токена)", code, sub.email, AUTH_QUARANTINE);
             last = err_response(st, "overloaded_error", &format!("upstream {code} via {}", sub.email));
@@ -380,6 +385,7 @@ pub async fn forward(
         if st.is_server_error() || code == 408 || code == 409 || code == 425 {
             // вина АПСТРИМА, не подписки: НЕ студим подписку (слот закроет guard), кормим breaker
             // максимум раз на запрос (анти-DoS от poison-запроса).
+            Metrics::inc(&app.metrics.upstream_5xx);
             if !backend_fail_recorded { app.breaker.record_fail(now); backend_fail_recorded = true; }
             eprintln!("↻ ротация: {} вернул {} — backend-fault (breaker+)", sub.email, code);
             last = err_response(st, "overloaded_error", &format!("upstream {code} via {}", sub.email));
@@ -423,6 +429,7 @@ pub async fn forward(
     if tried.is_empty() {
         last
     } else {
+        Metrics::inc(&app.metrics.exhausted);
         let retry = app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs);
         err_retry(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error",
                   "all subscriptions are rate-limited — retry shortly", retry)

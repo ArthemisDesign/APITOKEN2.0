@@ -283,6 +283,7 @@ async fn serve() -> Result<()> {
         clients: Arc::new(Clients::new(&s.proxy)),
         billing,
         breaker: Arc::new(forward::Breaker::new()),
+        metrics: Arc::new(forward::Metrics::new()),
     };
 
     // Восстановить durable-состояние пула (cooling/калибровка) — бан на дни переживает деплой;
