@@ -63,6 +63,12 @@ enum KeyOp {
     Disable { key: String },
     /// Разблокировать ключ.
     Enable { key: String },
+    /// Удалить ключ НАВСЕГДА (в отличие от disable — строка исчезает из БД).
+    Rm { key: String },
+    /// Удалить ВСЕ ключи (нужен --yes). Осторожно: балансы клиентов пропадут.
+    Clear {
+        #[arg(long)] yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -183,6 +189,11 @@ fn key_cmd(op: KeyOp) -> Result<()> {
         }
         KeyOp::Disable { key } => println!("обновлено: {}", registry::key_set_status(&conn, &key, "disabled")?),
         KeyOp::Enable { key } => println!("обновлено: {}", registry::key_set_status(&conn, &key, "active")?),
+        KeyOp::Rm { key } => println!("удалено ключей: {}", registry::key_remove(&conn, &key)?),
+        KeyOp::Clear { yes } => {
+            if !yes { println!("нужен --yes: удалит ВСЕ ключи (балансы клиентов пропадут)"); }
+            else { println!("удалено ключей: {}", registry::key_clear(&conn)?); }
+        }
     }
     Ok(())
 }

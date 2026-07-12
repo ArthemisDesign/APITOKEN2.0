@@ -356,6 +356,16 @@ pub fn key_set_status(conn: &Connection, key: &str, status: &str) -> Result<usiz
     Ok(conn.execute("UPDATE api_keys SET status=?1 WHERE key=?2", rusqlite::params![status, key])?)
 }
 
+/// Удалить ключ НАВСЕГДА (в отличие от set_status 'disabled' — строка исчезает).
+pub fn key_remove(conn: &Connection, key: &str) -> Result<usize> {
+    Ok(conn.execute("DELETE FROM api_keys WHERE key=?1", rusqlite::params![key])?)
+}
+
+/// Удалить ВСЕ ключи (для очистки/тестов). Возвращает число удалённых.
+pub fn key_clear(conn: &Connection) -> Result<usize> {
+    Ok(conn.execute("DELETE FROM api_keys", [])?)
+}
+
 /// Все ключи (для CLI-листинга; ключ маскируется на стороне вывода).
 pub fn key_list(conn: &Connection) -> Result<Vec<KeyRow>> {
     let mut stmt = conn.prepare(
