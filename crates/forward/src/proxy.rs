@@ -360,7 +360,7 @@ pub async fn forward(
                 // сетевой сбой: мог быть локальный прокси (короткий cooling подписки), а мог —
                 // общий апстрим-аутейдж (тогда фейлят все прокси → брейкер разомкнётся). Тратит бюджет.
                 app.pool.mark_cooling(&sub.email, 15);
-                if !backend_fail_recorded { app.breaker.record_fail(pool::now()); backend_fail_recorded = true; }
+                if !backend_fail_recorded { app.breaker.record_fail(pool::now(), &sub.email); backend_fail_recorded = true; }
                 eprintln!("⚠ upstream {}: {e}", sub.email); // детали (email/сеть) ТОЛЬКО в лог
                 last = err_response(StatusCode::BAD_GATEWAY, "api_error", "upstream unavailable");
                 backend_tries += 1;
@@ -411,7 +411,7 @@ pub async fn forward(
             // вина АПСТРИМА, не подписки: НЕ студим подписку (слот закроет guard), кормим breaker
             // максимум раз на запрос (анти-DoS от poison-запроса).
             Metrics::inc(&app.metrics.upstream_5xx);
-            if !backend_fail_recorded { app.breaker.record_fail(now); backend_fail_recorded = true; }
+            if !backend_fail_recorded { app.breaker.record_fail(now, &sub.email); backend_fail_recorded = true; }
             eprintln!("↻ ротация: {} вернул {} — backend-fault (breaker+)", sub.email, code);
             last = err_response(st, "overloaded_error", "upstream unavailable"); // без email клиенту
             backend_tries += 1;                                    // backend тратит бюджет (аутейдж)
