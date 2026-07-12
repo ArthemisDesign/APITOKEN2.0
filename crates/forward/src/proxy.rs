@@ -264,8 +264,9 @@ pub async fn forward(
     };
 
     // тело: один парс — вытаскиваем модель + max_tokens (для тарификации/резерва) и инжектим
-    // identity (иначе токен подписки не пустят на /v1/messages).
-    let mut body_bytes = raw.to_vec();
+    // identity (иначе токен подписки не пустят на /v1/messages). Держим `Bytes` (не Vec): clone на
+    // каждую попытку ротации тогда O(1) refcount, а не копия до BODY_LIMIT (анти-амплификация памяти).
+    let mut body_bytes: bytes::Bytes = raw.clone();
     let mut model = String::new();
     let mut max_tokens: u64 = 0;
     let mut session: Option<u64> = None; // sticky-ключ диалога (см. session_key) — для pool.pick_sticky
@@ -274,7 +275,7 @@ pub async fn forward(
         max_tokens = v.get("max_tokens").and_then(Value::as_u64).unwrap_or(0);
         session = session_key(&parts.headers, &v); // ДО инжекта — по исходному контенту клиента
         if app.cfg.inject_identity && inject_identity(&mut v, &app.cfg.identity) {
-            if let Ok(b) = serde_json::to_vec(&v) { body_bytes = b; }
+            if let Ok(b) = serde_json::to_vec(&v) { body_bytes = bytes::Bytes::from(b); }
         }
     }
 
