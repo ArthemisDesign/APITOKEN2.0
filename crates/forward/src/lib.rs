@@ -8,12 +8,14 @@
 //! и `registry` (тип Sub). НЕ читает окружение и НЕ содержит CLI/роутинг управляющих
 //! эндпоинтов — это делает крейт `server` (композиция).
 
+mod breaker;
 mod config;
 mod meter;
 mod proxy;
 mod state;
 mod upstream;
 
+pub use breaker::Breaker;
 pub use config::{ProxyConfig, CLAUDE_CODE_IDENTITY};
 pub use proxy::{authed, client_key, forward};
 pub use state::AppState;

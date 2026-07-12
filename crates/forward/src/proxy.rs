@@ -104,12 +104,28 @@ fn authorize(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> Authz {
     if authed(app, headers, peer) { Authz::Admin } else { Authz::Unauthorized }
 }
 
+/// 401/403 = мёртвый/битый OAuth-токен подписки — НЕ транзиент. Студим надолго (не 10с), чтобы не
+/// долбить забаненный аккаунт раз в 10с (ban-signal) и не жечь слот попытки. Ждёт refresh токена.
+const AUTH_QUARANTINE: i64 = 900;
+
 /// Anthropic-подобная ошибка (чтобы SDK-клиент видел привычную форму).
 fn err_response(code: StatusCode, kind: &str, msg: &str) -> Response {
     let body = serde_json::json!({"type": "error", "error": {"type": kind, "message": msg}});
     Response::builder()
         .status(code)
         .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+/// Ошибка с `Retry-After` — прозрачно для клиента (как настоящий Anthropic при перегрузе/лимите):
+/// SDK сам откатится на указанные секунды вместо слепого ретрая.
+fn err_retry(code: StatusCode, kind: &str, msg: &str, retry_after: i64) -> Response {
+    let body = serde_json::json!({"type": "error", "error": {"type": kind, "message": msg}});
+    Response::builder()
+        .status(code)
+        .header("content-type", "application/json")
+        .header("retry-after", retry_after.max(1).to_string())
         .body(Body::from(body.to_string()))
         .unwrap()
 }
@@ -220,6 +236,13 @@ pub async fn forward(
         parts.headers.get("anthropic-beta").and_then(|v| v.to_str().ok()),
         &app.cfg.default_beta);
 
+    // Circuit breaker разомкнут (брауноут апстрима) → быстрый отбой, НЕ веерим по всему пулу.
+    if let Some(retry) = app.breaker.open_for(pool::now()) {
+        release_hold(&app, reserved.take());
+        return err_retry(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error",
+                         "upstream temporarily unavailable", retry);
+    }
+
     let mut tried: HashSet<String> = HashSet::new();
     let mut last = err_response(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error",
                                "no subscriptions available in pool");
@@ -264,7 +287,10 @@ pub async fn forward(
         let resp = match rb.send().await {
             Ok(r) => r,
             Err(e) => {
+                // сетевой сбой: мог быть локальный прокси (короткий cooling подписки), а мог —
+                // общий апстрим-аутейдж (тогда фейлят все прокси → брейкер разомкнётся).
                 app.pool.mark_cooling(&sub.email, 15);
+                app.breaker.record_fail(pool::now());
                 last = err_response(StatusCode::BAD_GATEWAY, "api_error",
                                     &format!("upstream via {}: {e}", sub.email));
                 continue;
@@ -282,17 +308,33 @@ pub async fn forward(
                               lim.reset5h, lim.reset7d);
         }
 
-        let rotate = code == 429 || code == 401 || code == 403 || code == 408
-            || code == 409 || code == 425 || st.is_server_error();
-        if rotate {
-            let secs = if code == 429 {
-                cool_secs_429(&resp, &lim, pool::now())
-            } else { 10 };
+        let now = pool::now();
+        // Классификация вины (важно: НЕ студить подписку за чужую вину):
+        if code == 429 {
+            // квота подписки: студим до сброса окна-виновника (см. cool_secs_429)
+            let secs = cool_secs_429(&resp, &lim, now);
             app.pool.mark_cooling(&sub.email, secs);
-            eprintln!("↻ ротация: {} вернул {} — cooling {}s", sub.email, code, secs);
+            eprintln!("↻ ротация: {} вернул 429 — cooling {}s", sub.email, secs);
+            last = err_response(st, "overloaded_error", &format!("upstream 429 via {}", sub.email));
+            continue;
+        }
+        if code == 401 || code == 403 {
+            // мёртвый/битый токен подписки — НЕ транзиент: длинный карантин (не 10с), ждёт refresh
+            app.pool.mark_cooling(&sub.email, AUTH_QUARANTINE);
+            eprintln!("⚠ auth {} на {} — карантин {}s (нужен refresh токена)", code, sub.email, AUTH_QUARANTINE);
             last = err_response(st, "overloaded_error", &format!("upstream {code} via {}", sub.email));
             continue;
         }
+        if st.is_server_error() || code == 408 || code == 409 || code == 425 {
+            // вина АПСТРИМА, не подписки: слот освобождаем БЕЗ cooling, кормим circuit breaker
+            app.pool.mark_done(&sub.email);
+            app.breaker.record_fail(now);
+            eprintln!("↻ ротация: {} вернул {} — backend-fault (breaker+)", sub.email, code);
+            last = err_response(st, "overloaded_error", &format!("upstream {code} via {}", sub.email));
+            continue;
+        }
+        // 2xx/клиентская 4xx → апстрим здоров: сбрасываем окно фейлов брейкера
+        app.breaker.record_ok(now);
 
         // успех или клиентская ошибка запроса (одинакова на любой подписке) → отдаём как есть.
         // На УСПЕХЕ всегда меряем ответ: расход подписки → калибровка пула; для метерного ключа
@@ -322,7 +364,15 @@ pub async fn forward(
         return stream_back(st, resp, meter);
     }
     release_hold(&app, reserved.take()); // ни одна подписка не отдала успех → вернуть резерв
-    last
+    // Пробовали подписки, но все за лимитом/недоступны → прозрачный 429 + Retry-After (клиент
+    // откатится сам, как от настоящего Anthropic). Пул реально пуст → отдаём исходный 503.
+    if tried.is_empty() {
+        last
+    } else {
+        let retry = app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs);
+        err_retry(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error",
+                  "all subscriptions are rate-limited — retry shortly", retry)
+    }
 }
 
 /// Вернуть зарезервированный hold целиком (actual=0), если запрос не дошёл до тарификации.

@@ -282,6 +282,7 @@ async fn serve() -> Result<()> {
         pool: Arc::new(Pool::new(subs, s.proxy.util_cap, s.cap5h_usd, s.cap7d_usd)),
         clients: Arc::new(Clients::new(&s.proxy)),
         billing,
+        breaker: Arc::new(forward::Breaker::new()),
     };
 
     tokio::spawn(poller::reload_loop(app.clone(), s.db_path.clone(), s.fleet.clone()));

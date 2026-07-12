@@ -372,6 +372,26 @@ impl Pool {
         g.live.entry(email.to_string()).or_default().cooling_until = now() + secs.max(1);
     }
 
+    /// Освободить слот конкуррентности БЕЗ cooling — для backend-fault (5xx/timeout апстрима: вина
+    /// api.anthropic.com, а не подписки; студить подписку было бы неверно — она здорова). Парен с
+    /// `mark_used`, клампится в 0.
+    pub fn mark_done(&self, email: &str) {
+        let mut g = self.inner.lock().unwrap();
+        let l = g.live.entry(email.to_string()).or_default();
+        l.inflight = (l.inflight - 1).max(0);
+    }
+
+    /// Через сколько секунд освободится ближайшая остывающая подписка (для `Retry-After` при
+    /// исчерпании пула). None → остывающих нет.
+    pub fn soonest_ready(&self) -> Option<i64> {
+        let g = self.inner.lock().unwrap();
+        let now = now();
+        g.live.values()
+            .map(|l| l.cooling_until - now)
+            .filter(|&d| d > 0)
+            .min()
+    }
+
     /// Учесть реальный расход запроса (USD real-API, ×1.0 до наценки) — монотонно.
     /// Питает калибровку ёмкости окон и «живую» утилизацию. Вызывается из tee-метеринга forward.
     pub fn record_spend(&self, email: &str, real_nano: i128) {
