@@ -123,12 +123,23 @@ fn session_key(headers: &HeaderMap, v: &Value) -> Option<u64> {
 /// Админ-доступ: env-ключи `CLAUDE_API_KEYS`, либо loopback-пир ТОЛЬКО если `trust_loopback`
 /// (сервер реально слушает loopback). За реверс-прокси (bind 0.0.0.0) trust_loopback=false →
 /// пустые ключи означают «отклонять всё», а не «доверять любому 127.0.0.1». Без биллинга.
+/// Сравнение в константное время (по длине совпадающих строк): не выходим рано на первом различии,
+/// чтобы не давать timing-oracle на угадывание админ-ключа по байту. Длину строк не скрываем
+/// (не секрет). Без внешних зависимостей.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() { return false; }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) { diff |= x ^ y; }
+    diff == 0
+}
+
 pub fn authed(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> bool {
     if app.cfg.api_keys.is_empty() {
         return app.cfg.trust_loopback && peer.ip().is_loopback();
     }
     match client_key(headers) {
-        Some(k) => app.cfg.api_keys.iter().any(|x| x == &k),
+        // fold (не any/short-circuit): проверяем все ключи в константное время каждый.
+        Some(k) => app.cfg.api_keys.iter().fold(false, |ok, x| ok | ct_eq(x.as_bytes(), k.as_bytes())),
         None => false,
     }
 }
@@ -527,6 +538,14 @@ const BURST_COOL_SECS: i64 = 20;
 fn window_cool(lim: &Limits, now: i64) -> Option<i64> {
     let fut = |t: Option<i64>| t.filter(|x| *x > now).map(|x| (x - now).max(1));
     let (u5, u7) = (lim.util5h.unwrap_or(0.0), lim.util7d.unwrap_or(0.0));
+    // АВТОРИТЕТНО: Anthropic сам указал связывающее окно (`representative-claim`). Студим до его reset,
+    // но только если это окно реально у потолка (≥0.9) — иначе 429 = burst по rate (запросов/мин), а
+    // не исчерпание квоты, и на часы студить нельзя (упадём в burst-дефолт). "seven_day"/"five_hour".
+    if let Some(c) = lim.claim.as_deref() {
+        if c.contains("day") && u7 >= 0.9 { return fut(lim.reset7d).or_else(|| fut(lim.reset5h)); }
+        if c.contains("hour") && u5 >= 0.9 { return fut(lim.reset5h).or_else(|| fut(lim.reset7d)); }
+    }
+    // Фолбэк-эвристика, если заголовка claim нет: окно у потолка → студим до его reset.
     if u7 >= 0.95 { return fut(lim.reset7d).or_else(|| fut(lim.reset5h)); }
     if u5 >= 0.95 { return fut(lim.reset5h).or_else(|| fut(lim.reset7d)); }
     None
@@ -558,4 +577,38 @@ fn stream_back(st: StatusCode, resp: reqwest::Response, meter: Option<MeterCtx>)
     builder.body(body).unwrap_or_else(|_| {
         err_response(StatusCode::INTERNAL_SERVER_ERROR, "api_error", "response build error")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lim(u5: f64, u7: f64, claim: Option<&str>, r5: i64, r7: i64) -> Limits {
+        Limits {
+            util5h: Some(u5), util7d: Some(u7), status: None,
+            reset5h: Some(r5), reset7d: Some(r7), claim: claim.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn window_cool_prefers_authoritative_claim() {
+        let now = 1_000_000;
+        let (r5, r7) = (now + 3600, now + 100_000);
+        // claim=seven_day + 7d у потолка → студим до reset7d (не до 5h, хотя 5h тоже высок)
+        assert_eq!(window_cool(&lim(0.97, 0.96, Some("seven_day"), r5, r7), now), Some(100_000));
+        // claim=five_hour → до reset5h
+        assert_eq!(window_cool(&lim(0.97, 0.96, Some("five_hour"), r5, r7), now), Some(3600));
+        // claim есть, но окно НЕ у потолка (0.5) → burst-429 (rate), не quota → None (короткий дефолт)
+        assert_eq!(window_cool(&lim(0.5, 0.5, Some("five_hour"), r5, r7), now), None);
+        // нет claim → фолбэк-эвристика (7d≥0.95 → reset7d)
+        assert_eq!(window_cool(&lim(0.1, 0.96, None, r5, r7), now), Some(100_000));
+    }
+
+    #[test]
+    fn ct_eq_is_correct() {
+        assert!(ct_eq(b"secret-key", b"secret-key"));
+        assert!(!ct_eq(b"secret-key", b"secret-keX"));
+        assert!(!ct_eq(b"short", b"longer-key")); // разная длина
+        assert!(ct_eq(b"", b""));
+    }
 }

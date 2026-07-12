@@ -150,6 +150,10 @@ pub struct Limits {
     pub status: Option<String>,
     pub reset5h: Option<i64>,
     pub reset7d: Option<i64>,
+    /// Какое окно Anthropic считает СВЯЗЫВАЮЩИМ прямо сейчас (`representative-claim`: "five_hour" |
+    /// "seven_day"). Авторитетный источник для атрибуции 429-cooling нужному окну — вместо догадки
+    /// «util≥0.95». Подтверждено живым заголовком (`unified-representative-claim: five_hour`).
+    pub claim: Option<String>,
 }
 
 /// Разобрать unified-ratelimit из заголовков ответа.
@@ -161,6 +165,8 @@ pub fn limits_from_headers(h: &reqwest::header::HeaderMap) -> Limits {
             .and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
         reset5h: reset_ts(h, "anthropic-ratelimit-unified-5h-reset"),
         reset7d: reset_ts(h, "anthropic-ratelimit-unified-7d-reset"),
+        claim: h.get("anthropic-ratelimit-unified-representative-claim")
+            .and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
     }
 }
 
