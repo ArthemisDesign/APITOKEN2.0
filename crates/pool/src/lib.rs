@@ -9,11 +9,22 @@
 
 use registry::Sub;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// Rendezvous/HRW-вес пары (сессия, подписка). «Домашняя» подписка сессии = максимальный вес.
+/// Свойство HRW: при добавлении/выбытии подписки перекладывается лишь доля сессий выбывшей, а не
+/// весь маппинг — диалоги держатся своих аккаунтов даже при изменении флота (в отличие от `hash%N`).
+fn hrw(session: u64, email: &str) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    session.hash(&mut h);
+    email.hash(&mut h);
+    h.finish()
 }
 
 // ── Калибровка ёмкости окон (USD real-API за полное окно) ────────────────────
@@ -201,6 +212,34 @@ impl Pool {
                 .then(lru(ea).cmp(&lru(eb)))
         });
         pool.first().map(|s| (***s).clone())
+    }
+
+    /// Sticky-выбор по сессии (HRW-хэш): консистентно отдаёт **одну и ту же** живую подписку для
+    /// диалога — так вся история садится на один аккаунт → prompt-cache hit (повторный префикс
+    /// стоит ~10%) и трафик аккаунта выглядит как один связный юзер, а не веер чужих запросов.
+    ///
+    /// Возвращает подписку ТОЛЬКО если она здорова (не в `exclude`, не cooling, окна под потолком);
+    /// иначе `None` — и вызывающий падает на обычный load-based [`pick`]. Аффинити — предпочтение,
+    /// не жёсткая привязка: под давлением (домашняя горячая/остывает) диалог переливается на пул,
+    /// а как только дом освободится — снова липнет к нему (HRW детерминирован). Пул не зависает.
+    pub fn pick_sticky(&self, session: u64, exclude: &HashSet<String>, allow_full: bool) -> Option<Sub> {
+        let g = self.inner.lock().unwrap();
+        let now = now();
+        let cap = if allow_full { 1.0 } else { self.util_cap };
+        let cool = |e: &str| g.live.get(e).map(|l| l.cooling_until > now).unwrap_or(false);
+        // та же «эффективная» утилизация с учётом сброса окна, что и в pick
+        let eff = |e: &str, w: u8| g.live.get(e).map(|l| {
+            let (util, reset) = if w == 7 { (l.util7d, l.reset7d) } else { (l.util5h, l.reset5h) };
+            if reset != 0 && now >= reset { 0.0 } else { util }
+        }).unwrap_or(0.0);
+        // среди ЗДОРОВЫХ кандидатов берём с максимальным HRW-весом → детерминированный «дом» сессии.
+        // Дом горячий/остыл → выпадает из фильтра, HRW сам выберет стабильный «запасной дом»
+        // (тоже детерминированно), сохраняя частичную локальность кэша на резервном аккаунте.
+        g.subs.iter()
+            .filter(|s| !exclude.contains(&s.email) && !cool(&s.email)
+                        && eff(&s.email, 7) < cap && eff(&s.email, 5) < cap)
+            .max_by_key(|s| hrw(session, &s.email))
+            .cloned()
     }
 
     /// Взяли подписку в работу (pick): отметить время и +1 в in-flight.
@@ -434,6 +473,37 @@ mod tests {
         p.record_spend("a", 10 * 1_000_000_000);
         let after = p.capacity()[0].rem5h_usd;
         assert!((before - after - 10.0).abs() < 0.5, "before={before} after={after}");
+    }
+
+    /// Sticky: одна сессия консистентно попадает на одну «домашнюю» подписку, пока та жива.
+    #[test]
+    fn sticky_is_consistent_per_session() {
+        let p = pool(&["a", "b", "c", "d"]);
+        for e in ["a", "b", "c", "d"] { p.set_util(e, Some(0.1), Some(0.1), None, None, None); }
+        let s = 123456789u64;
+        let home = p.pick_sticky(s, &none(), false).unwrap().email;
+        for _ in 0..10 { assert_eq!(p.pick_sticky(s, &none(), false).unwrap().email, home); }
+    }
+
+    /// Sticky под давлением: домашняя cooling → None (вызывающий уходит на load-based pick).
+    #[test]
+    fn sticky_yields_when_home_unavailable() {
+        let p = pool(&["a"]);
+        p.set_util("a", Some(0.1), Some(0.1), None, None, None);
+        let s = 42u64;
+        assert!(p.pick_sticky(s, &none(), false).is_some());
+        p.mark_cooling("a", 300);
+        assert!(p.pick_sticky(s, &none(), false).is_none()); // единственная cooling → None
+    }
+
+    /// Разные сессии раскладываются по разным домам (HRW-спред → нагрузка распределена по флоту).
+    #[test]
+    fn sticky_spreads_sessions_across_fleet() {
+        let p = pool(&["a", "b", "c", "d"]);
+        for e in ["a", "b", "c", "d"] { p.set_util(e, Some(0.1), Some(0.1), None, None, None); }
+        let mut seen = HashSet::new();
+        for s in 0..200u64 { seen.insert(p.pick_sticky(s, &none(), false).unwrap().email); }
+        assert!(seen.len() >= 3, "HRW должен разложить сессии по флоту, got {}", seen.len());
     }
 
     /// До калибровки — прайор (Max 20x), помечено calibrated=false.

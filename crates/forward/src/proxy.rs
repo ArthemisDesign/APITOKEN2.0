@@ -19,6 +19,7 @@ use axum::response::Response;
 use futures_util::StreamExt;
 use serde_json::Value;
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 
 const BODY_LIMIT: usize = 64 * 1024 * 1024;
@@ -46,6 +47,19 @@ pub fn client_key(headers: &HeaderMap) -> Option<String> {
     let a = headers.get("authorization").and_then(|v| v.to_str().ok())?;
     a.strip_prefix("Bearer ").or_else(|| a.strip_prefix("bearer "))
         .map(|s| s.trim().to_string())
+}
+
+/// Стабильный идентификатор «сессии» диалога для sticky-роутинга (crate `pool`): клиентский ключ
+/// + якорь диалога. Якорь = ПЕРВОЕ сообщение (`messages[0]`) — оно не меняется от хода к ходу (диалог
+/// растёт добавлением в хвост), поэтому вся история консистентно липнет к одной подписке → prompt-cache
+/// hit + естественный паттерн одного юзера. `None` → не messages-запрос: sticky не нужен, идём load-based.
+/// Считаем ДО инжекта identity — по исходному контенту клиента, чтобы наш system-блок не влиял на якорь.
+fn session_key(headers: &HeaderMap, v: &Value) -> Option<u64> {
+    let first = v.get("messages").and_then(Value::as_array).and_then(|m| m.first())?;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    if let Some(k) = client_key(headers) { k.hash(&mut h); }
+    first.to_string().hash(&mut h);
+    Some(h.finish())
 }
 
 /// Админ-доступ (env-ключи `CLAUDE_API_KEYS` или localhost, если ключи не заданы). Без биллинга.
@@ -169,9 +183,11 @@ pub async fn forward(
     let mut body_bytes = raw.to_vec();
     let mut model = String::new();
     let mut max_tokens: u64 = 0;
+    let mut session: Option<u64> = None; // sticky-ключ диалога (см. session_key) — для pool.pick_sticky
     if let Ok(mut v) = serde_json::from_slice::<Value>(&raw) {
         model = v.get("model").and_then(Value::as_str).unwrap_or("").to_string();
         max_tokens = v.get("max_tokens").and_then(Value::as_u64).unwrap_or(0);
+        session = session_key(&parts.headers, &v); // ДО инжекта — по исходному контенту клиента
         if app.cfg.inject_identity && inject_identity(&mut v, &app.cfg.identity) {
             if let Ok(b) = serde_json::to_vec(&v) { body_bytes = b; }
         }
@@ -205,8 +221,17 @@ pub async fn forward(
     let mut last = err_response(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error",
                                "no subscriptions available in pool");
 
-    for _ in 0..app.cfg.max_tries.max(1) {
-        let sub = match app.pool.pick(&tried, false) { Some(s) => s, None => break };
+    for attempt in 0..app.cfg.max_tries.max(1) {
+        // Первая попытка — sticky «домашняя» подписка сессии (cache-affinity + естественный паттерн).
+        // Дом горячий/остывает/уже пробован → pick_sticky вернёт None и падаем на load-based pick.
+        // Ретраи (после 429 на доме) всегда идут load-based: дом уже в `tried`, ищем живую замену.
+        let sub = match session.filter(|_| attempt == 0)
+            .and_then(|s| app.pool.pick_sticky(s, &tried, false))
+            .or_else(|| app.pool.pick(&tried, false))
+        {
+            Some(s) => s,
+            None => break,
+        };
         tried.insert(sub.email.clone());
         app.pool.mark_used(&sub.email);
 

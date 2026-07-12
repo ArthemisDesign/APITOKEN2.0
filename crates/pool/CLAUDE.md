@@ -10,8 +10,17 @@
   значения утилизации через `set_util(...)`.
 
 **Что внутри:** `Pool` (Mutex-состояние + прайоры ёмкости), `Live` (util/reset/status/cooling/
-inflight + калибровка: cap5h_usd/cap7d_usd/spent_total/якоря), `pick`, `mark_used/mark_ok/
-mark_cooling`, `cool`, `set_util`, `record_spend`, `capacity`, `snapshot`.
+inflight + калибровка: cap5h_usd/cap7d_usd/spent_total/якоря), `pick`, `pick_sticky`, `mark_used/
+mark_ok/mark_cooling`, `cool`, `set_util`, `record_spend`, `capacity`, `snapshot`.
+
+**Sticky-роутинг (cache-affinity + естественный паттерн):** `pick_sticky(session, exclude, allow_full)`
+консистентно отдаёт ОДНУ «домашнюю» подписку на session-ключ через HRW/rendezvous-хэш (`hrw`), чтобы
+весь диалог садился на один аккаунт → prompt-cache hit (повторный префикс ~10% цены) и трафик
+аккаунта выглядит как один связный юзер, а не веер чужих запросов. Возвращает подписку ТОЛЬКО
+здоровую (не exclude, не cooling, окна под потолком) — иначе `None`, и `forward` падает на load-based
+`pick`. Аффинити = предпочтение, не привязка: под давлением диалог переливается на пул и снова липнет
+к дому, когда тот освободится (HRW детерминирован). HRW вместо `hash%N`: при изменении флота
+перекладывается лишь доля сессий выбывшей подписки, а не весь маппинг. session-ключ считает `forward`.
 
 **Калибровка ёмкости (USD real-API) и доступность:**
 - Anthropic НЕ даёт абсолютный размер окна — только долю (util) и reset. Абсолют вычисляем:
