@@ -92,8 +92,50 @@ fn util(h: &reqwest::header::HeaderMap, name: &str) -> Option<f64> {
     let v: f64 = h.get(name)?.to_str().ok()?.trim().parse().ok()?;
     Some(if v > 1.0 { v / 100.0 } else { v })
 }
-fn int(h: &reqwest::header::HeaderMap, name: &str) -> Option<i64> {
-    h.get(name)?.to_str().ok()?.trim().parse::<f64>().ok().map(|x| x as i64)
+/// RFC3339 → Unix epoch (сек). Поддерживает `Z` и `±HH:MM`; дробные секунды игнорируем (нужна
+/// секундная точность). Алгоритм civil→days — Howard Hinnant, без внешних зависимостей. None при
+/// любом несоответствии формату.
+fn parse_rfc3339(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() < 19 { return None; }
+    let num = |lo: usize, hi: usize| s.get(lo..hi)?.parse::<i64>().ok();
+    if b[4] != b'-' || b[7] != b'-' || !matches!(b[10], b'T' | b't' | b' ')
+        || b[13] != b':' || b[16] != b':' { return None; }
+    let (y, mo, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    let (h, mi, se) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || se > 60 {
+        return None;
+    }
+    // civil → дни от эпохи
+    let yy = y - if mo <= 2 { 1 } else { 0 };
+    let era = (if yy >= 0 { yy } else { yy - 399 }) / 400;
+    let yoe = yy - era * 400;
+    let doy = (153 * (if mo > 2 { mo - 3 } else { mo + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    let mut epoch = days * 86400 + h * 3600 + mi * 60 + se;
+    // зона: суффикс после секунд (пропускаем дробную часть)
+    let tz = s[19..].trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
+    match tz.as_bytes().first() {
+        None | Some(b'Z') | Some(b'z') => {} // UTC
+        Some(&sign @ (b'+' | b'-')) => {
+            let oh = tz.get(1..3)?.parse::<i64>().ok()?;
+            let om = tz.get(4..6).and_then(|x| x.parse::<i64>().ok()).unwrap_or(0);
+            let off = oh * 3600 + om * 60;
+            epoch += if sign == b'+' { -off } else { off };
+        }
+        _ => return None,
+    }
+    Some(epoch)
+}
+
+/// Reset-заголовок → Unix epoch (сек). Anthropic может слать его числовым epoch ИЛИ RFC3339-датой —
+/// принимаем ОБА (не гадаем формат: числовой путь пробуем первым, иначе RFC3339). Неизвестное → None
+/// → выше по стеку сработает fallback cooling, а не поедет вся математика окон.
+fn reset_ts(h: &reqwest::header::HeaderMap, name: &str) -> Option<i64> {
+    let v = h.get(name)?.to_str().ok()?.trim();
+    if let Ok(f) = v.parse::<f64>() { return Some(f as i64); }
+    parse_rfc3339(v)
 }
 
 /// Снимок лимитов из unified-заголовков (без HTTP-кода). Приходят на КАЖДЫЙ ответ
@@ -115,8 +157,8 @@ pub fn limits_from_headers(h: &reqwest::header::HeaderMap) -> Limits {
         util7d: util(h, "anthropic-ratelimit-unified-7d-utilization"),
         status: h.get("anthropic-ratelimit-unified-status")
             .and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
-        reset5h: int(h, "anthropic-ratelimit-unified-5h-reset"),
-        reset7d: int(h, "anthropic-ratelimit-unified-7d-reset"),
+        reset5h: reset_ts(h, "anthropic-ratelimit-unified-5h-reset"),
+        reset7d: reset_ts(h, "anthropic-ratelimit-unified-7d-reset"),
     }
 }
 
@@ -232,6 +274,21 @@ mod tests {
         let base = "claude-cli/2.1.195 (external, sdk-cli)";
         assert_eq!(vary_patch(base, 12345, 1), base);
         assert_eq!(vary_patch(base, 12345, 0), base);
+    }
+
+    #[test]
+    fn rfc3339_epoch_conversions() {
+        assert_eq!(parse_rfc3339("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_rfc3339("2000-01-01T00:00:00Z"), Some(946_684_800));
+        // смещение зоны сводится к тому же инстанту
+        assert_eq!(parse_rfc3339("2000-01-01T05:00:00+05:00"), Some(946_684_800));
+        assert_eq!(parse_rfc3339("1999-12-31T19:00:00-05:00"), Some(946_684_800));
+        // дробные секунды игнорируем (секундная точность)
+        assert_eq!(parse_rfc3339("2000-01-01T00:00:00.123Z"), Some(946_684_800));
+        // мусор / невалидные поля → None (сработает fallback, а не кривой epoch)
+        assert_eq!(parse_rfc3339("not-a-date"), None);
+        assert_eq!(parse_rfc3339("2000-13-01T00:00:00Z"), None);
+        assert_eq!(parse_rfc3339("2000-01-32T00:00:00Z"), None);
     }
 
     /// Разброс реально раскидывает флот по нескольким UA (не все в один).
