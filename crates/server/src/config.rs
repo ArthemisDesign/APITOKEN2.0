@@ -54,9 +54,12 @@ impl Settings {
         let db_path = ev("SUBS_DB").unwrap_or_else(|| format!("{cfg_dir}/subscriptions.db"));
         let host = ev_or("CLAUDE_API_HOST", "0.0.0.0");
         let port = ev_or("CLAUDE_API_PORT", "8787");
-        // Доверять loopback-админу только когда РЕАЛЬНО слушаем loopback (иначе за реверс-прокси
-        // все пиры видны как 127.0.0.1 → аноним-админ). Экспонированный bind требует CLAUDE_API_KEYS.
-        let trust_loopback = matches!(host.as_str(), "127.0.0.1" | "::1" | "localhost");
+        // Доверять loopback-админу — ТОЛЬКО при явном opt-in `CLAUDE_API_TRUST_LOOPBACK=1` И реальном
+        // loopback-bind. Без opt-in — false даже на loopback: закрывает footgun «за реверс-прокси
+        // (nginx→127.0.0.1) все пиры видны как 127.0.0.1 → аноним получает админ-доступ». Экспонированный
+        // bind (0.0.0.0) не доверяет loopback никогда; управляющие роуты требуют CLAUDE_API_KEYS.
+        let trust_loopback = ev("CLAUDE_API_TRUST_LOOPBACK").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false)
+            && matches!(host.as_str(), "127.0.0.1" | "::1" | "localhost");
         let api_keys = ev("CLAUDE_API_KEYS").map(|s| {
             s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
         }).unwrap_or_default();

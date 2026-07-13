@@ -135,7 +135,11 @@ pub async fn persist_loop(app: AppState, db_path: String, poke: Arc<Notify>) {
         // Синхронный SQLite → на blocking-пул (не держим async-воркер во время записи).
         let db = db_path.clone();
         let res = tokio::task::spawn_blocking(move || {
-            registry::open(&db).and_then(|conn| registry::save_pool_state(&conn, &rows))
+            registry::open(&db).and_then(|conn| {
+                registry::save_pool_state(&conn, &rows)?;
+                let _ = registry::wal_checkpoint(&conn); // страховка от роста WAL (best-effort)
+                Ok(())
+            })
         }).await;
         match res {
             Ok(Ok(())) => {}

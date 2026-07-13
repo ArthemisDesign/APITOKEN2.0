@@ -410,6 +410,9 @@ async fn serve() -> Result<()> {
         None
     };
 
+    // Poke поллера: и расписание (reload/poll_loop), и probe-по-требованию из forward (401/403 →
+    // ранний clean-probe). Создаём ДО AppState, чтобы отдать хэндл в него. Без поллера — probe не нужен.
+    let poke = std::sync::Arc::new(tokio::sync::Notify::new());
     let app = AppState {
         cfg: Arc::new(s.proxy.clone()),
         pool: Arc::new(Pool::new(subs,
@@ -420,6 +423,7 @@ async fn serve() -> Result<()> {
         breaker: Arc::new(forward::Breaker::new()),
         metrics: Arc::new(forward::Metrics::new()),
         key_limiter: Arc::new(forward::KeyLimiter::new()),
+        probe_poke: if s.proxy.poll { Some(poke.clone()) } else { None },
     };
 
     // Восстановить durable-состояние пула (cooling/калибровка) — бан на дни переживает деплой;
@@ -469,7 +473,6 @@ async fn serve() -> Result<()> {
     }
     tokio::spawn(poller::persist_loop(app.clone(), s.db_path.clone(), persist_poke));
 
-    let poke = std::sync::Arc::new(tokio::sync::Notify::new());
     tokio::spawn(poller::reload_loop(app.clone(), s.db_path.clone(), s.fleet.clone(), poke.clone()));
     // Фоновая обрезка ledger под масштаб (retention из env, деф 30д; 0 = выключено).
     if s.billing {

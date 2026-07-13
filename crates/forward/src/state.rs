@@ -23,4 +23,8 @@ pub struct AppState {
     pub metrics: Arc<Metrics>,
     /// Fair-share: счётчик одновременных запросов на клиентский ключ (кит не набивает флот).
     pub key_limiter: Arc<KeyLimiter>,
+    /// Разбудить liveness-поллер вне расписания (forward зовёт после `pool.request_probe`, когда
+    /// подписка отдала 401/403 → надо СРАЗУ рассудить чистым probe, мёртв ли токен). `None` → поллер
+    /// выключен (`CLAUDE_API_POLL=0`), тогда probe-по-требованию просто не нужен.
+    pub probe_poke: Option<Arc<tokio::sync::Notify>>,
 }

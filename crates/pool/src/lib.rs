@@ -456,6 +456,17 @@ impl Pool {
         l.last_used = now();
     }
 
+    /// Пометить подписку для НЕМЕДЛЕННОГО liveness-probe поллером (сброс `polled_ts` в 0 → `next_probe_at`
+    /// сразу due). Зовётся из forward, когда подписка отдала 401/403, а запрос успешно ушёл на ДРУГУЮ
+    /// (значит вина не запроса, а токена этой). Чистый probe поллера авторитетно рассудит: мёртвый токен
+    /// → карантин, живой (был crafted-запрос) → без вреда. Так revoked-токен перестаёт быть placement-
+    /// магнитом за ~1 цикл поллера, а НЕ за LIVENESS_INTERVAL — и БЕЗ cooling здесь (иначе crafted-запрос
+    /// студил бы флот = DoS). In-flight/cooling не трогаем.
+    pub fn request_probe(&self, email: &str) {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(l) = g.live.get_mut(email) { l.polled_ts = 0; }
+    }
+
     /// Стрим ответа завершён или оборван клиентом → освобождаем слот конкуррентности персоны.
     /// Парен с `mark_used`+`mark_healthy` (успех); вызывается из tee-метеринга forward. Клампится в 0.
     pub fn end_stream(&self, email: &str) {
@@ -966,5 +977,16 @@ mod tests {
         assert!(!c.calibrated);
         assert!((c.cap7d_usd - 1500.0).abs() < 1e-6);
         assert!((c.rem7d_usd - 1500.0).abs() < 1e-6); // util 0 → весь бюджет доступен
+    }
+
+    /// request_probe сбрасывает polled_ts в 0 → подписка «созревает» для немедленного clean-probe
+    /// (revoked-токен перестаёт быть placement-магнитом за ~1 цикл поллера, а не за LIVENESS_INTERVAL).
+    #[test]
+    fn request_probe_marks_due() {
+        let p = pool(&["a"]);
+        p.set_util("a", Some(0.2), Some(0.1), None, None, None); // двигает polled_ts в now()
+        assert!(p.snapshot()[0].1.polled_ts > 0, "после set_util polled_ts свеж");
+        p.request_probe("a");
+        assert_eq!(p.snapshot()[0].1.polled_ts, 0, "request_probe → polled_ts=0 (due сейчас)");
     }
 }

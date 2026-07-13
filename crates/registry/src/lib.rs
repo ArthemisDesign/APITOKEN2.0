@@ -506,6 +506,16 @@ pub fn backup_to(conn: &Connection, out_path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Свернуть WAL в основную БД и обрезать файл (TRUNCATE). Авто-checkpoint SQLite (порог ~1000 стр.)
+/// обычно держит WAL в узде, но под НЕПРЕРЫВНОЙ записью + постоянными читателями (наш случай:
+/// reserve/settle на каждом запросе + N read-соединений) чекпоинт может откладываться и WAL растёт.
+/// Периодический явный TRUNCATE-чекпоинт держит файл ограниченным. PASSIVE не нужен — вызываем редко
+/// из persist_loop; занятость нормальна, вернём Ok даже если часть страниц осталась (не критично).
+pub fn wal_checkpoint(conn: &Connection) -> Result<()> {
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+    Ok(())
+}
+
 /// Обрезать ledger под масштаб: удалить bulk-строки списаний (`charge`) старше `older_than_ts`.
 /// Редкие финансовые события (`topup`/`adjust` — пополнения/коррекции) НЕ трогаем: их немного, а
 /// история «кто сколько занёс» важна для споров. Текущие суммы (`accounts.spent_nano`/per-key) —

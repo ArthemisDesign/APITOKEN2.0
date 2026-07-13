@@ -562,6 +562,11 @@ pub async fn forward(
             // другой нет (напр. пул из одной) или повтор — это вина запроса (scope/модель/путь) → отдаём
             // РЕАЛЬНЫЙ 401/403 Anthropic прозрачно, а НЕ маскируем в 429-исчерпание (был баг с 1 подпиской).
             if auth_tries < 2 && attempt < hard_cap && app.pool.pick(&tried, false).is_some() {
+                // Уходим на ДРУГУЮ подписку → эта, возможно, с мёртвым токеном. Просим поллер проверить
+                // её чистым probe СРАЗУ (не через LIVENESS_INTERVAL): revoked-токен перестанет быть
+                // placement-магнитом за ~1 цикл. Без cooling здесь (crafted-запрос иначе студил бы флот).
+                app.pool.request_probe(&sub.email);
+                if let Some(p) = &app.probe_poke { p.notify_one(); }
                 last = err_response(st, "overloaded_error", "upstream unavailable");
                 continue;
             }
