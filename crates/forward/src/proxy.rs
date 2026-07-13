@@ -194,6 +194,30 @@ fn err_retry(code: StatusCode, kind: &str, msg: &str, retry_after: i64) -> Respo
         .unwrap()
 }
 
+/// Точный баланс-лимит метерного ключа: сколько OUTPUT-токенов и какой hold клиент может позволить
+/// остатком баланса `bal` (client-нанодоллары, т.е. с учётом наценки). Гарантии («ни на токен/цент
+/// больше баланса»):
+///   • `None` → баланса не хватает даже на ВХОД worst-case → запрос отклоняется (иначе вход мог бы
+///     пробить баланс, ведь input тарифицируется всегда, даже при output=0);
+///   • `hold ≤ bal` (по построению + кламп) → атомарный reserve не уводит баланс в минус;
+///   • при возвращённом `eff_mt`: реальная стоимость (usage ≤ input_est токенов входа + `eff_mt`
+///     output + web_buf) ≤ hold — т.к. affordable округляем ВНИЗ и вход оценён сверху (байты ≥ токены).
+/// Anthropic, получив урезанный `max_tokens=eff_mt`, останавливает генерацию ровно на доступном
+/// токене — это и есть «отруб посреди запроса» без mid-stream-хаков.
+fn cap_to_balance(bal: i128, input_est: i128, web_buf: i128, p: &metering::Prices,
+                  mult_bp: i64, client_mt: u64) -> Option<(u64, i64)> {
+    if bal <= 0 { return None; }
+    let fixed = metering::apply_multiplier(input_est * p.cache_write_1h + web_buf, mult_bp);
+    if fixed >= bal { return None; } // не тянет даже вход worst-case
+    let out_rate = metering::apply_multiplier(p.output, mult_bp).max(1); // client-нано за output-токен
+    let affordable = ((bal - fixed) / out_rate).max(0) as u64;           // round-down = консервативно
+    if affordable == 0 { return None; }
+    let eff_mt = client_mt.min(affordable);
+    let ceiling = (eff_mt as i128) * p.output + input_est * p.cache_write_1h + web_buf;
+    let hold = metering::apply_multiplier(ceiling, mult_bp).clamp(0, bal) as i64;
+    Some((eff_mt, hold))
+}
+
 /// Инжект Claude Code identity первым system-блоком (если его там ещё нет).
 /// Первый system-блок уже несёт Claude-Code-идентичность? (billing-header/identity — как шлёт
 /// САМ Claude Code). Тогда повторно инжектить не надо — иначе получим двойную identity.
@@ -281,42 +305,55 @@ pub async fn forward(
     let mut model = String::new();
     let mut max_tokens: u64 = 0;
     let mut session: Option<u64> = None; // sticky-ключ диалога (см. session_key) — для pool.pick_sticky
-    if let Ok(mut v) = serde_json::from_slice::<Value>(&raw) {
+    let mut parsed = serde_json::from_slice::<Value>(&raw).ok();
+    let mut body_dirty = false; // тело менялось (identity/cap max_tokens) → пересобрать перед форвардом
+    let mut has_web = false;    // включён ли web_search-инструмент (иначе платных поисков быть не может)
+    if let Some(v) = parsed.as_mut() {
         model = v.get("model").and_then(Value::as_str).unwrap_or("").to_string();
         max_tokens = v.get("max_tokens").and_then(Value::as_u64).unwrap_or(0);
-        session = session_key(&parts.headers, &v); // ДО инжекта — по исходному контенту клиента
-        if app.cfg.inject_identity && inject_identity(&mut v, &app.cfg.identity) {
-            if let Ok(b) = serde_json::to_vec(&v) { body_bytes = bytes::Bytes::from(b); }
-        }
+        has_web = v.get("tools").and_then(Value::as_array).map(|ts| ts.iter().any(|t| {
+            t.get("type").and_then(Value::as_str).map(|s| s.contains("web_search")).unwrap_or(false)
+        })).unwrap_or(false);
+        session = session_key(&parts.headers, v); // ДО инжекта — по исходному контенту клиента
+        if app.cfg.inject_identity && inject_identity(v, &app.cfg.identity) { body_dirty = true; }
     }
 
-    // РЕЗЕРВ баланса метерного ключа: атомарно списываем ПОТОЛОК стоимости запроса до начала
-    // обслуживания. Устраняет гонку (конкурентные запросы не уводят баланс в минус), актуальную
-    // стоимость закрываем в finalize (settle). Потолок: max_tokens по цене output + вход по САМОЙ
-    // дорогой входной ставке (cache_write_1h) на ПОЛНЫЕ байты (токенов ≤ байт) → charge входа ≤ hold
-    // при любой корзине. web_search — мягкий буфер (число вызовов заранее неизвестно), не абсолют.
+    // БАЛАНС-ЛИМИТ метерного ключа (точный контроль: клиент не получит ни токена/цента сверх баланса).
+    // Идея: output ограничиваем ЗАРАНЕЕ — урезаем `max_tokens` под остаток баланса, и Anthropic сам
+    // отрубает генерацию ровно на доступном токене (stop_reason: max_tokens). Вход считаем по ВЕРХНЕЙ
+    // оценке (полные байты × cache_write_1h — токенов ≤ байт при любой корзине). Затем атомарно
+    // резервируем потолок при УРЕЗАННОМ max_tokens (≤ баланса), фактику закрываем settle в finalize.
     let mut reserved: Option<(String, i64)> = None;
     if let (Authz::Metered { key, mult_bp }, Some(billing)) = (&authz, &app.billing) {
+        let bal = billing.get(key).map(|r| r.balance_nano).unwrap_or(0) as i128;
         let p = metering::model_prices(&model);
-        // max_tokens от клиента клампим сверху: абсурдное значение (≫ любого лимита модели, ~128k out)
-        // иначе переполнило бы i128 в ceiling/apply_multiplier. 2M — заведомо выше реальных лимитов.
-        let mt = (if max_tokens > 0 { max_tokens.min(2_000_000) } else { 4096 }) as i128;
-        // ВЕРХНЯЯ оценка входа: ПОЛНЫЕ байты тела+identity по самой дорогой входной ставке
-        // (cache_write_1h). Токенов ВСЕГДА ≤ байт (токен = ≥1 символ = ≥1 байт), поэтому input_est=bytes
-        // по ставке cw1h покрывает charge входа при ЛЮБОЙ корзине — ВКЛЮЧАЯ 1h-cache-creation, где вход
-        // тарифицируется по cw1h. (Прежний bytes/2 покрывал cw1h-вход лишь до 0.5 ток/байт и пробивался
-        // плотным 1h-cache вводом — баланс мог уйти за резерв.)
         let input_est = ((raw.len() + app.cfg.identity.len()) as i128).max(1);
-        // web_search: число вызовов заранее НЕИЗВЕСТНО (агентный цикл) → резерв на разумный потолок (20),
-        // НЕ абсолютный предел. Overage сверх него уводит баланс чуть в минус, затем ключ блокируется
-        // (≤0) — мягкая деградация; сама тарификация остаётся ТОЧНОЙ (charge = реальный usage).
-        let web_buf = 20 * metering::WEB_SEARCH_NANO;
-        let ceiling = mt * p.output + input_est * p.cache_write_1h + web_buf;
-        let hold = metering::apply_multiplier(ceiling, *mult_bp).clamp(0, i64::MAX as i128) as i64;
+        // web_buf резервируем ТОЛЬКО если инструмент web_search реально включён (иначе платных поисков
+        // не будет) — иначе $0.20-буфер блокировал бы малобалансовым любой обычный запрос.
+        let web_buf = if has_web { 20 * metering::WEB_SEARCH_NANO } else { 0 };
+        let client_mt = if max_tokens > 0 { max_tokens.min(2_000_000) } else { 4096 };
+        let (eff_mt, hold) = match cap_to_balance(bal, input_est, web_buf, &p, *mult_bp, client_mt) {
+            Some(x) => x,
+            None => return err_response(StatusCode::PAYMENT_REQUIRED, "invalid_request_error",
+                                        "insufficient balance for this request — top up your key"),
+        };
+        // урезали под баланс → правим max_tokens в теле: Anthropic остановит генерацию ровно тут
+        if eff_mt < max_tokens {
+            if let Some(v) = parsed.as_mut() {
+                v["max_tokens"] = serde_json::json!(eff_mt);
+                body_dirty = true;
+            }
+        }
         match billing.reserve(key, hold) {
             Some(_) => reserved = Some((key.clone(), hold)),
             None => return err_response(StatusCode::PAYMENT_REQUIRED, "invalid_request_error",
                                         "insufficient balance for this request — top up your key"),
+        }
+    }
+    // Пересобираем тело ОДИН раз после всех правок (identity + возможный cap max_tokens).
+    if body_dirty {
+        if let Some(v) = &parsed {
+            if let Ok(b) = serde_json::to_vec(v) { body_bytes = bytes::Bytes::from(b); }
         }
     }
     // Гард резерва: на любом не-успешном исходе И при отмене запроса вернёт hold клиенту.
@@ -615,5 +652,33 @@ mod tests {
         assert!(!ct_eq(b"secret-key", b"secret-keX"));
         assert!(!ct_eq(b"short", b"longer-key")); // разная длина
         assert!(ct_eq(b"", b""));
+    }
+
+    #[test]
+    fn cap_to_balance_enforces_budget() {
+        let p = metering::model_prices("claude-haiku-4-5"); // input 1000, output 5000, cw1h 2000
+        let m = 10000; // наценка ×1.0 → client-нано == raw-нано (проще считать)
+        // большой баланс → НЕ режем: eff_mt == запрошенное, hold ≤ balance
+        let (eff, hold) = cap_to_balance(1_000_000_000, 100, 0, &p, m, 50).unwrap();
+        assert_eq!(eff, 50);
+        assert!((hold as i128) <= 1_000_000_000);
+        // малый баланс → output УРЕЗАН под доступное; hold ≤ balance; charge(eff) ≤ hold
+        let bal = 2_000_000i128; // $0.002
+        let (eff2, hold2) = cap_to_balance(bal, 100, 0, &p, m, 100_000).unwrap();
+        assert!(eff2 < 100_000 && eff2 > 0, "output урезан под баланс: {eff2}");
+        assert!((hold2 as i128) <= bal, "hold ≤ balance");
+        // реальная стоимость при worst-case usage (input_est токенов + eff2 output) НЕ превышает hold
+        let real_ceiling = 100 * p.cache_write_1h + (eff2 as i128) * p.output;
+        assert!(metering::apply_multiplier(real_ceiling, m) <= hold2 as i128,
+                "charge при eff_mt должен укладываться в hold");
+        // ещё один output-токен сверх eff2 УЖЕ пробил бы баланс (доказываем точность отруба)
+        let over = 100 * p.cache_write_1h + ((eff2 + 1) as i128) * p.output;
+        assert!(metering::apply_multiplier(over, m) > bal, "eff_mt+1 должен превышать баланс");
+        // баланс не тянет даже вход → None (отказ, а не отрицательный баланс)
+        assert!(cap_to_balance(100, 100_000, 0, &p, m, 10).is_none());
+        assert!(cap_to_balance(0, 10, 0, &p, m, 10).is_none());
+        // web_buf съедает бюджет только когда включён web_search: с буфером $0.20 малый баланс → None
+        let web = 20 * metering::WEB_SEARCH_NANO;
+        assert!(cap_to_balance(1_000_000, 100, web, &p, m, 10).is_none());
     }
 }
