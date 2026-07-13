@@ -74,7 +74,10 @@ impl Drop for KeyGuard {
     fn drop(&mut self) { self.limiter.release(&self.key); }
 }
 
-const BODY_LIMIT: usize = 64 * 1024 * 1024;
+// 16 МиБ: покрывает ЛЮБОЙ реальный messages-запрос (16MB ≈ 4M токенов — выше любого контекст-окна),
+// но ограничивает DoS-амплификацию (тело читается и парсится в serde_json::Value ДО резерв-гейта;
+// 64MB × конверт конкуррентности раздувало бы память в ГБ). Files/большие payload'ы мы не поддерживаем.
+const BODY_LIMIT: usize = 16 * 1024 * 1024;
 
 // Заголовки клиента, которые НЕ пробрасываем апстриму (перезаписываем или служебные).
 fn skip_req_header(name: &str) -> bool {
@@ -372,6 +375,14 @@ pub async fn forward(
         if app.cfg.inject_identity && inject_identity(v, &app.cfg.identity) { body_dirty = true; }
     }
 
+    // Circuit breaker разомкнут (брауноут апстрима) → быстрый отбой ДО резерва: в аутейдж не делаем
+    // лишних DB-записей (reserve+возврат) на каждый запрос thundering-herd. Резерва ещё нет — возвращать нечего.
+    if let Some(retry) = app.breaker.open_for(pool::now()) {
+        Metrics::inc(&app.metrics.breaker_rejects);
+        return err_retry(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error",
+                         "upstream temporarily unavailable", retry);
+    }
+
     // БАЛАНС-ЛИМИТ метерного ключа (точный контроль: клиент не получит ни токена/цента сверх баланса).
     // Идея: output ограничиваем ЗАРАНЕЕ — урезаем `max_tokens` под остаток баланса, и Anthropic сам
     // отрубает генерацию ровно на доступном токене (stop_reason: max_tokens). Вход считаем по ВЕРХНЕЙ
@@ -433,14 +444,6 @@ pub async fn forward(
     let beta = merge_beta(
         parts.headers.get("anthropic-beta").and_then(|v| v.to_str().ok()),
         &app.cfg.default_beta);
-
-    // Circuit breaker разомкнут (брауноут апстрима) → быстрый отбой, НЕ веерим по всему пулу.
-    // Резерв вернёт `hold_guard` на return.
-    if let Some(retry) = app.breaker.open_for(pool::now()) {
-        Metrics::inc(&app.metrics.breaker_rejects);
-        return err_retry(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error",
-                         "upstream temporarily unavailable", retry);
-    }
 
     let mut tried: HashSet<String> = HashSet::new();
     // Один запрос вносит в breaker максимум ОДИН backend-фейл (не `max_tries`): иначе poison-запрос
@@ -563,7 +566,11 @@ pub async fn forward(
                 continue;
             }
             app.pool.mark_healthy(&sub.email);          // повтор/нет альтернативы → вина запроса
-            return stream_back(st, resp, None);          // прозрачно отдаём реальный 401/403 клиенту
+            // НОРМАЛИЗУЕМ тело: сырой 401/403 подписочного OAuth-токена несёт «OAuth token does not meet
+            // scope requirement…» — это раскрыло бы, что backend на подписках, а не на API-ключе. Отдаём
+            // клиенту тот же КОД с generic Anthropic-shaped телом (backend скрыт, транспарентность цела).
+            let kind = if code == 403 { "permission_error" } else { "authentication_error" };
+            return err_response(st, kind, "this request is not permitted");
         }
         if st.is_server_error() || code == 408 || code == 409 || code == 425 {
             // вина АПСТРИМА, не подписки: НЕ студим подписку (слот закроет guard), кормим breaker

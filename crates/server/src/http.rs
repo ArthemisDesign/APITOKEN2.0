@@ -127,14 +127,11 @@ async fn capacity(
     })).into_response()
 }
 
-async fn health(State(app): State<AppState>) -> Json<serde_json::Value> {
-    Json(json!({
-        "ok": true,
-        "subs": app.pool.len(),
-        "upstream": app.cfg.upstream,
-        "auth": !app.cfg.api_keys.is_empty(),
-        "billing": app.billing.is_some(),
-    }))
+async fn health() -> Json<serde_json::Value> {
+    // Минимум без авторизации: голый liveness-пинг. Размер пула / upstream / статус биллинга —
+    // раскрытие backend (у api.anthropic.com нет /health, N подписок = фингерпринт) → только на
+    // авторизованных /pool и /metrics.
+    Json(json!({ "ok": true }))
 }
 
 /// Баланс по своему ключу: клиент шлёт свой x-api-key/Bearer → видит остаток в USD.

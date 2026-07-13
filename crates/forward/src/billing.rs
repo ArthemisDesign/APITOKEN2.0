@@ -26,6 +26,9 @@ enum WriteCmd {
         reply: Option<oneshot::Sender<Option<i64>>>, // None → fire-and-forget (RAII из Drop)
     },
     Topup { account_id: String, amount: i64, reference: Option<String>, reply: oneshot::Sender<Option<i64>> },
+    /// Барьер: writer FIFO → когда Flush обработан, ВСЕ прежние команды (settle) применены.
+    /// Для дренажа очереди на graceful shutdown (иначе последние списания потерялись бы).
+    Flush(oneshot::Sender<()>),
 }
 
 enum ReadCmd {
@@ -55,7 +58,14 @@ impl AsyncBilling {
                 while let Some(cmd) = wrx.blocking_recv() {
                     match cmd {
                         WriteCmd::Reserve { account_id, hold, reply } => {
-                            let _ = reply.send(registry::account_reserve(&conn, &account_id, hold).ok().flatten());
+                            let res = registry::account_reserve(&conn, &account_id, hold).ok().flatten();
+                            let committed = res.is_some();
+                            if reply.send(res).is_err() && committed {
+                                // Клиент отменил запрос ВО ВРЕМЯ reserve().await → получатель ответа
+                                // отвалился, а резерв УЖЕ закоммичен. Без рефанда hold завис бы в
+                                // reserved_nano до рестарта (замороженные деньги клиента). Возвращаем сразу.
+                                let _ = registry::account_settle(&conn, &account_id, "", hold, 0, None);
+                            }
                         }
                         WriteCmd::Settle { account_id, key, hold, actual, reference, reply } => {
                             let res = registry::account_settle(&conn, &account_id, &key, hold, actual, reference.as_deref())
@@ -66,8 +76,10 @@ impl AsyncBilling {
                             let _ = reply.send(
                                 registry::account_topup(&conn, &account_id, amount, reference.as_deref()).ok().flatten());
                         }
+                        WriteCmd::Flush(r) => { let _ = r.send(()); } // барьер обработан → очередь дренирована
                     }
                 }
+                eprintln!("⚠ billing-writer поток завершён (все sender'ы дропнуты)"); // супервизия
             })?;
         }
         // reader-пул
@@ -84,6 +96,7 @@ impl AsyncBilling {
                         ReadCmd::Totals(r) => { let _ = r.send(registry::billing_totals(&conn)); }
                     }
                 }
+                eprintln!("⚠ billing-reader-{i} поток завершён");
             })?;
             rtxs.push(rtx);
         }
@@ -142,5 +155,14 @@ impl AsyncBilling {
             account_id: account_id.into(), amount, reference: reference.map(|s| s.into()), reply: r,
         }).ok()?;
         rx.await.ok().flatten()
+    }
+    /// Дренаж очереди writer'а (барьер): ждёт, пока ВСЕ ранее поставленные команды (в т.ч.
+    /// fire-and-forget `settle_detached`) применятся. Вызывать на graceful shutdown ПОСЛЕ дренажа
+    /// стримов — тогда их финальные списания не потеряются при выходе процесса.
+    pub async fn flush(&self) {
+        let (r, rx) = oneshot::channel();
+        if self.writer.send(WriteCmd::Flush(r)).is_ok() {
+            let _ = rx.await;
+        }
     }
 }

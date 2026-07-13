@@ -455,9 +455,15 @@ pub fn account_settle(conn: &Connection, id: &str, key: &str, hold_nano: i64, ac
                       reference: Option<&str>) -> Result<Option<i64>> {
     let (hold, actual) = (hold_nano.max(0), actual_nano.max(0));
     let tx = conn.unchecked_transaction()?;
+    // Возвращаем hold, но НЕ БОЛЬШЕ, чем реально числится в reserved_nano: MIN(hold, reserved).
+    // Защита от двойного settle (перекрытие деплоя: reconcile уже вернул резерв, затем прилетел
+    // settle старого инстанса) — иначе balance получил бы +hold дважды (over-credit) и reserved
+    // ушёл бы в минус. MAX(0, …) держит reserved ≥ 0. В норме (reserved≥hold) поведение прежнее.
     let bal = match tx.query_row(
-        "UPDATE accounts SET balance_nano = balance_nano + ?1 - ?2, spent_nano = spent_nano + ?2, \
-         reserved_nano = reserved_nano - ?1 WHERE id = ?3 RETURNING balance_nano",
+        "UPDATE accounts SET \
+         balance_nano = balance_nano + MIN(?1, reserved_nano) - ?2, \
+         spent_nano = spent_nano + ?2, \
+         reserved_nano = MAX(0, reserved_nano - ?1) WHERE id = ?3 RETURNING balance_nano",
         rusqlite::params![hold, actual, id], |r| r.get::<_, i64>(0)) {
         Ok(b) => Some(b),
         Err(rusqlite::Error::QueryReturnedNoRows) => None,
@@ -729,6 +735,25 @@ mod tests {
         // ledger: строка topup ($1) + строка charge ($0.10)
         let cnt: i64 = c.query_row("SELECT COUNT(*) FROM ledger WHERE account_id='a'", [], |r| r.get(0)).unwrap();
         assert_eq!(cnt, 2);
+    }
+
+    /// Двойной settle (перекрытие деплоя: reconcile уже вернул резерв, затем settle старого инстанса)
+    /// НЕ переначисляет и НЕ уводит reserved в минус — кламп MIN(hold,reserved)/MAX(0,…).
+    #[test]
+    fn double_settle_no_overcredit() {
+        let c = db();
+        acct_with_key(&c, "a", "k", 1_000_000_000, 10000); // $1
+        account_reserve(&c, "a", 400_000_000).unwrap();     // резерв $0.4 → баланс $0.6, reserved $0.4
+        // «reconcile» вернул резерв (краш до settle): руками эмулируем возврат
+        reconcile_reservations(&c).unwrap();                 // баланс $1.0, reserved 0
+        assert_eq!(account_get(&c, "a").unwrap().unwrap().balance_nano, 1_000_000_000);
+        // теперь прилетает settle СТАРОГО инстанса на тот же hold (actual $0.1)
+        account_settle(&c, "a", "k", 400_000_000, 100_000_000, None).unwrap();
+        let acc = account_get(&c, "a").unwrap().unwrap();
+        // без клампа было бы: +$0.4 (второй раз!) − $0.1 = $1.3 (over-credit) и reserved=−$0.4.
+        // с клампом: MIN(0.4, reserved=0)=0 → баланс += 0 − $0.1 = $0.9; reserved MAX(0,−0.4)=0.
+        assert_eq!(acc.balance_nano, 900_000_000, "нет over-credit: списан только actual");
+        assert_eq!(acc.reserved_nano, 0, "reserved не ушёл в минус");
     }
 
     /// release (settle с actual=0) возвращает резерв полностью, ledger-charge НЕ пишется.

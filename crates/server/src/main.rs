@@ -436,17 +436,16 @@ async fn serve() -> Result<()> {
         if s.billing {
             let lockpath = format!("{}.lock", s.db_path);
             let me = std::process::id();
-            let our_comm = std::fs::read_to_string("/proc/self/comm").unwrap_or_default();
-            let our_comm = our_comm.trim().to_string();
-            // «Живой другой инстанс» = PID из лока занят ТЕМ ЖЕ бинарём (не просто существует /proc/pid):
-            // иначе переиспользование PID чужим процессом дало бы ложный «alive» → reconcile пропущен →
-            // осиротевшие резервы застряли бы до следующего чистого рестарта. Сверяем comm и исключаем
-            // собственный PID (reuse нашего же PID при рестарте).
+            // «Живой другой инстанс» = PID из лока занят другим процессом, который РЕАЛЬНО делает `serve`
+            // (проверяем /proc/pid/cmdline на аргумент "serve", а не просто comm=claude-api). Иначе
+            // переиспользование PID нашей же CLI-командой (backup по таймеру, authbot sub add, topup)
+            // дало бы ложный «alive» → reconcile пропущен → осиротевшие резервы застряли бы до чистого
+            // рестарта. Исключаем собственный PID (reuse нашего же PID).
             let other_alive = std::fs::read_to_string(&lockpath).ok()
                 .and_then(|p| p.trim().parse::<u32>().ok())
                 .filter(|&pid| pid != me)
-                .map(|pid| std::fs::read_to_string(format!("/proc/{pid}/comm"))
-                    .map(|c| !our_comm.is_empty() && c.trim() == our_comm)
+                .map(|pid| std::fs::read(format!("/proc/{pid}/cmdline"))
+                    .map(|c| c.split(|&b| b == 0).any(|arg| arg == b"serve"))
                     .unwrap_or(false))
                 .unwrap_or(false);
             let _ = std::fs::write(&lockpath, me.to_string());
@@ -501,7 +500,12 @@ async fn serve() -> Result<()> {
     axum::serve(listener, http::router(app).into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(shutdown_signal())
         .await?;
-    eprintln!("graceful shutdown: дренаж завершён, финальный флаш состояния пула");
+    eprintln!("graceful shutdown: дренаж стримов завершён, дренирую очередь биллинга + флаш пула");
+    // Стримы дотекли → их TeeMeter/HoldGuard поставили последние settle в очередь DB-актора. Ждём,
+    // пока актор их применит (flush = FIFO-барьер), иначе выход процесса потерял бы эти списания (выручку).
+    if let Some(b) = &flush_app.billing {
+        tokio::time::timeout(std::time::Duration::from_secs(10), b.flush()).await.ok();
+    }
     match registry::open(&flush_db) {
         Ok(conn) => if let Err(e) = registry::save_pool_state(&conn, &flush_app.pool.export_state()) {
             eprintln!("⚠ финальный флаш не удался: {e}");

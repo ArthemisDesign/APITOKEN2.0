@@ -66,7 +66,7 @@ impl Clients {
     /// непрерывно проверяет соединение (в т.ч. на простое), TCP keep-alive — на уровне сокета. Мёртвое
     /// соединение (чёрная дыра) обнаруживается в момент неответа PING, а не по выжиданию таймаута.
     pub fn get(&self, proxy: &str) -> reqwest::Result<Client> {
-        if let Some(c) = self.map.lock().unwrap().get(proxy) { return Ok(c.clone()); }
+        if let Some(c) = self.map.lock().unwrap_or_else(|e| e.into_inner()).get(proxy) { return Ok(c.clone()); }
         let mut b = Client::builder()
             .connect_timeout(Duration::from_secs(self.connect_timeout))
             .user_agent(&self.user_agent)
@@ -82,7 +82,7 @@ impl Clients {
             b = b.proxy(reqwest::Proxy::all(proxy)?);
         }
         let c = b.build()?;
-        self.map.lock().unwrap().insert(proxy.to_string(), c.clone());
+        self.map.lock().unwrap_or_else(|e| e.into_inner()).insert(proxy.to_string(), c.clone());
         Ok(c)
     }
 }
