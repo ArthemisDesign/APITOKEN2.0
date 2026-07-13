@@ -285,6 +285,20 @@ fn merge_beta(client_beta: Option<&str>, default_beta: &str) -> String {
     out.join(", ")
 }
 
+/// Allowlist эндпоинтов Anthropic, работающих на квоте ПОДПИСКИ (что мы форвардим на пул):
+/// `POST /v1/messages` (метерим), `POST /v1/messages/count_tokens` и `GET /v1/models[/{id}]` (проброс
+/// без тарификации). Всё прочее (batches/files/agents/sessions/environments/skills/complete) на
+/// подписочном OAuth-токене недоступно → чистый 404 на шлюзе. Управляющие роуты (`/health` и др.)
+/// сюда НЕ доходят — их обслуживает `server` до fallback на `forward`.
+fn is_supported_endpoint(method: &Method, path: &str) -> bool {
+    match (method.as_str(), path) {
+        ("POST", "/v1/messages") | ("POST", "/v1/messages/count_tokens") => true,
+        ("GET", "/v1/models") => true,
+        ("GET", p) if p.starts_with("/v1/models/") => true,
+        _ => false,
+    }
+}
+
 pub async fn forward(
     State(app): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -299,6 +313,13 @@ pub async fn forward(
             return err_response(StatusCode::PAYMENT_REQUIRED, "invalid_request_error",
                                 "insufficient balance — top up your key"),
         Authz::Admin | Authz::Metered { .. } => {}
+    }
+    // ALLOWLIST эндпоинтов: форвардим на пул ТОЛЬКО то, что доступно на квоте ПОДПИСКИ Claude Max
+    // (messages/count_tokens/models). Batches/Files/Agents/Sessions требуют scope OAuth-токена
+    // (user:batch/developer), которого у подписки НЕТ → на них Anthropic отдаёт 403/401/404. Не роутим
+    // их на подписку (иначе застудили бы её и слили бы backend-scope в ошибке), а отдаём чистый 404.
+    if !is_supported_endpoint(&parts.method, parts.uri.path()) {
+        return err_response(StatusCode::NOT_FOUND, "not_found_error", "this endpoint is not available");
     }
     Metrics::inc(&app.metrics.requests);
     // fair-share ПО АККАУНТУ: не даём одному клиенту (профилю) набить флот бёрстом одновременных
@@ -534,11 +555,14 @@ pub async fn forward(
             Metrics::inc(&app.metrics.upstream_auth);
             auth_tries += 1;
             eprintln!("auth {} на {} (попытка {}) — НЕ студим (возможно вина запроса)", code, sub.email, auth_tries);
-            if auth_tries < 2 && attempt < hard_cap {
+            // Пробуем ДРУГУЮ подписку ТОЛЬКО если она реально есть (вдруг дохлый токен этой). Если
+            // другой нет (напр. пул из одной) или повтор — это вина запроса (scope/модель/путь) → отдаём
+            // РЕАЛЬНЫЙ 401/403 Anthropic прозрачно, а НЕ маскируем в 429-исчерпание (был баг с 1 подпиской).
+            if auth_tries < 2 && attempt < hard_cap && app.pool.pick(&tried, false).is_some() {
                 last = err_response(st, "overloaded_error", "upstream unavailable");
-                continue; // единичный 401/403 — вдруг дохлый токен: пробуем другую подписку без cooling
+                continue;
             }
-            app.pool.mark_healthy(&sub.email);          // повтор на разных подписках → вина запроса
+            app.pool.mark_healthy(&sub.email);          // повтор/нет альтернативы → вина запроса
             return stream_back(st, resp, None);          // прозрачно отдаём реальный 401/403 клиенту
         }
         if st.is_server_error() || code == 408 || code == 409 || code == 425 {
@@ -695,6 +719,24 @@ mod tests {
         assert_eq!(window_cool(&lim(0.5, 0.5, Some("five_hour"), r5, r7), now), None);
         // нет claim → фолбэк-эвристика (7d≥0.95 → reset7d)
         assert_eq!(window_cool(&lim(0.1, 0.96, None, r5, r7), now), Some(100_000));
+    }
+
+    #[test]
+    fn endpoint_allowlist() {
+        use super::Method;
+        assert!(is_supported_endpoint(&Method::POST, "/v1/messages"));
+        assert!(is_supported_endpoint(&Method::POST, "/v1/messages/count_tokens"));
+        assert!(is_supported_endpoint(&Method::GET, "/v1/models"));
+        assert!(is_supported_endpoint(&Method::GET, "/v1/models/claude-haiku-4-5"));
+        // недоступное на подписке — отклоняем
+        assert!(!is_supported_endpoint(&Method::POST, "/v1/messages/batches"));
+        assert!(!is_supported_endpoint(&Method::GET, "/v1/messages/batches"));
+        assert!(!is_supported_endpoint(&Method::POST, "/v1/files"));
+        assert!(!is_supported_endpoint(&Method::GET, "/v1/files"));
+        assert!(!is_supported_endpoint(&Method::POST, "/v1/agents"));
+        assert!(!is_supported_endpoint(&Method::POST, "/v1/complete")); // легаси
+        assert!(!is_supported_endpoint(&Method::GET, "/v1/messages")); // messages только POST
+        assert!(!is_supported_endpoint(&Method::DELETE, "/v1/models/x"));
     }
 
     #[test]
