@@ -36,7 +36,12 @@ enum Cmd {
         #[command(subcommand)]
         op: SubOp,
     },
-    /// Управление ключами клиентов (баланс в USD-эквиваленте)
+    /// Аккаунты клиентов (профиль + ЕДИНЫЙ баланс, к которому цепляются ключи)
+    Account {
+        #[command(subcommand)]
+        op: AccountOp,
+    },
+    /// Ключи клиентов (доступы к аккаунту; баланс — на аккаунте)
     Key {
         #[command(subcommand)]
         op: KeyOp,
@@ -44,18 +49,36 @@ enum Cmd {
 }
 
 #[derive(Subcommand)]
-enum KeyOp {
-    /// Выпустить ключ с балансом (USD). Без --key ключ генерится и печатается ОДИН раз.
-    Issue {
-        #[arg(long)] usd: f64,
-        /// Наценка × 10000 (900 = ×0.09). По умолчанию — из CLAUDE_API_MULT_BP.
+enum AccountOp {
+    /// Создать аккаунт (баланс 0). Печатает id. --handle — внешняя идентичность (TG id/email).
+    Create {
+        #[arg(long)] handle: Option<String>,
+        /// Наценка × 10000 (2000 = ×0.20). По умолчанию — из CLAUDE_API_MULT_BP.
         #[arg(long)] mult_bp: Option<i64>,
-        /// Задать ключ явно (иначе сгенерируется sk-pool-…).
+        /// Задать id явно (иначе сгенерируется acct_…).
+        #[arg(long)] id: Option<String>,
+    },
+    /// Пополнить баланс аккаунта на USD (можно отрицательное — коррекция). --ref — метка платежа.
+    Topup { id: String, #[arg(long)] usd: f64, #[arg(long)] r#ref: Option<String> },
+    /// Показать баланс/расход аккаунта.
+    Balance { id: String },
+    /// Список аккаунтов.
+    List,
+    /// Заблокировать/разблокировать аккаунт (все его ключи тоже перестают/начинают работать).
+    Disable { id: String },
+    Enable { id: String },
+}
+
+#[derive(Subcommand)]
+enum KeyOp {
+    /// Выпустить ключ ПОД аккаунт (баланс общий с аккаунтом). Без --key генерится и печатается ОДИН раз.
+    Issue {
+        #[arg(long)] account: String,
+        /// Имя ключа (проект/член команды) — для атрибуции расхода.
+        #[arg(long)] label: Option<String>,
         #[arg(long)] key: Option<String>,
     },
-    /// Пополнить баланс ключа на USD (можно отрицательное — коррекция).
-    Topup { key: String, #[arg(long)] usd: f64 },
-    /// Показать баланс/потрачено по ключу.
+    /// Показать ключ: аккаунт, метка, расход по ключу, баланс аккаунта.
     Balance { key: String },
     /// Список ключей (ключ маскируется).
     List,
@@ -63,9 +86,9 @@ enum KeyOp {
     Disable { key: String },
     /// Разблокировать ключ.
     Enable { key: String },
-    /// Удалить ключ НАВСЕГДА (в отличие от disable — строка исчезает из БД).
+    /// Удалить ключ НАВСЕГДА (баланс аккаунта не трогается).
     Rm { key: String },
-    /// Удалить ВСЕ ключи (нужен --yes). Осторожно: балансы клиентов пропадут.
+    /// Удалить ВСЕ ключи (нужен --yes). Балансы аккаунтов НЕ трогаются.
     Clear {
         #[arg(long)] yes: bool,
     },
@@ -114,8 +137,58 @@ async fn main() -> Result<()> {
     match cli.cmd.unwrap_or(Cmd::Serve) {
         Cmd::Serve => serve().await,
         Cmd::Sub { op } => sub_cmd(op).await,
+        Cmd::Account { op } => account_cmd(op),
         Cmd::Key { op } => key_cmd(op),
     }
+}
+
+/// Сгенерировать id аккаунта: acct_<24hex> (из /dev/urandom, как ключ).
+fn gen_account_id() -> Result<String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open("/dev/urandom").context("открыть /dev/urandom")?;
+    let mut buf = [0u8; 12];
+    f.read_exact(&mut buf).context("прочитать /dev/urandom")?;
+    let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
+    Ok(format!("acct_{hex}"))
+}
+
+fn account_cmd(op: AccountOp) -> Result<()> {
+    let s = Settings::from_env();
+    let conn = registry::open(&s.db_path)?;
+    match op {
+        AccountOp::Create { handle, mult_bp, id } => {
+            let id = match id { Some(i) => i, None => gen_account_id()? };
+            let mult = mult_bp.unwrap_or(s.mult_bp);
+            registry::account_create(&conn, &id, handle.as_deref(), mult)?;
+            println!("✓ аккаунт создан: {id}  ·  наценка ×{}  ·  handle={}",
+                mult as f64 / 10000.0, handle.as_deref().unwrap_or("—"));
+            println!("  выпустить ключ:  claude-api key issue --account {id}");
+        }
+        AccountOp::Topup { id, usd, r#ref } => {
+            match registry::account_topup(&conn, &id, usd_to_nano(usd), r#ref.as_deref())? {
+                Some(bal) => println!("✓ баланс аккаунта {id}: {}", usd_str(bal)),
+                None => println!("аккаунт не найден: {id}"),
+            }
+        }
+        AccountOp::Balance { id } => match registry::account_get(&conn, &id)? {
+            Some(a) => println!("{}\tбаланс={}\tпотрачено={}\tрезерв={}\tнаценка=×{}\tstatus={}\thandle={}",
+                a.id, usd_str(a.balance_nano), usd_str(a.spent_nano), usd_str(a.reserved_nano),
+                a.mult_bp as f64 / 10000.0, a.status, a.handle.as_deref().unwrap_or("—")),
+            None => println!("аккаунт не найден: {id}"),
+        },
+        AccountOp::List => {
+            let rows = registry::account_list(&conn)?;
+            if rows.is_empty() { println!("(аккаунтов нет) · БД: {}", s.db_path); return Ok(()); }
+            for a in rows {
+                println!("{}\tбаланс={}\tпотрачено={}\tнаценка=×{}\tstatus={}\thandle={}",
+                    a.id, usd_str(a.balance_nano), usd_str(a.spent_nano),
+                    a.mult_bp as f64 / 10000.0, a.status, a.handle.as_deref().unwrap_or("—"));
+            }
+        }
+        AccountOp::Disable { id } => println!("обновлено: {}", registry::account_set_status(&conn, &id, "disabled")?),
+        AccountOp::Enable { id } => println!("обновлено: {}", registry::account_set_status(&conn, &id, "active")?),
+    }
+    Ok(())
 }
 
 /// USD → нанодоллары (округление до ближайшего нано; f64 достаточно на этапе ВЫПУСКА,
@@ -152,39 +225,35 @@ fn key_cmd(op: KeyOp) -> Result<()> {
     let s = Settings::from_env();
     let conn = registry::open(&s.db_path)?;
     match op {
-        KeyOp::Issue { usd, mult_bp, key } => {
-            let key = match key { Some(k) => k, None => gen_key()? };
-            let mult = mult_bp.unwrap_or(s.mult_bp);
-            registry::key_issue(&conn, &key, usd_to_nano(usd), mult)?;
-            let mult_x = mult as f64 / 10000.0;
-            println!("✓ ключ выпущен: {key}");
-            println!("  баланс: {}  ·  наценка ×{mult_x}  ·  = {} реального API",
-                usd_str(usd_to_nano(usd)),
-                usd_str(usd_to_nano(usd / mult_x.max(f64::MIN_POSITIVE))));
-        }
-        KeyOp::Topup { key, usd } => {
-            match registry::key_topup(&conn, &key, usd_to_nano(usd))? {
-                Some(bal) => println!("✓ баланс: {}", usd_str(bal)),
-                None => println!("ключ не найден: {}", mask_key(&key)),
+        KeyOp::Issue { account, label, key } => {
+            // проверяем, что аккаунт есть (иначе ключ никуда не резолвится)
+            if registry::account_get(&conn, &account)?.is_none() {
+                println!("аккаунт не найден: {account} (создай: claude-api account create)"); return Ok(());
             }
+            let key = match key { Some(k) => k, None => gen_key()? };
+            registry::key_issue(&conn, &key, &account, label.as_deref())?;
+            println!("✓ ключ выпущен: {key}");
+            println!("  аккаунт: {account}  ·  метка: {}  (баланс общий с аккаунтом)",
+                label.as_deref().unwrap_or("—"));
         }
         KeyOp::Balance { key } => match registry::key_get(&conn, &key)? {
-            Some(r) => println!("{}\tбаланс={}\tпотрачено={}\tнаценка=×{}\tstatus={}",
-                mask_key(&r.key),
-                usd_str(r.balance_nano),
-                usd_str(r.spent_nano),
-                r.mult_bp as f64 / 10000.0, r.status),
+            Some(r) => {
+                let acct = r.account_id.clone().unwrap_or_default();
+                let abal = registry::account_get(&conn, &acct)?
+                    .map(|a| usd_str(a.balance_nano)).unwrap_or_else(|| "?".into());
+                println!("{}\tаккаунт={}\tметка={}\tрасход_ключа={}\tбаланс_аккаунта={}\tstatus={}",
+                    mask_key(&r.key), acct, r.label.as_deref().unwrap_or("—"),
+                    usd_str(r.spent_nano), abal, r.status);
+            }
             None => println!("ключ не найден: {}", mask_key(&key)),
         },
         KeyOp::List => {
             let rows = registry::key_list(&conn)?;
             if rows.is_empty() { println!("(ключей нет) · БД: {}", s.db_path); return Ok(()); }
             for r in rows {
-                println!("{}\tбаланс={}\tпотрачено={}\tнаценка=×{}\tstatus={}",
-                    mask_key(&r.key),
-                    usd_str(r.balance_nano),
-                    usd_str(r.spent_nano),
-                    r.mult_bp as f64 / 10000.0, r.status);
+                println!("{}\tаккаунт={}\tметка={}\tрасход_ключа={}\tstatus={}",
+                    mask_key(&r.key), r.account_id.as_deref().unwrap_or("—"),
+                    r.label.as_deref().unwrap_or("—"), usd_str(r.spent_nano), r.status);
             }
         }
         KeyOp::Disable { key } => println!("обновлено: {}", registry::key_set_status(&conn, &key, "disabled")?),

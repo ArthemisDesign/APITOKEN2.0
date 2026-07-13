@@ -46,6 +46,7 @@ impl Drop for InflightGuard {
 /// фактической стоимостью. Без гарда отмена запроса НАВСЕГДА списывала бы удержанное (деньги клиента).
 struct HoldGuard {
     billing: Option<Arc<registry::Billing>>,
+    account_id: String,
     key: String,
     hold: i64,
     armed: bool,
@@ -56,7 +57,8 @@ impl HoldGuard {
 impl Drop for HoldGuard {
     fn drop(&mut self) {
         if self.armed {
-            if let Some(b) = &self.billing { b.settle(&self.key, self.hold, 0); }
+            // возврат резерва на аккаунт (actual=0 → ledger-charge не пишется)
+            if let Some(b) = &self.billing { b.settle(&self.account_id, &self.key, self.hold, 0, None); }
         }
     }
 }
@@ -148,25 +150,26 @@ pub fn authed(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> bool {
 enum Authz {
     /// Админ (env-ключ/localhost) — без тарификации.
     Admin,
-    /// Ключ клиента с балансом — тарифицируем ответ и списываем.
-    Metered { key: String, mult_bp: i64 },
-    /// Ключ есть, но баланс ≤ 0.
+    /// Ключ клиента → АККАУНТ с балансом. Тарифицируем и списываем с БАЛАНСА АККАУНТА (общего на
+    /// все ключи юзера); `key` — для атрибуции расхода по ключу. `mult_bp` — наценка аккаунта.
+    Metered { account_id: String, key: String, mult_bp: i64 },
+    /// Ключ/аккаунт есть, но баланс ≤ 0.
     PaymentRequired,
-    /// Ключ неизвестен/заблокирован.
+    /// Ключ неизвестен/заблокирован (ключ или аккаунт).
     Unauthorized,
 }
 
-/// Приоритет: сначала биллинг-ключ (из таблицы api_keys), иначе — админ (env/localhost).
+/// Приоритет: сначала клиентский ключ (→ аккаунт из БД), иначе — админ (env/localhost).
 fn authorize(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> Authz {
     if let (Some(billing), Some(k)) = (&app.billing, client_key(headers)) {
-        if let Some(row) = billing.get(&k) {
-            if row.status != "active" {
-                return Authz::Unauthorized;
+        if let Some(a) = billing.key_auth(&k) {
+            if !a.active {
+                return Authz::Unauthorized; // ключ или аккаунт неактивен
             }
-            if row.balance_nano <= 0 {
+            if a.balance_nano <= 0 {
                 return Authz::PaymentRequired;
             }
-            return Authz::Metered { key: k, mult_bp: row.mult_bp };
+            return Authz::Metered { account_id: a.account_id, key: k, mult_bp: a.mult_bp };
         }
     }
     if authed(app, headers, peer) { Authz::Admin } else { Authz::Unauthorized }
@@ -345,9 +348,9 @@ pub async fn forward(
     // отрубает генерацию ровно на доступном токене (stop_reason: max_tokens). Вход считаем по ВЕРХНЕЙ
     // оценке (полные байты × cache_write_1h — токенов ≤ байт при любой корзине). Затем атомарно
     // резервируем потолок при УРЕЗАННОМ max_tokens (≤ баланса), фактику закрываем settle в finalize.
-    let mut reserved: Option<(String, i64)> = None;
-    if let (Authz::Metered { key, mult_bp }, Some(billing)) = (&authz, &app.billing) {
-        let bal = billing.get(key).map(|r| r.balance_nano).unwrap_or(0) as i128;
+    let mut reserved: Option<(String, String, i64)> = None; // (account_id, key, hold)
+    if let (Authz::Metered { account_id, key, mult_bp }, Some(billing)) = (&authz, &app.billing) {
+        let bal = billing.account(account_id).map(|a| a.balance_nano).unwrap_or(0) as i128;
         // РЕЗЕРВ по model_prices_RESERVE: распознанная модель → её цена; нераспознанный алиас →
         // MAX-тариф. Иначе резерв по дешёвому дефолту, а списание по (дорогой) модели ОТВЕТА пробили
         // бы hold → баланс в минус до −2×. Списание (finalize) остаётся по реальной модели ответа.
@@ -369,8 +372,9 @@ pub async fn forward(
                 body_dirty = true;
             }
         }
-        match billing.reserve(key, hold) {
-            Some(_) => reserved = Some((key.clone(), hold)),
+        // РЕЗЕРВ по АККАУНТУ (общий баланс на все ключи юзера); гонки атомарны на уровне аккаунта.
+        match billing.reserve(account_id, hold) {
+            Some(_) => reserved = Some((account_id.clone(), key.clone(), hold)),
             None => return err_response(StatusCode::PAYMENT_REQUIRED, "invalid_request_error",
                                         "insufficient balance for this request — top up your key"),
         }
@@ -378,8 +382,8 @@ pub async fn forward(
     // Гард резерва: на любом не-успешном исходе И при отмене запроса вернёт hold клиенту. Создаём
     // ДО пересборки тела — если она упадёт и мы вернёмся, Drop гарда вернёт hold (без утечки).
     // Разоружим на успехе — там hold закрывает tee-метеринг. Снимает утечку денег при disconnect.
-    let mut hold_guard = reserved.as_ref().map(|(k, h)| HoldGuard {
-        billing: app.billing.clone(), key: k.clone(), hold: *h, armed: true,
+    let mut hold_guard = reserved.as_ref().map(|(acct, k, h)| HoldGuard {
+        billing: app.billing.clone(), account_id: acct.clone(), key: k.clone(), hold: *h, armed: true,
     });
     // Пересобираем тело ОДИН раз после всех правок (identity + возможный cap max_tokens). Если правили,
     // но пересборка НЕ удалась — форвардить исходное тело НЕЛЬЗЯ: оно несёт СТАРЫЙ (большой) max_tokens
@@ -549,9 +553,10 @@ pub async fn forward(
             guard.disarm();                                   // слот переходит стриму (end_stream)
             if let Some(g) = hold_guard.as_mut() { g.disarm(); } // hold закроет tee-метеринг фактикой
             let bill = match (&authz, reserved.take()) {
-                (Authz::Metered { key, mult_bp }, Some((_, hold))) =>
+                (Authz::Metered { mult_bp, .. }, Some((acct, key, hold))) =>
                     app.billing.clone().map(|billing| BillCtx {
-                        billing, key: key.clone(), mult_bp: *mult_bp, hold,
+                        billing, account_id: acct, key, mult_bp: *mult_bp, hold,
+                        request_id: request_id_of(&resp),
                     }),
                 _ => None,
             };
@@ -592,6 +597,11 @@ fn is_event_stream(resp: &reqwest::Response) -> bool {
         .and_then(|v| v.to_str().ok())
         .map(|c| c.contains("text/event-stream"))
         .unwrap_or(false)
+}
+
+/// request-id ответа Anthropic — кладём в ledger как `ref` списания (аудит-трейл «за что списано»).
+fn request_id_of(resp: &reqwest::Response) -> Option<String> {
+    resp.headers().get("request-id").and_then(|v| v.to_str().ok()).map(|s| s.to_string())
 }
 
 /// Явный заголовок `Retry-After` (самый авторитетный хинт — Anthropic сам говорит, когда можно).

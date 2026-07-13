@@ -15,12 +15,15 @@ use std::task::{Context, Poll};
 
 type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
 
-/// Опциональное списание с ключа клиента (только для метерных ключей).
+/// Опциональное списание с АККАУНТА клиента (только для метерных ключей). Баланс общий на аккаунт;
+/// `key` — для атрибуции расхода по ключу; `request_id` — в ledger как ссылка на запрос.
 pub struct BillCtx {
     pub billing: Arc<Billing>,
+    pub account_id: String,
     pub key: String,
     pub mult_bp: i64,
     pub hold: i64, // зарезервированный при допуске потолок — закрываем его фактической стоимостью
+    pub request_id: Option<String>,
 }
 
 /// Что нужно, чтобы обработать один успешный ответ на завершении стрима. Делаем ВСЕГДА
@@ -85,7 +88,7 @@ impl TeeMeter {
         if let Some(b) = ctx.bill {
             let charge = if real > 0 { metering::apply_multiplier(real, b.mult_bp) } else { 0 };
             let charge_i64 = charge.clamp(0, i64::MAX as i128) as i64;
-            let newbal = b.billing.settle(&b.key, b.hold, charge_i64);
+            let newbal = b.billing.settle(&b.account_id, &b.key, b.hold, charge_i64, b.request_id.as_deref());
             if charge_i64 > 0 {
                 // хвост ключа для лога — по символам (не байтами: срез не на границе char паникует)
                 let tail: String = {

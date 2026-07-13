@@ -63,6 +63,36 @@ pub fn open(path: &str) -> Result<Connection> {
     )?;
     // Мягкая миграция: колонка учёта незакрытых резервов (леджер крах-безопасности).
     let _ = c.execute("ALTER TABLE api_keys ADD COLUMN reserved_nano INTEGER NOT NULL DEFAULT 0", []);
+
+    // АККАУНТЫ клиентов: ЕДИНЫЙ баланс на профиль; ключи (api_keys) — доступы к нему (1:N).
+    // Баланс/резерв/наценка живут ЗДЕСЬ, не на ключе. Ключ теперь несёт account_id + label +
+    // per-key spent (атрибуция расхода по ключу без разделения баланса).
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY, handle TEXT, \
+         balance_nano INTEGER NOT NULL DEFAULT 0, spent_nano INTEGER NOT NULL DEFAULT 0, \
+         reserved_nano INTEGER NOT NULL DEFAULT 0, mult_bp INTEGER NOT NULL DEFAULT 2000, \
+         status TEXT NOT NULL DEFAULT 'active', created_ts INTEGER, created TEXT)",
+        [],
+    )?;
+    // handle (внешняя идентичность: TG id / email) уникален, когда задан.
+    let _ = c.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS accounts_handle ON accounts(handle) WHERE handle IS NOT NULL", []);
+    let _ = c.execute("ALTER TABLE api_keys ADD COLUMN account_id TEXT", []);
+    let _ = c.execute("ALTER TABLE api_keys ADD COLUMN label TEXT", []);
+    let _ = c.execute("CREATE INDEX IF NOT EXISTS api_keys_account ON api_keys(account_id)", []);
+
+    // ЛЕДЖЕР: append-only история движений баланса (пополнения/списания/возвраты) — для точного
+    // учёта, споров и дашбордов. Текущий баланс = accounts.balance_nano; ledger — журнал КАК он менялся.
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS ledger(id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, \
+         key TEXT, kind TEXT NOT NULL, amount_nano INTEGER NOT NULL, ref TEXT, \
+         balance_after_nano INTEGER, ts INTEGER)",
+        [],
+    )?;
+    let _ = c.execute("CREATE INDEX IF NOT EXISTS ledger_acct ON ledger(account_id, id)", []);
+
+    // Миграция старой модели (key=кошелёк): ключам без account_id заводим аккаунт и переносим баланс.
+    migrate_legacy_keys(&c)?;
     // Персист волатильного состояния пула (переживание рестарта): cooling (бан на дни не должен
     // забываться при деплое) + калибровка ёмкости (дорого переучивать) + spent/util/reset.
     c.execute(
@@ -80,6 +110,31 @@ fn now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Миграция старой модели «ключ = кошелёк» → «аккаунт (баланс) + ключи (доступы)». Для каждого ключа
+/// без `account_id` (легаси) заводим отдельный аккаунт, переносим баланс/расход/наценку, линкуем ключ.
+/// Идемпотентно (INSERT OR IGNORE + фильтр по NULL). В проде ключей нет → no-op, но безопасно вообще.
+fn migrate_legacy_keys(c: &Connection) -> Result<()> {
+    let legacy: Vec<(String, i64, i64, i64, String)> = {
+        let mut stmt = c.prepare(
+            "SELECT key, balance_nano, spent_nano, mult_bp, COALESCE(status,'active') \
+             FROM api_keys WHERE account_id IS NULL")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    for (key, bal, spent, mult, status) in legacy {
+        // детерминированный id аккаунта из ключа (хвост) — миграция повторяема без дублей
+        let tail: String = key.chars().rev().take(12).collect::<String>().chars().rev().collect();
+        let acct = format!("acct_{tail}");
+        c.execute(
+            "INSERT OR IGNORE INTO accounts(id, balance_nano, spent_nano, mult_bp, status, created_ts, created) \
+             VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            rusqlite::params![acct, bal, spent, mult, status, now(), chrono_like(now())])?;
+        c.execute("UPDATE api_keys SET account_id=?1 WHERE key=?2 AND account_id IS NULL",
+                  rusqlite::params![acct, key])?;
+    }
+    Ok(())
 }
 
 fn resolve_token(inline: Option<String>, token_file: Option<String>) -> String {
@@ -235,89 +290,25 @@ pub fn list(conn: &Connection) -> Result<Vec<SubRow>> {
 // в крейте `metering`; сюда приходит уже готовая сумма списания в нано. Границы держим:
 // registry не знает про цены/токены, только про целые нанодоллары на ключе.
 
-/// Строка ключа (баланс/потрачено — в нанодолларах; mult_bp — наценка × 10000).
+/// Строка ключа. Баланс — НЕ здесь (он на аккаунте); ключ = доступ + метка + атрибуция расхода.
 #[derive(Clone, Debug)]
 pub struct KeyRow {
     pub key: String,
-    pub balance_nano: i64,
-    pub spent_nano: i64,
-    pub mult_bp: i64,
+    pub account_id: Option<String>,
+    pub label: Option<String>,
+    pub spent_nano: i64, // расход по ЭТОМУ ключу (атрибуция; баланс общий на аккаунте)
     pub status: String,
 }
 
-/// Выпустить/перевыпустить ключ с балансом (перевыпуск СБРАСЫВАЕТ баланс на новый).
-pub fn key_issue(conn: &Connection, key: &str, balance_nano: i64, mult_bp: i64) -> Result<()> {
+/// Выпустить ключ ПОД аккаунт (баланс — на аккаунте, ключ лишь ссылается). `label` — имя ключа.
+pub fn key_issue(conn: &Connection, key: &str, account_id: &str, label: Option<&str>) -> Result<()> {
     conn.execute(
-        "INSERT INTO api_keys(key, balance_nano, spent_nano, mult_bp, status, created_ts, created) \
-         VALUES(?1, ?2, 0, ?3, 'active', ?4, ?5) \
-         ON CONFLICT(key) DO UPDATE SET balance_nano=excluded.balance_nano, mult_bp=excluded.mult_bp, status='active'",
-        rusqlite::params![key, balance_nano, mult_bp, now(), chrono_like(now())],
+        "INSERT INTO api_keys(key, account_id, label, spent_nano, status, created_ts, created) \
+         VALUES(?1, ?2, ?3, 0, 'active', ?4, ?5) \
+         ON CONFLICT(key) DO UPDATE SET account_id=excluded.account_id, label=excluded.label, status='active'",
+        rusqlite::params![key, account_id, label, now(), chrono_like(now())],
     )?;
     Ok(())
-}
-
-/// Пополнить баланс (add_nano может быть отрицательным для ручной коррекции).
-/// Возвращает новый баланс или None, если ключа нет.
-pub fn key_topup(conn: &Connection, key: &str, add_nano: i64) -> Result<Option<i64>> {
-    let n = conn.execute(
-        "UPDATE api_keys SET balance_nano = balance_nano + ?1 WHERE key = ?2",
-        rusqlite::params![add_nano, key],
-    )?;
-    if n == 0 { return Ok(None); }
-    Ok(Some(conn.query_row(
-        "SELECT balance_nano FROM api_keys WHERE key=?1",
-        rusqlite::params![key], |r| r.get::<_, i64>(0))?))
-}
-
-/// Списать стоимость запроса: баланс −charge, потрачено +charge (одной атомарной командой).
-/// Возвращает новый баланс или None, если ключа нет.
-pub fn key_deduct(conn: &Connection, key: &str, charge_nano: i64) -> Result<Option<i64>> {
-    let n = conn.execute(
-        "UPDATE api_keys SET balance_nano = balance_nano - ?1, spent_nano = spent_nano + ?1 WHERE key = ?2",
-        rusqlite::params![charge_nano, key],
-    )?;
-    if n == 0 { return Ok(None); }
-    Ok(Some(conn.query_row(
-        "SELECT balance_nano FROM api_keys WHERE key=?1",
-        rusqlite::params![key], |r| r.get::<_, i64>(0))?))
-}
-
-/// АТОМАРНО зарезервировать `hold_nano` (оценку максимальной стоимости запроса), если баланс
-/// покрывает и ключ активен. Устраняет гонку: конкурентные запросы каждый вычитает свой hold →
-/// суммарно нельзя превысить баланс. Держим сумму незакрытых резервов в `reserved_nano` (леджер):
-/// при краше процесса `reconcile_reservations` на старте вернёт их в баланс. Возвращает новый баланс.
-pub fn key_reserve(conn: &Connection, key: &str, hold_nano: i64) -> Result<Option<i64>> {
-    let hold = hold_nano.max(0);
-    // ОДНО атомарное `UPDATE ... RETURNING`: списание hold и возврат нового баланса — единая операция.
-    // Раздельные UPDATE+SELECT давали окно: если SELECT падал после коммита UPDATE, баланс уже списан
-    // и reserved_nano поднят, а вызывающий получал None → 402 клиенту БЕЗ HoldGuard → осиротевший
-    // резерв до рестарта. RETURNING такого окна не оставляет: либо всё, либо ничего.
-    match conn.query_row(
-        "UPDATE api_keys SET balance_nano = balance_nano - ?1, reserved_nano = reserved_nano + ?1 \
-         WHERE key = ?2 AND status = 'active' AND balance_nano >= ?1 RETURNING balance_nano",
-        rusqlite::params![hold, key],
-        |r| r.get::<_, i64>(0),
-    ) {
-        Ok(bal) => Ok(Some(bal)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None), // не хватило баланса / ключ неактивен
-        Err(e) => Err(e.into()),
-    }
-}
-
-/// Закрыть резерв: вернуть hold и списать фактическую стоимость (`actual_nano`), потрачено +actual,
-/// снять hold с леджера незакрытых резервов. Итог по паре reserve→settle: баланс −actual, spent
-/// +actual, reserved 0. Возвращает новый баланс.
-pub fn key_settle(conn: &Connection, key: &str, hold_nano: i64, actual_nano: i64) -> Result<Option<i64>> {
-    let (hold, actual) = (hold_nano.max(0), actual_nano.max(0));
-    let n = conn.execute(
-        "UPDATE api_keys SET balance_nano = balance_nano + ?1 - ?2, spent_nano = spent_nano + ?2, \
-         reserved_nano = reserved_nano - ?1 WHERE key = ?3",
-        rusqlite::params![hold, actual, key],
-    )?;
-    if n == 0 { return Ok(None); }
-    Ok(Some(conn.query_row(
-        "SELECT balance_nano FROM api_keys WHERE key=?1",
-        rusqlite::params![key], |r| r.get::<_, i64>(0))?))
 }
 
 /// Реконсиляция незакрытых резервов на СТАРТЕ. Краш процесса между `reserve` и `settle` оставляет
@@ -326,22 +317,174 @@ pub fn key_settle(conn: &Connection, key: &str, hold_nano: i64, actual_nano: i64
 /// число ключей, которым вернули резерв. Вызывать ОДИН раз до начала обслуживания.
 pub fn reconcile_reservations(conn: &Connection) -> Result<usize> {
     Ok(conn.execute(
-        "UPDATE api_keys SET balance_nano = balance_nano + reserved_nano, reserved_nano = 0 \
+        "UPDATE accounts SET balance_nano = balance_nano + reserved_nano, reserved_nano = 0 \
          WHERE reserved_nano != 0",
         [],
     )?)
 }
 
+// ── Аккаунты (профиль клиента: ЕДИНЫЙ баланс, N ключей-доступов) ─────────────────────
+
+/// Строка аккаунта. Баланс/резерв/наценка — ЗДЕСЬ (не на ключе). `handle` — внешняя идентичность.
+#[derive(Clone, Debug)]
+pub struct AccountRow {
+    pub id: String,
+    pub handle: Option<String>,
+    pub balance_nano: i64,
+    pub spent_nano: i64,
+    pub reserved_nano: i64,
+    pub mult_bp: i64,
+    pub status: String,
+}
+
+/// Резолв ключа → аккаунт (горячий путь авторизации). Активны должны быть И ключ, И аккаунт.
+#[derive(Clone, Debug)]
+pub struct KeyAuth {
+    pub account_id: String,
+    pub mult_bp: i64,
+    pub balance_nano: i64,
+    pub active: bool, // ключ активен И аккаунт активен
+}
+
+/// Создать аккаунт. `handle` (TG id/email) опционален и уникален (когда задан).
+pub fn account_create(conn: &Connection, id: &str, handle: Option<&str>, mult_bp: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO accounts(id, handle, balance_nano, spent_nano, reserved_nano, mult_bp, status, created_ts, created) \
+         VALUES(?1, ?2, 0, 0, 0, ?3, 'active', ?4, ?5)",
+        rusqlite::params![id, handle, mult_bp, now(), chrono_like(now())])?;
+    Ok(())
+}
+
+pub fn account_get(conn: &Connection, id: &str) -> Result<Option<AccountRow>> {
+    one_account(conn, "id", id)
+}
+/// Найти аккаунт по внешней идентичности (для входа юзера из TG/web).
+pub fn account_by_handle(conn: &Connection, handle: &str) -> Result<Option<AccountRow>> {
+    one_account(conn, "handle", handle)
+}
+fn one_account(conn: &Connection, col: &str, val: &str) -> Result<Option<AccountRow>> {
+    let sql = format!(
+        "SELECT id, handle, balance_nano, spent_nano, reserved_nano, mult_bp, COALESCE(status,'active') \
+         FROM accounts WHERE {col}=?1");
+    match conn.query_row(&sql, rusqlite::params![val], |r| Ok(AccountRow {
+        id: r.get(0)?, handle: r.get(1)?, balance_nano: r.get(2)?, spent_nano: r.get(3)?,
+        reserved_nano: r.get(4)?, mult_bp: r.get(5)?, status: r.get(6)?,
+    })) {
+        Ok(a) => Ok(Some(a)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Список аккаунтов (для админ-CLI).
+pub fn account_list(conn: &Connection) -> Result<Vec<AccountRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, handle, balance_nano, spent_nano, reserved_nano, mult_bp, COALESCE(status,'active') \
+         FROM accounts ORDER BY COALESCE(created_ts,0)")?;
+    let rows = stmt.query_map([], |r| Ok(AccountRow {
+        id: r.get(0)?, handle: r.get(1)?, balance_nano: r.get(2)?, spent_nano: r.get(3)?,
+        reserved_nano: r.get(4)?, mult_bp: r.get(5)?, status: r.get(6)?,
+    }))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+pub fn account_set_status(conn: &Connection, id: &str, status: &str) -> Result<usize> {
+    Ok(conn.execute("UPDATE accounts SET status=?1 WHERE id=?2", rusqlite::params![status, id])?)
+}
+
+/// Пополнить баланс аккаунта (`amount` может быть отрицательным = коррекция) + запись в ledger.
+/// Возвращает новый баланс или None, если аккаунта нет. Атомарно (UPDATE…RETURNING + ledger).
+pub fn account_topup(conn: &Connection, id: &str, amount_nano: i64, reference: Option<&str>) -> Result<Option<i64>> {
+    let tx = conn.unchecked_transaction()?;
+    let bal = match tx.query_row(
+        "UPDATE accounts SET balance_nano = balance_nano + ?1 WHERE id = ?2 RETURNING balance_nano",
+        rusqlite::params![amount_nano, id], |r| r.get::<_, i64>(0)) {
+        Ok(b) => Some(b),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(e) => return Err(e.into()),
+    };
+    if let Some(b) = bal {
+        let kind = if amount_nano >= 0 { "topup" } else { "adjust" };
+        ledger_add(&tx, id, None, kind, amount_nano, reference, b)?;
+    }
+    tx.commit()?;
+    Ok(bal)
+}
+
+/// АТОМАРНО зарезервировать `hold` по АККАУНТУ, если баланс покрывает и аккаунт активен. Та же
+/// семантика, что была на ключе, но кошелёк — общий на профиль (все ключи юзера тратят из него).
+pub fn account_reserve(conn: &Connection, id: &str, hold_nano: i64) -> Result<Option<i64>> {
+    let hold = hold_nano.max(0);
+    match conn.query_row(
+        "UPDATE accounts SET balance_nano = balance_nano - ?1, reserved_nano = reserved_nano + ?1 \
+         WHERE id = ?2 AND status = 'active' AND balance_nano >= ?1 RETURNING balance_nano",
+        rusqlite::params![hold, id], |r| r.get::<_, i64>(0)) {
+        Ok(bal) => Ok(Some(bal)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Закрыть резерв аккаунта: баланс += hold − actual, spent += actual, reserved −= hold; per-key
+/// `spent` += actual (атрибуция расхода по ключу); строка в ledger (charge). ВСЁ в ОДНОЙ транзакции.
+pub fn account_settle(conn: &Connection, id: &str, key: &str, hold_nano: i64, actual_nano: i64,
+                      reference: Option<&str>) -> Result<Option<i64>> {
+    let (hold, actual) = (hold_nano.max(0), actual_nano.max(0));
+    let tx = conn.unchecked_transaction()?;
+    let bal = match tx.query_row(
+        "UPDATE accounts SET balance_nano = balance_nano + ?1 - ?2, spent_nano = spent_nano + ?2, \
+         reserved_nano = reserved_nano - ?1 WHERE id = ?3 RETURNING balance_nano",
+        rusqlite::params![hold, actual, id], |r| r.get::<_, i64>(0)) {
+        Ok(b) => Some(b),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(e) => return Err(e.into()),
+    };
+    if let Some(b) = bal {
+        tx.execute("UPDATE api_keys SET spent_nano = spent_nano + ?1 WHERE key = ?2",
+                   rusqlite::params![actual, key])?;
+        if actual > 0 { ledger_add(&tx, id, Some(key), "charge", actual, reference, b)?; }
+    }
+    tx.commit()?;
+    Ok(bal)
+}
+
+/// Резолв ключа в аккаунт для авторизации запроса (JOIN api_keys→accounts).
+pub fn key_account(conn: &Connection, key: &str) -> Result<Option<KeyAuth>> {
+    match conn.query_row(
+        "SELECT a.id, a.mult_bp, a.balance_nano, \
+         (COALESCE(k.status,'active')='active' AND COALESCE(a.status,'active')='active') \
+         FROM api_keys k JOIN accounts a ON a.id = k.account_id WHERE k.key = ?1",
+        rusqlite::params![key],
+        |r| Ok(KeyAuth {
+            account_id: r.get(0)?, mult_bp: r.get(1)?, balance_nano: r.get(2)?,
+            active: r.get::<_, i64>(3)? != 0,
+        })) {
+        Ok(a) => Ok(Some(a)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Добавить строку в append-only ledger (журнал движений баланса).
+fn ledger_add(conn: &Connection, account_id: &str, key: Option<&str>, kind: &str,
+              amount_nano: i64, reference: Option<&str>, balance_after: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO ledger(account_id, key, kind, amount_nano, ref, balance_after_nano, ts) \
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![account_id, key, kind, amount_nano, reference, balance_after, now()])?;
+    Ok(())
+}
+
 /// Прочитать ключ (для авторизации/`/balance`).
 pub fn key_get(conn: &Connection, key: &str) -> Result<Option<KeyRow>> {
     let row = conn.query_row(
-        "SELECT key, balance_nano, spent_nano, mult_bp, COALESCE(status,'active') FROM api_keys WHERE key=?1",
+        "SELECT key, account_id, label, spent_nano, COALESCE(status,'active') FROM api_keys WHERE key=?1",
         rusqlite::params![key],
         |r| Ok(KeyRow {
             key: r.get::<_, String>(0)?,
-            balance_nano: r.get::<_, i64>(1)?,
-            spent_nano: r.get::<_, i64>(2)?,
-            mult_bp: r.get::<_, i64>(3)?,
+            account_id: r.get::<_, Option<String>>(1)?,
+            label: r.get::<_, Option<String>>(2)?,
+            spent_nano: r.get::<_, i64>(3)?,
             status: r.get::<_, String>(4)?,
         }),
     );
@@ -369,13 +512,13 @@ pub fn key_clear(conn: &Connection) -> Result<usize> {
 /// Все ключи (для CLI-листинга; ключ маскируется на стороне вывода).
 pub fn key_list(conn: &Connection) -> Result<Vec<KeyRow>> {
     let mut stmt = conn.prepare(
-        "SELECT key, balance_nano, spent_nano, mult_bp, COALESCE(status,'active') \
+        "SELECT key, account_id, label, spent_nano, COALESCE(status,'active') \
          FROM api_keys ORDER BY COALESCE(created_ts,0)")?;
     let rows = stmt.query_map([], |r| Ok(KeyRow {
         key: r.get::<_, String>(0)?,
-        balance_nano: r.get::<_, i64>(1)?,
-        spent_nano: r.get::<_, i64>(2)?,
-        mult_bp: r.get::<_, i64>(3)?,
+        account_id: r.get::<_, Option<String>>(1)?,
+        label: r.get::<_, Option<String>>(2)?,
+        spent_nano: r.get::<_, i64>(3)?,
         status: r.get::<_, String>(4)?,
     }))?;
     Ok(rows.filter_map(|x| x.ok()).collect())
@@ -452,41 +595,51 @@ impl Billing {
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
-    /// Прочитать ключ (None при ошибке/отсутствии).
+    /// Инфо о ключе (метка/аккаунт/расход по ключу; баланс — на аккаунте).
     pub fn get(&self, key: &str) -> Option<KeyRow> {
         key_get(&self.conn(), key).ok().flatten()
     }
-    /// Зарезервировать hold (атомарно). None → не хватает/не активен/нет ключа.
-    pub fn reserve(&self, key: &str, hold_nano: i64) -> Option<i64> {
-        key_reserve(&self.conn(), key, hold_nano).ok().flatten()
+    /// Резолв ключа → аккаунт (горячий путь авторизации запроса).
+    pub fn key_auth(&self, key: &str) -> Option<KeyAuth> {
+        key_account(&self.conn(), key).ok().flatten()
     }
-    /// Закрыть резерв фактической стоимостью, вернуть новый баланс.
-    pub fn settle(&self, key: &str, hold_nano: i64, actual_nano: i64) -> Option<i64> {
-        key_settle(&self.conn(), key, hold_nano, actual_nano).ok().flatten()
+    /// Аккаунт по id (для /balance, дашборда).
+    pub fn account(&self, id: &str) -> Option<AccountRow> {
+        account_get(&self.conn(), id).ok().flatten()
     }
-    /// Прямое списание (для путей без резерва). None если ключа нет/ошибка.
-    pub fn deduct(&self, key: &str, charge_nano: i64) -> Option<i64> {
-        key_deduct(&self.conn(), key, charge_nano).ok().flatten()
+    /// Зарезервировать hold по АККАУНТУ (атомарно). None → не хватает/не активен/нет аккаунта.
+    pub fn reserve(&self, account_id: &str, hold_nano: i64) -> Option<i64> {
+        account_reserve(&self.conn(), account_id, hold_nano).ok().flatten()
     }
-    /// Агрегаты по всем ключам (для наблюдаемости трат в /metrics). Авторитетно из БД одним SUM.
+    /// Закрыть резерв: баланс аккаунта += hold−actual, spent += actual, per-key spent += actual,
+    /// строка ledger. `reference` — id запроса (для журнала).
+    pub fn settle(&self, account_id: &str, key: &str, hold_nano: i64, actual_nano: i64,
+                  reference: Option<&str>) -> Option<i64> {
+        account_settle(&self.conn(), account_id, key, hold_nano, actual_nano, reference).ok().flatten()
+    }
+    /// Пополнить баланс аккаунта (+ledger). Для платёжного флоу (TG/web/крипта — любой источник).
+    pub fn topup(&self, account_id: &str, amount_nano: i64, reference: Option<&str>) -> Option<i64> {
+        account_topup(&self.conn(), account_id, amount_nano, reference).ok().flatten()
+    }
+    /// Агрегаты по всем АККАУНТАМ (для наблюдаемости трат в /metrics). Авторитетно из БД одним SUM.
     pub fn totals(&self) -> BillingTotals { billing_totals(&self.conn()) }
 }
 
-/// Агрегаты биллинга по всем клиентским ключам (нанодоллары).
+/// Агрегаты биллинга по всем аккаунтам клиентов (нанодоллары).
 #[derive(Clone, Debug, Default)]
 pub struct BillingTotals {
-    pub balance_nano: i64,   // суммарный остаток на ключах (клиентский флоат)
+    pub balance_nano: i64,   // суммарный остаток на аккаунтах (клиентский флоат)
     pub spent_nano: i64,     // суммарно списано за всё время
     pub reserved_nano: i64,  // сейчас в незакрытых резервах (in-flight холды)
-    pub active_keys: i64,    // активных метерных ключей
+    pub active_keys: i64,    // активных аккаунтов
 }
 
-/// Суммы по api_keys одним запросом (источник истины — БД). Ошибка → нули.
+/// Суммы по accounts одним запросом (источник истины — БД). Ошибка → нули.
 pub fn billing_totals(conn: &Connection) -> BillingTotals {
     conn.query_row(
         "SELECT COALESCE(SUM(balance_nano),0), COALESCE(SUM(spent_nano),0), \
          COALESCE(SUM(reserved_nano),0), COALESCE(SUM(CASE WHEN COALESCE(status,'active')='active' \
-         THEN 1 ELSE 0 END),0) FROM api_keys",
+         THEN 1 ELSE 0 END),0) FROM accounts",
         [], |r| Ok(BillingTotals {
             balance_nano: r.get(0)?, spent_nano: r.get(1)?,
             reserved_nano: r.get(2)?, active_keys: r.get(3)?,
@@ -521,68 +674,105 @@ mod tests {
         assert_eq!(got[0].calib_n, 4);
     }
 
-    /// Агрегаты трат (для /metrics): суммы баланса/потрачено/резерва и число активных ключей.
-    #[test]
-    fn billing_totals_aggregates_across_keys() {
-        let c = db();
-        key_issue(&c, "sk-1", 5_000_000_000, 10000).unwrap();  // $5
-        key_issue(&c, "sk-2", 3_000_000_000, 10000).unwrap();  // $3
-        // на sk-1: резерв $1 → списание $0.4 (settle) → баланс $4.6, spent $0.4, reserved 0
-        key_reserve(&c, "sk-1", 1_000_000_000).unwrap();
-        key_settle(&c, "sk-1", 1_000_000_000, 400_000_000).unwrap();
-        // на sk-2: висящий резерв $0.5 (in-flight)
-        key_reserve(&c, "sk-2", 500_000_000).unwrap();
-        key_set_status(&c, "sk-2", "disabled").unwrap(); // 1 активный останется (sk-1)
-        let t = billing_totals(&c);
-        assert_eq!(t.balance_nano, 4_600_000_000 + 2_500_000_000); // $4.6 + $2.5
-        assert_eq!(t.spent_nano, 400_000_000);                     // $0.4
-        assert_eq!(t.reserved_nano, 500_000_000);                  // $0.5 висит
-        assert_eq!(t.active_keys, 1);                              // sk-2 отключён
+    // хелпер: аккаунт с балансом + ключ под ним
+    fn acct_with_key(c: &Connection, acct: &str, key: &str, usd_nano: i64, mult: i64) {
+        account_create(c, acct, None, mult).unwrap();
+        account_topup(c, acct, usd_nano, Some("test")).unwrap();
+        key_issue(c, key, acct, None).unwrap();
     }
 
-    /// Реконсиляция возвращает осиротевший при краше резерв обратно в баланс (идемпотентно).
+    /// Агрегаты трат (для /metrics): суммы по аккаунтам + число активных.
+    #[test]
+    fn billing_totals_aggregates_across_accounts() {
+        let c = db();
+        acct_with_key(&c, "acct_1", "sk-1", 5_000_000_000, 10000); // $5
+        acct_with_key(&c, "acct_2", "sk-2", 3_000_000_000, 10000); // $3
+        account_reserve(&c, "acct_1", 1_000_000_000).unwrap();
+        account_settle(&c, "acct_1", "sk-1", 1_000_000_000, 400_000_000, None).unwrap(); // spent $0.4
+        account_reserve(&c, "acct_2", 500_000_000).unwrap(); // висящий резерв $0.5
+        account_set_status(&c, "acct_2", "disabled").unwrap();
+        let t = billing_totals(&c);
+        assert_eq!(t.balance_nano, 4_600_000_000 + 2_500_000_000); // $4.6 + $2.5
+        assert_eq!(t.spent_nano, 400_000_000);
+        assert_eq!(t.reserved_nano, 500_000_000);
+        assert_eq!(t.active_keys, 1); // активных аккаунтов
+    }
+
+    /// Реконсиляция возвращает осиротевший при краше резерв в баланс АККАУНТА (идемпотентно).
     #[test]
     fn reconcile_refunds_orphaned_reservations() {
         let c = db();
-        key_issue(&c, "k", 1_000_000_000, 2000).unwrap();
-        key_reserve(&c, "k", 600_000_000).unwrap(); // «краш» до settle: balance 0.40, reserved 0.60
-        assert_eq!(key_get(&c, "k").unwrap().unwrap().balance_nano, 400_000_000);
+        acct_with_key(&c, "a", "k", 1_000_000_000, 2000);
+        account_reserve(&c, "a", 600_000_000).unwrap(); // «краш» до settle: balance 0.40, reserved 0.60
+        assert_eq!(account_get(&c, "a").unwrap().unwrap().balance_nano, 400_000_000);
         assert_eq!(reconcile_reservations(&c).unwrap(), 1);
-        assert_eq!(key_get(&c, "k").unwrap().unwrap().balance_nano, 1_000_000_000); // возвращено
+        assert_eq!(account_get(&c, "a").unwrap().unwrap().balance_nano, 1_000_000_000);
         assert_eq!(reconcile_reservations(&c).unwrap(), 0); // повторно — no-op
     }
 
-    /// reserve атомарно гейтит по балансу; settle сводит пару к −actual, +actual в spent.
+    /// reserve атомарно гейтит по балансу аккаунта; settle сводит пару к −actual; per-key spent + ledger.
     #[test]
     fn reserve_gates_and_settle_nets_to_actual() {
         let c = db();
-        key_issue(&c, "k", 1_000_000_000, 2000).unwrap(); // $1.00
-        assert_eq!(key_reserve(&c, "k", 600_000_000).unwrap(), Some(400_000_000)); // резерв $0.60
-        assert_eq!(key_reserve(&c, "k", 600_000_000).unwrap(), None);              // $0.40 < $0.60 → отказ
-        // settle actual $0.10: баланс += 0.60 − 0.10 = +0.50 → $0.90, spent = $0.10
-        assert_eq!(key_settle(&c, "k", 600_000_000, 100_000_000).unwrap(), Some(900_000_000));
-        let row = key_get(&c, "k").unwrap().unwrap();
-        assert_eq!(row.balance_nano, 900_000_000);
-        assert_eq!(row.spent_nano, 100_000_000);
+        acct_with_key(&c, "a", "k", 1_000_000_000, 2000); // $1.00
+        assert_eq!(account_reserve(&c, "a", 600_000_000).unwrap(), Some(400_000_000));
+        assert_eq!(account_reserve(&c, "a", 600_000_000).unwrap(), None); // $0.40 < $0.60 → отказ
+        assert_eq!(account_settle(&c, "a", "k", 600_000_000, 100_000_000, Some("req1")).unwrap(), Some(900_000_000));
+        let acc = account_get(&c, "a").unwrap().unwrap();
+        assert_eq!(acc.balance_nano, 900_000_000);
+        assert_eq!(acc.spent_nano, 100_000_000);
+        // per-key атрибуция: spent по ключу тоже $0.10
+        assert_eq!(key_get(&c, "k").unwrap().unwrap().spent_nano, 100_000_000);
+        // ledger: строка topup ($1) + строка charge ($0.10)
+        let cnt: i64 = c.query_row("SELECT COUNT(*) FROM ledger WHERE account_id='a'", [], |r| r.get(0)).unwrap();
+        assert_eq!(cnt, 2);
     }
 
-    /// release (settle с actual=0) возвращает резерв полностью.
+    /// release (settle с actual=0) возвращает резерв полностью, ledger-charge НЕ пишется.
     #[test]
     fn reserve_release_refunds_fully() {
         let c = db();
-        key_issue(&c, "k", 500_000_000, 2000).unwrap();
-        key_reserve(&c, "k", 200_000_000).unwrap();
-        key_settle(&c, "k", 200_000_000, 0).unwrap();
-        assert_eq!(key_get(&c, "k").unwrap().unwrap().balance_nano, 500_000_000);
+        acct_with_key(&c, "a", "k", 500_000_000, 2000);
+        account_reserve(&c, "a", 200_000_000).unwrap();
+        account_settle(&c, "a", "k", 200_000_000, 0, None).unwrap();
+        assert_eq!(account_get(&c, "a").unwrap().unwrap().balance_nano, 500_000_000);
+        let charges: i64 = c.query_row("SELECT COUNT(*) FROM ledger WHERE kind='charge'", [], |r| r.get(0)).unwrap();
+        assert_eq!(charges, 0);
     }
 
-    /// заблокированный ключ не резервируется.
+    /// заблокированный аккаунт не резервируется; резолв ключа отражает активность обоих.
     #[test]
-    fn reserve_rejects_disabled_key() {
+    fn reserve_rejects_disabled_account() {
         let c = db();
-        key_issue(&c, "k", 1_000_000_000, 2000).unwrap();
-        key_set_status(&c, "k", "disabled").unwrap();
-        assert_eq!(key_reserve(&c, "k", 1).unwrap(), None);
+        acct_with_key(&c, "a", "k", 1_000_000_000, 2000);
+        assert!(key_account(&c, "k").unwrap().unwrap().active);
+        account_set_status(&c, "a", "disabled").unwrap();
+        assert_eq!(account_reserve(&c, "a", 1).unwrap(), None);
+        assert!(!key_account(&c, "k").unwrap().unwrap().active); // аккаунт неактивен → ключ тоже
+    }
+
+    /// N ключей под ОДНИМ аккаунтом тратят из ОБЩЕГО баланса (ключевая модель).
+    #[test]
+    fn multiple_keys_share_one_account_balance() {
+        let c = db();
+        account_create(&c, "team", Some("tg:123"), 2000).unwrap();
+        account_topup(&c, "team", 1_000_000_000, None).unwrap(); // $1 на команду
+        key_issue(&c, "k-alice", "team", Some("alice")).unwrap();
+        key_issue(&c, "k-bob", "team", Some("bob")).unwrap();
+        // оба ключа резолвятся в тот же аккаунт
+        assert_eq!(key_account(&c, "k-alice").unwrap().unwrap().account_id, "team");
+        assert_eq!(key_account(&c, "k-bob").unwrap().unwrap().account_id, "team");
+        // alice тратит $0.30, bob $0.20 — из общего баланса
+        account_reserve(&c, "team", 300_000_000).unwrap();
+        account_settle(&c, "team", "k-alice", 300_000_000, 300_000_000, None).unwrap();
+        account_reserve(&c, "team", 200_000_000).unwrap();
+        account_settle(&c, "team", "k-bob", 200_000_000, 200_000_000, None).unwrap();
+        assert_eq!(account_get(&c, "team").unwrap().unwrap().balance_nano, 500_000_000); // $0.50 осталось
+        // атрибуция по ключам раздельная
+        assert_eq!(key_get(&c, "k-alice").unwrap().unwrap().spent_nano, 300_000_000);
+        assert_eq!(key_get(&c, "k-bob").unwrap().unwrap().spent_nano, 200_000_000);
+        // вход по handle
+        assert_eq!(account_by_handle(&c, "tg:123").unwrap().unwrap().id, "team");
     }
 }
 
