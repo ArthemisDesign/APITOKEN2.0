@@ -7,10 +7,17 @@
 **Границы (жёстко):**
 - Зависит только от `rusqlite`, `anyhow`. Больше ни от чего.
 - НИКАКОЙ сети, HTTP, чтения env, логики выбора подписок. Только персист + CRUD + `load_active`.
-- **Биллинг ключей (таблица `api_keys`)** тоже здесь — но ТОЛЬКО хранение баланса в целых
-  нанодолларах: `key_issue/topup/deduct/get/list/set_status` + обёртка `Billing` (Mutex<Conn>
-  для запросного пути). Подсчёт стоимости (токены→нано) сюда НЕ лезет — это `metering`; registry
-  принимает готовую сумму списания. `deduct` атомарен (balance−charge, spent+charge одной командой).
+- **Биллинг: АККАУНТЫ клиентов (`accounts`) + ключи-доступы (`api_keys`) + журнал (`ledger`)** — здесь,
+  но ТОЛЬКО хранение/атомарные движения в целых нанодолларах. Модель: **баланс на АККАУНТЕ** (профиль
+  юзера), ключи (`api_keys.account_id`) — доступы к общему балансу (1:N, на проекты/команду); per-key
+  `spent_nano` — атрибуция расхода по ключу. Функции: `account_create/get/by_handle/list/set_status/rm`,
+  `account_topup` (+ledger), `account_reserve`/`account_settle` (атомарно: баланс аккаунта + per-key
+  spent + ledger-строка), `key_issue(account_id,label)/get/list/set_status/remove/clear`,
+  `key_account` (JOIN ключ→аккаунт для авторизации), обёртка `Billing` (Mutex<Conn>). Подсчёт стоимости
+  (токены→нано) сюда НЕ лезет — это `metering`; registry принимает готовую сумму. **Инвариант денег:**
+  `charge≤hold≤balance` держится на уровне АККАУНТА (reserve атомарен `WHERE balance>=hold`, settle
+  сводит пару к −actual). `ledger` — append-only история (topup/charge/adjust, ref=request-id).
+  Мягкая миграция старой модели «key=кошелёк» → аккаунт per-key (`migrate_legacy_keys`).
 - Публичный тип [`Sub`] (email/token/proxy/fleet) — контракт для `pool`/`forward`. Меняешь его —
   проверь оба потребителя.
 - **Персист состояния пула (таблица `pool_state`)** — тоже здесь: `PoolStateRow` (примитивы, registry
