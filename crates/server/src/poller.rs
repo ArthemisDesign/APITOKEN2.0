@@ -40,7 +40,12 @@ fn next_probe_at(live: &pool::Live) -> i64 {
 pub async fn reload_loop(app: AppState, db_path: String, fleet: Option<String>, poke: Arc<Notify>) {
     let mut prev: HashSet<String> = HashSet::new();
     loop {
-        match registry::open(&db_path).and_then(|c| registry::load_active(&c, fleet.as_deref())) {
+        // синхронный SQLite → на blocking-пул, чтобы не держать async-воркер (пусть и на 30с редко)
+        let (db, fl) = (db_path.clone(), fleet.clone());
+        let loaded = tokio::task::spawn_blocking(move || {
+            registry::open(&db).and_then(|c| registry::load_active(&c, fl.as_deref()))
+        }).await.unwrap_or_else(|e| Err(anyhow::anyhow!("reload task panicked: {e}")));
+        match loaded {
             Err(e) => eprintln!("⚠ reload реестра не удался (держим прежний список): {e}"),
             Ok(subs) => {
                 let cur: HashSet<String> = subs.iter().map(|s| s.email.clone()).collect();
@@ -102,12 +107,16 @@ pub async fn persist_loop(app: AppState, db_path: String, poke: Arc<Notify>) {
         }
         let rows = app.pool.export_state();
         if rows.is_empty() { continue; }
-        // durability реальна только если запись прошла — сбои НЕ глотаем (иначе бан не переживёт рестарт)
-        match registry::open(&db_path) {
-            Ok(conn) => if let Err(e) = registry::save_pool_state(&conn, &rows) {
-                eprintln!("⚠ персист состояния пула не удался: {e}");
-            },
-            Err(e) => eprintln!("⚠ персист: открыть БД не удалось: {e}"),
+        // durability реальна только если запись прошла — сбои НЕ глотаем (иначе бан не переживёт рестарт).
+        // Синхронный SQLite → на blocking-пул (не держим async-воркер во время записи).
+        let db = db_path.clone();
+        let res = tokio::task::spawn_blocking(move || {
+            registry::open(&db).and_then(|conn| registry::save_pool_state(&conn, &rows))
+        }).await;
+        match res {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("⚠ персист состояния пула не удался: {e}"),
+            Err(e) => eprintln!("⚠ персист: задача упала: {e}"),
         }
     }
 }

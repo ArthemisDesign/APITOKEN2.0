@@ -8,6 +8,7 @@
 //! и `registry` (тип Sub). НЕ читает окружение и НЕ содержит CLI/роутинг управляющих
 //! эндпоинтов — это делает крейт `server` (композиция).
 
+mod billing;
 mod breaker;
 mod config;
 mod keylimiter;
@@ -17,6 +18,7 @@ mod proxy;
 mod state;
 mod upstream;
 
+pub use billing::AsyncBilling;
 pub use breaker::Breaker;
 pub use config::{ProxyConfig, CLAUDE_CODE_IDENTITY};
 pub use keylimiter::KeyLimiter;

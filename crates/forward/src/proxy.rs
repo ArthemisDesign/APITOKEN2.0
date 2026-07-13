@@ -45,7 +45,7 @@ impl Drop for InflightGuard {
 /// hold клиенту (`settle` с actual=0). Разоружается на успехе — там hold закрывает tee-метеринг
 /// фактической стоимостью. Без гарда отмена запроса НАВСЕГДА списывала бы удержанное (деньги клиента).
 struct HoldGuard {
-    billing: Option<Arc<registry::Billing>>,
+    billing: Option<Arc<crate::billing::AsyncBilling>>,
     account_id: String,
     key: String,
     hold: i64,
@@ -57,8 +57,9 @@ impl HoldGuard {
 impl Drop for HoldGuard {
     fn drop(&mut self) {
         if self.armed {
-            // возврат резерва на аккаунт (actual=0 → ledger-charge не пишется)
-            if let Some(b) = &self.billing { b.settle(&self.account_id, &self.key, self.hold, 0, None); }
+            // возврат резерва на аккаунт (actual=0 → ledger-charge не пишется). Drop синхронен —
+            // шлём АСИНХРОННО через актор (settle_detached: mpsc::send не блокирует, не требует await).
+            if let Some(b) = &self.billing { b.settle_detached(&self.account_id, &self.key, self.hold, 0, None); }
         }
     }
 }
@@ -163,10 +164,10 @@ enum Authz {
 /// Порядок для МАСШТАБА: сначала админ (env-ключ/loopback) — проверка В ПАМЯТИ, без похода в БД
 /// (админ-трафик не грузит биллинг-мьютекс). Только если не админ — клиентский ключ → аккаунт
 /// (ОДНА DB-выборка, несёт баланс для резерва → без повторного чтения).
-fn authorize(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> Authz {
+async fn authorize(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> Authz {
     if authed(app, headers, peer) { return Authz::Admin; }
     if let (Some(billing), Some(k)) = (&app.billing, client_key(headers)) {
-        if let Some(a) = billing.key_auth(&k) {
+        if let Some(a) = billing.key_auth(&k).await {
             if !a.active {
                 return Authz::Unauthorized; // ключ или аккаунт неактивен
             }
@@ -290,7 +291,7 @@ pub async fn forward(
     req: axum::extract::Request,
 ) -> Response {
     let (parts, body) = req.into_parts();
-    let authz = authorize(&app, &parts.headers, &peer);
+    let authz = authorize(&app, &parts.headers, &peer).await;
     match authz {
         Authz::Unauthorized =>
             return err_response(StatusCode::UNAUTHORIZED, "authentication_error", "invalid api key"),
@@ -382,7 +383,7 @@ pub async fn forward(
             }
         }
         // РЕЗЕРВ по АККАУНТУ (общий баланс на все ключи юзера); гонки атомарны на уровне аккаунта.
-        match billing.reserve(account_id, hold) {
+        match billing.reserve(account_id, hold).await {
             Some(_) => reserved = Some((account_id.clone(), key.clone(), hold)),
             None => return err_response(StatusCode::PAYMENT_REQUIRED, "invalid_request_error",
                                         "insufficient balance for this request — top up your key"),

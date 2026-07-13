@@ -66,7 +66,7 @@ async fn metrics(
     // Авторитетно из БД одним SUM. Даёт «сколько клиенты потратили / держат / зарезервировано».
     let body = match &app.billing {
         Some(b) => {
-            let t = b.totals();
+            let t = b.totals().await;
             let usd = |n: i64| n as f64 / 1e9;
             format!(
                 "{body}# TYPE claude_api_client_balance_usd gauge\nclaude_api_client_balance_usd {:.6}\n\
@@ -148,9 +148,12 @@ async fn balance(State(app): State<AppState>, headers: HeaderMap) -> Response {
         None => return (StatusCode::UNAUTHORIZED, Json(json!({"error": "no api key"}))).into_response(),
     };
     // ключ → аккаунт → баланс аккаунта (общий на все ключи юзера) + расход именно этого ключа
-    let krow = billing.get(&key);
-    let auth = billing.key_auth(&key);
-    match (krow, auth.and_then(|a| billing.account(&a.account_id))) {
+    let krow = billing.get(&key).await;
+    let acct = match billing.key_auth(&key).await {
+        Some(a) => billing.account(&a.account_id).await,
+        None => None,
+    };
+    match (krow, acct) {
         (Some(k), Some(a)) => Json(json!({
             "account": a.id,
             "balance": metering::nano_to_usd_string(a.balance_nano as i128),

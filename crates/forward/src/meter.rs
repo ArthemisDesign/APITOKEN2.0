@@ -5,10 +5,10 @@
 //! парсим `usage` (SSE — из накопленного текста, не-стрим — из полного JSON), считаем стоимость
 //! через `metering` и списываем с баланса ключа. Метерим ТОЛЬКО успешный ответ (см. proxy.rs).
 
+use crate::billing::AsyncBilling;
 use bytes::Bytes;
 use futures_util::Stream;
 use pool::Pool;
-use registry::Billing;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -18,7 +18,7 @@ type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Sen
 /// Опциональное списание с АККАУНТА клиента (только для метерных ключей). Баланс общий на аккаунт;
 /// `key` — для атрибуции расхода по ключу; `request_id` — в ledger как ссылка на запрос.
 pub struct BillCtx {
-    pub billing: Arc<Billing>,
+    pub billing: Arc<AsyncBilling>,
     pub account_id: String,
     pub key: String,
     pub mult_bp: i64,
@@ -88,7 +88,9 @@ impl TeeMeter {
         if let Some(b) = ctx.bill {
             let charge = if real > 0 { metering::apply_multiplier(real, b.mult_bp) } else { 0 };
             let charge_i64 = charge.clamp(0, i64::MAX as i128) as i64;
-            let newbal = b.billing.settle(&b.account_id, &b.key, b.hold, charge_i64, b.request_id.as_deref());
+            // finalize СИНХРОНЕН (Stream::poll / Drop) → шлём списание АСИНХРОННО через актор
+            // (settle_detached не блокирует). Гарантия: осиротевшее при краше вернёт reconcile.
+            b.billing.settle_detached(&b.account_id, &b.key, b.hold, charge_i64, b.request_id.as_deref());
             if charge_i64 > 0 {
                 // хвост ключа для лога — по символам (не байтами: срез не на границе char паникует)
                 let tail: String = {
@@ -96,12 +98,9 @@ impl TeeMeter {
                     t.reverse();
                     t.into_iter().collect()
                 };
-                eprintln!(
-                    "💵 ключ …{tail}: −{} [{}] → баланс {}",
+                eprintln!("💵 ключ …{tail}: −{} [{}]",
                     metering::nano_to_usd_string(charge),
-                    if price_model.is_empty() { "?" } else { price_model },
-                    newbal.map(|b| metering::nano_to_usd_string(b as i128)).unwrap_or_else(|| "?".into()),
-                );
+                    if price_model.is_empty() { "?" } else { price_model });
             }
         }
     }

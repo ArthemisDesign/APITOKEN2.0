@@ -357,8 +357,9 @@ async fn serve() -> Result<()> {
     drop(conn);
     let n = subs.len();
 
+    // Биллинг — async DB-актор (синхронный SQLite на выделенном потоке, не на воркерах рантайма).
     let billing = if s.billing {
-        Some(Arc::new(registry::Billing::open(&s.db_path)?))
+        Some(Arc::new(forward::AsyncBilling::start(s.db_path.clone())?))
     } else {
         None
     };
