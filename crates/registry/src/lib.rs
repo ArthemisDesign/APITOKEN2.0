@@ -10,7 +10,6 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::fs;
-use std::sync::Mutex;
 
 /// Рантайм-запись подписки с УЖЕ разрешённым токеном (inline или из файла).
 #[derive(Clone, Debug)]
@@ -90,6 +89,11 @@ pub fn open(path: &str) -> Result<Connection> {
         [],
     )?;
     let _ = c.execute("CREATE INDEX IF NOT EXISTS ledger_acct ON ledger(account_id, id)", []);
+    // ИДЕМПОТЕНТНОСТЬ пополнений: payment-ref уникален среди topup-строк → повторный вебхук с тем же
+    // tx-id физически не начислит дважды (партиальный UNIQUE; на charge/adjust не распространяется).
+    let _ = c.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ledger_topup_ref ON ledger(ref) \
+         WHERE kind='topup' AND ref IS NOT NULL", []);
 
     // Миграция старой модели (key=кошелёк): ключам без account_id заводим аккаунт и переносим баланс.
     migrate_legacy_keys(&c)?;
@@ -406,19 +410,29 @@ pub fn account_remove(conn: &Connection, id: &str) -> Result<usize> {
 /// Возвращает новый баланс или None, если аккаунта нет. Атомарно (UPDATE…RETURNING + ledger).
 pub fn account_topup(conn: &Connection, id: &str, amount_nano: i64, reference: Option<&str>) -> Result<Option<i64>> {
     let tx = conn.unchecked_transaction()?;
+    // Начисляем баланс...
     let bal = match tx.query_row(
         "UPDATE accounts SET balance_nano = balance_nano + ?1 WHERE id = ?2 RETURNING balance_nano",
         rusqlite::params![amount_nano, id], |r| r.get::<_, i64>(0)) {
-        Ok(b) => Some(b),
-        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Ok(b) => b,
+        Err(rusqlite::Error::QueryReturnedNoRows) => { return Ok(None); } // нет аккаунта
         Err(e) => return Err(e.into()),
     };
-    if let Some(b) = bal {
-        let kind = if amount_nano >= 0 { "topup" } else { "adjust" };
-        ledger_add(&tx, id, None, kind, amount_nano, reference, b)?;
+    let kind = if amount_nano >= 0 { "topup" } else { "adjust" };
+    // ...и пишем ledger. ИДЕМПОТЕНТНОСТЬ: если payment-ref (topup) уже был — UNIQUE-индекс отклонит
+    // INSERT → откатываем НАЧИСЛЕНИЕ и возвращаем текущий баланс (повторный вебхук не задваивает).
+    match tx.execute(
+        "INSERT INTO ledger(account_id, key, kind, amount_nano, ref, balance_after_nano, ts) \
+         VALUES(?1, NULL, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![id, kind, amount_nano, reference, bal, now()]) {
+        Ok(_) => { tx.commit()?; Ok(Some(bal)) }
+        Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::ConstraintViolation => {
+            drop(tx); // ROLLBACK: начисление отменено
+            eprintln!("↩ topup идемпотентно пропущен (ref уже начислен): {}", reference.unwrap_or("?"));
+            Ok(account_get(conn, id)?.map(|a| a.balance_nano))
+        }
+        Err(e) => Err(e.into()),
     }
-    tx.commit()?;
-    Ok(bal)
 }
 
 /// АТОМАРНО зарезервировать `hold` по АККАУНТУ, если баланс покрывает и аккаунт активен. Та же
@@ -473,6 +487,17 @@ pub fn key_account(conn: &Connection, key: &str) -> Result<Option<KeyAuth>> {
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),
     }
+}
+
+/// Консистентный ОНЛАЙН-бэкап всей БД в `out_path` через `VACUUM INTO` (best-practice для живого
+/// SQLite): создаёт целостный снимок, безопасный при WAL и параллельной работе. НЕЛЬЗЯ просто
+/// копировать `.db` — без `-wal`/`-shm` копия рассинхронизирована/битая. `out_path` должен НЕ
+/// существовать (VACUUM INTO создаёт файл). Восстановление: остановить сервис, положить снимок на
+/// место `subscriptions.db`, удалить `-wal`/`-shm`, запустить.
+pub fn backup_to(conn: &Connection, out_path: &str) -> Result<()> {
+    let esc = out_path.replace('\'', "''"); // путь наш, но экранируем кавычку
+    conn.execute_batch(&format!("VACUUM INTO '{esc}'"))?;
+    Ok(())
 }
 
 /// Обрезать ledger под масштаб: удалить bulk-строки списаний (`charge`) старше `older_than_ts`.
@@ -600,50 +625,8 @@ pub fn load_pool_state(conn: &Connection) -> Result<Vec<PoolStateRow>> {
     Ok(rows.filter_map(|x| x.ok()).collect())
 }
 
-/// Обёртка для запросного пути сервера: одно долгоживущее соединение под мьютексом.
-/// Списание идёт синхронно (быстрый UPDATE по WAL, без удержания через await).
-pub struct Billing {
-    conn: Mutex<Connection>,
-}
-
-impl Billing {
-    pub fn open(path: &str) -> Result<Billing> {
-        Ok(Billing { conn: Mutex::new(open(path)?) })
-    }
-    /// Восстанавливаем ОТРАВЛЕННЫЙ мьютекс (into_inner), а не «падаем открыто»: на денежном
-    /// пути безопаснее продолжить учёт, чем молча обслуживать бесплатно после чужой паники.
-    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|e| e.into_inner())
-    }
-    /// Инфо о ключе (метка/аккаунт/расход по ключу; баланс — на аккаунте).
-    pub fn get(&self, key: &str) -> Option<KeyRow> {
-        key_get(&self.conn(), key).ok().flatten()
-    }
-    /// Резолв ключа → аккаунт (горячий путь авторизации запроса).
-    pub fn key_auth(&self, key: &str) -> Option<KeyAuth> {
-        key_account(&self.conn(), key).ok().flatten()
-    }
-    /// Аккаунт по id (для /balance, дашборда).
-    pub fn account(&self, id: &str) -> Option<AccountRow> {
-        account_get(&self.conn(), id).ok().flatten()
-    }
-    /// Зарезервировать hold по АККАУНТУ (атомарно). None → не хватает/не активен/нет аккаунта.
-    pub fn reserve(&self, account_id: &str, hold_nano: i64) -> Option<i64> {
-        account_reserve(&self.conn(), account_id, hold_nano).ok().flatten()
-    }
-    /// Закрыть резерв: баланс аккаунта += hold−actual, spent += actual, per-key spent += actual,
-    /// строка ledger. `reference` — id запроса (для журнала).
-    pub fn settle(&self, account_id: &str, key: &str, hold_nano: i64, actual_nano: i64,
-                  reference: Option<&str>) -> Option<i64> {
-        account_settle(&self.conn(), account_id, key, hold_nano, actual_nano, reference).ok().flatten()
-    }
-    /// Пополнить баланс аккаунта (+ledger). Для платёжного флоу (TG/web/крипта — любой источник).
-    pub fn topup(&self, account_id: &str, amount_nano: i64, reference: Option<&str>) -> Option<i64> {
-        account_topup(&self.conn(), account_id, amount_nano, reference).ok().flatten()
-    }
-    /// Агрегаты по всем АККАУНТАМ (для наблюдаемости трат в /metrics). Авторитетно из БД одним SUM.
-    pub fn totals(&self) -> BillingTotals { billing_totals(&self.conn()) }
-}
+// (Синхронная обёртка `Billing` удалена: запросный путь теперь через `forward::AsyncBilling`
+//  — DB-акторы, ноль синхронных вызовов на async-воркерах. registry остаётся чистым sync-ядром.)
 
 /// Агрегаты биллинга по всем аккаунтам клиентов (нанодоллары).
 #[derive(Clone, Debug, Default)]
@@ -694,10 +677,10 @@ mod tests {
         assert_eq!(got[0].calib_n, 4);
     }
 
-    // хелпер: аккаунт с балансом + ключ под ним
+    // хелпер: аккаунт с балансом + ключ под ним (ref=None — админ-сид, не платёж, без дедупа)
     fn acct_with_key(c: &Connection, acct: &str, key: &str, usd_nano: i64, mult: i64) {
         account_create(c, acct, None, mult).unwrap();
-        account_topup(c, acct, usd_nano, Some("test")).unwrap();
+        account_topup(c, acct, usd_nano, None).unwrap();
         key_issue(c, key, acct, None).unwrap();
     }
 
@@ -769,6 +752,27 @@ mod tests {
         account_set_status(&c, "a", "disabled").unwrap();
         assert_eq!(account_reserve(&c, "a", 1).unwrap(), None);
         assert!(!key_account(&c, "k").unwrap().unwrap().active); // аккаунт неактивен → ключ тоже
+    }
+
+    /// Идемпотентный topup: повтор вебхука с тем же payment-ref НЕ начисляет дважды.
+    #[test]
+    fn topup_is_idempotent_by_ref() {
+        let c = db();
+        account_create(&c, "a", None, 2000).unwrap();
+        // первый вебхук: +$10, ref=tx_ABC
+        assert_eq!(account_topup(&c, "a", 10_000_000_000, Some("tx_ABC")).unwrap(), Some(10_000_000_000));
+        // ПОВТОР того же вебхука (ретрай) — баланс НЕ должен вырасти
+        assert_eq!(account_topup(&c, "a", 10_000_000_000, Some("tx_ABC")).unwrap(), Some(10_000_000_000));
+        assert_eq!(account_get(&c, "a").unwrap().unwrap().balance_nano, 10_000_000_000); // ровно $10
+        // ДРУГОЙ ref начисляет нормально
+        assert_eq!(account_topup(&c, "a", 5_000_000_000, Some("tx_XYZ")).unwrap(), Some(15_000_000_000));
+        // без ref (админ-коррекция) — не дедупится, всегда применяется
+        account_topup(&c, "a", 1_000_000_000, None).unwrap();
+        account_topup(&c, "a", 1_000_000_000, None).unwrap();
+        assert_eq!(account_get(&c, "a").unwrap().unwrap().balance_nano, 17_000_000_000);
+        // в ledger ровно один topup на каждый уникальный ref (+ 2 без ref)
+        let topups: i64 = c.query_row("SELECT COUNT(*) FROM ledger WHERE kind='topup'", [], |r| r.get(0)).unwrap();
+        assert_eq!(topups, 4); // tx_ABC, tx_XYZ, и 2 без ref
     }
 
     /// ledger_prune режет старые списания (charge), но хранит пополнения (topup) и текущие суммы.

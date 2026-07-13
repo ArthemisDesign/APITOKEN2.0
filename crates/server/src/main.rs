@@ -46,6 +46,13 @@ enum Cmd {
         #[command(subcommand)]
         op: KeyOp,
     },
+    /// Консистентный бэкап БД (VACUUM INTO) с ротацией. Ставится по systemd-таймеру.
+    Backup {
+        /// Каталог для снимков (деф: <cfg>/backups).
+        #[arg(long)] out: Option<String>,
+        /// Сколько последних снимков хранить (деф 24).
+        #[arg(long, default_value = "24")] keep: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -141,7 +148,42 @@ async fn main() -> Result<()> {
         Cmd::Sub { op } => sub_cmd(op).await,
         Cmd::Account { op } => account_cmd(op),
         Cmd::Key { op } => key_cmd(op),
+        Cmd::Backup { out, keep } => backup_cmd(out, keep),
     }
+}
+
+/// Консистентный бэкап БД (`VACUUM INTO`) в timestamped-файл + ротация (храним `keep` последних).
+/// НЕ копируем .db напрямую (WAL → битая копия). Рекомендация прод: снимки складывать И на ОТДЕЛЬНЫЙ
+/// носитель/офсайт (напр. rclone/scp по тому же таймеру) — иначе отказ диска унесёт и БД, и бэкапы.
+fn backup_cmd(out: Option<String>, keep: usize) -> Result<()> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let s = Settings::from_env();
+    let dir = out.unwrap_or_else(|| {
+        let p = std::path::Path::new(&s.db_path).parent()
+            .map(|d| d.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
+        format!("{p}/backups")
+    });
+    std::fs::create_dir_all(&dir)?;
+    let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let path = format!("{dir}/subscriptions.db.bak-{ts}");
+    let conn = registry::open(&s.db_path)?;
+    registry::backup_to(&conn, &path)?;
+    let sz = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    println!("✓ бэкап: {path} ({} КиБ)", sz / 1024);
+    // ротация: оставляем `keep` самых свежих snapshot'ов, старые удаляем
+    let mut snaps: Vec<_> = std::fs::read_dir(&dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("subscriptions.db.bak-"))
+        .map(|e| e.path())
+        .collect();
+    snaps.sort(); // имена с epoch-ts → лексикографически = хронологически
+    if snaps.len() > keep {
+        for old in &snaps[..snaps.len() - keep] {
+            let _ = std::fs::remove_file(old);
+        }
+        println!("  ротация: удалено {} старых", snaps.len() - keep);
+    }
+    Ok(())
 }
 
 /// Сгенерировать id аккаунта: acct_<24hex> (из /dev/urandom, как ключ).

@@ -1,0 +1,13 @@
+# Ежечасный бэкап money-БД. Установка:
+#   cp systemd/claude-api-backup.{service,timer} /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now claude-api-backup.timer
+[Unit]
+Description=claude-api — ежечасный бэкап БД
+
+[Timer]
+OnCalendar=hourly
+Persistent=true          # догоняет пропущенный запуск после простоя/перезагрузки
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target
