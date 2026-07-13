@@ -6,7 +6,7 @@
 //! Все записи идут через тот же single-writer актор биллинга (`AsyncBilling`) — дисциплина единого
 //! писателя, никаких гонок с reserve/settle горячего пути.
 
-use axum::extract::{ConnectInfo, Path, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use forward::{control_authed, AppState};
@@ -82,6 +82,58 @@ pub async fn get_account(
         })).into_response(),
         None => (StatusCode::NOT_FOUND, Json(json!({"error": "unknown account"}))).into_response(),
     }
+}
+
+/// Маска ключа для листинга (полный ключ виден лишь единожды при выпуске): sk-pool-abcd…wxyz.
+fn mask(k: &str) -> String {
+    if k.len() <= 16 { return format!("{}…", &k[..k.len().min(6)]); }
+    format!("{}…{}", &k[..12], &k[k.len() - 4..])
+}
+
+/// GET /admin/account/{id}/keys — ключи аккаунта (маскированные) + метаданные для дашборда.
+pub async fn list_keys(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Some(r) = deny(&app, &headers, &peer) { return r; }
+    let b = match billing(&app) { Ok(b) => b, Err(r) => return r };
+    let keys: Vec<_> = b.keys_by_account(&id).await.into_iter().map(|k| json!({
+        "key_masked": mask(&k.key),
+        "label": k.label,
+        "status": k.status,
+        "spent_nano": k.spent_nano,
+        "spent": metering::nano_to_usd_string(k.spent_nano as i128),
+    })).collect();
+    Json(json!({"account": id, "keys": keys})).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct LedgerQuery { limit: Option<i64> }
+
+/// GET /admin/account/{id}/ledger?limit=N — история движений баланса (свежие сверху).
+/// kind: topup (пополнение) | charge (списание) | adjust (коррекция). Для дашборда «расход/платежи».
+pub async fn list_ledger(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(q): Query<LedgerQuery>,
+) -> Response {
+    if let Some(r) = deny(&app, &headers, &peer) { return r; }
+    let b = match billing(&app) { Ok(b) => b, Err(r) => return r };
+    let rows: Vec<_> = b.ledger(&id, q.limit.unwrap_or(50)).await.into_iter().map(|e| json!({
+        "id": e.id,
+        "kind": e.kind,
+        "amount_nano": e.amount_nano,
+        "amount": metering::nano_to_usd_string(e.amount_nano as i128),
+        "key_masked": e.key.as_deref().map(mask),
+        "ref": e.reference,
+        "balance_after_nano": e.balance_after_nano,
+        "ts": e.ts,
+    })).collect();
+    Json(json!({"account": id, "entries": rows})).into_response()
 }
 
 #[derive(Deserialize)]

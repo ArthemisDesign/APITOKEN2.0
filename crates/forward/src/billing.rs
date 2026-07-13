@@ -42,6 +42,8 @@ enum ReadCmd {
     KeyGet(String, oneshot::Sender<Option<KeyRow>>),
     Account(String, oneshot::Sender<Option<AccountRow>>),
     Totals(oneshot::Sender<BillingTotals>),
+    KeysByAccount(String, oneshot::Sender<Vec<KeyRow>>),
+    Ledger(String, i64, oneshot::Sender<Vec<registry::LedgerRow>>),
 }
 
 /// Async-фасад биллинга: writer-канал + пул reader-каналов. Клонируется (в `Arc`) во все хендлеры.
@@ -116,6 +118,8 @@ impl AsyncBilling {
                         ReadCmd::KeyGet(k, r) => { let _ = r.send(registry::key_get(&conn, &k).ok().flatten()); }
                         ReadCmd::Account(id, r) => { let _ = r.send(registry::account_get(&conn, &id).ok().flatten()); }
                         ReadCmd::Totals(r) => { let _ = r.send(registry::billing_totals(&conn)); }
+                        ReadCmd::KeysByAccount(id, r) => { let _ = r.send(registry::keys_by_account(&conn, &id).unwrap_or_default()); }
+                        ReadCmd::Ledger(id, lim, r) => { let _ = r.send(registry::ledger_recent(&conn, &id, lim).unwrap_or_default()); }
                     }
                 }
                 eprintln!("⚠ billing-reader-{i} поток завершён");
@@ -148,6 +152,16 @@ impl AsyncBilling {
     pub async fn totals(&self) -> BillingTotals {
         let (r, rx) = oneshot::channel();
         if self.reader().send(ReadCmd::Totals(r)).is_err() { return BillingTotals::default(); }
+        rx.await.unwrap_or_default()
+    }
+    pub async fn keys_by_account(&self, account_id: &str) -> Vec<KeyRow> {
+        let (r, rx) = oneshot::channel();
+        if self.reader().send(ReadCmd::KeysByAccount(account_id.into(), r)).is_err() { return Vec::new(); }
+        rx.await.unwrap_or_default()
+    }
+    pub async fn ledger(&self, account_id: &str, limit: i64) -> Vec<registry::LedgerRow> {
+        let (r, rx) = oneshot::channel();
+        if self.reader().send(ReadCmd::Ledger(account_id.into(), limit, r)).is_err() { return Vec::new(); }
         rx.await.unwrap_or_default()
     }
     pub async fn reserve(&self, account_id: &str, hold: i64) -> Option<i64> {

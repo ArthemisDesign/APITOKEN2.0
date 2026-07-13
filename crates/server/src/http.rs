@@ -31,6 +31,8 @@ pub fn router(app: AppState) -> Router {
         .route("/admin/account/{id}", get(admin::get_account))
         .route("/admin/account/{id}/credit", post(admin::credit_account))
         .route("/admin/account/{id}/status", post(admin::account_status))
+        .route("/admin/account/{id}/keys", get(admin::list_keys))
+        .route("/admin/account/{id}/ledger", get(admin::list_ledger))
         .route("/admin/key", post(admin::issue_key))
         .route("/admin/key/{key}/status", post(admin::key_status))
         .fallback(forward)

@@ -570,6 +570,50 @@ pub fn key_clear(conn: &Connection) -> Result<usize> {
     Ok(conn.execute("DELETE FROM api_keys", [])?)
 }
 
+/// Ключи КОНКРЕТНОГО аккаунта (для дашборда коммерции: список ключей юзера). Ключ маскируется на выводе.
+pub fn keys_by_account(conn: &Connection, account_id: &str) -> Result<Vec<KeyRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT key, account_id, label, spent_nano, COALESCE(status,'active') \
+         FROM api_keys WHERE account_id=?1 ORDER BY COALESCE(created_ts,0)")?;
+    let rows = stmt.query_map(rusqlite::params![account_id], |r| Ok(KeyRow {
+        key: r.get::<_, String>(0)?,
+        account_id: r.get::<_, Option<String>>(1)?,
+        label: r.get::<_, Option<String>>(2)?,
+        spent_nano: r.get::<_, i64>(3)?,
+        status: r.get::<_, String>(4)?,
+    }))?;
+    Ok(rows.filter_map(|x| x.ok()).collect())
+}
+
+/// Строка журнала движений баланса (для истории трат/пополнений в дашборде).
+#[derive(Debug, Clone)]
+pub struct LedgerRow {
+    pub id: i64,
+    pub key: Option<String>,
+    pub kind: String,          // topup | charge | adjust
+    pub amount_nano: i64,      // + пополнение / − списание
+    pub reference: Option<String>,
+    pub balance_after_nano: Option<i64>,
+    pub ts: i64,
+}
+
+/// Последние `limit` строк ledger аккаунта (свежие сверху). Для дашборда «история/расход».
+pub fn ledger_recent(conn: &Connection, account_id: &str, limit: i64) -> Result<Vec<LedgerRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, key, kind, amount_nano, ref, balance_after_nano, ts \
+         FROM ledger WHERE account_id=?1 ORDER BY id DESC LIMIT ?2")?;
+    let rows = stmt.query_map(rusqlite::params![account_id, limit.clamp(1, 1000)], |r| Ok(LedgerRow {
+        id: r.get::<_, i64>(0)?,
+        key: r.get::<_, Option<String>>(1)?,
+        kind: r.get::<_, String>(2)?,
+        amount_nano: r.get::<_, i64>(3)?,
+        reference: r.get::<_, Option<String>>(4)?,
+        balance_after_nano: r.get::<_, Option<i64>>(5)?,
+        ts: r.get::<_, i64>(6)?,
+    }))?;
+    Ok(rows.filter_map(|x| x.ok()).collect())
+}
+
 /// Все ключи (для CLI-листинга; ключ маскируется на стороне вывода).
 pub fn key_list(conn: &Connection) -> Result<Vec<KeyRow>> {
     let mut stmt = conn.prepare(
