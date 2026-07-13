@@ -12,13 +12,17 @@ const environmentSchema = z.object({
   PUBLIC_APP_BASE_URL: z.string().url().default("https://apitoken.sale"),
   MIN_TOPUP_USD: z.string().regex(/^[1-9]\d*$/).transform(BigInt).default("1"),
   MAX_TOPUP_USD: z.string().regex(/^[1-9]\d*$/).transform(BigInt).default("10000"),
-  ALLOW_INSECURE_USER_HEADER: z.enum(["true", "false"]).transform((value) => value === "true").default("false"),
+  SESSION_TTL_SECONDS: z.coerce.number().int().min(900).max(2_592_000).default(604_800),
+  REQUIRE_VERIFIED_EMAIL: z.enum(["true", "false"]).transform((value) => value === "true").default("false"),
   DIGISELLER_SELLER_ID: z.coerce.number().int().positive().optional(),
   DIGISELLER_API_KEY: z.string().min(1).optional(),
   DIGISELLER_PRODUCT_ID: z.coerce.number().int().positive().optional(),
   DIGISELLER_CHECKOUT_TRACKING_SECRET: z.string().min(32).optional(),
   CRYPTOMUS_MERCHANT_ID: z.string().uuid().optional(),
   CRYPTOMUS_PAYMENT_API_KEY: z.string().min(1).optional(),
+  GOOGLE_CLIENT_ID: z.string().min(1).optional(),
+  GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
+  GOOGLE_REDIRECT_URI: z.string().url().optional(),
 }).superRefine((value, context) => {
   const configured = [
     value.DIGISELLER_SELLER_ID,
@@ -37,8 +41,13 @@ const environmentSchema = z.object({
   if (value.MIN_TOPUP_USD > value.MAX_TOPUP_USD) {
     context.addIssue({ code: "custom", message: "MIN_TOPUP_USD must not exceed MAX_TOPUP_USD" });
   }
-  if (value.NODE_ENV === "production" && value.ALLOW_INSECURE_USER_HEADER) {
-    context.addIssue({ code: "custom", message: "ALLOW_INSECURE_USER_HEADER cannot be enabled in production" });
+  const googleConfigured = [value.GOOGLE_CLIENT_ID, value.GOOGLE_CLIENT_SECRET, value.GOOGLE_REDIRECT_URI]
+    .filter((item) => item !== undefined).length;
+  if (googleConfigured !== 0 && googleConfigured !== 3) {
+    context.addIssue({ code: "custom", message: "all Google OIDC settings must be provided together" });
+  }
+  if (value.NODE_ENV === "production" && !value.REQUIRE_VERIFIED_EMAIL) {
+    context.addIssue({ code: "custom", message: "REQUIRE_VERIFIED_EMAIL must be true in production" });
   }
 });
 

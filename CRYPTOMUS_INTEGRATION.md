@@ -83,18 +83,16 @@ GET  /v1/checkouts/{checkout UUID}
 POST /v1/payments/cryptomus/webhook        raw Cryptomus JSON
 ```
 
-Checkout creation and status currently accept `x-user-id` only when
-`ALLOW_INSECURE_USER_HEADER=true`. This is deliberately forbidden in production and exists solely
-for backend testing before browser-session authentication is implemented. Webhook processing is
-public, signature-verified, independently rechecked through `/v1/payment/info`, amount-checked and
-idempotent. A paid checkout queues exactly `amountUsd * 1_000_000_000` nanoUSD.
+Checkout creation and status require a valid server-side session. User identity is never accepted
+from the body, URL or a custom user header. Webhook processing is public, signature-verified,
+independently rechecked through `/v1/payment/info`, amount-checked and idempotent. A paid checkout
+queues exactly `amountUsd * 1_000_000_000` nanoUSD.
 
 ## What remains before live payments
 
 Before launch:
 
-1. Replace the local `x-user-id` test bridge with real browser-session authentication.
-2. Point `api.apitoken.sale` to the API through HTTPS and configure the webhook IP rule.
-3. Add real Cryptomus credentials to the deployment environment.
-4. Use Cryptomus's test-webhook endpoint to exercise the deployed callback.
-5. Run one controlled invoice through every relevant state before enabling customers.
+1. Point `api.apitoken.sale` to the API through HTTPS and configure the webhook IP rule.
+2. Add real Cryptomus credentials to the deployment environment.
+3. Use Cryptomus's test-webhook endpoint to exercise the deployed callback.
+4. Run one controlled invoice through every relevant state before enabling customers.

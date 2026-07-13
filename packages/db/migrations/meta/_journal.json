@@ -15,6 +15,20 @@
       "when": 1783956094307,
       "tag": "0001_clammy_wild_pack",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783957090273,
+      "tag": "0002_sudden_dracula",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1783957558853,
+      "tag": "0003_faulty_deathstrike",
+      "breakpoints": true
     }
   ]
 }

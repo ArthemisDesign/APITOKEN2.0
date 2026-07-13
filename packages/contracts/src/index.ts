@@ -67,3 +67,21 @@ export interface CheckoutView {
   checkoutUrl: string | null;
   expiresAt: string | null;
 }
+
+export const authEmailSchema = z.string().trim().toLowerCase().email().max(254);
+export const authPasswordSchema = z.string().min(12).max(128)
+  .refine((value) => Buffer.byteLength(value, "utf8") <= 256, "password is too long");
+
+export const registerSchema = z.object({
+  email: authEmailSchema,
+  password: authPasswordSchema,
+}).strict();
+
+export const loginSchema = registerSchema;
+
+export interface AuthUserView {
+  id: string;
+  email: string;
+  emailVerified: boolean;
+  engineAccountStatus: "pending" | "active" | "error" | "disabled";
+}

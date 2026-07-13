@@ -81,6 +81,8 @@ payment provider → apps/api (verified webhook) → engine_credits outbox → a
 
 `apps/api` владеет будущей browser-facing API-границей и приёмом подписанных вебхуков.
 Пользователь вводит произвольное целое число USD строкой; каталог продуктов отсутствует.
+Browser identity определяется только opaque server-side сессией; email/Google identities и
+сессии живут в commerce PostgreSQL, подробности — `AUTHENTICATION.md`.
 `apps/worker` забирает durable credit jobs из PostgreSQL через `FOR UPDATE SKIP LOCKED` и
 идемпотентно вызывает `/admin/account/{id}/credit`. Общие схемы/репозитории/клиент движка находятся
 в `packages/contracts`, `packages/db`, `packages/engine-client`. Коммерческий контур никогда не

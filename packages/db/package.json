@@ -20,12 +20,12 @@
     "db:migrate": "drizzle-kit migrate"
   },
   "dependencies": {
-    "drizzle-orm": "^0.44.0",
+    "drizzle-orm": "^0.45.2",
     "pg": "^8.16.0"
   },
   "devDependencies": {
     "@types/pg": "^8.15.0",
-    "drizzle-kit": "^0.31.0",
+    "drizzle-kit": "^0.31.10",
     "vitest": "^3.2.0"
   }
 }

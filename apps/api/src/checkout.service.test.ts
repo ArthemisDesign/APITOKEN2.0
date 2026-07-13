@@ -36,7 +36,8 @@ describe.runIf(Boolean(connectionString))("Cryptomus checkout service", () => {
 
   beforeEach(async () => {
     await database.pool.query(`
-      TRUNCATE audit_log, api_keys, engine_credits, webhook_events, payments,
+      TRUNCATE audit_log, api_keys, engine_credits, webhook_events, payments, email_outbox, auth_rate_limits,
+               auth_tokens, auth_sessions, auth_identities,
                checkout_sessions, engine_accounts, users RESTART IDENTITY CASCADE
     `);
     userId = randomUUID();
@@ -49,7 +50,8 @@ describe.runIf(Boolean(connectionString))("Cryptomus checkout service", () => {
 
   afterAll(async () => {
     await database.pool.query(`
-      TRUNCATE audit_log, api_keys, engine_credits, webhook_events, payments,
+      TRUNCATE audit_log, api_keys, engine_credits, webhook_events, payments, email_outbox, auth_rate_limits,
+               auth_tokens, auth_sessions, auth_identities,
                checkout_sessions, engine_accounts, users RESTART IDENTITY CASCADE
     `);
     await database.pool.end();

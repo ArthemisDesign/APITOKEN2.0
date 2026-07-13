@@ -25,6 +25,8 @@ export const webhookStatus = pgEnum("webhook_status", ["received", "processed", 
 export const engineCreditStatus = pgEnum("engine_credit_status", ["pending", "processing", "retry", "confirmed", "dead"]);
 export const apiKeyStatus = pgEnum("api_key_status", ["active", "disabled"]);
 export const checkoutStatus = pgEnum("checkout_status", ["creating", "pending", "paid", "canceled", "refunded", "failed"]);
+export const authTokenPurpose = pgEnum("auth_token_purpose", ["verify_email", "reset_password"]);
+export const emailOutboxStatus = pgEnum("email_outbox_status", ["pending", "processing", "sent", "failed"]);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey(),
@@ -35,6 +37,71 @@ export const users = pgTable("users", {
   createdAt,
   updatedAt,
 }, (table) => [uniqueIndex("users_email_lower_uidx").on(sql`lower(${table.email})`)]);
+
+export const authIdentities = pgTable("auth_identities", {
+  id: uuid("id").primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  provider: text("provider").notNull(),
+  subject: text("subject").notNull(),
+  email: text("email"),
+  emailVerified: boolean("email_verified").notNull().default(false),
+  metadata: jsonb("metadata").notNull().default({}),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  uniqueIndex("auth_identities_provider_subject_uidx").on(table.provider, table.subject),
+  uniqueIndex("auth_identities_user_provider_uidx").on(table.userId, table.provider),
+]);
+
+export const authSessions = pgTable("auth_sessions", {
+  id: uuid("id").primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  tokenHash: text("token_hash").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  userAgent: text("user_agent"),
+  ipAddress: text("ip_address"),
+  createdAt,
+}, (table) => [
+  uniqueIndex("auth_sessions_token_hash_uidx").on(table.tokenHash),
+  index("auth_sessions_user_idx").on(table.userId, table.createdAt),
+  index("auth_sessions_expiry_idx").on(table.expiresAt),
+]);
+
+export const authRateLimits = pgTable("auth_rate_limits", {
+  keyHash: text("key_hash").primaryKey(),
+  attempts: integer("attempts").notNull().default(0),
+  windowStartedAt: timestamp("window_started_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt,
+});
+
+export const authTokens = pgTable("auth_tokens", {
+  id: uuid("id").primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  purpose: authTokenPurpose("purpose").notNull(),
+  tokenHash: text("token_hash").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  createdAt,
+}, (table) => [
+  uniqueIndex("auth_tokens_token_hash_uidx").on(table.tokenHash),
+  index("auth_tokens_user_purpose_idx").on(table.userId, table.purpose, table.createdAt),
+]);
+
+export const emailOutbox = pgTable("email_outbox", {
+  id: uuid("id").primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  recipient: text("recipient").notNull(),
+  template: text("template").notNull(),
+  payload: jsonb("payload").notNull().default({}),
+  status: emailOutboxStatus("status").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  lastError: text("last_error"),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+  createdAt,
+}, (table) => [index("email_outbox_claim_idx").on(table.status, table.nextAttemptAt)]);
 
 export const engineAccounts = pgTable("engine_accounts", {
   id: uuid("id").primaryKey(),

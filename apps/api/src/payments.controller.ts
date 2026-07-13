@@ -4,7 +4,7 @@ import {
   Body,
   Controller,
   Get,
-  Headers,
+  Header,
   HttpCode,
   NotFoundException,
   Param,
@@ -12,12 +12,12 @@ import {
   Req,
   ServiceUnavailableException,
   UnauthorizedException,
+  UseGuards,
 } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
 import { createCheckoutSchema } from "@claude-api/contracts";
 import { CryptomusError } from "@claude-api/payments";
 import { z } from "zod";
-import type { Environment } from "./config.js";
+import { CurrentAuth, type RequestAuth, SessionAuthGuard } from "./auth.guard.js";
 import { CheckoutAmountError, CheckoutService } from "./checkout.service.js";
 
 const uuidSchema = z.string().uuid();
@@ -26,16 +26,16 @@ const uuidSchema = z.string().uuid();
 export class PaymentsController {
   constructor(
     private readonly checkouts: CheckoutService,
-    private readonly config: ConfigService<Environment, true>,
   ) {}
 
   @Post("checkouts")
-  async createCheckout(@Headers("x-user-id") userHeader: string | undefined, @Body() body: unknown): Promise<unknown> {
-    const userId = this.localUserId(userHeader);
+  @Header("Cache-Control", "no-store")
+  @UseGuards(SessionAuthGuard)
+  async createCheckout(@CurrentAuth() current: RequestAuth, @Body() body: unknown): Promise<unknown> {
     const parsed = createCheckoutSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     try {
-      return await this.checkouts.create(userId, parsed.data.amountUsd, parsed.data.provider);
+      return await this.checkouts.create(current.user.id, parsed.data.amountUsd, parsed.data.provider);
     } catch (error) {
       if (error instanceof CheckoutAmountError) throw new BadRequestException(error.message);
       if (error instanceof CryptomusError) throw new BadGatewayException(error.message);
@@ -48,10 +48,11 @@ export class PaymentsController {
   }
 
   @Get("checkouts/:id")
-  async getCheckout(@Headers("x-user-id") userHeader: string | undefined, @Param("id") id: string): Promise<unknown> {
-    const userId = this.localUserId(userHeader);
+  @Header("Cache-Control", "no-store")
+  @UseGuards(SessionAuthGuard)
+  async getCheckout(@CurrentAuth() current: RequestAuth, @Param("id") id: string): Promise<unknown> {
     if (!uuidSchema.safeParse(id).success) throw new BadRequestException("checkout ID must be a UUID");
-    const checkout = await this.checkouts.get(userId, id);
+    const checkout = await this.checkouts.get(current.user.id, id);
     if (!checkout) throw new NotFoundException("checkout not found");
     return checkout;
   }
@@ -70,14 +71,5 @@ export class PaymentsController {
       if (error instanceof CryptomusError) throw new BadGatewayException(error.message);
       throw error;
     }
-  }
-
-  private localUserId(value: string | undefined): string {
-    if (!this.config.get("ALLOW_INSECURE_USER_HEADER", { infer: true })) {
-      throw new ServiceUnavailableException("checkout authentication is not enabled yet");
-    }
-    const parsed = uuidSchema.safeParse(value);
-    if (!parsed.success) throw new UnauthorizedException("valid x-user-id header required for local checkout testing");
-    return parsed.data;
   }
 }

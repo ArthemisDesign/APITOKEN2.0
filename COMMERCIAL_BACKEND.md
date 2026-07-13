@@ -45,6 +45,9 @@ Only then may it create a payment and enqueue an engine credit. The worker uses 
 stable, idempotent engine credit reference. Provider specifics are in `DIGISELLER_INTEGRATION.md`
 and `CRYPTOMUS_INTEGRATION.md`.
 
+Email/password authentication, authorization invariants and the future email/Google provider
+boundaries are documented in `AUTHENTICATION.md`.
+
 ## Top-up money contract
 
 Top-ups are not products and there is no fixed catalog. The user submits a JSON **string** containing

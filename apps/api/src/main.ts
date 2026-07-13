@@ -13,10 +13,11 @@ async function bootstrap(): Promise<void> {
     bodyLimit: 1_048_576,
   }), { rawBody: true });
   await app.register(helmet, { contentSecurityPolicy: false });
+  const config = app.get(ConfigService<Environment, true>);
+  app.enableCors({ origin: new URL(config.get("PUBLIC_APP_BASE_URL", { infer: true })).origin, credentials: true });
   app.enableShutdownHooks();
   app.setGlobalPrefix("v1");
 
-  const config = app.get(ConfigService<Environment, true>);
   const host = config.get("HOST", { infer: true });
   const port = config.get("PORT", { infer: true });
   await app.listen(port, host);
