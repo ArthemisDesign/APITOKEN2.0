@@ -60,16 +60,22 @@ impl Settings {
         // bind (0.0.0.0) не доверяет loopback никогда; управляющие роуты требуют CLAUDE_API_KEYS.
         let trust_loopback = ev("CLAUDE_API_TRUST_LOOPBACK").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false)
             && matches!(host.as_str(), "127.0.0.1" | "::1" | "localhost");
-        let api_keys = ev("CLAUDE_API_KEYS").map(|s| {
-            s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
+        let parse_keys = |name: &str| ev(name).map(|s| {
+            s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect::<Vec<_>>()
         }).unwrap_or_default();
+        let api_keys = parse_keys("CLAUDE_API_KEYS");
+        let control_keys = parse_keys("CLAUDE_API_CONTROL_KEY");
+        let panel_keys = parse_keys("CLAUDE_API_PANEL_KEY");
+        // Наценка по умолчанию (×0.20): нужна и в Settings, и в ProxyConfig (для /admin/account) →
+        // считаем один раз в локальную переменную.
+        let mult_bp = ev("CLAUDE_API_MULT_BP").and_then(|s| s.parse().ok()).unwrap_or(2000);
         Settings {
             db_path,
             bind: format!("{host}:{port}"),
             fleet: ev("SUBS_FLEET").filter(|f| f != "all"),
             billing: ev_bool("CLAUDE_API_BILLING", true),
             // Наценка по умолчанию: клиент платит 20% от реального API-эквивалента (×0.20).
-            mult_bp: ev("CLAUDE_API_MULT_BP").and_then(|s| s.parse().ok()).unwrap_or(2000),
+            mult_bp,
             // Прайоры ёмкости окон (0 → дефолт пула под Max 20x; калибровка их уточняет).
             cap5h_usd: ev("CLAUDE_API_CAP5H_USD").and_then(|s| s.parse().ok()).unwrap_or(0.0),
             cap7d_usd: ev("CLAUDE_API_CAP7D_USD").and_then(|s| s.parse().ok()).unwrap_or(0.0),
@@ -80,6 +86,9 @@ impl Settings {
             reserve_jitter: ev_frac("CLAUDE_API_RESERVE_JITTER", 0.02),
             proxy: ProxyConfig {
                 api_keys,
+                control_keys,
+                panel_keys,
+                default_mult_bp: mult_bp,
                 trust_loopback,
                 upstream: ev_or("CLAUDE_API_UPSTREAM", "https://api.anthropic.com"),
                 max_tries: ev("CLAUDE_API_MAX_TRIES").and_then(|s| s.parse().ok()).unwrap_or(3),

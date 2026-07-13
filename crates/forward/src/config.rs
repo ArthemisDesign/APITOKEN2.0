@@ -11,6 +11,17 @@ pub const CLAUDE_CODE_IDENTITY: &str = "You are a Claude agent, built on Anthrop
 #[derive(Clone, Debug)]
 pub struct ProxyConfig {
     pub api_keys: Vec<String>,     // ключи НАШЕГО API (пусто → см. trust_loopback)
+    /// Control-плоскость: ключи для `/admin/*` (создание аккаунтов/ключей/кредит). Ими пользуется
+    /// коммерция (control-plane) — ОТДЕЛЬНО от `api_keys` (раздача /v1). Пусто → /admin/* доступен
+    /// только admin-ключам (`api_keys`) или loopback-админу. Разделение секретов: компрометация
+    /// коммерц-ключа не даёт бесплатный форвардинг, компрометация forwarding-ключа не даёт эмиссию денег.
+    pub control_keys: Vec<String>,
+    /// Read-only ключи панели/дашбордов (`/capacity`, `/metrics`). Ими смотрят ёмкость/метрики БЕЗ
+    /// прав на /admin/* и БЕЗ неметеренного /v1. Пусто → дашборды доступны admin/control-ключам.
+    pub panel_keys: Vec<String>,
+    /// Наценка по умолчанию (basis points) для аккаунтов, созданных через `/admin/account` без явного
+    /// mult_bp. Коммерция обычно задаёт свою; это fallback (= CLAUDE_API_MULT_BP).
+    pub default_mult_bp: i64,
     /// Доверять ли loopback-пиру как админу при ПУСТЫХ `api_keys`. true ТОЛЬКО когда сервер
     /// слушает loopback-интерфейс. При bind на 0.0.0.0/публичный IP — false: за реверс-прокси
     /// (nginx) peer виден как 127.0.0.1, и доверие loopback открыло бы аноним-админ + бесплатный

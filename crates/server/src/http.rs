@@ -7,9 +7,10 @@
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
-use forward::{authed, client_key, forward, AppState, Metrics};
+use forward::{authed, client_key, forward, readonly_authed, AppState, Metrics};
+use crate::admin;
 use serde_json::json;
 use std::net::SocketAddr;
 
@@ -24,6 +25,14 @@ pub fn router(app: AppState) -> Router {
         .route("/capacity", get(capacity))
         .route("/metrics", get(metrics))
         .route("/panel", get(panel))
+        // Control-плоскость (`/admin/*`) — управление аккаунтами/ключами/балансом за control-ключом.
+        // Контракт для будущей КОММЕРЦИИ (отдельный сервис). Движок — авторитет живого баланса.
+        .route("/admin/account", post(admin::create_account))
+        .route("/admin/account/{id}", get(admin::get_account))
+        .route("/admin/account/{id}/credit", post(admin::credit_account))
+        .route("/admin/account/{id}/status", post(admin::account_status))
+        .route("/admin/key", post(admin::issue_key))
+        .route("/admin/key/{key}/status", post(admin::key_status))
         .fallback(forward)
         .with_state(app)
 }
@@ -35,7 +44,7 @@ async fn metrics(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    if !authed(&app, &headers, &peer) {
+    if !readonly_authed(&app, &headers, &peer) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
     let m = &app.metrics;
@@ -94,7 +103,7 @@ async fn capacity(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    if !authed(&app, &headers, &peer) {
+    if !readonly_authed(&app, &headers, &peer) {
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response();
     }
     let caps = app.pool.capacity();

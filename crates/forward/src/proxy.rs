@@ -150,6 +150,31 @@ pub fn authed(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> bool {
     }
 }
 
+/// Совпал ли клиентский ключ с любым из `allow` (constant-time по каждому). Пустой `allow` → false.
+fn key_in(headers: &HeaderMap, allow: &[String]) -> bool {
+    match client_key(headers) {
+        Some(k) => allow.iter().fold(false, |ok, x| ok | ct_eq(x.as_bytes(), k.as_bytes())),
+        None => false,
+    }
+}
+
+/// Control-плоскость (`/admin/*`): admin-ключ ИЛИ control-ключ ИЛИ (нет ни того ни другого →
+/// loopback-админ). Отдельный класс, чтобы коммерция управляла аккаунтами своим секретом, не имея
+/// прав неметеренного форвардинга.
+pub fn control_authed(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> bool {
+    if authed(app, headers, peer) { return true; } // admin-ключ/loopback покрывает control
+    if key_in(headers, &app.cfg.control_keys) { return true; }
+    // Ни admin, ни control-ключей не задано → доверяем loopback (dev). Иначе — только по ключу.
+    app.cfg.api_keys.is_empty() && app.cfg.control_keys.is_empty()
+        && app.cfg.trust_loopback && peer.ip().is_loopback()
+}
+
+/// Read-only дашборды (`/capacity`, `/metrics`): admin ИЛИ control ИЛИ panel-ключ. Панель смотрит
+/// ёмкость своим низкопривилегированным ключом — без прав /admin/* и без форвардинга.
+pub fn readonly_authed(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> bool {
+    control_authed(app, headers, peer) || key_in(headers, &app.cfg.panel_keys)
+}
+
 /// Результат авторизации запроса.
 enum Authz {
     /// Админ (env-ключ/localhost) — без тарификации.

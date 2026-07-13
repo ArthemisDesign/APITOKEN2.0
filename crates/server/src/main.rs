@@ -8,6 +8,7 @@
 //!   claude-api sub add-file <email> --token-file <path> [--proxy ...] [--fleet ...]
 //!   claude-api sub list | rm <email> | status <email> <s> | proxy <email> <p> | fleet <email> <f>
 
+mod admin;
 mod config;
 mod http;
 mod poller;
@@ -188,7 +189,7 @@ fn backup_cmd(out: Option<String>, keep: usize) -> Result<()> {
 }
 
 /// Сгенерировать id аккаунта: acct_<24hex> (из /dev/urandom, как ключ).
-fn gen_account_id() -> Result<String> {
+pub(crate) fn gen_account_id() -> Result<String> {
     use std::io::Read;
     let mut f = std::fs::File::open("/dev/urandom").context("открыть /dev/urandom")?;
     let mut buf = [0u8; 12];
@@ -261,7 +262,7 @@ fn mask_key(k: &str) -> String {
 
 /// Сгенерировать ключ из /dev/urandom (ровно 24 байта → hex): sk-pool-<48hex>.
 /// ВАЖНО: читаем фиксированный буфер (`read_exact`), а не весь файл — /dev/urandom бесконечен.
-fn gen_key() -> Result<String> {
+pub(crate) fn gen_key() -> Result<String> {
     use std::io::Read;
     let mut f = std::fs::File::open("/dev/urandom").context("открыть /dev/urandom")?;
     let mut buf = [0u8; 24];

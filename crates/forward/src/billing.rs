@@ -26,6 +26,12 @@ enum WriteCmd {
         reply: Option<oneshot::Sender<Option<i64>>>, // None → fire-and-forget (RAII из Drop)
     },
     Topup { account_id: String, amount: i64, reference: Option<String>, reply: oneshot::Sender<Option<i64>> },
+    /// Control-плоскость (редкие управляющие записи из `/admin/*`) — через ТОТ ЖЕ writer, чтобы
+    /// сохранить дисциплину единственного писателя (никаких гонок/BUSY с reserve/settle).
+    CreateAccount { id: String, handle: Option<String>, mult_bp: i64, reply: oneshot::Sender<bool> },
+    IssueKey { key: String, account_id: String, label: Option<String>, reply: oneshot::Sender<bool> },
+    AccountStatus { id: String, status: String, reply: oneshot::Sender<usize> },
+    KeyStatus { key: String, status: String, reply: oneshot::Sender<usize> },
     /// Барьер: writer FIFO → когда Flush обработан, ВСЕ прежние команды (settle) применены.
     /// Для дренажа очереди на graceful shutdown (иначе последние списания потерялись бы).
     Flush(oneshot::Sender<()>),
@@ -75,6 +81,22 @@ impl AsyncBilling {
                         WriteCmd::Topup { account_id, amount, reference, reply } => {
                             let _ = reply.send(
                                 registry::account_topup(&conn, &account_id, amount, reference.as_deref()).ok().flatten());
+                        }
+                        WriteCmd::CreateAccount { id, handle, mult_bp, reply } => {
+                            let ok = registry::account_create(&conn, &id, handle.as_deref(), mult_bp).is_ok();
+                            let _ = reply.send(ok);
+                        }
+                        WriteCmd::IssueKey { key, account_id, label, reply } => {
+                            let ok = registry::key_issue(&conn, &key, &account_id, label.as_deref()).is_ok();
+                            let _ = reply.send(ok);
+                        }
+                        WriteCmd::AccountStatus { id, status, reply } => {
+                            let n = registry::account_set_status(&conn, &id, &status).unwrap_or(0);
+                            let _ = reply.send(n);
+                        }
+                        WriteCmd::KeyStatus { key, status, reply } => {
+                            let n = registry::key_set_status(&conn, &key, &status).unwrap_or(0);
+                            let _ = reply.send(n);
                         }
                         WriteCmd::Flush(r) => { let _ = r.send(()); } // барьер обработан → очередь дренирована
                     }
@@ -155,6 +177,31 @@ impl AsyncBilling {
             account_id: account_id.into(), amount, reference: reference.map(|s| s.into()), reply: r,
         }).ok()?;
         rx.await.ok().flatten()
+    }
+    // --- Control-плоскость (`/admin/*`) — редкие управляющие операции через writer ---
+    pub async fn create_account(&self, id: &str, handle: Option<&str>, mult_bp: i64) -> bool {
+        let (r, rx) = oneshot::channel();
+        if self.writer.send(WriteCmd::CreateAccount {
+            id: id.into(), handle: handle.map(|s| s.into()), mult_bp, reply: r,
+        }).is_err() { return false; }
+        rx.await.unwrap_or(false)
+    }
+    pub async fn issue_key(&self, key: &str, account_id: &str, label: Option<&str>) -> bool {
+        let (r, rx) = oneshot::channel();
+        if self.writer.send(WriteCmd::IssueKey {
+            key: key.into(), account_id: account_id.into(), label: label.map(|s| s.into()), reply: r,
+        }).is_err() { return false; }
+        rx.await.unwrap_or(false)
+    }
+    pub async fn account_status(&self, id: &str, status: &str) -> usize {
+        let (r, rx) = oneshot::channel();
+        if self.writer.send(WriteCmd::AccountStatus { id: id.into(), status: status.into(), reply: r }).is_err() { return 0; }
+        rx.await.unwrap_or(0)
+    }
+    pub async fn key_status(&self, key: &str, status: &str) -> usize {
+        let (r, rx) = oneshot::channel();
+        if self.writer.send(WriteCmd::KeyStatus { key: key.into(), status: status.into(), reply: r }).is_err() { return 0; }
+        rx.await.unwrap_or(0)
     }
     /// Дренаж очереди writer'а (барьер): ждёт, пока ВСЕ ранее поставленные команды (в т.ч.
     /// fire-and-forget `settle_detached`) применятся. Вызывать на graceful shutdown ПОСЛЕ дренажа

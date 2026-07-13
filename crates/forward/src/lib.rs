@@ -23,6 +23,6 @@ pub use breaker::Breaker;
 pub use config::{ProxyConfig, CLAUDE_CODE_IDENTITY};
 pub use keylimiter::KeyLimiter;
 pub use metrics::Metrics;
-pub use proxy::{authed, client_key, forward};
+pub use proxy::{authed, client_key, control_authed, forward, readonly_authed};
 pub use state::AppState;
 pub use upstream::{detect_plan, limits_from_headers, persona_ua, poll_sub, Clients, Limits, PlanDetect, PollResult};
