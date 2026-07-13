@@ -81,7 +81,11 @@ const BODY_LIMIT: usize = 16 * 1024 * 1024;
 
 // Заголовки клиента, которые НЕ пробрасываем апстриму (перезаписываем или служебные).
 fn skip_req_header(name: &str) -> bool {
+    // Отпечаток Claude-Code-клиента синтезируем МЫ (x-app, x-stainless-*) → клиентские НЕ пробрасываем:
+    // иначе Python-SDK клиент дал бы `x-stainless-lang: python` при нашем claude-cli UA (противоречие).
+    if name.starts_with("x-stainless") { return true; }
     matches!(name,
+        "x-app" | "anthropic-dangerous-direct-browser-access" | "accept" |
         "host" | "content-length" | "connection" | "authorization" | "x-api-key"
         | "anthropic-beta" | "anthropic-version" | "user-agent" | "accept-encoding"
         | "transfer-encoding" | "upgrade" | "proxy-connection" | "proxy-authorization"
@@ -286,19 +290,23 @@ fn is_cc_marker(text: &str) -> bool {
 fn inject_identity(v: &mut Value, identity: &str) -> bool {
     let obj = match v.as_object_mut() { Some(o) => o, None => return false };
     if !obj.contains_key("messages") { return false; } // не messages-запрос — не трогаем
+    // identity-блок с cache_control:ephemeral — так же, как реальный Claude Code метит system-блоки:
+    // (1) структура system совпадает с CC (без cache_control — отпечаток отличается), (2) большой
+    // статический префикс кэшируется у Anthropic (экономика + ускорение), а мы по нему же роутим сессию.
+    let idblock = serde_json::json!({"type":"text","text":identity,"cache_control":{"type":"ephemeral"}});
     match obj.get("system").cloned() {
-        None => { obj.insert("system".into(), serde_json::json!([{"type":"text","text":identity}])); }
+        None => { obj.insert("system".into(), serde_json::json!([idblock])); }
         Some(Value::String(s)) => {
             if is_cc_marker(&s) { return false; }       // клиент прислал identity строкой — не дублируем
             obj.insert("system".into(),
-                serde_json::json!([{"type":"text","text":identity},{"type":"text","text":s}]));
+                serde_json::json!([idblock, {"type":"text","text":s}]));
         }
         Some(Value::Array(mut arr)) => {
             let first_cc = arr.first()
                 .and_then(|b| b.get("text")).and_then(|t| t.as_str())
                 .map(is_cc_marker).unwrap_or(false);
             if first_cc { return false; }               // уже Claude-Code-запрос (напр. сам Claude Code)
-            arr.insert(0, serde_json::json!({"type":"text","text":identity}));
+            arr.insert(0, idblock);
             obj.insert("system".into(), Value::Array(arr));
         }
         _ => return false,
@@ -398,12 +406,14 @@ pub async fn forward(
     // тело: один парс — вытаскиваем модель + max_tokens (для тарификации/резерва) и инжектим
     // identity (иначе токен подписки не пустят на /v1/messages). Держим `Bytes` (не Vec): clone на
     // каждую попытку ротации тогда O(1) refcount, а не копия до BODY_LIMIT (анти-амплификация памяти).
-    let mut body_bytes: bytes::Bytes = raw.clone();
+    let body_bytes: bytes::Bytes = raw.clone();
     let mut model = String::new();
     let mut max_tokens: u64 = 0;
     let mut session: Option<u64> = None; // sticky-ключ диалога (см. session_key) — для pool.pick_sticky
     let mut parsed = serde_json::from_slice::<Value>(&raw).ok();
-    let mut body_dirty = false; // тело менялось (identity/cap max_tokens) → пересобрать перед форвардом
+    // `parsed` (если тело — JSON) держим как ФИНАЛИЗИРУЕМЫЙ шаблон: инжектим identity/cap max_tokens
+    // здесь, а per-sub metadata.user_id — в цикле per-подписка, и сериализуем тело per-attempt. `body_bytes`
+    // (=raw) — фолбэк для не-JSON тела. В общем случае (1 попытка) это 1 сериализация, как и раньше.
     let mut web_uses: u64 = 0;  // суммарный лимит web-поисков (для резерва их стоимости под баланс)
     if let Some(v) = parsed.as_mut() {
         model = v.get("model").and_then(Value::as_str).unwrap_or("").to_string();
@@ -423,7 +433,7 @@ pub async fn forward(
             }
         }
         session = session_key(&parts.headers, v); // ДО инжекта — по исходному контенту клиента
-        if app.cfg.inject_identity && inject_identity(v, &app.cfg.identity) { body_dirty = true; }
+        if app.cfg.inject_identity { inject_identity(v, &app.cfg.identity); }
     }
 
     // Circuit breaker разомкнут (брауноут апстрима) → быстрый отбой ДО резерва: в аутейдж не делаем
@@ -467,7 +477,6 @@ pub async fn forward(
         if eff_mt < max_tokens {
             if let Some(v) = parsed.as_mut() {
                 v["max_tokens"] = serde_json::json!(eff_mt);
-                body_dirty = true;
             }
         }
         // РЕЗЕРВ по АККАУНТУ (общий баланс на все ключи юзера); гонки атомарны на уровне аккаунта.
@@ -483,17 +492,6 @@ pub async fn forward(
     let mut hold_guard = reserved.as_ref().map(|(acct, k, h)| HoldGuard {
         billing: app.billing.clone(), account_id: acct.clone(), key: k.clone(), hold: *h, armed: true,
     });
-    // Пересобираем тело ОДИН раз после всех правок (identity + возможный cap max_tokens). Если правили,
-    // но пересборка НЕ удалась — форвардить исходное тело НЕЛЬЗЯ: оно несёт СТАРЫЙ (большой) max_tokens
-    // при малом hold → пробой баланса. Тогда отказ (hold вернёт hold_guard на return).
-    if body_dirty {
-        match parsed.as_ref().map(serde_json::to_vec) {
-            Some(Ok(b)) => body_bytes = bytes::Bytes::from(b),
-            _ => return err_response(StatusCode::INTERNAL_SERVER_ERROR, "api_error",
-                                     "request could not be processed"),
-        }
-    }
-
     let version = parts.headers.get("anthropic-version")
         .and_then(|v| v.to_str().ok()).unwrap_or(&app.cfg.anthropic_version).to_string();
     let beta = merge_beta(
@@ -543,7 +541,7 @@ pub async fn forward(
         // Разоружим только на успехе (слот перейдёт стриму). mark_cooling/mark_healthy in-flight не трогают.
         let mut guard = InflightGuard::new(app.pool.clone(), sub.email.clone());
 
-        let client = match app.clients.get(&sub.proxy) {
+        let client = match app.clients.get(&sub.proxy, &sub.email) {
             Ok(c) => c,
             Err(e) => {
                 app.pool.mark_cooling(&sub.email, 10); // битый прокси → cooling (слот закроет guard)
@@ -561,11 +559,27 @@ pub async fn forward(
             .header("anthropic-version", &version)
             .header("anthropic-beta", &beta)
             .header("user-agent", &ua);
+        rb = crate::upstream::apply_persona_headers(rb, &app.cfg); // x-app + x-stainless-* + accept
         for (name, value) in parts.headers.iter() {
             let n = name.as_str();
             if !skip_req_header(n) { rb = rb.header(n, value.as_bytes()); }
         }
-        rb = rb.body(body_bytes.clone());
+        // per-sub тело: инжектим metadata.user_id ЭТОЙ подписки (стабилен per-аккаунт, перекрывает
+        // клиентский — иначе один user_id размазался бы по флоту). Сериализация здесь — в общем случае
+        // 1 раз (1 попытка); лишняя только на редкой ротации. Ошибка сериализации → отказ (не форвардим
+        // stale-тело с большим max_tokens при малом hold — пробой баланса; hold вернёт hold_guard).
+        let body_this = match parsed.as_mut() {
+            Some(v) => {
+                v["metadata"]["user_id"] = serde_json::json!(crate::upstream::persona_user_id(&sub.email));
+                match serde_json::to_vec(v) {
+                    Ok(b) => bytes::Bytes::from(b),
+                    Err(_) => return err_response(StatusCode::INTERNAL_SERVER_ERROR, "api_error",
+                                                  "request could not be processed"),
+                }
+            }
+            None => body_bytes.clone(), // не-JSON тело → как есть
+        };
+        rb = rb.body(body_this);
 
         let resp = match rb.send().await {
             Ok(r) => r,

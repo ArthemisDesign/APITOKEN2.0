@@ -15,37 +15,55 @@ fn email_seed(email: &str) -> u64 {
     h.finish()
 }
 
-/// Понизить patch-версию первого токена вида `A.B.C` в UA на `seed % spread`. patch-релизы почти
-/// наверняка существовали → правдоподобный разброс между персонами без смены major.minor.
-fn vary_patch(base: &str, seed: u64, spread: u32) -> String {
-    if spread <= 1 { return base.to_string(); }
-    for token in base.split([' ', '/', '(', ')', ',']) {
-        let parts: Vec<&str> = token.split('.').collect();
-        if parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) {
-            if let (Ok(maj), Ok(min), Ok(patch)) =
-                (parts[0].parse::<u32>(), parts[1].parse::<u32>(), parts[2].parse::<u32>())
-            {
-                let newpatch = patch.saturating_sub((seed % spread as u64) as u32);
-                return base.replacen(token, &format!("{maj}.{min}.{newpatch}"), 1);
-            }
-        }
-    }
-    base.to_string()
-}
-
-/// **Per-persona UA:** стабильный во времени для подписки, но различный между подписками.
-/// Пул задан списком (`user_agents` len>1) → пиним один по hash(email); иначе варьируем patch
-/// базового UA на `ua_spread`. Флот из одинаковых UA сам по себе — отпечаток; это его убирает.
+/// **Per-persona UA.** Список реальных UA (`user_agents` len>1) → пиним один по hash(email). Иначе —
+/// один ВАЛИДНЫЙ UA на весь флот. ВАЖНО: patch-версию НЕ варьируем. Раньше варьировали (`vary_patch`),
+/// но это создавало НЕСУЩЕСТВУЮЩИЕ комбинации версий (UA говорит 2.1.188, а x-stainless-package-version/
+/// identity — от 2.1.195) → аномалия ВНУТРИ одного запроса, хуже одинакового UA. Реальные юзеры на одной
+/// версии CC делят точный UA — флот-константный валидный UA нормален. Различие аккаунтов даём через
+/// egress-IP + `metadata.user_id` (per-подписка), а НЕ через фейковые версии. `ua_spread` больше не влияет.
 pub fn persona_ua(cfg: &ProxyConfig, email: &str) -> String {
     let seed = email_seed(email);
     if cfg.user_agents.len() > 1 {
         return cfg.user_agents[(seed as usize) % cfg.user_agents.len()].clone();
     }
-    let base = cfg.user_agents.first().cloned().unwrap_or_else(|| cfg.user_agent.clone());
-    vary_patch(&base, seed, cfg.ua_spread)
+    cfg.user_agents.first().cloned().unwrap_or_else(|| cfg.user_agent.clone())
 }
 
-/// Кэш http-клиентов: один клиент на строку прокси (переиспользуем пулы соединений).
+/// Добавить КОНСТАНТНЫЕ заголовки отпечатка Claude-Code-клиента (Stainless SDK): `x-app`, весь набор
+/// `x-stainless-*`, `accept`. UA/anthropic-version/anthropic-beta/authorization каждый вызыватель ставит
+/// сам. Применяется ОДИНАКОВО в бою (`forward`) и в probe/detect — иначе health-трафик имел бы иной
+/// (урезанный) отпечаток, чем боевой. Реальный CC всегда шлёт полный набор; их отсутствие/чужие значения
+/// (напр. `x-stainless-lang: python` от Python-SDK клиента) — мгновенный сигнал «это не Claude Code».
+pub fn apply_persona_headers(rb: reqwest::RequestBuilder, cfg: &ProxyConfig) -> reqwest::RequestBuilder {
+    rb.header("x-app", &cfg.x_app)
+        .header("x-stainless-lang", &cfg.stainless_lang)
+        .header("x-stainless-runtime", &cfg.stainless_runtime)
+        .header("x-stainless-runtime-version", &cfg.stainless_runtime_version)
+        .header("x-stainless-package-version", &cfg.stainless_package_version)
+        .header("x-stainless-os", &cfg.stainless_os)
+        .header("x-stainless-arch", &cfg.stainless_arch)
+        .header("x-stainless-retry-count", "0")
+        .header("x-stainless-timeout", "600")
+        .header("accept", "application/json")
+}
+
+/// Стабильный per-подписка `metadata.user_id` в формате Claude Code (`user_<hex>_account_<hex>...`).
+/// Детерминирован от email → у аккаунта он ОДИН во времени (как у реального юзера), но РАЗНЫЙ между
+/// подписками. Инжектим в тело, перекрывая клиентский: иначе (а) его нет вовсе (аномалия — CC всегда шлёт),
+/// либо (б) один клиентский user_id размазан по флоту = прямая кросс-аккаунт склейка.
+pub fn persona_user_id(email: &str) -> String {
+    let s = email_seed(email);
+    // два независимых 64-бит слова из seed → правдоподобные hex-поля
+    let a = s;
+    let b = s.wrapping_mul(0x9e3779b97f4a7c15).rotate_left(31);
+    format!("user_{a:016x}{b:016x}_account_{b:016x}{a:016x}_session_{a:016x}")
+}
+
+/// Кэш http-клиентов: один клиент на ПАРУ (прокси, подписка). Ключевание по email критично для
+/// анти-фингерпринта: клиент по одной лишь строке прокси заставил бы подписки с общим/пустым прокси
+/// делить ОДИН reqwest::Client → один пул TCP/HTTP2-соединений и TLS-session-store → токены разных
+/// Max-аккаунтов мультиплексировались бы в одном TLS-соединении (сильнейший сигнал «это пул»). Свой
+/// клиент на подписку изолирует соединения и TLS-сессии полностью.
 pub struct Clients {
     map: Mutex<HashMap<String, Client>>,
     connect_timeout: u64,
@@ -65,8 +83,10 @@ impl Clients {
     /// Liveness обеспечиваем СОБЫТИЙНО, а не ожиданием большого idle-таймаута: HTTP/2 keep-alive PING
     /// непрерывно проверяет соединение (в т.ч. на простое), TCP keep-alive — на уровне сокета. Мёртвое
     /// соединение (чёрная дыра) обнаруживается в момент неответа PING, а не по выжиданию таймаута.
-    pub fn get(&self, proxy: &str) -> reqwest::Result<Client> {
-        if let Some(c) = self.map.lock().unwrap_or_else(|e| e.into_inner()).get(proxy) { return Ok(c.clone()); }
+    pub fn get(&self, proxy: &str, email: &str) -> reqwest::Result<Client> {
+        // Ключ = (proxy, email): своя изоляция соединений/TLS-сессий на КАЖДУЮ подписку (см. док структуры).
+        let key = format!("{proxy}\x00{email}");
+        if let Some(c) = self.map.lock().unwrap_or_else(|e| e.into_inner()).get(&key) { return Ok(c.clone()); }
         let mut b = Client::builder()
             .connect_timeout(Duration::from_secs(self.connect_timeout))
             .user_agent(&self.user_agent)
@@ -82,7 +102,7 @@ impl Clients {
             b = b.proxy(reqwest::Proxy::all(proxy)?);
         }
         let c = b.build()?;
-        self.map.lock().unwrap_or_else(|e| e.into_inner()).insert(proxy.to_string(), c.clone());
+        self.map.lock().unwrap_or_else(|e| e.into_inner()).insert(key, c.clone());
         Ok(c)
     }
 }
@@ -198,10 +218,12 @@ pub enum PlanDetect {
 /// user:inference-only токен профиль не отдаёт (403) → NoScope.
 pub async fn detect_plan(client: &Client, cfg: &ProxyConfig, token: &str, ua: &str) -> PlanDetect {
     let url = format!("{}/api/oauth/profile", cfg.upstream.trim_end_matches('/'));
-    let resp = match client.get(&url)
+    let mut rb = client.get(&url)
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
-        .header("user-agent", ua)
+        .header("user-agent", ua);
+    rb = apply_persona_headers(rb, cfg); // единый отпечаток CC и на profile-запросе
+    let resp = match rb
         .timeout(Duration::from_secs(20))
         .send().await
     {
@@ -247,19 +269,19 @@ pub async fn poll_sub(client: &Client, cfg: &ProxyConfig, token: &str, ua: &str,
     let body = serde_json::json!({
         "model": "claude-haiku-4-5-20251001",
         "max_tokens": max_tokens,
-        "system": [{"type": "text", "text": cfg.identity}],
-        "messages": [{"role": "user", "content": content}]
+        "system": [{"type": "text", "text": cfg.identity, "cache_control": {"type": "ephemeral"}}],
+        "messages": [{"role": "user", "content": content}],
+        "metadata": {"user_id": persona_user_id(email)} // тот же per-подписка user_id, что и в бою
     });
     let url = format!("{}/v1/messages", cfg.upstream.trim_end_matches('/'));
-    let resp = client.post(&url)
+    let mut rb = client.post(&url)
         .header("authorization", format!("Bearer {token}"))
         .header("anthropic-version", &cfg.anthropic_version)
         .header("anthropic-beta", &cfg.default_beta)
         .header("content-type", "application/json")
-        .header("user-agent", ua) // per-persona UA — здоровье персоны идёт с тем же отпечатком, что и бой
-        .json(&body)
-        .timeout(Duration::from_secs(25))
-        .send().await.ok()?;
+        .header("user-agent", ua); // per-persona UA — здоровье персоны идёт с тем же отпечатком, что и бой
+    rb = apply_persona_headers(rb, cfg);          // ТОТ ЖЕ x-app + x-stainless-* + accept, что и в бою
+    let resp = rb.json(&body).timeout(Duration::from_secs(25)).send().await.ok()?;
     let http = resp.status().as_u16();
     let l = limits_from_headers(resp.headers());
     Some(PollResult {
@@ -273,23 +295,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vary_patch_stable_per_email_varied_across() {
-        let base = "claude-cli/2.1.195 (external, sdk-cli)";
-        let a = vary_patch(base, email_seed("alice@x.io"), 8);
-        // стабильность: тот же email → тот же UA
-        assert_eq!(a, vary_patch(base, email_seed("alice@x.io"), 8));
-        // major.minor не меняются, суффикс на месте
-        assert!(a.starts_with("claude-cli/2.1.") && a.ends_with("(external, sdk-cli)"), "a={a}");
-        let patch: u32 = a.split('/').nth(1).unwrap().split_whitespace().next().unwrap()
-            .split('.').nth(2).unwrap().parse().unwrap();
-        assert!((187..=195).contains(&patch), "patch={patch}");
-    }
-
-    #[test]
-    fn vary_patch_disabled_when_spread_low() {
-        let base = "claude-cli/2.1.195 (external, sdk-cli)";
-        assert_eq!(vary_patch(base, 12345, 1), base);
-        assert_eq!(vary_patch(base, 12345, 0), base);
+    fn persona_user_id_stable_and_distinct() {
+        let a = persona_user_id("alice@x.io");
+        assert_eq!(a, persona_user_id("alice@x.io"), "стабилен per-подписка");
+        assert_ne!(a, persona_user_id("bob@x.io"), "различен между подписками");
+        assert!(a.starts_with("user_") && a.contains("_account_") && a.contains("_session_"), "формат CC: {a}");
     }
 
     #[test]
@@ -307,12 +317,4 @@ mod tests {
         assert_eq!(parse_rfc3339("2000-01-32T00:00:00Z"), None);
     }
 
-    /// Разброс реально раскидывает флот по нескольким UA (не все в один).
-    #[test]
-    fn vary_patch_spreads_fleet() {
-        let base = "claude-cli/2.1.195 (external, sdk-cli)";
-        let mut seen = std::collections::HashSet::new();
-        for i in 0..50 { seen.insert(vary_patch(base, email_seed(&format!("u{i}@x.io")), 8)); }
-        assert!(seen.len() >= 3, "флот должен разложиться по UA, got {}", seen.len());
-    }
 }

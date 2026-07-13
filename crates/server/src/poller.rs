@@ -100,7 +100,7 @@ pub async fn reload_loop(app: AppState, db_path: String, fleet: Option<String>, 
 /// Один liveness-probe: читаем лимиты подписки и применяем. Сетевой сбой всё равно фиксируем
 /// (`set_util` c None двигает `polled_ts`) — иначе поллер спинил бы по мёртвому прокси.
 async fn probe(app: &AppState, sub: &Sub) {
-    let client = match app.clients.get(&sub.proxy) {
+    let client = match app.clients.get(&sub.proxy, &sub.email) {
         Ok(c) => c,
         Err(_) => { app.pool.set_util(&sub.email, None, None, None, None, None); return; }
     };

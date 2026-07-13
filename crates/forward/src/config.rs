@@ -48,4 +48,15 @@ pub struct ProxyConfig {
     pub ua_spread: u32,
     pub anthropic_version: String, // деф. anthropic-version, если клиент не прислал
     pub connect_timeout: u64,      // сек на установку соединения с апстримом/прокси
+    /// Отпечаток Claude Code клиента (Stainless SDK) — синтезируем эти заголовки в КАЖДЫЙ апстрим-
+    /// запрос, чтобы выглядеть как настоящий CC, и НЕ пробрасываем клиентские (иначе Python-SDK
+    /// клиент дал бы `x-stainless-lang: python` при нашем claude-cli UA = противоречие). Флот-константны
+    /// и ВАЛИДНЫ (реальные юзеры на одной версии CC их делят); различие аккаунтов — через IP+user_id.
+    pub x_app: String,                    // "cli"
+    pub stainless_lang: String,           // "js"
+    pub stainless_runtime: String,        // "node"
+    pub stainless_runtime_version: String,// "v22.x.x"
+    pub stainless_package_version: String,// версия @anthropic-ai/sdk (снимается refresh-скриптом)
+    pub stainless_os: String,             // "MacOS"
+    pub stainless_arch: String,           // "arm64"
 }

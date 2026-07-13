@@ -60,6 +60,9 @@ class H(BaseHTTPRequestHandler):
         print("VER=" + (self.headers.get('anthropic-version') or ''))
         print("BETA=" + (self.headers.get('anthropic-beta') or ''))
         print("IDENT=" + ident)
+        print("XAPP=" + (self.headers.get('x-app') or ''))
+        for h in ['lang','runtime','runtime-version','package-version','os','arch']:
+            print("SL_%s=%s" % (h, self.headers.get('x-stainless-'+h) or ''))
         self.send_response(200); self.send_header('content-type', 'application/json'); self.end_headers()
         self.wfile.write(b'{"id":"x","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}')
     def do_GET(self):
@@ -82,8 +85,15 @@ UA="$(sed -n 's/^UA=//p' "$LOG" | head -1)"
 VER="$(sed -n 's/^VER=//p' "$LOG" | head -1)"
 BETA_RAW="$(sed -n 's/^BETA=//p' "$LOG" | head -1)"
 IDENT="$(sed -n 's/^IDENT=//p' "$LOG" | head -1)"
+BETA="$BETA_RAW"   # ВЕСЬ реальный beta-набор Claude Code (не только oauth — иначе теряем claude-code-* маркер)
+XAPP="$(sed -n 's/^XAPP=//p' "$LOG" | head -1)"
+SL_LANG="$(sed -n 's/^SL_lang=//p' "$LOG" | head -1)"
+SL_RUNTIME="$(sed -n 's/^SL_runtime=//p' "$LOG" | head -1)"
+SL_RTVER="$(sed -n 's/^SL_runtime-version=//p' "$LOG" | head -1)"
+SL_PKGVER="$(sed -n 's/^SL_package-version=//p' "$LOG" | head -1)"
+SL_OS="$(sed -n 's/^SL_os=//p' "$LOG" | head -1)"
+SL_ARCH="$(sed -n 's/^SL_arch=//p' "$LOG" | head -1)"
 rm -rf "$LOG" "$TMPCFG"
-BETA="$(printf '%s' "$BETA_RAW" | tr ',' '\n' | grep -i oauth | paste -sd, -)"   # только oauth-бета
 
 # UA — НАДЁЖНО из версии установленного claude (не требует токена/сети)
 CLI_VER="$("$CLAUDE" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
@@ -97,7 +107,15 @@ set_kv CLAUDE_API_UA "$UA"                                    # всегда а�
 [ -n "$VER" ]   && set_kv CLAUDE_API_ANTHROPIC_VERSION "$VER" # best-effort (если захват удался)
 [ -n "$BETA" ]  && set_kv CLAUDE_API_BETA "$BETA"
 [ -n "$IDENT" ] && set_kv CLAUDE_API_IDENTITY "$IDENT"
+# Отпечаток Stainless-SDK (x-app + x-stainless-*) — если захват удался, кладём реальные значения.
+[ -n "$XAPP" ]     && set_kv CLAUDE_API_X_APP "$XAPP"
+[ -n "$SL_LANG" ]  && set_kv CLAUDE_API_SL_LANG "$SL_LANG"
+[ -n "$SL_RUNTIME" ] && set_kv CLAUDE_API_SL_RUNTIME "$SL_RUNTIME"
+[ -n "$SL_RTVER" ] && set_kv CLAUDE_API_SL_RT_VER "$SL_RTVER"
+[ -n "$SL_PKGVER" ] && set_kv CLAUDE_API_SL_PKG_VER "$SL_PKGVER"
+[ -n "$SL_OS" ]    && set_kv CLAUDE_API_SL_OS "$SL_OS"
+[ -n "$SL_ARCH" ]  && set_kv CLAUDE_API_SL_ARCH "$SL_ARCH"
 chown "$RUN_USER":"$RUN_USER" "$CONFIG_ENV" 2>/dev/null || true
-echo "актуализировано: UA='$UA' VER='${VER:-(деф)}' BETA='${BETA:-(деф)}' IDENT='${IDENT:+снят}${IDENT:-(деф)}'"
+echo "актуализировано: UA='$UA' BETA='${BETA:-(деф)}' XAPP='${XAPP:-(деф)}' SL_OS='${SL_OS:-(деф)}' SL_PKG='${SL_PKGVER:-(деф)}'"
 systemctl restart claude-api 2>/dev/null && echo "claude-api перезапущен" \
     || echo "(claude-api не как сервис — применится при следующем старте)"

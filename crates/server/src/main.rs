@@ -327,7 +327,7 @@ async fn detect_and_store(s: &Settings, email: &str) -> String {
         Err(e) => return format!("db: {e}"),
     };
     let clients = Clients::new(&s.proxy);
-    let client = match clients.get(&proxy) { Ok(c) => c, Err(e) => return format!("proxy: {e}") };
+    let client = match clients.get(&proxy, email) { Ok(c) => c, Err(e) => return format!("proxy: {e}") };
     let ua = forward::persona_ua(&s.proxy, email);
     match detect_plan(&client, &s.proxy, &tok, &ua).await {
         PlanDetect::Plan(p) => {
