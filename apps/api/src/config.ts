@@ -9,6 +9,10 @@ const environmentSchema = z.object({
   ENGINE_CONTROL_KEY: z.string().min(32),
   ENGINE_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
   PUBLIC_API_BASE_URL: z.string().url().default("https://api.apitoken.sale"),
+  PUBLIC_APP_BASE_URL: z.string().url().default("https://apitoken.sale"),
+  MIN_TOPUP_USD: z.string().regex(/^[1-9]\d*$/).transform(BigInt).default("1"),
+  MAX_TOPUP_USD: z.string().regex(/^[1-9]\d*$/).transform(BigInt).default("10000"),
+  ALLOW_INSECURE_USER_HEADER: z.enum(["true", "false"]).transform((value) => value === "true").default("false"),
   DIGISELLER_SELLER_ID: z.coerce.number().int().positive().optional(),
   DIGISELLER_API_KEY: z.string().min(1).optional(),
   DIGISELLER_PRODUCT_ID: z.coerce.number().int().positive().optional(),
@@ -29,6 +33,12 @@ const environmentSchema = z.object({
     .filter((item) => item !== undefined).length;
   if (cryptomusConfigured !== 0 && cryptomusConfigured !== 2) {
     context.addIssue({ code: "custom", message: "all Cryptomus settings must be provided together" });
+  }
+  if (value.MIN_TOPUP_USD > value.MAX_TOPUP_USD) {
+    context.addIssue({ code: "custom", message: "MIN_TOPUP_USD must not exceed MAX_TOPUP_USD" });
+  }
+  if (value.NODE_ENV === "production" && value.ALLOW_INSECURE_USER_HEADER) {
+    context.addIssue({ code: "custom", message: "ALLOW_INSECURE_USER_HEADER cannot be enabled in production" });
   }
 });
 

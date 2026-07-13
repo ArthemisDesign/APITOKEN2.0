@@ -33,17 +33,34 @@ pnpm dev:api
 pnpm dev:worker
 ```
 
+Run the real PostgreSQL checkout/payment tests with:
+
+```bash
+TEST_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/commerce pnpm test:integration
+```
+
 Payment providers sit behind a provider-neutral adapter. Every adapter must verify
 the provider event using its authoritative API and persist the webhook's globally unique event ID.
 Only then may it create a payment and enqueue an engine credit. The worker uses the payment ID as a
 stable, idempotent engine credit reference. Provider specifics are in `DIGISELLER_INTEGRATION.md`
 and `CRYPTOMUS_INTEGRATION.md`.
 
+## Top-up money contract
+
+Top-ups are not products and there is no fixed catalog. The user submits a JSON **string** containing
+positive whole USD digits, for example `{"amountUsd":"37"}`. Values containing a decimal point,
+sign, leading zero or a JSON number are invalid. PostgreSQL stores `amount_usd` as `bigint` and
+enforces `amount_nano = amount_usd * 1_000_000_000`. Provider-formatted `"37.00"` is accepted only
+when every fractional digit is zero.
+
+The local checkout is authoritative for user, engine account and amount. A provider webhook cannot
+change any of them. `paid_over` credits only the requested amount; underpayment never credits.
+
 ## Ownership rules
 
 - PostgreSQL `commerce` is the source of truth for users, payments and webhook processing.
 - The Rust Control API is the only allowed path to engine accounts and balances.
 - Never copy the Control API key into the frontend or return it from an HTTP response.
-- Store provider amounts in integer minor units and engine amounts as PostgreSQL `bigint`.
+- Store requested whole USD and engine nanoUSD as PostgreSQL `bigint`; never use floating point.
 - A payment webhook may enqueue at most one credit; an engine credit reference may confirm once.
 - The worker may retry indefinitely until the engine confirms the credit or an operator marks it dead.

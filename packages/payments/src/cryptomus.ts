@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import type {
-  CheckoutAction,
+  CheckoutCreation,
   CheckoutContext,
   ProviderPaymentState,
   VerifiedProviderPayment,
@@ -20,6 +20,7 @@ const paymentSchema = z.object({
   is_final: z.boolean(),
   additional_data: z.string().nullish(),
   updated_at: z.string().nullish(),
+  expired_at: z.number().int().nonnegative(),
 }).passthrough();
 
 const apiResponseSchema = z.object({
@@ -39,7 +40,6 @@ const webhookSchema = z.object({
 
 const metadataSchema = z.object({
   checkoutId: z.string().min(1),
-  productId: z.string().min(1),
 });
 
 export interface CryptomusOptions {
@@ -73,14 +73,14 @@ export class CryptomusProvider implements WebhookPaymentProviderAdapter {
     }
   }
 
-  async createCheckout(context: CheckoutContext): Promise<CheckoutAction> {
+  async createCheckout(context: CheckoutContext): Promise<CheckoutCreation> {
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(context.checkoutId)) {
       throw new CryptomusError("Cryptomus checkout ID must be 1-128 alpha-dash characters", false);
     }
-    if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(context.amount) || /^0(?:\.0+)?$/.test(context.amount)) {
-      throw new CryptomusError("Cryptomus amount must be a positive decimal string", false);
+    if (!/^[1-9]\d*$/.test(context.amount)) {
+      throw new CryptomusError("Cryptomus amount must be a positive whole USD string", false);
     }
-    const additionalData = JSON.stringify({ checkoutId: context.checkoutId, productId: context.productId });
+    const additionalData = JSON.stringify({ checkoutId: context.checkoutId });
     if (Buffer.byteLength(additionalData, "utf8") > 255) {
       throw new CryptomusError("Cryptomus checkout metadata exceeds 255 bytes", false);
     }
@@ -99,7 +99,12 @@ export class CryptomusProvider implements WebhookPaymentProviderAdapter {
     if (payment.order_id !== context.checkoutId) {
       throw new CryptomusError("Cryptomus returned a mismatched order ID", true);
     }
-    return { kind: "redirect", url: payment.url };
+    return {
+      action: { kind: "redirect", url: payment.url },
+      providerPaymentId: payment.uuid,
+      expiresAt: new Date(payment.expired_at * 1000).toISOString(),
+      raw: payment,
+    };
   }
 
   verifyWebhook(rawBody: string | Uint8Array): VerifiedWebhookSignal {
@@ -142,7 +147,7 @@ export class CryptomusProvider implements WebhookPaymentProviderAdapter {
       providerPaymentId: payment.uuid,
       providerEventId: `${payment.uuid}:${payment.status}`,
       state,
-      productId: metadata.productId,
+      providerProductId: null,
       checkoutId: metadata.checkoutId,
       paidAt: state === "paid" ? payment.updated_at ?? null : null,
       buyerEmail: null,

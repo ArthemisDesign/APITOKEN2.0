@@ -57,6 +57,9 @@ importers:
       tsx:
         specifier: ^4.20.0
         version: 4.23.1
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.7(@types/node@24.13.3)(tsx@4.23.1)
 
   apps/worker:
     dependencies:

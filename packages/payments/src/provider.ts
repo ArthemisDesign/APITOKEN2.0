@@ -2,7 +2,7 @@ export type ProviderPaymentState = "pending" | "paid" | "canceled" | "refunded";
 
 export interface CheckoutContext {
   checkoutId: string;
-  productId: string;
+  /** Positive whole USD represented as digits only. */
   amount: string;
   customerEmail: string;
   locale: "en-US" | "ru-RU";
@@ -31,12 +31,19 @@ export interface RedirectCheckout {
 
 export type CheckoutAction = FormPostCheckout | RedirectCheckout;
 
+export interface CheckoutCreation {
+  action: CheckoutAction;
+  providerPaymentId: string | null;
+  expiresAt: string | null;
+  raw: unknown;
+}
+
 export interface VerifiedProviderPayment {
   provider: string;
   providerPaymentId: string;
   providerEventId: string;
   state: ProviderPaymentState;
-  productId: string;
+  providerProductId: string | null;
   checkoutId: string | null;
   paidAt: string | null;
   buyerEmail: string | null;
@@ -49,7 +56,7 @@ export interface VerifiedProviderPayment {
 /** Provider-specific transport and verification. It never decides how much engine credit to issue. */
 export interface PaymentProviderAdapter {
   readonly code: string;
-  createCheckout(context: CheckoutContext): Promise<CheckoutAction>;
+  createCheckout(context: CheckoutContext): Promise<CheckoutCreation>;
   verifyPayment(providerPaymentId: string): Promise<VerifiedProviderPayment>;
 }
 
@@ -72,6 +79,14 @@ export class PaymentProviderRegistry {
     const provider = this.providers.get(code);
     if (!provider) throw new Error(`unsupported payment provider: ${code}`);
     return provider;
+  }
+
+  getWebhook(code: string): WebhookPaymentProviderAdapter {
+    const provider = this.get(code);
+    if (!("verifyWebhook" in provider) || typeof provider.verifyWebhook !== "function") {
+      throw new Error(`payment provider does not support webhooks: ${code}`);
+    }
+    return provider as WebhookPaymentProviderAdapter;
   }
 
   codes(): string[] {

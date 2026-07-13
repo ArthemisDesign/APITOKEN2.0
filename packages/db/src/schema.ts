@@ -24,6 +24,7 @@ export const paymentStatus = pgEnum("payment_status", ["pending", "paid", "faile
 export const webhookStatus = pgEnum("webhook_status", ["received", "processed", "ignored", "failed"]);
 export const engineCreditStatus = pgEnum("engine_credit_status", ["pending", "processing", "retry", "confirmed", "dead"]);
 export const apiKeyStatus = pgEnum("api_key_status", ["active", "disabled"]);
+export const checkoutStatus = pgEnum("checkout_status", ["creating", "pending", "paid", "canceled", "refunded", "failed"]);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey(),
@@ -51,8 +52,32 @@ export const engineAccounts = pgTable("engine_accounts", {
   check("engine_accounts_mult_bp_check", sql`${table.multBp} >= 0`),
 ]);
 
+export const checkoutSessions = pgTable("checkout_sessions", {
+  id: uuid("id").primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  engineAccountId: text("engine_account_id").notNull(),
+  provider: text("provider").notNull(),
+  amountUsd: bigint("amount_usd", { mode: "bigint" }).notNull(),
+  amountNano: bigint("amount_nano", { mode: "bigint" }).notNull(),
+  providerPaymentId: text("provider_payment_id"),
+  checkoutUrl: text("checkout_url"),
+  status: checkoutStatus("status").notNull().default("creating"),
+  providerState: jsonb("provider_state").notNull().default({}),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  index("checkout_sessions_user_created_idx").on(table.userId, table.createdAt),
+  uniqueIndex("checkout_sessions_provider_payment_uidx").on(table.provider, table.providerPaymentId)
+    .where(sql`${table.providerPaymentId} IS NOT NULL`),
+  check("checkout_sessions_amount_usd_check", sql`${table.amountUsd} > 0`),
+  check("checkout_sessions_amount_exact_check", sql`${table.amountNano} = ${table.amountUsd} * 1000000000`),
+]);
+
 export const payments = pgTable("payments", {
   id: uuid("id").primaryKey(),
+  checkoutId: uuid("checkout_id").notNull().references(() => checkoutSessions.id, { onDelete: "restrict" }),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
   provider: text("provider").notNull(),
   providerPaymentId: text("provider_payment_id").notNull(),
@@ -65,6 +90,7 @@ export const payments = pgTable("payments", {
   createdAt,
   updatedAt,
 }, (table) => [
+  uniqueIndex("payments_checkout_uidx").on(table.checkoutId),
   uniqueIndex("payments_provider_payment_uidx").on(table.provider, table.providerPaymentId),
   index("payments_user_created_idx").on(table.userId, table.createdAt),
   check("payments_amount_minor_check", sql`${table.amountMinor} > 0`),

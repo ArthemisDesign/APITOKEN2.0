@@ -11,20 +11,21 @@ Official documentation:
 
 ## Chosen flow
 
-Use a hosted **invoice**, not a static wallet. Each local checkout has a fixed fiat amount and a
-unique `checkoutId`; the customer chooses the cryptocurrency and network on Cryptomus's hosted
-page. This keeps pricing in our local product catalog and avoids maintaining blockchain addresses.
+Use a hosted **invoice**, not a static wallet. The user types an arbitrary positive **whole USD**
+amount; decimal points, JSON numbers, signs, leading zeroes and floats are rejected. Each local
+checkout stores that amount and a unique `checkoutId`; the customer chooses the cryptocurrency and
+network on Cryptomus's hosted page. There is no product catalog.
 
 ```text
-authenticated client selects a local product
-  -> commercial API creates a local checkout with user, engine account, product and USD value
+authenticated client submits whole USD digits such as "37"
+  -> commercial API stores user, engine account, 37 USD and 37000000000 nanoUSD
   -> Cryptomus POST /v1/payment uses checkoutId as idempotent order_id
   -> browser redirects to the returned pay.cryptomus.com URL
   -> Cryptomus POSTs signed status changes to
      https://api.apitoken.sale/v1/payments/cryptomus/webhook
   -> backend verifies the webhook signature
   -> backend rechecks the UUID with signed POST /v1/payment/info
-  -> backend matches checkoutId, product, expected fiat amount and commercial user
+  -> backend matches checkoutId, expected whole USD amount and commercial user
   -> a paid payment and one engine-credit job are persisted atomically
 ```
 
@@ -57,13 +58,16 @@ may only see a trusted reverse proxy address.
 | `refund_process`, `refund_fail` | pending | none |
 | `refund_paid` | refunded | never add positive credit |
 
-For `paid_over`, grant only the purchased local product value. Never convert the excess payment
-into extra engine credit automatically. Refunds require a separate operator/product policy.
+For `paid_over`, grant only the locally requested top-up. Never convert the excess payment into
+extra engine credit automatically. Refunds require a separate operator policy.
 
 ## Configuration
 
 ```text
 PUBLIC_API_BASE_URL=https://api.apitoken.sale
+PUBLIC_APP_BASE_URL=https://apitoken.sale
+MIN_TOPUP_USD=1
+MAX_TOPUP_USD=10000
 CRYPTOMUS_MERCHANT_ID=<merchant UUID>
 CRYPTOMUS_PAYMENT_API_KEY=<payment API key>
 ```
@@ -71,17 +75,26 @@ CRYPTOMUS_PAYMENT_API_KEY=<payment API key>
 Both Cryptomus credentials are optional in development but must be set together. Secrets belong in
 the deployment environment, never in the repository or browser.
 
-## What remains before live payments
+## Implemented HTTP contract
 
-The provider adapter, request signing, invoice creation, signed webhook parsing and authoritative
-payment lookup are implemented. Public checkout/webhook controllers intentionally wait for the
-local product catalog and checkout-session model: without them there is no safe source for user,
-engine account, expected amount or engine-credit value.
+```text
+POST /v1/checkouts                         {"amountUsd":"37","provider":"cryptomus"}
+GET  /v1/checkouts/{checkout UUID}
+POST /v1/payments/cryptomus/webhook        raw Cryptomus JSON
+```
+
+Checkout creation and status currently accept `x-user-id` only when
+`ALLOW_INSECURE_USER_HEADER=true`. This is deliberately forbidden in production and exists solely
+for backend testing before browser-session authentication is implemented. Webhook processing is
+public, signature-verified, independently rechecked through `/v1/payment/info`, amount-checked and
+idempotent. A paid checkout queues exactly `amountUsd * 1_000_000_000` nanoUSD.
+
+## What remains before live payments
 
 Before launch:
 
-1. Add product and checkout-session persistence.
-2. Add authenticated checkout creation and the public webhook controller.
-3. Point `api.apitoken.sale` to the API through HTTPS and configure the webhook IP rule.
+1. Replace the local `x-user-id` test bridge with real browser-session authentication.
+2. Point `api.apitoken.sale` to the API through HTTPS and configure the webhook IP rule.
+3. Add real Cryptomus credentials to the deployment environment.
 4. Use Cryptomus's test-webhook endpoint to exercise the deployed callback.
 5. Run one controlled invoice through every relevant state before enabling customers.

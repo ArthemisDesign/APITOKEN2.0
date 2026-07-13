@@ -1,17 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
-  acceptVerifiedPaidWebhook,
+  activateCheckoutSession,
+  applyVerifiedCheckoutPaymentEvent,
   claimNextCredit,
   confirmCredit,
+  createCheckoutSession,
   createDatabase,
+  getCheckoutSession,
+  type CheckoutSession,
   type Database,
-  type VerifiedPaidWebhook,
+  type VerifiedCheckoutPaymentEvent,
 } from "./index.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
 
-describe.runIf(Boolean(connectionString))("payment persistence", () => {
+describe.runIf(Boolean(connectionString))("whole-USD checkout persistence", () => {
   let database: Database;
   let userId: string;
 
@@ -22,79 +26,110 @@ describe.runIf(Boolean(connectionString))("payment persistence", () => {
 
   beforeEach(async () => {
     await database.pool.query(`
-      TRUNCATE audit_log, api_keys, engine_credits, webhook_events, payments, engine_accounts, users
-      RESTART IDENTITY CASCADE
+      TRUNCATE audit_log, api_keys, engine_credits, webhook_events, payments,
+               checkout_sessions, engine_accounts, users RESTART IDENTITY CASCADE
     `);
     userId = randomUUID();
     await database.pool.query("INSERT INTO users (id, email) VALUES ($1, $2)", [userId, `${userId}@test.invalid`]);
+    await database.pool.query(`
+      INSERT INTO engine_accounts (id, user_id, engine_account_id, status)
+      VALUES ($1, $2, 'acct_integration', 'active')
+    `, [randomUUID(), userId]);
   });
 
   afterAll(async () => {
     await database.pool.query(`
-      TRUNCATE audit_log, api_keys, engine_credits, webhook_events, payments, engine_accounts, users
-      RESTART IDENTITY CASCADE
+      TRUNCATE audit_log, api_keys, engine_credits, webhook_events, payments,
+               checkout_sessions, engine_accounts, users RESTART IDENTITY CASCADE
     `);
     await database.pool.end();
   });
 
-  function paidEvent(overrides: Partial<VerifiedPaidWebhook> = {}): VerifiedPaidWebhook {
+  async function checkout(amountUsd = 25n): Promise<CheckoutSession> {
+    const created = await createCheckoutSession(database, { userId, provider: "cryptomus", amountUsd });
+    return activateCheckoutSession(database, {
+      id: created.id,
+      providerPaymentId: "26109ba0-b05b-4ee0-93d1-fd62c822ce95",
+      checkoutUrl: "https://pay.test/invoice",
+      providerState: { status: "check" },
+    });
+  }
+
+  function event(session: CheckoutSession, overrides: Partial<VerifiedCheckoutPaymentEvent> = {}): VerifiedCheckoutPaymentEvent {
     return {
-      provider: "testpay",
-      providerEventId: "event-1",
-      eventType: "payment.succeeded",
-      providerPaymentId: "payment-1",
-      userId,
-      engineAccountId: "acct_integration",
-      amountMinor: 2500n,
-      amountNano: 25_000_000_000n,
+      provider: "cryptomus",
+      providerEventId: "payment-1:paid",
+      providerPaymentId: session.providerPaymentId!,
+      checkoutId: session.id,
+      state: "paid",
+      amountUsd: session.amountUsd,
       currency: "USD",
+      paidAt: new Date("2026-07-13T12:00:00Z"),
       payload: { safe: "fixture" },
       ...overrides,
     };
   }
 
-  it("persists a verified payment and engine credit atomically", async () => {
-    const accepted = await acceptVerifiedPaidWebhook(database, paidEvent());
-    expect(accepted).toMatchObject({ duplicateEvent: false });
-
-    const payment = await database.pool.query("SELECT status, amount_nano FROM payments");
-    const credit = await database.pool.query("SELECT status, idempotency_ref FROM engine_credits");
-    expect(payment.rows).toEqual([{ status: "paid", amount_nano: "25000000000" }]);
-    expect(credit.rows).toEqual([{ status: "pending", idempotency_ref: "testpay:payment-1" }]);
+  it("stores arbitrary whole USD as exact nanoUSD", async () => {
+    const session = await checkout(37n);
+    expect(session).toMatchObject({ amountUsd: 37n, amountNano: 37_000_000_000n, status: "pending" });
+    await expect(getCheckoutSession(database, { id: session.id, userId })).resolves.toMatchObject({ amountUsd: 37n });
   });
 
-  it("deduplicates webhook deliveries and payment events", async () => {
-    const first = await acceptVerifiedPaidWebhook(database, paidEvent());
-    const duplicateDelivery = await acceptVerifiedPaidWebhook(database, paidEvent());
-    const secondEventForSamePayment = await acceptVerifiedPaidWebhook(database, paidEvent({ providerEventId: "event-2" }));
+  it("persists a verified payment and engine credit atomically", async () => {
+    const session = await checkout();
+    const accepted = await applyVerifiedCheckoutPaymentEvent(database, event(session));
+    expect(accepted).toMatchObject({ duplicateEvent: false, checkoutStatus: "paid" });
+
+    const payment = await database.pool.query("SELECT status, amount_minor, amount_nano FROM payments");
+    const credit = await database.pool.query("SELECT status, idempotency_ref FROM engine_credits");
+    expect(payment.rows).toEqual([{ status: "paid", amount_minor: "2500", amount_nano: "25000000000" }]);
+    expect(credit.rows).toEqual([{ status: "pending", idempotency_ref: `cryptomus:${session.providerPaymentId}` }]);
+  });
+
+  it("deduplicates deliveries and never creates a second credit", async () => {
+    const session = await checkout();
+    const first = await applyVerifiedCheckoutPaymentEvent(database, event(session));
+    const duplicate = await applyVerifiedCheckoutPaymentEvent(database, event(session));
+    const paidOver = await applyVerifiedCheckoutPaymentEvent(database, event(session, { providerEventId: "payment-1:paid_over" }));
 
     expect(first.duplicateEvent).toBe(false);
-    expect(duplicateDelivery).toEqual({ duplicateEvent: true, paymentId: null, creditId: null });
-    expect(secondEventForSamePayment.paymentId).toBe(first.paymentId);
-    expect(secondEventForSamePayment.creditId).toBe(first.creditId);
-
+    expect(duplicate).toEqual({ duplicateEvent: true, paymentId: null, creditId: null, checkoutStatus: null });
+    expect(paidOver.paymentId).toBe(first.paymentId);
+    expect(paidOver.creditId).toBe(first.creditId);
     const counts = await database.pool.query(`
-      SELECT
-        (SELECT count(*)::int FROM payments) AS payments,
-        (SELECT count(*)::int FROM engine_credits) AS credits,
-        (SELECT count(*)::int FROM webhook_events) AS events
+      SELECT (SELECT count(*)::int FROM payments) AS payments,
+             (SELECT count(*)::int FROM engine_credits) AS credits,
+             (SELECT count(*)::int FROM webhook_events) AS events
     `);
     expect(counts.rows[0]).toEqual({ payments: 1, credits: 1, events: 2 });
   });
 
-  it("rolls back a provider payment ID reused with different money", async () => {
-    await acceptVerifiedPaidWebhook(database, paidEvent());
-    await expect(acceptVerifiedPaidWebhook(database, paidEvent({
-      providerEventId: "event-mismatch",
-      amountNano: 99_000_000_000n,
-    }))).rejects.toThrow("reused with different payment data");
-
+  it("rejects a verified amount different from the stored checkout", async () => {
+    const session = await checkout();
+    await expect(applyVerifiedCheckoutPaymentEvent(database, event(session, {
+      providerEventId: "payment-1:mismatch",
+      amountUsd: 99n,
+    }))).rejects.toThrow("amount does not match");
     const events = await database.pool.query("SELECT count(*)::int AS count FROM webhook_events");
-    expect(events.rows[0]).toEqual({ count: 1 });
+    expect(events.rows[0]).toEqual({ count: 0 });
+  });
+
+  it("records cancellation without issuing credit", async () => {
+    const session = await checkout();
+    const result = await applyVerifiedCheckoutPaymentEvent(database, event(session, {
+      providerEventId: "payment-1:cancel",
+      state: "canceled",
+      paidAt: null,
+    }));
+    expect(result).toMatchObject({ checkoutStatus: "canceled", paymentId: null, creditId: null });
+    const credits = await database.pool.query("SELECT count(*)::int AS count FROM engine_credits");
+    expect(credits.rows[0]).toEqual({ count: 0 });
   });
 
   it("claims each credit once and records the engine balance", async () => {
-    await acceptVerifiedPaidWebhook(database, paidEvent());
+    const session = await checkout();
+    await applyVerifiedCheckoutPaymentEvent(database, event(session));
     const [first, second] = await Promise.all([
       claimNextCredit(database, "worker-a"),
       claimNextCredit(database, "worker-b"),

@@ -1,7 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import type {
-  CheckoutAction,
+  CheckoutCreation,
   CheckoutContext,
   PaymentProviderAdapter,
   ProviderPaymentState,
@@ -83,22 +83,27 @@ export class DigiSellerProvider implements PaymentProviderAdapter {
     this.now = options.now ?? (() => new Date());
   }
 
-  async createCheckout(context: CheckoutContext): Promise<CheckoutAction> {
+  async createCheckout(context: CheckoutContext): Promise<CheckoutCreation> {
     const trackingSignature = this.signCheckout(context.checkoutId);
     const checkoutUrl = new URL(this.checkoutUrl);
     // DigiSeller's automatic unique-code redirect preserves GET parameters from the payment URL.
     checkoutUrl.searchParams.set("checkout_id", context.checkoutId);
     checkoutUrl.searchParams.set("checkout_sig", trackingSignature);
     return {
-      kind: "form_post",
-      url: checkoutUrl.toString(),
-      fields: {
-        id_d: this.options.productId.toString(),
-        typecurr: context.currency,
-        email: context.customerEmail,
-        lang: context.locale,
-        failpage: context.cancelUrl,
+      action: {
+        kind: "form_post",
+        url: checkoutUrl.toString(),
+        fields: {
+          id_d: this.options.productId.toString(),
+          typecurr: context.currency,
+          email: context.customerEmail,
+          lang: context.locale,
+          failpage: context.cancelUrl,
+        },
       },
+      providerPaymentId: null,
+      expiresAt: null,
+      raw: null,
     };
   }
 
@@ -124,7 +129,7 @@ export class DigiSellerProvider implements PaymentProviderAdapter {
       providerPaymentId,
       providerEventId: `${providerPaymentId}:3`,
       state: "paid",
-      productId: String(result.id_goods),
+      providerProductId: String(result.id_goods),
       checkoutId: this.decodeTracking(result.query_string),
       paidAt: result.date_pay ?? null,
       buyerEmail: result.email ?? null,
@@ -158,7 +163,7 @@ export class DigiSellerProvider implements PaymentProviderAdapter {
       providerPaymentId,
       providerEventId: `${providerPaymentId}:${purchase.invoice_state}`,
       state: invoiceState(purchase.invoice_state),
-      productId: String(purchase.item_id),
+      providerProductId: String(purchase.item_id),
       checkoutId: tracking,
       paidAt: purchase.date_pay ?? null,
       buyerEmail: purchase.buyer_info?.email ?? null,

@@ -2,13 +2,14 @@ import { Global, Module } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { CryptomusProvider, DigiSellerProvider, PaymentProviderRegistry, type PaymentProviderAdapter } from "@claude-api/payments";
 import type { Environment } from "./config.js";
-
-export const PAYMENT_PROVIDERS = Symbol("PAYMENT_PROVIDERS");
+import { CheckoutService } from "./checkout.service.js";
+import { PaymentsController } from "./payments.controller.js";
 
 @Global()
 @Module({
+  controllers: [PaymentsController],
   providers: [{
-    provide: PAYMENT_PROVIDERS,
+    provide: PaymentProviderRegistry,
     inject: [ConfigService],
     useFactory: (config: ConfigService<Environment, true>): PaymentProviderRegistry => {
       const adapters: PaymentProviderAdapter[] = [];
@@ -31,7 +32,7 @@ export const PAYMENT_PROVIDERS = Symbol("PAYMENT_PROVIDERS");
       }
       return new PaymentProviderRegistry(adapters);
     },
-  }],
-  exports: [PAYMENT_PROVIDERS],
+  }, CheckoutService],
+  exports: [PaymentProviderRegistry],
 })
 export class PaymentsModule {}

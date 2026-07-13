@@ -9,22 +9,21 @@ describe("DigiSellerProvider", () => {
     const provider = makeProvider(async () => new Response());
     const checkout = await provider.createCheckout({
       checkoutId: "checkout-123",
-      productId: "credits-25",
-      amount: "25.00",
+      amount: "25",
       customerEmail: "buyer@example.com",
       locale: "en-US",
       currency: "USD",
       returnUrl: "https://example.com/payments/return",
       cancelUrl: "https://example.com/payments/cancel",
     });
-    expect(checkout.kind).toBe("form_post");
-    if (checkout.kind !== "form_post") return;
-    expect(checkout.fields).toMatchObject({ id_d: "777" });
-    const checkoutUrl = new URL(checkout.url);
+    expect(checkout.action.kind).toBe("form_post");
+    if (checkout.action.kind !== "form_post") return;
+    expect(checkout.action.fields).toMatchObject({ id_d: "777" });
+    const checkoutUrl = new URL(checkout.action.url);
     expect(checkoutUrl.searchParams.get("checkout_id")).toBe("checkout-123");
     expect(checkoutUrl.searchParams.get("checkout_sig")).toBe(createHmac("sha256", "tracking-secret-with-enough-entropy")
       .update("checkout-123").digest("hex"));
-    expect(JSON.stringify(checkout.fields)).not.toContain("seller-api-key");
+    expect(JSON.stringify(checkout.action.fields)).not.toContain("seller-api-key");
   });
 
   it("logs in, verifies the invoice, and authenticates checkout tracking", async () => {
@@ -66,7 +65,7 @@ describe("DigiSellerProvider", () => {
       state: "paid",
       providerPaymentId: "123456789",
       providerEventId: "123456789:3",
-      productId: "777",
+      providerProductId: "777",
       checkoutId,
       amountUsd: "25",
     });
@@ -108,7 +107,7 @@ describe("DigiSellerProvider", () => {
       providerPaymentId: "987654321",
       providerEventId: "987654321:3",
       state: "paid",
-      productId: "777",
+      providerProductId: "777",
       providerAmount: "25.00",
     });
   });

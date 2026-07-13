@@ -17,8 +17,7 @@ describe("CryptomusProvider", () => {
 
     const checkout = await provider.createCheckout({
       checkoutId: "checkout-123",
-      productId: "credits-25",
-      amount: "25.00",
+      amount: "25",
       customerEmail: "buyer@example.com",
       locale: "en-US",
       currency: "USD",
@@ -26,14 +25,17 @@ describe("CryptomusProvider", () => {
       cancelUrl: "https://apitoken.sale/payments/cancel",
     });
 
-    expect(checkout).toEqual({ kind: "redirect", url: `https://pay.test/pay/${paymentId}` });
+    expect(checkout).toMatchObject({
+      action: { kind: "redirect", url: `https://pay.test/pay/${paymentId}` },
+      providerPaymentId: paymentId,
+    });
     expect(JSON.parse(requestBody)).toMatchObject({
-      amount: "25.00",
+      amount: "25",
       currency: "USD",
       order_id: "checkout-123",
       url_callback: "https://api.apitoken.sale/v1/payments/cryptomus/webhook",
       is_payment_multiple: true,
-      additional_data: JSON.stringify({ checkoutId: "checkout-123", productId: "credits-25" }),
+      additional_data: JSON.stringify({ checkoutId: "checkout-123" }),
     });
     expect(requestHeaders.get("merchant")).toBe("merchant-uuid");
     expect(requestHeaders.get("sign")).toBe(signRequest(requestBody));
@@ -76,7 +78,7 @@ describe("CryptomusProvider", () => {
       providerPaymentId: paymentId,
       providerEventId: `${paymentId}:paid_over`,
       state: "paid",
-      productId: "credits-25",
+      providerProductId: null,
       checkoutId: "checkout-123",
       providerAmount: "25.00",
       providerCurrency: "USD",
@@ -115,8 +117,9 @@ function successfulPayment(overrides: Record<string, unknown> = {}): Record<stri
       status: "paid",
       url: `https://pay.test/pay/${paymentId}`,
       is_final: true,
-      additional_data: JSON.stringify({ checkoutId: "checkout-123", productId: "credits-25" }),
+      additional_data: JSON.stringify({ checkoutId: "checkout-123" }),
       updated_at: "2026-07-13T15:00:00+03:00",
+      expired_at: 1_783_955_600,
       ...overrides,
     },
   };

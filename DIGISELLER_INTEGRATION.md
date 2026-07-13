@@ -25,7 +25,7 @@ commercial API creates local checkout session
   → backend obtains a short-lived seller API token
   → GET /api/purchases/unique-code/{uniquecode}?token=...
   → obtain the authoritative invoice ID and purchase facts
-  → validate successful code lookup, item_id, local checkout tracking and expected product value
+  → validate successful code lookup, item_id, local checkout tracking and expected whole USD amount
   → atomically persist payment + enqueue engine credit
 ```
 
@@ -66,8 +66,11 @@ policy; they must never silently issue another positive credit.
 
 - DigiSeller invoice ID is the provider payment ID and must be globally unique in our database.
 - Provider event identity is `invoice_id:invoice_state`, allowing one transition per state.
-- `item_id` must match a configured DigiSeller product owned by us.
-- The amount of API credit comes from our local product catalog, not a callback field.
+- `item_id` must match the DigiSeller sale configuration owned by us, but it never determines credit.
+- The user-entered local checkout amount is authoritative; there is no product catalog.
+- DigiSeller must ultimately charge the exact checkout whole-USD amount. The existing product-form
+  adapter is groundwork only and must not be enabled until the later full DigiSeller phase confirms
+  and implements its seller-side variable-price mechanism.
 - Purchase `amount`/`amount_usd` are recorded for reconciliation and checked against expectations.
 - DigiSeller's automatic completion redirects with the `uniquecode` plus GET parameters originally
   placed on the payment-page URL. We place an opaque `checkout_id` plus HMAC `checkout_sig` there.
@@ -83,7 +86,7 @@ policy; they must never silently issue another positive credit.
 - Provider adapters never decide engine credit value and never write the database.
 
 Adding Stripe, crypto or another provider means implementing this interface. Shared persistence,
-webhook deduplication, product valuation and engine-credit processing remain provider-independent.
+webhook deduplication, whole-USD amount validation and engine-credit processing remain provider-independent.
 
 ## Configuration still required
 

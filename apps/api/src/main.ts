@@ -11,7 +11,7 @@ async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter({
     logger: false,
     bodyLimit: 1_048_576,
-  }));
+  }), { rawBody: true });
   await app.register(helmet, { contentSecurityPolicy: false });
   app.enableShutdownHooks();
   app.setGlobalPrefix("v1");

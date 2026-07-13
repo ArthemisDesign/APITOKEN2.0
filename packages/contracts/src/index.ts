@@ -46,3 +46,24 @@ export interface HealthStatus {
   database: "up" | "down";
   engine: "up" | "down" | "unchecked";
 }
+
+/** User-entered whole USD. JSON numbers and decimal points are intentionally rejected. */
+export const wholeUsdSchema = z.string().regex(/^[1-9]\d*$/, "amountUsd must contain positive whole USD digits only");
+
+export const createCheckoutSchema = z.object({
+  amountUsd: wholeUsdSchema,
+  provider: z.literal("cryptomus").default("cryptomus"),
+});
+
+export type CreateCheckout = z.infer<typeof createCheckoutSchema>;
+
+export const checkoutStatusSchema = z.enum(["creating", "pending", "paid", "canceled", "refunded", "failed"]);
+
+export interface CheckoutView {
+  id: string;
+  provider: string;
+  amountUsd: string;
+  status: z.infer<typeof checkoutStatusSchema>;
+  checkoutUrl: string | null;
+  expiresAt: string | null;
+}
