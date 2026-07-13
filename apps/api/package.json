@@ -1,0 +1,30 @@
+{
+  "name": "@claude-api/commercial-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "predev": "pnpm --filter @claude-api/contracts build && pnpm --filter @claude-api/db build && pnpm --filter @claude-api/engine-client build && pnpm --filter @claude-api/payments build",
+    "dev": "tsx watch src/main.ts",
+    "start": "node --enable-source-maps dist/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@claude-api/contracts": "workspace:*",
+    "@claude-api/db": "workspace:*",
+    "@claude-api/engine-client": "workspace:*",
+    "@claude-api/payments": "workspace:*",
+    "@fastify/helmet": "^13.0.0",
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/config": "^4.0.0",
+    "@nestjs/core": "^11.0.0",
+    "@nestjs/platform-fastify": "^11.0.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.0"
+  }
+}

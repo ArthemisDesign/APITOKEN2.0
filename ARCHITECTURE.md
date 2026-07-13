@@ -70,3 +70,17 @@
 - **env только в server** — нижние слои чисто-функциональны и тестируемы без окружения.
 
 Детали конфигурации — `config.env.example` / `server.env.example`. Деплой — `systemd/claude-api.service`.
+
+## Коммерческий контур (отдельно от движка)
+
+```text
+future Next.js web → apps/api → commerce PostgreSQL
+                           └── Control API → Rust claude-api
+payment provider → apps/api (verified webhook) → engine_credits outbox → apps/worker → Control API
+```
+
+`apps/api` владеет будущей browser-facing API-границей и приёмом подписанных вебхуков.
+`apps/worker` забирает durable credit jobs из PostgreSQL через `FOR UPDATE SKIP LOCKED` и
+идемпотентно вызывает `/admin/account/{id}/credit`. Общие схемы/репозитории/клиент движка находятся
+в `packages/contracts`, `packages/db`, `packages/engine-client`. Коммерческий контур никогда не
+читает SQLite движка напрямую; полная карта — `COMMERCIAL_BACKEND.md`.

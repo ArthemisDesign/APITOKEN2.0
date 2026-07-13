@@ -1,6 +1,14 @@
 # Rust
 /target/
 
+# TypeScript commercial platform
+node_modules/
+dist/
+.turbo/
+.pnpm-store/
+coverage/
+*.tsbuildinfo
+
 # СЕКРЕТЫ — никогда в репозиторий
 *.env
 !*.env.example
@@ -15,3 +23,6 @@ active_proxy
 *.fifo
 .claude-*/
 secrets*
+
+# Local database volumes
+.data/

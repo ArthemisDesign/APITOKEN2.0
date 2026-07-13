@@ -1,0 +1,22 @@
+{
+  "name": "claude-api-platform",
+  "private": true,
+  "packageManager": "pnpm@9.7.0",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "dev:api": "pnpm --filter @claude-api/commercial-api dev",
+    "dev:worker": "pnpm --filter @claude-api/payment-worker dev",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "test:integration": "pnpm --filter @claude-api/db test:integration",
+    "db:generate": "pnpm --filter @claude-api/db db:generate",
+    "db:migrate": "pnpm --filter @claude-api/db db:migrate"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0"
+  }
+}

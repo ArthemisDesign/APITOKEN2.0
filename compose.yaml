@@ -1,0 +1,20 @@
+services:
+  commerce-postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: commerce
+      POSTGRES_USER: commerce
+      POSTGRES_PASSWORD: commerce-local-only
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      # PostgreSQL 18 uses a versioned PGDATA below this parent directory.
+      - commerce-postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U commerce -d commerce"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  commerce-postgres:

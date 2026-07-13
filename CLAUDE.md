@@ -12,6 +12,23 @@
 запрос уходит на квоте подписки из пула, с ротацией по лимитам. Полное описание — `README.md`,
 карта модулей — `ARCHITECTURE.md`, модель веток — `BRANCHES.md`.
 
+## Commercial workspace (TypeScript, отдельный bounded context)
+
+В этом же репозитории находится коммерческий pnpm-workspace: `apps/api`, `apps/worker` и общие
+`packages/*`. Он отвечает за будущих пользователей, платежи, вебхуки и связь user→engine account.
+Он **не входит** в Rust-цепочку `registry ← pool ← forward ← server` и не импортирует Rust-крейты.
+
+- Коммерческий код не открывает `subscriptions.db` и не пишет баланс напрямую.
+- Единственная граница коммерция→движок — HTTP Control API из `CONTROL_API.md`.
+- `apps/api` и `apps/worker` независимо деплоятся; общую логику кладём в `packages/*`.
+- Коммерческая PostgreSQL хранит людей/платежи/доставку событий, но НЕ авторитетный live-баланс.
+- CONTROL_KEY существует только в server-side env; браузеру, ответам и логам его не отдавать.
+- Суммы провайдера и движка — только integer (`bigint`/decimal string), без JavaScript `number`.
+- Публичный production API коммерческого слоя: `https://api.apitoken.sale`; клиентский домен:
+  `https://apitoken.sale`.
+
+Локальная карта и запуск — `COMMERCIAL_BACKEND.md`. Проверка: `pnpm build && pnpm typecheck && pnpm test`.
+
 ## Архитектура — слои (НЕ нарушать направление зависимостей)
 
 ```
