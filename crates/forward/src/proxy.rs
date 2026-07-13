@@ -204,17 +204,31 @@ fn err_retry(code: StatusCode, kind: &str, msg: &str, retry_after: i64) -> Respo
 ///     output + web_buf) ≤ hold — т.к. affordable округляем ВНИЗ и вход оценён сверху (байты ≥ токены).
 /// Anthropic, получив урезанный `max_tokens=eff_mt`, останавливает генерацию ровно на доступном
 /// токене — это и есть «отруб посреди запроса» без mid-stream-хаков.
+/// Дефолт лимита web-поисков, если web_search включён без явного `max_uses` — консервативная оценка
+/// для резерва их стоимости под баланс (реальный `max_uses` из тела приоритетен).
+const DEFAULT_WEB_USES: u64 = 20;
+
 fn cap_to_balance(bal: i128, input_est: i128, web_buf: i128, p: &metering::Prices,
                   mult_bp: i64, client_mt: u64) -> Option<(u64, i64)> {
     if bal <= 0 { return None; }
-    let fixed = metering::apply_multiplier(input_est * p.cache_write_1h + web_buf, mult_bp);
-    if fixed >= bal { return None; } // не тянет даже вход worst-case
-    let out_rate = metering::apply_multiplier(p.output, mult_bp).max(1); // client-нано за output-токен
-    let affordable = ((bal - fixed) / out_rate).max(0) as u64;           // round-down = консервативно
+    // Наценка ≤ 0 = бесплатный ключ (charge всегда 0) → не лимитируем, hold 0.
+    if mult_bp <= 0 { return Some((client_mt, 0)); }
+    // Работаем в RAW-нано (до наценки). Максимальная RAW-стоимость `x_max`, чья КЛИЕНТСКАЯ цена
+    // (apply_multiplier, round-half-up) гарантированно ≤ bal: apply_multiplier(X)=(X·m+5000)/10000 ≤ bal
+    // при X ≤ ⌊bal·10000/m⌋ (тогда X·m ≤ bal·10000 → (X·m+5000)/10000 ≤ bal, т.к. 5000<10000). Так
+    // `hold=apply_multiplier(ceiling) ≤ bal` держится ПО ПОСТРОЕНИЮ, без клампа (клампа-щели округления нет).
+    let x_max = bal.saturating_mul(10000) / (mult_bp as i128);
+    let fixed_raw = input_est * p.cache_write_1h + web_buf; // вход worst-case + буфер поисков (RAW)
+    if fixed_raw > x_max { return None; }                   // не тянет даже вход worst-case → 402
+    let out = p.output.max(1);
+    let affordable = ((x_max - fixed_raw) / out).max(0) as u64; // сколько output-токенов влезает в x_max
     if affordable == 0 { return None; }
     let eff_mt = client_mt.min(affordable);
-    let ceiling = (eff_mt as i128) * p.output + input_est * p.cache_write_1h + web_buf;
-    let hold = metering::apply_multiplier(ceiling, mult_bp).clamp(0, bal) as i64;
+    // ceiling_raw ≤ x_max (по построению) → hold = apply_multiplier(ceiling_raw) ≤ bal. А реальный
+    // charge = apply_multiplier(real_raw) ≤ hold, т.к. real_raw ≤ ceiling_raw (реальных input-токенов
+    // ≤ байт=input_est, ставка входа ≤ cw1h, output ≤ eff_mt). Итог: charge ≤ hold ≤ bal — жёстко.
+    let ceiling_raw = fixed_raw + (eff_mt as i128) * p.output;
+    let hold = metering::apply_multiplier(ceiling_raw, mult_bp) as i64;
     Some((eff_mt, hold))
 }
 
@@ -307,13 +321,21 @@ pub async fn forward(
     let mut session: Option<u64> = None; // sticky-ключ диалога (см. session_key) — для pool.pick_sticky
     let mut parsed = serde_json::from_slice::<Value>(&raw).ok();
     let mut body_dirty = false; // тело менялось (identity/cap max_tokens) → пересобрать перед форвардом
-    let mut has_web = false;    // включён ли web_search-инструмент (иначе платных поисков быть не может)
+    let mut web_uses: u64 = 0;  // суммарный лимит web-поисков (для резерва их стоимости под баланс)
     if let Some(v) = parsed.as_mut() {
         model = v.get("model").and_then(Value::as_str).unwrap_or("").to_string();
         max_tokens = v.get("max_tokens").and_then(Value::as_u64).unwrap_or(0);
-        has_web = v.get("tools").and_then(Value::as_array).map(|ts| ts.iter().any(|t| {
-            t.get("type").and_then(Value::as_str).map(|s| s.contains("web_search")).unwrap_or(false)
-        })).unwrap_or(false);
+        // Резервируем стоимость web_search по РЕАЛЬНОМУ max_uses каждого инструмента (не фикс-буфер):
+        // иначе клиент с max_uses>buf пробил бы hold. Без max_uses — консервативный дефолт.
+        if let Some(tools) = v.get("tools").and_then(Value::as_array) {
+            for t in tools {
+                let is_web = t.get("type").and_then(Value::as_str)
+                    .map(|s| s.contains("web_search")).unwrap_or(false);
+                if is_web {
+                    web_uses += t.get("max_uses").and_then(Value::as_u64).unwrap_or(DEFAULT_WEB_USES);
+                }
+            }
+        }
         session = session_key(&parts.headers, v); // ДО инжекта — по исходному контенту клиента
         if app.cfg.inject_identity && inject_identity(v, &app.cfg.identity) { body_dirty = true; }
     }
@@ -326,11 +348,14 @@ pub async fn forward(
     let mut reserved: Option<(String, i64)> = None;
     if let (Authz::Metered { key, mult_bp }, Some(billing)) = (&authz, &app.billing) {
         let bal = billing.get(key).map(|r| r.balance_nano).unwrap_or(0) as i128;
-        let p = metering::model_prices(&model);
+        // РЕЗЕРВ по model_prices_RESERVE: распознанная модель → её цена; нераспознанный алиас →
+        // MAX-тариф. Иначе резерв по дешёвому дефолту, а списание по (дорогой) модели ОТВЕТА пробили
+        // бы hold → баланс в минус до −2×. Списание (finalize) остаётся по реальной модели ответа.
+        let p = metering::model_prices_reserve(&model);
         let input_est = ((raw.len() + app.cfg.identity.len()) as i128).max(1);
-        // web_buf резервируем ТОЛЬКО если инструмент web_search реально включён (иначе платных поисков
-        // не будет) — иначе $0.20-буфер блокировал бы малобалансовым любой обычный запрос.
-        let web_buf = if has_web { 20 * metering::WEB_SEARCH_NANO } else { 0 };
+        // web-буфер = число разрешённых поисков × ставка (0 без web_search-инструмента → малобалансовым
+        // не блокирует обычные запросы; при включённом — покрывает ровно заявленный max_uses).
+        let web_buf = (web_uses as i128) * metering::WEB_SEARCH_NANO;
         let client_mt = if max_tokens > 0 { max_tokens.min(2_000_000) } else { 4096 };
         let (eff_mt, hold) = match cap_to_balance(bal, input_est, web_buf, &p, *mult_bp, client_mt) {
             Some(x) => x,
@@ -350,17 +375,22 @@ pub async fn forward(
                                         "insufficient balance for this request — top up your key"),
         }
     }
-    // Пересобираем тело ОДИН раз после всех правок (identity + возможный cap max_tokens).
-    if body_dirty {
-        if let Some(v) = &parsed {
-            if let Ok(b) = serde_json::to_vec(v) { body_bytes = bytes::Bytes::from(b); }
-        }
-    }
-    // Гард резерва: на любом не-успешном исходе И при отмене запроса вернёт hold клиенту.
+    // Гард резерва: на любом не-успешном исходе И при отмене запроса вернёт hold клиенту. Создаём
+    // ДО пересборки тела — если она упадёт и мы вернёмся, Drop гарда вернёт hold (без утечки).
     // Разоружим на успехе — там hold закрывает tee-метеринг. Снимает утечку денег при disconnect.
     let mut hold_guard = reserved.as_ref().map(|(k, h)| HoldGuard {
         billing: app.billing.clone(), key: k.clone(), hold: *h, armed: true,
     });
+    // Пересобираем тело ОДИН раз после всех правок (identity + возможный cap max_tokens). Если правили,
+    // но пересборка НЕ удалась — форвардить исходное тело НЕЛЬЗЯ: оно несёт СТАРЫЙ (большой) max_tokens
+    // при малом hold → пробой баланса. Тогда отказ (hold вернёт hold_guard на return).
+    if body_dirty {
+        match parsed.as_ref().map(serde_json::to_vec) {
+            Some(Ok(b)) => body_bytes = bytes::Bytes::from(b),
+            _ => return err_response(StatusCode::INTERNAL_SERVER_ERROR, "api_error",
+                                     "request could not be processed"),
+        }
+    }
 
     let version = parts.headers.get("anthropic-version")
         .and_then(|v| v.to_str().ok()).unwrap_or(&app.cfg.anthropic_version).to_string();
@@ -657,28 +687,37 @@ mod tests {
     #[test]
     fn cap_to_balance_enforces_budget() {
         let p = metering::model_prices("claude-haiku-4-5"); // input 1000, output 5000, cw1h 2000
-        let m = 10000; // наценка ×1.0 → client-нано == raw-нано (проще считать)
-        // большой баланс → НЕ режем: eff_mt == запрошенное, hold ≤ balance
-        let (eff, hold) = cap_to_balance(1_000_000_000, 100, 0, &p, m, 50).unwrap();
+        // ИНВАРИАНТ на широком диапазоне (наценки, балансы): hold ≤ bal И charge(worst usage) ≤ hold,
+        // И один лишний output-токен пробил бы баланс (точность отруба «ни на токен больше»).
+        for &m in &[10000i64, 2000, 900, 33333] { // ×1.0, ×0.2 (прод), ×0.09, ×3.33
+            for &bal in &[500_000i128, 2_000_000, 50_000_000, 10_000_000_000] {
+                let ib = 137i128; // байты входа
+                if let Some((eff, hold)) = cap_to_balance(bal, ib, 0, &p, m, 100_000) {
+                    assert!((hold as i128) <= bal, "hold {hold} > bal {bal} (m={m})");
+                    let real = ib * p.cache_write_1h + (eff as i128) * p.output; // worst-case usage
+                    assert!(metering::apply_multiplier(real, m) <= hold as i128,
+                            "charge > hold (m={m}, bal={bal}, eff={eff})");
+                    // если урезали балансом (eff < запрошенного) — +1 токен обязан пробить баланс
+                    if eff < 100_000 {
+                        let over = ib * p.cache_write_1h + ((eff + 1) as i128) * p.output;
+                        assert!(metering::apply_multiplier(over, m) > bal,
+                                "eff+1 должен превышать баланс (m={m}, bal={bal}, eff={eff})");
+                    }
+                }
+            }
+        }
+        // большой баланс + большой запрос → НЕ режем (eff == запрошенное)
+        let (eff, _) = cap_to_balance(1_000_000_000, 100, 0, &p, 2000, 50).unwrap();
         assert_eq!(eff, 50);
-        assert!((hold as i128) <= 1_000_000_000);
-        // малый баланс → output УРЕЗАН под доступное; hold ≤ balance; charge(eff) ≤ hold
-        let bal = 2_000_000i128; // $0.002
-        let (eff2, hold2) = cap_to_balance(bal, 100, 0, &p, m, 100_000).unwrap();
-        assert!(eff2 < 100_000 && eff2 > 0, "output урезан под баланс: {eff2}");
-        assert!((hold2 as i128) <= bal, "hold ≤ balance");
-        // реальная стоимость при worst-case usage (input_est токенов + eff2 output) НЕ превышает hold
-        let real_ceiling = 100 * p.cache_write_1h + (eff2 as i128) * p.output;
-        assert!(metering::apply_multiplier(real_ceiling, m) <= hold2 as i128,
-                "charge при eff_mt должен укладываться в hold");
-        // ещё один output-токен сверх eff2 УЖЕ пробил бы баланс (доказываем точность отруба)
-        let over = 100 * p.cache_write_1h + ((eff2 + 1) as i128) * p.output;
-        assert!(metering::apply_multiplier(over, m) > bal, "eff_mt+1 должен превышать баланс");
-        // баланс не тянет даже вход → None (отказ, а не отрицательный баланс)
-        assert!(cap_to_balance(100, 100_000, 0, &p, m, 10).is_none());
-        assert!(cap_to_balance(0, 10, 0, &p, m, 10).is_none());
-        // web_buf съедает бюджет только когда включён web_search: с буфером $0.20 малый баланс → None
-        let web = 20 * metering::WEB_SEARCH_NANO;
-        assert!(cap_to_balance(1_000_000, 100, web, &p, m, 10).is_none());
+        // бесплатный ключ (наценка 0) → не лимитируем, hold 0
+        assert_eq!(cap_to_balance(1_000, 999_999, 0, &p, 0, 12345), Some((12345, 0)));
+        // баланс не тянет даже вход → None (отказ, не отрицательный баланс)
+        assert!(cap_to_balance(100, 100_000, 0, &p, 2000, 10).is_none());
+        assert!(cap_to_balance(0, 10, 0, &p, 2000, 10).is_none());
+        // web_buf ($0.20) режет бюджет только при web_search: малый баланс + буфер → None
+        assert!(cap_to_balance(1_000_000, 100, 20 * metering::WEB_SEARCH_NANO, &p, 10000, 10).is_none());
+        // переполнения нет: огромный баланс и max_tokens
+        let (_, h) = cap_to_balance(i64::MAX as i128, 100, 0, &p, 2000, u64::MAX).unwrap();
+        assert!(h >= 0);
     }
 }

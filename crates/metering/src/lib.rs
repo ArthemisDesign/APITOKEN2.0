@@ -59,15 +59,39 @@ pub struct Prices {
 /// $/Mtoken → нано/токен. Цена в целых центах/десятитысячных → результат ЦЕЛЫЙ.
 const fn nano(dollars_per_mtoken_x1000: i128) -> i128 { dollars_per_mtoken_x1000 }
 
-/// Цены модели ($/Mtoken → нано/токен). Совпадают с официальными ставками Anthropic.
-/// Матчим по подстроке имени (как это делает движок), дефолт = Opus 4.8.
+/// Дефолт для НЕраспознанной модели при СПИСАНИИ (ответ обычно несёт реальный dated-id → распознан).
+const OPUS_48_PRICES: Prices = Prices {
+    input: 5000, cache_read: 500, cache_write_5m: 6250, cache_write_1h: 10000, output: 25000,
+};
+/// САМЫЙ ДОРОГОЙ тариф по ВСЕМ корзинам (Opus 3/4.0/4.1: $15/$75). Для РЕЗЕРВА нераспознанной модели:
+/// апстрим мог резолвить алиас в дорогую модель, а списание идёт по модели ОТВЕТА — если резервировать
+/// по дешёвому дефолту, charge пробил бы hold. Резерв по MAX ⟹ charge ≤ hold при любом резолве.
+const MAX_PRICES: Prices = Prices {
+    input: 15000, cache_read: 1500, cache_write_5m: 18750, cache_write_1h: 30000, output: 75000,
+};
+
+/// Цены модели для СПИСАНИЯ ($/Mtoken → нано/токен). Совпадают с официальными ставками Anthropic.
+/// Нераспознанная строка → дефолт Opus 4.8. (Для РЕЗЕРВА см. `model_prices_reserve`.)
 pub fn model_prices(model: &str) -> Prices {
+    model_prices_matched(model).unwrap_or(OPUS_48_PRICES)
+}
+
+/// Цены для РЕЗЕРВА (hold). Распознанная модель → её цена (апстрим отдаст ТОТ ЖЕ тариф → charge ≤ hold,
+/// точность сохранена). Нераспознанная → MAX_PRICES (страховка от алиаса, резолвящегося в дорогую
+/// модель: иначе charge по ответу пробил бы hold и увёл баланс в минус до −2×). Разница с `model_prices`
+/// ТОЛЬКО в дефолте (MAX vs Opus 4.8).
+pub fn model_prices_reserve(model: &str) -> Prices {
+    model_prices_matched(model).unwrap_or(MAX_PRICES)
+}
+
+/// Точный матч тарифа по имени; `None` — не распознано (не свалилось в дефолт).
+fn model_prices_matched(model: &str) -> Option<Prices> {
     let m = model.to_lowercase();
-    // helper: значения = $/Mtoken × 1000 (нано/токен)
-    let p = |inp, cr, cw5, cw1, out| Prices {
+    // helper: значения = $/Mtoken × 1000 (нано/токен); Some — распознанный тариф
+    let p = |inp, cr, cw5, cw1, out| Some(Prices {
         input: nano(inp), cache_read: nano(cr), cache_write_5m: nano(cw5),
         cache_write_1h: nano(cw1), output: nano(out),
-    };
+    });
     // Fable 5 / Mythos 5 — самые дорогие текущие модели ($10/$50). ДОЛЖНЫ идти до дефолта,
     // иначе считались бы как Opus 4.8 ($5/$25) — недосписание вдвое (теряем деньги).
     if m.contains("fable") || m.contains("mythos") {
@@ -98,7 +122,7 @@ pub fn model_prices(model: &str) -> Prices {
         }
         return p(250, 25, 313, 500, 1250);               // Haiku 3 = $0.25 / 0.025 / 0.3125→313 / 0.50 / 1.25
     }
-    p(5000, 500, 6250, 10000, 25000)                     // дефолт = Opus 4.8 (неизвестная новая модель)
+    None                                                 // не распознано (дефолт решают вызывающие)
 }
 
 /// Стоимость usage в **нанодолларах** (i128 — переполнения исключены). Каждая корзина
@@ -305,6 +329,29 @@ mod tests {
         assert_eq!(out1m("claude-haiku-4-5-20251001"), 5 * NANO_PER_USD);
         assert_eq!(out1m("claude-3-5-haiku-20241022"), 4 * NANO_PER_USD); // альт-схема, НЕ дефолт
         assert_eq!(out1m("claude-3-haiku-20240307"), 1_250_000_000);      // $1.25
+    }
+
+    #[test]
+    fn reserve_prices_cover_any_served_model() {
+        let out = |pr: &Prices| pr.output;
+        // распознанная модель: цена РЕЗЕРВА == цене СПИСАНИЯ (апстрим отдаст тот же тариф → charge≤hold)
+        for mdl in ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8", "claude-fable-5",
+                    "claude-opus-4-20250514", "claude-3-5-haiku-20241022"] {
+            assert_eq!(model_prices_reserve(mdl), model_prices(mdl), "recognized {mdl}");
+        }
+        // НЕраспознанная строка (алиас/опечатка): резерв по MAX-тарифу (≥ ЛЮБОГО реального тарифа),
+        // а списание по дефолту Opus 4.8 → charge(любая реальная модель) ≤ hold. Сценарий Находки 1:
+        let unknown = model_prices_reserve("claude-opus-4-0"); // request-matcher НЕ ловит
+        assert_eq!(out(&unknown), 75000, "нераспознанное → MAX output $75");
+        // MAX ≥ output ЛЮБОЙ известной модели (иначе резерв не покрыл бы charge)
+        for mdl in ["claude-fable-5", "claude-opus-4-8", "claude-opus-4-20250514",
+                    "claude-sonnet-5", "claude-haiku-4-5"] {
+            assert!(out(&unknown) >= out(&model_prices(mdl)), "MAX ≥ {mdl}");
+            assert!(unknown.cache_write_1h >= model_prices(mdl).cache_write_1h);
+            assert!(unknown.input >= model_prices(mdl).input);
+        }
+        // а вот СПИСАНИЕ нераспознанного остаётся Opus 4.8 (ответ обычно несёт реальный id)
+        assert_eq!(model_prices("claude-opus-4-0").output, 25000);
     }
 
     #[test]
