@@ -8,7 +8,7 @@ The Rust engine remains authoritative for API keys, live balances, reservations 
 
 ```text
 apps/api                 NestJS HTTP API (future browser/backend boundary)
-apps/worker              Durable engine-credit and customer-pricing processor
+apps/worker              Durable engine-credit, customer-pricing and SMTP email processor
 packages/contracts       Shared validation and transport types
 packages/db              PostgreSQL schema, migrations and repositories
 packages/engine-client   Typed client for the Rust Control API
@@ -47,6 +47,7 @@ and `CRYPTOMUS_INTEGRATION.md`.
 
 Email/password authentication, authorization invariants and the future email/Google provider
 boundaries are documented in `AUTHENTICATION.md`.
+Transactional email and self-hosted SMTP configuration are documented in `EMAIL_INTEGRATION.md`.
 
 B2C progressive tiers, B2B invitations/manual pricing, month-close behavior and the engine sync
 pipeline are documented in `PRICING.md`.

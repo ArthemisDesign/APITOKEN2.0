@@ -6,6 +6,7 @@ import { EngineClient } from "@claude-api/engine-client";
 import { validateEnvironment, type Environment } from "./config.js";
 import { CreditWorkerService } from "./credit-worker.service.js";
 import { PricingWorkerService } from "./pricing-worker.service.js";
+import { EmailWorkerService } from "./email-worker.service.js";
 import { DATABASE, ENGINE_CLIENT, WORKER_ID } from "./tokens.js";
 
 @Injectable()
@@ -37,6 +38,7 @@ class DatabaseShutdown implements OnApplicationShutdown {
     { provide: WORKER_ID, useFactory: () => `${hostname()}:${process.pid}` },
     CreditWorkerService,
     PricingWorkerService,
+    EmailWorkerService,
     DatabaseShutdown,
   ],
 })

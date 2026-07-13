@@ -30,6 +30,10 @@
   из проверенной server-side сессии; приватные SQL-запросы дополнительно фильтруют по `user_id`.
 - Полный клиентский `sk-pool-…` возвращается браузеру только при выпуске и не хранится в commerce
   PostgreSQL; листинг/отзыв используют маску и не-секретный engine `key_id`.
+- Password users never receive a session or engine account before email verification. Google/GitHub
+  may bypass local verification only with a provider-verified email; identities key on provider subject.
+- Auth tokens are stored hashed. The email outbox may contain only AES-GCM-encrypted raw tokens;
+  neither tokens nor verification/reset URLs may be logged.
 - Публичный production API коммерческого слоя: `https://api.apitoken.sale`; клиентский домен:
   `https://apitoken.sale`.
 - B2C pricing derives only from idempotently consumed engine charge-ledger rows. Tier/month state and

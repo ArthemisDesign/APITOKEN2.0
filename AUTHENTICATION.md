@@ -5,15 +5,20 @@
 ```text
 POST /v1/auth/register  {"email":"user@example.com","password":"at least 12 characters","inviteToken"?:"..."}
 POST /v1/auth/login     {"email":"user@example.com","password":"..."}
+POST /v1/auth/email/verify      {"token":"..."}
+POST /v1/auth/email/resend      {"email":"user@example.com"}
+POST /v1/auth/password/forgot   {"email":"user@example.com"}
+POST /v1/auth/password/reset    {"token":"...","password":"..."}
+GET  /v1/auth/google            (redirect; optional `?invite=...`)
+GET  /v1/auth/github            (redirect; optional `?invite=...`)
 GET  /v1/auth/me
 POST /v1/auth/logout
 GET  /v1/auth/providers
 ```
 
 Registration normalizes email to lowercase, hashes passwords with Argon2id (`m=19456`, `t=2`,
-`p=1`), creates the commercial user, queues a provider-neutral `verify_email` outbox job and
-provisions one Rust engine account. An engine provisioning failure leaves an explicit `error` state;
-it never creates an unowned checkout or silently shares another account.
+`p=1`), creates the commercial user and atomically queues a provider-neutral verification job.
+It does not provision a Rust engine account or create a session until verification succeeds.
 
 Without an invitation, registration creates a B2C Starter profile at 60% off. A valid B2B token is
 single-use, bound to the normalized registration email, expires, and is consumed in the same
@@ -21,9 +26,8 @@ transaction as the user. Only its SHA-256 hash is stored. B2B accounts receive t
 manual price and do not participate in progressive B2C tiers. See `PRICING.md`.
 
 Login failures use the same external response for an unknown email and a wrong password. A dummy
-Argon2 verification reduces timing-based email discovery. Set `REQUIRE_VERIFIED_EMAIL=true` after
-the email delivery worker is connected. Production configuration requires this flag. When enabled,
-registration creates no session and login remains blocked until verification completes.
+Argon2 verification reduces timing-based email discovery. Password login is always blocked until
+verification completes. Forgot-password and resend responses do not reveal whether an account exists.
 
 Login and registration limits are enforced in PostgreSQL by hashed email/IP buckets, so they work
 across multiple API instances without storing raw emails in the rate-limit table. A successful login
@@ -55,15 +59,14 @@ Background workers use narrow internal database jobs, not browser sessions. Paym
 webhooks can change only the checkout encoded when the invoice was created and independently
 verified through the provider API.
 
-## Future email infrastructure
+## Email delivery
 
-`apps/api/src/auth-providers.ts` defines `EmailDeliveryProvider`. PostgreSQL `email_outbox` stores
-provider-neutral jobs; `auth_tokens` stores hashed, expiring, single-use verification/reset tokens.
-The future email worker will claim an outbox job, mint the one-time link, send it through SMTP or a
-transactional provider, and record provider delivery identity. Raw one-time tokens must never be
-stored in `auth_tokens` or logs.
+PostgreSQL `email_outbox` stores durable jobs; `auth_tokens` stores hashed, expiring, single-use
+verification/reset tokens. Raw tokens are AES-256-GCM encrypted in the outbox and decrypted only in
+the worker process. SMTP jobs use leases, exponential retry and provider message IDs. Full setup is
+in `EMAIL_INTEGRATION.md`.
 
-## Future Google OpenID Connect
+## Google and GitHub authentication
 
 Optional configuration is all-or-none:
 
@@ -71,11 +74,16 @@ Optional configuration is all-or-none:
 GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET
 GOOGLE_REDIRECT_URI=https://api.apitoken.sale/v1/auth/google/callback
+GITHUB_CLIENT_ID
+GITHUB_CLIENT_SECRET
+GITHUB_REDIRECT_URI=https://api.apitoken.sale/v1/auth/github/callback
 ```
 
-`GoogleIdentityProvider` is the adapter boundary and `auth_identities` stores the immutable Google
-`sub` under a unique `(provider, subject)` constraint. The implementation must verify authorization
-`state`, OIDC `nonce`, signature, issuer, audience and redirect URI.
+Google uses authorization code + PKCE and verifies state, browser binding, nonce, ID-token signature,
+issuer, audience and `email_verified`. GitHub uses authorization code + PKCE with the minimal
+`user:email` scope, then reads `/user/emails` and accepts only a provider-verified address. Provider
+tokens are not retained. Both providers mark the local email verified and therefore skip our email.
+The immutable Google `sub` or GitHub numeric user ID is the identity key, never the email address.
 
 Never identify or automatically link a Google account by email alone. A verified Google identity
 whose email already belongs to a password account must be linked only from an authenticated account
@@ -84,8 +92,8 @@ email-based identity merging.
 
 ## Remaining production work
 
-1. Connect an email provider/worker and expose verification and password-reset completion routes.
-2. Implement the Google adapter and state/nonce transaction store using the existing identity table.
-3. Add trusted-edge rate limiting as defense in depth around the PostgreSQL limits.
-4. Configure HTTPS and trusted proxy/IP handling before relying on recorded client IPs.
+1. Deploy the self-hosted SMTP server and install its credentials in the worker.
+2. Register Google and GitHub applications with the documented callback URLs.
+3. Add an authenticated provider-linking flow for emails that already own an account.
+4. Add trusted-edge rate limiting and trusted proxy/IP handling.
 5. Add session management UI (list devices, revoke all sessions, password change and reauthentication).

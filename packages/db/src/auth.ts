@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { B2C_PRICING_TIERS } from "@claude-api/contracts";
 import type { Database } from "./client.js";
+import { insertAuthEmail } from "./email.js";
 import { lockBusinessInvite, utcMonthStart } from "./pricing.js";
 
 export interface AuthUser {
@@ -54,6 +55,7 @@ export async function createEmailUser(
   email: string,
   passwordHash: string,
   businessInviteTokenHash?: string,
+  verification?: { tokenHash: string; encryptedToken: string; expiresAt: Date },
 ): Promise<RegisteredAuthUser> {
   const client = await database.pool.connect();
   const userId = randomUUID();
@@ -87,10 +89,14 @@ export async function createEmailUser(
         WHERE id = $1 AND consumed_at IS NULL
       `, [invite.id, userId]);
     }
-    await client.query(`
-      INSERT INTO email_outbox (id, user_id, recipient, template, payload)
-      VALUES ($1, $2, $3, 'verify_email', '{}'::jsonb)
-    `, [randomUUID(), userId, email]);
+    if (verification) {
+      await insertAuthEmail(client, {
+        userId,
+        recipient: email,
+        purpose: "verify_email",
+        ...verification,
+      });
+    }
     await client.query("COMMIT");
     return {
       id: userId,

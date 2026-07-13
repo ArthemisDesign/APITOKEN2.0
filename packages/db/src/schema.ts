@@ -29,6 +29,7 @@ export const authTokenPurpose = pgEnum("auth_token_purpose", ["verify_email", "r
 export const emailOutboxStatus = pgEnum("email_outbox_status", ["pending", "processing", "sent", "failed"]);
 export const customerType = pgEnum("customer_type", ["b2c", "b2b"]);
 export const pricingJobStatus = pgEnum("pricing_job_status", ["pending", "processing", "retry", "confirmed"]);
+export const oauthProvider = pgEnum("oauth_provider", ["google", "github"]);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey(),
@@ -182,6 +183,17 @@ export const authTokens = pgTable("auth_tokens", {
   index("auth_tokens_user_purpose_idx").on(table.userId, table.purpose, table.createdAt),
 ]);
 
+export const oauthTransactions = pgTable("oauth_transactions", {
+  stateHash: text("state_hash").primaryKey(),
+  provider: oauthProvider("provider").notNull(),
+  nonce: text("nonce"),
+  codeVerifier: text("code_verifier").notNull(),
+  inviteTokenHash: text("invite_token_hash"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  createdAt,
+}, (table) => [index("oauth_transactions_expiry_idx").on(table.expiresAt)]);
+
 export const emailOutbox = pgTable("email_outbox", {
   id: uuid("id").primaryKey(),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
@@ -191,9 +203,13 @@ export const emailOutbox = pgTable("email_outbox", {
   status: emailOutboxStatus("status").notNull().default("pending"),
   attempts: integer("attempts").notNull().default(0),
   nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  lockedAt: timestamp("locked_at", { withTimezone: true }),
+  lockedBy: text("locked_by"),
   lastError: text("last_error"),
+  providerMessageId: text("provider_message_id"),
   sentAt: timestamp("sent_at", { withTimezone: true }),
   createdAt,
+  updatedAt,
 }, (table) => [index("email_outbox_claim_idx").on(table.status, table.nextAttemptAt)]);
 
 export const engineAccounts = pgTable("engine_accounts", {

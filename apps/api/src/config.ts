@@ -13,7 +13,9 @@ const environmentSchema = z.object({
   MIN_TOPUP_USD: z.string().regex(/^[1-9]\d*$/).transform(BigInt).default("1"),
   MAX_TOPUP_USD: z.string().regex(/^[1-9]\d*$/).transform(BigInt).default("10000"),
   SESSION_TTL_SECONDS: z.coerce.number().int().min(900).max(2_592_000).default(604_800),
-  REQUIRE_VERIFIED_EMAIL: z.enum(["true", "false"]).transform((value) => value === "true").default("false"),
+  AUTH_TOKEN_ENCRYPTION_KEY: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  EMAIL_VERIFICATION_TTL_SECONDS: z.coerce.number().int().min(900).max(604_800).default(86_400),
+  PASSWORD_RESET_TTL_SECONDS: z.coerce.number().int().min(300).max(86_400).default(3_600),
   COMMERCIAL_ADMIN_KEY: z.string().min(32).optional(),
   DIGISELLER_SELLER_ID: z.coerce.number().int().positive().optional(),
   DIGISELLER_API_KEY: z.string().min(1).optional(),
@@ -24,6 +26,9 @@ const environmentSchema = z.object({
   GOOGLE_CLIENT_ID: z.string().min(1).optional(),
   GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
   GOOGLE_REDIRECT_URI: z.string().url().optional(),
+  GITHUB_CLIENT_ID: z.string().min(1).optional(),
+  GITHUB_CLIENT_SECRET: z.string().min(1).optional(),
+  GITHUB_REDIRECT_URI: z.string().url().optional(),
 }).superRefine((value, context) => {
   const configured = [
     value.DIGISELLER_SELLER_ID,
@@ -47,8 +52,10 @@ const environmentSchema = z.object({
   if (googleConfigured !== 0 && googleConfigured !== 3) {
     context.addIssue({ code: "custom", message: "all Google OIDC settings must be provided together" });
   }
-  if (value.NODE_ENV === "production" && !value.REQUIRE_VERIFIED_EMAIL) {
-    context.addIssue({ code: "custom", message: "REQUIRE_VERIFIED_EMAIL must be true in production" });
+  const githubConfigured = [value.GITHUB_CLIENT_ID, value.GITHUB_CLIENT_SECRET, value.GITHUB_REDIRECT_URI]
+    .filter((item) => item !== undefined).length;
+  if (githubConfigured !== 0 && githubConfigured !== 3) {
+    context.addIssue({ code: "custom", message: "all GitHub OAuth settings must be provided together" });
   }
 });
 

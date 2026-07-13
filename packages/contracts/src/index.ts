@@ -134,6 +134,12 @@ export const registerSchema = credentialsSchema.extend({
 
 export const loginSchema = credentialsSchema.strict();
 
+export const emailOnlySchema = z.object({ email: authEmailSchema }).strict();
+export const authTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+export const verifyEmailSchema = z.object({ token: authTokenSchema }).strict();
+export const resetPasswordSchema = z.object({ token: authTokenSchema, password: authPasswordSchema }).strict();
+export const oauthProviderSchema = z.enum(["google", "github"]);
+
 export const createApiKeySchema = z.object({
   label: z.string().trim().min(1).max(100).optional(),
 }).strict();

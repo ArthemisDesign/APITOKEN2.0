@@ -9,6 +9,26 @@ const environmentSchema = z.object({
   CREDIT_POLL_MS: z.coerce.number().int().min(100).default(1000),
   PRICING_POLL_MS: z.coerce.number().int().min(1000).default(60_000),
   PRICING_CLOSE_GRACE_MS: z.coerce.number().int().min(0).default(3_600_000),
+  EMAIL_DELIVERY_MODE: z.enum(["disabled", "smtp"]).default("disabled"),
+  EMAIL_POLL_MS: z.coerce.number().int().min(100).default(1000),
+  AUTH_TOKEN_ENCRYPTION_KEY: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  PUBLIC_APP_BASE_URL: z.string().url().default("https://apitoken.sale"),
+  EMAIL_FROM: z.string().email().optional(),
+  SMTP_HOST: z.string().min(1).optional(),
+  SMTP_PORT: z.coerce.number().int().min(1).max(65_535).optional(),
+  SMTP_SECURE: z.enum(["true", "false"]).transform((value) => value === "true").default("true"),
+  SMTP_USERNAME: z.string().min(1).optional(),
+  SMTP_PASSWORD: z.string().min(1).optional(),
+}).superRefine((value, context) => {
+  if (value.EMAIL_DELIVERY_MODE === "smtp" && (!value.EMAIL_FROM || !value.SMTP_HOST || !value.SMTP_PORT)) {
+    context.addIssue({ code: "custom", message: "EMAIL_FROM, SMTP_HOST and SMTP_PORT are required for SMTP delivery" });
+  }
+  if (Boolean(value.SMTP_USERNAME) !== Boolean(value.SMTP_PASSWORD)) {
+    context.addIssue({ code: "custom", message: "SMTP_USERNAME and SMTP_PASSWORD must be configured together" });
+  }
+  if (value.NODE_ENV === "production" && value.EMAIL_DELIVERY_MODE !== "smtp") {
+    context.addIssue({ code: "custom", message: "SMTP email delivery is required in production" });
+  }
 });
 
 export type Environment = z.infer<typeof environmentSchema>;
