@@ -152,15 +152,19 @@ enum Authz {
     Admin,
     /// Ключ клиента → АККАУНТ с балансом. Тарифицируем и списываем с БАЛАНСА АККАУНТА (общего на
     /// все ключи юзера); `key` — для атрибуции расхода по ключу. `mult_bp` — наценка аккаунта.
-    Metered { account_id: String, key: String, mult_bp: i64 },
+    /// `balance_nano` несём из авторизации → резерв-блок НЕ перечитывает баланс из БД (−1 запрос).
+    Metered { account_id: String, key: String, mult_bp: i64, balance_nano: i64 },
     /// Ключ/аккаунт есть, но баланс ≤ 0.
     PaymentRequired,
     /// Ключ неизвестен/заблокирован (ключ или аккаунт).
     Unauthorized,
 }
 
-/// Приоритет: сначала клиентский ключ (→ аккаунт из БД), иначе — админ (env/localhost).
+/// Порядок для МАСШТАБА: сначала админ (env-ключ/loopback) — проверка В ПАМЯТИ, без похода в БД
+/// (админ-трафик не грузит биллинг-мьютекс). Только если не админ — клиентский ключ → аккаунт
+/// (ОДНА DB-выборка, несёт баланс для резерва → без повторного чтения).
 fn authorize(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> Authz {
+    if authed(app, headers, peer) { return Authz::Admin; }
     if let (Some(billing), Some(k)) = (&app.billing, client_key(headers)) {
         if let Some(a) = billing.key_auth(&k) {
             if !a.active {
@@ -169,10 +173,12 @@ fn authorize(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> Authz {
             if a.balance_nano <= 0 {
                 return Authz::PaymentRequired;
             }
-            return Authz::Metered { account_id: a.account_id, key: k, mult_bp: a.mult_bp };
+            return Authz::Metered {
+                account_id: a.account_id, key: k, mult_bp: a.mult_bp, balance_nano: a.balance_nano,
+            };
         }
     }
-    if authed(app, headers, peer) { Authz::Admin } else { Authz::Unauthorized }
+    Authz::Unauthorized
 }
 
 /// Anthropic-подобная ошибка (чтобы SDK-клиент видел привычную форму).
@@ -349,8 +355,11 @@ pub async fn forward(
     // оценке (полные байты × cache_write_1h — токенов ≤ байт при любой корзине). Затем атомарно
     // резервируем потолок при УРЕЗАННОМ max_tokens (≤ баланса), фактику закрываем settle в finalize.
     let mut reserved: Option<(String, String, i64)> = None; // (account_id, key, hold)
-    if let (Authz::Metered { account_id, key, mult_bp }, Some(billing)) = (&authz, &app.billing) {
-        let bal = billing.account(account_id).map(|a| a.balance_nano).unwrap_or(0) as i128;
+    if let (Authz::Metered { account_id, key, mult_bp, balance_nano }, Some(billing)) = (&authz, &app.billing) {
+        // баланс несём из authorize (свежая выборка) — без повторного чтения. Гонку с параллельными
+        // запросами всё равно ловит АТОМАРНЫЙ reserve (WHERE balance>=hold): stale-баланс лишь мог бы
+        // дать чуть больший cap, но reserve тогда честно откажет (402), в минус не уводя.
+        let bal = *balance_nano as i128;
         // РЕЗЕРВ по model_prices_RESERVE: распознанная модель → её цена; нераспознанный алиас →
         // MAX-тариф. Иначе резерв по дешёвому дефолту, а списание по (дорогой) модели ОТВЕТА пробили
         // бы hold → баланс в минус до −2×. Списание (finalize) остаётся по реальной модели ответа.
