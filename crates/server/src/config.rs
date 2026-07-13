@@ -66,6 +66,15 @@ impl Settings {
         let api_keys = parse_keys("CLAUDE_API_KEYS");
         let control_keys = parse_keys("CLAUDE_API_CONTROL_KEY");
         let panel_keys = parse_keys("CLAUDE_API_PANEL_KEY");
+        // Слабый управляющий ключ = онлайн-брутфорс денег/форвардинга (throttle нет — см. reverse-proxy).
+        // Предупреждаем громко при старте, если admin/control-ключ короче 24 символов (наши генераторы
+        // дают 48-hex; короткий = операторская парольная фраза, брутфорсибельна).
+        for (name, keys) in [("CLAUDE_API_KEYS", &api_keys), ("CLAUDE_API_CONTROL_KEY", &control_keys)] {
+            if keys.iter().any(|k| k.len() < 24) {
+                eprintln!("⚠️  {name}: есть ключ короче 24 символов — слабый для управляющего доступа. \
+                           Задай длинный случайный (напр. openssl rand -hex 24).");
+            }
+        }
         // Наценка по умолчанию (×0.20): нужна и в Settings, и в ProxyConfig (для /admin/account) →
         // считаем один раз в локальную переменную.
         let mult_bp = ev("CLAUDE_API_MULT_BP").and_then(|s| s.parse().ok()).unwrap_or(2000);

@@ -424,6 +424,10 @@ async fn serve() -> Result<()> {
         breaker: Arc::new(forward::Breaker::new()),
         metrics: Arc::new(forward::Metrics::new()),
         key_limiter: Arc::new(forward::KeyLimiter::new()),
+        // Глобальный потолок одновременной обработки (анти-DoS). Деф 1024 — с запасом под легит-нагрузку
+        // (нагрузочный тест давал ~1000 req/с), но отсекает флуд от бесконтрольного роста.
+        concurrency: Arc::new(tokio::sync::Semaphore::new(
+            std::env::var("CLAUDE_API_MAX_CONCURRENT").ok().and_then(|v| v.parse().ok()).unwrap_or(1024))),
         probe_poke: if s.proxy.poll { Some(poke.clone()) } else { None },
     };
 

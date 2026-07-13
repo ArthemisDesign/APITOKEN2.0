@@ -189,6 +189,10 @@ pub struct Live {
     pub cooling_until: i64,
     pub last_used: i64,
     pub polled_ts: i64,
+    /// Момент последнего ФОРСИРОВАННОГО probe-запроса (`request_probe`) — для дебаунса. Отдельно от
+    /// `polled_ts` (тот пассивный сбор держит свежим на каждом ответе), иначе флуд 401/403 гнал бы
+    /// непрерывный probe-трафик. Эфемерный, не персистится.
+    pub last_probe_req: i64,
     pub reset5h: i64,
     pub reset7d: i64,
     /// Сколько запросов сейчас «в полёте» на этой подписке (мягкий счётчик для веерного
@@ -464,7 +468,15 @@ impl Pool {
     /// студил бы флот = DoS). In-flight/cooling не трогаем.
     pub fn request_probe(&self, email: &str) {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(l) = g.live.get_mut(email) { l.polled_ts = 0; }
+        if let Some(l) = g.live.get_mut(email) {
+            // Дебаунс по ОТДЕЛЬНОМУ last_probe_req (не polled_ts — его пассивный сбор держит свежим на
+            // каждом ответе, включая тот 401/403, что нас позвал → дебаунс по нему заблокировал бы и
+            // легитимный probe). Форсим не чаще раза в ~15с: флуд crafted-401/403 не гонит probe-трафик.
+            let now = now();
+            if l.last_probe_req >= now - 15 { return; }
+            l.last_probe_req = now;
+            l.polled_ts = 0; // → next_probe_at сразу due, поллер проверит чистым probe
+        }
     }
 
     /// Стрим ответа завершён или оборван клиентом → освобождаем слот конкуррентности персоны.
@@ -988,5 +1000,9 @@ mod tests {
         assert!(p.snapshot()[0].1.polled_ts > 0, "после set_util polled_ts свеж");
         p.request_probe("a");
         assert_eq!(p.snapshot()[0].1.polled_ts, 0, "request_probe → polled_ts=0 (due сейчас)");
+        // дебаунс: повторный форс в окне 15с — no-op, даже если пассивный сбор снова обновил polled_ts
+        p.set_util("a", Some(0.3), None, None, None, None); // polled_ts снова > 0
+        p.request_probe("a");
+        assert!(p.snapshot()[0].1.polled_ts > 0, "второй request_probe в окне дебаунса — no-op");
     }
 }

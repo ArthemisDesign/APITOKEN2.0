@@ -19,6 +19,7 @@ fn deny(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> Option<Respon
     if control_authed(app, headers, peer) {
         None
     } else {
+        forward::Metrics::inc(&app.metrics.auth_failures); // спайк = скан/брутфорс control-ключа
         Some((StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response())
     }
 }
@@ -158,7 +159,15 @@ pub async fn credit_account(
         Some(n) => n,
         None => return (StatusCode::BAD_REQUEST, Json(json!({"error": "need usd or amount_nano"}))).into_response(),
     };
-    match b.topup(&id, nano, req.r#ref.as_deref()).await {
+    // Идемпотентность пополнения держится ТОЛЬКО на UNIQUE(ref) для kind=topup И ref IS NOT NULL.
+    // Поэтому ПОЛОЖИТЕЛЬНОЕ зачисление (платёж) ОБЯЗАНО нести ref = id транзакции — иначе ретрай вебхука
+    // задвоил бы баланс. Отрицательная коррекция (adjust, ручная) ref не требует. Тримим ref.
+    let ref_trimmed = req.r#ref.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if nano > 0 && ref_trimmed.is_none() {
+        return (StatusCode::BAD_REQUEST,
+            Json(json!({"error": "ref required for credit (idempotency); use payment/transaction id"}))).into_response();
+    }
+    match b.topup(&id, nano, ref_trimmed).await {
         Some(bal) => Json(json!({
             "account": id, "balance_nano": bal, "balance": metering::nano_to_usd_string(bal as i128),
         })).into_response(),

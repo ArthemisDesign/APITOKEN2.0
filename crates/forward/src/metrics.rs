@@ -11,6 +11,7 @@ pub struct Metrics {
     pub breaker_rejects: AtomicU64, // отбито разомкнутым circuit breaker
     pub exhausted: AtomicU64,       // исчерпание пула (все за лимитом) → 429+Retry-After
     pub key_throttled: AtomicU64,   // отбито fair-share (кит превысил потолок одновременных)
+    pub auth_failures: AtomicU64,   // неудачных авторизаций (спайк = брутфорс/скан управляющих ключей)
 }
 
 impl Metrics {

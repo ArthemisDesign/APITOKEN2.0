@@ -53,8 +53,17 @@ const MAX_SLEEP: i64 = 300;
 /// probe не нужен и ВРЕДЕН: долбил бы забаненный (401/403) аккаунт внутри 900с-карантина каждые 300с
 /// (амплификация бан-сигнала) или слал бы трафик на 429-лимитированный на дни. Поэтому не probe-им до
 /// конца cooling — тогда и обновим liveness. `max` держит инвариант единой точки (due-фильтр == сон).
-fn next_probe_at(live: &pool::Live) -> i64 {
-    let base = if live.polled_ts == 0 { 0 } else { live.polled_ts + LIVENESS_INTERVAL };
+fn next_probe_at(email: &str, live: &pool::Live) -> i64 {
+    // Per-persona джиттер (0..LIVENESS_INTERVAL/2, стабилен по email): если трафик встал по всему флоту
+    // в момент T, без джиттера все idle-подписки созрели бы РОВНО в T+300 → синхронный залп идентичных
+    // probe (временна́я корреляция поверх фингерпринта). Джиттер разводит их во времени. Cooling НЕ
+    // джиттерим — он авторитетен (reset вычислен точно).
+    let base = if live.polled_ts == 0 { 0 } else {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(email, &mut h);
+        let jitter = (std::hash::Hasher::finish(&h) % (LIVENESS_INTERVAL as u64 / 2)) as i64;
+        live.polled_ts + LIVENESS_INTERVAL + jitter
+    };
     base.max(live.cooling_until)
 }
 
@@ -96,7 +105,7 @@ async fn probe(app: &AppState, sub: &Sub) {
         Err(_) => { app.pool.set_util(&sub.email, None, None, None, None, None); return; }
     };
     let ua = persona_ua(&app.cfg, &sub.email);
-    match poll_sub(&client, &app.cfg, &sub.token, &ua).await {
+    match poll_sub(&client, &app.cfg, &sub.token, &ua, &sub.email).await {
         Some(r) => {
             app.pool.set_util(&sub.email, r.util5h, r.util7d, r.status.clone(), r.reset5h, r.reset7d);
             match r.http {
@@ -156,7 +165,7 @@ pub async fn poll_loop(app: AppState, poke: Arc<Notify>) {
         let now = pool::now();
         let snap = app.pool.snapshot();
         let due: Vec<Sub> = snap.iter()
-            .filter(|(_, l)| next_probe_at(l) <= now)
+            .filter(|(s, l)| next_probe_at(&s.email, l) <= now)
             .map(|(s, _)| s.clone())
             .collect();
 
@@ -171,7 +180,7 @@ pub async fn poll_loop(app: AppState, poke: Arc<Notify>) {
         }
 
         // спим до ближайшего due (событийно), но не дольше MAX_SLEEP; будимся раньше по `poke`.
-        let next = app.pool.snapshot().iter().map(|(_, l)| next_probe_at(l)).min().unwrap_or(now + MAX_SLEEP);
+        let next = app.pool.snapshot().iter().map(|(s, l)| next_probe_at(&s.email, l)).min().unwrap_or(now + MAX_SLEEP);
         let sleep_s = (next - pool::now()).clamp(1, MAX_SLEEP);
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(sleep_s as u64)) => {}
@@ -187,12 +196,14 @@ mod tests {
     #[test]
     fn cooling_sub_is_not_due_for_probe() {
         let now = pool::now();
-        let mut l = pool::Live { polled_ts: now - LIVENESS_INTERVAL - 10, ..Default::default() };
-        // простаивающая (не cooling) давно опрошена → созрела
-        assert!(next_probe_at(&l) <= now, "idle-подписка должна созреть для liveness-probe");
+        let em = "probe@test.io";
+        // давно опрошена (с запасом на джиттер ≤ LIVENESS_INTERVAL/2) → созрела
+        let mut l = pool::Live { polled_ts: now - LIVENESS_INTERVAL * 2, ..Default::default() };
+        assert!(next_probe_at(em, &l) <= now, "idle-подписка должна созреть для liveness-probe");
         // в cooling → НЕ probe-им до конца cooling (не долбим забаненный/лимитированный аккаунт)
+        l.polled_ts = now - 310;
         l.cooling_until = now + 500;
-        assert_eq!(next_probe_at(&l), now + 500, "probe откладывается до конца cooling");
-        assert!(next_probe_at(&l) > now);
+        assert_eq!(next_probe_at(em, &l), now + 500, "probe откладывается до конца cooling");
+        assert!(next_probe_at(em, &l) > now);
     }
 }

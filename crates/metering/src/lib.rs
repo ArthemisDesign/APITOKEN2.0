@@ -233,12 +233,25 @@ pub fn model_from_sse(sse: &str) -> Option<String> {
 pub fn usage_from_sse(sse: &str) -> Usage {
     let mut u = Usage::default();
     let mut have_start = false;
+    let mut delta_chars: u64 = 0; // символы фактически отданного клиенту текста (нижняя оценка output)
     for raw in sse.lines() {
         let line = raw.trim_start();
         let json = match line.strip_prefix("data:") { Some(r) => r.trim(), None => continue };
         if json.is_empty() || json == "[DONE]" { continue; }
         let v: Value = match serde_json::from_str(json) { Ok(v) => v, Err(_) => continue };
         match v.get("type").and_then(Value::as_str) {
+            Some("content_block_delta") => {
+                // Копим символы отданного текста/размышления/tool-json. Нужно, чтобы при ОБРЫВЕ стрима
+                // клиентом ДО финального `message_delta` (несёт кумулятивный output_tokens) списать не
+                // «1 токен из message_start», а реально полученный объём (иначе — бесплатный инференс).
+                if let Some(d) = v.get("delta") {
+                    for f in ["text", "thinking", "partial_json"] {
+                        if let Some(t) = d.get(f).and_then(Value::as_str) {
+                            delta_chars += t.chars().count() as u64;
+                        }
+                    }
+                }
+            }
             Some("message_start") => {
                 if let Some(mu) = v.get("message").and_then(|m| m.get("usage")) {
                     let s = usage_from_value(mu);
@@ -266,6 +279,11 @@ pub fn usage_from_sse(sse: &str) -> Usage {
         }
     }
     let _ = have_start;
+    // Анти-абьюз обрыва: output не может быть меньше реально отданного текста. `chars/4` — КОНСЕРВАТИВНАЯ
+    // нижняя оценка токенов (реальная токенизация обычно <4 симв/токен, а для многобайтных языков символов
+    // ещё меньше на токен) → честный полный ответ не переоценивается (там parsed ≥ этой оценки), а
+    // оборванный больше не проходит как «1 токен».
+    u.output_tokens = u.output_tokens.max(delta_chars / 4);
     u
 }
 
@@ -442,7 +460,25 @@ data: {\"type\":\"message_delta\",\"delta\":{},\"usage\":{\"output_tokens\":37}}
         // input/cache из message_start, output — ПОСЛЕДНИЙ (37), не потерян и не задвоен
         assert_eq!(u.input_tokens, 100);
         assert_eq!(u.cache_read_tokens, 50);
+        // текст "hi" (2 симв) даёт floor 0 → honest ответ не переоценивается, остаётся 37
         assert_eq!(u.output_tokens, 37);
+    }
+
+    /// Анти-абьюз: клиент оборвал стрим ДО финального message_delta — output считаем по отданному тексту,
+    /// а не «1 токен из message_start» (иначе бесплатный дорогой инференс).
+    #[test]
+    fn sse_abort_before_message_delta_charges_by_text() {
+        let text = "a".repeat(4000); // 4000 символов отданного текста, message_delta так и НЕ пришёл
+        let sse = format!("\
+event: message_start\n\
+data: {{\"type\":\"message_start\",\"message\":{{\"usage\":{{\"input_tokens\":50,\"output_tokens\":1}}}}}}\n\
+\n\
+event: content_block_delta\n\
+data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{text}\"}}}}\n\
+\n");
+        let u = usage_from_sse(&sse);
+        assert_eq!(u.input_tokens, 50);
+        assert_eq!(u.output_tokens, 1000, "4000 симв/4 = 1000 токенов floor, а не 1"); // ловит обрыв
     }
 
     #[test]

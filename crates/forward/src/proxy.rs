@@ -85,7 +85,11 @@ fn skip_req_header(name: &str) -> bool {
         "host" | "content-length" | "connection" | "authorization" | "x-api-key"
         | "anthropic-beta" | "anthropic-version" | "user-agent" | "accept-encoding"
         | "transfer-encoding" | "upgrade" | "proxy-connection" | "proxy-authorization"
-        | "keep-alive" | "te" | "trailer")
+        | "keep-alive" | "te" | "trailer"
+        // Клиентские forwarding/hop-заголовки НЕ пробрасываем апстриму: они раскрыли бы цепочку прокси
+        // и IP клиента (рассинхрон с IP нашего egress-прокси → подрыв антифингерпринта флота).
+        | "x-forwarded-for" | "x-forwarded-host" | "x-forwarded-proto" | "forwarded"
+        | "x-real-ip" | "via" | "cf-connecting-ip" | "true-client-ip")
 }
 // Заголовки апстрима, которые НЕ отдаём клиенту: hop-by-hop + per-ПОДПИСОЧНЫЕ ratelimit/идентити.
 // `anthropic-ratelimit-*` отражают состояние НАШЕЙ подписки (утилизация/reset пула) — отдавать их
@@ -319,6 +323,13 @@ fn merge_beta(client_beta: Option<&str>, default_beta: &str) -> String {
 /// подписочном OAuth-токене недоступно → чистый 404 на шлюзе. Управляющие роуты (`/health` и др.)
 /// сюда НЕ доходят — их обслуживает `server` до fallback на `forward`.
 fn is_supported_endpoint(method: &Method, path: &str) -> bool {
+    // Отклоняем dot-сегменты/пустые сегменты ДО матчинга: reqwest/url РЕЗОЛВИТ `..` в исходящем URL
+    // (`/v1/models/../organizations` → `/v1/organizations`), поэтому allowlist по `starts_with` иначе
+    // пропустил бы НЕразрешённый эндпоинт на подписочный OAuth-токен (студит подписку, backend-scope-
+    // ошибка). Любой `.`/`..`/`//`-сегмент → путь считаем неподдерживаемым (чистый 404 на шлюзе).
+    if path.contains("//") || path.split('/').any(|seg| seg == "." || seg == "..") {
+        return false;
+    }
     match (method.as_str(), path) {
         ("POST", "/v1/messages") | ("POST", "/v1/messages/count_tokens") => true,
         ("GET", "/v1/models") => true,
@@ -332,11 +343,23 @@ pub async fn forward(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     req: axum::extract::Request,
 ) -> Response {
+    // ГЛОБАЛЬНЫЙ анти-DoS потолок: занимаем слот ДО авторизации (иначе флуд неверными ключами насытил
+    // бы пул DB-читателей мимо fair-share). Держится до конца обработки; стрим ответа его уже не занимает
+    // (Response возвращается — permit дропается). Переполнение → 503 с Retry-After (клиент откатится).
+    let _permit = match app.concurrency.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            Metrics::inc(&app.metrics.breaker_rejects);
+            return err_retry(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error", "server busy", 2);
+        }
+    };
     let (parts, body) = req.into_parts();
     let authz = authorize(&app, &parts.headers, &peer).await;
     match authz {
-        Authz::Unauthorized =>
-            return err_response(StatusCode::UNAUTHORIZED, "authentication_error", "invalid api key"),
+        Authz::Unauthorized => {
+            Metrics::inc(&app.metrics.auth_failures);
+            return err_response(StatusCode::UNAUTHORIZED, "authentication_error", "invalid api key");
+        }
         Authz::PaymentRequired =>
             return err_response(StatusCode::PAYMENT_REQUIRED, "invalid_request_error",
                                 "insufficient balance — top up your key"),
@@ -392,7 +415,10 @@ pub async fn forward(
                 let is_web = t.get("type").and_then(Value::as_str)
                     .map(|s| s.contains("web_search")).unwrap_or(false);
                 if is_web {
-                    web_uses += t.get("max_uses").and_then(Value::as_u64).unwrap_or(DEFAULT_WEB_USES);
+                    // saturating + кламп: crafted max_uses≈u64::MAX не должен обернуть web_uses (release-wrap
+                    // → мизерный web_buf → недорезерв). Потолок 1000 с запасом покрывает любой реальный кейс.
+                    web_uses = web_uses.saturating_add(
+                        t.get("max_uses").and_then(Value::as_u64).unwrap_or(DEFAULT_WEB_USES)).min(1000);
                 }
             }
         }
@@ -414,7 +440,11 @@ pub async fn forward(
     // оценке (полные байты × cache_write_1h — токенов ≤ байт при любой корзине). Затем атомарно
     // резервируем потолок при УРЕЗАННОМ max_tokens (≤ баланса), фактику закрываем settle в finalize.
     let mut reserved: Option<(String, String, i64)> = None; // (account_id, key, hold)
-    if let (Authz::Metered { account_id, key, mult_bp, balance_nano }, Some(billing)) = (&authz, &app.billing) {
+    // Резервируем ТОЛЬКО под POST /v1/messages — единственный биллинговый эндпоинт. `count_tokens` и
+    // `GET /v1/models` бесплатны у Anthropic; для них резерв (по MAX-тарифу пустой модели) мог бы 402-ить
+    // клиента с малым балансом на бесплатном листинге/подсчёте — а настоящий API их отдаёт независимо.
+    let billable = parts.method == Method::POST && parts.uri.path() == "/v1/messages";
+    if let (true, Authz::Metered { account_id, key, mult_bp, balance_nano }, Some(billing)) = (billable, &authz, &app.billing) {
         // баланс несём из authorize (свежая выборка) — без повторного чтения. Гонку с параллельными
         // запросами всё равно ловит АТОМАРНЫЙ reserve (WHERE balance>=hold): stale-баланс лишь мог бы
         // дать чуть больший cap, но reserve тогда честно откажет (402), в минус не уводя.
@@ -707,8 +737,14 @@ fn window_cool(lim: &Limits, now: i64) -> Option<i64> {
 
 /// Сколько студить при 429: Retry-After (авторитетно) → окно-виновник (если квота выбита) →
 /// короткий burst-дефолт (транзиентный лимит запросов/мин).
+/// Верхний потолок cooling: недельное окно 7d + сутки запаса. Кламп защищает от враждебного/битого
+/// upstream-ответа (или скомпрометированного прокси), который прислал бы Retry-After/reset в далёкое
+/// будущее и запарковал бы здоровую подписку на месяцы. Дольше 8 суток остывать нечему (все окна ≤7d).
+const MAX_COOL_SECS: i64 = 8 * 24 * 3600;
+
 fn cool_secs_429(resp: &reqwest::Response, lim: &Limits, now: i64) -> i64 {
     retry_after_header(resp).or_else(|| window_cool(lim, now)).unwrap_or(BURST_COOL_SECS)
+        .clamp(0, MAX_COOL_SECS)
 }
 
 /// Отдать ответ апстрима клиенту байт-в-байт (стримом — работает и для SSE).

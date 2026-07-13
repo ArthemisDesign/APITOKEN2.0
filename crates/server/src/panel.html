@@ -71,8 +71,8 @@ function setup(msg){
   clearInterval(timer);
   document.getElementById('app').innerHTML='';
   const box=$(`<div class="setup"><h1 style="margin:0 0 4px">Панель ёмкости пула</h1>
-    <div class="muted" style="font-size:12px">Введи admin API-ключ (CLAUDE_API_KEYS) — он хранится только в этом браузере.</div>
-    <input id="k" type="password" placeholder="sk-..." value="${key()}">
+    <div class="muted" style="font-size:12px">Введи ключ панели (CLAUDE_API_PANEL_KEY) — read-only, хранится только в этом браузере. НЕ используй admin/control-ключ.</div>
+    <input id="k" type="password" placeholder="pnl-..." value="${esc(key())}">
     <button id="go">Открыть</button>${msg?`<div class="err">${msg}</div>`:''}</div>`);
   document.getElementById('app').appendChild(box);
   box.querySelector('#go').onclick=()=>{localStorage.setItem('capkey',box.querySelector('#k').value.trim());start()};

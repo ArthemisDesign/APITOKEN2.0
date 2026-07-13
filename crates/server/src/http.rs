@@ -9,7 +9,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
-use forward::{authed, client_key, forward, readonly_authed, AppState, Metrics};
+use forward::{authed, client_key, control_authed, forward, readonly_authed, AppState, Metrics};
 use crate::admin;
 use serde_json::json;
 use std::net::SocketAddr;
@@ -47,6 +47,7 @@ async fn metrics(
     headers: HeaderMap,
 ) -> Response {
     if !readonly_authed(&app, &headers, &peer) {
+        Metrics::inc(&app.metrics.auth_failures);
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
     let m = &app.metrics;
@@ -62,6 +63,7 @@ async fn metrics(
          # TYPE claude_api_breaker_rejects_total counter\nclaude_api_breaker_rejects_total {}\n\
          # TYPE claude_api_exhausted_total counter\nclaude_api_exhausted_total {}\n\
          # TYPE claude_api_key_throttled_total counter\nclaude_api_key_throttled_total {}\n\
+         # TYPE claude_api_auth_failures_total counter\nclaude_api_auth_failures_total {}\n\
          # TYPE claude_api_route_pin_total counter\nclaude_api_route_pin_total {}\n\
          # TYPE claude_api_route_spill_total counter\nclaude_api_route_spill_total {}\n\
          # TYPE claude_api_route_place_total counter\nclaude_api_route_place_total {}\n\
@@ -70,13 +72,14 @@ async fn metrics(
          # TYPE claude_api_cooling gauge\nclaude_api_cooling {}\n\
          # TYPE claude_api_breaker_open gauge\nclaude_api_breaker_open {}\n",
         g(&m.requests), g(&m.upstream_429), g(&m.upstream_auth), g(&m.upstream_5xx),
-        g(&m.breaker_rejects), g(&m.exhausted), g(&m.key_throttled),
+        g(&m.breaker_rejects), g(&m.exhausted), g(&m.key_throttled), g(&m.auth_failures),
         rs.pin, rs.spill, rs.place, inflight, app.pool.len(), cooling, breaker_open,
     );
-    // Наблюдаемость трат: агрегаты по клиентским ключам (USD) — только когда биллинг включён.
-    // Авторитетно из БД одним SUM. Даёт «сколько клиенты потратили / держат / зарезервировано».
+    // Наблюдаемость трат: агрегаты по клиентским ключам (USD) — только когда биллинг включён И вызов
+    // авторизован CONTROL-ключом. Выручка/остатки клиентов — коммерческая тайна: панельному (read-only)
+    // ключу их НЕ отдаём (он видит лишь операционные метрики inflight/breaker/429).
     let body = match &app.billing {
-        Some(b) => {
+        Some(b) if control_authed(&app, &headers, &peer) => {
             let t = b.totals().await;
             let usd = |n: i64| n as f64 / 1e9;
             format!(
@@ -87,7 +90,7 @@ async fn metrics(
                 usd(t.balance_nano), usd(t.spent_nano), usd(t.reserved_nano), t.active_keys,
             )
         }
-        None => body,
+        _ => body, // биллинг выключен ИЛИ вызов не control → только операционные метрики
     };
     ([(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")], body).into_response()
 }
@@ -106,17 +109,25 @@ async fn capacity(
     headers: HeaderMap,
 ) -> Response {
     if !readonly_authed(&app, &headers, &peer) {
+        Metrics::inc(&app.metrics.auth_failures);
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response();
     }
     let caps = app.pool.capacity();
     let round = |x: f64| (x * 100.0).round() / 100.0; // 2 знака
+    // Маскируем email подписки: панельному (read-only) ключу не отдаём реальные адреса пула — это
+    // операционно чувствительно (реселлимые Claude-аккаунты; полный email помогает корреляции/бану).
+    // Оставляем стабильный различитель: первые 4 символа + «…». Оператору хватает отличить подписки.
+    let mask_email = |e: &str| -> String {
+        let head: String = e.chars().take(4).collect();
+        format!("{head}…")
+    };
     let (mut a1, mut a5, mut a1d, mut a7d) = (0.0, 0.0, 0.0, 0.0);
     let mut all_calibrated = true;
     let subs: Vec<_> = caps.iter().map(|c| {
         a1 += c.avail_1h_usd; a5 += c.avail_5h_usd; a1d += c.avail_1d_usd; a7d += c.avail_7d_usd;
         if !c.calibrated { all_calibrated = false; }
         json!({
-            "email": c.email,
+            "email": mask_email(&c.email),
             "calibrated": c.calibrated,
             "util5h": round(c.util5h), "util7d": round(c.util7d),
             "reset5h_in": c.reset5h_in, "reset7d_in": c.reset7d_in,
@@ -184,6 +195,7 @@ async fn pool_status(
     headers: HeaderMap,
 ) -> Response {
     if !authed(&app, &headers, &peer) {
+        Metrics::inc(&app.metrics.auth_failures);
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response();
     }
     let now = pool::now();

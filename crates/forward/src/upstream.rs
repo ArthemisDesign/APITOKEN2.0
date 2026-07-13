@@ -235,12 +235,20 @@ pub async fn detect_plan(client: &Client, cfg: &ProxyConfig, token: &str, ua: &s
 
 /// Минимальный запрос → читаем unified-ratelimit из ЗАГОЛОВКОВ (приходят и на 400/429).
 /// Идентичность Claude Code включена, чтобы запрос был валиден и вернул реальные лимиты.
-pub async fn poll_sub(client: &Client, cfg: &ProxyConfig, token: &str, ua: &str) -> Option<PollResult> {
+pub async fn poll_sub(client: &Client, cfg: &ProxyConfig, token: &str, ua: &str, email: &str) -> Option<PollResult> {
+    // Анти-фингерпринт: тело probe РАЗНОЕ по персоне (стабильно во времени, но различно между подписками),
+    // а не байт-в-байт "." / max_tokens:1 у всего флота. Иначе — два сигнала аномалии для Anthropic:
+    // (а) один аккаунт шлёт роботизированный микрозапрос по расписанию; (б) N аккаунтов шлют ИДЕНТИЧНЫЙ
+    // запрос (кросс-аккаунт корреляция). Набор — короткие человечные строки; max_tokens 1..=5.
+    let seed = email_seed(email);
+    const PROMPTS: [&str; 8] = ["Hi", "Hello", "Hey", "Good morning", "Thanks!", "Quick test", "Ping", "Are you there?"];
+    let content = PROMPTS[(seed % PROMPTS.len() as u64) as usize];
+    let max_tokens = 1 + (seed >> 8) % 5; // 1..=5
     let body = serde_json::json!({
         "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 1,
+        "max_tokens": max_tokens,
         "system": [{"type": "text", "text": cfg.identity}],
-        "messages": [{"role": "user", "content": "."}]
+        "messages": [{"role": "user", "content": content}]
     });
     let url = format!("{}/v1/messages", cfg.upstream.trim_end_matches('/'));
     let resp = client.post(&url)
