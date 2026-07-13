@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "api_keys_engine_key_uidx" ON "api_keys" USING btree ("engine_key_id") WHERE "api_keys"."engine_key_id" IS NOT NULL;

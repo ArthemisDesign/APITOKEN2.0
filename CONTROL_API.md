@@ -61,6 +61,8 @@
 ### A. Регистрация клиента
 1. Юзер регистрируется у тебя на сайте → ты создаёшь запись в СВОЕЙ БД.
 2. `POST /admin/account` → движок вернёт `account_id` (`acct_…`). Сохрани его у себя рядом с юзером.
+   Повтор с тем же непустым `handle` вернёт тот же аккаунт, поэтому восстановление регистрации
+   идемпотентно и не создаёт осиротевшие аккаунты.
 3. `POST /admin/key` c этим `account_id` → движок вернёт **`sk-pool-…`**. Покажи юзеру **один раз**
    (это его API-ключ, секрет). У аккаунта может быть много ключей (на проекты/команду).
 
@@ -72,7 +74,8 @@
 
 ### C. Личный кабинет (баланс/ключи/история)
 - Баланс/траты: `GET /admin/account/{id}` → `balance_nano`, `spent_nano`, `reserved_nano`.
-- Список ключей юзера: `GET /admin/account/{id}/keys` (ключи маскированы + label/status/расход).
+- Список ключей юзера: `GET /admin/account/{id}/keys` (не-секретный `key_id`, маска,
+  label/status/расход).
 - История платежей/трат: `GET /admin/account/{id}/ledger?limit=50` (топапы/списания сверху).
 
 ### D. Как клиент ПОЛЬЗУЕТСЯ (что показать ему в доке)
@@ -98,15 +101,20 @@ GET  /admin/account/{id}                                             → 200 {ba
 POST /admin/account/{id}/credit         {"usd"?|"amount_nano"?, "ref"?} → 200 {balance_nano, balance} | 404
                                         (идемпотентно по ref; usd отрицательный = коррекция)
 POST /admin/account/{id}/status         {"status":"active"|"disabled"}  → 200 {updated} | 404
-GET  /admin/account/{id}/keys                                        → 200 {keys:[{key_masked,label,status,spent_nano}]}
+GET  /admin/account/{id}/keys                                        → 200 {keys:[{key_id,key_masked,label,status,spent_nano}]}
 GET  /admin/account/{id}/ledger?limit=N                              → 200 {entries:[{kind,amount_nano,ref,ts,...}]}
 ```
 
 ### Ключи доступа
 ```
-POST /admin/key                         {"account_id", "label"?}     → 200 {key:"sk-pool-…", account}  (ключ виден 1 раз!)
+POST /admin/key                         {"account_id", "label"?}     → 200 {key:"sk-pool-…", key_id:"key_…", account}  (key виден 1 раз!)
+POST /admin/key-id/{key_id}/status      {"status":"active"|"disabled"} → 200 {updated} | 404 (рекомендуется)
 POST /admin/key/{key}/status            {"status":"active"|"disabled"}  → 200 {updated} | 404
 ```
+
+`key_id` не даёт доступа к `/v1` и безопасен для хранения в коммерческой PostgreSQL. Новый backend
+должен отзывать ключ по `key_id`, чтобы никогда не сохранять пригодный к использованию `sk-pool-…`.
+Старый endpoint с полным ключом оставлен для обратной совместимости и CLI.
 
 ### Коды ошибок
 `400` неверное тело · `401` нет/неверный control-ключ · `404` аккаунт/ключ не найден ·

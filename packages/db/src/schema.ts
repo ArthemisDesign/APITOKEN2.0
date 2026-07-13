@@ -214,7 +214,11 @@ export const apiKeys = pgTable("api_keys", {
   status: apiKeyStatus("status").notNull().default("active"),
   createdAt,
   updatedAt,
-}, (table) => [index("api_keys_user_idx").on(table.userId, table.createdAt)]);
+}, (table) => [
+  index("api_keys_user_idx").on(table.userId, table.createdAt),
+  uniqueIndex("api_keys_engine_key_uidx").on(table.engineKeyId)
+    .where(sql`${table.engineKeyId} IS NOT NULL`),
+]);
 
 export const auditLog = pgTable("audit_log", {
   id: bigserial("id", { mode: "bigint" }).primaryKey(),

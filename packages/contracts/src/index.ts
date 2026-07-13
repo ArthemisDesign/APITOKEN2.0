@@ -1,7 +1,15 @@
 import { z } from "zod";
 
-export const decimalIntegerSchema = z.string().regex(/^-?\d+$/);
-export const nonNegativeIntegerSchema = z.string().regex(/^\d+$/);
+// json-bigint returns unsafe integers as strings and small exact integers as numbers. Normalize at
+// the transport boundary so money is always represented as a decimal string inside our services.
+export const decimalIntegerSchema = z.union([
+  z.string().regex(/^-?\d+$/),
+  z.number().int().safe(),
+]).transform(String);
+export const nonNegativeIntegerSchema = z.union([
+  z.string().regex(/^\d+$/),
+  z.number().int().safe().nonnegative(),
+]).transform(String);
 
 export const engineAccountSchema = z.object({
   account: z.string().startsWith("acct_"),
@@ -23,6 +31,49 @@ export const engineCreditResultSchema = z.object({
 });
 
 export type EngineCreditResult = z.infer<typeof engineCreditResultSchema>;
+
+export const engineApiKeySchema = z.object({
+  key_id: z.string().startsWith("key_"),
+  key_masked: z.string().min(1),
+  label: z.string().nullable(),
+  status: z.enum(["active", "disabled"]),
+  spent_nano: nonNegativeIntegerSchema,
+  spent: z.string(),
+});
+
+export type EngineApiKey = z.infer<typeof engineApiKeySchema>;
+
+export const engineApiKeyListSchema = z.object({
+  account: z.string().startsWith("acct_"),
+  keys: z.array(engineApiKeySchema),
+});
+
+export const issuedEngineApiKeySchema = z.object({
+  key: z.string().startsWith("sk-pool-"),
+  key_id: z.string().startsWith("key_"),
+  account: z.string().startsWith("acct_"),
+  label: z.string().nullable(),
+});
+
+export type IssuedEngineApiKey = z.infer<typeof issuedEngineApiKeySchema>;
+
+export const engineLedgerEntrySchema = z.object({
+  id: nonNegativeIntegerSchema,
+  kind: z.enum(["topup", "charge", "adjust"]),
+  amount_nano: decimalIntegerSchema,
+  amount: z.string(),
+  key_masked: z.string().nullable(),
+  ref: z.string().nullable(),
+  balance_after_nano: decimalIntegerSchema.nullable(),
+  ts: nonNegativeIntegerSchema,
+});
+
+export type EngineLedgerEntry = z.infer<typeof engineLedgerEntrySchema>;
+
+export const engineLedgerSchema = z.object({
+  account: z.string().startsWith("acct_"),
+  entries: z.array(engineLedgerEntrySchema),
+});
 
 export const createEngineAccountSchema = z.object({
   handle: z.string().trim().min(1).max(200).optional(),
@@ -78,6 +129,10 @@ export const registerSchema = z.object({
 }).strict();
 
 export const loginSchema = registerSchema;
+
+export const createApiKeySchema = z.object({
+  label: z.string().trim().min(1).max(100).optional(),
+}).strict();
 
 export interface AuthUserView {
   id: string;

@@ -49,6 +49,15 @@ pub async fn create_account(
 ) -> Response {
     if let Some(r) = deny(&app, &headers, &peer) { return r; }
     let b = match billing(&app) { Ok(b) => b, Err(r) => return r };
+    // A commercial registration retry must not orphan duplicate engine accounts. Handles are unique,
+    // so returning the existing account makes provisioning idempotent for a stable user handle.
+    if let Some(handle) = req.handle.as_deref() {
+        if let Some(existing) = b.account_by_handle(handle).await {
+            return Json(json!({
+                "account": existing.id, "mult_bp": existing.mult_bp, "handle": existing.handle,
+            })).into_response();
+        }
+    }
     let id = match crate::gen_account_id() {
         Ok(i) => i,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
@@ -100,7 +109,11 @@ pub async fn list_keys(
 ) -> Response {
     if let Some(r) = deny(&app, &headers, &peer) { return r; }
     let b = match billing(&app) { Ok(b) => b, Err(r) => return r };
+    if b.account(&id).await.is_none() {
+        return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown account"}))).into_response();
+    }
     let keys: Vec<_> = b.keys_by_account(&id).await.into_iter().map(|k| json!({
+        "key_id": k.key_id,
         "key_masked": mask(&k.key),
         "label": k.label,
         "status": k.status,
@@ -124,6 +137,9 @@ pub async fn list_ledger(
 ) -> Response {
     if let Some(r) = deny(&app, &headers, &peer) { return r; }
     let b = match billing(&app) { Ok(b) => b, Err(r) => return r };
+    if b.account(&id).await.is_none() {
+        return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown account"}))).into_response();
+    }
     let rows: Vec<_> = b.ledger(&id, q.limit.unwrap_or(50)).await.into_iter().map(|e| json!({
         "id": e.id,
         "kind": e.kind,
@@ -222,7 +238,13 @@ pub async fn issue_key(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     };
     if b.issue_key(&key, &req.account_id, req.label.as_deref()).await {
-        (StatusCode::OK, Json(json!({"key": key, "account": req.account_id, "label": req.label}))).into_response()
+        match b.get(&key).await {
+            Some(row) => (StatusCode::OK, Json(json!({
+                "key": key, "key_id": row.key_id, "account": req.account_id, "label": req.label,
+            }))).into_response(),
+            None => (StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "issued key could not be read"}))).into_response(),
+        }
     } else {
         (StatusCode::CONFLICT, Json(json!({"error": "issue failed"}))).into_response()
     }
@@ -244,4 +266,22 @@ pub async fn key_status(
     let n = b.key_status(&key, &req.status).await;
     if n == 0 { return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown key"}))).into_response(); }
     Json(json!({"status": req.status, "updated": n})).into_response()
+}
+
+/// POST /admin/key-id/{key_id}/status — revoke/enable through a stable non-secret identifier.
+pub async fn key_status_by_id(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(key_id): Path<String>,
+    Json(req): Json<StatusReq>,
+) -> Response {
+    if let Some(r) = deny(&app, &headers, &peer) { return r; }
+    if !valid_status(&req.status) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "status must be active|disabled"}))).into_response();
+    }
+    let b = match billing(&app) { Ok(b) => b, Err(r) => return r };
+    let n = b.key_status_by_id(&key_id, &req.status).await;
+    if n == 0 { return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown key"}))).into_response(); }
+    Json(json!({"key_id": key_id, "status": req.status, "updated": n})).into_response()
 }

@@ -1,10 +1,16 @@
 import JSONbigFactory from "json-bigint";
 import {
   engineAccountSchema,
+  engineApiKeyListSchema,
   engineCreditResultSchema,
+  engineLedgerSchema,
+  issuedEngineApiKeySchema,
   type CreateEngineAccount,
   type EngineAccount,
+  type EngineApiKey,
   type EngineCreditResult,
+  type EngineLedgerEntry,
+  type IssuedEngineApiKey,
 } from "@claude-api/contracts";
 
 const JSONbig = JSONbigFactory({ storeAsString: true, useNativeBigInt: false });
@@ -78,6 +84,39 @@ export class EngineClient {
       body,
     });
     return engineCreditResultSchema.parse(this.parse(response, await response.text()));
+  }
+
+  async listKeys(accountId: string): Promise<EngineApiKey[]> {
+    const response = await this.request(`/admin/account/${encodeURIComponent(accountId)}/keys`);
+    const result = engineApiKeyListSchema.parse(this.parse(response, await response.text()));
+    return result.keys;
+  }
+
+  async issueKey(accountId: string, label?: string): Promise<IssuedEngineApiKey> {
+    const body: Record<string, unknown> = { account_id: accountId };
+    if (label !== undefined) body.label = label;
+    const response = await this.request("/admin/key", { method: "POST", body: JSON.stringify(body) });
+    return issuedEngineApiKeySchema.parse(this.parse(response, await response.text()));
+  }
+
+  async disableKey(keyId: string): Promise<void> {
+    const response = await this.request(`/admin/key-id/${encodeURIComponent(keyId)}/status`, {
+      method: "POST",
+      body: '{"status":"disabled"}',
+    });
+    const payload = this.parse(response, await response.text()) as Record<string, unknown>;
+    if (payload.key_id !== keyId || payload.status !== "disabled" || payload.updated !== 1) {
+      throw new EngineClientError("engine returned an invalid key status response", response.status, false);
+    }
+  }
+
+  async getLedger(accountId: string, limit = 50): Promise<EngineLedgerEntry[]> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new RangeError("limit must be an integer from 1 to 1000");
+    const response = await this.request(
+      `/admin/account/${encodeURIComponent(accountId)}/ledger?limit=${limit}`,
+    );
+    const result = engineLedgerSchema.parse(this.parse(response, await response.text()));
+    return result.entries;
   }
 
   private async request(

@@ -72,7 +72,7 @@ export async function completeEngineAccount(database: Database, userId: string, 
   await database.pool.query(`
     UPDATE engine_accounts
     SET engine_account_id = $2, status = 'active', last_error = NULL, updated_at = now()
-    WHERE user_id = $1 AND status IN ('pending', 'error')
+    WHERE user_id = $1 AND (status IN ('pending', 'error') OR engine_account_id IS NULL)
   `, [userId, engineAccountId]);
 }
 

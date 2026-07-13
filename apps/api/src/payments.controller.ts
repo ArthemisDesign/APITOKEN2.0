@@ -19,6 +19,7 @@ import { CryptomusError } from "@claude-api/payments";
 import { z } from "zod";
 import { CurrentAuth, type RequestAuth, SessionAuthGuard } from "./auth.guard.js";
 import { CheckoutAmountError, CheckoutService } from "./checkout.service.js";
+import { AccountService, isRetryableEngineFailure } from "./account.service.js";
 
 const uuidSchema = z.string().uuid();
 
@@ -26,6 +27,7 @@ const uuidSchema = z.string().uuid();
 export class PaymentsController {
   constructor(
     private readonly checkouts: CheckoutService,
+    private readonly accounts: AccountService,
   ) {}
 
   @Post("checkouts")
@@ -35,6 +37,7 @@ export class PaymentsController {
     const parsed = createCheckoutSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     try {
+      await this.accounts.ensureEngineAccount(current.user.id);
       return await this.checkouts.create(current.user.id, parsed.data.amountUsd, parsed.data.provider);
     } catch (error) {
       if (error instanceof CheckoutAmountError) throw new BadRequestException(error.message);
@@ -43,6 +46,7 @@ export class PaymentsController {
       if (error instanceof Error && error.message.includes("unsupported payment provider")) {
         throw new ServiceUnavailableException("Cryptomus is not configured");
       }
+      if (isRetryableEngineFailure(error)) throw new ServiceUnavailableException("engine is temporarily unavailable");
       throw error;
     }
   }

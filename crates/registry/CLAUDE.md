@@ -12,7 +12,8 @@
   юзера), ключи (`api_keys.account_id`) — доступы к общему балансу (1:N, на проекты/команду); per-key
   `spent_nano` — атрибуция расхода по ключу. Функции: `account_create/get/by_handle/list/set_status/rm`,
   `account_topup` (+ledger), `account_reserve`/`account_settle` (атомарно: баланс аккаунта + per-key
-  spent + ledger-строка), `key_issue(account_id,label)/get/list/set_status/remove/clear`,
+  spent + ledger-строка), `key_issue(account_id,label)/get/list/set_status/set_status_by_id/remove/clear`;
+  `api_keys.key_id` — стабильный не-секретный control-plane ID для отзыва без хранения полного ключа,
   `key_account` (JOIN ключ→аккаунт для авторизации), обёртка `Billing` (Mutex<Conn>). Подсчёт стоимости
   (токены→нано) сюда НЕ лезет — это `metering`; registry принимает готовую сумму. **Инвариант денег:**
   `charge≤hold≤balance` держится на уровне АККАУНТА (reserve атомарен `WHERE balance>=hold`, settle

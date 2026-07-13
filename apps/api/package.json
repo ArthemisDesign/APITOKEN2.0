@@ -10,7 +10,7 @@
     "start": "node --enable-source-maps dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pretest": "pnpm --filter @claude-api/contracts build && pnpm --filter @claude-api/db build && pnpm --filter @claude-api/payments build",
-    "test": "vitest run"
+    "test": "vitest run --no-file-parallelism"
   },
   "dependencies": {
     "@claude-api/contracts": "workspace:*",

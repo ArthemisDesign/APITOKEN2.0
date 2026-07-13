@@ -87,3 +87,5 @@ Browser identity определяется только opaque server-side сес
 идемпотентно вызывает `/admin/account/{id}/credit`. Общие схемы/репозитории/клиент движка находятся
 в `packages/contracts`, `packages/db`, `packages/engine-client`. Коммерческий контур никогда не
 читает SQLite движка напрямую; полная карта — `COMMERCIAL_BACKEND.md`.
+Dashboard routes read authoritative balances, ledger rows and per-key spend through the Control API.
+Key creation returns the usable secret once; later revocation uses a stable non-secret engine `key_id`.

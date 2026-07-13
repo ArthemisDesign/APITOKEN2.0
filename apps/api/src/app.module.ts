@@ -5,12 +5,14 @@ import { HealthController } from "./health.controller.js";
 import { InfrastructureModule } from "./infrastructure.module.js";
 import { PaymentsModule } from "./payments.module.js";
 import { AuthModule } from "./auth.module.js";
+import { AccountModule } from "./account.module.js";
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }),
     InfrastructureModule,
     AuthModule,
+    AccountModule,
     PaymentsModule,
   ],
   controllers: [HealthController],

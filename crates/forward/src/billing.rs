@@ -32,6 +32,7 @@ enum WriteCmd {
     IssueKey { key: String, account_id: String, label: Option<String>, reply: oneshot::Sender<bool> },
     AccountStatus { id: String, status: String, reply: oneshot::Sender<usize> },
     KeyStatus { key: String, status: String, reply: oneshot::Sender<usize> },
+    KeyStatusById { key_id: String, status: String, reply: oneshot::Sender<usize> },
     /// Барьер: writer FIFO → когда Flush обработан, ВСЕ прежние команды (settle) применены.
     /// Для дренажа очереди на graceful shutdown (иначе последние списания потерялись бы).
     Flush(oneshot::Sender<()>),
@@ -41,6 +42,7 @@ enum ReadCmd {
     KeyAuth(String, oneshot::Sender<Option<KeyAuth>>),
     KeyGet(String, oneshot::Sender<Option<KeyRow>>),
     Account(String, oneshot::Sender<Option<AccountRow>>),
+    AccountByHandle(String, oneshot::Sender<Option<AccountRow>>),
     Totals(oneshot::Sender<BillingTotals>),
     KeysByAccount(String, oneshot::Sender<Vec<KeyRow>>),
     Ledger(String, i64, oneshot::Sender<Vec<registry::LedgerRow>>),
@@ -100,6 +102,10 @@ impl AsyncBilling {
                             let n = registry::key_set_status(&conn, &key, &status).unwrap_or(0);
                             let _ = reply.send(n);
                         }
+                        WriteCmd::KeyStatusById { key_id, status, reply } => {
+                            let n = registry::key_set_status_by_id(&conn, &key_id, &status).unwrap_or(0);
+                            let _ = reply.send(n);
+                        }
                         WriteCmd::Flush(r) => { let _ = r.send(()); } // барьер обработан → очередь дренирована
                     }
                 }
@@ -117,6 +123,9 @@ impl AsyncBilling {
                         ReadCmd::KeyAuth(k, r) => { let _ = r.send(registry::key_account(&conn, &k).ok().flatten()); }
                         ReadCmd::KeyGet(k, r) => { let _ = r.send(registry::key_get(&conn, &k).ok().flatten()); }
                         ReadCmd::Account(id, r) => { let _ = r.send(registry::account_get(&conn, &id).ok().flatten()); }
+                        ReadCmd::AccountByHandle(handle, r) => {
+                            let _ = r.send(registry::account_by_handle(&conn, &handle).ok().flatten());
+                        }
                         ReadCmd::Totals(r) => { let _ = r.send(registry::billing_totals(&conn)); }
                         ReadCmd::KeysByAccount(id, r) => { let _ = r.send(registry::keys_by_account(&conn, &id).unwrap_or_default()); }
                         ReadCmd::Ledger(id, lim, r) => { let _ = r.send(registry::ledger_recent(&conn, &id, lim).unwrap_or_default()); }
@@ -147,6 +156,11 @@ impl AsyncBilling {
     pub async fn account(&self, id: &str) -> Option<AccountRow> {
         let (r, rx) = oneshot::channel();
         self.reader().send(ReadCmd::Account(id.into(), r)).ok()?;
+        rx.await.ok().flatten()
+    }
+    pub async fn account_by_handle(&self, handle: &str) -> Option<AccountRow> {
+        let (r, rx) = oneshot::channel();
+        self.reader().send(ReadCmd::AccountByHandle(handle.into(), r)).ok()?;
         rx.await.ok().flatten()
     }
     pub async fn totals(&self) -> BillingTotals {
@@ -215,6 +229,13 @@ impl AsyncBilling {
     pub async fn key_status(&self, key: &str, status: &str) -> usize {
         let (r, rx) = oneshot::channel();
         if self.writer.send(WriteCmd::KeyStatus { key: key.into(), status: status.into(), reply: r }).is_err() { return 0; }
+        rx.await.unwrap_or(0)
+    }
+    pub async fn key_status_by_id(&self, key_id: &str, status: &str) -> usize {
+        let (r, rx) = oneshot::channel();
+        if self.writer.send(WriteCmd::KeyStatusById {
+            key_id: key_id.into(), status: status.into(), reply: r,
+        }).is_err() { return 0; }
         rx.await.unwrap_or(0)
     }
     /// Дренаж очереди writer'а (барьер): ждёт, пока ВСЕ ранее поставленные команды (в т.ч.

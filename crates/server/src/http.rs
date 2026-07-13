@@ -35,6 +35,7 @@ pub fn router(app: AppState) -> Router {
         .route("/admin/account/{id}/ledger", get(admin::list_ledger))
         .route("/admin/key", post(admin::issue_key))
         .route("/admin/key/{key}/status", post(admin::key_status))
+        .route("/admin/key-id/{key_id}/status", post(admin::key_status_by_id))
         .fallback(forward)
         .with_state(app)
 }

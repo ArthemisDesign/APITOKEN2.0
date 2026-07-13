@@ -78,6 +78,13 @@ pub fn open(path: &str) -> Result<Connection> {
         "CREATE UNIQUE INDEX IF NOT EXISTS accounts_handle ON accounts(handle) WHERE handle IS NOT NULL", []);
     let _ = c.execute("ALTER TABLE api_keys ADD COLUMN account_id TEXT", []);
     let _ = c.execute("ALTER TABLE api_keys ADD COLUMN label TEXT", []);
+    // Stable public identifier for control-plane key management. The usable `key` remains secret;
+    // dashboards and the commercial backend can revoke by `key_id` without persisting that secret.
+    let _ = c.execute("ALTER TABLE api_keys ADD COLUMN key_id TEXT", []);
+    let _ = c.execute(
+        "UPDATE api_keys SET key_id = 'key_' || lower(hex(randomblob(16))) WHERE key_id IS NULL", []);
+    let _ = c.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS api_keys_key_id ON api_keys(key_id) WHERE key_id IS NOT NULL", []);
     let _ = c.execute("CREATE INDEX IF NOT EXISTS api_keys_account ON api_keys(account_id)", []);
 
     // ЛЕДЖЕР: append-only история движений баланса (пополнения/списания/возвраты) — для точного
@@ -298,6 +305,7 @@ pub fn list(conn: &Connection) -> Result<Vec<SubRow>> {
 #[derive(Clone, Debug)]
 pub struct KeyRow {
     pub key: String,
+    pub key_id: String,
     pub account_id: Option<String>,
     pub label: Option<String>,
     pub spent_nano: i64, // расход по ЭТОМУ ключу (атрибуция; баланс общий на аккаунте)
@@ -307,8 +315,8 @@ pub struct KeyRow {
 /// Выпустить ключ ПОД аккаунт (баланс — на аккаунте, ключ лишь ссылается). `label` — имя ключа.
 pub fn key_issue(conn: &Connection, key: &str, account_id: &str, label: Option<&str>) -> Result<()> {
     conn.execute(
-        "INSERT INTO api_keys(key, account_id, label, spent_nano, status, created_ts, created) \
-         VALUES(?1, ?2, ?3, 0, 'active', ?4, ?5) \
+        "INSERT INTO api_keys(key, key_id, account_id, label, spent_nano, status, created_ts, created) \
+         VALUES(?1, 'key_' || lower(hex(randomblob(16))), ?2, ?3, 0, 'active', ?4, ?5) \
          ON CONFLICT(key) DO UPDATE SET account_id=excluded.account_id, label=excluded.label, status='active'",
         rusqlite::params![key, account_id, label, now(), chrono_like(now())],
     )?;
@@ -539,14 +547,15 @@ fn ledger_add(conn: &Connection, account_id: &str, key: Option<&str>, kind: &str
 /// Прочитать ключ (для авторизации/`/balance`).
 pub fn key_get(conn: &Connection, key: &str) -> Result<Option<KeyRow>> {
     let row = conn.query_row(
-        "SELECT key, account_id, label, spent_nano, COALESCE(status,'active') FROM api_keys WHERE key=?1",
+        "SELECT key, key_id, account_id, label, spent_nano, COALESCE(status,'active') FROM api_keys WHERE key=?1",
         rusqlite::params![key],
         |r| Ok(KeyRow {
             key: r.get::<_, String>(0)?,
-            account_id: r.get::<_, Option<String>>(1)?,
-            label: r.get::<_, Option<String>>(2)?,
-            spent_nano: r.get::<_, i64>(3)?,
-            status: r.get::<_, String>(4)?,
+            key_id: r.get::<_, String>(1)?,
+            account_id: r.get::<_, Option<String>>(2)?,
+            label: r.get::<_, Option<String>>(3)?,
+            spent_nano: r.get::<_, i64>(4)?,
+            status: r.get::<_, String>(5)?,
         }),
     );
     match row {
@@ -558,6 +567,11 @@ pub fn key_get(conn: &Connection, key: &str) -> Result<Option<KeyRow>> {
 
 pub fn key_set_status(conn: &Connection, key: &str, status: &str) -> Result<usize> {
     Ok(conn.execute("UPDATE api_keys SET status=?1 WHERE key=?2", rusqlite::params![status, key])?)
+}
+
+/// Change key status through its non-secret control-plane identifier.
+pub fn key_set_status_by_id(conn: &Connection, key_id: &str, status: &str) -> Result<usize> {
+    Ok(conn.execute("UPDATE api_keys SET status=?1 WHERE key_id=?2", rusqlite::params![status, key_id])?)
 }
 
 /// Удалить ключ НАВСЕГДА (в отличие от set_status 'disabled' — строка исчезает).
@@ -573,14 +587,15 @@ pub fn key_clear(conn: &Connection) -> Result<usize> {
 /// Ключи КОНКРЕТНОГО аккаунта (для дашборда коммерции: список ключей юзера). Ключ маскируется на выводе.
 pub fn keys_by_account(conn: &Connection, account_id: &str) -> Result<Vec<KeyRow>> {
     let mut stmt = conn.prepare(
-        "SELECT key, account_id, label, spent_nano, COALESCE(status,'active') \
+        "SELECT key, key_id, account_id, label, spent_nano, COALESCE(status,'active') \
          FROM api_keys WHERE account_id=?1 ORDER BY COALESCE(created_ts,0)")?;
     let rows = stmt.query_map(rusqlite::params![account_id], |r| Ok(KeyRow {
         key: r.get::<_, String>(0)?,
-        account_id: r.get::<_, Option<String>>(1)?,
-        label: r.get::<_, Option<String>>(2)?,
-        spent_nano: r.get::<_, i64>(3)?,
-        status: r.get::<_, String>(4)?,
+        key_id: r.get::<_, String>(1)?,
+        account_id: r.get::<_, Option<String>>(2)?,
+        label: r.get::<_, Option<String>>(3)?,
+        spent_nano: r.get::<_, i64>(4)?,
+        status: r.get::<_, String>(5)?,
     }))?;
     Ok(rows.filter_map(|x| x.ok()).collect())
 }
@@ -617,14 +632,15 @@ pub fn ledger_recent(conn: &Connection, account_id: &str, limit: i64) -> Result<
 /// Все ключи (для CLI-листинга; ключ маскируется на стороне вывода).
 pub fn key_list(conn: &Connection) -> Result<Vec<KeyRow>> {
     let mut stmt = conn.prepare(
-        "SELECT key, account_id, label, spent_nano, COALESCE(status,'active') \
+        "SELECT key, key_id, account_id, label, spent_nano, COALESCE(status,'active') \
          FROM api_keys ORDER BY COALESCE(created_ts,0)")?;
     let rows = stmt.query_map([], |r| Ok(KeyRow {
         key: r.get::<_, String>(0)?,
-        account_id: r.get::<_, Option<String>>(1)?,
-        label: r.get::<_, Option<String>>(2)?,
-        spent_nano: r.get::<_, i64>(3)?,
-        status: r.get::<_, String>(4)?,
+        key_id: r.get::<_, String>(1)?,
+        account_id: r.get::<_, Option<String>>(2)?,
+        label: r.get::<_, Option<String>>(3)?,
+        spent_nano: r.get::<_, i64>(4)?,
+        status: r.get::<_, String>(5)?,
     }))?;
     Ok(rows.filter_map(|x| x.ok()).collect())
 }
@@ -897,6 +913,18 @@ mod tests {
         assert_eq!(key_get(&c, "k-bob").unwrap().unwrap().spent_nano, 200_000_000);
         // вход по handle
         assert_eq!(account_by_handle(&c, "tg:123").unwrap().unwrap().id, "team");
+    }
+
+    /// Control-plane management uses a stable public ID and never needs to persist the raw key.
+    #[test]
+    fn key_can_be_disabled_by_non_secret_id() {
+        let c = db();
+        account_create(&c, "acct", None, 2000).unwrap();
+        key_issue(&c, "sk-pool-super-secret", "acct", Some("prod")).unwrap();
+        let issued = key_get(&c, "sk-pool-super-secret").unwrap().unwrap();
+        assert!(issued.key_id.starts_with("key_"));
+        assert_eq!(key_set_status_by_id(&c, &issued.key_id, "disabled").unwrap(), 1);
+        assert_eq!(key_get(&c, "sk-pool-super-secret").unwrap().unwrap().status, "disabled");
     }
 }
 
