@@ -66,6 +66,7 @@ enum AccountOp {
         #[arg(long)] id: Option<String>,
     },
     /// Пополнить баланс аккаунта на USD (можно отрицательное — коррекция). --ref — метка платежа.
+    #[command(allow_negative_numbers = true)] // чтобы `--usd -100` (коррекция) не парсился как флаг
     Topup { id: String, #[arg(long)] usd: f64, #[arg(long)] r#ref: Option<String> },
     /// Показать баланс/расход аккаунта.
     Balance { id: String },
