@@ -3,7 +3,7 @@
 ## Implemented email/password flow
 
 ```text
-POST /v1/auth/register  {"email":"user@example.com","password":"at least 12 characters"}
+POST /v1/auth/register  {"email":"user@example.com","password":"at least 12 characters","inviteToken"?:"..."}
 POST /v1/auth/login     {"email":"user@example.com","password":"..."}
 GET  /v1/auth/me
 POST /v1/auth/logout
@@ -14,6 +14,11 @@ Registration normalizes email to lowercase, hashes passwords with Argon2id (`m=1
 `p=1`), creates the commercial user, queues a provider-neutral `verify_email` outbox job and
 provisions one Rust engine account. An engine provisioning failure leaves an explicit `error` state;
 it never creates an unowned checkout or silently shares another account.
+
+Without an invitation, registration creates a B2C Starter profile at 60% off. A valid B2B token is
+single-use, bound to the normalized registration email, expires, and is consumed in the same
+transaction as the user. Only its SHA-256 hash is stored. B2B accounts receive the invitation's
+manual price and do not participate in progressive B2C tiers. See `PRICING.md`.
 
 Login failures use the same external response for an unknown email and a wrong password. A dummy
 Argon2 verification reduces timing-based email discovery. Set `REQUIRE_VERIFIED_EMAIL=true` after

@@ -101,4 +101,36 @@ describe("EngineClient", () => {
     expect(entries[0]).toMatchObject({ id: "1", amount_nano: "1000000000", ts: "1700000000" });
     await expect(client.getLedger("acct_test", 0)).rejects.toThrow("limit");
   });
+
+  it("reads ledger pages after an exact cursor", async () => {
+    let requestedUrl = "";
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async (input) => {
+        requestedUrl = String(input);
+        return Response.json({ account: "acct_test", entries: [] });
+      },
+    });
+    await expect(client.getLedgerAfter("acct_test", 9_007_199_254_740_993_123n, 1000)).resolves.toEqual([]);
+    expect(requestedUrl).toContain("after_id=9007199254740993123&limit=1000");
+  });
+
+  it("updates account pricing through the control API", async () => {
+    let request: { url: string; body: string } | undefined;
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async (input, init) => {
+        request = { url: String(input), body: String(init?.body) };
+        return Response.json({ account: "acct_test", mult_bp: 3500, updated: 1 });
+      },
+    });
+    await expect(client.setAccountMultiplier("acct_test", 3500)).resolves.toBeUndefined();
+    expect(request).toEqual({
+      url: "http://engine.test/admin/account/acct_test/pricing",
+      body: '{"mult_bp":3500}',
+    });
+    await expect(client.setAccountMultiplier("acct_test", 10_001)).rejects.toThrow("multiplierBp");
+  });
 });

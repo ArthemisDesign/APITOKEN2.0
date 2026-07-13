@@ -31,6 +31,7 @@ enum WriteCmd {
     CreateAccount { id: String, handle: Option<String>, mult_bp: i64, reply: oneshot::Sender<bool> },
     IssueKey { key: String, account_id: String, label: Option<String>, reply: oneshot::Sender<bool> },
     AccountStatus { id: String, status: String, reply: oneshot::Sender<usize> },
+    AccountMultiplier { id: String, mult_bp: i64, reply: oneshot::Sender<usize> },
     KeyStatus { key: String, status: String, reply: oneshot::Sender<usize> },
     KeyStatusById { key_id: String, status: String, reply: oneshot::Sender<usize> },
     /// Барьер: writer FIFO → когда Flush обработан, ВСЕ прежние команды (settle) применены.
@@ -46,6 +47,7 @@ enum ReadCmd {
     Totals(oneshot::Sender<BillingTotals>),
     KeysByAccount(String, oneshot::Sender<Vec<KeyRow>>),
     Ledger(String, i64, oneshot::Sender<Vec<registry::LedgerRow>>),
+    LedgerAfter(String, i64, i64, oneshot::Sender<Vec<registry::LedgerRow>>),
 }
 
 /// Async-фасад биллинга: writer-канал + пул reader-каналов. Клонируется (в `Arc`) во все хендлеры.
@@ -98,6 +100,10 @@ impl AsyncBilling {
                             let n = registry::account_set_status(&conn, &id, &status).unwrap_or(0);
                             let _ = reply.send(n);
                         }
+                        WriteCmd::AccountMultiplier { id, mult_bp, reply } => {
+                            let n = registry::account_set_mult_bp(&conn, &id, mult_bp).unwrap_or(0);
+                            let _ = reply.send(n);
+                        }
                         WriteCmd::KeyStatus { key, status, reply } => {
                             let n = registry::key_set_status(&conn, &key, &status).unwrap_or(0);
                             let _ = reply.send(n);
@@ -129,6 +135,9 @@ impl AsyncBilling {
                         ReadCmd::Totals(r) => { let _ = r.send(registry::billing_totals(&conn)); }
                         ReadCmd::KeysByAccount(id, r) => { let _ = r.send(registry::keys_by_account(&conn, &id).unwrap_or_default()); }
                         ReadCmd::Ledger(id, lim, r) => { let _ = r.send(registry::ledger_recent(&conn, &id, lim).unwrap_or_default()); }
+                        ReadCmd::LedgerAfter(id, after, lim, r) => {
+                            let _ = r.send(registry::ledger_after(&conn, &id, after, lim).unwrap_or_default());
+                        }
                     }
                 }
                 eprintln!("⚠ billing-reader-{i} поток завершён");
@@ -178,6 +187,13 @@ impl AsyncBilling {
         if self.reader().send(ReadCmd::Ledger(account_id.into(), limit, r)).is_err() { return Vec::new(); }
         rx.await.unwrap_or_default()
     }
+    pub async fn ledger_after(&self, account_id: &str, after_id: i64, limit: i64) -> Vec<registry::LedgerRow> {
+        let (r, rx) = oneshot::channel();
+        if self.reader().send(ReadCmd::LedgerAfter(account_id.into(), after_id, limit, r)).is_err() {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
     pub async fn reserve(&self, account_id: &str, hold: i64) -> Option<i64> {
         let (r, rx) = oneshot::channel();
         self.writer.send(WriteCmd::Reserve { account_id: account_id.into(), hold, reply: r }).ok()?;
@@ -224,6 +240,13 @@ impl AsyncBilling {
     pub async fn account_status(&self, id: &str, status: &str) -> usize {
         let (r, rx) = oneshot::channel();
         if self.writer.send(WriteCmd::AccountStatus { id: id.into(), status: status.into(), reply: r }).is_err() { return 0; }
+        rx.await.unwrap_or(0)
+    }
+    pub async fn account_multiplier(&self, id: &str, mult_bp: i64) -> usize {
+        let (r, rx) = oneshot::channel();
+        if self.writer.send(WriteCmd::AccountMultiplier { id: id.into(), mult_bp, reply: r }).is_err() {
+            return 0;
+        }
         rx.await.unwrap_or(0)
     }
     pub async fn key_status(&self, key: &str, status: &str) -> usize {

@@ -123,20 +123,45 @@ export const authEmailSchema = z.string().trim().toLowerCase().email().max(254);
 export const authPasswordSchema = z.string().min(12).max(128)
   .refine((value) => Buffer.byteLength(value, "utf8") <= 256, "password is too long");
 
-export const registerSchema = z.object({
+const credentialsSchema = z.object({
   email: authEmailSchema,
   password: authPasswordSchema,
+});
+
+export const registerSchema = credentialsSchema.extend({
+  inviteToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional(),
 }).strict();
 
-export const loginSchema = registerSchema;
+export const loginSchema = credentialsSchema.strict();
 
 export const createApiKeySchema = z.object({
   label: z.string().trim().min(1).max(100).optional(),
 }).strict();
+
+export const B2C_PRICING_TIERS = [
+  { code: "starter", discountPercent: 60, multiplierBp: 4000, spendThresholdNano: 0n, visibleOfficialUsageUsd: "0" },
+  { code: "builder", discountPercent: 65, multiplierBp: 3500, spendThresholdNano: 25_000_000_000n, visibleOfficialUsageUsd: "60" },
+  { code: "pro", discountPercent: 70, multiplierBp: 3000, spendThresholdNano: 75_000_000_000n, visibleOfficialUsageUsd: "200" },
+  { code: "studio", discountPercent: 75, multiplierBp: 2500, spendThresholdNano: 200_000_000_000n, visibleOfficialUsageUsd: "600" },
+  { code: "scale", discountPercent: 80, multiplierBp: 2000, spendThresholdNano: 500_000_000_000n, visibleOfficialUsageUsd: "1800" },
+] as const;
+
+export const businessDiscountSchema = z.number().int().min(0).max(95);
+export const createBusinessInviteSchema = z.object({
+  email: authEmailSchema,
+  discountPercent: businessDiscountSchema,
+  expiresInDays: z.number().int().min(1).max(30).default(7),
+}).strict();
+export const setBusinessPricingSchema = z.object({ discountPercent: businessDiscountSchema }).strict();
+
+export function multiplierForDiscount(discountPercent: number): number {
+  return 10_000 - discountPercent * 100;
+}
 
 export interface AuthUserView {
   id: string;
   email: string;
   emailVerified: boolean;
   engineAccountStatus: "pending" | "active" | "error" | "disabled";
+  customerType: "b2c" | "b2b";
 }

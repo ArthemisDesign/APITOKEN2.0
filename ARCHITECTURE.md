@@ -77,6 +77,7 @@
 future Next.js web → apps/api → whole-USD checkout_sessions → commerce PostgreSQL
                            └── Control API → Rust claude-api
 payment provider → apps/api (verified webhook) → engine_credits outbox → apps/worker → Control API
+engine charge ledger → apps/worker cursor → monthly B2C tier/job ────────────────────┘
 ```
 
 `apps/api` владеет будущей browser-facing API-границей и приёмом подписанных вебхуков.
@@ -89,3 +90,5 @@ Browser identity определяется только opaque server-side сес
 читает SQLite движка напрямую; полная карта — `COMMERCIAL_BACKEND.md`.
 Dashboard routes read authoritative balances, ledger rows and per-key spend through the Control API.
 Key creation returns the usable secret once; later revocation uses a stable non-secret engine `key_id`.
+B2C/B2B pricing state lives in commerce PostgreSQL; the worker synchronizes its multiplier to the
+engine through durable jobs. Full rules and tier thresholds are in `PRICING.md`.

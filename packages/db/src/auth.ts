@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { B2C_PRICING_TIERS } from "@claude-api/contracts";
 import type { Database } from "./client.js";
+import { lockBusinessInvite, utcMonthStart } from "./pricing.js";
 
 export interface AuthUser {
   id: string;
@@ -7,6 +9,7 @@ export interface AuthUser {
   emailVerified: boolean;
   status: "active" | "disabled";
   engineAccountStatus: "pending" | "active" | "error" | "disabled";
+  customerType: "b2c" | "b2b";
 }
 
 export interface PasswordUser extends AuthUser {
@@ -14,6 +17,10 @@ export interface PasswordUser extends AuthUser {
 }
 
 export class EmailAlreadyRegisteredError extends Error {}
+
+export interface RegisteredAuthUser extends AuthUser {
+  engineMultiplierBp: number;
+}
 
 export async function consumeAuthRateLimit(
   database: Database,
@@ -42,23 +49,58 @@ export async function clearAuthRateLimit(database: Database, keyHashes: readonly
   await database.pool.query("DELETE FROM auth_rate_limits WHERE key_hash = ANY($1::text[])", [keyHashes]);
 }
 
-export async function createEmailUser(database: Database, email: string, passwordHash: string): Promise<AuthUser> {
+export async function createEmailUser(
+  database: Database,
+  email: string,
+  passwordHash: string,
+  businessInviteTokenHash?: string,
+): Promise<RegisteredAuthUser> {
   const client = await database.pool.connect();
   const userId = randomUUID();
   try {
     await client.query("BEGIN");
+    const invite = businessInviteTokenHash
+      ? await lockBusinessInvite(client, { email, tokenHash: businessInviteTokenHash })
+      : null;
+    const customerType = invite ? "b2b" : "b2c";
+    const engineMultiplierBp = invite?.multiplierBp ?? B2C_PRICING_TIERS[0].multiplierBp;
+    const monthStart = utcMonthStart();
     await client.query(`
       INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)
     `, [userId, email, passwordHash]);
     await client.query(`
-      INSERT INTO engine_accounts (id, user_id, status) VALUES ($1, $2, 'pending')
-    `, [randomUUID(), userId]);
+      INSERT INTO engine_accounts (id, user_id, mult_bp, status) VALUES ($1, $2, $3, 'pending')
+    `, [randomUUID(), userId, engineMultiplierBp]);
+    await client.query(`
+      INSERT INTO customer_profiles (
+        user_id, customer_type, current_tier, multiplier_bp, pricing_month_start
+      ) VALUES ($1, $2, $3, $4, $5)
+    `, [userId, customerType, invite ? null : 0, engineMultiplierBp, monthStart]);
+    if (!invite) {
+      await client.query(`
+        INSERT INTO pricing_months (id, user_id, month_start, opening_tier, highest_tier)
+        VALUES ($1, $2, $3, 0, 0)
+      `, [randomUUID(), userId, monthStart]);
+    } else {
+      await client.query(`
+        UPDATE business_invites SET consumed_at = now(), consumed_by_user_id = $2
+        WHERE id = $1 AND consumed_at IS NULL
+      `, [invite.id, userId]);
+    }
     await client.query(`
       INSERT INTO email_outbox (id, user_id, recipient, template, payload)
       VALUES ($1, $2, $3, 'verify_email', '{}'::jsonb)
     `, [randomUUID(), userId, email]);
     await client.query("COMMIT");
-    return { id: userId, email, emailVerified: false, status: "active", engineAccountStatus: "pending" };
+    return {
+      id: userId,
+      email,
+      emailVerified: false,
+      status: "active",
+      engineAccountStatus: "pending",
+      customerType,
+      engineMultiplierBp,
+    };
   } catch (error) {
     await client.query("ROLLBACK");
     if (isUniqueViolation(error)) throw new EmailAlreadyRegisteredError("email is already registered");
@@ -85,8 +127,10 @@ export async function failEngineAccount(database: Database, userId: string, erro
 export async function findPasswordUser(database: Database, email: string): Promise<PasswordUser | null> {
   const result = await database.pool.query<UserRow>(`
     SELECT u.id, u.email, u.email_verified, u.password_hash, u.status,
-           COALESCE(ea.status, 'pending') AS engine_account_status
+           COALESCE(ea.status, 'pending') AS engine_account_status,
+           COALESCE(cp.customer_type, 'b2c') AS customer_type
     FROM users u LEFT JOIN engine_accounts ea ON ea.user_id = u.id
+    LEFT JOIN customer_profiles cp ON cp.user_id = u.id
     WHERE lower(u.email) = lower($1)
   `, [email]);
   return result.rows[0] ? mapPasswordUser(result.rows[0]) : null;
@@ -95,8 +139,10 @@ export async function findPasswordUser(database: Database, email: string): Promi
 export async function getAuthUser(database: Database, userId: string): Promise<AuthUser | null> {
   const result = await database.pool.query<UserRow>(`
     SELECT u.id, u.email, u.email_verified, u.password_hash, u.status,
-           COALESCE(ea.status, 'pending') AS engine_account_status
-    FROM users u LEFT JOIN engine_accounts ea ON ea.user_id = u.id WHERE u.id = $1
+           COALESCE(ea.status, 'pending') AS engine_account_status,
+           COALESCE(cp.customer_type, 'b2c') AS customer_type
+    FROM users u LEFT JOIN engine_accounts ea ON ea.user_id = u.id
+    LEFT JOIN customer_profiles cp ON cp.user_id = u.id WHERE u.id = $1
   `, [userId]);
   return result.rows[0] ? withoutPassword(mapPasswordUser(result.rows[0])) : null;
 }
@@ -115,10 +161,12 @@ export async function createAuthSession(database: Database, input: {
 export async function resolveAuthSession(database: Database, tokenHash: string): Promise<{ sessionId: string; user: AuthUser } | null> {
   const result = await database.pool.query<UserRow & { session_id: string }>(`
     SELECT s.id AS session_id, u.id, u.email, u.email_verified, u.password_hash, u.status,
-           COALESCE(ea.status, 'pending') AS engine_account_status
+           COALESCE(ea.status, 'pending') AS engine_account_status,
+           COALESCE(cp.customer_type, 'b2c') AS customer_type
     FROM auth_sessions s
     JOIN users u ON u.id = s.user_id
     LEFT JOIN engine_accounts ea ON ea.user_id = u.id
+    LEFT JOIN customer_profiles cp ON cp.user_id = u.id
     WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.status = 'active'
   `, [tokenHash]);
   const row = result.rows[0];
@@ -148,6 +196,7 @@ interface UserRow {
   password_hash: string | null;
   status: "active" | "disabled";
   engine_account_status: "pending" | "active" | "error" | "disabled";
+  customer_type: "b2c" | "b2b";
 }
 
 function mapPasswordUser(row: UserRow): PasswordUser {
@@ -158,6 +207,7 @@ function mapPasswordUser(row: UserRow): PasswordUser {
     passwordHash: row.password_hash,
     status: row.status,
     engineAccountStatus: row.engine_account_status,
+    customerType: row.customer_type,
   };
 }
 

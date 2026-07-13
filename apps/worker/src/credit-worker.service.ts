@@ -33,7 +33,6 @@ export class CreditWorkerService implements OnModuleInit, OnApplicationShutdown 
   async onApplicationShutdown(): Promise<void> {
     this.stopped = true;
     await this.loop;
-    await this.database.pool.end();
   }
 
   private async run(): Promise<void> {

@@ -18,6 +18,8 @@
   (токены→нано) сюда НЕ лезет — это `metering`; registry принимает готовую сумму. **Инвариант денег:**
   `charge≤hold≤balance` держится на уровне АККАУНТА (reserve атомарен `WHERE balance>=hold`, settle
   сводит пару к −actual). `ledger` — append-only история (topup/charge/adjust, ref=request-id).
+  Cursor consumers use `ledger_after(account, after_id, limit)` (oldest-first); account pricing uses
+  `account_set_mult_bp`.
   Мягкая миграция старой модели «key=кошелёк» → аккаунт per-key (`migrate_legacy_keys`).
 - Публичный тип [`Sub`] (email/token/proxy/fleet) — контракт для `pool`/`forward`. Меняешь его —
   проверь оба потребителя.

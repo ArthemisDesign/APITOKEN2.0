@@ -8,7 +8,7 @@ The Rust engine remains authoritative for API keys, live balances, reservations 
 
 ```text
 apps/api                 NestJS HTTP API (future browser/backend boundary)
-apps/worker              Durable engine-credit processor
+apps/worker              Durable engine-credit and customer-pricing processor
 packages/contracts       Shared validation and transport types
 packages/db              PostgreSQL schema, migrations and repositories
 packages/engine-client   Typed client for the Rust Control API
@@ -48,6 +48,9 @@ and `CRYPTOMUS_INTEGRATION.md`.
 Email/password authentication, authorization invariants and the future email/Google provider
 boundaries are documented in `AUTHENTICATION.md`.
 
+B2C progressive tiers, B2B invitations/manual pricing, month-close behavior and the engine sync
+pipeline are documented in `PRICING.md`.
+
 ## Authenticated client API
 
 All private routes use the HttpOnly session cookie and derive the owner from that session. Engine
@@ -60,6 +63,10 @@ GET    /v1/api-keys                masked keys with live status and per-key spen
 POST   /v1/api-keys                {"label"?: "production"}; raw sk-pool key returned once
 DELETE /v1/api-keys/{id}           disable an owned key by commercial UUID
 ```
+
+`GET /v1/account` also returns the authenticated customer's safe pricing view. Commercial operator
+routes use a separate `COMMERCIAL_ADMIN_KEY`; they create email-bound B2B invitations and change
+B2B pricing. That key is never a client session or an engine Control API credential.
 
 Engine provisioning is recoverable: the stable handle `user:<commercial UUID>` makes account
 creation idempotent. API-key revocation uses the engine's non-secret `key_id`; PostgreSQL stores the
@@ -86,3 +93,6 @@ change any of them. `paid_over` credits only the requested amount; underpayment 
 - Store requested whole USD and engine nanoUSD as PostgreSQL `bigint`; never use floating point.
 - A payment webhook may enqueue at most one credit; an engine credit reference may confirm once.
 - The worker may retry indefinitely until the engine confirms the credit or an operator marks it dead.
+- B2C tier progress comes only from authoritative engine `charge` ledger rows and is deduplicated by
+  `(engine_account_id, ledger_entry_id)`.
+- Pricing changes are persisted as durable jobs before the engine multiplier is updated.

@@ -1,11 +1,20 @@
 import { hostname } from "node:os";
-import { Module } from "@nestjs/common";
+import { Inject, Injectable, Module, OnApplicationShutdown } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { createDatabase } from "@claude-api/db";
 import { EngineClient } from "@claude-api/engine-client";
 import { validateEnvironment, type Environment } from "./config.js";
 import { CreditWorkerService } from "./credit-worker.service.js";
+import { PricingWorkerService } from "./pricing-worker.service.js";
 import { DATABASE, ENGINE_CLIENT, WORKER_ID } from "./tokens.js";
+
+@Injectable()
+class DatabaseShutdown implements OnApplicationShutdown {
+  constructor(@Inject(DATABASE) private readonly database: ReturnType<typeof createDatabase>) {}
+  async onApplicationShutdown(): Promise<void> {
+    await this.database.pool.end();
+  }
+}
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment })],
@@ -27,6 +36,8 @@ import { DATABASE, ENGINE_CLIENT, WORKER_ID } from "./tokens.js";
     },
     { provide: WORKER_ID, useFactory: () => `${hostname()}:${process.pid}` },
     CreditWorkerService,
+    PricingWorkerService,
+    DatabaseShutdown,
   ],
 })
 export class AppModule {}

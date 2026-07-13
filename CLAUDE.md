@@ -32,6 +32,8 @@
   PostgreSQL; листинг/отзыв используют маску и не-секретный engine `key_id`.
 - Публичный production API коммерческого слоя: `https://api.apitoken.sale`; клиентский домен:
   `https://apitoken.sale`.
+- B2C pricing derives only from idempotently consumed engine charge-ledger rows. Tier/month state and
+  B2B invite/manual pricing live in commerce PostgreSQL; engine multiplier changes use durable jobs.
 
 Локальная карта и запуск — `COMMERCIAL_BACKEND.md`. Проверка: `pnpm build && pnpm typecheck && pnpm test`.
 

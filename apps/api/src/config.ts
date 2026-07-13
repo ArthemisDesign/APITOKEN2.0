@@ -14,6 +14,7 @@ const environmentSchema = z.object({
   MAX_TOPUP_USD: z.string().regex(/^[1-9]\d*$/).transform(BigInt).default("10000"),
   SESSION_TTL_SECONDS: z.coerce.number().int().min(900).max(2_592_000).default(604_800),
   REQUIRE_VERIFIED_EMAIL: z.enum(["true", "false"]).transform((value) => value === "true").default("false"),
+  COMMERCIAL_ADMIN_KEY: z.string().min(32).optional(),
   DIGISELLER_SELLER_ID: z.coerce.number().int().positive().optional(),
   DIGISELLER_API_KEY: z.string().min(1).optional(),
   DIGISELLER_PRODUCT_ID: z.coerce.number().int().positive().optional(),

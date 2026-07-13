@@ -101,9 +101,13 @@ GET  /admin/account/{id}                                             → 200 {ba
 POST /admin/account/{id}/credit         {"usd"?|"amount_nano"?, "ref"?} → 200 {balance_nano, balance} | 404
                                         (идемпотентно по ref; usd отрицательный = коррекция)
 POST /admin/account/{id}/status         {"status":"active"|"disabled"}  → 200 {updated} | 404
+POST /admin/account/{id}/pricing        {"mult_bp":0..10000}             → 200 {account,mult_bp,updated} | 404
 GET  /admin/account/{id}/keys                                        → 200 {keys:[{key_id,key_masked,label,status,spent_nano}]}
-GET  /admin/account/{id}/ledger?limit=N                              → 200 {entries:[{kind,amount_nano,ref,ts,...}]}
+GET  /admin/account/{id}/ledger?limit=N[&after_id=ID]                 → 200 {entries:[{id,kind,amount_nano,ref,ts,...}]}
 ```
+
+Without `after_id`, ledger entries are the newest bounded history. With `after_id`, entries are
+returned oldest-first with `id > after_id`; this is the durable worker cursor for progressive pricing.
 
 ### Ключи доступа
 ```
@@ -137,8 +141,8 @@ curl -s $B/admin/account/$AID/ledger -H "x-api-key: $CTL"        # истори�
 
 ## 6. Чего пока НЕТ (не блокирует старт)
 
-- **Push-поток usage** движок→твой сервис (Фаза 2). Пока для истории/дашборда **опрашивай**
-  `GET /admin/account/{id}/ledger` — этого достаточно.
+- **Push-поток usage** движок→твой сервис отсутствует. Коммерческий worker опрашивает cursor-based
+  `GET /admin/account/{id}/ledger?after_id=...`; доставка при этом идемпотентна.
 - **TLS/домен** (Фаза 3). Сейчас Control API по HTTP — только за доверенным периметром.
 - Ключи можно **ротировать** в любой момент (правка `server.env` + рестарт) — скажи, если нужно.
 

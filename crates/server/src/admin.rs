@@ -124,7 +124,7 @@ pub async fn list_keys(
 }
 
 #[derive(Deserialize)]
-pub struct LedgerQuery { limit: Option<i64> }
+pub struct LedgerQuery { limit: Option<i64>, after_id: Option<i64> }
 
 /// GET /admin/account/{id}/ledger?limit=N — история движений баланса (свежие сверху).
 /// kind: topup (пополнение) | charge (списание) | adjust (коррекция). Для дашборда «расход/платежи».
@@ -140,7 +140,12 @@ pub async fn list_ledger(
     if b.account(&id).await.is_none() {
         return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown account"}))).into_response();
     }
-    let rows: Vec<_> = b.ledger(&id, q.limit.unwrap_or(50)).await.into_iter().map(|e| json!({
+    let limit = q.limit.unwrap_or(50);
+    let ledger = match q.after_id {
+        Some(after) => b.ledger_after(&id, after, limit).await,
+        None => b.ledger(&id, limit).await,
+    };
+    let rows: Vec<_> = ledger.into_iter().map(|e| json!({
         "id": e.id,
         "kind": e.kind,
         "amount_nano": e.amount_nano,
@@ -212,6 +217,27 @@ pub async fn account_status(
     let n = b.account_status(&id, &req.status).await;
     if n == 0 { return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown account"}))).into_response(); }
     Json(json!({"account": id, "status": req.status, "updated": n})).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct PricingReq { mult_bp: i64 }
+
+/// POST /admin/account/{id}/pricing — change the multiplier used for future charges.
+pub async fn account_pricing(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<PricingReq>,
+) -> Response {
+    if let Some(r) = deny(&app, &headers, &peer) { return r; }
+    if !(0..=10_000).contains(&req.mult_bp) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "mult_bp must be 0..10000"}))).into_response();
+    }
+    let b = match billing(&app) { Ok(b) => b, Err(r) => return r };
+    let n = b.account_multiplier(&id, req.mult_bp).await;
+    if n == 0 { return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown account"}))).into_response(); }
+    Json(json!({"account": id, "mult_bp": req.mult_bp, "updated": n})).into_response()
 }
 
 #[derive(Deserialize)]

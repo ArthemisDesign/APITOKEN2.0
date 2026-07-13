@@ -47,12 +47,26 @@ export class AuthService {
     private readonly config: ConfigService<Environment, true>,
   ) {}
 
-  async register(input: { email: string; password: string; userAgent: string | null; ipAddress: string | null }): Promise<RegistrationResult> {
+  async register(input: {
+    email: string;
+    password: string;
+    inviteToken?: string | undefined;
+    userAgent: string | null;
+    ipAddress: string | null;
+  }): Promise<RegistrationResult> {
     await this.enforceRateLimits("register", input.email, input.ipAddress, 5, 20, 3600);
     const passwordHash = await hash(input.password, passwordHashOptions());
-    const user = await createEmailUser(this.database, input.email, passwordHash);
+    const user = await createEmailUser(
+      this.database,
+      input.email,
+      passwordHash,
+      input.inviteToken ? tokenHash(input.inviteToken) : undefined,
+    );
     try {
-      const account = await this.engine.createAccount({ handle: `user:${user.id}` });
+      const account = await this.engine.createAccount({
+        handle: `user:${user.id}`,
+        multBp: user.engineMultiplierBp,
+      });
       await completeEngineAccount(this.database, user.id, account.account);
       user.engineAccountStatus = "active";
     } catch (error) {
@@ -151,5 +165,6 @@ function userView(user: AuthUser): AuthUserView {
     email: user.email,
     emailVerified: user.emailVerified,
     engineAccountStatus: user.engineAccountStatus,
+    customerType: user.customerType,
   };
 }

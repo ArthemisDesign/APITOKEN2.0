@@ -119,6 +119,30 @@ export class EngineClient {
     return result.entries;
   }
 
+  async getLedgerAfter(accountId: string, afterId: bigint, limit = 1000): Promise<EngineLedgerEntry[]> {
+    if (afterId < 0n) throw new RangeError("afterId must not be negative");
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new RangeError("limit must be an integer from 1 to 1000");
+    const response = await this.request(
+      `/admin/account/${encodeURIComponent(accountId)}/ledger?after_id=${afterId.toString()}&limit=${limit}`,
+    );
+    const result = engineLedgerSchema.parse(this.parse(response, await response.text()));
+    return result.entries;
+  }
+
+  async setAccountMultiplier(accountId: string, multiplierBp: number): Promise<void> {
+    if (!Number.isInteger(multiplierBp) || multiplierBp < 0 || multiplierBp > 10_000) {
+      throw new RangeError("multiplierBp must be an integer from 0 to 10000");
+    }
+    const response = await this.request(`/admin/account/${encodeURIComponent(accountId)}/pricing`, {
+      method: "POST",
+      body: JSON.stringify({ mult_bp: multiplierBp }),
+    });
+    const payload = this.parse(response, await response.text()) as Record<string, unknown>;
+    if (payload.account !== accountId || payload.mult_bp !== multiplierBp || payload.updated !== 1) {
+      throw new EngineClientError("engine returned an invalid pricing response", response.status, false);
+    }
+  }
+
   private async request(
     path: string,
     options: { method?: string; body?: string; authenticated?: boolean } = {},

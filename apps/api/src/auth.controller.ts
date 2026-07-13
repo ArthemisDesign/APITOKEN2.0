@@ -16,7 +16,7 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { loginSchema, registerSchema } from "@claude-api/contracts";
-import { EmailAlreadyRegisteredError } from "@claude-api/db";
+import { EmailAlreadyRegisteredError, InvalidBusinessInvitationError } from "@claude-api/db";
 import type { Environment } from "./config.js";
 import { CurrentAuth, type RequestAuth, SessionAuthGuard, sessionCookieName } from "./auth.guard.js";
 import { AuthRateLimitedError, AuthService, EmailVerificationRequiredError, InvalidCredentialsError, type AuthSession } from "./auth.service.js";
@@ -38,6 +38,7 @@ export class AuthController {
       return { user: result.user, verificationRequired: result.session === null };
     } catch (error) {
       if (error instanceof EmailAlreadyRegisteredError) throw new ConflictException("email is already registered");
+      if (error instanceof InvalidBusinessInvitationError) throw new BadRequestException(error.message);
       if (error instanceof AuthRateLimitedError) throw new HttpException(error.message, HttpStatus.TOO_MANY_REQUESTS);
       throw error;
     }

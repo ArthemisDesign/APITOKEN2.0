@@ -6,6 +6,7 @@ import { InfrastructureModule } from "./infrastructure.module.js";
 import { PaymentsModule } from "./payments.module.js";
 import { AuthModule } from "./auth.module.js";
 import { AccountModule } from "./account.module.js";
+import { AdminModule } from "./admin.module.js";
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { AccountModule } from "./account.module.js";
     InfrastructureModule,
     AuthModule,
     AccountModule,
+    AdminModule,
     PaymentsModule,
   ],
   controllers: [HealthController],

@@ -27,6 +27,8 @@ export const apiKeyStatus = pgEnum("api_key_status", ["active", "disabled"]);
 export const checkoutStatus = pgEnum("checkout_status", ["creating", "pending", "paid", "canceled", "refunded", "failed"]);
 export const authTokenPurpose = pgEnum("auth_token_purpose", ["verify_email", "reset_password"]);
 export const emailOutboxStatus = pgEnum("email_outbox_status", ["pending", "processing", "sent", "failed"]);
+export const customerType = pgEnum("customer_type", ["b2c", "b2b"]);
+export const pricingJobStatus = pgEnum("pricing_job_status", ["pending", "processing", "retry", "confirmed"]);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey(),
@@ -37,6 +39,97 @@ export const users = pgTable("users", {
   createdAt,
   updatedAt,
 }, (table) => [uniqueIndex("users_email_lower_uidx").on(sql`lower(${table.email})`)]);
+
+export const customerProfiles = pgTable("customer_profiles", {
+  userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "restrict" }),
+  customerType: customerType("customer_type").notNull().default("b2c"),
+  currentTier: integer("current_tier"),
+  multiplierBp: integer("multiplier_bp").notNull().default(4000),
+  pricingMonthStart: timestamp("pricing_month_start", { withTimezone: true }).notNull(),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  check("customer_profiles_multiplier_check", sql`${table.multiplierBp} BETWEEN 0 AND 10000`),
+  check("customer_profiles_tier_check", sql`${table.currentTier} IS NULL OR ${table.currentTier} BETWEEN 0 AND 4`),
+  check("customer_profiles_type_tier_check", sql`
+    (${table.customerType} = 'b2c' AND ${table.currentTier} IS NOT NULL)
+    OR (${table.customerType} = 'b2b' AND ${table.currentTier} IS NULL)
+  `),
+]);
+
+export const businessInvites = pgTable("business_invites", {
+  id: uuid("id").primaryKey(),
+  email: text("email").notNull(),
+  tokenHash: text("token_hash").notNull(),
+  multiplierBp: integer("multiplier_bp").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  consumedByUserId: uuid("consumed_by_user_id").references(() => users.id, { onDelete: "restrict" }),
+  createdAt,
+}, (table) => [
+  uniqueIndex("business_invites_token_hash_uidx").on(table.tokenHash),
+  index("business_invites_email_idx").on(table.email, table.createdAt),
+  check("business_invites_multiplier_check", sql`${table.multiplierBp} BETWEEN 0 AND 10000`),
+]);
+
+export const pricingMonths = pgTable("pricing_months", {
+  id: uuid("id").primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  monthStart: timestamp("month_start", { withTimezone: true }).notNull(),
+  openingTier: integer("opening_tier").notNull(),
+  highestTier: integer("highest_tier").notNull(),
+  spentNano: bigint("spent_nano", { mode: "bigint" }).notNull().default(sql`0`),
+  closedAt: timestamp("closed_at", { withTimezone: true }),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  uniqueIndex("pricing_months_user_month_uidx").on(table.userId, table.monthStart),
+  check("pricing_months_opening_tier_check", sql`${table.openingTier} BETWEEN 0 AND 4`),
+  check("pricing_months_highest_tier_check", sql`${table.highestTier} BETWEEN 0 AND 4`),
+  check("pricing_months_spent_check", sql`${table.spentNano} >= 0`),
+]);
+
+export const pricingUsageCursors = pgTable("pricing_usage_cursors", {
+  engineAccountId: text("engine_account_id").primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  lastLedgerId: bigint("last_ledger_id", { mode: "bigint" }).notNull().default(sql`0`),
+  updatedAt,
+}, (table) => [uniqueIndex("pricing_usage_cursors_user_uidx").on(table.userId)]);
+
+export const pricingUsageEvents = pgTable("pricing_usage_events", {
+  id: uuid("id").primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  engineAccountId: text("engine_account_id").notNull(),
+  ledgerEntryId: bigint("ledger_entry_id", { mode: "bigint" }).notNull(),
+  amountNano: bigint("amount_nano", { mode: "bigint" }).notNull(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+  createdAt,
+}, (table) => [
+  uniqueIndex("pricing_usage_events_engine_ledger_uidx").on(table.engineAccountId, table.ledgerEntryId),
+  index("pricing_usage_events_user_time_idx").on(table.userId, table.occurredAt),
+  check("pricing_usage_events_amount_check", sql`${table.amountNano} > 0`),
+]);
+
+export const enginePricingJobs = pgTable("engine_pricing_jobs", {
+  id: uuid("id").primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  engineAccountId: text("engine_account_id").notNull(),
+  multiplierBp: integer("multiplier_bp").notNull(),
+  reason: text("reason").notNull(),
+  status: pricingJobStatus("status").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  lockedAt: timestamp("locked_at", { withTimezone: true }),
+  lockedBy: text("locked_by"),
+  lastError: text("last_error"),
+  confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  uniqueIndex("engine_pricing_jobs_user_uidx").on(table.userId),
+  index("engine_pricing_jobs_claim_idx").on(table.status, table.nextAttemptAt),
+  check("engine_pricing_jobs_multiplier_check", sql`${table.multiplierBp} BETWEEN 0 AND 10000`),
+]);
 
 export const authIdentities = pgTable("auth_identities", {
   id: uuid("id").primaryKey(),
@@ -107,7 +200,7 @@ export const engineAccounts = pgTable("engine_accounts", {
   id: uuid("id").primaryKey(),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
   engineAccountId: text("engine_account_id"),
-  multBp: integer("mult_bp").notNull().default(2000),
+  multBp: integer("mult_bp").notNull().default(4000),
   status: engineAccountStatus("status").notNull().default("pending"),
   lastError: text("last_error"),
   createdAt,

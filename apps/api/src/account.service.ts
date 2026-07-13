@@ -4,6 +4,7 @@ import {
   failEngineAccount,
   findOwnedApiKey,
   getEngineAccountMapping,
+  getPricingView,
   markEngineAccountMissing,
   markOwnedApiKeyDisabled,
   saveIssuedApiKey,
@@ -44,7 +45,10 @@ export class AccountService {
   }
 
   async getAccount(userId: string): Promise<unknown> {
-    const account = await this.withEngineAccount(userId, (accountId) => this.engine.getAccount(accountId));
+    const [account, pricing] = await Promise.all([
+      this.withEngineAccount(userId, (accountId) => this.engine.getAccount(accountId)),
+      getPricingView(this.database, userId),
+    ]);
     return {
       balanceNano: account.balance_nano,
       reservedNano: account.reserved_nano,
@@ -52,6 +56,7 @@ export class AccountService {
       balanceUsd: account.balance,
       markupBasisPoints: account.mult_bp,
       status: account.status,
+      pricing,
     };
   }
 

@@ -404,6 +404,11 @@ pub fn account_set_status(conn: &Connection, id: &str, status: &str) -> Result<u
     Ok(conn.execute("UPDATE accounts SET status=?1 WHERE id=?2", rusqlite::params![status, id])?)
 }
 
+/// Change the price multiplier for future requests. Existing ledger rows remain immutable.
+pub fn account_set_mult_bp(conn: &Connection, id: &str, mult_bp: i64) -> Result<usize> {
+    Ok(conn.execute("UPDATE accounts SET mult_bp=?1 WHERE id=?2", rusqlite::params![mult_bp, id])?)
+}
+
 /// Удалить аккаунт НАВСЕГДА вместе с его ключами и ledger (каскад, одной транзакцией).
 pub fn account_remove(conn: &Connection, id: &str) -> Result<usize> {
     let tx = conn.unchecked_transaction()?;
@@ -618,6 +623,23 @@ pub fn ledger_recent(conn: &Connection, account_id: &str, limit: i64) -> Result<
         "SELECT id, key, kind, amount_nano, ref, balance_after_nano, ts \
          FROM ledger WHERE account_id=?1 ORDER BY id DESC LIMIT ?2")?;
     let rows = stmt.query_map(rusqlite::params![account_id, limit.clamp(1, 1000)], |r| Ok(LedgerRow {
+        id: r.get::<_, i64>(0)?,
+        key: r.get::<_, Option<String>>(1)?,
+        kind: r.get::<_, String>(2)?,
+        amount_nano: r.get::<_, i64>(3)?,
+        reference: r.get::<_, Option<String>>(4)?,
+        balance_after_nano: r.get::<_, Option<i64>>(5)?,
+        ts: r.get::<_, i64>(6)?,
+    }))?;
+    Ok(rows.filter_map(|x| x.ok()).collect())
+}
+
+/// Ledger cursor for durable external consumers. Rows are returned oldest-first after `after_id`.
+pub fn ledger_after(conn: &Connection, account_id: &str, after_id: i64, limit: i64) -> Result<Vec<LedgerRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, key, kind, amount_nano, ref, balance_after_nano, ts \
+         FROM ledger WHERE account_id=?1 AND id>?2 ORDER BY id ASC LIMIT ?3")?;
+    let rows = stmt.query_map(rusqlite::params![account_id, after_id.max(0), limit.clamp(1, 1000)], |r| Ok(LedgerRow {
         id: r.get::<_, i64>(0)?,
         key: r.get::<_, Option<String>>(1)?,
         kind: r.get::<_, String>(2)?,
@@ -925,6 +947,21 @@ mod tests {
         assert!(issued.key_id.starts_with("key_"));
         assert_eq!(key_set_status_by_id(&c, &issued.key_id, "disabled").unwrap(), 1);
         assert_eq!(key_get(&c, "sk-pool-super-secret").unwrap().unwrap().status, "disabled");
+    }
+
+    #[test]
+    fn ledger_cursor_is_oldest_first_and_multiplier_is_mutable() {
+        let c = db();
+        acct_with_key(&c, "acct", "key", 2_000_000_000, 4000);
+        account_reserve(&c, "acct", 100_000_000).unwrap();
+        account_settle(&c, "acct", "key", 100_000_000, 50_000_000, Some("request")).unwrap();
+        let first = ledger_after(&c, "acct", 0, 1).unwrap();
+        assert_eq!(first.len(), 1);
+        let rest = ledger_after(&c, "acct", first[0].id, 10).unwrap();
+        assert_eq!(rest.len(), 1);
+        assert!(rest[0].id > first[0].id);
+        assert_eq!(account_set_mult_bp(&c, "acct", 3500).unwrap(), 1);
+        assert_eq!(account_get(&c, "acct").unwrap().unwrap().mult_bp, 3500);
     }
 }
 
