@@ -1,119 +1,146 @@
 //! Асинхронный биллинг поверх синхронного `registry` — БЕЗ блокировки async-воркеров.
 //!
-//! Проблема: rusqlite синхронна. Вызвать её прямо в axum-хендлере = заблокировать tokio-воркер на
-//! время запроса к БД; под нагрузкой воркеры встают на мьютексе → рантайм застревает.
+//! Проблема: rusqlite синхронна. Вызвать её в axum-хендлере = заблокировать tokio-воркер на время
+//! запроса к БД; под нагрузкой воркеры встают → рантайм застревает.
 //!
-//! Решение (актор): ВЫДЕЛЕННЫЙ OS-поток владеет соединением и крутит блокирующий цикл `blocking_recv`.
-//! Async-код шлёт команду в `mpsc` и `.await`-ит `oneshot`-ответ — воркеры НЕ блокируются ни на миг.
-//! SQLite — single-writer, поэтому один поток-владелец идеально сериализует записи без SQLITE_BUSY.
-//! Пропускная способность одного потока (индексированные запросы, микросекунды) — десятки тысяч
-//! операций/с, с огромным запасом над 1000 юзеров (~3k оп/с). Read-параллелизм (доп. потоки на WAL)
-//! добавим, если упрёмся; сейчас узкое место — не throughput, а НЕблокировка рантайма.
+//! Решение (акторы + пул): ВЫДЕЛЕННЫЕ OS-потоки владеют соединениями и крутят блокирующий цикл
+//! `blocking_recv`. Async-код шлёт команду в `mpsc` и `.await`-ит `oneshot`-ответ — воркеры не
+//! блокируются ни на миг. Разделение под природу SQLite (single-writer, multi-reader на WAL):
+//!   • ОДИН writer-поток — reserve/settle/topup. Записи сериализуются им идеально, без SQLITE_BUSY.
+//!   • N reader-потоков (каждый со СВОИМ read-соединением) — key_auth/account/get/totals. WAL пускает
+//!     параллельные чтения → key_auth (на КАЖДОМ запросе) масштабируется линейно по числу читателей.
+//! Раздача чтений — round-robin по N каналам (без общего мьютекса на приём).
 //!
-//! RAII-возвраты (`HoldGuard::drop`, `TeeMeter::finalize`) живут в СИНХРОННОМ контексте (Drop не умеет
-//! await). Для них `settle_detached` просто шлёт команду (`mpsc::send` не блокирует и не требует
-//! рантайма) — актор применит позже. Гарантия денег: даже если процесс упадёт до применения, `reconcile`
-//! на старте вернёт осиротевший резерв. Ничего не теряется, ничего не застревает.
+//! RAII-возвраты (`HoldGuard::drop`, `TeeMeter::finalize`) СИНХРОННЫ (Drop не умеет await). Для них
+//! `settle_detached` шлёт команду writer'у без ожидания (`mpsc::send` не блокирует и не требует
+//! рантайма). Гарантия денег: осиротевшее при краше вернёт `reconcile` на старте. Ничего не застревает.
 
 use registry::{AccountRow, BillingTotals, KeyAuth, KeyRow};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{mpsc, oneshot};
 
-enum Cmd {
-    KeyAuth(String, oneshot::Sender<Option<KeyAuth>>),
-    KeyGet(String, oneshot::Sender<Option<KeyRow>>),
-    Account(String, oneshot::Sender<Option<AccountRow>>),
+enum WriteCmd {
     Reserve { account_id: String, hold: i64, reply: oneshot::Sender<Option<i64>> },
     Settle {
         account_id: String, key: String, hold: i64, actual: i64, reference: Option<String>,
         reply: Option<oneshot::Sender<Option<i64>>>, // None → fire-and-forget (RAII из Drop)
     },
     Topup { account_id: String, amount: i64, reference: Option<String>, reply: oneshot::Sender<Option<i64>> },
+}
+
+enum ReadCmd {
+    KeyAuth(String, oneshot::Sender<Option<KeyAuth>>),
+    KeyGet(String, oneshot::Sender<Option<KeyRow>>),
+    Account(String, oneshot::Sender<Option<AccountRow>>),
     Totals(oneshot::Sender<BillingTotals>),
 }
 
-/// Async-фасад биллинга. Клонируется (внутри `Arc`) во все хендлеры; шлёт команды в DB-поток.
+/// Async-фасад биллинга: writer-канал + пул reader-каналов. Клонируется (в `Arc`) во все хендлеры.
 pub struct AsyncBilling {
-    tx: mpsc::UnboundedSender<Cmd>,
+    writer: mpsc::UnboundedSender<WriteCmd>,
+    readers: Vec<mpsc::UnboundedSender<ReadCmd>>,
+    rr: AtomicUsize, // round-robin по читателям
 }
 
 impl AsyncBilling {
-    /// Поднять DB-поток. `open` (миграции + PRAGMA WAL) выполняется НА ЭТОМ ПОТОКЕ — синхронный
-    /// SQLite не касается async-рантайма никогда.
-    pub fn start(db_path: String) -> anyhow::Result<Self> {
-        let conn = registry::open(&db_path)?;
-        let (tx, mut rx) = mpsc::unbounded_channel::<Cmd>();
-        std::thread::Builder::new().name("billing-db".into()).spawn(move || {
-            while let Some(cmd) = rx.blocking_recv() {
-                match cmd {
-                    Cmd::KeyAuth(k, r) => { let _ = r.send(registry::key_account(&conn, &k).ok().flatten()); }
-                    Cmd::KeyGet(k, r) => { let _ = r.send(registry::key_get(&conn, &k).ok().flatten()); }
-                    Cmd::Account(id, r) => { let _ = r.send(registry::account_get(&conn, &id).ok().flatten()); }
-                    Cmd::Reserve { account_id, hold, reply } => {
-                        let _ = reply.send(registry::account_reserve(&conn, &account_id, hold).ok().flatten());
+    /// Поднять writer-поток + `readers` reader-потоков. `open` (миграции + PRAGMA WAL) — на этих
+    /// потоках; синхронный SQLite не касается async-рантайма никогда.
+    pub fn start(db_path: String, readers: usize) -> anyhow::Result<Self> {
+        let readers = readers.max(1);
+        // writer
+        let (wtx, mut wrx) = mpsc::unbounded_channel::<WriteCmd>();
+        {
+            let conn = registry::open(&db_path)?;
+            std::thread::Builder::new().name("billing-writer".into()).spawn(move || {
+                while let Some(cmd) = wrx.blocking_recv() {
+                    match cmd {
+                        WriteCmd::Reserve { account_id, hold, reply } => {
+                            let _ = reply.send(registry::account_reserve(&conn, &account_id, hold).ok().flatten());
+                        }
+                        WriteCmd::Settle { account_id, key, hold, actual, reference, reply } => {
+                            let res = registry::account_settle(&conn, &account_id, &key, hold, actual, reference.as_deref())
+                                .ok().flatten();
+                            if let Some(r) = reply { let _ = r.send(res); }
+                        }
+                        WriteCmd::Topup { account_id, amount, reference, reply } => {
+                            let _ = reply.send(
+                                registry::account_topup(&conn, &account_id, amount, reference.as_deref()).ok().flatten());
+                        }
                     }
-                    Cmd::Settle { account_id, key, hold, actual, reference, reply } => {
-                        let res = registry::account_settle(&conn, &account_id, &key, hold, actual, reference.as_deref())
-                            .ok().flatten();
-                        if let Some(r) = reply { let _ = r.send(res); }
-                    }
-                    Cmd::Topup { account_id, amount, reference, reply } => {
-                        let _ = reply.send(
-                            registry::account_topup(&conn, &account_id, amount, reference.as_deref()).ok().flatten());
-                    }
-                    Cmd::Totals(r) => { let _ = r.send(registry::billing_totals(&conn)); }
                 }
-            }
-            // канал закрыт (сервер гасится) — поток завершается сам
-        })?;
-        Ok(AsyncBilling { tx })
+            })?;
+        }
+        // reader-пул
+        let mut rtxs = Vec::with_capacity(readers);
+        for i in 0..readers {
+            let (rtx, mut rrx) = mpsc::unbounded_channel::<ReadCmd>();
+            let conn = registry::open(&db_path)?; // своё read-соединение (WAL параллелит чтения)
+            std::thread::Builder::new().name(format!("billing-reader-{i}")).spawn(move || {
+                while let Some(cmd) = rrx.blocking_recv() {
+                    match cmd {
+                        ReadCmd::KeyAuth(k, r) => { let _ = r.send(registry::key_account(&conn, &k).ok().flatten()); }
+                        ReadCmd::KeyGet(k, r) => { let _ = r.send(registry::key_get(&conn, &k).ok().flatten()); }
+                        ReadCmd::Account(id, r) => { let _ = r.send(registry::account_get(&conn, &id).ok().flatten()); }
+                        ReadCmd::Totals(r) => { let _ = r.send(registry::billing_totals(&conn)); }
+                    }
+                }
+            })?;
+            rtxs.push(rtx);
+        }
+        Ok(AsyncBilling { writer: wtx, readers: rtxs, rr: AtomicUsize::new(0) })
+    }
+
+    fn reader(&self) -> &mpsc::UnboundedSender<ReadCmd> {
+        let i = self.rr.fetch_add(1, Ordering::Relaxed) % self.readers.len();
+        &self.readers[i]
     }
 
     pub async fn key_auth(&self, key: &str) -> Option<KeyAuth> {
         let (r, rx) = oneshot::channel();
-        self.tx.send(Cmd::KeyAuth(key.into(), r)).ok()?;
+        self.reader().send(ReadCmd::KeyAuth(key.into(), r)).ok()?;
         rx.await.ok().flatten()
     }
     pub async fn get(&self, key: &str) -> Option<KeyRow> {
         let (r, rx) = oneshot::channel();
-        self.tx.send(Cmd::KeyGet(key.into(), r)).ok()?;
+        self.reader().send(ReadCmd::KeyGet(key.into(), r)).ok()?;
         rx.await.ok().flatten()
     }
     pub async fn account(&self, id: &str) -> Option<AccountRow> {
         let (r, rx) = oneshot::channel();
-        self.tx.send(Cmd::Account(id.into(), r)).ok()?;
+        self.reader().send(ReadCmd::Account(id.into(), r)).ok()?;
         rx.await.ok().flatten()
+    }
+    pub async fn totals(&self) -> BillingTotals {
+        let (r, rx) = oneshot::channel();
+        if self.reader().send(ReadCmd::Totals(r)).is_err() { return BillingTotals::default(); }
+        rx.await.unwrap_or_default()
     }
     pub async fn reserve(&self, account_id: &str, hold: i64) -> Option<i64> {
         let (r, rx) = oneshot::channel();
-        self.tx.send(Cmd::Reserve { account_id: account_id.into(), hold, reply: r }).ok()?;
+        self.writer.send(WriteCmd::Reserve { account_id: account_id.into(), hold, reply: r }).ok()?;
         rx.await.ok().flatten()
     }
     pub async fn settle(&self, account_id: &str, key: &str, hold: i64, actual: i64, reference: Option<&str>) -> Option<i64> {
         let (r, rx) = oneshot::channel();
-        self.tx.send(Cmd::Settle {
+        self.writer.send(WriteCmd::Settle {
             account_id: account_id.into(), key: key.into(), hold, actual,
             reference: reference.map(|s| s.into()), reply: Some(r),
         }).ok()?;
         rx.await.ok().flatten()
     }
     /// Списание/возврат БЕЗ ожидания — для RAII в синхронном контексте (Drop/finalize). `mpsc::send`
-    /// не блокирует и не требует рантайма; актор применит. Осиротевшее при краше вернёт `reconcile`.
+    /// не блокирует и не требует рантайма; writer применит. Осиротевшее при краше вернёт `reconcile`.
     pub fn settle_detached(&self, account_id: &str, key: &str, hold: i64, actual: i64, reference: Option<&str>) {
-        let _ = self.tx.send(Cmd::Settle {
+        let _ = self.writer.send(WriteCmd::Settle {
             account_id: account_id.into(), key: key.into(), hold, actual,
             reference: reference.map(|s| s.into()), reply: None,
         });
     }
     pub async fn topup(&self, account_id: &str, amount: i64, reference: Option<&str>) -> Option<i64> {
         let (r, rx) = oneshot::channel();
-        self.tx.send(Cmd::Topup {
+        self.writer.send(WriteCmd::Topup {
             account_id: account_id.into(), amount, reference: reference.map(|s| s.into()), reply: r,
         }).ok()?;
         rx.await.ok().flatten()
-    }
-    pub async fn totals(&self) -> BillingTotals {
-        let (r, rx) = oneshot::channel();
-        if self.tx.send(Cmd::Totals(r)).is_err() { return BillingTotals::default(); }
-        rx.await.unwrap_or_default()
     }
 }

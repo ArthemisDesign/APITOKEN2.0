@@ -16,6 +16,30 @@ use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
 
+/// Как часто прогонять обрезку ledger (сек). Раз в 6ч — с запасом (задача дешёвая, рост не взрывной).
+const LEDGER_PRUNE_INTERVAL: u64 = 6 * 3600;
+
+/// Фоновая обрезка ledger под масштаб: удаляем bulk-строки списаний старше `retention_days`
+/// (topup/adjust не трогаем). Синхронный SQLite → на blocking-пул. При 1000 юзеров бережёт БД от
+/// раздувания журналом per-request-списаний, не теряя ни текущих сумм, ни истории пополнений.
+pub async fn ledger_prune_loop(db_path: String, retention_days: i64) {
+    if retention_days <= 0 { return; } // 0/отриц. → обрезка выключена
+    loop {
+        tokio::time::sleep(Duration::from_secs(LEDGER_PRUNE_INTERVAL)).await;
+        let cutoff = pool::now() - retention_days * 86400;
+        let db = db_path.clone();
+        let res = tokio::task::spawn_blocking(move || {
+            registry::open(&db).and_then(|c| registry::ledger_prune(&c, cutoff))
+        }).await;
+        match res {
+            Ok(Ok(n)) if n > 0 => eprintln!("ledger: обрезано {n} старых списаний (>{retention_days}д)"),
+            Ok(Err(e)) => eprintln!("⚠ ledger-обрезка не удалась: {e}"),
+            Err(e) => eprintln!("⚠ ledger-обрезка: задача упала: {e}"),
+            _ => {}
+        }
+    }
+}
+
 /// Простаивающую подписку пингуем не чаще этого (сек). Не для «поймать сброс» (он вычисляется), а
 /// лишь для проверки живости токена. Под боевым трафиком `polled_ts` свеж → probe не срабатывает.
 const LIVENESS_INTERVAL: i64 = 300;

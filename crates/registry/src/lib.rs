@@ -475,6 +475,16 @@ pub fn key_account(conn: &Connection, key: &str) -> Result<Option<KeyAuth>> {
     }
 }
 
+/// Обрезать ledger под масштаб: удалить bulk-строки списаний (`charge`) старше `older_than_ts`.
+/// Редкие финансовые события (`topup`/`adjust` — пополнения/коррекции) НЕ трогаем: их немного, а
+/// история «кто сколько занёс» важна для споров. Текущие суммы (`accounts.spent_nano`/per-key) —
+/// это отдельный монотонный источник истины, обрезка ledger их не затрагивает. Возвращает удалённое.
+pub fn ledger_prune(conn: &Connection, older_than_ts: i64) -> Result<usize> {
+    Ok(conn.execute(
+        "DELETE FROM ledger WHERE kind='charge' AND ts < ?1",
+        rusqlite::params![older_than_ts])?)
+}
+
 /// Добавить строку в append-only ledger (журнал движений баланса).
 fn ledger_add(conn: &Connection, account_id: &str, key: Option<&str>, kind: &str,
               amount_nano: i64, reference: Option<&str>, balance_after: i64) -> Result<()> {
@@ -759,6 +769,27 @@ mod tests {
         account_set_status(&c, "a", "disabled").unwrap();
         assert_eq!(account_reserve(&c, "a", 1).unwrap(), None);
         assert!(!key_account(&c, "k").unwrap().unwrap().active); // аккаунт неактивен → ключ тоже
+    }
+
+    /// ledger_prune режет старые списания (charge), но хранит пополнения (topup) и текущие суммы.
+    #[test]
+    fn ledger_prune_keeps_topups_and_totals() {
+        let c = db();
+        acct_with_key(&c, "a", "k", 5_000_000_000, 10000); // topup $5 (ledger topup)
+        account_reserve(&c, "a", 1_000_000_000).unwrap();
+        account_settle(&c, "a", "k", 1_000_000_000, 400_000_000, Some("old")).unwrap(); // charge $0.4
+        // состарим ВСЕ строки (ts в прошлом)
+        c.execute("UPDATE ledger SET ts = 1000", []).unwrap();
+        let removed = ledger_prune(&c, 2000).unwrap(); // cutoff позже строк
+        assert_eq!(removed, 1, "удалён 1 charge");
+        let topups: i64 = c.query_row("SELECT COUNT(*) FROM ledger WHERE kind='topup'", [], |r| r.get(0)).unwrap();
+        let charges: i64 = c.query_row("SELECT COUNT(*) FROM ledger WHERE kind='charge'", [], |r| r.get(0)).unwrap();
+        assert_eq!(topups, 1, "topup сохранён");
+        assert_eq!(charges, 0, "charge обрезан");
+        // текущие суммы аккаунта НЕ тронуты обрезкой (отдельный источник истины)
+        let acc = account_get(&c, "a").unwrap().unwrap();
+        assert_eq!(acc.balance_nano, 4_600_000_000);
+        assert_eq!(acc.spent_nano, 400_000_000);
     }
 
     /// N ключей под ОДНИМ аккаунтом тратят из ОБЩЕГО баланса (ключевая модель).

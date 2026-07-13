@@ -301,15 +301,16 @@ pub async fn forward(
         Authz::Admin | Authz::Metered { .. } => {}
     }
     Metrics::inc(&app.metrics.requests);
-    // fair-share: не даём одному метерному ключу набить флот бёрстом одновременных запросов.
+    // fair-share ПО АККАУНТУ: не даём одному клиенту (профилю) набить флот бёрстом одновременных
+    // запросов — лимитим по account_id, а НЕ по ключу, иначе юзер с N ключами обошёл бы конверт в N раз.
     // Слот держится всю обработку (гард освобождает на любом исходе/отмене). Админ — без лимита.
-    let _key_guard = if let Authz::Metered { key, .. } = &authz {
-        if !app.key_limiter.try_acquire(key, app.cfg.max_inflight_per_key) {
+    let _key_guard = if let Authz::Metered { account_id, .. } = &authz {
+        if !app.key_limiter.try_acquire(account_id, app.cfg.max_inflight_per_key) {
             Metrics::inc(&app.metrics.key_throttled);
             return err_retry(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error",
                              "too many concurrent requests — slow down", 1);
         }
-        Some(KeyGuard { limiter: app.key_limiter.clone(), key: key.clone() })
+        Some(KeyGuard { limiter: app.key_limiter.clone(), key: account_id.clone() })
     } else {
         None
     };

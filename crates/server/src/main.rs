@@ -357,9 +357,12 @@ async fn serve() -> Result<()> {
     drop(conn);
     let n = subs.len();
 
-    // Биллинг — async DB-актор (синхронный SQLite на выделенном потоке, не на воркерах рантайма).
+    // Биллинг — async DB-акторы (синхронный SQLite на выделенных потоках, не на воркерах рантайма):
+    // 1 writer + N reader-потоков (WAL параллелит чтения). N из env, деф 4 — с запасом под 1000 юзеров.
     let billing = if s.billing {
-        Some(Arc::new(forward::AsyncBilling::start(s.db_path.clone())?))
+        let readers = std::env::var("CLAUDE_API_DB_READERS").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(4);
+        Some(Arc::new(forward::AsyncBilling::start(s.db_path.clone(), readers)?))
     } else {
         None
     };
@@ -426,6 +429,11 @@ async fn serve() -> Result<()> {
 
     let poke = std::sync::Arc::new(tokio::sync::Notify::new());
     tokio::spawn(poller::reload_loop(app.clone(), s.db_path.clone(), s.fleet.clone(), poke.clone()));
+    // Фоновая обрезка ledger под масштаб (retention из env, деф 30д; 0 = выключено).
+    if s.billing {
+        let days = std::env::var("CLAUDE_API_LEDGER_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(30);
+        tokio::spawn(poller::ledger_prune_loop(s.db_path.clone(), days));
+    }
     if s.proxy.poll {
         tokio::spawn(poller::poll_loop(app.clone(), poke.clone()));
         eprintln!("поллер лимитов: событийный (liveness-only)");
