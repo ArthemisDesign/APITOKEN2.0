@@ -392,6 +392,16 @@ pub fn account_set_status(conn: &Connection, id: &str, status: &str) -> Result<u
     Ok(conn.execute("UPDATE accounts SET status=?1 WHERE id=?2", rusqlite::params![status, id])?)
 }
 
+/// Удалить аккаунт НАВСЕГДА вместе с его ключами и ledger (каскад, одной транзакцией).
+pub fn account_remove(conn: &Connection, id: &str) -> Result<usize> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM api_keys WHERE account_id=?1", rusqlite::params![id])?;
+    tx.execute("DELETE FROM ledger WHERE account_id=?1", rusqlite::params![id])?;
+    let n = tx.execute("DELETE FROM accounts WHERE id=?1", rusqlite::params![id])?;
+    tx.commit()?;
+    Ok(n)
+}
+
 /// Пополнить баланс аккаунта (`amount` может быть отрицательным = коррекция) + запись в ledger.
 /// Возвращает новый баланс или None, если аккаунта нет. Атомарно (UPDATE…RETURNING + ledger).
 pub fn account_topup(conn: &Connection, id: &str, amount_nano: i64, reference: Option<&str>) -> Result<Option<i64>> {

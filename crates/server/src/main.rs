@@ -67,6 +67,8 @@ enum AccountOp {
     /// Заблокировать/разблокировать аккаунт (все его ключи тоже перестают/начинают работать).
     Disable { id: String },
     Enable { id: String },
+    /// Удалить аккаунт НАВСЕГДА вместе с ключами и историей (нужен --yes).
+    Rm { id: String, #[arg(long)] yes: bool },
 }
 
 #[derive(Subcommand)]
@@ -187,6 +189,10 @@ fn account_cmd(op: AccountOp) -> Result<()> {
         }
         AccountOp::Disable { id } => println!("обновлено: {}", registry::account_set_status(&conn, &id, "disabled")?),
         AccountOp::Enable { id } => println!("обновлено: {}", registry::account_set_status(&conn, &id, "active")?),
+        AccountOp::Rm { id, yes } => {
+            if !yes { println!("нужен --yes: удалит аккаунт {id} с ключами и историей"); }
+            else { println!("удалено аккаунтов: {}", registry::account_remove(&conn, &id)?); }
+        }
     }
     Ok(())
 }
