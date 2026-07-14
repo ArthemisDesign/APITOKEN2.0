@@ -30,8 +30,11 @@ export function PricingOverview() {
     </div>
     <div className="tier-section">
       <div className="tier-heading">
-        <div><T k="b2c_tag" as="span" className="tag">B2C · Progressive pricing</T><T k="b2c_h" as="h3">Your discount grows with monthly usage</T></div>
-        <T k="tier_rule" as="p">Your achieved tier carries into the next calendar month. If you miss its target, you move down only one tier.</T>
+        <div className="tier-heading-copy"><T k="b2c_tag" as="span" className="tag">B2C · Progressive pricing</T><T k="b2c_h" as="h3">Your discount grows with monthly usage</T></div>
+        <div className="tier-rule">
+          <div className="tier-rule-item"><T k="tier_rule_keep_label" as="span">Carry forward</T><T k="tier_rule_keep" as="strong">Keep your achieved tier next month</T></div>
+          <div className="tier-rule-item"><T k="tier_rule_miss_label" as="span">If you miss the target</T><T k="tier_rule_miss" as="strong">Move down only one tier</T></div>
+        </div>
       </div>
       <div className="tier-table-wrap">
         <table className="tier-table">
