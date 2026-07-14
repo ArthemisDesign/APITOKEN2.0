@@ -14,7 +14,12 @@ metering = { path = "../metering" }
 tokio = { version = "1", features = ["sync", "rt"] }
 anyhow = "1"
 axum = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls", "json", "socks", "http2"] }
+# TLS-бэкенд: native-tls → на Linux это СИСТЕМНЫЙ OpenSSL (у нас 3.0.13 — ровно как в Node 22).
+# Критично для анти-фингерпринта: JA3/JA4 нашего ClientHello попадает в семейство OpenSSL (как у
+# настоящего Claude Code = Node = OpenSSL), БЕЗ GREASE, а не редкий характерный rustls-отпечаток и не
+# BoringSSL+GREASE браузерных impersonation-крейтов (те кричали бы «Chrome» под claude-cli UA). API
+# reqwest не меняется. (Mac при локальной сборке берёт SecureTransport — только для функц-смоука; прод = Linux/OpenSSL.)
+reqwest = { version = "0.12", default-features = false, features = ["stream", "native-tls", "json", "socks", "http2"] }
 serde_json = "1"
 futures-util = "0.3"
 bytes = "1"
