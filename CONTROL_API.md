@@ -27,7 +27,7 @@
 
 ## 2. Доступ
 
-- **База (сейчас):** `http://5.9.59.83:8787` (внутри доверенного периметра; TLS/домен — Фаза 3, до
+- **База (сейчас):** `http://127.0.0.1:8787` (внутри доверенного периметра; TLS/домен — Фаза 3, до
   публичного продакшена ходи по VPN/приватной сети).
 - **Твой ключ:** `CONTROL_KEY` (выдан отдельно). Шли в заголовке **`x-api-key: <CONTROL_KEY>`** на все
   `/admin/*`. Этим же ключом **нельзя** раздавать `/v1` — он только для управления (компрометация
@@ -126,7 +126,7 @@ POST /admin/key/{key}/status            {"status":"active"|"disabled"}  → 200 
 
 ### Пример: полный цикл (bash)
 ```bash
-CTL=<CONTROL_KEY>; B=http://5.9.59.83:8787
+CTL=<CONTROL_KEY>; B=http://127.0.0.1:8787
 AID=$(curl -s -XPOST $B/admin/account -H "x-api-key: $CTL" -H 'content-type: application/json' \
       -d '{"handle":"acme","mult_bp":2000}' | jq -r .account)
 curl -s -XPOST $B/admin/account/$AID/credit -H "x-api-key: $CTL" -H 'content-type: application/json' \

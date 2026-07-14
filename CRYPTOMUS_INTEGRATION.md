@@ -22,7 +22,7 @@ authenticated client submits whole USD digits such as "37"
   -> Cryptomus POST /v1/payment uses checkoutId as idempotent order_id
   -> browser redirects to the returned pay.cryptomus.com URL
   -> Cryptomus POSTs signed status changes to
-     https://api.apitoken.sale/v1/payments/cryptomus/webhook
+     https://backend.apitoken.sale/v1/payments/cryptomus/webhook
   -> backend verifies the webhook signature
   -> backend rechecks the UUID with signed POST /v1/payment/info
   -> backend matches checkoutId, expected whole USD amount and commercial user
@@ -64,7 +64,7 @@ extra engine credit automatically. Refunds require a separate operator policy.
 ## Configuration
 
 ```text
-PUBLIC_API_BASE_URL=https://api.apitoken.sale
+PUBLIC_API_BASE_URL=https://backend.apitoken.sale
 PUBLIC_APP_BASE_URL=https://apitoken.sale
 MIN_TOPUP_USD=1
 MAX_TOPUP_USD=10000
@@ -92,7 +92,7 @@ queues exactly `amountUsd * 1_000_000_000` nanoUSD.
 
 Before launch:
 
-1. Point `api.apitoken.sale` to the API through HTTPS and configure the webhook IP rule.
+1. Point `backend.apitoken.sale` to the API through HTTPS and configure the webhook IP rule.
 2. Add real Cryptomus credentials to the deployment environment.
 3. Use Cryptomus's test-webhook endpoint to exercise the deployed callback.
 4. Run one controlled invoice through every relevant state before enabling customers.

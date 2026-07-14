@@ -7,24 +7,26 @@ the repository. Production secrets live in root-readable files below `/etc/apito
 ## Current topology
 
 ```text
+api.apitoken.sale --------------------------> commercial host 84.32.48.2 (Chicago)
+                                                | reverse proxy
+                                                `-> Rust core on 127.0.0.1:8787 after migration
+
 future browser at apitoken.sale
         |
-        v
-commercial host 84.32.48.2 (Chicago)
-  reverse proxy (when DNS is enabled)
-        |-- NestJS API on 127.0.0.1:3000
-        |-- payment/email/pricing worker
-        `-- PostgreSQL 18 on 127.0.0.1:5433
-                 |
-                 v
-Rust engine Control API at 5.9.59.83:8787
+        `-> backend.apitoken.sale ----------> commercial host 84.32.48.2
+                                                |-> NestJS API on 127.0.0.1:3000
+                                                |-> payment/email/pricing worker
+                                                `-> PostgreSQL 18 on 127.0.0.1:5433
 
 commercial host -- encrypted Borg/SSH --> 84.32.109.82:2223/backup/.repo
 ```
 
-The Rust engine remains authoritative for API keys, balances, reservations and usage. The
-commercial PostgreSQL database owns users, authentication, payment state, B2C/B2B pricing state and
-durable jobs. The commercial services access the engine only through its Control API.
+`api.apitoken.sale` is the public Anthropic-compatible core endpoint. Its public proxy exposes only
+`/v1/*` and `/health`, not the engine Control API. `backend.apitoken.sale` is the browser-facing
+commercial API. The Rust engine remains authoritative for API keys, balances, reservations and
+usage. The commercial PostgreSQL database owns users, authentication, payment state, B2C/B2B
+pricing state and durable jobs. The commercial services access the engine only through its Control
+API at `http://127.0.0.1:8787`. The legacy core host is not an upstream or fallback in this topology.
 
 ## Commercial host
 
@@ -99,17 +101,18 @@ never be returned to clients or placed in frontend configuration.
 
 ### Deployment state recorded on 2026-07-14
 
-- Git revision `dfbcf09a228ce08d33f4062e7a85f2b50465b604` was built and tested on the commercial host.
+- The deployed Git revision was built and tested on the commercial host before service startup.
 - PostgreSQL, API and worker services are enabled and running.
-- `GET http://127.0.0.1:3000/v1/health` reports PostgreSQL and the engine as healthy.
+- `GET http://127.0.0.1:3000/v1/health` reports PostgreSQL as healthy. Its engine component remains
+  down until the Rust core is migrated to this host; the backend has no legacy-core fallback.
 - Seven commerce migrations are applied.
 - The worker's credit and pricing processors are active. Until SMTP is connected, its environment
   deliberately uses `NODE_ENV=development` with `EMAIL_DELIVERY_MODE=disabled`; verification and
   reset messages remain durably queued. Change both settings when production SMTP is ready.
-- `api.apitoken.sale` does not yet resolve to this host, so no public reverse proxy is active.
-- The private GitHub repository was transferred over authenticated operator SSH. A dedicated
-  read-only deploy key exists at `/home/deploy/.ssh/github_deploy_ed25519`, but it must be registered
-  in the GitHub repository settings before this host can run direct `git fetch` or `git pull`.
+- `api.apitoken.sale` and `backend.apitoken.sale` do not yet resolve to this host, so the prepared
+  reverse-proxy configuration is not active.
+- A dedicated read-only GitHub deploy key exists at
+  `/home/deploy/.ssh/github_deploy_ed25519` and is registered for direct `git fetch` and `git pull`.
 
 ## Backups
 
@@ -156,9 +159,8 @@ cargo test --workspace
 sudo systemctl restart apitoken-postgres apitoken-api apitoken-worker
 ```
 
-Direct GitHub commands require registration of the host's read-only deploy key. Until then, release
-artifacts must be transferred through an authenticated operator connection and verified against the
-pushed commit hash.
+Direct GitHub commands use the host's registered read-only deploy key. Production releases must
+still be verified against the intended pushed commit hash before services restart.
 
 Run PostgreSQL migrations after the database is healthy and before restarting a new API revision:
 
@@ -174,7 +176,8 @@ server as an update mechanism.
 
 ## Work still requiring external configuration
 
-- Point `api.apitoken.sale` to `84.32.48.2`, then install the reverse proxy and obtain TLS.
+- Point the wildcard DNS record `*.apitoken.sale` to `84.32.48.2`, then install the prepared
+  `deploy/Caddyfile` and obtain TLS for `api.apitoken.sale` and `backend.apitoken.sale`.
 - Configure SMTP on a separate mail host.
 - Add Google and GitHub OAuth application credentials.
 - Add Cryptomus credentials and test its deployed webhook.

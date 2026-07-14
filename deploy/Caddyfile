@@ -1,0 +1,12 @@
+api.apitoken.sale {
+	@public_core path /v1/* /health
+	handle @public_core {
+		reverse_proxy 127.0.0.1:8787
+	}
+
+	respond 404
+}
+
+backend.apitoken.sale {
+	reverse_proxy 127.0.0.1:3000
+}

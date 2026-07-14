@@ -38,7 +38,7 @@ clears its buckets.
 - The browser receives a random 256-bit opaque token. It contains no user data or authorization.
 - PostgreSQL stores only `SHA-256(token)`, the owning user, expiry and revocation state.
 - Production cookie: `__Host-apitoken_session; Path=/; Secure; HttpOnly; SameSite=Lax`.
-- The cookie has no `Domain`, so it is host-only to `api.apitoken.sale`.
+- The cookie has no `Domain`, so it is host-only to `backend.apitoken.sale`.
 - Login and registration always issue a fresh session; logout revokes only that exact session.
 - Private responses use `Cache-Control: no-store`; logout also sends `Clear-Site-Data`.
 - All unsafe browser requests must have `Origin` exactly equal to `PUBLIC_APP_BASE_URL`.
@@ -73,10 +73,10 @@ Optional configuration is all-or-none:
 ```text
 GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET
-GOOGLE_REDIRECT_URI=https://api.apitoken.sale/v1/auth/google/callback
+GOOGLE_REDIRECT_URI=https://backend.apitoken.sale/v1/auth/google/callback
 GITHUB_CLIENT_ID
 GITHUB_CLIENT_SECRET
-GITHUB_REDIRECT_URI=https://api.apitoken.sale/v1/auth/github/callback
+GITHUB_REDIRECT_URI=https://backend.apitoken.sale/v1/auth/github/callback
 ```
 
 Google uses authorization code + PKCE and verifies state, browser binding, nonce, ID-token signature,
