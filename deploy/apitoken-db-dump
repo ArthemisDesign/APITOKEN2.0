@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+install -d -m 700 /var/lib/apitoken/backups
+temporary_dump=/var/lib/apitoken/backups/commerce.dump.tmp
+final_dump=/var/lib/apitoken/backups/commerce.dump
+trap 'rm -f "$temporary_dump"' EXIT
+
+docker compose \
+  --env-file /etc/apitoken/postgres.env \
+  -f /opt/apitoken/repo/deploy/commerce-postgres.compose.yaml \
+  exec -T commerce-postgres \
+  pg_dump \
+    --username=commerce \
+    --dbname=commerce \
+    --format=custom \
+    --compress=6 \
+    --no-owner \
+    --no-acl > "$temporary_dump"
+
+chmod 600 "$temporary_dump"
+mv -f "$temporary_dump" "$final_dump"
+trap - EXIT

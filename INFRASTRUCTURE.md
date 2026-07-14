@@ -97,6 +97,20 @@ The PostgreSQL container publishes only to `127.0.0.1:5433`. API and worker use 
 and authentication-token encryption key. Both use the server-side engine Control key, which must
 never be returned to clients or placed in frontend configuration.
 
+### Deployment state recorded on 2026-07-14
+
+- Git revision `dfbcf09a228ce08d33f4062e7a85f2b50465b604` was built and tested on the commercial host.
+- PostgreSQL, API and worker services are enabled and running.
+- `GET http://127.0.0.1:3000/v1/health` reports PostgreSQL and the engine as healthy.
+- Seven commerce migrations are applied.
+- The worker's credit and pricing processors are active. Until SMTP is connected, its environment
+  deliberately uses `NODE_ENV=development` with `EMAIL_DELIVERY_MODE=disabled`; verification and
+  reset messages remain durably queued. Change both settings when production SMTP is ready.
+- `api.apitoken.sale` does not yet resolve to this host, so no public reverse proxy is active.
+- The private GitHub repository was transferred over authenticated operator SSH. A dedicated
+  read-only deploy key exists at `/home/deploy/.ssh/github_deploy_ed25519`, but it must be registered
+  in the GitHub repository settings before this host can run direct `git fetch` or `git pull`.
+
 ## Backups
 
 | Item | Value |
@@ -114,6 +128,10 @@ replaceable caches, toolchains and the live `/var/lib/apitoken/postgres` data di
 image/cache data under `/var/lib/docker` is intentionally not included. Once PostgreSQL is deployed,
 backups must include application-consistent logical database dumps staged below
 `/var/lib/apitoken/backups`; raw live database files are not a restore strategy.
+
+`deploy/apitoken-db-dump` creates the PostgreSQL custom-format dump. It is installed as
+`/usr/local/sbin/apitoken-db-dump` and configured as Borgmatic's `before_backup` hook. Validate a
+dump with `pg_restore --list /var/lib/apitoken/backups/commerce.dump`.
 
 The Borg private identity, repository key and passphrase are required for disaster recovery. An
 independent copy exists on the operator workstation and must also be kept in an encrypted password
@@ -137,6 +155,10 @@ pnpm test
 cargo test --workspace
 sudo systemctl restart apitoken-postgres apitoken-api apitoken-worker
 ```
+
+Direct GitHub commands require registration of the host's read-only deploy key. Until then, release
+artifacts must be transferred through an authenticated operator connection and verified against the
+pushed commit hash.
 
 Run PostgreSQL migrations after the database is healthy and before restarting a new API revision:
 
