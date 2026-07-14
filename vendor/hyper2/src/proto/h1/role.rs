@@ -1595,12 +1595,29 @@ fn cc_header_case(dst: &mut Vec<u8>, name: &HeaderName) {
     }
 }
 
+/// CC-канонический порядок ВСЕХ заголовков, включая ТРАНСПОРТНЫЕ (host/connection/content-length),
+/// которые hyper добавляет в карту сам — wreq `headers_order` их не достаёт (сортирует ДО их вставки).
+/// Поэтому финальный порядок задаём здесь. Снято с живого claude 2.1.195. Неизвестные — в хвост,
+/// со стабильным относительным порядком.
+fn cc_header_order(name: &str) -> usize {
+    const ORDER: &[&str] = &[
+        "accept", "authorization", "content-type", "user-agent", "x-claude-code-session-id",
+        "x-stainless-arch", "x-stainless-lang", "x-stainless-os", "x-stainless-package-version",
+        "x-stainless-retry-count", "x-stainless-runtime", "x-stainless-runtime-version",
+        "x-stainless-timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access",
+        "anthropic-version", "x-app", "x-client-request-id",
+        "connection", "host", "accept-encoding", "content-length",
+    ];
+    ORDER.iter().position(|&h| h == name).unwrap_or(ORDER.len())
+}
+
 pub(crate) fn write_headers_title_case(headers: &HeaderMap, dst: &mut Vec<u8>) {
-    for (name, value) in headers {
-        // ПАТЧ (claude-api fingerprint): вместо обычного title_case пишем регистр имён БАЙТ-В-БАЙТ
-        // как Claude Code (cc_header_case). Клиентский encode выбирает эту функцию, когда включён
-        // title_case_headers — а его включает ТОЛЬКО наш wreq bun_emulation, поэтому CC-специфика
-        // тут никого больше не затрагивает (axum-сервер — на отдельном крейте hyper).
+    // ПАТЧ (claude-api fingerprint): регистр (cc_header_case) И порядок (cc_header_order) заголовков
+    // БАЙТ-В-БАЙТ как Claude Code, включая транспортный хвост. Выбирается только при title_case_headers,
+    // а его включает ТОЛЬКО наш wreq bun_emulation → axum-сервер (отдельный hyper) не затронут.
+    let mut items: Vec<(&HeaderName, &HeaderValue)> = headers.iter().collect();
+    items.sort_by_key(|(name, _)| cc_header_order(name.as_str())); // stable → неизвестные держат порядок
+    for (name, value) in items {
         cc_header_case(dst, name);
         extend(dst, b": ");
         extend(dst, value.as_bytes());

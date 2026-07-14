@@ -47,6 +47,7 @@ pub fn apply_persona_headers(rb: wreq::RequestBuilder, cfg: &ProxyConfig) -> wre
         .header("anthropic-dangerous-direct-browser-access", "true") // реальный CC всегда шлёт
         .header("accept", "application/json")
         .header("accept-encoding", "gzip, deflate, br, zstd") // точный набор Bun/undici (снято с 2.1.195)
+        .header("connection", "keep-alive") // undici/CC шлёт явно; hyper на keep-alive его не пишет
 }
 
 /// Свежий per-request UUID для `x-client-request-id` (реальный CC шлёт случайный на КАЖДЫЙ запрос —

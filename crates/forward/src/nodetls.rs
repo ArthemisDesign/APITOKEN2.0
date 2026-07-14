@@ -80,7 +80,7 @@ mod tests {
         rt.block_on(async move {
             let client = wreq::Client::builder().emulation(bun_emulation()).build().unwrap();
             let _ = client
-                .get(format!("http://127.0.0.1:{port}/v1/models"))
+                .post(format!("http://127.0.0.1:{port}/v1/messages"))
                 .header("x-stainless-arch", "x64")
                 .header("x-stainless-os", "Linux")
                 .header("x-stainless-package-version", "0.94.0")
@@ -88,6 +88,9 @@ mod tests {
                 .header("anthropic-version", "2023-06-01")
                 .header("x-app", "cli")
                 .header("x-client-request-id", "abc")
+                .header("accept-encoding", "gzip, deflate, br, zstd")
+                .header("connection", "keep-alive")
+                .body("{}")
                 .send()
                 .await;
         });
@@ -107,5 +110,11 @@ mod tests {
         // НЕ должно быть ошибочного Title-Case на anthropic-*/x-app
         assert!(!req.contains("Anthropic-Beta"), "anthropic-* НЕ должен быть Title-Case:\n{req}");
         assert!(!req.contains("X-App:"), "x-app НЕ должен быть Title-Case:\n{req}");
+        // ТРАНСПОРТНЫЙ ХВОСТ в порядке CC: Connection, Host, Accept-Encoding, Content-Length
+        let pos = |h: &str| req.find(h).unwrap_or_else(|| panic!("нет {h}:\n{req}"));
+        let (c, h, ae, cl) = (pos("Connection:"), pos("Host:"), pos("Accept-Encoding:"), pos("Content-Length:"));
+        assert!(c < h && h < ae && ae < cl, "хвост не в порядке CC (Connection<Host<Accept-Encoding<Content-Length):\n{req}");
+        // весь хвост — ПОСЛЕ приложенческих заголовков
+        assert!(pos("x-client-request-id:") < c, "транспорт должен быть после app-заголовков:\n{req}");
     }
 }
