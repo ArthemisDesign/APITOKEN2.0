@@ -9,6 +9,7 @@
     "build": "pnpm -r --if-present build",
     "dev:api": "pnpm --filter @claude-api/commercial-api dev",
     "dev:worker": "pnpm --filter @claude-api/payment-worker dev",
+    "dev:web": "pnpm --filter @claude-api/web dev",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
     "test:integration": "pnpm --filter @claude-api/db test:integration && pnpm --filter @claude-api/commercial-api test",

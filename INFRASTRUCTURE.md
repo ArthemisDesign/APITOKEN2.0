@@ -184,12 +184,26 @@ pnpm db:migrate
 Production releases should deploy a specific tested commit. Never use `git reset --hard` on the
 server as an update mechanism.
 
+## Vercel frontend
+
+The customer frontend lives in `apps/web` and deploys independently to Vercel. Configure the Vercel
+project with `apps/web` as its Root Directory, use the Next.js framework preset, set
+`NEXT_PUBLIC_BACKEND_URL=https://backend.apitoken.sale/v1`, and attach the production apex domain
+`apitoken.sale`. Vercel must install from the repository-level pnpm workspace and lockfile.
+
+Keep `apitoken.sale` as the canonical browser origin. The commercial API deliberately allows that
+one exact origin for credentialed CORS and state-changing requests. Redirect alternate frontend
+hosts such as `www.apitoken.sale` to the apex instead of serving the application from multiple
+origins. The Vercel frontend contains no Control API or payment-provider secrets.
+
 ## Work still requiring external configuration
 
 - Migrate and start the Rust core on `127.0.0.1:8787`; no legacy-core fallback is configured.
 - Configure SMTP on a separate mail host.
 - Add Google and GitHub OAuth application credentials.
 - Add Cryptomus credentials and test its deployed webhook.
+- Import `apps/web` into Vercel, attach `apitoken.sale`, and update the apex DNS using the exact
+  records Vercel provides for the project.
 - Add external monitoring/alert delivery and an independent second backup location.
 - Before multiple Rust engine nodes share subscriptions, implement centralized durable subscription
   ownership/leases; never share the engine SQLite database over NFS.

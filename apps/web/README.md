@@ -1,0 +1,42 @@
+# apiToken.sale web frontend
+
+Next.js App Router frontend for the independently deployed commercial customer UI. It talks to the
+NestJS API at `backend.apitoken.sale`; it never calls the engine Control API and never receives the
+engine control key.
+
+## Local development
+
+```bash
+cp apps/web/.env.example apps/web/.env.local
+pnpm --filter @claude-api/web dev
+```
+
+For a local commercial API, set `NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:3000/v1` and configure the
+API's `PUBLIC_APP_BASE_URL` to the exact frontend origin. Browser requests include the API's secure
+session cookie with `credentials: include`.
+
+## Vercel
+
+Import the monorepo as a Vercel project with:
+
+- Root Directory: `apps/web`
+- Framework Preset: Next.js
+- Environment: `NEXT_PUBLIC_BACKEND_URL=https://backend.apitoken.sale/v1`
+- Production domain: `apitoken.sale`
+
+The repository-level `pnpm-lock.yaml` is the dependency lock. Keep `apitoken.sale` as the canonical
+origin because the backend CORS and mutation-origin checks intentionally allow one exact frontend
+origin.
+
+## Implemented customer capabilities
+
+- email/password registration, verification, resend, login, logout, forgot/reset password;
+- Google and GitHub OAuth when the backend reports those providers enabled;
+- authoritative balance, reserved amount, spend, B2C progress and B2B pricing;
+- API-key listing, one-time secret issuance, and revocation;
+- engine ledger;
+- arbitrary positive whole-USD Cryptomus checkout creation.
+
+Referral rewards, promo codes, Telegram, rich analytics, checkout history, editable profiles, password
+change, session management, and TOTP remain visible only as non-interactive future areas. The frontend
+does not simulate them or store fake server data in browser storage.
