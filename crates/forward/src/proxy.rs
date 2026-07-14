@@ -599,8 +599,10 @@ pub async fn forward(
                     // billing-header первым system-блоком (как реальный CC): cc_version флот-константна,
                     // cch стабилен per-подписка. Идемпотентно — на ротации заменяет, не дублирует.
                     if app.cfg.inject_billing {
-                        let txt = format!("x-anthropic-billing-header: cc_version={}; cc_entrypoint={}; cch={};",
-                            app.cfg.cc_version, app.cfg.cc_entrypoint, crate::upstream::persona_cch(&sub.email));
+                        // cc_version = <base>.<build> где build стабилен per-подписка (см. persona_ccbuild).
+                        let txt = format!("x-anthropic-billing-header: cc_version={}.{}; cc_entrypoint={}; cch={};",
+                            app.cfg.cc_version, crate::upstream::persona_ccbuild(&sub.email),
+                            app.cfg.cc_entrypoint, crate::upstream::persona_cch(&sub.email));
                         set_billing_block(v, &txt);
                     }
                 }
@@ -857,9 +859,13 @@ mod tests {
             "x-anthropic-billing-header: cc_version=2.1.195.d49; cc_entrypoint=sdk-cli; cch=99999;");
         assert!(sys[0].get("cache_control").is_none(), "billing-блок БЕЗ cache_control (как у CC)");
         assert!(sys[1]["text"].as_str().unwrap().starts_with("You are a Claude agent"));
-        // per-подписка cch стабилен и различается между подписками
+        // per-подписка cch/ccbuild стабильны и различаются между подписками (анти-кластер)
         assert_eq!(crate::upstream::persona_cch("a@x.io"), crate::upstream::persona_cch("a@x.io"));
         assert_ne!(crate::upstream::persona_cch("a@x.io"), crate::upstream::persona_cch("b@x.io"));
+        let cb = crate::upstream::persona_ccbuild("a@x.io");
+        assert_eq!(cb, crate::upstream::persona_ccbuild("a@x.io"));   // стабилен
+        assert!(cb.starts_with('d') && cb[1..].parse::<u32>().map(|n| (10..100).contains(&n)).unwrap_or(false),
+            "формат dNN (10..99): {cb}");
     }
 
     #[test]

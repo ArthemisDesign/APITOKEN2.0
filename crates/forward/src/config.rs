@@ -41,7 +41,7 @@ pub struct ProxyConfig {
     /// (реальный CC шлёт его ПЕРВЫМ system-блоком; отсутствие = структурный отпечаток). cc_version
     /// флот-константна (все на 2.1.195 шлют одно), cch варьируется per-персона (per-install реализм).
     pub inject_billing: bool,
-    pub cc_version: String,        // "2.1.195.d49" (версия+build-суффикс; коген с UA)
+    pub cc_version: String,        // БАЗА "2.1.195" (коген с UA); суффикс .dNN добавляем per-подписка
     pub cc_entrypoint: String,     // "sdk-cli"
     pub default_beta: String,      // anthropic-beta, добавляемый к клиентским
     pub user_agent: String,        // UA-fallback (client-level default; поллер/детект)

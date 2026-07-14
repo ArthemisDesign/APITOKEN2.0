@@ -101,6 +101,13 @@ pub fn persona_session_id(email: &str, session: Option<u64>) -> String {
 pub fn persona_cch(email: &str) -> String {
     hex_expand(email_seed(email).wrapping_add(0xCC), 1)[0..5].to_string()
 }
+/// build-суффикс cc_version (`cc_version=<base>.d<NN>`). Живые захваты показали, что `.dNN` МЕНЯЕТСЯ
+/// между запусками (d49, d80 — зависит от конфиг-окружения инстанса), т.е. это НЕ стабильный build-id.
+/// Значит фиксировать один `.dNN` на весь флот = кластер. Делаем стабильным per-подписка (свой у каждой
+/// «инсталляции»), 2 цифры (10..99) — как в наблюдаемом формате.
+pub fn persona_ccbuild(email: &str) -> String {
+    format!("d{}", 10 + (email_seed(email).wrapping_add(0xB1) % 90))
+}
 
 /// Кэш http-клиентов: один клиент на ПАРУ (прокси, подписка). Ключевание по email критично для
 /// анти-фингерпринта: клиент по одной лишь строке прокси заставил бы подписки с общим/пустым прокси

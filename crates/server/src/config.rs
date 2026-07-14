@@ -112,7 +112,10 @@ impl Settings {
                 // `x-anthropic-billing-header: cc_version=2.1.195.d49; cc_entrypoint=sdk-cli; cch=<hex>;`
                 // cc_version флот-константна (коген с UA), cch — per-персона (см. inject).
                 inject_billing: ev_bool("CLAUDE_API_INJECT_BILLING", true),
-                cc_version: ev_or("CLAUDE_API_CC_VERSION", "2.1.195.d49"),
+                // БАЗА cc_version (без .dNN-суффикса); суффикс `.dNN` добавляем per-подписка в proxy
+                // (persona_ccbuild) — живые захваты показали, что .dNN варьируется, фиксировать на флот
+                // = кластер. refresh-fingerprint.sh кладёт сюда базу (срезает .dNN из живого захвата).
+                cc_version: ev_or("CLAUDE_API_CC_VERSION", "2.1.195"),
                 cc_entrypoint: ev_or("CLAUDE_API_CC_ENTRYPOINT", "sdk-cli"),
                 // Полный CC-набор beta (не только oauth): без `claude-code-20250219` мы «OAuth-клиент, но
                 // НЕ Claude Code». ТОЧНЫЙ актуальный набор снимает refresh-fingerprint.sh с живого claude
