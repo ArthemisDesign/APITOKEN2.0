@@ -14,3 +14,11 @@ members = [
 [profile.release]
 opt-level = 2
 lto = "thin"
+
+# Форк hyper2 (транспорт wreq) — единственная правка: регистр имён заголовков БАЙТ-В-БАЙТ как у
+# Claude Code на пути preserve_header_case (наш bun_emulation). См. vendor/hyper2/src/proto/h1/role.rs
+# (cc_header_case). Патч НЕ трогает axum-сервер (он на отдельном крейте hyper). Обновление hyper2 →
+# перенести правку. Причина форка: HeaderName нормализует регистр в lowercase, а hyper2 отдаёт
+# оригинальный регистр только из pub(crate) HeaderCaseMap, недоступной извне.
+[patch.crates-io]
+hyper2 = { path = "vendor/hyper2" }
