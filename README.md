@@ -27,7 +27,8 @@ Anthropic не пускает OAuth-токены подписок на `/v1/mess
 ## Из чего состоит (Cargo workspace)
 
 Слои — только вниз: `registry ← pool ← forward ← server`. Карта — [`ARCHITECTURE.md`](ARCHITECTURE.md),
-правила для агентов — [`CLAUDE.md`](CLAUDE.md), модель веток — [`BRANCHES.md`](BRANCHES.md).
+правила для агентов — [`CLAUDE.md`](CLAUDE.md), модель веток — [`BRANCHES.md`](BRANCHES.md),
+production-хосты и эксплуатация — [`INFRASTRUCTURE.md`](INFRASTRUCTURE.md).
 
 | Крейт | Роль | Ветка-владелец |
 |---|---|---|
