@@ -21,9 +21,11 @@ export function PricingOverview() {
         <Link className="btn btn-primary" href="/register"><T k="topup_cta">Create account</T></Link>
       </div>
       <div className="business-card">
-        <T k="b2b_tag" as="span" className="tag">B2B · Invite only</T>
+        <T k="b2b_tag" as="span" className="tag">B2B pricing</T>
         <T k="b2b_h" as="h3">Negotiated business pricing</T>
-        <T k="b2b_p" as="p">Business customers receive an operator-set discount under an individual agreement and join through a private invitation.</T>
+        <div className="business-preview" aria-hidden="true"><strong>B2B</strong><T k="b2b_preview">Private access</T></div>
+        <T k="b2b_p" as="p">Business customers receive an operator-set discount under an individual agreement.</T>
+        <div className="business-status"><span className="status-dot" aria-hidden="true" /><T k="b2b_status">Invite-only registration</T></div>
       </div>
     </div>
     <div className="tier-section">

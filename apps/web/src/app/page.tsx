@@ -16,7 +16,26 @@ export default function HomePage() {
     <SiteHeader home />
     <main>
       <div className="hero"><div className="wrap hero-grid"><div><T k="hero_eyebrow" as="span" className="eyebrow">Claude API · One gateway</T><T k="hero_h1" as="h1">All Claude models. One key.</T><T k="hero_lead" as="p" className="lead">One key, one dashboard, every Claude model — ready for Claude Code, Cursor and production.</T><div className="hero-cta"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link><Link className="btn btn-ghost" href="/docs"><T k="hero_cta2">Read documentation</T></Link></div></div><InteractiveTerminal /></div><div className="wrap home-stats"><div className="stats reveal"><Stat value="8+" label="stat1" /><Stat value="2" label="stat2" /><Stat value="99.9%" label="stat3" /><Stat value="<100ms" label="stat4" /><div className="stat"><T k="stat5v" as="b">minutes</T><T k="stat5">Setup time</T></div></div></div></div>
-      <section id="products"><div className="wrap"><div className="prod-grid" data-reveal-stagger><div className="prod"><T k="pc1_tag" as="span" className="tag">Claude API</T><T k="pc1_h" as="h3">All models, one key</T><ul className="prod-list">{models.map((model) => <li key={model}>{model}</li>)}</ul><Link className="btn btn-ghost" href="/models"><T k="pc1_cta">View models</T></Link></div><div className="prod prod-feat"><T k="pc2_tag" as="span" className="tag">Flexible balance</T><T k="pc2_h" as="h3">Choose your amount</T><TopUpAmountInput className="amount-example" initialAmount="37" /><T k="pc2_p" as="p">Enter any whole USD amount. No fixed product catalog.</T><Link className="btn btn-primary" href="#pricing"><T k="pc2_cta">See pricing</T></Link></div><div className="prod"><T k="pc3_tag" as="span" className="tag">Free start</T><T k="pc3_h" as="h3">Free API usage</T><div className="amt"><T k="p3_now" as="span" className="now">$10</T><T k="pc3_official" as="span" className="official">at official API prices</T></div><T k="pc3_p" as="p">No card required. Start with any Claude model.</T><Link className="btn btn-ghost" href="/register"><T k="start_free">Start free</T></Link></div></div></div></section>
+      <section id="products"><div className="wrap"><div className="prod-grid" data-reveal-stagger>
+        <div className="prod">
+          <T k="pc1_tag" as="span" className="tag">Claude API</T>
+          <T k="pc1_h" as="h3">All models, one key</T>
+          <div className="prod-body"><ul className="prod-list">{models.map((model) => <li key={model}>{model}</li>)}</ul></div>
+          <Link className="btn btn-ghost" href="/models"><T k="pc1_cta">View models</T></Link>
+        </div>
+        <div className="prod prod-feat">
+          <T k="pc2_tag" as="span" className="tag">Flexible balance</T>
+          <T k="pc2_h" as="h3">Choose your amount</T>
+          <div className="prod-body"><TopUpAmountInput className="amount-example" initialAmount="37" /><T k="pc2_p" as="p">Enter any whole USD amount. No fixed product catalog.</T></div>
+          <Link className="btn btn-primary" href="#pricing"><T k="pc2_cta">See pricing</T></Link>
+        </div>
+        <div className="prod">
+          <T k="pc3_tag" as="span" className="tag">Free start</T>
+          <T k="pc3_h" as="h3">Free API usage</T>
+          <div className="prod-body"><div className="amt"><T k="p3_now" as="span" className="now">$10</T><T k="pc3_official" as="span" className="official">at official API prices</T></div><T k="pc3_p" as="p">No card required. Start with any Claude model.</T></div>
+          <Link className="btn btn-ghost" href="/register"><T k="start_free">Start free</T></Link>
+        </div>
+      </div></div></section>
       <section id="how"><div className="wrap"><SectionHead eyebrow="how_eyebrow" title="how_h2" lead="how_lead" /><div className="steps" data-reveal-stagger>{steps.map(([title, text], index) => <InfoCard key={title} index={index} title={title} text={text} className="step" />)}</div></div></section>
       <section id="workflow"><div className="wrap"><SectionHead eyebrow="wf_eyebrow" title="wf_h2" /><div className="feats" data-reveal-stagger>{features.map(([title, text], index) => <InfoCard key={title} index={index} title={title} text={text} className="feat" />)}</div></div></section>
       <section className="announce"><div className="wrap announce-inner reveal"><div className="announce-copy"><T k="ann_eyebrow" as="span" className="eyebrow">Latest model</T><T k="ann_h" as="h2">Claude Opus 4.8 is live</T><T k="ann_p" as="p">The most capable Claude model runs on the same key and balance.</T><Link className="btn btn-ghost" href="/models"><T k="ann_cta">Explore models</T></Link></div><div className="announce-badge"><b>Opus 4.8</b><T k="ann_ctx">1M context</T></div></div></section>

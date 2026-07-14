@@ -16,7 +16,7 @@ Capture the public routes in another terminal:
 pnpm --filter @claude-api/web audit:screenshots
 ```
 
-The PNG files and `manifest.json` are written to `apps/web/.artifacts/site-audit/` and are intentionally ignored by Git.
+The PNG files and `manifest.json` are written to `apps/web/.artifacts/site-audit/` and are intentionally ignored by Git. The audit includes desktop, mobile, light, dark, and a Russian-language home-page pass so translated text wrapping is visible before release.
 
 Optional environment variables:
 

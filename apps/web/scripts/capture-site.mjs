@@ -16,6 +16,7 @@ const captures = [
   ["home-desktop", "/", 1440, 1000, "light"],
   ["home-mobile", "/", 390, 844, "light"],
   ["home-dark", "/", 1440, 1000, "dark"],
+  ["home-russian", "/", 1440, 1000, "dark", "ru"],
   ["plans-desktop", "/plans", 1440, 1000, "light"],
   ["plans-mobile", "/plans", 390, 844, "light"],
   ["plans-dark", "/plans", 1440, 1000, "dark"],
@@ -70,6 +71,7 @@ function createCdpClient(webSocketUrl) {
       const request = pending.get(message.id);
       if (!request) return;
       pending.delete(message.id);
+      clearTimeout(request.timeout);
       if (message.error) request.reject(new Error(message.error.message));
       else request.resolve(message.result);
       return;
@@ -88,7 +90,11 @@ function createCdpClient(webSocketUrl) {
     send(method, params = {}) {
       const id = ++sequence;
       return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject });
+        const timeout = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`CDP command timed out: ${method}`));
+        }, 30_000);
+        pending.set(id, { resolve, reject, timeout });
         socket.send(JSON.stringify({ id, method, params }));
       });
     },
@@ -105,7 +111,7 @@ function createCdpClient(webSocketUrl) {
   };
 }
 
-async function capturePage(client, [name, route, width, height, theme]) {
+async function capturePage(client, [name, route, width, height, theme, language = "en"]) {
   await client.send("Emulation.setDeviceMetricsOverride", {
     width,
     height,
@@ -114,6 +120,9 @@ async function capturePage(client, [name, route, width, height, theme]) {
     screenWidth: width,
     screenHeight: height,
   });
+  await client.send("Runtime.evaluate", {
+    expression: `localStorage.setItem('theme', ${JSON.stringify(theme)}); localStorage.setItem('lang', ${JSON.stringify(language)});`,
+  });
   const loaded = client.once("Page.loadEventFired");
   await client.send("Page.navigate", { url: new URL(route, baseUrl).href });
   await loaded;
@@ -121,7 +130,6 @@ async function capturePage(client, [name, route, width, height, theme]) {
     awaitPromise: true,
     expression: `(async () => {
       document.documentElement.dataset.theme = ${JSON.stringify(theme)};
-      localStorage.setItem('theme', ${JSON.stringify(theme)});
       await new Promise((resolve) => setTimeout(resolve, 700));
       document.querySelector('.hero')?.classList.add('loaded');
       document.querySelectorAll('[data-reveal], [data-reveal-stagger], .reveal')
@@ -147,7 +155,7 @@ async function capturePage(client, [name, route, width, height, theme]) {
   });
   const filename = `${name}.png`;
   await writeFile(path.join(outputDirectory, filename), Buffer.from(screenshot.data, "base64"));
-  return { name, route, theme, width: pageWidth, height: pageHeight, file: filename };
+  return { name, route, theme, language, width: pageWidth, height: pageHeight, file: filename };
 }
 
 const chrome = await findChrome();
@@ -173,6 +181,9 @@ try {
   await client.ready;
   await client.send("Page.enable");
   await client.send("Runtime.enable");
+  const warmupLoaded = client.once("Page.loadEventFired");
+  await client.send("Page.navigate", { url: baseUrl });
+  await warmupLoaded;
 
   const manifest = [];
   for (const capture of captures) {
