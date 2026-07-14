@@ -53,8 +53,7 @@ describe("completed Next.js migration", () => {
     expect(pricing).toContain('"tier_pro", "70%", "$75", "$250"');
     expect(pricing).toContain('"tier_studio", "75%", "$200", "$800"');
     expect(pricing).toContain('"tier_scale", "80%", "$500", "$2,500"');
-    expect(pricing).toContain("billing-equation");
-    expect(pricing).toContain("Percentage paid after discount");
+    expect(pricing).not.toContain("BillingFormula");
     expect(messages).toContain("$10 of Claude usage at official API prices");
     expect(messages).toContain("$10 на Claude по официальным ценам API");
     expect(messages).not.toContain("$2.50");
@@ -84,8 +83,8 @@ describe("completed Next.js migration", () => {
     expect(styles).toContain(".term-controls i:hover::after");
     expect(styles).not.toContain(".term-controls:hover i::after");
     expect(styles).toContain("inset:0;display:grid;place-items:center");
-    expect(styles).toContain(".pricing-intro{display:grid;grid-template-columns:1.1fr .9fr;gap:22px;align-items:stretch}");
-    expect(styles).toContain(".business-card{justify-content:center");
+    expect(styles).toContain(".pricing-intro{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px;align-items:stretch}");
+    expect(styles).toContain(".business-card{justify-content:flex-start");
     expect(topup).toContain('inputMode="numeric"');
     expect(topup).toContain('pattern="[1-9][0-9]*"');
     expect(topup).not.toContain("editable");

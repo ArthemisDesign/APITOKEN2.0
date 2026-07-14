@@ -37,25 +37,14 @@ export function PricingOverview() {
           <tbody>{tiers.map(([name, discount, localSpend, officialUsage]) => <tr key={name}><T k={name} as="td">Tier</T><td><strong>{discount}</strong></td><td>{localSpend}</td><td>{officialUsage}</td></tr>)}</tbody>
         </table>
       </div>
-      <T k="tier_footnote" as="p" className="tier-footnote">Official API usage is calculated as platform spend ÷ the percentage paid after discount. Client-facing values are rounded for presentation; billing keeps the exact amount.</T>
-    </div>
-  </div>;
-}
-
-export function BillingFormula() {
-  return <div className="billing-formula">
-    <T k="billing_label" as="span" className="billing-formula-title">How billing works</T>
-    <div className="billing-equation">
-      <T k="bill1" as="strong" className="billing-term">Official API spend</T>
-      <span className="billing-operator" aria-hidden="true">×</span>
-      <T k="bill2" as="strong" className="billing-term">Percentage paid after discount</T>
-      <span className="billing-operator" aria-hidden="true">=</span>
-      <T k="bill3" as="strong" className="billing-term billing-result">Balance charge</T>
-    </div>
-    <div className="billing-trail">
-      <T k="bill4">Recorded in request ledger</T>
-      <span aria-hidden="true">→</span>
-      <T k="bill5">Updates monthly tier progress</T>
+      <div className="tier-cards">
+        {tiers.map(([name, discount, localSpend, officialUsage]) => <div className="tier-mobile" key={name}>
+          <div className="tier-mobile-head"><T k={name} as="strong">Tier</T><b>{discount}</b></div>
+          <div className="tier-mobile-row"><T k="local_spend_col">Monthly platform spend</T><span>{localSpend}</span></div>
+          <div className="tier-mobile-row"><T k="official_usage_col">Approx. official API usage</T><span>{officialUsage}</span></div>
+        </div>)}
+      </div>
+      <T k="tier_footnote" as="p" className="tier-footnote">Displayed official API usage equals monthly platform spend ÷ the share paid after discount. Values are rounded only for display; billing remains exact.</T>
     </div>
   </div>;
 }

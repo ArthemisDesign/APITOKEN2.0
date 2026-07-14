@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { InteractiveTerminal } from "@/components/interactive-terminal";
 import { MotionEffects } from "@/components/motion-effects";
-import { BillingFormula, PricingOverview } from "@/components/pricing-overview";
+import { PricingOverview } from "@/components/pricing-overview";
 import { SiteFooter, SiteHeader } from "@/components/site-chrome";
 import { TopUpAmountInput } from "@/components/topup-amount-input";
 import { T } from "@/components/translated";
@@ -9,7 +9,6 @@ import { T } from "@/components/translated";
 const models = ["Claude Opus 4.8", "Claude Opus 4.7", "Claude Sonnet 4.6", "Claude Haiku 4.5"];
 const steps = [["step1_h","step1_p"],["step2_h","step2_p"],["step3_h","step3_p"]] as const;
 const features = [["f1_h","f1_p"],["f2_h","f2_p"],["f3_h","f3_p"],["f4_h","f4_p"]] as const;
-const meters = [["mt1_h","mt1_p"],["mt2_h","mt2_p"],["mt3_h","mt3_p"],["mt4_h","mt4_p"],["mt5_h","mt5_p"]] as const;
 const faqs = [["q1","a1"],["q2","a2"],["q3","a3"],["q4","a4"],["q5","a5"],["q6","a6"]] as const;
 
 export default function HomePage() {
@@ -21,8 +20,7 @@ export default function HomePage() {
       <section id="how"><div className="wrap"><SectionHead eyebrow="how_eyebrow" title="how_h2" lead="how_lead" /><div className="steps" data-reveal-stagger>{steps.map(([title, text], index) => <InfoCard key={title} index={index} title={title} text={text} className="step" />)}</div></div></section>
       <section id="workflow"><div className="wrap"><SectionHead eyebrow="wf_eyebrow" title="wf_h2" /><div className="feats" data-reveal-stagger>{features.map(([title, text], index) => <InfoCard key={title} index={index} title={title} text={text} className="feat" />)}</div></div></section>
       <section className="announce"><div className="wrap announce-inner reveal"><div className="announce-copy"><T k="ann_eyebrow" as="span" className="eyebrow">Latest model</T><T k="ann_h" as="h2">Claude Opus 4.8 is live</T><T k="ann_p" as="p">The most capable Claude model runs on the same key and balance.</T><Link className="btn btn-ghost" href="/models"><T k="ann_cta">Explore models</T></Link></div><div className="announce-badge"><b>Opus 4.8</b><T k="ann_ctx">1M context</T></div></div></section>
-      <section id="pricing"><div className="wrap"><SectionHead eyebrow="pr_eyebrow" title="pr_h2" lead="pr_lead" /><PricingOverview /><BillingFormula /></div></section>
-      <section id="metered"><div className="wrap"><SectionHead eyebrow="mt_eyebrow" title="mt_h2" lead="mt_lead" /><div className="meters" data-reveal-stagger>{meters.map(([title,text], index) => <InfoCard key={title} index={index} title={title} text={text} className="meter" />)}</div></div></section>
+      <section id="pricing"><div className="wrap"><SectionHead eyebrow="pr_eyebrow" title="pr_h2" lead="pr_lead" /><PricingOverview /></div></section>
       <section id="faq"><div className="wrap"><SectionHead eyebrow="faq_eyebrow" title="faq_h2" lead="faq_lead" /><div className="faq" data-reveal-stagger>{faqs.map(([question, answer]) => <details key={question}><summary><T k={question}>Question</T><span className="plus">+</span></summary><T k={answer} as="div" className="ans">Answer</T></details>)}</div></div></section>
       <section className="cta-band"><div className="wrap reveal"><T k="cta_h2" as="h2">Ready to start building?</T><T k="cta_p" as="p">Create a key in minutes.</T><div className="cta-actions"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link><Link className="btn btn-ghost" href="/docs"><T k="hero_cta2">Read documentation</T></Link></div></div></section>
     </main>

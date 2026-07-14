@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { MotionEffects } from "./motion-effects";
-import { BillingFormula, PricingOverview } from "./pricing-overview";
+import { PricingOverview } from "./pricing-overview";
 import { SiteFooter, SiteHeader } from "./site-chrome";
 import { T } from "./translated";
 
@@ -14,7 +14,7 @@ export function PageHero({ eyebrow, title, subtitle, back }: { eyebrow: string; 
 }
 
 export function PlansPage() {
-  return <MarketingFrame><PageHero eyebrow="pr_eyebrow" title="plans_h" subtitle="plans_sub" /><section className="borderless"><div className="wrap"><PricingOverview /><BillingFormula /></div></section></MarketingFrame>;
+  return <MarketingFrame><PageHero eyebrow="pr_eyebrow" title="plans_h" subtitle="plans_sub" /><section className="borderless"><div className="wrap"><PricingOverview /></div></section></MarketingFrame>;
 }
 
 const modelRows = [
@@ -25,14 +25,14 @@ const modelRows = [
 ] as const;
 
 export function ModelsPage() {
-  return <MarketingFrame><PageHero eyebrow="nav_models" title="models_h" subtitle="models_sub" /><section className="borderless"><div className="wrap"><div className="model-rate-note"><div><T k="model_rate_tag" as="span" className="tag">Official list rates</T><T k="model_rate_h" as="h3">Official rates behind every spend calculation</T></div><T k="model_rate_p" as="p">These Anthropic list rates calculate official API spend. B2C accounts start 60% below that spend and can progress to 80% off; B2B rates are negotiated.</T></div><div className="table-scroll"><table className="mtable"><thead><tr><T k="th_model" as="th">Model</T><T k="th_ctx" as="th">Context</T><T k="th_in" as="th">Input / 1M</T><T k="th_out" as="th">Output / 1M</T><T k="th_best" as="th">Best for</T></tr></thead><tbody>{modelRows.map(([name,id,ctx,input,output,best], index) => <tr key={id}><td><span className="mname">{name}</span>{index === 0 && <T k="latest_badge" as="span" className="model-badge">Latest</T>}<br /><code>{id}</code></td><td><span className={`context-badge ${ctx === "1M" ? "context-full" : ""}`}>{ctx}</span></td><td className="mprice">{input}</td><td className="mprice">{output}</td><T k={best} as="td">Use case</T></tr>)}</tbody></table></div><T k="models_price_note" as="p" className="mnote">Official rates are used to calculate official API spend; your active discount is then applied to that USD amount.</T><PageActions /></div></section></MarketingFrame>;
+  return <MarketingFrame><PageHero eyebrow="nav_models" title="models_h" subtitle="models_sub" /><section className="borderless"><div className="wrap"><div className="model-rate-note"><div><T k="model_rate_tag" as="span" className="tag">Official list rates</T><T k="model_rate_h" as="h3">Official rates behind every spend calculation</T></div><T k="model_rate_p" as="p">These Anthropic list rates calculate official API spend. B2C accounts start 60% below that spend and can progress to 80% off; B2B rates are negotiated.</T></div><div className="table-scroll"><table className="mtable"><thead><tr><T k="th_model" as="th">Model</T><T k="th_ctx" as="th">Context</T><T k="th_in" as="th">Input / 1M</T><T k="th_out" as="th">Output / 1M</T><T k="th_best" as="th">Best for</T></tr></thead><tbody>{modelRows.map(([name,id,ctx,input,output,best], index) => <tr key={id}><td><span className="mname">{name}</span>{index === 0 && <T k="latest_badge" as="span" className="model-badge">Latest</T>}<br /><code>{id}</code></td><td><span className={`context-badge ${ctx === "1M" ? "context-full" : ""}`}>{ctx}</span></td><td className="mprice">{input}</td><td className="mprice">{output}</td><T k={best} as="td">Use case</T></tr>)}</tbody></table></div><PageActions /></div></section></MarketingFrame>;
 }
 
 export function DocsPage() {
   return <MarketingFrame><PageHero eyebrow="nav_docs" title="docs_h" subtitle="docs_sub" /><section className="borderless"><div className="wrap">
     <div className="doc-block"><T k="docs_base" as="h3">Base URL</T><pre className="codebox">https://api.apitoken.sale            <span className="c"># Anthropic Messages API</span></pre></div>
     <div className="doc-block"><T k="docs_qs" as="h3">Quickstart</T><div className="doc-grid"><div><T k="docs_anthropic" as="p" className="code-label">Anthropic Messages API</T><pre className="codebox"><span className="k">curl</span> https://api.apitoken.sale/v1/messages {`\\\n`}  -H <span className="g">&quot;x-api-key: $APITOKEN_API_KEY&quot;</span> {`\\\n`}  -H <span className="g">&quot;anthropic-version: 2023-06-01&quot;</span> {`\\\n`}  -H <span className="g">&quot;content-type: application/json&quot;</span> {`\\\n`}  -d <span className="g">&apos;{`{"model":"claude-opus-4-8",`}{`\n    "max_tokens":1024,`}{`\n    "messages":[{"role":"user",`}{`\n    "content":"Hello"}]}'`}</span></pre></div><div><T k="docs_auth" as="p" className="code-label">Authentication</T><div className="codebox"><span className="c"># The raw key is shown once when created</span>{`\n`}x-api-key: <span className="g">sk-pool-•••</span>{`\n`}anthropic-version: <span className="g">2023-06-01</span></div></div></div></div>
-    <div className="doc-block"><T k="docs_auth" as="h3">Authentication</T><T k="docs_auth_p" as="p" className="docs-copy">Create a key in your dashboard and pass it as x-api-key.</T><PageActions primaryOnly /></div>
+    <PageActions primaryOnly />
   </div></section></MarketingFrame>;
 }
 
