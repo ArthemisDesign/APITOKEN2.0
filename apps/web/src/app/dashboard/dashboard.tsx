@@ -16,7 +16,7 @@ type Section = "overview" | "keys" | "credits" | "refer" | "promos" | "usage" | 
 const navigation: Array<{ section?: Section; label: string; icon: string; href?: string; group?: string }> = [
   { group: "Start", section: "overview", label: "Overview", icon: "▦" },
   { section: "keys", label: "API keys", icon: "⚿" },
-  { section: "credits", label: "Buy credits", icon: "＋" },
+  { section: "credits", label: "Top up balance", icon: "＋" },
   { group: "Growth", section: "refer", label: "Refer & earn", icon: "◈" },
   { section: "promos", label: "Promo codes", icon: "%" },
   { group: "Activity", section: "usage", label: "Usage", icon: "◔" },
@@ -179,10 +179,10 @@ function Credits({ account }: { account: AccountView }) {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to create checkout"); }
     finally { setBusy(false); }
   }
-  return <section className="panel"><PageHeading eyebrow="Start" title="Buy credits" subtitle="Enter the whole USD amount you want to add to your API balance." />
+  return <section className="panel"><PageHeading eyebrow="Start" title="Top up balance" subtitle="Enter the whole USD amount you want to add to your API balance." />
     <div className="ov-stats bill3"><Stat label="Current balance" value={normalizeUsd(account.balanceUsd)} detail="Available" /><Stat label="Used" value={nanoToUsd(account.spentNano)} detail="Official-equivalent usage" /><Stat label="Reserved" value={nanoToUsd(account.reservedNano)} detail="In-flight requests" /></div>
     <PricingBanner account={account} />
-    <div className="card checkout-card"><div><span className="chip">Crypto checkout</span><h2>Top up any whole USD amount</h2><p className="p-sub">No fixed product catalog and no decimal amounts. The payment provider will show the final cryptocurrency amount.</p></div><div className="checkout-entry"><span className="currency-prefix">$</span><input className="set-in" inputMode="numeric" pattern="[1-9][0-9]*" value={amount} onChange={(event) => setAmount(event.target.value.replace(/\D/g, ""))} placeholder="100" /><button className="btn btn-primary" disabled={busy} onClick={start}>{busy ? "Creating…" : "Continue to payment"}</button></div>{error && <div className="auth-msg err">{error}</div>}{checkout && !checkout.checkoutUrl && <div className="banner">Checkout {checkout.id} is {checkout.status}. Refresh later to obtain its payment URL.</div>}</div>
+    <div className="card checkout-card"><div><span className="chip">Crypto checkout</span><h2>Top up any whole USD amount</h2><p className="p-sub">No preset amounts and no decimals. The payment provider will show the final cryptocurrency amount.</p></div><div className="checkout-entry"><span className="currency-prefix">$</span><input className="set-in" inputMode="numeric" pattern="[1-9][0-9]*" value={amount} onChange={(event) => setAmount(event.target.value.replace(/\D/g, ""))} placeholder="100" /><button className="btn btn-primary" disabled={busy} onClick={start}>{busy ? "Creating…" : "Continue to payment"}</button></div>{error && <div className="auth-msg err">{error}</div>}{checkout && !checkout.checkoutUrl && <div className="banner">Checkout {checkout.id} is {checkout.status}. Refresh later to obtain its payment URL.</div>}</div>
   </section>;
 }
 

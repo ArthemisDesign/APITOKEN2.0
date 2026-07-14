@@ -13,13 +13,13 @@ const waveLayers = [
 
 function wavePath(y: number, amplitude: number, periods: number, phase: number): string {
   const points = 240;
-  let path = `M0,${y.toFixed(1)}`;
+  const offsetAt = (progress: number) => y
+    + Math.sin(phase + progress * Math.PI * 2 * periods) * amplitude
+    + Math.sin(phase * 1.7 + progress * Math.PI * 2 * (periods / 2)) * amplitude * .35;
+  let path = `M0,${offsetAt(0).toFixed(1)}`;
   for (let index = 1; index <= points; index += 1) {
     const x = waveWidth * index / points;
-    const offset = y
-      + Math.sin(phase + index / points * Math.PI * 2 * periods) * amplitude
-      + Math.sin(phase * 1.7 + index / points * Math.PI * 2 * (periods / 2)) * amplitude * .35;
-    path += ` L${x.toFixed(1)},${offset.toFixed(1)}`;
+    path += ` L${x.toFixed(1)},${offsetAt(index / points).toFixed(1)}`;
   }
   return path;
 }
@@ -69,12 +69,13 @@ export function MotionEffects() {
   }, []);
   return <div ref={decorRef} className="bg-decor" aria-hidden="true">
     <svg className="wave-field" viewBox={`0 0 ${waveWidth} ${waveHeight}`} preserveAspectRatio="xMidYMid slice">
-      <g className="wf-scroll">{waveLayers.map((layer, index) => <path
-        className={`wl wl${index}`}
-        d={wavePath(layer.y, layer.amplitude, layer.periods, layer.phase)}
-        key={layer.y}
-        style={{ "--sw": layer.stroke, "--o": layer.opacity, "--dur": `${layer.duration}s`, "--dl": `${-index * 4}s` } as WaveStyle}
-      />)}</g>
+      {waveLayers.map((layer, index) => {
+        const path = wavePath(layer.y, layer.amplitude, layer.periods, layer.phase);
+        return <g className={`wl wl${index}`} key={layer.y} style={{ "--sw": layer.stroke, "--o": layer.opacity, "--dur": `${layer.duration}s`, "--dl": `${-index * 4}s` } as WaveStyle}>
+          <path d={path} />
+          <path d={path} transform={`translate(${waveWidth} 0)`} />
+        </g>;
+      })}
     </svg>
     <span className="glow g1" /><span className="glow g2" /><span className="glow g3" />
   </div>;

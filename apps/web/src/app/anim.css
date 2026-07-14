@@ -10,14 +10,13 @@
 .hero.loaded .hero-grid > div:first-child > .hero-cta{transition-delay:.36s}
 .hero.loaded .hero-grid > div:first-child > .hero-note{transition-delay:.44s}
 
-.term{opacity:0;transform:translateY(26px) scale(.985);
+.term-stage{opacity:0;transform:translateY(26px) scale(.985);
   transition:opacity .8s cubic-bezier(.16,.8,.28,1),transform .8s cubic-bezier(.16,.8,.28,1),
              background-color .35s ease,border-color .35s ease,box-shadow .35s ease}
-.hero.loaded .term{opacity:1;transform:none;transition-delay:.28s}
+.hero.loaded .term-stage{opacity:1;transform:none;transition-delay:.28s}
 
-/* subtle floating drift of the terminal card, premium idle motion */
+/* Ambient float is reserved for the small announcement badge; the terminal stays anchored. */
 @keyframes floatCard{0%,100%{transform:translateY(0)}50%{transform:translateY(-7px)}}
-.hero.loaded .term{animation:floatCard 7s ease-in-out 1.4s infinite}
 
 /* ---------- animated aurora in hero background ---------- */
 .hero::before{content:"";position:absolute;inset:-20% -10% auto auto;width:60%;height:120%;
@@ -48,9 +47,9 @@
 .reveal.in{opacity:1;transform:none}
 
 /* ---------- premium hover on cards ---------- */
-.step,.feat,.tier,.price,.mtable,.dcard{will-change:transform}
-.step,.feat,.tier,.price{transition:transform .28s cubic-bezier(.16,.8,.28,1),border-color .28s ease,box-shadow .28s ease,background-color .35s ease}
-.step:hover,.feat:hover,.tier:hover,.price:hover{
+.step,.tier,.price,.mtable,.dcard{will-change:transform}
+.step,.tier,.price{transition:transform .28s cubic-bezier(.16,.8,.28,1),border-color .28s ease,box-shadow .28s ease,background-color .35s ease}
+.step:hover,.tier:hover,.price:hover{
   transform:translateY(-6px);border-color:var(--accent-line);
   box-shadow:0 18px 44px -18px color-mix(in srgb,var(--accent) 45%,transparent)}
 
@@ -95,8 +94,10 @@ header.nav.scrolled{box-shadow:0 8px 30px -18px rgba(10,10,10,.35)}
 .wave-field{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
 .wave-field .wl{fill:none;stroke:var(--accent);stroke-width:var(--sw,1.4);
   opacity:var(--o,.14);vector-effect:non-scaling-stroke;stroke-linecap:round;
-  will-change:transform;animation:waveScroll var(--dur,40s) linear var(--dl,0s) infinite}
-@keyframes waveScroll{from{transform:translateX(0)}to{transform:translateX(-1000px)}}
+  transform-box:fill-box;transform-origin:left center;will-change:transform;
+  animation:waveScroll var(--dur,40s) linear var(--dl,0s) infinite}
+.wave-field .wl path{vector-effect:non-scaling-stroke}
+@keyframes waveScroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
 [data-theme="dark"] .wave-field .wl{opacity:calc(var(--o,.14) + .04)}
 
 /* ---------- lighten heavy background on phones / weak devices ---------- */
@@ -121,7 +122,7 @@ header.nav.scrolled{box-shadow:0 8px 30px -18px rgba(10,10,10,.35)}
 /* ---------- accessibility ---------- */
 @media (prefers-reduced-motion: reduce){
   *,*::before,*::after{animation:none !important;transition-duration:.001s !important}
-  .hero-grid > div:first-child > *,.term,[data-reveal],[data-reveal-stagger] > *,.reveal{opacity:1 !important;transform:none !important;filter:none !important}
+  .hero-grid > div:first-child > *,.term-stage,.term,[data-reveal],[data-reveal-stagger] > *,.reveal{opacity:1 !important;transform:none !important;filter:none !important}
   .bg-decor .px{display:none}
   .wave-field{display:none}
 }

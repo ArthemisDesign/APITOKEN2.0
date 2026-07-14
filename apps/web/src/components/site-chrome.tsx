@@ -28,14 +28,12 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
   const links = <>
     <Link href={home ? "#how" : "/#how"}><T k="nav_how">How it works</T></Link>
     <Link href="/integrations"><T k="nav_int">Integrations</T></Link>
-    <Link href={home ? "#workflow" : "/#workflow"}><T k="nav_features">Developer</T></Link>
-    <Link href={home ? "#pricing" : "/plans"}><T k="nav_pricing">Pricing</T></Link>
     <Link href="/models"><T k="nav_models">Models</T></Link>
+    <Link href={home ? "#pricing" : "/plans"}><T k="nav_pricing">Pricing</T></Link>
     <Link href="/docs"><T k="nav_docs">Docs</T></Link>
-    {home && <Link href="#faq"><T k="nav_faq">FAQ</T></Link>}
   </>;
 
-  const actions = authenticated ? <>
+  const renderActions = () => authenticated ? <>
     <Link className="btn btn-ghost" href="/dashboard">{t("dash")}</Link>
     <button className="btn btn-primary" onClick={logout}>{t("logout")}</button>
   </> : <>
@@ -48,12 +46,12 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
       <Brand />
       {!compact && <nav className={`nav-links ${menuOpen ? "open" : ""}`}>
         {links}
-        <div className="nav-auth-mobile">{actions}</div>
+        <div className="nav-auth-mobile">{renderActions()}</div>
       </nav>}
       <div className="nav-right">
         <div className="lang"><button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}>EN</button><button className={language === "ru" ? "active" : ""} onClick={() => setLanguage("ru")}>RU</button></div>
         <ThemeToggle />
-        {!compact && actions}
+        {!compact && <div className="nav-actions">{renderActions()}</div>}
       </div>
       {!compact && <button className="nav-burger" aria-label="Menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>☰</button>}
     </div>

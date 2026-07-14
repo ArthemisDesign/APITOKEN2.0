@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { MotionEffects } from "./motion-effects";
+import { PricingOverview } from "./pricing-overview";
 import { SiteFooter, SiteHeader } from "./site-chrome";
 import { T } from "./translated";
 
@@ -13,22 +14,18 @@ export function PageHero({ eyebrow, title, subtitle, back }: { eyebrow: string; 
 }
 
 export function PlansPage() {
-  return <MarketingFrame><PageHero eyebrow="pr_eyebrow" title="plans_h" subtitle="plans_sub" /><section className="borderless"><div className="wrap"><div className="prices"><Plan tag="p1_tag" price="$45" equivalent="$500" text="p1_val" /><Plan tag="p2_tag" price="$90" equivalent="$1,000" text="p2_val" featured /><Plan tag="p3_tag" price="Free" equivalent="$2.50" text="p3_val" /></div><div className="tokens page-tokens"><T k="tokens_label">Metered per token:</T>{[1,2,3,4,5].map((index) => <T k={`tk${index}`} key={index}>Token type</T>)}</div></div></section></MarketingFrame>;
-}
-
-function Plan({ tag, price, equivalent, text, featured = false }: { tag: string; price: string; equivalent: string; text: string; featured?: boolean }) {
-  return <div className={`price ${featured ? "feat-plan" : ""}`}>{featured && <T k="p2_badge" as="span" className="badge">Best value</T>}<T k={tag} as="span" className="tag">Plan</T><div className="amt"><span className="now">{price}</span><span className="was">{equivalent}</span></div><T k={text} as="p" className="val">Plan description</T><Link className={`btn ${featured ? "btn-primary" : "btn-ghost"}`} href="/register"><T k={price === "Free" ? "start_free" : "buy"}>Buy balance</T></Link></div>;
+  return <MarketingFrame><PageHero eyebrow="pr_eyebrow" title="plans_h" subtitle="plans_sub" /><section className="borderless"><div className="wrap"><PricingOverview /><div className="tokens page-tokens"><T k="tokens_label">Metered per token:</T>{[1,2,3,4,5].map((index) => <T k={`tk${index}`} key={index}>Token type</T>)}</div></div></section></MarketingFrame>;
 }
 
 const modelRows = [
-  ["Claude Opus 4.8","claude-opus-4-8","200K","$5","$25","m_opus48"],
-  ["Claude Opus 4.7","claude-opus-4-7","200K","$5","$25","m_opus47"],
-  ["Claude Sonnet 4.6","claude-sonnet-4-6","200K","$3","$15","m_son46"],
+  ["Claude Opus 4.8","claude-opus-4-8","1M","$5","$25","m_opus48"],
+  ["Claude Opus 4.7","claude-opus-4-7","1M","$5","$25","m_opus47"],
+  ["Claude Sonnet 4.6","claude-sonnet-4-6","1M","$3","$15","m_son46"],
   ["Claude Haiku 4.5","claude-haiku-4-5","200K","$1","$5","m_haiku"],
 ] as const;
 
 export function ModelsPage() {
-  return <MarketingFrame><PageHero eyebrow="nav_models" title="models_h" subtitle="models_sub" /><section className="borderless"><div className="wrap"><div className="table-scroll"><table className="mtable"><thead><tr><T k="th_model" as="th">Model</T><T k="th_ctx" as="th">Context</T><T k="th_in" as="th">Input / 1M</T><T k="th_out" as="th">Output / 1M</T><T k="th_best" as="th">Best for</T></tr></thead><tbody>{modelRows.map(([name,id,ctx,input,output,best]) => <tr key={id}><td><span className="mname">{name}</span><br /><code>{id}</code></td><td>{ctx}</td><td className="mprice">{input}</td><td className="mprice">{output}</td><T k={best} as="td">Use case</T></tr>)}</tbody></table></div><T k="models_price_note" as="p" className="mnote">Metered per token.</T><PageActions /></div></section></MarketingFrame>;
+  return <MarketingFrame><PageHero eyebrow="nav_models" title="models_h" subtitle="models_sub" /><section className="borderless"><div className="wrap"><div className="model-rate-note"><div><T k="model_rate_tag" as="span" className="tag">Official list rates</T><T k="model_rate_h" as="h3">Transparent per-token reference pricing</T></div><T k="model_rate_p" as="p">Rates below are Anthropic list prices. B2C accounts start 60% below them and can progress to 80% off; B2B rates are negotiated.</T></div><div className="table-scroll"><table className="mtable"><thead><tr><T k="th_model" as="th">Model</T><T k="th_ctx" as="th">Context</T><T k="th_in" as="th">Input / 1M</T><T k="th_out" as="th">Output / 1M</T><T k="th_best" as="th">Best for</T></tr></thead><tbody>{modelRows.map(([name,id,ctx,input,output,best], index) => <tr key={id}><td><span className="mname">{name}</span>{index === 0 && <T k="latest_badge" as="span" className="model-badge">Latest</T>}<br /><code>{id}</code></td><td><span className={`context-badge ${ctx === "1M" ? "context-full" : ""}`}>{ctx}</span></td><td className="mprice">{input}</td><td className="mprice">{output}</td><T k={best} as="td">Use case</T></tr>)}</tbody></table></div><T k="models_price_note" as="p" className="mnote">Official rates shown per million tokens; your active account discount is applied when balance is charged.</T><PageActions /></div></section></MarketingFrame>;
 }
 
 export function DocsPage() {

@@ -19,8 +19,8 @@ export function AuthShell({ children }: { children: ReactNode }) {
           </Link>
           <div className="nav-right">
             <div className="lang">
-              <button className={language === "en" ? "on" : ""} onClick={() => setLanguage("en")}>EN</button>
-              <button className={language === "ru" ? "on" : ""} onClick={() => setLanguage("ru")}>RU</button>
+              <button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}>EN</button>
+              <button className={language === "ru" ? "active" : ""} onClick={() => setLanguage("ru")}>RU</button>
             </div>
             <ThemeToggle />
           </div>
