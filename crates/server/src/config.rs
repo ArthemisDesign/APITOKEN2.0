@@ -111,8 +111,12 @@ impl Settings {
                 // Полный CC-набор beta (не только oauth): без `claude-code-20250219` мы «OAuth-клиент, но
                 // НЕ Claude Code». ТОЧНЫЙ актуальный набор снимает refresh-fingerprint.sh с живого claude
                 // в config.env; это fallback. (Проверено живым /v1 — набор совместим с OAuth-подпиской.)
+                // ТОЧНЫЙ набор снят с живого claude 2.1.195 (mitm-захват /v1/messages, 2026-07-14):
+                // 10 бет, разделитель "," без пробела. Порядок ЗНАЧЕНИЙ внутри — Set-итерация (не
+                // фингерпринт), важен НАБОР. extended-cache-ttl → ttl:"1h", prompt-caching-scope →
+                // scope:"global" на cache_control (см. inject_identity). Проверено живым /v1 (200).
                 default_beta: ev_or("CLAUDE_API_BETA",
-                    "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"),
+                    "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07"),
                 // Дефолт-fallback; актуальное значение — env CLAUDE_API_UA (авто-рефреш скриптом).
                 // CLAUDE_API_UA можно задать СПИСКОМ через `|` (пул реальных UA) — тогда каждая персона
                 // пинит один. Иначе один UA + разброс patch-версии между персонами (ниже).
@@ -129,8 +133,11 @@ impl Settings {
                 x_app: ev_or("CLAUDE_API_X_APP", "cli"),
                 stainless_lang: ev_or("CLAUDE_API_SL_LANG", "js"),
                 stainless_runtime: ev_or("CLAUDE_API_SL_RUNTIME", "node"),
-                stainless_runtime_version: ev_or("CLAUDE_API_SL_RT_VER", "v22.19.0"),
-                stainless_package_version: ev_or("CLAUDE_API_SL_PKG_VER", "0.68.0"),
+                // Сняты с живого claude 2.1.195 (mitm-захват 2026-07-14): runtime-version =
+                // process.version бандл-Bun (v26.3.0), package-version = @anthropic-ai/sdk (0.94.0).
+                // Коген с UA 2.1.195. (0.208.0 в бандле — версия ДРУГОГО пакета, не stainless.)
+                stainless_runtime_version: ev_or("CLAUDE_API_SL_RT_VER", "v26.3.0"),
+                stainless_package_version: ev_or("CLAUDE_API_SL_PKG_VER", "0.94.0"),
                 stainless_os: ev_or("CLAUDE_API_SL_OS", "Linux"),
                 stainless_arch: ev_or("CLAUDE_API_SL_ARCH", "x64"),
             },

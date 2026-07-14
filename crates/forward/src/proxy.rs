@@ -290,10 +290,12 @@ fn is_cc_marker(text: &str) -> bool {
 fn inject_identity(v: &mut Value, identity: &str) -> bool {
     let obj = match v.as_object_mut() { Some(o) => o, None => return false };
     if !obj.contains_key("messages") { return false; } // не messages-запрос — не трогаем
-    // identity-блок с cache_control:ephemeral — так же, как реальный Claude Code метит system-блоки:
-    // (1) структура system совпадает с CC (без cache_control — отпечаток отличается), (2) большой
-    // статический префикс кэшируется у Anthropic (экономика + ускорение), а мы по нему же роутим сессию.
-    let idblock = serde_json::json!({"type":"text","text":identity,"cache_control":{"type":"ephemeral"}});
+    // identity-блок БЕЗ cache_control — ТОЧНО как реальный CC (снято с 2.1.195: system[identity] не
+    // имеет cache_control; брейкпоинты CC ставит на БОЛЬШОЙ системный промпт, а не на identity).
+    // cache_control на нашем identity был бы отпечатком («этот клиент кэш-контролит identity, а CC — нет»).
+    // Экономику кэша это не рушит: если клиент сам ставит брейкпоинт ниже, наш identity попадёт в его
+    // кэш-префикс (кэшируется всё ДО брейкпоинта включительно). session_key считаем отдельно (не зависит).
+    let idblock = serde_json::json!({"type":"text","text":identity});
     match obj.get("system").cloned() {
         None => { obj.insert("system".into(), serde_json::json!([idblock])); }
         Some(Value::String(s)) => {
@@ -312,17 +314,6 @@ fn inject_identity(v: &mut Value, identity: &str) -> bool {
         _ => return false,
     }
     true
-}
-
-/// Слить anthropic-beta клиента с нашим (гарантируем присутствие oauth-беты).
-fn merge_beta(client_beta: Option<&str>, default_beta: &str) -> String {
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    for part in default_beta.split(',').chain(client_beta.unwrap_or("").split(',')) {
-        let p = part.trim();
-        if !p.is_empty() && seen.insert(p.to_string()) { out.push(p.to_string()); }
-    }
-    out.join(", ")
 }
 
 /// Allowlist эндпоинтов Anthropic, работающих на квоте ПОДПИСКИ (что мы форвардим на пул):
@@ -396,6 +387,17 @@ pub async fn forward(
     };
     let method: Method = parts.method.clone();
     let pq = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+    // Реальный CC шлёт `/v1/messages?beta=true` (снято с живого claude 2.1.195). Добавляем query
+    // `beta=true` ровно на POST /v1/messages, если его там ещё нет (мержим с существующим query,
+    // не ломая клиентские параметры). Остальные пути — байт-в-байт как пришли.
+    let pq_owned;
+    let pq: &str = if method == Method::POST && parts.uri.path() == "/v1/messages"
+        && !parts.uri.query().map(|q| q.split('&').any(|kv| kv == "beta=true")).unwrap_or(false)
+    {
+        let sep = if parts.uri.query().is_some() { '&' } else { '?' };
+        pq_owned = format!("{pq}{sep}beta=true");
+        &pq_owned
+    } else { pq };
     let url = format!("{}{}", app.cfg.upstream.trim_end_matches('/'), pq);
 
     let raw = match axum::body::to_bytes(body, BODY_LIMIT).await {
@@ -494,9 +496,10 @@ pub async fn forward(
     });
     let version = parts.headers.get("anthropic-version")
         .and_then(|v| v.to_str().ok()).unwrap_or(&app.cfg.anthropic_version).to_string();
-    let beta = merge_beta(
-        parts.headers.get("anthropic-beta").and_then(|v| v.to_str().ok()),
-        &app.cfg.default_beta);
+    // anthropic-beta — ТОЧНЫЙ набор Claude Code (byte-exact), клиентские беты НЕ мержим: реальный CC
+    // шлёт фиксированный набор в фиксированном порядке с разделителем "," (без пробела). Мерж клиентских
+    // менял бы набор/порядок → отпечаток «не CC». Набор снят с живого claude (config.rs default_beta).
+    let beta = app.cfg.default_beta.clone();
 
     let mut tried: HashSet<String> = HashSet::new();
     // Один запрос вносит в breaker максимум ОДИН backend-фейл (не `max_tries`): иначе poison-запрос
@@ -558,8 +561,13 @@ pub async fn forward(
             .header("authorization", format!("Bearer {}", sub.token))
             .header("anthropic-version", &version)
             .header("anthropic-beta", &beta)
-            .header("user-agent", &ua);
-        rb = crate::upstream::apply_persona_headers(rb, &app.cfg); // x-app + x-stainless-* + accept
+            .header("user-agent", &ua)
+            // X-Claude-Code-Session-Id — per-диалог UUID (тот же, что в metadata.user_id.session_id).
+            // Реальный CC шлёт его на каждый запрос; синтезируем от session-ключа.
+            .header("x-claude-code-session-id", crate::upstream::persona_session_id(&sub.email, session))
+            // x-client-request-id — случайный per-request uuid (реальный CC шлёт на каждый запрос).
+            .header("x-client-request-id", crate::upstream::fresh_request_id());
+        rb = crate::upstream::apply_persona_headers(rb, &app.cfg); // x-app + x-stainless-* + accept + browser-access
         for (name, value) in parts.headers.iter() {
             let n = name.as_str();
             if !skip_req_header(n) { rb = rb.header(n, value.as_bytes()); }
@@ -573,7 +581,7 @@ pub async fn forward(
                 // metadata.user_id инжектим ТОЛЬКО в /v1/messages — как настоящий Claude Code. На
                 // count_tokens Anthropic поле `metadata` НЕ принимает (→ 400), да и CC его туда не шлёт.
                 if billable {
-                    v["metadata"]["user_id"] = serde_json::json!(crate::upstream::persona_user_id(&sub.email));
+                    v["metadata"]["user_id"] = serde_json::json!(crate::upstream::persona_user_id(&sub.email, session));
                 }
                 match serde_json::to_vec(v) {
                     Ok(b) => bytes::Bytes::from(b),

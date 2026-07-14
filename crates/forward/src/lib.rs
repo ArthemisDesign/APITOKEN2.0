@@ -26,4 +26,4 @@ pub use keylimiter::KeyLimiter;
 pub use metrics::Metrics;
 pub use proxy::{authed, client_key, control_authed, forward, readonly_authed};
 pub use state::AppState;
-pub use upstream::{detect_plan, limits_from_headers, persona_ua, persona_user_id, poll_sub, Clients, Limits, PlanDetect, PollResult};
+pub use upstream::{detect_plan, fresh_request_id, limits_from_headers, persona_ua, persona_session_id, persona_user_id, poll_sub, Clients, Limits, PlanDetect, PollResult};

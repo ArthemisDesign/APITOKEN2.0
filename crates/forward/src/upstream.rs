@@ -44,19 +44,57 @@ pub fn apply_persona_headers(rb: wreq::RequestBuilder, cfg: &ProxyConfig) -> wre
         .header("x-stainless-arch", &cfg.stainless_arch)
         .header("x-stainless-retry-count", "0")
         .header("x-stainless-timeout", "600")
+        .header("anthropic-dangerous-direct-browser-access", "true") // реальный CC всегда шлёт
         .header("accept", "application/json")
+        .header("accept-encoding", "gzip, deflate, br, zstd") // точный набор Bun/undici (снято с 2.1.195)
 }
 
-/// Стабильный per-подписка `metadata.user_id` в формате Claude Code (`user_<hex>_account_<hex>...`).
-/// Детерминирован от email → у аккаунта он ОДИН во времени (как у реального юзера), но РАЗНЫЙ между
-/// подписками. Инжектим в тело, перекрывая клиентский: иначе (а) его нет вовсе (аномалия — CC всегда шлёт),
-/// либо (б) один клиентский user_id размазан по флоту = прямая кросс-аккаунт склейка.
-pub fn persona_user_id(email: &str) -> String {
-    let s = email_seed(email);
-    // два независимых 64-бит слова из seed → правдоподобные hex-поля
-    let a = s;
-    let b = s.wrapping_mul(0x9e3779b97f4a7c15).rotate_left(31);
-    format!("user_{a:016x}{b:016x}_account_{b:016x}{a:016x}_session_{a:016x}")
+/// Свежий per-request UUID для `x-client-request-id` (реальный CC шлёт случайный на КАЖДЫЙ запрос —
+/// корреляционный id, не персона-стабильный). Мешаем время+счётчик, чтобы не был предсказуемо
+/// последовательным. Значение семантически безразлично Anthropic; важно ПРИСУТСТВИЕ + вид uuid.
+pub fn fresh_request_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CTR: AtomicU64 = AtomicU64::new(0x1234_5678_9abc_def0);
+    let n = CTR.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::Relaxed);
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
+    let lo = n ^ t.rotate_left(17);
+    let hi = t ^ n.rotate_left(41);
+    let a = hex_expand(hi, 2); // 32 hex из времени+счётчика
+    let b = hex_expand(lo, 2);
+    format!("{}-{}-4{}-{}-{}", &a[0..8], &a[8..12], &a[13..16], &b[0..4], &b[4..16])
+}
+
+/// Детерминированная hex-строка из seed (`words`×16 hex). Стабильна per-подписка.
+fn hex_expand(seed: u64, words: usize) -> String {
+    let mut out = String::with_capacity(words * 16);
+    let mut s = seed;
+    for _ in 0..words {
+        s = s.wrapping_mul(0x9e3779b97f4a7c15).rotate_left(29) ^ 0xda3e_39cb_94b9_5bdb;
+        out.push_str(&format!("{s:016x}"));
+    }
+    out
+}
+/// UUID-подобная строка (8-4-4-4-12 hex) из seed. Детерминирована.
+fn uuid_from(seed: u64) -> String {
+    let h = hex_expand(seed, 2); // 32 hex
+    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+}
+
+/// `metadata.user_id` В ТОЧНОМ формате Claude Code — **stringified JSON**
+/// `{"device_id":"<64hex>","account_uuid":"<uuid>","session_id":"<uuid>"}` (снято с живого claude).
+/// device_id/account_uuid стабильны per-подписка (от email); session_id — от session-ключа диалога
+/// (per-разговор, как у настоящего CC — одна сессия на диалог). Инжектим, перекрывая клиентский.
+pub fn persona_user_id(email: &str, session: Option<u64>) -> String {
+    let e = email_seed(email);
+    let device_id = hex_expand(e, 4);                 // 64 hex
+    let account_uuid = uuid_from(e.wrapping_add(0xA1)); // стабилен per-подписка
+    let session_id = persona_session_id(email, session);
+    format!(r#"{{"device_id":"{device_id}","account_uuid":"{account_uuid}","session_id":"{session_id}"}}"#)
+}
+/// session_id (UUID) — тот же, что в `metadata.user_id`, для заголовка `X-Claude-Code-Session-Id`.
+pub fn persona_session_id(email: &str, session: Option<u64>) -> String {
+    uuid_from(session.unwrap_or_else(|| email_seed(email)).wrapping_add(0x5E))
 }
 
 /// Кэш http-клиентов: один клиент на ПАРУ (прокси, подписка). Ключевание по email критично для
@@ -271,7 +309,7 @@ pub async fn poll_sub(client: &Client, cfg: &ProxyConfig, token: &str, ua: &str,
         "max_tokens": max_tokens,
         "system": [{"type": "text", "text": cfg.identity, "cache_control": {"type": "ephemeral"}}],
         "messages": [{"role": "user", "content": content}],
-        "metadata": {"user_id": persona_user_id(email)} // тот же per-подписка user_id, что и в бою
+        "metadata": {"user_id": persona_user_id(email, None)} // тот же per-подписка user_id, что и в бою
     });
     let url = format!("{}/v1/messages", cfg.upstream.trim_end_matches('/'));
     let mut rb = client.post(&url)
@@ -295,11 +333,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn persona_user_id_stable_and_distinct() {
-        let a = persona_user_id("alice@x.io");
-        assert_eq!(a, persona_user_id("alice@x.io"), "стабилен per-подписка");
-        assert_ne!(a, persona_user_id("bob@x.io"), "различен между подписками");
-        assert!(a.starts_with("user_") && a.contains("_account_") && a.contains("_session_"), "формат CC: {a}");
+    fn persona_user_id_is_cc_json() {
+        let a = persona_user_id("alice@x.io", Some(42));
+        assert_eq!(a, persona_user_id("alice@x.io", Some(42)), "стабилен per-(подписка,сессия)");
+        assert_ne!(a, persona_user_id("bob@x.io", Some(42)), "device/account различны между подписками");
+        // формат Claude Code: валидный JSON с тремя ключами
+        let v: serde_json::Value = serde_json::from_str(&a).expect("user_id — валидный JSON");
+        assert_eq!(v["device_id"].as_str().unwrap().len(), 64, "device_id = 64 hex");
+        assert!(v["account_uuid"].as_str().unwrap().contains('-'), "account_uuid = uuid");
+        assert!(v["session_id"].as_str().unwrap().contains('-'), "session_id = uuid");
+        // session_id меняется с session-ключом, device/account — нет
+        let b = persona_user_id("alice@x.io", Some(99));
+        assert_ne!(serde_json::from_str::<serde_json::Value>(&a).unwrap()["session_id"],
+                   serde_json::from_str::<serde_json::Value>(&b).unwrap()["session_id"], "session_id per-диалог");
     }
 
     #[test]

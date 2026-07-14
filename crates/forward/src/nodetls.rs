@@ -4,8 +4,22 @@
 //! x25519/P256/P384, ALPN http/1.1. Эталон снят tcpdump'ом с живого claude-cli → api.anthropic.com.
 
 use std::borrow::Cow;
+use wreq::header::HeaderName;
 use wreq::tls::{AlpnProtos, TlsConfig};
 use wreq::{EmulationProvider, SslCurve};
+
+/// Порядок заголовков ТОЧНО как реальный claude 2.1.195 (снято mitm 2026-07-14): SDK сортирует
+/// case-sensitive → все `X-*` (uppercase) идут перед `anthropic-*`/`x-app` (lowercase). wreq хранит
+/// имена в lowercase (HTTP-норма), поэтому byte-exact РЕГИСТР недостижим в wreq 5.3 (нужен hyper-патч
+/// OriginalHeaderCaseMap) — это единственный остаточный не-идеал; ПОРЯДОК+НАБОР+значения совпадают.
+/// accept-encoding/host/connection/content-length — транспортные, не в списке (уходят в хвост, как у CC).
+const HDR_ORDER: [&str; 18] = [
+    "accept", "authorization", "content-type", "user-agent",
+    "x-claude-code-session-id", "x-stainless-arch", "x-stainless-lang", "x-stainless-os",
+    "x-stainless-package-version", "x-stainless-retry-count", "x-stainless-runtime",
+    "x-stainless-runtime-version", "x-stainless-timeout", "anthropic-beta",
+    "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "x-client-request-id",
+];
 
 /// Bun/Claude-Code cipher-list в IANA-именах (как требует BoringSSL). Порядок ClientHello:
 /// TLS1.3 (1301,1302,1303), затем TLS1.2 (c02b,c02f,c02c,c030,cca9,cca8,c009,c013,c00a,c014,009c,009d,002f,0035).
@@ -28,5 +42,9 @@ pub fn bun_emulation() -> EmulationProvider {
         .curves(Cow::Owned(vec![SslCurve::X25519, SslCurve::SECP256R1, SslCurve::SECP384R1]))
         .alpn_protos(AlpnProtos::HTTP1)        // ALPN=http/1.1 (Bun/undici)
         .build();
-    EmulationProvider::builder().tls_config(tls).build()
+    let order: Vec<HeaderName> = HDR_ORDER.iter().map(|s| HeaderName::from_static(s)).collect();
+    EmulationProvider::builder()
+        .tls_config(tls)
+        .headers_order(Cow::Owned(order))      // порядок заголовков как у CC (см. HDR_ORDER)
+        .build()
 }
