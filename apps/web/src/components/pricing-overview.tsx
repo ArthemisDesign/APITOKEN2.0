@@ -1,12 +1,13 @@
 import Link from "next/link";
 import { T } from "./translated";
+import { TopUpAmountInput } from "./topup-amount-input";
 
 const tiers = [
   ["tier_starter", "60%", "$0", "$0"],
-  ["tier_builder", "65%", "$25", "$60+"],
-  ["tier_pro", "70%", "$75", "$200+"],
-  ["tier_studio", "75%", "$200", "$600+"],
-  ["tier_scale", "80%", "$500", "$1,800+"],
+  ["tier_builder", "65%", "$25", "≈ $71"],
+  ["tier_pro", "70%", "$75", "$250"],
+  ["tier_studio", "75%", "$200", "$800"],
+  ["tier_scale", "80%", "$500", "$2,500"],
 ] as const;
 
 export function PricingOverview() {
@@ -15,7 +16,7 @@ export function PricingOverview() {
       <div className="topup-card">
         <T k="topup_tag" as="span" className="tag">Flexible top-up</T>
         <T k="topup_h" as="h3">Choose any whole USD amount</T>
-        <div className="topup-preview" aria-label="Example amount"><span>$</span><b>100</b></div>
+        <TopUpAmountInput className="topup-preview" initialAmount="100" />
         <T k="topup_p" as="p">No catalog and no preset amounts. Enter a whole amount and add exactly that much to your balance.</T>
         <Link className="btn btn-primary" href="/register"><T k="topup_cta">Create account</T></Link>
       </div>
@@ -23,7 +24,6 @@ export function PricingOverview() {
         <T k="b2b_tag" as="span" className="tag">B2B · Invite only</T>
         <T k="b2b_h" as="h3">Negotiated business pricing</T>
         <T k="b2b_p" as="p">Business customers receive an operator-set discount under an individual agreement and join through a private invitation.</T>
-        <T k="b2b_note" as="span" className="business-note">Custom rates · consolidated access · direct onboarding</T>
       </div>
     </div>
     <div className="tier-section">
@@ -37,7 +37,7 @@ export function PricingOverview() {
           <tbody>{tiers.map(([name, discount, localSpend, officialUsage]) => <tr key={name}><T k={name} as="td">Tier</T><td><strong>{discount}</strong></td><td>{localSpend}</td><td>{officialUsage}</td></tr>)}</tbody>
         </table>
       </div>
-      <T k="tier_footnote" as="p" className="tier-footnote">Progress uses authoritative balance spent during the UTC calendar month. Official usage values are rounded client-facing equivalents.</T>
+      <T k="tier_footnote" as="p" className="tier-footnote">Official API usage is calculated as platform spend ÷ the percentage paid after discount. Progress uses authoritative balance spent during the UTC calendar month.</T>
     </div>
   </div>;
 }

@@ -146,10 +146,10 @@ export const createApiKeySchema = z.object({
 
 export const B2C_PRICING_TIERS = [
   { code: "starter", discountPercent: 60, multiplierBp: 4000, spendThresholdNano: 0n, visibleOfficialUsageUsd: "0" },
-  { code: "builder", discountPercent: 65, multiplierBp: 3500, spendThresholdNano: 25_000_000_000n, visibleOfficialUsageUsd: "60" },
-  { code: "pro", discountPercent: 70, multiplierBp: 3000, spendThresholdNano: 75_000_000_000n, visibleOfficialUsageUsd: "200" },
-  { code: "studio", discountPercent: 75, multiplierBp: 2500, spendThresholdNano: 200_000_000_000n, visibleOfficialUsageUsd: "600" },
-  { code: "scale", discountPercent: 80, multiplierBp: 2000, spendThresholdNano: 500_000_000_000n, visibleOfficialUsageUsd: "1800" },
+  { code: "builder", discountPercent: 65, multiplierBp: 3500, spendThresholdNano: 25_000_000_000n, visibleOfficialUsageUsd: "71" },
+  { code: "pro", discountPercent: 70, multiplierBp: 3000, spendThresholdNano: 75_000_000_000n, visibleOfficialUsageUsd: "250" },
+  { code: "studio", discountPercent: 75, multiplierBp: 2500, spendThresholdNano: 200_000_000_000n, visibleOfficialUsageUsd: "800" },
+  { code: "scale", discountPercent: 80, multiplierBp: 2000, spendThresholdNano: 500_000_000_000n, visibleOfficialUsageUsd: "2500" },
 ] as const;
 
 export const businessDiscountSchema = z.number().int().min(0).max(95);

@@ -13,12 +13,17 @@ not meet the retained tier's threshold in a month, month close moves them down e
 | Tier | Client discount | Local monthly spend | Rounded official API usage shown to client |
 |---|---:|---:|---:|
 | Starter | 60% | $0 | $0 |
-| Builder | 65% | $25 | $60+ |
-| Pro | 70% | $75 | $200+ |
-| Studio | 75% | $200 | $600+ |
-| Scale | 80% | $500 | $1,800+ |
+| Builder | 65% | $25 | ~$71 |
+| Pro | 70% | $75 | $250 |
+| Studio | 75% | $200 | $800 |
+| Scale | 80% | $500 | $2,500 |
 
-Money is stored as integer nanoUSD. The engine multiplier is the percentage the client pays:
+The client-facing official API usage is calculated from the discount on the same row:
+`local spend / (1 - discount)`. For example, Scale charges 20% of official API prices, so
+`$500 / 0.20 = $2,500` of official API spend.
+
+Money is stored as integer nanoUSD. Requests are metered as official API spend first; the engine
+then applies the account multiplier to determine the local balance charge. The multiplier is the percentage the client pays:
 Starter is `4000` (40%), Builder `3500`, Pro `3000`, Studio `2500`, and Scale `2000`.
 
 The pricing worker paginates `GET /admin/account/{id}/ledger?after_id=...`, deduplicates by engine

@@ -10,14 +10,6 @@
 .hero.loaded .hero-grid > div:first-child > .hero-cta{transition-delay:.36s}
 .hero.loaded .hero-grid > div:first-child > .hero-note{transition-delay:.44s}
 
-.term-stage{opacity:0;transform:translateY(26px) scale(.985);
-  transition:opacity .8s cubic-bezier(.16,.8,.28,1),transform .8s cubic-bezier(.16,.8,.28,1),
-             background-color .35s ease,border-color .35s ease,box-shadow .35s ease}
-.hero.loaded .term-stage{opacity:1;transform:none;transition-delay:.28s}
-
-/* Ambient float is reserved for the small announcement badge; the terminal stays anchored. */
-@keyframes floatCard{0%,100%{transform:translateY(0)}50%{transform:translateY(-7px)}}
-
 /* ---------- animated aurora in hero background ---------- */
 .hero::before{content:"";position:absolute;inset:-20% -10% auto auto;width:60%;height:120%;
   pointer-events:none;z-index:0;opacity:.55;
@@ -115,9 +107,6 @@ header.nav.scrolled{box-shadow:0 8px 30px -18px rgba(10,10,10,.35)}
 [data-reveal],[data-reveal-stagger] > *{filter:blur(6px);
   transition:opacity .7s cubic-bezier(.16,.8,.28,1),transform .7s cubic-bezier(.16,.8,.28,1),filter .7s ease}
 [data-reveal].in,[data-reveal-stagger].in > *{filter:blur(0)}
-
-/* ---------- ambient float on announce badge ---------- */
-.announce .announce-badge{animation:floatCard 6s ease-in-out .6s infinite}
 
 /* ---------- accessibility ---------- */
 @media (prefers-reduced-motion: reduce){
