@@ -9,7 +9,7 @@ describe("OAuth identity providers", () => {
     const provider = new GoogleIdentityProvider({
       clientId: "google-client",
       clientSecret: "google-secret",
-      redirectUri: "https://api.apitoken.sale/v1/auth/google/callback",
+      redirectUri: "https://backend.apitoken.sale/v1/auth/google/callback",
     });
     const url = provider.createAuthorizationUrl({ state: "state", nonce: "nonce", codeChallenge: "challenge" });
     expect(url.origin).toBe("https://accounts.google.com");
@@ -44,7 +44,7 @@ describe("OAuth identity providers", () => {
     const provider = new GoogleIdentityProvider({
       clientId: "google-client",
       clientSecret: "google-secret",
-      redirectUri: "https://api.apitoken.sale/v1/auth/google/callback",
+      redirectUri: "https://backend.apitoken.sale/v1/auth/google/callback",
     });
     await expect(provider.exchangeCallback({
       code: "code", expectedNonce: "expected-nonce", codeVerifier: "verifier",
@@ -68,7 +68,7 @@ describe("OAuth identity providers", () => {
     const provider = new GitHubIdentityProvider({
       clientId: "github-client",
       clientSecret: "github-secret",
-      redirectUri: "https://api.apitoken.sale/v1/auth/github/callback",
+      redirectUri: "https://backend.apitoken.sale/v1/auth/github/callback",
     });
     const authorization = provider.createAuthorizationUrl({ state: "state", nonce: null, codeChallenge: "challenge" });
     expect(authorization.searchParams.get("scope")).toBe("user:email");
@@ -95,7 +95,7 @@ describe("OAuth identity providers", () => {
     const provider = new GitHubIdentityProvider({
       clientId: "github-client",
       clientSecret: "github-secret",
-      redirectUri: "https://api.apitoken.sale/v1/auth/github/callback",
+      redirectUri: "https://backend.apitoken.sale/v1/auth/github/callback",
     });
     await expect(provider.exchangeCallback({
       code: "code", expectedNonce: null, codeVerifier: "verifier",

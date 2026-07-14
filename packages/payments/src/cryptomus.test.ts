@@ -33,7 +33,7 @@ describe("CryptomusProvider", () => {
       amount: "25",
       currency: "USD",
       order_id: "checkout-123",
-      url_callback: "https://api.apitoken.sale/v1/payments/cryptomus/webhook",
+      url_callback: "https://backend.apitoken.sale/v1/payments/cryptomus/webhook",
       is_payment_multiple: true,
       additional_data: JSON.stringify({ checkoutId: "checkout-123" }),
     });
@@ -99,7 +99,7 @@ function makeProvider(fetch: typeof globalThis.fetch): CryptomusProvider {
   return new CryptomusProvider({
     merchantId: "merchant-uuid",
     paymentApiKey: "payment-api-key",
-    callbackUrl: "https://api.apitoken.sale/v1/payments/cryptomus/webhook",
+    callbackUrl: "https://backend.apitoken.sale/v1/payments/cryptomus/webhook",
     apiBaseUrl: "https://api.test",
     fetch,
   });

@@ -1,0 +1,18 @@
+[Unit]
+Description=API Token Sale commerce PostgreSQL
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/apitoken/repo
+EnvironmentFile=/etc/apitoken/postgres.env
+ExecStart=/usr/bin/docker compose -f deploy/commerce-postgres.compose.yaml up -d --wait
+ExecStop=/usr/bin/docker compose -f deploy/commerce-postgres.compose.yaml down
+TimeoutStartSec=180
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target

@@ -62,7 +62,7 @@ describe.runIf(Boolean(connectionString))("Cryptomus checkout service", () => {
     const provider = new CryptomusProvider({
       merchantId: "00000000-0000-4000-8000-000000000001",
       paymentApiKey: apiKey,
-      callbackUrl: "https://api.apitoken.sale/v1/payments/cryptomus/webhook",
+      callbackUrl: "https://backend.apitoken.sale/v1/payments/cryptomus/webhook",
       apiBaseUrl: "https://api.test",
       fetch: async (input, init) => {
         const url = String(input);

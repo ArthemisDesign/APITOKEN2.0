@@ -8,7 +8,7 @@ const environmentSchema = z.object({
   ENGINE_BASE_URL: z.string().url(),
   ENGINE_CONTROL_KEY: z.string().min(32),
   ENGINE_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
-  PUBLIC_API_BASE_URL: z.string().url().default("https://api.apitoken.sale"),
+  PUBLIC_API_BASE_URL: z.string().url().default("https://backend.apitoken.sale"),
   PUBLIC_APP_BASE_URL: z.string().url().default("https://apitoken.sale"),
   MIN_TOPUP_USD: z.string().regex(/^[1-9]\d*$/).transform(BigInt).default("1"),
   MAX_TOPUP_USD: z.string().regex(/^[1-9]\d*$/).transform(BigInt).default("10000"),
