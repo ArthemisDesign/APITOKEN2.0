@@ -1570,8 +1570,28 @@ fn cc_header_case(dst: &mut Vec<u8>, name: &HeaderName) {
     let s = name.as_str();
     if s.starts_with("anthropic-") || s == "x-app" || s == "x-client-request-id" {
         extend(dst, s.as_bytes());
-    } else {
-        title_case(dst, s.as_bytes());
+        return;
+    }
+    // Title-Case по сегментам '-', НО известные аббревиатуры Stainless SDK — В ВЕРХНЕМ регистре.
+    // Снято с живого claude: `X-Stainless-OS` (OS целиком upper), при этом `X-Claude-Code-Session-Id`
+    // — обычный Title ("Id"). Единственная аббревиатура в наборе CC — "os".
+    let mut first = true;
+    for seg in s.split('-') {
+        if !first {
+            dst.push(b'-');
+        }
+        first = false;
+        if seg == "os" {
+            extend(dst, b"OS");
+        } else {
+            let mut it = seg.bytes();
+            if let Some(b0) = it.next() {
+                dst.push(b0.to_ascii_uppercase());
+                for b in it {
+                    dst.push(b);
+                }
+            }
+        }
     }
 }
 

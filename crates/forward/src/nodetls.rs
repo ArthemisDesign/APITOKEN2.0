@@ -82,6 +82,7 @@ mod tests {
             let _ = client
                 .get(format!("http://127.0.0.1:{port}/v1/models"))
                 .header("x-stainless-arch", "x64")
+                .header("x-stainless-os", "Linux")
                 .header("x-stainless-package-version", "0.94.0")
                 .header("anthropic-beta", "oauth-2025-04-20")
                 .header("anthropic-version", "2023-06-01")
@@ -95,6 +96,9 @@ mod tests {
         // Title-Case для стандартных / X-Stainless-* / X-Claude-*
         assert!(req.contains("X-Stainless-Arch: x64"), "ожидался Title-Case X-Stainless-Arch:\n{req}");
         assert!(req.contains("X-Stainless-Package-Version: 0.94.0"), "\n{req}");
+        // аббревиатура OS — В ВЕРХНЕМ регистре (как реальный CC), НЕ "Os"
+        assert!(req.contains("X-Stainless-OS: Linux"), "OS должен быть UPPER (X-Stainless-OS):\n{req}");
+        assert!(!req.contains("X-Stainless-Os"), "OS не должен быть 'Os':\n{req}");
         // lowercase для anthropic-* / x-app / x-client-request-id
         assert!(req.contains("anthropic-beta: oauth-2025-04-20"), "anthropic-beta должен быть lowercase:\n{req}");
         assert!(req.contains("anthropic-version: 2023-06-01"), "\n{req}");
