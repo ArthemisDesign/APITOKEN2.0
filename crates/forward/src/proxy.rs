@@ -316,6 +316,20 @@ fn inject_identity(v: &mut Value, identity: &str) -> bool {
     true
 }
 
+/// Препендит/обновляет system[0] = billing-header блок ИДЕМПОТЕНТНО (на ротации заменяет текст,
+/// не дублирует). Реальный CC шлёт его первым system-блоком, БЕЗ cache_control (снято с 2.1.195).
+/// Работает только по массиву system (identity-инжект уже гарантирует массив на messages-запросе).
+fn set_billing_block(v: &mut Value, text: &str) {
+    let obj = match v.as_object_mut() { Some(o) => o, None => return };
+    let block = serde_json::json!({"type":"text","text":text});
+    if let Some(Value::Array(arr)) = obj.get_mut("system") {
+        let first_billing = arr.first()
+            .and_then(|b| b.get("text")).and_then(|t| t.as_str())
+            .map(|t| t.starts_with("x-anthropic-billing-header:")).unwrap_or(false);
+        if first_billing { arr[0] = block; } else { arr.insert(0, block); }
+    }
+}
+
 /// Allowlist эндпоинтов Anthropic, работающих на квоте ПОДПИСКИ (что мы форвардим на пул):
 /// `POST /v1/messages` (метерим), `POST /v1/messages/count_tokens` и `GET /v1/models[/{id}]` (проброс
 /// без тарификации). Всё прочее (batches/files/agents/sessions/environments/skills/complete) на
@@ -582,6 +596,13 @@ pub async fn forward(
                 // count_tokens Anthropic поле `metadata` НЕ принимает (→ 400), да и CC его туда не шлёт.
                 if billable {
                     v["metadata"]["user_id"] = serde_json::json!(crate::upstream::persona_user_id(&sub.email, session));
+                    // billing-header первым system-блоком (как реальный CC): cc_version флот-константна,
+                    // cch стабилен per-подписка. Идемпотентно — на ротации заменяет, не дублирует.
+                    if app.cfg.inject_billing {
+                        let txt = format!("x-anthropic-billing-header: cc_version={}; cc_entrypoint={}; cch={};",
+                            app.cfg.cc_version, app.cfg.cc_entrypoint, crate::upstream::persona_cch(&sub.email));
+                        set_billing_block(v, &txt);
+                    }
                 }
                 match serde_json::to_vec(v) {
                     Ok(b) => bytes::Bytes::from(b),
@@ -818,6 +839,27 @@ mod tests {
         assert_eq!(window_cool(&lim(0.5, 0.5, Some("five_hour"), r5, r7), now), None);
         // нет claim → фолбэк-эвристика (7d≥0.95 → reset7d)
         assert_eq!(window_cool(&lim(0.1, 0.96, None, r5, r7), now), Some(100_000));
+    }
+
+    #[test]
+    fn billing_block_is_idempotent_and_first() {
+        // identity уже стоит первым; billing должен встать ПЕРЕД ним и НЕ дублироваться на «ротации».
+        let mut v = serde_json::json!({
+            "messages": [],
+            "system": [{"type":"text","text":"You are a Claude agent, built on Anthropic's Claude Agent SDK."}]
+        });
+        set_billing_block(&mut v, "x-anthropic-billing-header: cc_version=2.1.195.d49; cc_entrypoint=sdk-cli; cch=abcde;");
+        // вторая подписка (ротация) — другой cch: заменяем, не добавляем второй блок
+        set_billing_block(&mut v, "x-anthropic-billing-header: cc_version=2.1.195.d49; cc_entrypoint=sdk-cli; cch=99999;");
+        let sys = v["system"].as_array().unwrap();
+        assert_eq!(sys.len(), 2, "billing не должен дублироваться на ротации");
+        assert_eq!(sys[0]["text"].as_str().unwrap(),
+            "x-anthropic-billing-header: cc_version=2.1.195.d49; cc_entrypoint=sdk-cli; cch=99999;");
+        assert!(sys[0].get("cache_control").is_none(), "billing-блок БЕЗ cache_control (как у CC)");
+        assert!(sys[1]["text"].as_str().unwrap().starts_with("You are a Claude agent"));
+        // per-подписка cch стабилен и различается между подписками
+        assert_eq!(crate::upstream::persona_cch("a@x.io"), crate::upstream::persona_cch("a@x.io"));
+        assert_ne!(crate::upstream::persona_cch("a@x.io"), crate::upstream::persona_cch("b@x.io"));
     }
 
     #[test]

@@ -108,6 +108,12 @@ impl Settings {
                 poll: ev_bool("CLAUDE_API_POLL", true),
                 inject_identity: ev_bool("CLAUDE_API_INJECT_IDENTITY", true),
                 identity: ev_or("CLAUDE_API_IDENTITY", CLAUDE_CODE_IDENTITY),
+                // billing-header (system[0]) — точный вид с живого claude 2.1.195 (mitm 2026-07-14):
+                // `x-anthropic-billing-header: cc_version=2.1.195.d49; cc_entrypoint=sdk-cli; cch=<hex>;`
+                // cc_version флот-константна (коген с UA), cch — per-персона (см. inject).
+                inject_billing: ev_bool("CLAUDE_API_INJECT_BILLING", true),
+                cc_version: ev_or("CLAUDE_API_CC_VERSION", "2.1.195.d49"),
+                cc_entrypoint: ev_or("CLAUDE_API_CC_ENTRYPOINT", "sdk-cli"),
                 // Полный CC-набор beta (не только oauth): без `claude-code-20250219` мы «OAuth-клиент, но
                 // НЕ Claude Code». ТОЧНЫЙ актуальный набор снимает refresh-fingerprint.sh с живого claude
                 // в config.env; это fallback. (Проверено живым /v1 — набор совместим с OAuth-подпиской.)

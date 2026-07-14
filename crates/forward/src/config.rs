@@ -37,6 +37,12 @@ pub struct ProxyConfig {
     pub poll: bool,                // включён ли фоновый поллер (для /pool)
     pub inject_identity: bool,     // инжектить Claude Code identity в system
     pub identity: String,          // сама строка идентичности
+    /// Инжектить system[0] = `x-anthropic-billing-header: cc_version=…; cc_entrypoint=…; cch=…;`
+    /// (реальный CC шлёт его ПЕРВЫМ system-блоком; отсутствие = структурный отпечаток). cc_version
+    /// флот-константна (все на 2.1.195 шлют одно), cch варьируется per-персона (per-install реализм).
+    pub inject_billing: bool,
+    pub cc_version: String,        // "2.1.195.d49" (версия+build-суффикс; коген с UA)
+    pub cc_entrypoint: String,     // "sdk-cli"
     pub default_beta: String,      // anthropic-beta, добавляемый к клиентским
     pub user_agent: String,        // UA-fallback (client-level default; поллер/детект)
     /// Пул реальных UA. len>1 → каждая персона пинит один (hash(email)%len). len≤1 → берём его

@@ -96,6 +96,11 @@ pub fn persona_user_id(email: &str, session: Option<u64>) -> String {
 pub fn persona_session_id(email: &str, session: Option<u64>) -> String {
     uuid_from(session.unwrap_or_else(|| email_seed(email)).wrapping_add(0x5E))
 }
+/// cch (config-hash) для billing-header — 5 hex, СТАБИЛЕН per-подписка (per-install реализм: каждая
+/// подписка = отдельная «инсталляция» claude со своим конфиг-хэшем; общий cch на флот был бы кластером).
+pub fn persona_cch(email: &str) -> String {
+    hex_expand(email_seed(email).wrapping_add(0xCC), 1)[0..5].to_string()
+}
 
 /// Кэш http-клиентов: один клиент на ПАРУ (прокси, подписка). Ключевание по email критично для
 /// анти-фингерпринта: клиент по одной лишь строке прокси заставил бы подписки с общим/пустым прокси
