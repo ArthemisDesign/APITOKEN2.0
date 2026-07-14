@@ -5,6 +5,7 @@ export interface EngineAccountMapping {
   engineAccountId: string | null;
   status: "pending" | "active" | "error" | "disabled";
   multBp: number;
+  customerType: "b2c" | "b2b";
   lastError: string | null;
 }
 
@@ -20,14 +21,18 @@ export interface StoredApiKey {
 
 export async function getEngineAccountMapping(database: Database, userId: string): Promise<EngineAccountMapping | null> {
   const result = await database.pool.query<EngineAccountRow>(`
-    SELECT engine_account_id, status, mult_bp, last_error
-    FROM engine_accounts WHERE user_id = $1
+    SELECT ea.engine_account_id, ea.status, ea.mult_bp, ea.last_error,
+           COALESCE(cp.customer_type, 'b2c') AS customer_type
+    FROM engine_accounts ea
+    LEFT JOIN customer_profiles cp ON cp.user_id = ea.user_id
+    WHERE ea.user_id = $1
   `, [userId]);
   const row = result.rows[0];
   return row ? {
     engineAccountId: row.engine_account_id,
     status: row.status,
     multBp: row.mult_bp,
+    customerType: row.customer_type,
     lastError: row.last_error,
   } : null;
 }
@@ -150,6 +155,7 @@ interface EngineAccountRow {
   engine_account_id: string | null;
   status: "pending" | "active" | "error" | "disabled";
   mult_bp: number;
+  customer_type: "b2c" | "b2b";
   last_error: string | null;
 }
 

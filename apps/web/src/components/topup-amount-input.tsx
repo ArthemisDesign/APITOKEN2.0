@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useI18n } from "./i18n-provider";
-import { T } from "./translated";
 
 export function TopUpAmountInput({ className, initialAmount }: { className: string; initialAmount: string }) {
   const [amount, setAmount] = useState(initialAmount);
@@ -19,6 +18,5 @@ export function TopUpAmountInput({ className, initialAmount }: { className: stri
       onChange={(event) => setAmount(event.target.value.replace(/\D/g, "").replace(/^0+/, ""))}
       placeholder="0"
     />
-    <T k="amount_example" as="small">editable</T>
   </label>;
 }

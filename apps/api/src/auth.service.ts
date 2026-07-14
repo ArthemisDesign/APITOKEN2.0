@@ -30,6 +30,7 @@ import { EngineClient } from "@claude-api/engine-client";
 import type { Environment } from "./config.js";
 import { DATABASE, ENGINE_CLIENT } from "./infrastructure.module.js";
 import { OAuthProviderRegistry } from "./auth-providers.js";
+import { createFundedEngineAccount } from "./engine-provisioning.js";
 
 const dummyHash = hash("not-a-real-user-password", passwordHashOptions());
 
@@ -259,7 +260,12 @@ export class AuthService {
   private async provisionEngineAccount(user: AuthUser, multiplierBp: number): Promise<void> {
     if (user.engineAccountStatus === "active") return;
     try {
-      const account = await this.engine.createAccount({ handle: `user:${user.id}`, multBp: multiplierBp });
+      const account = await createFundedEngineAccount(this.engine, {
+        userId: user.id,
+        customerType: user.customerType,
+        handle: `user:${user.id}`,
+        multBp: multiplierBp,
+      });
       await completeEngineAccount(this.database, user.id, account.account);
       user.engineAccountStatus = "active";
     } catch (error) {

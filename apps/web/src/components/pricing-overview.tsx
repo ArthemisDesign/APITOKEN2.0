@@ -4,7 +4,7 @@ import { TopUpAmountInput } from "./topup-amount-input";
 
 const tiers = [
   ["tier_starter", "60%", "$0", "$0"],
-  ["tier_builder", "65%", "$25", "≈ $71"],
+  ["tier_builder", "65%", "$25", "$70"],
   ["tier_pro", "70%", "$75", "$250"],
   ["tier_studio", "75%", "$200", "$800"],
   ["tier_scale", "80%", "$500", "$2,500"],
@@ -37,7 +37,25 @@ export function PricingOverview() {
           <tbody>{tiers.map(([name, discount, localSpend, officialUsage]) => <tr key={name}><T k={name} as="td">Tier</T><td><strong>{discount}</strong></td><td>{localSpend}</td><td>{officialUsage}</td></tr>)}</tbody>
         </table>
       </div>
-      <T k="tier_footnote" as="p" className="tier-footnote">Official API usage is calculated as platform spend ÷ the percentage paid after discount. Progress uses authoritative balance spent during the UTC calendar month.</T>
+      <T k="tier_footnote" as="p" className="tier-footnote">Official API usage is calculated as platform spend ÷ the percentage paid after discount. Client-facing values are rounded for presentation; billing keeps the exact amount.</T>
+    </div>
+  </div>;
+}
+
+export function BillingFormula() {
+  return <div className="billing-formula">
+    <T k="billing_label" as="span" className="billing-formula-title">How billing works</T>
+    <div className="billing-equation">
+      <T k="bill1" as="strong" className="billing-term">Official API spend</T>
+      <span className="billing-operator" aria-hidden="true">×</span>
+      <T k="bill2" as="strong" className="billing-term">Percentage paid after discount</T>
+      <span className="billing-operator" aria-hidden="true">=</span>
+      <T k="bill3" as="strong" className="billing-term billing-result">Balance charge</T>
+    </div>
+    <div className="billing-trail">
+      <T k="bill4">Recorded in request ledger</T>
+      <span aria-hidden="true">→</span>
+      <T k="bill5">Updates monthly tier progress</T>
     </div>
   </div>;
 }

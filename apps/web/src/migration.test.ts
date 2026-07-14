@@ -49,10 +49,15 @@ describe("completed Next.js migration", () => {
     expect(messages).not.toMatch(/\bcredit packs?\b|пакет/i);
     expect(pricing).toContain("Choose any whole USD amount");
     expect(pricing).toContain("Negotiated business pricing");
-    expect(pricing).toContain('"tier_builder", "65%", "$25", "≈ $71"');
+    expect(pricing).toContain('"tier_builder", "65%", "$25", "$70"');
     expect(pricing).toContain('"tier_pro", "70%", "$75", "$250"');
     expect(pricing).toContain('"tier_studio", "75%", "$200", "$800"');
     expect(pricing).toContain('"tier_scale", "80%", "$500", "$2,500"');
+    expect(pricing).toContain("billing-equation");
+    expect(pricing).toContain("Percentage paid after discount");
+    expect(messages).toContain("$10 of Claude usage at official API prices");
+    expect(messages).toContain("$10 на Claude по официальным ценам API");
+    expect(messages).not.toContain("$2.50");
   });
 
   it("keeps the verified model prices and context windows", () => {
@@ -76,8 +81,17 @@ describe("completed Next.js migration", () => {
     expect(styles).toContain("grid-template-columns:repeat(2,134px)");
     for (const control of ["term-close", "term-minimize", "term-zoom"]) expect(terminal).toContain(control);
     expect(terminal).not.toContain("onPointerMove");
+    expect(styles).toContain(".term-controls i:hover::after");
+    expect(styles).not.toContain(".term-controls:hover i::after");
+    expect(styles).toContain("inset:0;display:grid;place-items:center");
+    expect(styles).toContain(".pricing-intro{display:grid;grid-template-columns:1.1fr .9fr;gap:22px;align-items:stretch}");
+    expect(styles).toContain(".business-card{justify-content:center");
     expect(topup).toContain('inputMode="numeric"');
     expect(topup).toContain('pattern="[1-9][0-9]*"');
+    expect(topup).not.toContain("editable");
+    expect(styles).toContain(".prod .amt .now{font-family:var(--font-mono)");
+    expect(styles).not.toContain(".hero-note{");
+    expect(readFileSync(join(appRoot, "page.tsx"), "utf8")).not.toContain('k="hero_note"');
     expect(animations).not.toContain(".feat:hover{");
     expect(motion).toContain("transform={`translate(${waveWidth} 0)`}");
     expect(animations).toContain("translateX(-50%)");

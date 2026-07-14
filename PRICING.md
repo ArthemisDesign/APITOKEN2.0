@@ -10,16 +10,25 @@ All thresholds are the customer's actual local balance spent during one UTC cale
 Promotions apply immediately. The achieved tier carries into the next month. If the customer does
 not meet the retained tier's threshold in a month, month close moves them down exactly one tier.
 
+### B2C signup usage
+
+Each newly provisioned B2C account receives **$10 of usage at official API prices**. Starter charges
+40% of official prices, so the engine receives an exact `$4.000000000` balance credit. The credit
+uses the stable `signup-bonus:<commercial user UUID>` reference and is therefore safe to retry
+without double-crediting. Invited B2B accounts do not receive this B2C offer.
+
 | Tier | Client discount | Local monthly spend | Rounded official API usage shown to client |
 |---|---:|---:|---:|
 | Starter | 60% | $0 | $0 |
-| Builder | 65% | $25 | ~$71 |
+| Builder | 65% | $25 | $70 |
 | Pro | 70% | $75 | $250 |
 | Studio | 75% | $200 | $800 |
 | Scale | 80% | $500 | $2,500 |
 
-The client-facing official API usage is calculated from the discount on the same row:
-`local spend / (1 - discount)`. For example, Scale charges 20% of official API prices, so
+The official API usage equivalent is calculated from the discount on the same row:
+`local spend / (1 - discount)`. Client-facing values are rounded to clean figures for presentation
+(Builder is displayed as `$70`), while billing keeps the exact integer nanoUSD amount. For example,
+Scale charges 20% of official API prices, so
 `$500 / 0.20 = $2,500` of official API spend.
 
 Money is stored as integer nanoUSD. Requests are metered as official API spend first; the engine

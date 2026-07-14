@@ -14,6 +14,7 @@ import {
 } from "@claude-api/db";
 import { EngineClient, EngineClientError } from "@claude-api/engine-client";
 import { DATABASE, ENGINE_CLIENT } from "./infrastructure.module.js";
+import { createFundedEngineAccount } from "./engine-provisioning.js";
 
 export class EngineAccountUnavailableError extends Error {}
 
@@ -31,7 +32,12 @@ export class AccountService {
     if (mapping.status === "active" && mapping.engineAccountId) return mapping.engineAccountId;
 
     try {
-      const account = await this.engine.createAccount({ handle: `user:${userId}`, multBp: mapping.multBp });
+      const account = await createFundedEngineAccount(this.engine, {
+        userId,
+        customerType: mapping.customerType,
+        handle: `user:${userId}`,
+        multBp: mapping.multBp,
+      });
       await completeEngineAccount(this.database, userId, account.account);
       return account.account;
     } catch (error) {

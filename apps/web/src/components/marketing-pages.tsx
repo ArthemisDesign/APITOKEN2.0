@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { MotionEffects } from "./motion-effects";
-import { PricingOverview } from "./pricing-overview";
+import { BillingFormula, PricingOverview } from "./pricing-overview";
 import { SiteFooter, SiteHeader } from "./site-chrome";
 import { T } from "./translated";
 
@@ -14,7 +14,7 @@ export function PageHero({ eyebrow, title, subtitle, back }: { eyebrow: string; 
 }
 
 export function PlansPage() {
-  return <MarketingFrame><PageHero eyebrow="pr_eyebrow" title="plans_h" subtitle="plans_sub" /><section className="borderless"><div className="wrap"><PricingOverview /><div className="tokens page-tokens"><T k="billing_label">Billing basis:</T>{[1,2,3,4,5].map((index) => <T k={`bill${index}`} key={index}>Billing step</T>)}</div></div></section></MarketingFrame>;
+  return <MarketingFrame><PageHero eyebrow="pr_eyebrow" title="plans_h" subtitle="plans_sub" /><section className="borderless"><div className="wrap"><PricingOverview /><BillingFormula /></div></section></MarketingFrame>;
 }
 
 const modelRows = [

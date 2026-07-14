@@ -81,6 +81,9 @@ describe.runIf(Boolean(connectionString))("commercial account and engine integra
       SELECT engine_account_id, status FROM engine_accounts WHERE user_id = $1
     `, [aliceId]);
     expect(mapping.rows[0]).toEqual({ engine_account_id: "acct_recovered", status: "active" });
+    expect(engine.signupCredits).toEqual([{
+      account: "acct_recovered", amountNano: "4000000000", reference: `signup-bonus:${aliceId}`,
+    }]);
   });
 
   it("reprovisions when a previously mapped engine account no longer exists", async () => {
@@ -92,6 +95,9 @@ describe.runIf(Boolean(connectionString))("commercial account and engine integra
       SELECT engine_account_id, status FROM engine_accounts WHERE user_id = $1
     `, [aliceId]);
     expect(mapping.rows[0]).toEqual({ engine_account_id: "acct_recovered", status: "active" });
+    expect(engine.signupCredits).toEqual([{
+      account: "acct_recovered", amountNano: "4000000000", reference: `signup-bonus:${aliceId}`,
+    }]);
   });
 });
 
@@ -107,6 +113,7 @@ async function createUser(database: Database, email: string, engineAccountId: st
 
 class FakeEngine {
   readonly disabledKeyIds: string[] = [];
+  readonly signupCredits: Array<{ account: string; amountNano: string; reference: string }> = [];
   readonly missingAccountIds = new Set<string>();
   recoveredAccountId = "acct_alice";
   private issued = false;
@@ -120,6 +127,12 @@ class FakeEngine {
     const path = new URL(url).pathname;
     if (path === "/admin/account" && init?.method === "POST") {
       return Response.json({ account: this.recoveredAccountId, mult_bp: 2000, handle: "user:test" });
+    }
+    if (path.endsWith("/credit") && init?.method === "POST") {
+      const account = path.slice("/admin/account/".length, -"/credit".length);
+      const body = JSON.parse(String(init.body)) as { amount_nano: number; ref: string };
+      this.signupCredits.push({ account, amountNano: String(body.amount_nano), reference: body.ref });
+      return Response.json({ account, balance_nano: body.amount_nano, balance: "$4.000000000" });
     }
     if (path === "/admin/key" && init?.method === "POST") {
       this.issued = true;

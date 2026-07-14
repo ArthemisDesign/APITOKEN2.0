@@ -26,6 +26,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
     database = createDatabase(connectionString!);
     const engine = {
       createAccount: async () => ({ account: `acct_auth_${++accountCounter}`, multBp: 2000, handle: null }),
+      creditAccount: async (account: string) => ({ account, balance_nano: "4000000000", balance: "$4.000000000" }),
     } as unknown as EngineClient;
     const config = new ConfigService<Environment, true>({
       SESSION_TTL_SECONDS: 604_800,
@@ -99,7 +100,10 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
   });
 
   it("does not authenticate password registration before verification in every environment", async () => {
-    const engine = { createAccount: async () => ({ account: "acct_verified_gate", multBp: 2000, handle: null }) } as unknown as EngineClient;
+    const engine = {
+      createAccount: async () => ({ account: "acct_verified_gate", multBp: 2000, handle: null }),
+      creditAccount: async (account: string) => ({ account, balance_nano: "4000000000", balance: "$4.000000000" }),
+    } as unknown as EngineClient;
     const strictAuth = new AuthService(database, engine, new ConfigService<Environment, true>({
       SESSION_TTL_SECONDS: 604_800,
       AUTH_TOKEN_ENCRYPTION_KEY: encryptionKey,
@@ -160,6 +164,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
       database,
       {
         createAccount: async () => ({ account: `acct_oauth_${++accountCounter}`, multBp: 4000, handle: null }),
+        creditAccount: async (account: string) => ({ account, balance_nano: "4000000000", balance: "$4.000000000" }),
       } as unknown as EngineClient,
       new ConfigService<Environment, true>({
         SESSION_TTL_SECONDS: 604_800,

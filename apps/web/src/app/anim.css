@@ -8,7 +8,6 @@
 .hero.loaded .hero-grid > div:first-child > h1{transition-delay:.14s}
 .hero.loaded .hero-grid > div:first-child > .lead{transition-delay:.26s}
 .hero.loaded .hero-grid > div:first-child > .hero-cta{transition-delay:.36s}
-.hero.loaded .hero-grid > div:first-child > .hero-note{transition-delay:.44s}
 
 /* ---------- animated aurora in hero background ---------- */
 .hero::before{content:"";position:absolute;inset:-20% -10% auto auto;width:60%;height:120%;

@@ -25,6 +25,11 @@ single-use, bound to the normalized registration email, expires, and is consumed
 transaction as the user. Only its SHA-256 hash is stored. B2B accounts receive the invitation's
 manual price and do not participate in progressive B2C tiers. See `PRICING.md`.
 
+On the first successful engine provisioning, a B2C account receives an idempotent `$4.000000000`
+engine balance credit. At the Starter rate (60% off), this gives the client **$10 of Claude usage at
+official API prices**. The same rule applies after email verification and to a new Google/GitHub
+account; invited B2B accounts are excluded.
+
 Login failures use the same external response for an unknown email and a wrong password. A dummy
 Argon2 verification reduces timing-based email discovery. Password login is always blocked until
 verification completes. Forgot-password and resend responses do not reveal whether an account exists.
