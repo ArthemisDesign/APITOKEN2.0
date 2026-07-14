@@ -570,7 +570,11 @@ pub async fn forward(
         // stale-тело с большим max_tokens при малом hold — пробой баланса; hold вернёт hold_guard).
         let body_this = match parsed.as_mut() {
             Some(v) => {
-                v["metadata"]["user_id"] = serde_json::json!(crate::upstream::persona_user_id(&sub.email));
+                // metadata.user_id инжектим ТОЛЬКО в /v1/messages — как настоящий Claude Code. На
+                // count_tokens Anthropic поле `metadata` НЕ принимает (→ 400), да и CC его туда не шлёт.
+                if billable {
+                    v["metadata"]["user_id"] = serde_json::json!(crate::upstream::persona_user_id(&sub.email));
+                }
                 match serde_json::to_vec(v) {
                     Ok(b) => bytes::Bytes::from(b),
                     Err(_) => return err_response(StatusCode::INTERNAL_SERVER_ERROR, "api_error",
