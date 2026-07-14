@@ -19,7 +19,7 @@ axum = "0.8"
 # настоящего Claude Code = Node = OpenSSL), БЕЗ GREASE, а не редкий характерный rustls-отпечаток и не
 # BoringSSL+GREASE браузерных impersonation-крейтов (те кричали бы «Chrome» под claude-cli UA). API
 # reqwest не меняется. (Mac при локальной сборке берёт SecureTransport — только для функц-смоука; прод = Linux/OpenSSL.)
-reqwest = { version = "0.12", default-features = false, features = ["stream", "native-tls", "json", "socks", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "native-tls", "json", "socks"] }
 serde_json = "1"
 futures-util = "0.3"
 bytes = "1"

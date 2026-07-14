@@ -80,24 +80,23 @@ impl Clients {
     }
 
     /// Клиент для данного прокси ("" = напрямую). Без общего request-timeout — иначе рвал бы стримы.
-    /// Liveness обеспечиваем СОБЫТИЙНО, а не ожиданием большого idle-таймаута: HTTP/2 keep-alive PING
-    /// непрерывно проверяет соединение (в т.ч. на простое), TCP keep-alive — на уровне сокета. Мёртвое
-    /// соединение (чёрная дыра) обнаруживается в момент неответа PING, а не по выжиданию таймаута.
+    /// **HTTP/1.1-ONLY** — как настоящий Claude Code: захват реального ClientHello показал ALPN=`http/1.1`
+    /// (undici/Node по умолчанию h1). h2 у нас был бы отличием (иной ALPN в JA4 + Akamai-h2-отпечаток +
+    /// характерный 30с idle-PING). На h1 живость держим TCP keep-alive + read_timeout (мёртвое соединение
+    /// = нет байтов → read_timeout рвёт; SSE-ping Anthropic сбрасывает таймер, живой стрим не рвётся).
     pub fn get(&self, proxy: &str, email: &str) -> reqwest::Result<Client> {
         // Ключ = (proxy, email): своя изоляция соединений/TLS-сессий на КАЖДУЮ подписку (см. док структуры).
         let key = format!("{proxy}\x00{email}");
         if let Some(c) = self.map.lock().unwrap_or_else(|e| e.into_inner()).get(&key) { return Ok(c.clone()); }
         let mut b = Client::builder()
+            .http1_only()                                         // ALPN=http/1.1 — как Claude Code (undici)
             .connect_timeout(Duration::from_secs(self.connect_timeout))
             .user_agent(&self.user_agent)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Duration::from_secs(60))
-            .read_timeout(Duration::from_secs(120))               // idle между чтениями: ловит «подключился
+            .read_timeout(Duration::from_secs(120));              // idle между чтениями: ловит «подключился
             //   но молчит» до первого байта И зависший посреди стрима; сбрасывается на каждом чтении,
             //   поэтому живой поток данных (в т.ч. SSE с ping-ами Anthropic) не рвёт.
-            .http2_keep_alive_interval(Duration::from_secs(30))   // PING каждые 30с…
-            .http2_keep_alive_timeout(Duration::from_secs(20))    // …нет ответа за 20с → соединение мёртво
-            .http2_keep_alive_while_idle(true);                   // проверять и на простое (idle-стрим/пул)
         if !proxy.is_empty() {
             b = b.proxy(reqwest::Proxy::all(proxy)?);
         }
