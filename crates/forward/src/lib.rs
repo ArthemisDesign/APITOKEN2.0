@@ -14,6 +14,7 @@ mod config;
 mod keylimiter;
 mod meter;
 mod metrics;
+pub mod nodetls;
 mod proxy;
 mod state;
 mod upstream;

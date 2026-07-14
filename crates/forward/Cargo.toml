@@ -23,3 +23,7 @@ reqwest = { version = "0.12", default-features = false, features = ["stream", "n
 serde_json = "1"
 futures-util = "0.3"
 bytes = "1"
+# Кастомный TLS-коннектор для byte-exact Claude-Code (Node/OpenSSL) ClientHello: точный порядок/состав
+# шифров, groups, ALPN, опции расширений (OCSP/SCT/no-ETM). Линкуется с ТЕМ ЖЕ системным openssl-sys,
+# что и native-tls (не boring — конфликта символов нет). Пока используется для probe-валидации отпечатка.
+openssl = "0.10"
