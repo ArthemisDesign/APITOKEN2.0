@@ -52,12 +52,16 @@ Installed host tooling:
 - Docker Engine with the Compose and Buildx plugins;
 - PostgreSQL 16 client, build-essential, Clang, CMake, OpenSSL and SQLite development tools;
 - UFW, Fail2ban and unattended security upgrades;
-- BorgBackup and Borgmatic.
+- BorgBackup and Borgmatic;
+- Caddy 2 from its official stable package repository.
 
 UFW denies inbound traffic by default and permits only SSH, HTTP and HTTPS. SSH password
 authentication is disabled. Root can authenticate by key for recovery, while routine deployment
-uses `deploy`. The application API binds to loopback; public TLS termination is added only after the
-DNS record is pointed at this host.
+uses `deploy`. The application API and PostgreSQL bind to loopback. Caddy owns public ports 80/443,
+redirects HTTP to HTTPS and terminates TLS for the two configured hostnames.
+
+The active DNS record is `A *.apitoken.sale -> 84.32.48.2`. The apex remains independent for the
+future frontend. Exact DNS records override the wildcard if they are added later.
 
 ## Host paths
 
@@ -93,6 +97,8 @@ Normal operations:
 sudo systemctl status apitoken-postgres apitoken-api apitoken-worker
 sudo systemctl restart apitoken-api apitoken-worker
 sudo journalctl -u apitoken-api -u apitoken-worker --since today
+sudo systemctl status caddy
+sudo caddy validate --config /etc/caddy/Caddyfile
 ```
 
 The PostgreSQL container publishes only to `127.0.0.1:5433`. API and worker use the same database
@@ -109,8 +115,12 @@ never be returned to clients or placed in frontend configuration.
 - The worker's credit and pricing processors are active. Until SMTP is connected, its environment
   deliberately uses `NODE_ENV=development` with `EMAIL_DELIVERY_MODE=disabled`; verification and
   reset messages remain durably queued. Change both settings when production SMTP is ready.
-- `api.apitoken.sale` and `backend.apitoken.sale` do not yet resolve to this host, so the prepared
-  reverse-proxy configuration is not active.
+- Wildcard DNS resolves through public resolvers. Caddy serves valid public certificates for
+  `api.apitoken.sale` and `backend.apitoken.sale`.
+- `https://backend.apitoken.sale/v1/health` reaches the commercial API. It reports engine `down`
+  until the local core migration is completed.
+- The core proxy exposes only `/v1/*` and `/health`; `/admin/*`, `/pool` and unspecified paths return
+  `404`. `/health` currently returns `502` because nothing is listening on local port `8787` yet.
 - A dedicated read-only GitHub deploy key exists at
   `/home/deploy/.ssh/github_deploy_ed25519` and is registered for direct `git fetch` and `git pull`.
 
@@ -176,8 +186,7 @@ server as an update mechanism.
 
 ## Work still requiring external configuration
 
-- Point the wildcard DNS record `*.apitoken.sale` to `84.32.48.2`, then install the prepared
-  `deploy/Caddyfile` and obtain TLS for `api.apitoken.sale` and `backend.apitoken.sale`.
+- Migrate and start the Rust core on `127.0.0.1:8787`; no legacy-core fallback is configured.
 - Configure SMTP on a separate mail host.
 - Add Google and GitHub OAuth application credentials.
 - Add Cryptomus credentials and test its deployed webhook.
