@@ -32,11 +32,6 @@ struct Cli {
 enum Cmd {
     /// Поднять HTTP-сервер (форвардинг-прокси над пулом)
     Serve,
-    /// Диагностика: TLS-probe нашим кастомным Claude-Code-коннектором (ClientHello ловится tcpdump).
-    Tlsprobe {
-        #[arg(default_value = "api.anthropic.com")]
-        host: String,
-    },
     /// Управление реестром подписок
     Sub {
         #[command(subcommand)]
@@ -152,7 +147,6 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd.unwrap_or(Cmd::Serve) {
         Cmd::Serve => serve().await,
-        Cmd::Tlsprobe { host } => { forward::nodetls::probe(&host); Ok(()) }
         Cmd::Sub { op } => sub_cmd(op).await,
         Cmd::Account { op } => account_cmd(op),
         Cmd::Key { op } => key_cmd(op),

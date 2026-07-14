@@ -14,16 +14,12 @@ metering = { path = "../metering" }
 tokio = { version = "1", features = ["sync", "rt"] }
 anyhow = "1"
 axum = "0.8"
-# TLS-бэкенд: native-tls → на Linux это СИСТЕМНЫЙ OpenSSL (у нас 3.0.13 — ровно как в Node 22).
-# Критично для анти-фингерпринта: JA3/JA4 нашего ClientHello попадает в семейство OpenSSL (как у
-# настоящего Claude Code = Node = OpenSSL), БЕЗ GREASE, а не редкий характерный rustls-отпечаток и не
-# BoringSSL+GREASE браузерных impersonation-крейтов (те кричали бы «Chrome» под claude-cli UA). API
-# reqwest не меняется. (Mac при локальной сборке берёт SecureTransport — только для функц-смоука; прод = Linux/OpenSSL.)
-reqwest = { version = "0.12", default-features = false, features = ["stream", "native-tls", "json", "socks"] }
+# TLS-транспорт: wreq (форк reqwest на BoringSSL/boring2). Claude Code 2.1.195 = Bun 1.4.0 = BoringSSL,
+# поэтому наш ClientHello делаем БАЙТ-В-БАЙТ как у Claude Code (JA3=d871d02c…, JA4 совпадают): кастомный
+# TlsConfig — grease off, Bun cipher-list (IANA), OCSP+SCT расширения, curves x25519/P256/P384, ALPN http/1.1
+# (см. nodetls::bun_emulation). API близок к reqwest (Client/RequestBuilder/Response/bytes_stream/json).
+# Сборка требует clang+cmake (BoringSSL) — есть на сервере.
+wreq = { version = "5.3", default-features = false, features = ["stream", "json", "socks", "gzip", "brotli"] }
 serde_json = "1"
 futures-util = "0.3"
 bytes = "1"
-# Кастомный TLS-коннектор для byte-exact Claude-Code (Node/OpenSSL) ClientHello: точный порядок/состав
-# шифров, groups, ALPN, опции расширений (OCSP/SCT/no-ETM). Линкуется с ТЕМ ЖЕ системным openssl-sys,
-# что и native-tls (не boring — конфликта символов нет). Пока используется для probe-валидации отпечатка.
-openssl = "0.10"

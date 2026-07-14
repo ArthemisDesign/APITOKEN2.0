@@ -2,7 +2,7 @@
 //! Каждая подписка ходит на api.anthropic.com со СВОЕГО IP (через свой прокси).
 
 use crate::config::ProxyConfig;
-use reqwest::Client;
+use wreq::Client;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
@@ -34,7 +34,7 @@ pub fn persona_ua(cfg: &ProxyConfig, email: &str) -> String {
 /// сам. Применяется ОДИНАКОВО в бою (`forward`) и в probe/detect — иначе health-трафик имел бы иной
 /// (урезанный) отпечаток, чем боевой. Реальный CC всегда шлёт полный набор; их отсутствие/чужие значения
 /// (напр. `x-stainless-lang: python` от Python-SDK клиента) — мгновенный сигнал «это не Claude Code».
-pub fn apply_persona_headers(rb: reqwest::RequestBuilder, cfg: &ProxyConfig) -> reqwest::RequestBuilder {
+pub fn apply_persona_headers(rb: wreq::RequestBuilder, cfg: &ProxyConfig) -> wreq::RequestBuilder {
     rb.header("x-app", &cfg.x_app)
         .header("x-stainless-lang", &cfg.stainless_lang)
         .header("x-stainless-runtime", &cfg.stainless_runtime)
@@ -84,21 +84,22 @@ impl Clients {
     /// (undici/Node по умолчанию h1). h2 у нас был бы отличием (иной ALPN в JA4 + Akamai-h2-отпечаток +
     /// характерный 30с idle-PING). На h1 живость держим TCP keep-alive + read_timeout (мёртвое соединение
     /// = нет байтов → read_timeout рвёт; SSE-ping Anthropic сбрасывает таймер, живой стрим не рвётся).
-    pub fn get(&self, proxy: &str, email: &str) -> reqwest::Result<Client> {
+    pub fn get(&self, proxy: &str, email: &str) -> wreq::Result<Client> {
         // Ключ = (proxy, email): своя изоляция соединений/TLS-сессий на КАЖДУЮ подписку (см. док структуры).
         let key = format!("{proxy}\x00{email}");
         if let Some(c) = self.map.lock().unwrap_or_else(|e| e.into_inner()).get(&key) { return Ok(c.clone()); }
+        let _ = &self.user_agent; // UA ставим per-request (persona_ua); клиентский не нужен
         let mut b = Client::builder()
-            .http1_only()                                         // ALPN=http/1.1 — как Claude Code (undici)
+            .emulation(crate::nodetls::bun_emulation())           // ClientHello БАЙТ-В-БАЙТ как Claude Code
+                                                                  // (Bun/BoringSSL) + ALPN=http/1.1 (см. nodetls)
             .connect_timeout(Duration::from_secs(self.connect_timeout))
-            .user_agent(&self.user_agent)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Duration::from_secs(60))
             .read_timeout(Duration::from_secs(120));              // idle между чтениями: ловит «подключился
             //   но молчит» до первого байта И зависший посреди стрима; сбрасывается на каждом чтении,
             //   поэтому живой поток данных (в т.ч. SSE с ping-ами Anthropic) не рвёт.
         if !proxy.is_empty() {
-            b = b.proxy(reqwest::Proxy::all(proxy)?);
+            b = b.proxy(wreq::Proxy::all(proxy)?);
         }
         let c = b.build()?;
         self.map.lock().unwrap_or_else(|e| e.into_inner()).insert(key, c.clone());
@@ -109,7 +110,7 @@ impl Clients {
 /// Утилизация приходит ДОЛЕЙ 0.0–1.0 — ПОДТВЕРЖДЕНО живым заголовком (`7d-utilization: 0.22` = 22%).
 /// Значит «ровно 1% → 100%» невозможен: Anthropic шлёт `0.01` для 1%, а не `1`. Клампим в [0,1] от
 /// шума; ветку `/100 при >1` держим лишь страховкой на случай смены формата (реально не срабатывает).
-fn util(h: &reqwest::header::HeaderMap, name: &str) -> Option<f64> {
+fn util(h: &wreq::header::HeaderMap, name: &str) -> Option<f64> {
     let v: f64 = h.get(name)?.to_str().ok()?.trim().parse().ok()?;
     Some((if v > 1.0 { v / 100.0 } else { v }).clamp(0.0, 1.0))
 }
@@ -153,7 +154,7 @@ fn parse_rfc3339(s: &str) -> Option<i64> {
 /// Reset-заголовок → Unix epoch (сек). ПОДТВЕРЖДЕНО живым заголовком: числовой epoch (`5h-reset:
 /// 1783884600`). Числовой путь — основной; RFC3339-fallback держим страховкой на смену формата.
 /// Неизвестное → None → выше сработает fallback cooling, а не поедет вся математика окон.
-fn reset_ts(h: &reqwest::header::HeaderMap, name: &str) -> Option<i64> {
+fn reset_ts(h: &wreq::header::HeaderMap, name: &str) -> Option<i64> {
     let v = h.get(name)?.to_str().ok()?.trim();
     if let Ok(f) = v.parse::<f64>() { return Some(f as i64); }
     parse_rfc3339(v)
@@ -176,7 +177,7 @@ pub struct Limits {
 }
 
 /// Разобрать unified-ratelimit из заголовков ответа.
-pub fn limits_from_headers(h: &reqwest::header::HeaderMap) -> Limits {
+pub fn limits_from_headers(h: &wreq::header::HeaderMap) -> Limits {
     Limits {
         util5h: util(h, "anthropic-ratelimit-unified-5h-utilization"),
         util7d: util(h, "anthropic-ratelimit-unified-7d-utilization"),

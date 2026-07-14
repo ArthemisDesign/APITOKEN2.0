@@ -712,7 +712,7 @@ pub async fn forward(
 }
 
 /// Ответ — SSE-стрим? (по content-type). Определяет способ парсинга usage.
-fn is_event_stream(resp: &reqwest::Response) -> bool {
+fn is_event_stream(resp: &wreq::Response) -> bool {
     resp.headers().get("content-type")
         .and_then(|v| v.to_str().ok())
         .map(|c| c.contains("text/event-stream"))
@@ -720,12 +720,12 @@ fn is_event_stream(resp: &reqwest::Response) -> bool {
 }
 
 /// request-id ответа Anthropic — кладём в ledger как `ref` списания (аудит-трейл «за что списано»).
-fn request_id_of(resp: &reqwest::Response) -> Option<String> {
+fn request_id_of(resp: &wreq::Response) -> Option<String> {
     resp.headers().get("request-id").and_then(|v| v.to_str().ok()).map(|s| s.to_string())
 }
 
 /// Явный заголовок `Retry-After` (самый авторитетный хинт — Anthropic сам говорит, когда можно).
-fn retry_after_header(resp: &reqwest::Response) -> Option<i64> {
+fn retry_after_header(resp: &wreq::Response) -> Option<i64> {
     let v = resp.headers().get("retry-after")?.to_str().ok()?;
     v.trim().parse::<i64>().ok().map(|s| s.max(1))
 }
@@ -760,7 +760,7 @@ fn window_cool(lim: &Limits, now: i64) -> Option<i64> {
 /// будущее и запарковал бы здоровую подписку на месяцы. Дольше 8 суток остывать нечему (все окна ≤7d).
 const MAX_COOL_SECS: i64 = 8 * 24 * 3600;
 
-fn cool_secs_429(resp: &reqwest::Response, lim: &Limits, now: i64) -> i64 {
+fn cool_secs_429(resp: &wreq::Response, lim: &Limits, now: i64) -> i64 {
     retry_after_header(resp).or_else(|| window_cool(lim, now)).unwrap_or(BURST_COOL_SECS)
         .clamp(0, MAX_COOL_SECS)
 }
@@ -768,7 +768,7 @@ fn cool_secs_429(resp: &reqwest::Response, lim: &Limits, now: i64) -> i64 {
 /// Отдать ответ апстрима клиенту байт-в-байт (стримом — работает и для SSE).
 /// Если задан `meter` — оборачиваем тело в tee-метеринг: клиент получает те же байты,
 /// а на завершении стрима списываем стоимость с ключа (тело клиенту НЕ задерживается).
-fn stream_back(st: StatusCode, resp: reqwest::Response, meter: Option<MeterCtx>) -> Response {
+fn stream_back(st: StatusCode, resp: wreq::Response, meter: Option<MeterCtx>) -> Response {
     let mut builder = Response::builder().status(st);
     for (name, value) in resp.headers().iter() {
         if !skip_resp_header(name.as_str()) {
