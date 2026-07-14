@@ -9,7 +9,7 @@ the repository. Production secrets live in root-readable files below `/etc/apito
 ```text
 api.apitoken.sale --------------------------> commercial host 84.32.48.2 (Chicago)
                                                 | reverse proxy
-                                                `-> Rust core on 127.0.0.1:8787 after migration
+                                                `-> Rust core on 127.0.0.1:8787 (claude-api.service)
 
 future browser at apitoken.sale
         |
@@ -27,6 +27,16 @@ commercial API. The Rust engine remains authoritative for API keys, balances, re
 usage. The commercial PostgreSQL database owns users, authentication, payment state, B2C/B2B
 pricing state and durable jobs. The commercial services access the engine only through its Control
 API at `http://127.0.0.1:8787`. The legacy core host is not an upstream or fallback in this topology.
+
+The Rust engine ran on an interim host (`5.9.59.83`, shared with an unrelated project) until it was
+migrated onto this commercial host on 2026-07-14. The engine now runs here as `claude-api.service`
+(plus `claude-authbot.service` and the `claude-api-backup.timer`) under the `deploy` user, with its
+registry at `/srv/claude-api/data/subscriptions.db` and its own secrets at
+`/srv/claude-api/data/{server.env,config.env,authbot.env}` (separate from the commercial
+`/etc/apitoken/*.env`). The interim host keeps a cold copy of the pre-migration data as a rollback
+point but no longer runs any product unit. The `claude-api-fingerprint.timer` is intentionally not
+enabled here yet (it needs a live `claude` CLI on the host); the fingerprint values in `config.env`
+are current.
 
 ## Commercial host
 
