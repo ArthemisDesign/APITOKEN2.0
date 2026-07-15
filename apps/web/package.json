@@ -9,7 +9,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "audit:screenshots": "node scripts/capture-site.mjs"
+    "audit:screenshots": "node scripts/capture-site.mjs",
+    "audit:dashboard": "AUDIT_SCOPE=dashboard node scripts/capture-site.mjs"
   },
   "dependencies": {
     "next": "16.2.10",

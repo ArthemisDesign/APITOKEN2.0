@@ -4,6 +4,7 @@ import path from "node:path";
 
 const baseUrl = process.env.SITE_URL ?? "http://localhost:3001";
 const outputDirectory = path.resolve(process.env.SCREENSHOT_DIR ?? ".artifacts/site-audit");
+const auditScope = process.env.AUDIT_SCOPE ?? "site";
 const chromeCandidates = [
   process.env.CHROME_PATH,
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -12,7 +13,7 @@ const chromeCandidates = [
   "/usr/bin/chromium",
 ].filter(Boolean);
 
-const captures = [
+const siteCaptures = [
   ["home-desktop", "/", 1440, 1000, "light"],
   ["home-mobile", "/", 390, 844, "light"],
   ["home-dark", "/", 1440, 1000, "dark"],
@@ -32,6 +33,98 @@ const captures = [
   ["terms-desktop", "/terms", 1440, 1000, "light"],
   ["privacy-desktop", "/privacy", 1440, 1000, "light"],
 ];
+
+const dashboardCaptures = [
+  ["dashboard-overview-light", "/dashboard", 1440, 1000, "light"],
+  ["dashboard-overview-dark", "/dashboard", 1440, 1000, "dark"],
+  ["dashboard-keys-light", "/dashboard?view=keys", 1440, 1000, "light"],
+  ["dashboard-keys-dark", "/dashboard?view=keys", 1440, 1000, "dark"],
+  ["dashboard-topup-light", "/dashboard?view=credits", 1440, 1000, "light"],
+  ["dashboard-topup-dark", "/dashboard?view=credits", 1440, 1000, "dark"],
+  ["dashboard-usage-light", "/dashboard?view=usage", 1440, 1000, "light"],
+  ["dashboard-usage-dark", "/dashboard?view=usage", 1440, 1000, "dark"],
+  ["dashboard-referral-light", "/dashboard?view=refer", 1440, 1000, "light"],
+  ["dashboard-referral-dark", "/dashboard?view=refer", 1440, 1000, "dark"],
+  ["dashboard-promos-light", "/dashboard?view=promos", 1440, 1000, "light"],
+  ["dashboard-promos-dark", "/dashboard?view=promos", 1440, 1000, "dark"],
+  ["dashboard-orders-light", "/dashboard?view=orders", 1440, 1000, "light"],
+  ["dashboard-orders-dark", "/dashboard?view=orders", 1440, 1000, "dark"],
+  ["dashboard-profile-light", "/dashboard?view=profile", 1440, 1000, "light"],
+  ["dashboard-profile-dark", "/dashboard?view=profile", 1440, 1000, "dark"],
+  ["dashboard-security-light", "/dashboard?view=security", 1440, 1000, "light"],
+  ["dashboard-security-dark", "/dashboard?view=security", 1440, 1000, "dark"],
+  ["dashboard-overview-mobile", "/dashboard", 390, 844, "light"],
+  ["dashboard-keys-mobile-dark", "/dashboard?view=keys", 390, 844, "dark"],
+];
+
+const captures = auditScope === "dashboard" ? dashboardCaptures :
+  auditScope === "all" ? [...siteCaptures, ...dashboardCaptures] : siteCaptures;
+
+const dashboardFixtureScript = `(() => {
+  const originalFetch = window.fetch.bind(window);
+  const apiBase = "https://backend.apitoken.sale/v1";
+  const json = (body, status = 200) => Promise.resolve(new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  }));
+  const user = {
+    id: "9d3b0b02-b864-4e77-b690-e3c252c44a9e",
+    email: "dashboard.audit@apitoken.sale",
+    emailVerified: true,
+    engineAccountStatus: "active",
+    customerType: "b2c",
+  };
+  const account = {
+    balanceNano: "4000000000",
+    reservedNano: "0",
+    spentNano: "12000000000",
+    balanceUsd: "4.00",
+    markupBasisPoints: 4000,
+    status: "active",
+    pricing: {
+      customerType: "b2c",
+      pricingMode: "progressive",
+      monthStart: "2026-07-01T00:00:00.000Z",
+      tier: "starter",
+      discountPercent: 60,
+      multiplierBp: 4000,
+      spentNano: "12000000000",
+      retentionSpendNano: "0",
+      nextTier: {
+        tier: "builder",
+        discountPercent: 65,
+        spendThresholdNano: "25000000000",
+        remainingNano: "13000000000",
+        visibleOfficialUsageUsd: "70.00",
+      },
+    },
+  };
+  const keys = [{
+    id: "3df4f03d-e5e8-4811-bcea-d32e9f6f20c0",
+    label: "Production",
+    keyMasked: "sk-pool-a5b5••••••••eeb",
+    status: "active",
+    spentNano: "12000000000",
+    spentUsd: "12.00",
+    createdAt: "2026-07-15T08:30:00.000Z",
+  }];
+  const entries = [
+    { id: "ledger-1", kind: "charge", amountNano: "185000000", amountUsd: "0.185", keyMasked: "sk-pool-a5b5••••••••eeb", reference: "req_01K0", balanceAfterNano: "4000000000", timestamp: "1784109600" },
+    { id: "ledger-2", kind: "topup", amountNano: "4000000000", amountUsd: "4.00", keyMasked: null, reference: "welcome_credit", balanceAfterNano: "4185000000", timestamp: "1784106000" },
+  ];
+  window.fetch = (input, init = {}) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (!location.pathname.startsWith("/dashboard") || !url.startsWith(apiBase)) return originalFetch(input, init);
+    const parsed = new URL(url);
+    const path = parsed.pathname.slice("/v1".length);
+    if (path === "/auth/me") return json({ user });
+    if (path === "/account") return json(account);
+    if (path === "/api-keys") return json({ keys });
+    if (path === "/account/ledger") return json({ entries });
+    if (path === "/auth/logout") return Promise.resolve(new Response(null, { status: 204 }));
+    return json({ message: "Fixture route not found" }, 404);
+  };
+})();`;
 
 async function findChrome() {
   const { access } = await import("node:fs/promises");
@@ -181,6 +274,7 @@ try {
   await client.ready;
   await client.send("Page.enable");
   await client.send("Runtime.enable");
+  await client.send("Page.addScriptToEvaluateOnNewDocument", { source: dashboardFixtureScript });
   const warmupLoaded = client.once("Page.loadEventFired");
   await client.send("Page.navigate", { url: baseUrl });
   await warmupLoaded;

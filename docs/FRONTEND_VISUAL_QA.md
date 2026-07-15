@@ -16,6 +16,14 @@ Capture the public routes in another terminal:
 pnpm --filter @claude-api/web audit:screenshots
 ```
 
+Capture every authenticated dashboard view in both themes, plus mobile overview and API-key passes:
+
+```bash
+pnpm --filter @claude-api/web audit:dashboard
+```
+
+The dashboard audit intercepts API calls inside its isolated headless Chrome profile and supplies deterministic fixtures. It never signs into production, reads browser cookies, or mutates customer data. Each dashboard view uses its reloadable `/dashboard?view=...` URL, so the same run also catches route-state regressions.
+
 The PNG files and `manifest.json` are written to `apps/web/.artifacts/site-audit/` and are intentionally ignored by Git. The audit includes desktop, mobile, light, dark, and a Russian-language home-page pass so translated text wrapping is visible before release.
 
 Optional environment variables:
@@ -27,7 +35,7 @@ CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
 pnpm --filter @claude-api/web audit:screenshots
 ```
 
-The default audit covers the complete homepage at desktop and mobile sizes, the plans page at both sizes, and every distinct public page template: models, docs, integrations, integration guide, login, registration, terms, and privacy. Dark-mode captures are produced for the homepage, plans, models, docs, and registration—the main text and component templates used throughout the site.
+The default audit covers the complete homepage at desktop and mobile sizes, the plans page at both sizes, and every distinct public page template: models, docs, integrations, integration guide, login, registration, terms, and privacy. Dark-mode captures are produced for the homepage, plans, models, docs, and registration—the main text and component templates used throughout the site. Set `AUDIT_SCOPE=all` to capture the public site and dashboard in a single run.
 
 ## Review checklist
 

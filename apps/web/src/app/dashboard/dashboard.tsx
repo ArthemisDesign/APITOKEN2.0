@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import {
   api, ApiError, type AccountView, type ApiKeyView, type AuthUser, type CheckoutView, type LedgerEntry,
@@ -10,8 +10,9 @@ import {
 import { nanoToUsd, normalizeUsd, wholeUsdError } from "@/lib/money";
 import { useI18n } from "@/components/i18n-provider";
 import { ThemeToggle } from "@/components/site-chrome";
+import { dashboardHref, parseDashboardSection, type DashboardSection } from "./dashboard-route";
 
-type Section = "overview" | "keys" | "credits" | "refer" | "promos" | "usage" | "orders" | "profile" | "security";
+type Section = DashboardSection;
 
 const navigation: Array<{ section?: Section; label: string; icon: string; href?: string; group?: string }> = [
   { group: "Start", section: "overview", label: "Overview", icon: "▦" },
@@ -28,8 +29,9 @@ const navigation: Array<{ section?: Section; label: string; icon: string; href?:
 
 export function Dashboard() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { language, setLanguage } = useI18n();
-  const [section, setSection] = useState<Section>("overview");
+  const section = parseDashboardSection(searchParams.get("view"));
   const [user, setUser] = useState<AuthUser | null>(null);
   const [account, setAccount] = useState<AccountView | null>(null);
   const [keys, setKeys] = useState<ApiKeyView[]>([]);
@@ -61,7 +63,11 @@ export function Dashboard() {
     await api.logout().catch(() => undefined); router.replace("/login"); router.refresh();
   }
 
-  function open(next: Section) { setSection(next); setSideOpen(false); window.scrollTo(0, 0); }
+  function open(next: Section) {
+    setSideOpen(false);
+    router.push(dashboardHref(next), { scroll: false });
+    window.scrollTo({ top: 0, behavior: "auto" });
+  }
 
   if (loading) return <div className="dashboard-loading"><span className="brand">apiToken.sale</span><p>Loading your account…</p></div>;
   if (!user || !account) return <div className="wrap guard"><div className="auth-card"><p>{error ?? "Please log in to open your dashboard."}</p><Link className="btn btn-primary" href="/login">Log in</Link></div></div>;
@@ -74,7 +80,7 @@ export function Dashboard() {
         {navigation.map((item, index) => <div key={`${item.label}-${index}`} className="side-nav-item">
           {item.group && <span className="side-group">{item.group}</span>}
           {item.href ? <Link className="side-link" href={item.href}><span className="si">{item.icon}</span><span>{item.label}</span></Link> :
-            <button className={section === item.section ? "on" : ""} onClick={() => open(item.section!)}><span className="si">{item.icon}</span><span>{item.label}</span></button>}
+            <button className={section === item.section ? "on" : ""} aria-current={section === item.section ? "page" : undefined} onClick={() => open(item.section!)}><span className="si">{item.icon}</span><span>{item.label}</span></button>}
         </div>)}
       </nav>
       <div className="side-foot">
@@ -107,7 +113,7 @@ function BrandImages() {
 }
 
 function PageHeading({ eyebrow, title, subtitle }: { eyebrow: string; title: string; subtitle: string }) {
-  return <><span className="eyebrow">{eyebrow}</span><h1 className="p-h1">{title}</h1><p className="p-sub">{subtitle}</p></>;
+  return <header className="page-heading"><span className="eyebrow">{eyebrow}</span><h1 className="p-h1">{title}</h1><p className="p-sub">{subtitle}</p></header>;
 }
 
 function Overview({ account, keys, ledger, open }: { account: AccountView; keys: ApiKeyView[]; ledger: LedgerEntry[]; open(section: Section): void }) {
@@ -133,10 +139,10 @@ function Tile({ icon, title, subtitle, onClick }: { icon: string; title: string;
 function PricingBanner({ account }: { account: AccountView }) {
   const pricing = account.pricing;
   if (!pricing) return null;
-  if (pricing.customerType === "b2b") return <div className="banner banner-accent"><b>Business pricing: {pricing.discountPercent}% discount</b><span> Your rate is managed under your business agreement.</span></div>;
+  if (pricing.customerType === "b2b") return <section className="pricing-banner pricing-banner-business"><div className="pricing-summary"><div><span className="pricing-kicker">Current pricing</span><strong>Business agreement</strong></div><div className="pricing-discount"><b>{pricing.discountPercent}%</b><span>discount</span></div></div><p>Your negotiated rate is active across every supported model.</p></section>;
   const spent = BigInt(pricing.spentNano), target = pricing.nextTier ? BigInt(pricing.nextTier.spendThresholdNano) : spent || 1n;
   const percent = pricing.nextTier ? Number(spent * 100n / target) : 100;
-  return <div className="banner banner-accent pricing-banner"><div><b>{titleCase(pricing.tier)} tier · {pricing.discountPercent}% discount</b><span> Current calendar-month progress is calculated from authoritative engine charges.</span></div><div className="rd-bar"><div className="rd-bar-fill" style={{ width: `${Math.min(percent, 100)}%` }} /></div>{pricing.nextTier ? <small>{nanoToUsd(pricing.spentNano)} spent · {nanoToUsd(pricing.nextTier.remainingNano)} to {pricing.nextTier.discountPercent}%</small> : <small>Highest progressive tier reached</small>}</div>;
+  return <section className="pricing-banner"><div className="pricing-summary"><div><span className="pricing-kicker">Current pricing</span><strong>{titleCase(pricing.tier)} tier</strong></div><div className="pricing-discount"><b>{pricing.discountPercent}%</b><span>discount</span></div></div><div className="pricing-progress"><div className="pricing-progress-meta"><span>{nanoToUsd(pricing.spentNano)} platform spend this month</span>{pricing.nextTier ? <span>{nanoToUsd(pricing.nextTier.remainingNano)} to unlock {pricing.nextTier.discountPercent}%</span> : <span>Highest tier reached</span>}</div><div className="rd-bar"><div className="rd-bar-fill" style={{ width: `${Math.min(percent, 100)}%` }} /></div></div></section>;
 }
 
 function ApiKeys({ keys, onChanged }: { keys: ApiKeyView[]; onChanged(): Promise<void> }) {
@@ -195,10 +201,8 @@ function Usage({ account, ledger, open }: { account: AccountView; ledger: Ledger
       <div className="card us-health"><div className="us-route-h"><b>API health</b><span className="pill pill-soft">Analytics pending</span></div><span className="p-sub no-margin">Request-level health will appear when the backend exposes authoritative metrics.</span><div className="us-health-row"><div><span className="dlabel">Success rate</span><b className="num">—</b></div><div><span className="dlabel">Avg latency</span><b className="num">—</b></div></div><button className="btn btn-primary btn-sm compact-top" onClick={() => open("credits")}>Top up balance</button></div>
     </div>
     <div className="ov-stats bill4"><Stat label="Requests" value="—" detail="Analytics pending" /><Stat label="Official API spend" value="—" detail="Per-request metric pending" /><Stat label="Balance charged" value={nanoToUsd(account.spentNano)} detail="After discount" /><Stat label="Active discount" value={discount === undefined ? "—" : `${discount}%`} detail={account.pricing?.customerType === "b2b" ? "Business rate" : "Current B2C tier"} /></div>
-    <section className="dsec"><div className="trend-head"><h2>Usage trend</h2><div className="trend-ctl"><div className="seg"><button disabled>7d</button><button className="on" disabled>14d</button><button disabled>30d</button></div><div className="seg"><button className="on" disabled>Official spend</button><button disabled>Balance charge</button></div><button className="btn btn-ghost btn-sm" disabled>Export CSV</button></div></div><div className="chart-card disabled-chart"><div className="chart-legend"><span><i className="legend-blue" />Daily official API spend</span></div><div className="empty-box">Official-spend analytics are not connected yet.</div></div></section>
-    <section className="dsec"><h2>Spend by model</h2><div className="empty-box">Model-level billing data will appear here when available.</div></section>
+    <section className="dsec"><div className="dsec-head analytics-heading"><div><h2>Usage analytics</h2><p>Charts and model-level breakdowns will appear when the backend exposes authoritative request metrics.</p></div><span className="pill pill-soft">Coming soon</span></div><div className="analytics-placeholder"><div><span className="dlabel">Usage trend</span><b>Official API spend over time</b></div><div><span className="dlabel">Model breakdown</span><b>Spend grouped by Claude model</b></div></div></section>
     <section className="dsec"><h2>Transactions and charges</h2><div className="table-scroll"><table className="mtable"><thead><tr><th>Time</th><th>Type</th><th>API key</th><th>Reference</th><th className="tnum">Amount</th></tr></thead><tbody>{ledger.length === 0 ? <tr><td colSpan={5} className="empty-cell">No ledger activity yet.</td></tr> : ledger.map((entry) => <tr key={entry.id}><td>{formatLedgerTime(entry.timestamp)}</td><td><span className="pill pill-soft">{entry.kind}</span></td><td><code>{entry.keyMasked ?? "—"}</code></td><td>{entry.reference ?? "—"}</td><td className="tnum">{normalizeUsd(entry.amountUsd)}</td></tr>)}</tbody></table></div></section>
-    <section className="dsec"><h2>Official API spend</h2><div className="empty-box">Per-request official USD spend will appear here when the backend exposes it.</div></section>
   </section>;
 }
 

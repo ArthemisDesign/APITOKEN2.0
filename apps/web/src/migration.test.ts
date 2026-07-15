@@ -32,12 +32,15 @@ describe("completed Next.js migration", () => {
     }
   });
 
-  it("keeps dashboard sections in the single canonical /dashboard route", () => {
+  it("keeps reloadable dashboard views in the single canonical /dashboard route", () => {
     const dashboard = readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8");
+    const routes = readFileSync(join(appRoot, "dashboard", "dashboard-route.ts"), "utf8");
     for (const section of ["overview", "keys", "credits", "refer", "promos", "usage", "orders", "profile", "security"]) {
       expect(dashboard).toContain(`section === \"${section}\"`);
+      expect(routes).toContain(`\"${section}\"`);
     }
     expect(dashboard).not.toMatch(/href=[{\"]+\/dashboard\//);
+    expect(routes).toContain('`/dashboard?view=${section}`');
   });
 
   it("uses flexible whole-USD top-ups and the authoritative pricing tiers", () => {
