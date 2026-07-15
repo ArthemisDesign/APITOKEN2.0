@@ -313,6 +313,43 @@ footer{padding:64px 0 40px;border-bottom:0}
 
 .disclaimer{color:var(--txt-4);font-size:12px;margin-top:8px;max-width:560px}
 
+/* full footer — dark, brand-forward (референс: fal). Отдельный класс → легко откатить */
+.site-foot-full{position:relative;overflow:hidden;background:#0b0c10;color:#e8e9ee;padding:0;border-top:1px solid rgba(255,255,255,.07)}
+.site-foot-full .foot-inner{position:relative;z-index:2;padding:76px 0 44px}
+.site-foot-full .foot-glow{position:absolute;top:-46%;left:50%;transform:translateX(-50%);width:130%;height:90%;pointer-events:none;z-index:1;
+  background:radial-gradient(48% 62% at 50% 0%, color-mix(in srgb,var(--accent) 28%,transparent), transparent 72%);opacity:.55;filter:blur(26px)}
+/* CTA row — заголовок слева, действия справа */
+.foot-cta{display:flex;align-items:center;justify-content:space-between;gap:34px;flex-wrap:wrap;
+  padding-bottom:46px;margin-bottom:46px;border-bottom:1px solid rgba(255,255,255,.08)}
+.foot-cta-copy h2{font-size:clamp(24px,3vw,32px);margin:0 0 10px;color:#fff;letter-spacing:-.02em}
+.foot-cta-copy p{margin:0;color:#9aa0ad;font-size:15px;line-height:1.55;max-width:540px}
+.foot-cta-actions{display:flex;gap:12px;flex-wrap:wrap;flex:none}
+.btn-ondark{background:transparent;border:1px solid rgba(255,255,255,.22);color:#e8e9ee}
+.btn-ondark:hover{border-color:rgba(255,255,255,.5);background:rgba(255,255,255,.06)}
+/* колонки на тёмном */
+.site-foot-full .foot-brand .brand{color:#fff}
+.site-foot-full .foot-brand p{color:#868c98}
+.site-foot-full .foot-col h4{color:#6b707e}
+.site-foot-full .foot-col a,.site-foot-full .foot-col>span{color:#aeb3be}
+.site-foot-full .foot-col a:hover{color:#fff}
+.site-foot-full .foot-bottom{border-top:1px solid rgba(255,255,255,.08);margin-top:46px}
+.site-foot-full .foot-bottom small{color:#7c818d}
+.site-foot-full .foot-legal{color:#7c818d}
+.site-foot-full .foot-legal a{color:#9aa0ad}
+.site-foot-full .foot-legal a:hover{color:#fff}
+.site-foot-full .disclaimer{color:#676c76}
+/* гигантский вордмарк, уходит за нижний-правый край как в референсе */
+.foot-wordmark{position:absolute;right:-1.5%;bottom:-7%;z-index:0;pointer-events:none;user-select:none;
+  font-family:var(--font-bit);font-weight:700;line-height:.8;letter-spacing:-.045em;white-space:nowrap;
+  font-size:clamp(74px,16vw,248px);color:transparent;
+  background:linear-gradient(176deg,color-mix(in srgb,var(--accent) 40%,transparent),color-mix(in srgb,var(--accent) 6%,transparent) 78%);
+  -webkit-background-clip:text;background-clip:text;opacity:.85}
+.foot-wordmark span{opacity:.5}
+@media(max-width:760px){
+  .foot-cta{align-items:flex-start}
+  .foot-wordmark{font-size:clamp(56px,22vw,120px);bottom:-4%;opacity:.7}
+}
+
 /* reveal animation */
 .reveal{opacity:0;transform:translateY(18px);transition:.6s cubic-bezier(.2,.7,.2,1)}
 .reveal.in{opacity:1;transform:none}

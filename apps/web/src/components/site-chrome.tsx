@@ -81,18 +81,32 @@ export function ThemeToggle() {
 
 export function SiteFooter({ full = false }: { full?: boolean }) {
   if (!full) return <footer><div className="wrap"><div className="foot-bottom"><Brand /><T k="copyright" as="small">© 2026 apiToken.sale. All rights reserved.</T><FooterComplianceLinks /></div><T k="disclaimer" as="p" className="disclaimer">apiToken.sale is an independent platform and is not affiliated with or endorsed by Anthropic, PBC.</T></div></footer>;
-  return <footer><div className="wrap">
-    <div className="foot-grid">
-      <div className="foot-brand"><Brand /><T k="foot_about" as="p">Claude API access platform for developers.</T></div>
-      <FooterColumn title="foot_product" links={[["/plans","fp1"],["/models","fp2"],["/#pricing","fp3"],[DOCS_URL,"fp4"]]} />
-      <FooterColumn title="foot_dev" links={[[DOCS_URL,"fd1"],[DOCS_URL,"fd2"],[DOCS_URL,"fd3"]]} />
-      <div className="foot-col"><T k="foot_int" as="h4">Integrations</T><Link href="/int-claude-code">Claude Code</Link><Link href="/int-cursor">Cursor</Link><Link href="/int-zed">Zed</Link><Link href="/integrations"><T k="foot_int_all">All integrations</T></Link></div>
-      <div className="foot-col"><T k="foot_support" as="h4">Support</T><Link href="/support"><T k="foot_support">Customer support</T></Link><a href="mailto:apitokensale@gmail.com">apitokensale@gmail.com</a></div>
-      <div className="foot-col"><T k="foot_legal_h" as="h4">Legal</T><Link href="/terms"><T k="legal_terms_h">User Agreement</T></Link><Link href="/privacy"><T k="legal_privacy_h">Privacy Policy</T></Link><Link href="/plans"><T k="nav_pricing">Prices &amp; tariffs</T></Link></div>
+  return <footer className="site-foot-full">
+    <div className="foot-glow" aria-hidden="true" />
+    <div className="wrap foot-inner">
+      <div className="foot-cta">
+        <div className="foot-cta-copy">
+          <T k="cta_h2" as="h2">Ready to start building?</T>
+          <T k="cta_p" as="p">Create a key in minutes and put every Claude model behind one endpoint.</T>
+        </div>
+        <div className="foot-cta-actions">
+          <Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link>
+          <Link className="btn btn-ghost btn-ondark" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link>
+        </div>
+      </div>
+      <div className="foot-grid">
+        <div className="foot-brand"><Brand /><T k="foot_about" as="p">Claude API access platform for developers.</T></div>
+        <FooterColumn title="foot_product" links={[["/plans","fp1"],["/models","fp2"],["/#pricing","fp3"],[DOCS_URL,"fp4"]]} />
+        <FooterColumn title="foot_dev" links={[[DOCS_URL,"fd1"],[DOCS_URL,"fd2"],[DOCS_URL,"fd3"]]} />
+        <div className="foot-col"><T k="foot_int" as="h4">Integrations</T><Link href="/int-claude-code">Claude Code</Link><Link href="/int-cursor">Cursor</Link><Link href="/int-zed">Zed</Link><Link href="/integrations"><T k="foot_int_all">All integrations</T></Link></div>
+        <div className="foot-col"><T k="foot_support" as="h4">Support</T><Link href="/support"><T k="foot_support">Customer support</T></Link><a href="mailto:apitokensale@gmail.com">apitokensale@gmail.com</a></div>
+        <div className="foot-col"><T k="foot_legal_h" as="h4">Legal</T><Link href="/terms"><T k="legal_terms_h">User Agreement</T></Link><Link href="/privacy"><T k="legal_privacy_h">Privacy Policy</T></Link><Link href="/plans"><T k="nav_pricing">Prices &amp; tariffs</T></Link></div>
+      </div>
+      <div className="foot-bottom"><T k="copyright" as="small">© 2026 apiToken.sale. All rights reserved.</T><FooterComplianceLinks /></div>
+      <T k="disclaimer" as="p" className="disclaimer">apiToken.sale is an independent platform and is not affiliated with or endorsed by Anthropic, PBC.</T>
     </div>
-    <div className="foot-bottom"><T k="copyright" as="small">© 2026 apiToken.sale. All rights reserved.</T><FooterComplianceLinks /></div>
-    <T k="disclaimer" as="p" className="disclaimer">apiToken.sale is an independent platform and is not affiliated with or endorsed by Anthropic, PBC.</T>
-  </div></footer>;
+    <div className="foot-wordmark" aria-hidden="true">apiToken<span>.sale</span></div>
+  </footer>;
 }
 
 function FooterComplianceLinks() {

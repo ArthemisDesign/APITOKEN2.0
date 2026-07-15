@@ -37,7 +37,6 @@ export default function HomePage() {
       <section id="workflow"><div className="wrap"><SectionHead eyebrow="wf_eyebrow" title="wf_h2" /><div className="feats" data-reveal-stagger>{features.map(([title, text], index) => <InfoCard key={title} index={index} title={title} text={text} className="feat" />)}</div></div></section>
       <section id="pricing"><div className="wrap"><SectionHead eyebrow="pr_eyebrow" title="pr_h2" lead="pr_lead" /><PricingOverview /></div></section>
       <section id="faq"><div className="wrap"><SectionHead eyebrow="faq_eyebrow" title="faq_h2" lead="faq_lead" /><div className="faq" data-reveal-stagger>{faqs.map(([question, answer]) => <details key={question}><summary><T k={question}>Question</T><span className="plus">+</span></summary><T k={answer} as="div" className="ans">Answer</T></details>)}</div></div></section>
-      <section className="cta-band"><div className="wrap reveal"><T k="cta_h2" as="h2">Ready to start building?</T><T k="cta_p" as="p">Create a key in minutes.</T><div className="cta-actions"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link><Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link></div></div></section>
     </main>;
 }
 
