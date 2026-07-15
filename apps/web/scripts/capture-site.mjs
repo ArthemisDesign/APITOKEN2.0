@@ -124,8 +124,16 @@ const dashboardFixtureScript = `(() => {
   }];
   const nowS = Math.floor(Date.now() / 1000), DAY = 86400;
   // реальный формат движка: amountUsd со знаком "$" и 6 знаками (раньше ломал график через Number())
-  const chg = [[0, "1246000000"], [0, "742000000"], [1, "918000000"], [2, "655000000"], [3, "1330000000"], [4, "540000000"], [6, "805000000"], [8, "1050000000"]];
-  const entries = chg.map((c, i) => ({ id: "c" + i, kind: "charge", amountNano: c[1], amountUsd: "$" + (Number(c[1]) / 1e9).toFixed(6), keyMasked: "sk-pool-a5b5••••••••eeb", reference: "req_0" + i, balanceAfterNano: null, timestamp: String(nowS - c[0] * DAY - i * 137) }));
+  const chg = [
+    [0, "1246000000", "claude-opus-4-8"], [0, "742000000", "claude-sonnet-5"], [0, "180000000", "claude-haiku-4-5-20251001"],
+    [1, "918000000", "claude-opus-4-8"], [1, "410000000", "claude-sonnet-5"],
+    [2, "655000000", "claude-sonnet-5"], [2, "300000000", "claude-opus-4-8"],
+    [3, "1330000000", "claude-opus-4-8"], [3, "520000000", "claude-sonnet-5"], [3, "90000000", "claude-haiku-4-5-20251001"],
+    [4, "540000000", "claude-sonnet-5"],
+    [6, "805000000", "claude-opus-4-8"], [6, "260000000", "claude-haiku-4-5-20251001"],
+    [8, "1050000000", "claude-opus-4-8"], [8, "300000000", "claude-sonnet-5"],
+  ];
+  const entries = chg.map((c, i) => ({ id: "c" + i, kind: "charge", amountNano: c[1], amountUsd: "$" + (Number(c[1]) / 1e9).toFixed(6), keyMasked: "sk-pool-a5b5••••••••eeb", reference: "req_0" + i, model: c[2], balanceAfterNano: null, timestamp: String(nowS - c[0] * DAY - i * 137) }));
   entries.push({ id: "t0", kind: "topup", amountNano: "200000000000", amountUsd: "$200.000000", keyMasked: null, reference: "cryptomus_9f2c1a", balanceAfterNano: null, timestamp: String(nowS - 3 * DAY) });
   const usage = {
     window: "30d", requests: 59, totalOfficialNano: "20234893050", totalChargedNano: "8093957220",

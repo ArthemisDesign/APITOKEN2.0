@@ -335,8 +335,6 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
   </section>;
 }
 
-const USAGE_WINDOW_DAYS = 30;
-const DAY_MS = 86_400_000;
 
 function Usage({ account, ledger, usage }: { account: AccountView; ledger: LedgerEntry[]; usage: UsageView | null }) {
   const copy = useDashboardCopy();
@@ -354,23 +352,57 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
 
   const charges = ledger.filter((entry) => entry.kind === "charge");
 
-  // Дневные корзины официальной ценности за последние 30 дней (реальные данные ledger).
-  // "Сегодня" читаем один раз при монтировании — Date.now() нельзя дёргать в чистом рендере.
-  const [today] = useState(() => startOfDay(Date.now()));
-  const days = Array.from({ length: USAGE_WINDOW_DAYS }, (_, index) => today - (USAGE_WINDOW_DAYS - 1 - index) * DAY_MS);
-  const perDay = new Map<number, number>();
+  // Стабильный цвет на модель: сначала порядок из агрегата usage.models (совпадает с таблицей ниже),
+  // затем модели, встреченные только в ledger. Один и тот же id → один цвет во всех графиках.
+  const modelColor = new Map<string, string>();
+  const assignColor = (id: string) => { if (!modelColor.has(id)) modelColor.set(id, MODEL_COLORS[modelColor.size % MODEL_COLORS.length]!); };
+  for (const model of models) assignColor(model.model);
+
+  // Окно графика — ТЕКУЩИЙ КАЛЕНДАРНЫЙ МЕСЯЦ (1-е … последнее число), как в референсе:
+  // «сегодня» оказывается не у правого края, а внутри шкалы. Время читаем один раз при монтировании.
+  const [nowMs] = useState(() => Date.now());
+  const todayMs = startOfDay(nowMs);
+  const monthAnchor = new Date(nowMs);
+  const mYear = monthAnchor.getFullYear(), mMon = monthAnchor.getMonth();
+  const daysInMonth = new Date(mYear, mMon + 1, 0).getDate();
+  const days = Array.from({ length: daysInMonth }, (_, index) => new Date(mYear, mMon, index + 1).getTime());
+
+  // День → (модель → официальная ценность $). Модель берём из charge.model, иначе «прочее».
+  const UNKNOWN_MODEL = "__other__";
+  const perDay = new Map<number, Map<string, number>>();
   for (const charge of charges) {
     const bucket = startOfDay(ledgerMs(charge.timestamp));
-    if (bucket < days[0]!) continue;
-    perDay.set(bucket, (perDay.get(bucket) ?? 0) + nanoNum(charge.amountNano) / frac);
+    if (bucket < days[0]! || bucket > days[days.length - 1]!) continue;
+    const id = charge.model || UNKNOWN_MODEL;
+    assignColor(id);
+    const slot = perDay.get(bucket) ?? new Map<string, number>();
+    slot.set(id, (slot.get(id) ?? 0) + nanoNum(charge.amountNano) / frac);
+    perDay.set(bucket, slot);
   }
-  const series = days.map((day) => ({ day, value: perDay.get(day) ?? 0 }));
+  const series = days.map((day) => {
+    const byModel = perDay.get(day);
+    const segs = byModel ? [...byModel.entries()].map(([id, value]) => ({ id, value })).sort((a, b) => b.value - a.value) : [];
+    return { day, value: segs.reduce((sum, seg) => sum + seg.value, 0), segs };
+  });
   const maxValue = Math.max(0, ...series.map((point) => point.value));
+  const scale = niceScale(maxValue);
+  const gridTicks = Array.from({ length: scale.divisions + 1 }, (_, i) => scale.max - i * scale.step); // сверху вниз
   const activeDays = series.filter((point) => point.value > 0).length;
   const windowOfficial = series.reduce((sum, point) => sum + point.value, 0);
-  const windowCharges = charges.filter((charge) => startOfDay(ledgerMs(charge.timestamp)) >= days[0]!).length;
-  const peak = series.reduce((best, point) => (point.value > best.value ? point : best), { day: today, value: 0 });
-  const axisMarks = [0, 7, 14, 21, USAGE_WINDOW_DAYS - 1];
+  const windowCharges = charges.filter((charge) => { const b = startOfDay(ledgerMs(charge.timestamp)); return b >= days[0]! && b <= days[days.length - 1]!; }).length;
+  const peak = series.reduce((best, point) => (point.value > best.value ? point : best), { day: todayMs, value: 0, segs: [] as { id: string; value: number }[] });
+  const LABEL_COUNT = 7;
+  const axisMarks = [...new Set(Array.from({ length: LABEL_COUNT }, (_, i) => Math.round(i * (days.length - 1) / (LABEL_COUNT - 1))))];
+
+  // Разбивка модель-бара (mdist) с центрами сегментов — для наведения/подсказки.
+  let mdistAcc = 0;
+  const mdistPlaced = models.map((model) => {
+    const share = modelOfficialTotal > 0 ? Number(BigInt(model.officialNano)) / modelOfficialTotal : 1 / models.length;
+    const center = mdistAcc + share / 2; mdistAcc += share;
+    return { model, share, center };
+  });
+  const [hoverDay, setHoverDay] = useState<number | null>(null);
+  const [mdistHover, setMdistHover] = useState<number | null>(null);
 
   // Разбивка списаний по API-ключу — наш аналог per-endpoint из референса.
   const keyMap = new Map<string, { key: string; count: number; net: number }>();
@@ -395,14 +427,31 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
 
     <div className="usage-graph">
       <div className="uchart">
-        <div className="uchart-head"><b>{copy.usageOverTime}</b><span>{copy.last30Official}</span></div>
+        <div className="uchart-head"><b>{copy.usageOverTime}</b><span>{copy.chartWindowLabel}</span></div>
         {maxValue === 0 ? <div className="uchart-empty">{copy.noChargesPeriod}</div> : <>
-          <div className="uchart-plot">
-            {series.map((point) => <div key={point.day} className="uchart-col" title={`${fmtDay(point.day, locale)} · ${fmtUsd(point.value)}`}>
-              <div className="uchart-bar" style={{ height: `${maxValue > 0 ? Math.max(point.value > 0 ? 3 : 0, (point.value / maxValue) * 100) : 0}%` }} />
-            </div>)}
+          <div className="uchart-grid">
+            <div className="uchart-yaxis">{gridTicks.map((tick, i) => <span key={i}>{fmtAxisUsd(tick)}</span>)}</div>
+            <div className="uchart-plotwrap">
+              <div className="uchart-lines">{gridTicks.map((_, i) => <i key={i} />)}</div>
+              <div className="uchart-plot" onMouseLeave={() => setHoverDay(null)}>
+                {series.map((point, index) => <div key={point.day} className={`uchart-col${hoverDay === index ? " is-hover" : ""}`} onMouseEnter={() => setHoverDay(index)}>
+                  <div className="uchart-col-fill">
+                    {point.segs.map((seg) => <div key={seg.id} className="uchart-seg" style={{ height: `${(seg.value / scale.max) * 100}%`, background: modelColor.get(seg.id) }} />)}
+                  </div>
+                </div>)}
+                {hoverDay !== null && series[hoverDay] && series[hoverDay]!.value > 0 && (() => {
+                  const point = series[hoverDay]!;
+                  const leftPct = Math.min(92, Math.max(8, (hoverDay + 0.5) / days.length * 100));
+                  return <div className="chart-tip" style={{ left: `${leftPct}%`, bottom: `${(point.value / scale.max) * 100}%` }}>
+                    <div className="chart-tip-h">{fmtDay(point.day, locale)}</div>
+                    {point.segs.map((seg) => <div key={seg.id} className="chart-tip-row"><span className="chart-tip-dot" style={{ background: modelColor.get(seg.id) }} /><span className="chart-tip-nm">{seg.id === UNKNOWN_MODEL ? copy.otherModels : modelLabel(seg.id)}</span><b>{fmtUsdSmart(seg.value)}</b></div>)}
+                    <div className="chart-tip-total"><span>{copy.chartTotal}</span><b>{fmtUsdSmart(point.value)}</b></div>
+                  </div>;
+                })()}
+              </div>
+              <div className="uchart-axis">{axisMarks.map((mark) => <span key={mark} style={{ left: `${(mark + 0.5) / days.length * 100}%` }}>{fmtDay(days[mark]!, locale)}</span>)}</div>
+            </div>
           </div>
-          <div className="uchart-axis">{axisMarks.map((mark) => <span key={mark}>{fmtDay(days[Math.min(mark, days.length - 1)]!, locale)}</span>)}</div>
         </>}
       </div>
       <div className="usum">
@@ -424,8 +473,18 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
           <div className="tokb"><span className="dlabel">{copy.cacheWriteLabel}</span><b>{fmtTokens(usage.buckets.cacheWrite.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.cacheWrite.officialNano)}</span></div>
           {usage.buckets.webSearch.requests > 0 && <div className="tokb"><span className="dlabel">{copy.webSearchLabel}</span><b>{usage.buckets.webSearch.requests.toLocaleString(locale)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.webSearch.officialNano)}</span></div>}
         </div>
-        <div className="mdist" role="img" aria-label={copy.tokensAndModels}>
-          {models.map((model, index) => <div key={model.model} className="mdist-seg" style={{ width: `${modelOfficialTotal > 0 ? Number(BigInt(model.officialNano)) / modelOfficialTotal * 100 : 100 / models.length}%`, background: MODEL_COLORS[index % MODEL_COLORS.length] }} title={`${modelLabel(model.model)} · ${fmtNanoUsd(model.officialNano)}`} />)}
+        <div className="mdist-wrap">
+          <div className="mdist" role="img" aria-label={copy.tokensAndModels} onMouseLeave={() => setMdistHover(null)}>
+            {mdistPlaced.map((seg, index) => <div key={seg.model.model} className={`mdist-seg${mdistHover === index ? " is-hover" : ""}`} style={{ width: `${seg.share * 100}%`, background: modelColor.get(seg.model.model) }} onMouseEnter={() => setMdistHover(index)} />)}
+          </div>
+          {mdistHover !== null && mdistPlaced[mdistHover] && (() => {
+            const seg = mdistPlaced[mdistHover]!;
+            const leftPct = Math.min(92, Math.max(8, seg.center * 100));
+            return <div className="chart-tip mdist-tip" style={{ left: `${leftPct}%` }}>
+              <div className="chart-tip-row"><span className="chart-tip-dot" style={{ background: modelColor.get(seg.model.model) }} /><span className="chart-tip-nm">{modelLabel(seg.model.model)}</span><b>{fmtNanoUsd(seg.model.officialNano)}</b></div>
+              <div className="chart-tip-total"><span>{copy.shareOfUse}</span><b>{(seg.share * 100).toFixed(seg.share < 0.1 ? 1 : 0)}%</b></div>
+            </div>;
+          })()}
         </div>
         <div className="table-scroll"><table className="mtable"><thead><tr><th>{copy.model}</th><th className="tnum">{copy.requests}</th><th className="tnum">{copy.inputShort}</th><th className="tnum">{copy.outputShort}</th><th className="tnum">{copy.cacheRdShort}</th><th className="tnum">{copy.cacheWrShort}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
           <tbody>{models.map((model, index) => <tr key={model.model}>
@@ -522,6 +581,24 @@ function fmtUsdSmart(value: number): string {
 function startOfDay(ms: number): number { const date = new Date(ms); date.setHours(0, 0, 0, 0); return date.getTime(); }
 function ledgerMs(timestamp: string): number { const numeric = Number(timestamp); return numeric < 10_000_000_000 ? numeric * 1_000 : numeric; }
 function fmtDay(ms: number, locale: string): string { return new Date(ms).toLocaleDateString(locale, { month: "numeric", day: "numeric" }); }
+
+// «Красивая» шкала оси Y: шаг из ряда 1/2/2.5/5 ×10ⁿ, чтобы верх и деления оси были круглыми.
+function niceScale(max: number): { max: number; step: number; divisions: number } {
+  const divisions = 4;
+  if (!(max > 0)) return { max: 1, step: 0.25, divisions };
+  const rough = max / divisions;
+  const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+  const norm = rough / mag;
+  const nice = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10;
+  const step = nice * mag;
+  return { max: step * divisions, step, divisions };
+}
+function fmtAxisUsd(value: number): string {
+  if (value <= 0) return "$0";
+  if (value >= 1) return `$${Number.isInteger(value) ? value : value.toFixed(1)}`;
+  if (value >= 0.01) return `$${value.toFixed(2)}`;
+  return `$${value.toFixed(4).replace(/0+$/, "")}`;
+}
 
 // Палитра сегментов по моделям — средние тона, читаются и на светлой, и на тёмной теме.
 const MODEL_COLORS = ["#3767f0", "#7c5cff", "#12a594", "#e0913a", "#d6455d", "#8b8f9a"];
