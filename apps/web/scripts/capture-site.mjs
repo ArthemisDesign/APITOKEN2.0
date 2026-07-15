@@ -122,10 +122,11 @@ const dashboardFixtureScript = `(() => {
     spentUsd: "12.00",
     createdAt: "2026-07-15T08:30:00.000Z",
   }];
-  const entries = [
-    { id: "ledger-1", kind: "charge", amountNano: "185000000", amountUsd: "0.185", keyMasked: "sk-pool-a5b5••••••••eeb", reference: "req_01K0", balanceAfterNano: "4000000000", timestamp: "1784109600" },
-    { id: "ledger-2", kind: "topup", amountNano: "4000000000", amountUsd: "4.00", keyMasked: null, reference: "welcome_credit", balanceAfterNano: "4185000000", timestamp: "1784106000" },
-  ];
+  const nowS = Math.floor(Date.now() / 1000), DAY = 86400;
+  // реальный формат движка: amountUsd со знаком "$" и 6 знаками (раньше ломал график через Number())
+  const chg = [[0, "1246000000"], [0, "742000000"], [1, "918000000"], [2, "655000000"], [3, "1330000000"], [4, "540000000"], [6, "805000000"], [8, "1050000000"]];
+  const entries = chg.map((c, i) => ({ id: "c" + i, kind: "charge", amountNano: c[1], amountUsd: "$" + (Number(c[1]) / 1e9).toFixed(6), keyMasked: "sk-pool-a5b5••••••••eeb", reference: "req_0" + i, balanceAfterNano: null, timestamp: String(nowS - c[0] * DAY - i * 137) }));
+  entries.push({ id: "t0", kind: "topup", amountNano: "200000000000", amountUsd: "$200.000000", keyMasked: null, reference: "cryptomus_9f2c1a", balanceAfterNano: null, timestamp: String(nowS - 3 * DAY) });
   const usage = {
     window: "30d", requests: 59, totalOfficialNano: "20234893050", totalChargedNano: "8093957220",
     buckets: {
