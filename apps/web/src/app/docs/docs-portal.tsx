@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useI18n } from "@/components/i18n-provider";
 import { ThemeToggle } from "@/components/site-chrome";
 import { B2C_PRICING_MILESTONES, formatWholeUsd } from "@/lib/pricing-tiers";
@@ -57,6 +57,33 @@ const message = await client.messages.create({
   messages: [{ role: "user", content: "Hello" }],
 });`;
 
+function cleanApiKey(value: string) {
+  const key = value.trim();
+  return /^sk-[A-Za-z0-9._-]{4,}$/.test(key) ? key : "";
+}
+
+function keyFromHash(hash: string) {
+  const keyParam = hash.replace(/^#/, "").split("&").find((part) => part.startsWith("key="));
+  if (!keyParam) return "";
+  try {
+    return cleanApiKey(decodeURIComponent(keyParam.slice(4)));
+  } catch {
+    return "";
+  }
+}
+
+function replaceKeyHash(key: string) {
+  if (typeof window === "undefined") return;
+  const { pathname, search, hash } = window.location;
+  let nextHash = hash;
+  if (key) nextHash = `#key=${encodeURIComponent(key)}`;
+  else if (hash) {
+    const remaining = hash.replace(/^#/, "").split("&").filter((part) => !part.startsWith("key="));
+    if (remaining.length !== hash.replace(/^#/, "").split("&").length) nextHash = remaining.length ? `#${remaining.join("&")}` : "";
+  }
+  window.history.replaceState(window.history.state, "", `${pathname}${search}${nextHash}`);
+}
+
 const copy = {
   en: {
     documentation: "Documentation", back: "Back to site", dashboard: "Dashboard", onThisPage: "On this page",
@@ -72,6 +99,7 @@ const copy = {
     exampleHead: "A full example", exampleText: "Top up $250 in total → you reach Pro (−70%). To keep Pro, spend ≥ $125 of platform charge every 30 days. Spend enough and the window renews; miss it and you drop to Builder (−65%). Top up $250 more (cumulative $500) → Studio (−75%).",
     title: "Build with one Claude endpoint", lead: "Everything required to connect Claude Code, editors, scripts, and production applications to apiToken.sale.",
     openKeys: "Open API keys", baseUrl: "Base URL", messagesEndpoint: "Messages endpoint", authHeader: "Authentication header",
+    apiKeyLabel: "Your API key", apiKeyHelp: "Paste a valid sk-… key. It stays in this tab and is used only to fill the examples below.", apiKeyApply: "Use this key", apiKeyClear: "Clear", apiKeyActive: "Snippets below use your key",
     oneEndpoint: "Connection essentials", oneEndpointText: "All supported Claude models use the Anthropic Messages API through the same base URL.",
     keyNotice: "Your raw API key is shown only once when created. Store it in a secret manager or environment variable; never commit it to source control.",
     requestTitle: "Send your first request", requestText: "This request uses the Anthropic Messages API and works with streaming clients as well.",
@@ -102,6 +130,7 @@ const copy = {
     exampleHead: "Полный пример", exampleText: "Пополнил суммарно $250 → получил Pro (−70%). Чтобы удержать Pro, трать ≥ $125 списаний каждые 30 дней. Хватило — окно продлевается; не хватило — откат на Builder (−65%). Пополнил ещё $250 (суммарно $500) → Studio (−75%).",
     title: "Один адрес для работы с Claude", lead: "Всё необходимое для подключения Claude Code, редакторов, скриптов и production-приложений к apiToken.sale.",
     openKeys: "Открыть API-ключи", baseUrl: "Базовый URL", messagesEndpoint: "Адрес Messages API", authHeader: "Заголовок авторизации",
+    apiKeyLabel: "Ваш API-ключ", apiKeyHelp: "Вставьте действующий ключ sk-…. Он остаётся только в этой вкладке и используется лишь для заполнения примеров ниже.", apiKeyApply: "Использовать ключ", apiKeyClear: "Очистить", apiKeyActive: "В примерах ниже используется ваш ключ",
     oneEndpoint: "Основные параметры", oneEndpointText: "Все поддерживаемые модели Claude используют Anthropic Messages API через единый базовый URL.",
     keyNotice: "Исходный API-ключ показывается только один раз при создании. Храните его в менеджере секретов или переменной окружения и никогда не добавляйте в репозиторий.",
     requestTitle: "Отправьте первый запрос", requestText: "Запрос использует Anthropic Messages API и также подходит для потоковых клиентов.",
@@ -123,17 +152,49 @@ const copy = {
 export function DocsPortal() {
   const { language, setLanguage } = useI18n();
   const t = copy[language];
+  const [activeKey, setActiveKey] = useState("");
+  const [keyInput, setKeyInput] = useState("");
+  useEffect(() => {
+    // Seed from the URL fragment (#key=…). The fragment is never sent to the server, so the key
+    // is unknown during SSR and can only be applied after mount — a lazy initializer would render
+    // a substituted snippet on the client while the server rendered the placeholder (hydration
+    // mismatch). This one-time post-mount set is intentional.
+    if (typeof window === "undefined") return;
+    const key = keyFromHash(window.location.hash);
+    if (!key) return;
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setActiveKey(key);
+    setKeyInput(key);
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, []);
+  function applyKey() {
+    const key = cleanApiKey(keyInput);
+    setActiveKey(key);
+    setKeyInput(key);
+    replaceKeyHash(key);
+  }
+  function clearKey() {
+    setActiveKey("");
+    setKeyInput("");
+    replaceKeyHash("");
+  }
+  const withKey = (code: string) => activeKey ? code.replaceAll("sk-pool-•••", activeKey).replaceAll("$APITOKEN_API_KEY", activeKey) : code;
   return <div className="docs-site">
     <header className="docs-header"><Link className="docs-brand" href="/"><BrandMark /><span>apiToken.sale</span><i>{t.documentation}</i></Link><div className="docs-header-actions"><div className="lang"><button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}>EN</button><button className={language === "ru" ? "active" : ""} onClick={() => setLanguage("ru")}>RU</button></div><ThemeToggle /><Link className="btn btn-ghost btn-sm docs-back" href="/">{t.back}</Link><Link className="btn btn-primary btn-sm" href="/dashboard">{t.dashboard}</Link></div></header>
     <div className="docs-layout">
       <aside className="docs-sidebar"><span>{t.onThisPage}</span><nav><a href="#overview">{t.overview}</a><a href="#quickstart">{t.quickstart}</a><a href="#authentication">{t.authentication}</a><a href="#tools">{t.tools}</a><a href="#sdks">{t.sdks}</a><a href="#errors">{t.errors}</a><a href="#pricing">{t.pricing}</a></nav></aside>
       <main className="docs-main">
         <section className="docs-hero" id="overview"><span className="eyebrow">{t.eyebrow}</span><h1>{t.title}</h1><p>{t.lead}</p><Link className="btn btn-primary" href="/dashboard?view=keys">{t.openKeys}</Link></section>
-        <section className="docs-section"><div className="docs-section-heading"><span>01</span><div><h2>{t.oneEndpoint}</h2><p>{t.oneEndpointText}</p></div></div><div className="docs-essential-grid"><Endpoint label={t.baseUrl} value={BASE_URL} copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label={t.messagesEndpoint} value={MESSAGES_URL} copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label={t.authHeader} value="x-api-key: sk-pool-•••" copyLabel={t.copy} copiedLabel={t.copied} /></div><div className="docs-notice">{t.keyNotice}</div></section>
-        <section className="docs-section" id="quickstart"><div className="docs-section-heading"><span>02</span><div><h2>{t.quickstart}</h2><p>{t.requestText}</p></div></div><CodeBlock title={t.requestTitle} code={CURL} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.envTitle} description={t.envText} code={ENVIRONMENT} copyLabel={t.copy} copiedLabel={t.copied} /></section>
+        <section className="docs-section"><div className="docs-section-heading"><span>01</span><div><h2>{t.oneEndpoint}</h2><p>{t.oneEndpointText}</p></div></div>
+          <div className="docs-notice" style={{ marginTop: 0, marginBottom: 14, display: "grid", gap: 12 }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}><div><label htmlFor="docs-api-key" style={{ display: "block", color: "var(--txt)", fontWeight: 700 }}>{t.apiKeyLabel}</label><span id="docs-api-key-help" style={{ display: "block", marginTop: 3, color: "var(--txt-3)" }}>{t.apiKeyHelp}</span></div>{activeKey && <span role="status" aria-live="polite" style={{ color: "var(--accent)", fontSize: 11 }}>{t.apiKeyActive} <b>••••{activeKey.slice(-4)}</b></span>}</div>
+            <form onSubmit={(event) => { event.preventDefault(); applyKey(); }} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}><input id="docs-api-key" type="text" value={keyInput} onChange={(event) => setKeyInput(event.target.value)} placeholder="sk-pool-•••" aria-describedby="docs-api-key-help" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} style={{ flex: "1 1 280px", minWidth: 0, padding: "10px 12px", border: "1px solid var(--line-strong)", borderRadius: 6, background: "var(--bg-card)", color: "var(--txt)", fontFamily: "var(--font-mono)", fontSize: 12 }} /><button className="btn btn-primary btn-sm" type="submit">{t.apiKeyApply}</button><button className="btn btn-ghost btn-sm" type="button" onClick={clearKey}>{t.apiKeyClear}</button></form>
+          </div>
+          <div className="docs-essential-grid"><Endpoint label={t.baseUrl} value={BASE_URL} copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label={t.messagesEndpoint} value={MESSAGES_URL} copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label={t.authHeader} value={withKey("x-api-key: sk-pool-•••")} copyLabel={t.copy} copiedLabel={t.copied} /></div><div className="docs-notice">{t.keyNotice}</div></section>
+        <section className="docs-section" id="quickstart"><div className="docs-section-heading"><span>02</span><div><h2>{t.quickstart}</h2><p>{t.requestText}</p></div></div><CodeBlock title={t.requestTitle} code={withKey(CURL)} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.envTitle} description={t.envText} code={withKey(ENVIRONMENT)} copyLabel={t.copy} copiedLabel={t.copied} /></section>
         <section className="docs-section" id="authentication"><div className="docs-section-heading"><span>03</span><div><h2>{t.authentication}</h2><p>{t.authText}</p></div></div><div className="docs-auth-flow"><div><b>1</b><code>x-api-key</code></div><span>＋</span><div><b>2</b><code>anthropic-version</code></div><span>→</span><div><b>API</b><code>/v1/messages</code></div></div></section>
-        <section className="docs-section" id="tools"><div className="docs-section-heading"><span>04</span><div><h2>{t.tools}</h2><p>{t.oneEndpointText}</p></div></div><div className="docs-two-col"><CodeBlock title={t.claudeCode} description={t.claudeCodeText} code={CLAUDE_CODE} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.editors} description={t.editorsText} code={CURSOR} copyLabel={t.copy} copiedLabel={t.copied} /></div></section>
-        <section className="docs-section" id="sdks"><div className="docs-section-heading"><span>05</span><div><h2>{t.sdks}</h2><p>{t.oneEndpointText}</p></div></div><div className="docs-two-col"><CodeBlock title={t.python} description={t.pythonText} code={PYTHON} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.typescript} description={t.typescriptText} code={TYPESCRIPT} copyLabel={t.copy} copiedLabel={t.copied} /></div></section>
+        <section className="docs-section" id="tools"><div className="docs-section-heading"><span>04</span><div><h2>{t.tools}</h2><p>{t.oneEndpointText}</p></div></div><div className="docs-two-col"><CodeBlock title={t.claudeCode} description={t.claudeCodeText} code={withKey(CLAUDE_CODE)} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.editors} description={t.editorsText} code={withKey(CURSOR)} copyLabel={t.copy} copiedLabel={t.copied} /></div></section>
+        <section className="docs-section" id="sdks"><div className="docs-section-heading"><span>05</span><div><h2>{t.sdks}</h2><p>{t.oneEndpointText}</p></div></div><div className="docs-two-col"><CodeBlock title={t.python} description={t.pythonText} code={withKey(PYTHON)} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.typescript} description={t.typescriptText} code={withKey(TYPESCRIPT)} copyLabel={t.copy} copiedLabel={t.copied} /></div></section>
         <section className="docs-section" id="errors"><div className="docs-section-heading"><span>06</span><div><h2>{t.errorTitle}</h2><p>{t.errorText}</p></div></div><div className="table-scroll"><table className="mtable docs-errors"><thead><tr><th>{t.status}</th><th>{t.meaning}</th><th>{t.action}</th></tr></thead><tbody><ErrorRow code="401" meaning={t.e401} action={t.a401} labels={t} /><ErrorRow code="402" meaning={t.e402} action={t.a402} labels={t} /><ErrorRow code="429" meaning={t.e429} action={t.a429} labels={t} /><ErrorRow code="5xx" meaning={t.e5xx} action={t.a5xx} labels={t} /></tbody></table></div><div className="docs-checklist"><h3>{t.production}</h3><ul>{t.checklist.map((item) => <li key={item}>{item}</li>)}</ul></div></section>
         <section className="docs-section" id="pricing"><div className="docs-section-heading"><span>07</span><div><h2>{t.pricingTitle}</h2><p>{t.pricingLead}</p></div></div>
           <h3 className="docs-h3">{t.billingHead}</h3><p className="docs-para">{t.billingText}</p><div className="docs-notice">{t.billingExample}</div>

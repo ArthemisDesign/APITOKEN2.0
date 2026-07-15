@@ -19,13 +19,13 @@ type Section = DashboardSection;
 
 const navigation: Array<{ section?: Section; label: keyof DashboardCopy; icon: string; href?: string; group?: keyof DashboardCopy }> = [
   { group: "navStart", section: "overview", label: "navOverview", icon: "▦" },
-  { section: "keys", label: "navKeys", icon: "⚿" },
-  { section: "credits", label: "navTopUp", icon: "＋" },
+  { group: "navDevelopers", section: "keys", label: "navKeys", icon: "⚿" },
+  { href: DOCS_URL, label: "navDocs", icon: "↗" },
+  { group: "navBilling", section: "credits", label: "navTopUp", icon: "＋" },
   { group: "navGrowth", section: "promos", label: "navPromos", icon: "%" },
   { group: "navActivity", section: "usage", label: "navUsage", icon: "◔" },
   { group: "navAccount", section: "profile", label: "navProfile", icon: "◍" },
   { section: "security", label: "navSecurity", icon: "⛨" },
-  { href: DOCS_URL, label: "navDocs", icon: "↗" },
 ];
 
 function useDashboardCopy(): DashboardCopy {
@@ -46,6 +46,7 @@ export function Dashboard() {
   const [usage, setUsage] = useState<UsageView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [issuedKey, setIssuedKey] = useState<string | null>(null);
   const [sideOpen, setSideOpen] = useState(false);
 
   const load = useCallback(async () => {
@@ -127,7 +128,7 @@ export function Dashboard() {
       <div className="app-body-in">
         {error && <div className="banner banner-error">{error} <button className="btn btn-ghost btn-sm" onClick={load}>{copy.retry}</button></div>}
         {section === "overview" && <Overview account={account} keys={activeKeys} ledger={ledger} open={open} />}
-        {section === "keys" && <ApiKeys keys={keys} onChanged={load} />}
+        {section === "keys" && <ApiKeys keys={keys} issued={issuedKey} onIssuedChange={setIssuedKey} onChanged={load} />}
         {section === "credits" && <Credits account={account} ledger={ledger} />}
         {section === "usage" && <Usage account={account} ledger={ledger} usage={usage} />}
         {section === "profile" && <Profile user={user} open={open} onUpdated={setUser} />}
@@ -187,6 +188,8 @@ function Stat({ label, value, detail, onClick }: { label: string; value: string;
 
 function PricingBanner({ account }: { account: AccountView }) {
   const copy = useDashboardCopy();
+  // Read "now" once at mount — Date.now() in render is impure (see the same pattern in Usage).
+  const [now] = useState(() => Date.now());
   const pricing = account.pricing;
   if (!pricing) return null;
   if (pricing.customerType === "b2b") return <section className="pricing-banner pricing-banner-business"><div className="pricing-summary"><div><span className="pricing-kicker">{copy.currentPricing}</span><strong>{copy.businessAgreement}</strong></div><div className="pricing-discount"><b>{pricing.discountPercent}%</b><span>{copy.discount}</span><em className="pricing-mult">{multFromDiscount(pricing.discountPercent)} {copy.valueMultiplier}</em></div></div><p>{copy.negotiatedRate}</p></section>;
@@ -198,7 +201,7 @@ function PricingBanner({ account }: { account: AccountView }) {
   const holdNano = BigInt(pricing.retentionSpendNano);
   const windowSpent = BigInt(pricing.windowSpentNano ?? "0");
   const held = windowSpent >= holdNano;
-  const daysLeft = pricing.windowStart ? Math.max(0, Math.ceil(30 - (Date.now() - new Date(pricing.windowStart).getTime()) / 86_400_000)) : 30;
+  const daysLeft = pricing.windowStart ? Math.max(0, Math.ceil(30 - (now - new Date(pricing.windowStart).getTime()) / 86_400_000)) : 30;
   return <section className="pricing-banner pricing-banner-milestones">
     <div className="pricing-summary">
       <div><span className="pricing-kicker">{copy.monthlyTierProgress}</span><strong>{tierName(copy, currentTier.code)}</strong></div>
@@ -228,16 +231,15 @@ function PricingBanner({ account }: { account: AccountView }) {
   </section>;
 }
 
-function ApiKeys({ keys, onChanged }: { keys: ApiKeyView[]; onChanged(): Promise<void> }) {
+function ApiKeys({ keys, issued, onIssuedChange, onChanged }: { keys: ApiKeyView[]; issued: string | null; onIssuedChange(value: string | null): void; onChanged(): Promise<void> }) {
   const copy = useDashboardCopy();
   const { language } = useI18n();
   const [label, setLabel] = useState("");
-  const [issued, setIssued] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   async function create() {
     setBusy(true); setError(null);
-    try { const created = await api.createApiKey(label.trim() || undefined); setIssued(created.key ?? null); setLabel(""); await onChanged(); }
+    try { const created = await api.createApiKey(label.trim() || undefined); onIssuedChange(created.key ?? null); setLabel(""); await onChanged(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : copy.createKeyError); }
     finally { setBusy(false); }
   }
@@ -245,13 +247,12 @@ function ApiKeys({ keys, onChanged }: { keys: ApiKeyView[]; onChanged(): Promise
     if (!window.confirm(copy.revokeConfirm)) return;
     setBusy(true); try { await api.revokeApiKey(id); await onChanged(); } catch (cause) { setError(cause instanceof Error ? cause.message : copy.revokeKeyError); } finally { setBusy(false); }
   }
-  const snippet = `curl https://api.apitoken.sale/v1/messages \\\n  -H "x-api-key: YOUR_API_KEY" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{"model":"claude-opus-4-8","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'`;
+  const sortedKeys = [...keys].sort((left, right) => Number(left.status !== "active") - Number(right.status !== "active"));
   return <section className="panel"><PageHeading eyebrow={copy.keysEyebrow} title={copy.keysTitle} subtitle={copy.keysSubtitle} />
-    <div className="card ep-card"><span className="cc-ep-l">{copy.apiEndpoint}</span><div className="ep-row"><div><span className="ep-t">{copy.anthropicCompatible}</span><code>https://api.apitoken.sale</code></div><CopyButton value="https://api.apitoken.sale" /></div></div>
-    {issued && <div className="card secret-card"><span className="chip">{copy.shownOnce}</span><h2>{copy.copyNewKeyNow}</h2><p>{copy.rawSecretWarning}</p><code>{issued}</code><CopyButton value={issued} /><button className="btn btn-ghost btn-sm" onClick={() => setIssued(null)}>{copy.savedKey}</button></div>}
+    {issued && <aside className="card secret-card" aria-labelledby="issued-key-title"><div className="secret-head"><h2 id="issued-key-title">{copy.copyNewKeyNow}</h2><span className="chip">{copy.shownOnce}</span></div><p className="secret-warning">{copy.rawSecretWarning}</p><div className="secret-key-field"><code>{issued}</code><CopyButton value={issued} className="secret-copy" /></div><div className="secret-actions"><Link className="btn btn-primary btn-sm" href={`${DOCS_URL}#key=${encodeURIComponent(issued)}`} target="_blank" rel="noreferrer">{copy.openInDocs}</Link><button className="btn btn-ghost btn-sm" onClick={() => onIssuedChange(null)}>{copy.savedKey}</button></div></aside>}
     <section className="dsec"><div className="dsec-head"><h2>{copy.universalKeys}</h2><div className="key-create"><input className="set-in" value={label} onChange={(event) => setLabel(event.target.value)} maxLength={100} placeholder={copy.optionalLabel} /><button className="btn btn-primary btn-sm" disabled={busy} onClick={create}>＋ {copy.newKey}</button></div></div>{error && <div className="banner banner-error">{error}</div>}
-      <div className="keys">{keys.length === 0 ? <div className="empty-box">{copy.noKeys}</div> : keys.map((key) => <div className="keyrow" key={key.id}><code className="kval">{key.keyMasked}</code><div className="kmeta">{key.label || copy.unlabelledKey} · {copy.created} {new Date(key.createdAt).toLocaleDateString(language === "ru" ? "ru-RU" : "en-US")} · {copy.spent} {normalizeUsd(key.spentUsd)}</div><div className="kacts"><span className={`pill ${key.status === "active" ? "" : "pill-soft"}`}>{key.status}</span>{key.status === "active" && <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => revoke(key.id)}>{copy.revoke}</button>}</div></div>)}</div>
-    </section><section className="dsec"><div className="dsec-head"><h2>{copy.quickStart}</h2><CopyButton value={snippet} /></div><pre className="code-card"><code>{snippet}</code></pre></section>
+      <div className="keys">{sortedKeys.length === 0 ? <div className="empty-box">{copy.noKeys}</div> : sortedKeys.map((key) => <div className="keyrow" key={key.id}><div className="kval">{key.label || copy.unlabelledKey}</div><div className="kmeta"><code>{key.keyMasked}</code><span>· {copy.created} {new Date(key.createdAt).toLocaleDateString(language === "ru" ? "ru-RU" : "en-US")} · {copy.spent} {normalizeUsd(key.spentUsd)}</span></div><div className="kacts"><span className={`pill ${key.status === "active" ? "" : "pill-soft"}`}>{key.status}</span><Link className="btn btn-ghost btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{copy.docsShort}</Link>{key.status === "active" && <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => revoke(key.id)}>{copy.revoke}</button>}</div></div>)}</div>
+    </section>
   </section>;
 }
 
