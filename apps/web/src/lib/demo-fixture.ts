@@ -19,7 +19,10 @@ export const DEMO_FIXTURE_SCRIPT = `(() => {
   const keys = [{ id: "demo-key", label: "Production", keyMasked: "sk-pool-a5b5\\u2022\\u2022\\u2022\\u2022eeb", status: "active", spentNano: "12000000000", spentUsd: "12.00", createdAt: "2026-07-15T08:30:00.000Z" }];
   const entries = [
     { id: "l1", kind: "charge", amountNano: "185000000", amountUsd: "0.185", keyMasked: "sk-pool-a5b5\\u2022\\u2022\\u2022\\u2022eeb", reference: "req_01K0", balanceAfterNano: "4000000000", timestamp: "1784109600" },
-    { id: "l2", kind: "topup", amountNano: "4000000000", amountUsd: "4.00", keyMasked: null, reference: "welcome_credit", balanceAfterNano: "4185000000", timestamp: "1784106000" },
+    { id: "t1", kind: "topup", amountNano: "500000000000", amountUsd: "500.00", keyMasked: null, reference: "cryptomus_9f2c1a", balanceAfterNano: "500000000000", timestamp: "1784106000", discountPercent: 80 },
+    { id: "t2", kind: "topup", amountNano: "75000000000", amountUsd: "75.00", keyMasked: null, reference: "cryptomus_4a1e77", balanceAfterNano: "80000000000", timestamp: "1782600000", discountPercent: 70 },
+    { id: "t3", kind: "topup", amountNano: "20000000000", amountUsd: "20.00", keyMasked: null, reference: "cryptomus_1c8b90", balanceAfterNano: "22000000000", timestamp: "1781000000", discountPercent: 60 },
+    { id: "t4", kind: "topup", amountNano: "4000000000", amountUsd: "4.00", keyMasked: null, reference: "welcome_credit", balanceAfterNano: "4000000000", timestamp: "1780400000", discountPercent: 60 },
   ];
   window.fetch = (input, init = {}) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
