@@ -25,7 +25,7 @@ describe("completed Next.js migration", () => {
     const staticRoute = readFileSync(join(appRoot, "[slug]", "page.tsx"), "utf8");
     for (const route of [
       "plans", "models", "integrations", "int-claude-code", "int-cursor", "int-cline",
-      "int-continue", "int-zed", "int-sdk", "terms", "privacy",
+      "int-continue", "int-zed", "int-sdk", "terms", "privacy", "support",
     ]) expect(staticRoute).toContain(`\"${route}\"`);
     for (const route of ["login", "register", "dashboard", "docs"]) {
       expect(existsSync(join(appRoot, route, "page.tsx"))).toBe(true);

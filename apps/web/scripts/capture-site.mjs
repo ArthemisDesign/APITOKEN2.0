@@ -23,6 +23,7 @@ const siteCaptures = [
   ["plans-desktop", "/plans", 1440, 1000, "light"],
   ["plans-mobile", "/plans", 390, 844, "light"],
   ["plans-dark", "/plans", 1440, 1000, "dark"],
+  ["plans-russian", "/plans", 1440, 1000, "light", "ru"],
   ["models-desktop", "/models", 1440, 1000, "light"],
   ["models-dark", "/models", 1440, 1000, "dark"],
   ["docs-desktop", "/docs", 1440, 1000, "light"],
@@ -34,7 +35,15 @@ const siteCaptures = [
   ["register-desktop", "/register", 1440, 1000, "light"],
   ["register-dark", "/register", 1440, 1000, "dark"],
   ["terms-desktop", "/terms", 1440, 1000, "light"],
+  ["terms-dark", "/terms", 1440, 1000, "dark"],
+  ["terms-russian", "/terms", 1440, 1000, "light", "ru"],
   ["privacy-desktop", "/privacy", 1440, 1000, "light"],
+  ["privacy-dark", "/privacy", 1440, 1000, "dark"],
+  ["privacy-russian", "/privacy", 1440, 1000, "light", "ru"],
+  ["support-desktop", "/support", 1440, 1000, "light"],
+  ["support-mobile", "/support", 390, 844, "light"],
+  ["support-dark", "/support", 1440, 1000, "dark"],
+  ["support-russian", "/support", 1440, 1000, "light", "ru"],
 ];
 
 const dashboardCaptures = [

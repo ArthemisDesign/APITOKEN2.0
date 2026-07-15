@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { MotionEffects } from "./motion-effects";
+import { CommercialDisclosure } from "./commercial-disclosure";
 import { PricingOverview } from "./pricing-overview";
 import { SiteFooter, SiteHeader } from "./site-chrome";
 import { T } from "./translated";
@@ -15,7 +16,7 @@ export function PageHero({ eyebrow, title, subtitle, back }: { eyebrow: string; 
 }
 
 export function PlansPage() {
-  return <MarketingFrame><PageHero eyebrow="pr_eyebrow" title="plans_h" subtitle="plans_sub" /><section className="borderless"><div className="wrap"><PricingOverview /></div></section></MarketingFrame>;
+  return <MarketingFrame><PageHero eyebrow="pr_eyebrow" title="plans_h" subtitle="plans_sub" /><section className="borderless"><div className="wrap plans-content"><CommercialDisclosure /><PricingOverview /></div></section></MarketingFrame>;
 }
 
 const modelRows = [
@@ -52,16 +53,6 @@ export function IntegrationGuidePage({ slug }: { slug: string }) {
   if (!found) return null;
   const [,name,tag] = found;
   return <MarketingFrame><div className="page-hero"><div className="wrap"><Link className="auth-back" href="/integrations"><T k="int_back">← All integrations</T></Link><T k="nav_int" as="span" className="eyebrow">Integrations</T><h1>{name}</h1><T k={tag} as="p">Integration description</T></div></div><section className="borderless"><div className="wrap"><div className="steps guide-steps" data-reveal-stagger>{[["int_s1_h","int_s1_p"],["int_s2_h","int_s2_p"],["int_s3_h","int_s3_p"]].map(([title,text], index) => <div className="step" key={title}><div className="n">{String(index + 1).padStart(2,"0")}</div><T k={title} as="h3">Step</T><T k={text} as="p">Description</T></div>)}</div><div className="doc-block"><T k="int_cfg" as="h3">Configuration</T><pre className="codebox">{guideCode[slug]}</pre><PageActions /></div></div></section></MarketingFrame>;
-}
-
-const legal = {
-  terms: { title: "legal_terms_h", paragraphs: ["terms_p0","terms_p1","terms_p2","terms_p3","terms_p4"] },
-  privacy: { title: "legal_privacy_h", paragraphs: ["privacy_p0","privacy_p1","privacy_p2","privacy_p3","privacy_p4"] },
-} as const;
-
-export function LegalPage({ kind }: { kind: keyof typeof legal }) {
-  const content = legal[kind];
-  return <MarketingFrame><div className="page-hero"><div className="wrap"><T k="nav_legal" as="span" className="eyebrow">Legal</T><T k={content.title} as="h1">Legal</T><T k="legal_updated" as="p">Last updated: July 2026</T></div></div><section className="borderless"><div className="wrap legal-wrap"><T k="legal_draft" as="p" className="legal-note">Draft template.</T>{content.paragraphs.map((key) => <T k={key} as="p" key={key}>Legal paragraph</T>)}</div></section></MarketingFrame>;
 }
 
 function PageActions({ primaryOnly = false }: { primaryOnly?: boolean }) {

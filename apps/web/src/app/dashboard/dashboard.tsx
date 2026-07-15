@@ -103,6 +103,12 @@ export function Dashboard() {
       </nav>
       <div className="side-foot">
         <div className="side-tools"><div className="lang"><button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}>EN</button><button className={language === "ru" ? "active" : ""} onClick={() => setLanguage("ru")}>RU</button></div><ThemeToggle /></div>
+        <nav className="side-legal" aria-label={language === "ru" ? "Правовая информация" : "Legal information"}>
+          <Link href="/privacy" target="_blank">{language === "ru" ? "Конфиденциальность" : "Privacy"}</Link>
+          <Link href="/terms" target="_blank">{language === "ru" ? "Соглашение" : "Agreement"}</Link>
+          <Link href="/support" target="_blank">{language === "ru" ? "Поддержка" : "Support"}</Link>
+          <Link href="/plans" target="_blank">{language === "ru" ? "Цены" : "Pricing"}</Link>
+        </nav>
         <div className="side-user"><span className="side-av">{user.email[0]?.toUpperCase()}</span><div className="side-uinfo"><b>{user.email.split("@")[0]}</b><span>{user.email}</span></div></div>
         <button className="btn btn-ghost btn-sm side-logout" onClick={logout}>{copy.logout}</button>
       </div>
