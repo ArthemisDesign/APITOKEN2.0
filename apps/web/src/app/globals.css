@@ -789,7 +789,8 @@ a.step:hover .step-cta::after{margin-left:4px}
 .prod{border:1px solid var(--line);border-radius:8px;padding:28px;background:var(--bg-card);display:grid;grid-template-rows:auto 86px minmax(180px,1fr) 50px;align-items:start;transition:.16s}
 .prod:hover{border-color:var(--accent-line)}
 .prod .tag{font-family:var(--font-mono);font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent)}
-.prod h3{margin:14px 0 0;font-family:var(--font-bit);font-weight:700;font-size:28px;letter-spacing:0;word-spacing:-.06em;line-height:1.2}
+.prod h3{margin:14px 0 0;font-family:var(--font-i18n-display);font-weight:400;font-size:32px;letter-spacing:0;word-spacing:normal;line-height:1.15;
+  font-variation-settings:'wght' 500,'ELGR' 1,'ELSH' 2}
 .prod p{color:var(--txt-2);font-size:14px;margin:0 0 20px}
 .prod-body{display:flex;flex-direction:column;align-items:stretch;min-width:0}
 .prod .btn{width:100%;height:50px;justify-content:center;align-self:end}
