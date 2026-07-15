@@ -70,13 +70,14 @@ header.nav.scrolled{box-shadow:0 8px 30px -18px rgba(10,10,10,.35)}
   0%{transform:translateY(0) rotate(0deg)}
   100%{transform:translateY(var(--rise,-40px)) rotate(24deg)}}
 .bg-decor .glow{position:absolute;border-radius:50%;filter:blur(80px);
-  background:radial-gradient(circle,color-mix(in srgb,var(--accent) 24%,transparent),transparent 70%)}
+  background:radial-gradient(circle,color-mix(in srgb,var(--accent) 24%,transparent),transparent 70%);
+  will-change:transform}
 .bg-decor .g1{width:46vw;height:46vw;left:-14vw;top:-12vw;opacity:.45;
   animation:glowPulse 14s ease-in-out infinite alternate}
 .bg-decor .g2{width:40vw;height:40vw;right:-12vw;top:34%;opacity:.34;
-  animation:glowPulse 18s ease-in-out 2s infinite alternate}
+  animation:glowPulse 18s ease-in-out -2s infinite alternate}
 .bg-decor .g3{width:36vw;height:36vw;left:22%;bottom:-16vw;opacity:.26;
-  animation:glowPulse 20s ease-in-out 1s infinite alternate}
+  animation:glowPulse 20s ease-in-out -1s infinite alternate}
 @keyframes glowPulse{0%{transform:scale(1) translate(0,0)}
   100%{transform:scale(1.16) translate(3%,-4%)}}
 [data-theme="dark"] .bg-decor .glow{filter:blur(90px)}
@@ -101,11 +102,6 @@ header.nav.scrolled{box-shadow:0 8px 30px -18px rgba(10,10,10,.35)}
 @media (hover:none){
   .bg-decor{transition:none}
 }
-
-/* ---------- richer reveal (soft blur-in) ---------- */
-[data-reveal],[data-reveal-stagger] > *{filter:blur(6px);
-  transition:opacity .7s cubic-bezier(.16,.8,.28,1),transform .7s cubic-bezier(.16,.8,.28,1),filter .7s ease}
-[data-reveal].in,[data-reveal-stagger].in > *{filter:blur(0)}
 
 /* ---------- accessibility ---------- */
 @media (prefers-reduced-motion: reduce){

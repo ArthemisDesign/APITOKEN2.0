@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { B2C_PRICING_TIERS } from "@claude-api/contracts";
+import { B2C_PRICING_TIERS, displayNameSchema } from "@claude-api/contracts";
 import type { Database } from "./client.js";
 import { insertAuthEmail } from "./email.js";
 import { lockBusinessInvite, utcMonthStart } from "./pricing.js";
@@ -7,6 +7,7 @@ import { lockBusinessInvite, utcMonthStart } from "./pricing.js";
 export interface AuthUser {
   id: string;
   email: string;
+  displayName: string;
   emailVerified: boolean;
   passwordEnabled: boolean;
   status: "active" | "disabled";
@@ -69,8 +70,8 @@ export async function createEmailUser(
     const engineMultiplierBp = invite?.multiplierBp ?? B2C_PRICING_TIERS[0].multiplierBp;
     const monthStart = utcMonthStart();
     await client.query(`
-      INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)
-    `, [userId, email, passwordHash]);
+      INSERT INTO users (id, email, display_name, password_hash) VALUES ($1, $2, $3, $4)
+    `, [userId, email, initialDisplayName(email), passwordHash]);
     await client.query(`
       INSERT INTO engine_accounts (id, user_id, mult_bp, status) VALUES ($1, $2, $3, 'pending')
     `, [randomUUID(), userId, engineMultiplierBp]);
@@ -102,6 +103,7 @@ export async function createEmailUser(
     return {
       id: userId,
       email,
+      displayName: initialDisplayName(email),
       emailVerified: false,
       passwordEnabled: true,
       status: "active",
@@ -134,7 +136,7 @@ export async function failEngineAccount(database: Database, userId: string, erro
 
 export async function findPasswordUser(database: Database, email: string): Promise<PasswordUser | null> {
   const result = await database.pool.query<UserRow>(`
-    SELECT u.id, u.email, u.email_verified, u.password_hash, u.status,
+    SELECT u.id, u.email, u.display_name, u.email_verified, u.password_hash, u.status,
            COALESCE(ea.status, 'pending') AS engine_account_status,
            COALESCE(cp.customer_type, 'b2c') AS customer_type
     FROM users u LEFT JOIN engine_accounts ea ON ea.user_id = u.id
@@ -146,7 +148,7 @@ export async function findPasswordUser(database: Database, email: string): Promi
 
 export async function getAuthUser(database: Database, userId: string): Promise<AuthUser | null> {
   const result = await database.pool.query<UserRow>(`
-    SELECT u.id, u.email, u.email_verified, u.password_hash, u.status,
+    SELECT u.id, u.email, u.display_name, u.email_verified, u.password_hash, u.status,
            COALESCE(ea.status, 'pending') AS engine_account_status,
            COALESCE(cp.customer_type, 'b2c') AS customer_type
     FROM users u LEFT JOIN engine_accounts ea ON ea.user_id = u.id
@@ -168,7 +170,7 @@ export async function createAuthSession(database: Database, input: {
 
 export async function resolveAuthSession(database: Database, tokenHash: string): Promise<{ sessionId: string; user: AuthUser } | null> {
   const result = await database.pool.query<UserRow & { session_id: string }>(`
-    SELECT s.id AS session_id, u.id, u.email, u.email_verified, u.password_hash, u.status,
+    SELECT s.id AS session_id, u.id, u.email, u.display_name, u.email_verified, u.password_hash, u.status,
            COALESCE(ea.status, 'pending') AS engine_account_status,
            COALESCE(cp.customer_type, 'b2c') AS customer_type
     FROM auth_sessions s
@@ -188,6 +190,38 @@ export async function revokeAuthSession(database: Database, sessionId: string, u
   `, [sessionId, userId]);
 }
 
+export async function updateUserDisplayName(
+  database: Database,
+  userId: string,
+  displayName: string,
+): Promise<AuthUser | null> {
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const updated = await client.query<{ id: string }>(`
+      UPDATE users
+      SET display_name = $2, updated_at = now()
+      WHERE id = $1 AND status = 'active'
+      RETURNING id
+    `, [userId, displayName]);
+    if (!updated.rows[0]) {
+      await client.query("ROLLBACK");
+      return null;
+    }
+    await client.query(`
+      INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+      VALUES ('user', $1, 'profile.display_name_updated', 'user', $1, $2::jsonb)
+    `, [userId, JSON.stringify({ displayName })]);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+  return getAuthUser(database, userId);
+}
+
 export async function linkExternalIdentity(database: Database, input: {
   userId: string; provider: string; subject: string; email: string | null; emailVerified: boolean; metadata: unknown;
 }): Promise<void> {
@@ -200,6 +234,7 @@ export async function linkExternalIdentity(database: Database, input: {
 interface UserRow {
   id: string;
   email: string;
+  display_name: string;
   email_verified: boolean;
   password_hash: string | null;
   status: "active" | "disabled";
@@ -211,6 +246,7 @@ function mapPasswordUser(row: UserRow): PasswordUser {
   return {
     id: row.id,
     email: row.email,
+    displayName: row.display_name,
     emailVerified: row.email_verified,
     passwordEnabled: row.password_hash !== null,
     passwordHash: row.password_hash,
@@ -218,6 +254,15 @@ function mapPasswordUser(row: UserRow): PasswordUser {
     engineAccountStatus: row.engine_account_status,
     customerType: row.customer_type,
   };
+}
+
+export function initialDisplayName(email: string, candidate?: string | null): string {
+  const preferred = candidate?.trim().slice(0, 80) ?? "";
+  const preferredResult = displayNameSchema.safeParse(preferred);
+  if (preferredResult.success) return preferredResult.data;
+  const fallback = email.split("@", 1)[0]?.trim().slice(0, 80) || "User";
+  const fallbackResult = displayNameSchema.safeParse(fallback);
+  return fallbackResult.success ? fallbackResult.data : "User";
 }
 
 function withoutPassword(user: PasswordUser): AuthUser {

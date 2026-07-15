@@ -179,6 +179,9 @@ export const authTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 export const verifyEmailSchema = z.object({ token: authTokenSchema }).strict();
 export const resetPasswordSchema = z.object({ token: authTokenSchema, password: authPasswordSchema }).strict();
 export const oauthProviderSchema = z.enum(["google", "github"]);
+export const displayNameSchema = z.string().trim().min(1).max(80)
+  .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), "display name contains unsupported characters");
+export const updateProfileSchema = z.object({ displayName: displayNameSchema }).strict();
 
 export const createApiKeySchema = z.object({
   label: z.string().trim().min(1).max(100).optional(),
@@ -212,6 +215,7 @@ export function multiplierForDiscount(discountPercent: number): number {
 export interface AuthUserView {
   id: string;
   email: string;
+  displayName: string;
   emailVerified: boolean;
   passwordEnabled: boolean;
   engineAccountStatus: "pending" | "active" | "error" | "disabled";

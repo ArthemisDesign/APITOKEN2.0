@@ -8,6 +8,7 @@ import {
   HttpCode,
   HttpException,
   HttpStatus,
+  Patch,
   Post,
   Query,
   Redirect,
@@ -24,6 +25,7 @@ import {
   loginSchema,
   registerSchema,
   resetPasswordSchema,
+  updateProfileSchema,
   verifyEmailSchema,
 } from "@claude-api/contracts";
 import {
@@ -171,6 +173,16 @@ export class AuthController {
   @UseGuards(SessionAuthGuard)
   me(@CurrentAuth() current: RequestAuth): unknown {
     return { user: current.user };
+  }
+
+  @Patch("me")
+  @UseGuards(SessionAuthGuard)
+  async updateProfile(@Body() body: unknown, @CurrentAuth() current: RequestAuth): Promise<unknown> {
+    const parsed = updateProfileSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException("invalid profile data");
+    const user = await this.auth.updateProfile(current.user.id, parsed.data.displayName);
+    if (!user) throw new UnauthorizedException("account is unavailable");
+    return { user };
   }
 
   @Post("logout")

@@ -79,10 +79,14 @@ describe("completed Next.js migration", () => {
   it("keeps reloadable dashboard views in the single canonical /dashboard route", () => {
     const dashboard = readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8");
     const routes = readFileSync(join(appRoot, "dashboard", "dashboard-route.ts"), "utf8");
-    for (const section of ["overview", "keys", "credits", "refer", "promos", "usage", "orders", "profile", "security"]) {
+    for (const section of ["overview", "keys", "credits", "promos", "usage", "profile", "security"]) {
       expect(dashboard).toContain(`section === \"${section}\"`);
       expect(routes).toContain(`\"${section}\"`);
     }
+    expect(dashboard).not.toContain('section === "refer"');
+    expect(dashboard).not.toContain('section === "orders"');
+    expect(routes).not.toContain('"refer"');
+    expect(routes).not.toContain('"orders"');
     expect(dashboard).not.toMatch(/href=[{\"]+\/dashboard\//);
     expect(routes).toContain('`/dashboard?view=${section}`');
     expect(dashboard).toContain("const [section, setSection] = useState<Section>(() => parseDashboardSection(searchParams.get(\"view\")))");
@@ -133,7 +137,10 @@ describe("completed Next.js migration", () => {
     expect(dashboardCopy).toContain('navOverview: "Overview"');
     expect(dashboardCopy).toContain('navOverview: "Обзор"');
     expect(dashboard).toContain("user.passwordEnabled ?");
-    expect(dashboard).toContain("ov-tiles ov-tiles-two");
+    expect(dashboard).toContain('className="overview-core"');
+    expect(dashboard).toContain("officialBalance");
+    expect(dashboardCopy).toContain('platformBalance: "Platform balance"');
+    expect(dashboardCopy).toContain('platformBalance: "Баланс платформы"');
     expect(dashboard).not.toContain('title="API keys" subtitle="Create and revoke keys"');
   });
 

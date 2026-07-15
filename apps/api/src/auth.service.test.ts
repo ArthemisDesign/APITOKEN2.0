@@ -55,7 +55,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
       ipAddress: "127.0.0.1",
     });
     expect(registration.user).toMatchObject({
-      email: "alice@example.com", emailVerified: false, passwordEnabled: true, engineAccountStatus: "pending",
+      email: "alice@example.com", displayName: "alice", emailVerified: false, passwordEnabled: true, engineAccountStatus: "pending",
     });
     expect(registration.session).toBeNull();
 
@@ -182,7 +182,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
       provider: "github", code: "temporary-code", state, stateCookie: state, userAgent: null, ipAddress: null,
     });
     expect(session.user).toMatchObject({
-      email: "developer@example.com", emailVerified: true, passwordEnabled: false, engineAccountStatus: "active",
+      email: "developer@example.com", displayName: "Developer", emailVerified: true, passwordEnabled: false, engineAccountStatus: "active",
     });
     const rows = await database.pool.query(`
       SELECT u.password_hash, u.email_verified, ai.provider,
@@ -190,6 +190,28 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
       FROM users u JOIN auth_identities ai ON ai.user_id = u.id
     `);
     expect(rows.rows[0]).toMatchObject({ password_hash: null, email_verified: true, provider: "github", emails: 0 });
+  });
+
+  it("updates only the authenticated user's display name", async () => {
+    const alice = await registerAndVerify({
+      email: "alice@example.com", password: "correct horse battery staple", userAgent: null, ipAddress: null,
+    });
+    const bob = await registerAndVerify({
+      email: "bob@example.com", password: "another correct battery staple", userAgent: null, ipAddress: null,
+    });
+
+    await expect(auth.updateProfile(alice.user.id, "Alice Studio")).resolves.toMatchObject({
+      id: alice.user.id, displayName: "Alice Studio",
+    });
+    await expect(auth.getUser(bob.user.id)).resolves.toMatchObject({
+      id: bob.user.id, displayName: "bob",
+    });
+    const audit = await database.pool.query<{ actor_id: string; target_id: string; action: string }>(`
+      SELECT actor_id, target_id, action FROM audit_log WHERE action = 'profile.display_name_updated'
+    `);
+    expect(audit.rows).toEqual([{
+      actor_id: alice.user.id, target_id: alice.user.id, action: "profile.display_name_updated",
+    }]);
   });
 
   it("never returns another user's checkout", async () => {

@@ -62,6 +62,6 @@ To regression-test a hard-reloaded dashboard subview returning directly to Overv
 - engine ledger;
 - arbitrary positive whole-USD Cryptomus checkout creation.
 
-Referral rewards, promo codes, Telegram, rich analytics, checkout history, editable profiles, password
-change, session management, and TOTP remain visible only as non-interactive future areas. The frontend
-does not simulate them or store fake server data in browser storage.
+Promo codes, Telegram, rich analytics, password change, session management, and TOTP remain visible
+only as non-interactive future areas. The frontend does not simulate them or store fake server data in
+browser storage. Referral and order workspaces are intentionally not exposed in the dashboard.

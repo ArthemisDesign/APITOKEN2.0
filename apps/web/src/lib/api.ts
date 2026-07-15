@@ -4,6 +4,7 @@ export const API_BASE_URL = (process.env.NEXT_PUBLIC_BACKEND_URL ?? "https://bac
 export interface AuthUser {
   id: string;
   email: string;
+  displayName: string;
   emailVerified: boolean;
   passwordEnabled: boolean;
   engineAccountStatus: "pending" | "active" | "error" | "disabled";
@@ -158,6 +159,9 @@ function defaultError(status: number): string {
 export const api = {
   providers: () => request<ProviderStatus>("/auth/providers"),
   me: () => request<{ user: AuthUser }>("/auth/me"),
+  updateProfile: (displayName: string) => request<{ user: AuthUser }>("/auth/me", {
+    method: "PATCH", body: JSON.stringify({ displayName }),
+  }),
   register: (input: { email: string; password: string; inviteToken?: string }) =>
     request<{ user: AuthUser; verificationRequired: boolean }>("/auth/register", {
       method: "POST", body: JSON.stringify(input),
