@@ -127,7 +127,7 @@ export function Dashboard() {
       </header>
       <div className="app-body-in">
         {error && <div className="banner banner-error">{error} <button className="btn btn-ghost btn-sm" onClick={load}>{copy.retry}</button></div>}
-        {section === "overview" && <Overview account={account} keys={activeKeys} ledger={ledger} open={open} />}
+        {section === "overview" && <Overview account={account} keys={activeKeys} open={open} />}
         {section === "keys" && <ApiKeys keys={keys} issued={issuedKey} sessionRawKeys={sessionRawKeys} onIssuedChange={setIssuedKey} onSessionKey={(id, key) => setSessionRawKeys((prev) => ({ ...prev, [id]: key }))} onChanged={load} />}
         {section === "credits" && <Credits account={account} ledger={ledger} />}
         {section === "usage" && <Usage account={account} ledger={ledger} usage={usage} />}
@@ -147,14 +147,14 @@ function PageHeading({ eyebrow, title, subtitle }: { eyebrow: string; title: str
   return <header className="page-heading"><span className="eyebrow">{eyebrow}</span><h1 className="p-h1">{title}</h1><p className="p-sub">{subtitle}</p></header>;
 }
 
-function Overview({ account, keys, ledger, open }: { account: AccountView; keys: ApiKeyView[]; ledger: LedgerEntry[]; open(section: Section): void }) {
+function Overview({ account, keys, open }: { account: AccountView; keys: ApiKeyView[]; open(section: Section): void }) {
   const copy = useDashboardCopy();
   const fraction = payFraction(account);
   const discount = discountOf(account);
   const officialBalance = nanoNum(account.balanceNano) / fraction;
-  const monthlyPricing = account.pricing?.customerType === "b2c" ? account.pricing : null;
-  const monthStart = monthlyPricing ? Date.parse(monthlyPricing.monthStart) : null;
-  const charged = ledger.filter((entry) => entry.kind === "charge" && (monthStart === null || ledgerMs(entry.timestamp) >= monthStart)).length;
+  // Реализованная ценность: сколько официального Claude API уже получено за реально списанное.
+  const officialUsed = nanoNum(account.spentNano) / fraction;
+  const hasSpent = nanoNum(account.spentNano) > 0;
   return <section className="panel">
     <div className="overview-core">
       <article className="card overview-balance-card">
@@ -174,8 +174,8 @@ function Overview({ account, keys, ledger, open }: { account: AccountView; keys:
           <button className="btn btn-ghost btn-sm" onClick={() => open("keys")}>{keys.length ? copy.manageKeys : copy.getKey}</button>
         </article>
         <article className="card overview-action-card">
-          <div><span className="dlabel">{monthlyPricing ? copy.thisMonth : copy.used}</span><strong>{nanoToUsd(monthlyPricing?.spentNano ?? account.spentNano)}</strong></div>
-          <p>{interpolate(copy.chargeEventsThisMonth, { count: charged })}</p>
+          <div><span className="dlabel">{copy.claudeApiReceived}</span><strong>{hasSpent ? `≈ ${fmtUsd(officialUsed)}` : "—"}</strong></div>
+          <p>{hasSpent ? interpolate(copy.receivedFromCharged, { charged: nanoToUsd(account.spentNano), mult: fmtMult(fraction) }) : copy.receivedEmpty}</p>
           <button className="btn btn-ghost btn-sm" onClick={() => open("usage")}>{copy.viewUsage}</button>
         </article>
       </div>
