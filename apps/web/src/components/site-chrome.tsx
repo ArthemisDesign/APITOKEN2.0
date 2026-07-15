@@ -60,10 +60,11 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
 }
 
 export function ThemeToggle() {
-  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [theme, setTheme] = useState<"light" | "dark">("dark");
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
-    const saved = window.localStorage.getItem("theme") === "dark" ? "dark" : "light";
+    // Тема по умолчанию — тёмная; светлая только если пользователь её явно сохранил.
+    const saved = window.localStorage.getItem("theme") === "light" ? "light" : "dark";
     const timer = window.setTimeout(() => {
       setTheme(saved);
       setMounted(true);
