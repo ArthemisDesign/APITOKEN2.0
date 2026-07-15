@@ -12,6 +12,9 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: Arc<ProxyConfig>,
+    /// Путь к реестру (subscriptions.db) — для read-only админ-обзоров (`/subs`: срок/прокси
+    /// подписок). Money-путь БД к нему не обращается (у него свой AsyncBilling), это только чтение.
+    pub db_path: Arc<String>,
     pub pool: Arc<Pool>,
     pub clients: Arc<Clients>,
     /// Биллинг клиентов (async DB-актор — синхронный SQLite не блокирует воркеры).

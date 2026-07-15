@@ -328,8 +328,8 @@ pub struct SubAdmin {
     pub has_token: bool,
     pub proxy_host: String,     // host:port (без user:pass)
     pub proxy_expire: String,   // ISO из IPRoyal / ""
-    pub proxy_checked_ts: i64,  // 0 = не проверялся
-    pub proxy_ok: Option<bool>, // None = не проверялся
+    pub proxy_ok: Option<bool>, // None = не проверялся (здоровье в осн. из движка/органики)
+    pub added_ts: i64,          // момент добавления токена (срок жизни = added_ts + N дней)
     pub added: String,
 }
 
@@ -337,7 +337,7 @@ pub fn subs_admin(conn: &Connection) -> Result<Vec<SubAdmin>> {
     let mut stmt = conn.prepare(
         "SELECT email, COALESCE(status,'active'), COALESCE(fleet,'prod'), \
          COALESCE(NULLIF(token,''), NULLIF(token_file,'')), COALESCE(proxy,''), \
-         COALESCE(proxy_expire,''), COALESCE(proxy_checked_ts,0), proxy_ok, COALESCE(added,'') \
+         COALESCE(proxy_expire,''), proxy_ok, COALESCE(added_ts,0), COALESCE(added,'') \
          FROM subs ORDER BY COALESCE(added_ts,0)")?;
     let rows = stmt.query_map([], |r| {
         let proxy: String = r.get(4)?;
@@ -348,8 +348,8 @@ pub fn subs_admin(conn: &Connection) -> Result<Vec<SubAdmin>> {
             has_token: r.get::<_, Option<String>>(3)?.map(|s| !s.is_empty()).unwrap_or(false),
             proxy_host: mask_proxy(&proxy),
             proxy_expire: r.get(5)?,
-            proxy_checked_ts: r.get(6)?,
-            proxy_ok: r.get::<_, Option<i64>>(7)?.map(|n| n != 0),
+            proxy_ok: r.get::<_, Option<i64>>(6)?.map(|n| n != 0),
+            added_ts: r.get(7)?,
             added: r.get(8)?,
         })
     })?;

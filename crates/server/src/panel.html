@@ -97,10 +97,10 @@ async function getj(path){
 }
 
 async function tick(){
-  let ov,cap;
-  try{ [ov,cap]=await Promise.all([getj('/overview'),getj('/capacity').catch(()=>null)]); }
+  let ov,cap,subs;
+  try{ [ov,cap,subs]=await Promise.all([getj('/overview'),getj('/capacity').catch(()=>null),getj('/subs').catch(()=>null)]); }
   catch(e){ if(e.auth) return setup('нужен ключ'); return; }
-  render(ov,cap);
+  render(ov,cap,subs);
 }
 
 function verdict(ov){
@@ -123,7 +123,7 @@ function verdict(ov){
     d:`headroom 5h ${xr(h5)} / 7d ${xr(h7)} · подписок ${subs}, цель ×${th} держим`};
 }
 
-function render(ov,cap){
+function render(ov,cap,subs){
   const app=document.getElementById('app');
   const S=ov.supply, D=ov.demand, m=ov.ref_mult, v=verdict(ov);
   const hclass=(x)=>x==null?'ok':(x<1?'bad':x<ov.target_headroom?'warn':'ok');
@@ -181,8 +181,25 @@ function render(ov,cap){
           <div class="s">нужно ${rec.subs_needed} подписок (есть ${ov.subs})</div></div>
       </div>
 
-      <details ${(cap?.per_sub||[]).length<=25?'open':''}>
-        <summary>Подписки · ${ov.subs} (drill-down)</summary>
+      <h2>Жизненный цикл подписок ${subs?`· замена: ${subs.lifetime_days}д от добавления`:''}</h2>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th class="l">подписка</th><th>статус</th><th>добавлена</th><th>живёт ещё</th>
+          <th class="l">прокси</th><th>прокси до</th></tr></thead>
+        <tbody>${(subs?.subs||[]).map(s=>{
+          const dl=s.sub_days_left, dc=dl<=0?'bad':dl<7?'warn':'ok';
+          const pe=(s.proxy_expire||'').slice(0,10);
+          return `<tr>
+            <td class="l">${esc(s.email)}</td>
+            <td class="muted">${esc(s.status)}</td>
+            <td class="muted">${esc((s.added||'').slice(0,10)||'—')}</td>
+            <td><span class="dot ${dc}"></span>${dl>0?dl+' дн':'—'}</td>
+            <td class="l muted">${esc(s.proxy_host||'—')}</td>
+            <td class="muted">${pe||'—'}</td>
+          </tr>`}).join('')||'<tr><td colspan="6" class="muted l">нет подписок</td></tr>'}</tbody>
+      </table></div>
+
+      <details>
+        <summary>Ёмкость по подпискам · ${ov.subs} (live util/cooling)</summary>
         <div style="overflow-x:auto"><table>
           <thead><tr><th class="l">подписка</th><th>5h</th><th>сброс</th><th>7d</th><th>сброс</th>
             <th>ост. 5h</th><th>ост. 7d</th><th>доступно 7d</th></tr></thead>

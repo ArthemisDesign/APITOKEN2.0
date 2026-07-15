@@ -418,6 +418,7 @@ async fn serve() -> Result<()> {
     let poke = std::sync::Arc::new(tokio::sync::Notify::new());
     let app = AppState {
         cfg: Arc::new(s.proxy.clone()),
+        db_path: Arc::new(s.db_path.clone()),
         pool: Arc::new(Pool::new(subs,
             pool::Reserve::new(s.reserve5h, s.reserve7d, s.reserve_jitter),
             s.cap5h_usd, s.cap7d_usd)),

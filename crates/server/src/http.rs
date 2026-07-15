@@ -24,6 +24,10 @@ const DASH_TTL: std::time::Duration = std::time::Duration::from_secs(2);
 type DashCache = std::sync::OnceLock<std::sync::Mutex<Option<(std::time::Instant, serde_json::Value)>>>;
 static OVERVIEW_CACHE: DashCache = std::sync::OnceLock::new();
 static CAPACITY_CACHE: DashCache = std::sync::OnceLock::new();
+static SUBS_CACHE: DashCache = std::sync::OnceLock::new();
+/// Планируемый срок жизни подписки — ровно N дней от добавления токена (`added_ts`). Это НЕ срок
+/// самого OAuth-токена (opaque, недоступен), а наш горизонт планирования замены.
+const SUB_LIFETIME_DAYS: i64 = 30;
 fn cache_get(cell: &DashCache) -> Option<serde_json::Value> {
     cell.get_or_init(|| std::sync::Mutex::new(None)).lock().unwrap().as_ref()
         .filter(|(t, _)| t.elapsed() < DASH_TTL).map(|(_, v)| v.clone())
@@ -40,6 +44,7 @@ pub fn router(app: AppState) -> Router {
         .route("/balance", get(balance))
         .route("/capacity", get(capacity))
         .route("/overview", get(overview))
+        .route("/subs", get(subs))
         .route("/metrics", get(metrics))
         .route("/panel", get(panel))
         // Control-плоскость (`/admin/*`) — управление аккаунтами/ключами/балансом за control-ключом.
@@ -248,6 +253,44 @@ pub(crate) async fn overview_value(app: &AppState) -> serde_json::Value {
         "coverage": {"7d": r2(coverage7)},
         "recommend": {"subs_needed": need, "gap": gap},
     })
+}
+
+/// Lifecycle-обзор подписок (control-authed): срок жизни (added_ts + N дней = план замены) + прокси
+/// (маска host:port + срок из IPRoyal). Живое здоровье (cooling/util) — в /capacity; тут — планирование.
+/// Чистое чтение реестра (read-only, TTL-кэш) — money-путь не трогаем.
+async fn subs(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if !control_authed(&app, &headers, &peer) {
+        Metrics::inc(&app.metrics.auth_failures);
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response();
+    }
+    if let Some(v) = cache_get(&SUBS_CACHE) { return Json(v).into_response(); }
+    let db = app.db_path.as_ref().clone();
+    let rows = tokio::task::spawn_blocking(move || {
+        registry::open(&db).and_then(|c| registry::subs_admin(&c)).unwrap_or_default()
+    }).await.unwrap_or_default();
+    let now = pool::now();
+    let lifetime = SUB_LIFETIME_DAYS * 86400;
+    let days = |secs: i64| ((secs as f64 / 86400.0) * 10.0).round() / 10.0;
+    let list: Vec<_> = rows.iter().map(|s| {
+        let head: String = s.email.chars().take(4).collect();
+        let sub_expire = if s.added_ts > 0 { s.added_ts + lifetime } else { 0 };
+        json!({
+            "email": format!("{head}…"),
+            "status": s.status, "fleet": s.fleet, "added": s.added, "has_token": s.has_token,
+            "sub_expire_ts": sub_expire,
+            "sub_days_left": if sub_expire > 0 { days(sub_expire - now) } else { 0.0 },
+            "proxy_host": s.proxy_host,
+            "proxy_expire": s.proxy_expire,   // из IPRoyal (пусто, пока authbot-loop не заполнил)
+            "proxy_ok": s.proxy_ok,
+        })
+    }).collect();
+    let v = json!({"now": now, "lifetime_days": SUB_LIFETIME_DAYS, "subs": list});
+    cache_put(&SUBS_CACHE, &v);
+    Json(v).into_response()
 }
 
 async fn health() -> Json<serde_json::Value> {
