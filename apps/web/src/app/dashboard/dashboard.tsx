@@ -47,6 +47,7 @@ export function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [issuedKey, setIssuedKey] = useState<string | null>(null);
+  const [sessionRawKeys, setSessionRawKeys] = useState<Record<string, string>>({});
   const [sideOpen, setSideOpen] = useState(false);
 
   const load = useCallback(async () => {
@@ -128,7 +129,7 @@ export function Dashboard() {
       <div className="app-body-in">
         {error && <div className="banner banner-error">{error} <button className="btn btn-ghost btn-sm" onClick={load}>{copy.retry}</button></div>}
         {section === "overview" && <Overview account={account} keys={activeKeys} ledger={ledger} open={open} />}
-        {section === "keys" && <ApiKeys keys={keys} issued={issuedKey} onIssuedChange={setIssuedKey} onChanged={load} />}
+        {section === "keys" && <ApiKeys keys={keys} issued={issuedKey} sessionRawKeys={sessionRawKeys} onIssuedChange={setIssuedKey} onSessionKey={(id, key) => setSessionRawKeys((prev) => ({ ...prev, [id]: key }))} onChanged={load} />}
         {section === "credits" && <Credits account={account} ledger={ledger} />}
         {section === "usage" && <Usage account={account} ledger={ledger} usage={usage} />}
         {section === "profile" && <Profile user={user} open={open} onUpdated={setUser} />}
@@ -231,7 +232,7 @@ function PricingBanner({ account }: { account: AccountView }) {
   </section>;
 }
 
-function ApiKeys({ keys, issued, onIssuedChange, onChanged }: { keys: ApiKeyView[]; issued: string | null; onIssuedChange(value: string | null): void; onChanged(): Promise<void> }) {
+function ApiKeys({ keys, issued, sessionRawKeys, onIssuedChange, onSessionKey, onChanged }: { keys: ApiKeyView[]; issued: string | null; sessionRawKeys: Record<string, string>; onIssuedChange(value: string | null): void; onSessionKey(id: string, rawKey: string): void; onChanged(): Promise<void> }) {
   const copy = useDashboardCopy();
   const { language } = useI18n();
   const [label, setLabel] = useState("");
@@ -239,7 +240,13 @@ function ApiKeys({ keys, issued, onIssuedChange, onChanged }: { keys: ApiKeyView
   const [error, setError] = useState<string | null>(null);
   async function create() {
     setBusy(true); setError(null);
-    try { const created = await api.createApiKey(label.trim() || undefined); onIssuedChange(created.key ?? null); setLabel(""); await onChanged(); }
+    try {
+      const created = await api.createApiKey(label.trim() || undefined);
+      onIssuedChange(created.key ?? null);
+      if (created.key) onSessionKey(created.id, created.key);
+      setLabel("");
+      await onChanged();
+    }
     catch (cause) { setError(cause instanceof Error ? cause.message : copy.createKeyError); }
     finally { setBusy(false); }
   }
@@ -251,7 +258,20 @@ function ApiKeys({ keys, issued, onIssuedChange, onChanged }: { keys: ApiKeyView
   return <section className="panel"><PageHeading eyebrow={copy.keysEyebrow} title={copy.keysTitle} subtitle={copy.keysSubtitle} />
     {issued && <aside className="card secret-card" aria-labelledby="issued-key-title"><div className="secret-head"><h2 id="issued-key-title">{copy.copyNewKeyNow}</h2><span className="chip">{copy.shownOnce}</span></div><p className="secret-warning">{copy.rawSecretWarning}</p><div className="secret-key-field"><code>{issued}</code><CopyButton value={issued} className="secret-copy" /></div><div className="secret-actions"><Link className="btn btn-primary btn-sm" href={`${DOCS_URL}#key=${encodeURIComponent(issued)}`} target="_blank" rel="noreferrer">{copy.openInDocs}</Link><button className="btn btn-ghost btn-sm" onClick={() => onIssuedChange(null)}>{copy.savedKey}</button></div></aside>}
     <section className="dsec"><div className="dsec-head"><h2>{copy.universalKeys}</h2><div className="key-create"><input className="set-in" value={label} onChange={(event) => setLabel(event.target.value)} maxLength={100} placeholder={copy.optionalLabel} /><button className="btn btn-primary btn-sm" disabled={busy} onClick={create}>＋ {copy.newKey}</button></div></div>{error && <div className="banner banner-error">{error}</div>}
-      <div className="keys">{sortedKeys.length === 0 ? <div className="empty-box">{copy.noKeys}</div> : sortedKeys.map((key) => <div className="keyrow" key={key.id}><div className="kval">{key.label || copy.unlabelledKey}</div><div className="kmeta"><code>{key.keyMasked}</code><span>· {copy.created} {new Date(key.createdAt).toLocaleDateString(language === "ru" ? "ru-RU" : "en-US")} · {copy.spent} {normalizeUsd(key.spentUsd)}</span></div><div className="kacts"><span className={`pill ${key.status === "active" ? "" : "pill-soft"}`}>{key.status}</span><Link className="btn btn-ghost btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{copy.docsShort}</Link>{key.status === "active" && <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => revoke(key.id)}>{copy.revoke}</button>}</div></div>)}</div>
+      <div className="keys">{sortedKeys.length === 0 ? <div className="empty-box">{copy.noKeys}</div> : sortedKeys.map((key) => {
+        const raw = sessionRawKeys[key.id];
+        return <div className="keyrow" key={key.id}>
+          <div className="kval">{key.label || copy.unlabelledKey}</div>
+          <div className="kmeta"><code>{key.keyMasked}</code><span>· {copy.created} {new Date(key.createdAt).toLocaleDateString(language === "ru" ? "ru-RU" : "en-US")} · {copy.spent} {normalizeUsd(key.spentUsd)}</span></div>
+          <div className="kacts">
+            <span className={`pill ${key.status === "active" ? "" : "pill-soft"}`}>{key.status}</span>
+            {key.status === "active" ? <>
+              {raw !== undefined ? <><CopyButton value={raw} /><Link className="btn btn-ghost btn-sm" href={`${DOCS_URL}#key=${encodeURIComponent(raw)}`} target="_blank" rel="noreferrer">{copy.docsShort}</Link></> : <Link className="btn btn-ghost btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{copy.docsShort}</Link>}
+              <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => revoke(key.id)}>{copy.revoke}</button>
+            </> : <button className="btn btn-ghost btn-sm" disabled>{copy.docsShort}</button>}
+          </div>
+        </div>;
+      })}</div>
     </section>
   </section>;
 }
