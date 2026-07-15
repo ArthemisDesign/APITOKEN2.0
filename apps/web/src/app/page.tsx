@@ -6,12 +6,16 @@ import { TopUpAmountInput } from "@/components/topup-amount-input";
 import { T } from "@/components/translated";
 
 const models = ["Claude Opus 4.8", "Claude Opus 4.7", "Claude Sonnet 4.6", "Claude Haiku 4.5"];
-const steps = [["step1_h","step1_p"],["step2_h","step2_p"],["step3_h","step3_p"]] as const;
-const features = [["f1_h","f1_p"],["f2_h","f2_p"],["f3_h","f3_p"],["f4_h","f4_p"]] as const;
+// Единый developer-flow: три шага, каждый несёт реально важное (баланс/модели → drop-in эндпоинт → продакшн-биллинг).
+const flow = [
+  { num: "01", h: "step1_h", p: "step1_p", raw: [] as string[], chips: ["chip_models", "chip_tiers", "chip_balance"] },
+  { num: "02", h: "step2_h", p: "step2_p", raw: ["Claude Code", "Cursor", "Cline", "Continue", "OpenClaw", "SDK"], chips: [] as string[] },
+  { num: "03", h: "step3_h", p: "step3_p", raw: [] as string[], chips: ["chip_stream", "chip_limits", "chip_usage"] },
+] as const;
 
 export default function HomePage() {
   return <main>
-      <div className="hero"><div className="wrap hero-grid"><div><T k="hero_eyebrow" as="span" className="eyebrow">Claude API · One gateway</T><h1 className="hero-h1"><T k="hero_h1a" as="span">All Claude models.</T><T k="hero_h1b" as="span">One key.</T></h1><ul className="hero-points"><li><T k="hero_p1">Drop into Claude Code, Cursor, Zed — any tool that needs a key</T></li><li><T k="hero_p2">Add it to any product or workflow</T></li><li><T k="hero_p3">No Anthropic account required</T></li><li><T k="hero_p4">No VPN — works in any country</T></li></ul><div className="hero-cta"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link><Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link></div></div><InteractiveTerminal /></div><div className="wrap home-stats"><div className="stats reveal"><Stat value="8+" label="stat1" /><Stat value="1" label="stat2" /><Stat value="99.9%" label="stat3" /><Stat value="<100ms" label="stat4" /><div className="stat"><T k="stat5v" as="b">minutes</T><T k="stat5">Setup time</T></div></div></div></div>
+      <div className="hero"><div className="wrap hero-grid"><div><T k="hero_eyebrow" as="span" className="eyebrow">Claude API · One gateway</T><h1 className="hero-h1"><T k="hero_h1a" as="span">All Claude models.</T><T k="hero_h1b" as="span">One key.</T></h1><ul className="hero-points"><li><T k="hero_p1">Drop into Claude Code, Cursor, OpenClaw — any tool that needs a key</T></li><li><T k="hero_p2">Add it to any product or workflow</T></li><li><T k="hero_p3">No Anthropic account required</T></li><li><T k="hero_p4">No VPN — works in any country</T></li></ul><div className="hero-cta"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link><Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link></div></div><InteractiveTerminal /></div><div className="wrap home-stats"><div className="stats reveal"><Stat value="8+" label="stat1" /><Stat value="1" label="stat2" /><Stat value="99.9%" label="stat3" /><Stat value="<100ms" label="stat4" /><div className="stat"><T k="stat5v" as="b">minutes</T><T k="stat5">Setup time</T></div></div></div></div>
       <section id="products"><div className="wrap"><div className="prod-grid" data-reveal-stagger>
         <div className="prod">
           <T k="pc1_tag" as="span" className="tag">Claude API</T>
@@ -32,8 +36,14 @@ export default function HomePage() {
           <Link className="btn btn-ghost" href="/register"><T k="start_free">Start free</T></Link>
         </div>
       </div></div></section>
-      <section id="how"><div className="wrap"><SectionHead eyebrow="how_eyebrow" title="how_h2" lead="how_lead" /><div className="steps" data-reveal-stagger>{steps.map(([title, text], index) => <InfoCard key={title} index={index} title={title} text={text} className="step" />)}</div></div></section>
-      <section id="workflow"><div className="wrap"><SectionHead eyebrow="wf_eyebrow" title="wf_h2" /><div className="feats" data-reveal-stagger>{features.map(([title, text], index) => <InfoCard key={title} index={index} title={title} text={text} className="feat" />)}</div></div></section>
+      <section id="how"><div className="wrap"><SectionHead eyebrow="how_eyebrow" title="how_h2" lead="how_lead" />
+        <div className="flow" data-reveal-stagger>{flow.map((step) => <article key={step.num} className="flow-step">
+          <div className="flow-top"><span className="n">{step.num}</span></div>
+          <T k={step.h} as="h3">Step</T>
+          <T k={step.p} as="p">Detail</T>
+          <ul className="flow-chips">{step.raw.map((chip) => <li key={chip}>{chip}</li>)}{step.chips.map((chip) => <li key={chip}><T k={chip}>{chip}</T></li>)}</ul>
+        </article>)}</div>
+      </div></section>
       <section id="pricing"><div className="wrap"><SectionHead eyebrow="pr_eyebrow" title="pr_h2" lead="pr_lead" /><PricingOverview /></div></section>
       <section className="cta-band"><div className="wrap cta-row reveal">
         <T k="cta_h2" as="h2">Ready to start building?</T>
@@ -47,4 +57,3 @@ export default function HomePage() {
 
 function Stat({ value, label }: { value: string; label: string }) { return <div className="stat"><b>{value}</b><T k={label}>Metric</T></div>; }
 function SectionHead({ eyebrow, title, lead }: { eyebrow: string; title: string; lead?: string }) { return <div className="sec-head reveal"><T k={eyebrow} as="span" className="eyebrow">Section</T><T k={title} as="h2">Title</T>{lead && <T k={lead} as="p">Description</T>}</div>; }
-function InfoCard({ index, title, text, className }: { index: number; title: string; text: string; className: string }) { return <div className={className}><div className="n">{String(index + 1).padStart(2,"0")}</div><T k={title} as="h3">Title</T><T k={text} as="p">Description</T></div>; }
