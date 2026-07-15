@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import {
-  api, ApiError, type AccountView, type ApiKeyView, type AuthUser, type CheckoutView, type LedgerEntry,
+  api, ApiError, type AccountView, type ApiKeyView, type AuthUser, type CheckoutView, type LedgerEntry, type UsageView,
 } from "@/lib/api";
 import { nanoToUsd, normalizeUsd, wholeUsdError } from "@/lib/money";
 import { B2C_PRICING_MILESTONES, formatWholeUsd, pricingMilestoneProgress } from "@/lib/pricing-tiers";
@@ -45,6 +45,7 @@ export function Dashboard() {
   const [account, setAccount] = useState<AccountView | null>(null);
   const [keys, setKeys] = useState<ApiKeyView[]>([]);
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
+  const [usage, setUsage] = useState<UsageView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sideOpen, setSideOpen] = useState(false);
@@ -52,10 +53,11 @@ export function Dashboard() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [{ user: current }, accountView, keyList, ledgerView] = await Promise.all([
-        api.me(), api.account(), api.apiKeys(), api.ledger(100),
+      const [{ user: current }, accountView, keyList, ledgerView, usageView] = await Promise.all([
+        // usage() терпимо к отсутствию эндпоинта: пока движок не отдаёт per-model — секция покажет pending.
+        api.me(), api.account(), api.apiKeys(), api.ledger(100), api.usage("30d").catch(() => null),
       ]);
-      setUser(current); setAccount(accountView); setKeys(keyList.keys); setLedger(ledgerView.entries);
+      setUser(current); setAccount(accountView); setKeys(keyList.keys); setLedger(ledgerView.entries); setUsage(usageView);
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 401) { router.replace("/login"); return; }
       setError(cause instanceof Error ? cause.message : copy.loadError);
@@ -121,7 +123,7 @@ export function Dashboard() {
         {section === "overview" && <Overview account={account} keys={activeKeys} ledger={ledger} open={open} />}
         {section === "keys" && <ApiKeys keys={keys} onChanged={load} />}
         {section === "credits" && <Credits account={account} ledger={ledger} />}
-        {section === "usage" && <Usage account={account} ledger={ledger} />}
+        {section === "usage" && <Usage account={account} ledger={ledger} usage={usage} />}
         {section === "profile" && <Profile user={user} open={open} />}
         {section === "security" && <Security user={user} onLogout={logout} />}
         {section === "refer" && <ReferralPanel />}
@@ -316,10 +318,12 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
 const USAGE_WINDOW_DAYS = 30;
 const DAY_MS = 86_400_000;
 
-function Usage({ account, ledger }: { account: AccountView; ledger: LedgerEntry[] }) {
+function Usage({ account, ledger, usage }: { account: AccountView; ledger: LedgerEntry[]; usage: UsageView | null }) {
   const copy = useDashboardCopy();
   const { language } = useI18n();
   const locale = language === "ru" ? "ru-RU" : "en-US";
+  const models = usage?.models ?? [];
+  const modelOfficialTotal = models.reduce((sum, model) => sum + Number(BigInt(model.officialNano)), 0);
 
   // Скидка определяет, сколько реального Claude API стоит каждый списанный доллар:
   // клиент платит долю frac от официальной цены → официальная ценность = списано / frac.
@@ -390,6 +394,31 @@ function Usage({ account, ledger }: { account: AccountView; ledger: LedgerEntry[
       </div>
     </div>
 
+    {usage && <section className="dsec">
+      <div className="dsec-head analytics-heading"><div><h2>{copy.tokensAndModels}</h2><p>{copy.tokensAndModelsSub}</p></div></div>
+      {models.length === 0 ? <div className="empty-box">{copy.tokensPending}</div> : <>
+        <div className="tok-buckets">
+          <div className="tokb"><span className="dlabel">{copy.inputTokens}</span><b>{fmtTokens(usage.buckets.input.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.input.officialNano)}</span></div>
+          <div className="tokb"><span className="dlabel">{copy.outputTokens}</span><b>{fmtTokens(usage.buckets.output.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.output.officialNano)}</span></div>
+          <div className="tokb"><span className="dlabel">{copy.cacheTokens}</span><b>{fmtTokens(usage.buckets.cacheRead.tokens + usage.buckets.cacheWrite.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(addNano(usage.buckets.cacheRead.officialNano, usage.buckets.cacheWrite.officialNano))}</span></div>
+          <div className="tokb"><span className="dlabel">{copy.webSearchLabel}</span><b>{usage.buckets.webSearch.requests.toLocaleString(locale)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.webSearch.officialNano)}</span></div>
+        </div>
+        <div className="mdist" role="img" aria-label={copy.tokensAndModels}>
+          {models.map((model, index) => <div key={model.model} className="mdist-seg" style={{ width: `${modelOfficialTotal > 0 ? Number(BigInt(model.officialNano)) / modelOfficialTotal * 100 : 100 / models.length}%`, background: MODEL_COLORS[index % MODEL_COLORS.length] }} title={`${modelLabel(model.model)} · ${fmtNanoUsd(model.officialNano)}`} />)}
+        </div>
+        <div className="table-scroll"><table className="mtable"><thead><tr><th>{copy.model}</th><th className="tnum">{copy.requests}</th><th className="tnum">{copy.inputShort}</th><th className="tnum">{copy.outputShort}</th><th className="tnum">{copy.cacheShort}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
+          <tbody>{models.map((model, index) => <tr key={model.model}>
+            <td><span className="tkmdl"><span className="tkmdl-dot" style={{ background: MODEL_COLORS[index % MODEL_COLORS.length] }} />{modelLabel(model.model)}</span></td>
+            <td className="tnum">{model.requests.toLocaleString(locale)}</td>
+            <td className="tnum">{fmtTokens(model.inputTokens)}</td>
+            <td className="tnum">{fmtTokens(model.outputTokens)}</td>
+            <td className="tnum">{fmtTokens(model.cacheReadTokens + model.cacheWrite5mTokens + model.cacheWrite1hTokens)}</td>
+            <td className="tnum">{fmtNanoUsd(model.officialNano)}</td>
+            <td className="tnum mprice">{fmtNanoUsd(model.chargedNano)}</td>
+          </tr>)}</tbody></table></div>
+      </>}
+    </section>}
+
     <section className="dsec">
       <div className="dsec-head analytics-heading"><div><h2>{copy.usageByKey}</h2><p>{copy.usageByKeySub}</p></div></div>
       <div className="ubreak-sum">
@@ -416,6 +445,26 @@ function Usage({ account, ledger }: { account: AccountView; ledger: LedgerEntry[
 function startOfDay(ms: number): number { const date = new Date(ms); date.setHours(0, 0, 0, 0); return date.getTime(); }
 function ledgerMs(timestamp: string): number { const numeric = Number(timestamp); return numeric < 10_000_000_000 ? numeric * 1_000 : numeric; }
 function fmtDay(ms: number, locale: string): string { return new Date(ms).toLocaleDateString(locale, { month: "numeric", day: "numeric" }); }
+
+// Палитра сегментов по моделям — средние тона, читаются и на светлой, и на тёмной теме.
+const MODEL_COLORS = ["#3767f0", "#7c5cff", "#12a594", "#e0913a", "#d6455d", "#8b8f9a"];
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toLocaleString("en-US", { maximumFractionDigits: 2 })}M`;
+  if (n >= 1_000) return `${(n / 1_000).toLocaleString("en-US", { maximumFractionDigits: 1 })}K`;
+  return n.toLocaleString("en-US");
+}
+function fmtNanoUsd(nano: string): string {
+  const usd = Number(BigInt(nano)) / 1e9;
+  if (usd > 0 && usd < 0.01) return "<$0.01";
+  return `$${usd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+function addNano(a: string, b: string): string { return (BigInt(a) + BigInt(b)).toString(); }
+function modelLabel(id: string): string {
+  const base = id.replace(/^claude-/i, "").replace(/-\d{8}$/, "");
+  const words: string[] = []; const nums: string[] = [];
+  for (const part of base.split("-")) { if (/^\d+$/.test(part)) nums.push(part); else if (part) words.push(part[0]!.toUpperCase() + part.slice(1)); }
+  return `Claude ${words.join(" ")}${nums.length ? ` ${nums.join(".")}` : ""}`.trim();
+}
 
 function Profile({ user, open }: { user: AuthUser; open(section: Section): void }) {
   const copy = useDashboardCopy();

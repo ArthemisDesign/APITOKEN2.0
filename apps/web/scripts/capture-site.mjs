@@ -129,6 +129,21 @@ const dashboardFixtureScript = `(() => {
     { id: "ledger-1", kind: "charge", amountNano: "185000000", amountUsd: "0.185", keyMasked: "sk-pool-a5b5••••••••eeb", reference: "req_01K0", balanceAfterNano: "4000000000", timestamp: "1784109600" },
     { id: "ledger-2", kind: "topup", amountNano: "4000000000", amountUsd: "4.00", keyMasked: null, reference: "welcome_credit", balanceAfterNano: "4185000000", timestamp: "1784106000" },
   ];
+  const usage = {
+    window: "30d", requests: 171, totalOfficialNano: "29250000000", totalChargedNano: "11700000000",
+    buckets: {
+      input: { tokens: 2500000, officialNano: "9100000000" },
+      output: { tokens: 760000, officialNano: "14000000000" },
+      cacheRead: { tokens: 7400000, officialNano: "2960000000" },
+      cacheWrite: { tokens: 600000, officialNano: "3150000000" },
+      webSearch: { requests: 4, officialNano: "40000000" },
+    },
+    models: [
+      { model: "claude-opus-4-8", requests: 42, inputTokens: 1200000, outputTokens: 380000, cacheReadTokens: 4500000, cacheWrite5mTokens: 320000, cacheWrite1hTokens: 40000, webSearchRequests: 3, officialNano: "20180000000", chargedNano: "8072000000" },
+      { model: "claude-sonnet-5", requests: 71, inputTokens: 900000, outputTokens: 260000, cacheReadTokens: 2100000, cacheWrite5mTokens: 180000, cacheWrite1hTokens: 0, webSearchRequests: 1, officialNano: "7915000000", chargedNano: "3166000000" },
+      { model: "claude-haiku-4-5", requests: 58, inputTokens: 400000, outputTokens: 120000, cacheReadTokens: 800000, cacheWrite5mTokens: 60000, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "1155000000", chargedNano: "462000000" },
+    ],
+  };
   window.fetch = (input, init = {}) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (!url.startsWith(apiBase)) return originalFetch(input, init);
@@ -140,6 +155,7 @@ const dashboardFixtureScript = `(() => {
     if (path === "/account") return json(account);
     if (path === "/api-keys") return json({ keys });
     if (path === "/account/ledger") return json({ entries });
+    if (path === "/account/usage") return json(usage);
     if (path === "/auth/logout") return Promise.resolve(new Response(null, { status: 204 }));
     return json({ message: "Fixture route not found" }, 404);
   };
