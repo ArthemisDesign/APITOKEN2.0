@@ -454,8 +454,63 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
         </tr>)}</tbody></table></div>
     </section>
 
-    <section className="dsec"><h2>{copy.transactions}</h2><div className="table-scroll"><table className="mtable"><thead><tr><th>{copy.time}</th><th>{copy.type}</th><th>{copy.apiKey}</th><th>{copy.reference}</th><th className="tnum">{copy.amount}</th></tr></thead><tbody>{ledger.length === 0 ? <tr><td colSpan={5} className="empty-cell">{copy.noLedger}</td></tr> : ledger.map((entry) => <tr key={entry.id}><td>{formatLedgerTime(entry.timestamp, language)}</td><td><span className="pill pill-soft">{entry.kind}</span></td><td><code>{entry.keyMasked ?? "—"}</code></td><td>{entry.reference ?? "—"}</td><td className="tnum">{normalizeUsd(entry.amountUsd)}</td></tr>)}</tbody></table></div></section>
+    <LedgerHistory ledger={ledger} />
   </section>;
+}
+
+// История ledger сгруппирована по дням: компактные строки-дни (кол-во запросов + сумма), каждая
+// раскрывается в отдельные списания. Топапы/коррекции — отдельными выделенными строками. Так вместо
+// «вечного полотна» из сотен per-request строк видно читаемую сводку, а детали — по клику.
+function LedgerHistory({ ledger }: { ledger: LedgerEntry[] }) {
+  const copy = useDashboardCopy();
+  const { language } = useI18n();
+  const locale = language === "ru" ? "ru-RU" : "en-US";
+  if (ledger.length === 0) return <section className="dsec"><h2>{copy.transactions}</h2><div className="empty-box">{copy.noLedger}</div></section>;
+
+  const groups = new Map<number, { day: number; charges: LedgerEntry[]; events: LedgerEntry[] }>();
+  for (const entry of ledger) {
+    const day = startOfDay(ledgerMs(entry.timestamp));
+    const group = groups.get(day) ?? { day, charges: [], events: [] };
+    if (entry.kind === "charge") group.charges.push(entry); else group.events.push(entry);
+    groups.set(day, group);
+  }
+  const days = [...groups.values()].sort((a, b) => b.day - a.day);
+  const CAP = 50;
+
+  return <section className="dsec"><h2>{copy.transactions}</h2>
+    <div className="txh">
+      {days.map((group) => {
+        const chargeNano = group.charges.reduce((sum, entry) => sum + BigInt(entry.amountNano), 0n);
+        return <div className="txh-day" key={group.day}>
+          <div className="txh-date">{new Date(group.day).toLocaleDateString(locale, { weekday: "short", month: "short", day: "numeric", year: "numeric" })}</div>
+          {group.events.map((entry) => <div className={`txh-ev ${entry.kind}`} key={entry.id}>
+            <span className={`pill ${entry.kind === "topup" ? "pill-good" : "pill-soft"}`}>{entry.kind === "topup" ? copy.topupType : copy.adjustType}</span>
+            <span className="txh-ev-ref">{entry.reference ?? "—"}</span>
+            <span className="txh-ev-amt">{entry.kind === "topup" ? "+" : ""}{fmtUsdSmart(nanoNum(entry.amountNano))}</span>
+          </div>)}
+          {group.charges.length > 0 && <details className="txh-charges">
+            <summary><span className="txh-sum-l"><span className="txh-ic" aria-hidden="true">▸</span>{interpolate(copy.apiRequestsN, { n: group.charges.length })}</span><span className="txh-sum-amt">−{fmtUsdSmart(Number(chargeNano) / 1e9)}</span></summary>
+            <div className="txh-list">
+              {group.charges.slice(0, CAP).map((entry) => <div className="txh-row" key={entry.id}>
+                <span className="txh-time">{new Date(ledgerMs(entry.timestamp)).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+                <code className="txh-key">{entry.keyMasked ?? "—"}</code>
+                <span className="txh-ref">{entry.reference ?? "—"}</span>
+                <span className="txh-amt">{fmtUsdSmart(nanoNum(entry.amountNano))}</span>
+              </div>)}
+              {group.charges.length > CAP && <div className="txh-more">{interpolate(copy.moreRows, { n: group.charges.length - CAP })}</div>}
+            </div>
+          </details>}
+        </div>;
+      })}
+    </div>
+  </section>;
+}
+
+// Мелкие суммы (суб-цент) не округляем в "$0" — показываем честно до значащих знаков.
+function fmtUsdSmart(value: number): string {
+  if (value === 0) return "$0.00";
+  if (value >= 0.01) return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `$${value.toFixed(6).replace(/0+$/, "")}`;
 }
 
 function startOfDay(ms: number): number { const date = new Date(ms); date.setHours(0, 0, 0, 0); return date.getTime(); }
