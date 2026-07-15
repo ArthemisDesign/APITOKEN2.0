@@ -34,6 +34,7 @@ export const oauthProvider = pgEnum("oauth_provider", ["google", "github"]);
 export const users = pgTable("users", {
   id: uuid("id").primaryKey(),
   email: text("email").notNull(),
+  displayName: text("display_name").notNull(),
   emailVerified: boolean("email_verified").notNull().default(false),
   passwordHash: text("password_hash"),
   status: userStatus("status").notNull().default("active"),

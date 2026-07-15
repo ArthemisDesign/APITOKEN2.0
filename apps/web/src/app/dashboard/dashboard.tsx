@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useState, type CSSProperties, type FormEvent } from "react";
 import {
   api, ApiError, type AccountView, type ApiKeyView, type AuthUser, type CheckoutView, type LedgerEntry, type UsageView,
 } from "@/lib/api";
@@ -21,10 +21,8 @@ const navigation: Array<{ section?: Section; label: keyof DashboardCopy; icon: s
   { group: "navStart", section: "overview", label: "navOverview", icon: "▦" },
   { section: "keys", label: "navKeys", icon: "⚿" },
   { section: "credits", label: "navTopUp", icon: "＋" },
-  { group: "navGrowth", section: "refer", label: "navReferral", icon: "◈" },
-  { section: "promos", label: "navPromos", icon: "%" },
+  { group: "navGrowth", section: "promos", label: "navPromos", icon: "%" },
   { group: "navActivity", section: "usage", label: "navUsage", icon: "◔" },
-  { section: "orders", label: "navOrders", icon: "▣" },
   { group: "navAccount", section: "profile", label: "navProfile", icon: "◍" },
   { section: "security", label: "navSecurity", icon: "⛨" },
   { href: DOCS_URL, label: "navDocs", icon: "↗" },
@@ -111,24 +109,22 @@ export function Dashboard() {
           <Link href="/support" target="_blank">{language === "ru" ? "Поддержка" : "Support"}</Link>
           <Link href="/plans" target="_blank">{language === "ru" ? "Цены" : "Pricing"}</Link>
         </nav>
-        <div className="side-user"><span className="side-av">{user.email[0]?.toUpperCase()}</span><div className="side-uinfo"><b>{user.email.split("@")[0]}</b><span>{user.email}</span></div></div>
+        <div className="side-user"><span className="side-av">{(user.displayName || user.email)[0]?.toUpperCase()}</span><div className="side-uinfo"><b>{user.displayName || user.email.split("@")[0]}</b><span>{user.email}</span></div></div>
         <button className="btn btn-ghost btn-sm side-logout" onClick={logout}>{copy.logout}</button>
       </div>
     </aside>
     <button className={`side-scrim ${sideOpen ? "show" : ""}`} onClick={() => setSideOpen(false)} aria-label={copy.closeMenu} />
     <main className="app-main">
-      <header className="app-top"><button className="app-burger" onClick={() => setSideOpen(true)} aria-label={copy.menu}>☰</button><div className="app-top-h"><div className="app-title">{copy[navigation.find((item) => item.section === section)?.label ?? "navOverview"]}</div><span className="app-top-email">{user.email}</span></div><button className="btn btn-primary btn-sm" onClick={() => open("credits")}>{copy.topUp}</button></header>
+      <header className="app-top"><button className="app-burger" onClick={() => setSideOpen(true)} aria-label={copy.menu}>☰</button><div className="app-top-h"><div className="app-title">{copy[navigation.find((item) => item.section === section)?.label ?? "navOverview"]}</div></div><button className="btn btn-primary btn-sm" onClick={() => open("credits")}>{copy.topUp}</button></header>
       <div className="app-body-in">
         {error && <div className="banner banner-error">{error} <button className="btn btn-ghost btn-sm" onClick={load}>{copy.retry}</button></div>}
         {section === "overview" && <Overview account={account} keys={activeKeys} ledger={ledger} open={open} />}
         {section === "keys" && <ApiKeys keys={keys} onChanged={load} />}
         {section === "credits" && <Credits account={account} ledger={ledger} />}
         {section === "usage" && <Usage account={account} ledger={ledger} usage={usage} />}
-        {section === "profile" && <Profile user={user} open={open} />}
+        {section === "profile" && <Profile user={user} open={open} onUpdated={setUser} />}
         {section === "security" && <Security user={user} onLogout={logout} />}
-        {section === "refer" && <ReferralPanel />}
         {section === "promos" && <PromoPanel />}
-        {section === "orders" && <OrdersPanel />}
       </div>
     </main>
   </div>;
@@ -144,24 +140,42 @@ function PageHeading({ eyebrow, title, subtitle }: { eyebrow: string; title: str
 
 function Overview({ account, keys, ledger, open }: { account: AccountView; keys: ApiKeyView[]; ledger: LedgerEntry[]; open(section: Section): void }) {
   const copy = useDashboardCopy();
-  const spent = nanoToUsd(account.spentNano);
-  const total = nanoToUsd((BigInt(account.balanceNano) + BigInt(account.spentNano)).toString());
-  const charged = ledger.filter((entry) => entry.kind === "charge").length;
-  const complete = 1 + Number(keys.length > 0) + Number(BigInt(account.spentNano) > 0n);
+  const fraction = payFraction(account);
+  const discount = discountOf(account);
+  const officialBalance = nanoNum(account.balanceNano) / fraction;
+  const monthlyPricing = account.pricing?.customerType === "b2c" ? account.pricing : null;
+  const monthStart = monthlyPricing ? Date.parse(monthlyPricing.monthStart) : null;
+  const charged = ledger.filter((entry) => entry.kind === "charge" && (monthStart === null || ledgerMs(entry.timestamp) >= monthStart)).length;
   return <section className="panel">
-    <PageHeading eyebrow={copy.workspace} title={copy.overview} subtitle={copy.overviewSubtitle} />
+    <div className="overview-core">
+      <article className="card overview-balance-card">
+        <span className="eyebrow">{copy.platformBalance}</span>
+        <div className="overview-balance-values">
+          <div><strong>{normalizeUsd(account.balanceUsd)}</strong><span>{copy.availableOnPlatform}</span></div>
+          <span className="overview-value-arrow" aria-hidden="true">→</span>
+          <div><strong>≈ {fmtUsd(officialBalance)}</strong><span>{copy.officialApiValue}</span></div>
+        </div>
+        <p>{interpolate(copy.balanceValueAtDiscount, { discount })}</p>
+        <button className="btn btn-primary btn-sm" onClick={() => open("credits")}>{copy.topUp}</button>
+      </article>
+      <div className="overview-actions">
+        <article className="card overview-action-card">
+          <div><span className="dlabel">{copy.activeKeys}</span><strong>{keys.length}</strong></div>
+          <p>{keys.length ? copy.keysReady : copy.noKeysOverview}</p>
+          <button className="btn btn-ghost btn-sm" onClick={() => open("keys")}>{keys.length ? copy.manageKeys : copy.getKey}</button>
+        </article>
+        <article className="card overview-action-card">
+          <div><span className="dlabel">{monthlyPricing ? copy.thisMonth : copy.used}</span><strong>{nanoToUsd(monthlyPricing?.spentNano ?? account.spentNano)}</strong></div>
+          <p>{interpolate(copy.chargeEventsThisMonth, { count: charged })}</p>
+          <button className="btn btn-ghost btn-sm" onClick={() => open("usage")}>{copy.viewUsage}</button>
+        </article>
+      </div>
+    </div>
     <PricingBanner account={account} />
-    <div className="ov-lead"><div className="ov-lead-l card"><span className="chip">{copy.nextStep}</span><h2>{keys.length ? copy.connectKey : copy.createKey}</h2><p>{copy.oneKeyAllModels}</p><button className="btn btn-primary btn-sm" onClick={() => open("keys")}>⚿ {keys.length ? copy.manageKeys : copy.getKey}</button></div>
-      <div className="ov-lead-r card"><div className="rd-head"><div><b>{copy.accountReadiness}</b><span className="rd-steps">{complete}/3 {copy.stepsComplete}</span></div><span className="rd-pct">{Math.round(complete / 3 * 100)}%</span></div><div className="rd-bar"><div className="rd-bar-fill" style={{ width: `${complete / 3 * 100}%` }} /></div><Readiness label={copy.accountActive} done /><Readiness label={copy.apiKey} done={keys.length > 0} /><Readiness label={copy.firstChargedRequest} done={BigInt(account.spentNano) > 0n} /></div></div>
-    <div className="ov-stats"><Stat label={copy.remainingBalance} value={normalizeUsd(account.balanceUsd)} detail={`${total} ${copy.funded}`} /><Stat label={copy.used} value={spent} detail={copy.balanceAfterDiscount} /><Stat label={copy.activeKeys} value={String(keys.length)} detail={copy.issuedCredentials} /><Stat label={copy.recentCharges} value={String(charged)} detail={copy.viewLedger} onClick={() => open("usage")} /></div>
-    <div className="ov-tiles ov-tiles-two"><Tile icon="▤" title={copy.topUpBalance} subtitle={copy.addApiBalance} onClick={() => open("credits")} /><Tile icon="◍" title={copy.profileSecurity} subtitle={copy.accountAccess} onClick={() => open("profile")} /></div>
-    <div className="card connect-card"><div className="cc-head"><div><span className="cc-eyebrow">{copy.connectEyebrow}</span><h2>{copy.connectWithoutDocs}</h2><p>{copy.compatibleEndpoint}</p></div></div><div className="cc-ep"><span className="cc-ep-l">{copy.anthropicEndpoint}</span><div className="ep-row"><code>https://api.apitoken.sale</code><CopyButton value="https://api.apitoken.sale" /></div></div></div>
   </section>;
 }
 
-function Readiness({ label, done }: { label: string; done: boolean }) { const copy = useDashboardCopy(); return <div className="rd-row"><span>{label}</span><span className={`rd-st ${done ? "done" : "todo"}`}>{done ? copy.done : copy.todo}</span></div>; }
 function Stat({ label, value, detail, onClick }: { label: string; value: string; detail: string; onClick?: () => void }) { return <div className="ovstat"><span className="dlabel">{label}</span><b className="num">{value}</b>{onClick ? <button className="dtrend link plain-button" onClick={onClick}>{detail}</button> : <span className="dtrend">{detail}</span>}</div>; }
-function Tile({ icon, title, subtitle, onClick }: { icon: string; title: string; subtitle: string; onClick(): void }) { return <button className="ov-tile" onClick={onClick}><span className="ovt-ic">{icon}</span><span className="ovt-t"><b>{title}</b><span>{subtitle}</span></span><span className="ovt-a">→</span></button>; }
 
 function PricingBanner({ account }: { account: AccountView }) {
   const copy = useDashboardCopy();
@@ -340,7 +354,7 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
   for (const charge of charges) {
     const bucket = startOfDay(ledgerMs(charge.timestamp));
     if (bucket < days[0]!) continue;
-    perDay.set(bucket, (perDay.get(bucket) ?? 0) + Number(charge.amountUsd) / frac);
+    perDay.set(bucket, (perDay.get(bucket) ?? 0) + nanoNum(charge.amountNano) / frac);
   }
   const series = days.map((day) => ({ day, value: perDay.get(day) ?? 0 }));
   const maxValue = Math.max(0, ...series.map((point) => point.value));
@@ -356,7 +370,7 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
     const key = charge.keyMasked ?? "__system__";
     const row = keyMap.get(key) ?? { key, count: 0, net: 0 };
     row.count += 1;
-    row.net += Number(charge.amountUsd);
+    row.net += nanoNum(charge.amountNano);
     keyMap.set(key, row);
   }
   const keyRows = [...keyMap.values()].sort((a, b) => b.net - a.net);
@@ -398,19 +412,21 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
         <div className="tok-buckets">
           <div className="tokb"><span className="dlabel">{copy.inputTokens}</span><b>{fmtTokens(usage.buckets.input.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.input.officialNano)}</span></div>
           <div className="tokb"><span className="dlabel">{copy.outputTokens}</span><b>{fmtTokens(usage.buckets.output.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.output.officialNano)}</span></div>
-          <div className="tokb"><span className="dlabel">{copy.cacheTokens}</span><b>{fmtTokens(usage.buckets.cacheRead.tokens + usage.buckets.cacheWrite.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(addNano(usage.buckets.cacheRead.officialNano, usage.buckets.cacheWrite.officialNano))}</span></div>
-          <div className="tokb"><span className="dlabel">{copy.webSearchLabel}</span><b>{usage.buckets.webSearch.requests.toLocaleString(locale)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.webSearch.officialNano)}</span></div>
+          <div className="tokb"><span className="dlabel">{copy.cacheReadLabel}</span><b>{fmtTokens(usage.buckets.cacheRead.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.cacheRead.officialNano)}</span></div>
+          <div className="tokb"><span className="dlabel">{copy.cacheWriteLabel}</span><b>{fmtTokens(usage.buckets.cacheWrite.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.cacheWrite.officialNano)}</span></div>
+          {usage.buckets.webSearch.requests > 0 && <div className="tokb"><span className="dlabel">{copy.webSearchLabel}</span><b>{usage.buckets.webSearch.requests.toLocaleString(locale)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.webSearch.officialNano)}</span></div>}
         </div>
         <div className="mdist" role="img" aria-label={copy.tokensAndModels}>
           {models.map((model, index) => <div key={model.model} className="mdist-seg" style={{ width: `${modelOfficialTotal > 0 ? Number(BigInt(model.officialNano)) / modelOfficialTotal * 100 : 100 / models.length}%`, background: MODEL_COLORS[index % MODEL_COLORS.length] }} title={`${modelLabel(model.model)} · ${fmtNanoUsd(model.officialNano)}`} />)}
         </div>
-        <div className="table-scroll"><table className="mtable"><thead><tr><th>{copy.model}</th><th className="tnum">{copy.requests}</th><th className="tnum">{copy.inputShort}</th><th className="tnum">{copy.outputShort}</th><th className="tnum">{copy.cacheShort}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
+        <div className="table-scroll"><table className="mtable"><thead><tr><th>{copy.model}</th><th className="tnum">{copy.requests}</th><th className="tnum">{copy.inputShort}</th><th className="tnum">{copy.outputShort}</th><th className="tnum">{copy.cacheRdShort}</th><th className="tnum">{copy.cacheWrShort}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
           <tbody>{models.map((model, index) => <tr key={model.model}>
             <td><span className="tkmdl"><span className="tkmdl-dot" style={{ background: MODEL_COLORS[index % MODEL_COLORS.length] }} />{modelLabel(model.model)}</span></td>
             <td className="tnum">{model.requests.toLocaleString(locale)}</td>
             <td className="tnum">{fmtTokens(model.inputTokens)}</td>
             <td className="tnum">{fmtTokens(model.outputTokens)}</td>
-            <td className="tnum">{fmtTokens(model.cacheReadTokens + model.cacheWrite5mTokens + model.cacheWrite1hTokens)}</td>
+            <td className="tnum">{fmtTokens(model.cacheReadTokens)}</td>
+            <td className="tnum">{fmtTokens(model.cacheWrite5mTokens + model.cacheWrite1hTokens)}</td>
             <td className="tnum">{fmtNanoUsd(model.officialNano)}</td>
             <td className="tnum mprice">{fmtNanoUsd(model.chargedNano)}</td>
           </tr>)}</tbody></table></div>
@@ -456,7 +472,6 @@ function fmtNanoUsd(nano: string): string {
   if (usd > 0 && usd < 0.01) return "<$0.01";
   return `$${usd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
-function addNano(a: string, b: string): string { return (BigInt(a) + BigInt(b)).toString(); }
 function modelLabel(id: string): string {
   const base = id.replace(/^claude-/i, "").replace(/-\d{8}$/, "");
   const words: string[] = []; const nums: string[] = [];
@@ -464,9 +479,28 @@ function modelLabel(id: string): string {
   return `Claude ${words.join(" ")}${nums.length ? ` ${nums.join(".")}` : ""}`.trim();
 }
 
-function Profile({ user, open }: { user: AuthUser; open(section: Section): void }) {
+function Profile({ user, open, onUpdated }: { user: AuthUser; open(section: Section): void; onUpdated(user: AuthUser): void }) {
   const copy = useDashboardCopy();
-  return <section className="panel"><PageHeading eyebrow={copy.navAccount} title={copy.profileTitle} subtitle={copy.profileSubtitle} /><div className="prof-grid"><div className="card"><h2>{copy.profileTitle}</h2><div className="set-row"><span className="set-l">{copy.email}</span><input className="set-in" value={user.email} disabled readOnly /></div><div className="set-row"><span className="set-l">{copy.displayName}</span><input className="set-in" value={user.email.split("@")[0]} disabled readOnly /></div><div className="set-row"><span className="set-l">{copy.userId}</span><span className="uid-wrap"><input className="set-in" value={user.id} readOnly /><CopyButton value={user.id} /></span></div><p className="p-sub">{copy.supportId}</p><div className="profile-meta"><span className="pill">{user.customerType.toUpperCase()}</span><span className="pill pill-soft">Email {user.emailVerified ? copy.verified : copy.pending}</span></div><div className="prof-save"><button className="btn btn-primary btn-sm" disabled>{copy.save}</button><span className="set-saved always-visible">{copy.profileEditingPending}</span></div></div>
+  const persistedDisplayName = user.displayName || user.email.split("@")[0];
+  const [displayName, setDisplayName] = useState(persistedDisplayName);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const trimmedName = displayName.trim();
+  const unchanged = trimmedName === persistedDisplayName;
+  async function saveProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!trimmedName || trimmedName.length > 80 || unchanged || saving) return;
+    setSaving(true); setSaved(false); setSaveError(null);
+    try {
+      const result = await api.updateProfile(trimmedName);
+      onUpdated(result.user); setDisplayName(result.user.displayName); setSaved(true);
+      window.setTimeout(() => setSaved(false), 2_000);
+    } catch (cause) {
+      setSaveError(cause instanceof Error ? cause.message : copy.profileSaveError);
+    } finally { setSaving(false); }
+  }
+  return <section className="panel"><PageHeading eyebrow={copy.navAccount} title={copy.profileTitle} subtitle={copy.profileSubtitle} /><div className="prof-grid"><form className="card" onSubmit={saveProfile}><h2>{copy.profileTitle}</h2><div className="set-row"><label className="set-l" htmlFor="profile-email">{copy.email}</label><input id="profile-email" className="set-in" value={user.email} disabled readOnly /></div><div className="set-row"><label className="set-l" htmlFor="profile-display-name">{copy.displayName}</label><input id="profile-display-name" className="set-in" value={displayName} maxLength={80} autoComplete="name" onChange={(event) => { setDisplayName(event.target.value); setSaved(false); setSaveError(null); }} /></div><div className="set-row profile-id-row"><span className="set-l">{copy.userId}</span><span className="uid-wrap"><input className="set-in" value={user.id} aria-label={copy.userId} disabled readOnly /><CopyButton value={user.id} className="uid-copy-button" /></span></div><p className="p-sub">{copy.supportId}</p><div className="profile-meta"><span className="pill">{user.customerType.toUpperCase()}</span><span className="pill pill-soft">Email {user.emailVerified ? copy.verified : copy.pending}</span></div><div className="prof-save"><button className="btn btn-primary btn-sm" type="submit" disabled={saving || unchanged || trimmedName.length === 0}>{saving ? copy.saving : copy.save}</button>{saved && <span className="set-saved always-visible profile-save-success" role="status">{copy.profileSaved}</span>}{saveError && <span className="profile-save-error" role="alert">{saveError}</span>}</div></form>
     <div className="prof-side"><div className="card"><div className="tg-head"><b>{copy.telegram}</b><span className="pill pill-soft">{copy.notConnected}</span></div><p className="p-sub">{copy.telegramHelp}</p><button className="btn btn-primary btn-sm" disabled>{copy.connectTelegram}</button><div className="set-row compact-top"><span className="set-l">{copy.botLanguage}</span><select className="set-in" disabled defaultValue="English"><option>{copy.english}</option><option>{copy.russian}</option></select></div><ToggleRow label={copy.lowBalanceAlerts} /><ToggleRow label={copy.paymentNotifications} /><ToggleRow label={copy.weeklyDigest} /><div className="set-row"><span className="set-l">{copy.lowBalanceThreshold}</span><input className="set-in set-in-sm" type="number" value="10" disabled readOnly /></div></div><div className="card"><div className="tg-head"><b>{copy.securityTitle}</b></div><p className="p-sub">{copy.securityHelp}</p><button className="btn btn-ghost btn-sm" onClick={() => open("security")}>{copy.securityTitle} →</button></div></div></div></section>;
 }
 
@@ -476,30 +510,39 @@ function Security({ user, onLogout }: { user: AuthUser; onLogout(): Promise<void
   return <section className="panel"><PageHeading eyebrow={copy.navAccount} title={copy.securityTitle} subtitle={copy.securitySubtitle} /><div className="card"><p className="p-sub no-top-margin">{copy.twoFactorHelp}</p><button className="btn btn-primary btn-sm" disabled>{copy.enable2fa}</button><span className="future-note">{copy.backendRequired}</span></div>{user.passwordEnabled ? <section className="dsec"><h2>{copy.password}</h2><div className="set-card"><div className="set-row"><span className="set-l">{copy.currentPassword}</span><input className="set-in" type="password" disabled /></div><div className="set-row"><span className="set-l">{copy.newPassword}</span><input className="set-in" type="password" disabled /></div><button className="btn btn-primary btn-sm" disabled>{copy.updatePassword}</button><span className="future-note">{copy.passwordPending}</span></div></section> : <section className="dsec"><h2>{copy.oauthAccess}</h2><div className="set-card oauth-access-card"><p className="p-sub no-margin">{copy.oauthAccessText}</p></div></section>}<section className="dsec"><h2>{copy.activeSessions}</h2><div className="set-card"><div className="set-row"><span className="set-l"><b>{copy.thisDevice}</b><br /><span className="p-sub session-agent">{browser}</span></span><span className="obadge">{copy.activeNow}</span></div><button className="btn btn-ghost btn-sm" onClick={onLogout}>{copy.logoutSession}</button></div></section></section>;
 }
 
-function ReferralPanel() {
-  const copy = useDashboardCopy();
-  return <section className="panel"><PageHeading eyebrow={copy.navGrowth} title={copy.referralTitle} subtitle={copy.referralSubtitle} /><div className="card ref-linkcard"><span className="cc-ep-l">{copy.referralLink}</span><div className="ref-row"><input className="set-in" value={copy.availableLater} disabled readOnly /><button className="btn btn-primary btn-sm" disabled>{copy.copyLink}</button></div></div><div className="claim-grid"><div className="card claim-card"><div className="claim-top"><b>{copy.claimUsage}</b><span className="pill pill-soft">{copy.pendingUsage}</span></div><div className="claim-amt">$0.00</div><p>{copy.referralUsageHelp}</p><button className="btn btn-primary btn-sm" disabled>{copy.claimUsageAction}</button></div><div className="card claim-card"><div className="claim-top"><b>{copy.claimUsdt}</b><span className="pill pill-soft">{copy.pendingUsdt}</span></div><div className="claim-amt">$0.00</div><p>{copy.usdtReview}</p><button className="btn btn-ghost btn-sm" disabled>{copy.claimUsdtAction}</button></div></div><div className="ov-stats bill4"><Stat label={copy.joined} value="0" detail={copy.notActive} /><Stat label={copy.paid} value="0" detail={copy.notActive} /><Stat label={copy.confirmedRewards} value="0" detail={copy.notActive} /><Stat label={copy.totalUsageReward} value="$0.00" detail={copy.notActive} /></div><section className="dsec"><h2>{copy.rewardsLog}</h2><div className="empty-box">{copy.noRewards}</div></section></section>;
-}
-
 function PromoPanel() {
   const copy = useDashboardCopy();
   return <section className="panel"><PageHeading eyebrow={copy.navGrowth} title={copy.promoTitle} subtitle={copy.promoSubtitle} /><div className="card ref-linkcard"><div className="ref-row"><input className="set-in" placeholder="CS-XXXX-XXXX-XXXX" disabled /><button className="btn btn-primary btn-sm" disabled>{copy.activate}</button></div><span className="future-note">{copy.promoPending}</span></div><section className="dsec"><h2>{copy.myActivations}</h2><div className="table-scroll"><table className="mtable"><thead><tr><th>{copy.code}</th><th>{copy.reward}</th><th>{copy.date}</th></tr></thead><tbody><tr><td colSpan={3} className="empty-cell">{copy.noPromos}</td></tr></tbody></table></div></section></section>;
-}
-
-function OrdersPanel() {
-  const copy = useDashboardCopy();
-  return <section className="panel"><PageHeading eyebrow={copy.navActivity} title={copy.ordersTitle} subtitle={copy.ordersSubtitle} /><div className="table-scroll"><table className="mtable"><thead><tr><th>{copy.order}</th><th>{copy.date}</th><th>{copy.description}</th><th className="tnum">{copy.amount}</th><th>{copy.status}</th></tr></thead><tbody><tr><td colSpan={5} className="empty-cell">{copy.noOrders}</td></tr></tbody></table></div></section>;
 }
 
 function ToggleRow({ label }: { label: string }) {
   return <label className="tgl-row disabled-control"><span>{label}</span><span className="tgl" /></label>;
 }
 
-function CopyButton({ value }: { value: string }) {
+function CopyButton({ value, className }: { value: string; className?: string }) {
   const copyText = useDashboardCopy();
   const [copied, setCopied] = useState(false);
-  async function copy() { await navigator.clipboard.writeText(value); setCopied(true); window.setTimeout(() => setCopied(false), 1_200); }
-  return <button className="btn btn-ghost btn-sm" onClick={copy}>{copied ? copyText.copied : copyText.copy}</button>;
+  async function copy() {
+    let successful = false;
+    try {
+      await navigator.clipboard.writeText(value);
+      successful = true;
+    } catch {
+      const fallback = document.createElement("textarea");
+      fallback.value = value;
+      fallback.setAttribute("readonly", "");
+      fallback.style.position = "fixed";
+      fallback.style.opacity = "0";
+      document.body.appendChild(fallback);
+      fallback.select();
+      successful = document.execCommand("copy");
+      fallback.remove();
+    }
+    if (!successful) return;
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1_200);
+  }
+  return <button type="button" className={`btn btn-ghost btn-sm${className ? ` ${className}` : ""}`} onClick={copy}>{copied ? copyText.copied : copyText.copy}</button>;
 }
 
 function formatLedgerTime(timestamp: string, language: "en" | "ru"): string {

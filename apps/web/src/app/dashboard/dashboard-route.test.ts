@@ -14,5 +14,7 @@ describe("dashboard URL state", () => {
     expect(dashboardHref("overview")).toBe("/dashboard");
     expect(parseDashboardSection(null)).toBe("overview");
     expect(parseDashboardSection("billing-admin")).toBe("overview");
+    expect(parseDashboardSection("refer")).toBe("overview");
+    expect(parseDashboardSection("orders")).toBe("overview");
   });
 });

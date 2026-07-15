@@ -22,6 +22,7 @@ import {
   queueAuthEmailForAddress,
   resolveAuthSession,
   revokeAuthSession,
+  updateUserDisplayName,
   type AuthUser,
   type Database,
   type OAuthProvider,
@@ -202,6 +203,11 @@ export class AuthService {
     return user ? userView(user) : null;
   }
 
+  async updateProfile(userId: string, displayName: string): Promise<AuthUserView | null> {
+    const user = await updateUserDisplayName(this.database, userId, displayName);
+    return user ? userView(user) : null;
+  }
+
   private async issueSession(user: AuthUser, userAgent: string | null, ipAddress: string | null): Promise<AuthSession> {
     const token = randomBytes(32).toString("base64url");
     const ttlSeconds = this.config.get("SESSION_TTL_SECONDS", { infer: true });
@@ -297,6 +303,7 @@ function userView(user: AuthUser): AuthUserView {
   return {
     id: user.id,
     email: user.email,
+    displayName: user.displayName,
     emailVerified: user.emailVerified,
     passwordEnabled: user.passwordEnabled,
     engineAccountStatus: user.engineAccountStatus,

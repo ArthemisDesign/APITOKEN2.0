@@ -62,11 +62,10 @@ export function MotionEffects() {
     };
     window.addEventListener("pointermove", onPointerMove, { passive: true });
 
-    const safety = window.setTimeout(() => targets.forEach((target) => target.classList.add("in")), 2_500);
     return () => {
       window.cancelAnimationFrame(frame); window.cancelAnimationFrame(parallaxFrame);
       window.removeEventListener("scroll", onScroll); window.removeEventListener("pointermove", onPointerMove);
-      observer?.disconnect(); window.clearTimeout(safety);
+      observer?.disconnect();
     };
   }, [pathname]);
   return <div ref={decorRef} className="bg-decor" aria-hidden="true">

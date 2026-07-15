@@ -1,5 +1,5 @@
 {
-  "id": "84891710-9985-423f-afda-d06d07bbf384",
+  "id": "98fb6cb5-fec5-4068-b5f5-68c039deb6bd",
   "prevId": "6e865a47-3753-4f13-a322-706c74497d62",
   "version": "7",
   "dialect": "postgresql",
@@ -959,26 +959,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "cumulative_topup_nano": {
-          "name": "cumulative_topup_nano",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "0"
-        },
-        "tier_window_start": {
-          "name": "tier_window_start",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "tier_window_spent_nano": {
-          "name": "tier_window_spent_nano",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "0"
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -1020,7 +1000,7 @@
         },
         "customer_profiles_tier_check": {
           "name": "customer_profiles_tier_check",
-          "value": "\"customer_profiles\".\"current_tier\" IS NULL OR \"customer_profiles\".\"current_tier\" BETWEEN 0 AND 5"
+          "value": "\"customer_profiles\".\"current_tier\" IS NULL OR \"customer_profiles\".\"current_tier\" BETWEEN 0 AND 4"
         },
         "customer_profiles_type_tier_check": {
           "name": "customer_profiles_type_tier_check",
@@ -2222,6 +2202,12 @@
         },
         "email": {
           "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
           "type": "text",
           "primaryKey": false,
           "notNull": true

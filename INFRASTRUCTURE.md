@@ -121,7 +121,8 @@ never be returned to clients or placed in frontend configuration.
 - PostgreSQL, API and worker services are enabled and running.
 - `GET http://127.0.0.1:3000/v1/health` reports PostgreSQL as healthy. Its engine component remains
   down until the Rust core is migrated to this host; the backend has no legacy-core fallback.
-- Seven commerce migrations are applied.
+- Eight commerce migrations are defined; production must apply migration `0007` before starting the
+  profile-enabled API revision.
 - The worker's credit and pricing processors are active. Until SMTP is connected, its environment
   deliberately uses `NODE_ENV=development` with `EMAIL_DELIVERY_MODE=disabled`; verification and
   reset messages remain durably queued. Change both settings when production SMTP is ready.

@@ -56,12 +56,8 @@ const dashboardCaptures = [
   ["dashboard-topup-dark", "/dashboard?view=credits", 1440, 1000, "dark"],
   ["dashboard-usage-light", "/dashboard?view=usage", 1440, 1000, "light"],
   ["dashboard-usage-dark", "/dashboard?view=usage", 1440, 1000, "dark"],
-  ["dashboard-referral-light", "/dashboard?view=refer", 1440, 1000, "light"],
-  ["dashboard-referral-dark", "/dashboard?view=refer", 1440, 1000, "dark"],
   ["dashboard-promos-light", "/dashboard?view=promos", 1440, 1000, "light"],
   ["dashboard-promos-dark", "/dashboard?view=promos", 1440, 1000, "dark"],
-  ["dashboard-orders-light", "/dashboard?view=orders", 1440, 1000, "light"],
-  ["dashboard-orders-dark", "/dashboard?view=orders", 1440, 1000, "dark"],
   ["dashboard-profile-light", "/dashboard?view=profile", 1440, 1000, "light"],
   ["dashboard-profile-dark", "/dashboard?view=profile", 1440, 1000, "dark"],
   ["dashboard-security-light", "/dashboard?view=security", 1440, 1000, "light"],
@@ -86,6 +82,7 @@ const dashboardFixtureScript = `(() => {
   const user = {
     id: "9d3b0b02-b864-4e77-b690-e3c252c44a9e",
     email: "dashboard.audit@apitoken.sale",
+    displayName: "Dashboard Audit",
     emailVerified: true,
     passwordEnabled: false,
     engineAccountStatus: "active",
@@ -125,23 +122,24 @@ const dashboardFixtureScript = `(() => {
     spentUsd: "12.00",
     createdAt: "2026-07-15T08:30:00.000Z",
   }];
-  const entries = [
-    { id: "ledger-1", kind: "charge", amountNano: "185000000", amountUsd: "0.185", keyMasked: "sk-pool-a5b5••••••••eeb", reference: "req_01K0", balanceAfterNano: "4000000000", timestamp: "1784109600" },
-    { id: "ledger-2", kind: "topup", amountNano: "4000000000", amountUsd: "4.00", keyMasked: null, reference: "welcome_credit", balanceAfterNano: "4185000000", timestamp: "1784106000" },
-  ];
+  const nowS = Math.floor(Date.now() / 1000), DAY = 86400;
+  // реальный формат движка: amountUsd со знаком "$" и 6 знаками (раньше ломал график через Number())
+  const chg = [[0, "1246000000"], [0, "742000000"], [1, "918000000"], [2, "655000000"], [3, "1330000000"], [4, "540000000"], [6, "805000000"], [8, "1050000000"]];
+  const entries = chg.map((c, i) => ({ id: "c" + i, kind: "charge", amountNano: c[1], amountUsd: "$" + (Number(c[1]) / 1e9).toFixed(6), keyMasked: "sk-pool-a5b5••••••••eeb", reference: "req_0" + i, balanceAfterNano: null, timestamp: String(nowS - c[0] * DAY - i * 137) }));
+  entries.push({ id: "t0", kind: "topup", amountNano: "200000000000", amountUsd: "$200.000000", keyMasked: null, reference: "cryptomus_9f2c1a", balanceAfterNano: null, timestamp: String(nowS - 3 * DAY) });
   const usage = {
-    window: "30d", requests: 171, totalOfficialNano: "29250000000", totalChargedNano: "11700000000",
+    window: "30d", requests: 59, totalOfficialNano: "20234893050", totalChargedNano: "8093957220",
     buckets: {
-      input: { tokens: 2500000, officialNano: "9100000000" },
-      output: { tokens: 760000, officialNano: "14000000000" },
-      cacheRead: { tokens: 7400000, officialNano: "2960000000" },
-      cacheWrite: { tokens: 600000, officialNano: "3150000000" },
-      webSearch: { requests: 4, officialNano: "40000000" },
+      input: { tokens: 3781269, officialNano: "15124021000" },
+      output: { tokens: 15168, officialNano: "228560000" },
+      cacheRead: { tokens: 4866858, officialNano: "1840525800" },
+      cacheWrite: { tokens: 741129, officialNano: "3041786250" },
+      webSearch: { requests: 0, officialNano: "0" },
     },
     models: [
-      { model: "claude-opus-4-8", requests: 42, inputTokens: 1200000, outputTokens: 380000, cacheReadTokens: 4500000, cacheWrite5mTokens: 320000, cacheWrite1hTokens: 40000, webSearchRequests: 3, officialNano: "20180000000", chargedNano: "8072000000" },
-      { model: "claude-sonnet-5", requests: 71, inputTokens: 900000, outputTokens: 260000, cacheReadTokens: 2100000, cacheWrite5mTokens: 180000, cacheWrite1hTokens: 0, webSearchRequests: 1, officialNano: "7915000000", chargedNano: "3166000000" },
-      { model: "claude-haiku-4-5", requests: 58, inputTokens: 400000, outputTokens: 120000, cacheReadTokens: 800000, cacheWrite5mTokens: 60000, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "1155000000", chargedNano: "462000000" },
+      { model: "claude-opus-4-8", requests: 27, inputTokens: 1890211, outputTokens: 5100, cacheReadTokens: 2256400, cacheWrite5mTokens: 282050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "12469567500", chargedNano: "4987827000" },
+      { model: "claude-sonnet-5", requests: 27, inputTokens: 1890954, outputTokens: 5072, cacheReadTokens: 2256400, cacheWrite5mTokens: 282050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "7483549500", chargedNano: "2993419800" },
+      { model: "claude-haiku-4-5-20251001", requests: 5, inputTokens: 104, outputTokens: 4996, cacheReadTokens: 354058, cacheWrite5mTokens: 177029, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "281776050", chargedNano: "112710420" },
     ],
   };
   window.fetch = (input, init = {}) => {
@@ -151,7 +149,12 @@ const dashboardFixtureScript = `(() => {
     const path = parsed.pathname.slice("/v1".length);
     if (location.search.includes("audit-auth=1") && path === "/auth/me") return json({ user });
     if (!location.pathname.startsWith("/dashboard")) return originalFetch(input, init);
-    if (path === "/auth/me") return json({ user });
+    if (path === "/auth/me") {
+      if ((init.method || "GET").toUpperCase() === "PATCH") {
+        user.displayName = JSON.parse(String(init.body || "{}")).displayName || user.displayName;
+      }
+      return json({ user });
+    }
     if (path === "/account") return json(account);
     if (path === "/api-keys") return json({ keys });
     if (path === "/account/ledger") return json({ entries });
@@ -340,6 +343,16 @@ async function waitForCondition(client, expression, description, timeoutMs = 8_0
 }
 
 async function verifyDashboardRouting(client) {
+  for (const removedView of ["refer", "orders"]) {
+    const removedLoaded = client.once("Page.loadEventFired");
+    await client.send("Page.navigate", { url: new URL(`/dashboard?view=${removedView}`, baseUrl).href });
+    await removedLoaded;
+    await waitForCondition(
+      client,
+      `document.querySelector('[data-dashboard-section="overview"]')?.getAttribute('aria-current') === 'page' && Boolean(document.querySelector('.overview-core'))`,
+      `the removed ${removedView} route to fall back to Overview`,
+    );
+  }
   const loaded = client.once("Page.loadEventFired");
   await client.send("Page.navigate", { url: new URL("/dashboard?view=credits", baseUrl).href });
   await loaded;
@@ -354,12 +367,12 @@ async function verifyDashboardRouting(client) {
   try {
     await waitForCondition(
       client,
-      `location.pathname === '/dashboard' && location.search === '' && document.querySelector('.p-h1')?.textContent?.trim() === 'Overview'`,
+      `location.pathname === '/dashboard' && location.search === '' && document.querySelector('.app-title')?.textContent?.trim() === 'Overview' && Boolean(document.querySelector('.overview-core'))`,
       "direct navigation from a reloaded subview to Overview",
     );
   } catch (error) {
     const state = await client.send("Runtime.evaluate", {
-      expression: `JSON.stringify({ href: location.href, heading: document.querySelector('.p-h1')?.textContent?.trim(), active: document.querySelector('[data-dashboard-section][aria-current="page"]')?.dataset.dashboardSection })`,
+      expression: `JSON.stringify({ href: location.href, heading: document.querySelector('.app-title')?.textContent?.trim(), active: document.querySelector('[data-dashboard-section][aria-current="page"]')?.dataset.dashboardSection })`,
       returnByValue: true,
     });
     throw new Error(`${error instanceof Error ? error.message : error} Browser state: ${state.result.value}`);
@@ -375,7 +388,7 @@ async function verifyDashboardRouting(client) {
   await client.send("Runtime.evaluate", { expression: "history.back()" });
   await waitForCondition(
     client,
-    `location.pathname === '/dashboard' && location.search === '' && document.querySelector('.p-h1')?.textContent?.trim() === 'Overview'`,
+    `location.pathname === '/dashboard' && location.search === '' && document.querySelector('.app-title')?.textContent?.trim() === 'Overview' && Boolean(document.querySelector('.overview-core'))`,
     "Back navigation to Overview",
   );
   await client.send("Runtime.evaluate", { expression: "history.forward()" });
@@ -384,7 +397,95 @@ async function verifyDashboardRouting(client) {
     `location.search === '?view=keys' && document.querySelector('.p-h1')?.textContent?.trim() === 'API keys'`,
     "Forward navigation to API keys",
   );
-  process.stdout.write("Verified reload, direct Overview, and Back/Forward dashboard routing\n");
+  process.stdout.write("Verified removed-view fallbacks, reload, direct Overview, and Back/Forward dashboard routing\n");
+}
+
+async function verifyProfileBehavior(client) {
+  const loaded = client.once("Page.loadEventFired");
+  await client.send("Page.navigate", { url: new URL("/dashboard?view=profile", baseUrl).href });
+  await loaded;
+  await waitForCondition(
+    client,
+    `Boolean(document.querySelector('#profile-display-name')) && Boolean(document.querySelector('.uid-copy-button'))`,
+    "the editable profile form",
+  );
+  await client.send("Browser.grantPermissions", {
+    origin: new URL(baseUrl).origin,
+    permissions: ["clipboardReadWrite"],
+  });
+  const before = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const input = document.querySelector('.profile-id-row .set-in');
+      const rect = input?.getBoundingClientRect();
+      const style = input ? getComputedStyle(input) : null;
+      return JSON.stringify({
+        value: input?.value,
+        disabled: input?.disabled,
+        readOnly: input?.readOnly,
+        className: input?.className,
+        rect: rect && { width: rect.width, height: rect.height },
+        border: style?.border,
+        background: style?.backgroundColor,
+      });
+    })()`,
+    returnByValue: true,
+  });
+  const copyRect = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const rect = document.querySelector('.uid-copy-button')?.getBoundingClientRect();
+      return rect && { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    })()`,
+    returnByValue: true,
+  });
+  await client.send("Page.bringToFront");
+  const copyX = copyRect.result.value.x + copyRect.result.value.width / 2;
+  const copyY = copyRect.result.value.y + copyRect.result.value.height / 2;
+  await client.send("Input.dispatchMouseEvent", { type: "mousePressed", x: copyX, y: copyY, button: "left", clickCount: 1 });
+  await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: copyX, y: copyY, button: "left", clickCount: 1 });
+  await waitForCondition(
+    client,
+    `document.querySelector('.uid-copy-button')?.textContent?.trim() === 'Copied'`,
+    "independent user-ID copy feedback",
+  );
+  const after = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const input = document.querySelector('.profile-id-row .set-in');
+      const rect = input?.getBoundingClientRect();
+      const style = input ? getComputedStyle(input) : null;
+      return JSON.stringify({
+        value: input?.value,
+        disabled: input?.disabled,
+        readOnly: input?.readOnly,
+        className: input?.className,
+        rect: rect && { width: rect.width, height: rect.height },
+        border: style?.border,
+        background: style?.backgroundColor,
+      });
+    })()`,
+    returnByValue: true,
+  });
+  if (before.result.value !== after.result.value) {
+    throw new Error(`Copy feedback changed the user-ID field: ${before.result.value} -> ${after.result.value}`);
+  }
+  const state = JSON.parse(before.result.value);
+  if (!state.disabled || !state.readOnly || !state.value) {
+    throw new Error(`User ID is not immutable: ${before.result.value}`);
+  }
+  await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const input = document.querySelector('#profile-display-name');
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'Updated Dashboard');
+      input?.dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('.prof-save button')?.click();
+    })()`,
+  });
+  await waitForCondition(
+    client,
+    `document.querySelector('.side-uinfo b')?.textContent?.trim() === 'Updated Dashboard' && Boolean(document.querySelector('.profile-save-success'))`,
+    "the saved display name to update the authenticated profile shell",
+  );
+  process.stdout.write("Verified editable display name and immutable, independently copied user ID\n");
 }
 
 async function verifyPersistentSiteRouting(client) {
@@ -557,6 +658,7 @@ try {
     process.stdout.write(`Captured ${capture[0]}\n`);
   }
   if (process.env.AUDIT_VERIFY_ROUTING === "1") await verifyDashboardRouting(client);
+  if (process.env.AUDIT_VERIFY_PROFILE === "1") await verifyProfileBehavior(client);
   if (process.env.AUDIT_VERIFY_SITE_ROUTING === "1") await verifyPersistentSiteRouting(client);
   if (process.env.AUDIT_VERIFY_COMPLIANCE === "1") await verifyComplianceRouting(client);
   await writeFile(path.join(outputDirectory, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { B2C_PRICING_TIERS } from "@claude-api/contracts";
 import type { Database } from "./client.js";
-import type { AuthUser, RegisteredAuthUser } from "./auth.js";
+import { initialDisplayName, type AuthUser, type RegisteredAuthUser } from "./auth.js";
 import { lockBusinessInvite, utcMonthStart } from "./pricing.js";
 
 export type OAuthProvider = "google" | "github";
@@ -70,7 +70,7 @@ export async function findExternalAuthUser(
   subject: string,
 ): Promise<AuthUser | null> {
   const result = await database.pool.query<ExternalUserRow>(`
-    SELECT u.id, u.email, u.email_verified, u.status,
+    SELECT u.id, u.email, u.display_name, u.email_verified, u.status,
            (u.password_hash IS NOT NULL) AS password_enabled,
            COALESCE(ea.status, 'pending') AS engine_account_status,
            COALESCE(cp.customer_type, 'b2c') AS customer_type
@@ -109,8 +109,8 @@ export async function completeExternalSignIn(
     const engineMultiplierBp = invite?.multiplierBp ?? B2C_PRICING_TIERS[0].multiplierBp;
     const monthStart = utcMonthStart();
     await client.query(`
-      INSERT INTO users (id, email, email_verified, password_hash) VALUES ($1, $2, true, NULL)
-    `, [userId, identity.email]);
+      INSERT INTO users (id, email, display_name, email_verified, password_hash) VALUES ($1, $2, $3, true, NULL)
+    `, [userId, identity.email, initialDisplayName(identity.email, identity.displayName)]);
     await client.query(`
       INSERT INTO auth_identities (id, user_id, provider, subject, email, email_verified, metadata)
       VALUES ($1, $2, $3, $4, $5, true, $6::jsonb)
@@ -144,6 +144,7 @@ export async function completeExternalSignIn(
     return {
       id: userId,
       email: identity.email,
+      displayName: initialDisplayName(identity.email, identity.displayName),
       emailVerified: true,
       passwordEnabled: false,
       status: "active",
@@ -174,6 +175,7 @@ async function multiplierForUser(database: Database, userId: string): Promise<nu
 interface ExternalUserRow {
   id: string;
   email: string;
+  display_name: string;
   email_verified: boolean;
   password_enabled: boolean;
   status: "active" | "disabled";
@@ -185,6 +187,7 @@ function mapExternalUser(row: ExternalUserRow): AuthUser {
   return {
     id: row.id,
     email: row.email,
+    displayName: row.display_name,
     emailVerified: row.email_verified,
     passwordEnabled: row.password_enabled,
     status: row.status,

@@ -23,6 +23,17 @@ describe("browser API client", () => {
     expect(JSON.parse(String(request.body))).toEqual({ amountUsd: "9007199254740993", provider: "cryptomus" });
   });
 
+  it("updates only the display name through the authenticated profile endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ user: { id: "u", displayName: "Alice" } }), {
+      status: 200, headers: { "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    await api.updateProfile("Alice");
+    expect(fetchMock).toHaveBeenCalledWith("https://backend.apitoken.sale/v1/auth/me", expect.objectContaining({
+      method: "PATCH", credentials: "include", body: JSON.stringify({ displayName: "Alice" }),
+    }));
+  });
+
   it("surfaces backend errors with their status", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "authentication required" }), { status: 401 })));
     const failure = await api.me().catch((error: unknown) => error);

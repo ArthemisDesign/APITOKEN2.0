@@ -7,7 +7,7 @@ const legacyPages = [
 ];
 
 const dashboardSections = [
-  "overview", "keys", "credits", "refer", "promos", "usage", "orders", "profile", "security",
+  "overview", "keys", "credits", "promos", "usage", "profile", "security",
 ];
 
 const nextConfig: NextConfig = {
