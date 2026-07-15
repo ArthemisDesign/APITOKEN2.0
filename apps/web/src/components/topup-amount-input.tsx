@@ -1,16 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { B2C_PRICING_MILESTONES } from "@/lib/pricing-tiers";
+import { B2C_PRICING_MILESTONES, tierIndexForTopups } from "@/lib/pricing-tiers";
 import { useI18n } from "./i18n-provider";
-
-// Prepay-модель: сумма разового пополнения разблокирует тир (те же пороги, что и месячный расход) —
-// чем больше кладёшь сразу, тем выше скидка. Согласовано с логикой дашборда.
-function tierForAmount(amtUsd: number): typeof B2C_PRICING_MILESTONES[number] {
-  let tier: typeof B2C_PRICING_MILESTONES[number] = B2C_PRICING_MILESTONES[0];
-  for (const milestone of B2C_PRICING_MILESTONES) if (amtUsd >= Number(milestone.platformSpendUsd)) tier = milestone;
-  return tier;
-}
 
 export function TopUpAmountInput({ className, initialAmount, showReceive }: { className: string; initialAmount: string; showReceive?: boolean }) {
   const [amount, setAmount] = useState(initialAmount);
@@ -32,12 +24,17 @@ export function TopUpAmountInput({ className, initialAmount, showReceive }: { cl
   if (!showReceive) return field;
 
   const amt = Number(amount) || 0;
-  const tier = tierForAmount(amt);
-  const receive = amt / ((100 - tier.discountPercent) / 100);
+  const idx = tierIndexForTopups(amt);
+  const tier = idx >= 0 ? B2C_PRICING_MILESTONES[idx] : null;
+  const receive = amt / (tier ? (100 - tier.discountPercent) / 100 : 1);
   const value = `$${receive.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
-  const note = language === "ru"
-    ? `Claude API · тариф ${tier.label} −${tier.discountPercent}% — при таком расходе за календарный месяц`
-    : `of Claude API · ${tier.label} tier −${tier.discountPercent}% — at this spend within the calendar month`;
+  const note = tier
+    ? (language === "ru"
+        ? `Claude API · тариф ${tier.label} −${tier.discountPercent}% · держать $${Number(tier.holdUsd)}/30д`
+        : `of Claude API · ${tier.label} tier −${tier.discountPercent}% · keep $${Number(tier.holdUsd)}/30d`)
+    : (language === "ru"
+        ? "без скидки · пополни от $100, чтобы получить тариф"
+        : "no discount · top up from $100 to reach a tier");
   return <div className="topup-live">
     {field}
     <div className="topup-live-out">

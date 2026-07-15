@@ -8,7 +8,7 @@ import {
   api, ApiError, type AccountView, type ApiKeyView, type AuthUser, type CheckoutView, type LedgerEntry, type UsageView,
 } from "@/lib/api";
 import { nanoToUsd, normalizeUsd, wholeUsdError } from "@/lib/money";
-import { B2C_PRICING_MILESTONES, formatWholeUsd, pricingMilestoneProgress } from "@/lib/pricing-tiers";
+import { B2C_PRICING_MILESTONES, formatWholeUsd, pricingMilestoneProgress, tierIndexForTopups } from "@/lib/pricing-tiers";
 import { useI18n } from "@/components/i18n-provider";
 import { ThemeToggle } from "@/components/site-chrome";
 import { dashboardCopy, type DashboardCopy } from "@/lib/dashboard-copy";
@@ -189,7 +189,7 @@ function PricingBanner({ account }: { account: AccountView }) {
           const state = index < currentIndex ? "complete" : index === currentIndex ? "current" : "upcoming";
           return <li className={`pricing-milestone ${state}`} key={tier.code}>
             <span className="pricing-milestone-dot" aria-hidden="true">{index < currentIndex ? "✓" : index + 1}</span>
-            <div><strong>{tierName(copy, tier.code)}</strong><span>{tier.discountPercent}% {copy.discount}</span><em className="pm-mult">{multFromDiscount(tier.discountPercent)} {copy.valueMultiplier}</em><small>{index === 0 ? copy.startingTier : interpolate(copy.atSpend, { amount: formatWholeUsd(tier.platformSpendUsd) })}</small></div>
+            <div><strong>{tierName(copy, tier.code)}</strong><span>{tier.discountPercent}% {copy.discount}</span><em className="pm-mult">{multFromDiscount(tier.discountPercent)} {copy.valueMultiplier}</em><small>{interpolate(copy.tierGetHold, { get: formatWholeUsd(tier.platformSpendUsd), hold: formatWholeUsd(tier.holdUsd) })}</small></div>
           </li>;
         })}
       </ol>
@@ -224,7 +224,7 @@ function ApiKeys({ keys, onChanged }: { keys: ApiKeyView[]; onChanged(): Promise
   </section>;
 }
 
-const TOPUP_PRESETS = [20, 50, 100, 200] as const;
+const TOPUP_PRESETS = [100, 250, 500, 1000] as const;
 
 function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntry[] }) {
   const copy = useDashboardCopy();
@@ -244,32 +244,28 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
     finally { setBusy(false); }
   }
 
-  // Разовое пополнение может РАЗБЛОКИРОВАТЬ более высокий тариф (по тем же порогам расхода):
-  // чем больше кладёшь сразу, тем выше скидка → тем больше реального Claude API получаешь.
+  // Prepay-модель: тир определяется НАКОПЛЕННОЙ суммой пополнений (не расходом). Показываем, какой
+  // тир даёт пополнение на введённую сумму, ценность по его скидке и условие удержания (50%/30 дней).
   const pricing = account.pricing;
   const isB2c = pricing?.customerType === "b2c";
-  const currentIdx = pricing?.customerType === "b2c"
-    ? Math.max(0, B2C_PRICING_MILESTONES.findIndex((m) => m.code === pricing.tier)) : 0;
-  const baseFrac = payFraction(account);
   const amt = Number(amount) || 0;
-  const fracForAmount = (a: number) => isB2c
-    ? (100 - B2C_PRICING_MILESTONES[Math.max(currentIdx, tierIndexForAmount(a))].discountPercent) / 100
-    : baseFrac;
-  const unlockedIdx = isB2c ? Math.max(currentIdx, tierIndexForAmount(amt)) : currentIdx;
-  const unlockedTier = B2C_PRICING_MILESTONES[unlockedIdx];
-  const unlockedDiscount = isB2c ? unlockedTier.discountPercent : discountOf(account);
-  const unlockedFrac = fracForAmount(amt);
-  const apiValue = amt / unlockedFrac;
-  const isUpgrade = isB2c && unlockedIdx > currentIdx;
-  const balanceApi = nanoNum(account.balanceNano) / baseFrac;
-  const upsell = isB2c && unlockedIdx + 1 < B2C_PRICING_MILESTONES.length ? B2C_PRICING_MILESTONES[unlockedIdx + 1] : null;
+  const reachedIdx = isB2c ? tierIndexForTopups(amt) : -1;
+  const reachedTier = reachedIdx >= 0 ? B2C_PRICING_MILESTONES[reachedIdx] : null;
+  const discount = isB2c ? (reachedTier ? reachedTier.discountPercent : 0) : discountOf(account);
+  const frac = isB2c ? (reachedTier ? (100 - discount) / 100 : 1) : payFraction(account);
+  const hasTier = discount > 0;
+  const apiValue = amt / frac;
+  const nextTier = isB2c && reachedIdx + 1 < B2C_PRICING_MILESTONES.length ? B2C_PRICING_MILESTONES[reachedIdx + 1] : null;
+  const currentIdx = pricing?.customerType === "b2c" ? B2C_PRICING_MILESTONES.findIndex((m) => m.code === pricing.tier) : -1;
+  const balanceApi = nanoNum(account.balanceNano) / payFraction(account);
+  const fracForTopup = (a: number) => { const i = tierIndexForTopups(a); return i >= 0 ? (100 - B2C_PRICING_MILESTONES[i].discountPercent) / 100 : 1; };
   const topups = ledger.filter((entry) => entry.kind === "topup");
 
   return <section className="panel"><PageHeading eyebrow={copy.keysEyebrow} title={copy.creditsTitle} subtitle={copy.creditsSubtitle} />
     <div className="ov-stats bill3">
       <div className="ovstat"><span className="dlabel">{copy.currentBalance}</span><b className="num">{normalizeUsd(account.balanceUsd)}</b><span className="dtrend">{nanoNum(account.balanceNano) > 0 ? interpolate(copy.valueOfBalance, { value: fmtUsd(balanceApi) }) : copy.available}</span></div>
       <Stat label={copy.used} value={nanoToUsd(account.spentNano)} detail={copy.balanceAfterDiscount} />
-      <div className="ovstat"><span className="dlabel">{copy.currentTier}</span><b className="num">{isB2c ? tierName(copy, B2C_PRICING_MILESTONES[currentIdx].code) : copy.businessRate}</b><span className="dtrend">{discountOf(account)}% {copy.discount} · {fmtMult(baseFrac)} {copy.valueMultiplier}</span></div>
+      <div className="ovstat"><span className="dlabel">{copy.currentTier}</span><b className="num">{isB2c ? (currentIdx >= 0 ? tierName(copy, B2C_PRICING_MILESTONES[currentIdx].code) : copy.noTierYet) : copy.businessRate}</b><span className="dtrend">{discountOf(account)}% {copy.discount} · {fmtMult(payFraction(account))} {copy.valueMultiplier}</span></div>
     </div>
 
     <div className="card topup-convert">
@@ -277,19 +273,21 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
       <div className="tc-body">
         <div className="tc-input">
           <label className="tc-field"><span className="currency-prefix">$</span><input className="set-in" inputMode="numeric" pattern="[1-9][0-9]*" value={amount} onChange={(event) => setAmount(event.target.value.replace(/\D/g, ""))} placeholder="100" /></label>
-          <div className="tc-presets" role="group" aria-label={copy.quickAmounts}>{TOPUP_PRESETS.map((preset) => <button key={preset} type="button" className={`tc-preset ${amount === String(preset) ? "on" : ""}`} onClick={() => { setAmount(String(preset)); setError(null); }}><b>${preset}</b><span>{fmtUsd(preset / fracForAmount(preset))}</span></button>)}</div>
+          <div className="tc-presets" role="group" aria-label={copy.quickAmounts}>{TOPUP_PRESETS.map((preset) => <button key={preset} type="button" className={`tc-preset ${amount === String(preset) ? "on" : ""}`} onClick={() => { setAmount(String(preset)); setError(null); }}><b>${preset}</b><span>{fmtUsd(preset / fracForTopup(preset))}</span></button>)}</div>
         </div>
         <div className="tc-arrow" aria-hidden="true">→</div>
-        <div className={`tc-receive ${isUpgrade ? "tc-receive-up" : ""}`}>
+        <div className={`tc-receive ${hasTier ? "tc-receive-up" : ""}`}>
           <span className="tc-recv-label">{copy.youReceive}</span>
           <b className="tc-recv-value">{amt > 0 ? `≈ ${fmtUsd(apiValue)}` : "—"}</b>
-          <span className="tc-recv-sub">{amt > 0 ? `${copy.inClaudeApi} · ${isB2c ? interpolate(copy.atTier, { tier: tierName(copy, unlockedTier.code), discount: unlockedDiscount }) : copy.officialPricing}` : copy.enterAmount}</span>
-          <div className="tc-recv-meta"><span className="tc-badge">−{unlockedDiscount}%</span><span className="tc-badge tc-badge-soft">{fmtMult(unlockedFrac)} {copy.valueMultiplier}</span></div>
+          <span className="tc-recv-sub">{amt <= 0 ? copy.enterAmount : hasTier ? `${copy.inClaudeApi} · ${interpolate(copy.atTier, { tier: reachedTier ? tierName(copy, reachedTier.code) : copy.businessRate, discount })}` : `${copy.inClaudeApi} · ${copy.noDiscountYet}`}</span>
+          <div className="tc-recv-meta"><span className="tc-badge">−{discount}%</span><span className="tc-badge tc-badge-soft">{fmtMult(frac)} {copy.valueMultiplier}</span></div>
         </div>
       </div>
-      {isUpgrade && <p className="tc-upgrade"><span className="tc-upgrade-ic" aria-hidden="true">ⓘ</span>{interpolate(copy.topupUnlocks, { tier: tierName(copy, unlockedTier.code), discount: unlockedDiscount })}</p>}
-      <p className="tc-explain">{interpolate(copy.perDollar, { mult: `$${(1 / unlockedFrac).toFixed(2)}` })}</p>
-      {amt > 0 && upsell && <p className="tc-nudge">↑ {interpolate(copy.topupUpsell, { amount: fmtUsd(Number(upsell.platformSpendUsd)), tier: tierName(copy, upsell.code), discount: upsell.discountPercent })}</p>}
+      {isB2c && amt > 0 && (reachedTier
+        ? <p className="tc-upgrade"><span className="tc-upgrade-ic" aria-hidden="true">ⓘ</span>{interpolate(copy.topupReach, { tier: tierName(copy, reachedTier.code), discount, hold: fmtUsd(Number(reachedTier.holdUsd)) })}</p>
+        : <p className="tc-upgrade"><span className="tc-upgrade-ic" aria-hidden="true">ⓘ</span>{interpolate(copy.topupNoTier, { amount: fmtUsd(Number(B2C_PRICING_MILESTONES[0].platformSpendUsd)), tier: tierName(copy, "starter"), discount: B2C_PRICING_MILESTONES[0].discountPercent })}</p>)}
+      <p className="tc-explain">{hasTier ? interpolate(copy.perDollar, { mult: `$${(1 / frac).toFixed(2)}` }) : copy.perDollarNone}</p>
+      {isB2c && amt > 0 && nextTier && <p className="tc-nudge">↑ {interpolate(copy.topupNext, { amount: fmtUsd(Number(nextTier.platformSpendUsd)), tier: tierName(copy, nextTier.code), discount: nextTier.discountPercent })}</p>}
       <div className="tc-actions"><button className="btn btn-primary" disabled={busy} onClick={start}>{busy ? copy.creating : copy.continuePayment}</button></div>
       {error && <div className="auth-msg err">{error}</div>}{checkout && !checkout.checkoutUrl && <div className="banner">{interpolate(copy.checkoutPending, { id: checkout.id, status: checkout.status })}</div>}
     </div>
@@ -539,10 +537,4 @@ function fmtMult(fraction: number): string {
 }
 function multFromDiscount(discountPercent: number): string {
   return `×${(100 / (100 - discountPercent)).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
-}
-// Тир, который разблокирует разовое пополнение amtUsd (по тем же порогам месячного расхода).
-function tierIndexForAmount(amtUsd: number): number {
-  let idx = 0;
-  B2C_PRICING_MILESTONES.forEach((milestone, index) => { if (amtUsd >= Number(milestone.platformSpendUsd)) idx = index; });
-  return idx;
 }

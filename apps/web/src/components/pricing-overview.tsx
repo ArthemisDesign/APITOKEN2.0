@@ -31,15 +31,16 @@ export function PricingOverview() {
       </div>
       <div className="tier-table-wrap">
         <table className="tier-table">
-          <thead><tr><T k="tier_col" as="th">Tier</T><T k="discount_col" as="th">Discount</T><T k="local_spend_col" as="th">Monthly platform spend</T><T k="official_usage_col" as="th">Approx. official API usage</T></tr></thead>
-          <tbody>{B2C_PRICING_MILESTONES.map((tier) => <tr key={tier.code}><T k={tier.messageKey} as="td">{tier.label}</T><td><strong>{tier.discountPercent}%</strong> <em className="tier-mult">×{(100 / (100 - tier.discountPercent)).toLocaleString("en-US", { maximumFractionDigits: 2 })}</em></td><td>{formatWholeUsd(tier.platformSpendUsd)}</td><td>{formatWholeUsd(tier.visibleOfficialUsageUsd)}</td></tr>)}</tbody>
+          <thead><tr><T k="tier_col" as="th">Tier</T><T k="discount_col" as="th">Discount</T><T k="local_spend_col" as="th">Top up to reach</T><T k="hold_col" as="th">Keep / 30 days</T><T k="official_usage_col" as="th">Approx. Claude API</T></tr></thead>
+          <tbody>{B2C_PRICING_MILESTONES.map((tier) => <tr key={tier.code}><T k={tier.messageKey} as="td">{tier.label}</T><td><strong>{tier.discountPercent}%</strong> <em className="tier-mult">×{(100 / (100 - tier.discountPercent)).toLocaleString("en-US", { maximumFractionDigits: 2 })}</em></td><td>{formatWholeUsd(tier.platformSpendUsd)}</td><td>{formatWholeUsd(tier.holdUsd)}</td><td>{formatWholeUsd(tier.visibleOfficialUsageUsd)}</td></tr>)}</tbody>
         </table>
       </div>
       <div className="tier-cards">
         {B2C_PRICING_MILESTONES.map((tier) => <div className="tier-mobile" key={tier.code}>
           <div className="tier-mobile-head"><T k={tier.messageKey} as="strong">{tier.label}</T><b>{tier.discountPercent}% <em className="tier-mult">×{(100 / (100 - tier.discountPercent)).toLocaleString("en-US", { maximumFractionDigits: 2 })}</em></b></div>
-          <div className="tier-mobile-row"><T k="local_spend_col">Monthly platform spend</T><span>{formatWholeUsd(tier.platformSpendUsd)}</span></div>
-          <div className="tier-mobile-row"><T k="official_usage_col">Approx. official API usage</T><span>{formatWholeUsd(tier.visibleOfficialUsageUsd)}</span></div>
+          <div className="tier-mobile-row"><T k="local_spend_col">Top up to reach</T><span>{formatWholeUsd(tier.platformSpendUsd)}</span></div>
+          <div className="tier-mobile-row"><T k="hold_col">Keep / 30 days</T><span>{formatWholeUsd(tier.holdUsd)}</span></div>
+          <div className="tier-mobile-row"><T k="official_usage_col">Approx. Claude API</T><span>{formatWholeUsd(tier.visibleOfficialUsageUsd)}</span></div>
         </div>)}
       </div>
       <T k="tier_footnote" as="p" className="tier-footnote">Displayed official API usage equals monthly platform spend ÷ the share paid after discount. Values are rounded only for display; billing remains exact.</T>

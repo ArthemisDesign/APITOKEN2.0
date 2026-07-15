@@ -1,9 +1,16 @@
+// Prepay-модель тиров: скидку даёт ПОПОЛНЕНИЕ.
+// - Тир получаешь, когда НАКОПЛЕННАЯ сумма пополнений достигает `platformSpendUsd` (пополнения
+//   суммируются, пока не слетел). Ниже первого порога ($100) скидки нет.
+// - Удержание: за каждые 30 дней надо потратить ≥ `holdUsd` (= 50% порога), иначе откат на −1 тир.
+// - Выше — доложить (накопительно) до порога следующего тира.
+// (`platformSpendUsd` = порог пополнения; `visibleOfficialUsageUsd` = порог ÷ доля оплаты = сколько
+//  реального Claude API это даёт; `spendThresholdNano` = порог в нано — для визуального прогресса.)
 export const B2C_PRICING_MILESTONES = [
-  { code: "starter", label: "Starter", messageKey: "tier_starter", discountPercent: 60, spendThresholdNano: "0", platformSpendUsd: "0", visibleOfficialUsageUsd: "0" },
-  { code: "builder", label: "Builder", messageKey: "tier_builder", discountPercent: 65, spendThresholdNano: "25000000000", platformSpendUsd: "25", visibleOfficialUsageUsd: "70" },
-  { code: "pro", label: "Pro", messageKey: "tier_pro", discountPercent: 70, spendThresholdNano: "75000000000", platformSpendUsd: "75", visibleOfficialUsageUsd: "250" },
-  { code: "studio", label: "Studio", messageKey: "tier_studio", discountPercent: 75, spendThresholdNano: "200000000000", platformSpendUsd: "200", visibleOfficialUsageUsd: "800" },
-  { code: "scale", label: "Scale", messageKey: "tier_scale", discountPercent: 80, spendThresholdNano: "500000000000", platformSpendUsd: "500", visibleOfficialUsageUsd: "2500" },
+  { code: "starter", label: "Starter", messageKey: "tier_starter", discountPercent: 60, platformSpendUsd: "100", holdUsd: "50", spendThresholdNano: "100000000000", visibleOfficialUsageUsd: "250" },
+  { code: "builder", label: "Builder", messageKey: "tier_builder", discountPercent: 65, platformSpendUsd: "250", holdUsd: "125", spendThresholdNano: "250000000000", visibleOfficialUsageUsd: "714" },
+  { code: "pro", label: "Pro", messageKey: "tier_pro", discountPercent: 70, platformSpendUsd: "500", holdUsd: "250", spendThresholdNano: "500000000000", visibleOfficialUsageUsd: "1667" },
+  { code: "studio", label: "Studio", messageKey: "tier_studio", discountPercent: 75, platformSpendUsd: "1000", holdUsd: "500", spendThresholdNano: "1000000000000", visibleOfficialUsageUsd: "4000" },
+  { code: "scale", label: "Scale", messageKey: "tier_scale", discountPercent: 80, platformSpendUsd: "2000", holdUsd: "1000", spendThresholdNano: "2000000000000", visibleOfficialUsageUsd: "10000" },
 ] as const;
 
 export type B2CPricingMilestone = typeof B2C_PRICING_MILESTONES[number];
@@ -12,19 +19,25 @@ export function formatWholeUsd(value: string): string {
   return `$${BigInt(value).toLocaleString("en-US")}`;
 }
 
+/** Индекс тира по НАКОПЛЕННОЙ сумме пополнений (USD). −1 = тира ещё нет (ниже первого порога $100). */
+export function tierIndexForTopups(topupUsd: number): number {
+  let index = -1;
+  B2C_PRICING_MILESTONES.forEach((milestone, i) => { if (topupUsd >= Number(milestone.platformSpendUsd)) index = i; });
+  return index;
+}
+
 /**
- * Returns progress across equally sized visual milestone segments. Real spend
- * thresholds remain authoritative; equal segment widths keep every tier legible.
+ * Прогресс (0..100) по НАКОПЛЕННЫМ пополнениям через равные визуальные сегменты. Первый сегмент —
+ * путь «нет тира → Starter»; дальше сегмент на каждый тир.
  */
 export function pricingMilestoneProgress(currentTier: string, spentNano: string): number {
-  const currentIndex = B2C_PRICING_MILESTONES.findIndex((tier) => tier.code === currentTier);
-  const safeIndex = currentIndex < 0 ? 0 : currentIndex;
-  if (safeIndex >= B2C_PRICING_MILESTONES.length - 1) return 100;
-
-  const start = BigInt(B2C_PRICING_MILESTONES[safeIndex]!.spendThresholdNano);
-  const end = BigInt(B2C_PRICING_MILESTONES[safeIndex + 1]!.spendThresholdNano);
+  const index = B2C_PRICING_MILESTONES.findIndex((tier) => tier.code === currentTier);
+  if (index >= B2C_PRICING_MILESTONES.length - 1) return 100;
+  const segments = B2C_PRICING_MILESTONES.length;
+  const start = index < 0 ? 0n : BigInt(B2C_PRICING_MILESTONES[index]!.spendThresholdNano);
+  const end = BigInt(B2C_PRICING_MILESTONES[index + 1]!.spendThresholdNano);
   const spent = BigInt(spentNano);
   const position = spent <= start ? 0n : spent >= end ? end - start : spent - start;
-  const segmentBasisPoints = Number(position * 10_000n / (end - start));
-  return ((safeIndex + segmentBasisPoints / 10_000) / (B2C_PRICING_MILESTONES.length - 1)) * 100;
+  const within = end > start ? Number(position * 10_000n / (end - start)) / 10_000 : 0;
+  return ((index + 1 + within) / segments) * 100;
 }
