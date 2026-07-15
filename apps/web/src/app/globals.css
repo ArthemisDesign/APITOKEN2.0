@@ -427,12 +427,33 @@ footer{padding:64px 0 40px;border-bottom:0}
 .pricing-discount{display:flex;align-items:baseline;gap:8px;white-space:nowrap}
 .pricing-discount b{font-size:28px;line-height:1;color:var(--accent);font-variant-numeric:tabular-nums}
 .pricing-discount span{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt-3)}
-.pricing-progress{padding-top:16px;border-top:1px solid var(--accent-line)}
-.pricing-progress-meta{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:10px;
-  font-size:11px;color:var(--txt-3)}
-.pricing-progress-meta span:last-child{color:var(--txt);text-align:right}
-.pricing-banner .rd-bar{margin:0;background:color-mix(in srgb,var(--accent) 12%,var(--bg-card))}
 .pricing-banner-business p{margin:0;color:var(--txt-2);font-size:13px}
+.pricing-banner-milestones{background:color-mix(in srgb,var(--accent) 6%,var(--bg-card));gap:18px}
+.pricing-milestone-status{display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr);
+  overflow:hidden;border:1px solid var(--accent-line);border-radius:8px;background:var(--bg-card)}
+.pricing-status-item{display:grid;grid-template-columns:auto 1fr;align-items:baseline;column-gap:12px;row-gap:2px;padding:15px 18px}
+.pricing-status-item>span{grid-column:1/-1;font-size:9px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--txt-4)}
+.pricing-status-item strong{font-size:16px;line-height:1.35;color:var(--txt);font-variant-numeric:tabular-nums}
+.pricing-status-item small{font-size:11px;color:var(--txt-3)}
+.pricing-status-next{border-left:1px solid var(--accent-line);background:var(--accent-soft)}
+.pricing-status-next strong{color:var(--accent)}
+.pricing-milestone-track{--tier-progress:0%;position:relative;padding:6px 0 2px}
+.pricing-track-line{position:absolute;z-index:0;top:20px;left:10%;right:10%;height:3px;border-radius:99px;
+  background:color-mix(in srgb,var(--accent) 16%,var(--bg-soft));overflow:hidden}
+.pricing-track-line span{display:block;width:var(--tier-progress);height:100%;border-radius:inherit;background:var(--accent);
+  transition:width .45s ease,height .45s ease}
+.pricing-milestone-list{position:relative;z-index:1;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));
+  gap:0;margin:0;padding:0;list-style:none}
+.pricing-milestone{display:flex;min-width:0;flex-direction:column;align-items:center;gap:9px;text-align:center;color:var(--txt-4)}
+.pricing-milestone-dot{display:grid;place-items:center;width:31px;height:31px;border:2px solid var(--line-strong);border-radius:50%;
+  background:var(--bg-card);color:var(--txt-4);font-size:10px;font-weight:700;font-variant-numeric:tabular-nums}
+.pricing-milestone.complete .pricing-milestone-dot{border-color:var(--accent);background:var(--accent);color:#fff}
+.pricing-milestone.current .pricing-milestone-dot{border-color:var(--accent);color:var(--accent);box-shadow:0 0 0 5px var(--accent-soft)}
+.pricing-milestone>div{display:flex;min-width:0;flex-direction:column;align-items:center;gap:2px}
+.pricing-milestone strong{font-size:12px;line-height:1.35;color:var(--txt)}
+.pricing-milestone>div>span{font-size:10px;color:var(--txt-3)}
+.pricing-milestone.current>div>span{color:var(--accent);font-weight:600}
+.pricing-milestone small{font-size:9px;line-height:1.35;color:var(--txt-4)}
 .key-create{display:flex;gap:10px;align-items:center}
 .key-create .set-in{min-width:220px}
 .secret-card{margin:22px 0;border-color:var(--accent);display:grid;gap:12px}
@@ -1023,8 +1044,14 @@ body.app-body .bg-decor{display:none!important}
   .pricing-banner{padding:20px;gap:16px}
   .pricing-summary{align-items:flex-end}
   .pricing-discount{flex-direction:column;align-items:flex-end;gap:4px}
-  .pricing-progress-meta{align-items:flex-start;flex-direction:column;gap:4px}
-  .pricing-progress-meta span:last-child{text-align:left}
+  .pricing-milestone-status{grid-template-columns:1fr}
+  .pricing-status-next{border-left:0;border-top:1px solid var(--accent-line)}
+  .pricing-milestone-track{padding:2px 0}
+  .pricing-track-line{top:15px;bottom:15px;left:14px;right:auto;width:3px;height:auto}
+  .pricing-track-line span{width:100%;height:var(--tier-progress)}
+  .pricing-milestone-list{grid-template-columns:1fr;gap:15px}
+  .pricing-milestone{display:grid;grid-template-columns:31px minmax(0,1fr);gap:13px;text-align:left;align-items:center}
+  .pricing-milestone>div{align-items:flex-start}
   .analytics-placeholder{grid-template-columns:1fr}
   .code-card code{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
   .app .table-scroll{overflow-x:auto}

@@ -1,14 +1,7 @@
 import Link from "next/link";
+import { B2C_PRICING_MILESTONES, formatWholeUsd } from "@/lib/pricing-tiers";
 import { T } from "./translated";
 import { TopUpAmountInput } from "./topup-amount-input";
-
-const tiers = [
-  ["tier_starter", "60%", "$0", "$0"],
-  ["tier_builder", "65%", "$25", "$70"],
-  ["tier_pro", "70%", "$75", "$250"],
-  ["tier_studio", "75%", "$200", "$800"],
-  ["tier_scale", "80%", "$500", "$2,500"],
-] as const;
 
 export function PricingOverview() {
   return <div className="pricing-overview">
@@ -39,14 +32,14 @@ export function PricingOverview() {
       <div className="tier-table-wrap">
         <table className="tier-table">
           <thead><tr><T k="tier_col" as="th">Tier</T><T k="discount_col" as="th">Discount</T><T k="local_spend_col" as="th">Monthly platform spend</T><T k="official_usage_col" as="th">Approx. official API usage</T></tr></thead>
-          <tbody>{tiers.map(([name, discount, localSpend, officialUsage]) => <tr key={name}><T k={name} as="td">Tier</T><td><strong>{discount}</strong></td><td>{localSpend}</td><td>{officialUsage}</td></tr>)}</tbody>
+          <tbody>{B2C_PRICING_MILESTONES.map((tier) => <tr key={tier.code}><T k={tier.messageKey} as="td">{tier.label}</T><td><strong>{tier.discountPercent}%</strong></td><td>{formatWholeUsd(tier.platformSpendUsd)}</td><td>{formatWholeUsd(tier.visibleOfficialUsageUsd)}</td></tr>)}</tbody>
         </table>
       </div>
       <div className="tier-cards">
-        {tiers.map(([name, discount, localSpend, officialUsage]) => <div className="tier-mobile" key={name}>
-          <div className="tier-mobile-head"><T k={name} as="strong">Tier</T><b>{discount}</b></div>
-          <div className="tier-mobile-row"><T k="local_spend_col">Monthly platform spend</T><span>{localSpend}</span></div>
-          <div className="tier-mobile-row"><T k="official_usage_col">Approx. official API usage</T><span>{officialUsage}</span></div>
+        {B2C_PRICING_MILESTONES.map((tier) => <div className="tier-mobile" key={tier.code}>
+          <div className="tier-mobile-head"><T k={tier.messageKey} as="strong">{tier.label}</T><b>{tier.discountPercent}%</b></div>
+          <div className="tier-mobile-row"><T k="local_spend_col">Monthly platform spend</T><span>{formatWholeUsd(tier.platformSpendUsd)}</span></div>
+          <div className="tier-mobile-row"><T k="official_usage_col">Approx. official API usage</T><span>{formatWholeUsd(tier.visibleOfficialUsageUsd)}</span></div>
         </div>)}
       </div>
       <T k="tier_footnote" as="p" className="tier-footnote">Displayed official API usage equals monthly platform spend ÷ the share paid after discount. Values are rounded only for display; billing remains exact.</T>

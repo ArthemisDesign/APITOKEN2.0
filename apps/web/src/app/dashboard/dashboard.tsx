@@ -3,11 +3,12 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import {
   api, ApiError, type AccountView, type ApiKeyView, type AuthUser, type CheckoutView, type LedgerEntry,
 } from "@/lib/api";
 import { nanoToUsd, normalizeUsd, wholeUsdError } from "@/lib/money";
+import { B2C_PRICING_MILESTONES, formatWholeUsd, pricingMilestoneProgress } from "@/lib/pricing-tiers";
 import { useI18n } from "@/components/i18n-provider";
 import { ThemeToggle } from "@/components/site-chrome";
 import { dashboardHref, parseDashboardSection, type DashboardSection } from "./dashboard-route";
@@ -140,9 +141,33 @@ function PricingBanner({ account }: { account: AccountView }) {
   const pricing = account.pricing;
   if (!pricing) return null;
   if (pricing.customerType === "b2b") return <section className="pricing-banner pricing-banner-business"><div className="pricing-summary"><div><span className="pricing-kicker">Current pricing</span><strong>Business agreement</strong></div><div className="pricing-discount"><b>{pricing.discountPercent}%</b><span>discount</span></div></div><p>Your negotiated rate is active across every supported model.</p></section>;
-  const spent = BigInt(pricing.spentNano), target = pricing.nextTier ? BigInt(pricing.nextTier.spendThresholdNano) : spent || 1n;
-  const percent = pricing.nextTier ? Number(spent * 100n / target) : 100;
-  return <section className="pricing-banner"><div className="pricing-summary"><div><span className="pricing-kicker">Current pricing</span><strong>{titleCase(pricing.tier)} tier</strong></div><div className="pricing-discount"><b>{pricing.discountPercent}%</b><span>discount</span></div></div><div className="pricing-progress"><div className="pricing-progress-meta"><span>{nanoToUsd(pricing.spentNano)} platform spend this month</span>{pricing.nextTier ? <span>{nanoToUsd(pricing.nextTier.remainingNano)} to unlock {pricing.nextTier.discountPercent}%</span> : <span>Highest tier reached</span>}</div><div className="rd-bar"><div className="rd-bar-fill" style={{ width: `${Math.min(percent, 100)}%` }} /></div></div></section>;
+  const currentIndex = Math.max(0, B2C_PRICING_MILESTONES.findIndex((tier) => tier.code === pricing.tier));
+  const currentTier = B2C_PRICING_MILESTONES[currentIndex]!;
+  const progress = pricingMilestoneProgress(pricing.tier, pricing.spentNano);
+  const trackStyle = { "--tier-progress": `${progress}%` } as CSSProperties;
+  return <section className="pricing-banner pricing-banner-milestones">
+    <div className="pricing-summary">
+      <div><span className="pricing-kicker">Monthly tier progress</span><strong>{currentTier.label} tier</strong></div>
+      <div className="pricing-discount"><b>{pricing.discountPercent}%</b><span>discount</span></div>
+    </div>
+    <div className="pricing-milestone-status">
+      <div className="pricing-status-item"><span>This month</span><strong>{nanoToUsd(pricing.spentNano)}</strong><small>platform spend</small></div>
+      {pricing.nextTier ? <div className="pricing-status-item pricing-status-next"><span>Next milestone</span><strong>Spend {nanoToUsd(pricing.nextTier.remainingNano)} more</strong><small>Unlock {titleCase(pricing.nextTier.tier)} · {pricing.nextTier.discountPercent}% discount</small></div> :
+        <div className="pricing-status-item pricing-status-next"><span>Milestones complete</span><strong>Highest tier reached</strong><small>Scale · {pricing.discountPercent}% discount</small></div>}
+    </div>
+    <div className="pricing-milestone-track" style={trackStyle} aria-label={`${Math.round(progress)}% progress through pricing milestones`}>
+      <div className="pricing-track-line" aria-hidden="true"><span /></div>
+      <ol className="pricing-milestone-list">
+        {B2C_PRICING_MILESTONES.map((tier, index) => {
+          const state = index < currentIndex ? "complete" : index === currentIndex ? "current" : "upcoming";
+          return <li className={`pricing-milestone ${state}`} key={tier.code}>
+            <span className="pricing-milestone-dot" aria-hidden="true">{index < currentIndex ? "✓" : index + 1}</span>
+            <div><strong>{tier.label}</strong><span>{tier.discountPercent}% discount</span><small>{index === 0 ? "Starting tier" : `At ${formatWholeUsd(tier.platformSpendUsd)} spend`}</small></div>
+          </li>;
+        })}
+      </ol>
+    </div>
+  </section>;
 }
 
 function ApiKeys({ keys, onChanged }: { keys: ApiKeyView[]; onChanged(): Promise<void> }) {

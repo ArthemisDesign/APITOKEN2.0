@@ -45,21 +45,33 @@ describe("completed Next.js migration", () => {
 
   it("uses flexible whole-USD top-ups and the authoritative pricing tiers", () => {
     const pricing = readFileSync(join(root, "components", "pricing-overview.tsx"), "utf8");
+    const pricingTiers = readFileSync(join(root, "lib", "pricing-tiers.ts"), "utf8");
     const messages = readFileSync(join(root, "lib", "messages.json"), "utf8");
-    for (const value of ["60%", "65%", "70%", "75%", "80%", "$25", "$75", "$200", "$500", "$2,500"]) {
-      expect(pricing).toContain(value);
+    for (const value of ["starter", "builder", "pro", "studio", "scale", "60", "65", "70", "75", "80", "25", "75", "200", "500", "2500"]) {
+      expect(pricingTiers).toContain(value);
     }
     expect(messages).not.toMatch(/\bcredit packs?\b|пакет/i);
     expect(pricing).toContain("Choose any whole USD amount");
     expect(pricing).toContain("Negotiated business pricing");
-    expect(pricing).toContain('"tier_builder", "65%", "$25", "$70"');
-    expect(pricing).toContain('"tier_pro", "70%", "$75", "$250"');
-    expect(pricing).toContain('"tier_studio", "75%", "$200", "$800"');
-    expect(pricing).toContain('"tier_scale", "80%", "$500", "$2,500"');
+    expect(pricing).toContain("B2C_PRICING_MILESTONES.map");
+    expect(pricingTiers).toContain('{ code: "builder", label: "Builder", messageKey: "tier_builder", discountPercent: 65');
+    expect(pricingTiers).toContain('{ code: "pro", label: "Pro", messageKey: "tier_pro", discountPercent: 70');
+    expect(pricingTiers).toContain('{ code: "studio", label: "Studio", messageKey: "tier_studio", discountPercent: 75');
+    expect(pricingTiers).toContain('{ code: "scale", label: "Scale", messageKey: "tier_scale", discountPercent: 80');
     expect(pricing).not.toContain("BillingFormula");
     expect(messages).toContain("$10 of Claude usage at official API prices");
     expect(messages).toContain("$10 на Claude по официальным ценам API");
     expect(messages).not.toContain("$2.50");
+  });
+
+  it("renders dashboard pricing as a complete milestone track", () => {
+    const dashboard = readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8");
+    const styles = readFileSync(join(appRoot, "globals.css"), "utf8");
+    expect(dashboard).toContain("Monthly tier progress");
+    expect(dashboard).toContain("Spend {nanoToUsd(pricing.nextTier.remainingNano)} more");
+    expect(dashboard).toContain("B2C_PRICING_MILESTONES.map");
+    expect(styles).toContain(".pricing-milestone-track");
+    expect(styles).toContain("height:var(--tier-progress)");
   });
 
   it("keeps the verified model prices and context windows", () => {
