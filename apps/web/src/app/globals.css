@@ -1329,7 +1329,7 @@ body.app-body .bg-decor{display:none!important}
 .pricing-howto-text{font-family:var(--font-mono);font-size:13.5px;line-height:1.65;color:var(--txt-2);margin:0;max-width:68ch}
 .pricing-howto-link,.tier-docs-link{font-family:var(--font-mono);font-size:13.5px;color:var(--accent);white-space:nowrap;font-weight:500}
 .pricing-howto-link:hover,.tier-docs-link:hover{text-decoration:underline}
-.tier-docs-link{display:inline-block;margin-top:14px}
+.tier-docs-link{display:inline-block;margin:0;padding:2px 22px 22px}
 .pricing-status-warn strong{color:var(--warn)}
 .pricing-status-ok small{color:var(--ok)}
 .tc-head h2{margin:10px 0 6px}
