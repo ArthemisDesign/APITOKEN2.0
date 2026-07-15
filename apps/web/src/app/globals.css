@@ -940,6 +940,15 @@ a.step:hover .step-cta::after{margin-left:4px}
   min-height:70px;padding:12px 38px;background:var(--bg-card);border-bottom:1px solid var(--line)}
 .app-burger{display:none;background:none;border:0;font-size:22px;color:var(--txt);cursor:pointer}
 .app-title{font-family:var(--font-bit);font-weight:700;font-size:20px;flex:1}
+.app-top-actions{display:flex;align-items:center;gap:12px}
+.app-top-bal{display:inline-flex;align-items:center;gap:8px;padding:7px 14px;border-radius:9px;
+  background:var(--bg-soft);border:1px solid var(--line);cursor:pointer;font-family:var(--font-mono);
+  transition:border-color .18s ease,background-color .18s ease,transform .12s ease}
+.app-top-bal:hover{border-color:var(--accent-line);background:var(--accent-soft)}
+.app-top-bal:active{transform:scale(.97)}
+.app-top-bal .atb-label{font-size:12px;color:var(--txt-4);text-transform:uppercase;letter-spacing:.05em}
+.app-top-bal .atb-val{font-size:14px;font-weight:700;color:var(--txt);font-variant-numeric:tabular-nums}
+.app-top-bal .atb-val.atb-neg{color:var(--danger,#d6455d)}
 .app-body-in{padding:42px 40px 72px;max-width:1440px;width:100%}
 .panel{animation:panelIn .25s ease}
 .app section{border-bottom:0;scroll-margin-top:0}
