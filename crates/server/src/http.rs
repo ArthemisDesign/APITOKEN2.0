@@ -164,6 +164,12 @@ async fn overview(
         Metrics::inc(&app.metrics.auth_failures);
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response();
     }
+    Json(overview_value(&app).await).into_response()
+}
+
+/// Вычисление control-room агрегата (без авторизации) — переиспользуется хендлером `/overview`
+/// И фоновым коллектором истории (`poller::metrics_loop`). Считается на лету из пула + биллинга.
+pub(crate) async fn overview_value(app: &AppState) -> serde_json::Value {
     const TARGET_HEADROOM: f64 = 1.3; // держим 30% запас
     const REF_MULT: f64 = 0.20;       // референсная наценка для «продаём клиентам» и coverage
     let r2 = |x: f64| (x * 100.0).round() / 100.0;
@@ -200,7 +206,7 @@ async fn overview(
     let real_demand = if REF_MULT > 0.0 { bal / REF_MULT } else { 0.0 }; // потенц. real-API из балансов
     let coverage7 = if a7d > 0.01 { real_demand / a7d } else { 0.0 };    // >1 = потенциально перепродали
     let jinf = |x: f64| if x.is_finite() { json!(r2(x)) } else { json!(null) }; // null = ∞ (нет спроса)
-    Json(json!({
+    json!({
         "now": pool::now(),
         "subs": n, "calibrated": all_cal, "ref_mult": REF_MULT, "target_headroom": TARGET_HEADROOM,
         "supply": {
@@ -215,7 +221,7 @@ async fn overview(
         "headroom": {"5h": jinf(head5), "7d": jinf(head7)},
         "coverage": {"7d": r2(coverage7)},
         "recommend": {"subs_needed": need, "gap": gap},
-    })).into_response()
+    })
 }
 
 async fn health() -> Json<serde_json::Value> {

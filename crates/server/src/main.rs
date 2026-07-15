@@ -11,6 +11,7 @@
 mod admin;
 mod config;
 mod http;
+mod metrics_store;
 mod poller;
 
 use anyhow::{Context, Result};
@@ -487,6 +488,16 @@ async fn serve() -> Result<()> {
     if s.proxy.poll {
         tokio::spawn(poller::poll_loop(app.clone(), poke.clone()));
         eprintln!("поллер лимитов: событийный (liveness-only)");
+    }
+    // Коллектор истории метрик: снапшоты агрегата (спрос/предложение/headroom) в отдельную metrics.db.
+    // Фундамент под capacity-planning и предсказательную модель (retention из env, деф 90д).
+    {
+        let mdir = std::path::Path::new(&s.db_path).parent()
+            .map(|d| d.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
+        let metrics_db = format!("{mdir}/metrics.db");
+        let mdays = std::env::var("CLAUDE_API_METRICS_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(90);
+        tokio::spawn(poller::metrics_loop(app.clone(), metrics_db, mdays));
+        eprintln!("коллектор истории: metrics.db (снапшот/60с, retention {mdays}д)");
     }
     if s.proxy.api_keys.is_empty() {
         if s.proxy.trust_loopback {

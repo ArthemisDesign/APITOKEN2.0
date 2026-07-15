@@ -40,7 +40,11 @@ pub fn open(path: &str) -> Result<Connection> {
         }
     }
     let c = Connection::open(path).with_context(|| format!("открыть БД {path}"))?;
-    c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
+    // synchronous=NORMAL: в WAL безопасно (крах теряет максимум последний commit — его чинит
+    // reconcile_reservations на старте), но снимает fsync на КАЖДЫЙ commit → 5–20× запись под
+    // нагрузкой (снимает потолок money-хот-пути). wal_autocheckpoint держит WAL от распухания.
+    c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; \
+                     PRAGMA busy_timeout=5000; PRAGMA wal_autocheckpoint=1000;")?;
     c.execute(
         "CREATE TABLE IF NOT EXISTS subs(email TEXT PRIMARY KEY, token TEXT, token_file TEXT, \
          proxy TEXT, plan TEXT DEFAULT '', status TEXT DEFAULT 'active', fleet TEXT DEFAULT 'prod', \
@@ -101,6 +105,10 @@ pub fn open(path: &str) -> Result<Connection> {
     let _ = c.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS ledger_topup_ref ON ledger(ref) \
          WHERE kind='topup' AND ref IS NOT NULL", []);
+    // Индекс под фоновую обрезку: prune ходит по ts среди charge-строк. Без него DELETE = full-scan
+    // всей таблицы (при высоком QPS ledger огромный) → многоминутный фриз единственного writer'а.
+    let _ = c.execute(
+        "CREATE INDEX IF NOT EXISTS ledger_charge_ts ON ledger(ts) WHERE kind='charge'", []);
 
     // Миграция старой модели (key=кошелёк): ключам без account_id заводим аккаунт и переносим баланс.
     migrate_legacy_keys(&c)?;
@@ -534,9 +542,22 @@ pub fn wal_checkpoint(conn: &Connection) -> Result<()> {
 /// история «кто сколько занёс» важна для споров. Текущие суммы (`accounts.spent_nano`/per-key) —
 /// это отдельный монотонный источник истины, обрезка ledger их не затрагивает. Возвращает удалённое.
 pub fn ledger_prune(conn: &Connection, older_than_ts: i64) -> Result<usize> {
-    Ok(conn.execute(
-        "DELETE FROM ledger WHERE kind='charge' AND ts < ?1",
-        rusqlite::params![older_than_ts])?)
+    // Батчами (LIMIT через подзапрос по индексу ledger_charge_ts), с микропаузой между батчами —
+    // иначе один гигантский DELETE держит write-lock минутами и морозит единственный billing-writer
+    // (все reserve/settle встают). Каждый батч — отдельная транзакция (autocommit), между ними
+    // writer успевает вклиниться. Вызывается из spawn_blocking → sleep безопасен (не async-воркер).
+    const BATCH: i64 = 5000;
+    let mut total = 0usize;
+    loop {
+        let n = conn.execute(
+            "DELETE FROM ledger WHERE id IN \
+             (SELECT id FROM ledger WHERE kind='charge' AND ts < ?1 LIMIT ?2)",
+            rusqlite::params![older_than_ts, BATCH])?;
+        total += n;
+        if (n as i64) < BATCH { break; }
+        std::thread::sleep(std::time::Duration::from_millis(20)); // отдать write-lock writer'у
+    }
+    Ok(total)
 }
 
 /// Добавить строку в append-only ledger (журнал движений баланса).

@@ -19,3 +19,4 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }  # отдельная metrics.db для истории (не money-БД)

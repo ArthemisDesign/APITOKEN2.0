@@ -40,6 +40,33 @@ pub async fn ledger_prune_loop(db_path: String, retention_days: i64) {
     }
 }
 
+/// Коллектор истории: раз в минуту пишет снапшот агрегата (спрос/предложение/headroom/рекомендация)
+/// в ОТДЕЛЬНУЮ metrics.db. Фундамент под capacity-planning и предсказательную модель — учиться она
+/// будет на накопленной истории. Не мешает биллингу (своя БД, blocking-поток, редкая запись).
+pub async fn metrics_loop(app: AppState, metrics_db: String, retention_days: i64) {
+    const SNAP_SECS: u64 = 60;
+    let mut ticks: u64 = 0;
+    loop {
+        let snap = crate::http::overview_value(&app).await; // тот же агрегат, что и /overview
+        let db = metrics_db.clone();
+        let cutoff = if retention_days > 0 { pool::now() - retention_days * 86400 } else { 0 };
+        let do_prune = retention_days > 0 && ticks % 60 == 0; // ~раз в час
+        // Запись в SQLite — на blocking-потоке (не блокируем async-воркер). Открываем per-write:
+        // снапшоты редки (60с), проще, чем таскать не-Sync Connection через .await.
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Ok(c) = crate::metrics_store::open(&db) {
+                let _ = crate::metrics_store::insert_snapshot(&c, &snap);
+                if do_prune {
+                    let _ = crate::metrics_store::prune(&c, cutoff);
+                }
+            }
+        })
+        .await;
+        ticks = ticks.wrapping_add(1);
+        tokio::time::sleep(Duration::from_secs(SNAP_SECS)).await;
+    }
+}
+
 /// Простаивающую подписку пингуем не чаще этого (сек). Не для «поймать сброс» (он вычисляется), а
 /// лишь для проверки живости токена. Под боевым трафиком `polled_ts` свеж → probe не срабатывает.
 const LIVENESS_INTERVAL: i64 = 300;
