@@ -16,17 +16,21 @@ const flow = [
 export default function HomePage() {
   return <main>
       <div className="hero"><div className="wrap hero-grid"><div><T k="hero_eyebrow" as="span" className="eyebrow">Claude API · One gateway</T><h1 className="hero-h1"><T k="hero_h1a" as="span">All Claude models.</T><T k="hero_h1b" as="span">One key.</T></h1><ul className="hero-points"><li><T k="hero_p1">Drop into Claude Code, Cursor, OpenClaw — any tool that needs a key</T></li><li><T k="hero_p2">Add it to any product or workflow</T></li><li><T k="hero_p3">No Anthropic account required</T></li><li><T k="hero_p4">No VPN — works in any country</T></li></ul><div className="hero-cta"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link><Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link></div></div><InteractiveTerminal /></div><div className="wrap home-stats"><div className="stats reveal"><Stat value="8+" label="stat1" /><Stat value="1" label="stat2" /><Stat value="99.9%" label="stat3" /><Stat value="<100ms" label="stat4" /><div className="stat"><T k="stat5v" as="b">minutes</T><T k="stat5">Setup time</T></div></div></div></div>
-      <section id="products"><div className="wrap"><div className="prod-grid" data-reveal-stagger>
+      <section id="products"><div className="wrap"><SectionHead eyebrow="prod_eyebrow" title="prod_h2" lead="prod_lead" />
+        <div className="prod-grid" data-reveal-stagger>
         <div className="prod">
-          <T k="pc1_tag" as="span" className="tag">Claude API</T>
+          <T k="pc1_tag" as="span" className="tag">Official Anthropic API</T>
           <T k="pc1_h" as="h3">All models, one key</T>
-          <div className="prod-body"><ul className="prod-list">{models.map((model) => <li key={model}>{model}</li>)}</ul></div>
+          <div className="prod-body">
+            <T k="pc1_note" as="p" className="prod-note">The same Anthropic Messages API and the full Claude line — billed at your discount.</T>
+            <ul className="prod-chips">{models.map((model) => <li key={model}>{model}</li>)}</ul>
+          </div>
           <Link className="btn btn-ghost" href="/models"><T k="pc1_cta">View models</T></Link>
         </div>
         <div className="prod prod-feat">
-          <T k="pc2_tag" as="span" className="tag">Flexible balance</T>
-          <T k="pc2_h" as="h3">Choose your amount</T>
-          <div className="prod-body"><TopUpAmountInput className="amount-example" initialAmount="1000" showReceive /><T k="pc2_p" as="p">Enter any whole USD amount. No fixed product catalog.</T></div>
+          <T k="pc2_tag" as="span" className="tag">Your discount</T>
+          <T k="pc2_h" as="h3">Pay less than official</T>
+          <div className="prod-body"><TopUpAmountInput className="amount-example" initialAmount="1000" showReceive /><T k="pc2_p" as="p">Top up any whole USD amount — spend it at official Anthropic prices minus up to 80%.</T></div>
           <Link className="btn btn-primary" href="#pricing"><T k="pc2_cta">See pricing</T></Link>
         </div>
         <div className="prod">

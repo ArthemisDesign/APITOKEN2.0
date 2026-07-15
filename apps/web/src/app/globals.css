@@ -967,15 +967,20 @@ a.step:hover .step-cta::after{margin-left:4px}
 
 /* ===== enriched landing blocks (product trio, tools, meters) ===== */
 #products{padding-top:64px;padding-bottom:80px}
-.prod-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
-.prod{border:1px solid var(--line);border-radius:8px;padding:28px;background:var(--bg-card);display:grid;grid-template-rows:auto 86px minmax(180px,1fr) 50px;align-items:start;transition:.16s}
+/* align-items:start → каждая карточка по высоте контента, без нелепых пустот; центральная (featured) выше = акцент */
+.prod-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;align-items:start}
+.prod{border:1px solid var(--line);border-radius:8px;padding:28px;background:var(--bg-card);display:flex;flex-direction:column;transition:.16s}
 .prod:hover{border-color:var(--accent-line)}
 .prod .tag{font-family:var(--font-mono);font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent)}
-.prod h3{margin:14px 0 0;font-family:var(--font-i18n-display);font-weight:400;font-size:32px;letter-spacing:0;word-spacing:normal;line-height:1.15;
+.prod h3{margin:14px 0 18px;font-family:var(--font-i18n-display);font-weight:400;font-size:30px;letter-spacing:0;word-spacing:normal;line-height:1.15;
   font-variation-settings:'wght' 500,'ELGR' 1,'ELSH' 2}
 .prod p{color:var(--txt-2);font-size:14px;margin:0 0 20px}
 .prod-body{display:flex;flex-direction:column;align-items:stretch;min-width:0}
-.prod .btn{width:100%;height:50px;justify-content:center;align-self:end}
+.prod .btn{width:100%;height:50px;justify-content:center;margin-top:22px}
+.prod-note{color:var(--txt-3);font-size:14px;line-height:1.55;margin:0 0 16px}
+.prod-chips{list-style:none;display:flex;flex-wrap:wrap;gap:7px;margin:0;padding:0}
+.prod-chips li{font-family:var(--font-mono);font-size:12.5px;color:var(--txt-2);padding:6px 11px;border:1px solid var(--line);border-radius:6px;background:var(--bg-soft);white-space:nowrap}
+.prod:hover .prod-chips li{border-color:var(--accent-line)}
 .prod .amt{width:100%;height:78px;margin:0 0 14px;padding:14px 16px;display:flex;align-items:center;gap:14px;border:1px solid var(--line-strong);border-radius:6px;background:var(--bg-card)}
 .prod .amt .now{font-family:var(--font-mono);font-weight:700;font-size:32px;line-height:1;color:var(--txt)}
 .prod .amt .official{font-family:var(--font-mono);font-size:13px;line-height:1.4;color:var(--txt-3)}
