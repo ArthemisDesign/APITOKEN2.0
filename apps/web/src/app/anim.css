@@ -92,6 +92,9 @@ header.nav.scrolled{box-shadow:0 8px 30px -18px rgba(10,10,10,.35)}
 @keyframes waveScroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
 [data-theme="dark"] .wave-field .wl{opacity:calc(var(--o,.14) + .04)}
 
+/* Декоративные волны отключены по просьбе. Чтобы вернуть — revert коммита с этим правилом. */
+.wave-field{display:none}
+
 /* ---------- lighten heavy background on phones / weak devices ---------- */
 @media (max-width:760px){
   .bg-decor .glow{filter:blur(45px)}          /* cheaper blur */
