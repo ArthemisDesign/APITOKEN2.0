@@ -127,18 +127,18 @@ const dashboardFixtureScript = `(() => {
     { id: "ledger-2", kind: "topup", amountNano: "4000000000", amountUsd: "4.00", keyMasked: null, reference: "welcome_credit", balanceAfterNano: "4185000000", timestamp: "1784106000" },
   ];
   const usage = {
-    window: "30d", requests: 171, totalOfficialNano: "29250000000", totalChargedNano: "11700000000",
+    window: "30d", requests: 59, totalOfficialNano: "20234893050", totalChargedNano: "8093957220",
     buckets: {
-      input: { tokens: 2500000, officialNano: "9100000000" },
-      output: { tokens: 760000, officialNano: "14000000000" },
-      cacheRead: { tokens: 7400000, officialNano: "2960000000" },
-      cacheWrite: { tokens: 600000, officialNano: "3150000000" },
-      webSearch: { requests: 4, officialNano: "40000000" },
+      input: { tokens: 3781269, officialNano: "15124021000" },
+      output: { tokens: 15168, officialNano: "228560000" },
+      cacheRead: { tokens: 4866858, officialNano: "1840525800" },
+      cacheWrite: { tokens: 741129, officialNano: "3041786250" },
+      webSearch: { requests: 0, officialNano: "0" },
     },
     models: [
-      { model: "claude-opus-4-8", requests: 42, inputTokens: 1200000, outputTokens: 380000, cacheReadTokens: 4500000, cacheWrite5mTokens: 320000, cacheWrite1hTokens: 40000, webSearchRequests: 3, officialNano: "20180000000", chargedNano: "8072000000" },
-      { model: "claude-sonnet-5", requests: 71, inputTokens: 900000, outputTokens: 260000, cacheReadTokens: 2100000, cacheWrite5mTokens: 180000, cacheWrite1hTokens: 0, webSearchRequests: 1, officialNano: "7915000000", chargedNano: "3166000000" },
-      { model: "claude-haiku-4-5", requests: 58, inputTokens: 400000, outputTokens: 120000, cacheReadTokens: 800000, cacheWrite5mTokens: 60000, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "1155000000", chargedNano: "462000000" },
+      { model: "claude-opus-4-8", requests: 27, inputTokens: 1890211, outputTokens: 5100, cacheReadTokens: 2256400, cacheWrite5mTokens: 282050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "12469567500", chargedNano: "4987827000" },
+      { model: "claude-sonnet-5", requests: 27, inputTokens: 1890954, outputTokens: 5072, cacheReadTokens: 2256400, cacheWrite5mTokens: 282050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "7483549500", chargedNano: "2993419800" },
+      { model: "claude-haiku-4-5-20251001", requests: 5, inputTokens: 104, outputTokens: 4996, cacheReadTokens: 354058, cacheWrite5mTokens: 177029, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "281776050", chargedNano: "112710420" },
     ],
   };
   window.fetch = (input, init = {}) => {

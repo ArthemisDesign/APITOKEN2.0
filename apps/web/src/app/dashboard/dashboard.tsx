@@ -414,19 +414,21 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
         <div className="tok-buckets">
           <div className="tokb"><span className="dlabel">{copy.inputTokens}</span><b>{fmtTokens(usage.buckets.input.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.input.officialNano)}</span></div>
           <div className="tokb"><span className="dlabel">{copy.outputTokens}</span><b>{fmtTokens(usage.buckets.output.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.output.officialNano)}</span></div>
-          <div className="tokb"><span className="dlabel">{copy.cacheTokens}</span><b>{fmtTokens(usage.buckets.cacheRead.tokens + usage.buckets.cacheWrite.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(addNano(usage.buckets.cacheRead.officialNano, usage.buckets.cacheWrite.officialNano))}</span></div>
-          <div className="tokb"><span className="dlabel">{copy.webSearchLabel}</span><b>{usage.buckets.webSearch.requests.toLocaleString(locale)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.webSearch.officialNano)}</span></div>
+          <div className="tokb"><span className="dlabel">{copy.cacheReadLabel}</span><b>{fmtTokens(usage.buckets.cacheRead.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.cacheRead.officialNano)}</span></div>
+          <div className="tokb"><span className="dlabel">{copy.cacheWriteLabel}</span><b>{fmtTokens(usage.buckets.cacheWrite.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.cacheWrite.officialNano)}</span></div>
+          {usage.buckets.webSearch.requests > 0 && <div className="tokb"><span className="dlabel">{copy.webSearchLabel}</span><b>{usage.buckets.webSearch.requests.toLocaleString(locale)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.webSearch.officialNano)}</span></div>}
         </div>
         <div className="mdist" role="img" aria-label={copy.tokensAndModels}>
           {models.map((model, index) => <div key={model.model} className="mdist-seg" style={{ width: `${modelOfficialTotal > 0 ? Number(BigInt(model.officialNano)) / modelOfficialTotal * 100 : 100 / models.length}%`, background: MODEL_COLORS[index % MODEL_COLORS.length] }} title={`${modelLabel(model.model)} · ${fmtNanoUsd(model.officialNano)}`} />)}
         </div>
-        <div className="table-scroll"><table className="mtable"><thead><tr><th>{copy.model}</th><th className="tnum">{copy.requests}</th><th className="tnum">{copy.inputShort}</th><th className="tnum">{copy.outputShort}</th><th className="tnum">{copy.cacheShort}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
+        <div className="table-scroll"><table className="mtable"><thead><tr><th>{copy.model}</th><th className="tnum">{copy.requests}</th><th className="tnum">{copy.inputShort}</th><th className="tnum">{copy.outputShort}</th><th className="tnum">{copy.cacheRdShort}</th><th className="tnum">{copy.cacheWrShort}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
           <tbody>{models.map((model, index) => <tr key={model.model}>
             <td><span className="tkmdl"><span className="tkmdl-dot" style={{ background: MODEL_COLORS[index % MODEL_COLORS.length] }} />{modelLabel(model.model)}</span></td>
             <td className="tnum">{model.requests.toLocaleString(locale)}</td>
             <td className="tnum">{fmtTokens(model.inputTokens)}</td>
             <td className="tnum">{fmtTokens(model.outputTokens)}</td>
-            <td className="tnum">{fmtTokens(model.cacheReadTokens + model.cacheWrite5mTokens + model.cacheWrite1hTokens)}</td>
+            <td className="tnum">{fmtTokens(model.cacheReadTokens)}</td>
+            <td className="tnum">{fmtTokens(model.cacheWrite5mTokens + model.cacheWrite1hTokens)}</td>
             <td className="tnum">{fmtNanoUsd(model.officialNano)}</td>
             <td className="tnum mprice">{fmtNanoUsd(model.chargedNano)}</td>
           </tr>)}</tbody></table></div>
@@ -472,7 +474,6 @@ function fmtNanoUsd(nano: string): string {
   if (usd > 0 && usd < 0.01) return "<$0.01";
   return `$${usd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
-function addNano(a: string, b: string): string { return (BigInt(a) + BigInt(b)).toString(); }
 function modelLabel(id: string): string {
   const base = id.replace(/^claude-/i, "").replace(/-\d{8}$/, "");
   const words: string[] = []; const nums: string[] = [];
