@@ -1,5 +1,6 @@
 "use client";
 
+import { usePathname } from "next/navigation";
 import { useEffect, useRef, type CSSProperties } from "react";
 
 const waveWidth = 2_000;
@@ -28,6 +29,7 @@ type WaveStyle = CSSProperties & Record<"--sw" | "--o" | "--dur" | "--dl", strin
 
 export function MotionEffects() {
   const decorRef = useRef<HTMLDivElement>(null);
+  const pathname = usePathname();
   useEffect(() => {
     const hero = document.querySelector(".hero");
     const frame = window.requestAnimationFrame(() => hero?.classList.add("loaded"));
@@ -66,7 +68,7 @@ export function MotionEffects() {
       window.removeEventListener("scroll", onScroll); window.removeEventListener("pointermove", onPointerMove);
       observer?.disconnect(); window.clearTimeout(safety);
     };
-  }, []);
+  }, [pathname]);
   return <div ref={decorRef} className="bg-decor" aria-hidden="true">
     <svg className="wave-field" viewBox={`0 0 ${waveWidth} ${waveHeight}`} preserveAspectRatio="xMidYMid slice">
       {waveLayers.map((layer, index) => {

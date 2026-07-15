@@ -1,9 +1,7 @@
 import Link from "next/link";
 import { DOCS_URL } from "@/lib/site-links";
 import { InteractiveTerminal } from "@/components/interactive-terminal";
-import { MotionEffects } from "@/components/motion-effects";
 import { PricingOverview } from "@/components/pricing-overview";
-import { SiteFooter, SiteHeader } from "@/components/site-chrome";
 import { TopUpAmountInput } from "@/components/topup-amount-input";
 import { T } from "@/components/translated";
 
@@ -13,9 +11,7 @@ const features = [["f1_h","f1_p"],["f2_h","f2_p"],["f3_h","f3_p"],["f4_h","f4_p"
 const faqs = [["q1","a1"],["q2","a2"],["q3","a3"],["q4","a4"],["q5","a5"],["q6","a6"]] as const;
 
 export default function HomePage() {
-  return <>
-    <SiteHeader home />
-    <main>
+  return <main>
       <div className="hero"><div className="wrap hero-grid"><div><T k="hero_eyebrow" as="span" className="eyebrow">Claude API · One gateway</T><T k="hero_h1" as="h1">All Claude models. One key.</T><T k="hero_lead" as="p" className="lead">One key, one dashboard, every Claude model — ready for Claude Code, Cursor and production.</T><div className="hero-cta"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link><Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link></div></div><InteractiveTerminal /></div><div className="wrap home-stats"><div className="stats reveal"><Stat value="8+" label="stat1" /><Stat value="1" label="stat2" /><Stat value="99.9%" label="stat3" /><Stat value="<100ms" label="stat4" /><div className="stat"><T k="stat5v" as="b">minutes</T><T k="stat5">Setup time</T></div></div></div></div>
       <section id="products"><div className="wrap"><div className="prod-grid" data-reveal-stagger>
         <div className="prod">
@@ -42,10 +38,7 @@ export default function HomePage() {
       <section id="pricing"><div className="wrap"><SectionHead eyebrow="pr_eyebrow" title="pr_h2" lead="pr_lead" /><PricingOverview /></div></section>
       <section id="faq"><div className="wrap"><SectionHead eyebrow="faq_eyebrow" title="faq_h2" lead="faq_lead" /><div className="faq" data-reveal-stagger>{faqs.map(([question, answer]) => <details key={question}><summary><T k={question}>Question</T><span className="plus">+</span></summary><T k={answer} as="div" className="ans">Answer</T></details>)}</div></div></section>
       <section className="cta-band"><div className="wrap reveal"><T k="cta_h2" as="h2">Ready to start building?</T><T k="cta_p" as="p">Create a key in minutes.</T><div className="cta-actions"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link><Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link></div></div></section>
-    </main>
-    <SiteFooter full />
-    <MotionEffects />
-  </>;
+    </main>;
 }
 
 function Stat({ value, label }: { value: string; label: string }) { return <div className="stat"><b>{value}</b><T k={label}>Metric</T></div>; }

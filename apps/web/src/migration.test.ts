@@ -36,15 +36,32 @@ describe("completed Next.js migration", () => {
     expect(staticRoute).not.toContain('slug === "docs"');
   });
 
-  it("keeps one persistent shell while navigating between compliance pages", () => {
-    const layout = readFileSync(join(appRoot, "(compliance)", "layout.tsx"), "utf8");
+  it("keeps persistent public and authentication shells across client navigation", () => {
+    const rootLayout = readFileSync(join(appRoot, "layout.tsx"), "utf8");
+    const shell = readFileSync(join(root, "components", "persistent-route-shell.tsx"), "utf8");
+    const complianceLayout = readFileSync(join(appRoot, "(compliance)", "layout.tsx"), "utf8");
     const compliance = readFileSync(join(root, "components", "compliance-pages.tsx"), "utf8");
-    expect(layout).toContain("<SiteHeader />");
-    expect(layout).toContain("<SiteFooter />");
-    expect(layout).toContain("<main>{children}</main>");
+    const home = readFileSync(join(appRoot, "page.tsx"), "utf8");
+    const marketing = readFileSync(join(root, "components", "marketing-pages.tsx"), "utf8");
+    expect(rootLayout).toContain("<PersistentRouteShell>{children}</PersistentRouteShell>");
+    expect(shell).toContain("<SiteHeader home={home} />");
+    expect(shell).toContain("<SiteFooter full={home} />");
+    expect(shell).toContain("<MotionEffects />");
+    expect(shell).toContain("<AuthShell>{children}</AuthShell>");
+    for (const route of ["/", "/models", "/integrations", "/plans", "/privacy", "/terms", "/support"]) expect(shell).toContain(`"${route}"`);
+    for (const route of ["/login", "/register", "/forgot-password", "/reset-password", "/verify-email"]) expect(shell).toContain(`"${route}"`);
+    expect(complianceLayout).toContain("<main>{children}</main>");
+    expect(home).not.toContain("<SiteHeader");
+    expect(home).not.toContain("<SiteFooter");
+    expect(marketing).not.toContain("<SiteHeader");
+    expect(marketing).not.toContain("<SiteFooter");
     expect(compliance).not.toContain("<SiteHeader />");
     expect(compliance).not.toContain("<SiteFooter />");
     for (const route of ["/privacy", "/terms", "/support", "/plans"]) expect(compliance).toContain(`href: \"${route}\"`);
+    const authSource = ["login/login-form.tsx", "register/register-form.tsx", "forgot-password/forgot-password-form.tsx", "reset-password/reset-password-form.tsx", "verify-email/verify-email.tsx", "auth/callback/oauth-callback.tsx"]
+      .map((path) => readFileSync(join(appRoot, path), "utf8")).join("\n");
+    expect(authSource).not.toContain("<AuthShell");
+    expect(authSource).not.toContain("router.refresh()");
   });
 
   it("loads Vercel Analytics once and strips sensitive URL data", () => {
@@ -73,6 +90,7 @@ describe("completed Next.js migration", () => {
     expect(dashboard).toContain('window.history.pushState(null, "", dashboardHref(next))');
     expect(dashboard).toContain('window.addEventListener("popstate", syncSectionFromHistory)');
     expect(dashboard).toContain("data-dashboard-section={item.section}");
+    expect(dashboard).not.toContain("router.refresh()");
   });
 
   it("uses flexible whole-USD top-ups and the authoritative pricing tiers", () => {
@@ -167,7 +185,8 @@ describe("completed Next.js migration", () => {
     expect(styles).not.toContain(".term-controls:hover i::after");
     expect(styles).toContain("inset:0;display:grid;place-items:center");
     expect(styles).toContain(".pricing-intro{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px;align-items:stretch}");
-    expect(styles).toContain(".topup-card,.business-card{padding:30px;display:grid;grid-template-rows:");
+    expect(styles).toContain(".topup-card{padding:30px;display:flex;flex-direction:column");
+    expect(styles).toContain(".business-card{padding:30px;display:grid;grid-template-rows:");
     expect(styles).toContain(".business-preview{justify-content:space-between");
     expect(styles).toContain(".stat b{font-family:var(--font-mono)");
     expect(styles).toContain(".prod{border:1px solid var(--line);border-radius:8px;padding:28px;background:var(--bg-card);display:grid");

@@ -387,6 +387,77 @@ async function verifyDashboardRouting(client) {
   process.stdout.write("Verified reload, direct Overview, and Back/Forward dashboard routing\n");
 }
 
+async function verifyPersistentSiteRouting(client) {
+  await client.send("Runtime.evaluate", {
+    expression: `localStorage.setItem('lang', 'en'); localStorage.setItem('theme', 'dark');`,
+  });
+  const loaded = client.once("Page.loadEventFired");
+  await client.send("Page.navigate", { url: new URL("/", baseUrl).href });
+  await loaded;
+  await waitForCondition(
+    client,
+    `document.documentElement.lang === 'en' && document.documentElement.dataset.theme === 'dark' && Boolean(document.querySelector('header.nav')) && Boolean(document.querySelector('footer')) && Boolean(document.querySelector('.bg-decor'))`,
+    "the public site shell",
+  );
+  await client.send("Runtime.evaluate", {
+    awaitPromise: true,
+    expression: `new Promise((resolve) => setTimeout(resolve, 800))`,
+  });
+  await client.send("Runtime.evaluate", {
+    expression: `window.__siteAuditSentinel = 'persistent-site-shell';
+      window.__siteAuditHeader = document.querySelector('header.nav');
+      window.__siteAuditFooter = document.querySelector('footer');
+      window.__siteAuditBackground = document.querySelector('.bg-decor');
+      window.__siteAuditAuthChecks = 0;
+      window.__siteAuditOriginalFetch = window.fetch;
+      window.fetch = (...args) => {
+        const input = args[0];
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (url.includes('/auth/me')) window.__siteAuditAuthChecks += 1;
+        return window.__siteAuditOriginalFetch(...args);
+      };`,
+  });
+
+  const transitions = [
+    [`.prod a[href="/models"]`, "/models"],
+    [`header.nav a[href="/integrations"]`, "/integrations"],
+    [`.steps a[href="/int-claude-code"]`, "/int-claude-code"],
+    [`.auth-back[href="/integrations"]`, "/integrations"],
+    [`header.nav a[href="/models"]`, "/models"],
+    [`footer a[href="/privacy"]`, "/privacy"],
+    [`.compliance-nav a[href="/terms"]`, "/terms"],
+    [`.compliance-nav a[href="/support"]`, "/support"],
+    [`.compliance-nav a[href="/plans"]`, "/plans"],
+    [`header.nav a.brand[href="/"]`, "/"],
+  ];
+
+  for (const [selector, pathname] of transitions) {
+    const clicked = await client.send("Runtime.evaluate", {
+      expression: `(() => { const link = document.querySelector(${JSON.stringify(selector)}); link?.click(); return Boolean(link); })()`,
+      returnByValue: true,
+    });
+    if (!clicked.result.value) throw new Error(`Navigation audit link was not found: ${selector}`);
+    await waitForCondition(client, `location.pathname === ${JSON.stringify(pathname)}`, `client navigation to ${pathname}`);
+    const result = await client.send("Runtime.evaluate", {
+      expression: `JSON.stringify({
+        sentinel: window.__siteAuditSentinel === 'persistent-site-shell',
+        sameHeader: window.__siteAuditHeader === document.querySelector('header.nav'),
+        sameFooter: window.__siteAuditFooter === document.querySelector('footer'),
+        sameBackground: window.__siteAuditBackground === document.querySelector('.bg-decor'),
+        authChecks: window.__siteAuditAuthChecks,
+        language: document.documentElement.lang,
+        theme: document.documentElement.dataset.theme,
+      })`,
+      returnByValue: true,
+    });
+    const state = JSON.parse(result.result.value);
+    if (!state.sentinel || !state.sameHeader || !state.sameFooter || !state.sameBackground || state.authChecks !== 0 || state.language !== "en" || state.theme !== "dark") {
+      throw new Error(`Public shell changed while navigating to ${pathname}: ${JSON.stringify(state)}`);
+    }
+  }
+  process.stdout.write("Verified persistent public shell across landing, marketing, integration, and compliance routes\n");
+}
+
 async function verifyComplianceRouting(client) {
   await client.send("Runtime.evaluate", {
     expression: `localStorage.setItem('lang', 'ru'); localStorage.setItem('theme', 'dark');`,
@@ -486,6 +557,7 @@ try {
     process.stdout.write(`Captured ${capture[0]}\n`);
   }
   if (process.env.AUDIT_VERIFY_ROUTING === "1") await verifyDashboardRouting(client);
+  if (process.env.AUDIT_VERIFY_SITE_ROUTING === "1") await verifyPersistentSiteRouting(client);
   if (process.env.AUDIT_VERIFY_COMPLIANCE === "1") await verifyComplianceRouting(client);
   await writeFile(path.join(outputDirectory, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   client.close();

@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import "./globals.css";
 import "./anim.css";
 import { I18nProvider } from "@/components/i18n-provider";
+import { PersistentRouteShell } from "@/components/persistent-route-shell";
 import { SiteAnalytics } from "@/components/site-analytics";
 import { DEMO_FIXTURE_SCRIPT } from "@/lib/demo-fixture";
 
@@ -31,7 +32,7 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
       </head>
       <body>
         <I18nProvider>
-          {children}
+          <PersistentRouteShell>{children}</PersistentRouteShell>
         </I18nProvider>
         <SiteAnalytics />
       </body>

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
-import { AuthIntro, AuthShell, Feedback } from "@/components/auth-shell";
+import { AuthIntro, Feedback } from "@/components/auth-shell";
 
 export function VerifyEmail() {
   const search = useSearchParams();
@@ -21,7 +21,7 @@ export function VerifyEmail() {
     started.current = true;
     api.verifyEmail(token).then(() => {
       setMessage("Email verified. Opening your dashboard…"); setSuccess(true);
-      window.setTimeout(() => { router.replace("/dashboard"); router.refresh(); }, 500);
+      window.setTimeout(() => { router.replace("/dashboard"); }, 500);
     }).catch((error) => { setMessage(error instanceof ApiError ? error.message : "The verification link is invalid or expired"); setSuccess(false); });
   }, [router, token]);
 
@@ -33,10 +33,10 @@ export function VerifyEmail() {
     finally { setBusy(false); }
   }
 
-  return <AuthShell>
+  return <>
     <AuthIntro title="Verify your email" subtitle={email ? `We sent a verification link to ${email}.` : "Complete email verification to activate your account."} />
     <Feedback message={message} success={success} />
     {!token && email && <button className="btn btn-primary" disabled={busy} onClick={resend}>{busy ? "…" : "Resend verification email"}</button>}
     <div className="auth-alt"><Link href="/login">Back to login</Link></div>
-  </AuthShell>;
+  </>;
 }

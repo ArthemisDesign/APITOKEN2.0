@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { api, ApiError } from "@/lib/api";
-import { AuthIntro, AuthShell, Feedback } from "@/components/auth-shell";
+import { AuthIntro, Feedback } from "@/components/auth-shell";
 
 export function ResetPasswordForm() {
   const token = useSearchParams().get("token") ?? "";
@@ -18,10 +18,10 @@ export function ResetPasswordForm() {
     try { await api.resetPassword(token, password); router.replace("/login?reset=1"); }
     catch (error) { setMessage(error instanceof ApiError ? error.message : "Unable to reset the password"); setBusy(false); }
   }
-  return <AuthShell>
+  return <>
     <AuthIntro title="Choose a new password" subtitle="Use at least 12 characters." />
     <form onSubmit={submit}><div className="field"><label htmlFor="password">New password</label><input id="password" name="password" type="password" autoComplete="new-password" minLength={12} maxLength={128} required /></div>
       <button className="btn btn-primary" disabled={busy || !token}>{busy ? "…" : "Update password"}</button><Feedback message={message} /></form>
     <div className="auth-alt"><Link href="/login">Back to login</Link></div>
-  </AuthShell>;
+  </>;
 }

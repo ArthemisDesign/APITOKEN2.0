@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { DOCS_URL } from "@/lib/site-links";
@@ -18,10 +19,15 @@ export function Brand() {
 
 export function SiteHeader({ home = false, compact = false }: { home?: boolean; compact?: boolean }) {
   const { language, setLanguage, t } = useI18n();
+  const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
 
   useEffect(() => { api.me().then(() => setAuthenticated(true)).catch(() => setAuthenticated(false)); }, []);
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => setMenuOpen(false));
+    return () => window.cancelAnimationFrame(frame);
+  }, [pathname]);
 
   const links = <>
     <Link href={home ? "#how" : "/#how"}><T k="nav_how">How it works</T></Link>

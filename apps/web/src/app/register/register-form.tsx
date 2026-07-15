@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { api, ApiError } from "@/lib/api";
-import { AuthIntro, AuthShell, Feedback } from "@/components/auth-shell";
+import { AuthIntro, Feedback } from "@/components/auth-shell";
 import { SocialAuth } from "@/components/social-auth";
 import { useI18n } from "@/components/i18n-provider";
 
@@ -26,14 +26,13 @@ export function RegisterForm() {
       const result = await api.register({ email, password, inviteToken });
       if (result.verificationRequired) router.replace(`/verify-email?email=${encodeURIComponent(email)}`);
       else router.replace("/dashboard");
-      router.refresh();
     } catch (error) {
       setMessage(error instanceof ApiError ? error.message : "Unable to create the account right now");
       setBusy(false);
     }
   }
 
-  return <AuthShell>
+  return <>
     <AuthIntro title={t("reg_h")} subtitle="Create an account to access your keys and balance." />
     <form onSubmit={submit} noValidate>
       <div className="field"><label htmlFor="email">{t("f_email")}</label><input id="email" name="email" type="email" autoComplete="email" placeholder="you@company.com" required /></div>
@@ -43,5 +42,5 @@ export function RegisterForm() {
     </form>
     <SocialAuth inviteToken={inviteToken} />
     <div className="auth-alt"><span>{t("have_acc")}</span> <Link href="/login">{t("to_login")}</Link></div>
-  </AuthShell>;
+  </>;
 }
