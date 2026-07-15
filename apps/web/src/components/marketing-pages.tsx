@@ -15,8 +15,8 @@ export function PageHero({ eyebrow, title, subtitle, back }: { eyebrow: string; 
   return <div className="page-hero"><div className="wrap">{back && <Link className="auth-back" href="/integrations"><T k="int_back">← All integrations</T></Link>}<T k={eyebrow} as="span" className="eyebrow">Section</T><T k={title} as="h1">Title</T><T k={subtitle} as="p">Description</T></div></div>;
 }
 
-export function PlansPage() {
-  return <MarketingFrame><PageHero eyebrow="pr_eyebrow" title="plans_h" subtitle="plans_sub" /><section className="borderless"><div className="wrap plans-content"><CommercialDisclosure /><PricingOverview /></div></section></MarketingFrame>;
+export function PlansContent() {
+  return <><PageHero eyebrow="pr_eyebrow" title="plans_h" subtitle="plans_sub" /><section className="borderless"><div className="wrap plans-content"><CommercialDisclosure /><PricingOverview /></div></section></>;
 }
 
 const modelRows = [

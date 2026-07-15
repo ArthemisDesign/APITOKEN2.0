@@ -24,13 +24,27 @@ describe("completed Next.js migration", () => {
   it("owns every migrated public page through App Router components", () => {
     const staticRoute = readFileSync(join(appRoot, "[slug]", "page.tsx"), "utf8");
     for (const route of [
-      "plans", "models", "integrations", "int-claude-code", "int-cursor", "int-cline",
-      "int-continue", "int-zed", "int-sdk", "terms", "privacy", "support",
+      "models", "integrations", "int-claude-code", "int-cursor", "int-cline",
+      "int-continue", "int-zed", "int-sdk",
     ]) expect(staticRoute).toContain(`\"${route}\"`);
+    for (const route of ["plans", "terms", "privacy", "support"]) {
+      expect(existsSync(join(appRoot, "(compliance)", route, "page.tsx"))).toBe(true);
+    }
     for (const route of ["login", "register", "dashboard", "docs"]) {
       expect(existsSync(join(appRoot, route, "page.tsx"))).toBe(true);
     }
     expect(staticRoute).not.toContain('slug === "docs"');
+  });
+
+  it("keeps one persistent shell while navigating between compliance pages", () => {
+    const layout = readFileSync(join(appRoot, "(compliance)", "layout.tsx"), "utf8");
+    const compliance = readFileSync(join(root, "components", "compliance-pages.tsx"), "utf8");
+    expect(layout).toContain("<SiteHeader />");
+    expect(layout).toContain("<SiteFooter />");
+    expect(layout).toContain("<main>{children}</main>");
+    expect(compliance).not.toContain("<SiteHeader />");
+    expect(compliance).not.toContain("<SiteFooter />");
+    for (const route of ["/privacy", "/terms", "/support", "/plans"]) expect(compliance).toContain(`href: \"${route}\"`);
   });
 
   it("keeps reloadable dashboard views in the single canonical /dashboard route", () => {

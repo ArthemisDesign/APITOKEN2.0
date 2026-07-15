@@ -1,9 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import type { ReactNode } from "react";
-import { MotionEffects } from "./motion-effects";
-import { SiteFooter, SiteHeader } from "./site-chrome";
 import { useI18n, type Language } from "./i18n-provider";
 
 const SUPPORT_EMAIL = "apitokensale@gmail.com";
@@ -445,10 +442,6 @@ const supportCopy: Record<Language, {
   },
 };
 
-function ComplianceFrame({ children }: { children: ReactNode }) {
-  return <><SiteHeader /><main>{children}</main><SiteFooter /><MotionEffects /></>;
-}
-
 export function ComplianceNav({ current }: { current: "privacy" | "terms" | "support" | "pricing" }) {
   const { language } = useI18n();
   const labels = language === "ru"
@@ -463,19 +456,19 @@ export function ComplianceNav({ current }: { current: "privacy" | "terms" | "sup
 export function LegalPage({ kind }: { kind: "privacy" | "terms" }) {
   const { language } = useI18n();
   const document = documents[language][kind];
-  return <ComplianceFrame>
+  return <>
     <div className="page-hero legal-hero"><div className="wrap"><span className="eyebrow">{document.eyebrow}</span><h1>{document.title}</h1><p>{document.summary}</p><ComplianceNav current={kind} /></div></div>
     <section className="borderless legal-section"><div className="wrap legal-layout">
       <aside className="legal-aside"><span>{document.updated}</span><strong>{document.notice}</strong><a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a></aside>
       <article className="legal-document">{document.sections.map((section) => <section className="legal-document-section" key={section.title}><h2>{section.title}</h2>{section.paragraphs?.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}{section.bullets && <ul>{section.bullets.map((bullet) => <li key={bullet}>{bullet}</li>)}</ul>}</section>)}</article>
     </div></section>
-  </ComplianceFrame>;
+  </>;
 }
 
 export function SupportPage() {
   const { language } = useI18n();
   const copy = supportCopy[language];
-  return <ComplianceFrame>
+  return <>
     <div className="page-hero legal-hero"><div className="wrap"><span className="eyebrow">{copy.eyebrow}</span><h1>{copy.title}</h1><p>{copy.summary}</p><ComplianceNav current="support" /></div></div>
     <section className="borderless support-section"><div className="wrap">
       <div className="support-email-card"><div><span>{copy.emailLabel}</span><a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a><p>{copy.emailHelp}</p></div><a className="btn btn-primary" href={`mailto:${SUPPORT_EMAIL}`}>{copy.write}</a></div>
@@ -487,5 +480,5 @@ export function SupportPage() {
         <div className="support-card"><h2>{copy.refundsTitle}</h2><p>{copy.refunds}</p><Link href="/terms">{language === "ru" ? "Открыть Пользовательское соглашение →" : "Open the User Agreement →"}</Link></div>
       </div>
     </div></section>
-  </ComplianceFrame>;
+  </>;
 }

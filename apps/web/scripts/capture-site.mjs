@@ -344,6 +344,71 @@ async function verifyDashboardRouting(client) {
   process.stdout.write("Verified reload, direct Overview, and Back/Forward dashboard routing\n");
 }
 
+async function verifyComplianceRouting(client) {
+  await client.send("Runtime.evaluate", {
+    expression: `localStorage.setItem('lang', 'ru'); localStorage.setItem('theme', 'dark');`,
+  });
+  const loaded = client.once("Page.loadEventFired");
+  await client.send("Page.navigate", { url: new URL("/privacy", baseUrl).href });
+  await loaded;
+  await waitForCondition(
+    client,
+    `document.documentElement.lang === 'ru' && document.documentElement.dataset.theme === 'dark' && document.querySelector('h1')?.textContent?.trim() === 'Политика конфиденциальности'`,
+    "the Russian dark-mode compliance state",
+  );
+  await client.send("Runtime.evaluate", {
+    awaitPromise: true,
+    expression: `new Promise((resolve) => setTimeout(resolve, 800))`,
+  });
+  await client.send("Runtime.evaluate", {
+    expression: `window.__complianceHeader = document.querySelector('header.nav');
+      window.__complianceAuthText = document.querySelector('.nav-actions')?.textContent;
+      window.__complianceAuthChecks = 0;
+      window.__complianceOriginalFetch = window.fetch;
+      window.fetch = (...args) => {
+        const input = args[0];
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (url.includes('/auth/me')) window.__complianceAuthChecks += 1;
+        return window.__complianceOriginalFetch(...args);
+      };
+      document.querySelector('.compliance-nav a[href="/terms"]')?.click();`,
+  });
+  await waitForCondition(
+    client,
+    `location.pathname === '/terms' && document.querySelector('h1')?.textContent?.trim() === 'Пользовательское соглашение'`,
+    "client navigation to the User Agreement",
+  );
+  await client.send("Runtime.evaluate", { expression: `document.querySelector('.compliance-nav a[href="/support"]')?.click()` });
+  await waitForCondition(
+    client,
+    `location.pathname === '/support' && document.querySelector('h1')?.textContent?.trim() === 'Связаться с apiToken.sale'`,
+    "client navigation to Support",
+  );
+  await client.send("Runtime.evaluate", { expression: `document.querySelector('.compliance-nav a[href="/plans"]')?.click()` });
+  await waitForCondition(
+    client,
+    `location.pathname === '/plans' && document.querySelector('h1')?.textContent?.trim() === 'Тарифы и цены'`,
+    "client navigation to Pricing",
+  );
+  const result = await client.send("Runtime.evaluate", {
+    expression: `JSON.stringify({
+      sameHeader: window.__complianceHeader === document.querySelector('header.nav'),
+      authChecks: window.__complianceAuthChecks,
+      sameAuthText: window.__complianceAuthText === document.querySelector('.nav-actions')?.textContent,
+      language: document.documentElement.lang,
+      storedLanguage: localStorage.getItem('lang'),
+      theme: document.documentElement.dataset.theme,
+      storedTheme: localStorage.getItem('theme'),
+    })`,
+    returnByValue: true,
+  });
+  const state = JSON.parse(result.result.value);
+  if (!state.sameHeader || state.authChecks !== 0 || !state.sameAuthText || state.language !== "ru" || state.storedLanguage !== "ru" || state.theme !== "dark" || state.storedTheme !== "dark") {
+    throw new Error(`Compliance shell was not preserved: ${JSON.stringify(state)}`);
+  }
+  process.stdout.write("Verified persistent compliance shell, language, theme, and authentication menu state\n");
+}
+
 const chrome = await findChrome();
 const port = 9222 + Math.floor(Math.random() * 500);
 await mkdir(outputDirectory, { recursive: true });
@@ -378,6 +443,7 @@ try {
     process.stdout.write(`Captured ${capture[0]}\n`);
   }
   if (process.env.AUDIT_VERIFY_ROUTING === "1") await verifyDashboardRouting(client);
+  if (process.env.AUDIT_VERIFY_COMPLIANCE === "1") await verifyComplianceRouting(client);
   await writeFile(path.join(outputDirectory, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   client.close();
   process.stdout.write(`Screenshots: ${outputDirectory}\n`);
