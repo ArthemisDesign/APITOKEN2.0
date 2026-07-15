@@ -347,14 +347,15 @@ async fn sub_cmd(op: SubOp) -> Result<()> {
     match op {
         SubOp::Add { email, token, proxy, fleet } => {
             registry::add(&conn, &email, &token, &proxy, &fleet)?;
-            let plan = detect_and_store(&s, &email).await;   // авто-детект тарифа
-            println!("✓ добавлена {email} (fleet={fleet}, proxy={}) · {plan}",
+            // Тариф НЕ детектим синтетическим запросом к Anthropic: у OAuth-токенов нет scope
+            // user:profile → всё равно NoScope, а лишний запрос = фингерпринт. Ёмкость калибруется
+            // из боевого трафика; при необходимости тариф задаётся вручную (`sub set-plan`).
+            println!("✓ добавлена {email} (fleet={fleet}, proxy={})",
                 if proxy.is_empty() { "—" } else { &proxy });
         }
         SubOp::AddFile { email, token_file, proxy, fleet } => {
             registry::add_file(&conn, &email, &token_file, &proxy, &fleet)?;
-            let plan = detect_and_store(&s, &email).await;   // авто-детект тарифа
-            println!("✓ добавлена {email} (token_file={token_file}, fleet={fleet}) · {plan}");
+            println!("✓ добавлена {email} (token_file={token_file}, fleet={fleet})");
         }
         SubOp::List => {
             let rows = registry::list(&conn)?;
