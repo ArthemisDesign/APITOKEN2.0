@@ -9,7 +9,7 @@ export function PricingOverview() {
       <div className="topup-card">
         <T k="topup_tag" as="span" className="tag">Flexible top-up</T>
         <T k="topup_h" as="h3">Choose any whole USD amount</T>
-        <TopUpAmountInput className="topup-preview" initialAmount="100" showReceive />
+        <TopUpAmountInput className="topup-preview" initialAmount="1000" showReceive />
         <T k="topup_p" as="p">No catalog and no preset amounts. Enter a whole amount and add exactly that much to your balance.</T>
         <Link className="btn btn-primary" href="/register"><T k="topup_cta">Create account</T></Link>
       </div>
