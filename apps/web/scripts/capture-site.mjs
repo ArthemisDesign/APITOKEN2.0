@@ -29,6 +29,7 @@ const siteCaptures = [
   ["docs-desktop", "/docs", 1440, 1000, "light"],
   ["docs-dark", "/docs", 1440, 1000, "dark"],
   ["docs-mobile", "/docs", 390, 844, "light"],
+  ["docs-mobile-dark", "/docs", 390, 844, "dark"],
   ["integrations-desktop", "/integrations", 1440, 1000, "light"],
   ["integration-guide-desktop", "/int-claude-code", 1440, 1000, "light"],
   ["login-desktop", "/login", 1440, 1000, "light"],
@@ -54,6 +55,10 @@ const dashboardCaptures = [
   ["dashboard-keys-dark", "/dashboard?view=keys", 1440, 1000, "dark"],
   ["dashboard-topup-light", "/dashboard?view=credits", 1440, 1000, "light"],
   ["dashboard-topup-dark", "/dashboard?view=credits", 1440, 1000, "dark"],
+  ["dashboard-topup-tablet-light", "/dashboard?view=credits", 768, 1024, "light"],
+  ["dashboard-topup-mobile-light", "/dashboard?view=credits", 390, 844, "light"],
+  ["dashboard-topup-mobile-dark", "/dashboard?view=credits", 390, 844, "dark"],
+  ["dashboard-topup-mobile-russian", "/dashboard?view=credits", 390, 844, "light", "ru"],
   ["dashboard-usage-light", "/dashboard?view=usage", 1440, 1000, "light"],
   ["dashboard-usage-dark", "/dashboard?view=usage", 1440, 1000, "dark"],
   ["dashboard-promos-light", "/dashboard?view=promos", 1440, 1000, "light"],
@@ -69,6 +74,10 @@ const dashboardCaptures = [
 const scopedCaptures = auditScope === "dashboard" ? dashboardCaptures :
   auditScope === "all" ? [...siteCaptures, ...dashboardCaptures] : siteCaptures;
 const captures = auditFilter.size > 0 ? scopedCaptures.filter(([name]) => auditFilter.has(name)) : scopedCaptures;
+const shouldVerifyCredits = process.env.AUDIT_VERIFY_CREDITS === "1" ||
+  (process.env.AUDIT_VERIFY_CREDITS !== "0" && captures.some(([name]) => name.startsWith("dashboard-topup-")));
+const shouldVerifyDocsTheme = process.env.AUDIT_VERIFY_DOCS_THEME === "1" ||
+  (process.env.AUDIT_VERIFY_DOCS_THEME !== "0" && captures.some(([name]) => name.startsWith("docs-")));
 
 if (captures.length === 0) throw new Error("No screenshots matched AUDIT_SCOPE/AUDIT_FILTER.");
 
@@ -107,9 +116,9 @@ const dashboardFixtureScript = `(() => {
       nextTier: {
         tier: "builder",
         discountPercent: 65,
-        spendThresholdNano: "25000000000",
-        remainingNano: "13000000000",
-        visibleOfficialUsageUsd: "70.00",
+        spendThresholdNano: "100000000000",
+        remainingNano: "88000000000",
+        visibleOfficialUsageUsd: "286.00",
       },
     },
   };
@@ -134,7 +143,7 @@ const dashboardFixtureScript = `(() => {
     [8, "1050000000", "claude-opus-4-8"], [8, "300000000", "claude-sonnet-5"],
   ];
   const entries = chg.map((c, i) => ({ id: "c" + i, kind: "charge", amountNano: c[1], amountUsd: "$" + (Number(c[1]) / 1e9).toFixed(6), keyMasked: "sk-pool-a5b5••••••••eeb", reference: "req_0" + i, model: c[2], balanceAfterNano: null, timestamp: String(nowS - c[0] * DAY - i * 137) }));
-  entries.push({ id: "t0", kind: "topup", amountNano: "200000000000", amountUsd: "$200.000000", keyMasked: null, reference: "cryptomus_9f2c1a", balanceAfterNano: null, timestamp: String(nowS - 3 * DAY) });
+  entries.push({ id: "t0", kind: "topup", amountNano: "12000000000", amountUsd: "$12.000000", discountPercent: 60, keyMasked: null, reference: "cryptomus_9f2c1a", balanceAfterNano: null, timestamp: String(nowS - 3 * DAY) });
   const usage = {
     window: "30d", requests: 59, totalOfficialNano: "20234893050", totalChargedNano: "8093957220",
     buckets: {
@@ -350,7 +359,224 @@ async function waitForCondition(client, expression, description, timeoutMs = 8_0
   throw new Error(`Timed out waiting for ${description}.`);
 }
 
+async function setViewport(client, width, height) {
+  await client.send("Emulation.setDeviceMetricsOverride", {
+    width,
+    height,
+    deviceScaleFactor: 1,
+    mobile: width < 600,
+    screenWidth: width,
+    screenHeight: height,
+  });
+}
+
+async function clickSelector(client, selector) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      const rect = element?.getBoundingClientRect();
+      return rect && { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    })()`,
+    returnByValue: true,
+  });
+  const rect = result.result.value;
+  if (!rect) throw new Error(`Browser audit control was not found: ${selector}`);
+  await client.send("Page.bringToFront");
+  const x = rect.x + rect.width / 2;
+  const y = rect.y + rect.height / 2;
+  await client.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+  await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+}
+
+async function verifyCreditsLayout(client) {
+  const cases = [
+    { name: "desktop", width: 1440, height: 1000, statRows: 1, statusRows: 1, converterRow: true, mobileHistory: false },
+    { name: "tablet", width: 768, height: 1024, statRows: 1, statusRows: 3, converterRow: true, mobileHistory: false },
+    { name: "mobile", width: 390, height: 844, statRows: 3, statusRows: 3, converterRow: false, mobileHistory: true },
+  ];
+
+  for (const layoutCase of cases) {
+    await setViewport(client, layoutCase.width, layoutCase.height);
+    await client.send("Runtime.evaluate", {
+      expression: `localStorage.setItem('theme', 'light'); localStorage.setItem('lang', 'en');`,
+    });
+    const url = new URL("/dashboard?view=credits", baseUrl);
+    url.searchParams.set("__auditCredits", layoutCase.name);
+    const loaded = client.once("Page.loadEventFired");
+    await client.send("Page.navigate", { url: url.href });
+    await loaded;
+    await waitForCondition(
+      client,
+      `Boolean(document.querySelector('.credits-stack .topup-convert')) && document.querySelectorAll('.pricing-status-item').length === 3 && Boolean(document.querySelector('.topup-history-table tbody tr'))`,
+      `${layoutCase.name} Credits layout`,
+    );
+    await client.send("Runtime.evaluate", {
+      awaitPromise: true,
+      expression: `new Promise((resolve) => setTimeout(resolve, 500))`,
+    });
+
+    const result = await client.send("Runtime.evaluate", {
+      expression: `(() => {
+        const rects = (selector) => [...document.querySelectorAll(selector)].map((element) => element.getBoundingClientRect());
+        const rowCount = (items) => new Set(items.map((rect) => Math.round(rect.top))).size;
+        const stats = rects('.credits-stack .tc-stats .ovstat');
+        const statuses = rects('.pricing-milestone-status .pricing-status-item');
+        const input = document.querySelector('.tc-input')?.getBoundingClientRect();
+        const receive = document.querySelector('.tc-receive')?.getBoundingClientRect();
+        const rail = ['.credits-stack .tc-stats', '.credits-stack .topup-convert', '.credits-stack .pricing-banner', '.credits-history']
+          .map((selector) => document.querySelector(selector)?.getBoundingClientRect())
+          .filter(Boolean);
+        const history = document.querySelector('.credits-history .table-scroll');
+        const historyTable = document.querySelector('.topup-history-table');
+        const historyCells = [...document.querySelectorAll('.topup-history-table td:not(.empty-cell)')];
+        return JSON.stringify({
+          overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          statRows: rowCount(stats),
+          statusRows: rowCount(statuses),
+          converterRow: Boolean(input && receive && Math.abs(input.top - receive.top) < 2),
+          aligned: rail.length === 4 && Math.max(...rail.map((rect) => rect.left)) - Math.min(...rail.map((rect) => rect.left)) < 2 && Math.max(...rail.map((rect) => rect.right)) - Math.min(...rail.map((rect) => rect.right)) < 2,
+          historyFits: Boolean(history && history.scrollWidth <= history.clientWidth + 1),
+          mobileHistory: Boolean(historyTable && historyCells.length === 5 && getComputedStyle(historyTable).display === 'block' && historyCells.every((cell) => cell.dataset.label && !['none', '""'].includes(getComputedStyle(cell, '::before').content))),
+          receiveText: document.querySelector('.tc-recv-value')?.textContent?.trim(),
+        });
+      })()`,
+      returnByValue: true,
+    });
+    const state = JSON.parse(result.result.value);
+    if (state.overflow > 1 || state.statRows !== layoutCase.statRows || state.statusRows !== layoutCase.statusRows || state.converterRow !== layoutCase.converterRow) {
+      throw new Error(`Credits ${layoutCase.name} responsive layout failed: ${JSON.stringify(state)}`);
+    }
+    if (layoutCase.name === "desktop" && !state.aligned) {
+      throw new Error(`Credits desktop rail is not aligned: ${JSON.stringify(state)}`);
+    }
+    if (!state.historyFits || state.mobileHistory !== layoutCase.mobileHistory) {
+      throw new Error(`Credits ${layoutCase.name} history layout failed: ${JSON.stringify(state)}`);
+    }
+
+    if (layoutCase.name === "desktop") {
+      await clickSelector(client, '[data-topup-preset="500"]');
+      await waitForCondition(
+        client,
+        `document.querySelector('.tc-field input')?.value === '500' && document.querySelector('.tc-preset.on b')?.textContent?.trim() === '$500'`,
+        "the Credits preset to update the converter",
+      );
+      const updated = await client.send("Runtime.evaluate", {
+        expression: `document.querySelector('.tc-recv-value')?.textContent?.trim()`,
+        returnByValue: true,
+      });
+      if (!updated.result.value || updated.result.value === state.receiveText) {
+        throw new Error(`The Credits receive value did not update: ${state.receiveText} -> ${updated.result.value}`);
+      }
+    }
+  }
+  process.stdout.write("Verified Credits alignment, responsive stacking, history layout, and preset interaction\n");
+}
+
+async function verifyDocsTheme(client) {
+  await setViewport(client, 1440, 1000);
+  await client.send("Emulation.setEmulatedMedia", {
+    media: "screen",
+    features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
+  });
+  await client.send("Runtime.evaluate", {
+    expression: `localStorage.setItem('theme', 'light'); localStorage.setItem('lang', 'en');`,
+  });
+  const url = new URL("/docs", baseUrl);
+  url.searchParams.set("__auditDocsTheme", "1");
+  const loaded = client.once("Page.loadEventFired");
+  await client.send("Page.navigate", { url: url.href });
+  await loaded;
+  await waitForCondition(
+    client,
+    `document.querySelector('.theme-tgl')?.getAttribute('aria-label') === 'Switch to dark theme' && !document.documentElement.hasAttribute('data-theme')`,
+    "the light docs theme",
+  );
+
+  const lightResult = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const style = (selector) => getComputedStyle(document.querySelector(selector));
+      return JSON.stringify({
+        site: style('.docs-site').backgroundColor,
+        header: style('.docs-header').backgroundColor,
+        code: style('.docs-code-card pre').backgroundColor,
+        durations: ['.docs-site', '.docs-header', '.docs-sidebar', '.docs-endpoint', '.docs-notice', '.docs-code-card pre', '.docs-auth-flow', '.docs-checklist', '.docs-footer'].map((selector) => style(selector).transitionDuration),
+      });
+    })()`,
+    returnByValue: true,
+  });
+  const light = JSON.parse(lightResult.result.value);
+  if (light.durations.some((duration) => Number.parseFloat(duration) < 0.3)) {
+    throw new Error(`Docs theme surfaces do not use the shared transition timing: ${JSON.stringify(light)}`);
+  }
+
+  await clickSelector(client, ".theme-tgl");
+  await waitForCondition(
+    client,
+    `document.documentElement.dataset.theme === 'dark' && localStorage.getItem('theme') === 'dark' && document.querySelector('.theme-tgl')?.getAttribute('aria-label') === 'Switch to light theme'`,
+    "the dark docs theme after a real toggle click",
+  );
+  await client.send("Runtime.evaluate", { awaitPromise: true, expression: `new Promise((resolve) => setTimeout(resolve, 450))` });
+  const darkResult = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const style = (selector) => getComputedStyle(document.querySelector(selector));
+      return JSON.stringify({
+        site: style('.docs-site').backgroundColor,
+        header: style('.docs-header').backgroundColor,
+        code: style('.docs-code-card pre').backgroundColor,
+      });
+    })()`,
+    returnByValue: true,
+  });
+  const dark = JSON.parse(darkResult.result.value);
+  if (dark.site === light.site || dark.header === light.header || dark.code === light.code) {
+    throw new Error(`Docs theme-sensitive surfaces did not change together: ${JSON.stringify({ light, dark })}`);
+  }
+
+  await clickSelector(client, ".theme-tgl");
+  await waitForCondition(
+    client,
+    `!document.documentElement.hasAttribute('data-theme') && localStorage.getItem('theme') === 'light' && document.querySelector('.theme-tgl')?.getAttribute('aria-label') === 'Switch to dark theme'`,
+    "the light docs theme after switching back",
+  );
+  await clickSelector(client, ".theme-tgl");
+  await waitForCondition(client, `document.documentElement.dataset.theme === 'dark' && localStorage.getItem('theme') === 'dark'`, "the persisted dark docs theme");
+
+  const reloaded = client.once("Page.loadEventFired");
+  await client.send("Page.reload");
+  await reloaded;
+  await waitForCondition(
+    client,
+    `document.documentElement.dataset.theme === 'dark' && localStorage.getItem('theme') === 'dark' && document.querySelector('.theme-tgl')?.getAttribute('aria-label') === 'Switch to light theme'`,
+    "the dark docs theme after reload",
+  );
+
+  await client.send("Emulation.setEmulatedMedia", {
+    media: "screen",
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  });
+  const reducedResult = await client.send("Runtime.evaluate", {
+    expression: `JSON.stringify(['.docs-site', '.docs-header', '.docs-sidebar', '.docs-endpoint', '.docs-notice', '.docs-code-card pre', '.docs-auth-flow', '.docs-checklist', '.docs-footer'].map((selector) => getComputedStyle(document.querySelector(selector)).transitionDuration))`,
+    returnByValue: true,
+  });
+  const reducedDurations = JSON.parse(reducedResult.result.value);
+  if (reducedDurations.some((duration) => Number.parseFloat(duration) > 0.002)) {
+    throw new Error(`Reduced-motion docs transitions are too long: ${JSON.stringify(reducedDurations)}`);
+  }
+  await clickSelector(client, ".theme-tgl");
+  await waitForCondition(
+    client,
+    `!document.documentElement.hasAttribute('data-theme') && localStorage.getItem('theme') === 'light' && document.querySelector('.theme-tgl')?.getAttribute('aria-label') === 'Switch to dark theme'`,
+    "the reduced-motion docs theme toggle",
+  );
+  await client.send("Emulation.setEmulatedMedia", {
+    media: "screen",
+    features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
+  });
+  process.stdout.write("Verified real docs theme toggles, persistence, shared transitions, and reduced motion\n");
+}
+
 async function verifyDashboardRouting(client) {
+  await client.send("Runtime.evaluate", { expression: `localStorage.setItem('lang', 'en');` });
   for (const removedView of ["refer", "orders"]) {
     const removedLoaded = client.once("Page.loadEventFired");
     await client.send("Page.navigate", { url: new URL(`/dashboard?view=${removedView}`, baseUrl).href });
@@ -409,6 +635,7 @@ async function verifyDashboardRouting(client) {
 }
 
 async function verifyProfileBehavior(client) {
+  await client.send("Runtime.evaluate", { expression: `localStorage.setItem('lang', 'en');` });
   const loaded = client.once("Page.loadEventFired");
   await client.send("Page.navigate", { url: new URL("/dashboard?view=profile", baseUrl).href });
   await loaded;
@@ -667,6 +894,8 @@ try {
   }
   if (process.env.AUDIT_VERIFY_ROUTING === "1") await verifyDashboardRouting(client);
   if (process.env.AUDIT_VERIFY_PROFILE === "1") await verifyProfileBehavior(client);
+  if (shouldVerifyCredits) await verifyCreditsLayout(client);
+  if (shouldVerifyDocsTheme) await verifyDocsTheme(client);
   if (process.env.AUDIT_VERIFY_SITE_ROUTING === "1") await verifyPersistentSiteRouting(client);
   if (process.env.AUDIT_VERIFY_COMPLIANCE === "1") await verifyComplianceRouting(client);
   await writeFile(path.join(outputDirectory, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);

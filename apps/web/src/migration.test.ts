@@ -101,8 +101,11 @@ describe("completed Next.js migration", () => {
     const pricing = readFileSync(join(root, "components", "pricing-overview.tsx"), "utf8");
     const pricingTiers = readFileSync(join(root, "lib", "pricing-tiers.ts"), "utf8");
     const messages = readFileSync(join(root, "lib", "messages.json"), "utf8");
-    for (const value of ["starter", "builder", "pro", "studio", "scale", "60", "65", "70", "75", "80", "25", "75", "200", "500", "2500"]) {
+    for (const value of ["starter", "builder", "pro", "studio", "scale", "60", "65", "70", "75", "80"]) {
       expect(pricingTiers).toContain(value);
+    }
+    for (const threshold of ["100", "250", "500", "1000"]) {
+      expect(pricingTiers).toContain(`platformSpendUsd: "${threshold}"`);
     }
     expect(messages).not.toMatch(/\bcredit packs?\b|пакет/i);
     expect(pricing).toContain("Choose any whole USD amount");
@@ -122,8 +125,8 @@ describe("completed Next.js migration", () => {
     const dashboard = readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8");
     const dashboardCopy = readFileSync(join(root, "lib", "dashboard-copy.ts"), "utf8");
     const styles = readFileSync(join(appRoot, "globals.css"), "utf8");
-    expect(dashboardCopy).toContain('monthlyTierProgress: "Monthly tier progress"');
-    expect(dashboardCopy).toContain('spendMore: "Spend {amount} more"');
+    expect(dashboardCopy).toContain('monthlyTierProgress: "Tier progress"');
+    expect(dashboardCopy).toContain('spendMore: "Top up {amount} more"');
     expect(dashboard).toContain("B2C_PRICING_MILESTONES.map");
     expect(styles).toContain(".pricing-milestone-track");
     expect(styles).toContain("height:var(--tier-progress)");

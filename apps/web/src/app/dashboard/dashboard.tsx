@@ -313,53 +313,55 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
   const topups = ledger.filter((entry) => entry.kind === "topup");
 
   return <section className="panel"><PageHeading eyebrow={copy.keysEyebrow} title={copy.creditsTitle} subtitle={copy.creditsSubtitle} />
-    <div className="ov-stats bill3 tc-stats">
-      <div className="ovstat"><span className="dlabel">{copy.currentBalance}</span><b className="num">{normalizeUsd(account.balanceUsd)}</b><span className="dtrend">{nanoNum(account.balanceNano) > 0 ? interpolate(copy.valueOfBalance, { value: fmtUsd(balanceApi) }) : copy.available}</span></div>
-      <Stat label={copy.used} value={nanoToUsd(account.spentNano)} detail={copy.balanceAfterDiscount} />
-      <div className="ovstat"><span className="dlabel">{copy.currentTier}</span><b className="num">{isB2c ? (currentIdx >= 0 ? tierName(copy, B2C_PRICING_MILESTONES[currentIdx].code) : copy.noTierYet) : copy.businessRate}</b><span className="dtrend">{discountOf(account)}% {copy.discount} · {fmtMult(payFraction(account))} {copy.valueMultiplier}</span></div>
-    </div>
-
-    <div className="card topup-convert">
-      <div className="tc-head"><h2>{copy.anyWholeAmount}</h2><p className="p-sub">{copy.checkoutHelp}</p></div>
-      <div className="tc-body">
-        <div className="tc-input">
-          <label className="tc-field"><span className="currency-prefix">$</span><input className="set-in" inputMode="numeric" pattern="[1-9][0-9]*" value={amount} onChange={(event) => setAmount(event.target.value.replace(/\D/g, ""))} placeholder="100" /></label>
-          <div className="tc-presets" role="group" aria-label={copy.quickAmounts}>{TOPUP_PRESETS.map((preset) => <button key={preset} type="button" className={`tc-preset ${amount === String(preset) ? "on" : ""}`} onClick={() => { setAmount(String(preset)); setError(null); }}><b>${preset}</b><span>{fmtUsd(preset / fracForTopup(preset))}</span></button>)}</div>
-        </div>
-        <div className="tc-arrow" aria-hidden="true">→</div>
-        <div className={`tc-receive ${hasTier ? "tc-receive-up" : ""}`}>
-          <span className="tc-recv-label">{copy.youReceive}</span>
-          <b className="tc-recv-value">{amt > 0 ? `≈ ${fmtUsd(apiValue)}` : "—"}</b>
-          <span className="tc-recv-sub">{amt <= 0 ? copy.enterAmount : hasTier ? `${copy.inClaudeApi} · ${interpolate(copy.atTier, { tier: reachedTier ? tierName(copy, reachedTier.code) : copy.businessRate, discount })}` : `${copy.inClaudeApi} · ${copy.noDiscountYet}`}</span>
-          <div className="tc-recv-meta"><span className="tc-badge">−{discount}%</span><span className="tc-badge tc-badge-soft">{fmtMult(frac)} {copy.valueMultiplier}</span></div>
-        </div>
+    <div className="credits-stack">
+      <div className="ov-stats bill3 tc-stats">
+        <div className="ovstat"><span className="dlabel">{copy.currentBalance}</span><b className="num">{normalizeUsd(account.balanceUsd)}</b><span className="dtrend">{nanoNum(account.balanceNano) > 0 ? interpolate(copy.valueOfBalance, { value: fmtUsd(balanceApi) }) : copy.available}</span></div>
+        <Stat label={copy.used} value={nanoToUsd(account.spentNano)} detail={copy.balanceAfterDiscount} />
+        <div className="ovstat"><span className="dlabel">{copy.currentTier}</span><b className="num">{isB2c ? (currentIdx >= 0 ? tierName(copy, B2C_PRICING_MILESTONES[currentIdx].code) : copy.noTierYet) : copy.businessRate}</b><span className="dtrend">{discountOf(account)}% {copy.discount} · {fmtMult(payFraction(account))} {copy.valueMultiplier}</span></div>
       </div>
-      {isB2c && amt > 0 && reachedTier && Number(reachedTier.holdUsd) > 0 &&
-        <p className="tc-upgrade"><span className="tc-upgrade-ic" aria-hidden="true">ⓘ</span>{interpolate(copy.topupReach, { tier: tierName(copy, reachedTier.code), discount, hold: fmtUsd(Number(reachedTier.holdUsd)) })}</p>}
-      <p className="tc-explain">{hasTier ? interpolate(copy.perDollar, { mult: `$${(1 / frac).toFixed(2)}` }) : copy.perDollarNone}</p>
-      {isB2c && amt > 0 && nextTier && <p className="tc-nudge">↑ {interpolate(copy.topupNext, { amount: fmtUsd(Number(nextTier.platformSpendUsd)), tier: tierName(copy, nextTier.code), discount: nextTier.discountPercent })}</p>}
-      <div className="tc-actions"><button className="btn btn-primary" disabled={busy} onClick={start}>{busy ? copy.creating : copy.continuePayment}</button></div>
-      {error && <div className="auth-msg err">{error}</div>}{checkout && !checkout.checkoutUrl && <div className="banner">{interpolate(copy.checkoutPending, { id: checkout.id, status: checkout.status })}</div>}
+
+      <div className="card topup-convert">
+        <div className="tc-head"><h2>{copy.anyWholeAmount}</h2><p className="p-sub" id="topup-amount-help">{copy.checkoutHelp}</p></div>
+        <div className="tc-body">
+          <div className="tc-input">
+            <label className="tc-field"><span className="currency-prefix">$</span><input className="set-in" inputMode="numeric" pattern="[1-9][0-9]*" value={amount} onChange={(event) => setAmount(event.target.value.replace(/\D/g, ""))} placeholder="100" aria-label={copy.anyWholeAmount} aria-describedby="topup-amount-help" /></label>
+            <div className="tc-presets" role="group" aria-label={copy.quickAmounts}>{TOPUP_PRESETS.map((preset) => <button key={preset} type="button" className={`tc-preset ${amount === String(preset) ? "on" : ""}`} data-topup-preset={preset} aria-pressed={amount === String(preset)} onClick={() => { setAmount(String(preset)); setError(null); }}><b>${preset}</b><span>{fmtUsd(preset / fracForTopup(preset))}</span></button>)}</div>
+          </div>
+          <div className="tc-arrow" aria-hidden="true">→</div>
+          <div className={`tc-receive ${hasTier ? "tc-receive-up" : ""}`}>
+            <span className="tc-recv-label">{copy.youReceive}</span>
+            <b className="tc-recv-value">{amt > 0 ? `≈ ${fmtUsd(apiValue)}` : "—"}</b>
+            <span className="tc-recv-sub">{amt <= 0 ? copy.enterAmount : hasTier ? `${copy.inClaudeApi} · ${interpolate(copy.atTier, { tier: reachedTier ? tierName(copy, reachedTier.code) : copy.businessRate, discount })}` : `${copy.inClaudeApi} · ${copy.noDiscountYet}`}</span>
+            <div className="tc-recv-meta"><span className="tc-badge">−{discount}%</span><span className="tc-badge tc-badge-soft">{fmtMult(frac)} {copy.valueMultiplier}</span></div>
+          </div>
+        </div>
+        {isB2c && amt > 0 && reachedTier && Number(reachedTier.holdUsd) > 0 &&
+          <p className="tc-upgrade"><span className="tc-upgrade-ic" aria-hidden="true">ⓘ</span>{interpolate(copy.topupReach, { tier: tierName(copy, reachedTier.code), discount, hold: fmtUsd(Number(reachedTier.holdUsd)) })}</p>}
+        <p className="tc-explain">{hasTier ? interpolate(copy.perDollar, { mult: `$${(1 / frac).toFixed(2)}` }) : copy.perDollarNone}</p>
+        {isB2c && amt > 0 && nextTier && <p className="tc-nudge">↑ {interpolate(copy.topupNext, { amount: fmtUsd(Number(nextTier.platformSpendUsd)), tier: tierName(copy, nextTier.code), discount: nextTier.discountPercent })}</p>}
+        <div className="tc-actions"><button className="btn btn-primary" disabled={busy} onClick={start}>{busy ? copy.creating : copy.continuePayment}</button></div>
+        {error && <div className="auth-msg err">{error}</div>}{checkout && !checkout.checkoutUrl && <div className="banner">{interpolate(copy.checkoutPending, { id: checkout.id, status: checkout.status })}</div>}
+      </div>
+
+      <PricingBanner account={account} />
+
+      <section className="dsec credits-history"><div className="dsec-head"><h2 id="topup-history-title">{copy.topupHistory}</h2></div>
+        <div className="table-scroll"><table className="mtable topup-history-table" aria-labelledby="topup-history-title" role="table">
+          <thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">{copy.date}</th><th scope="col" role="columnheader" className="tnum">{copy.histPaid}</th><th scope="col" role="columnheader">{copy.histDiscount}</th><th scope="col" role="columnheader" className="tnum">{copy.histApiValue}</th><th scope="col" role="columnheader">{copy.reference}</th></tr></thead>
+          <tbody role="rowgroup">{topups.length === 0 ? <tr role="row"><td role="cell" colSpan={5} className="empty-cell">{copy.noTopups}</td></tr> : topups.map((entry) => {
+            const d = (entry as { discountPercent?: number }).discountPercent ?? discountOf(account);
+            const paid = Number(entry.amountUsd) || nanoNum(entry.amountNano);
+            return <tr role="row" key={entry.id}>
+              <td role="cell" data-label={copy.date}>{formatLedgerTime(entry.timestamp, language)}</td>
+              <td role="cell" className="tnum" data-label={copy.histPaid}>{normalizeUsd(entry.amountUsd)}</td>
+              <td role="cell" data-label={copy.histDiscount}><span className="pill pill-soft">−{d}%</span></td>
+              <td role="cell" className="tnum" data-label={copy.histApiValue}>≈ {fmtUsd(paid / ((100 - d) / 100))}</td>
+              <td role="cell" data-label={copy.reference}>{entry.reference ?? "—"}</td>
+            </tr>;
+          })}</tbody>
+        </table></div>
+      </section>
     </div>
-
-    <PricingBanner account={account} />
-
-    <section className="dsec"><div className="dsec-head"><h2>{copy.topupHistory}</h2></div>
-      <div className="table-scroll"><table className="mtable">
-        <thead><tr><th>{copy.date}</th><th className="tnum">{copy.histPaid}</th><th>{copy.histDiscount}</th><th className="tnum">{copy.histApiValue}</th><th>{copy.reference}</th></tr></thead>
-        <tbody>{topups.length === 0 ? <tr><td colSpan={5} className="empty-cell">{copy.noTopups}</td></tr> : topups.map((entry) => {
-          const d = (entry as { discountPercent?: number }).discountPercent ?? discountOf(account);
-          const paid = Number(entry.amountUsd) || nanoNum(entry.amountNano);
-          return <tr key={entry.id}>
-            <td>{formatLedgerTime(entry.timestamp, language)}</td>
-            <td className="tnum">{normalizeUsd(entry.amountUsd)}</td>
-            <td><span className="pill pill-soft">−{d}%</span></td>
-            <td className="tnum">≈ {fmtUsd(paid / ((100 - d) / 100))}</td>
-            <td>{entry.reference ?? "—"}</td>
-          </tr>;
-        })}</tbody>
-      </table></div>
-    </section>
   </section>;
 }
 
@@ -423,10 +425,10 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
   const axisMarks = [...new Set(Array.from({ length: LABEL_COUNT }, (_, i) => Math.round(i * (days.length - 1) / (LABEL_COUNT - 1))))];
 
   // Разбивка модель-бара (mdist) с центрами сегментов — для наведения/подсказки.
-  let mdistAcc = 0;
-  const mdistPlaced = models.map((model) => {
-    const share = modelOfficialTotal > 0 ? Number(BigInt(model.officialNano)) / modelOfficialTotal : 1 / models.length;
-    const center = mdistAcc + share / 2; mdistAcc += share;
+  const modelShares = models.map((model) => modelOfficialTotal > 0 ? Number(BigInt(model.officialNano)) / modelOfficialTotal : 1 / models.length);
+  const mdistPlaced = models.map((model, index) => {
+    const share = modelShares[index]!;
+    const center = modelShares.slice(0, index).reduce((sum, value) => sum + value, 0) + share / 2;
     return { model, share, center };
   });
   const [hoverDay, setHoverDay] = useState<number | null>(null);
