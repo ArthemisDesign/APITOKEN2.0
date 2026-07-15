@@ -251,9 +251,47 @@ async function capturePage(client, [name, route, width, height, theme, language 
   await client.send("Runtime.evaluate", {
     expression: `localStorage.setItem('theme', ${JSON.stringify(theme)}); localStorage.setItem('lang', ${JSON.stringify(language)});`,
   });
+  const captureUrl = new URL(route, baseUrl);
+  // Force a real navigation even when consecutive captures use the same route.
+  // Without this cache-buster Chrome can reuse the mounted English page after
+  // localStorage is changed, producing a mislabeled language screenshot.
+  captureUrl.searchParams.set("__audit", `${name}-${Date.now()}`);
   const loaded = client.once("Page.loadEventFired");
-  await client.send("Page.navigate", { url: new URL(route, baseUrl).href });
+  await client.send("Page.navigate", { url: captureUrl.href });
   await loaded;
+  await client.send("Runtime.evaluate", {
+    awaitPromise: true,
+    expression: `new Promise((resolve) => setTimeout(resolve, 500))`,
+  });
+  await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      if (document.documentElement.lang === ${JSON.stringify(language)}) return;
+      const label = ${JSON.stringify(language.toUpperCase())};
+      const control = [...document.querySelectorAll('.lang button')]
+        .find((button) => button.textContent?.trim() === label);
+      control?.click();
+    })()`,
+  });
+  try {
+    await waitForCondition(
+      client,
+      `document.documentElement.lang === ${JSON.stringify(language)}`,
+      `${name} language state`,
+    );
+  } catch (error) {
+    const state = await client.send("Runtime.evaluate", {
+      expression: `JSON.stringify({
+        documentLanguage: document.documentElement.lang,
+        storedLanguage: localStorage.getItem('lang'),
+        controls: [...document.querySelectorAll('.lang button')].map((button) => ({
+          label: button.textContent?.trim(),
+          active: button.classList.contains('active'),
+        })),
+      })`,
+      returnByValue: true,
+    });
+    throw new Error(`${error instanceof Error ? error.message : error} Browser state: ${state.result.value}`);
+  }
   await client.send("Runtime.evaluate", {
     awaitPromise: true,
     expression: `(async () => {
@@ -266,6 +304,11 @@ async function capturePage(client, [name, route, width, height, theme, language 
       document.documentElement.style.scrollBehavior = 'auto';
       await document.fonts.ready;
       await new Promise((resolve) => setTimeout(resolve, 850));
+      // A language hydration can replace translated reveal nodes after the
+      // first pass. Stabilize the final DOM immediately before capture.
+      document.querySelector('.hero')?.classList.add('loaded');
+      document.querySelectorAll('[data-reveal], [data-reveal-stagger], .reveal')
+        .forEach((element) => element.classList.add('in'));
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     })()`,
   });
