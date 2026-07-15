@@ -1,10 +1,16 @@
 "use client";
 
 import { useState } from "react";
+import { B2C_PRICING_MILESTONES } from "@/lib/pricing-tiers";
 import { useI18n } from "./i18n-provider";
 
-// Стартовый тариф для незалогиненных: скидка 60% → клиент платит 40% → ×2.5 ценности.
-const STARTER_PAY_FRACTION = 0.4;
+// Prepay-модель: сумма разового пополнения разблокирует тир (те же пороги, что и месячный расход) —
+// чем больше кладёшь сразу, тем выше скидка. Согласовано с логикой дашборда.
+function tierForAmount(amtUsd: number): typeof B2C_PRICING_MILESTONES[number] {
+  let tier: typeof B2C_PRICING_MILESTONES[number] = B2C_PRICING_MILESTONES[0];
+  for (const milestone of B2C_PRICING_MILESTONES) if (amtUsd >= Number(milestone.platformSpendUsd)) tier = milestone;
+  return tier;
+}
 
 export function TopUpAmountInput({ className, initialAmount, showReceive }: { className: string; initialAmount: string; showReceive?: boolean }) {
   const [amount, setAmount] = useState(initialAmount);
@@ -26,8 +32,12 @@ export function TopUpAmountInput({ className, initialAmount, showReceive }: { cl
   if (!showReceive) return field;
 
   const amt = Number(amount) || 0;
-  const value = `$${(amt / STARTER_PAY_FRACTION).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
-  const note = language === "ru" ? "Claude API · офиц. цены · −60%" : "of Claude API · official prices · −60%";
+  const tier = tierForAmount(amt);
+  const receive = amt / ((100 - tier.discountPercent) / 100);
+  const value = `$${receive.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+  const note = language === "ru"
+    ? `Claude API · офиц. цены · тариф ${tier.label} −${tier.discountPercent}%`
+    : `of Claude API · official prices · ${tier.label} tier −${tier.discountPercent}%`;
   return <div className="topup-live">
     {field}
     <div className="topup-live-out">
