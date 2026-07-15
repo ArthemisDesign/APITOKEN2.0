@@ -262,14 +262,14 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
   const topups = ledger.filter((entry) => entry.kind === "topup");
 
   return <section className="panel"><PageHeading eyebrow={copy.keysEyebrow} title={copy.creditsTitle} subtitle={copy.creditsSubtitle} />
-    <div className="ov-stats bill3">
+    <div className="ov-stats bill3 tc-stats">
       <div className="ovstat"><span className="dlabel">{copy.currentBalance}</span><b className="num">{normalizeUsd(account.balanceUsd)}</b><span className="dtrend">{nanoNum(account.balanceNano) > 0 ? interpolate(copy.valueOfBalance, { value: fmtUsd(balanceApi) }) : copy.available}</span></div>
       <Stat label={copy.used} value={nanoToUsd(account.spentNano)} detail={copy.balanceAfterDiscount} />
       <div className="ovstat"><span className="dlabel">{copy.currentTier}</span><b className="num">{isB2c ? (currentIdx >= 0 ? tierName(copy, B2C_PRICING_MILESTONES[currentIdx].code) : copy.noTierYet) : copy.businessRate}</b><span className="dtrend">{discountOf(account)}% {copy.discount} · {fmtMult(payFraction(account))} {copy.valueMultiplier}</span></div>
     </div>
 
     <div className="card topup-convert">
-      <div className="tc-head"><span className="chip">{copy.cryptoCheckout}</span><h2>{copy.anyWholeAmount}</h2><p className="p-sub">{copy.checkoutHelp}</p></div>
+      <div className="tc-head"><h2>{copy.anyWholeAmount}</h2><p className="p-sub">{copy.checkoutHelp}</p></div>
       <div className="tc-body">
         <div className="tc-input">
           <label className="tc-field"><span className="currency-prefix">$</span><input className="set-in" inputMode="numeric" pattern="[1-9][0-9]*" value={amount} onChange={(event) => setAmount(event.target.value.replace(/\D/g, ""))} placeholder="100" /></label>
