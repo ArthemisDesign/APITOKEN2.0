@@ -123,7 +123,6 @@ export function Dashboard() {
             <span className="atb-label">{copy.creditsLabel}</span>
             <span className={`atb-val${nanoNum(account.balanceNano) < 0 ? " atb-neg" : ""}`}>{nanoToUsd(account.balanceNano)}</span>
           </button>
-          <button className="btn btn-primary btn-sm" onClick={() => open("credits")}>{copy.topUp}</button>
         </div>
       </header>
       <div className="app-body-in">
