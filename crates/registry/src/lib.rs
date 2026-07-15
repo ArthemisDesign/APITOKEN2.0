@@ -31,6 +31,10 @@ const COLS: &[(&str, &str)] = &[
     ("fleet", "TEXT"),
     ("added_ts", "INTEGER"),
     ("added", "TEXT"),
+    // Метаданные прокси (заполняет authbot — владелец жизненного цикла; движок лишь читает/показывает):
+    ("proxy_expire", "TEXT"),      // дата истечения прокси из IPRoyal (ISO), "" = неизвестно
+    ("proxy_checked_ts", "INTEGER"), // ts последней health-проверки прокси (fingerprint-free)
+    ("proxy_ok", "INTEGER"),       // 1=жив / 0=мёртв на последней проверке (NULL=не проверялся)
 ];
 
 pub fn open(path: &str) -> Result<Connection> {
@@ -262,6 +266,19 @@ pub fn set_proxy(conn: &Connection, email: &str, proxy: &str) -> Result<usize> {
 pub fn set_fleet(conn: &Connection, email: &str, fleet: &str) -> Result<usize> {
     Ok(conn.execute("UPDATE subs SET fleet=?1 WHERE email=?2", rusqlite::params![fleet, email])?)
 }
+/// Обновить прокси-метаданные (пишет authbot — владелец жизненного цикла прокси). `expire` — дата
+/// истечения из IPRoyal (ISO, "" если неизвестно); `ok` — жив ли прокси на fingerprint-free проверке.
+pub fn set_proxy_meta(conn: &Connection, email: &str, expire: &str, checked_ts: i64, ok: bool) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE subs SET proxy_expire=?1, proxy_checked_ts=?2, proxy_ok=?3 WHERE email=?4",
+        rusqlite::params![expire, checked_ts, ok as i64, email])?)
+}
+/// host:port из строки прокси (без user:pass) — для показа в панели/логах.
+pub fn mask_proxy(p: &str) -> String {
+    if p.is_empty() { return String::new(); }
+    let no_scheme = p.split("://").last().unwrap_or(p);
+    no_scheme.rsplit('@').next().unwrap_or(no_scheme).to_string()
+}
 pub fn remove(conn: &Connection, email: &str) -> Result<usize> {
     Ok(conn.execute("DELETE FROM subs WHERE email=?1", rusqlite::params![email])?)
 }
@@ -298,6 +315,42 @@ pub fn list(conn: &Connection) -> Result<Vec<SubRow>> {
             plan: r.get::<_, String>(3)?,
             has_token: r.get::<_, Option<String>>(4)?.map(|s| !s.is_empty()).unwrap_or(false),
             proxy: r.get::<_, String>(5)?,
+        })
+    })?;
+    Ok(rows.filter_map(|x| x.ok()).collect())
+}
+
+/// Строка админ-обзора подписок (движок → панель): БЕЗ токена, прокси — маска host:port + метаданные.
+pub struct SubAdmin {
+    pub email: String,
+    pub status: String,
+    pub fleet: String,
+    pub has_token: bool,
+    pub proxy_host: String,     // host:port (без user:pass)
+    pub proxy_expire: String,   // ISO из IPRoyal / ""
+    pub proxy_checked_ts: i64,  // 0 = не проверялся
+    pub proxy_ok: Option<bool>, // None = не проверялся
+    pub added: String,
+}
+
+pub fn subs_admin(conn: &Connection) -> Result<Vec<SubAdmin>> {
+    let mut stmt = conn.prepare(
+        "SELECT email, COALESCE(status,'active'), COALESCE(fleet,'prod'), \
+         COALESCE(NULLIF(token,''), NULLIF(token_file,'')), COALESCE(proxy,''), \
+         COALESCE(proxy_expire,''), COALESCE(proxy_checked_ts,0), proxy_ok, COALESCE(added,'') \
+         FROM subs ORDER BY COALESCE(added_ts,0)")?;
+    let rows = stmt.query_map([], |r| {
+        let proxy: String = r.get(4)?;
+        Ok(SubAdmin {
+            email: r.get(0)?,
+            status: r.get(1)?,
+            fleet: r.get(2)?,
+            has_token: r.get::<_, Option<String>>(3)?.map(|s| !s.is_empty()).unwrap_or(false),
+            proxy_host: mask_proxy(&proxy),
+            proxy_expire: r.get(5)?,
+            proxy_checked_ts: r.get(6)?,
+            proxy_ok: r.get::<_, Option<i64>>(7)?.map(|n| n != 0),
+            added: r.get(8)?,
         })
     })?;
     Ok(rows.filter_map(|x| x.ok()).collect())
