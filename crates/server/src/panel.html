@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>claude-api · ёмкость пула</title>
+<title>claude-api · центр управления</title>
 <style>
   :root{
     --bg:#0b0d10; --panel:#14181d; --panel2:#1b2027; --line:#262d36;
@@ -23,17 +23,25 @@
   .badge{margin-left:auto;font-size:12px;padding:4px 10px;border-radius:20px;border:1px solid var(--line)}
   .badge.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,transparent)}
   .badge.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
+  .badge.bad{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 40%,transparent)}
   main{padding:22px;max-width:1200px;margin:0 auto}
-  .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:22px}
+  .verdict{display:flex;align-items:center;gap:14px;background:var(--panel);border:1px solid var(--line);
+    border-radius:14px;padding:16px 20px;margin-bottom:18px}
+  .verdict .em{font-size:26px}
+  .verdict .t{font-size:16px;font-weight:650}
+  .verdict .d{color:var(--dim);font-size:12px;margin-top:2px}
+  .verdict.ok{border-color:color-mix(in srgb,var(--ok) 35%,transparent)}
+  .verdict.warn{border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
+  .verdict.bad{border-color:color-mix(in srgb,var(--bad) 40%,transparent)}
+  .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
   @media(max-width:760px){.cards{grid-template-columns:repeat(2,1fr)}}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
   .card .h{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.6px}
-  .card .v{font-size:30px;font-weight:700;margin-top:6px;font-variant-numeric:tabular-nums}
+  .card .v{font-size:28px;font-weight:700;margin-top:6px;font-variant-numeric:tabular-nums}
   .card .s{color:var(--dim);font-size:12px;margin-top:4px}
-  .card .bind{font-size:11px;margin-top:8px;padding:2px 8px;border-radius:6px;display:inline-block;
-              background:var(--panel2);color:var(--dim)}
-  .card .bind.w7{color:var(--warn)} .card .bind.w5{color:var(--accent)}
-  h2{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px;margin:0 0 12px}
+  .card .hr{font-size:12px;margin-top:8px;padding:2px 8px;border-radius:6px;display:inline-block;background:var(--panel2)}
+  .hr.ok{color:var(--ok)} .hr.warn{color:var(--warn)} .hr.bad{color:var(--bad)}
+  h2{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px;margin:22px 0 12px}
   table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
   th,td{text-align:right;padding:9px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
   th{color:var(--dim);font-weight:500;font-size:12px}
@@ -53,7 +61,7 @@
                 color:#fff;font:inherit;font-weight:600;cursor:pointer}
   .err{color:var(--bad);font-size:12px;margin-top:10px}
   footer{color:var(--dim);font-size:11px;text-align:center;padding:18px}
-  .flash{animation:f .6s ease}@keyframes f{from{background:color-mix(in srgb,var(--accent) 18%,transparent)}to{}}
+  details{margin-top:8px} summary{cursor:pointer;color:var(--dim);font-size:13px}
 </style>
 </head>
 <body>
@@ -61,96 +69,131 @@
 <script>
 const $=(h)=>{const t=document.createElement('template');t.innerHTML=h.trim();return t.content.firstChild};
 const esc=(s)=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const fmtUsd=(x)=>'$'+(x??0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-const fmtDur=(s)=>{s=Math.max(0,s|0);const d=s/86400|0,h=(s%86400)/3600|0,m=(s%3600)/60|0;
+const usd=(x)=>'$'+(+x||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const dur=(s)=>{s=Math.max(0,s|0);const d=s/86400|0,h=(s%86400)/3600|0,m=(s%3600)/60|0;
   return d?`${d}д ${h}ч`:h?`${h}ч ${m}м`:`${m}м`};
+const xr=(v)=>v==null?'∞':('×'+(+v).toLocaleString('en-US',{maximumFractionDigits:v<10?1:0}));
 const key=()=>localStorage.getItem('capkey')||'';
-let timer=null, prev={};
+let timer=null;
 
 function setup(msg){
   clearInterval(timer);
   document.getElementById('app').innerHTML='';
-  const box=$(`<div class="setup"><h1 style="margin:0 0 4px">Панель ёмкости пула</h1>
-    <div class="muted" style="font-size:12px">Введи ключ панели (CLAUDE_API_PANEL_KEY) — read-only, хранится только в этом браузере. НЕ используй admin/control-ключ.</div>
-    <input id="k" type="password" placeholder="pnl-..." value="${esc(key())}">
+  const box=$(`<div class="setup"><h1 style="margin:0 0 4px">Центр управления</h1>
+    <div class="muted" style="font-size:12px">Введи ключ (за Caddy обычно не требуется). Read-only панельный ключ покажет только ёмкость; полная картина (деньги/рекомендации) — под control-ключом.</div>
+    <input id="k" type="password" placeholder="ключ…" value="${esc(key())}">
     <button id="go">Открыть</button>${msg?`<div class="err">${msg}</div>`:''}</div>`);
   document.getElementById('app').appendChild(box);
   box.querySelector('#go').onclick=()=>{localStorage.setItem('capkey',box.querySelector('#k').value.trim());start()};
   box.querySelector('#k').onkeydown=(e)=>{if(e.key==='Enter')box.querySelector('#go').click()};
 }
 
+async function getj(path){
+  const h=key()?{'x-api-key':key()}:{};      // за Caddy ключ инжектится server-side
+  const r=await fetch(path,{headers:h});
+  if(r.status===401) throw {auth:true};
+  if(!r.ok) throw {msg:'ошибка '+r.status};
+  return r.json();
+}
+
 async function tick(){
-  let r;
-  try{ r=await fetch('/capacity',{headers:{'x-api-key':key()}}); }
-  catch(e){ return render(null,'сеть недоступна'); }
-  if(r.status===401){ return setup('ключ отклонён'); }
-  if(!r.ok){ return render(null,'ошибка '+r.status); }
-  render(await r.json());
+  let ov,cap;
+  try{ [ov,cap]=await Promise.all([getj('/overview'),getj('/capacity').catch(()=>null)]); }
+  catch(e){ if(e.auth) return setup('нужен ключ'); return; }
+  render(ov,cap);
 }
 
-function bindLabel(c){ // какое окно связывает горизонт: сравниваем 5h- и 7d-ветки
-  return null;
+function verdict(ov){
+  const g=ov.recommend.gap, h5=ov.headroom['5h'], h7=ov.headroom['7d'], th=ov.target_headroom;
+  const cov=ov.coverage['7d'], cooling=ov.supply.health.cooling;
+  const low=(x)=>x!=null&&x<th;
+  if(low(h5)||low(h7)||cov>1){
+    return {c:'bad',em:'🔴',t:`Дефицит ёмкости — нужно +${Math.max(1,g)} подписок`,
+      d:`headroom 5h ${xr(h5)} / 7d ${xr(h7)} · coverage ×${cov} (>1 = перепродали)`};
+  }
+  if(g>0||cooling>0){
+    return {c:'warn',em:'🟠',t:g>0?`Тесновато — рекомендую +${g} подписок`:'Работаем, часть подписок остывает',
+      d:`держим цель запаса ×${th} · headroom 5h ${xr(h5)} / 7d ${xr(h7)} · cooling ${cooling}`};
+  }
+  return {c:'ok',em:'🟢',t:'Здорово — запаса хватает',
+    d:`headroom 5h ${xr(h5)} / 7d ${xr(h7)} · подписок ${ov.subs}, цель держим`};
 }
 
-function render(d,err){
+function render(ov,cap){
   const app=document.getElementById('app');
-  if(!d){ if(!document.getElementById('cards')) setup(err); return; }
-  const A=d.available_usd, calib=d.calibrated;
-  const horizons=[['next_1h','1 час'],['next_5h','5 часов'],['next_1d','1 день'],['next_7d','7 дней']];
-  const cardsHtml=horizons.map(([k,l])=>{
-    const v=A[k]||0, sell=v*0.20;
+  const S=ov.supply, D=ov.demand, m=ov.ref_mult, v=verdict(ov);
+  const hclass=(x)=>x==null?'ok':(x<1?'bad':x<ov.target_headroom?'warn':'ok');
+
+  const win=[['7d','7 дней','7d'],['1d','1 день',null],['5h','5 часов (бёрст)','5h']];
+  const supplyCards=win.map(([k,l,hk])=>{
+    const a=S.avail_usd[k]||0, h=hk?ov.headroom[hk]:null;
     return `<div class="card"><div class="h">доступно · ${l}</div>
-      <div class="v" data-k="${k}">${fmtUsd(v)}</div>
-      <div class="s">клиентам ×0.20 = ${fmtUsd(sell)}</div></div>`;
+      <div class="v">${usd(a)}</div>
+      <div class="s">клиентам ×${m} = ${usd(a*m)}</div>
+      ${hk?`<div class="hr ${hclass(h)}">запас ${xr(h)}</div>`:''}</div>`;
   }).join('');
 
-  const rows=(d.per_sub||[]).map(c=>{
-    const st=c.cooling?'bad':(String(c.status).includes('warning')?'warn':'ok');
-    const b=(u)=>{const p=Math.min(100,Math.round(u*100));const cl=p>=95?'max':p>=70?'hi':'';
-      return `<div class="bar"><i class="${cl}" style="width:${p}%"></i></div><span class="pct">${p}%</span>`};
+  const demandCard=`<div class="card"><div class="h">баланс юзеров</div>
+      <div class="v">${usd(D.balance_usd)}</div>
+      <div class="s">резерв ${usd(D.reserved_usd)} · ключей ${D.active_keys}</div>
+      <div class="hr ${ov.coverage['7d']>1?'bad':'ok'}">coverage 7d ×${ov.coverage['7d']}</div></div>`;
+
+  const health=S.health, util=S.util;
+  const rec=ov.recommend;
+
+  const subRows=(cap?.per_sub||[]).map(c=>{
+    const st=c.cooling?'bad':(String(c.status).includes('warn')?'warn':'ok');
+    const bar=(u)=>{const p=Math.min(100,Math.round(u*100));const cl=p>=95?'max':p>=70?'hi':'';
+      return `<div style="display:flex;align-items:center;justify-content:flex-end"><div class="bar"><i class="${cl}" style="width:${p}%"></i></div><span class="pct">${p}%</span></div>`};
     return `<tr>
       <td class="l"><span class="dot ${st}"></span>${esc(c.email)}${c.calibrated?'':' <span class="muted">(калибр…)</span>'}</td>
-      <td><div style="display:flex;align-items:center;justify-content:flex-end">${b(c.util5h)}</div></td>
-      <td class="muted">${fmtDur(c.reset5h_in)}</td>
-      <td><div style="display:flex;align-items:center;justify-content:flex-end">${b(c.util7d)}</div></td>
-      <td class="muted">${fmtDur(c.reset7d_in)}</td>
-      <td>${fmtUsd(c.rem5h_usd)}</td>
-      <td>${fmtUsd(c.rem7d_usd)}</td>
-      <td>${fmtUsd(c.avail_1d_usd)}</td>
-      <td>${fmtUsd(c.avail_7d_usd)}</td>
+      <td>${bar(c.util5h)}</td><td class="muted">${dur(c.reset5h_in)}</td>
+      <td>${bar(c.util7d)}</td><td class="muted">${dur(c.reset7d_in)}</td>
+      <td>${usd(c.rem5h_usd)}</td><td>${usd(c.rem7d_usd)}</td><td>${usd(c.avail_7d_usd)}</td>
     </tr>`;
   }).join('');
 
   app.innerHTML=`
     <header>
-      <h1>claude-api</h1><span class="sub">ёмкость пула · USD real-API-эквивалента</span>
-      <span class="badge ${calib?'ok':'warn'}">${calib?'калибровано':'калибруется…'}</span>
+      <h1>claude-api</h1><span class="sub">центр управления · спрос ↔ предложение</span>
+      <span class="badge ${v.c}">${ov.calibrated?'калибровано':'калибруется…'}</span>
     </header>
     <main>
-      <div class="cards" id="cards">${cardsHtml}</div>
-      <h2>Подписки · ${d.subs}</h2>
-      <div style="overflow-x:auto"><table>
-        <thead><tr>
-          <th class="l">подписка</th><th>5h util</th><th>сброс</th><th>7d util</th><th>сброс</th>
-          <th>ост. 5h</th><th>ост. 7d</th><th>1 день</th><th>7 дней</th>
-        </tr></thead>
-        <tbody>${rows||'<tr><td colspan="9" class="muted l">нет подписок</td></tr>'}</tbody>
-      </table></div>
-      <footer>обновление каждые 2с · «доступно» = максимум real-API-USD на горизонте (учёт сбросов окон) ·
-        клиентам продаём ×0.20</footer>
-    </main>`;
+      <div class="verdict ${v.c}"><div class="em">${v.em}</div>
+        <div><div class="t">${esc(v.t)}</div><div class="d">${esc(v.d)}</div></div></div>
 
-  // мигание карточек при изменении
-  horizons.forEach(([k])=>{const el=app.querySelector(`.v[data-k="${k}"]`);
-    if(el&&prev[k]!==undefined&&prev[k]!==A[k]){el.parentElement.classList.add('flash');
-      setTimeout(()=>el.parentElement.classList.remove('flash'),600)}
-    prev[k]=A[k];});
+      <h2>Предложение — доступно real-API (USD)</h2>
+      <div class="cards">${supplyCards}${demandCard}</div>
+
+      <div class="cards">
+        <div class="card"><div class="h">подписки</div><div class="v">${ov.subs}</div>
+          <div class="s"><span class="dot ok"></span>${health.healthy} живых · <span class="dot bad"></span>${health.cooling} остывают</div></div>
+        <div class="card"><div class="h">утилизация (сред.)</div><div class="v">${Math.round(util['7d']*100)}%<span class="muted" style="font-size:14px"> 7d</span></div>
+          <div class="s">${Math.round(util['5h']*100)}% за 5h</div></div>
+        <div class="card"><div class="h">всего потрачено</div><div class="v">${usd(D.spent_usd)}</div>
+          <div class="s">потенц. спрос ${usd(D.potential_realapi_usd)} real-API</div></div>
+        <div class="card"><div class="h">рекомендация</div>
+          <div class="v" style="color:${rec.gap>0?'var(--warn)':'var(--ok)'}">${rec.gap>0?'+'+rec.gap:'ок'}</div>
+          <div class="s">нужно ${rec.subs_needed} подписок (есть ${ov.subs})</div></div>
+      </div>
+
+      <details ${(cap?.per_sub||[]).length<=25?'open':''}>
+        <summary>Подписки · ${ov.subs} (drill-down)</summary>
+        <div style="overflow-x:auto"><table>
+          <thead><tr><th class="l">подписка</th><th>5h</th><th>сброс</th><th>7d</th><th>сброс</th>
+            <th>ост. 5h</th><th>ост. 7d</th><th>доступно 7d</th></tr></thead>
+          <tbody>${subRows||'<tr><td colspan="8" class="muted l">нет данных по подпискам</td></tr>'}</tbody>
+        </table></div>
+      </details>
+
+      <footer>обновление каждые 3с · «доступно» = максимум real-API-USD на горизонте (учёт сбросов окон) ·
+        «запас» = доступно ÷ текущее потребление · клиентам ×${m}</footer>
+    </main>`;
 }
 
 function start(){
   clearInterval(timer);
-  if(!key()) return setup();
-  tick(); timer=setInterval(tick,2000);
+  tick(); timer=setInterval(tick,3000);
 }
 start();
 </script>

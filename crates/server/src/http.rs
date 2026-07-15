@@ -23,6 +23,7 @@ pub fn router(app: AppState) -> Router {
         .route("/pool", get(pool_status))
         .route("/balance", get(balance))
         .route("/capacity", get(capacity))
+        .route("/overview", get(overview))
         .route("/metrics", get(metrics))
         .route("/panel", get(panel))
         // Control-плоскость (`/admin/*`) — управление аккаунтами/ключами/балансом за control-ключом.
@@ -148,6 +149,72 @@ async fn capacity(
             "next_1h": round(a1), "next_5h": round(a5), "next_1d": round(a1d), "next_7d": round(a7d),
         },
         "per_sub": subs,
+    })).into_response()
+}
+
+/// Control-room: агрегат СПРОС (балансы/резерв/траты) + ПРЕДЛОЖЕНИЕ (ёмкость/потребление/здоровье)
+/// + headroom + рекомендация по числу подписок. Одно окно «мы под контролем?». Гейт — control-ключ
+/// (деньги = коммерческая тайна). Работает от 1 до 1000 подписок — всё в агрегатах и отношениях.
+async fn overview(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if !control_authed(&app, &headers, &peer) {
+        Metrics::inc(&app.metrics.auth_failures);
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response();
+    }
+    const TARGET_HEADROOM: f64 = 1.3; // держим 30% запас
+    const REF_MULT: f64 = 0.20;       // референсная наценка для «продаём клиентам» и coverage
+    let r2 = |x: f64| (x * 100.0).round() / 100.0;
+    let caps = app.pool.capacity();
+    let n = caps.len();
+    let (mut a1, mut a5, mut a1d, mut a7d) = (0.0, 0.0, 0.0, 0.0);
+    let (mut cap5, mut cap7, mut rem5, mut rem7) = (0.0, 0.0, 0.0, 0.0);
+    let (mut u5, mut u7) = (0.0, 0.0);
+    let (mut cooling, mut all_cal) = (0usize, true);
+    for c in &caps {
+        a1 += c.avail_1h_usd; a5 += c.avail_5h_usd; a1d += c.avail_1d_usd; a7d += c.avail_7d_usd;
+        cap5 += c.cap5h_usd; cap7 += c.cap7d_usd; rem5 += c.rem5h_usd; rem7 += c.rem7d_usd;
+        u5 += c.util5h; u7 += c.util7d;
+        if c.cooling { cooling += 1; }
+        if !c.calibrated { all_cal = false; }
+    }
+    let cons5 = (cap5 - rem5).max(0.0); // real-API-$ потрачено в текущем 5h окне (по всему флоту)
+    let cons7 = (cap7 - rem7).max(0.0);
+    let head5 = if cons5 > 0.01 { a5 / cons5 } else { f64::INFINITY };  // «во сколько раз ещё выдержим»
+    let head7 = if cons7 > 0.01 { a7d / cons7 } else { f64::INFINITY };
+    // Рекомендация: сколько подписок держать под target_headroom относительно текущего потребления.
+    let per_sub_5h = if n > 0 { cap5 / n as f64 } else { 0.0 };
+    let per_sub_7d = if n > 0 { cap7 / n as f64 } else { 0.0 };
+    let need5 = if per_sub_5h > 0.0 { (cons5 * TARGET_HEADROOM / per_sub_5h).ceil() as i64 } else { 0 };
+    let need7 = if per_sub_7d > 0.0 { (cons7 * TARGET_HEADROOM / per_sub_7d).ceil() as i64 } else { 0 };
+    let need = need5.max(need7).max(n.min(1) as i64);
+    let gap = need - n as i64;
+    // Спрос (деньги клиентов) — только при включённом биллинге.
+    let (bal, res, spent, keys) = match &app.billing {
+        Some(b) => { let t = b.totals().await;
+            (t.balance_nano as f64/1e9, t.reserved_nano as f64/1e9, t.spent_nano as f64/1e9, t.active_keys) }
+        None => (0.0, 0.0, 0.0, 0),
+    };
+    let real_demand = if REF_MULT > 0.0 { bal / REF_MULT } else { 0.0 }; // потенц. real-API из балансов
+    let coverage7 = if a7d > 0.01 { real_demand / a7d } else { 0.0 };    // >1 = потенциально перепродали
+    let jinf = |x: f64| if x.is_finite() { json!(r2(x)) } else { json!(null) }; // null = ∞ (нет спроса)
+    Json(json!({
+        "now": pool::now(),
+        "subs": n, "calibrated": all_cal, "ref_mult": REF_MULT, "target_headroom": TARGET_HEADROOM,
+        "supply": {
+            "avail_usd":    {"1h": r2(a1), "5h": r2(a5), "1d": r2(a1d), "7d": r2(a7d)},
+            "cap_usd":      {"5h": r2(cap5), "7d": r2(cap7)},
+            "consumed_usd": {"5h": r2(cons5), "7d": r2(cons7)},
+            "util":         {"5h": r2(if n>0 {u5/n as f64} else {0.0}), "7d": r2(if n>0 {u7/n as f64} else {0.0})},
+            "health":       {"healthy": n.saturating_sub(cooling), "cooling": cooling, "total": n},
+        },
+        "demand": {"balance_usd": r2(bal), "reserved_usd": r2(res), "spent_usd": r2(spent), "active_keys": keys,
+                   "potential_realapi_usd": r2(real_demand)},
+        "headroom": {"5h": jinf(head5), "7d": jinf(head7)},
+        "coverage": {"7d": r2(coverage7)},
+        "recommend": {"subs_needed": need, "gap": gap},
     })).into_response()
 }
 
