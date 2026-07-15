@@ -27,7 +27,7 @@ export default function HomePage() {
         <div className="prod prod-feat">
           <T k="pc2_tag" as="span" className="tag">Flexible balance</T>
           <T k="pc2_h" as="h3">Choose your amount</T>
-          <div className="prod-body"><TopUpAmountInput className="amount-example" initialAmount="37" /><T k="pc2_p" as="p">Enter any whole USD amount. No fixed product catalog.</T></div>
+          <div className="prod-body"><TopUpAmountInput className="amount-example" initialAmount="1000" showReceive /><T k="pc2_p" as="p">Enter any whole USD amount. No fixed product catalog.</T></div>
           <Link className="btn btn-primary" href="#pricing"><T k="pc2_cta">See pricing</T></Link>
         </div>
         <div className="prod">

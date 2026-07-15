@@ -247,7 +247,9 @@ section{padding:96px 0;border-bottom:1px solid var(--line)}
 .pricing-overview{display:grid;gap:22px}
 .pricing-intro{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px;align-items:stretch}
 .topup-card,.business-card,.tier-section{border:1px solid var(--line);border-radius:8px;background:var(--bg-card);box-shadow:var(--shadow)}
-.topup-card,.business-card{padding:30px;display:grid;grid-template-rows:18px 58px 82px minmax(86px,1fr) 50px;gap:12px;align-items:start}
+.business-card{padding:30px;display:grid;grid-template-rows:18px 58px 82px minmax(86px,1fr) 50px;gap:12px;align-items:start}
+.topup-card{padding:30px;display:flex;flex-direction:column;gap:12px}
+.topup-card .btn{margin-top:auto}
 .topup-card .tag,.business-card .tag,.tier-heading .tag,.model-rate-note .tag{font-family:var(--font-mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent)}
 .topup-card h3,.business-card h3,.tier-heading h3{margin:0;font-size:21px}
 .topup-card p,.business-card p{color:var(--txt-3);font-size:14px;margin:0;max-width:58ch}
@@ -637,6 +639,44 @@ footer{padding:64px 0 40px;border-bottom:0}
 .analytics-placeholder>div{min-height:132px;display:flex;flex-direction:column;justify-content:center;gap:8px;padding:24px;background:var(--bg-card)}
 .analytics-placeholder .dlabel{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--txt-4)}
 .analytics-placeholder b{font-size:14px;color:var(--txt-2)}
+
+/* Usage — real ledger-derived chart + per-key breakdown */
+.usage-graph{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:16px;margin-bottom:20px}
+.uchart{background:var(--bg-card);border:1px solid var(--line);border-radius:10px;padding:20px 22px;display:flex;flex-direction:column;min-width:0}
+.uchart-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:18px}
+.uchart-head b{font-family:var(--font-mono);font-size:14px;color:var(--txt);font-weight:700}
+.uchart-head span{font-family:var(--font-mono);font-size:11px;color:var(--txt-4)}
+.uchart-plot{display:flex;align-items:flex-end;gap:3px;height:180px;padding-top:8px}
+.uchart-col{flex:1 1 0;min-width:0;height:100%;display:flex;align-items:flex-end}
+.uchart-bar{width:100%;min-height:2px;background:var(--accent);border-radius:2px 2px 0 0;transition:opacity .15s}
+.uchart-col:hover .uchart-bar{opacity:.65}
+.uchart-empty{height:180px;display:grid;place-items:center;color:var(--txt-4);font-family:var(--font-mono);font-size:12px;text-align:center}
+.uchart-axis{display:flex;justify-content:space-between;margin-top:10px;font-family:var(--font-mono);font-size:10px;color:var(--txt-4);font-variant-numeric:tabular-nums}
+.usum{background:var(--bg-soft);border:1px solid var(--line);border-radius:10px;padding:20px 22px;display:flex;flex-direction:column}
+.usum-t{font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--txt-4);margin-bottom:6px}
+.usum-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid var(--line)}
+.usum-row:last-child{border-bottom:0}
+.usum-row>span{font-family:var(--font-mono);font-size:13px;color:var(--txt-3)}
+.usum-row>b{font-family:var(--font-mono);font-size:15px;color:var(--txt);font-weight:700;font-variant-numeric:tabular-nums;text-align:right}
+.usum-row>b.accent{color:var(--accent)}
+.ubreak-sum{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:14px}
+.ubreak-sum>div{background:var(--bg-card);padding:14px 18px;display:flex;flex-direction:column;gap:5px;min-width:0}
+.ubreak-sum .dlabel{font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt-4)}
+.ubreak-sum>div>b{font-family:var(--font-mono);font-size:20px;color:var(--txt);font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.ubadge{display:inline-block;font-family:var(--font-mono);font-size:11px;padding:2px 7px;border-radius:5px;background:var(--accent-soft);color:var(--accent);font-weight:600}
+@media(max-width:820px){.usage-graph{grid-template-columns:1fr}.ubreak-sum{grid-template-columns:repeat(2,minmax(0,1fr))}.table-scroll .mtable{min-width:640px}}
+
+/* Usage — token buckets + per-model distribution */
+.tok-buckets{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:16px}
+.tokb{background:var(--bg-card);padding:14px 18px;display:flex;flex-direction:column;gap:5px;min-width:0}
+.tokb .dlabel{font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt-4)}
+.tokb>b{font-family:var(--font-mono);font-size:20px;color:var(--txt);font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.tokb-usd{font-family:var(--font-mono);font-size:12px;color:var(--accent);font-variant-numeric:tabular-nums}
+.mdist{display:flex;height:12px;border-radius:6px;overflow:hidden;gap:2px;margin-bottom:16px;background:var(--bg-soft)}
+.mdist-seg{height:100%;border-radius:3px;min-width:3px}
+.tkmdl{display:inline-flex;align-items:center;gap:8px;font-family:var(--font-mono);font-weight:600;color:var(--txt);white-space:nowrap}
+.tkmdl-dot{width:9px;height:9px;border-radius:3px;flex:none}
+@media(max-width:820px){.tok-buckets{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 .keys{display:flex;flex-direction:column;gap:12px}
 .keyrow{background:var(--bg-card);border:1px solid var(--line);border-radius:var(--radius);
@@ -1222,4 +1262,45 @@ body.app-body .bg-decor{display:none!important}
 }
 @media(max-width:480px){
   .ov-stats,.bill3,.bill4{grid-template-columns:1fr}
+}
+
+/* --- Top-up converter: показываем, сколько реального Claude API получает клиент --- */
+.topup-convert{margin-top:24px;display:grid;gap:18px;max-width:860px}
+.tc-head h2{margin:10px 0 6px}
+.tc-body{display:grid;grid-template-columns:1fr auto 1fr;gap:20px;align-items:stretch}
+.tc-input{display:flex;flex-direction:column;gap:14px}
+.tc-field{position:relative;display:flex;align-items:center}
+.tc-field .set-in{width:100%;max-width:none;padding-left:34px;font-family:var(--font-mono);font-size:28px;font-weight:700;letter-spacing:-.03em}
+.tc-field .currency-prefix{top:50%;transform:translateY(-50%);font-size:22px}
+.tc-presets{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.tc-preset{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:10px 13px;border:1px solid var(--line-strong);border-radius:8px;background:var(--bg-card);cursor:pointer;transition:.15s;font-family:var(--font-mono);text-align:left}
+.tc-preset:hover{border-color:var(--accent-line)}
+.tc-preset.on{border-color:var(--accent);background:var(--accent-soft)}
+.tc-preset b{font-size:15px;color:var(--txt)}
+.tc-preset span{font-size:12px;color:var(--accent);font-variant-numeric:tabular-nums}
+.tc-arrow{display:flex;align-items:center;justify-content:center;color:var(--txt-4);font-size:22px}
+.tc-receive{display:flex;flex-direction:column;justify-content:center;gap:6px;padding:18px 20px;border:1px solid var(--accent-line);border-radius:10px;background:var(--accent-soft)}
+.tc-recv-label{font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent)}
+.tc-recv-value{font-family:var(--font-mono);font-weight:700;font-size:34px;line-height:1.05;letter-spacing:-.045em;color:var(--txt);font-variant-numeric:tabular-nums}
+.tc-recv-sub{font-family:var(--font-mono);font-size:12px;line-height:1.5;color:var(--txt-3)}
+.tc-recv-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
+.tc-badge{font-family:var(--font-mono);font-size:12px;font-weight:700;color:#fff;background:var(--accent);border-radius:99px;padding:3px 11px;letter-spacing:.02em}
+.tc-badge-soft{color:var(--accent);background:transparent;border:1px solid var(--accent-line);font-weight:500}
+.tc-explain{font-family:var(--font-mono);font-size:12.5px;line-height:1.6;color:var(--txt-2);margin:0}
+.tc-nudge{font-family:var(--font-mono);font-size:12.5px;line-height:1.6;color:var(--accent);margin:0}
+.tc-upgrade{font-family:var(--font-mono);font-size:13px;font-weight:700;line-height:1.5;color:var(--accent);margin:0;padding:8px 12px;border:1px solid var(--accent-line);border-radius:8px;background:var(--accent-soft)}
+.tc-receive-up{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),0 8px 30px rgba(55,103,240,.14)}
+/* маркетинг: живая ценность под полем суммы */
+.topup-live{display:flex;flex-direction:column;gap:12px}
+.topup-live-out{display:flex;flex-direction:column;gap:2px;padding:12px 14px;border:1px solid var(--accent-line);border-radius:8px;background:var(--accent-soft)}
+.topup-live-out b{font-family:var(--font-mono);font-weight:700;font-size:22px;letter-spacing:-.03em;color:var(--txt);font-variant-numeric:tabular-nums}
+.topup-live-out span{font-family:var(--font-mono);font-size:11.5px;color:var(--txt-3)}
+.tier-mult{font-style:normal;font-family:var(--font-mono);font-size:11px;color:var(--accent);white-space:nowrap}
+.tc-actions{display:flex}
+.tc-actions .btn{white-space:nowrap}
+.pricing-mult{display:block;font-style:normal;font-family:var(--font-mono);font-size:11px;color:var(--txt-3);margin-top:2px;letter-spacing:.02em}
+.pm-mult{display:block;font-style:normal;font-family:var(--font-mono);font-size:11px;color:var(--accent);margin-top:1px;letter-spacing:.02em}
+@media(max-width:640px){
+  .tc-body{grid-template-columns:1fr;gap:14px}
+  .tc-arrow{transform:rotate(90deg)}
 }

@@ -28,6 +28,8 @@ export interface LedgerEntry {
   amountUsd: string;
   keyMasked: string | null;
   reference: string | null;
+  // Claude-модель за списанием, когда движок помечает ею запрос (иначе выводим из reference).
+  model?: string | null;
   balanceAfterNano: string | null;
   timestamp: string;
 }
@@ -65,6 +67,44 @@ export interface AccountView {
   markupBasisPoints: number;
   status: "active" | "disabled";
   pricing: B2CPricing | B2BPricing | null;
+}
+
+// Полная разбивка расхода по токенам и моделям (движок считает всё это на каждом запросе).
+// Токены — number (безопасно < 2^53); деньги — nano-строки (bigint-safe). officialNano — по
+// официальным ценам Anthropic (×1.0), chargedNano — списано с баланса после скидки.
+export interface UsageBucket {
+  tokens: number;
+  officialNano: string;
+}
+export interface UsageWebSearchBucket {
+  requests: number;
+  officialNano: string;
+}
+export interface UsageModelRow {
+  model: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWrite5mTokens: number;
+  cacheWrite1hTokens: number;
+  webSearchRequests: number;
+  officialNano: string;
+  chargedNano: string;
+}
+export interface UsageView {
+  window: string;
+  requests: number;
+  totalOfficialNano: string;
+  totalChargedNano: string;
+  buckets: {
+    input: UsageBucket;
+    output: UsageBucket;
+    cacheRead: UsageBucket;
+    cacheWrite: UsageBucket;
+    webSearch: UsageWebSearchBucket;
+  };
+  models: UsageModelRow[];
 }
 
 export interface CheckoutView {
@@ -135,6 +175,7 @@ export const api = {
   logout: () => request<void>("/auth/logout", { method: "POST" }),
   account: () => request<AccountView>("/account"),
   ledger: (limit = 50) => request<{ entries: LedgerEntry[] }>(`/account/ledger?limit=${limit}`),
+  usage: (window = "30d") => request<UsageView>(`/account/usage?window=${encodeURIComponent(window)}`),
   apiKeys: () => request<{ keys: ApiKeyView[] }>("/api-keys"),
   createApiKey: (label?: string) => request<ApiKeyView>("/api-keys", {
     method: "POST", body: JSON.stringify(label ? { label } : {}),
