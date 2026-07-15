@@ -23,9 +23,47 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             util5h REAL, util7d REAL, healthy INTEGER, cooling INTEGER,
             balance_usd REAL, reserved_usd REAL, spent_usd REAL, active_keys INTEGER,
             potential_realapi REAL, coverage7d REAL,
-            headroom5h REAL, headroom7d REAL, subs_needed INTEGER, gap INTEGER);",
+            headroom5h REAL, headroom7d REAL, subs_needed INTEGER, gap INTEGER);
+         CREATE TABLE IF NOT EXISTS sub_snapshots(
+            email TEXT NOT NULL, ts INTEGER NOT NULL,
+            cap5h REAL, cap7d REAL, util5h REAL, util7d REAL,
+            PRIMARY KEY(email, ts));
+         CREATE TABLE IF NOT EXISTS sub_peaks(
+            email TEXT PRIMARY KEY,
+            max_cap5h REAL DEFAULT 0, max_cap7d REAL DEFAULT 0,
+            samples INTEGER DEFAULT 0, updated_ts INTEGER DEFAULT 0);",
     )?;
     Ok(c)
+}
+
+/// Снапшот ёмкости ПО КАЖДОЙ подписке (email полный — metrics.db не публичен). На дистанции даёт
+/// реальный потолок: `MAX(cap5h/cap7d)` по подписке (не только текущая EMA-калибровка).
+pub fn insert_sub_snapshots(c: &Connection, ts: i64, subs: &[(String, f64, f64, f64, f64)]) -> rusqlite::Result<()> {
+    for (email, cap5h, cap7d, util5h, util7d) in subs {
+        // raw-история (подрезается) — для тренда/анализа
+        c.execute(
+            "INSERT OR REPLACE INTO sub_snapshots(email,ts,cap5h,cap7d,util5h,util7d) \
+             VALUES(?1,?2,?3,?4,?5,?6)",
+            rusqlite::params![email, ts, cap5h, cap7d, util5h, util7d])?;
+        // durable-пик (НЕ подрезается): истинный max за всю дистанцию, переживает prune и рестарт
+        c.execute(
+            "INSERT INTO sub_peaks(email,max_cap5h,max_cap7d,samples,updated_ts) VALUES(?1,?2,?3,1,?4) \
+             ON CONFLICT(email) DO UPDATE SET \
+               max_cap5h=MAX(max_cap5h,excluded.max_cap5h), \
+               max_cap7d=MAX(max_cap7d,excluded.max_cap7d), \
+               samples=samples+1, updated_ts=excluded.updated_ts",
+            rusqlite::params![email, cap5h, cap7d, ts])?;
+    }
+    Ok(())
+}
+
+/// Истинный пик ёмкости по подписке за всю дистанцию (из durable sub_peaks, prune не стирает):
+/// (email, max_cap5h, max_cap7d, samples).
+pub fn sub_maxes(c: &Connection) -> rusqlite::Result<Vec<(String, f64, f64, i64)>> {
+    let mut stmt = c.prepare("SELECT email, max_cap5h, max_cap7d, samples FROM sub_peaks")?;
+    let rows = stmt.query_map([], |r| Ok((
+        r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?, r.get::<_, i64>(3)?)))?;
+    Ok(rows.filter_map(|x| x.ok()).collect())
 }
 
 /// Записать один снапшот из агрегата `/overview` (JSON). Поля, которых нет → NULL (напр. headroom=∞).
@@ -55,8 +93,12 @@ pub fn insert_snapshot(c: &Connection, o: &Value) -> rusqlite::Result<()> {
 }
 
 /// Обрезать снапшоты старше retention (metrics.db не растёт вечно). Снапшоты редки → без батчинга.
+/// Пиковые max(cap) при этом НЕ теряем осознанно: обрезаем raw-историю, но пик уже «зафиксирован»
+/// в старых данных; для долгой памяти пика retention ставь щедро (деф 90д) или считай max в приложении.
 pub fn prune(c: &Connection, older_than_ts: i64) -> rusqlite::Result<usize> {
-    c.execute("DELETE FROM snapshots WHERE ts < ?1", rusqlite::params![older_than_ts])
+    let n = c.execute("DELETE FROM snapshots WHERE ts < ?1", rusqlite::params![older_than_ts])?;
+    let _ = c.execute("DELETE FROM sub_snapshots WHERE ts < ?1", rusqlite::params![older_than_ts]);
+    Ok(n)
 }
 
 #[cfg(test)]

@@ -48,14 +48,20 @@ pub async fn metrics_loop(app: AppState, metrics_db: String, retention_days: i64
     let mut ticks: u64 = 0;
     loop {
         let snap = crate::http::overview_value(&app).await; // тот же агрегат, что и /overview
+        let now = pool::now();
+        // Пер-подписочный снапшот ёмкости: на дистанции даёт истинный ПИК (max cap5h/cap7d), которого
+        // текущая EMA-калибровка не показывает (она усредняет). Полный email — metrics.db не публичен.
+        let subs: Vec<(String, f64, f64, f64, f64)> = app.pool.capacity().into_iter()
+            .map(|c| (c.email, c.cap5h_usd, c.cap7d_usd, c.util5h, c.util7d)).collect();
         let db = metrics_db.clone();
-        let cutoff = if retention_days > 0 { pool::now() - retention_days * 86400 } else { 0 };
+        let cutoff = if retention_days > 0 { now - retention_days * 86400 } else { 0 };
         let do_prune = retention_days > 0 && ticks % 60 == 0; // ~раз в час
         // Запись в SQLite — на blocking-потоке (не блокируем async-воркер). Открываем per-write:
         // снапшоты редки (60с), проще, чем таскать не-Sync Connection через .await.
         let _ = tokio::task::spawn_blocking(move || {
             if let Ok(c) = crate::metrics_store::open(&db) {
                 let _ = crate::metrics_store::insert_snapshot(&c, &snap);
+                let _ = crate::metrics_store::insert_sub_snapshots(&c, now, &subs);
                 if do_prune {
                     let _ = crate::metrics_store::prune(&c, cutoff);
                 }

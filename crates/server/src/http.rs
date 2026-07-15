@@ -269,15 +269,25 @@ async fn subs(
     }
     if let Some(v) = cache_get(&SUBS_CACHE) { return Json(v).into_response(); }
     let db = app.db_path.as_ref().clone();
-    let rows = tokio::task::spawn_blocking(move || {
-        registry::open(&db).and_then(|c| registry::subs_admin(&c)).unwrap_or_default()
+    let (rows, maxes) = tokio::task::spawn_blocking(move || {
+        let rows = registry::open(&db).and_then(|c| registry::subs_admin(&c)).unwrap_or_default();
+        // пиковая ёмкость по подписке за всю дистанцию (durable sub_peaks в metrics.db)
+        let mdir = std::path::Path::new(&db).parent()
+            .map(|d| d.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
+        let maxes = crate::metrics_store::open(&format!("{mdir}/metrics.db"))
+            .and_then(|c| crate::metrics_store::sub_maxes(&c)).unwrap_or_default();
+        (rows, maxes)
     }).await.unwrap_or_default();
+    let peak: std::collections::HashMap<String, (f64, f64)> =
+        maxes.into_iter().map(|(e, m5, m7, _)| (e, (m5, m7))).collect();
     let now = pool::now();
     let lifetime = SUB_LIFETIME_DAYS * 86400;
     let days = |secs: i64| ((secs as f64 / 86400.0) * 10.0).round() / 10.0;
+    let r2 = |x: f64| (x * 100.0).round() / 100.0;
     let list: Vec<_> = rows.iter().map(|s| {
         let head: String = s.email.chars().take(4).collect();
         let sub_expire = if s.added_ts > 0 { s.added_ts + lifetime } else { 0 };
+        let (pk5, pk7) = peak.get(&s.email).copied().unwrap_or((0.0, 0.0));
         json!({
             "email": format!("{head}…"),
             "status": s.status, "fleet": s.fleet, "added": s.added, "has_token": s.has_token,
@@ -286,6 +296,8 @@ async fn subs(
             "proxy_host": s.proxy_host,
             "proxy_expire": s.proxy_expire,   // из IPRoyal (пусто, пока authbot-loop не заполнил)
             "proxy_ok": s.proxy_ok,
+            "peak_cap5h_usd": r2(pk5),         // истинный ПИК ёмкости на дистанции (не EMA)
+            "peak_cap7d_usd": r2(pk7),
         })
     }).collect();
     let v = json!({"now": now, "lifetime_days": SUB_LIFETIME_DAYS, "subs": list});

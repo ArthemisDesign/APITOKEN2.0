@@ -184,18 +184,21 @@ function render(ov,cap,subs){
       <h2>Жизненный цикл подписок ${subs?`· замена: ${subs.lifetime_days}д от добавления`:''}</h2>
       <div style="overflow-x:auto"><table>
         <thead><tr><th class="l">подписка</th><th>статус</th><th>добавлена</th><th>живёт ещё</th>
-          <th class="l">прокси</th><th>прокси до</th></tr></thead>
+          <th>пик 5h</th><th>пик 7d</th><th class="l">прокси</th><th>прокси до</th></tr></thead>
         <tbody>${(subs?.subs||[]).map(s=>{
           const dl=s.sub_days_left, dc=dl<=0?'bad':dl<7?'warn':'ok';
           const pe=(s.proxy_expire||'').slice(0,10);
+          const pk5=s.peak_cap5h_usd||0, pk7=s.peak_cap7d_usd||0;
           return `<tr>
             <td class="l">${esc(s.email)}</td>
             <td class="muted">${esc(s.status)}</td>
             <td class="muted">${esc((s.added||'').slice(0,10)||'—')}</td>
             <td><span class="dot ${dc}"></span>${dl>0?dl+' дн':'—'}</td>
+            <td>${pk5>0?usd(pk5):'<span class="muted">—</span>'}</td>
+            <td>${pk7>0?usd(pk7):'<span class="muted">—</span>'}</td>
             <td class="l muted">${esc(s.proxy_host||'—')}</td>
             <td class="muted">${pe||'—'}</td>
-          </tr>`}).join('')||'<tr><td colspan="6" class="muted l">нет подписок</td></tr>'}</tbody>
+          </tr>`}).join('')||'<tr><td colspan="8" class="muted l">нет подписок</td></tr>'}</tbody>
       </table></div>
 
       <details>
