@@ -1,14 +1,12 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { MotionEffects } from "./motion-effects";
 import { CommercialDisclosure } from "./commercial-disclosure";
 import { PricingOverview } from "./pricing-overview";
-import { SiteFooter, SiteHeader } from "./site-chrome";
 import { T } from "./translated";
 import { DOCS_URL } from "@/lib/site-links";
 
 export function MarketingFrame({ children }: { children: ReactNode }) {
-  return <><SiteHeader /><main>{children}</main><SiteFooter /><MotionEffects /></>;
+  return <main>{children}</main>;
 }
 
 export function PageHero({ eyebrow, title, subtitle, back }: { eyebrow: string; title: string; subtitle: string; back?: boolean }) {

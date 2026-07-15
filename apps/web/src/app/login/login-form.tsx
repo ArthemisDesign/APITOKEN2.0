@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { api, ApiError } from "@/lib/api";
-import { AuthIntro, AuthShell, Feedback } from "@/components/auth-shell";
+import { AuthIntro, Feedback } from "@/components/auth-shell";
 import { SocialAuth } from "@/components/social-auth";
 import { useI18n } from "@/components/i18n-provider";
 
@@ -21,14 +21,14 @@ export function LoginForm() {
     const data = new FormData(event.currentTarget);
     try {
       await api.login({ email: String(data.get("email") ?? "").trim(), password: String(data.get("password") ?? "") });
-      router.replace("/dashboard"); router.refresh();
+      router.replace("/dashboard");
     } catch (error) {
       setMessage(error instanceof ApiError ? error.message : "Unable to log in right now");
       setBusy(false);
     }
   }
 
-  return <AuthShell>
+  return <>
     <AuthIntro title={t("login_h")} subtitle={t("login_sub")} />
     <form onSubmit={submit} noValidate>
       <div className="field"><label htmlFor="email">{t("f_email")}</label><input id="email" name="email" type="email" autoComplete="email" placeholder="you@company.com" required /></div>
@@ -39,5 +39,5 @@ export function LoginForm() {
     </form>
     <SocialAuth />
     <div className="auth-alt"><span>{t("no_acc")}</span> <Link href="/register">{t("to_reg")}</Link></div>
-  </AuthShell>;
+  </>;
 }

@@ -79,7 +79,7 @@ export function Dashboard() {
   }, []);
 
   async function logout() {
-    await api.logout().catch(() => undefined); router.replace("/login"); router.refresh();
+    await api.logout().catch(() => undefined); router.replace("/login");
   }
 
   function open(next: Section) {
