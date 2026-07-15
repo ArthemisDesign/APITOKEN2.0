@@ -9,7 +9,7 @@ export function PricingOverview() {
       <div className="topup-card">
         <T k="topup_tag" as="span" className="tag">Flexible top-up</T>
         <T k="topup_h" as="h3">Choose any whole USD amount</T>
-        <TopUpAmountInput className="topup-preview" initialAmount="100" />
+        <TopUpAmountInput className="topup-preview" initialAmount="100" showReceive />
         <T k="topup_p" as="p">No catalog and no preset amounts. Enter a whole amount and add exactly that much to your balance.</T>
         <Link className="btn btn-primary" href="/register"><T k="topup_cta">Create account</T></Link>
       </div>
@@ -32,12 +32,12 @@ export function PricingOverview() {
       <div className="tier-table-wrap">
         <table className="tier-table">
           <thead><tr><T k="tier_col" as="th">Tier</T><T k="discount_col" as="th">Discount</T><T k="local_spend_col" as="th">Monthly platform spend</T><T k="official_usage_col" as="th">Approx. official API usage</T></tr></thead>
-          <tbody>{B2C_PRICING_MILESTONES.map((tier) => <tr key={tier.code}><T k={tier.messageKey} as="td">{tier.label}</T><td><strong>{tier.discountPercent}%</strong></td><td>{formatWholeUsd(tier.platformSpendUsd)}</td><td>{formatWholeUsd(tier.visibleOfficialUsageUsd)}</td></tr>)}</tbody>
+          <tbody>{B2C_PRICING_MILESTONES.map((tier) => <tr key={tier.code}><T k={tier.messageKey} as="td">{tier.label}</T><td><strong>{tier.discountPercent}%</strong> <em className="tier-mult">×{(100 / (100 - tier.discountPercent)).toLocaleString("en-US", { maximumFractionDigits: 2 })}</em></td><td>{formatWholeUsd(tier.platformSpendUsd)}</td><td>{formatWholeUsd(tier.visibleOfficialUsageUsd)}</td></tr>)}</tbody>
         </table>
       </div>
       <div className="tier-cards">
         {B2C_PRICING_MILESTONES.map((tier) => <div className="tier-mobile" key={tier.code}>
-          <div className="tier-mobile-head"><T k={tier.messageKey} as="strong">{tier.label}</T><b>{tier.discountPercent}%</b></div>
+          <div className="tier-mobile-head"><T k={tier.messageKey} as="strong">{tier.label}</T><b>{tier.discountPercent}% <em className="tier-mult">×{(100 / (100 - tier.discountPercent)).toLocaleString("en-US", { maximumFractionDigits: 2 })}</em></b></div>
           <div className="tier-mobile-row"><T k="local_spend_col">Monthly platform spend</T><span>{formatWholeUsd(tier.platformSpendUsd)}</span></div>
           <div className="tier-mobile-row"><T k="official_usage_col">Approx. official API usage</T><span>{formatWholeUsd(tier.visibleOfficialUsageUsd)}</span></div>
         </div>)}
