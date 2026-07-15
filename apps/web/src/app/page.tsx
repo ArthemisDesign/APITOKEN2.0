@@ -8,7 +8,6 @@ import { T } from "@/components/translated";
 const models = ["Claude Opus 4.8", "Claude Opus 4.7", "Claude Sonnet 4.6", "Claude Haiku 4.5"];
 const steps = [["step1_h","step1_p"],["step2_h","step2_p"],["step3_h","step3_p"]] as const;
 const features = [["f1_h","f1_p"],["f2_h","f2_p"],["f3_h","f3_p"],["f4_h","f4_p"]] as const;
-const faqs = [["q1","a1"],["q2","a2"],["q3","a3"],["q4","a4"],["q5","a5"],["q6","a6"]] as const;
 
 export default function HomePage() {
   return <main>
@@ -36,7 +35,6 @@ export default function HomePage() {
       <section id="how"><div className="wrap"><SectionHead eyebrow="how_eyebrow" title="how_h2" lead="how_lead" /><div className="steps" data-reveal-stagger>{steps.map(([title, text], index) => <InfoCard key={title} index={index} title={title} text={text} className="step" />)}</div></div></section>
       <section id="workflow"><div className="wrap"><SectionHead eyebrow="wf_eyebrow" title="wf_h2" /><div className="feats" data-reveal-stagger>{features.map(([title, text], index) => <InfoCard key={title} index={index} title={title} text={text} className="feat" />)}</div></div></section>
       <section id="pricing"><div className="wrap"><SectionHead eyebrow="pr_eyebrow" title="pr_h2" lead="pr_lead" /><PricingOverview /></div></section>
-      <section id="faq"><div className="wrap"><SectionHead eyebrow="faq_eyebrow" title="faq_h2" lead="faq_lead" /><div className="faq" data-reveal-stagger>{faqs.map(([question, answer]) => <details key={question}><summary><T k={question}>Question</T><span className="plus">+</span></summary><T k={answer} as="div" className="ans">Answer</T></details>)}</div></div></section>
       <section className="cta-band"><div className="wrap cta-row reveal">
         <T k="cta_h2" as="h2">Ready to start building?</T>
         <div className="cta-actions">
