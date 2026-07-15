@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { useI18n } from "@/components/i18n-provider";
 import { ThemeToggle } from "@/components/site-chrome";
+import { B2C_PRICING_MILESTONES, formatWholeUsd } from "@/lib/pricing-tiers";
 
 const BASE_URL = "https://api.apitoken.sale";
 const MESSAGES_URL = `${BASE_URL}/v1/messages`;
@@ -60,7 +61,15 @@ const copy = {
   en: {
     documentation: "Documentation", back: "Back to site", dashboard: "Dashboard", onThisPage: "On this page",
     overview: "Overview", quickstart: "Quick start", authentication: "Authentication", tools: "Developer tools",
-    sdks: "SDKs", errors: "Errors", eyebrow: "CLAUDE API · CONNECTION GUIDE",
+    sdks: "SDKs", errors: "Errors", pricing: "Pricing & tiers", eyebrow: "CLAUDE API · CONNECTION GUIDE",
+    pricingTitle: "Pricing & discount tiers", pricingLead: "One prepaid balance. You pay a share of official Anthropic prices set by your discount tier — and the tier grows as you top up.",
+    billingHead: "How billing works", billingText: "Every request is priced at the upstream model's official Anthropic rate, then multiplied by the share you pay after your discount. No token packs, no subscriptions.",
+    billingExample: "Example — at Starter (−60%): $100 of official Claude API usage × 40% paid = $40 charged from your balance. So $40 of balance buys ≈ $100 of official usage (×2.5).",
+    tiersHead: "Discount tiers", tiersText: "Starter −60% is free — every account has it from the start. Higher tiers are unlocked by your CUMULATIVE top-ups (they add up over time). The more you prepay, the deeper the discount.",
+    tierColTier: "Tier", tierColDiscount: "Discount", tierColValue: "$1 buys", tierColGet: "Top up to reach", tierColKeep: "Keep / 30 days", tierBaseCell: "Free · default",
+    keepHead: "Keeping a tier", keepText: "To keep a tier you must spend at least 50% of its threshold within every rolling 30-day window. If you don't, you drop one tier and your accumulated top-ups reset to the new tier's threshold. Until you drop, top-ups keep adding up toward the next tier.",
+    keepFree: "Starter −60% is the base tier — it never expires and needs no top-up.",
+    exampleHead: "A full example", exampleText: "Top up $250 in total → you reach Pro (−70%). To keep Pro, spend ≥ $125 of platform charge every 30 days. Spend enough and the window renews; miss it and you drop to Builder (−65%). Top up $250 more (cumulative $500) → Studio (−75%).",
     title: "Build with one Claude endpoint", lead: "Everything required to connect Claude Code, editors, scripts, and production applications to apiToken.sale.",
     openKeys: "Open API keys", baseUrl: "Base URL", messagesEndpoint: "Messages endpoint", authHeader: "Authentication header",
     oneEndpoint: "Connection essentials", oneEndpointText: "All supported Claude models use the Anthropic Messages API through the same base URL.",
@@ -82,7 +91,15 @@ const copy = {
   ru: {
     documentation: "Документация", back: "На главный сайт", dashboard: "Кабинет", onThisPage: "На этой странице",
     overview: "Обзор", quickstart: "Быстрый старт", authentication: "Аутентификация", tools: "Инструменты",
-    sdks: "SDK", errors: "Ошибки", eyebrow: "CLAUDE API · РУКОВОДСТВО ПО ПОДКЛЮЧЕНИЮ",
+    sdks: "SDK", errors: "Ошибки", pricing: "Цены и тарифы", eyebrow: "CLAUDE API · РУКОВОДСТВО ПО ПОДКЛЮЧЕНИЮ",
+    pricingTitle: "Цены и тарифные скидки", pricingLead: "Единый предоплаченный баланс. Ты платишь долю от официальных цен Anthropic, заданную твоим тарифом — а тариф растёт по мере пополнений.",
+    billingHead: "Как считается оплата", billingText: "Каждый запрос считается по официальной цене модели у Anthropic и умножается на долю, которую ты платишь после скидки. Никаких пакетов токенов и подписок.",
+    billingExample: "Пример — на Starter (−60%): $100 официального использования Claude API × 40% оплаты = $40 списывается с баланса. То есть $40 баланса ≈ $100 официального использования (×2.5).",
+    tiersHead: "Тарифные скидки", tiersText: "Starter −60% бесплатно — есть у каждого аккаунта сразу. Выше тиры открываются по НАКОПЛЕННЫМ пополнениям (они суммируются). Чем больше предоплата, тем выше скидка.",
+    tierColTier: "Тариф", tierColDiscount: "Скидка", tierColValue: "$1 даёт", tierColGet: "Пополнить, чтобы получить", tierColKeep: "Держать / 30 дней", tierBaseCell: "Бесплатно · по умолчанию",
+    keepHead: "Как удержать тариф", keepText: "Чтобы удержать тариф, нужно потратить не менее 50% его порога за каждые скользящие 30 дней. Если не выполнил — откат на один тариф, а накопленные пополнения сбрасываются к порогу нового тарифа. Пока не слетел — пополнения суммируются к следующему тарифу.",
+    keepFree: "Starter −60% — базовый тариф, не истекает и не требует пополнения.",
+    exampleHead: "Полный пример", exampleText: "Пополнил суммарно $250 → получил Pro (−70%). Чтобы удержать Pro, трать ≥ $125 списаний каждые 30 дней. Хватило — окно продлевается; не хватило — откат на Builder (−65%). Пополнил ещё $250 (суммарно $500) → Studio (−75%).",
     title: "Один адрес для работы с Claude", lead: "Всё необходимое для подключения Claude Code, редакторов, скриптов и production-приложений к apiToken.sale.",
     openKeys: "Открыть API-ключи", baseUrl: "Базовый URL", messagesEndpoint: "Адрес Messages API", authHeader: "Заголовок авторизации",
     oneEndpoint: "Основные параметры", oneEndpointText: "Все поддерживаемые модели Claude используют Anthropic Messages API через единый базовый URL.",
@@ -109,7 +126,7 @@ export function DocsPortal() {
   return <div className="docs-site">
     <header className="docs-header"><Link className="docs-brand" href="/"><BrandMark /><span>apiToken.sale</span><i>{t.documentation}</i></Link><div className="docs-header-actions"><div className="lang"><button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}>EN</button><button className={language === "ru" ? "active" : ""} onClick={() => setLanguage("ru")}>RU</button></div><ThemeToggle /><Link className="btn btn-ghost btn-sm docs-back" href="/">{t.back}</Link><Link className="btn btn-primary btn-sm" href="/dashboard">{t.dashboard}</Link></div></header>
     <div className="docs-layout">
-      <aside className="docs-sidebar"><span>{t.onThisPage}</span><nav><a href="#overview">{t.overview}</a><a href="#quickstart">{t.quickstart}</a><a href="#authentication">{t.authentication}</a><a href="#tools">{t.tools}</a><a href="#sdks">{t.sdks}</a><a href="#errors">{t.errors}</a></nav></aside>
+      <aside className="docs-sidebar"><span>{t.onThisPage}</span><nav><a href="#overview">{t.overview}</a><a href="#quickstart">{t.quickstart}</a><a href="#authentication">{t.authentication}</a><a href="#tools">{t.tools}</a><a href="#sdks">{t.sdks}</a><a href="#errors">{t.errors}</a><a href="#pricing">{t.pricing}</a></nav></aside>
       <main className="docs-main">
         <section className="docs-hero" id="overview"><span className="eyebrow">{t.eyebrow}</span><h1>{t.title}</h1><p>{t.lead}</p><Link className="btn btn-primary" href="/dashboard?view=keys">{t.openKeys}</Link></section>
         <section className="docs-section"><div className="docs-section-heading"><span>01</span><div><h2>{t.oneEndpoint}</h2><p>{t.oneEndpointText}</p></div></div><div className="docs-essential-grid"><Endpoint label={t.baseUrl} value={BASE_URL} copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label={t.messagesEndpoint} value={MESSAGES_URL} copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label={t.authHeader} value="x-api-key: sk-pool-•••" copyLabel={t.copy} copiedLabel={t.copied} /></div><div className="docs-notice">{t.keyNotice}</div></section>
@@ -118,6 +135,15 @@ export function DocsPortal() {
         <section className="docs-section" id="tools"><div className="docs-section-heading"><span>04</span><div><h2>{t.tools}</h2><p>{t.oneEndpointText}</p></div></div><div className="docs-two-col"><CodeBlock title={t.claudeCode} description={t.claudeCodeText} code={CLAUDE_CODE} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.editors} description={t.editorsText} code={CURSOR} copyLabel={t.copy} copiedLabel={t.copied} /></div></section>
         <section className="docs-section" id="sdks"><div className="docs-section-heading"><span>05</span><div><h2>{t.sdks}</h2><p>{t.oneEndpointText}</p></div></div><div className="docs-two-col"><CodeBlock title={t.python} description={t.pythonText} code={PYTHON} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.typescript} description={t.typescriptText} code={TYPESCRIPT} copyLabel={t.copy} copiedLabel={t.copied} /></div></section>
         <section className="docs-section" id="errors"><div className="docs-section-heading"><span>06</span><div><h2>{t.errorTitle}</h2><p>{t.errorText}</p></div></div><div className="table-scroll"><table className="mtable docs-errors"><thead><tr><th>{t.status}</th><th>{t.meaning}</th><th>{t.action}</th></tr></thead><tbody><ErrorRow code="401" meaning={t.e401} action={t.a401} labels={t} /><ErrorRow code="402" meaning={t.e402} action={t.a402} labels={t} /><ErrorRow code="429" meaning={t.e429} action={t.a429} labels={t} /><ErrorRow code="5xx" meaning={t.e5xx} action={t.a5xx} labels={t} /></tbody></table></div><div className="docs-checklist"><h3>{t.production}</h3><ul>{t.checklist.map((item) => <li key={item}>{item}</li>)}</ul></div></section>
+        <section className="docs-section" id="pricing"><div className="docs-section-heading"><span>07</span><div><h2>{t.pricingTitle}</h2><p>{t.pricingLead}</p></div></div>
+          <h3 className="docs-h3">{t.billingHead}</h3><p className="docs-para">{t.billingText}</p><div className="docs-notice">{t.billingExample}</div>
+          <h3 className="docs-h3">{t.tiersHead}</h3><p className="docs-para">{t.tiersText}</p>
+          <div className="table-scroll"><table className="mtable docs-errors"><thead><tr><th>{t.tierColTier}</th><th>{t.tierColDiscount}</th><th>{t.tierColValue}</th><th>{t.tierColGet}</th><th>{t.tierColKeep}</th></tr></thead>
+            <tbody>{B2C_PRICING_MILESTONES.map((tier) => <tr key={tier.code}><td><b>{tier.label}</b></td><td>{tier.discountPercent}%</td><td>×{(100 / (100 - tier.discountPercent)).toLocaleString("en-US", { maximumFractionDigits: 2 })}</td><td>{Number(tier.platformSpendUsd) === 0 ? t.tierBaseCell : formatWholeUsd(tier.platformSpendUsd)}</td><td>{Number(tier.holdUsd) === 0 ? "—" : `${formatWholeUsd(tier.holdUsd)} / 30d`}</td></tr>)}</tbody>
+          </table></div>
+          <h3 className="docs-h3">{t.keepHead}</h3><p className="docs-para">{t.keepText}</p><div className="docs-notice">{t.keepFree}</div>
+          <h3 className="docs-h3">{t.exampleHead}</h3><p className="docs-para">{t.exampleText}</p>
+        </section>
         <footer className="docs-footer">{t.footer}</footer>
       </main>
     </div>

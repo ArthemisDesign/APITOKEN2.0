@@ -44,6 +44,8 @@ export interface B2CPricing {
   multiplierBp: number;
   spentNano: string;
   retentionSpendNano: string;
+  windowSpentNano?: string;
+  windowStart?: string | null;
   nextTier: null | {
     tier: string;
     discountPercent: number;

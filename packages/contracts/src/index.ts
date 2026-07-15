@@ -187,16 +187,14 @@ export const createApiKeySchema = z.object({
   label: z.string().trim().min(1).max(100).optional(),
 }).strict();
 
-// Prepay-модель: тир получают за НАКОПЛЕННЫЕ пополнения (`spendThresholdNano` = порог пополнения).
-// `holdNano` (= 50% порога) — сколько надо потратить за скользящие 30 дней, чтобы удержать тир.
-// Индекс 0 = "none": ниже $100 накоплений скидки нет (mult 10000 = платит 100%).
+// Prepay-модель: Starter −60% даётся СТАРТОВО (базовый тир, порог $0, удержания нет). Выше — за
+// НАКОПЛЕННЫЕ пополнения (`spendThresholdNano` = порог), удержание `holdNano` (=50%) за скользящие 30 дней.
 export const B2C_PRICING_TIERS = [
-  { code: "none", discountPercent: 0, multiplierBp: 10000, spendThresholdNano: 0n, holdNano: 0n, visibleOfficialUsageUsd: "0" },
-  { code: "starter", discountPercent: 60, multiplierBp: 4000, spendThresholdNano: 100_000_000_000n, holdNano: 50_000_000_000n, visibleOfficialUsageUsd: "250" },
-  { code: "builder", discountPercent: 65, multiplierBp: 3500, spendThresholdNano: 250_000_000_000n, holdNano: 125_000_000_000n, visibleOfficialUsageUsd: "714" },
-  { code: "pro", discountPercent: 70, multiplierBp: 3000, spendThresholdNano: 500_000_000_000n, holdNano: 250_000_000_000n, visibleOfficialUsageUsd: "1667" },
-  { code: "studio", discountPercent: 75, multiplierBp: 2500, spendThresholdNano: 1_000_000_000_000n, holdNano: 500_000_000_000n, visibleOfficialUsageUsd: "4000" },
-  { code: "scale", discountPercent: 80, multiplierBp: 2000, spendThresholdNano: 2_000_000_000_000n, holdNano: 1_000_000_000_000n, visibleOfficialUsageUsd: "10000" },
+  { code: "starter", discountPercent: 60, multiplierBp: 4000, spendThresholdNano: 0n, holdNano: 0n, visibleOfficialUsageUsd: "0" },
+  { code: "builder", discountPercent: 65, multiplierBp: 3500, spendThresholdNano: 100_000_000_000n, holdNano: 50_000_000_000n, visibleOfficialUsageUsd: "286" },
+  { code: "pro", discountPercent: 70, multiplierBp: 3000, spendThresholdNano: 250_000_000_000n, holdNano: 125_000_000_000n, visibleOfficialUsageUsd: "833" },
+  { code: "studio", discountPercent: 75, multiplierBp: 2500, spendThresholdNano: 500_000_000_000n, holdNano: 250_000_000_000n, visibleOfficialUsageUsd: "2000" },
+  { code: "scale", discountPercent: 80, multiplierBp: 2000, spendThresholdNano: 1_000_000_000_000n, holdNano: 500_000_000_000n, visibleOfficialUsageUsd: "5000" },
 ] as const;
 
 export const B2C_SIGNUP_BONUS_OFFICIAL_USD = "10";

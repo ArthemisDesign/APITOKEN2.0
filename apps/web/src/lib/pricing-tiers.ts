@@ -1,16 +1,13 @@
-// Prepay-модель тиров: скидку даёт ПОПОЛНЕНИЕ.
-// - Тир получаешь, когда НАКОПЛЕННАЯ сумма пополнений достигает `platformSpendUsd` (пополнения
-//   суммируются, пока не слетел). Ниже первого порога ($100) скидки нет.
-// - Удержание: за каждые 30 дней надо потратить ≥ `holdUsd` (= 50% порога), иначе откат на −1 тир.
-// - Выше — доложить (накопительно) до порога следующего тира.
-// (`platformSpendUsd` = порог пополнения; `visibleOfficialUsageUsd` = порог ÷ доля оплаты = сколько
-//  реального Claude API это даёт; `spendThresholdNano` = порог в нано — для визуального прогресса.)
+// Prepay-модель тиров: Starter −60% даётся СТАРТОВО (базовый, порог $0, удержания нет).
+// - Выше — за НАКОПЛЕННУЮ сумму пополнений (`platformSpendUsd` = порог; суммируются, пока не слетел).
+// - Удержание: за каждые 30 дней потратить ≥ `holdUsd` (= 50% порога), иначе откат на −1 тир.
+// (`visibleOfficialUsageUsd` = порог ÷ доля оплаты; `spendThresholdNano` = порог в нано для прогресса.)
 export const B2C_PRICING_MILESTONES = [
-  { code: "starter", label: "Starter", messageKey: "tier_starter", discountPercent: 60, platformSpendUsd: "100", holdUsd: "50", spendThresholdNano: "100000000000", visibleOfficialUsageUsd: "250" },
-  { code: "builder", label: "Builder", messageKey: "tier_builder", discountPercent: 65, platformSpendUsd: "250", holdUsd: "125", spendThresholdNano: "250000000000", visibleOfficialUsageUsd: "714" },
-  { code: "pro", label: "Pro", messageKey: "tier_pro", discountPercent: 70, platformSpendUsd: "500", holdUsd: "250", spendThresholdNano: "500000000000", visibleOfficialUsageUsd: "1667" },
-  { code: "studio", label: "Studio", messageKey: "tier_studio", discountPercent: 75, platformSpendUsd: "1000", holdUsd: "500", spendThresholdNano: "1000000000000", visibleOfficialUsageUsd: "4000" },
-  { code: "scale", label: "Scale", messageKey: "tier_scale", discountPercent: 80, platformSpendUsd: "2000", holdUsd: "1000", spendThresholdNano: "2000000000000", visibleOfficialUsageUsd: "10000" },
+  { code: "starter", label: "Starter", messageKey: "tier_starter", discountPercent: 60, platformSpendUsd: "0", holdUsd: "0", spendThresholdNano: "0", visibleOfficialUsageUsd: "0" },
+  { code: "builder", label: "Builder", messageKey: "tier_builder", discountPercent: 65, platformSpendUsd: "100", holdUsd: "50", spendThresholdNano: "100000000000", visibleOfficialUsageUsd: "286" },
+  { code: "pro", label: "Pro", messageKey: "tier_pro", discountPercent: 70, platformSpendUsd: "250", holdUsd: "125", spendThresholdNano: "250000000000", visibleOfficialUsageUsd: "833" },
+  { code: "studio", label: "Studio", messageKey: "tier_studio", discountPercent: 75, platformSpendUsd: "500", holdUsd: "250", spendThresholdNano: "500000000000", visibleOfficialUsageUsd: "2000" },
+  { code: "scale", label: "Scale", messageKey: "tier_scale", discountPercent: 80, platformSpendUsd: "1000", holdUsd: "500", spendThresholdNano: "1000000000000", visibleOfficialUsageUsd: "5000" },
 ] as const;
 
 export type B2CPricingMilestone = typeof B2C_PRICING_MILESTONES[number];

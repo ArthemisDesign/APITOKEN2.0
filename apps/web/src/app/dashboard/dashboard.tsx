@@ -186,6 +186,11 @@ function PricingBanner({ account }: { account: AccountView }) {
   const currentTier = B2C_PRICING_MILESTONES[currentIndex]!;
   const progress = pricingMilestoneProgress(pricing.tier, pricing.spentNano);
   const trackStyle = { "--tier-progress": `${progress}%` } as CSSProperties;
+  const isBase = currentTier.code === "starter";
+  const holdNano = BigInt(pricing.retentionSpendNano);
+  const windowSpent = BigInt(pricing.windowSpentNano ?? "0");
+  const held = windowSpent >= holdNano;
+  const daysLeft = pricing.windowStart ? Math.max(0, Math.ceil(30 - (Date.now() - new Date(pricing.windowStart).getTime()) / 86_400_000)) : 30;
   return <section className="pricing-banner pricing-banner-milestones">
     <div className="pricing-summary">
       <div><span className="pricing-kicker">{copy.monthlyTierProgress}</span><strong>{tierName(copy, currentTier.code)}</strong></div>
@@ -195,6 +200,9 @@ function PricingBanner({ account }: { account: AccountView }) {
       <div className="pricing-status-item"><span>{copy.thisMonth}</span><strong>{nanoToUsd(pricing.spentNano)}</strong><small>{copy.platformSpend}</small></div>
       {pricing.nextTier ? <div className="pricing-status-item pricing-status-next"><span>{copy.nextMilestone}</span><strong>{interpolate(copy.spendMore, { amount: nanoToUsd(pricing.nextTier.remainingNano) })}</strong><small>{interpolate(copy.unlockTier, { tier: tierName(copy, pricing.nextTier.tier), discount: pricing.nextTier.discountPercent })}</small></div> :
         <div className="pricing-status-item pricing-status-next"><span>{copy.milestonesComplete}</span><strong>{copy.highestTierReached}</strong><small>{copy.tierScale} · {pricing.discountPercent}% {copy.discount}</small></div>}
+      {isBase
+        ? <div className="pricing-status-item"><span>{copy.keepTier}</span><strong>{copy.baseTierKept}</strong><small>{copy.freeForever}</small></div>
+        : <div className={`pricing-status-item ${held ? "pricing-status-ok" : "pricing-status-warn"}`}><span>{copy.keepTier}</span><strong>{nanoToUsd(pricing.windowSpentNano ?? "0")} / {nanoToUsd(pricing.retentionSpendNano)}</strong><small>{interpolate(held ? copy.daysLeftOk : copy.daysLeftWarn, { days: daysLeft })}</small></div>}
     </div>
     <div className="pricing-milestone-track" style={trackStyle} aria-label={`${Math.round(progress)}% progress through pricing milestones`}>
       <div className="pricing-track-line" aria-hidden="true"><span /></div>
@@ -203,11 +211,12 @@ function PricingBanner({ account }: { account: AccountView }) {
           const state = index < currentIndex ? "complete" : index === currentIndex ? "current" : "upcoming";
           return <li className={`pricing-milestone ${state}`} key={tier.code}>
             <span className="pricing-milestone-dot" aria-hidden="true">{index < currentIndex ? "✓" : index + 1}</span>
-            <div><strong>{tierName(copy, tier.code)}</strong><span>{tier.discountPercent}% {copy.discount}</span><em className="pm-mult">{multFromDiscount(tier.discountPercent)} {copy.valueMultiplier}</em><small>{interpolate(copy.tierGetHold, { get: formatWholeUsd(tier.platformSpendUsd), hold: formatWholeUsd(tier.holdUsd) })}</small></div>
+            <div><strong>{tierName(copy, tier.code)}</strong><span>{tier.discountPercent}% {copy.discount}</span><em className="pm-mult">{multFromDiscount(tier.discountPercent)} {copy.valueMultiplier}</em><small>{Number(tier.platformSpendUsd) === 0 ? copy.tierBaseHint : interpolate(copy.tierGetHold, { get: formatWholeUsd(tier.platformSpendUsd), hold: formatWholeUsd(tier.holdUsd) })}</small></div>
           </li>;
         })}
       </ol>
     </div>
+    <div className="pricing-howto-row"><p className="pricing-howto-text">{copy.tierExplainer}</p><Link className="link pricing-howto-link" href={`${DOCS_URL}#pricing`}>{copy.howTiersWork} →</Link></div>
   </section>;
 }
 
@@ -297,9 +306,8 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
           <div className="tc-recv-meta"><span className="tc-badge">−{discount}%</span><span className="tc-badge tc-badge-soft">{fmtMult(frac)} {copy.valueMultiplier}</span></div>
         </div>
       </div>
-      {isB2c && amt > 0 && (reachedTier
-        ? <p className="tc-upgrade"><span className="tc-upgrade-ic" aria-hidden="true">ⓘ</span>{interpolate(copy.topupReach, { tier: tierName(copy, reachedTier.code), discount, hold: fmtUsd(Number(reachedTier.holdUsd)) })}</p>
-        : <p className="tc-upgrade"><span className="tc-upgrade-ic" aria-hidden="true">ⓘ</span>{interpolate(copy.topupNoTier, { amount: fmtUsd(Number(B2C_PRICING_MILESTONES[0].platformSpendUsd)), tier: tierName(copy, "starter"), discount: B2C_PRICING_MILESTONES[0].discountPercent })}</p>)}
+      {isB2c && amt > 0 && reachedTier && Number(reachedTier.holdUsd) > 0 &&
+        <p className="tc-upgrade"><span className="tc-upgrade-ic" aria-hidden="true">ⓘ</span>{interpolate(copy.topupReach, { tier: tierName(copy, reachedTier.code), discount, hold: fmtUsd(Number(reachedTier.holdUsd)) })}</p>}
       <p className="tc-explain">{hasTier ? interpolate(copy.perDollar, { mult: `$${(1 / frac).toFixed(2)}` }) : copy.perDollarNone}</p>
       {isB2c && amt > 0 && nextTier && <p className="tc-nudge">↑ {interpolate(copy.topupNext, { amount: fmtUsd(Number(nextTier.platformSpendUsd)), tier: tierName(copy, nextTier.code), discount: nextTier.discountPercent })}</p>}
       <div className="tc-actions"><button className="btn btn-primary" disabled={busy} onClick={start}>{busy ? copy.creating : copy.continuePayment}</button></div>
