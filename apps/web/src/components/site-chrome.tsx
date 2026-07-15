@@ -82,18 +82,7 @@ export function ThemeToggle() {
 export function SiteFooter({ full = false }: { full?: boolean }) {
   if (!full) return <footer><div className="wrap"><div className="foot-bottom"><Brand /><T k="copyright" as="small">© 2026 apiToken.sale. All rights reserved.</T><FooterComplianceLinks /></div><T k="disclaimer" as="p" className="disclaimer">apiToken.sale is an independent platform and is not affiliated with or endorsed by Anthropic, PBC.</T></div></footer>;
   return <footer className="site-foot-full">
-    <div className="foot-glow" aria-hidden="true" />
     <div className="wrap foot-inner">
-      <div className="foot-cta">
-        <div className="foot-cta-copy">
-          <T k="cta_h2" as="h2">Ready to start building?</T>
-          <T k="cta_p" as="p">Create a key in minutes and put every Claude model behind one endpoint.</T>
-        </div>
-        <div className="foot-cta-actions">
-          <Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link>
-          <Link className="btn btn-ghost btn-ondark" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link>
-        </div>
-      </div>
       <div className="foot-grid">
         <div className="foot-brand"><Brand /><T k="foot_about" as="p">Claude API access platform for developers.</T></div>
         <FooterColumn title="foot_product" links={[["/plans","fp1"],["/models","fp2"],["/#pricing","fp3"],[DOCS_URL,"fp4"]]} />
