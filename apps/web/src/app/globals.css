@@ -1232,3 +1232,36 @@ body.app-body .bg-decor{display:none!important}
 @media(max-width:480px){
   .ov-stats,.bill3,.bill4{grid-template-columns:1fr}
 }
+
+/* --- Top-up converter: показываем, сколько реального Claude API получает клиент --- */
+.topup-convert{margin-top:24px;display:grid;gap:18px;max-width:860px}
+.tc-head h2{margin:10px 0 6px}
+.tc-body{display:grid;grid-template-columns:1fr auto 1fr;gap:20px;align-items:stretch}
+.tc-input{display:flex;flex-direction:column;gap:14px}
+.tc-field{position:relative;display:flex;align-items:center}
+.tc-field .set-in{width:100%;max-width:none;padding-left:34px;font-family:var(--font-mono);font-size:28px;font-weight:700;letter-spacing:-.03em}
+.tc-field .currency-prefix{top:50%;transform:translateY(-50%);font-size:22px}
+.tc-presets{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.tc-preset{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:10px 13px;border:1px solid var(--line-strong);border-radius:8px;background:var(--bg-card);cursor:pointer;transition:.15s;font-family:var(--font-mono);text-align:left}
+.tc-preset:hover{border-color:var(--accent-line)}
+.tc-preset.on{border-color:var(--accent);background:var(--accent-soft)}
+.tc-preset b{font-size:15px;color:var(--txt)}
+.tc-preset span{font-size:12px;color:var(--accent);font-variant-numeric:tabular-nums}
+.tc-arrow{display:flex;align-items:center;justify-content:center;color:var(--txt-4);font-size:22px}
+.tc-receive{display:flex;flex-direction:column;justify-content:center;gap:6px;padding:18px 20px;border:1px solid var(--accent-line);border-radius:10px;background:var(--accent-soft)}
+.tc-recv-label{font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent)}
+.tc-recv-value{font-family:var(--font-mono);font-weight:700;font-size:34px;line-height:1.05;letter-spacing:-.045em;color:var(--txt);font-variant-numeric:tabular-nums}
+.tc-recv-sub{font-family:var(--font-mono);font-size:12px;line-height:1.5;color:var(--txt-3)}
+.tc-recv-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
+.tc-badge{font-family:var(--font-mono);font-size:12px;font-weight:700;color:#fff;background:var(--accent);border-radius:99px;padding:3px 11px;letter-spacing:.02em}
+.tc-badge-soft{color:var(--accent);background:transparent;border:1px solid var(--accent-line);font-weight:500}
+.tc-explain{font-family:var(--font-mono);font-size:12.5px;line-height:1.6;color:var(--txt-2);margin:0}
+.tc-nudge{font-family:var(--font-mono);font-size:12.5px;line-height:1.6;color:var(--accent);margin:0}
+.tc-actions{display:flex}
+.tc-actions .btn{white-space:nowrap}
+.pricing-mult{display:block;font-style:normal;font-family:var(--font-mono);font-size:11px;color:var(--txt-3);margin-top:2px;letter-spacing:.02em}
+.pm-mult{display:block;font-style:normal;font-family:var(--font-mono);font-size:11px;color:var(--accent);margin-top:1px;letter-spacing:.02em}
+@media(max-width:640px){
+  .tc-body{grid-template-columns:1fr;gap:14px}
+  .tc-arrow{transform:rotate(90deg)}
+}

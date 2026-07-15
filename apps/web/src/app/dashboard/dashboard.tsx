@@ -165,7 +165,7 @@ function PricingBanner({ account }: { account: AccountView }) {
   const copy = useDashboardCopy();
   const pricing = account.pricing;
   if (!pricing) return null;
-  if (pricing.customerType === "b2b") return <section className="pricing-banner pricing-banner-business"><div className="pricing-summary"><div><span className="pricing-kicker">{copy.currentPricing}</span><strong>{copy.businessAgreement}</strong></div><div className="pricing-discount"><b>{pricing.discountPercent}%</b><span>{copy.discount}</span></div></div><p>{copy.negotiatedRate}</p></section>;
+  if (pricing.customerType === "b2b") return <section className="pricing-banner pricing-banner-business"><div className="pricing-summary"><div><span className="pricing-kicker">{copy.currentPricing}</span><strong>{copy.businessAgreement}</strong></div><div className="pricing-discount"><b>{pricing.discountPercent}%</b><span>{copy.discount}</span><em className="pricing-mult">{multFromDiscount(pricing.discountPercent)} {copy.valueMultiplier}</em></div></div><p>{copy.negotiatedRate}</p></section>;
   const currentIndex = Math.max(0, B2C_PRICING_MILESTONES.findIndex((tier) => tier.code === pricing.tier));
   const currentTier = B2C_PRICING_MILESTONES[currentIndex]!;
   const progress = pricingMilestoneProgress(pricing.tier, pricing.spentNano);
@@ -173,7 +173,7 @@ function PricingBanner({ account }: { account: AccountView }) {
   return <section className="pricing-banner pricing-banner-milestones">
     <div className="pricing-summary">
       <div><span className="pricing-kicker">{copy.monthlyTierProgress}</span><strong>{tierName(copy, currentTier.code)}</strong></div>
-      <div className="pricing-discount"><b>{pricing.discountPercent}%</b><span>{copy.discount}</span></div>
+      <div className="pricing-discount"><b>{pricing.discountPercent}%</b><span>{copy.discount}</span><em className="pricing-mult">{multFromDiscount(pricing.discountPercent)} {copy.valueMultiplier}</em></div>
     </div>
     <div className="pricing-milestone-status">
       <div className="pricing-status-item"><span>{copy.thisMonth}</span><strong>{nanoToUsd(pricing.spentNano)}</strong><small>{copy.platformSpend}</small></div>
@@ -187,7 +187,7 @@ function PricingBanner({ account }: { account: AccountView }) {
           const state = index < currentIndex ? "complete" : index === currentIndex ? "current" : "upcoming";
           return <li className={`pricing-milestone ${state}`} key={tier.code}>
             <span className="pricing-milestone-dot" aria-hidden="true">{index < currentIndex ? "✓" : index + 1}</span>
-            <div><strong>{tierName(copy, tier.code)}</strong><span>{tier.discountPercent}% {copy.discount}</span><small>{index === 0 ? copy.startingTier : interpolate(copy.atSpend, { amount: formatWholeUsd(tier.platformSpendUsd) })}</small></div>
+            <div><strong>{tierName(copy, tier.code)}</strong><span>{tier.discountPercent}% {copy.discount}</span><em className="pm-mult">{multFromDiscount(tier.discountPercent)} {copy.valueMultiplier}</em><small>{index === 0 ? copy.startingTier : interpolate(copy.atSpend, { amount: formatWholeUsd(tier.platformSpendUsd) })}</small></div>
           </li>;
         })}
       </ol>
@@ -222,9 +222,11 @@ function ApiKeys({ keys, onChanged }: { keys: ApiKeyView[]; onChanged(): Promise
   </section>;
 }
 
+const TOPUP_PRESETS = [20, 50, 100, 200] as const;
+
 function Credits({ account }: { account: AccountView }) {
   const copy = useDashboardCopy();
-  const [amount, setAmount] = useState("");
+  const [amount, setAmount] = useState("100");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [checkout, setCheckout] = useState<CheckoutView | null>(null);
@@ -238,10 +240,45 @@ function Credits({ account }: { account: AccountView }) {
     } catch (cause) { setError(cause instanceof Error ? cause.message : copy.createCheckoutError); }
     finally { setBusy(false); }
   }
+
+  // Скидка определяет, сколько реального Claude API получает клиент за $1: клиент платит
+  // долю payFraction от официальной цены, значит его деньги стоят ×(1/payFraction) API.
+  const frac = payFraction(account);
+  const discount = discountOf(account);
+  const amt = Number(amount) || 0;
+  const apiValue = amt / frac;
+  const balanceApi = nanoNum(account.balanceNano) / frac;
+  const next = account.pricing?.customerType === "b2c" ? account.pricing.nextTier : null;
+
   return <section className="panel"><PageHeading eyebrow={copy.keysEyebrow} title={copy.creditsTitle} subtitle={copy.creditsSubtitle} />
-    <div className="ov-stats bill3"><Stat label={copy.currentBalance} value={normalizeUsd(account.balanceUsd)} detail={copy.available} /><Stat label={copy.used} value={nanoToUsd(account.spentNano)} detail={copy.balanceAfterDiscount} /><Stat label={copy.reserved} value={nanoToUsd(account.reservedNano)} detail={copy.inFlight} /></div>
+    <div className="ov-stats bill3">
+      <div className="ovstat"><span className="dlabel">{copy.currentBalance}</span><b className="num">{normalizeUsd(account.balanceUsd)}</b><span className="dtrend">{nanoNum(account.balanceNano) > 0 ? interpolate(copy.valueOfBalance, { value: fmtUsd(balanceApi) }) : copy.available}</span></div>
+      <Stat label={copy.used} value={nanoToUsd(account.spentNano)} detail={copy.balanceAfterDiscount} />
+      <Stat label={copy.reserved} value={nanoToUsd(account.reservedNano)} detail={copy.inFlight} />
+    </div>
+
+    <div className="card topup-convert">
+      <div className="tc-head"><span className="chip">{copy.cryptoCheckout}</span><h2>{copy.anyWholeAmount}</h2><p className="p-sub">{copy.checkoutHelp}</p></div>
+      <div className="tc-body">
+        <div className="tc-input">
+          <label className="tc-field"><span className="currency-prefix">$</span><input className="set-in" inputMode="numeric" pattern="[1-9][0-9]*" value={amount} onChange={(event) => setAmount(event.target.value.replace(/\D/g, ""))} placeholder="100" /></label>
+          <div className="tc-presets" role="group" aria-label={copy.quickAmounts}>{TOPUP_PRESETS.map((preset) => <button key={preset} type="button" className={`tc-preset ${amount === String(preset) ? "on" : ""}`} onClick={() => { setAmount(String(preset)); setError(null); }}><b>${preset}</b><span>{fmtUsd(preset / frac)}</span></button>)}</div>
+        </div>
+        <div className="tc-arrow" aria-hidden="true">→</div>
+        <div className="tc-receive">
+          <span className="tc-recv-label">{copy.youReceive}</span>
+          <b className="tc-recv-value">{amt > 0 ? `≈ ${fmtUsd(apiValue)}` : "—"}</b>
+          <span className="tc-recv-sub">{amt > 0 ? `${copy.inClaudeApi} · ${copy.officialPricing}` : copy.enterAmount}</span>
+          <div className="tc-recv-meta"><span className="tc-badge">−{discount}%</span><span className="tc-badge tc-badge-soft">{fmtMult(frac)} {copy.valueMultiplier}</span></div>
+        </div>
+      </div>
+      <p className="tc-explain">{interpolate(copy.perDollar, { mult: `$${(1 / frac).toFixed(2)}` })}</p>
+      {amt > 0 && next && <p className="tc-nudge">↑ {interpolate(copy.nextTierNudge, { tier: tierName(copy, next.tier), discount: next.discountPercent, amount: fmtUsd(amt), value: fmtUsd(amt / ((100 - next.discountPercent) / 100)) })}</p>}
+      <div className="tc-actions"><button className="btn btn-primary" disabled={busy} onClick={start}>{busy ? copy.creating : copy.continuePayment}</button></div>
+      {error && <div className="auth-msg err">{error}</div>}{checkout && !checkout.checkoutUrl && <div className="banner">{interpolate(copy.checkoutPending, { id: checkout.id, status: checkout.status })}</div>}
+    </div>
+
     <PricingBanner account={account} />
-    <div className="card checkout-card"><div><span className="chip">{copy.cryptoCheckout}</span><h2>{copy.anyWholeAmount}</h2><p className="p-sub">{copy.checkoutHelp}</p></div><div className="checkout-entry"><span className="currency-prefix">$</span><input className="set-in" inputMode="numeric" pattern="[1-9][0-9]*" value={amount} onChange={(event) => setAmount(event.target.value.replace(/\D/g, ""))} placeholder="100" /><button className="btn btn-primary" disabled={busy} onClick={start}>{busy ? copy.creating : copy.continuePayment}</button></div>{error && <div className="auth-msg err">{error}</div>}{checkout && !checkout.checkoutUrl && <div className="banner">{interpolate(copy.checkoutPending, { id: checkout.id, status: checkout.status })}</div>}</div>
   </section>;
 }
 
@@ -314,4 +351,24 @@ function tierName(copy: DashboardCopy, tier: string): string {
 
 function interpolate(template: string, values: Record<string, string | number>): string {
   return Object.entries(values).reduce((value, [key, replacement]) => value.replace(`{${key}}`, String(replacement)), template);
+}
+
+// --- Скидка → сколько реального Claude API получает клиент ---
+// multiplierBp = доля оплаты в базисных пунктах (4000 = платит 40% = скидка 60% = ×2.5 ценности).
+function payFraction(account: AccountView): number {
+  const bp = account.pricing?.multiplierBp ?? account.markupBasisPoints;
+  return bp && bp > 0 ? bp / 10_000 : 0.4;
+}
+function discountOf(account: AccountView): number {
+  return account.pricing?.discountPercent ?? Math.round((1 - payFraction(account)) * 100);
+}
+function nanoNum(nano: string): number { return Number(BigInt(nano)) / 1e9; }
+function fmtUsd(value: number): string {
+  return `$${value.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+}
+function fmtMult(fraction: number): string {
+  return `×${(1 / fraction).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+}
+function multFromDiscount(discountPercent: number): string {
+  return `×${(100 / (100 - discountPercent)).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
 }
