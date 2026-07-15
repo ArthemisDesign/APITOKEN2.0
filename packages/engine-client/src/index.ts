@@ -4,12 +4,14 @@ import {
   engineApiKeyListSchema,
   engineCreditResultSchema,
   engineLedgerSchema,
+  engineUsageSchema,
   issuedEngineApiKeySchema,
   type CreateEngineAccount,
   type EngineAccount,
   type EngineApiKey,
   type EngineCreditResult,
   type EngineLedgerEntry,
+  type EngineUsage,
   type IssuedEngineApiKey,
 } from "@claude-api/contracts";
 
@@ -117,6 +119,14 @@ export class EngineClient {
     );
     const result = engineLedgerSchema.parse(this.parse(response, await response.text()));
     return result.entries;
+  }
+
+  async getUsage(accountId: string, window = "30d"): Promise<EngineUsage> {
+    if (!/^(all|\d+[dh])$/.test(window)) throw new RangeError("window must be like 30d, 7d, 24h, or all");
+    const response = await this.request(
+      `/admin/account/${encodeURIComponent(accountId)}/usage?window=${encodeURIComponent(window)}`,
+    );
+    return engineUsageSchema.parse(this.parse(response, await response.text()));
   }
 
   async getLedgerAfter(accountId: string, afterId: bigint, limit = 1000): Promise<EngineLedgerEntry[]> {

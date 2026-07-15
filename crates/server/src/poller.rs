@@ -29,10 +29,16 @@ pub async fn ledger_prune_loop(db_path: String, retention_days: i64) {
         let cutoff = pool::now() - retention_days * 86400;
         let db = db_path.clone();
         let res = tokio::task::spawn_blocking(move || {
-            registry::open(&db).and_then(|c| registry::ledger_prune(&c, cutoff))
+            registry::open(&db).and_then(|c| {
+                let led = registry::ledger_prune(&c, cutoff)?;
+                // usage_events (аналитика) — та же ретенция, чтобы таблица не росла вечно.
+                let usg = registry::usage_prune(&c, cutoff).unwrap_or(0);
+                Ok((led, usg))
+            })
         }).await;
         match res {
-            Ok(Ok(n)) if n > 0 => eprintln!("ledger: обрезано {n} старых списаний (>{retention_days}д)"),
+            Ok(Ok((led, usg))) if led > 0 || usg > 0 =>
+                eprintln!("ledger: обрезано {led} списаний, {usg} usage-строк (>{retention_days}д)"),
             Ok(Err(e)) => eprintln!("⚠ ledger-обрезка не удалась: {e}"),
             Err(e) => eprintln!("⚠ ledger-обрезка: задача упала: {e}"),
             _ => {}
