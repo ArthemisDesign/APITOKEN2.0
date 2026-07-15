@@ -29,8 +29,8 @@ export default function HomePage() {
         </div>
         <div className="prod prod-feat">
           <T k="pc2_tag" as="span" className="tag">Your discount</T>
-          <T k="pc2_h" as="h3">Pay less than official</T>
-          <div className="prod-body"><TopUpAmountInput className="amount-example" initialAmount="1000" showReceive /><T k="pc2_p" as="p">Top up any whole USD amount — spend it at official Anthropic prices minus up to 80%.</T></div>
+          <T k="pc2_h" as="h3">The same API, cheaper</T>
+          <div className="prod-body"><TopUpAmountInput className="amount-example" initialAmount="1000" showReceive /><T k="pc2_p" as="p">The exact same Anthropic API — same models, same endpoints, same responses. You just pay up to 80% less per call.</T></div>
           <Link className="btn btn-primary" href="#pricing"><T k="pc2_cta">See pricing</T></Link>
         </div>
         <div className="prod">

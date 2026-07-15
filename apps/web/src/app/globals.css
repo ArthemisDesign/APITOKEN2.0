@@ -1496,9 +1496,12 @@ body.app-body .bg-decor{display:none!important}
 .tc-receive-up{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),0 8px 30px rgba(55,103,240,.14)}
 /* маркетинг: живая ценность под полем суммы */
 .topup-live{display:flex;flex-direction:column;gap:12px}
-.topup-live-out{display:flex;flex-direction:column;gap:2px;padding:12px 14px;border:1px solid var(--accent-line);border-radius:8px;background:var(--accent-soft)}
-.topup-live-out b{font-family:var(--font-mono);font-weight:700;font-size:22px;letter-spacing:-.03em;color:var(--txt);font-variant-numeric:tabular-nums}
-.topup-live-out span{font-family:var(--font-mono);font-size:11.5px;color:var(--txt-3)}
+.topup-live-out{display:flex;flex-direction:column;gap:8px;padding:18px 18px 16px;border:1px solid var(--accent-line);border-radius:8px;background:var(--accent-soft)}
+.topup-live-out .tlo-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.topup-live-out b{font-family:var(--font-mono);font-weight:700;font-size:30px;letter-spacing:-.03em;line-height:1;color:var(--txt);font-variant-numeric:tabular-nums}
+.topup-live-out .tlo-badge{font-family:var(--font-mono);font-weight:700;font-size:13px;color:var(--accent);
+  padding:4px 10px;border-radius:6px;background:color-mix(in srgb,var(--accent) 16%,transparent);white-space:nowrap}
+.topup-live-out .tlo-sub{font-family:var(--font-mono);font-size:13px;line-height:1.45;color:var(--txt-3)}
 .tier-mult{font-style:normal;font-family:var(--font-mono);font-size:11px;color:var(--accent);white-space:nowrap}
 .tc-actions{display:flex}
 .tc-actions .btn{white-space:nowrap}

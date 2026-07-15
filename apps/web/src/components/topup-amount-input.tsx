@@ -28,18 +28,19 @@ export function TopUpAmountInput({ className, initialAmount, showReceive }: { cl
   const tier = idx >= 0 ? B2C_PRICING_MILESTONES[idx] : null;
   const receive = amt / (tier ? (100 - tier.discountPercent) / 100 : 1);
   const value = `$${receive.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
-  const note = tier
-    ? (language === "ru"
-        ? `Claude API · тариф ${tier.label} −${tier.discountPercent}% · держать $${Number(tier.holdUsd)}/30д`
-        : `of Claude API · ${tier.label} tier −${tier.discountPercent}% · keep $${Number(tier.holdUsd)}/30d`)
-    : (language === "ru"
-        ? "без скидки · пополни от $100, чтобы получить тариф"
-        : "no discount · top up from $100 to reach a tier");
+  const sub = amt <= 0
+    ? (language === "ru" ? "Введите сумму" : "Enter an amount")
+    : tier
+      ? (language === "ru" ? `официального Claude API · тариф ${tier.label}` : `of official Claude API · ${tier.label} tier`)
+      : (language === "ru" ? "официального Claude API · пополни от $100 для скидки" : "of official Claude API · top up from $100 for a discount");
   return <div className="topup-live">
     {field}
     <div className="topup-live-out">
-      <b>{amt > 0 ? `≈ ${value}` : "—"}</b>
-      <span>{amt > 0 ? note : (language === "ru" ? "Введите сумму" : "Enter an amount")}</span>
+      <div className="tlo-row">
+        <b>{amt > 0 ? `≈ ${value}` : "—"}</b>
+        {amt > 0 && tier && <span className="tlo-badge">−{tier.discountPercent}%</span>}
+      </div>
+      <span className="tlo-sub">{sub}</span>
     </div>
   </div>;
 }
