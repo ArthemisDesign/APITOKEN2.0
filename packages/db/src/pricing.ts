@@ -260,6 +260,54 @@ export async function applyPricingLedgerPage(
   }
 }
 
+/**
+ * Prepay-тир: подтверждённое разовое пополнение СРАЗУ открывает тариф, порог которого ≤ суммы
+ * пополнения (те же пороги spendThresholdNano, что и месячный расход). Тир только ПОВЫШАЕТСЯ.
+ * Удержание на закрытии месяца остаётся по ФАКТИЧЕСКОМУ расходу (closeElapsedPricingMonths) —
+ * скидку дают сразу, но чтобы сохранить её в следующем месяце, клиент должен реально её
+ * использовать (анти-абуз против «купил Scale за одно пополнение и держу вечно»).
+ * B2B и неизвестные аккаунты — no-op. Идемпотентно: повторный вызов не понизит тир.
+ */
+export async function applyTopupTier(database: Database, input: {
+  engineAccountId: string;
+  amountNano: bigint;
+}): Promise<void> {
+  const topupTier = tierForSpend(input.amountNano);
+  if (topupTier <= 0) return; // ниже первого порога — апгрейдить нечего
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const profileResult = await client.query<{ user_id: string; current_tier: number; pricing_month_start: Date }>(`
+      SELECT cp.user_id, cp.current_tier, cp.pricing_month_start
+      FROM customer_profiles cp
+      JOIN engine_accounts ea ON ea.user_id = cp.user_id
+      WHERE ea.engine_account_id = $1 AND cp.customer_type = 'b2c'
+      FOR UPDATE OF cp
+    `, [input.engineAccountId]);
+    const profile = profileResult.rows[0];
+    if (!profile || topupTier <= profile.current_tier) {
+      await client.query("COMMIT");
+      return;
+    }
+    await applyTierChange(
+      client,
+      { userId: profile.user_id, engineAccountId: input.engineAccountId },
+      topupTier,
+      "b2c_topup_prepay",
+    );
+    await client.query(`
+      UPDATE pricing_months SET highest_tier = GREATEST(highest_tier, $3), updated_at = now()
+      WHERE user_id = $1 AND month_start = $2
+    `, [profile.user_id, profile.pricing_month_start, topupTier]);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 /** Close every elapsed UTC month, one locked profile/month at a time. */
 export async function closeElapsedPricingMonths(database: Database, now = new Date()): Promise<number> {
   const currentMonth = utcMonthStart(now);
