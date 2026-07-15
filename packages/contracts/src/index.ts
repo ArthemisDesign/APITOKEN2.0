@@ -173,6 +173,7 @@ export interface AuthUserView {
   id: string;
   email: string;
   emailVerified: boolean;
+  passwordEnabled: boolean;
   engineAccountStatus: "pending" | "active" | "error" | "disabled";
   customerType: "b2c" | "b2b";
 }

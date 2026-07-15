@@ -5,6 +5,7 @@ import path from "node:path";
 const baseUrl = process.env.SITE_URL ?? "http://localhost:3001";
 const outputDirectory = path.resolve(process.env.SCREENSHOT_DIR ?? ".artifacts/site-audit");
 const auditScope = process.env.AUDIT_SCOPE ?? "site";
+const auditFilter = new Set((process.env.AUDIT_FILTER ?? "").split(",").map((value) => value.trim()).filter(Boolean));
 const chromeCandidates = [
   process.env.CHROME_PATH,
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -18,6 +19,7 @@ const siteCaptures = [
   ["home-mobile", "/", 390, 844, "light"],
   ["home-dark", "/", 1440, 1000, "dark"],
   ["home-russian", "/", 1440, 1000, "dark", "ru"],
+  ["home-authenticated", "/?audit-auth=1", 1440, 1000, "light"],
   ["plans-desktop", "/plans", 1440, 1000, "light"],
   ["plans-mobile", "/plans", 390, 844, "light"],
   ["plans-dark", "/plans", 1440, 1000, "dark"],
@@ -25,6 +27,7 @@ const siteCaptures = [
   ["models-dark", "/models", 1440, 1000, "dark"],
   ["docs-desktop", "/docs", 1440, 1000, "light"],
   ["docs-dark", "/docs", 1440, 1000, "dark"],
+  ["docs-mobile", "/docs", 390, 844, "light"],
   ["integrations-desktop", "/integrations", 1440, 1000, "light"],
   ["integration-guide-desktop", "/int-claude-code", 1440, 1000, "light"],
   ["login-desktop", "/login", 1440, 1000, "light"],
@@ -37,6 +40,7 @@ const siteCaptures = [
 const dashboardCaptures = [
   ["dashboard-overview-light", "/dashboard", 1440, 1000, "light"],
   ["dashboard-overview-dark", "/dashboard", 1440, 1000, "dark"],
+  ["dashboard-overview-russian", "/dashboard", 1440, 1000, "dark", "ru"],
   ["dashboard-keys-light", "/dashboard?view=keys", 1440, 1000, "light"],
   ["dashboard-keys-dark", "/dashboard?view=keys", 1440, 1000, "dark"],
   ["dashboard-topup-light", "/dashboard?view=credits", 1440, 1000, "light"],
@@ -57,8 +61,11 @@ const dashboardCaptures = [
   ["dashboard-keys-mobile-dark", "/dashboard?view=keys", 390, 844, "dark"],
 ];
 
-const captures = auditScope === "dashboard" ? dashboardCaptures :
+const scopedCaptures = auditScope === "dashboard" ? dashboardCaptures :
   auditScope === "all" ? [...siteCaptures, ...dashboardCaptures] : siteCaptures;
+const captures = auditFilter.size > 0 ? scopedCaptures.filter(([name]) => auditFilter.has(name)) : scopedCaptures;
+
+if (captures.length === 0) throw new Error("No screenshots matched AUDIT_SCOPE/AUDIT_FILTER.");
 
 const dashboardFixtureScript = `(() => {
   const originalFetch = window.fetch.bind(window);
@@ -71,6 +78,7 @@ const dashboardFixtureScript = `(() => {
     id: "9d3b0b02-b864-4e77-b690-e3c252c44a9e",
     email: "dashboard.audit@apitoken.sale",
     emailVerified: true,
+    passwordEnabled: false,
     engineAccountStatus: "active",
     customerType: "b2c",
   };
@@ -114,9 +122,11 @@ const dashboardFixtureScript = `(() => {
   ];
   window.fetch = (input, init = {}) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    if (!location.pathname.startsWith("/dashboard") || !url.startsWith(apiBase)) return originalFetch(input, init);
+    if (!url.startsWith(apiBase)) return originalFetch(input, init);
     const parsed = new URL(url);
     const path = parsed.pathname.slice("/v1".length);
+    if (location.search.includes("audit-auth=1") && path === "/auth/me") return json({ user });
+    if (!location.pathname.startsWith("/dashboard")) return originalFetch(input, init);
     if (path === "/auth/me") return json({ user });
     if (path === "/account") return json(account);
     if (path === "/api-keys") return json({ keys });

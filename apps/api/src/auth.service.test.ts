@@ -54,7 +54,9 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
       userAgent: "test-agent",
       ipAddress: "127.0.0.1",
     });
-    expect(registration.user).toMatchObject({ email: "alice@example.com", emailVerified: false, engineAccountStatus: "pending" });
+    expect(registration.user).toMatchObject({
+      email: "alice@example.com", emailVerified: false, passwordEnabled: true, engineAccountStatus: "pending",
+    });
     expect(registration.session).toBeNull();
 
     const stored = await database.pool.query(`
@@ -180,7 +182,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
       provider: "github", code: "temporary-code", state, stateCookie: state, userAgent: null, ipAddress: null,
     });
     expect(session.user).toMatchObject({
-      email: "developer@example.com", emailVerified: true, engineAccountStatus: "active",
+      email: "developer@example.com", emailVerified: true, passwordEnabled: false, engineAccountStatus: "active",
     });
     const rows = await database.pool.query(`
       SELECT u.password_hash, u.email_verified, ai.provider,

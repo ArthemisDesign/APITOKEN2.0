@@ -71,6 +71,7 @@ export async function findExternalAuthUser(
 ): Promise<AuthUser | null> {
   const result = await database.pool.query<ExternalUserRow>(`
     SELECT u.id, u.email, u.email_verified, u.status,
+           (u.password_hash IS NOT NULL) AS password_enabled,
            COALESCE(ea.status, 'pending') AS engine_account_status,
            COALESCE(cp.customer_type, 'b2c') AS customer_type
     FROM auth_identities ai JOIN users u ON u.id = ai.user_id
@@ -144,6 +145,7 @@ export async function completeExternalSignIn(
       id: userId,
       email: identity.email,
       emailVerified: true,
+      passwordEnabled: false,
       status: "active",
       engineAccountStatus: "pending",
       customerType,
@@ -173,6 +175,7 @@ interface ExternalUserRow {
   id: string;
   email: string;
   email_verified: boolean;
+  password_enabled: boolean;
   status: "active" | "disabled";
   engine_account_status: "pending" | "active" | "error" | "disabled";
   customer_type: "b2c" | "b2b";
@@ -183,6 +186,7 @@ function mapExternalUser(row: ExternalUserRow): AuthUser {
     id: row.id,
     email: row.email,
     emailVerified: row.email_verified,
+    passwordEnabled: row.password_enabled,
     status: row.status,
     engineAccountStatus: row.engine_account_status,
     customerType: row.customer_type,

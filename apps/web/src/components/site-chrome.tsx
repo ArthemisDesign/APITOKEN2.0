@@ -2,9 +2,9 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { DOCS_URL } from "@/lib/site-links";
 import { useI18n } from "./i18n-provider";
 import { T } from "./translated";
 
@@ -17,26 +17,21 @@ export function Brand() {
 }
 
 export function SiteHeader({ home = false, compact = false }: { home?: boolean; compact?: boolean }) {
-  const router = useRouter();
   const { language, setLanguage, t } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
 
   useEffect(() => { api.me().then(() => setAuthenticated(true)).catch(() => setAuthenticated(false)); }, []);
-  async function logout() { await api.logout().catch(() => undefined); setAuthenticated(false); router.push("/"); router.refresh(); }
 
   const links = <>
     <Link href={home ? "#how" : "/#how"}><T k="nav_how">How it works</T></Link>
     <Link href="/integrations"><T k="nav_int">Integrations</T></Link>
     <Link href="/models"><T k="nav_models">Models</T></Link>
     <Link href={home ? "#pricing" : "/plans"}><T k="nav_pricing">Pricing</T></Link>
-    <Link href="/docs"><T k="nav_docs">Docs</T></Link>
+    <Link href={DOCS_URL} target="_blank" rel="noreferrer"><T k="nav_docs">Docs</T></Link>
   </>;
 
-  const renderActions = () => authenticated ? <>
-    <Link className="btn btn-ghost" href="/dashboard">{t("dash")}</Link>
-    <button className="btn btn-primary" onClick={logout}>{t("logout")}</button>
-  </> : <>
+  const renderActions = () => authenticated ? <Link className="btn btn-primary" href="/dashboard">{t("dash")}</Link> : <>
     <Link className="btn btn-ghost" href="/login">{t("login")}</Link>
     <Link className="btn btn-primary" href="/register">{t("signup")}</Link>
   </>;
@@ -51,7 +46,7 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
       <div className="nav-right">
         <div className="lang"><button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}>EN</button><button className={language === "ru" ? "active" : ""} onClick={() => setLanguage("ru")}>RU</button></div>
         <ThemeToggle />
-        {!compact && <div className="nav-actions">{renderActions()}</div>}
+        {!compact && <div className={`nav-actions ${authenticated ? "authenticated" : ""}`}>{renderActions()}</div>}
       </div>
       {!compact && <button className="nav-burger" aria-label="Menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>☰</button>}
     </div>
@@ -83,8 +78,8 @@ export function SiteFooter({ full = false }: { full?: boolean }) {
   return <footer><div className="wrap">
     <div className="foot-grid">
       <div className="foot-brand"><Brand /><T k="foot_about" as="p">Claude API access platform for developers.</T></div>
-      <FooterColumn title="foot_product" links={[["/plans","fp1"],["/models","fp2"],["/#pricing","fp3"],["/docs","fp4"]]} />
-      <FooterColumn title="foot_dev" links={[["/docs","fd1"],["/docs","fd2"],["/docs","fd3"]]} />
+      <FooterColumn title="foot_product" links={[["/plans","fp1"],["/models","fp2"],["/#pricing","fp3"],[DOCS_URL,"fp4"]]} />
+      <FooterColumn title="foot_dev" links={[[DOCS_URL,"fd1"],[DOCS_URL,"fd2"],[DOCS_URL,"fd3"]]} />
       <div className="foot-col"><T k="foot_int" as="h4">Integrations</T><Link href="/int-claude-code">Claude Code</Link><Link href="/int-cursor">Cursor</Link><Link href="/int-zed">Zed</Link><Link href="/integrations"><T k="foot_int_all">All integrations</T></Link></div>
       <div className="foot-col"><T k="foot_support" as="h4">Support</T><span><T k="fs1">Community</T></span><span><T k="fs2">Telegram support</T></span><span><T k="fs3">Contacts</T></span><span><T k="fs4">About</T></span></div>
       <div className="foot-col"><T k="foot_legal_h" as="h4">Legal</T><Link href="/terms"><T k="legal_terms_h">Terms</T></Link><Link href="/privacy"><T k="legal_privacy_h">Privacy</T></Link></div>
@@ -95,5 +90,5 @@ export function SiteFooter({ full = false }: { full?: boolean }) {
 }
 
 function FooterColumn({ title, links }: { title: string; links: Array<[string, string]> }) {
-  return <div className="foot-col"><T k={title} as="h4">Section</T>{links.map(([href, key]) => <Link href={href} key={key}><T k={key}>{key}</T></Link>)}</div>;
+  return <div className="foot-col"><T k={title} as="h4">Section</T>{links.map(([href, key]) => <Link href={href} key={key} target={href === DOCS_URL ? "_blank" : undefined} rel={href === DOCS_URL ? "noreferrer" : undefined}><T k={key}>{key}</T></Link>)}</div>;
 }

@@ -4,6 +4,7 @@ import { MotionEffects } from "./motion-effects";
 import { PricingOverview } from "./pricing-overview";
 import { SiteFooter, SiteHeader } from "./site-chrome";
 import { T } from "./translated";
+import { DOCS_URL } from "@/lib/site-links";
 
 export function MarketingFrame({ children }: { children: ReactNode }) {
   return <><SiteHeader /><main>{children}</main><SiteFooter /><MotionEffects /></>;
@@ -26,14 +27,6 @@ const modelRows = [
 
 export function ModelsPage() {
   return <MarketingFrame><PageHero eyebrow="nav_models" title="models_h" subtitle="models_sub" /><section className="borderless"><div className="wrap"><div className="model-rate-note"><div><T k="model_rate_tag" as="span" className="tag">Official list rates</T><T k="model_rate_h" as="h3">Official rates behind every spend calculation</T></div><T k="model_rate_p" as="p">These Anthropic list rates calculate official API spend. B2C accounts start 60% below that spend and can progress to 80% off; B2B rates are negotiated.</T></div><div className="table-scroll"><table className="mtable"><thead><tr><T k="th_model" as="th">Model</T><T k="th_ctx" as="th">Context</T><T k="th_in" as="th">Input / 1M</T><T k="th_out" as="th">Output / 1M</T><T k="th_best" as="th">Best for</T></tr></thead><tbody>{modelRows.map(([name,id,ctx,input,output,best], index) => <tr key={id}><td><span className="mname">{name}</span>{index === 0 && <T k="latest_badge" as="span" className="model-badge">Latest</T>}<br /><code>{id}</code></td><td><span className={`context-badge ${ctx === "1M" ? "context-full" : ""}`}>{ctx}</span></td><td className="mprice">{input}</td><td className="mprice">{output}</td><T k={best} as="td">Use case</T></tr>)}</tbody></table></div><PageActions /></div></section></MarketingFrame>;
-}
-
-export function DocsPage() {
-  return <MarketingFrame><PageHero eyebrow="nav_docs" title="docs_h" subtitle="docs_sub" /><section className="borderless"><div className="wrap">
-    <div className="doc-block"><T k="docs_base" as="h3">Base URL</T><pre className="codebox">https://api.apitoken.sale            <span className="c"># Anthropic Messages API</span></pre></div>
-    <div className="doc-block"><T k="docs_qs" as="h3">Quickstart</T><div className="doc-grid"><div><T k="docs_anthropic" as="p" className="code-label">Anthropic Messages API</T><pre className="codebox"><span className="k">curl</span> https://api.apitoken.sale/v1/messages {`\\\n`}  -H <span className="g">&quot;x-api-key: $APITOKEN_API_KEY&quot;</span> {`\\\n`}  -H <span className="g">&quot;anthropic-version: 2023-06-01&quot;</span> {`\\\n`}  -H <span className="g">&quot;content-type: application/json&quot;</span> {`\\\n`}  -d <span className="g">&apos;{`{"model":"claude-opus-4-8",`}{`\n    "max_tokens":1024,`}{`\n    "messages":[{"role":"user",`}{`\n    "content":"Hello"}]}'`}</span></pre></div><div><T k="docs_auth" as="p" className="code-label">Authentication</T><div className="codebox"><span className="c"># The raw key is shown once when created</span>{`\n`}x-api-key: <span className="g">sk-pool-•••</span>{`\n`}anthropic-version: <span className="g">2023-06-01</span></div></div></div></div>
-    <PageActions primaryOnly />
-  </div></section></MarketingFrame>;
 }
 
 const integrations = [
@@ -72,5 +65,5 @@ export function LegalPage({ kind }: { kind: keyof typeof legal }) {
 }
 
 function PageActions({ primaryOnly = false }: { primaryOnly?: boolean }) {
-  return <div className="hero-cta page-actions"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link>{!primaryOnly && <Link className="btn btn-ghost" href="/docs"><T k="hero_cta2">Read documentation</T></Link>}</div>;
+  return <div className="hero-cta page-actions"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link>{!primaryOnly && <Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link>}</div>;
 }

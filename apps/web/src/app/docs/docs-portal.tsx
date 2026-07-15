@@ -1,0 +1,151 @@
+"use client";
+
+import Image from "next/image";
+import Link from "next/link";
+import { useState } from "react";
+import { useI18n } from "@/components/i18n-provider";
+import { ThemeToggle } from "@/components/site-chrome";
+
+const BASE_URL = "https://api.apitoken.sale";
+const MESSAGES_URL = `${BASE_URL}/v1/messages`;
+const CURL = `curl https://api.apitoken.sale/v1/messages \\
+  -H "x-api-key: $APITOKEN_API_KEY" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -H "content-type: application/json" \\
+  -d '{
+    "model": "claude-opus-4-8",
+    "max_tokens": 1024,
+    "messages": [{ "role": "user", "content": "Hello" }]
+  }'`;
+const ENVIRONMENT = `export ANTHROPIC_BASE_URL=https://api.apitoken.sale
+export ANTHROPIC_API_KEY=sk-pool-•••
+export APITOKEN_API_KEY=sk-pool-•••`;
+const CLAUDE_CODE = `# Add these to your shell profile
+export ANTHROPIC_BASE_URL=https://api.apitoken.sale
+export ANTHROPIC_API_KEY=sk-pool-•••
+
+# Start Claude Code
+claude`;
+const CURSOR = `Provider: Anthropic
+Base URL: https://api.apitoken.sale
+API key: sk-pool-•••
+Model: claude-opus-4-8`;
+const PYTHON = `from anthropic import Anthropic
+
+client = Anthropic(
+    base_url="https://api.apitoken.sale",
+    api_key="sk-pool-•••",
+)
+
+message = client.messages.create(
+    model="claude-opus-4-8",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello"}],
+)
+print(message.content)`;
+const TYPESCRIPT = `import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  baseURL: "https://api.apitoken.sale",
+  apiKey: "sk-pool-•••",
+});
+
+const message = await client.messages.create({
+  model: "claude-opus-4-8",
+  max_tokens: 1024,
+  messages: [{ role: "user", content: "Hello" }],
+});`;
+
+const copy = {
+  en: {
+    documentation: "Documentation", back: "Back to site", dashboard: "Dashboard", onThisPage: "On this page",
+    overview: "Overview", quickstart: "Quick start", authentication: "Authentication", tools: "Developer tools",
+    sdks: "SDKs", errors: "Errors", eyebrow: "CLAUDE API · CONNECTION GUIDE",
+    title: "Build with one Claude endpoint", lead: "Everything required to connect Claude Code, editors, scripts, and production applications to apiToken.sale.",
+    openKeys: "Open API keys", baseUrl: "Base URL", messagesEndpoint: "Messages endpoint", authHeader: "Authentication header",
+    oneEndpoint: "Connection essentials", oneEndpointText: "All supported Claude models use the Anthropic Messages API through the same base URL.",
+    keyNotice: "Your raw API key is shown only once when created. Store it in a secret manager or environment variable; never commit it to source control.",
+    requestTitle: "Send your first request", requestText: "This request uses the Anthropic Messages API and works with streaming clients as well.",
+    envTitle: "Environment variables", envText: "Use environment variables so tools can share the same endpoint without embedding secrets in configuration files.",
+    claudeCode: "Claude Code", claudeCodeText: "Set the Anthropic-compatible endpoint, then start Claude Code normally.",
+    editors: "Cursor, Cline, Continue, and Zed", editorsText: "Choose Anthropic as the provider. Use the same base URL, API key, and a supported model ID.",
+    python: "Python SDK", pythonText: "The official Anthropic Python SDK accepts a custom base URL.",
+    typescript: "TypeScript SDK", typescriptText: "The official Anthropic TypeScript SDK works through the same Messages API.",
+    authTitle: "How authentication works", authText: "Send your key in the x-api-key header. Also include anthropic-version: 2023-06-01 on direct HTTP requests.",
+    errorTitle: "Common response codes", errorText: "Errors use HTTP status codes and a JSON response body. Do not retry authentication or balance errors without changing the request or account state.",
+    status: "Status", meaning: "Meaning", action: "What to do", e401: "Missing, invalid, or revoked API key", a401: "Check x-api-key or create a new key.",
+    e402: "Insufficient available balance", a402: "Top up the account and retry.", e429: "Request or provider capacity limit", a429: "Back off with jitter and retry.",
+    e5xx: "Temporary gateway or upstream error", a5xx: "Retry safely with exponential backoff.", copy: "Copy", copied: "Copied",
+    production: "Production checklist", checklist: ["Keep API keys server-side", "Use request timeouts", "Retry 429 and 5xx responses with backoff", "Log request IDs, not raw secrets", "Monitor balance and the request ledger"],
+    footer: "apiToken.sale documentation · Anthropic-compatible Claude access",
+  },
+  ru: {
+    documentation: "Документация", back: "На главный сайт", dashboard: "Кабинет", onThisPage: "На этой странице",
+    overview: "Обзор", quickstart: "Быстрый старт", authentication: "Аутентификация", tools: "Инструменты",
+    sdks: "SDK", errors: "Ошибки", eyebrow: "CLAUDE API · РУКОВОДСТВО ПО ПОДКЛЮЧЕНИЮ",
+    title: "Один адрес для работы с Claude", lead: "Всё необходимое для подключения Claude Code, редакторов, скриптов и production-приложений к apiToken.sale.",
+    openKeys: "Открыть API-ключи", baseUrl: "Базовый URL", messagesEndpoint: "Адрес Messages API", authHeader: "Заголовок авторизации",
+    oneEndpoint: "Основные параметры", oneEndpointText: "Все поддерживаемые модели Claude используют Anthropic Messages API через единый базовый URL.",
+    keyNotice: "Исходный API-ключ показывается только один раз при создании. Храните его в менеджере секретов или переменной окружения и никогда не добавляйте в репозиторий.",
+    requestTitle: "Отправьте первый запрос", requestText: "Запрос использует Anthropic Messages API и также подходит для потоковых клиентов.",
+    envTitle: "Переменные окружения", envText: "Переменные окружения позволяют инструментам использовать единый адрес без хранения секретов в конфигурационных файлах.",
+    claudeCode: "Claude Code", claudeCodeText: "Укажите Anthropic-совместимый адрес и запускайте Claude Code как обычно.",
+    editors: "Cursor, Cline, Continue и Zed", editorsText: "Выберите Anthropic как провайдера. Используйте тот же базовый URL, API-ключ и ID поддерживаемой модели.",
+    python: "Python SDK", pythonText: "Официальный Anthropic SDK для Python поддерживает собственный базовый URL.",
+    typescript: "TypeScript SDK", typescriptText: "Официальный Anthropic SDK для TypeScript работает через тот же Messages API.",
+    authTitle: "Как работает аутентификация", authText: "Передавайте ключ в заголовке x-api-key. Для прямых HTTP-запросов также передавайте anthropic-version: 2023-06-01.",
+    errorTitle: "Основные коды ответа", errorText: "Ошибки возвращаются HTTP-кодом и JSON-телом. Не повторяйте запрос при проблеме с ключом или балансом, пока не исправите причину.",
+    status: "Статус", meaning: "Значение", action: "Что делать", e401: "Ключ отсутствует, неверен или отозван", a401: "Проверьте x-api-key или создайте новый ключ.",
+    e402: "Недостаточно доступного баланса", a402: "Пополните аккаунт и повторите запрос.", e429: "Лимит запросов или мощности провайдера", a429: "Повторите запрос с задержкой и случайным смещением.",
+    e5xx: "Временная ошибка шлюза или провайдера", a5xx: "Безопасно повторите с экспоненциальной задержкой.", copy: "Копировать", copied: "Скопировано",
+    production: "Чек-лист для production", checklist: ["Храните API-ключи только на сервере", "Используйте таймауты запросов", "Повторяйте 429 и 5xx с задержкой", "Логируйте ID запросов, но не секреты", "Следите за балансом и журналом операций"],
+    footer: "Документация apiToken.sale · Anthropic-совместимый доступ к Claude",
+  },
+} as const;
+
+export function DocsPortal() {
+  const { language, setLanguage } = useI18n();
+  const t = copy[language];
+  return <div className="docs-site">
+    <header className="docs-header"><Link className="docs-brand" href="/"><BrandMark /><span>apiToken.sale</span><i>{t.documentation}</i></Link><div className="docs-header-actions"><div className="lang"><button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}>EN</button><button className={language === "ru" ? "active" : ""} onClick={() => setLanguage("ru")}>RU</button></div><ThemeToggle /><Link className="btn btn-ghost btn-sm docs-back" href="/">{t.back}</Link><Link className="btn btn-primary btn-sm" href="/dashboard">{t.dashboard}</Link></div></header>
+    <div className="docs-layout">
+      <aside className="docs-sidebar"><span>{t.onThisPage}</span><nav><a href="#overview">{t.overview}</a><a href="#quickstart">{t.quickstart}</a><a href="#authentication">{t.authentication}</a><a href="#tools">{t.tools}</a><a href="#sdks">{t.sdks}</a><a href="#errors">{t.errors}</a></nav></aside>
+      <main className="docs-main">
+        <section className="docs-hero" id="overview"><span className="eyebrow">{t.eyebrow}</span><h1>{t.title}</h1><p>{t.lead}</p><Link className="btn btn-primary" href="/dashboard?view=keys">{t.openKeys}</Link></section>
+        <section className="docs-section"><div className="docs-section-heading"><span>01</span><div><h2>{t.oneEndpoint}</h2><p>{t.oneEndpointText}</p></div></div><div className="docs-essential-grid"><Endpoint label={t.baseUrl} value={BASE_URL} copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label={t.messagesEndpoint} value={MESSAGES_URL} copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label={t.authHeader} value="x-api-key: sk-pool-•••" copyLabel={t.copy} copiedLabel={t.copied} /></div><div className="docs-notice">{t.keyNotice}</div></section>
+        <section className="docs-section" id="quickstart"><div className="docs-section-heading"><span>02</span><div><h2>{t.quickstart}</h2><p>{t.requestText}</p></div></div><CodeBlock title={t.requestTitle} code={CURL} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.envTitle} description={t.envText} code={ENVIRONMENT} copyLabel={t.copy} copiedLabel={t.copied} /></section>
+        <section className="docs-section" id="authentication"><div className="docs-section-heading"><span>03</span><div><h2>{t.authentication}</h2><p>{t.authText}</p></div></div><div className="docs-auth-flow"><div><b>1</b><code>x-api-key</code></div><span>＋</span><div><b>2</b><code>anthropic-version</code></div><span>→</span><div><b>API</b><code>/v1/messages</code></div></div></section>
+        <section className="docs-section" id="tools"><div className="docs-section-heading"><span>04</span><div><h2>{t.tools}</h2><p>{t.oneEndpointText}</p></div></div><div className="docs-two-col"><CodeBlock title={t.claudeCode} description={t.claudeCodeText} code={CLAUDE_CODE} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.editors} description={t.editorsText} code={CURSOR} copyLabel={t.copy} copiedLabel={t.copied} /></div></section>
+        <section className="docs-section" id="sdks"><div className="docs-section-heading"><span>05</span><div><h2>{t.sdks}</h2><p>{t.oneEndpointText}</p></div></div><div className="docs-two-col"><CodeBlock title={t.python} description={t.pythonText} code={PYTHON} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.typescript} description={t.typescriptText} code={TYPESCRIPT} copyLabel={t.copy} copiedLabel={t.copied} /></div></section>
+        <section className="docs-section" id="errors"><div className="docs-section-heading"><span>06</span><div><h2>{t.errorTitle}</h2><p>{t.errorText}</p></div></div><div className="table-scroll"><table className="mtable docs-errors"><thead><tr><th>{t.status}</th><th>{t.meaning}</th><th>{t.action}</th></tr></thead><tbody><ErrorRow code="401" meaning={t.e401} action={t.a401} labels={t} /><ErrorRow code="402" meaning={t.e402} action={t.a402} labels={t} /><ErrorRow code="429" meaning={t.e429} action={t.a429} labels={t} /><ErrorRow code="5xx" meaning={t.e5xx} action={t.a5xx} labels={t} /></tbody></table></div><div className="docs-checklist"><h3>{t.production}</h3><ul>{t.checklist.map((item) => <li key={item}>{item}</li>)}</ul></div></section>
+        <footer className="docs-footer">{t.footer}</footer>
+      </main>
+    </div>
+  </div>;
+}
+
+function BrandMark() {
+  return <><Image className="brand-mark bm-light" src="/assets/logo-mark-light.png" width={24} height={24} alt="" /><Image className="brand-mark bm-dark" src="/assets/logo-mark-dark.png" width={24} height={24} alt="" /></>;
+}
+
+function Endpoint({ label, value, copyLabel, copiedLabel }: { label: string; value: string; copyLabel: string; copiedLabel: string }) {
+  return <div className="docs-endpoint"><span>{label}</span><code>{value}</code><CopyControl value={value} label={copyLabel} copiedLabel={copiedLabel} /></div>;
+}
+
+function CodeBlock({ title, description, code, copyLabel, copiedLabel }: { title: string; description?: string; code: string; copyLabel: string; copiedLabel: string }) {
+  return <article className="docs-code-card"><header><div><h3>{title}</h3>{description && <p>{description}</p>}</div><CopyControl value={code} label={copyLabel} copiedLabel={copiedLabel} /></header><pre><code>{code}</code></pre></article>;
+}
+
+function CopyControl({ value, label, copiedLabel }: { value: string; label: string; copiedLabel: string }) {
+  const [copied, setCopied] = useState(false);
+  async function handleCopy() {
+    await navigator.clipboard.writeText(value);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1_200);
+  }
+  return <button className="btn btn-ghost btn-sm docs-copy" type="button" onClick={handleCopy}>{copied ? copiedLabel : label}</button>;
+}
+
+function ErrorRow({ code, meaning, action, labels }: { code: string; meaning: string; action: string; labels: { status: string; meaning: string; action: string } }) {
+  return <tr><td data-label={labels.status}><code>{code}</code></td><td data-label={labels.meaning}><span>{meaning}</span></td><td data-label={labels.action}><span>{action}</span></td></tr>;
+}

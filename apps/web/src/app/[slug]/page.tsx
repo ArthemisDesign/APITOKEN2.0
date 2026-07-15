@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import {
-  DocsPage, IntegrationGuidePage, IntegrationsPage, LegalPage, ModelsPage, PlansPage,
+  IntegrationGuidePage, IntegrationsPage, LegalPage, ModelsPage, PlansPage,
 } from "@/components/marketing-pages";
 
 const pageTitles: Record<string, string> = {
-  plans: "Pricing", models: "Models", docs: "Documentation", integrations: "Integrations",
+  plans: "Pricing", models: "Models", integrations: "Integrations",
   "int-claude-code": "Claude Code integration", "int-cursor": "Cursor integration",
   "int-cline": "Cline integration", "int-continue": "Continue integration",
   "int-zed": "Zed integration", "int-sdk": "SDK integration",
@@ -19,7 +19,6 @@ export default async function StaticPage({ params }: { params: Promise<{ slug: s
   const { slug } = await params;
   if (slug === "plans") return <PlansPage />;
   if (slug === "models") return <ModelsPage />;
-  if (slug === "docs") return <DocsPage />;
   if (slug === "integrations") return <IntegrationsPage />;
   if (slug === "terms" || slug === "privacy") return <LegalPage kind={slug} />;
   if (slug.startsWith("int-")) {

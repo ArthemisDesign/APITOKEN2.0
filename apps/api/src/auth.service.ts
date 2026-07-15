@@ -298,6 +298,7 @@ function userView(user: AuthUser): AuthUserView {
     id: user.id,
     email: user.email,
     emailVerified: user.emailVerified,
+    passwordEnabled: user.passwordEnabled,
     engineAccountStatus: user.engineAccountStatus,
     customerType: user.customerType,
   };

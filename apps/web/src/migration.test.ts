@@ -24,12 +24,13 @@ describe("completed Next.js migration", () => {
   it("owns every migrated public page through App Router components", () => {
     const staticRoute = readFileSync(join(appRoot, "[slug]", "page.tsx"), "utf8");
     for (const route of [
-      "plans", "models", "docs", "integrations", "int-claude-code", "int-cursor", "int-cline",
+      "plans", "models", "integrations", "int-claude-code", "int-cursor", "int-cline",
       "int-continue", "int-zed", "int-sdk", "terms", "privacy",
     ]) expect(staticRoute).toContain(`\"${route}\"`);
-    for (const route of ["login", "register", "dashboard"]) {
+    for (const route of ["login", "register", "dashboard", "docs"]) {
       expect(existsSync(join(appRoot, route, "page.tsx"))).toBe(true);
     }
+    expect(staticRoute).not.toContain('slug === "docs"');
   });
 
   it("keeps reloadable dashboard views in the single canonical /dashboard route", () => {
@@ -66,12 +67,35 @@ describe("completed Next.js migration", () => {
 
   it("renders dashboard pricing as a complete milestone track", () => {
     const dashboard = readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8");
+    const dashboardCopy = readFileSync(join(root, "lib", "dashboard-copy.ts"), "utf8");
     const styles = readFileSync(join(appRoot, "globals.css"), "utf8");
-    expect(dashboard).toContain("Monthly tier progress");
-    expect(dashboard).toContain("Spend {nanoToUsd(pricing.nextTier.remainingNano)} more");
+    expect(dashboardCopy).toContain('monthlyTierProgress: "Monthly tier progress"');
+    expect(dashboardCopy).toContain('spendMore: "Spend {amount} more"');
     expect(dashboard).toContain("B2C_PRICING_MILESTONES.map");
     expect(styles).toContain(".pricing-milestone-track");
     expect(styles).toContain("height:var(--tier-progress)");
+    expect(styles).toContain(".app section.pricing-banner{border:1px solid var(--accent-line)}");
+  });
+
+  it("keeps the dashboard bilingual and authentication-aware", () => {
+    const dashboard = readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8");
+    const dashboardCopy = readFileSync(join(root, "lib", "dashboard-copy.ts"), "utf8");
+    expect(dashboard).toContain("dashboardCopy[language]");
+    expect(dashboardCopy).toContain('navOverview: "Overview"');
+    expect(dashboardCopy).toContain('navOverview: "Обзор"');
+    expect(dashboard).toContain("user.passwordEnabled ?");
+    expect(dashboard).toContain("ov-tiles ov-tiles-two");
+    expect(dashboard).not.toContain('title="API keys" subtitle="Create and revoke keys"');
+  });
+
+  it("serves documentation as a standalone copyable portal", () => {
+    const docs = readFileSync(join(appRoot, "docs", "docs-portal.tsx"), "utf8");
+    const dynamicRoute = readFileSync(join(appRoot, "[slug]", "page.tsx"), "utf8");
+    expect(docs).toContain("docs-layout");
+    expect(docs).toContain("navigator.clipboard.writeText");
+    expect(docs).toContain("ANTHROPIC_BASE_URL");
+    expect(docs).toContain("Python SDK");
+    expect(dynamicRoute).not.toContain("DocsPage");
   });
 
   it("keeps the verified model prices and context windows", () => {
@@ -91,6 +115,7 @@ describe("completed Next.js migration", () => {
     const animations = readFileSync(join(appRoot, "anim.css"), "utf8");
     expect(header).not.toContain('k="nav_features"');
     expect(header).not.toContain('k="nav_faq"');
+    expect(header).not.toContain("api.logout");
     expect(styles).toContain("header.nav{position:fixed");
     expect(styles).toContain("grid-template-columns:repeat(2,134px)");
     for (const control of ["term-close", "term-minimize", "term-zoom"]) expect(terminal).toContain(control);

@@ -8,6 +8,7 @@ export interface AuthUser {
   id: string;
   email: string;
   emailVerified: boolean;
+  passwordEnabled: boolean;
   status: "active" | "disabled";
   engineAccountStatus: "pending" | "active" | "error" | "disabled";
   customerType: "b2c" | "b2b";
@@ -102,6 +103,7 @@ export async function createEmailUser(
       id: userId,
       email,
       emailVerified: false,
+      passwordEnabled: true,
       status: "active",
       engineAccountStatus: "pending",
       customerType,
@@ -210,6 +212,7 @@ function mapPasswordUser(row: UserRow): PasswordUser {
     id: row.id,
     email: row.email,
     emailVerified: row.email_verified,
+    passwordEnabled: row.password_hash !== null,
     passwordHash: row.password_hash,
     status: row.status,
     engineAccountStatus: row.engine_account_status,
