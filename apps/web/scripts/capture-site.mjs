@@ -261,6 +261,64 @@ async function capturePage(client, [name, route, width, height, theme, language 
   return { name, route, theme, language, width: pageWidth, height: pageHeight, file: filename };
 }
 
+async function waitForCondition(client, expression, description, timeoutMs = 8_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = await client.send("Runtime.evaluate", { expression, returnByValue: true });
+    if (result.result.value === true) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for ${description}.`);
+}
+
+async function verifyDashboardRouting(client) {
+  const loaded = client.once("Page.loadEventFired");
+  await client.send("Page.navigate", { url: new URL("/dashboard?view=credits", baseUrl).href });
+  await loaded;
+  await waitForCondition(
+    client,
+    `Boolean(document.querySelector('[data-dashboard-section="overview"]')) && document.querySelector('.p-h1')?.textContent?.trim() === 'Top up balance'`,
+    "the reloaded top-up view",
+  );
+  await client.send("Runtime.evaluate", {
+    expression: `document.querySelector('[data-dashboard-section="overview"]')?.click()`,
+  });
+  try {
+    await waitForCondition(
+      client,
+      `location.pathname === '/dashboard' && location.search === '' && document.querySelector('.p-h1')?.textContent?.trim() === 'Overview'`,
+      "direct navigation from a reloaded subview to Overview",
+    );
+  } catch (error) {
+    const state = await client.send("Runtime.evaluate", {
+      expression: `JSON.stringify({ href: location.href, heading: document.querySelector('.p-h1')?.textContent?.trim(), active: document.querySelector('[data-dashboard-section][aria-current="page"]')?.dataset.dashboardSection })`,
+      returnByValue: true,
+    });
+    throw new Error(`${error instanceof Error ? error.message : error} Browser state: ${state.result.value}`);
+  }
+  await client.send("Runtime.evaluate", {
+    expression: `document.querySelector('[data-dashboard-section="keys"]')?.click()`,
+  });
+  await waitForCondition(
+    client,
+    `location.search === '?view=keys' && document.querySelector('.p-h1')?.textContent?.trim() === 'API keys'`,
+    "dashboard navigation to API keys",
+  );
+  await client.send("Runtime.evaluate", { expression: "history.back()" });
+  await waitForCondition(
+    client,
+    `location.pathname === '/dashboard' && location.search === '' && document.querySelector('.p-h1')?.textContent?.trim() === 'Overview'`,
+    "Back navigation to Overview",
+  );
+  await client.send("Runtime.evaluate", { expression: "history.forward()" });
+  await waitForCondition(
+    client,
+    `location.search === '?view=keys' && document.querySelector('.p-h1')?.textContent?.trim() === 'API keys'`,
+    "Forward navigation to API keys",
+  );
+  process.stdout.write("Verified reload, direct Overview, and Back/Forward dashboard routing\n");
+}
+
 const chrome = await findChrome();
 const port = 9222 + Math.floor(Math.random() * 500);
 await mkdir(outputDirectory, { recursive: true });
@@ -294,6 +352,7 @@ try {
     manifest.push(await capturePage(client, capture));
     process.stdout.write(`Captured ${capture[0]}\n`);
   }
+  if (process.env.AUDIT_VERIFY_ROUTING === "1") await verifyDashboardRouting(client);
   await writeFile(path.join(outputDirectory, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   client.close();
   process.stdout.write(`Screenshots: ${outputDirectory}\n`);

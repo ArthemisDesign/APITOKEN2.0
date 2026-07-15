@@ -50,6 +50,9 @@ SCREENSHOT_DIR=.artifacts/focused-audit \
 node apps/web/scripts/capture-site.mjs
 ```
 
+To regression-test a hard-reloaded dashboard subview returning directly to Overview, add
+`AUDIT_VERIFY_ROUTING=1` to a dashboard audit command.
+
 ## Implemented customer capabilities
 
 - email/password registration, verification, resend, login, logout, forgot/reset password;

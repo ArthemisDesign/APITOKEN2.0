@@ -40,7 +40,7 @@ export function Dashboard() {
   const searchParams = useSearchParams();
   const { language, setLanguage } = useI18n();
   const copy = dashboardCopy[language];
-  const section = parseDashboardSection(searchParams.get("view"));
+  const [section, setSection] = useState<Section>(() => parseDashboardSection(searchParams.get("view")));
   const [user, setUser] = useState<AuthUser | null>(null);
   const [account, setAccount] = useState<AccountView | null>(null);
   const [keys, setKeys] = useState<ApiKeyView[]>([]);
@@ -68,13 +68,22 @@ export function Dashboard() {
     return () => { window.clearTimeout(timer); document.body.classList.remove("app-body"); };
   }, [load]);
 
+  useEffect(() => {
+    function syncSectionFromHistory() {
+      setSection(parseDashboardSection(new URLSearchParams(window.location.search).get("view")));
+    }
+    window.addEventListener("popstate", syncSectionFromHistory);
+    return () => window.removeEventListener("popstate", syncSectionFromHistory);
+  }, []);
+
   async function logout() {
     await api.logout().catch(() => undefined); router.replace("/login"); router.refresh();
   }
 
   function open(next: Section) {
     setSideOpen(false);
-    router.push(dashboardHref(next), { scroll: false });
+    setSection(next);
+    window.history.pushState(null, "", dashboardHref(next));
     window.scrollTo({ top: 0, behavior: "auto" });
   }
 
@@ -89,7 +98,7 @@ export function Dashboard() {
         {navigation.map((item, index) => <div key={`${item.label}-${index}`} className="side-nav-item">
           {item.group && <span className="side-group">{copy[item.group]}</span>}
           {item.href ? <Link className="side-link" href={item.href} target="_blank" rel="noreferrer"><span className="si">{item.icon}</span><span>{copy[item.label]}</span></Link> :
-            <button className={section === item.section ? "on" : ""} aria-current={section === item.section ? "page" : undefined} onClick={() => open(item.section!)}><span className="si">{item.icon}</span><span>{copy[item.label]}</span></button>}
+            <button data-dashboard-section={item.section} className={section === item.section ? "on" : ""} aria-current={section === item.section ? "page" : undefined} onClick={() => open(item.section!)}><span className="si">{item.icon}</span><span>{copy[item.label]}</span></button>}
         </div>)}
       </nav>
       <div className="side-foot">

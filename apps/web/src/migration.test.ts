@@ -42,6 +42,11 @@ describe("completed Next.js migration", () => {
     }
     expect(dashboard).not.toMatch(/href=[{\"]+\/dashboard\//);
     expect(routes).toContain('`/dashboard?view=${section}`');
+    expect(dashboard).toContain("const [section, setSection] = useState<Section>(() => parseDashboardSection(searchParams.get(\"view\")))");
+    expect(dashboard).toContain("setSection(next)");
+    expect(dashboard).toContain('window.history.pushState(null, "", dashboardHref(next))');
+    expect(dashboard).toContain('window.addEventListener("popstate", syncSectionFromHistory)');
+    expect(dashboard).toContain("data-dashboard-section={item.section}");
   });
 
   it("uses flexible whole-USD top-ups and the authoritative pricing tiers", () => {
