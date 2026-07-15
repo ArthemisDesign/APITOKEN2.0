@@ -104,9 +104,9 @@ img{max-width:100%}
 
 .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
 .mono{font-family:var(--font-mono)}
-.eyebrow{font-family:var(--font-i18n-display);font-weight:400;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);display:inline-flex;align-items:center;gap:10px;
+.eyebrow{font-family:var(--font-i18n-display);font-weight:400;font-size:16px;letter-spacing:.05em;text-transform:uppercase;color:var(--accent);display:inline-flex;align-items:center;gap:11px;
   font-variation-settings:'wght' 600,'ELGR' 1,'ELSH' 2}
-.eyebrow::before{content:"";width:22px;height:1px;background:var(--accent)}
+.eyebrow::before{content:"";width:26px;height:1px;background:var(--accent)}
 
 h1,h2,h3{color:var(--txt);font-weight:700;line-height:1.08;margin:0}
 /* Translated display type supports the same pixel character and metrics in Latin and Cyrillic. */
@@ -319,7 +319,10 @@ section{padding:96px 0;border-bottom:1px solid var(--line)}
 
 /* CTA band — самостоятельная секция (НЕ часть футера). Крупный заголовок слева, действия справа.
    Тема-зависима через --cta-bg (светлая/тёмная подложка флипается вместе с темой). */
-.cta-band{background:var(--cta-bg)}
+/* CTA-полоса = плавный мост из фона страницы в верх футера (без «заплатки» и жёстких границ) */
+#pricing{border-bottom:0}
+.cta-band{background:linear-gradient(180deg,var(--bg),var(--bg-soft));border-top:0;border-bottom:0}
+[data-theme="dark"] .cta-band{background:linear-gradient(180deg,var(--bg),#0b0c10)}
 .cta-row{display:flex;align-items:center;justify-content:space-between;gap:40px;flex-wrap:wrap}
 .cta-band h2{font-size:clamp(34px,5.5vw,60px);margin:0;letter-spacing:-.03em;line-height:1.03;color:var(--txt)}
 .cta-actions{display:flex;gap:12px;flex-wrap:wrap;flex:none}
@@ -342,7 +345,7 @@ footer{padding:64px 0 40px;border-bottom:0}
    Базовые правила = светлая тема; ниже блок [data-theme="dark"] переопределяет под тёмную.
    Отдельный класс .site-foot-full → легко откатить. */
 .site-foot-full{position:relative;overflow:hidden;padding:0;
-  background:linear-gradient(180deg,var(--bg-soft),var(--bg));color:var(--txt);border-top:1px solid var(--line)}
+  background:linear-gradient(180deg,var(--bg-soft),var(--bg));color:var(--txt);border-top:0}
 .site-foot-full .foot-inner{position:relative;z-index:2;padding:64px 0 44px}
 .site-foot-full .foot-col a:hover{color:var(--accent)}
 /* большой вордмарк бренда, уходит за нижний-правый край как в референсе */
@@ -354,7 +357,7 @@ footer{padding:64px 0 40px;border-bottom:0}
 .foot-wordmark span{opacity:.5}
 
 /* --- ТЁМНАЯ ТЕМА: тёмный brand-forward футер --- */
-[data-theme="dark"] .site-foot-full{background:#0b0c10;color:#e8e9ee;border-top:1px solid rgba(255,255,255,.07)}
+[data-theme="dark"] .site-foot-full{background:#0b0c10;color:#e8e9ee;border-top:0}
 [data-theme="dark"] .site-foot-full .foot-brand .brand{color:#fff}
 [data-theme="dark"] .site-foot-full .foot-brand p{color:#868c98}
 [data-theme="dark"] .site-foot-full .foot-col h4{color:#6b707e}
@@ -1502,6 +1505,8 @@ body.app-body .bg-decor{display:none!important}
 .topup-live-out .tlo-badge{font-family:var(--font-mono);font-weight:700;font-size:13px;color:var(--accent);
   padding:4px 10px;border-radius:6px;background:color-mix(in srgb,var(--accent) 16%,transparent);white-space:nowrap}
 .topup-live-out .tlo-sub{font-family:var(--font-mono);font-size:13px;line-height:1.45;color:var(--txt-3)}
+/* отбить поясняющий абзац от value-бокса, чтобы не сливался */
+.topup-live + p{margin-top:18px}
 .tier-mult{font-style:normal;font-family:var(--font-mono);font-size:11px;color:var(--accent);white-space:nowrap}
 .tc-actions{display:flex}
 .tc-actions .btn{white-space:nowrap}
