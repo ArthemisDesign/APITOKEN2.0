@@ -129,6 +129,18 @@ describe("completed Next.js migration", () => {
     expect(dynamicRoute).not.toContain("DocsPage");
   });
 
+  it("advertises only the supported Anthropic API format", () => {
+    const messages = readFileSync(join(root, "lib", "messages.json"), "utf8");
+    const home = readFileSync(join(appRoot, "page.tsx"), "utf8");
+    const styles = readFileSync(join(appRoot, "globals.css"), "utf8");
+    expect(messages).not.toMatch(/openai/i);
+    expect(messages).toContain('"f2_h": "Anthropic-native API"');
+    expect(messages).toContain('"f2_h": "Нативный Anthropic API"');
+    expect(home).toContain('<Stat value="1" label="stat2" />');
+    expect(home).not.toContain('className="announce"');
+    expect(styles).not.toContain(".announce-");
+  });
+
   it("keeps the verified model prices and context windows", () => {
     const marketing = readFileSync(join(root, "components", "marketing-pages.tsx"), "utf8");
     expect(marketing).toContain('["Claude Opus 4.8","claude-opus-4-8","1M","$5","$25"');
