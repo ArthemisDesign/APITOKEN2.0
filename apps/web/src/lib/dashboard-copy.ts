@@ -2,7 +2,7 @@ import type { Language } from "@/components/i18n-provider";
 
 const en = {
   navStart: "Start", navOverview: "Overview", navDevelopers: "Developers", navKeys: "API keys", navDocs: "Docs",
-  navBilling: "Billing", navTopUp: "Top up balance",
+  navBilling: "Billing", navTopUp: "Credits",
   navGrowth: "Growth", navPromos: "Promo codes",
   navActivity: "Activity", navUsage: "Usage",
   navAccount: "Account", navProfile: "Profile", navSecurity: "Security",
@@ -104,7 +104,7 @@ export type DashboardCopy = { [K in keyof typeof en]: string };
 
 const ru: DashboardCopy = {
   navStart: "Начало", navOverview: "Обзор", navDevelopers: "Разработчикам", navKeys: "API-ключи", navDocs: "Документация",
-  navBilling: "Оплата", navTopUp: "Пополнить баланс",
+  navBilling: "Оплата", navTopUp: "Баланс",
   navGrowth: "Развитие", navPromos: "Промокоды",
   navActivity: "Активность", navUsage: "Использование",
   navAccount: "Аккаунт", navProfile: "Профиль", navSecurity: "Безопасность",
