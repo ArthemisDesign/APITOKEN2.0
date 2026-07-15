@@ -10,3 +10,15 @@ api.apitoken.sale {
 backend.apitoken.sale {
 	reverse_proxy 127.0.0.1:3000
 }
+
+# Живой read-only дашборд ёмкости движка. Отдаём ТОЛЬКО /panel,/capacity,/metrics
+# (не /admin, не /v1). Панель просит CLAUDE_API_PANEL_KEY в UI (read-only, хранится
+# в браузере) и шлёт его в /capacity — control/admin-ключ сюда не попадает.
+panel.apitoken.sale {
+	redir / /panel
+	@panel path /panel /capacity /metrics
+	handle @panel {
+		reverse_proxy 127.0.0.1:8787
+	}
+	respond 404
+}
