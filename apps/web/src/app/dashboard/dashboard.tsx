@@ -121,7 +121,7 @@ export function Dashboard() {
         {section === "overview" && <Overview account={account} keys={activeKeys} ledger={ledger} open={open} />}
         {section === "keys" && <ApiKeys keys={keys} onChanged={load} />}
         {section === "credits" && <Credits account={account} />}
-        {section === "usage" && <Usage account={account} ledger={ledger} open={open} />}
+        {section === "usage" && <Usage account={account} ledger={ledger} />}
         {section === "profile" && <Profile user={user} open={open} />}
         {section === "security" && <Security user={user} onLogout={logout} />}
         {section === "refer" && <ReferralPanel />}
@@ -282,21 +282,109 @@ function Credits({ account }: { account: AccountView }) {
   </section>;
 }
 
-function Usage({ account, ledger, open }: { account: AccountView; ledger: LedgerEntry[]; open(section: Section): void }) {
+const USAGE_WINDOW_DAYS = 30;
+const DAY_MS = 86_400_000;
+
+function Usage({ account, ledger }: { account: AccountView; ledger: LedgerEntry[] }) {
   const copy = useDashboardCopy();
   const { language } = useI18n();
-  const discount = account.pricing?.discountPercent;
+  const locale = language === "ru" ? "ru-RU" : "en-US";
+
+  // Скидка определяет, сколько реального Claude API стоит каждый списанный доллар:
+  // клиент платит долю frac от официальной цены → официальная ценность = списано / frac.
+  const frac = payFraction(account);
+  const discount = account.pricing?.discountPercent ?? discountOf(account);
+  const netCharged = nanoNum(account.spentNano);
+  const officialReceived = netCharged / frac;
+
+  const charges = ledger.filter((entry) => entry.kind === "charge");
+
+  // Дневные корзины официальной ценности за последние 30 дней (реальные данные ledger).
+  // "Сегодня" читаем один раз при монтировании — Date.now() нельзя дёргать в чистом рендере.
+  const [today] = useState(() => startOfDay(Date.now()));
+  const days = Array.from({ length: USAGE_WINDOW_DAYS }, (_, index) => today - (USAGE_WINDOW_DAYS - 1 - index) * DAY_MS);
+  const perDay = new Map<number, number>();
+  for (const charge of charges) {
+    const bucket = startOfDay(ledgerMs(charge.timestamp));
+    if (bucket < days[0]!) continue;
+    perDay.set(bucket, (perDay.get(bucket) ?? 0) + Number(charge.amountUsd) / frac);
+  }
+  const series = days.map((day) => ({ day, value: perDay.get(day) ?? 0 }));
+  const maxValue = Math.max(0, ...series.map((point) => point.value));
+  const activeDays = series.filter((point) => point.value > 0).length;
+  const windowOfficial = series.reduce((sum, point) => sum + point.value, 0);
+  const windowCharges = charges.filter((charge) => startOfDay(ledgerMs(charge.timestamp)) >= days[0]!).length;
+  const peak = series.reduce((best, point) => (point.value > best.value ? point : best), { day: today, value: 0 });
+  const axisMarks = [0, 7, 14, 21, USAGE_WINDOW_DAYS - 1];
+
+  // Разбивка списаний по API-ключу — наш аналог per-endpoint из референса.
+  const keyMap = new Map<string, { key: string; count: number; net: number }>();
+  for (const charge of charges) {
+    const key = charge.keyMasked ?? "__system__";
+    const row = keyMap.get(key) ?? { key, count: 0, net: 0 };
+    row.count += 1;
+    row.net += Number(charge.amountUsd);
+    keyMap.set(key, row);
+  }
+  const keyRows = [...keyMap.values()].sort((a, b) => b.net - a.net);
+
   return <section className="panel"><PageHeading eyebrow={copy.usageEyebrow} title={copy.usageTitle} subtitle={copy.usageSubtitle} />
     <div className="banner">💡 <b>{copy.sessionSavingTitle}</b><span> {copy.sessionSavingText}</span></div>
-    <div className="us-cards">
-      <div className="card us-route"><div className="us-route-h"><b>{copy.apiRouting}</b><span className="pill">API</span></div><span className="dlabel">{copy.availableBalance}</span><div className="us-bal">{normalizeUsd(account.balanceUsd)}</div><span className="p-sub no-margin">{nanoToUsd(account.spentNano)} {copy.totalCharged}</span><p className="p-sub compact-top">{copy.sameBalance}</p></div>
-      <div className="card us-health"><div className="us-route-h"><b>{copy.apiHealth}</b><span className="pill pill-soft">{copy.analyticsPending}</span></div><span className="p-sub no-margin">{copy.healthPending}</span><div className="us-health-row"><div><span className="dlabel">{copy.successRate}</span><b className="num">—</b></div><div><span className="dlabel">{copy.averageLatency}</span><b className="num">—</b></div></div><button className="btn btn-primary btn-sm compact-top" onClick={() => open("credits")}>{copy.topUpBalance}</button></div>
+
+    <div className="ov-stats bill4">
+      <div className="ovstat"><span className="dlabel">{copy.claudeApiReceived}</span><b className="num accent">{fmtUsd(officialReceived)}</b><span className="dtrend">{copy.atOfficialPrices}</span></div>
+      <Stat label={copy.balanceCharged} value={nanoToUsd(account.spentNano)} detail={copy.afterDiscount} />
+      <div className="ovstat"><span className="dlabel">{copy.activeDiscount}</span><b className="num">{discount}%</b><span className="dtrend">{fmtMult(frac)} {copy.valueMultiplier}</span></div>
+      <div className="ovstat"><span className="dlabel">{copy.availableBalance}</span><b className="num">{normalizeUsd(account.balanceUsd)}</b><span className="dtrend">{nanoNum(account.balanceNano) > 0 ? interpolate(copy.valueOfBalance, { value: fmtUsd(nanoNum(account.balanceNano) / frac) }) : copy.available}</span></div>
     </div>
-    <div className="ov-stats bill4"><Stat label={copy.requests} value="—" detail={copy.analyticsPending} /><Stat label={copy.officialSpend} value="—" detail={copy.perRequestPending} /><Stat label={copy.balanceCharged} value={nanoToUsd(account.spentNano)} detail={copy.afterDiscount} /><Stat label={copy.activeDiscount} value={discount === undefined ? "—" : `${discount}%`} detail={account.pricing?.customerType === "b2b" ? copy.businessRate : copy.currentB2cTier} /></div>
-    <section className="dsec"><div className="dsec-head analytics-heading"><div><h2>{copy.usageAnalytics}</h2><p>{copy.chartsPending}</p></div><span className="pill pill-soft">{copy.comingSoon}</span></div><div className="analytics-placeholder"><div><span className="dlabel">{copy.usageTrend}</span><b>{copy.officialSpendOverTime}</b></div><div><span className="dlabel">{copy.modelBreakdown}</span><b>{copy.spendByModel}</b></div></div></section>
+
+    <div className="usage-graph">
+      <div className="uchart">
+        <div className="uchart-head"><b>{copy.usageOverTime}</b><span>{copy.last30Official}</span></div>
+        {maxValue === 0 ? <div className="uchart-empty">{copy.noChargesPeriod}</div> : <>
+          <div className="uchart-plot">
+            {series.map((point) => <div key={point.day} className="uchart-col" title={`${fmtDay(point.day, locale)} · ${fmtUsd(point.value)}`}>
+              <div className="uchart-bar" style={{ height: `${maxValue > 0 ? Math.max(point.value > 0 ? 3 : 0, (point.value / maxValue) * 100) : 0}%` }} />
+            </div>)}
+          </div>
+          <div className="uchart-axis">{axisMarks.map((mark) => <span key={mark}>{fmtDay(days[Math.min(mark, days.length - 1)]!, locale)}</span>)}</div>
+        </>}
+      </div>
+      <div className="usum">
+        <span className="usum-t">{copy.periodSummary}</span>
+        <div className="usum-row"><span>{copy.officialSpend}</span><b className="accent">{fmtUsd(windowOfficial)}</b></div>
+        <div className="usum-row"><span>{copy.chargeEvents}</span><b>{windowCharges}</b></div>
+        <div className="usum-row"><span>{copy.peakDay}</span><b>{peak.value > 0 ? `${fmtDay(peak.day, locale)} · ${fmtUsd(peak.value)}` : "—"}</b></div>
+        <div className="usum-row"><span>{copy.dailyAverage}</span><b>{activeDays > 0 ? fmtUsd(windowOfficial / activeDays) : "—"}</b></div>
+      </div>
+    </div>
+
+    <section className="dsec">
+      <div className="dsec-head analytics-heading"><div><h2>{copy.usageByKey}</h2><p>{copy.usageByKeySub}</p></div></div>
+      <div className="ubreak-sum">
+        <div><span className="dlabel">{copy.keysCount}</span><b>{keyRows.length}</b></div>
+        <div><span className="dlabel">{copy.requests}</span><b>{charges.length}</b></div>
+        <div><span className="dlabel">{copy.officialValueCol}</span><b>{fmtUsd(officialReceived)}</b></div>
+        <div><span className="dlabel">{copy.chargedCol}</span><b>{nanoToUsd(account.spentNano)}</b></div>
+      </div>
+      <div className="table-scroll"><table className="mtable"><thead><tr><th>{copy.apiKey}</th><th className="tnum">{copy.requests}</th><th className="tnum">{copy.discount}</th><th className="tnum">{copy.valueColumn}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
+        <tbody>{keyRows.length === 0 ? <tr><td colSpan={6} className="empty-cell">{copy.noChargesPeriod}</td></tr> : keyRows.map((row) => <tr key={row.key}>
+          <td><code>{row.key === "__system__" ? copy.systemCharge : row.key}</code></td>
+          <td className="tnum">{row.count}</td>
+          <td className="tnum">{discount}%</td>
+          <td className="tnum"><span className="ubadge">{fmtMult(frac)}</span></td>
+          <td className="tnum">{fmtUsd(row.net / frac)}</td>
+          <td className="tnum mprice">{fmtUsd(row.net)}</td>
+        </tr>)}</tbody></table></div>
+    </section>
+
     <section className="dsec"><h2>{copy.transactions}</h2><div className="table-scroll"><table className="mtable"><thead><tr><th>{copy.time}</th><th>{copy.type}</th><th>{copy.apiKey}</th><th>{copy.reference}</th><th className="tnum">{copy.amount}</th></tr></thead><tbody>{ledger.length === 0 ? <tr><td colSpan={5} className="empty-cell">{copy.noLedger}</td></tr> : ledger.map((entry) => <tr key={entry.id}><td>{formatLedgerTime(entry.timestamp, language)}</td><td><span className="pill pill-soft">{entry.kind}</span></td><td><code>{entry.keyMasked ?? "—"}</code></td><td>{entry.reference ?? "—"}</td><td className="tnum">{normalizeUsd(entry.amountUsd)}</td></tr>)}</tbody></table></div></section>
   </section>;
 }
+
+function startOfDay(ms: number): number { const date = new Date(ms); date.setHours(0, 0, 0, 0); return date.getTime(); }
+function ledgerMs(timestamp: string): number { const numeric = Number(timestamp); return numeric < 10_000_000_000 ? numeric * 1_000 : numeric; }
+function fmtDay(ms: number, locale: string): string { return new Date(ms).toLocaleDateString(locale, { month: "numeric", day: "numeric" }); }
 
 function Profile({ user, open }: { user: AuthUser; open(section: Section): void }) {
   const copy = useDashboardCopy();
