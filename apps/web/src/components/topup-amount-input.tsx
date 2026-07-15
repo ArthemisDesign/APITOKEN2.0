@@ -36,8 +36,8 @@ export function TopUpAmountInput({ className, initialAmount, showReceive }: { cl
   const receive = amt / ((100 - tier.discountPercent) / 100);
   const value = `$${receive.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
   const note = language === "ru"
-    ? `Claude API · офиц. цены · тариф ${tier.label} −${tier.discountPercent}%`
-    : `of Claude API · official prices · ${tier.label} tier −${tier.discountPercent}%`;
+    ? `Claude API · тариф ${tier.label} −${tier.discountPercent}% — при таком расходе за календарный месяц`
+    : `of Claude API · ${tier.label} tier −${tier.discountPercent}% — at this spend within the calendar month`;
   return <div className="topup-live">
     {field}
     <div className="topup-live-out">

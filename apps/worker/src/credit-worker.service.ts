@@ -1,7 +1,6 @@
 import { Inject, Injectable, Logger, OnApplicationShutdown, OnModuleInit } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
-  applyTopupTier,
   claimNextCredit,
   confirmCredit,
   recoverStaleCredits,
@@ -54,16 +53,6 @@ export class CreditWorkerService implements OnModuleInit, OnApplicationShutdown 
           );
           await confirmCredit(this.database, credit.id, BigInt(result.balance_nano));
           this.logger.log(`confirmed credit ${credit.id}`);
-          // Prepay-тир: пополнение может поднять тариф по своей сумме. Best-effort —
-          // кредит уже подтверждён, сбой апгрейда не должен его ронять (следующий топ-ап догонит).
-          try {
-            await applyTopupTier(this.database, {
-              engineAccountId: credit.engineAccountId,
-              amountNano: credit.amountNano,
-            });
-          } catch (tierError) {
-            this.logger.error(`prepay tier bump failed for credit ${credit.id}: ${tierError instanceof Error ? tierError.message : "unknown"}`);
-          }
         } catch (error) {
           const message = error instanceof Error ? error.message : "unknown credit error";
           if (error instanceof EngineClientError && !error.retryable) {

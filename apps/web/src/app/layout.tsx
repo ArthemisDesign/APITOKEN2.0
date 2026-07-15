@@ -3,7 +3,6 @@ import type { ReactNode } from "react";
 import "./globals.css";
 import "./anim.css";
 import { I18nProvider } from "@/components/i18n-provider";
-import { DEMO_FIXTURE_SCRIPT } from "@/lib/demo-fixture";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://apitoken.sale"),
@@ -23,11 +22,7 @@ const themeScript = `(()=>{try{const t=localStorage.getItem('theme')||'light';do
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <head>
-        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
-        {/* self-gated: активен только на *.vercel.app (превью), на apitoken.sale — no-op */}
-        <script dangerouslySetInnerHTML={{ __html: DEMO_FIXTURE_SCRIPT }} />
-      </head>
+      <head><script dangerouslySetInnerHTML={{ __html: themeScript }} /></head>
       <body>
         <I18nProvider>
           {children}
