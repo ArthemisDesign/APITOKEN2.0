@@ -3,7 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import {
   applyPricingLedgerPage,
   claimNextPricingJob,
-  closeElapsedPricingMonths,
+  closeElapsedTierWindows,
   confirmPricingJob,
   getPricingUsageCursor,
   listPricingSyncTargets,
@@ -59,7 +59,7 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
           }
         }
         if (afterMonthCloseGrace(new Date(), this.config.get("PRICING_CLOSE_GRACE_MS", { infer: true }))) {
-          const closed = await closeElapsedPricingMonths(this.database);
+          const closed = await closeElapsedTierWindows(this.database);
           if (closed > 0) this.logger.log(`closed ${closed} elapsed pricing months`);
         }
         await this.flushPricingJobs();

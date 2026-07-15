@@ -47,11 +47,15 @@ export const customerProfiles = pgTable("customer_profiles", {
   currentTier: integer("current_tier"),
   multiplierBp: integer("multiplier_bp").notNull().default(4000),
   pricingMonthStart: timestamp("pricing_month_start", { withTimezone: true }).notNull(),
+  // Prepay-тир: накопленные пополнения (суммируются, пока не слетел) + скользящее 30-дневное окно удержания.
+  cumulativeTopupNano: bigint("cumulative_topup_nano", { mode: "bigint" }).notNull().default(sql`0`),
+  tierWindowStart: timestamp("tier_window_start", { withTimezone: true }),
+  tierWindowSpentNano: bigint("tier_window_spent_nano", { mode: "bigint" }).notNull().default(sql`0`),
   createdAt,
   updatedAt,
 }, (table) => [
   check("customer_profiles_multiplier_check", sql`${table.multiplierBp} BETWEEN 0 AND 10000`),
-  check("customer_profiles_tier_check", sql`${table.currentTier} IS NULL OR ${table.currentTier} BETWEEN 0 AND 4`),
+  check("customer_profiles_tier_check", sql`${table.currentTier} IS NULL OR ${table.currentTier} BETWEEN 0 AND 5`),
   check("customer_profiles_type_tier_check", sql`
     (${table.customerType} = 'b2c' AND ${table.currentTier} IS NOT NULL)
     OR (${table.customerType} = 'b2b' AND ${table.currentTier} IS NULL)

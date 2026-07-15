@@ -26,13 +26,17 @@ export function utcMonthStart(value = new Date()): Date {
   return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), 1));
 }
 
-export function tierForSpend(spentNano: bigint): number {
+/** Тир по НАКОПЛЕННОЙ сумме пополнений (`spendThresholdNano` = порог пополнения). 0 = none (<$100). */
+export function tierForTopups(cumulativeNano: bigint): number {
   let tier = 0;
   for (let index = 1; index < B2C_PRICING_TIERS.length; index += 1) {
-    if (spentNano >= B2C_PRICING_TIERS[index]!.spendThresholdNano) tier = index;
+    if (cumulativeNano >= B2C_PRICING_TIERS[index]!.spendThresholdNano) tier = index;
   }
   return tier;
 }
+
+/** Тридцатидневное окно удержания в миллисекундах. */
+const HOLD_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 export async function createBusinessInvite(database: Database, input: {
   email: string;
@@ -67,10 +71,8 @@ export async function lockBusinessInvite(
 export async function getPricingView(database: Database, userId: string): Promise<Record<string, unknown> | null> {
   const result = await database.pool.query<PricingViewRow>(`
     SELECT cp.customer_type, cp.current_tier, cp.multiplier_bp, cp.pricing_month_start,
-           COALESCE(pm.spent_nano, 0) AS spent_nano
+           cp.cumulative_topup_nano, cp.tier_window_start, cp.tier_window_spent_nano
     FROM customer_profiles cp
-    LEFT JOIN pricing_months pm
-      ON pm.user_id = cp.user_id AND pm.month_start = cp.pricing_month_start
     WHERE cp.user_id = $1
   `, [userId]);
   const row = result.rows[0];
@@ -84,10 +86,13 @@ export async function getPricingView(database: Database, userId: string): Promis
       multiplierBp: row.multiplier_bp,
     };
   }
+  // Prepay-модель: поля формы сохранены, но переосмыслены —
+  // spentNano = НАКОПЛЕНО пополнений; retentionSpendNano = сколько тратить за 30 дней (hold);
+  // nextTier.remainingNano = сколько ещё ДОЛОЖИТЬ до следующего тира.
   const currentTier = row.current_tier ?? 0;
   const tier = B2C_PRICING_TIERS[currentTier]!;
   const nextTier = B2C_PRICING_TIERS[currentTier + 1];
-  const spentNano = BigInt(row.spent_nano);
+  const cumulative = BigInt(row.cumulative_topup_nano);
   return {
     customerType: "b2c",
     pricingMode: "progressive",
@@ -95,14 +100,16 @@ export async function getPricingView(database: Database, userId: string): Promis
     tier: tier.code,
     discountPercent: tier.discountPercent,
     multiplierBp: tier.multiplierBp,
-    spentNano: spentNano.toString(),
-    retentionSpendNano: tier.spendThresholdNano.toString(),
+    spentNano: cumulative.toString(),
+    retentionSpendNano: tier.holdNano.toString(),
+    windowSpentNano: BigInt(row.tier_window_spent_nano).toString(),
+    windowStart: row.tier_window_start ? row.tier_window_start.toISOString() : null,
     nextTier: nextTier ? {
       tier: nextTier.code,
       discountPercent: nextTier.discountPercent,
       spendThresholdNano: nextTier.spendThresholdNano.toString(),
-      remainingNano: (nextTier.spendThresholdNano > spentNano
-        ? nextTier.spendThresholdNano - spentNano
+      remainingNano: (nextTier.spendThresholdNano > cumulative
+        ? nextTier.spendThresholdNano - cumulative
         : 0n).toString(),
       visibleOfficialUsageUsd: nextTier.visibleOfficialUsageUsd,
     } : null,
@@ -211,6 +218,7 @@ export async function applyPricingLedgerPage(
       return;
     }
     let lastLedgerId = 0n;
+    let windowCharge = 0n;
     for (const entry of entries) {
       const ledgerId = BigInt(entry.id);
       if (ledgerId > lastLedgerId) lastLedgerId = ledgerId;
@@ -224,6 +232,7 @@ export async function applyPricingLedgerPage(
         RETURNING id
       `, [randomUUID(), target.userId, target.engineAccountId, ledgerId.toString(), entry.amount_nano, occurredAt]);
       if (!inserted.rows[0]) continue;
+      windowCharge += BigInt(entry.amount_nano);
       const monthStart = utcMonthStart(occurredAt);
       await client.query(`
         INSERT INTO pricing_months (
@@ -239,17 +248,13 @@ export async function applyPricingLedgerPage(
       WHERE engine_account_id = $1 AND user_id = $2
     `, [target.engineAccountId, target.userId, lastLedgerId.toString()]);
 
-    const currentMonth = await client.query<{ spent_nano: string }>(`
-      SELECT spent_nano FROM pricing_months WHERE user_id = $1 AND month_start = $2
-    `, [target.userId, profile.pricing_month_start]);
-    const spent = BigInt(currentMonth.rows[0]?.spent_nano ?? "0");
-    const earnedTier = tierForSpend(spent);
-    if (earnedTier > profile.current_tier) {
-      await applyTierChange(client, target, earnedTier, "b2c_upgrade");
+    // Prepay: расход НЕ поднимает тир (тир — за пополнения). Копим расход в 30-дневном окне
+    // удержания текущего тира; проверяется в closeElapsedTierWindows.
+    if (windowCharge > 0n) {
       await client.query(`
-        UPDATE pricing_months SET highest_tier = GREATEST(highest_tier, $3), updated_at = now()
-        WHERE user_id = $1 AND month_start = $2
-      `, [target.userId, profile.pricing_month_start, earnedTier]);
+        UPDATE customer_profiles SET tier_window_spent_nano = tier_window_spent_nano + $2, updated_at = now()
+        WHERE user_id = $1
+      `, [target.userId, windowCharge.toString()]);
     }
     await client.query("COMMIT");
   } catch (error) {
@@ -260,64 +265,93 @@ export async function applyPricingLedgerPage(
   }
 }
 
-/** Close every elapsed UTC month, one locked profile/month at a time. */
-export async function closeElapsedPricingMonths(database: Database, now = new Date()): Promise<number> {
-  const currentMonth = utcMonthStart(now);
+/**
+ * Prepay-тир: подтверждённое пополнение прибавляется к накоплению; если накопление достигло
+ * порога более высокого тира — поднимаем тир и запускаем новое 30-дневное окно удержания.
+ * Пополнения суммируются, пока не слетел (см. closeElapsedTierWindows). Best-effort в воркере.
+ */
+export async function applyTopupTier(database: Database, input: {
+  engineAccountId: string;
+  amountNano: bigint;
+}): Promise<void> {
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const res = await client.query<{ user_id: string; current_tier: number; cumulative_topup_nano: string }>(`
+      SELECT cp.user_id, cp.current_tier, cp.cumulative_topup_nano
+      FROM customer_profiles cp
+      JOIN engine_accounts ea ON ea.user_id = cp.user_id
+      WHERE ea.engine_account_id = $1 AND cp.customer_type = 'b2c'
+      FOR UPDATE OF cp
+    `, [input.engineAccountId]);
+    const profile = res.rows[0];
+    if (!profile) { await client.query("COMMIT"); return; }
+    const cumulative = BigInt(profile.cumulative_topup_nano) + input.amountNano;
+    await client.query(`
+      UPDATE customer_profiles SET cumulative_topup_nano = $2, updated_at = now() WHERE user_id = $1
+    `, [profile.user_id, cumulative.toString()]);
+    const newTier = tierForTopups(cumulative);
+    if (newTier > (profile.current_tier ?? 0)) {
+      await applyTierChange(client, { userId: profile.user_id, engineAccountId: input.engineAccountId }, newTier, "b2c_topup");
+      await client.query(`
+        UPDATE customer_profiles SET tier_window_start = now(), tier_window_spent_nano = 0, updated_at = now()
+        WHERE user_id = $1
+      `, [profile.user_id]);
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Закрытие 30-дневных окон удержания: у кого окно истекло — если за окно потрачено ≥ hold(tier),
+ * окно продлевается; иначе откат на −1 тир, накопление сбрасывается к порогу нового тира, окно новое.
+ */
+export async function closeElapsedTierWindows(database: Database, now = new Date()): Promise<number> {
+  const windowDeadline = new Date(now.getTime() - HOLD_WINDOW_MS);
   let closed = 0;
   for (;;) {
     const client = await database.pool.connect();
     try {
       await client.query("BEGIN");
       const result = await client.query<{
-        user_id: string; current_tier: number; pricing_month_start: Date; engine_account_id: string | null;
+        user_id: string; current_tier: number; tier_window_spent_nano: string; engine_account_id: string | null;
       }>(`
-        SELECT cp.user_id, cp.current_tier, cp.pricing_month_start, ea.engine_account_id
+        SELECT cp.user_id, cp.current_tier, cp.tier_window_spent_nano, ea.engine_account_id
         FROM customer_profiles cp
         JOIN engine_accounts ea ON ea.user_id = cp.user_id
-        WHERE cp.customer_type = 'b2c' AND cp.pricing_month_start < $1
-        ORDER BY cp.pricing_month_start, cp.user_id
+        WHERE cp.customer_type = 'b2c' AND cp.current_tier > 0
+          AND cp.tier_window_start IS NOT NULL AND cp.tier_window_start <= $1
+        ORDER BY cp.tier_window_start, cp.user_id
         FOR UPDATE OF cp, ea SKIP LOCKED
         LIMIT 1
-      `, [currentMonth]);
+      `, [windowDeadline]);
       const row = result.rows[0];
       if (!row) {
         await client.query("COMMIT");
         return closed;
       }
-      const month = await client.query<{ spent_nano: string }>(`
-        INSERT INTO pricing_months (id, user_id, month_start, opening_tier, highest_tier)
-        VALUES ($1, $2, $3, $4, $4)
-        ON CONFLICT (user_id, month_start) DO UPDATE SET updated_at = pricing_months.updated_at
-        RETURNING spent_nano
-      `, [randomUUID(), row.user_id, row.pricing_month_start, row.current_tier]);
-      const spent = BigInt(month.rows[0]?.spent_nano ?? "0");
-      const retentionThreshold = B2C_PRICING_TIERS[row.current_tier]!.spendThresholdNano;
-      const nextTier = spent >= retentionThreshold ? row.current_tier : Math.max(0, row.current_tier - 1);
-      const nextMonthStart = addUtcMonth(row.pricing_month_start);
-      await client.query(`
-        UPDATE pricing_months SET closed_at = now(), updated_at = now()
-        WHERE user_id = $1 AND month_start = $2
-      `, [row.user_id, row.pricing_month_start]);
-      await client.query(`
-        UPDATE customer_profiles
-        SET current_tier = $2, multiplier_bp = $3, pricing_month_start = $4, updated_at = now()
-        WHERE user_id = $1
-      `, [row.user_id, nextTier, B2C_PRICING_TIERS[nextTier]!.multiplierBp, nextMonthStart]);
-      await client.query(`
-        UPDATE engine_accounts SET mult_bp = $2, updated_at = now() WHERE user_id = $1
-      `, [row.user_id, B2C_PRICING_TIERS[nextTier]!.multiplierBp]);
-      await client.query(`
-        INSERT INTO pricing_months (id, user_id, month_start, opening_tier, highest_tier)
-        VALUES ($1, $2, $3, $4, $4)
-        ON CONFLICT (user_id, month_start) DO NOTHING
-      `, [randomUUID(), row.user_id, nextMonthStart, nextTier]);
-      if (nextTier !== row.current_tier && row.engine_account_id) {
-        await enqueuePricingJob(client, {
-          userId: row.user_id,
-          engineAccountId: row.engine_account_id,
-          multiplierBp: B2C_PRICING_TIERS[nextTier]!.multiplierBp,
-          reason: "b2c_monthly_downgrade",
-        });
+      const held = BigInt(row.tier_window_spent_nano) >= B2C_PRICING_TIERS[row.current_tier]!.holdNano;
+      if (held) {
+        // Удержал — новое 30-дневное окно, счётчик расхода обнуляем.
+        await client.query(`
+          UPDATE customer_profiles SET tier_window_start = $2, tier_window_spent_nano = 0, updated_at = now()
+          WHERE user_id = $1
+        `, [row.user_id, now]);
+      } else {
+        // Не удержал — откат на −1 тир; накопление к порогу нового тира; новое окно (или none → без окна).
+        const nextTier = Math.max(0, row.current_tier - 1);
+        const newCumulative = B2C_PRICING_TIERS[nextTier]!.spendThresholdNano;
+        await applyTierChange(client, { userId: row.user_id, engineAccountId: row.engine_account_id ?? "" }, nextTier, "b2c_window_downgrade");
+        await client.query(`
+          UPDATE customer_profiles
+          SET cumulative_topup_nano = $2, tier_window_start = $3, tier_window_spent_nano = 0, updated_at = now()
+          WHERE user_id = $1
+        `, [row.user_id, newCumulative.toString(), nextTier > 0 ? now : null]);
       }
       await client.query("COMMIT");
       closed += 1;
@@ -438,14 +472,12 @@ async function enqueuePricingJob(client: PoolClient, input: {
   return result.rows[0]!.id;
 }
 
-function addUtcMonth(value: Date): Date {
-  return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth() + 1, 1));
-}
-
 interface PricingViewRow {
   customer_type: "b2c" | "b2b";
   current_tier: number | null;
   multiplier_bp: number;
   pricing_month_start: Date;
-  spent_nano: string;
+  cumulative_topup_nano: string;
+  tier_window_start: Date | null;
+  tier_window_spent_nano: string;
 }
