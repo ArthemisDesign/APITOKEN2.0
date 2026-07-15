@@ -261,26 +261,28 @@ fn inflight_of(g: &Inner, e: &str) -> i64 {
 /// Стратегия: беречь недельный бюджет (7d) → размазывать 5h → «предупреждённые» ниже → меньше
 /// in-flight → LRU. Фильтры ослабляются постепенно (пул НИКОГДА не зависает).
 fn select_best(g: &Inner, exclude: &HashSet<String>, now: i64, rsv: &Reserve) -> Option<Sub> {
-    let cands: Vec<&Sub> = g.subs.iter().filter(|s| !exclude.contains(&s.email)).collect();
-    if cands.is_empty() { return None; }
-    let not_cool: Vec<&Sub> = cands.iter().copied().filter(|s| !is_cooling(g, &s.email, now)).collect();
-    let stage1: Vec<&Sub> = if not_cool.is_empty() { cands } else { not_cool };
-    let ready: Vec<&Sub> = stage1.iter().copied()
-        .filter(|s| { let (c5, c7) = rsv.caps(&s.email);
-            eff_util(g, &s.email, 7, now) < c7 && eff_util(g, &s.email, 5, now) < c5 })
-        .collect();
-    let poolv: Vec<&Sub> = if ready.is_empty() { stage1 } else { ready };
     let warn = |e: &str| g.live.get(e).map(|l| l.status.contains("warning")).unwrap_or(false);
     let lru = |e: &str| g.live.get(e).map(|l| l.last_used).unwrap_or(0);
-    // Один проход (O(n)) вместо sort (O(n log n)+O(n log n) вызовов eff_util под глоб-локом).
-    // `min_by` возвращает ПЕРВЫЙ минимум при равенстве → идентично прежнему `sort().first()`.
-    poolv.into_iter().min_by(|a, b| {
-        eff_util(g, &a.email, 7, now).partial_cmp(&eff_util(g, &b.email, 7, now)).unwrap_or(Equal)
-            .then(eff_util(g, &a.email, 5, now).partial_cmp(&eff_util(g, &b.email, 5, now)).unwrap_or(Equal))
-            .then(warn(&a.email).cmp(&warn(&b.email)))
-            .then(inflight_of(g, &a.email).cmp(&inflight_of(g, &b.email)))
-            .then(lru(&a.email).cmp(&lru(&b.email)))
-    }).map(|s| s.clone())
+    // over_cap: не под конвертом util (сверх 5h ИЛИ 7d потолка) — инверсия прежнего `ready`-фильтра.
+    let over_cap = |s: &Sub| -> bool {
+        let (c5, c7) = rsv.caps(&s.email);
+        !(eff_util(g, &s.email, 7, now) < c7 && eff_util(g, &s.email, 5, now) < c5)
+    };
+    // ОДИН проход без промежуточных Vec (сжимаем критсекцию под глоб-локом): прежний тиеринг
+    // (сначала не-cooling; среди них под-cap) закодирован ВЕДУЩИМИ ключами сравнения. `min` даёт
+    // non-cooling если есть (false<true), среди них under-cap если есть — идентично стадиям.
+    g.subs.iter()
+        .filter(|s| !exclude.contains(&s.email))
+        .min_by(|a, b| {
+            is_cooling(g, &a.email, now).cmp(&is_cooling(g, &b.email, now))
+                .then_with(|| over_cap(a).cmp(&over_cap(b)))
+                .then_with(|| eff_util(g, &a.email, 7, now).partial_cmp(&eff_util(g, &b.email, 7, now)).unwrap_or(Equal))
+                .then_with(|| eff_util(g, &a.email, 5, now).partial_cmp(&eff_util(g, &b.email, 5, now)).unwrap_or(Equal))
+                .then_with(|| warn(&a.email).cmp(&warn(&b.email)))
+                .then_with(|| inflight_of(g, &a.email).cmp(&inflight_of(g, &b.email)))
+                .then_with(|| lru(&a.email).cmp(&lru(&b.email)))
+        })
+        .cloned()
 }
 
 /// Capacity-weighted placement НОВОЙ сессии: среди здоровых персон под потолком util И под

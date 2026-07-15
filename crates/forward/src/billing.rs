@@ -16,7 +16,10 @@
 //! рантайма). Гарантия денег: осиротевшее при краше вернёт `reconcile` на старте. Ничего не застревает.
 
 use registry::{AccountRow, BillingTotals, KeyAuth, KeyRow};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex as StdMutex;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
 enum WriteCmd {
@@ -57,12 +60,22 @@ pub struct AsyncBilling {
     writer: mpsc::UnboundedSender<WriteCmd>,
     readers: Vec<mpsc::UnboundedSender<ReadCmd>>,
     rr: AtomicUsize, // round-robin по читателям
+    // TTL-кэш key_auth (key→account). key→account статичен; кэш срезает read/запрос под нагрузкой.
+    // МОНЕЙ-БЕЗОПАСНО: авторитет баланса — атомарный reserve (перечитывает в БД), кэш лишь оценка cap.
+    // Полностью чистится при ЛЮБОЙ смене статуса ключа/аккаунта → отозванный ключ живёт ≤ TTL. ttl=0 → выкл.
+    auth_cache: StdMutex<HashMap<String, (KeyAuth, Instant)>>,
+    auth_ttl: Duration,
 }
 
 impl AsyncBilling {
     /// Поднять writer-поток + `readers` reader-потоков. `open` (миграции + PRAGMA WAL) — на этих
     /// потоках; синхронный SQLite не касается async-рантайма никогда.
     pub fn start(db_path: String, readers: usize) -> anyhow::Result<Self> {
+        Self::start_with(db_path, readers, 0)
+    }
+
+    /// `auth_ttl_ms` — TTL кэша key_auth в мс (0 = кэш выключен).
+    pub fn start_with(db_path: String, readers: usize, auth_ttl_ms: u64) -> anyhow::Result<Self> {
         let readers = readers.max(1);
         // writer
         let (wtx, mut wrx) = mpsc::unbounded_channel::<WriteCmd>();
@@ -78,19 +91,15 @@ impl AsyncBilling {
                                 // Клиент отменил запрос ВО ВРЕМЯ reserve().await → получатель ответа
                                 // отвалился, а резерв УЖЕ закоммичен. Без рефанда hold завис бы в
                                 // reserved_nano до рестарта (замороженные деньги клиента). Возвращаем сразу.
-                                let _ = registry::account_settle(&conn, &account_id, "", hold, 0, None);
+                                let _ = registry::account_settle(&conn, &account_id, "", hold, 0, None, None);
                             }
                         }
                         WriteCmd::Settle { account_id, key, hold, actual, reference, usage, reply } => {
-                            let res = registry::account_settle(&conn, &account_id, &key, hold, actual, reference.as_deref())
+                            // usage_event пишется ВНУТРИ той же транзакции settle (один коммит на запрос
+                            // вместо двух) — только при реальном списании (actual>0), best-effort.
+                            let usage_ref = if actual > 0 { usage.as_ref() } else { None };
+                            let res = registry::account_settle(&conn, &account_id, &key, hold, actual, reference.as_deref(), usage_ref)
                                 .ok().flatten();
-                            // usage_events — аналитика рядом с charge (не money). Пишем только когда
-                            // списание реально произошло (settle применился и actual>0).
-                            if res.is_some() && actual > 0 {
-                                if let Some(u) = &usage {
-                                    let _ = registry::usage_event_add(&conn, &account_id, Some(&key), u, actual, reference.as_deref());
-                                }
-                            }
                             if let Some(r) = reply { let _ = r.send(res); }
                         }
                         WriteCmd::Topup { account_id, amount, reference, reply } => {
@@ -156,7 +165,17 @@ impl AsyncBilling {
             })?;
             rtxs.push(rtx);
         }
-        Ok(AsyncBilling { writer: wtx, readers: rtxs, rr: AtomicUsize::new(0) })
+        Ok(AsyncBilling {
+            writer: wtx, readers: rtxs, rr: AtomicUsize::new(0),
+            auth_cache: StdMutex::new(HashMap::new()),
+            auth_ttl: Duration::from_millis(auth_ttl_ms),
+        })
+    }
+
+    fn auth_cache_clear(&self) {
+        if !self.auth_ttl.is_zero() {
+            self.auth_cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        }
     }
 
     fn reader(&self) -> &mpsc::UnboundedSender<ReadCmd> {
@@ -165,9 +184,19 @@ impl AsyncBilling {
     }
 
     pub async fn key_auth(&self, key: &str) -> Option<KeyAuth> {
+        // TTL-кэш: под нагрузкой множество запросов одного ключа коллапсируют в один read.
+        if !self.auth_ttl.is_zero() {
+            if let Some((auth, at)) = self.auth_cache.lock().unwrap_or_else(|e| e.into_inner()).get(key) {
+                if at.elapsed() < self.auth_ttl { return Some(auth.clone()); }
+            }
+        }
         let (r, rx) = oneshot::channel();
         self.reader().send(ReadCmd::KeyAuth(key.into(), r)).ok()?;
-        rx.await.ok().flatten()
+        let auth = rx.await.ok().flatten()?;
+        if !self.auth_ttl.is_zero() {
+            self.auth_cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key.into(), (auth.clone(), Instant::now()));
+        }
+        Some(auth)
     }
     pub async fn get(&self, key: &str) -> Option<KeyRow> {
         let (r, rx) = oneshot::channel();
@@ -260,26 +289,34 @@ impl AsyncBilling {
     pub async fn account_status(&self, id: &str, status: &str) -> usize {
         let (r, rx) = oneshot::channel();
         if self.writer.send(WriteCmd::AccountStatus { id: id.into(), status: status.into(), reply: r }).is_err() { return 0; }
-        rx.await.unwrap_or(0)
+        let n = rx.await.unwrap_or(0);
+        self.auth_cache_clear(); // статус аккаунта влияет на active в key_auth → сброс кэша
+        n
     }
     pub async fn account_multiplier(&self, id: &str, mult_bp: i64) -> usize {
         let (r, rx) = oneshot::channel();
         if self.writer.send(WriteCmd::AccountMultiplier { id: id.into(), mult_bp, reply: r }).is_err() {
             return 0;
         }
-        rx.await.unwrap_or(0)
+        let n = rx.await.unwrap_or(0);
+        self.auth_cache_clear(); // mult_bp кэшируется в KeyAuth → сброс кэша
+        n
     }
     pub async fn key_status(&self, key: &str, status: &str) -> usize {
         let (r, rx) = oneshot::channel();
         if self.writer.send(WriteCmd::KeyStatus { key: key.into(), status: status.into(), reply: r }).is_err() { return 0; }
-        rx.await.unwrap_or(0)
+        let n = rx.await.unwrap_or(0);
+        self.auth_cache_clear(); // отзыв/включение ключа → сброс кэша (отозванный живёт ≤ TTL иначе)
+        n
     }
     pub async fn key_status_by_id(&self, key_id: &str, status: &str) -> usize {
         let (r, rx) = oneshot::channel();
         if self.writer.send(WriteCmd::KeyStatusById {
             key_id: key_id.into(), status: status.into(), reply: r,
         }).is_err() { return 0; }
-        rx.await.unwrap_or(0)
+        let n = rx.await.unwrap_or(0);
+        self.auth_cache_clear();
+        n
     }
     /// Дренаж очереди writer'а (барьер): ждёт, пока ВСЕ ранее поставленные команды (в т.ч.
     /// fire-and-forget `settle_detached`) применятся. Вызывать на graceful shutdown ПОСЛЕ дренажа

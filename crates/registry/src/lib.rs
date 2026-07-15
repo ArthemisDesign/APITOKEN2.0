@@ -540,7 +540,7 @@ pub fn account_reserve(conn: &Connection, id: &str, hold_nano: i64) -> Result<Op
 /// Закрыть резерв аккаунта: баланс += hold − actual, spent += actual, reserved −= hold; per-key
 /// `spent` += actual (атрибуция расхода по ключу); строка в ledger (charge). ВСЁ в ОДНОЙ транзакции.
 pub fn account_settle(conn: &Connection, id: &str, key: &str, hold_nano: i64, actual_nano: i64,
-                      reference: Option<&str>) -> Result<Option<i64>> {
+                      reference: Option<&str>, usage: Option<&UsageEventInput>) -> Result<Option<i64>> {
     let (hold, actual) = (hold_nano.max(0), actual_nano.max(0));
     let tx = conn.unchecked_transaction()?;
     // Возвращаем hold, но НЕ БОЛЬШЕ, чем реально числится в reserved_nano: MIN(hold, reserved).
@@ -560,7 +560,12 @@ pub fn account_settle(conn: &Connection, id: &str, key: &str, hold_nano: i64, ac
     if let Some(b) = bal {
         tx.execute("UPDATE api_keys SET spent_nano = spent_nano + ?1 WHERE key = ?2",
                    rusqlite::params![actual, key])?;
-        if actual > 0 { ledger_add(&tx, id, Some(key), "charge", actual, reference, b)?; }
+        if actual > 0 {
+            ledger_add(&tx, id, Some(key), "charge", actual, reference, b)?;
+            // usage_events (аналитика) — в ТОЙ ЖЕ транзакции, что и charge (экономим коммит на запрос).
+            // Best-effort: ошибка вставки usage НЕ роняет money-коммит (аналитика не критична).
+            if let Some(u) = usage { let _ = usage_event_add(&tx, id, Some(key), u, actual, reference); }
+        }
     }
     tx.commit()?;
     Ok(bal)
@@ -954,7 +959,7 @@ mod tests {
         acct_with_key(&c, "acct_1", "sk-1", 5_000_000_000, 10000); // $5
         acct_with_key(&c, "acct_2", "sk-2", 3_000_000_000, 10000); // $3
         account_reserve(&c, "acct_1", 1_000_000_000).unwrap();
-        account_settle(&c, "acct_1", "sk-1", 1_000_000_000, 400_000_000, None).unwrap(); // spent $0.4
+        account_settle(&c, "acct_1", "sk-1", 1_000_000_000, 400_000_000, None, None).unwrap(); // spent $0.4
         account_reserve(&c, "acct_2", 500_000_000).unwrap(); // висящий резерв $0.5
         account_set_status(&c, "acct_2", "disabled").unwrap();
         let t = billing_totals(&c);
@@ -983,7 +988,7 @@ mod tests {
         acct_with_key(&c, "a", "k", 1_000_000_000, 2000); // $1.00
         assert_eq!(account_reserve(&c, "a", 600_000_000).unwrap(), Some(400_000_000));
         assert_eq!(account_reserve(&c, "a", 600_000_000).unwrap(), None); // $0.40 < $0.60 → отказ
-        assert_eq!(account_settle(&c, "a", "k", 600_000_000, 100_000_000, Some("req1")).unwrap(), Some(900_000_000));
+        assert_eq!(account_settle(&c, "a", "k", 600_000_000, 100_000_000, Some("req1"), None).unwrap(), Some(900_000_000));
         let acc = account_get(&c, "a").unwrap().unwrap();
         assert_eq!(acc.balance_nano, 900_000_000);
         assert_eq!(acc.spent_nano, 100_000_000);
@@ -1005,7 +1010,7 @@ mod tests {
         reconcile_reservations(&c).unwrap();                 // баланс $1.0, reserved 0
         assert_eq!(account_get(&c, "a").unwrap().unwrap().balance_nano, 1_000_000_000);
         // теперь прилетает settle СТАРОГО инстанса на тот же hold (actual $0.1)
-        account_settle(&c, "a", "k", 400_000_000, 100_000_000, None).unwrap();
+        account_settle(&c, "a", "k", 400_000_000, 100_000_000, None, None).unwrap();
         let acc = account_get(&c, "a").unwrap().unwrap();
         // без клампа было бы: +$0.4 (второй раз!) − $0.1 = $1.3 (over-credit) и reserved=−$0.4.
         // с клампом: MIN(0.4, reserved=0)=0 → баланс += 0 − $0.1 = $0.9; reserved MAX(0,−0.4)=0.
@@ -1019,7 +1024,7 @@ mod tests {
         let c = db();
         acct_with_key(&c, "a", "k", 500_000_000, 2000);
         account_reserve(&c, "a", 200_000_000).unwrap();
-        account_settle(&c, "a", "k", 200_000_000, 0, None).unwrap();
+        account_settle(&c, "a", "k", 200_000_000, 0, None, None).unwrap();
         assert_eq!(account_get(&c, "a").unwrap().unwrap().balance_nano, 500_000_000);
         let charges: i64 = c.query_row("SELECT COUNT(*) FROM ledger WHERE kind='charge'", [], |r| r.get(0)).unwrap();
         assert_eq!(charges, 0);
@@ -1062,6 +1067,28 @@ mod tests {
         assert!(usage_by_model(&c, "a", 0).unwrap().is_empty());
     }
 
+    /// settle пишет usage_event В ТОЙ ЖЕ операции (один коммит); при actual=0 usage НЕ пишется.
+    #[test]
+    fn settle_writes_usage_event_in_same_tx() {
+        let c = db();
+        acct_with_key(&c, "a", "k", 10_000_000_000, 4000);
+        account_reserve(&c, "a", 1_000_000_000).unwrap();
+        let u = UsageEventInput { model: "claude-opus-4-8".into(), input_tokens: 100, output_tokens: 50,
+            real_nano: 5_000_000, ..Default::default() };
+        account_settle(&c, "a", "k", 1_000_000_000, 400_000_000, Some("req1"), Some(&u)).unwrap();
+        let charges: i64 = c.query_row("SELECT COUNT(*) FROM ledger WHERE kind='charge' AND account_id='a'", [], |r| r.get(0)).unwrap();
+        assert_eq!(charges, 1, "charge записан");
+        let agg = usage_by_model(&c, "a", 0).unwrap();
+        assert_eq!(agg.len(), 1);
+        assert_eq!(agg[0].model, "claude-opus-4-8");
+        assert_eq!(agg[0].input_tokens, 100);
+        assert_eq!(agg[0].charge_nano, 400_000_000);
+        // actual=0 (release/refund) → usage НЕ добавляется (charge не было)
+        account_reserve(&c, "a", 500_000_000).unwrap();
+        account_settle(&c, "a", "k", 500_000_000, 0, None, Some(&u)).unwrap();
+        assert_eq!(usage_by_model(&c, "a", 0).unwrap()[0].requests, 1, "usage не прибавился при actual=0");
+    }
+
     /// заблокированный аккаунт не резервируется; резолв ключа отражает активность обоих.
     #[test]
     fn reserve_rejects_disabled_account() {
@@ -1100,7 +1127,7 @@ mod tests {
         let c = db();
         acct_with_key(&c, "a", "k", 5_000_000_000, 10000); // topup $5 (ledger topup)
         account_reserve(&c, "a", 1_000_000_000).unwrap();
-        account_settle(&c, "a", "k", 1_000_000_000, 400_000_000, Some("old")).unwrap(); // charge $0.4
+        account_settle(&c, "a", "k", 1_000_000_000, 400_000_000, Some("old"), None).unwrap(); // charge $0.4
         // состарим ВСЕ строки (ts в прошлом)
         c.execute("UPDATE ledger SET ts = 1000", []).unwrap();
         let removed = ledger_prune(&c, 2000).unwrap(); // cutoff позже строк
@@ -1128,9 +1155,9 @@ mod tests {
         assert_eq!(key_account(&c, "k-bob").unwrap().unwrap().account_id, "team");
         // alice тратит $0.30, bob $0.20 — из общего баланса
         account_reserve(&c, "team", 300_000_000).unwrap();
-        account_settle(&c, "team", "k-alice", 300_000_000, 300_000_000, None).unwrap();
+        account_settle(&c, "team", "k-alice", 300_000_000, 300_000_000, None, None).unwrap();
         account_reserve(&c, "team", 200_000_000).unwrap();
-        account_settle(&c, "team", "k-bob", 200_000_000, 200_000_000, None).unwrap();
+        account_settle(&c, "team", "k-bob", 200_000_000, 200_000_000, None, None).unwrap();
         assert_eq!(account_get(&c, "team").unwrap().unwrap().balance_nano, 500_000_000); // $0.50 осталось
         // атрибуция по ключам раздельная
         assert_eq!(key_get(&c, "k-alice").unwrap().unwrap().spent_nano, 300_000_000);
@@ -1156,7 +1183,7 @@ mod tests {
         let c = db();
         acct_with_key(&c, "acct", "key", 2_000_000_000, 4000);
         account_reserve(&c, "acct", 100_000_000).unwrap();
-        account_settle(&c, "acct", "key", 100_000_000, 50_000_000, Some("request")).unwrap();
+        account_settle(&c, "acct", "key", 100_000_000, 50_000_000, Some("request"), None).unwrap();
         let first = ledger_after(&c, "acct", 0, 1).unwrap();
         assert_eq!(first.len(), 1);
         let rest = ledger_after(&c, "acct", first[0].id, 10).unwrap();

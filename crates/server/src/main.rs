@@ -407,8 +407,13 @@ async fn serve() -> Result<()> {
     // 1 writer + N reader-потоков (WAL параллелит чтения). N из env, деф 4 — с запасом под 1000 юзеров.
     let billing = if s.billing {
         let readers = std::env::var("CLAUDE_API_DB_READERS").ok()
-            .and_then(|v| v.parse().ok()).unwrap_or(4);
-        Some(Arc::new(forward::AsyncBilling::start(s.db_path.clone(), readers)?))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get().clamp(4, 16)).unwrap_or(4));
+        // TTL-кэш key_auth (мс): срезает read/запрос под нагрузкой; 0 = выкл. Дефолт 1с (money-safe:
+        // reserve перечитывает баланс атомарно; кэш чистится при смене статуса ключа/аккаунта).
+        let auth_ttl_ms = std::env::var("CLAUDE_API_KEYAUTH_TTL_MS").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(1000);
+        Some(Arc::new(forward::AsyncBilling::start_with(s.db_path.clone(), readers, auth_ttl_ms)?))
     } else {
         None
     };
