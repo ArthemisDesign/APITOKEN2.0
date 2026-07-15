@@ -283,7 +283,7 @@ section{padding:96px 0;border-bottom:1px solid var(--line)}
 .tier-table tbody tr:hover{background:var(--accent-soft)}
 .tier-table tbody tr:last-child td{border-bottom:0}
 .tier-cards{display:none}
-.tier-footnote{padding:16px 22px;margin:0;border-top:1px solid var(--line);font-size:11px;color:var(--txt-4)}
+.tier-footnote{padding:16px 22px;margin:0;border-top:1px solid var(--line);font-size:13px;line-height:1.6;color:var(--txt-3)}
 
 /* FAQ */
 .faq{border-top:1px solid var(--line)}
@@ -1323,11 +1323,11 @@ body.app-body .bg-decor{display:none!important}
 /* --- Top-up converter: показываем, сколько реального Claude API получает клиент --- */
 .topup-convert{margin-top:24px;display:grid;gap:18px;max-width:860px}
 .tc-stats{max-width:860px}
-.docs-h3{font-family:var(--font-mono);font-weight:700;font-size:15px;margin:24px 0 8px;color:var(--txt)}
-.docs-para{font-family:var(--font-mono);font-size:13.5px;line-height:1.7;color:var(--txt-2);margin:0 0 6px;max-width:72ch}
-.pricing-howto-row{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
-.pricing-howto-text{font-family:var(--font-mono);font-size:12px;line-height:1.6;color:var(--txt-3);margin:0;max-width:66ch}
-.pricing-howto-link,.tier-docs-link{font-family:var(--font-mono);font-size:12.5px;color:var(--accent);white-space:nowrap;font-weight:500}
+.docs-h3{font-family:var(--font-mono);font-weight:700;font-size:17px;margin:26px 0 10px;color:var(--txt)}
+.docs-para{font-family:var(--font-mono);font-size:15px;line-height:1.75;color:var(--txt-2);margin:0 0 8px;max-width:74ch}
+.pricing-howto-row{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}
+.pricing-howto-text{font-family:var(--font-mono);font-size:13.5px;line-height:1.65;color:var(--txt-2);margin:0;max-width:68ch}
+.pricing-howto-link,.tier-docs-link{font-family:var(--font-mono);font-size:13.5px;color:var(--accent);white-space:nowrap;font-weight:500}
 .pricing-howto-link:hover,.tier-docs-link:hover{text-decoration:underline}
 .tier-docs-link{display:inline-block;margin-top:14px}
 .pricing-status-warn strong{color:var(--warn)}
