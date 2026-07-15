@@ -23,6 +23,7 @@ enum WriteCmd {
     Reserve { account_id: String, hold: i64, reply: oneshot::Sender<Option<i64>> },
     Settle {
         account_id: String, key: String, hold: i64, actual: i64, reference: Option<String>,
+        usage: Option<registry::UsageEventInput>, // разбивка токенов/модели (аналитика), если есть
         reply: Option<oneshot::Sender<Option<i64>>>, // None → fire-and-forget (RAII из Drop)
     },
     Topup { account_id: String, amount: i64, reference: Option<String>, reply: oneshot::Sender<Option<i64>> },
@@ -48,6 +49,7 @@ enum ReadCmd {
     KeysByAccount(String, oneshot::Sender<Vec<KeyRow>>),
     Ledger(String, i64, oneshot::Sender<Vec<registry::LedgerRow>>),
     LedgerAfter(String, i64, i64, oneshot::Sender<Vec<registry::LedgerRow>>),
+    UsageByModel(String, i64, oneshot::Sender<Vec<registry::UsageModelAgg>>),
 }
 
 /// Async-фасад биллинга: writer-канал + пул reader-каналов. Клонируется (в `Arc`) во все хендлеры.
@@ -79,9 +81,16 @@ impl AsyncBilling {
                                 let _ = registry::account_settle(&conn, &account_id, "", hold, 0, None);
                             }
                         }
-                        WriteCmd::Settle { account_id, key, hold, actual, reference, reply } => {
+                        WriteCmd::Settle { account_id, key, hold, actual, reference, usage, reply } => {
                             let res = registry::account_settle(&conn, &account_id, &key, hold, actual, reference.as_deref())
                                 .ok().flatten();
+                            // usage_events — аналитика рядом с charge (не money). Пишем только когда
+                            // списание реально произошло (settle применился и actual>0).
+                            if res.is_some() && actual > 0 {
+                                if let Some(u) = &usage {
+                                    let _ = registry::usage_event_add(&conn, &account_id, Some(&key), u, actual, reference.as_deref());
+                                }
+                            }
                             if let Some(r) = reply { let _ = r.send(res); }
                         }
                         WriteCmd::Topup { account_id, amount, reference, reply } => {
@@ -137,6 +146,9 @@ impl AsyncBilling {
                         ReadCmd::Ledger(id, lim, r) => { let _ = r.send(registry::ledger_recent(&conn, &id, lim).unwrap_or_default()); }
                         ReadCmd::LedgerAfter(id, after, lim, r) => {
                             let _ = r.send(registry::ledger_after(&conn, &id, after, lim).unwrap_or_default());
+                        }
+                        ReadCmd::UsageByModel(id, since, r) => {
+                            let _ = r.send(registry::usage_by_model(&conn, &id, since).unwrap_or_default());
                         }
                     }
                 }
@@ -203,17 +215,25 @@ impl AsyncBilling {
         let (r, rx) = oneshot::channel();
         self.writer.send(WriteCmd::Settle {
             account_id: account_id.into(), key: key.into(), hold, actual,
-            reference: reference.map(|s| s.into()), reply: Some(r),
+            reference: reference.map(|s| s.into()), usage: None, reply: Some(r),
         }).ok()?;
         rx.await.ok().flatten()
     }
     /// Списание/возврат БЕЗ ожидания — для RAII в синхронном контексте (Drop/finalize). `mpsc::send`
     /// не блокирует и не требует рантайма; writer применит. Осиротевшее при краше вернёт `reconcile`.
-    pub fn settle_detached(&self, account_id: &str, key: &str, hold: i64, actual: i64, reference: Option<&str>) {
+    /// `usage` — разбивка токенов/модели (аналитика), пишется рядом с charge, если передана.
+    pub fn settle_detached(&self, account_id: &str, key: &str, hold: i64, actual: i64,
+                           reference: Option<&str>, usage: Option<registry::UsageEventInput>) {
         let _ = self.writer.send(WriteCmd::Settle {
             account_id: account_id.into(), key: key.into(), hold, actual,
-            reference: reference.map(|s| s.into()), reply: None,
+            reference: reference.map(|s| s.into()), usage, reply: None,
         });
+    }
+    /// Агрегат usage по модели за окно (ts ≥ since_ts) — для клиентского дашборда `/account/usage`.
+    pub async fn usage_by_model(&self, account_id: &str, since_ts: i64) -> Vec<registry::UsageModelAgg> {
+        let (r, rx) = oneshot::channel();
+        if self.reader().send(ReadCmd::UsageByModel(account_id.into(), since_ts, r)).is_err() { return Vec::new(); }
+        rx.await.unwrap_or_default()
     }
     pub async fn topup(&self, account_id: &str, amount: i64, reference: Option<&str>) -> Option<i64> {
         let (r, rx) = oneshot::channel();

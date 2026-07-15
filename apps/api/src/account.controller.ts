@@ -22,6 +22,7 @@ import { CurrentAuth, type RequestAuth, SessionAuthGuard } from "./auth.guard.js
 
 const uuidSchema = z.string().uuid();
 const ledgerLimitSchema = z.coerce.number().int().min(1).max(1000).default(50);
+const usageWindowSchema = z.string().regex(/^(all|\d+[dh])$/).default("30d");
 
 @Controller()
 @UseGuards(SessionAuthGuard)
@@ -40,6 +41,14 @@ export class AccountController {
     const parsed = ledgerLimitSchema.safeParse(value);
     if (!parsed.success) throw new BadRequestException("limit must be an integer from 1 to 1000");
     return this.withEngineErrors(() => this.accounts.getLedger(current.user.id, parsed.data));
+  }
+
+  @Get("account/usage")
+  @Header("Cache-Control", "no-store")
+  async getUsage(@CurrentAuth() current: RequestAuth, @Query("window") value?: string): Promise<unknown> {
+    const parsed = usageWindowSchema.safeParse(value ?? undefined);
+    if (!parsed.success) throw new BadRequestException("window must be like 30d, 7d, 24h, or all");
+    return this.withEngineErrors(() => this.accounts.getUsage(current.user.id, parsed.data));
   }
 
   @Get("api-keys")

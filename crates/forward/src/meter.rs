@@ -88,9 +88,21 @@ impl TeeMeter {
         if let Some(b) = ctx.bill {
             let charge = if real > 0 { metering::apply_multiplier(real, b.mult_bp) } else { 0 };
             let charge_i64 = charge.clamp(0, i64::MAX as i128) as i64;
+            // Разбивка токенов/модели для клиентского дашборда — пишется рядом с charge (аналитика).
+            // Только при реальном списании; `real` = стоимость по официальным ценам (×1.0).
+            let usage_event = if charge_i64 > 0 { Some(registry::UsageEventInput {
+                model: price_model.to_string(),
+                input_tokens: usage.input_tokens as i64,
+                output_tokens: usage.output_tokens as i64,
+                cache_read_tokens: usage.cache_read_tokens as i64,
+                cache_write_5m_tokens: usage.cache_write_5m_tokens as i64,
+                cache_write_1h_tokens: usage.cache_write_1h_tokens as i64,
+                web_search_requests: usage.web_search_requests as i64,
+                real_nano: real.clamp(0, i64::MAX as i128) as i64,
+            }) } else { None };
             // finalize СИНХРОНЕН (Stream::poll / Drop) → шлём списание АСИНХРОННО через актор
             // (settle_detached не блокирует). Гарантия: осиротевшее при краше вернёт reconcile.
-            b.billing.settle_detached(&b.account_id, &b.key, b.hold, charge_i64, b.request_id.as_deref());
+            b.billing.settle_detached(&b.account_id, &b.key, b.hold, charge_i64, b.request_id.as_deref(), usage_event);
             if charge_i64 > 0 {
                 // хвост ключа для лога — по символам (не байтами: срез не на границе char паникует)
                 let tail: String = {
