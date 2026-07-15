@@ -356,7 +356,7 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
   for (const charge of charges) {
     const bucket = startOfDay(ledgerMs(charge.timestamp));
     if (bucket < days[0]!) continue;
-    perDay.set(bucket, (perDay.get(bucket) ?? 0) + Number(charge.amountUsd) / frac);
+    perDay.set(bucket, (perDay.get(bucket) ?? 0) + nanoNum(charge.amountNano) / frac);
   }
   const series = days.map((day) => ({ day, value: perDay.get(day) ?? 0 }));
   const maxValue = Math.max(0, ...series.map((point) => point.value));
@@ -372,7 +372,7 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
     const key = charge.keyMasked ?? "__system__";
     const row = keyMap.get(key) ?? { key, count: 0, net: 0 };
     row.count += 1;
-    row.net += Number(charge.amountUsd);
+    row.net += nanoNum(charge.amountNano);
     keyMap.set(key, row);
   }
   const keyRows = [...keyMap.values()].sort((a, b) => b.net - a.net);
