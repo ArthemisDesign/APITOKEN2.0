@@ -105,18 +105,22 @@ async function tick(){
 
 function verdict(ov){
   const g=ov.recommend.gap, h5=ov.headroom['5h'], h7=ov.headroom['7d'], th=ov.target_headroom;
-  const cov=ov.coverage['7d'], cooling=ov.supply.health.cooling;
-  const low=(x)=>x!=null&&x<th;
-  if(low(h5)||low(h7)||cov>1){
+  const cov=ov.coverage['7d'], cooling=ov.supply.health.cooling, subs=ov.subs;
+  const crit=(x)=>x!=null&&x<1;                 // реальный дефицит: ёмкость кончается СЕЙЧАС
+  const tight=(x)=>x!=null&&x<th;               // тесно относительно цели запаса
+  if(crit(h5)||crit(h7)||(subs>0&&cooling>=subs)){
     return {c:'bad',em:'🔴',t:`Дефицит ёмкости — нужно +${Math.max(1,g)} подписок`,
-      d:`headroom 5h ${xr(h5)} / 7d ${xr(h7)} · coverage ×${cov} (>1 = перепродали)`};
+      d:`headroom 5h ${xr(h5)} / 7d ${xr(h7)} · потребление близко к потолку`};
   }
-  if(g>0||cooling>0){
-    return {c:'warn',em:'🟠',t:g>0?`Тесновато — рекомендую +${g} подписок`:'Работаем, часть подписок остывает',
-      d:`держим цель запаса ×${th} · headroom 5h ${xr(h5)} / 7d ${xr(h7)} · cooling ${cooling}`};
+  if(g>0||tight(h5)||tight(h7)||cov>1||cooling>0){
+    const why = g>0 ? `рекомендую +${g} подписок`
+      : (tight(h5)||tight(h7)) ? `запас ниже цели ×${th}`
+      : cov>1 ? `балансы юзеров ×${cov} к ёмкости (перепродано «на бумаге» — риск только если начнут тратить)`
+      : `${cooling} подписок остывают`;
+    return {c:'warn',em:'🟠',t:'Под контролем, но следим', d:`${esc(why)} · headroom 5h ${xr(h5)} / 7d ${xr(h7)}`};
   }
   return {c:'ok',em:'🟢',t:'Здорово — запаса хватает',
-    d:`headroom 5h ${xr(h5)} / 7d ${xr(h7)} · подписок ${ov.subs}, цель держим`};
+    d:`headroom 5h ${xr(h5)} / 7d ${xr(h7)} · подписок ${subs}, цель ×${th} держим`};
 }
 
 function render(ov,cap){
