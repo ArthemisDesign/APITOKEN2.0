@@ -1,5 +1,5 @@
 api.apitoken.sale {
-	@public_core path /v1/* /health
+	@public_core path /v1/* /health /balance
 	handle @public_core {
 		reverse_proxy 127.0.0.1:8787
 	}
