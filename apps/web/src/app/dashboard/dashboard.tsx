@@ -283,13 +283,13 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
         <div className={`tc-receive ${isUpgrade ? "tc-receive-up" : ""}`}>
           <span className="tc-recv-label">{copy.youReceive}</span>
           <b className="tc-recv-value">{amt > 0 ? `≈ ${fmtUsd(apiValue)}` : "—"}</b>
-          <span className="tc-recv-sub">{amt > 0 ? `${copy.inClaudeApi} · ${copy.officialPricing}` : copy.enterAmount}</span>
+          <span className="tc-recv-sub">{amt > 0 ? `${copy.inClaudeApi} · ${isB2c ? interpolate(copy.atTier, { tier: tierName(copy, unlockedTier.code), discount: unlockedDiscount }) : copy.officialPricing}` : copy.enterAmount}</span>
           <div className="tc-recv-meta"><span className="tc-badge">−{unlockedDiscount}%</span><span className="tc-badge tc-badge-soft">{fmtMult(unlockedFrac)} {copy.valueMultiplier}</span></div>
         </div>
       </div>
-      {isUpgrade && <p className="tc-upgrade">▲ {interpolate(copy.topupUnlocks, { tier: tierName(copy, unlockedTier.code), discount: unlockedDiscount })}</p>}
+      {isUpgrade && <p className="tc-upgrade"><span className="tc-upgrade-ic" aria-hidden="true">ⓘ</span>{interpolate(copy.topupUnlocks, { tier: tierName(copy, unlockedTier.code), discount: unlockedDiscount })}</p>}
       <p className="tc-explain">{interpolate(copy.perDollar, { mult: `$${(1 / unlockedFrac).toFixed(2)}` })}</p>
-      {amt > 0 && upsell && <p className="tc-nudge">↑ {interpolate(copy.topupUpsell, { amount: fmtUsd(Number(upsell.platformSpendUsd)), tier: tierName(copy, upsell.code), discount: upsell.discountPercent, value: fmtUsd(Number(upsell.platformSpendUsd) / ((100 - upsell.discountPercent) / 100)) })}</p>}
+      {amt > 0 && upsell && <p className="tc-nudge">↑ {interpolate(copy.topupUpsell, { amount: fmtUsd(Number(upsell.platformSpendUsd)), tier: tierName(copy, upsell.code), discount: upsell.discountPercent })}</p>}
       <div className="tc-actions"><button className="btn btn-primary" disabled={busy} onClick={start}>{busy ? copy.creating : copy.continuePayment}</button></div>
       {error && <div className="auth-msg err">{error}</div>}{checkout && !checkout.checkoutUrl && <div className="banner">{interpolate(copy.checkoutPending, { id: checkout.id, status: checkout.status })}</div>}
     </div>
@@ -518,7 +518,7 @@ function tierName(copy: DashboardCopy, tier: string): string {
 }
 
 function interpolate(template: string, values: Record<string, string | number>): string {
-  return Object.entries(values).reduce((value, [key, replacement]) => value.replace(`{${key}}`, String(replacement)), template);
+  return Object.entries(values).reduce((value, [key, replacement]) => value.replaceAll(`{${key}}`, String(replacement)), template);
 }
 
 // --- Скидка → сколько реального Claude API получает клиент ---

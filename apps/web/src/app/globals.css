@@ -1288,7 +1288,8 @@ body.app-body .bg-decor{display:none!important}
 .tc-badge-soft{color:var(--accent);background:transparent;border:1px solid var(--accent-line);font-weight:500}
 .tc-explain{font-family:var(--font-mono);font-size:12.5px;line-height:1.6;color:var(--txt-2);margin:0}
 .tc-nudge{font-family:var(--font-mono);font-size:12.5px;line-height:1.6;color:var(--accent);margin:0}
-.tc-upgrade{font-family:var(--font-mono);font-size:13px;font-weight:700;line-height:1.5;color:var(--accent);margin:0;padding:8px 12px;border:1px solid var(--accent-line);border-radius:8px;background:var(--accent-soft)}
+.tc-upgrade{display:flex;align-items:flex-start;gap:8px;font-family:var(--font-mono);font-size:12.5px;font-weight:500;line-height:1.55;color:var(--txt-2);margin:0;padding:10px 13px;border:1px solid var(--accent-line);border-radius:8px;background:var(--accent-soft)}
+.tc-upgrade-ic{flex:0 0 auto;color:var(--accent);font-weight:700}
 .tc-receive-up{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),0 8px 30px rgba(55,103,240,.14)}
 /* маркетинг: живая ценность под полем суммы */
 .topup-live{display:flex;flex-direction:column;gap:12px}
