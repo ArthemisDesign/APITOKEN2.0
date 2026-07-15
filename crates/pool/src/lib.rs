@@ -269,17 +269,18 @@ fn select_best(g: &Inner, exclude: &HashSet<String>, now: i64, rsv: &Reserve) ->
         .filter(|s| { let (c5, c7) = rsv.caps(&s.email);
             eff_util(g, &s.email, 7, now) < c7 && eff_util(g, &s.email, 5, now) < c5 })
         .collect();
-    let mut poolv: Vec<&Sub> = if ready.is_empty() { stage1 } else { ready };
+    let poolv: Vec<&Sub> = if ready.is_empty() { stage1 } else { ready };
     let warn = |e: &str| g.live.get(e).map(|l| l.status.contains("warning")).unwrap_or(false);
     let lru = |e: &str| g.live.get(e).map(|l| l.last_used).unwrap_or(0);
-    poolv.sort_by(|a, b| {
+    // Один проход (O(n)) вместо sort (O(n log n)+O(n log n) вызовов eff_util под глоб-локом).
+    // `min_by` возвращает ПЕРВЫЙ минимум при равенстве → идентично прежнему `sort().first()`.
+    poolv.into_iter().min_by(|a, b| {
         eff_util(g, &a.email, 7, now).partial_cmp(&eff_util(g, &b.email, 7, now)).unwrap_or(Equal)
             .then(eff_util(g, &a.email, 5, now).partial_cmp(&eff_util(g, &b.email, 5, now)).unwrap_or(Equal))
             .then(warn(&a.email).cmp(&warn(&b.email)))
             .then(inflight_of(g, &a.email).cmp(&inflight_of(g, &b.email)))
             .then(lru(&a.email).cmp(&lru(&b.email)))
-    });
-    poolv.first().map(|s| (*s).clone())
+    }).map(|s| s.clone())
 }
 
 /// Capacity-weighted placement НОВОЙ сессии: среди здоровых персон под потолком util И под

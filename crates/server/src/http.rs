@@ -17,6 +17,22 @@ use std::net::SocketAddr;
 /// Живой дашборд ёмкости (self-contained HTML; данные тянет с /capacity тем же origin).
 const PANEL_HTML: &str = include_str!("panel.html");
 
+/// TTL-кэш дашборд-эндпоинтов: панель поллит /overview и /capacity, а они делают O(n)-скан
+/// (capacity() под пул-локом + billing_totals full-scan). Кэш на 2с → при N поллерах пересчёт
+/// максимум раз в 2с, не крадём hot-path лок у боевых запросов. Свежесть суб-секунд дашборду не нужна.
+const DASH_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+type DashCache = std::sync::OnceLock<std::sync::Mutex<Option<(std::time::Instant, serde_json::Value)>>>;
+static OVERVIEW_CACHE: DashCache = std::sync::OnceLock::new();
+static CAPACITY_CACHE: DashCache = std::sync::OnceLock::new();
+fn cache_get(cell: &DashCache) -> Option<serde_json::Value> {
+    cell.get_or_init(|| std::sync::Mutex::new(None)).lock().unwrap().as_ref()
+        .filter(|(t, _)| t.elapsed() < DASH_TTL).map(|(_, v)| v.clone())
+}
+fn cache_put(cell: &DashCache, v: &serde_json::Value) {
+    *cell.get_or_init(|| std::sync::Mutex::new(None)).lock().unwrap() =
+        Some((std::time::Instant::now(), v.clone()));
+}
+
 pub fn router(app: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -115,11 +131,18 @@ async fn capacity(
         Metrics::inc(&app.metrics.auth_failures);
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response();
     }
+    if let Some(v) = cache_get(&CAPACITY_CACHE) { return Json(v).into_response(); }
+    let v = capacity_value(&app);
+    cache_put(&CAPACITY_CACHE, &v);
+    Json(v).into_response()
+}
+
+/// Вычисление ёмкости пула (per-sub + агрегат) — для `/capacity` и TTL-кэша. Синхронно.
+fn capacity_value(app: &AppState) -> serde_json::Value {
     let caps = app.pool.capacity();
     let round = |x: f64| (x * 100.0).round() / 100.0; // 2 знака
     // Маскируем email подписки: панельному (read-only) ключу не отдаём реальные адреса пула — это
     // операционно чувствительно (реселлимые Claude-аккаунты; полный email помогает корреляции/бану).
-    // Оставляем стабильный различитель: первые 4 символа + «…». Оператору хватает отличить подписки.
     let mask_email = |e: &str| -> String {
         let head: String = e.chars().take(4).collect();
         format!("{head}…")
@@ -141,7 +164,7 @@ async fn capacity(
             "status": c.status, "cooling": c.cooling,
         })
     }).collect();
-    Json(json!({
+    json!({
         "now": pool::now(),
         "subs": subs.len(),
         "calibrated": all_calibrated,   // false → хотя бы одна подписка ещё на прайоре
@@ -149,7 +172,7 @@ async fn capacity(
             "next_1h": round(a1), "next_5h": round(a5), "next_1d": round(a1d), "next_7d": round(a7d),
         },
         "per_sub": subs,
-    })).into_response()
+    })
 }
 
 /// Control-room: агрегат СПРОС (балансы/резерв/траты) + ПРЕДЛОЖЕНИЕ (ёмкость/потребление/здоровье)
@@ -164,7 +187,10 @@ async fn overview(
         Metrics::inc(&app.metrics.auth_failures);
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response();
     }
-    Json(overview_value(&app).await).into_response()
+    if let Some(v) = cache_get(&OVERVIEW_CACHE) { return Json(v).into_response(); }
+    let v = overview_value(&app).await;
+    cache_put(&OVERVIEW_CACHE, &v);
+    Json(v).into_response()
 }
 
 /// Вычисление control-room агрегата (без авторизации) — переиспользуется хендлером `/overview`
