@@ -124,6 +124,20 @@ pub fn open(path: &str) -> Result<Connection> {
          reset5 INTEGER, reset7 INTEGER, calib_n INTEGER, updated_ts INTEGER)",
         [],
     )?;
+    // Разбивка расхода по токенам/моделям для клиентских дашбордов (per-request). НЕ money-БД:
+    // авторитет денег — accounts.balance_nano + ledger. Эта таблица — аналитика (что реально
+    // потрачено по корзинам токенов и моделям), пишется рядом с charge, обрезается по ретенции.
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS usage_events(id INTEGER PRIMARY KEY AUTOINCREMENT, \
+         account_id TEXT NOT NULL, key TEXT, model TEXT, \
+         input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, \
+         cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_write_5m_tokens INTEGER NOT NULL DEFAULT 0, \
+         cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0, web_search_requests INTEGER NOT NULL DEFAULT 0, \
+         real_nano INTEGER NOT NULL DEFAULT 0, charge_nano INTEGER NOT NULL DEFAULT 0, ref TEXT, ts INTEGER)",
+        [],
+    )?;
+    // Индекс под агрегацию по окну (account_id + время) и под фоновую обрезку по ts.
+    let _ = c.execute("CREATE INDEX IF NOT EXISTS usage_events_acct_ts ON usage_events(account_id, ts)", []);
     Ok(c)
 }
 
@@ -623,6 +637,83 @@ fn ledger_add(conn: &Connection, account_id: &str, key: Option<&str>, kind: &str
     Ok(())
 }
 
+/// Разбивка одного оплаченного запроса по корзинам токенов + модель (owned — переживает канал
+/// биллинг-актора). `real_nano` — стоимость по официальным ценам (×1.0, до наценки).
+#[derive(Debug, Clone, Default)]
+pub struct UsageEventInput {
+    pub model: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_5m_tokens: i64,
+    pub cache_write_1h_tokens: i64,
+    pub web_search_requests: i64,
+    pub real_nano: i64,
+}
+
+/// Записать usage-событие (аналитика; НЕ money-строка). Вызывается billing-writer'ом сразу после
+/// `account_settle` на той же connection. `charge_nano` — фактически списанное (после наценки).
+pub fn usage_event_add(conn: &Connection, account_id: &str, key: Option<&str>,
+                       u: &UsageEventInput, charge_nano: i64, reference: Option<&str>) -> Result<()> {
+    conn.execute(
+        "INSERT INTO usage_events(account_id, key, model, input_tokens, output_tokens, \
+         cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, web_search_requests, \
+         real_nano, charge_nano, ref, ts) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+        rusqlite::params![account_id, key, u.model, u.input_tokens, u.output_tokens,
+            u.cache_read_tokens, u.cache_write_5m_tokens, u.cache_write_1h_tokens,
+            u.web_search_requests, u.real_nano, charge_nano, reference, now()])?;
+    Ok(())
+}
+
+/// Агрегат usage по модели за окно (ts ≥ `since_ts`). Суммы токенов по корзинам + real/charge nano
+/// + число запросов. Долларовый эквивалент по корзинам считает вызывающий (server, через metering).
+#[derive(Debug, Clone, Default)]
+pub struct UsageModelAgg {
+    pub model: String,
+    pub requests: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_5m_tokens: i64,
+    pub cache_write_1h_tokens: i64,
+    pub web_search_requests: i64,
+    pub real_nano: i64,
+    pub charge_nano: i64,
+}
+
+pub fn usage_by_model(conn: &Connection, account_id: &str, since_ts: i64) -> Result<Vec<UsageModelAgg>> {
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(model,''), COUNT(*), \
+         COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), \
+         COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_write_5m_tokens),0), \
+         COALESCE(SUM(cache_write_1h_tokens),0), COALESCE(SUM(web_search_requests),0), \
+         COALESCE(SUM(real_nano),0), COALESCE(SUM(charge_nano),0) \
+         FROM usage_events WHERE account_id=?1 AND ts>=?2 GROUP BY model ORDER BY SUM(real_nano) DESC")?;
+    let rows = stmt.query_map(rusqlite::params![account_id, since_ts], |r| Ok(UsageModelAgg {
+        model: r.get(0)?, requests: r.get(1)?, input_tokens: r.get(2)?, output_tokens: r.get(3)?,
+        cache_read_tokens: r.get(4)?, cache_write_5m_tokens: r.get(5)?, cache_write_1h_tokens: r.get(6)?,
+        web_search_requests: r.get(7)?, real_nano: r.get(8)?, charge_nano: r.get(9)?,
+    }))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Обрезать usage_events под масштаб (как ledger_prune): удалить строки старше `older_than_ts`
+/// батчами, отдавая write-lock между ними. Возвращает удалённое.
+pub fn usage_prune(conn: &Connection, older_than_ts: i64) -> Result<usize> {
+    const BATCH: i64 = 5000;
+    let mut total = 0usize;
+    loop {
+        let n = conn.execute(
+            "DELETE FROM usage_events WHERE id IN \
+             (SELECT id FROM usage_events WHERE ts < ?1 LIMIT ?2)",
+            rusqlite::params![older_than_ts, BATCH])?;
+        total += n;
+        if (n as i64) < BATCH { break; }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    Ok(total)
+}
+
 /// Прочитать ключ (для авторизации/`/balance`).
 pub fn key_get(conn: &Connection, key: &str) -> Result<Option<KeyRow>> {
     let row = conn.query_row(
@@ -932,6 +1023,43 @@ mod tests {
         assert_eq!(account_get(&c, "a").unwrap().unwrap().balance_nano, 500_000_000);
         let charges: i64 = c.query_row("SELECT COUNT(*) FROM ledger WHERE kind='charge'", [], |r| r.get(0)).unwrap();
         assert_eq!(charges, 0);
+    }
+
+    /// usage_events: запись по корзинам и агрегат по модели (суммы + real/charge nano + requests).
+    #[test]
+    fn usage_events_aggregate_by_model() {
+        let c = db();
+        acct_with_key(&c, "a", "k", 100_000_000_000, 4000);
+        let opus = UsageEventInput { model: "claude-opus-4-8".into(), input_tokens: 1000, output_tokens: 500,
+            cache_read_tokens: 200, cache_write_5m_tokens: 100, cache_write_1h_tokens: 50,
+            web_search_requests: 2, real_nano: 20_000_000 };
+        usage_event_add(&c, "a", Some("k"), &opus, 8_000_000, Some("req1")).unwrap();
+        usage_event_add(&c, "a", Some("k"), &opus, 8_000_000, Some("req2")).unwrap();
+        let sonnet = UsageEventInput { model: "claude-sonnet-5".into(), input_tokens: 300, output_tokens: 100,
+            real_nano: 5_000_000, ..Default::default() };
+        usage_event_add(&c, "a", Some("k"), &sonnet, 2_000_000, Some("req3")).unwrap();
+
+        let aggs = usage_by_model(&c, "a", 0).unwrap();
+        assert_eq!(aggs.len(), 2);
+        // сортировка по SUM(real_nano) DESC → opus первый (2×20M > 5M)
+        let o = &aggs[0];
+        assert_eq!(o.model, "claude-opus-4-8");
+        assert_eq!(o.requests, 2);
+        assert_eq!(o.input_tokens, 2000);        // 2×1000
+        assert_eq!(o.output_tokens, 1000);
+        assert_eq!(o.cache_read_tokens, 400);
+        assert_eq!(o.cache_write_5m_tokens, 200);
+        assert_eq!(o.cache_write_1h_tokens, 100);
+        assert_eq!(o.web_search_requests, 4);
+        assert_eq!(o.real_nano, 40_000_000);
+        assert_eq!(o.charge_nano, 16_000_000);
+        assert_eq!(aggs[1].model, "claude-sonnet-5");
+        assert_eq!(aggs[1].requests, 1);
+        // окно отсекает по ts: since в будущем → пусто
+        assert!(usage_by_model(&c, "a", now() + 10_000).unwrap().is_empty());
+        // prune всего → таблица пуста
+        assert!(usage_prune(&c, now() + 10_000).unwrap() >= 3);
+        assert!(usage_by_model(&c, "a", 0).unwrap().is_empty());
     }
 
     /// заблокированный аккаунт не резервируется; резолв ключа отражает активность обоих.

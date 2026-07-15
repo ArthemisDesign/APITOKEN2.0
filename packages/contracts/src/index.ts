@@ -75,6 +75,46 @@ export const engineLedgerSchema = z.object({
   entries: z.array(engineLedgerEntrySchema),
 });
 
+// Разбивка расхода по токенам/моделям (`/admin/account/:id/usage`). Токены — числа (реалистично
+// < 2^53); нанодоллары — decimal-строки (bigint-safe, деньги никогда не через JS number).
+const usageBucketSchema = z.object({
+  tokens: z.coerce.number().int().nonnegative(),
+  official_nano: decimalIntegerSchema,
+});
+const usageWebSearchBucketSchema = z.object({
+  requests: z.coerce.number().int().nonnegative(),
+  official_nano: decimalIntegerSchema,
+});
+export const engineUsageModelSchema = z.object({
+  model: z.string(),
+  requests: z.coerce.number().int().nonnegative(),
+  input_tokens: z.coerce.number().int().nonnegative(),
+  output_tokens: z.coerce.number().int().nonnegative(),
+  cache_read_tokens: z.coerce.number().int().nonnegative(),
+  cache_write_5m_tokens: z.coerce.number().int().nonnegative(),
+  cache_write_1h_tokens: z.coerce.number().int().nonnegative(),
+  web_search_requests: z.coerce.number().int().nonnegative(),
+  official_nano: decimalIntegerSchema,
+  charged_nano: decimalIntegerSchema,
+});
+export const engineUsageSchema = z.object({
+  account: z.string().startsWith("acct_"),
+  window: z.string(),
+  requests: z.coerce.number().int().nonnegative(),
+  total_official_nano: decimalIntegerSchema,
+  total_charged_nano: decimalIntegerSchema,
+  buckets: z.object({
+    input: usageBucketSchema,
+    output: usageBucketSchema,
+    cache_read: usageBucketSchema,
+    cache_write: usageBucketSchema,
+    web_search: usageWebSearchBucketSchema,
+  }),
+  models: z.array(engineUsageModelSchema),
+});
+
+export type EngineUsage = z.infer<typeof engineUsageSchema>;
+
 export const createEngineAccountSchema = z.object({
   handle: z.string().trim().min(1).max(200).optional(),
   multBp: z.number().int().min(0).max(100_000).optional(),

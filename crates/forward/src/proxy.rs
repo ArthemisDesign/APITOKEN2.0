@@ -59,7 +59,7 @@ impl Drop for HoldGuard {
         if self.armed {
             // возврат резерва на аккаунт (actual=0 → ledger-charge не пишется). Drop синхронен —
             // шлём АСИНХРОННО через актор (settle_detached: mpsc::send не блокирует, не требует await).
-            if let Some(b) = &self.billing { b.settle_detached(&self.account_id, &self.key, self.hold, 0, None); }
+            if let Some(b) = &self.billing { b.settle_detached(&self.account_id, &self.key, self.hold, 0, None, None); }
         }
     }
 }

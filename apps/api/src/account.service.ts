@@ -82,6 +82,35 @@ export class AccountService {
     };
   }
 
+  async getUsage(userId: string, window: string): Promise<unknown> {
+    const usage = await this.withEngineAccount(userId, (accountId) => this.engine.getUsage(accountId, window));
+    return {
+      window: usage.window,
+      requests: usage.requests,
+      totalOfficialNano: usage.total_official_nano,
+      totalChargedNano: usage.total_charged_nano,
+      buckets: {
+        input: { tokens: usage.buckets.input.tokens, officialNano: usage.buckets.input.official_nano },
+        output: { tokens: usage.buckets.output.tokens, officialNano: usage.buckets.output.official_nano },
+        cacheRead: { tokens: usage.buckets.cache_read.tokens, officialNano: usage.buckets.cache_read.official_nano },
+        cacheWrite: { tokens: usage.buckets.cache_write.tokens, officialNano: usage.buckets.cache_write.official_nano },
+        webSearch: { requests: usage.buckets.web_search.requests, officialNano: usage.buckets.web_search.official_nano },
+      },
+      models: usage.models.map((model) => ({
+        model: model.model,
+        requests: model.requests,
+        inputTokens: model.input_tokens,
+        outputTokens: model.output_tokens,
+        cacheReadTokens: model.cache_read_tokens,
+        cacheWrite5mTokens: model.cache_write_5m_tokens,
+        cacheWrite1hTokens: model.cache_write_1h_tokens,
+        webSearchRequests: model.web_search_requests,
+        officialNano: model.official_nano,
+        chargedNano: model.charged_nano,
+      })),
+    };
+  }
+
   async listApiKeys(userId: string): Promise<unknown> {
     const { accountId, value: engineKeys } = await this.withEngineAccountId(
       userId,

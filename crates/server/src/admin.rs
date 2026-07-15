@@ -311,3 +311,83 @@ pub async fn key_status_by_id(
     if n == 0 { return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown key"}))).into_response(); }
     Json(json!({"key_id": key_id, "status": req.status, "updated": n})).into_response()
 }
+
+#[derive(Deserialize)]
+pub struct UsageQuery { window: Option<String> }
+
+/// Окно вида "30d"/"7d"/"24h"/"90d"/"all" → нижняя граница ts (unix-сек). Дефолт — 30 дней.
+fn window_since(window: &str) -> (String, i64) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64).unwrap_or(0);
+    let w = window.trim();
+    if w.eq_ignore_ascii_case("all") { return ("all".into(), 0); }
+    let (num, unit_secs) = if let Some(n) = w.strip_suffix('h') { (n.parse::<i64>().ok(), 3_600) }
+        else if let Some(n) = w.strip_suffix('d') { (n.parse::<i64>().ok(), 86_400) }
+        else { (None, 0) };
+    match num {
+        Some(n) if n > 0 => (w.to_string(), now - n * unit_secs),
+        _ => ("30d".into(), now - 30 * 86_400), // дефолт при пустом/битом окне
+    }
+}
+
+/// GET /admin/account/{id}/usage?window=30d — разбивка расхода по токенам/моделям для дашборда.
+/// Долларовый эквивалент по корзинам считаем здесь (per-model суммы токенов × официальные ставки).
+pub async fn list_usage(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(q): Query<UsageQuery>,
+) -> Response {
+    if let Some(r) = deny(&app, &headers, &peer) { return r; }
+    let b = match billing(&app) { Ok(b) => b, Err(r) => return r };
+    if b.account(&id).await.is_none() {
+        return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown account"}))).into_response();
+    }
+    let (window, since) = window_since(q.window.as_deref().unwrap_or("30d"));
+    let aggs = b.usage_by_model(&id, since).await;
+
+    // Пер-корзинный официальный $ (×1.0): суммируем токены×ставку модели по всем моделям.
+    let (mut in_n, mut out_n, mut cr_n, mut cw_n, mut ws_n): (i128, i128, i128, i128, i128) = (0, 0, 0, 0, 0);
+    let (mut in_t, mut out_t, mut cr_t, mut cw_t, mut ws_r): (i64, i64, i64, i64, i64) = (0, 0, 0, 0, 0);
+    let (mut total_official, mut total_charged, mut total_requests): (i128, i128, i64) = (0, 0, 0);
+    let models: Vec<_> = aggs.iter().map(|m| {
+        let p = metering::model_prices(&m.model);
+        in_n += m.input_tokens as i128 * p.input;
+        out_n += m.output_tokens as i128 * p.output;
+        cr_n += m.cache_read_tokens as i128 * p.cache_read;
+        cw_n += m.cache_write_5m_tokens as i128 * p.cache_write_5m + m.cache_write_1h_tokens as i128 * p.cache_write_1h;
+        ws_n += m.web_search_requests as i128 * metering::WEB_SEARCH_NANO;
+        in_t += m.input_tokens; out_t += m.output_tokens; cr_t += m.cache_read_tokens;
+        cw_t += m.cache_write_5m_tokens + m.cache_write_1h_tokens; ws_r += m.web_search_requests;
+        total_official += m.real_nano as i128; total_charged += m.charge_nano as i128; total_requests += m.requests;
+        json!({
+            "model": m.model,
+            "requests": m.requests,
+            "input_tokens": m.input_tokens,
+            "output_tokens": m.output_tokens,
+            "cache_read_tokens": m.cache_read_tokens,
+            "cache_write_5m_tokens": m.cache_write_5m_tokens,
+            "cache_write_1h_tokens": m.cache_write_1h_tokens,
+            "web_search_requests": m.web_search_requests,
+            "official_nano": m.real_nano.to_string(),
+            "charged_nano": m.charge_nano.to_string(),
+        })
+    }).collect();
+
+    Json(json!({
+        "account": id,
+        "window": window,
+        "requests": total_requests,
+        "total_official_nano": total_official.to_string(),
+        "total_charged_nano": total_charged.to_string(),
+        "buckets": {
+            "input": { "tokens": in_t, "official_nano": in_n.to_string() },
+            "output": { "tokens": out_t, "official_nano": out_n.to_string() },
+            "cache_read": { "tokens": cr_t, "official_nano": cr_n.to_string() },
+            "cache_write": { "tokens": cw_t, "official_nano": cw_n.to_string() },
+            "web_search": { "requests": ws_r, "official_nano": ws_n.to_string() },
+        },
+        "models": models,
+    })).into_response()
+}
