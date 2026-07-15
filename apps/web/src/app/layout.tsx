@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import "./globals.css";
 import "./anim.css";
 import { I18nProvider } from "@/components/i18n-provider";
+import { SiteAnalytics } from "@/components/site-analytics";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://apitoken.sale"),
@@ -27,6 +28,7 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
         <I18nProvider>
           {children}
         </I18nProvider>
+        <SiteAnalytics />
       </body>
     </html>
   );

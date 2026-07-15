@@ -47,6 +47,18 @@ describe("completed Next.js migration", () => {
     for (const route of ["/privacy", "/terms", "/support", "/plans"]) expect(compliance).toContain(`href: \"${route}\"`);
   });
 
+  it("loads Vercel Analytics once and strips sensitive URL data", () => {
+    const rootLayout = readFileSync(join(appRoot, "layout.tsx"), "utf8");
+    const analytics = readFileSync(join(root, "components", "site-analytics.tsx"), "utf8");
+    const packageJson = readFileSync(join(root, "..", "package.json"), "utf8");
+    expect(rootLayout).toContain("<SiteAnalytics />");
+    expect(analytics).toContain('from "@vercel/analytics/next"');
+    expect(analytics).toContain("beforeSend");
+    expect(analytics).toContain('.split("#", 1)');
+    expect(analytics).toContain('.split("?", 1)');
+    expect(packageJson).toContain('"@vercel/analytics"');
+  });
+
   it("keeps reloadable dashboard views in the single canonical /dashboard route", () => {
     const dashboard = readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8");
     const routes = readFileSync(join(appRoot, "dashboard", "dashboard-route.ts"), "utf8");

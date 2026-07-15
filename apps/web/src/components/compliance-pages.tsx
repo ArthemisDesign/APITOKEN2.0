@@ -42,6 +42,7 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
             "Account information: email address, account identifier, verification status, customer type, and account settings.",
             "Authentication information: a securely hashed password for password accounts, or identifiers and profile data returned by Google or GitHub when you choose OAuth sign-in. We do not receive your Google or GitHub password.",
             "Technical and security information: IP address, browser and device details, timestamps, session identifiers, security events, and diagnostic logs.",
+            "Website analytics: page path without query strings or fragments, timestamp, referrer, approximate location, device type, operating system, and browser. We receive this through Vercel Web Analytics as aggregated traffic statistics and do not link it to your account identity.",
             "API and billing metadata: API key identifier, selected model, request time, token and usage totals, official API cost, discount, balance charge, ledger reference, and request status.",
             "Payment information: top-up amount, currency, payment status, provider transaction identifiers, and webhook records. Full payment-card credentials are handled by the payment provider and are not stored by apiToken.sale.",
             "Support information: messages, attachments, account or order identifiers, and other information you voluntarily send to support.",
@@ -73,7 +74,7 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
         {
           title: "6. When information is shared",
           paragraphs: [
-            "We do not sell personal information. We share only what is reasonably necessary with infrastructure and hosting providers, authentication providers you select, payment providers shown at checkout, upstream model/API providers, security and monitoring vendors, professional advisers, and public authorities when lawfully required.",
+            "We do not sell personal information. We share only what is reasonably necessary with infrastructure, hosting and analytics providers, authentication providers you select, payment providers shown at checkout, upstream model/API providers, security and monitoring vendors, professional advisers, and public authorities when lawfully required.",
             "A provider may act in another country and under its own privacy terms. We select providers for a defined operational purpose and limit access where reasonably possible.",
           ],
         },
@@ -81,6 +82,7 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
           title: "7. Cookies and local storage",
           paragraphs: [
             "The Service uses an essential secure, HttpOnly session cookie to keep you signed in. Language and theme preferences may be stored in your browser's local storage. These technologies are required for the requested functionality and are not used by us to sell advertising profiles.",
+            "We use Vercel Web Analytics for anonymous, aggregated page-view statistics. It does not use third-party analytics cookies. Vercel creates a short-lived visitor hash from a request and discards the visitor-session identifier after 24 hours. apiToken.sale removes query strings and URL fragments before an analytics event is sent.",
           ],
         },
         {
@@ -239,6 +241,7 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
             "Данные аккаунта: адрес электронной почты, идентификатор аккаунта, статус подтверждения, тип клиента и настройки.",
             "Данные авторизации: надёжно хешированный пароль для аккаунтов с паролем либо идентификаторы и данные профиля, полученные от Google или GitHub при выборе OAuth. Пароль от Google или GitHub нам не передаётся.",
             "Технические данные и данные безопасности: IP-адрес, сведения о браузере и устройстве, время событий, идентификаторы сессий, события безопасности и диагностические журналы.",
+            "Веб-аналитика: путь страницы без параметров запроса и фрагментов, время, источник перехода, примерное местоположение, тип устройства, операционная система и браузер. Мы получаем эти сведения через Vercel Web Analytics в виде агрегированной статистики и не связываем их с личностью владельца аккаунта.",
             "Метаданные API и биллинга: идентификатор API-ключа, выбранная модель, время запроса, объём использования и токены, официальная стоимость API, скидка, списание с баланса, ссылка в журнале операций и статус запроса.",
             "Платёжные данные: сумма пополнения, валюта, статус, идентификаторы операции у провайдера и записи вебхуков. Полные данные банковской карты обрабатываются платёжным провайдером и не хранятся apiToken.sale.",
             "Данные поддержки: сообщения, вложения, идентификаторы аккаунта или заказа и иные сведения, которые вы добровольно отправляете.",
@@ -270,7 +273,7 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
         {
           title: "6. Кому могут передаваться данные",
           paragraphs: [
-            "Мы не продаём персональные данные. Необходимые сведения могут передаваться поставщикам хостинга и инфраструктуры, выбранным вами провайдерам авторизации, платёжному провайдеру на странице оплаты, поставщикам моделей и API, сервисам безопасности и мониторинга, профессиональным консультантам и государственным органам при наличии законного требования.",
+            "Мы не продаём персональные данные. Необходимые сведения могут передаваться поставщикам инфраструктуры, хостинга и аналитики, выбранным вами провайдерам авторизации, платёжному провайдеру на странице оплаты, поставщикам моделей и API, сервисам безопасности и мониторинга, профессиональным консультантам и государственным органам при наличии законного требования.",
             "Поставщик может находиться в другой стране и применять собственные правила конфиденциальности. Мы привлекаем поставщиков для конкретной рабочей цели и по возможности ограничиваем доступ.",
           ],
         },
@@ -278,6 +281,7 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
           title: "7. Cookie и локальное хранилище",
           paragraphs: [
             "Сервис использует обязательный защищённый HttpOnly cookie сессии, чтобы сохранять вход в аккаунт. Язык и тема могут храниться в локальном хранилище браузера. Эти технологии нужны для запрошенных функций и не используются нами для продажи рекламных профилей.",
+            "Мы используем Vercel Web Analytics для анонимной агрегированной статистики просмотров. Сервис аналитики не использует сторонние cookie. Vercel создаёт краткосрочный хеш посетителя из запроса и удаляет идентификатор сессии посетителя через 24 часа. apiToken.sale удаляет параметры запроса и фрагменты URL до отправки события аналитики.",
           ],
         },
         {
