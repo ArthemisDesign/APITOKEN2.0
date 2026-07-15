@@ -14,7 +14,14 @@ async function bootstrap(): Promise<void> {
   }), { rawBody: true });
   await app.register(helmet, { contentSecurityPolicy: false });
   const config = app.get(ConfigService<Environment, true>);
-  app.enableCors({ origin: new URL(config.get("PUBLIC_APP_BASE_URL", { infer: true })).origin, credentials: true });
+  // @fastify/cors по умолчанию отдаёт methods="GET,HEAD,POST" — без DELETE/PATCH браузер
+  // заворачивает preflight на revoke-ключа и правку профиля ("Failed to fetch"). Перечисляем
+  // явно все методы, которыми пользуется браузерный клиент.
+  app.enableCors({
+    origin: new URL(config.get("PUBLIC_APP_BASE_URL", { infer: true })).origin,
+    credentials: true,
+    methods: ["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"],
+  });
   app.enableShutdownHooks();
   app.setGlobalPrefix("v1");
 
