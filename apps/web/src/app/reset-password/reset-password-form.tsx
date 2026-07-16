@@ -2,15 +2,38 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useState, type FormEvent } from "react";
+import { useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { api, ApiError } from "@/lib/api";
 import { AuthIntro, Feedback } from "@/components/auth-shell";
 
 export function ResetPasswordForm() {
-  const token = useSearchParams().get("token") ?? "";
+  const searchParams = useSearchParams();
+  const initialQueryToken = useRef(searchParams.get("token") ?? "");
   const router = useRouter();
-  const [message, setMessage] = useState<string | null>(token ? null : "This reset link is missing its token.");
+  const [token, setToken] = useState("");
+  const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  useLayoutEffect(() => {
+    const url = new URL(window.location.href);
+    const fragmentParams = new URLSearchParams(url.hash.slice(1));
+    const fragmentToken = fragmentParams.get("token") ?? "";
+    const capturedToken = fragmentToken || initialQueryToken.current;
+    const hadFragmentToken = fragmentParams.has("token");
+    const hadQueryToken = url.searchParams.has("token");
+
+    if (hadFragmentToken) {
+      fragmentParams.delete("token");
+      url.hash = fragmentParams.size ? `#${fragmentParams.toString()}` : "";
+    }
+    if (hadQueryToken) url.searchParams.delete("token");
+    if (hadFragmentToken || hadQueryToken) {
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    }
+
+    setToken(capturedToken);
+    setMessage(capturedToken ? null : "This reset link is missing its token.");
+  }, []);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setMessage(null); setBusy(true);
     const password = String(new FormData(event.currentTarget).get("password") ?? "");
@@ -19,6 +42,7 @@ export function ResetPasswordForm() {
     catch (error) { setMessage(error instanceof ApiError ? error.message : "Unable to reset the password"); setBusy(false); }
   }
   return <>
+    <meta name="referrer" content="no-referrer" />
     <AuthIntro title="Choose a new password" subtitle="Use at least 12 characters." />
     <form onSubmit={submit}><div className="field"><label htmlFor="password">New password</label><input id="password" name="password" type="password" autoComplete="new-password" minLength={12} maxLength={128} required /></div>
       <button className="btn btn-primary" disabled={busy || !token}>{busy ? "…" : "Update password"}</button><Feedback message={message} /></form>

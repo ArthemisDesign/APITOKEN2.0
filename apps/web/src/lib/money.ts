@@ -18,6 +18,5 @@ export function normalizeUsd(value: string): string {
 
 export function wholeUsdError(value: string): string | null {
   if (!/^[1-9]\d*$/.test(value)) return "Enter a positive whole USD amount without decimals";
-  if (BigInt(value) > 10_000n) return "The maximum top-up is $10,000";
   return null;
 }

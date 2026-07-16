@@ -186,6 +186,9 @@ export const api = {
   createApiKey: (label?: string) => request<ApiKeyView>("/api-keys", {
     method: "POST", body: JSON.stringify(label ? { label } : {}),
   }),
+  renameApiKey: (id: string, label: string) => request<ApiKeyView>(`/api-keys/${encodeURIComponent(id)}`, {
+    method: "PATCH", body: JSON.stringify({ label }),
+  }),
   revokeApiKey: (id: string) => request<void>(`/api-keys/${encodeURIComponent(id)}`, { method: "DELETE" }),
   createCheckout: (amountUsd: string) => request<CheckoutView>("/checkouts", {
     method: "POST", body: JSON.stringify({ amountUsd, provider: "cryptomus" }),

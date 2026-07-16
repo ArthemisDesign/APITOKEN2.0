@@ -5,38 +5,132 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { AuthIntro, Feedback } from "@/components/auth-shell";
+import { useI18n } from "@/components/i18n-provider";
+
+const copy = {
+  en: {
+    title: "Verify your email",
+    sentTo: "We sent a verification link to {email}.",
+    subtitle: "Complete email verification to activate your account.",
+    verifying: "Verifying your email…",
+    inbox: "Check your inbox and open the verification link.",
+    verified: "Email verified. Opening your dashboard…",
+    invalid: "The verification link is invalid or expired",
+    resent: "If the account is eligible, a new verification email has been queued.",
+    resendFailed: "Unable to resend right now",
+    resend: "Resend verification email",
+    back: "Back to login",
+  },
+  ru: {
+    title: "Подтвердите адрес электронной почты",
+    sentTo: "Мы отправили ссылку для подтверждения на адрес {email}.",
+    subtitle: "Подтвердите адрес электронной почты, чтобы активировать аккаунт.",
+    verifying: "Подтверждаем адрес электронной почты…",
+    inbox: "Проверьте почту и откройте ссылку для подтверждения.",
+    verified: "Адрес подтверждён. Открываем личный кабинет…",
+    invalid: "Ссылка для подтверждения недействительна или устарела",
+    resent: "Если для аккаунта доступна повторная отправка, новое письмо поставлено в очередь.",
+    resendFailed: "Сейчас не удалось отправить письмо повторно",
+    resend: "Отправить письмо повторно",
+    back: "Вернуться ко входу",
+  },
+} as const;
+
+type MessageKey = "verifying" | "inbox" | "verified" | "invalid" | "resent" | "resendFailed";
+
+function captureAndScrubVerificationToken(): string | null {
+  const url = new URL(window.location.href);
+  const hashParams = new URLSearchParams(url.hash.slice(1));
+  const hashToken = hashParams.get("token");
+  const queryToken = url.searchParams.get("token");
+
+  if (hashToken === null && queryToken === null) return null;
+
+  url.searchParams.delete("token");
+  hashParams.delete("token");
+  url.hash = hashParams.toString();
+  window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+
+  return hashToken || queryToken || null;
+}
 
 export function VerifyEmail() {
+  const { language } = useI18n();
+  const t = copy[language];
   const search = useSearchParams();
   const router = useRouter();
-  const token = search.get("token");
   const email = search.get("email");
-  const started = useRef(false);
-  const [message, setMessage] = useState(token ? "Verifying your email…" : "Check your inbox and open the verification link.");
-  const [success, setSuccess] = useState(!token);
+  const hasQueryToken = search.has("token");
+  const processing = useRef(false);
+  const [messageKey, setMessageKey] = useState<MessageKey | null>(hasQueryToken ? "verifying" : null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+  const [hasToken, setHasToken] = useState(hasQueryToken);
+  const [ready, setReady] = useState(hasQueryToken);
   const [busy, setBusy] = useState(false);
 
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    if (!token || started.current) return;
-    started.current = true;
+    if (processing.current) return;
+    const token = captureAndScrubVerificationToken();
+    setReady(true);
+
+    if (!token) {
+      setHasToken(false);
+      setMessageKey("inbox");
+      setSuccess(true);
+      return;
+    }
+
+    processing.current = true;
+    setHasToken(true);
+    setErrorMessage(null);
+    setMessageKey("verifying");
+    setSuccess(false);
     api.verifyEmail(token).then(() => {
-      setMessage("Email verified. Opening your dashboard…"); setSuccess(true);
+      setMessageKey("verified");
+      setSuccess(true);
       window.setTimeout(() => { router.replace("/dashboard"); }, 500);
-    }).catch((error) => { setMessage(error instanceof ApiError ? error.message : "The verification link is invalid or expired"); setSuccess(false); });
-  }, [router, token]);
+    }).catch((error) => {
+      if (error instanceof ApiError) {
+        setErrorMessage(error.message);
+        setMessageKey(null);
+      } else {
+        setMessageKey("invalid");
+      }
+      setSuccess(false);
+    });
+  }, [router, search]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   async function resend() {
     if (!email) return;
     setBusy(true);
-    try { await api.resendVerification(email); setMessage("If the account is eligible, a new verification email has been queued."); setSuccess(true); }
-    catch (error) { setMessage(error instanceof ApiError ? error.message : "Unable to resend right now"); setSuccess(false); }
-    finally { setBusy(false); }
+    setErrorMessage(null);
+    try {
+      await api.resendVerification(email);
+      setMessageKey("resent");
+      setSuccess(true);
+    } catch (error) {
+      if (error instanceof ApiError) {
+        setErrorMessage(error.message);
+        setMessageKey(null);
+      } else {
+        setMessageKey("resendFailed");
+      }
+      setSuccess(false);
+    } finally {
+      setBusy(false);
+    }
   }
 
+  const message = errorMessage ?? (messageKey ? t[messageKey] : null);
+
   return <>
-    <AuthIntro title="Verify your email" subtitle={email ? `We sent a verification link to ${email}.` : "Complete email verification to activate your account."} />
+    <meta name="referrer" content="no-referrer" />
+    <AuthIntro title={t.title} subtitle={email ? t.sentTo.replace("{email}", email) : t.subtitle} />
     <Feedback message={message} success={success} />
-    {!token && email && <button className="btn btn-primary" disabled={busy} onClick={resend}>{busy ? "…" : "Resend verification email"}</button>}
-    <div className="auth-alt"><Link href="/login">Back to login</Link></div>
+    {ready && !hasToken && email && <button className="btn btn-primary" disabled={busy} onClick={resend}>{busy ? "…" : t.resend}</button>}
+    <div className="auth-alt"><Link href="/login">{t.back}</Link></div>
   </>;
 }

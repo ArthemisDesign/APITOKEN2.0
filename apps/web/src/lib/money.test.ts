@@ -13,12 +13,15 @@ describe("money formatting", () => {
     expect(normalizeUsd("1000.00")).toBe("$1,000");
   });
 
-  it("accepts only bounded positive whole USD input", () => {
+  it("accepts any positive whole USD amount and rejects malformed values", () => {
     expect(wholeUsdError("1")).toBeNull();
     expect(wholeUsdError("10000")).toBeNull();
+    // No client-side ceiling: arbitrary positive whole USD is allowed; the backend
+    // enforces the authoritative min/max (C77).
+    expect(wholeUsdError("10001")).toBeNull();
+    expect(wholeUsdError("999999")).toBeNull();
     expect(wholeUsdError("0")).toMatch(/positive whole/);
     expect(wholeUsdError("01")).toMatch(/positive whole/);
     expect(wholeUsdError("1.5")).toMatch(/positive whole/);
-    expect(wholeUsdError("10001")).toMatch(/maximum/);
   });
 });

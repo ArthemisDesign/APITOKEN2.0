@@ -16,10 +16,13 @@ export function formatWholeUsd(value: string): string {
   return `$${BigInt(value).toLocaleString("en-US")}`;
 }
 
-/** Индекс тира по НАКОПЛЕННОЙ сумме пополнений (USD). −1 = тира ещё нет (ниже первого порога $100). */
-export function tierIndexForTopups(topupUsd: number): number {
+/** Индекс тира после пополнения: текущая накопленная сумма + новое пополнение, оба в нано-USD. */
+export function tierIndexForTopups(currentTopupsNano: string, proposedTopupNano: string): number {
+  const totalTopupsNano = BigInt(currentTopupsNano) + BigInt(proposedTopupNano);
   let index = -1;
-  B2C_PRICING_MILESTONES.forEach((milestone, i) => { if (topupUsd >= Number(milestone.platformSpendUsd)) index = i; });
+  B2C_PRICING_MILESTONES.forEach((milestone, i) => {
+    if (totalTopupsNano >= BigInt(milestone.spendThresholdNano)) index = i;
+  });
   return index;
 }
 
@@ -36,5 +39,5 @@ export function pricingMilestoneProgress(currentTier: string, spentNano: string)
   const spent = BigInt(spentNano);
   const position = spent <= start ? 0n : spent >= end ? end - start : spent - start;
   const within = end > start ? Number(position * 10_000n / (end - start)) / 10_000 : 0;
-  return ((index + 1 + within) / segments) * 100;
+  return ((index + within) / (segments - 1)) * 100;
 }

@@ -24,7 +24,9 @@ export function TopUpAmountInput({ className, initialAmount, showReceive }: { cl
   if (!showReceive) return field;
 
   const amt = Number(amount) || 0;
-  const idx = tierIndexForTopups(amt);
+  // Hero/marketing preview has no account context → project the tier from a zero prior balance.
+  const proposedNano = amount ? (BigInt(amount) * 1_000_000_000n).toString() : "0";
+  const idx = amount ? tierIndexForTopups("0", proposedNano) : -1;
   const tier = idx >= 0 ? B2C_PRICING_MILESTONES[idx] : null;
   const receive = amt / (tier ? (100 - tier.discountPercent) / 100 : 1);
   const value = `$${receive.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;

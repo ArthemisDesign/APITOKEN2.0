@@ -7,8 +7,8 @@ import { useCallback, useEffect, useState, type CSSProperties, type FormEvent } 
 import {
   api, ApiError, type AccountView, type ApiKeyView, type AuthUser, type CheckoutView, type LedgerEntry, type UsageView,
 } from "@/lib/api";
-import { nanoToUsd, normalizeUsd, wholeUsdError } from "@/lib/money";
-import { B2C_PRICING_MILESTONES, formatWholeUsd, pricingMilestoneProgress, tierIndexForTopups } from "@/lib/pricing-tiers";
+import { normalizeUsd } from "@/lib/money";
+import { B2C_PRICING_MILESTONES, formatWholeUsd, pricingMilestoneProgress } from "@/lib/pricing-tiers";
 import { useI18n } from "@/components/i18n-provider";
 import { ThemeToggle } from "@/components/site-chrome";
 import { dashboardCopy, type DashboardCopy } from "@/lib/dashboard-copy";
@@ -16,6 +16,36 @@ import { DOCS_URL } from "@/lib/site-links";
 import { dashboardHref, parseDashboardSection, type DashboardSection } from "./dashboard-route";
 
 type Section = DashboardSection;
+type KeyStatusFilter = "active" | "disabled" | "all";
+
+const NANO_PER_USD = 1_000_000_000n;
+const BASIS_POINTS = 10_000n;
+const CHECKOUT_ORIGINS: Record<CheckoutView["provider"], ReadonlySet<string>> = {
+  cryptomus: new Set(["https://pay.cryptomus.com"]),
+};
+
+const localDashboardCopy = {
+  en: {
+    logoutError: "Logout failed. Your server session is still active; please try again.", loggingOut: "Logging out…",
+    invalidCheckoutUrl: "The payment provider returned an unsafe checkout address. Payment was not opened.",
+    invalidWholeUsd: "Enter a positive whole USD amount using digits only, without decimals, signs, separators, or leading zeros.",
+    editLabel: "Rename", saveLabel: "Save", cancelLabel: "Cancel", labelRequired: "Enter a label before saving.", renameKeyError: "Unable to rename API key",
+    filterLabel: "Filter API keys", activeFilter: "Active", disabledFilter: "Disabled", allFilter: "All",
+    noActiveKeys: "No active API keys.", noDisabledKeys: "No disabled API keys.", activeStatus: "Active", disabledStatus: "Disabled",
+    partialLedger: "Showing only the latest 100 ledger entries. Usage, key, transaction, and top-up totals based on this list may be incomplete.",
+    topupNextRemaining: "Add {amount} more to reach {tier} (−{discount}%).",
+  },
+  ru: {
+    logoutError: "Не удалось выйти. Серверная сессия всё ещё активна; повторите попытку.", loggingOut: "Выходим…",
+    invalidCheckoutUrl: "Платёжный сервис вернул небезопасный адрес. Страница оплаты не была открыта.",
+    invalidWholeUsd: "Введите целую положительную сумму в USD только цифрами: без дробей, знаков, разделителей и ведущих нулей.",
+    editLabel: "Переименовать", saveLabel: "Сохранить", cancelLabel: "Отмена", labelRequired: "Введите название перед сохранением.", renameKeyError: "Не удалось переименовать API-ключ",
+    filterLabel: "Фильтр API-ключей", activeFilter: "Активные", disabledFilter: "Отключённые", allFilter: "Все",
+    noActiveKeys: "Активных API-ключей нет.", noDisabledKeys: "Отключённых API-ключей нет.", activeStatus: "Активен", disabledStatus: "Отключён",
+    partialLedger: "Показаны только последние 100 записей журнала. Итоги использования, ключей, операций и пополнений по этому списку могут быть неполными.",
+    topupNextRemaining: "Добавьте ещё {amount}, чтобы получить {tier} (−{discount}%).",
+  },
+} as const;
 
 const navigation: Array<{ section?: Section; label: keyof DashboardCopy; icon: string; href?: string; group?: keyof DashboardCopy }> = [
   { group: "navStart", section: "overview", label: "navOverview", icon: "▦" },
@@ -38,6 +68,7 @@ export function Dashboard() {
   const searchParams = useSearchParams();
   const { language, setLanguage } = useI18n();
   const copy = dashboardCopy[language];
+  const localCopy = localDashboardCopy[language];
   const [section, setSection] = useState<Section>(() => parseDashboardSection(searchParams.get("view")));
   const [user, setUser] = useState<AuthUser | null>(null);
   const [account, setAccount] = useState<AccountView | null>(null);
@@ -46,8 +77,8 @@ export function Dashboard() {
   const [usage, setUsage] = useState<UsageView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [issuedKey, setIssuedKey] = useState<string | null>(null);
-  const [sessionRawKeys, setSessionRawKeys] = useState<Record<string, string>>({});
+  const [logoutError, setLogoutError] = useState<string | null>(null);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [sideOpen, setSideOpen] = useState(false);
 
   const load = useCallback(async () => {
@@ -79,7 +110,11 @@ export function Dashboard() {
   }, []);
 
   async function logout() {
-    await api.logout().catch(() => undefined); router.replace("/login");
+    if (loggingOut) return;
+    setLoggingOut(true); setLogoutError(null);
+    try { await api.logout(); router.replace("/login"); }
+    catch { setLogoutError(localCopy.logoutError); }
+    finally { setLoggingOut(false); }
   }
 
   function open(next: Section) {
@@ -112,7 +147,7 @@ export function Dashboard() {
           <Link href="/plans" target="_blank">{language === "ru" ? "Цены" : "Pricing"}</Link>
         </nav>
         <div className="side-user"><span className="side-av">{(user.displayName || user.email)[0]?.toUpperCase()}</span><div className="side-uinfo"><b>{user.displayName || user.email.split("@")[0]}</b><span>{user.email}</span></div></div>
-        <button className="btn btn-ghost btn-sm side-logout" onClick={logout}>{copy.logout}</button>
+        <button className="btn btn-ghost btn-sm side-logout" disabled={loggingOut} onClick={logout}>{loggingOut ? localCopy.loggingOut : copy.logout}</button>
       </div>
     </aside>
     <button className={`side-scrim ${sideOpen ? "show" : ""}`} onClick={() => setSideOpen(false)} aria-label={copy.closeMenu} />
@@ -122,14 +157,15 @@ export function Dashboard() {
           <button className="app-top-bal" onClick={() => open("credits")} title={copy.navTopUp}>
             <span className="atb-ic" aria-hidden="true" />
             <span className="atb-label">{copy.creditsLabel}</span>
-            <span className={`atb-val${nanoNum(account.balanceNano) < 0 ? " atb-neg" : ""}`}>{nanoToUsd(account.balanceNano)}</span>
+            <span className={`atb-val${BigInt(account.balanceNano) < 0n ? " atb-neg" : ""}`}>{formatNanoUsd(account.balanceNano)}</span>
           </button>
         </div>
       </header>
       <div className="app-body-in">
         {error && <div className="banner banner-error">{error} <button className="btn btn-ghost btn-sm" onClick={load}>{copy.retry}</button></div>}
+        {logoutError && <div className="banner banner-error">{logoutError} <button className="btn btn-ghost btn-sm" disabled={loggingOut} onClick={logout}>{copy.retry}</button></div>}
         {section === "overview" && <Overview account={account} keys={activeKeys} open={open} />}
-        {section === "keys" && <ApiKeys keys={keys} issued={issuedKey} sessionRawKeys={sessionRawKeys} onIssuedChange={setIssuedKey} onSessionKey={(id, key) => setSessionRawKeys((prev) => ({ ...prev, [id]: key }))} onChanged={load} />}
+        {section === "keys" && <ApiKeys keys={keys} onChanged={load} />}
         {section === "credits" && <Credits account={account} ledger={ledger} />}
         {section === "usage" && <Usage account={account} ledger={ledger} usage={usage} />}
         {section === "profile" && <Profile user={user} open={open} onUpdated={setUser} />}
@@ -150,12 +186,12 @@ function PageHeading({ eyebrow, title, subtitle }: { eyebrow: string; title: str
 
 function Overview({ account, keys, open }: { account: AccountView; keys: ApiKeyView[]; open(section: Section): void }) {
   const copy = useDashboardCopy();
-  const fraction = payFraction(account);
+  const multiplierBp = paymentBasisPoints(account);
   const discount = discountOf(account);
-  const officialBalance = nanoNum(account.balanceNano) / fraction;
+  const officialBalanceNano = officialNanoFromCharged(BigInt(account.balanceNano), multiplierBp);
   // Реализованная ценность: сколько официального Claude API уже получено за реально списанное.
-  const officialUsed = nanoNum(account.spentNano) / fraction;
-  const hasSpent = nanoNum(account.spentNano) > 0;
+  const officialUsedNano = officialNanoFromCharged(BigInt(account.spentNano), multiplierBp);
+  const hasSpent = BigInt(account.spentNano) > 0n;
   return <section className="panel">
     <div className="overview-core">
       <article className="card overview-balance-card">
@@ -163,7 +199,7 @@ function Overview({ account, keys, open }: { account: AccountView; keys: ApiKeyV
         <div className="overview-balance-values">
           <div><strong>{normalizeUsd(account.balanceUsd)}</strong><span>{copy.availableOnPlatform}</span></div>
           <span className="overview-value-arrow" aria-hidden="true">→</span>
-          <div><strong>≈ {fmtUsd(officialBalance)}</strong><span>{copy.officialApiValue}</span></div>
+          <div><strong>≈ {formatNanoUsd(officialBalanceNano)}</strong><span>{copy.officialApiValue}</span></div>
         </div>
         <p>{interpolate(copy.balanceValueAtDiscount, { discount })}</p>
         <button className="btn btn-primary btn-sm" onClick={() => open("credits")}>{copy.topUp}</button>
@@ -175,8 +211,8 @@ function Overview({ account, keys, open }: { account: AccountView; keys: ApiKeyV
           <button className="btn btn-ghost btn-sm" onClick={() => open("keys")}>{keys.length ? copy.manageKeys : copy.getKey}</button>
         </article>
         <article className="card overview-action-card">
-          <div><span className="dlabel">{copy.claudeApiReceived}</span><strong>{hasSpent ? `≈ ${fmtUsd(officialUsed)}` : "—"}</strong></div>
-          <p>{hasSpent ? interpolate(copy.receivedFromCharged, { charged: nanoToUsd(account.spentNano), mult: fmtMult(fraction) }) : copy.receivedEmpty}</p>
+          <div><span className="dlabel">{copy.claudeApiReceived}</span><strong>{hasSpent ? `≈ ${formatNanoUsd(officialUsedNano)}` : "—"}</strong></div>
+          <p>{hasSpent ? interpolate(copy.receivedFromCharged, { charged: formatNanoUsd(account.spentNano), mult: formatMultiplier(multiplierBp) }) : copy.receivedEmpty}</p>
           <button className="btn btn-ghost btn-sm" onClick={() => open("usage")}>{copy.viewUsage}</button>
         </article>
       </div>
@@ -209,12 +245,12 @@ function PricingBanner({ account }: { account: AccountView }) {
       <div className="pricing-discount"><b>{pricing.discountPercent}%</b><span>{copy.discount}</span><em className="pricing-mult">{multFromDiscount(pricing.discountPercent)} {copy.valueMultiplier}</em></div>
     </div>
     <div className="pricing-milestone-status">
-      <div className="pricing-status-item"><span>{copy.thisMonth}</span><strong>{nanoToUsd(pricing.spentNano)}</strong><small>{copy.platformSpend}</small></div>
-      {pricing.nextTier ? <div className="pricing-status-item pricing-status-next"><span>{copy.nextMilestone}</span><strong>{interpolate(copy.spendMore, { amount: nanoToUsd(pricing.nextTier.remainingNano) })}</strong><small>{interpolate(copy.unlockTier, { tier: tierName(copy, pricing.nextTier.tier), discount: pricing.nextTier.discountPercent })}</small></div> :
+      <div className="pricing-status-item"><span>{copy.thisMonth}</span><strong>{formatNanoUsd(pricing.spentNano)}</strong><small>{copy.platformSpend}</small></div>
+      {pricing.nextTier ? <div className="pricing-status-item pricing-status-next"><span>{copy.nextMilestone}</span><strong>{interpolate(copy.spendMore, { amount: formatNanoUsd(pricing.nextTier.remainingNano) })}</strong><small>{interpolate(copy.unlockTier, { tier: tierName(copy, pricing.nextTier.tier), discount: pricing.nextTier.discountPercent })}</small></div> :
         <div className="pricing-status-item pricing-status-next"><span>{copy.milestonesComplete}</span><strong>{copy.highestTierReached}</strong><small>{copy.tierScale} · {pricing.discountPercent}% {copy.discount}</small></div>}
       {isBase
         ? <div className="pricing-status-item"><span>{copy.keepTier}</span><strong>{copy.baseTierKept}</strong><small>{copy.freeForever}</small></div>
-        : <div className={`pricing-status-item ${held ? "pricing-status-ok" : "pricing-status-warn"}`}><span>{copy.keepTier}</span><strong>{nanoToUsd(pricing.windowSpentNano ?? "0")} / {nanoToUsd(pricing.retentionSpendNano)}</strong><small>{interpolate(held ? copy.daysLeftOk : copy.daysLeftWarn, { days: daysLeft })}</small></div>}
+        : <div className={`pricing-status-item ${held ? "pricing-status-ok" : "pricing-status-warn"}`}><span>{copy.keepTier}</span><strong>{formatNanoUsd(pricing.windowSpentNano ?? "0")} / {formatNanoUsd(pricing.retentionSpendNano)}</strong><small>{interpolate(held ? copy.daysLeftOk : copy.daysLeftWarn, { days: daysLeft })}</small></div>}
     </div>
     <div className="pricing-milestone-track" style={trackStyle} aria-label={`${Math.round(progress)}% progress through pricing milestones`}>
       <div className="pricing-track-line" aria-hidden="true"><span /></div>
@@ -223,7 +259,7 @@ function PricingBanner({ account }: { account: AccountView }) {
           const state = index < currentIndex ? "complete" : index === currentIndex ? "current" : "upcoming";
           return <li className={`pricing-milestone ${state}`} key={tier.code}>
             <span className="pricing-milestone-dot" aria-hidden="true">{index < currentIndex ? "✓" : index + 1}</span>
-            <div><strong>{tierName(copy, tier.code)}</strong><span>{tier.discountPercent}% {copy.discount}</span><em className="pm-mult">{multFromDiscount(tier.discountPercent)} {copy.valueMultiplier}</em><small>{Number(tier.platformSpendUsd) === 0 ? copy.tierBaseHint : interpolate(copy.tierGetHold, { get: formatWholeUsd(tier.platformSpendUsd), hold: formatWholeUsd(tier.holdUsd) })}</small></div>
+            <div><strong>{tierName(copy, tier.code)}</strong><span>{tier.discountPercent}% {copy.discount}</span><em className="pm-mult">{multFromDiscount(tier.discountPercent)} {copy.valueMultiplier}</em><small>{BigInt(tier.platformSpendUsd) === 0n ? copy.tierBaseHint : interpolate(copy.tierGetHold, { get: formatWholeUsd(tier.platformSpendUsd), hold: formatWholeUsd(tier.holdUsd) })}</small></div>
           </li>;
         })}
       </ol>
@@ -232,18 +268,22 @@ function PricingBanner({ account }: { account: AccountView }) {
   </section>;
 }
 
-function ApiKeys({ keys, issued, sessionRawKeys, onIssuedChange, onSessionKey, onChanged }: { keys: ApiKeyView[]; issued: string | null; sessionRawKeys: Record<string, string>; onIssuedChange(value: string | null): void; onSessionKey(id: string, rawKey: string): void; onChanged(): Promise<void> }) {
+function ApiKeys({ keys, onChanged }: { keys: ApiKeyView[]; onChanged(): Promise<void> }) {
   const copy = useDashboardCopy();
   const { language } = useI18n();
+  const localCopy = localDashboardCopy[language];
+  const [issued, setIssued] = useState<string | null>(null);
   const [label, setLabel] = useState("");
+  const [filter, setFilter] = useState<KeyStatusFilter>("active");
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameLabel, setRenameLabel] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   async function create() {
     setBusy(true); setError(null);
     try {
       const created = await api.createApiKey(label.trim() || undefined);
-      onIssuedChange(created.key ?? null);
-      if (created.key) onSessionKey(created.id, created.key);
+      setIssued(created.key ?? null);
       setLabel("");
       await onChanged();
     }
@@ -252,26 +292,47 @@ function ApiKeys({ keys, issued, sessionRawKeys, onIssuedChange, onSessionKey, o
   }
   async function revoke(id: string) {
     if (!window.confirm(copy.revokeConfirm)) return;
-    setBusy(true); try { await api.revokeApiKey(id); await onChanged(); } catch (cause) { setError(cause instanceof Error ? cause.message : copy.revokeKeyError); } finally { setBusy(false); }
+    setBusy(true); setError(null);
+    try { await api.revokeApiKey(id); await onChanged(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : copy.revokeKeyError); }
+    finally { setBusy(false); }
   }
-  const sortedKeys = [...keys].sort((left, right) => Number(left.status !== "active") - Number(right.status !== "active"));
+  function beginRename(key: ApiKeyView) {
+    setRenamingId(key.id); setRenameLabel(key.label ?? ""); setError(null);
+  }
+  function cancelRename() { setRenamingId(null); setRenameLabel(""); }
+  async function saveRename(id: string) {
+    const nextLabel = renameLabel.trim();
+    if (!nextLabel) { setError(localCopy.labelRequired); return; }
+    setBusy(true); setError(null);
+    try { await api.renameApiKey(id, nextLabel); await onChanged(); cancelRename(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : localCopy.renameKeyError); }
+    finally { setBusy(false); }
+  }
+  const counts = {
+    active: keys.filter((key) => key.status === "active").length,
+    disabled: keys.filter((key) => key.status === "disabled").length,
+    all: keys.length,
+  };
+  const sortedKeys = [...keys]
+    .filter((key) => filter === "all" || key.status === filter)
+    .sort((left, right) => Number(left.status !== "active") - Number(right.status !== "active"));
+  const emptyMessage = filter === "active" ? localCopy.noActiveKeys : filter === "disabled" ? localCopy.noDisabledKeys : copy.noKeys;
   return <section className="panel"><PageHeading eyebrow={copy.keysEyebrow} title={copy.keysTitle} subtitle={copy.keysSubtitle} />
-    {issued && <aside className="card secret-card" aria-labelledby="issued-key-title"><div className="secret-head"><h2 id="issued-key-title">{copy.copyNewKeyNow}</h2><span className="chip">{copy.shownOnce}</span></div><p className="secret-warning">{copy.rawSecretWarning}</p><div className="secret-key-field"><code>{issued}</code><CopyButton value={issued} className="secret-copy" /></div><div className="secret-actions"><Link className="btn btn-primary btn-sm" href={`${DOCS_URL}#key=${encodeURIComponent(issued)}`} target="_blank" rel="noreferrer">{copy.openInDocs}</Link><button className="btn btn-ghost btn-sm" onClick={() => onIssuedChange(null)}>{copy.savedKey}</button></div></aside>}
-    <section className="dsec"><div className="dsec-head"><h2>{copy.universalKeys}</h2><div className="key-create"><input className="set-in" value={label} onChange={(event) => setLabel(event.target.value)} maxLength={100} placeholder={copy.optionalLabel} /><button className="btn btn-primary btn-sm" disabled={busy} onClick={create}>＋ {copy.newKey}</button></div></div>{error && <div className="banner banner-error">{error}</div>}
-      <div className="keys">{sortedKeys.length === 0 ? <div className="empty-box">{copy.noKeys}</div> : sortedKeys.map((key) => {
-        const raw = sessionRawKeys[key.id];
-        return <div className="keyrow" key={key.id}>
-          <div className="kval">{key.label || copy.unlabelledKey}</div>
-          <div className="kmeta"><code>{key.keyMasked}</code><span>· {copy.created} {new Date(key.createdAt).toLocaleDateString(language === "ru" ? "ru-RU" : "en-US")} · {copy.spent} {normalizeUsd(key.spentUsd)}</span></div>
-          <div className="kacts">
-            <span className={`pill ${key.status === "active" ? "" : "pill-soft"}`}>{key.status}</span>
-            {key.status === "active" ? <>
-              {raw !== undefined ? <><CopyButton value={raw} /><Link className="btn btn-ghost btn-sm" href={`${DOCS_URL}#key=${encodeURIComponent(raw)}`} target="_blank" rel="noreferrer">{copy.docsShort}</Link></> : <Link className="btn btn-ghost btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{copy.docsShort}</Link>}
-              <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => revoke(key.id)}>{copy.revoke}</button>
-            </> : <button className="btn btn-ghost btn-sm" disabled>{copy.docsShort}</button>}
-          </div>
-        </div>;
-      })}</div>
+    {issued && <aside className="card secret-card" aria-labelledby="issued-key-title"><div className="secret-head"><h2 id="issued-key-title">{copy.copyNewKeyNow}</h2><span className="chip">{copy.shownOnce}</span></div><p className="secret-warning">{copy.rawSecretWarning}</p><div className="secret-key-field"><code>{issued}</code><CopyButton value={issued} className="secret-copy" /></div><div className="secret-actions"><Link className="btn btn-primary btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{copy.openInDocs}</Link><button className="btn btn-ghost btn-sm" onClick={() => setIssued(null)}>{copy.savedKey}</button></div></aside>}
+    <section className="dsec"><div className="dsec-head"><h2>{copy.universalKeys}</h2><div className="key-create"><input className="set-in" value={label} onChange={(event) => setLabel(event.target.value)} maxLength={64} placeholder={copy.optionalLabel} /><button className="btn btn-primary btn-sm" disabled={busy} onClick={create}>＋ {copy.newKey}</button></div></div>{error && <div className="banner banner-error">{error}</div>}
+      <div className="tc-presets" role="group" aria-label={localCopy.filterLabel}>
+        {(["active", "disabled", "all"] as const).map((status) => <button key={status} type="button" className={`tc-preset ${filter === status ? "on" : ""}`} aria-pressed={filter === status} onClick={() => setFilter(status)}><b>{status === "active" ? localCopy.activeFilter : status === "disabled" ? localCopy.disabledFilter : localCopy.allFilter}</b><span>{counts[status]}</span></button>)}
+      </div>
+      <div className="keys">{sortedKeys.length === 0 ? <div className="empty-box">{emptyMessage}</div> : sortedKeys.map((key) => <div className="keyrow" key={key.id}>
+        <div className="kval">{renamingId === key.id ? <div className="key-create"><input className="set-in" value={renameLabel} maxLength={64} autoFocus onChange={(event) => setRenameLabel(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && renameLabel.trim()) void saveRename(key.id); if (event.key === "Escape") cancelRename(); }} /><button className="btn btn-primary btn-sm" disabled={busy || !renameLabel.trim()} onClick={() => void saveRename(key.id)}>{localCopy.saveLabel}</button><button className="btn btn-ghost btn-sm" disabled={busy} onClick={cancelRename}>{localCopy.cancelLabel}</button></div> : key.label || copy.unlabelledKey}</div>
+        <div className="kmeta"><code>{key.keyMasked}</code><span>· {copy.created} {new Date(key.createdAt).toLocaleDateString(language === "ru" ? "ru-RU" : "en-US")} · {copy.spent} {formatNanoUsd(key.spentNano)}</span></div>
+        <div className="kacts">
+          <span className={`pill ${key.status === "active" ? "" : "pill-soft"}`}>{key.status === "active" ? localCopy.activeStatus : localCopy.disabledStatus}</span>
+          {renamingId !== key.id && <button className="btn btn-ghost btn-sm" disabled={busy} aria-label={`${localCopy.editLabel}: ${key.label || copy.unlabelledKey}`} title={localCopy.editLabel} onClick={() => beginRename(key)}>✎</button>}
+          {key.status === "active" ? <><Link className="btn btn-ghost btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{copy.docsShort}</Link><button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => revoke(key.id)}>{copy.revoke}</button></> : <button className="btn btn-ghost btn-sm" disabled>{copy.docsShort}</button>}
+        </div>
+      </div>)}</div>
     </section>
   </section>;
 }
@@ -281,17 +342,23 @@ const TOPUP_PRESETS = [100, 250, 500, 1000] as const;
 function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntry[] }) {
   const copy = useDashboardCopy();
   const { language } = useI18n();
+  const localCopy = localDashboardCopy[language];
   const [amount, setAmount] = useState("100");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [checkout, setCheckout] = useState<CheckoutView | null>(null);
+  const amountValid = /^[1-9]\d*$/.test(amount);
+  const amountValidation = amount === "" || amountValid ? null : localCopy.invalidWholeUsd;
   async function start() {
-    const validation = wholeUsdError(amount);
-    if (validation) { setError(validation); return; }
+    if (!amountValid) { setError(localCopy.invalidWholeUsd); return; }
     setBusy(true); setError(null);
     try {
       const created = await api.createCheckout(amount); setCheckout(created);
-      if (created.checkoutUrl) window.location.assign(created.checkoutUrl);
+      if (created.checkoutUrl) {
+        const checkoutUrl = safeCheckoutUrl(created.checkoutUrl, created.provider);
+        if (!checkoutUrl) { setError(localCopy.invalidCheckoutUrl); return; }
+        window.location.assign(checkoutUrl);
+      }
     } catch (cause) { setError(cause instanceof Error ? cause.message : copy.createCheckoutError); }
     finally { setBusy(false); }
   }
@@ -300,63 +367,76 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
   // тир даёт пополнение на введённую сумму, ценность по его скидке и условие удержания (50%/30 дней).
   const pricing = account.pricing;
   const isB2c = pricing?.customerType === "b2c";
-  const amt = Number(amount) || 0;
-  const reachedIdx = isB2c ? tierIndexForTopups(amt) : -1;
+  const amountNano = amountValid ? BigInt(amount) * NANO_PER_USD : 0n;
+  const currentIdx = pricing?.customerType === "b2c" ? B2C_PRICING_MILESTONES.findIndex((milestone) => milestone.code === pricing.tier) : -1;
+  const cumulativeNano = pricing?.customerType === "b2c" ? BigInt(pricing.spentNano) + amountNano : amountNano;
+  const projectedIdx = isB2c ? tierIndexForCumulativeNano(cumulativeNano) : -1;
+  const reachedIdx = isB2c ? Math.max(currentIdx, projectedIdx) : -1;
   const reachedTier = reachedIdx >= 0 ? B2C_PRICING_MILESTONES[reachedIdx] : null;
-  const discount = isB2c ? (reachedTier ? reachedTier.discountPercent : 0) : discountOf(account);
-  const frac = isB2c ? (reachedTier ? (100 - discount) / 100 : 1) : payFraction(account);
+  const discount = isB2c ? (reachedTier?.discountPercent ?? 0) : discountOf(account);
+  const topupPaymentBp = isB2c ? BigInt(100 - discount) * 100n : paymentBasisPoints(account);
   const hasTier = discount > 0;
-  const apiValue = amt / frac;
+  const apiValueNano = officialNanoFromCharged(amountNano, topupPaymentBp);
   const nextTier = isB2c && reachedIdx + 1 < B2C_PRICING_MILESTONES.length ? B2C_PRICING_MILESTONES[reachedIdx + 1] : null;
-  const currentIdx = pricing?.customerType === "b2c" ? B2C_PRICING_MILESTONES.findIndex((m) => m.code === pricing.tier) : -1;
-  const balanceApi = nanoNum(account.balanceNano) / payFraction(account);
-  const fracForTopup = (a: number) => { const i = tierIndexForTopups(a); return i >= 0 ? (100 - B2C_PRICING_MILESTONES[i].discountPercent) / 100 : 1; };
+  const nextTierRemainingNano = nextTier ? bigintMax(0n, BigInt(nextTier.spendThresholdNano) - cumulativeNano) : 0n;
+  const balanceApiNano = officialNanoFromCharged(BigInt(account.balanceNano), paymentBasisPoints(account));
+  const apiValueForPreset = (preset: number) => {
+    const presetNano = BigInt(preset) * NANO_PER_USD;
+    if (!isB2c || pricing?.customerType !== "b2c") return officialNanoFromCharged(presetNano, paymentBasisPoints(account));
+    const index = Math.max(currentIdx, tierIndexForCumulativeNano(BigInt(pricing.spentNano) + presetNano));
+    const tier = B2C_PRICING_MILESTONES[Math.max(0, index)]!;
+    return officialNanoFromCharged(presetNano, BigInt(100 - tier.discountPercent) * 100n);
+  };
   const topups = ledger.filter((entry) => entry.kind === "topup");
+  const ledgerMayBePartial = ledger.length >= 100;
 
   return <section className="panel"><PageHeading eyebrow={copy.keysEyebrow} title={copy.creditsTitle} subtitle={copy.creditsSubtitle} />
     <div className="credits-stack">
       <div className="ov-stats bill3 tc-stats">
-        <div className="ovstat"><span className="dlabel">{copy.currentBalance}</span><b className="num">{normalizeUsd(account.balanceUsd)}</b><span className="dtrend">{nanoNum(account.balanceNano) > 0 ? interpolate(copy.valueOfBalance, { value: fmtUsd(balanceApi) }) : copy.available}</span></div>
-        <Stat label={copy.used} value={nanoToUsd(account.spentNano)} detail={copy.balanceAfterDiscount} />
-        <div className="ovstat"><span className="dlabel">{copy.currentTier}</span><b className="num">{isB2c ? (currentIdx >= 0 ? tierName(copy, B2C_PRICING_MILESTONES[currentIdx].code) : copy.noTierYet) : copy.businessRate}</b><span className="dtrend">{discountOf(account)}% {copy.discount} · {fmtMult(payFraction(account))} {copy.valueMultiplier}</span></div>
+        <div className="ovstat"><span className="dlabel">{copy.currentBalance}</span><b className="num">{normalizeUsd(account.balanceUsd)}</b><span className="dtrend">{BigInt(account.balanceNano) > 0n ? interpolate(copy.valueOfBalance, { value: formatNanoUsd(balanceApiNano) }) : copy.available}</span></div>
+        <Stat label={copy.used} value={formatNanoUsd(account.spentNano)} detail={copy.balanceAfterDiscount} />
+        <div className="ovstat"><span className="dlabel">{copy.currentTier}</span><b className="num">{isB2c ? (currentIdx >= 0 ? tierName(copy, B2C_PRICING_MILESTONES[currentIdx].code) : copy.noTierYet) : copy.businessRate}</b><span className="dtrend">{discountOf(account)}% {copy.discount} · {formatMultiplier(paymentBasisPoints(account))} {copy.valueMultiplier}</span></div>
       </div>
 
       <div className="card topup-convert">
         <div className="tc-head"><h2>{copy.anyWholeAmount}</h2><p className="p-sub" id="topup-amount-help">{copy.checkoutHelp}</p></div>
         <div className="tc-body">
           <div className="tc-input">
-            <label className="tc-field"><span className="currency-prefix">$</span><input className="set-in" inputMode="numeric" pattern="[1-9][0-9]*" value={amount} onChange={(event) => setAmount(event.target.value.replace(/\D/g, ""))} placeholder="100" aria-label={copy.anyWholeAmount} aria-describedby="topup-amount-help" /></label>
-            <div className="tc-presets" role="group" aria-label={copy.quickAmounts}>{TOPUP_PRESETS.map((preset) => <button key={preset} type="button" className={`tc-preset ${amount === String(preset) ? "on" : ""}`} data-topup-preset={preset} aria-pressed={amount === String(preset)} onClick={() => { setAmount(String(preset)); setError(null); }}><b>${preset}</b><span>{fmtUsd(preset / fracForTopup(preset))}</span></button>)}</div>
+            <label className="tc-field"><span className="currency-prefix">$</span><input className="set-in" inputMode="numeric" pattern="[1-9][0-9]*" value={amount} onChange={(event) => { setAmount(event.target.value); setError(null); }} placeholder="100" aria-label={copy.anyWholeAmount} aria-describedby={amountValidation ? "topup-amount-help topup-amount-error" : "topup-amount-help"} aria-invalid={amountValidation ? true : undefined} /></label>
+            <div className="tc-presets" role="group" aria-label={copy.quickAmounts}>{TOPUP_PRESETS.map((preset) => <button key={preset} type="button" className={`tc-preset ${amount === String(preset) ? "on" : ""}`} data-topup-preset={preset} aria-pressed={amount === String(preset)} onClick={() => { setAmount(String(preset)); setError(null); }}><b>${preset}</b><span>{formatNanoUsd(apiValueForPreset(preset))}</span></button>)}</div>
           </div>
           <div className="tc-arrow" aria-hidden="true">→</div>
           <div className={`tc-receive ${hasTier ? "tc-receive-up" : ""}`}>
             <span className="tc-recv-label">{copy.youReceive}</span>
-            <b className="tc-recv-value">{amt > 0 ? `≈ ${fmtUsd(apiValue)}` : "—"}</b>
-            <span className="tc-recv-sub">{amt <= 0 ? copy.enterAmount : hasTier ? `${copy.inClaudeApi} · ${interpolate(copy.atTier, { tier: reachedTier ? tierName(copy, reachedTier.code) : copy.businessRate, discount })}` : `${copy.inClaudeApi} · ${copy.noDiscountYet}`}</span>
-            <div className="tc-recv-meta"><span className="tc-badge">−{discount}%</span><span className="tc-badge tc-badge-soft">{fmtMult(frac)} {copy.valueMultiplier}</span></div>
+            <b className="tc-recv-value">{amountNano > 0n ? `≈ ${formatNanoUsd(apiValueNano)}` : "—"}</b>
+            <span className="tc-recv-sub">{amountNano <= 0n ? copy.enterAmount : hasTier ? `${copy.inClaudeApi} · ${interpolate(copy.atTier, { tier: reachedTier ? tierName(copy, reachedTier.code) : copy.businessRate, discount })}` : `${copy.inClaudeApi} · ${copy.noDiscountYet}`}</span>
+            <div className="tc-recv-meta"><span className="tc-badge">−{discount}%</span><span className="tc-badge tc-badge-soft">{formatMultiplier(topupPaymentBp)} {copy.valueMultiplier}</span></div>
           </div>
         </div>
-        {isB2c && amt > 0 && reachedTier && Number(reachedTier.holdUsd) > 0 &&
-          <p className="tc-upgrade"><span className="tc-upgrade-ic" aria-hidden="true">ⓘ</span>{interpolate(copy.topupReach, { tier: tierName(copy, reachedTier.code), discount, hold: fmtUsd(Number(reachedTier.holdUsd)) })}</p>}
-        <p className="tc-explain">{hasTier ? interpolate(copy.perDollar, { mult: `$${(1 / frac).toFixed(2)}` }) : copy.perDollarNone}</p>
-        {isB2c && amt > 0 && nextTier && <p className="tc-nudge">↑ {interpolate(copy.topupNext, { amount: fmtUsd(Number(nextTier.platformSpendUsd)), tier: tierName(copy, nextTier.code), discount: nextTier.discountPercent })}</p>}
-        <div className="tc-actions"><button className="btn btn-primary" disabled={busy} onClick={start}>{busy ? copy.creating : copy.continuePayment}</button></div>
+        {isB2c && amountNano > 0n && reachedTier && BigInt(reachedTier.holdUsd) > 0n &&
+          <p className="tc-upgrade"><span className="tc-upgrade-ic" aria-hidden="true">ⓘ</span>{interpolate(copy.topupReach, { tier: tierName(copy, reachedTier.code), discount, hold: formatWholeUsd(reachedTier.holdUsd) })}</p>}
+        <p className="tc-explain">{hasTier ? interpolate(copy.perDollar, { mult: formatPerDollar(topupPaymentBp) }) : copy.perDollarNone}</p>
+        {isB2c && amountNano > 0n && nextTier && nextTierRemainingNano > 0n && <p className="tc-nudge">↑ {interpolate(localCopy.topupNextRemaining, { amount: formatNanoUsd(nextTierRemainingNano), tier: tierName(copy, nextTier.code), discount: nextTier.discountPercent })}</p>}
+        <div className="tc-actions"><button className="btn btn-primary" disabled={busy || !amountValid} onClick={start}>{busy ? copy.creating : copy.continuePayment}</button></div>
+        {amountValidation && <div className="auth-msg err" id="topup-amount-error">{amountValidation}</div>}
         {error && <div className="auth-msg err">{error}</div>}{checkout && !checkout.checkoutUrl && <div className="banner">{interpolate(copy.checkoutPending, { id: checkout.id, status: checkout.status })}</div>}
       </div>
 
       <PricingBanner account={account} />
 
+      {ledgerMayBePartial && <div className="banner">{localCopy.partialLedger}</div>}
       <section className="dsec credits-history"><div className="dsec-head"><h2 id="topup-history-title">{copy.topupHistory}</h2></div>
         <div className="table-scroll"><table className="mtable topup-history-table" aria-labelledby="topup-history-title" role="table">
           <thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">{copy.date}</th><th scope="col" role="columnheader" className="tnum">{copy.histPaid}</th><th scope="col" role="columnheader">{copy.histDiscount}</th><th scope="col" role="columnheader" className="tnum">{copy.histApiValue}</th><th scope="col" role="columnheader">{copy.reference}</th></tr></thead>
           <tbody role="rowgroup">{topups.length === 0 ? <tr role="row"><td role="cell" colSpan={5} className="empty-cell">{copy.noTopups}</td></tr> : topups.map((entry) => {
             const d = (entry as { discountPercent?: number }).discountPercent ?? discountOf(account);
-            const paid = Number(entry.amountUsd) || nanoNum(entry.amountNano);
+            const paidNano = BigInt(entry.amountNano);
+            const officialValueNano = officialNanoFromCharged(paidNano, BigInt(100 - d) * 100n);
             return <tr role="row" key={entry.id}>
               <td role="cell" data-label={copy.date}>{formatLedgerTime(entry.timestamp, language)}</td>
-              <td role="cell" className="tnum" data-label={copy.histPaid}>{normalizeUsd(entry.amountUsd)}</td>
+              <td role="cell" className="tnum" data-label={copy.histPaid}>{formatNanoUsd(paidNano)}</td>
               <td role="cell" data-label={copy.histDiscount}><span className="pill pill-soft">−{d}%</span></td>
-              <td role="cell" className="tnum" data-label={copy.histApiValue}>≈ {fmtUsd(paid / ((100 - d) / 100))}</td>
+              <td role="cell" className="tnum" data-label={copy.histApiValue}>≈ {formatNanoUsd(officialValueNano)}</td>
               <td role="cell" data-label={copy.reference}>{entry.reference ?? "—"}</td>
             </tr>;
           })}</tbody>
@@ -370,18 +450,20 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
 function Usage({ account, ledger, usage }: { account: AccountView; ledger: LedgerEntry[]; usage: UsageView | null }) {
   const copy = useDashboardCopy();
   const { language } = useI18n();
+  const localCopy = localDashboardCopy[language];
   const locale = language === "ru" ? "ru-RU" : "en-US";
   const models = usage?.models ?? [];
-  const modelOfficialTotal = models.reduce((sum, model) => sum + Number(BigInt(model.officialNano)), 0);
+  const modelOfficialTotal = models.reduce((sum, model) => sum + BigInt(model.officialNano), 0n);
 
   // Скидка определяет, сколько реального Claude API стоит каждый списанный доллар:
-  // клиент платит долю frac от официальной цены → официальная ценность = списано / frac.
-  const frac = payFraction(account);
+  // клиент платит multiplierBp от официальной цены → официальная ценность = списано × 10000 / multiplierBp.
+  const multiplierBp = paymentBasisPoints(account);
   const discount = account.pricing?.discountPercent ?? discountOf(account);
-  const netCharged = nanoNum(account.spentNano);
-  const officialReceived = netCharged / frac;
+  const netChargedNano = BigInt(account.spentNano);
+  const officialReceivedNano = officialNanoFromCharged(netChargedNano, multiplierBp);
 
   const charges = ledger.filter((entry) => entry.kind === "charge");
+  const ledgerMayBePartial = ledger.length >= 100;
 
   // Стабильный цвет на модель: сначала порядок из агрегата usage.models (совпадает с таблицей ниже),
   // затем модели, встреченные только в ledger. Один и тот же id → один цвет во всех графиках.
@@ -400,33 +482,34 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
 
   // День → (модель → официальная ценность $). Модель берём из charge.model, иначе «прочее».
   const UNKNOWN_MODEL = "__other__";
-  const perDay = new Map<number, Map<string, number>>();
+  const perDay = new Map<number, Map<string, bigint>>();
   for (const charge of charges) {
     const bucket = startOfDay(ledgerMs(charge.timestamp));
     if (bucket < days[0]! || bucket > days[days.length - 1]!) continue;
     const id = charge.model || UNKNOWN_MODEL;
     assignColor(id);
-    const slot = perDay.get(bucket) ?? new Map<string, number>();
-    slot.set(id, (slot.get(id) ?? 0) + nanoNum(charge.amountNano) / frac);
+    const slot = perDay.get(bucket) ?? new Map<string, bigint>();
+    const officialNano = officialNanoFromCharged(BigInt(charge.amountNano), multiplierBp);
+    slot.set(id, (slot.get(id) ?? 0n) + officialNano);
     perDay.set(bucket, slot);
   }
   const series = days.map((day) => {
     const byModel = perDay.get(day);
-    const segs = byModel ? [...byModel.entries()].map(([id, value]) => ({ id, value })).sort((a, b) => b.value - a.value) : [];
-    return { day, value: segs.reduce((sum, seg) => sum + seg.value, 0), segs };
+    const segs = byModel ? [...byModel.entries()].map(([id, value]) => ({ id, value })).sort((a, b) => compareBigInt(b.value, a.value)) : [];
+    return { day, value: segs.reduce((sum, seg) => sum + seg.value, 0n), segs };
   });
-  const maxValue = Math.max(0, ...series.map((point) => point.value));
-  const scale = niceScale(maxValue);
-  const gridTicks = Array.from({ length: scale.divisions + 1 }, (_, i) => scale.max - i * scale.step); // сверху вниз
-  const activeDays = series.filter((point) => point.value > 0).length;
-  const windowOfficial = series.reduce((sum, point) => sum + point.value, 0);
+  const maxValue = series.reduce((max, point) => bigintMax(max, point.value), 0n);
+  const scale = niceNanoScale(maxValue);
+  const gridTicks = Array.from({ length: scale.divisions + 1 }, (_, index) => scale.max - BigInt(index) * scale.step); // сверху вниз
+  const activeDays = series.filter((point) => point.value > 0n).length;
+  const windowOfficialNano = series.reduce((sum, point) => sum + point.value, 0n);
   const windowCharges = charges.filter((charge) => { const b = startOfDay(ledgerMs(charge.timestamp)); return b >= days[0]! && b <= days[days.length - 1]!; }).length;
-  const peak = series.reduce((best, point) => (point.value > best.value ? point : best), { day: todayMs, value: 0, segs: [] as { id: string; value: number }[] });
+  const peak = series.reduce((best, point) => (point.value > best.value ? point : best), { day: todayMs, value: 0n, segs: [] as { id: string; value: bigint }[] });
   const LABEL_COUNT = 7;
   const axisMarks = [...new Set(Array.from({ length: LABEL_COUNT }, (_, i) => Math.round(i * (days.length - 1) / (LABEL_COUNT - 1))))];
 
   // Разбивка модель-бара (mdist) с центрами сегментов — для наведения/подсказки.
-  const modelShares = models.map((model) => modelOfficialTotal > 0 ? Number(BigInt(model.officialNano)) / modelOfficialTotal : 1 / models.length);
+  const modelShares = models.map((model) => modelOfficialTotal > 0n ? boundedRatio(BigInt(model.officialNano), modelOfficialTotal) : 1 / models.length);
   const mdistPlaced = models.map((model, index) => {
     const share = modelShares[index]!;
     const center = modelShares.slice(0, index).reduce((sum, value) => sum + value, 0) + share / 2;
@@ -436,47 +519,48 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
   const [mdistHover, setMdistHover] = useState<number | null>(null);
 
   // Разбивка списаний по API-ключу — наш аналог per-endpoint из референса.
-  const keyMap = new Map<string, { key: string; count: number; net: number }>();
+  const keyMap = new Map<string, { key: string; count: number; netNano: bigint }>();
   for (const charge of charges) {
     const key = charge.keyMasked ?? "__system__";
-    const row = keyMap.get(key) ?? { key, count: 0, net: 0 };
+    const row = keyMap.get(key) ?? { key, count: 0, netNano: 0n };
     row.count += 1;
-    row.net += nanoNum(charge.amountNano);
+    row.netNano += BigInt(charge.amountNano);
     keyMap.set(key, row);
   }
-  const keyRows = [...keyMap.values()].sort((a, b) => b.net - a.net);
+  const keyRows = [...keyMap.values()].sort((a, b) => compareBigInt(b.netNano, a.netNano));
 
   return <section className="panel"><PageHeading eyebrow={copy.usageEyebrow} title={copy.usageTitle} subtitle={copy.usageSubtitle} />
     <div className="banner">💡 <b>{copy.sessionSavingTitle}</b><span> {copy.sessionSavingText}</span></div>
+    {ledgerMayBePartial && <div className="banner">{localCopy.partialLedger}</div>}
 
     <div className="ov-stats bill4">
-      <div className="ovstat"><span className="dlabel">{copy.claudeApiReceived}</span><b className="num accent">{fmtUsd(officialReceived)}</b><span className="dtrend">{copy.atOfficialPrices}</span></div>
-      <Stat label={copy.balanceCharged} value={nanoToUsd(account.spentNano)} detail={copy.afterDiscount} />
-      <div className="ovstat"><span className="dlabel">{copy.activeDiscount}</span><b className="num">{discount}%</b><span className="dtrend">{fmtMult(frac)} {copy.valueMultiplier}</span></div>
-      <div className="ovstat"><span className="dlabel">{copy.availableBalance}</span><b className="num">{normalizeUsd(account.balanceUsd)}</b><span className="dtrend">{nanoNum(account.balanceNano) > 0 ? interpolate(copy.valueOfBalance, { value: fmtUsd(nanoNum(account.balanceNano) / frac) }) : copy.available}</span></div>
+      <div className="ovstat"><span className="dlabel">{copy.claudeApiReceived}</span><b className="num accent">{formatNanoUsd(officialReceivedNano)}</b><span className="dtrend">{copy.atOfficialPrices}</span></div>
+      <Stat label={copy.balanceCharged} value={formatNanoUsd(account.spentNano)} detail={copy.afterDiscount} />
+      <div className="ovstat"><span className="dlabel">{copy.activeDiscount}</span><b className="num">{discount}%</b><span className="dtrend">{formatMultiplier(multiplierBp)} {copy.valueMultiplier}</span></div>
+      <div className="ovstat"><span className="dlabel">{copy.availableBalance}</span><b className="num">{normalizeUsd(account.balanceUsd)}</b><span className="dtrend">{BigInt(account.balanceNano) > 0n ? interpolate(copy.valueOfBalance, { value: formatNanoUsd(officialNanoFromCharged(BigInt(account.balanceNano), multiplierBp)) }) : copy.available}</span></div>
     </div>
 
     <div className="usage-graph">
       <div className="uchart">
         <div className="uchart-head"><b>{copy.usageOverTime}</b><span>{copy.chartWindowLabel}</span></div>
-        {maxValue === 0 ? <div className="uchart-empty">{copy.noChargesPeriod}</div> : <>
+        {maxValue === 0n ? <div className="uchart-empty">{copy.noChargesPeriod}</div> : <>
           <div className="uchart-grid">
-            <div className="uchart-yaxis">{gridTicks.map((tick, i) => <span key={i}>{fmtAxisUsd(tick)}</span>)}</div>
+            <div className="uchart-yaxis">{gridTicks.map((tick, i) => <span key={i}>{formatAxisNanoUsd(tick)}</span>)}</div>
             <div className="uchart-plotwrap">
               <div className="uchart-lines">{gridTicks.map((_, i) => <i key={i} />)}</div>
               <div className="uchart-plot" onMouseLeave={() => setHoverDay(null)}>
                 {series.map((point, index) => <div key={point.day} className={`uchart-col${hoverDay === index ? " is-hover" : ""}`} onMouseEnter={() => setHoverDay(index)}>
                   <div className="uchart-col-fill">
-                    {point.segs.map((seg) => <div key={seg.id} className="uchart-seg" style={{ height: `${(seg.value / scale.max) * 100}%`, background: modelColor.get(seg.id) }} />)}
+                    {point.segs.map((seg) => <div key={seg.id} className="uchart-seg" style={{ height: `${boundedPercent(seg.value, scale.max)}%`, background: modelColor.get(seg.id) }} />)}
                   </div>
                 </div>)}
-                {hoverDay !== null && series[hoverDay] && series[hoverDay]!.value > 0 && (() => {
+                {hoverDay !== null && series[hoverDay] && series[hoverDay]!.value > 0n && (() => {
                   const point = series[hoverDay]!;
                   const leftPct = Math.min(92, Math.max(8, (hoverDay + 0.5) / days.length * 100));
-                  return <div className="chart-tip" style={{ left: `${leftPct}%`, bottom: `${(point.value / scale.max) * 100}%` }}>
+                  return <div className="chart-tip" style={{ left: `${leftPct}%`, bottom: `${boundedPercent(point.value, scale.max)}%` }}>
                     <div className="chart-tip-h">{fmtDay(point.day, locale)}</div>
-                    {point.segs.map((seg) => <div key={seg.id} className="chart-tip-row"><span className="chart-tip-dot" style={{ background: modelColor.get(seg.id) }} /><span className="chart-tip-nm">{seg.id === UNKNOWN_MODEL ? copy.otherModels : modelLabel(seg.id)}</span><b>{fmtUsdSmart(seg.value)}</b></div>)}
-                    <div className="chart-tip-total"><span>{copy.chartTotal}</span><b>{fmtUsdSmart(point.value)}</b></div>
+                    {point.segs.map((seg) => <div key={seg.id} className="chart-tip-row"><span className="chart-tip-dot" style={{ background: modelColor.get(seg.id) }} /><span className="chart-tip-nm">{seg.id === UNKNOWN_MODEL ? copy.otherModels : modelLabel(seg.id)}</span><b>{formatNanoUsdSmart(seg.value)}</b></div>)}
+                    <div className="chart-tip-total"><span>{copy.chartTotal}</span><b>{formatNanoUsdSmart(point.value)}</b></div>
                   </div>;
                 })()}
               </div>
@@ -487,10 +571,10 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
       </div>
       <div className="usum">
         <span className="usum-t">{copy.periodSummary}</span>
-        <div className="usum-row"><span>{copy.officialSpend}</span><b className="accent">{fmtUsd(windowOfficial)}</b></div>
+        <div className="usum-row"><span>{copy.officialSpend}</span><b className="accent">{formatNanoUsd(windowOfficialNano)}</b></div>
         <div className="usum-row"><span>{copy.chargeEvents}</span><b>{windowCharges}</b></div>
-        <div className="usum-row"><span>{copy.peakDay}</span><b>{peak.value > 0 ? `${fmtDay(peak.day, locale)} · ${fmtUsd(peak.value)}` : "—"}</b></div>
-        <div className="usum-row"><span>{copy.dailyAverage}</span><b>{activeDays > 0 ? fmtUsd(windowOfficial / activeDays) : "—"}</b></div>
+        <div className="usum-row"><span>{copy.peakDay}</span><b>{peak.value > 0n ? `${fmtDay(peak.day, locale)} · ${formatNanoUsd(peak.value)}` : "—"}</b></div>
+        <div className="usum-row"><span>{copy.dailyAverage}</span><b>{activeDays > 0 ? formatNanoUsd(roundDivide(windowOfficialNano, BigInt(activeDays))) : "—"}</b></div>
       </div>
     </div>
 
@@ -536,17 +620,17 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
       <div className="ubreak-sum">
         <div><span className="dlabel">{copy.keysCount}</span><b>{keyRows.length}</b></div>
         <div><span className="dlabel">{copy.requests}</span><b>{charges.length}</b></div>
-        <div><span className="dlabel">{copy.officialValueCol}</span><b>{fmtUsd(officialReceived)}</b></div>
-        <div><span className="dlabel">{copy.chargedCol}</span><b>{nanoToUsd(account.spentNano)}</b></div>
+        <div><span className="dlabel">{copy.officialValueCol}</span><b>{formatNanoUsd(officialReceivedNano)}</b></div>
+        <div><span className="dlabel">{copy.chargedCol}</span><b>{formatNanoUsd(account.spentNano)}</b></div>
       </div>
       <div className="table-scroll"><table className="mtable"><thead><tr><th>{copy.apiKey}</th><th className="tnum">{copy.requests}</th><th className="tnum">{copy.discount}</th><th className="tnum">{copy.valueColumn}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
         <tbody>{keyRows.length === 0 ? <tr><td colSpan={6} className="empty-cell">{copy.noChargesPeriod}</td></tr> : keyRows.map((row) => <tr key={row.key}>
           <td><code>{row.key === "__system__" ? copy.systemCharge : row.key}</code></td>
           <td className="tnum">{row.count}</td>
           <td className="tnum">{discount}%</td>
-          <td className="tnum"><span className="ubadge">{fmtMult(frac)}</span></td>
-          <td className="tnum">{fmtUsd(row.net / frac)}</td>
-          <td className="tnum mprice">{fmtUsd(row.net)}</td>
+          <td className="tnum"><span className="ubadge">{formatMultiplier(multiplierBp)}</span></td>
+          <td className="tnum">{formatNanoUsd(officialNanoFromCharged(row.netNano, multiplierBp))}</td>
+          <td className="tnum mprice">{formatNanoUsd(row.netNano)}</td>
         </tr>)}</tbody></table></div>
     </section>
 
@@ -582,16 +666,16 @@ function LedgerHistory({ ledger }: { ledger: LedgerEntry[] }) {
           {group.events.map((entry) => <div className={`txh-ev ${entry.kind}`} key={entry.id}>
             <span className={`pill ${entry.kind === "topup" ? "pill-good" : "pill-soft"}`}>{entry.kind === "topup" ? copy.topupType : copy.adjustType}</span>
             <span className="txh-ev-ref">{entry.reference ?? "—"}</span>
-            <span className="txh-ev-amt">{entry.kind === "topup" ? "+" : ""}{fmtUsdSmart(nanoNum(entry.amountNano))}</span>
+            <span className="txh-ev-amt">{entry.kind === "topup" ? "+" : ""}{formatNanoUsdSmart(BigInt(entry.amountNano))}</span>
           </div>)}
           {group.charges.length > 0 && <details className="txh-charges">
-            <summary><span className="txh-sum-l"><span className="txh-ic" aria-hidden="true">▸</span>{interpolate(copy.apiRequestsN, { n: group.charges.length })}</span><span className="txh-sum-amt">−{fmtUsdSmart(Number(chargeNano) / 1e9)}</span></summary>
+            <summary><span className="txh-sum-l"><span className="txh-ic" aria-hidden="true">▸</span>{interpolate(copy.apiRequestsN, { n: group.charges.length })}</span><span className="txh-sum-amt">−{formatNanoUsdSmart(chargeNano)}</span></summary>
             <div className="txh-list">
               {group.charges.slice(0, CAP).map((entry) => <div className="txh-row" key={entry.id}>
                 <span className="txh-time">{new Date(ledgerMs(entry.timestamp)).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
                 <code className="txh-key">{entry.keyMasked ?? "—"}</code>
                 <span className="txh-ref">{entry.reference ?? "—"}</span>
-                <span className="txh-amt">{fmtUsdSmart(nanoNum(entry.amountNano))}</span>
+                <span className="txh-amt">{formatNanoUsdSmart(BigInt(entry.amountNano))}</span>
               </div>)}
               {group.charges.length > CAP && <div className="txh-more">{interpolate(copy.moreRows, { n: group.charges.length - CAP })}</div>}
             </div>
@@ -603,32 +687,32 @@ function LedgerHistory({ ledger }: { ledger: LedgerEntry[] }) {
 }
 
 // Мелкие суммы (суб-цент) не округляем в "$0" — показываем честно до значащих знаков.
-function fmtUsdSmart(value: number): string {
-  if (value === 0) return "$0.00";
-  if (value >= 0.01) return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  return `$${value.toFixed(6).replace(/0+$/, "")}`;
+function formatNanoUsdSmart(value: bigint): string {
+  if (value === 0n) return "$0.00";
+  if (absoluteBigInt(value) >= 10_000_000n) return formatNanoUsd(value, 2, 2);
+  return formatNanoUsd(value, 0, 9);
 }
 
 function startOfDay(ms: number): number { const date = new Date(ms); date.setHours(0, 0, 0, 0); return date.getTime(); }
 function ledgerMs(timestamp: string): number { const numeric = Number(timestamp); return numeric < 10_000_000_000 ? numeric * 1_000 : numeric; }
 function fmtDay(ms: number, locale: string): string { return new Date(ms).toLocaleDateString(locale, { month: "numeric", day: "numeric" }); }
 
-// «Красивая» шкала оси Y: шаг из ряда 1/2/2.5/5 ×10ⁿ, чтобы верх и деления оси были круглыми.
-function niceScale(max: number): { max: number; step: number; divisions: number } {
+// «Красивая» шкала оси Y на целых нано-USD. В number переводятся только ограниченные отношения для CSS.
+function niceNanoScale(max: bigint): { max: bigint; step: bigint; divisions: number } {
   const divisions = 4;
-  if (!(max > 0)) return { max: 1, step: 0.25, divisions };
-  const rough = max / divisions;
-  const mag = Math.pow(10, Math.floor(Math.log10(rough)));
-  const norm = rough / mag;
-  const nice = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10;
-  const step = nice * mag;
-  return { max: step * divisions, step, divisions };
+  if (max <= 0n) return { max: NANO_PER_USD, step: NANO_PER_USD / 4n, divisions };
+  const rough = (max + BigInt(divisions) - 1n) / BigInt(divisions);
+  const magnitude = 10n ** BigInt(Math.max(0, rough.toString().length - 1));
+  const candidates = [magnitude, 2n * magnitude, 5n * magnitude, 10n * magnitude];
+  const step = candidates.find((candidate) => candidate >= rough) ?? 10n * magnitude;
+  return { max: step * BigInt(divisions), step, divisions };
 }
-function fmtAxisUsd(value: number): string {
-  if (value <= 0) return "$0";
-  if (value >= 1) return `$${Number.isInteger(value) ? value : value.toFixed(1)}`;
-  if (value >= 0.01) return `$${value.toFixed(2)}`;
-  return `$${value.toFixed(4).replace(/0+$/, "")}`;
+function formatAxisNanoUsd(value: bigint): string {
+  if (value <= 0n) return "$0";
+  if (value >= NANO_PER_USD) return formatNanoUsd(value, 0, 1);
+  if (value >= 10_000_000n) return formatNanoUsd(value, 0, 2);
+  if (value >= 100_000n) return formatNanoUsd(value, 0, 4);
+  return formatNanoUsd(value, 0, 9);
 }
 
 // Палитра сегментов по моделям — средние тона, читаются и на светлой, и на тёмной теме.
@@ -639,9 +723,9 @@ function fmtTokens(n: number): string {
   return n.toLocaleString("en-US");
 }
 function fmtNanoUsd(nano: string): string {
-  const usd = Number(BigInt(nano)) / 1e9;
-  if (usd > 0 && usd < 0.01) return "<$0.01";
-  return `$${usd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const value = BigInt(nano);
+  if (value > 0n && value < 10_000_000n) return "<$0.01";
+  return formatNanoUsd(value, 2, 2);
 }
 function modelLabel(id: string): string {
   const base = id.replace(/^claude-/i, "").replace(/-\d{8}$/, "");
@@ -735,20 +819,80 @@ function interpolate(template: string, values: Record<string, string | number>):
 
 // --- Скидка → сколько реального Claude API получает клиент ---
 // multiplierBp = доля оплаты в базисных пунктах (4000 = платит 40% = скидка 60% = ×2.5 ценности).
-function payFraction(account: AccountView): number {
+function paymentBasisPoints(account: AccountView): bigint {
   const bp = account.pricing?.multiplierBp ?? account.markupBasisPoints;
-  return bp && bp > 0 ? bp / 10_000 : 0.4;
+  return BigInt(bp && bp > 0 ? bp : 4_000);
 }
 function discountOf(account: AccountView): number {
-  return account.pricing?.discountPercent ?? Math.round((1 - payFraction(account)) * 100);
+  if (account.pricing) return account.pricing.discountPercent;
+  const discountBp = bigintMax(0n, BASIS_POINTS - paymentBasisPoints(account));
+  return Number(roundDivide(discountBp, 100n));
 }
-function nanoNum(nano: string): number { return Number(BigInt(nano)) / 1e9; }
-function fmtUsd(value: number): string {
-  return `$${value.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+function officialNanoFromCharged(chargedNano: bigint, multiplierBp: bigint): bigint {
+  return multiplierBp > 0n ? roundDivide(chargedNano * BASIS_POINTS, multiplierBp) : chargedNano;
 }
-function fmtMult(fraction: number): string {
-  return `×${(1 / fraction).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+function roundDivide(numerator: bigint, denominator: bigint): bigint {
+  if (denominator <= 0n) throw new Error("denominator must be positive");
+  const negative = numerator < 0n;
+  const absolute = negative ? -numerator : numerator;
+  const rounded = (absolute + denominator / 2n) / denominator;
+  return negative ? -rounded : rounded;
+}
+function formatNanoUsd(value: string | bigint, minimumFractionDigits = 0, maximumFractionDigits = 2): string {
+  const nano = typeof value === "bigint" ? value : BigInt(value);
+  const negative = nano < 0n;
+  const absolute = negative ? -nano : nano;
+  const digits = Math.max(0, Math.min(9, maximumFractionDigits));
+  const minimum = Math.max(0, Math.min(digits, minimumFractionDigits));
+  const quantum = 10n ** BigInt(9 - digits);
+  const scaled = (absolute + quantum / 2n) / quantum;
+  const units = 10n ** BigInt(digits);
+  const whole = scaled / units;
+  let fraction = digits > 0 ? (scaled % units).toString().padStart(digits, "0") : "";
+  while (fraction.length > minimum && fraction.endsWith("0")) fraction = fraction.slice(0, -1);
+  return `${negative ? "-" : ""}$${whole.toLocaleString("en-US")}${fraction ? `.${fraction}` : ""}`;
+}
+function formatMultiplier(multiplierBp: bigint): string {
+  return `×${formatFixedRatio(BASIS_POINTS, multiplierBp, 2)}`;
+}
+function formatPerDollar(multiplierBp: bigint): string {
+  return `$${formatFixedRatio(BASIS_POINTS, multiplierBp, 2)}`;
+}
+function formatFixedRatio(numerator: bigint, denominator: bigint, fractionDigits: number): string {
+  if (denominator <= 0n) return "1";
+  const scale = 10n ** BigInt(fractionDigits);
+  const scaled = roundDivide(numerator * scale, denominator);
+  const whole = scaled / scale;
+  const fraction = (scaled % scale).toString().padStart(fractionDigits, "0").replace(/0+$/, "");
+  return `${whole.toLocaleString("en-US")}${fraction ? `.${fraction}` : ""}`;
 }
 function multFromDiscount(discountPercent: number): string {
-  return `×${(100 / (100 - discountPercent)).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+  return formatMultiplier(BigInt(100 - discountPercent) * 100n);
 }
+function tierIndexForCumulativeNano(spentNano: bigint): number {
+  let index = -1;
+  B2C_PRICING_MILESTONES.forEach((milestone, milestoneIndex) => {
+    if (spentNano >= BigInt(milestone.spendThresholdNano)) index = milestoneIndex;
+  });
+  return index;
+}
+function safeCheckoutUrl(rawUrl: string, provider: CheckoutView["provider"]): string | null {
+  try {
+    const parsed = new URL(rawUrl);
+    const allowedOrigins = CHECKOUT_ORIGINS[provider];
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || !allowedOrigins?.has(parsed.origin)) return null;
+    return parsed.href;
+  } catch { return null; }
+}
+function boundedRatio(numerator: bigint, denominator: bigint): number {
+  if (denominator <= 0n || numerator <= 0n) return 0;
+  const scale = 1_000_000n;
+  const bounded = bigintMax(0n, numerator > denominator ? denominator : numerator);
+  return Number(bounded * scale / denominator) / Number(scale);
+}
+function boundedPercent(numerator: bigint, denominator: bigint): number {
+  return boundedRatio(numerator, denominator) * 100;
+}
+function compareBigInt(left: bigint, right: bigint): number { return left < right ? -1 : left > right ? 1 : 0; }
+function bigintMax(left: bigint, right: bigint): bigint { return left > right ? left : right; }
+function absoluteBigInt(value: bigint): bigint { return value < 0n ? -value : value; }

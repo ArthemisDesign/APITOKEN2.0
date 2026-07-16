@@ -13,17 +13,20 @@ describe("B2C pricing milestones", () => {
     expect(formatWholeUsd("2500")).toBe("$2,500");
   });
 
-  it("fills each visual segment using its real spend interval", () => {
-    expect(pricingMilestoneProgress("starter", "0")).toBe(20);
-    expect(pricingMilestoneProgress("starter", "50000000000")).toBe(30);
-    expect(pricingMilestoneProgress("builder", "175000000000")).toBe(50);
-    expect(pricingMilestoneProgress("pro", "375000000000")).toBe(70);
-    expect(pricingMilestoneProgress("studio", "750000000000")).toBe(90);
+  it("fills the track so the current tier's dot sits at its own position", () => {
+    // Dots are one-per-column with the track ends aligned to the first/last dot, so
+    // dot k is at k/(segments-1). Fill = (index + within)/(segments-1) * 100 (5 tiers → /4).
+    expect(pricingMilestoneProgress("starter", "0")).toBe(0);
+    expect(pricingMilestoneProgress("starter", "50000000000")).toBe(12.5);
+    expect(pricingMilestoneProgress("builder", "175000000000")).toBe(37.5);
+    expect(pricingMilestoneProgress("pro", "375000000000")).toBe(62.5);
+    expect(pricingMilestoneProgress("studio", "750000000000")).toBe(87.5);
     expect(pricingMilestoneProgress("scale", "1000000000000")).toBe(100);
   });
 
   it("clamps spend inside the active segment", () => {
-    expect(pricingMilestoneProgress("starter", "100000000000")).toBe(40);
-    expect(pricingMilestoneProgress("builder", "0")).toBe(40);
+    // Reaching the next threshold fills to that next dot; 0 progress sits on the current dot.
+    expect(pricingMilestoneProgress("starter", "100000000000")).toBe(25);
+    expect(pricingMilestoneProgress("builder", "0")).toBe(25);
   });
 });

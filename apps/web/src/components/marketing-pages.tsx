@@ -1,6 +1,9 @@
+"use client";
+
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { CommercialDisclosure } from "./commercial-disclosure";
+import { useI18n, type Language } from "./i18n-provider";
 import { PricingOverview } from "./pricing-overview";
 import { T } from "./translated";
 import { DOCS_URL } from "@/lib/site-links";
@@ -20,12 +23,19 @@ export function PlansContent() {
 const modelRows = [
   ["Claude Opus 4.8","claude-opus-4-8","1M","$5","$25","m_opus48"],
   ["Claude Opus 4.7","claude-opus-4-7","1M","$5","$25","m_opus47"],
+  ["Claude Sonnet 5","claude-sonnet-5","1M","$2*","$10*","m_son46"],
   ["Claude Sonnet 4.6","claude-sonnet-4-6","1M","$3","$15","m_son46"],
   ["Claude Haiku 4.5","claude-haiku-4-5","200K","$1","$5","m_haiku"],
 ] as const;
 
+const modelPageCopy: Record<Language, { sonnet5Footnote: string }> = {
+  en: { sonnet5Footnote: "* Claude Sonnet 5 introductory official pricing is $2 / $10 per 1M through 2026-08-31 and returns to $3 / $15 on 2026-09-01. The engine already charges the current effective rate." },
+  ru: { sonnet5Footnote: "* Для Claude Sonnet 5 официальная вводная цена $2 / $10 за 1 млн действует до 2026-08-31 включительно; с 2026-09-01 возвращается ставка $3 / $15. Движок уже применяет актуальную ставку." },
+};
+
 export function ModelsPage() {
-  return <MarketingFrame><PageHero eyebrow="nav_models" title="models_h" subtitle="models_sub" /><section className="borderless"><div className="wrap"><div className="model-rate-note"><div><T k="model_rate_tag" as="span" className="tag">Official list rates</T><T k="model_rate_h" as="h3">Official rates behind every spend calculation</T></div><T k="model_rate_p" as="p">These Anthropic list rates calculate official API spend. B2C accounts start 60% below that spend and can progress to 80% off; B2B rates are negotiated.</T></div><div className="table-scroll"><table className="mtable"><thead><tr><T k="th_model" as="th">Model</T><T k="th_ctx" as="th">Context</T><T k="th_in" as="th">Input / 1M</T><T k="th_out" as="th">Output / 1M</T><T k="th_best" as="th">Best for</T></tr></thead><tbody>{modelRows.map(([name,id,ctx,input,output,best], index) => <tr key={id}><td><span className="mname">{name}</span>{index === 0 && <T k="latest_badge" as="span" className="model-badge">Latest</T>}<br /><code>{id}</code></td><td><span className={`context-badge ${ctx === "1M" ? "context-full" : ""}`}>{ctx}</span></td><td className="mprice">{input}</td><td className="mprice">{output}</td><T k={best} as="td">Use case</T></tr>)}</tbody></table></div><PageActions /></div></section></MarketingFrame>;
+  const { language } = useI18n();
+  return <MarketingFrame><PageHero eyebrow="nav_models" title="models_h" subtitle="models_sub" /><section className="borderless"><div className="wrap"><div className="model-rate-note"><div><T k="model_rate_tag" as="span" className="tag">Official list rates</T><T k="model_rate_h" as="h3">Official rates behind every spend calculation</T></div><T k="model_rate_p" as="p">These Anthropic list rates calculate official API spend. B2C accounts start 60% below that spend and can progress to 80% off; B2B rates are negotiated.</T></div><div className="table-scroll"><table className="mtable"><thead><tr><T k="th_model" as="th">Model</T><T k="th_ctx" as="th">Context</T><T k="th_in" as="th">Input / 1M</T><T k="th_out" as="th">Output / 1M</T><T k="th_best" as="th">Best for</T></tr></thead><tbody>{modelRows.map(([name,id,ctx,input,output,best], index) => <tr key={id}><td><span className="mname">{name}</span>{index === 0 && <T k="latest_badge" as="span" className="model-badge">Latest</T>}<br /><code>{id}</code></td><td><span className={`context-badge ${ctx === "1M" ? "context-full" : ""}`}>{ctx}</span></td><td className="mprice">{input}</td><td className="mprice">{output}</td><T k={best} as="td">Use case</T></tr>)}</tbody></table></div><p className="tier-footnote">{modelPageCopy[language].sonnet5Footnote}</p><PageActions /></div></section></MarketingFrame>;
 }
 
 const integrations = [
