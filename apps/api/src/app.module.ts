@@ -8,6 +8,7 @@ import { ReadinessService } from "./readiness.service.js";
 import { AuthModule } from "./auth.module.js";
 import { AccountModule } from "./account.module.js";
 import { AdminModule } from "./admin.module.js";
+import { SecurityModule } from "./security.module.js";
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { AdminModule } from "./admin.module.js";
     AuthModule,
     AccountModule,
     AdminModule,
+    SecurityModule,
     PaymentsModule,
   ],
   controllers: [HealthController],

@@ -40,6 +40,10 @@ export const users = pgTable("users", {
   emailVerified: boolean("email_verified").notNull().default(false),
   passwordHash: text("password_hash"),
   status: userStatus("status").notNull().default("active"),
+  // TOTP (Google Authenticator) 2FA. Secret stored AES-GCM-encrypted (auth-secrets); "pending"
+  // while a secret exists but totp_enabled is false (enrolled, not yet verified). Gates key issuance.
+  totpSecret: text("totp_secret"),
+  totpEnabled: boolean("totp_enabled").notNull().default(false),
   createdAt,
   updatedAt,
 }, (table) => [uniqueIndex("users_email_lower_uidx").on(sql`lower(${table.email})`)]);

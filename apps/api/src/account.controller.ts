@@ -13,6 +13,7 @@ import {
   Post,
   Query,
   ServiceUnavailableException,
+  UnauthorizedException,
   UseGuards,
 } from "@nestjs/common";
 import { createApiKeySchema, renameApiKeySchema } from "@claude-api/contracts";
@@ -20,6 +21,7 @@ import { EngineClientError } from "@claude-api/engine-client";
 import { z } from "zod";
 import { AccountService, isRetryableEngineFailure } from "./account.service.js";
 import { CurrentAuth, type RequestAuth, SessionAuthGuard } from "./auth.guard.js";
+import { TotpService } from "./totp.service.js";
 
 const uuidSchema = z.string().uuid();
 const ledgerLimitSchema = z.coerce.number().int().min(1).max(1000).default(50);
@@ -28,7 +30,7 @@ const usageWindowSchema = z.string().regex(/^(all|\d+[dh])$/).default("30d");
 @Controller()
 @UseGuards(SessionAuthGuard)
 export class AccountController {
-  constructor(private readonly accounts: AccountService) {}
+  constructor(private readonly accounts: AccountService, private readonly totp: TotpService) {}
 
   @Get("account")
   @Header("Cache-Control", "no-store")
@@ -63,6 +65,12 @@ export class AccountController {
   async createApiKey(@CurrentAuth() current: RequestAuth, @Body() body: unknown): Promise<unknown> {
     const parsed = createApiKeySchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    // Гейт 2FA: если у пользователя включена TOTP — выпуск ключа только с действующим кодом.
+    if (current.user.totpEnabled) {
+      if (!parsed.data.totpCode) throw new UnauthorizedException("2fa_required");
+      const ok = await this.totp.verify(current.user.id, parsed.data.totpCode);
+      if (!ok) throw new UnauthorizedException("2fa_invalid");
+    }
     return this.withEngineErrors(() => this.accounts.createApiKey(current.user.id, parsed.data.label));
   }
 

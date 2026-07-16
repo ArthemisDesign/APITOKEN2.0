@@ -185,8 +185,13 @@ export const displayNameSchema = z.string().trim().min(1).max(80)
   .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), "display name contains unsupported characters");
 export const updateProfileSchema = z.object({ displayName: displayNameSchema }).strict();
 
+// 6-значный TOTP-код (Google Authenticator). Требуется на выпуск ключа, если 2FA включена.
+export const totpCodeSchema = z.string().regex(/^\d{6}$/);
+export const totpCodeBodySchema = z.object({ code: totpCodeSchema }).strict();
+
 export const createApiKeySchema = z.object({
   label: z.string().trim().min(1).max(100).optional(),
+  totpCode: totpCodeSchema.optional(),
 }).strict();
 
 export const renameApiKeySchema = z.object({
@@ -231,4 +236,5 @@ export interface AuthUserView {
   passwordEnabled: boolean;
   engineAccountStatus: "pending" | "active" | "error" | "disabled";
   customerType: "b2c" | "b2b";
+  totpEnabled: boolean;
 }

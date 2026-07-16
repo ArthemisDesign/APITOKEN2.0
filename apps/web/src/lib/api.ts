@@ -9,6 +9,13 @@ export interface AuthUser {
   passwordEnabled: boolean;
   engineAccountStatus: "pending" | "active" | "error" | "disabled";
   customerType: "b2c" | "b2b";
+  totpEnabled: boolean;
+}
+
+export interface TotpSetup {
+  otpauthUri: string;
+  secret: string;
+  qrDataUrl: string;
 }
 
 export interface ApiKeyView {
@@ -183,9 +190,12 @@ export const api = {
   ledger: (limit = 50) => request<{ entries: LedgerEntry[] }>(`/account/ledger?limit=${limit}`),
   usage: (window = "30d") => request<UsageView>(`/account/usage?window=${encodeURIComponent(window)}`),
   apiKeys: () => request<{ keys: ApiKeyView[] }>("/api-keys"),
-  createApiKey: (label?: string) => request<ApiKeyView>("/api-keys", {
-    method: "POST", body: JSON.stringify(label ? { label } : {}),
+  createApiKey: (label?: string, totpCode?: string) => request<ApiKeyView>("/api-keys", {
+    method: "POST", body: JSON.stringify({ ...(label ? { label } : {}), ...(totpCode ? { totpCode } : {}) }),
   }),
+  totpSetup: () => request<TotpSetup>("/security/totp/setup", { method: "POST" }),
+  totpEnable: (code: string) => request<void>("/security/totp/enable", { method: "POST", body: JSON.stringify({ code }) }),
+  totpDisable: (code: string) => request<void>("/security/totp/disable", { method: "POST", body: JSON.stringify({ code }) }),
   renameApiKey: (id: string, label: string) => request<ApiKeyView>(`/api-keys/${encodeURIComponent(id)}`, {
     method: "PATCH", body: JSON.stringify({ label }),
   }),

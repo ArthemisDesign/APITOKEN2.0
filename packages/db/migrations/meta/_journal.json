@@ -78,6 +78,13 @@
       "when": 1784202441952,
       "tag": "0010_optimal_komodo",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1784204781061,
+      "tag": "0011_futuristic_blindfold",
+      "breakpoints": true
     }
   ]
 }

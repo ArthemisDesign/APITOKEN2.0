@@ -6,7 +6,6 @@ export const dashboardSections = [
   "usage",
   "support",
   "profile",
-  "security",
 ] as const;
 
 export type DashboardSection = typeof dashboardSections[number];
