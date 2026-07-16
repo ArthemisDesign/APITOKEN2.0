@@ -95,7 +95,13 @@ export function LearnArticleView({ article }: { article: ResolvedArticle }) {
     <main className="learn-article">
       <div className="page-hero">
         <div className="wrap">
-          <Link className="auth-back" href={learnHubPath(locale)}>{ui.backToHub}</Link>
+          <nav className="crumbs" aria-label="Breadcrumb">
+            <Link href="/docs">{ui.crumbDocs}</Link>
+            <span aria-hidden="true">/</span>
+            <Link href={learnHubPath(locale)}>{ui.crumbGuides}</Link>
+            <span aria-hidden="true">/</span>
+            <span className="crumbs-current">{cluster.label}</span>
+          </nav>
           <span className="eyebrow">{cluster.label}</span>
           <h1>{content.h1}</h1>
           <p>{content.dek}</p>
