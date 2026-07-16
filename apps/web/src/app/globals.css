@@ -933,6 +933,43 @@ a.step:hover .step-cta::after{margin-left:4px}
 .support-card ul{display:grid;gap:10px;margin:0;padding-left:20px}
 .support-card li::marker{color:var(--accent)}
 .support-card a{color:var(--accent);font-family:var(--font-mono);font-size:12px;font-weight:600}
+/* ===== Support — featured AI bot card + how-it-works flow ===== */
+.support-bot{position:relative;overflow:hidden;border:1px solid var(--accent-line);border-radius:16px;
+  background:linear-gradient(158deg,color-mix(in srgb,var(--accent) 11%,var(--bg-card)),var(--bg-card) 62%);
+  padding:38px 40px;margin-bottom:34px;box-shadow:var(--shadow)}
+.support-bot-glow{position:absolute;inset:-30% -8% auto auto;width:52%;height:150%;pointer-events:none;z-index:0;
+  background:radial-gradient(46% 46% at 78% 22%,color-mix(in srgb,var(--accent) 30%,transparent),transparent 70%);filter:blur(30px);opacity:.6}
+.support-bot-main{position:relative;z-index:1;max-width:660px}
+.support-bot-head{display:flex;align-items:center;gap:16px;margin-bottom:20px}
+.support-bot-av{width:54px;height:54px;border-radius:15px;flex:none;display:grid;place-items:center;color:#fff;
+  background:linear-gradient(150deg,var(--accent),color-mix(in srgb,var(--accent) 55%,#7fb0ff));
+  box-shadow:0 10px 24px -8px color-mix(in srgb,var(--accent) 70%,transparent)}
+.support-bot-tag{display:block;font-family:var(--font-mono);font-size:12px;letter-spacing:.05em;text-transform:uppercase;color:var(--accent);margin-bottom:5px}
+.support-bot-head h2{margin:0;font-size:clamp(22px,2.6vw,28px);font-family:var(--font-mono);letter-spacing:-.01em}
+.support-bot-desc{color:var(--txt-2);font-size:15px;line-height:1.62;margin:0 0 20px}
+.support-bot-points{list-style:none;padding:0;margin:0 0 28px;display:grid;grid-template-columns:1fr 1fr;gap:11px 22px}
+.support-bot-points li{position:relative;padding-left:27px;font-family:var(--font-mono);font-size:14px;color:var(--txt-2);line-height:1.5}
+.support-bot-points li::before{content:"";position:absolute;left:2px;top:.4em;width:11px;height:6px;
+  border-left:2px solid var(--accent);border-bottom:2px solid var(--accent);transform:rotate(-45deg)}
+.support-bot-actions{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.support-bot-cta{height:50px;padding:0 28px;font-size:15px}
+.support-bot-handle{display:inline-flex;flex-direction:column;font-family:var(--font-mono);text-decoration:none;line-height:1.3}
+.support-bot-handle span{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--txt-4)}
+.support-bot-handle{color:var(--txt);font-size:14px;font-weight:600}
+.support-bot-handle:hover{color:var(--accent)}
+.support-bot-avail{display:inline-flex;align-items:center;gap:9px;margin-top:20px;font-family:var(--font-mono);font-size:12.5px;color:var(--txt-4)}
+.support-bot-dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--ok);box-shadow:0 0 0 0 color-mix(in srgb,var(--ok) 60%,transparent);animation:supportPulse 2.4s ease-out infinite}
+@keyframes supportPulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--ok) 55%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
+.support-how{margin-bottom:34px}
+.support-how-title{margin:0 0 20px;font-family:var(--font-mono);font-size:20px}
+.support-flow{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.support-step{position:relative;border:1px solid var(--line);border-radius:10px;padding:24px;background:var(--bg-card);transition:border-color .16s ease}
+.support-step:hover{border-color:var(--accent-line)}
+.support-step .n{display:block;font-family:var(--font-pixel);font-weight:400;font-size:24px;color:var(--accent);margin-bottom:14px;line-height:1}
+.support-step h3{margin:0 0 8px;font-family:var(--font-mono);font-size:17px}
+.support-step p{margin:0;color:var(--txt-3);font-size:14px;line-height:1.55}
+@media(max-width:760px){.support-flow{grid-template-columns:1fr}.support-bot-points{grid-template-columns:1fr}.support-bot{padding:28px 24px}}
+
 .commercial-disclosure{padding:30px;border:1px solid var(--accent-line);border-radius:8px;background:linear-gradient(145deg,var(--bg-card),var(--accent-soft));box-shadow:var(--shadow)}
 .commercial-heading{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.8fr);gap:44px;align-items:end;margin-bottom:26px}
 .commercial-heading .tag{display:block;margin-bottom:10px;font-family:var(--font-mono);font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--accent)}
