@@ -76,7 +76,11 @@ future frontend. Exact DNS records override the wildcard if they are added later
 ## Host paths
 
 ```text
-/opt/apitoken/repo             checked-out application repository
+/opt/apitoken/repo             fetch-only application repository used by deploy tooling
+/opt/apitoken/releases/<sha>   immutable commerce release directories
+/opt/apitoken/releases/current active commerce release symlink
+/srv/claude-api/releases/<sha> immutable Rust engine release directories
+/srv/claude-api/releases/current active engine release symlink
 /var/lib/apitoken/postgres     PostgreSQL container data
 /var/lib/apitoken/backups      application-consistent database export staging
 /var/log/apitoken              application-owned logs when file output is needed
@@ -96,17 +100,21 @@ Repository-managed deployment units:
 
 ```text
 systemd/apitoken-postgres.service
-systemd/apitoken-api.service
+systemd/apitoken-api.service          legacy untemplated API unit
+systemd/apitoken-api@.service         release-symlink API unit; instance name is the port
 systemd/apitoken-worker.service
+systemd/claude-api.service
+deploy/deploy.sh
+deploy/rollback.sh
 deploy/commerce-postgres.compose.yaml
 ```
 
 Normal operations:
 
 ```bash
-sudo systemctl status apitoken-postgres apitoken-api apitoken-worker
-sudo systemctl restart apitoken-api apitoken-worker
-sudo journalctl -u apitoken-api -u apitoken-worker --since today
+sudo systemctl status apitoken-postgres apitoken-api@3000 apitoken-worker claude-api
+sudo systemctl restart apitoken-api@3000 apitoken-worker claude-api
+sudo journalctl -u apitoken-api@3000 -u apitoken-worker -u claude-api --since today
 sudo systemctl status caddy
 sudo caddy validate --config /etc/caddy/Caddyfile
 ```
@@ -167,33 +175,51 @@ copying required archives to independent storage.
 
 ## Deployment procedure
 
+Production deploys use immutable SHA directories and the controllers documented in
+`deploy/README.md`. The integrated pipeline must build, typecheck, and test the intended commit before
+an operator supplies its full 40-character SHA to the host.
+
 ```bash
 ssh deploy@84.32.48.2
 cd /opt/apitoken/repo
-git fetch origin
-git pull --ff-only origin master
-pnpm install --frozen-lockfile
-pnpm build
-pnpm typecheck
-pnpm test
-cargo test --workspace
-sudo systemctl restart apitoken-postgres apitoken-api apitoken-worker
+deploy/deploy.sh --dry-run <tested-sha>
+deploy/deploy.sh <tested-sha>
 ```
 
-Direct GitHub commands use the host's registered read-only deploy key. Production releases must
-still be verified against the intended pushed commit hash before services restart.
-
-Run PostgreSQL migrations after the database is healthy and before restarting a new API revision:
+The default deploy prepares and activates both components. Deploy the Rust engine and commerce API
+independently when only one changed:
 
 ```bash
-set -a
-. /etc/apitoken/api.env
-set +a
-pnpm db:migrate
+deploy/deploy.sh --engine-only <tested-sha>
+deploy/deploy.sh --api-only <tested-sha>
 ```
 
-Production releases should deploy a specific tested commit. Never use `git reset --hard` on the
-server as an update mechanism.
+For commerce releases, the controller loads `/etc/apitoken/api.env` without printing it, takes the
+migration lock, and runs the exact migration command below **before** changing
+`/opt/apitoken/releases/current`:
+
+```bash
+pnpm --filter @claude-api/db db:migrate
+```
+
+`--skip-migrate` is an explicit exception for a release known not to require a database migration.
+Application rollback never reverses migrations, so production migrations must remain additive and
+backward-compatible.
+
+Activation atomically repoints `/opt/apitoken/releases/current` and/or
+`/srv/claude-api/releases/current`, restarts only the selected application unit, and readiness-gates the
+release with `http://127.0.0.1:3000/v1/ready` and `http://127.0.0.1:8787/ready`. A readiness timeout
+restores the recorded previous symlink and restarts the affected unit. Manual rollback uses
+`deploy/rollback.sh [--api-only|--engine-only] [<sha>]` and never touches the database.
+
+**Never restart `apitoken-postgres.service` as part of an application deploy or rollback.** PostgreSQL
+is an independent stateful service; application units may be restarted without bouncing the database.
+The commerce worker remains separately managed by `apitoken-worker.service` until it receives its own
+release-symlink unit.
+
+Direct GitHub commands use the host's registered read-only deploy key. The controller fetches and
+verifies the exact requested commit from `origin`; it does not run `git pull` or `git reset --hard`, and
+it refuses to overwrite an existing SHA release directory.
 
 ## Vercel frontend
 

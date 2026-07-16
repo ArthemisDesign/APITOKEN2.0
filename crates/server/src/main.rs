@@ -20,7 +20,10 @@ use config::Settings;
 use forward::{detect_plan, AppState, Clients, PlanDetect};
 use pool::Pool;
 use std::net::SocketAddr;
+use std::future::IntoFuture;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 // Fail-closed bounded defaults until these knobs are represented by validated Settings fields.
 // AUDIT-TODO(C60/C89): add typed, range-checked fields in config.rs before restoring env overrides.
@@ -587,6 +590,7 @@ async fn serve() -> Result<()> {
     // Poke поллера: и расписание (reload/poll_loop), и probe-по-требованию из forward (401/403 →
     // ранний clean-probe). Создаём ДО AppState, чтобы отдать хэндл в него. Без поллера — probe не нужен.
     let poke = std::sync::Arc::new(tokio::sync::Notify::new());
+    let accepting = Arc::new(AtomicBool::new(true));
     let app = AppState {
         cfg: Arc::new(s.proxy.clone()),
         db_path: Arc::new(s.db_path.clone()),
@@ -667,22 +671,74 @@ async fn serve() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&s.bind).await?;
     eprintln!("claude-api слушает http://{}  (подписок: {n}, апстрим {}, реестр {})",
         s.bind, s.proxy.upstream, s.db_path);
-    // Graceful shutdown: на SIGTERM (деплой) / SIGINT axum ДОЖДЁТСЯ завершения in-flight стримов
-    // (их HoldGuard/tee-метеринг корректно закроют резервы — не теряем деньги на деплое), затем —
-    // финальный флаш состояния пула (свежая калибровка/cooling переживут рестарт без потери до 120с).
+    // Graceful shutdown: сначала снимаем readiness и даём балансировщику убрать инстанс, затем axum
+    // дренирует in-flight стримы. Общий deadline включает propagation-delay, дренаж и billing FIFO-flush.
     let flush_app = app.clone();
     let flush_db = s.db_path.clone();
-    axum::serve(listener, http::router(app).into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
-    eprintln!("graceful shutdown: дренаж стримов завершён, дренирую очередь биллинга + флаш пула");
-    // Стримы дотекли → их TeeMeter/HoldGuard поставили последние settle в очередь DB-актора. Ждём,
-    // пока актор их применит (flush = FIFO-барьер), иначе выход процесса потерял бы эти списания (выручку).
+    let shutdown_accepting = accepting.clone();
+    let readiness_delay = Duration::from_secs(s.readiness_delay_secs);
+    let drain_deadline = Duration::from_secs(s.drain_deadline_secs);
+    let (shutdown_started_tx, shutdown_started_rx) = tokio::sync::oneshot::channel();
+    let (serve_result, shutdown_deadline, forced_stream_cut) = {
+        let shutdown = async move {
+            shutdown_signal().await;
+            shutdown_accepting.store(false, Ordering::Release);
+            eprintln!(
+                "graceful shutdown: readiness снята, жду {}с перед дренажем",
+                readiness_delay.as_secs()
+            );
+            let _ = shutdown_started_tx.send(());
+            tokio::time::sleep(readiness_delay).await;
+        };
+        let server = axum::serve(
+            listener,
+            http::router(app, accepting).into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown)
+        .into_future();
+        tokio::pin!(server);
+        tokio::select! {
+            result = &mut server => (result, None, false),
+            started = shutdown_started_rx => match started {
+                Ok(()) => {
+                    let deadline = tokio::time::Instant::now() + drain_deadline;
+                    match tokio::time::timeout_at(deadline, &mut server).await {
+                        Ok(result) => (result, Some(deadline), false),
+                        Err(_) => (Ok(()), Some(deadline), true),
+                    }
+                }
+                Err(_) => ((&mut server).await, None, false),
+            }
+        }
+    };
+    if forced_stream_cut {
+        eprintln!(
+            "⚠ graceful shutdown: deadline {}с исчерпан — принудительно обрываю оставшиеся стримы",
+            s.drain_deadline_secs
+        );
+    } else if shutdown_deadline.is_some() {
+        eprintln!("graceful shutdown: дренаж стримов завершён");
+    }
+    eprintln!("graceful shutdown: дренирую очередь биллинга + флаш пула");
+    // Завершённые/оборванные стримы поставили settle в очередь DB-актора. Даже после deadline ждём
+    // обязательный FIFO-барьер: ограничение дренажа не должно превращаться в потерянную выручку.
     if let Some(b) = &flush_app.billing {
-        // Never convert a slow money-writer into lost revenue by exiting on a local timeout.
-        // AUDIT-TODO(C12): make AsyncBilling::flush return Result so a closed writer is distinguishable
-        // from an acknowledged FIFO barrier, then fail shutdown loudly on the former.
-        b.flush().await;
+        let flushed_in_deadline = match shutdown_deadline {
+            Some(deadline) => tokio::time::timeout_at(deadline, b.flush()).await.is_ok(),
+            None => {
+                b.flush().await;
+                true
+            }
+        };
+        if !flushed_in_deadline {
+            eprintln!(
+                "⚠ graceful shutdown: billing flush не уложился в deadline; продолжаю обязательный flush"
+            );
+            // Never convert a slow money-writer into lost revenue by exiting on a local timeout.
+            // AUDIT-TODO(C12): make AsyncBilling::flush return Result so a closed writer is distinguishable
+            // from an acknowledged FIFO barrier, then fail shutdown loudly on the former.
+            b.flush().await;
+        }
     }
     match registry::open(&flush_db) {
         Ok(conn) => if let Err(e) = registry::save_pool_state(&conn, &flush_app.pool.export_state()) {
@@ -691,6 +747,7 @@ async fn serve() -> Result<()> {
         Err(e) => eprintln!("⚠ финальный флаш: открыть БД не удалось: {e}"),
     }
     drop(instance_lock);
+    serve_result?;
     Ok(())
 }
 

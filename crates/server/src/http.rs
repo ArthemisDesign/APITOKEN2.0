@@ -1,10 +1,11 @@
 //! HTTP-роутер: наши управляющие эндпоинты + прозрачный форвардинг всего остального.
 //!
-//!   GET /health   — жив ли сервер (без авторизации)
-//!   GET /pool     — статус пула (util/cooling, без секретов)
+//!   GET /health,/live — жив ли сервер (без авторизации)
+//!   GET /ready        — принимает ли сервер новый трафик (без авторизации)
+//!   GET /pool         — статус пула (util/cooling, без секретов)
 //!   *             — форвардинг на api.anthropic.com (см. forward::forward)
 
-use axum::extract::{ConnectInfo, State};
+use axum::extract::{ConnectInfo, FromRef, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
@@ -13,6 +14,8 @@ use forward::{authed, client_key, control_authed, forward, readonly_authed, AppS
 use crate::admin;
 use serde_json::json;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// Живой дашборд ёмкости (self-contained HTML; данные тянет с /capacity тем же origin).
 const PANEL_HTML: &str = include_str!("panel.html");
@@ -37,9 +40,23 @@ fn cache_put(cell: &DashCache, v: &serde_json::Value) {
         Some((std::time::Instant::now(), v.clone()));
 }
 
-pub fn router(app: AppState) -> Router {
+#[derive(Clone)]
+struct HttpState {
+    app: AppState,
+    accepting: Arc<AtomicBool>,
+}
+
+impl FromRef<HttpState> for AppState {
+    fn from_ref(state: &HttpState) -> Self {
+        state.app.clone()
+    }
+}
+
+pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/live", get(health))
+        .route("/ready", get(ready))
         .route("/pool", get(pool_status))
         .route("/balance", get(balance))
         .route("/capacity", get(capacity))
@@ -62,7 +79,7 @@ pub fn router(app: AppState) -> Router {
         .route("/admin/key-id/{key_id}/status", post(admin::key_status_by_id))
         .route("/admin/key-id/{key_id}/label", post(admin::key_label_by_id))
         .fallback(forward)
-        .with_state(app)
+        .with_state(HttpState { app, accepting })
 }
 
 /// Prometheus-метрики (admin-авторизация). Ключевое: `route_pin/place` = доля cache-hit,
@@ -314,6 +331,22 @@ async fn health() -> Json<serde_json::Value> {
     Json(json!({ "ok": true }))
 }
 
+fn readiness_snapshot(accepting: &AtomicBool) -> (StatusCode, serde_json::Value) {
+    if accepting.load(Ordering::Acquire) {
+        (StatusCode::OK, json!({ "ready": true }))
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({ "ready": false, "reason": "draining" }),
+        )
+    }
+}
+
+async fn ready(State(state): State<HttpState>) -> Response {
+    let (status, body) = readiness_snapshot(&state.accepting);
+    (status, Json(body)).into_response()
+}
+
 /// Баланс по своему ключу: клиент шлёт свой x-api-key/Bearer → видит остаток в USD.
 async fn balance(State(app): State<AppState>, headers: HeaderMap) -> Response {
     let billing = match &app.billing {
@@ -370,4 +403,27 @@ async fn pool_status(
         "polled_ts": l.polled_ts,
     })).collect();
     Json(json!({"pool": list, "cap": app.cfg.util_cap, "poller": app.cfg.poll})).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn readiness_flag_flips_before_drain() {
+        let accepting = AtomicBool::new(true);
+        assert_eq!(
+            readiness_snapshot(&accepting),
+            (StatusCode::OK, json!({"ready": true}))
+        );
+
+        accepting.store(false, Ordering::Release);
+        assert_eq!(
+            readiness_snapshot(&accepting),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"ready": false, "reason": "draining"}),
+            )
+        );
+    }
 }

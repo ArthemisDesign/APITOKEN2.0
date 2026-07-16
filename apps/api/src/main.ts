@@ -7,6 +7,17 @@ import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fa
 import { AppModule } from "./app.module.js";
 import type { Environment } from "./config.js";
 
+function installDrainFailsafe(deadlineMs: number): void {
+  let armed = false;
+  const arm = (): void => {
+    if (armed) return;
+    armed = true;
+    setTimeout(() => process.exit(0), deadlineMs).unref();
+  };
+  process.once("SIGTERM", arm);
+  process.once("SIGINT", arm);
+}
+
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter({
     logger: false,
@@ -23,6 +34,7 @@ async function bootstrap(): Promise<void> {
     methods: ["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"],
   });
   app.enableShutdownHooks();
+  installDrainFailsafe(config.get("API_DRAIN_DEADLINE_MS", { infer: true }));
   app.setGlobalPrefix("v1");
 
   const host = config.get("HOST", { infer: true });

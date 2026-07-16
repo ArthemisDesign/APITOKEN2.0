@@ -4,6 +4,7 @@ import { validateEnvironment } from "./config.js";
 import { HealthController } from "./health.controller.js";
 import { InfrastructureModule } from "./infrastructure.module.js";
 import { PaymentsModule } from "./payments.module.js";
+import { ReadinessService } from "./readiness.service.js";
 import { AuthModule } from "./auth.module.js";
 import { AccountModule } from "./account.module.js";
 import { AdminModule } from "./admin.module.js";
@@ -18,5 +19,6 @@ import { AdminModule } from "./admin.module.js";
     PaymentsModule,
   ],
   controllers: [HealthController],
+  providers: [ReadinessService],
 })
 export class AppModule {}

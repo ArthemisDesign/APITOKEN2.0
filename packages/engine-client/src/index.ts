@@ -57,6 +57,15 @@ export class EngineClient {
     }
   }
 
+  async readiness(): Promise<boolean> {
+    try {
+      const { response } = await this.request("/ready", { authenticated: false });
+      return response.status === 200;
+    } catch {
+      return false;
+    }
+  }
+
   async createAccount(input: CreateEngineAccount): Promise<{ account: string; multBp: number; handle: string | null }> {
     const body: Record<string, unknown> = {};
     if (input.handle !== undefined) body.handle = input.handle;

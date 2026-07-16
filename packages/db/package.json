@@ -17,7 +17,7 @@
     "test": "vitest run",
     "test:integration": "vitest run --no-file-parallelism src/*.integration.test.ts",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "pnpm run build && node dist/migrate.js"
   },
   "dependencies": {
     "@claude-api/contracts": "workspace:*",

@@ -30,6 +30,7 @@ const environmentSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
   HOST: z.string().default("127.0.0.1"),
+  API_DRAIN_DEADLINE_MS: z.coerce.number().int().min(1_000).max(29_000).default(25_000),
   DATABASE_URL: z.string().url(),
   ENGINE_BASE_URL: engineBaseUrlSchema,
   ENGINE_CONTROL_KEY: z.string().min(32),

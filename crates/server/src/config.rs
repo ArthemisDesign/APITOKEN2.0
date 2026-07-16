@@ -15,6 +15,8 @@ pub struct Settings {
     pub reserve5h: f64,      // запас 5h-окна (доля; деф 0.10 = бережём 10%)
     pub reserve7d: f64,      // запас 7d-окна (доля; деф 0.03)
     pub reserve_jitter: f64, // ± разброс порога между подписками (антифингерпринт; деф 0.02)
+    pub readiness_delay_secs: u64, // задержка после снятия readiness перед дренажем (деф 3с)
+    pub drain_deadline_secs: u64, // предел graceful-дренажа до принудительного обрыва (деф 540с)
     pub proxy: ProxyConfig,
 }
 
@@ -166,6 +168,12 @@ impl Settings {
             reserve5h: ev_frac("CLAUDE_API_RESERVE_5H", 0.10),
             reserve7d: ev_frac("CLAUDE_API_RESERVE_7D", 0.03),
             reserve_jitter: ev_frac("CLAUDE_API_RESERVE_JITTER", 0.02),
+            // Fail-closed clamps: readiness-delay ≤ 30с; drain-deadline в [5, 595]с — оставляем
+            // headroom под systemd TimeoutStopSec=600 и исключаем переполнение Instant + deadline.
+            readiness_delay_secs: ev("CLAUDE_API_READINESS_DELAY_SECS")
+                .and_then(|s| s.parse::<u64>().ok()).unwrap_or(3).min(30),
+            drain_deadline_secs: ev("CLAUDE_API_DRAIN_DEADLINE_SECS")
+                .and_then(|s| s.parse::<u64>().ok()).unwrap_or(540).clamp(5, 595),
             proxy: ProxyConfig {
                 api_keys,
                 control_keys,
