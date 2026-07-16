@@ -73,6 +73,8 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
         <script id="yandex-metrika" dangerouslySetInnerHTML={{ __html: yandexMetrikaBootstrap }} />
+        <link rel="alternate" type="text/plain" href="/llms.txt" title="LLM-readable site summary" />
+        <link rel="alternate" type="text/plain" href="/llms-full.txt" title="LLM-readable full reference" />
       </head>
       <body>
         <I18nProvider>

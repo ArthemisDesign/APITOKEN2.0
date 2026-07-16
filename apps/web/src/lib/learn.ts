@@ -730,3 +730,56 @@ export function learnPath(slug: string): string {
 }
 
 export const LEARN_HUB_PATH = "/docs/learn";
+
+/** Path to the clean-markdown version of a learn article (AI-agent gateway). */
+export function learnMarkdownPath(slug: string): string {
+  return `/md/docs/learn/${slug}`;
+}
+
+function blockToMarkdown(block: LearnBlock): string {
+  switch (block.type) {
+    case "p":
+      return block.text;
+    case "note":
+      return `> ${block.text}`;
+    case "list":
+      return block.items.map((item) => `- ${item}`).join("\n");
+    case "steps":
+      return block.items.map((item, index) => `${index + 1}. ${item}`).join("\n");
+    case "code":
+      return "```\n" + block.code + "\n```";
+    default:
+      return "";
+  }
+}
+
+/** Serialize an article to clean Markdown for the AI-agent gateway. */
+export function renderLearnMarkdown(article: LearnArticle, origin: string): string {
+  const lines: string[] = [
+    "---",
+    `title: ${article.title}`,
+    `description: ${JSON.stringify(article.description)}`,
+    `url: ${origin}${learnPath(article.slug)}`,
+    "language: en",
+    "---",
+    "",
+    `# ${article.h1}`,
+    "",
+    article.dek,
+    "",
+  ];
+  for (const section of article.sections) {
+    lines.push(`## ${section.h2}`, "");
+    for (const block of section.blocks) {
+      lines.push(blockToMarkdown(block), "");
+    }
+  }
+  if (article.faq.length > 0) {
+    lines.push("## Frequently asked questions", "");
+    for (const item of article.faq) {
+      lines.push(`### ${item.q}`, "", item.a, "");
+    }
+  }
+  lines.push("---", `Get a key: ${origin}/register`, `More guides: ${origin}${LEARN_HUB_PATH}`, "");
+  return lines.join("\n");
+}

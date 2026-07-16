@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { JsonLd } from "@/components/json-ld";
 import { LearnArticleView } from "@/components/learn-article";
-import { clusterLabels, learnArticles, learnArticlesBySlug, learnPath, LEARN_HUB_PATH } from "@/lib/learn";
+import { clusterLabels, learnArticles, learnArticlesBySlug, learnMarkdownPath, learnPath, LEARN_HUB_PATH } from "@/lib/learn";
 import { absoluteUrl, breadcrumbNode, createNoIndexMetadata, createPageMetadata, LAST_CONTENT_UPDATE, SITE_ORIGIN } from "@/lib/seo";
 
 export function generateStaticParams() {
@@ -13,9 +13,14 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   const { slug } = await params;
   const article = learnArticlesBySlug[slug];
   if (!article) return createNoIndexMetadata("Guide not found", "The requested guide does not exist.");
+  const base = createPageMetadata({ path: learnPath(slug), title: article.title, description: article.description });
   return {
-    ...createPageMetadata({ path: learnPath(slug), title: article.title, description: article.description }),
+    ...base,
     keywords: article.keywords,
+    alternates: {
+      ...base.alternates,
+      types: { "text/markdown": absoluteUrl(learnMarkdownPath(slug)) },
+    },
   };
 }
 
