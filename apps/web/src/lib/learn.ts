@@ -326,6 +326,14 @@ export const learnArticles: LearnArticle[] = [
         ] },
         cta(),
       ] },
+      { h2: "What to expect at checkout", blocks: [
+        { type: "p", text: "Choose crypto at checkout, send the amount to the address shown, and your balance credits once the network confirms. Card remains available if you prefer it for a specific top-up." },
+        { type: "list", items: [
+          "Balance credits after on-chain confirmation.",
+          "Any whole-dollar amount; balance never expires.",
+          "Switch between card and crypto per top-up.",
+        ] },
+      ] },
     ],
     faq: [
       { q: "Which payment methods are supported?", a: "You can pay by bank card or with cryptocurrency through a checkout provider." },
@@ -345,6 +353,14 @@ export const learnArticles: LearnArticle[] = [
       { h2: "Instant, self-serve access", blocks: [ quickSetupSteps, cta() ] },
       { h2: "What 'instant' actually means", blocks: [
         { type: "p", text: "The moment you generate a key it is live. There is no manual review step between signing up and your first successful request, so you can wire up a tool and ship in the same sitting." },
+      ] },
+      { h2: "From zero to first call", blocks: [
+        { type: "list", items: [
+          "Sign up and open the dashboard — no approval step.",
+          "Generate a key and point your tool at api.apitoken.sale.",
+          "Send a request and see it metered in your usage.",
+        ] },
+        { type: "p", text: "Every new account also starts with $10 of official-price Claude usage, so you can validate the whole flow before topping up." },
       ] },
     ],
     faq: [
@@ -370,6 +386,14 @@ export const learnArticles: LearnArticle[] = [
       { h2: "3. Send your first request", blocks: [
         { type: "code", code: `curl ${BASE}/v1/messages \\\n  -H "x-api-key: ${KEY}" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-opus-4-8",\n    "max_tokens": 1024,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
         cta(),
+      ] },
+      { h2: "Common first-call errors", blocks: [
+        { type: "list", items: [
+          "401 Unauthorized — missing or wrong x-api-key, or wrong base URL.",
+          "400 Bad Request — check the model ID and that max_tokens is set.",
+          "429 Too Many Requests — respect Retry-After and lower concurrency.",
+          "402 / insufficient balance — top up any whole-dollar amount.",
+        ] },
       ] },
     ],
     faq: [
@@ -555,6 +579,14 @@ export const learnArticles: LearnArticle[] = [
         { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : ${BASE}\nAPI key  : ${KEY}\nModel    : claude-opus-4-8` },
         cta(),
       ] },
+      { h2: "Troubleshooting", blocks: [
+        { type: "list", items: [
+          "Cursor ignores the key: confirm you edited the Anthropic provider, not OpenAI.",
+          "Model not found: set a current model ID like claude-opus-4-8.",
+          "401: re-check the base URL and that the key was pasted in full.",
+        ] },
+        { type: "p", text: "Once connected, every supported Claude model is available on the same key and balance." },
+      ] },
     ],
     faq: [
       { q: "Can I use my own Claude key in Cursor?", a: "Yes. Cursor's Anthropic provider accepts a custom base URL and key, so you can point it at apiToken.sale." },
@@ -577,6 +609,14 @@ export const learnArticles: LearnArticle[] = [
       { h2: "Continue", blocks: [
         { type: "code", code: `// ~/.continue/config.json\n{\n  "models": [{\n    "title": "Claude via apiToken.sale",\n    "provider": "anthropic",\n    "apiBase": "${BASE}",\n    "apiKey": "${KEY}",\n    "model": "claude-opus-4-8"\n  }]\n}` },
         cta(),
+      ] },
+      { h2: "Which extension and troubleshooting", blocks: [
+        { type: "p", text: "Cline is a strong default for autonomous edits; Continue is lighter and good for inline chat and completions. Both are free and use your prepaid balance." },
+        { type: "list", items: [
+          "401 Unauthorized: the API key or base URL is wrong.",
+          "Model not found: use a current ID such as claude-sonnet-5 or claude-opus-4-8.",
+          "Slow or 429: reduce concurrency and respect Retry-After.",
+        ] },
       ] },
     ],
     faq: [
@@ -601,6 +641,14 @@ export const learnArticles: LearnArticle[] = [
         { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : ${BASE}\nAPI key  : ${KEY}\nModel    : claude-opus-4-8` },
         cta(),
       ] },
+      { h2: "What you keep", blocks: [
+        { type: "list", items: [
+          "The full Claude line — Opus, Sonnet and Haiku — on one key.",
+          "Standard Anthropic behaviour: streaming, tool use, system prompts.",
+          "Per-key spend caps and token-level usage in the dashboard.",
+        ] },
+        { type: "p", text: "Nothing about how you use Cursor changes; you simply source the key from apiToken.sale instead of Anthropic." },
+      ] },
     ],
     faq: [
       { q: "Do I need an Anthropic account for this?", a: "No. apiToken.sale provides the key and balance, so no Anthropic account is required." },
@@ -623,6 +671,14 @@ export const learnArticles: LearnArticle[] = [
       { h2: "TypeScript", blocks: [
         { type: "code", code: `import Anthropic from "@anthropic-ai/sdk";\n\nconst client = new Anthropic({\n  baseURL: "${BASE}",\n  apiKey: "${KEY}",\n});\nconst msg = await client.messages.create({\n  model: "claude-opus-4-8",\n  max_tokens: 1024,\n  messages: [{ role: "user", content: "Hello" }],\n});` },
         cta(),
+      ] },
+      { h2: "Verify the switch worked", blocks: [
+        { type: "p", text: "After changing the base URL, make one request and confirm you get a normal Anthropic response. Streaming, tool use and system prompts all behave exactly as with api.anthropic.com — only the billing endpoint changed." },
+        { type: "list", items: [
+          "A 401 means the key or base URL is wrong — re-check both.",
+          "Keep the same model IDs; no code around messages needs to change.",
+          "Read usage per request in the dashboard to confirm spend and your discount.",
+        ] },
       ] },
     ],
     faq: [
@@ -686,6 +742,13 @@ export const learnArticles: LearnArticle[] = [
           "Card or crypto top-ups that never expire.",
         ] },
         cta(),
+      ] },
+      { h2: "When to choose each", blocks: [
+        { type: "list", items: [
+          "apiToken.sale — Claude is your main model and you want a native Anthropic endpoint with a discount.",
+          "OpenRouter — you need to route across many providers behind one abstraction.",
+          "Both let you start without an Anthropic account; only apiToken.sale discounts Claude spend directly.",
+        ] },
       ] },
     ],
     faq: [
@@ -823,6 +886,14 @@ export const learnArticles: LearnArticle[] = [
         { type: "p", text: "Keys are live the moment you generate them. Top-ups credit your balance as soon as payment confirms, and card payments confirm in seconds." },
         cta(),
       ] },
+      { h2: "What can add a short delay", blocks: [
+        { type: "p", text: "The only wait is payment confirmation. Card top-ups clear in seconds; a crypto top-up credits once the network confirms the transaction, which depends on the coin and fee you choose." },
+        { type: "list", items: [
+          "Key generation: instant.",
+          "Card top-up: seconds.",
+          "Crypto top-up: after network confirmation.",
+        ] },
+      ] },
     ],
     faq: [
       { q: "How long until my key works?", a: "Immediately. There is no manual review — a freshly generated key works on the next request." },
@@ -847,6 +918,14 @@ export const learnArticles: LearnArticle[] = [
         ] },
         cta(),
       ] },
+      { h2: "How payment works across regions", blocks: [
+        { type: "p", text: "Because we issue the key and balance, you are not tied to an Anthropic-supported billing country. Pay with a bank card where available, or with cryptocurrency where cards are declined." },
+        { type: "list", items: [
+          "No Anthropic billing country required.",
+          "Card or cryptocurrency at checkout.",
+          "Support in English and Russian over Telegram.",
+        ] },
+      ] },
     ],
     faq: [
       { q: "Is the Claude API available in my country?", a: "apiToken.sale has no billing-country requirement, so you can buy balance and use a key from regions Anthropic does not bill directly." },
@@ -869,6 +948,14 @@ export const learnArticles: LearnArticle[] = [
       { h2: "Getting help", blocks: [
         { type: "p", text: "Support is available in English and Russian via Telegram, and by email at apitokensale@gmail.com. Most integration questions are answered quickly." },
         cta(),
+      ] },
+      { h2: "How top-ups and balance work", blocks: [
+        { type: "p", text: "You add balance in any whole-dollar amount, and it is drawn down only as requests run. Because it never expires, there is little reason to over-fund — top up as you go." },
+        { type: "list", items: [
+          "Prepaid, never-expiring balance.",
+          "Refunds processed through the original payment provider.",
+          "Contact support with your account email for help.",
+        ] },
       ] },
     ],
     faq: [
@@ -898,6 +985,13 @@ export const learnArticles: LearnArticle[] = [
           "Card or cryptocurrency top-ups that never expire.",
         ] },
         cta(),
+      ] },
+      { h2: "When each fits", blocks: [
+        { type: "list", items: [
+          "apiToken.sale — a native Anthropic endpoint with a progressive discount and per-key controls.",
+          "A generic reseller — may suit you if you already use its other providers.",
+          "Both remove the Anthropic-account barrier; the difference is price and how native the Claude access is.",
+        ] },
       ] },
     ],
     faq: [
@@ -946,6 +1040,13 @@ export const learnArticles: LearnArticle[] = [
           "apiToken.sale adds a 60–80% discount on Claude spend that a bare proxy cannot.",
         ] },
         cta(),
+      ] },
+      { h2: "When to choose each", blocks: [
+        { type: "list", items: [
+          "apiToken.sale — you want a hosted, discounted Claude endpoint with nothing to run.",
+          "LiteLLM — you want to self-host a unified proxy across many providers you fund yourself.",
+          "You can even put LiteLLM in front of an apiToken.sale key to keep the discount underneath.",
+        ] },
       ] },
     ],
     faq: [
@@ -1078,6 +1179,14 @@ export const learnArticles: LearnArticle[] = [
         { type: "p", text: `apiToken.sale is Anthropic-native: point any client at ${BASE}/v1/messages and it behaves exactly like api.anthropic.com — plus your discount and dashboard controls.` },
         cta(),
       ] },
+      { h2: "What to look for in a gateway", blocks: [
+        { type: "list", items: [
+          "Native Anthropic API, so tools and SDKs work unchanged.",
+          "Transparent per-token billing you can audit in a dashboard.",
+          "Per-key controls: spend caps, model scoping, rotation.",
+          "No lock-in — prepaid balance that never expires.",
+        ] },
+      ] },
     ],
     faq: [
       { q: "Does a gateway change the API?", a: "No. A native Claude gateway speaks the standard Anthropic Messages API, so your tools and SDKs are unchanged." },
@@ -1129,6 +1238,14 @@ export const learnArticles: LearnArticle[] = [
         { type: "p", text: "Streaming and non-streaming requests are billed the same way — by input and output tokens — so you lose nothing by streaming." },
         cta(),
       ] },
+      { h2: "When streaming is worth it", blocks: [
+        { type: "list", items: [
+          "Chat and coding UIs where users watch the answer appear.",
+          "Long generations, so you can render or act on partial output early.",
+          "Agents that stop as soon as a tool call is emitted.",
+        ] },
+        { type: "p", text: "For short batch jobs, non-streaming is simpler; the cost is identical either way." },
+      ] },
     ],
     faq: [
       { q: "Does apiToken.sale support streaming?", a: "Yes — the standard Anthropic SSE streaming format works for coding agents, IDEs and production calls." },
@@ -1179,6 +1296,14 @@ export const learnArticles: LearnArticle[] = [
         ] },
         cta(),
       ] },
+      { h2: "Keep costs and reliability in check", blocks: [
+        { type: "list", items: [
+          "Cap max_tokens to what each response actually needs.",
+          "Retry 429/5xx with exponential backoff, not tight loops.",
+          "Separate keys per environment so limits and leaks are contained.",
+          "Review token-level usage weekly to catch regressions early.",
+        ] },
+      ] },
     ],
     faq: [
       { q: "What is the most impactful best practice?", a: "Match the model to the task and cache repeated context — together they cut cost the most." },
@@ -1201,6 +1326,14 @@ export const learnArticles: LearnArticle[] = [
         { type: "code", code: `export ANTHROPIC_BASE_URL=${BASE}\nexport ANTHROPIC_API_KEY=${KEY}\n\n# then just run\nclaude` },
         { type: "p", text: "That is the whole setup. Use claude-opus-4-8 for hard work and claude-sonnet-5 for everyday coding." },
         cta(),
+      ] },
+      { h2: "Verify and choose a model", blocks: [
+        { type: "p", text: "Run a small prompt first to confirm the key works, then set your default model. If Claude Code reports an auth error, re-check both environment variables and restart your shell so they are exported." },
+        { type: "list", items: [
+          "Everyday coding: claude-sonnet-5.",
+          "Hard refactors and long sessions: claude-opus-4-8.",
+          "See per-request token usage in the dashboard to track spend.",
+        ] },
       ] },
     ],
     faq: [
@@ -1225,6 +1358,14 @@ export const learnArticles: LearnArticle[] = [
           `Set the base URL to ${BASE}, paste your ${KEY} key, and pick a model like claude-sonnet-5.`,
         ] },
         cta(),
+      ] },
+      { h2: "Pick the right model per task", blocks: [
+        { type: "list", items: [
+          "claude-sonnet-5 — the default for everyday coding and agent loops.",
+          "claude-opus-4-8 — complex refactors, architecture and long sessions.",
+          "claude-haiku-4-5 — fast, cheap edits and high-volume steps.",
+        ] },
+        { type: "p", text: "Because one key covers every model, you can switch per task in the extension without changing accounts or billing." },
       ] },
     ],
     faq: [
@@ -1282,6 +1423,14 @@ export const learnArticles: LearnArticle[] = [
           "Per-key spend caps so a runaway loop cannot drain your balance.",
         ] },
         cta(),
+      ] },
+      { h2: "A cost-aware agent loop", blocks: [
+        { type: "p", text: "A practical pattern: route planning and reasoning to Sonnet, cheap sub-steps and parsing to Haiku, and escalate only the hardest calls to Opus. Cache the system prompt and tool definitions so repeated context is nearly free." },
+        { type: "list", items: [
+          "Set a per-key spend cap so a runaway loop cannot drain balance.",
+          "Stream so the agent can act on partial output.",
+          "Watch token usage to tune which steps use which model.",
+        ] },
       ] },
     ],
     faq: [
