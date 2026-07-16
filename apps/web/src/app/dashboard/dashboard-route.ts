@@ -4,6 +4,7 @@ export const dashboardSections = [
   "credits",
   "promos",
   "usage",
+  "support",
   "profile",
   "security",
 ] as const;

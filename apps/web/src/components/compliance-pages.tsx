@@ -447,15 +447,15 @@ const supportCopy: Record<Language, {
       desc: "Chat with our support bot on Telegram. It knows the product inside out and resolves most questions on the spot — sign-up, keys, endpoint setup, request errors, pricing and usage — then quietly hands you to a human when your case needs one.",
       points: ["Instant answers, 24/7, in your language", "Setup, keys, endpoints, and request errors", "Pricing tiers, discounts, and reading your usage", "Seamless hand-off to a person for money & account-specific help"],
       cta: "Open in Telegram",
-      availability: "Live now · replies in seconds · a human joins the same chat when needed",
+      availability: "AI answers instantly, 24/7 · human operators reply 08:00–12:00 UTC",
       handleLabel: "Support bot",
     },
     how: {
       title: "How support works",
       steps: [
         { h: "Message the bot", p: "Open @apitokensupportbot in Telegram and describe your problem in plain words. Attach screenshots if they help — never secrets." },
-        { h: "AI answers instantly", p: "Claude Sonnet 5 replies in seconds: how to connect, why a request failed, how billing and discounts work, and exactly what to do next." },
-        { h: "A human steps in", p: "Anything about your specific balance, a payment, or a complex case is escalated to a real operator — in the same chat, with the full context already there." },
+        { h: "AI answers instantly", p: "Claude Sonnet 5 replies in seconds, 24/7: how to connect, why a request failed, how billing and discounts work, and exactly what to do next." },
+        { h: "A human steps in", p: "Anything about your specific balance, a payment, or a complex case is escalated to a real operator — in the same chat, with the full context already there. Human operators are online 08:00–12:00 UTC; outside that window your message is queued and answered as soon as they're back." },
       ],
     },
   },
@@ -473,15 +473,15 @@ const supportCopy: Record<Language, {
       desc: "Напишите нашему боту поддержки в Telegram. Он знает продукт до мелочей и решает большинство вопросов на месте — регистрация, ключи, настройка endpoint, ошибки запросов, тарифы и использование — а когда нужно, незаметно передаёт диалог человеку.",
       points: ["Мгновенные ответы 24/7 на вашем языке", "Настройка, ключи, endpoint и ошибки запросов", "Тарифы, скидки и как читать своё использование", "Плавная передача человеку по деньгам и вопросам аккаунта"],
       cta: "Открыть в Telegram",
-      availability: "Уже работает · отвечает за секунды · человек подключается в тот же чат при необходимости",
+      availability: "ИИ отвечает мгновенно, 24/7 · операторы-люди отвечают 08:00–12:00 UTC",
       handleLabel: "Бот поддержки",
     },
     how: {
       title: "Как работает поддержка",
       steps: [
         { h: "Напишите боту", p: "Откройте @apitokensupportbot в Telegram и опишите проблему простыми словами. Можно приложить скриншоты — но без секретов." },
-        { h: "ИИ отвечает сразу", p: "Claude Sonnet 5 отвечает за секунды: как подключиться, почему упал запрос, как работают биллинг и скидки и что делать дальше." },
-        { h: "Подключается человек", p: "Вопросы про конкретный баланс, платёж или сложный случай эскалируются живому оператору — в тот же чат, где уже есть весь контекст." },
+        { h: "ИИ отвечает сразу", p: "Claude Sonnet 5 отвечает за секунды, 24/7: как подключиться, почему упал запрос, как работают биллинг и скидки и что делать дальше." },
+        { h: "Подключается человек", p: "Вопросы про конкретный баланс, платёж или сложный случай эскалируются живому оператору — в тот же чат, где уже есть весь контекст. Операторы онлайн 08:00–12:00 UTC; вне этого окна сообщение ждёт в очереди и получает ответ, как только они вернутся." },
       ],
     },
   },
@@ -510,13 +510,12 @@ export function LegalPage({ kind }: { kind: "privacy" | "terms" }) {
   </>;
 }
 
-export function SupportPage() {
+// Ядро поддержки (бот-карточка + how-it-works + карточки). Переиспользуется публичной
+// страницей /support И секцией дашборда — поддержка в первую очередь часть кабинета.
+export function SupportContent() {
   const { language } = useI18n();
   const copy = supportCopy[language];
   return <>
-    <div className="page-hero legal-hero"><div className="wrap"><span className="eyebrow">{copy.eyebrow}</span><h1>{copy.title}</h1><p>{copy.summary}</p><ComplianceNav current="support" /></div></div>
-    <section className="borderless support-section"><div className="wrap">
-
       <div className="support-bot">
         <div className="support-bot-glow" aria-hidden="true" />
         <div className="support-bot-main">
@@ -557,6 +556,16 @@ export function SupportPage() {
 
       <div className="support-email-card"><div><span>{copy.emailKicker}</span><a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a><p>{copy.emailHelp}</p></div><a className="btn btn-ghost" href={`mailto:${SUPPORT_EMAIL}`}>{copy.write}</a></div>
       <p className="support-official">{copy.official}</p>
+  </>;
+}
+
+export function SupportPage() {
+  const { language } = useI18n();
+  const copy = supportCopy[language];
+  return <>
+    <div className="page-hero legal-hero"><div className="wrap"><span className="eyebrow">{copy.eyebrow}</span><h1>{copy.title}</h1><p>{copy.summary}</p><ComplianceNav current="support" /></div></div>
+    <section className="borderless support-section"><div className="wrap">
+      <SupportContent />
     </div></section>
   </>;
 }
