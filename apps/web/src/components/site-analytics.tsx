@@ -3,6 +3,7 @@
 import { Analytics, type BeforeSendEvent } from "@vercel/analytics/next";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef } from "react";
+import { detectAiSource } from "@/lib/ai-source";
 import { YANDEX_METRIKA_ID } from "@/lib/yandex-metrika";
 
 type YandexMetrika = (counterId: number, method: string, ...args: unknown[]) => void;
@@ -37,9 +38,26 @@ export function withoutSensitiveUrlData(url: string): string {
   return safeQuery ? `${path}?${safeQuery}` : path;
 }
 
+const AI_SOURCE_SESSION_KEY = "ai_source_reported";
+
 export function SiteAnalytics() {
   const pathname = usePathname();
   const previousPathname = useRef(pathname);
+
+  // Report AI-assistant referrals once per session for GEO ROI measurement.
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem(AI_SOURCE_SESSION_KEY)) return;
+      const utmSource = new URLSearchParams(location.search).get("utm_source") ?? "";
+      const source = detectAiSource(document.referrer, utmSource);
+      if (!source) return;
+      sessionStorage.setItem(AI_SOURCE_SESSION_KEY, source);
+      window.ym?.(YANDEX_METRIKA_ID, "params", { ai_source: source });
+      window.ym?.(YANDEX_METRIKA_ID, "reachGoal", "ai_referral", { ai_source: source });
+    } catch {
+      // sessionStorage or referrer unavailable — ignore.
+    }
+  }, []);
 
   useEffect(() => {
     if (previousPathname.current === pathname) return;
