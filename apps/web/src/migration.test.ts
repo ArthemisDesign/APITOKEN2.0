@@ -92,7 +92,9 @@ describe("completed Next.js migration", () => {
     expect(metrika).toContain("clickmap:true");
     expect(metrika).toContain("ecommerce:'dataLayer'");
     expect(metrika).not.toContain("defer:true");
-    expect(metrika).toContain("location.origin+location.pathname");
+    expect(metrika).toContain('"utm_source"');
+    expect(metrika).toContain('"utm_campaign"');
+    expect(metrika).toContain("url:pageUrl.href");
     expect(analytics).toContain('window.ym?.(YANDEX_METRIKA_ID, "hit", location.origin + pathname');
     expect(authShell).toContain("auth-card ym-hide-content");
     expect(dashboard).toContain("app ym-hide-content");
