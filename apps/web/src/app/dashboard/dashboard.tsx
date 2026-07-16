@@ -337,7 +337,7 @@ function ApiKeys({ keys, onChanged, open }: { keys: ApiKeyView[]; onChanged(): P
         </div>
       </div>)}</div>
       <div className="keys-help">
-        <span className="keys-help-ic" aria-hidden="true"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9.4 9.4 0 0 1-3.4-.6L3 21l1.3-4a8.2 8.2 0 0 1-1-4A8.4 8.4 0 0 1 12 4a8.4 8.4 0 0 1 9 7.5Z" /></svg></span>
+        <span className="keys-help-ic" aria-hidden="true"><svg viewBox="0 0 24 24" width="19" height="19" fill="currentColor"><path d="M22 2 2.5 10.6c-.9.4-.9 1.6.1 1.9l4.6 1.4 1.8 5.6c.3.9 1.4 1.1 2 .4l2.5-2.8 4.7 3.4c.8.6 2 .1 2.2-.9L23.9 3.3C24.1 2.3 23 1.5 22 2ZM9 13.6l8.3-5.7-6.4 6.9-.1 3.4L9 13.6Z" /></svg></span>
         <div className="keys-help-txt"><b>{copy.keysHelpTitle}</b><span>{copy.keysHelpText}</span></div>
         <button className="btn btn-ghost btn-sm" onClick={() => open("support")}>{copy.keysHelpCta}</button>
       </div>
