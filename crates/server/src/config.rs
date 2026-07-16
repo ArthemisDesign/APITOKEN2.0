@@ -2,7 +2,7 @@
 //! [`forward::ProxyConfig`]. Единственное место в проекте, где читается env.
 
 use forward::{ProxyConfig, CLAUDE_CODE_IDENTITY};
-use std::env;
+use std::{env, net::IpAddr};
 
 pub struct Settings {
     pub db_path: String,
@@ -25,6 +25,73 @@ fn ev_or(k: &str, d: &str) -> String { ev(k).unwrap_or_else(|| d.to_string()) }
 fn ev_bool(k: &str, d: bool) -> bool {
     match ev(k) { Some(v) => !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"), None => d }
 }
+fn ev_opt_in(k: &str) -> bool {
+    ev(k).is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+}
+
+fn parse_mult_bp(k: &str, v: &str, allow_zero: bool) -> Result<i64, String> {
+    let parsed = v.parse::<i64>()
+        .map_err(|_| format!("{k}={v:?}: ожидается целое число в диапазоне 1..=10000"))?;
+    if (1..=10_000).contains(&parsed) || (allow_zero && parsed == 0) {
+        Ok(parsed)
+    } else if parsed == 0 {
+        Err(format!(
+            "{k}=0 запрещён без CLAUDE_API_ALLOW_ZERO_MULT_BP=1 (явный opt-in бесплатного тарифа)"
+        ))
+    } else {
+        Err(format!("{k}={parsed}: значение должно быть в диапазоне 1..=10000"))
+    }
+}
+
+fn ev_mult_bp(k: &str, d: i64, allow_zero: bool) -> i64 {
+    match ev(k) {
+        None => d,
+        Some(v) => parse_mult_bp(k, &v, allow_zero).unwrap_or_else(|msg| panic!("{msg}")),
+    }
+}
+
+fn validate_upstream(v: &str, allow_insecure_loopback: bool) -> Result<String, String> {
+    let uri = v.parse::<axum::http::Uri>()
+        .map_err(|_| "CLAUDE_API_UPSTREAM: ожидается абсолютный URL".to_string())?;
+    let scheme = uri.scheme_str()
+        .ok_or_else(|| "CLAUDE_API_UPSTREAM: URL должен содержать схему".to_string())?;
+    let authority = uri.authority()
+        .ok_or_else(|| "CLAUDE_API_UPSTREAM: URL должен содержать host".to_string())?;
+
+    if authority.as_str().contains('@') {
+        return Err("CLAUDE_API_UPSTREAM: userinfo в URL запрещён".to_string());
+    }
+    if v.contains('#') || uri.query().is_some() || !matches!(uri.path(), "" | "/") {
+        return Err("CLAUDE_API_UPSTREAM: path, query и fragment запрещены".to_string());
+    }
+
+    if scheme.eq_ignore_ascii_case("https")
+        && authority.as_str().eq_ignore_ascii_case("api.anthropic.com")
+    {
+        return Ok("https://api.anthropic.com".to_string());
+    }
+
+    let host = authority.host();
+    let ip_literal = host.strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    let loopback = ip_literal.parse::<IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback());
+    if allow_insecure_loopback && scheme.eq_ignore_ascii_case("http") && loopback {
+        return Ok(v.trim_end_matches('/').to_string());
+    }
+
+    Err("CLAUDE_API_UPSTREAM: разрешён только https://api.anthropic.com; HTTP loopback требует CLAUDE_API_ALLOW_INSECURE_LOOPBACK_UPSTREAM=1".to_string())
+}
+
+fn ev_upstream() -> String {
+    let upstream = ev_or("CLAUDE_API_UPSTREAM", "https://api.anthropic.com");
+    validate_upstream(
+        &upstream,
+        ev_opt_in("CLAUDE_API_ALLOW_INSECURE_LOOPBACK_UPSTREAM"),
+    ).unwrap_or_else(|msg| panic!("{msg}"))
+}
+
 /// UA-список из env. Разделитель `|`, а НЕ `,`: реальный UA Claude Code содержит запятую
 /// (`(external, sdk-cli)`), split(',') порвал бы одиночный UA на фрагменты → битый UA всему флоту.
 fn split_ua_list(s: &str) -> Vec<String> {
@@ -76,8 +143,14 @@ impl Settings {
             }
         }
         // Наценка по умолчанию (×0.20): нужна и в Settings, и в ProxyConfig (для /admin/account) →
-        // считаем один раз в локальную переменную.
-        let mult_bp = ev("CLAUDE_API_MULT_BP").and_then(|s| s.parse().ok()).unwrap_or(2000);
+        // считаем один раз в локальную переменную. Ноль разрешён только явным opt-in бесплатного тарифа;
+        // отрицательные/слишком большие/нечисловые значения аварийно останавливают запуск.
+        let mult_bp = ev_mult_bp(
+            "CLAUDE_API_MULT_BP",
+            2000,
+            ev_opt_in("CLAUDE_API_ALLOW_ZERO_MULT_BP"),
+        );
+        // AUDIT-TODO(C33): продублировать этот инвариант в Control API account creation перед persistence.
         Settings {
             db_path,
             bind: format!("{host}:{port}"),
@@ -99,7 +172,9 @@ impl Settings {
                 panel_keys,
                 default_mult_bp: mult_bp,
                 trust_loopback,
-                upstream: ev_or("CLAUDE_API_UPSTREAM", "https://api.anthropic.com"),
+                // OAuth-токены можно отправлять только на канонический Anthropic origin. Локальный HTTP
+                // mock разрешается исключительно явным opt-in и только на literal loopback IP.
+                upstream: ev_upstream(),
                 max_tries: ev("CLAUDE_API_MAX_TRIES").and_then(|s| s.parse().ok()).unwrap_or(3),
                 // Fair-share: потолок одновременных запросов на клиентский ключ (кит не набивает флот).
                 max_inflight_per_key: ev("CLAUDE_API_MAX_INFLIGHT_PER_KEY").and_then(|s| s.parse().ok()).unwrap_or(20),
@@ -177,5 +252,37 @@ mod tests {
         assert_eq!(clamp_frac("k", "-1", 0.5), 0.0);      // отрицательное → 0
         assert_eq!(clamp_frac("k", "хлам", 0.5), 0.5);    // не число → дефолт
         assert_eq!(clamp_frac("k", "0,1", 0.5), 0.5);     // запятая-десятичная (опечатка) → дефолт
+    }
+
+    #[test]
+    fn multiplier_rejects_free_or_out_of_range_defaults() {
+        assert_eq!(parse_mult_bp("MULT", "2000", false), Ok(2000));
+        assert_eq!(parse_mult_bp("MULT", "0", true), Ok(0));
+        assert!(parse_mult_bp("MULT", "0", false).is_err());
+        assert!(parse_mult_bp("MULT", "-1", true).is_err());
+        assert!(parse_mult_bp("MULT", "10001", false).is_err());
+        assert!(parse_mult_bp("MULT", "garbage", false).is_err());
+    }
+
+    #[test]
+    fn upstream_is_pinned_or_explicit_literal_loopback() {
+        assert_eq!(
+            validate_upstream("https://api.anthropic.com/", false),
+            Ok("https://api.anthropic.com".to_string()),
+        );
+        assert_eq!(
+            validate_upstream("http://127.0.0.1:18080", true),
+            Ok("http://127.0.0.1:18080".to_string()),
+        );
+        assert_eq!(
+            validate_upstream("http://[::1]:18080/", true),
+            Ok("http://[::1]:18080".to_string()),
+        );
+        assert!(validate_upstream("http://127.0.0.1:18080", false).is_err());
+        assert!(validate_upstream("http://198.51.100.7", true).is_err());
+        assert!(validate_upstream("https://api.anthropic.com:443", false).is_err());
+        assert!(validate_upstream("https://api.anthropic.com/v1", false).is_err());
+        assert!(validate_upstream("https://user@api.anthropic.com", false).is_err());
+        assert!(validate_upstream("http://localhost:18080", true).is_err());
     }
 }

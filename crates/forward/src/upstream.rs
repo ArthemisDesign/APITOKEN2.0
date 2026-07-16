@@ -46,7 +46,9 @@ pub fn apply_persona_headers(rb: wreq::RequestBuilder, cfg: &ProxyConfig) -> wre
         .header("x-stainless-timeout", "600")
         .header("anthropic-dangerous-direct-browser-access", "true") // реальный CC всегда шлёт
         .header("accept", "application/json")
-        .header("accept-encoding", "gzip, deflate, br, zstd") // точный набор Bun/undici (снято с 2.1.195)
+        // C6: рекламируем только кодеки, которые wreq гарантированно декодирует с текущими features.
+        // Иначе deflate/zstd мог прийти сжатым, а downstream уже без Content-Encoding.
+        .header("accept-encoding", "gzip, br")
         .header("connection", "keep-alive") // undici/CC шлёт явно; hyper на keep-alive его не пишет
 }
 

@@ -60,6 +60,7 @@ pub fn router(app: AppState) -> Router {
         .route("/admin/key", post(admin::issue_key))
         .route("/admin/key/{key}/status", post(admin::key_status))
         .route("/admin/key-id/{key_id}/status", post(admin::key_status_by_id))
+        .route("/admin/key-id/{key_id}/label", post(admin::key_label_by_id))
         .fallback(forward)
         .with_state(app)
 }

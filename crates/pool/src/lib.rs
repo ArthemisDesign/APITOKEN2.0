@@ -245,44 +245,85 @@ pub struct RouteStats {
 fn is_cooling(g: &Inner, e: &str, now: i64) -> bool {
     g.live.get(e).map(|l| l.cooling_until > now).unwrap_or(false)
 }
-/// Эффективная утилизация окна с учётом сброса: reset уже прошёл → окно обнулилось (util ~0),
-/// даже если поллер/трафик ещё не обновили число.
-fn eff_util(g: &Inner, e: &str, w: u8, now: i64) -> f64 {
-    g.live.get(e).map(|l| {
-        let (util, reset) = if w == 7 { (l.util7d, l.reset7d) } else { (l.util5h, l.reset5h) };
-        if reset != 0 && now >= reset { 0.0 } else { util }
-    }).unwrap_or(0.0)
+/// Единая «живая» утилизация окна для capacity И маршрутизации: последний заголовок + наш расход
+/// после него / измеренная (либо тарифная прайорная) ёмкость. Прошедший reset обнуляет окно.
+fn live_util(g: &Inner, e: &str, scale: f64, w: u8, now: i64, p5: f64, p7: f64) -> f64 {
+    let Some(l) = g.live.get(e) else { return 0.0; };
+    let (util, reset, measured_cap, prior_cap) = if w == 7 {
+        (l.util7d, l.reset7d, l.cap7d_usd, p7)
+    } else {
+        (l.util5h, l.reset5h, l.cap5h_usd, p5)
+    };
+    if reset != 0 && now >= reset { return 0.0; }
+
+    let cap = if measured_cap > 0.0 { measured_cap } else { prior_cap * scale };
+    let since_header = (l.spent_total_usd - l.spent_at_header_usd).max(0.0);
+    (util + since_header / cap).clamp(0.0, 1.0)
 }
 fn inflight_of(g: &Inner, e: &str) -> i64 {
     g.live.get(e).map(|l| l.inflight).unwrap_or(0)
 }
 
-/// Ротационный выбор (для ретраев/спилла): наименее загруженная живая подписка не из `exclude`.
-/// Стратегия: беречь недельный бюджет (7d) → размазывать 5h → «предупреждённые» ниже → меньше
-/// in-flight → LRU. Фильтры ослабляются постепенно (пул НИКОГДА не зависает).
-fn select_best(g: &Inner, exclude: &HashSet<String>, now: i64, rsv: &Reserve) -> Option<Sub> {
+/// Общий ротационный выбор. `allow_cooling_fallback=false` нужен для spill: внутреннее давление
+/// конкуррентности не должно превращаться в длинный Retry-After от чужой cooling-персоны.
+fn select_best_with_policy(g: &Inner, exclude: &HashSet<String>, now: i64, rsv: &Reserve,
+                           p5: f64, p7: f64, allow_cooling_fallback: bool) -> Option<Sub> {
     let warn = |e: &str| g.live.get(e).map(|l| l.status.contains("warning")).unwrap_or(false);
     let lru = |e: &str| g.live.get(e).map(|l| l.last_used).unwrap_or(0);
-    // over_cap: не под конвертом util (сверх 5h ИЛИ 7d потолка) — инверсия прежнего `ready`-фильтра.
     let over_cap = |s: &Sub| -> bool {
         let (c5, c7) = rsv.caps(&s.email);
-        !(eff_util(g, &s.email, 7, now) < c7 && eff_util(g, &s.email, 5, now) < c5)
+        !(live_util(g, &s.email, plan_scale(&s.plan), 7, now, p5, p7) < c7
+            && live_util(g, &s.email, plan_scale(&s.plan), 5, now, p5, p7) < c5)
     };
-    // ОДИН проход без промежуточных Vec (сжимаем критсекцию под глоб-локом): прежний тиеринг
-    // (сначала не-cooling; среди них под-cap) закодирован ВЕДУЩИМИ ключами сравнения. `min` даёт
-    // non-cooling если есть (false<true), среди них under-cap если есть — идентично стадиям.
+    let over_envelope = |s: &Sub| inflight_of(g, &s.email) >= MAX_INFLIGHT;
+
     g.subs.iter()
         .filter(|s| !exclude.contains(&s.email))
+        .filter(|s| allow_cooling_fallback || !is_cooling(g, &s.email, now))
         .min_by(|a, b| {
-            is_cooling(g, &a.email, now).cmp(&is_cooling(g, &b.email, now))
-                .then_with(|| over_cap(a).cmp(&over_cap(b)))
-                .then_with(|| eff_util(g, &a.email, 7, now).partial_cmp(&eff_util(g, &b.email, 7, now)).unwrap_or(Equal))
-                .then_with(|| eff_util(g, &a.email, 5, now).partial_cmp(&eff_util(g, &b.email, 5, now)).unwrap_or(Equal))
+            let cooling_order = is_cooling(g, &a.email, now).cmp(&is_cooling(g, &b.email, now));
+            if cooling_order != Equal { return cooling_order; }
+
+            // Конверт — полноценный tier: пока есть кандидат ниже MAX_INFLIGHT, перегруженный не
+            // выбирается. Если весь доступный tier уже переполнен, сначала берём минимальный inflight,
+            // а лишь затем сравниваем небольшие различия util.
+            let a_over = over_envelope(a);
+            let b_over = over_envelope(b);
+            let envelope_order = a_over.cmp(&b_over);
+            if envelope_order != Equal { return envelope_order; }
+            if a_over && b_over {
+                return inflight_of(g, &a.email).cmp(&inflight_of(g, &b.email))
+                    .then_with(|| over_cap(a).cmp(&over_cap(b)))
+                    .then_with(|| live_util(g, &a.email, plan_scale(&a.plan), 7, now, p5, p7)
+                        .partial_cmp(&live_util(g, &b.email, plan_scale(&b.plan), 7, now, p5, p7)).unwrap_or(Equal))
+                    .then_with(|| live_util(g, &a.email, plan_scale(&a.plan), 5, now, p5, p7)
+                        .partial_cmp(&live_util(g, &b.email, plan_scale(&b.plan), 5, now, p5, p7)).unwrap_or(Equal))
+                    .then_with(|| warn(&a.email).cmp(&warn(&b.email)))
+                    .then_with(|| lru(&a.email).cmp(&lru(&b.email)));
+            }
+
+            over_cap(a).cmp(&over_cap(b))
+                .then_with(|| live_util(g, &a.email, plan_scale(&a.plan), 7, now, p5, p7)
+                    .partial_cmp(&live_util(g, &b.email, plan_scale(&b.plan), 7, now, p5, p7)).unwrap_or(Equal))
+                .then_with(|| live_util(g, &a.email, plan_scale(&a.plan), 5, now, p5, p7)
+                    .partial_cmp(&live_util(g, &b.email, plan_scale(&b.plan), 5, now, p5, p7)).unwrap_or(Equal))
                 .then_with(|| warn(&a.email).cmp(&warn(&b.email)))
                 .then_with(|| inflight_of(g, &a.email).cmp(&inflight_of(g, &b.email)))
                 .then_with(|| lru(&a.email).cmp(&lru(&b.email)))
         })
         .cloned()
+}
+
+/// Ротационный выбор (ретраи/обычный трафик): не зависает, cooling ослабляется только если иных нет.
+fn select_best(g: &Inner, exclude: &HashSet<String>, now: i64, rsv: &Reserve,
+               p5: f64, p7: f64) -> Option<Sub> {
+    select_best_with_policy(g, exclude, now, rsv, p5, p7, true)
+}
+
+/// Строгий spill: cooling-кандидаты не возвращаем даже как fallback.
+fn select_best_non_cooling(g: &Inner, exclude: &HashSet<String>, now: i64, rsv: &Reserve,
+                           p5: f64, p7: f64) -> Option<Sub> {
+    select_best_with_policy(g, exclude, now, rsv, p5, p7, false)
 }
 
 /// Capacity-weighted placement НОВОЙ сессии: среди здоровых персон под потолком util И под
@@ -296,13 +337,15 @@ fn place_best(g: &Inner, now: i64, rsv: &Reserve, p5: f64, p7: f64) -> Option<Su
         let sc = plan_scale(&s.plan); // прайор по тарифу (Pro/Max5 меньше Max20) до калибровки
         let cap5 = l.map(|l| l.cap5h_usd).filter(|c| *c > 0.0).unwrap_or(p5 * sc);
         let cap7 = l.map(|l| l.cap7d_usd).filter(|c| *c > 0.0).unwrap_or(p7 * sc);
-        (cap5 * (1.0 - eff_util(g, &s.email, 5, now))).min(cap7 * (1.0 - eff_util(g, &s.email, 7, now)))
+        (cap5 * (1.0 - live_util(g, &s.email, plan_scale(&s.plan), 5, now, p5, p7)))
+            .min(cap7 * (1.0 - live_util(g, &s.email, plan_scale(&s.plan), 7, now, p5, p7)))
     };
     let lru = |e: &str| g.live.get(e).map(|l| l.last_used).unwrap_or(0);
     let eligible = g.subs.iter().filter(|s| {
         let (c5, c7) = rsv.caps(&s.email);
         !is_cooling(g, &s.email, now)
-            && eff_util(g, &s.email, 7, now) < c7 && eff_util(g, &s.email, 5, now) < c5
+            && live_util(g, &s.email, plan_scale(&s.plan), 7, now, p5, p7) < c7
+            && live_util(g, &s.email, plan_scale(&s.plan), 5, now, p5, p7) < c5
             && inflight_of(g, &s.email) < MAX_INFLIGHT
     });
     let best = eligible.max_by(|a, b|
@@ -311,7 +354,7 @@ fn place_best(g: &Inner, now: i64, rsv: &Reserve, p5: f64, p7: f64) -> Option<Su
             .then(lru(&b.email).cmp(&lru(&a.email))));                    // затем давнее использование
     match best {
         Some(s) => Some(s.clone()),
-        None => select_best(g, &HashSet::new(), now, &Reserve::FULL), // все за конвертом → не зависаем
+        None => select_best(g, &HashSet::new(), now, &Reserve::FULL, p5, p7), // все за конвертом → не зависаем
     }
 }
 
@@ -380,7 +423,7 @@ impl Pool {
     pub fn pick(&self, exclude: &HashSet<String>, allow_full: bool) -> Option<Sub> {
         let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let rsv = if allow_full { Reserve::FULL } else { self.reserve };
-        select_best(&g, exclude, now(), &rsv)
+        select_best(&g, exclude, now(), &rsv, self.prior5h_usd, self.prior7d_usd)
     }
 
     /// **Cache-first роутинг сессии** (первая попытка запроса). Держит диалог на «домашней» персоне,
@@ -406,7 +449,12 @@ impl Pool {
             let exists = g.subs.iter().any(|s| s.email == home);
             if fresh && exists {
                 let cooling = g.live.get(&home).map(|l| l.cooling_until).unwrap_or(0);
-                let (e5, e7) = (eff_util(&g, &home, 5, now), eff_util(&g, &home, 7, now));
+                let home_scale = g.subs.iter().find(|s| s.email == home)
+                    .map(|s| plan_scale(&s.plan)).unwrap_or_else(|| plan_scale(""));
+                let (e5, e7) = (
+                    live_util(&g, &home, home_scale, 5, now, p5, p7),
+                    live_util(&g, &home, home_scale, 7, now, p5, p7),
+                );
                 let deep_cooling = cooling > now && cooling - now >= REBIND_AFTER;
                 let (c5, c7) = rsv.caps(&home);
                 let over_cap = e5 >= c5 || e7 >= c7;
@@ -418,10 +466,12 @@ impl Pool {
                         g.route_pin += 1;
                         return g.subs.iter().find(|s| s.email == home).cloned(); // ПИН (cache-hit)
                     }
-                    // временно занят → спилл ЭТОГО запроса, дом за сессией сохраняем
+                    // временно занят → спилл ЭТОГО запроса, дом за сессией сохраняем. Cooling-
+                    // альтернативы здесь запрещены: если здоровой замены нет, ослабляем конверт на
+                    // собственном доме, а не превращаем busy в ложный fleet-exhaustion Retry-After.
                     g.route_spill += 1;
                     let ex: HashSet<String> = std::iter::once(home.clone()).collect();
-                    return select_best(&g, &ex, now, &rsv)
+                    return select_best_non_cooling(&g, &ex, now, &rsv, p5, p7)
                         .or_else(|| g.subs.iter().find(|s| s.email == home).cloned());
                 }
                 // deep_cooling || over_cap → пере-привязка ниже
@@ -450,7 +500,13 @@ impl Pool {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let l = g.live.entry(email.to_string()).or_default();
         l.last_used = now();
-        l.inflight += 1;
+        if l.inflight >= MAX_INFLIGHT {
+            // Не скрываем реальную нагрузку клампом: попытка уже выбрана и forward сейчас её пошлёт.
+            // Лог без email/токена делает окно гонки наблюдаемым до атомарной lease-миграции.
+            eprintln!("pool: in-flight envelope oversubscribed (current={})", l.inflight);
+        }
+        l.inflight = l.inflight.saturating_add(1);
+        // AUDIT-TODO(C43): route/pick должны атомарно резервировать слот и возвращать RAII lease.
     }
 
     /// Подписка здорова: снять истёкший cooling, обновить last_used. In-flight НЕ трогаем — слотом
@@ -497,7 +553,9 @@ impl Pool {
     pub fn mark_cooling(&self, email: &str, secs: i64) {
         {
             let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            g.live.entry(email.to_string()).or_default().cooling_until = now() + secs.max(1);
+            let deadline = now().saturating_add(secs.max(1));
+            let l = g.live.entry(email.to_string()).or_default();
+            l.cooling_until = l.cooling_until.max(deadline);
         }
         self.signal_change();
     }
@@ -506,7 +564,9 @@ impl Pool {
     pub fn cool(&self, email: &str, secs: i64) {
         {
             let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            g.live.entry(email.to_string()).or_default().cooling_until = now() + secs.max(1);
+            let deadline = now().saturating_add(secs.max(1));
+            let l = g.live.entry(email.to_string()).or_default();
+            l.cooling_until = l.cooling_until.max(deadline);
         }
         self.signal_change();
     }
@@ -585,14 +645,9 @@ impl Pool {
             let er5 = if l.reset5h > 0 { l.reset5h } else { now + WIN5_SECS };
             let er7 = if l.reset7d > 0 { l.reset7d } else { now + WIN7_SECS };
 
-            // «живая» утилизация: заголовок + наш расход с момента заголовка / ёмкость; rollover.
-            let since_header = l.spent_total_usd - l.spent_at_header_usd;
-            let live = |util: f64, reset: i64, cap: f64| -> f64 {
-                if now >= reset { 0.0 }
-                else { (util + since_header / cap).clamp(0.0, 1.0) }
-            };
-            let u5 = live(l.util5h, er5, cap5);
-            let u7 = live(l.util7d, er7, cap7);
+            // Та же «живая» утилизация, что используется route/pick/place: один источник истины.
+            let u5 = live_util(&g, &s.email, sc, 5, now, p5, p7);
+            let u7 = live_util(&g, &s.email, sc, 7, now, p5, p7);
             let rem5 = cap5 * (1.0 - u5);
             let rem7 = cap7 * (1.0 - u7);
 
@@ -652,23 +707,21 @@ impl Pool {
         (inflight, cooling)
     }
 
-    /// Экспорт durable-состояния для персиста (по текущим подпискам).
+    /// Экспорт durable-состояния для персиста, включая временно неактивные подписки с удержанным
+    /// cooling. Иначе следующий safety-flush после рестарта мог бы стереть dormant-бан до реактивации.
     pub fn export_state(&self) -> Vec<registry::PoolStateRow> {
         let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        g.subs.iter().filter_map(|s| {
-            let l = g.live.get(&s.email)?;
-            Some(registry::PoolStateRow {
-                email: s.email.clone(),
-                cooling_until: l.cooling_until,
-                cap5h_usd: l.cap5h_usd,
-                cap7d_usd: l.cap7d_usd,
-                spent_total_usd: l.spent_total_usd,
-                util5h: l.util5h,
-                util7d: l.util7d,
-                reset5h: l.reset5h,
-                reset7d: l.reset7d,
-                calib_n: l.calib_n as i64,
-            })
+        g.live.iter().map(|(email, l)| registry::PoolStateRow {
+            email: email.clone(),
+            cooling_until: l.cooling_until,
+            cap5h_usd: l.cap5h_usd,
+            cap7d_usd: l.cap7d_usd,
+            spent_total_usd: l.spent_total_usd,
+            util5h: l.util5h,
+            util7d: l.util7d,
+            reset5h: l.reset5h,
+            reset7d: l.reset7d,
+            calib_n: l.calib_n as i64,
         }).collect()
     }
 
@@ -680,7 +733,9 @@ impl Pool {
         let now = now();
         let known: HashSet<String> = g.subs.iter().map(|s| s.email.clone()).collect();
         for r in rows {
-            if !known.contains(&r.email) { continue; } // подписки уже нет — не воскрешаем
+            // Активным восстанавливаем всё. Неактивным удерживаем строку только пока важен будущий
+            // cooling: replace_subs потом сольёт её в live при реактивации и не пустит трафик в бан.
+            if !known.contains(&r.email) && r.cooling_until <= now { continue; }
             let l = g.live.entry(r.email.clone()).or_default();
             if r.cooling_until > now { l.cooling_until = r.cooling_until; }
             if r.cap5h_usd > 0.0 { l.cap5h_usd = r.cap5h_usd; }
@@ -992,6 +1047,78 @@ mod tests {
         assert!(!c.calibrated);
         assert!((c.cap7d_usd - 1500.0).abs() < 1e-6);
         assert!((c.rem7d_usd - 1500.0).abs() < 1e-6); // util 0 → весь бюджет доступен
+    }
+
+    /// Поздний короткий failure не имеет права укоротить уже установленный длинный quota-cooling.
+    #[test]
+    fn cooling_deadline_only_extends() {
+        let p = pool(&["a"]);
+        p.mark_cooling("a", 3600);
+        let long = p.snapshot()[0].1.cooling_until;
+        p.mark_cooling("a", 10);
+        assert!(p.snapshot()[0].1.cooling_until >= long);
+        p.cool("a", 5);
+        assert!(p.snapshot()[0].1.cooling_until >= long);
+    }
+
+    /// Retry/pick не льёт в аккаунт за MAX_INFLIGHT, пока есть кандидат под конвертом.
+    #[test]
+    fn retry_selection_respects_concurrency_envelope() {
+        let p = pool(&["a", "b"]);
+        p.set_util("a", Some(0.10), Some(0.10), None, None, None);
+        p.set_util("b", Some(0.00), Some(0.11), None, None, None);
+        for _ in 0..MAX_INFLIGHT { p.mark_used("a"); }
+        assert_eq!(picked(&p), "b", "слегка более горячий, но свободный b должен разгрузить a");
+    }
+
+    /// Локально известный расход сразу участвует в reserve-гейте, не ждёт следующего util-заголовка.
+    #[test]
+    fn routing_uses_live_spend_between_headers() {
+        let p = pool(&["a", "b"]);
+        let f5 = now() + WIN5_SECS;
+        let f7 = now() + WIN7_SECS;
+        p.set_util("a", Some(0.85), Some(0.10), None, Some(f5), Some(f7));
+        p.set_util("b", Some(0.50), Some(0.11), None, Some(f5), Some(f7));
+        {
+            let mut g = p.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let a = g.live.get_mut("a").unwrap();
+            a.cap5h_usd = 50.0;
+            a.cap7d_usd = 1500.0;
+        }
+        assert_eq!(picked(&p), "a", "до расхода меньший 7d util выигрывает");
+        p.record_spend("a", 5 * 1_000_000_000); // live 5h = cap 0.95, а eligibility требует strict <
+        assert_eq!(picked(&p), "b", "после расхода a должна выйти за reserve-cap немедленно");
+    }
+
+    /// Busy-дом не спиллирует на cooling-альтернативу и не создаёт ложный долгий fleet exhaustion.
+    #[test]
+    fn spill_does_not_choose_cooling_alternative() {
+        let p = pool(&["a", "b"]);
+        for e in ["a", "b"] { p.set_util(e, Some(0.1), Some(0.1), None, None, None); }
+        let session = 4242;
+        let home = p.route(session).unwrap().email;
+        let other = if home == "a" { "b" } else { "a" };
+        p.mark_cooling(other, 3600);
+        for _ in 0..MAX_INFLIGHT { p.mark_used(&home); }
+        let chosen = p.route(session).unwrap();
+        assert_eq!(chosen.email, home, "без здоровой альтернативы ослабляем конверт на доме");
+        assert!(!p.is_cooling(&chosen.email));
+    }
+
+    /// Future cooling импортируется даже для неактивной на старте подписки и переживает flush/reactivate.
+    #[test]
+    fn import_retains_inactive_future_cooling() {
+        let source = pool(&["a"]);
+        source.mark_cooling("a", 3600);
+        let rows = source.export_state();
+
+        let restarted = pool(&["b"]); // a неактивна в момент старта
+        restarted.import_state(rows);
+        assert!(restarted.is_cooling("a"), "dormant future cooling нельзя отбрасывать");
+        assert!(restarted.export_state().iter().any(|r| r.email == "a"),
+                "safety-flush обязан сохранить dormant cooling");
+        restarted.replace_subs(vec![sub("a"), sub("b")]);
+        assert_eq!(picked(&restarted), "b", "реактивированная a остаётся в cooling");
     }
 
     /// request_probe сбрасывает polled_ts в 0 → подписка «созревает» для немедленного clean-probe

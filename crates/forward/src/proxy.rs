@@ -17,12 +17,14 @@ use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::Response;
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 /// Гард слота конкуррентности персоны. На ЛЮБОМ не-стриминговом исходе попытки (ошибка/ротация/4xx)
 /// и — главное — при ОТМЕНЕ запроса (клиент отключился, future хендлера дропнут на await) декрементит
@@ -64,8 +66,8 @@ impl Drop for HoldGuard {
     }
 }
 
-/// Гард fair-share-слота ключа: освобождает счётчик одновременных запросов ключа на выходе из
-/// `forward` (любой исход + отмена запроса). Живёт всю обработку запроса.
+/// Гард fair-share-слота аккаунта: на ошибке/отмене освобождается при выходе из `forward`, а на
+/// успешном ответе переносится в body-stream и живёт до EOF/ошибки/Drop.
 struct KeyGuard {
     limiter: Arc<crate::keylimiter::KeyLimiter>,
     key: String,
@@ -74,10 +76,53 @@ impl Drop for KeyGuard {
     fn drop(&mut self) { self.limiter.release(&self.key); }
 }
 
-// 16 МиБ: покрывает ЛЮБОЙ реальный messages-запрос (16MB ≈ 4M токенов — выше любого контекст-окна),
-// но ограничивает DoS-амплификацию (тело читается и парсится в serde_json::Value ДО резерв-гейта;
-// 64MB × конверт конкуррентности раздувало бы память в ГБ). Files/большие payload'ы мы не поддерживаем.
-const BODY_LIMIT: usize = 16 * 1024 * 1024;
+type ResponseByteStream = Pin<Box<dyn Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send>>;
+
+/// Держит fair-share слот аккаунта до EOF/ошибки/Drop успешного response body, а не только до
+/// возврата HTTP-заголовков из handler. Это закрывает обход лимита длинными SSE-стримами.
+struct KeyGuardStream {
+    inner: ResponseByteStream,
+    guard: Option<KeyGuard>,
+}
+impl KeyGuardStream {
+    fn new(inner: ResponseByteStream, guard: KeyGuard) -> Self { Self { inner, guard: Some(guard) } }
+}
+impl Stream for KeyGuardStream {
+    type Item = Result<bytes::Bytes, std::io::Error>;
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let me = self.get_mut();
+        match me.inner.as_mut().poll_next(cx) {
+            Poll::Ready(Some(Err(e))) => {
+                me.guard.take();
+                Poll::Ready(Some(Err(e)))
+            }
+            Poll::Ready(None) => {
+                me.guard.take();
+                Poll::Ready(None)
+            }
+            other => other,
+        }
+    }
+}
+
+// Anthropic Messages принимает тела до 32 МиБ. Держим тот же публичный предел; точное различение
+// overflow/read-error ниже сохраняет нативный 413-контракт вместо ложного generic 400.
+const BODY_LIMIT: usize = 32 * 1024 * 1024;
+
+enum BodyReadError { TooLarge, Read }
+
+async fn read_body_limited(body: Body, limit: usize) -> Result<bytes::Bytes, BodyReadError> {
+    let mut stream = body.into_data_stream();
+    let mut out = bytes::BytesMut::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| BodyReadError::Read)?;
+        if out.len().saturating_add(chunk.len()) > limit {
+            return Err(BodyReadError::TooLarge);
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out.freeze())
+}
 
 // Заголовки клиента, которые НЕ пробрасываем апстриму (перезаписываем или служебные).
 fn skip_req_header(name: &str) -> bool {
@@ -330,23 +375,64 @@ fn set_billing_block(v: &mut Value, text: &str) {
     }
 }
 
+/// Сливает клиентские beta-флаги с МИНИМАЛЬНЫМИ identity-флагами OAuth/Claude Code.
+/// Feature-беты из fleet-конфига не навязываем обычному SDK-клиенту: реальный Claude Code пришлёт
+/// свой полный набор сам, а произвольный клиент сохранит ровно запрошенные capabilities.
+fn merged_beta(headers: &HeaderMap, configured: &str) -> Result<String, ()> {
+    fn push(raw: &str, identity_only: bool, seen: &mut HashSet<String>, out: &mut Vec<String>) {
+        for token in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            if identity_only && !(token.starts_with("oauth-") || token.starts_with("claude-code-")) {
+                continue;
+            }
+            if seen.insert(token.to_string()) { out.push(token.to_string()); }
+        }
+    }
+
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for value in headers.get_all("anthropic-beta").iter() {
+        push(value.to_str().map_err(|_| ())?, false, &mut seen, &mut out);
+    }
+    push(configured, true, &mut seen, &mut out);
+    Ok(out.join(","))
+}
+
+/// Claude-Code persona нужна для OAuth-поведения, но документированную атрибуцию клиента нельзя
+/// перезаписывать. Добавляем persona только когда metadata/user_id отсутствуют; malformed metadata
+/// оставляем как есть, чтобы Anthropic вернул свою нативную validation error вместо panic шлюза.
+fn set_persona_user_id_if_absent(v: &mut Value, user_id: String) {
+    let Some(obj) = v.as_object_mut() else { return };
+    if obj.get("metadata").map(|m| m.is_null()).unwrap_or(true) {
+        obj.insert("metadata".into(), serde_json::json!({"user_id": user_id}));
+    } else if let Some(Value::Object(metadata)) = obj.get_mut("metadata") {
+        if !metadata.contains_key("user_id") {
+            metadata.insert("user_id".into(), Value::String(user_id));
+        }
+    }
+    // Existing non-object metadata is intentionally untouched so upstream returns its native 4xx.
+    // AUDIT-TODO(C52): move internal persona attribution to a private upstream channel and stop adding public metadata.
+}
+
 /// Allowlist эндпоинтов Anthropic, работающих на квоте ПОДПИСКИ (что мы форвардим на пул):
 /// `POST /v1/messages` (метерим), `POST /v1/messages/count_tokens` и `GET /v1/models[/{id}]` (проброс
 /// без тарификации). Всё прочее (batches/files/agents/sessions/environments/skills/complete) на
 /// подписочном OAuth-токене недоступно → чистый 404 на шлюзе. Управляющие роуты (`/health` и др.)
 /// сюда НЕ доходят — их обслуживает `server` до fallback на `forward`.
 fn is_supported_endpoint(method: &Method, path: &str) -> bool {
-    // Отклоняем dot-сегменты/пустые сегменты ДО матчинга: reqwest/url РЕЗОЛВИТ `..` в исходящем URL
-    // (`/v1/models/../organizations` → `/v1/organizations`), поэтому allowlist по `starts_with` иначе
-    // пропустил бы НЕразрешённый эндпоинт на подписочный OAuth-токен (студит подписку, backend-scope-
-    // ошибка). Любой `.`/`..`/`//`-сегмент → путь считаем неподдерживаемым (чистый 404 на шлюзе).
-    if path.contains("//") || path.split('/').any(|seg| seg == "." || seg == "..") {
+    // Модельный id — ровно ОДИН непустой raw-сегмент. `%` отклоняем целиком: model ids не требуют
+    // percent-encoding, зато URL-парсер нормализует `%2e`, `%2f` и варианты регистра уже ПОСЛЕ allowlist.
+    // Также запрещаем backslash (separator на части URL/proxy стеков) и literal dot/empty-сегменты.
+    if path.contains('%') || path.contains('\\') || path.contains("//")
+        || path.split('/').any(|seg| seg == "." || seg == "..")
+    {
         return false;
     }
     match (method.as_str(), path) {
         ("POST", "/v1/messages") | ("POST", "/v1/messages/count_tokens") => true,
         ("GET", "/v1/models") => true,
-        ("GET", p) if p.starts_with("/v1/models/") => true,
+        ("GET", p) => p.strip_prefix("/v1/models/")
+            .map(|id| !id.is_empty() && !id.contains('/'))
+            .unwrap_or(false),
         _ => false,
     }
 }
@@ -388,8 +474,9 @@ pub async fn forward(
     Metrics::inc(&app.metrics.requests);
     // fair-share ПО АККАУНТУ: не даём одному клиенту (профилю) набить флот бёрстом одновременных
     // запросов — лимитим по account_id, а НЕ по ключу, иначе юзер с N ключами обошёл бы конверт в N раз.
-    // Слот держится всю обработку (гард освобождает на любом исходе/отмене). Админ — без лимита.
-    let _key_guard = if let Authz::Metered { account_id, .. } = &authz {
+    // На ошибках слот держится до выхода handler; на успешном ответе переносится в body-stream и
+    // освобождается только на EOF/stream error/Drop. Админ — без лимита.
+    let mut key_guard = if let Authz::Metered { account_id, .. } = &authz {
         if !app.key_limiter.try_acquire(account_id, app.cfg.max_inflight_per_key) {
             Metrics::inc(&app.metrics.key_throttled);
             return err_retry(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error",
@@ -414,9 +501,12 @@ pub async fn forward(
     } else { pq };
     let url = format!("{}{}", app.cfg.upstream.trim_end_matches('/'), pq);
 
-    let raw = match axum::body::to_bytes(body, BODY_LIMIT).await {
+    let raw = match read_body_limited(body, BODY_LIMIT).await {
         Ok(b) => b,
-        Err(_) => return err_response(StatusCode::BAD_REQUEST, "invalid_request_error", "body read error"),
+        Err(BodyReadError::TooLarge) =>
+            return err_response(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large", "request too large"),
+        Err(BodyReadError::Read) =>
+            return err_response(StatusCode::BAD_REQUEST, "invalid_request_error", "body read error"),
     };
 
     // тело: один парс — вытаскиваем модель + max_tokens (для тарификации/резерва) и инжектим
@@ -510,18 +600,22 @@ pub async fn forward(
     });
     let version = parts.headers.get("anthropic-version")
         .and_then(|v| v.to_str().ok()).unwrap_or(&app.cfg.anthropic_version).to_string();
-    // anthropic-beta — ТОЧНЫЙ набор Claude Code (byte-exact), клиентские беты НЕ мержим: реальный CC
-    // шлёт фиксированный набор в фиксированном порядке с разделителем "," (без пробела). Мерж клиентских
-    // менял бы набор/порядок → отпечаток «не CC». Набор снят с живого claude (config.rs default_beta).
-    let beta = app.cfg.default_beta.clone();
+    let beta = match merged_beta(&parts.headers, &app.cfg.default_beta) {
+        Ok(v) => v,
+        Err(()) => return err_response(StatusCode::BAD_REQUEST, "invalid_request_error",
+                                       "invalid anthropic-beta header"),
+    };
 
     let mut tried: HashSet<String> = HashSet::new();
     // Один запрос вносит в breaker максимум ОДИН backend-фейл (не `max_tries`): иначе poison-запрос
     // (500 на каждой подписке) в одиночку размыкал бы глобальный breaker и клал сервис всем. Реальный
     // аутейдж тилит breaker числом РАЗНЫХ запросов, а не веером одного.
     let mut backend_fail_recorded = false;
-    let mut last = err_response(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error",
-                               "no subscriptions available in pool");
+    let mut last_local = err_response(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error",
+                                     "no subscriptions available in pool");
+    // Последний РЕАЛЬНЫЙ ответ Anthropic удерживаем до конца ротации. Если успеха не будет, именно он
+    // уходит клиенту со своим body/request-id/retry headers; synthetic допустим только без response.
+    let mut last_upstream: Option<(StatusCode, wreq::Response)> = None;
 
     // Бюджет: ошибки ПОДПИСКИ (429/401/403 — бан/лимит конкретного аккаунта) НЕ тратят попытки,
     // крутимся дальше по флоту (клиенту такая ошибка идти не должна, пока есть здоровые подписки).
@@ -532,6 +626,16 @@ pub async fn forward(
     let mut backend_tries = 0usize;
     let mut auth_tries = 0usize; // 401/403: возможно вина запроса клиента, а не токена — см. ниже
     while attempt < hard_cap {
+        // Уже допущенные запросы тоже обязаны увидеть breaker, открытый конкурентным фейлом, ДО
+        // следующей ротации. Если у нас есть реальный upstream response — возвращаем его прозрачно.
+        if let Some(retry) = app.breaker.open_for(pool::now()) {
+            Metrics::inc(&app.metrics.breaker_rejects);
+            if let Some((st, resp)) = last_upstream.take() {
+                return stream_back(st, resp, None, None);
+            }
+            return err_retry(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error",
+                             "upstream temporarily unavailable", retry);
+        }
         // Первая попытка — cache-first роутинг сессии (пин/placement/спилл в `route`). Дальше —
         // load-based `pick` (дом/пробованные уже в `tried`; cooling-подписки пул исключает сам).
         let sub = match session.filter(|_| attempt == 0)
@@ -547,6 +651,9 @@ pub async fn forward(
         // клиенту с точным Retry-After = soonest_ready (он откатится сам). hold вернёт hold_guard на return.
         if app.pool.is_cooling(&sub.email) {
             Metrics::inc(&app.metrics.exhausted);
+            if let Some((st, resp)) = last_upstream.take() {
+                return stream_back(st, resp, None, None);
+            }
             let retry = app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs);
             return err_retry(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error",
                              "all subscriptions are rate-limited — retry shortly", retry);
@@ -563,7 +670,7 @@ pub async fn forward(
             Err(e) => {
                 app.pool.mark_cooling(&sub.email, 10); // битый прокси → cooling (слот закроет guard)
                 eprintln!("⚠ прокси {}: {e}", sub.email); // детали ТОЛЬКО в лог (не клиенту)
-                last = err_response(StatusCode::BAD_GATEWAY, "api_error", "upstream connection error");
+                last_local = err_response(StatusCode::BAD_GATEWAY, "api_error", "upstream connection error");
                 continue;
             }
         };
@@ -574,28 +681,27 @@ pub async fn forward(
         let mut rb = client.request(method.clone(), &url)
             .header("authorization", format!("Bearer {}", sub.token))
             .header("anthropic-version", &version)
-            .header("anthropic-beta", &beta)
             .header("user-agent", &ua)
             // X-Claude-Code-Session-Id — per-диалог UUID (тот же, что в metadata.user_id.session_id).
             // Реальный CC шлёт его на каждый запрос; синтезируем от session-ключа.
             .header("x-claude-code-session-id", crate::upstream::persona_session_id(&sub.email, session))
             // x-client-request-id — случайный per-request uuid (реальный CC шлёт на каждый запрос).
             .header("x-client-request-id", crate::upstream::fresh_request_id());
+        if !beta.is_empty() { rb = rb.header("anthropic-beta", &beta); }
         rb = crate::upstream::apply_persona_headers(rb, &app.cfg); // x-app + x-stainless-* + accept + browser-access
         for (name, value) in parts.headers.iter() {
             let n = name.as_str();
             if !skip_req_header(n) { rb = rb.header(n, value.as_bytes()); }
         }
-        // per-sub тело: инжектим metadata.user_id ЭТОЙ подписки (стабилен per-аккаунт, перекрывает
-        // клиентский — иначе один user_id размазался бы по флоту). Сериализация здесь — в общем случае
-        // 1 раз (1 попытка); лишняя только на редкой ротации. Ошибка сериализации → отказ (не форвардим
-        // stale-тело с большим max_tokens при малом hold — пробой баланса; hold вернёт hold_guard).
+        // per-sub тело: persona metadata добавляем только когда клиент её НЕ задал; malformed metadata
+        // не мутируем (Anthropic сам вернёт native 4xx). Сериализация здесь — в общем случае 1 раз;
+        // лишняя только на редкой ротации. Ошибка сериализации → отказ (не форвардим stale-тело с
+        // большим max_tokens при малом hold — пробой баланса; hold вернёт hold_guard).
         let body_this = match parsed.as_mut() {
             Some(v) => {
-                // metadata.user_id инжектим ТОЛЬКО в /v1/messages — как настоящий Claude Code. На
-                // count_tokens Anthropic поле `metadata` НЕ принимает (→ 400), да и CC его туда не шлёт.
+                // metadata допустима только у /v1/messages; count_tokens её не принимает.
                 if billable {
-                    v["metadata"]["user_id"] = serde_json::json!(crate::upstream::persona_user_id(&sub.email, session));
+                    set_persona_user_id_if_absent(v, crate::upstream::persona_user_id(&sub.email, session));
                     // billing-header первым system-блоком (как реальный CC): cc_version флот-константна,
                     // cch стабилен per-подписка. Идемпотентно — на ротации заменяет, не дублирует.
                     if app.cfg.inject_billing {
@@ -616,6 +722,17 @@ pub async fn forward(
         };
         rb = rb.body(body_this);
 
+        // Breaker мог открыться, пока мы выбирали persona/строили тело. Не делаем ещё один send после
+        // этого момента; предыдущий upstream response (если был) приоритетнее локальной синтетики.
+        if let Some(retry) = app.breaker.open_for(pool::now()) {
+            Metrics::inc(&app.metrics.breaker_rejects);
+            if let Some((st, resp)) = last_upstream.take() {
+                return stream_back(st, resp, None, None);
+            }
+            return err_retry(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error",
+                             "upstream temporarily unavailable", retry);
+        }
+
         let resp = match rb.send().await {
             Ok(r) => r,
             Err(e) => {
@@ -624,7 +741,7 @@ pub async fn forward(
                 app.pool.mark_cooling(&sub.email, 15);
                 if !backend_fail_recorded { app.breaker.record_fail(pool::now(), &sub.email); backend_fail_recorded = true; }
                 eprintln!("⚠ upstream {}: {e}", sub.email); // детали (email/сеть) ТОЛЬКО в лог
-                last = err_response(StatusCode::BAD_GATEWAY, "api_error", "upstream unavailable");
+                last_local = err_response(StatusCode::BAD_GATEWAY, "api_error", "upstream unavailable");
                 backend_tries += 1;
                 if backend_tries >= app.cfg.max_tries.max(1) { break; }
                 continue;
@@ -650,7 +767,7 @@ pub async fn forward(
             let secs = cool_secs_429(&resp, &lim, now);
             app.pool.mark_cooling(&sub.email, secs);
             eprintln!("↻ ротация: {} вернул 429 — cooling {}s", sub.email, secs);
-            last = err_response(st, "overloaded_error", "upstream rate-limited"); // без email клиенту
+            last_upstream = Some((st, resp));
             continue;
         }
         if code == 401 || code == 403 {
@@ -671,15 +788,13 @@ pub async fn forward(
                 // placement-магнитом за ~1 цикл. Без cooling здесь (crafted-запрос иначе студил бы флот).
                 app.pool.request_probe(&sub.email);
                 if let Some(p) = &app.probe_poke { p.notify_one(); }
-                last = err_response(st, "overloaded_error", "upstream unavailable");
+                last_upstream = Some((st, resp));
                 continue;
             }
             app.pool.mark_healthy(&sub.email);          // повтор/нет альтернативы → вина запроса
-            // НОРМАЛИЗУЕМ тело: сырой 401/403 подписочного OAuth-токена несёт «OAuth token does not meet
-            // scope requirement…» — это раскрыло бы, что backend на подписках, а не на API-ключе. Отдаём
-            // клиенту тот же КОД с generic Anthropic-shaped телом (backend скрыт, транспарентность цела).
-            let kind = if code == 403 { "permission_error" } else { "authentication_error" };
-            return err_response(st, kind, "this request is not permitted");
+            // Запрос-детерминированный 401/403 возвращаем БАЙТ-В-БАЙТ: body/request-id/error type
+            // принадлежат Anthropic и нужны SDK-диагностике; секретные auth headers уже фильтруются.
+            return stream_back(st, resp, None, None);
         }
         if st.is_server_error() || code == 408 || code == 409 || code == 425 {
             // вина АПСТРИМА, не подписки: НЕ студим подписку (слот закроет guard), кормим breaker
@@ -687,7 +802,7 @@ pub async fn forward(
             Metrics::inc(&app.metrics.upstream_5xx);
             if !backend_fail_recorded { app.breaker.record_fail(now, &sub.email); backend_fail_recorded = true; }
             eprintln!("↻ ротация: {} вернул {} — backend-fault (breaker+)", sub.email, code);
-            last = err_response(st, "overloaded_error", "upstream unavailable"); // без email клиенту
+            last_upstream = Some((st, resp));
             backend_tries += 1;                                    // backend тратит бюджет (аутейдж)
             if backend_tries >= app.cfg.max_tries.max(1) { break; }
             continue;
@@ -723,18 +838,18 @@ pub async fn forward(
             app.pool.mark_healthy(&sub.email);
             None
         };
-        return stream_back(st, resp, meter);
+        let stream_key_guard = if st.is_success() { key_guard.take() } else { None };
+        return stream_back(st, resp, meter, stream_key_guard);
     }
     // Резерв вернёт `hold_guard` на return; слот последней попытки уже закрыл её `guard`.
-    if backend_tries >= app.cfg.max_tries.max(1) {
-        // упёрлись в бюджет backend-фейлов → это аутейдж апстрима, отдаём последнюю upstream-ошибку
-        // (breaker уже накапливает — скоро разомкнётся и будет быстрый отбой).
-        last
-    } else if tried.is_empty() {
-        last // пул реально пуст
+    // Любой реально полученный Anthropic response приоритетнее локальной классификации исчерпания.
+    if let Some((st, resp)) = last_upstream {
+        stream_back(st, resp, None, None)
+    } else if backend_tries >= app.cfg.max_tries.max(1) || tried.is_empty() {
+        last_local
     } else {
-        // перебрали подписки, но все за лимитом → прозрачный 429 + Retry-After (клиент откатится сам).
-        // Именно это, а НЕ ошибка отдельной забаненной/лимитированной подписки, уходит клиенту.
+        // Ни одного upstream response не было (например, все кандидаты уже cooling) → только тогда
+        // синтезируем локальный 429 с readiness всего пула.
         Metrics::inc(&app.metrics.exhausted);
         let retry = app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs);
         err_retry(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error",
@@ -799,18 +914,21 @@ fn cool_secs_429(resp: &wreq::Response, lim: &Limits, now: i64) -> i64 {
 /// Отдать ответ апстрима клиенту байт-в-байт (стримом — работает и для SSE).
 /// Если задан `meter` — оборачиваем тело в tee-метеринг: клиент получает те же байты,
 /// а на завершении стрима списываем стоимость с ключа (тело клиенту НЕ задерживается).
-fn stream_back(st: StatusCode, resp: wreq::Response, meter: Option<MeterCtx>) -> Response {
+fn stream_back(st: StatusCode, resp: wreq::Response, meter: Option<MeterCtx>,
+               key_guard: Option<KeyGuard>) -> Response {
     let mut builder = Response::builder().status(st);
     for (name, value) in resp.headers().iter() {
         if !skip_resp_header(name.as_str()) {
             builder = builder.header(name.as_str(), value.as_bytes());
         }
     }
-    let stream = resp.bytes_stream().map(|chunk| {
-        chunk.map_err(std::io::Error::other)
-    });
+    let stream = resp.bytes_stream().map(|chunk| chunk.map_err(std::io::Error::other));
+    let mut stream: ResponseByteStream = Box::pin(stream);
+    if let Some(guard) = key_guard {
+        stream = Box::pin(KeyGuardStream::new(stream, guard));
+    }
     let body = match meter {
-        Some(ctx) => Body::from_stream(TeeMeter::new(Box::pin(stream), ctx)),
+        Some(ctx) => Body::from_stream(TeeMeter::new(stream, ctx)),
         None => Body::from_stream(stream),
     };
     builder.body(body).unwrap_or_else(|_| {
@@ -884,6 +1002,36 @@ mod tests {
         assert!(!is_supported_endpoint(&Method::POST, "/v1/complete")); // легаси
         assert!(!is_supported_endpoint(&Method::GET, "/v1/messages")); // messages только POST
         assert!(!is_supported_endpoint(&Method::DELETE, "/v1/models/x"));
+        // C4: только один raw model-id сегмент; URL-normalized traversal/separators не проходят.
+        assert!(!is_supported_endpoint(&Method::GET, "/v1/models/a/b"));
+        assert!(!is_supported_endpoint(&Method::GET, "/v1/models/%2e%2e/%2e%2e/api/oauth/profile"));
+        assert!(!is_supported_endpoint(&Method::GET, "/v1/models/%2Fapi%2Foauth%2Fprofile"));
+        assert!(!is_supported_endpoint(&Method::GET, "/v1/models/..\\api\\oauth\\profile"));
+    }
+
+    #[test]
+    fn beta_merge_preserves_client_capabilities_and_adds_only_identity() {
+        let mut headers = HeaderMap::new();
+        headers.append("anthropic-beta", "task-budgets-2026-03-13,oauth-2025-04-20".parse().unwrap());
+        headers.append("anthropic-beta", "server-side-fallback-2026-06-01".parse().unwrap());
+        let configured = "oauth-2025-04-20,claude-code-20250219,advisor-tool-2026-03-01";
+        assert_eq!(merged_beta(&headers, configured).unwrap(),
+            "task-budgets-2026-03-13,oauth-2025-04-20,server-side-fallback-2026-06-01,claude-code-20250219");
+    }
+
+    #[test]
+    fn persona_metadata_never_overwrites_or_panics_on_client_shape() {
+        let mut supplied = serde_json::json!({"metadata":{"user_id":"hashed-customer-42"}});
+        set_persona_user_id_if_absent(&mut supplied, "persona".into());
+        assert_eq!(supplied["metadata"]["user_id"].as_str(), Some("hashed-customer-42"));
+
+        let mut absent = serde_json::json!({"messages":[]});
+        set_persona_user_id_if_absent(&mut absent, "persona".into());
+        assert_eq!(absent["metadata"]["user_id"].as_str(), Some("persona"));
+
+        let mut malformed = serde_json::json!({"metadata":"x"});
+        set_persona_user_id_if_absent(&mut malformed, "persona".into());
+        assert_eq!(malformed["metadata"].as_str(), Some("x"));
     }
 
     #[test]

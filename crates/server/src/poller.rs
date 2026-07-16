@@ -136,6 +136,35 @@ pub async fn reload_loop(app: AppState, db_path: String, fleet: Option<String>, 
     }
 }
 
+/// Верхняя граница cooling для probe: все известные окна не длиннее 7d; сутки — запас.
+const MAX_PROBE_COOL_SECS: i64 = 8 * 24 * 3600;
+/// Без authoritative claim используем тот же консервативный порог, что fallback в `forward`.
+const PROBE_QUOTA_UTIL: f64 = 0.95;
+
+/// Локальный claim-less fallback до переноса единой классификации 429 в `forward`.
+/// Принимаем только будущие reset и ограничиваем даже враждебный timestamp восемью сутками.
+fn probe_cool_secs_429(
+    util5h: Option<f64>,
+    util7d: Option<f64>,
+    reset5h: Option<i64>,
+    reset7d: Option<i64>,
+    now: i64,
+    fallback_secs: i64,
+) -> i64 {
+    let future = |reset: Option<i64>| {
+        reset.filter(|t| *t > now).map(|t| t.saturating_sub(now).max(1))
+    };
+    let (u5, u7) = (util5h.unwrap_or(0.0), util7d.unwrap_or(0.0));
+    let reset = if u7 >= PROBE_QUOTA_UTIL {
+        future(reset7d).or_else(|| future(reset5h))
+    } else if u5 >= PROBE_QUOTA_UTIL {
+        future(reset5h).or_else(|| future(reset7d))
+    } else {
+        None
+    };
+    reset.unwrap_or(fallback_secs).clamp(1, MAX_PROBE_COOL_SECS)
+}
+
 /// Один liveness-probe: читаем лимиты подписки и применяем. Сетевой сбой всё равно фиксируем
 /// (`set_util` c None двигает `polled_ts`) — иначе поллер спинил бы по мёртвому прокси.
 async fn probe(app: &AppState, sub: &Sub) {
@@ -149,10 +178,16 @@ async fn probe(app: &AppState, sub: &Sub) {
             app.pool.set_util(&sub.email, r.util5h, r.util7d, r.status.clone(), r.reset5h, r.reset7d);
             match r.http {
                 429 => {
-                    // студим до сброса ОКНА-виновника (недельное почти выбрано → до reset7d, дни).
-                    let reset = if r.util7d.unwrap_or(0.0) >= 0.98 { r.reset7d.or(r.reset5h) }
-                                else { r.reset5h.or(r.reset7d) };
-                    let secs = reset.map(|t| (t - pool::now()).max(1)).unwrap_or(app.cfg.cool_secs);
+                    // AUDIT-TODO(C59): expose claim/Retry-After and one public 429-cooling helper from
+                    // `forward`, then delete this claim-less fallback from the composition crate.
+                    let secs = probe_cool_secs_429(
+                        r.util5h,
+                        r.util7d,
+                        r.reset5h,
+                        r.reset7d,
+                        pool::now(),
+                        app.cfg.cool_secs,
+                    );
                     app.pool.cool(&sub.email, secs);
                 }
                 401 | 403 => app.pool.cool(&sub.email, 900), // мёртвый токен, обнаружен на простое
@@ -244,5 +279,49 @@ mod tests {
         l.cooling_until = now + 500;
         assert_eq!(next_probe_at(em, &l), now + 500, "probe откладывается до конца cooling");
         assert!(next_probe_at(em, &l) > now);
+    }
+
+    #[test]
+    fn probe_429_uses_weekly_reset_at_shared_fallback_threshold() {
+        let now = 1_000_000;
+        assert_eq!(
+            probe_cool_secs_429(
+                Some(0.99),
+                Some(0.97),
+                Some(now + 3600),
+                Some(now + 3 * 86400),
+                now,
+                300,
+            ),
+            3 * 86400,
+            "7d utilization above the forward fallback threshold must not cool only to 5h reset",
+        );
+    }
+
+    #[test]
+    fn probe_429_rejects_stale_and_bounds_hostile_resets() {
+        let now = 1_000_000;
+        assert_eq!(
+            probe_cool_secs_429(
+                Some(0.99),
+                Some(0.99),
+                Some(now + 3600),
+                Some(now - 1),
+                now,
+                300,
+            ),
+            3600,
+        );
+        assert_eq!(
+            probe_cool_secs_429(
+                None,
+                Some(1.0),
+                None,
+                Some(i64::MAX),
+                now,
+                300,
+            ),
+            MAX_PROBE_COOL_SECS,
+        );
     }
 }

@@ -17,13 +17,85 @@
 
 use registry::{AccountRow, BillingTotals, KeyAuth, KeyRow};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
+const RESERVE_HANDOFF_PENDING: u8 = 0;
+const RESERVE_HANDOFF_COMMITTED: u8 = 1;
+const RESERVE_HANDOFF_CLAIMED: u8 = 2;
+const RESERVE_HANDOFF_CANCELED: u8 = 3;
+const RESERVE_HANDOFF_REFUNDING: u8 = 4;
+const RESERVE_HANDOFF_REFUNDED: u8 = 5;
+const RESERVE_HANDOFF_FAILED: u8 = 6;
+
+// Закрывает окно отмены, пока `reserve().await` ещё не передал владение резервом вызывающему коду.
+// AUDIT-TODO(C54): заменить account-level компенсацию на durable reservation ID + idempotent cancel/settle.
+struct ReserveHandoffGuard<'a> {
+    writer: &'a mpsc::UnboundedSender<WriteCmd>,
+    account_id: String,
+    hold: i64,
+    handoff: Arc<AtomicU8>,
+}
+
+impl ReserveHandoffGuard<'_> {
+    fn claim(&self) -> bool {
+        self.handoff.compare_exchange(
+            RESERVE_HANDOFF_COMMITTED,
+            RESERVE_HANDOFF_CLAIMED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ).is_ok()
+    }
+}
+
+impl Drop for ReserveHandoffGuard<'_> {
+    fn drop(&mut self) {
+        loop {
+            match self.handoff.load(Ordering::Acquire) {
+                RESERVE_HANDOFF_PENDING => {
+                    if self.handoff.compare_exchange(
+                        RESERVE_HANDOFF_PENDING,
+                        RESERVE_HANDOFF_CANCELED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ).is_ok() {
+                        return;
+                    }
+                }
+                RESERVE_HANDOFF_COMMITTED => {
+                    if self.handoff.compare_exchange(
+                        RESERVE_HANDOFF_COMMITTED,
+                        RESERVE_HANDOFF_CANCELED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ).is_ok() {
+                        let _ = self.writer.send(WriteCmd::CancelReserve {
+                            account_id: self.account_id.clone(),
+                            hold: self.hold,
+                            handoff: Arc::clone(&self.handoff),
+                        });
+                        return;
+                    }
+                }
+                RESERVE_HANDOFF_CLAIMED | RESERVE_HANDOFF_CANCELED
+                | RESERVE_HANDOFF_REFUNDING | RESERVE_HANDOFF_REFUNDED
+                | RESERVE_HANDOFF_FAILED => return,
+                _ => return,
+            }
+        }
+    }
+}
+
 enum WriteCmd {
-    Reserve { account_id: String, hold: i64, reply: oneshot::Sender<Option<i64>> },
+    Reserve {
+        account_id: String,
+        hold: i64,
+        handoff: Arc<AtomicU8>,
+        reply: oneshot::Sender<Option<i64>>,
+    },
+    CancelReserve { account_id: String, hold: i64, handoff: Arc<AtomicU8> },
     Settle {
         account_id: String, key: String, hold: i64, actual: i64, reference: Option<String>,
         usage: Option<registry::UsageEventInput>, // разбивка токенов/модели (аналитика), если есть
@@ -38,6 +110,7 @@ enum WriteCmd {
     AccountMultiplier { id: String, mult_bp: i64, reply: oneshot::Sender<usize> },
     KeyStatus { key: String, status: String, reply: oneshot::Sender<usize> },
     KeyStatusById { key_id: String, status: String, reply: oneshot::Sender<usize> },
+    KeyLabelById { key_id: String, label: String, reply: oneshot::Sender<usize> },
     /// Барьер: writer FIFO → когда Flush обработан, ВСЕ прежние команды (settle) применены.
     /// Для дренажа очереди на graceful shutdown (иначе последние списания потерялись бы).
     Flush(oneshot::Sender<()>),
@@ -86,9 +159,84 @@ impl AsyncBilling {
                 // пачка) + bounded латентность/память. Под низкой нагрузкой пачка=1 (канал пуст).
                 const MAX_WRITE_BATCH: usize = 256;
                 let is_hot = |c: &WriteCmd| matches!(c, WriteCmd::Reserve { .. } | WriteCmd::Settle { .. });
+                let refund_canceled_reserve = |account_id: &str, hold: i64, handoff: &AtomicU8| {
+                    if handoff.compare_exchange(
+                        RESERVE_HANDOFF_CANCELED,
+                        RESERVE_HANDOFF_REFUNDING,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ).is_err() {
+                        return;
+                    }
+                    match registry::account_settle(&conn, account_id, "", hold, 0, None, None) {
+                        Ok(Some(_)) => handoff.store(RESERVE_HANDOFF_REFUNDED, Ordering::Release),
+                        Ok(None) => {
+                            eprintln!("billing reserve cancellation refund failed: account not found");
+                            handoff.store(RESERVE_HANDOFF_CANCELED, Ordering::Release);
+                        }
+                        Err(err) => {
+                            eprintln!("billing reserve cancellation refund failed: {err:#}");
+                            handoff.store(RESERVE_HANDOFF_CANCELED, Ordering::Release);
+                        }
+                    }
+                };
+                let finish_reserve = |account_id: String, hold: i64, handoff: Arc<AtomicU8>,
+                                      reply: oneshot::Sender<Option<i64>>, res: Option<i64>| {
+                    if res.is_none() {
+                        handoff.store(RESERVE_HANDOFF_FAILED, Ordering::Release);
+                        let _ = reply.send(None);
+                        return;
+                    }
+                    match handoff.compare_exchange(
+                        RESERVE_HANDOFF_PENDING,
+                        RESERVE_HANDOFF_COMMITTED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => {
+                            if reply.send(res).is_err() {
+                                let _ = handoff.compare_exchange(
+                                    RESERVE_HANDOFF_COMMITTED,
+                                    RESERVE_HANDOFF_CANCELED,
+                                    Ordering::AcqRel,
+                                    Ordering::Acquire,
+                                );
+                                refund_canceled_reserve(&account_id, hold, &handoff);
+                            }
+                        }
+                        Err(RESERVE_HANDOFF_CANCELED) => {
+                            refund_canceled_reserve(&account_id, hold, &handoff);
+                        }
+                        Err(state) => {
+                            eprintln!("billing reserve handoff entered unexpected state {state}");
+                        }
+                    }
+                };
+                // AUDIT-TODO(C56): persist idempotent pending settlements and retry them until commit.
+                let settle_one = |account_id: &str, key: &str, hold: i64, actual: i64,
+                                  reference: Option<&str>, usage: Option<&registry::UsageEventInput>| {
+                    match registry::account_settle(&conn, account_id, key, hold, actual, reference, usage) {
+                        Ok(Some(balance)) => Some(balance),
+                        Ok(None) => {
+                            eprintln!(
+                                "billing settlement failed: account missing (hold={hold}, actual={actual})"
+                            );
+                            None
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "billing settlement database failure (hold={hold}, actual={actual}): {err:#}"
+                            );
+                            None
+                        }
+                    }
+                };
                 // НЕ-горячие (топап/контрол/Flush) — по-одному (редкие; у топапа идемпотентный rollback
                 // несовместим с общей транзакцией). Прежнее поведение.
                 let apply_nonhot = |cmd: WriteCmd| match cmd {
+                    WriteCmd::CancelReserve { account_id, hold, handoff } => {
+                        refund_canceled_reserve(&account_id, hold, &handoff);
+                    }
                     WriteCmd::Topup { account_id, amount, reference, reply } => {
                         let _ = reply.send(registry::account_topup(&conn, &account_id, amount, reference.as_deref()).ok().flatten());
                     }
@@ -98,20 +246,21 @@ impl AsyncBilling {
                     WriteCmd::AccountMultiplier { id, mult_bp, reply } => { let _ = reply.send(registry::account_set_mult_bp(&conn, &id, mult_bp).unwrap_or(0)); }
                     WriteCmd::KeyStatus { key, status, reply } => { let _ = reply.send(registry::key_set_status(&conn, &key, &status).unwrap_or(0)); }
                     WriteCmd::KeyStatusById { key_id, status, reply } => { let _ = reply.send(registry::key_set_status_by_id(&conn, &key_id, &status).unwrap_or(0)); }
+                    WriteCmd::KeyLabelById { key_id, label, reply } => { let _ = reply.send(registry::key_set_label_by_id(&conn, &key_id, &label).unwrap_or(0)); }
                     WriteCmd::Flush(r) => { let _ = r.send(()); }
                     WriteCmd::Reserve { .. } | WriteCmd::Settle { .. } => {}
                 };
                 // Одна горячая команда в СВОЕЙ транзакции (fallback батча) + reply/refund как раньше.
                 let apply_hot_single = |cmd: WriteCmd| match cmd {
-                    WriteCmd::Reserve { account_id, hold, reply } => {
+                    WriteCmd::Reserve { account_id, hold, handoff, reply } => {
                         let res = registry::account_reserve(&conn, &account_id, hold).ok().flatten();
-                        if reply.send(res).is_err() && res.is_some() {
-                            let _ = registry::account_settle(&conn, &account_id, "", hold, 0, None, None);
-                        }
+                        finish_reserve(account_id, hold, handoff, reply, res);
                     }
                     WriteCmd::Settle { account_id, key, hold, actual, reference, usage, reply } => {
                         let usage_ref = if actual > 0 { usage.as_ref() } else { None };
-                        let res = registry::account_settle(&conn, &account_id, &key, hold, actual, reference.as_deref(), usage_ref).ok().flatten();
+                        let res = settle_one(
+                            &account_id, &key, hold, actual, reference.as_deref(), usage_ref,
+                        );
                         if let Some(r) = reply { let _ = r.send(res); }
                     }
                     _ => {}
@@ -141,12 +290,19 @@ impl AsyncBilling {
                             drop(ops); // снять borrow с batch перед consume
                             for (cmd, res) in batch.into_iter().zip(results) {
                                 match cmd {
-                                    WriteCmd::Reserve { account_id, hold, reply } => {
-                                        if reply.send(res).is_err() && res.is_some() {
-                                            let _ = registry::account_settle(&conn, &account_id, "", hold, 0, None, None);
-                                        }
+                                    WriteCmd::Reserve { account_id, hold, handoff, reply } => {
+                                        finish_reserve(account_id, hold, handoff, reply, res);
                                     }
-                                    WriteCmd::Settle { reply, .. } => { if let Some(r) = reply { let _ = r.send(res); } }
+                                    WriteCmd::Settle { hold, actual, reply, .. } => {
+                                        // `registry::apply_hot_batch` currently folds per-op DB errors into
+                                        // `None`; surface that loss instead of silently treating it as success.
+                                        if res.is_none() {
+                                            eprintln!(
+                                                "billing settlement failed in group commit (hold={hold}, actual={actual})"
+                                            );
+                                        }
+                                        if let Some(r) = reply { let _ = r.send(res); }
+                                    }
                                     _ => unreachable!(),
                                 }
                             }
@@ -260,8 +416,20 @@ impl AsyncBilling {
     }
     pub async fn reserve(&self, account_id: &str, hold: i64) -> Option<i64> {
         let (r, rx) = oneshot::channel();
-        self.writer.send(WriteCmd::Reserve { account_id: account_id.into(), hold, reply: r }).ok()?;
-        rx.await.ok().flatten()
+        let handoff = Arc::new(AtomicU8::new(RESERVE_HANDOFF_PENDING));
+        let guard = ReserveHandoffGuard {
+            writer: &self.writer,
+            account_id: account_id.into(),
+            hold,
+            handoff: Arc::clone(&handoff),
+        };
+        self.writer.send(WriteCmd::Reserve {
+            account_id: account_id.into(), hold, handoff, reply: r,
+        }).ok()?;
+        match rx.await {
+            Ok(Some(balance)) if guard.claim() => Some(balance),
+            Ok(_) | Err(_) => None,
+        }
     }
     pub async fn settle(&self, account_id: &str, key: &str, hold: i64, actual: i64, reference: Option<&str>) -> Option<i64> {
         let (r, rx) = oneshot::channel();
@@ -340,6 +508,13 @@ impl AsyncBilling {
         let n = rx.await.unwrap_or(0);
         self.auth_cache_clear();
         n
+    }
+    pub async fn key_label_by_id(&self, key_id: &str, label: &str) -> usize {
+        let (r, rx) = oneshot::channel();
+        if self.writer.send(WriteCmd::KeyLabelById {
+            key_id: key_id.into(), label: label.into(), reply: r,
+        }).is_err() { return 0; }
+        rx.await.unwrap_or(0)
     }
     /// Дренаж очереди writer'а (барьер): ждёт, пока ВСЕ ранее поставленные команды (в т.ч.
     /// fire-and-forget `settle_detached`) применятся. Вызывать на graceful shutdown ПОСЛЕ дренажа

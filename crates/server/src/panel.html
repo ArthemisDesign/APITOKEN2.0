@@ -73,23 +73,26 @@ const usd=(x)=>'$'+(+x||0).toLocaleString('en-US',{minimumFractionDigits:2,maxim
 const dur=(s)=>{s=Math.max(0,s|0);const d=s/86400|0,h=(s%86400)/3600|0,m=(s%3600)/60|0;
   return d?`${d}д ${h}ч`:h?`${h}ч ${m}м`:`${m}м`};
 const xr=(v)=>v==null?'∞':('×'+(+v).toLocaleString('en-US',{maximumFractionDigits:v<10?1:0}));
-const key=()=>localStorage.getItem('capkey')||'';
+// AUDIT-TODO(C32): enforce server-side that panel routes accept only panel-scoped credentials, never control/admin keys.
+let panelKey='';
+const key=()=>panelKey;
 let timer=null;
 
 function setup(msg){
   clearInterval(timer);
   document.getElementById('app').innerHTML='';
   const box=$(`<div class="setup"><h1 style="margin:0 0 4px">Центр управления</h1>
-    <div class="muted" style="font-size:12px">Введи ключ (за Caddy обычно не требуется). Read-only панельный ключ покажет только ёмкость; полная картина (деньги/рекомендации) — под control-ключом.</div>
-    <input id="k" type="password" placeholder="ключ…" value="${esc(key())}">
+    <div class="muted" style="font-size:12px">Введи только отдельный read-only ключ панели (за Caddy обычно не требуется). Никогда не вводи здесь control/admin-ключ: ключ хранится только в памяти этой вкладки и исчезнет при перезагрузке.</div>
+    <input id="k" type="password" placeholder="ключ панели…" autocomplete="off" autocapitalize="off" spellcheck="false">
     <button id="go">Открыть</button>${msg?`<div class="err">${msg}</div>`:''}</div>`);
   document.getElementById('app').appendChild(box);
-  box.querySelector('#go').onclick=()=>{localStorage.setItem('capkey',box.querySelector('#k').value.trim());start()};
+  box.querySelector('#go').onclick=()=>{panelKey=box.querySelector('#k').value.trim();box.querySelector('#k').value='';start()};
   box.querySelector('#k').onkeydown=(e)=>{if(e.key==='Enter')box.querySelector('#go').click()};
 }
 
 async function getj(path){
-  const h=key()?{'x-api-key':key()}:{};      // за Caddy ключ инжектится server-side
+  const k=key();
+  const h=k?{'x-api-key':k}:{};              // за Caddy ключ инжектится server-side
   const r=await fetch(path,{headers:h});
   if(r.status===401) throw {auth:true};
   if(!r.ok) throw {msg:'ошибка '+r.status};
@@ -99,7 +102,7 @@ async function getj(path){
 async function tick(){
   let ov,cap,subs;
   try{ [ov,cap,subs]=await Promise.all([getj('/overview'),getj('/capacity').catch(()=>null),getj('/subs').catch(()=>null)]); }
-  catch(e){ if(e.auth) return setup('нужен ключ'); return; }
+  catch(e){ if(e.auth){panelKey='';return setup('нужен read-only ключ панели')} return; }
   render(ov,cap,subs);
 }
 

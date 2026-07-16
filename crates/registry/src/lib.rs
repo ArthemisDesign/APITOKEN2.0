@@ -44,10 +44,10 @@ pub fn open(path: &str) -> Result<Connection> {
         }
     }
     let c = Connection::open(path).with_context(|| format!("открыть БД {path}"))?;
-    // synchronous=NORMAL: в WAL безопасно (крах теряет максимум последний commit — его чинит
-    // reconcile_reservations на старте), но снимает fsync на КАЖДЫЙ commit → 5–20× запись под
-    // нагрузкой (снимает потолок money-хот-пути). wal_autocheckpoint держит WAL от распухания.
-    c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; \
+    // AUDIT(C38): this database is authoritative for balances and ledger entries. In WAL mode,
+    // synchronous=FULL makes an acknowledged commit durable across OS crashes and power loss.
+    // Performance-sensitive nonfinancial state should move to a separate database if needed.
+    c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; \
                      PRAGMA busy_timeout=5000; PRAGMA wal_autocheckpoint=1000;")?;
     c.execute(
         "CREATE TABLE IF NOT EXISTS subs(email TEXT PRIMARY KEY, token TEXT, token_file TEXT, \
@@ -107,13 +107,20 @@ pub fn open(path: &str) -> Result<Connection> {
     // в момент settle (тот же запрос, что и usage_event). topup/adjust модели не имеют → NULL. Идемпотентно.
     let _ = c.execute("ALTER TABLE ledger ADD COLUMN model TEXT", []);
     let _ = c.execute("CREATE INDEX IF NOT EXISTS ledger_acct ON ledger(account_id, id)", []);
-    // ИДЕМПОТЕНТНОСТЬ пополнений: payment-ref уникален среди topup-строк → повторный вебхук с тем же
-    // tx-id физически не начислит дважды (партиальный UNIQUE; на charge/adjust не распространяется).
-    let _ = c.execute(
+    // AUDIT(C2): correctness-critical idempotency indexes must fail closed. A legacy database with
+    // duplicate references must not open for billing traffic without explicit operator repair.
+    c.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS ledger_topup_ref ON ledger(ref) \
-         WHERE kind='topup' AND ref IS NOT NULL", []);
-    // Индекс под фоновую обрезку: prune ходит по ts среди charge-строк. Без него DELETE = full-scan
-    // всей таблицы (при высоком QPS ledger огромный) → многоминутный фриз единственного writer'а.
+         WHERE kind='topup' AND ref IS NOT NULL", [])
+        .context("create required unique top-up reference index")?;
+    // AUDIT(C40): negative adjustments are retryable monetary mutations too, so their supplied
+    // references share the same global idempotency namespace as top-ups.
+    c.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ledger_money_ref ON ledger(ref) \
+         WHERE kind IN ('topup','adjust') AND ref IS NOT NULL", [])
+        .context("create required unique monetary reference index")?;
+    // AUDIT-TODO(C2): move schema upgrades into versioned transactions with explicit duplicate repair.
+    // Retained for the future checkpoint-aware pruning path; current timestamp-only prune is disabled.
     let _ = c.execute(
         "CREATE INDEX IF NOT EXISTS ledger_charge_ts ON ledger(ts) WHERE kind='charge'", []);
 
@@ -153,27 +160,37 @@ fn now() -> i64 {
 }
 
 /// Миграция старой модели «ключ = кошелёк» → «аккаунт (баланс) + ключи (доступы)». Для каждого ключа
-/// без `account_id` (легаси) заводим отдельный аккаунт, переносим баланс/расход/наценку, линкуем ключ.
-/// Идемпотентно (INSERT OR IGNORE + фильтр по NULL). В проде ключей нет → no-op, но безопасно вообще.
+/// без `account_id` (легаси) атомарно заводим отдельный случайный аккаунт, переносим баланс/расход/
+/// наценку и линкуем ключ. Повторный запуск пропускает уже связанные строки.
 fn migrate_legacy_keys(c: &Connection) -> Result<()> {
     let legacy: Vec<(String, i64, i64, i64, String)> = {
         let mut stmt = c.prepare(
             "SELECT key, balance_nano, spent_nano, mult_bp, COALESCE(status,'active') \
              FROM api_keys WHERE account_id IS NULL")?;
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?;
-        rows.filter_map(|r| r.ok()).collect()
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
+    let tx = c.unchecked_transaction()?;
     for (key, bal, spent, mult, status) in legacy {
-        // детерминированный id аккаунта из ключа (хвост) — миграция повторяема без дублей
-        let tail: String = key.chars().rev().take(12).collect::<String>().chars().rev().collect();
-        let acct = format!("acct_{tail}");
-        c.execute(
-            "INSERT OR IGNORE INTO accounts(id, balance_nano, spent_nano, mult_bp, status, created_ts, created) \
-             VALUES(?1,?2,?3,?4,?5,?6,?7)",
-            rusqlite::params![acct, bal, spent, mult, status, now(), chrono_like(now())])?;
-        c.execute("UPDATE api_keys SET account_id=?1 WHERE key=?2 AND account_id IS NULL",
-                  rusqlite::params![acct, key])?;
+        // AUDIT(C39): never derive wallet identity from a short key suffix. Generate a full random
+        // account ID and persist the key→account mapping atomically with the migrated balance.
+        let ts = now();
+        let acct: String = tx.query_row(
+            "INSERT INTO accounts(id, balance_nano, spent_nano, mult_bp, status, created_ts, created) \
+             VALUES('acct_' || lower(hex(randomblob(16))),?1,?2,?3,?4,?5,?6) RETURNING id",
+            rusqlite::params![bal, spent, mult, status, ts, chrono_like(ts)],
+            |r| r.get(0),
+        )?;
+        let updated = tx.execute(
+            "UPDATE api_keys SET account_id=?1 WHERE key=?2 AND account_id IS NULL",
+            rusqlite::params![acct, key],
+        )?;
+        if updated != 1 {
+            anyhow::bail!("legacy key migration lost its target row");
+        }
     }
+    tx.commit()?;
+    // AUDIT-TODO(C39): detect and manually split wallets already merged by the historical suffix migration.
     Ok(())
 }
 
@@ -401,16 +418,13 @@ pub fn key_issue(conn: &Connection, key: &str, account_id: &str, label: Option<&
     Ok(())
 }
 
-/// Реконсиляция незакрытых резервов на СТАРТЕ. Краш процесса между `reserve` и `settle` оставляет
-/// hold вычтенным из баланса, но `reserved_nano` его помнит. На свежем старте запросов в полёте нет,
-/// поэтому любой ненулевой `reserved_nano` = осиротевший hold → возвращаем в баланс. Возвращает
-/// число ключей, которым вернули резерв. Вызывать ОДИН раз до начала обслуживания.
-pub fn reconcile_reservations(conn: &Connection) -> Result<usize> {
-    Ok(conn.execute(
-        "UPDATE accounts SET balance_nano = balance_nano + reserved_nano, reserved_nano = 0 \
-         WHERE reserved_nano != 0",
-        [],
-    )?)
+/// Startup reconciliation is intentionally fail-closed. Aggregate `reserved_nano` has no owner,
+/// lease, request ID, or age, so a rolling deploy cannot prove that a hold is orphaned. Refunding it
+/// could expose live reserved funds for reuse. Returns zero and leaves all holds untouched.
+pub fn reconcile_reservations(_conn: &Connection) -> Result<usize> {
+    // AUDIT-TODO(C1): persist per-request reservation rows with owner/lease/state and reconcile only
+    // expired reservations whose owner is provably dead; settlement must consume that exact row once.
+    Ok(0)
 }
 
 // ── Аккаунты (профиль клиента: ЕДИНЫЙ баланс, N ключей-доступов) ─────────────────────
@@ -498,8 +512,12 @@ pub fn account_remove(conn: &Connection, id: &str) -> Result<usize> {
 }
 
 /// Пополнить баланс аккаунта (`amount` может быть отрицательным = коррекция) + запись в ledger.
-/// Возвращает новый баланс или None, если аккаунта нет. Атомарно (UPDATE…RETURNING + ledger).
+/// Возвращает новый баланс, сохранённый исходный баланс точного idempotent replay, либо None, если
+/// аккаунта нет. Повтор reference с другими параметрами — ошибка. Атомарно (UPDATE…RETURNING + ledger).
 pub fn account_topup(conn: &Connection, id: &str, amount_nano: i64, reference: Option<&str>) -> Result<Option<i64>> {
+    if matches!(reference, Some(r) if r.trim().is_empty()) {
+        anyhow::bail!("monetary idempotency reference must not be empty");
+    }
     let tx = conn.unchecked_transaction()?;
     // Начисляем баланс...
     let bal = match tx.query_row(
@@ -510,17 +528,41 @@ pub fn account_topup(conn: &Connection, id: &str, amount_nano: i64, reference: O
         Err(e) => return Err(e.into()),
     };
     let kind = if amount_nano >= 0 { "topup" } else { "adjust" };
-    // ...и пишем ledger. ИДЕМПОТЕНТНОСТЬ: если payment-ref (topup) уже был — UNIQUE-индекс отклонит
-    // INSERT → откатываем НАЧИСЛЕНИЕ и возвращаем текущий баланс (повторный вебхук не задваивает).
+    // ...и пишем ledger. UNIQUE откатывает предварительный UPDATE. После конфликта считаем операцию
+    // идемпотентным повтором ТОЛЬКО при точном совпадении account + amount + kind.
     match tx.execute(
         "INSERT INTO ledger(account_id, key, kind, amount_nano, ref, balance_after_nano, ts) \
          VALUES(?1, NULL, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![id, kind, amount_nano, reference, bal, now()]) {
         Ok(_) => { tx.commit()?; Ok(Some(bal)) }
         Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::ConstraintViolation => {
-            drop(tx); // ROLLBACK: начисление отменено
-            eprintln!("↩ topup идемпотентно пропущен (ref уже начислен): {}", reference.unwrap_or("?"));
-            Ok(account_get(conn, id)?.map(|a| a.balance_nano))
+            drop(tx); // ROLLBACK before inspecting the existing operation.
+            let Some(reference) = reference else {
+                return Err(rusqlite::Error::SqliteFailure(e, None).into());
+            };
+            let existing = conn.query_row(
+                "SELECT account_id, kind, amount_nano, balance_after_nano FROM ledger \
+                 WHERE ref=?1 AND kind IN ('topup','adjust')",
+                rusqlite::params![reference],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?, r.get::<_, Option<i64>>(3)?)),
+            );
+            match existing {
+                Ok((existing_id, existing_kind, existing_amount, Some(original_balance)))
+                    if existing_id == id && existing_kind == kind && existing_amount == amount_nano =>
+                {
+                    Ok(Some(original_balance))
+                }
+                Ok(_) => {
+                    eprintln!("billing idempotency conflict: parameters differ from the stored operation");
+                    // AUDIT-TODO(C42/C80): expose a typed idempotency conflict through Control API as HTTP 409.
+                    anyhow::bail!("idempotency reference already belongs to a different monetary operation")
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    Err(rusqlite::Error::SqliteFailure(e, None).into())
+                }
+                Err(query_err) => Err(query_err.into()),
+            }
         }
         Err(e) => Err(e.into()),
     }
@@ -583,7 +625,12 @@ pub fn account_settle(conn: &Connection, id: &str, key: &str, hold_nano: i64, ac
 /// `&Transaction` (Deref в `&Connection`). Семантика идентична `account_settle`.
 pub fn account_settle_in(conn: &Connection, id: &str, key: &str, hold_nano: i64, actual_nano: i64,
                          reference: Option<&str>, usage: Option<&UsageEventInput>) -> Result<Option<i64>> {
-    let (hold, actual) = (hold_nano.max(0), actual_nano.max(0));
+    let hold = hold_nano.max(0);
+    // AUDIT(C37): never debit more than was atomically approved by reserve. The localized fail-safe
+    // clamps an oversized caller result; it cannot turn already-delivered usage into unapproved debt.
+    let actual = actual_nano.max(0).min(hold);
+    // AUDIT-TODO(C37): return a typed over-hold settlement error and retain the exact reservation row
+    // for an explicitly audited recovery/debt workflow once per-request reservations exist.
     // Возвращаем hold, но НЕ БОЛЬШЕ, чем реально числится в reserved_nano: MIN(hold, reserved).
     // Защита от двойного settle (перекрытие деплоя: reconcile уже вернул резерв, затем прилетел
     // settle старого инстанса) — иначе balance получил бы +hold дважды (over-credit) и reserved
@@ -651,27 +698,12 @@ pub fn wal_checkpoint(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Обрезать ledger под масштаб: удалить bulk-строки списаний (`charge`) старше `older_than_ts`.
-/// Редкие финансовые события (`topup`/`adjust` — пополнения/коррекции) НЕ трогаем: их немного, а
-/// история «кто сколько занёс» важна для споров. Текущие суммы (`accounts.spent_nano`/per-key) —
-/// это отдельный монотонный источник истины, обрезка ledger их не затрагивает. Возвращает удалённое.
-pub fn ledger_prune(conn: &Connection, older_than_ts: i64) -> Result<usize> {
-    // Батчами (LIMIT через подзапрос по индексу ledger_charge_ts), с микропаузой между батчами —
-    // иначе один гигантский DELETE держит write-lock минутами и морозит единственный billing-writer
-    // (все reserve/settle встают). Каждый батч — отдельная транзакция (autocommit), между ними
-    // writer успевает вклиниться. Вызывается из spawn_blocking → sleep безопасен (не async-воркер).
-    const BATCH: i64 = 5000;
-    let mut total = 0usize;
-    loop {
-        let n = conn.execute(
-            "DELETE FROM ledger WHERE id IN \
-             (SELECT id FROM ledger WHERE kind='charge' AND ts < ?1 LIMIT ?2)",
-            rusqlite::params![older_than_ts, BATCH])?;
-        total += n;
-        if (n as i64) < BATCH { break; }
-        std::thread::sleep(std::time::Duration::from_millis(20)); // отдать write-lock writer'у
-    }
-    Ok(total)
+/// Ledger pruning is intentionally disabled while `ledger_after` is a durable external cursor.
+/// Timestamp-only deletion can erase rows that a lagging consumer has not acknowledged. Returns zero.
+pub fn ledger_prune(_conn: &Connection, _older_than_ts: i64) -> Result<usize> {
+    // AUDIT-TODO(C41): persist required-consumer checkpoints and prune only below their shared
+    // acknowledgement watermark, or archive charge rows durably and surface cursor gaps.
+    Ok(0)
 }
 
 /// Добавить строку в append-only ledger (журнал движений баланса). `model` — Claude-модель за
@@ -790,6 +822,11 @@ pub fn key_set_status(conn: &Connection, key: &str, status: &str) -> Result<usiz
 /// Change key status through its non-secret control-plane identifier.
 pub fn key_set_status_by_id(conn: &Connection, key_id: &str, status: &str) -> Result<usize> {
     Ok(conn.execute("UPDATE api_keys SET status=?1 WHERE key_id=?2", rusqlite::params![status, key_id])?)
+}
+
+/// Change key label through its non-secret control-plane identifier.
+pub fn key_set_label_by_id(conn: &Connection, key_id: &str, label: &str) -> Result<usize> {
+    Ok(conn.execute("UPDATE api_keys SET label=?2 WHERE key_id=?1", rusqlite::params![key_id, label])?)
 }
 
 /// Удалить ключ НАВСЕГДА (в отличие от set_status 'disabled' — строка исчезает).
@@ -998,6 +1035,56 @@ mod tests {
         key_issue(c, key, acct, None).unwrap();
     }
 
+    #[test]
+    fn authoritative_database_uses_full_synchronous_durability() {
+        let c = db();
+        let synchronous: i64 = c.query_row("PRAGMA synchronous", [], |r| r.get(0)).unwrap();
+        assert_eq!(synchronous, 2); // SQLite FULL
+    }
+
+    #[test]
+    fn open_fails_closed_when_legacy_topup_references_are_duplicated() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(
+            format!("registry-duplicate-ref-{}-{unique}.db", std::process::id()));
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE ledger(id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, \
+                 key TEXT, kind TEXT NOT NULL, amount_nano INTEGER NOT NULL, ref TEXT, \
+                 balance_after_nano INTEGER, ts INTEGER, model TEXT); \
+                 INSERT INTO ledger(account_id,kind,amount_nano,ref) VALUES('a','topup',1,'dup'); \
+                 INSERT INTO ledger(account_id,kind,amount_nano,ref) VALUES('a','topup',1,'dup');",
+            ).unwrap();
+        }
+        assert!(open(path.to_str().unwrap()).is_err());
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(format!("{}-wal", path.display()));
+        let _ = fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[test]
+    fn legacy_keys_with_same_suffix_migrate_to_distinct_accounts() {
+        let c = db();
+        c.execute(
+            "INSERT INTO api_keys(key,key_id,balance_nano,spent_nano,mult_bp,status,reserved_nano) \
+             VALUES(?1,?2,?3,?4,?5,'active',0)",
+            rusqlite::params!["sk-user-a-123456789abc", "legacy_a", 100, 10, 2000],
+        ).unwrap();
+        c.execute(
+            "INSERT INTO api_keys(key,key_id,balance_nano,spent_nano,mult_bp,status,reserved_nano) \
+             VALUES(?1,?2,?3,?4,?5,'active',0)",
+            rusqlite::params!["sk-user-b-123456789abc", "legacy_b", 200, 20, 3000],
+        ).unwrap();
+        migrate_legacy_keys(&c).unwrap();
+        let a = key_get(&c, "sk-user-a-123456789abc").unwrap().unwrap().account_id.unwrap();
+        let b = key_get(&c, "sk-user-b-123456789abc").unwrap().unwrap().account_id.unwrap();
+        assert_ne!(a, b);
+        assert_eq!(account_get(&c, &a).unwrap().unwrap().balance_nano, 100);
+        assert_eq!(account_get(&c, &b).unwrap().unwrap().balance_nano, 200);
+    }
+
     /// Агрегаты трат (для /metrics): суммы по аккаунтам + число активных.
     #[test]
     fn billing_totals_aggregates_across_accounts() {
@@ -1015,16 +1102,16 @@ mod tests {
         assert_eq!(t.active_keys, 1); // активных аккаунтов
     }
 
-    /// Реконсиляция возвращает осиротевший при краше резерв в баланс АККАУНТА (идемпотентно).
+    /// Без per-request identity старт не может доказать, что резерв осиротел: fail-closed оставляет hold.
     #[test]
-    fn reconcile_refunds_orphaned_reservations() {
+    fn reconcile_does_not_refund_unowned_aggregate_reservations() {
         let c = db();
         acct_with_key(&c, "a", "k", 1_000_000_000, 2000);
-        account_reserve(&c, "a", 600_000_000).unwrap(); // «краш» до settle: balance 0.40, reserved 0.60
-        assert_eq!(account_get(&c, "a").unwrap().unwrap().balance_nano, 400_000_000);
-        assert_eq!(reconcile_reservations(&c).unwrap(), 1);
-        assert_eq!(account_get(&c, "a").unwrap().unwrap().balance_nano, 1_000_000_000);
-        assert_eq!(reconcile_reservations(&c).unwrap(), 0); // повторно — no-op
+        account_reserve(&c, "a", 600_000_000).unwrap();
+        assert_eq!(reconcile_reservations(&c).unwrap(), 0);
+        let acc = account_get(&c, "a").unwrap().unwrap();
+        assert_eq!(acc.balance_nano, 400_000_000);
+        assert_eq!(acc.reserved_nano, 600_000_000);
     }
 
     /// reserve атомарно гейтит по балансу аккаунта; settle сводит пару к −actual; per-key spent + ledger.
@@ -1045,6 +1132,21 @@ mod tests {
         assert_eq!(cnt, 2);
     }
 
+    /// Oversized actual is clamped to the atomically approved hold at the registry money boundary.
+    #[test]
+    fn settle_never_charges_more_than_hold() {
+        let c = db();
+        acct_with_key(&c, "a", "k", 100, 2000);
+        assert_eq!(account_reserve(&c, "a", 100).unwrap(), Some(0));
+        assert_eq!(account_settle(&c, "a", "k", 100, 150, Some("req"), None).unwrap(), Some(0));
+        let acc = account_get(&c, "a").unwrap().unwrap();
+        assert_eq!(acc.balance_nano, 0);
+        assert_eq!(acc.spent_nano, 100);
+        assert_eq!(acc.reserved_nano, 0);
+        assert_eq!(key_get(&c, "k").unwrap().unwrap().spent_nano, 100);
+        assert_eq!(ledger_recent(&c, "a", 10).unwrap()[0].amount_nano, 100);
+    }
+
     /// Двойной settle (перекрытие деплоя: reconcile уже вернул резерв, затем settle старого инстанса)
     /// НЕ переначисляет и НЕ уводит reserved в минус — кламп MIN(hold,reserved)/MAX(0,…).
     #[test]
@@ -1052,8 +1154,11 @@ mod tests {
         let c = db();
         acct_with_key(&c, "a", "k", 1_000_000_000, 10000); // $1
         account_reserve(&c, "a", 400_000_000).unwrap();     // резерв $0.4 → баланс $0.6, reserved $0.4
-        // «reconcile» вернул резерв (краш до settle): руками эмулируем возврат
-        reconcile_reservations(&c).unwrap();                 // баланс $1.0, reserved 0
+        // Эмулируем внешний/исторический возврат hold до прихода старого settle.
+        c.execute(
+            "UPDATE accounts SET balance_nano=balance_nano+reserved_nano, reserved_nano=0 WHERE id='a'",
+            [],
+        ).unwrap();
         assert_eq!(account_get(&c, "a").unwrap().unwrap().balance_nano, 1_000_000_000);
         // теперь прилетает settle СТАРОГО инстанса на тот же hold (actual $0.1)
         account_settle(&c, "a", "k", 400_000_000, 100_000_000, None, None).unwrap();
@@ -1201,27 +1306,40 @@ mod tests {
         // в ledger ровно один topup на каждый уникальный ref (+ 2 без ref)
         let topups: i64 = c.query_row("SELECT COUNT(*) FROM ledger WHERE kind='topup'", [], |r| r.get(0)).unwrap();
         assert_eq!(topups, 4); // tx_ABC, tx_XYZ, и 2 без ref
+        // Поздний точный replay возвращает сохранённый исходный результат, не текущий баланс.
+        assert_eq!(account_topup(&c, "a", 10_000_000_000, Some("tx_ABC")).unwrap(), Some(10_000_000_000));
     }
 
-    /// ledger_prune режет старые списания (charge), но хранит пополнения (topup) и текущие суммы.
+    /// A duplicate monetary reference succeeds only for the exact original operation.
     #[test]
-    fn ledger_prune_keeps_topups_and_totals() {
+    fn monetary_reference_rejects_parameter_mismatch_and_deduplicates_adjustments() {
         let c = db();
-        acct_with_key(&c, "a", "k", 5_000_000_000, 10000); // topup $5 (ledger topup)
+        account_create(&c, "a", None, 2000).unwrap();
+        account_create(&c, "b", None, 2000).unwrap();
+        assert_eq!(account_topup(&c, "a", 100, Some("payment:1")).unwrap(), Some(100));
+        assert!(account_topup(&c, "a", 200, Some("payment:1")).is_err());
+        assert!(account_topup(&c, "b", 100, Some("payment:1")).is_err());
+        assert_eq!(account_get(&c, "a").unwrap().unwrap().balance_nano, 100);
+        assert_eq!(account_get(&c, "b").unwrap().unwrap().balance_nano, 0);
+        assert_eq!(account_topup(&c, "a", -25, Some("adjust:1")).unwrap(), Some(75));
+        assert_eq!(account_topup(&c, "a", -25, Some("adjust:1")).unwrap(), Some(75));
+        assert!(account_topup(&c, "a", -30, Some("adjust:1")).is_err());
+        assert_eq!(account_get(&c, "a").unwrap().unwrap().balance_nano, 75);
+        assert!(account_topup(&c, "a", 1, Some("   ")).is_err());
+    }
+
+    /// Без consumer acknowledgement watermark charge-строки нельзя безопасно удалять.
+    #[test]
+    fn ledger_prune_is_disabled_without_consumer_watermarks() {
+        let c = db();
+        acct_with_key(&c, "a", "k", 5_000_000_000, 10000);
         account_reserve(&c, "a", 1_000_000_000).unwrap();
-        account_settle(&c, "a", "k", 1_000_000_000, 400_000_000, Some("old"), None).unwrap(); // charge $0.4
-        // состарим ВСЕ строки (ts в прошлом)
+        account_settle(&c, "a", "k", 1_000_000_000, 400_000_000, Some("old"), None).unwrap();
         c.execute("UPDATE ledger SET ts = 1000", []).unwrap();
-        let removed = ledger_prune(&c, 2000).unwrap(); // cutoff позже строк
-        assert_eq!(removed, 1, "удалён 1 charge");
-        let topups: i64 = c.query_row("SELECT COUNT(*) FROM ledger WHERE kind='topup'", [], |r| r.get(0)).unwrap();
-        let charges: i64 = c.query_row("SELECT COUNT(*) FROM ledger WHERE kind='charge'", [], |r| r.get(0)).unwrap();
-        assert_eq!(topups, 1, "topup сохранён");
-        assert_eq!(charges, 0, "charge обрезан");
-        // текущие суммы аккаунта НЕ тронуты обрезкой (отдельный источник истины)
-        let acc = account_get(&c, "a").unwrap().unwrap();
-        assert_eq!(acc.balance_nano, 4_600_000_000);
-        assert_eq!(acc.spent_nano, 400_000_000);
+        assert_eq!(ledger_prune(&c, 2000).unwrap(), 0);
+        let rows = ledger_after(&c, "a", 0, 10).unwrap();
+        assert_eq!(rows.len(), 2, "topup and unacknowledged charge remain cursor-visible");
+        assert!(rows.iter().any(|row| row.kind == "charge"));
     }
 
     /// N ключей под ОДНИМ аккаунтом тратят из ОБЩЕГО баланса (ключевая модель).
@@ -1257,7 +1375,11 @@ mod tests {
         let issued = key_get(&c, "sk-pool-super-secret").unwrap().unwrap();
         assert!(issued.key_id.starts_with("key_"));
         assert_eq!(key_set_status_by_id(&c, &issued.key_id, "disabled").unwrap(), 1);
-        assert_eq!(key_get(&c, "sk-pool-super-secret").unwrap().unwrap().status, "disabled");
+        assert_eq!(key_set_label_by_id(&c, &issued.key_id, "renamed").unwrap(), 1);
+        let updated = key_get(&c, "sk-pool-super-secret").unwrap().unwrap();
+        assert_eq!(updated.status, "disabled");
+        assert_eq!(updated.label.as_deref(), Some("renamed"));
+        assert_eq!(key_set_label_by_id(&c, "key_missing", "unused").unwrap(), 0);
     }
 
     #[test]

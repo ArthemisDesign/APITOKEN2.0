@@ -69,11 +69,26 @@ const OPUS_48_PRICES: Prices = Prices {
 const MAX_PRICES: Prices = Prices {
     input: 15000, cache_read: 1500, cache_write_5m: 18750, cache_write_1h: 30000, output: 75000,
 };
+const SONNET_STANDARD_PRICES: Prices = Prices {
+    input: 3000, cache_read: 300, cache_write_5m: 3750, cache_write_1h: 6000, output: 15000,
+};
+const SONNET5_INTRO_PRICES: Prices = Prices {
+    input: 2000, cache_read: 200, cache_write_5m: 2500, cache_write_1h: 4000, output: 10000,
+};
+// 2026-09-01T00:00:00Z — Sonnet 5 intro pricing ends 2026-08-31
+const SONNET5_STD_START: i64 = 1788220800;
 
 /// Цены модели для СПИСАНИЯ ($/Mtoken → нано/токен). Совпадают с официальными ставками Anthropic.
 /// Нераспознанная строка → дефолт Opus 4.8. (Для РЕЗЕРВА см. `model_prices_reserve`.)
+/// Чистая таблица без зависимости от часов: Sonnet 5 возвращается по стандартной ставке.
 pub fn model_prices(model: &str) -> Prices {
-    model_prices_matched(model).unwrap_or(OPUS_48_PRICES)
+    model_prices_at(model, SONNET5_STD_START)
+}
+
+/// Effective-dated цены для списания. Только Sonnet 5 меняет ставку по времени; остальные модели
+/// полностью совпадают с `model_prices`.
+pub fn model_prices_at(model: &str, now_unix: i64) -> Prices {
+    model_prices_matched_at(model, now_unix).unwrap_or(OPUS_48_PRICES)
 }
 
 /// Цены для РЕЗЕРВА (hold). Распознанная модель → её цена (апстрим отдаст ТОТ ЖЕ тариф → charge ≤ hold,
@@ -81,11 +96,16 @@ pub fn model_prices(model: &str) -> Prices {
 /// модель: иначе charge по ответу пробил бы hold и увёл баланс в минус до −2×). Разница с `model_prices`
 /// ТОЛЬКО в дефолте (MAX vs Opus 4.8).
 pub fn model_prices_reserve(model: &str) -> Prices {
-    model_prices_matched(model).unwrap_or(MAX_PRICES)
+    model_prices_reserve_at(model, SONNET5_STD_START)
+}
+
+/// Effective-dated цены для резерва, с тем же тарифом Sonnet 5, что и итоговое списание.
+pub fn model_prices_reserve_at(model: &str, now_unix: i64) -> Prices {
+    model_prices_matched_at(model, now_unix).unwrap_or(MAX_PRICES)
 }
 
 /// Точный матч тарифа по имени; `None` — не распознано (не свалилось в дефолт).
-fn model_prices_matched(model: &str) -> Option<Prices> {
+fn model_prices_matched_at(model: &str, now_unix: i64) -> Option<Prices> {
     let m = model.to_lowercase();
     // helper: значения = $/Mtoken × 1000 (нано/токен); Some — распознанный тариф
     let p = |inp, cr, cw5, cw1, out| Some(Prices {
@@ -107,9 +127,18 @@ fn model_prices_matched(model: &str) -> Option<Prices> {
         || m.contains("opus-3") || m.contains("3-opus") {
         return p(15000, 1500, 18750, 30000, 75000);      // $15 / 1.50 / 18.75 / 30 / 75
     }
-    // Все поколения Sonnet (3 / 3.5 / 3.7 / 4 / 4.6 / 5) исторически $3/$15 — один тариф на семейство.
+    // Sonnet 5: introductory $2/$10 through 2026-08-31, then the standard Sonnet tariff.
+    // Match only "sonnet-5" so IDs such as sonnet-4-6 are never date-gated accidentally.
+    if m.contains("sonnet-5") {
+        return Some(if now_unix < SONNET5_STD_START {
+            SONNET5_INTRO_PRICES
+        } else {
+            SONNET_STANDARD_PRICES
+        });
+    }
+    // Earlier Sonnet generations keep their historical standard $3/$15 tariff.
     if m.contains("sonnet") {
-        return p(3000, 300, 3750, 6000, 15000);          // $3 / 0.30 / 3.75 / 6 / 15
+        return Some(SONNET_STANDARD_PRICES);
     }
     // Haiku тарифицируется ПОКОЛЕННО (цены росли): 4.5 = $1, 3.5 = $0.80, 3 = $0.25. Обе схемы
     // именования (haiku-3-5 и 3-5-haiku). "3-5" проверяем ДО общего Haiku 3 (подстроки пересекаются).
@@ -232,22 +261,30 @@ pub fn model_from_sse(sse: &str) -> Option<String> {
 /// `message_delta` (там output_tokens кумулятивный). web-search — из delta, если есть.
 pub fn usage_from_sse(sse: &str) -> Usage {
     let mut u = Usage::default();
-    let mut have_start = false;
-    let mut delta_chars: u64 = 0; // символы фактически отданного клиенту текста (нижняя оценка output)
+    let mut have_output_usage = false;
+    let mut delta_bytes: u64 = 0;
+    let mut observed_web_search_requests: u64 = 0;
     for raw in sse.lines() {
         let line = raw.trim_start();
         let json = match line.strip_prefix("data:") { Some(r) => r.trim(), None => continue };
         if json.is_empty() || json == "[DONE]" { continue; }
         let v: Value = match serde_json::from_str(json) { Ok(v) => v, Err(_) => continue };
         match v.get("type").and_then(Value::as_str) {
+            Some("content_block_start") => {
+                let block = v.get("content_block");
+                if block.and_then(|b| b.get("type")).and_then(Value::as_str) == Some("server_tool_use")
+                    && block.and_then(|b| b.get("name")).and_then(Value::as_str) == Some("web_search")
+                {
+                    observed_web_search_requests = observed_web_search_requests.saturating_add(1);
+                }
+            }
             Some("content_block_delta") => {
-                // Копим символы отданного текста/размышления/tool-json. Нужно, чтобы при ОБРЫВЕ стрима
-                // клиентом ДО финального `message_delta` (несёт кумулятивный output_tokens) списать не
-                // «1 токен из message_start», а реально полученный объём (иначе — бесплатный инференс).
+                // При обрыве до финального usage байты UTF-8 — консервативная верхняя граница числа
+                // byte-level токенов. В отличие от chars/4 она не недосчитывает CJK/emoji.
                 if let Some(d) = v.get("delta") {
                     for f in ["text", "thinking", "partial_json"] {
                         if let Some(t) = d.get(f).and_then(Value::as_str) {
-                            delta_chars += t.chars().count() as u64;
+                            delta_bytes = delta_bytes.saturating_add(t.len() as u64);
                         }
                     }
                 }
@@ -261,13 +298,13 @@ pub fn usage_from_sse(sse: &str) -> Usage {
                     u.cache_write_1h_tokens = s.cache_write_1h_tokens;
                     u.output_tokens = s.output_tokens; // обычно 1 — перезапишется delta
                     if s.web_search_requests > 0 { u.web_search_requests = s.web_search_requests; }
-                    have_start = true;
                 }
             }
             Some("message_delta") => {
                 if let Some(du) = v.get("usage") {
                     if let Some(o) = du.get("output_tokens").and_then(Value::as_u64) {
                         u.output_tokens = o; // кумулятивный — держим последний
+                        have_output_usage = true;
                     }
                     if let Some(w) = du.get("server_tool_use")
                         .and_then(|s| s.get("web_search_requests")).and_then(Value::as_u64) {
@@ -278,12 +315,11 @@ pub fn usage_from_sse(sse: &str) -> Usage {
             _ => {}
         }
     }
-    let _ = have_start;
-    // Анти-абьюз обрыва: output не может быть меньше реально отданного текста. `chars/4` — КОНСЕРВАТИВНАЯ
-    // нижняя оценка токенов (реальная токенизация обычно <4 симв/токен, а для многобайтных языков символов
-    // ещё меньше на токен) → честный полный ответ не переоценивается (там parsed ≥ этой оценки), а
-    // оборванный больше не проходит как «1 токен».
-    u.output_tokens = u.output_tokens.max(delta_chars / 4);
+    u.web_search_requests = u.web_search_requests.max(observed_web_search_requests);
+    if !have_output_usage {
+        u.output_tokens = u.output_tokens.max(delta_bytes);
+    }
+    // AUDIT-TODO(C9): drain the upstream stream after downstream disconnect and settle only from final usage.
     u
 }
 
@@ -314,8 +350,11 @@ mod tests {
         // Haiku 3.5 cache_read $0.08/Mtoken
         let h35 = model_prices("claude-haiku-3-5");
         assert_eq!(cost_nanodollars(&Usage{cache_read_tokens:1_000_000,..Default::default()}, &h35), 80_000_000);
-        // Sonnet 5: 1M output $15
-        assert_eq!(cost_nanodollars(&Usage{output_tokens:1_000_000,..Default::default()}, &model_prices("claude-sonnet-5")), 15*NANO_PER_USD);
+        // Sonnet 5: intro 1M output $10 before cutoff, standard $15 from cutoff onward.
+        let sonnet5_intro = model_prices_at("claude-sonnet-5", SONNET5_STD_START - 1);
+        let sonnet5_standard = model_prices_at("claude-sonnet-5", SONNET5_STD_START);
+        assert_eq!(cost_nanodollars(&Usage{output_tokens:1_000_000,..Default::default()}, &sonnet5_intro), 10*NANO_PER_USD);
+        assert_eq!(cost_nanodollars(&Usage{output_tokens:1_000_000,..Default::default()}, &sonnet5_standard), 15*NANO_PER_USD);
         // Fable 5 / Mythos 5: 1M output = $50, 1M input = $10 (НЕ дефолт Opus)
         let fable = model_prices("claude-fable-5");
         assert_eq!(cost_nanodollars(&Usage{output_tokens:1_000_000,..Default::default()}, &fable), 50*NANO_PER_USD);
@@ -324,6 +363,26 @@ mod tests {
         assert_ne!(fable, opus); // не свалилось в дефолт
         // неизвестная модель → дефолт Opus 4.8
         assert_eq!(model_prices("что-то-непонятное"), opus);
+    }
+
+    #[test]
+    fn sonnet5_intro_pricing_cutoff_boundary() {
+        let intro = Prices {
+            input: 2000, cache_read: 200, cache_write_5m: 2500,
+            cache_write_1h: 4000, output: 10000,
+        };
+        let standard = Prices {
+            input: 3000, cache_read: 300, cache_write_5m: 3750,
+            cache_write_1h: 6000, output: 15000,
+        };
+
+        assert_eq!(model_prices_at("claude-sonnet-5", SONNET5_STD_START - 1), intro);
+        assert_eq!(model_prices_at("claude-sonnet-5", SONNET5_STD_START), standard);
+        assert_eq!(model_prices_reserve_at("claude-sonnet-5", SONNET5_STD_START - 1), intro);
+        assert_eq!(model_prices_reserve_at("claude-sonnet-5", SONNET5_STD_START), standard);
+        assert_eq!(model_prices("claude-sonnet-5"), standard);
+        assert_eq!(model_prices_reserve("claude-sonnet-5"), standard);
+        assert_eq!(model_prices_at("claude-sonnet-4-6", SONNET5_STD_START - 1), standard);
     }
 
     #[test]
@@ -464,11 +523,11 @@ data: {\"type\":\"message_delta\",\"delta\":{},\"usage\":{\"output_tokens\":37}}
         assert_eq!(u.output_tokens, 37);
     }
 
-    /// Анти-абьюз: клиент оборвал стрим ДО финального message_delta — output считаем по отданному тексту,
-    /// а не «1 токен из message_start» (иначе бесплатный дорогой инференс).
+    /// Анти-абьюз: клиент оборвал стрим ДО финального message_delta — output считаем по байтам
+    /// отданного текста, а не по небезопасному chars/4 или «1 токену из message_start».
     #[test]
-    fn sse_abort_before_message_delta_charges_by_text() {
-        let text = "a".repeat(4000); // 4000 символов отданного текста, message_delta так и НЕ пришёл
+    fn sse_abort_before_message_delta_charges_by_utf8_bytes() {
+        let text = "a".repeat(4000); // 4000 байт отданного текста, message_delta так и НЕ пришёл
         let sse = format!("\
 event: message_start\n\
 data: {{\"type\":\"message_start\",\"message\":{{\"usage\":{{\"input_tokens\":50,\"output_tokens\":1}}}}}}\n\
@@ -478,7 +537,25 @@ data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text
 \n");
         let u = usage_from_sse(&sse);
         assert_eq!(u.input_tokens, 50);
-        assert_eq!(u.output_tokens, 1000, "4000 симв/4 = 1000 токенов floor, а не 1"); // ловит обрыв
+        assert_eq!(u.output_tokens, 4000, "fallback charges the conservative UTF-8 byte bound");
+    }
+
+    #[test]
+    fn sse_abort_unicode_and_web_search_are_not_undercounted() {
+        let text = "🙂".repeat(1000); // 4 UTF-8 bytes per scalar; chars/4 would charge only 250.
+        let sse = format!("\
+event: message_start\n\
+data: {{\"type\":\"message_start\",\"message\":{{\"usage\":{{\"input_tokens\":10,\"output_tokens\":1}}}}}}\n\
+\n\
+event: content_block_start\n\
+data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"server_tool_use\",\"id\":\"srvtoolu_1\",\"name\":\"web_search\"}}}}\n\
+\n\
+event: content_block_delta\n\
+data: {{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{text}\"}}}}\n\
+\n");
+        let u = usage_from_sse(&sse);
+        assert_eq!(u.output_tokens, 4000);
+        assert_eq!(u.web_search_requests, 1);
     }
 
     #[test]

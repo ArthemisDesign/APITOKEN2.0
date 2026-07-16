@@ -32,8 +32,6 @@ fn billing(app: &AppState) -> Result<&std::sync::Arc<forward::AsyncBilling>, Res
         (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "billing disabled"}))).into_response())
 }
 
-fn usd_to_nano(usd: f64) -> i64 { (usd * 1e9).round() as i64 }
-
 #[derive(Deserialize)]
 pub struct CreateAccountReq {
     handle: Option<String>,
@@ -160,13 +158,40 @@ pub async fn list_ledger(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreditReq {
-    usd: Option<f64>,
-    amount_nano: Option<i64>,
+    amount_nano: Option<String>,
     r#ref: Option<String>,
 }
 
-/// POST /admin/account/{id}/credit — зачислить средства. Тело: {usd? | amount_nano?, ref?}.
+fn qualified_topup_ref(reference: &str) -> bool {
+    reference.split_once(':').is_some_and(|(provider, transaction)| {
+        !provider.is_empty() && !transaction.is_empty()
+            && !provider.chars().any(char::is_whitespace)
+            && !transaction.chars().any(char::is_whitespace)
+    })
+}
+
+async fn topup_amount_by_ref(
+    billing: &forward::AsyncBilling,
+    account_id: &str,
+    reference: &str,
+) -> Option<i64> {
+    let mut after_id = 0;
+    loop {
+        let rows = billing.ledger_after(account_id, after_id, 1000).await;
+        if rows.is_empty() { return None; }
+        if let Some(row) = rows.iter().find(|row|
+            row.kind == "topup" && row.reference.as_deref() == Some(reference)) {
+            return Some(row.amount_nano);
+        }
+        let next_after = rows.last().map(|row| row.id).unwrap_or(after_id);
+        if next_after <= after_id { return None; }
+        after_id = next_after;
+    }
+}
+
+/// POST /admin/account/{id}/credit — зачислить средства. Тело: {amount_nano: "...", ref?}.
 /// Идемпотентно по `ref` (повторный вебхук платежа НЕ задвоит). → {account, balance_nano}.
 pub async fn credit_account(
     State(app): State<AppState>,
@@ -177,28 +202,57 @@ pub async fn credit_account(
 ) -> Response {
     if let Some(r) = deny(&app, &headers, &peer) { return r; }
     let b = match billing(&app) { Ok(b) => b, Err(r) => return r };
-    let nano = match req.amount_nano.or_else(|| req.usd.map(usd_to_nano)) {
-        Some(n) => n,
-        None => return (StatusCode::BAD_REQUEST, Json(json!({"error": "need usd or amount_nano"}))).into_response(),
+    let nano = match req.amount_nano.as_deref().map(str::trim) {
+        Some(value) if !value.is_empty() => match value.parse::<i64>() {
+            Ok(n) => n,
+            Err(_) => return (StatusCode::BAD_REQUEST,
+                Json(json!({"error": "amount_nano must be an i64 decimal string"}))).into_response(),
+        },
+        _ => return (StatusCode::BAD_REQUEST,
+            Json(json!({"error": "amount_nano string required"}))).into_response(),
     };
     // Идемпотентность пополнения держится ТОЛЬКО на UNIQUE(ref) для kind=topup И ref IS NOT NULL.
-    // Поэтому ПОЛОЖИТЕЛЬНОЕ зачисление (платёж) ОБЯЗАНО нести ref = id транзакции — иначе ретрай вебхука
-    // задвоил бы баланс. Отрицательная коррекция (adjust, ручная) ref не требует. Тримим ref.
+    // Поэтому ПОЛОЖИТЕЛЬНОЕ зачисление (платёж) ОБЯЗАНО нести provider-qualified ref — иначе
+    // независимые провайдеры с одинаковым transaction id столкнутся в глобальном UNIQUE-индексе.
     let ref_trimmed = req.r#ref.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    if nano > 0 && ref_trimmed.is_none() {
-        return (StatusCode::BAD_REQUEST,
-            Json(json!({"error": "ref required for credit (idempotency); use payment/transaction id"}))).into_response();
+    if nano > 0 {
+        let reference = match ref_trimmed {
+            Some(reference) if qualified_topup_ref(reference) => reference,
+            _ => return (StatusCode::BAD_REQUEST,
+                Json(json!({"error": "ref must be provider-qualified as <provider>:<transaction-id>"}))).into_response(),
+        };
+        if topup_amount_by_ref(b, &id, reference).await.is_some_and(|amount| amount != nano) {
+            return (StatusCode::CONFLICT,
+                Json(json!({"error": "ref already used with a different amount"}))).into_response();
+        }
     }
     match b.topup(&id, nano, ref_trimmed).await {
-        Some(bal) => Json(json!({
-            "account": id, "balance_nano": bal, "balance": metering::nano_to_usd_string(bal as i128),
-        })).into_response(),
+        Some(bal) => {
+            if nano > 0 {
+                // account_topup collapses every global ref conflict into Some(current_balance).
+                // Verify that this account owns a matching top-up before acknowledging the payment.
+                // AUDIT-TODO(C57): Return a typed top-up outcome with the conflicting row from the single writer.
+                match topup_amount_by_ref(b, &id, ref_trimmed.expect("positive top-up ref validated")).await {
+                    Some(amount) if amount == nano => {}
+                    Some(_) => return (StatusCode::CONFLICT,
+                        Json(json!({"error": "ref already used with a different amount"}))).into_response(),
+                    None => return (StatusCode::CONFLICT,
+                        Json(json!({"error": "ref already used by another payment"}))).into_response(),
+                }
+            }
+            Json(json!({
+                "account": id, "balance_nano": bal, "balance": metering::nano_to_usd_string(bal as i128),
+            })).into_response()
+        }
         None => (StatusCode::NOT_FOUND, Json(json!({"error": "unknown account"}))).into_response(),
     }
 }
 
 #[derive(Deserialize)]
 pub struct StatusReq { status: String }
+
+#[derive(Deserialize)]
+pub struct LabelReq { label: String }
 
 fn valid_status(s: &str) -> bool { matches!(s, "active" | "disabled") }
 
@@ -311,6 +365,26 @@ pub async fn key_status_by_id(
     let n = b.key_status_by_id(&key_id, &req.status).await;
     if n == 0 { return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown key"}))).into_response(); }
     Json(json!({"key_id": key_id, "status": req.status, "updated": n})).into_response()
+}
+
+/// POST /admin/key-id/{key_id}/label — rename through a stable non-secret identifier.
+pub async fn key_label_by_id(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(key_id): Path<String>,
+    Json(req): Json<LabelReq>,
+) -> Response {
+    if let Some(r) = deny(&app, &headers, &peer) { return r; }
+    let label = req.label.trim().to_owned();
+    if label.is_empty() || label.chars().count() > 64 {
+        return (StatusCode::BAD_REQUEST,
+            Json(json!({"error": "label must be 1..64 characters after trimming"}))).into_response();
+    }
+    let b = match billing(&app) { Ok(b) => b, Err(r) => return r };
+    let n = b.key_label_by_id(&key_id, &label).await;
+    if n == 0 { return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown key"}))).into_response(); }
+    Json(json!({"key_id": key_id, "label": label, "updated": n})).into_response()
 }
 
 #[derive(Deserialize)]
