@@ -40,12 +40,10 @@ validate_and_preserve() {
 
   # Rendering the entire custom archive (not just listing its table of contents) forces pg_restore
   # to read and decompress every archived object without changing a database.
-  if command -v pg_restore >/dev/null 2>&1; then
-    pg_restore --file=/dev/null "$temporary"
-  else
-    docker compose --env-file "$POSTGRES_ENV" -f "$COMPOSE_FILE" \
-      exec -T commerce-postgres pg_restore --file=/dev/null <"$temporary"
-  fi
+  # Always validate with the PostgreSQL toolchain inside the production container. The host client
+  # may be an older major version and cannot reliably read a newer custom archive format.
+  docker compose --env-file "$POSTGRES_ENV" -f "$COMPOSE_FILE" \
+    exec -T commerce-postgres pg_restore --file=/dev/null <"$temporary"
   mv -f -- "$temporary" "$final"
 }
 
