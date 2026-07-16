@@ -51,8 +51,9 @@ test ${#SHA} -eq 40
 printf '%s\n' "$SHA"
 ```
 
-The controllers fetch and verify the supplied commit again. The host checkout must also remain at
-that SHA because the current worker still runs from the mutable checkout.
+The controllers fetch and verify the supplied commit again. API and worker processes both run from
+the immutable release selected by `/opt/apitoken/releases/current`; the host checkout is only the
+controller source and may retain reviewed host-specific files.
 
 ## Deploy the Rust engine
 
@@ -102,11 +103,11 @@ systemctl list-unit-files 'apitoken-api@*.service'
 
 ## Worker changes
 
-The worker is the remaining Stage 1 exception: it is single-instance and runs from
-`/opt/apitoken/repo/apps/worker`, not an immutable release. Its stop/start creates a short processing
-gap but no overlap; durable jobs remain in PostgreSQL.
+The worker remains single-instance, but runs from
+`/opt/apitoken/releases/current/apps/worker`. Its stop/start creates a short processing gap but no
+overlap; durable jobs remain in PostgreSQL.
 
-Build the exact checked-out SHA and its required workspace packages before restarting it:
+Build/select the exact immutable SHA and its required workspace packages before restarting it:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -123,16 +124,17 @@ deploy/api-bluegreen.sh --with-worker --dry-run
 deploy/api-bluegreen.sh --with-worker
 ```
 
-If only the worker changed:
+If only the worker changed, first select/build its immutable commerce release, then restart it:
 
 ```bash
+deploy/deploy.sh --api-only --skip-migrate "$SHA"
 sudo systemctl stop apitoken-worker.service
 sudo systemctl start apitoken-worker.service
 systemctl is-active apitoken-worker.service
 ```
 
-`--with-worker` only stops and starts the unit; it does not install dependencies, build TypeScript,
-or copy artifacts.
+`--with-worker` only stops and starts the unit; phase 1 (`deploy.sh --api-only`) must already have
+built and selected the release.
 
 ## Changes spanning engine and API
 

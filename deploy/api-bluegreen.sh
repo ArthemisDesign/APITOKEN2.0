@@ -13,8 +13,8 @@ usage() {
     'Cut the commerce API over between health-gated systemd slots.' \
     '' \
     'Options:' \
-    '  --with-worker        Restart the repository-based worker after the API cutover' \
-    '                       (it runs from /opt/apitoken/repo, not releases/current)' \
+    '  --with-worker        Restart the immutable worker after the API cutover' \
+    '                       (it runs from /opt/apitoken/releases/current)' \
     '  --target-port PORT   Keep the final API on port 3000 or 3001' \
     '  --timeout SECONDS    Readiness deadline per operation (default: 60)' \
     '  --dry-run            Print mutations without changing service state' \
@@ -32,7 +32,7 @@ PRE_DRAIN_SECONDS=6
 COMMERCE_RELEASE_ROOT=${COMMERCE_RELEASE_ROOT:-/opt/apitoken/releases}
 DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}
 WORKER_SERVICE=apitoken-worker.service
-WORKER_SOURCE_ROOT=/opt/apitoken/repo
+WORKER_SOURCE_ROOT=$COMMERCE_RELEASE_ROOT/current
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -233,12 +233,18 @@ start_slot_fresh() {
 }
 
 require_worker_active() {
+  local worker_pid worker_cwd
   if [[ "$DRY_RUN" == "1" ]]; then
     log "dry-run: would require $WORKER_SERVICE to be active"
     return 0
   fi
   unit_is_active "$WORKER_SERVICE" || die "$WORKER_SERVICE is not active after start"
-  log "$WORKER_SERVICE is active from its repository-based deployment under $WORKER_SOURCE_ROOT"
+  worker_pid=$(systemctl show "$WORKER_SERVICE" -p MainPID --value)
+  [[ $worker_pid =~ ^[1-9][0-9]*$ ]] || die "$WORKER_SERVICE has no MainPID"
+  worker_cwd=$(readlink -f -- "/proc/$worker_pid/cwd")
+  [[ $worker_cwd == "$CURRENT_RELEASE/apps/worker" ]] \
+    || die "$WORKER_SERVICE is not running current immutable release (cwd=$worker_cwd)"
+  log "$WORKER_SERVICE is active from immutable release $CURRENT_RELEASE"
 }
 
 require_worker_stopped() {
@@ -366,7 +372,7 @@ recover_cutover() {
 
   if [[ "$WORKER_TOUCHED" == "1" ]] && ! unit_is_active "$WORKER_SERVICE"; then
     if systemctl_raw start "$WORKER_SERVICE" && unit_is_active "$WORKER_SERVICE"; then
-      log "recovery restored repository-based $WORKER_SERVICE"
+      log "recovery restored immutable $WORKER_SERVICE"
     else
       warn "recovery could not restore $WORKER_SERVICE"
       recovery_failed=1
@@ -536,10 +542,10 @@ fi
 
 if [[ "$WITH_WORKER" == "1" ]]; then
   WORKER_TOUCHED=1
-  log "stopping repository-based $WORKER_SERVICE before restart (worker overlap is forbidden)"
+  log "stopping immutable $WORKER_SERVICE before restart (worker overlap is forbidden)"
   systemctl_command stop "$WORKER_SERVICE"
   require_worker_stopped
-  log "starting $WORKER_SERVICE from its existing deployment under $WORKER_SOURCE_ROOT; releases/current is not used"
+  log "starting $WORKER_SERVICE from $WORKER_SOURCE_ROOT"
   systemctl_command start "$WORKER_SERVICE"
   require_worker_active
 fi

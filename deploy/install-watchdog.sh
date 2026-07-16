@@ -22,6 +22,7 @@ install -o root -g root -m 0755 "$ROOT/deploy/api-bluegreen.sh" /usr/local/lib/a
 install -o root -g root -m 0755 "$ROOT/deploy/engine-bluegreen.sh" /usr/local/lib/apitoken-watchdog/controller/engine-bluegreen.sh
 install -o root -g root -m 0644 "$ROOT/systemd/apitoken-deploy-watchdog.service" /etc/systemd/system/apitoken-deploy-watchdog.service
 install -o root -g root -m 0644 "$ROOT/systemd/apitoken-deploy-watchdog.timer" /etc/systemd/system/apitoken-deploy-watchdog.timer
+install -o root -g root -m 0644 "$ROOT/systemd/apitoken-worker.service" /etc/systemd/system/apitoken-worker.service
 install -d -o root -g deploy -m 0775 /run/lock
 for lock in apitoken-watchdog apitoken-deploy; do
   touch "/run/lock/$lock.lock"; chown root:deploy "/run/lock/$lock.lock"; chmod 0664 "/run/lock/$lock.lock"

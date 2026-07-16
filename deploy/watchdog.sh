@@ -192,10 +192,8 @@ final_verify_backend() {
   worker_pid=$(systemctl show apitoken-worker.service -p MainPID --value)
   [[ $worker_pid =~ ^[1-9][0-9]*$ ]] || wd_die "worker has no MainPID"
   worker_cwd=$(readlink -f -- "/proc/$worker_pid/cwd")
-  [[ $worker_cwd == "$SOURCE_REPO/apps/worker" ]] \
+  [[ $worker_cwd == "$COMMERCE_RELEASE_ROOT/$sha/apps/worker" ]] \
     || wd_die "worker is not running immutable release $sha (cwd=$worker_cwd)"
-  [[ $(git -C "$SOURCE_REPO" rev-parse HEAD) == "$sha" ]] \
-    || wd_die "worker checkout is not the tested release $sha"
 }
 
 deploy_engine() {
@@ -213,11 +211,6 @@ deploy_backend() {
   local sha=$1
   CURRENT_PHASE=deploying-backend
   status "building and blue-green deploying API plus worker; migrations explicitly skipped"
-  # The worker service intentionally remains repository-based until its own immutable
-  # service migration. Pin that checkout to the exact tested commit before restarting it.
-  [[ -z $(git -C "$SOURCE_REPO" status --porcelain --untracked-files=no) ]] \
-    || wd_die "source checkout has local changes; refusing to deploy repository-based worker"
-  git -C "$SOURCE_REPO" checkout --detach --quiet "$sha"
   "$CONTROLLER_ROOT/deploy.sh" --api-only --skip-migrate "$sha"
   "$CONTROLLER_ROOT/api-bluegreen.sh" --with-worker
   final_verify_backend "$sha"

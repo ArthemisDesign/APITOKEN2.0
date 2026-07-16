@@ -14,7 +14,7 @@ Run them on the production host as the `deploy` operator from `/opt/apitoken/rep
 |---|---|---|---|
 | Commerce API | `/opt/apitoken/releases/<sha>` | `apitoken-api@3000.service` / `apitoken-api@3001.service` | `http://127.0.0.1:<port>/v1/ready` |
 | Rust engine | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api@8787.service` / `claude-api@8788.service` | `http://127.0.0.1:<port>/ready` |
-| Commerce worker | `/opt/apitoken/repo` (mutable Git checkout; not `releases/current`) | `apitoken-worker.service` | managed separately |
+| Commerce worker | `/opt/apitoken/releases/<sha>` through `current` | `apitoken-worker.service` | process-active + exact cwd |
 | PostgreSQL | `/var/lib/apitoken/postgres` | `apitoken-postgres.service` | forbidden to these scripts |
 
 The engine owns a separate `claude_engine` database and non-superuser login role in this PostgreSQL
@@ -24,8 +24,8 @@ Caddy health-routes that origin to the active engine slot.
 
 After the Stage-2 database cutover, use `deploy.sh --engine-bluegreen` followed by
 `engine-bluegreen.sh`; legacy restart mode refuses to run while the PostgreSQL credential is active.
-`api-bluegreen.sh` similarly owns commerce slots; `--with-worker` may separately restart the
-repository-based worker. Any service name containing `postgres` is rejected before work begins.
+`api-bluegreen.sh` similarly owns commerce slots; `--with-worker` restarts the single worker from
+the same immutable commerce release. Any service name containing `postgres` is rejected before work begins.
 
 ## One-time prerequisites
 
@@ -249,15 +249,17 @@ Use `--target-port 3000` or `--target-port 3001` to choose the final serving slo
 
 When adding `127.0.0.1:3001` to Caddy for the first time, keep `apitoken-api@3001.service` stopped during the validated Caddy reload. Its first active check marks the new upstream down. Caddy's dial-failure retry window covers the short gap before that health result is recorded; only a later `api-bluegreen.sh` run should start and admit the slot.
 
-`--with-worker` does **not** ship or bind the worker to `/opt/apitoken/releases/current`. The existing `apitoken-worker.service` runs from the mutable Git checkout under `/opt/apitoken/repo/apps/worker`; the option merely stops and starts that repository-based unit after the API cutover, with no worker overlap:
+`--with-worker` restarts `apitoken-worker.service` from `/opt/apitoken/releases/current/apps/worker`
+after the API cutover, with no worker overlap. Final verification requires the worker PID's cwd to
+resolve to the exact selected immutable release:
 
 ```bash
 deploy/api-bluegreen.sh --with-worker
 ```
 
-Build the checked-out worker and its workspace dependencies before using this option; it does not
-run `pnpm install`, compile TypeScript, or copy artifacts. Exact commands are in the top-level
-deployment runbook.
+Build and select the immutable worker release before using this option; it does not run `pnpm
+install`, compile TypeScript, or copy artifacts. Exact commands are in the top-level deployment
+runbook.
 
 Rollback is availability-first and never casually restarts the old slot through the moved symlink. Until the new slot is verified ready, serving current, and has passed the Caddy inclusion window, the old process remains running. A pre-commit failure stops only the failed target and leaves/confirms the old slot ready. After pre-drain or old-slot stop has committed traffic to the new process, recovery retains the verified new slot. Only if the old slot has already died/drained **and** no verified new slot remains will recovery restart the old unit; it emits a critical warning that this restart launches `releases/current` (the possibly bad new release), then requires exact-release readiness.
 
