@@ -29,16 +29,23 @@ export function buildArticleMetadata(slug: string, locale: Locale): Metadata | n
   if (!article) return null;
   const path = learnPath(slug, locale);
   const base = createPageMetadata({ path, title: article.content.title, description: article.content.description });
+  // en/ru get a generated per-article OG image via opengraph-image.tsx; omit the
+  // static image entirely so the file convention supplies it. zh keeps og.png.
+  const usesGeneratedOg = locale !== "zh";
+  const { images: _ogImages, ...ogRest } = base.openGraph ?? {};
+  const { images: _twImages, ...twRest } = base.twitter ?? {};
+  const openGraph = {
+    ...(usesGeneratedOg ? ogRest : base.openGraph),
+    type: "article" as const,
+    locale: ogLocale(locale),
+    publishedTime: LAST_CONTENT_UPDATE.toISOString(),
+    modifiedTime: LAST_CONTENT_UPDATE.toISOString(),
+  };
   return {
     ...base,
     keywords: article.content.keywords,
-    openGraph: {
-      ...base.openGraph,
-      type: "article",
-      locale: ogLocale(locale),
-      publishedTime: LAST_CONTENT_UPDATE.toISOString(),
-      modifiedTime: LAST_CONTENT_UPDATE.toISOString(),
-    },
+    openGraph,
+    twitter: usesGeneratedOg ? twRest : base.twitter,
     alternates: {
       canonical: absoluteUrl(path),
       languages: learnAlternates(slug, absoluteUrl),
