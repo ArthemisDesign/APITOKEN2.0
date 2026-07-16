@@ -29,6 +29,8 @@ Anthropic не пускает OAuth-токены подписок на `/v1/mess
 Слои — только вниз: `registry ← pool ← forward ← server`. Карта — [`ARCHITECTURE.md`](ARCHITECTURE.md),
 правила для агентов — [`CLAUDE.md`](CLAUDE.md), модель веток — [`BRANCHES.md`](BRANCHES.md),
 production-хосты и эксплуатация — [`INFRASTRUCTURE.md`](INFRASTRUCTURE.md).
+Операторский deploy/rollback — [`DEPLOYMENT.md`](DEPLOYMENT.md), модель PostgreSQL authority и
+fencing Stage 2 — [`docs/STAGE2_POSTGRES_AUTHORITY.md`](docs/STAGE2_POSTGRES_AUTHORITY.md).
 
 | Крейт | Роль | Ветка-владелец |
 |---|---|---|
@@ -55,13 +57,12 @@ cargo build --release          # → target/release/claude-api
 export SUB_CFG_DIR=/srv/claude-api/data      # local config/SQLite migration snapshot
 export CLAUDE_API_DATABASE_URL=postgresql://.../claude_engine
 
-# добавить подписку (inline-токен или файл с токеном):
-claude-api sub add account-a@example.com --token 'sk-ant-oat01-…' --proxy http://user:pass@1.2.3.4:8080 --fleet prod
-claude-api sub add-file account-b@example.com --token-file ~/.claude-b/oauth_token --proxy 5.6.7.8:8080
+# секреты читаются только из mode-0600 файлов, не из argv:
+claude-api sub add-file account-a@example.com --token-file ~/.claude-b/oauth_token --proxy-file ~/.claude-b/proxy_url --fleet prod
 
 claude-api sub list                          # список (тариф в колонке plan, без утечки токена)
 claude-api sub status account-a@example.com paused   # active|paused|disabled
-claude-api sub proxy  account-a@example.com http://…  # сменить прокси
+claude-api sub proxy  account-a@example.com --proxy-file ~/.claude-b/new_proxy_url
 claude-api sub fleet  account-a@example.com dev       # сменить флот
 claude-api sub rm     account-a@example.com
 ```
@@ -108,13 +109,16 @@ client.messages.create(model="claude-opus-4-8", max_tokens=256,
                        messages=[{"role":"user","content":"2+2?"}])
 ```
 
-Служебные эндпоинты: `GET /health` (без авторизации), `GET /pool` (статус пула, util/cooling).
+Служебные эндпоинты: `GET /live` (процесс жив), `GET /ready` (можно направлять новый трафик),
+`GET /health` (совместимый health), `GET /pool` (статус пула, util/cooling). Во время drain
+`/ready` возвращает 503 раньше закрытия listener; `/live` и `/health` остаются доступны.
 
 ## Конфигурация
 
 Все переменные — в [`config.env.example`](config.env.example) (пул/порт/апстрим) и секреты в
-[`server.env.example`](server.env.example) (ключи API). Под systemd —
-[`systemd/claude-api.service`](systemd/claude-api.service) (грузит оба env-файла).
+[`server.env.example`](server.env.example) (ключи API). Production PostgreSQL-слоты запускает
+[`systemd/claude-api@.service`](systemd/claude-api@.service); untemplated
+[`systemd/claude-api.service`](systemd/claude-api.service) оставлен только как one-time bridge.
 
 ## Безопасность
 

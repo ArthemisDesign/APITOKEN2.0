@@ -10,7 +10,8 @@
 Пул обычных Claude-подписок (Max/Pro) отдаётся по сети как **API, неотличимый от
 `api.anthropic.com`**. Клиент наводит любой Anthropic-совместимый инструмент на наш сервер —
 запрос уходит на квоте подписки из пула, с ротацией по лимитам. Полное описание — `README.md`,
-карта модулей — `ARCHITECTURE.md`, модель веток — `BRANCHES.md`.
+карта модулей — `ARCHITECTURE.md`, модель веток — `BRANCHES.md`, production runbook —
+`DEPLOYMENT.md`, authority/fencing Stage 2 — `docs/STAGE2_POSTGRES_AUTHORITY.md`.
 
 ## Commercial workspace (TypeScript, отдельный bounded context)
 

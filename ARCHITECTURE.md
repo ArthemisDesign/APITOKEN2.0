@@ -80,6 +80,10 @@
   blue/green path. PostgreSQL mode may overlap two engine slots because money, delivery, capacity,
   pool writes, and poller leadership are fenced. SQLite fallback still takes the OS singleton lock.
 
+Полная схема request lifecycle, fencing, cutover и операционные инварианты описаны в
+[`docs/STAGE2_POSTGRES_AUTHORITY.md`](docs/STAGE2_POSTGRES_AUTHORITY.md). Production runbook —
+[`DEPLOYMENT.md`](DEPLOYMENT.md).
+
 Детали конфигурации — `config.env.example` / `server.env.example`. Деплой —
 `systemd/claude-api@.service` + `deploy/engine-bluegreen.sh` (legacy cutover unit remains one-time only).
 

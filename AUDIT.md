@@ -1,5 +1,10 @@
 # Архитектурный аудит claude-api
 
+> **Historical snapshot:** этот документ предшествует PostgreSQL authority Stage 2. Пункты про
+> anonymous SQLite reservations, last-writer-wins pool state и single-engine rollout не описывают
+> текущий production. Реализованные исправления и текущая эксплуатация — в
+> `docs/STAGE2_POSTGRES_AUTHORITY.md` и `DEPLOYMENT.md`.
+
 Снимок после серии работ по устойчивости (2026-07-12). Ниже — что построено, что уже
 исправлено, и что **не предусмотрено / можно сделать лучше** (открытые пункты с приоритетами).
 Источник: собственный разбор + независимый аудит-агент по всему коду.

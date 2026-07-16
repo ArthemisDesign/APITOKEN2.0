@@ -1,5 +1,11 @@
 # FULL_AUDIT_M — Full-project audit (engine · backend · frontend · connections)
 
+> **Historical finding set:** Stage 2 PostgreSQL authority and blue-green rollout were implemented
+> after this snapshot. Request-keyed reservations, durable settlement outbox, unique charge identity,
+> owner epochs, capacity leases, CAS pool state, and PostgreSQL leader leases supersede the SQLite
+> mechanisms discussed below. Current behavior is in `docs/STAGE2_POSTGRES_AUTHORITY.md` and
+> `DEPLOYMENT.md`.
+
 **Date:** 2026-07-16  **Audited at:** `master` @ `59ae42c`  **Auditor:** Claude (Opus 4.8, 1M) with a
 parallel multi-agent workflow harness.
 

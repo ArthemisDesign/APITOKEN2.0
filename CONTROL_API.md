@@ -27,8 +27,10 @@
 
 ## 2. Доступ
 
-- **База (сейчас):** `http://127.0.0.1:8787` (внутри доверенного периметра; TLS/домен — Фаза 3, до
-  публичного продакшена ходи по VPN/приватной сети).
+- **Production-база для API/worker на том же host:** `http://127.0.0.1:8790`. Это явно
+  loopback-bound Caddy origin, который health-route-ит активный engine slot 8787/8788. Никогда не
+  закрепляй commerce consumer за конкретным slot-портом. Для другого host Control API должен идти
+  только по аутентифицированной приватной сети/TLS; публичный engine-домен admin routes не экспонирует.
 - **Твой ключ:** `CONTROL_KEY` (выдан отдельно). Шли в заголовке **`x-api-key: <CONTROL_KEY>`** на все
   `/admin/*`. Этим же ключом **нельзя** раздавать `/v1` — он только для управления (компрометация
   бэкенда ≠ бесплатный инференс).
@@ -126,7 +128,7 @@ POST /admin/key/{key}/status            {"status":"active"|"disabled"}  → 200 
 
 ### Пример: полный цикл (bash)
 ```bash
-CTL=<CONTROL_KEY>; B=http://127.0.0.1:8787
+CTL=<CONTROL_KEY>; B=http://127.0.0.1:8790
 AID=$(curl -s -XPOST $B/admin/account -H "x-api-key: $CTL" -H 'content-type: application/json' \
       -d '{"handle":"acme","mult_bp":2000}' | jq -r .account)
 curl -s -XPOST $B/admin/account/$AID/credit -H "x-api-key: $CTL" -H 'content-type: application/json' \
@@ -143,8 +145,11 @@ curl -s $B/admin/account/$AID/ledger -H "x-api-key: $CTL"        # истори�
 
 - **Push-поток usage** движок→твой сервис отсутствует. Коммерческий worker опрашивает cursor-based
   `GET /admin/account/{id}/ledger?after_id=...`; доставка при этом идемпотентна.
-- **TLS/домен** (Фаза 3). Сейчас Control API по HTTP — только за доверенным периметром.
-- Ключи можно **ротировать** в любой момент (правка `server.env` + рестарт) — скажи, если нужно.
+- **Cross-host TLS/private networking** остаётся частью Фазы 3. Текущий HTTP Control origin доступен
+  только через loopback на том же host и не публикуется Caddy наружу.
+- Ротация `CONTROL_KEY` требует согласованно обновить engine, API и worker env, затем провести
+  обычный engine/API blue-green и stop/start worker по `DEPLOYMENT.md`; одиночный ручной restart
+  создаст окно с несовпадающими ключами.
 
 Вопросы по контракту — они все закрываются этим движком; если чего-то не хватает для сайта,
 допилим на нашей стороне.

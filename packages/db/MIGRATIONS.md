@@ -9,3 +9,8 @@
 3. **Contract later:** only drop old columns/tables or tighten `NOT NULL` in a later release, after the old code is fully removed and no deployed process depends on the old shape.
 
 Roll application code back by deploying the previous release; never down-migrate production schema during rollback.
+
+Production does not run the package script from an immutable release because that script rebuilds.
+`deploy/deploy.sh --api-only <sha>` executes the already-built
+`/opt/apitoken/releases/<sha>/packages/db/dist/migrate.js` under the same advisory/file lock before
+moving `releases/current`. See the top-level `DEPLOYMENT.md` for the two-phase API rollout.

@@ -1,5 +1,9 @@
 # Production deploy controller
 
+For copy-paste production commands, preflight, worker handling, rollback, backups, and the final
+verification gate, start with [`../DEPLOYMENT.md`](../DEPLOYMENT.md). This file documents controller
+internals and first-environment procedures.
+
 These scripts build immutable SHA-addressed releases, move release links atomically, and activate processes with exact-systemd-unit readiness gates. Commerce and PostgreSQL-backed engine deploys are two-phase: `deploy.sh` selects the release without touching their serving slots, then the matching blue-green controller owns admission, pre-drain, and shutdown. They never restart PostgreSQL, never write into a finalized release, and never treat an arbitrary HTTP 2xx on the expected port as proof that the selected unit started.
 
 Run them on the production host as the `deploy` operator from `/opt/apitoken/repo`, with narrowly scoped `sudo` access for application-unit and unit-file operations.
@@ -93,6 +97,11 @@ deploy/engine-bluegreen.sh
 ```
 
 ## One-time Stage-2 engine database cutover
+
+**Production already completed this cutover. Do not run these commands during a normal deploy.**
+They remain for a new environment or disaster reconstruction. The authority design and post-cutover
+rollback boundary are documented in
+[`../docs/STAGE2_POSTGRES_AUTHORITY.md`](../docs/STAGE2_POSTGRES_AUTHORITY.md).
 
 Only run this after the exact release passed the workspace suite and the real PostgreSQL fault matrix.
 The first script creates the isolated role/database and stages, but does not activate, its root-only
@@ -245,6 +254,10 @@ When adding `127.0.0.1:3001` to Caddy for the first time, keep `apitoken-api@300
 ```bash
 deploy/api-bluegreen.sh --with-worker
 ```
+
+Build the checked-out worker and its workspace dependencies before using this option; it does not
+run `pnpm install`, compile TypeScript, or copy artifacts. Exact commands are in the top-level
+deployment runbook.
 
 Rollback is availability-first and never casually restarts the old slot through the moved symlink. Until the new slot is verified ready, serving current, and has passed the Caddy inclusion window, the old process remains running. A pre-commit failure stops only the failed target and leaves/confirms the old slot ready. After pre-drain or old-slot stop has committed traffic to the new process, recovery retains the verified new slot. Only if the old slot has already died/drained **and** no verified new slot remains will recovery restart the old unit; it emits a critical warning that this restart launches `releases/current` (the possibly bad new release), then requires exact-release readiness.
 

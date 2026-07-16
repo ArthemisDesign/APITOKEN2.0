@@ -2,7 +2,8 @@
 
 This document records the non-secret production topology for `apitoken.sale`. Credentials, OAuth
 secrets, payment-provider keys, subscription tokens and database passwords must never be added to
-the repository. Production secrets live in root-readable files below `/etc/apitoken` on the host.
+the repository. Commerce secrets live in root-readable files below `/etc/apitoken`; engine secrets
+live below `/srv/claude-api/data` on the host.
 
 ## Current topology
 
@@ -15,8 +16,12 @@ api.apitoken.sale --------------------------> commercial host 84.32.48.2 (Chicag
 future browser at apitoken.sale
         |
         `-> backend.apitoken.sale ----------> commercial host 84.32.48.2
-                                                |-> NestJS API on 127.0.0.1:3000
-                                                |-> payment/email/pricing worker
+                                                |-> NestJS API slots 127.0.0.1:3000/3001
+                                                |-> payment/email/pricing worker ------.
+                                                |                                      |
+                                                |   stable Control API 127.0.0.1:8790 <-'
+                                                |          |-> engine slot :8787
+                                                |          `-> engine slot :8788
                                                 `-> PostgreSQL 18 on 127.0.0.1:5433
                                                     |-> commerce DB/role
                                                     `-> claude_engine DB/isolated role
@@ -25,11 +30,12 @@ commercial host -- encrypted Borg/SSH --> 84.32.109.82:2223/backup/.repo
 ```
 
 `api.apitoken.sale` is the public Anthropic-compatible core endpoint. Its public proxy exposes only
-`/v1/*` and `/health`, not the engine Control API. `backend.apitoken.sale` is the browser-facing
+`/v1/*`, `/health`, and `/balance`, not the engine Control API. `backend.apitoken.sale` is the browser-facing
 commercial API. The Rust engine remains authoritative for API keys, balances, reservations and
 usage. The commercial PostgreSQL database owns users, authentication, payment state, B2C/B2B
-pricing state and durable jobs. The commercial services access the engine only through its Control
-API through Caddy's health-gated engine slots. The legacy core host is not an upstream or fallback.
+pricing state and durable jobs. The commercial services access the engine only through Caddy's
+explicitly loopback-bound stable Control API at `127.0.0.1:8790`, never through a deployment slot.
+The legacy core host is not an upstream or fallback.
 
 The Rust engine ran on an interim host (`5.9.59.83`, shared with an unrelated project) until it was
 migrated onto this commercial host on 2026-07-14. The engine now runs here as `claude-api@8787` or
@@ -38,8 +44,8 @@ migrated onto this commercial host on 2026-07-14. The engine now runs here as `c
 authority in the isolated PostgreSQL `claude_engine` database; the drained SQLite snapshot remains
 at `/srv/claude-api/data/subscriptions.db`. Its secrets live at
 `/srv/claude-api/data/{server.env,config.env,authbot.env,engine-postgres.env}` (separate from the commercial
-`/etc/apitoken/*.env`). The interim host keeps a cold copy of the pre-migration data as a rollback
-point but no longer runs any product unit. The `claude-api-fingerprint.timer` is intentionally not
+`/etc/apitoken/*.env`). The interim host keeps a cold pre-migration copy for forensics, not as a
+live rollback authority, and no longer runs any product unit. The `claude-api-fingerprint.timer` is intentionally not
 enabled here yet (it needs a live `claude` CLI on the host); the fingerprint values in `config.env`
 are current.
 
@@ -73,7 +79,7 @@ Installed host tooling:
 UFW denies inbound traffic by default and permits only SSH, HTTP and HTTPS. SSH password
 authentication is disabled. Root can authenticate by key for recovery, while routine deployment
 uses `deploy`. The application API and PostgreSQL bind to loopback. Caddy owns public ports 80/443,
-redirects HTTP to HTTPS and terminates TLS for the two configured hostnames.
+redirects HTTP to HTTPS and terminates TLS for the configured product/mail hostnames.
 
 The active DNS record is `A *.apitoken.sale -> 84.32.48.2`. The apex remains independent for the
 future frontend. Exact DNS records override the wildcard if they are added later.
@@ -81,7 +87,7 @@ future frontend. Exact DNS records override the wildcard if they are added later
 ## Host paths
 
 ```text
-/opt/apitoken/repo             fetch-only application repository used by deploy tooling
+/opt/apitoken/repo             deployment checkout; also the current mutable worker runtime
 /opt/apitoken/releases/<sha>   immutable commerce release directories
 /opt/apitoken/releases/current active commerce release symlink
 /srv/claude-api/releases/<sha> immutable Rust engine release directories
@@ -110,44 +116,47 @@ systemd/apitoken-api@.service         release-symlink API unit; instance name is
 systemd/apitoken-worker.service
 systemd/claude-api.service          one-time SQLite-to-PostgreSQL bridge
 systemd/claude-api@.service         PostgreSQL-fenced blue/green slots
+systemd/claude-api-backup.service
+systemd/claude-api-backup.timer
 deploy/deploy.sh
+deploy/api-bluegreen.sh
 deploy/engine-bluegreen.sh
 deploy/rollback.sh
+deploy/install-caddy.sh
+deploy/configure-engine-control-url.sh
+deploy/apitoken-db-dump
 deploy/commerce-postgres.compose.yaml
 ```
 
 Normal operations:
 
 ```bash
-sudo systemctl status apitoken-postgres apitoken-api@3000 apitoken-worker 'claude-api@*'
-sudo journalctl -u apitoken-api@3000 -u apitoken-worker -u 'claude-api@*' --since today
+sudo systemctl status apitoken-postgres apitoken-worker 'apitoken-api@*' 'claude-api@*'
+sudo journalctl -u 'apitoken-api@*' -u apitoken-worker -u 'claude-api@*' --since today
 sudo systemctl status caddy
 sudo caddy validate --config /etc/caddy/Caddyfile
+curl -fsS http://127.0.0.1:8790/ready
 ```
 
 The PostgreSQL container publishes only to `127.0.0.1:5433`. API and worker use the same database
 and authentication-token encryption key. Both use the server-side engine Control key, which must
 never be returned to clients or placed in frontend configuration.
 
-### Deployment state recorded on 2026-07-14
+### Current deployment model (verified 2026-07-16)
 
-- The deployed Git revision was built and tested on the commercial host before service startup.
-- PostgreSQL, API and worker services are enabled and running.
-- `GET http://127.0.0.1:3000/v1/health` reports PostgreSQL as healthy. Its engine component remains
-  down until the Rust core is migrated to this host; the backend has no legacy-core fallback.
-- Eight commerce migrations are defined; production must apply migration `0007` before starting the
-  profile-enabled API revision.
-- The worker's credit and pricing processors are active. Until SMTP is connected, its environment
-  deliberately uses `NODE_ENV=development` with `EMAIL_DELIVERY_MODE=disabled`; verification and
-  reset messages remain durably queued. Change both settings when production SMTP is ready.
-- Wildcard DNS resolves through public resolvers. Caddy serves valid public certificates for
-  `api.apitoken.sale` and `backend.apitoken.sale`.
-- `https://backend.apitoken.sale/v1/health` reaches the commercial API. It reports engine `down`
-  until the local core migration is completed.
-- The core proxy exposes only `/v1/*` and `/health`; `/admin/*`, `/pool` and unspecified paths return
-  `404`. `/health` currently returns `502` because nothing is listening on local port `8787` yet.
-- A dedicated read-only GitHub deploy key exists at
-  `/home/deploy/.ssh/github_deploy_ed25519` and is registered for direct `git fetch` and `git pull`.
+- Stage 2 is complete: the engine authority is the role-isolated `claude_engine` PostgreSQL database;
+  SQLite is a retained audit snapshot and must not be reactivated after production writes.
+- Engine 8787/8788 and API 3000/3001 are health-gated blue-green slots. Only one slot per component
+  remains enabled after a normal cutover.
+- API and worker load `ENGINE_BASE_URL=http://127.0.0.1:8790`; Caddy binds that listener explicitly
+  to loopback and routes only ready engine slots.
+- Public engine, commerce API, Caddy, worker, and the hourly dual-database backup timer are active.
+- The core public matcher exposes `/v1/*`, `/health`, and `/balance`; Control/admin routes remain
+  private. Public liveness/readiness behavior is described in `deploy/CADDY.md`.
+- A dedicated read-only GitHub deploy key at `/home/deploy/.ssh/github_deploy_ed25519` supports
+  `git fetch`; pushing a commit does not automatically deploy it.
+- The authoritative operator procedure is `DEPLOYMENT.md`; Stage 2 data/fencing details are in
+  `docs/STAGE2_POSTGRES_AUTHORITY.md`.
 
 ## Backups
 
@@ -167,9 +176,9 @@ image/cache data under `/var/lib/docker` is intentionally not included. Once Pos
 backups must include application-consistent logical database dumps staged below
 `/var/lib/apitoken/backups`; raw live database files are not a restore strategy.
 
-`deploy/apitoken-db-dump` creates the PostgreSQL custom-format dump. It is installed as
-`/usr/local/sbin/apitoken-db-dump` and configured as Borgmatic's `before_backup` hook. Validate a
-dump with `pg_restore --list /var/lib/apitoken/backups/commerce.dump`.
+`systemd/claude-api-backup.timer` runs `deploy/apitoken-db-dump` hourly. The script atomically creates
+mode-0600 custom-format `commerce.dump` and `claude_engine.dump`; daily Borgmatic includes their
+staging directory. Validate both using the matching PostgreSQL container's `pg_restore --list`.
 
 The Borg private identity, repository key and passphrase are required for disaster recovery. An
 independent copy exists on the operator workstation and must also be kept in an encrypted password
@@ -181,52 +190,26 @@ copying required archives to independent storage.
 
 ## Deployment procedure
 
-Production deploys use immutable SHA directories and the controllers documented in
-`deploy/README.md`. The integrated pipeline must build, typecheck, and test the intended commit before
-an operator supplies its full 40-character SHA to the host.
+[`DEPLOYMENT.md`](DEPLOYMENT.md) is the authoritative copy-paste runbook. In short, every release is
+an exact tested 40-character SHA and every stateless component uses two explicit phases:
 
 ```bash
-ssh deploy@84.32.48.2
-cd /opt/apitoken/repo
-deploy/deploy.sh --dry-run <tested-sha>
-deploy/deploy.sh <tested-sha>
+deploy/deploy.sh --engine-bluegreen <sha>  # build/finalize/select; serving slot untouched
+deploy/engine-bluegreen.sh                 # admit target, pre-drain and stop old
+
+deploy/deploy.sh --api-only <sha>          # build, locked prebuilt migration, select
+deploy/api-bluegreen.sh                    # admit target, pre-drain and stop old
 ```
 
-The default deploy prepares and activates both components. Deploy the Rust engine and commerce API
-independently when only one changed:
+Do not use the unqualified full-stack deploy after Stage 2 and do not manually restart a component
+between its two phases. Commerce migration runs from the immutable release as
+`node /opt/apitoken/releases/<sha>/packages/db/dist/migrate.js`; it is additive and not reversed by
+rollback. PostgreSQL is never restarted by an application deploy.
 
-```bash
-deploy/deploy.sh --engine-bluegreen <tested-sha>
-deploy/engine-bluegreen.sh
-deploy/deploy.sh --api-only <tested-sha>
-```
-
-For commerce releases, the controller loads `/etc/apitoken/api.env` without printing it, takes the
-migration lock, and runs the exact migration command below **before** changing
-`/opt/apitoken/releases/current`:
-
-```bash
-pnpm --filter @claude-api/db db:migrate
-```
-
-`--skip-migrate` is an explicit exception for a release known not to require a database migration.
-Application rollback never reverses migrations, so production migrations must remain additive and
-backward-compatible.
-
-Activation atomically repoints `/opt/apitoken/releases/current` and/or
-`/srv/claude-api/releases/current`. The blue-green controllers start and exact-unit gate the inactive
-target, health-admit it through Caddy, pre-drain the old slot, and only then stop it. Manual rollback
-uses `deploy/rollback.sh --engine-bluegreen|--api-only [<sha>]` followed by the matching controller;
-it never touches database state.
-
-**Never restart `apitoken-postgres.service` as part of an application deploy or rollback.** PostgreSQL
-is an independent stateful service; application units may be restarted without bouncing the database.
-The commerce worker remains separately managed by `apitoken-worker.service` until it receives its own
-release-symlink unit.
-
-Direct GitHub commands use the host's registered read-only deploy key. The controller fetches and
-verifies the exact requested commit from `origin`; it does not run `git pull` or `git reset --hard`, and
-it refuses to overwrite an existing SHA release directory.
+The worker remains separately managed and mutable until it receives a release-symlink unit. Its
+checked-out SHA and workspace dependencies must be built before stop-old/start-new; `--with-worker`
+does not build it. Controller recovery, rollback, verification, and backup commands are all in the
+runbook. Detailed availability behavior remains in `deploy/README.md` and `deploy/CADDY.md`.
 
 ## Vercel frontend
 

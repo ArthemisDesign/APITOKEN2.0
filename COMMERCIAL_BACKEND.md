@@ -17,6 +17,8 @@ packages/payments        DigiSeller/Cryptomus adapters and normalized payment co
 
 The applications are independently deployable. They share packages at build time, but neither
 imports code from the Rust crates or opens the engine PostgreSQL database/SQLite migration snapshot.
+Production deployment and rollback are documented in [`DEPLOYMENT.md`](DEPLOYMENT.md). The API is
+immutable blue-green; the worker remains a single repository-based stop/start service.
 
 ## Local setup
 
@@ -27,11 +29,16 @@ docker compose up -d commerce-postgres
 pnpm install
 cp apps/api/.env.example apps/api/.env
 cp apps/worker/.env.example apps/worker/.env
+# Without the production loopback Caddy listener, set local ENGINE_BASE_URL to the direct dev engine:
+sed -i.bak 's#http://127.0.0.1:8790#http://127.0.0.1:8787#' apps/api/.env apps/worker/.env
 pnpm db:migrate
 pnpm build
 pnpm dev:api
 pnpm dev:worker
 ```
+
+Production API and worker must instead use `ENGINE_BASE_URL=http://127.0.0.1:8790`; that stable,
+loopback-only Caddy origin follows the healthy engine slot across blue-green cutovers.
 
 Run the real PostgreSQL checkout/payment tests with:
 
