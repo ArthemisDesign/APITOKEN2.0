@@ -814,6 +814,419 @@ export const learnArticles: LearnArticle[] = [
     ],
     related: ["how-billing-works", "claude-api-crypto-payment", "claude-api-supported-countries", "how-to-buy-claude-api-key"],
   },
+
+  // ─────────────────────────── COMPARE (expansion) ───────────────────────────
+  {
+    slug: "apitoken-vs-proxyapi",
+    cluster: "compare",
+    title: "apiToken.sale vs ProxyAPI for Claude",
+    h1: "apiToken.sale vs ProxyAPI",
+    description: "Comparing Claude API resellers: apiToken.sale offers a native Anthropic endpoint with a progressive 60–80% discount, card or crypto payment, and one key for every model.",
+    keywords: ["proxyapi alternative", "apitoken vs proxyapi", "claude api reseller", "proxyapi claude", "claude api без proxyapi"],
+    dek: "Both let you reach Claude without an Anthropic account. The differences are in how you pay, how much you save, and whether the endpoint is truly Anthropic-native.",
+    sections: [
+      { h2: "Native Anthropic endpoint", blocks: [
+        { type: "p", text: `apiToken.sale exposes the standard Anthropic Messages API at ${BASE}, so Claude Code, Cursor and the Anthropic SDKs work unchanged — no adapter layer between you and Claude.` },
+      ] },
+      { h2: "Discount, not markup", blocks: [
+        { type: "list", items: [
+          "Progressive B2C discount up to 80% off official Claude spend.",
+          "One prepaid key and balance for Opus, Sonnet and Haiku.",
+          "Card or cryptocurrency top-ups that never expire.",
+        ] },
+        cta(),
+      ] },
+    ],
+    faq: [
+      { q: "Is apiToken.sale cheaper than a standard reseller?", a: "It applies a progressive discount of up to 80% to official Claude spend rather than adding a markup on top of list prices." },
+      { q: "Do my Anthropic tools still work?", a: "Yes — it is the native Anthropic Messages API, so Claude Code, Cursor and the SDKs need only a base-URL change." },
+    ],
+    related: ["apitoken-vs-anthropic-direct", "apitoken-vs-openrouter", "cheapest-claude-api", "claude-api-for-russia"],
+  },
+  {
+    slug: "apitoken-vs-portkey",
+    cluster: "compare",
+    title: "apiToken.sale vs Portkey for Claude",
+    h1: "apiToken.sale vs Portkey",
+    description: "Portkey is an AI gateway for routing and observability using your own provider keys. apiToken.sale provides the Claude key and balance itself, at a discount. Here is when to use each.",
+    keywords: ["portkey alternative", "apitoken vs portkey", "ai gateway claude", "portkey claude api", "claude api gateway"],
+    dek: "These tools solve different problems. Portkey sits in front of provider keys you already own; apiToken.sale is where the Claude key and discounted balance come from.",
+    sections: [
+      { h2: "Different jobs", blocks: [
+        { type: "p", text: "Portkey adds routing, caching, and observability on top of API keys you bring. It does not sell you Claude access or a discount — you still need a funded Anthropic account behind it." },
+        { type: "p", text: `apiToken.sale is the source of the key and balance: a native Anthropic endpoint at ${BASE} with up to 80% off, no Anthropic account required.` },
+      ] },
+      { h2: "They can even combine", blocks: [
+        { type: "p", text: "If you like Portkey's observability, you can point it at an apiToken.sale key as the Anthropic provider and get the discount underneath." },
+        cta(),
+      ] },
+    ],
+    faq: [
+      { q: "Does Portkey give me a Claude discount?", a: "No — Portkey is a gateway over keys you already own. apiToken.sale is what provides the discounted Claude key and balance." },
+      { q: "Can I use both together?", a: "Yes. Use an apiToken.sale key as Portkey's Anthropic provider to keep observability while paying less." },
+    ],
+    related: ["apitoken-vs-openrouter", "claude-api-gateway", "cheapest-claude-api", "anthropic-sdk-base-url"],
+  },
+  {
+    slug: "apitoken-vs-litellm",
+    cluster: "compare",
+    title: "apiToken.sale vs LiteLLM for Claude",
+    h1: "apiToken.sale vs LiteLLM",
+    description: "LiteLLM is a self-hosted proxy that unifies model APIs but needs your own funded keys. apiToken.sale is a hosted, discounted Claude endpoint with nothing to run.",
+    keywords: ["litellm alternative", "apitoken vs litellm", "litellm claude", "self-hosted claude proxy", "claude api hosted"],
+    dek: "LiteLLM is great if you want to self-host a proxy across many providers. apiToken.sale is the opposite trade-off: nothing to run, and the Claude balance comes discounted.",
+    sections: [
+      { h2: "Self-hosted vs hosted", blocks: [
+        { type: "list", items: [
+          "LiteLLM: you run and maintain the proxy, and you still fund each provider yourself.",
+          "apiToken.sale: fully hosted native Anthropic endpoint, no infrastructure to manage.",
+          "apiToken.sale adds a 60–80% discount on Claude spend that a bare proxy cannot.",
+        ] },
+        cta(),
+      ] },
+    ],
+    faq: [
+      { q: "Does LiteLLM discount Claude?", a: "No. LiteLLM routes to providers you fund yourself; the discount comes from apiToken.sale's pooled prepaid balance." },
+      { q: "Do I need to host anything with apiToken.sale?", a: "No — it is a hosted endpoint. You only change your base URL and key." },
+    ],
+    related: ["apitoken-vs-portkey", "apitoken-vs-openrouter", "claude-api-gateway", "anthropic-sdk-base-url"],
+  },
+  {
+    slug: "best-claude-model-for-coding",
+    cluster: "compare",
+    title: "Best Claude Model for Coding",
+    h1: "The best Claude model for coding",
+    description: "Which Claude model should you use for coding? A practical guide to picking Opus, Sonnet or Haiku per task — all available on one apiToken.sale key.",
+    keywords: ["best claude model for coding", "claude model for programming", "opus vs sonnet coding", "claude coding model", "which claude for code"],
+    dek: "The best model depends on the task. Match the model to the job and you get better output for fewer tokens — and every tier is on one key.",
+    sections: [
+      { h2: "Sonnet for everyday coding", blocks: [
+        { type: "p", text: "Claude Sonnet 5 and Sonnet 4.6 are the default for interactive coding and agent loops: fast, capable, and cost-effective. Start here for most work." },
+      ] },
+      { h2: "Opus for hard problems", blocks: [
+        { type: "p", text: "Use Claude Opus 4.8 for complex refactors, architecture and long, high-stakes sessions where extra reasoning pays off." },
+      ] },
+      { h2: "Haiku for volume", blocks: [
+        { type: "p", text: "Claude Haiku 4.5 handles fast, cheap, high-volume tasks — linting, extraction, quick edits — to stretch your balance." },
+        cta(),
+      ] },
+    ],
+    faq: [
+      { q: "What is the best Claude model for coding?", a: "Sonnet for everyday coding, Opus for complex reasoning and refactors, Haiku for fast high-volume tasks — all on one apiToken.sale key." },
+      { q: "Can I switch models per request?", a: "Yes. One key and balance cover every model, so you can route each request to the best-value tier." },
+    ],
+    related: ["claude-opus-vs-sonnet", "claude-sonnet-api", "claude-opus-api", "save-tokens-on-claude-api"],
+  },
+  {
+    slug: "claude-max-plan-vs-api",
+    cluster: "compare",
+    title: "Claude Max Plan vs the Claude API",
+    h1: "Claude Max subscription vs the API",
+    description: "When to use a Claude subscription vs the Claude API. apiToken.sale gives pay-as-you-go API access to every model with no monthly fee and up to 80% off.",
+    keywords: ["claude max plan", "claude subscription vs api", "claude max vs api", "claude api pay as you go", "claude without subscription"],
+    dek: "A flat Claude subscription and pay-as-you-go API billing suit different usage. For programmatic and bursty use, the API on prepaid balance is usually the better deal.",
+    sections: [
+      { h2: "Subscription vs per-token", blocks: [
+        { type: "p", text: "A fixed monthly plan makes sense for steady, heavy interactive use in one app. But it is wasteful for spiky usage, and it does not give you a programmable API key for your own tools." },
+      ] },
+      { h2: "Why the API often wins", blocks: [
+        { type: "list", items: [
+          "Pay only for the tokens you actually use — no monthly floor.",
+          "One key drives Claude Code, Cursor, agents and production calls.",
+          "apiToken.sale adds up to 80% off official token rates.",
+        ] },
+        cta(),
+      ] },
+    ],
+    faq: [
+      { q: "Is the API cheaper than a Claude subscription?", a: "For bursty or programmatic usage, pay-as-you-go API billing avoids paying a flat monthly fee for idle time, and apiToken.sale discounts it further." },
+      { q: "Can I use the API in coding tools?", a: "Yes — the API key works in Claude Code, Cursor, VS Code agents and the SDKs, which a subscription does not provide." },
+    ],
+    related: ["claude-code-without-subscription", "claude-api-pricing-explained", "cheapest-claude-api", "how-billing-works"],
+  },
+  {
+    slug: "claude-3-5-vs-claude-4",
+    cluster: "compare",
+    title: "Claude 3.5 vs Claude 4 — What Changed",
+    h1: "Claude 3.5 vs Claude 4: what changed",
+    description: "Moving from Claude 3.5 to the current Claude 4 line? What improved, updated model IDs, and how to switch on apiToken.sale with one base-URL change.",
+    keywords: ["claude 3.5 vs 4", "claude 4 vs 3.5", "claude model migration", "upgrade claude model", "new claude models"],
+    dek: "The current Claude line is a clear step up from 3.5 in reasoning and coding. Migrating is mostly a model-ID change — everything else stays the same.",
+    sections: [
+      { h2: "What improved", blocks: [
+        { type: "p", text: "The Opus, Sonnet and Haiku 4-series models improve on 3.5 for agentic coding, long-context consistency and complex reasoning, while keeping the same Messages API." },
+      ] },
+      { h2: "How to migrate", blocks: [
+        { type: "p", text: "Swap the model ID to a current one — for example claude-opus-4-8, claude-sonnet-5 or claude-haiku-4-5 — and keep your existing request code. On apiToken.sale it is the same key and endpoint." },
+        cta(),
+      ] },
+    ],
+    faq: [
+      { q: "Is Claude 4 much better than 3.5?", a: "Yes, especially for coding, agents and long-context tasks, while using the same API format." },
+      { q: "Is migrating hard?", a: "No — update the model ID (e.g. to claude-sonnet-5) and your existing Messages API code keeps working." },
+    ],
+    related: ["best-claude-model-for-coding", "claude-opus-vs-sonnet", "claude-sonnet-api", "claude-api-quick-setup"],
+  },
+  {
+    slug: "why-choose-apitoken",
+    cluster: "compare",
+    title: "Why Choose apiToken.sale",
+    h1: "Why choose apiToken.sale",
+    description: "The reasons developers pick apiToken.sale for Claude: the same Anthropic API up to 80% cheaper, instant access with no Anthropic account, and card or crypto payment.",
+    keywords: ["why apitoken.sale", "best claude api provider", "claude api discount provider", "cheap claude api gateway", "claude api no anthropic account"],
+    dek: "apiToken.sale is built for one thing: the same Claude API, cheaper and easier to start. Here is what that means in practice.",
+    sections: [
+      { h2: "The short version", blocks: [
+        { type: "list", items: [
+          "The exact Anthropic Messages API and every current Claude model.",
+          "Up to 80% off official spend on prepaid balance that never expires.",
+          "Instant, self-serve access — no Anthropic account, waitlist or billing country.",
+          "Pay by bank card or cryptocurrency.",
+          "Per-key spend controls and token-level usage in the dashboard.",
+        ] },
+        cta(),
+      ] },
+    ],
+    faq: [
+      { q: "What makes apiToken.sale different?", a: "It is the same Claude API at up to 80% less, with instant access and no Anthropic account, payable by card or crypto." },
+      { q: "Is anything about the API changed?", a: "No — the protocol, models and responses are standard Anthropic. Only price and onboarding differ." },
+    ],
+    related: ["apitoken-vs-anthropic-direct", "cheapest-claude-api", "how-to-buy-claude-api-key", "claude-api-for-russia"],
+  },
+
+  // ─────────────────────────── EXPLAIN (expansion) ───────────────────────────
+  {
+    slug: "claude-api-gateway",
+    cluster: "explain",
+    title: "What Is a Claude API Gateway?",
+    h1: "What a Claude API gateway is",
+    description: "A Claude API gateway sits between your tools and Anthropic, adding access, billing and control. apiToken.sale is a native gateway with a 60–80% discount.",
+    keywords: ["claude api gateway", "what is an api gateway", "anthropic gateway", "claude proxy", "claude api access layer"],
+    dek: "A gateway is a thin layer between your code and the model provider. A good Claude gateway is invisible to your tools while improving access, price and control.",
+    sections: [
+      { h2: "What a gateway does", blocks: [
+        { type: "list", items: [
+          "Presents the standard Anthropic Messages API so tools work unchanged.",
+          "Handles access and billing — here, prepaid balance at a discount.",
+          "Adds per-key controls like spend caps and usage visibility.",
+        ] },
+      ] },
+      { h2: "Native, not a translation layer", blocks: [
+        { type: "p", text: `apiToken.sale is Anthropic-native: point any client at ${BASE}/v1/messages and it behaves exactly like api.anthropic.com — plus your discount and dashboard controls.` },
+        cta(),
+      ] },
+    ],
+    faq: [
+      { q: "Does a gateway change the API?", a: "No. A native Claude gateway speaks the standard Anthropic Messages API, so your tools and SDKs are unchanged." },
+      { q: "Why use a gateway instead of Anthropic directly?", a: "For a discount, instant access without an Anthropic account, and per-key spend controls." },
+    ],
+    related: ["apitoken-vs-anthropic-direct", "claude-api-key-security", "cheapest-claude-api", "anthropic-sdk-base-url"],
+  },
+  {
+    slug: "claude-api-rate-limits",
+    cluster: "explain",
+    title: "Claude API Rate Limits",
+    h1: "Understanding Claude API rate limits",
+    description: "How rate limits work on apiToken.sale, what a 429 means, and how to handle it with backoff and per-key caps to protect your prepaid balance.",
+    keywords: ["claude api rate limits", "claude api 429", "anthropic rate limit", "claude api throughput", "claude api retry"],
+    dek: "Rate limits keep the gateway stable and your balance safe. Handling them well means smoother tools and no wasted spend.",
+    sections: [
+      { h2: "Protective, per-key limits", blocks: [
+        { type: "p", text: "Rather than a fixed public RPM table, apiToken.sale applies protective per-key and gateway limits. You can also set your own per-key caps in the dashboard to split throughput across tools." },
+      ] },
+      { h2: "Handling a 429", blocks: [
+        { type: "list", items: [
+          "Respect the Retry-After header and back off exponentially.",
+          "Reduce concurrency rather than hammering the endpoint.",
+          "Contact support if you need sustained higher throughput.",
+        ] },
+        cta(),
+      ] },
+    ],
+    faq: [
+      { q: "What are the Claude API rate limits?", a: "apiToken.sale uses protective per-key and gateway limits plus your own configurable per-key caps, rather than a fixed public RPM number." },
+      { q: "What should I do on a 429?", a: "Respect Retry-After, back off, and reduce concurrency; contact support for sustained higher limits." },
+    ],
+    related: ["claude-api-best-practices", "claude-api-streaming", "how-billing-works", "claude-api-key-security"],
+  },
+  {
+    slug: "claude-api-streaming",
+    cluster: "explain",
+    title: "Streaming with the Claude API",
+    h1: "Streaming responses from the Claude API",
+    description: "How to stream Claude responses on apiToken.sale for responsive coding agents and UIs. Same Anthropic SSE format, billed the same as non-streaming.",
+    keywords: ["claude api streaming", "claude sse", "stream claude responses", "anthropic streaming api", "claude api real-time"],
+    dek: "Streaming sends tokens as they are generated, which makes agents and chat UIs feel instant. apiToken.sale supports the standard Anthropic streaming format.",
+    sections: [
+      { h2: "How to stream", blocks: [
+        { type: "p", text: "Set \"stream\": true in your request (or use the SDK's streaming helper). The gateway returns standard Anthropic server-sent events." },
+        { type: "code", code: `curl ${BASE}/v1/messages \\\n  -H "x-api-key: ${KEY}" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-sonnet-5",\n    "max_tokens": 1024,\n    "stream": true,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
+      ] },
+      { h2: "Billing is identical", blocks: [
+        { type: "p", text: "Streaming and non-streaming requests are billed the same way — by input and output tokens — so you lose nothing by streaming." },
+        cta(),
+      ] },
+    ],
+    faq: [
+      { q: "Does apiToken.sale support streaming?", a: "Yes — the standard Anthropic SSE streaming format works for coding agents, IDEs and production calls." },
+      { q: "Does streaming cost more?", a: "No. Streaming and non-streaming requests are billed identically by tokens." },
+    ],
+    related: ["claude-api-quick-setup", "claude-api-rate-limits", "anthropic-sdk-base-url", "claude-api-for-ai-agents"],
+  },
+  {
+    slug: "claude-api-prompt-caching",
+    cluster: "explain",
+    title: "Prompt Caching on the Claude API",
+    h1: "Cutting costs with Claude prompt caching",
+    description: "Prompt caching makes repeated context on the Claude API much cheaper. How it works on apiToken.sale, when to use it, and how it stacks with your discount.",
+    keywords: ["claude prompt caching", "claude api cache", "anthropic prompt cache", "reduce claude cost caching", "claude cache read"],
+    dek: "If you send the same large context repeatedly — system prompts, files, tool definitions — caching turns those tokens from expensive to nearly free.",
+    sections: [
+      { h2: "How caching saves money", blocks: [
+        { type: "p", text: "Cache writes and cache reads are metered separately, and cache reads cost a fraction of fresh input tokens. Stable, reused context is the ideal candidate." },
+      ] },
+      { h2: "It stacks with your discount", blocks: [
+        { type: "p", text: "Caching lowers the token count; your apiToken.sale discount lowers the price per token. Together they compound into a much smaller bill, and every cache line is visible in your usage breakdown." },
+        cta(),
+      ] },
+    ],
+    faq: [
+      { q: "How much does prompt caching save?", a: "Cache reads cost a fraction of fresh input tokens, so repeated large context becomes far cheaper." },
+      { q: "Does caching work with the discount?", a: "Yes — caching reduces token count and the discount reduces price per token, so the savings multiply." },
+    ],
+    related: ["save-tokens-on-claude-api", "claude-api-pricing-explained", "cheapest-claude-api", "how-billing-works"],
+  },
+  {
+    slug: "claude-api-best-practices",
+    cluster: "explain",
+    title: "Claude API Best Practices",
+    h1: "Claude API best practices",
+    description: "Practical best practices for the Claude API on apiToken.sale: model choice, prompt caching, streaming, per-key caps, and secure key handling.",
+    keywords: ["claude api best practices", "claude api tips", "claude api production", "claude api guidelines", "anthropic api best practices"],
+    dek: "A short checklist to get reliable, economical results from the Claude API in production.",
+    sections: [
+      { h2: "The checklist", blocks: [
+        { type: "list", items: [
+          "Pick the cheapest model that can do each task; escalate only when needed.",
+          "Cache large, stable context to slash input cost.",
+          "Stream responses for responsive agents and UIs.",
+          "Set per-key spend caps and rotate keys per tool.",
+          "Handle 429s with Retry-After and backoff.",
+          "Watch the token-level usage breakdown to catch waste early.",
+        ] },
+        cta(),
+      ] },
+    ],
+    faq: [
+      { q: "What is the most impactful best practice?", a: "Match the model to the task and cache repeated context — together they cut cost the most." },
+      { q: "How do I keep keys safe?", a: "Use per-key caps, IDE-scoped keys, and rotate keys without downtime from the dashboard." },
+    ],
+    related: ["save-tokens-on-claude-api", "claude-api-rate-limits", "claude-api-key-security", "best-claude-model-for-coding"],
+  },
+
+  // ─────────────────────────── INTEGRATE (expansion) ───────────────────────────
+  {
+    slug: "claude-code-api-key",
+    cluster: "integrate",
+    title: "Set Up Claude Code with an API Key",
+    h1: "Use Claude Code with an apiToken.sale key",
+    description: "Configure Claude Code with an apiToken.sale key in two environment variables and run every Claude model on prepaid balance at up to 80% off.",
+    keywords: ["claude code api key", "claude code setup", "claude code anthropic base url", "claude code custom key", "run claude code cheap"],
+    dek: "Claude Code reads two environment variables. Point them at apiToken.sale and you keep every feature while billing against discounted prepaid balance.",
+    sections: [
+      { h2: "Two variables", blocks: [
+        { type: "code", code: `export ANTHROPIC_BASE_URL=${BASE}\nexport ANTHROPIC_API_KEY=${KEY}\n\n# then just run\nclaude` },
+        { type: "p", text: "That is the whole setup. Use claude-opus-4-8 for hard work and claude-sonnet-5 for everyday coding." },
+        cta(),
+      ] },
+    ],
+    faq: [
+      { q: "How do I point Claude Code at apiToken.sale?", a: "Set ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY to your apiToken.sale endpoint and key, then run claude." },
+      { q: "Do I keep all Claude Code features?", a: "Yes — only billing changes, from subscription to discounted prepaid usage." },
+    ],
+    related: ["claude-code-without-subscription", "claude-api-key-for-cursor", "anthropic-sdk-base-url", "best-claude-model-for-coding"],
+  },
+  {
+    slug: "vscode-ai-agents-one-prompt",
+    cluster: "integrate",
+    title: "Free VS Code AI Agents with Claude",
+    h1: "Run free VS Code AI agents on Claude",
+    description: "Set up free VS Code agents like Cline and Roo Code with an apiToken.sale Claude key — no Cursor Pro needed. One endpoint, every Claude model, at a discount.",
+    keywords: ["free vscode ai agent", "cline roo code claude", "vscode claude agent", "cursor alternative free", "claude vscode without cursor"],
+    dek: "You do not need Cursor Pro to get agentic coding. Free VS Code agents accept any Anthropic-compatible key, so Claude runs in VS Code on discounted balance.",
+    sections: [
+      { h2: "Point the agent at Claude", blocks: [
+        { type: "steps", items: [
+          "Install a free agent extension such as Cline or Roo Code.",
+          "Choose Anthropic as the API provider.",
+          `Set the base URL to ${BASE}, paste your ${KEY} key, and pick a model like claude-sonnet-5.`,
+        ] },
+        cta(),
+      ] },
+    ],
+    faq: [
+      { q: "Do I need Cursor Pro for AI coding?", a: "No. Free VS Code agents like Cline and Roo Code work with an apiToken.sale Claude key." },
+      { q: "Which model should I pick?", a: "claude-sonnet-5 for everyday coding; claude-opus-4-8 for complex tasks." },
+    ],
+    related: ["claude-api-for-vs-code", "claude-api-key-for-cursor", "claude-code-api-key", "cursor-without-anthropic-account"],
+  },
+  {
+    slug: "claude-api-key-security",
+    cluster: "integrate",
+    title: "Securing Your Claude API Key",
+    h1: "Keep your Claude API key secure",
+    description: "How to protect a Claude API key on apiToken.sale: per-key spend caps, IDE-scoped keys, IP controls, rotation without downtime, and never committing keys.",
+    keywords: ["claude api key security", "protect api key", "rotate claude api key", "claude api key management", "secure anthropic key"],
+    dek: "Your key spends real balance, so treat it like a credential. apiToken.sale gives you controls to limit blast radius if a key ever leaks.",
+    sections: [
+      { h2: "Controls that limit risk", blocks: [
+        { type: "list", items: [
+          "Set per-key daily and monthly spend caps.",
+          "Issue a separate key per tool or environment.",
+          "Rotate keys without downtime from the dashboard.",
+          "Restrict allowed models or IP ranges where supported.",
+        ] },
+      ] },
+      { h2: "Basic hygiene", blocks: [
+        { type: "list", items: [
+          "Never commit keys to git or paste them into chats.",
+          "Store keys in environment variables or a secret manager.",
+          "Revoke and rotate immediately if a key is exposed.",
+        ] },
+        cta(),
+      ] },
+    ],
+    faq: [
+      { q: "How do I limit damage if a key leaks?", a: "Use per-key spend caps and scoped keys, then rotate the key without downtime from the dashboard." },
+      { q: "Where should I store my key?", a: "In environment variables or a secret manager — never committed to git or shared in chats." },
+    ],
+    related: ["claude-api-best-practices", "claude-api-rate-limits", "claude-code-api-key", "how-billing-works"],
+  },
+  {
+    slug: "claude-api-for-ai-agents",
+    cluster: "explain",
+    title: "Claude API for AI Agents",
+    h1: "Using the Claude API for AI agents",
+    description: "Build AI agents on the Claude API with apiToken.sale: one key for every model, streaming, tool use, prompt caching and spend caps to keep long runs affordable.",
+    keywords: ["claude api agents", "claude ai agent api", "claude tool use", "claude agent framework", "claude api for automation"],
+    dek: "Agentic workloads are token-hungry and long-running, which makes model choice, caching and cost control matter most. Here is how apiToken.sale fits agents.",
+    sections: [
+      { h2: "What agents need", blocks: [
+        { type: "list", items: [
+          "Streaming and tool use — both standard on the Anthropic Messages API.",
+          "Model routing: Haiku for cheap steps, Sonnet for reasoning, Opus for the hardest.",
+          "Prompt caching for repeated system prompts and tool definitions.",
+          "Per-key spend caps so a runaway loop cannot drain your balance.",
+        ] },
+        cta(),
+      ] },
+    ],
+    faq: [
+      { q: "Is the Claude API good for agents?", a: "Yes — with streaming, tool use, model routing and prompt caching, all on one apiToken.sale key with spend controls." },
+      { q: "How do I keep agent costs down?", a: "Route cheap steps to Haiku, cache repeated context, and set per-key spend caps." },
+    ],
+    related: ["claude-api-streaming", "claude-api-prompt-caching", "save-tokens-on-claude-api", "claude-api-key-security"],
+  },
 ];
 
 export const learnArticlesBySlug: Record<string, LearnArticle> = Object.fromEntries(
