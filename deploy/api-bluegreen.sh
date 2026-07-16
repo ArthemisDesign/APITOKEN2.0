@@ -233,18 +233,26 @@ start_slot_fresh() {
 }
 
 require_worker_active() {
-  local worker_pid worker_cwd
+  local worker_pid worker_cwd deadline
   if [[ "$DRY_RUN" == "1" ]]; then
     log "dry-run: would require $WORKER_SERVICE to be active"
     return 0
   fi
-  unit_is_active "$WORKER_SERVICE" || die "$WORKER_SERVICE is not active after start"
-  worker_pid=$(systemctl show "$WORKER_SERVICE" -p MainPID --value)
-  [[ $worker_pid =~ ^[1-9][0-9]*$ ]] || die "$WORKER_SERVICE has no MainPID"
-  worker_cwd=$(readlink -f -- "/proc/$worker_pid/cwd")
-  [[ $worker_cwd == "$CURRENT_RELEASE/apps/worker" ]] \
-    || die "$WORKER_SERVICE is not running current immutable release (cwd=$worker_cwd)"
-  log "$WORKER_SERVICE is active from immutable release $CURRENT_RELEASE"
+  deadline=$(( $(date +%s) + READINESS_TIMEOUT ))
+  while (( $(date +%s) < deadline )); do
+    if unit_is_active "$WORKER_SERVICE"; then
+      worker_pid=$(systemctl show "$WORKER_SERVICE" -p MainPID --value)
+      if [[ $worker_pid =~ ^[1-9][0-9]*$ ]]; then
+        worker_cwd=$(readlink -f -- "/proc/$worker_pid/cwd" 2>/dev/null || true)
+        if [[ $worker_cwd == "$CURRENT_RELEASE/apps/worker" ]]; then
+          log "$WORKER_SERVICE is active from immutable release $CURRENT_RELEASE"
+          return 0
+        fi
+      fi
+    fi
+    sleep 1
+  done
+  die "$WORKER_SERVICE did not become active on immutable release $CURRENT_RELEASE within ${READINESS_TIMEOUT}s"
 }
 
 require_worker_stopped() {
