@@ -70,7 +70,7 @@ export async function findExternalAuthUser(
   subject: string,
 ): Promise<AuthUser | null> {
   const result = await database.pool.query<ExternalUserRow>(`
-    SELECT u.id, u.email, u.display_name, u.email_verified, u.status,
+    SELECT u.id, u.email, u.display_name, u.email_verified, u.status, u.totp_enabled,
            (u.password_hash IS NOT NULL) AS password_enabled,
            COALESCE(ea.status, 'pending') AS engine_account_status,
            COALESCE(cp.customer_type, 'b2c') AS customer_type
@@ -150,6 +150,7 @@ export async function completeExternalSignIn(
       status: "active",
       engineAccountStatus: "pending",
       customerType,
+      totpEnabled: false,
       engineMultiplierBp,
     };
   } catch (error) {
@@ -181,6 +182,7 @@ interface ExternalUserRow {
   status: "active" | "disabled";
   engine_account_status: "pending" | "active" | "error" | "disabled";
   customer_type: "b2c" | "b2b";
+  totp_enabled: boolean;
 }
 
 function mapExternalUser(row: ExternalUserRow): AuthUser {
@@ -193,6 +195,7 @@ function mapExternalUser(row: ExternalUserRow): AuthUser {
     status: row.status,
     engineAccountStatus: row.engine_account_status,
     customerType: row.customer_type,
+    totpEnabled: row.totp_enabled,
   };
 }
 

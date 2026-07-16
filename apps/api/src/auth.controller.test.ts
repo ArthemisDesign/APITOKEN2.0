@@ -14,7 +14,7 @@ function currentAuth(userId = "alice-id"): RequestAuth {
     displayName: "Alice",
     emailVerified: true,
     passwordEnabled: false,
-    engineAccountStatus: "active",
+    engineAccountStatus: "active", totpEnabled: false,
     customerType: "b2c",
   };
   return { sessionId: "session-id", user };

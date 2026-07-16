@@ -13,6 +13,7 @@ export interface AuthUser {
   status: "active" | "disabled";
   engineAccountStatus: "pending" | "active" | "error" | "disabled";
   customerType: "b2c" | "b2b";
+  totpEnabled: boolean;
 }
 
 export interface PasswordUser extends AuthUser {
@@ -109,6 +110,7 @@ export async function createEmailUser(
       status: "active",
       engineAccountStatus: "pending",
       customerType,
+      totpEnabled: false,
       engineMultiplierBp,
     };
   } catch (error) {
@@ -137,6 +139,7 @@ export async function failEngineAccount(database: Database, userId: string, erro
 export async function findPasswordUser(database: Database, email: string): Promise<PasswordUser | null> {
   const result = await database.pool.query<UserRow>(`
     SELECT u.id, u.email, u.display_name, u.email_verified, u.password_hash, u.status,
+           u.totp_enabled,
            COALESCE(ea.status, 'pending') AS engine_account_status,
            COALESCE(cp.customer_type, 'b2c') AS customer_type
     FROM users u LEFT JOIN engine_accounts ea ON ea.user_id = u.id
@@ -149,6 +152,7 @@ export async function findPasswordUser(database: Database, email: string): Promi
 export async function getAuthUser(database: Database, userId: string): Promise<AuthUser | null> {
   const result = await database.pool.query<UserRow>(`
     SELECT u.id, u.email, u.display_name, u.email_verified, u.password_hash, u.status,
+           u.totp_enabled,
            COALESCE(ea.status, 'pending') AS engine_account_status,
            COALESCE(cp.customer_type, 'b2c') AS customer_type
     FROM users u LEFT JOIN engine_accounts ea ON ea.user_id = u.id
@@ -171,6 +175,7 @@ export async function createAuthSession(database: Database, input: {
 export async function resolveAuthSession(database: Database, tokenHash: string): Promise<{ sessionId: string; user: AuthUser } | null> {
   const result = await database.pool.query<UserRow & { session_id: string }>(`
     SELECT s.id AS session_id, u.id, u.email, u.display_name, u.email_verified, u.password_hash, u.status,
+           u.totp_enabled,
            COALESCE(ea.status, 'pending') AS engine_account_status,
            COALESCE(cp.customer_type, 'b2c') AS customer_type
     FROM auth_sessions s
@@ -240,6 +245,7 @@ interface UserRow {
   status: "active" | "disabled";
   engine_account_status: "pending" | "active" | "error" | "disabled";
   customer_type: "b2c" | "b2b";
+  totp_enabled: boolean;
 }
 
 function mapPasswordUser(row: UserRow): PasswordUser {
@@ -253,6 +259,7 @@ function mapPasswordUser(row: UserRow): PasswordUser {
     status: row.status,
     engineAccountStatus: row.engine_account_status,
     customerType: row.customer_type,
+    totpEnabled: row.totp_enabled,
   };
 }
 

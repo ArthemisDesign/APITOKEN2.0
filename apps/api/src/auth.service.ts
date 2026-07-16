@@ -372,5 +372,6 @@ function userView(user: AuthUser): AuthUserView {
     passwordEnabled: user.passwordEnabled,
     engineAccountStatus: user.engineAccountStatus,
     customerType: user.customerType,
+    totpEnabled: user.totpEnabled,
   };
 }
