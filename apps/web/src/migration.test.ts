@@ -141,7 +141,7 @@ describe("completed Next.js migration", () => {
     expect(dashboard).toContain("dashboardCopy[language]");
     expect(dashboardCopy).toContain('navOverview: "Overview"');
     expect(dashboardCopy).toContain('navOverview: "Обзор"');
-    expect(dashboard).toContain("user.passwordEnabled ?");
+    expect(dashboard).toContain("user.totpEnabled");
     expect(dashboard).toContain('className="overview-core"');
     expect(dashboard).toContain("officialBalance");
     expect(dashboardCopy).toContain('platformBalance: "Platform balance"');
