@@ -22,6 +22,8 @@ api.apitoken.sale {
 # Stable, loopback-only Control API origin for the commerce API and worker.
 # Consumers never address an engine deployment slot directly.
 http://127.0.0.1:8790 {
+	bind 127.0.0.1
+
 	reverse_proxy 127.0.0.1:8787 127.0.0.1:8788 {
 		lb_policy round_robin
 		lb_try_duration 2s
