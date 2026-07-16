@@ -10,7 +10,10 @@ id apitoken-ci >/dev/null 2>&1 || useradd --system --home-dir /var/lib/apitoken/
 usermod -a -G deploy apitoken-ci
 
 install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/controller
-install -d -o deploy -g deploy -m 0750 /var/lib/apitoken/watchdog /var/lib/apitoken/watchdog/candidates /var/lib/apitoken/watchdog/ci-home
+install -d -o deploy -g deploy -m 0751 /var/lib/apitoken/watchdog /var/lib/apitoken/watchdog/candidates
+install -d -o deploy -g deploy -m 0750 /var/lib/apitoken/watchdog/ci-home
+# Candidate tests need traverse-only access through these parents. State contents remain unlistable.
+chmod o+x /var/lib/apitoken /var/lib/apitoken/watchdog /var/lib/apitoken/watchdog/candidates
 chown apitoken-ci:apitoken-ci /var/lib/apitoken/watchdog/ci-home
 install -d -o root -g root -m 0755 /opt/apitoken-watchdog
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog.sh" /usr/local/lib/apitoken-watchdog/watchdog.sh
