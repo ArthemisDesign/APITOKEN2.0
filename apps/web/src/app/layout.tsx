@@ -6,6 +6,7 @@ import { I18nProvider } from "@/components/i18n-provider";
 import { PersistentRouteShell } from "@/components/persistent-route-shell";
 import { SiteAnalytics } from "@/components/site-analytics";
 import { DEFAULT_OG_IMAGE, SITE_NAME, SITE_ORIGIN, seoPages } from "@/lib/seo";
+import { YANDEX_METRIKA_ID, yandexMetrikaBootstrap } from "@/lib/yandex-metrika";
 
 const webmasterVerification = {
   ...(process.env.GOOGLE_SITE_VERIFICATION ? { google: process.env.GOOGLE_SITE_VERIFICATION } : {}),
@@ -69,12 +70,25 @@ const themeScript = `(()=>{try{const t=localStorage.getItem('theme')||'dark';doc
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <head><script dangerouslySetInnerHTML={{ __html: themeScript }} /></head>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        <script id="yandex-metrika" dangerouslySetInnerHTML={{ __html: yandexMetrikaBootstrap }} />
+      </head>
       <body>
         <I18nProvider>
           <PersistentRouteShell>{children}</PersistentRouteShell>
         </I18nProvider>
         <SiteAnalytics />
+        <noscript>
+          <div>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={`https://mc.yandex.ru/watch/${YANDEX_METRIKA_ID}`}
+              style={{ position: "absolute", left: "-9999px" }}
+              alt=""
+            />
+          </div>
+        </noscript>
       </body>
     </html>
   );

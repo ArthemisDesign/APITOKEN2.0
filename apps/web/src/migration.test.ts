@@ -77,20 +77,23 @@ describe("completed Next.js migration", () => {
   });
 
   it("loads Yandex Metrika globally with SPA pageviews and replay privacy guards", () => {
+    const rootLayout = readFileSync(join(appRoot, "layout.tsx"), "utf8");
     const analytics = readFileSync(join(root, "components", "site-analytics.tsx"), "utf8");
+    const metrika = readFileSync(join(root, "lib", "yandex-metrika.ts"), "utf8");
     const authShell = readFileSync(join(root, "components", "auth-shell.tsx"), "utf8");
     const dashboard = readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8");
     const docs = readFileSync(join(appRoot, "docs", "docs-portal.tsx"), "utf8");
 
-    expect(analytics).toContain("110788366");
-    expect(analytics).toContain("https://mc.yandex.ru/metrika/tag.js");
-    expect(analytics).toContain("https://mc.yandex.ru/watch/");
-    expect(analytics).toContain("webvisor:true");
-    expect(analytics).toContain("clickmap:true");
-    expect(analytics).toContain("ecommerce:'dataLayer'");
-    expect(analytics).toContain("defer:true");
-    expect(analytics).toContain('window.ym?.(YANDEX_METRIKA_ID, "hit", pathname');
-    expect(analytics).toContain("location.origin+location.pathname");
+    expect(rootLayout).toContain('id="yandex-metrika"');
+    expect(rootLayout).toContain("https://mc.yandex.ru/watch/");
+    expect(metrika).toContain("110788366");
+    expect(metrika).toContain("https://mc.yandex.ru/metrika/tag.js");
+    expect(metrika).toContain("webvisor:true");
+    expect(metrika).toContain("clickmap:true");
+    expect(metrika).toContain("ecommerce:'dataLayer'");
+    expect(metrika).not.toContain("defer:true");
+    expect(metrika).toContain("location.origin+location.pathname");
+    expect(analytics).toContain('window.ym?.(YANDEX_METRIKA_ID, "hit", location.origin + pathname');
     expect(authShell).toContain("auth-card ym-hide-content");
     expect(dashboard).toContain("app ym-hide-content");
     expect(docs).toContain("ym-disable-keys");
