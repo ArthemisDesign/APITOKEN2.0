@@ -467,9 +467,15 @@ preflight_links() {
     [[ -z "$ENGINE_ORIGINAL" && -z "$API_ORIGINAL" ]] || die "--bootstrap requires both current links to be genuinely absent"
     if [[ "$DRY_RUN" != "1" ]]; then
       systemctl_raw is-active --quiet "$LEGACY_API_SERVICE" || die "$LEGACY_API_SERVICE must be active before bootstrap handoff"
-      systemctl_raw is-active --quiet "$ENGINE_SERVICE" && BOOTSTRAP_ENGINE_WAS_ACTIVE=1
-      systemctl_raw is-enabled --quiet "$ENGINE_SERVICE" && BOOTSTRAP_ENGINE_WAS_ENABLED=1
-      systemctl_raw is-enabled --quiet "$API_SERVICE" && BOOTSTRAP_API_WAS_ENABLED=1
+      if systemctl_raw is-active --quiet "$ENGINE_SERVICE"; then
+        BOOTSTRAP_ENGINE_WAS_ACTIVE=1
+      fi
+      if systemctl_raw is-enabled --quiet "$ENGINE_SERVICE"; then
+        BOOTSTRAP_ENGINE_WAS_ENABLED=1
+      fi
+      if systemctl_raw is-enabled --quiet "$API_SERVICE"; then
+        BOOTSTRAP_API_WAS_ENABLED=1
+      fi
     else
       log "dry-run: would require legacy unit $LEGACY_API_SERVICE active before handoff"
     fi
