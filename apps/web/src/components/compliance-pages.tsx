@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { useI18n, type Language } from "./i18n-provider";
+import { api } from "@/lib/api";
 
 const SUPPORT_EMAIL = "apitokensale@gmail.com";
 // apiToken Support — живой Telegram-бот первой линии (Claude Sonnet 5 через наш движок,
@@ -525,6 +527,18 @@ const SUPPORT_IC_MONEY = <svg viewBox="0 0 24 24" width="20" height="20" fill="n
 export function SupportContent() {
   const { language } = useI18n();
   const copy = supportCopy[language];
+  // Залогинен → персональная deep-link: t.me/bot?start=<accountId>. Бот получает
+  // ID профиля в контекст (для себя и оператора). Аноним → обычная ссылка.
+  const [tgUrl, setTgUrl] = useState(SUPPORT_TELEGRAM_URL);
+  useEffect(() => {
+    let alive = true;
+    api.me()
+      .then(({ user }) => {
+        if (alive && user?.id) setTgUrl(`${SUPPORT_TELEGRAM_URL}?start=${encodeURIComponent(user.id)}`);
+      })
+      .catch(() => {/* аноним — обычная ссылка */});
+    return () => { alive = false; };
+  }, []);
   return <>
       <div className="support-bot">
         <div className="support-bot-glow" aria-hidden="true" />
@@ -540,8 +554,8 @@ export function SupportContent() {
           </div>
           <p className="support-bot-desc">{copy.bot.desc}</p>
           <div className="support-bot-actions">
-            <a className="btn btn-primary support-bot-cta" href={SUPPORT_TELEGRAM_URL} target="_blank" rel="noreferrer">{copy.bot.cta}</a>
-            <a className="support-bot-handle" href={SUPPORT_TELEGRAM_URL} target="_blank" rel="noreferrer"><span>{copy.bot.handleLabel}</span>{SUPPORT_TELEGRAM_HANDLE}</a>
+            <a className="btn btn-primary support-bot-cta" href={tgUrl} target="_blank" rel="noreferrer">{copy.bot.cta}</a>
+            <a className="support-bot-handle" href={tgUrl} target="_blank" rel="noreferrer"><span>{copy.bot.handleLabel}</span>{SUPPORT_TELEGRAM_HANDLE}</a>
           </div>
           <span className="support-bot-avail"><i className="support-bot-dot" aria-hidden="true" />{copy.bot.availability}</span>
         </div>
