@@ -61,4 +61,3 @@ chmod 0640 "${DB_MANIFEST}.tmp.$$"
 mv -f -- "${DB_MANIFEST}.tmp.$$" "$DB_MANIFEST"
 rm -f -- "$PENDING_FILE"
 wd_log "migration $SHA committed; the watchdog may now deploy that tested candidate"
-

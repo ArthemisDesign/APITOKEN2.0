@@ -21,4 +21,3 @@ PrivateTmp=true
 ProtectHome=read-only
 ProtectSystem=full
 ReadWritePaths=/var/lib/apitoken/watchdog /opt/apitoken /srv/claude-api/releases /run/lock
-
