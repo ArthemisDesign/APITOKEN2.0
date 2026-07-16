@@ -94,6 +94,9 @@ export const learnUi: Record<Locale, {
   crumbDocs: string;
   crumbGuides: string;
   updated: string;
+  byline: string;
+  seeAlso: string;
+  ctaVariants: string[];
 }> = {
   en: {
     guidesEyebrow: "Claude API guides",
@@ -110,6 +113,14 @@ export const learnUi: Record<Locale, {
     crumbDocs: "Docs",
     crumbGuides: "Guides",
     updated: "Updated",
+    byline: "apiToken.sale Editorial",
+    seeAlso: "See also:",
+    ctaVariants: [
+      "Start free — new accounts get $10 of Claude usage at official prices, no card required.",
+      "Try it before you pay: every new account includes $10 of official-price Claude usage.",
+      "Spin up a key and test the gateway with $10 of included Claude usage — no card needed.",
+      "Create a key and get $10 of Claude usage to prove the setup before you top up.",
+    ],
   },
   ru: {
     guidesEyebrow: "Гайды по Claude API",
@@ -126,6 +137,14 @@ export const learnUi: Record<Locale, {
     crumbDocs: "Документация",
     crumbGuides: "Гайды",
     updated: "Обновлено",
+    byline: "Редакция apiToken.sale",
+    seeAlso: "Читайте также:",
+    ctaVariants: [
+      "Начните бесплатно — новые аккаунты получают $10 использования Claude по официальным ценам, без карты.",
+      "Проверьте до оплаты: в каждом новом аккаунте $10 использования Claude по официальным ценам.",
+      "Создайте ключ и протестируйте шлюз на $10 включённого использования Claude — карта не нужна.",
+      "Заведите ключ и получите $10 использования Claude, чтобы проверить настройку до первого пополнения.",
+    ],
   },
   zh: {
     guidesEyebrow: "Claude API 指南",
@@ -142,6 +161,14 @@ export const learnUi: Record<Locale, {
     crumbDocs: "文档",
     crumbGuides: "指南",
     updated: "更新于",
+    byline: "apiToken.sale 编辑部",
+    seeAlso: "另见：",
+    ctaVariants: [
+      "免费开始——新账户获得价值 $10 的 Claude 官方价格用量，无需绑卡。",
+      "先试后付：每个新账户都包含 $10 的 Claude 官方价格用量。",
+      "创建密钥，用 $10 的 Claude 赠送用量测试网关——无需绑卡。",
+      "创建密钥并获得 $10 的 Claude 用量，在充值前先跑通配置。",
+    ],
   },
   ko: {
     guidesEyebrow: "Claude API 가이드",
@@ -158,6 +185,14 @@ export const learnUi: Record<Locale, {
     crumbDocs: "문서",
     crumbGuides: "가이드",
     updated: "업데이트",
+    byline: "apiToken.sale 편집팀",
+    seeAlso: "함께 보기:",
+    ctaVariants: [
+      "무료로 시작하세요 — 신규 계정은 공식 가격 기준 $10 상당의 Claude 사용량을 카드 없이 받습니다.",
+      "결제 전에 사용해 보세요: 모든 신규 계정에 공식 가격 기준 $10 상당의 Claude 사용량이 포함됩니다.",
+      "키를 만들고 $10 상당의 Claude 사용량으로 게이트웨이를 테스트하세요 — 카드가 필요 없습니다.",
+      "키를 만들고 $10 상당의 Claude 사용량으로 충전 전에 먼저 설정을 확인하세요.",
+    ],
   },
 };
 
@@ -1279,6 +1314,19 @@ function enContent(article: LearnArticle): LocalizedContent {
   };
 }
 
+// The old boilerplate "$10 free" note was repeated on ~40 pages per locale.
+// Strip it from the body so it is not duplicate content; the article view
+// renders a single rotating CTA instead.
+function stripBoilerplateCta(content: LocalizedContent): LocalizedContent {
+  return {
+    ...content,
+    sections: content.sections.map((section) => ({
+      ...section,
+      blocks: section.blocks.filter((block) => !(block.type === "note" && block.text.includes("$10"))),
+    })),
+  };
+}
+
 export type ResolvedArticle = {
   slug: string;
   cluster: LearnCluster;
@@ -1292,11 +1340,11 @@ export function resolveArticle(slug: string, locale: Locale): ResolvedArticle | 
   const base = learnArticlesBySlug[slug];
   if (!base) return null;
   if (locale === "en") {
-    return { slug, cluster: base.cluster, related: base.related, locale, content: enContent(base) };
+    return { slug, cluster: base.cluster, related: base.related, locale, content: stripBoilerplateCta(enContent(base)) };
   }
   const content = translations[locale][slug];
   if (!content) return null;
-  return { slug, cluster: base.cluster, related: base.related, locale, content };
+  return { slug, cluster: base.cluster, related: base.related, locale, content: stripBoilerplateCta(content) };
 }
 
 /** Locales that have a published version of this article (en is always present). */

@@ -17,6 +17,13 @@ import { LAST_CONTENT_UPDATE } from "@/lib/seo";
 
 const UPDATED_DATE = LAST_CONTENT_UPDATE.toISOString().slice(0, 10);
 
+// Deterministic pick so the CTA varies across the cluster without being random.
+function pickIndex(seed: string, n: number): number {
+  let h = 0;
+  for (let i = 0; i < seed.length; i += 1) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return n > 0 ? h % n : 0;
+}
+
 const CLUSTER_ORDER: LearnCluster[] = ["buy", "free", "integrate", "compare", "explain"];
 
 const LANG_LABEL: Record<Locale, string> = { en: "EN", ru: "RU", zh: "中文", ko: "한국어" };
@@ -113,6 +120,8 @@ export function LearnArticleView({ article }: { article: ResolvedArticle }) {
   const related = article.related
     .map((slug) => resolveArticle(slug, locale))
     .filter((entry): entry is ResolvedArticle => Boolean(entry));
+  const ctaText = ui.ctaVariants[pickIndex(article.slug, ui.ctaVariants.length)];
+  const seeAlso = related[0];
 
   return (
     <main className="learn-article">
@@ -131,16 +140,19 @@ export function LearnArticleView({ article }: { article: ResolvedArticle }) {
           <span className="eyebrow">{cluster.label}</span>
           <h1>{content.h1}</h1>
           <p>{content.dek}</p>
-          <p className="learn-updated"><time dateTime={UPDATED_DATE}>{ui.updated} {UPDATED_DATE}</time></p>
+          <p className="learn-updated"><span className="learn-byline">{ui.byline}</span> · <time dateTime={UPDATED_DATE}>{ui.updated} {UPDATED_DATE}</time></p>
         </div>
       </div>
 
       <section className="borderless">
         <div className="wrap learn-body">
-          {content.sections.map((section) => (
+          {content.sections.map((section, sectionIndex) => (
             <div className="learn-section" key={section.h2}>
               <h2 className="docs-h3">{section.h2}</h2>
               {section.blocks.map((block, index) => <Block key={index} block={block} />)}
+              {sectionIndex === 0 && seeAlso && (
+                <p className="learn-seealso">{ui.seeAlso} <Link href={learnPath(seeAlso.slug, locale)}>{seeAlso.content.h1}</Link></p>
+              )}
             </div>
           ))}
 
@@ -158,9 +170,12 @@ export function LearnArticleView({ article }: { article: ResolvedArticle }) {
             </div>
           )}
 
-          <div className="hero-cta page-actions">
-            <Link className="btn btn-primary" href="/register">{ui.getKey}</Link>
-            <Link className="btn btn-ghost" href="/docs">{ui.readDocs}</Link>
+          <div className="learn-cta">
+            <p>{ctaText}</p>
+            <div className="hero-cta page-actions">
+              <Link className="btn btn-primary" href="/register">{ui.getKey}</Link>
+              <Link className="btn btn-ghost" href="/docs">{ui.readDocs}</Link>
+            </div>
           </div>
 
           {related.length > 0 && (

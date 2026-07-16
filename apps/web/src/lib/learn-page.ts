@@ -45,7 +45,6 @@ export function buildArticleMetadata(slug: string, locale: Locale): Metadata | n
   };
   return {
     ...base,
-    keywords: article.content.keywords,
     openGraph,
     twitter: usesGeneratedOg ? twRest : base.twitter,
     alternates: {
@@ -106,7 +105,6 @@ export function buildHubMetadata(locale: Locale): Metadata {
   const base = createPageMetadata({ path, title: ui.hubTitle, description: ui.hubDescription });
   return {
     ...base,
-    keywords: ui.hubKeywords,
     openGraph: { ...base.openGraph, locale: ogLocale(locale) },
     alternates: { canonical: absoluteUrl(path), languages: hubAlternates() },
   };

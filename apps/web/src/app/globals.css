@@ -1829,3 +1829,12 @@ body.app-body .bg-decor{display:none!important}
 
 .learn-updated{font-family:var(--font-mono);font-size:12px;color:var(--txt-3);margin:6px 0 0}
 .learn-updated time{color:var(--txt-3)}
+
+/* Guide CTA banner, byline, contextual link */
+.learn-byline{color:var(--txt-2);font-weight:600}
+.learn-cta{border:1px solid var(--line);border-left:3px solid var(--accent);background:var(--bg-soft);
+  border-radius:var(--radius,12px);padding:18px 20px;display:flex;flex-direction:column;gap:12px}
+.learn-cta p{margin:0;color:var(--txt);font-size:15px}
+.learn-cta .page-actions{margin:0}
+.learn-seealso{margin:2px 0 0;font-size:14px;color:var(--txt-3)}
+.learn-seealso a{color:var(--accent)}
