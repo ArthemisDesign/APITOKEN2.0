@@ -11,6 +11,7 @@ import { normalizeUsd } from "@/lib/money";
 import { B2C_PRICING_MILESTONES, formatWholeUsd, pricingMilestoneProgress } from "@/lib/pricing-tiers";
 import { useI18n } from "@/components/i18n-provider";
 import { ThemeToggle } from "@/components/site-chrome";
+import { SupportContent } from "@/components/compliance-pages";
 import { dashboardCopy, type DashboardCopy } from "@/lib/dashboard-copy";
 import { DOCS_URL } from "@/lib/site-links";
 import { dashboardHref, parseDashboardSection, type DashboardSection } from "./dashboard-route";
@@ -54,6 +55,7 @@ const navigation: Array<{ section?: Section; label: keyof DashboardCopy; icon: s
   { group: "navBilling", section: "credits", label: "navTopUp", icon: "＋" },
   { group: "navGrowth", section: "promos", label: "navPromos", icon: "%" },
   { group: "navActivity", section: "usage", label: "navUsage", icon: "◔" },
+  { group: "navSupportGroup", section: "support", label: "navSupport", icon: "☏" },
   { group: "navAccount", section: "profile", label: "navProfile", icon: "◍" },
   { section: "security", label: "navSecurity", icon: "⛨" },
 ];
@@ -168,6 +170,7 @@ export function Dashboard() {
         {section === "keys" && <ApiKeys keys={keys} onChanged={load} />}
         {section === "credits" && <Credits account={account} ledger={ledger} />}
         {section === "usage" && <Usage account={account} ledger={ledger} usage={usage} />}
+        {section === "support" && <SupportPanel />}
         {section === "profile" && <Profile user={user} open={open} onUpdated={setUser} />}
         {section === "security" && <Security user={user} onLogout={logout} />}
         {section === "promos" && <PromoPanel />}
@@ -763,6 +766,11 @@ function Security({ user, onLogout }: { user: AuthUser; onLogout(): Promise<void
   const copy = useDashboardCopy();
   const browser = typeof navigator === "undefined" ? "Current browser" : navigator.userAgent;
   return <section className="panel"><PageHeading eyebrow={copy.navAccount} title={copy.securityTitle} subtitle={copy.securitySubtitle} /><div className="card"><p className="p-sub no-top-margin">{copy.twoFactorHelp}</p><button className="btn btn-primary btn-sm" disabled>{copy.enable2fa}</button><span className="future-note">{copy.backendRequired}</span></div>{user.passwordEnabled ? <section className="dsec"><h2>{copy.password}</h2><div className="set-card"><div className="set-row"><span className="set-l">{copy.currentPassword}</span><input className="set-in" type="password" disabled /></div><div className="set-row"><span className="set-l">{copy.newPassword}</span><input className="set-in" type="password" disabled /></div><button className="btn btn-primary btn-sm" disabled>{copy.updatePassword}</button><span className="future-note">{copy.passwordPending}</span></div></section> : <section className="dsec"><h2>{copy.oauthAccess}</h2><div className="set-card oauth-access-card"><p className="p-sub no-margin">{copy.oauthAccessText}</p></div></section>}<section className="dsec"><h2>{copy.activeSessions}</h2><div className="set-card"><div className="set-row"><span className="set-l"><b>{copy.thisDevice}</b><br /><span className="p-sub session-agent">{browser}</span></span><span className="obadge">{copy.activeNow}</span></div><button className="btn btn-ghost btn-sm" onClick={onLogout}>{copy.logoutSession}</button></div></section></section>;
+}
+
+function SupportPanel() {
+  const copy = useDashboardCopy();
+  return <section className="panel"><PageHeading eyebrow={copy.supportEyebrow} title={copy.supportTitle} subtitle={copy.supportSubtitle} /><SupportContent /></section>;
 }
 
 function PromoPanel() {
