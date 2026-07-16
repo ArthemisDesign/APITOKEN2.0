@@ -175,11 +175,14 @@ section{padding:96px 0;border-bottom:1px solid var(--line)}
 .hero h1{margin:22px 0 22px;inline-size:510px;max-inline-size:100%;min-block-size:2.36em}
 .hero-h1 span{display:block}
 .hero .lead{font-size:17px;color:var(--txt-3);max-width:520px;margin-bottom:20px;min-block-size:3.2em}
-/* супер-краткие тезисы о продукте под лидом */
-.hero-points{list-style:none;margin:0 0 30px;padding:0;display:grid;gap:9px;max-width:520px}
-.hero-points li{position:relative;padding-left:26px;font-family:var(--font-mono);font-size:14px;color:var(--txt-2);line-height:1.45}
-.hero-points li::before{content:"";position:absolute;left:2px;top:.42em;width:11px;height:6px;
-  border-left:2px solid var(--accent);border-bottom:2px solid var(--accent);transform:rotate(-45deg)}
+/* супер-краткие тезисы о продукте под лидом — с пиксель-значками (свой на светлую/тёмную) */
+.hero-points{list-style:none;margin:0 0 30px;padding:0;display:grid;gap:11px;max-width:540px}
+.hero-points li{display:flex;align-items:flex-start;gap:11px;font-family:var(--font-mono);font-size:14px;color:var(--txt-2);line-height:1.45}
+.hp-ic{flex:none;width:22px;height:22px;margin-top:1px;display:inline-flex}
+.hp-ic img{width:22px;height:22px;object-fit:contain;display:block}
+.hp-ic .hp-ic-d{display:none}
+[data-theme="dark"] .hp-ic .hp-ic-l{display:none}
+[data-theme="dark"] .hp-ic .hp-ic-d{display:inline-block}
 .hero-cta{display:flex;gap:14px;flex-wrap:wrap}
 
 /* terminal card stays anchored; only the macOS controls react to hover */
