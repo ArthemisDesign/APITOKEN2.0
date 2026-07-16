@@ -189,8 +189,15 @@ export const createApiKeySchema = z.object({
   label: z.string().trim().min(1).max(100).optional(),
 }).strict();
 
-// Prepay-модель: Starter −60% даётся СТАРТОВО (базовый тир, порог $0, удержания нет). Выше — за
-// НАКОПЛЕННЫЕ пополнения (`spendThresholdNano` = порог), удержание `holdNano` (=50%) за скользящие 30 дней.
+export const renameApiKeySchema = z.object({
+  label: z.string().trim().min(1).max(64),
+}).strict();
+
+export type RenameApiKey = z.infer<typeof renameApiKeySchema>;
+
+// Prepay-модель: Starter −60% даётся СТАРТОВО (базовый тир, порог $0, удержания нет). Выше тир
+// повышается только по идемпотентно потреблённым charge-строкам engine ledger: `spendThresholdNano`
+// — порог накопленного `pricing_usage_events.amount_nano`, `holdNano` — расход за скользящие 30 дней.
 export const B2C_PRICING_TIERS = [
   { code: "starter", discountPercent: 60, multiplierBp: 4000, spendThresholdNano: 0n, holdNano: 0n, visibleOfficialUsageUsd: "0" },
   { code: "builder", discountPercent: 65, multiplierBp: 3500, spendThresholdNano: 100_000_000_000n, holdNano: 50_000_000_000n, visibleOfficialUsageUsd: "286" },

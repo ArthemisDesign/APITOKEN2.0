@@ -34,14 +34,20 @@ export class CheckoutService {
     const session = await createCheckoutSession(this.database, { userId, provider: providerCode, amountUsd });
     try {
       const appBaseUrl = this.config.get("PUBLIC_APP_BASE_URL", { infer: true });
+      const returnUrl = new URL("/dashboard", appBaseUrl);
+      returnUrl.searchParams.set("view", "credits");
+      returnUrl.searchParams.set("checkoutId", session.id);
+      returnUrl.searchParams.set("paymentReturn", "success");
+      const cancelUrl = new URL(returnUrl);
+      cancelUrl.searchParams.set("paymentReturn", "cancel");
       const creation = await provider.createCheckout({
         checkoutId: session.id,
         amount: amountInput,
         customerEmail: session.customerEmail,
         locale: "en-US",
         currency: "USD",
-        returnUrl: new URL(`/payments/${session.id}/success`, appBaseUrl).toString(),
-        cancelUrl: new URL(`/payments/${session.id}/cancel`, appBaseUrl).toString(),
+        returnUrl: returnUrl.toString(),
+        cancelUrl: cancelUrl.toString(),
       });
       if (!creation.providerPaymentId) throw new Error("provider did not return a payment ID");
       if (creation.action.kind !== "redirect") throw new Error("provider did not return a redirect checkout");

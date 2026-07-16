@@ -141,11 +141,11 @@ export class CryptomusProvider implements WebhookPaymentProviderAdapter {
       throw new CryptomusError("Cryptomus returned a mismatched payment ID", true);
     }
     const metadata = parseMetadata(payment.additional_data);
-    const state = paymentState(payment.status);
+    const state = paymentState(payment.status, payment.is_final);
     return {
       provider: this.code,
       providerPaymentId: payment.uuid,
-      providerEventId: `${payment.uuid}:${payment.status}`,
+      providerEventId: paymentEventId(payment.uuid, payment.status, payment.is_final),
       state,
       providerProductId: null,
       checkoutId: metadata.checkoutId,
@@ -202,7 +202,7 @@ function parseMetadata(value: string | null | undefined): z.infer<typeof metadat
   }
 }
 
-function paymentState(status: string): ProviderPaymentState {
+function paymentState(status: string, isFinal: boolean): ProviderPaymentState {
   switch (status) {
     case "paid":
     case "paid_over":
@@ -213,9 +213,18 @@ function paymentState(status: string): ProviderPaymentState {
       return "canceled";
     case "refund_paid":
       return "refunded";
+    case "wrong_amount":
+      return isFinal ? "canceled" : "pending";
+    case "wrong_amount_waiting":
     default:
       return "pending";
   }
+}
+
+function paymentEventId(paymentId: string, status: string, isFinal: boolean): string {
+  return status === "wrong_amount"
+    ? `${paymentId}:${status}:${isFinal ? "final" : "open"}`
+    : `${paymentId}:${status}`;
 }
 
 // Cryptomus signs webhook JSON using PHP's default escaped-slash representation.

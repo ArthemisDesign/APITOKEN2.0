@@ -14,6 +14,8 @@ import {
 import type { Environment } from "./config.js";
 import { DATABASE, WORKER_ID } from "./tokens.js";
 
+const STALE_EMAIL_RECOVERY_INTERVAL_MS = 60_000;
+
 @Injectable()
 export class EmailWorkerService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(EmailWorkerService.name);
@@ -45,7 +47,12 @@ export class EmailWorkerService implements OnModuleInit, OnApplicationShutdown {
     });
     const recovered = await recoverStaleEmails(this.database);
     if (recovered > 0) this.logger.warn(`recovered ${recovered} stale email jobs`);
-    this.loop = this.run();
+    this.loop = this.run().catch((error) => {
+      this.stopped = true;
+      this.logger.error(`email worker terminated unexpectedly: ${message(error)}`);
+      process.exitCode = 1;
+      process.kill(process.pid, "SIGTERM");
+    });
   }
 
   async onApplicationShutdown(): Promise<void> {
@@ -57,26 +64,32 @@ export class EmailWorkerService implements OnModuleInit, OnApplicationShutdown {
 
   private async run(): Promise<void> {
     const pollMs = this.config.get("EMAIL_POLL_MS", { infer: true });
+    let nextRecoveryAt = Date.now() + STALE_EMAIL_RECOVERY_INTERVAL_MS;
     this.logger.log(`email worker ${this.workerId} started`);
     while (!this.stopped) {
-      let job: ClaimedEmail | null;
       try {
-        job = await claimNextEmail(this.database, this.workerId);
+        if (Date.now() >= nextRecoveryAt) {
+          const recovered = await recoverStaleEmails(this.database);
+          if (recovered > 0) this.logger.warn(`recovered ${recovered} stale email jobs`);
+          nextRecoveryAt = Date.now() + STALE_EMAIL_RECOVERY_INTERVAL_MS;
+        }
+
+        const job = await claimNextEmail(this.database, this.workerId);
+        if (!job) {
+          await this.sleep(pollMs);
+          continue;
+        }
+        try {
+          const messageId = await this.send(job);
+          await confirmEmail(this.database, job.id, messageId);
+        } catch (error) {
+          const deliveryError = message(error);
+          this.logger.error(`email ${job.id} delivery failed: ${deliveryError}`);
+          await retryEmail(this.database, job, deliveryError);
+        }
       } catch (error) {
-        this.logger.error(`email claim failed: ${message(error)}`);
+        this.logger.error(`email worker iteration failed: ${message(error)}`);
         await this.sleep(pollMs);
-        continue;
-      }
-      if (!job) {
-        await this.sleep(pollMs);
-        continue;
-      }
-      try {
-        const messageId = await this.send(job);
-        await confirmEmail(this.database, job.id, messageId);
-      } catch (error) {
-        await retryEmail(this.database, job, message(error));
-        this.logger.error(`email ${job.id} delivery failed: ${message(error)}`);
       }
     }
   }

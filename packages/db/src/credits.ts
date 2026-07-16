@@ -9,6 +9,7 @@ export interface ClaimedCredit {
   amountNano: bigint;
   idempotencyRef: string;
   attempts: number;
+  leaseToken: string;
 }
 
 export async function claimNextCredit(database: Database, workerId: string): Promise<ClaimedCredit | null> {
@@ -37,12 +38,13 @@ export async function claimNextCredit(database: Database, workerId: string): Pro
       return null;
     }
 
+    const leaseToken = `${workerId}:${randomUUID()}`;
     await client.query(`
       UPDATE engine_credits
       SET status = 'processing', locked_at = now(), locked_by = $1,
           attempts = attempts + 1, updated_at = now()
       WHERE id = $2
-    `, [workerId, row.id]);
+    `, [leaseToken, row.id]);
     await client.query("COMMIT");
     return {
       id: row.id,
@@ -51,6 +53,7 @@ export async function claimNextCredit(database: Database, workerId: string): Pro
       amountNano: BigInt(row.amount_nano),
       idempotencyRef: row.idempotency_ref,
       attempts: row.attempts + 1,
+      leaseToken,
     };
   } catch (error) {
     await client.query("ROLLBACK");
@@ -60,25 +63,38 @@ export async function claimNextCredit(database: Database, workerId: string): Pro
   }
 }
 
-export async function confirmCredit(database: Database, id: string, balanceNano: bigint): Promise<void> {
-  await database.db.execute(sql`
+export async function confirmCredit(
+  database: Database,
+  id: string,
+  leaseToken: string,
+  balanceNano: bigint,
+): Promise<boolean> {
+  const result = await database.db.execute(sql`
     UPDATE engine_credits
     SET status = 'confirmed', engine_balance_after_nano = ${balanceNano.toString()},
         confirmed_at = now(), locked_at = NULL, locked_by = NULL,
         last_error = NULL, updated_at = now()
-    WHERE id = ${id} AND status = 'processing'
+    WHERE id = ${id} AND status = 'processing' AND locked_by = ${leaseToken}
   `);
+  return result.rowCount === 1;
 }
 
-export async function retryCredit(database: Database, id: string, error: string, attempts: number): Promise<void> {
+export async function retryCredit(
+  database: Database,
+  id: string,
+  leaseToken: string,
+  error: string,
+  attempts: number,
+): Promise<boolean> {
   const cappedError = error.slice(0, 2000);
   const delaySeconds = Math.min(3600, Math.max(5, 2 ** Math.min(attempts, 10)));
-  await database.db.execute(sql`
+  const result = await database.db.execute(sql`
     UPDATE engine_credits
     SET status = 'retry', next_attempt_at = now() + (${delaySeconds} * interval '1 second'),
         locked_at = NULL, locked_by = NULL, last_error = ${cappedError}, updated_at = now()
-    WHERE id = ${id} AND status = 'processing'
+    WHERE id = ${id} AND status = 'processing' AND locked_by = ${leaseToken}
   `);
+  return result.rowCount === 1;
 }
 
 export async function recoverStaleCredits(database: Database): Promise<number> {

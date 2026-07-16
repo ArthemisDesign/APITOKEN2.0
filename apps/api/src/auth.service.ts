@@ -1,10 +1,9 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { Inject, Injectable } from "@nestjs/common";
+import { ForbiddenException, Inject, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { hash, verify, argon2id } from "argon2";
 import type { AuthUserView } from "@claude-api/contracts";
 import {
-  completeEngineAccount,
   completeExternalSignIn,
   consumeEmailVerification,
   consumeOAuthTransaction,
@@ -14,7 +13,6 @@ import {
   createAuthSession,
   createEmailUser,
   clearAuthRateLimit,
-  failEngineAccount,
   findPasswordUser,
   getAuthUser,
   decodeAuthEncryptionKey,
@@ -52,6 +50,11 @@ export class EmailVerificationRequiredError extends Error {}
 export class AuthRateLimitedError extends Error {}
 export class InvalidAuthTokenError extends Error {}
 export class InvalidOAuthTransactionError extends Error {}
+export class EngineAccountDisabledError extends ForbiddenException {
+  constructor() {
+    super("engine account is disabled");
+  }
+}
 
 @Injectable()
 export class AuthService {
@@ -265,6 +268,19 @@ export class AuthService {
 
   private async provisionEngineAccount(user: AuthUser, multiplierBp: number): Promise<void> {
     if (user.engineAccountStatus === "active") return;
+    if (user.engineAccountStatus === "disabled") throw new EngineAccountDisabledError();
+
+    const currentStatus = await this.engineAccountStatusForUser(user.id);
+    if (currentStatus === "active") {
+      user.engineAccountStatus = "active";
+      return;
+    }
+    if (currentStatus === "disabled") {
+      user.engineAccountStatus = "disabled";
+      throw new EngineAccountDisabledError();
+    }
+    if (currentStatus === null) throw new Error("engine account mapping is missing");
+
     try {
       const account = await createFundedEngineAccount(this.engine, {
         userId: user.id,
@@ -272,12 +288,60 @@ export class AuthService {
         handle: `user:${user.id}`,
         multBp: multiplierBp,
       });
-      await completeEngineAccount(this.database, user.id, account.account);
-      user.engineAccountStatus = "active";
+      const completed = await this.database.pool.query(`
+        UPDATE engine_accounts
+        SET engine_account_id = $2, status = 'active', last_error = NULL, updated_at = now()
+        WHERE user_id = $1 AND status IN ('pending', 'error')
+        RETURNING status
+      `, [user.id, account.account]);
+      if (completed.rowCount === 1) {
+        user.engineAccountStatus = "active";
+        return;
+      }
+
+      const latestStatus = await this.engineAccountStatusForUser(user.id);
+      if (latestStatus === "active") {
+        user.engineAccountStatus = "active";
+        return;
+      }
+      if (latestStatus === "disabled") {
+        user.engineAccountStatus = "disabled";
+        // AUDIT-TODO(C61): add a durable provisioning lease/version plus remote disable compensation for a claim lost after creation.
+        throw new EngineAccountDisabledError();
+      }
+      throw new Error("engine account mapping changed during provisioning");
     } catch (error) {
-      await failEngineAccount(this.database, user.id, error instanceof Error ? error.message : "engine account creation failed");
+      if (error instanceof EngineAccountDisabledError) throw error;
+      const failed = await this.database.pool.query(`
+        UPDATE engine_accounts
+        SET status = 'error', last_error = $2, updated_at = now()
+        WHERE user_id = $1 AND status IN ('pending', 'error')
+        RETURNING status
+      `, [user.id, error instanceof Error ? error.message.slice(0, 1000) : "engine account creation failed"]);
+      if (failed.rowCount === 1) {
+        user.engineAccountStatus = "error";
+        return;
+      }
+
+      const latestStatus = await this.engineAccountStatusForUser(user.id);
+      if (latestStatus === "disabled") {
+        user.engineAccountStatus = "disabled";
+        throw new EngineAccountDisabledError();
+      }
+      if (latestStatus === "active") {
+        user.engineAccountStatus = "active";
+        return;
+      }
       user.engineAccountStatus = "error";
     }
+  }
+
+  private async engineAccountStatusForUser(userId: string): Promise<AuthUser["engineAccountStatus"] | null> {
+    const result = await this.database.pool.query<{ status: AuthUser["engineAccountStatus"] }>(
+      "SELECT status FROM engine_accounts WHERE user_id = $1",
+      [userId],
+    );
+    return result.rows[0]?.status ?? null;
   }
 }
 

@@ -1,9 +1,6 @@
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, NotFoundException } from "@nestjs/common";
 import {
-  completeEngineAccount,
-  failEngineAccount,
   findOwnedApiKey,
-  getEngineAccountMapping,
   getPricingView,
   markEngineAccountMissing,
   markOwnedApiKeyDisabled,
@@ -26,27 +23,90 @@ export class AccountService {
   ) {}
 
   async ensureEngineAccount(userId: string): Promise<string> {
-    const mapping = await getEngineAccountMapping(this.database, userId);
-    if (!mapping) throw new EngineAccountUnavailableError("engine account mapping is missing");
-    if (mapping.status === "disabled") throw new EngineAccountUnavailableError("engine account is disabled");
-    if (mapping.status === "active" && mapping.engineAccountId) return mapping.engineAccountId;
-
+    const client = await this.database.pool.connect();
+    let transactionOpen = false;
     try {
-      const account = await createFundedEngineAccount(this.engine, {
-        userId,
-        customerType: mapping.customerType,
-        handle: `user:${userId}`,
-        multBp: mapping.multBp,
-      });
-      await completeEngineAccount(this.database, userId, account.account);
-      return account.account;
+      await client.query("BEGIN");
+      transactionOpen = true;
+      // AUDIT(C82): serialize provisioning across API instances without keeping lock state in process memory.
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [userId]);
+
+      const mappingResult = await client.query<EngineAccountMappingRow>(`
+        SELECT ea.engine_account_id, ea.status, ea.mult_bp,
+               COALESCE(cp.customer_type, 'b2c') AS customer_type
+        FROM engine_accounts ea
+        LEFT JOIN customer_profiles cp ON cp.user_id = ea.user_id
+        WHERE ea.user_id = $1
+        FOR UPDATE OF ea
+      `, [userId]);
+      const row = mappingResult.rows[0];
+      const mapping = row ? {
+        engineAccountId: row.engine_account_id,
+        status: row.status,
+        multBp: row.mult_bp,
+        customerType: row.customer_type,
+      } : null;
+      if (!mapping) throw new EngineAccountUnavailableError("engine account mapping is missing");
+      if (mapping.status === "disabled") throw new EngineAccountUnavailableError("engine account is disabled");
+      if (mapping.status === "active" && mapping.engineAccountId) {
+        await client.query("COMMIT");
+        transactionOpen = false;
+        return mapping.engineAccountId;
+      }
+      if (mapping.status !== "pending" && mapping.status !== "error") {
+        throw new EngineAccountUnavailableError("engine account mapping is inconsistent");
+      }
+
+      let account: Awaited<ReturnType<typeof createFundedEngineAccount>>;
+      try {
+        account = await createFundedEngineAccount(this.engine, {
+          userId,
+          customerType: mapping.customerType,
+          handle: `user:${userId}`,
+          multBp: mapping.multBp,
+        });
+      } catch (error) {
+        // AUDIT(C65/C82): a failed attempt may only fail the exact state it observed.
+        await client.query(`
+          UPDATE engine_accounts
+          SET status = 'error', last_error = $4, updated_at = now()
+          WHERE user_id = $1
+            AND status = $2
+            AND engine_account_id IS NOT DISTINCT FROM $3
+        `, [
+          userId,
+          mapping.status,
+          mapping.engineAccountId,
+          (error instanceof Error ? error.message : "engine account provisioning failed").slice(0, 1000),
+        ]);
+        await client.query("COMMIT");
+        transactionOpen = false;
+        throw new EngineAccountUnavailableError("engine account is temporarily unavailable", { cause: error });
+      }
+
+      // AUDIT(C65): never let an in-flight request overwrite a concurrent administrative disable.
+      const completed = await client.query<{ engine_account_id: string }>(`
+        UPDATE engine_accounts
+        SET engine_account_id = $3, status = 'active', last_error = NULL, updated_at = now()
+        WHERE user_id = $1
+          AND status = $2
+          AND engine_account_id IS NOT DISTINCT FROM $4
+        RETURNING engine_account_id
+      `, [userId, mapping.status, account.account, mapping.engineAccountId]);
+      await client.query("COMMIT");
+      transactionOpen = false;
+
+      if (!completed.rows[0]) {
+        // AUDIT-TODO(C65): add an engine-client account-disable compensation call for a newly
+        // provisioned account when this compare-and-set loses to an administrative disable.
+        throw new EngineAccountUnavailableError("engine account state changed during provisioning");
+      }
+      return completed.rows[0].engine_account_id;
     } catch (error) {
-      await failEngineAccount(
-        this.database,
-        userId,
-        error instanceof Error ? error.message : "engine account provisioning failed",
-      );
-      throw new EngineAccountUnavailableError("engine account is temporarily unavailable", { cause: error });
+      if (transactionOpen) await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
     }
   }
 
@@ -119,12 +179,13 @@ export class AccountService {
     );
     const keys: unknown[] = [];
     for (const key of engineKeys) {
+      const keyMasked = validateMaskedApiKey(key.key_masked);
       const stored = await syncEngineApiKey(this.database, {
         userId,
         engineAccountId: accountId,
         engineKeyId: key.key_id,
         label: key.label,
-        keyMasked: key.key_masked,
+        keyMasked,
         status: key.status,
       });
       keys.push(apiKeyView(stored, key.spent_nano, key.spent));
@@ -159,6 +220,35 @@ export class AccountService {
     return { ...apiKeyView(stored, "0", "$0.000000000"), key: issued.key };
   }
 
+  async renameApiKey(userId: string, apiKeyId: string, label: string): Promise<unknown> {
+    const owned = await findOwnedApiKey(this.database, userId, apiKeyId);
+    if (!owned) throw new NotFoundException("API key not found");
+
+    // The engine rename endpoint is global by key_id, so verify the key is still present on the
+    // authenticated user's mapped account immediately before invoking it.
+    const accountKeys = await this.engine.listKeys(owned.engineAccountId);
+    if (!accountKeys.some((key) => key.key_id === owned.engineKeyId)) {
+      throw new NotFoundException("API key not found");
+    }
+
+    await this.engine.renameKey(owned.engineKeyId, label);
+
+    const updated = (await this.engine.listKeys(owned.engineAccountId))
+      .find((key) => key.key_id === owned.engineKeyId);
+    if (!updated) {
+      throw new EngineClientError("engine omitted the renamed API key", undefined, false);
+    }
+    const stored = await syncEngineApiKey(this.database, {
+      userId,
+      engineAccountId: owned.engineAccountId,
+      engineKeyId: updated.key_id,
+      label: updated.label,
+      keyMasked: validateMaskedApiKey(updated.key_masked),
+      status: updated.status,
+    });
+    return apiKeyView(stored, updated.spent_nano, updated.spent);
+  }
+
   async disableApiKey(userId: string, apiKeyId: string): Promise<boolean> {
     const owned = await findOwnedApiKey(this.database, userId, apiKeyId);
     if (!owned) return false;
@@ -184,6 +274,24 @@ export class AccountService {
       return { accountId: recoveredId, value: await action(recoveredId) };
     }
   }
+}
+
+interface EngineAccountMappingRow {
+  engine_account_id: string | null;
+  status: "pending" | "active" | "error" | "disabled";
+  mult_bp: number;
+  customer_type: "b2c" | "b2b";
+}
+
+const rawPoolApiKeyPattern = /^sk-pool-[0-9a-f]{48}$/i;
+const maskedPoolApiKeyPattern = /^sk-pool-[0-9a-f]{4}…[0-9a-f]{4}$/i;
+
+function validateMaskedApiKey(value: string): string {
+  // AUDIT(C64): defense in depth before the engine value can reach commerce storage or the browser.
+  if (rawPoolApiKeyPattern.test(value) || !maskedPoolApiKeyPattern.test(value)) {
+    throw new EngineClientError("engine returned an invalid masked API key", undefined, false);
+  }
+  return value;
 }
 
 function apiKeyView(stored: StoredApiKey, spentNano: string, spentUsd: string): Record<string, unknown> {

@@ -50,7 +50,7 @@ export class EngineClient {
 
   async health(): Promise<boolean> {
     try {
-      const response = await this.request("/health", { authenticated: false });
+      const { response } = await this.request("/health", { authenticated: false });
       return response.ok;
     } catch {
       return false;
@@ -61,81 +61,109 @@ export class EngineClient {
     const body: Record<string, unknown> = {};
     if (input.handle !== undefined) body.handle = input.handle;
     if (input.multBp !== undefined) body.mult_bp = input.multBp;
-    const response = await this.request("/admin/account", { method: "POST", body: JSON.stringify(body) });
-    const payload = this.parse(response, await response.text()) as Record<string, unknown>;
-    if (typeof payload.account !== "string" || typeof payload.mult_bp !== "number") {
+    const { response, payload } = await this.request("/admin/account", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    const result = payload as Record<string, unknown>;
+    if (typeof result.account !== "string" || typeof result.mult_bp !== "number") {
       throw new EngineClientError("engine returned an invalid account response", response.status, false);
     }
     return {
-      account: payload.account,
-      multBp: payload.mult_bp,
-      handle: typeof payload.handle === "string" ? payload.handle : null,
+      account: result.account,
+      multBp: result.mult_bp,
+      handle: typeof result.handle === "string" ? result.handle : null,
     };
   }
 
   async getAccount(accountId: string): Promise<EngineAccount> {
-    const response = await this.request(`/admin/account/${encodeURIComponent(accountId)}`);
-    return engineAccountSchema.parse(this.parse(response, await response.text()));
+    const { response, payload } = await this.request(`/admin/account/${encodeURIComponent(accountId)}`);
+    const account = engineAccountSchema.parse(payload);
+    this.assertAccount(account.account, accountId, response);
+    return account;
   }
 
   async creditAccount(accountId: string, amountNano: bigint, reference: string): Promise<EngineCreditResult> {
     if (amountNano <= 0n) throw new RangeError("amountNano must be positive");
     const body = `{"amount_nano":${amountNano.toString()},"ref":${JSON.stringify(reference)}}`;
-    const response = await this.request(`/admin/account/${encodeURIComponent(accountId)}/credit`, {
+    const { response, payload } = await this.request(`/admin/account/${encodeURIComponent(accountId)}/credit`, {
       method: "POST",
       body,
     });
-    return engineCreditResultSchema.parse(this.parse(response, await response.text()));
+    const result = engineCreditResultSchema.parse(payload);
+    this.assertAccount(result.account, accountId, response);
+    return result;
   }
 
   async listKeys(accountId: string): Promise<EngineApiKey[]> {
-    const response = await this.request(`/admin/account/${encodeURIComponent(accountId)}/keys`);
-    const result = engineApiKeyListSchema.parse(this.parse(response, await response.text()));
+    const { response, payload } = await this.request(`/admin/account/${encodeURIComponent(accountId)}/keys`);
+    const result = engineApiKeyListSchema.parse(payload);
+    this.assertAccount(result.account, accountId, response);
     return result.keys;
   }
 
   async issueKey(accountId: string, label?: string): Promise<IssuedEngineApiKey> {
     const body: Record<string, unknown> = { account_id: accountId };
     if (label !== undefined) body.label = label;
-    const response = await this.request("/admin/key", { method: "POST", body: JSON.stringify(body) });
-    return issuedEngineApiKeySchema.parse(this.parse(response, await response.text()));
+    const { response, payload } = await this.request("/admin/key", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    const key = issuedEngineApiKeySchema.parse(payload);
+    this.assertAccount(key.account, accountId, response);
+    return key;
   }
 
   async disableKey(keyId: string): Promise<void> {
-    const response = await this.request(`/admin/key-id/${encodeURIComponent(keyId)}/status`, {
+    const { response, payload } = await this.request(`/admin/key-id/${encodeURIComponent(keyId)}/status`, {
       method: "POST",
       body: '{"status":"disabled"}',
     });
-    const payload = this.parse(response, await response.text()) as Record<string, unknown>;
-    if (payload.key_id !== keyId || payload.status !== "disabled" || payload.updated !== 1) {
+    const result = payload as Record<string, unknown>;
+    if (result.key_id !== keyId || result.status !== "disabled" || result.updated !== 1) {
       throw new EngineClientError("engine returned an invalid key status response", response.status, false);
+    }
+  }
+
+  async renameKey(keyId: string, label: string): Promise<void> {
+    const { response, payload } = await this.request(`/admin/key-id/${encodeURIComponent(keyId)}/label`, {
+      method: "POST",
+      body: JSON.stringify({ label }),
+    });
+    const result = payload as Record<string, unknown>;
+    if (result.key_id !== keyId || result.updated !== 1) {
+      throw new EngineClientError("engine returned an invalid key label response", response.status, false);
     }
   }
 
   async getLedger(accountId: string, limit = 50): Promise<EngineLedgerEntry[]> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new RangeError("limit must be an integer from 1 to 1000");
-    const response = await this.request(
+    const { response, payload } = await this.request(
       `/admin/account/${encodeURIComponent(accountId)}/ledger?limit=${limit}`,
     );
-    const result = engineLedgerSchema.parse(this.parse(response, await response.text()));
+    const result = engineLedgerSchema.parse(payload);
+    this.assertAccount(result.account, accountId, response);
     return result.entries;
   }
 
   async getUsage(accountId: string, window = "30d"): Promise<EngineUsage> {
     if (!/^(all|\d+[dh])$/.test(window)) throw new RangeError("window must be like 30d, 7d, 24h, or all");
-    const response = await this.request(
+    const { response, payload } = await this.request(
       `/admin/account/${encodeURIComponent(accountId)}/usage?window=${encodeURIComponent(window)}`,
     );
-    return engineUsageSchema.parse(this.parse(response, await response.text()));
+    const usage = engineUsageSchema.parse(payload);
+    this.assertAccount(usage.account, accountId, response);
+    return usage;
   }
 
   async getLedgerAfter(accountId: string, afterId: bigint, limit = 1000): Promise<EngineLedgerEntry[]> {
     if (afterId < 0n) throw new RangeError("afterId must not be negative");
     if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new RangeError("limit must be an integer from 1 to 1000");
-    const response = await this.request(
+    const { response, payload } = await this.request(
       `/admin/account/${encodeURIComponent(accountId)}/ledger?after_id=${afterId.toString()}&limit=${limit}`,
     );
-    const result = engineLedgerSchema.parse(this.parse(response, await response.text()));
+    const result = engineLedgerSchema.parse(payload);
+    this.assertAccount(result.account, accountId, response);
     return result.entries;
   }
 
@@ -143,12 +171,12 @@ export class EngineClient {
     if (!Number.isInteger(multiplierBp) || multiplierBp < 0 || multiplierBp > 10_000) {
       throw new RangeError("multiplierBp must be an integer from 0 to 10000");
     }
-    const response = await this.request(`/admin/account/${encodeURIComponent(accountId)}/pricing`, {
+    const { response, payload } = await this.request(`/admin/account/${encodeURIComponent(accountId)}/pricing`, {
       method: "POST",
       body: JSON.stringify({ mult_bp: multiplierBp }),
     });
-    const payload = this.parse(response, await response.text()) as Record<string, unknown>;
-    if (payload.account !== accountId || payload.mult_bp !== multiplierBp || payload.updated !== 1) {
+    const result = payload as Record<string, unknown>;
+    if (result.account !== accountId || result.mult_bp !== multiplierBp || result.updated !== 1) {
       throw new EngineClientError("engine returned an invalid pricing response", response.status, false);
     }
   }
@@ -156,12 +184,13 @@ export class EngineClient {
   private async request(
     path: string,
     options: { method?: string; body?: string; authenticated?: boolean } = {},
-  ): Promise<Response> {
+  ): Promise<{ response: Response; payload: unknown }> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     const headers: Record<string, string> = { accept: "application/json" };
     if (options.body !== undefined) headers["content-type"] = "application/json";
     if (options.authenticated !== false) headers["x-api-key"] = this.controlKey;
+    let response: Response | undefined;
     try {
       const request: RequestInit = {
         method: options.method ?? "GET",
@@ -169,14 +198,26 @@ export class EngineClient {
         signal: controller.signal,
       };
       if (options.body !== undefined) request.body = options.body;
-      return await this.fetchImpl(`${this.baseUrl}${path}`, request);
+      response = await this.fetchImpl(`${this.baseUrl}${path}`, request);
+      const text = await response.text();
+      return { response, payload: this.parse(response, text) };
     } catch (error) {
-      const message = error instanceof Error && error.name === "AbortError"
+      if (error instanceof EngineClientError) throw error;
+      const timedOut = controller.signal.aborted || (error instanceof Error && error.name === "AbortError");
+      const message = timedOut
         ? "engine request timed out"
-        : "engine request failed";
-      throw new EngineClientError(message, undefined, true);
+        : response === undefined
+          ? "engine request failed"
+          : "engine response body failed";
+      throw new EngineClientError(message, response?.status, true);
     } finally {
       clearTimeout(timeout);
+    }
+  }
+
+  private assertAccount(actualAccountId: string, expectedAccountId: string, response: Response): void {
+    if (actualAccountId !== expectedAccountId) {
+      throw new EngineClientError("engine returned a response for a different account", response.status, false);
     }
   }
 

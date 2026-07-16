@@ -37,6 +37,7 @@ export function tierForTopups(cumulativeNano: bigint): number {
 
 /** Тридцатидневное окно удержания в миллисекундах. */
 const HOLD_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const PRICING_LEDGER_PAGE_SIZE = 1000;
 
 export async function createBusinessInvite(database: Database, input: {
   email: string;
@@ -183,12 +184,17 @@ export async function getPricingUsageCursor(
     await client.query(`
       DELETE FROM pricing_usage_cursors WHERE user_id = $1 AND engine_account_id <> $2
     `, [target.userId, target.engineAccountId]);
+    // Invalidate the completion marker before network I/O. Only a terminal short page restores it;
+    // a thrown/failed sync therefore cannot authorize window closure with a previous cycle's marker.
     const result = await client.query<{ last_ledger_id: string }>(`
-      INSERT INTO pricing_usage_cursors (engine_account_id, user_id)
-      VALUES ($1, $2)
-      ON CONFLICT (engine_account_id) DO UPDATE SET updated_at = pricing_usage_cursors.updated_at
+      INSERT INTO pricing_usage_cursors (engine_account_id, user_id, updated_at)
+      VALUES ($1, $2, '-infinity')
+      ON CONFLICT (engine_account_id) DO UPDATE SET updated_at = '-infinity'
       RETURNING last_ledger_id
     `, [target.engineAccountId, target.userId]);
+    // Reconcile durable credit accrual markers on every pricing poll. This catches a missed
+    // post-credit call and reverses markers whose payment has since been refunded/disputed.
+    await reconcileTopupTier(client, target, "b2c_topup_reconcile");
     await client.query("COMMIT");
     return BigInt(result.rows[0]?.last_ledger_id ?? "0");
   } catch (error) {
@@ -218,7 +224,7 @@ export async function applyPricingLedgerPage(
       return;
     }
     let lastLedgerId = 0n;
-    let windowCharge = 0n;
+    let insertedCharge = false;
     for (const entry of entries) {
       const ledgerId = BigInt(entry.id);
       if (ledgerId > lastLedgerId) lastLedgerId = ledgerId;
@@ -232,7 +238,7 @@ export async function applyPricingLedgerPage(
         RETURNING id
       `, [randomUUID(), target.userId, target.engineAccountId, ledgerId.toString(), entry.amount_nano, occurredAt]);
       if (!inserted.rows[0]) continue;
-      windowCharge += BigInt(entry.amount_nano);
+      insertedCharge = true;
       const monthStart = utcMonthStart(occurredAt);
       await client.query(`
         INSERT INTO pricing_months (
@@ -242,20 +248,18 @@ export async function applyPricingLedgerPage(
         SET spent_nano = pricing_months.spent_nano + EXCLUDED.spent_nano, updated_at = now()
       `, [randomUUID(), target.userId, monthStart, profile.current_tier, entry.amount_nano]);
     }
+    const reachedStablePageEnd = entries.length < PRICING_LEDGER_PAGE_SIZE;
     await client.query(`
       UPDATE pricing_usage_cursors
-      SET last_ledger_id = GREATEST(last_ledger_id, $3), updated_at = now()
+      SET last_ledger_id = GREATEST(last_ledger_id, $3),
+          updated_at = CASE WHEN $4 THEN now() ELSE updated_at END
       WHERE engine_account_id = $1 AND user_id = $2
-    `, [target.engineAccountId, target.userId, lastLedgerId.toString()]);
+    `, [target.engineAccountId, target.userId, lastLedgerId.toString(), reachedStablePageEnd]);
 
-    // Prepay: расход НЕ поднимает тир (тир — за пополнения). Копим расход в 30-дневном окне
-    // удержания текущего тира; проверяется в closeElapsedTierWindows.
-    if (windowCharge > 0n) {
-      await client.query(`
-        UPDATE customer_profiles SET tier_window_spent_nano = tier_window_spent_nano + $2, updated_at = now()
-        WHERE user_id = $1
-      `, [target.userId, windowCharge.toString()]);
-    }
+    // Prepay: расход НЕ поднимает тир (тир — за пополнения). The cached counter is rebuilt
+    // from immutable events in the exact current [window_start, window_end) interval so late
+    // ingestion cannot move a charge across retention windows.
+    if (insertedCharge) await refreshCurrentTierWindowSpend(client, target.userId);
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -266,38 +270,21 @@ export async function applyPricingLedgerPage(
 }
 
 /**
- * Prepay-тир: подтверждённое пополнение прибавляется к накоплению; если накопление достигло
- * порога более высокого тира — поднимаем тир и запускаем новое 30-дневное окно удержания.
- * Пополнения суммируются, пока не слетел (см. closeElapsedTierWindows). Best-effort в воркере.
+ * Prepay-тир: применяет ещё не учтённые confirmed-кредиты через durable accrual markers.
+ * Повторный вызов идемпотентен, пропущенный вызов догоняется следующим reconcile, а marker
+ * refunded/disputed-платежа удаляется с компенсирующим уменьшением cumulative.
  */
 export async function applyTopupTier(database: Database, input: {
   engineAccountId: string;
   amountNano: bigint;
 }): Promise<void> {
+  if (input.amountNano <= 0n) throw new RangeError("top-up amount must be positive");
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
-    const res = await client.query<{ user_id: string; current_tier: number; cumulative_topup_nano: string }>(`
-      SELECT cp.user_id, cp.current_tier, cp.cumulative_topup_nano
-      FROM customer_profiles cp
-      JOIN engine_accounts ea ON ea.user_id = cp.user_id
-      WHERE ea.engine_account_id = $1 AND cp.customer_type = 'b2c'
-      FOR UPDATE OF cp
-    `, [input.engineAccountId]);
-    const profile = res.rows[0];
-    if (!profile) { await client.query("COMMIT"); return; }
-    const cumulative = BigInt(profile.cumulative_topup_nano) + input.amountNano;
-    await client.query(`
-      UPDATE customer_profiles SET cumulative_topup_nano = $2, updated_at = now() WHERE user_id = $1
-    `, [profile.user_id, cumulative.toString()]);
-    const newTier = tierForTopups(cumulative);
-    if (newTier > (profile.current_tier ?? 0)) {
-      await applyTierChange(client, { userId: profile.user_id, engineAccountId: input.engineAccountId }, newTier, "b2c_topup");
-      await client.query(`
-        UPDATE customer_profiles SET tier_window_start = now(), tier_window_spent_nano = 0, updated_at = now()
-        WHERE user_id = $1
-      `, [profile.user_id]);
-    }
+    await reconcileTopupTier(client, {
+      engineAccountId: input.engineAccountId,
+    }, "b2c_topup");
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -319,13 +306,20 @@ export async function closeElapsedTierWindows(database: Database, now = new Date
     try {
       await client.query("BEGIN");
       const result = await client.query<{
-        user_id: string; current_tier: number; tier_window_spent_nano: string; engine_account_id: string | null;
+        user_id: string; current_tier: number; tier_window_start: Date; engine_account_id: string;
       }>(`
-        SELECT cp.user_id, cp.current_tier, cp.tier_window_spent_nano, ea.engine_account_id
+        SELECT cp.user_id, cp.current_tier, cp.tier_window_start, ea.engine_account_id
         FROM customer_profiles cp
         JOIN engine_accounts ea ON ea.user_id = cp.user_id
+        JOIN pricing_usage_cursors puc
+          ON puc.user_id = cp.user_id AND puc.engine_account_id = ea.engine_account_id
         WHERE cp.customer_type = 'b2c' AND cp.current_tier > 0
+          AND ea.engine_account_id IS NOT NULL
           AND cp.tier_window_start IS NOT NULL AND cp.tier_window_start <= $1
+          -- A page shorter than the engine limit marks a completed ledger scan. If the current
+          -- scan failed, updated_at is not advanced and this window is deferred rather than closed
+          -- from incomplete usage.
+          AND puc.updated_at >= cp.tier_window_start + interval '30 days'
         ORDER BY cp.tier_window_start, cp.user_id
         FOR UPDATE OF cp, ea SKIP LOCKED
         LIMIT 1
@@ -335,24 +329,35 @@ export async function closeElapsedTierWindows(database: Database, now = new Date
         await client.query("COMMIT");
         return closed;
       }
-      const held = BigInt(row.tier_window_spent_nano) >= B2C_PRICING_TIERS[row.current_tier]!.holdNano;
+      const windowEnd = new Date(row.tier_window_start.getTime() + HOLD_WINDOW_MS);
+      const spentResult = await client.query<{ spent_nano: string }>(`
+        SELECT COALESCE(SUM(amount_nano), 0)::text AS spent_nano
+        FROM pricing_usage_events
+        WHERE user_id = $1 AND engine_account_id = $2
+          AND occurred_at >= $3 AND occurred_at < $4
+      `, [row.user_id, row.engine_account_id, row.tier_window_start, windowEnd]);
+      const windowSpent = BigInt(spentResult.rows[0]?.spent_nano ?? "0");
+      const held = windowSpent >= B2C_PRICING_TIERS[row.current_tier]!.holdNano;
       if (held) {
-        // Удержал — новое 30-дневное окно, счётчик расхода обнуляем.
         await client.query(`
           UPDATE customer_profiles SET tier_window_start = $2, tier_window_spent_nano = 0, updated_at = now()
           WHERE user_id = $1
-        `, [row.user_id, now]);
+        `, [row.user_id, windowEnd]);
       } else {
         // Не удержал — откат на −1 тир; накопление к порогу нового тира; новое окно (или none → без окна).
         const nextTier = Math.max(0, row.current_tier - 1);
         const newCumulative = B2C_PRICING_TIERS[nextTier]!.spendThresholdNano;
-        await applyTierChange(client, { userId: row.user_id, engineAccountId: row.engine_account_id ?? "" }, nextTier, "b2c_window_downgrade");
+        await applyTierChange(client, { userId: row.user_id, engineAccountId: row.engine_account_id }, nextTier, "b2c_window_downgrade");
         await client.query(`
           UPDATE customer_profiles
           SET cumulative_topup_nano = $2, tier_window_start = $3, tier_window_spent_nano = 0, updated_at = now()
           WHERE user_id = $1
-        `, [row.user_id, newCumulative.toString(), nextTier > 0 ? now : null]);
+        `, [row.user_id, newCumulative.toString(), nextTier > 0 ? windowEnd : null]);
       }
+      // Carry already-ingested post-cutoff charges into the exact next window instead of losing them.
+      await refreshCurrentTierWindowSpend(client, row.user_id);
+      // AUDIT-TODO(C19): persist an explicit engine cutoff watermark; cursor freshness is the
+      // safest localized guard available until the Control API exposes a stable ledger watermark.
       await client.query("COMMIT");
       closed += 1;
     } catch (error) {
@@ -371,6 +376,16 @@ export async function claimNextPricingJob(
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
+    // Lease recovery is part of normal claiming, not a startup-only maintenance step. A failed
+    // retryPricingJob write therefore delays a job by at most one lease interval instead of
+    // stranding it in processing until process restart.
+    await client.query(`
+      UPDATE engine_pricing_jobs
+      SET status = 'retry', locked_at = NULL, locked_by = NULL, next_attempt_at = now(),
+          last_error = COALESCE(last_error, 'recovered expired pricing lease'), updated_at = now()
+      WHERE status = 'processing'
+        AND (locked_at IS NULL OR locked_at < now() - interval '5 minutes')
+    `);
     const result = await client.query<{
       id: string; user_id: string; engine_account_id: string; multiplier_bp: number; attempts: number;
     }>(`
@@ -407,18 +422,51 @@ export async function claimNextPricingJob(
 
 export async function confirmPricingJob(database: Database, job: ClaimedPricingJob): Promise<void> {
   await database.pool.query(`
-    UPDATE engine_pricing_jobs SET status = 'confirmed', confirmed_at = now(), locked_at = NULL,
-      locked_by = NULL, last_error = NULL, updated_at = now()
-    WHERE id = $1 AND status = 'processing' AND multiplier_bp = $2
+    UPDATE engine_pricing_jobs job
+    SET engine_account_id = COALESCE(ea.engine_account_id, job.engine_account_id),
+        multiplier_bp = cp.multiplier_bp,
+        reason = CASE
+          WHEN cp.multiplier_bp = job.multiplier_bp AND COALESCE(ea.engine_account_id, job.engine_account_id) = job.engine_account_id THEN job.reason
+          ELSE 'superseded_after_processing'
+        END,
+        status = CASE
+          WHEN cp.multiplier_bp = job.multiplier_bp AND COALESCE(ea.engine_account_id, job.engine_account_id) = job.engine_account_id THEN 'confirmed'::pricing_job_status
+          ELSE 'pending'::pricing_job_status
+        END,
+        attempts = CASE WHEN cp.multiplier_bp = job.multiplier_bp AND COALESCE(ea.engine_account_id, job.engine_account_id) = job.engine_account_id THEN job.attempts ELSE 0 END,
+        next_attempt_at = CASE WHEN cp.multiplier_bp = job.multiplier_bp AND COALESCE(ea.engine_account_id, job.engine_account_id) = job.engine_account_id THEN job.next_attempt_at ELSE now() END,
+        confirmed_at = CASE WHEN cp.multiplier_bp = job.multiplier_bp AND COALESCE(ea.engine_account_id, job.engine_account_id) = job.engine_account_id THEN now() ELSE NULL END,
+        locked_at = NULL, locked_by = NULL, last_error = NULL, updated_at = now()
+    FROM customer_profiles cp
+    LEFT JOIN engine_accounts ea ON ea.user_id = cp.user_id
+    WHERE job.id = $1 AND job.status = 'processing' AND job.multiplier_bp = $2
+      AND cp.user_id = job.user_id
   `, [job.id, job.multiplierBp]);
 }
 
 export async function retryPricingJob(database: Database, job: ClaimedPricingJob, error: string): Promise<void> {
   const delaySeconds = Math.min(3600, Math.max(5, 2 ** Math.min(job.attempts, 10)));
   await database.pool.query(`
-    UPDATE engine_pricing_jobs SET status = 'retry', next_attempt_at = now() + ($3 * interval '1 second'),
-      locked_at = NULL, locked_by = NULL, last_error = $2, updated_at = now()
-    WHERE id = $1 AND status = 'processing' AND multiplier_bp = $4
+    UPDATE engine_pricing_jobs job
+    SET engine_account_id = COALESCE(ea.engine_account_id, job.engine_account_id),
+        multiplier_bp = cp.multiplier_bp,
+        reason = CASE
+          WHEN cp.multiplier_bp = job.multiplier_bp AND COALESCE(ea.engine_account_id, job.engine_account_id) = job.engine_account_id THEN job.reason
+          ELSE 'superseded_after_processing'
+        END,
+        status = 'retry',
+        attempts = CASE WHEN cp.multiplier_bp = job.multiplier_bp AND COALESCE(ea.engine_account_id, job.engine_account_id) = job.engine_account_id THEN job.attempts ELSE 0 END,
+        next_attempt_at = CASE
+          WHEN cp.multiplier_bp = job.multiplier_bp AND COALESCE(ea.engine_account_id, job.engine_account_id) = job.engine_account_id THEN now() + ($3 * interval '1 second')
+          ELSE now()
+        END,
+        locked_at = NULL, locked_by = NULL,
+        last_error = CASE WHEN cp.multiplier_bp = job.multiplier_bp AND COALESCE(ea.engine_account_id, job.engine_account_id) = job.engine_account_id THEN $2 ELSE NULL END,
+        updated_at = now()
+    FROM customer_profiles cp
+    LEFT JOIN engine_accounts ea ON ea.user_id = cp.user_id
+    WHERE job.id = $1 AND job.status = 'processing' AND job.multiplier_bp = $4
+      AND cp.user_id = job.user_id
   `, [job.id, error.slice(0, 2000), delaySeconds, job.multiplierBp]);
 }
 
@@ -456,20 +504,130 @@ async function applyTierChange(
 async function enqueuePricingJob(client: PoolClient, input: {
   userId: string; engineAccountId: string; multiplierBp: number; reason: string;
 }): Promise<string> {
-  const result = await client.query<{ id: string }>(`
+  const existing = await client.query<{ id: string; status: "pending" | "processing" | "retry" | "confirmed" }>(`
+    SELECT id, status FROM engine_pricing_jobs WHERE user_id = $1 FOR UPDATE
+  `, [input.userId]);
+  const row = existing.rows[0];
+  if (row?.status === "processing") {
+    // Do not revoke an active lease or let a newer generation run concurrently. The desired
+    // multiplier is already durable on customer_profiles; confirmPricingJob requeues this row
+    // after the in-flight engine request completes if that desired value changed.
+    return row.id;
+  }
+  if (row) {
+    const updated = await client.query<{ id: string }>(`
+      UPDATE engine_pricing_jobs SET
+        engine_account_id = $2, multiplier_bp = $3, reason = $4,
+        status = 'pending', attempts = 0, next_attempt_at = now(),
+        locked_at = NULL, locked_by = NULL, last_error = NULL,
+        confirmed_at = NULL, updated_at = now()
+      WHERE id = $1
+      RETURNING id
+    `, [row.id, input.engineAccountId, input.multiplierBp, input.reason]);
+    return updated.rows[0]!.id;
+  }
+  const id = randomUUID();
+  await client.query(`
     INSERT INTO engine_pricing_jobs (
       id, user_id, engine_account_id, multiplier_bp, reason
     ) VALUES ($1, $2, $3, $4, $5)
-    ON CONFLICT (user_id) DO UPDATE SET
-      engine_account_id = EXCLUDED.engine_account_id,
-      multiplier_bp = EXCLUDED.multiplier_bp,
-      reason = EXCLUDED.reason,
-      status = 'pending', attempts = 0, next_attempt_at = now(),
-      locked_at = NULL, locked_by = NULL, last_error = NULL,
-      confirmed_at = NULL, updated_at = now()
-    RETURNING id
-  `, [randomUUID(), input.userId, input.engineAccountId, input.multiplierBp, input.reason]);
-  return result.rows[0]!.id;
+  `, [id, input.userId, input.engineAccountId, input.multiplierBp, input.reason]);
+  return id;
+}
+
+async function reconcileTopupTier(
+  client: PoolClient,
+  target: { engineAccountId: string; userId?: string },
+  reason: string,
+): Promise<void> {
+  const profileResult = await client.query<{
+    user_id: string; current_tier: number; cumulative_topup_nano: string;
+  }>(`
+    SELECT cp.user_id, cp.current_tier, cp.cumulative_topup_nano
+    FROM customer_profiles cp
+    JOIN engine_accounts ea ON ea.user_id = cp.user_id
+    WHERE ea.engine_account_id = $1 AND cp.customer_type = 'b2c'
+      AND ($2::uuid IS NULL OR cp.user_id = $2::uuid)
+    FOR UPDATE OF cp
+  `, [target.engineAccountId, target.userId ?? null]);
+  const profile = profileResult.rows[0];
+  if (!profile) return;
+
+  // AUDIT-TODO(C21): run pnpm db:generate + migrate for pricing_credit_accruals.
+  const appliedResult = await client.query<{ amount_nano: string }>(`
+    WITH eligible AS (
+      SELECT ec.id AS credit_id
+      FROM engine_credits ec
+      JOIN payments p ON p.id = ec.payment_id
+      LEFT JOIN pricing_credit_accruals pca ON pca.credit_id = ec.id
+      WHERE ec.engine_account_id = $1 AND ec.status = 'confirmed'
+        AND p.user_id = $2 AND p.status = 'paid' AND pca.credit_id IS NULL
+    ), inserted AS (
+      INSERT INTO pricing_credit_accruals (credit_id)
+      SELECT credit_id FROM eligible
+      ON CONFLICT (credit_id) DO NOTHING
+      RETURNING credit_id
+    )
+    SELECT COALESCE(SUM(ec.amount_nano), 0)::text AS amount_nano
+    FROM inserted i
+    JOIN engine_credits ec ON ec.id = i.credit_id
+  `, [target.engineAccountId, profile.user_id]);
+  const reversedResult = await client.query<{ amount_nano: string }>(`
+    WITH removed AS (
+      DELETE FROM pricing_credit_accruals pca
+      USING engine_credits ec, payments p
+      WHERE pca.credit_id = ec.id AND ec.payment_id = p.id
+        AND ec.engine_account_id = $1 AND p.user_id = $2
+        AND p.status IN ('refunded', 'disputed')
+      RETURNING ec.amount_nano
+    )
+    SELECT COALESCE(SUM(amount_nano), 0)::text AS amount_nano FROM removed
+  `, [target.engineAccountId, profile.user_id]);
+
+  const applied = BigInt(appliedResult.rows[0]?.amount_nano ?? "0");
+  const reversed = BigInt(reversedResult.rows[0]?.amount_nano ?? "0");
+  if (applied === 0n && reversed === 0n) return;
+  const currentCumulative = BigInt(profile.cumulative_topup_nano);
+  const cumulative = currentCumulative + applied > reversed
+    ? currentCumulative + applied - reversed
+    : 0n;
+  const currentTier = profile.current_tier ?? 0;
+  const newTier = tierForTopups(cumulative);
+  await client.query(`
+    UPDATE customer_profiles SET cumulative_topup_nano = $2, updated_at = now() WHERE user_id = $1
+  `, [profile.user_id, cumulative.toString()]);
+  if (newTier !== currentTier) {
+    await applyTierChange(client, {
+      userId: profile.user_id,
+      engineAccountId: target.engineAccountId,
+    }, newTier, reversed > 0n ? "b2c_refund_reversal" : reason);
+    await client.query(`
+      UPDATE customer_profiles
+      SET tier_window_start = CASE WHEN $2 > 0 THEN now() ELSE NULL END,
+          tier_window_spent_nano = 0, updated_at = now()
+      WHERE user_id = $1
+    `, [profile.user_id, newTier]);
+    await refreshCurrentTierWindowSpend(client, profile.user_id);
+  }
+}
+
+async function refreshCurrentTierWindowSpend(client: PoolClient, userId: string): Promise<void> {
+  await client.query(`
+    UPDATE customer_profiles cp
+    SET tier_window_spent_nano = CASE
+          WHEN cp.tier_window_start IS NULL THEN 0
+          ELSE COALESCE((
+            SELECT SUM(pue.amount_nano)
+            FROM pricing_usage_events pue
+            WHERE pue.user_id = cp.user_id AND pue.engine_account_id = ea.engine_account_id
+              AND pue.occurred_at >= cp.tier_window_start
+              AND pue.occurred_at < cp.tier_window_start + interval '30 days'
+          ), 0)
+        END,
+        updated_at = now()
+    FROM engine_accounts ea
+    WHERE cp.user_id = $1 AND cp.customer_type = 'b2c' AND ea.user_id = cp.user_id
+  `, [userId]);
 }
 
 interface PricingViewRow {

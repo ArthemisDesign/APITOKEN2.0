@@ -76,7 +76,10 @@ export async function applyVerifiedCheckoutPaymentEvent(
     let creditId: string | null = null;
     let checkoutStatus: CheckoutState = stateForCheckout(input.state);
 
-    if (input.state === "paid") {
+    if (input.state === "paid" && checkout.status === "refunded") {
+      // A delayed paid event must not recreate credit after an authoritative refund.
+      checkoutStatus = "refunded";
+    } else if (input.state === "paid") {
       const proposedPaymentId = randomUUID();
       const payment = await client.query<{
         id: string;
@@ -141,6 +144,31 @@ export async function applyVerifiedCheckoutPaymentEvent(
       }
       creditId = storedCredit.id;
     } else if (input.state === "refunded") {
+      const creditResult = await client.query<{
+        credit_id: string;
+        credit_status: "pending" | "processing" | "retry" | "confirmed" | "dead";
+      }>(`
+        SELECT ec.id AS credit_id, ec.status AS credit_status
+        FROM payments p
+        JOIN engine_credits ec ON ec.payment_id = p.id
+        WHERE p.checkout_id = $1
+        FOR UPDATE OF ec
+      `, [input.checkoutId]);
+      const existingCredit = creditResult.rows[0];
+      if (existingCredit) {
+        if (existingCredit.credit_status === "pending" || existingCredit.credit_status === "retry") {
+          await client.query(`
+            UPDATE engine_credits
+            SET status = 'dead', locked_at = NULL, locked_by = NULL,
+                last_error = 'canceled because the provider payment was refunded', updated_at = now()
+            WHERE id = $1
+          `, [existingCredit.credit_id]);
+        } else {
+          // AUDIT-TODO(C14): add a durable idempotent engine debit/reversal and worker lease protocol.
+          throw new Error("cannot finalize refund until engine credit compensation is durably recorded");
+        }
+      }
+
       await client.query(`
         UPDATE payments SET status = 'refunded', provider_state = $2::jsonb, updated_at = now()
         WHERE checkout_id = $1

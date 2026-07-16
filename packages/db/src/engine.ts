@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "./client.js";
 
+const POOL_API_KEY_PATTERN = /sk-pool-[0-9a-f]{48}/i;
+const REDACTED_AUDIT_LABEL = "[redacted]";
+
 export interface EngineAccountMapping {
   engineAccountId: string | null;
   status: "pending" | "active" | "error" | "disabled";
@@ -56,6 +59,7 @@ export async function saveIssuedApiKey(database: Database, input: {
   label: string | null;
   keyMasked: string;
 }): Promise<StoredApiKey> {
+  assertSafeApiKeyLabel(input.label);
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
@@ -74,7 +78,11 @@ export async function saveIssuedApiKey(database: Database, input: {
     await client.query(`
       INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
       VALUES ('user', $1, 'api_key.created', 'api_key', $2, $3::jsonb)
-    `, [input.userId, row.id, JSON.stringify({ label: input.label })]);
+    `, [
+      input.userId,
+      row.id,
+      JSON.stringify({ label: input.label === null ? null : REDACTED_AUDIT_LABEL }),
+    ]);
     await client.query("COMMIT");
     return mapApiKey(row);
   } catch (error) {
@@ -94,6 +102,7 @@ export async function syncEngineApiKey(database: Database, input: {
   keyMasked: string;
   status: "active" | "disabled";
 }): Promise<StoredApiKey> {
+  assertSafeApiKeyLabel(input.label);
   const result = await database.pool.query<ApiKeyRow>(`
     INSERT INTO api_keys (
       id, user_id, engine_account_id, engine_key_id, label, key_masked, status
@@ -148,6 +157,12 @@ export async function markOwnedApiKeyDisabled(database: Database, userId: string
     throw error;
   } finally {
     client.release();
+  }
+}
+
+function assertSafeApiKeyLabel(label: string | null): void {
+  if (label !== null && POOL_API_KEY_PATTERN.test(label)) {
+    throw new Error("API key labels must not contain pool API keys");
   }
 }
 

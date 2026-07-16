@@ -140,7 +140,7 @@ describe.runIf(Boolean(connectionString))("whole-USD checkout persistence", () =
     expect(claimed).not.toBeNull();
     expect([first, second].filter(Boolean)).toHaveLength(1);
 
-    await confirmCredit(database, claimed!.id, 123_456_789n);
+    await confirmCredit(database, claimed!.id, claimed!.leaseToken, 123_456_789n);
     const row = await database.pool.query("SELECT status, engine_balance_after_nano FROM engine_credits");
     expect(row.rows).toEqual([{ status: "confirmed", engine_balance_after_nano: "123456789" }]);
   });

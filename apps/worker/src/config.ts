@@ -29,6 +29,25 @@ const environmentSchema = z.object({
   if (value.NODE_ENV === "production" && value.EMAIL_DELIVERY_MODE !== "smtp") {
     context.addIssue({ code: "custom", message: "SMTP email delivery is required in production" });
   }
+  if (value.NODE_ENV === "production" && value.EMAIL_DELIVERY_MODE === "smtp" && !value.SMTP_SECURE) {
+    context.addIssue({ code: "custom", message: "Implicit TLS (SMTP_SECURE=true) is required for SMTP delivery in production" });
+  }
+  if (value.NODE_ENV === "production") {
+    const publicAppUrl = new URL(value.PUBLIC_APP_BASE_URL);
+    if (
+      publicAppUrl.origin !== "https://apitoken.sale" ||
+      publicAppUrl.username !== "" ||
+      publicAppUrl.password !== "" ||
+      publicAppUrl.pathname !== "/" ||
+      publicAppUrl.search !== "" ||
+      publicAppUrl.hash !== ""
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "PUBLIC_APP_BASE_URL must be exactly the canonical production origin https://apitoken.sale",
+      });
+    }
+  }
 });
 
 export type Environment = z.infer<typeof environmentSchema>;

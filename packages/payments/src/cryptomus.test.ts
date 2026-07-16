@@ -88,10 +88,17 @@ describe("CryptomusProvider", () => {
   });
 
   it("does not treat underpayments or in-progress refunds as paid", async () => {
-    for (const status of ["wrong_amount", "confirm_check", "refund_process", "refund_fail"]) {
+    // In-progress states stay pending (never "paid").
+    for (const status of ["confirm_check", "refund_process", "refund_fail"]) {
       const provider = makeProvider(async () => Response.json(successfulPayment({ status, payment_status: status })));
       await expect(provider.verifyPayment(paymentId)).resolves.toMatchObject({ state: "pending" });
     }
+    // A non-final underpayment is still pending; a FINAL underpayment reaches a terminal
+    // "canceled" state (C66) rather than being stuck as pending forever.
+    const stillWaiting = makeProvider(async () => Response.json(successfulPayment({ status: "wrong_amount", payment_status: "wrong_amount", is_final: false })));
+    await expect(stillWaiting.verifyPayment(paymentId)).resolves.toMatchObject({ state: "pending" });
+    const finalUnderpaid = makeProvider(async () => Response.json(successfulPayment({ status: "wrong_amount", payment_status: "wrong_amount", is_final: true })));
+    await expect(finalUnderpaid.verifyPayment(paymentId)).resolves.toMatchObject({ state: "canceled" });
   });
 });
 

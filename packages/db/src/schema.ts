@@ -23,6 +23,8 @@ export const engineAccountStatus = pgEnum("engine_account_status", ["pending", "
 export const paymentStatus = pgEnum("payment_status", ["pending", "paid", "failed", "refunded", "disputed"]);
 export const webhookStatus = pgEnum("webhook_status", ["received", "processed", "ignored", "failed"]);
 export const engineCreditStatus = pgEnum("engine_credit_status", ["pending", "processing", "retry", "confirmed", "dead"]);
+export const engineAdjustmentKind = pgEnum("engine_adjustment_kind", ["refund", "dispute"]);
+export const engineAdjustmentStatus = pgEnum("engine_adjustment_status", ["pending", "processing", "retry", "confirmed", "dead"]);
 export const apiKeyStatus = pgEnum("api_key_status", ["active", "disabled"]);
 export const checkoutStatus = pgEnum("checkout_status", ["creating", "pending", "paid", "canceled", "refunded", "failed"]);
 export const authTokenPurpose = pgEnum("auth_token_purpose", ["verify_email", "reset_password"]);
@@ -56,7 +58,8 @@ export const customerProfiles = pgTable("customer_profiles", {
   updatedAt,
 }, (table) => [
   check("customer_profiles_multiplier_check", sql`${table.multiplierBp} BETWEEN 0 AND 10000`),
-  check("customer_profiles_tier_check", sql`${table.currentTier} IS NULL OR ${table.currentTier} BETWEEN 0 AND 5`),
+  // AUDIT-TODO(C71): run pnpm db:generate + migrate.
+  check("customer_profiles_tier_check", sql`${table.currentTier} IS NULL OR ${table.currentTier} BETWEEN 0 AND 4`),
   check("customer_profiles_type_tier_check", sql`
     (${table.customerType} = 'b2c' AND ${table.currentTier} IS NOT NULL)
     OR (${table.customerType} = 'b2b' AND ${table.currentTier} IS NULL)
@@ -316,6 +319,39 @@ export const engineCredits = pgTable("engine_credits", {
   uniqueIndex("engine_credits_ref_uidx").on(table.idempotencyRef),
   index("engine_credits_claim_idx").on(table.status, table.nextAttemptAt),
   check("engine_credits_amount_check", sql`${table.amountNano} > 0`),
+]);
+
+// AUDIT-TODO(C23): run pnpm db:generate + migrate; insert this marker and update the profile aggregate in one transaction.
+export const pricingCreditAccruals = pgTable("pricing_credit_accruals", {
+  creditId: uuid("credit_id").primaryKey().references(() => engineCredits.id, { onDelete: "restrict" }),
+  appliedAt: timestamp("applied_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// AUDIT-TODO(C24): run pnpm db:generate + migrate; enqueue the adjustment in the same transaction as the refund/dispute state change.
+export const engineAdjustments = pgTable("engine_adjustments", {
+  id: uuid("id").primaryKey(),
+  paymentId: uuid("payment_id").notNull().references(() => payments.id, { onDelete: "restrict" }),
+  webhookEventId: uuid("webhook_event_id").notNull().references(() => webhookEvents.id, { onDelete: "restrict" }),
+  engineAccountId: text("engine_account_id").notNull(),
+  kind: engineAdjustmentKind("kind").notNull(),
+  amountNano: bigint("amount_nano", { mode: "bigint" }).notNull(),
+  idempotencyRef: text("idempotency_ref").notNull(),
+  status: engineAdjustmentStatus("status").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  lockedAt: timestamp("locked_at", { withTimezone: true }),
+  lockedBy: text("locked_by"),
+  lastError: text("last_error"),
+  engineBalanceAfterNano: bigint("engine_balance_after_nano", { mode: "bigint" }),
+  confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  uniqueIndex("engine_adjustments_payment_event_uidx").on(table.paymentId, table.webhookEventId),
+  uniqueIndex("engine_adjustments_ref_uidx").on(table.idempotencyRef),
+  index("engine_adjustments_payment_idx").on(table.paymentId, table.createdAt),
+  index("engine_adjustments_claim_idx").on(table.status, table.nextAttemptAt),
+  check("engine_adjustments_amount_check", sql`${table.amountNano} < 0`),
 ]);
 
 export const apiKeys = pgTable("api_keys", {
