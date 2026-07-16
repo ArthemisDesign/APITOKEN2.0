@@ -35,6 +35,7 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
     <Link href="/models"><T k="nav_models">Models</T></Link>
     <Link href={home ? "#pricing" : "/plans"}><T k="nav_pricing">Pricing</T></Link>
     <Link href={DOCS_URL} target="_blank" rel="noreferrer"><T k="nav_docs">Docs</T></Link>
+    <Link href="/docs/learn"><T k="nav_guides">Guides</T></Link>
   </>;
 
   const renderActions = () => authenticated ? <Link className="btn btn-primary" href="/dashboard">{t("dash")}</Link> : <>
