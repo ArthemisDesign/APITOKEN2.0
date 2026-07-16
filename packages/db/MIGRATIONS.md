@@ -27,8 +27,9 @@ does not run the package script because it rebuilds. The watchdog consumes the p
 candidate directly. The manual `deploy/deploy.sh --api-only <sha>` path remains a recovery tool and
 uses the same locked prebuilt migrator.
 
-For a schema-dependent change, add a new expand migration before the dependent code and keep the
-old release compatible. Never edit, rename, reorder, or delete a committed migration. Destructive
-contract changes require a later release after backfill and after all old processes no longer depend
-on the old shape. See the top-level [`CONTRIBUTING.md`](../../CONTRIBUTING.md) and
+For a schema-dependent change, merge a migration-only expand commit first and wait for its
+`deploy/migration` and `deploy/watchdog` GitHub statuses to pass. Merge the dependent code only
+after production has the expanded schema, and keep the old release compatible throughout. Never
+edit, rename, reorder, or delete a committed migration. Destructive contract changes require a
+later release after backfill and after all old processes no longer depend on the old shape. See the top-level [`CONTRIBUTING.md`](../../CONTRIBUTING.md) and
 [`DEPLOYMENT.md`](../../DEPLOYMENT.md).

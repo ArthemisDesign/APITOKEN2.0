@@ -10,10 +10,12 @@ engine, commerce API, commerce worker, and commerce PostgreSQL migrations.
 ## Contributor and AI-agent workflow
 
 1. Fetch the current remote state and work on the appropriate `comp/*` or short feature branch.
-2. If the change needs a schema update, add the new expand migration **before** code which depends
-   on it. Never edit, rename, or delete an existing migration. See
-   [`packages/db/MIGRATIONS.md`](packages/db/MIGRATIONS.md).
-3. Keep application changes compatible with both the old and expanded schema during rollout.
+2. If the change needs a schema update, deliver it in two production commits. First merge the
+   additive/expand migration without code that depends on it, then wait for `deploy/migration` and
+   `deploy/watchdog` to turn green. Only then merge the dependent application change. Never edit,
+   rename, or delete an existing migration. See [`packages/db/MIGRATIONS.md`](packages/db/MIGRATIONS.md).
+3. Keep old application code compatible with the expanded schema. Destructive contract cleanup is
+   a later migration after every deployed version has stopped using the old shape.
 4. Run the relevant local tests. Before merging a cross-component change, run the complete gate:
 
    ```bash

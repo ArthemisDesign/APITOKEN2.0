@@ -17,6 +17,10 @@ explicit operator tools, not the normal contributor workflow. See [`CONTRIBUTING
 Contributors and AI agents only merge production-ready work to `master`, then watch these GitHub
 commit-status contexts:
 
+Schema-dependent delivery uses two merges: an additive migration-only commit must complete first;
+only after its migration and overall statuses are green may dependent application code reach
+`master`. Contract cleanup is a later release.
+
 | Context | Gate |
 |---|---|
 | `deploy/tests` | Complete isolated TypeScript/Rust/database/static test suite |
