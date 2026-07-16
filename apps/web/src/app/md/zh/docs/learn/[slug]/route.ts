@@ -4,12 +4,12 @@ import { SITE_ORIGIN } from "@/lib/seo";
 export const dynamic = "force-static";
 
 export function generateStaticParams() {
-  return articlesForLocale("en").map((slug) => ({ slug }));
+  return articlesForLocale("zh").map((slug) => ({ slug }));
 }
 
 export async function GET(_request: Request, { params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  const article = resolveArticle(slug, "en");
+  const article = resolveArticle(slug, "zh");
   if (!article) {
     return new Response("Not found\n", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
   }
@@ -17,7 +17,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ slu
     status: 200,
     headers: {
       "content-type": "text/markdown; charset=utf-8",
-      "x-markdown-source": `${SITE_ORIGIN}${learnPath(slug, "en")}`,
+      "x-markdown-source": `${SITE_ORIGIN}${learnPath(slug, "zh")}`,
       "cache-control": "public, max-age=3600",
     },
   });

@@ -1,5 +1,5 @@
 import type { MetadataRoute } from "next";
-import { learnArticles, learnPath, LEARN_HUB_PATH } from "@/lib/learn";
+import { articlesForLocale, learnHubPath, learnPath, LOCALES } from "@/lib/learn";
 import { absoluteUrl, LAST_CONTENT_UPDATE, sitemapPages } from "@/lib/seo";
 
 export default function sitemap(): MetadataRoute.Sitemap {
@@ -17,19 +17,21 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: 0.6,
   }];
 
-  const learnHub: MetadataRoute.Sitemap = [{
-    url: absoluteUrl(LEARN_HUB_PATH),
+  const learnHubs: MetadataRoute.Sitemap = LOCALES.map((locale) => ({
+    url: absoluteUrl(learnHubPath(locale)),
     lastModified: LAST_CONTENT_UPDATE,
     changeFrequency: "weekly",
     priority: 0.8,
-  }];
-
-  const learnPages: MetadataRoute.Sitemap = learnArticles.map((article) => ({
-    url: absoluteUrl(learnPath(article.slug)),
-    lastModified: LAST_CONTENT_UPDATE,
-    changeFrequency: "monthly",
-    priority: 0.7,
   }));
 
-  return [...corePages, ...aboutPage, ...learnHub, ...learnPages];
+  const learnPages: MetadataRoute.Sitemap = LOCALES.flatMap((locale) =>
+    articlesForLocale(locale).map((slug) => ({
+      url: absoluteUrl(learnPath(slug, locale)),
+      lastModified: LAST_CONTENT_UPDATE,
+      changeFrequency: "monthly" as const,
+      priority: 0.7,
+    })),
+  );
+
+  return [...corePages, ...aboutPage, ...learnHubs, ...learnPages];
 }

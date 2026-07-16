@@ -3,8 +3,8 @@ import { JsonLd } from "@/components/json-ld";
 import { LearnHubView } from "@/components/learn-article";
 import { buildHubJsonLd, buildHubMetadata } from "@/lib/learn-page";
 
-export const metadata: Metadata = buildHubMetadata("en");
+export const metadata: Metadata = buildHubMetadata("zh");
 
-export default function LearnHubPage() {
-  return <><JsonLd data={buildHubJsonLd("en")} /><LearnHubView locale="en" /></>;
+export default function LearnHubPageZh() {
+  return <><JsonLd data={buildHubJsonLd("zh")} /><LearnHubView locale="zh" /></>;
 }

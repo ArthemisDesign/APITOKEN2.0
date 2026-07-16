@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { learnArticles, learnArticlesBySlug, renderLearnMarkdown } from "./learn";
+import {
+  articlesForLocale,
+  learnArticles,
+  learnArticlesBySlug,
+  LOCALES,
+  renderLearnMarkdown,
+  resolveArticle,
+} from "./learn";
 
 describe("learn cluster", () => {
   it("has unique slugs", () => {
@@ -26,9 +33,40 @@ describe("learn cluster", () => {
   });
 
   it("renders self-contained markdown with front matter and headings", () => {
-    const md = renderLearnMarkdown(learnArticles[0]!, "https://apitoken.sale");
+    const article = resolveArticle(learnArticles[0]!.slug, "en")!;
+    const md = renderLearnMarkdown(article, "https://apitoken.sale");
     expect(md).toContain("---");
-    expect(md).toContain(`# ${learnArticles[0]!.h1}`);
-    expect(md).toContain("## Frequently asked questions");
+    expect(md).toContain(`# ${article.content.h1}`);
+  });
+});
+
+describe("learn localization", () => {
+  it("publishes every article in ru and zh with the same structure as en", () => {
+    for (const article of learnArticles) {
+      for (const locale of LOCALES) {
+        const resolved = resolveArticle(article.slug, locale);
+        expect(resolved, `${article.slug} @ ${locale}`).not.toBeNull();
+        // structure parity with the English source
+        expect(resolved!.content.sections.length).toBe(article.sections.length);
+        expect(resolved!.content.faq.length).toBe(article.faq.length);
+        expect(resolved!.content.keywords.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("exposes the same article set across locales", () => {
+    const en = articlesForLocale("en").sort();
+    expect(articlesForLocale("ru").sort()).toEqual(en);
+    expect(articlesForLocale("zh").sort()).toEqual(en);
+  });
+
+  it("keeps product facts verbatim in translations (base URL, model IDs)", () => {
+    const ru = resolveArticle("claude-api-quick-setup", "ru")!;
+    const zh = resolveArticle("claude-api-quick-setup", "zh")!;
+    const flatten = (a: typeof ru) => JSON.stringify(a.content);
+    for (const resolved of [ru, zh]) {
+      expect(flatten(resolved)).toContain("https://api.apitoken.sale");
+      expect(flatten(resolved)).toContain("claude-opus-4-8");
+    }
   });
 });

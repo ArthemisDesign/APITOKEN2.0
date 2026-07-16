@@ -44,6 +44,13 @@ export function SiteAnalytics() {
   const pathname = usePathname();
   const previousPathname = useRef(pathname);
 
+  // Keep <html lang> in sync with the localized route subtree (root layout
+  // renders lang="en"; hreflang tags carry the authoritative signal for Google).
+  useEffect(() => {
+    const lang = pathname.startsWith("/zh") ? "zh-CN" : pathname.startsWith("/ru") ? "ru" : "en";
+    if (document.documentElement.lang !== lang) document.documentElement.lang = lang;
+  }, [pathname]);
+
   // Report AI-assistant referrals once per session for GEO ROI measurement.
   useEffect(() => {
     try {

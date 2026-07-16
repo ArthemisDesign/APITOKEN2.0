@@ -3,6 +3,9 @@
 // rendered server-side (fully crawlable) with Article + FAQPage + Breadcrumb
 // structured data. Copy is grounded in real product facts only.
 
+import { learnRu } from "./learn-ru";
+import { learnZh } from "./learn-zh";
+
 export type LearnCluster = "buy" | "free" | "integrate" | "compare" | "explain";
 
 export type LearnBlock =
@@ -30,12 +33,104 @@ export type LearnArticle = {
   related: string[];
 };
 
-export const clusterLabels: Record<LearnCluster, { label: string; blurb: string }> = {
-  buy: { label: "Buying a key", blurb: "Get a Claude API key, pay your way, start in minutes." },
-  free: { label: "Free & low cost", blurb: "Try every Claude model before you spend a cent." },
-  integrate: { label: "Tool setup", blurb: "Wire the API into Cursor, VS Code, Claude Code and SDKs." },
-  compare: { label: "Compare", blurb: "How apiToken.sale stacks up against the alternatives." },
-  explain: { label: "How it works", blurb: "Pricing, billing, activation and support, explained." },
+export type Locale = "en" | "ru" | "zh";
+export const LOCALES: Locale[] = ["en", "ru", "zh"];
+
+/** The translatable subset of an article (shared fields: slug, cluster, related). */
+export type LocalizedContent = {
+  title: string;
+  h1: string;
+  description: string;
+  keywords: string[];
+  dek: string;
+  sections: LearnSection[];
+  faq: LearnFaq[];
+};
+
+export const clusterLabels: Record<Locale, Record<LearnCluster, { label: string; blurb: string }>> = {
+  en: {
+    buy: { label: "Buying a key", blurb: "Get a Claude API key, pay your way, start in minutes." },
+    free: { label: "Free & low cost", blurb: "Try every Claude model before you spend a cent." },
+    integrate: { label: "Tool setup", blurb: "Wire the API into Cursor, VS Code, Claude Code and SDKs." },
+    compare: { label: "Compare", blurb: "How apiToken.sale stacks up against the alternatives." },
+    explain: { label: "How it works", blurb: "Pricing, billing, activation and support, explained." },
+  },
+  ru: {
+    buy: { label: "Покупка ключа", blurb: "Получите ключ Claude API, оплатите удобным способом, начните за минуты." },
+    free: { label: "Бесплатно и дёшево", blurb: "Попробуйте любую модель Claude, не потратив ни цента." },
+    integrate: { label: "Настройка инструментов", blurb: "Подключите API к Cursor, VS Code, Claude Code и SDK." },
+    compare: { label: "Сравнения", blurb: "Чем apiToken.sale отличается от альтернатив." },
+    explain: { label: "Как это работает", blurb: "Цены, оплата, активация и поддержка — простыми словами." },
+  },
+  zh: {
+    buy: { label: "购买密钥", blurb: "获取 Claude API 密钥，自由付款，几分钟即可上手。" },
+    free: { label: "免费与低成本", blurb: "先免费试用每一个 Claude 模型，再决定充值。" },
+    integrate: { label: "工具接入", blurb: "将 API 接入 Cursor、VS Code、Claude Code 和 SDK。" },
+    compare: { label: "对比", blurb: "apiToken.sale 与其他方案的对比。" },
+    explain: { label: "工作原理", blurb: "价格、计费、激活与支持，通俗讲解。" },
+  },
+};
+
+export const learnUi: Record<Locale, {
+  guidesEyebrow: string;
+  backToHub: string;
+  faqHeading: string;
+  relatedHeading: string;
+  getKey: string;
+  readDocs: string;
+  docsBack: string;
+  hubTitle: string;
+  hubDescription: string;
+  hubKeywords: string[];
+  crumbHome: string;
+  crumbDocs: string;
+  crumbGuides: string;
+}> = {
+  en: {
+    guidesEyebrow: "Claude API guides",
+    backToHub: "← Claude API guides",
+    faqHeading: "Frequently asked questions",
+    relatedHeading: "Related guides",
+    getKey: "Get API key",
+    readDocs: "Read documentation",
+    docsBack: "← Documentation",
+    hubTitle: "Claude API Guides & Tutorials",
+    hubDescription: "Practical guides for buying, setting up and getting the most from the Claude API with apiToken.sale — pricing, integrations, payment, and model choice.",
+    hubKeywords: ["claude api guide", "claude api tutorial", "how to use claude api", "claude api help", "claude api docs"],
+    crumbHome: "Home",
+    crumbDocs: "Docs",
+    crumbGuides: "Guides",
+  },
+  ru: {
+    guidesEyebrow: "Гайды по Claude API",
+    backToHub: "← Гайды по Claude API",
+    faqHeading: "Частые вопросы",
+    relatedHeading: "Похожие гайды",
+    getKey: "Получить API-ключ",
+    readDocs: "Открыть документацию",
+    docsBack: "← Документация",
+    hubTitle: "Гайды и инструкции по Claude API",
+    hubDescription: "Практические гайды по покупке, настройке и эффективному использованию Claude API с apiToken.sale — цены, интеграции, оплата и выбор модели.",
+    hubKeywords: ["claude api гайд", "claude api инструкция", "как использовать claude api", "claude api помощь", "claude api документация"],
+    crumbHome: "Главная",
+    crumbDocs: "Документация",
+    crumbGuides: "Гайды",
+  },
+  zh: {
+    guidesEyebrow: "Claude API 指南",
+    backToHub: "← Claude API 指南",
+    faqHeading: "常见问题",
+    relatedHeading: "相关指南",
+    getKey: "获取 API 密钥",
+    readDocs: "阅读文档",
+    docsBack: "← 文档",
+    hubTitle: "Claude API 指南与教程",
+    hubDescription: "关于购买、配置并充分利用 apiToken.sale Claude API 的实用指南——价格、集成、支付与模型选择。",
+    hubKeywords: ["claude api 指南", "claude api 教程", "如何使用 claude api", "claude api 帮助", "claude api 文档"],
+    crumbHome: "首页",
+    crumbDocs: "文档",
+    crumbGuides: "指南",
+  },
 };
 
 const BASE = "https://api.apitoken.sale";
@@ -725,15 +820,90 @@ export const learnArticlesBySlug: Record<string, LearnArticle> = Object.fromEntr
   learnArticles.map((article) => [article.slug, article]),
 );
 
-export function learnPath(slug: string): string {
-  return `/docs/learn/${slug}`;
+const translations: Record<Exclude<Locale, "en">, Record<string, LocalizedContent>> = {
+  ru: learnRu,
+  zh: learnZh,
+};
+
+function enContent(article: LearnArticle): LocalizedContent {
+  return {
+    title: article.title,
+    h1: article.h1,
+    description: article.description,
+    keywords: article.keywords,
+    dek: article.dek,
+    sections: article.sections,
+    faq: article.faq,
+  };
+}
+
+export type ResolvedArticle = {
+  slug: string;
+  cluster: LearnCluster;
+  related: string[];
+  locale: Locale;
+  content: LocalizedContent;
+};
+
+/** Resolve an article for a locale, or null if that translation is not published. */
+export function resolveArticle(slug: string, locale: Locale): ResolvedArticle | null {
+  const base = learnArticlesBySlug[slug];
+  if (!base) return null;
+  if (locale === "en") {
+    return { slug, cluster: base.cluster, related: base.related, locale, content: enContent(base) };
+  }
+  const content = translations[locale][slug];
+  if (!content) return null;
+  return { slug, cluster: base.cluster, related: base.related, locale, content };
+}
+
+/** Locales that have a published version of this article (en is always present). */
+export function articleLocales(slug: string): Locale[] {
+  return LOCALES.filter((locale) => locale === "en" || Boolean(translations[locale as Exclude<Locale, "en">]?.[slug]));
+}
+
+/** Article slugs available in a locale (en = all; ru/zh = those translated). */
+export function articlesForLocale(locale: Locale): string[] {
+  const all = learnArticles.map((article) => article.slug);
+  if (locale === "en") return all;
+  return all.filter((slug) => Boolean(translations[locale as Exclude<Locale, "en">][slug]));
+}
+
+export function localePrefix(locale: Locale): string {
+  return locale === "en" ? "" : `/${locale}`;
+}
+
+export function learnPath(slug: string, locale: Locale = "en"): string {
+  return `${localePrefix(locale)}/docs/learn/${slug}`;
+}
+
+export function learnHubPath(locale: Locale = "en"): string {
+  return `${localePrefix(locale)}/docs/learn`;
 }
 
 export const LEARN_HUB_PATH = "/docs/learn";
 
 /** Path to the clean-markdown version of a learn article (AI-agent gateway). */
-export function learnMarkdownPath(slug: string): string {
-  return `/md/docs/learn/${slug}`;
+export function learnMarkdownPath(slug: string, locale: Locale = "en"): string {
+  return `/md${localePrefix(locale)}/docs/learn/${slug}`;
+}
+
+export function ogLocale(locale: Locale): string {
+  return locale === "ru" ? "ru_RU" : locale === "zh" ? "zh_CN" : "en_US";
+}
+
+export function htmlLang(locale: Locale): string {
+  return locale === "zh" ? "zh-CN" : locale;
+}
+
+/** hreflang alternates map for a learn article across every published locale. */
+export function learnAlternates(slug: string, absolute: (path: string) => string): Record<string, string> {
+  const languages: Record<string, string> = {};
+  for (const locale of articleLocales(slug)) {
+    languages[htmlLang(locale)] = absolute(learnPath(slug, locale));
+  }
+  languages["x-default"] = absolute(learnPath(slug, "en"));
+  return languages;
 }
 
 function blockToMarkdown(block: LearnBlock): string {
@@ -753,33 +923,35 @@ function blockToMarkdown(block: LearnBlock): string {
   }
 }
 
-/** Serialize an article to clean Markdown for the AI-agent gateway. */
-export function renderLearnMarkdown(article: LearnArticle, origin: string): string {
+/** Serialize a resolved article to clean Markdown for the AI-agent gateway. */
+export function renderLearnMarkdown(article: ResolvedArticle, origin: string): string {
+  const { content, slug, locale } = article;
+  const ui = learnUi[locale];
   const lines: string[] = [
     "---",
-    `title: ${article.title}`,
-    `description: ${JSON.stringify(article.description)}`,
-    `url: ${origin}${learnPath(article.slug)}`,
-    "language: en",
+    `title: ${content.title}`,
+    `description: ${JSON.stringify(content.description)}`,
+    `url: ${origin}${learnPath(slug, locale)}`,
+    `language: ${htmlLang(locale)}`,
     "---",
     "",
-    `# ${article.h1}`,
+    `# ${content.h1}`,
     "",
-    article.dek,
+    content.dek,
     "",
   ];
-  for (const section of article.sections) {
+  for (const section of content.sections) {
     lines.push(`## ${section.h2}`, "");
     for (const block of section.blocks) {
       lines.push(blockToMarkdown(block), "");
     }
   }
-  if (article.faq.length > 0) {
-    lines.push("## Frequently asked questions", "");
-    for (const item of article.faq) {
+  if (content.faq.length > 0) {
+    lines.push(`## ${ui.faqHeading}`, "");
+    for (const item of content.faq) {
       lines.push(`### ${item.q}`, "", item.a, "");
     }
   }
-  lines.push("---", `Get a key: ${origin}/register`, `More guides: ${origin}${LEARN_HUB_PATH}`, "");
+  lines.push("---", `Get a key: ${origin}/register`, `More guides: ${origin}${learnHubPath(locale)}`, "");
   return lines.join("\n");
 }
