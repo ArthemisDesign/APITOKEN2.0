@@ -5,6 +5,7 @@
 
 import { learnRu } from "./learn-ru";
 import { learnZh } from "./learn-zh";
+import { learnKo } from "./learn-ko";
 
 export type LearnCluster = "buy" | "free" | "integrate" | "compare" | "explain";
 
@@ -33,8 +34,8 @@ export type LearnArticle = {
   related: string[];
 };
 
-export type Locale = "en" | "ru" | "zh";
-export const LOCALES: Locale[] = ["en", "ru", "zh"];
+export type Locale = "en" | "ru" | "zh" | "ko";
+export const LOCALES: Locale[] = ["en", "ru", "zh", "ko"];
 
 /** The translatable subset of an article (shared fields: slug, cluster, related). */
 export type LocalizedContent = {
@@ -68,6 +69,13 @@ export const clusterLabels: Record<Locale, Record<LearnCluster, { label: string;
     integrate: { label: "工具接入", blurb: "将 API 接入 Cursor、VS Code、Claude Code 和 SDK。" },
     compare: { label: "对比", blurb: "apiToken.sale 与其他方案的对比。" },
     explain: { label: "工作原理", blurb: "价格、计费、激活与支持，通俗讲解。" },
+  },
+  ko: {
+    buy: { label: "키 구매", blurb: "Claude API 키를 받고, 원하는 방식으로 결제하고, 몇 분 안에 시작하세요." },
+    free: { label: "무료 및 저비용", blurb: "충전하기 전에 모든 Claude 모델을 무료로 사용해 보세요." },
+    integrate: { label: "도구 설정", blurb: "Cursor, VS Code, Claude Code, SDK에 API를 연결하세요." },
+    compare: { label: "비교", blurb: "apiToken.sale과 다른 대안들의 비교." },
+    explain: { label: "작동 방식", blurb: "가격, 결제, 활성화, 지원을 쉽게 설명합니다." },
   },
 };
 
@@ -134,6 +142,22 @@ export const learnUi: Record<Locale, {
     crumbDocs: "文档",
     crumbGuides: "指南",
     updated: "更新于",
+  },
+  ko: {
+    guidesEyebrow: "Claude API 가이드",
+    backToHub: "← Claude API 가이드",
+    faqHeading: "자주 묻는 질문",
+    relatedHeading: "관련 가이드",
+    getKey: "API 키 받기",
+    readDocs: "문서 읽기",
+    docsBack: "← 문서",
+    hubTitle: "Claude API 가이드 및 튜토리얼",
+    hubDescription: "apiToken.sale로 Claude API를 구매·설정하고 최대한 활용하기 위한 실용 가이드 — 가격, 통합, 결제, 모델 선택.",
+    hubKeywords: ["claude api 가이드", "claude api 튜토리얼", "claude api 사용법", "claude api 도움말", "claude api 문서"],
+    crumbHome: "홈",
+    crumbDocs: "문서",
+    crumbGuides: "가이드",
+    updated: "업데이트",
   },
 };
 
@@ -1240,6 +1264,7 @@ export const learnArticlesBySlug: Record<string, LearnArticle> = Object.fromEntr
 const translations: Record<Exclude<Locale, "en">, Record<string, LocalizedContent>> = {
   ru: learnRu,
   zh: learnZh,
+  ko: learnKo,
 };
 
 function enContent(article: LearnArticle): LocalizedContent {
@@ -1306,7 +1331,7 @@ export function learnMarkdownPath(slug: string, locale: Locale = "en"): string {
 }
 
 export function ogLocale(locale: Locale): string {
-  return locale === "ru" ? "ru_RU" : locale === "zh" ? "zh_CN" : "en_US";
+  return locale === "ru" ? "ru_RU" : locale === "zh" ? "zh_CN" : locale === "ko" ? "ko_KR" : "en_US";
 }
 
 export function htmlLang(locale: Locale): string {

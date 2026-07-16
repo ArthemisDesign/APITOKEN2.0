@@ -77,6 +77,24 @@ const copy: Record<Locale, LlmsCopy> = {
     guidesHeading: "## 指南",
     allGuides: "全部 Claude API 指南",
   },
+  ko: {
+    heading: "# apiToken.sale — Claude API 액세스",
+    summary: "> apiToken.sale은 독립적인 Claude API 게이트웨이입니다. 표준 Anthropic Messages API와 전체 Claude 라인업(Opus, Sonnet, Haiku)을 선불 잔액으로 공식 요금 대비 60~80% 할인된 가격에 제공합니다. Anthropic 계정, 대기열, 국가 제한이 없으며 신용카드 또는 암호화폐로 결제할 수 있습니다.",
+    factsHeading: "## 핵심 정보",
+    facts: [
+      "웹사이트: " + SITE_ORIGIN,
+      "API 기본 URL: https://api.apitoken.sale",
+      "API 형식: Anthropic Messages API (POST /v1/messages), x-api-key + anthropic-version 헤더",
+      "모델: Claude Opus 4.8, Opus 4.7, Sonnet 5, Sonnet 4.6, Haiku 4.5 (하나의 키와 잔액)",
+      "과금: 선불, 공식 요금 기준 토큰당 과금에서 B2C 60~80% 할인; 잔액은 만료되지 않음",
+      "결제: 신용카드 또는 암호화폐",
+      "무료 시작: 공식 API 가격 기준 $10 상당의 Claude 사용량, 카드 불필요",
+      "온보딩: 즉시, 셀프서비스, Anthropic 계정 불필요",
+      "지원: Telegram 및 apitokensale@gmail.com (한국어 요청 시 영어/러시아어 응대)",
+    ],
+    guidesHeading: "## 가이드",
+    allGuides: "모든 Claude API 가이드",
+  },
 };
 
 export function buildLlms(locale: Locale): string {

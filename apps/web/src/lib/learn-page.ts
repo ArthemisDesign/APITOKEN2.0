@@ -9,6 +9,7 @@ import {
   learnPath,
   learnUi,
   localePrefix,
+  LOCALES,
   ogLocale,
   resolveArticle,
   type Locale,
@@ -17,7 +18,7 @@ import { absoluteUrl, breadcrumbNode, createPageMetadata, LAST_CONTENT_UPDATE, S
 
 function hubAlternates(): Record<string, string> {
   const languages: Record<string, string> = {};
-  for (const locale of ["en", "ru", "zh"] as Locale[]) {
+  for (const locale of LOCALES) {
     languages[htmlLang(locale)] = absoluteUrl(learnHubPath(locale));
   }
   languages["x-default"] = absoluteUrl(learnHubPath("en"));
@@ -30,8 +31,9 @@ export function buildArticleMetadata(slug: string, locale: Locale): Metadata | n
   const path = learnPath(slug, locale);
   const base = createPageMetadata({ path, title: article.content.title, description: article.content.description });
   // en/ru get a generated per-article OG image via opengraph-image.tsx; omit the
-  // static image entirely so the file convention supplies it. zh keeps og.png.
-  const usesGeneratedOg = locale !== "zh";
+  // static image entirely so the file convention supplies it. zh/ko keep og.png
+  // (CJK/Hangul fonts are not bundled for the image generator).
+  const usesGeneratedOg = locale === "en" || locale === "ru";
   const { images: _ogImages, ...ogRest } = base.openGraph ?? {};
   const { images: _twImages, ...twRest } = base.twitter ?? {};
   const openGraph = {

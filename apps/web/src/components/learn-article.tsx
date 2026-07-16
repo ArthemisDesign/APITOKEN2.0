@@ -19,7 +19,7 @@ const UPDATED_DATE = LAST_CONTENT_UPDATE.toISOString().slice(0, 10);
 
 const CLUSTER_ORDER: LearnCluster[] = ["buy", "free", "integrate", "compare", "explain"];
 
-const LANG_LABEL: Record<Locale, string> = { en: "EN", ru: "RU", zh: "中文" };
+const LANG_LABEL: Record<Locale, string> = { en: "EN", ru: "RU", zh: "中文", ko: "한국어" };
 
 function LearnLangSwitch({ current, locales, hrefFor }: { current: Locale; locales: Locale[]; hrefFor: (locale: Locale) => string }) {
   if (locales.length < 2) return null;

@@ -56,8 +56,9 @@ describe("learn localization", () => {
 
   it("exposes the same article set across locales", () => {
     const en = articlesForLocale("en").sort();
-    expect(articlesForLocale("ru").sort()).toEqual(en);
-    expect(articlesForLocale("zh").sort()).toEqual(en);
+    for (const locale of LOCALES) {
+      expect(articlesForLocale(locale).sort(), locale).toEqual(en);
+    }
   });
 
   it("keeps product facts verbatim in translations (base URL, model IDs)", () => {

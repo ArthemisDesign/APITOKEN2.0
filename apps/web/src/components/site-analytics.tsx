@@ -47,7 +47,7 @@ export function SiteAnalytics() {
   // Keep <html lang> in sync with the localized route subtree (root layout
   // renders lang="en"; hreflang tags carry the authoritative signal for Google).
   useEffect(() => {
-    const lang = pathname.startsWith("/zh") ? "zh-CN" : pathname.startsWith("/ru") ? "ru" : "en";
+    const lang = pathname.startsWith("/zh") ? "zh-CN" : pathname.startsWith("/ru") ? "ru" : pathname.startsWith("/ko") ? "ko" : "en";
     if (document.documentElement.lang !== lang) document.documentElement.lang = lang;
   }, [pathname]);
 
