@@ -95,71 +95,92 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-api-crypto-payment": {
     title: "用加密货币支付 Claude API",
     h1: "用加密货币支付 Claude API",
-    description: "在 apitoken.sale 上用加密货币或银行卡购买 Claude API 余额。无需 Anthropic 账户，即时激活，预付余额永不过期。",
-    keywords: ["claude api 加密货币支付", "用加密货币购买 claude api", "claude api usdt", "加密货币支付 anthropic api", "claude api 比特币"],
-    dek: "如果无法使用银行卡——或者你就是更偏好加密货币——你可以用加密货币为 Claude API 余额充值并立即开始。",
+    description: "在 apitoken.sale 上用加密货币或银行卡购买 Claude API 余额。无需 Anthropic 账户，即时开通，预付余额永不过期。",
+    keywords: ["claude api 加密货币支付", "用加密货币买 claude api", "claude api usdt", "加密货币支付 anthropic api", "claude api 比特币"],
+    dek: "如果银行卡不是一个选项——或者你就是更偏好加密货币——你可以用加密货币为 Claude API 余额充值并立即开始。",
     sections: [
-      { h2: "银行卡或加密货币，任你选", blocks: [
-        { type: "p", text: "在结账时你可以通过安全的支付服务商用银行卡或加密货币支付。无论哪种方式，余额都会以预付形式进入你的账户，仅在请求运行时消耗。" },
+      { h2: "银行卡或加密货币，任你选择", blocks: [
+        { type: "p", text: "结账时你可以通过安全的支付服务商用银行卡或加密货币支付。无论哪种方式，余额都会以预付形式进入你的账户，仅在请求运行时才扣费。" },
       ] },
-      { h2: "加密货币为何有帮助", blocks: [
+      { h2: "加密货币为什么有帮助", blocks: [
         { type: "list", items: [
-          "无需受支持的 Anthropic 开票国家。",
-          "在银行卡被拒或无法使用的场景下尤其有用。",
-          "余额永不过期，一次充值即可边开发边扣减。",
+          "无需 Anthropic 支持的计费国家。",
+          "在银行卡被拒或不可用的地方很实用。",
+          "余额永不过期，因此你充值一次，边构建边扣减。",
         ] },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+      ] },
+      { h2: "结账时会遇到什么", blocks: [
+        { type: "p", text: "在结账时选择加密货币，向显示的地址转入金额，网络确认后你的余额即入账。若你更愿意用银行卡进行某笔特定充值，银行卡依然可用。" },
+        { type: "list", items: [
+          "链上确认后余额入账。",
+          "任意整数美元金额；余额永不过期。",
+          "每次充值都可在银行卡和加密货币之间切换。",
+        ] },
       ] },
     ],
     faq: [
       { q: "支持哪些支付方式？", a: "你可以通过收银服务商用银行卡或加密货币支付。" },
-      { q: "余额会过期吗？", a: "不会。预付余额永不过期，仅由真实 API 用量消耗。" },
+      { q: "余额会过期吗？", a: "不会。预付余额永不过期，仅在真实 API 使用时才消耗。" },
     ],
   },
   "claude-api-without-waitlist": {
     title: "无需排队或审批的 Claude API",
-    h1: "无需排队即可访问 Claude API",
-    description: "跳过 Anthropic 的排队和审批。在 apitoken.sale 上创建账户、生成 Claude API 密钥，几分钟内完成你的第一次调用。",
-    keywords: ["claude api 免排队", "claude api 即时开通", "claude api 无需审批", "快速获取 claude api 密钥", "claude api 无需 anthropic 账户"],
-    dek: "等待审批会消磨积极性。apitoken.sale 让你即时自助访问所有受支持的 Claude 模型——不排队、不用销售通话、无需公司核验。",
+    h1: "无需排队即可使用 Claude API",
+    description: "跳过 Anthropic 的排队和审批。在 apitoken.sale 上创建账户、生成 Claude API 密钥，几分钟内即可发出第一个调用。",
+    keywords: ["claude api 无排队", "claude api 即时开通", "claude api 无需审批", "快速获取 claude api 密钥", "claude api 无需 anthropic 账户"],
+    dek: "等待审批会消磨积极性。apitoken.sale 让你即时、自助地用上所有受支持的 Claude 模型——无排队、无销售电话、无公司验证。",
     sections: [
-      { h2: "即时、自助的访问", blocks: [
-        { type: "steps", items: [
+      { h2: "即时、自助开通", blocks: [ { type: "steps", items: [
           "创建一个免费账户并打开控制台——无需审批、无需排队。",
           "生成一把 API 密钥（形如 sk-pool-…）。同一把密钥可用于所有受支持的 Claude 模型。",
           "将任意兼容 Anthropic 的工具指向 https://api.apitoken.sale，并携带 x-api-key 请求头向 /v1/messages 发送请求。",
-        ] },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        ] }, { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" } ] },
+      { h2: "「即时」到底是什么意思", blocks: [
+        { type: "p", text: "你一生成密钥它就是激活的。从注册到第一个成功请求之间没有任何人工审核步骤，因此你可以在同一次坐下就接通工具并交付。" },
       ] },
-      { h2: "所谓“即时”到底意味着什么", blocks: [
-        { type: "p", text: "你生成密钥的那一刻它就已生效。注册与第一次成功请求之间没有人工审核环节，因此你可以在同一次会话中接通工具并上线。" },
+      { h2: "从零到第一个调用", blocks: [
+        { type: "list", items: [
+          "注册并打开控制台——没有审批步骤。",
+          "生成密钥并把你的工具指向 api.apitoken.sale。",
+          "发出请求，即可在用量中看到它被计量。",
+        ] },
+        { type: "p", text: "每个新账户还会附带价值 $10 的官方价格 Claude 用量，因此你可以在充值前先验证整个流程。" },
       ] },
     ],
     faq: [
-      { q: "真的完全不用排队吗？", a: "没错。访问是自助且即时的——你生成密钥后，下一次请求即可使用。" },
-      { q: "我需要联系销售吗？", a: "不需要。B2C 访问完全自助。只有需要商议的 B2B 批量定价才涉及沟通。" },
+      { q: "真的没有排队吗？", a: "没错。开通是自助且即时的——你生成一把密钥，它在下一次请求就能用。" },
+      { q: "我需要联系销售吗？", a: "不需要。B2C 开通完全自助。只有需要商议的 B2B 批量定价才涉及沟通。" },
     ],
   },
   "claude-api-quick-setup": {
-    title: "两分钟搞定 Claude API 配置",
+    title: "两分钟完成 Claude API 配置",
     h1: "两分钟配置好 Claude API",
-    description: "两分钟 Claude API 快速上手：创建密钥、将 base URL 设为 api.apitoken.sale，用 curl、Python 或你的 IDE 发送第一个 /v1/messages 请求。",
+    description: "两分钟的 Claude API 快速上手：创建密钥、把 Base URL 设为 api.apitoken.sale，然后用 curl、Python 或你的 IDE 发出第一个 /v1/messages 请求。",
     keywords: ["claude api 快速上手", "claude api 配置", "claude api 第一个请求", "anthropic messages api", "claude api base url"],
-    dek: "这是从零到跑通一次 Claude API 调用最快的路径。下面的一切都使用标准 Anthropic Messages API，因此可以直接嵌入你现有的代码。",
+    dek: "这是从零到跑通 Claude API 调用的最快路径。下面的一切都使用标准的 Anthropic Messages API，因此可以直接嵌入你现有的代码。",
     sections: [
       { h2: "1. 创建密钥", blocks: [ { type: "p", text: "注册、打开控制台并生成一把密钥。它形如 sk-pool-…，可用于所有受支持的模型。" } ] },
-      { h2: "2. 设置你的接口地址", blocks: [
+      { h2: "2. 设置端点", blocks: [
         { type: "p", text: "将任意兼容 Anthropic 的客户端指向网关：" },
         { type: "code", code: `Base URL:  https://api.apitoken.sale\nEndpoint:  POST /v1/messages\nHeaders:   x-api-key: sk-pool-•••\n           anthropic-version: 2023-06-01` },
       ] },
-      { h2: "3. 发送你的第一个请求", blocks: [
+      { h2: "3. 发出第一个请求", blocks: [
         { type: "code", code: `curl https://api.apitoken.sale/v1/messages \\\n  -H "x-api-key: sk-pool-•••" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-opus-4-8",\n    "max_tokens": 1024,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
       ] },
+      { h2: "首次调用的常见错误", blocks: [
+        { type: "list", items: [
+          "401 Unauthorized——缺少或写错 x-api-key，或 Base URL 有误。",
+          "400 Bad Request——检查模型 ID，并确认已设置 max_tokens。",
+          "429 Too Many Requests——遵守 Retry-After 并降低并发。",
+          "402 / 余额不足——充值任意整数美元金额即可。",
+        ] },
+      ] },
     ],
     faq: [
-      { q: "我应该用哪个 base URL？", a: "用任意兼容 Anthropic 的工具时使用 https://api.apitoken.sale，并向 /v1/messages 发送请求。" },
-      { q: "需要哪个认证请求头？", a: "发送携带你密钥的 x-api-key 以及 anthropic-version，与官方 Anthropic API 完全一致。" },
+      { q: "我该用哪个 Base URL？", a: "在任意兼容 Anthropic 的工具中使用 https://api.apitoken.sale，并向 /v1/messages 发送请求。" },
+      { q: "需要哪个鉴权请求头？", a: "发送 x-api-key（携带你的密钥）和 anthropic-version，与官方 Anthropic API 完全一致。" },
     ],
   },
   "free-claude-api-key": {
@@ -306,33 +327,41 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-api-key-for-cursor": {
     title: "用于 Cursor 的 Claude API 密钥",
     h1: "在 Cursor 中使用 Claude API 密钥",
-    description: "用 apitoken.sale 密钥把 Cursor 接入 Claude：将 Anthropic base URL 设为 api.apitoken.sale，粘贴密钥，选择模型，以最高 80% 的折扣编码。",
-    keywords: ["cursor claude api 密钥", "cursor claude api", "cursor anthropic 密钥", "在 cursor 中使用 claude", "无需 cursor pro"],
-    dek: "Cursor 允许你自带 Anthropic 密钥，这意味着你可以用折扣预付余额在 Cursor 中运行 Claude，而非捆绑套餐。",
+    description: "用 apitoken.sale 密钥把 Cursor 接入 Claude：将 Anthropic Base URL 设为 api.apitoken.sale，粘贴密钥，选择模型，即可以最高 80% 折扣编码。",
+    keywords: ["用于 cursor 的 claude api 密钥", "cursor claude api", "cursor anthropic 密钥", "在 cursor 中用 claude", "不买 cursor pro 用 cursor"],
+    dek: "Cursor 允许你自带 Anthropic 密钥，这意味着你可以用折扣预付余额在 Cursor 中运行 Claude，而不必依赖捆绑套餐。",
     sections: [
       { h2: "三步配置", blocks: [
         { type: "steps", items: [
           "打开 Cursor → Settings → Models → Anthropic API。",
-          "将 base URL 设为 https://api.apitoken.sale 并粘贴你的 sk-pool-••• 密钥。",
-          "选择一个模型（如 claude-opus-4-8）即可开始编码。",
+          "把 Base URL 设为 https://api.apitoken.sale，并粘贴你的 sk-pool-••• 密钥。",
+          "选择一个模型，例如 claude-opus-4-8，即可开始编码。",
         ] },
       ] },
       { h2: "配置", blocks: [
         { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://api.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
       ] },
+      { h2: "故障排查", blocks: [
+        { type: "list", items: [
+          "Cursor 忽略密钥：确认你编辑的是 Anthropic 提供方，而不是 OpenAI。",
+          "找不到模型：设置一个当前的模型 ID，例如 claude-opus-4-8。",
+          "401：重新检查 Base URL，并确认密钥完整粘贴。",
+        ] },
+        { type: "p", text: "连接成功后，所有受支持的 Claude 模型都可在同一把密钥和余额下使用。" },
+      ] },
     ],
     faq: [
-      { q: "我能在 Cursor 里用自己的 Claude 密钥吗？", a: "可以。Cursor 的 Anthropic 提供方接受自定义 base URL 和密钥，因此你可以把它指向 apitoken.sale。" },
-      { q: "我还需要 Cursor Pro 吗？", a: "你可以通过自己的 API 密钥和余额运行 Claude；需要 Cursor 自身套餐的功能与模型提供方是相互独立的。" },
+      { q: "我能在 Cursor 里用自己的 Claude 密钥吗？", a: "可以。Cursor 的 Anthropic 提供方接受自定义 Base URL 和密钥，因此你可以把它指向 apitoken.sale。" },
+      { q: "我还需要 Cursor Pro 吗？", a: "你可以用自己的 API 密钥和余额运行 Claude；而需要 Cursor 自身套餐的功能则与模型提供方无关，属于另一回事。" },
     ],
   },
   "claude-api-for-vs-code": {
     title: "在 VS Code 中使用 Claude API（Cline、Continue）",
     h1: "在 VS Code 中使用 Claude API",
-    description: "用 apitoken.sale 密钥通过 Cline 或 Continue 在 VS Code 中运行 Claude。将 Anthropic base URL 设为 api.apitoken.sale，以折扣价按 token 付费。",
-    keywords: ["claude api vs code", "cline claude api", "continue claude api", "在 vscode 中使用 claude", "vscode anthropic api 密钥"],
-    dek: "Cline、Continue 等免费 VS Code 智能体接受任意兼容 Anthropic 的接口，因此你可以在 VS Code 中用折扣余额与 Claude 一起编码。",
+    description: "使用 apitoken.sale 密钥，通过 Cline 或 Continue 在 VS Code 中运行 Claude。把 Anthropic Base URL 设为 api.apitoken.sale，即可按 token 折扣付费。",
+    keywords: ["claude api vs code", "cline claude api", "continue claude api", "vscode 用 claude", "vscode anthropic api 密钥"],
+    dek: "Cline、Continue 等免费的 VS Code 智能体接受任何兼容 Anthropic 的端点，因此你可以用折扣余额在 VS Code 里用 Claude 编码。",
     sections: [
       { h2: "Cline", blocks: [
         { type: "code", code: `# Cline → Settings\nAPI Provider : Anthropic\nBase URL     : https://api.apitoken.sale\nAPI Key      : sk-pool-•••\nModel        : claude-opus-4-8` },
@@ -341,38 +370,54 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "code", code: `// ~/.continue/config.json\n{\n  "models": [{\n    "title": "Claude via apiToken.sale",\n    "provider": "anthropic",\n    "apiBase": "https://api.apitoken.sale",\n    "apiKey": "sk-pool-•••",\n    "model": "claude-opus-4-8"\n  }]\n}` },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
       ] },
+      { h2: "选哪个扩展与故障排查", blocks: [
+        { type: "p", text: "Cline 适合作为自主编辑的默认之选；Continue 更轻量，适合内联对话和补全。两者都免费，且都使用你的预付余额。" },
+        { type: "list", items: [
+          "401 Unauthorized：API 密钥或 Base URL 有误。",
+          "找不到模型：使用当前的模型 ID，例如 claude-sonnet-5 或 claude-opus-4-8。",
+          "缓慢或 429：降低并发并遵守 Retry-After。",
+        ] },
+      ] },
     ],
     faq: [
-      { q: "哪些 VS Code 扩展可以用？", a: "任何支持兼容 Anthropic 接口的扩展都能配合 apitoken.sale 密钥使用，包括 Cline 和 Continue。" },
-      { q: "我需要付费扩展吗？", a: "不需要。Cline 和 Continue 都是免费的；你只需为对应预付余额的 Claude API 用量付费。" },
+      { q: "哪些 VS Code 扩展可以用？", a: "任何支持兼容 Anthropic 端点的扩展都可以，包括 Cline 和 Continue，均可搭配 apitoken.sale 密钥使用。" },
+      { q: "需要付费扩展吗？", a: "不需要。Cline 和 Continue 都是免费的；你只为消耗预付余额的 Claude API 用量付费。" },
     ],
   },
   "cursor-without-anthropic-account": {
-    title: "无需 Anthropic 账户在 Cursor 中使用 Claude",
+    title: "无需 Anthropic 账户在 Cursor 中用 Claude",
     h1: "无需 Anthropic 账户在 Cursor 中运行 Claude",
-    description: "没有 Anthropic 账户？改用 apitoken.sale 密钥在 Cursor 中使用 Claude。即时访问、银行卡或加密货币支付，享受最高 80% 的官方 API 费率折扣。",
-    keywords: ["无需 anthropic 账户使用 cursor", "cursor claude 无 anthropic", "cursor claude api 密钥", "不用 anthropic 账户使用 claude"],
-    dek: "如果你无法或不愿创建 Anthropic 账户，apitoken.sale 会签发自己的密钥，Cursor 会把它当作 Anthropic 提供方接受。",
+    description: "没有 Anthropic 账户？改用 apitoken.sale 密钥在 Cursor 中使用 Claude。即时开通，支持银行卡或加密货币支付，官方费率最高立省 80%。",
+    keywords: ["无 anthropic 账户用 cursor", "cursor claude 无 anthropic", "cursor claude api 密钥", "不用 anthropic 账户用 claude"],
+    dek: "如果你无法或不愿创建 Anthropic 账户，apitoken.sale 会签发自己的密钥，Cursor 会把它当作 Anthropic 提供方来接受。",
     sections: [
       { h2: "为什么可行", blocks: [
-        { type: "p", text: "Cursor 与 Anthropic Messages API 通信。apitoken.sale 暴露的正是这套 API，因此 Cursor 分辨不出差别——它只是使用你的密钥和 base URL。" },
+        { type: "p", text: "Cursor 与 Anthropic Messages API 通信。apitoken.sale 对外暴露的正是这套 API，因此 Cursor 分辨不出差别——它只是使用你的密钥和 Base URL。" },
       ] },
       { h2: "配置方法", blocks: [
         { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://api.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
       ] },
+      { h2: "你能保留什么", blocks: [
+        { type: "list", items: [
+          "完整的 Claude 系列——Opus、Sonnet 和 Haiku——都在一把密钥下。",
+          "标准的 Anthropic 行为：流式输出、工具调用、系统提示。",
+          "控制台中的按密钥消费上限和 token 级用量。",
+        ] },
+        { type: "p", text: "你使用 Cursor 的方式毫无变化；只是把密钥来源从 Anthropic 换成了 apitoken.sale。" },
+      ] },
     ],
     faq: [
       { q: "这样做需要 Anthropic 账户吗？", a: "不需要。apitoken.sale 提供密钥和余额，因此无需 Anthropic 账户。" },
-      { q: "这个集成是官方 Anthropic API 吗？", a: "Cursor 使用标准的 Anthropic Messages API；apitoken.sale 以折扣价提供同一套 API。" },
+      { q: "这个集成用的是官方 Anthropic API 吗？", a: "Cursor 使用标准的 Anthropic Messages API；apitoken.sale 以折扣价提供同一套 API。" },
     ],
   },
   "anthropic-sdk-base-url": {
-    title: "使用自定义 Base URL 调用 Anthropic SDK",
+    title: "在 Anthropic SDK 中使用自定义 Base URL",
     h1: "将 Anthropic SDK 指向 apitoken.sale",
-    description: "通过将 base_url 设为 api.apitoken.sale，用官方 Anthropic Python 和 TypeScript SDK 调用 apitoken.sale。相同的 SDK、相同的代码、更低的每 token 成本。",
-    keywords: ["anthropic sdk base url", "anthropic python sdk 自定义接口", "claude sdk base url", "anthropic typescript sdk", "claude api sdk"],
-    dek: "官方 Anthropic SDK 允许你覆盖 base URL，因此切换到 apitoken.sale 只是一行改动——你的模型 ID 和消息代码保持完全不变。",
+    description: "只需把 base_url 设为 api.apitoken.sale，即可在官方 Anthropic Python 和 TypeScript SDK 中使用 apitoken.sale。同样的 SDK、同样的代码，每 token 成本更低。",
+    keywords: ["anthropic sdk base url", "anthropic python sdk 自定义端点", "claude sdk base url", "anthropic typescript sdk", "claude api sdk 配置"],
+    dek: "官方 Anthropic SDK 允许覆盖 Base URL，因此切换到 apitoken.sale 只是一行改动——你的模型 ID 和消息代码完全保持不变。",
     sections: [
       { h2: "Python", blocks: [
         { type: "code", code: `from anthropic import Anthropic\n\nclient = Anthropic(\n    base_url="https://api.apitoken.sale",\n    api_key="sk-pool-•••",\n)\nmsg = client.messages.create(\n    model="claude-opus-4-8",\n    max_tokens=1024,\n    messages=[{"role": "user", "content": "Hello"}],\n)` },
@@ -381,10 +426,18 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "code", code: `import Anthropic from "@anthropic-ai/sdk";\n\nconst client = new Anthropic({\n  baseURL: "https://api.apitoken.sale",\n  apiKey: "sk-pool-•••",\n});\nconst msg = await client.messages.create({\n  model: "claude-opus-4-8",\n  max_tokens: 1024,\n  messages: [{ role: "user", content: "Hello" }],\n});` },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
       ] },
+      { h2: "验证切换是否成功", blocks: [
+        { type: "p", text: "改完 Base URL 后，发一次请求，确认你能收到正常的 Anthropic 响应。流式输出、工具调用和系统提示的表现都与 api.anthropic.com 完全一致——变的只有计费端点。" },
+        { type: "list", items: [
+          "返回 401 说明密钥或 Base URL 有误——两者都要重新检查。",
+          "保持相同的模型 ID；消息相关的代码无需任何改动。",
+          "在控制台按请求查看用量，确认消费和你的折扣。",
+        ] },
+      ] },
     ],
     faq: [
-      { q: "我能继续使用官方 Anthropic SDK 吗？", a: "可以。把 base_url（Python）或 baseURL（TypeScript）设为 apitoken.sale，其余一切保持不变。" },
-      { q: "模型 ID 会变吗？", a: "不会。使用相同的模型 ID，例如 claude-opus-4-8 和 claude-sonnet-5。" },
+      { q: "我还能继续用官方 Anthropic SDK 吗？", a: "可以。把 base_url（Python）或 baseURL（TypeScript）设为 apitoken.sale，其余一切保持不变。" },
+      { q: "模型 ID 会变吗？", a: "不会。继续使用相同的模型 ID，例如 claude-opus-4-8 和 claude-sonnet-5。" },
     ],
   },
   "apitoken-vs-anthropic-direct": {
@@ -419,27 +472,34 @@ export const learnZh: Record<string, LocalizedContent> = {
     ],
   },
   "apitoken-vs-openrouter": {
-    title: "面向 Claude 的 apitoken.sale 对比 OpenRouter",
-    h1: "面向 Claude 的 apitoken.sale 对比 OpenRouter",
-    description: "在挑选 Claude 网关？对比 apitoken.sale 与 OpenRouter：原生 Anthropic 接口加预付折扣，还是一个多提供方路由器。",
-    keywords: ["openrouter 替代", "apitoken 对比 openrouter", "claude api 网关", "openrouter claude", "最佳 claude api 网关"],
-    dek: "两者都能让你在没有 Anthropic 账户的情况下用上 Claude，但构建方式不同。如果 Claude 是你的主力模型，原生 Anthropic 接口能让一切保持简单。",
+    title: "Claude 场景下 apiToken.sale 与 OpenRouter 对比",
+    h1: "Claude 场景下 apiToken.sale 与 OpenRouter 对比",
+    description: "在选择 Claude 网关？对比 apiToken.sale 与 OpenRouter：原生 Anthropic 端点加预付折扣，对比多提供方路由器。",
+    keywords: ["openrouter 替代品", "apitoken 对比 openrouter", "claude api 网关", "openrouter claude", "最佳 claude api 网关"],
+    dek: "两者都能让你无需 Anthropic 账户就用上 Claude，但架构不同。如果 Claude 是你的主力模型，原生 Anthropic 端点会让一切更简单。",
     sections: [
-      { h2: "原生 Anthropic 接口", blocks: [
-        { type: "p", text: "apitoken.sale 在 https://api.apitoken.sale 暴露标准的 Anthropic Messages API，因此 Claude Code、Cursor 和 Anthropic SDK 无需任何适配器即可工作。你无需经过通用的多提供方抽象层路由。" },
+      { h2: "原生 Anthropic 端点", blocks: [
+        { type: "p", text: "apiToken.sale 在 https://api.apitoken.sale 上暴露标准的 Anthropic Messages API，因此 Claude Code、Cursor 和 Anthropic SDK 都无需任何适配器即可使用。你不必经过一层通用的多提供方抽象。" },
       ] },
-      { h2: "预付折扣，而非加价", blocks: [
+      { h2: "是预付折扣，不是加价", blocks: [
         { type: "list", items: [
-          "面向 B2C 的递进折扣，最高比官方 Claude 消费低 80%。",
-          "一把密钥和一份余额覆盖 Opus、Sonnet 和 Haiku。",
+          "递进式 B2C 折扣，官方 Claude 消费最高立省 80%。",
+          "一把密钥、一份余额，通用 Opus、Sonnet 和 Haiku。",
           "银行卡或加密货币充值，永不过期。",
         ] },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
       ] },
+      { h2: "分别适合什么时候用", blocks: [
+        { type: "list", items: [
+          "apiToken.sale——Claude 是你的主力模型，你想要一个带折扣的原生 Anthropic 端点。",
+          "OpenRouter——你需要在一层抽象后路由到众多提供方。",
+          "两者都能让你无需 Anthropic 账户即可开始；但只有 apiToken.sale 直接对 Claude 消费打折。",
+        ] },
+      ] },
     ],
     faq: [
-      { q: "为什么选择 Claude 原生网关？", a: "如果 Claude 是你的主力模型，原生 Anthropic 接口意味着你现有的 Anthropic 工具和 SDK 无需改动即可工作。" },
-      { q: "apitoken.sale 会加价吗？", a: "不会——它对官方 Claude 消费套用折扣，而非加价。" },
+      { q: "为什么要选 Claude 原生网关？", a: "如果 Claude 是你的主力模型，原生 Anthropic 端点意味着你现有的 Anthropic 工具和 SDK 无需改动即可使用。" },
+      { q: "apiToken.sale 会加价吗？", a: "不会——它对官方 Claude 消费打折，而不是在标价之上加价。" },
     ],
   },
   "claude-opus-vs-sonnet": {
@@ -547,83 +607,114 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-api-activation-time": {
     title: "Claude API 激活有多快？",
     h1: "你的 Claude API 密钥激活有多快",
-    description: "apitoken.sale 的密钥即时激活。生成密钥、充值，几分钟内即可完成一次成功的 Claude API 调用——无需人工审核或排队。",
+    description: "apitoken.sale 的密钥即时激活。生成密钥、充值，几分钟内即可成功发出 Claude API 调用——无需人工审核或排队。",
     keywords: ["claude api 激活时间", "claude api 密钥多快", "即时 claude api 密钥", "claude api 就绪时间"],
-    dek: "从创建密钥到使用它之间没有等待期。激活是即时的，因此唯一的速度限制就是你把密钥粘贴到工具里的速度。",
+    dek: "从创建密钥到使用它之间没有任何等待期。激活是即时的，速度唯一的限制就是你把密钥粘贴进工具有多快。",
     sections: [
-      { h2: "生来即时", blocks: [
-        { type: "p", text: "密钥在你生成的那一刻即生效。充值在支付确认后立即计入余额，而银行卡支付几秒内即可确认。" },
+      { h2: "为即时而设计", blocks: [
+        { type: "p", text: "密钥一经生成即刻可用。充值在支付确认后立即入账，而银行卡支付几秒内即可确认。" },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+      ] },
+      { h2: "什么可能带来短暂延迟", blocks: [
+        { type: "p", text: "唯一的等待是支付确认。银行卡充值几秒内到账；加密货币充值则在网络确认交易后入账，具体时间取决于你选择的币种和手续费。" },
+        { type: "list", items: [
+          "密钥生成：即时。",
+          "银行卡充值：几秒。",
+          "加密货币充值：网络确认之后。",
+        ] },
       ] },
     ],
     faq: [
       { q: "我的密钥多久能用？", a: "立即可用。没有人工审核——刚生成的密钥在下一次请求即可使用。" },
-      { q: "充值需要多久？", a: "银行卡支付几秒内计入；加密货币在网络确认交易后计入。" },
+      { q: "充值需要多久？", a: "银行卡支付几秒内到账；加密货币在网络确认交易后入账。" },
     ],
   },
   "claude-api-supported-countries": {
-    title: "Claude API 支持的国家",
+    title: "Claude API 支持的国家/地区",
     h1: "你可以在哪里使用 apitoken.sale",
-    description: "apitoken.sale 全球可用，无 Anthropic 开票国家要求。用银行卡或加密货币支付，从 Anthropic 不直接服务的地区使用 Claude API。",
+    description: "apitoken.sale 全球可用，无 Anthropic 计费国家要求。用银行卡或加密货币支付，即可在 Anthropic 不直接服务的地区使用 Claude API。",
     keywords: ["claude api 支持的国家", "claude api 全球可用", "anthropic api 国家限制", "claude api 可用地区"],
-    dek: "由于密钥和余额由我们签发，因此没有 Anthropic 开票国家的门槛。这让身处直接注册困难地区的开发者也能用上 Claude API。",
+    dek: "由于我们自行签发密钥和余额，因此没有 Anthropic 计费国家的门槛。这让身处直接注册困难地区的开发者也能用上 Claude API。",
     sections: [
-      { h2: "没有开票国家门槛", blocks: [
+      { h2: "无计费国家门槛", blocks: [
         { type: "list", items: [
-          "无需 Anthropic 账户或受支持的开票国家。",
-          "支持银行卡和加密货币支付选项。",
+          "无需 Anthropic 账户或受支持的计费国家。",
+          "支持银行卡和加密货币支付。",
           "通过 Telegram 提供英语和俄语支持。",
         ] },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
       ] },
+      { h2: "跨地区的支付方式", blocks: [
+        { type: "p", text: "由于我们签发密钥和余额，你不受 Anthropic 支持的计费国家约束。在可用的地区用银行卡支付，或在银行卡被拒的地区用加密货币支付。" },
+        { type: "list", items: [
+          "无需 Anthropic 计费国家。",
+          "结账时可用银行卡或加密货币。",
+          "通过 Telegram 提供英语和俄语支持。",
+        ] },
+      ] },
     ],
     faq: [
-      { q: "Claude API 在我的国家可用吗？", a: "apitoken.sale 没有开票国家要求，因此你可以从 Anthropic 不直接开票的地区购买余额并使用密钥。" },
-      { q: "支付限制方面如何？", a: "你可以用银行卡或加密货币支付，这在银行卡无法使用的地方很有帮助。" },
+      { q: "我所在的国家能用 Claude API 吗？", a: "apitoken.sale 没有计费国家要求，因此你可以在 Anthropic 不直接计费的地区购买余额并使用密钥。" },
+      { q: "支付限制怎么办？", a: "你可以用银行卡或加密货币支付，这在银行卡不可用的地区很有帮助。" },
     ],
   },
   "claude-api-refund-policy": {
     title: "Claude API 退款政策",
     h1: "退款与支持",
-    description: "了解 apitoken.sale 如何处理余额、退款和支持。预付余额永不过期，并通过 Telegram 提供英语和俄语帮助。",
+    description: "了解 apitoken.sale 如何处理余额、退款和支持。预付余额永不过期，并通过 Telegram 提供英语和俄语支持。",
     keywords: ["claude api 退款", "apitoken 退款政策", "claude api 支持", "claude api 退钱", "claude api 帮助"],
-    dek: "预付余额被设计为低风险：永不过期，你只花实际调用的部分，而支持只需一条消息即可触达。",
+    dek: "预付余额的设计就是为了低风险：它永不过期，你只为实际调用的部分付费，而支持只需一条消息即可触达。",
     sections: [
       { h2: "余额与退款", blocks: [
-        { type: "p", text: "由于余额为预付且永不过期，未使用的资金会保留供未来使用。退款处理通过原支付服务商进行；请携带你的账户信息联系支持。" },
+        { type: "p", text: "由于余额为预付制且永不过期，未使用的资金会一直保留供日后使用。退款通过原支付渠道处理；请带上你的账户信息联系支持。" },
       ] },
       { h2: "获取帮助", blocks: [
-        { type: "p", text: "支持通过 Telegram 提供英语和俄语服务，也可通过邮箱 apitokensale@gmail.com 联系。大多数集成问题都能得到快速解答。" },
+        { type: "p", text: "支持通过 Telegram 提供英语和俄语服务，也可发邮件至 apitokensale@gmail.com。大多数集成问题都能很快得到解答。" },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+      ] },
+      { h2: "充值与余额如何运作", blocks: [
+        { type: "p", text: "你以任意整数美元金额充值余额，且仅在请求运行时才扣减。由于它永不过期，没什么理由超额充值——用多少充多少即可。" },
+        { type: "list", items: [
+          "预付、永不过期的余额。",
+          "退款通过原支付渠道处理。",
+          "用你的账户邮箱联系支持以获取帮助。",
+        ] },
       ] },
     ],
     faq: [
-      { q: "我的余额会过期吗？", a: "不会。预付余额永不过期，仅由真实 API 用量消耗。" },
-      { q: "我如何联系支持？", a: "通过 Telegram 用英语或俄语联系支持，或发邮件至 apitokensale@gmail.com。" },
+      { q: "我的余额会过期吗？", a: "不会。预付余额永不过期，仅在真实 API 使用时才消耗。" },
+      { q: "我该如何联系支持？", a: "通过 Telegram 以英语或俄语联系支持，或发邮件至 apitokensale@gmail.com。" },
     ],
   },
   "apitoken-vs-proxyapi": {
-    title: "apiToken.sale 与 ProxyAPI 对比（Claude）",
+    title: "Claude 场景下 apiToken.sale 与 ProxyAPI 对比",
     h1: "apiToken.sale 与 ProxyAPI 对比",
-    description: "对比 Claude API 分销商：apiToken.sale 提供原生 Anthropic 端点、60–80% 的渐进折扣、支持银行卡或加密货币支付，一把密钥通用所有模型。",
-    keywords: ["proxyapi 替代方案", "claude api 分销商", "claude api 便宜渠道", "claude api 无需 anthropic 账号", "国内使用 claude api"],
-    dek: "两者都能让你无需 Anthropic 账户即可使用 Claude。区别在于付款方式、能省多少钱，以及端点是否真正原生兼容 Anthropic。",
+    description: "对比 Claude API 转售商：apiToken.sale 提供原生 Anthropic 端点、60–80% 的递进折扣、银行卡或加密货币支付，一把密钥通用所有模型。",
+    keywords: ["proxyapi 替代品", "apitoken 对比 proxyapi", "claude api 转售", "proxyapi claude", "不用 proxyapi 用 claude api"],
+    dek: "两者都能让你无需 Anthropic 账户就用上 Claude。差别在于付款方式、能省多少，以及端点是否真正 Anthropic 原生。",
     sections: [
       { h2: "原生 Anthropic 端点", blocks: [
-        { type: "p", text: "apitoken.sale 在 https://api.apitoken.sale 上暴露标准的 Anthropic Messages API，因此 Claude Code、Cursor 和 Anthropic 官方 SDK 无需改动即可使用——你与 Claude 之间没有任何适配层。" },
+        { type: "p", text: "apiToken.sale 在 https://api.apitoken.sale 上暴露标准的 Anthropic Messages API，因此 Claude Code、Cursor 和 Anthropic SDK 无需改动即可使用——你与 Claude 之间没有一层适配层。" },
       ] },
-      { h2: "折扣，而非加价", blocks: [
+      { h2: "是折扣，不是加价", blocks: [
         { type: "list", items: [
-          "B2C 渐进折扣，最高可享官方 Claude 消费 80% 减免。",
-          "一把预付密钥和余额通用 Opus、Sonnet 和 Haiku。",
-          "银行卡或加密货币充值，余额永不过期。",
+          "递进式 B2C 折扣，官方 Claude 消费最高立省 80%。",
+          "一把预付密钥、一份余额，通用 Opus、Sonnet 和 Haiku。",
+          "银行卡或加密货币充值，永不过期。",
         ] },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
       ] },
+      { h2: "分别适合什么", blocks: [
+        { type: "list", items: [
+          "apiToken.sale——带递进折扣和按密钥管控的原生 Anthropic 端点。",
+          "通用转售商——如果你已经在用它的其他提供方，可能适合你。",
+          "两者都移除了 Anthropic 账户门槛；差别在于价格，以及 Claude 接入有多原生。",
+        ] },
+      ] },
     ],
     faq: [
-      { q: "apiToken.sale 比普通分销商更便宜吗？", a: "它是在官方 Claude 消费基础上叠加最高 80% 的渐进折扣，而不是在标价之上加价。" },
-      { q: "我原有的 Anthropic 工具还能用吗？", a: "能——这是原生的 Anthropic Messages API，Claude Code、Cursor 和各 SDK 只需修改 base URL 即可。" },
+      { q: "apiToken.sale 比普通转售商更便宜吗？", a: "它对官方 Claude 消费套用最高 80% 的递进折扣，而不是在标价之上再加价。" },
+      { q: "我的 Anthropic 工具还能用吗？", a: "能——它是原生的 Anthropic Messages API，因此 Claude Code、Cursor 和 SDK 只需改一下 Base URL。" },
     ],
   },
   "apitoken-vs-portkey": {
@@ -648,24 +739,31 @@ export const learnZh: Record<string, LocalizedContent> = {
     ],
   },
   "apitoken-vs-litellm": {
-    title: "apiToken.sale 与 LiteLLM 对比（Claude）",
+    title: "Claude 场景下 apiToken.sale 与 LiteLLM 对比",
     h1: "apiToken.sale 与 LiteLLM 对比",
-    description: "LiteLLM 是一款自托管代理，能统一各家模型 API，但需要你自备已充值的密钥。apiToken.sale 则是托管式的折扣 Claude 端点，无需你运维任何东西。",
-    keywords: ["litellm 替代方案", "litellm claude", "自托管 claude 代理", "托管 claude api", "claude api 代理"],
-    dek: "如果你想自托管一个横跨多家厂商的代理，LiteLLM 很合适。apiToken.sale 走的是相反的取舍：无需运维任何东西，而且 Claude 余额本身就带折扣。",
+    description: "LiteLLM 是一个统一各模型 API 的自托管代理，但需要你自己充值的密钥。apiToken.sale 则是一个托管的折扣 Claude 端点，无需自行运维。",
+    keywords: ["litellm 替代品", "apitoken 对比 litellm", "litellm claude", "自托管 claude 代理", "托管 claude api"],
+    dek: "如果你想跨多个提供方自托管一个代理，LiteLLM 很棒。apiToken.sale 是相反的取舍：无需运维，而且 Claude 余额自带折扣。",
     sections: [
       { h2: "自托管 vs 托管", blocks: [
         { type: "list", items: [
-          "LiteLLM：你自己运行和维护代理，且仍需为每家厂商自行充值。",
+          "LiteLLM：你自己运行和维护代理，并且仍要自行为每个提供方充值。",
           "apiToken.sale：完全托管的原生 Anthropic 端点，无需管理任何基础设施。",
-          "apiToken.sale 在 Claude 消费上额外提供 60–80% 折扣，这是裸代理做不到的。",
+          "apiToken.sale 对 Claude 消费提供 60–80% 的折扣，这是裸代理做不到的。",
         ] },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
       ] },
+      { h2: "分别适合什么时候用", blocks: [
+        { type: "list", items: [
+          "apiToken.sale——你想要一个托管、带折扣、无需运维的 Claude 端点。",
+          "LiteLLM——你想自托管一个跨多个自付费提供方的统一代理。",
+          "你甚至可以把 LiteLLM 放在 apiToken.sale 密钥前面，在底层保留折扣。",
+        ] },
+      ] },
     ],
     faq: [
-      { q: "LiteLLM 会给 Claude 打折吗？", a: "不会。LiteLLM 只是把请求路由到你自行充值的厂商；折扣来自 apiToken.sale 汇集的预付余额。" },
-      { q: "用 apiToken.sale 需要自己托管什么吗？", a: "不需要——它是托管式端点。你只需更改 base URL 和密钥。" },
+      { q: "LiteLLM 会给 Claude 打折吗？", a: "不会。LiteLLM 路由到你自己充值的提供方；折扣来自 apiToken.sale 汇集的预付余额。" },
+      { q: "用 apiToken.sale 需要自己托管东西吗？", a: "不需要——它是托管端点。你只需改一下 Base URL 和密钥。" },
     ],
   },
   "best-claude-model-for-coding": {
@@ -760,26 +858,34 @@ export const learnZh: Record<string, LocalizedContent> = {
   },
   "claude-api-gateway": {
     title: "什么是 Claude API 网关？",
-    h1: "什么是 Claude API 网关",
-    description: "Claude API 网关位于你的工具与 Anthropic 之间，负责接入、计费与管控。apiToken.sale 是一个带 60–80% 折扣的原生网关。",
+    h1: "Claude API 网关是什么",
+    description: "Claude API 网关位于你的工具和 Anthropic 之间，增加接入、计费和管控能力。apitoken.sale 是一个带 60–80% 折扣的原生网关。",
     keywords: ["claude api 网关", "什么是 api 网关", "anthropic 网关", "claude 代理", "claude api 接入层"],
-    dek: "网关是位于你的代码与模型厂商之间的一层薄层。一个好的 Claude 网关对你的工具而言是透明的，同时改善接入、价格与管控。",
+    dek: "网关是介于你的代码和模型提供方之间的一层薄薄的中间层。好的 Claude 网关对你的工具是透明的，同时改善接入、价格和管控。",
     sections: [
-      { h2: "网关都做什么", blocks: [
+      { h2: "网关做什么", blocks: [
         { type: "list", items: [
-          "呈现标准的 Anthropic Messages API，让工具无需改动即可使用。",
-          "处理接入与计费——在这里是折扣价的预付余额。",
+          "对外呈现标准的 Anthropic Messages API，让工具无需改动即可使用。",
+          "处理接入和计费——在这里，就是折扣预付余额。",
           "增加按密钥的管控，例如消费上限和用量可见性。",
         ] },
       ] },
       { h2: "原生，而非转译层", blocks: [
-        { type: "p", text: "apitoken.sale 原生兼容 Anthropic：把任意客户端指向 https://api.apitoken.sale/v1/messages，它的行为就与 api.anthropic.com 完全一致——外加你的折扣和控制台管控。" },
+        { type: "p", text: "apiToken.sale 是 Anthropic 原生的：把任意客户端指向 https://api.apitoken.sale/v1/messages，它的表现与 api.anthropic.com 完全一致——再加上你的折扣和控制台管控。" },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+      ] },
+      { h2: "挑选网关时看什么", blocks: [
+        { type: "list", items: [
+          "原生 Anthropic API，让工具和 SDK 无需改动即可使用。",
+          "透明的按 token 计费，可在控制台审计。",
+          "按密钥的管控：消费上限、模型限定、轮换。",
+          "无绑定——预付余额永不过期。",
+        ] },
       ] },
     ],
     faq: [
-      { q: "网关会改变 API 吗？", a: "不会。原生的 Claude 网关讲的是标准的 Anthropic Messages API，因此你的工具和 SDK 无需改动。" },
-      { q: "为什么用网关而不直接用 Anthropic？", a: "为了折扣、无需 Anthropic 账户即时开通，以及按密钥的消费管控。" },
+      { q: "网关会改变 API 吗？", a: "不会。原生 Claude 网关讲的是标准的 Anthropic Messages API，因此你的工具和 SDK 无需改动。" },
+      { q: "为什么用网关而不直接用 Anthropic？", a: "为了折扣、无需 Anthropic 账户即可即时开通，以及按密钥的消费管控。" },
     ],
   },
   "claude-api-rate-limits": {
@@ -807,24 +913,32 @@ export const learnZh: Record<string, LocalizedContent> = {
     ],
   },
   "claude-api-streaming": {
-    title: "使用 Claude API 进行流式传输",
-    h1: "从 Claude API 流式接收响应",
-    description: "如何在 apiToken.sale 上流式接收 Claude 响应，为响应迅捷的编码智能体和界面服务。采用相同的 Anthropic SSE 格式，计费与非流式一致。",
-    keywords: ["claude api 流式", "claude sse", "流式接收 claude 响应", "anthropic 流式 api", "claude api 实时"],
-    dek: "流式传输会在 token 生成的同时逐个发送，让智能体和聊天界面感觉即时。apiToken.sale 支持标准的 Anthropic 流式格式。",
+    title: "使用 Claude API 进行流式输出",
+    h1: "从 Claude API 流式获取响应",
+    description: "如何在 apitoken.sale 上流式获取 Claude 响应，让编码智能体和界面更灵敏。与 Anthropic SSE 格式相同，计费方式与非流式一致。",
+    keywords: ["claude api 流式", "claude sse", "流式获取 claude 响应", "anthropic 流式 api", "claude api 实时"],
+    dek: "流式输出会在 token 生成时即刻发送，让智能体和聊天界面感觉即时响应。apitoken.sale 支持标准的 Anthropic 流式格式。",
     sections: [
-      { h2: "如何流式传输", blocks: [
-        { type: "p", text: "在请求中设置 stream: true（或使用 SDK 的流式辅助方法）。网关会返回标准的 Anthropic server-sent events。" },
+      { h2: "如何流式输出", blocks: [
+        { type: "p", text: "在请求中设置 \"stream\": true（或使用 SDK 的流式辅助方法）。网关会返回标准的 Anthropic 服务器发送事件（SSE）。" },
         { type: "code", code: `curl https://api.apitoken.sale/v1/messages \\\n  -H "x-api-key: sk-pool-•••" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-sonnet-5",\n    "max_tokens": 1024,\n    "stream": true,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
       ] },
       { h2: "计费完全相同", blocks: [
-        { type: "p", text: "流式与非流式请求的计费方式相同——都按输入和输出 token 计——所以流式传输不会让你多花任何钱。" },
+        { type: "p", text: "流式与非流式请求的计费方式相同——都按输入和输出 token 计费——因此流式输出不会让你多花一分钱。" },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+      ] },
+      { h2: "什么时候值得用流式", blocks: [
+        { type: "list", items: [
+          "聊天和编码界面，用户会看着答案逐字出现。",
+          "长生成任务，可以尽早渲染或处理部分输出。",
+          "一旦发出工具调用就停止的智能体。",
+        ] },
+        { type: "p", text: "对于简短的批处理任务，非流式更简单；无论哪种方式，成本都一样。" },
       ] },
     ],
     faq: [
-      { q: "apiToken.sale 支持流式传输吗？", a: "支持——标准的 Anthropic SSE 流式格式适用于编码智能体、IDE 和生产环境调用。" },
-      { q: "流式传输会更贵吗？", a: "不会。流式与非流式请求按 token 计费完全相同。" },
+      { q: "apitoken.sale 支持流式输出吗？", a: "支持——标准的 Anthropic SSE 流式格式适用于编码智能体、IDE 和生产调用。" },
+      { q: "流式输出会更贵吗？", a: "不会。流式与非流式请求按 token 计费的方式完全相同。" },
     ],
   },
   "claude-api-prompt-caching": {
@@ -850,64 +964,88 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-api-best-practices": {
     title: "Claude API 最佳实践",
     h1: "Claude API 最佳实践",
-    description: "在 apiToken.sale 上使用 Claude API 的实用最佳实践：模型选择、提示缓存、流式传输、按密钥上限和密钥安全处理。",
+    description: "在 apitoken.sale 上使用 Claude API 的实用最佳实践：模型选择、提示缓存、流式输出、按密钥上限，以及密钥的安全处理。",
     keywords: ["claude api 最佳实践", "claude api 技巧", "claude api 生产环境", "claude api 使用规范", "anthropic api 最佳实践"],
-    dek: "一份简短清单，帮你在生产环境中从 Claude API 获得可靠且经济的结果。",
+    dek: "一份简短的清单，帮你在生产环境中从 Claude API 获得可靠又经济的结果。",
     sections: [
       { h2: "清单", blocks: [
         { type: "list", items: [
-          "为每项任务选择能胜任的最便宜模型；仅在需要时升级。",
-          "缓存大段、稳定的上下文以大幅削减输入成本。",
-          "为响应迅捷的智能体和界面采用流式响应。",
-          "设置按密钥的消费上限，并为每个工具轮换独立密钥。",
+          "为每项任务挑选能胜任的最便宜模型；仅在需要时升级。",
+          "缓存大而稳定的上下文，以大幅削减输入成本。",
+          "为灵敏的智能体和界面使用流式响应。",
+          "设置按密钥的消费上限，并为每个工具轮换密钥。",
           "用 Retry-After 和退避处理 429。",
           "关注 token 级用量明细，尽早发现浪费。",
         ] },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
       ] },
+      { h2: "把成本和可靠性控制住", blocks: [
+        { type: "list", items: [
+          "把 max_tokens 限制在每次响应实际所需的范围。",
+          "对 429/5xx 采用指数退避重试，而非紧密循环。",
+          "按环境分开使用密钥，将限流和泄露的影响隔离。",
+          "每周复查 token 级用量，尽早发现回退。",
+        ] },
+      ] },
     ],
     faq: [
-      { q: "最有效的最佳实践是什么？", a: "让模型匹配任务，并缓存重复的上下文——两者结合最能削减成本。" },
-      { q: "如何保证密钥安全？", a: "使用按密钥上限、限定 IDE 用途的密钥，并从控制台不停机轮换密钥。" },
+      { q: "最有效的最佳实践是什么？", a: "让模型与任务匹配，并缓存重复的上下文——两者结合最能削减成本。" },
+      { q: "如何保护密钥安全？", a: "使用按密钥上限、限定 IDE 用途的密钥，并在控制台无停机轮换密钥。" },
     ],
   },
   "claude-code-api-key": {
     title: "用 API 密钥配置 Claude Code",
-    h1: "用 apiToken.sale 密钥使用 Claude Code",
-    description: "只需两个环境变量即可用 apiToken.sale 密钥配置 Claude Code，在预付余额上以最高 80% 折扣运行所有 Claude 模型。",
-    keywords: ["claude code api 密钥", "claude code 配置", "claude code anthropic base url", "claude code 自定义密钥", "低价运行 claude code"],
-    dek: "Claude Code 读取两个环境变量。把它们指向 apiToken.sale，你就能保留全部功能，同时以折扣价的预付余额计费。",
+    h1: "用 apitoken.sale 密钥运行 Claude Code",
+    description: "只需两个环境变量即可为 Claude Code 配置 apitoken.sale 密钥，用预付余额以最高 80% 折扣运行所有 Claude 模型。",
+    keywords: ["claude code api 密钥", "claude code 配置", "claude code anthropic base url", "claude code 自定义密钥", "低成本运行 claude code"],
+    dek: "Claude Code 读取两个环境变量。把它们指向 apitoken.sale，即可保留全部功能，同时按折扣预付余额计费。",
     sections: [
       { h2: "两个变量", blocks: [
         { type: "code", code: `export ANTHROPIC_BASE_URL=https://api.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••\n\n# then just run\nclaude` },
-        { type: "p", text: "整个配置就这些。高难度工作用 claude-opus-4-8，日常编码用 claude-sonnet-5。" },
+        { type: "p", text: "整个配置就这么简单。高难度工作用 claude-opus-4-8，日常编码用 claude-sonnet-5。" },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+      ] },
+      { h2: "验证并选择模型", blocks: [
+        { type: "p", text: "先跑一个简短的提示确认密钥可用，然后设置你的默认模型。如果 Claude Code 报鉴权错误，请重新检查两个环境变量，并重启 shell 以确保它们已导出。" },
+        { type: "list", items: [
+          "日常编码：claude-sonnet-5。",
+          "高难度重构和漫长会话：claude-opus-4-8。",
+          "在控制台按请求查看 token 用量，以追踪消费。",
+        ] },
       ] },
     ],
     faq: [
-      { q: "如何把 Claude Code 指向 apiToken.sale？", a: "把 ANTHROPIC_BASE_URL 和 ANTHROPIC_API_KEY 设为你的 apiToken.sale 端点和密钥，然后运行 claude。" },
-      { q: "会保留全部 Claude Code 功能吗？", a: "会——只有计费方式改变，从订阅变为折扣价的预付用量。" },
+      { q: "如何把 Claude Code 指向 apitoken.sale？", a: "将 ANTHROPIC_BASE_URL 和 ANTHROPIC_API_KEY 设为你的 apitoken.sale 端点和密钥，然后运行 claude。" },
+      { q: "Claude Code 的所有功能都能保留吗？", a: "能——只有计费方式改变，从订阅制变为折扣预付用量。" },
     ],
   },
   "vscode-ai-agents-one-prompt": {
-    title: "用 Claude 驱动免费的 VS Code AI 智能体",
-    h1: "在 VS Code 上运行免费的 Claude AI 智能体",
-    description: "用 apiToken.sale 的 Claude 密钥配置 Cline、Roo Code 等免费 VS Code 智能体——无需 Cursor Pro。一个端点、所有 Claude 模型，均享折扣。",
-    keywords: ["免费 vscode ai 智能体", "cline roo code claude", "vscode claude 智能体", "cursor 免费替代", "无需 cursor 的 claude vscode"],
-    dek: "你无需 Cursor Pro 也能获得智能体编码。免费的 VS Code 智能体接受任何兼容 Anthropic 的密钥，因此 Claude 能在 VS Code 上以折扣余额运行。",
+    title: "在 VS Code 中用 Claude 运行免费 AI 智能体",
+    h1: "用 Claude 运行免费的 VS Code AI 智能体",
+    description: "用 apitoken.sale 的 Claude 密钥配置 Cline、Roo Code 等免费 VS Code 智能体——无需 Cursor Pro。一个端点，通用所有 Claude 模型，还享折扣。",
+    keywords: ["免费 vscode ai 智能体", "cline roo code claude", "vscode claude 智能体", "免费的 cursor 替代品", "不用 cursor 在 vscode 用 claude"],
+    dek: "无需 Cursor Pro 也能拥有智能体编码。免费的 VS Code 智能体接受任何兼容 Anthropic 的密钥，因此 Claude 可以用折扣余额在 VS Code 中运行。",
     sections: [
       { h2: "把智能体指向 Claude", blocks: [
         { type: "steps", items: [
           "安装一个免费的智能体扩展，例如 Cline 或 Roo Code。",
-          "选择 Anthropic 作为 API 厂商。",
-          "把 base URL 设为 https://api.apitoken.sale，粘贴你的 sk-pool-••• 密钥，并选择 claude-sonnet-5 之类的模型。",
+          "选择 Anthropic 作为 API 提供方。",
+          "把 Base URL 设为 https://api.apitoken.sale，粘贴你的 sk-pool-••• 密钥，并选择一个模型，例如 claude-sonnet-5。",
         ] },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
       ] },
+      { h2: "为每项任务选对模型", blocks: [
+        { type: "list", items: [
+          "claude-sonnet-5——日常编码和智能体循环的默认之选。",
+          "claude-opus-4-8——复杂重构、架构设计和漫长会话。",
+          "claude-haiku-4-5——快速、廉价的编辑和高吞吐步骤。",
+        ] },
+        { type: "p", text: "由于一把密钥通用所有模型，你可以在扩展里按任务随时切换，无需更换账户或计费方式。" },
+      ] },
     ],
     faq: [
-      { q: "做 AI 编码必须用 Cursor Pro 吗？", a: "不必。Cline、Roo Code 等免费 VS Code 智能体配合 apiToken.sale 的 Claude 密钥即可使用。" },
-      { q: "该选哪个模型？", a: "日常编码用 claude-sonnet-5；复杂任务用 claude-opus-4-8。" },
+      { q: "做 AI 编码需要 Cursor Pro 吗？", a: "不需要。Cline、Roo Code 等免费 VS Code 智能体都可搭配 apitoken.sale 的 Claude 密钥使用。" },
+      { q: "我该选哪个模型？", a: "日常编码用 claude-sonnet-5；复杂任务用 claude-opus-4-8。" },
     ],
   },
   "claude-api-key-security": {
@@ -942,23 +1080,31 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-api-for-ai-agents": {
     title: "面向 AI 智能体的 Claude API",
     h1: "将 Claude API 用于 AI 智能体",
-    description: "用 apiToken.sale 在 Claude API 上构建 AI 智能体：一把密钥通用所有模型，配合流式、工具调用、提示缓存和消费上限，让长时运行保持经济。",
+    description: "用 apitoken.sale 在 Claude API 上构建 AI 智能体：一把密钥通用所有模型，配合流式输出、工具调用、提示缓存和消费上限，让长时间运行也负担得起。",
     keywords: ["claude api 智能体", "claude ai 智能体 api", "claude 工具调用", "claude 智能体框架", "claude api 自动化"],
-    dek: "智能体类工作负载消耗大量 token 且运行时间长，这使得模型选择、缓存和成本管控最为关键。以下是 apiToken.sale 如何契合智能体。",
+    dek: "智能体工作负载既耗 token 又长时间运行，这让模型选择、缓存和成本控制变得最为关键。以下是 apitoken.sale 如何契合智能体。",
     sections: [
       { h2: "智能体需要什么", blocks: [
         { type: "list", items: [
-          "流式与工具调用——两者都是 Anthropic Messages API 的标准能力。",
-          "模型路由：便宜的步骤用 Haiku，推理用 Sonnet，最难的用 Opus。",
-          "对重复的系统提示和工具定义使用提示缓存。",
-          "按密钥的消费上限，防止失控循环耗尽你的余额。",
+          "流式输出和工具调用——两者都是 Anthropic Messages API 的标准能力。",
+          "模型路由：Haiku 处理廉价步骤，Sonnet 负责推理，Opus 应对最难的任务。",
+          "为重复的系统提示和工具定义使用提示缓存。",
+          "按密钥的消费上限，让失控的循环无法耗尽你的余额。",
         ] },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
       ] },
+      { h2: "一个成本感知的智能体循环", blocks: [
+        { type: "p", text: "一个实用的模式：把规划和推理路由到 Sonnet，把廉价的子步骤和解析交给 Haiku，仅将最难的调用升级到 Opus。缓存系统提示和工具定义，让重复上下文几乎免费。" },
+        { type: "list", items: [
+          "设置按密钥消费上限，让失控循环无法耗尽余额。",
+          "使用流式输出，让智能体能够基于部分输出行动。",
+          "关注 token 用量，以调优哪些步骤用哪个模型。",
+        ] },
+      ] },
     ],
     faq: [
-      { q: "Claude API 适合做智能体吗？", a: "适合——具备流式、工具调用、模型路由和提示缓存，全部在一把 apiToken.sale 密钥上，并带消费管控。" },
-      { q: "如何压低智能体成本？", a: "把便宜的步骤路由到 Haiku、缓存重复的上下文，并设置按密钥的消费上限。" },
+      { q: "Claude API 适合做智能体吗？", a: "适合——具备流式输出、工具调用、模型路由和提示缓存，全都在一把 apitoken.sale 密钥下，并带消费管控。" },
+      { q: "如何压低智能体成本？", a: "把廉价步骤路由到 Haiku，缓存重复上下文，并设置按密钥的消费上限。" },
     ],
   },
 };

@@ -96,34 +96,42 @@ export const learnKo: Record<string, LocalizedContent> = {
     title: "암호화폐로 Claude API 결제하기",
     h1: "암호화폐로 Claude API 결제하기",
     description: "apitoken.sale에서 암호화폐 또는 은행 카드로 Claude API 잔액을 구매하세요. Anthropic 계정 불필요, 즉시 활성화, 만료되지 않는 선불 잔액.",
-    keywords: ["claude api 암호화폐 결제", "claude api 코인 결제", "claude api usdt", "anthropic api 암호화폐", "claude api 비트코인"],
-    dek: "은행 카드를 쓸 수 없거나 단순히 암호화폐를 선호한다면, Claude API 잔액을 암호화폐로 충전하고 곧바로 시작할 수 있습니다.",
+    keywords: ["claude api 암호화폐 결제", "암호화폐로 claude api 구매", "claude api usdt", "anthropic api 암호화폐 결제", "claude api 비트코인"],
+    dek: "은행 카드를 쓸 수 없거나, 단순히 암호화폐를 선호한다면, Claude API 잔액을 암호화폐로 충전하고 즉시 시작할 수 있습니다.",
     sections: [
       { h2: "카드 또는 암호화폐, 선택은 자유", blocks: [
-        { type: "p", text: "결제 시 안전한 결제 서비스 제공자를 통해 은행 카드 또는 암호화폐로 결제할 수 있습니다. 어느 쪽이든 잔액은 선불로 계정에 들어오며 요청이 실행될 때만 소비됩니다." },
+        { type: "p", text: "결제 시 안전한 결제 서비스 제공자를 통해 은행 카드 또는 암호화폐로 결제할 수 있습니다. 어느 쪽이든 잔액은 선불로 계정에 들어가고 요청이 실행될 때만 소비됩니다." },
       ] },
-      { h2: "암호화폐가 유용한 이유", blocks: [
+      { h2: "암호화폐가 도움이 되는 이유", blocks: [
         { type: "list", items: [
           "지원되는 Anthropic 청구 국가가 필요 없습니다.",
           "카드가 거절되거나 사용할 수 없는 곳에서 유용합니다.",
-          "잔액은 만료되지 않으므로 한 번 충전해 두고 개발하면서 차차 사용하면 됩니다.",
+          "잔액이 만료되지 않으므로, 한 번 충전하고 개발하면서 차감해 쓰면 됩니다.",
         ] },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
+      ] },
+      { h2: "결제 시 예상되는 것", blocks: [
+        { type: "p", text: "결제에서 암호화폐를 선택하고 표시된 주소로 금액을 보내면, 네트워크가 확인하는 즉시 잔액이 반영됩니다. 특정 충전에서 카드를 선호한다면 카드도 계속 사용할 수 있습니다." },
+        { type: "list", items: [
+          "온체인 확인 후 잔액이 반영됩니다.",
+          "달러 단위 정수 금액이면 무엇이든 가능하며, 잔액은 만료되지 않습니다.",
+          "충전마다 카드와 암호화폐를 전환하세요.",
+        ] },
       ] },
     ],
     faq: [
       { q: "어떤 결제 수단이 지원되나요?", a: "결제 서비스 제공자를 통해 은행 카드 또는 암호화폐로 결제할 수 있습니다." },
-      { q: "잔액이 만료되나요?", a: "아니요. 선불 잔액은 만료되지 않으며 실제 API 사용에만 소비됩니다." },
+      { q: "잔액이 만료되나요?", a: "아니요. 선불 잔액은 만료되지 않으며 실제 API 사용으로만 소비됩니다." },
     ],
   },
   "claude-api-without-waitlist": {
     title: "대기열이나 승인 없는 Claude API",
     h1: "대기열 없는 Claude API 접근",
-    description: "Anthropic 대기열과 승인을 건너뛰세요. apitoken.sale에서 계정을 만들고 Claude API 키를 생성해 몇 분 만에 첫 호출을 실행하세요.",
-    keywords: ["claude api 대기열 없음", "claude api 즉시 발급", "claude api 승인 없이", "claude api 키 빠르게", "claude api anthropic 계정 없이"],
-    dek: "승인을 기다리는 동안 흐름이 끊깁니다. apitoken.sale은 지원되는 모든 Claude 모델에 즉시, 셀프 서비스로 접근하게 해줍니다. 대기열도, 영업 통화도, 법인 인증도 없습니다.",
+    description: "Anthropic 대기열과 승인을 건너뛰세요. apitoken.sale에서 계정을 만들고 Claude API 키를 생성한 뒤 몇 분 안에 첫 호출을 하세요.",
+    keywords: ["claude api 대기열 없음", "claude api 즉시 접근", "승인 없이 claude api", "claude api 키 빠르게", "anthropic 계정 없이 claude api"],
+    dek: "승인을 기다리면 흐름이 끊깁니다. apitoken.sale은 지원되는 모든 Claude 모델에 즉시 셀프서비스로 접근할 수 있게 해 줍니다. 대기열도, 영업 통화도, 법인 인증도 없습니다.",
     sections: [
-      { h2: "즉시, 셀프 서비스 접근", blocks: [
+      { h2: "즉시, 셀프서비스 접근", blocks: [
         { type: "steps", items: [
           "무료 계정을 만들고 대시보드를 여세요. 승인이나 대기열이 없습니다.",
           "API 키를 하나 생성하세요(sk-pool-… 형태). 동일한 키가 지원되는 모든 Claude 모델에서 작동합니다.",
@@ -131,23 +139,31 @@ export const learnKo: Record<string, LocalizedContent> = {
         ] },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
-      { h2: "'즉시'의 진짜 의미", blocks: [
-        { type: "p", text: "키를 생성하는 순간 바로 활성화됩니다. 가입과 첫 성공 요청 사이에 수동 심사 단계가 없어, 한 자리에서 도구를 연결하고 배포까지 마칠 수 있습니다." },
+      { h2: "'즉시'가 실제로 의미하는 것", blocks: [
+        { type: "p", text: "키를 생성하는 순간 바로 유효합니다. 가입과 첫 성공 요청 사이에 수동 심사 단계가 없으므로, 한자리에서 도구를 연결하고 출시까지 할 수 있습니다." },
+      ] },
+      { h2: "제로에서 첫 호출까지", blocks: [
+        { type: "list", items: [
+          "가입하고 대시보드를 여세요 — 승인 단계 없음.",
+          "키를 생성하고 도구를 api.apitoken.sale로 지정하세요.",
+          "요청을 보내고 사용량에 측정되는 것을 확인하세요.",
+        ] },
+        { type: "p", text: "모든 신규 계정은 공식 가격 기준 $10의 Claude 사용량으로도 시작하므로, 충전 전에 전체 흐름을 검증할 수 있습니다." },
       ] },
     ],
     faq: [
-      { q: "정말 대기열이 없나요?", a: "맞습니다. 접근은 셀프 서비스이며 즉시입니다. 키를 생성하면 다음 요청부터 작동합니다." },
-      { q: "영업팀과 이야기해야 하나요?", a: "아니요. B2C 접근은 완전한 셀프 서비스입니다. 협의가 필요한 것은 B2B 물량 가격뿐입니다." },
+      { q: "정말 대기열이 없나요?", a: "맞습니다. 접근은 셀프서비스이며 즉시입니다. 키를 생성하면 다음 요청부터 작동합니다." },
+      { q: "영업팀과 이야기해야 하나요?", a: "아니요. B2C 접근은 완전히 셀프서비스입니다. 협의가 필요한 것은 협상형 B2B 물량 가격뿐입니다." },
     ],
   },
   "claude-api-quick-setup": {
-    title: "2분 만에 끝내는 Claude API 설정",
+    title: "2분 만에 Claude API 설정하기",
     h1: "2분 만에 Claude API 설정하기",
-    description: "2분짜리 Claude API 퀵스타트: 키를 만들고, 베이스 URL을 api.apitoken.sale로 설정한 뒤, curl, Python 또는 IDE로 첫 /v1/messages 요청을 보내세요.",
+    description: "2분짜리 Claude API 퀵스타트: 키를 만들고, base URL을 api.apitoken.sale로 설정한 뒤, curl·Python·IDE로 첫 /v1/messages 요청을 보내세요.",
     keywords: ["claude api 퀵스타트", "claude api 설정", "claude api 첫 요청", "anthropic messages api", "claude api base url"],
-    dek: "제로에서 작동하는 Claude API 호출까지 가는 가장 빠른 길입니다. 아래 모든 내용은 표준 Anthropic Messages API를 사용하므로 기존 코드에 그대로 들어갑니다.",
+    dek: "제로에서 작동하는 Claude API 호출까지 가장 빠른 길입니다. 아래 내용은 모두 표준 Anthropic Messages API를 사용하므로 기존 코드에 그대로 들어갑니다.",
     sections: [
-      { h2: "1. 키 만들기", blocks: [ { type: "p", text: "가입하고 대시보드를 연 뒤 키를 생성하세요. sk-pool-… 형태이며 지원되는 모든 모델에서 작동합니다." } ] },
+      { h2: "1. 키 만들기", blocks: [ { type: "p", text: "가입하고 대시보드를 열어 키를 생성하세요. sk-pool-… 형태이며 지원되는 모든 모델에서 작동합니다." } ] },
       { h2: "2. 엔드포인트 설정하기", blocks: [
         { type: "p", text: "Anthropic 호환 클라이언트를 게이트웨이로 지정하세요:" },
         { type: "code", code: `Base URL:  https://api.apitoken.sale\nEndpoint:  POST /v1/messages\nHeaders:   x-api-key: sk-pool-•••\n           anthropic-version: 2023-06-01` },
@@ -156,10 +172,18 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "code", code: `curl https://api.apitoken.sale/v1/messages \\\n  -H "x-api-key: sk-pool-•••" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-opus-4-8",\n    "max_tokens": 1024,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
+      { h2: "흔한 첫 호출 오류", blocks: [
+        { type: "list", items: [
+          "401 Unauthorized — x-api-key가 누락되었거나 틀렸거나, base URL이 잘못되었습니다.",
+          "400 Bad Request — 모델 ID와 max_tokens 설정 여부를 확인하세요.",
+          "429 Too Many Requests — Retry-After를 준수하고 동시 요청 수를 낮추세요.",
+          "402 / 잔액 부족 — 달러 단위 정수 금액으로 충전하세요.",
+        ] },
+      ] },
     ],
     faq: [
-      { q: "어떤 베이스 URL을 써야 하나요?", a: "Anthropic 호환 도구에서 https://api.apitoken.sale을 사용하고 /v1/messages로 요청을 보내세요." },
-      { q: "어떤 인증 헤더가 필요한가요?", a: "공식 Anthropic API와 똑같이 키가 담긴 x-api-key와 anthropic-version을 보내세요." },
+      { q: "어떤 base URL을 사용하나요?", a: "Anthropic 호환 도구에 https://api.apitoken.sale를 사용하고 /v1/messages로 요청을 보내세요." },
+      { q: "어떤 인증 헤더가 필요한가요?", a: "공식 Anthropic API와 똑같이 키를 담은 x-api-key와 anthropic-version을 보내세요." },
     ],
   },
   "free-claude-api-key": {
@@ -306,33 +330,41 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-api-key-for-cursor": {
     title: "Cursor용 Claude API 키",
     h1: "Cursor에서 Claude API 키 사용하기",
-    description: "apitoken.sale 키로 Cursor를 Claude에 연결하세요. Anthropic 베이스 URL을 api.apitoken.sale로 설정하고 키를 붙여넣은 뒤 모델을 골라 최대 80% 할인가로 코딩하세요.",
+    description: "apitoken.sale 키로 Cursor를 Claude에 연결하세요. Anthropic base URL을 api.apitoken.sale로 설정하고 키를 붙여넣은 뒤 모델을 골라 최대 80% 할인가로 코딩하세요.",
     keywords: ["cursor claude api 키", "cursor claude api", "cursor anthropic 키", "cursor에서 claude 사용", "cursor pro 없이"],
-    dek: "Cursor는 자신의 Anthropic 키를 가져올 수 있게 해주므로, 번들 요금제 대신 할인된 선불 잔액으로 Cursor에서 Claude를 실행할 수 있습니다.",
+    dek: "Cursor는 자체 Anthropic 키를 가져올 수 있게 해 주므로, 번들 플랜 대신 할인된 선불 잔액으로 Cursor에서 Claude를 실행할 수 있습니다.",
     sections: [
       { h2: "세 단계 설정", blocks: [
         { type: "steps", items: [
           "Cursor → Settings → Models → Anthropic API를 여세요.",
-          "베이스 URL을 https://api.apitoken.sale로 설정하고 sk-pool-••• 키를 붙여넣으세요.",
-          "claude-opus-4-8 같은 모델을 고르고 코딩을 시작하세요.",
+          "base URL을 https://api.apitoken.sale로 설정하고 sk-pool-••• 키를 붙여넣으세요.",
+          "claude-opus-4-8 같은 모델을 선택하고 코딩을 시작하세요.",
         ] },
       ] },
-      { h2: "설정", blocks: [
+      { h2: "구성", blocks: [
         { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://api.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
+      { h2: "문제 해결", blocks: [
+        { type: "list", items: [
+          "Cursor가 키를 무시함: OpenAI가 아니라 Anthropic 제공자를 편집했는지 확인하세요.",
+          "모델을 찾을 수 없음: claude-opus-4-8 같은 최신 모델 ID를 설정하세요.",
+          "401: base URL과 키가 전부 붙여넣어졌는지 다시 확인하세요.",
+        ] },
+        { type: "p", text: "연결되면 지원되는 모든 Claude 모델을 동일한 키와 잔액으로 사용할 수 있습니다." },
+      ] },
     ],
     faq: [
-      { q: "Cursor에서 제 Claude 키를 쓸 수 있나요?", a: "네. Cursor의 Anthropic 공급자는 커스텀 베이스 URL과 키를 받으므로 apitoken.sale로 지정할 수 있습니다." },
-      { q: "그래도 Cursor Pro가 필요한가요?", a: "여러분의 API 키와 잔액으로 Claude를 실행할 수 있습니다. Cursor 자체 요금제가 필요한 기능은 모델 공급자와 별개입니다." },
+      { q: "Cursor에서 내 Claude 키를 사용할 수 있나요?", a: "네. Cursor의 Anthropic 제공자는 커스텀 base URL과 키를 받아들이므로 apitoken.sale로 지정할 수 있습니다." },
+      { q: "Cursor Pro가 여전히 필요한가요?", a: "자체 API 키와 잔액으로 Claude를 실행할 수 있습니다. Cursor 자체 플랜이 필요한 기능은 모델 제공자와 별개입니다." },
     ],
   },
   "claude-api-for-vs-code": {
-    title: "VS Code(Cline, Continue)에서 Claude API",
+    title: "VS Code에서 Claude API 사용하기 (Cline, Continue)",
     h1: "VS Code에서 Claude API 사용하기",
-    description: "apitoken.sale 키로 Cline 또는 Continue를 이용해 VS Code에서 Claude를 실행하세요. Anthropic 베이스 URL을 api.apitoken.sale로 설정하고 토큰 단위로 할인가로 지불하세요.",
-    keywords: ["claude api vs code", "cline claude api", "continue claude api", "vscode에서 claude", "vscode anthropic api 키"],
-    dek: "Cline과 Continue 같은 무료 VS Code 에이전트는 Anthropic 호환 엔드포인트라면 무엇이든 받으므로, 할인 잔액으로 VS Code 안에서 Claude로 코딩할 수 있습니다.",
+    description: "apitoken.sale 키로 Cline 또는 Continue를 사용해 VS Code에서 Claude를 실행하세요. Anthropic base URL을 api.apitoken.sale로 설정하고 토큰 단위로 할인가에 결제하세요.",
+    keywords: ["claude api vs code", "cline claude api", "continue claude api", "vscode claude", "vscode anthropic api 키"],
+    dek: "Cline이나 Continue 같은 무료 VS Code 에이전트는 Anthropic 호환 엔드포인트를 모두 지원하므로, VS Code 안에서 할인된 잔액으로 Claude 코딩을 할 수 있습니다.",
     sections: [
       { h2: "Cline", blocks: [
         { type: "code", code: `# Cline → Settings\nAPI Provider : Anthropic\nBase URL     : https://api.apitoken.sale\nAPI Key      : sk-pool-•••\nModel        : claude-opus-4-8` },
@@ -341,38 +373,54 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "code", code: `// ~/.continue/config.json\n{\n  "models": [{\n    "title": "Claude via apiToken.sale",\n    "provider": "anthropic",\n    "apiBase": "https://api.apitoken.sale",\n    "apiKey": "sk-pool-•••",\n    "model": "claude-opus-4-8"\n  }]\n}` },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
+      { h2: "어떤 확장을 쓸지와 문제 해결", blocks: [
+        { type: "p", text: "Cline은 자율 편집에 강한 기본 선택지이고, Continue는 더 가벼워서 인라인 채팅과 자동완성에 좋습니다. 둘 다 무료이며 선불 잔액을 사용합니다." },
+        { type: "list", items: [
+          "401 Unauthorized: API 키 또는 base URL이 잘못되었습니다.",
+          "모델을 찾을 수 없음: claude-sonnet-5 또는 claude-opus-4-8 같은 최신 ID를 사용하세요.",
+          "느리거나 429: 동시 요청 수를 줄이고 Retry-After를 준수하세요.",
+        ] },
+      ] },
     ],
     faq: [
-      { q: "어떤 VS Code 확장이 작동하나요?", a: "Cline과 Continue를 포함해 Anthropic 호환 엔드포인트를 지원하는 확장이라면 apitoken.sale 키로 작동합니다." },
-      { q: "유료 확장이 필요한가요?", a: "아니요. Cline과 Continue는 무료이며, 선불 잔액에서 Claude API 사용량만 지불하면 됩니다." },
+      { q: "어떤 VS Code 확장이 작동하나요?", a: "Cline과 Continue를 포함해 Anthropic 호환 엔드포인트를 지원하는 모든 확장이 apitoken.sale 키와 함께 작동합니다." },
+      { q: "유료 확장이 필요한가요?", a: "아니요. Cline과 Continue는 무료이며, 선불 잔액에서 차감되는 Claude API 사용량에 대해서만 비용을 지불합니다." },
     ],
   },
   "cursor-without-anthropic-account": {
-    title: "Anthropic 계정 없이 Cursor에서 Claude",
+    title: "Anthropic 계정 없이 Cursor에서 Claude 사용하기",
     h1: "Anthropic 계정 없이 Cursor에서 Claude 실행하기",
-    description: "Anthropic 계정이 없으신가요? 대신 apitoken.sale 키로 Cursor에서 Claude를 사용하세요. 즉시 접근, 카드 또는 암호화폐 결제, 공식 API 요율 대비 최대 80% 할인.",
-    keywords: ["anthropic 계정 없이 cursor", "cursor claude anthropic 없이", "cursor claude api 키", "anthropic 계정 없이 claude"],
-    dek: "Anthropic 계정을 만들 수 없거나 만들고 싶지 않다면, apitoken.sale이 Cursor가 Anthropic 공급자로 받아들이는 자체 키를 발급합니다.",
+    description: "Anthropic 계정이 없나요? 대신 apitoken.sale 키로 Cursor에서 Claude를 사용하세요. 즉시 접근, 카드 또는 암호화폐 결제, 공식 API 요율 대비 최대 80% 할인.",
+    keywords: ["anthropic 계정 없이 cursor", "anthropic 없이 cursor claude", "cursor claude api 키", "anthropic 계정 없이 claude 사용"],
+    dek: "Anthropic 계정을 만들 수 없거나 만들고 싶지 않다면, apitoken.sale이 Cursor가 Anthropic 제공자로 받아들이는 자체 키를 발급합니다.",
     sections: [
-      { h2: "이 방식이 작동하는 이유", blocks: [
-        { type: "p", text: "Cursor는 Anthropic Messages API와 통신합니다. apitoken.sale은 바로 그 API를 그대로 노출하므로 Cursor는 차이를 알 수 없고, 여러분의 키와 베이스 URL을 그대로 사용합니다." },
+      { h2: "왜 작동하는가", blocks: [
+        { type: "p", text: "Cursor는 Anthropic Messages API와 통신합니다. apitoken.sale은 바로 그 API를 그대로 노출하므로, Cursor는 차이를 알 수 없습니다. 그저 여러분의 키와 base URL을 사용할 뿐입니다." },
       ] },
       { h2: "설정하기", blocks: [
         { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://api.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
+      { h2: "그대로 유지되는 것", blocks: [
+        { type: "list", items: [
+          "전체 Claude 라인업(Opus, Sonnet, Haiku)을 키 하나로.",
+          "표준 Anthropic 동작: 스트리밍, 도구 사용, 시스템 프롬프트.",
+          "대시보드에서 키별 소비 상한과 토큰 단위 사용량.",
+        ] },
+        { type: "p", text: "Cursor 사용 방식은 전혀 바뀌지 않으며, Anthropic 대신 apitoken.sale에서 키를 조달할 뿐입니다." },
+      ] },
     ],
     faq: [
-      { q: "이걸 하려면 Anthropic 계정이 필요한가요?", a: "아니요. apitoken.sale이 키와 잔액을 제공하므로 Anthropic 계정이 필요하지 않습니다." },
-      { q: "이 연동이 공식 Anthropic API인가요?", a: "Cursor는 표준 Anthropic Messages API를 사용하며, apitoken.sale은 그 동일한 API를 할인가로 제공합니다." },
+      { q: "이걸 하려면 Anthropic 계정이 필요한가요?", a: "아니요. apitoken.sale이 키와 잔액을 제공하므로 Anthropic 계정이 필요 없습니다." },
+      { q: "이 통합은 공식 Anthropic API인가요?", a: "Cursor는 표준 Anthropic Messages API를 사용하며, apitoken.sale은 바로 그 API를 할인가로 제공합니다." },
     ],
   },
   "anthropic-sdk-base-url": {
-    title: "커스텀 베이스 URL로 Anthropic SDK 사용하기",
+    title: "커스텀 Base URL로 Anthropic SDK 사용하기",
     h1: "Anthropic SDK를 apitoken.sale로 지정하기",
-    description: "base_url을 api.apitoken.sale로 설정해 공식 Anthropic Python 및 TypeScript SDK를 apitoken.sale과 함께 사용하세요. 같은 SDK, 같은 코드, 더 낮은 토큰당 비용.",
+    description: "base_url을 api.apitoken.sale로 설정해 공식 Anthropic Python 및 TypeScript SDK를 apitoken.sale과 함께 사용하세요. 동일한 SDK, 동일한 코드, 더 낮은 토큰당 비용.",
     keywords: ["anthropic sdk base url", "anthropic python sdk 커스텀 엔드포인트", "claude sdk base url", "anthropic typescript sdk", "claude api sdk"],
-    dek: "공식 Anthropic SDK는 베이스 URL을 재정의할 수 있으므로 apitoken.sale로 전환하는 것은 한 줄 변경입니다. 모델 ID와 메시지 코드는 그대로 유지됩니다.",
+    dek: "공식 Anthropic SDK는 base URL을 재정의할 수 있으므로, apitoken.sale로 전환하는 것은 한 줄만 바꾸면 됩니다. 모델 ID와 메시지 코드는 그대로 유지됩니다.",
     sections: [
       { h2: "Python", blocks: [
         { type: "code", code: `from anthropic import Anthropic\n\nclient = Anthropic(\n    base_url="https://api.apitoken.sale",\n    api_key="sk-pool-•••",\n)\nmsg = client.messages.create(\n    model="claude-opus-4-8",\n    max_tokens=1024,\n    messages=[{"role": "user", "content": "Hello"}],\n)` },
@@ -381,10 +429,18 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "code", code: `import Anthropic from "@anthropic-ai/sdk";\n\nconst client = new Anthropic({\n  baseURL: "https://api.apitoken.sale",\n  apiKey: "sk-pool-•••",\n});\nconst msg = await client.messages.create({\n  model: "claude-opus-4-8",\n  max_tokens: 1024,\n  messages: [{ role: "user", content: "Hello" }],\n});` },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
+      { h2: "전환이 제대로 되었는지 확인하기", blocks: [
+        { type: "p", text: "base URL을 바꾼 뒤 요청을 한 번 보내 정상적인 Anthropic 응답이 오는지 확인하세요. 스트리밍, 도구 사용, 시스템 프롬프트 모두 api.anthropic.com과 완전히 동일하게 동작하며, 바뀐 것은 과금 엔드포인트뿐입니다." },
+        { type: "list", items: [
+          "401이 뜨면 키 또는 base URL이 잘못된 것입니다. 둘 다 다시 확인하세요.",
+          "모델 ID는 그대로 유지하세요. 메시지 주변 코드는 전혀 바꿀 필요가 없습니다.",
+          "대시보드에서 요청별 사용량을 확인해 소비와 할인이 맞는지 확인하세요.",
+        ] },
+      ] },
     ],
     faq: [
-      { q: "공식 Anthropic SDK를 계속 쓸 수 있나요?", a: "네. base_url(Python) 또는 baseURL(TypeScript)을 apitoken.sale로 설정하면 나머지는 그대로입니다." },
-      { q: "모델 ID가 바뀌나요?", a: "아니요. claude-opus-4-8, claude-sonnet-5 같은 동일한 모델 ID를 사용하세요." },
+      { q: "공식 Anthropic SDK를 계속 사용할 수 있나요?", a: "네. base_url(Python) 또는 baseURL(TypeScript)만 apitoken.sale로 설정하면 나머지는 그대로입니다." },
+      { q: "모델 ID가 바뀌나요?", a: "아니요. claude-opus-4-8, claude-sonnet-5처럼 동일한 모델 ID를 그대로 사용합니다." },
     ],
   },
   "apitoken-vs-anthropic-direct": {
@@ -419,27 +475,34 @@ export const learnKo: Record<string, LocalizedContent> = {
     ],
   },
   "apitoken-vs-openrouter": {
-    title: "Claude를 위한 apiToken.sale 대 OpenRouter",
-    h1: "Claude를 위한 apiToken.sale 대 OpenRouter",
-    description: "Claude 게이트웨이를 고르시나요? apiToken.sale과 OpenRouter 비교: 네이티브 Anthropic 엔드포인트와 선불 할인 대 멀티 공급자 라우터.",
-    keywords: ["openrouter 대안", "apitoken vs openrouter", "claude api 게이트웨이", "openrouter claude", "최고의 claude api 게이트웨이"],
-    dek: "둘 다 Anthropic 계정 없이 Claude에 접근하게 해주지만 구조가 다릅니다. Claude가 주력 모델이라면 네이티브 Anthropic 엔드포인트가 일을 단순하게 유지합니다.",
+    title: "Claude를 위한 apitoken.sale 대 OpenRouter",
+    h1: "Claude를 위한 apitoken.sale 대 OpenRouter",
+    description: "Claude 게이트웨이를 고르시나요? apitoken.sale과 OpenRouter를 비교하세요. 네이티브 Anthropic 엔드포인트와 선불 할인 대 멀티 제공자 라우터.",
+    keywords: ["openrouter 대안", "apitoken 대 openrouter", "claude api 게이트웨이", "openrouter claude", "최고의 claude api 게이트웨이"],
+    dek: "둘 다 Anthropic 계정 없이 Claude에 접근할 수 있게 해 주지만, 구조가 다릅니다. Claude가 주력 모델이라면 네이티브 Anthropic 엔드포인트가 일을 단순하게 유지합니다.",
     sections: [
       { h2: "네이티브 Anthropic 엔드포인트", blocks: [
-        { type: "p", text: "apiToken.sale은 https://api.apitoken.sale에서 표준 Anthropic Messages API를 노출하므로 Claude Code, Cursor, Anthropic SDK가 어댑터 없이 작동합니다. 범용 멀티 공급자 추상화를 거치지 않습니다." },
+        { type: "p", text: "apitoken.sale은 표준 Anthropic Messages API를 https://api.apitoken.sale에서 노출하므로, Claude Code, Cursor, Anthropic SDK가 어댑터 없이 작동합니다. 범용 멀티 제공자 추상화 계층을 거치지 않습니다." },
       ] },
       { h2: "마크업이 아닌 선불 할인", blocks: [
         { type: "list", items: [
-          "공식 Claude 소비 대비 최대 80% 할인의 누진 B2C 할인.",
+          "공식 Claude 소비 대비 최대 80% 누진 B2C 할인.",
           "Opus, Sonnet, Haiku를 위한 하나의 키와 잔액.",
           "만료되지 않는 카드 또는 암호화폐 충전.",
         ] },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
+      { h2: "각각 언제 고를까", blocks: [
+        { type: "list", items: [
+          "apitoken.sale — Claude가 주력 모델이고 할인이 있는 네이티브 Anthropic 엔드포인트를 원할 때.",
+          "OpenRouter — 하나의 추상화 뒤에서 여러 제공자로 라우팅해야 할 때.",
+          "둘 다 Anthropic 계정 없이 시작할 수 있지만, Claude 소비를 직접 할인해 주는 것은 apitoken.sale뿐입니다.",
+        ] },
+      ] },
     ],
     faq: [
-      { q: "왜 Claude 네이티브 게이트웨이를 골라야 하나요?", a: "Claude가 주력 모델이라면 네이티브 Anthropic 엔드포인트 덕분에 기존 Anthropic 도구와 SDK가 변경 없이 작동합니다." },
-      { q: "apiToken.sale은 가격을 올려 받나요?", a: "아니요 — 마크업을 붙이는 대신 공식 Claude 소비에 할인을 적용합니다." },
+      { q: "왜 Claude 네이티브 게이트웨이를 골라야 하나요?", a: "Claude가 주력 모델이라면 네이티브 Anthropic 엔드포인트 덕분에 기존 Anthropic 도구와 SDK가 그대로 작동합니다." },
+      { q: "apitoken.sale은 가격에 마크업을 붙이나요?", a: "아니요. 마크업을 더하는 대신 공식 Claude 소비에 할인을 적용합니다." },
     ],
   },
   "claude-opus-vs-sonnet": {
@@ -545,85 +608,116 @@ export const learnKo: Record<string, LocalizedContent> = {
     ],
   },
   "claude-api-activation-time": {
-    title: "Claude API 활성화는 얼마나 빠른가?",
-    h1: "Claude API 키가 활성화되는 속도",
-    description: "apiToken.sale 키는 즉시 활성화됩니다. 키를 생성하고 충전한 뒤 몇 분 안에 성공적인 Claude API 호출을 실행하세요. 수동 심사나 대기열이 없습니다.",
-    keywords: ["claude api 활성화 시간", "claude api 키 얼마나 빠르게", "즉시 claude api 키", "claude api 준비 시간"],
-    dek: "키를 만들고 사용하는 사이에 대기 기간이 없습니다. 활성화는 즉시이므로 속도의 유일한 한계는 도구에 키를 얼마나 빨리 붙여넣느냐입니다.",
+    title: "Claude API 활성화는 얼마나 빠른가요?",
+    h1: "Claude API 키가 얼마나 빨리 활성화되는가",
+    description: "apitoken.sale 키는 즉시 활성화됩니다. 키를 생성하고 충전한 뒤 몇 분 안에 성공적인 Claude API 호출을 하세요. 수동 심사나 대기열이 없습니다.",
+    keywords: ["claude api 활성화 시간", "claude api 키 얼마나 빨리", "즉시 claude api 키", "claude api 준비 시간"],
+    dek: "키를 만들고 사용하기까지 대기 시간이 없습니다. 활성화는 즉시 이루어지므로, 속도의 유일한 한계는 키를 도구에 붙여넣는 속도뿐입니다.",
     sections: [
-      { h2: "설계상 즉시", blocks: [
-        { type: "p", text: "키는 생성하는 순간 바로 작동합니다. 충전은 결제가 확인되는 즉시 잔액에 반영되며, 카드 결제는 수 초 내에 확인됩니다." },
+      { h2: "설계상 즉시 활성화", blocks: [
+        { type: "p", text: "키는 생성하는 순간 유효합니다. 충전은 결제가 확인되는 즉시 잔액에 반영되며, 카드 결제는 몇 초 안에 확인됩니다." },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
+      ] },
+      { h2: "짧은 지연을 유발할 수 있는 것", blocks: [
+        { type: "p", text: "유일한 대기는 결제 확인입니다. 카드 충전은 몇 초 안에 처리되고, 암호화폐 충전은 네트워크가 거래를 확인하면 반영되며, 이는 선택한 코인과 수수료에 따라 달라집니다." },
+        { type: "list", items: [
+          "키 생성: 즉시.",
+          "카드 충전: 수 초.",
+          "암호화폐 충전: 네트워크 확인 후.",
+        ] },
       ] },
     ],
     faq: [
-      { q: "키가 작동하기까지 얼마나 걸리나요?", a: "즉시입니다. 수동 심사가 없으며, 갓 생성한 키가 다음 요청부터 작동합니다." },
-      { q: "충전은 얼마나 걸리나요?", a: "카드 결제는 수 초 내에 반영되며, 암호화폐는 네트워크가 거래를 확인한 뒤 반영됩니다." },
+      { q: "키가 작동하기까지 얼마나 걸리나요?", a: "즉시입니다. 수동 심사가 없으며, 새로 생성한 키는 다음 요청부터 작동합니다." },
+      { q: "충전은 얼마나 걸리나요?", a: "카드 결제는 몇 초 안에 반영되고, 암호화폐는 네트워크가 거래를 확인한 뒤 반영됩니다." },
     ],
   },
   "claude-api-supported-countries": {
     title: "Claude API 지원 국가",
-    h1: "apiToken.sale을 사용할 수 있는 곳",
-    description: "apiToken.sale은 Anthropic 청구 국가 요구 없이 전 세계에서 작동합니다. 카드 또는 암호화폐로 결제하고, Anthropic이 직접 서비스하지 않는 지역에서도 Claude API를 사용하세요.",
-    keywords: ["claude api 지원 국가", "claude api 전 세계", "anthropic api 국가 제한", "claude api 이용 가능 지역"],
-    dek: "저희가 키와 잔액을 발급하므로 Anthropic 청구 국가 게이트가 없습니다. 덕분에 직접 가입이 어려운 지역의 개발자에게도 Claude API가 열립니다.",
+    h1: "apitoken.sale을 사용할 수 있는 곳",
+    description: "apitoken.sale은 Anthropic 청구 국가 요건 없이 전 세계에서 작동합니다. 카드 또는 암호화폐로 결제하고, Anthropic이 직접 서비스하지 않는 지역에서도 Claude API를 사용하세요.",
+    keywords: ["claude api 지원 국가", "claude api 전 세계", "anthropic api 국가 제한", "claude api 사용 가능 지역"],
+    dek: "저희가 키와 잔액을 발급하므로 Anthropic 청구 국가 관문이 없습니다. 덕분에 직접 가입이 어려운 지역의 개발자도 Claude API를 사용할 수 있습니다.",
     sections: [
-      { h2: "청구 국가 게이트 없음", blocks: [
+      { h2: "청구 국가 관문 없음", blocks: [
         { type: "list", items: [
           "Anthropic 계정이나 지원되는 청구 국가가 필요 없습니다.",
-          "카드와 암호화폐 결제 옵션.",
-          "텔레그램에서 영어와 러시아어 지원.",
+          "카드 및 암호화폐 결제 옵션.",
+          "Telegram을 통한 영어 및 러시아어 지원.",
         ] },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
+      { h2: "지역별 결제 방식", blocks: [
+        { type: "p", text: "저희가 키와 잔액을 발급하므로 Anthropic이 지원하는 청구 국가에 묶이지 않습니다. 가능한 곳에서는 은행 카드로, 카드가 거절되는 곳에서는 암호화폐로 결제하세요." },
+        { type: "list", items: [
+          "Anthropic 청구 국가가 필요 없습니다.",
+          "결제 시 카드 또는 암호화폐.",
+          "Telegram을 통한 영어 및 러시아어 지원.",
+        ] },
+      ] },
     ],
     faq: [
-      { q: "제 국가에서 Claude API를 쓸 수 있나요?", a: "apiToken.sale은 청구 국가 요구가 없으므로, Anthropic이 직접 청구하지 않는 지역에서도 잔액을 사고 키를 사용할 수 있습니다." },
-      { q: "결제 제한은 어떤가요?", a: "카드 또는 암호화폐로 결제할 수 있어, 카드를 쓸 수 없는 곳에서 도움이 됩니다." },
+      { q: "제 국가에서 Claude API를 사용할 수 있나요?", a: "apitoken.sale은 청구 국가 요건이 없으므로, Anthropic이 직접 청구하지 않는 지역에서도 잔액을 구매하고 키를 사용할 수 있습니다." },
+      { q: "결제 제한은 어떤가요?", a: "카드 또는 암호화폐로 결제할 수 있으며, 이는 카드를 쓸 수 없는 곳에서 도움이 됩니다." },
     ],
   },
   "claude-api-refund-policy": {
     title: "Claude API 환불 정책",
     h1: "환불과 지원",
-    description: "apiToken.sale이 잔액, 환불, 지원을 처리하는 방식을 알아보세요. 선불 잔액은 만료되지 않으며, 도움은 텔레그램에서 영어와 러시아어로 제공됩니다.",
-    keywords: ["claude api 환불", "apitoken 환불 정책", "claude api 지원", "claude api 환불 정책", "claude api 도움말"],
-    dek: "선불 잔액은 위험이 낮도록 설계되었습니다. 만료되지 않고, 호출한 만큼만 쓰며, 지원은 메시지 한 통 거리에 있습니다.",
+    description: "apitoken.sale이 잔액, 환불, 지원을 어떻게 처리하는지 알아보세요. 선불 잔액은 만료되지 않으며, Telegram을 통해 영어와 러시아어로 도움을 받을 수 있습니다.",
+    keywords: ["claude api 환불", "apitoken 환불 정책", "claude api 지원", "claude api 환불 방법", "claude api 도움말"],
+    dek: "선불 잔액은 위험이 낮도록 설계되었습니다. 만료되지 않고, 호출한 만큼만 소비되며, 지원은 메시지 한 통이면 됩니다.",
     sections: [
       { h2: "잔액과 환불", blocks: [
-        { type: "p", text: "잔액이 선불이고 만료되지 않으므로 사용하지 않은 자금은 향후 사용을 위해 그대로 남습니다. 환불 처리는 원래 결제 서비스 제공자를 통해 진행되며, 계정 정보와 함께 지원팀에 문의하세요." },
+        { type: "p", text: "잔액은 선불이며 만료되지 않으므로, 사용하지 않은 금액은 향후 사용을 위해 그대로 남아 있습니다. 환불 처리는 원 결제 서비스 제공자를 통해 진행되며, 계정 정보와 함께 지원팀에 문의하세요." },
       ] },
       { h2: "도움 받기", blocks: [
-        { type: "p", text: "지원은 텔레그램에서 영어와 러시아어로, 그리고 이메일 apitokensale@gmail.com으로 제공됩니다. 대부분의 연동 문의는 신속히 답변됩니다." },
+        { type: "p", text: "지원은 Telegram을 통해 영어와 러시아어로, 그리고 apitokensale@gmail.com 이메일로 제공됩니다. 대부분의 통합 관련 질문은 빠르게 답변됩니다." },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
+      ] },
+      { h2: "충전과 잔액 작동 방식", blocks: [
+        { type: "p", text: "달러 단위 정수 금액으로 잔액을 추가하며, 요청이 실행될 때만 차감됩니다. 만료되지 않으므로 과도하게 충전할 이유가 거의 없습니다. 쓰는 만큼 충전하세요." },
+        { type: "list", items: [
+          "선불이며 만료되지 않는 잔액.",
+          "원 결제 서비스 제공자를 통한 환불 처리.",
+          "도움이 필요하면 계정 이메일과 함께 지원팀에 문의하세요.",
+        ] },
       ] },
     ],
     faq: [
-      { q: "잔액이 만료되나요?", a: "아니요. 선불 잔액은 만료되지 않으며 실제 API 사용에만 소비됩니다." },
-      { q: "지원팀에 어떻게 연락하나요?", a: "텔레그램에서 영어나 러시아어로, 또는 이메일 apitokensale@gmail.com으로 문의하세요." },
+      { q: "제 잔액이 만료되나요?", a: "아니요. 선불 잔액은 만료되지 않으며 실제 API 사용으로만 소비됩니다." },
+      { q: "지원팀에 어떻게 연락하나요?", a: "Telegram을 통해 영어나 러시아어로, 또는 apitokensale@gmail.com 이메일로 지원을 받으세요." },
     ],
   },
   "apitoken-vs-proxyapi": {
-    title: "Claude를 위한 apiToken.sale 대 ProxyAPI",
-    h1: "apiToken.sale 대 ProxyAPI",
-    description: "Claude API 리셀러 비교: apiToken.sale은 60–80% 누진 할인의 네이티브 Anthropic 엔드포인트, 카드 또는 암호화폐 결제, 모든 모델에 통용되는 하나의 키를 제공합니다.",
-    keywords: ["proxyapi 대안", "apitoken vs proxyapi", "claude api 리셀러", "proxyapi claude", "proxyapi 없이 claude api"],
-    dek: "둘 다 Anthropic 계정 없이 Claude에 접근하게 해줍니다. 차이는 결제 방식, 절약 폭, 그리고 엔드포인트가 진정한 Anthropic 네이티브인지에 있습니다.",
+    title: "Claude를 위한 apitoken.sale 대 ProxyAPI",
+    h1: "apitoken.sale 대 ProxyAPI",
+    description: "Claude API 리셀러 비교: apitoken.sale은 누진 60~80% 할인, 카드 또는 암호화폐 결제, 모든 모델용 하나의 키를 갖춘 네이티브 Anthropic 엔드포인트를 제공합니다.",
+    keywords: ["proxyapi 대안", "apitoken 대 proxyapi", "claude api 리셀러", "proxyapi claude", "proxyapi 없이 claude api"],
+    dek: "둘 다 Anthropic 계정 없이 Claude에 접근할 수 있게 해 줍니다. 차이는 결제 방식, 절감 폭, 그리고 엔드포인트가 진정으로 Anthropic 네이티브인지에 있습니다.",
     sections: [
       { h2: "네이티브 Anthropic 엔드포인트", blocks: [
-        { type: "p", text: "apiToken.sale은 https://api.apitoken.sale에서 표준 Anthropic Messages API를 노출하므로 Claude Code, Cursor, Anthropic SDK가 변경 없이 작동합니다. 여러분과 Claude 사이에 어댑터 계층이 없습니다." },
+        { type: "p", text: "apitoken.sale은 표준 Anthropic Messages API를 https://api.apitoken.sale에서 노출하므로, Claude Code, Cursor, Anthropic SDK가 그대로 작동합니다. 여러분과 Claude 사이에 어댑터 계층이 없습니다." },
       ] },
       { h2: "마크업이 아닌 할인", blocks: [
         { type: "list", items: [
-          "공식 Claude 소비 대비 최대 80% 할인의 누진 B2C 할인.",
+          "공식 Claude 소비 대비 최대 80% 누진 B2C 할인.",
           "Opus, Sonnet, Haiku를 위한 하나의 선불 키와 잔액.",
           "만료되지 않는 카드 또는 암호화폐 충전.",
         ] },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
+      { h2: "각각 언제 맞을까", blocks: [
+        { type: "list", items: [
+          "apitoken.sale — 누진 할인과 키별 제어를 갖춘 네이티브 Anthropic 엔드포인트.",
+          "범용 리셀러 — 이미 그곳의 다른 제공자를 쓰고 있다면 맞을 수 있습니다.",
+          "둘 다 Anthropic 계정 장벽을 없애며, 차이는 가격과 Claude 접근이 얼마나 네이티브인가입니다.",
+        ] },
+      ] },
     ],
     faq: [
-      { q: "apiToken.sale이 일반 리셀러보다 저렴한가요?", a: "정가에 마크업을 얹는 대신 공식 Claude 소비에 최대 80%의 누진 할인을 적용합니다." },
-      { q: "제 Anthropic 도구가 그대로 작동하나요?", a: "네 — 네이티브 Anthropic Messages API이므로 Claude Code, Cursor, SDK는 베이스 URL 변경만 하면 됩니다." },
+      { q: "apitoken.sale이 일반 리셀러보다 저렴한가요?", a: "정가에 마크업을 더하는 대신, 공식 Claude 소비에 최대 80% 누진 할인을 적용합니다." },
+      { q: "제 Anthropic 도구가 그대로 작동하나요?", a: "네. 네이티브 Anthropic Messages API이므로 Claude Code, Cursor, SDK는 base URL만 바꾸면 됩니다." },
     ],
   },
   "apitoken-vs-portkey": {
@@ -648,24 +742,31 @@ export const learnKo: Record<string, LocalizedContent> = {
     ],
   },
   "apitoken-vs-litellm": {
-    title: "Claude를 위한 apiToken.sale 대 LiteLLM",
-    h1: "apiToken.sale 대 LiteLLM",
-    description: "LiteLLM은 모델 API를 통합하지만 여러분 자신의 충전된 키가 필요한 셀프 호스팅 프록시입니다. apiToken.sale은 운영할 것이 없는 호스팅형 할인 Claude 엔드포인트입니다.",
-    keywords: ["litellm 대안", "apitoken vs litellm", "litellm claude", "셀프 호스팅 claude 프록시", "claude api 호스팅"],
-    dek: "LiteLLM은 여러 공급자를 아우르는 프록시를 직접 호스팅하고 싶을 때 훌륭합니다. apiToken.sale은 그 반대의 절충안입니다. 운영할 것이 없고, Claude 잔액이 할인가로 제공됩니다.",
+    title: "Claude를 위한 apitoken.sale 대 LiteLLM",
+    h1: "apitoken.sale 대 LiteLLM",
+    description: "LiteLLM은 모델 API를 통합하지만 자체 충전 키가 필요한 셀프호스팅 프록시입니다. apitoken.sale은 실행할 것이 없는 호스팅형 할인 Claude 엔드포인트입니다.",
+    keywords: ["litellm 대안", "apitoken 대 litellm", "litellm claude", "셀프호스팅 claude 프록시", "claude api 호스팅"],
+    dek: "LiteLLM은 여러 제공자에 걸친 프록시를 직접 호스팅하고 싶을 때 훌륭합니다. apitoken.sale은 그 반대의 절충안입니다. 실행할 것이 없고, Claude 잔액이 할인되어 옵니다.",
     sections: [
-      { h2: "셀프 호스팅 대 호스팅", blocks: [
+      { h2: "셀프호스팅 대 호스팅", blocks: [
         { type: "list", items: [
-          "LiteLLM: 프록시를 직접 운영·유지하고, 각 공급자도 여전히 스스로 충전합니다.",
-          "apiToken.sale: 완전 호스팅형 네이티브 Anthropic 엔드포인트, 관리할 인프라 없음.",
-          "apiToken.sale은 순수 프록시가 할 수 없는 Claude 소비 60–80% 할인을 더합니다.",
+          "LiteLLM: 프록시를 직접 실행·유지해야 하고, 각 제공자에 대한 충전도 직접 합니다.",
+          "apitoken.sale: 완전 호스팅형 네이티브 Anthropic 엔드포인트로, 관리할 인프라가 없습니다.",
+          "apitoken.sale은 순수 프록시가 할 수 없는 60~80% Claude 소비 할인을 더합니다.",
         ] },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
+      { h2: "각각 언제 고를까", blocks: [
+        { type: "list", items: [
+          "apitoken.sale — 실행할 것 없이 호스팅되는 할인 Claude 엔드포인트를 원할 때.",
+          "LiteLLM — 직접 충전하는 여러 제공자에 걸친 통합 프록시를 셀프호스팅하고 싶을 때.",
+          "LiteLLM을 apitoken.sale 키 앞에 두어 그 아래에서 할인을 유지할 수도 있습니다.",
+        ] },
+      ] },
     ],
     faq: [
-      { q: "LiteLLM이 Claude를 할인해 주나요?", a: "아니요. LiteLLM은 여러분이 직접 충전하는 공급자로 라우팅하며, 할인은 apiToken.sale의 풀링된 선불 잔액에서 나옵니다." },
-      { q: "apiToken.sale에서는 무언가를 호스팅해야 하나요?", a: "아니요 — 호스팅형 엔드포인트입니다. 베이스 URL과 키만 바꾸면 됩니다." },
+      { q: "LiteLLM이 Claude를 할인해 주나요?", a: "아니요. LiteLLM은 직접 충전하는 제공자로 라우팅합니다. 할인은 apitoken.sale의 풀링된 선불 잔액에서 나옵니다." },
+      { q: "apitoken.sale은 무언가 호스팅해야 하나요?", a: "아니요. 호스팅형 엔드포인트입니다. base URL과 키만 바꾸면 됩니다." },
     ],
   },
   "best-claude-model-for-coding": {
@@ -761,25 +862,33 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-api-gateway": {
     title: "Claude API 게이트웨이란 무엇인가?",
     h1: "Claude API 게이트웨이란",
-    description: "Claude API 게이트웨이는 여러분의 도구와 Anthropic 사이에 위치해 접근, 과금, 제어를 더합니다. apiToken.sale은 60–80% 할인을 갖춘 네이티브 게이트웨이입니다.",
+    description: "Claude API 게이트웨이는 도구와 Anthropic 사이에 위치해 접근, 과금, 제어를 더합니다. apitoken.sale은 60~80% 할인을 제공하는 네이티브 게이트웨이입니다.",
     keywords: ["claude api 게이트웨이", "api 게이트웨이란", "anthropic 게이트웨이", "claude 프록시", "claude api 접근 계층"],
-    dek: "게이트웨이는 여러분의 코드와 모델 공급자 사이의 얇은 계층입니다. 좋은 Claude 게이트웨이는 도구에 보이지 않으면서 접근, 가격, 제어를 개선합니다.",
+    dek: "게이트웨이는 코드와 모델 제공자 사이의 얇은 계층입니다. 좋은 Claude 게이트웨이는 도구에는 보이지 않으면서 접근, 가격, 제어를 개선합니다.",
     sections: [
       { h2: "게이트웨이가 하는 일", blocks: [
         { type: "list", items: [
-          "표준 Anthropic Messages API를 제시해 도구가 변경 없이 작동합니다.",
-          "접근과 과금을 처리합니다 — 여기서는 할인가의 선불 잔액.",
-          "지출 상한, 사용량 가시성 같은 키별 제어를 더합니다.",
+          "표준 Anthropic Messages API를 제시해 도구가 그대로 작동합니다.",
+          "접근과 과금을 처리합니다 — 여기서는 할인된 선불 잔액.",
+          "소비 상한, 사용량 가시성 같은 키별 제어를 더합니다.",
         ] },
       ] },
       { h2: "번역 계층이 아닌 네이티브", blocks: [
-        { type: "p", text: "apiToken.sale은 Anthropic 네이티브입니다. 클라이언트를 https://api.apitoken.sale/v1/messages로 지정하면 api.anthropic.com과 완전히 똑같이 동작하며, 여기에 할인과 대시보드 제어가 더해집니다." },
+        { type: "p", text: "apitoken.sale은 Anthropic 네이티브입니다. 어떤 클라이언트든 https://api.apitoken.sale/v1/messages로 지정하면 api.anthropic.com과 완전히 동일하게 동작하며, 여기에 할인과 대시보드 제어가 더해집니다." },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
+      ] },
+      { h2: "게이트웨이에서 살펴봐야 할 것", blocks: [
+        { type: "list", items: [
+          "네이티브 Anthropic API — 도구와 SDK가 그대로 작동.",
+          "대시보드에서 감사할 수 있는 투명한 토큰 단위 과금.",
+          "키별 제어: 소비 상한, 모델 범위 지정, 로테이션.",
+          "락인 없음 — 만료되지 않는 선불 잔액.",
+        ] },
       ] },
     ],
     faq: [
-      { q: "게이트웨이가 API를 바꾸나요?", a: "아니요. 네이티브 Claude 게이트웨이는 표준 Anthropic Messages API를 구사하므로 도구와 SDK가 그대로입니다." },
-      { q: "왜 Anthropic 직접 대신 게이트웨이를 쓰나요?", a: "할인, Anthropic 계정 없는 즉시 접근, 키별 지출 제어 때문입니다." },
+      { q: "게이트웨이가 API를 바꾸나요?", a: "아니요. 네이티브 Claude 게이트웨이는 표준 Anthropic Messages API를 사용하므로 도구와 SDK가 그대로입니다." },
+      { q: "왜 Anthropic을 직접 쓰지 않고 게이트웨이를 쓰나요?", a: "할인, Anthropic 계정 없는 즉시 접근, 키별 소비 제어를 위해서입니다." },
     ],
   },
   "claude-api-rate-limits": {
@@ -809,22 +918,30 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-api-streaming": {
     title: "Claude API로 스트리밍하기",
     h1: "Claude API에서 응답 스트리밍하기",
-    description: "반응성 좋은 코딩 에이전트와 UI를 위해 apiToken.sale에서 Claude 응답을 스트리밍하는 방법. 동일한 Anthropic SSE 형식, 비스트리밍과 동일하게 과금.",
-    keywords: ["claude api 스트리밍", "claude sse", "claude 응답 스트림", "anthropic 스트리밍 api", "claude api 실시간"],
-    dek: "스트리밍은 토큰이 생성되는 대로 보내주므로 에이전트와 채팅 UI가 즉각적으로 느껴집니다. apiToken.sale은 표준 Anthropic 스트리밍 형식을 지원합니다.",
+    description: "반응성 좋은 코딩 에이전트와 UI를 위해 apitoken.sale에서 Claude 응답을 스트리밍하는 방법. 동일한 Anthropic SSE 형식이며, 비스트리밍과 동일하게 과금됩니다.",
+    keywords: ["claude api 스트리밍", "claude sse", "claude 응답 스트리밍", "anthropic 스트리밍 api", "claude api 실시간"],
+    dek: "스트리밍은 토큰이 생성되는 대로 전송하므로 에이전트와 채팅 UI가 즉각적으로 느껴집니다. apitoken.sale은 표준 Anthropic 스트리밍 형식을 지원합니다.",
     sections: [
-      { h2: "스트리밍하는 법", blocks: [
-        { type: "p", text: "요청에 \"stream\": true를 설정하세요(또는 SDK의 스트리밍 헬퍼를 사용하세요). 게이트웨이가 표준 Anthropic 서버 전송 이벤트를 반환합니다." },
+      { h2: "스트리밍하는 방법", blocks: [
+        { type: "p", text: "요청에 \"stream\": true를 설정하세요(또는 SDK의 스트리밍 헬퍼를 사용하세요). 게이트웨이는 표준 Anthropic server-sent events를 반환합니다." },
         { type: "code", code: `curl https://api.apitoken.sale/v1/messages \\\n  -H "x-api-key: sk-pool-•••" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-sonnet-5",\n    "max_tokens": 1024,\n    "stream": true,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
       ] },
-      { h2: "과금은 동일", blocks: [
-        { type: "p", text: "스트리밍과 비스트리밍 요청은 입력과 출력 토큰으로 동일하게 과금되므로, 스트리밍한다고 손해 볼 것이 없습니다." },
+      { h2: "과금은 동일합니다", blocks: [
+        { type: "p", text: "스트리밍 요청과 비스트리밍 요청은 입력 및 출력 토큰 단위로 동일하게 과금되므로, 스트리밍한다고 손해 볼 것이 없습니다." },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
+      ] },
+      { h2: "스트리밍이 유리한 경우", blocks: [
+        { type: "list", items: [
+          "사용자가 답이 나타나는 것을 지켜보는 채팅과 코딩 UI.",
+          "긴 생성 작업. 부분 출력을 일찍 렌더링하거나 처리할 수 있습니다.",
+          "도구 호출이 나오는 즉시 멈추는 에이전트.",
+        ] },
+        { type: "p", text: "짧은 배치 작업에는 비스트리밍이 더 간단하며, 비용은 어느 쪽이든 동일합니다." },
       ] },
     ],
     faq: [
-      { q: "apiToken.sale이 스트리밍을 지원하나요?", a: "네 — 표준 Anthropic SSE 스트리밍 형식이 코딩 에이전트, IDE, 프로덕션 호출에서 작동합니다." },
-      { q: "스트리밍이 더 비싼가요?", a: "아니요. 스트리밍과 비스트리밍 요청은 토큰 기준으로 동일하게 과금됩니다." },
+      { q: "apitoken.sale은 스트리밍을 지원하나요?", a: "네. 표준 Anthropic SSE 스트리밍 형식이 코딩 에이전트, IDE, 프로덕션 호출에서 작동합니다." },
+      { q: "스트리밍은 비용이 더 드나요?", a: "아니요. 스트리밍 요청과 비스트리밍 요청은 토큰 단위로 동일하게 과금됩니다." },
     ],
   },
   "claude-api-prompt-caching": {
@@ -850,64 +967,88 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-api-best-practices": {
     title: "Claude API 모범 사례",
     h1: "Claude API 모범 사례",
-    description: "apiToken.sale에서의 Claude API 실용 모범 사례: 모델 선택, 프롬프트 캐싱, 스트리밍, 키별 상한, 안전한 키 관리.",
+    description: "apitoken.sale에서의 Claude API 실전 모범 사례: 모델 선택, 프롬프트 캐싱, 스트리밍, 키별 상한, 안전한 키 관리.",
     keywords: ["claude api 모범 사례", "claude api 팁", "claude api 프로덕션", "claude api 가이드라인", "anthropic api 모범 사례"],
-    dek: "프로덕션에서 Claude API로부터 신뢰할 수 있고 경제적인 결과를 얻기 위한 짧은 체크리스트입니다.",
+    dek: "프로덕션에서 Claude API로 안정적이고 경제적인 결과를 얻기 위한 짧은 체크리스트입니다.",
     sections: [
       { h2: "체크리스트", blocks: [
         { type: "list", items: [
-          "각 작업을 해낼 수 있는 가장 저렴한 모델을 고르고, 필요할 때만 승격하세요.",
-          "크고 안정적인 컨텍스트를 캐싱해 입력 비용을 대폭 줄이세요.",
+          "각 작업을 처리할 수 있는 가장 값싼 모델을 고르고, 필요할 때만 상위 모델로 올리세요.",
+          "크고 안정적인 컨텍스트를 캐시해 입력 비용을 크게 줄이세요.",
           "반응성 좋은 에이전트와 UI를 위해 응답을 스트리밍하세요.",
-          "키별 지출 상한을 설정하고 도구마다 키를 순환하세요.",
+          "키별 소비 상한을 설정하고 도구마다 키를 로테이션하세요.",
           "429는 Retry-After와 백오프로 처리하세요.",
-          "토큰 단위 사용량 내역을 살펴 낭비를 조기에 잡으세요.",
+          "토큰 단위 사용량 분석을 살펴 낭비를 일찍 잡으세요.",
         ] },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
+      { h2: "비용과 안정성 관리하기", blocks: [
+        { type: "list", items: [
+          "max_tokens를 각 응답이 실제로 필요한 만큼으로 제한하세요.",
+          "429/5xx는 촘촘한 반복 대신 지수 백오프로 재시도하세요.",
+          "환경마다 키를 분리해 한도와 유출을 격리하세요.",
+          "매주 토큰 단위 사용량을 검토해 회귀를 일찍 잡으세요.",
+        ] },
+      ] },
     ],
     faq: [
-      { q: "가장 효과적인 모범 사례는 무엇인가요?", a: "모델을 작업에 맞추고 반복되는 컨텍스트를 캐싱하는 것입니다. 이 둘이 함께 비용을 가장 많이 줄입니다." },
-      { q: "키를 어떻게 안전하게 지키나요?", a: "키별 상한, IDE 범위 키를 사용하고, 대시보드에서 다운타임 없이 키를 순환하세요." },
+      { q: "가장 효과적인 모범 사례는 무엇인가요?", a: "작업에 모델을 맞추고 반복되는 컨텍스트를 캐시하는 것입니다. 둘을 합치면 비용이 가장 크게 줄어듭니다." },
+      { q: "키를 어떻게 안전하게 지키나요?", a: "키별 상한, IDE 범위 지정 키를 사용하고, 대시보드에서 다운타임 없이 키를 로테이션하세요." },
     ],
   },
   "claude-code-api-key": {
     title: "API 키로 Claude Code 설정하기",
-    h1: "apiToken.sale 키로 Claude Code 사용하기",
-    description: "환경 변수 두 개로 Claude Code를 apiToken.sale 키로 설정하고, 모든 Claude 모델을 선불 잔액에서 최대 80% 할인가로 실행하세요.",
+    h1: "apitoken.sale 키로 Claude Code 사용하기",
+    description: "두 개의 환경 변수로 Claude Code를 apitoken.sale 키에 설정하고, 최대 80% 할인된 선불 잔액으로 모든 Claude 모델을 실행하세요.",
     keywords: ["claude code api 키", "claude code 설정", "claude code anthropic base url", "claude code 커스텀 키", "claude code 저렴하게"],
-    dek: "Claude Code는 환경 변수 두 개를 읽습니다. 이를 apiToken.sale로 지정하면 모든 기능을 유지하면서 할인된 선불 잔액에 과금합니다.",
+    dek: "Claude Code는 두 개의 환경 변수를 읽습니다. 이를 apitoken.sale로 지정하면 모든 기능을 유지하면서 할인된 선불 잔액으로 과금됩니다.",
     sections: [
-      { h2: "변수 두 개", blocks: [
+      { h2: "두 개의 변수", blocks: [
         { type: "code", code: `export ANTHROPIC_BASE_URL=https://api.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••\n\n# then just run\nclaude` },
-        { type: "p", text: "이게 설정의 전부입니다. 어려운 작업에는 claude-opus-4-8을, 일상 코딩에는 claude-sonnet-5를 사용하세요." },
+        { type: "p", text: "이게 설정의 전부입니다. 어려운 작업에는 claude-opus-4-8을, 일상적인 코딩에는 claude-sonnet-5를 사용하세요." },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
+      ] },
+      { h2: "확인하고 모델 고르기", blocks: [
+        { type: "p", text: "먼저 짧은 프롬프트를 실행해 키가 작동하는지 확인한 다음 기본 모델을 설정하세요. Claude Code가 인증 오류를 보고하면 두 환경 변수를 다시 확인하고 셸을 재시작해 변수가 export되도록 하세요." },
+        { type: "list", items: [
+          "일상적인 코딩: claude-sonnet-5.",
+          "어려운 리팩터링과 긴 세션: claude-opus-4-8.",
+          "대시보드에서 요청별 토큰 사용량을 확인해 소비를 추적하세요.",
+        ] },
       ] },
     ],
     faq: [
-      { q: "Claude Code를 apiToken.sale로 어떻게 지정하나요?", a: "ANTHROPIC_BASE_URL과 ANTHROPIC_API_KEY를 여러분의 apiToken.sale 엔드포인트와 키로 설정한 뒤 claude를 실행하세요." },
-      { q: "모든 Claude Code 기능을 유지하나요?", a: "네 — 과금만 구독에서 할인된 선불 사용으로 바뀝니다." },
+      { q: "Claude Code를 apitoken.sale로 어떻게 지정하나요?", a: "ANTHROPIC_BASE_URL과 ANTHROPIC_API_KEY를 apitoken.sale 엔드포인트와 키로 설정한 뒤 claude를 실행하세요." },
+      { q: "Claude Code의 모든 기능을 유지하나요?", a: "네. 구독에서 할인된 선불 사용량으로 과금만 바뀔 뿐입니다." },
     ],
   },
   "vscode-ai-agents-one-prompt": {
-    title: "Claude로 무료 VS Code AI 에이전트",
+    title: "Claude로 무료 VS Code AI 에이전트 실행하기",
     h1: "Claude로 무료 VS Code AI 에이전트 실행하기",
-    description: "apiToken.sale Claude 키로 Cline, Roo Code 같은 무료 VS Code 에이전트를 설정하세요. Cursor Pro가 필요 없습니다. 하나의 엔드포인트, 모든 Claude 모델, 할인가.",
-    keywords: ["무료 vscode ai 에이전트", "cline roo code claude", "vscode claude 에이전트", "무료 cursor 대안", "cursor 없이 claude vscode"],
-    dek: "에이전트형 코딩을 위해 Cursor Pro가 필요하지 않습니다. 무료 VS Code 에이전트는 Anthropic 호환 키라면 무엇이든 받으므로, Claude가 할인 잔액으로 VS Code에서 돌아갑니다.",
+    description: "Cursor Pro 없이 apitoken.sale Claude 키로 Cline, Roo Code 같은 무료 VS Code 에이전트를 설정하세요. 하나의 엔드포인트, 모든 Claude 모델, 할인가.",
+    keywords: ["무료 vscode ai 에이전트", "cline roo code claude", "vscode claude 에이전트", "cursor 무료 대안", "cursor 없이 claude vscode"],
+    dek: "에이전트형 코딩을 하려고 Cursor Pro가 필요하지는 않습니다. 무료 VS Code 에이전트는 Anthropic 호환 키를 모두 받아들이므로, Claude가 할인된 잔액으로 VS Code에서 실행됩니다.",
     sections: [
       { h2: "에이전트를 Claude로 지정하기", blocks: [
         { type: "steps", items: [
           "Cline이나 Roo Code 같은 무료 에이전트 확장을 설치하세요.",
-          "API 공급자로 Anthropic을 선택하세요.",
-          "베이스 URL을 https://api.apitoken.sale로 설정하고 sk-pool-••• 키를 붙여넣은 뒤 claude-sonnet-5 같은 모델을 고르세요.",
+          "API 제공자로 Anthropic을 선택하세요.",
+          "base URL을 https://api.apitoken.sale로 설정하고 sk-pool-••• 키를 붙여넣은 뒤 claude-sonnet-5 같은 모델을 선택하세요.",
         ] },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
+      { h2: "작업마다 알맞은 모델 고르기", blocks: [
+        { type: "list", items: [
+          "claude-sonnet-5 — 일상적인 코딩과 에이전트 루프의 기본값.",
+          "claude-opus-4-8 — 복잡한 리팩터링, 아키텍처, 긴 세션.",
+          "claude-haiku-4-5 — 빠르고 값싼 편집과 대량 처리 단계.",
+        ] },
+        { type: "p", text: "키 하나로 모든 모델을 사용하므로, 계정이나 과금을 바꾸지 않고 확장에서 작업마다 모델을 전환할 수 있습니다." },
+      ] },
     ],
     faq: [
-      { q: "AI 코딩에 Cursor Pro가 필요한가요?", a: "아니요. Cline, Roo Code 같은 무료 VS Code 에이전트가 apiToken.sale Claude 키로 작동합니다." },
-      { q: "어떤 모델을 골라야 하나요?", a: "일상 코딩에는 claude-sonnet-5, 복잡한 작업에는 claude-opus-4-8을 고르세요." },
+      { q: "AI 코딩을 하려면 Cursor Pro가 필요한가요?", a: "아니요. Cline, Roo Code 같은 무료 VS Code 에이전트는 apitoken.sale Claude 키와 함께 작동합니다." },
+      { q: "어떤 모델을 골라야 하나요?", a: "일상적인 코딩에는 claude-sonnet-5, 복잡한 작업에는 claude-opus-4-8을 사용하세요." },
     ],
   },
   "claude-api-key-security": {
@@ -942,23 +1083,31 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-api-for-ai-agents": {
     title: "AI 에이전트를 위한 Claude API",
     h1: "AI 에이전트에 Claude API 사용하기",
-    description: "apiToken.sale로 Claude API 위에 AI 에이전트를 구축하세요. 모든 모델에 통용되는 하나의 키, 스트리밍, 도구 사용, 프롬프트 캐싱, 그리고 긴 실행을 저렴하게 유지하는 지출 상한.",
+    description: "apitoken.sale로 Claude API 위에 AI 에이전트를 구축하세요. 모든 모델용 하나의 키, 스트리밍, 도구 사용, 프롬프트 캐싱, 그리고 긴 실행을 감당 가능하게 유지하는 소비 상한.",
     keywords: ["claude api 에이전트", "claude ai 에이전트 api", "claude 도구 사용", "claude 에이전트 프레임워크", "claude api 자동화"],
-    dek: "에이전트형 워크로드는 토큰을 많이 먹고 오래 실행되므로 모델 선택, 캐싱, 비용 제어가 가장 중요합니다. apiToken.sale이 에이전트에 어떻게 들어맞는지 살펴봅니다.",
+    dek: "에이전트형 워크로드는 토큰을 많이 쓰고 오래 실행되므로 모델 선택, 캐싱, 비용 제어가 가장 중요합니다. apitoken.sale이 에이전트에 어떻게 맞는지 살펴봅니다.",
     sections: [
       { h2: "에이전트에 필요한 것", blocks: [
         { type: "list", items: [
-          "스트리밍과 도구 사용 — 둘 다 Anthropic Messages API의 표준입니다.",
-          "모델 라우팅: 값싼 단계에는 Haiku, 추론에는 Sonnet, 가장 어려운 것에는 Opus.",
+          "스트리밍과 도구 사용 — 둘 다 Anthropic Messages API의 표준.",
+          "모델 라우팅: 값싼 단계는 Haiku, 추론은 Sonnet, 가장 어려운 것은 Opus.",
           "반복되는 시스템 프롬프트와 도구 정의를 위한 프롬프트 캐싱.",
-          "폭주하는 루프가 잔액을 소진하지 못하도록 하는 키별 지출 상한.",
+          "폭주하는 루프가 잔액을 소진하지 못하도록 하는 키별 소비 상한.",
         ] },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
+      { h2: "비용을 의식한 에이전트 루프", blocks: [
+        { type: "p", text: "실전 패턴: 계획과 추론은 Sonnet으로, 값싼 하위 단계와 파싱은 Haiku로 라우팅하고, 가장 어려운 호출만 Opus로 올리세요. 시스템 프롬프트와 도구 정의를 캐시해 반복되는 컨텍스트를 거의 무료로 만드세요." },
+        { type: "list", items: [
+          "폭주하는 루프가 잔액을 소진하지 못하도록 키별 소비 상한을 설정하세요.",
+          "에이전트가 부분 출력에 반응할 수 있도록 스트리밍하세요.",
+          "토큰 사용량을 살펴 어떤 단계가 어떤 모델을 쓸지 조정하세요.",
+        ] },
+      ] },
     ],
     faq: [
-      { q: "Claude API가 에이전트에 좋나요?", a: "네 — 스트리밍, 도구 사용, 모델 라우팅, 프롬프트 캐싱을 갖추고 있으며, 모두 지출 제어가 되는 하나의 apiToken.sale 키로 사용합니다." },
-      { q: "에이전트 비용을 어떻게 낮추나요?", a: "값싼 단계는 Haiku로 라우팅하고, 반복되는 컨텍스트를 캐싱하며, 키별 지출 상한을 설정하세요." },
+      { q: "Claude API가 에이전트에 좋나요?", a: "네. 스트리밍, 도구 사용, 모델 라우팅, 프롬프트 캐싱을 모두 하나의 apitoken.sale 키와 소비 제어로 제공합니다." },
+      { q: "에이전트 비용을 어떻게 낮추나요?", a: "값싼 단계는 Haiku로 라우팅하고, 반복되는 컨텍스트를 캐시하며, 키별 소비 상한을 설정하세요." },
     ],
   },
 };
