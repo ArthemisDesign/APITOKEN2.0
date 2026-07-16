@@ -82,56 +82,79 @@ impl AsyncBilling {
         {
             let conn = registry::open(&db_path)?;
             std::thread::Builder::new().name("billing-writer".into()).spawn(move || {
-                while let Some(cmd) = wrx.blocking_recv() {
-                    match cmd {
-                        WriteCmd::Reserve { account_id, hold, reply } => {
-                            let res = registry::account_reserve(&conn, &account_id, hold).ok().flatten();
-                            let committed = res.is_some();
-                            if reply.send(res).is_err() && committed {
-                                // Клиент отменил запрос ВО ВРЕМЯ reserve().await → получатель ответа
-                                // отвалился, а резерв УЖЕ закоммичен. Без рефанда hold завис бы в
-                                // reserved_nano до рестарта (замороженные деньги клиента). Возвращаем сразу.
-                                let _ = registry::account_settle(&conn, &account_id, "", hold, 0, None, None);
+                // Батч group-commit ограничен сверху: bounded окно потери на краше (незакоммиченная
+                // пачка) + bounded латентность/память. Под низкой нагрузкой пачка=1 (канал пуст).
+                const MAX_WRITE_BATCH: usize = 256;
+                let is_hot = |c: &WriteCmd| matches!(c, WriteCmd::Reserve { .. } | WriteCmd::Settle { .. });
+                // НЕ-горячие (топап/контрол/Flush) — по-одному (редкие; у топапа идемпотентный rollback
+                // несовместим с общей транзакцией). Прежнее поведение.
+                let apply_nonhot = |cmd: WriteCmd| match cmd {
+                    WriteCmd::Topup { account_id, amount, reference, reply } => {
+                        let _ = reply.send(registry::account_topup(&conn, &account_id, amount, reference.as_deref()).ok().flatten());
+                    }
+                    WriteCmd::CreateAccount { id, handle, mult_bp, reply } => { let _ = reply.send(registry::account_create(&conn, &id, handle.as_deref(), mult_bp).is_ok()); }
+                    WriteCmd::IssueKey { key, account_id, label, reply } => { let _ = reply.send(registry::key_issue(&conn, &key, &account_id, label.as_deref()).is_ok()); }
+                    WriteCmd::AccountStatus { id, status, reply } => { let _ = reply.send(registry::account_set_status(&conn, &id, &status).unwrap_or(0)); }
+                    WriteCmd::AccountMultiplier { id, mult_bp, reply } => { let _ = reply.send(registry::account_set_mult_bp(&conn, &id, mult_bp).unwrap_or(0)); }
+                    WriteCmd::KeyStatus { key, status, reply } => { let _ = reply.send(registry::key_set_status(&conn, &key, &status).unwrap_or(0)); }
+                    WriteCmd::KeyStatusById { key_id, status, reply } => { let _ = reply.send(registry::key_set_status_by_id(&conn, &key_id, &status).unwrap_or(0)); }
+                    WriteCmd::Flush(r) => { let _ = r.send(()); }
+                    WriteCmd::Reserve { .. } | WriteCmd::Settle { .. } => {}
+                };
+                // Одна горячая команда в СВОЕЙ транзакции (fallback батча) + reply/refund как раньше.
+                let apply_hot_single = |cmd: WriteCmd| match cmd {
+                    WriteCmd::Reserve { account_id, hold, reply } => {
+                        let res = registry::account_reserve(&conn, &account_id, hold).ok().flatten();
+                        if reply.send(res).is_err() && res.is_some() {
+                            let _ = registry::account_settle(&conn, &account_id, "", hold, 0, None, None);
+                        }
+                    }
+                    WriteCmd::Settle { account_id, key, hold, actual, reference, usage, reply } => {
+                        let usage_ref = if actual > 0 { usage.as_ref() } else { None };
+                        let res = registry::account_settle(&conn, &account_id, &key, hold, actual, reference.as_deref(), usage_ref).ok().flatten();
+                        if let Some(r) = reply { let _ = r.send(res); }
+                    }
+                    _ => {}
+                };
+                while let Some(first) = wrx.blocking_recv() {
+                    if !is_hot(&first) { apply_nonhot(first); continue; }
+                    // собираем contiguous-run горячих команд (FIFO не нарушаем: не-hot команду,
+                    // вытянутую при дренаже, откладываем в trailer и применяем сразу после пачки).
+                    let mut batch = vec![first];
+                    let mut trailer: Option<WriteCmd> = None;
+                    while batch.len() < MAX_WRITE_BATCH {
+                        match wrx.try_recv() {
+                            Ok(c) if is_hot(&c) => batch.push(c),
+                            Ok(c) => { trailer = Some(c); break; }
+                            Err(_) => break,
+                        }
+                    }
+                    let ops: Vec<registry::HotOp> = batch.iter().map(|c| match c {
+                        WriteCmd::Reserve { account_id, hold, .. } => registry::HotOp::Reserve { account_id, hold: *hold },
+                        WriteCmd::Settle { account_id, key, hold, actual, reference, usage, .. } =>
+                            registry::HotOp::Settle { account_id, key, hold: *hold, actual: *actual,
+                                reference: reference.as_deref(), usage: if *actual > 0 { usage.as_ref() } else { None } },
+                        _ => unreachable!(),
+                    }).collect();
+                    match registry::apply_hot_batch(&conn, &ops) {
+                        Ok(results) => {
+                            drop(ops); // снять borrow с batch перед consume
+                            for (cmd, res) in batch.into_iter().zip(results) {
+                                match cmd {
+                                    WriteCmd::Reserve { account_id, hold, reply } => {
+                                        if reply.send(res).is_err() && res.is_some() {
+                                            let _ = registry::account_settle(&conn, &account_id, "", hold, 0, None, None);
+                                        }
+                                    }
+                                    WriteCmd::Settle { reply, .. } => { if let Some(r) = reply { let _ = r.send(res); } }
+                                    _ => unreachable!(),
+                                }
                             }
                         }
-                        WriteCmd::Settle { account_id, key, hold, actual, reference, usage, reply } => {
-                            // usage_event пишется ВНУТРИ той же транзакции settle (один коммит на запрос
-                            // вместо двух) — только при реальном списании (actual>0), best-effort.
-                            let usage_ref = if actual > 0 { usage.as_ref() } else { None };
-                            let res = registry::account_settle(&conn, &account_id, &key, hold, actual, reference.as_deref(), usage_ref)
-                                .ok().flatten();
-                            if let Some(r) = reply { let _ = r.send(res); }
-                        }
-                        WriteCmd::Topup { account_id, amount, reference, reply } => {
-                            let _ = reply.send(
-                                registry::account_topup(&conn, &account_id, amount, reference.as_deref()).ok().flatten());
-                        }
-                        WriteCmd::CreateAccount { id, handle, mult_bp, reply } => {
-                            let ok = registry::account_create(&conn, &id, handle.as_deref(), mult_bp).is_ok();
-                            let _ = reply.send(ok);
-                        }
-                        WriteCmd::IssueKey { key, account_id, label, reply } => {
-                            let ok = registry::key_issue(&conn, &key, &account_id, label.as_deref()).is_ok();
-                            let _ = reply.send(ok);
-                        }
-                        WriteCmd::AccountStatus { id, status, reply } => {
-                            let n = registry::account_set_status(&conn, &id, &status).unwrap_or(0);
-                            let _ = reply.send(n);
-                        }
-                        WriteCmd::AccountMultiplier { id, mult_bp, reply } => {
-                            let n = registry::account_set_mult_bp(&conn, &id, mult_bp).unwrap_or(0);
-                            let _ = reply.send(n);
-                        }
-                        WriteCmd::KeyStatus { key, status, reply } => {
-                            let n = registry::key_set_status(&conn, &key, &status).unwrap_or(0);
-                            let _ = reply.send(n);
-                        }
-                        WriteCmd::KeyStatusById { key_id, status, reply } => {
-                            let n = registry::key_set_status_by_id(&conn, &key_id, &status).unwrap_or(0);
-                            let _ = reply.send(n);
-                        }
-                        WriteCmd::Flush(r) => { let _ = r.send(()); } // барьер обработан → очередь дренирована
+                        // Ошибка BEGIN/COMMIT (редко) → пачка НЕ применена → по-одному (безопасный fallback).
+                        Err(_) => { drop(ops); for cmd in batch { apply_hot_single(cmd); } }
                     }
+                    if let Some(c) = trailer { apply_nonhot(c); }
                 }
                 eprintln!("⚠ billing-writer поток завершён (все sender'ы дропнуты)"); // супервизия
             })?;

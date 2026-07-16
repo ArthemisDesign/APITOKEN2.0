@@ -523,6 +523,34 @@ pub fn account_topup(conn: &Connection, id: &str, amount_nano: i64, reference: O
     }
 }
 
+/// Горячая money-операция для group-commit (reserve/settle) — writer'а. Ссылки (не owned): вызывающий
+/// (billing) держит команды, registry лишь применяет их SQL в ОДНОЙ транзакции.
+pub enum HotOp<'a> {
+    Reserve { account_id: &'a str, hold: i64 },
+    Settle { account_id: &'a str, key: &'a str, hold: i64, actual: i64,
+             reference: Option<&'a str>, usage: Option<&'a UsageEventInput> },
+}
+
+/// Применить пачку reserve/settle в ОДНОЙ транзакции (group-commit): амортизирует стоимость коммита
+/// под нагрузкой. Команды применяются ПОСЛЕДОВАТЕЛЬНО — атомарный reserve (`WHERE balance>=hold`)
+/// видит эффекты предыдущих в этой же транзакции ⇒ инвариант `charge≤hold≤balance` сохранён, как при
+/// по-одному. Возвращает результаты в порядке `ops` (индекс-в-индекс). Ошибка BEGIN/COMMIT → Err
+/// (вызывающий откатывается на обработку по-одному). Per-op ошибки глушатся в None (как в прежнем
+/// writer'е: `.ok().flatten()`).
+pub fn apply_hot_batch(conn: &Connection, ops: &[HotOp]) -> Result<Vec<Option<i64>>> {
+    let tx = conn.unchecked_transaction()?;
+    let mut out = Vec::with_capacity(ops.len());
+    for op in ops {
+        out.push(match op {
+            HotOp::Reserve { account_id, hold } => account_reserve(&tx, account_id, *hold).ok().flatten(),
+            HotOp::Settle { account_id, key, hold, actual, reference, usage } =>
+                account_settle_in(&tx, account_id, key, *hold, *actual, *reference, *usage).ok().flatten(),
+        });
+    }
+    tx.commit()?;
+    Ok(out)
+}
+
 /// АТОМАРНО зарезервировать `hold` по АККАУНТУ, если баланс покрывает и аккаунт активен. Та же
 /// семантика, что была на ключе, но кошелёк — общий на профиль (все ключи юзера тратят из него).
 pub fn account_reserve(conn: &Connection, id: &str, hold_nano: i64) -> Result<Option<i64>> {
@@ -541,13 +569,23 @@ pub fn account_reserve(conn: &Connection, id: &str, hold_nano: i64) -> Result<Op
 /// `spent` += actual (атрибуция расхода по ключу); строка в ledger (charge). ВСЁ в ОДНОЙ транзакции.
 pub fn account_settle(conn: &Connection, id: &str, key: &str, hold_nano: i64, actual_nano: i64,
                       reference: Option<&str>, usage: Option<&UsageEventInput>) -> Result<Option<i64>> {
-    let (hold, actual) = (hold_nano.max(0), actual_nano.max(0));
     let tx = conn.unchecked_transaction()?;
+    let bal = account_settle_in(&tx, id, key, hold_nano, actual_nano, reference, usage)?;
+    tx.commit()?;
+    Ok(bal)
+}
+
+/// SQL-тело settle БЕЗ BEGIN/COMMIT — для group-commit writer'а (несколько settle в одной транзакции).
+/// Вызывающий обязан обернуть в транзакцию (`account_settle` — тонкая обёртка). `conn` может быть
+/// `&Transaction` (Deref в `&Connection`). Семантика идентична `account_settle`.
+pub fn account_settle_in(conn: &Connection, id: &str, key: &str, hold_nano: i64, actual_nano: i64,
+                         reference: Option<&str>, usage: Option<&UsageEventInput>) -> Result<Option<i64>> {
+    let (hold, actual) = (hold_nano.max(0), actual_nano.max(0));
     // Возвращаем hold, но НЕ БОЛЬШЕ, чем реально числится в reserved_nano: MIN(hold, reserved).
     // Защита от двойного settle (перекрытие деплоя: reconcile уже вернул резерв, затем прилетел
     // settle старого инстанса) — иначе balance получил бы +hold дважды (over-credit) и reserved
     // ушёл бы в минус. MAX(0, …) держит reserved ≥ 0. В норме (reserved≥hold) поведение прежнее.
-    let bal = match tx.query_row(
+    let bal = match conn.query_row(
         "UPDATE accounts SET \
          balance_nano = balance_nano + MIN(?1, reserved_nano) - ?2, \
          spent_nano = spent_nano + ?2, \
@@ -558,16 +596,15 @@ pub fn account_settle(conn: &Connection, id: &str, key: &str, hold_nano: i64, ac
         Err(e) => return Err(e.into()),
     };
     if let Some(b) = bal {
-        tx.execute("UPDATE api_keys SET spent_nano = spent_nano + ?1 WHERE key = ?2",
+        conn.execute("UPDATE api_keys SET spent_nano = spent_nano + ?1 WHERE key = ?2",
                    rusqlite::params![actual, key])?;
         if actual > 0 {
-            ledger_add(&tx, id, Some(key), "charge", actual, reference, b)?;
+            ledger_add(conn, id, Some(key), "charge", actual, reference, b)?;
             // usage_events (аналитика) — в ТОЙ ЖЕ транзакции, что и charge (экономим коммит на запрос).
             // Best-effort: ошибка вставки usage НЕ роняет money-коммит (аналитика не критична).
-            if let Some(u) = usage { let _ = usage_event_add(&tx, id, Some(key), u, actual, reference); }
+            if let Some(u) = usage { let _ = usage_event_add(conn, id, Some(key), u, actual, reference); }
         }
     }
-    tx.commit()?;
     Ok(bal)
 }
 
@@ -1087,6 +1124,39 @@ mod tests {
         account_reserve(&c, "a", 500_000_000).unwrap();
         account_settle(&c, "a", "k", 500_000_000, 0, None, Some(&u)).unwrap();
         assert_eq!(usage_by_model(&c, "a", 0).unwrap()[0].requests, 1, "usage не прибавился при actual=0");
+    }
+
+    /// group-commit: reserve/settle в ОДНОЙ транзакции видят эффекты предыдущих (атомарность
+    /// `charge≤hold≤balance` сохранена), результаты в порядке ops, settle пишет usage.
+    #[test]
+    fn hot_batch_sequential_and_atomic() {
+        let c = db();
+        acct_with_key(&c, "a", "k", 1_000_000_000, 4000); // $1
+        // 3 резерва по 400M в одной пачке: 3-й видит списания первых двух → отказ (None).
+        let ops = vec![
+            HotOp::Reserve { account_id: "a", hold: 400_000_000 },
+            HotOp::Reserve { account_id: "a", hold: 400_000_000 },
+            HotOp::Reserve { account_id: "a", hold: 400_000_000 },
+        ];
+        let r = apply_hot_batch(&c, &ops).unwrap();
+        assert_eq!(r[0], Some(600_000_000));
+        assert_eq!(r[1], Some(200_000_000));
+        assert_eq!(r[2], None, "3-й резерв видит эффекты предыдущих в той же tx → отказ");
+        let acc = account_get(&c, "a").unwrap().unwrap();
+        assert_eq!(acc.balance_nano, 200_000_000);
+        assert_eq!(acc.reserved_nano, 800_000_000);
+        // settle в пачке: возвращает hold − actual, пишет usage; release (actual=0) возвращает hold.
+        let u = UsageEventInput { model: "claude-opus-4-8".into(), input_tokens: 10, real_nano: 1000, ..Default::default() };
+        let ops2 = vec![
+            HotOp::Settle { account_id: "a", key: "k", hold: 400_000_000, actual: 100_000_000, reference: Some("r1"), usage: Some(&u) },
+            HotOp::Settle { account_id: "a", key: "k", hold: 400_000_000, actual: 0, reference: None, usage: None },
+        ];
+        apply_hot_batch(&c, &ops2).unwrap();
+        let acc = account_get(&c, "a").unwrap().unwrap();
+        assert_eq!(acc.balance_nano, 900_000_000); // 200 +300(settle1) +400(settle2)
+        assert_eq!(acc.reserved_nano, 0);
+        assert_eq!(acc.spent_nano, 100_000_000);
+        assert_eq!(usage_by_model(&c, "a", 0).unwrap().len(), 1, "usage записан из батча");
     }
 
     /// заблокированный аккаунт не резервируется; резолв ключа отражает активность обоих.
