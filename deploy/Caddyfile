@@ -1,24 +1,48 @@
 api.apitoken.sale {
 	@public_core path /v1/* /health /balance
 	handle @public_core {
-		reverse_proxy 127.0.0.1:8787
+		reverse_proxy 127.0.0.1:8787 {
+			lb_try_duration 2s
+			lb_try_interval 100ms
+		}
 	}
-
 	respond 404
 }
 
 backend.apitoken.sale {
-	reverse_proxy 127.0.0.1:3000
+	reverse_proxy 127.0.0.1:3000 127.0.0.1:3001 {
+		lb_policy round_robin
+		lb_try_duration 3s
+		lb_try_interval 100ms
+
+		health_uri /v1/ready
+		health_interval 2s
+		health_timeout 2s
+		health_status 2xx
+
+		fail_duration 5s
+		max_fails 1
+		unhealthy_status 503
+	}
 }
 
-# Живой read-only дашборд ёмкости движка. Отдаём ТОЛЬКО /panel,/capacity,/metrics
-# (не /admin, не /v1). Панель просит CLAUDE_API_PANEL_KEY в UI (read-only, хранится
-# в браузере) и шлёт его в /capacity — control/admin-ключ сюда не попадает.
+mail.apitoken.sale, autodiscover.apitoken.sale, autoconfig.apitoken.sale {
+	reverse_proxy 127.0.0.1:8080
+}
+
 panel.apitoken.sale {
-	redir / /panel
-	@panel path /panel /capacity /metrics
-	handle @panel {
-		reverse_proxy 127.0.0.1:8787
+	basic_auth {
+		admin <BCRYPT_HASH_PLACEHOLDER>
 	}
-	respond 404
+	@data path /overview /capacity /metrics /subs
+	handle @data {
+		reverse_proxy 127.0.0.1:8787 {
+			header_up x-api-key "<CONTROL_KEY_PLACEHOLDER>"
+		}
+	}
+	handle {
+		root * /srv/claude-api/panel
+		try_files {path} /index.html
+		file_server
+	}
 }

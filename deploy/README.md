@@ -157,3 +157,30 @@ Supported operational overrides include:
 `--dry-run` prints fetch/build/migration/link/unit/service/readiness operations without creating directories, loading the secret environment file, opening locks, writing markers, changing symlinks, installing units, restarting services, or touching the database.
 
 See [RELEASES.md](./RELEASES.md) for layout and retention rules.
+
+## Blue-green API deploy
+
+After `deploy.sh` has built and finalized the desired commerce release and `/opt/apitoken/releases/current` points to it, cut the API over separately between the two Caddy health-gated slots:
+
+```bash
+deploy/deploy.sh --api-only --dry-run <full-40-character-sha>
+deploy/deploy.sh --api-only <full-40-character-sha>
+deploy/api-bluegreen.sh --dry-run
+deploy/api-bluegreen.sh
+```
+
+`api-bluegreen.sh` detects the slot that is both systemd-active and returning HTTP 200 from `/v1/ready`, starts the other slot against `releases/current`, requires that exact unit to be running from the current immutable release, and waits for readiness. It then gives Caddy five seconds to include the new healthy upstream before stopping the old instance. The application changes `/v1/ready` to 503 during shutdown, so Caddy depools the old slot while systemd's bounded stop and the application's drain handler allow in-flight requests to finish.
+
+Use `--target-port 3000` or `--target-port 3001` to choose the final serving slot explicitly. Without it, a single healthy slot is cut over to the other port; if neither slot is healthy, the bootstrap target defaults to 3000. `--timeout SECONDS` controls each bounded readiness wait.
+
+To move the commerce worker to the same current release without overlapping worker processes, add `--with-worker`:
+
+```bash
+deploy/api-bluegreen.sh --with-worker
+```
+
+The worker is handled after the API cutover as a separate stop-then-start operation. This intentionally permits a short worker pause and prevents concurrent old/new email or pricing jobs.
+
+Any error or signal before final verification triggers availability-first rollback. The script first ensures the old API slot is running and ready, then stops the failed target; it never intentionally removes the last ready slot. During a first-slot bootstrap, where no old process exists, recovery tries the other slot before stopping anything. If worker replacement began, rollback also ensures the worker is active. Recovery failures are logged prominently for immediate operator action.
+
+Both API instances may overlap safely during the Caddy grace period: they are stateless and share the same PostgreSQL database. Database operations that require singleton coordination use PostgreSQL advisory locks, so the brief blue-green overlap does not require separate databases or application-level leader selection.
