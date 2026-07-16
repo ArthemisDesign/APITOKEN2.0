@@ -1,6 +1,6 @@
 # Production deploy controller
 
-These scripts build immutable SHA-addressed releases and activate them with exact-systemd-unit readiness gates. They never restart PostgreSQL, never write into a finalized release, and never treat an arbitrary HTTP 2xx on the expected port as proof that the selected unit started.
+These scripts build immutable SHA-addressed releases, move release links atomically, and activate processes with exact-systemd-unit readiness gates. A normal commerce deploy is deliberately two-phase: `deploy.sh` finalizes/migrates/selects the release without touching API processes, then `api-bluegreen.sh` owns the slot lifecycle and zero-downtime cutover. They never restart PostgreSQL, never write into a finalized release, and never treat an arbitrary HTTP 2xx on the expected port as proof that the selected unit started.
 
 Run them on the production host as the `deploy` operator from `/opt/apitoken/repo`, with narrowly scoped `sudo` access for application-unit and unit-file operations.
 
@@ -8,12 +8,12 @@ Run them on the production host as the `deploy` operator from `/opt/apitoken/rep
 
 | Component | Immutable release | Active unit | Readiness probe |
 |---|---|---|---|
-| Commerce API | `/opt/apitoken/releases/<sha>` | `apitoken-api@3000.service` | `http://127.0.0.1:3000/v1/ready` |
+| Commerce API | `/opt/apitoken/releases/<sha>` | `apitoken-api@3000.service` / `apitoken-api@3001.service` | `http://127.0.0.1:<port>/v1/ready` |
 | Rust engine | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api.service` | `http://127.0.0.1:8787/ready` |
-| Commerce worker | repository-based existing deployment | `apitoken-worker.service` | managed separately |
+| Commerce worker | `/opt/apitoken/repo` (mutable Git checkout; not `releases/current`) | `apitoken-worker.service` | managed separately |
 | PostgreSQL | `/var/lib/apitoken/postgres` | `apitoken-postgres.service` | forbidden to these scripts |
 
-The deploy controller activates only the commerce API and Rust engine. Any service name containing `postgres` is rejected before work begins, including through environment overrides.
+`deploy.sh` activates the Rust engine but only prepares and selects a commerce API release. `api-bluegreen.sh` alone starts, signals, and stops normal commerce API slots; `--with-worker` may separately restart the repository-based worker. Any service name containing `postgres` is rejected before work begins, including through environment overrides.
 
 ## One-time prerequisites
 
@@ -74,12 +74,15 @@ Always supply the full SHA of a commit that has already passed integrated build 
 ```bash
 deploy/deploy.sh --dry-run <sha>
 deploy/deploy.sh <sha>
+deploy/api-bluegreen.sh --dry-run
+deploy/api-bluegreen.sh
 ```
 
-Deploy components independently after bootstrap when only one changed:
+The last two commands are required whenever the selected release includes the commerce API; `deploy.sh` intentionally leaves the old API process untouched. Deploy components independently after bootstrap when only one changed:
 
 ```bash
 deploy/deploy.sh --api-only <sha>
+deploy/api-bluegreen.sh
 deploy/deploy.sh --engine-only <sha>
 ```
 
@@ -96,18 +99,18 @@ A normal deploy:
 1. validates roots, lock files, unit names, timeout, and poll interval;
 2. preflights and captures both `current` and `previous` for every selected component, rejecting broken, non-symlink, out-of-root, or non-SHA targets before builds or migrations;
 3. builds only in staging, or strictly validates every required artifact in an existing SHA release;
-4. runs the prebuilt commerce migration before API activation;
+4. runs the locked, prebuilt commerce migration before moving the API release link;
 5. installs `ERR`, `EXIT`, `INT`, and `TERM` recovery traps before the first link mutation;
 6. when the target differs from `current`, records the old `current` as `previous` and atomically changes `current`;
-7. restarts only selected non-PostgreSQL units;
-8. requires every exact selected unit to be active, loaded from a real fragment, configured through `releases/current`, running from the requested SHA, and passing its HTTP readiness endpoint;
-9. disables recovery traps only after all selected services pass.
+7. restarts only the selected Rust engine and requires its exact unit to be loaded from a real fragment, configured through `releases/current`, running from the requested SHA, and passing readiness;
+8. does **not** start, stop, restart, or readiness-probe a commerce API slot—the old API process keeps serving the immutable release from which it was started;
+9. disables recovery traps after link activation and any selected engine restart succeed, then instructs the operator to run `api-bluegreen.sh`.
 
-A same-SHA deploy does not rewrite `previous`; it restarts and verifies the selected exact unit while preserving the real rollback target.
+A same-SHA deploy does not rewrite `previous`. It restarts and verifies the engine when selected, but still leaves commerce API slot lifecycle to `api-bluegreen.sh`.
 
 ## Exact-unit readiness
 
-The HTTP probe is necessary but not sufficient. For each selected service the readiness loop also requires:
+The HTTP probe is necessary but not sufficient. When `deploy.sh` activates the engine, and when `api-bluegreen.sh` starts/verifies an API target slot, the readiness loop also requires:
 
 - `systemctl is-active <exact-unit>`;
 - `releases/current` resolves to the requested SHA directory;
@@ -160,27 +163,37 @@ See [RELEASES.md](./RELEASES.md) for layout and retention rules.
 
 ## Blue-green API deploy
 
-After `deploy.sh` has built and finalized the desired commerce release and `/opt/apitoken/releases/current` points to it, cut the API over separately between the two Caddy health-gated slots:
+A production API release is always two commands and two distinct phases:
 
 ```bash
 deploy/deploy.sh --api-only --dry-run <full-40-character-sha>
-deploy/deploy.sh --api-only <full-40-character-sha>
+deploy/deploy.sh --api-only <full-40-character-sha>   # build/finalize, locked migration, move current
 deploy/api-bluegreen.sh --dry-run
-deploy/api-bluegreen.sh
+deploy/api-bluegreen.sh                               # start/verify/pre-drain/stop slots
 ```
 
-`api-bluegreen.sh` detects the slot that is both systemd-active and returning HTTP 200 from `/v1/ready`, starts the other slot against `releases/current`, requires that exact unit to be running from the current immutable release, and waits for readiness. It then gives Caddy five seconds to include the new healthy upstream before stopping the old instance. The application changes `/v1/ready` to 503 during shutdown, so Caddy depools the old slot while systemd's bounded stop and the application's drain handler allow in-flight requests to finish.
+Do not insert an API `systemctl restart` between those commands. Both template units name `/opt/apitoken/releases/current/apps/api`, but a process that is already running keeps its resolved working directory, loaded JavaScript, and open files in the immutable release from which it started. Moving `releases/current` therefore does not mutate the old process. Blue-green remains safe only while that old slot is **not restarted** onto the new symlink before the target has been admitted.
+
+`api-bluegreen.sh` performs the cutover in this order:
+
+1. detect the ready old slot and choose the inactive target;
+2. unless the target already proves it serves `releases/current`, stop its unit unconditionally to clear any stale process, require it stopped, and start it fresh;
+3. require the exact target unit, `MainPID` working directory, current SHA, and direct `/v1/ready` HTTP 200;
+4. wait 6 seconds—Caddy's 2-second health interval plus 2-second health timeout plus margin—then re-verify the target and commit it as the availability anchor;
+5. send `SIGUSR1` to the old unit, which flips only its readiness to HTTP 503 while leaving its listener and in-flight work alive;
+6. wait another 6 seconds for Caddy to depool the old upstream, then require old readiness to be exactly HTTP 503 **and** require the new slot to remain ready on the current release;
+7. only then stop the old unit; systemd/Nest complete the bounded application drain.
 
 Use `--target-port 3000` or `--target-port 3001` to choose the final serving slot explicitly. Without it, a single healthy slot is cut over to the other port; if neither slot is healthy, the bootstrap target defaults to 3000. `--timeout SECONDS` controls each bounded readiness wait.
 
-To move the commerce worker to the same current release without overlapping worker processes, add `--with-worker`:
+When adding `127.0.0.1:3001` to Caddy for the first time, keep `apitoken-api@3001.service` stopped during the validated Caddy reload. Its first active check marks the new upstream down. Caddy's dial-failure retry window covers the short gap before that health result is recorded; only a later `api-bluegreen.sh` run should start and admit the slot.
+
+`--with-worker` does **not** ship or bind the worker to `/opt/apitoken/releases/current`. The existing `apitoken-worker.service` runs from the mutable Git checkout under `/opt/apitoken/repo/apps/worker`; the option merely stops and starts that repository-based unit after the API cutover, with no worker overlap:
 
 ```bash
 deploy/api-bluegreen.sh --with-worker
 ```
 
-The worker is handled after the API cutover as a separate stop-then-start operation. This intentionally permits a short worker pause and prevents concurrent old/new email or pricing jobs.
-
-Any error or signal before final verification triggers availability-first rollback. The script first ensures the old API slot is running and ready, then stops the failed target; it never intentionally removes the last ready slot. During a first-slot bootstrap, where no old process exists, recovery tries the other slot before stopping anything. If worker replacement began, rollback also ensures the worker is active. Recovery failures are logged prominently for immediate operator action.
+Rollback is availability-first and never casually restarts the old slot through the moved symlink. Until the new slot is verified ready, serving current, and has passed the Caddy inclusion window, the old process remains running. A pre-commit failure stops only the failed target and leaves/confirms the old slot ready. After pre-drain or old-slot stop has committed traffic to the new process, recovery retains the verified new slot. Only if the old slot has already died/drained **and** no verified new slot remains will recovery restart the old unit; it emits a critical warning that this restart launches `releases/current` (the possibly bad new release), then requires exact-release readiness.
 
 Both API instances may overlap safely during the Caddy grace period: they are stateless and share the same PostgreSQL database. Database operations that require singleton coordination use PostgreSQL advisory locks, so the brief blue-green overlap does not require separate databases or application-level leader selection.

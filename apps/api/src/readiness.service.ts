@@ -5,6 +5,10 @@ export class ReadinessService implements BeforeApplicationShutdown {
   private acceptingTraffic = true;
 
   beforeApplicationShutdown(): void {
+    this.markDraining();
+  }
+
+  markDraining(): void {
     this.acceptingTraffic = false;
   }
 

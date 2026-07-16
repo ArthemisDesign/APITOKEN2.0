@@ -40,19 +40,24 @@ Do not use a stop/start cycle for a configuration update. A reload preserves Cad
 
 Caddy probes `GET /v1/ready` on each slot every 2 seconds with a 2-second timeout and accepts only a `2xx` response. A process that is starting, draining, or missing a required dependency must return `503` from `/v1/ready`; Caddy then removes that slot from new-request selection. When the endpoint returns `2xx` again, Caddy automatically makes the slot eligible.
 
+For the first reload that adds `127.0.0.1:3001`, leave `apitoken-api@3001.service` stopped. Validate and reload Caddy while port 3000 continues serving. The new upstream initially dial-fails and Caddy's first active check marks it down; the configured dial-retry window covers the short interval before that health state is recorded. Start 3001 only through `api-bluegreen.sh` after the reload.
+
+Both API units name `/opt/apitoken/releases/current/apps/api`, but a running process retains the resolved immutable release it started from in its working directory, loaded modules, and open files. Moving `releases/current` is therefore safe while the old process remains alive. Restarting that old unit after the symlink moves would instead launch the new release and destroy the rollback anchor, so API unit lifecycle belongs to `api-bluegreen.sh` during a normal deploy.
+
 Passive checks complement the active gate. One dial/request failure within the 5-second `fail_duration`, or a proxied `503`, marks that slot unavailable immediately. `lb_try_duration 3s` with a 100 ms interval lets Caddy retry another eligible slot when a selected process has already stopped or refuses the connection. The retry window does not make non-idempotent requests generally replayable: Caddy always permits retry after a dial failure because no HTTP request reached the upstream, while its default post-connect retry match remains GET-only.
 
 ### Cutover sequence
 
-1. Identify the inactive port and deploy the new release to that slot. Do not stop the active slot.
-2. Start the new slot with `/v1/ready` returning `503` until startup, dependency checks, migrations, and warm-up are complete.
-3. Confirm the new slot directly returns `2xx` from `/v1/ready`, then allow one complete active-check window for Caddy to observe it. With this configuration, the conservative upper bound is `health_interval + health_timeout` (4 seconds).
-4. Put the old slot into drain mode so its `/v1/ready` returns `503` while it continues serving requests already in flight.
-5. Allow one complete active-check window for Caddy to depool the old slot, then wait for the old process's graceful-drain deadline.
-6. Stop the old slot. If a request races with the stop and gets a connection refusal, Caddy retries the healthy slot within the configured 3-second window.
-7. Leave the stopped port as the inactive slot for the next deployment.
+1. Run `deploy.sh` to build/finalize the immutable release, execute its locked prebuilt migration, and atomically move `/opt/apitoken/releases/current`. This step does not touch either API process; the old slot continues executing its started-with release.
+2. Identify the inactive target. Unless it already proves that its exact `MainPID` serves the current immutable release, stop its unit first even if it appears inactive, require it stopped, and start it fresh through `releases/current`. This clears stale unit/cgroup/port state.
+3. Require the exact target unit and direct `/v1/ready` HTTP 200, then wait 6 seconds (`health_interval` 2s + `health_timeout` 2s + margin) and re-verify it. The old slot remains running throughout this admission phase.
+4. Commit the verified target as the new availability anchor. If admission failed before this point, stop only the failed target and leave/confirm the old process ready; never restart old through the moved symlink.
+5. Send `SIGUSR1` to the old unit. The application immediately changes `/v1/ready` to `503` but keeps its listener open and continues in-flight work.
+6. Wait another 6 seconds for Caddy's active checker to depool the old slot. Before closing any listener, require the old endpoint to return exactly `503` and re-require the new slot to return `200` from the current release.
+7. Only after both checks pass, stop the old unit. Systemd's `SIGTERM` and the application's bounded drain complete in-flight shutdown. A connection-refusal race is still cushioned by Caddy's configured 3-second dial retry.
+8. Leave the stopped port as the inactive slot for the next deployment.
 
-For rollback, use the same sequence in reverse: start the previous release on the inactive slot, wait until its readiness is `2xx` and Caddy has admitted it, drain the current slot through readiness `503`, then stop it.
+Rollback is state-aware rather than a blind reverse restart. Before pre-drain, the old process is the rollback anchor and a failed new slot is stopped alone. Once the new slot has been admitted and the old slot has drained/stopped, recovery keeps the verified new process. Restarting the old unit is a last-resort availability action only when it has already died/drained and no verified target remains; because `releases/current` has moved, that restart launches the new release and must be warned and readiness-verified explicitly.
 
 A `503` returned by a normal proxied request is recorded by the passive health checker, but that response has already been produced and is not safely replayed as an arbitrary POST. The readiness-first drain and wait in steps 4-5 are therefore required; passive health and dial retries are a race cushion, not a replacement for orderly draining.
 

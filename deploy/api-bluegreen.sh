@@ -13,7 +13,8 @@ usage() {
     'Cut the commerce API over between health-gated systemd slots.' \
     '' \
     'Options:' \
-    '  --with-worker        Stop then start apitoken-worker.service after the API cutover' \
+    '  --with-worker        Restart the repository-based worker after the API cutover' \
+    '                       (it runs from /opt/apitoken/repo, not releases/current)' \
     '  --target-port PORT   Keep the final API on port 3000 or 3001' \
     '  --timeout SECONDS    Readiness deadline per operation (default: 60)' \
     '  --dry-run            Print mutations without changing service state' \
@@ -24,10 +25,14 @@ DRY_RUN=0
 WITH_WORKER=0
 REQUESTED_TARGET_PORT=
 READINESS_TIMEOUT=${READINESS_TIMEOUT_SECONDS:-60}
-CADDY_GRACE_SECONDS=5
+# Caddy health_interval=2s and health_timeout=2s. Six seconds covers a full
+# active-check window plus margin both when admitting and depooling a slot.
+CADDY_HEALTH_WINDOW_SECONDS=6
+PRE_DRAIN_SECONDS=6
 COMMERCE_RELEASE_ROOT=${COMMERCE_RELEASE_ROOT:-/opt/apitoken/releases}
 DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}
 WORKER_SERVICE=apitoken-worker.service
+WORKER_SOURCE_ROOT=/opt/apitoken/repo
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -89,13 +94,22 @@ unit_is_active() {
   systemctl_raw is-active --quiet "$1" >/dev/null 2>&1
 }
 
-http_returns_200() {
+http_returns_status() {
   local url=$1
-  local max_time=${2:-2}
+  local expected_status=$2
+  local max_time=${3:-2}
   local status
 
   status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time "$max_time" "$url" 2>/dev/null) || return 1
-  [[ "$status" == "200" ]]
+  [[ "$status" == "$expected_status" ]]
+}
+
+http_returns_200() {
+  http_returns_status "$1" 200 "${2:-2}"
+}
+
+http_returns_503() {
+  http_returns_status "$1" 503 "${2:-2}"
 }
 
 slot_is_ready() {
@@ -104,6 +118,14 @@ slot_is_ready() {
   local unit
   unit=$(slot_unit "$port")
   unit_is_active "$unit" && http_returns_200 "$(slot_url "$port")" "$max_time"
+}
+
+slot_is_draining() {
+  local port=$1
+  local max_time=${2:-2}
+  local unit
+  unit=$(slot_unit "$port")
+  unit_is_active "$unit" && http_returns_503 "$(slot_url "$port")" "$max_time"
 }
 
 slot_serves_current_release() {
@@ -182,13 +204,41 @@ require_slot_stopped() {
   log "$unit is stopped"
 }
 
+require_slot_draining() {
+  local port=$1
+  local unit url
+  unit=$(slot_unit "$port")
+  url=$(slot_url "$port")
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "dry-run: would require $unit to remain active while $url returns HTTP 503"
+    return 0
+  fi
+  slot_is_draining "$port" || die "$unit did not remain active with HTTP 503 readiness after pre-drain"
+  log "$unit remains active for in-flight requests and returns HTTP 503 at $url"
+}
+
+start_slot_fresh() {
+  local port=$1
+  local unit
+  unit=$(slot_unit "$port")
+
+  # The target is the inactive slot. Always stop its unit before starting so a
+  # stale process cannot keep the port or continue running the previous release.
+  log "stopping inactive target $unit before a fresh start"
+  systemctl_command stop "$unit"
+  require_slot_stopped "$port"
+  log "starting target $unit from releases/current"
+  systemctl_command start "$unit"
+}
+
 require_worker_active() {
   if [[ "$DRY_RUN" == "1" ]]; then
     log "dry-run: would require $WORKER_SERVICE to be active"
     return 0
   fi
   unit_is_active "$WORKER_SERVICE" || die "$WORKER_SERVICE is not active after start"
-  log "$WORKER_SERVICE is active"
+  log "$WORKER_SERVICE is active from its repository-based deployment under $WORKER_SOURCE_ROOT"
 }
 
 require_worker_stopped() {
@@ -204,37 +254,83 @@ ACTIVE_PORT=
 TARGET_PORT=
 CURRENT_RELEASE=
 API_SWITCH_NEEDED=1
+NEW_SLOT_COMMITTED=0
+OLD_DRAIN_SIGNALLED=0
+OLD_SLOT_STOPPED=0
 CUTOVER_ACTIVE=0
 CUTOVER_COMMITTED=0
 WORKER_TOUCHED=0
 
-recover_slot_without_downtime() {
-  local recovery_port=$1
+stop_failed_target_after_old_ready() {
+  local old_port=$1
   local failed_target=$2
 
-  if ! slot_is_ready "$recovery_port"; then
-    warn "recovery starting $(slot_unit "$recovery_port") before touching the target slot"
-    systemctl_raw start "$(slot_unit "$recovery_port")" || true
-    if ! wait_for_slot "$recovery_port" "$CURRENT_RELEASE" availability "$READINESS_TIMEOUT"; then
-      warn "recovery start did not restore port $recovery_port; attempting a restart"
-      systemctl_raw restart "$(slot_unit "$recovery_port")" || true
-      wait_for_slot "$recovery_port" "$CURRENT_RELEASE" availability "$READINESS_TIMEOUT" || return 1
-    fi
+  [[ "$failed_target" != "$old_port" ]] || return 0
+  if systemctl_raw stop "$(slot_unit "$failed_target")"; then
+    log "recovery stopped only the failed new slot $(slot_unit "$failed_target"); old port $old_port remains ready"
+  else
+    warn "recovery could not stop failed new slot $(slot_unit "$failed_target")"
+    return 1
+  fi
+}
+
+restart_old_slot_on_current_loudly() {
+  local old_port=$1
+  local old_unit
+  old_unit=$(slot_unit "$old_port")
+
+  warn "CRITICAL: old slot $old_unit is no longer ready, so preserving availability now requires a restart"
+  warn "CRITICAL: restarting $old_unit WILL launch releases/current ($(basename -- "$CURRENT_RELEASE")), not the old process's original in-memory release"
+  systemctl_raw restart "$old_unit" || return 1
+  wait_for_slot "$old_port" "$CURRENT_RELEASE" current-release "$READINESS_TIMEOUT"
+}
+
+recover_with_old_slot() {
+  local old_port=$1
+  local failed_target=$2
+  local old_unit
+  old_unit=$(slot_unit "$old_port")
+
+  # Before pre-drain, rollback never restarts the old process: it is still the
+  # availability anchor even though releases/current already points at the new SHA.
+  if slot_is_ready "$old_port"; then
+    log "recovery confirmed old slot $old_unit is still running and ready"
+    stop_failed_target_after_old_ready "$old_port" "$failed_target" || return 1
+    wait_for_slot "$old_port" "$CURRENT_RELEASE" availability "$READINESS_TIMEOUT"
+    return
   fi
 
-  if [[ "$failed_target" != "$recovery_port" ]]; then
-    if systemctl_raw stop "$(slot_unit "$failed_target")"; then
-      log "recovery stopped failed target $(slot_unit "$failed_target") after port $recovery_port was ready"
-    else
-      warn "recovery could not stop failed target $(slot_unit "$failed_target")"
-    fi
+  # After the new slot was committed and the old slot entered drain/stopped, the
+  # safe recovery direction is forward. Never restart old onto the moved symlink
+  # while the verified new process can preserve availability.
+  if [[ "$OLD_DRAIN_SIGNALLED" == "1" || "$OLD_SLOT_STOPPED" == "1" ]]; then
+    warn "old slot $old_unit had already entered the committed drain phase (signalled=$OLD_DRAIN_SIGNALLED stopped=$OLD_SLOT_STOPPED)"
   fi
-  return 0
+  if slot_serves_current_release "$failed_target" "$CURRENT_RELEASE"; then
+    warn "old slot $old_unit is no longer ready; retaining verified target $(slot_unit "$failed_target") (new-slot-committed=$NEW_SLOT_COMMITTED)"
+    if unit_is_active "$old_unit" && [[ "$NEW_SLOT_COMMITTED" == "1" ]]; then
+      if systemctl_raw stop "$old_unit"; then
+        log "recovery stopped the non-ready old slot after confirming the committed target"
+      else
+        warn "recovery could not stop the non-ready old slot $old_unit"
+        return 1
+      fi
+    elif unit_is_active "$old_unit"; then
+      warn "new slot was not committed before the abort; leaving the non-ready old unit running for operator inspection"
+    fi
+    return 0
+  fi
+
+  # This is the only case where restarting OLD is availability-improving: it has
+  # already died/drained and the new slot is not ready. Be explicit that the
+  # symlink has moved, then verify the restarted process against current.
+  restart_old_slot_on_current_loudly "$old_port" || return 1
+  stop_failed_target_after_old_ready "$old_port" "$failed_target"
 }
 
 recover_cutover() {
   local recovery_failed=0
-  local fallback_port
+  local fallback_port fallback_unit
 
   if [[ "$DRY_RUN" == "1" ]]; then
     warn "dry-run failure: no service state was changed, so rollback has no mutations to perform"
@@ -243,8 +339,8 @@ recover_cutover() {
 
   if [[ "$API_SWITCH_NEEDED" == "1" ]]; then
     if [[ -n "$ACTIVE_PORT" ]]; then
-      if ! recover_slot_without_downtime "$ACTIVE_PORT" "$TARGET_PORT"; then
-        warn "old slot $ACTIVE_PORT could not be restored; leaving target slot $TARGET_PORT untouched"
+      if ! recover_with_old_slot "$ACTIVE_PORT" "$TARGET_PORT"; then
+        warn "automatic API recovery was incomplete"
         recovery_failed=1
       fi
     else
@@ -254,8 +350,10 @@ recover_cutover() {
         warn "bootstrap rollback is leaving target port $TARGET_PORT running because it is the only ready slot"
       else
         fallback_port=$(other_port "$TARGET_PORT")
-        warn "bootstrap had no old slot; attempting recovery on fallback port $fallback_port"
-        systemctl_raw start "$(slot_unit "$fallback_port")" || true
+        fallback_unit=$(slot_unit "$fallback_port")
+        warn "bootstrap had no old slot; attempting a fresh recovery start on fallback port $fallback_port"
+        systemctl_raw stop "$fallback_unit" || true
+        systemctl_raw start "$fallback_unit" || true
         if wait_for_slot "$fallback_port" "$CURRENT_RELEASE" current-release "$READINESS_TIMEOUT"; then
           systemctl_raw stop "$(slot_unit "$TARGET_PORT")" || warn "could not stop failed bootstrap target port $TARGET_PORT"
         else
@@ -268,7 +366,7 @@ recover_cutover() {
 
   if [[ "$WORKER_TOUCHED" == "1" ]] && ! unit_is_active "$WORKER_SERVICE"; then
     if systemctl_raw start "$WORKER_SERVICE" && unit_is_active "$WORKER_SERVICE"; then
-      log "recovery restored $WORKER_SERVICE"
+      log "recovery restored repository-based $WORKER_SERVICE"
     else
       warn "recovery could not restore $WORKER_SERVICE"
       recovery_failed=1
@@ -394,45 +492,54 @@ if [[ "$API_SWITCH_NEEDED" == "1" ]]; then
   if slot_serves_current_release "$TARGET_PORT" "$CURRENT_RELEASE"; then
     log "target $(slot_unit "$TARGET_PORT") already serves the current release; reusing it"
   else
-    if unit_is_active "$(slot_unit "$TARGET_PORT")"; then
-      log "stopping active but unsuitable target $(slot_unit "$TARGET_PORT") before a clean start"
-      systemctl_command stop "$(slot_unit "$TARGET_PORT")"
-      require_slot_stopped "$TARGET_PORT"
-    fi
-    log "starting target $(slot_unit "$TARGET_PORT")"
-    systemctl_command start "$(slot_unit "$TARGET_PORT")"
-    if ! wait_for_slot "$TARGET_PORT" "$CURRENT_RELEASE" current-release "$READINESS_TIMEOUT"; then
-      die "target port $TARGET_PORT never became ready on the current release"
-    fi
+    start_slot_fresh "$TARGET_PORT"
+  fi
+  if ! wait_for_slot "$TARGET_PORT" "$CURRENT_RELEASE" current-release "$READINESS_TIMEOUT"; then
+    die "target port $TARGET_PORT never became ready on the current release"
   fi
 
-  log "waiting ${CADDY_GRACE_SECONDS}s for Caddy to health-include target port $TARGET_PORT"
-  run sleep "$CADDY_GRACE_SECONDS"
+  log "waiting ${CADDY_HEALTH_WINDOW_SECONDS}s for Caddy to health-include target port $TARGET_PORT"
+  run sleep "$CADDY_HEALTH_WINDOW_SECONDS"
 
   if [[ "$DRY_RUN" != "1" ]] && ! slot_serves_current_release "$TARGET_PORT" "$CURRENT_RELEASE"; then
-    die "target port $TARGET_PORT lost readiness before the old slot could be drained"
+    die "target port $TARGET_PORT lost readiness before Caddy inclusion could be committed"
   fi
+  NEW_SLOT_COMMITTED=1
+  log "new slot $(slot_unit "$TARGET_PORT") is ready on releases/current and has passed the Caddy inclusion window"
 
   if [[ -n "$ACTIVE_PORT" ]]; then
     if slot_is_ready "$ACTIVE_PORT"; then
-      log "both API slots are healthy after the Caddy inclusion grace"
+      log "old slot $(slot_unit "$ACTIVE_PORT") is still ready; committing the new slot before pre-drain"
     else
-      warn "old port $ACTIVE_PORT is no longer ready; target port $TARGET_PORT remains the verified serving slot"
+      warn "old port $ACTIVE_PORT died before pre-drain; committed target port $TARGET_PORT remains the verified serving slot"
     fi
-    log "draining and stopping old $(slot_unit "$ACTIVE_PORT")"
+
+    log "pre-draining old $(slot_unit "$ACTIVE_PORT") with SIGUSR1 before its listener is stopped"
+    systemctl_command kill -s SIGUSR1 "$(slot_unit "$ACTIVE_PORT")"
+    OLD_DRAIN_SIGNALLED=1
+    log "waiting ${PRE_DRAIN_SECONDS}s for Caddy to observe HTTP 503 and depool old port $ACTIVE_PORT"
+    run sleep "$PRE_DRAIN_SECONDS"
+    require_slot_draining "$ACTIVE_PORT"
+
+    if [[ "$DRY_RUN" != "1" ]] && ! slot_serves_current_release "$TARGET_PORT" "$CURRENT_RELEASE"; then
+      die "target port $TARGET_PORT lost readiness during old-slot pre-drain"
+    fi
+    [[ "$NEW_SLOT_COMMITTED" == "1" ]] || die "refusing to stop old slot before the new slot is committed"
+    log "new slot is still ready and old slot is depoolable; stopping old $(slot_unit "$ACTIVE_PORT") for bounded application drain"
     systemctl_command stop "$(slot_unit "$ACTIVE_PORT")"
     require_slot_stopped "$ACTIVE_PORT"
+    OLD_SLOT_STOPPED=1
   else
-    log "bootstrap target port $TARGET_PORT is ready; there is no old slot to drain"
+    log "bootstrap target port $TARGET_PORT is ready; there is no old slot to pre-drain"
   fi
 fi
 
 if [[ "$WITH_WORKER" == "1" ]]; then
   WORKER_TOUCHED=1
-  log "stopping old $WORKER_SERVICE before starting its new process (worker overlap is forbidden)"
+  log "stopping repository-based $WORKER_SERVICE before restart (worker overlap is forbidden)"
   systemctl_command stop "$WORKER_SERVICE"
   require_worker_stopped
-  log "starting new $WORKER_SERVICE"
+  log "starting $WORKER_SERVICE from its existing deployment under $WORKER_SOURCE_ROOT; releases/current is not used"
   systemctl_command start "$WORKER_SERVICE"
   require_worker_active
 fi

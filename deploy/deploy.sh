@@ -10,15 +10,15 @@ usage() {
   printf '%s\n' \
     'Usage: deploy.sh [options] <full-commit-sha>' \
     '' \
-    'Build and activate an immutable, tested release.' \
+    'Build and finalize an immutable, tested release.' \
     '' \
     'Options:' \
-    '  --engine-only       Build, activate, and probe only the Rust engine' \
-    '  --api-only          Build, migrate, activate, and probe only the commerce API' \
+    '  --engine-only       Build, activate, restart, and probe only the Rust engine' \
+    '  --api-only          Build, migrate, and point current for a later blue-green API cutover' \
     '  --bootstrap         Prepare the first release, create both current links, then install/start units' \
     '  --skip-migrate      Skip the commerce database migration (explicit override)' \
     '  --timeout SECONDS   Readiness deadline per service (default: 60)' \
-    '  --dry-run           Print changes without fetching, building, swapping, or restarting' \
+    '  --dry-run           Print changes without fetching, building, swapping, or changing services' \
     '  -h, --help          Show this help'
 }
 
@@ -266,11 +266,10 @@ run_locked_migration() {
 }
 
 restart_selected_services() {
+  # Normal commerce API lifecycle is owned exclusively by api-bluegreen.sh. Moving
+  # releases/current must not restart the still-serving slot onto the new release.
   if [[ "$DEPLOY_ENGINE" == "1" ]]; then
     restart_units "$ENGINE_SERVICE"
-  fi
-  if [[ "$DEPLOY_API" == "1" ]]; then
-    restart_units "$API_SERVICE"
   fi
 }
 
@@ -278,9 +277,6 @@ recovery_restart_selected_services() {
   local failed=0
   if [[ "$DEPLOY_ENGINE" == "1" ]]; then
     best_effort_restart_units "$ENGINE_SERVICE" || failed=1
-  fi
-  if [[ "$DEPLOY_API" == "1" ]]; then
-    best_effort_restart_units "$API_SERVICE" || failed=1
   fi
   return "$failed"
 }
@@ -329,9 +325,6 @@ readiness_ok() {
   local ok=0
   if [[ "$DEPLOY_ENGINE" == "1" ]]; then
     wait_for_release_service engine engine "$ENGINE_SERVICE" "$ENGINE_RELEASE_ROOT" "$ENGINE_RELEASE" "$ENGINE_READY_URL" "$READINESS_TIMEOUT" || ok=1
-  fi
-  if [[ "$DEPLOY_API" == "1" ]]; then
-    wait_for_release_service commerce-api api "$API_SERVICE" "$COMMERCE_RELEASE_ROOT" "$COMMERCE_RELEASE" "$API_READY_URL" "$READINESS_TIMEOUT" || ok=1
   fi
   return "$ok"
 }
@@ -477,5 +470,13 @@ commit_activation
 if [[ "$DRY_RUN" == "1" ]]; then
   log "dry-run complete; no release, symlink, unit, service, lock, or database state changed"
 else
-  log "release $SHA is active on every selected exact unit and passed readiness"
+  if [[ "$DEPLOY_ENGINE" == "1" ]]; then
+    log "engine release $SHA is active on its exact unit and passed readiness"
+  fi
+  if [[ "$DEPLOY_API" == "1" && "$BOOTSTRAP" == "1" ]]; then
+    log "commerce bootstrap handoff completed on $API_SERVICE for release $SHA"
+  elif [[ "$DEPLOY_API" == "1" ]]; then
+    log "commerce release $SHA is finalized, migrated, and selected by releases/current; API slots were not restarted"
+    log "run $SCRIPT_DIR/api-bluegreen.sh to cut the commerce API over without downtime"
+  fi
 fi

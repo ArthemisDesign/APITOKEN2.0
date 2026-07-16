@@ -6,6 +6,7 @@ import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
 import { AppModule } from "./app.module.js";
 import type { Environment } from "./config.js";
+import { ReadinessService } from "./readiness.service.js";
 
 function installDrainFailsafe(deadlineMs: number): void {
   let armed = false;
@@ -23,6 +24,11 @@ async function bootstrap(): Promise<void> {
     logger: false,
     bodyLimit: 1_048_576,
   }), { rawBody: true });
+  const readiness = app.get(ReadinessService);
+  process.on("SIGUSR1", () => {
+    readiness.markDraining();
+    Logger.log("pre-drain: readiness flipped to draining (still serving in-flight)", "Bootstrap");
+  });
   await app.register(helmet, { contentSecurityPolicy: false });
   const config = app.get(ConfigService<Environment, true>);
   // @fastify/cors по умолчанию отдаёт methods="GET,HEAD,POST" — без DELETE/PATCH браузер
