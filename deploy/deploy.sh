@@ -252,16 +252,17 @@ run_locked_migration() {
     return 0
   fi
 
-  [[ -f "$API_ENV_FILE" ]] || die "API environment file not found: $API_ENV_FILE"
+  # api.env is root-only (0600, root:root) — the commercial service reads it via systemd
+  # EnvironmentFile as root, and the deploy user must NOT need read access to the secret file.
+  # So both the existence check AND the migration run happen as root via privileged_command; the
+  # OS deploy-serialization lock is still held by this (deploy) shell through fd 8.
+  privileged_command test -f "$API_ENV_FILE" || die "API environment file not found: $API_ENV_FILE"
   validate_commerce_release "$COMMERCE_RELEASE_ROOT" "$COMMERCE_RELEASE" "$SHA"
   log "running prebuilt commerce database migration before API switchover"
   (
     acquire_migration_lock "$MIGRATION_LOCK_FILE"
-    set -a
-    # shellcheck disable=SC1090
-    source "$API_ENV_FILE"
-    set +a
-    node "$COMMERCE_RELEASE/packages/db/dist/migrate.js"
+    privileged_command bash -c 'set -a; . "$0"; set +a; exec node "$1"' \
+      "$API_ENV_FILE" "$COMMERCE_RELEASE/packages/db/dist/migrate.js"
   )
 }
 
