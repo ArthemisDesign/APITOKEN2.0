@@ -1532,3 +1532,153 @@ body.app-body .bg-decor{display:none!important}
   .topup-history-table td:not(.empty-cell)::before{content:attr(data-label);font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--txt-4)}
   .topup-history-table .empty-cell{display:block;width:100%;padding:20px;border:0;font-family:var(--font-mono);font-size:12px;text-align:left}
 }
+
+/* ============ visual QA polish: overflow, controls, contrast, and narrow layouts ============ */
+
+/* Keep every interactive surface keyboard-visible, including compact utility controls. */
+:where(a,button,input,select,textarea,summary,[tabindex]):focus-visible{
+  outline:2px solid var(--accent);outline-offset:2px
+}
+.field input:focus-visible,.set-in:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* Utility controls share one deliberate touch target instead of mixing tiny glyphs with full buttons. */
+.lang button{inline-size:40px;block-size:40px}
+.theme-tgl{width:40px;height:40px;font-size:17px}
+.nav-burger,.app-burger{width:40px;height:40px;align-items:center;justify-content:center;padding:0;
+  border:1px solid var(--line-strong);border-radius:var(--radius);background:transparent;font-size:20px;line-height:1}
+.nav-burger:hover,.app-burger:hover{border-color:var(--accent);color:var(--accent)}
+.docs-header-actions .btn-sm{min-height:40px}
+@media(max-width:1240px){.nav-burger{display:inline-flex}}
+@media(max-width:1080px){.app-burger{display:inline-flex}}
+
+/* Final home CTA: preserve equal page gutters by stacking actions on phones. */
+@media(max-width:640px){
+  .cta-row{align-items:stretch;gap:24px}
+  .cta-actions{display:grid;grid-template-columns:1fr;width:100%;min-width:0}
+  .cta-actions .btn{width:100%;min-width:0;justify-content:center}
+}
+
+/* Footer links wrap as an intentional 2 × 2 set rather than a stranded final link. */
+@media(max-width:640px){
+  .foot-bottom{align-items:flex-start;flex-direction:column}
+  .foot-legal{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;margin:8px 0 0;gap:10px 18px}
+  .foot-legal a{min-width:0}
+}
+
+/* Dark surfaces keep small links and disabled labels readable without changing the accent system. */
+[data-theme="dark"] .btn.btn-primary[disabled]{opacity:1;background:var(--accent-soft);border-color:var(--accent-line);color:var(--txt-3);box-shadow:none}
+[data-theme="dark"] .btn.btn-ghost[disabled]{opacity:1;background:var(--bg-soft);border-color:var(--line-strong);color:var(--txt-3)}
+[data-theme="dark"] .pricing-howto-link,
+[data-theme="dark"] .tier-docs-link,
+[data-theme="dark"] .commercial-policy a,
+[data-theme="dark"] .support-card a,
+[data-theme="dark"] .legal-aside a,
+[data-theme="dark"] .step-cta,
+[data-theme="dark"] .mtable td code,
+[data-theme="dark"] .model-badge,
+[data-theme="dark"] .tier-mult,
+[data-theme="dark"] .pm-mult,
+[data-theme="dark"] .tier-table td strong,
+[data-theme="dark"] .tier-mobile-head b,
+[data-theme="dark"] .kmeta code,
+[data-theme="dark"] .txh-key,
+[data-theme="dark"] .tokb-usd,
+[data-theme="dark"] .docs-endpoint code,
+[data-theme="dark"] .docs-errors code,
+[data-theme="dark"] .docs-auth-flow code,
+[data-theme="dark"] .compliance-nav a.active{color:var(--term-key)}
+
+/* Generic scroll containers may scroll internally, but never establish page-width min-content. */
+.table-scroll{min-width:0;max-width:100%}
+:where(.hero-grid,.prod-grid,.pricing-intro,.tier-heading,.commercial-heading,.support-grid)>*{min-width:0}
+
+/* Models: rebalance the callout, strengthen the latest badge, and define dark table structure. */
+.model-rate-note{grid-template-columns:.9fr 1.3fr;align-items:center}
+.model-rate-note h3{font-size:17.5px;letter-spacing:-.03em;white-space:nowrap}
+.model-rate-note p{line-height:1.65}
+.model-badge{padding:3px 9px;font-size:10.5px;font-weight:600;border-color:var(--accent-line)}
+[data-theme="dark"] .model-rate-note + .table-scroll .mtable{background:var(--bg-card);border-color:var(--line-strong)}
+[data-theme="dark"] .model-rate-note + .table-scroll .mtable th{background:var(--bg-soft);border-bottom-color:var(--line-strong)}
+[data-theme="dark"] .model-rate-note + .table-scroll .mtable td{border-bottom-color:var(--line-strong)}
+@media(max-width:700px){.model-rate-note h3{white-space:normal}}
+
+/* Plans/docs pricing helpers remain legible at their actual mobile size. */
+.tier-rule-item span{font-size:11px}
+.tier-rule-item strong{font-size:12.5px;color:var(--txt-2)}
+@media(max-width:700px){
+  .tier-mobile{padding:20px 18px}
+  .tier-mobile-row{align-items:flex-start;font-size:12px;line-height:1.5;color:var(--txt-3)}
+  .tier-mobile-row span:first-child{min-width:0;padding-right:12px}
+  .tier-mobile-row span:last-child{flex:none;font-size:13px}
+}
+
+/* Dashboard cards stay balanced; profile-side cards participate in the parent grid. */
+.prof-side{display:contents}
+
+/* Dashboard tier cards use their full width; helper copy no longer collapses into microtext. */
+.pricing-milestone>div{width:100%}
+.pricing-milestone>div>span{font-size:11px;line-height:1.45;color:var(--txt-3)}
+.pricing-milestone small{font-size:11px;line-height:1.5;color:var(--txt-3)}
+@media(max-width:560px){
+  .pricing-status-item{grid-template-columns:minmax(0,1fr);align-items:start;gap:4px}
+  .pricing-status-item>span,.pricing-status-item strong,.pricing-status-item small{grid-column:1;width:100%}
+  .pricing-status-item small{font-size:11px;line-height:1.5}
+  .pricing-milestone{align-items:start}
+  .pricing-milestone>div{width:100%;padding-right:4px}
+  .pricing-milestone>div>span,.pricing-milestone small{font-size:11.5px;line-height:1.5}
+  .keyrow .kmeta{display:grid;align-items:start;gap:4px}
+  .keyrow .kmeta span{display:block;overflow:hidden;text-indent:-2ch}
+}
+@media(max-width:700px){
+  .topup-history-table td .pill{justify-self:start;width:max-content;max-width:100%;padding-inline:10px}
+}
+
+/* Documentation portal: every layout child can shrink; only code owns horizontal scrolling. */
+.docs-layout,.docs-main,.docs-main>*,.docs-main section,.docs-hero,.docs-section,
+.docs-section-heading>div,.docs-essential-grid>*,.docs-two-col>*,.docs-auth-flow>*,
+.docs-code-card,.docs-code-card>header>div,.docs-checklist,.docs-errors{
+  min-width:0;max-width:100%
+}
+.docs-layout{width:100%}
+.docs-main{min-width:0}
+.docs-hero h1,.docs-section-heading h2,.docs-section-heading p,.docs-notice,.docs-checklist li{
+  max-width:100%;overflow-wrap:anywhere
+}
+.docs-code-card pre{width:100%;max-width:100%;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}
+.docs-code-card pre code{display:block;width:max-content;min-width:100%}
+.docs-auth-flow>div{width:100%}
+#docs-api-key{max-width:100%}
+
+/* Reuse the existing table of contents as a compact sticky mobile section rail. */
+@media(max-width:980px){
+  .docs-layout{grid-template-columns:minmax(0,1fr)}
+  .docs-sidebar{display:block;position:sticky;top:68px;z-index:35;align-self:auto;width:100%;height:auto;min-width:0;
+    padding:8px 16px;border-right:0;border-bottom:1px solid var(--line);background:var(--nav-bg);backdrop-filter:blur(12px);
+    overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
+  .docs-sidebar>span{display:none}
+  .docs-sidebar nav{display:flex;flex-direction:row;gap:4px;width:max-content;min-width:100%}
+  .docs-sidebar a{flex:none;white-space:nowrap}
+  .docs-main{width:100%;max-width:100%}
+  .docs-main section{scroll-margin-top:124px}
+}
+@media(max-width:700px){
+  .docs-header{height:68px;min-height:68px;align-items:center;flex-wrap:nowrap;gap:8px;padding:10px 16px}
+  .docs-brand{flex:1;min-width:0;max-width:100%;gap:7px;font-size:14px}
+  .docs-brand span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .docs-header-actions{flex:none;flex-wrap:nowrap;gap:6px}
+  .docs-header-actions .lang button{inline-size:34px;block-size:36px;font-size:11px}
+  .docs-header-actions .theme-tgl{width:36px;height:36px;font-size:15px}
+  .docs-header-actions .btn-sm{min-height:36px;padding:7px 10px;font-size:12px}
+  .docs-sidebar{top:68px;padding-inline:12px}
+  .docs-main{padding:38px 16px 62px}
+  .docs-hero h1{font-size:clamp(32px,10vw,38px)}
+  .docs-section-heading{grid-template-columns:34px minmax(0,1fr);gap:12px}
+  .docs-code-card>header{padding:16px}
+  .docs-code-card pre{padding:18px 16px}
+  .docs-notice form>*{min-width:0;max-width:100%}
+}
+
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
+}

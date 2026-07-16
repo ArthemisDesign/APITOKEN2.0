@@ -199,8 +199,8 @@ describe("completed Next.js migration", () => {
     expect(styles).toContain(".business-card{padding:30px;display:grid;grid-template-rows:");
     expect(styles).toContain(".business-preview{justify-content:space-between");
     expect(styles).toContain(".stat b{font-family:var(--font-mono)");
-    expect(styles).toContain(".prod{border:1px solid var(--line);border-radius:8px;padding:28px;background:var(--bg-card);display:grid");
-    expect(styles).toContain(".prod h3{margin:14px 0 0;font-family:var(--font-i18n-display)");
+    expect(styles).toContain(".prod{border:1px solid var(--line);border-radius:8px;padding:28px;background:var(--bg-card);display:flex;flex-direction:column");
+    expect(styles).toContain(".prod h3{margin:14px 0 18px;font-family:var(--font-i18n-display)");
     expect(topup).toContain('inputMode="numeric"');
     expect(topup).toContain('pattern="[1-9][0-9]*"');
     expect(topup).not.toContain("editable");
