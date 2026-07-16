@@ -20,6 +20,7 @@ pub struct Settings {
     pub reserve_jitter: f64, // ± разброс порога между подписками (антифингерпринт; деф 0.02)
     pub readiness_delay_secs: u64, // задержка после снятия readiness перед дренажем (деф 3с)
     pub drain_deadline_secs: u64, // предел graceful-дренажа до принудительного обрыва (деф 540с)
+    pub max_inflight: i64,   // потолок параллельных запросов на подписку (деф 6; выше = больше параллели, риск бана)
     pub proxy: ProxyConfig,
 }
 
@@ -186,6 +187,9 @@ impl Settings {
                 .and_then(|s| s.parse::<u64>().ok()).unwrap_or(3).min(30),
             drain_deadline_secs: ev("CLAUDE_API_DRAIN_DEADLINE_SECS")
                 .and_then(|s| s.parse::<u64>().ok()).unwrap_or(540).clamp(5, 595),
+            // Потолок параллельных запросов на подписку. Дефолт 6 (человеческий конверт/анти-бан).
+            // Высокое значение снимает потолок concurrency — больше параллели ценой риска бан-сигнала.
+            max_inflight: ev("CLAUDE_API_MAX_INFLIGHT").and_then(|s| s.parse::<i64>().ok()).unwrap_or(6).max(1),
             proxy: ProxyConfig {
                 api_keys,
                 control_keys,

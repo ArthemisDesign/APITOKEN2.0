@@ -630,6 +630,9 @@ fn sub_cmd(op: SubOp) -> Result<()> {
 
 async fn serve() -> Result<()> {
     let s = Settings::from_env();
+    // Потолок параллельных запросов на подписку (env CLAUDE_API_MAX_INFLIGHT) — ставим ДО
+    // создания пула, чтобы route/pick/capacity видели актуальное значение.
+    pool::set_max_inflight(s.max_inflight);
     let authority = authority_config(&s);
     if authority.is_postgres() && !s.billing {
         bail!("PostgreSQL authority requires CLAUDE_API_BILLING=1 because capacity leases share the durable actor");

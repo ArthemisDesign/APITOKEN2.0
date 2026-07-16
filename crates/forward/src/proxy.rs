@@ -689,7 +689,7 @@ pub async fn forward(
         let capacity_lease = if let Some(billing) = &app.billing {
             billing.acquire_capacity(
                 &capacity_lease_id, &engine_request_id, &sub.email, 3600,
-                pool::MAX_INFLIGHT, app.cfg.util_cap,
+                pool::max_inflight(), app.cfg.util_cap,
             ).await
         } else { None };
         if app.billing.is_some() && capacity_lease.is_none() {

@@ -67,7 +67,13 @@ const AFFINITY_TTL: i64 = 3600;
 const REBIND_AFTER: i64 = 60;
 /// Потолок параллельных запросов на персону — «человеческий конверт» (живой юзер не крутит 20
 /// стримов разом) + защита аккаунта от загона в лимит. Гейтит placement и переводит пин в спилл.
-pub const MAX_INFLIGHT: i64 = 6;
+/// Настраивается через env `CLAUDE_API_MAX_INFLIGHT` (`server::config` → `set_max_inflight` при
+/// старте, ДО создания пула). Дефолт 6. Высокое значение снимает потолок concurrency на подписку
+/// (больше параллели, но выше риск бан-сигнала — держать осознанно).
+static MAX_INFLIGHT_CELL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(6);
+#[inline]
+pub fn max_inflight() -> i64 { MAX_INFLIGHT_CELL.load(std::sync::atomic::Ordering::Relaxed) }
+pub fn set_max_inflight(v: i64) { MAX_INFLIGHT_CELL.store(v.max(1), std::sync::atomic::Ordering::Relaxed); }
 /// Потолок таблицы привязок (память). Переполнение → вытесняем самые старые по last_seen.
 const BINDINGS_CAP: usize = 100_000;
 
@@ -277,7 +283,7 @@ fn select_best_with_policy(g: &Inner, exclude: &HashSet<String>, now: i64, rsv: 
         !(live_util(g, &s.email, plan_scale(&s.plan), 7, now, p5, p7) < c7
             && live_util(g, &s.email, plan_scale(&s.plan), 5, now, p5, p7) < c5)
     };
-    let over_envelope = |s: &Sub| inflight_of(g, &s.email) >= MAX_INFLIGHT;
+    let over_envelope = |s: &Sub| inflight_of(g, &s.email) >= max_inflight();
 
     g.subs.iter()
         .filter(|s| !exclude.contains(&s.email))
@@ -329,7 +335,7 @@ fn select_best_non_cooling(g: &Inner, exclude: &HashSet<String>, now: i64, rsv: 
 }
 
 /// Capacity-weighted placement НОВОЙ сессии: среди здоровых персон под потолком util И под
-/// конвертом конкуррентности (`inflight < MAX_INFLIGHT`) — та, где больше свободной ёмкости (USD).
+/// конвертом конкуррентности (`inflight < max_inflight()`) — та, где больше свободной ёмкости (USD).
 /// Так новые сессии наливаются в самые пустые аккаунты, но не сверх человеческого конверта; когда
 /// эмптейший упёрся в конверт — перелив на следующий по ёмкости. Никого под конвертом → не зависаем
 /// (обычный `select_best`, эффект — краткая деградация естественности под пиком).
@@ -348,7 +354,7 @@ fn place_best(g: &Inner, now: i64, rsv: &Reserve, p5: f64, p7: f64) -> Option<Su
         !is_cooling(g, &s.email, now)
             && live_util(g, &s.email, plan_scale(&s.plan), 7, now, p5, p7) < c7
             && live_util(g, &s.email, plan_scale(&s.plan), 5, now, p5, p7) < c5
-            && inflight_of(g, &s.email) < MAX_INFLIGHT
+            && inflight_of(g, &s.email) < max_inflight()
     });
     let best = eligible.max_by(|a, b|
         free(a).partial_cmp(&free(b)).unwrap_or(Equal)                    // больше свободной ёмкости
@@ -463,7 +469,7 @@ impl Pool {
                 if !deep_cooling && !over_cap {
                     // дом всё ещё «наш» — кэш тёплый; либо пин, либо кратковременный спилл
                     if let Some(b) = g.bindings.get_mut(&session) { b.last_seen = now; }
-                    let busy = cooling > now || inflight_of(&g, &home) >= MAX_INFLIGHT;
+                    let busy = cooling > now || inflight_of(&g, &home) >= max_inflight();
                     if !busy {
                         g.route_pin += 1;
                         return g.subs.iter().find(|s| s.email == home).cloned(); // ПИН (cache-hit)
@@ -502,7 +508,7 @@ impl Pool {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let l = g.live.entry(email.to_string()).or_default();
         l.last_used = now();
-        if l.inflight >= MAX_INFLIGHT {
+        if l.inflight >= max_inflight() {
             // Не скрываем реальную нагрузку клампом: попытка уже выбрана и forward сейчас её пошлёт.
             // Лог без email/токена делает окно гонки наблюдаемым до атомарной lease-миграции.
             eprintln!("pool: in-flight envelope oversubscribed (current={})", l.inflight);
@@ -966,7 +972,7 @@ mod tests {
         let p = pool(&["a", "b"]);
         p.set_util("a", Some(0.05), Some(0.05), None, None, None); // эмптейший…
         p.set_util("b", Some(0.20), Some(0.20), None, None, None);
-        for _ in 0..MAX_INFLIGHT { p.mark_used("a"); }             // …но забит до конверта
+        for _ in 0..max_inflight() { p.mark_used("a"); }             // …но забит до конверта
         assert_eq!(p.route(777).unwrap().email, "b");
     }
 
@@ -979,10 +985,10 @@ mod tests {
         p.set_util("b", Some(0.20), Some(0.20), None, None, None);
         let s = 999u64;
         let home = p.route(s).unwrap().email;         // сел на эмптейший (a)
-        for _ in 0..MAX_INFLIGHT { p.mark_used(&home); } // забили дом до конверта
+        for _ in 0..max_inflight() { p.mark_used(&home); } // забили дом до конверта
         let spilled = p.route(s).unwrap().email;
         assert_ne!(spilled, home, "занятый дом → спилл на другой");
-        for _ in 0..MAX_INFLIGHT { p.end_stream(&home); } // слоты освободились
+        for _ in 0..max_inflight() { p.end_stream(&home); } // слоты освободились
         assert_eq!(p.route(s).unwrap().email, home, "вернулись на тёплый дом");
     }
 
@@ -1141,7 +1147,7 @@ mod tests {
         let p = pool(&["a", "b"]);
         p.set_util("a", Some(0.10), Some(0.10), None, None, None);
         p.set_util("b", Some(0.00), Some(0.11), None, None, None);
-        for _ in 0..MAX_INFLIGHT { p.mark_used("a"); }
+        for _ in 0..max_inflight() { p.mark_used("a"); }
         assert_eq!(picked(&p), "b", "слегка более горячий, но свободный b должен разгрузить a");
     }
 
@@ -1173,7 +1179,7 @@ mod tests {
         let home = p.route(session).unwrap().email;
         let other = if home == "a" { "b" } else { "a" };
         p.mark_cooling(other, 3600);
-        for _ in 0..MAX_INFLIGHT { p.mark_used(&home); }
+        for _ in 0..max_inflight() { p.mark_used(&home); }
         let chosen = p.route(session).unwrap();
         assert_eq!(chosen.email, home, "без здоровой альтернативы ослабляем конверт на доме");
         assert!(!p.is_cooling(&chosen.email));
