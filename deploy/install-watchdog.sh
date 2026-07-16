@@ -29,10 +29,26 @@ for lock in apitoken-watchdog apitoken-deploy; do
 done
 [[ -d /opt/apitoken/repo/.git ]] || { echo 'missing /opt/apitoken/repo checkout' >&2; exit 1; }
 [[ -d /opt/apitoken-watchdog/rust-toolchain/bin ]] || { echo 'install Rust in /opt/apitoken-watchdog/rust-toolchain first' >&2; exit 1; }
-[[ -d /opt/apitoken/repo/packages/db/migrations ]] || { echo 'missing migration directory' >&2; exit 1; }
+[[ -d /opt/apitoken/releases/current/packages/db/migrations ]] || { echo 'current immutable commerce migration directory is missing' >&2; exit 1; }
 manifest=/var/lib/apitoken/watchdog/database-migrations.manifest
-( cd /opt/apitoken/repo && while IFS= read -r p; do sha256sum "$p" | awk '{print $1 "  " $2}'; done < <(find packages/db/migrations -type f -print | sort) ) >"$manifest"
-chown root:deploy "$manifest"; chmod 0640 "$manifest"
+if [[ ! -e $manifest ]]; then
+  ( cd /opt/apitoken/releases/current && while IFS= read -r p; do sha256sum "$p" | awk '{print $1 "  " $2}'; done < <(find packages/db/migrations -type f -print | sort) ) >"$manifest"
+  chown root:deploy "$manifest"; chmod 0640 "$manifest"
+fi
+
+if [[ ! -e /var/lib/apitoken/watchdog/processed.sha ]]; then
+  processed=$(git -C /opt/apitoken/repo rev-parse HEAD)
+  engine=$(basename -- "$(readlink -f /srv/claude-api/releases/current)")
+  backend=$(basename -- "$(readlink -f /opt/apitoken/releases/current)")
+  for sha in "$processed" "$engine" "$backend"; do
+    [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "invalid release baseline: $sha" >&2; exit 1; }
+  done
+  printf '%s\n' "$processed" >/var/lib/apitoken/watchdog/processed.sha
+  printf '%s\n' "$engine" >/var/lib/apitoken/watchdog/engine.sha
+  printf '%s\n' "$backend" >/var/lib/apitoken/watchdog/backend.sha
+  chown root:deploy /var/lib/apitoken/watchdog/{processed,engine,backend}.sha
+  chmod 0640 /var/lib/apitoken/watchdog/{processed,engine,backend}.sha
+fi
 systemctl daemon-reload
 systemctl enable --now apitoken-deploy-watchdog.timer
 echo 'watchdog installed and timer enabled; verify with: sudo apitoken-watchdog status'
