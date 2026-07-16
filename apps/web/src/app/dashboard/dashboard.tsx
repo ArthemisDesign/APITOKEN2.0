@@ -56,6 +56,7 @@ const navigation: Array<{ section?: Section; label: keyof DashboardCopy; icon: s
   { group: "navActivity", section: "usage", label: "navUsage", icon: "◔" },
   { group: "navAccount", section: "profile", label: "navProfile", icon: "◍" },
   { section: "security", label: "navSecurity", icon: "⛨" },
+  { href: "/support", label: "navSupport", icon: "☏" },
 ];
 
 function useDashboardCopy(): DashboardCopy {
