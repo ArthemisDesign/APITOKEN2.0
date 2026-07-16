@@ -119,7 +119,8 @@ export function Dashboard() {
     <main className="app-main">
       <header className="app-top"><button className="app-burger" onClick={() => setSideOpen(true)} aria-label={copy.menu}>☰</button><div className="app-top-h"><div className="app-title">{copy[navigation.find((item) => item.section === section)?.label ?? "navOverview"]}</div></div>
         <div className="app-top-actions">
-          <button className="app-top-bal" onClick={() => open("profile")} title={copy.openProfile}>
+          <button className="app-top-bal" onClick={() => open("credits")} title={copy.navTopUp}>
+            <span className="atb-ic" aria-hidden="true" />
             <span className="atb-label">{copy.creditsLabel}</span>
             <span className={`atb-val${nanoNum(account.balanceNano) < 0 ? " atb-neg" : ""}`}>{nanoToUsd(account.balanceNano)}</span>
           </button>
