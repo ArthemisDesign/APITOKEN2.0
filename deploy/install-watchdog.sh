@@ -7,9 +7,11 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 command -v systemctl >/dev/null || { echo 'systemd is required' >&2; exit 1; }
 id deploy >/dev/null 2>&1 || { echo 'deploy user is required' >&2; exit 1; }
 id apitoken-ci >/dev/null 2>&1 || useradd --system --home-dir /var/lib/apitoken/watchdog/ci-home --create-home --shell /usr/sbin/nologin apitoken-ci
+usermod -a -G deploy apitoken-ci
 
 install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/controller
 install -d -o deploy -g deploy -m 0750 /var/lib/apitoken/watchdog /var/lib/apitoken/watchdog/candidates /var/lib/apitoken/watchdog/ci-home
+chown apitoken-ci:apitoken-ci /var/lib/apitoken/watchdog/ci-home
 install -d -o root -g root -m 0755 /opt/apitoken-watchdog
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog.sh" /usr/local/lib/apitoken-watchdog/watchdog.sh
 install -o root -g root -m 0644 "$ROOT/deploy/watchdog-lib.sh" /usr/local/lib/apitoken-watchdog/watchdog-lib.sh
