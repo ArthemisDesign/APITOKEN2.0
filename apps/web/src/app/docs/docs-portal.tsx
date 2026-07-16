@@ -293,7 +293,7 @@ export function DocsPortal() {
     <div className="docs-layout">
       <aside className="docs-sidebar"><span>{t.onThisPage}</span><nav><a href="#overview">{t.overview}</a><a href="#quickstart">{t.quickstart}</a><a href="#authentication">{t.authentication}</a><a href="#tools">{t.tools}</a><a href="#sdks">{t.sdks}</a><a href="#errors">{t.errors}</a><a href="#pricing">{t.pricing}</a></nav></aside>
       <main className="docs-main">
-        <section className="docs-hero" id="overview"><span className="eyebrow">{t.eyebrow}</span><h1>{t.title}</h1><p>{t.lead}</p><Link className="btn btn-primary" href="/dashboard?view=keys">{t.openKeys}</Link></section>
+        <section className="docs-hero" id="overview"><span className="eyebrow">{t.eyebrow}</span><h1>{t.title}</h1><p>{t.lead}</p><div className="hero-cta"><Link className="btn btn-primary" href="/dashboard?view=keys">{t.openKeys}</Link><Link className="btn btn-ghost" href="/docs/learn">Claude API guides</Link></div></section>
 
         <section className="docs-section">
           <div className="docs-section-heading"><span>01</span><div><h2>{t.oneEndpoint}</h2><p>{t.oneEndpointText}</p></div></div>
