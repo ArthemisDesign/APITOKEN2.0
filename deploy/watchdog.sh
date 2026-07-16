@@ -148,12 +148,12 @@ prepare_and_test_candidate() {
   sudo -n "$TEST_DB_HELPER" stop
   TEST_DB_STARTED=0
 
-  [[ -z $(git -C "$candidate" status --porcelain --untracked-files=no) ]] \
+  [[ -z $(run_as_ci git -C "$candidate" status --porcelain --untracked-files=no) ]] \
     || wd_die "tests modified tracked candidate files"
   manifest="$STATE_ROOT/.candidate-manifest.$$"
   wd_migration_manifest "$candidate" >"$manifest"
   digest=$(wd_manifest_digest "$manifest")
-  tree=$(git -C "$candidate" rev-parse 'HEAD^{tree}')
+  tree=$(run_as_ci git -C "$candidate" rev-parse 'HEAD^{tree}')
   {
     printf 'sha=%s\n' "$sha"
     printf 'tree=%s\n' "$tree"
