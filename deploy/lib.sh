@@ -341,6 +341,40 @@ systemctl_show_value() {
   systemctl_raw show --property="$property" --value "$unit" 2>/dev/null
 }
 
+wait_for_unit_active() {
+  local unit=$1
+  local timeout=$2
+  local deadline now remaining
+
+  validate_service_unit "$unit"
+  validate_timeout "$timeout"
+
+  if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    log "dry-run: would wait up to ${timeout}s for $unit to become active"
+    return 0
+  fi
+
+  deadline=$(( $(date +%s) + timeout ))
+  while true; do
+    if systemctl_raw is-active --quiet "$unit" >/dev/null 2>&1; then
+      log "$unit is active"
+      return 0
+    fi
+    if systemctl_raw is-failed --quiet "$unit" >/dev/null 2>&1; then
+      warn "$unit entered failed state before becoming active"
+      return 1
+    fi
+
+    now=$(date +%s)
+    remaining=$(( deadline - now ))
+    (( remaining > 0 )) || break
+    sleep 1
+  done
+
+  warn "$unit did not become active within ${timeout}s"
+  return 1
+}
+
 unit_release_binding_ok() {
   local role=$1
   local unit=$2

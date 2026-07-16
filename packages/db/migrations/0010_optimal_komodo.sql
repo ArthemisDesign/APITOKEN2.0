@@ -1,0 +1,2 @@
+ALTER TABLE "customer_profiles" DROP CONSTRAINT "customer_profiles_tier_check";--> statement-breakpoint
+ALTER TABLE "customer_profiles" ADD CONSTRAINT "customer_profiles_tier_check" CHECK ("customer_profiles"."current_tier" IS NULL OR "customer_profiles"."current_tier" BETWEEN 0 AND 5);

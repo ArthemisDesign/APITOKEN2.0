@@ -8,10 +8,10 @@ After=network.target
 
 [Service]
 Type=oneshot
-User=agents
-Group=agents
+User=deploy
+Group=deploy
 Environment=SUB_CFG_DIR=/srv/claude-api/data
-ExecStart=/srv/claude-api/target/release/claude-api backup --out /srv/claude-api/data/backups --keep 48
+ExecStart=/srv/claude-api/releases/current/claude-api backup --out /srv/claude-api/data/backups --keep 48
 # hardening: пишет только в data/
 NoNewPrivileges=true
 ProtectSystem=strict

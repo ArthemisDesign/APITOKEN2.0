@@ -6,7 +6,8 @@ Description=claude-api — ежечасный бэкап БД
 
 [Timer]
 OnCalendar=hourly
-Persistent=true          # догоняет пропущенный запуск после простоя/перезагрузки
+# Догоняет пропущенный запуск после простоя/перезагрузки.
+Persistent=true
 RandomizedDelaySec=120
 
 [Install]

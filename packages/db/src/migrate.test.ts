@@ -1,4 +1,5 @@
-import { basename, dirname, isAbsolute } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MIGRATION_LOCK_TIMEOUT_MS,
@@ -50,5 +51,17 @@ describe("migration configuration", () => {
         DB_MIGRATION_LOCK_TIMEOUT_MS: "0",
       }),
     ).toThrow("DB_MIGRATION_LOCK_TIMEOUT_MS must be between 1 and 2147483647 milliseconds");
+  });
+
+  it("keeps the tier-5 expansion compatible across adjacent rollout migrations", () => {
+    for (const migration of [
+      "0008_prepay_tier_columns.sql",
+      "0009_round_joshua_kane.sql",
+      "0010_optimal_komodo.sql",
+    ]) {
+      const sql = readFileSync(join(MIGRATIONS_FOLDER, migration), "utf8");
+      expect(sql).toContain('"current_tier" BETWEEN 0 AND 5');
+      expect(sql).not.toContain('"current_tier" BETWEEN 0 AND 4');
+    }
   });
 });

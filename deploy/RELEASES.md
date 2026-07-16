@@ -90,7 +90,7 @@ Neither symlink-based unit may be installed or first-started before both of thes
 /srv/claude-api/releases/current
 ```
 
-`deploy.sh --bootstrap` creates both links first, validates them, then installs unit files, reloads systemd, starts/verifies the engine, and finally hands the API port from the active legacy unit to `apitoken-api@3000.service`. A failed handoff restores the original absent links and restarts the legacy API.
+`deploy.sh --bootstrap` validates the staged service identity and snapshots the unit files it will replace before activation. It then creates both links, validates them, installs the new units, reloads systemd, starts/verifies the engine, and finally hands the API port from the active legacy unit to `apitoken-api@3000.service`. A failed handoff restores the original links, unit files, engine enabled/running state, and legacy API.
 
 ## Retention and cleanup
 

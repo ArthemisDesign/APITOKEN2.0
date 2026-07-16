@@ -119,6 +119,13 @@ ENGINE_SOURCE_STAGE=
 ENGINE_SOURCE_DIR=
 ENGINE_ORIGINAL=
 API_ORIGINAL=
+BOOTSTRAP_UNIT_BACKUP_DIR=
+BOOTSTRAP_ENGINE_UNIT_PRESENT=0
+BOOTSTRAP_API_UNIT_PRESENT=0
+BOOTSTRAP_UNITS_CAPTURED=0
+BOOTSTRAP_ENGINE_WAS_ACTIVE=0
+BOOTSTRAP_ENGINE_WAS_ENABLED=0
+BOOTSTRAP_API_WAS_ENABLED=0
 
 cleanup() {
   local path
@@ -282,6 +289,72 @@ recovery_restart_selected_services() {
   return "$failed"
 }
 
+capture_bootstrap_unit_files() {
+  local engine_unit="$SYSTEMD_UNIT_DIR/$ENGINE_SERVICE"
+  local api_template_unit="$SYSTEMD_UNIT_DIR/apitoken-api@.service"
+
+  [[ "$BOOTSTRAP" == "1" ]] || return 0
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "dry-run: would snapshot the existing engine and API template unit files before replacing them"
+    BOOTSTRAP_UNITS_CAPTURED=1
+    return 0
+  fi
+
+  BOOTSTRAP_UNIT_BACKUP_DIR="/run/apitoken-bootstrap-units.$$"
+  [[ ! -e "$BOOTSTRAP_UNIT_BACKUP_DIR" && ! -L "$BOOTSTRAP_UNIT_BACKUP_DIR" ]] \
+    || die "bootstrap unit backup path already exists: $BOOTSTRAP_UNIT_BACKUP_DIR"
+  privileged_command install -d -m 0700 -- "$BOOTSTRAP_UNIT_BACKUP_DIR"
+
+  if [[ -e "$engine_unit" || -L "$engine_unit" ]]; then
+    [[ -f "$engine_unit" && ! -L "$engine_unit" ]] || die "engine unit must be a regular file: $engine_unit"
+    privileged_command cp -a -- "$engine_unit" "$BOOTSTRAP_UNIT_BACKUP_DIR/claude-api.service"
+    BOOTSTRAP_ENGINE_UNIT_PRESENT=1
+  fi
+  if [[ -e "$api_template_unit" || -L "$api_template_unit" ]]; then
+    [[ -f "$api_template_unit" && ! -L "$api_template_unit" ]] || die "API template unit must be a regular file: $api_template_unit"
+    privileged_command cp -a -- "$api_template_unit" "$BOOTSTRAP_UNIT_BACKUP_DIR/apitoken-api@.service"
+    BOOTSTRAP_API_UNIT_PRESENT=1
+  fi
+  BOOTSTRAP_UNITS_CAPTURED=1
+  log "captured original bootstrap unit files under $BOOTSTRAP_UNIT_BACKUP_DIR"
+}
+
+remove_bootstrap_unit_backups() {
+  [[ -n "$BOOTSTRAP_UNIT_BACKUP_DIR" ]] || return 0
+  case "$BOOTSTRAP_UNIT_BACKUP_DIR" in
+    /run/apitoken-bootstrap-units."$$") ;;
+    *) warn "refusing to remove unexpected bootstrap unit backup path $BOOTSTRAP_UNIT_BACKUP_DIR"; return 1 ;;
+  esac
+  privileged_command rm -rf -- "$BOOTSTRAP_UNIT_BACKUP_DIR"
+  BOOTSTRAP_UNIT_BACKUP_DIR=
+}
+
+restore_bootstrap_unit_files() {
+  local engine_unit="$SYSTEMD_UNIT_DIR/$ENGINE_SERVICE"
+  local api_template_unit="$SYSTEMD_UNIT_DIR/apitoken-api@.service"
+  local failed=0
+
+  [[ "$BOOTSTRAP_UNITS_CAPTURED" == "1" ]] || return 0
+  if [[ "$BOOTSTRAP_ENGINE_UNIT_PRESENT" == "1" ]]; then
+    privileged_command cp -a -- "$BOOTSTRAP_UNIT_BACKUP_DIR/claude-api.service" "$engine_unit" || failed=1
+  else
+    privileged_command rm -f -- "$engine_unit" || failed=1
+  fi
+  if [[ "$BOOTSTRAP_API_UNIT_PRESENT" == "1" ]]; then
+    privileged_command cp -a -- "$BOOTSTRAP_UNIT_BACKUP_DIR/apitoken-api@.service" "$api_template_unit" || failed=1
+  else
+    privileged_command rm -f -- "$api_template_unit" || failed=1
+  fi
+  if systemctl_raw daemon-reload; then
+    log "recovery restored the original systemd unit files and reloaded systemd"
+  else
+    warn "recovery restored unit files but systemd daemon-reload failed"
+    failed=1
+  fi
+  remove_bootstrap_unit_backups || failed=1
+  return "$failed"
+}
+
 bootstrap_recovery_services() {
   local failed=0
 
@@ -292,10 +365,28 @@ bootstrap_recovery_services() {
     failed=1
   fi
   if systemctl_raw stop "$ENGINE_SERVICE"; then
-    log "recovery stopped $ENGINE_SERVICE because bootstrap restored an absent engine current link"
+    log "recovery stopped the bootstrap engine before restoring its original unit"
   else
     warn "recovery failed to stop $ENGINE_SERVICE"
     failed=1
+  fi
+  restore_bootstrap_unit_files || failed=1
+
+  if [[ "$BOOTSTRAP_ENGINE_WAS_ENABLED" == "1" ]]; then
+    systemctl_raw enable "$ENGINE_SERVICE" >/dev/null || failed=1
+  else
+    systemctl_raw disable "$ENGINE_SERVICE" >/dev/null || failed=1
+  fi
+  if [[ "$BOOTSTRAP_ENGINE_WAS_ACTIVE" == "1" ]]; then
+    if systemctl_raw start "$ENGINE_SERVICE" && wait_for_unit_active "$ENGINE_SERVICE" 10; then
+      log "recovery restored the pre-bootstrap engine service"
+    else
+      warn "recovery failed to restore the pre-bootstrap engine service"
+      failed=1
+    fi
+  fi
+  if [[ "$BOOTSTRAP_API_WAS_ENABLED" == "1" ]]; then
+    systemctl_raw enable "$API_SERVICE" >/dev/null || failed=1
   fi
   if systemctl_raw enable "$LEGACY_API_SERVICE"; then
     log "recovery enabled $LEGACY_API_SERVICE"
@@ -312,16 +403,6 @@ bootstrap_recovery_services() {
   return "$failed"
 }
 
-require_unit_active_now() {
-  local unit=$1
-  validate_service_unit "$unit"
-  if [[ "$DRY_RUN" == "1" ]]; then
-    log "dry-run: would immediately require $unit to be active"
-    return 0
-  fi
-  systemctl_raw is-active --quiet "$unit" || die "$unit is not active immediately after start/restart"
-}
-
 readiness_ok() {
   local ok=0
   if [[ "$DEPLOY_ENGINE" == "1" ]]; then
@@ -330,13 +411,23 @@ readiness_ok() {
   return "$ok"
 }
 
-install_bootstrap_units() {
+validate_bootstrap_unit_artifacts() {
+  [[ "$BOOTSTRAP" == "1" ]] || return 0
   if [[ "$DRY_RUN" != "1" ]]; then
     [[ -f "$COMMERCE_RELEASE/systemd/apitoken-api@.service" ]] || die "bootstrap API unit artifact is missing from release"
     [[ -f "$COMMERCE_RELEASE/systemd/claude-api.service" ]] || die "bootstrap engine unit artifact is missing from release"
+    getent passwd deploy >/dev/null || die "required service account does not exist: deploy"
+    getent group deploy >/dev/null || die "required service group does not exist: deploy"
+    grep -qx 'User=deploy' "$COMMERCE_RELEASE/systemd/claude-api.service" || die "bootstrap engine unit must run as User=deploy"
+    grep -qx 'Group=deploy' "$COMMERCE_RELEASE/systemd/claude-api.service" || die "bootstrap engine unit must run as Group=deploy"
+  else
+    log "dry-run: would require the deploy service account/group and validate the staged engine unit identity"
   fi
+}
+
+install_bootstrap_units() {
   privileged_command install -m 0644 -- "$COMMERCE_RELEASE/systemd/apitoken-api@.service" "$SYSTEMD_UNIT_DIR/apitoken-api@.service"
-  privileged_command install -m 0644 -- "$COMMERCE_RELEASE/systemd/claude-api.service" "$SYSTEMD_UNIT_DIR/claude-api.service"
+  privileged_command install -m 0644 -- "$COMMERCE_RELEASE/systemd/claude-api.service" "$SYSTEMD_UNIT_DIR/$ENGINE_SERVICE"
   systemctl_command daemon-reload
 }
 
@@ -349,13 +440,13 @@ bootstrap_services() {
   # process binds, so there is no flock/port overlap.
   systemctl_command enable "$ENGINE_SERVICE"
   restart_units "$ENGINE_SERVICE"
-  require_unit_active_now "$ENGINE_SERVICE"
+  wait_for_unit_active "$ENGINE_SERVICE" 10 || die "$ENGINE_SERVICE did not become active after restart"
   wait_for_release_service engine engine "$ENGINE_SERVICE" "$ENGINE_RELEASE_ROOT" "$ENGINE_RELEASE" "$ENGINE_READY_URL" "$READINESS_TIMEOUT"
 
   # The legacy API remains serving until both current links exist, validate, and systemd has reloaded.
   systemctl_command stop "$LEGACY_API_SERVICE"
   systemctl_command enable --now "$API_SERVICE"
-  require_unit_active_now "$API_SERVICE"
+  wait_for_unit_active "$API_SERVICE" 10 || die "$API_SERVICE did not become active after start"
   wait_for_release_service commerce-api api "$API_SERVICE" "$COMMERCE_RELEASE_ROOT" "$COMMERCE_RELEASE" "$API_READY_URL" "$READINESS_TIMEOUT"
   systemctl_command disable "$LEGACY_API_SERVICE"
 }
@@ -376,6 +467,9 @@ preflight_links() {
     [[ -z "$ENGINE_ORIGINAL" && -z "$API_ORIGINAL" ]] || die "--bootstrap requires both current links to be genuinely absent"
     if [[ "$DRY_RUN" != "1" ]]; then
       systemctl_raw is-active --quiet "$LEGACY_API_SERVICE" || die "$LEGACY_API_SERVICE must be active before bootstrap handoff"
+      systemctl_raw is-active --quiet "$ENGINE_SERVICE" && BOOTSTRAP_ENGINE_WAS_ACTIVE=1
+      systemctl_raw is-enabled --quiet "$ENGINE_SERVICE" && BOOTSTRAP_ENGINE_WAS_ENABLED=1
+      systemctl_raw is-enabled --quiet "$API_SERVICE" && BOOTSTRAP_API_WAS_ENABLED=1
     else
       log "dry-run: would require legacy unit $LEGACY_API_SERVICE active before handoff"
     fi
@@ -452,11 +546,13 @@ if [[ "$DRY_RUN" != "1" ]]; then
     validate_engine_release "$ENGINE_RELEASE_ROOT" "$ENGINE_RELEASE" "$SHA"
   fi
 fi
+validate_bootstrap_unit_artifacts
 
 # No staging path remains by the time activation traps replace the cleanup trap.
 cleanup
 trap - EXIT
 if [[ "$BOOTSTRAP" == "1" ]]; then
+  capture_bootstrap_unit_files
   begin_activation bootstrap_recovery_services
 else
   begin_activation recovery_restart_selected_services
@@ -473,6 +569,9 @@ else
 fi
 
 commit_activation
+if [[ "$BOOTSTRAP" == "1" && "$DRY_RUN" != "1" ]]; then
+  remove_bootstrap_unit_backups || warn "could not remove bootstrap unit backup directory; remove it manually after verification"
+fi
 if [[ "$DRY_RUN" == "1" ]]; then
   log "dry-run complete; no release, symlink, unit, service, lock, or database state changed"
 else

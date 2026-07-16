@@ -47,25 +47,30 @@ The bootstrap order is deliberate:
 5. build the engine in staging;
 6. validate required artifacts, write `.release-sha`, recursively remove write bits, and atomically rename both staging directories to their final SHA paths;
 7. run the migration with `node /opt/apitoken/releases/<sha>/packages/db/dist/migrate.js` under the fixed migration lock;
-8. install activation traps, create both `current` symlinks atomically, and validate them;
-9. only now install the symlink-based systemd unit files and run `daemon-reload`;
-10. enable/start the engine and require its exact unit and release to pass readiness;
-11. stop the still-running legacy API, enable/start `apitoken-api@3000.service`, immediately require that exact unit to be active, then require exact-release readiness;
-12. disable the legacy unit only after the template is healthy.
+8. validate that the staged engine unit uses the production `deploy` account and snapshot every unit file that bootstrap will replace;
+9. install activation traps, create both `current` symlinks atomically, and validate them;
+10. only now install the symlink-based systemd unit files and run `daemon-reload`;
+11. enable/start the engine, allow a bounded active-state transition, and require its exact unit and release to pass readiness;
+12. stop the still-running legacy API, enable/start `apitoken-api@3000.service`, allow a bounded active-state transition, then require exact-release readiness;
+13. disable the legacy unit only after the template is healthy.
 
-If any link change, unit installation, restart/start, exact-unit check, HTTP probe, or signal fails after activation begins, the trap restores every changed `current`/`previous` link. During bootstrap it also stops/disables the template API, stops the engine whose original `current` link was absent, and enables/restarts `apitoken-api.service`. Each failed restoration or recovery action is reported separately.
+If any link change, unit installation, restart/start, exact-unit check, HTTP probe, or signal fails after activation begins, the trap restores every changed `current`/`previous` link and every replaced systemd unit file before `daemon-reload`. During bootstrap it also stops/disables the template API, restores the engine's original enabled/running state, and enables/restarts `apitoken-api.service`. Each failed restoration or recovery action is reported separately.
 
 Manual recovery if automatic recovery is incomplete:
 
 ```bash
 sudo systemctl disable --now apitoken-api@3000.service
 sudo systemctl stop claude-api.service
+sudo cp /root/zdt-backups/<timestamp>/systemd/claude-api.service /etc/systemd/system/claude-api.service
+sudo systemctl daemon-reload
+sudo systemctl start claude-api.service
 sudo systemctl enable apitoken-api.service
 sudo systemctl restart apitoken-api.service
+sudo systemctl is-active claude-api.service
 sudo systemctl is-active apitoken-api.service
 ```
 
-Inspect the warnings from the failed bootstrap before retrying. Unit files may remain installed after a failed handoff, but they must not be started again until both `current` links are valid.
+Inspect the warnings from the failed bootstrap before retrying. Automatic recovery restores unit files from a root-owned temporary snapshot; the manual copy above is needed only if recovery explicitly reports that unit restoration failed.
 
 ## Normal deploy
 

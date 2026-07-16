@@ -8,8 +8,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=agents
-Group=agents
+User=deploy
+Group=deploy
 Environment=SUB_CFG_DIR=/srv/claude-api/data
 # Общий конфиг (модель/порт/пул) и ОТДЕЛЬНО секреты (ключи API):
 EnvironmentFile=-/srv/claude-api/data/config.env

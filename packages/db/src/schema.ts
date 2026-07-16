@@ -58,8 +58,8 @@ export const customerProfiles = pgTable("customer_profiles", {
   updatedAt,
 }, (table) => [
   check("customer_profiles_multiplier_check", sql`${table.multiplierBp} BETWEEN 0 AND 10000`),
-  // AUDIT-TODO(C71): run pnpm db:generate + migrate.
-  check("customer_profiles_tier_check", sql`${table.currentTier} IS NULL OR ${table.currentTier} BETWEEN 0 AND 4`),
+  // Expanded in 0008. Contract only in a later release after no deployed writer can emit tier 5.
+  check("customer_profiles_tier_check", sql`${table.currentTier} IS NULL OR ${table.currentTier} BETWEEN 0 AND 5`),
   check("customer_profiles_type_tier_check", sql`
     (${table.customerType} = 'b2c' AND ${table.currentTier} IS NOT NULL)
     OR (${table.customerType} = 'b2b' AND ${table.currentTier} IS NULL)

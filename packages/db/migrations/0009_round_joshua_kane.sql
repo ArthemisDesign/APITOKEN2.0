@@ -34,4 +34,6 @@ CREATE UNIQUE INDEX "engine_adjustments_payment_event_uidx" ON "engine_adjustmen
 CREATE UNIQUE INDEX "engine_adjustments_ref_uidx" ON "engine_adjustments" USING btree ("idempotency_ref");--> statement-breakpoint
 CREATE INDEX "engine_adjustments_payment_idx" ON "engine_adjustments" USING btree ("payment_id","created_at");--> statement-breakpoint
 CREATE INDEX "engine_adjustments_claim_idx" ON "engine_adjustments" USING btree ("status","next_attempt_at");--> statement-breakpoint
-ALTER TABLE "customer_profiles" ADD CONSTRAINT "customer_profiles_tier_check" CHECK ("customer_profiles"."current_tier" IS NULL OR "customer_profiles"."current_tier" BETWEEN 0 AND 4);
+-- Keep the 0008 expansion rollout-compatible. Contracting this constraint while an older
+-- application can still write tier 5 would make the migration unsafe for rolling deploys.
+ALTER TABLE "customer_profiles" ADD CONSTRAINT "customer_profiles_tier_check" CHECK ("customer_profiles"."current_tier" IS NULL OR "customer_profiles"."current_tier" BETWEEN 0 AND 5);
