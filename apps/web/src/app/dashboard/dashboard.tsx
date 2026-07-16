@@ -167,7 +167,7 @@ export function Dashboard() {
         {error && <div className="banner banner-error">{error} <button className="btn btn-ghost btn-sm" onClick={load}>{copy.retry}</button></div>}
         {logoutError && <div className="banner banner-error">{logoutError} <button className="btn btn-ghost btn-sm" disabled={loggingOut} onClick={logout}>{copy.retry}</button></div>}
         {section === "overview" && <Overview account={account} keys={activeKeys} open={open} />}
-        {section === "keys" && <ApiKeys keys={keys} onChanged={load} />}
+        {section === "keys" && <ApiKeys keys={keys} onChanged={load} open={open} />}
         {section === "credits" && <Credits account={account} ledger={ledger} />}
         {section === "usage" && <Usage account={account} ledger={ledger} usage={usage} />}
         {section === "support" && <SupportPanel />}
@@ -271,7 +271,7 @@ function PricingBanner({ account }: { account: AccountView }) {
   </section>;
 }
 
-function ApiKeys({ keys, onChanged }: { keys: ApiKeyView[]; onChanged(): Promise<void> }) {
+function ApiKeys({ keys, onChanged, open }: { keys: ApiKeyView[]; onChanged(): Promise<void>; open(section: Section): void }) {
   const copy = useDashboardCopy();
   const { language } = useI18n();
   const localCopy = localDashboardCopy[language];
@@ -322,7 +322,7 @@ function ApiKeys({ keys, onChanged }: { keys: ApiKeyView[]; onChanged(): Promise
     .sort((left, right) => Number(left.status !== "active") - Number(right.status !== "active"));
   const emptyMessage = filter === "active" ? localCopy.noActiveKeys : filter === "disabled" ? localCopy.noDisabledKeys : copy.noKeys;
   return <section className="panel"><PageHeading eyebrow={copy.keysEyebrow} title={copy.keysTitle} subtitle={copy.keysSubtitle} />
-    {issued && <aside className="card secret-card" aria-labelledby="issued-key-title"><div className="secret-head"><h2 id="issued-key-title">{copy.copyNewKeyNow}</h2><span className="chip">{copy.shownOnce}</span></div><p className="secret-warning">{copy.rawSecretWarning}</p><div className="secret-key-field"><code>{issued}</code><CopyButton value={issued} className="secret-copy" /></div><div className="secret-actions"><Link className="btn btn-primary btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{copy.openInDocs}</Link><button className="btn btn-ghost btn-sm" onClick={() => setIssued(null)}>{copy.savedKey}</button></div></aside>}
+    {issued && <aside className="card secret-card" aria-labelledby="issued-key-title"><div className="secret-head"><h2 id="issued-key-title">{copy.copyNewKeyNow}</h2><span className="chip">{copy.shownOnce}</span></div><p className="secret-warning">{copy.rawSecretWarning}</p><div className="secret-key-field"><code>{issued}</code><CopyButton value={issued} className="secret-copy" /></div><div className="secret-actions"><Link className="btn btn-primary btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{copy.openInDocs}</Link><button className="btn btn-ghost btn-sm" onClick={() => open("support")}>{copy.keysHelpCta}</button><button className="btn btn-ghost btn-sm" onClick={() => setIssued(null)}>{copy.savedKey}</button></div></aside>}
     <section className="dsec"><div className="dsec-head"><h2>{copy.universalKeys}</h2><div className="key-create"><input className="set-in" value={label} onChange={(event) => setLabel(event.target.value)} maxLength={64} placeholder={copy.optionalLabel} /><button className="btn btn-primary btn-sm" disabled={busy} onClick={create}>＋ {copy.newKey}</button></div></div>{error && <div className="banner banner-error">{error}</div>}
       <div className="tc-presets" role="group" aria-label={localCopy.filterLabel}>
         {(["active", "disabled", "all"] as const).map((status) => <button key={status} type="button" className={`tc-preset ${filter === status ? "on" : ""}`} aria-pressed={filter === status} onClick={() => setFilter(status)}><b>{status === "active" ? localCopy.activeFilter : status === "disabled" ? localCopy.disabledFilter : localCopy.allFilter}</b><span>{counts[status]}</span></button>)}
@@ -336,6 +336,11 @@ function ApiKeys({ keys, onChanged }: { keys: ApiKeyView[]; onChanged(): Promise
           {key.status === "active" ? <><Link className="btn btn-ghost btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{copy.docsShort}</Link><button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => revoke(key.id)}>{copy.revoke}</button></> : <button className="btn btn-ghost btn-sm" disabled>{copy.docsShort}</button>}
         </div>
       </div>)}</div>
+      <div className="keys-help">
+        <span className="keys-help-ic" aria-hidden="true"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9.4 9.4 0 0 1-3.4-.6L3 21l1.3-4a8.2 8.2 0 0 1-1-4A8.4 8.4 0 0 1 12 4a8.4 8.4 0 0 1 9 7.5Z" /></svg></span>
+        <div className="keys-help-txt"><b>{copy.keysHelpTitle}</b><span>{copy.keysHelpText}</span></div>
+        <button className="btn btn-ghost btn-sm" onClick={() => open("support")}>{copy.keysHelpCta}</button>
+      </div>
     </section>
   </section>;
 }

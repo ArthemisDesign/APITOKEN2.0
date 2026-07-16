@@ -814,6 +814,16 @@ footer{padding:64px 0 40px;border-bottom:0}
 .keys{display:flex;flex-direction:column;gap:12px}
 .keyrow{background:var(--bg-card);border:1px solid var(--line);border-radius:var(--radius);
   padding:17px 18px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px 18px;align-items:center}
+/* «Помочь подключить ключ» — тонкая акцентная плашка внизу секции ключей */
+.keys-help{display:flex;align-items:center;gap:15px;margin-top:16px;padding:15px 18px;
+  border:1px solid var(--accent-line);border-radius:10px;background:var(--accent-soft)}
+.keys-help-ic{width:38px;height:38px;border-radius:10px;flex:none;display:grid;place-items:center;
+  color:var(--accent);background:var(--bg-card);border:1px solid var(--accent-line)}
+.keys-help-txt{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}
+.keys-help-txt b{font-family:var(--font-mono);font-size:14px;color:var(--txt)}
+.keys-help-txt span{font-family:var(--font-mono);font-size:12.5px;color:var(--txt-3);line-height:1.45}
+.keys-help .btn{flex:none}
+@media(max-width:640px){.keys-help{flex-wrap:wrap}.keys-help-txt{flex-basis:70%}.keys-help .btn{width:100%;justify-content:center}}
 .keyrow .kval{grid-column:1/2;min-width:0;font-family:var(--font-mono);font-size:15px;font-weight:700;line-height:1.4;color:var(--txt);overflow-wrap:anywhere}
 .keyrow .kmeta{grid-column:1/2;min-width:0;display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font-family:var(--font-mono);font-size:12px;color:var(--txt-3)}
 .keyrow .kmeta code{font-family:var(--font-mono);font-size:12px;color:var(--accent);overflow-wrap:anywhere}
