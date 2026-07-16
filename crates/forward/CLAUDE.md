@@ -17,15 +17,16 @@
 ключ НЕ форвардит `/v1` (не админ, не метерный → 401). `AsyncBilling` расширен control-командами
 (`create_account`/`issue_key`/`account_status`/`key_status_by_id`) через ТОТ ЖЕ single-writer (без гонок).
 Pricing sync uses the same actors: multiplier writes go through the writer and cursor ledger reads
-through a reader; HTTP code never opens SQLite directly.
+through a reader; HTTP code never opens the authority directly.
 
 **Биллинг (async, `billing.rs` + tee-метеринг `meter.rs`):** авторизация (`authorize`, async):
 env-админ проверяется ПЕРВЫМ в памяти; иначе клиентский ключ → `key_account` (JOIN ключ→аккаунт)
 → баланс АККАУНТА (≤0 → 402). Баланс/резерв/наценка — на аккаунте (общий на все ключи юзера).
-Все DB-операции идут через `AsyncBilling` (DB-акторы: 1 writer + N readers, синхронный SQLite на
-выделенных потоках, НЕ на async-воркерах). На УСПЕШНЫЙ ответ тело → `TeeMeter`, на завершении стрима
-usage → `metering::apply_multiplier` → `settle_detached` (fire-and-forget через writer; RAII-возврат
-из синхронного Drop без блокировки). Резерв под баланс с урезанием `max_tokens` (`cap_to_balance`)
+Все DB-операции идут через `AsyncBilling` (DB-акторы: 1 writer + N readers; sync PostgreSQL/legacy
+SQLite живут на выделенных потоках, НЕ на async-воркерах). Generated request ID создаётся до reserve;
+успешная доставка помечается durable до передачи стрима; finalize кладёт idempotent settlement в
+outbox, а writer retry-ит до commit. RAII cancel закрывает именно этот request ID. Резерв под баланс
+с урезанием `max_tokens` (`cap_to_balance`)
 → клиент не получит ни токена/цента сверх баланса. 4xx/ошибки/ротация НЕ тарифицируются.
 
 **Что внутри:** `ProxyConfig`, `AppState`, `Clients` (кэш http-клиентов по прокси),

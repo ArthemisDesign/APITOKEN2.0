@@ -16,7 +16,7 @@ packages/payments        DigiSeller/Cryptomus adapters and normalized payment co
 ```
 
 The applications are independently deployable. They share packages at build time, but neither
-imports code from the Rust crates or opens the engine SQLite database.
+imports code from the Rust crates or opens the engine PostgreSQL database/SQLite migration snapshot.
 
 ## Local setup
 

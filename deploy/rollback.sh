@@ -15,6 +15,7 @@ usage() {
     '' \
     'Options:' \
     '  --engine-only       Roll back and probe only the Rust engine' \
+    '  --engine-bluegreen  Select only the engine rollback release; cut over slots separately' \
     '  --api-only          Select only the commerce API rollback release for blue-green cutover' \
     '  --timeout SECONDS   Readiness deadline per service (default: 60)' \
     '  --dry-run           Print changes without swapping or restarting' \
@@ -24,6 +25,7 @@ usage() {
 DRY_RUN=0
 ROLLBACK_ENGINE=1
 ROLLBACK_API=1
+RESTART_ENGINE=1
 READINESS_TIMEOUT=${READINESS_TIMEOUT_SECONDS:-60}
 SHA=
 MODE_SELECTED=
@@ -35,6 +37,14 @@ while [[ $# -gt 0 ]]; do
       ROLLBACK_ENGINE=1
       ROLLBACK_API=0
       MODE_SELECTED=engine
+      shift
+      ;;
+    --engine-bluegreen)
+      [[ -z "$MODE_SELECTED" ]] || die "rollback modes are mutually exclusive"
+      ROLLBACK_ENGINE=1
+      ROLLBACK_API=0
+      RESTART_ENGINE=0
+      MODE_SELECTED=engine-bluegreen
       shift
       ;;
     --api-only)
@@ -78,6 +88,7 @@ COMMERCE_RELEASE_ROOT=$(canonicalize_release_root "${COMMERCE_RELEASE_ROOT:-/opt
 ENGINE_RELEASE_ROOT=$(canonicalize_release_root "${ENGINE_RELEASE_ROOT:-/srv/claude-api/releases}" /srv/claude-api engine)
 DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}
 ENGINE_READY_URL=${ENGINE_READY_URL:-http://127.0.0.1:8787/ready}
+ENGINE_POSTGRES_ENV=${ENGINE_POSTGRES_ENV:-/srv/claude-api/data/engine-postgres.env}
 ENGINE_SERVICE=${ENGINE_SERVICE:-claude-api.service}
 
 validate_service_unit "$ENGINE_SERVICE"
@@ -88,14 +99,14 @@ API_ORIGINAL=
 API_TARGET=
 
 restart_selected_services() {
-  if [[ "$ROLLBACK_ENGINE" == "1" ]]; then
+  if [[ "$ROLLBACK_ENGINE" == "1" && "$RESTART_ENGINE" == "1" ]]; then
     restart_units "$ENGINE_SERVICE"
   fi
 }
 
 recovery_restart_selected_services() {
   local failed=0
-  if [[ "$ROLLBACK_ENGINE" == "1" ]]; then
+  if [[ "$ROLLBACK_ENGINE" == "1" && "$RESTART_ENGINE" == "1" ]]; then
     best_effort_restart_units "$ENGINE_SERVICE" || failed=1
   fi
   return "$failed"
@@ -103,7 +114,7 @@ recovery_restart_selected_services() {
 
 readiness_ok() {
   local ok=0
-  if [[ "$ROLLBACK_ENGINE" == "1" ]]; then
+  if [[ "$ROLLBACK_ENGINE" == "1" && "$RESTART_ENGINE" == "1" ]]; then
     wait_for_release_service engine engine "$ENGINE_SERVICE" "$ENGINE_RELEASE_ROOT" "$ENGINE_TARGET" "$ENGINE_READY_URL" "$READINESS_TIMEOUT" || ok=1
   fi
   return "$ok"
@@ -178,8 +189,12 @@ activate_rollback_links() {
   fi
 }
 
-log "rolling back immutable releases (engine=$ROLLBACK_ENGINE api=$ROLLBACK_API dry-run=$DRY_RUN)"
+log "rolling back immutable releases (engine=$ROLLBACK_ENGINE engine-restart=$RESTART_ENGINE api=$ROLLBACK_API dry-run=$DRY_RUN)"
 acquire_deploy_lock "$DEPLOY_LOCK_FILE"
+if [[ "$ROLLBACK_ENGINE" == "1" && "$RESTART_ENGINE" == "1" ]] \
+  && privileged_command test -s "$ENGINE_POSTGRES_ENV"; then
+  die "PostgreSQL engine slots are active; use --engine-bluegreen, then engine-bluegreen.sh"
+fi
 
 # Full preflight for every selected component happens before any current/previous link mutation.
 if [[ "$ROLLBACK_ENGINE" == "1" ]]; then
@@ -200,8 +215,11 @@ commit_activation
 if [[ "$DRY_RUN" == "1" ]]; then
   log "dry-run complete; no symlink, service, lock, or database state changed"
 else
-  if [[ "$ROLLBACK_ENGINE" == "1" ]]; then
+  if [[ "$ROLLBACK_ENGINE" == "1" && "$RESTART_ENGINE" == "1" ]]; then
     log "engine rollback completed and its exact unit serves the requested release"
+  elif [[ "$ROLLBACK_ENGINE" == "1" ]]; then
+    log "engine rollback release selected by releases/current; engine slots were not restarted"
+    log "run $SCRIPT_DIR/engine-bluegreen.sh to cut the PostgreSQL engine over without downtime"
   fi
   if [[ "$ROLLBACK_API" == "1" ]]; then
     log "commerce rollback release selected by releases/current; API slots were not restarted"

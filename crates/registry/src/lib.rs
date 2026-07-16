@@ -1,11 +1,14 @@
 //! # registry — реестр подписок (пункт 1)
 //!
-//! Источник истины пула: таблица `subs` в SQLite. Для форвардинг-прокси подписке нужны
+//! Источник истины пула: engine-owned PostgreSQL. SQLite remains a migration/rollback source. Для форвардинг-прокси подписке нужны
 //! только OAuth-токен + прокси (+ статус/флот). Токен берётся из колонки `token` (inline)
 //! либо из файла `token_file`. Совместим с исторической subscriptions.db (мягкая миграция).
 //!
-//! **Границы крейта:** только хранение/чтение подписок. НИКАКОЙ сети, HTTP, логики пула.
-//! Зависит лишь от rusqlite/anyhow. Ниже по стеку зависеть не от кого.
+//! **Границы крейта:** только хранение/чтение подписок. НИКАКОЙ HTTP/логики пула.
+//! Ниже по стеку зависеть не от кого.
+
+pub mod pg;
+pub mod authority;
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
@@ -933,6 +936,8 @@ pub struct PoolStateRow {
     pub reset5h: i64,
     pub reset7d: i64,
     pub calib_n: i64,
+    /// PostgreSQL CAS version. SQLite compatibility rows use zero.
+    pub version: i64,
 }
 
 /// Сохранить снимок состояния пула (upsert по email). Одной транзакцией — атомарно и быстро.
@@ -972,6 +977,7 @@ pub fn load_pool_state(conn: &Connection) -> Result<Vec<PoolStateRow>> {
         reset5h: r.get(7)?,
         reset7d: r.get(8)?,
         calib_n: r.get(9)?,
+        version: 0,
     }))?;
     Ok(rows.filter_map(|x| x.ok()).collect())
 }
@@ -1014,6 +1020,7 @@ mod tests {
         let rows = vec![PoolStateRow {
             email: "a@x.io".into(), cooling_until: 123456, cap5h_usd: 50.0, cap7d_usd: 1500.0,
             spent_total_usd: 12.5, util5h: 0.3, util7d: 0.1, reset5h: 999, reset7d: 888, calib_n: 4,
+            version: 0,
         }];
         save_pool_state(&c, &rows).unwrap();
         // повторный save (upsert) не дублирует и обновляет

@@ -6,6 +6,9 @@ use std::{env, net::IpAddr};
 
 pub struct Settings {
     pub db_path: String,
+    /// Engine-owned PostgreSQL DSN. When set, SQLite is migration/rollback input only.
+    pub database_url: Option<String>,
+    pub instance_id: String,
     pub bind: String,
     pub fleet: Option<String>,
     pub billing: bool,       // включён ли учёт баланса ключей (таблица api_keys)
@@ -121,6 +124,13 @@ impl Settings {
             format!("{home}/.config/claude-api")
         });
         let db_path = ev("SUBS_DB").unwrap_or_else(|| format!("{cfg_dir}/subscriptions.db"));
+        let database_url = ev("CLAUDE_API_DATABASE_URL");
+        let instance_id = ev("CLAUDE_API_INSTANCE_ID").unwrap_or_else(|| {
+            let host = ev("HOSTNAME").unwrap_or_else(|| "engine".into());
+            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos()).unwrap_or(0);
+            format!("{host}:{}:{ts:x}", std::process::id())
+        });
         let host = ev_or("CLAUDE_API_HOST", "0.0.0.0");
         let port = ev_or("CLAUDE_API_PORT", "8787");
         // Доверять loopback-админу — ТОЛЬКО при явном opt-in `CLAUDE_API_TRUST_LOOPBACK=1` И реальном
@@ -155,6 +165,8 @@ impl Settings {
         // AUDIT-TODO(C33): продублировать этот инвариант в Control API account creation перед persistence.
         Settings {
             db_path,
+            database_url,
+            instance_id,
             bind: format!("{host}:{port}"),
             fleet: ev("SUBS_FLEET").filter(|f| f != "all"),
             billing: ev_bool("CLAUDE_API_BILLING", true),

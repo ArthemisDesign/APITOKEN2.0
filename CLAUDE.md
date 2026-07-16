@@ -18,7 +18,7 @@
 `packages/*`. Он отвечает за будущих пользователей, платежи, вебхуки и связь user→engine account.
 Он **не входит** в Rust-цепочку `registry ← pool ← forward ← server` и не импортирует Rust-крейты.
 
-- Коммерческий код не открывает `subscriptions.db` и не пишет баланс напрямую.
+- Коммерческий код не открывает engine PostgreSQL/SQLite и не пишет баланс напрямую.
 - Единственная граница коммерция→движок — HTTP Control API из `CONTROL_API.md`.
 - `apps/api` и `apps/worker` независимо деплоятся; общую логику кладём в `packages/*`.
 - Коммерческая PostgreSQL хранит людей/платежи/доставку событий, но НЕ авторитетный live-баланс.
@@ -49,7 +49,7 @@ registry  ←  pool  ←  forward  ←  server(bin)
 
 | Крейт | Отвечает за | МОЖЕТ зависеть от | НЕ ДЕЛАЕТ |
 |---|---|---|---|
-| `crates/registry` | реестр подписок в SQLite (пункт 1) | rusqlite, anyhow | сеть, HTTP, env, логика пула |
+| `crates/registry` | engine PostgreSQL authority + SQLite importer | postgres, rusqlite, anyhow | HTTP, env, логика пула |
 | `crates/pool` | пул + ротация (in-memory) | registry | сеть, HTTP, БД, env |
 | `crates/forward` | прозрачный форвардинг /v1/*, поллер лимитов | pool, registry, axum, reqwest | чтение env, CLI, управляющие роуты |
 | `crates/server` | КОМПОЗИЦИЯ: env-конфиг, CLI, роутер, фоновые циклы | forward, pool, registry | бизнес-логику форвардинга (она в forward) |

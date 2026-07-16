@@ -22,17 +22,17 @@ const LEDGER_PRUNE_INTERVAL: u64 = 6 * 3600;
 /// Фоновая обрезка ledger под масштаб: удаляем bulk-строки списаний старше `retention_days`
 /// (topup/adjust не трогаем). Синхронный SQLite → на blocking-пул. При 1000 юзеров бережёт БД от
 /// раздувания журналом per-request-списаний, не теряя ни текущих сумм, ни истории пополнений.
-pub async fn ledger_prune_loop(db_path: String, retention_days: i64) {
+pub async fn ledger_prune_loop(authority: registry::authority::AuthorityConfig, retention_days: i64) {
     if retention_days <= 0 { return; } // 0/отриц. → обрезка выключена
     loop {
         tokio::time::sleep(Duration::from_secs(LEDGER_PRUNE_INTERVAL)).await;
         let cutoff = pool::now() - retention_days * 86400;
-        let db = db_path.clone();
+        let db = authority.clone();
         let res = tokio::task::spawn_blocking(move || {
-            registry::open(&db).and_then(|c| {
-                let led = registry::ledger_prune(&c, cutoff)?;
+            db.connect().and_then(|mut c| {
+                let led = c.ledger_prune(cutoff)?;
                 // usage_events (аналитика) — та же ретенция, чтобы таблица не росла вечно.
-                let usg = registry::usage_prune(&c, cutoff).unwrap_or(0);
+                let usg = c.usage_prune(cutoff).unwrap_or(0);
                 Ok((led, usg))
             })
         }).await;
@@ -109,13 +109,14 @@ fn next_probe_at(email: &str, live: &pool::Live) -> i64 {
 /// Перечитывание реестра: подхватываем добавленные/убранные подписки. Спит 30с (локальная БД,
 /// дёшево), но будит поллер `poke` ТОЛЬКО когда набор реально изменился (онбординг новой подписки
 /// не ждёт liveness-таймера).
-pub async fn reload_loop(app: AppState, db_path: String, fleet: Option<String>, poke: Arc<Notify>) {
+pub async fn reload_loop(app: AppState, authority: registry::authority::AuthorityConfig,
+                         fleet: Option<String>, poke: Arc<Notify>) {
     let mut prev: HashSet<String> = HashSet::new();
     loop {
         // синхронный SQLite → на blocking-пул, чтобы не держать async-воркер (пусть и на 30с редко)
-        let (db, fl) = (db_path.clone(), fleet.clone());
+        let (db, fl) = (authority.clone(), fleet.clone());
         let loaded = tokio::task::spawn_blocking(move || {
-            registry::open(&db).and_then(|c| registry::load_active(&c, fl.as_deref()))
+            db.connect().and_then(|mut c| c.load_active(fl.as_deref()))
         }).await.unwrap_or_else(|e| Err(anyhow::anyhow!("reload task panicked: {e}")));
         match loaded {
             Err(e) => eprintln!("⚠ reload реестра не удался (держим прежний список): {e}"),
@@ -203,39 +204,97 @@ const PERSIST_SAFETY: u64 = 120;
 /// Коалесцируем всплеск cooling-событий перед записью (сек).
 const PERSIST_DEBOUNCE: u64 = 1;
 
+/// Persist with bounded CAS rebasing so overlapping blue/green engines converge instead of one
+/// writer either overwriting the other or retrying forever from a stale version.
+pub async fn persist_state_cas(
+    app: &AppState,
+    authority: &registry::authority::AuthorityConfig,
+    owner: Option<&registry::pg::Owner>,
+    attempts: usize,
+) -> anyhow::Result<()> {
+    let attempts = attempts.max(1);
+    let mut last_error = String::from("pool-state persistence did not run");
+    for attempt in 0..attempts {
+        let rows = app.pool.export_state();
+        if rows.is_empty() { return Ok(()); }
+        let config = authority.clone();
+        let write_owner = owner.cloned();
+        let saved = tokio::task::spawn_blocking(move || {
+            let mut conn = config.connect()?;
+            let versions = conn.save_pool_state(write_owner.as_ref(), &rows)?;
+            let _ = conn.wal_checkpoint();
+            Ok::<_, anyhow::Error>(versions)
+        }).await;
+        match saved {
+            Ok(Ok(versions)) => {
+                app.pool.accept_persist_versions(&versions);
+                return Ok(());
+            }
+            Ok(Err(err)) => last_error = err.to_string(),
+            Err(err) => last_error = format!("pool-state writer task failed: {err}"),
+        }
+
+        if attempt + 1 == attempts { break; }
+        let config = authority.clone();
+        match tokio::task::spawn_blocking(move || {
+            config.connect().and_then(|mut conn| conn.load_pool_state())
+        }).await {
+            Ok(Ok(rows)) => app.pool.merge_persisted_state(rows),
+            Ok(Err(err)) => last_error = format!("{last_error}; CAS rebase failed: {err}"),
+            Err(err) => last_error = format!("{last_error}; CAS rebase task failed: {err}"),
+        }
+        tokio::time::sleep(Duration::from_millis(50 * (attempt as u64 + 1))).await;
+    }
+    Err(anyhow::anyhow!(last_error))
+}
+
 /// Персист состояния пула: **write-through по событию** cooling (`poke` из `pool.on_change`) —
 /// бан переживает рестарт почти сразу; плюс редкий safety-flush для калибровки. Не фиксированный
 /// снапшот «раз в N»: под тишиной (нет cooling) пишем лишь раз в `PERSIST_SAFETY`.
-pub async fn persist_loop(app: AppState, db_path: String, poke: Arc<Notify>) {
+pub async fn persist_loop(app: AppState, authority: registry::authority::AuthorityConfig,
+                          owner: Option<registry::pg::Owner>, poke: Arc<Notify>) {
     loop {
         tokio::select! {
             _ = poke.notified() => { tokio::time::sleep(Duration::from_secs(PERSIST_DEBOUNCE)).await; }
             _ = tokio::time::sleep(Duration::from_secs(PERSIST_SAFETY)) => {}
         }
-        let rows = app.pool.export_state();
-        if rows.is_empty() { continue; }
-        // durability реальна только если запись прошла — сбои НЕ глотаем (иначе бан не переживёт рестарт).
-        // Синхронный SQLite → на blocking-пул (не держим async-воркер во время записи).
-        let db = db_path.clone();
-        let res = tokio::task::spawn_blocking(move || {
-            registry::open(&db).and_then(|conn| {
-                registry::save_pool_state(&conn, &rows)?;
-                let _ = registry::wal_checkpoint(&conn); // страховка от роста WAL (best-effort)
-                Ok(())
-            })
-        }).await;
-        match res {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => eprintln!("⚠ персист состояния пула не удался: {e}"),
-            Err(e) => eprintln!("⚠ персист: задача упала: {e}"),
+        // Durability is real only after a successful fenced write. PostgreSQL overlap may produce
+        // a legitimate CAS conflict, so reload/merge/retry immediately instead of losing a cooling.
+        if let Err(e) = persist_state_cas(&app, &authority, owner.as_ref(), 5).await {
+            eprintln!("⚠ персист состояния пула не удался после CAS retry: {e}");
         }
     }
 }
 
 /// Событийный liveness-поллер: probe-ит созревшие подписки конкурентно, затем спит РОВНО до
 /// ближайшего due-времени (или до `poke` при изменении флота). Фиксированного тика нет.
-pub async fn poll_loop(app: AppState, poke: Arc<Notify>) {
+pub async fn poll_loop(app: AppState, authority: registry::authority::AuthorityConfig,
+                       owner: Option<registry::pg::Owner>, poke: Arc<Notify>) {
     loop {
+        // PostgreSQL lease-epoch elects exactly one active poller. No Redlock and no best-effort race.
+        if let Some(owner) = owner.as_ref() {
+            let config = authority.clone();
+            let owner = owner.clone();
+            let leader = tokio::task::spawn_blocking(move || {
+                let mut db = config.connect()?;
+                db.postgres()?.acquire_leader(&owner, "subscription-poller", 30)
+            }).await.unwrap_or_else(|e| Err(anyhow::anyhow!("poller leader task failed: {e}")));
+            match leader {
+                Ok(true) => {}
+                Ok(false) => {
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(10)) => {}
+                        _ = poke.notified() => {}
+                    }
+                    continue;
+                }
+                Err(err) => {
+                    eprintln!("⚠ poller leader lease unavailable: {err}");
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+            }
+        }
         let now = pool::now();
         let snap = app.pool.snapshot();
         let due: Vec<Sub> = snap.iter()
@@ -255,10 +314,46 @@ pub async fn poll_loop(app: AppState, poke: Arc<Notify>) {
 
         // спим до ближайшего due (событийно), но не дольше MAX_SLEEP; будимся раньше по `poke`.
         let next = app.pool.snapshot().iter().map(|(s, l)| next_probe_at(&s.email, l)).min().unwrap_or(now + MAX_SLEEP);
-        let sleep_s = (next - pool::now()).clamp(1, MAX_SLEEP);
+        let max_sleep = if owner.is_some() { 10 } else { MAX_SLEEP };
+        let sleep_s = (next - pool::now()).clamp(1, max_sleep);
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(sleep_s as u64)) => {}
             _ = poke.notified() => {}
+        }
+    }
+}
+
+/// Renew the monotonic instance epoch. A fenced/stale process flips readiness before it can accept
+/// further work; PostgreSQL transactions independently reject its money/capacity mutations.
+pub async fn owner_heartbeat_loop(
+    authority: registry::authority::AuthorityConfig,
+    owner: registry::pg::Owner,
+    authority_ready: Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
+    loop {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        let config = authority.clone();
+        let current = owner.clone();
+        let renewed = tokio::task::spawn_blocking(move || {
+            let mut db = config.connect()?;
+            db.heartbeat_instance(&current, 30)
+        }).await;
+        match renewed {
+            Ok(Ok(true)) => authority_ready.store(true, Ordering::Release),
+            Ok(Ok(false)) => {
+                eprintln!("🛑 engine owner epoch fenced; readiness removed");
+                authority_ready.store(false, Ordering::Release);
+                return;
+            }
+            Ok(Err(err)) => {
+                authority_ready.store(false, Ordering::Release);
+                eprintln!("⚠ engine owner heartbeat failed; readiness removed until recovery: {err}");
+            }
+            Err(err) => {
+                authority_ready.store(false, Ordering::Release);
+                eprintln!("⚠ engine owner heartbeat task failed; readiness removed: {err}");
+            }
         }
     }
 }

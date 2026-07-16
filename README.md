@@ -3,7 +3,7 @@
 Пул обычных подписок Claude (Max/Pro) отдаётся по сети как **API, неотличимый от
 `api.anthropic.com`**. Наводишь любой Anthropic-клиент (SDK, `curl`, стороннее приложение) на
 этот сервер — а под капотом запрос идёт **на квоте подписки из пула**, с ротацией по лимитам.
-Никакого платного Anthropic API. Один бинарь на Rust, без внешних сервисов.
+Никакого платного Anthropic API. Один бинарь на Rust и engine-owned PostgreSQL authority.
 
 ```
    Клиент (Anthropic SDK / curl)                POST /v1/messages  (наш api-key)
@@ -32,7 +32,7 @@ production-хосты и эксплуатация — [`INFRASTRUCTURE.md`](INFR
 
 | Крейт | Роль | Ветка-владелец |
 |---|---|---|
-| `crates/registry` | **Реестр подписок** (SQLite `subs`): email, OAuth-токен, прокси, статус, флот | `comp/registry` |
+| `crates/registry` | **PostgreSQL authority**: subscriptions, money reservations/outbox, capacity leases, epochs | `comp/registry` |
 | `crates/pool` | **Пул + ротация**: выбор наименее загруженной, cooling при 429, состояние лимитов | `comp/pool` |
 | `crates/forward` | **Прозрачный форвардинг** `/v1/*`: инжект identity, поллер лимитов, ротация, стрим | `comp/forward` |
 | `crates/server` | **Композиция** (bin `claude-api`): env-конфиг, CLI, роутер `/health`+`/pool`, фоновые циклы | `comp/server` |
@@ -52,7 +52,8 @@ cargo build --release          # → target/release/claude-api
 Идентификатор — email. Подписке нужны только **OAuth-токен + прокси** (свой IP на аккаунт).
 
 ```bash
-export SUB_CFG_DIR=/srv/claude-api/data      # где лежит subscriptions.db
+export SUB_CFG_DIR=/srv/claude-api/data      # local config/SQLite migration snapshot
+export CLAUDE_API_DATABASE_URL=postgresql://.../claude_engine
 
 # добавить подписку (inline-токен или файл с токеном):
 claude-api sub add account-a@example.com --token 'sk-ant-oat01-…' --proxy http://user:pass@1.2.3.4:8080 --fleet prod
@@ -77,7 +78,8 @@ claude-api sub set-plan account-a@example.com max20  # задать вручну
 > `user:inference` — тогда профиль отвечает `403` и авто-детект даёт `noscope`. Тариф в этом
 > случае ставится вручную (`set-plan`) или подтянется после перелогина токена (scope `user:profile`).
 
-БД совместима с исторической `subscriptions.db` (недостающие колонки доливаются мягкой миграцией).
+Историческая `subscriptions.db` импортируется guarded-командой Stage 2; active money authority —
+role-isolated PostgreSQL. Import refuses anonymous in-flight holds and verifies balance aggregates.
 
 ## Запуск сервера
 

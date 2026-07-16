@@ -1,9 +1,19 @@
 api.apitoken.sale {
 	@public_core path /v1/* /health /balance
 	handle @public_core {
-		reverse_proxy 127.0.0.1:8787 {
+		reverse_proxy 127.0.0.1:8787 127.0.0.1:8788 {
+			lb_policy round_robin
 			lb_try_duration 2s
 			lb_try_interval 100ms
+
+			health_uri /ready
+			health_interval 2s
+			health_timeout 2s
+			health_status 2xx
+
+			fail_duration 5s
+			max_fails 1
+			unhealthy_status 503
 		}
 	}
 	respond 404
@@ -36,7 +46,15 @@ panel.apitoken.sale {
 	}
 	@data path /overview /capacity /metrics /subs
 	handle @data {
-		reverse_proxy 127.0.0.1:8787 {
+		reverse_proxy 127.0.0.1:8787 127.0.0.1:8788 {
+			lb_policy round_robin
+			health_uri /ready
+			health_interval 2s
+			health_timeout 2s
+			health_status 2xx
+			fail_duration 5s
+			max_fails 1
+			unhealthy_status 503
 			header_up x-api-key "<CONTROL_KEY_PLACEHOLDER>"
 		}
 	}

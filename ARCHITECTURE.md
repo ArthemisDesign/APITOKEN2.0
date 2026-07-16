@@ -40,8 +40,8 @@
 └───────────────┬────────────────────────────────────────────┘
                 ▼
 ┌────────────────────────────────────────────────────────────┐
-│ registry  — реестр подписок в SQLite (пункт 1)             │
-│   Sub · open · load_active · add/list/rm/set_*              │
+│ registry  — engine-owned PostgreSQL authority              │
+│   reservations/outbox · capacity leases · epochs · CRUD    │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -68,8 +68,20 @@
 - **Ротация до стрима** — статус ответа проверяется до отдачи тела, поэтому переключение подписок
   при 429/5xx не рвёт клиентский стрим.
 - **env только в server** — нижние слои чисто-функциональны и тестируемы без окружения.
+- **PostgreSQL — durable authority.** Generated request IDs own exact reservation rows. Settlement
+  first lands in a durable outbox, then atomically closes that exact reservation, updates the account,
+  and inserts a charge unique on `(kind, request_id)`. SQLite is retained only as the guarded import
+  source and rollback-era audit snapshot.
+- **Fencing, not distributed hope.** Every engine process holds a monotonic PostgreSQL owner epoch;
+  stale epochs cannot reserve money, persist pool state, or acquire capacity. Subscription admission
+  is one transaction (cooldown/utilization/inflight validation + lease + increment). Polling uses one
+  PostgreSQL lease-epoch leader; there is no Redlock path.
+- **Proven overlap gate.** Real-PostgreSQL fault injection and a two-owner end-to-end test gate the
+  blue/green path. PostgreSQL mode may overlap two engine slots because money, delivery, capacity,
+  pool writes, and poller leadership are fenced. SQLite fallback still takes the OS singleton lock.
 
-Детали конфигурации — `config.env.example` / `server.env.example`. Деплой — `systemd/claude-api.service`.
+Детали конфигурации — `config.env.example` / `server.env.example`. Деплой —
+`systemd/claude-api@.service` + `deploy/engine-bluegreen.sh` (legacy cutover unit remains one-time only).
 
 ## Коммерческий контур (отдельно от движка)
 
@@ -86,8 +98,9 @@ Browser identity определяется только opaque server-side сес
 сессии живут в commerce PostgreSQL, подробности — `AUTHENTICATION.md`.
 `apps/worker` забирает durable credit jobs из PostgreSQL через `FOR UPDATE SKIP LOCKED` и
 идемпотентно вызывает `/admin/account/{id}/credit`. Общие схемы/репозитории/клиент движка находятся
-в `packages/contracts`, `packages/db`, `packages/engine-client`. Коммерческий контур никогда не
-читает SQLite движка напрямую; полная карта — `COMMERCIAL_BACKEND.md`.
+в `packages/contracts`, `packages/db`, `packages/engine-client`. Коммерческие приложения не получают
+engine DSN и не имеют прямого DB-кода; они общаются с движком только через Control API. Полная карта —
+`COMMERCIAL_BACKEND.md`.
 Dashboard routes read authoritative balances, ledger rows and per-key spend through the Control API.
 Key creation returns the usable secret once; later revocation uses a stable non-secret engine `key_id`.
 B2C/B2B pricing state lives in commerce PostgreSQL; the worker synchronizes its multiplier to the

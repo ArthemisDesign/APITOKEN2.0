@@ -63,9 +63,12 @@ Rollback is state-aware rather than a blind reverse restart. Before pre-drain, t
 
 A `503` returned by a normal proxied request is recorded by the passive health checker, but that response has already been produced and is not safely replayed as an arbitrary POST. The readiness-first drain and wait in steps 4-5 are therefore required; passive health and dial retries are a race cushion, not a replacement for orderly draining.
 
-## Engine restart cushion and SSE
+## Engine blue-green and SSE
 
-`api.apitoken.sale` intentionally remains single-upstream on `127.0.0.1:8787`. Engine blue-green deployment is not enabled in this stage.
+`api.apitoken.sale` and the operator-panel proxy use health-gated engine slots on
+`127.0.0.1:8787` and `127.0.0.1:8788`. Caddy probes `/ready`; `engine-bluegreen.sh` admits the new
+slot, sends `SIGUSR1` to make the old slot return 503 readiness, waits for depooling, then sends
+SIGTERM so established streams drain under the systemd deadline.
 
 The 2-second `lb_try_duration` and 100 ms `lb_try_interval` hold and retry a newly arriving request when the loopback dial fails during a brief engine restart/bind gap. Dial failures are retryable for every HTTP method because the connection was never established and the request was not transmitted. The configuration does not broaden Caddy's default rule for failures after a connection was established, so POST bodies are not unsafely replayed after a partial round trip.
 
@@ -73,7 +76,8 @@ The retry window applies only while Caddy is selecting and connecting to an upst
 
 - a successful long-lived SSE response may run far longer than 2 seconds;
 - Caddy recognizes `Content-Type: text/event-stream` and flushes SSE writes immediately by default, so no `flush_interval` override is needed;
-- if the engine process dies after an SSE stream is established, that stream still disconnects and must be re-established by the client/application protocol; the cushion protects new requests during the bind gap, not already-established streams.
+- an orderly blue-green drain leaves an established SSE on the old process until completion;
+- an ungraceful process death still disconnects that stream and requires client/application retry.
 
 The public engine matcher remains restricted to `/v1/*`, `/health`, and `/balance`; all other paths on `api.apitoken.sale` return `404`.
 

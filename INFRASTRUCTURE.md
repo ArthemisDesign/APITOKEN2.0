@@ -9,7 +9,8 @@ the repository. Production secrets live in root-readable files below `/etc/apito
 ```text
 api.apitoken.sale --------------------------> commercial host 84.32.48.2 (Chicago)
                                                 | reverse proxy
-                                                `-> Rust core on 127.0.0.1:8787 (claude-api.service)
+                                                |-> Rust core slot 127.0.0.1:8787
+                                                `-> Rust core slot 127.0.0.1:8788
 
 future browser at apitoken.sale
         |
@@ -17,6 +18,8 @@ future browser at apitoken.sale
                                                 |-> NestJS API on 127.0.0.1:3000
                                                 |-> payment/email/pricing worker
                                                 `-> PostgreSQL 18 on 127.0.0.1:5433
+                                                    |-> commerce DB/role
+                                                    `-> claude_engine DB/isolated role
 
 commercial host -- encrypted Borg/SSH --> 84.32.109.82:2223/backup/.repo
 ```
@@ -26,13 +29,15 @@ commercial host -- encrypted Borg/SSH --> 84.32.109.82:2223/backup/.repo
 commercial API. The Rust engine remains authoritative for API keys, balances, reservations and
 usage. The commercial PostgreSQL database owns users, authentication, payment state, B2C/B2B
 pricing state and durable jobs. The commercial services access the engine only through its Control
-API at `http://127.0.0.1:8787`. The legacy core host is not an upstream or fallback in this topology.
+API through Caddy's health-gated engine slots. The legacy core host is not an upstream or fallback.
 
 The Rust engine ran on an interim host (`5.9.59.83`, shared with an unrelated project) until it was
-migrated onto this commercial host on 2026-07-14. The engine now runs here as `claude-api.service`
-(plus `claude-authbot.service` and the `claude-api-backup.timer`) under the `deploy` user, with its
-registry at `/srv/claude-api/data/subscriptions.db` and its own secrets at
-`/srv/claude-api/data/{server.env,config.env,authbot.env}` (separate from the commercial
+migrated onto this commercial host on 2026-07-14. The engine now runs here as `claude-api@8787` or
+`claude-api@8788` (plus `claude-authbot.service` and the `claude-api-backup.timer`) under the
+`deploy` user, with its
+authority in the isolated PostgreSQL `claude_engine` database; the drained SQLite snapshot remains
+at `/srv/claude-api/data/subscriptions.db`. Its secrets live at
+`/srv/claude-api/data/{server.env,config.env,authbot.env,engine-postgres.env}` (separate from the commercial
 `/etc/apitoken/*.env`). The interim host keeps a cold copy of the pre-migration data as a rollback
 point but no longer runs any product unit. The `claude-api-fingerprint.timer` is intentionally not
 enabled here yet (it needs a live `claude` CLI on the host); the fingerprint values in `config.env`
@@ -103,8 +108,10 @@ systemd/apitoken-postgres.service
 systemd/apitoken-api.service          legacy untemplated API unit
 systemd/apitoken-api@.service         release-symlink API unit; instance name is the port
 systemd/apitoken-worker.service
-systemd/claude-api.service
+systemd/claude-api.service          one-time SQLite-to-PostgreSQL bridge
+systemd/claude-api@.service         PostgreSQL-fenced blue/green slots
 deploy/deploy.sh
+deploy/engine-bluegreen.sh
 deploy/rollback.sh
 deploy/commerce-postgres.compose.yaml
 ```
@@ -112,9 +119,8 @@ deploy/commerce-postgres.compose.yaml
 Normal operations:
 
 ```bash
-sudo systemctl status apitoken-postgres apitoken-api@3000 apitoken-worker claude-api
-sudo systemctl restart apitoken-api@3000 apitoken-worker claude-api
-sudo journalctl -u apitoken-api@3000 -u apitoken-worker -u claude-api --since today
+sudo systemctl status apitoken-postgres apitoken-api@3000 apitoken-worker 'claude-api@*'
+sudo journalctl -u apitoken-api@3000 -u apitoken-worker -u 'claude-api@*' --since today
 sudo systemctl status caddy
 sudo caddy validate --config /etc/caddy/Caddyfile
 ```
@@ -190,7 +196,8 @@ The default deploy prepares and activates both components. Deploy the Rust engin
 independently when only one changed:
 
 ```bash
-deploy/deploy.sh --engine-only <tested-sha>
+deploy/deploy.sh --engine-bluegreen <tested-sha>
+deploy/engine-bluegreen.sh
 deploy/deploy.sh --api-only <tested-sha>
 ```
 
@@ -207,10 +214,10 @@ Application rollback never reverses migrations, so production migrations must re
 backward-compatible.
 
 Activation atomically repoints `/opt/apitoken/releases/current` and/or
-`/srv/claude-api/releases/current`, restarts only the selected application unit, and readiness-gates the
-release with `http://127.0.0.1:3000/v1/ready` and `http://127.0.0.1:8787/ready`. A readiness timeout
-restores the recorded previous symlink and restarts the affected unit. Manual rollback uses
-`deploy/rollback.sh [--api-only|--engine-only] [<sha>]` and never touches the database.
+`/srv/claude-api/releases/current`. The blue-green controllers start and exact-unit gate the inactive
+target, health-admit it through Caddy, pre-drain the old slot, and only then stop it. Manual rollback
+uses `deploy/rollback.sh --engine-bluegreen|--api-only [<sha>]` followed by the matching controller;
+it never touches database state.
 
 **Never restart `apitoken-postgres.service` as part of an application deploy or rollback.** PostgreSQL
 is an independent stateful service; application units may be restarted without bouncing the database.
@@ -235,12 +242,12 @@ origins. The Vercel frontend contains no Control API or payment-provider secrets
 
 ## Work still requiring external configuration
 
-- Migrate and start the Rust core on `127.0.0.1:8787`; no legacy-core fallback is configured.
+- Add external health monitoring for both public routes and PostgreSQL authority readiness.
 - Configure SMTP on a separate mail host.
 - Add Google and GitHub OAuth application credentials.
 - Add Cryptomus credentials and test its deployed webhook.
 - Import `apps/web` into Vercel, attach `apitoken.sale`, and update the apex DNS using the exact
   records Vercel provides for the project.
 - Add external monitoring/alert delivery and an independent second backup location.
-- Before multiple Rust engine nodes share subscriptions, implement centralized durable subscription
-  ownership/leases; never share the engine SQLite database over NFS.
+- Before cross-host active/active, move PostgreSQL to synchronous multi-AZ service and add an external
+  health-checked load balancer; never share the retained SQLite snapshot over NFS.

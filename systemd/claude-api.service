@@ -14,6 +14,8 @@ Environment=SUB_CFG_DIR=/srv/claude-api/data
 # Общий конфиг (модель/порт/пул) и ОТДЕЛЬНО секреты (ключи API):
 EnvironmentFile=-/srv/claude-api/data/config.env
 EnvironmentFile=-/srv/claude-api/data/server.env
+# Activated only by the guarded Stage-2 cutover. Root-owned 0600 because it contains the DB role secret.
+EnvironmentFile=-/srv/claude-api/data/engine-postgres.env
 ExecStart=/srv/claude-api/releases/current/claude-api serve
 Restart=on-failure
 RestartSec=3

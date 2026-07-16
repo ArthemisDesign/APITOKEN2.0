@@ -1,19 +1,15 @@
-# Консистентный бэкап money-БД (VACUUM INTO) с ротацией. Запускается таймером (см. .timer).
-# Восстановление: systemctl stop claude-api; cp <снимок> /srv/claude-api/data/subscriptions.db;
-#   rm -f /srv/claude-api/data/subscriptions.db-wal /srv/claude-api/data/subscriptions.db-shm;
-#   systemctl start claude-api
+# Consistent custom-format dumps of commerce and (when provisioned) engine PostgreSQL databases.
 [Unit]
-Description=claude-api — консистентный бэкап БД (VACUUM INTO + ротация)
-After=network.target
+Description=claude-api — consistent PostgreSQL backup
+Requires=docker.service
+After=docker.service network.target
 
 [Service]
 Type=oneshot
-User=deploy
-Group=deploy
-Environment=SUB_CFG_DIR=/srv/claude-api/data
-ExecStart=/srv/claude-api/releases/current/claude-api backup --out /srv/claude-api/data/backups --keep 48
-# hardening: пишет только в data/
+User=root
+Group=root
+ExecStart=/opt/apitoken/repo/deploy/apitoken-db-dump
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/srv/claude-api/data
+ReadWritePaths=/var/lib/apitoken/backups

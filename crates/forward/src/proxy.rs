@@ -24,6 +24,7 @@ use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::Ordering as AtomicOrdering;
 use std::task::{Context, Poll};
 
 /// Гард слота конкуррентности персоны. На ЛЮБОМ не-стриминговом исходе попытки (ошибка/ротация/4xx)
@@ -32,15 +33,27 @@ use std::task::{Context, Poll};
 /// Без этого гарда `mark_used(+1)` при отмене НЕ откатывался бы → inflight персоны копится до рестарта.
 struct InflightGuard {
     pool: Arc<pool::Pool>,
+    billing: Option<Arc<crate::billing::AsyncBilling>>,
+    capacity_lease_id: Option<String>,
     email: String,
     armed: bool,
 }
 impl InflightGuard {
-    fn new(pool: Arc<pool::Pool>, email: String) -> Self { Self { pool, email, armed: true } }
+    fn new(pool: Arc<pool::Pool>, billing: Option<Arc<crate::billing::AsyncBilling>>,
+           capacity_lease_id: Option<String>, email: String) -> Self {
+        Self { pool, billing, capacity_lease_id, email, armed: true }
+    }
     fn disarm(&mut self) { self.armed = false; }
 }
 impl Drop for InflightGuard {
-    fn drop(&mut self) { if self.armed { self.pool.mark_done(&self.email); } }
+    fn drop(&mut self) {
+        if self.armed {
+            self.pool.mark_done(&self.email);
+            if let (Some(billing), Some(lease_id)) = (&self.billing, &self.capacity_lease_id) {
+                billing.release_capacity(lease_id);
+            }
+        }
+    }
 }
 
 /// Гард резерва баланса. На любом не-успешном исходе И при отмене запроса возвращает удержанный
@@ -51,6 +64,7 @@ struct HoldGuard {
     account_id: String,
     key: String,
     hold: i64,
+    request_id: String,
     armed: bool,
 }
 impl HoldGuard {
@@ -61,7 +75,9 @@ impl Drop for HoldGuard {
         if self.armed {
             // возврат резерва на аккаунт (actual=0 → ledger-charge не пишется). Drop синхронен —
             // шлём АСИНХРОННО через актор (settle_detached: mpsc::send не блокирует, не требует await).
-            if let Some(b) = &self.billing { b.settle_detached(&self.account_id, &self.key, self.hold, 0, None, None); }
+            if let Some(b) = &self.billing {
+                b.settle_detached(&self.request_id, &self.account_id, &self.key, self.hold, 0, None, None);
+            }
         }
     }
 }
@@ -442,6 +458,9 @@ pub async fn forward(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     req: axum::extract::Request,
 ) -> Response {
+    if !app.authority_ready.load(AtomicOrdering::Acquire) {
+        return err_retry(StatusCode::SERVICE_UNAVAILABLE, "api_error", "billing authority unavailable", 2);
+    }
     // ГЛОБАЛЬНЫЙ анти-DoS потолок: занимаем слот ДО авторизации (иначе флуд неверными ключами насытил
     // бы пул DB-читателей мимо fair-share). Держится до конца обработки; стрим ответа его уже не занимает
     // (Response возвращается — permit дропается). Переполнение → 503 с Retry-After (клиент откатится).
@@ -555,7 +574,10 @@ pub async fn forward(
     // отрубает генерацию ровно на доступном токене (stop_reason: max_tokens). Вход считаем по ВЕРХНЕЙ
     // оценке (полные байты × cache_write_1h — токенов ≤ байт при любой корзине). Затем атомарно
     // резервируем потолок при УРЕЗАННОМ max_tokens (≤ баланса), фактику закрываем settle в finalize.
-    let mut reserved: Option<(String, String, i64)> = None; // (account_id, key, hold)
+    // One stable internal ID spans reservation, all upstream attempts, settlement, and capacity leases.
+    // It is generated before any money mutation and is never replaced by an upstream audit header.
+    let engine_request_id = crate::upstream::fresh_request_id();
+    let mut reserved: Option<(String, String, String, i64)> = None; // (request_id, account_id, key, hold)
     // Резервируем ТОЛЬКО под POST /v1/messages — единственный биллинговый эндпоинт. `count_tokens` и
     // `GET /v1/models` бесплатны у Anthropic; для них резерв (по MAX-тарифу пустой модели) мог бы 402-ить
     // клиента с малым балансом на бесплатном листинге/подсчёте — а настоящий API их отдаёт независимо.
@@ -586,8 +608,8 @@ pub async fn forward(
             }
         }
         // РЕЗЕРВ по АККАУНТУ (общий баланс на все ключи юзера); гонки атомарны на уровне аккаунта.
-        match billing.reserve(account_id, hold).await {
-            Some(_) => reserved = Some((account_id.clone(), key.clone(), hold)),
+        match billing.reserve_request(&engine_request_id, account_id, key, hold).await {
+            Some(_) => reserved = Some((engine_request_id.clone(), account_id.clone(), key.clone(), hold)),
             None => return err_response(StatusCode::PAYMENT_REQUIRED, "invalid_request_error",
                                         "insufficient balance for this request — top up your key"),
         }
@@ -595,8 +617,9 @@ pub async fn forward(
     // Гард резерва: на любом не-успешном исходе И при отмене запроса вернёт hold клиенту. Создаём
     // ДО пересборки тела — если она упадёт и мы вернёмся, Drop гарда вернёт hold (без утечки).
     // Разоружим на успехе — там hold закрывает tee-метеринг. Снимает утечку денег при disconnect.
-    let mut hold_guard = reserved.as_ref().map(|(acct, k, h)| HoldGuard {
-        billing: app.billing.clone(), account_id: acct.clone(), key: k.clone(), hold: *h, armed: true,
+    let mut hold_guard = reserved.as_ref().map(|(request_id, acct, k, h)| HoldGuard {
+        billing: app.billing.clone(), account_id: acct.clone(), key: k.clone(), hold: *h,
+        request_id: request_id.clone(), armed: true,
     });
     let version = parts.headers.get("anthropic-version")
         .and_then(|v| v.to_str().ok()).unwrap_or(&app.cfg.anthropic_version).to_string();
@@ -660,10 +683,24 @@ pub async fn forward(
         }
         attempt += 1;
         tried.insert(sub.email.clone());
+        // The in-memory choice is only a candidate. PostgreSQL performs the authoritative atomic
+        // cooldown/utilization/inflight validation and increments capacity in the same transaction.
+        let capacity_lease_id = format!("{}:{attempt}", engine_request_id);
+        let capacity_lease = if let Some(billing) = &app.billing {
+            billing.acquire_capacity(
+                &capacity_lease_id, &engine_request_id, &sub.email, 3600,
+                pool::MAX_INFLIGHT, app.cfg.util_cap,
+            ).await
+        } else { None };
+        if app.billing.is_some() && capacity_lease.is_none() {
+            continue;
+        }
         app.pool.mark_used(&sub.email);
         // Гард слота: закроет in-flight на ЛЮБОМ выходе из итерации (continue/return/ОТМЕНА запроса).
         // Разоружим только на успехе (слот перейдёт стриму). mark_cooling/mark_healthy in-flight не трогают.
-        let mut guard = InflightGuard::new(app.pool.clone(), sub.email.clone());
+        let mut guard = InflightGuard::new(
+            app.pool.clone(), app.billing.clone(), capacity_lease.map(|l| l.lease_id), sub.email.clone(),
+        );
 
         let client = match app.clients.get(&sub.proxy, &sub.email) {
             Ok(c) => c,
@@ -686,7 +723,7 @@ pub async fn forward(
             // Реальный CC шлёт его на каждый запрос; синтезируем от session-ключа.
             .header("x-claude-code-session-id", crate::upstream::persona_session_id(&sub.email, session))
             // x-client-request-id — случайный per-request uuid (реальный CC шлёт на каждый запрос).
-            .header("x-client-request-id", crate::upstream::fresh_request_id());
+            .header("x-client-request-id", &engine_request_id);
         if !beta.is_empty() { rb = rb.header("anthropic-beta", &beta); }
         rb = crate::upstream::apply_persona_headers(rb, &app.cfg); // x-app + x-stainless-* + accept + browser-access
         for (name, value) in parts.headers.iter() {
@@ -816,13 +853,34 @@ pub async fn forward(
         // конкуррентности. 4xx не меряем — резерв возвращаем, слот освобождаем сразу.
         let meter = if st.is_success() {
             app.pool.mark_healthy(&sub.email);
+            if let (Some((request_id, account_id, key, hold)), Some(billing)) =
+                (reserved.as_ref(), app.billing.as_ref())
+            {
+                if !billing.mark_delivering(request_id, 3600).await {
+                    // The provider accepted the request, but the durable delivery marker was fenced.
+                    // Preserve the approved hold and fail closed instead of handing out untracked usage.
+                    billing.settle_detached(
+                        request_id, account_id, key, *hold, *hold,
+                        Some("delivery-marker-failed"), None,
+                    );
+                    if let Some(g) = hold_guard.as_mut() { g.disarm(); }
+                    return err_retry(
+                        StatusCode::SERVICE_UNAVAILABLE, "api_error",
+                        "billing authority unavailable", 2,
+                    );
+                }
+            }
+            let capacity = match (&guard.billing, &guard.capacity_lease_id) {
+                (Some(billing), Some(lease_id)) => Some((billing.clone(), lease_id.clone())),
+                _ => None,
+            };
             guard.disarm();                                   // слот переходит стриму (end_stream)
             if let Some(g) = hold_guard.as_mut() { g.disarm(); } // hold закроет tee-метеринг фактикой
             let bill = match (&authz, reserved.take()) {
-                (Authz::Metered { mult_bp, .. }, Some((acct, key, hold))) =>
+                (Authz::Metered { mult_bp, .. }, Some((request_id, acct, key, hold))) =>
                     app.billing.clone().map(|billing| BillCtx {
                         billing, account_id: acct, key, mult_bp: *mult_bp, hold,
-                        request_id: request_id_of(&resp),
+                        request_id, reference: request_id_of(&resp),
                     }),
                 _ => None,
             };
@@ -832,6 +890,7 @@ pub async fn forward(
                 model: model.clone(),
                 is_sse: is_event_stream(&resp),
                 bill,
+                capacity,
             })
         } else {
             // клиентская 4xx: подписка ни при чём. Слот закроет guard, резерв — hold_guard (на return).

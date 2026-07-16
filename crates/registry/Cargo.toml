@@ -2,11 +2,12 @@
 name = "registry"
 version = "0.1.0"
 edition = "2021"
-description = "Реестр Claude-подписок (SQLite) — источник истины пула"
+description = "Engine-owned PostgreSQL registry with a SQLite migration source"
 
 [lib]
 path = "src/lib.rs"
 
 [dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
+postgres = "0.19"
 anyhow = "1"

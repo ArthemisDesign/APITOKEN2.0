@@ -37,7 +37,11 @@ The database package is built in staging. Deployment never calls the package's `
 └── previous -> /srv/claude-api/releases/<prior-sha>
 ```
 
-`claude-api.service` starts `/srv/claude-api/releases/current/claude-api serve`. Exact-unit readiness verifies that its `MainPID` executable resolves to the binary in the requested SHA. The unit's SIGTERM drain behavior and `TimeoutStopSec=600` remain unchanged, so activation does not weaken in-flight stream draining.
+After the one-time database cutover, `claude-api@8787.service` and `claude-api@8788.service` start
+`/srv/claude-api/releases/current/claude-api serve` with fixed port/instance identities. Exact-unit
+readiness verifies the target `MainPID` executable. A running old slot retains its already-resolved
+immutable binary after `current` moves; `engine-bluegreen.sh` admits the target before draining it.
+`claude-api.service` exists only as the bridge through the first SQLite-to-PostgreSQL cutover.
 
 ## Link validity
 
@@ -72,12 +76,15 @@ When the target differs from `current`:
 
 1. the original `current` becomes `previous` when one exists;
 2. a temporary symlink is atomically moved over `current`;
-3. a selected engine unit is restarted;
-4. exact engine-unit binding and HTTP readiness must both pass; commerce selection leaves both API slots untouched for `api-bluegreen.sh`.
+3. legacy engine mode may restart one unit; PostgreSQL mode leaves both engine slots untouched;
+4. `engine-bluegreen.sh` or `api-bluegreen.sh` exact-unit gates the inactive target before pre-drain.
 
 If the target already equals `current`, neither `current` nor `previous` is rewritten. This preserves the real prior rollback target during a same-SHA deploy or no-op rollback.
 
-On any activation error or signal, recovery restores every changed link to its individually captured original target or original absence, in reverse mutation order, then restarts affected engine services best-effort. Failures are reported per link and per service. Engine recovery traps are disabled only after the exact unit is active, bound to the requested release, and HTTP-ready. Commerce release selection never restarts a slot; `api-bluegreen.sh` owns its health-gated cutover.
+On any link-selection error or signal, recovery restores every changed link to its captured state.
+Slot controllers add their own availability-first recovery: before admission they preserve the old
+process; after admission they retain the verified new one. Neither PostgreSQL engine nor commerce
+selection restarts a serving slot.
 
 Database migrations are intentionally outside rollback. They must remain additive and backward-compatible with the prior application release.
 

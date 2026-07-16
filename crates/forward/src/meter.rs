@@ -23,7 +23,10 @@ pub struct BillCtx {
     pub key: String,
     pub mult_bp: i64,
     pub hold: i64, // зарезервированный при допуске потолок — закрываем его фактической стоимостью
-    pub request_id: Option<String>,
+    /// Internal, generated before reservation; the exactly-once money identity.
+    pub request_id: String,
+    /// Upstream Anthropic request-id retained only as audit metadata.
+    pub reference: Option<String>,
 }
 
 /// Что нужно, чтобы обработать один успешный ответ на завершении стрима. Делаем ВСЕГДА
@@ -35,6 +38,8 @@ pub struct MeterCtx {
     pub model: String,
     pub is_sse: bool,
     pub bill: Option<BillCtx>,
+    /// Durable capacity lease transferred from the attempt guard to the response stream.
+    pub capacity: Option<(Arc<AsyncBilling>, String)>,
 }
 
 /// Копим до 32 МиБ тела для парсинга usage. Реальный ответ (даже 128k output) — сильно меньше;
@@ -98,6 +103,9 @@ impl TeeMeter {
         // стрим завершён/оборван → освободить слот конкуррентности персоны (парен с mark_used).
         // Делаем ПЕРВЫМ и безусловно, даже если usage пустой (иначе in-flight подтёк бы).
         ctx.pool.end_stream(&ctx.email);
+        if let Some((billing, lease_id)) = &ctx.capacity {
+            billing.release_capacity(lease_id);
+        }
         let (usage, served_model, incomplete_non_sse, us_inference) = if ctx.is_sse {
             let s = String::from_utf8_lossy(&self.acc);
             // ошибка ВНУТРИ стрима после 200 (overloaded посреди генерации) — HTTP-код её не отражал,
@@ -196,11 +204,12 @@ impl TeeMeter {
             // finalize СИНХРОНЕН (Stream::poll / Drop) → шлём списание АСИНХРОННО через актор
             // (settle_detached не блокирует). Гарантия: осиротевшее при краше вернёт reconcile.
             b.billing.settle_detached(
+                &b.request_id,
                 &b.account_id,
                 &b.key,
                 b.hold,
                 charge_i64,
-                b.request_id.as_deref(),
+                b.reference.as_deref(),
                 usage_event,
             );
             if charge_i64 > 0 {

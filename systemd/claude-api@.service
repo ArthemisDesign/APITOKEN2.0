@@ -1,0 +1,31 @@
+# PostgreSQL-fenced engine slot. Instance name is the loopback port (8787 or 8788).
+[Unit]
+Description=claude-api PostgreSQL engine slot on port %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+Environment=SUB_CFG_DIR=/srv/claude-api/data
+EnvironmentFile=-/srv/claude-api/data/config.env
+EnvironmentFile=-/srv/claude-api/data/server.env
+EnvironmentFile=/srv/claude-api/data/engine-postgres.env
+# Slot identity/port must override any legacy values in the shared environment files.
+Environment=CLAUDE_API_PORT=%i
+Environment=CLAUDE_API_INSTANCE_ID=%H:engine:%i
+ExecStart=/srv/claude-api/releases/current/claude-api serve
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=600
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/srv/claude-api/data
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

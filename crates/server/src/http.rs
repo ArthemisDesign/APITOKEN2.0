@@ -287,9 +287,10 @@ async fn subs(
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response();
     }
     if let Some(v) = cache_get(&SUBS_CACHE) { return Json(v).into_response(); }
-    let db = app.db_path.as_ref().clone();
+    let authority = app.authority.as_ref().clone();
+    let db = app.data_db_path.as_ref().clone();
     let (rows, maxes) = tokio::task::spawn_blocking(move || {
-        let rows = registry::open(&db).and_then(|c| registry::subs_admin(&c)).unwrap_or_default();
+        let rows = authority.connect().and_then(|mut c| c.subs_admin()).unwrap_or_default();
         // пиковая ёмкость по подписке за всю дистанцию (durable sub_peaks в metrics.db)
         let mdir = std::path::Path::new(&db).parent()
             .map(|d| d.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
@@ -331,19 +332,20 @@ async fn health() -> Json<serde_json::Value> {
     Json(json!({ "ok": true }))
 }
 
-fn readiness_snapshot(accepting: &AtomicBool) -> (StatusCode, serde_json::Value) {
-    if accepting.load(Ordering::Acquire) {
+fn readiness_snapshot(accepting: &AtomicBool, authority_ready: &AtomicBool) -> (StatusCode, serde_json::Value) {
+    if accepting.load(Ordering::Acquire) && authority_ready.load(Ordering::Acquire) {
         (StatusCode::OK, json!({ "ready": true }))
     } else {
+        let reason = if !accepting.load(Ordering::Acquire) { "draining" } else { "authority_unavailable" };
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            json!({ "ready": false, "reason": "draining" }),
+            json!({ "ready": false, "reason": reason }),
         )
     }
 }
 
 async fn ready(State(state): State<HttpState>) -> Response {
-    let (status, body) = readiness_snapshot(&state.accepting);
+    let (status, body) = readiness_snapshot(&state.accepting, &state.app.authority_ready);
     (status, Json(body)).into_response()
 }
 
@@ -412,17 +414,27 @@ mod tests {
     #[test]
     fn readiness_flag_flips_before_drain() {
         let accepting = AtomicBool::new(true);
+        let authority_ready = AtomicBool::new(true);
         assert_eq!(
-            readiness_snapshot(&accepting),
+            readiness_snapshot(&accepting, &authority_ready),
             (StatusCode::OK, json!({"ready": true}))
         );
 
         accepting.store(false, Ordering::Release);
         assert_eq!(
-            readiness_snapshot(&accepting),
+            readiness_snapshot(&accepting, &authority_ready),
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({"ready": false, "reason": "draining"}),
+            )
+        );
+        accepting.store(true, Ordering::Release);
+        authority_ready.store(false, Ordering::Release);
+        assert_eq!(
+            readiness_snapshot(&accepting, &authority_ready),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"ready": false, "reason": "authority_unavailable"}),
             )
         );
     }

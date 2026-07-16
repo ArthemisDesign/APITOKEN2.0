@@ -1,6 +1,6 @@
 # Production deploy controller
 
-These scripts build immutable SHA-addressed releases, move release links atomically, and activate processes with exact-systemd-unit readiness gates. A normal commerce deploy is deliberately two-phase: `deploy.sh` finalizes/migrates/selects the release without touching API processes, then `api-bluegreen.sh` owns the slot lifecycle and zero-downtime cutover. They never restart PostgreSQL, never write into a finalized release, and never treat an arbitrary HTTP 2xx on the expected port as proof that the selected unit started.
+These scripts build immutable SHA-addressed releases, move release links atomically, and activate processes with exact-systemd-unit readiness gates. Commerce and PostgreSQL-backed engine deploys are two-phase: `deploy.sh` selects the release without touching their serving slots, then the matching blue-green controller owns admission, pre-drain, and shutdown. They never restart PostgreSQL, never write into a finalized release, and never treat an arbitrary HTTP 2xx on the expected port as proof that the selected unit started.
 
 Run them on the production host as the `deploy` operator from `/opt/apitoken/repo`, with narrowly scoped `sudo` access for application-unit and unit-file operations.
 
@@ -9,11 +9,18 @@ Run them on the production host as the `deploy` operator from `/opt/apitoken/rep
 | Component | Immutable release | Active unit | Readiness probe |
 |---|---|---|---|
 | Commerce API | `/opt/apitoken/releases/<sha>` | `apitoken-api@3000.service` / `apitoken-api@3001.service` | `http://127.0.0.1:<port>/v1/ready` |
-| Rust engine | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api.service` | `http://127.0.0.1:8787/ready` |
+| Rust engine | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api@8787.service` / `claude-api@8788.service` | `http://127.0.0.1:<port>/ready` |
 | Commerce worker | `/opt/apitoken/repo` (mutable Git checkout; not `releases/current`) | `apitoken-worker.service` | managed separately |
 | PostgreSQL | `/var/lib/apitoken/postgres` | `apitoken-postgres.service` | forbidden to these scripts |
 
-`deploy.sh` activates the Rust engine but only prepares and selects a commerce API release. `api-bluegreen.sh` alone starts, signals, and stops normal commerce API slots; `--with-worker` may separately restart the repository-based worker. Any service name containing `postgres` is rejected before work begins, including through environment overrides.
+The engine owns a separate `claude_engine` database and non-superuser login role in this PostgreSQL
+server. Commerce application units receive no engine DSN and continue to communicate only through
+the Control API.
+
+After the Stage-2 database cutover, use `deploy.sh --engine-bluegreen` followed by
+`engine-bluegreen.sh`; legacy restart mode refuses to run while the PostgreSQL credential is active.
+`api-bluegreen.sh` similarly owns commerce slots; `--with-worker` may separately restart the
+repository-based worker. Any service name containing `postgres` is rejected before work begins.
 
 ## One-time prerequisites
 
@@ -74,22 +81,38 @@ Inspect the warnings from the failed bootstrap before retrying. Automatic recove
 
 ## Normal deploy
 
-Always supply the full SHA of a commit that has already passed integrated build and test:
-
-```bash
-deploy/deploy.sh --dry-run <sha>
-deploy/deploy.sh <sha>
-deploy/api-bluegreen.sh --dry-run
-deploy/api-bluegreen.sh
-```
-
-The last two commands are required whenever the selected release includes the commerce API; `deploy.sh` intentionally leaves the old API process untouched. Deploy components independently after bootstrap when only one changed:
+Always supply the full SHA of a commit that has already passed integrated build and test. After the
+PostgreSQL cutover, deploy components independently through their slot controllers:
 
 ```bash
 deploy/deploy.sh --api-only <sha>
 deploy/api-bluegreen.sh
-deploy/deploy.sh --engine-only <sha>
+deploy/deploy.sh --engine-bluegreen <sha>
+deploy/engine-bluegreen.sh
 ```
+
+## One-time Stage-2 engine database cutover
+
+Only run this after the exact release passed the workspace suite and the real PostgreSQL fault matrix.
+The first script creates the isolated role/database and stages, but does not activate, its root-only
+credential. The second takes a final SQLite snapshot, drains the singleton, refuses anonymous holds,
+imports and reconciles monetary aggregates, installs the PostgreSQL-aware legacy and slot units, and
+requires `/ready`. Then install the validated dual-upstream Caddy config and move the legacy process
+to a template slot without dropping traffic:
+
+```bash
+sudo deploy/engine-postgres-provision.sh
+sudo deploy/engine-postgres-cutover.sh
+sudo deploy/install-caddy.sh --check
+sudo deploy/install-caddy.sh
+deploy/engine-bluegreen.sh
+```
+
+If import, start, or readiness fails, the trap restores the old unit, moves the credential back to
+pending, and restarts SQLite. Once PostgreSQL readiness succeeds and traffic resumes, do not point the
+engine back at SQLite: it is then only an audit snapshot. `deploy/apitoken-db-dump` makes independent
+custom-format dumps for `commerce` and `claude_engine`. PostgreSQL mode uses fenced template slots;
+SQLite mode continues to enforce the host-local `flock` singleton.
 
 A commerce release contains a prebuilt database migrator. Deployment invokes it directly:
 
@@ -107,15 +130,17 @@ A normal deploy:
 4. runs the locked, prebuilt commerce migration before moving the API release link;
 5. installs `ERR`, `EXIT`, `INT`, and `TERM` recovery traps before the first link mutation;
 6. when the target differs from `current`, records the old `current` as `previous` and atomically changes `current`;
-7. restarts only the selected Rust engine and requires its exact unit to be loaded from a real fragment, configured through `releases/current`, running from the requested SHA, and passing readiness;
+7. in legacy mode, restarts the selected Rust engine and exact-unit gates it; in PostgreSQL mode, `--engine-bluegreen` leaves serving slots untouched for `engine-bluegreen.sh`;
 8. does **not** start, stop, restart, or readiness-probe a commerce API slot—the old API process keeps serving the immutable release from which it was started;
-9. disables recovery traps after link activation and any selected engine restart succeed, then instructs the operator to run `api-bluegreen.sh`.
+9. disables recovery traps after link activation and any selected legacy restart succeeds, then instructs the operator to run the matching blue-green controller.
 
-A same-SHA deploy does not rewrite `previous`. It restarts and verifies the engine when selected, but still leaves commerce API slot lifecycle to `api-bluegreen.sh`.
+A same-SHA deploy does not rewrite `previous`. Legacy engine mode may restart its unit; PostgreSQL
+engine and commerce selection leave slot lifecycle to their blue-green controllers.
 
 ## Exact-unit readiness
 
-The HTTP probe is necessary but not sufficient. When `deploy.sh` activates the engine, and when `api-bluegreen.sh` starts/verifies an API target slot, the readiness loop also requires:
+The HTTP probe is necessary but not sufficient. When either blue-green controller starts/verifies a
+target (or legacy `deploy.sh` activates its one engine), the readiness loop also requires:
 
 - `systemctl is-active <exact-unit>`;
 - `releases/current` resolves to the requested SHA directory;
@@ -133,16 +158,15 @@ This prevents a legacy process that still owns the port from producing a false-p
 Roll back to each component's recorded `previous` release:
 
 ```bash
-deploy/rollback.sh
 deploy/rollback.sh --api-only
-deploy/rollback.sh --engine-only
+deploy/rollback.sh --engine-bluegreen
 ```
 
 Or select an existing immutable SHA explicitly:
 
 ```bash
 deploy/rollback.sh --api-only <sha>
-deploy/rollback.sh --engine-only <sha>
+deploy/rollback.sh --engine-bluegreen <sha>
 ```
 
 Commerce rollback is deliberately two-phase, like a normal deploy:
@@ -152,9 +176,16 @@ deploy/rollback.sh --api-only [<sha>]
 deploy/api-bluegreen.sh
 ```
 
+Engine rollback is the same pattern:
+
+```bash
+deploy/rollback.sh --engine-bluegreen [<sha>]
+deploy/engine-bluegreen.sh
+```
+
 The first command selects the immutable rollback release without touching either running API slot. The second starts and verifies the inactive slot from that release, lets Caddy admit it, pre-drains the old slot, and then stops the old process. Do not insert an API restart between these commands.
 
-Rollback fully preflights every selected target before mutating anything: release directory, `.release-sha`, API and migration artifacts or engine binary, plus original `current` and `previous` states for all selected components. It activates links under the same `ERR`/`EXIT`/`INT`/`TERM` recovery trap. Selected engines restart through the exact-unit readiness gate; commerce API slot lifecycle remains exclusively owned by `api-bluegreen.sh`.
+Rollback fully preflights every selected target before mutating anything: release directory, `.release-sha`, API and migration artifacts or engine binary, plus original `current` and `previous` states for all selected components. It activates links under the same `ERR`/`EXIT`/`INT`/`TERM` recovery trap. PostgreSQL engine and commerce slot lifecycles remain exclusively owned by their blue-green controllers.
 
 If the target equals `current`, rollback is a link-bookkeeping no-op and does not overwrite `previous`. If activation, engine restart/readiness, or a signal fails, every changed link is restored to its captured original state and selected engine services are restarted best-effort. Rollback never changes database state.
 

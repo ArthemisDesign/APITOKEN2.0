@@ -67,7 +67,7 @@ const AFFINITY_TTL: i64 = 3600;
 const REBIND_AFTER: i64 = 60;
 /// Потолок параллельных запросов на персону — «человеческий конверт» (живой юзер не крутит 20
 /// стримов разом) + защита аккаунта от загона в лимит. Гейтит placement и переводит пин в спилл.
-const MAX_INFLIGHT: i64 = 6;
+pub const MAX_INFLIGHT: i64 = 6;
 /// Потолок таблицы привязок (память). Переполнение → вытесняем самые старые по last_seen.
 const BINDINGS_CAP: usize = 100_000;
 
@@ -219,6 +219,8 @@ pub struct Live {
     pub seed7: bool,
     /// Сколько раз реально калибровали (>0 → cap измерен, а не прайор).
     pub calib_n: u32,
+    /// CAS version of the durable pool-state row. Not involved in routing decisions.
+    pub persist_version: i64,
 }
 
 struct Inner {
@@ -722,6 +724,7 @@ impl Pool {
             reset5h: l.reset5h,
             reset7d: l.reset7d,
             calib_n: l.calib_n as i64,
+            version: l.persist_version,
         }).collect()
     }
 
@@ -747,6 +750,7 @@ impl Pool {
             l.reset5h = r.reset5h;
             l.reset7d = r.reset7d;
             l.calib_n = r.calib_n.max(0) as u32;
+            l.persist_version = r.version.max(0);
             // засеять якоря калибровки восстановленной точкой (продолжаем EMA, не мерим с нуля)
             l.seed5 = true; l.util5_anchor = r.util5h; l.spent5_anchor_usd = r.spent_total_usd;
             l.seed7 = true; l.util7_anchor = r.util7d; l.spent7_anchor_usd = r.spent_total_usd;
@@ -756,6 +760,51 @@ impl Pool {
             r.email.hash(&mut h);
             l.polled_ts = now - (h.finish() % 240) as i64;
             l.last_used = now;
+        }
+    }
+
+    /// Accept versions returned by a successful fenced PostgreSQL CAS write without replacing live
+    /// utilization/cooling values that may have advanced while persistence was in flight.
+    pub fn accept_persist_versions(&self, versions: &[(String, i64)]) {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        for (email, version) in versions {
+            if let Some(live) = g.live.get_mut(email) {
+                live.persist_version = live.persist_version.max(*version);
+            }
+        }
+    }
+
+    /// Rebase local observations after a PostgreSQL CAS conflict. Cooling and utilization merge
+    /// conservatively, newer reset windows replace older ones, and calibrated capacity never grows
+    /// merely because two writers raced. The caller retries the fenced CAS with the returned version.
+    pub fn merge_persisted_state(&self, rows: Vec<registry::PoolStateRow>) {
+        fn conservative_cap(local: f64, remote: f64) -> f64 {
+            match (local > 0.0, remote > 0.0) {
+                (true, true) => local.min(remote),
+                (false, true) => remote,
+                _ => local,
+            }
+        }
+        fn merge_window(local_util: &mut f64, local_reset: &mut i64, remote_util: f64, remote_reset: i64) {
+            if remote_reset > *local_reset {
+                *local_reset = remote_reset;
+                *local_util = remote_util;
+            } else if remote_reset == *local_reset {
+                *local_util = local_util.max(remote_util);
+            }
+        }
+
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        for row in rows {
+            let live = g.live.entry(row.email).or_default();
+            live.cooling_until = live.cooling_until.max(row.cooling_until);
+            live.spent_total_usd = live.spent_total_usd.max(row.spent_total_usd);
+            live.cap5h_usd = conservative_cap(live.cap5h_usd, row.cap5h_usd);
+            live.cap7d_usd = conservative_cap(live.cap7d_usd, row.cap7d_usd);
+            live.calib_n = live.calib_n.max(row.calib_n.max(0) as u32);
+            merge_window(&mut live.util5h, &mut live.reset5h, row.util5h, row.reset5h);
+            merge_window(&mut live.util7d, &mut live.reset7d, row.util7d, row.reset7d);
+            live.persist_version = live.persist_version.max(row.version.max(0));
         }
     }
 }
@@ -983,6 +1032,31 @@ mod tests {
         assert!(c.calibrated, "калибровка восстановлена");
         assert!((c.cap5h_usd - 50.0).abs() < 1e-6, "cap5={}", c.cap5h_usd);
         assert!(p2.soonest_ready().map(|s| s > 0).unwrap_or(false), "cooling пережил рестарт");
+    }
+
+    #[test]
+    fn cas_rebase_is_conservative_and_accepts_newer_window() {
+        let p = pool(&["a"]);
+        p.import_state(vec![registry::PoolStateRow {
+            email: "a".into(), cooling_until: now() + 60,
+            cap5h_usd: 50.0, cap7d_usd: 500.0, spent_total_usd: 10.0,
+            util5h: 0.4, util7d: 0.3, reset5h: 100, reset7d: 100,
+            calib_n: 4, version: 2,
+        }]);
+        p.merge_persisted_state(vec![registry::PoolStateRow {
+            email: "a".into(), cooling_until: now() + 120,
+            cap5h_usd: 80.0, cap7d_usd: 400.0, spent_total_usd: 12.0,
+            util5h: 0.6, util7d: 0.1, reset5h: 100, reset7d: 200,
+            calib_n: 5, version: 3,
+        }]);
+        let row = p.export_state().into_iter().find(|r| r.email == "a").unwrap();
+        assert_eq!(row.version, 3);
+        assert_eq!(row.cap5h_usd, 50.0, "a race must not inflate calibrated capacity");
+        assert_eq!(row.cap7d_usd, 400.0);
+        assert_eq!(row.util5h, 0.6, "same window keeps the conservative utilization");
+        assert_eq!(row.reset7d, 200);
+        assert_eq!(row.util7d, 0.1, "a newer provider window replaces the expired one");
+        assert!(row.cooling_until >= now() + 119);
     }
 
     /// Тариф масштабирует прайор ёмкости: Pro-подписка до калибровки НЕ считается как Max20.

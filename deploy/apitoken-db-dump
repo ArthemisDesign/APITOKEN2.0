@@ -2,22 +2,35 @@
 set -eu
 
 install -d -m 700 /var/lib/apitoken/backups
-temporary_dump=/var/lib/apitoken/backups/commerce.dump.tmp
-final_dump=/var/lib/apitoken/backups/commerce.dump
-trap 'rm -f "$temporary_dump"' EXIT
 
-docker compose \
-  --env-file /etc/apitoken/postgres.env \
-  -f /opt/apitoken/repo/deploy/commerce-postgres.compose.yaml \
-  exec -T commerce-postgres \
-  pg_dump \
-    --username=commerce \
-    --dbname=commerce \
-    --format=custom \
-    --compress=6 \
-    --no-owner \
-    --no-acl > "$temporary_dump"
+dump_database() {
+  database=$1
+  user=$2
+  temporary_dump=/var/lib/apitoken/backups/$database.dump.tmp
+  final_dump=/var/lib/apitoken/backups/$database.dump
+  rm -f "$temporary_dump"
 
-chmod 600 "$temporary_dump"
-mv -f "$temporary_dump" "$final_dump"
+  docker compose \
+    --env-file /etc/apitoken/postgres.env \
+    -f /opt/apitoken/repo/deploy/commerce-postgres.compose.yaml \
+    exec -T commerce-postgres \
+    pg_dump \
+      --username="$user" \
+      --dbname="$database" \
+      --format=custom \
+      --compress=6 \
+      --no-owner \
+      --no-acl > "$temporary_dump"
+
+  chmod 600 "$temporary_dump"
+  mv -f "$temporary_dump" "$final_dump"
+}
+
+trap 'rm -f /var/lib/apitoken/backups/*.dump.tmp' EXIT
+dump_database commerce commerce
+if docker compose --env-file /etc/apitoken/postgres.env \
+  -f /opt/apitoken/repo/deploy/commerce-postgres.compose.yaml exec -T commerce-postgres \
+  psql -U commerce -d postgres -Atqc "SELECT 1 FROM pg_database WHERE datname='claude_engine'" | grep -qx 1; then
+  dump_database claude_engine claude_engine
+fi
 trap - EXIT

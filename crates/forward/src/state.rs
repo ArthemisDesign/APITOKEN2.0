@@ -8,18 +8,22 @@ use crate::metrics::Metrics;
 use crate::upstream::Clients;
 use pool::Pool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: Arc<ProxyConfig>,
-    /// Путь к реестру (subscriptions.db) — для read-only админ-обзоров (`/subs`: срок/прокси
-    /// подписок). Money-путь БД к нему не обращается (у него свой AsyncBilling), это только чтение.
-    pub db_path: Arc<String>,
+    /// Authority selector for read-only admin overviews. Secrets are never rendered in logs/responses.
+    pub authority: Arc<registry::authority::AuthorityConfig>,
+    /// Local data directory path remains the home of non-authoritative metrics.db.
+    pub data_db_path: Arc<String>,
     pub pool: Arc<Pool>,
     pub clients: Arc<Clients>,
     /// Биллинг клиентов (async DB-актор — синхронный SQLite не блокирует воркеры).
     /// `None` → биллинг выключен (только env-ключи/localhost).
     pub billing: Option<Arc<AsyncBilling>>,
+    /// Live dependency health. PostgreSQL heartbeat toggles this and request admission fails closed.
+    pub authority_ready: Arc<AtomicBool>,
     /// Глобальный circuit breaker апстрима (анти-амплификация при брауноуте api.anthropic.com).
     pub breaker: Arc<Breaker>,
     /// Счётчики форвардинга для `/metrics`.

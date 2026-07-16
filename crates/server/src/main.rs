@@ -129,6 +129,21 @@ enum Cmd {
         /// Сколько последних снимков хранить (деф 24).
         #[arg(long, default_value = "24")] keep: usize,
     },
+    /// Engine PostgreSQL schema/import operations. These never print the database DSN.
+    Db {
+        #[command(subcommand)]
+        op: DbOp,
+    },
+}
+
+#[derive(Subcommand)]
+enum DbOp {
+    /// Apply engine schema then atomically import a fully drained SQLite authority.
+    MigratePostgres {
+        #[arg(long)] sqlite: Option<String>,
+    },
+    /// Apply/verify the PostgreSQL schema without importing data.
+    VerifyPostgres,
 }
 
 #[derive(Subcommand)]
@@ -212,16 +227,53 @@ enum SubOp {
     DetectPlan { email: Option<String> },
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd.unwrap_or(Cmd::Serve) {
-        Cmd::Serve => serve().await,
-        Cmd::Sub { op } => sub_cmd(op).await,
+        Cmd::Serve => tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .context("create Tokio runtime")?
+            .block_on(serve()),
+        Cmd::Sub { op } => sub_cmd(op),
         Cmd::Account { op } => account_cmd(op),
         Cmd::Key { op } => key_cmd(op),
         Cmd::Backup { out, keep } => backup_cmd(out, keep),
+        Cmd::Db { op } => db_cmd(op),
     }
+}
+
+fn authority_config(s: &Settings) -> registry::authority::AuthorityConfig {
+    registry::authority::AuthorityConfig::new(s.db_path.clone(), s.database_url.clone())
+}
+
+fn db_cmd(op: DbOp) -> Result<()> {
+    let s = Settings::from_env();
+    let url = s.database_url.as_deref()
+        .context("CLAUDE_API_DATABASE_URL is required for PostgreSQL database commands")?;
+    let mut pg = registry::pg::PgStore::connect(url)?;
+    pg.migrate()?;
+    match op {
+        DbOp::MigratePostgres { sqlite } => {
+            let source = sqlite.unwrap_or(s.db_path);
+            let report = pg.import_sqlite(&source)?;
+            println!(
+                "✓ PostgreSQL import verified: subs={} accounts={} keys={} ledger={} usage={} pool={} balance_nano={} spent_nano={} reserved_nano={}",
+                report.subscriptions, report.accounts, report.keys, report.ledger_rows,
+                report.usage_rows, report.pool_rows, report.balance_nano, report.spent_nano,
+                report.reserved_nano,
+            );
+        }
+        DbOp::VerifyPostgres => {
+            let version = pg.schema_version()?;
+            let totals = pg.billing_totals()?;
+            println!(
+                "✓ engine PostgreSQL schema={} balance_nano={} spent_nano={} reserved_nano={}",
+                version, totals.balance_nano, totals.spent_nano, totals.reserved_nano,
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Консистентный бэкап БД (`VACUUM INTO`) в timestamped-файл + ротация (храним `keep` последних).
@@ -230,6 +282,9 @@ async fn main() -> Result<()> {
 fn backup_cmd(out: Option<String>, keep: usize) -> Result<()> {
     use std::time::{SystemTime, UNIX_EPOCH};
     let s = Settings::from_env();
+    if s.database_url.is_some() {
+        bail!("PostgreSQL authority requires pgBackRest/WAL-G or managed PITR; SQLite VACUUM backup is disabled");
+    }
     let dir = out.unwrap_or_else(|| {
         let p = std::path::Path::new(&s.db_path).parent()
             .map(|d| d.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
@@ -270,42 +325,43 @@ pub(crate) fn gen_account_id() -> Result<String> {
 
 fn account_cmd(op: AccountOp) -> Result<()> {
     let s = Settings::from_env();
-    let conn = registry::open(&s.db_path)?;
+    let config = authority_config(&s);
+    let mut db = config.connect()?;
     match op {
         AccountOp::Create { handle, mult_bp, id } => {
             let id = match id { Some(i) => i, None => gen_account_id()? };
             let mult = mult_bp.unwrap_or(s.mult_bp);
-            registry::account_create(&conn, &id, handle.as_deref(), mult)?;
+            db.account_create(&id, handle.as_deref(), mult)?;
             println!("✓ аккаунт создан: {id}  ·  наценка ×{}  ·  handle={}",
                 mult as f64 / 10000.0, handle.as_deref().unwrap_or("—"));
             println!("  выпустить ключ:  claude-api key issue --account {id}");
         }
         AccountOp::Topup { id, usd, r#ref } => {
-            match registry::account_topup(&conn, &id, usd_to_nano(usd), r#ref.as_deref())? {
+            match db.account_topup(&id, usd_to_nano(usd), r#ref.as_deref())? {
                 Some(bal) => println!("✓ баланс аккаунта {id}: {}", usd_str(bal)),
                 None => println!("аккаунт не найден: {id}"),
             }
         }
-        AccountOp::Balance { id } => match registry::account_get(&conn, &id)? {
+        AccountOp::Balance { id } => match db.account_get(&id)? {
             Some(a) => println!("{}\tбаланс={}\tпотрачено={}\tрезерв={}\tнаценка=×{}\tstatus={}\thandle={}",
                 a.id, usd_str(a.balance_nano), usd_str(a.spent_nano), usd_str(a.reserved_nano),
                 a.mult_bp as f64 / 10000.0, a.status, a.handle.as_deref().unwrap_or("—")),
             None => println!("аккаунт не найден: {id}"),
         },
         AccountOp::List => {
-            let rows = registry::account_list(&conn)?;
-            if rows.is_empty() { println!("(аккаунтов нет) · БД: {}", s.db_path); return Ok(()); }
+            let rows = db.account_list()?;
+            if rows.is_empty() { println!("(аккаунтов нет) · БД: {}", config.label()); return Ok(()); }
             for a in rows {
                 println!("{}\tбаланс={}\tпотрачено={}\tнаценка=×{}\tstatus={}\thandle={}",
                     a.id, usd_str(a.balance_nano), usd_str(a.spent_nano),
                     a.mult_bp as f64 / 10000.0, a.status, a.handle.as_deref().unwrap_or("—"));
             }
         }
-        AccountOp::Disable { id } => println!("обновлено: {}", registry::account_set_status(&conn, &id, "disabled")?),
-        AccountOp::Enable { id } => println!("обновлено: {}", registry::account_set_status(&conn, &id, "active")?),
+        AccountOp::Disable { id } => println!("обновлено: {}", db.account_set_status(&id, "disabled")?),
+        AccountOp::Enable { id } => println!("обновлено: {}", db.account_set_status(&id, "active")?),
         AccountOp::Rm { id, yes } => {
             if !yes { println!("нужен --yes: удалит аккаунт {id} с ключами и историей"); }
-            else { println!("удалено аккаунтов: {}", registry::account_remove(&conn, &id)?); }
+            else { println!("удалено аккаунтов: {}", db.account_remove(&id)?); }
         }
     }
     Ok(())
@@ -414,11 +470,12 @@ pub(crate) fn gen_key() -> Result<String> {
 
 fn key_cmd(op: KeyOp) -> Result<()> {
     let s = Settings::from_env();
-    let conn = registry::open(&s.db_path)?;
+    let config = authority_config(&s);
+    let mut db = config.connect()?;
     match op {
         KeyOp::Issue { account, label, key_file } => {
             // проверяем, что аккаунт есть (иначе ключ никуда не резолвится)
-            if registry::account_get(&conn, &account)?.is_none() {
+            if db.account_get(&account)?.is_none() {
                 println!("аккаунт не найден: {account} (создай: claude-api account create)"); return Ok(());
             }
             let generated = key_file.is_none();
@@ -426,7 +483,7 @@ fn key_cmd(op: KeyOp) -> Result<()> {
                 Some(path) => read_secret_file(&path, "customer API key")?,
                 None => gen_key()?,
             };
-            registry::key_issue(&conn, &key, &account, label.as_deref())?;
+            db.key_issue(&key, &account, label.as_deref())?;
             if generated {
                 println!("✓ ключ выпущен: {key}");
             } else {
@@ -437,10 +494,10 @@ fn key_cmd(op: KeyOp) -> Result<()> {
         }
         KeyOp::Balance { key_file } => {
             let key = read_secret_file(&key_file, "customer API key")?;
-            match registry::key_get(&conn, &key)? {
+            match db.key_get(&key)? {
                 Some(r) => {
                     let acct = r.account_id.clone().unwrap_or_default();
-                    let abal = registry::account_get(&conn, &acct)?
+                    let abal = db.account_get(&acct)?
                         .map(|a| usd_str(a.balance_nano)).unwrap_or_else(|| "?".into());
                     println!("{}\tаккаунт={}\tметка={}\tрасход_ключа={}\tбаланс_аккаунта={}\tstatus={}",
                         mask_key(&r.key), acct, r.label.as_deref().unwrap_or("—"),
@@ -450,8 +507,8 @@ fn key_cmd(op: KeyOp) -> Result<()> {
             }
         }
         KeyOp::List => {
-            let rows = registry::key_list(&conn)?;
-            if rows.is_empty() { println!("(ключей нет) · БД: {}", s.db_path); return Ok(()); }
+            let rows = db.key_list()?;
+            if rows.is_empty() { println!("(ключей нет) · БД: {}", config.label()); return Ok(()); }
             for r in rows {
                 println!("{}\tаккаунт={}\tметка={}\tрасход_ключа={}\tstatus={}",
                     mask_key(&r.key), r.account_id.as_deref().unwrap_or("—"),
@@ -460,19 +517,19 @@ fn key_cmd(op: KeyOp) -> Result<()> {
         }
         KeyOp::Disable { key_file } => {
             let key = read_secret_file(&key_file, "customer API key")?;
-            println!("обновлено: {}", registry::key_set_status(&conn, &key, "disabled")?);
+            println!("обновлено: {}", db.key_set_status(&key, "disabled")?);
         }
         KeyOp::Enable { key_file } => {
             let key = read_secret_file(&key_file, "customer API key")?;
-            println!("обновлено: {}", registry::key_set_status(&conn, &key, "active")?);
+            println!("обновлено: {}", db.key_set_status(&key, "active")?);
         }
         KeyOp::Rm { key_file } => {
             let key = read_secret_file(&key_file, "customer API key")?;
-            println!("удалено ключей: {}", registry::key_remove(&conn, &key)?);
+            println!("удалено ключей: {}", db.key_remove(&key)?);
         }
         KeyOp::Clear { yes } => {
             if !yes { println!("нужен --yes: удалит ВСЕ ключи (балансы клиентов пропадут)"); }
-            else { println!("удалено ключей: {}", registry::key_clear(&conn)?); }
+            else { println!("удалено ключей: {}", db.key_clear()?); }
         }
     }
     Ok(())
@@ -480,9 +537,10 @@ fn key_cmd(op: KeyOp) -> Result<()> {
 
 /// Определить тариф подписки (профиль Anthropic через её прокси) и записать в реестр.
 /// Возвращает человекочитаемую строку итога.
-async fn detect_and_store(s: &Settings, email: &str) -> String {
-    let conn = match registry::open(&s.db_path) { Ok(c) => c, Err(e) => return format!("db: {e}") };
-    let (tok, proxy) = match registry::get_creds(&conn, email) {
+fn detect_and_store(s: &Settings, email: &str) -> String {
+    let (tok, proxy) = match authority_config(s).connect()
+        .and_then(|mut db| db.get_creds(email))
+    {
         Ok(Some(c)) => c,
         Ok(None) => return "нет токена".into(),
         Err(e) => return format!("db: {e}"),
@@ -493,10 +551,16 @@ async fn detect_and_store(s: &Settings, email: &str) -> String {
         Err(_) => return format!("proxy {}: не удалось создать клиент", mask_proxy(&proxy)),
     };
     let ua = forward::persona_ua(&s.proxy, email);
-    match detect_plan(&client, &s.proxy, &tok, &ua).await {
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(e) => return format!("runtime: {e}"),
+    };
+    match runtime.block_on(detect_plan(&client, &s.proxy, &tok, &ua)) {
         PlanDetect::Plan(p) => {
-            let _ = registry::set_plan(&conn, email, &p);
-            format!("тариф: {p}")
+            match authority_config(s).connect().and_then(|mut db| db.set_plan(email, &p)) {
+                Ok(_) => format!("тариф: {p}"),
+                Err(e) => format!("тариф определён ({p}), но запись в db не удалась: {e}"),
+            }
         }
         PlanDetect::NoScope =>
             "тариф: noscope (у токена нет scope user:profile — задай вручную: sub set-plan)".into(),
@@ -504,9 +568,10 @@ async fn detect_and_store(s: &Settings, email: &str) -> String {
     }
 }
 
-async fn sub_cmd(op: SubOp) -> Result<()> {
+fn sub_cmd(op: SubOp) -> Result<()> {
     let s = Settings::from_env();
-    let conn = registry::open(&s.db_path)?;
+    let config = authority_config(&s);
+    let mut db = config.connect()?;
     match op {
         SubOp::AddFile { email, token_file, proxy_file, fleet } => {
             let token = read_secret_file(&token_file, "subscription token")?;
@@ -514,15 +579,15 @@ async fn sub_cmd(op: SubOp) -> Result<()> {
                 Some(path) => read_secret_file(&path, "proxy URL")?,
                 None => String::new(),
             };
-            registry::add(&conn, &email, &token, &proxy, &fleet)?;
+            db.add(&email, &token, &proxy, &fleet)?;
             // Тариф НЕ детектим синтетическим запросом к Anthropic: у OAuth-токенов нет scope
             // user:profile → всё равно NoScope, а лишний запрос = фингерпринт. Ёмкость калибруется
             // из боевого трафика; при необходимости тариф задаётся вручную (`sub set-plan`).
             println!("✓ добавлена {email} (fleet={fleet}, proxy={})", mask_proxy(&proxy));
         }
         SubOp::List => {
-            let rows = registry::list(&conn)?;
-            if rows.is_empty() { println!("(подписок нет) · БД: {}", s.db_path); return Ok(()); }
+            let rows = db.list_subs()?;
+            if rows.is_empty() { println!("(подписок нет) · БД: {}", config.label()); return Ok(()); }
             for r in rows {
                 println!("{}\tstatus={}\tfleet={}\tplan={}\ttoken={}\tproxy={}",
                     r.email, r.status, r.fleet,
@@ -531,32 +596,33 @@ async fn sub_cmd(op: SubOp) -> Result<()> {
                     mask_proxy(&r.proxy));
             }
         }
-        SubOp::Rm { email } => { println!("удалено строк: {}", registry::remove(&conn, &email)?); }
+        SubOp::Rm { email } => { println!("удалено строк: {}", db.remove_sub(&email)?); }
         SubOp::Clear { yes, fleet } => {
             if !yes {
-                let n = registry::list(&conn)?.len();
+                let n = db.list_subs()?.len();
                 println!("⚠️  удалит ВСЕ подписки{} — {n} шт. Повтори с --yes для подтверждения.",
                     fleet.as_deref().map(|f| format!(" флота {f}")).unwrap_or_default());
             } else {
-                let n = registry::clear(&conn, fleet.as_deref())?;
+                let n = db.clear_subs(fleet.as_deref())?;
                 println!("✓ удалено подписок: {n}{}", fleet.as_deref().map(|f| format!(" (флот {f})")).unwrap_or_default());
             }
         }
-        SubOp::Status { email, status } => { println!("обновлено: {}", registry::set_status(&conn, &email, &status)?); }
+        SubOp::Status { email, status } => { println!("обновлено: {}", db.set_sub_status(&email, &status)?); }
         SubOp::Proxy { email, proxy_file } => {
             let proxy = read_secret_file(&proxy_file, "proxy URL")?;
-            println!("обновлено: {}", registry::set_proxy(&conn, &email, &proxy)?);
+            println!("обновлено: {}", db.set_proxy(&email, &proxy)?);
         }
-        SubOp::Fleet { email, fleet } => { println!("обновлено: {}", registry::set_fleet(&conn, &email, &fleet)?); }
-        SubOp::SetPlan { email, plan } => { println!("обновлено: {} (plan={plan})", registry::set_plan(&conn, &email, &plan)?); }
+        SubOp::Fleet { email, fleet } => { println!("обновлено: {}", db.set_fleet(&email, &fleet)?); }
+        SubOp::SetPlan { email, plan } => { println!("обновлено: {} (plan={plan})", db.set_plan(&email, &plan)?); }
         SubOp::DetectPlan { email } => {
             let targets: Vec<String> = match email {
                 Some(e) => vec![e],
-                None => registry::list(&conn)?.into_iter()
+                None => db.list_subs()?.into_iter()
                     .filter(|r| r.plan.is_empty()).map(|r| r.email).collect(),
             };
             if targets.is_empty() { println!("нечего определять (у всех тариф уже задан)"); }
-            for e in targets { println!("{e} → {}", detect_and_store(&s, &e).await); }
+            drop(db);
+            for e in targets { println!("{e} → {}", detect_and_store(&s, &e)); }
         }
     }
     Ok(())
@@ -564,12 +630,66 @@ async fn sub_cmd(op: SubOp) -> Result<()> {
 
 async fn serve() -> Result<()> {
     let s = Settings::from_env();
-    // Lock before reconciliation, pool loading, binding, or accepting work. The descriptor is held
-    // through final billing/pool flush and makes overlapping instances fail closed.
-    let instance_lock = acquire_instance_lock(&s.db_path)?;
-    let conn = registry::open(&s.db_path)?;
-    let subs = registry::load_active(&conn, s.fleet.as_deref())?;
-    drop(conn);
+    let authority = authority_config(&s);
+    if authority.is_postgres() && !s.billing {
+        bail!("PostgreSQL authority requires CLAUDE_API_BILLING=1 because capacity leases share the durable actor");
+    }
+    // SQLite has anonymous aggregate reservations and therefore remains strictly single-process.
+    // PostgreSQL has owner epochs plus request/capacity leases; its completed fault matrix permits
+    // blue-green overlap, so no host-local flock is taken in that mode.
+    let instance_lock = if authority.is_postgres() {
+        None
+    } else {
+        Some(acquire_instance_lock(&s.db_path)?)
+    };
+    // `postgres` is a synchronous client with its own Tokio runtime. Every call must stay outside
+    // this async runtime, just like SQLite I/O, or it panics with a nested-runtime error.
+    let startup_authority = authority.clone();
+    let startup_instance = s.instance_id.clone();
+    let startup_fleet = s.fleet.clone();
+    let startup_billing = s.billing;
+    let startup_is_postgres = authority.is_postgres();
+    let (owner, subs, recovery, pool_rows, sqlite_reconcile) = tokio::task::spawn_blocking(move || {
+        let mut db = startup_authority.connect()?;
+        db.migrate()?;
+        let owner = db.claim_instance(&startup_instance, 30)?;
+        let mut recovery = registry::pg::ReconcileReport::default();
+        if let Some(current) = owner.as_ref() {
+            let pg = db.postgres()?;
+            recovery = pg.reconcile_expired(10_000)?;
+            if !pg.heartbeat_instance(current, 30)? {
+                bail!("engine PostgreSQL owner epoch was fenced during startup");
+            }
+        }
+        let subs = db.load_active(startup_fleet.as_deref())?;
+        let pool_rows = db.load_pool_state()?;
+        let sqlite_reconcile = if startup_billing && !startup_is_postgres {
+            Some(
+                db.sqlite_connection()
+                    .and_then(registry::reconcile_reservations)
+                    .map_err(|e| e.to_string()),
+            )
+        } else {
+            None
+        };
+        Ok::<_, anyhow::Error>((owner, subs, recovery, pool_rows, sqlite_reconcile))
+    })
+    .await
+    .context("engine authority startup task failed")??;
+    if recovery != registry::pg::ReconcileReport::default() {
+        eprintln!(
+            "PostgreSQL recovery: canceled={} full_hold={} outbox={}",
+            recovery.canceled_before_delivery, recovery.charged_after_delivery,
+            recovery.processed_outbox,
+        );
+    }
+    if let Some(result) = sqlite_reconcile {
+        match result {
+            Ok(n) if n > 0 => eprintln!("реконсиляция резервов: возвращено {n} ключам (краш-остатки)"),
+            Err(e) => eprintln!("⚠ reconcile резервов не удался: {e}"),
+            _ => {}
+        }
+    }
     let n = subs.len();
 
     // Биллинг — async DB-акторы (синхронный SQLite на выделенных потоках, не на воркерах рантайма):
@@ -580,9 +700,16 @@ async fn serve() -> Result<()> {
             .unwrap_or(4);
         // TTL-кэш key_auth (мс): срезает read/запрос под нагрузкой; reserve перечитывает баланс
         // атомарно, а кэш чистится при смене статуса ключа/аккаунта.
-        Some(Arc::new(forward::AsyncBilling::start_with(
-            s.db_path.clone(), readers, KEY_AUTH_TTL_MS,
-        )?))
+        let billing_authority = authority.clone();
+        let billing_owner = owner.clone();
+        let actor = tokio::task::spawn_blocking(move || {
+            forward::AsyncBilling::start_authority(
+                billing_authority, billing_owner, readers, KEY_AUTH_TTL_MS,
+            )
+        })
+        .await
+        .context("billing authority startup task failed")??;
+        Some(Arc::new(actor))
     } else {
         None
     };
@@ -591,14 +718,18 @@ async fn serve() -> Result<()> {
     // ранний clean-probe). Создаём ДО AppState, чтобы отдать хэндл в него. Без поллера — probe не нужен.
     let poke = std::sync::Arc::new(tokio::sync::Notify::new());
     let accepting = Arc::new(AtomicBool::new(true));
+    let authority_ready = Arc::new(AtomicBool::new(true));
+    spawn_pre_drain_signal(accepting.clone());
     let app = AppState {
         cfg: Arc::new(s.proxy.clone()),
-        db_path: Arc::new(s.db_path.clone()),
+        authority: Arc::new(authority.clone()),
+        data_db_path: Arc::new(s.db_path.clone()),
         pool: Arc::new(Pool::new(subs,
             pool::Reserve::new(s.reserve5h, s.reserve7d, s.reserve_jitter),
             s.cap5h_usd, s.cap7d_usd)),
         clients: Arc::new(Clients::new(&s.proxy)),
         billing,
+        authority_ready: authority_ready.clone(),
         breaker: Arc::new(forward::Breaker::new()),
         metrics: Arc::new(forward::Metrics::new()),
         key_limiter: Arc::new(forward::KeyLimiter::new()),
@@ -607,24 +738,13 @@ async fn serve() -> Result<()> {
         concurrency: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT)),
         probe_poke: if s.proxy.poll { Some(poke.clone()) } else { None },
     };
-
-    // Восстановить durable-состояние пула (cooling/калибровка) — бан на дни переживает деплой;
-    // и реконсилить осиротевшие при краше резервы баланса обратно клиентам.
-    if let Ok(conn) = registry::open(&s.db_path) {
-        if let Ok(rows) = registry::load_pool_state(&conn) {
-            let n = rows.len();
-            app.pool.import_state(rows);
-            if n > 0 { eprintln!("восстановлено состояние пула: {n} подписок"); }
-        }
-        // Эксклюзивный advisory lock уже удерживается: живой второй writer не может дренировать
-        // стримы параллельно, поэтому оставшиеся резервы действительно являются crash-остатками.
-        if s.billing {
-            match registry::reconcile_reservations(&conn) {
-                Ok(n) if n > 0 => eprintln!("реконсиляция резервов: возвращено {n} ключам (краш-остатки)"),
-                Err(e) => eprintln!("⚠ reconcile резервов не удался: {e}"),
-                _ => {}
-            }
-        }
+    let restored = pool_rows.len();
+    app.pool.import_state(pool_rows);
+    if restored > 0 { eprintln!("восстановлено состояние пула: {restored} подписок"); }
+    if let Some(owner) = owner.clone() {
+        tokio::spawn(poller::owner_heartbeat_loop(
+            authority.clone(), owner, authority_ready.clone(),
+        ));
     }
 
     // Write-through персист: pool сигналит cooling → poke → persist_loop пишет (плюс safety-flush).
@@ -633,17 +753,21 @@ async fn serve() -> Result<()> {
         let pk = persist_poke.clone();
         app.pool.set_on_change(std::sync::Arc::new(move || pk.notify_one()));
     }
-    tokio::spawn(poller::persist_loop(app.clone(), s.db_path.clone(), persist_poke));
+    tokio::spawn(poller::persist_loop(
+        app.clone(), authority.clone(), owner.clone(), persist_poke,
+    ));
 
-    tokio::spawn(poller::reload_loop(app.clone(), s.db_path.clone(), s.fleet.clone(), poke.clone()));
+    tokio::spawn(poller::reload_loop(app.clone(), authority.clone(), s.fleet.clone(), poke.clone()));
     // Фоновая обрезка ledger под масштаб; bounded default до переноса настройки в Settings.
     if s.billing {
         tokio::spawn(poller::ledger_prune_loop(
-            s.db_path.clone(), LEDGER_RETENTION_DAYS,
+            authority.clone(), LEDGER_RETENTION_DAYS,
         ));
     }
     if s.proxy.poll {
-        tokio::spawn(poller::poll_loop(app.clone(), poke.clone()));
+        tokio::spawn(poller::poll_loop(
+            app.clone(), authority.clone(), owner.clone(), poke.clone(),
+        ));
         eprintln!("поллер лимитов: событийный (liveness-only)");
     }
     // Коллектор истории метрик: снапшоты агрегата (спрос/предложение/headroom) в отдельную metrics.db.
@@ -670,11 +794,12 @@ async fn serve() -> Result<()> {
 
     let listener = tokio::net::TcpListener::bind(&s.bind).await?;
     eprintln!("claude-api слушает http://{}  (подписок: {n}, апстрим {}, реестр {})",
-        s.bind, s.proxy.upstream, s.db_path);
+        s.bind, s.proxy.upstream, authority.label());
     // Graceful shutdown: сначала снимаем readiness и даём балансировщику убрать инстанс, затем axum
     // дренирует in-flight стримы. Общий deadline включает propagation-delay, дренаж и billing FIFO-flush.
     let flush_app = app.clone();
-    let flush_db = s.db_path.clone();
+    let flush_authority = authority.clone();
+    let flush_owner = owner.clone();
     let shutdown_accepting = accepting.clone();
     let readiness_delay = Duration::from_secs(s.readiness_delay_secs);
     let drain_deadline = Duration::from_secs(s.drain_deadline_secs);
@@ -740,11 +865,10 @@ async fn serve() -> Result<()> {
             b.flush().await;
         }
     }
-    match registry::open(&flush_db) {
-        Ok(conn) => if let Err(e) = registry::save_pool_state(&conn, &flush_app.pool.export_state()) {
-            eprintln!("⚠ финальный флаш не удался: {e}");
-        },
-        Err(e) => eprintln!("⚠ финальный флаш: открыть БД не удалось: {e}"),
+    if let Err(e) = poller::persist_state_cas(
+        &flush_app, &flush_authority, flush_owner.as_ref(), 8,
+    ).await {
+        eprintln!("⚠ финальный флаш не удался после CAS retry: {e}");
     }
     drop(instance_lock);
     serve_result?;
@@ -765,3 +889,23 @@ async fn shutdown_signal() {
     let term = std::future::pending::<()>();
     tokio::select! { _ = ctrl_c => {}, _ = term => {} }
 }
+
+/// SIGUSR1 is a load-balancer pre-drain: readiness flips immediately, but the listener and existing
+/// streams remain alive until the deployer later sends SIGTERM through `systemctl stop`.
+#[cfg(unix)]
+fn spawn_pre_drain_signal(accepting: Arc<AtomicBool>) {
+    tokio::spawn(async move {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1()) {
+            Ok(mut signal) => {
+                if signal.recv().await.is_some() {
+                    accepting.store(false, Ordering::Release);
+                    eprintln!("pre-drain: readiness снята по SIGUSR1; listener остаётся для in-flight");
+                }
+            }
+            Err(e) => eprintln!("⚠ SIGUSR1 pre-drain handler unavailable: {e}"),
+        }
+    });
+}
+
+#[cfg(not(unix))]
+fn spawn_pre_drain_signal(_accepting: Arc<AtomicBool>) {}
