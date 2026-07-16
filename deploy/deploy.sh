@@ -342,7 +342,12 @@ install_bootstrap_units() {
 bootstrap_services() {
   install_bootstrap_units
 
-  systemctl_command enable --now "$ENGINE_SERVICE"
+  # The engine unit keeps its name (claude-api.service) and is already running the pre-bootstrap
+  # binary, so `enable --now` would NOT reload it. Enable for boot, then restart to bind the new
+  # ExecStart (releases/current -> new release). SIGTERM drains + releases the flock before the new
+  # process binds, so there is no flock/port overlap.
+  systemctl_command enable "$ENGINE_SERVICE"
+  restart_units "$ENGINE_SERVICE"
   require_unit_active_now "$ENGINE_SERVICE"
   wait_for_release_service engine engine "$ENGINE_SERVICE" "$ENGINE_RELEASE_ROOT" "$ENGINE_RELEASE" "$ENGINE_READY_URL" "$READINESS_TIMEOUT"
 
