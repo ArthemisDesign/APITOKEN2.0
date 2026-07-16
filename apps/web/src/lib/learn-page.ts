@@ -32,7 +32,13 @@ export function buildArticleMetadata(slug: string, locale: Locale): Metadata | n
   return {
     ...base,
     keywords: article.content.keywords,
-    openGraph: { ...base.openGraph, locale: ogLocale(locale) },
+    openGraph: {
+      ...base.openGraph,
+      type: "article",
+      locale: ogLocale(locale),
+      publishedTime: LAST_CONTENT_UPDATE.toISOString(),
+      modifiedTime: LAST_CONTENT_UPDATE.toISOString(),
+    },
     alternates: {
       canonical: absoluteUrl(path),
       languages: learnAlternates(slug, absoluteUrl),
