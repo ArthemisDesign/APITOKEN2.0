@@ -15,7 +15,7 @@ usage() {
     '' \
     'Options:' \
     '  --engine-only       Roll back and probe only the Rust engine' \
-    '  --api-only          Roll back and probe only the commerce API' \
+    '  --api-only          Select only the commerce API rollback release for blue-green cutover' \
     '  --timeout SECONDS   Readiness deadline per service (default: 60)' \
     '  --dry-run           Print changes without swapping or restarting' \
     '  -h, --help          Show this help'
@@ -77,12 +77,9 @@ validate_readiness_interval "${READINESS_INTERVAL_SECONDS:-2}"
 COMMERCE_RELEASE_ROOT=$(canonicalize_release_root "${COMMERCE_RELEASE_ROOT:-/opt/apitoken/releases}" /opt/apitoken commerce)
 ENGINE_RELEASE_ROOT=$(canonicalize_release_root "${ENGINE_RELEASE_ROOT:-/srv/claude-api/releases}" /srv/claude-api engine)
 DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}
-API_READY_URL=${API_READY_URL:-http://127.0.0.1:3000/v1/ready}
 ENGINE_READY_URL=${ENGINE_READY_URL:-http://127.0.0.1:8787/ready}
-API_SERVICE=${API_SERVICE:-apitoken-api@3000.service}
 ENGINE_SERVICE=${ENGINE_SERVICE:-claude-api.service}
 
-validate_service_unit "$API_SERVICE"
 validate_service_unit "$ENGINE_SERVICE"
 
 ENGINE_ORIGINAL=
@@ -94,18 +91,12 @@ restart_selected_services() {
   if [[ "$ROLLBACK_ENGINE" == "1" ]]; then
     restart_units "$ENGINE_SERVICE"
   fi
-  if [[ "$ROLLBACK_API" == "1" ]]; then
-    restart_units "$API_SERVICE"
-  fi
 }
 
 recovery_restart_selected_services() {
   local failed=0
   if [[ "$ROLLBACK_ENGINE" == "1" ]]; then
     best_effort_restart_units "$ENGINE_SERVICE" || failed=1
-  fi
-  if [[ "$ROLLBACK_API" == "1" ]]; then
-    best_effort_restart_units "$API_SERVICE" || failed=1
   fi
   return "$failed"
 }
@@ -114,9 +105,6 @@ readiness_ok() {
   local ok=0
   if [[ "$ROLLBACK_ENGINE" == "1" ]]; then
     wait_for_release_service engine engine "$ENGINE_SERVICE" "$ENGINE_RELEASE_ROOT" "$ENGINE_TARGET" "$ENGINE_READY_URL" "$READINESS_TIMEOUT" || ok=1
-  fi
-  if [[ "$ROLLBACK_API" == "1" ]]; then
-    wait_for_release_service commerce-api api "$API_SERVICE" "$COMMERCE_RELEASE_ROOT" "$API_TARGET" "$API_READY_URL" "$READINESS_TIMEOUT" || ok=1
   fi
   return "$ok"
 }
@@ -212,5 +200,12 @@ commit_activation
 if [[ "$DRY_RUN" == "1" ]]; then
   log "dry-run complete; no symlink, service, lock, or database state changed"
 else
-  log "rollback completed and exact selected units serve the requested releases; database migrations were not changed"
+  if [[ "$ROLLBACK_ENGINE" == "1" ]]; then
+    log "engine rollback completed and its exact unit serves the requested release"
+  fi
+  if [[ "$ROLLBACK_API" == "1" ]]; then
+    log "commerce rollback release selected by releases/current; API slots were not restarted"
+    log "run $SCRIPT_DIR/api-bluegreen.sh to cut the commerce API over without downtime"
+  fi
+  log "database migrations were not changed"
 fi

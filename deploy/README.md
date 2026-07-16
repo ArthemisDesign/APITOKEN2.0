@@ -145,9 +145,18 @@ deploy/rollback.sh --api-only <sha>
 deploy/rollback.sh --engine-only <sha>
 ```
 
-Rollback fully preflights every selected target before mutating anything: release directory, `.release-sha`, API and migration artifacts or engine binary, plus original `current` and `previous` states for all selected components. It then activates under the same `ERR`/`EXIT`/`INT`/`TERM` recovery trap and the same exact-unit readiness gate.
+Commerce rollback is deliberately two-phase, like a normal deploy:
 
-If the target equals `current`, rollback is a link-bookkeeping no-op and does not overwrite `previous`. If activation, restart, readiness, or a signal fails, every changed link is restored to its captured original state and selected services are restarted best-effort. Rollback never changes database state.
+```bash
+deploy/rollback.sh --api-only [<sha>]
+deploy/api-bluegreen.sh
+```
+
+The first command selects the immutable rollback release without touching either running API slot. The second starts and verifies the inactive slot from that release, lets Caddy admit it, pre-drains the old slot, and then stops the old process. Do not insert an API restart between these commands.
+
+Rollback fully preflights every selected target before mutating anything: release directory, `.release-sha`, API and migration artifacts or engine binary, plus original `current` and `previous` states for all selected components. It activates links under the same `ERR`/`EXIT`/`INT`/`TERM` recovery trap. Selected engines restart through the exact-unit readiness gate; commerce API slot lifecycle remains exclusively owned by `api-bluegreen.sh`.
+
+If the target equals `current`, rollback is a link-bookkeeping no-op and does not overwrite `previous`. If activation, engine restart/readiness, or a signal fails, every changed link is restored to its captured original state and selected engine services are restarted best-effort. Rollback never changes database state.
 
 ## Overrides and dry-run safety
 
@@ -157,7 +166,7 @@ Supported operational overrides include:
 
 - `READINESS_TIMEOUT_SECONDS` and `READINESS_INTERVAL_SECONDS`;
 - `SOURCE_REPO`, `COMMERCE_RELEASE_ROOT`, and `ENGINE_RELEASE_ROOT`, subject to the fixed prefixes;
-- `API_SERVICE`, `ENGINE_SERVICE`, `API_READY_URL`, and `ENGINE_READY_URL`, subject to unit validation;
+- `API_SERVICE`/`API_READY_URL` for deploy and blue-green operations, plus `ENGINE_SERVICE`/`ENGINE_READY_URL`, subject to unit validation;
 - `API_ENV_FILE`, `SYSTEMCTL_BIN`, and `SUDO_BIN`.
 
 `DEPLOY_LOCK_FILE`, `MIGRATION_LOCK_FILE`, and `SYSTEMD_UNIT_DIR` may be present in the environment only with their fixed production values; alternate paths are rejected.

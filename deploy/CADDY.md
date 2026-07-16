@@ -8,6 +8,8 @@ The repository intentionally contains the literal placeholders `<BCRYPT_HASH_PLA
 
 Before validation or reload, splice the real values into the host copy without printing them, putting them in shell history, or committing them. Never reload the repository placeholders into production, and never copy the populated host file back into Git.
 
+Preserve the existing file owner, group, and mode when replacing the host config. The packaged service reads it as the `caddy` user; changing a `root:caddy 0640` file to `root:root 0640` makes `systemctl reload caddy` fail even though a root-run `caddy validate` succeeds. Use `cp -a` for a backup and `chown --reference`/`chmod --reference` after installing a generated candidate.
+
 ## Validate and reload
 
 After updating `/etc/caddy/Caddyfile` and inserting the host-only secrets, validate the exact file that Caddy will load:

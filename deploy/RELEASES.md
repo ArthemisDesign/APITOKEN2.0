@@ -72,12 +72,12 @@ When the target differs from `current`:
 
 1. the original `current` becomes `previous` when one exists;
 2. a temporary symlink is atomically moved over `current`;
-3. selected units are restarted or started;
-4. exact-unit binding and HTTP readiness must both pass.
+3. a selected engine unit is restarted;
+4. exact engine-unit binding and HTTP readiness must both pass; commerce selection leaves both API slots untouched for `api-bluegreen.sh`.
 
 If the target already equals `current`, neither `current` nor `previous` is rewritten. This preserves the real prior rollback target during a same-SHA deploy or no-op rollback.
 
-On any activation error or signal, recovery restores every changed link to its individually captured original target or original absence, in reverse mutation order, then restarts affected services best-effort. Failures are reported per link and per service. Recovery traps are disabled only after every selected unit is active, bound to the requested release, and HTTP-ready.
+On any activation error or signal, recovery restores every changed link to its individually captured original target or original absence, in reverse mutation order, then restarts affected engine services best-effort. Failures are reported per link and per service. Engine recovery traps are disabled only after the exact unit is active, bound to the requested release, and HTTP-ready. Commerce release selection never restarts a slot; `api-bluegreen.sh` owns its health-gated cutover.
 
 Database migrations are intentionally outside rollback. They must remain additive and backward-compatible with the prior application release.
 
