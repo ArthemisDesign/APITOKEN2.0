@@ -430,17 +430,17 @@ const supportCopy: Record<Language, {
   write: string; official: string; topicsTitle: string; topics: string[]; includeTitle: string;
   include: string[]; securityTitle: string; security: string; refundsTitle: string; refunds: string;
   bot: { poweredBy: string; name: string; desc: string; points: string[]; cta: string; availability: string; handleLabel: string };
-  how: { title: string; steps: { h: string; p: string }[] };
+  how: { title: string; hours: string; steps: { h: string; p: string }[] };
   emailKicker: string;
 }> = {
   en: {
     eyebrow: "Customer support", title: "apiToken Support", summary: "Get help fast. Our AI assistant answers instantly in Telegram, and hands you over to a real person whenever a case needs targeted, human attention.",
     emailLabel: "Official support email", emailHelp: "For account-specific paperwork or if you can't use Telegram — email is a permanent channel for B2C and B2B.", write: "Write an email", emailKicker: "Prefer email?",
     official: "Public groups, comments, and direct messages from unrelated accounts are not official apiToken.sale support channels. The only support bot is @apitokensupportbot.",
-    topicsTitle: "What the assistant can do", topics: ["Sign-up, top-up, and issuing or revoking API keys", "Pointing an SDK or tool at the endpoint and fixing request errors", "Explaining pricing tiers, discounts, and how to read your usage", "Diagnosing base URL, x-api-key header, model id, and balance issues"],
-    includeTitle: "For a faster answer", include: ["The email address used for your account", "The exact error text or model id you're calling", "A clear description, the approximate time, and screenshots without secrets"],
-    securityTitle: "Protect your account", security: "Never send a password, complete API key, OAuth token, payment secret, seed phrase, or full card details. Neither the bot nor a human operator will ever ask you to disclose them.",
-    refundsTitle: "Money & refunds", refunds: "Anything about a specific charge, missing top-up, or refund is handed straight to a human operator. Send refund requests within 14 calendar days of payment with the order identifier; eligibility is governed by the User Agreement.",
+    topicsTitle: "What the assistant handles", topics: ["Sign-up & top-up", "Issue / revoke keys", "Endpoint setup", "Request errors", "Pricing & discounts", "Reading usage", "Base URL & x-api-key", "Model id & balance"],
+    includeTitle: "For a faster answer", include: ["Your account email", "The exact error or model id", "Roughly when it happened", "Screenshots — no secrets"],
+    securityTitle: "Protect your account", security: "Never share a password, full API key, OAuth token, payment secret or card details. Nobody on our side will ever ask for them.",
+    refundsTitle: "Money & refunds", refunds: "Charges, missing top-ups and refunds go straight to a human. Refund requests: within 14 days, with the order id.",
     bot: {
       poweredBy: "AI first line · Claude Sonnet 5",
       name: "apiToken Support",
@@ -452,10 +452,11 @@ const supportCopy: Record<Language, {
     },
     how: {
       title: "How support works",
+      hours: "Human operators · 08:00–12:00 UTC",
       steps: [
-        { h: "Message the bot", p: "Open @apitokensupportbot in Telegram and describe your problem in plain words. Attach screenshots if they help — never secrets." },
-        { h: "AI answers instantly", p: "Claude Sonnet 5 replies in seconds, 24/7: how to connect, why a request failed, how billing and discounts work, and exactly what to do next." },
-        { h: "A human steps in", p: "Anything about your specific balance, a payment, or a complex case is escalated to a real operator — in the same chat, with the full context already there. Human operators are online 08:00–12:00 UTC; outside that window your message is queued and answered as soon as they're back." },
+        { h: "Message the bot", p: "Describe the problem in plain words — attach screenshots, never secrets." },
+        { h: "AI answers instantly", p: "Claude Sonnet 5 replies in seconds, 24/7 — setup, errors, billing, next steps." },
+        { h: "A human steps in", p: "Money and account-specific cases go to a real operator in the same chat." },
       ],
     },
   },
@@ -463,10 +464,10 @@ const supportCopy: Record<Language, {
     eyebrow: "Поддержка клиентов", title: "apiToken Support", summary: "Помощь без ожидания. ИИ-ассистент мгновенно отвечает в Telegram и передаёт вас живому человеку, как только вопрос требует точечного, ручного разбора.",
     emailLabel: "Официальная почта поддержки", emailHelp: "Для документов по аккаунту или если Telegram недоступен — почта остаётся постоянным каналом для B2C и B2B.", write: "Написать письмо", emailKicker: "Удобнее почтой?",
     official: "Публичные группы, комментарии и сообщения от посторонних аккаунтов не являются официальными каналами поддержки apiToken.sale. Единственный бот поддержки — @apitokensupportbot.",
-    topicsTitle: "С чем поможет ассистент", topics: ["Регистрация, пополнение, выпуск и отзыв API-ключей", "Настройка SDK или инструмента на endpoint и разбор ошибок запросов", "Объяснение тарифов, скидок и как читать своё использование", "Диагностика base URL, заголовка x-api-key, id модели и баланса"],
-    includeTitle: "Чтобы ответить быстрее", include: ["Email, на который зарегистрирован аккаунт", "Точный текст ошибки или id модели, к которой обращаетесь", "Понятное описание, примерное время и скриншоты без секретных данных"],
-    securityTitle: "Защитите аккаунт", security: "Никогда не отправляйте пароль, полный API-ключ, OAuth-токен, платёжный секрет, seed-фразу или полные данные карты. Ни бот, ни оператор никогда не попросят их раскрыть.",
-    refundsTitle: "Деньги и возвраты", refunds: "Всё, что касается конкретного списания, непришедшего пополнения или возврата, сразу передаётся живому оператору. Запрос возврата — в течение 14 календарных дней после оплаты с номером заказа; условия определяются Пользовательским соглашением.",
+    topicsTitle: "С чем помогает ассистент", topics: ["Регистрация и пополнение", "Выпуск / отзыв ключей", "Настройка endpoint", "Ошибки запросов", "Тарифы и скидки", "Чтение использования", "Base URL и x-api-key", "id модели и баланс"],
+    includeTitle: "Чтобы ответить быстрее", include: ["Email аккаунта", "Точный текст ошибки или id модели", "Примерное время события", "Скриншоты — без секретов"],
+    securityTitle: "Защитите аккаунт", security: "Никогда не отправляйте пароль, полный API-ключ, OAuth-токен, платёжный секрет или данные карты. С нашей стороны их никогда не спросят.",
+    refundsTitle: "Деньги и возвраты", refunds: "Списания, непришедшие пополнения и возвраты идут сразу человеку. Возврат — в течение 14 дней, с номером заказа.",
     bot: {
       poweredBy: "ИИ первой линии · Claude Sonnet 5",
       name: "apiToken Support",
@@ -478,10 +479,11 @@ const supportCopy: Record<Language, {
     },
     how: {
       title: "Как работает поддержка",
+      hours: "Операторы-люди · 08:00–12:00 UTC",
       steps: [
-        { h: "Напишите боту", p: "Откройте @apitokensupportbot в Telegram и опишите проблему простыми словами. Можно приложить скриншоты — но без секретов." },
-        { h: "ИИ отвечает сразу", p: "Claude Sonnet 5 отвечает за секунды, 24/7: как подключиться, почему упал запрос, как работают биллинг и скидки и что делать дальше." },
-        { h: "Подключается человек", p: "Вопросы про конкретный баланс, платёж или сложный случай эскалируются живому оператору — в тот же чат, где уже есть весь контекст. Операторы онлайн 08:00–12:00 UTC; вне этого окна сообщение ждёт в очереди и получает ответ, как только они вернутся." },
+        { h: "Напишите боту", p: "Опишите проблему простыми словами — можно скриншоты, но без секретов." },
+        { h: "ИИ отвечает сразу", p: "Claude Sonnet 5 отвечает за секунды, 24/7 — настройка, ошибки, биллинг, что дальше." },
+        { h: "Подключается человек", p: "Вопросы по деньгам и аккаунту идут живому оператору в тот же чат." },
       ],
     },
   },
@@ -509,6 +511,15 @@ export function LegalPage({ kind }: { kind: "privacy" | "terms" }) {
     </div></section>
   </>;
 }
+
+const SUPPORT_STEP_ICONS = [
+  <svg key="a" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9.4 9.4 0 0 1-3.4-.6L3 21l1.3-4a8.2 8.2 0 0 1-1-4A8.4 8.4 0 0 1 12 4a8.4 8.4 0 0 1 9 7.5Z" /></svg>,
+  <svg key="b" viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 2.5l1.7 4.6 4.6 1.7-4.6 1.7L12 15.1l-1.7-4.6L5.7 8.8l4.6-1.7L12 2.5Z" /><path d="M18.7 14l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z" opacity=".55" /></svg>,
+  <svg key="c" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="3.4" /><path d="M5 20a7 7 0 0 1 14 0" /></svg>,
+];
+const SUPPORT_IC_BOLT = <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><path d="M13 2 4 14h7l-1 8 10-12h-7l1-8Z" /></svg>;
+const SUPPORT_IC_SHIELD = <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><path d="M12 3 5 6v5c0 4.5 3 7.6 7 9 4-1.4 7-4.5 7-9V6l-7-3Z" /><path d="m9.4 12 1.9 1.9L15 10" /></svg>;
+const SUPPORT_IC_MONEY = <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M3 10h18" /><circle cx="8" cy="14" r="1.2" /></svg>;
 
 // Ядро поддержки (бот-карточка + how-it-works + карточки). Переиспользуется публичной
 // страницей /support И секцией дашборда — поддержка в первую очередь часть кабинета.
@@ -539,19 +550,39 @@ export function SupportContent() {
       </div>
 
       <div className="support-how">
-        <h2 className="support-how-title">{copy.how.title}</h2>
+        <div className="support-how-head">
+          <h2 className="support-how-title">{copy.how.title}</h2>
+          <span className="support-hours"><i className="support-bot-dot" aria-hidden="true" />{copy.how.hours}</span>
+        </div>
         <div className="support-flow">{copy.how.steps.map((step, index) => <article className="support-step" key={step.h}>
-          <span className="n">{String(index + 1).padStart(2, "0")}</span>
+          <div className="support-step-top"><span className="support-step-ic" aria-hidden="true">{SUPPORT_STEP_ICONS[index]}</span><span className="n">{String(index + 1).padStart(2, "0")}</span></div>
           <h3>{step.h}</h3>
           <p>{step.p}</p>
         </article>)}</div>
       </div>
 
-      <div className="support-grid">
-        <div className="support-card"><h2>{copy.topicsTitle}</h2><ul>{copy.topics.map((item) => <li key={item}>{item}</li>)}</ul></div>
-        <div className="support-card"><h2>{copy.includeTitle}</h2><ul>{copy.include.map((item) => <li key={item}>{item}</li>)}</ul></div>
-        <div className="support-card"><h2>{copy.securityTitle}</h2><p>{copy.security}</p></div>
-        <div className="support-card"><h2>{copy.refundsTitle}</h2><p>{copy.refunds}</p><Link href="/terms">{language === "ru" ? "Открыть Пользовательское соглашение →" : "Open the User Agreement →"}</Link></div>
+      <div className="support-topics">
+        <h2 className="support-topics-title">{copy.topicsTitle}</h2>
+        <ul className="support-chips">{copy.topics.map((item) => <li key={item}>{item}</li>)}</ul>
+      </div>
+
+      <div className="support-mini-grid">
+        <div className="support-mini">
+          <span className="support-mini-ic" aria-hidden="true">{SUPPORT_IC_BOLT}</span>
+          <h3>{copy.includeTitle}</h3>
+          <ul className="support-mini-list">{copy.include.map((item) => <li key={item}>{item}</li>)}</ul>
+        </div>
+        <div className="support-mini">
+          <span className="support-mini-ic" aria-hidden="true">{SUPPORT_IC_SHIELD}</span>
+          <h3>{copy.securityTitle}</h3>
+          <p>{copy.security}</p>
+        </div>
+        <div className="support-mini">
+          <span className="support-mini-ic" aria-hidden="true">{SUPPORT_IC_MONEY}</span>
+          <h3>{copy.refundsTitle}</h3>
+          <p>{copy.refunds}</p>
+          <Link className="support-mini-link" href="/terms">{language === "ru" ? "Пользовательское соглашение →" : "User Agreement →"}</Link>
+        </div>
       </div>
 
       <div className="support-email-card"><div><span>{copy.emailKicker}</span><a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a><p>{copy.emailHelp}</p></div><a className="btn btn-ghost" href={`mailto:${SUPPORT_EMAIL}`}>{copy.write}</a></div>
