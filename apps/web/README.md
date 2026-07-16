@@ -25,6 +25,10 @@ Import the monorepo as a Vercel project with:
 - Optional documentation host: `NEXT_PUBLIC_DOCS_URL=https://docs.apitoken.sale` (defaults to the standalone `/docs` portal)
 - Production domain: `apitoken.sale`
 
+Optional `GOOGLE_SITE_VERIFICATION`, `YANDEX_SITE_VERIFICATION`, and `BING_SITE_VERIFICATION`
+environment variables add the corresponding webmaster ownership meta tags during the production build.
+After deployment, submit `https://apitoken.sale/sitemap.xml` in each webmaster console.
+
 The repository-level `pnpm-lock.yaml` is the dependency lock. Keep `apitoken.sale` as the canonical
 origin because the backend CORS and mutation-origin checks intentionally allow one exact frontend
 origin.

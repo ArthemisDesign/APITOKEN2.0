@@ -76,6 +76,27 @@ describe("completed Next.js migration", () => {
     expect(packageJson).toContain('"@vercel/analytics"');
   });
 
+  it("loads Yandex Metrika globally with SPA pageviews and replay privacy guards", () => {
+    const analytics = readFileSync(join(root, "components", "site-analytics.tsx"), "utf8");
+    const authShell = readFileSync(join(root, "components", "auth-shell.tsx"), "utf8");
+    const dashboard = readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8");
+    const docs = readFileSync(join(appRoot, "docs", "docs-portal.tsx"), "utf8");
+
+    expect(analytics).toContain("110788366");
+    expect(analytics).toContain("https://mc.yandex.ru/metrika/tag.js");
+    expect(analytics).toContain("https://mc.yandex.ru/watch/");
+    expect(analytics).toContain("webvisor:true");
+    expect(analytics).toContain("clickmap:true");
+    expect(analytics).toContain("ecommerce:'dataLayer'");
+    expect(analytics).toContain("defer:true");
+    expect(analytics).toContain('window.ym?.(YANDEX_METRIKA_ID, "hit", pathname');
+    expect(analytics).toContain("location.origin+location.pathname");
+    expect(authShell).toContain("auth-card ym-hide-content");
+    expect(dashboard).toContain("app ym-hide-content");
+    expect(docs).toContain("ym-disable-keys");
+    expect(docs).toContain("docs-code-card ym-hide-content");
+  });
+
   it("keeps reloadable dashboard views in the single canonical /dashboard route", () => {
     const dashboard = readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8");
     const routes = readFileSync(join(appRoot, "dashboard", "dashboard-route.ts"), "utf8");

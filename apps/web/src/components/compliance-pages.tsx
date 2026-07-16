@@ -32,7 +32,7 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
       eyebrow: "Legal information",
       title: "Privacy Policy",
       summary: "How apiToken.sale collects, uses, shares, and protects information when you use the website, dashboard, payments, and API gateway.",
-      updated: "Effective and last updated: July 15, 2026",
+      updated: "Effective and last updated: July 16, 2026",
       notice: `Privacy requests are handled at ${SUPPORT_EMAIL}.`,
       sections: [
         {
@@ -48,7 +48,7 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
             "Account information: email address, account identifier, verification status, customer type, and account settings.",
             "Authentication information: a securely hashed password for password accounts, or identifiers and profile data returned by Google or GitHub when you choose OAuth sign-in. We do not receive your Google or GitHub password.",
             "Technical and security information: IP address, browser and device details, timestamps, session identifiers, security events, and diagnostic logs.",
-            "Website analytics: page path without query strings or fragments, timestamp, referrer, approximate location, device type, operating system, and browser. We receive this through Vercel Web Analytics as aggregated traffic statistics and do not link it to your account identity.",
+            "Website analytics: page path without query strings or fragments, timestamp, referrer, approximate location, device type, operating system, browser, and interaction data such as clicks, link activity, and session replay. We receive aggregated traffic statistics through Vercel Web Analytics and behavior analytics through Yandex Metrica, and do not intentionally link them to your account identity.",
             "API and billing metadata: API key identifier, selected model, request time, token and usage totals, official API cost, discount, balance charge, ledger reference, and request status.",
             "Payment information: top-up amount, currency, payment status, provider transaction identifiers, and webhook records. Full payment-card credentials are handled by the payment provider and are not stored by apiToken.sale.",
             "Support information: messages, attachments, account or order identifiers, and other information you voluntarily send to support.",
@@ -89,6 +89,7 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
           paragraphs: [
             "The Service uses an essential secure, HttpOnly session cookie to keep you signed in. Language and theme preferences may be stored in your browser's local storage. These technologies are required for the requested functionality and are not used by us to sell advertising profiles.",
             "We use Vercel Web Analytics for anonymous, aggregated page-view statistics. It does not use third-party analytics cookies. Vercel creates a short-lived visitor hash from a request and discards the visitor-session identifier after 24 hours. apiToken.sale removes query strings and URL fragments before an analytics event is sent.",
+            "We also use Yandex Metrica for page-view and interaction analytics, including click maps, outbound-link tracking, and Session Replay. Yandex Metrica may use cookies and browser storage to distinguish visits. apiToken.sale removes query strings and URL fragments from page-view URLs, masks authentication and dashboard content from Session Replay, and prevents API-key fields and examples from being recorded.",
           ],
         },
         {
@@ -231,7 +232,7 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
       eyebrow: "Правовая информация",
       title: "Политика конфиденциальности",
       summary: "Как apiToken.sale собирает, использует, передаёт и защищает информацию при использовании сайта, кабинета, платежей и API-шлюза.",
-      updated: "Дата вступления в силу и последнего обновления: 15 июля 2026 года",
+      updated: "Дата вступления в силу и последнего обновления: 16 июля 2026 года",
       notice: `Запросы по персональным данным принимаются по адресу ${SUPPORT_EMAIL}.`,
       sections: [
         {
@@ -247,7 +248,7 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
             "Данные аккаунта: адрес электронной почты, идентификатор аккаунта, статус подтверждения, тип клиента и настройки.",
             "Данные авторизации: надёжно хешированный пароль для аккаунтов с паролем либо идентификаторы и данные профиля, полученные от Google или GitHub при выборе OAuth. Пароль от Google или GitHub нам не передаётся.",
             "Технические данные и данные безопасности: IP-адрес, сведения о браузере и устройстве, время событий, идентификаторы сессий, события безопасности и диагностические журналы.",
-            "Веб-аналитика: путь страницы без параметров запроса и фрагментов, время, источник перехода, примерное местоположение, тип устройства, операционная система и браузер. Мы получаем эти сведения через Vercel Web Analytics в виде агрегированной статистики и не связываем их с личностью владельца аккаунта.",
+            "Веб-аналитика: путь страницы без параметров запроса и фрагментов, время, источник перехода, примерное местоположение, тип устройства, операционная система, браузер, а также данные о взаимодействии, включая клики, переходы по ссылкам и запись сеанса. Мы получаем агрегированную статистику через Vercel Web Analytics и аналитику поведения через Яндекс Метрику и намеренно не связываем её с личностью владельца аккаунта.",
             "Метаданные API и биллинга: идентификатор API-ключа, выбранная модель, время запроса, объём использования и токены, официальная стоимость API, скидка, списание с баланса, ссылка в журнале операций и статус запроса.",
             "Платёжные данные: сумма пополнения, валюта, статус, идентификаторы операции у провайдера и записи вебхуков. Полные данные банковской карты обрабатываются платёжным провайдером и не хранятся apiToken.sale.",
             "Данные поддержки: сообщения, вложения, идентификаторы аккаунта или заказа и иные сведения, которые вы добровольно отправляете.",
@@ -288,6 +289,7 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
           paragraphs: [
             "Сервис использует обязательный защищённый HttpOnly cookie сессии, чтобы сохранять вход в аккаунт. Язык и тема могут храниться в локальном хранилище браузера. Эти технологии нужны для запрошенных функций и не используются нами для продажи рекламных профилей.",
             "Мы используем Vercel Web Analytics для анонимной агрегированной статистики просмотров. Сервис аналитики не использует сторонние cookie. Vercel создаёт краткосрочный хеш посетителя из запроса и удаляет идентификатор сессии посетителя через 24 часа. apiToken.sale удаляет параметры запроса и фрагменты URL до отправки события аналитики.",
+            "Мы также используем Яндекс Метрику для аналитики просмотров и взаимодействий, включая карту кликов, отслеживание внешних ссылок и Вебвизор. Яндекс Метрика может использовать cookie и хранилище браузера, чтобы различать визиты. apiToken.sale удаляет параметры запроса и фрагменты из URL просмотров, скрывает содержимое авторизации и личного кабинета от Вебвизора и запрещает запись полей и примеров с API-ключами.",
           ],
         },
         {

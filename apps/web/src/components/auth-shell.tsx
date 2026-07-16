@@ -26,7 +26,7 @@ export function AuthShell({ children }: { children: ReactNode }) {
           </div>
         </div>
       </header>
-      <div className="auth-shell"><div className="auth-card">{children}</div></div>
+      <div className="auth-shell"><div className="auth-card ym-hide-content">{children}</div></div>
     </>
   );
 }

@@ -1,12 +1,19 @@
+import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 import { DOCS_URL } from "@/lib/site-links";
 import { InteractiveTerminal } from "@/components/interactive-terminal";
+import { JsonLd } from "@/components/json-ld";
 import { PricingOverview } from "@/components/pricing-overview";
 import { TopUpAmountInput } from "@/components/topup-amount-input";
 import { T } from "@/components/translated";
+import { absoluteUrl, createPageMetadata, SITE_NAME, SITE_ORIGIN, seoPages } from "@/lib/seo";
 
-const models = ["Claude Opus 4.8", "Claude Opus 4.7", "Claude Sonnet 4.6", "Claude Haiku 4.5"];
+export const metadata: Metadata = createPageMetadata(seoPages.home, {
+  absoluteTitle: `${seoPages.home.title} | ${SITE_NAME}`,
+});
+
+const models = ["Claude Opus 4.8", "Claude Opus 4.7", "Claude Sonnet 5", "Claude Sonnet 4.6", "Claude Haiku 4.5"];
 // Hero-тезисы: у каждого свой пиксель-значок (свой файл на светлую/тёмную тему).
 const heroPoints = [
   { k: "hero_p1", en: "Drop into Claude Code, Cursor, OpenClaw — any tool that needs a key", ic: "connect" },
@@ -21,8 +28,64 @@ const flow = [
   { num: "03", h: "step3_h", p: "step3_p", raw: [] as string[], chips: ["chip_stream", "chip_limits", "chip_usage"] },
 ] as const;
 
+const faqItems = [
+  { question: "q1", answer: "a1", q: "How much does the Claude API cost?", a: "Enter any positive whole USD top-up amount. Each request is converted to official API spend, then your active discount is applied: B2C progresses from 60% to 80% off, while B2B pricing is negotiated." },
+  { question: "q2", answer: "a2", q: "Is there a free option?", a: "Yes — every new B2C account gets $10 of Claude usage at official API prices, enough to wire up your tools and run real calls." },
+  { question: "q3", answer: "a3", q: "Which models are available?", a: "The current supported Claude line includes Opus, Sonnet, and Haiku models on the same balance and API key." },
+  { question: "q4", answer: "a4", q: "Which Claude model is best for coding?", a: "For agentic coding and long sessions, Opus and Sonnet tiers give the best results; Haiku is ideal for fast, economical calls." },
+  { question: "q5", answer: "a5", q: "What base URL should I use?", a: "Use https://api.apitoken.sale with any Anthropic-compatible tool. Send requests through /v1/messages with the same key and balance." },
+  { question: "q6", answer: "a6", q: "What are the rate limits?", a: "Per-key request caps are configurable in the dashboard, so you can protect your balance and split limits across tools." },
+] as const;
+
+const homeJsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": `${SITE_ORIGIN}/#organization`,
+      name: SITE_NAME,
+      url: SITE_ORIGIN,
+      logo: {
+        "@type": "ImageObject",
+        url: absoluteUrl("/assets/favicon-512.png"),
+        width: 512,
+        height: 512,
+      },
+      email: "apitokensale@gmail.com",
+      contactPoint: {
+        "@type": "ContactPoint",
+        contactType: "customer support",
+        email: "apitokensale@gmail.com",
+        availableLanguage: ["English", "Russian"],
+      },
+    },
+    {
+      "@type": "WebSite",
+      "@id": `${SITE_ORIGIN}/#website`,
+      url: SITE_ORIGIN,
+      name: SITE_NAME,
+      alternateName: "apiToken.sale Claude API",
+      description: seoPages.home.description,
+      inLanguage: "en",
+      publisher: { "@id": `${SITE_ORIGIN}/#organization` },
+    },
+    {
+      "@type": "Service",
+      "@id": `${SITE_ORIGIN}/#service`,
+      name: "Claude API access for developers",
+      description: seoPages.home.description,
+      url: SITE_ORIGIN,
+      serviceType: "Anthropic-compatible API access",
+      areaServed: "Worldwide",
+      audience: { "@type": "Audience", audienceType: "Software developers" },
+      provider: { "@id": `${SITE_ORIGIN}/#organization` },
+      termsOfService: absoluteUrl("/terms"),
+    },
+  ],
+};
+
 export default function HomePage() {
-  return <main>
+  return <><JsonLd data={homeJsonLd} /><main>
       <div className="hero"><div className="wrap hero-grid"><div><T k="hero_eyebrow" as="span" className="eyebrow">Claude API · One gateway</T><h1 className="hero-h1"><T k="hero_h1a" as="span">All Claude models.</T><T k="hero_h1b" as="span">One key.</T></h1><ul className="hero-points">{heroPoints.map((point) => <li key={point.k}><span className="hp-ic" aria-hidden="true"><Image className="hp-ic-l" src={`/assets/feat-${point.ic}-light.png`} width={22} height={22} alt="" /><Image className="hp-ic-d" src={`/assets/feat-${point.ic}-dark.png`} width={22} height={22} alt="" /></span><T k={point.k}>{point.en}</T></li>)}</ul><div className="hero-cta"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link><Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link></div></div><InteractiveTerminal /></div><div className="wrap home-stats"><div className="stats reveal"><Stat value="8+" label="stat1" /><Stat value="1" label="stat2" /><Stat value="99.9%" label="stat3" /><Stat value="<100ms" label="stat4" /><div className="stat"><T k="stat5v" as="b">minutes</T><T k="stat5">Setup time</T></div></div></div></div>
       <section id="products"><div className="wrap"><SectionHead eyebrow="prod_eyebrow" title="prod_h2" lead="prod_lead" />
         <div className="prod-grid" data-reveal-stagger>
@@ -57,6 +120,12 @@ export default function HomePage() {
         </article>)}</div>
       </div></section>
       <section id="pricing"><div className="wrap"><SectionHead eyebrow="pr_eyebrow" title="pr_h2" lead="pr_lead" /><PricingOverview /></div></section>
+      <section id="faq"><div className="wrap"><SectionHead eyebrow="faq_eyebrow" title="faq_h2" lead="faq_lead" />
+        <div className="faq">{faqItems.map((item) => <details key={item.question}>
+          <summary><T k={item.question}>{item.q}</T><span className="plus" aria-hidden="true">＋</span></summary>
+          <T k={item.answer} as="p" className="ans">{item.a}</T>
+        </details>)}</div>
+      </div></section>
       <section className="cta-band"><div className="wrap cta-row reveal">
         <T k="cta_h2" as="h2">Ready to start building?</T>
         <div className="cta-actions">
@@ -64,7 +133,7 @@ export default function HomePage() {
           <Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link>
         </div>
       </div></section>
-    </main>;
+    </main></>;
 }
 
 function Stat({ value, label }: { value: string; label: string }) { return <div className="stat"><b>{value}</b><T k={label}>Metric</T></div>; }

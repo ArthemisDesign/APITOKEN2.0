@@ -1,4 +1,8 @@
+import type { Metadata } from "next";
 import Link from "next/link";
+import { createNoIndexMetadata } from "@/lib/seo";
+
+export const metadata: Metadata = createNoIndexMetadata("Page not found", "The requested apiToken.sale page does not exist.");
 
 export default function NotFound() {
   return (

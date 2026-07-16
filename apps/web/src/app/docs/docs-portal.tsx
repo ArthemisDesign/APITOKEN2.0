@@ -306,7 +306,7 @@ export function DocsPortal() {
               {activeKey && <span role="status" aria-live="polite" style={{ color: "var(--accent)", fontSize: 11 }}>{t.apiKeyActive} <b>••••{activeKey.slice(-4)}</b></span>}
             </div>
             <form onSubmit={(event) => { event.preventDefault(); applyKey(); }} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <input id="docs-api-key" type="password" value={keyInput} onChange={(event) => setKeyInput(event.target.value)} placeholder="sk-pool-•••" aria-describedby="docs-api-key-help" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} style={{ flex: "1 1 280px", minWidth: 0, padding: "10px 12px", border: "1px solid var(--line-strong)", borderRadius: 6, background: "var(--bg-card)", color: "var(--txt)", fontFamily: "var(--font-mono)", fontSize: 12 }} />
+              <input id="docs-api-key" className="ym-disable-keys" type="password" value={keyInput} onChange={(event) => setKeyInput(event.target.value)} placeholder="sk-pool-•••" aria-describedby="docs-api-key-help" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} style={{ flex: "1 1 280px", minWidth: 0, padding: "10px 12px", border: "1px solid var(--line-strong)", borderRadius: 6, background: "var(--bg-card)", color: "var(--txt)", fontFamily: "var(--font-mono)", fontSize: 12 }} />
               <button className="btn btn-primary btn-sm" type="submit">{t.apiKeyApply}</button>
               <button className="btn btn-ghost btn-sm" type="button" onClick={clearKey}>{t.apiKeyClear}</button>
             </form>
@@ -365,11 +365,11 @@ function BrandMark() {
 }
 
 function Endpoint({ label, value, copyLabel, copiedLabel }: { label: string; value: string; copyLabel: string; copiedLabel: string }) {
-  return <div className="docs-endpoint"><span>{label}</span><code>{value}</code><CopyControl value={value} label={copyLabel} copiedLabel={copiedLabel} /></div>;
+  return <div className="docs-endpoint ym-hide-content"><span>{label}</span><code>{value}</code><CopyControl value={value} label={copyLabel} copiedLabel={copiedLabel} /></div>;
 }
 
 function CodeBlock({ title, description, code, copyLabel, copiedLabel }: { title: string; description?: string; code: string; copyLabel: string; copiedLabel: string }) {
-  return <article className="docs-code-card"><header><div><h3>{title}</h3>{description && <p>{description}</p>}</div><CopyControl value={code} label={copyLabel} copiedLabel={copiedLabel} /></header><pre><code>{code}</code></pre></article>;
+  return <article className="docs-code-card ym-hide-content"><header><div><h3>{title}</h3>{description && <p>{description}</p>}</div><CopyControl value={code} label={copyLabel} copiedLabel={copiedLabel} /></header><pre><code>{code}</code></pre></article>;
 }
 
 function CopyControl({ value, label, copiedLabel }: { value: string; label: string; copiedLabel: string }) {

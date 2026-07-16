@@ -126,10 +126,10 @@ export function Dashboard() {
   }
 
   if (loading) return <div className="dashboard-loading"><span className="brand">apiToken.sale</span><p>{copy.loading}</p></div>;
-  if (!user || !account) return <div className="wrap guard"><div className="auth-card"><p>{error ?? copy.loginPrompt}</p><Link className="btn btn-primary" href="/login">{copy.login}</Link></div></div>;
+  if (!user || !account) return <div className="wrap guard ym-hide-content"><div className="auth-card"><p>{error ?? copy.loginPrompt}</p><Link className="btn btn-primary" href="/login">{copy.login}</Link></div></div>;
 
   const activeKeys = keys.filter((key) => key.status === "active");
-  return <div className="app">
+  return <div className="app ym-hide-content">
     <aside className={`side ${sideOpen ? "open" : ""}`}>
       <Link className="brand side-brand" href="/"><BrandImages />apiToken.sale</Link>
       <nav className="side-nav">
