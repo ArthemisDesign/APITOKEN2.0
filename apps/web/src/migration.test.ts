@@ -79,7 +79,7 @@ describe("completed Next.js migration", () => {
   it("keeps reloadable dashboard views in the single canonical /dashboard route", () => {
     const dashboard = readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8");
     const routes = readFileSync(join(appRoot, "dashboard", "dashboard-route.ts"), "utf8");
-    for (const section of ["overview", "keys", "credits", "promos", "usage", "profile", "security"]) {
+    for (const section of ["overview", "keys", "credits", "promos", "usage", "support", "profile"]) {
       expect(dashboard).toContain(`section === \"${section}\"`);
       expect(routes).toContain(`\"${section}\"`);
     }
@@ -87,6 +87,8 @@ describe("completed Next.js migration", () => {
     expect(dashboard).not.toContain('section === "orders"');
     expect(routes).not.toContain('"refer"');
     expect(routes).not.toContain('"orders"');
+    expect(dashboard).not.toContain('section === "security"');
+    expect(routes).not.toContain('"security"');
     expect(dashboard).not.toMatch(/href=[{\"]+\/dashboard\//);
     expect(routes).toContain('`/dashboard?view=${section}`');
     expect(dashboard).toContain("const [section, setSection] = useState<Section>(() => parseDashboardSection(searchParams.get(\"view\")))");

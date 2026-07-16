@@ -1,6 +1,6 @@
 # Caddy production routing
 
-`deploy/Caddyfile` is the complete intended production configuration for Caddy 2.11. It includes the public engine API, the blue-green commerce API, mail/autodiscovery, and the operator panel.
+`deploy/Caddyfile` is the complete intended production configuration for Caddy 2.11. It includes the public engine API, the blue-green commerce API, a loopback-only stable Control API origin, mail/autodiscovery, and the operator panel.
 
 ## Host-only secrets
 
@@ -69,6 +69,11 @@ A `503` returned by a normal proxied request is recorded by the passive health c
 `127.0.0.1:8787` and `127.0.0.1:8788`. Caddy probes `/ready`; `engine-bluegreen.sh` admits the new
 slot, sends `SIGUSR1` to make the old slot return 503 readiness, waits for depooling, then sends
 SIGTERM so established streams drain under the systemd deadline.
+
+The commerce API and worker use `http://127.0.0.1:8790`, a loopback-only Caddy listener over those
+same health-gated slots. They must never address either deployment slot directly. The engine
+blue-green controller requires this stable listener to remain ready before, during, and after an old
+slot is drained.
 
 The 2-second `lb_try_duration` and 100 ms `lb_try_interval` hold and retry a newly arriving request when the loopback dial fails during a brief engine restart/bind gap. Dial failures are retryable for every HTTP method because the connection was never established and the request was not transmitted. The configuration does not broaden Caddy's default rule for failures after a connection was established, so POST bodies are not unsafely replayed after a partial round trip.
 

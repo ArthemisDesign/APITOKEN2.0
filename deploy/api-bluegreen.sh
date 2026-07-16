@@ -548,6 +548,13 @@ if [[ "$DRY_RUN" != "1" ]] && ! slot_serves_current_release "$TARGET_PORT" "$CUR
   die "target port $TARGET_PORT is not ready on the current release at final verification"
 fi
 
+# Boot persistence must follow the verified serving slot. Otherwise a reboot can
+# resurrect the stopped instance while leaving the selected one disabled.
+systemctl_command enable "$(slot_unit "$TARGET_PORT")"
+if [[ -n "$ACTIVE_PORT" && "$ACTIVE_PORT" != "$TARGET_PORT" ]]; then
+  systemctl_command disable "$(slot_unit "$ACTIVE_PORT")"
+fi
+
 commit_cutover
 if [[ "$DRY_RUN" == "1" ]]; then
   log "dry-run complete; no API or worker service state changed"

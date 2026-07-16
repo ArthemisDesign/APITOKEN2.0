@@ -15,7 +15,8 @@ Run them on the production host as the `deploy` operator from `/opt/apitoken/rep
 
 The engine owns a separate `claude_engine` database and non-superuser login role in this PostgreSQL
 server. Commerce application units receive no engine DSN and continue to communicate only through
-the Control API.
+the Control API. Both commerce processes use the stable loopback origin `http://127.0.0.1:8790`;
+Caddy health-routes that origin to the active engine slot.
 
 After the Stage-2 database cutover, use `deploy.sh --engine-bluegreen` followed by
 `engine-bluegreen.sh`; legacy restart mode refuses to run while the PostgreSQL credential is active.
@@ -105,8 +106,14 @@ sudo deploy/engine-postgres-provision.sh
 sudo deploy/engine-postgres-cutover.sh
 sudo deploy/install-caddy.sh --check
 sudo deploy/install-caddy.sh
+sudo deploy/configure-engine-control-url.sh
 deploy/engine-bluegreen.sh
 ```
+
+After configuring the stable origin, start a new commerce API slot and restart the single worker so
+both processes load the updated environment. Verify `configure-engine-control-url.sh --check` before
+retiring an engine slot. The environment updater makes root-only timestamped rollback copies and
+does not print any secret-bearing line.
 
 If import, start, or readiness fails, the trap restores the old unit, moves the credential back to
 pending, and restarts SQLite. Once PostgreSQL readiness succeeds and traffic resumes, do not point the

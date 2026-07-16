@@ -23,6 +23,7 @@ ENGINE_RELEASE_ROOT=${ENGINE_RELEASE_ROOT:-/srv/claude-api/releases}
 DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}
 POSTGRES_ENV=${ENGINE_POSTGRES_ENV:-/srv/claude-api/data/engine-postgres.env}
 CADDY_CONFIG=${CADDY_CONFIG:-/etc/caddy/Caddyfile}
+CONTROL_READY_URL=${ENGINE_CONTROL_READY_URL:-http://127.0.0.1:8790/ready}
 LEGACY_UNIT=claude-api.service
 CURRENT_RELEASE=
 ACTIVE_PORT=
@@ -59,6 +60,11 @@ draining_port() {
   local port=$1 status
   status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 "$(slot_url "$port")" 2>/dev/null) || return 1
   [[ $status == 503 ]]
+}
+control_ready() {
+  local status
+  status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 "$CONTROL_READY_URL" 2>/dev/null) || return 1
+  [[ $status == 200 ]]
 }
 unit_for_ready_port() {
   local port=$1 template
@@ -147,6 +153,11 @@ privileged_command test -f /etc/systemd/system/claude-api@.service || die "engin
 privileged_command caddy validate --adapter caddyfile --config "$CADDY_CONFIG" >/dev/null
 privileged_command grep -q '127.0.0.1:8788' "$CADDY_CONFIG" \
   || die "Caddy is not configured with the 8788 engine slot"
+privileged_command grep -q '127.0.0.1:8790' "$CADDY_CONFIG" \
+  || die "Caddy is missing the stable loopback Control API listener on 127.0.0.1:8790"
+if [[ $DRY_RUN == 0 ]]; then
+  control_ready || die "stable Control API is not ready at $CONTROL_READY_URL"
+fi
 CURRENT_RELEASE=$(required_current_release_path "$ENGINE_RELEASE_ROOT")
 validate_release_marker "$CURRENT_RELEASE" "$(basename -- "$CURRENT_RELEASE")"
 [[ -x "$CURRENT_RELEASE/claude-api" ]] || die "current engine binary is missing"
@@ -189,6 +200,7 @@ log "waiting ${HEALTH_WINDOW_SECONDS}s for Caddy to health-include $TARGET_PORT"
 run sleep "$HEALTH_WINDOW_SECONDS"
 if [[ $DRY_RUN == 0 ]]; then
   slot_serves_current "$TARGET_PORT" || die "target lost readiness during Caddy inclusion"
+  control_ready || die "stable Control API lost readiness while admitting the target"
 fi
 TARGET_COMMITTED=1
 
@@ -200,6 +212,7 @@ if [[ -n $ACTIVE_UNIT && $ACTIVE_UNIT != "$TARGET_UNIT" ]]; then
   if [[ $DRY_RUN == 0 ]]; then draining_port "$ACTIVE_PORT" || die "old engine did not flip readiness to 503"; fi
   if [[ $DRY_RUN == 0 ]]; then
     slot_serves_current "$TARGET_PORT" || die "target lost readiness during old-engine pre-drain"
+    control_ready || die "stable Control API lost readiness during old-engine pre-drain"
   fi
   systemctl_command stop "$ACTIVE_UNIT"
   systemctl_command disable "$ACTIVE_UNIT"
@@ -207,6 +220,7 @@ fi
 systemctl_command enable "$TARGET_UNIT"
 if [[ $DRY_RUN == 0 ]]; then
   slot_serves_current "$TARGET_PORT" || die "target failed final exact-release verification"
+  control_ready || die "stable Control API failed final readiness verification"
 fi
 
 commit_cutover

@@ -19,6 +19,25 @@ api.apitoken.sale {
 	respond 404
 }
 
+# Stable, loopback-only Control API origin for the commerce API and worker.
+# Consumers never address an engine deployment slot directly.
+http://127.0.0.1:8790 {
+	reverse_proxy 127.0.0.1:8787 127.0.0.1:8788 {
+		lb_policy round_robin
+		lb_try_duration 2s
+		lb_try_interval 100ms
+
+		health_uri /ready
+		health_interval 2s
+		health_timeout 2s
+		health_status 2xx
+
+		fail_duration 5s
+		max_fails 1
+		unhealthy_status 503
+	}
+}
+
 backend.apitoken.sale {
 	reverse_proxy 127.0.0.1:3000 127.0.0.1:3001 {
 		lb_policy round_robin
