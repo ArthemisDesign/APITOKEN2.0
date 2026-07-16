@@ -1826,3 +1826,6 @@ body.app-body .bg-decor{display:none!important}
 .learn-lang-off{color:var(--txt-3);background:var(--bg-card)}
 .learn-lang-off:hover{border-color:var(--accent);color:var(--accent)}
 .learn-lang-on{color:var(--txt);background:var(--bg-soft);border-color:var(--line-strong);font-weight:700}
+
+.learn-updated{font-family:var(--font-mono);font-size:12px;color:var(--txt-3);margin:6px 0 0}
+.learn-updated time{color:var(--txt-3)}

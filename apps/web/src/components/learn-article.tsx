@@ -13,6 +13,9 @@ import {
   type Locale,
   type ResolvedArticle,
 } from "@/lib/learn";
+import { LAST_CONTENT_UPDATE } from "@/lib/seo";
+
+const UPDATED_DATE = LAST_CONTENT_UPDATE.toISOString().slice(0, 10);
 
 const CLUSTER_ORDER: LearnCluster[] = ["buy", "free", "integrate", "compare", "explain"];
 
@@ -128,6 +131,7 @@ export function LearnArticleView({ article }: { article: ResolvedArticle }) {
           <span className="eyebrow">{cluster.label}</span>
           <h1>{content.h1}</h1>
           <p>{content.dek}</p>
+          <p className="learn-updated"><time dateTime={UPDATED_DATE}>{ui.updated} {UPDATED_DATE}</time></p>
         </div>
       </div>
 

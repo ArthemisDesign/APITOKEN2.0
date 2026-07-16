@@ -85,6 +85,7 @@ export const learnUi: Record<Locale, {
   crumbHome: string;
   crumbDocs: string;
   crumbGuides: string;
+  updated: string;
 }> = {
   en: {
     guidesEyebrow: "Claude API guides",
@@ -100,6 +101,7 @@ export const learnUi: Record<Locale, {
     crumbHome: "Home",
     crumbDocs: "Docs",
     crumbGuides: "Guides",
+    updated: "Updated",
   },
   ru: {
     guidesEyebrow: "Гайды по Claude API",
@@ -115,6 +117,7 @@ export const learnUi: Record<Locale, {
     crumbHome: "Главная",
     crumbDocs: "Документация",
     crumbGuides: "Гайды",
+    updated: "Обновлено",
   },
   zh: {
     guidesEyebrow: "Claude API 指南",
@@ -130,6 +133,7 @@ export const learnUi: Record<Locale, {
     crumbHome: "首页",
     crumbDocs: "文档",
     crumbGuides: "指南",
+    updated: "更新于",
   },
 };
 

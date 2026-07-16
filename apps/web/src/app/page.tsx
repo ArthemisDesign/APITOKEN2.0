@@ -52,10 +52,12 @@ const homeJsonLd = {
         height: 512,
       },
       email: "apitokensale@gmail.com",
+      sameAs: ["https://t.me/apitokensupportbot"],
       contactPoint: {
         "@type": "ContactPoint",
         contactType: "customer support",
         email: "apitokensale@gmail.com",
+        url: absoluteUrl("/contacts"),
         availableLanguage: ["English", "Russian"],
       },
     },
@@ -80,6 +82,15 @@ const homeJsonLd = {
       audience: { "@type": "Audience", audienceType: "Software developers" },
       provider: { "@id": `${SITE_ORIGIN}/#organization` },
       termsOfService: absoluteUrl("/terms"),
+    },
+    {
+      "@type": "FAQPage",
+      "@id": `${SITE_ORIGIN}/#faq`,
+      mainEntity: faqItems.map((item) => ({
+        "@type": "Question",
+        name: item.q,
+        acceptedAnswer: { "@type": "Answer", text: item.a },
+      })),
     },
   ],
 };

@@ -10,12 +10,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: page.priority,
   }));
 
-  const aboutPage: MetadataRoute.Sitemap = [{
-    url: absoluteUrl("/about"),
-    lastModified: LAST_CONTENT_UPDATE,
-    changeFrequency: "monthly",
-    priority: 0.6,
-  }];
+  const infoPages: MetadataRoute.Sitemap = [
+    { url: absoluteUrl("/about"), changeFrequency: "monthly" as const, priority: 0.6 },
+    { url: absoluteUrl("/contacts"), changeFrequency: "monthly" as const, priority: 0.5 },
+    { url: absoluteUrl("/changelog"), changeFrequency: "weekly" as const, priority: 0.5 },
+    { url: absoluteUrl("/status"), changeFrequency: "weekly" as const, priority: 0.4 },
+  ].map((page) => ({ ...page, lastModified: LAST_CONTENT_UPDATE }));
 
   const learnHubs: MetadataRoute.Sitemap = LOCALES.map((locale) => ({
     url: absoluteUrl(learnHubPath(locale)),
@@ -33,5 +33,5 @@ export default function sitemap(): MetadataRoute.Sitemap {
     })),
   );
 
-  return [...corePages, ...aboutPage, ...learnHubs, ...learnPages];
+  return [...corePages, ...infoPages, ...learnHubs, ...learnPages];
 }

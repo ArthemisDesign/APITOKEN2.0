@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import manifest from "./app/manifest";
-import robots from "./app/robots";
 import sitemap from "./app/sitemap";
+import { buildRobotsTxt } from "./lib/robots";
 import {
   absoluteUrl,
   createNoIndexMetadata,
@@ -28,16 +28,14 @@ describe("technical SEO", () => {
   });
 
   it("advertises the sitemap, welcomes AI crawlers, and blocks private surfaces", () => {
-    const rules = robots().rules as Array<{ userAgent: string | string[]; allow?: string | string[]; disallow?: string | string[] }>;
-    const wildcard = rules.find((rule) => rule.userAgent === "*");
-    expect(wildcard?.allow).toBe("/");
-    expect(wildcard?.disallow).toContain("/dashboard");
-
-    const agents = rules.flatMap((rule) => (Array.isArray(rule.userAgent) ? rule.userAgent : [rule.userAgent]));
-    for (const agent of ["Googlebot", "YandexBot", "GPTBot", "ClaudeBot", "PerplexityBot", "Google-Extended"]) {
-      expect(agents).toContain(agent);
+    const txt = buildRobotsTxt();
+    for (const agent of ["User-agent: *", "Googlebot", "YandexBot", "GPTBot", "ClaudeBot", "PerplexityBot", "Google-Extended"]) {
+      expect(txt).toContain(agent);
     }
-    expect(robots().sitemap).toBe(absoluteUrl("/sitemap.xml"));
+    expect(txt).toContain("Disallow: /dashboard");
+    expect(txt).toContain("Content-Signal: search=yes, ai-input=yes, ai-train=yes");
+    expect(txt).toContain("Clean-param:");
+    expect(txt).toContain(`Sitemap: ${absoluteUrl("/sitemap.xml")}`);
     expect(manifest().start_url).toBe("/");
     expect(manifest().icons).toHaveLength(3);
   });
