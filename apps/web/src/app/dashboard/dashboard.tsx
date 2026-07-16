@@ -170,7 +170,7 @@ export function Dashboard() {
         {section === "credits" && <Credits account={account} ledger={ledger} />}
         {section === "usage" && <Usage account={account} ledger={ledger} usage={usage} />}
         {section === "support" && <SupportPanel />}
-        {section === "profile" && <Profile user={user} onUpdated={setUser} onLogout={logout} />}
+        {section === "profile" && <Profile user={user} onUpdated={setUser} />}
         {section === "promos" && <PromoPanel />}
       </div>
     </main>
@@ -799,9 +799,8 @@ function TwoFactorCard({ user, onUpdated }: { user: AuthUser; onUpdated(user: Au
   </div>;
 }
 
-function Profile({ user, onUpdated, onLogout }: { user: AuthUser; onUpdated(user: AuthUser): void; onLogout(): Promise<void> }) {
+function Profile({ user, onUpdated }: { user: AuthUser; onUpdated(user: AuthUser): void }) {
   const copy = useDashboardCopy();
-  const browser = typeof navigator === "undefined" ? "Current browser" : navigator.userAgent;
   const persistedDisplayName = user.displayName || user.email.split("@")[0];
   const [displayName, setDisplayName] = useState(persistedDisplayName);
   const [saving, setSaving] = useState(false);
@@ -823,8 +822,6 @@ function Profile({ user, onUpdated, onLogout }: { user: AuthUser; onUpdated(user
   }
   return <section className="panel"><PageHeading eyebrow={copy.navAccount} title={copy.profileTitle} subtitle={copy.profileSubtitle} /><div className="prof-grid"><form className="card" onSubmit={saveProfile}><h2>{copy.profileTitle}</h2><div className="set-row"><label className="set-l" htmlFor="profile-email">{copy.email}</label><input id="profile-email" className="set-in" value={user.email} disabled readOnly /></div><div className="set-row"><label className="set-l" htmlFor="profile-display-name">{copy.displayName}</label><input id="profile-display-name" className="set-in" value={displayName} maxLength={80} autoComplete="name" onChange={(event) => { setDisplayName(event.target.value); setSaved(false); setSaveError(null); }} /></div><div className="set-row profile-id-row"><span className="set-l">{copy.userId}</span><span className="uid-wrap"><input className="set-in" value={user.id} aria-label={copy.userId} disabled readOnly /><CopyButton value={user.id} className="uid-copy-button" /></span></div><p className="p-sub">{copy.supportId}</p><div className="profile-meta"><span className="pill">{user.customerType.toUpperCase()}</span><span className="pill pill-soft">Email {user.emailVerified ? copy.verified : copy.pending}</span></div><div className="prof-save"><button className="btn btn-primary btn-sm" type="submit" disabled={saving || unchanged || trimmedName.length === 0}>{saving ? copy.saving : copy.save}</button>{saved && <span className="set-saved always-visible profile-save-success" role="status">{copy.profileSaved}</span>}{saveError && <span className="profile-save-error" role="alert">{saveError}</span>}</div></form>
     <div className="prof-side"><TwoFactorCard user={user} onUpdated={onUpdated} /></div></div>
-    {user.passwordEnabled ? <section className="dsec"><h2>{copy.password}</h2><div className="set-card"><div className="set-row"><span className="set-l">{copy.currentPassword}</span><input className="set-in" type="password" disabled /></div><div className="set-row"><span className="set-l">{copy.newPassword}</span><input className="set-in" type="password" disabled /></div><button className="btn btn-primary btn-sm" disabled>{copy.updatePassword}</button><span className="future-note">{copy.passwordPending}</span></div></section> : <section className="dsec"><h2>{copy.oauthAccess}</h2><div className="set-card oauth-access-card"><p className="p-sub no-margin">{copy.oauthAccessText}</p></div></section>}
-    <section className="dsec"><h2>{copy.activeSessions}</h2><div className="set-card"><div className="set-row"><span className="set-l"><b>{copy.thisDevice}</b><br /><span className="p-sub session-agent">{browser}</span></span><span className="obadge">{copy.activeNow}</span></div><button className="btn btn-ghost btn-sm" onClick={onLogout}>{copy.logoutSession}</button></div></section>
   </section>;
 }
 
