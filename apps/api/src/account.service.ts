@@ -76,6 +76,7 @@ export class AccountService {
         amountUsd: entry.amount,
         keyMasked: entry.key_masked,
         reference: entry.ref,
+        model: entry.model ?? null,
         balanceAfterNano: entry.balance_after_nano,
         timestamp: entry.ts,
       })),

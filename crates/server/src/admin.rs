@@ -154,6 +154,7 @@ pub async fn list_ledger(
         "ref": e.reference,
         "balance_after_nano": e.balance_after_nano,
         "ts": e.ts,
+        "model": e.model,
     })).collect();
     Json(json!({"account": id, "entries": rows})).into_response()
 }

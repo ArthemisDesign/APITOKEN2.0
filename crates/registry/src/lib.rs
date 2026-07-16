@@ -100,9 +100,12 @@ pub fn open(path: &str) -> Result<Connection> {
     c.execute(
         "CREATE TABLE IF NOT EXISTS ledger(id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, \
          key TEXT, kind TEXT NOT NULL, amount_nano INTEGER NOT NULL, ref TEXT, \
-         balance_after_nano INTEGER, ts INTEGER)",
+         balance_after_nano INTEGER, ts INTEGER, model TEXT)",
         [],
     )?;
+    // Атрибуция charge-строк к Claude-модели (для точного per-model дневного графика). Модель известна
+    // в момент settle (тот же запрос, что и usage_event). topup/adjust модели не имеют → NULL. Идемпотентно.
+    let _ = c.execute("ALTER TABLE ledger ADD COLUMN model TEXT", []);
     let _ = c.execute("CREATE INDEX IF NOT EXISTS ledger_acct ON ledger(account_id, id)", []);
     // ИДЕМПОТЕНТНОСТЬ пополнений: payment-ref уникален среди topup-строк → повторный вебхук с тем же
     // tx-id физически не начислит дважды (партиальный UNIQUE; на charge/adjust не распространяется).
@@ -599,7 +602,9 @@ pub fn account_settle_in(conn: &Connection, id: &str, key: &str, hold_nano: i64,
         conn.execute("UPDATE api_keys SET spent_nano = spent_nano + ?1 WHERE key = ?2",
                    rusqlite::params![actual, key])?;
         if actual > 0 {
-            ledger_add(conn, id, Some(key), "charge", actual, reference, b)?;
+            // Модель за списанием — из usage того же запроса (пустую строку не пишем → NULL).
+            let model = usage.map(|u| u.model.as_str()).filter(|m| !m.is_empty());
+            ledger_add(conn, id, Some(key), "charge", actual, reference, b, model)?;
             // usage_events (аналитика) — в ТОЙ ЖЕ транзакции, что и charge (экономим коммит на запрос).
             // Best-effort: ошибка вставки usage НЕ роняет money-коммит (аналитика не критична).
             if let Some(u) = usage { let _ = usage_event_add(conn, id, Some(key), u, actual, reference); }
@@ -669,13 +674,14 @@ pub fn ledger_prune(conn: &Connection, older_than_ts: i64) -> Result<usize> {
     Ok(total)
 }
 
-/// Добавить строку в append-only ledger (журнал движений баланса).
+/// Добавить строку в append-only ledger (журнал движений баланса). `model` — Claude-модель за
+/// charge-строкой (для точного per-model графика); у topup/adjust модели нет → None.
 fn ledger_add(conn: &Connection, account_id: &str, key: Option<&str>, kind: &str,
-              amount_nano: i64, reference: Option<&str>, balance_after: i64) -> Result<()> {
+              amount_nano: i64, reference: Option<&str>, balance_after: i64, model: Option<&str>) -> Result<()> {
     conn.execute(
-        "INSERT INTO ledger(account_id, key, kind, amount_nano, ref, balance_after_nano, ts) \
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        rusqlite::params![account_id, key, kind, amount_nano, reference, balance_after, now()])?;
+        "INSERT INTO ledger(account_id, key, kind, amount_nano, ref, balance_after_nano, ts, model) \
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![account_id, key, kind, amount_nano, reference, balance_after, now(), model])?;
     Ok(())
 }
 
@@ -822,12 +828,13 @@ pub struct LedgerRow {
     pub reference: Option<String>,
     pub balance_after_nano: Option<i64>,
     pub ts: i64,
+    pub model: Option<String>, // Claude-модель за charge (для per-model графика); topup/adjust → None
 }
 
 /// Последние `limit` строк ledger аккаунта (свежие сверху). Для дашборда «история/расход».
 pub fn ledger_recent(conn: &Connection, account_id: &str, limit: i64) -> Result<Vec<LedgerRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, key, kind, amount_nano, ref, balance_after_nano, ts \
+        "SELECT id, key, kind, amount_nano, ref, balance_after_nano, ts, model \
          FROM ledger WHERE account_id=?1 ORDER BY id DESC LIMIT ?2")?;
     let rows = stmt.query_map(rusqlite::params![account_id, limit.clamp(1, 1000)], |r| Ok(LedgerRow {
         id: r.get::<_, i64>(0)?,
@@ -837,6 +844,7 @@ pub fn ledger_recent(conn: &Connection, account_id: &str, limit: i64) -> Result<
         reference: r.get::<_, Option<String>>(4)?,
         balance_after_nano: r.get::<_, Option<i64>>(5)?,
         ts: r.get::<_, i64>(6)?,
+        model: r.get::<_, Option<String>>(7)?,
     }))?;
     Ok(rows.filter_map(|x| x.ok()).collect())
 }
@@ -844,7 +852,7 @@ pub fn ledger_recent(conn: &Connection, account_id: &str, limit: i64) -> Result<
 /// Ledger cursor for durable external consumers. Rows are returned oldest-first after `after_id`.
 pub fn ledger_after(conn: &Connection, account_id: &str, after_id: i64, limit: i64) -> Result<Vec<LedgerRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, key, kind, amount_nano, ref, balance_after_nano, ts \
+        "SELECT id, key, kind, amount_nano, ref, balance_after_nano, ts, model \
          FROM ledger WHERE account_id=?1 AND id>?2 ORDER BY id ASC LIMIT ?3")?;
     let rows = stmt.query_map(rusqlite::params![account_id, after_id.max(0), limit.clamp(1, 1000)], |r| Ok(LedgerRow {
         id: r.get::<_, i64>(0)?,
@@ -854,6 +862,7 @@ pub fn ledger_after(conn: &Connection, account_id: &str, after_id: i64, limit: i
         reference: r.get::<_, Option<String>>(4)?,
         balance_after_nano: r.get::<_, Option<i64>>(5)?,
         ts: r.get::<_, i64>(6)?,
+        model: r.get::<_, Option<String>>(7)?,
     }))?;
     Ok(rows.filter_map(|x| x.ok()).collect())
 }
@@ -1115,6 +1124,9 @@ mod tests {
         account_settle(&c, "a", "k", 1_000_000_000, 400_000_000, Some("req1"), Some(&u)).unwrap();
         let charges: i64 = c.query_row("SELECT COUNT(*) FROM ledger WHERE kind='charge' AND account_id='a'", [], |r| r.get(0)).unwrap();
         assert_eq!(charges, 1, "charge записан");
+        // charge-строка несёт модель (для точного per-model графика); topup/adjust — NULL.
+        assert_eq!(ledger_recent(&c, "a", 10).unwrap()[0].model.as_deref(), Some("claude-opus-4-8"),
+                   "модель проставлена в ledger-charge");
         let agg = usage_by_model(&c, "a", 0).unwrap();
         assert_eq!(agg.len(), 1);
         assert_eq!(agg[0].model, "claude-opus-4-8");

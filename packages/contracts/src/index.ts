@@ -66,6 +66,8 @@ export const engineLedgerEntrySchema = z.object({
   ref: z.string().nullable(),
   balance_after_nano: decimalIntegerSchema.nullable(),
   ts: nonNegativeIntegerSchema,
+  // Claude-модель за charge-строкой (topup/adjust → null). nullish — устойчивость к старому движку без поля.
+  model: z.string().nullish(),
 });
 
 export type EngineLedgerEntry = z.infer<typeof engineLedgerEntrySchema>;
