@@ -1,0 +1,24 @@
+[Unit]
+Description=API Token Sale tested automatic engine/backend deploy watchdog
+After=network-online.target docker.service apitoken-postgres.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+Group=deploy
+Environment=HOME=/home/deploy
+Environment=PATH=/home/deploy/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/lib/apitoken-watchdog/watchdog.sh
+TimeoutStartSec=45min
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+# The controller needs network access for GitHub and fixed sudo operations for service cutovers.
+# Candidate builds/tests run separately as the unprivileged apitoken-ci account.
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=full
+ReadWritePaths=/var/lib/apitoken/watchdog /opt/apitoken /srv/claude-api/releases /run/lock
+
