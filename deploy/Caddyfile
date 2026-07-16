@@ -85,3 +85,10 @@ panel.apitoken.sale {
 		file_server
 	}
 }
+
+# Support console (Chatwoot) + Telegram webhook ingress. Chatwoot слушает 127.0.0.1:3010
+# (порт 3000 занят commerce). Держим в деплой-шаблоне, чтобы каждый деплой НЕ ронял
+# support-роут (иначе Telegram не может доставлять апдейты боту → поддержка «лежит»).
+support.apitoken.sale {
+	reverse_proxy 127.0.0.1:3010
+}
