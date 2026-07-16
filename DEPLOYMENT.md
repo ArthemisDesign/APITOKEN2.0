@@ -5,9 +5,84 @@ This is the operator runbook for `84.32.48.2`. Controller internals live in
 [`deploy/RELEASES.md`](deploy/RELEASES.md), and the Stage 2 authority design in
 [`docs/STAGE2_POSTGRES_AUTHORITY.md`](docs/STAGE2_POSTGRES_AUTHORITY.md).
 
-Pushing `master` does **not** deploy production. An operator selects an exact tested commit and runs
-the component-specific two-phase controller as `deploy`; the scripts use `sudo` only for bounded
-service and unit operations.
+Pushing or merging to `master` triggers the production-host watchdog. It tests an isolated exact
+commit, takes fresh validated database backups, applies commerce migrations, then health-gated
+blue-green deploys only the affected engine and/or backend. Engine migrations run transactionally
+inside the inactive slot and must pass readiness before admission. It reports every stage on the
+GitHub commit without using a paid Actions runner. The manual component controllers below are recovery and
+explicit operator tools, not the normal contributor workflow. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+## Normal automatic delivery
+
+Contributors and AI agents only merge production-ready work to `master`, then watch these GitHub
+commit-status contexts:
+
+| Context | Gate |
+|---|---|
+| `deploy/tests` | Complete isolated TypeScript/Rust/database/static test suite |
+| `deploy/migration` | Validated database backups plus exact tested commerce migrator, or no commerce migration needed |
+| `deploy/engine` | Exact-release engine rollout, or no engine change |
+| `deploy/backend` | Exact-release API/worker rollout, or no backend change |
+| `deploy/watchdog` | End-to-end result |
+
+Affected database, engine, and backend stages also appear as GitHub deployment records in the
+`production-database`, `production-engine`, and `production-backend` environments. This is reporting
+only: builds and deployments run on the existing production host, so no paid GitHub runner is used.
+
+The watchdog polls `origin/master` about once per minute. A failure quarantines that SHA and stops
+the pipeline; neither later migrations nor application cutovers are attempted. Commerce migration
+failure always blocks the backend. Engine migration or readiness failure leaves the serving engine
+slot untouched. Normal releases require no SSH command.
+
+```bash
+# Operator observation only
+sudo apitoken-watchdog status
+sudo apitoken-watchdog logs
+```
+
+Operational-definition changes (`deploy/`, `systemd/`, `compose.yaml`, `.github/`) stop after the
+test gate for exact-candidate host review. After applying and verifying those definitions, approve
+that exact SHA; the watchdog then continues component delivery:
+
+```bash
+sudo apitoken-watchdog approve-infrastructure <full-40-character-sha>
+```
+
+Do not approve merely to clear a pending GitHub status. Caddy changes must first be applied with the
+candidate's secret-preserving `deploy/install-caddy.sh`, validated, reloaded, and health-checked.
+Watchdog/systemd changes must likewise be installed from that exact tested candidate.
+
+An operator can request an immediate poll or retry a proven transient failure:
+
+```bash
+sudo apitoken-watchdog run
+sudo apitoken-watchdog retry <full-40-character-sha>
+```
+
+Prefer a new corrective commit for code/test/migration failures. A retry is not permission to alter
+the immutable candidate or production database by hand.
+
+### One-time GitHub reporting credential
+
+Use a fine-grained personal access token limited to this repository with only **Commit statuses:
+read/write** and **Deployments: read/write** (GitHub adds metadata read automatically). No Actions
+permission, hosted runner, webhook, or paid GitHub feature is required. Store it only in the
+root-owned file consumed by the reporting bridge:
+
+```bash
+sudo install -o root -g root -m 0600 /dev/null /etc/apitoken/github-watchdog.env
+sudoedit /etc/apitoken/github-watchdog.env
+```
+
+```dotenv
+GITHUB_REPOSITORY=OWNER/REPOSITORY
+GITHUB_TOKEN=github_pat_REDACTED
+```
+
+Never put this token in a systemd environment, candidate checkout, application environment, shell
+command line, or repository file. The watchdog calls a fixed root-owned bridge through narrowly
+scoped sudo; tested candidate code runs as `apitoken-ci` and cannot read the credential. Revoke and
+replace it immediately if its file permissions, logs, or host boundary are compromised.
 
 ## Non-negotiable rules
 
@@ -17,10 +92,14 @@ service and unit operations.
 - Never restart `apitoken-postgres.service` during an application deploy or rollback.
 - Never manually restart API/engine between release selection and blue-green cutover.
 - Never edit a finalized directory below `/opt/apitoken/releases` or `/srv/claude-api/releases`.
-- Commerce migrations are expand/contract and forward-only; binary rollback never reverses them.
+- Commerce migrations are append-only, expand/contract, and forward-only; the watchdog backs up and
+  applies them automatically before application cutover. Binary rollback never reverses them.
+- Engine migrations are ordered, transactional, advisory-locked, and forward-only. They run only in
+  the inactive candidate after a backup; readiness failure prevents Caddy admission and preserves
+  the old slot. Never edit an already-applied engine migration.
 - The one-time SQLite-to-PostgreSQL cutover is complete. Do not rerun it for a normal release.
 
-## Test the intended commit
+## Local pre-push test gate
 
 ```bash
 pnpm install --frozen-lockfile
@@ -39,7 +118,7 @@ with the test PostgreSQL container, never against `claude_engine`:
 sudo deploy/test-stage2-e2e.sh /path/to/test/claude-api
 ```
 
-## Select the production SHA
+## Manual recovery: select the production SHA
 
 ```bash
 ssh deploy@84.32.48.2
@@ -55,7 +134,7 @@ The controllers fetch and verify the supplied commit again. API and worker proce
 the immutable release selected by `/opt/apitoken/releases/current`; the host checkout is only the
 controller source and may retain reviewed host-specific files.
 
-## Deploy the Rust engine
+## Manual recovery: deploy the Rust engine
 
 ```bash
 deploy/deploy.sh --engine-bluegreen --dry-run "$SHA"
@@ -80,7 +159,7 @@ systemctl list-unit-files 'claude-api@*.service'
 The slot alternates. Consumers must never hard-code 8787 or 8788; commerce always uses
 `http://127.0.0.1:8790`.
 
-## Deploy the commerce API
+## Manual recovery: deploy the commerce API
 
 ```bash
 deploy/deploy.sh --api-only --dry-run "$SHA"

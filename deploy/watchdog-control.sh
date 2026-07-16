@@ -17,7 +17,6 @@ usage() {
     '  apitoken-watchdog status' \
     '  apitoken-watchdog run' \
     '  apitoken-watchdog retry <full-sha>' \
-    '  apitoken-watchdog migrate <full-sha>' \
     '  apitoken-watchdog approve-infrastructure <full-sha>' \
     '  apitoken-watchdog logs'
 }
@@ -49,12 +48,6 @@ case "${1:-}" in
     [[ $rejected == "$2" ]] || wd_die "quarantined candidate is $rejected, not $2"
     rm -f -- "$REJECTED"
     wd_log "cleared quarantine for $2"
-    systemctl start apitoken-deploy-watchdog.service
-    ;;
-  migrate)
-    [[ ${EUID:-$(id -u)} -eq 0 ]] || wd_die "migrate requires root"
-    [[ $# -eq 2 ]] || { usage >&2; exit 2; }
-    /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh "$2"
     systemctl start apitoken-deploy-watchdog.service
     ;;
   approve-infrastructure)

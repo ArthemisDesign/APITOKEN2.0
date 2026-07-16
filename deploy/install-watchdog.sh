@@ -4,7 +4,11 @@ set -euo pipefail
 # One-time root installer for the host-local, free GitHub polling watchdog.
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'run as root' >&2; exit 1; }
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=deploy/watchdog-lib.sh
+source "$ROOT/deploy/watchdog-lib.sh"
 command -v systemctl >/dev/null || { echo 'systemd is required' >&2; exit 1; }
+command -v curl >/dev/null || { echo 'curl is required' >&2; exit 1; }
+command -v jq >/dev/null || { echo 'jq is required' >&2; exit 1; }
 id deploy >/dev/null 2>&1 || { echo 'deploy user is required' >&2; exit 1; }
 id apitoken-ci >/dev/null 2>&1 || useradd --system --home-dir /var/lib/apitoken/watchdog/ci-home --create-home --shell /usr/sbin/nologin apitoken-ci
 usermod -a -G deploy apitoken-ci
@@ -19,7 +23,9 @@ install -d -o root -g root -m 0755 /opt/apitoken-watchdog
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog.sh" /usr/local/lib/apitoken-watchdog/watchdog.sh
 install -o root -g root -m 0644 "$ROOT/deploy/watchdog-lib.sh" /usr/local/lib/apitoken-watchdog/watchdog-lib.sh
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-test-db.sh" /usr/local/lib/apitoken-watchdog/watchdog-test-db
+install -o root -g root -m 0755 "$ROOT/deploy/watchdog-backup.sh" /usr/local/lib/apitoken-watchdog/watchdog-backup.sh
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-migrate.sh" /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
+install -o root -g root -m 0755 "$ROOT/deploy/watchdog-github.sh" /usr/local/lib/apitoken-watchdog/watchdog-github
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-control.sh" /usr/local/bin/apitoken-watchdog
 install -o root -g root -m 0755 "$ROOT/deploy/deploy.sh" /usr/local/lib/apitoken-watchdog/controller/deploy.sh
 install -o root -g root -m 0644 "$ROOT/deploy/lib.sh" /usr/local/lib/apitoken-watchdog/controller/lib.sh
@@ -29,16 +35,24 @@ install -o root -g root -m 0644 "$ROOT/systemd/apitoken-deploy-watchdog.service"
 install -o root -g root -m 0644 "$ROOT/systemd/apitoken-deploy-watchdog.timer" /etc/systemd/system/apitoken-deploy-watchdog.timer
 install -o root -g root -m 0644 "$ROOT/systemd/apitoken-worker.service" /etc/systemd/system/apitoken-worker.service
 install -d -o root -g deploy -m 0775 /run/lock
-for lock in apitoken-watchdog apitoken-deploy; do
+for lock in apitoken-watchdog apitoken-deploy apitoken-db-migrate; do
   touch "/run/lock/$lock.lock"; chown root:deploy "/run/lock/$lock.lock"; chmod 0664 "/run/lock/$lock.lock"
 done
 [[ -d /opt/apitoken/repo/.git ]] || { echo 'missing /opt/apitoken/repo checkout' >&2; exit 1; }
 [[ -d /opt/apitoken-watchdog/rust-toolchain/bin ]] || { echo 'install Rust in /opt/apitoken-watchdog/rust-toolchain first' >&2; exit 1; }
+[[ -f /etc/apitoken/github-watchdog.env && ! -L /etc/apitoken/github-watchdog.env ]] \
+  || { echo 'missing root-only /etc/apitoken/github-watchdog.env' >&2; exit 1; }
+[[ $(stat -c '%u:%a' /etc/apitoken/github-watchdog.env) == 0:600 ]] \
+  || { echo '/etc/apitoken/github-watchdog.env must be root-owned mode 0600' >&2; exit 1; }
 [[ -d /opt/apitoken/releases/current/packages/db/migrations ]] || { echo 'current immutable commerce migration directory is missing' >&2; exit 1; }
 manifest=/var/lib/apitoken/watchdog/database-migrations.manifest
-if [[ ! -e $manifest ]]; then
-  ( cd /opt/apitoken/releases/current && while IFS= read -r p; do sha256sum "$p" | awk '{print $1 "  " $2}'; done < <(find packages/db/migrations -type f -print | sort) ) >"$manifest"
-  chown root:deploy "$manifest"; chmod 0640 "$manifest"
+if [[ ! -e $manifest ]] || [[ $(head -n 1 -- "$manifest") != 'format=apitoken-drizzle-manifest-v2' ]]; then
+  # Upgrade the original whole-file manifest. The currently selected immutable commerce release
+  # has already been migrated, so it is the authoritative baseline for the semantic v2 format.
+  wd_migration_manifest /opt/apitoken/releases/current >"$manifest.tmp.$$"
+  chown root:deploy "$manifest.tmp.$$"
+  chmod 0640 "$manifest.tmp.$$"
+  mv -f -- "$manifest.tmp.$$" "$manifest"
 fi
 
 if [[ ! -e /var/lib/apitoken/watchdog/processed.sha ]]; then

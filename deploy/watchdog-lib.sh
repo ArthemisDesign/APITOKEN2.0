@@ -61,15 +61,91 @@ wd_sha256_stdin() {
 }
 
 wd_migration_manifest() {
-  local tree=$1 path hash
+  local tree=$1
   [[ -d $tree/packages/db/migrations ]] || wd_die "migration directory is missing from $tree"
 
-  while IFS= read -r path; do
-    [[ $path != *$'\n'* ]] || wd_die "migration path contains a newline"
-    hash=$(wd_sha256_file "$tree/$path")
-    printf '%s  %s\n' "$hash" "$path"
-  done < <(find "$tree/packages/db/migrations" -type f -print \
-    | sed "s#^$tree/##" | LC_ALL=C sort)
+  # Drizzle rewrites meta/_journal.json whenever it appends a migration. Hashing that file as one
+  # immutable artifact would therefore reject every legitimate migration after the baseline. Build
+  # a semantic manifest instead: existing SQL/snapshots remain byte-for-byte immutable, while each
+  # canonical journal entry is an individually immutable, ordered record and new records may append.
+  node - "$tree" <<'NODE'
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const tree = process.argv[2];
+const root = path.join(tree, "packages/db/migrations");
+const journalPath = path.join(root, "meta/_journal.json");
+
+function fail(message) {
+  process.stderr.write(`[watchdog] ERROR: invalid Drizzle migration history: ${message}\n`);
+  process.exit(1);
+}
+
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function digest(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function walk(directory, prefix = "") {
+  const files = [];
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name, "en"))) {
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+    const absolute = path.join(directory, entry.name);
+    if (!/^[A-Za-z0-9._/-]+$/.test(relative)) fail(`unsafe artifact path ${JSON.stringify(relative)}`);
+    if (entry.isSymbolicLink()) fail(`symlink is forbidden: ${relative}`);
+    if (entry.isDirectory()) files.push(...walk(absolute, relative));
+    else if (entry.isFile()) files.push(relative);
+    else fail(`non-regular artifact is forbidden: ${relative}`);
+  }
+  return files;
+}
+
+let journal;
+try {
+  journal = JSON.parse(fs.readFileSync(journalPath, "utf8"));
+} catch (error) {
+  fail(`cannot read meta/_journal.json (${error instanceof Error ? error.message : "unknown error"})`);
+}
+if (journal === null || typeof journal !== "object" || Array.isArray(journal)) fail("journal must be an object");
+if (typeof journal.version !== "string" || journal.dialect !== "postgresql" || !Array.isArray(journal.entries)) {
+  fail("journal header or entries are invalid");
+}
+
+const artifacts = walk(root);
+const sqlFiles = new Set(artifacts.filter((file) => file.endsWith(".sql")));
+const tags = new Set();
+let previousWhen = -1;
+
+process.stdout.write("format=apitoken-drizzle-manifest-v2\n");
+process.stdout.write(`journal=${digest(canonical({ version: journal.version, dialect: journal.dialect }))}\n`);
+for (let position = 0; position < journal.entries.length; position += 1) {
+  const entry = journal.entries[position];
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) fail(`entry ${position} must be an object`);
+  if (entry.idx !== position) fail(`entry ${position} has non-contiguous idx ${JSON.stringify(entry.idx)}`);
+  if (!Number.isSafeInteger(entry.when) || entry.when <= previousWhen) fail(`entry ${position} has a non-monotonic timestamp`);
+  if (typeof entry.tag !== "string" || !/^[A-Za-z0-9._-]+$/.test(entry.tag)) fail(`entry ${position} has an unsafe tag`);
+  if (tags.has(entry.tag)) fail(`duplicate journal tag ${entry.tag}`);
+  const sqlFile = `${entry.tag}.sql`;
+  if (!sqlFiles.delete(sqlFile)) fail(`journal entry ${entry.tag} has no unique SQL artifact`);
+  tags.add(entry.tag);
+  previousWhen = entry.when;
+  process.stdout.write(`entry=${String(position).padStart(8, "0")} ${digest(canonical(entry))} ${entry.tag}\n`);
+}
+if (sqlFiles.size !== 0) fail(`unjournaled SQL artifact(s): ${[...sqlFiles].sort().join(", ")}`);
+
+for (const relative of artifacts.filter((file) => file !== "meta/_journal.json").sort()) {
+  const contents = fs.readFileSync(path.join(root, relative));
+  process.stdout.write(`file=${digest(contents)} packages/db/migrations/${relative}\n`);
+}
+NODE
 }
 
 wd_manifest_digest() {

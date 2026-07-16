@@ -31,6 +31,7 @@ Anthropic не пускает OAuth-токены подписок на `/v1/mess
 production-хосты и эксплуатация — [`INFRASTRUCTURE.md`](INFRASTRUCTURE.md).
 Операторский deploy/rollback — [`DEPLOYMENT.md`](DEPLOYMENT.md), модель PostgreSQL authority и
 fencing Stage 2 — [`docs/STAGE2_POSTGRES_AUTHORITY.md`](docs/STAGE2_POSTGRES_AUTHORITY.md).
+Contributor/AI workflow и автоматическая доставка `master` — [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 | Крейт | Роль | Ветка-владелец |
 |---|---|---|

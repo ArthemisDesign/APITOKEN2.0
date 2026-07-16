@@ -10,7 +10,25 @@
 
 Roll application code back by deploying the previous release; never down-migrate production schema during rollback.
 
-Production does not run the package script from an immutable release because that script rebuilds.
-`deploy/deploy.sh --api-only <sha>` executes the already-built
-`/opt/apitoken/releases/<sha>/packages/db/dist/migrate.js` under the same advisory/file lock before
-moving `releases/current`. See the top-level `DEPLOYMENT.md` for the two-phase API rollout.
+## Automatic production gate
+
+Do not run production migrations manually during normal delivery. A commit merged to `master` is
+tested against disposable PostgreSQL first. Only after the complete TypeScript and Rust suite passes,
+the production watchdog:
+
+1. verifies that every already-applied migration still exists byte-for-byte;
+2. creates and validates a fresh production PostgreSQL backup;
+3. runs the exact tested `packages/db/dist/migrate.js` under the file and PostgreSQL advisory locks;
+4. atomically commits the new migration manifest;
+5. permits the backend blue-green deployment to start.
+
+Any backup or migration failure quarantines the SHA and blocks application deployment. Production
+does not run the package script because it rebuilds. The watchdog consumes the prebuilt immutable
+candidate directly. The manual `deploy/deploy.sh --api-only <sha>` path remains a recovery tool and
+uses the same locked prebuilt migrator.
+
+For a schema-dependent change, add a new expand migration before the dependent code and keep the
+old release compatible. Never edit, rename, reorder, or delete a committed migration. Destructive
+contract changes require a later release after backfill and after all old processes no longer depend
+on the old shape. See the top-level [`CONTRIBUTING.md`](../../CONTRIBUTING.md) and
+[`DEPLOYMENT.md`](../../DEPLOYMENT.md).

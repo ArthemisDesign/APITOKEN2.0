@@ -18,7 +18,8 @@ packages/payments        DigiSeller/Cryptomus adapters and normalized payment co
 The applications are independently deployable. They share packages at build time, but neither
 imports code from the Rust crates or opens the engine PostgreSQL database/SQLite migration snapshot.
 Production deployment and rollback are documented in [`DEPLOYMENT.md`](DEPLOYMENT.md). The API is
-immutable blue-green; the worker remains a single repository-based stop/start service.
+immutable blue-green; the worker remains single-instance stop/start but runs from the exact same
+immutable commerce release selected for the API.
 
 ## Local setup
 

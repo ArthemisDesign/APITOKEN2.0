@@ -87,11 +87,13 @@ future frontend. Exact DNS records override the wildcard if they are added later
 ## Host paths
 
 ```text
-/opt/apitoken/repo             deployment checkout; also the current mutable worker runtime
+/opt/apitoken/repo             fetch-only deployment checkout and reviewed controller source
 /opt/apitoken/releases/<sha>   immutable commerce release directories
-/opt/apitoken/releases/current active commerce release symlink
+/opt/apitoken/releases/current active API/worker commerce release symlink
 /srv/claude-api/releases/<sha> immutable Rust engine release directories
 /srv/claude-api/releases/current active engine release symlink
+/var/lib/apitoken/watchdog     tested candidates, SHA baselines, quarantine and status state
+/usr/local/lib/apitoken-watchdog root-owned automatic delivery controller
 /var/lib/apitoken/postgres     PostgreSQL container data
 /var/lib/apitoken/backups      application-consistent database export staging
 /var/log/apitoken              application-owned logs when file output is needed
@@ -118,6 +120,8 @@ systemd/claude-api.service          one-time SQLite-to-PostgreSQL bridge
 systemd/claude-api@.service         PostgreSQL-fenced blue/green slots
 systemd/claude-api-backup.service
 systemd/claude-api-backup.timer
+systemd/apitoken-deploy-watchdog.service
+systemd/apitoken-deploy-watchdog.timer
 deploy/deploy.sh
 deploy/api-bluegreen.sh
 deploy/engine-bluegreen.sh
@@ -154,7 +158,9 @@ never be returned to clients or placed in frontend configuration.
 - The core public matcher exposes `/v1/*`, `/health`, and `/balance`; Control/admin routes remain
   private. Public liveness/readiness behavior is described in `deploy/CADDY.md`.
 - A dedicated read-only GitHub deploy key at `/home/deploy/.ssh/github_deploy_ed25519` supports
-  `git fetch`; pushing a commit does not automatically deploy it.
+  polling `master`. The host watchdog automatically tests, migrates, and deploys affected
+  engine/backend components. A separate root-only least-privilege GitHub credential posts commit
+  statuses; untrusted candidate code and application users cannot read it.
 - The authoritative operator procedure is `DEPLOYMENT.md`; Stage 2 data/fencing details are in
   `docs/STAGE2_POSTGRES_AUTHORITY.md`.
 
@@ -190,8 +196,14 @@ copying required archives to independent storage.
 
 ## Deployment procedure
 
-[`DEPLOYMENT.md`](DEPLOYMENT.md) is the authoritative copy-paste runbook. In short, every release is
-an exact tested 40-character SHA and every stateless component uses two explicit phases:
+[`DEPLOYMENT.md`](DEPLOYMENT.md) is the authoritative operator runbook and
+[`CONTRIBUTING.md`](CONTRIBUTING.md) is the contributor/AI workflow. Normal delivery is automatic
+after `master` changes: isolated tests, validated backups of both databases, migrations before
+traffic admission, affected blue-green component cutovers, and exact-release verification. GitHub displays `deploy/tests`,
+`deploy/migration`, `deploy/engine`, `deploy/backend`, and overall `deploy/watchdog` contexts.
+
+The watchdog invokes the same two-phase controllers. These direct commands are retained for
+recovery; every release remains an exact tested 40-character SHA:
 
 ```bash
 deploy/deploy.sh --engine-bluegreen <sha>  # build/finalize/select; serving slot untouched
@@ -202,14 +214,15 @@ deploy/api-bluegreen.sh                    # admit target, pre-drain and stop ol
 ```
 
 Do not use the unqualified full-stack deploy after Stage 2 and do not manually restart a component
-between its two phases. Commerce migration runs from the immutable release as
-`node /opt/apitoken/releases/<sha>/packages/db/dist/migrate.js`; it is additive and not reversed by
-rollback. PostgreSQL is never restarted by an application deploy.
+between its two phases. Commerce migration runs automatically from the exact tested candidate before
+backend activation, under a backup gate and both file/advisory locks. It is additive and not
+reversed by rollback. PostgreSQL is never restarted by an application deploy.
 
-The worker remains separately managed and mutable until it receives a release-symlink unit. Its
-checked-out SHA and workspace dependencies must be built before stop-old/start-new; `--with-worker`
-does not build it. Controller recovery, rollback, verification, and backup commands are all in the
-runbook. Detailed availability behavior remains in `deploy/README.md` and `deploy/CADDY.md`.
+The worker remains single-instance stop-old/start-new, so a backend cutover has a short worker gap,
+but it runs from the same exact immutable commerce release as the API. The watchdog builds/selects
+that release before `--with-worker` and verifies the worker PID's working directory afterward.
+Controller recovery, rollback, verification, and backup commands are all in the runbook. Detailed
+availability behavior remains in `deploy/README.md` and `deploy/CADDY.md`.
 
 ## Vercel frontend
 

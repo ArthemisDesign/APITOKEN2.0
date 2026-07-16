@@ -12,6 +12,7 @@
 запрос уходит на квоте подписки из пула, с ротацией по лимитам. Полное описание — `README.md`,
 карта модулей — `ARCHITECTURE.md`, модель веток — `BRANCHES.md`, production runbook —
 `DEPLOYMENT.md`, authority/fencing Stage 2 — `docs/STAGE2_POSTGRES_AUTHORITY.md`.
+Обязательный workflow для contributor/AI и автоматическая доставка — `CONTRIBUTING.md`.
 
 ## Commercial workspace (TypeScript, отдельный bounded context)
 
@@ -105,4 +106,13 @@ Smoke без живых подписок — мок-апстрим (`CLAUDE_API_
 2. Меняй код в границах крейта; держи `cargo build` зелёным.
 3. Обнови документацию, если поменялись границы/поведение (`crates/<x>/CLAUDE.md`, `ARCHITECTURE.md`).
 4. Коммить по одному логическому изменению; секреты не стейджить (`git add <пути>`, не `git add -A`).
-5. Влей в `master` по готовности. Trailer: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
+5. Если нужна commerce-миграция, сначала добавь новый expand-файл. Никогда не меняй и не удаляй
+   уже существующую миграцию; приложение должно переживать rollout и со старой, и с расширенной
+   схемой. Правила — `packages/db/MIGRATIONS.md`.
+6. Влей в `master` только полностью готовую к production работу. Watchdog автоматически тестирует
+   точный SHA, делает backup, применяет новые миграции и лишь затем blue-green деплоит затронутые
+   engine/backend. Не запускай обычный deploy или production-миграцию через SSH.
+7. Проверь GitHub contexts `deploy/tests`, `deploy/migration`, `deploy/engine`, `deploy/backend` и
+   итоговый `deploy/watchdog`. Красный SHA не ретраить кодовой правкой на сервере — исправить новым
+   коммитом. Полный workflow — `CONTRIBUTING.md`.
+8. Trailer: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.

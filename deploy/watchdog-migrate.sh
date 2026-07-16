@@ -12,14 +12,12 @@ DB_MANIFEST=$STATE_ROOT/database-migrations.manifest
 API_ENV_FILE=/etc/apitoken/api.env
 DEPLOY_LOCK=/run/lock/apitoken-deploy.lock
 MIGRATION_LOCK=/run/lock/apitoken-db-migrate.lock
+BACKUP_RUNNER=$SCRIPT_DIR/watchdog-backup.sh
 
-[[ ${EUID:-$(id -u)} -eq 0 ]] || wd_die "manual migration must run as root"
+[[ ${EUID:-$(id -u)} -eq 0 ]] || wd_die "automatic migration must run as root"
 [[ $# -eq 1 ]] || wd_die "usage: $0 <tested-full-sha>"
 SHA=$1
 wd_validate_sha "$SHA"
-
-pending=$(wd_read_sha "$PENDING_FILE") || wd_die "there is no pending manual migration"
-[[ $pending == "$SHA" ]] || wd_die "pending migration is $pending, not $SHA"
 
 CANDIDATE=$CANDIDATE_ROOT/$SHA
 MARKER=$STATE_ROOT/$SHA.tested
@@ -41,23 +39,30 @@ actual_digest=$(wd_manifest_digest "$MANIFEST")
 wd_manifest_is_append_only "$DB_MANIFEST" "$MANIFEST" \
   || wd_die "candidate edits or deletes already-applied migration history"
 
+if [[ $(wd_manifest_digest "$DB_MANIFEST") == "$actual_digest" ]]; then
+  wd_log "production migration history already matches tested candidate $SHA"
+  rm -f -- "$PENDING_FILE"
+  exit 0
+fi
+
 exec 9<>"$DEPLOY_LOCK"
 flock -n 9 || wd_die "another deployment is running"
 exec 8<>"$MIGRATION_LOCK"
-flock -x 8
+flock -w 30 8 || wd_die "timed out waiting for the database migration lock"
 
-wd_log "creating a fresh validated PostgreSQL backup before manual migration"
-systemctl start claude-api-backup.service
-systemctl is-failed --quiet claude-api-backup.service \
-  && wd_die "pre-migration backup failed"
+wd_log "creating a fresh PostgreSQL backup before automatic migration"
+"$BACKUP_RUNNER" "$SHA"
 
-wd_log "manually applying the exact tested migration build for $SHA"
-bash -c 'set -a; . "$0"; set +a; exec node "$1"' \
-  "$API_ENV_FILE" "$CANDIDATE/packages/db/dist/migrate.js"
+wd_log "automatically applying the exact build that passed the disposable-database test gate for $SHA"
+deploy_uid=$(id -u deploy)
+deploy_gid=$(id -g deploy)
+bash -c 'set -a; . "$1"; set +a; export HOME=/home/deploy; exec setpriv --reuid="$2" --regid="$3" --init-groups --no-new-privs node "$4"' \
+  watchdog-migrate "$API_ENV_FILE" "$deploy_uid" "$deploy_gid" \
+  "$CANDIDATE/packages/db/dist/migrate.js"
 
 cp -- "$MANIFEST" "${DB_MANIFEST}.tmp.$$"
 chown root:deploy "${DB_MANIFEST}.tmp.$$"
 chmod 0640 "${DB_MANIFEST}.tmp.$$"
 mv -f -- "${DB_MANIFEST}.tmp.$$" "$DB_MANIFEST"
 rm -f -- "$PENDING_FILE"
-wd_log "migration $SHA committed; the watchdog may now deploy that tested candidate"
+wd_log "migration $SHA committed; application deployment may now begin"
