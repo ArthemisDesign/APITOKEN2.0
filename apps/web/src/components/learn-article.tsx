@@ -1,10 +1,12 @@
 import Link from "next/link";
 import {
+  articleLocales,
   articlesForLocale,
   clusterLabels,
   learnHubPath,
   learnPath,
   learnUi,
+  LOCALES,
   resolveArticle,
   type LearnBlock,
   type LearnCluster,
@@ -13,6 +15,21 @@ import {
 } from "@/lib/learn";
 
 const CLUSTER_ORDER: LearnCluster[] = ["buy", "free", "integrate", "compare", "explain"];
+
+const LANG_LABEL: Record<Locale, string> = { en: "EN", ru: "RU", zh: "中文" };
+
+function LearnLangSwitch({ current, locales, hrefFor }: { current: Locale; locales: Locale[]; hrefFor: (locale: Locale) => string }) {
+  if (locales.length < 2) return null;
+  return (
+    <div className="learn-lang" aria-label="Language">
+      {locales.map((locale) =>
+        locale === current
+          ? <span className="learn-lang-on" key={locale} aria-current="true">{LANG_LABEL[locale]}</span>
+          : <Link className="learn-lang-off" hrefLang={locale === "zh" ? "zh-CN" : locale} href={hrefFor(locale)} key={locale}>{LANG_LABEL[locale]}</Link>,
+      )}
+    </div>
+  );
+}
 
 export function LearnHubView({ locale }: { locale: Locale }) {
   const ui = learnUi[locale];
@@ -25,7 +42,10 @@ export function LearnHubView({ locale }: { locale: Locale }) {
     <main className="learn-hub">
       <div className="page-hero">
         <div className="wrap">
-          <Link className="auth-back" href="/docs">{ui.docsBack}</Link>
+          <div className="learn-hero-top">
+            <Link className="auth-back" href="/docs">{ui.docsBack}</Link>
+            <LearnLangSwitch current={locale} locales={LOCALES} hrefFor={(target) => learnHubPath(target)} />
+          </div>
           <span className="eyebrow">{ui.guidesEyebrow}</span>
           <h1>{ui.hubTitle}</h1>
           <p>{ui.hubDescription}</p>
@@ -95,13 +115,16 @@ export function LearnArticleView({ article }: { article: ResolvedArticle }) {
     <main className="learn-article">
       <div className="page-hero">
         <div className="wrap">
-          <nav className="crumbs" aria-label="Breadcrumb">
-            <Link href="/docs">{ui.crumbDocs}</Link>
-            <span aria-hidden="true">/</span>
-            <Link href={learnHubPath(locale)}>{ui.crumbGuides}</Link>
-            <span aria-hidden="true">/</span>
-            <span className="crumbs-current">{cluster.label}</span>
-          </nav>
+          <div className="learn-hero-top">
+            <nav className="crumbs" aria-label="Breadcrumb">
+              <Link href="/docs">{ui.crumbDocs}</Link>
+              <span aria-hidden="true">/</span>
+              <Link href={learnHubPath(locale)}>{ui.crumbGuides}</Link>
+              <span aria-hidden="true">/</span>
+              <span className="crumbs-current">{cluster.label}</span>
+            </nav>
+            <LearnLangSwitch current={locale} locales={articleLocales(article.slug)} hrefFor={(target) => learnPath(article.slug, target)} />
+          </div>
           <span className="eyebrow">{cluster.label}</span>
           <h1>{content.h1}</h1>
           <p>{content.dek}</p>

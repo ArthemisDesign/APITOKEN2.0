@@ -100,7 +100,7 @@ export function SiteFooter({ full = false }: { full?: boolean }) {
 }
 
 function FooterComplianceLinks() {
-  return <span className="foot-legal"><Link href="/privacy"><T k="legal_privacy_h">Privacy Policy</T></Link><Link href="/terms"><T k="legal_terms_h">User Agreement</T></Link><Link href="/support"><T k="foot_support">Support</T></Link><Link href="/plans"><T k="nav_pricing">Prices</T></Link></span>;
+  return <span className="foot-legal"><Link href="/docs/learn"><T k="nav_guides">Guides</T></Link><Link href="/privacy"><T k="legal_privacy_h">Privacy Policy</T></Link><Link href="/terms"><T k="legal_terms_h">User Agreement</T></Link><Link href="/support"><T k="foot_support">Support</T></Link><Link href="/plans"><T k="nav_pricing">Prices</T></Link></span>;
 }
 
 function FooterColumn({ title, links }: { title: string; links: Array<[string, string]> }) {

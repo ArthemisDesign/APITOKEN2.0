@@ -1818,3 +1818,11 @@ body.app-body .bg-decor{display:none!important}
 .crumbs a{color:var(--txt-3);text-decoration:none}
 .crumbs a:hover{color:var(--accent)}
 .crumbs .crumbs-current{color:var(--txt-2)}
+
+/* Learn hero top row (breadcrumb/back + language switch) */
+.learn-hero-top{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;margin-bottom:10px}
+.learn-lang{display:inline-flex;gap:4px;align-items:center;font-family:var(--font-mono);font-size:12px}
+.learn-lang a,.learn-lang span{padding:3px 9px;border-radius:6px;border:1px solid var(--line);text-decoration:none;line-height:1.4}
+.learn-lang-off{color:var(--txt-3);background:var(--bg-card)}
+.learn-lang-off:hover{border-color:var(--accent);color:var(--accent)}
+.learn-lang-on{color:var(--txt);background:var(--bg-soft);border-color:var(--line-strong);font-weight:700}
