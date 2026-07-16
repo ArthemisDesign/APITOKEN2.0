@@ -103,7 +103,9 @@ describe.runIf(Boolean(connectionString))("commercial account and engine integra
 
 async function createUser(database: Database, email: string, engineAccountId: string): Promise<string> {
   const userId = randomUUID();
-  await database.pool.query("INSERT INTO users (id, email) VALUES ($1, $2)", [userId, email]);
+  await database.pool.query("INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)", [
+    userId, email, "Account Test",
+  ]);
   await database.pool.query(`
     INSERT INTO engine_accounts (id, user_id, engine_account_id, status)
     VALUES ($1, $2, $3, 'active')

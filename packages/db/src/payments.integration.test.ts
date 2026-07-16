@@ -31,7 +31,9 @@ describe.runIf(Boolean(connectionString))("whole-USD checkout persistence", () =
                checkout_sessions, engine_accounts, users RESTART IDENTITY CASCADE
     `);
     userId = randomUUID();
-    await database.pool.query("INSERT INTO users (id, email) VALUES ($1, $2)", [userId, `${userId}@test.invalid`]);
+    await database.pool.query("INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)", [
+      userId, `${userId}@test.invalid`, "Payment Test",
+    ]);
     await database.pool.query(`
       INSERT INTO engine_accounts (id, user_id, engine_account_id, status)
       VALUES ($1, $2, 'acct_integration', 'active')

@@ -14,7 +14,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --no-file-parallelism",
     "test:integration": "vitest run --no-file-parallelism src/*.integration.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "pnpm run build && node dist/migrate.js"

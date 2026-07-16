@@ -41,7 +41,9 @@ describe.runIf(Boolean(connectionString))("Cryptomus checkout service", () => {
                checkout_sessions, engine_accounts, users RESTART IDENTITY CASCADE
     `);
     userId = randomUUID();
-    await database.pool.query("INSERT INTO users (id, email) VALUES ($1, $2)", [userId, "buyer@example.com"]);
+    await database.pool.query("INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)", [
+      userId, "buyer@example.com", "Checkout Test",
+    ]);
     await database.pool.query(`
       INSERT INTO engine_accounts (id, user_id, engine_account_id, status)
       VALUES ($1, $2, 'acct_checkout_test', 'active')
