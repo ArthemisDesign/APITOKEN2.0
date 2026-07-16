@@ -3,9 +3,12 @@ import { withoutSensitiveUrlData } from "./components/site-analytics";
 import { yandexMetrikaPageUrl } from "./lib/yandex-metrika";
 
 describe("Vercel Analytics URL privacy", () => {
-  it("keeps the route while removing query strings and fragments", () => {
-    expect(withoutSensitiveUrlData("https://apitoken.sale/auth/callback?code=secret&state=private#done"))
-      .toBe("https://apitoken.sale/auth/callback");
+  it("keeps UTM attribution while removing secrets and fragments", () => {
+    expect(withoutSensitiveUrlData(
+      "https://apitoken.sale/?utm_source=vercel&utm_medium=cpc&utm_campaign=analytics_test&code=secret&state=private#done",
+    )).toBe(
+      "https://apitoken.sale/?utm_source=vercel&utm_medium=cpc&utm_campaign=analytics_test",
+    );
     expect(withoutSensitiveUrlData("/reset-password?token=secret"))
       .toBe("/reset-password");
     expect(withoutSensitiveUrlData("/privacy"))

@@ -13,8 +13,28 @@ declare global {
   }
 }
 
+const VERCEL_UTM_PARAMETERS = new Set([
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_content",
+  "utm_term",
+  "utm_referrer",
+]);
+
 export function withoutSensitiveUrlData(url: string): string {
-  return url.split("#", 1)[0]!.split("?", 1)[0]!;
+  const withoutFragment = url.split("#", 1)[0]!;
+  const queryStart = withoutFragment.indexOf("?");
+  if (queryStart === -1) return withoutFragment;
+
+  const path = withoutFragment.slice(0, queryStart);
+  const query = new URLSearchParams(withoutFragment.slice(queryStart + 1));
+  for (const parameter of Array.from(query.keys())) {
+    if (!VERCEL_UTM_PARAMETERS.has(parameter)) query.delete(parameter);
+  }
+
+  const safeQuery = query.toString();
+  return safeQuery ? `${path}?${safeQuery}` : path;
 }
 
 export function SiteAnalytics() {

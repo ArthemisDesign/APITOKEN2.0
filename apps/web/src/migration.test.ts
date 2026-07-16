@@ -71,8 +71,9 @@ describe("completed Next.js migration", () => {
     expect(rootLayout).toContain("<SiteAnalytics />");
     expect(analytics).toContain('from "@vercel/analytics/next"');
     expect(analytics).toContain("beforeSend");
-    expect(analytics).toContain('.split("#", 1)');
-    expect(analytics).toContain('.split("?", 1)');
+    expect(analytics).toContain('"utm_source"');
+    expect(analytics).toContain('"utm_campaign"');
+    expect(analytics).toContain("query.delete(parameter)");
     expect(packageJson).toContain('"@vercel/analytics"');
   });
 
