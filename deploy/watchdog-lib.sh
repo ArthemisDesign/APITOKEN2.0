@@ -35,7 +35,8 @@ wd_read_sha() {
 }
 
 wd_atomic_write() {
-  local path=$1 value=$2 temporary="${path}.tmp.$$"
+  local path=$1 value=$2 temporary
+  temporary="${path}.tmp.$$"
   [[ $path == /* ]] || wd_die "state path must be absolute: $path"
   printf '%s\n' "$value" >"$temporary"
   chmod 0640 "$temporary"
