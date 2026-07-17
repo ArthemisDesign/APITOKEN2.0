@@ -10,12 +10,19 @@ const dashboardSections = [
   "overview", "keys", "credits", "promos", "usage", "profile", "security",
 ];
 
+// Короткие ссылки для шеринга: /go/<slug> → главная с UTM. 302 (не permanent), чтобы можно было
+// перенацелить slug и чтобы браузеры/мессенджеры не закешировали редирект навсегда.
+const shortLinks: Record<string, string> = {
+  vibe: "/?utm_source=telegram&utm_medium=community&utm_campaign=vibe_code_community",
+};
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   async redirects() {
     return [
       ...legacyPages.map((page) => ({ source: `/${page}.html`, destination: `/${page}`, permanent: true })),
       ...dashboardSections.map((section) => ({ source: `/dashboard/${section}`, destination: "/dashboard", permanent: false })),
+      ...Object.entries(shortLinks).map(([slug, destination]) => ({ source: `/go/${slug}`, destination, permanent: false })),
     ];
   },
   async headers() {
