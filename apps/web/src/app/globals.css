@@ -307,16 +307,20 @@ section{padding:96px 0;border-bottom:1px solid var(--line)}
 .topup-card h3,.business-card h3,.tier-heading h3{margin:0;font-size:21px}
 .topup-card p,.business-card p{color:var(--txt-3);font-size:14px;margin:0;max-width:58ch}
 .topup-card .btn{width:100%;justify-content:center}
-.topup-preview,.business-preview{display:flex;align-items:center;gap:8px;width:100%;height:82px;margin:0;padding:14px 18px;border:1px solid var(--line-strong);border-radius:6px;background:var(--bg-soft);color:var(--txt)}
+.topup-preview{display:flex;align-items:center;gap:8px;width:100%;height:82px;margin:0;padding:14px 18px;border:1px solid var(--line-strong);border-radius:6px;background:var(--bg-soft);color:var(--txt)}
 .topup-preview>span{font-size:20px;color:var(--txt-3)}
 .topup-preview input{min-width:0;width:100%;border:0;outline:0;background:transparent;color:var(--txt);font-family:var(--font-mono);font-size:34px;font-weight:700;line-height:1}
 .business-card{background:linear-gradient(145deg,var(--bg-card),var(--accent-soft));border-color:var(--accent-line)}
-.business-preview{justify-content:space-between;border-color:var(--accent-line);background:var(--bg-card)}
-/* B2B feature box grows to fill the card so tag/heading align on top and the CTA pins to the bottom,
-   mirroring the B2C top-up card next to it (no more lopsided empty gap). */
-.business-card .business-preview{height:auto;min-height:124px;flex:1 1 auto}
-.business-preview strong{font-family:var(--font-mono);font-size:34px;line-height:1;letter-spacing:-.055em}
-.business-preview span{font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt-3)}
+/* B2B card centerpiece — a centered "private access" brand lockup on a soft accent glow, grown to fill
+   the card so it balances the B2C top-up box instead of leaving an empty framed void. */
+.business-preview{flex:1 1 auto;min-height:168px;position:relative;overflow:hidden;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:32px;
+  border:1px solid var(--accent-line);border-radius:10px;
+  background:radial-gradient(140% 100% at 50% -8%,color-mix(in srgb,var(--accent) 15%,transparent),transparent 66%),var(--bg-card)}
+.business-preview::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.6;
+  background:radial-gradient(60% 55% at 50% 46%,color-mix(in srgb,var(--accent) 20%,transparent),transparent 70%);filter:blur(14px)}
+.business-preview strong{position:relative;font-family:var(--font-mono);font-weight:700;font-size:clamp(46px,6vw,58px);line-height:1;letter-spacing:-.045em;color:var(--txt)}
+.business-preview span{position:relative;font-family:var(--font-mono);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.24em;color:var(--accent)}
 .business-status{width:100%;height:50px;display:flex;align-items:center;justify-content:center;gap:10px;border:1px solid var(--accent-line);border-radius:6px;background:var(--accent-soft);font-family:var(--font-mono);font-size:13px;color:var(--txt-2)}
 a.business-status{text-decoration:none;cursor:pointer;transition:.15s}
 a.business-status:hover{border-color:var(--accent);color:var(--txt);background:color-mix(in srgb,var(--accent) 12%,transparent)}

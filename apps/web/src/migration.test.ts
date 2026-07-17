@@ -238,7 +238,7 @@ describe("completed Next.js migration", () => {
     expect(styles).toContain(".pricing-intro{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px;align-items:stretch}");
     expect(styles).toContain(".topup-card{padding:30px;display:flex;flex-direction:column");
     expect(styles).toContain(".business-card{padding:30px;display:flex;flex-direction:column");
-    expect(styles).toContain(".business-preview{justify-content:space-between");
+    expect(styles).toContain(".business-preview{flex:1 1 auto;min-height:168px");
     expect(styles).toContain(".stat b{font-family:var(--font-mono)");
     expect(styles).toContain(".prod{border:1px solid var(--line);border-radius:8px;padding:28px;background:var(--bg-card);display:flex;flex-direction:column");
     expect(styles).toContain(".prod h3{margin:14px 0 18px;font-family:var(--font-i18n-display)");
