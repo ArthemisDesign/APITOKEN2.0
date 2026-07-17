@@ -12,8 +12,13 @@ export function MarketingFrame({ children }: { children: ReactNode }) {
   return <main>{children}</main>;
 }
 
+function intBase(language: Language): string {
+  return language === "ru" ? "/ru/integrations" : "/integrations";
+}
+
 export function PageHero({ eyebrow, title, subtitle, back }: { eyebrow: string; title: string; subtitle: string; back?: boolean }) {
-  return <div className="page-hero"><div className="wrap">{back && <Link className="auth-back" href="/integrations"><T k="int_back">← All integrations</T></Link>}<T k={eyebrow} as="span" className="eyebrow">Section</T><T k={title} as="h1">Title</T><T k={subtitle} as="p">Description</T></div></div>;
+  const { language } = useI18n();
+  return <div className="page-hero"><div className="wrap">{back && <Link className="auth-back" href={intBase(language)}><T k="int_back">← All integrations</T></Link>}<T k={eyebrow} as="span" className="eyebrow">Section</T><T k={title} as="h1">Title</T><T k={subtitle} as="p">Description</T></div></div>;
 }
 
 export function PlansContent() {
@@ -44,7 +49,9 @@ const integrations = [
 ] as const;
 
 export function IntegrationsPage() {
-  return <MarketingFrame><PageHero eyebrow="nav_int" title="int_h" subtitle="int_sub" /><section className="borderless"><div className="wrap"><div className="steps" data-reveal-stagger>{integrations.map(([slug,name,tag], index) => <Link className="step" href={`/int-${slug}`} key={slug}><div className="n">{String(index + 1).padStart(2,"0")}</div><h3>{name}</h3><T k={tag} as="p">Integration description</T><T k="int_open" as="span" className="step-cta">Open guide</T></Link>)}</div></div></section></MarketingFrame>;
+  const { language } = useI18n();
+  const prefix = language === "ru" ? "/ru" : "";
+  return <MarketingFrame><PageHero eyebrow="nav_int" title="int_h" subtitle="int_sub" /><section className="borderless"><div className="wrap"><div className="steps" data-reveal-stagger>{integrations.map(([slug,name,tag], index) => <Link className="step" href={`${prefix}/int-${slug}`} key={slug}><div className="n">{String(index + 1).padStart(2,"0")}</div><h3>{name}</h3><T k={tag} as="p">Integration description</T><T k="int_open" as="span" className="step-cta">Open guide</T></Link>)}</div></div></section></MarketingFrame>;
 }
 
 const guideCode: Record<string, ReactNode> = {
@@ -57,10 +64,11 @@ const guideCode: Record<string, ReactNode> = {
 };
 
 export function IntegrationGuidePage({ slug }: { slug: string }) {
+  const { language } = useI18n();
   const found = integrations.find(([candidate]) => candidate === slug);
   if (!found) return null;
   const [,name,tag] = found;
-  return <MarketingFrame><div className="page-hero"><div className="wrap"><Link className="auth-back" href="/integrations"><T k="int_back">← All integrations</T></Link><T k="nav_int" as="span" className="eyebrow">Integrations</T><h1>{name}</h1><T k={tag} as="p">Integration description</T></div></div><section className="borderless"><div className="wrap"><div className="steps guide-steps" data-reveal-stagger>{[["int_s1_h","int_s1_p"],["int_s2_h","int_s2_p"],["int_s3_h","int_s3_p"]].map(([title,text], index) => <div className="step" key={title}><div className="n">{String(index + 1).padStart(2,"0")}</div><T k={title} as="h3">Step</T><T k={text} as="p">Description</T></div>)}</div><div className="doc-block"><T k="int_cfg" as="h3">Configuration</T><pre className="codebox">{guideCode[slug]}</pre><PageActions /></div></div></section></MarketingFrame>;
+  return <MarketingFrame><div className="page-hero"><div className="wrap"><Link className="auth-back" href={intBase(language)}><T k="int_back">← All integrations</T></Link><T k="nav_int" as="span" className="eyebrow">Integrations</T><h1>{name}</h1><T k={tag} as="p">Integration description</T></div></div><section className="borderless"><div className="wrap"><div className="steps guide-steps" data-reveal-stagger>{[["int_s1_h","int_s1_p"],["int_s2_h","int_s2_p"],["int_s3_h","int_s3_p"]].map(([title,text], index) => <div className="step" key={title}><div className="n">{String(index + 1).padStart(2,"0")}</div><T k={title} as="h3">Step</T><T k={text} as="p">Description</T></div>)}</div><div className="doc-block"><T k="int_cfg" as="h3">Configuration</T><pre className="codebox">{guideCode[slug]}</pre><PageActions /></div></div></section></MarketingFrame>;
 }
 
 function PageActions({ primaryOnly = false }: { primaryOnly?: boolean }) {
