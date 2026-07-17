@@ -11,8 +11,8 @@ type Localized = { title: string; description: string };
 
 export const coreRu: Record<string, Localized> = {
   home: {
-    title: "Купить доступ к Claude API",
-    description: "Один ключ и предоплаченный баланс для всех моделей Claude. Подключите Claude Code, Cursor, Cline, Zed или SDK Anthropic через совместимый эндпоинт.",
+    title: "Купить Claude API со скидкой — токены Claude",
+    description: "Купите доступ к Claude API со скидкой — один ключ и предоплаченные токены Claude API для Opus, Sonnet и Haiku. Тот же официальный API Anthropic, до 80% дешевле, готово для Claude Code и Cursor.",
   },
   models: {
     title: "Модели Claude, контекст и цены API",

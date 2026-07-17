@@ -16,8 +16,8 @@ export type SeoPage = {
 export const seoPages = {
   home: {
     path: "/",
-    title: "Claude API Access for Developers",
-    description: "Use one API key and prepaid balance for supported Claude models. Connect Claude Code, Cursor, Cline, Zed, or Anthropic SDKs through a compatible endpoint.",
+    title: "Buy Claude API — Discounted Access & Tokens",
+    description: "Buy discounted Claude API access — one key and prepaid Claude API tokens for Opus, Sonnet and Haiku. The same official Anthropic API, up to 80% off, ready for Claude Code and Cursor.",
     priority: 1,
     changeFrequency: "weekly",
   },

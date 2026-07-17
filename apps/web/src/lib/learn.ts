@@ -247,10 +247,10 @@ export const learnArticles: LearnArticle[] = [
   {
     slug: "cheapest-claude-api",
     cluster: "buy",
-    title: "Cheapest Claude API Access — Up to 80% Off",
+    title: "Cheapest Claude API — Up to 80% Discount",
     h1: "The cheapest way to use the Claude API",
-    description: "Cut Claude API costs by up to 80%. apiToken.sale sells the exact same Anthropic Messages API at a prepaid discount — same models, same endpoints, lower price per token.",
-    keywords: ["cheapest claude api", "claude api discount", "cheap claude api", "claude api price", "save on anthropic api", "claude api cheaper than anthropic"],
+    description: "The cheapest Claude API: buy discounted Claude API tokens at up to 80% off. apiToken.sale sells the identical Anthropic API from prepaid balance with a progressive Claude API discount.",
+    keywords: ["cheapest claude api", "claude api discount", "claude api tokens", "discounted claude api", "cheap claude api", "claude api cheaper than anthropic"],
     dek: "The Claude API is priced per token, and those tokens add up fast on long coding sessions. apiToken.sale gives you the identical API for up to 80% less by pooling prepaid balance and applying a progressive discount.",
     sections: [
       { h2: "Why it is cheaper", blocks: [
@@ -412,7 +412,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Free Claude API Key to Get Started",
     h1: "Get a free Claude API key to start",
     description: "Create a Claude API key for free on apiToken.sale and get $10 of Claude usage at official API prices — no card required, no Anthropic account, instant access.",
-    keywords: ["free claude api key", "claude api free", "claude api free tier", "free anthropic api key", "claude api no card"],
+    keywords: ["free claude api key", "claude api free", "free claude api", "claude api free tier", "free anthropic api key", "claude api no card"],
     dek: "You can create your key and make real Claude calls before spending anything. Every new B2C account is funded with $10 of usage at official API prices so you can prove the integration works first.",
     sections: [
       { h2: "What 'free' includes", blocks: [
@@ -791,7 +791,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Claude API Pricing Explained",
     h1: "How Claude API pricing works",
     description: "Understand Claude API pricing: per-token input and output rates, prompt caching, and how apiToken.sale applies a progressive discount of up to 80% off.",
-    keywords: ["claude api pricing", "claude api cost", "how claude api pricing works", "claude token pricing", "anthropic api pricing explained"],
+    keywords: ["claude api pricing", "claude api tokens", "claude token pricing", "claude api cost", "how claude api pricing works", "anthropic api pricing explained"],
     dek: "Claude is billed per token — separately for input and output — with discounts for cached content. apiToken.sale keeps those mechanics identical and layers a discount on top.",
     sections: [
       { h2: "Tokens, input and output", blocks: [
@@ -1138,8 +1138,8 @@ export const learnArticles: LearnArticle[] = [
     cluster: "compare",
     title: "Why Choose apiToken.sale",
     h1: "Why choose apiToken.sale",
-    description: "The reasons developers pick apiToken.sale for Claude: the same Anthropic API up to 80% cheaper, instant access with no Anthropic account, and card or crypto payment.",
-    keywords: ["why apitoken.sale", "best claude api provider", "claude api discount provider", "cheap claude api gateway", "claude api no anthropic account"],
+    description: "Why developers pick apiToken.sale for Claude: the same Anthropic API up to 80% off, discounted Claude API tokens, instant access with no Anthropic account, and card or crypto payment.",
+    keywords: ["why apitoken.sale", "claude api discount", "claude api tokens", "claude api sale", "best claude api provider", "claude api no anthropic account"],
     dek: "apiToken.sale is built for one thing: the same Claude API, cheaper and easier to start. Here is what that means in practice.",
     sections: [
       { h2: "The short version", blocks: [
