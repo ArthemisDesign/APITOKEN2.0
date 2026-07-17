@@ -102,6 +102,7 @@ fixture prevents dashboard browser requests from reaching the configured API.
 | `AUDIT_VERIFY_KEYS` | automatic | `1` forces API-key assertions; `0` disables them. They run automatically when a selected capture starts with `dashboard-keys-`. |
 | `AUDIT_VERIFY_CREDITS` | automatic | `1` forces Credits assertions; `0` disables them. They run automatically when a selected capture starts with `dashboard-topup-`. |
 | `AUDIT_VERIFY_DOCS_THEME` | automatic | `1` forces docs theme assertions; `0` disables them. They run automatically when a selected capture starts with `docs-`. |
+| `AUDIT_VERIFY_HERO` | automatic | `1` forces landing hero-offer assertions; `0` disables them. They run automatically when a selected capture starts with `home-`. |
 | `AUDIT_VERIFY_PRICING` | automatic | `1` forces pricing-card assertions; `0` disables them. They run automatically when a selected capture starts with `pricing-cards-`. |
 | `AUDIT_VERIFY_ROUTING` | `0` | Tests dashboard subview routing and hard-reload fallback behavior. |
 | `AUDIT_VERIFY_PROFILE` | `0` | Tests dashboard profile behavior. |
@@ -130,6 +131,19 @@ Capture definitions live near the top of `scripts/capture-site.mjs`. Each defini
 The public-site scope includes home, plans, models, docs, integrations, authentication, terms,
 privacy, and support states. The dashboard scope includes overview, API keys, credits, usage, support,
 promos, profile, and security states.
+
+The landing hero-offer matrix covers English and Russian, light and dark themes, and desktop and
+mobile layouts. `verifyHeroOfferLayout()` checks the card hierarchy, compact height, metadata
+alignment, vertical rhythm, equal tier-row heights, exact top-up/discount/API values, shared table
+columns, clipping, and horizontal overflow. Run that matrix on its own with:
+
+```bash
+AUDIT_SCOPE=site \
+AUDIT_FILTER=home-desktop,home-dark,home-russian-light,home-russian,home-mobile,home-mobile-dark,home-mobile-russian-light,home-mobile-russian-dark \
+AUDIT_VERIFY_HERO=1 \
+SCREENSHOT_DIR=.artifacts/hero-offer-review \
+node apps/web/scripts/capture-site.mjs
+```
 
 The `pricing-cards-*` matrix covers the plans-page top-up and B2B cards in English and Russian, light
 and dark themes, and desktop and mobile layouts. Its browser assertions keep both outer cards on the

@@ -241,6 +241,8 @@ describe("completed Next.js migration", () => {
     expect(styles).toContain(".business-preview-head{height:82px;min-height:82px");
     expect(styles).toContain(".business-terms{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))");
     expect(styles).toContain(".topup-live + p,.business-preview + p{margin-top:18px}");
+    expect(styles).toContain(".offer-table-head,.ot{display:grid;grid-template-columns:minmax(0,.8fr) 80px minmax(0,1.1fr)");
+    expect(styles).toContain(".ot-best{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}");
     expect(styles).not.toContain(".business-preview{flex:1 1 auto;min-height:168px");
     expect(styles).toContain(".stat b{font-family:var(--font-mono)");
     expect(styles).toContain(".prod{border:1px solid var(--line);border-radius:8px;padding:28px;background:var(--bg-card);display:flex;flex-direction:column");
@@ -250,7 +252,11 @@ describe("completed Next.js migration", () => {
     expect(topup).not.toContain("editable");
     expect(styles).toContain(".prod .amt .now{font-family:var(--font-mono)");
     expect(styles).not.toContain(".hero-note{");
-    expect(readFileSync(join(appRoot, "page.tsx"), "utf8")).not.toContain('k="hero_note"');
+    const home = readFileSync(join(appRoot, "page.tsx"), "utf8");
+    expect(home).not.toContain('k="hero_note"');
+    expect(home).toContain('k="offer_free_eyebrow"');
+    expect(home).toContain('className="offer-value-table"');
+    expect(home).toContain("−{tier.discount}%");
     expect(animations).not.toContain(".feat:hover{");
     expect(motion).toContain("transform={`translate(${waveWidth} 0)`}");
     expect(animations).toContain("translateX(-50%)");

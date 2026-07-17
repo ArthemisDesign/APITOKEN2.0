@@ -19,6 +19,10 @@ const siteCaptures = [
   ["home-mobile", "/", 390, 844, "light"],
   ["home-dark", "/", 1440, 1000, "dark"],
   ["home-russian", "/", 1440, 1000, "dark", "ru"],
+  ["home-russian-light", "/", 1440, 1000, "light", "ru"],
+  ["home-mobile-dark", "/", 390, 844, "dark"],
+  ["home-mobile-russian-light", "/", 390, 844, "light", "ru"],
+  ["home-mobile-russian-dark", "/", 390, 844, "dark", "ru"],
   ["home-authenticated", "/?audit-auth=1", 1440, 1000, "light"],
   ["plans-desktop", "/plans", 1440, 1000, "light"],
   ["plans-mobile", "/plans", 390, 844, "light"],
@@ -97,6 +101,8 @@ const shouldVerifyDocsTheme = process.env.AUDIT_VERIFY_DOCS_THEME === "1" ||
   (process.env.AUDIT_VERIFY_DOCS_THEME !== "0" && captures.some(([name]) => name.startsWith("docs-")));
 const shouldVerifyPricing = process.env.AUDIT_VERIFY_PRICING === "1" ||
   (process.env.AUDIT_VERIFY_PRICING !== "0" && captures.some(([name]) => name.startsWith("pricing-cards-")));
+const shouldVerifyHero = process.env.AUDIT_VERIFY_HERO === "1" ||
+  (process.env.AUDIT_VERIFY_HERO !== "0" && captures.some(([name]) => name.startsWith("home-")));
 
 if (captures.length === 0) throw new Error("No screenshots matched AUDIT_SCOPE/AUDIT_FILTER.");
 
@@ -413,6 +419,108 @@ async function clickSelector(client, selector) {
   const y = rect.y + rect.height / 2;
   await client.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
   await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+}
+
+async function verifyHeroOfferLayout(client) {
+  const cases = [
+    { name: "desktop-light-en", width: 1440, height: 1000, theme: "light", language: "en", label: "Free" },
+    { name: "desktop-dark-en", width: 1440, height: 1000, theme: "dark", language: "en", label: "Free" },
+    { name: "desktop-light-ru", width: 1440, height: 1000, theme: "light", language: "ru", label: "Бонус" },
+    { name: "desktop-dark-ru", width: 1440, height: 1000, theme: "dark", language: "ru", label: "Бонус" },
+    { name: "mobile-light-en", width: 390, height: 844, theme: "light", language: "en", label: "Free" },
+    { name: "mobile-dark-en", width: 390, height: 844, theme: "dark", language: "en", label: "Free" },
+    { name: "mobile-light-ru", width: 390, height: 844, theme: "light", language: "ru", label: "Бонус" },
+    { name: "mobile-dark-ru", width: 390, height: 844, theme: "dark", language: "ru", label: "Бонус" },
+  ];
+
+  for (const layoutCase of cases) {
+    await setViewport(client, layoutCase.width, layoutCase.height);
+    await client.send("Runtime.evaluate", {
+      expression: `localStorage.setItem('theme', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('lang', ${JSON.stringify(layoutCase.language)});`,
+    });
+    const url = new URL("/", baseUrl);
+    url.searchParams.set("__auditHero", layoutCase.name);
+    const loaded = client.once("Page.loadEventFired");
+    await client.send("Page.navigate", { url: url.href });
+    await loaded;
+    await waitForCondition(
+      client,
+      `Boolean(document.querySelector('.hero-offer .offer-value-table')) && document.querySelectorAll('.hero-offer .ot').length === 3`,
+      `${layoutCase.name} hero offer`,
+    );
+    await client.send("Runtime.evaluate", {
+      expression: `(() => {
+        if (document.documentElement.lang === ${JSON.stringify(layoutCase.language)}) return;
+        const target = [...document.querySelectorAll('.lang button, .lang a')]
+          .find((button) => button.textContent?.trim() === ${JSON.stringify(layoutCase.language.toUpperCase())});
+        target?.click();
+      })()`,
+    });
+    await waitForCondition(
+      client,
+      `document.documentElement.lang === ${JSON.stringify(layoutCase.language)} && document.querySelector('.offer-free-head .off-tag')?.textContent?.trim() === ${JSON.stringify(layoutCase.label)}`,
+      `${layoutCase.name} localized hero offer`,
+    );
+    await client.send("Runtime.evaluate", {
+      awaitPromise: true,
+      expression: `document.fonts.ready.then(() => new Promise((resolve) => setTimeout(resolve, 350)))`,
+    });
+
+    const result = await client.send("Runtime.evaluate", {
+      expression: `(() => {
+        const rect = (target) => target?.getBoundingClientRect();
+        const card = rect(document.querySelector('.hero-offer'));
+        const kicker = rect(document.querySelector('.offer-kicker'));
+        const noCard = rect(document.querySelector('.offer-no-card'));
+        const mainValue = document.querySelector('.offer-free-head .ofa');
+        const label = document.querySelector('.offer-free-head .off-tag');
+        const freeBlock = rect(document.querySelector('.offer-free'));
+        const rateHead = rect(document.querySelector('.offer-rate-head'));
+        const table = rect(document.querySelector('.offer-value-table'));
+        const headCells = [...document.querySelectorAll('.offer-table-head>span')].map(rect);
+        const rows = [...document.querySelectorAll('.offer-tiers>.ot')];
+        const rowRects = rows.map(rect);
+        const rowCells = rows.map((row) => [...row.children].map(rect));
+        const rowTextFits = rows.every((row) => {
+          const rowRect = rect(row);
+          return [...row.querySelectorAll('b,i,span')].every((node) => {
+            const nodeRect = rect(node);
+            return nodeRect.left >= rowRect.left - 1 && nodeRect.right <= rowRect.right + 1;
+          });
+        });
+        const columnCentersAligned = headCells.length === 3 && rowCells.every((cells) => cells.length === 3 && cells.every((cell, index) =>
+          Math.abs((cell.left + cell.width / 2) - (headCells[index].left + headCells[index].width / 2)) < 3
+        ));
+        const rowHeights = rowRects.map((row) => row.height);
+        const mainStyle = getComputedStyle(mainValue);
+        const labelStyle = getComputedStyle(label);
+        return JSON.stringify({
+          language: document.documentElement.lang,
+          theme: document.documentElement.dataset.theme || 'light',
+          overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          label: label?.textContent?.trim(),
+          cardFits: Boolean(card && card.left >= -1 && card.right <= innerWidth + 1),
+          compactCard: Boolean(card && card.height >= 390 && card.height <= 610),
+          metaAligned: Boolean(kicker && noCard && Math.abs((kicker.top + kicker.height / 2) - (noCard.top + noCard.height / 2)) < 8),
+          hierarchy: Number.parseFloat(mainStyle.fontSize) >= 52 && Number.parseFloat(labelStyle.fontSize) <= 12,
+          verticalRhythm: Boolean(freeBlock && rateHead && table && freeBlock.bottom < rateHead.top && rateHead.bottom < table.top),
+          rowsEqual: rowHeights.length === 3 && Math.max(...rowHeights) - Math.min(...rowHeights) < 2,
+          columnCentersAligned,
+          rowTextFits,
+          values: rows.map((row) => [...row.querySelectorAll('b')].map((node) => node.textContent?.trim())),
+          discounts: rows.map((row) => row.querySelector('i')?.textContent?.trim()),
+        });
+      })()`,
+      returnByValue: true,
+    });
+    const state = JSON.parse(result.result.value);
+    const expectedValues = [["$10", "$25"], ["$100", "$286"], ["$1,000", "$5,000"]];
+    const expectedDiscounts = ["−60%", "−65%", "−80%"];
+    if (state.language !== layoutCase.language || state.theme !== layoutCase.theme || state.overflow > 1 || state.label !== layoutCase.label || !state.cardFits || !state.compactCard || !state.metaAligned || !state.hierarchy || !state.verticalRhythm || !state.rowsEqual || !state.columnCentersAligned || !state.rowTextFits || JSON.stringify(state.values) !== JSON.stringify(expectedValues) || JSON.stringify(state.discounts) !== JSON.stringify(expectedDiscounts)) {
+      throw new Error(`Hero offer ${layoutCase.name} layout failed: ${JSON.stringify(state)}`);
+    }
+  }
+  process.stdout.write("Verified hero offer hierarchy, spacing, value columns, translations, themes, and responsive layout\n");
 }
 
 async function verifyPricingCardsLayout(client) {
@@ -1125,6 +1233,7 @@ try {
   }
   if (process.env.AUDIT_VERIFY_ROUTING === "1") await verifyDashboardRouting(client);
   if (process.env.AUDIT_VERIFY_PROFILE === "1") await verifyProfileBehavior(client);
+  if (shouldVerifyHero) await verifyHeroOfferLayout(client);
   if (shouldVerifyPricing) await verifyPricingCardsLayout(client);
   if (shouldVerifyKeys) await verifyApiKeysLayout(client);
   if (shouldVerifyCredits) await verifyCreditsLayout(client);

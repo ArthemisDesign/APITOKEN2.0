@@ -133,24 +133,39 @@ export default function HomePage() {
 }
 
 // Сколько официального Claude API получит клиент за пополнение `payUsd`: тир по накопленной сумме → скидка → номинал.
-function officialValueForTopup(payUsd: number): number {
+function pricingForTopup(payUsd: number) {
   const tier = B2C_PRICING_MILESTONES.filter((milestone) => payUsd >= Number(milestone.platformSpendUsd)).at(-1) ?? B2C_PRICING_MILESTONES[0];
-  return Math.round(payUsd / (1 - tier.discountPercent / 100));
+  return { pay: payUsd, get: Math.round(payUsd / (1 - tier.discountPercent / 100)), discount: tier.discountPercent };
 }
-const heroTopups = [10, 100, 1000].map((pay) => ({ pay, get: officialValueForTopup(pay) }));
+const heroTopups = [10, 100, 1000].map(pricingForTopup);
 
 function HeroDiscount() {
-  return <aside className="hero-offer reveal" aria-label="Free credit and top-up value">
+  return <aside className="hero-offer reveal">
     <div className="offer-free">
-      <h2 className="offer-free-head"><span className="ofa">$10</span><span className="off-tag">FREE</span></h2>
-      <T k="offer_free_sub" as="p" className="offer-free-sub">in Claude API tokens</T>
-      <T k="offer_free_note" as="p" className="offer-free-note">On sign up with Google or GitHub — no card</T>
+      <div className="offer-free-top">
+        <T k="offer_free_eyebrow" as="span" className="offer-kicker">Welcome credit</T>
+        <T k="offer_no_card" as="span" className="offer-no-card">No card required</T>
+      </div>
+      <h2 className="offer-free-head"><span className="ofa">$10</span><T k="offer_free_label" as="span" className="off-tag">Free</T></h2>
+      <T k="offer_free_sub" as="p" className="offer-free-sub">Claude API usage at official prices</T>
+      <T k="offer_free_note" as="p" className="offer-free-note">For new accounts created with Google or GitHub</T>
     </div>
-    <T k="offer_note" as="p" className="offer-note">Discounts start at 60% off.</T>
-    <ul className="offer-tiers">{heroTopups.map((tier, index) => <li key={tier.pay} className={index === heroTopups.length - 1 ? "ot ot-best" : "ot"}>
-      <span className="ot-pay"><T k="offer_top_up" as="i">Top up</T><b>${tier.pay.toLocaleString("en-US")}</b></span>
-      <span className="ot-get"><b>${tier.get.toLocaleString("en-US")}</b><T k="offer_in_api" as="i">in Claude API</T></span>
-    </li>)}</ul>
+    <div className="offer-rate-head">
+      <T k="offer_note" as="h3">Your balance goes further</T>
+      <T k="offer_note_detail" as="p">B2C discounts start at 60% off</T>
+    </div>
+    <div className="offer-value-table">
+      <div className="offer-table-head">
+        <T k="offer_top_up" as="span">Top up</T>
+        <T k="offer_discount" as="span">Discount</T>
+        <T k="offer_in_api" as="span">Claude API value</T>
+      </div>
+      <ul className="offer-tiers">{heroTopups.map((tier, index) => <li key={tier.pay} className={index === heroTopups.length - 1 ? "ot ot-best" : "ot"}>
+        <span className="ot-pay"><b>${tier.pay.toLocaleString("en-US")}</b></span>
+        <span className="ot-rate"><i>−{tier.discount}%</i><span aria-hidden="true">→</span></span>
+        <span className="ot-get"><b>${tier.get.toLocaleString("en-US")}</b></span>
+      </li>)}</ul>
+    </div>
   </aside>;
 }
 function Stat({ value, label }: { value: string; label: string }) { return <div className="stat"><b>{value}</b><T k={label}>Metric</T></div>; }

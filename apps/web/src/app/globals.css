@@ -190,27 +190,51 @@ section{padding:96px 0;border-bottom:1px solid var(--line)}
   background:var(--accent-soft);border:1px solid var(--accent-line);border-radius:11px}
 .hp-ic svg{width:24px;height:24px;display:block}
 
-/* Hero-оффер: $10 бесплатно + 3 тарифа с огромными цифрами «сколько получишь» */
-.hero-offer{min-width:0;background:var(--bg-card);border:1px solid var(--line);border-radius:18px;
-  padding:26px 26px 24px;box-shadow:0 30px 70px -34px rgba(10,12,30,.55)}
-.offer-free{padding-bottom:20px;margin-bottom:18px;border-bottom:1px solid var(--line)}
-.offer-free-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:0;
+/* Hero offer: a compact welcome-credit summary followed by a scannable value table. */
+.hero-offer{position:relative;min-width:0;overflow:hidden;background:
+  linear-gradient(145deg,color-mix(in srgb,var(--accent) 7%,transparent),transparent 42%),var(--bg-card);
+  border:1px solid var(--line-strong);border-radius:18px;padding:28px;
+  box-shadow:0 30px 70px -34px rgba(10,12,30,.55)}
+.hero-offer::after{content:"";position:absolute;right:-54px;top:-68px;width:170px;height:170px;border-radius:50%;
+  border:1px solid var(--accent-line);opacity:.38;pointer-events:none}
+.offer-free{position:relative;z-index:1;padding-bottom:24px;margin-bottom:22px;border-bottom:1px solid var(--line)}
+.offer-free-top{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.offer-kicker{display:inline-flex;align-items:center;gap:9px;font-family:var(--font-mono);font-size:11px;font-weight:700;
+  line-height:1.25;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+.offer-kicker::before{content:"";width:7px;height:7px;flex:none;border-radius:50%;background:var(--accent);
+  box-shadow:0 0 0 4px var(--accent-soft)}
+.offer-no-card{padding:5px 9px;border:1px solid var(--line);border-radius:999px;background:var(--bg-card);
+  font-family:var(--font-mono);font-size:10px;font-weight:600;line-height:1.2;letter-spacing:.08em;text-transform:uppercase;color:var(--txt-3);white-space:nowrap}
+.offer-free-head{display:flex;align-items:center;justify-content:flex-start;gap:14px;margin:18px 0 0;
   font-family:var(--font-i18n-display);font-weight:700;line-height:1;white-space:nowrap}
-.offer-free-head .ofa{font-size:clamp(56px,8vw,86px);color:var(--accent)}
-.offer-free-head .off-tag{font-size:clamp(52px,7.4vw,78px);letter-spacing:.02em;color:var(--txt)}
-.offer-free-sub{margin:12px 0 0;font-family:var(--font-mono);font-size:14px;color:var(--txt-2)}
-.offer-free-note{margin:6px 0 0;font-family:var(--font-mono);font-size:12px;color:var(--txt-4)}
-.offer-note{margin:0 0 16px;font-family:var(--font-mono);font-size:13.5px;color:var(--txt-2)}
-.offer-tiers{list-style:none;margin:0;padding:0;display:grid;gap:12px}
-.ot{display:flex;align-items:center;justify-content:space-between;gap:18px;
-  padding:16px 20px;border:1px solid var(--line);border-radius:14px;transition:border-color .2s ease,background-color .2s ease}
-.ot-pay{display:flex;flex-direction:column;gap:3px}
-.ot-pay i{font-style:normal;font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--txt-4)}
-.ot-pay b{font-family:var(--font-mono);font-size:23px;font-weight:700;color:var(--txt);line-height:1}
-.ot-get{display:flex;flex-direction:column;align-items:flex-end;gap:3px;text-align:right}
-.ot-get b{font-family:var(--font-display);font-weight:700;font-size:clamp(38px,5.2vw,52px);line-height:.9;color:var(--accent)}
-.ot-get i{font-style:normal;font-family:var(--font-mono);font-size:11.5px;letter-spacing:.02em;color:var(--txt-3)}
-.ot-best{border-color:var(--accent-line);background:var(--accent-soft)}
+.offer-free-head .ofa{font-size:clamp(58px,6.2vw,74px);letter-spacing:-.02em;color:var(--accent)}
+.offer-free-head .off-tag{padding:7px 10px;border:1px solid var(--accent-line);border-radius:999px;background:var(--accent-soft);
+  font-family:var(--font-mono);font-size:11px;font-weight:700;line-height:1;letter-spacing:.1em;text-transform:uppercase;color:var(--accent)}
+.offer-free-sub{margin:8px 0 0;font-family:var(--font-mono);font-size:14px;font-weight:600;line-height:1.45;color:var(--txt)}
+.offer-free-note{display:flex;align-items:flex-start;gap:8px;margin:9px 0 0;font-family:var(--font-mono);font-size:11.5px;line-height:1.5;color:var(--txt-4)}
+.offer-free-note::before{content:"";width:5px;height:5px;flex:none;margin-top:.55em;border-radius:50%;background:var(--accent)}
+.offer-rate-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:14px}
+.offer-rate-head h3{font-size:15px;line-height:1.35;color:var(--txt)}
+.offer-rate-head p{margin:0;font-family:var(--font-mono);font-size:10.5px;line-height:1.4;text-align:right;color:var(--txt-4)}
+.offer-value-table{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--bg-card)}
+.offer-table-head,.ot{display:grid;grid-template-columns:minmax(0,.8fr) 80px minmax(0,1.1fr);align-items:center;gap:12px}
+.offer-table-head{padding:10px 16px;border-bottom:1px solid var(--line);background:var(--bg-soft);
+  font-family:var(--font-mono);font-size:9px;font-weight:700;line-height:1.25;letter-spacing:.11em;text-transform:uppercase;color:var(--txt-4)}
+.offer-table-head span:nth-child(2){text-align:center}
+.offer-table-head span:last-child{text-align:right}
+.offer-tiers{list-style:none;margin:0;padding:0;display:grid}
+.ot{min-height:66px;padding:13px 16px;transition:border-color .2s ease,background-color .2s ease}
+.ot+.ot{border-top:1px solid var(--line)}
+.ot-pay,.ot-get{min-width:0}
+.ot-pay b,.ot-get b{display:block;font-family:var(--font-mono);font-weight:700;line-height:1;white-space:nowrap}
+.ot-pay b{font-size:21px;color:var(--txt)}
+.ot-rate{display:flex;align-items:center;justify-content:center;gap:7px;min-width:0}
+.ot-rate i{padding:4px 6px;border-radius:5px;background:var(--accent-soft);font-family:var(--font-mono);font-size:9.5px;font-weight:700;
+  font-style:normal;line-height:1;color:var(--accent);white-space:nowrap}
+.ot-rate span{font-size:14px;line-height:1;color:var(--txt-4)}
+.ot-get{text-align:right}
+.ot-get b{font-size:29px;letter-spacing:-.035em;color:var(--accent)}
+.ot-best{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
 
 /* terminal card stays anchored; only the macOS controls react to hover */
 .term-stage{min-width:0}
@@ -451,6 +475,25 @@ footer{padding:64px 0 40px;border-bottom:0}
 @media(max-width:520px){
   .hero-cta{display:grid;grid-template-columns:1fr}
   .hero-cta .btn{inline-size:100%;justify-content:center}
+  .hero-offer{padding:20px;border-radius:16px}
+  .offer-free{padding-bottom:20px;margin-bottom:18px}
+  .offer-free-top{align-items:flex-start;gap:12px}
+  .offer-kicker{font-size:10px;letter-spacing:.1em}
+  .offer-no-card{padding:4px 7px;font-size:9px;letter-spacing:.06em}
+  .offer-free-head{margin-top:16px}
+  .offer-free-head .ofa{font-size:58px}
+  .offer-free-sub{font-size:13px}
+  .offer-free-note{font-size:11px}
+  .offer-rate-head{display:block;margin-bottom:12px}
+  .offer-rate-head p{margin-top:4px;text-align:left}
+  .offer-table-head,.ot{grid-template-columns:minmax(0,.8fr) 70px minmax(0,1.1fr);gap:8px}
+  .offer-table-head{padding:9px 12px;font-size:8.5px;letter-spacing:.08em}
+  .ot{min-height:62px;padding:12px}
+  .ot-pay b{font-size:19px}
+  .ot-rate{gap:4px}
+  .ot-rate i{padding:4px;font-size:9px}
+  .ot-rate span{font-size:12px}
+  .ot-get b{font-size:25px}
   .stats{grid-template-columns:1fr}
   .stat{border-right:0;border-bottom:1px solid var(--line);padding:20px 22px;display:flex;align-items:baseline;justify-content:space-between;gap:16px}
   .stat:last-child{border-bottom:0}
@@ -470,6 +513,12 @@ footer{padding:64px 0 40px;border-bottom:0}
 }
 @media(max-width:380px){
   .brand{font-size:14px}
+  .hero-offer{padding:18px}
+  .offer-free-head .ofa{font-size:52px}
+  .offer-table-head,.ot{grid-template-columns:minmax(0,.78fr) 64px minmax(0,1.08fr);gap:6px}
+  .offer-table-head,.ot{padding-inline:10px}
+  .ot-pay b{font-size:18px}
+  .ot-get b{font-size:23px}
 }
 
 /* auth buttons don't fit the bar on phones — hidden here, shown inside the burger menu instead */
