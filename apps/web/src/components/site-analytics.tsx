@@ -66,6 +66,22 @@ export function SiteAnalytics() {
     }
   }, []);
 
+  // Шеринг-ссылки приходят с utm_*, но посетитель должен видеть чистый https://apitoken.sale.
+  // Ждём, пока Vercel Analytics и Метрика зафиксируют pageview с метками, затем чистим адрес.
+  useEffect(() => {
+    const hasUtm = Array.from(new URLSearchParams(location.search).keys()).some((k) => k.startsWith("utm_"));
+    if (!hasUtm) return;
+    const timer = setTimeout(() => {
+      const query = new URLSearchParams(location.search);
+      for (const parameter of Array.from(query.keys())) {
+        if (parameter.startsWith("utm_")) query.delete(parameter);
+      }
+      const rest = query.toString();
+      history.replaceState(history.state, "", location.pathname + (rest ? `?${rest}` : "") + location.hash);
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, []);
+
   useEffect(() => {
     if (previousPathname.current === pathname) return;
 
