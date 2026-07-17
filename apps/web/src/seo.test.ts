@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import manifest from "./app/manifest";
 import sitemap from "./app/sitemap";
@@ -47,6 +48,13 @@ describe("technical SEO", () => {
       { url: "/assets/favicon-192.png", sizes: "192x192", type: "image/png" },
     ]);
     expect(SITE_ICONS.shortcut).toEqual([{ url: "/assets/favicon-32.png", type: "image/png" }]);
+
+    for (const size of [32, 192, 512]) {
+      const favicon = readFileSync(new URL(`../public/assets/favicon-${size}.png`, import.meta.url));
+      expect(favicon.readUInt32BE(16)).toBe(size);
+      expect(favicon.readUInt32BE(20)).toBe(size);
+    }
+    expect(existsSync(new URL("../public/favicon.svg", import.meta.url))).toBe(false);
   });
 
   it("gives each indexable page a unique description, canonical, and social URL", () => {
