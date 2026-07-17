@@ -11,7 +11,9 @@ command -v curl >/dev/null || { echo 'curl is required' >&2; exit 1; }
 command -v jq >/dev/null || { echo 'jq is required' >&2; exit 1; }
 id deploy >/dev/null 2>&1 || { echo 'deploy user is required' >&2; exit 1; }
 id apitoken-ci >/dev/null 2>&1 || useradd --system --home-dir /var/lib/apitoken/watchdog/ci-home --create-home --shell /usr/sbin/nologin apitoken-ci
-usermod -a -G deploy apitoken-ci
+if ! id -Gn apitoken-ci | tr ' ' '\n' | grep -Fxq deploy; then
+  usermod -a -G deploy apitoken-ci
+fi
 
 install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/controller
 install -d -o deploy -g deploy -m 0751 /var/lib/apitoken/watchdog /var/lib/apitoken/watchdog/candidates
