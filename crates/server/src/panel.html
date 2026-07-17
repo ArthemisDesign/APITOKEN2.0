@@ -130,6 +130,11 @@ tbody tr:last-child td{border-bottom:0}
 .pill.ok{color:var(--ok);border-color:var(--ok-line);background:var(--ok-soft)}
 .pill.warn{color:var(--warn);border-color:var(--warn-line);background:var(--warn-soft)}
 .pill.bad{color:var(--danger);border-color:var(--danger-line);background:var(--danger-soft)}
+.act{font:inherit;font-size:11.5px;font-weight:600;color:var(--accent);background:var(--accent-soft);
+  border:1px solid var(--accent-line);border-radius:var(--radius);padding:4px 10px;cursor:pointer;
+  transition:.15s;white-space:nowrap}
+.act:hover{background:var(--accent);color:#fff}
+.act[disabled]{opacity:.4;cursor:not-allowed}
 
 /* ── вход (фолбэк без Caddy): как .auth-card сайта ── */
 .setup{max-width:420px;margin:80px auto;background:var(--bg-card);border:1px solid var(--line);
@@ -206,6 +211,29 @@ function repaint(html){
     if(s&&open.includes(s.textContent.trim())) d.open=true;});
   scrollTo(0,y);
   bindTabs();
+  bindCredit();
+}
+
+/* Начисление баланса: целые USD строкой цифр (правило проекта — без float/точек/ведущих нулей). */
+function bindCredit(){
+  document.querySelectorAll('[data-credit]').forEach(b=>b.onclick=async()=>{
+    const amount=prompt(`Начислить баланс ${b.dataset.email}\n\nСумма в USD (целое число, 1–99999):`);
+    if(amount==null) return;
+    const v=amount.trim();
+    if(!/^[1-9][0-9]{0,4}$/.test(v)) return alert('Нужно целое число долларов от 1 до 99999, без точек и ведущих нулей.');
+    if(!confirm(`Начислить $${v} пользователю ${b.dataset.email}?`)) return;
+    b.disabled=true;
+    try{
+      const k=key();
+      const r=await fetch(`/admin/users/${b.dataset.credit}/credit`,{method:'POST',
+        headers:{'content-type':'application/json',...(k?{'x-api-key':k}:{})},
+        body:JSON.stringify({amount_usd:v})});
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok) throw new Error(j.message||('ошибка '+r.status));
+      alert(`Начислено $${v}. Новый баланс: $${j.balance??'?'}`);
+      tick();
+    }catch(e){ alert('Не удалось начислить: '+e.message); b.disabled=false; }
+  });
 }
 
 function setup(msg){
@@ -277,6 +305,7 @@ function renderUsers(users){
       <td>${n(k.active)}${n(k.total)>n(k.active)?`<span class="muted">/${k.total}</span>`:''}</td>
       <td class="muted">${ago(u.last_seen_at)}</td>
       <td class="muted">${dt(u.created_at)}</td>
+      <td>${u.engine_account_id?`<button class="act" data-credit="${esc(u.id)}" data-email="${esc(u.email)}">+ баланс</button>`:'<span class="muted" title="аккаунт движка ещё не создан">—</span>'}</td>
     </tr>`;
   }).join('');
   repaint(`
@@ -296,8 +325,8 @@ function renderUsers(users){
       <h2>Все пользователи</h2>
       <div class="tbl"><div class="tbl-scroll"><table>
         <thead><tr><th class="l">пользователь</th><th class="l">тир</th><th>баланс</th><th>потрачено</th>
-          <th>пополнения</th><th>ключи</th><th>был(а)</th><th>регистрация</th></tr></thead>
-        <tbody>${rows||'<tr><td colspan="8" class="muted l">нет пользователей</td></tr>'}</tbody>
+          <th>пополнения</th><th>ключи</th><th>был(а)</th><th>регистрация</th><th></th></tr></thead>
+        <tbody>${rows||'<tr><td colspan="9" class="muted l">нет пользователей</td></tr>'}</tbody>
       </table></div></div>
       <footer>обновление каждые 15с · баланс/расход — live из движка · пополнения — подтверждённые платежи</footer>
     </main>`);

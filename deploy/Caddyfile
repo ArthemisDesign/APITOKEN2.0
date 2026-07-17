@@ -81,9 +81,9 @@ panel.apitoken.sale {
 	}
 	# Вкладка «Пользователи»: commerce-обзор юзеров (backend /v1/admin/users). Секрет админки
 	# инжектится server-side — в браузер не попадает; вход по-прежнему гейтится basic_auth выше.
-	@users path /admin/users
+	@users path /admin/users /admin/users/*
 	handle @users {
-		rewrite * /v1/admin/users
+		rewrite * /v1{uri}
 		reverse_proxy 127.0.0.1:3000 127.0.0.1:3001 {
 			lb_policy round_robin
 			health_uri /v1/ready

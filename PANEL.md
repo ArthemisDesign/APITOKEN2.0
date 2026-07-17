@@ -21,8 +21,11 @@
   (`GET /panel`, без авторизации — данные всё равно требуют ключей). Деплой движка = деплой панели,
   статических копий НЕТ (раньше была `/srv/claude-api/panel/index.html` — упразднена, дрейфовала).
 - **Данные движка** (`/overview`, `/capacity`, `/subs`, `/metrics`) — `crates/server/src/http.rs`.
-- **Данные коммерции** (`/v1/admin/users`) — `apps/api/src/admin.controller.ts` (AdminGuard по
-  `x-admin-key`), агрегат — `packages/db/src/admin-overview.ts` + live-деньги через engine Control API.
+- **Данные коммерции** (`/v1/admin/users`, `POST /v1/admin/users/:id/credit`) —
+  `apps/api/src/admin.controller.ts` (AdminGuard по `x-admin-key`), агрегат —
+  `packages/db/src/admin-overview.ts` + live-деньги через engine Control API.
+  Начисление: целые USD строкой цифр; кредитует движок идемпотентно по ref, след — в audit_log;
+  тир НЕ двигает (мимо payments/engine_credits — это подарок, не пополнение).
 
 ## Как добавить новую вкладку / источник данных
 

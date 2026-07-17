@@ -4,6 +4,7 @@ import {
   Controller,
   Get,
   Header,
+  HttpException,
   NotFoundException,
   Param,
   Patch,
@@ -17,9 +18,10 @@ import {
 import { BusinessCustomerNotFoundError } from "@claude-api/db";
 import { z } from "zod";
 import { AdminGuard } from "./admin.guard.js";
-import { AdminService } from "./admin.service.js";
+import { AdminCreditError, AdminService } from "./admin.service.js";
 
 const uuidSchema = z.string().uuid();
+const creditSchema = z.object({ amount_usd: z.string() });
 
 @Controller("admin")
 @UseGuards(AdminGuard)
@@ -30,6 +32,20 @@ export class AdminController {
   @Header("Cache-Control", "no-store")
   async listUsers(): Promise<unknown> {
     return this.admin.listUsers();
+  }
+
+  @Post("users/:id/credit")
+  @Header("Cache-Control", "no-store")
+  async creditUser(@Param("id") id: string, @Body() body: unknown): Promise<unknown> {
+    if (!uuidSchema.safeParse(id).success) throw new BadRequestException("user ID must be a UUID");
+    const parsed = creditSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    try {
+      return await this.admin.creditUser(id, parsed.data.amount_usd);
+    } catch (error) {
+      if (error instanceof AdminCreditError) throw new HttpException(error.message, error.status);
+      throw error;
+    }
   }
 
   @Post("business-invites")

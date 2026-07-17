@@ -4,7 +4,9 @@ import { ConfigService } from "@nestjs/config";
 import { multiplierForDiscount } from "@claude-api/contracts";
 import {
   createBusinessInvite,
+  getEngineAccountMapping,
   listAdminUserOverview,
+  recordAdminCredit,
   setBusinessPricing,
   type AdminUserOverviewRow,
   type Database,
@@ -43,6 +45,39 @@ export class AdminService {
     return { users: rows.map((row) => serializeUser(row, row.engineAccountId ? live.get(row.engineAccountId) ?? null : null)) };
   }
 
+  /**
+   * Админское начисление баланса. Сумма — целые USD строкой цифр (правило проекта: без float,
+   * точек и ведущих нулей). Деньги кредитует движок (авторитет live-баланса) идемпотентно по ref;
+   * commerce пишет только след в audit_log. НЕ считается пополнением для prepay-тира
+   * (мимо payments/engine_credits — подарок не двигает тир).
+   */
+  async creditUser(userId: string, amountUsd: string): Promise<Record<string, unknown>> {
+    if (!/^[1-9][0-9]{0,4}$/.test(amountUsd)) {
+      throw new AdminCreditError(400, "amount_usd must be an integer USD string from 1 to 99999");
+    }
+    const mapping = await getEngineAccountMapping(this.database, userId);
+    if (!mapping) throw new AdminCreditError(404, "user has no engine account record");
+    if (!mapping.engineAccountId || mapping.status !== "active") {
+      throw new AdminCreditError(409, `engine account is not active (status: ${mapping.status})`);
+    }
+    const amountNano = BigInt(amountUsd) * 1_000_000_000n;
+    const ref = `admin-credit:${randomBytes(16).toString("hex")}`;
+    const result = await this.engine.creditAccount(mapping.engineAccountId, amountNano, ref);
+    await recordAdminCredit(this.database, {
+      userId,
+      engineAccountId: mapping.engineAccountId,
+      amountNano,
+      ref,
+      balanceAfterNano: result.balance_nano,
+    });
+    return {
+      user_id: userId,
+      credited_usd: amountUsd,
+      balance: result.balance,
+      balance_nano: result.balance_nano,
+    };
+  }
+
   async createBusinessInvite(input: {
     email: string;
     discountPercent: number;
@@ -74,6 +109,13 @@ export class AdminService {
       actorId: "commercial-admin",
     });
     return { userId, discountPercent, syncStatus: "pending" };
+  }
+}
+
+export class AdminCreditError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "AdminCreditError";
   }
 }
 

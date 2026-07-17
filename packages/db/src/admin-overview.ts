@@ -57,6 +57,26 @@ interface RawRow {
   spent_30d_nano: string;
 }
 
+/** След админского начисления в audit_log (движок уже кредитован идемпотентно по ref). */
+export async function recordAdminCredit(database: Database, input: {
+  userId: string;
+  engineAccountId: string;
+  amountNano: bigint;
+  ref: string;
+  balanceAfterNano: string;
+}): Promise<void> {
+  await database.pool.query(
+    `INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+     VALUES ('commercial-admin', NULL, 'admin.credit', 'user', $1, $2)`,
+    [input.userId, JSON.stringify({
+      engine_account_id: input.engineAccountId,
+      amount_nano: input.amountNano.toString(),
+      ref: input.ref,
+      balance_after_nano: input.balanceAfterNano,
+    })],
+  );
+}
+
 export async function listAdminUserOverview(database: Database): Promise<AdminUserOverviewRow[]> {
   const result = await database.pool.query<RawRow>(`
     SELECT
