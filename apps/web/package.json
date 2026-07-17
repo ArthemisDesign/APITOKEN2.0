@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "audit:screenshots": "node scripts/capture-site.mjs",
-    "audit:dashboard": "AUDIT_SCOPE=dashboard node scripts/capture-site.mjs"
+    "audit:dashboard": "AUDIT_SCOPE=dashboard node scripts/capture-site.mjs",
+    "indexnow": "node scripts/indexnow.mjs"
   },
   "dependencies": {
     "@vercel/analytics": "^2.0.1",
