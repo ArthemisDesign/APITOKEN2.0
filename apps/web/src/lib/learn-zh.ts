@@ -27,11 +27,20 @@ export const learnZh: Record<string, LocalizedContent> = {
       { h2: "拿到密钥能做什么", blocks: [
         { type: "p", text: "一把密钥即可解锁全部受支持的 Claude 系列——Opus、Sonnet 和 Haiku——覆盖 Claude Code、Cursor、Cline、Continue、Zed 以及官方 Anthropic SDK。协议本身毫无变化，改变的只有价格。" },
       ] },
+      { h2: "你能用到哪些 Claude 模型和工具", blocks: [
+        { type: "p", text: "一把 Claude API 密钥即可在同一余额下解锁全部受支持的模型系列，并适用于所有兼容 Anthropic 的工具。" },
+        { type: "list", items: [
+          "模型：Claude Opus 4.8 与 4.7、Sonnet 5 与 4.6、Haiku 4.5。",
+          "工具：Claude Code、Cursor、Cline、Continue、Zed 以及 Anthropic SDK。",
+          "格式：支持流式输出与工具调用的 Anthropic Messages API。",
+        ] },
+      ] },
     ],
     faq: [
       { q: "购买 Claude API 密钥需要 Anthropic 账户吗？", a: "不需要。apitoken.sale 自行签发密钥和余额，因此你无需 Anthropic 账户、邀请码或审批即可开始。" },
       { q: "密钥多快能激活？", a: "即时激活。你在控制台生成密钥后，下一次请求即可使用——没有排队，也没有人工审核。" },
       { q: "起步要花多少钱？", a: "你可以充值任意整数美元金额，而且每个新账户还会免费获得价值 $10 的 Claude 用量（按官方 API 价格计）。" },
+      { q: "这是官方的 Claude API 吗？", a: "是的——它提供同一套 Anthropic Messages API 和同样的 Claude 模型。不同的只有价格以及注册和付款方式。" },
     ],
   },
   "cheapest-claude-api": {
@@ -57,11 +66,20 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "p", text: "没有月费。你充值的是永不过期的预付余额，仅在请求运行时才消耗，因此闲置的日子不花一分钱。" },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
       ] },
+      { h2: "Claude API 折扣如何生效", blocks: [
+        { type: "p", text: "没有加价，也没有单独的廉价模型——你得到的是对完全相同的 Claude API 的折扣访问。" },
+        { type: "list", items: [
+          "每次请求按官方 Anthropic token 费率计量。",
+          "减去你的递进折扣（60% 直至 80%）。",
+          "净额从你的预付余额中扣除。",
+        ] },
+      ] },
     ],
     faq: [
       { q: "这真的是同一套 Claude API 吗？", a: "是的——同一套 Anthropic Messages API、相同的模型 ID、相同的请求与响应格式。只有每次调用的价格更低。" },
       { q: "我能省多少？", a: "B2C 定价从比官方 API 消费低 60% 起步，随着累计充值提高最多可达 80% 折扣。" },
       { q: "有没有隐藏费用或订阅？", a: "没有。余额为预付制、永不过期，仅由真实 API 用量消耗——没有月费。" },
+      { q: "有比直接从 Anthropic 购买更便宜的 Claude API 吗？", a: "有。apiToken.sale 以最高 80% 的递进折扣出售一模一样的 Anthropic API，且没有订阅。" },
     ],
   },
   "claude-api-for-russia": {
@@ -85,11 +103,15 @@ export const learnZh: Record<string, LocalizedContent> = {
       { h2: "与你现有的工具兼容", blocks: [
         { type: "p", text: "将 Claude Code、Cursor、Cline 或 Anthropic SDK 指向 https://api.apitoken.sale，即可像以前一样继续工作。支持提供俄语和英语服务，通过 Telegram 联系。" },
       ] },
+      { h2: "在俄罗斯免 VPN 使用 Claude API", blocks: [
+        { type: "p", text: "签发密钥和余额没有 Anthropic 开票国家的门槛，因此你不需要外国银行卡或公司即可开始。网络可达性取决于你自己的连接，但购买余额和生成密钥都没有地域限制。" },
+      ] },
     ],
     faq: [
       { q: "我能从俄罗斯付款吗？", a: "可以。你可以通过收银服务商用银行卡或加密货币支付，因此不要求受支持的 Anthropic 开票国家。" },
       { q: "我需要 VPN 吗？", a: "你无需 Anthropic 账户或开票国家。网络可达性取决于你自己的连接，但签发密钥和余额没有地域限制。" },
       { q: "有俄语支持吗？", a: "有——支持提供俄语和英语服务，通过 Telegram 联系。" },
+      { q: "我能从俄罗斯为 Claude API 付款吗？", a: "可以——用银行卡或加密货币支付，因此不要求受支持的 Anthropic 开票国家。" },
     ],
   },
   "claude-api-crypto-payment": {
@@ -118,10 +140,19 @@ export const learnZh: Record<string, LocalizedContent> = {
           "每次充值都可在银行卡和加密货币之间切换。",
         ] },
       ] },
+      { h2: "可以用哪些加密货币支付", blocks: [
+        { type: "p", text: "加密货币充值通过安全的支付服务商处理，因此常见币种都受支持。" },
+        { type: "list", items: [
+          "USDT 及其他稳定币。",
+          "BTC 及主流加密货币。",
+          "网络确认交易后余额即入账。",
+        ] },
+      ] },
     ],
     faq: [
       { q: "支持哪些支付方式？", a: "你可以通过收银服务商用银行卡或加密货币支付。" },
       { q: "余额会过期吗？", a: "不会。预付余额永不过期，仅在真实 API 使用时才消耗。" },
+      { q: "我能用 USDT 购买 Claude API 吗？", a: "可以——结账时你可以用 USDT 或其他受支持的加密货币为 Claude API 余额充值。" },
     ],
   },
   "claude-api-without-waitlist": {
@@ -205,10 +236,14 @@ export const learnZh: Record<string, LocalizedContent> = {
           "将任意兼容 Anthropic 的工具指向 https://api.apitoken.sale，并携带 x-api-key 请求头向 /v1/messages 发送请求。",
         ] },
       ] },
+      { h2: "Claude API 是永久免费的吗？", blocks: [
+        { type: "p", text: "包含的 $10 是免费起步额度，而不是无限的免费套餐。用完之后，你只为实际消耗的 token 付费——没有订阅、没有月度最低消费，预付余额也永不过期。" },
+      ] },
     ],
     faq: [
       { q: "这些免费用量是真正的 API 访问吗？", a: "是的。包含的 $10 用量运行在与付费余额相同的 Claude 模型和接口上。" },
       { q: "开始使用需要银行卡吗？", a: "创建账户并使用包含的 $10 用量无需银行卡。" },
+      { q: "免费的 Claude API 密钥需要信用卡吗？", a: "不需要。你可以在没有银行卡的情况下创建密钥，并使用包含的价值 $10 的官方价 Claude 用量。" },
     ],
   },
   "claude-api-free-trial": {
@@ -350,10 +385,14 @@ export const learnZh: Record<string, LocalizedContent> = {
         ] },
         { type: "p", text: "连接成功后，所有受支持的 Claude 模型都可在同一把密钥和余额下使用。" },
       ] },
+      { h2: "任何语言都能在 Cursor 中使用你的 Claude API 密钥", blocks: [
+        { type: "p", text: "密钥与语言无关——无论是 Python、JavaScript、TypeScript、Go、Rust 还是其他项目，Cursor 都能在 Windows、macOS 和 Linux 上使用它。你配置的是模型提供方，而不是编程语言。" },
+      ] },
     ],
     faq: [
       { q: "我能在 Cursor 里用自己的 Claude 密钥吗？", a: "可以。Cursor 的 Anthropic 提供方接受自定义 Base URL 和密钥，因此你可以把它指向 apitoken.sale。" },
       { q: "我还需要 Cursor Pro 吗？", a: "你可以用自己的 API 密钥和余额运行 Claude；而需要 Cursor 自身套餐的功能则与模型提供方无关，属于另一回事。" },
+      { q: "Claude API 密钥能在 Windows 和 Mac 的 Cursor 里用吗？", a: "可以——Anthropic 提供方设置在 Windows、macOS 和 Linux 上完全相同。" },
     ],
   },
   "claude-api-for-vs-code": {
@@ -544,10 +583,14 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "p", text: "每次调用先换算为官方 Anthropic 消费，再减去你的折扣：B2C 从 60% 折扣起步，随累计充值增长最高可达 80%。每次请求都在控制台中以 token 级别的明细可见。" },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
       ] },
+      { h2: "按模型划分的 Claude API token 价格", blocks: [
+        { type: "p", text: "更大的模型每 token 更贵：Opus 是高端档，Sonnet 是均衡的默认选择，Haiku 最便宜。你的折扣适用于所有模型，因此排序不变，但每个价格都更低。" },
+      ] },
     ],
     faq: [
       { q: "Claude API 如何定价？", a: "按 token 计费，分为输入和输出，缓存读取另有更便宜的费率。更大的模型每 token 成本更高。" },
       { q: "折扣如何套用？", a: "先计算官方消费，再在扣减余额前减去你的 B2C 折扣（60% 直至 80%）。" },
+      { q: "Claude API 的 token 如何计价？", a: "按 token 计费，分输入和输出，缓存读取更便宜。apiToken.sale 在官方 token 费率之上再套用你 60–80% 的折扣。" },
     ],
   },
   "save-tokens-on-claude-api": {
@@ -850,10 +893,14 @@ export const learnZh: Record<string, LocalizedContent> = {
         ] },
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
       ] },
+      { h2: "同一余额上的折扣 Claude API token", blocks: [
+        { type: "p", text: "把它当作打折出售的 Claude API token：你一次性充值余额，享受官方 token 费率最高 80% 的折扣，并在所有模型和工具上使用。余额永不过期，也没有订阅。" },
+      ] },
     ],
     faq: [
       { q: "apiToken.sale 有什么不同？", a: "它是同一套 Claude API，最高便宜 80%，即时开通、无需 Anthropic 账户，支持银行卡或加密货币付款。" },
       { q: "API 有任何改动吗？", a: "没有——协议、模型和响应都是标准的 Anthropic。只有价格和开通方式不同。" },
+      { q: "apiToken.sale 是什么？", a: "一个独立的 Claude API 网关，以折扣价预付出售官方 Anthropic API 的访问权——同样的模型，最高便宜 80%，无需 Anthropic 账户。" },
     ],
   },
   "claude-api-gateway": {

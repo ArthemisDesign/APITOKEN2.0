@@ -27,11 +27,20 @@ export const learnKo: Record<string, LocalizedContent> = {
       { h2: "키로 할 수 있는 일", blocks: [
         { type: "p", text: "키 하나로 지원되는 전체 Claude 라인업(Opus, Sonnet, Haiku)을 Claude Code, Cursor, Cline, Continue, Zed 및 공식 Anthropic SDK에서 사용할 수 있습니다. 프로토콜은 전혀 바뀌지 않으며, 달라지는 것은 가격뿐입니다." },
       ] },
+      { h2: "받을 수 있는 Claude 모델과 도구", blocks: [
+        { type: "p", text: "Claude API 키 하나로 지원되는 전체 라인업을 하나의 잔액에서 사용할 수 있으며, 모든 Anthropic 호환 도구에서 작동합니다." },
+        { type: "list", items: [
+          "모델: Claude Opus 4.8 및 4.7, Sonnet 5 및 4.6, Haiku 4.5.",
+          "도구: Claude Code, Cursor, Cline, Continue, Zed 및 Anthropic SDK.",
+          "형식: 스트리밍과 도구 호출을 지원하는 Anthropic Messages API.",
+        ] },
+      ] },
     ],
     faq: [
       { q: "Claude API 키를 사려면 Anthropic 계정이 필요한가요?", a: "아니요. apitoken.sale이 자체 키와 잔액을 발급하므로 Anthropic 계정, 초대장, 승인 없이 시작할 수 있습니다." },
       { q: "키는 얼마나 빨리 활성화되나요?", a: "즉시 활성화됩니다. 대시보드에서 키를 생성하면 다음 요청부터 바로 작동하며, 대기열이나 수동 심사가 없습니다." },
       { q: "시작하는 데 비용이 얼마나 드나요?", a: "달러 단위 정수 금액으로 원하는 만큼 충전할 수 있으며, 모든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량도 무료로 받습니다." },
+      { q: "이것이 공식 Claude API인가요?", a: "네 — 동일한 Anthropic Messages API와 동일한 Claude 모델을 제공합니다. 다른 것은 가격과 가입·결제 방식뿐입니다." },
     ],
   },
   "cheapest-claude-api": {
@@ -57,11 +66,20 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "p", text: "월 요금이 없습니다. 만료되지 않는 선불 잔액을 충전하고 요청이 실행될 때만 소비하므로, 사용하지 않는 날에는 비용이 발생하지 않습니다." },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
+      { h2: "Claude API 할인이 적용되는 방식", blocks: [
+        { type: "p", text: "마진도 없고 별도의 저가 모델도 없습니다. 완전히 동일한 Claude API에 대한 할인 접근을 얻는 것입니다." },
+        { type: "list", items: [
+          "각 요청은 공식 Anthropic 토큰 요율로 측정됩니다.",
+          "누진 할인(60%에서 최대 80%)이 차감됩니다.",
+          "차감 후 금액이 선불 잔액에서 빠져나갑니다.",
+        ] },
+      ] },
     ],
     faq: [
       { q: "정말로 같은 Claude API인가요?", a: "네. 동일한 Anthropic Messages API, 동일한 모델 ID, 동일한 요청·응답 형식입니다. 호출당 가격만 더 낮습니다." },
       { q: "얼마나 절약할 수 있나요?", a: "B2C 가격은 공식 API 소비 대비 60% 할인으로 시작해, 누적 충전이 많아질수록 최대 80%까지 할인됩니다." },
       { q: "숨은 요금이나 구독이 있나요?", a: "없습니다. 잔액은 선불이며 만료되지 않고 실제 API 사용에만 소비됩니다. 월 요금은 없습니다." },
+      { q: "Anthropic에서 직접 사는 것보다 저렴한 Claude API가 있나요?", a: "네. apiToken.sale은 동일한 Anthropic API를 공식 소비 대비 최대 80% 누진 할인으로, 구독 없이 판매합니다." },
     ],
   },
   "claude-api-for-russia": {
@@ -85,11 +103,15 @@ export const learnKo: Record<string, LocalizedContent> = {
       { h2: "기존 도구와 그대로 작동", blocks: [
         { type: "p", text: "Claude Code, Cursor, Cline 또는 Anthropic SDK를 https://api.apitoken.sale로 지정하고 이전과 똑같이 작업하세요. 지원은 텔레그램에서 러시아어와 영어로 제공됩니다." },
       ] },
+      { h2: "VPN 없이 러시아에서 Claude API 사용하기", blocks: [
+        { type: "p", text: "키와 잔액 발급에는 Anthropic 청구 국가 요건이 없으므로 시작하는 데 외국 카드나 법인이 필요하지 않습니다. 네트워크 접근성은 본인의 연결 환경에 달려 있지만, 잔액 구매와 키 생성에는 지역 제한이 없습니다." },
+      ] },
     ],
     faq: [
       { q: "러시아에서 결제할 수 있나요?", a: "네. 결제 서비스 제공자를 통해 은행 카드 또는 암호화폐로 결제할 수 있으므로, 지원되는 Anthropic 청구 국가가 필요하지 않습니다." },
       { q: "VPN이 필요한가요?", a: "Anthropic 계정이나 청구 국가는 필요하지 않습니다. 네트워크 접근성은 본인의 연결 환경에 달려 있지만, 키와 잔액 발급에는 지역 제한이 없습니다." },
       { q: "러시아어 지원이 되나요?", a: "네 — 지원은 텔레그램에서 러시아어와 영어로 제공됩니다." },
+      { q: "러시아에서 Claude API 요금을 결제할 수 있나요?", a: "네 — 은행 카드 또는 암호화폐로 결제할 수 있으므로, 지원되는 Anthropic 청구 국가가 필요하지 않습니다." },
     ],
   },
   "claude-api-crypto-payment": {
@@ -118,10 +140,19 @@ export const learnKo: Record<string, LocalizedContent> = {
           "충전마다 카드와 암호화폐를 전환하세요.",
         ] },
       ] },
+      { h2: "결제 가능한 암호화폐", blocks: [
+        { type: "p", text: "암호화폐 충전은 안전한 결제 서비스 제공자를 통해 처리되므로 널리 쓰이는 코인이 지원됩니다." },
+        { type: "list", items: [
+          "USDT 및 기타 스테이블코인.",
+          "BTC 및 주요 암호화폐.",
+          "네트워크가 거래를 확인하면 잔액이 반영됩니다.",
+        ] },
+      ] },
     ],
     faq: [
       { q: "어떤 결제 수단이 지원되나요?", a: "결제 서비스 제공자를 통해 은행 카드 또는 암호화폐로 결제할 수 있습니다." },
       { q: "잔액이 만료되나요?", a: "아니요. 선불 잔액은 만료되지 않으며 실제 API 사용으로만 소비됩니다." },
+      { q: "USDT로 Claude API 접근 권한을 살 수 있나요?", a: "네 — 결제 시 USDT나 기타 지원되는 암호화폐로 Claude API 잔액을 충전할 수 있습니다." },
     ],
   },
   "claude-api-without-waitlist": {
@@ -208,10 +239,14 @@ export const learnKo: Record<string, LocalizedContent> = {
           "Anthropic 호환 도구를 https://api.apitoken.sale로 지정하고 x-api-key 헤더와 함께 /v1/messages로 요청을 보내세요.",
         ] },
       ] },
+      { h2: "Claude API는 영원히 무료인가요?", blocks: [
+        { type: "p", text: "포함된 $10는 무제한 무료 요금제가 아니라 무료 시작 지원금입니다. 이후에는 사용한 토큰에 대해서만 비용을 내며, 구독도 월 최소 금액도 없고 선불 잔액은 만료되지 않습니다." },
+      ] },
     ],
     faq: [
       { q: "무료 사용량도 실제 API 접근인가요?", a: "네. 포함된 $10의 사용량은 유료 잔액과 동일한 Claude 모델 및 엔드포인트에서 실행됩니다." },
       { q: "시작하려면 카드가 필요한가요?", a: "계정을 만들고 포함된 $10의 사용량을 쓰는 데는 카드가 필요하지 않습니다." },
+      { q: "무료 Claude API 키에 신용카드가 필요한가요?", a: "아니요. 카드 없이 키를 만들고 공식 가격 기준 $10의 Claude 사용량을 쓸 수 있습니다." },
     ],
   },
   "claude-api-free-trial": {
@@ -353,10 +388,14 @@ export const learnKo: Record<string, LocalizedContent> = {
         ] },
         { type: "p", text: "연결되면 지원되는 모든 Claude 모델을 동일한 키와 잔액으로 사용할 수 있습니다." },
       ] },
+      { h2: "어떤 언어에서든 Cursor에서 쓰는 Claude API 키", blocks: [
+        { type: "p", text: "키는 언어에 구애받지 않습니다. Cursor는 Python, JavaScript, TypeScript, Go, Rust 등 어떤 프로젝트에서든, Windows·macOS·Linux에서 이 키를 사용합니다. 설정하는 것은 모델 제공자이지 언어가 아닙니다." },
+      ] },
     ],
     faq: [
       { q: "Cursor에서 내 Claude 키를 사용할 수 있나요?", a: "네. Cursor의 Anthropic 제공자는 커스텀 base URL과 키를 받아들이므로 apitoken.sale로 지정할 수 있습니다." },
       { q: "Cursor Pro가 여전히 필요한가요?", a: "자체 API 키와 잔액으로 Claude를 실행할 수 있습니다. Cursor 자체 플랜이 필요한 기능은 모델 제공자와 별개입니다." },
+      { q: "Claude API 키가 Windows와 Mac의 Cursor에서 작동하나요?", a: "네 — Anthropic 제공자 설정은 Windows, macOS, Linux에서 동일합니다." },
     ],
   },
   "claude-api-for-vs-code": {
@@ -547,10 +586,14 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "p", text: "각 호출은 공식 Anthropic 소비로 환산된 뒤 할인이 차감됩니다. B2C는 60% 할인으로 시작해 누적 충전이 늘수록 80% 할인까지 진행됩니다. 모든 요청은 토큰 단위 상세와 함께 대시보드에서 확인할 수 있습니다." },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
+      { h2: "모델별 Claude API 토큰 가격", blocks: [
+        { type: "p", text: "큰 모델일수록 토큰당 비용이 높습니다. Opus는 프리미엄 등급, Sonnet은 균형 잡힌 기본값, Haiku는 가장 저렴합니다. 할인은 모든 모델에 적용되므로 순위는 그대로지만 모든 가격이 낮아집니다." },
+      ] },
     ],
     faq: [
       { q: "Claude API는 어떻게 과금되나요?", a: "토큰 단위로 입력과 출력으로 나뉘며, 캐시 읽기에는 별도의 더 저렴한 요율이 적용됩니다. 큰 모델일수록 토큰당 비용이 높습니다." },
       { q: "할인은 어떻게 적용되나요?", a: "먼저 공식 소비가 계산되고, 잔액에 반영되기 전에 B2C 할인(60%에서 최대 80%)이 차감됩니다." },
+      { q: "Claude API 토큰은 어떻게 가격이 매겨지나요?", a: "토큰 단위로 입력과 출력이 나뉘며 캐시 읽기는 더 저렴합니다. apiToken.sale은 공식 토큰 요율 위에 60~80% 할인을 적용합니다." },
     ],
   },
   "save-tokens-on-claude-api": {
@@ -853,10 +896,14 @@ export const learnKo: Record<string, LocalizedContent> = {
         ] },
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
+      { h2: "하나의 잔액으로 쓰는 할인된 Claude API 토큰", blocks: [
+        { type: "p", text: "Claude API 토큰 할인 판매라고 생각하면 됩니다. 잔액을 한 번 선불로 충전하면 공식 토큰 요율에서 최대 80% 할인을 받고, 모든 모델과 도구에서 사용할 수 있습니다. 잔액은 만료되지 않고 구독도 없습니다." },
+      ] },
     ],
     faq: [
       { q: "apiToken.sale은 무엇이 다른가요?", a: "동일한 Claude API를 최대 80% 저렴하게, 즉시 접근으로 Anthropic 계정 없이, 카드나 암호화폐로 결제할 수 있는 것입니다." },
       { q: "API에 대해 바뀐 것이 있나요?", a: "아니요 — 프로토콜, 모델, 응답은 표준 Anthropic입니다. 가격과 온보딩만 다릅니다." },
+      { q: "apiToken.sale은 무엇인가요?", a: "공식 Anthropic API에 대한 할인된 선불 접근을 판매하는 독립 Claude API 게이트웨이입니다. 같은 모델을 최대 80% 저렴하게, Anthropic 계정 없이 이용할 수 있습니다." },
     ],
   },
   "claude-api-gateway": {

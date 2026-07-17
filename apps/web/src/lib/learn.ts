@@ -236,11 +236,20 @@ export const learnArticles: LearnArticle[] = [
       { h2: "What you can do with the key", blocks: [
         { type: "p", text: "One key unlocks the full supported Claude line — Opus, Sonnet and Haiku — across Claude Code, Cursor, Cline, Continue, Zed and the official Anthropic SDKs. Nothing about the protocol changes; only the price does." },
       ] },
+      { h2: "Which Claude models and tools you get", blocks: [
+        { type: "p", text: "One Claude API key unlocks the full supported line on a single balance, and works in every Anthropic-compatible tool." },
+        { type: "list", items: [
+          "Models: Claude Opus 4.8 and 4.7, Sonnet 5 and 4.6, Haiku 4.5.",
+          "Tools: Claude Code, Cursor, Cline, Continue, Zed and the Anthropic SDKs.",
+          "Formats: the Anthropic Messages API with streaming and tool use.",
+        ] },
+      ] },
     ],
     faq: [
       { q: "Do I need an Anthropic account to buy a Claude API key?", a: "No. apiToken.sale issues its own key and balance, so you can start without an Anthropic account, invite, or approval." },
       { q: "How fast is the key active?", a: "Instantly. You generate the key in the dashboard and it works on the next request — there is no waitlist or manual review." },
       { q: "How much does it cost to start?", a: "You can top up any whole-dollar amount, and every new account also gets $10 of Claude usage at official API prices for free." },
+      { q: "Is this the official Claude API?", a: "Yes — it serves the same Anthropic Messages API and the same Claude models. Only the price and the way you sign up and pay are different." },
     ],
     related: ["claude-api-quick-setup", "cheapest-claude-api", "claude-api-crypto-payment", "free-claude-api-key"],
   },
@@ -269,11 +278,20 @@ export const learnArticles: LearnArticle[] = [
         { type: "p", text: "There is no monthly fee. You top up prepaid balance that never expires and spend it only when requests run, so idle days cost nothing." },
         cta(),
       ] },
+      { h2: "How the Claude API discount is applied", blocks: [
+        { type: "p", text: "There is no markup and no separate cheaper model — you get discounted access to the exact same Claude API." },
+        { type: "list", items: [
+          "Each request is metered at official Anthropic token rates.",
+          "Your progressive discount (60% up to 80%) is subtracted.",
+          "The net amount is drawn from your prepaid balance.",
+        ] },
+      ] },
     ],
     faq: [
       { q: "Is this really the same Claude API?", a: "Yes — the same Anthropic Messages API, same model IDs, same request and response format. Only the price per call is lower." },
       { q: "How much can I save?", a: "B2C pricing starts at 60% below official API spend and progresses to as much as 80% off with higher cumulative top-ups." },
       { q: "Are there hidden fees or subscriptions?", a: "No. Balance is prepaid, never expires, and is consumed only by real API usage — there is no monthly charge." },
+      { q: "Is there a cheaper Claude API than buying from Anthropic directly?", a: "Yes. apiToken.sale sells the identical Anthropic API at a progressive discount of up to 80% off official spend, with no subscription." },
     ],
     related: ["claude-api-pricing-explained", "save-tokens-on-claude-api", "apitoken-vs-anthropic-direct", "how-billing-works"],
   },
@@ -300,11 +318,15 @@ export const learnArticles: LearnArticle[] = [
       { h2: "Works with your existing tools", blocks: [
         { type: "p", text: `Point Claude Code, Cursor, Cline or the Anthropic SDK at ${BASE} and keep working exactly as before. Support is available in Russian and English over Telegram.` },
       ] },
+      { h2: "Claude API from Russia without a VPN", blocks: [
+        { type: "p", text: "There is no Anthropic billing-country gate on issuing your key and balance, so you do not need a foreign card or company to get started. Network reachability depends on your own connection, but nothing about buying balance or generating a key is region-locked." },
+      ] },
     ],
     faq: [
       { q: "Can I pay from Russia?", a: "Yes. You can pay by bank card or with cryptocurrency through a checkout provider, so a supported Anthropic billing country is not required." },
       { q: "Do I need a VPN?", a: "You do not need an Anthropic account or billing country. Network reachability depends on your own connection, but there is no geographic gate on issuing your key and balance." },
       { q: "Is support available in Russian?", a: "Yes — support is available in Russian and English through Telegram." },
+      { q: "Can I pay for the Claude API from Russia?", a: "Yes — pay by bank card or with cryptocurrency, so a supported Anthropic billing country is not required." },
     ],
     related: ["claude-api-crypto-payment", "claude-api-supported-countries", "how-to-buy-claude-api-key", "claude-api-without-waitlist"],
   },
@@ -336,10 +358,19 @@ export const learnArticles: LearnArticle[] = [
           "Switch between card and crypto per top-up.",
         ] },
       ] },
+      { h2: "Which cryptocurrencies you can pay with", blocks: [
+        { type: "p", text: "Crypto top-ups go through a secure payment provider, so common coins are supported." },
+        { type: "list", items: [
+          "USDT and other stablecoins.",
+          "BTC and major cryptocurrencies.",
+          "Balance credits once the network confirms the transaction.",
+        ] },
+      ] },
     ],
     faq: [
       { q: "Which payment methods are supported?", a: "You can pay by bank card or with cryptocurrency through a checkout provider." },
       { q: "Does the balance expire?", a: "No. Prepaid balance never expires and is consumed only by real API usage." },
+      { q: "Can I buy Claude API access with USDT?", a: "Yes — you can top up your Claude API balance with USDT or other supported cryptocurrencies at checkout." },
     ],
     related: ["claude-api-for-russia", "how-to-buy-claude-api-key", "how-billing-works", "claude-api-refund-policy"],
   },
@@ -424,10 +455,14 @@ export const learnArticles: LearnArticle[] = [
         { type: "p", text: "When you are ready for more, top up any whole-dollar amount and your discount kicks in automatically." },
       ] },
       { h2: "How to claim it", blocks: [ quickSetupSteps ] },
+      { h2: "Is the Claude API free forever?", blocks: [
+        { type: "p", text: "The included $10 is a free start, not an unlimited free tier. After it, you pay only for the tokens you use — there is no subscription and no monthly minimum, and your prepaid balance never expires." },
+      ] },
     ],
     faq: [
       { q: "Is the free usage real API access?", a: "Yes. The $10 of included usage runs against the same Claude models and endpoints as paid balance." },
       { q: "Do I need a card to start?", a: "No card is required to create your account and use the included $10 of usage." },
+      { q: "Do I need a credit card for a free Claude API key?", a: "No. You can create the key and use the included $10 of official-price Claude usage without a card." },
     ],
     related: ["claude-api-free-trial", "how-to-buy-claude-api-key", "claude-code-without-subscription", "cheapest-claude-api"],
   },
@@ -589,10 +624,14 @@ export const learnArticles: LearnArticle[] = [
         ] },
         { type: "p", text: "Once connected, every supported Claude model is available on the same key and balance." },
       ] },
+      { h2: "Your Claude API key in Cursor for any language", blocks: [
+        { type: "p", text: "The key is language-agnostic — Cursor uses it for Python, JavaScript, TypeScript, Go, Rust or any project, on Windows, macOS and Linux. You are configuring the model provider, not the language." },
+      ] },
     ],
     faq: [
       { q: "Can I use my own Claude key in Cursor?", a: "Yes. Cursor's Anthropic provider accepts a custom base URL and key, so you can point it at apiToken.sale." },
       { q: "Do I still need Cursor Pro?", a: "You can run Claude through your own API key and balance; features that require Cursor's own plan are separate from the model provider." },
+      { q: "Does the Claude API key work in Cursor on Windows and Mac?", a: "Yes — the Anthropic provider setting is the same across Windows, macOS and Linux." },
     ],
     related: ["cursor-without-anthropic-account", "claude-api-for-vs-code", "claude-api-quick-setup", "claude-sonnet-api"],
   },
@@ -808,10 +847,14 @@ export const learnArticles: LearnArticle[] = [
         { type: "p", text: "Each call is converted to official Anthropic spend, then your discount is subtracted: B2C starts at 60% off and progresses to 80% off as cumulative top-ups grow. Every request is visible in your dashboard with token-level detail." },
         cta(),
       ] },
+      { h2: "Claude API token pricing by model", blocks: [
+        { type: "p", text: "Larger models cost more per token: Opus is the premium tier, Sonnet is the balanced default, and Haiku is the cheapest. Your discount applies to all of them, so the ranking stays the same but every price is lower." },
+      ] },
     ],
     faq: [
       { q: "How is the Claude API priced?", a: "Per token, split into input and output, with separate cheaper rates for cache reads. Larger models cost more per token." },
       { q: "How does the discount apply?", a: "Official spend is calculated first, then your B2C discount (60% up to 80%) is subtracted before it touches your balance." },
+      { q: "How are Claude API tokens priced?", a: "Per token, split into input and output, with cheaper cache reads. apiToken.sale applies your 60–80% discount on top of the official token rates." },
     ],
     related: ["cheapest-claude-api", "save-tokens-on-claude-api", "how-billing-works", "apitoken-vs-anthropic-direct"],
   },
@@ -1152,10 +1195,14 @@ export const learnArticles: LearnArticle[] = [
         ] },
         cta(),
       ] },
+      { h2: "Discounted Claude API tokens on one balance", blocks: [
+        { type: "p", text: "Think of it as Claude API tokens on sale: you prepay a balance once, get up to 80% off official token rates, and spend it across every model and tool. The balance never expires and there is no subscription." },
+      ] },
     ],
     faq: [
       { q: "What makes apiToken.sale different?", a: "It is the same Claude API at up to 80% less, with instant access and no Anthropic account, payable by card or crypto." },
       { q: "Is anything about the API changed?", a: "No — the protocol, models and responses are standard Anthropic. Only price and onboarding differ." },
+      { q: "What is apiToken.sale?", a: "An independent Claude API gateway that sells discounted, prepaid access to the official Anthropic API — the same models, up to 80% cheaper, with no Anthropic account." },
     ],
     related: ["apitoken-vs-anthropic-direct", "cheapest-claude-api", "how-to-buy-claude-api-key", "claude-api-for-russia"],
   },
