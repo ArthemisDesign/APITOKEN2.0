@@ -32,6 +32,8 @@ export type LearnArticle = {
   sections: LearnSection[];
   faq: LearnFaq[];
   related: string[];
+  /** ISO date (YYYY-MM-DD) of the last substantive content change; falls back to the cluster launch date. */
+  updated?: string;
 };
 
 export type Locale = "en" | "ru" | "zh" | "ko";
@@ -252,6 +254,7 @@ export const learnArticles: LearnArticle[] = [
       { q: "Is this the official Claude API?", a: "Yes — it serves the same Anthropic Messages API and the same Claude models. Only the price and the way you sign up and pay are different." },
     ],
     related: ["claude-api-quick-setup", "cheapest-claude-api", "claude-api-crypto-payment", "free-claude-api-key"],
+    updated: "2026-07-17",
   },
   {
     slug: "cheapest-claude-api",
@@ -294,6 +297,7 @@ export const learnArticles: LearnArticle[] = [
       { q: "Is there a cheaper Claude API than buying from Anthropic directly?", a: "Yes. apiToken.sale sells the identical Anthropic API at a progressive discount of up to 80% off official spend, with no subscription." },
     ],
     related: ["claude-api-pricing-explained", "save-tokens-on-claude-api", "apitoken-vs-anthropic-direct", "how-billing-works"],
+    updated: "2026-07-17",
   },
   {
     slug: "claude-api-for-russia",
@@ -329,6 +333,7 @@ export const learnArticles: LearnArticle[] = [
       { q: "Can I pay for the Claude API from Russia?", a: "Yes — pay by bank card or with cryptocurrency, so a supported Anthropic billing country is not required." },
     ],
     related: ["claude-api-crypto-payment", "claude-api-supported-countries", "how-to-buy-claude-api-key", "claude-api-without-waitlist"],
+    updated: "2026-07-17",
   },
   {
     slug: "claude-api-crypto-payment",
@@ -373,6 +378,7 @@ export const learnArticles: LearnArticle[] = [
       { q: "Can I buy Claude API access with USDT?", a: "Yes — you can top up your Claude API balance with USDT or other supported cryptocurrencies at checkout." },
     ],
     related: ["claude-api-for-russia", "how-to-buy-claude-api-key", "how-billing-works", "claude-api-refund-policy"],
+    updated: "2026-07-17",
   },
   {
     slug: "claude-api-without-waitlist",
@@ -468,6 +474,7 @@ export const learnArticles: LearnArticle[] = [
       { q: "Do I need a credit card for a free Claude API key?", a: "No. Create the account with Google or GitHub to receive the included $10 of official-price Claude usage without a card." },
     ],
     related: ["claude-api-free-trial", "how-to-buy-claude-api-key", "claude-code-without-subscription", "cheapest-claude-api"],
+    updated: "2026-07-17",
   },
   {
     slug: "claude-api-free-trial",
@@ -637,6 +644,7 @@ export const learnArticles: LearnArticle[] = [
       { q: "Does the Claude API key work in Cursor on Windows and Mac?", a: "Yes — the Anthropic provider setting is the same across Windows, macOS and Linux." },
     ],
     related: ["cursor-without-anthropic-account", "claude-api-for-vs-code", "claude-api-quick-setup", "claude-sonnet-api"],
+    updated: "2026-07-17",
   },
   {
     slug: "claude-api-for-vs-code",
@@ -860,6 +868,7 @@ export const learnArticles: LearnArticle[] = [
       { q: "How are Claude API tokens priced?", a: "Per token, split into input and output, with cheaper cache reads. apiToken.sale applies your 60–80% discount on top of the official token rates." },
     ],
     related: ["cheapest-claude-api", "save-tokens-on-claude-api", "how-billing-works", "apitoken-vs-anthropic-direct"],
+    updated: "2026-07-17",
   },
   {
     slug: "save-tokens-on-claude-api",
@@ -1208,6 +1217,7 @@ export const learnArticles: LearnArticle[] = [
       { q: "What is apiToken.sale?", a: "An independent Claude API gateway that sells discounted, prepaid access to the official Anthropic API — the same models, up to 80% cheaper, with no Anthropic account." },
     ],
     related: ["apitoken-vs-anthropic-direct", "cheapest-claude-api", "how-to-buy-claude-api-key", "claude-api-for-russia"],
+    updated: "2026-07-17",
   },
 
   // ─────────────────────────── EXPLAIN (expansion) ───────────────────────────
@@ -1546,6 +1556,15 @@ export function resolveArticle(slug: string, locale: Locale): ResolvedArticle | 
   const content = translations[locale][slug];
   if (!content) return null;
   return { slug, cluster: base.cluster, related: base.related, locale, content: stripBoilerplateCta(content) };
+}
+
+/** The day the learn cluster first shipped — the default published/modified date. */
+export const LEARN_LAUNCH_DATE = new Date("2026-07-16T00:00:00.000Z");
+
+/** Last substantive content change for an article (all locales share the date). */
+export function articleUpdatedDate(slug: string): Date {
+  const updated = learnArticlesBySlug[slug]?.updated;
+  return updated ? new Date(`${updated}T00:00:00.000Z`) : LEARN_LAUNCH_DATE;
 }
 
 /** Locales that have a published version of this article (en is always present). */

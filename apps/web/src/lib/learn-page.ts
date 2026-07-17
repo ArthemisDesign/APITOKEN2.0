@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import {
   articlesForLocale,
+  articleUpdatedDate,
   clusterLabels,
+  LEARN_LAUNCH_DATE,
   htmlLang,
   learnAlternates,
   learnHubPath,
@@ -14,7 +16,7 @@ import {
   resolveArticle,
   type Locale,
 } from "./learn";
-import { absoluteUrl, breadcrumbNode, createPageMetadata, LAST_CONTENT_UPDATE, SITE_ORIGIN } from "./seo";
+import { absoluteUrl, breadcrumbNode, createPageMetadata, SITE_ORIGIN } from "./seo";
 
 function hubAlternates(): Record<string, string> {
   const languages: Record<string, string> = {};
@@ -40,8 +42,8 @@ export function buildArticleMetadata(slug: string, locale: Locale): Metadata | n
     ...(usesGeneratedOg ? ogRest : base.openGraph),
     type: "article" as const,
     locale: ogLocale(locale),
-    publishedTime: LAST_CONTENT_UPDATE.toISOString(),
-    modifiedTime: LAST_CONTENT_UPDATE.toISOString(),
+    publishedTime: LEARN_LAUNCH_DATE.toISOString(),
+    modifiedTime: articleUpdatedDate(slug).toISOString(),
   };
   return {
     ...base,
@@ -78,8 +80,8 @@ export function buildArticleJsonLd(slug: string, locale: Locale) {
         url,
         mainEntityOfPage: url,
         image: absoluteUrl("/og.png"),
-        dateModified: LAST_CONTENT_UPDATE.toISOString(),
-        datePublished: LAST_CONTENT_UPDATE.toISOString(),
+        dateModified: articleUpdatedDate(slug).toISOString(),
+        datePublished: LEARN_LAUNCH_DATE.toISOString(),
         inLanguage: htmlLang(locale),
         articleSection: clusterLabels[locale][article.cluster].label,
         keywords: article.content.keywords.join(", "),

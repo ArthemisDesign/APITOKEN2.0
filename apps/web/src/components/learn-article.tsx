@@ -7,15 +7,13 @@ import {
   learnPath,
   learnUi,
   LOCALES,
+  articleUpdatedDate,
   resolveArticle,
   type LearnBlock,
   type LearnCluster,
   type Locale,
   type ResolvedArticle,
 } from "@/lib/learn";
-import { LAST_CONTENT_UPDATE } from "@/lib/seo";
-
-const UPDATED_DATE = LAST_CONTENT_UPDATE.toISOString().slice(0, 10);
 
 // Deterministic pick so the CTA varies across the cluster without being random.
 function pickIndex(seed: string, n: number): number {
@@ -122,6 +120,7 @@ export function LearnArticleView({ article }: { article: ResolvedArticle }) {
     .filter((entry): entry is ResolvedArticle => Boolean(entry));
   const ctaText = ui.ctaVariants[pickIndex(article.slug, ui.ctaVariants.length)];
   const seeAlso = related[0];
+  const updatedDate = articleUpdatedDate(article.slug).toISOString().slice(0, 10);
 
   return (
     <main className="learn-article">
@@ -140,7 +139,7 @@ export function LearnArticleView({ article }: { article: ResolvedArticle }) {
           <span className="eyebrow">{cluster.label}</span>
           <h1>{content.h1}</h1>
           <p>{content.dek}</p>
-          <p className="learn-updated"><span className="learn-byline">{ui.byline}</span> · <time dateTime={UPDATED_DATE}>{ui.updated} {UPDATED_DATE}</time></p>
+          <p className="learn-updated"><span className="learn-byline">{ui.byline}</span> · <time dateTime={updatedDate}>{ui.updated} {updatedDate}</time></p>
         </div>
       </div>
 

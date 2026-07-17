@@ -1,5 +1,5 @@
 import type { MetadataRoute } from "next";
-import { articlesForLocale, learnHubPath, learnPath, LOCALES } from "@/lib/learn";
+import { articlesForLocale, articleUpdatedDate, learnHubPath, learnPath, LOCALES } from "@/lib/learn";
 import { absoluteUrl, LAST_CONTENT_UPDATE, sitemapPages } from "@/lib/seo";
 
 export default function sitemap(): MetadataRoute.Sitemap {
@@ -30,7 +30,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
 
   const learnHubs: MetadataRoute.Sitemap = LOCALES.map((locale) => ({
     url: absoluteUrl(learnHubPath(locale)),
-    lastModified: LAST_CONTENT_UPDATE,
+    lastModified: new Date(Math.max(...articlesForLocale(locale).map((slug) => articleUpdatedDate(slug).getTime()))),
     changeFrequency: "weekly",
     priority: 0.8,
   }));
@@ -38,7 +38,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
   const learnPages: MetadataRoute.Sitemap = LOCALES.flatMap((locale) =>
     articlesForLocale(locale).map((slug) => ({
       url: absoluteUrl(learnPath(slug, locale)),
-      lastModified: LAST_CONTENT_UPDATE,
+      lastModified: articleUpdatedDate(slug),
       changeFrequency: "monthly" as const,
       priority: 0.7,
     })),
