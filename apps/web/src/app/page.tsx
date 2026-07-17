@@ -1,9 +1,8 @@
 import type { Metadata } from "next";
-import Image from "next/image";
 import Link from "next/link";
 import { DOCS_URL } from "@/lib/site-links";
 import { JsonLd } from "@/components/json-ld";
-import { B2C_PRICING_MILESTONES, formatWholeUsd } from "@/lib/pricing-tiers";
+import { B2C_PRICING_MILESTONES } from "@/lib/pricing-tiers";
 import { PricingOverview } from "@/components/pricing-overview";
 import { TopUpAmountInput } from "@/components/topup-amount-input";
 import { T } from "@/components/translated";
@@ -16,7 +15,13 @@ export const metadata: Metadata = {
 };
 
 const models = ["Claude Opus 4.8", "Claude Opus 4.7", "Claude Sonnet 5", "Claude Sonnet 4.6", "Claude Haiku 4.5"];
-// Hero-тезисы: у каждого свой пиксель-значок (свой файл на светлую/тёмную тему).
+// Hero-значки: чистые inline-SVG (accent stroke), одинаково резкие в обеих темах — крупнее и контрастнее PNG.
+const heroIcons = {
+  connect: <><path d="M12 22v-5" /><path d="M9 8V2" /><path d="M15 8V2" /><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" /></>,
+  product: <><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" /><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65" /><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65" /></>,
+  noaccount: <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="m17 8 5 5" /><path d="m22 8-5 5" /></>,
+  novpn: <><circle cx="12" cy="12" r="10" /><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" /><path d="M2 12h20" /></>,
+};
 const heroPoints = [
   { k: "hero_p1", en: "Integration with Claude Code, Cursor, OpenClaw & more", ic: "connect" },
   { k: "hero_p2", en: "Add it to any product or workflow", ic: "product" },
@@ -99,7 +104,7 @@ const homeJsonLd = {
 
 export default function HomePage() {
   return <><JsonLd data={homeJsonLd} /><main>
-      <div className="hero"><div className="wrap hero-grid"><div><T k="hero_eyebrow" as="span" className="eyebrow">Claude API · One gateway</T><h1 className="hero-h1"><T k="hero_h1a" as="span" className="hero-h1-main">Buy Claude API access</T><T k="hero_h1b" as="span" className="hero-sub">Same as official, but cheaper</T></h1><ul className="hero-points">{heroPoints.map((point) => <li key={point.k}><span className="hp-ic" aria-hidden="true"><Image className="hp-ic-l" src={`/assets/feat-${point.ic}-light.png`} width={30} height={30} alt="" /><Image className="hp-ic-d" src={`/assets/feat-${point.ic}-dark.png`} width={30} height={30} alt="" /></span><T k={point.k}>{point.en}</T></li>)}</ul><div className="hero-cta"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link><Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link></div></div><HeroDiscount /></div><div className="wrap home-stats"><div className="stats reveal"><Stat value="8+" label="stat1" /><Stat value="1" label="stat2" /><Stat value="99.9%" label="stat3" /><Stat value="<100ms" label="stat4" /><div className="stat"><T k="stat5v" as="b">minutes</T><T k="stat5">Setup time</T></div></div></div></div>
+      <div className="hero"><div className="wrap hero-grid"><div><T k="hero_eyebrow" as="span" className="eyebrow">Claude API · One gateway</T><h1 className="hero-h1"><T k="hero_h1a" as="span" className="hero-h1-main">Buy Claude API access</T><T k="hero_h1b" as="span" className="hero-sub">Same as official, but cheaper</T></h1><ul className="hero-points">{heroPoints.map((point) => <li key={point.k}><span className="hp-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">{heroIcons[point.ic]}</svg></span><T k={point.k}>{point.en}</T></li>)}</ul><div className="hero-cta"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link><Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link></div></div><HeroDiscount /></div><div className="wrap home-stats"><div className="stats reveal"><Stat value="8+" label="stat1" /><Stat value="1" label="stat2" /><Stat value="99.9%" label="stat3" /><Stat value="<100ms" label="stat4" /><div className="stat"><T k="stat5v" as="b">minutes</T><T k="stat5">Setup time</T></div></div></div></div>
       <section id="products"><div className="wrap"><SectionHead eyebrow="prod_eyebrow" title="prod_h2" lead="prod_lead" />
         <div className="prod-grid" data-reveal-stagger>
         <div className="prod">
@@ -149,19 +154,24 @@ export default function HomePage() {
     </main></>;
 }
 
+// Сколько официального Claude API получит клиент за пополнение `payUsd`: тир по накопленной сумме → скидка → номинал.
+function officialValueForTopup(payUsd: number): number {
+  const tier = B2C_PRICING_MILESTONES.filter((milestone) => payUsd >= Number(milestone.platformSpendUsd)).at(-1) ?? B2C_PRICING_MILESTONES[0];
+  return Math.round(payUsd / (1 - tier.discountPercent / 100));
+}
+const heroTopups = [25, 100, 1000].map((pay) => ({ pay, get: officialValueForTopup(pay) }));
+
 function HeroDiscount() {
-  return <aside className="hero-offer reveal" aria-label="Discount by top-up">
+  return <aside className="hero-offer reveal" aria-label="Free credit and top-up value">
     <div className="offer-free">
-      <span className="offer-free-badge"><T k="offer_free_badge">FREE</T></span>
-      <span className="offer-free-amt">$10</span>
-      <T k="offer_free_note" as="span" className="offer-free-note">on signup — no card</T>
+      <h2 className="offer-free-head"><span className="ofa">$10</span><span className="ofb">Claude API</span><span className="off-tag">FREE</span></h2>
+      <T k="offer_free_note" as="p" className="offer-free-note">on signup — no card required</T>
     </div>
-    <div className="offer-head"><T k="offer_col_topup" as="span">Top up</T><T k="offer_col_off" as="span">You save</T></div>
-    <ul className="offer-rows">{B2C_PRICING_MILESTONES.map((tier) => <li key={tier.code}>
-      <span className="offer-amt">{Number(tier.platformSpendUsd) === 0 ? <T k="offer_free_start">Free</T> : formatWholeUsd(tier.platformSpendUsd)}</span>
-      <span className="offer-pct"><b>{tier.discountPercent}</b><i>% off</i></span>
+    <T k="offer_note" as="p" className="offer-note">Discounts start at 60% off.</T>
+    <ul className="offer-tiers">{heroTopups.map((tier, index) => <li key={tier.pay} className={index === heroTopups.length - 1 ? "ot ot-best" : "ot"}>
+      <span className="ot-pay"><T k="offer_top_up" as="i">Top up</T><b>${tier.pay.toLocaleString("en-US")}</b></span>
+      <span className="ot-get"><b>${tier.get.toLocaleString("en-US")}</b><T k="offer_in_api" as="i">in Claude API</T></span>
     </li>)}</ul>
-    <T k="offer_foot" as="p" className="offer-foot">Discount locks in and applies to every call.</T>
   </aside>;
 }
 function Stat({ value, label }: { value: string; label: string }) { return <div className="stat"><b>{value}</b><T k={label}>Metric</T></div>; }
