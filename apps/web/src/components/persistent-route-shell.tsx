@@ -49,7 +49,7 @@ export function PersistentRouteShell({ children }: Readonly<{ children: ReactNod
     return <>
       <SiteHeader home={home} />
       {children}
-      <SiteFooter full={home} />
+      <SiteFooter full />
       <MotionEffects />
     </>;
   }
