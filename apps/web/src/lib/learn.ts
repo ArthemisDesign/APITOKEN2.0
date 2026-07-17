@@ -35,10 +35,9 @@ export type LearnArticle = {
 };
 
 export type Locale = "en" | "ru" | "zh" | "ko";
-// Published locales. zh/ko translations remain in the repo (learn-zh.ts /
-// learn-ko.ts) but are not routed — re-enable by adding them back here and
-// restoring the /zh and /ko route folders.
-export const LOCALES: Locale[] = ["en", "ru"];
+// Guides are published in all four locales. (The core marketing site is
+// English + Russian only.)
+export const LOCALES: Locale[] = ["en", "ru", "zh", "ko"];
 
 /** The translatable subset of an article (shared fields: slug, cluster, related). */
 export type LocalizedContent = {
