@@ -188,11 +188,11 @@ section{padding:96px 0;border-bottom:1px solid var(--line)}
 .hero-offer{min-width:0;background:var(--bg-card);border:1px solid var(--line);border-radius:18px;
   padding:26px 26px 24px;box-shadow:0 30px 70px -34px rgba(10,12,30,.55)}
 .offer-free{padding-bottom:20px;margin-bottom:18px;border-bottom:1px solid var(--line)}
-.offer-free-head{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px 16px;margin:0;
-  font-family:var(--font-i18n-display);font-weight:700;line-height:1}
-.offer-free-head .ofa{font-size:clamp(52px,7.4vw,80px);color:var(--accent)}
-.offer-free-head .off-dash{font-size:clamp(36px,4.6vw,52px);color:var(--txt-4)}
-.offer-free-head .off-tag{font-size:clamp(48px,6.8vw,72px);letter-spacing:.02em;color:var(--txt)}
+.offer-free-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:0;
+  font-family:var(--font-i18n-display);font-weight:700;line-height:1;white-space:nowrap}
+.offer-free-head .ofa{font-size:clamp(54px,7.6vw,82px);color:var(--accent)}
+.offer-free-head .off-dash{flex:1;text-align:center;font-size:clamp(36px,4.6vw,52px);color:var(--txt-4)}
+.offer-free-head .off-tag{font-size:clamp(50px,7vw,74px);letter-spacing:.02em;color:var(--txt)}
 .offer-free-sub{margin:12px 0 0;font-family:var(--font-mono);font-size:14px;color:var(--txt-2)}
 .offer-free-note{margin:6px 0 0;font-family:var(--font-mono);font-size:12px;color:var(--txt-4)}
 .offer-note{margin:0 0 16px;font-family:var(--font-mono);font-size:13.5px;color:var(--txt-2)}
