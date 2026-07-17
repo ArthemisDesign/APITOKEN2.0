@@ -35,6 +35,9 @@ origin.
 
 ## Visual audit
 
+The complete workflow, capture matrix, fixture conventions, assertion patterns, and troubleshooting
+guide are documented in [`VISUAL_AUDIT.md`](VISUAL_AUDIT.md).
+
 Build or run the site on port 3001, then use the repository's Chrome DevTools Protocol capture tool.
 It injects deterministic dashboard API fixtures, waits for fonts and animation frames, captures the
 full CSS-pixel page, and writes a JSON manifest next to the PNG files.
