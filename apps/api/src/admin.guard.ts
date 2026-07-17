@@ -18,7 +18,7 @@ export class AdminGuard implements CanActivate {
   }
 }
 
-function safeEqual(left: string, right: string): boolean {
+export function safeEqual(left: string, right: string): boolean {
   const a = createHash("sha256").update(left).digest();
   const b = createHash("sha256").update(right).digest();
   return timingSafeEqual(a, b);
