@@ -83,7 +83,8 @@ export class PaymentsController {
   async plategaWebhook(
     @Req() request: { rawBody?: Buffer },
     @Headers("x-secret") secret?: string,
-    @Headers("x-merchant-id") merchantId?: string,
+    // Platega sends "X-MerchantId" which normalizes to "x-merchantid" (no dash).
+    @Headers("x-merchantid") merchantId?: string,
   ): Promise<unknown> {
     if (!request.rawBody) throw new BadRequestException("raw webhook body is unavailable");
     try {

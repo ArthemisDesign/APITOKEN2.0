@@ -7,6 +7,7 @@ import { validateEnvironment, type Environment } from "./config.js";
 import { CreditWorkerService } from "./credit-worker.service.js";
 import { PricingWorkerService } from "./pricing-worker.service.js";
 import { EmailWorkerService } from "./email-worker.service.js";
+import { PlategaReconcileService } from "./platega-reconcile.service.js";
 import { DATABASE, ENGINE_CLIENT, WORKER_ID } from "./tokens.js";
 
 @Injectable()
@@ -39,6 +40,7 @@ class DatabaseShutdown implements OnApplicationShutdown {
     CreditWorkerService,
     PricingWorkerService,
     EmailWorkerService,
+    PlategaReconcileService,
     DatabaseShutdown,
   ],
 })

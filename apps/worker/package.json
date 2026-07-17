@@ -14,6 +14,7 @@
   "dependencies": {
     "@claude-api/db": "workspace:*",
     "@claude-api/engine-client": "workspace:*",
+    "@claude-api/payments": "workspace:*",
     "@nestjs/common": "^11.0.0",
     "@nestjs/config": "^4.0.0",
     "@nestjs/core": "^11.0.0",

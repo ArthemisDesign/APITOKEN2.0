@@ -121,6 +121,9 @@ importers:
       '@claude-api/engine-client':
         specifier: workspace:*
         version: link:../../packages/engine-client
+      '@claude-api/payments':
+        specifier: workspace:*
+        version: link:../../packages/payments
       '@nestjs/common':
         specifier: ^11.0.0
         version: 11.1.28(reflect-metadata@0.2.2)(rxjs@7.8.2)

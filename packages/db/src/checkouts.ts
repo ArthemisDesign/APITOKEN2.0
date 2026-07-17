@@ -80,6 +80,29 @@ export async function getCheckoutSession(
   return result.rows[0] ? mapCheckout(result.rows[0]) : null;
 }
 
+// Reconciliation source: still-pending checkouts that already have a provider payment id, so a
+// poller can re-verify them against the provider and credit confirmed ones the webhook missed.
+// minAgeSeconds gives the webhook a head start; maxAgeSeconds bounds re-querying dead checkouts.
+export async function listPendingCheckoutsForReconcile(
+  database: Database,
+  input: { provider: string; minAgeSeconds: number; maxAgeSeconds: number; limit: number },
+): Promise<Array<{ id: string; providerPaymentId: string; amountUsd: bigint }>> {
+  const result = await database.pool.query<{ id: string; provider_payment_id: string; amount_usd: string }>(`
+    SELECT id, provider_payment_id, amount_usd
+    FROM checkout_sessions
+    WHERE provider = $1 AND status = 'pending' AND provider_payment_id IS NOT NULL
+      AND created_at <= now() - ($2 * interval '1 second')
+      AND created_at >= now() - ($3 * interval '1 second')
+    ORDER BY created_at ASC
+    LIMIT $4
+  `, [input.provider, input.minAgeSeconds, input.maxAgeSeconds, input.limit]);
+  return result.rows.map((row) => ({
+    id: row.id,
+    providerPaymentId: row.provider_payment_id,
+    amountUsd: BigInt(row.amount_usd),
+  }));
+}
+
 // Webhook-facing lookup: no user session is available, so the (provider, provider_payment_id)
 // unique pair identifies the checkout whose authoritative recorded USD must be credited.
 export async function getCheckoutByProviderPayment(
