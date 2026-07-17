@@ -3,71 +3,151 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>claude-api · центр управления</title>
+<title>apiToken.sale · панель</title>
 <style>
-  :root{
-    --bg:#0b0d10; --panel:#14181d; --panel2:#1b2027; --line:#262d36;
-    --fg:#e6edf3; --dim:#8b98a5; --accent:#4dabf7; --ok:#40c057; --warn:#fab005; --bad:#fa5252;
-    --track:#232a33;
-  }
-  @media (prefers-color-scheme: light){
-    :root{ --bg:#f4f6f8; --panel:#fff; --panel2:#f0f3f6; --line:#e2e8ee; --fg:#1a2028;
-           --dim:#5b6774; --track:#e6ebf0; }
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--fg);
-       font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-  header{display:flex;align-items:center;gap:12px;padding:16px 22px;border-bottom:1px solid var(--line)}
-  header h1{font-size:16px;margin:0;font-weight:650;letter-spacing:.2px}
-  header .sub{color:var(--dim);font-size:12px}
-  .badge{margin-left:auto;font-size:12px;padding:4px 10px;border-radius:20px;border:1px solid var(--line)}
-  .badge.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,transparent)}
-  .badge.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
-  .badge.bad{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 40%,transparent)}
-  main{padding:22px;max-width:1200px;margin:0 auto}
-  .verdict{display:flex;align-items:center;gap:14px;background:var(--panel);border:1px solid var(--line);
-    border-radius:14px;padding:16px 20px;margin-bottom:18px}
-  .verdict .em{font-size:26px}
-  .verdict .t{font-size:16px;font-weight:650}
-  .verdict .d{color:var(--dim);font-size:12px;margin-top:2px}
-  .verdict.ok{border-color:color-mix(in srgb,var(--ok) 35%,transparent)}
-  .verdict.warn{border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
-  .verdict.bad{border-color:color-mix(in srgb,var(--bad) 40%,transparent)}
-  .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
-  @media(max-width:760px){.cards{grid-template-columns:repeat(2,1fr)}}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
-  .card .h{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.6px}
-  .card .v{font-size:28px;font-weight:700;margin-top:6px;font-variant-numeric:tabular-nums}
-  .card .s{color:var(--dim);font-size:12px;margin-top:4px}
-  .card .hr{font-size:12px;margin-top:8px;padding:2px 8px;border-radius:6px;display:inline-block;background:var(--panel2)}
-  .hr.ok{color:var(--ok)} .hr.warn{color:var(--warn)} .hr.bad{color:var(--bad)}
-  h2{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px;margin:22px 0 12px}
-  table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
-  th,td{text-align:right;padding:9px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
-  th{color:var(--dim);font-weight:500;font-size:12px}
-  td.l,th.l{text-align:left}
-  .bar{position:relative;height:8px;border-radius:5px;background:var(--track);overflow:hidden;min-width:90px}
-  .bar>i{position:absolute;left:0;top:0;bottom:0;border-radius:5px;background:var(--accent)}
-  .bar>i.hi{background:var(--warn)} .bar>i.max{background:var(--bad)}
-  .pct{color:var(--dim);font-size:11px;margin-left:6px}
-  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px}
-  .dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)} .dot.bad{background:var(--bad)}
-  .muted{color:var(--dim)}
-  .setup{max-width:420px;margin:60px auto;background:var(--panel);border:1px solid var(--line);
-         border-radius:14px;padding:24px}
-  .setup input{width:100%;padding:10px 12px;margin-top:12px;border-radius:9px;border:1px solid var(--line);
-               background:var(--bg);color:var(--fg);font:inherit}
-  .setup button{margin-top:12px;width:100%;padding:10px;border-radius:9px;border:0;background:var(--accent);
-                color:#fff;font:inherit;font-weight:600;cursor:pointer}
-  .err{color:var(--bad);font-size:12px;margin-top:10px}
-  footer{color:var(--dim);font-size:11px;text-align:center;padding:18px}
-  details{margin-top:8px} summary{cursor:pointer;color:var(--dim);font-size:13px}
-  nav.tabs{display:flex;gap:4px;padding:10px 22px 0;border-bottom:1px solid var(--line)}
-  nav.tabs button{font:inherit;font-size:13px;padding:8px 14px;border:1px solid transparent;border-bottom:0;
-    border-radius:9px 9px 0 0;background:none;color:var(--dim);cursor:pointer}
-  nav.tabs button.on{background:var(--panel);border-color:var(--line);color:var(--fg);font-weight:600}
-  .pill{font-size:11px;padding:2px 8px;border-radius:10px;background:var(--panel2);color:var(--dim);margin-right:4px}
-  .pill.ok{color:var(--ok)} .pill.warn{color:var(--warn)} .pill.bad{color:var(--bad)}
+/* ── Дизайн-ДНК apitoken.sale (apps/web globals.css): mono, свет по умолчанию, один синий акцент,
+   сетка-атмосфера, joined-полосы статов, uppercase-лейблы. Держать в синхроне с токенами сайта. ── */
+:root{
+  --bg:#ffffff; --bg-soft:#f5f5f4; --bg-card:#ffffff;
+  --line:rgba(10,10,10,0.12); --line-strong:rgba(10,10,10,0.20);
+  --txt:#0a0a0a; --txt-2:#63625c; --txt-3:#696862; --txt-4:#73726c;
+  --accent:#3767f0; --accent-soft:rgba(55,103,240,0.08); --accent-line:rgba(55,103,240,0.30);
+  --ok:#1a9e57; --ok-soft:rgba(26,158,87,.08); --ok-line:rgba(26,158,87,.30);
+  --warn:#b8760a; --warn-soft:rgba(184,118,10,.08); --warn-line:rgba(184,118,10,.30);
+  --danger:#b42318; --danger-soft:rgba(180,35,24,.07); --danger-line:rgba(180,35,24,.30);
+  --grid:rgba(10,10,10,0.035);
+  --shadow:0 1px 2px rgba(10,10,10,.04),0 8px 30px rgba(10,10,10,.06);
+  --radius:4px;
+  --font-mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+}
+[data-theme="dark"]{
+  --bg:#0a0a0a; --bg-soft:#111111; --bg-card:#0e0e0e;
+  --line:rgba(255,255,255,0.10); --line-strong:rgba(255,255,255,0.18);
+  --txt:#ffffff; --txt-2:rgba(255,255,255,0.88); --txt-3:rgba(255,255,255,0.74); --txt-4:rgba(255,255,255,0.64);
+  --accent:#4778ff; --accent-soft:rgba(71,120,255,0.10); --accent-line:rgba(71,120,255,0.35);
+  --ok:#43d17a; --ok-soft:rgba(67,209,122,.10); --ok-line:rgba(67,209,122,.35);
+  --warn:#ffb020; --warn-soft:rgba(255,176,32,.10); --warn-line:rgba(255,176,32,.35);
+  --danger:#ff7b72; --danger-soft:rgba(255,123,114,.10); --danger-line:rgba(255,123,114,.35);
+  --grid:rgba(255,255,255,0.02);
+  --shadow:0 0 0 1px rgba(255,255,255,.03);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt-2);
+  font-family:var(--font-mono);font-size:14px;line-height:1.6;
+  -webkit-font-smoothing:antialiased;transition:background .25s ease,color .25s ease;
+  background-image:linear-gradient(var(--grid) 1px,transparent 1px),
+                   linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+  background-size:44px 44px}
+::selection{background:var(--accent);color:#fff}
+
+/* ── шапка: бренд + вкладки + статус + тема (как header.nav сайта) ── */
+header{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:22px;
+  height:60px;padding:0 24px;border-bottom:1px solid var(--line);
+  background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:blur(10px)}
+.brand{font-weight:700;font-size:16px;color:var(--txt);letter-spacing:.02em;white-space:nowrap}
+.brand i{font-style:normal;color:var(--accent)}
+.brand small{font-weight:400;font-size:11px;color:var(--txt-4);margin-left:10px;letter-spacing:.06em;text-transform:uppercase}
+nav.tabs{display:flex;gap:2px;align-self:stretch}
+nav.tabs button{font:inherit;font-size:13px;color:var(--txt-3);background:none;border:0;cursor:pointer;
+  padding:0 14px;border-bottom:2px solid transparent;transition:.15s}
+nav.tabs button:hover{color:var(--txt)}
+nav.tabs button.on{color:var(--txt);border-bottom-color:var(--accent);font-weight:600}
+.hd-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.badge{font-size:11px;letter-spacing:.05em;text-transform:uppercase;padding:4px 10px;
+  border-radius:99px;border:1px solid var(--line)}
+.badge.ok{color:var(--ok);border-color:var(--ok-line)}
+.badge.warn{color:var(--warn);border-color:var(--warn-line)}
+.badge.bad{color:var(--danger);border-color:var(--danger-line)}
+.theme-tgl{background:transparent;border:1px solid var(--line-strong);border-radius:var(--radius);
+  color:var(--txt-3);width:34px;height:32px;display:inline-flex;align-items:center;justify-content:center;
+  cursor:pointer;transition:.15s;font-size:15px;line-height:1}
+.theme-tgl:hover{border-color:var(--accent);color:var(--accent)}
+
+main{padding:26px 24px 10px;max-width:1200px;margin:0 auto}
+h2{font-size:11px;font-weight:600;color:var(--txt-4);text-transform:uppercase;letter-spacing:.12em;margin:30px 0 12px}
+h2:first-child{margin-top:0}
+
+/* ── вердикт: статусная полоса (как .pricing-banner сайта) ── */
+.verdict{display:flex;align-items:center;gap:16px;border:1px solid var(--accent-line);
+  background:var(--accent-soft);border-radius:10px;padding:16px 20px;margin-bottom:22px}
+.verdict .dot-big{flex:none;width:12px;height:12px;border-radius:50%}
+.verdict .t{font-size:15px;font-weight:700;color:var(--txt)}
+.verdict .d{color:var(--txt-3);font-size:12.5px;margin-top:2px}
+.verdict.ok{border-color:var(--ok-line);background:var(--ok-soft)}
+.verdict.ok .dot-big{background:var(--ok);box-shadow:0 0 0 5px var(--ok-soft)}
+.verdict.warn{border-color:var(--warn-line);background:var(--warn-soft)}
+.verdict.warn .dot-big{background:var(--warn);box-shadow:0 0 0 5px var(--warn-soft)}
+.verdict.bad{border-color:var(--danger-line);background:var(--danger-soft)}
+.verdict.bad .dot-big{background:var(--danger);box-shadow:0 0 0 5px var(--danger-soft)}
+
+/* ── stats-полоса: joined-ячейки как .stats сайта (не отдельные карточки) ── */
+.cards{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);border-radius:6px;
+  overflow:hidden;background:var(--bg-card);box-shadow:var(--shadow);margin-bottom:18px}
+[data-theme="dark"] .cards{box-shadow:none}
+@media(max-width:860px){.cards{grid-template-columns:repeat(2,1fr)}
+  .card:nth-child(2n){border-right:0}.card:nth-child(-n+2){border-bottom:1px solid var(--line)}}
+.card{padding:20px 22px;border-right:1px solid var(--line)}
+.card:last-child{border-right:0}
+.card .h{font-size:11px;color:var(--txt-4);text-transform:uppercase;letter-spacing:.08em}
+.card .v{font-size:30px;font-weight:700;color:var(--txt);margin-top:8px;line-height:1;
+  letter-spacing:-.04em;font-variant-numeric:tabular-nums}
+.card .v .unit{font-size:14px;font-weight:400;color:var(--txt-4);letter-spacing:0}
+.card .s{color:var(--txt-3);font-size:12px;margin-top:7px}
+.card .hr{font-size:11px;margin-top:9px;padding:3px 9px;border-radius:99px;display:inline-block;
+  border:1px solid var(--line);color:var(--txt-3)}
+.hr.ok{color:var(--ok);border-color:var(--ok-line);background:var(--ok-soft)}
+.hr.warn{color:var(--warn);border-color:var(--warn-line);background:var(--warn-soft)}
+.hr.bad{color:var(--danger);border-color:var(--danger-line);background:var(--danger-soft)}
+
+/* ── таблицы: как .tier-table сайта (bg-soft шапка, hover accent-soft, tabular) ── */
+.tbl{border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--bg-card);
+  box-shadow:var(--shadow);margin-bottom:18px}
+[data-theme="dark"] .tbl{box-shadow:none}
+.tbl-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th,td{text-align:right;padding:13px 16px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--txt-4);font-weight:500;
+  background:var(--bg-soft)}
+td{font-size:13px;color:var(--txt-2)}
+td.l,th.l{text-align:left}
+td.num{color:var(--txt);font-weight:600}
+tbody tr{transition:background-color .15s ease}
+tbody tr:hover{background:var(--accent-soft)}
+tbody tr:last-child td{border-bottom:0}
+.sub-line{font-size:11px;color:var(--txt-4);font-weight:400;margin-top:3px}
+
+/* ── бар утилизации: тонкий, скруглённый, статус по порогу ── */
+.bar{position:relative;height:6px;border-radius:4px;background:var(--bg-soft);
+  box-shadow:inset 0 0 0 1px var(--line);overflow:hidden;min-width:84px}
+.bar>i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--accent)}
+.bar>i.hi{background:var(--warn)} .bar>i.max{background:var(--danger)}
+.pct{color:var(--txt-4);font-size:11px;margin-left:7px;font-variant-numeric:tabular-nums}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;vertical-align:1px}
+.dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)} .dot.bad{background:var(--danger)}
+.muted{color:var(--txt-4)}
+.pill{font-size:10.5px;letter-spacing:.02em;padding:2px 7px;border-radius:var(--radius);
+  border:1px solid var(--line);background:var(--bg-soft);color:var(--txt-3);margin-right:4px}
+.pill.ok{color:var(--ok);border-color:var(--ok-line);background:var(--ok-soft)}
+.pill.warn{color:var(--warn);border-color:var(--warn-line);background:var(--warn-soft)}
+.pill.bad{color:var(--danger);border-color:var(--danger-line);background:var(--danger-soft)}
+
+/* ── вход (фолбэк без Caddy): как .auth-card сайта ── */
+.setup{max-width:420px;margin:80px auto;background:var(--bg-card);border:1px solid var(--line);
+  border-radius:10px;padding:36px 32px;box-shadow:var(--shadow)}
+.setup h1{font-size:22px;font-weight:700;color:var(--txt);margin:0 0 8px}
+.setup .sub{color:var(--txt-3);font-size:13px;margin-bottom:22px}
+.setup input{width:100%;background:var(--bg-soft);border:1px solid var(--line-strong);border-radius:var(--radius);
+  color:var(--txt);font-family:var(--font-mono);font-size:14px;padding:12px 14px;transition:.15s}
+.setup input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.setup button{margin-top:14px;width:100%;padding:12px;border-radius:var(--radius);border:1px solid var(--accent);
+  background:var(--accent);color:#fff;font:inherit;font-weight:600;cursor:pointer;transition:.16s}
+.setup button:hover{box-shadow:0 0 0 4px var(--accent-soft)}
+.setup button:active{transform:translateY(1px)}
+.err{color:var(--danger);font-size:12px;margin-top:12px}
+
+details{margin-top:8px} summary{cursor:pointer;color:var(--txt-3);font-size:13px;padding:4px 0}
+summary:hover{color:var(--txt)}
+footer{color:var(--txt-4);font-size:11.5px;text-align:center;padding:26px 24px 30px;line-height:1.7}
 </style>
 </head>
 <body>
@@ -88,17 +168,36 @@ const ago=(iso)=>{if(!iso)return '—';const s=(Date.now()-new Date(iso).getTime
   if(s<60)return 'только что';if(s<3600)return `${s/60|0}м назад`;if(s<86400)return `${s/3600|0}ч назад`;
   return `${s/86400|0}д назад`};
 const dt=(iso)=>iso?new Date(iso).toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit',year:'2-digit'}):'—';
-const tabsHtml=()=>`<nav class="tabs">
-  <button class="${tab==='overview'?'on':''}" data-tab="overview">Обзор</button>
-  <button class="${tab==='users'?'on':''}" data-tab="users">Пользователи</button></nav>`;
+
+/* тема: как на сайте — data-theme на корне, выбор хранится в браузере */
+function initTheme(){
+  const saved=localStorage.getItem('panel-theme');
+  const dark=saved?saved==='dark':matchMedia('(prefers-color-scheme: dark)').matches;
+  document.documentElement.dataset.theme=dark?'dark':'light';
+}
+function toggleTheme(){
+  const next=document.documentElement.dataset.theme==='dark'?'light':'dark';
+  document.documentElement.dataset.theme=next;localStorage.setItem('panel-theme',next);
+}
+initTheme();
+
+const headerHtml=(sub,badge)=>`<header>
+  <span class="brand">api<i>Token</i>.sale<small>${esc(sub)}</small></span>
+  <nav class="tabs">
+    <button class="${tab==='overview'?'on':''}" data-tab="overview">Обзор</button>
+    <button class="${tab==='users'?'on':''}" data-tab="users">Пользователи</button>
+  </nav>
+  <span class="hd-right">${badge||''}
+    <button class="theme-tgl" onclick="toggleTheme()" title="тема">◐</button></span>
+</header>`;
 function bindTabs(){document.querySelectorAll('nav.tabs button').forEach(b=>b.onclick=()=>{
   if(tab!==b.dataset.tab){tab=b.dataset.tab;start()}})}
 
 function setup(msg){
   clearInterval(timer);
   document.getElementById('app').innerHTML='';
-  const box=$(`<div class="setup"><h1 style="margin:0 0 4px">Центр управления</h1>
-    <div class="muted" style="font-size:12px">Введи только отдельный read-only ключ панели (за Caddy обычно не требуется). Никогда не вводи здесь control/admin-ключ: ключ хранится только в памяти этой вкладки и исчезнет при перезагрузке.</div>
+  const box=$(`<div class="setup"><h1>Центр управления</h1>
+    <div class="sub">Введи только отдельный read-only ключ панели (за Caddy обычно не требуется). Никогда не вводи здесь control/admin-ключ: ключ хранится только в памяти этой вкладки и исчезнет при перезагрузке.</div>
     <input id="k" type="password" placeholder="ключ панели…" autocomplete="off" autocapitalize="off" spellcheck="false">
     <button id="go">Открыть</button>${msg?`<div class="err">${msg}</div>`:''}</div>`);
   document.getElementById('app').appendChild(box);
@@ -130,8 +229,8 @@ async function tickUsers(){
     // 401 тут НЕ значит «нужен ключ панели»: /admin/users живёт в commerce-backend и доступен
     // только через Caddy panel-домена (server-side инжект x-admin-key). Показываем ошибку на месте.
     const why=e.auth?'нет доступа: маршрут /admin/users доступен только через panel-домен (Caddy инжектит x-admin-key; проверь, что ключ совпадает с COMMERCIAL_ADMIN_KEY бэкенда)':(e.msg||'ошибка сети');
-    document.getElementById('app').innerHTML=`<header><h1>claude-api</h1><span class="sub">пользователи</span></header>
-      ${tabsHtml()}<main><div class="verdict bad"><div class="em">⚠️</div><div><div class="t">Не удалось загрузить пользователей</div>
+    document.getElementById('app').innerHTML=`${headerHtml('пользователи')}
+      <main><div class="verdict bad"><span class="dot-big"></span><div><div class="t">Не удалось загрузить пользователей</div>
       <div class="d">${esc(why)}</div></div></div></main>`;
     bindTabs(); return; }
   renderUsers(data.users||[]);
@@ -155,24 +254,24 @@ function renderUsers(users){
     const tier=u.customer_type==='b2b'?'B2B':(u.tier!=null?tierName(u.tier):'—');
     const disc=u.multiplier_bp!=null?`−${100-u.multiplier_bp/100}%`:'—';
     return `<tr>
-      <td class="l"><span class="dot ${st}"></span>${esc(u.email)}<div class="muted" style="font-size:11px">${esc(u.display_name||'')} · ${auth}${flags}</div></td>
-      <td class="l">${esc(tier)}<div class="muted" style="font-size:11px">${esc(disc)}</div></td>
-      <td>${u.balance_usd!=null?usd(u.balance_usd):'<span class="muted">—</span>'}</td>
-      <td>${u.spent_usd!=null?usd(u.spent_usd):'<span class="muted">—</span>'}<div class="muted" style="font-size:11px">30д: ${usd(u.spent_30d_usd)}</div></td>
-      <td>${n(p.paid_count)>0?`${usd(p.paid_total_usd)}<div class="muted" style="font-size:11px">${p.paid_count} шт · ${dt(p.last_paid_at)}</div>`:'<span class="muted">не пополнял</span>'}</td>
+      <td class="l"><span class="dot ${st}"></span><b style="color:var(--txt);font-weight:600">${esc(u.email)}</b>
+        <div class="sub-line">${esc(u.display_name||'')} · ${auth}${flags}</div></td>
+      <td class="l">${esc(tier)}<div class="sub-line">${esc(disc)}</div></td>
+      <td class="num">${u.balance_usd!=null?usd(u.balance_usd):'<span class="muted">—</span>'}</td>
+      <td class="num">${u.spent_usd!=null?usd(u.spent_usd):'<span class="muted">—</span>'}<div class="sub-line">30д: ${usd(u.spent_30d_usd)}</div></td>
+      <td>${n(p.paid_count)>0?`<span class="num">${usd(p.paid_total_usd)}</span><div class="sub-line">${p.paid_count} шт · ${dt(p.last_paid_at)}</div>`:'<span class="muted">не пополнял</span>'}</td>
       <td>${n(k.active)}${n(k.total)>n(k.active)?`<span class="muted">/${k.total}</span>`:''}</td>
       <td class="muted">${ago(u.last_seen_at)}</td>
       <td class="muted">${dt(u.created_at)}</td>
     </tr>`;
   }).join('');
   app.innerHTML=`
-    <header><h1>claude-api</h1><span class="sub">пользователи · кто платит и тратит</span>
-      <span class="badge ok">${users.length} юзеров</span></header>
-    ${tabsHtml()}
+    ${headerHtml('пользователи',`<span class="badge ok">${users.length} юзеров</span>`)}
     <main>
+      <h2>Сводка</h2>
       <div class="cards">
         <div class="card"><div class="h">пользователей</div><div class="v">${users.length}</div>
-          <div class="s">${active7} активны за 7д</div></div>
+          <div class="s">${active7} активны за 7 дней</div></div>
         <div class="card"><div class="h">пополнено всего</div><div class="v">${usd(totPaid)}</div>
           <div class="s">${paidCnt} платежей · ${payers} платящих</div></div>
         <div class="card"><div class="h">на балансах</div><div class="v">${usd(totBal)}</div>
@@ -180,11 +279,12 @@ function renderUsers(users){
         <div class="card"><div class="h">потрачено юзерами</div><div class="v">${usd(totSpent)}</div>
           <div class="s">по прайсу клиента (с наценкой)</div></div>
       </div>
-      <div style="overflow-x:auto"><table>
+      <h2>Все пользователи</h2>
+      <div class="tbl"><div class="tbl-scroll"><table>
         <thead><tr><th class="l">пользователь</th><th class="l">тир</th><th>баланс</th><th>потрачено</th>
           <th>пополнения</th><th>ключи</th><th>был(а)</th><th>регистрация</th></tr></thead>
         <tbody>${rows||'<tr><td colspan="8" class="muted l">нет пользователей</td></tr>'}</tbody>
-      </table></div>
+      </table></div></div>
       <footer>обновление каждые 15с · баланс/расход — live из движка · пополнения — подтверждённые платежи</footer>
     </main>`;
   bindTabs();
@@ -196,7 +296,7 @@ function verdict(ov){
   const crit=(x)=>x!=null&&x<1;                 // реальный дефицит: ёмкость кончается СЕЙЧАС
   const tight=(x)=>x!=null&&x<th;               // тесно относительно цели запаса
   if(crit(h5)||crit(h7)||(subs>0&&cooling>=subs)){
-    return {c:'bad',em:'🔴',t:`Дефицит ёмкости — нужно +${Math.max(1,g)} подписок`,
+    return {c:'bad',t:`Дефицит ёмкости — нужно +${Math.max(1,g)} подписок`,
       d:`headroom 5h ${xr(h5)} / 7d ${xr(h7)} · потребление близко к потолку`};
   }
   if(g>0||tight(h5)||tight(h7)||cov>1||cooling>0){
@@ -204,9 +304,9 @@ function verdict(ov){
       : (tight(h5)||tight(h7)) ? `запас ниже цели ×${th}`
       : cov>1 ? `балансы юзеров ×${cov} к ёмкости (перепродано «на бумаге» — риск только если начнут тратить)`
       : `${cooling} подписок остывают`;
-    return {c:'warn',em:'🟠',t:'Под контролем, но следим', d:`${esc(why)} · headroom 5h ${xr(h5)} / 7d ${xr(h7)}`};
+    return {c:'warn',t:'Под контролем, но следим', d:`${esc(why)} · headroom 5h ${xr(h5)} / 7d ${xr(h7)}`};
   }
-  return {c:'ok',em:'🟢',t:'Здорово — запаса хватает',
+  return {c:'ok',t:'Здорово — запаса хватает',
     d:`headroom 5h ${xr(h5)} / 7d ${xr(h7)} · подписок ${subs}, цель ×${th} держим`};
 }
 
@@ -240,27 +340,24 @@ function render(ov,cap,subs){
       <td class="l"><span class="dot ${st}"></span>${esc(c.email)}${c.calibrated?'':' <span class="muted">(калибр…)</span>'}</td>
       <td>${bar(c.util5h)}</td><td class="muted">${dur(c.reset5h_in)}</td>
       <td>${bar(c.util7d)}</td><td class="muted">${dur(c.reset7d_in)}</td>
-      <td>${usd(c.rem5h_usd)}</td><td>${usd(c.rem7d_usd)}</td><td>${usd(c.avail_7d_usd)}</td>
+      <td class="num">${usd(c.rem5h_usd)}</td><td class="num">${usd(c.rem7d_usd)}</td><td class="num">${usd(c.avail_7d_usd)}</td>
     </tr>`;
   }).join('');
 
   app.innerHTML=`
-    <header>
-      <h1>claude-api</h1><span class="sub">центр управления · спрос ↔ предложение</span>
-      <span class="badge ${v.c}">${ov.calibrated?'калибровано':'калибруется…'}</span>
-    </header>
-    ${tabsHtml()}
+    ${headerHtml('центр управления',`<span class="badge ${v.c}">${ov.calibrated?'калибровано':'калибруется…'}</span>`)}
     <main>
-      <div class="verdict ${v.c}"><div class="em">${v.em}</div>
+      <div class="verdict ${v.c}"><span class="dot-big"></span>
         <div><div class="t">${esc(v.t)}</div><div class="d">${esc(v.d)}</div></div></div>
 
       <h2>Предложение — доступно real-API (USD)</h2>
       <div class="cards">${supplyCards}${demandCard}</div>
 
+      <h2>Флот и спрос</h2>
       <div class="cards">
         <div class="card"><div class="h">подписки</div><div class="v">${ov.subs}</div>
           <div class="s"><span class="dot ok"></span>${health.healthy} живых · <span class="dot bad"></span>${health.cooling} остывают</div></div>
-        <div class="card"><div class="h">утилизация (сред.)</div><div class="v">${Math.round(util['7d']*100)}%<span class="muted" style="font-size:14px"> 7d</span></div>
+        <div class="card"><div class="h">утилизация (сред.)</div><div class="v">${Math.round(util['7d']*100)}<span class="unit">% 7d</span></div>
           <div class="s">${Math.round(util['5h']*100)}% за 5h</div></div>
         <div class="card"><div class="h">всего потрачено</div><div class="v">${usd(D.spent_usd)}</div>
           <div class="s">потенц. спрос ${usd(D.potential_realapi_usd)} real-API</div></div>
@@ -270,7 +367,7 @@ function render(ov,cap,subs){
       </div>
 
       <h2>Жизненный цикл подписок ${subs?`· замена: ${subs.lifetime_days}д от добавления`:''}</h2>
-      <div style="overflow-x:auto"><table>
+      <div class="tbl"><div class="tbl-scroll"><table>
         <thead><tr><th class="l">подписка</th><th>статус</th><th>добавлена</th><th>живёт ещё</th>
           <th>пик 5h</th><th>пик 7d</th><th class="l">прокси</th><th>прокси до</th></tr></thead>
         <tbody>${(subs?.subs||[]).map(s=>{
@@ -278,24 +375,24 @@ function render(ov,cap,subs){
           const pe=(s.proxy_expire||'').slice(0,10);
           const pk5=s.peak_cap5h_usd||0, pk7=s.peak_cap7d_usd||0;
           return `<tr>
-            <td class="l">${esc(s.email)}</td>
+            <td class="l" style="color:var(--txt);font-weight:600">${esc(s.email)}</td>
             <td class="muted">${esc(s.status)}</td>
             <td class="muted">${esc((s.added||'').slice(0,10)||'—')}</td>
             <td><span class="dot ${dc}"></span>${dl>0?dl+' дн':'—'}</td>
-            <td>${pk5>0?usd(pk5):'<span class="muted">—</span>'}</td>
-            <td>${pk7>0?usd(pk7):'<span class="muted">—</span>'}</td>
+            <td class="num">${pk5>0?usd(pk5):'<span class="muted">—</span>'}</td>
+            <td class="num">${pk7>0?usd(pk7):'<span class="muted">—</span>'}</td>
             <td class="l muted">${esc(s.proxy_host||'—')}</td>
             <td class="muted">${pe||'—'}</td>
           </tr>`}).join('')||'<tr><td colspan="8" class="muted l">нет подписок</td></tr>'}</tbody>
-      </table></div>
+      </table></div></div>
 
       <details>
         <summary>Ёмкость по подпискам · ${ov.subs} (live util/cooling)</summary>
-        <div style="overflow-x:auto"><table>
+        <div class="tbl" style="margin-top:10px"><div class="tbl-scroll"><table>
           <thead><tr><th class="l">подписка</th><th>5h</th><th>сброс</th><th>7d</th><th>сброс</th>
             <th>ост. 5h</th><th>ост. 7d</th><th>доступно 7d</th></tr></thead>
           <tbody>${subRows||'<tr><td colspan="8" class="muted l">нет данных по подпискам</td></tr>'}</tbody>
-        </table></div>
+        </table></div></div>
       </details>
 
       <footer>обновление каждые 3с · «доступно» = максимум real-API-USD на горизонте (учёт сбросов окон) ·

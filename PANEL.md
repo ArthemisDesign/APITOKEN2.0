@@ -39,12 +39,18 @@
 
 | Секрет | Где живёт | Кто проверяет |
 |---|---|---|
-| basic auth `admin` (bcrypt) | `/etc/caddy/Caddyfile` | Caddy |
+| basic auth админов (bcrypt, по строке на человека: `Q`, `R`, `M`, легаси `admin`) | `/etc/caddy/Caddyfile` | Caddy |
 | CONTROL-ключ движка (`x-api-key`) | `/etc/caddy/Caddyfile` + env движка | движок `control_authed` |
 | `COMMERCIAL_ADMIN_KEY` (`x-admin-key`) | `/etc/caddy/Caddyfile` + `/etc/apitoken/api.env` | backend `AdminGuard` |
 
 **Инвариант:** значение `x-admin-key` в Caddyfile ОБЯЗАНО совпадать с `COMMERCIAL_ADMIN_KEY` в
 `api.env` (реальный инцидент 2026-07-17: ключи разошлись → 401 → панель просила «ключ»).
 `install-caddy.sh` переносит строки секретов из живого Caddyfile по placeholder'ам
-(`<BCRYPT_HASH_PLACEHOLDER>`, `<CONTROL_KEY_PLACEHOLDER>`, `<COMMERCIAL_ADMIN_KEY_PLACEHOLDER>`) —
-новый секрет = новый placeholder + ветка в awk + ручная первичная вставка в живой конфиг.
+(`<BASIC_AUTH_USERS_PLACEHOLDER>` — ВСЕ строки `user $2y$…` разом, `<CONTROL_KEY_PLACEHOLDER>`,
+`<COMMERCIAL_ADMIN_KEY_PLACEHOLDER>`) — новый секрет = новый placeholder + ветка в awk +
+ручная первичная вставка в живой конфиг.
+
+**Добавить/убрать админа:** `caddy hash-password --plaintext '<пароль>'` → добавить/удалить строку
+`<логин> <хэш>` в блоке `basic_auth` живого `/etc/caddy/Caddyfile` → `systemctl reload caddy`.
+Шаблонные применения (`--apply-caddy`) переносят все строки автоматически. Пароли хранятся только
+у людей; на сервере — только bcrypt.

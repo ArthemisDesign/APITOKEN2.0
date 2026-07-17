@@ -63,7 +63,7 @@ mail.apitoken.sale, autodiscover.apitoken.sale, autoconfig.apitoken.sale {
 
 panel.apitoken.sale {
 	basic_auth {
-		admin <BCRYPT_HASH_PLACEHOLDER>
+		<BASIC_AUTH_USERS_PLACEHOLDER>
 	}
 	@data path /overview /capacity /metrics /subs
 	handle @data {

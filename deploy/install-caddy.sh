@@ -20,14 +20,16 @@ trap cleanup EXIT
 chmod 0600 "$tmp"
 awk '
   NR == FNR {
-    if ($1 == "admin" && $2 ~ /^\$2/) auth = $0
+    # Каждая строка "user $2y$…" внутри basic_auth — отдельный админ (Q/R/M/…). Переносим ВСЕ,
+    # чтобы применение шаблона не выкидывало учётки, добавленные в живой конфиг.
+    if ($1 != "header_up" && $2 ~ /^\$2/) auth = auth $0 ORS
     if ($1 == "header_up" && $2 == "x-api-key") control = $0
     if ($1 == "header_up" && $2 == "x-admin-key") commadmin = $0
     next
   }
-  /<BCRYPT_HASH_PLACEHOLDER>/ {
+  /<BASIC_AUTH_USERS_PLACEHOLDER>/ {
     if (auth == "") exit 41
-    print auth
+    printf "%s", auth
     auth_used++
     next
   }
