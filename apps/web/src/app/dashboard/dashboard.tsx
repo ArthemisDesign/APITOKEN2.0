@@ -23,7 +23,16 @@ const NANO_PER_USD = 1_000_000_000n;
 const BASIS_POINTS = 10_000n;
 const CHECKOUT_ORIGINS: Record<CheckoutView["provider"], ReadonlySet<string>> = {
   cryptomus: new Set(["https://pay.cryptomus.com"]),
+  platega: new Set(["https://pay.platega.io", "https://app.platega.io"]),
 };
+// Platega payment-method ids offered in the top-up UI (see PLATEGA_DEFAULT_PAYMENT_METHOD).
+const PLATEGA_METHODS: ReadonlyArray<{ id: number; en: string; ru: string }> = [
+  { id: 2, en: "SBP", ru: "СБП" },
+  { id: 11, en: "Card", ru: "Карта" },
+  { id: 12, en: "Intl card", ru: "Межд. карта" },
+  { id: 13, en: "Crypto", ru: "Крипта" },
+  { id: 3, en: "ERIP", ru: "ЕРИП" },
+];
 
 const localDashboardCopy = {
   en: {
@@ -35,6 +44,7 @@ const localDashboardCopy = {
     noActiveKeys: "No active API keys.", noDisabledKeys: "No disabled API keys.", activeStatus: "Active", disabledStatus: "Disabled",
     partialLedger: "Showing only the latest 100 ledger entries. Usage, key, transaction, and top-up totals based on this list may be incomplete.",
     topupNextRemaining: "Add {amount} more to reach {tier} (−{discount}%).",
+    payWith: "Pay with",
   },
   ru: {
     logoutError: "Не удалось выйти. Серверная сессия всё ещё активна; повторите попытку.", loggingOut: "Выходим…",
@@ -45,6 +55,7 @@ const localDashboardCopy = {
     noActiveKeys: "Активных API-ключей нет.", noDisabledKeys: "Отключённых API-ключей нет.", activeStatus: "Активен", disabledStatus: "Отключён",
     partialLedger: "Показаны только последние 100 записей журнала. Итоги использования, ключей, операций и пополнений по этому списку могут быть неполными.",
     topupNextRemaining: "Добавьте ещё {amount}, чтобы получить {tier} (−{discount}%).",
+    payWith: "Оплата",
   },
 } as const;
 
@@ -357,6 +368,7 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
   const { language } = useI18n();
   const localCopy = localDashboardCopy[language];
   const [amount, setAmount] = useState("100");
+  const [method, setMethod] = useState<number>(PLATEGA_METHODS[0]!.id);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [checkout, setCheckout] = useState<CheckoutView | null>(null);
@@ -366,7 +378,7 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
     if (!amountValid) { setError(localCopy.invalidWholeUsd); return; }
     setBusy(true); setError(null);
     try {
-      const created = await api.createCheckout(amount); setCheckout(created);
+      const created = await api.createCheckout(amount, method); setCheckout(created);
       if (created.checkoutUrl) {
         const checkoutUrl = safeCheckoutUrl(created.checkoutUrl, created.provider);
         if (!checkoutUrl) { setError(localCopy.invalidCheckoutUrl); return; }
@@ -430,6 +442,10 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
           <p className="tc-upgrade"><span className="tc-upgrade-ic" aria-hidden="true">ⓘ</span>{interpolate(copy.topupReach, { tier: tierName(copy, reachedTier.code), discount, hold: formatWholeUsd(reachedTier.holdUsd) })}</p>}
         <p className="tc-explain">{hasTier ? interpolate(copy.perDollar, { mult: formatPerDollar(topupPaymentBp) }) : copy.perDollarNone}</p>
         {isB2c && amountNano > 0n && nextTier && nextTierRemainingNano > 0n && <p className="tc-nudge">↑ {interpolate(localCopy.topupNextRemaining, { amount: formatNanoUsd(nextTierRemainingNano), tier: tierName(copy, nextTier.code), discount: nextTier.discountPercent })}</p>}
+        <div className="tc-methods" role="group" aria-label={localCopy.payWith}>
+          <span className="tc-methods-label">{localCopy.payWith}</span>
+          {PLATEGA_METHODS.map((m) => <button key={m.id} type="button" className={`tc-method ${method === m.id ? "on" : ""}`} aria-pressed={method === m.id} onClick={() => setMethod(m.id)}>{language === "ru" ? m.ru : m.en}</button>)}
+        </div>
         <div className="tc-actions"><button className="btn btn-primary" disabled={busy || !amountValid} onClick={start}>{busy ? copy.creating : copy.continuePayment}</button></div>
         {amountValidation && <div className="auth-msg err" id="topup-amount-error">{amountValidation}</div>}
         {error && <div className="auth-msg err">{error}</div>}{checkout && !checkout.checkoutUrl && <div className="banner">{interpolate(copy.checkoutPending, { id: checkout.id, status: checkout.status })}</div>}

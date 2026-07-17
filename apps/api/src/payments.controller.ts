@@ -5,6 +5,7 @@ import {
   Controller,
   Get,
   Header,
+  Headers,
   HttpCode,
   NotFoundException,
   Param,
@@ -15,10 +16,10 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { createCheckoutSchema } from "@claude-api/contracts";
-import { CryptomusError } from "@claude-api/payments";
+import { CryptomusError, PlategaError } from "@claude-api/payments";
 import { z } from "zod";
 import { CurrentAuth, type RequestAuth, SessionAuthGuard } from "./auth.guard.js";
-import { CheckoutAmountError, CheckoutService } from "./checkout.service.js";
+import { CheckoutAmountError, CheckoutService, PlategaWebhookAuthError } from "./checkout.service.js";
 import { AccountService, isRetryableEngineFailure } from "./account.service.js";
 
 const uuidSchema = z.string().uuid();
@@ -38,13 +39,13 @@ export class PaymentsController {
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     try {
       await this.accounts.ensureEngineAccount(current.user.id);
-      return await this.checkouts.create(current.user.id, parsed.data.amountUsd, parsed.data.provider);
+      return await this.checkouts.create(current.user.id, parsed.data.amountUsd, parsed.data.provider, parsed.data.paymentMethod);
     } catch (error) {
       if (error instanceof CheckoutAmountError) throw new BadRequestException(error.message);
-      if (error instanceof CryptomusError) throw new BadGatewayException(error.message);
+      if (error instanceof CryptomusError || error instanceof PlategaError) throw new BadGatewayException(error.message);
       if (error instanceof Error && error.message.includes("active user")) throw new NotFoundException(error.message);
       if (error instanceof Error && error.message.includes("unsupported payment provider")) {
-        throw new ServiceUnavailableException("Cryptomus is not configured");
+        throw new ServiceUnavailableException("payment provider is not configured");
       }
       if (isRetryableEngineFailure(error)) throw new ServiceUnavailableException("engine is temporarily unavailable");
       throw error;
@@ -73,6 +74,24 @@ export class PaymentsController {
         throw new UnauthorizedException("invalid Cryptomus signature");
       }
       if (error instanceof CryptomusError) throw new BadGatewayException(error.message);
+      throw error;
+    }
+  }
+
+  @Post("payments/platega/webhook")
+  @HttpCode(200)
+  async plategaWebhook(
+    @Req() request: { rawBody?: Buffer },
+    @Headers("x-secret") secret?: string,
+    @Headers("x-merchant-id") merchantId?: string,
+  ): Promise<unknown> {
+    if (!request.rawBody) throw new BadRequestException("raw webhook body is unavailable");
+    try {
+      const result = await this.checkouts.processPlategaWebhook(request.rawBody, { secret, merchantId });
+      return { accepted: true, duplicate: result.duplicateEvent, status: result.checkoutStatus };
+    } catch (error) {
+      if (error instanceof PlategaWebhookAuthError) throw new UnauthorizedException(error.message);
+      if (error instanceof PlategaError) throw new BadGatewayException(error.message);
       throw error;
     }
   }

@@ -9,6 +9,8 @@ export interface CheckoutContext {
   currency: "USD" | "RUB" | "EUR";
   returnUrl: string;
   cancelUrl: string;
+  /** Provider-specific payment-method id (e.g. Platega SBP=2, card=11); provider falls back to a default. */
+  paymentMethod?: number;
 }
 
 export interface VerifiedWebhookSignal {

@@ -1,4 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
+import { timingSafeEqual } from "node:crypto";
 import { ConfigService } from "@nestjs/config";
 import type { CheckoutView } from "@claude-api/contracts";
 import {
@@ -6,6 +7,7 @@ import {
   applyVerifiedCheckoutPaymentEvent,
   createCheckoutSession,
   failCheckoutSession,
+  getCheckoutByProviderPayment,
   getCheckoutSession,
   type AppliedPaymentEvent,
   type CheckoutSession,
@@ -15,6 +17,8 @@ import { PaymentProviderRegistry } from "@claude-api/payments";
 import type { Environment } from "./config.js";
 import { DATABASE } from "./infrastructure.module.js";
 
+export type PaymentProviderCode = "cryptomus" | "platega";
+
 @Injectable()
 export class CheckoutService {
   constructor(
@@ -23,7 +27,7 @@ export class CheckoutService {
     private readonly config: ConfigService<Environment, true>,
   ) {}
 
-  async create(userId: string, amountInput: string, providerCode: "cryptomus"): Promise<CheckoutView> {
+  async create(userId: string, amountInput: string, providerCode: PaymentProviderCode, paymentMethod?: number): Promise<CheckoutView> {
     const amountUsd = BigInt(amountInput);
     const minimum = this.config.get("MIN_TOPUP_USD", { infer: true });
     const maximum = this.config.get("MAX_TOPUP_USD", { infer: true });
@@ -48,6 +52,7 @@ export class CheckoutService {
         currency: "USD",
         returnUrl: returnUrl.toString(),
         cancelUrl: cancelUrl.toString(),
+        ...(paymentMethod !== undefined ? { paymentMethod } : {}),
       });
       if (!creation.providerPaymentId) throw new Error("provider did not return a payment ID");
       if (creation.action.kind !== "redirect") throw new Error("provider did not return a redirect checkout");
@@ -94,9 +99,56 @@ export class CheckoutService {
       payload: payment.raw,
     });
   }
+
+  async processPlategaWebhook(
+    rawBody: string | Uint8Array,
+    headers: { secret: string | undefined; merchantId: string | undefined },
+  ): Promise<AppliedPaymentEvent> {
+    const secret = this.config.get("PLATEGA_SECRET", { infer: true });
+    const merchantId = this.config.get("PLATEGA_MERCHANT_ID", { infer: true });
+    if (!secret || !merchantId) throw new Error("unsupported payment provider: platega");
+    // Platega authenticates callbacks only with these headers (no HMAC); reject before doing any work.
+    if (!constantTimeEquals(headers.secret, secret) || !constantTimeEquals(headers.merchantId, merchantId)) {
+      throw new PlategaWebhookAuthError("invalid Platega webhook credentials");
+    }
+    const provider = this.providers.getWebhook("platega");
+    const signal = provider.verifyWebhook(rawBody);
+    // The callback is only a wake-up; re-query Platega's authoritative status before crediting.
+    const payment = await provider.verifyPayment(signal.providerPaymentId);
+    if (!payment.checkoutId) throw new Error("verified Platega payment has no checkout ID");
+    if (payment.providerPaymentId !== signal.providerPaymentId) {
+      throw new Error("Platega webhook and payment lookup IDs differ");
+    }
+    // Local checkout is authoritative for the amount; credit the recorded USD, never the RUB collected.
+    const checkout = await getCheckoutByProviderPayment(this.database, {
+      provider: "platega",
+      providerPaymentId: payment.providerPaymentId,
+    });
+    if (!checkout) throw new Error("verified Platega payment does not match a checkout session");
+    if (checkout.id !== payment.checkoutId) throw new Error("Platega payload checkout ID does not match");
+    return applyVerifiedCheckoutPaymentEvent(this.database, {
+      provider: payment.provider,
+      providerEventId: payment.providerEventId,
+      providerPaymentId: payment.providerPaymentId,
+      checkoutId: checkout.id,
+      state: payment.state,
+      amountUsd: checkout.amountUsd,
+      currency: "USD",
+      paidAt: payment.paidAt ? parseProviderDate(payment.paidAt) : null,
+      payload: payment.raw,
+    });
+  }
 }
 
 export class CheckoutAmountError extends Error {}
+export class PlategaWebhookAuthError extends Error {}
+
+function constantTimeEquals(supplied: string | undefined, expected: string): boolean {
+  if (typeof supplied !== "string") return false;
+  const suppliedBytes = Buffer.from(supplied, "utf8");
+  const expectedBytes = Buffer.from(expected, "utf8");
+  return suppliedBytes.length === expectedBytes.length && timingSafeEqual(suppliedBytes, expectedBytes);
+}
 
 export function parseProviderWholeUsd(value: string): bigint {
   const match = /^([1-9]\d*)(?:\.0+)?$/.exec(value);

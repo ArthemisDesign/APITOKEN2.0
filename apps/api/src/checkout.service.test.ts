@@ -3,12 +3,13 @@ import { ConfigService } from "@nestjs/config";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createCheckoutSchema } from "@claude-api/contracts";
 import { createDatabase, type Database } from "@claude-api/db";
-import { CryptomusProvider, PaymentProviderRegistry } from "@claude-api/payments";
+import { CryptomusProvider, PaymentProviderRegistry, PlategaProvider } from "@claude-api/payments";
 import type { Environment } from "./config.js";
 import { CheckoutService, parseProviderWholeUsd } from "./checkout.service.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
 const paymentId = "26109ba0-b05b-4ee0-93d1-fd62c822ce95";
+const plategaTxId = "3fa85f64-5717-4562-b3fc-2c463f66afa6";
 const apiKey = "payment-api-key";
 
 describe("whole USD input", () => {
@@ -95,6 +96,105 @@ describe.runIf(Boolean(connectionString))("Cryptomus checkout service", () => {
     expect(applied).toMatchObject({ duplicateEvent: false, checkoutStatus: "paid" });
     const credit = await database.pool.query("SELECT amount_nano, engine_account_id FROM engine_credits");
     expect(credit.rows).toEqual([{ amount_nano: "37000000000", engine_account_id: "acct_checkout_test" }]);
+  });
+});
+
+describe.runIf(Boolean(connectionString))("Platega checkout service", () => {
+  let database: Database;
+  let userId: string;
+
+  beforeAll(() => {
+    database = createDatabase(connectionString!);
+  });
+
+  beforeEach(async () => {
+    await database.pool.query(`
+      TRUNCATE audit_log, api_keys, engine_credits, webhook_events, payments, email_outbox, auth_rate_limits,
+               auth_tokens, auth_sessions, auth_identities,
+               checkout_sessions, engine_accounts, users RESTART IDENTITY CASCADE
+    `);
+    userId = randomUUID();
+    await database.pool.query("INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)", [
+      userId, "buyer@example.com", "Platega Test",
+    ]);
+    await database.pool.query(`
+      INSERT INTO engine_accounts (id, user_id, engine_account_id, status)
+      VALUES ($1, $2, 'acct_checkout_test', 'active')
+    `, [randomUUID(), userId]);
+  });
+
+  afterAll(async () => {
+    await database.pool.query(`
+      TRUNCATE audit_log, api_keys, engine_credits, webhook_events, payments, email_outbox, auth_rate_limits,
+               auth_tokens, auth_sessions, auth_identities,
+               checkout_sessions, engine_accounts, users RESTART IDENTITY CASCADE
+    `);
+    await database.pool.end();
+  });
+
+  it("charges RUB but credits the recorded USD on CONFIRMED", async () => {
+    let payloadCheckoutId = "";
+    const provider = new PlategaProvider({
+      merchantId: "merchant-uuid",
+      secret: "platega-secret",
+      callbackUrl: "https://backend.apitoken.sale/v1/payments/platega/webhook",
+      apiBaseUrl: "https://platega.test",
+      rateUrl: "https://rates.test/rates",
+      fetch: async (input, init) => {
+        const url = String(input);
+        if (url === "https://rates.test/rates") return Response.json({ data: [{ symbol: "USDT/RUB", askPrice: 100 }] });
+        if (url.endsWith("/transaction/process")) {
+          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          payloadCheckoutId = String(body.payload);
+          expect(body.paymentDetails).toEqual({ amount: 3700, currency: "RUB" }); // 37 USD * 100
+          return Response.json({ transactionId: plategaTxId, redirect: "https://pay.platega.io/x", status: "PENDING" });
+        }
+        expect(url).toBe(`https://platega.test/transaction/${plategaTxId}`);
+        return Response.json({
+          id: plategaTxId,
+          status: "CONFIRMED",
+          paymentDetails: { amount: 3700, currency: "RUB" },
+          payload: payloadCheckoutId,
+        });
+      },
+    });
+    const config = new ConfigService<Environment, true>({
+      MIN_TOPUP_USD: 1n,
+      MAX_TOPUP_USD: 10_000n,
+      PUBLIC_APP_BASE_URL: "https://apitoken.sale",
+      PLATEGA_SECRET: "platega-secret",
+      PLATEGA_MERCHANT_ID: "merchant-uuid",
+    } as Environment);
+    const service = new CheckoutService(database, new PaymentProviderRegistry([provider]), config);
+
+    const created = await service.create(userId, "37", "platega", 2);
+    expect(created).toMatchObject({ amountUsd: "37", status: "pending", checkoutUrl: "https://pay.platega.io/x" });
+
+    const webhook = JSON.stringify({ id: plategaTxId, status: "CONFIRMED", payload: payloadCheckoutId });
+    const applied = await service.processPlategaWebhook(webhook, { secret: "platega-secret", merchantId: "merchant-uuid" });
+    expect(applied).toMatchObject({ duplicateEvent: false, checkoutStatus: "paid" });
+    const credit = await database.pool.query("SELECT amount_nano, engine_account_id FROM engine_credits");
+    expect(credit.rows).toEqual([{ amount_nano: "37000000000", engine_account_id: "acct_checkout_test" }]);
+  });
+
+  it("rejects a webhook with the wrong secret", async () => {
+    const provider = new PlategaProvider({
+      merchantId: "merchant-uuid",
+      secret: "platega-secret",
+      callbackUrl: "https://backend.apitoken.sale/v1/payments/platega/webhook",
+      fetch: async () => new Response(),
+    });
+    const config = new ConfigService<Environment, true>({
+      MIN_TOPUP_USD: 1n,
+      MAX_TOPUP_USD: 10_000n,
+      PUBLIC_APP_BASE_URL: "https://apitoken.sale",
+      PLATEGA_SECRET: "platega-secret",
+      PLATEGA_MERCHANT_ID: "merchant-uuid",
+    } as Environment);
+    const service = new CheckoutService(database, new PaymentProviderRegistry([provider]), config);
+    const webhook = JSON.stringify({ id: plategaTxId, status: "CONFIRMED", payload: randomUUID() });
+    await expect(service.processPlategaWebhook(webhook, { secret: "wrong", merchantId: "merchant-uuid" }))
+      .rejects.toThrow("invalid Platega webhook credentials");
   });
 });
 

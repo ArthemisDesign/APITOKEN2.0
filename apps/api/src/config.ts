@@ -53,6 +53,11 @@ const environmentSchema = z.object({
   DIGISELLER_CHECKOUT_TRACKING_SECRET: z.string().min(32).optional(),
   CRYPTOMUS_MERCHANT_ID: z.string().uuid().optional(),
   CRYPTOMUS_PAYMENT_API_KEY: z.string().min(1).optional(),
+  PLATEGA_MERCHANT_ID: z.string().min(1).optional(),
+  PLATEGA_SECRET: z.string().min(1).optional(),
+  PLATEGA_FX_MARGIN_BPS: z.coerce.number().int().min(0).max(5_000).default(0),
+  PLATEGA_DEFAULT_PAYMENT_METHOD: z.coerce.number().int().positive().default(2),
+  PLATEGA_RATE_URL: z.string().url().default("https://api.rapira.net/open/market/rates"),
   GOOGLE_CLIENT_ID: z.string().min(1).optional(),
   GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
   GOOGLE_REDIRECT_URI: z.string().url().optional(),
@@ -73,6 +78,11 @@ const environmentSchema = z.object({
     .filter((item) => item !== undefined).length;
   if (cryptomusConfigured !== 0 && cryptomusConfigured !== 2) {
     context.addIssue({ code: "custom", message: "all Cryptomus settings must be provided together" });
+  }
+  const plategaConfigured = [value.PLATEGA_MERCHANT_ID, value.PLATEGA_SECRET]
+    .filter((item) => item !== undefined).length;
+  if (plategaConfigured !== 0 && plategaConfigured !== 2) {
+    context.addIssue({ code: "custom", message: "all Platega settings must be provided together" });
   }
   if (value.MIN_TOPUP_USD > value.MAX_TOPUP_USD) {
     context.addIssue({ code: "custom", message: "MIN_TOPUP_USD must not exceed MAX_TOPUP_USD" });

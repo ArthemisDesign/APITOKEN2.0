@@ -80,6 +80,21 @@ export async function getCheckoutSession(
   return result.rows[0] ? mapCheckout(result.rows[0]) : null;
 }
 
+// Webhook-facing lookup: no user session is available, so the (provider, provider_payment_id)
+// unique pair identifies the checkout whose authoritative recorded USD must be credited.
+export async function getCheckoutByProviderPayment(
+  database: Database,
+  input: { provider: string; providerPaymentId: string },
+): Promise<CheckoutSession | null> {
+  const result = await database.pool.query<CheckoutRow>(`
+    SELECT cs.id, cs.user_id, u.email AS customer_email, cs.engine_account_id, cs.provider, cs.amount_usd, cs.amount_nano,
+           cs.provider_payment_id, cs.checkout_url, cs.status, cs.expires_at
+    FROM checkout_sessions cs JOIN users u ON u.id = cs.user_id
+    WHERE cs.provider = $1 AND cs.provider_payment_id = $2
+  `, [input.provider, input.providerPaymentId]);
+  return result.rows[0] ? mapCheckout(result.rows[0]) : null;
+}
+
 interface CheckoutRow {
   id: string;
   user_id: string;

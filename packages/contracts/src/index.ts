@@ -143,9 +143,13 @@ export interface HealthStatus {
 /** User-entered whole USD. JSON numbers and decimal points are intentionally rejected. */
 export const wholeUsdSchema = z.string().regex(/^[1-9]\d*$/, "amountUsd must contain positive whole USD digits only");
 
+export const paymentProviderSchema = z.enum(["cryptomus", "platega"]);
+
 export const createCheckoutSchema = z.object({
   amountUsd: wholeUsdSchema,
-  provider: z.literal("cryptomus").default("cryptomus"),
+  provider: paymentProviderSchema.default("platega"),
+  // Platega payment-method id (2 SBP, 3 ERIP, 11 card, 12 international, 13 crypto). Ignored by other providers.
+  paymentMethod: z.coerce.number().int().positive().optional(),
 });
 
 export type CreateCheckout = z.infer<typeof createCheckoutSchema>;

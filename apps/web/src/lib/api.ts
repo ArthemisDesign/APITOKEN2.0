@@ -200,8 +200,9 @@ export const api = {
     method: "PATCH", body: JSON.stringify({ label }),
   }),
   revokeApiKey: (id: string) => request<void>(`/api-keys/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  createCheckout: (amountUsd: string) => request<CheckoutView>("/checkouts", {
-    method: "POST", body: JSON.stringify({ amountUsd, provider: "cryptomus" }),
+  createCheckout: (amountUsd: string, paymentMethod?: number) => request<CheckoutView>("/checkouts", {
+    method: "POST",
+    body: JSON.stringify({ amountUsd, provider: "platega", ...(paymentMethod ? { paymentMethod } : {}) }),
   }),
   checkout: (id: string) => request<CheckoutView>(`/checkouts/${encodeURIComponent(id)}`),
 };

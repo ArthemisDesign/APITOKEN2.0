@@ -20,7 +20,7 @@ describe("browser API client", () => {
     vi.stubGlobal("fetch", fetchMock);
     await api.createCheckout("9007199254740993");
     const request = fetchMock.mock.calls[0]![1] as RequestInit;
-    expect(JSON.parse(String(request.body))).toEqual({ amountUsd: "9007199254740993", provider: "cryptomus" });
+    expect(JSON.parse(String(request.body))).toEqual({ amountUsd: "9007199254740993", provider: "platega" });
   });
 
   it("updates only the display name through the authenticated profile endpoint", async () => {
