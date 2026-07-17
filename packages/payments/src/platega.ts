@@ -64,6 +64,8 @@ export interface PlategaOptions {
   fxMarginBps?: number;
   /** Platega payment-method id used when the checkout does not request a specific one. */
   defaultPaymentMethod?: number;
+  /** Method ids charged directly in USD (no RUB conversion) — e.g. crypto shows dollars. Default [13]. */
+  usdMethods?: readonly number[];
   fetch?: typeof globalThis.fetch;
 }
 
@@ -81,6 +83,7 @@ export class PlategaProvider implements WebhookPaymentProviderAdapter {
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly fxMarginBps: number;
   private readonly defaultPaymentMethod: number;
+  private readonly usdMethods: readonly number[];
 
   constructor(private readonly options: PlategaOptions) {
     this.apiBaseUrl = (options.apiBaseUrl ?? DEFAULT_API_BASE_URL).replace(/\/$/, "");
@@ -88,6 +91,7 @@ export class PlategaProvider implements WebhookPaymentProviderAdapter {
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.fxMarginBps = options.fxMarginBps ?? 0;
     this.defaultPaymentMethod = options.defaultPaymentMethod ?? 2;
+    this.usdMethods = options.usdMethods ?? [13];
     if (!options.merchantId) throw new PlategaError("Platega merchant ID is required", false);
     if (!options.secret) throw new PlategaError("Platega secret is required", false);
     if (this.fxMarginBps < 0 || this.fxMarginBps > 5000) {
@@ -110,10 +114,14 @@ export class PlategaProvider implements WebhookPaymentProviderAdapter {
       throw new PlategaError("Platega payment method must be a positive integer", false);
     }
 
-    const amountRub = await this.usdToRub(context.amount);
+    // Crypto (and any usdMethods) is charged directly in USD so the customer sees dollars; the rest
+    // is charged in RUB converted at the Rapira rate. Either way the engine credit is the recorded USD.
+    const paymentDetails = this.usdMethods.includes(paymentMethod)
+      ? { amount: Number(context.amount), currency: "USD" }
+      : { amount: await this.usdToRub(context.amount), currency: "RUB" };
     const created = await this.request("POST", "/transaction/process", {
       paymentMethod,
-      paymentDetails: { amount: amountRub, currency: "RUB" },
+      paymentDetails,
       description: `Top up ${context.amount} USD`,
       return: context.returnUrl,
       failedUrl: context.cancelUrl,

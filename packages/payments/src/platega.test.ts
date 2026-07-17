@@ -101,6 +101,34 @@ describe("PlategaProvider", () => {
     });
   });
 
+  it("charges the crypto method directly in USD without touching Rapira", async () => {
+    let postBody = "";
+    let rateCalled = false;
+    const provider = makeProvider(async (input, init) => {
+      const url = String(input);
+      if (url === RATE_URL) { rateCalled = true; return ratesResponse(100); }
+      postBody = String(init?.body);
+      return Response.json({ transactionId, redirect: "https://pay.platega.io?id=abc", status: "PENDING" });
+    });
+
+    await provider.createCheckout({
+      checkoutId,
+      amount: "100",
+      customerEmail: "b@e.com",
+      locale: "en-US",
+      currency: "USD",
+      returnUrl: "https://apitoken.sale/success",
+      cancelUrl: "https://apitoken.sale/cancel",
+      paymentMethod: 13,
+    });
+
+    expect(rateCalled).toBe(false);
+    expect(JSON.parse(postBody)).toMatchObject({
+      paymentMethod: 13,
+      paymentDetails: { amount: 100, currency: "USD" },
+    });
+  });
+
   it("parses a webhook into a wake-up signal and rejects malformed bodies", () => {
     const provider = makeProvider(async () => new Response());
     expect(provider.verifyWebhook(JSON.stringify({ id: transactionId, status: "CONFIRMED", payload: checkoutId }))).toMatchObject({
