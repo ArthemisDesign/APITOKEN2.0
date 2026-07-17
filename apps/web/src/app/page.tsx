@@ -4,7 +4,7 @@ import { DOCS_URL } from "@/lib/site-links";
 import { JsonLd } from "@/components/json-ld";
 import { B2C_PRICING_MILESTONES } from "@/lib/pricing-tiers";
 import { PricingOverview } from "@/components/pricing-overview";
-import { TopUpAmountInput } from "@/components/topup-amount-input";
+import { CostCalculator } from "@/components/cost-calculator";
 import { T } from "@/components/translated";
 import { absoluteUrl, createPageMetadata, SITE_NAME, SITE_ORIGIN, seoPages } from "@/lib/seo";
 import { coreAlternates } from "@/lib/seo-core";
@@ -14,7 +14,6 @@ export const metadata: Metadata = {
   alternates: coreAlternates("/"),
 };
 
-const models = ["Claude Opus 4.8", "Claude Opus 4.7", "Claude Sonnet 5", "Claude Sonnet 4.6", "Claude Haiku 4.5"];
 // Hero-значки: чистые inline-SVG (accent stroke), одинаково резкие в обеих темах — крупнее и контрастнее PNG.
 const heroIcons = {
   connect: <><path d="M12 22v-5" /><path d="M9 8V2" /><path d="M15 8V2" /><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" /></>,
@@ -106,29 +105,8 @@ export default function HomePage() {
   return <><JsonLd data={homeJsonLd} /><main>
       <div className="hero"><div className="wrap hero-grid"><div><T k="hero_eyebrow" as="span" className="eyebrow">Claude API · One gateway</T><h1 className="hero-h1"><T k="hero_h1a" as="span" className="hero-h1-main">Buy Claude API access</T><T k="hero_h1b" as="span" className="hero-sub">Same as official, but cheaper</T></h1><ul className="hero-points">{heroPoints.map((point) => <li key={point.k}><span className="hp-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">{heroIcons[point.ic]}</svg></span><T k={point.k}>{point.en}</T></li>)}</ul><div className="hero-cta"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link><Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link></div></div><HeroDiscount /></div><div className="wrap home-stats"><div className="stats reveal"><Stat value="8+" label="stat1" /><Stat value="1" label="stat2" /><Stat value="99.9%" label="stat3" /><Stat value="<100ms" label="stat4" /><div className="stat"><T k="stat5v" as="b">minutes</T><T k="stat5">Setup time</T></div></div></div></div>
       <section id="products"><div className="wrap"><SectionHead eyebrow="prod_eyebrow" title="prod_h2" lead="prod_lead" />
-        <div className="prod-grid" data-reveal-stagger>
-        <div className="prod">
-          <T k="pc1_tag" as="span" className="tag">Official Anthropic API</T>
-          <T k="pc1_h" as="h3">All models, one key</T>
-          <div className="prod-body">
-            <T k="pc1_note" as="p" className="prod-note">The same Anthropic Messages API and the full Claude line — billed at your discount.</T>
-            <ul className="prod-chips">{models.map((model) => <li key={model}>{model}</li>)}</ul>
-          </div>
-          <Link className="btn btn-ghost" href="/models"><T k="pc1_cta">View models</T></Link>
-        </div>
-        <div className="prod prod-feat">
-          <T k="pc2_tag" as="span" className="tag">Your discount</T>
-          <T k="pc2_h" as="h3">The same API, cheaper</T>
-          <div className="prod-body"><TopUpAmountInput className="amount-example" initialAmount="1000" showReceive /><T k="pc2_p" as="p">The exact same Anthropic API — same models, same endpoints, same responses. You just pay up to 80% less per call.</T></div>
-          <Link className="btn btn-primary" href="#pricing"><T k="pc2_cta">See pricing</T></Link>
-        </div>
-        <div className="prod">
-          <T k="pc3_tag" as="span" className="tag">Free start</T>
-          <T k="pc3_h" as="h3">Free API usage</T>
-          <div className="prod-body"><div className="amt"><T k="p3_now" as="span" className="now">$10</T><T k="pc3_official" as="span" className="official">at official API prices</T></div><T k="pc3_p" as="p">Create your account with Google or GitHub. No card required.</T></div>
-          <Link className="btn btn-ghost" href="/register"><T k="start_free">Start free</T></Link>
-        </div>
-      </div></div></section>
+        <div className="home-calc" data-reveal><CostCalculator /><p className="home-calc-more"><Link href="/tools/claude-api-cost-calculator"><T k="home_calc_more">Full calculator — prompt caching, every model &amp; pricing FAQ →</T></Link></p></div>
+      </div></section>
       <section id="how"><div className="wrap"><SectionHead eyebrow="how_eyebrow" title="how_h2" lead="how_lead" />
         <div className="flow" data-reveal-stagger>{flow.map((step) => <article key={step.num} className="flow-step">
           <div className="flow-top"><span className="n">{step.num}</span></div>
