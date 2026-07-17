@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { ForbiddenException, Inject, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { hash, verify, argon2id } from "argon2";
-import type { AuthUserView } from "@claude-api/contracts";
+import { B2C_SIGNUP_BONUS_BALANCE_NANO, type AuthUserView } from "@claude-api/contracts";
 import {
   completeExternalSignIn,
   consumeEmailVerification,
@@ -199,7 +199,8 @@ export class AuthService {
     });
     const user = await completeExternalSignIn(this.database, identity, transaction.inviteTokenHash);
     if (user.status !== "active") throw new InvalidOAuthTransactionError("account is disabled");
-    await this.provisionEngineAccount(user, user.engineMultiplierBp, true);
+    await this.provisionEngineAccount(user, user.engineMultiplierBp, false);
+    await this.grantOAuthWelcomeBonus(user);
     return this.issueSession(user, input.userAgent, input.ipAddress);
   }
 
@@ -270,6 +271,22 @@ export class AuthService {
       [userId],
     );
     return result.rows[0]?.mult_bp ?? 4000;
+  }
+
+  private async grantOAuthWelcomeBonus(user: AuthUser): Promise<void> {
+    if (user.customerType !== "b2c" || user.engineAccountStatus !== "active") return;
+    const result = await this.database.pool.query<{ engine_account_id: string | null }>(`
+      SELECT engine_account_id
+      FROM engine_accounts
+      WHERE user_id = $1 AND status = 'active'
+    `, [user.id]);
+    const engineAccountId = result.rows[0]?.engine_account_id;
+    if (!engineAccountId) return;
+    await this.engine.creditAccount(
+      engineAccountId,
+      B2C_SIGNUP_BONUS_BALANCE_NANO,
+      `signup-bonus:${user.id}`,
+    );
   }
 
   private emailVerificationRequired(): boolean {

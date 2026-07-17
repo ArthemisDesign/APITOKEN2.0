@@ -1,5 +1,6 @@
 import { ConfigService } from "@nestjs/config";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { B2C_SIGNUP_BONUS_BALANCE_NANO } from "@claude-api/contracts";
 import {
   createCheckoutSession,
   createDatabase,
@@ -259,6 +260,105 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
     `);
     expect(rows.rows[0]).toMatchObject({ password_hash: null, email_verified: true, provider: "github", emails: 0 });
   });
+
+  it.each(["google", "github"] as const)(
+    "lets a verified %s identity claim a same-email password account and grants the welcome bonus",
+    async (providerCode) => {
+      const externalProvider: ExternalIdentityProvider = {
+        code: providerCode,
+        createAuthorizationUrl: ({ state }) => new URL(`https://${providerCode}.test/authorize?state=${state}`),
+        exchangeCallback: async () => ({
+          provider: providerCode,
+          subject: `${providerCode}-claim-42`,
+          email: "claimed@example.com",
+          emailVerified: true,
+          displayName: "Claimed User",
+          metadata: { login: "claimed" },
+        }),
+      };
+      const creditAccount = vi.fn(async (account: string) => ({
+        account, balance_nano: "4000000000", balance: "$4.000000000",
+      }));
+      const oauthAuth = new AuthService(
+        database,
+        {
+          createAccount: async () => ({ account: `acct_claim_${providerCode}`, multBp: 4000, handle: null }),
+          creditAccount,
+        } as unknown as EngineClient,
+        new ConfigService<Environment, true>({
+          SESSION_TTL_SECONDS: 604_800,
+          AUTH_TOKEN_ENCRYPTION_KEY: encryptionKey,
+          EMAIL_VERIFICATION_REQUIRED: false,
+          EMAIL_VERIFICATION_TTL_SECONDS: 86_400,
+          PASSWORD_RESET_TTL_SECONDS: 3_600,
+        } as Environment),
+        new OAuthProviderRegistry([externalProvider]),
+      );
+      const registration = await oauthAuth.register({
+        email: "claimed@example.com",
+        password: "correct horse battery staple",
+        userAgent: "password-browser",
+        ipAddress: "192.0.2.20",
+      });
+      expect(registration.session).not.toBeNull();
+      expect(creditAccount).not.toHaveBeenCalled();
+      await oauthAuth.requestPasswordReset("claimed@example.com", "192.0.2.20");
+
+      const started = await oauthAuth.beginOAuth(providerCode);
+      const state = new URL(started.authorizationUrl).searchParams.get("state")!;
+      const session = await oauthAuth.completeOAuth({
+        provider: providerCode,
+        code: "temporary-code",
+        state,
+        stateCookie: state,
+        userAgent: "oauth-browser",
+        ipAddress: "192.0.2.21",
+      });
+
+      expect(session.user).toMatchObject({
+        id: registration.user.id,
+        email: "claimed@example.com",
+        emailVerified: true,
+        passwordEnabled: false,
+        engineAccountStatus: "active",
+      });
+      expect(creditAccount).toHaveBeenCalledOnce();
+      expect(creditAccount).toHaveBeenCalledWith(
+        `acct_claim_${providerCode}`,
+        B2C_SIGNUP_BONUS_BALANCE_NANO,
+        `signup-bonus:${registration.user.id}`,
+      );
+      await expect(oauthAuth.authenticate(registration.session!.token)).resolves.toBeNull();
+      await expect(oauthAuth.authenticate(session.token)).resolves.toMatchObject({
+        user: { id: registration.user.id },
+      });
+      await expect(oauthAuth.login({
+        email: "claimed@example.com",
+        password: "correct horse battery staple",
+        userAgent: null,
+        ipAddress: "192.0.2.22",
+      })).rejects.toBeInstanceOf(InvalidCredentialsError);
+
+      const stored = await database.pool.query(`
+        SELECT (u.password_hash IS NULL) AS password_removed, u.email_verified, ai.provider,
+               (SELECT count(*)::int FROM auth_sessions s WHERE s.user_id = u.id AND s.revoked_at IS NULL) AS active_sessions,
+               (SELECT count(*)::int FROM auth_sessions s WHERE s.user_id = u.id AND s.revoked_at IS NOT NULL) AS revoked_sessions,
+               (SELECT count(*)::int FROM auth_tokens t WHERE t.user_id = u.id AND t.used_at IS NOT NULL) AS invalidated_tokens,
+               (SELECT count(*)::int FROM audit_log al WHERE al.target_id = u.id::text AND al.action = 'auth.oauth_claimed') AS claim_events
+        FROM users u JOIN auth_identities ai ON ai.user_id = u.id
+        WHERE u.id = $1
+      `, [registration.user.id]);
+      expect(stored.rows[0]).toMatchObject({
+        password_removed: true,
+        email_verified: true,
+        provider: providerCode,
+        active_sessions: 1,
+        revoked_sessions: 1,
+        invalidated_tokens: 1,
+        claim_events: 1,
+      });
+    },
+  );
 
   it("updates only the authenticated user's display name", async () => {
     const alice = await registerAndVerify({

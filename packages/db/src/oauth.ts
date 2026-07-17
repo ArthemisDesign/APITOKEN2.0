@@ -22,8 +22,6 @@ export interface OAuthTransaction {
   inviteTokenHash: string | null;
 }
 
-export class ExternalIdentityLinkRequiredError extends Error {}
-
 export async function createOAuthTransaction(database: Database, input: {
   stateHash: string;
   provider: OAuthProvider;
@@ -94,13 +92,68 @@ export async function completeExternalSignIn(
   const userId = randomUUID();
   try {
     await client.query("BEGIN");
-    const emailOwner = await client.query<{ id: string }>(`
-      SELECT id FROM users WHERE lower(email) = lower($1) FOR UPDATE
-    `, [identity.email]);
-    if (emailOwner.rows[0]) {
-      throw new ExternalIdentityLinkRequiredError(
-        "an account with this email already exists; sign in to that account before linking this provider",
-      );
+    const emailOwner = await client.query<{
+      id: string;
+      email: string;
+      display_name: string;
+      status: "active" | "disabled";
+      engine_account_status: "pending" | "active" | "error" | "disabled";
+      customer_type: "b2c" | "b2b";
+      totp_enabled: boolean;
+      engine_multiplier_bp: number;
+    }>(`
+      SELECT u.id, u.email, u.display_name, u.status, u.totp_enabled,
+             COALESCE(ea.status, 'pending') AS engine_account_status,
+             COALESCE(cp.customer_type, 'b2c') AS customer_type,
+             COALESCE(ea.mult_bp, $2) AS engine_multiplier_bp
+      FROM users u
+      LEFT JOIN engine_accounts ea ON ea.user_id = u.id
+      LEFT JOIN customer_profiles cp ON cp.user_id = u.id
+      WHERE lower(u.email) = lower($1)
+      FOR UPDATE OF u
+    `, [identity.email, B2C_PRICING_TIERS[0].multiplierBp]);
+    const claimedAccount = emailOwner.rows[0];
+    if (claimedAccount) {
+      if (claimedAccount.status !== "active") throw new Error("account is disabled");
+      await client.query(`
+        INSERT INTO auth_identities (id, user_id, provider, subject, email, email_verified, metadata)
+        VALUES ($1, $2, $3, $4, $5, true, $6::jsonb)
+      `, [randomUUID(), claimedAccount.id, identity.provider, identity.subject, identity.email, JSON.stringify({
+        displayName: identity.displayName,
+        ...identity.metadata,
+      })]);
+      await client.query(`
+        UPDATE users
+        SET password_hash = NULL, email_verified = true, updated_at = now()
+        WHERE id = $1
+      `, [claimedAccount.id]);
+      await client.query(`
+        UPDATE auth_sessions
+        SET revoked_at = now()
+        WHERE user_id = $1 AND revoked_at IS NULL
+      `, [claimedAccount.id]);
+      await client.query(`
+        UPDATE auth_tokens
+        SET used_at = now()
+        WHERE user_id = $1 AND used_at IS NULL
+      `, [claimedAccount.id]);
+      await client.query(`
+        INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+        VALUES ('provider', $1, 'auth.oauth_claimed', 'user', $2, $3::jsonb)
+      `, [identity.provider, claimedAccount.id, JSON.stringify({ provider: identity.provider })]);
+      await client.query("COMMIT");
+      return {
+        id: claimedAccount.id,
+        email: claimedAccount.email,
+        displayName: claimedAccount.display_name,
+        emailVerified: true,
+        passwordEnabled: false,
+        status: claimedAccount.status,
+        engineAccountStatus: claimedAccount.engine_account_status,
+        customerType: claimedAccount.customer_type,
+        totpEnabled: claimedAccount.totp_enabled,
+        engineMultiplierBp: claimedAccount.engine_multiplier_bp,
+      };
     }
     const invite = businessInviteTokenHash
       ? await lockBusinessInvite(client, { email: identity.email, tokenHash: businessInviteTokenHash })

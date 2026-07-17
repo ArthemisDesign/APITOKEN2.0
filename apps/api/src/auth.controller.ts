@@ -30,7 +30,6 @@ import {
 } from "@claude-api/contracts";
 import {
   EmailAlreadyRegisteredError,
-  ExternalIdentityLinkRequiredError,
   InvalidBusinessInvitationError,
   type OAuthProvider,
 } from "@claude-api/db";
@@ -241,8 +240,7 @@ export class AuthController {
       reply.header("cache-control", "no-store");
       return { url: new URL(`/auth/callback?provider=${provider}`, this.config.get("PUBLIC_APP_BASE_URL", { infer: true })).toString(), statusCode: 302 };
     } catch (error) {
-      const code = error instanceof ExternalIdentityLinkRequiredError ? "account_link_required" :
-        error instanceof InvalidOAuthTransactionError ? "invalid_state" :
+      const code = error instanceof InvalidOAuthTransactionError ? "invalid_state" :
         error instanceof OAuthProviderError ? "provider_error" : "authentication_failed";
       return this.oauthErrorRedirect(reply, provider, code);
     }
