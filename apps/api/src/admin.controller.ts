@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Get,
   Header,
   NotFoundException,
   Param,
@@ -24,6 +25,12 @@ const uuidSchema = z.string().uuid();
 @UseGuards(AdminGuard)
 export class AdminController {
   constructor(private readonly admin: AdminService) {}
+
+  @Get("users")
+  @Header("Cache-Control", "no-store")
+  async listUsers(): Promise<unknown> {
+    return this.admin.listUsers();
+  }
 
   @Post("business-invites")
   @Header("Cache-Control", "no-store")

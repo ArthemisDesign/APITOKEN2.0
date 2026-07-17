@@ -62,6 +62,12 @@
   .err{color:var(--bad);font-size:12px;margin-top:10px}
   footer{color:var(--dim);font-size:11px;text-align:center;padding:18px}
   details{margin-top:8px} summary{cursor:pointer;color:var(--dim);font-size:13px}
+  nav.tabs{display:flex;gap:4px;padding:10px 22px 0;border-bottom:1px solid var(--line)}
+  nav.tabs button{font:inherit;font-size:13px;padding:8px 14px;border:1px solid transparent;border-bottom:0;
+    border-radius:9px 9px 0 0;background:none;color:var(--dim);cursor:pointer}
+  nav.tabs button.on{background:var(--panel);border-color:var(--line);color:var(--fg);font-weight:600}
+  .pill{font-size:11px;padding:2px 8px;border-radius:10px;background:var(--panel2);color:var(--dim);margin-right:4px}
+  .pill.ok{color:var(--ok)} .pill.warn{color:var(--warn)} .pill.bad{color:var(--bad)}
 </style>
 </head>
 <body>
@@ -77,6 +83,16 @@ const xr=(v)=>v==null?'∞':('×'+(+v).toLocaleString('en-US',{maximumFractionDi
 let panelKey='';
 const key=()=>panelKey;
 let timer=null;
+let tab='overview'; // 'overview' | 'users'
+const ago=(iso)=>{if(!iso)return '—';const s=(Date.now()-new Date(iso).getTime())/1e3|0;
+  if(s<60)return 'только что';if(s<3600)return `${s/60|0}м назад`;if(s<86400)return `${s/3600|0}ч назад`;
+  return `${s/86400|0}д назад`};
+const dt=(iso)=>iso?new Date(iso).toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit',year:'2-digit'}):'—';
+const tabsHtml=()=>`<nav class="tabs">
+  <button class="${tab==='overview'?'on':''}" data-tab="overview">Обзор</button>
+  <button class="${tab==='users'?'on':''}" data-tab="users">Пользователи</button></nav>`;
+function bindTabs(){document.querySelectorAll('nav.tabs button').forEach(b=>b.onclick=()=>{
+  if(tab!==b.dataset.tab){tab=b.dataset.tab;start()}})}
 
 function setup(msg){
   clearInterval(timer);
@@ -100,10 +116,75 @@ async function getj(path){
 }
 
 async function tick(){
+  if(tab==='users') return tickUsers();
   let ov,cap,subs;
   try{ [ov,cap,subs]=await Promise.all([getj('/overview'),getj('/capacity').catch(()=>null),getj('/subs').catch(()=>null)]); }
   catch(e){ if(e.auth){panelKey='';return setup('нужен read-only ключ панели')} return; }
   render(ov,cap,subs);
+}
+
+async function tickUsers(){
+  let data;
+  try{ data=await getj('/admin/users'); }
+  catch(e){ if(e.auth){panelKey='';return setup('нужен read-only ключ панели')}
+    document.getElementById('app').innerHTML=`<header><h1>claude-api</h1><span class="sub">пользователи</span></header>
+      ${tabsHtml()}<main><div class="verdict bad"><div class="em">⚠️</div><div><div class="t">Не удалось загрузить пользователей</div>
+      <div class="d">${esc(e.msg||'ошибка сети')}</div></div></div></main>`;
+    bindTabs(); return; }
+  renderUsers(data.users||[]);
+}
+
+function renderUsers(users){
+  const app=document.getElementById('app');
+  const n=(x)=>+x||0;
+  const totBal=users.reduce((a,u)=>a+n(u.balance_usd),0);
+  const totSpent=users.reduce((a,u)=>a+n(u.spent_usd),0);
+  const totPaid=users.reduce((a,u)=>a+n(u.payments?.paid_total_usd),0);
+  const paidCnt=users.reduce((a,u)=>a+n(u.payments?.paid_count),0);
+  const payers=users.filter(u=>n(u.payments?.paid_count)>0).length;
+  const active7=users.filter(u=>u.last_seen_at&&Date.now()-new Date(u.last_seen_at).getTime()<7*86400e3).length;
+  const tierName=(t)=>['Starter','Builder','Pro','Studio','Scale'][t]??t;
+  const rows=users.map(u=>{
+    const p=u.payments||{}, k=u.api_keys||{};
+    const auth=(u.auth_methods||[]).map(m=>`<span class="pill">${esc(m)}</span>`).join('')||'<span class="muted">—</span>';
+    const flags=`${u.email_verified?'<span class="pill ok">почта ✓</span>':'<span class="pill warn">почта ✗</span>'}${u.totp_enabled?'<span class="pill ok">2FA</span>':''}`;
+    const st=u.status==='active'?(u.engine_live_status==='disabled'?'warn':'ok'):'bad';
+    const tier=u.customer_type==='b2b'?'B2B':(u.tier!=null?tierName(u.tier):'—');
+    const disc=u.multiplier_bp!=null?`−${100-u.multiplier_bp/100}%`:'—';
+    return `<tr>
+      <td class="l"><span class="dot ${st}"></span>${esc(u.email)}<div class="muted" style="font-size:11px">${esc(u.display_name||'')} · ${auth}${flags}</div></td>
+      <td class="l">${esc(tier)}<div class="muted" style="font-size:11px">${esc(disc)}</div></td>
+      <td>${u.balance_usd!=null?usd(u.balance_usd):'<span class="muted">—</span>'}</td>
+      <td>${u.spent_usd!=null?usd(u.spent_usd):'<span class="muted">—</span>'}<div class="muted" style="font-size:11px">30д: ${usd(u.spent_30d_usd)}</div></td>
+      <td>${n(p.paid_count)>0?`${usd(p.paid_total_usd)}<div class="muted" style="font-size:11px">${p.paid_count} шт · ${dt(p.last_paid_at)}</div>`:'<span class="muted">не пополнял</span>'}</td>
+      <td>${n(k.active)}${n(k.total)>n(k.active)?`<span class="muted">/${k.total}</span>`:''}</td>
+      <td class="muted">${ago(u.last_seen_at)}</td>
+      <td class="muted">${dt(u.created_at)}</td>
+    </tr>`;
+  }).join('');
+  app.innerHTML=`
+    <header><h1>claude-api</h1><span class="sub">пользователи · кто платит и тратит</span>
+      <span class="badge ok">${users.length} юзеров</span></header>
+    ${tabsHtml()}
+    <main>
+      <div class="cards">
+        <div class="card"><div class="h">пользователей</div><div class="v">${users.length}</div>
+          <div class="s">${active7} активны за 7д</div></div>
+        <div class="card"><div class="h">пополнено всего</div><div class="v">${usd(totPaid)}</div>
+          <div class="s">${paidCnt} платежей · ${payers} платящих</div></div>
+        <div class="card"><div class="h">на балансах</div><div class="v">${usd(totBal)}</div>
+          <div class="s">live из движка</div></div>
+        <div class="card"><div class="h">потрачено юзерами</div><div class="v">${usd(totSpent)}</div>
+          <div class="s">по прайсу клиента (с наценкой)</div></div>
+      </div>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th class="l">пользователь</th><th class="l">тир</th><th>баланс</th><th>потрачено</th>
+          <th>пополнения</th><th>ключи</th><th>был(а)</th><th>регистрация</th></tr></thead>
+        <tbody>${rows||'<tr><td colspan="8" class="muted l">нет пользователей</td></tr>'}</tbody>
+      </table></div>
+      <footer>обновление каждые 15с · баланс/расход — live из движка · пополнения — подтверждённые платежи</footer>
+    </main>`;
+  bindTabs();
 }
 
 function verdict(ov){
@@ -165,6 +246,7 @@ function render(ov,cap,subs){
       <h1>claude-api</h1><span class="sub">центр управления · спрос ↔ предложение</span>
       <span class="badge ${v.c}">${ov.calibrated?'калибровано':'калибруется…'}</span>
     </header>
+    ${tabsHtml()}
     <main>
       <div class="verdict ${v.c}"><div class="em">${v.em}</div>
         <div><div class="t">${esc(v.t)}</div><div class="d">${esc(v.d)}</div></div></div>
@@ -216,11 +298,12 @@ function render(ov,cap,subs){
       <footer>обновление каждые 3с · «доступно» = максимум real-API-USD на горизонте (учёт сбросов окон) ·
         «запас» = доступно ÷ текущее потребление · клиентам ×${m}</footer>
     </main>`;
+  bindTabs();
 }
 
 function start(){
   clearInterval(timer);
-  tick(); timer=setInterval(tick,3000);
+  tick(); timer=setInterval(tick,tab==='users'?15000:3000);
 }
 start();
 </script>

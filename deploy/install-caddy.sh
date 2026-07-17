@@ -22,6 +22,7 @@ awk '
   NR == FNR {
     if ($1 == "admin" && $2 ~ /^\$2/) auth = $0
     if ($1 == "header_up" && $2 == "x-api-key") control = $0
+    if ($1 == "header_up" && $2 == "x-admin-key") commadmin = $0
     next
   }
   /<BCRYPT_HASH_PLACEHOLDER>/ {
@@ -36,9 +37,15 @@ awk '
     control_used++
     next
   }
+  /<COMMERCIAL_ADMIN_KEY_PLACEHOLDER>/ {
+    if (commadmin == "") exit 44
+    print commadmin
+    commadmin_used++
+    next
+  }
   { print }
   END {
-    if (auth_used != 1 || control_used != 1) exit 43
+    if (auth_used != 1 || control_used != 1 || commadmin_used != 1) exit 43
   }
 ' "$LIVE" "$TEMPLATE" >"$tmp"
 

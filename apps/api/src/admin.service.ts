@@ -4,18 +4,44 @@ import { ConfigService } from "@nestjs/config";
 import { multiplierForDiscount } from "@claude-api/contracts";
 import {
   createBusinessInvite,
+  listAdminUserOverview,
   setBusinessPricing,
+  type AdminUserOverviewRow,
   type Database,
 } from "@claude-api/db";
+import { EngineClient } from "@claude-api/engine-client";
 import type { Environment } from "./config.js";
-import { DATABASE } from "./infrastructure.module.js";
+import { DATABASE, ENGINE_CLIENT } from "./infrastructure.module.js";
 
 @Injectable()
 export class AdminService {
   constructor(
     @Inject(DATABASE) private readonly database: Database,
+    @Inject(ENGINE_CLIENT) private readonly engine: EngineClient,
     private readonly config: ConfigService<Environment, true>,
   ) {}
+
+  /** Обзор всех пользователей для панели: агрегаты commerce БД + live-деньги движка. */
+  async listUsers(): Promise<{ users: Array<Record<string, unknown>> }> {
+    const rows = await listAdminUserOverview(this.database);
+    // Live-баланс/расход — из движка (он авторитет денег); недоступность движка не валит список.
+    const live = new Map<string, { balance: string; spent: string; reserved: string; status: string }>();
+    await Promise.all(rows.map(async (row) => {
+      if (!row.engineAccountId) return;
+      try {
+        const account = await this.engine.getAccount(row.engineAccountId);
+        live.set(row.engineAccountId, {
+          balance: account.balance_nano,
+          spent: account.spent_nano,
+          reserved: account.reserved_nano,
+          status: account.status,
+        });
+      } catch {
+        // движок недоступен/аккаунт не найден → поля останутся null
+      }
+    }));
+    return { users: rows.map((row) => serializeUser(row, row.engineAccountId ? live.get(row.engineAccountId) ?? null : null)) };
+  }
 
   async createBusinessInvite(input: {
     email: string;
@@ -53,4 +79,51 @@ export class AdminService {
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+function serializeUser(
+  row: AdminUserOverviewRow,
+  engine: { balance: string; spent: string; reserved: string; status: string } | null,
+): Record<string, unknown> {
+  const methods = [...row.providers];
+  if (row.hasPassword) methods.push("password");
+  return {
+    id: row.id,
+    email: row.email,
+    display_name: row.displayName,
+    email_verified: row.emailVerified,
+    status: row.status,
+    created_at: row.createdAt.toISOString(),
+    auth_methods: methods,
+    totp_enabled: row.totpEnabled,
+    customer_type: row.customerType,
+    tier: row.currentTier,
+    multiplier_bp: row.multiplierBp,
+    cumulative_topup_usd: nanoToUsd(row.cumulativeTopupNano),
+    tier_window_spent_usd: nanoToUsd(row.tierWindowSpentNano),
+    engine_account_id: row.engineAccountId,
+    engine_account_status: row.engineAccountStatus,
+    balance_usd: engine ? nanoToUsd(engine.balance) : null,
+    spent_usd: engine ? nanoToUsd(engine.spent) : null,
+    reserved_usd: engine ? nanoToUsd(engine.reserved) : null,
+    engine_live_status: engine?.status ?? null,
+    spent_30d_usd: nanoToUsd(row.spent30dNano),
+    payments: {
+      paid_count: row.paidPaymentsCount,
+      paid_total_usd: nanoToUsd(row.paidTotalNano),
+      last_paid_at: row.lastPaidAt?.toISOString() ?? null,
+      pending_checkouts: row.pendingCheckoutsCount,
+    },
+    api_keys: { active: row.apiKeysActive, total: row.apiKeysTotal },
+    last_seen_at: row.lastSeenAt?.toISOString() ?? null,
+  };
+}
+
+/** nano-USD (строка целого) → десятичная USD-строка с 4 знаками; без float. */
+function nanoToUsd(nano: string): string {
+  const negative = nano.startsWith("-");
+  const digits = (negative ? nano.slice(1) : nano).padStart(10, "0");
+  const whole = digits.slice(0, -9);
+  const frac = digits.slice(-9, -5); // 4 знака после точки достаточно для панели
+  return `${negative ? "-" : ""}${whole}.${frac}`;
 }

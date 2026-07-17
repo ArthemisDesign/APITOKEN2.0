@@ -79,6 +79,23 @@ panel.apitoken.sale {
 			header_up x-api-key "<CONTROL_KEY_PLACEHOLDER>"
 		}
 	}
+	# Вкладка «Пользователи»: commerce-обзор юзеров (backend /v1/admin/users). Секрет админки
+	# инжектится server-side — в браузер не попадает; вход по-прежнему гейтится basic_auth выше.
+	@users path /admin/users
+	handle @users {
+		rewrite * /v1/admin/users
+		reverse_proxy 127.0.0.1:3000 127.0.0.1:3001 {
+			lb_policy round_robin
+			health_uri /v1/ready
+			health_interval 2s
+			health_timeout 2s
+			health_status 2xx
+			fail_duration 5s
+			max_fails 1
+			unhealthy_status 503
+			header_up x-admin-key "<COMMERCIAL_ADMIN_KEY_PLACEHOLDER>"
+		}
+	}
 	handle {
 		root * /srv/claude-api/panel
 		try_files {path} /index.html
