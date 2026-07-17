@@ -300,6 +300,7 @@ export const learnArticles: LearnArticle[] = [
           ["Claude Haiku 4.5", "$1 / $5", "$0.40 / $2", "$0.20 / $1"],
         ] },
         { type: "link", text: "Full per-model pricing, including cache rates", href: "/models" },
+        { type: "link", text: "Estimate your monthly cost in the free calculator", href: "/tools/claude-api-cost-calculator" },
       ] },
     ],
     faq: [

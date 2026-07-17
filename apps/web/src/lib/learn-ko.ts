@@ -81,6 +81,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           ["Claude Haiku 4.5", "$1 / $5", "$0.40 / $2", "$0.20 / $1"],
         ] },
         { type: "link", text: "모델별 전체 가격(캐시 요율 포함)", href: "/models" },
+        { type: "link", text: "무료 계산기로 월 비용을 추정해 보세요", href: "/tools/claude-api-cost-calculator" },
       ] },
     ],
     faq: [

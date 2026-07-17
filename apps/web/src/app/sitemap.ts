@@ -47,6 +47,10 @@ export default function sitemap(): MetadataRoute.Sitemap {
     })),
   );
 
+  const toolPages: MetadataRoute.Sitemap = [
+    { url: absoluteUrl("/tools/claude-api-cost-calculator"), lastModified: MODELS_LAUNCH, changeFrequency: "monthly" as const, priority: 0.8 },
+  ];
+
   // The /models hub itself ships via sitemapPages; only the per-model pages are added here.
   const modelPages: MetadataRoute.Sitemap = [
     ...claudeModels.map((model) => ({
@@ -57,5 +61,5 @@ export default function sitemap(): MetadataRoute.Sitemap {
     })),
   ];
 
-  return [...corePages, ...ruCorePages, ...infoPages, ...modelPages, ...learnHubs, ...learnPages];
+  return [...corePages, ...ruCorePages, ...infoPages, ...toolPages, ...modelPages, ...learnHubs, ...learnPages];
 }

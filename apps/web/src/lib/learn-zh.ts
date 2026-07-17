@@ -81,6 +81,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           ["Claude Haiku 4.5", "$1 / $5", "$0.40 / $2", "$0.20 / $1"],
         ] },
         { type: "link", text: "每个模型的完整价格（含缓存费率）", href: "/models" },
+        { type: "link", text: "用免费计算器估算你的月度成本", href: "/tools/claude-api-cost-calculator" },
       ] },
     ],
     faq: [

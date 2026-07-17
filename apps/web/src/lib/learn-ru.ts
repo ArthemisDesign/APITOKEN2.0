@@ -81,6 +81,7 @@ export const learnRu: Record<string, LocalizedContent> = {
           ["Claude Haiku 4.5", "$1 / $5", "$0.40 / $2", "$0.20 / $1"],
         ] },
         { type: "link", text: "Полные цены по каждой модели, включая ставки кэша", href: "/models" },
+        { type: "link", text: "Прикиньте месячную стоимость в бесплатном калькуляторе", href: "/tools/claude-api-cost-calculator" },
       ] },
     ],
     faq: [
