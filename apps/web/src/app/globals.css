@@ -156,9 +156,12 @@ section{scroll-margin-top:64px}
 .nav-actions.authenticated{grid-template-columns:134px}
 .nav-actions .btn{inline-size:134px;justify-content:center;padding-inline:12px}
 .lang{display:flex;border:1px solid var(--line-strong);border-radius:var(--radius);overflow:hidden}
-.lang button{background:transparent;border:0;color:var(--txt-4);font-family:var(--font-mono);
-  font-size:13px;padding:0;inline-size:36px;block-size:32px;cursor:pointer;transition:.15s}
-.lang button.active{background:var(--accent-soft);color:var(--accent)}
+.lang a,.lang button{display:flex;align-items:center;justify-content:center;background:transparent;border:0;
+  color:var(--txt-4);font-family:var(--font-mono);font-size:13px;line-height:1;padding:0;inline-size:36px;block-size:32px;
+  cursor:pointer;transition:.15s;text-decoration:none}
+.lang>*+*{border-left:1px solid var(--line-strong)}
+.lang a:hover,.lang button:hover{color:var(--txt-2)}
+.lang a.active,.lang button.active{background:var(--accent-soft);color:var(--accent)}
 .nav-burger{display:none;grid-column:4;background:none;border:0;color:var(--txt);cursor:pointer}
 
 /* ---------- sections ---------- */
@@ -188,11 +191,10 @@ section{padding:96px 0;border-bottom:1px solid var(--line)}
 .hero-offer{min-width:0;background:var(--bg-card);border:1px solid var(--line);border-radius:18px;
   padding:26px 26px 24px;box-shadow:0 30px 70px -34px rgba(10,12,30,.55)}
 .offer-free{padding-bottom:20px;margin-bottom:18px;border-bottom:1px solid var(--line)}
-.offer-free-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:0;
+.offer-free-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:0;
   font-family:var(--font-i18n-display);font-weight:700;line-height:1;white-space:nowrap}
-.offer-free-head .ofa{font-size:clamp(54px,7.6vw,82px);color:var(--accent)}
-.offer-free-head .off-dash{flex:1;text-align:center;font-size:clamp(36px,4.6vw,52px);color:var(--txt-4)}
-.offer-free-head .off-tag{font-size:clamp(50px,7vw,74px);letter-spacing:.02em;color:var(--txt)}
+.offer-free-head .ofa{font-size:clamp(56px,8vw,86px);color:var(--accent)}
+.offer-free-head .off-tag{font-size:clamp(52px,7.4vw,78px);letter-spacing:.02em;color:var(--txt)}
 .offer-free-sub{margin:12px 0 0;font-family:var(--font-mono);font-size:14px;color:var(--txt-2)}
 .offer-free-note{margin:6px 0 0;font-family:var(--font-mono);font-size:12px;color:var(--txt-4)}
 .offer-note{margin:0 0 16px;font-family:var(--font-mono);font-size:13.5px;color:var(--txt-2)}
@@ -451,7 +453,7 @@ footer{padding:64px 0 40px;border-bottom:0}
   .brand-mark{width:19px;height:19px;flex:0 0 auto}
   .nav-right{grid-column:2;gap:8px;flex:0 0 auto}
   .nav-burger{grid-column:3}
-  .lang button{padding:5px 8px;font-size:12px}
+  .lang a,.lang button{padding:5px 8px;font-size:12px}
   .theme-tgl{margin-left:2px}
 }
 @media(max-width:380px){
@@ -1666,7 +1668,7 @@ body.app-body .bg-decor{display:none!important}
 .field input:focus-visible,.set-in:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
 /* Utility controls share one deliberate touch target instead of mixing tiny glyphs with full buttons. */
-.lang button{inline-size:40px;block-size:40px}
+.lang a,.lang button{inline-size:40px;block-size:40px}
 .theme-tgl{width:40px;height:40px;font-size:17px}
 .nav-burger,.app-burger{width:40px;height:40px;align-items:center;justify-content:center;padding:0;
   border:1px solid var(--line-strong);border-radius:var(--radius);background:transparent;font-size:20px;line-height:1}
@@ -1790,7 +1792,7 @@ body.app-body .bg-decor{display:none!important}
   .docs-brand{flex:1;min-width:0;max-width:100%;gap:7px;font-size:14px}
   .docs-brand span{min-width:0;overflow:hidden;text-overflow:ellipsis}
   .docs-header-actions{flex:none;flex-wrap:nowrap;gap:6px}
-  .docs-header-actions .lang button{inline-size:34px;block-size:36px;font-size:11px}
+  .docs-header-actions .lang a,.docs-header-actions .lang button{inline-size:34px;block-size:36px;font-size:11px}
   .docs-header-actions .theme-tgl{width:36px;height:36px;font-size:15px}
   .docs-header-actions .btn-sm{min-height:36px;padding:7px 10px;font-size:12px}
   .docs-sidebar{top:68px;padding-inline:12px}
