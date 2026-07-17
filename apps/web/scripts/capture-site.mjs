@@ -24,6 +24,14 @@ const siteCaptures = [
   ["plans-mobile", "/plans", 390, 844, "light"],
   ["plans-dark", "/plans", 1440, 1000, "dark"],
   ["plans-russian", "/plans", 1440, 1000, "light", "ru"],
+  ["pricing-cards-light", "/plans", 1440, 1000, "light"],
+  ["pricing-cards-dark", "/plans", 1440, 1000, "dark"],
+  ["pricing-cards-russian-light", "/plans", 1440, 1000, "light", "ru"],
+  ["pricing-cards-russian-dark", "/plans", 1440, 1000, "dark", "ru"],
+  ["pricing-cards-mobile-light", "/plans", 390, 844, "light"],
+  ["pricing-cards-mobile-dark", "/plans", 390, 844, "dark"],
+  ["pricing-cards-mobile-russian-light", "/plans", 390, 844, "light", "ru"],
+  ["pricing-cards-mobile-russian-dark", "/plans", 390, 844, "dark", "ru"],
   ["models-desktop", "/models", 1440, 1000, "light"],
   ["models-dark", "/models", 1440, 1000, "dark"],
   ["docs-desktop", "/docs", 1440, 1000, "light"],
@@ -87,6 +95,8 @@ const shouldVerifyKeys = process.env.AUDIT_VERIFY_KEYS === "1" ||
   (process.env.AUDIT_VERIFY_KEYS !== "0" && captures.some(([name]) => name.startsWith("dashboard-keys-")));
 const shouldVerifyDocsTheme = process.env.AUDIT_VERIFY_DOCS_THEME === "1" ||
   (process.env.AUDIT_VERIFY_DOCS_THEME !== "0" && captures.some(([name]) => name.startsWith("docs-")));
+const shouldVerifyPricing = process.env.AUDIT_VERIFY_PRICING === "1" ||
+  (process.env.AUDIT_VERIFY_PRICING !== "0" && captures.some(([name]) => name.startsWith("pricing-cards-")));
 
 if (captures.length === 0) throw new Error("No screenshots matched AUDIT_SCOPE/AUDIT_FILTER.");
 
@@ -304,7 +314,7 @@ async function capturePage(client, [name, route, width, height, theme, language 
     expression: `(() => {
       if (document.documentElement.lang === ${JSON.stringify(language)}) return;
       const label = ${JSON.stringify(language.toUpperCase())};
-      const control = [...document.querySelectorAll('.lang button')]
+      const control = [...document.querySelectorAll('.lang button, .lang a')]
         .find((button) => button.textContent?.trim() === label);
       control?.click();
     })()`,
@@ -320,7 +330,7 @@ async function capturePage(client, [name, route, width, height, theme, language 
       expression: `JSON.stringify({
         documentLanguage: document.documentElement.lang,
         storedLanguage: localStorage.getItem('lang'),
-        controls: [...document.querySelectorAll('.lang button')].map((button) => ({
+        controls: [...document.querySelectorAll('.lang button, .lang a')].map((button) => ({
           label: button.textContent?.trim(),
           active: button.classList.contains('active'),
         })),
@@ -403,6 +413,94 @@ async function clickSelector(client, selector) {
   const y = rect.y + rect.height / 2;
   await client.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
   await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+}
+
+async function verifyPricingCardsLayout(client) {
+  const cases = [
+    { name: "desktop-light-en", width: 1440, height: 1000, theme: "light", language: "en", rate: "Custom rate" },
+    { name: "desktop-dark-en", width: 1440, height: 1000, theme: "dark", language: "en", rate: "Custom rate" },
+    { name: "desktop-light-ru", width: 1440, height: 1000, theme: "light", language: "ru", rate: "Индивидуальный тариф" },
+    { name: "desktop-dark-ru", width: 1440, height: 1000, theme: "dark", language: "ru", rate: "Индивидуальный тариф" },
+    { name: "mobile-light-en", width: 390, height: 844, theme: "light", language: "en", rate: "Custom rate" },
+    { name: "mobile-dark-en", width: 390, height: 844, theme: "dark", language: "en", rate: "Custom rate" },
+    { name: "mobile-light-ru", width: 390, height: 844, theme: "light", language: "ru", rate: "Индивидуальный тариф" },
+    { name: "mobile-dark-ru", width: 390, height: 844, theme: "dark", language: "ru", rate: "Индивидуальный тариф" },
+  ];
+
+  for (const layoutCase of cases) {
+    await setViewport(client, layoutCase.width, layoutCase.height);
+    await client.send("Runtime.evaluate", {
+      expression: `localStorage.setItem('theme', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('lang', ${JSON.stringify(layoutCase.language)});`,
+    });
+    const url = new URL("/plans", baseUrl);
+    url.searchParams.set("__auditPricing", layoutCase.name);
+    const loaded = client.once("Page.loadEventFired");
+    await client.send("Page.navigate", { url: url.href });
+    await loaded;
+    await waitForCondition(
+      client,
+      `Boolean(document.querySelector('.pricing-intro .topup-live')) && Boolean(document.querySelector('.business-preview-head strong')) && Boolean(document.querySelector('.business-terms'))`,
+      `${layoutCase.name} pricing cards`,
+    );
+    await client.send("Runtime.evaluate", {
+      expression: `(() => {
+        if (document.documentElement.lang === ${JSON.stringify(layoutCase.language)}) return;
+        const target = [...document.querySelectorAll('.lang button, .lang a')]
+          .find((button) => button.textContent?.trim() === ${JSON.stringify(layoutCase.language.toUpperCase())});
+        target?.click();
+      })()`,
+    });
+    await waitForCondition(
+      client,
+      `document.documentElement.lang === ${JSON.stringify(layoutCase.language)} && document.querySelector('.business-preview-head strong')?.textContent?.trim() === ${JSON.stringify(layoutCase.rate)}`,
+      `${layoutCase.name} localized pricing cards`,
+    );
+    await client.send("Runtime.evaluate", {
+      awaitPromise: true,
+      expression: `document.fonts.ready.then(() => new Promise((resolve) => setTimeout(resolve, 350)))`,
+    });
+
+    const result = await client.send("Runtime.evaluate", {
+      expression: `(() => {
+        const rect = (selector) => document.querySelector(selector)?.getBoundingClientRect();
+        const topup = rect('.topup-card');
+        const business = rect('.business-card');
+        const topupPanel = rect('.topup-live');
+        const businessPanel = rect('.business-preview');
+        const topupCta = rect('.topup-card .btn');
+        const businessCta = rect('.business-card .business-status');
+        const access = rect('.business-access');
+        const terms = [...document.querySelectorAll('.business-terms>div')].map((element) => element.getBoundingClientRect());
+        const topupStyle = getComputedStyle(document.querySelector('.topup-card'));
+        const businessStyle = getComputedStyle(document.querySelector('.business-card'));
+        const businessPanelStyle = getComputedStyle(document.querySelector('.business-preview'));
+        const rateStyle = getComputedStyle(document.querySelector('.business-preview-head strong'));
+        const stacked = innerWidth <= 900;
+        return JSON.stringify({
+          language: document.documentElement.lang,
+          theme: document.documentElement.dataset.theme || 'light',
+          overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          cardWidthsAligned: Boolean(topup && business && Math.abs(topup.width - business.width) < 2),
+          desktopCardsAligned: stacked || Boolean(topup && business && Math.abs(topup.top - business.top) < 2 && Math.abs(topup.height - business.height) < 2),
+          panelBalance: Boolean(topupPanel && businessPanel && Math.abs(topupPanel.height - businessPanel.height) <= 32),
+          compactBusinessPanel: Boolean(businessPanel && businessPanel.height <= 210 && Number.parseFloat(rateStyle.fontSize) <= 34),
+          matchingCardSurface: topupStyle.backgroundColor === businessStyle.backgroundColor && topupStyle.borderColor === businessStyle.borderColor,
+          distinctInnerSurface: businessPanelStyle.backgroundColor !== businessStyle.backgroundColor && businessPanelStyle.borderRadius !== businessStyle.borderRadius,
+          ctasMatch: Boolean(topupCta && businessCta && Math.abs(topupCta.width - businessCta.width) < 2 && Math.abs(topupCta.height - businessCta.height) < 2),
+          desktopCtasAligned: stacked || Boolean(topupCta && businessCta && Math.abs(topupCta.bottom - businessCta.bottom) < 2),
+          termsFit: terms.length === 2 && terms.every((term) => term.right <= innerWidth + 1) && Math.abs(terms[0].top - terms[1].top) < 2,
+          accessFits: Boolean(access && businessPanel && access.right <= businessPanel.right && access.left >= businessPanel.left),
+        });
+      })()`,
+      returnByValue: true,
+    });
+    const state = JSON.parse(result.result.value);
+    const expectedTheme = layoutCase.theme === "dark" ? "dark" : "light";
+    if (state.language !== layoutCase.language || state.theme !== expectedTheme || state.overflow > 1 || !state.cardWidthsAligned || !state.desktopCardsAligned || !state.panelBalance || !state.compactBusinessPanel || !state.matchingCardSurface || !state.distinctInnerSurface || !state.ctasMatch || !state.desktopCtasAligned || !state.termsFit || !state.accessFits) {
+      throw new Error(`Pricing cards ${layoutCase.name} layout failed: ${JSON.stringify(state)}`);
+    }
+  }
+  process.stdout.write("Verified pricing card balance, compact B2B hierarchy, translations, themes, and responsive layout\n");
 }
 
 async function verifyCreditsLayout(client) {
@@ -513,7 +611,7 @@ async function verifyApiKeysLayout(client) {
     await loaded;
     await waitForCondition(
       client,
-      `Boolean(document.querySelector('.keys-toolbar')) && document.querySelectorAll('.keys-filter-tab').length === 3 && Boolean(document.querySelector('.lang button'))`,
+      `Boolean(document.querySelector('.keys-toolbar')) && document.querySelectorAll('.keys-filter-tab').length === 3 && Boolean(document.querySelector('.lang button, .lang a'))`,
       `${layoutCase.name} API key manager shell`,
     );
     await client.send("Runtime.evaluate", {
@@ -523,7 +621,7 @@ async function verifyApiKeysLayout(client) {
     await client.send("Runtime.evaluate", {
       expression: `(() => {
         if (document.documentElement.lang === ${JSON.stringify(layoutCase.language)}) return;
-        const target = [...document.querySelectorAll('.lang button')]
+        const target = [...document.querySelectorAll('.lang button, .lang a')]
           .find((button) => button.textContent?.trim() === ${JSON.stringify(layoutCase.language.toUpperCase())});
         target?.click();
       })()`,
@@ -545,7 +643,7 @@ async function verifyApiKeysLayout(client) {
           loading: Boolean(document.querySelector('.dashboard-loading')),
           guard: Boolean(document.querySelector('.guard')),
           keyRows: document.querySelectorAll('.keyrow').length,
-          controls: [...document.querySelectorAll('.lang button')].map((button) => ({ label: button.textContent?.trim(), active: button.classList.contains('active') })),
+          controls: [...document.querySelectorAll('.lang button, .lang a')].map((button) => ({ label: button.textContent?.trim(), active: button.classList.contains('active') })),
         })`,
         returnByValue: true,
       });
@@ -1021,6 +1119,7 @@ try {
   }
   if (process.env.AUDIT_VERIFY_ROUTING === "1") await verifyDashboardRouting(client);
   if (process.env.AUDIT_VERIFY_PROFILE === "1") await verifyProfileBehavior(client);
+  if (shouldVerifyPricing) await verifyPricingCardsLayout(client);
   if (shouldVerifyKeys) await verifyApiKeysLayout(client);
   if (shouldVerifyCredits) await verifyCreditsLayout(client);
   if (shouldVerifyDocsTheme) await verifyDocsTheme(client);

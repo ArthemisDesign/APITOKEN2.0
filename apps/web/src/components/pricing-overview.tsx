@@ -16,9 +16,18 @@ export function PricingOverview() {
       <div className="business-card">
         <T k="b2b_tag" as="span" className="tag">B2B pricing</T>
         <T k="b2b_h" as="h3">Negotiated business pricing</T>
+        <div className="business-preview">
+          <div className="business-preview-head">
+            <div><T k="b2b_rate_label" as="span">Pricing model</T><T k="b2b_rate_value" as="strong">Custom rate</T></div>
+            <T k="b2b_preview" as="span" className="business-access">Private access</T>
+          </div>
+          <div className="business-terms">
+            <div><T k="b2b_discount_label" as="span">Discount</T><T k="b2b_discount_value" as="strong">Volume-based</T></div>
+            <div><T k="b2b_onboarding_label" as="span">Onboarding</T><T k="b2b_onboarding_value" as="strong">Direct with our team</T></div>
+          </div>
+        </div>
         <T k="b2b_p" as="p">Business customers receive an operator-set discount under an individual agreement.</T>
-        <div className="business-preview" aria-hidden="true"><strong>B2B</strong><T k="b2b_preview">Private access</T></div>
-        <a className="business-status" href="https://t.me/apiTokenSale" target="_blank" rel="noreferrer"><span className="status-dot" aria-hidden="true" /><T k="b2b_status">Invite-only registration</T></a>
+        <a className="business-status btn btn-ghost" href="https://t.me/apiTokenSale" target="_blank" rel="noreferrer"><span className="status-dot" aria-hidden="true" /><T k="b2b_status">Request B2B access</T><span className="business-status-arrow" aria-hidden="true">↗</span></a>
       </div>
     </div>
     <div className="tier-section">
