@@ -46,6 +46,13 @@ type Task = {
 
 const TASKS: Task[] = [
   {
+    key: "month-coding",
+    label: "A month of coding",
+    phrase: "for a month of coding",
+    desc: "Full-time development with Claude Code — all day, every day, ~22 workdays.",
+    input: 3_000_000, output: 2_500_000, cacheR: 80_000_000, cacheW: 3_000_000,
+  },
+  {
     key: "article",
     label: "Write an article",
     phrase: "to write an article",
@@ -60,6 +67,13 @@ const TASKS: Task[] = [
     input: 300_000, output: 120_000, cacheR: 3_000_000, cacheW: 400_000,
   },
   {
+    key: "crypto-audit",
+    label: "Audit a crypto project",
+    phrase: "to audit a crypto project",
+    desc: "Feed the smart contracts and docs, get a full security & tokenomics audit report.",
+    input: 500_000, output: 60_000, cacheR: 5_000_000, cacheW: 500_000,
+  },
+  {
     key: "memecoins",
     label: "Analyze 500 memecoins",
     phrase: "to analyze 500 memecoins",
@@ -67,11 +81,11 @@ const TASKS: Task[] = [
     input: 1_200_000, output: 200_000, cacheR: 0, cacheW: 0,
   },
   {
-    key: "month-coding",
-    label: "A month of coding",
-    phrase: "for a month of coding",
-    desc: "Full-time development with Claude Code — all day, every day, ~22 workdays.",
-    input: 3_000_000, output: 2_500_000, cacheR: 80_000_000, cacheW: 3_000_000,
+    key: "calorie-app",
+    label: "AI for a calorie app",
+    phrase: "to run a calorie app for a month",
+    desc: "A month of an App Store calorie tracker calling Claude to analyze real users' meals.",
+    input: 20_000_000, output: 6_000_000, cacheR: 5_000_000, cacheW: 500_000,
   },
   {
     key: "support",
@@ -87,9 +101,16 @@ const TASKS: Task[] = [
     desc: "Digest a long PDF end to end into a tight executive brief.",
     input: 250_000, output: 15_000, cacheR: 0, cacheW: 0,
   },
+  {
+    key: "team",
+    label: "Company · 50+ vibe-coders",
+    phrase: "for a 50-developer team, one month",
+    desc: "50+ developers vibe-coding full-time for a month on one shared balance.",
+    input: 150_000_000, output: 125_000_000, cacheR: 4_000_000_000, cacheW: 150_000_000,
+  },
 ];
 
-const DEFAULT_TASK = 3; // "A month of coding"
+const DEFAULT_TASK = 0; // "A month of coding"
 
 // Discount tiers — Starter is free, larger discounts unlock as you top up more.
 const TIERS = [
