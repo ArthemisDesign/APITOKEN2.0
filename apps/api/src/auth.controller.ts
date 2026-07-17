@@ -199,7 +199,10 @@ export class AuthController {
   providers(): unknown {
     const configured = this.auth.providerStatus();
     return {
-      email: { password: true, verificationRequired: true },
+      email: {
+        password: true,
+        verificationRequired: this.config.get("EMAIL_VERIFICATION_REQUIRED", { infer: true }) === true,
+      },
       google: { configured: configured.google, enabled: configured.google },
       github: { configured: configured.github, enabled: configured.github, emailScope: "user:email" },
     };

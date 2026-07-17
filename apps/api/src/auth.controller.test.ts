@@ -60,3 +60,18 @@ describe("authenticated profile updates", () => {
     expect(updateProfile).not.toHaveBeenCalled();
   });
 });
+
+describe("authentication provider status", () => {
+  it("advertises password verification as disabled", () => {
+    const controller = new AuthController(
+      { providerStatus: () => ({ google: true, github: false }) } as unknown as AuthService,
+      new ConfigService<Environment, true>({ EMAIL_VERIFICATION_REQUIRED: false } as Environment),
+    );
+
+    expect(controller.providers()).toEqual({
+      email: { password: true, verificationRequired: false },
+      google: { configured: true, enabled: true },
+      github: { configured: false, enabled: false, emailScope: "user:email" },
+    });
+  });
+});

@@ -41,6 +41,19 @@ export function AuthIntro({ title, subtitle }: { title: string; subtitle: string
   );
 }
 
+export function WelcomeBonusNotice() {
+  const { t } = useI18n();
+  return (
+    <aside className="auth-bonus" aria-label={t("auth_bonus_title")}>
+      <span className="auth-bonus-mark" aria-hidden="true">✦</span>
+      <span>
+        <strong>{t("auth_bonus_title")}</strong>
+        <small>{t("auth_bonus_note")}</small>
+      </span>
+    </aside>
+  );
+}
+
 export function Feedback({ message, success = false }: { message: string | null; success?: boolean }) {
   if (!message) return null;
   return <div className={`auth-msg ${success ? "ok" : "err"}`} role="status">{message}</div>;

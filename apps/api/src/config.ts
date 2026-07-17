@@ -41,6 +41,9 @@ const environmentSchema = z.object({
   MAX_TOPUP_USD: z.string().regex(/^[1-9]\d*$/).transform(BigInt).default("10000"),
   SESSION_TTL_SECONDS: z.coerce.number().int().min(900).max(2_592_000).default(604_800),
   AUTH_TOKEN_ENCRYPTION_KEY: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  EMAIL_VERIFICATION_REQUIRED: z.enum(["true", "false"])
+    .transform((value) => value === "true")
+    .default("false"),
   EMAIL_VERIFICATION_TTL_SECONDS: z.coerce.number().int().min(900).max(604_800).default(86_400),
   PASSWORD_RESET_TTL_SECONDS: z.coerce.number().int().min(300).max(86_400).default(3_600),
   COMMERCIAL_ADMIN_KEY: z.string().min(32).optional(),

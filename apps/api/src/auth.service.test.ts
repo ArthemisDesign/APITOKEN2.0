@@ -1,5 +1,5 @@
 import { ConfigService } from "@nestjs/config";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createCheckoutSession,
   createDatabase,
@@ -31,6 +31,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
     const config = new ConfigService<Environment, true>({
       SESSION_TTL_SECONDS: 604_800,
       AUTH_TOKEN_ENCRYPTION_KEY: encryptionKey,
+      EMAIL_VERIFICATION_REQUIRED: true,
       EMAIL_VERIFICATION_TTL_SECONDS: 86_400,
       PASSWORD_RESET_TTL_SECONDS: 3_600,
     } as Environment);
@@ -75,6 +76,65 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
     await expect(auth.verifyEmail({ token: rawToken, userAgent: null, ipAddress: null })).rejects.toThrow("invalid or expired");
   });
 
+  it("allows password registration while verification is disabled without granting the OAuth bonus", async () => {
+    const createAccount = vi.fn(async () => ({ account: "acct_password", multBp: 4000, handle: null }));
+    const creditAccount = vi.fn();
+    const passwordAuth = new AuthService(
+      database,
+      { createAccount, creditAccount } as unknown as EngineClient,
+      new ConfigService<Environment, true>({
+        SESSION_TTL_SECONDS: 604_800,
+        AUTH_TOKEN_ENCRYPTION_KEY: encryptionKey,
+        EMAIL_VERIFICATION_REQUIRED: false,
+        EMAIL_VERIFICATION_TTL_SECONDS: 86_400,
+        PASSWORD_RESET_TTL_SECONDS: 3_600,
+      } as Environment),
+    );
+
+    const registration = await passwordAuth.register({
+      email: "password-user@gmail.com",
+      password: "correct horse battery staple",
+      userAgent: "test-agent",
+      ipAddress: "192.0.2.10",
+    });
+
+    expect(registration.session).not.toBeNull();
+    expect(registration.user).toMatchObject({
+      email: "password-user@gmail.com",
+      emailVerified: false,
+      passwordEnabled: true,
+      engineAccountStatus: "active",
+    });
+    expect(createAccount).toHaveBeenCalledOnce();
+    expect(creditAccount).not.toHaveBeenCalled();
+    await expect(passwordAuth.authenticate(registration.session!.token)).resolves.toMatchObject({
+      user: { id: registration.user.id },
+    });
+    await expect(passwordAuth.login({
+      email: "password-user@gmail.com",
+      password: "correct horse battery staple",
+      userAgent: null,
+      ipAddress: "192.0.2.10",
+    })).resolves.toMatchObject({ user: { id: registration.user.id, emailVerified: false } });
+    await passwordAuth.resendVerification("password-user@gmail.com", "192.0.2.10");
+
+    const stored = await database.pool.query(`
+      SELECT u.password_hash, u.email_verified, ea.status, ea.engine_account_id,
+             (SELECT count(*)::int FROM auth_tokens WHERE user_id = u.id) AS tokens,
+             (SELECT count(*)::int FROM email_outbox WHERE user_id = u.id) AS emails
+      FROM users u JOIN engine_accounts ea ON ea.user_id = u.id
+      WHERE u.id = $1
+    `, [registration.user.id]);
+    expect(stored.rows[0].password_hash).toMatch(/^\$argon2id\$/);
+    expect(stored.rows[0]).toMatchObject({
+      email_verified: false,
+      status: "active",
+      engine_account_id: "acct_password",
+      tokens: 0,
+      emails: 0,
+    });
+  });
+
   it("uses generic login failure and revokes only the current user's session", async () => {
     const registered = await registerAndVerify({
       email: "alice@example.com", password: "correct horse battery staple", userAgent: null, ipAddress: null,
@@ -109,6 +169,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
     const strictAuth = new AuthService(database, engine, new ConfigService<Environment, true>({
       SESSION_TTL_SECONDS: 604_800,
       AUTH_TOKEN_ENCRYPTION_KEY: encryptionKey,
+      EMAIL_VERIFICATION_REQUIRED: true,
       EMAIL_VERIFICATION_TTL_SECONDS: 86_400,
       PASSWORD_RESET_TTL_SECONDS: 3_600,
     } as Environment));
@@ -162,11 +223,14 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
         metadata: { login: "developer" },
       }),
     };
+    const creditAccount = vi.fn(async (account: string) => ({
+      account, balance_nano: "4000000000", balance: "$4.000000000",
+    }));
     const oauthAuth = new AuthService(
       database,
       {
         createAccount: async () => ({ account: `acct_oauth_${++accountCounter}`, multBp: 4000, handle: null }),
-        creditAccount: async (account: string) => ({ account, balance_nano: "4000000000", balance: "$4.000000000" }),
+        creditAccount,
       } as unknown as EngineClient,
       new ConfigService<Environment, true>({
         SESSION_TTL_SECONDS: 604_800,
@@ -184,6 +248,10 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
     expect(session.user).toMatchObject({
       email: "developer@example.com", displayName: "Developer", emailVerified: true, passwordEnabled: false, engineAccountStatus: "active", totpEnabled: false,
     });
+    expect(creditAccount).toHaveBeenCalledOnce();
+    expect(creditAccount).toHaveBeenCalledWith(
+      "acct_oauth_1", 4_000_000_000n, `signup-bonus:${session.user.id}`,
+    );
     const rows = await database.pool.query(`
       SELECT u.password_hash, u.email_verified, ai.provider,
              (SELECT count(*)::int FROM email_outbox) AS emails

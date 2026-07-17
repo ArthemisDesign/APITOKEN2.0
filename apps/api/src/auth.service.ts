@@ -74,7 +74,8 @@ export class AuthService {
   }): Promise<RegistrationResult> {
     await this.enforceRateLimits("register", input.email, input.ipAddress, 5, 20, 3600);
     const passwordHash = await hash(input.password, passwordHashOptions());
-    const verification = this.createAuthEmailSecret("verify_email");
+    const verificationRequired = this.emailVerificationRequired();
+    const verification = verificationRequired ? this.createAuthEmailSecret("verify_email") : undefined;
     const user = await createEmailUser(
       this.database,
       input.email,
@@ -82,7 +83,10 @@ export class AuthService {
       input.inviteToken ? tokenHash(input.inviteToken) : undefined,
       verification,
     );
-    return { user: userView(user), session: null };
+    if (verificationRequired) return { user: userView(user), session: null };
+    await this.provisionEngineAccount(user, user.engineMultiplierBp, false);
+    const session = await this.issueSession(user, input.userAgent, input.ipAddress);
+    return { user: session.user, session };
   }
 
   async login(input: { email: string; password: string; userAgent: string | null; ipAddress: string | null }): Promise<AuthSession> {
@@ -98,9 +102,10 @@ export class AuthService {
     if (!user || !valid || user.status !== "active" || !user.passwordHash) {
       throw new InvalidCredentialsError("invalid email or password");
     }
-    if (!user.emailVerified) {
+    if (this.emailVerificationRequired() && !user.emailVerified) {
       throw new EmailVerificationRequiredError("email verification is required");
     }
+    await this.provisionEngineAccount(user, await this.multiplierForUser(user.id), false);
     await clearAuthRateLimit(this.database, keys);
     return this.issueSession(user, input.userAgent, input.ipAddress);
   }
@@ -122,11 +127,12 @@ export class AuthService {
     if (!userId) throw new InvalidAuthTokenError("email verification link is invalid or expired");
     const user = await getAuthUser(this.database, userId);
     if (!user) throw new InvalidAuthTokenError("email verification user is unavailable");
-    await this.provisionEngineAccount(user, await this.multiplierForUser(user.id));
+    await this.provisionEngineAccount(user, await this.multiplierForUser(user.id), false);
     return this.issueSession(user, input.userAgent, input.ipAddress);
   }
 
   async resendVerification(email: string, ipAddress: string | null): Promise<void> {
+    if (!this.emailVerificationRequired()) return;
     await this.enforceRateLimits("verify-resend", email, ipAddress, 3, 10, 3600);
     await queueAuthEmailForAddress(this.database, {
       email,
@@ -193,7 +199,7 @@ export class AuthService {
     });
     const user = await completeExternalSignIn(this.database, identity, transaction.inviteTokenHash);
     if (user.status !== "active") throw new InvalidOAuthTransactionError("account is disabled");
-    await this.provisionEngineAccount(user, user.engineMultiplierBp);
+    await this.provisionEngineAccount(user, user.engineMultiplierBp, true);
     return this.issueSession(user, input.userAgent, input.ipAddress);
   }
 
@@ -266,7 +272,15 @@ export class AuthService {
     return result.rows[0]?.mult_bp ?? 4000;
   }
 
-  private async provisionEngineAccount(user: AuthUser, multiplierBp: number): Promise<void> {
+  private emailVerificationRequired(): boolean {
+    return this.config.get("EMAIL_VERIFICATION_REQUIRED", { infer: true }) === true;
+  }
+
+  private async provisionEngineAccount(
+    user: AuthUser,
+    multiplierBp: number,
+    welcomeBonusEligible: boolean,
+  ): Promise<void> {
     if (user.engineAccountStatus === "active") return;
     if (user.engineAccountStatus === "disabled") throw new EngineAccountDisabledError();
 
@@ -287,6 +301,7 @@ export class AuthService {
         customerType: user.customerType,
         handle: `user:${user.id}`,
         multBp: multiplierBp,
+        welcomeBonusEligible,
       });
       const completed = await this.database.pool.query(`
         UPDATE engine_accounts

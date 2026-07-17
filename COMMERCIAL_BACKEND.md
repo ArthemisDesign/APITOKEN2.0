@@ -82,10 +82,11 @@ creation idempotent. API-key revocation uses the engine's non-secret `key_id`; P
 commercial UUID, engine `key_id`, and mask, never the usable key. A key issued by the engine is
 immediately disabled as compensation if its commercial record cannot be committed.
 
-New B2C provisioning also sends one idempotent `$4.000000000` signup credit using
+New Google/GitHub B2C provisioning also sends one idempotent `$4.000000000` signup credit using
 `signup-bonus:<commercial UUID>`. Because Starter clients pay 40% of official prices, the public
-offer is stated as **$10 of usage at official API prices**. Recovery repeats the same reference, so
-it cannot double-credit; B2B invitation provisioning skips this credit.
+offer is stated as **$10 of usage at official API prices**. Password accounts are ineligible even
+when their address is hosted by Gmail. Recovery derives eligibility from the stored OAuth identity
+and repeats the same reference, so it cannot double-credit; B2B invitation provisioning skips it.
 
 ## Top-up money contract
 

@@ -24,7 +24,7 @@ describe.runIf(Boolean(connectionString))("commercial account and engine integra
                auth_tokens, auth_sessions, auth_identities,
                checkout_sessions, engine_accounts, users RESTART IDENTITY CASCADE
     `);
-    aliceId = await createUser(database, "alice@example.com", "acct_alice");
+    aliceId = await createUser(database, "alice@example.com", "acct_alice", "github");
     bobId = await createUser(database, "bob@example.com", "acct_bob");
     engine = new FakeEngine();
     service = new AccountService(database, engine.client);
@@ -99,9 +99,24 @@ describe.runIf(Boolean(connectionString))("commercial account and engine integra
       account: "acct_recovered", amountNano: "4000000000", reference: `signup-bonus:${aliceId}`,
     }]);
   });
+
+  it("does not grant the welcome bonus while recovering a password account", async () => {
+    await database.pool.query(`
+      UPDATE engine_accounts SET engine_account_id = NULL, status = 'error' WHERE user_id = $1
+    `, [bobId]);
+    engine.recoveredAccountId = "acct_password_recovered";
+
+    await expect(service.ensureEngineAccount(bobId)).resolves.toBe("acct_password_recovered");
+    expect(engine.signupCredits).toEqual([]);
+  });
 });
 
-async function createUser(database: Database, email: string, engineAccountId: string): Promise<string> {
+async function createUser(
+  database: Database,
+  email: string,
+  engineAccountId: string,
+  oauthProvider?: "google" | "github",
+): Promise<string> {
   const userId = randomUUID();
   await database.pool.query("INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)", [
     userId, email, "Account Test",
@@ -110,6 +125,12 @@ async function createUser(database: Database, email: string, engineAccountId: st
     INSERT INTO engine_accounts (id, user_id, engine_account_id, status)
     VALUES ($1, $2, $3, 'active')
   `, [randomUUID(), userId, engineAccountId]);
+  if (oauthProvider) {
+    await database.pool.query(`
+      INSERT INTO auth_identities (id, user_id, provider, subject, email, email_verified)
+      VALUES ($1, $2, $3, $4, $5, true)
+    `, [randomUUID(), userId, oauthProvider, `${oauthProvider}:${userId}`, email]);
+  }
   return userId;
 }
 

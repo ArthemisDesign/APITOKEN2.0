@@ -64,6 +64,18 @@ describe("completed Next.js migration", () => {
     expect(authSource).not.toContain("router.refresh()");
   });
 
+  it("limits the advertised welcome bonus to Google and GitHub authentication", () => {
+    const authShell = readFileSync(join(root, "components", "auth-shell.tsx"), "utf8");
+    const login = readFileSync(join(appRoot, "login", "login-form.tsx"), "utf8");
+    const register = readFileSync(join(appRoot, "register", "register-form.tsx"), "utf8");
+    const messages = readFileSync(join(root, "lib", "messages.json"), "utf8");
+    expect(authShell).toContain('className="auth-bonus"');
+    expect(login).toContain("<WelcomeBonusNotice />");
+    expect(register).toContain("<WelcomeBonusNotice />");
+    expect(messages).toContain("new accounts created with Google or GitHub only");
+    expect(messages).toContain("При регистрации по email и паролю бонус не начисляется");
+  });
+
   it("loads Vercel Analytics once and strips sensitive URL data", () => {
     const rootLayout = readFileSync(join(appRoot, "layout.tsx"), "utf8");
     const analytics = readFileSync(join(root, "components", "site-analytics.tsx"), "utf8");

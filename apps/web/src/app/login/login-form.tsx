@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { api, ApiError } from "@/lib/api";
-import { AuthIntro, Feedback } from "@/components/auth-shell";
+import { AuthIntro, Feedback, WelcomeBonusNotice } from "@/components/auth-shell";
 import { SocialAuth } from "@/components/social-auth";
 import { useI18n } from "@/components/i18n-provider";
 
@@ -30,6 +30,7 @@ export function LoginForm() {
 
   return <>
     <AuthIntro title={t("login_h")} subtitle={t("login_sub")} />
+    <WelcomeBonusNotice />
     <form onSubmit={submit} noValidate>
       <div className="field"><label htmlFor="email">{t("f_email")}</label><input id="email" name="email" type="email" autoComplete="email" placeholder="you@company.com" required /></div>
       <div className="field"><label htmlFor="password">{t("f_password")}</label><input id="password" name="password" type="password" autoComplete="current-password" placeholder="••••••••••••" minLength={12} required /></div>

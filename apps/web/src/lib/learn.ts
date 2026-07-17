@@ -118,10 +118,10 @@ export const learnUi: Record<Locale, {
     byline: "apiToken.sale Editorial",
     seeAlso: "See also:",
     ctaVariants: [
-      "Start free — new accounts get $10 of Claude usage at official prices, no card required.",
-      "Try it before you pay: every new account includes $10 of official-price Claude usage.",
-      "Spin up a key and test the gateway with $10 of included Claude usage — no card needed.",
-      "Create a key and get $10 of Claude usage to prove the setup before you top up.",
+      "Start with Google or GitHub and get $10 of Claude usage at official prices — no card required.",
+      "Try it before you pay: new Google/GitHub accounts include $10 of official-price Claude usage.",
+      "Create an account with Google or GitHub and test the gateway with $10 of included Claude usage.",
+      "Use Google or GitHub to create your key and get $10 of Claude usage before you top up.",
     ],
   },
   ru: {
@@ -142,10 +142,10 @@ export const learnUi: Record<Locale, {
     byline: "Редакция apiToken.sale",
     seeAlso: "Читайте также:",
     ctaVariants: [
-      "Начните бесплатно — новые аккаунты получают $10 использования Claude по официальным ценам, без карты.",
-      "Проверьте до оплаты: в каждом новом аккаунте $10 использования Claude по официальным ценам.",
-      "Создайте ключ и протестируйте шлюз на $10 включённого использования Claude — карта не нужна.",
-      "Заведите ключ и получите $10 использования Claude, чтобы проверить настройку до первого пополнения.",
+      "Войдите через Google или GitHub и получите $10 использования Claude по официальным ценам — без карты.",
+      "Проверьте до оплаты: новые аккаунты через Google/GitHub получают $10 использования Claude.",
+      "Создайте аккаунт через Google или GitHub и протестируйте шлюз на $10 использования Claude.",
+      "Используйте Google или GitHub, чтобы получить ключ и $10 использования Claude до пополнения.",
     ],
   },
   zh: {
@@ -166,10 +166,10 @@ export const learnUi: Record<Locale, {
     byline: "apiToken.sale 编辑部",
     seeAlso: "另见：",
     ctaVariants: [
-      "免费开始——新账户获得价值 $10 的 Claude 官方价格用量，无需绑卡。",
-      "先试后付：每个新账户都包含 $10 的 Claude 官方价格用量。",
-      "创建密钥，用 $10 的 Claude 赠送用量测试网关——无需绑卡。",
-      "创建密钥并获得 $10 的 Claude 用量，在充值前先跑通配置。",
+      "使用 Google 或 GitHub 创建账户，可获价值 $10 的 Claude 官方价格用量，无需绑卡。",
+      "先试后付：通过 Google/GitHub 创建的新账户包含 $10 的 Claude 官方价格用量。",
+      "通过 Google 或 GitHub 创建密钥，用 $10 的 Claude 赠送用量测试网关。",
+      "使用 Google 或 GitHub 创建账户并获得 $10 的 Claude 用量，充值前先跑通配置。",
     ],
   },
   ko: {
@@ -190,10 +190,10 @@ export const learnUi: Record<Locale, {
     byline: "apiToken.sale 편집팀",
     seeAlso: "함께 보기:",
     ctaVariants: [
-      "무료로 시작하세요 — 신규 계정은 공식 가격 기준 $10 상당의 Claude 사용량을 카드 없이 받습니다.",
-      "결제 전에 사용해 보세요: 모든 신규 계정에 공식 가격 기준 $10 상당의 Claude 사용량이 포함됩니다.",
-      "키를 만들고 $10 상당의 Claude 사용량으로 게이트웨이를 테스트하세요 — 카드가 필요 없습니다.",
-      "키를 만들고 $10 상당의 Claude 사용량으로 충전 전에 먼저 설정을 확인하세요.",
+      "Google 또는 GitHub로 가입하고 공식 가격 기준 $10 상당의 Claude 사용량을 카드 없이 받으세요.",
+      "결제 전에 사용해 보세요: Google/GitHub 신규 계정에는 $10 상당의 Claude 사용량이 포함됩니다.",
+      "Google 또는 GitHub로 키를 만들고 $10 상당의 Claude 사용량으로 게이트웨이를 테스트하세요.",
+      "Google 또는 GitHub로 계정을 만들고 $10 상당의 Claude 사용량으로 충전 전에 설정을 확인하세요.",
     ],
   },
 };
@@ -211,7 +211,7 @@ const quickSetupSteps: LearnBlock = {
   ],
 };
 
-const cta = (): LearnBlock => ({ type: "note", text: "New accounts start with $10 of Claude usage at official API prices — enough to wire up your tools and run real calls before you top up." });
+const cta = (): LearnBlock => ({ type: "note", text: "New accounts created with Google or GitHub start with $10 of Claude usage at official API prices; email/password accounts do not receive the bonus." });
 
 export const learnArticles: LearnArticle[] = [
   // ─────────────────────────── BUY ───────────────────────────
@@ -248,7 +248,7 @@ export const learnArticles: LearnArticle[] = [
     faq: [
       { q: "Do I need an Anthropic account to buy a Claude API key?", a: "No. apiToken.sale issues its own key and balance, so you can start without an Anthropic account, invite, or approval." },
       { q: "How fast is the key active?", a: "Instantly. You generate the key in the dashboard and it works on the next request — there is no waitlist or manual review." },
-      { q: "How much does it cost to start?", a: "You can top up any whole-dollar amount, and every new account also gets $10 of Claude usage at official API prices for free." },
+      { q: "How much does it cost to start?", a: "You can top up any whole-dollar amount. New accounts created with Google or GitHub also get $10 of Claude usage at official API prices for free." },
       { q: "Is this the official Claude API?", a: "Yes — it serves the same Anthropic Messages API and the same Claude models. Only the price and the way you sign up and pay are different." },
     ],
     related: ["claude-api-quick-setup", "cheapest-claude-api", "claude-api-crypto-payment", "free-claude-api-key"],
@@ -393,7 +393,7 @@ export const learnArticles: LearnArticle[] = [
           "Generate a key and point your tool at api.apitoken.sale.",
           "Send a request and see it metered in your usage.",
         ] },
-        { type: "p", text: "Every new account also starts with $10 of official-price Claude usage, so you can validate the whole flow before topping up." },
+        { type: "p", text: "New accounts created with Google or GitHub also start with $10 of official-price Claude usage, so you can validate the whole flow before topping up." },
       ] },
     ],
     faq: [
@@ -442,27 +442,30 @@ export const learnArticles: LearnArticle[] = [
     cluster: "free",
     title: "Free Claude API Key to Get Started",
     h1: "Get a free Claude API key to start",
-    description: "Create a Claude API key for free on apiToken.sale and get $10 of Claude usage at official API prices — no card required, no Anthropic account, instant access.",
+    description: "Create a Claude API key with Google or GitHub and get $10 of Claude usage at official API prices — no card required, no Anthropic account, instant access.",
     keywords: ["free claude api key", "claude api free", "free claude api", "claude api free tier", "free anthropic api key", "claude api no card", "claude api no credit card", "claude api free credits", "try claude api free"],
-    dek: "You can create a free Claude API key and make real Claude calls before spending anything — no credit card needed. Every new account is funded with $10 of Claude usage at official API prices, so you can prove the integration works first.",
+    dek: "Create your account with Google or GitHub to receive $10 of Claude usage at official API prices and make real calls before spending anything. Email and password accounts do not receive the bonus.",
     sections: [
       { h2: "What 'free' includes", blocks: [
         { type: "list", items: [
           "A working API key across all supported Claude models.",
-          "$10 of Claude usage at official API prices, no card required.",
+          "A one-time $10 welcome bonus for new Google/GitHub accounts, no card required.",
           "Enough headroom to wire up your tools and run genuine requests.",
         ] },
         { type: "p", text: "When you are ready for more, top up any whole-dollar amount and your discount kicks in automatically." },
       ] },
-      { h2: "How to claim it", blocks: [ quickSetupSteps ] },
+      { h2: "How to claim it", blocks: [
+        { type: "p", text: "Choose Google or GitHub when creating the account. Registering with email and password creates a usable account but does not grant the welcome bonus." },
+        quickSetupSteps,
+      ] },
       { h2: "Is the Claude API free forever?", blocks: [
         { type: "p", text: "The included $10 is a free start, not an unlimited free tier. After it, you pay only for the tokens you use — there is no subscription and no monthly minimum, and your prepaid balance never expires." },
       ] },
     ],
     faq: [
-      { q: "Is the free usage real API access?", a: "Yes. The $10 of included usage runs against the same Claude models and endpoints as paid balance." },
-      { q: "Do I need a card to start?", a: "No card is required to create your account and use the included $10 of usage." },
-      { q: "Do I need a credit card for a free Claude API key?", a: "No. You can create the key and use the included $10 of official-price Claude usage without a card." },
+      { q: "Is the free usage real API access?", a: "Yes. The $10 Google/GitHub welcome bonus runs against the same Claude models and endpoints as paid balance." },
+      { q: "Do I need a card to start?", a: "No card is required. Create the account with Google or GitHub to receive the included $10 of usage." },
+      { q: "Do I need a credit card for a free Claude API key?", a: "No. Create the account with Google or GitHub to receive the included $10 of official-price Claude usage without a card." },
     ],
     related: ["claude-api-free-trial", "how-to-buy-claude-api-key", "claude-code-without-subscription", "cheapest-claude-api"],
   },
@@ -471,9 +474,9 @@ export const learnArticles: LearnArticle[] = [
     cluster: "free",
     title: "Claude API Free Trial — Start in Minutes",
     h1: "Try the Claude API free",
-    description: "Start coding with Claude in minutes. apiToken.sale gives every new account $10 of Claude usage at official prices, no card and no Anthropic approval required.",
+    description: "Start coding with Claude in minutes. New accounts created with Google or GitHub get $10 of Claude usage at official prices, with no card required.",
     keywords: ["claude api free trial", "try claude api", "claude api test", "claude api sandbox", "claude api demo", "free claude api", "claude api free", "claude api no credit card", "claude api free credits", "try claude api free", "claude api free tier"],
-    dek: "There is no separate trial to apply for — you simply sign up, get $10 of usage at official API prices, and run real calls against every supported model.",
+    dek: "There is no separate trial to apply for — create the account with Google or GitHub to get $10 of usage at official API prices and run real calls against every supported model.",
     sections: [
       { h2: "Prove it before you pay", blocks: [
         { type: "p", text: "The included usage is designed to check the gateway end to end: create a key, connect your editor, and confirm streaming, tool use and your favorite model all behave as expected." },
@@ -484,7 +487,7 @@ export const learnArticles: LearnArticle[] = [
       ] },
     ],
     faq: [
-      { q: "How do I start the trial?", a: "Just create an account — the $10 of official-price usage is added automatically, with no application step." },
+      { q: "How do I start the trial?", a: "Create a new account with Google or GitHub. The $10 of official-price usage is added automatically; email and password accounts are not eligible." },
       { q: "What happens when the free usage runs out?", a: "Top up any whole-dollar amount to keep going; your progressive discount applies immediately." },
     ],
     related: ["free-claude-api-key", "claude-api-without-waitlist", "claude-api-quick-setup", "claude-haiku-api"],

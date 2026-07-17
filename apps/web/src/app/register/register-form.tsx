@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { api, ApiError } from "@/lib/api";
-import { AuthIntro, Feedback } from "@/components/auth-shell";
+import { AuthIntro, Feedback, WelcomeBonusNotice } from "@/components/auth-shell";
 import { SocialAuth } from "@/components/social-auth";
 import { useI18n } from "@/components/i18n-provider";
 
@@ -33,7 +33,8 @@ export function RegisterForm() {
   }
 
   return <>
-    <AuthIntro title={t("reg_h")} subtitle="Create an account to access your keys and balance." />
+    <AuthIntro title={t("reg_h")} subtitle={t("reg_sub")} />
+    <WelcomeBonusNotice />
     <form onSubmit={submit} noValidate>
       <div className="field"><label htmlFor="email">{t("f_email")}</label><input id="email" name="email" type="email" autoComplete="email" placeholder="you@company.com" required /></div>
       <div className="field"><label htmlFor="password">{t("f_password")}</label><input id="password" name="password" type="password" autoComplete="new-password" placeholder="minimum 12 characters" minLength={12} maxLength={128} required /></div>

@@ -37,7 +37,7 @@ const flow = [
 
 const faqItems = [
   { question: "q1", answer: "a1", q: "How much does the Claude API cost?", a: "Enter any positive whole USD top-up amount. Each request is converted to official API spend, then your active discount is applied: B2C progresses from 60% to 80% off, while B2B pricing is negotiated." },
-  { question: "q2", answer: "a2", q: "Is there a free option?", a: "Yes — every new B2C account gets $10 of Claude usage at official API prices, enough to wire up your tools and run real calls." },
+  { question: "q2", answer: "a2", q: "Is there a free option?", a: "Yes — new B2C accounts created with Google or GitHub get $10 of Claude usage at official API prices. Email and password accounts are not eligible." },
   { question: "q3", answer: "a3", q: "Which models are available?", a: "The current supported Claude line includes Opus, Sonnet, and Haiku models on the same balance and API key." },
   { question: "q4", answer: "a4", q: "Which Claude model is best for coding?", a: "For agentic coding and long sessions, Opus and Sonnet tiers give the best results; Haiku is ideal for fast, economical calls." },
   { question: "q5", answer: "a5", q: "What base URL should I use?", a: "Use https://api.apitoken.sale with any Anthropic-compatible tool. Send requests through /v1/messages with the same key and balance." },
@@ -125,7 +125,7 @@ export default function HomePage() {
         <div className="prod">
           <T k="pc3_tag" as="span" className="tag">Free start</T>
           <T k="pc3_h" as="h3">Free API usage</T>
-          <div className="prod-body"><div className="amt"><T k="p3_now" as="span" className="now">$10</T><T k="pc3_official" as="span" className="official">at official API prices</T></div><T k="pc3_p" as="p">No card required. Start with any Claude model.</T></div>
+          <div className="prod-body"><div className="amt"><T k="p3_now" as="span" className="now">$10</T><T k="pc3_official" as="span" className="official">at official API prices</T></div><T k="pc3_p" as="p">Create your account with Google or GitHub. No card required.</T></div>
           <Link className="btn btn-ghost" href="/register"><T k="start_free">Start free</T></Link>
         </div>
       </div></div></section>

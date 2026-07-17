@@ -16,23 +16,27 @@ POST /v1/auth/logout
 GET  /v1/auth/providers
 ```
 
-Registration normalizes email to lowercase, hashes passwords with Argon2id (`m=19456`, `t=2`,
-`p=1`), creates the commercial user and atomically queues a provider-neutral verification job.
-It does not provision a Rust engine account or create a session until verification succeeds.
+Registration normalizes email to lowercase and hashes passwords with Argon2id (`m=19456`, `t=2`,
+`p=1`). Email verification is temporarily disabled by the default
+`EMAIL_VERIFICATION_REQUIRED=false`: password registration immediately provisions an unfunded Rust
+engine account and creates a session without queuing verification mail. Set the flag to `true` once
+SMTP is available to restore the durable verification job and pre-session verification gate.
 
 Without an invitation, registration creates a B2C Starter profile at 60% off. A valid B2B token is
 single-use, bound to the normalized registration email, expires, and is consumed in the same
 transaction as the user. Only its SHA-256 hash is stored. B2B accounts receive the invitation's
 manual price and do not participate in progressive B2C tiers. See `PRICING.md`.
 
-On the first successful engine provisioning, a B2C account receives an idempotent `$4.000000000`
-engine balance credit. At the Starter rate (60% off), this gives the client **$10 of Claude usage at
-official API prices**. The same rule applies after email verification and to a new Google/GitHub
-account; invited B2B accounts are excluded.
+On the first successful engine provisioning, a new Google/GitHub B2C account receives an idempotent
+`$4.000000000` engine balance credit. At the Starter rate (60% off), this gives the client **$10 of
+Claude usage at official API prices**. Password accounts—including addresses hosted by Gmail—never
+receive this credit, and invited B2B accounts are excluded. Recovery derives eligibility from the
+stored Google/GitHub identity and reuses the same idempotency reference.
 
 Login failures use the same external response for an unknown email and a wrong password. A dummy
-Argon2 verification reduces timing-based email discovery. Password login is always blocked until
-verification completes. Forgot-password and resend responses do not reveal whether an account exists.
+Argon2 verification reduces timing-based email discovery. Password login is blocked until verification
+completes only when `EMAIL_VERIFICATION_REQUIRED=true`; the resend endpoint is a no-op while the flag
+is false. Forgot-password and resend responses do not reveal whether an account exists.
 
 Login and registration limits are enforced in PostgreSQL by hashed email/IP buckets, so they work
 across multiple API instances without storing raw emails in the rate-limit table. A successful login
@@ -44,7 +48,8 @@ clears its buckets.
 - PostgreSQL stores only `SHA-256(token)`, the owning user, expiry and revocation state.
 - Production cookie: `__Host-apitoken_session; Path=/; Secure; HttpOnly; SameSite=Lax`.
 - The cookie has no `Domain`, so it is host-only to `backend.apitoken.sale`.
-- Login and registration always issue a fresh session; logout revokes only that exact session.
+- Successful login and registration issue a fresh session; verification-required registration waits
+  until the verification callback. Logout revokes only that exact session.
 - Private responses use `Cache-Control: no-store`; logout also sends `Clear-Site-Data`.
 - All unsafe browser requests must have `Origin` exactly equal to `PUBLIC_APP_BASE_URL`.
 - The Cryptomus webhook is the only current origin-check exemption and authenticates by its own
@@ -69,7 +74,8 @@ verified through the provider API.
 PostgreSQL `email_outbox` stores durable jobs; `auth_tokens` stores hashed, expiring, single-use
 verification/reset tokens. Raw tokens are AES-256-GCM encrypted in the outbox and decrypted only in
 the worker process. SMTP jobs use leases, exponential retry and provider message IDs. Full setup is
-in `EMAIL_INTEGRATION.md`.
+in `EMAIL_INTEGRATION.md`. Verification jobs are not created while
+`EMAIL_VERIFICATION_REQUIRED=false`; password-reset delivery still requires SMTP.
 
 ## Google and GitHub authentication
 

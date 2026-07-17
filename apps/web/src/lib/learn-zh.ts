@@ -14,7 +14,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "生成一把 API 密钥（形如 sk-pool-…）。同一把密钥可用于所有受支持的 Claude 模型。",
           "将任意兼容 Anthropic 的工具指向 https://api.apitoken.sale，并携带 x-api-key 请求头向 /v1/messages 发送请求。",
         ] },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "支付方式如何运作", blocks: [
         { type: "p", text: "想充多少就充多少（整数美元）——没有固定的产品套餐。你的余额为预付制，永不过期，仅在 API 请求实际运行时才会扣费。" },
@@ -39,7 +39,7 @@ export const learnZh: Record<string, LocalizedContent> = {
     faq: [
       { q: "购买 Claude API 密钥需要 Anthropic 账户吗？", a: "不需要。apitoken.sale 自行签发密钥和余额，因此你无需 Anthropic 账户、邀请码或审批即可开始。" },
       { q: "密钥多快能激活？", a: "即时激活。你在控制台生成密钥后，下一次请求即可使用——没有排队，也没有人工审核。" },
-      { q: "起步要花多少钱？", a: "你可以充值任意整数美元金额，而且每个新账户还会免费获得价值 $10 的 Claude 用量（按官方 API 价格计）。" },
+      { q: "起步要花多少钱？", a: "你可以充值任意整数美元金额。通过 Google 或 GitHub 创建的新账户还会免费获得价值 $10 的 Claude 官方价格用量。" },
       { q: "这是官方的 Claude API 吗？", a: "是的——它提供同一套 Anthropic Messages API 和同样的 Claude 模型。不同的只有价格以及注册和付款方式。" },
     ],
   },
@@ -64,7 +64,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "无订阅、无绑定", blocks: [
         { type: "p", text: "没有月费。你充值的是永不过期的预付余额，仅在请求运行时才消耗，因此闲置的日子不花一分钱。" },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "Claude API 折扣如何生效", blocks: [
         { type: "p", text: "没有加价，也没有单独的廉价模型——你得到的是对完全相同的 Claude API 的折扣访问。" },
@@ -98,7 +98,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "用银行卡或加密货币支付，哪种方便用哪种。",
           "即时激活，无需排队，无需公司核验。",
         ] },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "与你现有的工具兼容", blocks: [
         { type: "p", text: "将 Claude Code、Cursor、Cline 或 Anthropic SDK 指向 https://api.apitoken.sale，即可像以前一样继续工作。支持提供俄语和英语服务，通过 Telegram 联系。" },
@@ -130,7 +130,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "在银行卡被拒或不可用的地方很实用。",
           "余额永不过期，因此你充值一次，边构建边扣减。",
         ] },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "结账时会遇到什么", blocks: [
         { type: "p", text: "在结账时选择加密货币，向显示的地址转入金额，网络确认后你的余额即入账。若你更愿意用银行卡进行某笔特定充值，银行卡依然可用。" },
@@ -166,7 +166,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "创建一个免费账户并打开控制台——无需审批、无需排队。",
           "生成一把 API 密钥（形如 sk-pool-…）。同一把密钥可用于所有受支持的 Claude 模型。",
           "将任意兼容 Anthropic 的工具指向 https://api.apitoken.sale，并携带 x-api-key 请求头向 /v1/messages 发送请求。",
-        ] }, { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" } ] },
+        ] }, { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" } ] },
       { h2: "「即时」到底是什么意思", blocks: [
         { type: "p", text: "你一生成密钥它就是激活的。从注册到第一个成功请求之间没有任何人工审核步骤，因此你可以在同一次坐下就接通工具并交付。" },
       ] },
@@ -176,7 +176,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "生成密钥并把你的工具指向 api.apitoken.sale。",
           "发出请求，即可在用量中看到它被计量。",
         ] },
-        { type: "p", text: "每个新账户还会附带价值 $10 的官方价格 Claude 用量，因此你可以在充值前先验证整个流程。" },
+        { type: "p", text: "通过 Google 或 GitHub 创建的新账户还会附带价值 $10 的 Claude 官方价格用量，因此你可以在充值前验证整个流程。" },
       ] },
     ],
     faq: [
@@ -198,7 +198,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "3. 发出第一个请求", blocks: [
         { type: "code", code: `curl https://api.apitoken.sale/v1/messages \\\n  -H "x-api-key: sk-pool-•••" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-opus-4-8",\n    "max_tokens": 1024,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "首次调用的常见错误", blocks: [
         { type: "list", items: [
@@ -217,21 +217,21 @@ export const learnZh: Record<string, LocalizedContent> = {
   "free-claude-api-key": {
     title: "免费 Claude API 密钥助你上手",
     h1: "获取免费 Claude API 密钥开始使用",
-    description: "在 apitoken.sale 上免费创建 Claude API 密钥，并获得价值 $10 的 Claude 用量（按官方 API 价格计）——无需银行卡、无需 Anthropic 账户、即时访问。",
+    description: "通过 Google 或 GitHub 在 apitoken.sale 创建 Claude API 密钥，并获得价值 $10 的 Claude 官方价格用量——无需银行卡或 Anthropic 账户。",
     keywords: ["免费 claude api 密钥", "claude api 免费", "claude api 免费额度", "免费 anthropic api 密钥", "claude api 免银行卡"],
-    dek: "你可以在花一分钱之前就创建密钥并进行真实的 Claude 调用。每个新的 B2C 账户都会获得价值 $10 的用量（按官方 API 价格计），让你先验证集成是否可行。",
+    dek: "通过 Google 或 GitHub 创建账户，即可获得价值 $10 的 Claude 官方价格用量并在充值前验证集成。邮箱密码账户不享受此奖励。",
     sections: [
       { h2: "“免费”包含什么", blocks: [
         { type: "list", items: [
           "一把可用于所有受支持 Claude 模型的 API 密钥。",
-          "价值 $10 的 Claude 用量（按官方 API 价格计），无需银行卡。",
+          "Google/GitHub 新账户可获一次性价值 $10 的 Claude 用量，无需银行卡。",
           "足够的额度让你接通工具并跑通真实请求。",
         ] },
         { type: "p", text: "当你准备用更多时，充值任意整数美元金额，你的折扣就会自动生效。" },
       ] },
       { h2: "如何领取", blocks: [
         { type: "steps", items: [
-          "创建一个免费账户并打开控制台——无需审批、无需排队。",
+          "通过 Google 或 GitHub 创建账户并打开控制台——无需审批、无需排队。",
           "生成一把 API 密钥（形如 sk-pool-…）。同一把密钥可用于所有受支持的 Claude 模型。",
           "将任意兼容 Anthropic 的工具指向 https://api.apitoken.sale，并携带 x-api-key 请求头向 /v1/messages 发送请求。",
         ] },
@@ -241,28 +241,28 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "这些免费用量是真正的 API 访问吗？", a: "是的。包含的 $10 用量运行在与付费余额相同的 Claude 模型和接口上。" },
-      { q: "开始使用需要银行卡吗？", a: "创建账户并使用包含的 $10 用量无需银行卡。" },
-      { q: "免费的 Claude API 密钥需要信用卡吗？", a: "不需要。你可以在没有银行卡的情况下创建密钥，并使用包含的价值 $10 的官方价 Claude 用量。" },
+      { q: "这些免费用量是真正的 API 访问吗？", a: "是的。Google/GitHub 账户的 $10 奖励可用于与付费余额相同的 Claude 模型和接口。" },
+      { q: "开始使用需要银行卡吗？", a: "无需银行卡。通过 Google 或 GitHub 创建账户即可获得包含的 $10 用量。" },
+      { q: "免费的 Claude API 密钥需要信用卡吗？", a: "不需要。通过 Google 或 GitHub 创建账户，即可在没有银行卡的情况下获得价值 $10 的 Claude 官方价格用量。" },
     ],
   },
   "claude-api-free-trial": {
     title: "Claude API 免费试用——几分钟即可开始",
     h1: "免费试用 Claude API",
-    description: "几分钟内开始用 Claude 编码。apitoken.sale 为每个新账户提供价值 $10 的 Claude 用量（按官方价格计），无需银行卡、无需 Anthropic 审批。",
+    description: "几分钟内开始用 Claude 编码。通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量，无需银行卡。",
     keywords: ["claude api 免费试用", "试用 claude api", "claude api 测试", "claude api 沙盒", "claude api 演示"],
-    dek: "无需单独申请试用——你只需注册，即可获得价值 $10 的用量（按官方 API 价格计），并对所有受支持的模型运行真实调用。",
+    dek: "无需单独申请试用——通过 Google 或 GitHub 创建账户，即可获得价值 $10 的官方价格用量，并对所有受支持的模型运行真实调用。",
     sections: [
       { h2: "先验证再付费", blocks: [
         { type: "p", text: "包含的用量正是为端到端检验网关而设计的：创建密钥、连接你的编辑器，确认流式输出、工具调用以及你喜欢的模型都表现如预期。" },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码注册不享受此奖励。" },
       ] },
       { h2: "随后按你的节奏扩展", blocks: [
         { type: "p", text: "当试用用量所剩不多时，充值任意金额即可。没有订阅、余额永不过期，因此你只为实际调用的部分付费。" },
       ] },
     ],
     faq: [
-      { q: "我如何开始试用？", a: "只需创建账户——价值 $10 的官方价用量会自动添加，无需申请步骤。" },
+      { q: "我如何开始试用？", a: "通过 Google 或 GitHub 创建新账户，价值 $10 的官方价用量会自动添加；邮箱密码账户不参与。" },
       { q: "免费用量用完后会怎样？", a: "充值任意整数美元金额即可继续；你的递进折扣会立即生效。" },
     ],
   },
@@ -283,7 +283,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "在决定订阅套餐前先试用 Claude Code。",
           "让多个工具共用一份余额和一把密钥。",
         ] },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
     ],
     faq: [
@@ -307,7 +307,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "在你的余额上使用 Opus", blocks: [
         { type: "p", text: "Opus 4.8（模型 ID claude-opus-4-8）和 Opus 4.7 按官方 token 费率减去你的折扣计费，因此你能以标价的一小部分用上顶级档位。" },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
     ],
     faq: [
@@ -327,7 +327,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "Sonnet 定价说明", blocks: [
         { type: "p", text: "Claude Sonnet 5（claude-sonnet-5）采用介绍期官方费率，引擎始终在套用你的折扣前应用当前有效费率。Sonnet 4.6 仍可在同一把密钥上使用。" },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
     ],
     faq: [
@@ -348,7 +348,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "廉价的后台任务和预处理。",
           "在无需 Opus 的工作上让余额撑得更久。",
         ] },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "一把密钥混用多种模型", blocks: [
         { type: "p", text: "由于所有模型共用一把密钥和余额，你可以把廉价工作路由给 Haiku（claude-haiku-4-5），只把高难度请求升级到 Sonnet 或 Opus。" },
@@ -375,7 +375,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "配置", blocks: [
         { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://api.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "故障排查", blocks: [
         { type: "list", items: [
@@ -407,7 +407,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "Continue", blocks: [
         { type: "code", code: `// ~/.continue/config.json\n{\n  "models": [{\n    "title": "Claude via apiToken.sale",\n    "provider": "anthropic",\n    "apiBase": "https://api.apitoken.sale",\n    "apiKey": "sk-pool-•••",\n    "model": "claude-opus-4-8"\n  }]\n}` },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "选哪个扩展与故障排查", blocks: [
         { type: "p", text: "Cline 适合作为自主编辑的默认之选；Continue 更轻量，适合内联对话和补全。两者都免费，且都使用你的预付余额。" },
@@ -435,7 +435,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "配置方法", blocks: [
         { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://api.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "你能保留什么", blocks: [
         { type: "list", items: [
@@ -463,7 +463,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "TypeScript", blocks: [
         { type: "code", code: `import Anthropic from "@anthropic-ai/sdk";\n\nconst client = new Anthropic({\n  baseURL: "https://api.apitoken.sale",\n  apiKey: "sk-pool-•••",\n});\nconst msg = await client.messages.create({\n  model: "claude-opus-4-8",\n  max_tokens: 1024,\n  messages: [{ role: "user", content: "Hello" }],\n});` },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "验证切换是否成功", blocks: [
         { type: "p", text: "改完 Base URL 后，发一次请求，确认你能收到正常的 Anthropic 响应。流式输出、工具调用和系统提示的表现都与 api.anthropic.com 完全一致——变的只有计费端点。" },
@@ -499,7 +499,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "开通：无需 Anthropic 账户、排队或开票国家要求。",
           "支付：银行卡或加密货币。",
         ] },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "各自适合谁", blocks: [
         { type: "p", text: "如果你已经拥有顺畅的 Anthropic 开票和企业协议，直购或许适合你。如果你想用同样的模型但更便宜、更快上手，并且能用银行卡或加密货币付款，那么 apitoken.sale 是务实之选。" },
@@ -526,7 +526,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "一把密钥、一份余额，通用 Opus、Sonnet 和 Haiku。",
           "银行卡或加密货币充值，永不过期。",
         ] },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "分别适合什么时候用", blocks: [
         { type: "list", items: [
@@ -554,7 +554,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       { h2: "遇到难题再升级到 Opus", blocks: [
         { type: "p", text: "在复杂重构、架构设计以及额外推理物有所值的长时间高风险会话中，就该选 Opus 4.8。" },
         { type: "note", text: "由于一把密钥同时覆盖两者，你可以为每项任务路由到合适的档位，而无需在多个提供方之间来回切换。" },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
     ],
     faq: [
@@ -581,7 +581,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "apitoken.sale 的折扣", blocks: [
         { type: "p", text: "每次调用先换算为官方 Anthropic 消费，再减去你的折扣：B2C 从 60% 折扣起步，随累计充值增长最高可达 80%。每次请求都在控制台中以 token 级别的明细可见。" },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "按模型划分的 Claude API token 价格", blocks: [
         { type: "p", text: "更大的模型每 token 更贵：Opus 是高端档，Sonnet 是均衡的默认选择，Haiku 最便宜。你的折扣适用于所有模型，因此排序不变，但每个价格都更低。" },
@@ -612,7 +612,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "对长会话做摘要，而非完整重发。",
           "把 max_tokens 限制在响应真正需要的范围内。",
         ] },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
     ],
     faq: [
@@ -639,7 +639,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "完全可见", blocks: [
         { type: "p", text: "每次请求都在控制台中显示，含输入、输出、缓存和思考 token，因此你始终清楚余额去向。" },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
     ],
     faq: [
@@ -656,7 +656,7 @@ export const learnZh: Record<string, LocalizedContent> = {
     sections: [
       { h2: "为即时而设计", blocks: [
         { type: "p", text: "密钥一经生成即刻可用。充值在支付确认后立即入账，而银行卡支付几秒内即可确认。" },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "什么可能带来短暂延迟", blocks: [
         { type: "p", text: "唯一的等待是支付确认。银行卡充值几秒内到账；加密货币充值则在网络确认交易后入账，具体时间取决于你选择的币种和手续费。" },
@@ -685,7 +685,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "支持银行卡和加密货币支付。",
           "通过 Telegram 提供英语和俄语支持。",
         ] },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "跨地区的支付方式", blocks: [
         { type: "p", text: "由于我们签发密钥和余额，你不受 Anthropic 支持的计费国家约束。在可用的地区用银行卡支付，或在银行卡被拒的地区用加密货币支付。" },
@@ -713,7 +713,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "获取帮助", blocks: [
         { type: "p", text: "支持通过 Telegram 提供英语和俄语服务，也可发邮件至 apitokensale@gmail.com。大多数集成问题都能很快得到解答。" },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "充值与余额如何运作", blocks: [
         { type: "p", text: "你以任意整数美元金额充值余额，且仅在请求运行时才扣减。由于它永不过期，没什么理由超额充值——用多少充多少即可。" },
@@ -745,7 +745,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "一把预付密钥、一份余额，通用 Opus、Sonnet 和 Haiku。",
           "银行卡或加密货币充值，永不过期。",
         ] },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "分别适合什么", blocks: [
         { type: "list", items: [
@@ -773,7 +773,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "两者甚至可以组合", blocks: [
         { type: "p", text: "如果你喜欢 Portkey 的可观测能力，可以把 apiToken.sale 密钥设为它的 Anthropic 厂商，从而在底层享受折扣。" },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
     ],
     faq: [
@@ -794,7 +794,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "apiToken.sale：完全托管的原生 Anthropic 端点，无需管理任何基础设施。",
           "apiToken.sale 对 Claude 消费提供 60–80% 的折扣，这是裸代理做不到的。",
         ] },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "分别适合什么时候用", blocks: [
         { type: "list", items: [
@@ -824,7 +824,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "大批量用 Haiku", blocks: [
         { type: "p", text: "Claude Haiku 4.5 擅长快速、廉价、大批量的任务——代码检查、信息抽取、快速编辑——帮你撑长余额。" },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
     ],
     faq: [
@@ -848,7 +848,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "一把密钥驱动 Claude Code、Cursor、智能体和生产环境调用。",
           "apiToken.sale 在官方 token 费率上再享最高 80% 折扣。",
         ] },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
     ],
     faq: [
@@ -868,7 +868,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "如何迁移", blocks: [
         { type: "p", text: "把模型 ID 换成当前的某一个——例如 claude-opus-4-8、claude-sonnet-5 或 claude-haiku-4-5——并保留你现有的请求代码。在 apiToken.sale 上，密钥和端点都不变。" },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
     ],
     faq: [
@@ -891,7 +891,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "支持银行卡或加密货币付款。",
           "控制台内提供按密钥的消费管控和 token 级用量明细。",
         ] },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "同一余额上的折扣 Claude API token", blocks: [
         { type: "p", text: "把它当作打折出售的 Claude API token：你一次性充值余额，享受官方 token 费率最高 80% 的折扣，并在所有模型和工具上使用。余额永不过期，也没有订阅。" },
@@ -919,7 +919,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "原生，而非转译层", blocks: [
         { type: "p", text: "apiToken.sale 是 Anthropic 原生的：把任意客户端指向 https://api.apitoken.sale/v1/messages，它的表现与 api.anthropic.com 完全一致——再加上你的折扣和控制台管控。" },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "挑选网关时看什么", blocks: [
         { type: "list", items: [
@@ -951,7 +951,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "降低并发，而不是猛冲端点。",
           "若需持续更高的吞吐，请联系支持。",
         ] },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
     ],
     faq: [
@@ -972,7 +972,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "计费完全相同", blocks: [
         { type: "p", text: "流式与非流式请求的计费方式相同——都按输入和输出 token 计费——因此流式输出不会让你多花一分钱。" },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "什么时候值得用流式", blocks: [
         { type: "list", items: [
@@ -1000,7 +1000,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "它可与你的折扣叠加", blocks: [
         { type: "p", text: "缓存降低 token 数量；你的 apiToken.sale 折扣降低每 token 单价。两者叠加，账单大幅缩水，而且每一条缓存行都会显示在你的用量明细中。" },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
     ],
     faq: [
@@ -1024,7 +1024,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "用 Retry-After 和退避处理 429。",
           "关注 token 级用量明细，尽早发现浪费。",
         ] },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "把成本和可靠性控制住", blocks: [
         { type: "list", items: [
@@ -1050,7 +1050,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       { h2: "两个变量", blocks: [
         { type: "code", code: `export ANTHROPIC_BASE_URL=https://api.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••\n\n# then just run\nclaude` },
         { type: "p", text: "整个配置就这么简单。高难度工作用 claude-opus-4-8，日常编码用 claude-sonnet-5。" },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "验证并选择模型", blocks: [
         { type: "p", text: "先跑一个简短的提示确认密钥可用，然后设置你的默认模型。如果 Claude Code 报鉴权错误，请重新检查两个环境变量，并重启 shell 以确保它们已导出。" },
@@ -1079,7 +1079,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "选择 Anthropic 作为 API 提供方。",
           "把 Base URL 设为 https://api.apitoken.sale，粘贴你的 sk-pool-••• 密钥，并选择一个模型，例如 claude-sonnet-5。",
         ] },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "为每项任务选对模型", blocks: [
         { type: "list", items: [
@@ -1116,7 +1116,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "把密钥存放在环境变量或密钥管理器中。",
           "一旦密钥暴露，立即吊销并轮换。",
         ] },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
     ],
     faq: [
@@ -1138,7 +1138,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "为重复的系统提示和工具定义使用提示缓存。",
           "按密钥的消费上限，让失控的循环无法耗尽你的余额。",
         ] },
-        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "一个成本感知的智能体循环", blocks: [
         { type: "p", text: "一个实用的模式：把规划和推理路由到 Sonnet，把廉价的子步骤和解析交给 Haiku，仅将最难的调用升级到 Opus。缓存系统提示和工具定义，让重复上下文几乎免费。" },

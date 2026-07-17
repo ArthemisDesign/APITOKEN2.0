@@ -33,7 +33,11 @@ export class AccountService {
 
       const mappingResult = await client.query<EngineAccountMappingRow>(`
         SELECT ea.engine_account_id, ea.status, ea.mult_bp,
-               COALESCE(cp.customer_type, 'b2c') AS customer_type
+               COALESCE(cp.customer_type, 'b2c') AS customer_type,
+               EXISTS (
+                 SELECT 1 FROM auth_identities ai
+                 WHERE ai.user_id = ea.user_id AND ai.provider IN ('google', 'github')
+               ) AS welcome_bonus_eligible
         FROM engine_accounts ea
         LEFT JOIN customer_profiles cp ON cp.user_id = ea.user_id
         WHERE ea.user_id = $1
@@ -45,6 +49,7 @@ export class AccountService {
         status: row.status,
         multBp: row.mult_bp,
         customerType: row.customer_type,
+        welcomeBonusEligible: row.welcome_bonus_eligible,
       } : null;
       if (!mapping) throw new EngineAccountUnavailableError("engine account mapping is missing");
       if (mapping.status === "disabled") throw new EngineAccountUnavailableError("engine account is disabled");
@@ -64,6 +69,7 @@ export class AccountService {
           customerType: mapping.customerType,
           handle: `user:${userId}`,
           multBp: mapping.multBp,
+          welcomeBonusEligible: mapping.welcomeBonusEligible,
         });
       } catch (error) {
         // AUDIT(C65/C82): a failed attempt may only fail the exact state it observed.
@@ -281,6 +287,7 @@ interface EngineAccountMappingRow {
   status: "pending" | "active" | "error" | "disabled";
   mult_bp: number;
   customer_type: "b2c" | "b2b";
+  welcome_bonus_eligible: boolean;
 }
 
 const rawPoolApiKeyPattern = /^sk-pool-[0-9a-f]{48}$/i;
