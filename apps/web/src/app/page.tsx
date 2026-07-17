@@ -164,7 +164,7 @@ const heroTopups = [10, 100, 1000].map((pay) => ({ pay, get: officialValueForTop
 function HeroDiscount() {
   return <aside className="hero-offer reveal" aria-label="Free credit and top-up value">
     <div className="offer-free">
-      <h2 className="offer-free-head"><span className="ofa">$10</span><span className="off-tag">FREE</span></h2>
+      <h2 className="offer-free-head"><span className="ofa">$10</span><span className="off-dash">—</span><span className="off-tag">FREE</span></h2>
       <T k="offer_free_sub" as="p" className="offer-free-sub">in Claude API tokens</T>
       <T k="offer_free_note" as="p" className="offer-free-note">On sign up with Google or GitHub — no card</T>
     </div>
