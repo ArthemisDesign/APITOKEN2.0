@@ -218,13 +218,69 @@ prepare_and_test_candidate() {
 }
 
 final_verify_engine() {
-  local sha=$1 current
+  local sha=$1
+  engine_runtime_aligned "$sha" \
+    || wd_die "engine runtime is not in a single-slot steady state after cutover: $ENGINE_RUNTIME_DETAIL"
+}
+
+engine_runtime_aligned() {
+  local sha=$1 expected current legacy_active=0 legacy_enabled=0 stable_status
+  local active_8787=0 ready_8787=0 current_8787=0 enabled_8787=0
+  local active_8788=0 ready_8788=0 current_8788=0 enabled_8788=0
+  local port unit pid executable status
+
+  expected="$ENGINE_RELEASE_ROOT/$sha"
   current=$(readlink -f -- "$ENGINE_RELEASE_ROOT/current")
-  [[ $current == "$ENGINE_RELEASE_ROOT/$sha" ]] || wd_die "engine current is not $sha after cutover"
-  systemctl is-active --quiet claude-api@8787.service \
-    || systemctl is-active --quiet claude-api@8788.service \
-    || wd_die "no engine slot is active after cutover"
-  curl --noproxy '*' --fail --silent --show-error --max-time 5 http://127.0.0.1:8790/ready >/dev/null
+  if [[ $current != "$expected" ]]; then
+    ENGINE_RUNTIME_DETAIL="current=$current expected=$expected"
+    return 1
+  fi
+
+  for port in 8787 8788; do
+    unit="claude-api@$port.service"
+    local active=0 ready=0 selected=0 enabled=0
+    systemctl is-active --quiet "$unit" && active=1
+    systemctl is-enabled --quiet "$unit" && enabled=1
+    status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+      "http://127.0.0.1:$port/ready" 2>/dev/null || true)
+    [[ $status == 200 ]] && ready=1
+    if (( active == 1 )); then
+      pid=$(systemctl show "$unit" -p MainPID --value)
+      if [[ $pid =~ ^[1-9][0-9]*$ ]]; then
+        executable=$(readlink -f -- "/proc/$pid/exe" 2>/dev/null || true)
+        [[ $executable == "$expected/claude-api" ]] && selected=1
+      fi
+    fi
+    if [[ $port == 8787 ]]; then
+      active_8787=$active; ready_8787=$ready; current_8787=$selected; enabled_8787=$enabled
+    else
+      active_8788=$active; ready_8788=$ready; current_8788=$selected; enabled_8788=$enabled
+    fi
+  done
+  systemctl is-active --quiet claude-api.service && legacy_active=1
+  systemctl is-enabled --quiet claude-api.service && legacy_enabled=1
+  stable_status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+    http://127.0.0.1:8790/ready 2>/dev/null || true)
+  ENGINE_RUNTIME_DETAIL="8787=$active_8787:$ready_8787:$current_8787:$enabled_8787 8788=$active_8788:$ready_8788:$current_8788:$enabled_8788 legacy=$legacy_active:$legacy_enabled stable=${stable_status:-unreachable}"
+  [[ $stable_status == 200 ]] || return 1
+  wd_engine_topology_is_steady \
+    "$active_8787" "$ready_8787" "$current_8787" "$enabled_8787" \
+    "$active_8788" "$ready_8788" "$current_8788" "$enabled_8788" \
+    "$legacy_active" "$legacy_enabled"
+}
+
+reconcile_engine_runtime() {
+  local sha=$1 current expected="$ENGINE_RELEASE_ROOT/$sha"
+  if engine_runtime_aligned "$sha"; then return 0; fi
+  current=$(readlink -f -- "$ENGINE_RELEASE_ROOT/current")
+  [[ $current == "$expected" ]] \
+    || wd_die "refusing slot-only repair while engine release selection is wrong: $ENGINE_RUNTIME_DETAIL"
+  CURRENT_PHASE=reconciling-engine
+  status "repairing engine single-slot runtime drift: $ENGINE_RUNTIME_DETAIL"
+  wd_warn "engine runtime drift detected; converging through the health-gated controller: $ENGINE_RUNTIME_DETAIL"
+  "$CONTROLLER_ROOT/engine-bluegreen.sh"
+  final_verify_engine "$sha"
+  wd_log "engine runtime drift repaired; exactly one current slot is active, ready, and enabled"
 }
 
 final_verify_backend() {
@@ -361,8 +417,9 @@ main() {
     && backend_changed=1
 
   if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $engine_changed == 0 && $backend_changed == 0 ]]; then
+    reconcile_engine_runtime "$ENGINE_SHA"
     CURRENT_PHASE=idle
-    status "master already processed; no component drift"
+    status "master already processed; production runtime aligned"
     wd_log "master $CANDIDATE_SHA is already processed and production is aligned"
     exit 0
   fi
@@ -396,6 +453,7 @@ main() {
 
   if (( engine_changed == 1 )); then
     deploy_engine "$CANDIDATE_SHA"
+    ENGINE_SHA=$CANDIDATE_SHA
   else
     github_status success deploy/engine "No engine changes"
   fi
@@ -404,6 +462,8 @@ main() {
   else
     github_status success deploy/backend "No backend changes"
   fi
+
+  reconcile_engine_runtime "$ENGINE_SHA"
 
   wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"
   rm -f -- "$INFRA_APPROVED_FILE" "$PENDING_INFRA_FILE" "$PENDING_MIGRATION_FILE"

@@ -20,6 +20,23 @@ wd_validate_sha() {
   [[ ${1:-} =~ ^[0-9a-f]{40}$ ]] || wd_die "expected a full 40-character lowercase commit SHA"
 }
 
+# A PostgreSQL-backed engine deployment has exactly one steady-state writer. Both slots may be
+# ready briefly during a controlled cutover, but that overlap must never survive the controller.
+# Arguments are active, ready, current-release, enabled for 8787 and 8788, then legacy active/enabled.
+wd_engine_topology_is_steady() {
+  [[ $# -eq 10 ]] || wd_die "engine topology check requires ten boolean values"
+  local value
+  for value in "$@"; do
+    [[ $value == 0 || $value == 1 ]] || wd_die "engine topology values must be 0 or 1"
+  done
+
+  local slot_8787="$1:$2:$3:$4" slot_8788="$5:$6:$7:$8"
+  local legacy_active=$9 legacy_enabled=${10}
+  [[ $legacy_active == 0 && $legacy_enabled == 0 ]] || return 1
+  [[ $slot_8787 == "1:1:1:1" && $slot_8788 == "0:0:0:0" ]] \
+    || [[ $slot_8787 == "0:0:0:0" && $slot_8788 == "1:1:1:1" ]]
+}
+
 wd_read_line() {
   local path=$1
   [[ -f $path && ! -L $path ]] || return 1

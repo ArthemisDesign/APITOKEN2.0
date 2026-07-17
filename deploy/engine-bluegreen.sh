@@ -219,8 +219,24 @@ if [[ -n $ACTIVE_UNIT && $ACTIVE_UNIT != "$TARGET_UNIT" ]]; then
 fi
 systemctl_command enable "$TARGET_UNIT"
 if [[ $DRY_RUN == 0 ]]; then
+  OTHER_PORT=$(other_port "$TARGET_PORT")
+  OTHER_UNIT=$(slot_unit "$OTHER_PORT")
   slot_serves_current "$TARGET_PORT" || die "target failed final exact-release verification"
   control_ready || die "stable Control API failed final readiness verification"
+  unit_active "$OTHER_UNIT" && die "inactive engine slot remains active after cutover: $OTHER_UNIT"
+  ready_port "$OTHER_PORT" && die "inactive engine slot remains ready after cutover: $OTHER_UNIT"
+  # Repair boot-time drift as well as live drift. Disabling an already inactive unit is safe and
+  # prevents an out-of-band enable from resurrecting a second writer after the next host reboot.
+  systemctl_command disable "$OTHER_UNIT"
+  systemctl_raw is-enabled --quiet "$TARGET_UNIT" \
+    || die "target engine slot is not enabled after cutover: $TARGET_UNIT"
+  if systemctl_raw is-enabled --quiet "$OTHER_UNIT"; then
+    die "inactive engine slot remains enabled after cutover: $OTHER_UNIT"
+  fi
+  unit_active "$LEGACY_UNIT" && die "legacy engine unit remains active after cutover"
+  if systemctl_raw is-enabled --quiet "$LEGACY_UNIT"; then
+    systemctl_command disable "$LEGACY_UNIT"
+  fi
 fi
 
 commit_cutover

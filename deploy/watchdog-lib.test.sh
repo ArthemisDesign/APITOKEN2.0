@@ -51,4 +51,19 @@ if wd_manifest_is_append_only "$TEMP/baseline.manifest" "$TEMP/tampered-journal.
   wd_die "manifest accepted an edited historical journal entry"
 fi
 
-printf 'watchdog migration manifest tests passed\n'
+wd_engine_topology_is_steady 1 1 1 1 0 0 0 0 0 0
+wd_engine_topology_is_steady 0 0 0 0 1 1 1 1 0 0
+for invalid_topology in \
+  "1 1 1 1 1 1 1 1 0 0" \
+  "1 1 1 0 0 0 0 1 0 0" \
+  "1 0 1 1 0 0 0 0 0 0" \
+  "1 1 0 1 0 0 0 0 0 0" \
+  "1 1 1 1 0 0 0 0 1 0" \
+  "1 1 1 1 0 0 0 0 0 1"; do
+  # shellcheck disable=SC2086 -- each fixture intentionally expands to ten arguments.
+  if wd_engine_topology_is_steady $invalid_topology; then
+    wd_die "engine topology accepted an invalid steady state: $invalid_topology"
+  fi
+done
+
+printf 'watchdog migration and engine topology tests passed\n'

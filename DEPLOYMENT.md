@@ -36,7 +36,11 @@ only: builds and deployments run on the existing production host, so no paid Git
 The watchdog polls `origin/master` about once per minute. A failure quarantines that SHA and stops
 the pipeline; neither later migrations nor application cutovers are attempted. Commerce migration
 failure always blocks the backend. Engine migration or readiness failure leaves the serving engine
-slot untouched. Normal releases require no SSH command.
+slot untouched. On every idle cycle it also requires exactly one PostgreSQL engine slot to be
+active, ready, selected on the recorded release, and enabled. If an out-of-band service command
+reactivates the inactive slot, the watchdog reconverges through the same readiness-gated controller;
+it never stops the availability anchor before another current slot is verified. Normal releases
+require no SSH command.
 
 ```bash
 # Operator observation only
