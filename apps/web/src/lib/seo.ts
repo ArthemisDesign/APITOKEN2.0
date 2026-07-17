@@ -4,6 +4,14 @@ export const SITE_NAME = "apiToken.sale";
 export const SITE_ORIGIN = "https://apitoken.sale";
 export const DEFAULT_OG_IMAGE = "/og.png";
 export const LAST_CONTENT_UPDATE = new Date("2026-07-16T00:00:00.000Z");
+export const SITE_ICONS = {
+  icon: [
+    { url: "/assets/favicon-32.png", sizes: "32x32", type: "image/png" },
+    { url: "/assets/favicon-192.png", sizes: "192x192", type: "image/png" },
+  ],
+  shortcut: [{ url: "/assets/favicon-32.png", type: "image/png" }],
+  apple: [{ url: "/assets/favicon-192.png", sizes: "192x192", type: "image/png" }],
+} satisfies NonNullable<Metadata["icons"]>;
 
 export type SeoPage = {
   path: string;

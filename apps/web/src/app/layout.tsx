@@ -5,7 +5,7 @@ import "./anim.css";
 import { I18nProvider } from "@/components/i18n-provider";
 import { PersistentRouteShell } from "@/components/persistent-route-shell";
 import { SiteAnalytics } from "@/components/site-analytics";
-import { DEFAULT_OG_IMAGE, SITE_NAME, SITE_ORIGIN, seoPages } from "@/lib/seo";
+import { DEFAULT_OG_IMAGE, SITE_ICONS, SITE_NAME, SITE_ORIGIN, seoPages } from "@/lib/seo";
 import { YANDEX_METRIKA_ID, yandexMetrikaBootstrap } from "@/lib/yandex-metrika";
 
 const webmasterVerification = {
@@ -26,14 +26,7 @@ export const metadata: Metadata = {
   manifest: "/manifest.webmanifest",
   alternates: { types: { "application/rss+xml": "/feed.xml" } },
   formatDetection: { email: false, address: false, telephone: false },
-  icons: {
-    icon: [
-      { url: "/favicon.svg", type: "image/svg+xml" },
-      { url: "/assets/favicon-32.png", sizes: "32x32", type: "image/png" },
-      { url: "/assets/favicon-192.png", sizes: "192x192", type: "image/png" },
-    ],
-    apple: [{ url: "/assets/favicon-192.png", sizes: "192x192", type: "image/png" }],
-  },
+  icons: SITE_ICONS,
   appleWebApp: { capable: true, title: SITE_NAME, statusBarStyle: "black-translucent" },
   robots: {
     index: true,

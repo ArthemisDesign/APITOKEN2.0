@@ -7,6 +7,7 @@ import {
   createNoIndexMetadata,
   createPageMetadata,
   integrationGuideSeo,
+  SITE_ICONS,
   seoPages,
   sitemapPages,
 } from "./lib/seo";
@@ -38,6 +39,14 @@ describe("technical SEO", () => {
     expect(txt).toContain(`Sitemap: ${absoluteUrl("/sitemap.xml")}`);
     expect(manifest().start_url).toBe("/");
     expect(manifest().icons).toHaveLength(3);
+  });
+
+  it("uses the established PNG brand mark for browser icons", () => {
+    expect(SITE_ICONS.icon).toEqual([
+      { url: "/assets/favicon-32.png", sizes: "32x32", type: "image/png" },
+      { url: "/assets/favicon-192.png", sizes: "192x192", type: "image/png" },
+    ]);
+    expect(SITE_ICONS.shortcut).toEqual([{ url: "/assets/favicon-32.png", type: "image/png" }]);
   });
 
   it("gives each indexable page a unique description, canonical, and social URL", () => {
