@@ -3,8 +3,9 @@ import { JsonLd } from "@/components/json-ld";
 import { PlansContent } from "@/components/marketing-pages";
 import { B2C_PRICING_MILESTONES } from "@/lib/pricing-tiers";
 import { absoluteUrl, breadcrumbNode, createPageMetadata, seoPages, SITE_ORIGIN } from "@/lib/seo";
+import { coreAlternates } from "@/lib/seo-core";
 
-export const metadata: Metadata = createPageMetadata(seoPages.plans);
+export const metadata: Metadata = { ...createPageMetadata(seoPages.plans), alternates: coreAlternates("/plans") };
 
 const plansUrl = absoluteUrl("/plans");
 

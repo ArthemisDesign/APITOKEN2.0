@@ -2,8 +2,9 @@ import type { Metadata } from "next";
 import { JsonLd } from "@/components/json-ld";
 import { SupportPage } from "@/components/compliance-pages";
 import { absoluteUrl, breadcrumbNode, createPageMetadata, SITE_ORIGIN, seoPages } from "@/lib/seo";
+import { coreAlternates } from "@/lib/seo-core";
 
-export const metadata: Metadata = createPageMetadata(seoPages.support);
+export const metadata: Metadata = { ...createPageMetadata(seoPages.support), alternates: coreAlternates("/support") };
 
 export default function CustomerSupportPage() {
   const structuredData = {

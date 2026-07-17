@@ -10,7 +10,8 @@ import { useI18n } from "./i18n-provider";
 import { T } from "./translated";
 
 export function Brand() {
-  return <Link className="brand" href="/">
+  const { language } = useI18n();
+  return <Link className="brand" href={language === "ru" ? "/ru" : "/"}>
     <Image className="brand-mark bm-light" src="/assets/logo-mark-light.png" width={24} height={24} alt="" />
     <Image className="brand-mark bm-dark" src="/assets/logo-mark-dark.png" width={24} height={24} alt="" />
     apiToken.sale
@@ -29,11 +30,13 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
     return () => window.cancelAnimationFrame(frame);
   }, [pathname]);
 
+  const ru = language === "ru";
+  const loc = (path: string) => (ru ? (path === "/" ? "/ru" : `/ru${path}`) : path);
   const links = <>
-    <Link href={home ? "#how" : "/#how"}><T k="nav_how">How it works</T></Link>
-    <Link href="/integrations"><T k="nav_int">Integrations</T></Link>
-    <Link href="/models"><T k="nav_models">Models</T></Link>
-    <Link href={home ? "#pricing" : "/plans"}><T k="nav_pricing">Pricing</T></Link>
+    <Link href={home ? "#how" : `${loc("/")}#how`}><T k="nav_how">How it works</T></Link>
+    <Link href={loc("/integrations")}><T k="nav_int">Integrations</T></Link>
+    <Link href={loc("/models")}><T k="nav_models">Models</T></Link>
+    <Link href={home ? "#pricing" : loc("/plans")}><T k="nav_pricing">Pricing</T></Link>
     <Link href={DOCS_URL} target="_blank" rel="noreferrer"><T k="nav_docs">Docs</T></Link>
   </>;
 

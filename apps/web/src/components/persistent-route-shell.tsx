@@ -24,8 +24,16 @@ const authPaths = new Set([
   "/verify-email",
 ]);
 
+// Treat /ru mirrors of the marketing pages the same as their English paths.
+function withoutRuPrefix(pathname: string): string {
+  if (pathname === "/ru") return "/";
+  if (pathname.startsWith("/ru/")) return pathname.slice(3);
+  return pathname;
+}
+
 function usesPublicSiteShell(pathname: string): boolean {
-  return publicSitePaths.has(pathname) || pathname.startsWith("/int-");
+  const path = withoutRuPrefix(pathname);
+  return publicSitePaths.has(path) || path.startsWith("/int-");
 }
 
 function usesAuthShell(pathname: string): boolean {
@@ -36,7 +44,7 @@ export function PersistentRouteShell({ children }: Readonly<{ children: ReactNod
   const pathname = usePathname();
 
   if (usesPublicSiteShell(pathname)) {
-    const home = pathname === "/";
+    const home = withoutRuPrefix(pathname) === "/";
     return <>
       <SiteHeader home={home} />
       {children}

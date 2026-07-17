@@ -1,6 +1,7 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { createContext, useCallback, useContext, useMemo, type ReactNode } from "react";
 import messages from "@/lib/messages.json";
 
 export type Language = "en" | "ru";
@@ -14,34 +15,30 @@ interface I18nContextValue {
 
 const I18nContext = createContext<I18nContextValue | null>(null);
 
-export function I18nProvider({ children }: { children: ReactNode }) {
-  const [language, setLanguageState] = useState<Language>("en");
+function isRuPath(pathname: string): boolean {
+  return pathname === "/ru" || pathname.startsWith("/ru/");
+}
 
-  useEffect(() => {
-    const saved = window.localStorage.getItem("lang");
-    window.localStorage.removeItem("onekey_db_v1");
-    window.localStorage.removeItem("onekey_session");
-    window.localStorage.removeItem("onekey_promos");
-    const timer = window.setTimeout(() => {
-      if (saved === "ru" || saved === "en") setLanguageState(saved);
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, []);
+export function I18nProvider({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  const router = useRouter();
+  // Language follows the URL: /ru and /ru/* render Russian, everything else English.
+  const language: Language = isRuPath(pathname) ? "ru" : "en";
 
   const setLanguage = useCallback((next: Language) => {
-    window.localStorage.setItem("lang", next);
-    setLanguageState(next);
-  }, []);
+    try { window.localStorage.setItem("lang", next); } catch { /* ignore */ }
+    const onRu = isRuPath(pathname);
+    if (next === "ru" && !onRu) {
+      router.push(pathname === "/" ? "/ru" : `/ru${pathname}`);
+    } else if (next === "en" && onRu) {
+      router.push(pathname.replace(/^\/ru/, "") || "/");
+    }
+  }, [pathname, router]);
 
   const t = useCallback((key: string) => {
     const dictionary = messages[language] as Dictionary;
     const fallback = messages.en as Dictionary;
     return dictionary[key] ?? fallback[key] ?? key;
-  }, [language]);
-
-  useEffect(() => {
-    document.documentElement.lang = language;
-    document.documentElement.dataset.language = language;
   }, [language]);
 
   const value = useMemo(() => ({ language, setLanguage, t }), [language, setLanguage, t]);

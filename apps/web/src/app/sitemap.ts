@@ -17,6 +17,17 @@ export default function sitemap(): MetadataRoute.Sitemap {
     { url: absoluteUrl("/status"), changeFrequency: "weekly" as const, priority: 0.4 },
   ].map((page) => ({ ...page, lastModified: LAST_CONTENT_UPDATE }));
 
+  // Russian mirrors of the marketing pages (everything except /docs, which is
+  // not mirrored). Home "/" maps to "/ru".
+  const ruCorePages: MetadataRoute.Sitemap = sitemapPages
+    .filter((page) => page.path !== "/docs")
+    .map((page) => ({
+      url: absoluteUrl(page.path === "/" ? "/ru" : `/ru${page.path}`),
+      lastModified: LAST_CONTENT_UPDATE,
+      changeFrequency: page.changeFrequency,
+      priority: page.priority,
+    }));
+
   const learnHubs: MetadataRoute.Sitemap = LOCALES.map((locale) => ({
     url: absoluteUrl(learnHubPath(locale)),
     lastModified: LAST_CONTENT_UPDATE,
@@ -33,5 +44,5 @@ export default function sitemap(): MetadataRoute.Sitemap {
     })),
   );
 
-  return [...corePages, ...infoPages, ...learnHubs, ...learnPages];
+  return [...corePages, ...ruCorePages, ...infoPages, ...learnHubs, ...learnPages];
 }

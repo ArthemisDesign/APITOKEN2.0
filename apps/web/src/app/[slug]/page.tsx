@@ -16,6 +16,7 @@ import {
   seoPages,
   type IntegrationGuideSlug,
 } from "@/lib/seo";
+import { coreAlternates } from "@/lib/seo-core";
 
 const staticPageSeo = {
   "models": seoPages.models,
@@ -44,9 +45,11 @@ export function generateStaticParams() {
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const { slug } = await params;
-  return isStaticPageSlug(slug)
-    ? createPageMetadata(staticPageSeo[slug])
-    : createNoIndexMetadata("Page not found", "The requested page does not exist.");
+  if (isStaticPageSlug(slug)) {
+    const page = staticPageSeo[slug];
+    return { ...createPageMetadata(page), alternates: coreAlternates(page.path) };
+  }
+  return createNoIndexMetadata("Page not found", "The requested page does not exist.");
 }
 
 export default async function StaticPage({ params }: { params: Promise<{ slug: string }> }) {

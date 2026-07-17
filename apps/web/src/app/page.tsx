@@ -8,10 +8,12 @@ import { PricingOverview } from "@/components/pricing-overview";
 import { TopUpAmountInput } from "@/components/topup-amount-input";
 import { T } from "@/components/translated";
 import { absoluteUrl, createPageMetadata, SITE_NAME, SITE_ORIGIN, seoPages } from "@/lib/seo";
+import { coreAlternates } from "@/lib/seo-core";
 
-export const metadata: Metadata = createPageMetadata(seoPages.home, {
-  absoluteTitle: `${seoPages.home.title} | ${SITE_NAME}`,
-});
+export const metadata: Metadata = {
+  ...createPageMetadata(seoPages.home, { absoluteTitle: `${seoPages.home.title} | ${SITE_NAME}` }),
+  alternates: coreAlternates("/"),
+};
 
 const models = ["Claude Opus 4.8", "Claude Opus 4.7", "Claude Sonnet 5", "Claude Sonnet 4.6", "Claude Haiku 4.5"];
 // Hero-тезисы: у каждого свой пиксель-значок (свой файл на светлую/тёмную тему).
