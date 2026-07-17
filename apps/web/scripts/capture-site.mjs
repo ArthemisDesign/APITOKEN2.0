@@ -469,6 +469,8 @@ async function verifyPricingCardsLayout(client) {
         const businessPanel = rect('.business-preview');
         const topupValue = rect('.topup-preview input');
         const businessValue = rect('.business-preview-head strong');
+        const topupDescription = rect('.topup-card>p');
+        const businessDescription = rect('.business-card>p');
         const topupCta = rect('.topup-card .btn');
         const businessCta = rect('.business-card .business-status');
         const access = rect('.business-access');
@@ -486,6 +488,7 @@ async function verifyPricingCardsLayout(client) {
           desktopCardsAligned: stacked || Boolean(topup && business && Math.abs(topup.top - business.top) < 2 && Math.abs(topup.height - business.height) < 2),
           panelEdgesAligned: stacked || Boolean(topupPanel && businessPanel && Math.abs(topupPanel.top - businessPanel.top) < 2 && Math.abs(topupPanel.bottom - businessPanel.bottom) < 2),
           mainValuesAligned: stacked || Boolean(topupValue && businessValue && Math.abs((topupValue.top + topupValue.height / 2) - (businessValue.top + businessValue.height / 2)) < 2),
+          descriptionsAligned: stacked || Boolean(topupDescription && businessDescription && Math.abs(topupDescription.top - businessDescription.top) < 2),
           compactBusinessPanel: Boolean(businessPanel && businessPanel.height <= 210 && Number.parseFloat(rateStyle.fontSize) <= 34),
           matchingCardSurface: topupStyle.backgroundColor === businessStyle.backgroundColor && topupStyle.borderColor === businessStyle.borderColor,
           distinctInnerSurface: businessPanelStyle.backgroundColor !== businessStyle.backgroundColor && businessPanelStyle.borderRadius !== businessStyle.borderRadius,
@@ -499,7 +502,7 @@ async function verifyPricingCardsLayout(client) {
     });
     const state = JSON.parse(result.result.value);
     const expectedTheme = layoutCase.theme === "dark" ? "dark" : "light";
-    if (state.language !== layoutCase.language || state.theme !== expectedTheme || state.overflow > 1 || !state.cardWidthsAligned || !state.desktopCardsAligned || !state.panelEdgesAligned || !state.mainValuesAligned || !state.compactBusinessPanel || !state.matchingCardSurface || !state.distinctInnerSurface || !state.ctasMatch || !state.desktopCtasAligned || !state.termsFit || !state.accessFits) {
+    if (state.language !== layoutCase.language || state.theme !== expectedTheme || state.overflow > 1 || !state.cardWidthsAligned || !state.desktopCardsAligned || !state.panelEdgesAligned || !state.mainValuesAligned || !state.descriptionsAligned || !state.compactBusinessPanel || !state.matchingCardSurface || !state.distinctInnerSurface || !state.ctasMatch || !state.desktopCtasAligned || !state.termsFit || !state.accessFits) {
       throw new Error(`Pricing cards ${layoutCase.name} layout failed: ${JSON.stringify(state)}`);
     }
   }

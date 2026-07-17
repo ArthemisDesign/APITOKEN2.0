@@ -240,6 +240,7 @@ describe("completed Next.js migration", () => {
     expect(styles).toContain(".business-preview{overflow:hidden;border:1px solid var(--line-strong)");
     expect(styles).toContain(".business-preview-head{height:82px;min-height:82px");
     expect(styles).toContain(".business-terms{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))");
+    expect(styles).toContain(".topup-live + p,.business-preview + p{margin-top:18px}");
     expect(styles).not.toContain(".business-preview{flex:1 1 auto;min-height:168px");
     expect(styles).toContain(".stat b{font-family:var(--font-mono)");
     expect(styles).toContain(".prod{border:1px solid var(--line);border-radius:8px;padding:28px;background:var(--bg-card);display:flex;flex-direction:column");

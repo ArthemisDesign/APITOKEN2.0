@@ -1724,8 +1724,8 @@ body.app-body .bg-decor{display:none!important}
 .topup-live-out .tlo-badge{font-family:var(--font-mono);font-weight:700;font-size:13px;color:var(--accent);
   padding:4px 10px;border-radius:6px;background:color-mix(in srgb,var(--accent) 16%,transparent);white-space:nowrap}
 .topup-live-out .tlo-sub{font-family:var(--font-mono);font-size:13px;line-height:1.45;color:var(--txt-3)}
-/* отбить поясняющий абзац от value-бокса, чтобы не сливался */
-.topup-live + p{margin-top:18px}
+/* Keep both pricing explanations on the same row with equal breathing room after their data panels. */
+.topup-live + p,.business-preview + p{margin-top:18px}
 .tier-mult{font-style:normal;font-family:var(--font-mono);font-size:11px;color:var(--accent);white-space:nowrap}
 .tc-actions{display:flex}
 .tc-actions .btn{white-space:nowrap}
