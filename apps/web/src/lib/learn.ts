@@ -221,8 +221,8 @@ export const learnArticles: LearnArticle[] = [
     title: "How to Buy a Claude API Key",
     h1: "How to buy a Claude API key",
     description: "Buy a Claude API key in minutes with apiToken.sale — one key for every Claude model, prepaid balance, card or crypto payment, no Anthropic account required.",
-    keywords: ["buy claude api key", "how to buy claude api", "claude api key", "purchase claude api access", "anthropic api key"],
-    dek: "You do not need an Anthropic account, an invite, or a company card to start using Claude. With apiToken.sale you buy prepaid balance, generate one key, and call the same Anthropic Messages API at a discount.",
+    keywords: ["buy claude api key", "how to buy claude api", "claude api key", "purchase claude api access", "anthropic api key", "buy claude api", "claude api access", "claude api tokens", "claude api top up", "claude api reseller", "claude api provider"],
+    dek: "You do not need an Anthropic account, an invite, or a company card to buy a Claude API key. With apiToken.sale you top up prepaid balance, generate one key, and call the same Anthropic Messages API at a discount — instant Claude API access for Opus, Sonnet and Haiku.",
     sections: [
       { h2: "Get your key in three steps", blocks: [quickSetupSteps, cta()] },
       { h2: "How payment works", blocks: [
@@ -250,7 +250,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Cheapest Claude API — Up to 80% Discount",
     h1: "The cheapest way to use the Claude API",
     description: "The cheapest Claude API: buy discounted Claude API tokens at up to 80% off. apiToken.sale sells the identical Anthropic API from prepaid balance with a progressive Claude API discount.",
-    keywords: ["cheapest claude api", "claude api discount", "claude api tokens", "discounted claude api", "cheap claude api", "claude api cheaper than anthropic"],
+    keywords: ["cheapest claude api", "claude api discount", "claude api tokens", "discounted claude api", "cheap claude api", "claude api cheaper than anthropic", "buy claude api", "claude api access", "claude api top up", "claude api reseller", "claude api provider"],
     dek: "The Claude API is priced per token, and those tokens add up fast on long coding sessions. apiToken.sale gives you the identical API for up to 80% less by pooling prepaid balance and applying a progressive discount.",
     sections: [
       { h2: "Why it is cheaper", blocks: [
@@ -283,8 +283,8 @@ export const learnArticles: LearnArticle[] = [
     title: "Claude API from Russia and Restricted Regions",
     h1: "Using the Claude API from Russia",
     description: "Access the Claude API from Russia and other restricted regions with apiToken.sale — no Anthropic account, pay by card or crypto, one key for every Claude model.",
-    keywords: ["claude api russia", "claude api из россии", "anthropic api russia", "claude api restricted regions", "оплата claude api", "claude api без vpn"],
-    dek: "Anthropic does not sell directly in every country, which leaves developers in Russia and other regions without an obvious way to pay. apiToken.sale removes that barrier: you buy prepaid balance and get a working key regardless of where Anthropic bills.",
+    keywords: ["claude api russia", "claude api из россии", "anthropic api russia", "claude api restricted regions", "оплата claude api", "claude api без vpn", "buy claude api", "claude api access", "claude api tokens", "claude api top up", "claude api reseller"],
+    dek: "Anthropic does not sell directly in every country, which leaves developers in Russia and other regions without an obvious way to pay. apiToken.sale removes that barrier: you buy prepaid balance and get a working Claude API key regardless of where Anthropic bills — no Anthropic account and no VPN required.",
     sections: [
       { h2: "Why direct access is hard", blocks: [
         { type: "p", text: "Signing up with Anthropic often requires a supported billing country and payment method. If you cannot complete that, you cannot get a key — even though the models themselves are reachable over the network." },
@@ -314,8 +314,8 @@ export const learnArticles: LearnArticle[] = [
     title: "Pay for the Claude API with Crypto",
     h1: "Pay for the Claude API with cryptocurrency",
     description: "Buy Claude API balance with cryptocurrency or bank card on apiToken.sale. No Anthropic account, instant activation, prepaid balance that never expires.",
-    keywords: ["claude api crypto payment", "buy claude api with crypto", "claude api usdt", "pay anthropic api crypto", "claude api bitcoin"],
-    dek: "If a bank card is not an option — or you simply prefer crypto — you can fund your Claude API balance with cryptocurrency and start immediately.",
+    keywords: ["claude api crypto payment", "buy claude api with crypto", "claude api usdt", "pay anthropic api crypto", "claude api bitcoin", "buy claude api", "claude api access", "claude api tokens", "claude api top up", "claude api reseller", "claude api provider"],
+    dek: "If a bank card is not an option — or you simply prefer crypto — you can fund your Claude API balance with cryptocurrency such as USDT or BTC and start immediately, with no Anthropic account.",
     sections: [
       { h2: "Card or crypto, your choice", blocks: [
         { type: "p", text: "At checkout you can pay by bank card or with cryptocurrency through a secure payment provider. Either way the balance lands prepaid in your account and is spent only when requests run." },
@@ -349,7 +349,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Claude API With No Waitlist or Approval",
     h1: "Claude API access with no waitlist",
     description: "Skip the Anthropic waitlist and approval. Create an account on apiToken.sale, generate a Claude API key, and make your first call in minutes.",
-    keywords: ["claude api no waitlist", "claude api instant access", "claude api without approval", "get claude api key fast", "claude api no anthropic account"],
+    keywords: ["claude api no waitlist", "claude api instant access", "claude api without approval", "get claude api key fast", "claude api no anthropic account", "buy claude api", "claude api access", "claude api tokens", "claude api top up", "claude api reseller", "claude api provider"],
     dek: "Waiting for approval kills momentum. apiToken.sale gives you instant, self-serve access to every supported Claude model — no queue, no sales call, no company verification.",
     sections: [
       { h2: "Instant, self-serve access", blocks: [ quickSetupSteps, cta() ] },
@@ -377,7 +377,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Claude API Setup in Two Minutes",
     h1: "Set up the Claude API in two minutes",
     description: "A two-minute Claude API quickstart: create a key, set your base URL to api.apitoken.sale, and send your first /v1/messages request with curl, Python or your IDE.",
-    keywords: ["claude api quickstart", "claude api setup", "claude api first request", "anthropic messages api", "claude api base url"],
+    keywords: ["claude api quickstart", "claude api setup", "claude api first request", "anthropic messages api", "claude api base url", "buy claude api", "claude api access", "claude api tokens", "claude api top up", "claude api reseller", "claude api provider"],
     dek: "This is the fastest path from zero to a working Claude API call. Everything below uses the standard Anthropic Messages API, so it drops straight into your existing code.",
     sections: [
       { h2: "1. Create a key", blocks: [ { type: "p", text: "Sign up, open the dashboard, and generate a key. It looks like sk-pool-… and works across every supported model." } ] },
@@ -412,8 +412,8 @@ export const learnArticles: LearnArticle[] = [
     title: "Free Claude API Key to Get Started",
     h1: "Get a free Claude API key to start",
     description: "Create a Claude API key for free on apiToken.sale and get $10 of Claude usage at official API prices — no card required, no Anthropic account, instant access.",
-    keywords: ["free claude api key", "claude api free", "free claude api", "claude api free tier", "free anthropic api key", "claude api no card"],
-    dek: "You can create your key and make real Claude calls before spending anything. Every new B2C account is funded with $10 of usage at official API prices so you can prove the integration works first.",
+    keywords: ["free claude api key", "claude api free", "free claude api", "claude api free tier", "free anthropic api key", "claude api no card", "claude api no credit card", "claude api free credits", "try claude api free"],
+    dek: "You can create a free Claude API key and make real Claude calls before spending anything — no credit card needed. Every new account is funded with $10 of Claude usage at official API prices, so you can prove the integration works first.",
     sections: [
       { h2: "What 'free' includes", blocks: [
         { type: "list", items: [
@@ -437,7 +437,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Claude API Free Trial — Start in Minutes",
     h1: "Try the Claude API free",
     description: "Start coding with Claude in minutes. apiToken.sale gives every new account $10 of Claude usage at official prices, no card and no Anthropic approval required.",
-    keywords: ["claude api free trial", "try claude api", "claude api test", "claude api sandbox", "claude api demo"],
+    keywords: ["claude api free trial", "try claude api", "claude api test", "claude api sandbox", "claude api demo", "free claude api", "claude api free", "claude api no credit card", "claude api free credits", "try claude api free", "claude api free tier"],
     dek: "There is no separate trial to apply for — you simply sign up, get $10 of usage at official API prices, and run real calls against every supported model.",
     sections: [
       { h2: "Prove it before you pay", blocks: [
@@ -460,7 +460,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Use Claude Code Without a Subscription",
     h1: "Claude Code without the $200/month plan",
     description: "Run Claude Code on pay-as-you-go API balance instead of a monthly subscription. Set ANTHROPIC_BASE_URL to api.apitoken.sale and pay only for what you use.",
-    keywords: ["claude code without subscription", "claude code api key", "claude code pay as you go", "claude code cheap", "claude code no subscription"],
+    keywords: ["claude code without subscription", "claude code api key", "claude code pay as you go", "claude code cheap", "claude code no subscription", "free claude api", "claude api free", "claude api no credit card", "claude api free credits", "try claude api free", "claude api free tier"],
     dek: "Claude Code does not have to mean a fixed monthly plan. Point it at an API key with prepaid balance and you pay per token — ideal if your usage is spiky or you just want to try it.",
     sections: [
       { h2: "Two environment variables", blocks: [
@@ -488,7 +488,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Claude Opus API Access",
     h1: "Claude Opus 4.8 through the API",
     description: "Access Claude Opus 4.8 and 4.7 through one apiToken.sale key at up to 80% off official rates. Best for complex reasoning, refactors and long agent sessions.",
-    keywords: ["claude opus api", "claude opus 4.8 api", "opus api key", "claude opus pricing", "claude opus discount"],
+    keywords: ["claude opus api", "claude opus 4.8 api", "opus api key", "claude opus pricing", "claude opus discount", "free claude api", "claude api free", "claude api no credit card", "claude api free credits", "try claude api free", "claude api free tier"],
     dek: "Opus is Claude's most capable tier — the model to reach for on hard reasoning, architecture and long agentic runs. apiToken.sale gives you Opus 4.8 and 4.7 on the same key and balance as every other model.",
     sections: [
       { h2: "When to use Opus", blocks: [
@@ -515,7 +515,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Claude Sonnet API Access",
     h1: "Claude Sonnet through the API",
     description: "Use Claude Sonnet 5 and Sonnet 4.6 through apiToken.sale — the default model for daily coding and agents, at up to 80% off official API pricing.",
-    keywords: ["claude sonnet api", "claude sonnet 5 api", "sonnet api key", "claude sonnet pricing", "best claude model for coding"],
+    keywords: ["claude sonnet api", "claude sonnet 5 api", "sonnet api key", "claude sonnet pricing", "best claude model for coding", "free claude api", "claude api free", "claude api no credit card", "claude api free credits", "try claude api free", "claude api free tier"],
     dek: "Sonnet is the workhorse: fast enough for interactive coding, smart enough for real agent workflows. apiToken.sale serves Sonnet 5 and Sonnet 4.6 on one discounted balance.",
     sections: [
       { h2: "The daily-driver model", blocks: [
@@ -538,7 +538,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Claude Haiku API Access",
     h1: "Claude Haiku 4.5 through the API",
     description: "Access Claude Haiku 4.5 through apiToken.sale — the fastest, most economical Claude model, ideal for high-volume and low-latency tasks, at a prepaid discount.",
-    keywords: ["claude haiku api", "claude haiku 4.5 api", "fastest claude model", "cheap claude model", "haiku api key"],
+    keywords: ["claude haiku api", "claude haiku 4.5 api", "fastest claude model", "cheap claude model", "haiku api key", "free claude api", "claude api free", "claude api no credit card", "claude api free credits", "try claude api free", "claude api free tier"],
     dek: "Haiku is built for speed and volume: classification, extraction, routing and any task where latency and cost matter more than deep reasoning.",
     sections: [
       { h2: "When Haiku is the right call", blocks: [
@@ -567,7 +567,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Claude API Key for Cursor",
     h1: "Use a Claude API key in Cursor",
     description: "Connect Cursor to Claude with an apiToken.sale key: set the Anthropic base URL to api.apitoken.sale, paste your key, pick a model, and code at up to 80% off.",
-    keywords: ["claude api key for cursor", "cursor claude api", "cursor anthropic key", "use claude in cursor", "cursor without cursor pro"],
+    keywords: ["claude api key for cursor", "cursor claude api", "cursor anthropic key", "use claude in cursor", "cursor without cursor pro", "claude api key", "anthropic-compatible api", "claude api base url", "claude api setup", "claude api integration", "claude api cursor"],
     dek: "Cursor lets you bring your own Anthropic key, which means you can run Claude in Cursor on discounted prepaid balance instead of a bundled plan.",
     sections: [
       { h2: "Three-step setup", blocks: [
@@ -602,7 +602,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Claude API in VS Code (Cline, Continue)",
     h1: "Use the Claude API in VS Code",
     description: "Run Claude in VS Code with Cline or Continue using an apiToken.sale key. Set the Anthropic base URL to api.apitoken.sale and pay per token at a discount.",
-    keywords: ["claude api vs code", "cline claude api", "continue claude api", "claude in vscode", "vscode anthropic api key"],
+    keywords: ["claude api vs code", "cline claude api", "continue claude api", "claude in vscode", "vscode anthropic api key", "claude api key", "anthropic-compatible api", "claude api base url", "claude api setup", "claude api integration", "claude api vscode"],
     dek: "Free VS Code agents like Cline and Continue accept any Anthropic-compatible endpoint, so you can code with Claude inside VS Code on discounted balance.",
     sections: [
       { h2: "Cline", blocks: [
@@ -633,7 +633,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Claude in Cursor Without an Anthropic Account",
     h1: "Run Claude in Cursor without an Anthropic account",
     description: "No Anthropic account? Use Claude in Cursor with an apiToken.sale key instead. Instant access, card or crypto payment, and up to 80% off official API rates.",
-    keywords: ["cursor without anthropic account", "claude cursor no anthropic", "cursor claude api key", "use claude without anthropic account"],
+    keywords: ["cursor without anthropic account", "claude cursor no anthropic", "cursor claude api key", "use claude without anthropic account", "claude api key", "anthropic-compatible api", "claude api base url", "claude api setup", "claude api integration", "claude api python", "claude api typescript"],
     dek: "If you cannot or would rather not create an Anthropic account, apiToken.sale issues its own key that Cursor accepts as an Anthropic provider.",
     sections: [
       { h2: "Why this works", blocks: [
@@ -697,7 +697,7 @@ export const learnArticles: LearnArticle[] = [
     title: "apiToken.sale vs Anthropic Direct",
     h1: "apiToken.sale vs buying from Anthropic directly",
     description: "Compare apiToken.sale and Anthropic direct: identical Messages API and models, but with up to 80% off, no account requirement, and card or crypto payment.",
-    keywords: ["claude api vs anthropic direct", "apitoken vs anthropic", "anthropic api alternative", "cheaper than anthropic api", "claude api reseller"],
+    keywords: ["claude api vs anthropic direct", "apitoken vs anthropic", "anthropic api alternative", "cheaper than anthropic api", "claude api reseller", "claude api discount", "cheap claude api", "claude api vs anthropic", "best claude api"],
     dek: "apiToken.sale is not a different API — it is the same Anthropic Messages API, resold from prepaid balance at a discount. Here is what actually changes and what does not.",
     sections: [
       { h2: "What stays the same", blocks: [
@@ -731,7 +731,7 @@ export const learnArticles: LearnArticle[] = [
     title: "apiToken.sale vs OpenRouter for Claude",
     h1: "apiToken.sale vs OpenRouter for Claude",
     description: "Choosing a Claude gateway? Compare apiToken.sale and OpenRouter: a native Anthropic endpoint and prepaid discount vs a multi-provider router.",
-    keywords: ["openrouter alternative", "apitoken vs openrouter", "claude api gateway", "openrouter claude", "best claude api gateway"],
+    keywords: ["openrouter alternative", "apitoken vs openrouter", "claude api gateway", "openrouter claude", "best claude api gateway", "anthropic api alternative", "claude api discount", "cheap claude api", "claude api vs anthropic", "best claude api"],
     dek: "Both let you reach Claude without an Anthropic account, but they are built differently. If Claude is your main model, a native Anthropic endpoint keeps things simple.",
     sections: [
       { h2: "Native Anthropic endpoint", blocks: [
@@ -765,7 +765,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Claude Opus vs Sonnet — Which to Use",
     h1: "Claude Opus vs Sonnet: which model to use",
     description: "Opus or Sonnet? A practical guide to picking the right Claude model for coding and agents — and using both on one apiToken.sale key and balance.",
-    keywords: ["claude opus vs sonnet", "which claude model", "opus or sonnet coding", "best claude model", "claude model comparison"],
+    keywords: ["claude opus vs sonnet", "which claude model", "opus or sonnet coding", "best claude model", "claude model comparison", "claude api pricing", "claude api tokens", "how claude api works", "claude api explained", "anthropic api"],
     dek: "Opus and Sonnet solve different problems. Choosing well is the easiest way to get better results and spend fewer tokens — and you can keep both on one key.",
     sections: [
       { h2: "Use Sonnet by default", blocks: [
@@ -791,7 +791,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Claude API Pricing Explained",
     h1: "How Claude API pricing works",
     description: "Understand Claude API pricing: per-token input and output rates, prompt caching, and how apiToken.sale applies a progressive discount of up to 80% off.",
-    keywords: ["claude api pricing", "claude api tokens", "claude token pricing", "claude api cost", "how claude api pricing works", "anthropic api pricing explained"],
+    keywords: ["claude api pricing", "claude api tokens", "claude token pricing", "claude api cost", "how claude api pricing works", "anthropic api pricing explained", "how claude api works", "claude api explained", "anthropic api"],
     dek: "Claude is billed per token — separately for input and output — with discounts for cached content. apiToken.sale keeps those mechanics identical and layers a discount on top.",
     sections: [
       { h2: "Tokens, input and output", blocks: [
@@ -821,7 +821,7 @@ export const learnArticles: LearnArticle[] = [
     title: "How to Save Tokens on the Claude API",
     h1: "How to save tokens on the Claude API",
     description: "Cut Claude API costs with prompt caching, the right model per task, and tighter context. Practical token-saving tactics that stack with the apiToken.sale discount.",
-    keywords: ["save tokens claude api", "reduce claude api cost", "claude prompt caching", "claude api optimization", "lower claude api bill"],
+    keywords: ["save tokens claude api", "reduce claude api cost", "claude prompt caching", "claude api optimization", "lower claude api bill", "claude api pricing", "claude api tokens", "how claude api works", "claude api explained", "anthropic api"],
     dek: "Your discount lowers the price per token; these tactics lower the number of tokens. Together they compound into a much smaller bill.",
     sections: [
       { h2: "Use prompt caching", blocks: [
@@ -851,7 +851,7 @@ export const learnArticles: LearnArticle[] = [
     title: "How Billing Works on apiToken.sale",
     h1: "How billing works",
     description: "Understand apiToken.sale billing: prepaid balance, per-request metering at official rates, your progressive discount, and token-level usage in the dashboard.",
-    keywords: ["claude api billing", "how apitoken billing works", "prepaid claude api", "claude api usage tracking", "claude api balance"],
+    keywords: ["claude api billing", "how apitoken billing works", "prepaid claude api", "claude api usage tracking", "claude api balance", "claude api pricing", "claude api tokens", "how claude api works", "claude api explained", "anthropic api"],
     dek: "Billing is prepaid and transparent. You fund a balance, and each request draws down official spend minus your discount, with a full breakdown you can audit.",
     sections: [
       { h2: "Prepaid balance", blocks: [
@@ -881,7 +881,7 @@ export const learnArticles: LearnArticle[] = [
     title: "How Fast Is Claude API Activation?",
     h1: "How fast your Claude API key activates",
     description: "apiToken.sale keys activate instantly. Generate a key, top up, and make a successful Claude API call within minutes — no manual review or waitlist.",
-    keywords: ["claude api activation time", "how fast claude api key", "instant claude api key", "claude api ready time"],
+    keywords: ["claude api activation time", "how fast claude api key", "instant claude api key", "claude api ready time", "claude api pricing", "claude api tokens", "how claude api works", "claude api explained", "anthropic api", "claude api worldwide", "claude api china"],
     dek: "There is no waiting period between creating your key and using it. Activation is instant, so the only limit on speed is how fast you paste the key into your tool.",
     sections: [
       { h2: "Instant by design", blocks: [
@@ -909,7 +909,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Claude API Supported Countries",
     h1: "Where you can use apiToken.sale",
     description: "apiToken.sale works worldwide with no Anthropic billing-country requirement. Pay by card or crypto and use the Claude API from regions Anthropic does not serve directly.",
-    keywords: ["claude api supported countries", "claude api worldwide", "anthropic api country restrictions", "claude api available regions"],
+    keywords: ["claude api supported countries", "claude api worldwide", "anthropic api country restrictions", "claude api available regions", "claude api pricing", "claude api tokens", "how claude api works", "claude api explained", "anthropic api"],
     dek: "Because we issue your key and balance, there is no Anthropic billing-country gate. That opens the Claude API to developers in regions where signing up directly is difficult.",
     sections: [
       { h2: "No billing-country gate", blocks: [
@@ -941,7 +941,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Claude API Refund Policy",
     h1: "Refunds and support",
     description: "Learn how apiToken.sale handles balance, refunds and support. Prepaid balance never expires, and help is available in English and Russian through Telegram.",
-    keywords: ["claude api refund", "apitoken refund policy", "claude api support", "claude api money back", "claude api help"],
+    keywords: ["claude api refund", "apitoken refund policy", "claude api support", "claude api money back", "claude api help", "anthropic api alternative", "claude api discount", "cheap claude api", "claude api vs anthropic", "best claude api"],
     dek: "Prepaid balance is designed to be low-risk: it never expires, you spend only what you call, and support is one message away.",
     sections: [
       { h2: "Balance and refunds", blocks: [
@@ -974,7 +974,7 @@ export const learnArticles: LearnArticle[] = [
     title: "apiToken.sale vs ProxyAPI for Claude",
     h1: "apiToken.sale vs ProxyAPI",
     description: "Comparing Claude API resellers: apiToken.sale offers a native Anthropic endpoint with a progressive 60–80% discount, card or crypto payment, and one key for every model.",
-    keywords: ["proxyapi alternative", "apitoken vs proxyapi", "claude api reseller", "proxyapi claude", "claude api без proxyapi"],
+    keywords: ["proxyapi alternative", "apitoken vs proxyapi", "claude api reseller", "proxyapi claude", "claude api без proxyapi", "anthropic api alternative", "claude api discount", "cheap claude api", "claude api vs anthropic", "best claude api"],
     dek: "Both let you reach Claude without an Anthropic account. The differences are in how you pay, how much you save, and whether the endpoint is truly Anthropic-native.",
     sections: [
       { h2: "Native Anthropic endpoint", blocks: [
@@ -1008,7 +1008,7 @@ export const learnArticles: LearnArticle[] = [
     title: "apiToken.sale vs Portkey for Claude",
     h1: "apiToken.sale vs Portkey",
     description: "Portkey is an AI gateway for routing and observability using your own provider keys. apiToken.sale provides the Claude key and balance itself, at a discount. Here is when to use each.",
-    keywords: ["portkey alternative", "apitoken vs portkey", "ai gateway claude", "portkey claude api", "claude api gateway"],
+    keywords: ["portkey alternative", "apitoken vs portkey", "ai gateway claude", "portkey claude api", "claude api gateway", "anthropic api alternative", "claude api discount", "cheap claude api", "claude api vs anthropic", "best claude api"],
     dek: "These tools solve different problems. Portkey sits in front of provider keys you already own; apiToken.sale is where the Claude key and discounted balance come from.",
     sections: [
       { h2: "Different jobs", blocks: [
@@ -1032,7 +1032,7 @@ export const learnArticles: LearnArticle[] = [
     title: "apiToken.sale vs LiteLLM for Claude",
     h1: "apiToken.sale vs LiteLLM",
     description: "LiteLLM is a self-hosted proxy that unifies model APIs but needs your own funded keys. apiToken.sale is a hosted, discounted Claude endpoint with nothing to run.",
-    keywords: ["litellm alternative", "apitoken vs litellm", "litellm claude", "self-hosted claude proxy", "claude api hosted"],
+    keywords: ["litellm alternative", "apitoken vs litellm", "litellm claude", "self-hosted claude proxy", "claude api hosted", "anthropic api alternative", "claude api discount", "cheap claude api", "claude api vs anthropic", "best claude api"],
     dek: "LiteLLM is great if you want to self-host a proxy across many providers. apiToken.sale is the opposite trade-off: nothing to run, and the Claude balance comes discounted.",
     sections: [
       { h2: "Self-hosted vs hosted", blocks: [
@@ -1063,7 +1063,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Best Claude Model for Coding",
     h1: "The best Claude model for coding",
     description: "Which Claude model should you use for coding? A practical guide to picking Opus, Sonnet or Haiku per task — all available on one apiToken.sale key.",
-    keywords: ["best claude model for coding", "claude model for programming", "opus vs sonnet coding", "claude coding model", "which claude for code"],
+    keywords: ["best claude model for coding", "claude model for programming", "opus vs sonnet coding", "claude coding model", "which claude for code", "anthropic api alternative", "claude api discount", "cheap claude api", "claude api vs anthropic", "best claude api"],
     dek: "The best model depends on the task. Match the model to the job and you get better output for fewer tokens — and every tier is on one key.",
     sections: [
       { h2: "Sonnet for everyday coding", blocks: [
@@ -1089,7 +1089,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Claude Max Plan vs the Claude API",
     h1: "Claude Max subscription vs the API",
     description: "When to use a Claude subscription vs the Claude API. apiToken.sale gives pay-as-you-go API access to every model with no monthly fee and up to 80% off.",
-    keywords: ["claude max plan", "claude subscription vs api", "claude max vs api", "claude api pay as you go", "claude without subscription"],
+    keywords: ["claude max plan", "claude subscription vs api", "claude max vs api", "claude api pay as you go", "claude without subscription", "anthropic api alternative", "claude api discount", "cheap claude api", "claude api vs anthropic", "best claude api", "claude api tokens"],
     dek: "A flat Claude subscription and pay-as-you-go API billing suit different usage. For programmatic and bursty use, the API on prepaid balance is usually the better deal.",
     sections: [
       { h2: "Subscription vs per-token", blocks: [
@@ -1116,7 +1116,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Claude 3.5 vs Claude 4 — What Changed",
     h1: "Claude 3.5 vs Claude 4: what changed",
     description: "Moving from Claude 3.5 to the current Claude 4 line? What improved, updated model IDs, and how to switch on apiToken.sale with one base-URL change.",
-    keywords: ["claude 3.5 vs 4", "claude 4 vs 3.5", "claude model migration", "upgrade claude model", "new claude models"],
+    keywords: ["claude 3.5 vs 4", "claude 4 vs 3.5", "claude model migration", "upgrade claude model", "new claude models", "claude api pricing", "claude api tokens", "how claude api works", "claude api explained", "anthropic api"],
     dek: "The current Claude line is a clear step up from 3.5 in reasoning and coding. Migrating is mostly a model-ID change — everything else stays the same.",
     sections: [
       { h2: "What improved", blocks: [
@@ -1139,7 +1139,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Why Choose apiToken.sale",
     h1: "Why choose apiToken.sale",
     description: "Why developers pick apiToken.sale for Claude: the same Anthropic API up to 80% off, discounted Claude API tokens, instant access with no Anthropic account, and card or crypto payment.",
-    keywords: ["why apitoken.sale", "claude api discount", "claude api tokens", "claude api sale", "best claude api provider", "claude api no anthropic account"],
+    keywords: ["why apitoken.sale", "claude api discount", "claude api tokens", "claude api sale", "best claude api provider", "claude api no anthropic account", "claude api pricing", "how claude api works", "claude api explained", "anthropic api"],
     dek: "apiToken.sale is built for one thing: the same Claude API, cheaper and easier to start. Here is what that means in practice.",
     sections: [
       { h2: "The short version", blocks: [
@@ -1167,7 +1167,7 @@ export const learnArticles: LearnArticle[] = [
     title: "What Is a Claude API Gateway?",
     h1: "What a Claude API gateway is",
     description: "A Claude API gateway sits between your tools and Anthropic, adding access, billing and control. apiToken.sale is a native gateway with a 60–80% discount.",
-    keywords: ["claude api gateway", "what is an api gateway", "anthropic gateway", "claude proxy", "claude api access layer"],
+    keywords: ["claude api gateway", "what is an api gateway", "anthropic gateway", "claude proxy", "claude api access layer", "claude api pricing", "claude api tokens", "how claude api works", "claude api explained", "anthropic api"],
     dek: "A gateway is a thin layer between your code and the model provider. A good Claude gateway is invisible to your tools while improving access, price and control.",
     sections: [
       { h2: "What a gateway does", blocks: [
@@ -1202,7 +1202,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Claude API Rate Limits",
     h1: "Understanding Claude API rate limits",
     description: "How rate limits work on apiToken.sale, what a 429 means, and how to handle it with backoff and per-key caps to protect your prepaid balance.",
-    keywords: ["claude api rate limits", "claude api 429", "anthropic rate limit", "claude api throughput", "claude api retry"],
+    keywords: ["claude api rate limits", "claude api 429", "anthropic rate limit", "claude api throughput", "claude api retry", "claude api pricing", "claude api tokens", "how claude api works", "claude api explained", "anthropic api"],
     dek: "Rate limits keep the gateway stable and your balance safe. Handling them well means smoother tools and no wasted spend.",
     sections: [
       { h2: "Protective, per-key limits", blocks: [
@@ -1229,7 +1229,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Streaming with the Claude API",
     h1: "Streaming responses from the Claude API",
     description: "How to stream Claude responses on apiToken.sale for responsive coding agents and UIs. Same Anthropic SSE format, billed the same as non-streaming.",
-    keywords: ["claude api streaming", "claude sse", "stream claude responses", "anthropic streaming api", "claude api real-time"],
+    keywords: ["claude api streaming", "claude sse", "stream claude responses", "anthropic streaming api", "claude api real-time", "claude api pricing", "claude api tokens", "how claude api works", "claude api explained", "anthropic api"],
     dek: "Streaming sends tokens as they are generated, which makes agents and chat UIs feel instant. apiToken.sale supports the standard Anthropic streaming format.",
     sections: [
       { h2: "How to stream", blocks: [
@@ -1261,7 +1261,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Prompt Caching on the Claude API",
     h1: "Cutting costs with Claude prompt caching",
     description: "Prompt caching makes repeated context on the Claude API much cheaper. How it works on apiToken.sale, when to use it, and how it stacks with your discount.",
-    keywords: ["claude prompt caching", "claude api cache", "anthropic prompt cache", "reduce claude cost caching", "claude cache read"],
+    keywords: ["claude prompt caching", "claude api cache", "anthropic prompt cache", "reduce claude cost caching", "claude cache read", "claude api key", "anthropic-compatible api", "claude api base url", "claude api setup", "claude api integration", "claude code api"],
     dek: "If you send the same large context repeatedly — system prompts, files, tool definitions — caching turns those tokens from expensive to nearly free.",
     sections: [
       { h2: "How caching saves money", blocks: [
@@ -1284,7 +1284,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Claude API Best Practices",
     h1: "Claude API best practices",
     description: "Practical best practices for the Claude API on apiToken.sale: model choice, prompt caching, streaming, per-key caps, and secure key handling.",
-    keywords: ["claude api best practices", "claude api tips", "claude api production", "claude api guidelines", "anthropic api best practices"],
+    keywords: ["claude api best practices", "claude api tips", "claude api production", "claude api guidelines", "anthropic api best practices", "claude api key", "anthropic-compatible api", "claude api base url", "claude api setup", "claude api integration"],
     dek: "A short checklist to get reliable, economical results from the Claude API in production.",
     sections: [
       { h2: "The checklist", blocks: [
@@ -1321,7 +1321,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Set Up Claude Code with an API Key",
     h1: "Use Claude Code with an apiToken.sale key",
     description: "Configure Claude Code with an apiToken.sale key in two environment variables and run every Claude model on prepaid balance at up to 80% off.",
-    keywords: ["claude code api key", "claude code setup", "claude code anthropic base url", "claude code custom key", "run claude code cheap"],
+    keywords: ["claude code api key", "claude code setup", "claude code anthropic base url", "claude code custom key", "run claude code cheap", "claude api key", "anthropic-compatible api", "claude api base url", "claude api setup", "claude api integration"],
     dek: "Claude Code reads two environment variables. Point them at apiToken.sale and you keep every feature while billing against discounted prepaid balance.",
     sections: [
       { h2: "Two variables", blocks: [
@@ -1350,7 +1350,7 @@ export const learnArticles: LearnArticle[] = [
     title: "Free VS Code AI Agents with Claude",
     h1: "Run free VS Code AI agents on Claude",
     description: "Set up free VS Code agents like Cline and Roo Code with an apiToken.sale Claude key — no Cursor Pro needed. One endpoint, every Claude model, at a discount.",
-    keywords: ["free vscode ai agent", "cline roo code claude", "vscode claude agent", "cursor alternative free", "claude vscode without cursor"],
+    keywords: ["free vscode ai agent", "cline roo code claude", "vscode claude agent", "cursor alternative free", "claude vscode without cursor", "claude api pricing", "claude api tokens", "how claude api works", "claude api explained", "anthropic api", "claude api agent"],
     dek: "You do not need Cursor Pro to get agentic coding. Free VS Code agents accept any Anthropic-compatible key, so Claude runs in VS Code on discounted balance.",
     sections: [
       { h2: "Point the agent at Claude", blocks: [
