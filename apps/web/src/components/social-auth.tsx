@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { api, oauthUrl, type ProviderStatus } from "@/lib/api";
 import { useI18n } from "./i18n-provider";
+import { GitHubLogo, GoogleLogo } from "./provider-logos";
 
 export function SocialAuth({ inviteToken }: { inviteToken?: string }) {
   const { t } = useI18n();
@@ -13,11 +14,11 @@ export function SocialAuth({ inviteToken }: { inviteToken?: string }) {
     <>
       <div className="auth-or"><span>{t("auth_or")}</span></div>
       <div className="social">
-        {providers.google.enabled && <a className="btn-social" href={oauthUrl("google", inviteToken)}>
-          <span aria-hidden="true">G</span>{t("social_google")}
+        {providers.google.enabled && <a className="btn-social btn-social-google" href={oauthUrl("google", inviteToken)}>
+          <GoogleLogo />{t("social_google")}
         </a>}
-        {providers.github.enabled && <a className="btn-social" href={oauthUrl("github", inviteToken)}>
-          <span aria-hidden="true">GH</span>{t("social_github")}
+        {providers.github.enabled && <a className="btn-social btn-social-github" href={oauthUrl("github", inviteToken)}>
+          <GitHubLogo />{t("social_github")}
         </a>}
       </div>
     </>
