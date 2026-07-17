@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { CostCalculator } from "@/components/cost-calculator";
+import { JsonLd } from "@/components/json-ld";
 
 const TITLE = "Claude API Cost Calculator — Free Price Estimator for Every Model";
 const DESC =
@@ -79,7 +80,7 @@ const jsonLd = {
 export default function CostCalculatorPage() {
   return (
     <main>
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+      <JsonLd data={jsonLd} />
 
       <div className="page-hero">
         <div className="wrap">
