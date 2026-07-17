@@ -20,4 +20,5 @@ IOSchedulingPriority=7
 PrivateTmp=true
 ProtectHome=read-only
 ProtectSystem=full
-ReadWritePaths=/var/lib/apitoken/watchdog /opt/apitoken /srv/claude-api/releases /run/lock
+# Exact tested infrastructure updates may replace only the controller-owned operational files.
+ReadWritePaths=/var/lib/apitoken/watchdog /opt/apitoken /srv/claude-api/releases /run/lock /usr/local/lib/apitoken-watchdog /usr/local/bin /etc/systemd/system /etc/caddy

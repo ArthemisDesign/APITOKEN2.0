@@ -77,4 +77,13 @@ if wd_path_is_caddy deploy/watchdog.sh; then
   wd_die "non-Caddy infrastructure change requested a Caddy reload"
 fi
 
+watchdog_writable_paths=$(sed -n 's/^ReadWritePaths=//p' "$ROOT/systemd/apitoken-deploy-watchdog.service")
+for required_path in \
+  /var/lib/apitoken/watchdog /opt/apitoken /srv/claude-api/releases /run/lock \
+  /usr/local/lib/apitoken-watchdog /usr/local/bin /etc/systemd/system /etc/caddy; do
+  if ! tr ' ' '\n' <<<"$watchdog_writable_paths" | grep -Fxq "$required_path"; then
+    wd_die "watchdog service cannot update required operational path: $required_path"
+  fi
+done
+
 printf 'watchdog migration and engine topology tests passed\n'
