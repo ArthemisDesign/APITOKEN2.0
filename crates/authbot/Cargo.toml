@@ -1,0 +1,20 @@
+[package]
+name = "authbot"
+version = "0.1.0"
+edition = "2021"
+description = "Telegram-бот покупки подписок (Rust) — пополнение пула этого проекта"
+
+[[bin]]
+name = "authbot"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+anyhow = "1"
+portable-pty = "0.8"                 # Фаза 3: гоним `claude setup-token` в PTY
+registry = { path = "../registry" }  # мост: запись подписки в пул напрямую
+# Выплаты — через проверенный bsc_pay (subprocess); на чистый alloy переведём отдельно.

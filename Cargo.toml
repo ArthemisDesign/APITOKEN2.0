@@ -9,6 +9,7 @@ members = [
     "crates/forward",
     "crates/server",
     "crates/metering",
+    "crates/authbot",
 ]
 
 [profile.release]
