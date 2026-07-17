@@ -33,20 +33,26 @@ Worker SMTP configuration:
 ```text
 EMAIL_DELIVERY_MODE=smtp
 EMAIL_FROM=no-reply@apitoken.sale
-SMTP_HOST=mail.apitoken.sale
-SMTP_PORT=465
-SMTP_SECURE=true
-SMTP_USERNAME=no-reply@apitoken.sale
-SMTP_PASSWORD=<secret>
+SMTP_HOST=smtp-relay.brevo.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USERNAME=<Brevo SMTP login>
+SMTP_PASSWORD=<Brevo SMTP key>
 PUBLIC_APP_BASE_URL=https://apitoken.sale
 ```
+
+Port 587 starts as a plain SMTP connection and upgrades with STARTTLS. In production, the worker
+sets Nodemailer's `requireTLS` option and refuses to authenticate or deliver if that upgrade fails.
+`SMTP_SECURE=true` remains supported for providers using implicit TLS on port 465. Store the SMTP
+key only in the root-owned worker environment file; never commit it.
 
 Use `EMAIL_DELIVERY_MODE=disabled` during development when no SMTP server is available; jobs remain
 queued. A local SMTP capture server can be used with `SMTP_SECURE=false`.
 
-## Self-hosted SMTP requirements
+## Sender-domain requirements
 
-For reliable delivery, use a dedicated hostname/IP and configure forward DNS, matching PTR/reverse
-DNS, SPF, 2048-bit DKIM, DMARC, and TLS before production. Keep transactional mail separate from
-marketing traffic. Verification links target `/verify-email`; reset links target `/reset-password`
-on `PUBLIC_APP_BASE_URL`.
+Verify the sending domain with the SMTP provider and publish its SPF and DKIM records. Merge the
+provider into the existing SPF record instead of publishing a second SPF record, and add DMARC.
+Do not replace inbound MX records when the existing receiving service should remain active. Keep
+transactional mail separate from marketing traffic. Verification links target `/verify-email`;
+reset links target `/reset-password` on `PUBLIC_APP_BASE_URL`.

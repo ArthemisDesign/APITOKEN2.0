@@ -12,6 +12,7 @@ import {
   type Database,
 } from "@claude-api/db";
 import type { Environment } from "./config.js";
+import { smtpSecurityOptions } from "./smtp.js";
 import { DATABASE, WORKER_ID } from "./tokens.js";
 
 const STALE_EMAIL_RECOVERY_INTERVAL_MS = 60_000;
@@ -36,10 +37,14 @@ export class EmailWorkerService implements OnModuleInit, OnApplicationShutdown {
       this.logger.warn("email delivery is disabled; messages will remain queued");
       return;
     }
+    const environment = {
+      NODE_ENV: this.config.get("NODE_ENV", { infer: true }),
+      SMTP_SECURE: this.config.get("SMTP_SECURE", { infer: true }),
+    };
     this.transport = nodemailer.createTransport({
       host: this.config.get("SMTP_HOST", { infer: true }),
       port: this.config.get("SMTP_PORT", { infer: true }),
-      secure: this.config.get("SMTP_SECURE", { infer: true }),
+      ...smtpSecurityOptions(environment),
       auth: this.config.get("SMTP_USERNAME", { infer: true }) ? {
         user: this.config.get("SMTP_USERNAME", { infer: true }),
         pass: this.config.get("SMTP_PASSWORD", { infer: true }),
