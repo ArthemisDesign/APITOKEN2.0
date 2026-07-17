@@ -45,11 +45,13 @@ describe("technical SEO", () => {
   it("uses the established PNG brand mark for browser icons", () => {
     expect(SITE_ICONS.icon).toEqual([
       { url: "/assets/favicon-32.png", sizes: "32x32", type: "image/png" },
+      { url: "/assets/favicon-48.png", sizes: "48x48", type: "image/png" },
+      { url: "/assets/favicon-96.png", sizes: "96x96", type: "image/png" },
       { url: "/assets/favicon-192.png", sizes: "192x192", type: "image/png" },
     ]);
-    expect(SITE_ICONS.shortcut).toEqual([{ url: "/assets/favicon-32.png", type: "image/png" }]);
+    expect(SITE_ICONS.shortcut).toEqual([{ url: "/assets/favicon-48.png", type: "image/png" }]);
 
-    for (const size of [32, 192, 512]) {
+    for (const size of [32, 48, 96, 192, 512]) {
       const favicon = readFileSync(new URL(`../public/assets/favicon-${size}.png`, import.meta.url));
       expect(favicon.readUInt32BE(16)).toBe(size);
       expect(favicon.readUInt32BE(20)).toBe(size);
