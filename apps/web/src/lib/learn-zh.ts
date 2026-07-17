@@ -73,6 +73,14 @@ export const learnZh: Record<string, LocalizedContent> = {
           "减去你的递进折扣（60% 直至 80%）。",
           "净额从你的预付余额中扣除。",
         ] },
+        { type: "table", headers: ["模型", "官方 输入 / 输出（$ / 1M）", "本站起价（−60%）", "最优（−80%）"], rows: [
+          ["Claude Opus 4.8", "$5 / $25", "$2 / $10", "$1 / $5"],
+          ["Claude Opus 4.7", "$5 / $25", "$2 / $10", "$1 / $5"],
+          ["Claude Sonnet 5", "$3 / $15", "$1.20 / $6", "$0.60 / $3"],
+          ["Claude Sonnet 4.6", "$3 / $15", "$1.20 / $6", "$0.60 / $3"],
+          ["Claude Haiku 4.5", "$1 / $5", "$0.40 / $2", "$0.20 / $1"],
+        ] },
+        { type: "link", text: "每个模型的完整价格（含缓存费率）", href: "/models" },
       ] },
     ],
     faq: [
@@ -307,6 +315,11 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "在你的余额上使用 Opus", blocks: [
         { type: "p", text: "Opus 4.8（模型 ID claude-opus-4-8）和 Opus 4.7 按官方 token 费率减去你的折扣计费，因此你能以标价的一小部分用上顶级档位。" },
+        { type: "table", headers: ["模型", "官方 输入 / 输出（$ / 1M）", "本站起价（−60%）", "最优（−80%）"], rows: [
+          ["Claude Opus 4.8", "$5 / $25", "$2 / $10", "$1 / $5"],
+          ["Claude Opus 4.7", "$5 / $25", "$2 / $10", "$1 / $5"],
+        ] },
+        { type: "link", text: "Claude Opus 4.8 详细价格（缓存、上下文、FAQ）", href: "/models/claude-opus-4-8" },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
     ],
@@ -327,6 +340,11 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "Sonnet 定价说明", blocks: [
         { type: "p", text: "Claude Sonnet 5（claude-sonnet-5）采用介绍期官方费率，引擎始终在套用你的折扣前应用当前有效费率。Sonnet 4.6 仍可在同一把密钥上使用。" },
+        { type: "table", headers: ["模型", "官方 输入 / 输出（$ / 1M）", "本站起价（−60%）", "最优（−80%）"], rows: [
+          ["Claude Sonnet 5", "$3 / $15", "$1.20 / $6", "$0.60 / $3"],
+          ["Claude Sonnet 4.6", "$3 / $15", "$1.20 / $6", "$0.60 / $3"],
+        ] },
+        { type: "link", text: "Claude Sonnet 5 详细价格（缓存、上下文、FAQ）", href: "/models/claude-sonnet-5" },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
     ],
@@ -352,6 +370,10 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "一把密钥混用多种模型", blocks: [
         { type: "p", text: "由于所有模型共用一把密钥和余额，你可以把廉价工作路由给 Haiku（claude-haiku-4-5），只把高难度请求升级到 Sonnet 或 Opus。" },
+        { type: "table", headers: ["模型", "官方 输入 / 输出（$ / 1M）", "本站起价（−60%）", "最优（−80%）"], rows: [
+          ["Claude Haiku 4.5", "$1 / $5", "$0.40 / $2", "$0.20 / $1"],
+        ] },
+        { type: "link", text: "Claude Haiku 4.5 详细价格（缓存、上下文、FAQ）", href: "/models/claude-haiku-4-5" },
       ] },
     ],
     faq: [
@@ -554,6 +576,13 @@ export const learnZh: Record<string, LocalizedContent> = {
       { h2: "遇到难题再升级到 Opus", blocks: [
         { type: "p", text: "在复杂重构、架构设计以及额外推理物有所值的长时间高风险会话中，就该选 Opus 4.8。" },
         { type: "note", text: "由于一把密钥同时覆盖两者，你可以为每项任务路由到合适的档位，而无需在多个提供方之间来回切换。" },
+        { type: "table", headers: ["", "Claude Opus 4.8", "Claude Sonnet 5"], rows: [
+          ["官方价格（输入 / 输出 / 1M）", "$5 / $25", "$3 / $15"],
+          ["本站起价 −60%", "$2 / $10", "$1.20 / $6"],
+          ["上下文窗口", "1M token", "1M token"],
+          ["最适合", "高难推理、长程智能体运行", "日常编码与智能体"],
+        ] },
+        { type: "link", text: "比较所有 Claude 模型与价格", href: "/models" },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
     ],
@@ -585,6 +614,14 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "按模型划分的 Claude API token 价格", blocks: [
         { type: "p", text: "更大的模型每 token 更贵：Opus 是高端档，Sonnet 是均衡的默认选择，Haiku 最便宜。你的折扣适用于所有模型，因此排序不变，但每个价格都更低。" },
+        { type: "table", headers: ["模型", "官方 输入 / 输出（$ / 1M）", "本站起价（−60%）", "最优（−80%）"], rows: [
+          ["Claude Opus 4.8", "$5 / $25", "$2 / $10", "$1 / $5"],
+          ["Claude Opus 4.7", "$5 / $25", "$2 / $10", "$1 / $5"],
+          ["Claude Sonnet 5", "$3 / $15", "$1.20 / $6", "$0.60 / $3"],
+          ["Claude Sonnet 4.6", "$3 / $15", "$1.20 / $6", "$0.60 / $3"],
+          ["Claude Haiku 4.5", "$1 / $5", "$0.40 / $2", "$0.20 / $1"],
+        ] },
+        { type: "link", text: "含缓存费率与上下文窗口的模型页面", href: "/models" },
       ] },
     ],
     faq: [

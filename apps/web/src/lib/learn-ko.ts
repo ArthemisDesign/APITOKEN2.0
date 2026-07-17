@@ -73,6 +73,14 @@ export const learnKo: Record<string, LocalizedContent> = {
           "누진 할인(60%에서 최대 80%)이 차감됩니다.",
           "차감 후 금액이 선불 잔액에서 빠져나갑니다.",
         ] },
+        { type: "table", headers: ["모델", "공식 입력 / 출력($ / 1M)", "여기서는 (−60%)부터", "최대 (−80%)"], rows: [
+          ["Claude Opus 4.8", "$5 / $25", "$2 / $10", "$1 / $5"],
+          ["Claude Opus 4.7", "$5 / $25", "$2 / $10", "$1 / $5"],
+          ["Claude Sonnet 5", "$3 / $15", "$1.20 / $6", "$0.60 / $3"],
+          ["Claude Sonnet 4.6", "$3 / $15", "$1.20 / $6", "$0.60 / $3"],
+          ["Claude Haiku 4.5", "$1 / $5", "$0.40 / $2", "$0.20 / $1"],
+        ] },
+        { type: "link", text: "모델별 전체 가격(캐시 요율 포함)", href: "/models" },
       ] },
     ],
     faq: [
@@ -310,6 +318,11 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "잔액으로 쓰는 Opus", blocks: [
         { type: "p", text: "Opus 4.8(모델 ID claude-opus-4-8)과 Opus 4.7은 공식 토큰 요율에서 할인을 뺀 금액으로 과금되므로, 정가의 일부만으로 최상위 등급을 사용할 수 있습니다." },
+        { type: "table", headers: ["모델", "공식 입력 / 출력($ / 1M)", "여기서는 (−60%)부터", "최대 (−80%)"], rows: [
+          ["Claude Opus 4.8", "$5 / $25", "$2 / $10", "$1 / $5"],
+          ["Claude Opus 4.7", "$5 / $25", "$2 / $10", "$1 / $5"],
+        ] },
+        { type: "link", text: "Claude Opus 4.8 상세 가격(캐시, 컨텍스트, FAQ)", href: "/models/claude-opus-4-8" },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
     ],
@@ -330,6 +343,11 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "Sonnet 가격 참고", blocks: [
         { type: "p", text: "Claude Sonnet 5(claude-sonnet-5)는 도입 공식 요율로 제공되며, 엔진은 항상 현재 유효 요율을 적용한 뒤 할인을 반영합니다. Sonnet 4.6도 동일한 키로 계속 사용할 수 있습니다." },
+        { type: "table", headers: ["모델", "공식 입력 / 출력($ / 1M)", "여기서는 (−60%)부터", "최대 (−80%)"], rows: [
+          ["Claude Sonnet 5", "$3 / $15", "$1.20 / $6", "$0.60 / $3"],
+          ["Claude Sonnet 4.6", "$3 / $15", "$1.20 / $6", "$0.60 / $3"],
+        ] },
+        { type: "link", text: "Claude Sonnet 5 상세 가격(캐시, 컨텍스트, FAQ)", href: "/models/claude-sonnet-5" },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
     ],
@@ -355,6 +373,10 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "하나의 키로 모델 섞어 쓰기", blocks: [
         { type: "p", text: "모든 모델이 하나의 키와 잔액을 공유하므로, 값싼 작업은 Haiku(claude-haiku-4-5)로 보내고 어려운 요청만 Sonnet이나 Opus로 승격하면 됩니다." },
+        { type: "table", headers: ["모델", "공식 입력 / 출력($ / 1M)", "여기서는 (−60%)부터", "최대 (−80%)"], rows: [
+          ["Claude Haiku 4.5", "$1 / $5", "$0.40 / $2", "$0.20 / $1"],
+        ] },
+        { type: "link", text: "Claude Haiku 4.5 상세 가격(캐시, 컨텍스트, FAQ)", href: "/models/claude-haiku-4-5" },
       ] },
     ],
     faq: [
@@ -557,6 +579,13 @@ export const learnKo: Record<string, LocalizedContent> = {
       { h2: "어려운 문제는 Opus로 승격", blocks: [
         { type: "p", text: "복잡한 리팩터, 아키텍처, 추가 추론이 값을 하는 위험도 높은 긴 세션에는 Opus 4.8에 손을 뻗으세요." },
         { type: "note", text: "하나의 키가 둘 다 포괄하므로 공급자를 저글링하지 않고 작업마다 알맞은 등급으로 라우팅할 수 있습니다." },
+        { type: "table", headers: ["", "Claude Opus 4.8", "Claude Sonnet 5"], rows: [
+          ["공식 가격(입력 / 출력 / 1M)", "$5 / $25", "$3 / $15"],
+          ["여기서는 −60%부터", "$2 / $10", "$1.20 / $6"],
+          ["컨텍스트 윈도", "1M 토큰", "1M 토큰"],
+          ["최적 용도", "어려운 추론, 긴 에이전트 실행", "일상 코딩과 에이전트"],
+        ] },
+        { type: "link", text: "모든 Claude 모델과 가격 비교", href: "/models" },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
     ],
@@ -588,6 +617,14 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "모델별 Claude API 토큰 가격", blocks: [
         { type: "p", text: "큰 모델일수록 토큰당 비용이 높습니다. Opus는 프리미엄 등급, Sonnet은 균형 잡힌 기본값, Haiku는 가장 저렴합니다. 할인은 모든 모델에 적용되므로 순위는 그대로지만 모든 가격이 낮아집니다." },
+        { type: "table", headers: ["모델", "공식 입력 / 출력($ / 1M)", "여기서는 (−60%)부터", "최대 (−80%)"], rows: [
+          ["Claude Opus 4.8", "$5 / $25", "$2 / $10", "$1 / $5"],
+          ["Claude Opus 4.7", "$5 / $25", "$2 / $10", "$1 / $5"],
+          ["Claude Sonnet 5", "$3 / $15", "$1.20 / $6", "$0.60 / $3"],
+          ["Claude Sonnet 4.6", "$3 / $15", "$1.20 / $6", "$0.60 / $3"],
+          ["Claude Haiku 4.5", "$1 / $5", "$0.40 / $2", "$0.20 / $1"],
+        ] },
+        { type: "link", text: "캐시 요율과 컨텍스트 윈도가 있는 모델 페이지", href: "/models" },
       ] },
     ],
     faq: [

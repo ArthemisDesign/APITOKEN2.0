@@ -106,6 +106,21 @@ function Block({ block }: { block: LearnBlock }) {
       return <pre className="codebox learn-code">{block.code}</pre>;
     case "note":
       return <p className="docs-notice">{block.text}</p>;
+    case "table":
+      return (
+        <div className="tier-table-wrap">
+          <table className="tier-table">
+            <thead><tr>{block.headers.map((header) => <th key={header}>{header}</th>)}</tr></thead>
+            <tbody>
+              {block.rows.map((row) => (
+                <tr key={row.join("|")}>{row.map((cell, cellIndex) => <td key={`${cellIndex}-${cell}`}>{cell}</td>)}</tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    case "link":
+      return <p className="docs-para"><Link href={block.href}>{block.text} →</Link></p>;
     default:
       return null;
   }

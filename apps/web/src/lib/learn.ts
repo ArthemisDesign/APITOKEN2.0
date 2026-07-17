@@ -14,7 +14,9 @@ export type LearnBlock =
   | { type: "list"; items: string[] }
   | { type: "steps"; items: string[] }
   | { type: "code"; code: string }
-  | { type: "note"; text: string };
+  | { type: "note"; text: string }
+  | { type: "table"; headers: string[]; rows: string[][] }
+  | { type: "link"; text: string; href: string };
 
 export type LearnSection = { h2: string; blocks: LearnBlock[] };
 
@@ -290,6 +292,14 @@ export const learnArticles: LearnArticle[] = [
           "Your progressive discount (60% up to 80%) is subtracted.",
           "The net amount is drawn from your prepaid balance.",
         ] },
+        { type: "table", headers: ["Model", "Official in / out ($ per 1M)", "Here from (\u221260%)", "Best (\u221280%)"], rows: [
+          ["Claude Opus 4.8", "$5 / $25", "$2 / $10", "$1 / $5"],
+          ["Claude Opus 4.7", "$5 / $25", "$2 / $10", "$1 / $5"],
+          ["Claude Sonnet 5", "$3 / $15", "$1.20 / $6", "$0.60 / $3"],
+          ["Claude Sonnet 4.6", "$3 / $15", "$1.20 / $6", "$0.60 / $3"],
+          ["Claude Haiku 4.5", "$1 / $5", "$0.40 / $2", "$0.20 / $1"],
+        ] },
+        { type: "link", text: "Full per-model pricing, including cache rates", href: "/models" },
       ] },
     ],
     faq: [
@@ -547,6 +557,11 @@ export const learnArticles: LearnArticle[] = [
       ] },
       { h2: "Opus on your balance", blocks: [
         { type: "p", text: "Opus 4.8 (model ID claude-opus-4-8) and Opus 4.7 are billed at official token rates minus your discount, so you get the top tier for a fraction of the list price." },
+        { type: "table", headers: ["Model", "Official in / out ($ per 1M)", "Here from (\u221260%)", "Best (\u221280%)"], rows: [
+          ["Claude Opus 4.8", "$5 / $25", "$2 / $10", "$1 / $5"],
+          ["Claude Opus 4.7", "$5 / $25", "$2 / $10", "$1 / $5"],
+        ] },
+        { type: "link", text: "Claude Opus 4.8 pricing in detail (cache rates, context, FAQ)", href: "/models/claude-opus-4-8" },
         cta(),
       ] },
     ],
@@ -555,6 +570,7 @@ export const learnArticles: LearnArticle[] = [
       { q: "Is Opus worth the extra tokens?", a: "For complex reasoning, refactors and long agent runs, yes. For fast, cheap tasks, Haiku or Sonnet is usually the better value." },
     ],
     related: ["claude-opus-vs-sonnet", "claude-sonnet-api", "claude-haiku-api", "save-tokens-on-claude-api"],
+    updated: "2026-07-17",
   },
   {
     slug: "claude-sonnet-api",
@@ -570,6 +586,11 @@ export const learnArticles: LearnArticle[] = [
       ] },
       { h2: "Sonnet pricing note", blocks: [
         { type: "p", text: "Claude Sonnet 5 (claude-sonnet-5) ships with introductory official rates, and the engine always applies the current effective rate before your discount. Sonnet 4.6 remains available on the same key." },
+        { type: "table", headers: ["Model", "Official in / out ($ per 1M)", "Here from (\u221260%)", "Best (\u221280%)"], rows: [
+          ["Claude Sonnet 5", "$3 / $15", "$1.20 / $6", "$0.60 / $3"],
+          ["Claude Sonnet 4.6", "$3 / $15", "$1.20 / $6", "$0.60 / $3"],
+        ] },
+        { type: "link", text: "Claude Sonnet 5 pricing in detail (cache rates, context, FAQ)", href: "/models/claude-sonnet-5" },
         cta(),
       ] },
     ],
@@ -578,6 +599,7 @@ export const learnArticles: LearnArticle[] = [
       { q: "Is Sonnet good for coding?", a: "Yes — Sonnet is the recommended default for everyday coding and agent workflows." },
     ],
     related: ["claude-opus-vs-sonnet", "claude-opus-api", "claude-haiku-api", "claude-api-key-for-cursor"],
+    updated: "2026-07-17",
   },
   {
     slug: "claude-haiku-api",
@@ -598,6 +620,10 @@ export const learnArticles: LearnArticle[] = [
       ] },
       { h2: "Mix models on one key", blocks: [
         { type: "p", text: "Because every model shares one key and balance, you can route cheap work to Haiku (claude-haiku-4-5) and escalate only the hard requests to Sonnet or Opus." },
+        { type: "table", headers: ["Model", "Official in / out ($ per 1M)", "Here from (\u221260%)", "Best (\u221280%)"], rows: [
+          ["Claude Haiku 4.5", "$1 / $5", "$0.40 / $2", "$0.20 / $1"],
+        ] },
+        { type: "link", text: "Claude Haiku 4.5 pricing in detail (cache rates, context, FAQ)", href: "/models/claude-haiku-4-5" },
       ] },
     ],
     faq: [
@@ -605,6 +631,7 @@ export const learnArticles: LearnArticle[] = [
       { q: "Can I combine Haiku with other models?", a: "Yes. One key and balance covers Haiku, Sonnet and Opus, so you can route each task to the best-value model." },
     ],
     related: ["claude-sonnet-api", "claude-opus-api", "save-tokens-on-claude-api", "cheapest-claude-api"],
+    updated: "2026-07-17",
   },
 
   // ─────────────────────────── INTEGRATE ───────────────────────────
@@ -962,6 +989,13 @@ export const learnArticles: LearnArticle[] = [
       { h2: "Escalate to Opus for hard problems", blocks: [
         { type: "p", text: "Reach for Opus 4.8 on complex refactors, architecture, and long high-stakes sessions where extra reasoning pays for itself." },
         { type: "note", text: "Because one key covers both, you can route each task to the right tier without juggling providers." },
+        { type: "table", headers: ["", "Claude Opus 4.8", "Claude Sonnet 5"], rows: [
+          ["Official price (in / out per 1M)", "$5 / $25", "$3 / $15"],
+          ["Here from \u221260%", "$2 / $10", "$1.20 / $6"],
+          ["Context window", "1M tokens", "1M tokens"],
+          ["Best for", "Hard reasoning, long agent runs", "Everyday coding and agents"],
+        ] },
+        { type: "link", text: "Compare all Claude models and prices", href: "/models" },
         cta(),
       ] },
     ],
@@ -970,6 +1004,7 @@ export const learnArticles: LearnArticle[] = [
       { q: "Can I use both on one account?", a: "Yes. Opus, Sonnet and Haiku all share the same key and prepaid balance." },
     ],
     related: ["claude-opus-api", "claude-sonnet-api", "claude-haiku-api", "save-tokens-on-claude-api"],
+    updated: "2026-07-17",
   },
 
   // ─────────────────────────── EXPLAIN ───────────────────────────
@@ -998,6 +1033,14 @@ export const learnArticles: LearnArticle[] = [
       ] },
       { h2: "Claude API token pricing by model", blocks: [
         { type: "p", text: "Larger models cost more per token: Opus is the premium tier, Sonnet is the balanced default, and Haiku is the cheapest. Your discount applies to all of them, so the ranking stays the same but every price is lower." },
+        { type: "table", headers: ["Model", "Official in / out ($ per 1M)", "Here from (\u221260%)", "Best (\u221280%)"], rows: [
+          ["Claude Opus 4.8", "$5 / $25", "$2 / $10", "$1 / $5"],
+          ["Claude Opus 4.7", "$5 / $25", "$2 / $10", "$1 / $5"],
+          ["Claude Sonnet 5", "$3 / $15", "$1.20 / $6", "$0.60 / $3"],
+          ["Claude Sonnet 4.6", "$3 / $15", "$1.20 / $6", "$0.60 / $3"],
+          ["Claude Haiku 4.5", "$1 / $5", "$0.40 / $2", "$0.20 / $1"],
+        ] },
+        { type: "link", text: "Per-model pages with cache rates and context windows", href: "/models" },
       ] },
     ],
     faq: [
@@ -1772,6 +1815,14 @@ function blockToMarkdown(block: LearnBlock): string {
       return block.items.map((item, index) => `${index + 1}. ${item}`).join("\n");
     case "code":
       return "```\n" + block.code + "\n```";
+    case "table": {
+      const header = `| ${block.headers.join(" | ")} |`;
+      const divider = `| ${block.headers.map(() => "---").join(" | ")} |`;
+      const rows = block.rows.map((row) => `| ${row.join(" | ")} |`);
+      return [header, divider, ...rows].join("\n");
+    }
+    case "link":
+      return `[${block.text}](${block.href})`;
     default:
       return "";
   }
