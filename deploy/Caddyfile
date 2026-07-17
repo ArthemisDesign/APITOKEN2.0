@@ -96,10 +96,20 @@ panel.apitoken.sale {
 			header_up x-admin-key "<COMMERCIAL_ADMIN_KEY_PLACEHOLDER>"
 		}
 	}
+	# HTML панели отдаёт сам движок (GET /panel, вкомпилирован include_str!) — панель всегда
+	# совпадает с задеплоенным релизом, никаких статических копий и ручного rsync.
 	handle {
-		root * /srv/claude-api/panel
-		try_files {path} /index.html
-		file_server
+		rewrite * /panel
+		reverse_proxy 127.0.0.1:8787 127.0.0.1:8788 {
+			lb_policy round_robin
+			health_uri /ready
+			health_interval 2s
+			health_timeout 2s
+			health_status 2xx
+			fail_duration 5s
+			max_fails 1
+			unhealthy_status 503
+		}
 	}
 }
 

@@ -126,10 +126,13 @@ async function tick(){
 async function tickUsers(){
   let data;
   try{ data=await getj('/admin/users'); }
-  catch(e){ if(e.auth){panelKey='';return setup('нужен read-only ключ панели')}
+  catch(e){
+    // 401 тут НЕ значит «нужен ключ панели»: /admin/users живёт в commerce-backend и доступен
+    // только через Caddy panel-домена (server-side инжект x-admin-key). Показываем ошибку на месте.
+    const why=e.auth?'нет доступа: маршрут /admin/users доступен только через panel-домен (Caddy инжектит x-admin-key; проверь, что ключ совпадает с COMMERCIAL_ADMIN_KEY бэкенда)':(e.msg||'ошибка сети');
     document.getElementById('app').innerHTML=`<header><h1>claude-api</h1><span class="sub">пользователи</span></header>
       ${tabsHtml()}<main><div class="verdict bad"><div class="em">⚠️</div><div><div class="t">Не удалось загрузить пользователей</div>
-      <div class="d">${esc(e.msg||'ошибка сети')}</div></div></div></main>`;
+      <div class="d">${esc(why)}</div></div></div></main>`;
     bindTabs(); return; }
   renderUsers(data.users||[]);
 }

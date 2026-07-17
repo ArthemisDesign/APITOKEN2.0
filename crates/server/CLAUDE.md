@@ -15,7 +15,8 @@
 **Что внутри:**
 - `config.rs` — `Settings` (db_path/bind/fleet + `ProxyConfig`) из env.
 - `http.rs` — роутер: `/health`, `/pool`, `/balance`, `/capacity` (управляющие) + `/panel`
-  (живой HTML-дашборд ёмкости, `panel.html` через include_str!) + `/admin/*` (control-плоскость,
+  (живой HTML-дашборд, `panel.html` через include_str!; архитектура панели и как её развивать —
+  корневой `PANEL.md`) + `/admin/*` (control-плоскость,
   см. `admin.rs`) + fallback на `forward::forward`. Выпуск ключа возвращает не-секретный `key_id`,
   а `/admin/key-id/{key_id}/status` позволяет отзывать ключ без повторной передачи полного секрета.
 - `admin.rs` — **Control API** (`/admin/account`, `/admin/key`, `/admin/*/credit|status`): контракт,
