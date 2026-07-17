@@ -79,7 +79,7 @@ commit in GitHub to see:
 | `deploy/backend` | Commerce API/worker deployment and final exact-release verification, or no backend change |
 | `deploy/watchdog` | Overall delivery result; this is the status to use as the final merge/deploy signal |
 
-`pending` means the host is working or waiting for an infrastructure review. `failure`/`error`
+`pending` means the host is testing, installing, or deploying the candidate. `failure`/`error`
 means the commit did not complete production delivery. A green component status never overrides a
 red overall status.
 

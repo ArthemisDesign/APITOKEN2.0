@@ -225,11 +225,15 @@ wd_path_is_backend() {
 
 wd_path_is_infrastructure() {
   case "$1" in
-    deploy/*|systemd/*|compose.yaml|.github/*)
+    deploy/*|systemd/*|compose.yaml)
       return 0
       ;;
     *) return 1 ;;
   esac
+}
+
+wd_path_is_caddy() {
+  [[ $1 == deploy/Caddyfile ]]
 }
 
 wd_range_has_class() {

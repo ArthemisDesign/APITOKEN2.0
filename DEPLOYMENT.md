@@ -48,17 +48,12 @@ sudo apitoken-watchdog status
 sudo apitoken-watchdog logs
 ```
 
-Operational-definition changes (`deploy/`, `systemd/`, `compose.yaml`, `.github/`) stop after the
-test gate for exact-candidate host review. After applying and verifying those definitions, approve
-that exact SHA; the watchdog then continues component delivery:
-
-```bash
-sudo apitoken-watchdog approve-infrastructure <full-40-character-sha>
-```
-
-Do not approve merely to clear a pending GitHub status. Caddy changes must first be applied with the
-candidate's secret-preserving `deploy/install-caddy.sh`, validated, reloaded, and health-checked.
-Watchdog/systemd changes must likewise be installed from that exact tested candidate.
+Operational-definition changes (`deploy/`, `systemd/`, `compose.yaml`) are also automatic. Only
+after the exact immutable candidate passes the complete test gate, a fixed root-owned bridge verifies
+its SHA/tree/test marker, installs its watchdog controllers and systemd definitions, and continues
+component delivery. A changed Caddy template is rendered with the existing production secrets,
+validated, reloaded with automatic rollback, and never copied with repository placeholders. GitHub
+workflow changes do not alter the production host and therefore need no host-install stage.
 
 An operator can request an immediate poll or retry a proven transient failure:
 

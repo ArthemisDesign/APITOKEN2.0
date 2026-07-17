@@ -66,4 +66,15 @@ for invalid_topology in \
   fi
 done
 
+wd_path_is_infrastructure deploy/watchdog.sh
+wd_path_is_infrastructure systemd/apitoken-deploy-watchdog.service
+wd_path_is_infrastructure compose.yaml
+if wd_path_is_infrastructure .github/workflows/indexnow.yml; then
+  wd_die "GitHub-only workflow changes must not require a production-host infrastructure install"
+fi
+wd_path_is_caddy deploy/Caddyfile
+if wd_path_is_caddy deploy/watchdog.sh; then
+  wd_die "non-Caddy infrastructure change requested a Caddy reload"
+fi
+
 printf 'watchdog migration and engine topology tests passed\n'

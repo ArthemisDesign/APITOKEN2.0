@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/watchdog-lib.sh"
 
 BACKUP_SERVICE=claude-api-backup.service
 BACKUP_ROOT=/var/lib/apitoken/backups
-COMPOSE_FILE=/opt/apitoken/repo/deploy/commerce-postgres.compose.yaml
+COMPOSE_FILE=/usr/local/lib/apitoken-watchdog/controller/commerce-postgres.compose.yaml
 POSTGRES_ENV=/etc/apitoken/postgres.env
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || wd_die "validated deployment backup must run as root"

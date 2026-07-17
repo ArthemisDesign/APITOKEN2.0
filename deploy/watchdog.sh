@@ -18,6 +18,7 @@ CONTROLLER_ROOT=/usr/local/lib/apitoken-watchdog/controller
 TEST_DB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-test-db
 BACKUP_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-backup.sh
 MIGRATION_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
+INFRASTRUCTURE_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh
 GITHUB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-github
 WATCHDOG_LOCK=/run/lock/apitoken-watchdog.lock
 DEPLOY_LOCK=/run/lock/apitoken-deploy.lock
@@ -29,8 +30,6 @@ ENGINE_FILE=$STATE_ROOT/engine.sha
 BACKEND_FILE=$STATE_ROOT/backend.sha
 REJECTED_FILE=$STATE_ROOT/rejected.sha
 PENDING_MIGRATION_FILE=$STATE_ROOT/pending-migration.sha
-PENDING_INFRA_FILE=$STATE_ROOT/pending-infrastructure.sha
-INFRA_APPROVED_FILE=$STATE_ROOT/infrastructure-approved.sha
 DB_MANIFEST=$STATE_ROOT/database-migrations.manifest
 STATUS_FILE=$STATE_ROOT/status
 
@@ -270,7 +269,8 @@ engine_runtime_aligned() {
 }
 
 reconcile_engine_runtime() {
-  local sha=$1 current expected="$ENGINE_RELEASE_ROOT/$sha"
+  local sha=$1 current expected
+  expected="$ENGINE_RELEASE_ROOT/$sha"
   if engine_runtime_aligned "$sha"; then return 0; fi
   current=$(readlink -f -- "$ENGINE_RELEASE_ROOT/current")
   [[ $current == "$expected" ]] \
@@ -366,7 +366,7 @@ apply_migrations_before_deploy() {
 }
 
 main() {
-  local remote_ref rejected approved infra_changed=0 engine_changed=0 backend_changed=0
+  local remote_ref rejected infra_changed=0 caddy_changed=0 engine_changed=0 backend_changed=0
 
   [[ $(id -un) == deploy ]] || wd_die "watchdog service must run as deploy"
   [[ -d $SOURCE_REPO/.git ]] || wd_die "source repository is missing: $SOURCE_REPO"
@@ -377,6 +377,7 @@ main() {
   require_fixed_file "$TEST_DB_HELPER"
   require_fixed_file "$BACKUP_RUNNER"
   require_fixed_file "$MIGRATION_RUNNER"
+  require_fixed_file "$INFRASTRUCTURE_RUNNER"
   require_fixed_file "$GITHUB_HELPER"
   require_fixed_directory "$CI_TOOLCHAIN"
   [[ -f $DB_MANIFEST && ! -L $DB_MANIFEST ]] || wd_die "database migration baseline is missing"
@@ -411,6 +412,8 @@ main() {
 
   wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" wd_path_is_infrastructure \
     && infra_changed=1
+  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" wd_path_is_caddy \
+    && caddy_changed=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_engine \
     && engine_changed=1
   wd_range_has_class "$SOURCE_REPO" "$BACKEND_SHA" "$CANDIDATE_SHA" wd_path_is_backend \
@@ -432,18 +435,16 @@ main() {
   rm -f -- "$REJECTED_FILE"
 
   if (( infra_changed == 1 )); then
-    approved=$(wd_read_sha "$INFRA_APPROVED_FILE" 2>/dev/null || true)
-    if [[ $approved != "$CANDIDATE_SHA" ]]; then
-      wd_atomic_write "$PENDING_INFRA_FILE" "$CANDIDATE_SHA"
-      CURRENT_PHASE=waiting-for-infrastructure-review
-      status "tests passed; operational files require manual review and approval"
-      github_status pending deploy/watchdog "Application is tested; infrastructure review required"
-      wd_log "operational files changed; automatic component deployment is paused"
-      wd_log "after installing/reviewing them, run: sudo apitoken-watchdog approve-infrastructure $CANDIDATE_SHA"
-      exit 0
+    CURRENT_PHASE=installing-infrastructure
+    status "installing exact tested operational definitions"
+    github_status pending deploy/watchdog "Installing exact tested operational definitions"
+    if (( caddy_changed == 1 )); then
+      sudo -n "$INFRASTRUCTURE_RUNNER" "$CANDIDATE_SHA" --apply-caddy
+    else
+      sudo -n "$INFRASTRUCTURE_RUNNER" "$CANDIDATE_SHA"
     fi
+    wd_log "exact tested operational definitions installed automatically"
   fi
-  rm -f -- "$PENDING_INFRA_FILE"
 
   if (( backend_changed == 1 )); then
     apply_migrations_before_deploy "$CANDIDATE_SHA"
@@ -466,7 +467,7 @@ main() {
   reconcile_engine_runtime "$ENGINE_SHA"
 
   wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"
-  rm -f -- "$INFRA_APPROVED_FILE" "$PENDING_INFRA_FILE" "$PENDING_MIGRATION_FILE"
+  rm -f -- "$PENDING_MIGRATION_FILE"
   CURRENT_PHASE=idle
   status "candidate tested and all selected components verified in production"
   github_status success deploy/watchdog "All selected production components verified"
