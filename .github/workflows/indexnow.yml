@@ -1,0 +1,24 @@
+name: IndexNow ping
+
+# Notify Yandex/Bing (IndexNow) after web content deploys. Google has no
+# equivalent API for regular pages — it re-reads sitemap.xml lastmod instead.
+on:
+  push:
+    branches: [master]
+    paths:
+      - "apps/web/**"
+
+jobs:
+  indexnow:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Vercel builds the same push; give it time to go live so the
+      # engines crawl fresh pages, then submit the full sitemap.
+      - name: Wait for Vercel deploy
+        run: sleep 240
+      - name: Submit sitemap URLs to IndexNow
+        run: node apps/web/scripts/indexnow.mjs
