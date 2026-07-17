@@ -45,7 +45,7 @@ describe("completed Next.js migration", () => {
     const marketing = readFileSync(join(root, "components", "marketing-pages.tsx"), "utf8");
     expect(rootLayout).toContain("<PersistentRouteShell>{children}</PersistentRouteShell>");
     expect(shell).toContain("<SiteHeader home={home} />");
-    expect(shell).toContain("<SiteFooter full={home} />");
+    expect(shell).toContain("<SiteFooter full />");
     expect(shell).toContain("<MotionEffects />");
     expect(shell).toContain("<AuthShell>{children}</AuthShell>");
     for (const route of ["/", "/models", "/integrations", "/plans", "/privacy", "/terms", "/support"]) expect(shell).toContain(`"${route}"`);
@@ -237,7 +237,7 @@ describe("completed Next.js migration", () => {
     expect(styles).toContain("inset:0;display:grid;place-items:center");
     expect(styles).toContain(".pricing-intro{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px;align-items:stretch}");
     expect(styles).toContain(".topup-card{padding:30px;display:flex;flex-direction:column");
-    expect(styles).toContain(".business-card{padding:30px;display:grid;grid-template-rows:");
+    expect(styles).toContain(".business-card{padding:30px;display:flex;flex-direction:column");
     expect(styles).toContain(".business-preview{justify-content:space-between");
     expect(styles).toContain(".stat b{font-family:var(--font-mono)");
     expect(styles).toContain(".prod{border:1px solid var(--line);border-radius:8px;padding:28px;background:var(--bg-card);display:flex;flex-direction:column");
