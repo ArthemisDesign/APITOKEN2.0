@@ -9,11 +9,13 @@ export const dashboardSections = [
 ] as const;
 
 export type DashboardSection = typeof dashboardSections[number];
+export type DashboardLanguage = "en" | "ru";
 
 export function parseDashboardSection(value: string | null): DashboardSection {
   return dashboardSections.includes(value as DashboardSection) ? value as DashboardSection : "overview";
 }
 
-export function dashboardHref(section: DashboardSection): string {
-  return section === "overview" ? "/dashboard" : `/dashboard?view=${section}`;
+export function dashboardHref(section: DashboardSection, language: DashboardLanguage = "en"): string {
+  const base = language === "ru" ? "/ru/dashboard" : "/dashboard";
+  return section === "overview" ? base : `${base}?view=${section}`;
 }

@@ -28,10 +28,11 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const setLanguage = useCallback((next: Language) => {
     try { window.localStorage.setItem("lang", next); } catch { /* ignore */ }
     const onRu = isRuPath(pathname);
+    const suffix = `${window.location.search}${window.location.hash}`;
     if (next === "ru" && !onRu) {
-      router.push(pathname === "/" ? "/ru" : `/ru${pathname}`);
+      router.push(`${pathname === "/" ? "/ru" : `/ru${pathname}`}${suffix}`);
     } else if (next === "en" && onRu) {
-      router.push(pathname.replace(/^\/ru/, "") || "/");
+      router.push(`${pathname.replace(/^\/ru/, "") || "/"}${suffix}`);
     }
   }, [pathname, router]);
 

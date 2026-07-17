@@ -115,7 +115,7 @@ describe("completed Next.js migration", () => {
     expect(docs).toContain("docs-code-card ym-hide-content");
   });
 
-  it("keeps reloadable dashboard views in the single canonical /dashboard route", () => {
+  it("keeps reloadable dashboard views in the localized canonical dashboard routes", () => {
     const dashboard = readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8");
     const routes = readFileSync(join(appRoot, "dashboard", "dashboard-route.ts"), "utf8");
     for (const section of ["overview", "keys", "credits", "promos", "usage", "support", "profile"]) {
@@ -129,10 +129,10 @@ describe("completed Next.js migration", () => {
     expect(dashboard).not.toContain('section === "security"');
     expect(routes).not.toContain('"security"');
     expect(dashboard).not.toMatch(/href=[{\"]+\/dashboard\//);
-    expect(routes).toContain('`/dashboard?view=${section}`');
+    expect(routes).toContain('language === "ru" ? "/ru/dashboard" : "/dashboard"');
     expect(dashboard).toContain("const [section, setSection] = useState<Section>(() => parseDashboardSection(searchParams.get(\"view\")))");
     expect(dashboard).toContain("setSection(next)");
-    expect(dashboard).toContain('window.history.pushState(null, "", dashboardHref(next))');
+    expect(dashboard).toContain('window.history.pushState(null, "", dashboardHref(next, language))');
     expect(dashboard).toContain('window.addEventListener("popstate", syncSectionFromHistory)');
     expect(dashboard).toContain("data-dashboard-section={item.section}");
     expect(dashboard).not.toContain("router.refresh()");

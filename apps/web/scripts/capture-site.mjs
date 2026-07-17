@@ -53,6 +53,8 @@ const dashboardCaptures = [
   ["dashboard-overview-russian", "/dashboard", 1440, 1000, "dark", "ru"],
   ["dashboard-keys-light", "/dashboard?view=keys", 1440, 1000, "light"],
   ["dashboard-keys-dark", "/dashboard?view=keys", 1440, 1000, "dark"],
+  ["dashboard-keys-russian-light", "/dashboard?view=keys", 1440, 1000, "light", "ru"],
+  ["dashboard-keys-russian-dark", "/dashboard?view=keys", 1440, 1000, "dark", "ru"],
   ["dashboard-topup-light", "/dashboard?view=credits", 1440, 1000, "light"],
   ["dashboard-topup-dark", "/dashboard?view=credits", 1440, 1000, "dark"],
   ["dashboard-topup-tablet-light", "/dashboard?view=credits", 768, 1024, "light"],
@@ -70,7 +72,10 @@ const dashboardCaptures = [
   ["dashboard-security-light", "/dashboard?view=security", 1440, 1000, "light"],
   ["dashboard-security-dark", "/dashboard?view=security", 1440, 1000, "dark"],
   ["dashboard-overview-mobile", "/dashboard", 390, 844, "light"],
+  ["dashboard-keys-mobile-light", "/dashboard?view=keys", 390, 844, "light"],
   ["dashboard-keys-mobile-dark", "/dashboard?view=keys", 390, 844, "dark"],
+  ["dashboard-keys-mobile-russian-light", "/dashboard?view=keys", 390, 844, "light", "ru"],
+  ["dashboard-keys-mobile-russian-dark", "/dashboard?view=keys", 390, 844, "dark", "ru"],
 ];
 
 const scopedCaptures = auditScope === "dashboard" ? dashboardCaptures :
@@ -78,6 +83,8 @@ const scopedCaptures = auditScope === "dashboard" ? dashboardCaptures :
 const captures = auditFilter.size > 0 ? scopedCaptures.filter(([name]) => auditFilter.has(name)) : scopedCaptures;
 const shouldVerifyCredits = process.env.AUDIT_VERIFY_CREDITS === "1" ||
   (process.env.AUDIT_VERIFY_CREDITS !== "0" && captures.some(([name]) => name.startsWith("dashboard-topup-")));
+const shouldVerifyKeys = process.env.AUDIT_VERIFY_KEYS === "1" ||
+  (process.env.AUDIT_VERIFY_KEYS !== "0" && captures.some(([name]) => name.startsWith("dashboard-keys-")));
 const shouldVerifyDocsTheme = process.env.AUDIT_VERIFY_DOCS_THEME === "1" ||
   (process.env.AUDIT_VERIFY_DOCS_THEME !== "0" && captures.some(([name]) => name.startsWith("docs-")));
 
@@ -132,6 +139,14 @@ const dashboardFixtureScript = `(() => {
     spentNano: "12000000000",
     spentUsd: "12.00",
     createdAt: "2026-07-15T08:30:00.000Z",
+  }, {
+    id: "9c56809f-2c35-49cb-932e-7569ddf0d2e8",
+    label: "Staging",
+    keyMasked: "sk-pool-741c••••••••19a",
+    status: "disabled",
+    spentNano: "2500000000",
+    spentUsd: "2.50",
+    createdAt: "2026-07-08T14:20:00.000Z",
   }];
   const nowS = Math.floor(Date.now() / 1000), DAY = 86400;
   // реальный формат движка: amountUsd со знаком "$" и 6 знаками (раньше ломал график через Number())
@@ -167,7 +182,7 @@ const dashboardFixtureScript = `(() => {
     const parsed = new URL(url);
     const path = parsed.pathname.slice("/v1".length);
     if (location.search.includes("audit-auth=1") && path === "/auth/me") return json({ user });
-    if (!location.pathname.startsWith("/dashboard")) return originalFetch(input, init);
+    if (location.pathname !== "/dashboard" && location.pathname !== "/ru/dashboard") return originalFetch(input, init);
     if (path === "/auth/me") {
       if ((init.method || "GET").toUpperCase() === "PATCH") {
         user.displayName = JSON.parse(String(init.body || "{}")).displayName || user.displayName;
@@ -472,6 +487,116 @@ async function verifyCreditsLayout(client) {
     }
   }
   process.stdout.write("Verified Credits alignment, responsive stacking, history layout, and preset interaction\n");
+}
+
+async function verifyApiKeysLayout(client) {
+  const cases = [
+    { name: "desktop-light-en", width: 1440, height: 1000, theme: "light", language: "en", label: "Filter API keys", disabled: "Disabled" },
+    { name: "desktop-dark-en", width: 1440, height: 1000, theme: "dark", language: "en", label: "Filter API keys", disabled: "Disabled" },
+    { name: "desktop-light-ru", width: 1440, height: 1000, theme: "light", language: "ru", label: "Фильтр API-ключей", disabled: "Отключён" },
+    { name: "desktop-dark-ru", width: 1440, height: 1000, theme: "dark", language: "ru", label: "Фильтр API-ключей", disabled: "Отключён" },
+    { name: "mobile-light-en", width: 390, height: 844, theme: "light", language: "en", label: "Filter API keys", disabled: "Disabled" },
+    { name: "mobile-dark-en", width: 390, height: 844, theme: "dark", language: "en", label: "Filter API keys", disabled: "Disabled" },
+    { name: "mobile-light-ru", width: 390, height: 844, theme: "light", language: "ru", label: "Фильтр API-ключей", disabled: "Отключён" },
+    { name: "mobile-dark-ru", width: 390, height: 844, theme: "dark", language: "ru", label: "Фильтр API-ключей", disabled: "Отключён" },
+  ];
+
+  for (const layoutCase of cases) {
+    await setViewport(client, layoutCase.width, layoutCase.height);
+    await client.send("Runtime.evaluate", {
+      expression: `localStorage.setItem('theme', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('lang', ${JSON.stringify(layoutCase.language)});`,
+    });
+    const url = new URL("/dashboard?view=keys", baseUrl);
+    url.searchParams.set("__auditKeys", layoutCase.name);
+    const loaded = client.once("Page.loadEventFired");
+    await client.send("Page.navigate", { url: url.href });
+    await loaded;
+    await waitForCondition(
+      client,
+      `Boolean(document.querySelector('.keys-toolbar')) && document.querySelectorAll('.keys-filter-tab').length === 3 && Boolean(document.querySelector('.lang button'))`,
+      `${layoutCase.name} API key manager shell`,
+    );
+    await client.send("Runtime.evaluate", {
+      awaitPromise: true,
+      expression: `new Promise((resolve) => setTimeout(resolve, 500))`,
+    });
+    await client.send("Runtime.evaluate", {
+      expression: `(() => {
+        if (document.documentElement.lang === ${JSON.stringify(layoutCase.language)}) return;
+        const target = [...document.querySelectorAll('.lang button')]
+          .find((button) => button.textContent?.trim() === ${JSON.stringify(layoutCase.language.toUpperCase())});
+        target?.click();
+      })()`,
+    });
+    try {
+      await waitForCondition(
+        client,
+        `document.documentElement.lang === ${JSON.stringify(layoutCase.language)} && Boolean(document.querySelector('.keyrow'))`,
+        `${layoutCase.name} API key manager`,
+      );
+    } catch (error) {
+      const diagnostic = await client.send("Runtime.evaluate", {
+        expression: `JSON.stringify({
+          documentLanguage: document.documentElement.lang,
+          storedLanguage: localStorage.getItem('lang'),
+          href: location.href,
+          title: document.title,
+          bodyText: document.body.innerText.slice(0, 500),
+          loading: Boolean(document.querySelector('.dashboard-loading')),
+          guard: Boolean(document.querySelector('.guard')),
+          keyRows: document.querySelectorAll('.keyrow').length,
+          controls: [...document.querySelectorAll('.lang button')].map((button) => ({ label: button.textContent?.trim(), active: button.classList.contains('active') })),
+        })`,
+        returnByValue: true,
+      });
+      throw new Error(`${error instanceof Error ? error.message : error} Browser state: ${diagnostic.result.value}`);
+    }
+    await client.send("Runtime.evaluate", { awaitPromise: true, expression: `document.fonts.ready.then(() => new Promise((resolve) => setTimeout(resolve, 250)))` });
+
+    const result = await client.send("Runtime.evaluate", {
+      expression: `(() => {
+        const rect = (selector) => document.querySelector(selector)?.getBoundingClientRect();
+        const heading = rect('.keys-section-head');
+        const toolbar = rect('.keys-toolbar');
+        const tabs = rect('.keys-filter-tabs');
+        const keys = rect('.keys');
+        const key = rect('.keyrow');
+        const toolbarStyle = getComputedStyle(document.querySelector('.keys-toolbar'));
+        const keyStyle = getComputedStyle(document.querySelector('.keyrow'));
+        const tabRects = [...document.querySelectorAll('.keys-filter-tab')].map((element) => element.getBoundingClientRect());
+        return JSON.stringify({
+          language: document.documentElement.lang,
+          theme: document.documentElement.dataset.theme || 'light',
+          overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          aligned: Boolean(heading && toolbar && keys && Math.abs(heading.left - toolbar.left) < 2 && Math.abs(toolbar.left - keys.left) < 2 && Math.abs(toolbar.right - keys.right) < 2),
+          separated: Boolean(toolbar && key && key.top - toolbar.bottom >= 12),
+          distinctSurface: toolbarStyle.backgroundColor !== keyStyle.backgroundColor && toolbarStyle.borderRadius !== keyStyle.borderRadius,
+          controlsFit: Boolean(tabs && tabs.right <= innerWidth + 1 && document.querySelector('.keys-filter-tabs').scrollWidth <= document.querySelector('.keys-filter-tabs').clientWidth + 1),
+          tabRows: new Set(tabRects.map((entry) => Math.round(entry.top))).size,
+          equalMobileTabs: innerWidth >= 620 || Math.max(...tabRects.map((entry) => entry.width)) - Math.min(...tabRects.map((entry) => entry.width)) < 2,
+          label: document.querySelector('.keys-filter-tabs')?.getAttribute('aria-label'),
+          counts: [...document.querySelectorAll('.keys-filter-tab b')].map((element) => element.textContent?.trim()),
+          activeFilter: document.querySelector('.keys-filter-tab[aria-pressed="true"]')?.dataset.keyFilter,
+        });
+      })()`,
+      returnByValue: true,
+    });
+    const state = JSON.parse(result.result.value);
+    const expectedTheme = layoutCase.theme === "dark" ? "dark" : "light";
+    if (state.language !== layoutCase.language || state.theme !== expectedTheme || state.overflow > 1 || !state.aligned || !state.separated || !state.distinctSurface || !state.controlsFit || state.tabRows !== 1 || !state.equalMobileTabs || state.label !== layoutCase.label || state.counts.join(",") !== "1,1,2" || state.activeFilter !== "active") {
+      throw new Error(`API keys ${layoutCase.name} layout failed: ${JSON.stringify(state)}`);
+    }
+
+    await clickSelector(client, '[data-key-filter="disabled"]');
+    await waitForCondition(
+      client,
+      `document.querySelector('[data-key-filter="disabled"]')?.getAttribute('aria-pressed') === 'true' && document.querySelectorAll('.keyrow').length === 1 && document.querySelector('.keyrow .pill')?.textContent?.trim() === ${JSON.stringify(layoutCase.disabled)}`,
+      `${layoutCase.name} disabled-key filter`,
+    );
+    await clickSelector(client, '[data-key-filter="all"]');
+    await waitForCondition(client, `document.querySelectorAll('.keyrow').length === 2`, `${layoutCase.name} all-key filter`);
+  }
+  process.stdout.write("Verified API key filter distinction, alignment, responsive layout, translations, themes, and interactions\n");
 }
 
 async function verifyDocsTheme(client) {
@@ -896,6 +1021,7 @@ try {
   }
   if (process.env.AUDIT_VERIFY_ROUTING === "1") await verifyDashboardRouting(client);
   if (process.env.AUDIT_VERIFY_PROFILE === "1") await verifyProfileBehavior(client);
+  if (shouldVerifyKeys) await verifyApiKeysLayout(client);
   if (shouldVerifyCredits) await verifyCreditsLayout(client);
   if (shouldVerifyDocsTheme) await verifyDocsTheme(client);
   if (process.env.AUDIT_VERIFY_SITE_ROUTING === "1") await verifyPersistentSiteRouting(client);
