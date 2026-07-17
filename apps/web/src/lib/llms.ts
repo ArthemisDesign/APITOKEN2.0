@@ -9,6 +9,7 @@ import {
   type Locale,
   type LearnCluster,
 } from "./learn";
+import { claudeModels } from "./models";
 import { SITE_ORIGIN } from "./seo";
 
 const clusterOrder: LearnCluster[] = ["buy", "free", "integrate", "compare", "explain"];
@@ -99,6 +100,7 @@ const copy: Record<Locale, LlmsCopy> = {
 
 export function buildLlms(locale: Locale): string {
   const c = copy[locale];
+  const modelIds = claudeModels.map((model) => model.id).join(", ");
   const lines: string[] = [
     c.heading,
     "",
@@ -106,11 +108,20 @@ export function buildLlms(locale: Locale): string {
     "",
     "## For AI agents",
     "",
-    `Every guide is available as clean Markdown — append the slug to the markdown gateway. Example: ${SITE_ORIGIN}${learnMarkdownPath("cheapest-claude-api", locale)}`,
+    "Every public section is available as clean Markdown — the private dashboard, auth and account pages are excluded. Core references:",
+    "",
+    `- API reference (base URL, model IDs, streaming, tools, errors): ${SITE_ORIGIN}/md/docs`,
+    `- Model catalog (exact IDs, context, pricing): ${SITE_ORIGIN}/md/models`,
+    `- Pricing & discount tiers: ${SITE_ORIGIN}/md/plans`,
+    `- Markdown index of everything: ${SITE_ORIGIN}/md`,
+    `- Any guide as Markdown: append its slug to the gateway, e.g. ${SITE_ORIGIN}${learnMarkdownPath("cheapest-claude-api", locale)}`,
+    `- Sitemap: ${SITE_ORIGIN}/sitemap.xml`,
     "",
     c.factsHeading,
     "",
     ...c.facts.map((fact) => "- " + fact),
+    `- Exact API model IDs: ${modelIds}`,
+    "- Capability parity: streaming (SSE), tool use / function calling, prompt caching (cache_control) and vision all pass through unchanged — identical to the Anthropic Messages API",
     "",
     c.guidesHeading,
     "",
