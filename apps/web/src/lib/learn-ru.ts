@@ -1157,4 +1157,120 @@ export const learnRu: Record<string, LocalizedContent> = {
       { q: "Как удержать стоимость агентов низкой?", a: "Направляйте дешёвые шаги на Haiku, кэшируйте повторяющийся контекст и задавайте лимиты трат на ключ." },
     ],
   },
+  "claude-api-langchain": {
+    title: "Claude API в LangChain",
+    h1: "Используйте Claude API в LangChain",
+    description: "Подключите LangChain к Claude через apiToken.sale: направьте ChatAnthropic на api.apitoken.sale, оставьте те же ID моделей и платите за токены на 60–80% меньше.",
+    keywords: ["claude api langchain", "langchain anthropic", "langchain claude", "chatanthropic base url", "langchain claude api ключ"],
+    dek: "Интеграция Anthropic в LangChain принимает кастомный URL API, поэтому ваши цепочки и агенты работают с Claude через apiToken.sale после правки в две строки — те же модели, ниже цена за токен.",
+    sections: [
+      { h2: "Направьте ChatAnthropic на шлюз", blocks: [
+        { type: "code", code: `from langchain_anthropic import ChatAnthropic\n\nllm = ChatAnthropic(\n    model="claude-opus-4-8",\n    anthropic_api_url="https://api.apitoken.sale",\n    anthropic_api_key="sk-pool-•••",\n)\nprint(llm.invoke("Hello").content)` },
+        { type: "p", text: "Это вся интеграция: тот же пакет langchain-anthropic, те же ID моделей, тот же стриминг и вызов инструментов — меняются только эндпоинт и цена." },
+        { type: "note", text: "Новые аккаунты стартуют с $10 использования Claude по официальным ценам API — этого хватит, чтобы подключить инструменты и сделать реальные вызовы до первого пополнения." },
+      ] },
+      { h2: "Или через переменные окружения", blocks: [
+        { type: "code", code: `export ANTHROPIC_API_URL=https://api.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••` },
+        { type: "p", text: "С заданным окружением ChatAnthropic подхватывает оба значения автоматически, поэтому в общих кодовых базах правки кода не нужны вовсе." },
+      ] },
+      { h2: "Что работает", blocks: [
+        { type: "list", items: [
+          "Цепочки, агенты и LangGraph-воркфлоу — протокол не меняется.",
+          "Стриминг, вызов инструментов и структурированный вывод через стандартную интеграцию.",
+          "Все поддерживаемые модели Claude (Opus, Sonnet, Haiku) на одном ключе и балансе.",
+        ] },
+      ] },
+    ],
+    faq: [
+      { q: "Работает ли LangChain с кастомным эндпоинтом Claude API?", a: "Да. ChatAnthropic принимает anthropic_api_url (или переменную окружения ANTHROPIC_API_URL), поэтому можно направить его на https://api.apitoken.sale, не меняя больше ничего." },
+      { q: "Работают ли агенты LangChain и вызов инструментов?", a: "Да — шлюз отдаёт стандартный Anthropic Messages API, поэтому вызов инструментов, стриминг и LangGraph-агенты ведут себя ровно как с официальным эндпоинтом." },
+      { q: "Какие модели доступны из LangChain?", a: "Все поддерживаемые модели Claude — claude-opus-4-8, claude-sonnet-5, claude-haiku-4-5 и другие — на одном ключе и предоплаченном балансе." },
+    ],
+  },
+  "claude-api-litellm": {
+    title: "Claude API в LiteLLM",
+    h1: "Используйте Claude API в LiteLLM",
+    description: "Маршрутизируйте LiteLLM к Claude через apiToken.sale: задайте api_base на api.apitoken.sale в litellm_params или конфиге прокси и платите за токены на 60–80% меньше.",
+    keywords: ["claude api litellm", "litellm anthropic", "litellm claude", "litellm api_base anthropic", "litellm прокси claude"],
+    dek: "LiteLLM говорит с Anthropic нативно и позволяет переопределить эндпоинт для каждой модели — одна строка конфига отправляет весь ваш Claude-трафик через шлюз со скидкой.",
+    sections: [
+      { h2: "Прямой вызов SDK", blocks: [
+        { type: "code", code: `import litellm\n\nresponse = litellm.completion(\n    model="anthropic/claude-opus-4-8",\n    api_base="https://api.apitoken.sale",\n    api_key="sk-pool-•••",\n    messages=[{"role": "user", "content": "Hello"}],\n)` },
+        { type: "note", text: "Новые аккаунты стартуют с $10 использования Claude по официальным ценам API — этого хватит, чтобы подключить инструменты и сделать реальные вызовы до первого пополнения." },
+      ] },
+      { h2: "Конфиг LiteLLM-прокси", blocks: [
+        { type: "code", code: `# config.yaml\nmodel_list:\n  - model_name: claude-opus-4-8\n    litellm_params:\n      model: anthropic/claude-opus-4-8\n      api_base: https://api.apitoken.sale\n      api_key: sk-pool-•••` },
+        { type: "p", text: "Запустите прокси с этим конфигом — и каждый клиент вашего LiteLLM-шлюза прозрачно использует дисконтный эндпоинт Claude. Удобно, когда много сервисов делят один слой маршрутизации." },
+      ] },
+      { h2: "Зачем вести Claude через LiteLLM сюда", blocks: [
+        { type: "list", items: [
+          "Одно место, чтобы переключить все сервисы на дешёвый эндпоинт.",
+          "Тот же префикс anthropic/ у моделей и те же параметры, что вы уже используете.",
+          "Расход по каждому ключу виден в панели apiToken.sale с детализацией до токенов.",
+        ] },
+      ] },
+    ],
+    faq: [
+      { q: "Поддерживает ли LiteLLM кастомный api_base для Anthropic?", a: "Да — передайте api_base в litellm.completion() или в litellm_params конфига прокси, и LiteLLM будет слать Anthropic-запросы на https://api.apitoken.sale." },
+      { q: "Сохраняется ли префикс anthropic/ у моделей?", a: "Да. Используйте anthropic/claude-opus-4-8 (или любую поддерживаемую модель), чтобы LiteLLM применял протокол Anthropic; меняются только эндпоинт и ключ." },
+      { q: "Работает ли это для инструментов поверх LiteLLM?", a: "Да — всё, что маршрутизируется через LiteLLM (включая многие кодинг-агенты), наследует дисконтный эндпоинт из той же конфигурации." },
+    ],
+  },
+  "claude-api-aider": {
+    title: "Claude API в Aider",
+    h1: "Используйте Claude API в Aider",
+    description: "Запустите Aider на Claude через apiToken.sale: экспортируйте ANTHROPIC_API_BASE и ключ, выберите модель Claude и пишите код в терминале со скидкой 60–80%.",
+    keywords: ["claude api aider", "aider anthropic", "aider claude", "aider anthropic api base", "aider claude api ключ"],
+    dek: "Aider — терминальный парный программист, который быстро сжигает токены в длинных сессиях. Направьте его на дисконтный шлюз двумя переменными окружения и сохраните привычный процесс.",
+    sections: [
+      { h2: "Две переменные окружения", blocks: [
+        { type: "code", code: `export ANTHROPIC_API_KEY=sk-pool-•••\nexport ANTHROPIC_API_BASE=https://api.apitoken.sale\n\naider --model anthropic/claude-opus-4-8` },
+        { type: "p", text: "Под капотом Aider ведёт Anthropic-трафик через LiteLLM, который учитывает ANTHROPIC_API_BASE — конфиг-файл не нужен." },
+        { type: "note", text: "Новые аккаунты стартуют с $10 использования Claude по официальным ценам API — этого хватит, чтобы подключить инструменты и сделать реальные вызовы до первого пополнения." },
+      ] },
+      { h2: "Выбор модели для Aider", blocks: [
+        { type: "list", items: [
+          "anthropic/claude-opus-4-8 — сложнейшие рефакторинги и длинные агентные правки.",
+          "anthropic/claude-sonnet-5 — повседневный вариант по умолчанию; качество кода близко к Opus.",
+          "anthropic/claude-haiku-4-5 — быстрые правки и дешёвые эксперименты.",
+        ] },
+        { type: "p", text: "Длинные сессии Aider — ровно то место, где потокенная скидка накапливается: карты репозитория, диффы и многофайловые правки тарифицируются как вход и выход." },
+      ] },
+    ],
+    faq: [
+      { q: "Работает ли Aider с кастомным эндпоинтом Claude?", a: "Да. Aider использует LiteLLM для моделей Anthropic, а LiteLLM учитывает переменную окружения ANTHROPIC_API_BASE — задайте её в https://api.apitoken.sale и запускайте Aider как обычно." },
+      { q: "Какая модель Claude лучше в Aider?", a: "claude-sonnet-5 — лучший вариант по умолчанию для большинства задач; на сложнейшую многофайловую работу переключайтесь на claude-opus-4-8. Обе работают на одном ключе." },
+      { q: "Насколько дешевле длинная сессия Aider?", a: "Каждый запрос тарифицируется по официальным потокенным ставкам минус ваша скидка 60–80%, поэтому сессия за $10 напрямую здесь стоит $2–4." },
+    ],
+  },
+  "claude-api-roo-code": {
+    title: "Claude API в Roo Code",
+    h1: "Используйте Claude API в Roo Code",
+    description: "Подключите Roo Code в VS Code к Claude через apiToken.sale: выберите провайдера Anthropic, включите кастомный base URL, вставьте ключ и кодьте со скидкой 60–80%.",
+    keywords: ["claude api roo code", "roo code anthropic", "roo code claude", "roo code custom base url", "roo code api ключ"],
+    dek: "Roo Code — агентное расширение VS Code с нативным провайдером Anthropic и опцией кастомного base URL, поэтому настройка на дисконтном шлюзе занимает две минуты.",
+    sections: [
+      { h2: "Настройка в три шага", blocks: [
+        { type: "steps", items: [
+          "Откройте настройки Roo Code и выберите Anthropic как API-провайдера.",
+          "Включите опцию кастомного base URL и задайте его в https://api.apitoken.sale; вставьте ваш ключ sk-pool-….",
+          "Выберите модель, например claude-opus-4-8 или claude-sonnet-5, и запустите задачу.",
+        ] },
+        { type: "note", text: "Новые аккаунты стартуют с $10 использования Claude по официальным ценам API — этого хватит, чтобы подключить инструменты и сделать реальные вызовы до первого пополнения." },
+      ] },
+      { h2: "Почему Roo Code сжигает токены — и как платить меньше", blocks: [
+        { type: "p", text: "Агентные расширения читают файлы, планируют, правят и перепроверяют в циклах, поэтому одна задача может выполнить много вызовов модели. Именно на такой нагрузке потокенная скидка важнее всего: та же сессия на 60–80% дешевле, с токенной детализацией в панели." },
+        { type: "list", items: [
+          "Ведите повседневные задачи на claude-sonnet-5, а сложные — на claude-opus-4-8.",
+          "Кэширование промптов тарифицируется по более дешёвым официальным ставкам кэша минус ваша скидка.",
+          "Один ключ покрывает Roo Code, Cline, Cursor и SDK одновременно.",
+        ] },
+      ] },
+    ],
+    faq: [
+      { q: "Поддерживает ли Roo Code кастомный base URL для Anthropic?", a: "Да — в настройках провайдера Anthropic есть опция кастомного base URL; задайте её в https://api.apitoken.sale и используйте ключ apiToken.sale." },
+      { q: "Какие модели получает Roo Code на этом ключе?", a: "Все поддерживаемые модели Claude — Opus 4.8 и 4.7, Sonnet 5 и 4.6, Haiku 4.5 — на одном ключе и одном предоплаченном балансе." },
+      { q: "Чем это отличается от Cline?", a: "Настройка почти идентична: оба — агенты VS Code с провайдером Anthropic, принимающим кастомный base URL. Используйте того агента, который вам ближе; ключ работает в обоих." },
+    ],
+  },
 };

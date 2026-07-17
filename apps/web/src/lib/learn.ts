@@ -34,6 +34,8 @@ export type LearnArticle = {
   related: string[];
   /** ISO date (YYYY-MM-DD) of the last substantive content change; falls back to the cluster launch date. */
   updated?: string;
+  /** ISO date (YYYY-MM-DD) the article first shipped; falls back to the cluster launch date. */
+  published?: string;
 };
 
 export type Locale = "en" | "ru" | "zh" | "ko";
@@ -738,6 +740,142 @@ export const learnArticles: LearnArticle[] = [
       { q: "Do model IDs change?", a: "No. Use the same model IDs such as claude-opus-4-8 and claude-sonnet-5." },
     ],
     related: ["claude-api-quick-setup", "claude-api-for-vs-code", "claude-code-without-subscription", "claude-api-key-for-cursor"],
+  },
+  {
+    slug: "claude-api-langchain",
+    cluster: "integrate",
+    title: "Use the Claude API with LangChain",
+    h1: "Use the Claude API with LangChain",
+    description: "Connect LangChain to Claude through apiToken.sale: point ChatAnthropic at api.apitoken.sale, keep the same model IDs, and pay 60–80% less per token.",
+    keywords: ["claude api langchain", "langchain anthropic", "langchain claude", "chatanthropic base url", "langchain claude api key", "langchain anthropic_api_url"],
+    dek: "LangChain's Anthropic integration accepts a custom API URL, so your chains and agents can run on Claude through apiToken.sale with a two-line change — same models, lower token price.",
+    published: "2026-07-17",
+    updated: "2026-07-17",
+    sections: [
+      { h2: "Point ChatAnthropic at the gateway", blocks: [
+        { type: "code", code: `from langchain_anthropic import ChatAnthropic\n\nllm = ChatAnthropic(\n    model="claude-opus-4-8",\n    anthropic_api_url="${BASE}",\n    anthropic_api_key="${KEY}",\n)\nprint(llm.invoke("Hello").content)` },
+        { type: "p", text: "That is the whole integration: the same langchain-anthropic package, the same model IDs, the same streaming and tool-calling — only the endpoint and the price change." },
+        cta(),
+      ] },
+      { h2: "Or configure via environment variables", blocks: [
+        { type: "code", code: `export ANTHROPIC_API_URL=${BASE}\nexport ANTHROPIC_API_KEY=${KEY}` },
+        { type: "p", text: "With the environment set, ChatAnthropic picks up both values automatically, so shared codebases need no code change at all." },
+      ] },
+      { h2: "What works", blocks: [
+        { type: "list", items: [
+          "Chains, agents and LangGraph workflows — the protocol is unchanged.",
+          "Streaming, tool calling and structured output through the standard integration.",
+          "Every supported Claude model (Opus, Sonnet, Haiku) on one key and balance.",
+        ] },
+      ] },
+    ],
+    faq: [
+      { q: "Does LangChain work with a custom Claude API endpoint?", a: "Yes. ChatAnthropic accepts anthropic_api_url (or the ANTHROPIC_API_URL environment variable), so you can point it at https://api.apitoken.sale and keep everything else unchanged." },
+      { q: "Do LangChain agents and tool calling still work?", a: "Yes — the gateway serves the standard Anthropic Messages API, so tool calling, streaming and LangGraph agents behave exactly as with the official endpoint." },
+      { q: "Which models can I use from LangChain?", a: "All supported Claude models — claude-opus-4-8, claude-sonnet-5, claude-haiku-4-5 and more — on the same key and prepaid balance." },
+    ],
+    related: ["anthropic-sdk-base-url", "claude-api-litellm", "claude-api-quick-setup", "cheapest-claude-api"],
+  },
+  {
+    slug: "claude-api-litellm",
+    cluster: "integrate",
+    title: "Use the Claude API with LiteLLM",
+    h1: "Use the Claude API with LiteLLM",
+    description: "Route LiteLLM to Claude through apiToken.sale: set api_base to api.apitoken.sale in litellm_params or the proxy config and pay 60–80% less per token.",
+    keywords: ["claude api litellm", "litellm anthropic", "litellm claude", "litellm api_base anthropic", "litellm proxy claude", "litellm claude api key"],
+    dek: "LiteLLM speaks to Anthropic natively and lets you override the endpoint per model, so one config line sends all your Claude traffic through the discounted gateway.",
+    published: "2026-07-17",
+    updated: "2026-07-17",
+    sections: [
+      { h2: "Direct SDK call", blocks: [
+        { type: "code", code: `import litellm\n\nresponse = litellm.completion(\n    model="anthropic/claude-opus-4-8",\n    api_base="${BASE}",\n    api_key="${KEY}",\n    messages=[{"role": "user", "content": "Hello"}],\n)` },
+        cta(),
+      ] },
+      { h2: "LiteLLM proxy config", blocks: [
+        { type: "code", code: `# config.yaml\nmodel_list:\n  - model_name: claude-opus-4-8\n    litellm_params:\n      model: anthropic/claude-opus-4-8\n      api_base: ${BASE}\n      api_key: ${KEY}` },
+        { type: "p", text: "Run the proxy with this config and every client of your LiteLLM gateway transparently uses the discounted Claude endpoint — useful when many services share one routing layer." },
+      ] },
+      { h2: "Why route Claude through LiteLLM here", blocks: [
+        { type: "list", items: [
+          "One place to switch all services to the cheaper endpoint.",
+          "Same anthropic/ model prefix and parameters you already use.",
+          "Spend tracked per key in the apiToken.sale dashboard with token detail.",
+        ] },
+      ] },
+    ],
+    faq: [
+      { q: "Does LiteLLM support a custom Anthropic api_base?", a: "Yes — pass api_base in litellm.completion() or in litellm_params in the proxy config, and LiteLLM sends Anthropic-format requests to https://api.apitoken.sale." },
+      { q: "Do I keep the anthropic/ model prefix?", a: "Yes. Use anthropic/claude-opus-4-8 (or any supported model) so LiteLLM applies the Anthropic protocol; only the endpoint and key change." },
+      { q: "Does this work for tools built on LiteLLM?", a: "Yes — anything that routes through LiteLLM (including many coding agents) inherits the discounted endpoint from the same configuration." },
+    ],
+    related: ["claude-api-langchain", "claude-api-aider", "anthropic-sdk-base-url", "claude-api-gateway"],
+  },
+  {
+    slug: "claude-api-aider",
+    cluster: "integrate",
+    title: "Use the Claude API with Aider",
+    h1: "Use the Claude API with Aider",
+    description: "Run Aider on Claude through apiToken.sale: export ANTHROPIC_API_BASE and your key, pick a Claude model, and pair-program in the terminal at 60–80% off.",
+    keywords: ["claude api aider", "aider anthropic", "aider claude", "aider anthropic api base", "aider claude api key", "aider cheap claude"],
+    dek: "Aider is a terminal pair-programmer that burns tokens fast on long sessions. Point it at the discounted gateway with two environment variables and keep the exact same workflow.",
+    published: "2026-07-17",
+    updated: "2026-07-17",
+    sections: [
+      { h2: "Two environment variables", blocks: [
+        { type: "code", code: `export ANTHROPIC_API_KEY=${KEY}\nexport ANTHROPIC_API_BASE=${BASE}\n\naider --model anthropic/claude-opus-4-8` },
+        { type: "p", text: "Aider routes Anthropic traffic through LiteLLM under the hood, which honours ANTHROPIC_API_BASE — so no config file is required." },
+        cta(),
+      ] },
+      { h2: "Picking a model for Aider", blocks: [
+        { type: "list", items: [
+          "anthropic/claude-opus-4-8 — hardest refactors and long agentic edits.",
+          "anthropic/claude-sonnet-5 — the everyday default; near-Opus coding quality.",
+          "anthropic/claude-haiku-4-5 — quick edits and cheap experimentation.",
+        ] },
+        { type: "p", text: "Long Aider sessions are exactly where the token discount compounds: repo maps, diffs and multi-file edits all bill as input and output tokens." },
+      ] },
+    ],
+    faq: [
+      { q: "Does Aider work with a custom Claude endpoint?", a: "Yes. Aider uses LiteLLM for Anthropic models, and LiteLLM honours the ANTHROPIC_API_BASE environment variable — set it to https://api.apitoken.sale and start Aider normally." },
+      { q: "Which Claude model is best in Aider?", a: "claude-sonnet-5 is the best default for most coding; switch to claude-opus-4-8 for the hardest multi-file work. Both run on the same key." },
+      { q: "How much cheaper is a long Aider session?", a: "Every request is billed at official token rates minus your 60–80% discount, so a session that would cost $10 direct costs $2–4 here." },
+    ],
+    related: ["claude-api-litellm", "claude-code-without-subscription", "best-claude-model-for-coding", "save-tokens-on-claude-api"],
+  },
+  {
+    slug: "claude-api-roo-code",
+    cluster: "integrate",
+    title: "Use the Claude API with Roo Code",
+    h1: "Use the Claude API with Roo Code",
+    description: "Connect Roo Code in VS Code to Claude through apiToken.sale: choose the Anthropic provider, enable the custom base URL, paste your key and code at 60–80% off.",
+    keywords: ["claude api roo code", "roo code anthropic", "roo code claude", "roo code custom base url", "roo code api key", "roo code cheap claude"],
+    dek: "Roo Code is an agentic VS Code extension with a native Anthropic provider and a custom base URL option — which makes it a two-minute setup on the discounted gateway.",
+    published: "2026-07-17",
+    updated: "2026-07-17",
+    sections: [
+      { h2: "Setup in three steps", blocks: [
+        { type: "steps", items: [
+          "Open Roo Code settings and choose Anthropic as the API provider.",
+          `Enable the custom base URL option and set it to ${BASE}; paste your sk-pool-… key.`,
+          "Pick a model such as claude-opus-4-8 or claude-sonnet-5 and start a task.",
+        ] },
+        cta(),
+      ] },
+      { h2: "Why Roo Code burns tokens — and how to pay less", blocks: [
+        { type: "p", text: "Agentic extensions read files, plan, edit and re-check in loops, so a single task can run many model calls. That is precisely the workload where a per-token discount matters most: the same session, 60–80% cheaper, with token-level visibility in the dashboard." },
+        { type: "list", items: [
+          "Route everyday tasks to claude-sonnet-5 and hard ones to claude-opus-4-8.",
+          "Prompt caching is billed at the cheaper official cache rates minus your discount.",
+          "One key covers Roo Code, Cline, Cursor and the SDKs simultaneously.",
+        ] },
+      ] },
+    ],
+    faq: [
+      { q: "Does Roo Code support a custom Anthropic base URL?", a: "Yes — the Anthropic provider settings include a custom base URL option; set it to https://api.apitoken.sale and use your apiToken.sale key." },
+      { q: "Which models does Roo Code get on this key?", a: "Every supported Claude model — Opus 4.8 and 4.7, Sonnet 5 and 4.6, Haiku 4.5 — on one key and one prepaid balance." },
+      { q: "Is this different from using Cline?", a: "The setup is nearly identical: both are VS Code agents with an Anthropic provider that accepts a custom base URL. Use whichever agent you prefer; the key works in both." },
+    ],
+    related: ["claude-api-for-vs-code", "claude-api-key-for-cursor", "claude-api-langchain", "cheapest-claude-api"],
   },
 
   // ─────────────────────────── COMPARE ───────────────────────────
@@ -1564,7 +1702,13 @@ export const LEARN_LAUNCH_DATE = new Date("2026-07-16T00:00:00.000Z");
 /** Last substantive content change for an article (all locales share the date). */
 export function articleUpdatedDate(slug: string): Date {
   const updated = learnArticlesBySlug[slug]?.updated;
-  return updated ? new Date(`${updated}T00:00:00.000Z`) : LEARN_LAUNCH_DATE;
+  return updated ? new Date(`${updated}T00:00:00.000Z`) : articlePublishedDate(slug);
+}
+
+/** First publication date for an article. */
+export function articlePublishedDate(slug: string): Date {
+  const published = learnArticlesBySlug[slug]?.published;
+  return published ? new Date(`${published}T00:00:00.000Z`) : LEARN_LAUNCH_DATE;
 }
 
 /** Locales that have a published version of this article (en is always present). */

@@ -1154,4 +1154,120 @@ export const learnZh: Record<string, LocalizedContent> = {
       { q: "如何压低智能体成本？", a: "把廉价步骤路由到 Haiku，缓存重复上下文，并设置按密钥的消费上限。" },
     ],
   },
+  "claude-api-langchain": {
+    title: "在 LangChain 中使用 Claude API",
+    h1: "在 LangChain 中使用 Claude API",
+    description: "通过 apitoken.sale 将 LangChain 接入 Claude：把 ChatAnthropic 指向 api.apitoken.sale，模型 ID 保持不变，每 token 费用降低 60–80%。",
+    keywords: ["claude api langchain", "langchain anthropic", "langchain claude", "chatanthropic base url", "langchain claude api 密钥"],
+    dek: "LangChain 的 Anthropic 集成支持自定义 API URL，因此只改两行，你的链和智能体就能通过 apitoken.sale 运行 Claude——同样的模型，更低的 token 单价。",
+    sections: [
+      { h2: "把 ChatAnthropic 指向网关", blocks: [
+        { type: "code", code: `from langchain_anthropic import ChatAnthropic\n\nllm = ChatAnthropic(\n    model="claude-opus-4-8",\n    anthropic_api_url="https://api.apitoken.sale",\n    anthropic_api_key="sk-pool-•••",\n)\nprint(llm.invoke("Hello").content)` },
+        { type: "p", text: "整个集成就是这些：同一个 langchain-anthropic 包、同样的模型 ID、同样的流式输出与工具调用——变的只有端点和价格。" },
+        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+      ] },
+      { h2: "或通过环境变量配置", blocks: [
+        { type: "code", code: `export ANTHROPIC_API_URL=https://api.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••` },
+        { type: "p", text: "设置好环境变量后，ChatAnthropic 会自动读取这两个值，共享代码库完全无需改代码。" },
+      ] },
+      { h2: "哪些功能可用", blocks: [
+        { type: "list", items: [
+          "链、智能体和 LangGraph 工作流——协议不变。",
+          "通过标准集成使用流式输出、工具调用和结构化输出。",
+          "所有受支持的 Claude 模型（Opus、Sonnet、Haiku）共用一把密钥和一个余额。",
+        ] },
+      ] },
+    ],
+    faq: [
+      { q: "LangChain 支持自定义 Claude API 端点吗？", a: "支持。ChatAnthropic 接受 anthropic_api_url（或 ANTHROPIC_API_URL 环境变量），把它指向 https://api.apitoken.sale 即可，其余保持不变。" },
+      { q: "LangChain 智能体和工具调用还能用吗？", a: "能——网关提供标准的 Anthropic Messages API，工具调用、流式输出和 LangGraph 智能体的行为与官方端点完全一致。" },
+      { q: "从 LangChain 能用哪些模型？", a: "所有受支持的 Claude 模型——claude-opus-4-8、claude-sonnet-5、claude-haiku-4-5 等——共用一把密钥和预付余额。" },
+    ],
+  },
+  "claude-api-litellm": {
+    title: "在 LiteLLM 中使用 Claude API",
+    h1: "在 LiteLLM 中使用 Claude API",
+    description: "通过 apitoken.sale 将 LiteLLM 路由到 Claude：在 litellm_params 或代理配置中把 api_base 设为 api.apitoken.sale，每 token 费用降低 60–80%。",
+    keywords: ["claude api litellm", "litellm anthropic", "litellm claude", "litellm api_base anthropic", "litellm 代理 claude"],
+    dek: "LiteLLM 原生支持 Anthropic，并允许为每个模型覆盖端点——一行配置即可把你全部的 Claude 流量送经折扣网关。",
+    sections: [
+      { h2: "直接 SDK 调用", blocks: [
+        { type: "code", code: `import litellm\n\nresponse = litellm.completion(\n    model="anthropic/claude-opus-4-8",\n    api_base="https://api.apitoken.sale",\n    api_key="sk-pool-•••",\n    messages=[{"role": "user", "content": "Hello"}],\n)` },
+        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+      ] },
+      { h2: "LiteLLM 代理配置", blocks: [
+        { type: "code", code: `# config.yaml\nmodel_list:\n  - model_name: claude-opus-4-8\n    litellm_params:\n      model: anthropic/claude-opus-4-8\n      api_base: https://api.apitoken.sale\n      api_key: sk-pool-•••` },
+        { type: "p", text: "用这份配置运行代理，你的 LiteLLM 网关的每个客户端都会透明地使用折扣版 Claude 端点——当多个服务共享一个路由层时尤其方便。" },
+      ] },
+      { h2: "为什么在这里通过 LiteLLM 路由 Claude", blocks: [
+        { type: "list", items: [
+          "在一个地方把所有服务切到更便宜的端点。",
+          "沿用你已有的 anthropic/ 模型前缀和参数。",
+          "apitoken.sale 控制台按密钥追踪消费，精确到 token。",
+        ] },
+      ] },
+    ],
+    faq: [
+      { q: "LiteLLM 支持自定义 Anthropic api_base 吗？", a: "支持——在 litellm.completion() 或代理配置的 litellm_params 中传入 api_base，LiteLLM 就会把 Anthropic 格式的请求发送到 https://api.apitoken.sale。" },
+      { q: "模型还用 anthropic/ 前缀吗？", a: "是的。使用 anthropic/claude-opus-4-8（或任何受支持的模型），让 LiteLLM 应用 Anthropic 协议；变的只有端点和密钥。" },
+      { q: "基于 LiteLLM 的工具也适用吗？", a: "适用——凡是经 LiteLLM 路由的东西（包括许多编码智能体）都会从同一份配置继承折扣端点。" },
+    ],
+  },
+  "claude-api-aider": {
+    title: "在 Aider 中使用 Claude API",
+    h1: "在 Aider 中使用 Claude API",
+    description: "通过 apitoken.sale 在 Claude 上运行 Aider：导出 ANTHROPIC_API_BASE 和密钥，选一个 Claude 模型，以 60–80% 的折扣在终端结对编程。",
+    keywords: ["claude api aider", "aider anthropic", "aider claude", "aider anthropic api base", "aider claude api 密钥"],
+    dek: "Aider 是终端里的结对程序员，长会话烧 token 很快。用两个环境变量把它指向折扣网关，工作流保持原样。",
+    sections: [
+      { h2: "两个环境变量", blocks: [
+        { type: "code", code: `export ANTHROPIC_API_KEY=sk-pool-•••\nexport ANTHROPIC_API_BASE=https://api.apitoken.sale\n\naider --model anthropic/claude-opus-4-8` },
+        { type: "p", text: "Aider 底层通过 LiteLLM 路由 Anthropic 流量，而 LiteLLM 会读取 ANTHROPIC_API_BASE——因此无需任何配置文件。" },
+        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+      ] },
+      { h2: "为 Aider 选择模型", blocks: [
+        { type: "list", items: [
+          "anthropic/claude-opus-4-8——最难的重构和长程智能体编辑。",
+          "anthropic/claude-sonnet-5——日常默认；编码质量接近 Opus。",
+          "anthropic/claude-haiku-4-5——快速修改和低成本实验。",
+        ] },
+        { type: "p", text: "长 Aider 会话正是 token 折扣不断累积的地方：仓库地图、diff 和多文件编辑全部按输入和输出计费。" },
+      ] },
+    ],
+    faq: [
+      { q: "Aider 支持自定义 Claude 端点吗？", a: "支持。Aider 对 Anthropic 模型使用 LiteLLM，而 LiteLLM 读取 ANTHROPIC_API_BASE 环境变量——把它设为 https://api.apitoken.sale，然后正常启动 Aider 即可。" },
+      { q: "在 Aider 里哪个 Claude 模型最好？", a: "claude-sonnet-5 是大多数编码工作的最佳默认；最难的多文件任务切到 claude-opus-4-8。两者共用同一把密钥。" },
+      { q: "长 Aider 会话能便宜多少？", a: "每个请求按官方 token 费率计费再减去你 60–80% 的折扣，直连要花 $10 的会话在这里只需 $2–4。" },
+    ],
+  },
+  "claude-api-roo-code": {
+    title: "在 Roo Code 中使用 Claude API",
+    h1: "在 Roo Code 中使用 Claude API",
+    description: "通过 apitoken.sale 将 VS Code 中的 Roo Code 接入 Claude：选择 Anthropic 提供方，启用自定义 base URL，粘贴密钥，以 60–80% 的折扣编码。",
+    keywords: ["claude api roo code", "roo code anthropic", "roo code claude", "roo code 自定义 base url", "roo code api 密钥"],
+    dek: "Roo Code 是带原生 Anthropic 提供方和自定义 base URL 选项的智能体 VS Code 扩展——在折扣网关上两分钟即可完成设置。",
+    sections: [
+      { h2: "三步设置", blocks: [
+        { type: "steps", items: [
+          "打开 Roo Code 设置，选择 Anthropic 作为 API 提供方。",
+          "启用自定义 base URL 选项并设为 https://api.apitoken.sale；粘贴你的 sk-pool-… 密钥。",
+          "选择一个模型，例如 claude-opus-4-8 或 claude-sonnet-5，然后开始任务。",
+        ] },
+        { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
+      ] },
+      { h2: "Roo Code 为什么烧 token——以及如何少花钱", blocks: [
+        { type: "p", text: "智能体扩展会循环地读文件、规划、编辑、复查，一个任务可能跑很多次模型调用。这正是按 token 折扣最有价值的负载：同样的会话便宜 60–80%，控制台里还有 token 级明细。" },
+        { type: "list", items: [
+          "日常任务走 claude-sonnet-5，难题交给 claude-opus-4-8。",
+          "提示缓存按更便宜的官方缓存费率计费，再叠加你的折扣。",
+          "一把密钥同时覆盖 Roo Code、Cline、Cursor 和各 SDK。",
+        ] },
+      ] },
+    ],
+    faq: [
+      { q: "Roo Code 支持自定义 Anthropic base URL 吗？", a: "支持——Anthropic 提供方设置里有自定义 base URL 选项；设为 https://api.apitoken.sale 并使用你的 apitoken.sale 密钥即可。" },
+      { q: "这把密钥能让 Roo Code 用哪些模型？", a: "所有受支持的 Claude 模型——Opus 4.8 和 4.7、Sonnet 5 和 4.6、Haiku 4.5——共用一把密钥和一个预付余额。" },
+      { q: "和用 Cline 有什么区别？", a: "设置几乎一样：两者都是带 Anthropic 提供方、接受自定义 base URL 的 VS Code 智能体。用你喜欢的那个即可；密钥在两者中都能用。" },
+    ],
+  },
 };

@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import {
+  articlePublishedDate,
   articlesForLocale,
   articleUpdatedDate,
   clusterLabels,
-  LEARN_LAUNCH_DATE,
   htmlLang,
   learnAlternates,
   learnHubPath,
@@ -42,7 +42,7 @@ export function buildArticleMetadata(slug: string, locale: Locale): Metadata | n
     ...(usesGeneratedOg ? ogRest : base.openGraph),
     type: "article" as const,
     locale: ogLocale(locale),
-    publishedTime: LEARN_LAUNCH_DATE.toISOString(),
+    publishedTime: articlePublishedDate(slug).toISOString(),
     modifiedTime: articleUpdatedDate(slug).toISOString(),
   };
   return {
@@ -81,7 +81,7 @@ export function buildArticleJsonLd(slug: string, locale: Locale) {
         mainEntityOfPage: url,
         image: absoluteUrl("/og.png"),
         dateModified: articleUpdatedDate(slug).toISOString(),
-        datePublished: LEARN_LAUNCH_DATE.toISOString(),
+        datePublished: articlePublishedDate(slug).toISOString(),
         inLanguage: htmlLang(locale),
         articleSection: clusterLabels[locale][article.cluster].label,
         keywords: article.content.keywords.join(", "),

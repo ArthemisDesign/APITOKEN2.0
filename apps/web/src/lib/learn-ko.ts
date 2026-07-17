@@ -1157,4 +1157,120 @@ export const learnKo: Record<string, LocalizedContent> = {
       { q: "에이전트 비용을 어떻게 낮추나요?", a: "값싼 단계는 Haiku로 라우팅하고, 반복되는 컨텍스트를 캐시하며, 키별 소비 상한을 설정하세요." },
     ],
   },
+  "claude-api-langchain": {
+    title: "LangChain에서 Claude API 사용하기",
+    h1: "LangChain에서 Claude API 사용하기",
+    description: "apitoken.sale로 LangChain을 Claude에 연결하세요. ChatAnthropic을 api.apitoken.sale로 지정하면 모델 ID는 그대로, 토큰당 비용은 60~80% 저렴해집니다.",
+    keywords: ["claude api langchain", "langchain anthropic", "langchain claude", "chatanthropic base url", "langchain claude api 키"],
+    dek: "LangChain의 Anthropic 통합은 커스텀 API URL을 지원하므로, 두 줄만 바꾸면 체인과 에이전트가 apitoken.sale을 통해 Claude로 동작합니다. 같은 모델, 더 낮은 토큰 단가입니다.",
+    sections: [
+      { h2: "ChatAnthropic을 게이트웨이로 지정", blocks: [
+        { type: "code", code: `from langchain_anthropic import ChatAnthropic\n\nllm = ChatAnthropic(\n    model="claude-opus-4-8",\n    anthropic_api_url="https://api.apitoken.sale",\n    anthropic_api_key="sk-pool-•••",\n)\nprint(llm.invoke("Hello").content)` },
+        { type: "p", text: "통합은 이것이 전부입니다. 동일한 langchain-anthropic 패키지, 동일한 모델 ID, 동일한 스트리밍과 도구 호출 — 바뀌는 것은 엔드포인트와 가격뿐입니다." },
+        { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
+      ] },
+      { h2: "또는 환경 변수로 구성", blocks: [
+        { type: "code", code: `export ANTHROPIC_API_URL=https://api.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••` },
+        { type: "p", text: "환경 변수를 설정하면 ChatAnthropic이 두 값을 자동으로 읽어오므로, 공유 코드베이스에서는 코드 수정이 전혀 필요 없습니다." },
+      ] },
+      { h2: "무엇이 작동하나", blocks: [
+        { type: "list", items: [
+          "체인, 에이전트, LangGraph 워크플로 — 프로토콜은 그대로입니다.",
+          "표준 통합을 통한 스트리밍, 도구 호출, 구조화된 출력.",
+          "지원되는 모든 Claude 모델(Opus, Sonnet, Haiku)을 하나의 키와 잔액으로.",
+        ] },
+      ] },
+    ],
+    faq: [
+      { q: "LangChain이 커스텀 Claude API 엔드포인트를 지원하나요?", a: "네. ChatAnthropic은 anthropic_api_url(또는 ANTHROPIC_API_URL 환경 변수)을 받으므로, https://api.apitoken.sale로 지정하고 나머지는 그대로 두면 됩니다." },
+      { q: "LangChain 에이전트와 도구 호출도 작동하나요?", a: "네 — 게이트웨이는 표준 Anthropic Messages API를 제공하므로 도구 호출, 스트리밍, LangGraph 에이전트가 공식 엔드포인트와 똑같이 동작합니다." },
+      { q: "LangChain에서 어떤 모델을 쓸 수 있나요?", a: "지원되는 모든 Claude 모델 — claude-opus-4-8, claude-sonnet-5, claude-haiku-4-5 등 — 을 하나의 키와 선불 잔액으로 사용할 수 있습니다." },
+    ],
+  },
+  "claude-api-litellm": {
+    title: "LiteLLM에서 Claude API 사용하기",
+    h1: "LiteLLM에서 Claude API 사용하기",
+    description: "apitoken.sale로 LiteLLM을 Claude에 라우팅하세요. litellm_params 또는 프록시 설정에서 api_base를 api.apitoken.sale로 지정하면 토큰당 60~80% 저렴합니다.",
+    keywords: ["claude api litellm", "litellm anthropic", "litellm claude", "litellm api_base anthropic", "litellm 프록시 claude"],
+    dek: "LiteLLM은 Anthropic을 네이티브로 지원하고 모델별 엔드포인트 재정의를 허용하므로, 설정 한 줄로 모든 Claude 트래픽이 할인 게이트웨이를 지나갑니다.",
+    sections: [
+      { h2: "SDK 직접 호출", blocks: [
+        { type: "code", code: `import litellm\n\nresponse = litellm.completion(\n    model="anthropic/claude-opus-4-8",\n    api_base="https://api.apitoken.sale",\n    api_key="sk-pool-•••",\n    messages=[{"role": "user", "content": "Hello"}],\n)` },
+        { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
+      ] },
+      { h2: "LiteLLM 프록시 설정", blocks: [
+        { type: "code", code: `# config.yaml\nmodel_list:\n  - model_name: claude-opus-4-8\n    litellm_params:\n      model: anthropic/claude-opus-4-8\n      api_base: https://api.apitoken.sale\n      api_key: sk-pool-•••` },
+        { type: "p", text: "이 설정으로 프록시를 실행하면 LiteLLM 게이트웨이의 모든 클라이언트가 투명하게 할인된 Claude 엔드포인트를 사용합니다. 여러 서비스가 하나의 라우팅 계층을 공유할 때 유용합니다." },
+      ] },
+      { h2: "왜 LiteLLM으로 Claude를 이곳에 라우팅하나", blocks: [
+        { type: "list", items: [
+          "모든 서비스를 저렴한 엔드포인트로 전환하는 단일 지점.",
+          "이미 쓰던 anthropic/ 모델 접두사와 파라미터 그대로.",
+          "apitoken.sale 대시보드에서 키별 지출을 토큰 단위로 추적.",
+        ] },
+      ] },
+    ],
+    faq: [
+      { q: "LiteLLM이 커스텀 Anthropic api_base를 지원하나요?", a: "네 — litellm.completion()이나 프록시 설정의 litellm_params에 api_base를 전달하면 LiteLLM이 Anthropic 형식 요청을 https://api.apitoken.sale로 보냅니다." },
+      { q: "anthropic/ 모델 접두사는 유지하나요?", a: "네. anthropic/claude-opus-4-8(또는 지원되는 모든 모델)을 사용해 LiteLLM이 Anthropic 프로토콜을 적용하게 하세요. 바뀌는 것은 엔드포인트와 키뿐입니다." },
+      { q: "LiteLLM 기반 도구에도 적용되나요?", a: "네 — LiteLLM을 거치는 모든 것(많은 코딩 에이전트 포함)이 같은 설정에서 할인 엔드포인트를 물려받습니다." },
+    ],
+  },
+  "claude-api-aider": {
+    title: "Aider에서 Claude API 사용하기",
+    h1: "Aider에서 Claude API 사용하기",
+    description: "apitoken.sale로 Claude에서 Aider를 실행하세요. ANTHROPIC_API_BASE와 키를 내보내고 Claude 모델을 골라 60~80% 할인가로 터미널 페어 프로그래밍을 하세요.",
+    keywords: ["claude api aider", "aider anthropic", "aider claude", "aider anthropic api base", "aider claude api 키"],
+    dek: "Aider는 긴 세션에서 토큰을 빠르게 소모하는 터미널 페어 프로그래머입니다. 환경 변수 두 개로 할인 게이트웨이를 가리키게 하고 워크플로는 그대로 유지하세요.",
+    sections: [
+      { h2: "환경 변수 두 개", blocks: [
+        { type: "code", code: `export ANTHROPIC_API_KEY=sk-pool-•••\nexport ANTHROPIC_API_BASE=https://api.apitoken.sale\n\naider --model anthropic/claude-opus-4-8` },
+        { type: "p", text: "Aider는 내부적으로 LiteLLM을 통해 Anthropic 트래픽을 라우팅하며, LiteLLM은 ANTHROPIC_API_BASE를 인식합니다. 설정 파일이 필요 없습니다." },
+        { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
+      ] },
+      { h2: "Aider용 모델 고르기", blocks: [
+        { type: "list", items: [
+          "anthropic/claude-opus-4-8 — 가장 어려운 리팩터링과 긴 에이전트 편집.",
+          "anthropic/claude-sonnet-5 — 일상 기본값; Opus에 가까운 코딩 품질.",
+          "anthropic/claude-haiku-4-5 — 빠른 수정과 저렴한 실험.",
+        ] },
+        { type: "p", text: "긴 Aider 세션이야말로 토큰 할인이 누적되는 곳입니다. 저장소 맵, diff, 다중 파일 편집이 모두 입력과 출력으로 과금됩니다." },
+      ] },
+    ],
+    faq: [
+      { q: "Aider가 커스텀 Claude 엔드포인트를 지원하나요?", a: "네. Aider는 Anthropic 모델에 LiteLLM을 사용하고, LiteLLM은 ANTHROPIC_API_BASE 환경 변수를 인식합니다. https://api.apitoken.sale로 설정하고 평소처럼 Aider를 시작하세요." },
+      { q: "Aider에서 어떤 Claude 모델이 가장 좋나요?", a: "대부분의 코딩에는 claude-sonnet-5가 최선의 기본값이고, 가장 어려운 다중 파일 작업은 claude-opus-4-8로 전환하세요. 둘 다 같은 키에서 동작합니다." },
+      { q: "긴 Aider 세션은 얼마나 저렴해지나요?", a: "모든 요청이 공식 토큰 요율에서 60~80% 할인을 뺀 금액으로 과금되므로, 직접 연결로 $10짜리 세션이 여기서는 $2~4입니다." },
+    ],
+  },
+  "claude-api-roo-code": {
+    title: "Roo Code에서 Claude API 사용하기",
+    h1: "Roo Code에서 Claude API 사용하기",
+    description: "apitoken.sale로 VS Code의 Roo Code를 Claude에 연결하세요. Anthropic 제공자를 선택하고 커스텀 base URL을 켠 뒤 키를 붙여넣고 60~80% 할인가로 코딩하세요.",
+    keywords: ["claude api roo code", "roo code anthropic", "roo code claude", "roo code 커스텀 base url", "roo code api 키"],
+    dek: "Roo Code는 네이티브 Anthropic 제공자와 커스텀 base URL 옵션을 갖춘 에이전트형 VS Code 확장입니다. 할인 게이트웨이 설정은 2분이면 끝납니다.",
+    sections: [
+      { h2: "세 단계 설정", blocks: [
+        { type: "steps", items: [
+          "Roo Code 설정을 열고 API 제공자로 Anthropic을 선택하세요.",
+          "커스텀 base URL 옵션을 켜고 https://api.apitoken.sale로 설정한 뒤 sk-pool-… 키를 붙여넣으세요.",
+          "claude-opus-4-8이나 claude-sonnet-5 같은 모델을 골라 작업을 시작하세요.",
+        ] },
+        { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
+      ] },
+      { h2: "Roo Code가 토큰을 태우는 이유 — 그리고 덜 내는 법", blocks: [
+        { type: "p", text: "에이전트형 확장은 파일을 읽고, 계획하고, 수정하고, 재검토하는 루프를 돌기 때문에 작업 하나가 많은 모델 호출을 실행할 수 있습니다. 토큰당 할인이 가장 중요한 워크로드가 바로 이것입니다. 같은 세션이 60~80% 저렴하고, 대시보드에서 토큰 단위로 확인됩니다." },
+        { type: "list", items: [
+          "일상 작업은 claude-sonnet-5로, 어려운 작업은 claude-opus-4-8로 보내세요.",
+          "프롬프트 캐싱은 더 저렴한 공식 캐시 요율로 과금되고 할인이 더해집니다.",
+          "키 하나로 Roo Code, Cline, Cursor, SDK를 동시에 커버합니다.",
+        ] },
+      ] },
+    ],
+    faq: [
+      { q: "Roo Code가 커스텀 Anthropic base URL을 지원하나요?", a: "네 — Anthropic 제공자 설정에 커스텀 base URL 옵션이 있습니다. https://api.apitoken.sale로 설정하고 apitoken.sale 키를 사용하세요." },
+      { q: "이 키로 Roo Code에서 어떤 모델을 쓸 수 있나요?", a: "지원되는 모든 Claude 모델 — Opus 4.8과 4.7, Sonnet 5와 4.6, Haiku 4.5 — 을 하나의 키와 선불 잔액으로 사용할 수 있습니다." },
+      { q: "Cline과는 무엇이 다른가요?", a: "설정은 거의 동일합니다. 둘 다 커스텀 base URL을 받는 Anthropic 제공자를 갖춘 VS Code 에이전트입니다. 선호하는 쪽을 쓰면 되고, 키는 양쪽에서 모두 작동합니다." },
+    ],
+  },
 };
