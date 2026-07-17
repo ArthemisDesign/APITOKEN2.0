@@ -159,7 +159,7 @@ function officialValueForTopup(payUsd: number): number {
   const tier = B2C_PRICING_MILESTONES.filter((milestone) => payUsd >= Number(milestone.platformSpendUsd)).at(-1) ?? B2C_PRICING_MILESTONES[0];
   return Math.round(payUsd / (1 - tier.discountPercent / 100));
 }
-const heroTopups = [25, 100, 1000].map((pay) => ({ pay, get: officialValueForTopup(pay) }));
+const heroTopups = [10, 100, 1000].map((pay) => ({ pay, get: officialValueForTopup(pay) }));
 
 function HeroDiscount() {
   return <aside className="hero-offer reveal" aria-label="Free credit and top-up value">
