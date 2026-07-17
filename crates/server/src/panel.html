@@ -163,7 +163,10 @@ const xr=(v)=>v==null?'∞':('×'+(+v).toLocaleString('en-US',{maximumFractionDi
 let panelKey='';
 const key=()=>panelKey;
 let timer=null;
-let tab='overview'; // 'overview' | 'users'
+// Вкладка живёт в URL (#users) — refresh и шеринг ссылки не сбрасывают её на «Обзор».
+let tab=location.hash==='#users'?'users':'overview';
+addEventListener('hashchange',()=>{const t=location.hash==='#users'?'users':'overview';
+  if(t!==tab){tab=t;start()}});
 const ago=(iso)=>{if(!iso)return '—';const s=(Date.now()-new Date(iso).getTime())/1e3|0;
   if(s<60)return 'только что';if(s<3600)return `${s/60|0}м назад`;if(s<86400)return `${s/3600|0}ч назад`;
   return `${s/86400|0}д назад`};
@@ -191,7 +194,19 @@ const headerHtml=(sub,badge)=>`<header>
     <button class="theme-tgl" onclick="toggleTheme()" title="тема">◐</button></span>
 </header>`;
 function bindTabs(){document.querySelectorAll('nav.tabs button').forEach(b=>b.onclick=()=>{
-  if(tab!==b.dataset.tab){tab=b.dataset.tab;start()}})}
+  if(tab!==b.dataset.tab){tab=b.dataset.tab;
+    history.replaceState(null,'',tab==='users'?'#users':location.pathname);start()}})}
+/* Перерисовка тика не должна дёргать читателя: сохраняем скролл и раскрытые <details>. */
+function repaint(html){
+  const y=scrollY;
+  const open=[...document.querySelectorAll('details[open] summary')].map(s=>s.textContent.trim());
+  document.getElementById('app').innerHTML=html;
+  document.querySelectorAll('details').forEach(d=>{
+    const s=d.querySelector('summary');
+    if(s&&open.includes(s.textContent.trim())) d.open=true;});
+  scrollTo(0,y);
+  bindTabs();
+}
 
 function setup(msg){
   clearInterval(timer);
@@ -229,15 +244,14 @@ async function tickUsers(){
     // 401 тут НЕ значит «нужен ключ панели»: /admin/users живёт в commerce-backend и доступен
     // только через Caddy panel-домена (server-side инжект x-admin-key). Показываем ошибку на месте.
     const why=e.auth?'нет доступа: маршрут /admin/users доступен только через panel-домен (Caddy инжектит x-admin-key; проверь, что ключ совпадает с COMMERCIAL_ADMIN_KEY бэкенда)':(e.msg||'ошибка сети');
-    document.getElementById('app').innerHTML=`${headerHtml('пользователи')}
+    repaint(`${headerHtml('пользователи')}
       <main><div class="verdict bad"><span class="dot-big"></span><div><div class="t">Не удалось загрузить пользователей</div>
-      <div class="d">${esc(why)}</div></div></div></main>`;
-    bindTabs(); return; }
+      <div class="d">${esc(why)}</div></div></div></main>`);
+    return; }
   renderUsers(data.users||[]);
 }
 
 function renderUsers(users){
-  const app=document.getElementById('app');
   const n=(x)=>+x||0;
   const totBal=users.reduce((a,u)=>a+n(u.balance_usd),0);
   const totSpent=users.reduce((a,u)=>a+n(u.spent_usd),0);
@@ -265,7 +279,7 @@ function renderUsers(users){
       <td class="muted">${dt(u.created_at)}</td>
     </tr>`;
   }).join('');
-  app.innerHTML=`
+  repaint(`
     ${headerHtml('пользователи',`<span class="badge ok">${users.length} юзеров</span>`)}
     <main>
       <h2>Сводка</h2>
@@ -286,8 +300,7 @@ function renderUsers(users){
         <tbody>${rows||'<tr><td colspan="8" class="muted l">нет пользователей</td></tr>'}</tbody>
       </table></div></div>
       <footer>обновление каждые 15с · баланс/расход — live из движка · пополнения — подтверждённые платежи</footer>
-    </main>`;
-  bindTabs();
+    </main>`);
 }
 
 function verdict(ov){
@@ -311,7 +324,6 @@ function verdict(ov){
 }
 
 function render(ov,cap,subs){
-  const app=document.getElementById('app');
   const S=ov.supply, D=ov.demand, m=ov.ref_mult, v=verdict(ov);
   const hclass=(x)=>x==null?'ok':(x<1?'bad':x<ov.target_headroom?'warn':'ok');
 
@@ -344,7 +356,7 @@ function render(ov,cap,subs){
     </tr>`;
   }).join('');
 
-  app.innerHTML=`
+  repaint(`
     ${headerHtml('центр управления',`<span class="badge ${v.c}">${ov.calibrated?'калибровано':'калибруется…'}</span>`)}
     <main>
       <div class="verdict ${v.c}"><span class="dot-big"></span>
@@ -397,8 +409,7 @@ function render(ov,cap,subs){
 
       <footer>обновление каждые 3с · «доступно» = максимум real-API-USD на горизонте (учёт сбросов окон) ·
         «запас» = доступно ÷ текущее потребление · клиентам ×${m}</footer>
-    </main>`;
-  bindTabs();
+    </main>`);
 }
 
 function start(){
