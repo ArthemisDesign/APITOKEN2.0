@@ -12,6 +12,7 @@ import {
   type Database,
 } from "@claude-api/db";
 import type { Environment } from "./config.js";
+import { renderAuthEmail } from "./email-template.js";
 import { smtpSecurityOptions } from "./smtp.js";
 import { DATABASE, WORKER_ID } from "./tokens.js";
 
@@ -103,7 +104,7 @@ export class EmailWorkerService implements OnModuleInit, OnApplicationShutdown {
     if (!this.transport) throw new Error("SMTP transport is unavailable");
     const key = decodeAuthEncryptionKey(this.config.get("AUTH_TOKEN_ENCRYPTION_KEY", { infer: true }));
     const token = decryptAuthToken(job.encryptedToken, key);
-    const content = renderEmail(job.template, token, this.config.get("PUBLIC_APP_BASE_URL", { infer: true }));
+    const content = renderAuthEmail(job.template, token, this.config.get("PUBLIC_APP_BASE_URL", { infer: true }));
     const result = await this.transport.sendMail({
       from: this.config.get("EMAIL_FROM", { infer: true }),
       to: job.recipient,
@@ -117,26 +118,6 @@ export class EmailWorkerService implements OnModuleInit, OnApplicationShutdown {
   private async sleep(milliseconds: number): Promise<void> {
     await Promise.race([new Promise((resolve) => setTimeout(resolve, milliseconds)), this.stopSignal]);
   }
-}
-
-function renderEmail(template: ClaimedEmail["template"], token: string, appBaseUrl: string) {
-  const path = template === "verify_email" ? "/verify-email" : "/reset-password";
-  const url = new URL(path, appBaseUrl);
-  url.searchParams.set("token", token);
-  const title = template === "verify_email" ? "Verify your apitoken.sale email" : "Reset your apitoken.sale password";
-  const action = template === "verify_email" ? "Verify email" : "Reset password";
-  const escapedUrl = escapeHtml(url.toString());
-  return {
-    subject: title,
-    text: `${title}\n\nOpen this link: ${url.toString()}\n\nIf you did not request this, ignore this email.`,
-    html: `<h1>${escapeHtml(title)}</h1><p><a href="${escapedUrl}">${escapeHtml(action)}</a></p><p>If you did not request this, ignore this email.</p>`,
-  };
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  })[character]!);
 }
 
 function message(error: unknown): string {
