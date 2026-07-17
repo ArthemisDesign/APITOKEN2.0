@@ -25,14 +25,20 @@ const CHECKOUT_ORIGINS: Record<CheckoutView["provider"], ReadonlySet<string>> = 
   cryptomus: new Set(["https://pay.cryptomus.com"]),
   platega: new Set(["https://pay.platega.io", "https://app.platega.io"]),
 };
-// Platega payment-method ids offered in the top-up UI (see PLATEGA_DEFAULT_PAYMENT_METHOD).
-const PLATEGA_METHODS: ReadonlyArray<{ id: number; en: string; ru: string }> = [
-  { id: 2, en: "SBP", ru: "СБП" },
-  { id: 11, en: "Card", ru: "Карта" },
-  { id: 12, en: "Intl card", ru: "Межд. карта" },
-  { id: 13, en: "Crypto", ru: "Крипта" },
-  { id: 3, en: "ERIP", ru: "ЕРИП" },
-];
+// Payment methods actually enabled on our Platega merchant (SBP + crypto). Each has an icon and a
+// one-line description so it is obvious what it is; other Platega method ids are not available to us.
+const PLATEGA_METHODS = [
+  {
+    id: 2, en: "SBP", ru: "СБП",
+    enDesc: "Instant bank payment by QR", ruDesc: "Быстрый платёж по QR через банк",
+    icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><rect width="6" height="6" x="3" y="3" rx="1" /><rect width="6" height="6" x="15" y="3" rx="1" /><rect width="6" height="6" x="3" y="15" rx="1" /><path d="M15 15h2v2" /><path d="M21 15v.01" /><path d="M15 21h.01" /><path d="M18 18h.01" /><path d="M21 18v3" /><path d="M18 21h-1" /></svg>,
+  },
+  {
+    id: 13, en: "Crypto", ru: "Криптовалюта",
+    enDesc: "USDT and other coins", ruDesc: "USDT и другие монеты",
+    icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="6" /><path d="M18.09 10.37A6 6 0 1 1 10.34 18" /><path d="M7 6h1v4" /><path d="m16.71 13.88.7.71-2.82 2.82" /></svg>,
+  },
+] as const;
 
 const localDashboardCopy = {
   en: {
@@ -44,7 +50,7 @@ const localDashboardCopy = {
     noActiveKeys: "No active API keys.", noDisabledKeys: "No disabled API keys.", activeStatus: "Active", disabledStatus: "Disabled",
     partialLedger: "Showing only the latest 100 ledger entries. Usage, key, transaction, and top-up totals based on this list may be incomplete.",
     topupNextRemaining: "Add {amount} more to reach {tier} (−{discount}%).",
-    payWith: "Pay with",
+    payWith: "Payment method",
   },
   ru: {
     logoutError: "Не удалось выйти. Серверная сессия всё ещё активна; повторите попытку.", loggingOut: "Выходим…",
@@ -55,7 +61,7 @@ const localDashboardCopy = {
     noActiveKeys: "Активных API-ключей нет.", noDisabledKeys: "Отключённых API-ключей нет.", activeStatus: "Активен", disabledStatus: "Отключён",
     partialLedger: "Показаны только последние 100 записей журнала. Итоги использования, ключей, операций и пополнений по этому списку могут быть неполными.",
     topupNextRemaining: "Добавьте ещё {amount}, чтобы получить {tier} (−{discount}%).",
-    payWith: "Оплата",
+    payWith: "Способ оплаты",
   },
 } as const;
 
@@ -442,9 +448,14 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
           <p className="tc-upgrade"><span className="tc-upgrade-ic" aria-hidden="true">ⓘ</span>{interpolate(copy.topupReach, { tier: tierName(copy, reachedTier.code), discount, hold: formatWholeUsd(reachedTier.holdUsd) })}</p>}
         <p className="tc-explain">{hasTier ? interpolate(copy.perDollar, { mult: formatPerDollar(topupPaymentBp) }) : copy.perDollarNone}</p>
         {isB2c && amountNano > 0n && nextTier && nextTierRemainingNano > 0n && <p className="tc-nudge">↑ {interpolate(localCopy.topupNextRemaining, { amount: formatNanoUsd(nextTierRemainingNano), tier: tierName(copy, nextTier.code), discount: nextTier.discountPercent })}</p>}
-        <div className="tc-methods" role="group" aria-label={localCopy.payWith}>
-          <span className="tc-methods-label">{localCopy.payWith}</span>
-          {PLATEGA_METHODS.map((m) => <button key={m.id} type="button" className={`tc-method ${method === m.id ? "on" : ""}`} aria-pressed={method === m.id} onClick={() => setMethod(m.id)}>{language === "ru" ? m.ru : m.en}</button>)}
+        <div className="tc-pay">
+          <span className="tc-pay-label">{localCopy.payWith}</span>
+          <div className="tc-methods" role="radiogroup" aria-label={localCopy.payWith}>
+            {PLATEGA_METHODS.map((m) => <button key={m.id} type="button" role="radio" className={`pm-card ${method === m.id ? "on" : ""}`} aria-checked={method === m.id} onClick={() => setMethod(m.id)}>
+              <span className="pm-ic" aria-hidden="true">{m.icon}</span>
+              <span className="pm-txt"><b>{language === "ru" ? m.ru : m.en}</b><span>{language === "ru" ? m.ruDesc : m.enDesc}</span></span>
+            </button>)}
+          </div>
         </div>
         <div className="tc-actions"><button className="btn btn-primary" disabled={busy || !amountValid} onClick={start}>{busy ? copy.creating : copy.continuePayment}</button></div>
         {amountValidation && <div className="auth-msg err" id="topup-amount-error">{amountValidation}</div>}
