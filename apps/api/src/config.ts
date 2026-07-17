@@ -97,6 +97,16 @@ const environmentSchema = z.object({
   if (githubConfigured !== 0 && githubConfigured !== 3) {
     context.addIssue({ code: "custom", message: "all GitHub OAuth settings must be provided together" });
   }
+  if (
+    value.NODE_ENV === "production" &&
+    value.GITHUB_REDIRECT_URI !== undefined &&
+    value.GITHUB_REDIRECT_URI !== "https://backend.apitoken.sale/v1/auth/github/callback"
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "GITHUB_REDIRECT_URI must use the canonical production callback",
+    });
+  }
 });
 
 export type Environment = z.infer<typeof environmentSchema>;

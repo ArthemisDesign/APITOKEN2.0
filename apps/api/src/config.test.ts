@@ -23,4 +23,27 @@ describe("commercial API configuration", () => {
       EMAIL_VERIFICATION_REQUIRED: "false",
     }).EMAIL_VERIFICATION_REQUIRED).toBe(false);
   });
+
+  it("requires a complete GitHub OAuth configuration", () => {
+    expect(() => validateEnvironment({
+      ...requiredEnvironment,
+      GITHUB_CLIENT_ID: "github-client-id",
+    })).toThrow("all GitHub OAuth settings must be provided together");
+  });
+
+  it("accepts only the canonical GitHub callback in production", () => {
+    const githubEnvironment = {
+      ...requiredEnvironment,
+      NODE_ENV: "production",
+      GITHUB_CLIENT_ID: "github-client-id",
+      GITHUB_CLIENT_SECRET: "github-client-secret",
+      GITHUB_REDIRECT_URI: "https://backend.apitoken.sale/v1/auth/github/callback",
+    } as const;
+
+    expect(validateEnvironment(githubEnvironment).GITHUB_CLIENT_ID).toBe("github-client-id");
+    expect(() => validateEnvironment({
+      ...githubEnvironment,
+      GITHUB_REDIRECT_URI: "https://backend.apitoken.sale/v1/auth/github/other",
+    })).toThrow("GITHUB_REDIRECT_URI must use the canonical production callback");
+  });
 });
