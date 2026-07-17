@@ -30,8 +30,10 @@ const CHECKOUT_ORIGINS: Record<CheckoutView["provider"], ReadonlySet<string>> = 
 const PLATEGA_METHODS = [
   {
     id: 2, en: "SBP", ru: "СБП",
-    enDesc: "Instant bank payment by QR", ruDesc: "Быстрый платёж по QR через банк",
-    icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><rect width="6" height="6" x="3" y="3" rx="1" /><rect width="6" height="6" x="15" y="3" rx="1" /><rect width="6" height="6" x="3" y="15" rx="1" /><path d="M15 15h2v2" /><path d="M21 15v.01" /><path d="M15 21h.01" /><path d="M18 18h.01" /><path d="M21 18v3" /><path d="M18 21h-1" /></svg>,
+    enDesc: "Russian bank transfer (SBP)", ruDesc: "Банки России · перевод по СБП",
+    logo: true,
+    // Официальный знак СБП (Система быстрых платежей) как значок способа оплаты.
+    icon: <svg viewBox="0 0 97.3 120" fill="none"><path d="M0 26.12l14.532 25.975v15.844L.017 93.863z" fill="#5b57a2" /><path d="M55.797 42.643l13.617-8.346 27.868-.026-41.485 25.414z" fill="#d90751" /><path d="M55.72 25.967l.077 34.39-14.566-8.95V0l14.49 25.967z" fill="#fab718" /><path d="M97.282 34.271l-27.869.026-13.693-8.33L41.231 0l56.05 34.271z" fill="#ed6f26" /><path d="M55.797 94.007V77.322l-14.566-8.78.008 51.458z" fill="#63b22f" /><path d="M69.38 85.737L14.531 52.095 0 26.12l97.223 59.583-27.844.034z" fill="#1487c9" /><path d="M41.24 120l14.556-25.993 13.583-8.27 27.843-.034z" fill="#017f36" /><path d="M.017 93.863l41.333-25.32-13.896-8.526-12.922 7.922z" fill="#984995" /></svg>,
   },
   {
     id: 13, en: "Crypto", ru: "Криптовалюта",
@@ -452,7 +454,7 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
           <span className="tc-pay-label">{localCopy.payWith}</span>
           <div className="tc-methods" role="radiogroup" aria-label={localCopy.payWith}>
             {PLATEGA_METHODS.map((m) => <button key={m.id} type="button" role="radio" className={`pm-card ${method === m.id ? "on" : ""}`} aria-checked={method === m.id} onClick={() => setMethod(m.id)}>
-              <span className="pm-ic" aria-hidden="true">{m.icon}</span>
+              <span className={`pm-ic${"logo" in m ? " pm-ic-logo" : ""}`} aria-hidden="true">{m.icon}</span>
               <span className="pm-txt"><b>{language === "ru" ? m.ru : m.en}</b><span>{language === "ru" ? m.ruDesc : m.enDesc}</span></span>
             </button>)}
           </div>
