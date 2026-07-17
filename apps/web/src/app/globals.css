@@ -1898,6 +1898,14 @@ body.app-body .bg-decor{display:none!important}
 .calc-chip:hover{border-color:var(--accent-line);color:var(--txt)}
 .calc-chip.on{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent)}
 
+/* task selector (understandable whole-jobs instead of raw requests) */
+.calc-tasks{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.calc-task{text-align:left;font-family:var(--font-mono);font-size:13px;color:var(--txt-2);background:var(--bg);border:1px solid var(--line-strong);border-radius:8px;padding:12px 14px;cursor:pointer;transition:.14s;line-height:1.3}
+.calc-task:hover{border-color:var(--accent-line);color:var(--txt)}
+.calc-task.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);font-weight:600}
+.calc-task-desc{margin:12px 0 18px;font-family:var(--font-mono);font-size:12.5px;line-height:1.55;color:var(--txt-3)}
+@media(max-width:520px){.calc-tasks{grid-template-columns:1fr}}
+
 .calc-advanced-toggle{display:inline-flex;align-items:center;gap:8px;font-family:var(--font-mono);font-size:13px;color:var(--txt-3);background:transparent;border:0;cursor:pointer;padding:2px 0;transition:.14s}
 .calc-advanced-toggle:hover{color:var(--accent)}
 .calc-advanced-toggle .calc-plus{color:var(--accent);font-size:16px;width:14px;display:inline-flex;justify-content:center}

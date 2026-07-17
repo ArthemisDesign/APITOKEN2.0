@@ -4,9 +4,10 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 
 /**
- * Free Claude API cost calculator.
- * Official Anthropic list rates (per 1M tokens) live here verbatim; cache rates
- * follow Anthropic's standard multipliers (read = 0.1x input, 5m write = 1.25x input).
+ * Free Claude API cost calculator — framed around whole real tasks, not single requests.
+ * Official Anthropic list rates (per 1M tokens) live here verbatim; cache rates follow
+ * Anthropic's standard multipliers (read = 0.1x input, 5m write = 1.25x input).
+ * Each task carries a realistic TOTAL token budget for finishing the whole job end to end.
  * The apiToken.sale price is simply official x (1 - discount). Fully client-side.
  */
 
@@ -30,6 +31,66 @@ const MODELS: Model[] = [
 const CACHE_READ_MULT = 0.1; // Anthropic: cache read = 0.1x input
 const CACHE_WRITE_MULT = 1.25; // Anthropic: 5-minute cache write = 1.25x input
 
+// Real tasks our audience actually runs — each is a WHOLE job, with a realistic total
+// token budget across every call it takes. Numbers are estimates, labelled as such.
+type Task = {
+  key: string;
+  label: string;
+  phrase: string; // used in the result line: "You pay <phrase>"
+  desc: string;
+  input: number;
+  output: number;
+  cacheR: number;
+  cacheW: number;
+};
+
+const TASKS: Task[] = [
+  {
+    key: "article",
+    label: "Write an article",
+    phrase: "to write an article",
+    desc: "Research a topic and write a polished ~1,500-word article, with two rounds of edits.",
+    input: 30_000, output: 12_000, cacheR: 0, cacheW: 0,
+  },
+  {
+    key: "game",
+    label: "Build a browser game",
+    phrase: "to build a game",
+    desc: "An AI coding agent builds a small browser game over ~50 back-and-forth iterations.",
+    input: 300_000, output: 120_000, cacheR: 3_000_000, cacheW: 400_000,
+  },
+  {
+    key: "memecoins",
+    label: "Analyze 500 memecoins",
+    phrase: "to analyze 500 memecoins",
+    desc: "Feed market data for 500 tokens and get one ranked, reasoned report back.",
+    input: 1_200_000, output: 200_000, cacheR: 0, cacheW: 0,
+  },
+  {
+    key: "month-coding",
+    label: "A month of coding",
+    phrase: "for a month of coding",
+    desc: "Full-time development with Claude Code — all day, every day, ~22 workdays.",
+    input: 3_000_000, output: 2_500_000, cacheR: 80_000_000, cacheW: 3_000_000,
+  },
+  {
+    key: "support",
+    label: "Support bot · 10k chats",
+    phrase: "to run a support bot for 10k chats",
+    desc: "A month of an AI support agent handling 10,000 customer conversations.",
+    input: 8_000_000, output: 4_000_000, cacheR: 20_000_000, cacheW: 500_000,
+  },
+  {
+    key: "summarize",
+    label: "Summarize a 300-page report",
+    phrase: "to summarize a 300-page report",
+    desc: "Digest a long PDF end to end into a tight executive brief.",
+    input: 250_000, output: 15_000, cacheR: 0, cacheW: 0,
+  },
+];
+
+const DEFAULT_TASK = 3; // "A month of coding"
+
 // Discount tiers — Starter is free, larger discounts unlock as you top up more.
 const TIERS = [
   { label: "Starter", discount: 60, free: true },
@@ -38,15 +99,6 @@ const TIERS = [
   { label: "Studio", discount: 75 },
   { label: "Scale", discount: 80 },
 ];
-
-const PRESETS = [
-  { label: "Short Q&A", input: 500, output: 300 },
-  { label: "Chatbot turn", input: 2_000, output: 500 },
-  { label: "Long document", input: 50_000, output: 2_000 },
-  { label: "Coding agent", input: 15_000, output: 4_000 },
-];
-
-const REQ_PRESETS = [1, 1_000, 100_000, 1_000_000];
 
 function usd(v: number): string {
   if (!isFinite(v) || v <= 0) return "$0.00";
@@ -63,7 +115,7 @@ function parseNum(s: string): number {
   return isFinite(n) ? n : 0;
 }
 
-function modelCost(m: Model, inTok: number, outTok: number, cacheR: number, cacheW: number): number {
+function taskCost(m: Model, inTok: number, outTok: number, cacheR: number, cacheW: number): number {
   return (
     (inTok / 1e6) * m.input +
     (outTok / 1e6) * m.output +
@@ -73,36 +125,40 @@ function modelCost(m: Model, inTok: number, outTok: number, cacheR: number, cach
 }
 
 export function CostCalculator() {
-  const [inTok, setInTok] = useState(15_000);
-  const [outTok, setOutTok] = useState(4_000);
-  const [cacheR, setCacheR] = useState(0);
-  const [cacheW, setCacheW] = useState(0);
-  const [reqs, setReqs] = useState(1_000);
+  const [taskIdx, setTaskIdx] = useState(DEFAULT_TASK);
+  const [inTok, setInTok] = useState(TASKS[DEFAULT_TASK].input);
+  const [outTok, setOutTok] = useState(TASKS[DEFAULT_TASK].output);
+  const [cacheR, setCacheR] = useState(TASKS[DEFAULT_TASK].cacheR);
+  const [cacheW, setCacheW] = useState(TASKS[DEFAULT_TASK].cacheW);
   const [tier, setTier] = useState(0);
   const [selected, setSelected] = useState("claude-opus-4-8");
   const [advanced, setAdvanced] = useState(false);
 
+  const task = TASKS[taskIdx];
   const discount = TIERS[tier].discount;
   const mult = 1 - discount / 100;
 
+  function pickTask(i: number) {
+    const t = TASKS[i];
+    setTaskIdx(i);
+    setInTok(t.input);
+    setOutTok(t.output);
+    setCacheR(t.cacheR);
+    setCacheW(t.cacheW);
+  }
+
   const rows = useMemo(() => {
     return MODELS.map((m) => {
-      const per = modelCost(m, inTok, outTok, cacheR, cacheW);
-      const official = per * reqs;
+      const official = taskCost(m, inTok, outTok, cacheR, cacheW);
       const yours = official * mult;
-      return { m, per, official, yours, save: official - yours };
+      return { m, official, yours, save: official - yours };
     });
-  }, [inTok, outTok, cacheR, cacheW, reqs, mult]);
+  }, [inTok, outTok, cacheR, cacheW, mult]);
 
-  const cheapestId = useMemo(() => {
-    return rows.reduce((a, b) => (b.yours < a.yours ? b : a)).m.id;
-  }, [rows]);
+  const cheapestId = useMemo(() => rows.reduce((a, b) => (b.yours < a.yours ? b : a)).m.id, [rows]);
 
   const hero = rows.find((r) => r.m.id === selected) ?? rows[0];
-  const totalSave = rows.find((r) => r.m.id === selected)?.save ?? 0;
   const scaleMult = 100 / (100 - discount);
-
-  const reqLabel = reqs === 1 ? "1 request" : `${fmt(reqs)} requests / month`;
 
   return (
     <div className="calc">
@@ -110,59 +166,44 @@ export function CostCalculator() {
         {/* ---------- Inputs ---------- */}
         <div className="calc-panel">
           <div className="calc-field">
-            <label htmlFor="calc-in">
-              Input tokens <span>the prompt you send</span>
+            <label>
+              What do you want to do? <span>pick a whole task, not one request</span>
             </label>
-            <input
-              id="calc-in"
-              inputMode="numeric"
-              value={fmt(inTok)}
-              onChange={(e) => setInTok(parseNum(e.target.value))}
-              aria-label="Input tokens per request"
-            />
+            <div className="calc-tasks">
+              {TASKS.map((t, i) => (
+                <button key={t.key} type="button" className={`calc-task ${taskIdx === i ? "on" : ""}`} onClick={() => pickTask(i)}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
           </div>
 
-          <div className="calc-field">
-            <label htmlFor="calc-out">
-              Output tokens <span>what Claude writes back</span>
-            </label>
-            <input
-              id="calc-out"
-              inputMode="numeric"
-              value={fmt(outTok)}
-              onChange={(e) => setOutTok(parseNum(e.target.value))}
-              aria-label="Output tokens per request"
-            />
-          </div>
-
-          <div className="calc-presets">
-            {PRESETS.map((p) => (
-              <button
-                key={p.label}
-                type="button"
-                className="calc-chip"
-                onClick={() => {
-                  setInTok(p.input);
-                  setOutTok(p.output);
-                }}
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
+          <p className="calc-task-desc">{task.desc}</p>
 
           <button type="button" className="calc-advanced-toggle" onClick={() => setAdvanced((v) => !v)}>
-            <span className="calc-plus">{advanced ? "−" : "+"}</span> Prompt caching (optional)
+            <span className="calc-plus">{advanced ? "−" : "+"}</span> Adjust the tokens yourself
           </button>
           {advanced && (
             <div className="calc-advanced">
+              <div className="calc-field">
+                <label htmlFor="calc-in">
+                  Input tokens <span>everything you send</span>
+                </label>
+                <input id="calc-in" inputMode="numeric" value={fmt(inTok)} onChange={(e) => setInTok(parseNum(e.target.value))} />
+              </div>
+              <div className="calc-field">
+                <label htmlFor="calc-out">
+                  Output tokens <span>everything Claude writes</span>
+                </label>
+                <input id="calc-out" inputMode="numeric" value={fmt(outTok)} onChange={(e) => setOutTok(parseNum(e.target.value))} />
+              </div>
               <div className="calc-field">
                 <label htmlFor="calc-cr">
                   Cache read tokens <span>0.1× input rate</span>
                 </label>
                 <input id="calc-cr" inputMode="numeric" value={fmt(cacheR)} onChange={(e) => setCacheR(parseNum(e.target.value))} />
               </div>
-              <div className="calc-field">
+              <div className="calc-field" style={{ marginBottom: 0 }}>
                 <label htmlFor="calc-cw">
                   Cache write tokens <span>1.25× input rate</span>
                 </label>
@@ -173,23 +214,7 @@ export function CostCalculator() {
 
           <div className="calc-divider" />
 
-          <div className="calc-field">
-            <label htmlFor="calc-req">
-              How many requests? <span>scales every price below</span>
-            </label>
-            <input id="calc-req" inputMode="numeric" value={fmt(reqs)} onChange={(e) => setReqs(Math.max(1, parseNum(e.target.value)))} />
-          </div>
-          <div className="calc-presets">
-            {REQ_PRESETS.map((r) => (
-              <button key={r} type="button" className={`calc-chip ${reqs === r ? "on" : ""}`} onClick={() => setReqs(r)}>
-                {r === 1 ? "1" : fmt(r)}
-              </button>
-            ))}
-          </div>
-
-          <div className="calc-divider" />
-
-          <div className="calc-field">
+          <div className="calc-field" style={{ marginBottom: 0 }}>
             <label>
               Your discount <span>Starter is free — bigger tiers unlock as you top up</span>
             </label>
@@ -207,7 +232,7 @@ export function CostCalculator() {
         {/* ---------- Result ---------- */}
         <div className="calc-result">
           <div className="calc-result-head">
-            <span className="tag">You pay for {hero.m.name}</span>
+            <span className="tag">You pay {task.phrase}</span>
             <div className="calc-model-chips">
               {MODELS.map((m) => (
                 <button key={m.id} type="button" className={`calc-mchip ${selected === m.id ? "on" : ""}`} onClick={() => setSelected(m.id)}>
@@ -224,12 +249,14 @@ export function CostCalculator() {
               <span className="tlo-badge">−{discount}%</span>
             </div>
           </div>
-          <p className="calc-sub">for {reqLabel} · official Anthropic price minus your {discount}% discount</p>
+          <p className="calc-sub">
+            {task.phrase} on {hero.m.name} · official Anthropic price minus your {discount}% discount
+          </p>
 
           <div className="calc-save">
             <span>You save</span>
-            <b>{usd(totalSave)}</b>
-            <em>≈ ×{scaleMult.toLocaleString("en-US", { maximumFractionDigits: 2 })} more usage per $</em>
+            <b>{usd(hero.save)}</b>
+            <em>≈ ×{scaleMult.toLocaleString("en-US", { maximumFractionDigits: 2 })} more work per $</em>
           </div>
 
           <Link className="btn btn-primary calc-cta" href="/register">
@@ -241,9 +268,9 @@ export function CostCalculator() {
 
       {/* ---------- Full comparison ---------- */}
       <div className="calc-table-head">
-        <h2>Every Claude model, side by side</h2>
+        <h2>Every Claude model for this task</h2>
         <p>
-          Official Anthropic list price vs your apiToken.sale price at −{discount}%, for {reqLabel}.
+          Official Anthropic price vs your apiToken.sale price at −{discount}%, {task.phrase}.
         </p>
       </div>
       <div className="table-scroll">
@@ -279,9 +306,10 @@ export function CostCalculator() {
         </table>
       </div>
       <p className="tier-footnote">
-        Claude Sonnet 5 shows its introductory official rate ($2 / $10 per 1M) in effect through 2026-08-31; it returns to
-        $3 / $15 on 2026-09-01. Cache read is billed at 0.1× the input rate and 5-minute cache writes at 1.25×, per Anthropic&rsquo;s
-        standard pricing. Estimates only — your real bill depends on exact token usage.
+        Each task uses a realistic total number of tokens to finish the whole job — expand &ldquo;Adjust the tokens
+        yourself&rdquo; to tune it. Claude Sonnet 5 shows its introductory official rate ($2 / $10 per 1M) in effect through
+        2026-08-31; it returns to $3 / $15 on 2026-09-01. Cache read is billed at 0.1× the input rate and 5-minute cache writes
+        at 1.25×, per Anthropic&rsquo;s standard pricing. Estimates only — your real bill depends on exact token usage.
       </p>
     </div>
   );

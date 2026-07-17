@@ -87,8 +87,8 @@ export default function CostCalculatorPage() {
           <span className="eyebrow">Free tool</span>
           <h1>Claude API Cost Calculator</h1>
           <p>
-            Estimate what any Claude model costs at official Anthropic rates — then see your price at up to 80% off, side by
-            side. No sign-up, no card.
+            Pick a real task — write an article, build a game, a month of coding — and see what it costs to finish on any Claude
+            model at official Anthropic rates, next to your price at up to 80% off. No sign-up, no card.
           </p>
         </div>
       </div>
@@ -103,24 +103,24 @@ export default function CostCalculatorPage() {
         <div className="wrap">
           <div className="sec-head">
             <span className="eyebrow">How it works</span>
-            <h2>Three numbers, every model priced</h2>
+            <h2>Price a whole task, not a token</h2>
             <p>The calculator uses Anthropic&rsquo;s official published list rates. Nothing is sent anywhere — it all runs in your browser.</p>
           </div>
           <div className="steps" data-reveal-stagger>
             <div className="step">
               <div className="n">01</div>
-              <h3>Enter your tokens</h3>
-              <p>Type input and output tokens per request, or tap a preset. Add prompt-caching tokens if you use them.</p>
+              <h3>Pick a real task</h3>
+              <p>Choose a whole job — write an article, build a game, analyze 500 memecoins, a month of coding — not a single request.</p>
             </div>
             <div className="step">
               <div className="n">02</div>
-              <h3>Pick your scale</h3>
-              <p>Set how many requests you run — from a single call to millions a month. Every price updates instantly.</p>
+              <h3>See the token budget</h3>
+              <p>Each task carries a realistic total of input and output tokens to finish it end to end. Adjust them yourself if you like.</p>
             </div>
             <div className="step">
               <div className="n">03</div>
               <h3>Compare the price</h3>
-              <p>See official cost next to your apiToken.sale cost for all five Claude models, with the cheapest highlighted.</p>
+              <p>See the official cost to finish that task next to your apiToken.sale cost for all five Claude models, cheapest highlighted.</p>
             </div>
           </div>
         </div>
