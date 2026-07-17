@@ -1922,6 +1922,10 @@ body.app-body .bg-decor{display:none!important}
 .calc-tier em{font-family:var(--font-mono);font-size:10px;font-style:normal;letter-spacing:.03em;text-transform:uppercase;color:var(--txt-4)}
 .calc-tier.on{background:var(--accent-soft);border-color:var(--accent)}
 .calc-tier.on b,.calc-tier.on em{color:var(--accent)}
+.calc-tier-cta{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;padding:12px 16px;border:1px solid var(--accent-line);border-radius:8px;background:var(--accent-soft);font-family:var(--font-mono);font-size:12.5px;line-height:1.4;color:var(--accent);text-decoration:none;transition:.15s}
+.calc-tier-cta:hover{background:color-mix(in srgb,var(--accent) 14%,transparent);border-color:var(--accent)}
+.calc-tier-cta-arrow{flex:0 0 auto;font-size:15px;transition:transform .15s}
+.calc-tier-cta:hover .calc-tier-cta-arrow{transform:translateX(3px)}
 
 /* Result card — the visual hero, accent-tinted like the featured pricing card */
 .calc-result{position:sticky;top:88px;border:1px solid var(--accent-line);border-radius:10px;background:linear-gradient(180deg,var(--accent-soft),transparent 60%),var(--bg-card);padding:26px;box-shadow:var(--shadow)}

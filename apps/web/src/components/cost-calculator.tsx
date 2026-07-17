@@ -112,13 +112,13 @@ const TASKS: Task[] = [
 
 const DEFAULT_TASK = 0; // "A month of coding"
 
-// Discount tiers — Starter is free, larger discounts unlock as you top up more.
+// Discount tiers — Starter is free, larger discounts unlock as your cumulative top-ups grow.
 const TIERS = [
-  { label: "Starter", discount: 60, free: true },
-  { label: "Builder", discount: 65 },
-  { label: "Pro", discount: 70 },
-  { label: "Studio", discount: 75 },
-  { label: "Scale", discount: 80 },
+  { label: "Starter", discount: 60, free: true, topup: 0 },
+  { label: "Builder", discount: 65, topup: 100 },
+  { label: "Pro", discount: 70, topup: 250 },
+  { label: "Studio", discount: 75, topup: 500 },
+  { label: "Scale", discount: 80, topup: 1000 },
 ];
 
 function usd(v: number): string {
@@ -247,6 +247,14 @@ export function CostCalculator() {
                 </button>
               ))}
             </div>
+            <Link className="calc-tier-cta" href="/plans">
+              <span>
+                {TIERS[tier].free
+                  ? "You’re on Starter — −60%, free. See how bigger discounts unlock"
+                  : `Top up $${TIERS[tier].topup.toLocaleString("en-US")} total to unlock −${discount}%`}
+              </span>
+              <span className="calc-tier-cta-arrow" aria-hidden="true">→</span>
+            </Link>
           </div>
         </div>
 
