@@ -419,12 +419,12 @@ async function verifyPricingCardsLayout(client) {
   const cases = [
     { name: "desktop-light-en", width: 1440, height: 1000, theme: "light", language: "en", rate: "Custom rate" },
     { name: "desktop-dark-en", width: 1440, height: 1000, theme: "dark", language: "en", rate: "Custom rate" },
-    { name: "desktop-light-ru", width: 1440, height: 1000, theme: "light", language: "ru", rate: "Индивидуальный тариф" },
-    { name: "desktop-dark-ru", width: 1440, height: 1000, theme: "dark", language: "ru", rate: "Индивидуальный тариф" },
+    { name: "desktop-light-ru", width: 1440, height: 1000, theme: "light", language: "ru", rate: "Особый тариф" },
+    { name: "desktop-dark-ru", width: 1440, height: 1000, theme: "dark", language: "ru", rate: "Особый тариф" },
     { name: "mobile-light-en", width: 390, height: 844, theme: "light", language: "en", rate: "Custom rate" },
     { name: "mobile-dark-en", width: 390, height: 844, theme: "dark", language: "en", rate: "Custom rate" },
-    { name: "mobile-light-ru", width: 390, height: 844, theme: "light", language: "ru", rate: "Индивидуальный тариф" },
-    { name: "mobile-dark-ru", width: 390, height: 844, theme: "dark", language: "ru", rate: "Индивидуальный тариф" },
+    { name: "mobile-light-ru", width: 390, height: 844, theme: "light", language: "ru", rate: "Особый тариф" },
+    { name: "mobile-dark-ru", width: 390, height: 844, theme: "dark", language: "ru", rate: "Особый тариф" },
   ];
 
   for (const layoutCase of cases) {
@@ -467,6 +467,8 @@ async function verifyPricingCardsLayout(client) {
         const business = rect('.business-card');
         const topupPanel = rect('.topup-live');
         const businessPanel = rect('.business-preview');
+        const topupValue = rect('.topup-preview input');
+        const businessValue = rect('.business-preview-head strong');
         const topupCta = rect('.topup-card .btn');
         const businessCta = rect('.business-card .business-status');
         const access = rect('.business-access');
@@ -482,7 +484,8 @@ async function verifyPricingCardsLayout(client) {
           overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
           cardWidthsAligned: Boolean(topup && business && Math.abs(topup.width - business.width) < 2),
           desktopCardsAligned: stacked || Boolean(topup && business && Math.abs(topup.top - business.top) < 2 && Math.abs(topup.height - business.height) < 2),
-          panelBalance: Boolean(topupPanel && businessPanel && Math.abs(topupPanel.height - businessPanel.height) <= 32),
+          panelEdgesAligned: stacked || Boolean(topupPanel && businessPanel && Math.abs(topupPanel.top - businessPanel.top) < 2 && Math.abs(topupPanel.bottom - businessPanel.bottom) < 2),
+          mainValuesAligned: stacked || Boolean(topupValue && businessValue && Math.abs((topupValue.top + topupValue.height / 2) - (businessValue.top + businessValue.height / 2)) < 2),
           compactBusinessPanel: Boolean(businessPanel && businessPanel.height <= 210 && Number.parseFloat(rateStyle.fontSize) <= 34),
           matchingCardSurface: topupStyle.backgroundColor === businessStyle.backgroundColor && topupStyle.borderColor === businessStyle.borderColor,
           distinctInnerSurface: businessPanelStyle.backgroundColor !== businessStyle.backgroundColor && businessPanelStyle.borderRadius !== businessStyle.borderRadius,
@@ -496,7 +499,7 @@ async function verifyPricingCardsLayout(client) {
     });
     const state = JSON.parse(result.result.value);
     const expectedTheme = layoutCase.theme === "dark" ? "dark" : "light";
-    if (state.language !== layoutCase.language || state.theme !== expectedTheme || state.overflow > 1 || !state.cardWidthsAligned || !state.desktopCardsAligned || !state.panelBalance || !state.compactBusinessPanel || !state.matchingCardSurface || !state.distinctInnerSurface || !state.ctasMatch || !state.desktopCtasAligned || !state.termsFit || !state.accessFits) {
+    if (state.language !== layoutCase.language || state.theme !== expectedTheme || state.overflow > 1 || !state.cardWidthsAligned || !state.desktopCardsAligned || !state.panelEdgesAligned || !state.mainValuesAligned || !state.compactBusinessPanel || !state.matchingCardSurface || !state.distinctInnerSurface || !state.ctasMatch || !state.desktopCtasAligned || !state.termsFit || !state.accessFits) {
       throw new Error(`Pricing cards ${layoutCase.name} layout failed: ${JSON.stringify(state)}`);
     }
   }

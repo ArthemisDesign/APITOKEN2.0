@@ -310,13 +310,14 @@ section{padding:96px 0;border-bottom:1px solid var(--line)}
 .topup-preview>span{font-size:20px;color:var(--txt-3)}
 .topup-preview input{min-width:0;width:100%;border:0;outline:0;background:transparent;color:var(--txt);font-family:var(--font-mono);font-size:34px;font-weight:700;line-height:1}
 .business-preview{overflow:hidden;border:1px solid var(--line-strong);border-radius:6px;background:var(--bg-soft)}
-.business-preview-head{min-height:82px;padding:14px 18px;display:flex;align-items:center;justify-content:space-between;gap:18px}
-.business-preview-head>div{min-width:0;display:flex;flex-direction:column;gap:5px}
+.business-preview-head{height:82px;min-height:82px;padding:14px 18px;display:flex;align-items:center;justify-content:space-between;gap:18px}
+.business-preview-head>div{position:relative;align-self:stretch;min-width:0;display:flex;flex-direction:column;justify-content:center}
 .business-preview-head span,.business-terms span{font-family:var(--font-mono);font-size:10px;line-height:1.35;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:var(--txt-4)}
-.business-preview-head strong{font-family:var(--font-mono);font-size:30px;line-height:1.05;letter-spacing:-.035em;color:var(--txt)}
+.business-preview-head>div>span{position:absolute;top:-6px;left:0}
+.business-preview-head strong{font-family:var(--font-mono);font-size:32px;line-height:1;letter-spacing:-.035em;color:var(--txt)}
 .business-preview-head .business-access{flex:none;padding:5px 9px;border:1px solid var(--accent-line);border-radius:99px;background:var(--accent-soft);color:var(--accent);letter-spacing:.05em}
 .business-terms{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-top:1px solid var(--line)}
-.business-terms>div{min-width:0;min-height:84px;padding:16px 18px;display:flex;flex-direction:column;justify-content:center;gap:6px}
+.business-terms>div{min-width:0;min-height:102px;padding:16px 18px;display:flex;flex-direction:column;justify-content:center;gap:6px}
 .business-terms>div+div{border-left:1px solid var(--line)}
 .business-terms strong{font-family:var(--font-mono);font-size:13px;line-height:1.4;font-weight:600;color:var(--txt-2)}
 .business-status{width:100%;justify-content:center}
