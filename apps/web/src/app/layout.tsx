@@ -24,6 +24,7 @@ export const metadata: Metadata = {
   publisher: SITE_NAME,
   category: "technology",
   manifest: "/manifest.webmanifest",
+  alternates: { types: { "application/rss+xml": "/feed.xml" } },
   formatDetection: { email: false, address: false, telephone: false },
   icons: {
     icon: [

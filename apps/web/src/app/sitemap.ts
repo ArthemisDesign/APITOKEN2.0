@@ -1,6 +1,9 @@
 import type { MetadataRoute } from "next";
 import { articlesForLocale, articleUpdatedDate, learnHubPath, learnPath, LOCALES } from "@/lib/learn";
+import { claudeModels, modelPath } from "@/lib/models";
 import { absoluteUrl, LAST_CONTENT_UPDATE, sitemapPages } from "@/lib/seo";
+
+const MODELS_LAUNCH = new Date("2026-07-17T00:00:00.000Z");
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const corePages: MetadataRoute.Sitemap = sitemapPages.map((page) => ({
@@ -44,5 +47,15 @@ export default function sitemap(): MetadataRoute.Sitemap {
     })),
   );
 
-  return [...corePages, ...ruCorePages, ...infoPages, ...learnHubs, ...learnPages];
+  // The /models hub itself ships via sitemapPages; only the per-model pages are added here.
+  const modelPages: MetadataRoute.Sitemap = [
+    ...claudeModels.map((model) => ({
+      url: absoluteUrl(modelPath(model.slug)),
+      lastModified: MODELS_LAUNCH,
+      changeFrequency: "monthly" as const,
+      priority: 0.7,
+    })),
+  ];
+
+  return [...corePages, ...ruCorePages, ...infoPages, ...modelPages, ...learnHubs, ...learnPages];
 }
