@@ -247,7 +247,7 @@ export function CostCalculator() {
                 </button>
               ))}
             </div>
-            <Link className="calc-tier-cta" href="/plans">
+            <Link className="calc-tier-cta" href="/#pricing">
               <span>
                 {TIERS[tier].free
                   ? "You’re on Starter — −60%, free. See how bigger discounts unlock"
