@@ -18,7 +18,7 @@ export function PricingOverview() {
         <T k="b2b_h" as="h3">Negotiated business pricing</T>
         <div className="business-preview" aria-hidden="true"><strong>B2B</strong><T k="b2b_preview">Private access</T></div>
         <T k="b2b_p" as="p">Business customers receive an operator-set discount under an individual agreement.</T>
-        <div className="business-status"><span className="status-dot" aria-hidden="true" /><T k="b2b_status">Invite-only registration</T></div>
+        <a className="business-status" href="https://t.me/apiTokenSale" target="_blank" rel="noreferrer"><span className="status-dot" aria-hidden="true" /><T k="b2b_status">Invite-only registration</T></a>
       </div>
     </div>
     <div className="tier-section">

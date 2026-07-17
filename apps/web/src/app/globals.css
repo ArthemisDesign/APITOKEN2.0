@@ -312,6 +312,8 @@ section{padding:96px 0;border-bottom:1px solid var(--line)}
 .business-preview strong{font-family:var(--font-mono);font-size:34px;line-height:1;letter-spacing:-.055em}
 .business-preview span{font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt-3)}
 .business-status{width:100%;height:50px;display:flex;align-items:center;justify-content:center;gap:10px;border:1px solid var(--accent-line);border-radius:6px;background:var(--accent-soft);font-family:var(--font-mono);font-size:13px;color:var(--txt-2)}
+a.business-status{text-decoration:none;cursor:pointer;transition:.15s}
+a.business-status:hover{border-color:var(--accent);color:var(--txt);background:color-mix(in srgb,var(--accent) 12%,transparent)}
 .business-status>.status-dot{width:7px;height:7px;flex:none;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px var(--accent-soft)}
 .tier-section{overflow:hidden}
 .tier-heading{display:grid;grid-template-columns:1fr 1fr;gap:32px;align-items:center;min-height:154px;padding:30px;border-bottom:1px solid var(--line)}
