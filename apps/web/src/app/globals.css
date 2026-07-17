@@ -1874,3 +1874,81 @@ body.app-body .bg-decor{display:none!important}
 .learn-cta .page-actions{margin:0}
 .learn-seealso{margin:2px 0 0;font-size:14px;color:var(--txt-3)}
 .learn-seealso a{color:var(--accent)}
+
+/* ============ Claude API cost calculator (/tools/claude-api-cost-calculator) ============ */
+.calc{margin-top:8px}
+.calc-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:22px;align-items:start}
+.calc-panel{border:1px solid var(--line);border-radius:10px;background:var(--bg-card);padding:26px;box-shadow:var(--shadow)}
+
+.calc-field{display:flex;flex-direction:column;gap:9px;margin-bottom:16px}
+.calc-field label{font-family:var(--font-mono);font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--txt-2);display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.calc-field label span{font-weight:400;font-size:11px;letter-spacing:.01em;text-transform:none;color:var(--txt-4)}
+.calc-field input{width:100%;border:1px solid var(--line-strong);border-radius:6px;background:var(--bg);color:var(--txt);font-family:var(--font-mono);font-weight:700;font-size:26px;line-height:1;letter-spacing:-.02em;padding:14px 16px;font-variant-numeric:tabular-nums;transition:.15s}
+.calc-field input:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft)}
+
+.calc-presets{display:flex;flex-wrap:wrap;gap:8px;margin:-4px 0 18px}
+.calc-chip{font-family:var(--font-mono);font-size:12px;color:var(--txt-3);background:var(--bg-soft);border:1px solid var(--line);border-radius:999px;padding:7px 13px;cursor:pointer;transition:.14s;white-space:nowrap}
+.calc-chip:hover{border-color:var(--accent-line);color:var(--txt)}
+.calc-chip.on{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent)}
+
+.calc-advanced-toggle{display:inline-flex;align-items:center;gap:8px;font-family:var(--font-mono);font-size:13px;color:var(--txt-3);background:transparent;border:0;cursor:pointer;padding:2px 0;transition:.14s}
+.calc-advanced-toggle:hover{color:var(--accent)}
+.calc-advanced-toggle .calc-plus{color:var(--accent);font-size:16px;width:14px;display:inline-flex;justify-content:center}
+.calc-advanced{margin-top:16px;padding:16px;border:1px dashed var(--line-strong);border-radius:8px;background:var(--bg-soft)}
+.calc-advanced .calc-field:last-child{margin-bottom:0}
+.calc-advanced input{font-size:20px}
+
+.calc-divider{height:1px;background:var(--line);margin:20px 0}
+
+.calc-tiers{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+.calc-tier{display:flex;flex-direction:column;align-items:center;gap:3px;padding:12px 6px;border:1px solid var(--line-strong);border-radius:8px;background:var(--bg);cursor:pointer;transition:.14s}
+.calc-tier:hover{border-color:var(--accent-line)}
+.calc-tier b{font-family:var(--font-mono);font-size:15px;font-weight:700;color:var(--txt);letter-spacing:-.02em}
+.calc-tier em{font-family:var(--font-mono);font-size:10px;font-style:normal;letter-spacing:.03em;text-transform:uppercase;color:var(--txt-4)}
+.calc-tier.on{background:var(--accent-soft);border-color:var(--accent)}
+.calc-tier.on b,.calc-tier.on em{color:var(--accent)}
+
+/* Result card — the visual hero, accent-tinted like the featured pricing card */
+.calc-result{position:sticky;top:88px;border:1px solid var(--accent-line);border-radius:10px;background:linear-gradient(180deg,var(--accent-soft),transparent 60%),var(--bg-card);padding:26px;box-shadow:var(--shadow)}
+.calc-result-head{display:flex;flex-direction:column;gap:14px;margin-bottom:20px}
+.calc-result-head .tag{font-family:var(--font-mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent)}
+.calc-model-chips{display:flex;flex-wrap:wrap;gap:6px}
+.calc-mchip{font-family:var(--font-mono);font-size:11.5px;color:var(--txt-3);background:var(--bg-soft);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer;transition:.14s;white-space:nowrap}
+.calc-mchip:hover{border-color:var(--accent-line);color:var(--txt)}
+.calc-mchip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+
+.calc-hero-price{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap}
+.calc-now{font-family:var(--font-pixel);font-weight:400;font-size:clamp(40px,7vw,58px);line-height:.9;color:var(--txt);letter-spacing:.01em}
+.calc-was{display:flex;align-items:center;gap:9px;padding-bottom:6px}
+.calc-was s{font-family:var(--font-mono);font-size:17px;color:var(--txt-4);text-decoration-thickness:1px}
+.calc-was .tlo-badge{font-family:var(--font-mono);font-weight:700;font-size:12px;color:var(--accent);background:color-mix(in srgb,var(--accent) 16%,transparent);border-radius:6px;padding:3px 8px}
+.calc-sub{margin:12px 0 0;font-family:var(--font-mono);font-size:12.5px;line-height:1.55;color:var(--txt-3)}
+
+.calc-save{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:20px 0;padding:16px 18px;border:1px solid var(--line);border-radius:8px;background:var(--bg-card)}
+.calc-save>span{font-family:var(--font-mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--txt-4)}
+.calc-save b{font-family:var(--font-mono);font-weight:700;font-size:24px;letter-spacing:-.03em;color:var(--ok);font-variant-numeric:tabular-nums}
+.calc-save em{font-family:var(--font-mono);font-style:normal;font-size:11.5px;color:var(--txt-4);margin-left:auto}
+.calc-cta{width:100%;justify-content:center;margin-top:4px}
+.calc-note{margin:14px 0 0;font-family:var(--font-mono);font-size:12px;line-height:1.55;color:var(--txt-4);text-align:center}
+
+.calc-table-head{margin:52px 0 20px}
+.calc-table-head h2{font-size:clamp(24px,3.2vw,34px);margin:0 0 10px}
+.calc-table-head p{margin:0;color:var(--txt-3);font-size:14px}
+.calc-mtable td.calc-official{color:var(--txt-4);text-decoration:line-through;text-decoration-thickness:1px;font-weight:500}
+.calc-mtable td.calc-your{color:var(--accent);font-weight:700}
+.calc-mtable td.calc-savecell{color:var(--ok);font-weight:700}
+.calc-mtable tr.calc-cheapest td{background:var(--accent-soft)}
+.calc-mtable tr.calc-cheapest:hover td{background:var(--accent-soft)}
+
+.calc-how{padding-top:8px}
+
+@media(max-width:860px){
+  .calc-grid{grid-template-columns:1fr}
+  .calc-result{position:static}
+  .calc-table-head{margin-top:36px}
+  .calc-mtable{min-width:640px}
+}
+@media(max-width:520px){
+  .calc-tiers{grid-template-columns:repeat(3,1fr)}
+  .calc-field input{font-size:22px}
+}

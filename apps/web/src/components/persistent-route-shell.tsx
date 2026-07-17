@@ -14,6 +14,7 @@ const publicSitePaths = new Set([
   "/privacy",
   "/support",
   "/terms",
+  "/tools/claude-api-cost-calculator",
 ]);
 
 const authPaths = new Set([
