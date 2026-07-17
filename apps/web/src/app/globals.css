@@ -172,18 +172,39 @@ section{padding:96px 0;border-bottom:1px solid var(--line)}
 .hero::after{content:"";position:absolute;inset:0;pointer-events:none;
   background:radial-gradient(600px 320px at 78% 8%,var(--accent-soft),transparent 70%)}
 .hero-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:56px;align-items:center;position:relative;z-index:2}
-.hero h1{margin:22px 0 22px;inline-size:510px;max-inline-size:100%;min-block-size:2.36em}
+.hero h1{margin:22px 0 26px;inline-size:100%;max-inline-size:100%}
 .hero-h1 span{display:block}
+.hero-h1-main{font-size:clamp(40px,5.9vw,70px);line-height:1.05;letter-spacing:-.02em;text-wrap:balance}
+.hero-sub{margin-top:14px;font-size:clamp(19px,2.3vw,27px);line-height:1.18;color:var(--accent);letter-spacing:-.01em}
 .hero .lead{font-size:17px;color:var(--txt-3);max-width:520px;margin-bottom:20px;min-block-size:3.2em}
 /* супер-краткие тезисы о продукте под лидом — с пиксель-значками (свой на светлую/тёмную) */
-.hero-points{list-style:none;margin:0 0 30px;padding:0;display:grid;gap:11px;max-width:540px}
-.hero-points li{display:flex;align-items:flex-start;gap:11px;font-family:var(--font-mono);font-size:14px;color:var(--txt-2);line-height:1.45}
-.hp-ic{flex:none;width:22px;height:22px;margin-top:1px;display:inline-flex}
-.hp-ic img{width:22px;height:22px;object-fit:contain;display:block}
+.hero-points{list-style:none;margin:0 0 32px;padding:0;display:grid;gap:14px;max-width:560px}
+.hero-points li{display:flex;align-items:center;gap:14px;font-family:var(--font-mono);font-size:15px;color:var(--txt);line-height:1.4}
+.hp-ic{flex:none;width:44px;height:44px;display:inline-flex;align-items:center;justify-content:center;
+  background:var(--accent-soft);border:1px solid var(--accent-line);border-radius:11px}
+.hp-ic img{width:30px;height:30px;object-fit:contain;display:block}
 .hp-ic .hp-ic-d{display:none}
 [data-theme="dark"] .hp-ic .hp-ic-l{display:none}
 [data-theme="dark"] .hp-ic .hp-ic-d{display:inline-block}
 .hero-cta{display:flex;gap:14px;flex-wrap:wrap}
+
+/* Hero-оффер: скидка по объёму пополнения крупными цифрами + $10 фри за регистрацию */
+.hero-offer{min-width:0;background:var(--bg-card);border:1px solid var(--line);border-radius:16px;
+  padding:24px 26px 20px;box-shadow:0 24px 60px -30px rgba(10,12,30,.45)}
+.offer-free{display:flex;align-items:center;gap:12px;padding-bottom:18px;margin-bottom:6px;border-bottom:1px solid var(--line)}
+.offer-free-badge{font-family:var(--font-mono);font-size:11px;font-weight:700;letter-spacing:.16em;color:var(--accent);
+  border:1px solid var(--accent-line);border-radius:999px;padding:5px 11px;line-height:1}
+.offer-free-amt{font-family:var(--font-display);font-weight:700;font-size:40px;line-height:1;color:var(--txt);margin-left:2px}
+.offer-free-note{font-size:14px;color:var(--txt-3)}
+.offer-head{display:flex;justify-content:space-between;align-items:baseline;padding:16px 2px 4px;
+  font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--txt-4)}
+.offer-rows{list-style:none;margin:0;padding:0}
+.offer-rows li{display:flex;align-items:center;justify-content:space-between;padding:12px 2px;border-top:1px solid var(--line)}
+.offer-amt{font-family:var(--font-mono);font-weight:700;font-size:21px;color:var(--txt)}
+.offer-pct{display:flex;align-items:baseline;gap:5px;color:var(--accent)}
+.offer-pct b{font-family:var(--font-display);font-weight:700;font-size:46px;line-height:.9}
+.offer-pct i{font-style:normal;font-size:15px;color:var(--txt-3)}
+.offer-foot{margin:16px 0 2px;font-family:var(--font-mono);font-size:12.5px;color:var(--txt-4);line-height:1.5}
 
 /* terminal card stays anchored; only the macOS controls react to hover */
 .term-stage{min-width:0}

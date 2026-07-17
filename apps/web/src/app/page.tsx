@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 import { DOCS_URL } from "@/lib/site-links";
-import { InteractiveTerminal } from "@/components/interactive-terminal";
 import { JsonLd } from "@/components/json-ld";
+import { B2C_PRICING_MILESTONES, formatWholeUsd } from "@/lib/pricing-tiers";
 import { PricingOverview } from "@/components/pricing-overview";
 import { TopUpAmountInput } from "@/components/topup-amount-input";
 import { T } from "@/components/translated";
@@ -16,10 +16,10 @@ export const metadata: Metadata = createPageMetadata(seoPages.home, {
 const models = ["Claude Opus 4.8", "Claude Opus 4.7", "Claude Sonnet 5", "Claude Sonnet 4.6", "Claude Haiku 4.5"];
 // Hero-тезисы: у каждого свой пиксель-значок (свой файл на светлую/тёмную тему).
 const heroPoints = [
-  { k: "hero_p1", en: "Drop into Claude Code, Cursor, OpenClaw — any tool that needs a key", ic: "connect" },
+  { k: "hero_p1", en: "Integration with Claude Code, Cursor, OpenClaw & more", ic: "connect" },
   { k: "hero_p2", en: "Add it to any product or workflow", ic: "product" },
-  { k: "hero_p3", en: "No Anthropic account required", ic: "noaccount" },
-  { k: "hero_p4", en: "No VPN — works in any country", ic: "novpn" },
+  { k: "hero_p3", en: "No Anthropic account", ic: "noaccount" },
+  { k: "hero_p4", en: "No VPN", ic: "novpn" },
 ] as const;
 // Единый developer-flow: три шага, каждый несёт реально важное (баланс/модели → drop-in эндпоинт → продакшн-биллинг).
 const flow = [
@@ -97,7 +97,7 @@ const homeJsonLd = {
 
 export default function HomePage() {
   return <><JsonLd data={homeJsonLd} /><main>
-      <div className="hero"><div className="wrap hero-grid"><div><T k="hero_eyebrow" as="span" className="eyebrow">Claude API · One gateway</T><h1 className="hero-h1"><T k="hero_h1a" as="span">All Claude models.</T><T k="hero_h1b" as="span">One key.</T></h1><ul className="hero-points">{heroPoints.map((point) => <li key={point.k}><span className="hp-ic" aria-hidden="true"><Image className="hp-ic-l" src={`/assets/feat-${point.ic}-light.png`} width={22} height={22} alt="" /><Image className="hp-ic-d" src={`/assets/feat-${point.ic}-dark.png`} width={22} height={22} alt="" /></span><T k={point.k}>{point.en}</T></li>)}</ul><div className="hero-cta"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link><Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link></div></div><InteractiveTerminal /></div><div className="wrap home-stats"><div className="stats reveal"><Stat value="8+" label="stat1" /><Stat value="1" label="stat2" /><Stat value="99.9%" label="stat3" /><Stat value="<100ms" label="stat4" /><div className="stat"><T k="stat5v" as="b">minutes</T><T k="stat5">Setup time</T></div></div></div></div>
+      <div className="hero"><div className="wrap hero-grid"><div><T k="hero_eyebrow" as="span" className="eyebrow">Claude API · One gateway</T><h1 className="hero-h1"><T k="hero_h1a" as="span" className="hero-h1-main">Buy Claude API access</T><T k="hero_h1b" as="span" className="hero-sub">Same as official, but cheaper</T></h1><ul className="hero-points">{heroPoints.map((point) => <li key={point.k}><span className="hp-ic" aria-hidden="true"><Image className="hp-ic-l" src={`/assets/feat-${point.ic}-light.png`} width={30} height={30} alt="" /><Image className="hp-ic-d" src={`/assets/feat-${point.ic}-dark.png`} width={30} height={30} alt="" /></span><T k={point.k}>{point.en}</T></li>)}</ul><div className="hero-cta"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link><Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link></div></div><HeroDiscount /></div><div className="wrap home-stats"><div className="stats reveal"><Stat value="8+" label="stat1" /><Stat value="1" label="stat2" /><Stat value="99.9%" label="stat3" /><Stat value="<100ms" label="stat4" /><div className="stat"><T k="stat5v" as="b">minutes</T><T k="stat5">Setup time</T></div></div></div></div>
       <section id="products"><div className="wrap"><SectionHead eyebrow="prod_eyebrow" title="prod_h2" lead="prod_lead" />
         <div className="prod-grid" data-reveal-stagger>
         <div className="prod">
@@ -147,5 +147,20 @@ export default function HomePage() {
     </main></>;
 }
 
+function HeroDiscount() {
+  return <aside className="hero-offer reveal" aria-label="Discount by top-up">
+    <div className="offer-free">
+      <span className="offer-free-badge"><T k="offer_free_badge">FREE</T></span>
+      <span className="offer-free-amt">$10</span>
+      <T k="offer_free_note" as="span" className="offer-free-note">on signup — no card</T>
+    </div>
+    <div className="offer-head"><T k="offer_col_topup" as="span">Top up</T><T k="offer_col_off" as="span">You save</T></div>
+    <ul className="offer-rows">{B2C_PRICING_MILESTONES.map((tier) => <li key={tier.code}>
+      <span className="offer-amt">{Number(tier.platformSpendUsd) === 0 ? <T k="offer_free_start">Free</T> : formatWholeUsd(tier.platformSpendUsd)}</span>
+      <span className="offer-pct"><b>{tier.discountPercent}</b><i>% off</i></span>
+    </li>)}</ul>
+    <T k="offer_foot" as="p" className="offer-foot">Discount locks in and applies to every call.</T>
+  </aside>;
+}
 function Stat({ value, label }: { value: string; label: string }) { return <div className="stat"><b>{value}</b><T k={label}>Metric</T></div>; }
 function SectionHead({ eyebrow, title, lead }: { eyebrow: string; title: string; lead?: string }) { return <div className="sec-head reveal"><T k={eyebrow} as="span" className="eyebrow">Section</T><T k={title} as="h2">Title</T>{lead && <T k={lead} as="p">Description</T>}</div>; }
