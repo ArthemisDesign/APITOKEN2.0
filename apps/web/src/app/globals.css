@@ -626,8 +626,8 @@ footer{padding:64px 0 40px;border-bottom:0}
 .btn-social-google{background:#fff;border-color:#747775;color:#1f1f1f}
 [data-theme="dark"] .btn-social-google{background:#131314;border-color:#8e918f;color:#e3e3e3}
 .provider-logo{width:20px;height:20px;flex:none}
-.provider-logo-google{display:grid;place-items:center;border-radius:2px;background:#fff;overflow:hidden}
-.provider-logo-google img{display:block;width:17px;height:auto}
+.provider-logo-google{display:grid;place-items:center}
+.provider-logo-google img{display:block;width:auto;height:20px}
 .provider-logo-github{display:block;color:currentColor}
 .btn-social.loading{opacity:.6;pointer-events:none}
 
