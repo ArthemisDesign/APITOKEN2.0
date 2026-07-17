@@ -128,6 +128,29 @@ export function absoluteUrl(path: string): string {
   return new URL(path, SITE_ORIGIN).toString();
 }
 
+// HTML path -> its clean Markdown twin under /md, so pages can self-advertise a machine-readable
+// version to crawlers and AI agents via <link rel="alternate" type="text/markdown">.
+export function markdownTwinPath(path: string): string | undefined {
+  const exact: Record<string, string> = {
+    "/": "/md",
+    "/docs": "/md/docs",
+    "/models": "/md/models",
+    "/plans": "/md/plans",
+    "/integrations": "/md/int",
+    "/docs/learn": "/md",
+  };
+  if (exact[path]) return exact[path];
+  if (path.startsWith("/int-")) return `/md/int/${path.slice("/int-".length)}`;
+  if (path.startsWith("/models/")) return `/md/models/${path.slice("/models/".length)}`;
+  if (path.startsWith("/docs/learn/")) return `/md${path}`;
+  return undefined;
+}
+
+export function markdownAlternate(path: string): { types: Record<string, string> } | undefined {
+  const twin = markdownTwinPath(path);
+  return twin ? { types: { "text/markdown": absoluteUrl(twin) } } : undefined;
+}
+
 export function createPageMetadata(page: Pick<SeoPage, "path" | "title" | "description">, options?: { absoluteTitle?: string }): Metadata {
   const canonical = absoluteUrl(page.path);
   const socialTitle = options?.absoluteTitle ?? `${page.title} — ${SITE_NAME}`;
@@ -135,7 +158,7 @@ export function createPageMetadata(page: Pick<SeoPage, "path" | "title" | "descr
   return {
     title: options?.absoluteTitle ? { absolute: options.absoluteTitle } : page.title,
     description: page.description,
-    alternates: { canonical },
+    alternates: { canonical, ...markdownAlternate(page.path) },
     openGraph: {
       type: "website",
       locale: "en_US",

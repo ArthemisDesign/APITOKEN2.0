@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { absoluteUrl, DEFAULT_OG_IMAGE, SITE_NAME } from "./seo";
+import { absoluteUrl, DEFAULT_OG_IMAGE, markdownAlternate, SITE_NAME } from "./seo";
 
 // Russian copy for the public marketing pages that carry the EN/RU language
 // switcher. English copy stays in seoPages (lib/seo.ts). Each core page is
@@ -68,11 +68,12 @@ export const coreIntRu: Record<string, Localized> = {
 };
 
 /** canonical + en/ru hreflang for the English version of a core page. */
-export function coreAlternates(enPath: string): { canonical: string; languages: Record<string, string> } {
+export function coreAlternates(enPath: string): Metadata["alternates"] {
   const ruPath = enPath === "/" ? "/ru" : `/ru${enPath}`;
   return {
     canonical: absoluteUrl(enPath),
     languages: { en: absoluteUrl(enPath), ru: absoluteUrl(ruPath), "x-default": absoluteUrl(enPath) },
+    ...markdownAlternate(enPath),
   };
 }
 
@@ -92,6 +93,7 @@ export function coreMetadata(enPath: string, en: Localized, ru: Localized, local
         ru: absoluteUrl(ruPath),
         "x-default": absoluteUrl(enPath),
       },
+      ...markdownAlternate(enPath),
     },
     openGraph: {
       type: "website",
