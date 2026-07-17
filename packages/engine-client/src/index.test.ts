@@ -14,8 +14,25 @@ describe("EngineClient", () => {
     });
 
     const result = await client.creditAccount("acct_test", 9_007_199_254_740_993_123n, "payment:test");
-    expect(requestBody).toContain('"amount_nano":9007199254740993123');
+    expect(JSON.parse(requestBody)).toEqual({
+      amount_nano: "9007199254740993123",
+      ref: "payment:test",
+    });
     expect(result.balance_nano).toBe("9007199254740993123");
+  });
+
+  it("preserves the HTTP status when the engine returns a non-JSON error", async () => {
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async () => new Response("Failed to deserialize the JSON body", { status: 422 }),
+    });
+
+    await expect(client.creditAccount("acct_test", 1n, "payment:test")).rejects.toMatchObject({
+      message: "engine returned HTTP 422 with a non-JSON response",
+      status: 422,
+      retryable: false,
+    });
   });
 
   it("does not send the control key to the public health endpoint", async () => {

@@ -94,7 +94,7 @@ export class EngineClient {
 
   async creditAccount(accountId: string, amountNano: bigint, reference: string): Promise<EngineCreditResult> {
     if (amountNano <= 0n) throw new RangeError("amountNano must be positive");
-    const body = `{"amount_nano":${amountNano.toString()},"ref":${JSON.stringify(reference)}}`;
+    const body = JSON.stringify({ amount_nano: amountNano.toString(), ref: reference });
     const { response, payload } = await this.request(`/admin/account/${encodeURIComponent(accountId)}/credit`, {
       method: "POST",
       body,
@@ -235,6 +235,13 @@ export class EngineClient {
     try {
       payload = JSONbig.parse(text);
     } catch {
+      if (!response.ok) {
+        throw new EngineClientError(
+          `engine returned HTTP ${response.status} with a non-JSON response`,
+          response.status,
+          response.status >= 500 || response.status === 429,
+        );
+      }
       throw new EngineClientError("engine returned invalid JSON", response.status, response.status >= 500);
     }
     if (!response.ok) {

@@ -153,8 +153,11 @@ class FakeEngine {
     }
     if (path.endsWith("/credit") && init?.method === "POST") {
       const account = path.slice("/admin/account/".length, -"/credit".length);
-      const body = JSON.parse(String(init.body)) as { amount_nano: number; ref: string };
-      this.signupCredits.push({ account, amountNano: String(body.amount_nano), reference: body.ref });
+      const body = JSON.parse(String(init.body)) as { amount_nano: unknown; ref: string };
+      if (typeof body.amount_nano !== "string") {
+        return new Response("Failed to deserialize the JSON body", { status: 422 });
+      }
+      this.signupCredits.push({ account, amountNano: body.amount_nano, reference: body.ref });
       return Response.json({ account, balance_nano: body.amount_nano, balance: "$4.000000000" });
     }
     if (path === "/admin/key" && init?.method === "POST") {
