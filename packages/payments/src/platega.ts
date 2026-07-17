@@ -14,35 +14,35 @@ import type {
 const DEFAULT_API_BASE_URL = "https://app.platega.io";
 const DEFAULT_RATE_URL = "https://api.rapira.net/open/market/rates";
 
-// POST /transaction/process response.
+// POST /transaction/process response. Platega sends null (not absent) for empty optionals.
 const createResponseSchema = z.object({
   transactionId: z.string().uuid(),
   redirect: z.string().url(),
   status: z.string().min(1),
-  expiresIn: z.string().optional(),
-  paymentMethod: z.string().optional(),
-  merchantId: z.string().optional(),
+  expiresIn: z.string().nullish(),
+  paymentMethod: z.string().nullish(),
+  merchantId: z.string().nullish(),
 }).passthrough();
 
-// GET /transaction/{id} response.
+// GET /transaction/{id} response. paymentDetails is an object here (a string on create); keep it lenient.
 const statusResponseSchema = z.object({
   id: z.string().uuid(),
   status: z.string().min(1),
-  paymentDetails: z.object({ amount: z.number(), currency: z.string() }).partial().passthrough().optional(),
-  amount: z.number().optional(),
-  currency: z.string().optional(),
-  paymentMethod: z.union([z.string(), z.number()]).optional(),
-  payload: z.string().optional(),
+  paymentDetails: z.object({ amount: z.number(), currency: z.string() }).partial().passthrough().nullish(),
+  amount: z.number().nullish(),
+  currency: z.string().nullish(),
+  paymentMethod: z.union([z.string(), z.number()]).nullish(),
+  payload: z.string().nullish(),
 }).passthrough();
 
 // Callback body (POST to our webhook). Auth is via X-MerchantId / X-Secret headers, checked by the caller.
 const webhookSchema = z.object({
   id: z.string().uuid(),
-  amount: z.number().optional(),
-  currency: z.string().optional(),
+  amount: z.number().nullish(),
+  currency: z.string().nullish(),
   status: z.string().min(1),
-  paymentMethod: z.union([z.number(), z.string()]).optional(),
-  payload: z.string().optional(),
+  paymentMethod: z.union([z.number(), z.string()]).nullish(),
+  payload: z.string().nullish(),
 }).passthrough();
 
 // Rapira public rates: data[] with baseCurrency RUB / quoteCurrency USDT, price = RUB per 1 USDT.
@@ -157,16 +157,17 @@ export class PlategaProvider implements WebhookPaymentProviderAdapter {
     const state = paymentState(payment.status);
     const providerAmount = payment.paymentDetails?.amount ?? payment.amount;
     const providerCurrency = payment.paymentDetails?.currency ?? payment.currency ?? "RUB";
+    const checkoutId = payment.payload ?? null;
     return {
       provider: this.code,
       providerPaymentId: payment.id,
       providerEventId: `${payment.id}:${payment.status.toUpperCase()}`,
       state,
       providerProductId: null,
-      checkoutId: payment.payload ?? null,
+      checkoutId,
       paidAt: null,
       buyerEmail: null,
-      providerAmount: providerAmount !== undefined ? String(providerAmount) : "",
+      providerAmount: providerAmount != null ? String(providerAmount) : "",
       providerCurrency,
       amountUsd: null,
       raw: payment,
@@ -262,7 +263,7 @@ function paymentState(status: string): ProviderPaymentState {
 }
 
 // expiresIn is an "HH:MM:SS" duration from the moment of creation.
-function expiresAtFrom(expiresIn: string | undefined): string | null {
+function expiresAtFrom(expiresIn: string | null | undefined): string | null {
   if (!expiresIn) return null;
   const match = /^(\d{1,2}):(\d{2}):(\d{2})$/.exec(expiresIn);
   if (!match) return null;

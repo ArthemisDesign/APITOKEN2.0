@@ -35,7 +35,18 @@ describe("PlategaProvider", () => {
       expect(url).toBe(`${API_BASE}/transaction/process`);
       postBody = String(init?.body);
       postHeaders = new Headers(init?.headers);
-      return Response.json({ transactionId, redirect: "https://pay.platega.io/abc", status: "PENDING", expiresIn: "00:15:00" });
+      // Real Platega shape: null (not absent) optionals, paymentDetails as a string.
+      return Response.json({
+        paymentMethod: "SBPQR",
+        transactionId,
+        redirect: "https://pay.platega.io?id=abc",
+        return: null,
+        paymentDetails: "108.5 RUB",
+        status: "PENDING",
+        expiresIn: null,
+        merchantId: "merchant-uuid",
+        usdtRate: 83.1,
+      });
     });
 
     const checkout = await provider.createCheckout({
@@ -49,10 +60,10 @@ describe("PlategaProvider", () => {
     });
 
     expect(checkout).toMatchObject({
-      action: { kind: "redirect", url: "https://pay.platega.io/abc" },
+      action: { kind: "redirect", url: "https://pay.platega.io?id=abc" },
       providerPaymentId: transactionId,
     });
-    expect(checkout.expiresAt).not.toBeNull();
+    expect(checkout.expiresAt).toBeNull(); // expiresIn was null
     expect(JSON.parse(postBody)).toMatchObject({
       paymentMethod: 2,
       paymentDetails: { amount: 2500, currency: "RUB" }, // 25 USD * 100 RUB/USD
