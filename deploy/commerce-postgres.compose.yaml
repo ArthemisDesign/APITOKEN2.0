@@ -1,3 +1,8 @@
+# Явное имя проекта: сервис поднят из каталога deploy/ (проект «deploy»), а watchdog-backup
+# exec-ает через контроллер-копию в …/apitoken-watchdog/controller/ — без пина compose вывел бы
+# имя проекта из каталога («controller») и не нашёл бы работающий контейнер.
+name: deploy
+
 services:
   commerce-postgres:
     image: postgres:18-alpine
