@@ -33,6 +33,7 @@ import {
 import type { Environment } from "./config.js";
 import { CurrentAuth, type RequestAuth, SessionAuthGuard } from "./auth.guard.js";
 import { generateCode, partnerView } from "./auth.service.js";
+import { normalizeTelegramUsername } from "./telegram.js";
 import { SALES_DATABASE } from "./infrastructure.module.js";
 import {
   createInviteSchema,
@@ -122,6 +123,7 @@ export class PartnerController {
       items: team.map((member) => ({
         id: member.id,
         email: member.email,
+        telegramUsername: member.telegramUsername,
         displayName: member.displayName,
         status: member.status,
         commissionBps: member.commissionBps,
@@ -135,17 +137,26 @@ export class PartnerController {
   @Post("invites")
   async createInvite(@CurrentAuth() current: RequestAuth, @Body() body: unknown): Promise<unknown> {
     const parsed = createInviteSchema.safeParse(body ?? {});
-    if (!parsed.success) throw new BadRequestException("invalid invite data");
+    if (!parsed.success) throw new BadRequestException("invalid invite data: telegram username is required");
+    const telegramUsername = normalizeTelegramUsername(parsed.data.telegramUsername);
+    if (!telegramUsername) throw new BadRequestException("invalid telegram username");
     const expiresAt = new Date(Date.now() + INVITE_TTL_DAYS * 24 * 3600 * 1000);
     for (let attempt = 0; ; attempt += 1) {
       try {
         const invite = await createPartnerInvite(this.database, {
           partnerId: current.partner.id,
           code: generateCode(12),
+          telegramUsername,
           commissionBps: parsed.data.commissionBps ?? null,
+          subCommissionBps: null,
           expiresAt,
         });
-        return { code: invite.code, inviteUrl: this.inviteUrl(invite.code), expiresAt: invite.expiresAt?.toISOString() ?? null };
+        return {
+          code: invite.code,
+          inviteUrl: this.inviteUrl(invite.code),
+          telegramUsername: invite.telegramUsername,
+          expiresAt: invite.expiresAt?.toISOString() ?? null,
+        };
       } catch (error) {
         if (error instanceof InviteCodeCollisionError && attempt < 5) continue;
         throw error;
@@ -161,6 +172,7 @@ export class PartnerController {
       items: invites.map((invite) => ({
         code: invite.code,
         inviteUrl: this.inviteUrl(invite.code),
+        telegramUsername: invite.telegramUsername,
         commissionBps: invite.commissionBps,
         expiresAt: invite.expiresAt?.toISOString() ?? null,
         consumedAt: invite.consumedAt?.toISOString() ?? null,

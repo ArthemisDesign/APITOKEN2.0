@@ -127,8 +127,9 @@ export function formatDate(iso: string | null | undefined): string {
 
 export type Partner = {
   id: string;
-  email: string;
+  email: string | null;
   displayName: string | null;
+  telegramUsername: string | null;
   referralCode: string;
   commissionBps: number;
   subCommissionBps: number;
@@ -164,7 +165,8 @@ export type EarningRow = { date: string; spendNano: string; earnedNano: string }
 
 export type TeamRow = {
   id: string;
-  email: string;
+  email: string | null;
+  telegramUsername: string | null;
   displayName: string | null;
   commissionBps: number;
   referredUsers: number;
@@ -176,7 +178,9 @@ export type TeamRow = {
 export type InviteRow = {
   code: string;
   inviteUrl: string;
+  telegramUsername: string | null;
   commissionBps: number | null;
+  subCommissionBps?: number | null;
   expiresAt: string | null;
   consumedAt: string | null;
 };
@@ -193,10 +197,12 @@ export type PayoutRow = {
 // Admin
 export type AdminPartnerRow = {
   id: string;
-  email: string;
+  email: string | null;
+  telegramUsername?: string | null;
   displayName?: string | null;
   referralCode?: string;
   parentEmail?: string | null;
+  parentTelegramUsername?: string | null;
   parentId?: string | null;
   commissionBps: number;
   subCommissionBps: number;

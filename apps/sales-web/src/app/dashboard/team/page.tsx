@@ -29,7 +29,8 @@ export default function TeamPage() {
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
-  const [newInvite, setNewInvite] = useState<{ code: string; inviteUrl: string } | null>(null);
+  const [inviteTelegram, setInviteTelegram] = useState("");
+  const [newInvite, setNewInvite] = useState<{ code: string; inviteUrl: string; telegramUsername?: string | null } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -49,14 +50,20 @@ export default function TeamPage() {
   }, [load]);
 
   async function createInvite() {
+    const username = inviteTelegram.trim().replace(/^@/, "");
+    if (!/^[A-Za-z0-9_]{5,32}$/.test(username)) {
+      setCreateError("Enter the invitee's Telegram username (5–32 letters, digits, underscore).");
+      return;
+    }
     setCreating(true);
     setCreateError(null);
     try {
-      const res = await api<{ code: string; inviteUrl: string }>("/v1/partner/invites", {
+      const res = await api<{ code: string; inviteUrl: string; telegramUsername: string | null }>("/v1/partner/invites", {
         method: "POST",
-        body: {},
+        body: { telegramUsername: username },
       });
       setNewInvite(res);
+      setInviteTelegram("");
       void load();
     } catch (err) {
       setCreateError(
@@ -79,7 +86,7 @@ export default function TeamPage() {
       <div className="stack">
         <Card
           title="Invite a sub-partner"
-          sub="Generate a one-time invite link. Whoever registers with it becomes your sub-partner."
+          sub="Enter their Telegram username — the invite link works only for that account. Send it to them in Telegram."
         >
           {createError ? <Notice kind="error">{createError}</Notice> : null}
           {newInvite ? (
@@ -93,13 +100,21 @@ export default function TeamPage() {
                 <CopyButton value={newInvite.inviteUrl} label="Copy invite" />
               </div>
               <p className="field-hint" style={{ marginTop: 8 }}>
-                Invite code: <span className="mono">{newInvite.code}</span>
+                For <span className="mono">@{newInvite.telegramUsername}</span> · code{" "}
+                <span className="mono">{newInvite.code}</span>
               </p>
             </div>
           ) : null}
-          <Button onClick={createInvite} loading={creating}>
-            {newInvite ? "Create another invite" : "Create invite link"}
-          </Button>
+          <div className="reflink-row">
+            <Input
+              value={inviteTelegram}
+              onChange={(e) => setInviteTelegram(e.target.value)}
+              placeholder="@telegram_username"
+            />
+            <Button onClick={createInvite} loading={creating}>
+              Create invite
+            </Button>
+          </div>
         </Card>
 
         <Card title="Your sub-partners">
@@ -125,9 +140,11 @@ export default function TeamPage() {
               {team.map((m) => (
                 <tr key={m.id}>
                   <td>
-                    <div style={{ fontWeight: 600 }}>{m.displayName || m.email}</div>
-                    {m.displayName ? (
-                      <div style={{ fontSize: 12, color: "var(--text-faint)" }}>{m.email}</div>
+                    <div style={{ fontWeight: 600 }}>
+                      {m.displayName || (m.telegramUsername ? `@${m.telegramUsername}` : m.email)}
+                    </div>
+                    {m.telegramUsername ? (
+                      <div style={{ fontSize: 12, color: "var(--text-faint)" }}>@{m.telegramUsername}</div>
                     ) : null}
                   </td>
                   <td>{formatBps(m.commissionBps)}</td>
@@ -154,6 +171,7 @@ export default function TeamPage() {
             <Table
               head={
                 <>
+                  <th>For</th>
                   <th>Code</th>
                   <th>Commission</th>
                   <th>Expires</th>
@@ -164,6 +182,7 @@ export default function TeamPage() {
             >
               {invites.map((inv) => (
                 <tr key={inv.code}>
+                  <td className="mono">{inv.telegramUsername ? `@${inv.telegramUsername}` : "—"}</td>
                   <td className="mono">{inv.code}</td>
                   <td>{inv.commissionBps != null ? formatBps(inv.commissionBps) : "Program default"}</td>
                   <td>{inv.expiresAt ? formatDate(inv.expiresAt) : "—"}</td>

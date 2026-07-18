@@ -121,7 +121,9 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
               ☰
             </button>
             <div className="cab-topbar-user">
-              <span className="email">{partner.email}</span>
+              <span className="email">
+                {partner.telegramUsername ? `@${partner.telegramUsername}` : partner.displayName ?? partner.email}
+              </span>
               <button className="btn btn-ghost btn-sm" onClick={logout}>
                 Log out
               </button>

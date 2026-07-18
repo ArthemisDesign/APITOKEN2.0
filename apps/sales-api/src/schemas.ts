@@ -7,24 +7,31 @@ export const displayNameSchema = z.string().trim().min(1).max(80);
 export const commissionBpsSchema = z.number().int().min(0).max(10_000);
 export const nanoAmountSchema = z.string().regex(/^[1-9]\d{0,26}$/);
 
-export const registerSchema = z.object({
-  email: emailSchema,
-  password: passwordSchema,
-  displayName: displayNameSchema.optional(),
-  inviteCode: z.string().trim().min(1).max(64).optional(),
-});
+export const inviteCodeSchema = z.string().trim().regex(/^[a-z0-9]{4,64}$/i);
+// Telegram-юзернейм: 5–32 символа, буквы/цифры/подчёркивание; @ и регистр нормализуем сами.
+export const telegramUsernameSchema = z.string().trim().regex(/^@?[A-Za-z0-9_]{5,32}$/);
 
-export const loginSchema = z.object({
-  email: emailSchema,
-  password: passwordSchema,
+// Payload Telegram Login Widget + опциональный инвайт для первой регистрации.
+export const telegramAuthSchema = z.object({
+  id: z.union([z.number().int().positive(), z.string().regex(/^\d{1,19}$/)]).transform(String),
+  first_name: z.string().max(200).optional(),
+  last_name: z.string().max(200).optional(),
+  username: z.string().max(64).optional(),
+  photo_url: z.string().max(1000).optional(),
+  auth_date: z.coerce.number().int().positive(),
+  hash: z.string().regex(/^[0-9a-f]{64}$/),
+  inviteCode: inviteCodeSchema.optional(),
 });
-
-export const verifyEmailSchema = z.object({ token: authTokenSchema });
-export const emailOnlySchema = z.object({ email: emailSchema });
-export const resetPasswordSchema = z.object({ token: authTokenSchema, password: passwordSchema });
 
 export const createInviteSchema = z.object({
+  telegramUsername: telegramUsernameSchema,
   commissionBps: commissionBpsSchema.optional(),
+});
+
+export const adminCreateInviteSchema = z.object({
+  telegramUsername: telegramUsernameSchema,
+  commissionBps: commissionBpsSchema.optional(),
+  subCommissionBps: commissionBpsSchema.optional(),
 });
 
 export const createPayoutSchema = z.object({

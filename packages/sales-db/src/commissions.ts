@@ -216,7 +216,8 @@ export async function getPartnerDailyEarnings(
 
 export interface TeamMemberSummary {
   id: string;
-  email: string;
+  email: string | null;
+  telegramUsername: string | null;
   displayName: string | null;
   status: PartnerStatus;
   commissionBps: number;
@@ -227,10 +228,11 @@ export interface TeamMemberSummary {
 
 export async function listPartnerTeam(database: SalesDatabase, partnerId: string): Promise<TeamMemberSummary[]> {
   const result = await database.pool.query<{
-    id: string; email: string; display_name: string | null; status: PartnerStatus; commission_bps: number;
+    id: string; email: string | null; telegram_username: string | null; display_name: string | null;
+    status: PartnerStatus; commission_bps: number;
     referred_users: string; their_earned: string; my_override: string;
   }>(`
-    SELECT p.id, p.email, p.display_name, p.status, p.commission_bps,
+    SELECT p.id, p.email, p.telegram_username, p.display_name, p.status, p.commission_bps,
       (SELECT count(*) FROM referred_users ru WHERE ru.partner_id = p.id)::text AS referred_users,
       COALESCE((SELECT SUM(ce.amount_nano) FROM commission_entries ce WHERE ce.partner_id = p.id), 0)::text AS their_earned,
       COALESCE((
@@ -245,6 +247,7 @@ export async function listPartnerTeam(database: SalesDatabase, partnerId: string
   return result.rows.map((row) => ({
     id: row.id,
     email: row.email,
+    telegramUsername: row.telegram_username,
     displayName: row.display_name,
     status: row.status,
     commissionBps: row.commission_bps,

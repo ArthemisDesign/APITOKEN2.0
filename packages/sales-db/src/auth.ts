@@ -1,14 +1,17 @@
 import type { PoolClient } from "pg";
 import type { SalesDatabase } from "./client.js";
-import { insertPartnerEmail } from "./outbox.js";
 
 export type PartnerStatus = "active" | "suspended" | "pending";
 export type PartnerAuthPurpose = "verify_email" | "reset_password";
 
 export interface Partner {
   id: string;
-  email: string;
+  email: string | null;
   displayName: string | null;
+  // Telegram identity (онбординг через Telegram Login). id хранится строкой (pg bigint).
+  telegramId: string | null;
+  telegramUsername: string | null;
+  telegramPhotoUrl: string | null;
   status: PartnerStatus;
   emailVerified: boolean;
   referralCode: string;
@@ -21,7 +24,7 @@ export interface Partner {
 }
 
 export interface PasswordPartner extends Partner {
-  passwordHash: string;
+  passwordHash: string | null;
 }
 
 export class EmailAlreadyRegisteredError extends Error {}
@@ -30,9 +33,12 @@ export class InvalidInviteError extends Error {}
 
 interface PartnerRow {
   id: string;
-  email: string;
+  email: string | null;
   display_name: string | null;
-  password_hash: string;
+  password_hash: string | null;
+  telegram_id: string | null;
+  telegram_username: string | null;
+  telegram_photo_url: string | null;
   status: PartnerStatus;
   email_verified: boolean;
   referral_code: string;
@@ -45,7 +51,8 @@ interface PartnerRow {
 }
 
 const PARTNER_COLUMNS = `
-  id, email, display_name, password_hash, status, email_verified, referral_code,
+  id, email, display_name, password_hash, telegram_id, telegram_username, telegram_photo_url,
+  status, email_verified, referral_code,
   parent_partner_id, commission_bps, sub_commission_bps, payout_method, payout_details, created_at
 `;
 
@@ -55,6 +62,9 @@ function mapPartner(row: PartnerRow): PasswordPartner {
     email: row.email,
     displayName: row.display_name,
     passwordHash: row.password_hash,
+    telegramId: row.telegram_id,
+    telegramUsername: row.telegram_username,
+    telegramPhotoUrl: row.telegram_photo_url,
     status: row.status,
     emailVerified: row.email_verified,
     referralCode: row.referral_code,
@@ -100,54 +110,79 @@ export async function clearPartnerRateLimit(database: SalesDatabase, keyHashes: 
 }
 
 async function lockInvite(client: PoolClient, code: string): Promise<{
-  id: string; partnerId: string; commissionBps: number | null;
+  id: string; partnerId: string | null; commissionBps: number | null;
+  subCommissionBps: number | null; telegramUsername: string | null;
 }> {
-  const result = await client.query<{ id: string; partner_id: string; commission_bps: number | null }>(`
-    SELECT id, partner_id, commission_bps FROM partner_invites
+  const result = await client.query<{
+    id: string; partner_id: string | null; commission_bps: number | null;
+    sub_commission_bps: number | null; telegram_username: string | null;
+  }>(`
+    SELECT id, partner_id, commission_bps, sub_commission_bps, telegram_username FROM partner_invites
     WHERE code = $1 AND consumed_at IS NULL AND (expires_at IS NULL OR expires_at > now())
     FOR UPDATE
   `, [code]);
   const row = result.rows[0];
   if (!row) throw new InvalidInviteError("invite code is invalid or expired");
-  return { id: row.id, partnerId: row.partner_id, commissionBps: row.commission_bps };
+  return {
+    id: row.id,
+    partnerId: row.partner_id,
+    commissionBps: row.commission_bps,
+    subCommissionBps: row.sub_commission_bps,
+    telegramUsername: row.telegram_username,
+  };
 }
 
-export async function createPartner(database: SalesDatabase, input: {
-  email: string;
-  passwordHash: string;
+export class TelegramAlreadyRegisteredError extends Error {}
+
+export async function findTelegramPartner(database: SalesDatabase, telegramId: string): Promise<Partner | null> {
+  const result = await database.pool.query<PartnerRow>(`
+    SELECT ${PARTNER_COLUMNS} FROM partners WHERE telegram_id = $1
+  `, [telegramId]);
+  return result.rows[0] ? withoutPassword(mapPartner(result.rows[0])) : null;
+}
+
+/**
+ * Онбординг через Telegram: партнёр создаётся ТОЛЬКО по валидному инвайту, чей
+ * telegram_username (если задан) совпал с юзернеймом вошедшего. Сразу active.
+ */
+export async function createTelegramPartner(database: SalesDatabase, input: {
+  telegramId: string;
+  telegramUsername: string | null;
+  telegramPhotoUrl: string | null;
   displayName: string | null;
   referralCode: string;
-  inviteCode: string | null;
-  commissionBps: number;
-  subCommissionBps: number;
-  verification: { tokenHash: string; encryptedToken: string; expiresAt: Date };
+  inviteCode: string;
+  defaultCommissionBps: number;
+  defaultSubCommissionBps: number;
 }): Promise<Partner> {
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
-    const invite = input.inviteCode ? await lockInvite(client, input.inviteCode) : null;
-    const commissionBps = invite?.commissionBps ?? input.commissionBps;
+    const invite = await lockInvite(client, input.inviteCode);
+    if (invite.telegramUsername) {
+      const actual = (input.telegramUsername ?? "").toLowerCase();
+      if (actual !== invite.telegramUsername.toLowerCase()) {
+        throw new InvalidInviteError("this invite is issued for a different telegram account");
+      }
+    }
     const result = await client.query<PartnerRow>(`
-      INSERT INTO partners (email, display_name, password_hash, referral_code, parent_partner_id, commission_bps, sub_commission_bps)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      INSERT INTO partners (
+        telegram_id, telegram_username, telegram_photo_url, display_name, status,
+        referral_code, parent_partner_id, commission_bps, sub_commission_bps
+      )
+      VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8)
       RETURNING ${PARTNER_COLUMNS}
     `, [
-      input.email, input.displayName, input.passwordHash, input.referralCode,
-      invite?.partnerId ?? null, commissionBps, input.subCommissionBps,
+      input.telegramId, input.telegramUsername, input.telegramPhotoUrl, input.displayName,
+      input.referralCode, invite.partnerId,
+      invite.commissionBps ?? input.defaultCommissionBps,
+      invite.subCommissionBps ?? input.defaultSubCommissionBps,
     ]);
     const partner = mapPartner(result.rows[0]!);
-    if (invite) {
-      await client.query(`
-        UPDATE partner_invites SET consumed_at = now(), consumed_by_partner_id = $2
-        WHERE id = $1 AND consumed_at IS NULL
-      `, [invite.id, partner.id]);
-    }
-    await insertPartnerEmail(client, {
-      partnerId: partner.id,
-      recipient: partner.email,
-      purpose: "verify_email",
-      ...input.verification,
-    });
+    await client.query(`
+      UPDATE partner_invites SET consumed_at = now(), consumed_by_partner_id = $2
+      WHERE id = $1 AND consumed_at IS NULL
+    `, [invite.id, partner.id]);
     await client.query("COMMIT");
     return withoutPassword(partner);
   } catch (error) {
@@ -156,19 +191,12 @@ export async function createPartner(database: SalesDatabase, input: {
       if (constraintName(error) === "partners_referral_code_uidx") {
         throw new ReferralCodeCollisionError("referral code collision");
       }
-      throw new EmailAlreadyRegisteredError("email is already registered");
+      throw new TelegramAlreadyRegisteredError("telegram account is already registered");
     }
     throw error;
   } finally {
     client.release();
   }
-}
-
-export async function findPasswordPartner(database: SalesDatabase, email: string): Promise<PasswordPartner | null> {
-  const result = await database.pool.query<PartnerRow>(`
-    SELECT ${PARTNER_COLUMNS} FROM partners WHERE lower(email) = lower($1)
-  `, [email]);
-  return result.rows[0] ? mapPartner(result.rows[0]) : null;
 }
 
 export async function getPartner(database: SalesDatabase, partnerId: string): Promise<Partner | null> {
@@ -218,127 +246,6 @@ export async function revokePartnerSession(database: SalesDatabase, sessionId: s
   await database.pool.query(`
     UPDATE partner_sessions SET revoked_at = now() WHERE id = $1 AND partner_id = $2 AND revoked_at IS NULL
   `, [sessionId, partnerId]);
-}
-
-export async function queuePartnerEmailForAddress(database: SalesDatabase, input: {
-  email: string;
-  purpose: PartnerAuthPurpose;
-  tokenHash: string;
-  encryptedToken: string;
-  expiresAt: Date;
-}): Promise<boolean> {
-  const client = await database.pool.connect();
-  try {
-    await client.query("BEGIN");
-    const result = await client.query<{ id: string; email: string }>(`
-      SELECT id, email FROM partners
-      WHERE lower(email) = lower($1) AND status <> 'suspended'
-        AND ($2::text = 'reset_password' OR email_verified = false)
-      FOR UPDATE
-    `, [input.email, input.purpose]);
-    const partner = result.rows[0];
-    if (partner) {
-      await insertPartnerEmail(client, {
-        partnerId: partner.id,
-        recipient: partner.email,
-        purpose: input.purpose,
-        tokenHash: input.tokenHash,
-        encryptedToken: input.encryptedToken,
-        expiresAt: input.expiresAt,
-      });
-    }
-    await client.query("COMMIT");
-    return Boolean(partner);
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
-export async function consumePartnerEmailVerification(database: SalesDatabase, tokenHash: string): Promise<string | null> {
-  const client = await database.pool.connect();
-  try {
-    await client.query("BEGIN");
-    const result = await client.query<{ partner_id: string }>(`
-      SELECT partner_id FROM partner_auth_tokens
-      WHERE token_hash = $1 AND purpose = 'verify_email' AND used_at IS NULL AND expires_at > now()
-      FOR UPDATE
-    `, [tokenHash]);
-    const token = result.rows[0];
-    if (!token) {
-      await client.query("ROLLBACK");
-      return null;
-    }
-    await client.query(`
-      UPDATE partner_auth_tokens SET used_at = now()
-      WHERE partner_id = $1 AND purpose = 'verify_email' AND used_at IS NULL
-    `, [token.partner_id]);
-    await client.query(`
-      UPDATE partners
-      SET email_verified = true,
-          status = CASE WHEN status = 'pending' THEN 'active'::partner_status ELSE status END,
-          updated_at = now()
-      WHERE id = $1
-    `, [token.partner_id]);
-    await client.query(`
-      INSERT INTO sales_audit_log (actor_type, actor_id, action, target_type, target_id)
-      VALUES ('partner', $1, 'auth.email_verified', 'partner', $1)
-    `, [token.partner_id]);
-    await client.query("COMMIT");
-    return token.partner_id;
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
-export async function consumePartnerPasswordReset(
-  database: SalesDatabase,
-  tokenHash: string,
-  passwordHash: string,
-): Promise<boolean> {
-  const client = await database.pool.connect();
-  try {
-    await client.query("BEGIN");
-    const result = await client.query<{ partner_id: string }>(`
-      SELECT partner_id FROM partner_auth_tokens
-      WHERE token_hash = $1 AND purpose = 'reset_password' AND used_at IS NULL AND expires_at > now()
-      FOR UPDATE
-    `, [tokenHash]);
-    const token = result.rows[0];
-    if (!token) {
-      await client.query("ROLLBACK");
-      return false;
-    }
-    await client.query(`
-      UPDATE partners SET password_hash = $2, email_verified = true,
-        status = CASE WHEN status = 'pending' THEN 'active'::partner_status ELSE status END,
-        updated_at = now()
-      WHERE id = $1
-    `, [token.partner_id, passwordHash]);
-    await client.query(`
-      UPDATE partner_auth_tokens SET used_at = now()
-      WHERE partner_id = $1 AND purpose = 'reset_password' AND used_at IS NULL
-    `, [token.partner_id]);
-    await client.query(`
-      UPDATE partner_sessions SET revoked_at = now() WHERE partner_id = $1 AND revoked_at IS NULL
-    `, [token.partner_id]);
-    await client.query(`
-      INSERT INTO sales_audit_log (actor_type, actor_id, action, target_type, target_id)
-      VALUES ('partner', $1, 'auth.password_reset', 'partner', $1)
-    `, [token.partner_id]);
-    await client.query("COMMIT");
-    return true;
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
 }
 
 export async function updatePartnerSettings(database: SalesDatabase, partnerId: string, input: {

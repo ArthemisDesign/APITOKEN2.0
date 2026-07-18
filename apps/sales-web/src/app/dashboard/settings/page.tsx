@@ -62,8 +62,12 @@ export default function SettingsPage() {
           {error ? <Notice kind="error">{error}</Notice> : null}
           {saved ? <Notice kind="success">Settings saved.</Notice> : null}
           <form onSubmit={onSubmit}>
-            <Field label="Email">
-              <Input value={partner.email} readOnly disabled />
+            <Field label="Telegram">
+              <Input
+                value={partner.telegramUsername ? `@${partner.telegramUsername}` : partner.email ?? "—"}
+                readOnly
+                disabled
+              />
             </Field>
             <Field label="Display name">
               <Input

@@ -1,4 +1,4 @@
-# SALES_PORTAL.md — партнёрское направление (sales.apitoken.sale)
+# SALES_PORTAL.md — партнёрское направление (partners.apitoken.sale)
 
 Третий bounded context репозитория (после движка и коммерции): **многоуровневая партнёрская
 программа для сейлзов**. Отдельный продукт, отдельный домен, отдельная БД, отдельный визуальный
@@ -10,12 +10,18 @@ engine (Rust)  ←Control API─  commerce (apps/api + worker)  ←internal sale
 
 ## Что это
 
-- Партнёр («сейлз») регистрируется на sales.apitoken.sale (логин/пароль, подтверждение почты),
-  получает **реф-код** и ссылку `https://apitoken.sale/register?ref=CODE`.
+- Вход и онбординг — **только через Telegram** (официальный Login Widget; бот задаётся
+  `TELEGRAM_BOT_TOKEN`/`TELEGRAM_BOT_USERNAME`, домен виджета биндится в BotFather `/setdomain`).
+  Новый партнёр создаётся ТОЛЬКО по инвайту, выписанному на его telegram-юзернейм: админ (вкладка
+  Onboarding, корневые сейлзы) или партнёр (вкладка Team, суб-сейлзы) указывает `@username` и
+  отправляет человеку ссылку `partners.apitoken.sale/register?invite=CODE`; тот подтверждает вход
+  через Telegram — аккаунт сразу active, пароль/почта не нужны. Email/password-поля в partners —
+  legacy первой волны.
+- Партнёр получает **реф-код** и ссылку `https://apitoken.sale/register?ref=CODE`.
 - Пользователи, пришедшие по ссылке, атрибутируются партнёру. Партнёр зарабатывает
   `commission_bps` от **расхода** (charge-ledger) своих пользователей.
 - **Многоуровневость:** партнёр может приглашать суб-партнёров (инвайт-ссылка
-  `sales.apitoken.sale/register?invite=CODE`). С комиссии суб-партнёра его родитель получает
+  `partners.apitoken.sale/register?invite=CODE`). С комиссии суб-партнёра его родитель получает
   `sub_commission_bps` — «процент с процента», цепочка вверх до 10 уровней.
 - Условия (bps) индивидуальны для каждого партнёра, задаются в админке.
 - Выплаты: партнёр подаёт заявку с доступного баланса, админ одобряет/отклоняет/помечает оплаченной.
@@ -70,7 +76,7 @@ HTTP-фид в `apps/api` под ключом `SALES_CONTROL_KEY` (заголо�
 
 ## Деплой (В ПРОДЕ с 2026-07-19)
 
-https://sales.apitoken.sale работает. Как устроено на 84.32.48.2:
+https://partners.apitoken.sale работает. Как устроено на 84.32.48.2:
 
 - БД `sales` (роль `sales`) в commerce-Postgres (`deploy-commerce-postgres-1`, :5433).
   Миграции: `node <realpath релиза>/packages/sales-db/dist/migrate.js` с env из
@@ -84,7 +90,7 @@ https://sales.apitoken.sale работает. Как устроено на 84.32
 - Env: `/etc/apitoken/sales.env` (все ключи: SALES_DATABASE_URL, SALES_TOKEN_ENCRYPTION_KEY,
   `SALES_ADMIN_KEY` — ключ входа в /admin, SALES_CONTROL_KEY, SMTP Brevo). Тот же
   `SALES_CONTROL_KEY` добавлен в `/etc/apitoken/api.env` — включает фид.
-- Caddy: vhost `sales.apitoken.sale` (`/v1/*`→:3100, остальное→:3200, same-origin куки) и
+- Caddy: vhost `partners.apitoken.sale` (`/v1/*`→:3100, остальное→:3200, same-origin куки) и
   loopback `http://127.0.0.1:8791` — стабильный health-gated origin commerce-backend поверх
   blue-green слотов 3000/3001 (аналог 8790 для движка); `COMMERCE_BASE_URL=http://127.0.0.1:8791`.
   **Внимание:** systemd-юниты и Caddy-блоки применены на хосте вручную и НЕ закоммичены в

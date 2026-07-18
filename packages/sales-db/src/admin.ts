@@ -39,7 +39,8 @@ export async function getSalesOverview(database: SalesDatabase): Promise<SalesOv
 
 export interface AdminPartnerSummary {
   id: string;
-  email: string;
+  email: string | null;
+  telegramUsername: string | null;
   displayName: string | null;
   status: PartnerStatus;
   emailVerified: boolean;
@@ -48,6 +49,7 @@ export interface AdminPartnerSummary {
   subCommissionBps: number;
   parentPartnerId: string | null;
   parentEmail: string | null;
+  parentTelegramUsername: string | null;
   referredUsers: number;
   teamSize: number;
   earnedNano: bigint;
@@ -57,13 +59,15 @@ export interface AdminPartnerSummary {
 
 export async function listPartnersWithAggregates(database: SalesDatabase): Promise<AdminPartnerSummary[]> {
   const result = await database.pool.query<{
-    id: string; email: string; display_name: string | null; status: PartnerStatus;
+    id: string; email: string | null; telegram_username: string | null; display_name: string | null;
+    status: PartnerStatus;
     email_verified: boolean; referral_code: string; commission_bps: number; sub_commission_bps: number;
-    parent_partner_id: string | null; parent_email: string | null;
+    parent_partner_id: string | null; parent_email: string | null; parent_telegram_username: string | null;
     referred_users: string; team_size: string; earned: string; paid: string; created_at: Date;
   }>(`
-    SELECT p.id, p.email, p.display_name, p.status, p.email_verified, p.referral_code,
+    SELECT p.id, p.email, p.telegram_username, p.display_name, p.status, p.email_verified, p.referral_code,
       p.commission_bps, p.sub_commission_bps, p.parent_partner_id, parent.email AS parent_email,
+      parent.telegram_username AS parent_telegram_username,
       (SELECT count(*) FROM referred_users ru WHERE ru.partner_id = p.id)::text AS referred_users,
       (SELECT count(*) FROM partners child WHERE child.parent_partner_id = p.id)::text AS team_size,
       COALESCE((SELECT SUM(amount_nano) FROM commission_entries ce WHERE ce.partner_id = p.id), 0)::text AS earned,
@@ -76,6 +80,7 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
   return result.rows.map((row) => ({
     id: row.id,
     email: row.email,
+    telegramUsername: row.telegram_username,
     displayName: row.display_name,
     status: row.status,
     emailVerified: row.email_verified,
@@ -84,6 +89,7 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
     subCommissionBps: row.sub_commission_bps,
     parentPartnerId: row.parent_partner_id,
     parentEmail: row.parent_email,
+    parentTelegramUsername: row.parent_telegram_username,
     referredUsers: Number(row.referred_users),
     teamSize: Number(row.team_size),
     earnedNano: BigInt(row.earned),

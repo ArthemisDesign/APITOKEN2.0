@@ -8,6 +8,13 @@
       "when": 1784332800000,
       "tag": "0000_sales_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1784412784502,
+      "tag": "0001_telegram_onboarding",
+      "breakpoints": true
     }
   ]
 }

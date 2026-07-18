@@ -9,11 +9,13 @@ import {
   formatUsd,
   type AdminPartnerRow,
   type AdminPayoutRow,
+  type InviteRow,
 } from "@/lib/api";
 import {
   Badge,
   Button,
   Card,
+  CopyButton,
   EmptyState,
   Field,
   Input,
@@ -201,13 +203,19 @@ function PartnerEditor({
   return (
     <tr>
       <td>
-        <div style={{ fontWeight: 600 }}>{partner.email}</div>
+        <div style={{ fontWeight: 600 }}>
+          {partner.telegramUsername ? `@${partner.telegramUsername}` : partner.email ?? "—"}
+        </div>
         {partner.displayName ? (
           <div style={{ fontSize: 12, color: "var(--text-faint)" }}>{partner.displayName}</div>
         ) : null}
       </td>
       <td className="mono">{partner.referralCode ?? "—"}</td>
-      <td>{partner.parentEmail ?? (partner.parentId ? <span className="mono">{partner.parentId}</span> : "—")}</td>
+      <td>
+        {partner.parentTelegramUsername
+          ? `@${partner.parentTelegramUsername}`
+          : partner.parentEmail ?? (partner.parentId ? <span className="mono">{partner.parentId}</span> : "—")}
+      </td>
       <td>
         <Input
           className="inline-edit"
@@ -483,10 +491,154 @@ function PayoutsTab({ adminKey }: { adminKey: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// Onboarding tab — корневые инвайты, привязанные к telegram-юзернейму
+// ---------------------------------------------------------------------------
+
+function OnboardingTab({ adminKey }: { adminKey: string }) {
+  const [items, setItems] = useState<InviteRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [username, setUsername] = useState("");
+  const [bps, setBps] = useState("");
+  const [subBps, setSubBps] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [created, setCreated] = useState<{ inviteUrl: string; telegramUsername: string | null } | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await api<{ items: InviteRow[] }>("/v1/admin/invites", {
+        headers: adminHeaders(adminKey),
+      });
+      setItems(res.items);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to load invites.");
+    }
+  }, [adminKey]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function create() {
+    const clean = username.trim().replace(/^@/, "");
+    if (!/^[A-Za-z0-9_]{5,32}$/.test(clean)) {
+      setError("Enter the sales partner's Telegram username (5–32 letters, digits, underscore).");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api<{ inviteUrl: string; telegramUsername: string | null }>("/v1/admin/invites", {
+        method: "POST",
+        headers: adminHeaders(adminKey),
+        body: {
+          telegramUsername: clean,
+          ...(/^\d+$/.test(bps) ? { commissionBps: Number(bps) } : {}),
+          ...(/^\d+$/.test(subBps) ? { subCommissionBps: Number(subBps) } : {}),
+        },
+      });
+      setCreated(res);
+      setUsername("");
+      setBps("");
+      setSubBps("");
+      void load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not create the invite.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="stack">
+      <Card
+        title="Onboard a sales partner"
+        sub="Invite is bound to their Telegram username. Send them the link — they sign in with Telegram and the account is created."
+      >
+        {error ? <Notice kind="error">{error}</Notice> : null}
+        {created ? (
+          <div style={{ marginBottom: 14 }}>
+            <div className="reflink-row">
+              <Input readOnly value={created.inviteUrl} onFocus={(e) => e.currentTarget.select()} />
+              <CopyButton value={created.inviteUrl} label="Copy invite" />
+            </div>
+            <p className="field-hint" style={{ marginTop: 8 }}>
+              For <span className="mono">@{created.telegramUsername}</span>
+            </p>
+          </div>
+        ) : null}
+        <div className="row-actions" style={{ flexWrap: "wrap", gap: 8 }}>
+          <Input
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            placeholder="@telegram_username"
+            style={{ maxWidth: 220 }}
+          />
+          <Input
+            value={bps}
+            onChange={(e) => setBps(e.target.value.replace(/[^\d]/g, ""))}
+            placeholder="bps (default 1000)"
+            inputMode="numeric"
+            style={{ maxWidth: 160 }}
+          />
+          <Input
+            value={subBps}
+            onChange={(e) => setSubBps(e.target.value.replace(/[^\d]/g, ""))}
+            placeholder="sub-bps (default 1000)"
+            inputMode="numeric"
+            style={{ maxWidth: 160 }}
+          />
+          <Button onClick={create} loading={busy}>
+            Create invite
+          </Button>
+        </div>
+      </Card>
+
+      <Card title="Root invites">
+        {!items ? (
+          <Loading />
+        ) : items.length === 0 ? (
+          <EmptyState title="No invites yet" />
+        ) : (
+          <Table
+            head={
+              <>
+                <th>For</th>
+                <th>Bps</th>
+                <th>Sub-bps</th>
+                <th>Expires</th>
+                <th>Status</th>
+                <th />
+              </>
+            }
+          >
+            {items.map((inv) => (
+              <tr key={inv.code}>
+                <td className="mono">{inv.telegramUsername ? `@${inv.telegramUsername}` : "—"}</td>
+                <td>{inv.commissionBps != null ? formatBps(inv.commissionBps) : "default"}</td>
+                <td>{inv.subCommissionBps != null ? formatBps(inv.subCommissionBps) : "default"}</td>
+                <td>{inv.expiresAt ? formatDate(inv.expiresAt) : "—"}</td>
+                <td>
+                  {inv.consumedAt ? (
+                    <Badge tone="green">Used {formatDate(inv.consumedAt)}</Badge>
+                  ) : (
+                    <Badge tone="yellow">Unused</Badge>
+                  )}
+                </td>
+                <td>{!inv.consumedAt ? <CopyButton value={inv.inviteUrl} label="Copy" /> : null}</td>
+              </tr>
+            ))}
+          </Table>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
-type Tab = "overview" | "partners" | "payouts";
+type Tab = "overview" | "onboarding" | "partners" | "payouts";
 
 export default function AdminPage() {
   const [adminKey, setAdminKey] = useState<string | null>(null);
@@ -526,6 +678,7 @@ export default function AdminPage() {
         {(
           [
             ["overview", "Overview"],
+            ["onboarding", "Onboarding"],
             ["partners", "Partners"],
             ["payouts", "Payouts"],
           ] as Array<[Tab, string]>
@@ -543,6 +696,7 @@ export default function AdminPage() {
       </div>
 
       {tab === "overview" ? <OverviewTab adminKey={adminKey} /> : null}
+      {tab === "onboarding" ? <OnboardingTab adminKey={adminKey} /> : null}
       {tab === "partners" ? <PartnersTab adminKey={adminKey} /> : null}
       {tab === "payouts" ? <PayoutsTab adminKey={adminKey} /> : null}
     </div>

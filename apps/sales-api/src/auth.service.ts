@@ -1,41 +1,34 @@
 import { createHash, randomBytes } from "node:crypto";
 import { Inject, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { hash, verify, argon2id } from "argon2";
 import {
   clearPartnerRateLimit,
-  consumePartnerEmailVerification,
-  consumePartnerPasswordReset,
   consumePartnerRateLimit,
-  createPartner,
   createPartnerSession,
-  decodeSalesEncryptionKey,
-  encryptSalesToken,
-  findPasswordPartner,
-  getPartner,
-  queuePartnerEmailForAddress,
+  createTelegramPartner,
+  findTelegramPartner,
+  getActiveInviteByCode,
   resolvePartnerSession,
   revokePartnerSession,
-  EmailAlreadyRegisteredError,
   InvalidInviteError,
   ReferralCodeCollisionError,
+  TelegramAlreadyRegisteredError,
   type Partner,
-  type PartnerAuthPurpose,
   type SalesDatabase,
 } from "@claude-api/sales-db";
 import type { Environment } from "./config.js";
 import { SALES_DATABASE } from "./infrastructure.module.js";
-
-const dummyHash = hash("not-a-real-partner-password", passwordHashOptions());
+import { normalizeTelegramUsername, verifyTelegramLogin, type TelegramLoginPayload } from "./telegram.js";
 
 const REFERRAL_CODE_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
 
 export interface PartnerView {
   id: string;
-  email: string;
+  email: string | null;
   displayName: string | null;
+  telegramUsername: string | null;
+  telegramPhotoUrl: string | null;
   status: Partner["status"];
-  emailVerified: boolean;
   referralCode: string;
   commissionBps: number;
   subCommissionBps: number;
@@ -50,15 +43,12 @@ export interface PartnerSession {
   partner: PartnerView;
 }
 
-export type LoginResult =
-  | { kind: "session"; session: PartnerSession }
-  | { kind: "verification_required" };
-
-export class InvalidCredentialsError extends Error {}
 export class PartnerSuspendedError extends Error {}
 export class AuthRateLimitedError extends Error {}
-export class InvalidAuthTokenError extends Error {}
-export { EmailAlreadyRegisteredError, InvalidInviteError };
+export class TelegramAuthDisabledError extends Error {}
+export class TelegramSignatureError extends Error {}
+export class InviteRequiredError extends Error {}
+export { InvalidInviteError };
 
 @Injectable()
 export class AuthService {
@@ -67,56 +57,76 @@ export class AuthService {
     private readonly config: ConfigService<Environment, true>,
   ) {}
 
-  async register(input: {
-    email: string;
-    password: string;
-    displayName?: string | undefined;
-    inviteCode?: string | undefined;
+  telegramBotUsername(): string | null {
+    return this.config.get("TELEGRAM_BOT_USERNAME", { infer: true }) ?? null;
+  }
+
+  /**
+   * Единственная точка входа: подписанный payload Telegram Login Widget.
+   * Существующий telegram_id → сессия. Новый — только по валидному инвайту,
+   * чей telegram_username совпал; партнёр создаётся сразу active.
+   */
+  async telegramLogin(input: {
+    payload: TelegramLoginPayload;
+    inviteCode: string | null;
+    userAgent: string | null;
     ipAddress: string | null;
-  }): Promise<PartnerView> {
-    await this.enforceRateLimits("register", input.email, input.ipAddress, 5, 20, 3600);
-    const passwordHash = await hash(input.password, passwordHashOptions());
+  }): Promise<PartnerSession> {
+    const botToken = this.config.get("TELEGRAM_BOT_TOKEN", { infer: true });
+    if (!botToken || !this.telegramBotUsername()) {
+      throw new TelegramAuthDisabledError("telegram login is not configured");
+    }
+    const keys = await this.enforceRateLimits("tg", input.payload.id, input.ipAddress, 20, 60, 900);
+    if (!verifyTelegramLogin(input.payload, botToken)) {
+      throw new TelegramSignatureError("telegram login payload failed verification");
+    }
+    const existing = await findTelegramPartner(this.database, input.payload.id);
+    if (existing) {
+      if (existing.status === "suspended") throw new PartnerSuspendedError("partner account is suspended");
+      await clearPartnerRateLimit(this.database, keys);
+      return this.issueSession(existing, input.userAgent, input.ipAddress);
+    }
+    if (!input.inviteCode) throw new InviteRequiredError("no partner account for this telegram; an invite is required");
+    // Ранняя проверка (читаемая ошибка до транзакции); авторитетная — в createTelegramPartner.
+    const invite = await getActiveInviteByCode(this.database, input.inviteCode);
+    if (!invite) throw new InvalidInviteError("invite code is invalid or expired");
+    const partner = await this.createFromInvite(input);
+    await clearPartnerRateLimit(this.database, keys);
+    return this.issueSession(partner, input.userAgent, input.ipAddress);
+  }
+
+  private async createFromInvite(input: {
+    payload: TelegramLoginPayload;
+    inviteCode: string | null;
+  }): Promise<Partner> {
+    const displayName = [input.payload.first_name, input.payload.last_name].filter(Boolean).join(" ") || null;
     for (let attempt = 0; ; attempt += 1) {
       try {
-        const partner = await createPartner(this.database, {
-          email: input.email,
-          passwordHash,
-          displayName: input.displayName ?? null,
+        return await createTelegramPartner(this.database, {
+          telegramId: input.payload.id,
+          telegramUsername: normalizeTelegramUsername(input.payload.username),
+          telegramPhotoUrl: input.payload.photo_url ?? null,
+          displayName,
           referralCode: generateCode(8),
-          inviteCode: input.inviteCode ?? null,
-          commissionBps: this.config.get("DEFAULT_COMMISSION_BPS", { infer: true }),
-          subCommissionBps: this.config.get("DEFAULT_SUB_COMMISSION_BPS", { infer: true }),
-          verification: this.createAuthEmailSecret("verify_email"),
+          inviteCode: input.inviteCode!,
+          defaultCommissionBps: this.config.get("DEFAULT_COMMISSION_BPS", { infer: true }),
+          defaultSubCommissionBps: this.config.get("DEFAULT_SUB_COMMISSION_BPS", { infer: true }),
         });
-        return partnerView(partner);
       } catch (error) {
         if (error instanceof ReferralCodeCollisionError && attempt < 5) continue;
+        if (error instanceof TelegramAlreadyRegisteredError) {
+          // Гонка двух логинов одного аккаунта: победителю уже создали партнёра.
+          const partner = await findTelegramPartner(this.database, input.payload.id);
+          if (partner && partner.status !== "suspended") return partner;
+        }
         throw error;
       }
     }
   }
 
-  async login(input: {
-    email: string;
-    password: string;
-    userAgent: string | null;
-    ipAddress: string | null;
-  }): Promise<LoginResult> {
-    const keys = await this.enforceRateLimits("login", input.email, input.ipAddress, 10, 50, 900);
-    const partner = await findPasswordPartner(this.database, input.email);
-    const candidateHash = partner?.passwordHash ?? await dummyHash;
-    let valid = false;
-    try {
-      valid = await verify(candidateHash, input.password);
-    } catch {
-      valid = false;
-    }
-    if (!partner || !valid) throw new InvalidCredentialsError("invalid email or password");
-    if (partner.status === "suspended") throw new PartnerSuspendedError("partner account is suspended");
-    if (partner.status === "pending" || !partner.emailVerified) return { kind: "verification_required" };
-    await clearPartnerRateLimit(this.database, keys);
-    const session = await this.issueSession(partner, input.userAgent, input.ipAddress);
-    return { kind: "session", session };
+  async inviteInfo(code: string): Promise<{ telegramUsername: string | null } | null> {
+    const invite = await getActiveInviteByCode(this.database, code);
+    return invite ? { telegramUsername: invite.telegramUsername } : null;
   }
 
   async authenticate(token: string): Promise<{ sessionId: string; partner: PartnerView } | null> {
@@ -127,43 +137,6 @@ export class AuthService {
 
   async logout(sessionId: string, partnerId: string): Promise<void> {
     await revokePartnerSession(this.database, sessionId, partnerId);
-  }
-
-  async verifyEmail(input: {
-    token: string; userAgent: string | null; ipAddress: string | null;
-  }): Promise<PartnerSession> {
-    const partnerId = await consumePartnerEmailVerification(this.database, tokenHash(input.token));
-    if (!partnerId) throw new InvalidAuthTokenError("email verification link is invalid or expired");
-    const partner = await getPartner(this.database, partnerId);
-    if (!partner || partner.status !== "active") {
-      throw new InvalidAuthTokenError("partner account is unavailable");
-    }
-    return this.issueSession(partner, input.userAgent, input.ipAddress);
-  }
-
-  async resendVerification(email: string, ipAddress: string | null): Promise<void> {
-    await this.enforceRateLimits("verify-resend", email, ipAddress, 3, 10, 3600);
-    await queuePartnerEmailForAddress(this.database, {
-      email,
-      purpose: "verify_email",
-      ...this.createAuthEmailSecret("verify_email"),
-    });
-  }
-
-  async requestPasswordReset(email: string, ipAddress: string | null): Promise<void> {
-    await this.enforceRateLimits("password-reset", email, ipAddress, 3, 10, 3600);
-    await queuePartnerEmailForAddress(this.database, {
-      email,
-      purpose: "reset_password",
-      ...this.createAuthEmailSecret("reset_password"),
-    });
-  }
-
-  async resetPassword(token: string, password: string): Promise<void> {
-    const passwordHash = await hash(password, passwordHashOptions());
-    if (!await consumePartnerPasswordReset(this.database, tokenHash(token), passwordHash)) {
-      throw new InvalidAuthTokenError("password reset link is invalid or expired");
-    }
   }
 
   private async issueSession(partner: Partner, userAgent: string | null, ipAddress: string | null): Promise<PartnerSession> {
@@ -182,35 +155,19 @@ export class AuthService {
 
   private async enforceRateLimits(
     scope: string,
-    email: string,
+    subject: string,
     ipAddress: string | null,
-    emailMaximum: number,
+    subjectMaximum: number,
     ipMaximum: number,
     windowSeconds: number,
   ): Promise<string[]> {
-    const keys = [rateKey(`${scope}:email:${email.toLowerCase()}`), rateKey(`${scope}:ip:${ipAddress ?? "unknown"}`)];
-    const [emailAllowed, ipAllowed] = await Promise.all([
-      consumePartnerRateLimit(this.database, { keyHash: keys[0]!, maximum: emailMaximum, windowSeconds }),
+    const keys = [rateKey(`${scope}:subject:${subject.toLowerCase()}`), rateKey(`${scope}:ip:${ipAddress ?? "unknown"}`)];
+    const [subjectAllowed, ipAllowed] = await Promise.all([
+      consumePartnerRateLimit(this.database, { keyHash: keys[0]!, maximum: subjectMaximum, windowSeconds }),
       consumePartnerRateLimit(this.database, { keyHash: keys[1]!, maximum: ipMaximum, windowSeconds }),
     ]);
-    if (!emailAllowed || !ipAllowed) throw new AuthRateLimitedError("too many authentication attempts");
+    if (!subjectAllowed || !ipAllowed) throw new AuthRateLimitedError("too many authentication attempts");
     return keys;
-  }
-
-  private createAuthEmailSecret(purpose: PartnerAuthPurpose): {
-    tokenHash: string; encryptedToken: string; expiresAt: Date;
-  } {
-    const token = randomBytes(32).toString("base64url");
-    const ttl = this.config.get(
-      purpose === "verify_email" ? "EMAIL_VERIFICATION_TTL_SECONDS" : "PASSWORD_RESET_TTL_SECONDS",
-      { infer: true },
-    );
-    const key = decodeSalesEncryptionKey(this.config.get("SALES_TOKEN_ENCRYPTION_KEY", { infer: true }));
-    return {
-      tokenHash: tokenHash(token),
-      encryptedToken: encryptSalesToken(token, key),
-      expiresAt: new Date(Date.now() + ttl * 1000),
-    };
   }
 }
 
@@ -219,8 +176,9 @@ export function partnerView(partner: Partner): PartnerView {
     id: partner.id,
     email: partner.email,
     displayName: partner.displayName,
+    telegramUsername: partner.telegramUsername,
+    telegramPhotoUrl: partner.telegramPhotoUrl,
     status: partner.status,
-    emailVerified: partner.emailVerified,
     referralCode: partner.referralCode,
     commissionBps: partner.commissionBps,
     subCommissionBps: partner.subCommissionBps,
@@ -236,10 +194,6 @@ export function generateCode(length: number): string {
     code += REFERRAL_CODE_ALPHABET[bytes[index]! % REFERRAL_CODE_ALPHABET.length];
   }
   return code;
-}
-
-function passwordHashOptions(): Parameters<typeof hash>[1] {
-  return { type: argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 };
 }
 
 function tokenHash(token: string): string {

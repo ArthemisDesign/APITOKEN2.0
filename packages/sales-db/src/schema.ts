@@ -26,9 +26,14 @@ export const payoutStatus = pgEnum("payout_status", ["requested", "approved", "p
 
 export const partners = pgTable("partners", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  email: text("email").notNull(),
+  // Онбординг через Telegram: identity = telegram_id. email/password_hash — legacy
+  // (партнёры первой волны), для новых NULL.
+  email: text("email"),
   displayName: text("display_name"),
-  passwordHash: text("password_hash").notNull(),
+  passwordHash: text("password_hash"),
+  telegramId: bigint("telegram_id", { mode: "bigint" }),
+  telegramUsername: text("telegram_username"),
+  telegramPhotoUrl: text("telegram_photo_url"),
   status: partnerStatus("status").notNull().default("pending"),
   emailVerified: boolean("email_verified").notNull().default(false),
   referralCode: text("referral_code").notNull(),
@@ -40,7 +45,8 @@ export const partners = pgTable("partners", {
   createdAt,
   updatedAt,
 }, (table) => [
-  uniqueIndex("partners_email_lower_uidx").on(sql`lower(${table.email})`),
+  uniqueIndex("partners_email_lower_uidx").on(sql`lower(${table.email})`).where(sql`${table.email} IS NOT NULL`),
+  uniqueIndex("partners_telegram_id_uidx").on(table.telegramId).where(sql`${table.telegramId} IS NOT NULL`),
   uniqueIndex("partners_referral_code_uidx").on(table.referralCode),
   index("partners_parent_idx").on(table.parentPartnerId),
   check("partners_commission_bps_check", sql`${table.commissionBps} BETWEEN 0 AND 10000`),
@@ -102,9 +108,14 @@ export const partnerEmailOutbox = pgTable("partner_email_outbox", {
 
 export const partnerInvites = pgTable("partner_invites", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  partnerId: uuid("partner_id").notNull().references(() => partners.id, { onDelete: "restrict" }),
+  // NULL partner_id = корневой инвайт из админки (партнёр без родителя).
+  partnerId: uuid("partner_id").references(() => partners.id, { onDelete: "restrict" }),
   code: text("code").notNull(),
+  // Инвайт привязан к Telegram-юзернейму (нормализован: без @, lower). Регистрация — только
+  // если username вошедшего совпал.
+  telegramUsername: text("telegram_username"),
   commissionBps: integer("commission_bps"),
+  subCommissionBps: integer("sub_commission_bps"),
   expiresAt: timestamp("expires_at", { withTimezone: true }),
   consumedAt: timestamp("consumed_at", { withTimezone: true }),
   consumedByPartnerId: uuid("consumed_by_partner_id").references(() => partners.id, { onDelete: "restrict" }),
@@ -113,6 +124,7 @@ export const partnerInvites = pgTable("partner_invites", {
   uniqueIndex("partner_invites_code_uidx").on(table.code),
   index("partner_invites_partner_idx").on(table.partnerId, table.createdAt),
   check("partner_invites_commission_bps_check", sql`${table.commissionBps} IS NULL OR ${table.commissionBps} BETWEEN 0 AND 10000`),
+  check("partner_invites_sub_commission_bps_check", sql`${table.subCommissionBps} IS NULL OR ${table.subCommissionBps} BETWEEN 0 AND 10000`),
 ]);
 
 export const referredUsers = pgTable("referred_users", {

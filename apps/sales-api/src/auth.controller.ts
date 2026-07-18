@@ -1,7 +1,6 @@
 import {
   BadRequestException,
   Body,
-  ConflictException,
   Controller,
   ForbiddenException,
   Get,
@@ -9,9 +8,12 @@ import {
   HttpCode,
   HttpException,
   HttpStatus,
+  NotFoundException,
+  Param,
   Post,
   Req,
   Res,
+  ServiceUnavailableException,
   UnauthorizedException,
   UseGuards,
 } from "@nestjs/common";
@@ -21,20 +23,14 @@ import { CurrentAuth, type RequestAuth, SessionAuthGuard, sessionCookieName } fr
 import {
   AuthRateLimitedError,
   AuthService,
-  EmailAlreadyRegisteredError,
-  InvalidAuthTokenError,
-  InvalidCredentialsError,
   InvalidInviteError,
+  InviteRequiredError,
   PartnerSuspendedError,
+  TelegramAuthDisabledError,
+  TelegramSignatureError,
   type PartnerSession,
 } from "./auth.service.js";
-import {
-  emailOnlySchema,
-  loginSchema,
-  registerSchema,
-  resetPasswordSchema,
-  verifyEmailSchema,
-} from "./schemas.js";
+import { inviteCodeSchema, telegramAuthSchema } from "./schemas.js";
 
 interface ReplyLike { header(name: string, value: string | string[]): void }
 interface RequestLike { headers: Record<string, string | string[] | undefined>; ip?: string }
@@ -43,91 +39,46 @@ interface RequestLike { headers: Record<string, string | string[] | undefined>; 
 export class AuthController {
   constructor(private readonly auth: AuthService, private readonly config: ConfigService<Environment, true>) {}
 
-  @Post("register")
-  async register(@Body() body: unknown, @Req() request: RequestLike): Promise<unknown> {
-    const parsed = registerSchema.safeParse(body);
-    if (!parsed.success) throw new BadRequestException("invalid registration data");
-    try {
-      const partner = await this.auth.register({ ...parsed.data, ipAddress: request.ip ?? null });
-      return { partner, verificationRequired: true };
-    } catch (error) {
-      if (error instanceof EmailAlreadyRegisteredError) throw new ConflictException("email is already registered");
-      if (error instanceof InvalidInviteError) throw new BadRequestException(error.message);
-      if (error instanceof AuthRateLimitedError) throw new HttpException(error.message, HttpStatus.TOO_MANY_REQUESTS);
-      throw error;
-    }
+  /** Имя бота для Telegram Login Widget (нужно фронту до логина). */
+  @Get("telegram/config")
+  @Header("Cache-Control", "no-store")
+  telegramConfig(): unknown {
+    const botUsername = this.auth.telegramBotUsername();
+    if (!botUsername) throw new ServiceUnavailableException("telegram login is not configured");
+    return { botUsername };
   }
 
-  @Post("login")
-  @HttpCode(200)
-  async login(@Body() body: unknown, @Req() request: RequestLike, @Res({ passthrough: true }) reply: ReplyLike): Promise<unknown> {
-    const parsed = loginSchema.safeParse(body);
-    if (!parsed.success) throw new UnauthorizedException("invalid email or password");
-    try {
-      const result = await this.auth.login({ ...parsed.data, ...requestMetadata(request) });
-      if (result.kind === "verification_required") return { verificationRequired: true };
-      this.setSession(reply, result.session);
-      return { partner: result.session.partner };
-    } catch (error) {
-      if (error instanceof InvalidCredentialsError) throw new UnauthorizedException("invalid email or password");
-      if (error instanceof PartnerSuspendedError) throw new ForbiddenException(error.message);
-      if (error instanceof AuthRateLimitedError) throw new HttpException(error.message, HttpStatus.TOO_MANY_REQUESTS);
-      throw error;
-    }
+  /** Публичная проверка инвайта для страницы регистрации. */
+  @Get("invite/:code")
+  @Header("Cache-Control", "no-store")
+  async invite(@Param("code") code: string): Promise<unknown> {
+    if (!inviteCodeSchema.safeParse(code).success) throw new BadRequestException("invalid invite code");
+    const info = await this.auth.inviteInfo(code);
+    if (!info) throw new NotFoundException("invite code is invalid or expired");
+    return { invite: { telegramUsername: info.telegramUsername } };
   }
 
-  @Post("email/verify")
+  @Post("telegram")
   @HttpCode(200)
-  async verifyEmail(@Body() body: unknown, @Req() request: RequestLike, @Res({ passthrough: true }) reply: ReplyLike): Promise<unknown> {
-    const parsed = verifyEmailSchema.safeParse(body);
-    if (!parsed.success) throw new BadRequestException("invalid verification token");
+  async telegram(@Body() body: unknown, @Req() request: RequestLike, @Res({ passthrough: true }) reply: ReplyLike): Promise<unknown> {
+    const parsed = telegramAuthSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException("invalid telegram login payload");
+    const { inviteCode, ...payload } = parsed.data;
     try {
-      const session = await this.auth.verifyEmail({ ...parsed.data, ...requestMetadata(request) });
+      const session = await this.auth.telegramLogin({
+        payload,
+        inviteCode: inviteCode ?? null,
+        ...requestMetadata(request),
+      });
       this.setSession(reply, session);
       return { partner: session.partner };
     } catch (error) {
-      if (error instanceof InvalidAuthTokenError) throw new BadRequestException(error.message);
-      throw error;
-    }
-  }
-
-  @Post("email/resend")
-  @HttpCode(202)
-  async resendVerification(@Body() body: unknown, @Req() request: RequestLike): Promise<unknown> {
-    const parsed = emailOnlySchema.safeParse(body);
-    if (!parsed.success) throw new BadRequestException("invalid email");
-    try {
-      await this.auth.resendVerification(parsed.data.email, request.ip ?? null);
-      return { accepted: true };
-    } catch (error) {
+      if (error instanceof TelegramAuthDisabledError) throw new ServiceUnavailableException(error.message);
+      if (error instanceof TelegramSignatureError) throw new UnauthorizedException(error.message);
+      if (error instanceof InviteRequiredError) throw new ForbiddenException(error.message);
+      if (error instanceof InvalidInviteError) throw new BadRequestException(error.message);
+      if (error instanceof PartnerSuspendedError) throw new ForbiddenException(error.message);
       if (error instanceof AuthRateLimitedError) throw new HttpException(error.message, HttpStatus.TOO_MANY_REQUESTS);
-      throw error;
-    }
-  }
-
-  @Post("password/forgot")
-  @HttpCode(202)
-  async forgotPassword(@Body() body: unknown, @Req() request: RequestLike): Promise<unknown> {
-    const parsed = emailOnlySchema.safeParse(body);
-    if (!parsed.success) throw new BadRequestException("invalid email");
-    try {
-      await this.auth.requestPasswordReset(parsed.data.email, request.ip ?? null);
-      return { accepted: true };
-    } catch (error) {
-      if (error instanceof AuthRateLimitedError) throw new HttpException(error.message, HttpStatus.TOO_MANY_REQUESTS);
-      throw error;
-    }
-  }
-
-  @Post("password/reset")
-  @HttpCode(204)
-  async resetPassword(@Body() body: unknown): Promise<void> {
-    const parsed = resetPasswordSchema.safeParse(body);
-    if (!parsed.success) throw new BadRequestException("invalid password reset data");
-    try {
-      await this.auth.resetPassword(parsed.data.token, parsed.data.password);
-    } catch (error) {
-      if (error instanceof InvalidAuthTokenError) throw new BadRequestException(error.message);
       throw error;
     }
   }

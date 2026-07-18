@@ -1,95 +1,87 @@
 "use client";
 
-import { Suspense, useState, type FormEvent } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { api, ApiError } from "@/lib/api";
+import { api } from "@/lib/api";
 import { AuthShell } from "@/components/auth-shell";
-import { Badge, Button, Field, Input, Notice } from "@/components/ui";
+import { Badge, Loading, Notice } from "@/components/ui";
+import { TelegramLogin } from "@/components/telegram-login";
 
-function RegisterForm() {
+// Онбординг invite-only: инвайт выписан на конкретный telegram-юзернейм,
+// человек просто подтверждает вход через Telegram — аккаунт создаётся сам.
+
+function RegisterCard() {
   const params = useSearchParams();
   const inviteCode = params.get("invite") ?? "";
+  const [invite, setInvite] = useState<{ telegramUsername: string | null } | null>(null);
+  const [state, setState] = useState<"loading" | "ok" | "invalid" | "none">(inviteCode ? "loading" : "none");
 
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
-
-  async function onSubmit(e: FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setBusy(true);
-    try {
-      await api<{ verificationRequired: boolean }>("/v1/auth/register", {
-        method: "POST",
-        body: {
-          email: email.trim(),
-          password,
-          ...(inviteCode ? { inviteCode } : {}),
-        },
+  useEffect(() => {
+    if (!inviteCode) return;
+    let cancelled = false;
+    api<{ invite: { telegramUsername: string | null } }>(`/v1/auth/invite/${encodeURIComponent(inviteCode)}`)
+      .then((res) => {
+        if (cancelled) return;
+        setInvite(res.invite);
+        setState("ok");
+      })
+      .catch(() => {
+        if (!cancelled) setState("invalid");
       });
-      setDone(true);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Something went wrong. Try again.");
-    } finally {
-      setBusy(false);
-    }
-  }
+    return () => {
+      cancelled = true;
+    };
+  }, [inviteCode]);
 
-  if (done) {
+  if (state === "none") {
     return (
       <>
-        <h1>Check your inbox</h1>
+        <h1>Join APIToken Partners</h1>
         <p className="auth-sub">
-          We sent a verification link to <strong>{email}</strong>. Click it to
-          activate your partner account, then sign in.
+          The partner program is invite-only. Open the personal invite link you received to join
+          — or sign in if you already have an account.
         </p>
         <Link href="/login" className="btn btn-primary" style={{ width: "100%" }}>
-          Go to sign in
+          Sign in with Telegram
         </Link>
+      </>
+    );
+  }
+
+  if (state === "loading") {
+    return (
+      <>
+        <h1>Checking your invite…</h1>
+        <Loading />
+      </>
+    );
+  }
+
+  if (state === "invalid") {
+    return (
+      <>
+        <h1>Invite not found</h1>
+        <Notice kind="error">This invite link is invalid, expired, or already used.</Notice>
+        <p className="auth-alt">
+          Already a partner? <Link href="/login">Sign in</Link>
+        </p>
       </>
     );
   }
 
   return (
     <>
-      <h1>Become a partner</h1>
-      <p className="auth-sub">Create your APIToken Partners account.</p>
-      {inviteCode ? (
+      <h1>You&rsquo;re invited</h1>
+      <p className="auth-sub">
+        Confirm with Telegram to activate your partner account — that&rsquo;s it.
+      </p>
+      {invite?.telegramUsername ? (
         <p style={{ marginBottom: 16 }}>
-          <Badge tone="green">Invited by a partner</Badge>
+          <Badge tone="green">Invite for @{invite.telegramUsername}</Badge>
         </p>
       ) : null}
-      {error ? <Notice kind="error">{error}</Notice> : null}
-      <form onSubmit={onSubmit}>
-        <Field label="Email">
-          <Input
-            type="email"
-            required
-            autoComplete="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@example.com"
-          />
-        </Field>
-        <Field label="Password">
-          <Input
-            type="password"
-            required
-            minLength={8}
-            autoComplete="new-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="At least 8 characters"
-          />
-        </Field>
-        {inviteCode ? <input type="hidden" name="inviteCode" value={inviteCode} /> : null}
-        <Button type="submit" loading={busy} style={{ width: "100%" }}>
-          Create account
-        </Button>
-      </form>
+      <TelegramLogin inviteCode={inviteCode} />
       <p className="auth-alt">
         Already a partner? <Link href="/login">Sign in</Link>
       </p>
@@ -101,7 +93,7 @@ export default function RegisterPage() {
   return (
     <AuthShell>
       <Suspense>
-        <RegisterForm />
+        <RegisterCard />
       </Suspense>
     </AuthShell>
   );
