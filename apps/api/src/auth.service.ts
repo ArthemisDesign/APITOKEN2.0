@@ -18,6 +18,7 @@ import {
   decodeAuthEncryptionKey,
   encryptAuthToken,
   queueAuthEmailForAddress,
+  recordReferralAttribution,
   resolveAuthSession,
   revokeAuthSession,
   updateUserDisplayName,
@@ -69,6 +70,7 @@ export class AuthService {
     email: string;
     password: string;
     inviteToken?: string | undefined;
+    referralCode?: string | undefined;
     userAgent: string | null;
     ipAddress: string | null;
   }): Promise<RegistrationResult> {
@@ -83,10 +85,21 @@ export class AuthService {
       input.inviteToken ? tokenHash(input.inviteToken) : undefined,
       verification,
     );
+    await this.attributeReferral(user.id, input.referralCode);
     if (verificationRequired) return { user: userView(user), session: null };
     await this.provisionEngineAccount(user, user.engineMultiplierBp, false);
     const session = await this.issueSession(user, input.userAgent, input.ipAddress);
     return { user: session.user, session };
+  }
+
+  /** Атрибуция — best-effort: сбой записи реф-кода не должен ломать регистрацию. */
+  private async attributeReferral(userId: string, referralCode: string | undefined): Promise<void> {
+    if (!referralCode) return;
+    try {
+      await recordReferralAttribution(this.database, userId, referralCode.toLowerCase());
+    } catch {
+      // не логируем код — этого достаточно для диагностики по user_id через БД
+    }
   }
 
   async login(input: { email: string; password: string; userAgent: string | null; ipAddress: string | null }): Promise<AuthSession> {

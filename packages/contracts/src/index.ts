@@ -176,6 +176,9 @@ const credentialsSchema = z.object({
 
 export const registerSchema = credentialsSchema.extend({
   inviteToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional(),
+  // Партнёрский реф-код из ссылки ?ref=CODE (sales.apitoken.sale). Только атрибуция —
+  // на цену/бонусы пользователя не влияет.
+  referralCode: z.string().trim().regex(/^[A-Za-z0-9_-]{3,32}$/).optional(),
 }).strict();
 
 export const loginSchema = credentialsSchema.strict();

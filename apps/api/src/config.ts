@@ -47,6 +47,8 @@ const environmentSchema = z.object({
   EMAIL_VERIFICATION_TTL_SECONDS: z.coerce.number().int().min(900).max(604_800).default(86_400),
   PASSWORD_RESET_TTL_SECONDS: z.coerce.number().int().min(300).max(86_400).default(3_600),
   COMMERCIAL_ADMIN_KEY: z.string().min(32).optional(),
+  // Ключ internal-фида для sales bounded context (sales.apitoken.sale). Не задан — фид выключен.
+  SALES_CONTROL_KEY: z.string().min(32).optional(),
   DIGISELLER_SELLER_ID: z.coerce.number().int().positive().optional(),
   DIGISELLER_API_KEY: z.string().min(1).optional(),
   DIGISELLER_PRODUCT_ID: z.coerce.number().int().positive().optional(),

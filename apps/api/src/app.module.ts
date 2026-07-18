@@ -9,6 +9,7 @@ import { AuthModule } from "./auth.module.js";
 import { AccountModule } from "./account.module.js";
 import { AdminModule } from "./admin.module.js";
 import { SecurityModule } from "./security.module.js";
+import { SalesFeedModule } from "./sales-feed.module.js";
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { SecurityModule } from "./security.module.js";
     AdminModule,
     SecurityModule,
     PaymentsModule,
+    SalesFeedModule,
   ],
   controllers: [HealthController],
   providers: [ReadinessService],
