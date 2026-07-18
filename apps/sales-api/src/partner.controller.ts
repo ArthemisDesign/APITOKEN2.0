@@ -88,7 +88,7 @@ export class PartnerController {
   async referrals(@CurrentAuth() current: RequestAuth): Promise<unknown> {
     const referrals = await listReferredUsers(this.database, current.partner.id);
     return {
-      referrals: referrals.map((referral) => ({
+      items: referrals.map((referral) => ({
         // Commerce identities stay masked: only a short uuid prefix is exposed to partners.
         userMask: `user-${referral.commerceUserId.slice(0, 8)}…`,
         attributedAt: referral.attributedAt.toISOString(),
@@ -106,7 +106,7 @@ export class PartnerController {
     const series = await getPartnerDailyEarnings(this.database, current.partner.id, parsed.data.days);
     return {
       days: parsed.data.days,
-      series: series.map((point) => ({
+      items: series.map((point) => ({
         date: point.date,
         spendNano: point.spendNano.toString(),
         earnedNano: point.earnedNano.toString(),
@@ -119,14 +119,14 @@ export class PartnerController {
   async team(@CurrentAuth() current: RequestAuth): Promise<unknown> {
     const team = await listPartnerTeam(this.database, current.partner.id);
     return {
-      team: team.map((member) => ({
+      items: team.map((member) => ({
         id: member.id,
         email: member.email,
         displayName: member.displayName,
         status: member.status,
         commissionBps: member.commissionBps,
         referredUsers: member.referredUsers,
-        theirEarnedNano: member.theirEarnedNano.toString(),
+        earnedNano: member.theirEarnedNano.toString(),
         myOverrideNano: member.myOverrideNano.toString(),
       })),
     };
@@ -158,7 +158,7 @@ export class PartnerController {
   async listInvites(@CurrentAuth() current: RequestAuth): Promise<unknown> {
     const invites = await listPartnerInvites(this.database, current.partner.id);
     return {
-      invites: invites.map((invite) => ({
+      items: invites.map((invite) => ({
         code: invite.code,
         inviteUrl: this.inviteUrl(invite.code),
         commissionBps: invite.commissionBps,
@@ -173,7 +173,7 @@ export class PartnerController {
   @Header("Cache-Control", "no-store")
   async listPayouts(@CurrentAuth() current: RequestAuth): Promise<unknown> {
     const payouts = await listPartnerPayouts(this.database, current.partner.id);
-    return { payouts: payouts.map(payoutView) };
+    return { items: payouts.map(payoutView) };
   }
 
   @Post("payouts")

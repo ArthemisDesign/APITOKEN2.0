@@ -150,8 +150,12 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
     if (!response.ok) throw new Error(`commerce feed ${feed} responded ${response.status}`);
     this.missingFeedLogged.delete(feed);
     const body: unknown = await response.json();
-    if (!Array.isArray(body)) throw new Error(`commerce feed ${feed} returned a non-array body`);
-    return body.map((item) => schema.parse(item));
+    // Канонический формат фида коммерции (apps/api sales-feed.controller): { items: [...] }.
+    const items = body !== null && typeof body === "object" && Array.isArray((body as { items?: unknown }).items)
+      ? (body as { items: unknown[] }).items
+      : body;
+    if (!Array.isArray(items)) throw new Error(`commerce feed ${feed} returned an unexpected body shape`);
+    return items.map((item) => schema.parse(item));
   }
 
   private async sleep(milliseconds: number): Promise<void> {

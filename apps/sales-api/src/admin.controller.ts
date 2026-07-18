@@ -55,7 +55,7 @@ export class AdminController {
   async partners(): Promise<unknown> {
     const partners = await listPartnersWithAggregates(this.database);
     return {
-      partners: partners.map((partner) => ({
+      items: partners.map((partner) => ({
         id: partner.id,
         email: partner.email,
         displayName: partner.displayName,
@@ -97,7 +97,7 @@ export class AdminController {
     if (!parsed.success) throw new BadRequestException("invalid payouts query");
     const payouts = await listPayouts(this.database, parsed.data.status);
     return {
-      payouts: payouts.map((payout) => ({
+      items: payouts.map((payout) => ({
         id: payout.id,
         partnerId: payout.partnerId,
         amountNano: payout.amountNano.toString(),

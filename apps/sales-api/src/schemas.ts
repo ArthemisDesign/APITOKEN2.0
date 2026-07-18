@@ -30,13 +30,14 @@ export const createInviteSchema = z.object({
 export const createPayoutSchema = z.object({
   amountNano: nanoAmountSchema,
   method: z.string().trim().min(1).max(100),
-  details: z.record(z.unknown()).optional(),
+  // Фронт шлёт свободный текст (адрес кошелька/карта); объект тоже допустим — jsonb хранит оба.
+  details: z.union([z.string().trim().min(1).max(2000), z.record(z.unknown())]).optional(),
 });
 
 export const updateSettingsSchema = z.object({
   displayName: displayNameSchema.optional(),
   payoutMethod: z.string().trim().min(1).max(100).optional(),
-  payoutDetails: z.record(z.unknown()).optional(),
+  payoutDetails: z.union([z.string().trim().max(2000), z.record(z.unknown())]).optional(),
 });
 
 export const adminPatchPartnerSchema = z.object({
