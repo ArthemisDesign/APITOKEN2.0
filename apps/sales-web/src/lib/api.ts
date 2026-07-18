@@ -2,8 +2,11 @@
 // All money fields are decimal STRINGS of nanoUSD (1 USD = 1e9 nano).
 // Never do float math on them — formatting goes through formatUsd / usdToNano (BigInt only).
 
+// В проде дефолт — same-origin ("" => относительные /v1/...): Caddy на sales.apitoken.sale
+// проксирует /v1 на sales-api, куки остаются first-party. Прямой URL нужен только в dev.
 export const API_URL =
-  process.env.NEXT_PUBLIC_SALES_API_URL || "http://127.0.0.1:3100";
+  process.env.NEXT_PUBLIC_SALES_API_URL ||
+  (process.env.NODE_ENV === "development" ? "http://127.0.0.1:3100" : "");
 
 export class ApiError extends Error {
   status: number;
