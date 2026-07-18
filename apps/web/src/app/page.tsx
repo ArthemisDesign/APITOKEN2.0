@@ -50,6 +50,7 @@ const homeJsonLd = {
       "@type": "Organization",
       "@id": `${SITE_ORIGIN}/#organization`,
       name: SITE_NAME,
+      alternateName: ["API Token Sale", "apitoken.sale"],
       url: SITE_ORIGIN,
       logo: {
         "@type": "ImageObject",
