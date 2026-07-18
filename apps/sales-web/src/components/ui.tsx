@@ -230,7 +230,6 @@ export function CopyButton({ value, label = "Copy" }: { value: string; label?: s
 export function Brand() {
   return (
     <span className="brand">
-      <span className="brand-mark">%</span>
       <span>
         APIToken <em>Partners</em>
       </span>

@@ -1,12 +1,5 @@
 import type { Metadata } from "next";
-import { Manrope } from "next/font/google";
 import "./globals.css";
-
-const manrope = Manrope({
-  subsets: ["latin"],
-  variable: "--font-manrope",
-  display: "swap",
-});
 
 export const metadata: Metadata = {
   title: {
@@ -14,14 +7,14 @@ export const metadata: Metadata = {
     template: "%s · APIToken Partners",
   },
   description:
-    "The APIToken partner program: share your link, earn a commission on every dollar your referrals spend on Claude API, and build a team of sub-partners for override earnings.",
+    "Partner program for apitoken.sale: share your link and earn a share of what your referrals spend on Claude API.",
 };
 
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={manrope.variable}>
+    <html lang="en">
       <body>{children}</body>
     </html>
   );

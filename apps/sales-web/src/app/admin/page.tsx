@@ -505,7 +505,6 @@ export default function AdminPage() {
     <div className="admin-shell">
       <div className="admin-topbar">
         <div className="brand">
-          <span className="brand-mark">%</span>
           <span>
             APIToken <em>Partners</em>&nbsp;
             <Badge tone="yellow">Admin</Badge>

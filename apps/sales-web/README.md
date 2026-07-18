@@ -1,7 +1,7 @@
 # @claude-api/sales-web
 
 Partner-facing site for the APIToken multi-level sales/referral program
-(**APIToken Partners**), deployed at `https://sales.apitoken.sale`.
+(**APIToken Partners**), deployed at `https://partners.apitoken.sale`.
 
 Standalone brand and bounded context: it shares nothing visually or in code with
 the main client site `apps/web`. Dark fintech partner cabinet: landing, partner

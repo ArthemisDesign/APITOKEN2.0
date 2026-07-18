@@ -13,7 +13,6 @@ function RegisterForm() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [displayName, setDisplayName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
@@ -28,7 +27,6 @@ function RegisterForm() {
         body: {
           email: email.trim(),
           password,
-          ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
           ...(inviteCode ? { inviteCode } : {}),
         },
       });
@@ -85,15 +83,6 @@ function RegisterForm() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="At least 8 characters"
-          />
-        </Field>
-        <Field label="Display name (optional)">
-          <Input
-            type="text"
-            autoComplete="name"
-            value={displayName}
-            onChange={(e) => setDisplayName(e.target.value)}
-            placeholder="How we should address you"
           />
         </Field>
         {inviteCode ? <input type="hidden" name="inviteCode" value={inviteCode} /> : null}
