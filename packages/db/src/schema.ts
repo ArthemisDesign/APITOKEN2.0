@@ -85,6 +85,18 @@ export const businessInvites = pgTable("business_invites", {
   check("business_invites_multiplier_check", sql`${table.multiplierBp} BETWEEN 0 AND 10000`),
 ]);
 
+// Атрибуция регистрации к партнёрскому реф-коду (sales bounded context читает это через
+// internal-фид в apps/api; сама таблица не знает о партнёрах — только код из ссылки ?ref=).
+export const referralAttributions = pgTable("referral_attributions", {
+  id: bigserial("id", { mode: "bigint" }).primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  code: text("code").notNull(),
+  createdAt,
+}, (table) => [
+  uniqueIndex("referral_attributions_user_uidx").on(table.userId),
+  index("referral_attributions_code_idx").on(table.code),
+]);
+
 export const pricingMonths = pgTable("pricing_months", {
   id: uuid("id").primaryKey(),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
@@ -116,9 +128,13 @@ export const pricingUsageEvents = pgTable("pricing_usage_events", {
   ledgerEntryId: bigint("ledger_entry_id", { mode: "bigint" }).notNull(),
   amountNano: bigint("amount_nano", { mode: "bigint" }).notNull(),
   occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+  // Монотонный курсор для внешних читателей (sales-фид). Порядок ~= порядок вставки; читатели
+  // обязаны скрывать свежие строки (created_at близко к now), чтобы не терять in-flight вставки.
+  feedSeq: bigserial("feed_seq", { mode: "bigint" }).notNull(),
   createdAt,
 }, (table) => [
   uniqueIndex("pricing_usage_events_engine_ledger_uidx").on(table.engineAccountId, table.ledgerEntryId),
+  uniqueIndex("pricing_usage_events_feed_seq_uidx").on(table.feedSeq),
   index("pricing_usage_events_user_time_idx").on(table.userId, table.occurredAt),
   check("pricing_usage_events_amount_check", sql`${table.amountNano} > 0`),
 ]);
@@ -275,6 +291,8 @@ export const payments = pgTable("payments", {
   status: paymentStatus("status").notNull().default("pending"),
   providerState: jsonb("provider_state").notNull().default({}),
   paidAt: timestamp("paid_at", { withTimezone: true }),
+  // Монотонный курсор вставки для внешних читателей; см. pricing_usage_events.feed_seq.
+  feedSeq: bigserial("feed_seq", { mode: "bigint" }).notNull(),
   createdAt,
   updatedAt,
 }, (table) => [
