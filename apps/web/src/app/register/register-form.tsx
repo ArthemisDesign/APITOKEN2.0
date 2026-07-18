@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { api, ApiError } from "@/lib/api";
+import { captureReferralCode, storedReferralCode } from "@/lib/referral";
 import { AuthIntro, Feedback, WelcomeBonusNotice } from "@/components/auth-shell";
 import { SocialAuth } from "@/components/social-auth";
 import { useI18n } from "@/components/i18n-provider";
@@ -15,6 +16,7 @@ export function RegisterForm() {
   const inviteToken = search.get("invite") ?? undefined;
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  useEffect(() => captureReferralCode(search.get("ref")), [search]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setMessage(null);
@@ -23,7 +25,7 @@ export function RegisterForm() {
     const password = String(data.get("password") ?? "");
     if (password.length < 12) { setMessage("Password must be at least 12 characters"); setBusy(false); return; }
     try {
-      const result = await api.register({ email, password, inviteToken });
+      const result = await api.register({ email, password, inviteToken, referralCode: storedReferralCode() });
       if (result.verificationRequired) router.replace(`/verify-email?email=${encodeURIComponent(email)}`);
       else router.replace("/dashboard");
     } catch (error) {

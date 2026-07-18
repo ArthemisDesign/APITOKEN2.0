@@ -171,7 +171,7 @@ export const api = {
   updateProfile: (displayName: string) => request<{ user: AuthUser }>("/auth/me", {
     method: "PATCH", body: JSON.stringify({ displayName }),
   }),
-  register: (input: { email: string; password: string; inviteToken?: string }) =>
+  register: (input: { email: string; password: string; inviteToken?: string; referralCode?: string }) =>
     request<{ user: AuthUser; verificationRequired: boolean }>("/auth/register", {
       method: "POST", body: JSON.stringify(input),
     }),
