@@ -9,8 +9,12 @@ const environmentSchema = z.object({
   SALES_TOKEN_ENCRYPTION_KEY: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
   SALES_SESSION_TTL_SECONDS: z.coerce.number().int().min(900).max(31_536_000).default(2_592_000),
   // Telegram Login Widget: оба заданы — вход включён; иначе /v1/auth/* отвечает 503.
-  TELEGRAM_BOT_TOKEN: z.string().min(30).optional(),
-  TELEGRAM_BOT_USERNAME: z.string().regex(/^[A-Za-z0-9_]{5,32}$/).optional(),
+  // Пустая строка в env == «не задано» (удобно для заготовленных строк в env-файле).
+  TELEGRAM_BOT_TOKEN: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(30).optional()),
+  TELEGRAM_BOT_USERNAME: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.string().regex(/^[A-Za-z0-9_]{5,32}$/).optional(),
+  ),
   SALES_ADMIN_KEY: z.string().min(32),
   COMMERCE_BASE_URL: z.string().url().default("http://127.0.0.1:3000"),
   SALES_CONTROL_KEY: z.string().min(32),
