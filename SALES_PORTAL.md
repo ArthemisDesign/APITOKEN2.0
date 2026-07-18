@@ -90,7 +90,12 @@ https://partners.apitoken.sale работает. Как устроено на 84
 - Env: `/etc/apitoken/sales.env` (все ключи: SALES_DATABASE_URL, SALES_TOKEN_ENCRYPTION_KEY,
   `SALES_ADMIN_KEY` — ключ входа в /admin, SALES_CONTROL_KEY, SMTP Brevo). Тот же
   `SALES_CONTROL_KEY` добавлен в `/etc/apitoken/api.env` — включает фид.
-- Caddy: vhost `partners.apitoken.sale` (`/v1/*`→:3100, остальное→:3200, same-origin куки) и
+- Telegram-вход включается на сервере: в `/etc/apitoken/sales.env` добавить
+  `TELEGRAM_BOT_TOKEN` (от BotFather) и `TELEGRAM_BOT_USERNAME` (без @), у бота выполнить
+  `/setdomain` → `partners.apitoken.sale`, затем `systemctl restart apitoken-sales-api`.
+  Пока не задано — `/v1/auth/telegram*` отвечает 503, сайт показывает «sign-in unavailable».
+- Caddy: vhost `partners.apitoken.sale` (`/v1/*`→:3100, остальное→:3200, same-origin куки;
+  старый `sales.apitoken.sale` — 301 на partners) и
   loopback `http://127.0.0.1:8791` — стабильный health-gated origin commerce-backend поверх
   blue-green слотов 3000/3001 (аналог 8790 для движка); `COMMERCE_BASE_URL=http://127.0.0.1:8791`.
   **Внимание:** systemd-юниты и Caddy-блоки применены на хосте вручную и НЕ закоммичены в
