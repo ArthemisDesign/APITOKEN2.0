@@ -1739,7 +1739,7 @@ body.app-body .bg-decor{display:none!important}
 .tc-preset span{font-size:12px;color:var(--accent);font-variant-numeric:tabular-nums}
 .tc-pay{margin-top:18px}
 .tc-pay-label{display:block;font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--txt-4);margin-bottom:10px}
-.tc-methods{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.tc-methods{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
 .pm-card{display:flex;align-items:center;gap:12px;padding:14px 16px;border:1px solid var(--line-strong);border-radius:12px;background:var(--bg-card);cursor:pointer;text-align:left;transition:.15s}
 .pm-card:hover{border-color:var(--accent-line)}
 .pm-card.on{border-color:var(--accent);background:var(--accent-soft)}
