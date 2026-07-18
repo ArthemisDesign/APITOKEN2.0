@@ -68,15 +68,30 @@ HTTP-фид в `apps/api` под ключом `SALES_CONTROL_KEY` (заголо�
 слот backend), `PUBLIC_SALES_BASE_URL`, `PUBLIC_MAIN_SITE_URL`, SMTP как у worker (Brevo),
 `SALES_SESSION_TTL_SECONDS`, `SYNC_INTERVAL_MS`. Полный список — `apps/sales-api/.env.example`.
 
-## Деплой (план, ещё не выполнен)
+## Деплой (В ПРОДЕ с 2026-07-19)
 
-1. Влить в master **сначала** expand-only миграцию коммерции `0012_sales_referral_feed`
-   (отдельный коммит, дождаться зелёных `deploy/migration`+`deploy/watchdog`), потом код.
-2. На 84.32.48.2: создать БД `sales`, прогнать миграции sales-db; задать `SALES_CONTROL_KEY`
-   в env apps/api и sales-api; systemd-юнит для sales-api (порт 3100+, вне blue-green
-   watchdog'а на первом этапе); Caddy-блок `sales.apitoken.sale` → sales-web (или Vercel-проект
-   для sales-web + прокси `/v1` на sales-api).
-3. DNS `sales.apitoken.sale`.
+https://sales.apitoken.sale работает. Как устроено на 84.32.48.2:
+
+- БД `sales` (роль `sales`) в commerce-Postgres (`deploy-commerce-postgres-1`, :5433).
+  Миграции: `node <realpath релиза>/packages/sales-db/dist/migrate.js` с env из
+  `/etc/apitoken/sales.env`. **Готча:** запускать по разыменованному SHA-пути, не через
+  симлинк `current` — гвард `isDirectExecution` сравнивает realpath и молча выходит.
+- systemd: `apitoken-sales-api.service` (:3100) и `apitoken-sales-web.service` (:3200),
+  оба из `/opt/apitoken/releases/current` (обновляются watchdog-релизом; после деплоя новые
+  версии подтянутся при рестарте юнитов — авторестарт в blue-green НЕ включён, рестартить
+  руками после значимых изменений sales-кода). **Готча:** sales-web нужен `AF_NETLINK` в
+  `RestrictAddressFamilies`, иначе Next падает на `uv_interface_addresses`.
+- Env: `/etc/apitoken/sales.env` (все ключи: SALES_DATABASE_URL, SALES_TOKEN_ENCRYPTION_KEY,
+  `SALES_ADMIN_KEY` — ключ входа в /admin, SALES_CONTROL_KEY, SMTP Brevo). Тот же
+  `SALES_CONTROL_KEY` добавлен в `/etc/apitoken/api.env` — включает фид.
+- Caddy: vhost `sales.apitoken.sale` (`/v1/*`→:3100, остальное→:3200, same-origin куки) и
+  loopback `http://127.0.0.1:8791` — стабильный health-gated origin commerce-backend поверх
+  blue-green слотов 3000/3001 (аналог 8790 для движка); `COMMERCE_BASE_URL=http://127.0.0.1:8791`.
+  **Внимание:** systemd-юниты и Caddy-блоки применены на хосте вручную и НЕ закоммичены в
+  `systemd/`/`deploy/Caddyfile` — коммит этих путей ставит watchdog в pending до подтверждения
+  оператором (см. CONTRIBUTING); синхронизировать отдельным осознанным шагом.
+- Синк проверен на живых данных: курсоры прошли всю историю usage-событий и топапов; фид
+  отвечает 401 без ключа; verify-письмо реально ушло через Brevo.
 
 ## Идеи развития (не реализовано)
 
