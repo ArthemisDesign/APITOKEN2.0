@@ -1,6 +1,6 @@
 export * from "./client.js";
 export * from "./migrate.js";
-export * from "./secrets.js";
+export * from "./token-crypto.js";
 export * from "./auth.js";
 export * from "./outbox.js";
 export * from "./referrals.js";
