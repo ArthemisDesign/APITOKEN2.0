@@ -1,0 +1,33 @@
+{
+  "name": "@claude-api/sales-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "predev": "pnpm --filter @claude-api/sales-db build",
+    "dev": "tsx watch src/main.ts",
+    "start": "node --enable-source-maps dist/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "pretest": "pnpm --filter @claude-api/sales-db build",
+    "test": "vitest run --no-file-parallelism"
+  },
+  "dependencies": {
+    "@claude-api/sales-db": "workspace:*",
+    "@fastify/helmet": "^13.0.0",
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/config": "^4.0.0",
+    "@nestjs/core": "^11.0.0",
+    "@nestjs/platform-fastify": "^11.0.0",
+    "argon2": "^0.44.0",
+    "nodemailer": "^7.0.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/nodemailer": "^7.0.0",
+    "tsx": "^4.20.0",
+    "vitest": "^3.2.0"
+  }
+}
