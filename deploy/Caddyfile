@@ -96,17 +96,7 @@ panel.apitoken.sale {
 			header_up x-admin-key "<COMMERCIAL_ADMIN_KEY_PLACEHOLDER>"
 		}
 	}
-	# Вкладка «Партнёры»: админка sales bounded context (sales-api :3100, /v1/admin/*).
-	# Отдельный заголовок x-sales-admin-key — чтобы перенос секретов install-caddy.sh
-	# не путал его с commerce x-admin-key.
-	# handle_path срезает префикс ДО инициализации хендлера (в обычном handle порядок
-	# uri/rewrite не гарантирован → префикс не срезался, sales-api ловил 404).
-	handle_path /partners-admin/* {
-		rewrite * /v1/admin{uri}
-		reverse_proxy 127.0.0.1:3100 {
-			header_up x-sales-admin-key "<SALES_ADMIN_KEY_PLACEHOLDER>"
-		}
-	}
+	# Партнёрская админка вынесена на отдельный сайт partners.panel.apitoken.sale (см. ниже).
 	# HTML панели отдаёт сам движок (GET /panel, вкомпилирован include_str!) — панель всегда
 	# совпадает с задеплоенным релизом, никаких статических копий и ручного rsync.
 	handle {
@@ -166,4 +156,19 @@ partners.apitoken.sale {
 # Старый адрес партнёрки — постоянный редирект на partners.
 sales.apitoken.sale {
 	redir https://partners.apitoken.sale{uri} permanent
+}
+
+# Отдельный админ-сайт партнёрки. Тот же sales-web/sales-api, но вход сразу в /admin;
+# оператор вводит SALES_ADMIN_KEY в KeyGate (ключ не инжектится server-side — уходит как
+# x-sales-admin-key из sessionStorage). /v1/* → sales-api, остальное → sales-web (Next).
+partners.panel.apitoken.sale {
+	handle /v1/* {
+		reverse_proxy 127.0.0.1:3100
+	}
+	handle / {
+		redir /admin
+	}
+	handle {
+		reverse_proxy 127.0.0.1:3200
+	}
 }
