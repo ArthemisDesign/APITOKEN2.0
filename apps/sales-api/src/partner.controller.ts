@@ -40,9 +40,20 @@ import {
   createPayoutSchema,
   earningsQuerySchema,
   updateSettingsSchema,
+  walletSchema,
 } from "./schemas.js";
 
 const INVITE_TTL_DAYS = 30;
+const PAYOUT_METHOD = "usdt-bep20";
+
+/** Адрес из привязанного кошелька партнёра (payout_details.address, сеть BSC). */
+function boundWallet(partner: { payoutMethod: string | null; payoutDetails: unknown }): string | null {
+  if (partner.payoutMethod !== PAYOUT_METHOD) return null;
+  const details = partner.payoutDetails;
+  if (details === null || typeof details !== "object" || !("address" in details)) return null;
+  const address = (details as { address: unknown }).address;
+  return typeof address === "string" && /^0x[a-fA-F0-9]{40}$/.test(address) ? address : null;
+}
 
 @Controller("partner")
 @UseGuards(SessionAuthGuard)
@@ -64,7 +75,9 @@ export class PartnerController {
     const mainSite = this.config.get("PUBLIC_MAIN_SITE_URL", { infer: true });
     return {
       referralCode: current.partner.referralCode,
-      referralUrl: `${new URL(mainSite).origin}/register?ref=${current.partner.referralCode}`,
+      // Ведём на главную, а не в /register: код ловится глобально (apps/web RefCapture)
+      // и доживает до регистрации 30 дней.
+      referralUrl: `${new URL(mainSite).origin}/?ref=${current.partner.referralCode}`,
       commissionBps: current.partner.commissionBps,
       subCommissionBps: current.partner.subCommissionBps,
       referredUsers,
@@ -188,17 +201,20 @@ export class PartnerController {
     return { items: payouts.map(payoutView) };
   }
 
+  /** Выплата уходит ТОЛЬКО на привязанный BSC-кошелёк (USDT BEP-20). */
   @Post("payouts")
   @HttpCode(201)
   async createPayout(@CurrentAuth() current: RequestAuth, @Body() body: unknown): Promise<unknown> {
     const parsed = createPayoutSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException("invalid payout request");
+    const wallet = boundWallet(current.partner);
+    if (!wallet) throw new UnprocessableEntityException("bind your BSC wallet before requesting a payout");
     try {
       const payout = await requestPayout(this.database, {
         partnerId: current.partner.id,
         amountNano: BigInt(parsed.data.amountNano),
-        method: parsed.data.method,
-        details: parsed.data.details ?? {},
+        method: PAYOUT_METHOD,
+        details: { network: "BSC", asset: "USDT (BEP-20)", address: wallet },
       });
       return { payout: payoutView(payout) };
     } catch (error) {
@@ -207,14 +223,25 @@ export class PartnerController {
     }
   }
 
+  /** Привязка/смена кошелька: единственная поддерживаемая сеть — BSC (BEP-20). */
+  @Patch("wallet")
+  async updateWallet(@CurrentAuth() current: RequestAuth, @Body() body: unknown): Promise<unknown> {
+    const parsed = walletSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException("invalid BSC address: expected 0x + 40 hex characters");
+    const updated = await updatePartnerSettings(this.database, current.partner.id, {
+      payoutMethod: PAYOUT_METHOD,
+      payoutDetails: { network: "BSC", asset: "USDT (BEP-20)", address: parsed.data.address },
+    });
+    if (!updated) throw new UnauthorizedException("partner account is unavailable");
+    return { partner: partnerView(updated) };
+  }
+
   @Patch("settings")
   async updateSettings(@CurrentAuth() current: RequestAuth, @Body() body: unknown): Promise<unknown> {
     const parsed = updateSettingsSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException("invalid settings data");
     const updated = await updatePartnerSettings(this.database, current.partner.id, {
       ...(parsed.data.displayName !== undefined ? { displayName: parsed.data.displayName } : {}),
-      ...(parsed.data.payoutMethod !== undefined ? { payoutMethod: parsed.data.payoutMethod } : {}),
-      ...(parsed.data.payoutDetails !== undefined ? { payoutDetails: parsed.data.payoutDetails } : {}),
     });
     if (!updated) throw new UnauthorizedException("partner account is unavailable");
     return { partner: partnerView(updated) };

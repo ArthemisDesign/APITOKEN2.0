@@ -5,6 +5,7 @@ import "./anim.css";
 import { I18nProvider } from "@/components/i18n-provider";
 import { PersistentRouteShell } from "@/components/persistent-route-shell";
 import { SiteAnalytics } from "@/components/site-analytics";
+import { RefCapture } from "@/components/ref-capture";
 import { DEFAULT_OG_IMAGE, SITE_ICONS, SITE_NAME, SITE_ORIGIN, seoPages } from "@/lib/seo";
 import { YANDEX_METRIKA_ID, yandexMetrikaBootstrap } from "@/lib/yandex-metrika";
 
@@ -75,6 +76,7 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
           <PersistentRouteShell>{children}</PersistentRouteShell>
         </I18nProvider>
         <SiteAnalytics />
+        <RefCapture />
         <noscript>
           <div>
             {/* eslint-disable-next-line @next/next/no-img-element */}

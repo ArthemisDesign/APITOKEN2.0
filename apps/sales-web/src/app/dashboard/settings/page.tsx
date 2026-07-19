@@ -1,31 +1,15 @@
 "use client";
 
+// Только профиль и условия. Всё платёжное (кошелёк, выплаты) живёт в Payouts.
+
 import { useState, type FormEvent } from "react";
 import { api, ApiError, formatBps } from "@/lib/api";
 import { usePartner } from "@/components/partner-context";
-import {
-  Button,
-  Card,
-  Field,
-  Input,
-  Notice,
-  Select,
-  StatusBadge,
-  Textarea,
-} from "@/components/ui";
-
-const METHODS = [
-  { value: "", label: "Not set" },
-  { value: "usdt-trc20", label: "USDT (TRC-20)" },
-  { value: "card", label: "Card" },
-  { value: "other", label: "Other" },
-];
+import { Button, Card, Field, Input, Notice, StatusBadge } from "@/components/ui";
 
 export default function SettingsPage() {
   const partner = usePartner();
   const [displayName, setDisplayName] = useState(partner.displayName ?? "");
-  const [payoutMethod, setPayoutMethod] = useState("");
-  const [payoutDetails, setPayoutDetails] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -38,11 +22,7 @@ export default function SettingsPage() {
     try {
       await api("/v1/partner/settings", {
         method: "PATCH",
-        body: {
-          displayName: displayName.trim() || undefined,
-          payoutMethod: payoutMethod || undefined,
-          payoutDetails: payoutDetails.trim() || undefined,
-        },
+        body: { displayName: displayName.trim() || undefined },
       });
       setSaved(true);
     } catch (err) {
@@ -55,7 +35,7 @@ export default function SettingsPage() {
   return (
     <>
       <h1 className="page-title">Settings</h1>
-      <p className="page-sub">Your profile and payout defaults.</p>
+      <p className="page-sub">Your profile and commission terms.</p>
 
       <div className="stack">
         <Card title="Profile">
@@ -76,28 +56,6 @@ export default function SettingsPage() {
                 placeholder="How we should address you"
               />
             </Field>
-            <div className="grid-2">
-              <Field label="Default payout method">
-                <Select
-                  value={payoutMethod}
-                  onChange={(e) => setPayoutMethod(e.target.value)}
-                >
-                  {METHODS.map((m) => (
-                    <option key={m.value} value={m.value}>
-                      {m.label}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-              <Field label="Default payout details">
-                <Textarea
-                  value={payoutDetails}
-                  onChange={(e) => setPayoutDetails(e.target.value)}
-                  placeholder="Wallet address / card number"
-                  style={{ minHeight: 44 }}
-                />
-              </Field>
-            </div>
             <Button type="submit" loading={busy}>
               Save changes
             </Button>

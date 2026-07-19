@@ -134,6 +134,8 @@ export type Partner = {
   commissionBps: number;
   subCommissionBps: number;
   status: string;
+  payoutMethod?: string | null;
+  payoutDetails?: { network?: string; asset?: string; address?: string } | string | null;
 };
 
 export type Overview = {
@@ -190,6 +192,7 @@ export type PayoutRow = {
   amountNano: string;
   status: string;
   method: string;
+  details?: unknown;
   requestedAt: string;
   paidAt: string | null;
 };
