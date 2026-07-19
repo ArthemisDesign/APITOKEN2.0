@@ -82,11 +82,27 @@ https://partners.apitoken.sale работает. Как устроено на 84
   Миграции: `node <realpath релиза>/packages/sales-db/dist/migrate.js` с env из
   `/etc/apitoken/sales.env`. **Готча:** запускать по разыменованному SHA-пути, не через
   симлинк `current` — гвард `isDirectExecution` сравнивает realpath и молча выходит.
-- systemd: `apitoken-sales-api.service` (:3100) и `apitoken-sales-web.service` (:3200),
-  оба из `/opt/apitoken/releases/current` (обновляются watchdog-релизом; после деплоя новые
-  версии подтянутся при рестарте юнитов — авторестарт в blue-green НЕ включён, рестартить
-  руками после значимых изменений sales-кода). **Готча:** sales-web нужен `AF_NETLINK` в
-  `RestrictAddressFamilies`, иначе Next падает на `uv_interface_addresses`.
+- systemd: `apitoken-sales-api.service` (:3100) и `apitoken-sales-web.service` (:3200,
+  `next start -H 127.0.0.1` — bind ТОЛЬКО на loopback). **Готча:** sales-web нужен `AF_NETLINK`
+  в `RestrictAddressFamilies`, иначе Next падает на `uv_interface_addresses`.
+- **ВАЖНО — sales НЕ в watchdog-деплое.** Watchdog тестирует sales-код (build/typecheck/test),
+  но при коммите, не трогающем `apps/api`/движок, отдаёт `backend=0` и НЕ промоутит релиз —
+  общий симлинк `/opt/apitoken/releases/current` остаётся на прошлом backend-SHA (его трогать
+  нельзя: на нём commerce blue-green). Поэтому у sales СОБСТВЕННЫЙ жизненный цикл релизов:
+  юниты смотрят на `/opt/apitoken/sales-releases/current`. **Деплой sales после зелёного
+  watchdog** (SHA = полный хэш коммита):
+  ```
+  SHA=<full-sha>
+  cp -a /var/lib/apitoken/watchdog/candidates/$SHA /opt/apitoken/sales-releases/$SHA
+  chown -R deploy:deploy /opt/apitoken/sales-releases/$SHA
+  # если менялась схема sales-db:
+  set -a; . /etc/apitoken/sales.env; set +a
+  node /opt/apitoken/sales-releases/$SHA/packages/sales-db/dist/migrate.js
+  ln -sfn /opt/apitoken/sales-releases/$SHA /opt/apitoken/sales-releases/current
+  systemctl restart apitoken-sales-api apitoken-sales-web
+  ```
+  (candidate-каталог watchdog эфемерный — копируем в durable `sales-releases`.) Правильный
+  долг: свернуть sales в watchdog-пайплайн (build+health-gate+rollback) — TODO.
 - Env: `/etc/apitoken/sales.env` (все ключи: SALES_DATABASE_URL, SALES_TOKEN_ENCRYPTION_KEY,
   `SALES_ADMIN_KEY` — ключ входа в /admin, SALES_CONTROL_KEY, SMTP Brevo). Тот же
   `SALES_CONTROL_KEY` добавлен в `/etc/apitoken/api.env` — включает фид.
