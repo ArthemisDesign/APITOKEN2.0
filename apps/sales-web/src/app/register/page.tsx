@@ -7,11 +7,13 @@ import { api } from "@/lib/api";
 import { AuthShell } from "@/components/auth-shell";
 import { Badge, Loading, Notice } from "@/components/ui";
 import { TelegramLogin } from "@/components/telegram-login";
+import { useI18n } from "@/components/i18n";
 
 // Онбординг invite-only: инвайт выписан на конкретный telegram-юзернейм,
 // человек просто подтверждает вход через Telegram — аккаунт создаётся сам.
 
 function RegisterCard() {
+  const { t } = useI18n();
   const params = useSearchParams();
   const inviteCode = params.get("invite") ?? "";
   const [invite, setInvite] = useState<{ telegramUsername: string | null } | null>(null);
@@ -37,14 +39,16 @@ function RegisterCard() {
   if (state === "none") {
     return (
       <>
-        <h1>Join APIToken Partners</h1>
+        <h1>{t("Join APIToken Partners", "Присоединиться к APIToken Partners")}</h1>
         <p className="auth-sub">
-          The program is invite-only. If you were invited or approved, signing in with Telegram
-          is enough — your account opens automatically. New here? Sign in and apply for review.
+          {t(
+            "The program is invite-only. If you were invited or approved, signing in with Telegram is enough — your account opens automatically. New here? Sign in and apply for review.",
+            "Программа работает по приглашениям. Если вас пригласили или одобрили, достаточно войти через Telegram — аккаунт откроется автоматически. Впервые здесь? Войдите и подайте заявку на рассмотрение.",
+          )}
         </p>
         <TelegramLogin />
         <p className="auth-alt">
-          Already a partner? <Link href="/login">Sign in</Link>
+          {t("Already a partner?", "Уже партнёр?")} <Link href="/login">{t("Sign in", "Войти")}</Link>
         </p>
       </>
     );
@@ -53,7 +57,7 @@ function RegisterCard() {
   if (state === "loading") {
     return (
       <>
-        <h1>Checking your invite…</h1>
+        <h1>{t("Checking your invite…", "Проверяем ваше приглашение…")}</h1>
         <Loading />
       </>
     );
@@ -62,10 +66,15 @@ function RegisterCard() {
   if (state === "invalid") {
     return (
       <>
-        <h1>Invite not found</h1>
-        <Notice kind="error">This invite link is invalid, expired, or already used.</Notice>
+        <h1>{t("Invite not found", "Приглашение не найдено")}</h1>
+        <Notice kind="error">
+          {t(
+            "This invite link is invalid, expired, or already used.",
+            "Эта ссылка-приглашение недействительна, истекла или уже использована.",
+          )}
+        </Notice>
         <p className="auth-alt">
-          Already a partner? <Link href="/login">Sign in</Link>
+          {t("Already a partner?", "Уже партнёр?")} <Link href="/login">{t("Sign in", "Войти")}</Link>
         </p>
       </>
     );
@@ -73,18 +82,21 @@ function RegisterCard() {
 
   return (
     <>
-      <h1>You&rsquo;re invited</h1>
+      <h1>{t("You’re invited", "Вас пригласили")}</h1>
       <p className="auth-sub">
-        Confirm with Telegram to activate your partner account — that&rsquo;s it.
+        {t(
+          "Confirm with Telegram to activate your partner account — that’s it.",
+          "Подтвердите вход через Telegram, чтобы активировать партнёрский аккаунт — и всё.",
+        )}
       </p>
       {invite?.telegramUsername ? (
         <p style={{ marginBottom: 16 }}>
-          <Badge tone="green">Invite for @{invite.telegramUsername}</Badge>
+          <Badge tone="green">{t("Invite for", "Приглашение для")} @{invite.telegramUsername}</Badge>
         </p>
       ) : null}
       <TelegramLogin inviteCode={inviteCode} />
       <p className="auth-alt">
-        Already a partner? <Link href="/login">Sign in</Link>
+        {t("Already a partner?", "Уже партнёр?")} <Link href="/login">{t("Sign in", "Войти")}</Link>
       </p>
     </>
   );

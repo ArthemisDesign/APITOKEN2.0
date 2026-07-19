@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type ReactNode, type ButtonHTMLAttributes, type InputHTMLAttributes, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
+import { useI18n } from "@/components/i18n";
 
 // ---------------------------------------------------------------------------
 // Button
@@ -175,10 +176,11 @@ export function Table({
 // States
 // ---------------------------------------------------------------------------
 
-export function Loading({ label = "Loading…" }: { label?: string }) {
+export function Loading({ label }: { label?: string }) {
+  const { t } = useI18n();
   return (
     <div className="loading-block">
-      <span className="spinner" aria-hidden /> {label}
+      <span className="spinner" aria-hidden /> {label ?? t("Loading…", "Загрузка…")}
     </div>
   );
 }
@@ -202,7 +204,8 @@ export function EmptyState({
 // Copy button
 // ---------------------------------------------------------------------------
 
-export function CopyButton({ value, label = "Copy" }: { value: string; label?: string }) {
+export function CopyButton({ value, label }: { value: string; label?: string }) {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   return (
     <Button
@@ -218,7 +221,7 @@ export function CopyButton({ value, label = "Copy" }: { value: string; label?: s
         }
       }}
     >
-      {copied ? "Copied ✓" : label}
+      {copied ? t("Copied ✓", "Скопировано ✓") : label ?? t("Copy", "Копировать")}
     </Button>
   );
 }

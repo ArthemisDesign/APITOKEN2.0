@@ -6,16 +6,18 @@ import { usePathname, useRouter } from "next/navigation";
 import { api, ApiError, type Partner } from "@/lib/api";
 import { Brand, Loading } from "@/components/ui";
 import { PartnerContext } from "@/components/partner-context";
+import { LanguageToggle, useI18n } from "@/components/i18n";
 
 const NAV = [
-  { href: "/dashboard", label: "Overview", icon: "◧" },
-  { href: "/dashboard/referrals", label: "Referrals", icon: "⇢" },
-  { href: "/dashboard/team", label: "Team", icon: "⁂", soon: true },
-  { href: "/dashboard/payouts", label: "Payouts", icon: "◈" },
-  { href: "/dashboard/settings", label: "Settings", icon: "⚙" },
+  { href: "/dashboard", en: "Overview", ru: "Обзор", icon: "◧" },
+  { href: "/dashboard/referrals", en: "Referrals", ru: "Рефералы", icon: "⇢" },
+  { href: "/dashboard/team", en: "Team", ru: "Команда", icon: "⁂", soon: true },
+  { href: "/dashboard/payouts", en: "Payouts", ru: "Выплаты", icon: "◈" },
+  { href: "/dashboard/settings", en: "Settings", ru: "Настройки", icon: "⚙" },
 ];
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {
+  const { t } = useI18n();
   const router = useRouter();
   const pathname = usePathname();
   const [partner, setPartner] = useState<Partner | null>(null);
@@ -63,13 +65,15 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
     return (
       <div className="auth-shell" style={{ justifyContent: "center" }}>
         {checking ? (
-          <Loading label="Loading your cabinet…" />
+          <Loading label={t("Loading your cabinet…", "Загружаем ваш кабинет…")} />
         ) : (
           <div className="auth-card">
-            <h1>Can&apos;t reach the partner API</h1>
-            <p className="auth-sub">Check your connection and reload the page.</p>
+            <h1>{t("Can't reach the partner API", "Не удаётся связаться с API партнёров")}</h1>
+            <p className="auth-sub">
+              {t("Check your connection and reload the page.", "Проверьте соединение и перезагрузите страницу.")}
+            </p>
             <button className="btn btn-primary" onClick={() => window.location.reload()}>
-              Reload
+              {t("Reload", "Перезагрузить")}
             </button>
           </div>
         )}
@@ -99,14 +103,16 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
                   <span aria-hidden style={{ width: 18, textAlign: "center" }}>
                     {item.icon}
                   </span>
-                  {item.label}
-                  {"soon" in item && item.soon ? <span className="soon-pill">Soon</span> : null}
+                  {t(item.en, item.ru)}
+                  {"soon" in item && item.soon ? (
+                    <span className="soon-pill">{t("Soon", "Скоро")}</span>
+                  ) : null}
                 </Link>
               );
             })}
           </nav>
           <div className="cab-side-foot">
-            Partner code: <span className="mono">{partner.referralCode}</span>
+            {t("Partner code:", "Код партнёра:")} <span className="mono">{partner.referralCode}</span>
           </div>
         </aside>
         {menuOpen ? (
@@ -117,7 +123,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             <button
               className="cab-burger"
               onClick={() => setMenuOpen((v) => !v)}
-              aria-label="Toggle menu"
+              aria-label={t("Toggle menu", "Открыть меню")}
             >
               ☰
             </button>
@@ -125,8 +131,9 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
               <span className="email">
                 {partner.telegramUsername ? `@${partner.telegramUsername}` : partner.displayName ?? partner.email}
               </span>
+              <LanguageToggle />
               <button className="btn btn-ghost btn-sm" onClick={logout}>
-                Log out
+                {t("Log out", "Выйти")}
               </button>
             </div>
           </header>

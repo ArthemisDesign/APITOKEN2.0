@@ -14,6 +14,7 @@ import {
 } from "@/lib/api";
 import { usePartner } from "@/components/partner-context";
 import { Badge, Button, Card, EmptyState, Field, Input, Loading, Notice, Table } from "@/components/ui";
+import { localeFor, useI18n, type Lang } from "@/components/i18n";
 
 const BSC_ADDRESS = /^0x[a-fA-F0-9]{40}$/;
 
@@ -30,16 +31,17 @@ function shortAddress(address: string): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
 }
 
-function dateLabel(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+function dateLabel(iso: string, lang: Lang): string {
+  return new Date(iso).toLocaleDateString(localeFor(lang), { month: "short", day: "numeric", year: "numeric" });
 }
 
-function periodRange(startIso: string, endIso: string): string {
+function periodRange(startIso: string, endIso: string, lang: Lang): string {
+  const locale = localeFor(lang);
   const start = new Date(startIso);
   const endInclusive = new Date(new Date(endIso).getTime() - 86_400_000);
   const sameMonth = start.getUTCMonth() === endInclusive.getUTCMonth();
-  const s = start.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
-  const e = endInclusive.toLocaleDateString("en-US", {
+  const s = start.toLocaleDateString(locale, { month: "short", day: "numeric", timeZone: "UTC" });
+  const e = endInclusive.toLocaleDateString(locale, {
     month: sameMonth ? undefined : "short",
     day: "numeric",
     year: "numeric",
@@ -52,14 +54,15 @@ function daysUntil(iso: string, nowIso: string): number {
   return Math.max(0, Math.ceil((new Date(iso).getTime() - new Date(nowIso).getTime()) / 86_400_000));
 }
 
-const PHASE_BADGE: Record<string, { tone: "neutral" | "green" | "yellow"; label: string }> = {
-  accruing: { tone: "neutral", label: "Accruing" },
-  locked: { tone: "yellow", label: "Locked" },
-  payable: { tone: "green", label: "Paying out" },
-  closed: { tone: "neutral", label: "Closed" },
+const PHASE_BADGE: Record<string, { tone: "neutral" | "green" | "yellow"; en: string; ru: string }> = {
+  accruing: { tone: "neutral", en: "Accruing", ru: "Начисляется" },
+  locked: { tone: "yellow", en: "Locked", ru: "Заблокировано" },
+  payable: { tone: "green", en: "Paying out", ru: "Выплачивается" },
+  closed: { tone: "neutral", en: "Closed", ru: "Закрыто" },
 };
 
 function WalletCard({ wallet, onBound }: { wallet: string | null; onBound: (address: string) => void }) {
+  const { t } = useI18n();
   const [editing, setEditing] = useState(wallet === null);
   const [address, setAddress] = useState("");
   const [busy, setBusy] = useState(false);
@@ -72,7 +75,12 @@ function WalletCard({ wallet, onBound }: { wallet: string | null; onBound: (addr
     setSaved(false);
     const clean = address.trim();
     if (!BSC_ADDRESS.test(clean)) {
-      setError("That doesn't look like a BSC address — expected 0x followed by 40 hex characters.");
+      setError(
+        t(
+          "That doesn't look like a BSC address — expected 0x followed by 40 hex characters.",
+          "Это не похоже на адрес BSC — ожидается 0x и 40 шестнадцатеричных символов.",
+        ),
+      );
       return;
     }
     setBusy(true);
@@ -83,7 +91,11 @@ function WalletCard({ wallet, onBound }: { wallet: string | null; onBound: (addr
       setAddress("");
       setSaved(true);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not save the wallet. Try again.");
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : t("Could not save the wallet. Try again.", "Не удалось сохранить кошелёк. Попробуйте ещё раз."),
+      );
     } finally {
       setBusy(false);
     }
@@ -91,13 +103,21 @@ function WalletCard({ wallet, onBound }: { wallet: string | null; onBound: (addr
 
   return (
     <Card
-      title="Payout wallet"
-      sub="USDT (BEP-20) on BNB Smart Chain — the only supported network. Every payout is sent to this address."
+      title={t("Payout wallet", "Кошелёк для выплат")}
+      sub={t(
+        "USDT (BEP-20) on BNB Smart Chain — the only supported network. Every payout is sent to this address.",
+        "USDT (BEP-20) в сети BNB Smart Chain — единственная поддерживаемая сеть. Каждая выплата отправляется на этот адрес.",
+      )}
     >
       {error ? <Notice kind="error">{error}</Notice> : null}
-      {saved && !editing ? <Notice kind="success">Wallet saved.</Notice> : null}
+      {saved && !editing ? <Notice kind="success">{t("Wallet saved.", "Кошелёк сохранён.")}</Notice> : null}
       {!wallet && !editing ? (
-        <Notice kind="info">Bind your BSC wallet to receive payouts — without it, your balance rolls over.</Notice>
+        <Notice kind="info">
+          {t(
+            "Bind your BSC wallet to receive payouts — without it, your balance rolls over.",
+            "Привяжите кошелёк BSC, чтобы получать выплаты — без него баланс переносится на следующий период.",
+          )}
+        </Notice>
       ) : null}
 
       {wallet && !editing ? (
@@ -109,12 +129,18 @@ function WalletCard({ wallet, onBound }: { wallet: string | null; onBound: (addr
             </span>
           </div>
           <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
-            Change wallet
+            {t("Change wallet", "Изменить кошелёк")}
           </Button>
         </div>
       ) : (
         <form onSubmit={bind}>
-          <Field label="BSC wallet address" hint="Double-check it — on-chain payouts cannot be reversed.">
+          <Field
+            label={t("BSC wallet address", "Адрес кошелька BSC")}
+            hint={t(
+              "Double-check it — on-chain payouts cannot be reversed.",
+              "Перепроверьте — выплаты в блокчейне нельзя отменить.",
+            )}
+          >
             <Input
               className="mono"
               value={address}
@@ -127,11 +153,11 @@ function WalletCard({ wallet, onBound }: { wallet: string | null; onBound: (addr
           </Field>
           <div className="row-actions">
             <Button type="submit" loading={busy}>
-              {wallet ? "Save new wallet" : "Bind wallet"}
+              {wallet ? t("Save new wallet", "Сохранить новый кошелёк") : t("Bind wallet", "Привязать кошелёк")}
             </Button>
             {wallet ? (
               <Button type="button" variant="ghost" onClick={() => setEditing(false)} disabled={busy}>
-                Cancel
+                {t("Cancel", "Отмена")}
               </Button>
             ) : null}
           </div>
@@ -142,6 +168,7 @@ function WalletCard({ wallet, onBound }: { wallet: string | null; onBound: (addr
 }
 
 export default function PayoutsPage() {
+  const { t, lang } = useI18n();
   const partner = usePartner();
   const [wallet, setWallet] = useState<string | null>(walletFromPartner(partner));
   const [state, setState] = useState<PeriodState | null>(null);
@@ -151,7 +178,7 @@ export default function PayoutsPage() {
     try {
       setState(await api<PeriodState>("/v1/partner/periods"));
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to load payouts.");
+      setError(err instanceof ApiError ? err.message : t("Failed to load payouts.", "Не удалось загрузить выплаты."));
     }
   }, []);
 
@@ -165,83 +192,115 @@ export default function PayoutsPage() {
 
   return (
     <>
-      <h1 className="page-title">Payouts</h1>
+      <h1 className="page-title">{t("Payouts", "Выплаты")}</h1>
       <p className="page-sub">
-        Automatic twice-monthly payouts in USDT (BEP-20) on BNB Smart Chain. No manual withdrawal —
-        just keep your wallet bound.
+        {t(
+          "Automatic twice-monthly payouts in USDT (BEP-20) on BNB Smart Chain. No manual withdrawal — just keep your wallet bound.",
+          "Автоматические выплаты дважды в месяц в USDT (BEP-20) в сети BNB Smart Chain. Ручной вывод не нужен — просто держите кошелёк привязанным.",
+        )}
       </p>
       {error ? <Notice kind="error">{error}</Notice> : null}
 
       <div className="stack">
         <div className="stat-grid" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
           <div className="stat-card">
-            <div className="stat-label">This period</div>
+            <div className="stat-label">{t("This period", "Текущий период")}</div>
             <div className="stat-value green">{state ? formatUsd(state.current.accruedNano) : "…"}</div>
             <div className="stat-foot">
-              {state ? `accruing · ${periodRange(state.current.start, state.current.end)}` : ""}
-            </div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-label">Locked</div>
-            <div className="stat-value">{state ? formatUsd(lockedTotal) : "…"}</div>
-            <div className="stat-foot">
-              {state && state.locked[0]
-                ? `unlocks ${dateLabel(state.locked[0].unlocksAt)}`
-                : "7-day hold after a period ends"}
-            </div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-label">Next payout</div>
-            <div className="stat-value">{state ? formatUsd(state.nextPayout.estimatedNano) : "…"}</div>
-            <div className="stat-foot">
               {state
-                ? `${dateLabel(state.nextPayout.date)} · in ${daysUntil(state.nextPayout.date, state.now)}d`
+                ? `${t("accruing", "начисляется")} · ${periodRange(state.current.start, state.current.end, lang)}`
                 : ""}
             </div>
           </div>
           <div className="stat-card">
-            <div className="stat-label">Unpaid total</div>
+            <div className="stat-label">{t("Locked", "Заблокировано")}</div>
+            <div className="stat-value">{state ? formatUsd(lockedTotal) : "…"}</div>
+            <div className="stat-foot">
+              {state && state.locked[0]
+                ? `${t("unlocks", "разблокируется")} ${dateLabel(state.locked[0].unlocksAt, lang)}`
+                : t("7-day hold after a period ends", "удержание 7 дней после окончания периода")}
+            </div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">{t("Next payout", "Следующая выплата")}</div>
+            <div className="stat-value">{state ? formatUsd(state.nextPayout.estimatedNano) : "…"}</div>
+            <div className="stat-foot">
+              {state
+                ? `${dateLabel(state.nextPayout.date, lang)} · ${t("in", "через")} ${daysUntil(state.nextPayout.date, state.now)}${t("d", " дн.")}`
+                : ""}
+            </div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">{t("Unpaid total", "Всего не выплачено")}</div>
             <div className="stat-value">{state ? formatUsd(state.unpaidNano) : "…"}</div>
-            <div className="stat-foot">{state ? `${formatUsd(state.lifetimePaidNano)} paid to date` : ""}</div>
+            <div className="stat-foot">
+              {state ? `${formatUsd(state.lifetimePaidNano)} ${t("paid to date", "выплачено на данный момент")}` : ""}
+            </div>
           </div>
         </div>
 
         <WalletCard wallet={wallet} onBound={setWallet} />
 
-        <Card title="How payouts work">
+        <Card title={t("How payouts work", "Как работают выплаты")}>
           <ul className="how-list">
             <li>
-              Earnings are counted in two periods each month: the <strong>1st–15th</strong> and the{" "}
-              <strong>16th–end</strong>.
+              {t("Earnings are counted in two periods each month: the ", "Заработок учитывается в двух периодах каждый месяц: ")}
+              <strong>{t("1st–15th", "с 1-го по 15-е")}</strong>
+              {t(" and the ", " и ")}
+              <strong>{t("16th–last day of the month", "с 16-го по последний день месяца")}</strong>.
             </li>
             <li>
-              After a period ends there is a <strong>7-day lock</strong>, then payouts are sent within
-              the next <strong>3 days</strong> — if you have a bound wallet and your balance is at least{" "}
-              <strong>{state ? formatUsd(state.minPayoutNano) : "the minimum"}</strong>.
+              {t("After a period ends there is a ", "После окончания периода действует ")}
+              <strong>{t("7-day lock", "7-дневная блокировка")}</strong>
+              {t(
+                ", then any earnings are sent to your wallet within the next ",
+                ", затем весь заработок отправляется на ваш кошелёк в течение следующих ",
+              )}
+              <strong>{t("3 days", "3 дней")}</strong>.
             </li>
             <li>
-              Below the minimum or no wallet? Nothing is lost — the amount rolls into your next payout
-              (so it may cover two periods at once).
+              {t(
+                "No wallet bound yet? Nothing is lost — your balance rolls into the next payout (so it may cover two periods at once).",
+                "Кошелёк ещё не привязан? Ничего не теряется — баланс переносится на следующую выплату (так что она может покрыть сразу два периода).",
+              )}
             </li>
-            {!wallet ? <li><strong>Bind your BSC wallet above to start receiving payouts.</strong></li> : null}
+            {!wallet ? (
+              <li>
+                <strong>
+                  {t(
+                    "Bind your BSC wallet above to start receiving payouts.",
+                    "Привяжите кошелёк BSC выше, чтобы начать получать выплаты.",
+                  )}
+                </strong>
+              </li>
+            ) : null}
           </ul>
         </Card>
 
-        <Card title="Period history" sub="What you earned in each half-month period and when it pays out.">
+        <Card
+          title={t("Period history", "История периодов")}
+          sub={t(
+            "What you earned in each half-month period and when it pays out.",
+            "Сколько вы заработали в каждом полумесячном периоде и когда это выплачивается.",
+          )}
+        >
           {!state ? (
             <Loading />
           ) : state.history.length === 0 ? (
-            <EmptyState title="No earnings yet">
-              Your period earnings will appear here once your referrals start spending.
+            <EmptyState title={t("No earnings yet", "Пока нет заработка")}>
+              {t(
+                "Your period earnings will appear here once your referrals start spending.",
+                "Ваш заработок по периодам появится здесь, как только рефералы начнут тратить.",
+              )}
             </EmptyState>
           ) : (
             <Table
               head={
                 <>
-                  <th>Period</th>
-                  <th className="num">Earned</th>
-                  <th>Status</th>
-                  <th>Payout date</th>
+                  <th>{t("Period", "Период")}</th>
+                  <th className="num">{t("Earned", "Заработано")}</th>
+                  <th>{t("Status", "Статус")}</th>
+                  <th>{t("Payout date", "Дата выплаты")}</th>
                 </>
               }
             >
@@ -249,10 +308,10 @@ export default function PayoutsPage() {
                 const badge = PHASE_BADGE[row.phase] ?? PHASE_BADGE.closed;
                 return (
                   <tr key={row.key}>
-                    <td>{periodRange(row.start, row.end)}</td>
+                    <td>{periodRange(row.start, row.end, lang)}</td>
                     <td className="num" style={{ fontWeight: 700 }}>{formatUsd(row.earnedNano)}</td>
-                    <td><Badge tone={badge!.tone}>{badge!.label}</Badge></td>
-                    <td>{dateLabel(row.payoutDate)}</td>
+                    <td><Badge tone={badge!.tone}>{t(badge!.en, badge!.ru)}</Badge></td>
+                    <td>{dateLabel(row.payoutDate, lang)}</td>
                   </tr>
                 );
               })}

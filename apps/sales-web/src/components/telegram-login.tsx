@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
 import { Button, Loading, Notice, Textarea } from "@/components/ui";
+import { useI18n } from "@/components/i18n";
 
 // Официальный Telegram Login Widget. Бот приходит с бэка (/v1/auth/telegram/config),
 // подписанный payload виджета отправляется на /v1/auth/telegram.
@@ -29,7 +30,12 @@ declare global {
 type Mode = "widget" | "apply" | "applied" | "pending";
 
 export function TelegramLogin({ inviteCode }: { inviteCode?: string | null }) {
+  const { t } = useI18n();
   const router = useRouter();
+  // Виджет TG настраивается один раз в useEffect — держим актуальный t через ref,
+  // чтобы сообщения об ошибках были на текущем языке даже после его смены.
+  const tRef = useRef(t);
+  tRef.current = t;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "unavailable">("loading");
   const [mode, setMode] = useState<Mode>("widget");
@@ -75,13 +81,21 @@ export function TelegramLogin({ inviteCode }: { inviteCode?: string | null }) {
           } else if (err instanceof ApiError && err.status === 403) {
             setError(
               inviteCode
-                ? "This invite was issued for a different Telegram account."
-                : "This Telegram account cannot sign in right now.",
+                ? tRef.current(
+                    "This invite was issued for a different Telegram account.",
+                    "Это приглашение было выписано на другой аккаунт Telegram.",
+                  )
+                : tRef.current(
+                    "This Telegram account cannot sign in right now.",
+                    "Этот аккаунт Telegram сейчас не может войти.",
+                  ),
             );
           } else if (err instanceof ApiError) {
             setError(err.message);
           } else {
-            setError("Something went wrong. Try again.");
+            setError(
+              tRef.current("Something went wrong. Try again.", "Что-то пошло не так. Попробуйте ещё раз."),
+            );
           }
         }
       };
@@ -117,7 +131,11 @@ export function TelegramLogin({ inviteCode }: { inviteCode?: string | null }) {
       }
       setMode("applied");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not submit the application. Try again.");
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : t("Could not submit the application. Try again.", "Не удалось отправить заявку. Попробуйте ещё раз."),
+      );
     } finally {
       setBusy(false);
     }
@@ -128,8 +146,14 @@ export function TelegramLogin({ inviteCode }: { inviteCode?: string | null }) {
       <div className="tg-login">
         <Notice kind="info">
           {mode === "applied"
-            ? "Application submitted. Once it is approved, just sign in with Telegram again — your account will be ready."
-            : "Your application is being reviewed. Once it is approved, sign in with Telegram again."}
+            ? t(
+                "Application submitted. Once it is approved, just sign in with Telegram again — your account will be ready.",
+                "Заявка отправлена. Как только её одобрят, просто войдите через Telegram снова — аккаунт будет готов.",
+              )
+            : t(
+                "Your application is being reviewed. Once it is approved, sign in with Telegram again.",
+                "Ваша заявка на рассмотрении. Как только её одобрят, войдите через Telegram снова.",
+              )}
         </Notice>
       </div>
     );
@@ -139,18 +163,23 @@ export function TelegramLogin({ inviteCode }: { inviteCode?: string | null }) {
     return (
       <div className="tg-login">
         <Notice kind="info">
-          No partner account for @{payload.username ?? `id${payload.id}`} yet. The program is
-          invite-only — apply for review and we will get back to you.
+          {t(
+            `No partner account for @${payload.username ?? `id${payload.id}`} yet. The program is invite-only — apply for review and we will get back to you.`,
+            `Партнёрского аккаунта для @${payload.username ?? `id${payload.id}`} пока нет. Программа работает по приглашениям — подайте заявку, и мы вернёмся к вам с ответом.`,
+          )}
         </Notice>
         {error ? <Notice kind="error">{error}</Notice> : null}
         <Textarea
           value={note}
           onChange={(e) => setNote(e.target.value)}
-          placeholder="Tell us where you would promote apitoken.sale (channels, audience, experience)…"
+          placeholder={t(
+            "Tell us where you would promote apitoken.sale (channels, audience, experience)…",
+            "Расскажите, где вы будете продвигать apitoken.sale (каналы, аудитория, опыт)…",
+          )}
           style={{ minHeight: 96, marginBottom: 12 }}
         />
         <Button onClick={submitApplication} loading={busy} style={{ width: "100%" }}>
-          Apply for review
+          {t("Apply for review", "Подать заявку")}
         </Button>
       </div>
     );
@@ -161,7 +190,12 @@ export function TelegramLogin({ inviteCode }: { inviteCode?: string | null }) {
       {error ? <Notice kind="error">{error}</Notice> : null}
       {state === "loading" ? <Loading /> : null}
       {state === "unavailable" ? (
-        <Notice kind="info">Telegram sign-in is not available right now. Try again later.</Notice>
+        <Notice kind="info">
+          {t(
+            "Telegram sign-in is not available right now. Try again later.",
+            "Вход через Telegram сейчас недоступен. Попробуйте позже.",
+          )}
+        </Notice>
       ) : null}
       <div ref={containerRef} className="tg-login-widget" aria-busy={busy} />
       {busy ? <Loading /> : null}

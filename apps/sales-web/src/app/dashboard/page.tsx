@@ -20,8 +20,10 @@ import {
   Notice,
 } from "@/components/ui";
 import { EarningsChart } from "@/components/earnings-chart";
+import { useI18n } from "@/components/i18n";
 
 export default function OverviewPage() {
+  const { t } = useI18n();
   const [overview, setOverview] = useState<Overview | null>(null);
   const [earnings, setEarnings] = useState<EarningRow[] | null>(null);
   const [recent, setRecent] = useState<ReferralRow[] | null>(null);
@@ -46,7 +48,7 @@ export default function OverviewPage() {
         );
       } catch (err) {
         if (!cancelled)
-          setError(err instanceof ApiError ? err.message : "Failed to load overview.");
+          setError(err instanceof ApiError ? err.message : t("Failed to load overview.", "Не удалось загрузить обзор."));
       }
     })();
     return () => {
@@ -55,99 +57,135 @@ export default function OverviewPage() {
   }, []);
 
   if (error) return <Notice kind="error">{error}</Notice>;
-  if (!overview || !earnings || !recent) return <Loading label="Loading overview…" />;
+  if (!overview || !earnings || !recent)
+    return <Loading label={t("Loading overview…", "Загружаем обзор…")} />;
 
   return (
     <>
-      <h1 className="page-title">Overview</h1>
+      <h1 className="page-title">{t("Overview", "Обзор")}</h1>
       <p className="page-sub">
-        You earn <strong>{formatBps(overview.commissionBps)}</strong> of what your referrals
-        actually spend on apitoken.sale — their real paid API usage, after their own discount.
-        Not their top-ups, not list price. Paid out in USDT (BEP-20).
+        {t("You earn ", "Вы получаете ")}
+        <strong>{formatBps(overview.commissionBps)}</strong>
+        {t(
+          " of what your referrals actually spend on apitoken.sale — their real paid API usage, after their own discount. Not their top-ups, not list price. Paid out in USDT (BEP-20).",
+          " от того, что ваши рефералы реально тратят на apitoken.sale — их фактически оплаченного использования API, после их собственной скидки. Не от пополнений и не от прайс-листа. Выплаты в USDT (BEP-20).",
+        )}
       </p>
 
       <div className="stat-grid">
         <div className="stat-card">
-          <div className="stat-label">Available</div>
+          <div className="stat-label">{t("Available", "Доступно")}</div>
           <div className="stat-value green">{formatUsd(overview.totals.availableNano)}</div>
           <div className="stat-foot">
-            {formatUsd(overview.totals.pendingPayoutNano)} pending payout
+            {formatUsd(overview.totals.pendingPayoutNano)} {t("pending payout", "ожидает выплаты")}
           </div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Total earned</div>
+          <div className="stat-label">{t("Total earned", "Всего заработано")}</div>
           <div className="stat-value">{formatUsd(overview.totals.earnedNano)}</div>
-          <div className="stat-foot">{formatUsd(overview.totals.paidNano)} paid out</div>
+          <div className="stat-foot">{formatUsd(overview.totals.paidNano)} {t("paid out", "выплачено")}</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Referred users</div>
+          <div className="stat-label">{t("Referred users", "Приглашённые пользователи")}</div>
           <div className="stat-value">{overview.referredUsers}</div>
           <div className="stat-foot">
-            {formatUsd(overview.last30d.spendNano)} spend in 30d
+            {formatUsd(overview.last30d.spendNano)} {t("spend in 30d", "расход за 30 дн.")}
           </div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Earned in 30d</div>
+          <div className="stat-label">{t("Earned in 30d", "Заработано за 30 дн.")}</div>
           <div className="stat-value">{formatUsd(overview.last30d.earnedNano)}</div>
-          <div className="stat-foot">rolling 30-day window</div>
+          <div className="stat-foot">{t("rolling 30-day window", "скользящее окно 30 дней")}</div>
         </div>
       </div>
 
       <div className="stack">
         <Card
-          title="Your referral link"
-          sub="Anyone who registers on apitoken.sale through this link is attributed to you permanently."
+          title={t("Your referral link", "Ваша реферальная ссылка")}
+          sub={t(
+            "Anyone who registers on apitoken.sale through this link is attributed to you permanently.",
+            "Каждый, кто зарегистрируется на apitoken.sale по этой ссылке, навсегда закрепляется за вами.",
+          )}
         >
           <div className="reflink-row">
             <Input readOnly value={overview.referralUrl} onFocus={(e) => e.currentTarget.select()} />
-            <CopyButton value={overview.referralUrl} label="Copy link" />
+            <CopyButton value={overview.referralUrl} label={t("Copy link", "Копировать ссылку")} />
           </div>
           <p className="field-hint" style={{ marginTop: 10 }}>
-            Referral code: <span className="mono">{overview.referralCode}</span>
+            {t("Referral code:", "Реферальный код:")} <span className="mono">{overview.referralCode}</span>
           </p>
         </Card>
 
-        <Card title="How your commission works">
+        <Card title={t("How your commission works", "Как работает ваша комиссия")}>
           <ul className="how-list">
             <li>
-              You earn <strong>{formatBps(overview.commissionBps)}</strong> of every dollar your
-              referrals <strong>actually pay</strong> for API usage on apitoken.sale.
+              {t("You earn ", "Вы получаете ")}
+              <strong>{formatBps(overview.commissionBps)}</strong>
+              {t(
+                " of every dollar your referrals ",
+                " с каждого доллара, который ваши рефералы ",
+              )}
+              <strong>{t("actually pay", "реально платят")}</strong>
+              {t(" for API usage on apitoken.sale.", " за использование API на apitoken.sale.")}
             </li>
             <li>
-              The base is their <strong>real spend</strong> — the amount charged after their own
-              tier discount. It is <strong>not</strong> their top-up amount and <strong>not</strong>{" "}
-              the full list price.
+              {t("The base is their ", "Основа — их ")}
+              <strong>{t("real spend", "фактический расход")}</strong>
+              {t(
+                " — the amount charged after their own tier discount. It is ",
+                " — сумма, списанная после их собственной скидки за тир. Это ",
+              )}
+              <strong>{t("not", "не")}</strong>
+              {t(" their top-up amount and ", " сумма их пополнения и ")}
+              <strong>{t("not", "не")}</strong>{" "}
+              {t("the full list price.", "полная цена по прайс-листу.")}
             </li>
             <li>
-              Example: a referral is charged <strong>$100</strong> for usage → you earn{" "}
+              {t("Example: a referral is charged ", "Пример: с реферала списали ")}
+              <strong>$100</strong>
+              {t(" for usage → you earn ", " за использование → вы получаете ")}
               <strong>{formatUsd((BigInt(overview.commissionBps) * 100n * 10n ** 9n / 10000n).toString())}</strong>.
             </li>
-            <li>Commission accrues as they spend and is paid out in USDT (BEP-20).</li>
+            <li>
+              {t(
+                "Commission accrues as they spend and is paid out in USDT (BEP-20).",
+                "Комиссия начисляется по мере их расходов и выплачивается в USDT (BEP-20).",
+              )}
+            </li>
           </ul>
         </Card>
 
         <Card
-          title="Last 30 days"
-          sub={`${formatUsd(overview.last30d.earnedNano)} earned on ${formatUsd(overview.last30d.spendNano)} of referral spend.`}
+          title={t("Last 30 days", "Последние 30 дней")}
+          sub={t(
+            `${formatUsd(overview.last30d.earnedNano)} earned on ${formatUsd(overview.last30d.spendNano)} of referral spend.`,
+            `${formatUsd(overview.last30d.earnedNano)} заработано с ${formatUsd(overview.last30d.spendNano)} расходов рефералов.`,
+          )}
         >
           <EarningsChart items={earnings} />
         </Card>
 
-        <Card title="Recent activity" sub="Latest referrals attributed to you.">
+        <Card
+          title={t("Recent activity", "Недавняя активность")}
+          sub={t("Latest referrals attributed to you.", "Последние рефералы, закреплённые за вами.")}
+        >
           {recent.length === 0 ? (
-            <EmptyState title="No referrals yet">
-              Share your link to start building your list.
+            <EmptyState title={t("No referrals yet", "Пока нет рефералов")}>
+              {t(
+                "Share your link to start building your list.",
+                "Поделитесь своей ссылкой, чтобы начать собирать базу.",
+              )}
             </EmptyState>
           ) : (
             <div className="activity-list">
               {recent.map((r) => (
                 <div className="activity-item" key={`${r.userMask}-${r.attributedAt}`}>
                   <span>
-                    <span className="mono">{r.userMask}</span> joined ·{" "}
+                    <span className="mono">{r.userMask}</span> {t("joined ·", "присоединился ·")}{" "}
                     <span style={{ color: "var(--accent-strong)" }}>
                       {formatUsd(r.earnedNano)}
                     </span>{" "}
-                    earned for you
+                    {t("earned for you", "заработано для вас")}
                   </span>
                   <span className="activity-date">{formatDate(r.attributedAt)}</span>
                 </div>
