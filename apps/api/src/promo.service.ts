@@ -43,14 +43,20 @@ export class PromoService {
     const key = this.config.get("SALES_CONTROL_KEY", { infer: true });
     if (!base || !key) throw new PromoError(503, "promo codes are not available right now");
 
+    // B2B-аккаунты (рефы партнёров) не подчиняются обычным правилам: промокоды им недоступны.
+    // Проверяем ДО резервирования кода в sales, чтобы не тратить впустую попытку.
+    const mapping = await getEngineAccountMapping(this.database, userId);
+    if (mapping?.customerType === "b2b") {
+      throw new PromoError(403, "promo codes are not available for this account");
+    }
+    if (!mapping?.engineAccountId || mapping.status !== "active") {
+      throw new PromoError(409, "your account is not ready to receive a promo credit yet");
+    }
+
     // 1) Атомарно погасить код в sales (резервирование). Идемпотентно по (code,user).
     const redeemed = await this.consumeInSales(base, key, code, userId);
 
     // 2) Кредитовать движок идемпотентно по redemptionRef (ретраи безопасны).
-    const mapping = await getEngineAccountMapping(this.database, userId);
-    if (!mapping?.engineAccountId || mapping.status !== "active") {
-      throw new PromoError(409, "your account is not ready to receive a promo credit yet");
-    }
     const valueNano = BigInt(redeemed.valueNano);
     let balance: string | undefined;
     let balanceNano: string | undefined;

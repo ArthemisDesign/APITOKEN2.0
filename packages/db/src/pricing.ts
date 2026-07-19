@@ -161,6 +161,75 @@ export async function setBusinessPricing(database: Database, input: {
   }
 }
 
+/**
+ * Флип пользователя, пришедшего ПО РЕФЕРАЛКЕ ПАРТНЁРА (сейлза), в B2B. Его аккаунт перестаёт
+ * подчиняться обычным правилам: тир-скидки/бонусы/промо на него не действуют (вся тир-логика
+ * фильтрует customer_type='b2c'; welcome-бонус и промо гейтятся отдельно), а цену задаёт скидка
+ * сейлза (≤90%). Мультипликатор доставляется в движок через durable engine_pricing_jobs (worker).
+ * Идемпотентно: если уже b2b с тем же мультипликатором — no-op. Вызывается ТОЛЬКО для партнёрских
+ * реф-кодов (обычная сайтовая рефка, если появится, сюда не идёт).
+ */
+export async function flipReferredUserToB2B(database: Database, input: {
+  userId: string;
+  referralDiscountBps: number; // 0..9000 (скидка ≤ 90%)
+  actorId: string;
+}): Promise<{ flipped: boolean; alreadyB2B: boolean; multiplierBp: number }> {
+  if (!Number.isInteger(input.referralDiscountBps) || input.referralDiscountBps < 0 || input.referralDiscountBps > 9000) {
+    throw new RangeError("referral discount must be an integer between 0 and 9000 bps (≤90%)");
+  }
+  const multiplierBp = 10_000 - input.referralDiscountBps; // скидка 90% → mult 1000 (10% от прайса)
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query<{
+      engine_account_id: string | null; customer_type: "b2c" | "b2b"; multiplier_bp: number;
+    }>(`
+      SELECT ea.engine_account_id, cp.customer_type, cp.multiplier_bp
+      FROM customer_profiles cp
+      JOIN engine_accounts ea ON ea.user_id = cp.user_id
+      WHERE cp.user_id = $1
+      FOR UPDATE OF cp, ea
+    `, [input.userId]);
+    const row = result.rows[0];
+    if (!row) {
+      await client.query("ROLLBACK");
+      return { flipped: false, alreadyB2B: false, multiplierBp };
+    }
+    if (row.customer_type === "b2b" && row.multiplier_bp === multiplierBp) {
+      await client.query("ROLLBACK");
+      return { flipped: false, alreadyB2B: true, multiplierBp };
+    }
+    // b2b ⇒ current_tier обязан быть NULL (customer_profiles_type_tier_check).
+    await client.query(`
+      UPDATE customer_profiles
+      SET customer_type = 'b2b', current_tier = NULL, multiplier_bp = $2, updated_at = now()
+      WHERE user_id = $1
+    `, [input.userId, multiplierBp]);
+    await client.query(`
+      UPDATE engine_accounts SET mult_bp = $2, updated_at = now() WHERE user_id = $1
+    `, [input.userId, multiplierBp]);
+    if (row.engine_account_id) {
+      await enqueuePricingJob(client, {
+        userId: input.userId,
+        engineAccountId: row.engine_account_id,
+        multiplierBp,
+        reason: "b2b_referral",
+      });
+    }
+    await client.query(`
+      INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+      VALUES ('system', $1, 'pricing.b2b_referral', 'user', $2, $3::jsonb)
+    `, [input.actorId, input.userId, JSON.stringify({ multiplierBp, referralDiscountBps: input.referralDiscountBps })]);
+    await client.query("COMMIT");
+    return { flipped: true, alreadyB2B: false, multiplierBp };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function listPricingSyncTargets(database: Database): Promise<PricingSyncTarget[]> {
   const result = await database.pool.query<{ user_id: string; engine_account_id: string }>(`
     SELECT cp.user_id, ea.engine_account_id

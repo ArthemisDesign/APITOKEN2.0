@@ -1,17 +1,23 @@
 import {
+  BadRequestException,
+  Body,
   CanActivate,
   Controller,
   ExecutionContext,
   Get,
+  HttpCode,
   Inject,
   Injectable,
   NotFoundException,
+  Post,
   Query,
   UnauthorizedException,
   UseGuards,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { z } from "zod";
 import {
+  flipReferredUserToB2B,
   listPaidTopupsAfter,
   listReferralAttributionsAfter,
   listUsageEventsAfter,
@@ -97,4 +103,28 @@ export class SalesFeedController {
       })),
     };
   }
+
+  /**
+   * Флип пользователя, пришедшего ПО РЕФЕРАЛКЕ ПАРТНЁРА, в B2B: его цену задаёт скидка сейлза
+   * (≤90%), обычные тир-скидки/бонусы/промо на него не действуют. Вызывает sales-api, когда
+   * атрибуция впервые закрепила юзера за партнёром. Идемпотентно. Только для партнёрских кодов —
+   * обычная сайтовая рефка (в будущем) сюда не идёт.
+   */
+  @Post("referral-b2b")
+  @HttpCode(200)
+  async referralB2B(@Body() body: unknown) {
+    const parsed = referralB2BSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException("invalid referral b2b payload");
+    const result = await flipReferredUserToB2B(this.database, {
+      userId: parsed.data.userId,
+      referralDiscountBps: parsed.data.referralDiscountBps,
+      actorId: "sales-referral",
+    });
+    return { flipped: result.flipped, alreadyB2B: result.alreadyB2B, multiplierBp: result.multiplierBp };
+  }
 }
+
+const referralB2BSchema = z.object({
+  userId: z.string().uuid(),
+  referralDiscountBps: z.number().int().min(0).max(9000),
+});

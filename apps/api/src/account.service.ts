@@ -34,10 +34,12 @@ export class AccountService {
       const mappingResult = await client.query<EngineAccountMappingRow>(`
         SELECT ea.engine_account_id, ea.status, ea.mult_bp,
                COALESCE(cp.customer_type, 'b2c') AS customer_type,
-               EXISTS (
+               -- Welcome-бонус — только обычным (b2c) провайдер-верифицированным аккаунтам.
+               -- B2B (рефы партнёров) под обычные бонусы не подпадают.
+               (COALESCE(cp.customer_type, 'b2c') = 'b2c' AND EXISTS (
                  SELECT 1 FROM auth_identities ai
                  WHERE ai.user_id = ea.user_id AND ai.provider IN ('google', 'github')
-               ) AS welcome_bonus_eligible
+               )) AS welcome_bonus_eligible
         FROM engine_accounts ea
         LEFT JOIN customer_profiles cp ON cp.user_id = ea.user_id
         WHERE ea.user_id = $1

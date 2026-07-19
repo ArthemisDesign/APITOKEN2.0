@@ -76,19 +76,48 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
     const after = await getSyncCursor(this.database, "attributions");
     const rows = await this.fetchFeed("attributions", `attributions?after_id=${after}&limit=500`, attributionSchema);
     if (!rows || rows.length === 0) return;
-    for (const row of rows) {
-      const partner = await findPartnerByReferralCode(this.database, row.code);
-      if (partner) {
-        await upsertReferredUser(this.database, {
-          commerceUserId: row.userId,
-          partnerId: partner.id,
-          referralCode: row.code,
-          attributedAt: row.createdAt,
-          sourceAttributionId: row.id,
-        });
+    // Продвигаем курсор только по успешно обработанным строкам (rows идут по возрастанию id).
+    // Флип в B2B идемпотентен; сбой останавливает батч (курсор до последней хорошей строки),
+    // чтобы упавшая строка повторилась на следующем тике — at-least-once, без head-of-line stall.
+    let lastOk = after;
+    try {
+      for (const row of rows) {
+        const partner = await findPartnerByReferralCode(this.database, row.code);
+        if (partner) {
+          await upsertReferredUser(this.database, {
+            commerceUserId: row.userId,
+            partnerId: partner.id,
+            referralCode: row.code,
+            attributedAt: row.createdAt,
+            sourceAttributionId: row.id,
+          });
+          // Реф ПАРТНЁРА → аккаунт становится B2B (цена по скидке сейлза, без обычных
+          // тир-скидок/бонусов/промо). Обычная сайтовая рефка (в будущем) сюда не попадёт —
+          // findPartnerByReferralCode матчит только партнёрские коды.
+          await this.flipReferralToB2B(row.userId, partner.referralDiscountBps);
+        }
+        lastOk = row.id;
       }
+    } finally {
+      if (lastOk !== after) await advanceSyncCursor(this.database, "attributions", lastOk);
     }
-    await advanceSyncCursor(this.database, "attributions", maxId(rows));
+  }
+
+  /** Просит commerce перевести реферала партнёра в B2B со скидкой сейлза. Идемпотентно. */
+  private async flipReferralToB2B(userId: string, referralDiscountBps: number): Promise<void> {
+    const base = this.config.get("COMMERCE_BASE_URL", { infer: true });
+    const url = new URL("/v1/internal/sales/referral-b2b", base);
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": this.config.get("SALES_CONTROL_KEY", { infer: true }),
+      },
+      body: JSON.stringify({ userId, referralDiscountBps }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    // 404 — эндпоинт ещё не задеплоен в commerce; повторим на следующем тике (курсор не двинется).
+    if (!response.ok) throw new Error(`referral-b2b flip responded ${response.status}`);
   }
 
   /**
