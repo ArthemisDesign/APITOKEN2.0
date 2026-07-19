@@ -69,6 +69,18 @@ export const adminPayoutsQuerySchema = z.object({
   status: z.enum(["requested", "approved", "paid", "rejected"]).optional(),
 });
 
+// Партнёр создаёт промокод на целое число USD.
+export const createPromoSchema = z.object({
+  valueUsd: z.coerce.number().int().positive().max(100_000),
+});
+
+// Админ включает промо партнёру и задаёт лимиты (номинал в USD, количество кодов).
+export const adminPromoSchema = z.object({
+  enabled: z.boolean(),
+  maxValueUsd: z.coerce.number().int().min(0).max(100_000),
+  maxCount: z.coerce.number().int().min(0).max(10_000),
+});
+
 export const adminApplicationsQuerySchema = z.object({
   status: z.enum(["pending", "approved", "rejected"]).optional(),
 });

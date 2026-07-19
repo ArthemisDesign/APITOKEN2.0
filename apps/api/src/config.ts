@@ -49,6 +49,8 @@ const environmentSchema = z.object({
   COMMERCIAL_ADMIN_KEY: z.string().min(32).optional(),
   // Ключ internal-фида для sales bounded context (sales.apitoken.sale). Не задан — фид выключен.
   SALES_CONTROL_KEY: z.string().min(32).optional(),
+  // База sales-api для обратного вызова (погашение промокодов). Не задано — промо выключено.
+  SALES_API_URL: z.string().url().optional(),
   DIGISELLER_SELLER_ID: z.coerce.number().int().positive().optional(),
   DIGISELLER_API_KEY: z.string().min(1).optional(),
   DIGISELLER_PRODUCT_ID: z.coerce.number().int().positive().optional(),

@@ -10,6 +10,8 @@ import { AccountModule } from "./account.module.js";
 import { AdminModule } from "./admin.module.js";
 import { SecurityModule } from "./security.module.js";
 import { SalesFeedModule } from "./sales-feed.module.js";
+import { PromoController } from "./promo.controller.js";
+import { PromoService } from "./promo.service.js";
 
 @Module({
   imports: [
@@ -22,7 +24,7 @@ import { SalesFeedModule } from "./sales-feed.module.js";
     PaymentsModule,
     SalesFeedModule,
   ],
-  controllers: [HealthController],
-  providers: [ReadinessService],
+  controllers: [HealthController, PromoController],
+  providers: [ReadinessService, PromoService],
 })
 export class AppModule {}

@@ -37,6 +37,9 @@ export interface PartnerView {
   subCommissionBps: number;
   payoutMethod: string | null;
   payoutDetails: unknown;
+  promoEnabled: boolean;
+  promoMaxValueNano: string;
+  promoMaxCount: number;
 }
 
 export interface PartnerSession {
@@ -229,6 +232,9 @@ export function partnerView(partner: Partner): PartnerView {
     subCommissionBps: partner.subCommissionBps,
     payoutMethod: partner.payoutMethod,
     payoutDetails: partner.payoutDetails,
+    promoEnabled: partner.promoEnabled,
+    promoMaxValueNano: partner.promoMaxValueNano.toString(),
+    promoMaxCount: partner.promoMaxCount,
   };
 }
 

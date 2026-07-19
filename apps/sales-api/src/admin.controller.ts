@@ -24,6 +24,7 @@ import {
   deletePartnerAdmin,
   getDuePayoutList,
   listApplications,
+  setPromoPermissions,
   ApplicationAlreadyDecidedError,
   PartnerHasHistoryError,
   ReferralCodeCollisionError,
@@ -48,6 +49,7 @@ import {
   adminPatchPartnerSchema,
   adminPayoutDecisionSchema,
   adminPayoutsQuerySchema,
+  adminPromoSchema,
 } from "./schemas.js";
 
 const uuidSchema = z.string().uuid();
@@ -97,9 +99,30 @@ export class AdminController {
         teamSize: partner.teamSize,
         earnedNano: partner.earnedNano.toString(),
         paidNano: partner.paidNano.toString(),
+        promoEnabled: partner.promoEnabled,
+        promoMaxValueNano: partner.promoMaxValueNano.toString(),
+        promoMaxCount: partner.promoMaxCount,
+        promoUsed: partner.promoUsed,
         createdAt: partner.createdAt.toISOString(),
       })),
     };
+  }
+
+  /** Включить/выключить промокоды партнёру и задать лимиты (номинал USD, количество). */
+  @Post("partners/:id/promo")
+  @HttpCode(200)
+  async setPromo(@Param("id") id: string, @Body() body: unknown): Promise<unknown> {
+    if (!uuidSchema.safeParse(id).success) throw new BadRequestException("invalid partner id");
+    const parsed = adminPromoSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException("invalid promo settings");
+    const ok = await setPromoPermissions(this.database, id, {
+      enabled: parsed.data.enabled,
+      maxValueNano: BigInt(parsed.data.maxValueUsd) * 1_000_000_000n,
+      maxCount: parsed.data.maxCount,
+      actorId: "sales-admin-key",
+    });
+    if (!ok) throw new NotFoundException("partner not found");
+    return { updated: true };
   }
 
   /**

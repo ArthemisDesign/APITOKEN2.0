@@ -6,6 +6,7 @@ import { validateEnvironment } from "./config.js";
 import { EmailService } from "./email.service.js";
 import { HealthController } from "./health.controller.js";
 import { InfrastructureModule } from "./infrastructure.module.js";
+import { InternalModule } from "./internal.module.js";
 import { PartnerModule } from "./partner.module.js";
 import { ReadinessService } from "./readiness.service.js";
 import { SyncService } from "./sync.service.js";
@@ -17,6 +18,7 @@ import { SyncService } from "./sync.service.js";
     AuthModule,
     PartnerModule,
     AdminModule,
+    InternalModule,
   ],
   controllers: [HealthController],
   providers: [ReadinessService, SyncService, EmailService],

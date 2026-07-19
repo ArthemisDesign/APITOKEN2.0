@@ -20,6 +20,9 @@ export interface Partner {
   subCommissionBps: number;
   payoutMethod: string | null;
   payoutDetails: unknown;
+  promoEnabled: boolean;
+  promoMaxValueNano: bigint;
+  promoMaxCount: number;
   createdAt: Date;
 }
 
@@ -47,13 +50,17 @@ interface PartnerRow {
   sub_commission_bps: number;
   payout_method: string | null;
   payout_details: unknown;
+  promo_enabled: boolean;
+  promo_max_value_nano: string;
+  promo_max_count: number;
   created_at: Date;
 }
 
 const PARTNER_COLUMNS = `
   id, email, display_name, password_hash, telegram_id, telegram_username, telegram_photo_url,
   status, email_verified, referral_code,
-  parent_partner_id, commission_bps, sub_commission_bps, payout_method, payout_details, created_at
+  parent_partner_id, commission_bps, sub_commission_bps, payout_method, payout_details,
+  promo_enabled, promo_max_value_nano::text AS promo_max_value_nano, promo_max_count, created_at
 `;
 
 function mapPartner(row: PartnerRow): PasswordPartner {
@@ -73,6 +80,9 @@ function mapPartner(row: PartnerRow): PasswordPartner {
     subCommissionBps: row.sub_commission_bps,
     payoutMethod: row.payout_method,
     payoutDetails: row.payout_details,
+    promoEnabled: row.promo_enabled,
+    promoMaxValueNano: BigInt(row.promo_max_value_nano),
+    promoMaxCount: row.promo_max_count,
     createdAt: row.created_at,
   };
 }

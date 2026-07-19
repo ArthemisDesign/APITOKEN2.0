@@ -1,14 +1,20 @@
+import { randomBytes } from "node:crypto";
 import {
   BadRequestException,
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Header,
+  HttpCode,
   Inject,
+  NotFoundException,
+  Param,
   Patch,
   Post,
   Query,
   UnauthorizedException,
+  UnprocessableEntityException,
   UseGuards,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
@@ -25,7 +31,13 @@ import {
   getPartnerPeriodState,
   getPartnerPeriodHistory,
   updatePartnerSettings,
+  createPromoCode,
+  listPartnerPromoCodes,
+  disablePromoCode,
   InviteCodeCollisionError,
+  PromoNotAllowedError,
+  PromoLimitError,
+  PromoCodeCollisionError,
   type SalesDatabase,
 } from "@claude-api/sales-db";
 import type { Environment } from "./config.js";
@@ -35,6 +47,7 @@ import { normalizeTelegramUsername } from "./telegram.js";
 import { SALES_DATABASE } from "./infrastructure.module.js";
 import {
   createInviteSchema,
+  createPromoSchema,
   earningsQuerySchema,
   updateSettingsSchema,
   walletSchema,
@@ -42,6 +55,14 @@ import {
 
 const INVITE_TTL_DAYS = 30;
 const PAYOUT_METHOD = "usdt-bep20";
+const PROMO_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // без похожих 0O1I
+
+function generatePromoCode(): string {
+  const bytes = randomBytes(8);
+  let code = "";
+  for (let i = 0; i < 8; i += 1) code += PROMO_ALPHABET[bytes[i]! % PROMO_ALPHABET.length];
+  return code;
+}
 
 /** Адрес из привязанного кошелька партнёра (payout_details.address, сеть BSC). */
 function boundWallet(partner: { payoutMethod: string | null; payoutDetails: unknown }): string | null {
@@ -222,6 +243,59 @@ export class PartnerController {
       windowDays: 3,
       history,
     };
+  }
+
+  /** Промокоды партнёра. Доступно, только если админ включил промо и задал лимиты. */
+  @Get("promo-codes")
+  @Header("Cache-Control", "no-store")
+  async listPromo(@CurrentAuth() current: RequestAuth): Promise<unknown> {
+    const codes = await listPartnerPromoCodes(this.database, current.partner.id);
+    return {
+      enabled: current.partner.promoEnabled,
+      maxValueNano: current.partner.promoMaxValueNano.toString(),
+      maxCount: current.partner.promoMaxCount,
+      redeemUrl: `${new URL(this.config.get("PUBLIC_MAIN_SITE_URL", { infer: true })).origin}/dashboard?promo=`,
+      items: codes.map((c) => ({
+        id: c.id,
+        code: c.code,
+        valueNano: c.valueNano.toString(),
+        status: c.status,
+        redeemedAt: c.redeemedAt?.toISOString() ?? null,
+        createdAt: c.createdAt.toISOString(),
+      })),
+    };
+  }
+
+  @Post("promo-codes")
+  @HttpCode(201)
+  async createPromo(@CurrentAuth() current: RequestAuth, @Body() body: unknown): Promise<unknown> {
+    const parsed = createPromoSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException("invalid promo value");
+    const valueNano = BigInt(parsed.data.valueUsd) * 1_000_000_000n;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        const promo = await createPromoCode(this.database, {
+          partnerId: current.partner.id,
+          code: generatePromoCode(),
+          valueNano,
+        });
+        return { id: promo.id, code: promo.code, valueNano: promo.valueNano.toString(), status: promo.status };
+      } catch (error) {
+        if (error instanceof PromoCodeCollisionError && attempt < 5) continue;
+        if (error instanceof PromoNotAllowedError) throw new ForbiddenException(error.message);
+        if (error instanceof PromoLimitError) throw new UnprocessableEntityException(error.message);
+        throw error;
+      }
+    }
+  }
+
+  @Post("promo-codes/:id/disable")
+  @HttpCode(200)
+  async disablePromo(@CurrentAuth() current: RequestAuth, @Param("id") id: string): Promise<unknown> {
+    if (!/^[0-9a-f-]{36}$/.test(id)) throw new BadRequestException("invalid promo id");
+    const ok = await disablePromoCode(this.database, current.partner.id, id);
+    if (!ok) throw new NotFoundException("promo code not found or already used");
+    return { disabled: true };
   }
 
   /** Привязка/смена кошелька: единственная поддерживаемая сеть — BSC (BEP-20). */

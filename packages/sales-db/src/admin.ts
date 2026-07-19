@@ -54,6 +54,10 @@ export interface AdminPartnerSummary {
   teamSize: number;
   earnedNano: bigint;
   paidNano: bigint;
+  promoEnabled: boolean;
+  promoMaxValueNano: bigint;
+  promoMaxCount: number;
+  promoUsed: number;
   createdAt: Date;
 }
 
@@ -63,11 +67,15 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
     status: PartnerStatus;
     email_verified: boolean; referral_code: string; commission_bps: number; sub_commission_bps: number;
     parent_partner_id: string | null; parent_email: string | null; parent_telegram_username: string | null;
-    referred_users: string; team_size: string; earned: string; paid: string; created_at: Date;
+    referred_users: string; team_size: string; earned: string; paid: string;
+    promo_enabled: boolean; promo_max_value_nano: string; promo_max_count: number; promo_used: string;
+    created_at: Date;
   }>(`
     SELECT p.id, p.email, p.telegram_username, p.display_name, p.status, p.email_verified, p.referral_code,
       p.commission_bps, p.sub_commission_bps, p.parent_partner_id, parent.email AS parent_email,
       parent.telegram_username AS parent_telegram_username,
+      p.promo_enabled, p.promo_max_value_nano::text AS promo_max_value_nano, p.promo_max_count,
+      (SELECT count(*) FROM promo_codes pc WHERE pc.partner_id = p.id)::text AS promo_used,
       (SELECT count(*) FROM referred_users ru WHERE ru.partner_id = p.id)::text AS referred_users,
       (SELECT count(*) FROM partners child WHERE child.parent_partner_id = p.id)::text AS team_size,
       COALESCE((SELECT SUM(amount_nano) FROM commission_entries ce WHERE ce.partner_id = p.id), 0)::text AS earned,
@@ -94,6 +102,10 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
     teamSize: Number(row.team_size),
     earnedNano: BigInt(row.earned),
     paidNano: BigInt(row.paid),
+    promoEnabled: row.promo_enabled,
+    promoMaxValueNano: BigInt(row.promo_max_value_nano),
+    promoMaxCount: row.promo_max_count,
+    promoUsed: Number(row.promo_used),
     createdAt: row.created_at,
   }));
 }

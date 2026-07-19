@@ -24,6 +24,7 @@ export const partnerAuthTokenPurpose = pgEnum("partner_auth_token_purpose", ["ve
 export const partnerEmailStatus = pgEnum("partner_email_status", ["pending", "sending", "sent", "failed"]);
 export const payoutStatus = pgEnum("payout_status", ["requested", "approved", "paid", "rejected"]);
 export const partnerApplicationStatus = pgEnum("partner_application_status", ["pending", "approved", "rejected"]);
+export const promoCodeStatus = pgEnum("promo_code_status", ["active", "redeemed", "disabled"]);
 
 export const partners = pgTable("partners", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -43,6 +44,11 @@ export const partners = pgTable("partners", {
   subCommissionBps: integer("sub_commission_bps").notNull().default(1000),
   payoutMethod: text("payout_method"),
   payoutDetails: jsonb("payout_details"),
+  // Промокоды: по умолчанию доступа нет. Админ включает и задаёт лимиты — макс. номинал кода
+  // и макс. количество кодов, которые партнёр может создать.
+  promoEnabled: boolean("promo_enabled").notNull().default(false),
+  promoMaxValueNano: bigint("promo_max_value_nano", { mode: "bigint" }).notNull().default(sql`0`),
+  promoMaxCount: integer("promo_max_count").notNull().default(0),
   createdAt,
   updatedAt,
 }, (table) => [
@@ -145,6 +151,28 @@ export const partnerApplications = pgTable("partner_applications", {
 }, (table) => [
   uniqueIndex("partner_applications_pending_tg_uidx").on(table.telegramId).where(sql`${table.status} = 'pending'`),
   index("partner_applications_status_idx").on(table.status, table.createdAt),
+]);
+
+// Промокоды партнёра. Одноразовые: код погашается один раз, кредитует юзеру наш баланс на
+// value_nano. Погашение — через internal-эндпоинт (commerce → sales-api). Один юзер может
+// погасить не более одного промо (redeemed_by уникален).
+export const promoCodes = pgTable("promo_codes", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  partnerId: uuid("partner_id").notNull().references(() => partners.id, { onDelete: "restrict" }),
+  code: text("code").notNull(),
+  valueNano: bigint("value_nano", { mode: "bigint" }).notNull(),
+  status: promoCodeStatus("status").notNull().default("active"),
+  redeemedByCommerceUserId: uuid("redeemed_by_commerce_user_id"),
+  redeemedAt: timestamp("redeemed_at", { withTimezone: true }),
+  // Идемпотентный ref для кредита движка на стороне commerce.
+  redemptionRef: text("redemption_ref"),
+  createdAt,
+}, (table) => [
+  uniqueIndex("promo_codes_code_uidx").on(sql`upper(${table.code})`),
+  uniqueIndex("promo_codes_redemption_ref_uidx").on(table.redemptionRef).where(sql`${table.redemptionRef} IS NOT NULL`),
+  uniqueIndex("promo_codes_redeemed_by_uidx").on(table.redeemedByCommerceUserId).where(sql`${table.redeemedByCommerceUserId} IS NOT NULL`),
+  index("promo_codes_partner_idx").on(table.partnerId, table.createdAt),
+  check("promo_codes_value_check", sql`${table.valueNano} > 0`),
 ]);
 
 export const referredUsers = pgTable("referred_users", {
