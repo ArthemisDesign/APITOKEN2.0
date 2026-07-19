@@ -8,10 +8,13 @@ export default function LoginPage() {
   return (
     <AuthShell>
       <h1>Partner sign in</h1>
-      <p className="auth-sub">Sign in with the Telegram account your partner profile is linked to.</p>
+      <p className="auth-sub">
+        Invite-only program. If your Telegram was invited or approved, you&rsquo;ll get straight
+        in; otherwise you can apply for review.
+      </p>
       <TelegramLogin />
       <p className="auth-alt">
-        Have an invite? <Link href="/register">Join with your invite link</Link>
+        New here? <Link href="/register">Apply to join</Link>
       </p>
     </AuthShell>
   );

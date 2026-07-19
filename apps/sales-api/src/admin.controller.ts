@@ -18,7 +18,11 @@ import { z } from "zod";
 import { ConfigService } from "@nestjs/config";
 import {
   createPartnerInvite,
+  decideApplication,
   decidePayout,
+  listApplications,
+  ApplicationAlreadyDecidedError,
+  ReferralCodeCollisionError,
   getSalesOverview,
   listPartnersWithAggregates,
   listPayouts,
@@ -34,6 +38,8 @@ import { generateCode } from "./auth.service.js";
 import { SALES_DATABASE } from "./infrastructure.module.js";
 import { normalizeTelegramUsername } from "./telegram.js";
 import {
+  adminApplicationDecisionSchema,
+  adminApplicationsQuerySchema,
   adminCreateInviteSchema,
   adminPatchPartnerSchema,
   adminPayoutDecisionSchema,
@@ -90,6 +96,57 @@ export class AdminController {
         createdAt: partner.createdAt.toISOString(),
       })),
     };
+  }
+
+  /** Заявки «с улицы» (вход через Telegram без инвайта). */
+  @Get("applications")
+  @Header("Cache-Control", "no-store")
+  async applications(@Query() query: unknown): Promise<unknown> {
+    const parsed = adminApplicationsQuerySchema.safeParse(query ?? {});
+    if (!parsed.success) throw new BadRequestException("invalid applications query");
+    const applications = await listApplications(this.database, parsed.data.status ?? null);
+    return {
+      items: applications.map((application) => ({
+        id: application.id,
+        telegramUsername: application.telegramUsername,
+        displayName: application.displayName,
+        note: application.note,
+        status: application.status,
+        adminNote: application.adminNote,
+        createdAt: application.createdAt.toISOString(),
+        decidedAt: application.decidedAt?.toISOString() ?? null,
+      })),
+    };
+  }
+
+  /** Approve создаёт активного партнёра сразу (вход у человека заработает мгновенно). */
+  @Post("applications/:id/decision")
+  @HttpCode(200)
+  async decideApplicationEndpoint(@Param("id") id: string, @Body() body: unknown): Promise<unknown> {
+    if (!uuidSchema.safeParse(id).success) throw new BadRequestException("invalid application id");
+    const parsed = adminApplicationDecisionSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException("invalid application decision");
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        const result = await decideApplication(this.database, {
+          applicationId: id,
+          action: parsed.data.action,
+          referralCode: generateCode(8),
+          commissionBps: parsed.data.commissionBps ?? this.config.get("DEFAULT_COMMISSION_BPS", { infer: true }),
+          subCommissionBps: parsed.data.subCommissionBps ?? this.config.get("DEFAULT_SUB_COMMISSION_BPS", { infer: true }),
+          adminNote: parsed.data.note ?? null,
+          actorId: "sales-admin-key",
+        });
+        return {
+          application: { id: result.application.id, status: result.application.status },
+          partnerId: result.partnerId,
+        };
+      } catch (error) {
+        if (error instanceof ReferralCodeCollisionError && attempt < 5) continue;
+        if (error instanceof ApplicationAlreadyDecidedError) throw new UnprocessableEntityException(error.message);
+        throw error;
+      }
+    }
   }
 
   /** Онбординг сейлза верхнего уровня: инвайт без родителя, привязанный к telegram. */

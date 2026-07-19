@@ -23,6 +23,7 @@ export const partnerStatus = pgEnum("partner_status", ["active", "suspended", "p
 export const partnerAuthTokenPurpose = pgEnum("partner_auth_token_purpose", ["verify_email", "reset_password"]);
 export const partnerEmailStatus = pgEnum("partner_email_status", ["pending", "sending", "sent", "failed"]);
 export const payoutStatus = pgEnum("payout_status", ["requested", "approved", "paid", "rejected"]);
+export const partnerApplicationStatus = pgEnum("partner_application_status", ["pending", "approved", "rejected"]);
 
 export const partners = pgTable("partners", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -125,6 +126,25 @@ export const partnerInvites = pgTable("partner_invites", {
   index("partner_invites_partner_idx").on(table.partnerId, table.createdAt),
   check("partner_invites_commission_bps_check", sql`${table.commissionBps} IS NULL OR ${table.commissionBps} BETWEEN 0 AND 10000`),
   check("partner_invites_sub_commission_bps_check", sql`${table.subCommissionBps} IS NULL OR ${table.subCommissionBps} BETWEEN 0 AND 10000`),
+]);
+
+// Заявки «с улицы»: подписанный Telegram-вход без аккаунта и инвайта → заявка на
+// рассмотрение. Approve создаёт партнёра сразу (telegram_id уже проверен подписью).
+export const partnerApplications = pgTable("partner_applications", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  telegramId: bigint("telegram_id", { mode: "bigint" }).notNull(),
+  telegramUsername: text("telegram_username"),
+  displayName: text("display_name"),
+  telegramPhotoUrl: text("telegram_photo_url"),
+  note: text("note"),
+  status: partnerApplicationStatus("status").notNull().default("pending"),
+  adminNote: text("admin_note"),
+  createdPartnerId: uuid("created_partner_id").references(() => partners.id, { onDelete: "restrict" }),
+  createdAt,
+  decidedAt: timestamp("decided_at", { withTimezone: true }),
+}, (table) => [
+  uniqueIndex("partner_applications_pending_tg_uidx").on(table.telegramId).where(sql`${table.status} = 'pending'`),
+  index("partner_applications_status_idx").on(table.status, table.createdAt),
 ]);
 
 export const referredUsers = pgTable("referred_users", {

@@ -21,16 +21,17 @@ import { ConfigService } from "@nestjs/config";
 import type { Environment } from "./config.js";
 import { CurrentAuth, type RequestAuth, SessionAuthGuard, sessionCookieName } from "./auth.guard.js";
 import {
+  ApplicationPendingError,
   AuthRateLimitedError,
   AuthService,
   InvalidInviteError,
-  InviteRequiredError,
+  NoAccountError,
   PartnerSuspendedError,
   TelegramAuthDisabledError,
   TelegramSignatureError,
   type PartnerSession,
 } from "./auth.service.js";
-import { inviteCodeSchema, telegramAuthSchema } from "./schemas.js";
+import { inviteCodeSchema, telegramApplySchema, telegramAuthSchema } from "./schemas.js";
 
 interface ReplyLike { header(name: string, value: string | string[]): void }
 interface RequestLike { headers: Record<string, string | string[] | undefined>; ip?: string }
@@ -75,9 +76,34 @@ export class AuthController {
     } catch (error) {
       if (error instanceof TelegramAuthDisabledError) throw new ServiceUnavailableException(error.message);
       if (error instanceof TelegramSignatureError) throw new UnauthorizedException(error.message);
-      if (error instanceof InviteRequiredError) throw new ForbiddenException(error.message);
+      // code — машиночитаемый маркер для фронта: no_account → предложить заявку,
+      // application_pending → показать «на рассмотрении».
+      if (error instanceof NoAccountError) {
+        throw new ForbiddenException({ code: "no_account", message: error.message });
+      }
+      if (error instanceof ApplicationPendingError) {
+        throw new ForbiddenException({ code: "application_pending", message: error.message });
+      }
       if (error instanceof InvalidInviteError) throw new BadRequestException(error.message);
       if (error instanceof PartnerSuspendedError) throw new ForbiddenException(error.message);
+      if (error instanceof AuthRateLimitedError) throw new HttpException(error.message, HttpStatus.TOO_MANY_REQUESTS);
+      throw error;
+    }
+  }
+
+  /** Заявка в программу: тот же подписанный payload виджета + свободный текст. */
+  @Post("apply")
+  @HttpCode(200)
+  async apply(@Body() body: unknown, @Req() request: RequestLike): Promise<unknown> {
+    const parsed = telegramApplySchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException("invalid application payload");
+    const { note, ...payload } = parsed.data;
+    try {
+      const result = await this.auth.apply({ payload, note: note ?? null, ipAddress: request.ip ?? null });
+      return result;
+    } catch (error) {
+      if (error instanceof TelegramAuthDisabledError) throw new ServiceUnavailableException(error.message);
+      if (error instanceof TelegramSignatureError) throw new UnauthorizedException(error.message);
       if (error instanceof AuthRateLimitedError) throw new HttpException(error.message, HttpStatus.TOO_MANY_REQUESTS);
       throw error;
     }

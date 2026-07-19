@@ -39,12 +39,13 @@ function RegisterCard() {
       <>
         <h1>Join APIToken Partners</h1>
         <p className="auth-sub">
-          The partner program is invite-only. Open the personal invite link you received to join
-          — or sign in if you already have an account.
+          The program is invite-only. If you were invited or approved, signing in with Telegram
+          is enough — your account opens automatically. New here? Sign in and apply for review.
         </p>
-        <Link href="/login" className="btn btn-primary" style={{ width: "100%" }}>
-          Sign in with Telegram
-        </Link>
+        <TelegramLogin />
+        <p className="auth-alt">
+          Already a partner? <Link href="/login">Sign in</Link>
+        </p>
       </>
     );
   }

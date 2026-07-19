@@ -23,6 +23,10 @@ export const telegramAuthSchema = z.object({
   inviteCode: inviteCodeSchema.optional(),
 });
 
+export const telegramApplySchema = telegramAuthSchema.omit({ inviteCode: true }).extend({
+  note: z.string().trim().min(1).max(2000).optional(),
+});
+
 export const createInviteSchema = z.object({
   telegramUsername: telegramUsernameSchema,
   commissionBps: commissionBpsSchema.optional(),
@@ -66,4 +70,15 @@ export const earningsQuerySchema = z.object({
 
 export const adminPayoutsQuerySchema = z.object({
   status: z.enum(["requested", "approved", "paid", "rejected"]).optional(),
+});
+
+export const adminApplicationsQuerySchema = z.object({
+  status: z.enum(["pending", "approved", "rejected"]).optional(),
+});
+
+export const adminApplicationDecisionSchema = z.object({
+  action: z.enum(["approve", "reject"]),
+  commissionBps: commissionBpsSchema.optional(),
+  subCommissionBps: commissionBpsSchema.optional(),
+  note: z.string().trim().min(1).max(2000).optional(),
 });

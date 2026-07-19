@@ -7,15 +7,15 @@ export default function Landing() {
       <div className="gate-card">
         <Brand />
         <p>
-          Partner program for apitoken.sale — earn a share of what your
-          referrals spend.
+          Invite-only partner program for apitoken.sale — earn a share of what
+          your referrals spend.
         </p>
         <div className="gate-actions">
-          <Link href="/register" className="btn btn-primary btn-lg">
-            Create account
+          <Link href="/login" className="btn btn-primary btn-lg">
+            Sign in with Telegram
           </Link>
-          <Link href="/login" className="btn btn-ghost btn-lg">
-            Sign in
+          <Link href="/register" className="btn btn-ghost btn-lg">
+            Apply to join
           </Link>
         </div>
       </div>

@@ -494,6 +494,150 @@ function PayoutsTab({ adminKey }: { adminKey: string }) {
 // Onboarding tab — корневые инвайты, привязанные к telegram-юзернейму
 // ---------------------------------------------------------------------------
 
+type AdminApplicationRow = {
+  id: string;
+  telegramUsername: string | null;
+  displayName: string | null;
+  note: string | null;
+  status: string;
+  adminNote: string | null;
+  createdAt: string;
+  decidedAt: string | null;
+};
+
+function ApplicationRowView({
+  application,
+  adminKey,
+  onDone,
+  onError,
+}: {
+  application: AdminApplicationRow;
+  adminKey: string;
+  onDone: () => void;
+  onError: (msg: string) => void;
+}) {
+  const [bps, setBps] = useState("");
+  const [subBps, setSubBps] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function decide(action: "approve" | "reject") {
+    setBusy(true);
+    try {
+      await api(`/v1/admin/applications/${application.id}/decision`, {
+        method: "POST",
+        headers: adminHeaders(adminKey),
+        body: {
+          action,
+          ...(/^\d+$/.test(bps) ? { commissionBps: Number(bps) } : {}),
+          ...(/^\d+$/.test(subBps) ? { subCommissionBps: Number(subBps) } : {}),
+        },
+      });
+      onDone();
+    } catch (err) {
+      onError(err instanceof ApiError ? err.message : "Decision failed.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <tr>
+      <td>
+        <div style={{ fontWeight: 600 }}>
+          {application.telegramUsername ? `@${application.telegramUsername}` : "—"}
+        </div>
+        {application.displayName ? (
+          <div style={{ fontSize: 12, color: "var(--text-faint)" }}>{application.displayName}</div>
+        ) : null}
+      </td>
+      <td style={{ maxWidth: 320, whiteSpace: "pre-wrap" }}>{application.note ?? "—"}</td>
+      <td>{formatDate(application.createdAt)}</td>
+      <td>
+        <div className="row-actions">
+          <Input
+            className="inline-edit"
+            inputMode="numeric"
+            value={bps}
+            onChange={(e) => setBps(e.target.value.replace(/[^\d]/g, ""))}
+            placeholder="bps"
+            aria-label="Commission bps"
+            style={{ maxWidth: 90 }}
+          />
+          <Input
+            className="inline-edit"
+            inputMode="numeric"
+            value={subBps}
+            onChange={(e) => setSubBps(e.target.value.replace(/[^\d]/g, ""))}
+            placeholder="sub"
+            aria-label="Sub-commission bps"
+            style={{ maxWidth: 90 }}
+          />
+          <Button size="sm" disabled={busy} onClick={() => decide("approve")}>
+            Approve
+          </Button>
+          <Button size="sm" variant="danger" disabled={busy} onClick={() => decide("reject")}>
+            Reject
+          </Button>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function ApplicationsCard({ adminKey }: { adminKey: string }) {
+  const [items, setItems] = useState<AdminApplicationRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await api<{ items: AdminApplicationRow[] }>("/v1/admin/applications?status=pending", {
+        headers: adminHeaders(adminKey),
+      });
+      setItems(res.items);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to load applications.");
+    }
+  }, [adminKey]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  return (
+    <Card
+      title="Applications"
+      sub="People who signed in with Telegram without an invite and applied. Approve creates the partner account instantly."
+    >
+      {error ? <Notice kind="error">{error}</Notice> : null}
+      {!items ? (
+        <Loading />
+      ) : items.length === 0 ? (
+        <EmptyState title="No pending applications" />
+      ) : (
+        <Table
+          head={
+            <>
+              <th>Telegram</th>
+              <th>Application</th>
+              <th>Submitted</th>
+              <th>Decision (bps optional)</th>
+            </>
+          }
+        >
+          {items.map((application) => (
+            <ApplicationRowView
+              key={application.id}
+              application={application}
+              adminKey={adminKey}
+              onDone={load}
+              onError={setError}
+            />
+          ))}
+        </Table>
+      )}
+    </Card>
+  );
+}
+
 function OnboardingTab({ adminKey }: { adminKey: string }) {
   const [items, setItems] = useState<InviteRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -550,6 +694,7 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
 
   return (
     <div className="stack">
+      <ApplicationsCard adminKey={adminKey} />
       <Card
         title="Onboard a sales partner"
         sub="Invite is bound to their Telegram username. Send them the link — they sign in with Telegram and the account is created."

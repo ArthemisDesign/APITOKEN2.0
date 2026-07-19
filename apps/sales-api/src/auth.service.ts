@@ -8,6 +8,9 @@ import {
   createTelegramPartner,
   findTelegramPartner,
   getActiveInviteByCode,
+  getActiveInviteByTelegramUsername,
+  getPendingApplicationByTelegramId,
+  submitApplication,
   resolvePartnerSession,
   revokePartnerSession,
   InvalidInviteError,
@@ -47,7 +50,8 @@ export class PartnerSuspendedError extends Error {}
 export class AuthRateLimitedError extends Error {}
 export class TelegramAuthDisabledError extends Error {}
 export class TelegramSignatureError extends Error {}
-export class InviteRequiredError extends Error {}
+export class NoAccountError extends Error {}
+export class ApplicationPendingError extends Error {}
 export { InvalidInviteError };
 
 @Injectable()
@@ -63,8 +67,10 @@ export class AuthService {
 
   /**
    * Единственная точка входа: подписанный payload Telegram Login Widget.
-   * Существующий telegram_id → сессия. Новый — только по валидному инвайту,
-   * чей telegram_username совпал; партнёр создаётся сразу active.
+   * Существующий telegram_id → сессия. Иначе аккаунт создаётся по инвайту:
+   * явному (?invite=) или автоматически найденному по @username (онбординг
+   * «просто войди»). Нет инвайта → NoAccountError (фронт предложит заявку),
+   * а если заявка уже подана — ApplicationPendingError.
    */
   async telegramLogin(input: {
     payload: TelegramLoginPayload;
@@ -86,18 +92,54 @@ export class AuthService {
       await clearPartnerRateLimit(this.database, keys);
       return this.issueSession(existing, input.userAgent, input.ipAddress);
     }
-    if (!input.inviteCode) throw new InviteRequiredError("no partner account for this telegram; an invite is required");
-    // Ранняя проверка (читаемая ошибка до транзакции); авторитетная — в createTelegramPartner.
-    const invite = await getActiveInviteByCode(this.database, input.inviteCode);
-    if (!invite) throw new InvalidInviteError("invite code is invalid or expired");
-    const partner = await this.createFromInvite(input);
+    let inviteCode = input.inviteCode;
+    if (inviteCode) {
+      // Ранняя проверка (читаемая ошибка до транзакции); авторитетная — в createTelegramPartner.
+      const invite = await getActiveInviteByCode(this.database, inviteCode);
+      if (!invite) throw new InvalidInviteError("invite code is invalid or expired");
+    } else {
+      const username = normalizeTelegramUsername(input.payload.username);
+      const matched = username ? await getActiveInviteByTelegramUsername(this.database, username) : null;
+      if (matched) {
+        inviteCode = matched.code;
+      } else {
+        if (await getPendingApplicationByTelegramId(this.database, input.payload.id)) {
+          throw new ApplicationPendingError("your application is being reviewed");
+        }
+        throw new NoAccountError("no partner account for this telegram");
+      }
+    }
+    const partner = await this.createFromInvite({ payload: input.payload, inviteCode });
     await clearPartnerRateLimit(this.database, keys);
     return this.issueSession(partner, input.userAgent, input.ipAddress);
   }
 
+  /** Заявка «с улицы»: подписанный payload + свободный текст. Идемпотентна по telegram_id. */
+  async apply(input: {
+    payload: TelegramLoginPayload;
+    note: string | null;
+    ipAddress: string | null;
+  }): Promise<{ status: "applied" | "already_partner" }> {
+    const botToken = this.config.get("TELEGRAM_BOT_TOKEN", { infer: true });
+    if (!botToken) throw new TelegramAuthDisabledError("telegram login is not configured");
+    await this.enforceRateLimits("tg-apply", input.payload.id, input.ipAddress, 10, 30, 3600);
+    if (!verifyTelegramLogin(input.payload, botToken)) {
+      throw new TelegramSignatureError("telegram login payload failed verification");
+    }
+    if (await findTelegramPartner(this.database, input.payload.id)) return { status: "already_partner" };
+    await submitApplication(this.database, {
+      telegramId: input.payload.id,
+      telegramUsername: normalizeTelegramUsername(input.payload.username),
+      displayName: [input.payload.first_name, input.payload.last_name].filter(Boolean).join(" ") || null,
+      telegramPhotoUrl: input.payload.photo_url ?? null,
+      note: input.note,
+    });
+    return { status: "applied" };
+  }
+
   private async createFromInvite(input: {
     payload: TelegramLoginPayload;
-    inviteCode: string | null;
+    inviteCode: string;
   }): Promise<Partner> {
     const displayName = [input.payload.first_name, input.payload.last_name].filter(Boolean).join(" ") || null;
     for (let attempt = 0; ; attempt += 1) {
@@ -108,7 +150,7 @@ export class AuthService {
           telegramPhotoUrl: input.payload.photo_url ?? null,
           displayName,
           referralCode: generateCode(8),
-          inviteCode: input.inviteCode!,
+          inviteCode: input.inviteCode,
           defaultCommissionBps: this.config.get("DEFAULT_COMMISSION_BPS", { infer: true }),
           defaultSubCommissionBps: this.config.get("DEFAULT_SUB_COMMISSION_BPS", { infer: true }),
         });

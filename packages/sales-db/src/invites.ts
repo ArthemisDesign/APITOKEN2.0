@@ -91,6 +91,22 @@ export async function listRootInvites(database: SalesDatabase): Promise<PartnerI
   return result.rows.map(mapInvite);
 }
 
+/** Активный инвайт, выписанный на данный telegram-юзернейм (для входа без ссылки). */
+export async function getActiveInviteByTelegramUsername(
+  database: SalesDatabase,
+  telegramUsername: string,
+): Promise<PartnerInvite | null> {
+  const result = await database.pool.query<InviteRow>(`
+    SELECT ${INVITE_COLUMNS}
+    FROM partner_invites
+    WHERE lower(telegram_username) = lower($1)
+      AND consumed_at IS NULL AND (expires_at IS NULL OR expires_at > now())
+    ORDER BY created_at DESC
+    LIMIT 1
+  `, [telegramUsername]);
+  return result.rows[0] ? mapInvite(result.rows[0]) : null;
+}
+
 /** Публичная проверка инвайта (для страницы регистрации). */
 export async function getActiveInviteByCode(database: SalesDatabase, code: string): Promise<PartnerInvite | null> {
   const result = await database.pool.query<InviteRow>(`

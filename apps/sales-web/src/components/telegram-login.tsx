@@ -3,11 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
-import { Loading, Notice } from "@/components/ui";
+import { Button, Loading, Notice, Textarea } from "@/components/ui";
 
 // Официальный Telegram Login Widget. Бот приходит с бэка (/v1/auth/telegram/config),
-// подписанный payload виджета отправляется на /v1/auth/telegram; для первой
-// регистрации добавляется inviteCode.
+// подписанный payload виджета отправляется на /v1/auth/telegram.
+// Если аккаунта нет и инвайт на @username не найден, бэк отвечает 403 {code:"no_account"} —
+// показываем форму заявки (тот же подписанный payload уходит на /v1/auth/apply).
 
 interface TelegramUser {
   id: number;
@@ -25,10 +26,15 @@ declare global {
   }
 }
 
+type Mode = "widget" | "apply" | "applied" | "pending";
+
 export function TelegramLogin({ inviteCode }: { inviteCode?: string | null }) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "unavailable">("loading");
+  const [mode, setMode] = useState<Mode>("widget");
+  const [payload, setPayload] = useState<TelegramUser | null>(null);
+  const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -54,13 +60,23 @@ export function TelegramLogin({ inviteCode }: { inviteCode?: string | null }) {
             body: { ...user, ...(inviteCode ? { inviteCode } : {}) },
           });
           router.replace("/dashboard");
+          return;
         } catch (err) {
           setBusy(false);
-          if (err instanceof ApiError && err.status === 403) {
+          const code =
+            err instanceof ApiError && err.data && typeof err.data === "object" && "code" in err.data
+              ? String((err.data as { code: unknown }).code)
+              : null;
+          if (code === "no_account") {
+            setPayload(user);
+            setMode("apply");
+          } else if (code === "application_pending") {
+            setMode("pending");
+          } else if (err instanceof ApiError && err.status === 403) {
             setError(
               inviteCode
                 ? "This invite was issued for a different Telegram account."
-                : "No partner account for this Telegram. Open your personal invite link to join.",
+                : "This Telegram account cannot sign in right now.",
             );
           } else if (err instanceof ApiError) {
             setError(err.message);
@@ -85,6 +101,60 @@ export function TelegramLogin({ inviteCode }: { inviteCode?: string | null }) {
       delete window.__tgAuth;
     };
   }, [inviteCode, router]);
+
+  async function submitApplication() {
+    if (!payload) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api<{ status: "applied" | "already_partner" }>("/v1/auth/apply", {
+        method: "POST",
+        body: { ...payload, ...(note.trim() ? { note: note.trim() } : {}) },
+      });
+      if (res.status === "already_partner") {
+        router.replace("/dashboard");
+        return;
+      }
+      setMode("applied");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not submit the application. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (mode === "pending" || mode === "applied") {
+    return (
+      <div className="tg-login">
+        <Notice kind="info">
+          {mode === "applied"
+            ? "Application submitted. Once it is approved, just sign in with Telegram again — your account will be ready."
+            : "Your application is being reviewed. Once it is approved, sign in with Telegram again."}
+        </Notice>
+      </div>
+    );
+  }
+
+  if (mode === "apply" && payload) {
+    return (
+      <div className="tg-login">
+        <Notice kind="info">
+          No partner account for @{payload.username ?? `id${payload.id}`} yet. The program is
+          invite-only — apply for review and we will get back to you.
+        </Notice>
+        {error ? <Notice kind="error">{error}</Notice> : null}
+        <Textarea
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Tell us where you would promote apitoken.sale (channels, audience, experience)…"
+          style={{ minHeight: 96, marginBottom: 12 }}
+        />
+        <Button onClick={submitApplication} loading={busy} style={{ width: "100%" }}>
+          Apply for review
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="tg-login">
