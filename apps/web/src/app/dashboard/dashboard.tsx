@@ -869,7 +869,61 @@ function SupportPanel() {
 
 function PromoPanel() {
   const copy = useDashboardCopy();
-  return <section className="panel"><PageHeading eyebrow={copy.navGrowth} title={copy.promoTitle} subtitle={copy.promoSubtitle} /><div className="card ref-linkcard"><div className="ref-row"><input className="set-in" placeholder="CS-XXXX-XXXX-XXXX" disabled /><button className="btn btn-primary btn-sm" disabled>{copy.activate}</button></div><span className="future-note">{copy.promoPending}</span></div><section className="dsec"><h2>{copy.myActivations}</h2><div className="table-scroll"><table className="mtable"><thead><tr><th>{copy.code}</th><th>{copy.reward}</th><th>{copy.date}</th></tr></thead><tbody><tr><td colSpan={3} className="empty-cell">{copy.noPromos}</td></tr></tbody></table></div></section></section>;
+  const search = useSearchParams();
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<{ usd: string; balance?: string } | null>(null);
+
+  useEffect(() => {
+    const prefill = search.get("promo");
+    if (prefill && /^[A-Za-z0-9]{4,32}$/.test(prefill)) setCode(prefill.toUpperCase());
+  }, [search]);
+
+  async function redeem(e: FormEvent) {
+    e.preventDefault();
+    const clean = code.trim().toUpperCase();
+    if (!/^[A-Za-z0-9]{4,32}$/.test(clean)) { setError(copy.promoInvalid); return; }
+    setBusy(true); setError(null); setDone(null);
+    try {
+      const res = await api.redeemPromo(clean);
+      setDone({ usd: res.credited_usd, balance: res.balance });
+      setCode("");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : copy.promoInvalid);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="panel">
+      <PageHeading eyebrow={copy.navGrowth} title={copy.promoTitle} subtitle={copy.promoSubtitle} />
+      <div className="card ref-linkcard">
+        {done ? (
+          <div className="banner banner-accent">
+            {copy.promoAdded} <b>${done.usd}</b>
+            {done.balance ? ` · ${done.balance}` : ""}
+          </div>
+        ) : null}
+        {error ? <div className="banner banner-error">{error}</div> : null}
+        <form className="ref-row" onSubmit={redeem}>
+          <input
+            className="set-in"
+            placeholder={copy.promoInput}
+            value={code}
+            onChange={(e) => setCode(e.target.value.toUpperCase())}
+            maxLength={32}
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <button className="btn btn-primary btn-sm" type="submit" disabled={busy}>
+            {busy ? "…" : copy.activate}
+          </button>
+        </form>
+      </div>
+    </section>
+  );
 }
 
 

@@ -107,9 +107,10 @@ const en = {
   oauthAccess: "Social sign-in", oauthAccessText: "This account signs in through Google or GitHub. It has no password stored on apiToken.sale.",
   activeSessions: "Active sessions", thisDevice: "This device", activeNow: "Active now", logoutSession: "Log out this session",
   promoTitle: "Promo codes",
-  promoSubtitle: "Promo-code redemption will activate after its server-side domain is implemented.", activate: "Activate",
-  promoPending: "Promo-code redemption is not active yet.", myActivations: "My activations", code: "Code", reward: "Reward",
+  promoSubtitle: "Enter a promo code to add balance to your account.", activate: "Activate",
+  promoPending: "", myActivations: "My activations", code: "Code", reward: "Reward",
   date: "Date", noPromos: "No promo-code activations.",
+  promoInput: "Promo code", promoAdded: "Added to your balance:", promoInvalid: "Enter a valid promo code.",
 } as const;
 
 export type DashboardCopy = { [K in keyof typeof en]: string };
@@ -221,9 +222,10 @@ const ru: DashboardCopy = {
   oauthAccess: "Вход через соцсеть", oauthAccessText: "Этот аккаунт входит через Google или GitHub. Пароль на apiToken.sale не хранится.",
   activeSessions: "Активные сессии", thisDevice: "Это устройство", activeNow: "Активно сейчас", logoutSession: "Завершить эту сессию",
   promoTitle: "Промокоды",
-  promoSubtitle: "Активация промокодов появится после реализации серверной части.", activate: "Активировать",
-  promoPending: "Промокоды пока не активны.", myActivations: "Мои активации", code: "Код", reward: "Награда",
+  promoSubtitle: "Введите промокод, чтобы пополнить баланс.", activate: "Активировать",
+  promoPending: "", myActivations: "Мои активации", code: "Код", reward: "Награда",
   date: "Дата", noPromos: "Активированных промокодов нет.",
+  promoInput: "Промокод", promoAdded: "Начислено на баланс:", promoInvalid: "Введите корректный промокод.",
 };
 
 export const dashboardCopy: Record<Language, DashboardCopy> = { en, ru };
