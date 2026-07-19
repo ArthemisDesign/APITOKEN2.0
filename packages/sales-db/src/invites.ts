@@ -10,6 +10,10 @@ export interface PartnerInvite {
   telegramUsername: string | null;
   commissionBps: number | null;
   subCommissionBps: number | null;
+  promoEnabled: boolean;
+  promoMaxValueNano: bigint;
+  promoMaxCount: number;
+  referralDiscountBps: number;
   expiresAt: Date | null;
   consumedAt: Date | null;
   consumedByPartnerId: string | null;
@@ -25,6 +29,10 @@ interface InviteRow {
   telegram_username: string | null;
   commission_bps: number | null;
   sub_commission_bps: number | null;
+  promo_enabled: boolean;
+  promo_max_value_nano: string;
+  promo_max_count: number;
+  referral_discount_bps: number;
   expires_at: Date | null;
   consumed_at: Date | null;
   consumed_by_partner_id: string | null;
@@ -33,6 +41,7 @@ interface InviteRow {
 
 const INVITE_COLUMNS = `
   id, partner_id, code, telegram_username, commission_bps, sub_commission_bps,
+  promo_enabled, promo_max_value_nano::text AS promo_max_value_nano, promo_max_count, referral_discount_bps,
   expires_at, consumed_at, consumed_by_partner_id, created_at
 `;
 
@@ -44,6 +53,10 @@ function mapInvite(row: InviteRow): PartnerInvite {
     telegramUsername: row.telegram_username,
     commissionBps: row.commission_bps,
     subCommissionBps: row.sub_commission_bps,
+    promoEnabled: row.promo_enabled,
+    promoMaxValueNano: BigInt(row.promo_max_value_nano),
+    promoMaxCount: row.promo_max_count,
+    referralDiscountBps: row.referral_discount_bps,
     expiresAt: row.expires_at,
     consumedAt: row.consumed_at,
     consumedByPartnerId: row.consumed_by_partner_id,
@@ -57,14 +70,25 @@ export async function createPartnerInvite(database: SalesDatabase, input: {
   telegramUsername: string | null;
   commissionBps: number | null;
   subCommissionBps: number | null;
+  promoEnabled: boolean;
+  promoMaxValueNano: bigint;
+  promoMaxCount: number;
+  referralDiscountBps: number;
   expiresAt: Date;
 }): Promise<PartnerInvite> {
   try {
     const result = await database.pool.query<InviteRow>(`
-      INSERT INTO partner_invites (partner_id, code, telegram_username, commission_bps, sub_commission_bps, expires_at)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO partner_invites (
+        partner_id, code, telegram_username, commission_bps, sub_commission_bps,
+        promo_enabled, promo_max_value_nano, promo_max_count, referral_discount_bps, expires_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       RETURNING ${INVITE_COLUMNS}
-    `, [input.partnerId, input.code, input.telegramUsername, input.commissionBps, input.subCommissionBps, input.expiresAt]);
+    `, [
+      input.partnerId, input.code, input.telegramUsername, input.commissionBps, input.subCommissionBps,
+      input.promoEnabled, input.promoMaxValueNano.toString(), input.promoMaxCount, input.referralDiscountBps,
+      input.expiresAt,
+    ]);
     return mapInvite(result.rows[0]!);
   } catch (error) {
     if (typeof error === "object" && error !== null && "code" in error && error.code === "23505") {

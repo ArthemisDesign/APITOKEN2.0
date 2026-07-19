@@ -70,7 +70,7 @@ export class AdminController {
       partners: overview.partners,
       activePartners: overview.activePartners,
       referredUsers: overview.referredUsers,
-      totalSpendNano: overview.totalSpendNano.toString(),
+      totalDepositNano: overview.totalDepositNano.toString(),
       totalCommissionsNano: overview.totalCommissionsNano.toString(),
       pendingPayoutsNano: overview.pendingPayoutsNano.toString(),
       paidPayoutsNano: overview.paidPayoutsNano.toString(),
@@ -92,6 +92,7 @@ export class AdminController {
         referralCode: partner.referralCode,
         commissionBps: partner.commissionBps,
         subCommissionBps: partner.subCommissionBps,
+        referralDiscountBps: partner.referralDiscountBps,
         parentPartnerId: partner.parentPartnerId,
         parentEmail: partner.parentEmail,
         parentTelegramUsername: partner.parentTelegramUsername,
@@ -198,6 +199,10 @@ export class AdminController {
     const telegramUsername = normalizeTelegramUsername(parsed.data.telegramUsername);
     if (!telegramUsername) throw new BadRequestException("invalid telegram username");
     const expiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000);
+    // Промо-доступ включается только если заданы оба лимита (> 0). Номинал USD → nano.
+    const promoMaxCount = parsed.data.promoMaxCount ?? 0;
+    const promoMaxValueUsd = parsed.data.promoMaxValueUsd ?? 0;
+    const promoEnabled = promoMaxCount > 0 && promoMaxValueUsd > 0;
     for (let attempt = 0; ; attempt += 1) {
       try {
         const invite = await createPartnerInvite(this.database, {
@@ -206,12 +211,22 @@ export class AdminController {
           telegramUsername,
           commissionBps: parsed.data.commissionBps ?? null,
           subCommissionBps: parsed.data.subCommissionBps ?? null,
+          promoEnabled,
+          promoMaxValueNano: BigInt(promoMaxValueUsd) * 1_000_000_000n,
+          promoMaxCount,
+          referralDiscountBps: parsed.data.referralDiscountBps ?? 0,
           expiresAt,
         });
         return {
           code: invite.code,
           inviteUrl: `${new URL(this.config.get("PUBLIC_SALES_BASE_URL", { infer: true })).origin}/register?invite=${invite.code}`,
           telegramUsername: invite.telegramUsername,
+          commissionBps: invite.commissionBps,
+          subCommissionBps: invite.subCommissionBps,
+          referralDiscountBps: invite.referralDiscountBps,
+          promoEnabled: invite.promoEnabled,
+          promoMaxCount: invite.promoMaxCount,
+          promoMaxValueNano: invite.promoMaxValueNano.toString(),
           expiresAt: invite.expiresAt?.toISOString() ?? null,
         };
       } catch (error) {
@@ -233,6 +248,10 @@ export class AdminController {
         telegramUsername: invite.telegramUsername,
         commissionBps: invite.commissionBps,
         subCommissionBps: invite.subCommissionBps,
+        referralDiscountBps: invite.referralDiscountBps,
+        promoEnabled: invite.promoEnabled,
+        promoMaxCount: invite.promoMaxCount,
+        promoMaxValueNano: invite.promoMaxValueNano.toString(),
         expiresAt: invite.expiresAt?.toISOString() ?? null,
         consumedAt: invite.consumedAt?.toISOString() ?? null,
       })),
@@ -247,6 +266,7 @@ export class AdminController {
     const updated = await updatePartnerAdmin(this.database, id, {
       ...(parsed.data.commissionBps !== undefined ? { commissionBps: parsed.data.commissionBps } : {}),
       ...(parsed.data.subCommissionBps !== undefined ? { subCommissionBps: parsed.data.subCommissionBps } : {}),
+      ...(parsed.data.referralDiscountBps !== undefined ? { referralDiscountBps: parsed.data.referralDiscountBps } : {}),
       ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
       actorId: "sales-admin-key",
     });

@@ -5,7 +5,7 @@ export interface SalesOverview {
   partners: number;
   activePartners: number;
   referredUsers: number;
-  totalSpendNano: bigint;
+  totalDepositNano: bigint;
   totalCommissionsNano: bigint;
   pendingPayoutsNano: bigint;
   paidPayoutsNano: bigint;
@@ -14,13 +14,13 @@ export interface SalesOverview {
 export async function getSalesOverview(database: SalesDatabase): Promise<SalesOverview> {
   const result = await database.pool.query<{
     partners: string; active_partners: string; referred_users: string;
-    total_spend: string; total_commissions: string; pending_payouts: string; paid_payouts: string;
+    total_deposit: string; total_commissions: string; pending_payouts: string; paid_payouts: string;
   }>(`
     SELECT
       (SELECT count(*) FROM partners)::text AS partners,
       (SELECT count(*) FROM partners WHERE status = 'active')::text AS active_partners,
       (SELECT count(*) FROM referred_users)::text AS referred_users,
-      COALESCE((SELECT SUM(amount_nano) FROM partner_usage_events), 0)::text AS total_spend,
+      COALESCE((SELECT SUM(amount_nano) FROM referred_topups), 0)::text AS total_deposit,
       COALESCE((SELECT SUM(amount_nano) FROM commission_entries), 0)::text AS total_commissions,
       COALESCE((SELECT SUM(amount_nano) FROM payouts WHERE status IN ('requested', 'approved')), 0)::text AS pending_payouts,
       COALESCE((SELECT SUM(amount_nano) FROM payouts WHERE status = 'paid'), 0)::text AS paid_payouts
@@ -30,7 +30,7 @@ export async function getSalesOverview(database: SalesDatabase): Promise<SalesOv
     partners: Number(row.partners),
     activePartners: Number(row.active_partners),
     referredUsers: Number(row.referred_users),
-    totalSpendNano: BigInt(row.total_spend),
+    totalDepositNano: BigInt(row.total_deposit),
     totalCommissionsNano: BigInt(row.total_commissions),
     pendingPayoutsNano: BigInt(row.pending_payouts),
     paidPayoutsNano: BigInt(row.paid_payouts),
@@ -58,6 +58,7 @@ export interface AdminPartnerSummary {
   promoMaxValueNano: bigint;
   promoMaxCount: number;
   promoUsed: number;
+  referralDiscountBps: number;
   createdAt: Date;
 }
 
@@ -69,12 +70,14 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
     parent_partner_id: string | null; parent_email: string | null; parent_telegram_username: string | null;
     referred_users: string; team_size: string; earned: string; paid: string;
     promo_enabled: boolean; promo_max_value_nano: string; promo_max_count: number; promo_used: string;
+    referral_discount_bps: number;
     created_at: Date;
   }>(`
     SELECT p.id, p.email, p.telegram_username, p.display_name, p.status, p.email_verified, p.referral_code,
       p.commission_bps, p.sub_commission_bps, p.parent_partner_id, parent.email AS parent_email,
       parent.telegram_username AS parent_telegram_username,
       p.promo_enabled, p.promo_max_value_nano::text AS promo_max_value_nano, p.promo_max_count,
+      p.referral_discount_bps,
       (SELECT count(*) FROM promo_codes pc WHERE pc.partner_id = p.id)::text AS promo_used,
       (SELECT count(*) FROM referred_users ru WHERE ru.partner_id = p.id)::text AS referred_users,
       (SELECT count(*) FROM partners child WHERE child.parent_partner_id = p.id)::text AS team_size,
@@ -106,6 +109,7 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
     promoMaxValueNano: BigInt(row.promo_max_value_nano),
     promoMaxCount: row.promo_max_count,
     promoUsed: Number(row.promo_used),
+    referralDiscountBps: row.referral_discount_bps,
     createdAt: row.created_at,
   }));
 }
@@ -167,6 +171,7 @@ export async function deletePartnerAdmin(database: SalesDatabase, partnerId: str
 export async function updatePartnerAdmin(database: SalesDatabase, partnerId: string, input: {
   commissionBps?: number;
   subCommissionBps?: number;
+  referralDiscountBps?: number;
   status?: PartnerStatus;
   actorId: string | null;
 }): Promise<boolean> {
@@ -177,11 +182,12 @@ export async function updatePartnerAdmin(database: SalesDatabase, partnerId: str
       UPDATE partners
       SET commission_bps = COALESCE($2, commission_bps),
           sub_commission_bps = COALESCE($3, sub_commission_bps),
+          referral_discount_bps = COALESCE($5, referral_discount_bps),
           status = COALESCE($4::partner_status, status),
           updated_at = now()
       WHERE id = $1
       RETURNING id
-    `, [partnerId, input.commissionBps ?? null, input.subCommissionBps ?? null, input.status ?? null]);
+    `, [partnerId, input.commissionBps ?? null, input.subCommissionBps ?? null, input.status ?? null, input.referralDiscountBps ?? null]);
     if (!updated.rows[0]) {
       await client.query("ROLLBACK");
       return false;

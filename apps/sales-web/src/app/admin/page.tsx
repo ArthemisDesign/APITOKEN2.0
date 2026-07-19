@@ -683,12 +683,24 @@ function ApplicationsCard({ adminKey }: { adminKey: string }) {
   );
 }
 
+// "10" / "12.5" (percent) -> bps (1250). Empty/invalid -> null.
+function pctToBps(value: string): number | null {
+  const s = value.trim();
+  if (s === "" || !/^\d{1,3}(\.\d{1,2})?$/.test(s)) return null;
+  const pct = Number(s);
+  if (!Number.isFinite(pct)) return null;
+  return Math.round(pct * 100);
+}
+
 function OnboardingTab({ adminKey }: { adminKey: string }) {
   const [items, setItems] = useState<InviteRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [username, setUsername] = useState("");
-  const [bps, setBps] = useState("");
-  const [subBps, setSubBps] = useState("");
+  const [commissionPct, setCommissionPct] = useState("10");
+  const [subPct, setSubPct] = useState("10");
+  const [discountPct, setDiscountPct] = useState("0");
+  const [promoCount, setPromoCount] = useState("0");
+  const [promoMaxUsd, setPromoMaxUsd] = useState("0");
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState<{ inviteUrl: string; telegramUsername: string | null } | null>(null);
 
@@ -713,6 +725,27 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
       setError("Enter the sales partner's Telegram username (5–32 letters, digits, underscore).");
       return;
     }
+    const commissionBps = pctToBps(commissionPct);
+    const subCommissionBps = pctToBps(subPct);
+    const discountBps = pctToBps(discountPct);
+    if (commissionBps === null || subCommissionBps === null || discountBps === null) {
+      setError("Percents must be numbers like 10 or 12.5.");
+      return;
+    }
+    if (commissionBps > 10000 || subCommissionBps > 10000) {
+      setError("Commission percent cannot exceed 100%.");
+      return;
+    }
+    if (discountBps > 9000) {
+      setError("Referral discount cannot exceed 90%.");
+      return;
+    }
+    const count = Number(promoCount || "0");
+    const maxUsd = Number(promoMaxUsd || "0");
+    if (!Number.isInteger(count) || count < 0 || !Number.isInteger(maxUsd) || maxUsd < 0) {
+      setError("Promo count and max $ must be whole numbers.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -721,14 +754,15 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
         headers: adminHeaders(adminKey),
         body: {
           telegramUsername: clean,
-          ...(/^\d+$/.test(bps) ? { commissionBps: Number(bps) } : {}),
-          ...(/^\d+$/.test(subBps) ? { subCommissionBps: Number(subBps) } : {}),
+          commissionBps,
+          subCommissionBps,
+          referralDiscountBps: discountBps,
+          promoMaxCount: count,
+          promoMaxValueUsd: maxUsd,
         },
       });
       setCreated(res);
       setUsername("");
-      setBps("");
-      setSubBps("");
       void load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not create the invite.");
@@ -737,12 +771,14 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
     }
   }
 
+  const promoOn = Number(promoCount || "0") > 0 && Number(promoMaxUsd || "0") > 0;
+
   return (
     <div className="stack">
       <ApplicationsCard adminKey={adminKey} />
       <Card
         title="Onboard a sales partner"
-        sub="Invite is bound to their Telegram username. Send them the link — they sign in with Telegram and the account is created."
+        sub="Invite is bound to their Telegram username. Send them the link — they sign in with Telegram and the account is created with the terms below."
       >
         {error ? <Notice kind="error">{error}</Notice> : null}
         {created ? (
@@ -756,30 +792,64 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
             </p>
           </div>
         ) : null}
-        <div className="row-actions" style={{ flexWrap: "wrap", gap: 8 }}>
-          <Input
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            placeholder="@telegram_username"
-            style={{ maxWidth: 220 }}
-          />
-          <Input
-            value={bps}
-            onChange={(e) => setBps(e.target.value.replace(/[^\d]/g, ""))}
-            placeholder="bps (default 1000)"
-            inputMode="numeric"
-            style={{ maxWidth: 160 }}
-          />
-          <Input
-            value={subBps}
-            onChange={(e) => setSubBps(e.target.value.replace(/[^\d]/g, ""))}
-            placeholder="sub-bps (default 1000)"
-            inputMode="numeric"
-            style={{ maxWidth: 160 }}
-          />
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
+          <Field label="Telegram username">
+            <Input
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="@telegram_username"
+            />
+          </Field>
+          <Field label="Commission %" hint="Partner's cut of referral deposits">
+            <Input
+              value={commissionPct}
+              onChange={(e) => setCommissionPct(e.target.value.replace(/[^\d.]/g, ""))}
+              inputMode="decimal"
+              placeholder="10"
+            />
+          </Field>
+          <Field label="Sub-partner %" hint="Override on recruited sub-sales">
+            <Input
+              value={subPct}
+              onChange={(e) => setSubPct(e.target.value.replace(/[^\d.]/g, ""))}
+              inputMode="decimal"
+              placeholder="10"
+            />
+          </Field>
+          <Field label="Referral discount %" hint="B2B discount their users get · max 90%">
+            <Input
+              value={discountPct}
+              onChange={(e) => setDiscountPct(e.target.value.replace(/[^\d.]/g, ""))}
+              inputMode="decimal"
+              placeholder="0"
+            />
+          </Field>
+          <Field label="Promo codes (count)" hint="0 = no promo access">
+            <Input
+              value={promoCount}
+              onChange={(e) => setPromoCount(e.target.value.replace(/[^\d]/g, ""))}
+              inputMode="numeric"
+              placeholder="0"
+            />
+          </Field>
+          <Field label="Max promo $" hint="Per code, our balance">
+            <Input
+              value={promoMaxUsd}
+              onChange={(e) => setPromoMaxUsd(e.target.value.replace(/[^\d]/g, ""))}
+              inputMode="numeric"
+              placeholder="0"
+            />
+          </Field>
+        </div>
+        <div className="row-actions" style={{ marginTop: 14, alignItems: "center", gap: 12 }}>
           <Button onClick={create} loading={busy}>
             Create invite
           </Button>
+          <span className="field-hint">
+            {promoOn
+              ? `Promo: up to ${promoCount} code(s), max $${promoMaxUsd} each.`
+              : "Promo: off (set both count and max $ to enable)."}
+          </span>
         </div>
       </Card>
 
@@ -793,8 +863,10 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
             head={
               <>
                 <th>For</th>
-                <th>Bps</th>
-                <th>Sub-bps</th>
+                <th>Commission</th>
+                <th>Sub</th>
+                <th>Ref. discount</th>
+                <th>Promo</th>
                 <th>Expires</th>
                 <th>Status</th>
                 <th />
@@ -806,6 +878,12 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
                 <td className="mono">{inv.telegramUsername ? `@${inv.telegramUsername}` : "—"}</td>
                 <td>{inv.commissionBps != null ? formatBps(inv.commissionBps) : "default"}</td>
                 <td>{inv.subCommissionBps != null ? formatBps(inv.subCommissionBps) : "default"}</td>
+                <td>{formatBps(inv.referralDiscountBps ?? 0)}</td>
+                <td>
+                  {inv.promoEnabled
+                    ? `${inv.promoMaxCount ?? 0} × $${inv.promoMaxValueNano ? Number(BigInt(inv.promoMaxValueNano) / 1_000_000_000n) : 0}`
+                    : "—"}
+                </td>
                 <td>{inv.expiresAt ? formatDate(inv.expiresAt) : "—"}</td>
                 <td>
                   {inv.consumedAt ? (

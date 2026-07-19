@@ -109,7 +109,7 @@ export class PartnerController {
         availableNano: totals.availableNano.toString(),
       },
       last30d: {
-        spendNano: totals.last30dSpendNano.toString(),
+        depositNano: totals.last30dDepositNano.toString(),
         earnedNano: totals.last30dEarnedNano.toString(),
       },
     };
@@ -124,7 +124,7 @@ export class PartnerController {
         // Commerce identities stay masked: only a short uuid prefix is exposed to partners.
         userMask: `user-${referral.commerceUserId.slice(0, 8)}…`,
         attributedAt: referral.attributedAt.toISOString(),
-        spendNano: referral.spendNano.toString(),
+        depositNano: referral.depositNano.toString(),
         earnedNano: referral.earnedNano.toString(),
       })),
     };
@@ -140,7 +140,7 @@ export class PartnerController {
       days: parsed.data.days,
       items: series.map((point) => ({
         date: point.date,
-        spendNano: point.spendNano.toString(),
+        depositNano: point.depositNano.toString(),
         earnedNano: point.earnedNano.toString(),
       })),
     };
@@ -184,6 +184,12 @@ export class PartnerController {
           telegramUsername,
           commissionBps,
           subCommissionBps: null,
+          // Промо-доступ остаётся под контролем админа (по умолчанию выключен). Скидку рефа
+          // суб-партнёру задаёт админ позже; на суб-инвайте по умолчанию 0.
+          promoEnabled: false,
+          promoMaxValueNano: 0n,
+          promoMaxCount: 0,
+          referralDiscountBps: 0,
           expiresAt,
         });
         return {

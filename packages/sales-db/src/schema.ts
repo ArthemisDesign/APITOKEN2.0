@@ -49,6 +49,9 @@ export const partners = pgTable("partners", {
   promoEnabled: boolean("promo_enabled").notNull().default(false),
   promoMaxValueNano: bigint("promo_max_value_nano", { mode: "bigint" }).notNull().default(sql`0`),
   promoMaxCount: integer("promo_max_count").notNull().default(0),
+  // Скидка (B2B), которую сейлз даёт своим рефам. Их аккаунт становится B2B и получает эту скидку
+  // вместо обычных тир-скидок/бонусов. Максимум 90% (9000 bps).
+  referralDiscountBps: integer("referral_discount_bps").notNull().default(0),
   createdAt,
   updatedAt,
 }, (table) => [
@@ -58,6 +61,7 @@ export const partners = pgTable("partners", {
   index("partners_parent_idx").on(table.parentPartnerId),
   check("partners_commission_bps_check", sql`${table.commissionBps} BETWEEN 0 AND 10000`),
   check("partners_sub_commission_bps_check", sql`${table.subCommissionBps} BETWEEN 0 AND 10000`),
+  check("partners_referral_discount_check", sql`${table.referralDiscountBps} BETWEEN 0 AND 9000`),
 ]);
 
 export const partnerSessions = pgTable("partner_sessions", {
@@ -123,6 +127,11 @@ export const partnerInvites = pgTable("partner_invites", {
   telegramUsername: text("telegram_username"),
   commissionBps: integer("commission_bps"),
   subCommissionBps: integer("sub_commission_bps"),
+  // Промо-доступ и B2B-скидка рефа, зашитые в инвайт — применяются при создании партнёра.
+  promoEnabled: boolean("promo_enabled").notNull().default(false),
+  promoMaxValueNano: bigint("promo_max_value_nano", { mode: "bigint" }).notNull().default(sql`0`),
+  promoMaxCount: integer("promo_max_count").notNull().default(0),
+  referralDiscountBps: integer("referral_discount_bps").notNull().default(0),
   expiresAt: timestamp("expires_at", { withTimezone: true }),
   consumedAt: timestamp("consumed_at", { withTimezone: true }),
   consumedByPartnerId: uuid("consumed_by_partner_id").references(() => partners.id, { onDelete: "restrict" }),
@@ -132,6 +141,7 @@ export const partnerInvites = pgTable("partner_invites", {
   index("partner_invites_partner_idx").on(table.partnerId, table.createdAt),
   check("partner_invites_commission_bps_check", sql`${table.commissionBps} IS NULL OR ${table.commissionBps} BETWEEN 0 AND 10000`),
   check("partner_invites_sub_commission_bps_check", sql`${table.subCommissionBps} IS NULL OR ${table.subCommissionBps} BETWEEN 0 AND 10000`),
+  check("partner_invites_referral_discount_check", sql`${table.referralDiscountBps} BETWEEN 0 AND 9000`),
 ]);
 
 // Заявки «с улицы»: подписанный Telegram-вход без аккаунта и инвайта → заявка на
@@ -225,19 +235,28 @@ export const referredTopups = pgTable("referred_topups", {
 
 export const commissionEntries = pgTable("commission_entries", {
   id: bigserial("id", { mode: "bigint" }).primaryKey(),
-  usageEventId: bigint("usage_event_id", { mode: "bigint" }).notNull()
+  // Источник комиссии = депозит (topup). usage_event_id — legacy-путь (списания), больше не
+  // пишется; ровно один источник у строки (см. one_source CHECK ниже).
+  usageEventId: bigint("usage_event_id", { mode: "bigint" })
     .references(() => partnerUsageEvents.id, { onDelete: "restrict" }),
+  topupId: bigint("topup_id", { mode: "bigint" })
+    .references(() => referredTopups.id, { onDelete: "restrict" }),
   partnerId: uuid("partner_id").notNull().references(() => partners.id, { onDelete: "restrict" }),
   level: integer("level").notNull(),
   appliedBps: integer("applied_bps").notNull(),
   amountNano: bigint("amount_nano", { mode: "bigint" }).notNull(),
   createdAt,
 }, (table) => [
-  uniqueIndex("commission_entries_event_partner_uidx").on(table.usageEventId, table.partnerId),
+  uniqueIndex("commission_entries_usage_partner_uidx").on(table.usageEventId, table.partnerId)
+    .where(sql`${table.usageEventId} IS NOT NULL`),
+  uniqueIndex("commission_entries_topup_partner_uidx").on(table.topupId, table.partnerId)
+    .where(sql`${table.topupId} IS NOT NULL`),
   index("commission_entries_partner_time_idx").on(table.partnerId, table.createdAt),
   check("commission_entries_level_check", sql`${table.level} BETWEEN 0 AND 10`),
   check("commission_entries_applied_bps_check", sql`${table.appliedBps} BETWEEN 0 AND 10000`),
   check("commission_entries_amount_check", sql`${table.amountNano} > 0`),
+  check("commission_entries_one_source_check",
+    sql`((${table.usageEventId} IS NOT NULL)::int + (${table.topupId} IS NOT NULL)::int) = 1`),
 ]);
 
 export const payouts = pgTable("payouts", {

@@ -28,14 +28,20 @@ export default function DocsPage() {
           <ul className="how-list">
             <li>
               {t(
-                "You bring users to apitoken.sale with your referral link and earn a percentage of what they actually spend on API usage.",
-                "Вы приводите пользователей на apitoken.sale по своей реферальной ссылке и зарабатываете процент от того, что они реально тратят на использование API.",
+                "You bring users to apitoken.sale with your referral link and earn a percentage of the real money they deposit (top up with their own money).",
+                "Вы приводите пользователей на apitoken.sale по своей реферальной ссылке и зарабатываете процент от реальных денег, которые они вносят (пополняют своими деньгами).",
               )}
             </li>
             <li>
               {t("Your current rate: ", "Ваша текущая ставка: ")}
               <strong>{rate}</strong>
-              {t(" of your referrals' real paid usage.", " от реального оплаченного использования ваших рефералов.")}
+              {t(" of your referrals' real-money deposits.", " от реальных пополнений ваших рефералов.")}
+            </li>
+            <li>
+              {t(
+                "Free credits never count: welcome bonuses, promo codes and any other gifted balance earn you nothing — commission is paid only on money paid in with real money.",
+                "Бесплатные средства не считаются никогда: приветственные бонусы, промокоды и любой другой подаренный баланс комиссию не приносят — начисляется только с денег, внесённых реальными деньгами.",
+              )}
             </li>
           </ul>
         </Card>
@@ -66,24 +72,24 @@ export default function DocsPage() {
           <ul className="how-list">
             <li>
               {t(
-                "The base is what a referral actually pays for API usage — the amount charged after their own discount. Not their top-up, not the full list price.",
-                "База — это то, что реферал реально платит за использование API: сумма, списанная с учётом его собственной скидки. Не пополнение и не полная цена по прайс-листу.",
+                "The base is the real money a referral deposits — what they actually pay in with their own money at the discounted price. Free credits (bonus, promo) are not deposits and never count.",
+                "База — это реальные деньги, которые реферал вносит: то, что он реально оплатил своими деньгами по своей цене со скидкой. Бесплатные средства (бонус, промо) депозитами не являются и не считаются никогда.",
               )}
             </li>
             <li>
               {t("Commission = ", "Комиссия = ")}
               <strong>{rate}</strong>
-              {t(" × what the referral paid.", " × сумма, которую заплатил реферал.")}
+              {t(" × the real money the referral deposited.", " × реальные деньги, внесённые рефералом.")}
             </li>
             <li>
               {t(
-                "Example: your referral spends $100 on the API (their usage, not a top-up) → you earn ",
-                "Пример: ваш реферал тратит $100 на API (именно расход на использование, не пополнение) → вы получаете ",
+                "Example: your referral deposits $100 of their own money → you earn ",
+                "Пример: ваш реферал вносит $100 своих денег → вы получаете ",
               )}
               <strong>{formatBpsAmount(partner.commissionBps, 100)}</strong>
               {t(" — your ", " — ваши ")}
               <strong>{rate}</strong>
-              {t(" of their spend.", " от его трат.")}
+              {t(" of their deposit.", " от его пополнения.")}
             </li>
           </ul>
         </Card>
@@ -155,8 +161,8 @@ export default function DocsPage() {
           <ul className="how-list">
             <li>
               {t(
-                "Your referrals' identities are hidden — you only see a masked id, their paid usage and your earnings per user.",
-                "Личности ваших рефералов скрыты — вы видите только маскированный идентификатор, их оплаченное использование и ваш заработок с каждого.",
+                "Your referrals' identities are hidden — you only see a masked id, their deposits and your earnings per user.",
+                "Личности ваших рефералов скрыты — вы видите только маскированный идентификатор, их пополнения и ваш заработок с каждого.",
               )}
             </li>
           </ul>

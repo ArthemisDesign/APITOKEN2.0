@@ -29,6 +29,13 @@
       "when": 1784510000000,
       "tag": "0003_promo_codes",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1784600000000,
+      "tag": "0004_commission_deposits",
+      "breakpoints": true
     }
   ]
 }

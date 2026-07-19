@@ -89,7 +89,7 @@ export default function OverviewPage() {
           <div className="stat-label">{t("Referred users", "Приглашённые пользователи")}</div>
           <div className="stat-value">{overview.referredUsers}</div>
           <div className="stat-foot">
-            {formatUsd(overview.last30d.spendNano)} {t("spend in 30d", "расход за 30 дн.")}
+            {formatUsd(overview.last30d.depositNano)} {t("deposits in 30d", "пополнений за 30 дн.")}
           </div>
         </div>
         <div className="stat-card">
@@ -158,8 +158,8 @@ export default function OverviewPage() {
         <Card
           title={t("Last 30 days", "Последние 30 дней")}
           sub={t(
-            `${formatUsd(overview.last30d.earnedNano)} earned on ${formatUsd(overview.last30d.spendNano)} of referral spend.`,
-            `${formatUsd(overview.last30d.earnedNano)} заработано с ${formatUsd(overview.last30d.spendNano)} расходов рефералов.`,
+            `${formatUsd(overview.last30d.earnedNano)} earned on ${formatUsd(overview.last30d.depositNano)} of referral deposits.`,
+            `${formatUsd(overview.last30d.earnedNano)} заработано с ${formatUsd(overview.last30d.depositNano)} пополнений рефералов.`,
           )}
         >
           <EarningsChart items={earnings} />

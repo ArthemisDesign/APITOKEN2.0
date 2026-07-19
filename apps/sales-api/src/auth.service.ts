@@ -35,6 +35,7 @@ export interface PartnerView {
   referralCode: string;
   commissionBps: number;
   subCommissionBps: number;
+  referralDiscountBps: number;
   payoutMethod: string | null;
   payoutDetails: unknown;
   promoEnabled: boolean;
@@ -230,6 +231,7 @@ export function partnerView(partner: Partner): PartnerView {
     referralCode: partner.referralCode,
     commissionBps: partner.commissionBps,
     subCommissionBps: partner.subCommissionBps,
+    referralDiscountBps: partner.referralDiscountBps,
     payoutMethod: partner.payoutMethod,
     payoutDetails: partner.payoutDetails,
     promoEnabled: partner.promoEnabled,

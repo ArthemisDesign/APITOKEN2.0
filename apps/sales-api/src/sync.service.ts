@@ -5,8 +5,7 @@ import {
   advanceSyncCursor,
   findPartnerByReferralCode,
   getSyncCursor,
-  insertReferredTopup,
-  recordUsageEvent,
+  recordReferredDeposit,
   upsertReferredUser,
   type SalesDatabase,
   type SyncFeed,
@@ -22,13 +21,6 @@ const attributionSchema = z.object({
   userId: z.string().uuid(),
   code: z.string().min(1),
   createdAt: z.coerce.date(),
-});
-
-const usageEventSchema = z.object({
-  id: feedIdSchema,
-  userId: z.string().uuid(),
-  amountNano: nanoStringSchema,
-  occurredAt: z.coerce.date(),
 });
 
 const topupSchema = z.object({
@@ -72,7 +64,6 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
       // The loop itself is the overlap guard: the next tick starts only after this one ends.
       try {
         await this.syncAttributions();
-        await this.syncUsageEvents();
         await this.syncTopups();
       } catch (error) {
         this.logger.error(`sync iteration failed: ${message(error)}`);
@@ -100,29 +91,18 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
     await advanceSyncCursor(this.database, "attributions", maxId(rows));
   }
 
-  private async syncUsageEvents(): Promise<void> {
-    const after = await getSyncCursor(this.database, "usage_events");
-    const rows = await this.fetchFeed("usage_events", `usage-events?after_id=${after}&limit=1000`, usageEventSchema);
-    if (!rows || rows.length === 0) return;
-    for (const row of rows) {
-      if (row.amountNano <= 0n) continue;
-      await recordUsageEvent(this.database, {
-        commerceEventId: row.id,
-        commerceUserId: row.userId,
-        amountNano: row.amountNano,
-        occurredAt: row.occurredAt,
-      });
-    }
-    await advanceSyncCursor(this.database, "usage_events", maxId(rows));
-  }
-
+  /**
+   * ЕДИНСТВЕННЫЙ источник комиссий — реальные депозиты (оплаченные платежи commerce). Списания
+   * (usage-events) больше НЕ порождают комиссию: бесплатные балансы (welcome-бонус, промо, любые
+   * будущие бонусы) не создают платёж → в этот фид не попадают → комиссию не генерируют никогда.
+   */
   private async syncTopups(): Promise<void> {
     const after = await getSyncCursor(this.database, "topups");
     const rows = await this.fetchFeed("topups", `topups?after_id=${after}&limit=500`, topupSchema);
     if (!rows || rows.length === 0) return;
     for (const row of rows) {
       if (row.amountNano <= 0n) continue;
-      await insertReferredTopup(this.database, {
+      await recordReferredDeposit(this.database, {
         commercePaymentId: row.paymentId,
         commerceUserId: row.userId,
         amountNano: row.amountNano,

@@ -173,17 +173,17 @@ export type Overview = {
     pendingPayoutNano: string;
     availableNano: string;
   };
-  last30d: { spendNano: string; earnedNano: string };
+  last30d: { depositNano: string; earnedNano: string };
 };
 
 export type ReferralRow = {
   userMask: string;
   attributedAt: string;
-  spendNano: string;
+  depositNano: string;
   earnedNano: string;
 };
 
-export type EarningRow = { date: string; spendNano: string; earnedNano: string };
+export type EarningRow = { date: string; depositNano: string; earnedNano: string };
 
 export type TeamRow = {
   id: string;
@@ -203,6 +203,10 @@ export type InviteRow = {
   telegramUsername: string | null;
   commissionBps: number | null;
   subCommissionBps?: number | null;
+  referralDiscountBps?: number;
+  promoEnabled?: boolean;
+  promoMaxCount?: number;
+  promoMaxValueNano?: string;
   expiresAt: string | null;
   consumedAt: string | null;
 };
@@ -277,6 +281,7 @@ export type AdminPartnerRow = {
   parentId?: string | null;
   commissionBps: number;
   subCommissionBps: number;
+  referralDiscountBps?: number;
   status: string;
   earnedNano?: string;
   referredUsers?: number;

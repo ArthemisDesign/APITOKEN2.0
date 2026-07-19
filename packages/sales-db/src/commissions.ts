@@ -45,18 +45,23 @@ export function computeCommissionChain(
   return entries;
 }
 
-export type UsageEventOutcome = "recorded" | "duplicate" | "skipped";
+export type DepositCommissionOutcome = "recorded" | "duplicate" | "skipped";
 
 /**
- * Inserts the usage event and its full commission chain in one transaction. Idempotent via
- * the unique commerce_event_id: a duplicate insert is a no-op and produces no commissions.
+ * Записывает РЕАЛЬНЫЙ депозит рефа (referred_topups) и его полную цепочку комиссий в одной
+ * транзакции. Это ЕДИНСТВЕННЫЙ источник комиссий: начисляем только с денег, реально внесённых
+ * пользователем (оплаченный платёж commerce). Бесплатные балансы (welcome-бонус, промо, любые
+ * будущие бонусы) не создают платёж → сюда не попадают → комиссии не порождают никогда.
+ *
+ * Идемпотентно по commerce_payment_id: повторная доставка того же платежа — no-op без задвоения.
  */
-export async function recordUsageEvent(database: SalesDatabase, input: {
-  commerceEventId: bigint;
+export async function recordReferredDeposit(database: SalesDatabase, input: {
+  commercePaymentId: string;
   commerceUserId: string;
   amountNano: bigint;
-  occurredAt: Date;
-}): Promise<UsageEventOutcome> {
+  paidAt: Date;
+}): Promise<DepositCommissionOutcome> {
+  if (input.amountNano <= 0n) return "skipped";
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
@@ -70,16 +75,16 @@ export async function recordUsageEvent(database: SalesDatabase, input: {
       return "skipped";
     }
     const inserted = await client.query<{ id: string }>(`
-      INSERT INTO partner_usage_events (commerce_event_id, commerce_user_id, partner_id, amount_nano, occurred_at)
+      INSERT INTO referred_topups (commerce_payment_id, commerce_user_id, partner_id, amount_nano, paid_at)
       VALUES ($1, $2, $3, $4, $5)
-      ON CONFLICT (commerce_event_id) DO NOTHING
+      ON CONFLICT (commerce_payment_id) DO NOTHING
       RETURNING id
     `, [
-      input.commerceEventId.toString(), input.commerceUserId, directPartnerId,
-      input.amountNano.toString(), input.occurredAt,
+      input.commercePaymentId, input.commerceUserId, directPartnerId,
+      input.amountNano.toString(), input.paidAt,
     ]);
-    const usageEventId = inserted.rows[0]?.id;
-    if (!usageEventId) {
+    const topupId = inserted.rows[0]?.id;
+    if (!topupId) {
       await client.query("ROLLBACK");
       return "duplicate";
     }
@@ -106,10 +111,10 @@ export async function recordUsageEvent(database: SalesDatabase, input: {
 
     for (const entry of computeCommissionChain(chain, input.amountNano)) {
       await client.query(`
-        INSERT INTO commission_entries (usage_event_id, partner_id, level, applied_bps, amount_nano)
+        INSERT INTO commission_entries (topup_id, partner_id, level, applied_bps, amount_nano)
         VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (usage_event_id, partner_id) DO NOTHING
-      `, [usageEventId, entry.partnerId, entry.level, entry.appliedBps, entry.amountNano.toString()]);
+        ON CONFLICT (topup_id, partner_id) WHERE topup_id IS NOT NULL DO NOTHING
+      `, [topupId, entry.partnerId, entry.level, entry.appliedBps, entry.amountNano.toString()]);
     }
     await client.query("COMMIT");
     return "recorded";
@@ -128,14 +133,14 @@ export interface PartnerEarningsTotals {
   paidNano: bigint;
   pendingPayoutNano: bigint;
   availableNano: bigint;
-  last30dSpendNano: bigint;
+  last30dDepositNano: bigint;
   last30dEarnedNano: bigint;
 }
 
 export async function getPartnerEarningsTotals(database: SalesDatabase, partnerId: string): Promise<PartnerEarningsTotals> {
   const result = await database.pool.query<{
     earned: string; direct: string; override: string; paid: string; pending: string;
-    spend_30d: string; earned_30d: string;
+    deposit_30d: string; earned_30d: string;
   }>(`
     SELECT
       COALESCE((SELECT SUM(amount_nano) FROM commission_entries WHERE partner_id = $1), 0)::text AS earned,
@@ -144,13 +149,13 @@ export async function getPartnerEarningsTotals(database: SalesDatabase, partnerI
       COALESCE((SELECT SUM(amount_nano) FROM payouts WHERE partner_id = $1 AND status = 'paid'), 0)::text AS paid,
       COALESCE((SELECT SUM(amount_nano) FROM payouts WHERE partner_id = $1 AND status IN ('requested', 'approved')), 0)::text AS pending,
       COALESCE((
-        SELECT SUM(amount_nano) FROM partner_usage_events
-        WHERE partner_id = $1 AND occurred_at >= now() - interval '30 days'
-      ), 0)::text AS spend_30d,
+        SELECT SUM(amount_nano) FROM referred_topups
+        WHERE partner_id = $1 AND paid_at >= now() - interval '30 days'
+      ), 0)::text AS deposit_30d,
       COALESCE((
         SELECT SUM(ce.amount_nano) FROM commission_entries ce
-        JOIN partner_usage_events pue ON pue.id = ce.usage_event_id
-        WHERE ce.partner_id = $1 AND pue.occurred_at >= now() - interval '30 days'
+        JOIN referred_topups rt ON rt.id = ce.topup_id
+        WHERE ce.partner_id = $1 AND rt.paid_at >= now() - interval '30 days'
       ), 0)::text AS earned_30d
   `, [partnerId]);
   const row = result.rows[0]!;
@@ -164,14 +169,14 @@ export async function getPartnerEarningsTotals(database: SalesDatabase, partnerI
     paidNano,
     pendingPayoutNano,
     availableNano: earnedNano - paidNano - pendingPayoutNano,
-    last30dSpendNano: BigInt(row.spend_30d),
+    last30dDepositNano: BigInt(row.deposit_30d),
     last30dEarnedNano: BigInt(row.earned_30d),
   };
 }
 
 export interface DailyEarningsPoint {
   date: string;
-  spendNano: bigint;
+  depositNano: bigint;
   earnedNano: bigint;
 }
 
@@ -180,24 +185,24 @@ export async function getPartnerDailyEarnings(
   partnerId: string,
   days: number,
 ): Promise<DailyEarningsPoint[]> {
-  const [spendResult, earnedResult] = await Promise.all([
+  const [depositResult, earnedResult] = await Promise.all([
     database.pool.query<{ day: string; total: string }>(`
-      SELECT to_char(date_trunc('day', occurred_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
+      SELECT to_char(date_trunc('day', paid_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
              SUM(amount_nano)::text AS total
-      FROM partner_usage_events
-      WHERE partner_id = $1 AND occurred_at >= now() - ($2 * interval '1 day')
+      FROM referred_topups
+      WHERE partner_id = $1 AND paid_at >= now() - ($2 * interval '1 day')
       GROUP BY 1
     `, [partnerId, days]),
     database.pool.query<{ day: string; total: string }>(`
-      SELECT to_char(date_trunc('day', pue.occurred_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
+      SELECT to_char(date_trunc('day', rt.paid_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
              SUM(ce.amount_nano)::text AS total
       FROM commission_entries ce
-      JOIN partner_usage_events pue ON pue.id = ce.usage_event_id
-      WHERE ce.partner_id = $1 AND pue.occurred_at >= now() - ($2 * interval '1 day')
+      JOIN referred_topups rt ON rt.id = ce.topup_id
+      WHERE ce.partner_id = $1 AND rt.paid_at >= now() - ($2 * interval '1 day')
       GROUP BY 1
     `, [partnerId, days]),
   ]);
-  const spendByDay = new Map(spendResult.rows.map((row) => [row.day, BigInt(row.total)]));
+  const depositByDay = new Map(depositResult.rows.map((row) => [row.day, BigInt(row.total)]));
   const earnedByDay = new Map(earnedResult.rows.map((row) => [row.day, BigInt(row.total)]));
 
   const series: DailyEarningsPoint[] = [];
@@ -207,7 +212,7 @@ export async function getPartnerDailyEarnings(
     const date = day.toISOString().slice(0, 10);
     series.push({
       date,
-      spendNano: spendByDay.get(date) ?? 0n,
+      depositNano: depositByDay.get(date) ?? 0n,
       earnedNano: earnedByDay.get(date) ?? 0n,
     });
   }
@@ -237,8 +242,8 @@ export async function listPartnerTeam(database: SalesDatabase, partnerId: string
       COALESCE((SELECT SUM(ce.amount_nano) FROM commission_entries ce WHERE ce.partner_id = p.id), 0)::text AS their_earned,
       COALESCE((
         SELECT SUM(ce.amount_nano) FROM commission_entries ce
-        JOIN partner_usage_events pue ON pue.id = ce.usage_event_id
-        WHERE ce.partner_id = $1 AND ce.level > 0 AND pue.partner_id = p.id
+        JOIN referred_topups rt ON rt.id = ce.topup_id
+        WHERE ce.partner_id = $1 AND ce.level > 0 AND rt.partner_id = p.id
       ), 0)::text AS my_override
     FROM partners p
     WHERE p.parent_partner_id = $1

@@ -5,6 +5,10 @@ export const emailSchema = z.string().trim().email().max(320);
 export const passwordSchema = z.string().min(8).max(200);
 export const displayNameSchema = z.string().trim().min(1).max(80);
 export const commissionBpsSchema = z.number().int().min(0).max(10_000);
+// Скидка рефа (B2B). Максимум 90% = 9000 bps — жёсткий потолок того, что может поставить сейлз.
+export const referralDiscountBpsSchema = z.number().int().min(0).max(9_000);
+export const promoMaxCountSchema = z.number().int().min(0).max(10_000);
+export const promoMaxValueUsdSchema = z.number().int().min(0).max(100_000);
 // ≤18 значащих цифр (< 1e18 нано = < $1e9) — заведомо в пределах pg bigint, без риска overflow.
 export const nanoAmountSchema = z.string().regex(/^[1-9]\d{0,17}$/);
 
@@ -37,6 +41,11 @@ export const adminCreateInviteSchema = z.object({
   telegramUsername: telegramUsernameSchema,
   commissionBps: commissionBpsSchema.optional(),
   subCommissionBps: commissionBpsSchema.optional(),
+  // Скидка, которую сейлз даёт своим рефам (их аккаунт станет B2B). ≤ 90%.
+  referralDiscountBps: referralDiscountBpsSchema.optional(),
+  // Доступ к промокодам, задаваемый прямо на онбординге: сколько кодов и их макс. номинал в USD.
+  promoMaxCount: promoMaxCountSchema.optional(),
+  promoMaxValueUsd: promoMaxValueUsdSchema.optional(),
 });
 
 // Единственная сеть выплат — BSC (BEP-20): EVM-адрес.
@@ -51,6 +60,7 @@ export const updateSettingsSchema = z.object({
 export const adminPatchPartnerSchema = z.object({
   commissionBps: commissionBpsSchema.optional(),
   subCommissionBps: commissionBpsSchema.optional(),
+  referralDiscountBps: referralDiscountBpsSchema.optional(),
   status: z.enum(["active", "suspended", "pending"]).optional(),
 }).refine((value) => Object.values(value).some((item) => item !== undefined), {
   message: "at least one field is required",
