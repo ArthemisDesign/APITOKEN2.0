@@ -20,6 +20,7 @@ export interface OAuthTransaction {
   nonce: string | null;
   codeVerifier: string;
   inviteTokenHash: string | null;
+  referralCode: string | null;
 }
 
 export async function createOAuthTransaction(database: Database, input: {
@@ -28,6 +29,7 @@ export async function createOAuthTransaction(database: Database, input: {
   nonce: string | null;
   codeVerifier: string;
   inviteTokenHash: string | null;
+  referralCode: string | null;
   expiresAt: Date;
 }): Promise<void> {
   await database.pool.query(`
@@ -36,9 +38,9 @@ export async function createOAuthTransaction(database: Database, input: {
   `);
   await database.pool.query(`
     INSERT INTO oauth_transactions (
-      state_hash, provider, nonce, code_verifier, invite_token_hash, expires_at
-    ) VALUES ($1, $2, $3, $4, $5, $6)
-  `, [input.stateHash, input.provider, input.nonce, input.codeVerifier, input.inviteTokenHash, input.expiresAt]);
+      state_hash, provider, nonce, code_verifier, invite_token_hash, referral_code, expires_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+  `, [input.stateHash, input.provider, input.nonce, input.codeVerifier, input.inviteTokenHash, input.referralCode, input.expiresAt]);
 }
 
 export async function consumeOAuthTransaction(
@@ -47,11 +49,12 @@ export async function consumeOAuthTransaction(
   provider: OAuthProvider,
 ): Promise<OAuthTransaction | null> {
   const result = await database.pool.query<{
-    provider: OAuthProvider; nonce: string | null; code_verifier: string; invite_token_hash: string | null;
+    provider: OAuthProvider; nonce: string | null; code_verifier: string;
+    invite_token_hash: string | null; referral_code: string | null;
   }>(`
     UPDATE oauth_transactions SET consumed_at = now()
     WHERE state_hash = $1 AND provider = $2 AND consumed_at IS NULL AND expires_at > now()
-    RETURNING provider, nonce, code_verifier, invite_token_hash
+    RETURNING provider, nonce, code_verifier, invite_token_hash, referral_code
   `, [stateHash, provider]);
   const row = result.rows[0];
   return row ? {
@@ -59,6 +62,7 @@ export async function consumeOAuthTransaction(
     nonce: row.nonce,
     codeVerifier: row.code_verifier,
     inviteTokenHash: row.invite_token_hash,
+    referralCode: row.referral_code,
   } : null;
 }
 

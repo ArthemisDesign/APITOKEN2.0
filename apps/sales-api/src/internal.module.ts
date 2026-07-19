@@ -1,8 +1,8 @@
 import { Module } from "@nestjs/common";
-import { InternalController, InternalKeyGuard } from "./internal.controller.js";
+import { InternalController, InternalPartnersController, InternalKeyGuard } from "./internal.controller.js";
 
 @Module({
-  controllers: [InternalController],
+  controllers: [InternalController, InternalPartnersController],
   providers: [InternalKeyGuard],
 })
 export class InternalModule {}

@@ -6,17 +6,21 @@ import {
   ConflictException,
   Controller,
   ExecutionContext,
+  Get,
+  Header,
   HttpCode,
   Inject,
   Injectable,
   NotFoundException,
   Post,
+  Query,
   UnauthorizedException,
   UseGuards,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { z } from "zod";
 import {
+  findPartnerByReferralCode,
   redeemPromoCode,
   PromoAlreadyRedeemedError,
   PromoNotFoundError,
@@ -77,6 +81,29 @@ export class InternalController {
       if (error instanceof UserAlreadyRedeemedError) throw new ConflictException("account already used a promo code");
       throw error;
     }
+  }
+}
+
+const resolveSchema = z.object({
+  code: z.string().trim().regex(/^[A-Za-z0-9_-]{3,32}$/),
+});
+
+// commerce спрашивает при OAuth-регистрации: этот ?ref= — код активного партнёра? и его B2B-скидка.
+// По ней реф партнёра переводится в B2B ДО welcome-бонуса (бонус ему не выдаётся).
+@Controller("internal/partners")
+@UseGuards(InternalKeyGuard)
+export class InternalPartnersController {
+  constructor(@Inject(SALES_DATABASE) private readonly database: SalesDatabase) {}
+
+  @Get("resolve")
+  @Header("Cache-Control", "no-store")
+  async resolve(@Query("code") code?: string): Promise<unknown> {
+    const parsed = resolveSchema.safeParse({ code });
+    if (!parsed.success) return { found: false };
+    const partner = await findPartnerByReferralCode(this.database, parsed.data.code.toLowerCase());
+    // Только активный партнёр триггерит B2B; иначе код трактуется как обычный (реф получит бонус).
+    if (!partner || partner.status !== "active") return { found: false };
+    return { found: true, partnerId: partner.id, referralDiscountBps: partner.referralDiscountBps };
   }
 }
 

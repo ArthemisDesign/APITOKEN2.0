@@ -211,8 +211,10 @@ export const api = {
   checkout: (id: string) => request<CheckoutView>(`/checkouts/${encodeURIComponent(id)}`),
 };
 
-export function oauthUrl(provider: "google" | "github", inviteToken?: string): string {
+export function oauthUrl(provider: "google" | "github", inviteToken?: string, referralCode?: string): string {
   const url = new URL(`${API_BASE_URL}/auth/${provider}`);
   if (inviteToken) url.searchParams.set("invite", inviteToken);
+  // Партнёрский ?ref= пробрасываем в OAuth: реф партнёра станет B2B до welcome-бонуса.
+  if (referralCode) url.searchParams.set("ref", referralCode);
   return url.toString();
 }

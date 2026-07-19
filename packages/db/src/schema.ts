@@ -217,6 +217,8 @@ export const oauthTransactions = pgTable("oauth_transactions", {
   nonce: text("nonce"),
   codeVerifier: text("code_verifier").notNull(),
   inviteTokenHash: text("invite_token_hash"),
+  // Партнёрский реф-код (?ref=), протянутый через OAuth: реф партнёра станет B2B до бонуса.
+  referralCode: text("referral_code"),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   consumedAt: timestamp("consumed_at", { withTimezone: true }),
   createdAt,

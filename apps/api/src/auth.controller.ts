@@ -145,14 +145,22 @@ export class AuthController {
 
   @Get("google")
   @Redirect()
-  startGoogle(@Query("invite") invite: string | undefined, @Res({ passthrough: true }) reply: ReplyLike) {
-    return this.startOAuth("google", invite, reply);
+  startGoogle(
+    @Query("invite") invite: string | undefined,
+    @Query("ref") ref: string | undefined,
+    @Res({ passthrough: true }) reply: ReplyLike,
+  ) {
+    return this.startOAuth("google", invite, ref, reply);
   }
 
   @Get("github")
   @Redirect()
-  startGitHub(@Query("invite") invite: string | undefined, @Res({ passthrough: true }) reply: ReplyLike) {
-    return this.startOAuth("github", invite, reply);
+  startGitHub(
+    @Query("invite") invite: string | undefined,
+    @Query("ref") ref: string | undefined,
+    @Res({ passthrough: true }) reply: ReplyLike,
+  ) {
+    return this.startOAuth("github", invite, ref, reply);
   }
 
   @Get("google/callback")
@@ -207,10 +215,11 @@ export class AuthController {
     };
   }
 
-  private async startOAuth(provider: OAuthProvider, invite: string | undefined, reply: ReplyLike) {
+  private async startOAuth(provider: OAuthProvider, invite: string | undefined, ref: string | undefined, reply: ReplyLike) {
     if (invite !== undefined && !authTokenSchema.safeParse(invite).success) throw new BadRequestException("invalid invite token");
+    // ref валидируется мягко в auth.service (normalizeReferralCode); мусор просто игнорируется.
     try {
-      const result = await this.auth.beginOAuth(provider, invite);
+      const result = await this.auth.beginOAuth(provider, invite, ref);
       reply.header("set-cookie", oauthCookie(result.state, this.secureCookies()));
       reply.header("cache-control", "no-store");
       return { url: result.authorizationUrl, statusCode: 302 };

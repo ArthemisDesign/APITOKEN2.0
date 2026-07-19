@@ -19,6 +19,7 @@ import {
   encryptAuthToken,
   queueAuthEmailForAddress,
   recordReferralAttribution,
+  flipReferredUserToB2B,
   resolveAuthSession,
   revokeAuthSession,
   updateUserDisplayName,
@@ -170,7 +171,7 @@ export class AuthService {
     }
   }
 
-  async beginOAuth(provider: OAuthProvider, inviteToken?: string): Promise<{
+  async beginOAuth(provider: OAuthProvider, inviteToken?: string, referralCode?: string): Promise<{
     authorizationUrl: string; state: string;
   }> {
     const adapter = this.oauthProviders.get(provider);
@@ -184,6 +185,9 @@ export class AuthService {
       nonce,
       codeVerifier,
       inviteTokenHash: inviteToken ? tokenHash(inviteToken) : null,
+      // Реф-код (?ref=) переживает редирект в провайдера, чтобы на complete закрепить атрибуцию
+      // и (если это код партнёра) сделать аккаунт B2B ДО выдачи welcome-бонуса.
+      referralCode: normalizeReferralCode(referralCode),
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
     });
     return {
@@ -213,8 +217,59 @@ export class AuthService {
     const user = await completeExternalSignIn(this.database, identity, transaction.inviteTokenHash);
     if (user.status !== "active") throw new InvalidOAuthTransactionError("account is disabled");
     await this.provisionEngineAccount(user, user.engineMultiplierBp, false);
-    await this.grantOAuthWelcomeBonus(user);
+    await this.applyReferralAndBonus(user, transaction.referralCode);
     return this.issueSession(user, input.userAgent, input.ipAddress);
+  }
+
+  /**
+   * Атрибуция OAuth-регистрации и выдача welcome-бонуса — СТРОГО с гарантией «ничего не проскочит»:
+   * если пришёл по коду ПАРТНЁРА, аккаунт делается B2B ДО бонуса, и бонус не выдаётся вовсе. Бонус
+   * получают только подтверждённо-НЕ-партнёрские регистрации (обычные b2c). Если проверить код не
+   * удалось (sales недоступен) — fail-closed: бонус НЕ выдаём (сегодня любой ?ref= = код партнёра),
+   * а асинхронный фид всё равно закрепит атрибуцию и переведёт в B2B.
+   */
+  private async applyReferralAndBonus(user: AuthUser, referralCode: string | null): Promise<void> {
+    if (!referralCode) {
+      await this.grantOAuthWelcomeBonus(user);
+      return;
+    }
+    // Закрепляем атрибуцию в commerce (sales-фид подхватит для комиссий/команды).
+    await this.attributeReferral(user.id, referralCode);
+    let partner: { referralDiscountBps: number } | null;
+    try {
+      partner = await this.resolvePartnerReferral(referralCode);
+    } catch {
+      // Не смогли подтвердить, что код НЕ партнёрский → бонус не выдаём (fail-closed).
+      return;
+    }
+    if (partner) {
+      // Реф партнёра → B2B со скидкой сейлза; welcome-бонус не положен.
+      await flipReferredUserToB2B(this.database, {
+        userId: user.id,
+        referralDiscountBps: partner.referralDiscountBps,
+        actorId: "oauth-referral",
+      });
+      return;
+    }
+    // Код не принадлежит партнёру (обычная/сторонняя рефка) → обычный b2c, бонус выдаём.
+    await this.grantOAuthWelcomeBonus(user);
+  }
+
+  /** Спрашивает sales, является ли код активным партнёром, и его B2B-скидку. null — не партнёр. */
+  private async resolvePartnerReferral(code: string): Promise<{ referralDiscountBps: number } | null> {
+    const base = this.config.get("SALES_API_URL", { infer: true });
+    const key = this.config.get("SALES_CONTROL_KEY", { infer: true });
+    if (!base || !key) throw new Error("sales resolver is not configured");
+    const url = new URL(`/v1/internal/partners/resolve?code=${encodeURIComponent(code)}`, base);
+    const response = await fetch(url, {
+      headers: { "x-api-key": key },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!response.ok) throw new Error(`partner resolve responded ${response.status}`);
+    const body = (await response.json()) as { found?: unknown; referralDiscountBps?: unknown };
+    if (body.found !== true) return null;
+    const bps = typeof body.referralDiscountBps === "number" ? body.referralDiscountBps : 0;
+    return { referralDiscountBps: bps };
   }
 
   providerStatus(): { google: boolean; github: boolean } {
@@ -400,6 +455,13 @@ function tokenHash(token: string): string {
 
 function rateKey(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+// Реф-код: те же символы, что и на клиенте (lib/referral). Невалидный → null (атрибуции нет).
+function normalizeReferralCode(code: string | undefined): string | null {
+  if (!code) return null;
+  const trimmed = code.trim().toLowerCase();
+  return /^[a-z0-9_-]{3,32}$/.test(trimmed) ? trimmed : null;
 }
 
 function safeTokenEqual(left: string, right: string): boolean {
