@@ -15,6 +15,10 @@ coverage/
 *.env
 !*.env.example
 *.gpg
+# Google service-account ключи (GSC/sitemap auto-submit) — только на сервере, не в git
+apitoken-*.json
+*service-account*.json
+*-service-account-*.json
 subscriptions.json
 subscriptions.db
 subscriptions.db-*
