@@ -10,7 +10,9 @@ set -euo pipefail
 # from the shared commerce /opt/apitoken/releases/current (which governs the commerce blue-green
 # API and must not be disturbed by a sales-only change).
 
-[[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'sales-deploy must run as root' >&2; exit 1; }
+# Needs root (chown, read root-only sales.env, systemctl). The watchdog runs as `deploy`
+# (NOPASSWD:ALL), so self-elevate — robust whether invoked with or without sudo.
+if [[ ${EUID:-$(id -u)} -ne 0 ]]; then exec sudo -n -- "$0" "$@"; fi
 
 SHA=${1:?usage: sales-deploy.sh <full-40-char-sha>}
 [[ $SHA =~ ^[0-9a-f]{40}$ ]] || { echo "sales-deploy: SHA must be a full 40-char commit hash" >&2; exit 1; }
