@@ -141,9 +141,9 @@ export default function OverviewPage() {
               {t("the full list price.", "полная цена по прайс-листу.")}
             </li>
             <li>
-              {t("Example: a referral is charged ", "Пример: с реферала списали ")}
+              {t("Example: your referral spends ", "Пример: ваш реферал тратит ")}
               <strong>$100</strong>
-              {t(" for usage → you earn ", " за использование → вы получаете ")}
+              {t(" on the API (their usage, not a top-up) → you earn ", " на API (расход на использование, не пополнение) → вы получаете ")}
               <strong>{formatUsd((BigInt(overview.commissionBps) * 100n * 10n ** 9n / 10000n).toString())}</strong>.
             </li>
             <li>

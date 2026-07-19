@@ -13,6 +13,7 @@ const NAV = [
   { href: "/dashboard/referrals", en: "Referrals", ru: "Рефералы", icon: "⇢" },
   { href: "/dashboard/team", en: "Team", ru: "Команда", icon: "⁂", soon: true },
   { href: "/dashboard/payouts", en: "Payouts", ru: "Выплаты", icon: "◈" },
+  { href: "/dashboard/docs", en: "Docs", ru: "Документация", icon: "▤" },
   { href: "/dashboard/settings", en: "Settings", ru: "Настройки", icon: "⚙" },
 ];
 
