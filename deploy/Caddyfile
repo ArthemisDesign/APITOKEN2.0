@@ -99,9 +99,9 @@ panel.apitoken.sale {
 	# Вкладка «Партнёры»: админка sales bounded context (sales-api :3100, /v1/admin/*).
 	# Отдельный заголовок x-sales-admin-key — чтобы перенос секретов install-caddy.sh
 	# не путал его с commerce x-admin-key.
-	@partners path /partners-admin/*
-	handle @partners {
-		uri strip_prefix /partners-admin
+	# handle_path срезает префикс ДО инициализации хендлера (в обычном handle порядок
+	# uri/rewrite не гарантирован → префикс не срезался, sales-api ловил 404).
+	handle_path /partners-admin/* {
 		rewrite * /v1/admin{uri}
 		reverse_proxy 127.0.0.1:3100 {
 			header_up x-sales-admin-key "<SALES_ADMIN_KEY_PLACEHOLDER>"
