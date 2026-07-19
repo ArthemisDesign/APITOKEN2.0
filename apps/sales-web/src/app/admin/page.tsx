@@ -28,7 +28,7 @@ import {
 const KEY_STORAGE = "sales_admin_key";
 
 function adminHeaders(key: string) {
-  return { "x-admin-key": key };
+  return { "x-sales-admin-key": key };
 }
 
 // ---------------------------------------------------------------------------

@@ -82,10 +82,12 @@ export class AuthService {
     if (!botToken || !this.telegramBotUsername()) {
       throw new TelegramAuthDisabledError("telegram login is not configured");
     }
-    const keys = await this.enforceRateLimits("tg", input.payload.id, input.ipAddress, 20, 60, 900);
+    // Подпись проверяем ДО рейт-лимита по telegram_id: иначе неаутентифицированный
+    // запрос с чужим id жёг бы бакет жертвы (таргетированный lockout).
     if (!verifyTelegramLogin(input.payload, botToken)) {
       throw new TelegramSignatureError("telegram login payload failed verification");
     }
+    const keys = await this.enforceRateLimits("tg", input.payload.id, input.ipAddress, 20, 60, 900);
     const existing = await findTelegramPartner(this.database, input.payload.id);
     if (existing) {
       if (existing.status === "suspended") throw new PartnerSuspendedError("partner account is suspended");
@@ -122,10 +124,11 @@ export class AuthService {
   }): Promise<{ status: "applied" | "already_partner" }> {
     const botToken = this.config.get("TELEGRAM_BOT_TOKEN", { infer: true });
     if (!botToken) throw new TelegramAuthDisabledError("telegram login is not configured");
-    await this.enforceRateLimits("tg-apply", input.payload.id, input.ipAddress, 10, 30, 3600);
+    // Подпись — до рейт-лимита (см. telegramLogin): защищает бакет жертвы от чужих запросов.
     if (!verifyTelegramLogin(input.payload, botToken)) {
       throw new TelegramSignatureError("telegram login payload failed verification");
     }
+    await this.enforceRateLimits("tg-apply", input.payload.id, input.ipAddress, 10, 30, 3600);
     if (await findTelegramPartner(this.database, input.payload.id)) return { status: "already_partner" };
     await submitApplication(this.database, {
       telegramId: input.payload.id,

@@ -5,7 +5,8 @@ export const emailSchema = z.string().trim().email().max(320);
 export const passwordSchema = z.string().min(8).max(200);
 export const displayNameSchema = z.string().trim().min(1).max(80);
 export const commissionBpsSchema = z.number().int().min(0).max(10_000);
-export const nanoAmountSchema = z.string().regex(/^[1-9]\d{0,26}$/);
+// ≤18 значащих цифр (< 1e18 нано = < $1e9) — заведомо в пределах pg bigint, без риска overflow.
+export const nanoAmountSchema = z.string().regex(/^[1-9]\d{0,17}$/);
 
 export const inviteCodeSchema = z.string().trim().regex(/^[a-z0-9]{4,64}$/i);
 // Telegram-юзернейм: 5–32 символа, буквы/цифры/подчёркивание; @ и регистр нормализуем сами.

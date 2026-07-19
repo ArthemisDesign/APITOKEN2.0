@@ -153,6 +153,10 @@ export class PartnerController {
     if (!parsed.success) throw new BadRequestException("invalid invite data: telegram username is required");
     const telegramUsername = normalizeTelegramUsername(parsed.data.telegramUsername);
     if (!telegramUsername) throw new BadRequestException("invalid telegram username");
+    // Партнёр не может подарить суб-партнёру ставку выше собственной (иначе раздаёт маржу
+    // платформы). По умолчанию — своя ставка. Более широкий диапазон — только у админа.
+    const cap = current.partner.commissionBps;
+    const commissionBps = Math.min(parsed.data.commissionBps ?? cap, cap);
     const expiresAt = new Date(Date.now() + INVITE_TTL_DAYS * 24 * 3600 * 1000);
     for (let attempt = 0; ; attempt += 1) {
       try {
@@ -160,7 +164,7 @@ export class PartnerController {
           partnerId: current.partner.id,
           code: generateCode(12),
           telegramUsername,
-          commissionBps: parsed.data.commissionBps ?? null,
+          commissionBps,
           subCommissionBps: null,
           expiresAt,
         });

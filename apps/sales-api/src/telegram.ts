@@ -14,7 +14,9 @@ export interface TelegramLoginPayload {
   hash: string;
 }
 
-export const TELEGRAM_AUTH_MAX_AGE_SECONDS = 86_400;
+// Виджет выдаёт свежий auth_date в момент клика, а сессия минтится сразу — держим окно
+// узким (1 ч), чтобы сузить окно реплея перехваченного подписанного payload.
+export const TELEGRAM_AUTH_MAX_AGE_SECONDS = 3_600;
 
 export function verifyTelegramLogin(
   payload: TelegramLoginPayload,

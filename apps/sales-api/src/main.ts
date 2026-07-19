@@ -23,6 +23,10 @@ async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter({
     logger: false,
     bodyLimit: 1_048_576,
+    // Доверяем X-Forwarded-For ТОЛЬКО от loopback (Caddy на 127.0.0.1) — иначе за прокси
+    // request.ip схлопывается в 127.0.0.1 и per-IP рейт-лимит становится общим на всех.
+    // Никогда не `true`: :3100 слушает только loopback, публичный XFF-спуфинг невозможен.
+    trustProxy: "loopback",
   }), { rawBody: true });
   const readiness = app.get(ReadinessService);
   process.on("SIGUSR1", () => {

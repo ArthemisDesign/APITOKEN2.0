@@ -42,7 +42,7 @@ describe("verifyTelegramLogin", () => {
     expect(verifyTelegramLogin(payload(now), "other-token", now)).toBe(false);
   });
 
-  it("rejects stale auth_date (>24h)", () => {
+  it("rejects stale auth_date (beyond the max-age window)", () => {
     expect(verifyTelegramLogin(payload(now, { auth_date: now - 90_000 }), BOT_TOKEN, now)).toBe(false);
   });
 
