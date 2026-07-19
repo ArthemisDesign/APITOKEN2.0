@@ -15,6 +15,7 @@ import {
 import { usePartner } from "@/components/partner-context";
 import { Badge, Button, Card, EmptyState, Field, Input, Loading, Notice, Table } from "@/components/ui";
 import { localeFor, useI18n, type Lang } from "@/components/i18n";
+import { PayoutTimeline } from "@/components/payout-timeline";
 
 const BSC_ADDRESS = /^0x[a-fA-F0-9]{40}$/;
 
@@ -202,6 +203,7 @@ export default function PayoutsPage() {
       {error ? <Notice kind="error">{error}</Notice> : null}
 
       <div className="stack">
+        {state ? <PayoutTimeline state={state} /> : null}
         <div className="stat-grid" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
           <div className="stat-card">
             <div className="stat-label">{t("This period", "Текущий период")}</div>
