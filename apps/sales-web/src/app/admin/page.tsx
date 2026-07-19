@@ -28,8 +28,10 @@ import {
 
 const KEY_STORAGE = "sales_admin_key";
 
-function adminHeaders(key: string) {
-  return { "x-sales-admin-key": key };
+// На partners.panel Caddy инжектит x-sales-admin-key после basic_auth → ключ не нужен (key="").
+// При прямом доступе (без инжекта) оператор вводит ключ в KeyGate.
+function adminHeaders(key: string): Record<string, string> {
+  return key ? { "x-sales-admin-key": key } : {};
 }
 
 // ---------------------------------------------------------------------------
@@ -888,12 +890,23 @@ export default function AdminPage() {
   const [tab, setTab] = useState<Tab>("overview");
 
   useEffect(() => {
-    setAdminKey(sessionStorage.getItem(KEY_STORAGE));
-    setReady(true);
+    (async () => {
+      // partners.panel: Caddy инжектит ключ после basic_auth — пробуем без ключа.
+      try {
+        await api("/v1/admin/overview");
+        setAdminKey("");
+        setReady(true);
+        return;
+      } catch {
+        // нет инжекта (прямой доступ) → ключ из сессии или KeyGate
+      }
+      setAdminKey(sessionStorage.getItem(KEY_STORAGE));
+      setReady(true);
+    })();
   }, []);
 
   if (!ready) return <Loading />;
-  if (!adminKey) return <KeyGate onUnlock={setAdminKey} />;
+  if (adminKey === null) return <KeyGate onUnlock={setAdminKey} />;
 
   return (
     <div className="admin-shell">

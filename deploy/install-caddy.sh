@@ -25,6 +25,7 @@ awk '
     if ($1 != "header_up" && $2 ~ /^\$2/) auth = auth $0 ORS
     if ($1 == "header_up" && $2 == "x-api-key") control = $0
     if ($1 == "header_up" && $2 == "x-admin-key") commadmin = $0
+    if ($1 == "header_up" && $2 == "x-sales-admin-key") salesadmin = $0
     next
   }
   /<BASIC_AUTH_USERS_PLACEHOLDER>/ {
@@ -45,9 +46,15 @@ awk '
     commadmin_used++
     next
   }
+  /<SALES_ADMIN_KEY_PLACEHOLDER>/ {
+    if (salesadmin == "") exit 45
+    print salesadmin
+    salesadmin_used++
+    next
+  }
   { print }
   END {
-    if (auth_used != 1 || control_used != 1 || commadmin_used != 1) exit 43
+    if (auth_used != 1 || control_used != 1 || commadmin_used != 1 || salesadmin_used != 1) exit 43
   }
 ' "$LIVE" "$TEMPLATE" >"$tmp"
 

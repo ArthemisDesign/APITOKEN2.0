@@ -1,3 +1,11 @@
+# Общий набор админов (bcrypt: Q/R/M/…) для панельных сайтов. Один placeholder, чтобы
+# install-caddy.sh переносил учётки один раз, а vhost'ы подключали их через import.
+(panel_admins) {
+	basic_auth {
+		<BASIC_AUTH_USERS_PLACEHOLDER>
+	}
+}
+
 api.apitoken.sale {
 	@public_core path /v1/* /health /balance
 	handle @public_core {
@@ -62,9 +70,7 @@ mail.apitoken.sale, autodiscover.apitoken.sale, autoconfig.apitoken.sale {
 }
 
 panel.apitoken.sale {
-	basic_auth {
-		<BASIC_AUTH_USERS_PLACEHOLDER>
-	}
+	import panel_admins
 	@data path /overview /capacity /metrics /subs
 	handle @data {
 		reverse_proxy 127.0.0.1:8787 127.0.0.1:8788 {
@@ -158,12 +164,14 @@ sales.apitoken.sale {
 	redir https://partners.apitoken.sale{uri} permanent
 }
 
-# Отдельный админ-сайт партнёрки. Тот же sales-web/sales-api, но вход сразу в /admin;
-# оператор вводит SALES_ADMIN_KEY в KeyGate (ключ не инжектится server-side — уходит как
-# x-sales-admin-key из sessionStorage). /v1/* → sales-api, остальное → sales-web (Next).
+# Отдельный админ-сайт партнёрки. Вход — тот же basic_auth (Q/R/M), что и у панели.
+# Caddy инжектит x-sales-admin-key на /v1/* server-side → страница /admin не просит ключ.
 partners.panel.apitoken.sale {
+	import panel_admins
 	handle /v1/* {
-		reverse_proxy 127.0.0.1:3100
+		reverse_proxy 127.0.0.1:3100 {
+			header_up x-sales-admin-key "<SALES_ADMIN_KEY_PLACEHOLDER>"
+		}
 	}
 	handle / {
 		redir * /admin
