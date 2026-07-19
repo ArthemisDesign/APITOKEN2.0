@@ -184,6 +184,7 @@ function PartnerEditor({
 
   const dirty =
     bps !== String(partner.commissionBps) || subBps !== String(partner.subCommissionBps);
+  const maxPromoUsd = partner.promoMaxValueNano ? Number(BigInt(partner.promoMaxValueNano) / 1_000_000_000n) : 0;
 
   async function patch(body: Record<string, unknown>) {
     setBusy(true);
@@ -267,10 +268,51 @@ function PartnerEditor({
           >
             {suspended ? "Activate" : "Suspend"}
           </Button>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={editPromo}>
+            {partner.promoEnabled
+              ? `Promo ${maxPromoUsd}/${partner.promoMaxCount ?? 0}`
+              : "Promo: off"}
+          </Button>
         </div>
       </td>
     </tr>
   );
+
+  async function editPromo() {
+    const label = partner.telegramUsername ? `@${partner.telegramUsername}` : partner.email ?? partner.id.slice(0, 8);
+    const cur = partner.promoEnabled ? `${maxPromoUsd}/${partner.promoMaxCount ?? 0}` : "off";
+    const v = window.prompt(
+      `Promo codes for ${label}\n\nEnter "maxUSD/count" to enable (e.g. 20/10), or "off" to disable.\nCodes created so far: ${partner.promoUsed ?? 0}`,
+      cur,
+    );
+    if (v == null) return;
+    if (v.trim().toLowerCase() === "off") {
+      await postPromo({ enabled: false, maxValueUsd: 0, maxCount: 0 });
+      return;
+    }
+    const m = /^\s*(\d{1,5})\s*\/\s*(\d{1,5})\s*$/.exec(v);
+    if (!m) {
+      onError("Format: maxUSD/count, e.g. 20/10");
+      return;
+    }
+    await postPromo({ enabled: true, maxValueUsd: Number(m[1]), maxCount: Number(m[2]) });
+  }
+
+  async function postPromo(body: { enabled: boolean; maxValueUsd: number; maxCount: number }) {
+    setBusy(true);
+    try {
+      await api(`/v1/admin/partners/${partner.id}/promo`, {
+        method: "POST",
+        headers: adminHeaders(adminKey),
+        body,
+      });
+      onSaved();
+    } catch (err) {
+      onError(err instanceof ApiError ? err.message : "Promo update failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
 }
 
 function PartnersTab({ adminKey }: { adminKey: string }) {

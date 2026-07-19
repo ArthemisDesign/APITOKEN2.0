@@ -13,6 +13,7 @@ const NAV = [
   { href: "/dashboard/referrals", en: "Referrals", ru: "Рефералы", icon: "⇢" },
   { href: "/dashboard/team", en: "Team", ru: "Команда", icon: "⁂", soon: true },
   { href: "/dashboard/payouts", en: "Payouts", ru: "Выплаты", icon: "◈" },
+  { href: "/dashboard/promo", en: "Promo codes", ru: "Промокоды", icon: "%", promoOnly: true },
   { href: "/dashboard/docs", en: "Docs", ru: "Документация", icon: "▤" },
   { href: "/dashboard/settings", en: "Settings", ru: "Настройки", icon: "⚙" },
 ];
@@ -90,7 +91,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             <Brand />
           </Link>
           <nav className="cab-nav">
-            {NAV.map((item) => {
+            {NAV.filter((item) => !("promoOnly" in item && item.promoOnly) || partner.promoEnabled).map((item) => {
               const active =
                 item.href === "/dashboard"
                   ? pathname === "/dashboard"

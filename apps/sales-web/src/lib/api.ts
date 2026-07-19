@@ -136,6 +136,26 @@ export type Partner = {
   status: string;
   payoutMethod?: string | null;
   payoutDetails?: { network?: string; asset?: string; address?: string } | string | null;
+  promoEnabled?: boolean;
+  promoMaxValueNano?: string;
+  promoMaxCount?: number;
+};
+
+export type PromoCodeRow = {
+  id: string;
+  code: string;
+  valueNano: string;
+  status: "active" | "redeemed" | "disabled";
+  redeemedAt?: string | null;
+  createdAt?: string;
+};
+
+export type PromoListResponse = {
+  enabled: boolean;
+  maxValueNano: string;
+  maxCount: number;
+  redeemUrl: string;
+  items: PromoCodeRow[];
 };
 
 export type Overview = {
@@ -260,6 +280,10 @@ export type AdminPartnerRow = {
   status: string;
   earnedNano?: string;
   referredUsers?: number;
+  promoEnabled?: boolean;
+  promoMaxValueNano?: string;
+  promoMaxCount?: number;
+  promoUsed?: number;
 };
 
 export type AdminPayoutRow = {
