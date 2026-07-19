@@ -1,4 +1,4 @@
-import { absoluteUrl, SITE_ORIGIN } from "./seo";
+import { absoluteUrl } from "./seo";
 
 // Private surfaces that must never be indexed.
 export const ROBOTS_DISALLOW = [
@@ -55,10 +55,7 @@ export function buildRobotsTxt(): string {
   // Named search + AI crawlers.
   for (const agent of ROBOTS_WELCOME_AGENTS) blocks.push(group(agent));
 
-  blocks.push([
-    `Host: ${SITE_ORIGIN}`,
-    `Sitemap: ${absoluteUrl("/sitemap.xml")}`,
-  ].join("\n"));
+  blocks.push(`Sitemap: ${absoluteUrl("/sitemap.xml")}`);
 
   return blocks.join("\n\n") + "\n";
 }
