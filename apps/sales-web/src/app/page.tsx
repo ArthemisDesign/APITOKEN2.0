@@ -8,7 +8,7 @@ export default function Landing() {
         <Brand />
         <p>
           Invite-only partner program for apitoken.sale — earn a share of what
-          your referrals spend.
+          your referrals actually spend on API usage.
         </p>
         <div className="gate-actions">
           <Link href="/login" className="btn btn-primary btn-lg">

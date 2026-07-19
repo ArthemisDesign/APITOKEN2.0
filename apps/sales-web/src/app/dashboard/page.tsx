@@ -61,8 +61,9 @@ export default function OverviewPage() {
     <>
       <h1 className="page-title">Overview</h1>
       <p className="page-sub">
-        Your terms: <strong>{formatBps(overview.commissionBps)}</strong> on what your
-        referrals spend.
+        You earn <strong>{formatBps(overview.commissionBps)}</strong> of what your referrals
+        actually spend on apitoken.sale — their real paid API usage, after their own discount.
+        Not their top-ups, not list price. Paid out in USDT (BEP-20).
       </p>
 
       <div className="stat-grid">
@@ -104,6 +105,25 @@ export default function OverviewPage() {
           <p className="field-hint" style={{ marginTop: 10 }}>
             Referral code: <span className="mono">{overview.referralCode}</span>
           </p>
+        </Card>
+
+        <Card title="How your commission works">
+          <ul className="how-list">
+            <li>
+              You earn <strong>{formatBps(overview.commissionBps)}</strong> of every dollar your
+              referrals <strong>actually pay</strong> for API usage on apitoken.sale.
+            </li>
+            <li>
+              The base is their <strong>real spend</strong> — the amount charged after their own
+              tier discount. It is <strong>not</strong> their top-up amount and <strong>not</strong>{" "}
+              the full list price.
+            </li>
+            <li>
+              Example: a referral is charged <strong>$100</strong> for usage → you earn{" "}
+              <strong>{formatUsd((BigInt(overview.commissionBps) * 100n * 10n ** 9n / 10000n).toString())}</strong>.
+            </li>
+            <li>Commission accrues as they spend and is paid out in USDT (BEP-20).</li>
+          </ul>
         </Card>
 
         <Card

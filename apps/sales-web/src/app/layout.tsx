@@ -7,7 +7,7 @@ export const metadata: Metadata = {
     template: "%s · APIToken Partners",
   },
   description:
-    "Partner program for apitoken.sale: share your link and earn a share of what your referrals spend on Claude API.",
+    "Partner program for apitoken.sale: share your link and earn a percentage of what your referrals actually spend on Claude API usage (their real paid usage, after discount).",
 };
 
 export default function RootLayout({

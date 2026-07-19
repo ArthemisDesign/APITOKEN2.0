@@ -37,8 +37,9 @@ export default function ReferralsPage() {
     <>
       <h1 className="page-title">Referrals</h1>
       <p className="page-sub">
-        Users attributed to you. Identities are masked for their privacy — you see
-        spend and your earnings per user.
+        Users attributed to you. Identities are masked for their privacy. &ldquo;Spend&rdquo; is
+        what each user has actually paid for API usage (after their own discount) — the base your
+        commission is calculated from.
       </p>
       {error ? <Notice kind="error">{error}</Notice> : null}
       {!items && !error ? <Loading label="Loading referrals…" /> : null}
@@ -56,7 +57,7 @@ export default function ReferralsPage() {
               <>
                 <th>User</th>
                 <th>Joined</th>
-                <th className="num">Total spend</th>
+                <th className="num">Paid usage</th>
                 <th className="num">You earned</th>
               </>
             }

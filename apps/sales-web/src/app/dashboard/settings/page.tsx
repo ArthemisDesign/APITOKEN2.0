@@ -64,13 +64,13 @@ export default function SettingsPage() {
 
         <Card
           title="Your commission terms"
-          sub="Set individually by the program. Contact us to discuss an upgrade."
+          sub="You earn this share of what your referrals actually pay for API usage on apitoken.sale — their real spend after their own discount, not their top-ups or list price. Rate set individually by the program."
         >
           <div className="stat-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)", marginBottom: 0 }}>
             <div className="stat-card">
               <div className="stat-label">Direct commission</div>
               <div className="stat-value green">{formatBps(partner.commissionBps)}</div>
-              <div className="stat-foot">of your referrals&apos; spend</div>
+              <div className="stat-foot">of your referrals&apos; real spend</div>
             </div>
             <div className="stat-card">
               <div className="stat-label">Account status</div>
