@@ -166,7 +166,7 @@ partners.panel.apitoken.sale {
 		reverse_proxy 127.0.0.1:3100
 	}
 	handle / {
-		redir /admin
+		redir * /admin
 	}
 	handle {
 		reverse_proxy 127.0.0.1:3200
