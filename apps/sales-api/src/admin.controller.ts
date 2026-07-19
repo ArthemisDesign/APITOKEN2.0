@@ -22,6 +22,7 @@ import {
   decideApplication,
   decidePayout,
   deletePartnerAdmin,
+  getDuePayoutList,
   listApplications,
   ApplicationAlreadyDecidedError,
   PartnerHasHistoryError,
@@ -99,6 +100,19 @@ export class AdminController {
         createdAt: partner.createdAt.toISOString(),
       })),
     };
+  }
+
+  /**
+   * Авто-список «к выплате» за окно текущего/последнего периода. Считается от подтверждённых
+   * комиссий (< конца периода) минус выплаченное; ролловер автоматический. Само отправление
+   * (on-chain) — отдельная система; здесь только читаемый список для оператора.
+   */
+  @Get("payout-list")
+  @Header("Cache-Control", "no-store")
+  async payoutList(): Promise<unknown> {
+    const minPayoutNano = BigInt(this.config.get("SALES_MIN_PAYOUT_USD", { infer: true })) * 1_000_000_000n;
+    const list = await getDuePayoutList(this.database, new Date(), minPayoutNano);
+    return { ...list, minPayoutNano: minPayoutNano.toString() };
   }
 
   /** Заявки «с улицы» (вход через Telegram без инвайта). */

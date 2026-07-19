@@ -39,11 +39,6 @@ export const adminCreateInviteSchema = z.object({
   subCommissionBps: commissionBpsSchema.optional(),
 });
 
-// Реквизиты в запросе не принимаются: выплата уходит на привязанный BSC-кошелёк партнёра.
-export const createPayoutSchema = z.object({
-  amountNano: nanoAmountSchema,
-});
-
 // Единственная сеть выплат — BSC (BEP-20): EVM-адрес.
 export const walletSchema = z.object({
   address: z.string().trim().regex(/^0x[a-fA-F0-9]{40}$/),

@@ -197,6 +197,54 @@ export type PayoutRow = {
   paidAt: string | null;
 };
 
+export type PeriodHistoryRow = {
+  key: string;
+  index: 1 | 2;
+  start: string;
+  end: string;
+  phase: "accruing" | "locked" | "payable" | "closed";
+  payoutDate: string;
+  earnedNano: string;
+};
+
+export type PeriodState = {
+  now: string;
+  current: { key: string; start: string; end: string; accruedNano: string };
+  locked: { key: string; endedAt: string; unlocksAt: string; earnedNano: string }[];
+  nextPayout: { date: string; estimatedNano: string };
+  lifetimeEarnedNano: string;
+  lifetimePaidNano: string;
+  unpaidNano: string;
+  wallet: string | null;
+  minPayoutNano: string;
+  lockDays: number;
+  windowDays: number;
+  history: PeriodHistoryRow[];
+};
+
+export type DuePayoutRow = {
+  partnerId: string;
+  telegramUsername: string | null;
+  displayName: string | null;
+  payableNano: string;
+  walletAddress: string | null;
+  eligible: boolean;
+  reason: "ok" | "below_minimum" | "no_wallet" | "zero";
+};
+
+export type PayoutListResponse = {
+  period: {
+    key: string;
+    start: string;
+    end: string;
+    payoutWindowStart: string;
+    payoutWindowEnd: string;
+    phase: string;
+  };
+  items: DuePayoutRow[];
+  minPayoutNano: string;
+};
+
 // Admin
 export type AdminPartnerRow = {
   id: string;

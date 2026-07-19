@@ -4,13 +4,11 @@ import {
   Controller,
   Get,
   Header,
-  HttpCode,
   Inject,
   Patch,
   Post,
   Query,
   UnauthorizedException,
-  UnprocessableEntityException,
   UseGuards,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
@@ -24,9 +22,9 @@ import {
   listPartnerPayouts,
   listPartnerTeam,
   listReferredUsers,
-  requestPayout,
+  getPartnerPeriodState,
+  getPartnerPeriodHistory,
   updatePartnerSettings,
-  InsufficientEarningsError,
   InviteCodeCollisionError,
   type SalesDatabase,
 } from "@claude-api/sales-db";
@@ -37,7 +35,6 @@ import { normalizeTelegramUsername } from "./telegram.js";
 import { SALES_DATABASE } from "./infrastructure.module.js";
 import {
   createInviteSchema,
-  createPayoutSchema,
   earningsQuerySchema,
   updateSettingsSchema,
   walletSchema,
@@ -205,26 +202,26 @@ export class PartnerController {
     return { items: payouts.map(payoutView) };
   }
 
-  /** Выплата уходит ТОЛЬКО на привязанный BSC-кошелёк (USDT BEP-20). */
-  @Post("payouts")
-  @HttpCode(201)
-  async createPayout(@CurrentAuth() current: RequestAuth, @Body() body: unknown): Promise<unknown> {
-    const parsed = createPayoutSchema.safeParse(body);
-    if (!parsed.success) throw new BadRequestException("invalid payout request");
-    const wallet = boundWallet(current.partner);
-    if (!wallet) throw new UnprocessableEntityException("bind your BSC wallet before requesting a payout");
-    try {
-      const payout = await requestPayout(this.database, {
-        partnerId: current.partner.id,
-        amountNano: BigInt(parsed.data.amountNano),
-        method: PAYOUT_METHOD,
-        details: { network: "BSC", asset: "USDT (BEP-20)", address: wallet },
-      });
-      return { payout: payoutView(payout) };
-    } catch (error) {
-      if (error instanceof InsufficientEarningsError) throw new UnprocessableEntityException(error.message);
-      throw error;
-    }
+  /**
+   * Периодная модель выплат: текущий период (накопление), лок, дата следующей выплаты и история
+   * по полумесячным периодам. Ручного запроса вывода нет — платим по расписанию на кошелёк.
+   */
+  @Get("periods")
+  @Header("Cache-Control", "no-store")
+  async periods(@CurrentAuth() current: RequestAuth): Promise<unknown> {
+    const now = new Date();
+    const [state, history] = await Promise.all([
+      getPartnerPeriodState(this.database, current.partner.id, now),
+      getPartnerPeriodHistory(this.database, current.partner.id, now),
+    ]);
+    return {
+      ...state,
+      wallet: boundWallet(current.partner),
+      minPayoutNano: (BigInt(this.config.get("SALES_MIN_PAYOUT_USD", { infer: true })) * 1_000_000_000n).toString(),
+      lockDays: 7,
+      windowDays: 3,
+      history,
+    };
   }
 
   /** Привязка/смена кошелька: единственная поддерживаемая сеть — BSC (BEP-20). */

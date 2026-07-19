@@ -10,6 +10,7 @@ import {
   type AdminPartnerRow,
   type AdminPayoutRow,
   type InviteRow,
+  type PayoutListResponse,
 } from "@/lib/api";
 import {
   Badge,
@@ -783,7 +784,103 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
 // Page
 // ---------------------------------------------------------------------------
 
-type Tab = "overview" | "onboarding" | "partners" | "payouts";
+function PayoutListTab({ adminKey }: { adminKey: string }) {
+  const [data, setData] = useState<PayoutListResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api<PayoutListResponse>("/v1/admin/payout-list", { headers: adminHeaders(adminKey) })
+      .then(setData)
+      .catch((err) => setError(err instanceof ApiError ? err.message : "Failed to load the payout list."));
+  }, [adminKey]);
+
+  if (error) return <Notice kind="error">{error}</Notice>;
+  if (!data) return <Loading />;
+
+  const eligible = data.items.filter((i) => i.eligible);
+  const eligibleTotal = eligible.reduce((acc, i) => acc + BigInt(i.payableNano), 0n).toString();
+  const win = data.period;
+  const reasonLabel: Record<string, string> = {
+    ok: "Ready",
+    no_wallet: "No wallet",
+    below_minimum: "Below minimum",
+    zero: "—",
+  };
+  const dt = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+  return (
+    <div className="stack">
+      <Card
+        title={`Payout list — period ${win.key}`}
+        sub={`Auto-generated from confirmed commissions before ${dt(win.end)} minus what was already paid. Window ${dt(win.payoutWindowStart)} → ${dt(win.payoutWindowEnd)} · phase: ${win.phase}. Minimum ${formatUsd(data.minPayoutNano)}.`}
+      >
+        <div className="stat-grid" style={{ gridTemplateColumns: "repeat(3, 1fr)", marginBottom: 0 }}>
+          <div className="stat-card">
+            <div className="stat-label">Ready to pay</div>
+            <div className="stat-value green">{formatUsd(eligibleTotal)}</div>
+            <div className="stat-foot">{eligible.length} partners eligible</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Held (rolls over)</div>
+            <div className="stat-value">
+              {formatUsd(data.items.filter((i) => !i.eligible).reduce((a, i) => a + BigInt(i.payableNano), 0n).toString())}
+            </div>
+            <div className="stat-foot">{data.items.filter((i) => !i.eligible).length} not eligible yet</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Total unpaid</div>
+            <div className="stat-value">
+              {formatUsd(data.items.reduce((a, i) => a + BigInt(i.payableNano), 0n).toString())}
+            </div>
+            <div className="stat-foot">{data.items.length} partners with a balance</div>
+          </div>
+        </div>
+      </Card>
+
+      <Card title="Due this window">
+        {data.items.length === 0 ? (
+          <EmptyState title="Nothing due">No partner has an unpaid balance for this period.</EmptyState>
+        ) : (
+          <Table
+            head={
+              <>
+                <th>Partner</th>
+                <th className="num">Payable</th>
+                <th>Wallet (BSC)</th>
+                <th>Status</th>
+              </>
+            }
+          >
+            {data.items.map((row) => (
+              <tr key={row.partnerId}>
+                <td>
+                  <div style={{ fontWeight: 600 }}>
+                    {row.telegramUsername ? `@${row.telegramUsername}` : row.displayName ?? row.partnerId.slice(0, 8)}
+                  </div>
+                </td>
+                <td className="num" style={{ fontWeight: 700 }}>{formatUsd(row.payableNano)}</td>
+                <td className="mono">{row.walletAddress ? `${row.walletAddress.slice(0, 8)}…${row.walletAddress.slice(-6)}` : "—"}</td>
+                <td>
+                  {row.eligible ? (
+                    <Badge tone="green">Ready</Badge>
+                  ) : (
+                    <Badge tone="yellow">{reasonLabel[row.reason] ?? row.reason}</Badge>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </Table>
+        )}
+      </Card>
+      <p className="field-hint">
+        Sending is done manually for now: pay each “Ready” partner in USDT (BEP-20) to their wallet.
+        The automated on-chain payout &amp; reconciliation flow is a separate upcoming system.
+      </p>
+    </div>
+  );
+}
+
+type Tab = "overview" | "onboarding" | "partners" | "payoutList" | "payouts";
 
 export default function AdminPage() {
   const [adminKey, setAdminKey] = useState<string | null>(null);
@@ -825,6 +922,7 @@ export default function AdminPage() {
             ["overview", "Overview"],
             ["onboarding", "Onboarding"],
             ["partners", "Partners"],
+            ["payoutList", "Payout list"],
             ["payouts", "Payouts"],
           ] as Array<[Tab, string]>
         ).map(([id, label]) => (
@@ -843,6 +941,7 @@ export default function AdminPage() {
       {tab === "overview" ? <OverviewTab adminKey={adminKey} /> : null}
       {tab === "onboarding" ? <OnboardingTab adminKey={adminKey} /> : null}
       {tab === "partners" ? <PartnersTab adminKey={adminKey} /> : null}
+      {tab === "payoutList" ? <PayoutListTab adminKey={adminKey} /> : null}
       {tab === "payouts" ? <PayoutsTab adminKey={adminKey} /> : null}
     </div>
   );

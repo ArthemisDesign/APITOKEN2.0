@@ -1,31 +1,19 @@
 "use client";
 
-// Выплаты: единственная сеть — BSC (BNB Smart Chain), актив USDT (BEP-20).
-// Партнёр привязывает кошелёк, все выплаты уходят только на него.
+// Периодная модель выплат (USDT BEP-20 / BSC). Ручного запроса вывода нет — платим по
+// расписанию на привязанный кошелёк. Партнёр видит текущий период, лок, дату следующей
+// выплаты и историю по полумесячным периодам. Сама отправка — отдельная система.
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import {
   api,
   ApiError,
-  formatDate,
   formatUsd,
-  usdToNano,
-  type Overview,
+  type PeriodState,
   type Partner,
-  type PayoutRow,
 } from "@/lib/api";
 import { usePartner } from "@/components/partner-context";
-import {
-  Button,
-  Card,
-  EmptyState,
-  Field,
-  Input,
-  Loading,
-  Notice,
-  StatusBadge,
-  Table,
-} from "@/components/ui";
+import { Badge, Button, Card, EmptyState, Field, Input, Loading, Notice, Table } from "@/components/ui";
 
 const BSC_ADDRESS = /^0x[a-fA-F0-9]{40}$/;
 
@@ -41,6 +29,35 @@ function walletFromPartner(partner: Partner): string | null {
 function shortAddress(address: string): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
 }
+
+function dateLabel(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+function periodRange(startIso: string, endIso: string): string {
+  const start = new Date(startIso);
+  const endInclusive = new Date(new Date(endIso).getTime() - 86_400_000);
+  const sameMonth = start.getUTCMonth() === endInclusive.getUTCMonth();
+  const s = start.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+  const e = endInclusive.toLocaleDateString("en-US", {
+    month: sameMonth ? undefined : "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+  return `${s} – ${e}`;
+}
+
+function daysUntil(iso: string, nowIso: string): number {
+  return Math.max(0, Math.ceil((new Date(iso).getTime() - new Date(nowIso).getTime()) / 86_400_000));
+}
+
+const PHASE_BADGE: Record<string, { tone: "neutral" | "green" | "yellow"; label: string }> = {
+  accruing: { tone: "neutral", label: "Accruing" },
+  locked: { tone: "yellow", label: "Locked" },
+  payable: { tone: "green", label: "Paying out" },
+  closed: { tone: "neutral", label: "Closed" },
+};
 
 function WalletCard({ wallet, onBound }: { wallet: string | null; onBound: (address: string) => void }) {
   const [editing, setEditing] = useState(wallet === null);
@@ -75,10 +92,13 @@ function WalletCard({ wallet, onBound }: { wallet: string | null; onBound: (addr
   return (
     <Card
       title="Payout wallet"
-      sub="USDT (BEP-20) on BNB Smart Chain — the only supported network. Every payout goes to this address."
+      sub="USDT (BEP-20) on BNB Smart Chain — the only supported network. Every payout is sent to this address."
     >
       {error ? <Notice kind="error">{error}</Notice> : null}
       {saved && !editing ? <Notice kind="success">Wallet saved.</Notice> : null}
+      {!wallet && !editing ? (
+        <Notice kind="info">Bind your BSC wallet to receive payouts — without it, your balance rolls over.</Notice>
+      ) : null}
 
       {wallet && !editing ? (
         <div className="wallet-row">
@@ -94,10 +114,7 @@ function WalletCard({ wallet, onBound }: { wallet: string | null; onBound: (addr
         </div>
       ) : (
         <form onSubmit={bind}>
-          <Field
-            label="BSC wallet address"
-            hint="Double-check the address — payouts sent on-chain cannot be reversed."
-          >
+          <Field label="BSC wallet address" hint="Double-check it — on-chain payouts cannot be reversed.">
             <Input
               className="mono"
               value={address}
@@ -127,23 +144,12 @@ function WalletCard({ wallet, onBound }: { wallet: string | null; onBound: (addr
 export default function PayoutsPage() {
   const partner = usePartner();
   const [wallet, setWallet] = useState<string | null>(walletFromPartner(partner));
-  const [overview, setOverview] = useState<Overview | null>(null);
-  const [payouts, setPayouts] = useState<PayoutRow[] | null>(null);
+  const [state, setState] = useState<PeriodState | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  const [amount, setAmount] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [ov, po] = await Promise.all([
-        api<Overview>("/v1/partner/overview"),
-        api<{ items: PayoutRow[] }>("/v1/partner/payouts"),
-      ]);
-      setOverview(ov);
-      setPayouts([...po.items].sort((a, b) => (a.requestedAt < b.requestedAt ? 1 : -1)));
+      setState(await api<PeriodState>("/v1/partner/periods"));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to load payouts.");
     }
@@ -153,126 +159,103 @@ export default function PayoutsPage() {
     void load();
   }, [load]);
 
-  async function onSubmit(e: FormEvent) {
-    e.preventDefault();
-    setFormError(null);
-    setSuccess(null);
-    const amountNano = usdToNano(amount);
-    if (!amountNano) {
-      setFormError("Enter a valid positive USD amount, e.g. 100 or 49.50.");
-      return;
-    }
-    setBusy(true);
-    try {
-      await api("/v1/partner/payouts", { method: "POST", body: { amountNano } });
-      setSuccess("Payout requested. The program team will review it shortly.");
-      setAmount("");
-      void load();
-    } catch (err) {
-      setFormError(err instanceof ApiError ? err.message : "Could not request the payout.");
-    } finally {
-      setBusy(false);
-    }
-  }
+  const lockedTotal = state
+    ? state.locked.reduce((acc, l) => acc + BigInt(l.earnedNano), 0n).toString()
+    : "0";
 
   return (
     <>
       <h1 className="page-title">Payouts</h1>
-      <p className="page-sub">Withdraw your available balance in USDT (BEP-20) on BNB Smart Chain.</p>
+      <p className="page-sub">
+        Automatic twice-monthly payouts in USDT (BEP-20) on BNB Smart Chain. No manual withdrawal —
+        just keep your wallet bound.
+      </p>
       {error ? <Notice kind="error">{error}</Notice> : null}
 
       <div className="stack">
-        <div className="stat-grid" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
+        <div className="stat-grid" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
           <div className="stat-card">
-            <div className="stat-label">Available</div>
-            <div className="stat-value green">
-              {overview ? formatUsd(overview.totals.availableNano) : "…"}
+            <div className="stat-label">This period</div>
+            <div className="stat-value green">{state ? formatUsd(state.current.accruedNano) : "…"}</div>
+            <div className="stat-foot">
+              {state ? `accruing · ${periodRange(state.current.start, state.current.end)}` : ""}
             </div>
           </div>
           <div className="stat-card">
-            <div className="stat-label">Pending payout</div>
-            <div className="stat-value">
-              {overview ? formatUsd(overview.totals.pendingPayoutNano) : "…"}
+            <div className="stat-label">Locked</div>
+            <div className="stat-value">{state ? formatUsd(lockedTotal) : "…"}</div>
+            <div className="stat-foot">
+              {state && state.locked[0]
+                ? `unlocks ${dateLabel(state.locked[0].unlocksAt)}`
+                : "7-day hold after a period ends"}
             </div>
           </div>
           <div className="stat-card">
-            <div className="stat-label">Paid out to date</div>
-            <div className="stat-value">
-              {overview ? formatUsd(overview.totals.paidNano) : "…"}
+            <div className="stat-label">Next payout</div>
+            <div className="stat-value">{state ? formatUsd(state.nextPayout.estimatedNano) : "…"}</div>
+            <div className="stat-foot">
+              {state
+                ? `${dateLabel(state.nextPayout.date)} · in ${daysUntil(state.nextPayout.date, state.now)}d`
+                : ""}
             </div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Unpaid total</div>
+            <div className="stat-value">{state ? formatUsd(state.unpaidNano) : "…"}</div>
+            <div className="stat-foot">{state ? `${formatUsd(state.lifetimePaidNano)} paid to date` : ""}</div>
           </div>
         </div>
 
         <WalletCard wallet={wallet} onBound={setWallet} />
 
-        <Card title="Request a payout" sub="Requests are reviewed manually by the program team.">
-          {formError ? <Notice kind="error">{formError}</Notice> : null}
-          {success ? <Notice kind="success">{success}</Notice> : null}
-          {!wallet ? (
-            <Notice kind="info">Bind your BSC wallet above to request payouts.</Notice>
-          ) : (
-            <form onSubmit={onSubmit}>
-              <div className="grid-2">
-                <Field
-                  label="Amount (USD)"
-                  hint={overview ? `Available: ${formatUsd(overview.totals.availableNano)}` : undefined}
-                >
-                  <Input
-                    inputMode="decimal"
-                    placeholder="100"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    required
-                  />
-                </Field>
-                <Field label="Destination" hint="USDT (BEP-20), BNB Smart Chain">
-                  <Input className="mono" value={shortAddress(wallet)} readOnly disabled />
-                </Field>
-              </div>
-              <Button type="submit" loading={busy}>
-                Request payout
-              </Button>
-            </form>
-          )}
+        <Card title="How payouts work">
+          <ul className="how-list">
+            <li>
+              Earnings are counted in two periods each month: the <strong>1st–15th</strong> and the{" "}
+              <strong>16th–end</strong>.
+            </li>
+            <li>
+              After a period ends there is a <strong>7-day lock</strong>, then payouts are sent within
+              the next <strong>3 days</strong> — if you have a bound wallet and your balance is at least{" "}
+              <strong>{state ? formatUsd(state.minPayoutNano) : "the minimum"}</strong>.
+            </li>
+            <li>
+              Below the minimum or no wallet? Nothing is lost — the amount rolls into your next payout
+              (so it may cover two periods at once).
+            </li>
+            {!wallet ? <li><strong>Bind your BSC wallet above to start receiving payouts.</strong></li> : null}
+          </ul>
         </Card>
 
-        <Card title="Payout history">
-          {!payouts ? (
+        <Card title="Period history" sub="What you earned in each half-month period and when it pays out.">
+          {!state ? (
             <Loading />
-          ) : payouts.length === 0 ? (
-            <EmptyState title="No payouts yet">
-              Your requests and their status will appear here.
+          ) : state.history.length === 0 ? (
+            <EmptyState title="No earnings yet">
+              Your period earnings will appear here once your referrals start spending.
             </EmptyState>
           ) : (
             <Table
               head={
                 <>
-                  <th>Requested</th>
-                  <th className="num">Amount</th>
-                  <th>Destination</th>
+                  <th>Period</th>
+                  <th className="num">Earned</th>
                   <th>Status</th>
-                  <th>Paid</th>
+                  <th>Payout date</th>
                 </>
               }
             >
-              {payouts.map((p) => (
-                <tr key={p.id}>
-                  <td>{formatDate(p.requestedAt)}</td>
-                  <td className="num" style={{ fontWeight: 700 }}>
-                    {formatUsd(p.amountNano)}
-                  </td>
-                  <td className="mono">
-                    {p.details && typeof p.details === "object" && "address" in p.details &&
-                    typeof (p.details as { address?: unknown }).address === "string"
-                      ? `BSC · ${shortAddress((p.details as { address: string }).address)}`
-                      : p.method}
-                  </td>
-                  <td>
-                    <StatusBadge status={p.status} />
-                  </td>
-                  <td>{p.paidAt ? formatDate(p.paidAt) : "—"}</td>
-                </tr>
-              ))}
+              {state.history.map((row) => {
+                const badge = PHASE_BADGE[row.phase] ?? PHASE_BADGE.closed;
+                return (
+                  <tr key={row.key}>
+                    <td>{periodRange(row.start, row.end)}</td>
+                    <td className="num" style={{ fontWeight: 700 }}>{formatUsd(row.earnedNano)}</td>
+                    <td><Badge tone={badge!.tone}>{badge!.label}</Badge></td>
+                    <td>{dateLabel(row.payoutDate)}</td>
+                  </tr>
+                );
+              })}
             </Table>
           )}
         </Card>

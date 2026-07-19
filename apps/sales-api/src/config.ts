@@ -33,6 +33,8 @@ const environmentSchema = z.object({
   EMAIL_POLL_INTERVAL_MS: z.coerce.number().int().min(100).default(5_000),
   DEFAULT_COMMISSION_BPS: z.coerce.number().int().min(0).max(10_000).default(1000),
   DEFAULT_SUB_COMMISSION_BPS: z.coerce.number().int().min(0).max(10_000).default(1000),
+  // Минимальный профит за окно выплат («если профит есть»): меньше — сумма роллится дальше.
+  SALES_MIN_PAYOUT_USD: z.coerce.number().int().min(0).max(100_000).default(10),
 }).superRefine((value, context) => {
   if (value.EMAIL_DELIVERY_MODE === "smtp" && (!value.EMAIL_FROM || !value.SMTP_HOST || !value.SMTP_PORT)) {
     context.addIssue({ code: "custom", message: "EMAIL_FROM, SMTP_HOST and SMTP_PORT are required for SMTP delivery" });
