@@ -172,6 +172,9 @@ export async function getDuePayoutList(
 ): Promise<{ period: { key: string; start: string; end: string; payoutWindowStart: string; payoutWindowEnd: string; phase: PeriodPhase }; items: DuePayoutRow[] }> {
   const openWindow = periodInPayoutWindow(now);
   const target = openWindow ?? lastEndedPeriod(now);
+  // Платить можно только когда окно выплат реально открыто (после 7-дневного лока). Если открытого
+  // окна нет, это превью последнего периода — суммы показываем, но никто не «eligible» (ещё в локе).
+  const windowOpen = openWindow !== null;
 
   const result = await database.pool.query<{
     partner_id: string; telegram_username: string | null; display_name: string | null;
@@ -205,7 +208,7 @@ export async function getDuePayoutList(
         displayName: row.display_name,
         payableNano: (payable > 0n ? payable : 0n).toString(),
         walletAddress: wallet,
-        eligible: reason === "ok",
+        eligible: reason === "ok" && windowOpen,
         reason,
       };
     })

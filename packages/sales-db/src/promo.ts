@@ -154,10 +154,12 @@ export async function redeemPromoCode(database: SalesDatabase, input: {
     await client.query("BEGIN");
     const found = await client.query<{
       id: string; partner_id: string; value_nano: string; status: PromoCodeStatus;
-      redeemed_by_commerce_user_id: string | null; redemption_ref: string | null; referral_code: string;
+      redeemed_by_commerce_user_id: string | null; redemption_ref: string | null;
+      referral_code: string; partner_status: string; promo_enabled: boolean;
     }>(
       `SELECT pc.id, pc.partner_id, pc.value_nano::text AS value_nano, pc.status,
-              pc.redeemed_by_commerce_user_id, pc.redemption_ref, p.referral_code
+              pc.redeemed_by_commerce_user_id, pc.redemption_ref, p.referral_code,
+              p.status AS partner_status, p.promo_enabled
        FROM promo_codes pc JOIN partners p ON p.id = pc.partner_id
        WHERE upper(pc.code) = upper($1)
        FOR UPDATE OF pc`,
@@ -169,7 +171,8 @@ export async function redeemPromoCode(database: SalesDatabase, input: {
       throw new PromoNotFoundError("promo code not found");
     }
 
-    // Идемпотентность: тот же код уже погашен этим же юзером → возвращаем прежний ref.
+    // Идемпотентность: тот же код уже погашен этим же юзером → возвращаем прежний ref
+    // (кредит уже произошёл — не зависим от текущего состояния партнёра).
     if (promo.status === "redeemed" && promo.redeemed_by_commerce_user_id === input.commerceUserId) {
       await client.query("ROLLBACK");
       return {
@@ -184,6 +187,12 @@ export async function redeemPromoCode(database: SalesDatabase, input: {
       await client.query("ROLLBACK");
       throw new PromoAlreadyRedeemedError("promo code is not redeemable");
     }
+    // Новое погашение требует, чтобы партнёр был активен и промо включено — заморозка/выключение
+    // промо мгновенно гасит все ещё не погашенные коды (защита от фрода).
+    if (promo.partner_status !== "active" || !promo.promo_enabled) {
+      await client.query("ROLLBACK");
+      throw new PromoAlreadyRedeemedError("promo code is no longer available");
+    }
     // Один промо на юзера.
     const prior = await client.query(
       "SELECT 1 FROM promo_codes WHERE redeemed_by_commerce_user_id = $1 LIMIT 1",
@@ -194,12 +203,19 @@ export async function redeemPromoCode(database: SalesDatabase, input: {
       throw new UserAlreadyRedeemedError("this account has already used a promo code");
     }
     const ref = `promo:${promo.id}`;
-    await client.query(
-      `UPDATE promo_codes
-       SET status = 'redeemed', redeemed_by_commerce_user_id = $2, redeemed_at = now(), redemption_ref = $3
-       WHERE id = $1`,
-      [promo.id, input.commerceUserId, ref],
-    );
+    try {
+      await client.query(
+        `UPDATE promo_codes
+         SET status = 'redeemed', redeemed_by_commerce_user_id = $2, redeemed_at = now(), redemption_ref = $3
+         WHERE id = $1`,
+        [promo.id, input.commerceUserId, ref],
+      );
+    } catch (error) {
+      // Гонка двух разных кодов одним юзером: partial-unique redeemed_by → 23505 → чистый 409.
+      await client.query("ROLLBACK");
+      if (isUniqueViolation(error)) throw new UserAlreadyRedeemedError("this account has already used a promo code");
+      throw error;
+    }
     await client.query(
       `INSERT INTO sales_audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
        VALUES ('user', $1, 'promo.redeemed', 'promo_code', $2, $3::jsonb)`,

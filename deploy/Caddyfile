@@ -151,6 +151,11 @@ http://127.0.0.1:8791 {
 # /v1/* -> sales-api (:3100), остальное -> sales-web Next.js (:3200).
 # Same-origin, чтобы кука sales_session оставалась first-party.
 partners.apitoken.sale {
+	# Внутренний контур (promo redeem и т.п.) не публикуем: commerce ходит на sales-api по
+	# loopback :3100 напрямую, снаружи /v1/internal/* быть не должно.
+	handle /v1/internal/* {
+		respond 404
+	}
 	handle /v1/* {
 		reverse_proxy 127.0.0.1:3100
 	}
