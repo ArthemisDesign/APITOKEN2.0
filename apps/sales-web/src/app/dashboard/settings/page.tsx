@@ -106,18 +106,13 @@ export default function SettingsPage() {
 
         <Card
           title="Your commission terms"
-          sub="Set individually by the program. Contact the team to discuss an upgrade."
+          sub="Set individually by the program. Contact us to discuss an upgrade."
         >
-          <div className="stat-grid" style={{ gridTemplateColumns: "repeat(3, 1fr)", marginBottom: 0 }}>
+          <div className="stat-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)", marginBottom: 0 }}>
             <div className="stat-card">
               <div className="stat-label">Direct commission</div>
               <div className="stat-value green">{formatBps(partner.commissionBps)}</div>
               <div className="stat-foot">of your referrals&apos; spend</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Team override</div>
-              <div className="stat-value">{formatBps(partner.subCommissionBps)}</div>
-              <div className="stat-foot">of your sub-partners&apos; volume</div>
             </div>
             <div className="stat-card">
               <div className="stat-label">Account status</div>

@@ -10,7 +10,7 @@ import { PartnerContext } from "@/components/partner-context";
 const NAV = [
   { href: "/dashboard", label: "Overview", icon: "◧" },
   { href: "/dashboard/referrals", label: "Referrals", icon: "⇢" },
-  { href: "/dashboard/team", label: "Team", icon: "⁂" },
+  { href: "/dashboard/team", label: "Team", icon: "⁂", soon: true },
   { href: "/dashboard/payouts", label: "Payouts", icon: "◈" },
   { href: "/dashboard/settings", label: "Settings", icon: "⚙" },
 ];
@@ -100,6 +100,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
                     {item.icon}
                   </span>
                   {item.label}
+                  {"soon" in item && item.soon ? <span className="soon-pill">Soon</span> : null}
                 </Link>
               );
             })}

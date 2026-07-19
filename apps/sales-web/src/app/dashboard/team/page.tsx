@@ -1,208 +1,64 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import {
-  api,
-  ApiError,
-  formatBps,
-  formatDate,
-  formatUsd,
-  type InviteRow,
-  type TeamRow,
-} from "@/lib/api";
-import {
-  Badge,
-  Button,
-  Card,
-  CopyButton,
-  EmptyState,
-  Input,
-  Loading,
-  Notice,
-  StatusBadge,
-  Table,
-} from "@/components/ui";
+// Вкладка Team временно закрыта («Soon»): показываем заблюренный макет без данных
+// и без интерактива. Рабочая версия — в истории git, вернётся при запуске
+// многоуровневой программы.
+
+import { Card, Table } from "@/components/ui";
+
+const PLACEHOLDER_ROWS = [
+  ["@partner_one", "12%", "14", "$1,240.00", "$124.00"],
+  ["@partner_two", "10%", "8", "$610.50", "$61.05"],
+  ["@partner_three", "10%", "3", "$95.20", "$9.52"],
+];
 
 export default function TeamPage() {
-  const [team, setTeam] = useState<TeamRow[] | null>(null);
-  const [invites, setInvites] = useState<InviteRow[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
-  const [inviteTelegram, setInviteTelegram] = useState("");
-  const [newInvite, setNewInvite] = useState<{ code: string; inviteUrl: string; telegramUsername?: string | null } | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      const [t, inv] = await Promise.all([
-        api<{ items: TeamRow[] }>("/v1/partner/team"),
-        api<{ items: InviteRow[] }>("/v1/partner/invites"),
-      ]);
-      setTeam(t.items);
-      setInvites(inv.items);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to load your team.");
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  async function createInvite() {
-    const username = inviteTelegram.trim().replace(/^@/, "");
-    if (!/^[A-Za-z0-9_]{5,32}$/.test(username)) {
-      setCreateError("Enter the invitee's Telegram username (5–32 letters, digits, underscore).");
-      return;
-    }
-    setCreating(true);
-    setCreateError(null);
-    try {
-      const res = await api<{ code: string; inviteUrl: string; telegramUsername: string | null }>("/v1/partner/invites", {
-        method: "POST",
-        body: { telegramUsername: username },
-      });
-      setNewInvite(res);
-      setInviteTelegram("");
-      void load();
-    } catch (err) {
-      setCreateError(
-        err instanceof ApiError ? err.message : "Could not create an invite.",
-      );
-    } finally {
-      setCreating(false);
-    }
-  }
-
   return (
     <>
       <h1 className="page-title">Team</h1>
-      <p className="page-sub">
-        Sub-partners you recruited. You earn an override on the spend their
-        referrals generate.
-      </p>
-      {error ? <Notice kind="error">{error}</Notice> : null}
+      <p className="page-sub">Recruit sub-partners and earn an override on their results.</p>
 
-      <div className="stack">
-        <Card
-          title="Invite a sub-partner"
-          sub="Enter their Telegram username — the invite link works only for that account. Send it to them in Telegram."
-        >
-          {createError ? <Notice kind="error">{createError}</Notice> : null}
-          {newInvite ? (
-            <div style={{ marginBottom: 14 }}>
+      <div className="soon-wrap">
+        <div className="soon-overlay" role="status">
+          <span className="soon-label">Soon</span>
+          <p>Sub-partner teams are launching soon.</p>
+        </div>
+
+        <div className="soon-blur" aria-hidden inert>
+          <div className="stack">
+            <Card title="Invite a sub-partner" sub="Enter their Telegram username and send them the link.">
               <div className="reflink-row">
-                <Input
-                  readOnly
-                  value={newInvite.inviteUrl}
-                  onFocus={(e) => e.currentTarget.select()}
-                />
-                <CopyButton value={newInvite.inviteUrl} label="Copy invite" />
+                <input className="input" readOnly value="@telegram_username" />
+                <button className="btn btn-primary" type="button" tabIndex={-1}>
+                  Create invite
+                </button>
               </div>
-              <p className="field-hint" style={{ marginTop: 8 }}>
-                For <span className="mono">@{newInvite.telegramUsername}</span> · code{" "}
-                <span className="mono">{newInvite.code}</span>
-              </p>
-            </div>
-          ) : null}
-          <div className="reflink-row">
-            <Input
-              value={inviteTelegram}
-              onChange={(e) => setInviteTelegram(e.target.value)}
-              placeholder="@telegram_username"
-            />
-            <Button onClick={createInvite} loading={creating}>
-              Create invite
-            </Button>
+            </Card>
+            <Card title="Your sub-partners">
+              <Table
+                head={
+                  <>
+                    <th>Partner</th>
+                    <th>Commission</th>
+                    <th className="num">Referred users</th>
+                    <th className="num">They earned</th>
+                    <th className="num">Your override</th>
+                  </>
+                }
+              >
+                {PLACEHOLDER_ROWS.map((row) => (
+                  <tr key={row[0]}>
+                    {row.map((cell, index) => (
+                      <td key={index} className={index >= 2 ? "num" : undefined}>
+                        {cell}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </Table>
+            </Card>
           </div>
-        </Card>
-
-        <Card title="Your sub-partners">
-          {!team ? (
-            <Loading />
-          ) : team.length === 0 ? (
-            <EmptyState title="No sub-partners yet">
-              Invite other promoters and earn an override on their results.
-            </EmptyState>
-          ) : (
-            <Table
-              head={
-                <>
-                  <th>Partner</th>
-                  <th>Commission</th>
-                  <th className="num">Referred users</th>
-                  <th className="num">They earned</th>
-                  <th className="num">Your override</th>
-                  <th>Status</th>
-                </>
-              }
-            >
-              {team.map((m) => (
-                <tr key={m.id}>
-                  <td>
-                    <div style={{ fontWeight: 600 }}>
-                      {m.displayName || (m.telegramUsername ? `@${m.telegramUsername}` : m.email)}
-                    </div>
-                    {m.telegramUsername ? (
-                      <div style={{ fontSize: 12, color: "var(--text-faint)" }}>@{m.telegramUsername}</div>
-                    ) : null}
-                  </td>
-                  <td>{formatBps(m.commissionBps)}</td>
-                  <td className="num">{m.referredUsers}</td>
-                  <td className="num">{formatUsd(m.earnedNano)}</td>
-                  <td className="num" style={{ color: "var(--accent-strong)", fontWeight: 700 }}>
-                    {formatUsd(m.myOverrideNano)}
-                  </td>
-                  <td>
-                    <StatusBadge status={m.status} />
-                  </td>
-                </tr>
-              ))}
-            </Table>
-          )}
-        </Card>
-
-        <Card title="Invite links" sub="Invites you have created so far.">
-          {!invites ? (
-            <Loading />
-          ) : invites.length === 0 ? (
-            <EmptyState title="No invites yet" />
-          ) : (
-            <Table
-              head={
-                <>
-                  <th>For</th>
-                  <th>Code</th>
-                  <th>Commission</th>
-                  <th>Expires</th>
-                  <th>Status</th>
-                  <th />
-                </>
-              }
-            >
-              {invites.map((inv) => (
-                <tr key={inv.code}>
-                  <td className="mono">{inv.telegramUsername ? `@${inv.telegramUsername}` : "—"}</td>
-                  <td className="mono">{inv.code}</td>
-                  <td>{inv.commissionBps != null ? formatBps(inv.commissionBps) : "Program default"}</td>
-                  <td>{inv.expiresAt ? formatDate(inv.expiresAt) : "—"}</td>
-                  <td>
-                    {inv.consumedAt ? (
-                      <Badge tone="green">Used {formatDate(inv.consumedAt)}</Badge>
-                    ) : (
-                      <Badge tone="yellow">Unused</Badge>
-                    )}
-                  </td>
-                  <td>
-                    {!inv.consumedAt ? (
-                      <CopyButton value={inv.inviteUrl} label="Copy" />
-                    ) : null}
-                  </td>
-                </tr>
-              ))}
-            </Table>
-          )}
-        </Card>
+        </div>
       </div>
     </>
   );

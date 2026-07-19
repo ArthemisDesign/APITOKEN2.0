@@ -61,9 +61,8 @@ export default function OverviewPage() {
     <>
       <h1 className="page-title">Overview</h1>
       <p className="page-sub">
-        Your terms: <strong>{formatBps(overview.commissionBps)}</strong> on direct
-        referrals, <strong>{formatBps(overview.subCommissionBps)}</strong> override
-        on your team.
+        Your terms: <strong>{formatBps(overview.commissionBps)}</strong> on what your
+        referrals spend.
       </p>
 
       <div className="stat-grid">
@@ -77,10 +76,7 @@ export default function OverviewPage() {
         <div className="stat-card">
           <div className="stat-label">Total earned</div>
           <div className="stat-value">{formatUsd(overview.totals.earnedNano)}</div>
-          <div className="stat-foot">
-            {formatUsd(overview.totals.directNano)} direct ·{" "}
-            {formatUsd(overview.totals.overrideNano)} override
-          </div>
+          <div className="stat-foot">{formatUsd(overview.totals.paidNano)} paid out</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Referred users</div>
@@ -90,9 +86,9 @@ export default function OverviewPage() {
           </div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Team size</div>
-          <div className="stat-value">{overview.teamSize}</div>
-          <div className="stat-foot">sub-partners recruited</div>
+          <div className="stat-label">Earned in 30d</div>
+          <div className="stat-value">{formatUsd(overview.last30d.earnedNano)}</div>
+          <div className="stat-foot">rolling 30-day window</div>
         </div>
       </div>
 
