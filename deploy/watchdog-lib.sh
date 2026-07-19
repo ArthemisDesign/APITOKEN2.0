@@ -223,6 +223,18 @@ wd_path_is_backend() {
   esac
 }
 
+# Партнёрский bounded context (partners.apitoken.sale). Отдельный жизненный цикл релизов
+# (/opt/apitoken/sales-releases), НЕ на общем commerce-current. Shared build-файлы включены,
+# чтобы бамп зависимостей тоже пере-собирал sales-релиз.
+wd_path_is_sales() {
+  case "$1" in
+    apps/sales-api/*|apps/sales-web/*|packages/sales-db/*|packages/contracts/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig.base.json|.node-version)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 wd_path_is_infrastructure() {
   case "$1" in
     deploy/*|systemd/*|compose.yaml)

@@ -85,24 +85,16 @@ https://partners.apitoken.sale работает. Как устроено на 84
 - systemd: `apitoken-sales-api.service` (:3100) и `apitoken-sales-web.service` (:3200,
   `next start -H 127.0.0.1` — bind ТОЛЬКО на loopback). **Готча:** sales-web нужен `AF_NETLINK`
   в `RestrictAddressFamilies`, иначе Next падает на `uv_interface_addresses`.
-- **ВАЖНО — sales НЕ в watchdog-деплое.** Watchdog тестирует sales-код (build/typecheck/test),
-  но при коммите, не трогающем `apps/api`/движок, отдаёт `backend=0` и НЕ промоутит релиз —
-  общий симлинк `/opt/apitoken/releases/current` остаётся на прошлом backend-SHA (его трогать
-  нельзя: на нём commerce blue-green). Поэтому у sales СОБСТВЕННЫЙ жизненный цикл релизов:
-  юниты смотрят на `/opt/apitoken/sales-releases/current`. **Деплой sales после зелёного
-  watchdog** (SHA = полный хэш коммита):
-  ```
-  SHA=<full-sha>
-  cp -a /var/lib/apitoken/watchdog/candidates/$SHA /opt/apitoken/sales-releases/$SHA
-  chown -R deploy:deploy /opt/apitoken/sales-releases/$SHA
-  # если менялась схема sales-db:
-  set -a; . /etc/apitoken/sales.env; set +a
-  node /opt/apitoken/sales-releases/$SHA/packages/sales-db/dist/migrate.js
-  ln -sfn /opt/apitoken/sales-releases/$SHA /opt/apitoken/sales-releases/current
-  systemctl restart apitoken-sales-api apitoken-sales-web
-  ```
-  (candidate-каталог watchdog эфемерный — копируем в durable `sales-releases`.) Правильный
-  долг: свернуть sales в watchdog-пайплайн (build+health-gate+rollback) — TODO.
+- **sales в watchdog-пайплайне (автодеплой).** Класс путей `wd_path_is_sales`
+  (`apps/sales-api/*`, `apps/sales-web/*`, `packages/sales-db/*`, shared build-файлы) с отдельным
+  baseline `/var/lib/apitoken/watchdog/sales.sha`. После зелёных тестов watchdog зовёт
+  `deploy/sales-deploy.sh <sha>`: промоут тестированного кандидата в неизменяемый релиз
+  `/opt/apitoken/sales-releases/<sha>` → миграции sales-db (advisory-lock, expand-only) →
+  атомарный свап `sales-releases/current` → рестарт обоих юнитов → health-gate
+  (`/v1/health` + `/` по 200, до 60с) → **rollback симлинка** при провале. Контекст статуса —
+  `deploy/sales`. У sales СВОЙ release root, НЕ на общем commerce-`current` (там commerce
+  blue-green — трогать нельзя). Юниты смотрят на `sales-releases/current`.
+  Ручной аварийный деплой (если понадобится) — тем же `sales-deploy.sh <sha>` из кандидата.
 - Env: `/etc/apitoken/sales.env` (все ключи: SALES_DATABASE_URL, SALES_TOKEN_ENCRYPTION_KEY,
   `SALES_ADMIN_KEY` — ключ входа в /admin, SALES_CONTROL_KEY, SMTP Brevo). Тот же
   `SALES_CONTROL_KEY` добавлен в `/etc/apitoken/api.env` — включает фид.

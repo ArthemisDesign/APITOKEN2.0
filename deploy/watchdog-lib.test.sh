@@ -51,6 +51,14 @@ if wd_manifest_is_append_only "$TEMP/baseline.manifest" "$TEMP/tampered-journal.
   wd_die "manifest accepted an edited historical journal entry"
 fi
 
+# Path classifiers: sales vs backend/engine/infra separation.
+wd_path_is_sales apps/sales-api/src/main.ts || wd_die "sales-api not classified as sales"
+wd_path_is_sales apps/sales-web/src/app/page.tsx || wd_die "sales-web not classified as sales"
+wd_path_is_sales packages/sales-db/src/schema.ts || wd_die "sales-db not classified as sales"
+wd_path_is_sales apps/api/src/main.ts && wd_die "commerce api wrongly classified as sales"
+wd_path_is_sales crates/server/src/http.rs && wd_die "engine wrongly classified as sales"
+wd_path_is_backend packages/sales-db/src/schema.ts || wd_die "sales-db should also be backend class (shared packages)"
+
 wd_engine_topology_is_steady 1 1 1 1 0 0 0 0 0 0
 wd_engine_topology_is_steady 0 0 0 0 1 1 1 1 0 0
 for invalid_topology in \

@@ -19,6 +19,7 @@ TEST_DB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-test-db
 BACKUP_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-backup.sh
 MIGRATION_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
 INFRASTRUCTURE_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh
+SALES_RUNNER=/usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh
 GITHUB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-github
 WATCHDOG_LOCK=/run/lock/apitoken-watchdog.lock
 DEPLOY_LOCK=/run/lock/apitoken-deploy.lock
@@ -28,6 +29,7 @@ COMMERCE_RELEASE_ROOT=/opt/apitoken/releases
 PROCESSED_FILE=$STATE_ROOT/processed.sha
 ENGINE_FILE=$STATE_ROOT/engine.sha
 BACKEND_FILE=$STATE_ROOT/backend.sha
+SALES_FILE=$STATE_ROOT/sales.sha
 REJECTED_FILE=$STATE_ROOT/rejected.sha
 PENDING_MIGRATION_FILE=$STATE_ROOT/pending-migration.sha
 DB_MANIFEST=$STATE_ROOT/database-migrations.manifest
@@ -331,6 +333,20 @@ deploy_backend() {
   wd_log "backend $sha passed final production verification"
 }
 
+deploy_sales() {
+  local sha=$1
+  CURRENT_PHASE=deploying-sales
+  CURRENT_PHASE_BEFORE_FAILURE=deploying-sales
+  status "promoting and health-gating the sales partner portal (own release lifecycle)"
+  github_status pending deploy/sales "Sales partner portal deployment in progress"
+  github_deployment_start sales production-sales https://partners.apitoken.sale/v1/health
+  "$SALES_RUNNER" "$sha"
+  wd_atomic_write "$SALES_FILE" "$sha"
+  github_deployment_success sales
+  github_status success deploy/sales "Sales partner portal verified in production"
+  wd_log "sales $sha promoted and verified (partners.apitoken.sale)"
+}
+
 apply_migrations_before_deploy() {
   local sha=$1 candidate manifest digest applied_digest
   candidate=$(candidate_for "$sha")
@@ -366,7 +382,7 @@ apply_migrations_before_deploy() {
 }
 
 main() {
-  local remote_ref rejected infra_changed=0 caddy_changed=0 engine_changed=0 backend_changed=0
+  local remote_ref rejected infra_changed=0 caddy_changed=0 engine_changed=0 backend_changed=0 sales_changed=0
 
   [[ $(id -un) == deploy ]] || wd_die "watchdog service must run as deploy"
   [[ -d $SOURCE_REPO/.git ]] || wd_die "source repository is missing: $SOURCE_REPO"
@@ -378,6 +394,7 @@ main() {
   require_fixed_file "$BACKUP_RUNNER"
   require_fixed_file "$MIGRATION_RUNNER"
   require_fixed_file "$INFRASTRUCTURE_RUNNER"
+  require_fixed_file "$SALES_RUNNER"
   require_fixed_file "$GITHUB_HELPER"
   require_fixed_directory "$CI_TOOLCHAIN"
   [[ -f $DB_MANIFEST && ! -L $DB_MANIFEST ]] || wd_die "database migration baseline is missing"
@@ -399,9 +416,11 @@ main() {
   PROCESSED_SHA=$(wd_read_sha "$PROCESSED_FILE")
   ENGINE_SHA=$(wd_read_sha "$ENGINE_FILE")
   BACKEND_SHA=$(wd_read_sha "$BACKEND_FILE")
+  SALES_SHA=$(wd_read_sha "$SALES_FILE" 2>/dev/null || printf '')
   wd_require_ancestor "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" processed
   wd_require_ancestor "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" engine
   wd_require_ancestor "$SOURCE_REPO" "$BACKEND_SHA" "$CANDIDATE_SHA" backend
+  [[ -z $SALES_SHA ]] || wd_require_ancestor "$SOURCE_REPO" "$SALES_SHA" "$CANDIDATE_SHA" sales
 
   if rejected=$(wd_read_sha "$REJECTED_FILE" 2>/dev/null) && [[ $rejected == "$CANDIDATE_SHA" ]]; then
     CURRENT_PHASE=quarantined
@@ -418,8 +437,11 @@ main() {
     && engine_changed=1
   wd_range_has_class "$SOURCE_REPO" "$BACKEND_SHA" "$CANDIDATE_SHA" wd_path_is_backend \
     && backend_changed=1
+  # Sales has its own release baseline; fall back to processed on first run (before sales.sha exists).
+  wd_range_has_class "$SOURCE_REPO" "${SALES_SHA:-$PROCESSED_SHA}" "$CANDIDATE_SHA" wd_path_is_sales \
+    && sales_changed=1
 
-  if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $engine_changed == 0 && $backend_changed == 0 ]]; then
+  if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $engine_changed == 0 && $backend_changed == 0 && $sales_changed == 0 ]]; then
     reconcile_engine_runtime "$ENGINE_SHA"
     CURRENT_PHASE=idle
     status "master already processed; production runtime aligned"
@@ -464,6 +486,14 @@ main() {
     github_status success deploy/backend "No backend changes"
   fi
 
+  if (( sales_changed == 1 )); then
+    deploy_sales "$CANDIDATE_SHA"
+  else
+    github_status success deploy/sales "No sales changes"
+    # First run before sales.sha exists: adopt the current commit as the sales baseline.
+    if [[ -z ${SALES_SHA:-} ]]; then wd_atomic_write "$SALES_FILE" "$CANDIDATE_SHA"; fi
+  fi
+
   reconcile_engine_runtime "$ENGINE_SHA"
 
   wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"
@@ -471,7 +501,7 @@ main() {
   CURRENT_PHASE=idle
   status "candidate tested and all selected components verified in production"
   github_status success deploy/watchdog "All selected production components verified"
-  wd_log "watchdog completed $CANDIDATE_SHA (engine=$engine_changed backend=$backend_changed)"
+  wd_log "watchdog completed $CANDIDATE_SHA (engine=$engine_changed backend=$backend_changed sales=$sales_changed)"
 }
 
 main "$@"

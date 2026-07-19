@@ -34,6 +34,7 @@ install -o root -g root -m 0755 "$ROOT/deploy/deploy.sh" /usr/local/lib/apitoken
 install -o root -g root -m 0644 "$ROOT/deploy/lib.sh" /usr/local/lib/apitoken-watchdog/controller/lib.sh
 install -o root -g root -m 0755 "$ROOT/deploy/api-bluegreen.sh" /usr/local/lib/apitoken-watchdog/controller/api-bluegreen.sh
 install -o root -g root -m 0755 "$ROOT/deploy/engine-bluegreen.sh" /usr/local/lib/apitoken-watchdog/controller/engine-bluegreen.sh
+install -o root -g root -m 0755 "$ROOT/deploy/sales-deploy.sh" /usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh
 install -o root -g root -m 0644 "$ROOT/deploy/commerce-postgres.compose.yaml" \
   /usr/local/lib/apitoken-watchdog/controller/commerce-postgres.compose.yaml
 for unit in \
@@ -75,6 +76,20 @@ if [[ ! -e /var/lib/apitoken/watchdog/processed.sha ]]; then
   printf '%s\n' "$backend" >/var/lib/apitoken/watchdog/backend.sha
   chown root:deploy /var/lib/apitoken/watchdog/{processed,engine,backend}.sha
   chmod 0640 /var/lib/apitoken/watchdog/{processed,engine,backend}.sha
+fi
+
+# Sales bounded context has its own release lifecycle; bootstrap its baseline from the live
+# sales release if present, else from processed HEAD (so the next sales change triggers a deploy).
+install -d -o deploy -g deploy -m 0755 /opt/apitoken/sales-releases
+if [[ ! -e /var/lib/apitoken/watchdog/sales.sha ]]; then
+  sales_baseline=""
+  if [[ -L /opt/apitoken/sales-releases/current ]]; then
+    sales_baseline=$(basename -- "$(readlink -f /opt/apitoken/sales-releases/current)")
+  fi
+  [[ $sales_baseline =~ ^[0-9a-f]{40}$ ]] || sales_baseline=$(git -C /opt/apitoken/repo rev-parse HEAD)
+  printf '%s\n' "$sales_baseline" >/var/lib/apitoken/watchdog/sales.sha
+  chown root:deploy /var/lib/apitoken/watchdog/sales.sha
+  chmod 0640 /var/lib/apitoken/watchdog/sales.sha
 fi
 # Infrastructure delivery is fully automatic; remove markers from the retired approval workflow.
 rm -f -- /var/lib/apitoken/watchdog/pending-infrastructure.sha \
