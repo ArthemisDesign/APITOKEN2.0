@@ -812,7 +812,7 @@ function PayoutListTab({ adminKey }: { adminKey: string }) {
     <div className="stack">
       <Card
         title={`Payout list — period ${win.key}`}
-        sub={`Auto-generated from confirmed commissions before ${dt(win.end)} minus what was already paid. Window ${dt(win.payoutWindowStart)} → ${dt(win.payoutWindowEnd)} · phase: ${win.phase}. Minimum ${formatUsd(data.minPayoutNano)}.`}
+        sub={`Auto-generated from confirmed commissions before ${dt(win.end)} minus what was already paid. Window ${dt(win.payoutWindowStart)} → ${dt(win.payoutWindowEnd)} · phase: ${win.phase}. Any balance above zero with a bound wallet is paid.`}
       >
         <div className="stat-grid" style={{ gridTemplateColumns: "repeat(3, 1fr)", marginBottom: 0 }}>
           <div className="stat-card">
