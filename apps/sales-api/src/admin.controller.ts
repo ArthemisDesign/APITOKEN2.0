@@ -8,6 +8,7 @@ import {
   Inject,
   NotFoundException,
   Param,
+  Delete,
   Patch,
   Post,
   Query,
@@ -20,8 +21,10 @@ import {
   createPartnerInvite,
   decideApplication,
   decidePayout,
+  deletePartnerAdmin,
   listApplications,
   ApplicationAlreadyDecidedError,
+  PartnerHasHistoryError,
   ReferralCodeCollisionError,
   getSalesOverview,
   listPartnersWithAggregates,
@@ -212,6 +215,21 @@ export class AdminController {
     });
     if (!updated) throw new NotFoundException("partner not found");
     return { updated: true };
+  }
+
+  /** Полное удаление возможно только без истории; иначе 422 → suspend. */
+  @Delete("partners/:id")
+  @HttpCode(200)
+  async deletePartner(@Param("id") id: string): Promise<unknown> {
+    if (!uuidSchema.safeParse(id).success) throw new BadRequestException("invalid partner id");
+    try {
+      const deleted = await deletePartnerAdmin(this.database, id, "sales-admin-key");
+      if (!deleted) throw new NotFoundException("partner not found");
+      return { deleted: true };
+    } catch (error) {
+      if (error instanceof PartnerHasHistoryError) throw new UnprocessableEntityException(error.message);
+      throw error;
+    }
   }
 
   @Get("payouts")

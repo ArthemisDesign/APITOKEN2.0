@@ -96,6 +96,17 @@ panel.apitoken.sale {
 			header_up x-admin-key "<COMMERCIAL_ADMIN_KEY_PLACEHOLDER>"
 		}
 	}
+	# Вкладка «Партнёры»: админка sales bounded context (sales-api :3100, /v1/admin/*).
+	# Отдельный заголовок x-sales-admin-key — чтобы перенос секретов install-caddy.sh
+	# не путал его с commerce x-admin-key.
+	@partners path /partners-admin/*
+	handle @partners {
+		uri strip_prefix /partners-admin
+		rewrite * /v1/admin{uri}
+		reverse_proxy 127.0.0.1:3100 {
+			header_up x-sales-admin-key "<SALES_ADMIN_KEY_PLACEHOLDER>"
+		}
+	}
 	# HTML панели отдаёт сам движок (GET /panel, вкомпилирован include_str!) — панель всегда
 	# совпадает с задеплоенным релизом, никаких статических копий и ручного rsync.
 	handle {
@@ -118,4 +129,41 @@ panel.apitoken.sale {
 # support-роут (иначе Telegram не может доставлять апдейты боту → поддержка «лежит»).
 support.apitoken.sale {
 	reverse_proxy 127.0.0.1:3010
+}
+
+# Stable, loopback-only commerce-backend origin for the sales bounded context.
+# Health-gated across blue-green API slots so consumers never chase the active port.
+http://127.0.0.1:8791 {
+	bind 127.0.0.1
+
+	reverse_proxy 127.0.0.1:3000 127.0.0.1:3001 {
+		lb_policy round_robin
+		lb_try_duration 2s
+		lb_try_interval 100ms
+
+		health_uri /v1/ready
+		health_interval 2s
+		health_timeout 2s
+		health_status 2xx
+		fail_duration 5s
+		max_fails 1
+		unhealthy_status 503
+	}
+}
+
+# Партнёрский портал (APIToken Partners). Отдельный bounded context:
+# /v1/* -> sales-api (:3100), остальное -> sales-web Next.js (:3200).
+# Same-origin, чтобы кука sales_session оставалась first-party.
+partners.apitoken.sale {
+	handle /v1/* {
+		reverse_proxy 127.0.0.1:3100
+	}
+	handle {
+		reverse_proxy 127.0.0.1:3200
+	}
+}
+
+# Старый адрес партнёрки — постоянный редирект на partners.
+sales.apitoken.sale {
+	redir https://partners.apitoken.sale{uri} permanent
 }

@@ -38,13 +38,23 @@
 4. Деплой: обычный merge в master (watchdog). Изменения `deploy/Caddyfile` watchdog применяет сам
    (`--apply-caddy`), секретные строки переносит из живого конфига `install-caddy.sh`.
 
-## Секреты (три, все только server-side)
+## Вкладка «Партнёры» (sales bounded context)
+
+`/partners-admin/*` → Caddy strip prefix + rewrite `/v1/admin{uri}` → sales-api :3100 с
+server-side `header_up x-sales-admin-key` (ОТДЕЛЬНЫЙ заголовок, чтобы перенос секретов не путал
+его с commerce `x-admin-key`; sales-api принимает оба). UI: сводка, заявки в программу
+(approve/reject c bps), очередь выплат (BSC-кошелёк, approve/paid/reject), таблица партнёров
+(проценты prompt'ом, заморозка, удаление — только без истории), «+ пригласить» (корневой инвайт).
+Полная админка остаётся на partners.apitoken.sale/admin.
+
+## Секреты (четыре, все только server-side)
 
 | Секрет | Где живёт | Кто проверяет |
 |---|---|---|
 | basic auth админов (bcrypt, по строке на человека: `Q`, `R`, `M`, легаси `admin`) | `/etc/caddy/Caddyfile` | Caddy |
 | CONTROL-ключ движка (`x-api-key`) | `/etc/caddy/Caddyfile` + env движка | движок `control_authed` |
 | `COMMERCIAL_ADMIN_KEY` (`x-admin-key`) | `/etc/caddy/Caddyfile` + `/etc/apitoken/api.env` | backend `AdminGuard` |
+| `SALES_ADMIN_KEY` (`x-sales-admin-key`) | `/etc/caddy/Caddyfile` + `/etc/apitoken/sales.env` | sales-api `AdminKeyGuard` |
 
 **Инвариант:** значение `x-admin-key` в Caddyfile ОБЯЗАНО совпадать с `COMMERCIAL_ADMIN_KEY` в
 `api.env` (реальный инцидент 2026-07-17: ключи разошлись → 401 → панель просила «ключ»).

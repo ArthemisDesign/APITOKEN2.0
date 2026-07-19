@@ -13,7 +13,9 @@ export class AdminKeyGuard implements CanActivate {
 
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<AdminRequest>();
-    const provided = request.headers["x-admin-key"];
+    // x-sales-admin-key — server-side инжект Caddy panel-домена (отличим от commerce
+    // x-admin-key при переносе секретов); x-admin-key — прямой вход через /admin sales-web.
+    const provided = request.headers["x-sales-admin-key"] ?? request.headers["x-admin-key"];
     if (typeof provided !== "string" || provided.length === 0) {
       throw new UnauthorizedException("admin key required");
     }

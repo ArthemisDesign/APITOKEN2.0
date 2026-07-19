@@ -98,6 +98,60 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
   }));
 }
 
+export class PartnerHasHistoryError extends Error {}
+
+/**
+ * Полное удаление партнёра — только если у него нет финансовой истории и рефералов
+ * (иначе PartnerHasHistoryError: используйте suspend). Чистятся сессии, его инвайты,
+ * ссылки из заявок и потреблённых инвайтов.
+ */
+export async function deletePartnerAdmin(database: SalesDatabase, partnerId: string, actorId: string): Promise<boolean> {
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const existing = await client.query<{ id: string; telegram_username: string | null }>(
+      "SELECT id, telegram_username FROM partners WHERE id = $1 FOR UPDATE",
+      [partnerId],
+    );
+    if (!existing.rows[0]) {
+      await client.query("ROLLBACK");
+      return false;
+    }
+    const history = await client.query<{ referred: string; commissions: string; payouts: string; children: string }>(`
+      SELECT
+        (SELECT count(*) FROM referred_users WHERE partner_id = $1)::text AS referred,
+        (SELECT count(*) FROM commission_entries WHERE partner_id = $1)::text AS commissions,
+        (SELECT count(*) FROM payouts WHERE partner_id = $1)::text AS payouts,
+        (SELECT count(*) FROM partners WHERE parent_partner_id = $1)::text AS children
+    `, [partnerId]);
+    const h = history.rows[0]!;
+    if (h.referred !== "0" || h.commissions !== "0" || h.payouts !== "0" || h.children !== "0") {
+      await client.query("ROLLBACK");
+      throw new PartnerHasHistoryError(
+        "partner has referrals, earnings, payouts or sub-partners — suspend instead of deleting",
+      );
+    }
+    await client.query("DELETE FROM partner_sessions WHERE partner_id = $1", [partnerId]);
+    await client.query("DELETE FROM partner_invites WHERE partner_id = $1", [partnerId]);
+    await client.query("UPDATE partner_invites SET consumed_by_partner_id = NULL WHERE consumed_by_partner_id = $1", [partnerId]);
+    await client.query("UPDATE partner_applications SET created_partner_id = NULL WHERE created_partner_id = $1", [partnerId]);
+    await client.query("DELETE FROM partner_auth_tokens WHERE partner_id = $1", [partnerId]);
+    await client.query("DELETE FROM partner_email_outbox WHERE partner_id = $1", [partnerId]);
+    await client.query("DELETE FROM partners WHERE id = $1", [partnerId]);
+    await client.query(`
+      INSERT INTO sales_audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+      VALUES ('admin', $1, 'partner.deleted', 'partner', $2, $3::jsonb)
+    `, [actorId, partnerId, JSON.stringify({ telegramUsername: existing.rows[0].telegram_username })]);
+    await client.query("COMMIT");
+    return true;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function updatePartnerAdmin(database: SalesDatabase, partnerId: string, input: {
   commissionBps?: number;
   subCommissionBps?: number;

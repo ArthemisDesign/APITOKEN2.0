@@ -149,6 +149,7 @@ tbody tr:last-child td{border-bottom:0}
 .setup button:hover{box-shadow:0 0 0 4px var(--accent-soft)}
 .setup button:active{transform:translateY(1px)}
 .err{color:var(--danger);font-size:12px;margin-top:12px}
+.mono{font-family:var(--font-mono);letter-spacing:.02em}
 
 details{margin-top:8px} summary{cursor:pointer;color:var(--txt-3);font-size:13px;padding:4px 0}
 summary:hover{color:var(--txt)}
@@ -168,10 +169,16 @@ const xr=(v)=>v==null?'∞':('×'+(+v).toLocaleString('en-US',{maximumFractionDi
 let panelKey='';
 const key=()=>panelKey;
 let timer=null;
-// Вкладка живёт в URL (#users) — refresh и шеринг ссылки не сбрасывают её на «Обзор».
-let tab=location.hash==='#users'?'users':'overview';
-addEventListener('hashchange',()=>{const t=location.hash==='#users'?'users':'overview';
+// Вкладка живёт в URL (#users/#partners) — refresh и шеринг ссылки не сбрасывают её на «Обзор».
+const tabFromHash=()=>({'#users':'users','#partners':'partners'})[location.hash]||'overview';
+let tab=tabFromHash();
+addEventListener('hashchange',()=>{const t=tabFromHash();
   if(t!==tab){tab=t;start()}});
+// nanoUSD-строки sales-админки → $ (партнёрские суммы < 2^53 нано не гарантированы — BigInt).
+const usdN=(nano)=>{try{const n=BigInt(nano||'0');const c=n/10000000n;
+  return '$'+(Number(c)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
+  catch(_){return '$0.00'}};
+const bps=(v)=>v==null?'—':((v/100)+'%');
 const ago=(iso)=>{if(!iso)return '—';const s=(Date.now()-new Date(iso).getTime())/1e3|0;
   if(s<60)return 'только что';if(s<3600)return `${s/60|0}м назад`;if(s<86400)return `${s/3600|0}ч назад`;
   return `${s/86400|0}д назад`};
@@ -194,13 +201,14 @@ const headerHtml=(sub,badge)=>`<header>
   <nav class="tabs">
     <button class="${tab==='overview'?'on':''}" data-tab="overview">Обзор</button>
     <button class="${tab==='users'?'on':''}" data-tab="users">Пользователи</button>
+    <button class="${tab==='partners'?'on':''}" data-tab="partners">Партнёры</button>
   </nav>
   <span class="hd-right">${badge||''}
     <button class="theme-tgl" onclick="toggleTheme()" title="тема">◐</button></span>
 </header>`;
 function bindTabs(){document.querySelectorAll('nav.tabs button').forEach(b=>b.onclick=()=>{
   if(tab!==b.dataset.tab){tab=b.dataset.tab;
-    history.replaceState(null,'',tab==='users'?'#users':location.pathname);start()}})}
+    history.replaceState(null,'',tab==='overview'?location.pathname:'#'+tab);start()}})}
 /* Перерисовка тика не должна дёргать читателя: сохраняем скролл и раскрытые <details>. */
 function repaint(html){
   const y=scrollY;
@@ -212,6 +220,7 @@ function repaint(html){
   scrollTo(0,y);
   bindTabs();
   bindCredit();
+  bindPartnerActions();
 }
 
 /* Начисление баланса: целые USD строкой цифр (правило проекта — без float/точек/ведущих нулей). */
@@ -259,6 +268,7 @@ async function getj(path){
 
 async function tick(){
   if(tab==='users') return tickUsers();
+  if(tab==='partners') return tickPartners();
   let ov,cap,subs;
   try{ [ov,cap,subs]=await Promise.all([getj('/overview'),getj('/capacity').catch(()=>null),getj('/subs').catch(()=>null)]); }
   catch(e){ if(e.auth){panelKey='';return setup('нужен read-only ключ панели')} return; }
@@ -330,6 +340,162 @@ function renderUsers(users){
       </table></div></div>
       <footer>обновление каждые 15с · баланс/расход — live из движка · пополнения — подтверждённые платежи</footer>
     </main>`);
+}
+
+/* ==== Вкладка «Партнёры» — sales-админка (Caddy проксирует /partners-admin/* → sales-api
+   с server-side инжектом x-sales-admin-key; браузер секрет не видит). ==== */
+async function pfetch(path,opts){
+  const r=await fetch('/partners-admin'+path,{...opts,
+    headers:{...(opts&&opts.body?{'content-type':'application/json'}:{}),...(opts&&opts.headers||{})}});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(j.message||('ошибка '+r.status));
+  return j;
+}
+
+async function tickPartners(){
+  let ov,partners,payouts,apps;
+  try{
+    [ov,partners,payouts,apps]=await Promise.all([
+      pfetch('/overview'),pfetch('/partners'),
+      pfetch('/payouts?status=requested'),pfetch('/applications?status=pending')]);
+  }catch(e){
+    repaint(`${headerHtml('партнёры')}
+      <main><div class="verdict bad"><span class="dot-big"></span><div><div class="t">Не удалось загрузить партнёрку</div>
+      <div class="d">${esc(e.message||'сеть')} — маршрут /partners-admin/* доступен только через panel-домен (Caddy инжектит x-sales-admin-key; sales-api должен быть жив на :3100)</div></div></div></main>`);
+    return;
+  }
+  renderPartners(ov,partners.items||[],payouts.items||[],apps.items||[]);
+}
+
+function renderPartners(ov,partners,payouts,apps){
+  const tg=(p)=>p.telegramUsername?'@'+p.telegramUsername:(p.email||'—');
+  const appRows=apps.map(a=>`<tr>
+    <td class="l"><b style="color:var(--txt)">${a.telegramUsername?'@'+esc(a.telegramUsername):'—'}</b>
+      <div class="sub-line">${esc(a.displayName||'')}</div></td>
+    <td class="l" style="max-width:340px;white-space:pre-wrap">${esc(a.note||'—')}</td>
+    <td class="muted">${dt(a.createdAt)}</td>
+    <td><button class="act" data-app-approve="${esc(a.id)}" data-tg="${esc(a.telegramUsername||'')}">одобрить</button>
+        <button class="act" data-app-reject="${esc(a.id)}" data-tg="${esc(a.telegramUsername||'')}">отказать</button></td>
+  </tr>`).join('');
+  const payRows=payouts.map(p=>{
+    const addr=p.details&&p.details.address?p.details.address:'';
+    return `<tr>
+    <td class="l">${esc(p.partnerId.slice(0,8))}…</td>
+    <td class="num"><b>${usdN(p.amountNano)}</b></td>
+    <td class="l"><span class="mono" title="${esc(addr)}">${addr?esc(addr.slice(0,10))+'…'+esc(addr.slice(-6)):esc(p.method)}</span>
+      <div class="sub-line">BSC · USDT BEP-20</div></td>
+    <td class="muted">${dt(p.requestedAt)}</td>
+    <td><button class="act" data-pay="${esc(p.id)}" data-act="approve">одобрить</button>
+        <button class="act" data-pay="${esc(p.id)}" data-act="paid">выплачено</button>
+        <button class="act" data-pay="${esc(p.id)}" data-act="reject">отказ</button></td>
+  </tr>`;}).join('');
+  const rows=partners.map(p=>`<tr>
+    <td class="l"><span class="dot ${p.status==='active'?'ok':'bad'}"></span>
+      <b style="color:var(--txt);font-weight:600">${esc(tg(p))}</b>
+      <div class="sub-line">${esc(p.displayName||'')} · код ${esc(p.referralCode||'—')}</div></td>
+    <td class="l">${p.parentTelegramUsername?'@'+esc(p.parentTelegramUsername):(p.parentEmail?esc(p.parentEmail):'—')}</td>
+    <td>${bps(p.commissionBps)}<span class="muted">/${bps(p.subCommissionBps)}</span></td>
+    <td class="num">${p.referredUsers??0}</td>
+    <td class="num">${usdN(p.earnedNano)}<div class="sub-line">выплачено ${usdN(p.paidNano)}</div></td>
+    <td class="muted">${dt(p.createdAt)}</td>
+    <td><button class="act" data-pbps="${esc(p.id)}" data-tg="${esc(tg(p))}" data-cur="${p.commissionBps}" data-cursub="${p.subCommissionBps}">%</button>
+        <button class="act" data-pstatus="${esc(p.id)}" data-next="${p.status==='suspended'?'active':'suspended'}" data-tg="${esc(tg(p))}">${p.status==='suspended'?'включить':'заморозить'}</button>
+        <button class="act" data-pdel="${esc(p.id)}" data-tg="${esc(tg(p))}">✕</button></td>
+  </tr>`).join('');
+  repaint(`
+    ${headerHtml('партнёры',`<span class="badge ok">${partners.length} партнёров</span>`)}
+    <main>
+      <h2>Сводка</h2>
+      <div class="cards">
+        <div class="card"><div class="h">партнёров</div><div class="v">${ov.partners??0}</div>
+          <div class="s">${ov.activePartners??0} активны</div></div>
+        <div class="card"><div class="h">приведено юзеров</div><div class="v">${ov.referredUsers??0}</div>
+          <div class="s">расход ${usdN(ov.totalSpendNano)}</div></div>
+        <div class="card"><div class="h">комиссии</div><div class="v">${usdN(ov.totalCommissionsNano)}</div>
+          <div class="s">выплачено ${usdN(ov.paidPayoutsNano)}</div></div>
+        <div class="card"><div class="h">в очереди выплат</div><div class="v">${usdN(ov.pendingPayoutsNano)}</div>
+          <div class="s">${payouts.length} заявок · ${apps.length} анкет</div></div>
+      </div>
+      ${apps.length?`<h2>Заявки в программу</h2>
+      <div class="tbl"><div class="tbl-scroll"><table>
+        <thead><tr><th class="l">telegram</th><th class="l">о себе</th><th>подана</th><th></th></tr></thead>
+        <tbody>${appRows}</tbody></table></div></div>`:''}
+      ${payouts.length?`<h2>Очередь выплат</h2>
+      <div class="tbl"><div class="tbl-scroll"><table>
+        <thead><tr><th class="l">партнёр</th><th>сумма</th><th class="l">кошелёк</th><th>подана</th><th></th></tr></thead>
+        <tbody>${payRows}</tbody></table></div></div>`:''}
+      <h2>Партнёры <button class="act" data-pinvite style="margin-left:10px">+ пригласить</button></h2>
+      <div class="tbl"><div class="tbl-scroll"><table>
+        <thead><tr><th class="l">партнёр</th><th class="l">родитель</th><th>%/суб-%</th><th>юзеров</th>
+          <th>заработал</th><th>с нами</th><th></th></tr></thead>
+        <tbody>${rows||'<tr><td colspan="7" class="muted l">нет партнёров</td></tr>'}</tbody>
+      </table></div></div>
+      <footer>обновление каждые 15с · проценты в bps (100 bps = 1%) · выплаты только USDT BEP-20 (BSC) · полная админка — partners.apitoken.sale/admin</footer>
+    </main>`);
+}
+
+function bindPartnerActions(){
+  const reload=()=>tick();
+  document.querySelectorAll('[data-pbps]').forEach(b=>b.onclick=async()=>{
+    const v=prompt(`Проценты партнёра ${b.dataset.tg}\n\nФормат: bps или bps/суб-bps (100 bps = 1%).\nСейчас: ${b.dataset.cur}/${b.dataset.cursub}`,`${b.dataset.cur}/${b.dataset.cursub}`);
+    if(v==null) return;
+    const m=/^\s*(\d{1,5})\s*(?:\/\s*(\d{1,5})\s*)?$/.exec(v);
+    if(!m) return alert('Формат: 1500 или 1500/1000 (bps).');
+    const body={commissionBps:+m[1]};
+    if(m[2]!=null) body.subCommissionBps=+m[2];
+    if(+m[1]>10000||(m[2]&&+m[2]>10000)) return alert('Максимум 10000 bps (100%).');
+    try{ await pfetch('/partners/'+b.dataset.pbps,{method:'PATCH',body:JSON.stringify(body)}); reload(); }
+    catch(e){ alert('Не удалось обновить проценты: '+e.message); }
+  });
+  document.querySelectorAll('[data-pstatus]').forEach(b=>b.onclick=async()=>{
+    const act=b.dataset.next==='suspended'?'заморозить':'включить';
+    if(!confirm(`${act} партнёра ${b.dataset.tg}?`)) return;
+    try{ await pfetch('/partners/'+b.dataset.pstatus,{method:'PATCH',body:JSON.stringify({status:b.dataset.next})}); reload(); }
+    catch(e){ alert('Не удалось: '+e.message); }
+  });
+  document.querySelectorAll('[data-pdel]').forEach(b=>b.onclick=async()=>{
+    if(!confirm(`Удалить партнёра ${b.dataset.tg} НАВСЕГДА?\n\nУдаление возможно только без истории (нет рефералов/начислений/выплат) — иначе заморозь.`)) return;
+    try{ await pfetch('/partners/'+b.dataset.pdel,{method:'DELETE'}); reload(); }
+    catch(e){ alert('Не удалось удалить: '+e.message); }
+  });
+  document.querySelectorAll('[data-pay]').forEach(b=>b.onclick=async()=>{
+    const names={approve:'одобрить',paid:'пометить ВЫПЛАЧЕННОЙ',reject:'отклонить'};
+    if(!confirm(`${names[b.dataset.act]} выплату?`)) return;
+    const note=b.dataset.act==='reject'?(prompt('Причина отказа (увидит только админка):')||undefined):undefined;
+    try{ await pfetch('/payouts/'+b.dataset.pay+'/decision',{method:'POST',
+      body:JSON.stringify({action:b.dataset.act,...(note?{note}:{})})}); reload(); }
+    catch(e){ alert('Не удалось: '+e.message); }
+  });
+  document.querySelectorAll('[data-app-approve]').forEach(b=>b.onclick=async()=>{
+    const v=prompt(`Одобрить заявку @${b.dataset.tg}\n\nПроценты: bps или bps/суб-bps (пусто = дефолт 1000/1000):`,'1000/1000');
+    if(v==null) return;
+    const body={action:'approve'};
+    const m=/^\s*(\d{1,5})\s*(?:\/\s*(\d{1,5})\s*)?$/.exec(v);
+    if(v.trim()&&!m) return alert('Формат: 1500 или 1500/1000 (bps), либо пусто.');
+    if(m){ body.commissionBps=+m[1]; if(m[2]!=null) body.subCommissionBps=+m[2]; }
+    try{ await pfetch('/applications/'+b.dataset.appApprove+'/decision',{method:'POST',body:JSON.stringify(body)}); reload(); }
+    catch(e){ alert('Не удалось одобрить: '+e.message); }
+  });
+  document.querySelectorAll('[data-app-reject]').forEach(b=>b.onclick=async()=>{
+    if(!confirm(`Отклонить заявку @${b.dataset.tg}?`)) return;
+    try{ await pfetch('/applications/'+b.dataset.appReject+'/decision',{method:'POST',body:JSON.stringify({action:'reject'})}); reload(); }
+    catch(e){ alert('Не удалось: '+e.message); }
+  });
+  document.querySelectorAll('[data-pinvite]').forEach(b=>b.onclick=async()=>{
+    const tg=prompt('Пригласить сейлза верхнего уровня\n\nTelegram-юзернейм (без @):');
+    if(tg==null||!tg.trim()) return;
+    const v=prompt('Проценты: bps или bps/суб-bps (пусто = дефолт 1000/1000):','1000/1000');
+    if(v==null) return;
+    const body={telegramUsername:tg.trim().replace(/^@/,'')};
+    const m=/^\s*(\d{1,5})\s*(?:\/\s*(\d{1,5})\s*)?$/.exec(v);
+    if(v.trim()&&!m) return alert('Формат: 1500 или 1500/1000 (bps), либо пусто.');
+    if(m){ body.commissionBps=+m[1]; if(m[2]!=null) body.subCommissionBps=+m[2]; }
+    try{
+      const j=await pfetch('/invites',{method:'POST',body:JSON.stringify(body)});
+      prompt('Инвайт создан — отправь человеку ссылку (он просто войдёт через Telegram):',j.inviteUrl||'');
+      reload();
+    }catch(e){ alert('Не удалось создать инвайт: '+e.message); }
+  });
 }
 
 function verdict(ov){
