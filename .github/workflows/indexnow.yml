@@ -1,7 +1,8 @@
-name: IndexNow ping
+name: Search-engine ping
 
-# Notify Yandex/Bing (IndexNow) after web content deploys. Google has no
-# equivalent API for regular pages — it re-reads sitemap.xml lastmod instead.
+# Notify Yandex/Bing (IndexNow) and Google (GSC sitemap re-submit) after web
+# content deploys. Google's Indexing API only accepts job postings, so the
+# authenticated sitemap submit is its only legitimate automated channel.
 on:
   push:
     branches: [master]
@@ -23,3 +24,8 @@ jobs:
         run: sleep 240
       - name: Submit sitemap URLs to IndexNow
         run: node apps/web/scripts/indexnow.mjs
+      # Skips itself with a friendly log line when the secret is not configured.
+      - name: Re-submit sitemap to Google Search Console
+        env:
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+        run: node apps/web/scripts/google-sitemap.mjs
