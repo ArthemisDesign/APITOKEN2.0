@@ -49,9 +49,11 @@ export const partners = pgTable("partners", {
   promoEnabled: boolean("promo_enabled").notNull().default(false),
   promoMaxValueNano: bigint("promo_max_value_nano", { mode: "bigint" }).notNull().default(sql`0`),
   promoMaxCount: integer("promo_max_count").notNull().default(0),
-  // Скидка (B2B), которую сейлз даёт своим рефам. Их аккаунт становится B2B и получает эту скидку
-  // вместо обычных тир-скидок/бонусов. Максимум 90% (9000 bps).
+  // Скидка, которую сейлз даёт своим рефам как «пол» цены (реф остаётся b2c на обычных тирах, но
+  // платит не дороже этой скидки). Действует только при referralDiscountEnabled. Максимум 90%.
   referralDiscountBps: integer("referral_discount_bps").notNull().default(0),
+  // Право давать скидку — выдаётся админом (или каскадом от партнёра с правом). По умолчанию нет.
+  referralDiscountEnabled: boolean("referral_discount_enabled").notNull().default(false),
   createdAt,
   updatedAt,
 }, (table) => [
@@ -132,6 +134,7 @@ export const partnerInvites = pgTable("partner_invites", {
   promoMaxValueNano: bigint("promo_max_value_nano", { mode: "bigint" }).notNull().default(sql`0`),
   promoMaxCount: integer("promo_max_count").notNull().default(0),
   referralDiscountBps: integer("referral_discount_bps").notNull().default(0),
+  referralDiscountEnabled: boolean("referral_discount_enabled").notNull().default(false),
   expiresAt: timestamp("expires_at", { withTimezone: true }),
   consumedAt: timestamp("consumed_at", { withTimezone: true }),
   consumedByPartnerId: uuid("consumed_by_partner_id").references(() => partners.id, { onDelete: "restrict" }),

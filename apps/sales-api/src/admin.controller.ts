@@ -93,6 +93,7 @@ export class AdminController {
         commissionBps: partner.commissionBps,
         subCommissionBps: partner.subCommissionBps,
         referralDiscountBps: partner.referralDiscountBps,
+        referralDiscountEnabled: partner.referralDiscountEnabled,
         parentPartnerId: partner.parentPartnerId,
         parentEmail: partner.parentEmail,
         parentTelegramUsername: partner.parentTelegramUsername,
@@ -203,6 +204,7 @@ export class AdminController {
     const promoMaxCount = parsed.data.promoMaxCount ?? 0;
     const promoMaxValueUsd = parsed.data.promoMaxValueUsd ?? 0;
     const promoEnabled = promoMaxCount > 0 && promoMaxValueUsd > 0;
+    const referralDiscountEnabled = parsed.data.referralDiscountEnabled ?? false;
     for (let attempt = 0; ; attempt += 1) {
       try {
         const invite = await createPartnerInvite(this.database, {
@@ -215,6 +217,7 @@ export class AdminController {
           promoMaxValueNano: BigInt(promoMaxValueUsd) * 1_000_000_000n,
           promoMaxCount,
           referralDiscountBps: parsed.data.referralDiscountBps ?? 0,
+          referralDiscountEnabled,
           expiresAt,
         });
         return {
@@ -224,6 +227,7 @@ export class AdminController {
           commissionBps: invite.commissionBps,
           subCommissionBps: invite.subCommissionBps,
           referralDiscountBps: invite.referralDiscountBps,
+          referralDiscountEnabled: invite.referralDiscountEnabled,
           promoEnabled: invite.promoEnabled,
           promoMaxCount: invite.promoMaxCount,
           promoMaxValueNano: invite.promoMaxValueNano.toString(),
@@ -249,6 +253,7 @@ export class AdminController {
         commissionBps: invite.commissionBps,
         subCommissionBps: invite.subCommissionBps,
         referralDiscountBps: invite.referralDiscountBps,
+        referralDiscountEnabled: invite.referralDiscountEnabled,
         promoEnabled: invite.promoEnabled,
         promoMaxCount: invite.promoMaxCount,
         promoMaxValueNano: invite.promoMaxValueNano.toString(),
@@ -267,6 +272,7 @@ export class AdminController {
       ...(parsed.data.commissionBps !== undefined ? { commissionBps: parsed.data.commissionBps } : {}),
       ...(parsed.data.subCommissionBps !== undefined ? { subCommissionBps: parsed.data.subCommissionBps } : {}),
       ...(parsed.data.referralDiscountBps !== undefined ? { referralDiscountBps: parsed.data.referralDiscountBps } : {}),
+      ...(parsed.data.referralDiscountEnabled !== undefined ? { referralDiscountEnabled: parsed.data.referralDiscountEnabled } : {}),
       ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
       actorId: "sales-admin-key",
     });

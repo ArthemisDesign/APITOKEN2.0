@@ -34,6 +34,7 @@ import {
   createPromoCode,
   listPartnerPromoCodes,
   disablePromoCode,
+  setPartnerReferralDiscount,
   InviteCodeCollisionError,
   PromoNotAllowedError,
   PromoLimitError,
@@ -49,6 +50,7 @@ import {
   createInviteSchema,
   createPromoSchema,
   earningsQuerySchema,
+  partnerSetDiscountSchema,
   updateSettingsSchema,
   walletSchema,
 } from "./schemas.js";
@@ -97,6 +99,10 @@ export class PartnerController {
       // и доживает до регистрации 30 дней.
       referralUrl: `${new URL(mainSite).origin}/?ref=${current.partner.referralCode}`,
       commissionBps: current.partner.commissionBps,
+      // Скидка рефам: право (выдаёт админ/родитель) + текущее значение. Кабинет показывает поле,
+      // только если право есть.
+      referralDiscountEnabled: current.partner.referralDiscountEnabled,
+      referralDiscountBps: current.partner.referralDiscountBps,
       subCommissionBps: current.partner.subCommissionBps,
       referredUsers,
       teamSize,
@@ -175,6 +181,13 @@ export class PartnerController {
     // платформы). По умолчанию — своя ставка. Более широкий диапазон — только у админа.
     const cap = current.partner.commissionBps;
     const commissionBps = Math.min(parsed.data.commissionBps ?? cap, cap);
+    // Каскад права давать скидку: только партнёр, у кого право есть, может включить его суб-сейлзу,
+    // и не больше собственной скидки (нельзя раздать больше, чем разрешено самому). Нет права → нет.
+    const canGrantDiscount = current.partner.referralDiscountEnabled;
+    const subDiscountEnabled = canGrantDiscount && (parsed.data.referralDiscountEnabled ?? false);
+    const subDiscountBps = subDiscountEnabled
+      ? Math.min(parsed.data.referralDiscountBps ?? current.partner.referralDiscountBps, current.partner.referralDiscountBps)
+      : 0;
     const expiresAt = new Date(Date.now() + INVITE_TTL_DAYS * 24 * 3600 * 1000);
     for (let attempt = 0; ; attempt += 1) {
       try {
@@ -184,12 +197,12 @@ export class PartnerController {
           telegramUsername,
           commissionBps,
           subCommissionBps: null,
-          // Промо-доступ остаётся под контролем админа (по умолчанию выключен). Скидку рефа
-          // суб-партнёру задаёт админ позже; на суб-инвайте по умолчанию 0.
+          // Промо-доступ остаётся под контролем админа (по умолчанию выключен).
           promoEnabled: false,
           promoMaxValueNano: 0n,
           promoMaxCount: 0,
-          referralDiscountBps: 0,
+          referralDiscountBps: subDiscountBps,
+          referralDiscountEnabled: subDiscountEnabled,
           expiresAt,
         });
         return {
@@ -203,6 +216,23 @@ export class PartnerController {
         throw error;
       }
     }
+  }
+
+  /**
+   * Партнёр с правом ставит скидку своим рефам (≤90%) из кабинета. Применяется как «пол» цены рефа
+   * (реф остаётся b2c на обычных тирах). Право проверяется на уровне БД; нет права → 403.
+   */
+  @Patch("referral-discount")
+  @HttpCode(200)
+  async setReferralDiscount(@CurrentAuth() current: RequestAuth, @Body() body: unknown): Promise<unknown> {
+    if (!current.partner.referralDiscountEnabled) {
+      throw new ForbiddenException("referral discount is not enabled for this account");
+    }
+    const parsed = partnerSetDiscountSchema.safeParse(body ?? {});
+    if (!parsed.success) throw new BadRequestException("invalid referral discount (0–90%)");
+    const ok = await setPartnerReferralDiscount(this.database, current.partner.id, parsed.data.referralDiscountBps);
+    if (!ok) throw new ForbiddenException("referral discount is not enabled for this account");
+    return { updated: true, referralDiscountBps: parsed.data.referralDiscountBps };
   }
 
   @Get("invites")

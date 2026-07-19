@@ -35,13 +35,18 @@ export const telegramApplySchema = telegramAuthSchema.omit({ inviteCode: true })
 export const createInviteSchema = z.object({
   telegramUsername: telegramUsernameSchema,
   commissionBps: commissionBpsSchema.optional(),
+  // Каскад права давать скидку: партнёр с правом может включить его суб-сейлзу (скидка ≤ 90%).
+  referralDiscountEnabled: z.boolean().optional(),
+  referralDiscountBps: referralDiscountBpsSchema.optional(),
 });
 
 export const adminCreateInviteSchema = z.object({
   telegramUsername: telegramUsernameSchema,
   commissionBps: commissionBpsSchema.optional(),
   subCommissionBps: commissionBpsSchema.optional(),
-  // Скидка, которую сейлз даёт своим рефам (их аккаунт станет B2B). ≤ 90%.
+  // Право давать скидку рефам + сама скидка (≤90%), которую сейлз ставит как «пол» цены рефа
+  // (реф остаётся b2c на обычных тирах; скидка действует только при включённом праве).
+  referralDiscountEnabled: z.boolean().optional(),
   referralDiscountBps: referralDiscountBpsSchema.optional(),
   // Доступ к промокодам, задаваемый прямо на онбординге: сколько кодов и их макс. номинал в USD.
   promoMaxCount: promoMaxCountSchema.optional(),
@@ -61,9 +66,15 @@ export const adminPatchPartnerSchema = z.object({
   commissionBps: commissionBpsSchema.optional(),
   subCommissionBps: commissionBpsSchema.optional(),
   referralDiscountBps: referralDiscountBpsSchema.optional(),
+  referralDiscountEnabled: z.boolean().optional(),
   status: z.enum(["active", "suspended", "pending"]).optional(),
 }).refine((value) => Object.values(value).some((item) => item !== undefined), {
   message: "at least one field is required",
+});
+
+// Партнёр (с правом) ставит скидку своим рефам — из кабинета. ≤ 90%.
+export const partnerSetDiscountSchema = z.object({
+  referralDiscountBps: referralDiscountBpsSchema,
 });
 
 export const adminPayoutDecisionSchema = z.object({

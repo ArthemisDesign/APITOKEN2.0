@@ -17,7 +17,7 @@ import {
 import { ConfigService } from "@nestjs/config";
 import { z } from "zod";
 import {
-  flipReferredUserToB2B,
+  setReferralFloor,
   listPaidTopupsAfter,
   listReferralAttributionsAfter,
   listUsageEventsAfter,
@@ -105,26 +105,25 @@ export class SalesFeedController {
   }
 
   /**
-   * Флип пользователя, пришедшего ПО РЕФЕРАЛКЕ ПАРТНЁРА, в B2B: его цену задаёт скидка сейлза
-   * (≤90%), обычные тир-скидки/бонусы/промо на него не действуют. Вызывает sales-api, когда
-   * атрибуция впервые закрепила юзера за партнёром. Идемпотентно. Только для партнёрских кодов —
-   * обычная сайтовая рефка (в будущем) сюда не идёт.
+   * Устанавливает «пол» скидки сейлза для реферала партнёра. Клиент остаётся b2c и идёт по обычным
+   * тир-правилам; пол лишь гарантирует цену не хуже скидки сейлза (эффект = min(тир, 100−floor)).
+   * floorBps=0 снимает пол. Вызывает sales-api при атрибуции. Идемпотентно. Только партнёрские коды.
    */
-  @Post("referral-b2b")
+  @Post("referral-discount")
   @HttpCode(200)
-  async referralB2B(@Body() body: unknown) {
-    const parsed = referralB2BSchema.safeParse(body);
-    if (!parsed.success) throw new BadRequestException("invalid referral b2b payload");
-    const result = await flipReferredUserToB2B(this.database, {
+  async referralDiscount(@Body() body: unknown) {
+    const parsed = referralDiscountSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException("invalid referral discount payload");
+    const result = await setReferralFloor(this.database, {
       userId: parsed.data.userId,
-      referralDiscountBps: parsed.data.referralDiscountBps,
+      floorBps: parsed.data.floorBps,
       actorId: "sales-referral",
     });
-    return { flipped: result.flipped, alreadyB2B: result.alreadyB2B, multiplierBp: result.multiplierBp };
+    return { applied: result.applied, multiplierBp: result.multiplierBp };
   }
 }
 
-const referralB2BSchema = z.object({
+const referralDiscountSchema = z.object({
   userId: z.string().uuid(),
-  referralDiscountBps: z.number().int().min(0).max(9000),
+  floorBps: z.number().int().min(0).max(9000),
 });

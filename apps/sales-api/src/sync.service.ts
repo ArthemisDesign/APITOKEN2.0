@@ -91,10 +91,11 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
             attributedAt: row.createdAt,
             sourceAttributionId: row.id,
           });
-          // Реф ПАРТНЁРА → аккаунт становится B2B (цена по скидке сейлза, без обычных
-          // тир-скидок/бонусов/промо). Обычная сайтовая рефка (в будущем) сюда не попадёт —
-          // findPartnerByReferralCode матчит только партнёрские коды.
-          await this.flipReferralToB2B(row.userId, partner.referralDiscountBps);
+          // Реф ПАРТНЁРА остаётся b2c и идёт по обычным тирам; скидка сейлза применяется как
+          // «пол» (цена не хуже неё). Право давать скидку гейтится флагом partner; без него floor=0
+          // (обычный тир). Обычная сайтовая рефка сюда не попадёт — только партнёрские коды.
+          const floorBps = partner.referralDiscountEnabled ? partner.referralDiscountBps : 0;
+          await this.applyReferralDiscount(row.userId, floorBps);
         }
         lastOk = row.id;
       }
@@ -103,21 +104,21 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
     }
   }
 
-  /** Просит commerce перевести реферала партнёра в B2B со скидкой сейлза. Идемпотентно. */
-  private async flipReferralToB2B(userId: string, referralDiscountBps: number): Promise<void> {
+  /** Просит commerce применить «пол» скидки сейлза рефералу партнёра (b2c + floor). Идемпотентно. */
+  private async applyReferralDiscount(userId: string, floorBps: number): Promise<void> {
     const base = this.config.get("COMMERCE_BASE_URL", { infer: true });
-    const url = new URL("/v1/internal/sales/referral-b2b", base);
+    const url = new URL("/v1/internal/sales/referral-discount", base);
     const response = await fetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "x-api-key": this.config.get("SALES_CONTROL_KEY", { infer: true }),
       },
-      body: JSON.stringify({ userId, referralDiscountBps }),
+      body: JSON.stringify({ userId, floorBps }),
       signal: AbortSignal.timeout(15_000),
     });
     // 404 — эндпоинт ещё не задеплоен в commerce; повторим на следующем тике (курсор не двинется).
-    if (!response.ok) throw new Error(`referral-b2b flip responded ${response.status}`);
+    if (!response.ok) throw new Error(`referral-discount responded ${response.status}`);
   }
 
   /**

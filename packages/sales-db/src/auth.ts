@@ -24,6 +24,7 @@ export interface Partner {
   promoMaxValueNano: bigint;
   promoMaxCount: number;
   referralDiscountBps: number;
+  referralDiscountEnabled: boolean;
   createdAt: Date;
 }
 
@@ -55,6 +56,7 @@ interface PartnerRow {
   promo_max_value_nano: string;
   promo_max_count: number;
   referral_discount_bps: number;
+  referral_discount_enabled: boolean;
   created_at: Date;
 }
 
@@ -63,7 +65,7 @@ const PARTNER_COLUMNS = `
   status, email_verified, referral_code,
   parent_partner_id, commission_bps, sub_commission_bps, payout_method, payout_details,
   promo_enabled, promo_max_value_nano::text AS promo_max_value_nano, promo_max_count,
-  referral_discount_bps, created_at
+  referral_discount_bps, referral_discount_enabled, created_at
 `;
 
 function mapPartner(row: PartnerRow): PasswordPartner {
@@ -87,6 +89,7 @@ function mapPartner(row: PartnerRow): PasswordPartner {
     promoMaxValueNano: BigInt(row.promo_max_value_nano),
     promoMaxCount: row.promo_max_count,
     referralDiscountBps: row.referral_discount_bps,
+    referralDiscountEnabled: row.referral_discount_enabled,
     createdAt: row.created_at,
   };
 }
@@ -126,15 +129,18 @@ export async function clearPartnerRateLimit(database: SalesDatabase, keyHashes: 
 async function lockInvite(client: PoolClient, code: string): Promise<{
   id: string; partnerId: string | null; commissionBps: number | null;
   subCommissionBps: number | null; telegramUsername: string | null;
-  promoEnabled: boolean; promoMaxValueNano: string; promoMaxCount: number; referralDiscountBps: number;
+  promoEnabled: boolean; promoMaxValueNano: string; promoMaxCount: number;
+  referralDiscountBps: number; referralDiscountEnabled: boolean;
 }> {
   const result = await client.query<{
     id: string; partner_id: string | null; commission_bps: number | null;
     sub_commission_bps: number | null; telegram_username: string | null;
-    promo_enabled: boolean; promo_max_value_nano: string; promo_max_count: number; referral_discount_bps: number;
+    promo_enabled: boolean; promo_max_value_nano: string; promo_max_count: number;
+    referral_discount_bps: number; referral_discount_enabled: boolean;
   }>(`
     SELECT id, partner_id, commission_bps, sub_commission_bps, telegram_username,
-           promo_enabled, promo_max_value_nano::text AS promo_max_value_nano, promo_max_count, referral_discount_bps
+           promo_enabled, promo_max_value_nano::text AS promo_max_value_nano, promo_max_count,
+           referral_discount_bps, referral_discount_enabled
     FROM partner_invites
     WHERE code = $1 AND consumed_at IS NULL AND (expires_at IS NULL OR expires_at > now())
     FOR UPDATE
@@ -151,6 +157,7 @@ async function lockInvite(client: PoolClient, code: string): Promise<{
     promoMaxValueNano: row.promo_max_value_nano,
     promoMaxCount: row.promo_max_count,
     referralDiscountBps: row.referral_discount_bps,
+    referralDiscountEnabled: row.referral_discount_enabled,
   };
 }
 
@@ -191,16 +198,17 @@ export async function createTelegramPartner(database: SalesDatabase, input: {
       INSERT INTO partners (
         telegram_id, telegram_username, telegram_photo_url, display_name, status,
         referral_code, parent_partner_id, commission_bps, sub_commission_bps,
-        promo_enabled, promo_max_value_nano, promo_max_count, referral_discount_bps
+        promo_enabled, promo_max_value_nano, promo_max_count, referral_discount_bps, referral_discount_enabled
       )
-      VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8, $9, $10, $11, $12)
+      VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8, $9, $10, $11, $12, $13)
       RETURNING ${PARTNER_COLUMNS}
     `, [
       input.telegramId, input.telegramUsername, input.telegramPhotoUrl, input.displayName,
       input.referralCode, invite.partnerId,
       invite.commissionBps ?? input.defaultCommissionBps,
       invite.subCommissionBps ?? input.defaultSubCommissionBps,
-      invite.promoEnabled, invite.promoMaxValueNano, invite.promoMaxCount, invite.referralDiscountBps,
+      invite.promoEnabled, invite.promoMaxValueNano, invite.promoMaxCount,
+      invite.referralDiscountBps, invite.referralDiscountEnabled,
     ]);
     const partner = mapPartner(result.rows[0]!);
     await client.query(`
@@ -258,7 +266,7 @@ export async function resolvePartnerSession(
            p.email_verified, p.referral_code, p.parent_partner_id, p.commission_bps,
            p.sub_commission_bps, p.payout_method, p.payout_details,
            p.promo_enabled, p.promo_max_value_nano::text AS promo_max_value_nano, p.promo_max_count,
-           p.referral_discount_bps, p.created_at
+           p.referral_discount_bps, p.referral_discount_enabled, p.created_at
     FROM partner_sessions s
     JOIN partners p ON p.id = s.partner_id
     WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND p.status = 'active'

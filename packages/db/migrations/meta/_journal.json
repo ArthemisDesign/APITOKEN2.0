@@ -99,6 +99,13 @@
       "when": 1784620000000,
       "tag": "0013_oauth_referral_code",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1784700000000,
+      "tag": "0014_referral_discount_floor",
+      "breakpoints": true
     }
   ]
 }

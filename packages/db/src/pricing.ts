@@ -162,49 +162,51 @@ export async function setBusinessPricing(database: Database, input: {
 }
 
 /**
- * Флип пользователя, пришедшего ПО РЕФЕРАЛКЕ ПАРТНЁРА (сейлза), в B2B. Его аккаунт перестаёт
- * подчиняться обычным правилам: тир-скидки/бонусы/промо на него не действуют (вся тир-логика
- * фильтрует customer_type='b2c'; welcome-бонус и промо гейтятся отдельно), а цену задаёт скидка
- * сейлза (≤90%). Мультипликатор доставляется в движок через durable engine_pricing_jobs (worker).
- * Идемпотентно: если уже b2b с тем же мультипликатором — no-op. Вызывается ТОЛЬКО для партнёрских
- * реф-кодов (обычная сайтовая рефка, если появится, сюда не идёт).
+ * Устанавливает «пол» скидки от сейлза для реферала ПАРТНЁРА. Клиент ОСТАЁТСЯ b2c и идёт по
+ * обычным тир-правилам (тир, бонус, промо — как у всех); floor лишь гарантирует, что цена не хуже
+ * скидки сейлза: эффективный mult = min(тир-mult, 10000 - floorBps). floorBps=0 снимает пол
+ * (возврат к чистому тиру). Разграничение b2c/b2b сохранено: для business-b2b пол не применяется.
+ * Мультипликатор доставляется в движок через durable engine_pricing_jobs. Идемпотентно.
+ * Вызывается ТОЛЬКО для партнёрских реф-кодов (обычная сайтовая рефка сюда не идёт).
  */
-export async function flipReferredUserToB2B(database: Database, input: {
+export async function setReferralFloor(database: Database, input: {
   userId: string;
-  referralDiscountBps: number; // 0..9000 (скидка ≤ 90%)
+  floorBps: number; // 0..9000 (скидка ≤ 90%); 0 = снять пол
   actorId: string;
-}): Promise<{ flipped: boolean; alreadyB2B: boolean; multiplierBp: number }> {
-  if (!Number.isInteger(input.referralDiscountBps) || input.referralDiscountBps < 0 || input.referralDiscountBps > 9000) {
-    throw new RangeError("referral discount must be an integer between 0 and 9000 bps (≤90%)");
+}): Promise<{ applied: boolean; multiplierBp: number | null }> {
+  if (!Number.isInteger(input.floorBps) || input.floorBps < 0 || input.floorBps > 9000) {
+    throw new RangeError("referral floor must be an integer between 0 and 9000 bps (≤90%)");
   }
-  const multiplierBp = 10_000 - input.referralDiscountBps; // скидка 90% → mult 1000 (10% от прайса)
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
     const result = await client.query<{
-      engine_account_id: string | null; customer_type: "b2c" | "b2b"; multiplier_bp: number;
+      engine_account_id: string | null; customer_type: "b2c" | "b2b";
+      current_tier: number | null; multiplier_bp: number; referral_floor_bps: number;
     }>(`
-      SELECT ea.engine_account_id, cp.customer_type, cp.multiplier_bp
+      SELECT ea.engine_account_id, cp.customer_type, cp.current_tier, cp.multiplier_bp, cp.referral_floor_bps
       FROM customer_profiles cp
       JOIN engine_accounts ea ON ea.user_id = cp.user_id
       WHERE cp.user_id = $1
       FOR UPDATE OF cp, ea
     `, [input.userId]);
     const row = result.rows[0];
-    if (!row) {
+    // Пол применяется только к обычным b2c-аккаунтам; business-b2b не трогаем (своя прайс-логика).
+    if (!row || row.customer_type !== "b2c" || row.current_tier === null) {
       await client.query("ROLLBACK");
-      return { flipped: false, alreadyB2B: false, multiplierBp };
+      return { applied: false, multiplierBp: null };
     }
-    if (row.customer_type === "b2b" && row.multiplier_bp === multiplierBp) {
+    const tierMult = B2C_PRICING_TIERS[row.current_tier]!.multiplierBp;
+    const multiplierBp = effectiveMultiplierBp(tierMult, input.floorBps);
+    if (row.referral_floor_bps === input.floorBps && row.multiplier_bp === multiplierBp) {
       await client.query("ROLLBACK");
-      return { flipped: false, alreadyB2B: true, multiplierBp };
+      return { applied: false, multiplierBp };
     }
-    // b2b ⇒ current_tier обязан быть NULL (customer_profiles_type_tier_check).
     await client.query(`
       UPDATE customer_profiles
-      SET customer_type = 'b2b', current_tier = NULL, multiplier_bp = $2, updated_at = now()
+      SET referral_floor_bps = $2, multiplier_bp = $3, updated_at = now()
       WHERE user_id = $1
-    `, [input.userId, multiplierBp]);
+    `, [input.userId, input.floorBps, multiplierBp]);
     await client.query(`
       UPDATE engine_accounts SET mult_bp = $2, updated_at = now() WHERE user_id = $1
     `, [input.userId, multiplierBp]);
@@ -213,15 +215,15 @@ export async function flipReferredUserToB2B(database: Database, input: {
         userId: input.userId,
         engineAccountId: row.engine_account_id,
         multiplierBp,
-        reason: "b2b_referral",
+        reason: "referral_floor",
       });
     }
     await client.query(`
       INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
-      VALUES ('system', $1, 'pricing.b2b_referral', 'user', $2, $3::jsonb)
-    `, [input.actorId, input.userId, JSON.stringify({ multiplierBp, referralDiscountBps: input.referralDiscountBps })]);
+      VALUES ('system', $1, 'pricing.referral_floor', 'user', $2, $3::jsonb)
+    `, [input.actorId, input.userId, JSON.stringify({ floorBps: input.floorBps, multiplierBp })]);
     await client.query("COMMIT");
-    return { flipped: true, alreadyB2B: false, multiplierBp };
+    return { applied: true, multiplierBp };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
@@ -548,13 +550,24 @@ export async function recoverStalePricingJobs(database: Database): Promise<numbe
   return result.rowCount ?? 0;
 }
 
+/** Эффективный mult = лучшее из тира и «пола» скидки сейлза (меньший mult = большая скидка). */
+function effectiveMultiplierBp(tierMultiplierBp: number, referralFloorBps: number): number {
+  return Math.min(tierMultiplierBp, 10_000 - referralFloorBps);
+}
+
 async function applyTierChange(
   client: PoolClient,
   target: PricingSyncTarget,
   tier: number,
   reason: string,
 ): Promise<void> {
-  const multiplierBp = B2C_PRICING_TIERS[tier]!.multiplierBp;
+  // Реф-скидка сейлза — «пол»: тир даёт свою скидку, но цена не хуже скидки сейлза. floor=0 → тир как есть.
+  const floorResult = await client.query<{ referral_floor_bps: number }>(
+    "SELECT referral_floor_bps FROM customer_profiles WHERE user_id = $1",
+    [target.userId],
+  );
+  const floorBps = floorResult.rows[0]?.referral_floor_bps ?? 0;
+  const multiplierBp = effectiveMultiplierBp(B2C_PRICING_TIERS[tier]!.multiplierBp, floorBps);
   await client.query(`
     UPDATE customer_profiles SET current_tier = $2, multiplier_bp = $3, updated_at = now()
     WHERE user_id = $1 AND customer_type = 'b2c'

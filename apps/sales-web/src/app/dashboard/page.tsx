@@ -20,6 +20,7 @@ import {
   Notice,
 } from "@/components/ui";
 import { EarningsChart } from "@/components/earnings-chart";
+import { ReferralDiscountCard } from "@/components/referral-discount-card";
 import { useI18n } from "@/components/i18n";
 
 export default function OverviewPage() {
@@ -116,40 +117,41 @@ export default function OverviewPage() {
           </p>
         </Card>
 
+        <ReferralDiscountCard
+          enabled={overview.referralDiscountEnabled ?? false}
+          currentBps={overview.referralDiscountBps ?? 0}
+        />
+
         <Card title={t("How your commission works", "Как работает ваша комиссия")}>
           <ul className="how-list">
             <li>
               {t("You earn ", "Вы получаете ")}
               <strong>{formatBps(overview.commissionBps)}</strong>
               {t(
-                " of every dollar your referrals ",
-                " с каждого доллара, который ваши рефералы ",
+                " of the real money your referrals ",
+                " с реальных денег, которые ваши рефералы ",
               )}
-              <strong>{t("actually pay", "реально платят")}</strong>
-              {t(" for API usage on apitoken.sale.", " за использование API на apitoken.sale.")}
+              <strong>{t("deposit", "вносят")}</strong>
+              {t(" (top up with their own money).", " (пополняют своими деньгами).")}
             </li>
             <li>
-              {t("The base is their ", "Основа — их ")}
-              <strong>{t("real spend", "фактический расход")}</strong>
+              {t("Free credits never count: ", "Бесплатные средства не считаются: ")}
+              <strong>{t("welcome bonuses, promo codes", "приветственные бонусы, промокоды")}</strong>
               {t(
-                " — the amount charged after their own tier discount. It is ",
-                " — сумма, списанная после их собственной скидки за тир. Это ",
+                " and any gifted balance earn you nothing — only money paid in with real money.",
+                " и любой подаренный баланс комиссию не приносят — только деньги, внесённые реальными деньгами.",
               )}
-              <strong>{t("not", "не")}</strong>
-              {t(" their top-up amount and ", " сумма их пополнения и ")}
-              <strong>{t("not", "не")}</strong>{" "}
-              {t("the full list price.", "полная цена по прайс-листу.")}
             </li>
             <li>
-              {t("Example: your referral spends ", "Пример: ваш реферал тратит ")}
+              {t("Example: your referral deposits ", "Пример: ваш реферал вносит ")}
               <strong>$100</strong>
-              {t(" on the API (their usage, not a top-up) → you earn ", " на API (расход на использование, не пополнение) → вы получаете ")}
+              {t(" of their own money → you earn ", " своих денег → вы получаете ")}
               <strong>{formatUsd((BigInt(overview.commissionBps) * 100n * 10n ** 9n / 10000n).toString())}</strong>.
             </li>
             <li>
               {t(
-                "Commission accrues as they spend and is paid out in USDT (BEP-20).",
-                "Комиссия начисляется по мере их расходов и выплачивается в USDT (BEP-20).",
+                "Commission accrues on their deposits and is paid out in USDT (BEP-20).",
+                "Комиссия начисляется с их пополнений и выплачивается в USDT (BEP-20).",
               )}
             </li>
           </ul>

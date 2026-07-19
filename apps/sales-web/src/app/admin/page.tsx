@@ -273,10 +273,35 @@ function PartnerEditor({
               ? `Promo ${maxPromoUsd}/${partner.promoMaxCount ?? 0}`
               : "Promo: off"}
           </Button>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={editDiscount}>
+            {partner.referralDiscountEnabled
+              ? `Discount ${formatBps(partner.referralDiscountBps ?? 0)}`
+              : "Discount: off"}
+          </Button>
         </div>
       </td>
     </tr>
   );
+
+  async function editDiscount() {
+    const label = partner.telegramUsername ? `@${partner.telegramUsername}` : partner.email ?? partner.id.slice(0, 8);
+    const cur = partner.referralDiscountEnabled ? String((partner.referralDiscountBps ?? 0) / 100) : "off";
+    const v = window.prompt(
+      `Referral discount right for ${label}\n\nEnter a percent 0–90 to grant the right (their referrals never pay above this, as a floor), or "off" to revoke.`,
+      cur,
+    );
+    if (v == null) return;
+    if (v.trim().toLowerCase() === "off") {
+      await patch({ referralDiscountEnabled: false, referralDiscountBps: 0 });
+      return;
+    }
+    const pct = Number(v.trim());
+    if (!Number.isFinite(pct) || pct < 0 || pct > 90) {
+      onError("Discount must be a number 0–90.");
+      return;
+    }
+    await patch({ referralDiscountEnabled: true, referralDiscountBps: Math.round(pct * 100) });
+  }
 
   async function editPromo() {
     const label = partner.telegramUsername ? `@${partner.telegramUsername}` : partner.email ?? partner.id.slice(0, 8);
@@ -698,6 +723,7 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
   const [username, setUsername] = useState("");
   const [commissionPct, setCommissionPct] = useState("10");
   const [subPct, setSubPct] = useState("10");
+  const [discountEnabled, setDiscountEnabled] = useState(false);
   const [discountPct, setDiscountPct] = useState("0");
   const [promoCount, setPromoCount] = useState("0");
   const [promoMaxUsd, setPromoMaxUsd] = useState("0");
@@ -756,7 +782,8 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
           telegramUsername: clean,
           commissionBps,
           subCommissionBps,
-          referralDiscountBps: discountBps,
+          referralDiscountEnabled: discountEnabled,
+          referralDiscountBps: discountEnabled ? discountBps : 0,
           promoMaxCount: count,
           promoMaxValueUsd: maxUsd,
         },
@@ -816,12 +843,13 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
               placeholder="10"
             />
           </Field>
-          <Field label="Referral discount %" hint="B2B discount their users get · max 90%">
+          <Field label="Referral discount %" hint={discountEnabled ? "Floor: their users never pay above this · max 90%" : "Enable below to allow this partner to give a discount"}>
             <Input
               value={discountPct}
               onChange={(e) => setDiscountPct(e.target.value.replace(/[^\d.]/g, ""))}
               inputMode="decimal"
               placeholder="0"
+              disabled={!discountEnabled}
             />
           </Field>
           <Field label="Promo codes (count)" hint="0 = no promo access">
@@ -841,6 +869,14 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
             />
           </Field>
         </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, fontSize: 13, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={discountEnabled}
+            onChange={(e) => setDiscountEnabled(e.target.checked)}
+          />
+          Allow this partner to give their referrals a discount (they stay normal accounts; the discount is a price floor)
+        </label>
         <div className="row-actions" style={{ marginTop: 14, alignItems: "center", gap: 12 }}>
           <Button onClick={create} loading={busy}>
             Create invite
@@ -849,6 +885,7 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
             {promoOn
               ? `Promo: up to ${promoCount} code(s), max $${promoMaxUsd} each.`
               : "Promo: off (set both count and max $ to enable)."}
+            {discountEnabled ? ` · Discount right: on (${discountPct || "0"}%).` : " · Discount right: off."}
           </span>
         </div>
       </Card>
@@ -878,7 +915,7 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
                 <td className="mono">{inv.telegramUsername ? `@${inv.telegramUsername}` : "—"}</td>
                 <td>{inv.commissionBps != null ? formatBps(inv.commissionBps) : "default"}</td>
                 <td>{inv.subCommissionBps != null ? formatBps(inv.subCommissionBps) : "default"}</td>
-                <td>{formatBps(inv.referralDiscountBps ?? 0)}</td>
+                <td>{inv.referralDiscountEnabled ? formatBps(inv.referralDiscountBps ?? 0) : "—"}</td>
                 <td>
                   {inv.promoEnabled
                     ? `${inv.promoMaxCount ?? 0} × $${inv.promoMaxValueNano ? Number(BigInt(inv.promoMaxValueNano) / 1_000_000_000n) : 0}`

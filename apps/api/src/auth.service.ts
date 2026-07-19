@@ -19,7 +19,6 @@ import {
   encryptAuthToken,
   queueAuthEmailForAddress,
   recordReferralAttribution,
-  flipReferredUserToB2B,
   resolveAuthSession,
   revokeAuthSession,
   updateUserDisplayName,
@@ -217,59 +216,11 @@ export class AuthService {
     const user = await completeExternalSignIn(this.database, identity, transaction.inviteTokenHash);
     if (user.status !== "active") throw new InvalidOAuthTransactionError("account is disabled");
     await this.provisionEngineAccount(user, user.engineMultiplierBp, false);
-    await this.applyReferralAndBonus(user, transaction.referralCode);
-    return this.issueSession(user, input.userAgent, input.ipAddress);
-  }
-
-  /**
-   * Атрибуция OAuth-регистрации и выдача welcome-бонуса — СТРОГО с гарантией «ничего не проскочит»:
-   * если пришёл по коду ПАРТНЁРА, аккаунт делается B2B ДО бонуса, и бонус не выдаётся вовсе. Бонус
-   * получают только подтверждённо-НЕ-партнёрские регистрации (обычные b2c). Если проверить код не
-   * удалось (sales недоступен) — fail-closed: бонус НЕ выдаём (сегодня любой ?ref= = код партнёра),
-   * а асинхронный фид всё равно закрепит атрибуцию и переведёт в B2B.
-   */
-  private async applyReferralAndBonus(user: AuthUser, referralCode: string | null): Promise<void> {
-    if (!referralCode) {
-      await this.grantOAuthWelcomeBonus(user);
-      return;
-    }
-    // Закрепляем атрибуцию в commerce (sales-фид подхватит для комиссий/команды).
-    await this.attributeReferral(user.id, referralCode);
-    let partner: { referralDiscountBps: number } | null;
-    try {
-      partner = await this.resolvePartnerReferral(referralCode);
-    } catch {
-      // Не смогли подтвердить, что код НЕ партнёрский → бонус не выдаём (fail-closed).
-      return;
-    }
-    if (partner) {
-      // Реф партнёра → B2B со скидкой сейлза; welcome-бонус не положен.
-      await flipReferredUserToB2B(this.database, {
-        userId: user.id,
-        referralDiscountBps: partner.referralDiscountBps,
-        actorId: "oauth-referral",
-      });
-      return;
-    }
-    // Код не принадлежит партнёру (обычная/сторонняя рефка) → обычный b2c, бонус выдаём.
+    // Реф партнёра остаётся обычным b2c и получает welcome-бонус, как все. Реф-код лишь закрепляет
+    // атрибуцию (sales-фид подхватит для комиссии + применит скидку-«пол» партнёра асинхронно).
+    if (transaction.referralCode) await this.attributeReferral(user.id, transaction.referralCode);
     await this.grantOAuthWelcomeBonus(user);
-  }
-
-  /** Спрашивает sales, является ли код активным партнёром, и его B2B-скидку. null — не партнёр. */
-  private async resolvePartnerReferral(code: string): Promise<{ referralDiscountBps: number } | null> {
-    const base = this.config.get("SALES_API_URL", { infer: true });
-    const key = this.config.get("SALES_CONTROL_KEY", { infer: true });
-    if (!base || !key) throw new Error("sales resolver is not configured");
-    const url = new URL(`/v1/internal/partners/resolve?code=${encodeURIComponent(code)}`, base);
-    const response = await fetch(url, {
-      headers: { "x-api-key": key },
-      signal: AbortSignal.timeout(8_000),
-    });
-    if (!response.ok) throw new Error(`partner resolve responded ${response.status}`);
-    const body = (await response.json()) as { found?: unknown; referralDiscountBps?: unknown };
-    if (body.found !== true) return null;
-    const bps = typeof body.referralDiscountBps === "number" ? body.referralDiscountBps : 0;
-    return { referralDiscountBps: bps };
+    return this.issueSession(user, input.userAgent, input.ipAddress);
   }
 
   providerStatus(): { google: boolean; github: boolean } {

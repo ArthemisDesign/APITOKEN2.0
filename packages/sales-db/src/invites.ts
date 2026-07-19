@@ -14,6 +14,7 @@ export interface PartnerInvite {
   promoMaxValueNano: bigint;
   promoMaxCount: number;
   referralDiscountBps: number;
+  referralDiscountEnabled: boolean;
   expiresAt: Date | null;
   consumedAt: Date | null;
   consumedByPartnerId: string | null;
@@ -33,6 +34,7 @@ interface InviteRow {
   promo_max_value_nano: string;
   promo_max_count: number;
   referral_discount_bps: number;
+  referral_discount_enabled: boolean;
   expires_at: Date | null;
   consumed_at: Date | null;
   consumed_by_partner_id: string | null;
@@ -41,7 +43,8 @@ interface InviteRow {
 
 const INVITE_COLUMNS = `
   id, partner_id, code, telegram_username, commission_bps, sub_commission_bps,
-  promo_enabled, promo_max_value_nano::text AS promo_max_value_nano, promo_max_count, referral_discount_bps,
+  promo_enabled, promo_max_value_nano::text AS promo_max_value_nano, promo_max_count,
+  referral_discount_bps, referral_discount_enabled,
   expires_at, consumed_at, consumed_by_partner_id, created_at
 `;
 
@@ -57,6 +60,7 @@ function mapInvite(row: InviteRow): PartnerInvite {
     promoMaxValueNano: BigInt(row.promo_max_value_nano),
     promoMaxCount: row.promo_max_count,
     referralDiscountBps: row.referral_discount_bps,
+    referralDiscountEnabled: row.referral_discount_enabled,
     expiresAt: row.expires_at,
     consumedAt: row.consumed_at,
     consumedByPartnerId: row.consumed_by_partner_id,
@@ -74,20 +78,22 @@ export async function createPartnerInvite(database: SalesDatabase, input: {
   promoMaxValueNano: bigint;
   promoMaxCount: number;
   referralDiscountBps: number;
+  referralDiscountEnabled: boolean;
   expiresAt: Date;
 }): Promise<PartnerInvite> {
   try {
     const result = await database.pool.query<InviteRow>(`
       INSERT INTO partner_invites (
         partner_id, code, telegram_username, commission_bps, sub_commission_bps,
-        promo_enabled, promo_max_value_nano, promo_max_count, referral_discount_bps, expires_at
+        promo_enabled, promo_max_value_nano, promo_max_count, referral_discount_bps,
+        referral_discount_enabled, expires_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       RETURNING ${INVITE_COLUMNS}
     `, [
       input.partnerId, input.code, input.telegramUsername, input.commissionBps, input.subCommissionBps,
       input.promoEnabled, input.promoMaxValueNano.toString(), input.promoMaxCount, input.referralDiscountBps,
-      input.expiresAt,
+      input.referralDiscountEnabled, input.expiresAt,
     ]);
     return mapInvite(result.rows[0]!);
   } catch (error) {

@@ -59,6 +59,7 @@ export interface AdminPartnerSummary {
   promoMaxCount: number;
   promoUsed: number;
   referralDiscountBps: number;
+  referralDiscountEnabled: boolean;
   createdAt: Date;
 }
 
@@ -70,14 +71,14 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
     parent_partner_id: string | null; parent_email: string | null; parent_telegram_username: string | null;
     referred_users: string; team_size: string; earned: string; paid: string;
     promo_enabled: boolean; promo_max_value_nano: string; promo_max_count: number; promo_used: string;
-    referral_discount_bps: number;
+    referral_discount_bps: number; referral_discount_enabled: boolean;
     created_at: Date;
   }>(`
     SELECT p.id, p.email, p.telegram_username, p.display_name, p.status, p.email_verified, p.referral_code,
       p.commission_bps, p.sub_commission_bps, p.parent_partner_id, parent.email AS parent_email,
       parent.telegram_username AS parent_telegram_username,
       p.promo_enabled, p.promo_max_value_nano::text AS promo_max_value_nano, p.promo_max_count,
-      p.referral_discount_bps,
+      p.referral_discount_bps, p.referral_discount_enabled,
       (SELECT count(*) FROM promo_codes pc WHERE pc.partner_id = p.id)::text AS promo_used,
       (SELECT count(*) FROM referred_users ru WHERE ru.partner_id = p.id)::text AS referred_users,
       (SELECT count(*) FROM partners child WHERE child.parent_partner_id = p.id)::text AS team_size,
@@ -110,8 +111,26 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
     promoMaxCount: row.promo_max_count,
     promoUsed: Number(row.promo_used),
     referralDiscountBps: row.referral_discount_bps,
+    referralDiscountEnabled: row.referral_discount_enabled,
     createdAt: row.created_at,
   }));
+}
+
+/**
+ * Партнёр (из кабинета) ставит скидку своим рефам. Обновляет только если у партнёра есть право
+ * (referral_discount_enabled) — проверка на уровне БД, не полагаемся на контроллер.
+ */
+export async function setPartnerReferralDiscount(
+  database: SalesDatabase,
+  partnerId: string,
+  bps: number,
+): Promise<boolean> {
+  const result = await database.pool.query(
+    `UPDATE partners SET referral_discount_bps = $2, updated_at = now()
+     WHERE id = $1 AND status = 'active' AND referral_discount_enabled = true`,
+    [partnerId, bps],
+  );
+  return (result.rowCount ?? 0) > 0;
 }
 
 export class PartnerHasHistoryError extends Error {}
@@ -172,6 +191,7 @@ export async function updatePartnerAdmin(database: SalesDatabase, partnerId: str
   commissionBps?: number;
   subCommissionBps?: number;
   referralDiscountBps?: number;
+  referralDiscountEnabled?: boolean;
   status?: PartnerStatus;
   actorId: string | null;
 }): Promise<boolean> {
@@ -183,11 +203,12 @@ export async function updatePartnerAdmin(database: SalesDatabase, partnerId: str
       SET commission_bps = COALESCE($2, commission_bps),
           sub_commission_bps = COALESCE($3, sub_commission_bps),
           referral_discount_bps = COALESCE($5, referral_discount_bps),
+          referral_discount_enabled = COALESCE($6, referral_discount_enabled),
           status = COALESCE($4::partner_status, status),
           updated_at = now()
       WHERE id = $1
       RETURNING id
-    `, [partnerId, input.commissionBps ?? null, input.subCommissionBps ?? null, input.status ?? null, input.referralDiscountBps ?? null]);
+    `, [partnerId, input.commissionBps ?? null, input.subCommissionBps ?? null, input.status ?? null, input.referralDiscountBps ?? null, input.referralDiscountEnabled ?? null]);
     if (!updated.rows[0]) {
       await client.query("ROLLBACK");
       return false;

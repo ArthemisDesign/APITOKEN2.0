@@ -58,10 +58,13 @@ export const customerProfiles = pgTable("customer_profiles", {
   cumulativeTopupNano: bigint("cumulative_topup_nano", { mode: "bigint" }).notNull().default(sql`0`),
   tierWindowStart: timestamp("tier_window_start", { withTimezone: true }),
   tierWindowSpentNano: bigint("tier_window_spent_nano", { mode: "bigint" }).notNull().default(sql`0`),
+  // Скидка сейлза как «пол»: эффективный mult = min(тир-mult, 10000 - referral_floor_bps). 0 = нет.
+  referralFloorBps: integer("referral_floor_bps").notNull().default(0),
   createdAt,
   updatedAt,
 }, (table) => [
   check("customer_profiles_multiplier_check", sql`${table.multiplierBp} BETWEEN 0 AND 10000`),
+  check("customer_profiles_referral_floor_check", sql`${table.referralFloorBps} BETWEEN 0 AND 9000`),
   // Expanded in 0008. Contract only in a later release after no deployed writer can emit tier 5.
   check("customer_profiles_tier_check", sql`${table.currentTier} IS NULL OR ${table.currentTier} BETWEEN 0 AND 5`),
   check("customer_profiles_type_tier_check", sql`

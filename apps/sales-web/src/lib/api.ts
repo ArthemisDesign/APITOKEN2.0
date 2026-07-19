@@ -163,6 +163,8 @@ export type Overview = {
   referralUrl: string;
   commissionBps: number;
   subCommissionBps: number;
+  referralDiscountEnabled?: boolean;
+  referralDiscountBps?: number;
   referredUsers: number;
   teamSize: number;
   totals: {
@@ -204,6 +206,7 @@ export type InviteRow = {
   commissionBps: number | null;
   subCommissionBps?: number | null;
   referralDiscountBps?: number;
+  referralDiscountEnabled?: boolean;
   promoEnabled?: boolean;
   promoMaxCount?: number;
   promoMaxValueNano?: string;
@@ -282,6 +285,7 @@ export type AdminPartnerRow = {
   commissionBps: number;
   subCommissionBps: number;
   referralDiscountBps?: number;
+  referralDiscountEnabled?: boolean;
   status: string;
   earnedNano?: string;
   referredUsers?: number;
