@@ -38,7 +38,7 @@ case "${1:-}" in
   deployment-create)
     [[ $# -eq 4 ]] || { echo 'usage: deployment-create SHA ENVIRONMENT DESCRIPTION' >&2; exit 2; }
     [[ $2 =~ $sha_re ]] || { echo 'invalid SHA' >&2; exit 2; }
-    [[ $3 =~ ^production-(database|engine|backend)$ ]] || { echo 'invalid environment' >&2; exit 2; }
+    [[ $3 =~ ^production-(database|engine|backend|sales)$ ]] || { echo 'invalid environment' >&2; exit 2; }
     body=$(jq -cn --arg ref "$2" --arg environment "$3" --arg description "$4" \
       '{ref:$ref,environment:$environment,description:$description,auto_merge:false,required_contexts:[],transient_environment:false,production_environment:true}')
     github_curl -X POST "$api/deployments" -d "$body" | jq -er '.id'
@@ -47,7 +47,7 @@ case "${1:-}" in
     [[ $# -ge 6 && $# -le 7 ]] || { echo 'usage: deployment-status ID STATE DESCRIPTION ENVIRONMENT ENVIRONMENT_URL [LOG_URL]' >&2; exit 2; }
     [[ $2 =~ ^[1-9][0-9]*$ ]] || { echo 'invalid deployment id' >&2; exit 2; }
     [[ $3 =~ ^(error|failure|inactive|in_progress|queued|pending|success)$ ]] || { echo 'invalid deployment state' >&2; exit 2; }
-    [[ $5 =~ ^production-(database|engine|backend)$ ]] || { echo 'invalid environment' >&2; exit 2; }
+    [[ $5 =~ ^production-(database|engine|backend|sales)$ ]] || { echo 'invalid environment' >&2; exit 2; }
     body=$(jq -cn --arg state "$3" --arg description "$4" --arg environment "$5" \
       --arg environment_url "$6" --arg log_url "${7:-}" \
       '{state:$state,description:$description,environment:$environment,auto_inactive:true}
