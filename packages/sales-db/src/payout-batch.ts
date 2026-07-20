@@ -74,6 +74,7 @@ export interface PayoutRow {
   status: string;
   walletAddress: string | null;
   txHash: string | null;
+  nonce: number | null;
   chainStatus: PayoutChainStatus | null;
   chainError: string | null;
   paidAt: Date | null;
@@ -166,7 +167,7 @@ export async function listPayoutBatches(database: SalesDatabase, limit = 30): Pr
 export async function listBatchPayouts(database: SalesDatabase, batchId: string): Promise<PayoutRow[]> {
   const r = await database.pool.query<Record<string, unknown>>(`
     SELECT po.id, po.partner_id, po.amount_nano::text AS amount_nano, po.status, po.wallet_address,
-           po.tx_hash, po.chain_status, po.chain_error, po.paid_at,
+           po.tx_hash, po.nonce, po.chain_status, po.chain_error, po.paid_at,
            p.telegram_username, p.email, p.display_name
     FROM payouts po JOIN partners p ON p.id = po.partner_id
     WHERE po.batch_id = $1
@@ -182,6 +183,7 @@ export async function listBatchPayouts(database: SalesDatabase, batchId: string)
     status: row.status as string,
     walletAddress: (row.wallet_address as string) ?? null,
     txHash: (row.tx_hash as string) ?? null,
+    nonce: row.nonce === null || row.nonce === undefined ? null : Number(row.nonce),
     chainStatus: (row.chain_status as PayoutChainStatus) ?? null,
     chainError: (row.chain_error as string) ?? null,
     paidAt: (row.paid_at as Date) ?? null,
@@ -210,11 +212,43 @@ export async function setBatchStatus(database: SalesDatabase, id: string, status
 
 // --- on-chain state transitions per payout row (idempotent) ---
 
-export async function markPayoutBroadcast(database: SalesDatabase, payoutId: string, txHash: string): Promise<void> {
+export async function markPayoutBroadcast(database: SalesDatabase, payoutId: string, txHash: string, nonce: number): Promise<void> {
   await database.pool.query(
-    "UPDATE payouts SET tx_hash = $2, chain_status = 'broadcast', chain_error = NULL WHERE id = $1",
-    [payoutId, txHash],
+    "UPDATE payouts SET tx_hash = $2, nonce = $3, chain_status = 'broadcast', chain_error = NULL WHERE id = $1",
+    [payoutId, txHash, nonce],
   );
+}
+
+// Безопасно вернуть баланс в оборот: помечает НЕ отправленную (sim-fail/reverted) строку как
+// 'rejected' — sumCommitted её больше не учитывает, деньги попадут в следующее окно. НИКОГДА не
+// применять к строке с chain_status='broadcast' (транзакция могла уйти в сеть).
+export async function releasePayoutRow(database: SalesDatabase, payoutId: string): Promise<boolean> {
+  const r = await database.pool.query(
+    "UPDATE payouts SET status = 'rejected', decided_at = now() WHERE id = $1 AND status <> 'paid' AND (chain_status IS NULL OR chain_status IN ('pending','simulated','failed'))",
+    [payoutId],
+  );
+  return (r.rowCount ?? 0) > 0;
+}
+
+// Межпроцессный лок отправки (HA): один отправитель на горячий кошелёк. Держится на выделенном
+// соединении всю отправку. Ключ фиксированный.
+const PAYOUT_SEND_LOCK_KEY = 918273645;
+
+export async function acquirePayoutSendLock(database: SalesDatabase): Promise<import("pg").PoolClient | null> {
+  const client = await database.pool.connect();
+  try {
+    const r = await client.query<{ ok: boolean }>("SELECT pg_try_advisory_lock($1) AS ok", [PAYOUT_SEND_LOCK_KEY]);
+    if (!r.rows[0]?.ok) { client.release(); return null; }
+    return client;
+  } catch (error) {
+    client.release();
+    throw error;
+  }
+}
+
+export async function releasePayoutSendLock(client: import("pg").PoolClient): Promise<void> {
+  try { await client.query("SELECT pg_advisory_unlock($1)", [PAYOUT_SEND_LOCK_KEY]); }
+  finally { client.release(); }
 }
 
 export async function markPayoutConfirmed(database: SalesDatabase, payoutId: string): Promise<void> {
@@ -236,7 +270,7 @@ export async function markPayoutFailed(database: SalesDatabase, payoutId: string
 export async function listBroadcastPayouts(database: SalesDatabase, limit = 100): Promise<Array<PayoutRow & { batchId: string | null }>> {
   const r = await database.pool.query<Record<string, unknown>>(`
     SELECT po.id, po.partner_id, po.amount_nano::text AS amount_nano, po.status, po.wallet_address,
-           po.tx_hash, po.chain_status, po.chain_error, po.paid_at, po.batch_id,
+           po.tx_hash, po.nonce, po.chain_status, po.chain_error, po.paid_at, po.batch_id,
            p.telegram_username, p.email, p.display_name
     FROM payouts po JOIN partners p ON p.id = po.partner_id
     WHERE po.chain_status = 'broadcast' AND po.tx_hash IS NOT NULL
@@ -253,6 +287,7 @@ export async function listBroadcastPayouts(database: SalesDatabase, limit = 100)
     status: row.status as string,
     walletAddress: (row.wallet_address as string) ?? null,
     txHash: (row.tx_hash as string) ?? null,
+    nonce: row.nonce === null || row.nonce === undefined ? null : Number(row.nonce),
     chainStatus: (row.chain_status as PayoutChainStatus) ?? null,
     chainError: (row.chain_error as string) ?? null,
     paidAt: (row.paid_at as Date) ?? null,

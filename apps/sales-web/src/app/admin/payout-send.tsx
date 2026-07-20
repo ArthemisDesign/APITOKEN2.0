@@ -103,6 +103,11 @@ export function PayoutSendTab({ adminKey }: { adminKey: string }) {
     await act(() => api(`/v1/admin/payouts/rows/${row.id}/send`, { method: "POST", headers: adminHeaders(adminKey) }));
     await openBatch(report.batch.id);
   }
+  async function releaseOne(row: PayoutRowDto) {
+    if (!report || !confirm("Release this failed payout? Its balance rolls back into the partner's next window. Only do this if the transaction did NOT go on-chain.")) return;
+    await act(() => api(`/v1/admin/payouts/rows/${row.id}/release`, { method: "POST", headers: adminHeaders(adminKey) }));
+    await openBatch(report.batch.id);
+  }
   async function cancel() {
     if (!report || !confirm("Cancel this prepared batch? Unsent rows are removed and balances freed.")) return;
     await act(() => api(`/v1/admin/payouts/batches/${report.batch.id}/cancel`, { method: "POST", headers: adminHeaders(adminKey) }));
@@ -205,7 +210,10 @@ export function PayoutSendTab({ adminKey }: { adminKey: string }) {
                     </td>
                     <td style={{ padding: "6px 8px" }}>
                       {r.status !== "paid" && r.chainStatus !== "broadcast" ? (
-                        <Button size="sm" variant="ghost" disabled={busy || !windowOpen} onClick={() => sendOne(r)}>{r.chainStatus === "failed" ? "Retry" : "Send"}</Button>
+                        <span style={{ display: "inline-flex", gap: 4 }}>
+                          <Button size="sm" variant="ghost" disabled={busy || !windowOpen} onClick={() => sendOne(r)}>{r.chainStatus === "failed" ? "Retry" : "Send"}</Button>
+                          {r.chainStatus === "failed" ? <Button size="sm" variant="ghost" disabled={busy} onClick={() => releaseOne(r)}>Release</Button> : null}
+                        </span>
                       ) : null}
                     </td>
                   </tr>

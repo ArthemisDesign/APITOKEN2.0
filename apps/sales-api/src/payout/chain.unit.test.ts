@@ -1,5 +1,36 @@
 import { describe, expect, it } from "vitest";
-import { nanoToUsdtWei, normalizeBscAddress } from "./chain.js";
+import { nanoToUsdtWei, normalizeBscAddress, PayoutChain } from "./chain.js";
+
+const RECIPIENT = "0x55d398326f99059fF775485246999027B3197955";
+function testChain(): PayoutChain {
+  return new PayoutChain({
+    privateKey: "0x" + "11".repeat(32),
+    sendRpcUrl: "https://bsc.invalid",
+    readRpcUrls: [],
+    usdtContract: "0x55d398326f99059fF775485246999027B3197955",
+    chainId: 56,
+    gasPriceGwei: "0.1",
+    confirmations: 1,
+  });
+}
+
+describe("deterministic offline signing (double-pay safety)", () => {
+  it("same (recipient, amount, nonce, gas) → SAME tx hash (re-broadcast is idempotent)", async () => {
+    const chain = testChain();
+    const a = await chain.signTransfer(RECIPIENT, 1_000_000_000n, 5);
+    const b = await chain.signTransfer(RECIPIENT, 1_000_000_000n, 5);
+    expect(a.hash).toBe(b.hash);
+    expect(a.raw).toBe(b.raw);
+    expect(a.hash).toMatch(/^0x[0-9a-f]{64}$/);
+  });
+
+  it("a different nonce → different hash (so a fresh nonce is never confused with the old tx)", async () => {
+    const chain = testChain();
+    const n5 = await chain.signTransfer(RECIPIENT, 1_000_000_000n, 5);
+    const n6 = await chain.signTransfer(RECIPIENT, 1_000_000_000n, 6);
+    expect(n6.hash).not.toBe(n5.hash);
+  });
+});
 
 describe("payout chain helpers", () => {
   it("converts nanoUSD to USDT wei (BEP-20 has 18 decimals)", () => {

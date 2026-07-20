@@ -34,7 +34,7 @@ export function normalizeBscAddress(address: string): string {
   return a;
 }
 
-export interface SendResult { hash: string; nonce: number; }
+export interface SignedTransfer { hash: string; raw: string; nonce: number; }
 export interface ConfirmResult { status: "confirmed" | "reverted"; blockNumber: number | null; }
 
 export class PayoutChain {
@@ -45,6 +45,7 @@ export class PayoutChain {
   private readonly gasPrice: bigint;
   private readonly confirmations: number;
   private readonly chainId: number;
+  private readonly iface = new ethers.Interface(USDT_ABI);
 
   constructor(cfg: PayoutChainConfig) {
     if (!cfg.privateKey) throw new Error("payout hot-wallet key is not configured");
@@ -114,17 +115,25 @@ export class PayoutChain {
     );
   }
 
-  /** Бродкастит перевод через SEND-RPC (BlockRazor) с явными nonce/gasPrice/gasLimit. Возвращает хеш. */
-  async sendTransfer(to: string, amountNano: bigint, nonce: number): Promise<SendResult> {
+  /**
+   * ОФЛАЙН-подпись перевода (сеть не нужна). Возвращает подписанный raw + его хеш, посчитанный ДО
+   * бродкаста. Детерминированно от (to, amount, nonce, gasPrice, gasLimit, chainId) + ключа, поэтому
+   * повторная подпись с тем же nonce даёт ТОТ ЖЕ хеш → ре-бродкаст всегда идемпотентен, а потеря
+   * ответа при отправке не создаёт «неотслеживаемую» транзакцию.
+   */
+  async signTransfer(to: string, amountNano: bigint, nonce: number): Promise<SignedTransfer> {
     const recipient = normalizeBscAddress(to);
-    const amountWei = nanoToUsdtWei(amountNano);
-    const contract = new ethers.Contract(this.usdt, USDT_ABI, this.wallet.connect(this.sendProvider));
-    const tx = await contract.getFunction("transfer")(recipient, amountWei, {
-      nonce,
-      gasPrice: this.gasPrice,
-      gasLimit: TRANSFER_GAS_LIMIT,
-    }) as ethers.ContractTransactionResponse;
-    return { hash: tx.hash, nonce };
+    const data = this.iface.encodeFunctionData("transfer", [recipient, nanoToUsdtWei(amountNano)]);
+    const raw = await this.wallet.signTransaction({
+      to: this.usdt, data, value: 0n, nonce,
+      gasPrice: this.gasPrice, gasLimit: TRANSFER_GAS_LIMIT, chainId: this.chainId, type: 0,
+    });
+    return { hash: ethers.keccak256(raw), raw, nonce };
+  }
+
+  /** Бродкаст уже подписанного raw через SEND-RPC (BlockRazor). Повтор тем же raw безопасен. */
+  async broadcastRaw(raw: string): Promise<void> {
+    await this.sendProvider.broadcastTransaction(raw);
   }
 
   /** Ждёт квитанцию (confirmations + timeout через read-пул). null → ещё не в блоке (таймаут). */

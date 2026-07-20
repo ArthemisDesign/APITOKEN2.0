@@ -114,4 +114,12 @@ export class PayoutController {
     if (!uuidSchema.safeParse(id).success) throw new NotFoundException("invalid batch id");
     return { canceled: await this.payouts.cancel(id) };
   }
+
+  /** Освободить баланс failed-строки обратно в оборот (не под гейтом окна). */
+  @Post("rows/:payoutId/release")
+  @HttpCode(200)
+  async release(@Param("payoutId") payoutId: string): Promise<unknown> {
+    if (!uuidSchema.safeParse(payoutId).success) throw new NotFoundException("invalid payout id");
+    return { released: await this.payouts.release(payoutId) };
+  }
 }

@@ -317,6 +317,7 @@ export const payouts = pgTable("payouts", {
   batchId: uuid("batch_id").references(() => payoutBatches.id, { onDelete: "set null" }),
   walletAddress: text("wallet_address"),
   txHash: text("tx_hash"),
+  nonce: bigint("nonce", { mode: "number" }),
   chainStatus: text("chain_status"), // pending | simulated | broadcast | confirmed | failed
   chainError: text("chain_error"),
 }, (table) => [
