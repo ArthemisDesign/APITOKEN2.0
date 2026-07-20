@@ -122,11 +122,12 @@ export function PayoutTimeline({ state }: { state: PeriodState }) {
       </div>
 
       <div style={{ position: "relative" }}>
-        {/* линия «сейчас» через все дорожки */}
-        <div style={{ position: "absolute", left: nowPct, top: 0, bottom: 22, width: 2, background: "var(--text)", zIndex: 3 }} aria-hidden>
-          <span style={{ position: "absolute", top: -16, left: "50%", transform: "translateX(-50%)", fontSize: 10, fontWeight: 700, whiteSpace: "nowrap", background: "var(--text)", color: "var(--bg,#fff)", padding: "1px 5px", borderRadius: 4 }}>
+        {/* линия «сейчас» через все дорожки — яркая, контрастная */}
+        <div style={{ position: "absolute", left: nowPct, top: 18, bottom: 22, width: 2.5, background: "#e8590c", zIndex: 4, boxShadow: "0 0 0 1px rgba(255,255,255,0.5)" }} aria-hidden>
+          <span style={{ position: "absolute", top: -18, left: "50%", transform: "translateX(-50%)", fontSize: 10, fontWeight: 800, whiteSpace: "nowrap", background: "#e8590c", color: "#fff", padding: "2px 6px", borderRadius: 5 }}>
             {t("now", "сейчас")}
           </span>
+          <span style={{ position: "absolute", top: -4, left: "50%", transform: "translateX(-50%)", width: 8, height: 8, borderRadius: "50%", background: "#e8590c", border: "2px solid #fff", boxSizing: "border-box" }} />
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingTop: 6 }}>
