@@ -14,6 +14,17 @@
 `DEPLOYMENT.md`, authority/fencing Stage 2 — `docs/STAGE2_POSTGRES_AUTHORITY.md`.
 Обязательный workflow для contributor/AI и автоматическая доставка — `CONTRIBUTING.md`.
 
+## CRM & Parsing — ВЫНЕСЕНО в отдельный репозиторий
+
+Внутренняя AI-CRM и парсинг (`crm.panel.apitoken.sale`) больше НЕ живут в этом монорепо — они
+переехали в самостоятельный продукт **`github.com/Q666Q666Q/CRM-Parcing`** (пакеты `@crm/*`).
+Здесь остаётся только ИНФРА-роутинг под общий прод-сервер: блоки `(crm_admins)` и
+`crm.panel.apitoken.sale` в `deploy/Caddyfile`, `CRM_ADMIN_USERS_PLACEHOLDER` в
+`deploy/install-caddy.sh`, юниты `systemd/apitoken-crm-*.service`. Их держим тут, потому что Caddy
+и watchdog на сервере централизованы в этом репозитории; НЕ удалять (снесёт прод-роут CRM).
+Код/доки/парсеры CRM правим в новом репозитории, деплой CRM — ручной (его `deploy/DEPLOY.md`),
+вне watchdog монорепо. Аккаунт движка `crm-parsing` и ключ «CRM & Parsing» — общие (виден в панели).
+
 ## Commercial workspace (TypeScript, отдельный bounded context)
 
 В этом же репозитории находится коммерческий pnpm-workspace: `apps/api`, `apps/worker` и общие
