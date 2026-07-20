@@ -45,7 +45,24 @@ export function computeCommissionChain(
   return entries;
 }
 
-export type SpendCommissionOutcome = "recorded" | "duplicate" | "skipped";
+export type SpendCommissionOutcome = "recorded" | "duplicate" | "skipped" | "buffered";
+
+// Буферизует событие, пришедшее раньше атрибуции пользователя, чтобы reconcile проиграл его позже.
+// Идемпотентно по (kind, commerce_ref). Использует уже открытую транзакцию клиента.
+async function bufferPendingReferralEvent(
+  client: import("pg").PoolClient,
+  kind: "spend" | "deposit",
+  commerceRef: string,
+  commerceUserId: string,
+  amountNano: bigint,
+  occurredAt: Date,
+): Promise<void> {
+  await client.query(`
+    INSERT INTO pending_referral_events (kind, commerce_ref, commerce_user_id, amount_nano, occurred_at)
+    VALUES ($1, $2, $3, $4, $5)
+    ON CONFLICT (kind, commerce_ref) DO NOTHING
+  `, [kind, commerceRef, commerceUserId, amountNano.toString(), occurredAt]);
+}
 
 // Собирает цепочку партнёров (прямой реферер → родитель → …) для расчёта комиссии.
 async function loadCommissionChain(
@@ -94,8 +111,10 @@ export async function recordReferredDeposit(database: SalesDatabase, input: {
     );
     const directPartnerId = referred.rows[0]?.partner_id;
     if (!directPartnerId) {
-      await client.query("ROLLBACK");
-      return "skipped";
+      // Депозит пришёл раньше атрибуции юзера — буферизуем, reconcile проиграет после атрибуции.
+      await bufferPendingReferralEvent(client, "deposit", input.commercePaymentId, input.commerceUserId, input.amountNano, input.paidAt);
+      await client.query("COMMIT");
+      return "buffered";
     }
     const inserted = await client.query<{ id: string }>(`
       INSERT INTO referred_topups (commerce_payment_id, commerce_user_id, partner_id, amount_nano, paid_at)
@@ -143,8 +162,10 @@ export async function recordReferredSpend(database: SalesDatabase, input: {
     );
     const directPartnerId = referred.rows[0]?.partner_id;
     if (!directPartnerId) {
-      await client.query("ROLLBACK");
-      return "skipped";
+      // Спенд пришёл раньше атрибуции юзера — буферизуем, reconcile проиграет после атрибуции.
+      await bufferPendingReferralEvent(client, "spend", input.commerceEventId.toString(), input.commerceUserId, input.amountNano, input.occurredAt);
+      await client.query("COMMIT");
+      return "buffered";
     }
     const inserted = await client.query<{ id: string }>(`
       INSERT INTO partner_usage_events (commerce_event_id, commerce_user_id, partner_id, amount_nano, occurred_at)
@@ -176,6 +197,47 @@ export async function recordReferredSpend(database: SalesDatabase, input: {
   } finally {
     client.release();
   }
+}
+
+/**
+ * Проигрывает буфер pending_referral_events для пользователей, которые УЖЕ появились в referred_users
+ * (атрибуция пришла позже события). Каждое событие проигрывается идемпотентно через record*-функции;
+ * успешно обработанное (recorded/duplicate/skipped) удаляется из буфера, «buffered» (юзер всё ещё не
+ * атрибутирован — гонка) оставляется на следующий тик. Возвращает число обработанных строк.
+ */
+export async function reconcilePendingReferralEvents(database: SalesDatabase, limit = 200): Promise<number> {
+  const pending = await database.pool.query<{
+    id: string; kind: "spend" | "deposit"; commerce_ref: string; commerce_user_id: string; amount_nano: string; occurred_at: Date;
+  }>(`
+    SELECT pe.id, pe.kind, pe.commerce_ref, pe.commerce_user_id, pe.amount_nano::text AS amount_nano, pe.occurred_at
+    FROM pending_referral_events pe
+    JOIN referred_users ru ON ru.commerce_user_id = pe.commerce_user_id
+    ORDER BY pe.id
+    LIMIT $1
+  `, [limit]);
+
+  let processed = 0;
+  for (const row of pending.rows) {
+    const outcome = row.kind === "spend"
+      ? await recordReferredSpend(database, {
+          commerceEventId: BigInt(row.commerce_ref),
+          commerceUserId: row.commerce_user_id,
+          amountNano: BigInt(row.amount_nano),
+          occurredAt: row.occurred_at,
+        })
+      : await recordReferredDeposit(database, {
+          commercePaymentId: row.commerce_ref,
+          commerceUserId: row.commerce_user_id,
+          amountNano: BigInt(row.amount_nano),
+          paidAt: row.occurred_at,
+        });
+    // «buffered» = юзер снова оказался неатрибутирован (крайне редкая гонка) — не удаляем, повторим позже.
+    if (outcome !== "buffered") {
+      await database.pool.query("DELETE FROM pending_referral_events WHERE id = $1", [row.id]);
+      processed += 1;
+    }
+  }
+  return processed;
 }
 
 export interface PartnerEarningsTotals {

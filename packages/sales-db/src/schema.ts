@@ -309,3 +309,19 @@ export const salesAuditLog = pgTable("sales_audit_log", {
   metadata: jsonb("metadata").notNull().default({}),
   createdAt,
 }, (table) => [index("sales_audit_log_target_idx").on(table.targetType, table.targetId, table.createdAt)]);
+
+// Буфер спенд/депозит-событий, пришедших РАНЬШЕ атрибуции их пользователя (кросс-фидовая задержка
+// видимости). Записываются здесь вместо «тихо потерять»; reconcile проигрывает их (идемпотентно),
+// как только юзер появляется в referred_users, и удаляет строку. См. аудит 2026-07-20 (D1).
+export const pendingReferralEvents = pgTable("pending_referral_events", {
+  id: bigserial("id", { mode: "bigint" }).primaryKey(),
+  kind: text("kind").notNull(), // 'spend' | 'deposit'
+  commerceRef: text("commerce_ref").notNull(),
+  commerceUserId: uuid("commerce_user_id").notNull(),
+  amountNano: bigint("amount_nano", { mode: "bigint" }).notNull(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+  createdAt,
+}, (table) => [
+  uniqueIndex("pending_referral_events_kind_ref_uidx").on(table.kind, table.commerceRef),
+  index("pending_referral_events_user_idx").on(table.commerceUserId),
+]);

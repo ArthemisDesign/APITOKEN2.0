@@ -7,6 +7,7 @@ import {
   getSyncCursor,
   recordReferredDeposit,
   recordReferredSpend,
+  reconcilePendingReferralEvents,
   resolveReferralCode,
   upsertReferredUser,
   type SalesDatabase,
@@ -77,6 +78,9 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
         await this.syncAttributions();
         await this.syncTopups();
         await this.syncUsageEvents();
+        // Догоняем события, пришедшие раньше атрибуции их юзера (буфер pending_referral_events).
+        const replayed = await reconcilePendingReferralEvents(this.database);
+        if (replayed > 0) this.logger.log(`reconciled ${replayed} buffered referral events`);
       } catch (error) {
         this.logger.error(`sync iteration failed: ${message(error)}`);
       }
