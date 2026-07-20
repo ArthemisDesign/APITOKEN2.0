@@ -967,6 +967,7 @@ function PayoutListTab({ adminKey }: { adminKey: string }) {
     ok: "Ready",
     no_wallet: "No wallet",
     below_minimum: "Below minimum",
+    inactive: "Suspended — held",
     zero: "—",
   };
   const dt = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });

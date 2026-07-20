@@ -135,9 +135,10 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
   }
 
   /**
-   * ЕДИНСТВЕННЫЙ источник комиссий — реальные депозиты (оплаченные платежи commerce). Списания
-   * (usage-events) больше НЕ порождают комиссию: бесплатные балансы (welcome-бонус, промо, любые
-   * будущие бонусы) не создают платёж → в этот фид не попадают → комиссию не генерируют никогда.
+   * Депозиты рефералов — ТОЛЬКО для истории/аналитики (referred_topups). Комиссию они НЕ создают:
+   * источник комиссии — списания (см. syncUsageEvents/recordReferredSpend), где amountNano уже равен
+   * real_funded (реально-оплаченной части по принципу «бесплатное тратится первым»). Здесь же мы просто
+   * фиксируем факт пополнения реальными деньгами.
    */
   private async syncTopups(): Promise<void> {
     const after = await getSyncCursor(this.database, "topups");

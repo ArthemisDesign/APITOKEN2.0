@@ -22,9 +22,9 @@ export interface CommissionEntryPlan {
  *
  * `partnersChain[0]` is the direct referrer, `partnersChain[1]` its parent, and so on.
  * Level 0 earns `amountNano * commissionBps / 10000` (integer floor); every next level earns
- * `previousLevelAmount * subCommissionBps / 10000`. The walk stops at the first suspended
- * partner (no entry for it, chain ends there), when a computed amount reaches 0, or beyond
- * level MAX_COMMISSION_LEVELS.
+ * `previousLevelAmount * subCommissionBps / 10000`. The walk stops at the first NON-active
+ * partner (pending or suspended — no entry for it, chain ends there), when a computed amount
+ * reaches 0, or after exactly MAX_COMMISSION_LEVELS levels (0..MAX-1).
  */
 export function computeCommissionChain(
   partnersChain: readonly CommissionChainPartner[],
@@ -33,9 +33,9 @@ export function computeCommissionChain(
   const entries: CommissionEntryPlan[] = [];
   if (amountNano <= 0n) return entries;
   let basisNano = amountNano;
-  for (let level = 0; level < partnersChain.length && level <= MAX_COMMISSION_LEVELS; level += 1) {
+  for (let level = 0; level < partnersChain.length && level < MAX_COMMISSION_LEVELS; level += 1) {
     const partner = partnersChain[level]!;
-    if (partner.status === "suspended") break;
+    if (partner.status !== "active") break;
     const appliedBps = level === 0 ? partner.commissionBps : partner.subCommissionBps;
     const entryAmount = (basisNano * BigInt(appliedBps)) / 10_000n;
     if (entryAmount <= 0n) break;
@@ -54,7 +54,7 @@ async function loadCommissionChain(
 ): Promise<CommissionChainPartner[]> {
   const chain: CommissionChainPartner[] = [];
   let nextPartnerId: string | null = directPartnerId;
-  while (nextPartnerId && chain.length <= MAX_COMMISSION_LEVELS) {
+  while (nextPartnerId && chain.length < MAX_COMMISSION_LEVELS) {
     const row: {
       rows: { id: string; status: PartnerStatus; commission_bps: number; sub_commission_bps: number; parent_partner_id: string | null }[];
     } = await client.query(

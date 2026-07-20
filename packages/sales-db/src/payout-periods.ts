@@ -1,4 +1,5 @@
 import type { SalesDatabase } from "./client.js";
+import type { PartnerStatus } from "./auth.js";
 import {
   lastEndedPeriod,
   lockUntil,
@@ -41,10 +42,11 @@ export interface DuePayoutRow {
   partnerId: string;
   telegramUsername: string | null;
   displayName: string | null;
+  status: PartnerStatus;
   payableNano: string;
   walletAddress: string | null;
   eligible: boolean;
-  reason: "ok" | "below_minimum" | "no_wallet" | "zero";
+  reason: "ok" | "below_minimum" | "no_wallet" | "zero" | "inactive";
 }
 
 function periodSummary(p: Period) {
@@ -77,6 +79,18 @@ async function sumPaid(database: SalesDatabase, partnerId: string): Promise<bigi
   return BigInt(result.rows[0]?.total ?? "0");
 }
 
+// Уже «зафиксированные» деньги: выплачено ('paid') ЛИБО в процессе ('requested'/'approved').
+// Именно это, а не только 'paid', нужно вычитать из причитающегося — иначе пока выплата обрабатывается,
+// та же сумма показывается к оплате повторно и уходит в двойную отправку. 'rejected' не в счёт
+// (эти деньги всё ещё причитаются).
+async function sumCommitted(database: SalesDatabase, partnerId: string): Promise<bigint> {
+  const result = await database.pool.query<{ total: string }>(
+    "SELECT COALESCE(SUM(amount_nano), 0)::text AS total FROM payouts WHERE partner_id = $1 AND status IN ('requested', 'approved', 'paid')",
+    [partnerId],
+  );
+  return BigInt(result.rows[0]?.total ?? "0");
+}
+
 export async function getPartnerPeriodState(
   database: SalesDatabase,
   partnerId: string,
@@ -84,11 +98,13 @@ export async function getPartnerPeriodState(
 ): Promise<PartnerPeriodState> {
   const current = periodFor(now);
   const lastEnded = lastEndedPeriod(now);
+  const openWindow = periodInPayoutWindow(now);
 
-  const [accrued, lifetimeEarned, paid, lockedEarned] = await Promise.all([
+  const [accrued, lifetimeEarned, paid, committed, lockedEarned] = await Promise.all([
     sumCommissions(database, partnerId, current.start, now),
     sumCommissions(database, partnerId, null, null),
     sumPaid(database, partnerId),
+    sumCommitted(database, partnerId),
     // The just-ended period is "locked" until its payout window opens.
     sumCommissions(database, partnerId, lastEnded.start, lastEnded.end),
   ]);
@@ -103,13 +119,25 @@ export async function getPartnerPeriodState(
     });
   }
 
-  const unpaid = lifetimeEarned - paid;
-  // Estimated next payout = everything unpaid that will be past its lock by the next window.
-  const nextDate = now < windowStart(lastEnded) ? windowStart(lastEnded) : windowStart(current);
-  // Amount that will be payable at nextDate = commissions before that window's period end, minus paid.
-  const payablePeriodEnd = now < windowStart(lastEnded) ? lastEnded.end : current.end;
+  // «Не выплачено» = заработано − уже зафиксированное (выплачено + в очереди). Вычитаем committed,
+  // а не только paid, чтобы сумма в процессе выплаты не считалась причитающейся повторно.
+  const unpaid = lifetimeEarned - committed;
+  // Дата и сумма следующей выплаты — корректно во время ОТКРЫТОГО окна (иначе кабинет показывал бы
+  // выплату «через 2 недели», хотя деньги причитаются к оплате прямо сейчас).
+  let nextDate: Date;
+  let payablePeriodEnd: Date;
+  if (openWindow) {
+    nextDate = windowStart(openWindow);   // окно выплат открыто — причитается сейчас
+    payablePeriodEnd = openWindow.end;
+  } else if (now < windowStart(lastEnded)) {
+    nextDate = windowStart(lastEnded);    // прошлый период ещё в 7-дневном локе
+    payablePeriodEnd = lastEnded.end;
+  } else {
+    nextDate = windowStart(current);      // между окнами — ближайшее окно текущего периода
+    payablePeriodEnd = current.end;
+  }
   const confirmedByThen = await sumCommissions(database, partnerId, null, payablePeriodEnd);
-  const estimated = confirmedByThen - paid > 0n ? confirmedByThen - paid : 0n;
+  const estimated = confirmedByThen - committed > 0n ? confirmedByThen - committed : 0n;
 
   return {
     now: now.toISOString(),
@@ -176,20 +204,23 @@ export async function getDuePayoutList(
   // окна нет, это превью последнего периода — суммы показываем, но никто не «eligible» (ещё в локе).
   const windowOpen = openWindow !== null;
 
+  // ВНИМАНИЕ: вычитаем зафиксированные выплаты (paid + requested + approved), а не только paid —
+  // иначе партнёр с выплатой «в процессе» снова попадёт в список к оплате (двойная отправка).
+  // Неактивных партнёров НЕ прячем: если у них остался причитающийся баланс (заработан, пока были
+  // активны), он должен быть виден админу — но платить их нельзя (eligible=false, reason=inactive).
   const result = await database.pool.query<{
     partner_id: string; telegram_username: string | null; display_name: string | null;
-    payable: string; payout_method: string | null; payout_details: unknown;
+    status: PartnerStatus; payable: string; payout_method: string | null; payout_details: unknown;
   }>(
     `
-    SELECT p.id AS partner_id, p.telegram_username, p.display_name, p.payout_method, p.payout_details,
+    SELECT p.id AS partner_id, p.telegram_username, p.display_name, p.status, p.payout_method, p.payout_details,
       (
         COALESCE((SELECT SUM(ce.amount_nano) FROM commission_entries ce
                   WHERE ce.partner_id = p.id AND ce.created_at < $1), 0)
         - COALESCE((SELECT SUM(po.amount_nano) FROM payouts po
-                    WHERE po.partner_id = p.id AND po.status = 'paid'), 0)
+                    WHERE po.partner_id = p.id AND po.status IN ('requested', 'approved', 'paid')), 0)
       )::text AS payable
     FROM partners p
-    WHERE p.status = 'active'
     `,
     [target.end],
   );
@@ -200,12 +231,14 @@ export async function getDuePayoutList(
       const wallet = walletAddressOf(row.payout_method, row.payout_details);
       let reason: DuePayoutRow["reason"] = "ok";
       if (payable <= 0n) reason = "zero";
+      else if (row.status !== "active") reason = "inactive";
       else if (!wallet) reason = "no_wallet";
       else if (payable < minPayoutNano) reason = "below_minimum";
       return {
         partnerId: row.partner_id,
         telegramUsername: row.telegram_username,
         displayName: row.display_name,
+        status: row.status,
         payableNano: (payable > 0n ? payable : 0n).toString(),
         walletAddress: wallet,
         eligible: reason === "ok" && windowOpen,

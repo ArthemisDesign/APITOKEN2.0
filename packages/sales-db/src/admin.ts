@@ -152,15 +152,16 @@ export async function deletePartnerAdmin(database: SalesDatabase, partnerId: str
       await client.query("ROLLBACK");
       return false;
     }
-    const history = await client.query<{ referred: string; commissions: string; payouts: string; children: string }>(`
+    const history = await client.query<{ referred: string; topups: string; commissions: string; payouts: string; children: string }>(`
       SELECT
         (SELECT count(*) FROM referred_users WHERE partner_id = $1)::text AS referred,
+        (SELECT count(*) FROM referred_topups WHERE partner_id = $1)::text AS topups,
         (SELECT count(*) FROM commission_entries WHERE partner_id = $1)::text AS commissions,
         (SELECT count(*) FROM payouts WHERE partner_id = $1)::text AS payouts,
         (SELECT count(*) FROM partners WHERE parent_partner_id = $1)::text AS children
     `, [partnerId]);
     const h = history.rows[0]!;
-    if (h.referred !== "0" || h.commissions !== "0" || h.payouts !== "0" || h.children !== "0") {
+    if (h.referred !== "0" || h.topups !== "0" || h.commissions !== "0" || h.payouts !== "0" || h.children !== "0") {
       await client.query("ROLLBACK");
       throw new PartnerHasHistoryError(
         "partner has referrals, earnings, payouts or sub-partners — suspend instead of deleting",

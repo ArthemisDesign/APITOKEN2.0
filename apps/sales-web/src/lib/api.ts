@@ -253,10 +253,11 @@ export type DuePayoutRow = {
   partnerId: string;
   telegramUsername: string | null;
   displayName: string | null;
+  status: "active" | "suspended" | "pending";
   payableNano: string;
   walletAddress: string | null;
   eligible: boolean;
-  reason: "ok" | "below_minimum" | "no_wallet" | "zero";
+  reason: "ok" | "below_minimum" | "no_wallet" | "zero" | "inactive";
 };
 
 export type PayoutListResponse = {

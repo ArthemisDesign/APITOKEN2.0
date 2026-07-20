@@ -64,19 +64,25 @@ describe("computeCommissionChain", () => {
     expect(computeCommissionChain([partner({ partnerId: "p0" })], -5n)).toEqual([]);
   });
 
-  it("caps the walk at level 10", () => {
+  it("caps the walk at exactly 10 levels (0..9)", () => {
     const chain = Array.from({ length: 15 }, (_, index) =>
       partner({ partnerId: `p${index}`, commissionBps: 10000, subCommissionBps: 10000 }));
     const entries = computeCommissionChain(chain, 1_000n);
-    expect(entries).toHaveLength(11);
-    expect(entries.at(-1)?.level).toBe(10);
+    expect(entries).toHaveLength(10);
+    expect(entries.at(-1)?.level).toBe(9);
   });
 
-  it("keeps pending partners in the chain (only suspended stops it)", () => {
+  it("stops at a pending partner (only active partners earn)", () => {
     const entries = computeCommissionChain([
       partner({ partnerId: "p0" }),
       partner({ partnerId: "p1", status: "pending" }),
+      partner({ partnerId: "p2" }),
     ], 1_000_000_000n);
-    expect(entries.map((entry) => entry.partnerId)).toEqual(["p0", "p1"]);
+    expect(entries.map((entry) => entry.partnerId)).toEqual(["p0"]);
+  });
+
+  it("produces no entries when the direct partner is pending", () => {
+    const entries = computeCommissionChain([partner({ partnerId: "p0", status: "pending" })], 1_000_000_000n);
+    expect(entries).toEqual([]);
   });
 });
