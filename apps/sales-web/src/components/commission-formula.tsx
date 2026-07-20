@@ -28,7 +28,7 @@ export function CommissionFormula({ commissionBps }: { commissionBps: number }) 
       </div>
       <div style={{ fontSize: 30, fontWeight: 800, lineHeight: 1.25, letterSpacing: "-0.5px" }}>
         <span style={{ whiteSpace: "nowrap" }}>
-          (100% − <span style={{ color: "var(--accent-strong, #3b5bdb)" }}>{t("discount", "скидка")}</span>)
+          (100% − <span style={{ color: "var(--accent-strong, #3b5bdb)" }}>{t("discount", "скидка")}</span>%)
         </span>
         <span style={{ opacity: 0.55, margin: "0 8px" }}>×</span>
         <span style={{ color: "var(--accent-strong, #3b5bdb)", whiteSpace: "nowrap" }}>{rate}</span>
