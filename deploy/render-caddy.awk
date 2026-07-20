@@ -12,7 +12,9 @@ NR == FNR {
 }
 /<ADMIN_AUTH_KEY_PLACEHOLDER>/ {
   if (commadmin == "") exit 48
-  print commadmin
+  authkey = commadmin
+  sub(/header_up x-admin-key/, "header_up X-Admin-Key", authkey)
+  print authkey
   authkey_used++
   next
 }
