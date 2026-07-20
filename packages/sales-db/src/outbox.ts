@@ -70,22 +70,24 @@ export async function claimNextPartnerEmail(database: SalesDatabase, workerId: s
   }
 }
 
-export async function confirmPartnerEmail(database: SalesDatabase, id: string): Promise<void> {
+export async function confirmPartnerEmail(database: SalesDatabase, id: string, lockedBy: string): Promise<void> {
+  // Только держатель текущей аренды (locked_by) может закрыть строку — иначе после recover-а stale-аренды
+  // и повторного захвата другим воркером старый воркер затирал бы чужой прогресс (дубли писем).
   await database.pool.query(`
     UPDATE partner_email_outbox SET status = 'sent', sent_at = now(),
       locked_at = NULL, locked_by = NULL, last_error = NULL, updated_at = now()
-    WHERE id = $1 AND status = 'sending'
-  `, [id]);
+    WHERE id = $1 AND status = 'sending' AND locked_by = $2
+  `, [id, lockedBy]);
 }
 
-export async function retryPartnerEmail(database: SalesDatabase, job: ClaimedPartnerEmail, error: string): Promise<void> {
+export async function retryPartnerEmail(database: SalesDatabase, job: ClaimedPartnerEmail, error: string, lockedBy: string): Promise<void> {
   const terminal = job.attempts >= 10;
   const delaySeconds = Math.min(3600, Math.max(10, 2 ** Math.min(job.attempts, 10)));
   await database.pool.query(`
     UPDATE partner_email_outbox SET status = $2, next_attempt_at = now() + ($3 * interval '1 second'),
       locked_at = NULL, locked_by = NULL, last_error = $4, updated_at = now()
-    WHERE id = $1 AND status = 'sending'
-  `, [job.id, terminal ? "failed" : "pending", delaySeconds, error.slice(0, 2000)]);
+    WHERE id = $1 AND status = 'sending' AND locked_by = $5
+  `, [job.id, terminal ? "failed" : "pending", delaySeconds, error.slice(0, 2000), lockedBy]);
 }
 
 export async function recoverStalePartnerEmails(database: SalesDatabase): Promise<number> {

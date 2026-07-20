@@ -48,7 +48,7 @@ const environmentSchema = z.object({
   PAYOUT_CHAIN_ID: z.coerce.number().int().default(56),
   PAYOUT_GAS_PRICE_GWEI: z.string().default("0.05"),
   PAYOUT_MIN_USD: z.coerce.number().min(0).max(100_000).default(0),
-  PAYOUT_CONFIRMATIONS: z.coerce.number().int().min(1).max(20).default(1),
+  PAYOUT_CONFIRMATIONS: z.coerce.number().int().min(1).max(50).default(3),
   // Жёсткий гейт окна выплат. true (по умолчанию) = отправка ФИЗИЧЕСКИ возможна только в 3-дневное
   // окно; вне окна send-endpoints отвечают 423. false — только для теста/эксплуатации вручную.
   PAYOUT_ENFORCE_WINDOW: z.enum(["true", "false"]).transform((v) => v === "true").default("true"),

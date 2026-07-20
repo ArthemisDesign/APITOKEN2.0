@@ -10,6 +10,7 @@ import {
   reconcilePendingReferralEvents,
   resolveReferralCode,
   upsertReferredUser,
+  getReferredUserPartner,
   type SalesDatabase,
   type SyncFeed,
 } from "@claude-api/sales-db";
@@ -107,10 +108,12 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
             attributedAt: row.createdAt,
             sourceAttributionId: row.id,
           });
-          // Только если ЭТА атрибуция реально закрепила юзера (upsert вставил строку). Если юзер уже
-          // был привязан к другому партнёру, upsert — no-op: НЕ гасим чужую одноразовую ссылку и НЕ
-          // применяем чужую скидку (иначе партнёр терял бы ссылку, а юзер получал незаслуженный floor).
-          if (won) {
+          // Побочные эффекты запускаем, если юзер закреплён именно за ЭТИМ партнёром — либо мы только что
+          // выиграли атрибуцию (won), либо он уже был закреплён за ним же (идемпотентно к крашу/ретраю
+          // между upsert и consume). Если юзер закреплён за ДРУГИМ партнёром — не трогаем (не жжём чужую
+          // одноразовую ссылку и не даём незаслуженный floor). consume/apply идемпотентны.
+          const ownerPartnerId = won ? resolved.partnerId : await getReferredUserPartner(this.database, row.userId);
+          if (ownerPartnerId === resolved.partnerId) {
             // Персональная ОДНОРАЗОВАЯ ссылка со скидкой → гасим её этим пользователем.
             if (resolved.discountLinkId && !resolved.discountLinkConsumed) {
               await consumeDiscountLink(this.database, resolved.discountLinkId, row.userId);

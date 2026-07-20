@@ -79,7 +79,7 @@ describe.runIf(Boolean(connectionString))("payout batches (on-chain state machin
     const batch = await createPayoutBatch(db, { createdBy: "admin", minNano: 0n, gasPriceGwei: "0.05", hotWalletAddress: W, recipients: [{ partnerId: a, amountNano: 10n * USD, walletAddress: W }] });
     const row = (await listBatchPayouts(db, batch.id))[0]!;
 
-    await markPayoutBroadcast(db, row.id, "0xhash1", 7);
+    await markPayoutBroadcast(db, row.id, "0xhash1", 7, "0xraw1");
     let broad = await listBroadcastPayouts(db);
     expect(broad.map((r) => r.id)).toContain(row.id);
     expect(broad.find((r) => r.id === row.id)!.nonce).toBe(7); // nonce persisted for safe re-broadcast
@@ -97,7 +97,7 @@ describe.runIf(Boolean(connectionString))("payout batches (on-chain state machin
     await db.pool.query("UPDATE payout_batches SET status='sent' WHERE id=$1", [batch.id]); // free the in-progress lock
     const batch2 = await createPayoutBatch(db, { createdBy: "admin", minNano: 0n, gasPriceGwei: "0.05", hotWalletAddress: W, recipients: batch2Rows });
     const row2 = (await listBatchPayouts(db, batch2.id))[0]!;
-    await markPayoutBroadcast(db, row2.id, "0xhash2", 5);
+    await markPayoutBroadcast(db, row2.id, "0xhash2", 5, "0xraw2");
     await markPayoutFailed(db, row2.id, "reverted");
     const failed = (await listBatchPayouts(db, batch2.id))[0]!;
     expect(failed).toMatchObject({ chainStatus: "failed", txHash: null });
@@ -114,6 +114,25 @@ describe.runIf(Boolean(connectionString))("payout batches (on-chain state machin
     void setBatchStatus;
   });
 
+  it("getPayoutCandidates honors the earnedBefore cutoff (7-day lock)", async () => {
+    const a = await partner("aaa"); await earn(a, 30n * USD); // commission created ~now
+    const past = new Date(Date.now() - 60_000);
+    const future = new Date(Date.now() + 60_000);
+    expect(await getPayoutCandidates(db, 0n, past)).toHaveLength(0);          // earned after cutoff → locked out
+    expect((await getPayoutCandidates(db, 0n, future))[0]!.unpaidNano).toBe(30n * USD);
+    expect((await getPayoutCandidates(db, 0n))[0]!.unpaidNano).toBe(30n * USD); // no cutoff → full balance
+  });
+
+  it("a released (rejected) row is NOT sendable (no re-broadcast → no double-pay)", async () => {
+    const a = await partner("aaa"); await earn(a, 12n * USD);
+    const cands = await getPayoutCandidates(db, 0n);
+    const batch = await createPayoutBatch(db, { createdBy: "admin", minNano: 0n, gasPriceGwei: "0.05", hotWalletAddress: W, recipients: cands.map((c) => ({ partnerId: c.partnerId, amountNano: c.unpaidNano, walletAddress: W })) });
+    const row = (await listBatchPayouts(db, batch.id))[0]!;
+    await markPayoutFailed(db, row.id, "sim reverted");
+    expect(await releasePayoutRow(db, row.id)).toBe(true); // → rejected
+    expect((await listSendablePayouts(db, batch.id)).map((r) => r.id)).not.toContain(row.id); // never re-sent
+  });
+
   it("release frees a failed row's committed balance (→ rejected); never a broadcast row", async () => {
     const a = await partner("aaa"); await earn(a, 15n * USD);
     const cands = await getPayoutCandidates(db, 0n);
@@ -121,7 +140,7 @@ describe.runIf(Boolean(connectionString))("payout batches (on-chain state machin
     const row = (await listBatchPayouts(db, batch.id))[0]!;
 
     // a broadcast row must NOT be releasable (its tx may have landed)
-    await markPayoutBroadcast(db, row.id, "0xabc", 3);
+    await markPayoutBroadcast(db, row.id, "0xabc", 3, "0xrawabc");
     expect(await releasePayoutRow(db, row.id)).toBe(false);
 
     // once it's a definitive failure, releasing frees the balance

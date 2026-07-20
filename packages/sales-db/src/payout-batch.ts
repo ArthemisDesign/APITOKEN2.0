@@ -21,7 +21,10 @@ export interface PayoutCandidate {
  * 'requested'-строки, поэтому один и тот же баланс не попадёт в два батча. Адрес берём из
  * payout_details.address (формат уже проверен при привязке; checksum перепроверяет сервис через ethers).
  */
-export async function getPayoutCandidates(database: SalesDatabase, minNano: bigint): Promise<PayoutCandidate[]> {
+export async function getPayoutCandidates(database: SalesDatabase, minNano: bigint, earnedBefore?: Date): Promise<PayoutCandidate[]> {
+  // Учитываем только комиссии, начисленные ДО earnedBefore (конец периода, чьё окно выплат открыто) —
+  // так батч уважает 7-дневный лок и совпадает с превью getDuePayoutList. Без границы (undefined) —
+  // весь непогашенный остаток. committed вычитаем целиком (по всем статусам, не по времени).
   const result = await database.pool.query<{
     partner_id: string; telegram_username: string | null; email: string | null; display_name: string | null;
     wallet: string | null; unpaid: string;
@@ -29,12 +32,12 @@ export async function getPayoutCandidates(database: SalesDatabase, minNano: bigi
     SELECT p.id AS partner_id, p.telegram_username, p.email, p.display_name,
       (p.payout_details->>'address') AS wallet,
       (
-        COALESCE((SELECT SUM(ce.amount_nano) FROM commission_entries ce WHERE ce.partner_id = p.id), 0)
+        COALESCE((SELECT SUM(ce.amount_nano) FROM commission_entries ce WHERE ce.partner_id = p.id AND ($1::timestamptz IS NULL OR ce.created_at < $1)), 0)
         - COALESCE((SELECT SUM(po.amount_nano) FROM payouts po WHERE po.partner_id = p.id AND po.status IN ('requested','approved','paid')), 0)
       ) AS unpaid
     FROM partners p
     WHERE p.status = 'active' AND p.payout_method = 'usdt-bep20' AND (p.payout_details->>'address') IS NOT NULL
-  `);
+  `, [earnedBefore ?? null]);
   return result.rows
     .map((r) => ({
       partnerId: r.partner_id,
@@ -75,6 +78,7 @@ export interface PayoutRow {
   walletAddress: string | null;
   txHash: string | null;
   nonce: number | null;
+  rawTx: string | null;
   chainStatus: PayoutChainStatus | null;
   chainError: string | null;
   paidAt: Date | null;
@@ -124,8 +128,12 @@ export async function createPayoutBatch(database: SalesDatabase, input: {
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
+    // Транзакционный advisory-lock сериализует СОЗДАНИЕ батчей: `SELECT ... FOR UPDATE` ниже на пустом
+    // результате ничего не блокирует, поэтому два параллельных prepare() без этого лока могли бы создать
+    // два батча и заплатить каждому дважды. Лок снимается при COMMIT/ROLLBACK.
+    await client.query("SELECT pg_advisory_xact_lock($1)", [PAYOUT_PREPARE_LOCK_KEY]);
     const existing = await client.query(
-      "SELECT 1 FROM payout_batches WHERE status IN ('preparing','prepared','sending') FOR UPDATE",
+      "SELECT 1 FROM payout_batches WHERE status IN ('preparing','prepared','sending')",
     );
     if (existing.rows[0]) {
       await client.query("ROLLBACK");
@@ -167,7 +175,7 @@ export async function listPayoutBatches(database: SalesDatabase, limit = 30): Pr
 export async function listBatchPayouts(database: SalesDatabase, batchId: string): Promise<PayoutRow[]> {
   const r = await database.pool.query<Record<string, unknown>>(`
     SELECT po.id, po.partner_id, po.amount_nano::text AS amount_nano, po.status, po.wallet_address,
-           po.tx_hash, po.nonce, po.chain_status, po.chain_error, po.paid_at,
+           po.tx_hash, po.nonce, po.raw_tx, po.chain_status, po.chain_error, po.paid_at,
            p.telegram_username, p.email, p.display_name
     FROM payouts po JOIN partners p ON p.id = po.partner_id
     WHERE po.batch_id = $1
@@ -184,17 +192,33 @@ export async function listBatchPayouts(database: SalesDatabase, batchId: string)
     walletAddress: (row.wallet_address as string) ?? null,
     txHash: (row.tx_hash as string) ?? null,
     nonce: row.nonce === null || row.nonce === undefined ? null : Number(row.nonce),
+    rawTx: (row.raw_tx as string) ?? null,
     chainStatus: (row.chain_status as PayoutChainStatus) ?? null,
     chainError: (row.chain_error as string) ?? null,
     paidAt: (row.paid_at as Date) ?? null,
   }));
 }
 
-/** Строки, ожидающие отправки в этом батче: ещё не подтверждены и без активного бродкаста. */
+/** Строки, ожидающие отправки: не paid, НЕ rejected (освобождённые повторно не шлём), и без активного
+ * бродкаста/подтверждения. Исключение rejected критично: иначе release→re-send = двойная выплата. */
 export async function listSendablePayouts(database: SalesDatabase, batchId: string): Promise<PayoutRow[]> {
   return (await listBatchPayouts(database, batchId)).filter(
-    (p) => p.status !== "paid" && p.chainStatus !== "broadcast" && p.chainStatus !== "confirmed",
+    (p) => p.status !== "paid" && p.status !== "rejected" && p.chainStatus !== "broadcast" && p.chainStatus !== "confirmed",
   );
+}
+
+/** Разблокирует батчи, зависшие в 'sending' без единой 'broadcast'-строки (напр. краш во время
+ * отправки): переводит в терминальный 'sent' (completed только если все строки выплачены). */
+export async function finalizeStuckSendingBatches(database: SalesDatabase): Promise<number> {
+  const r = await database.pool.query(`
+    UPDATE payout_batches b
+    SET status = 'sent',
+        sent_at = COALESCE(sent_at, now()),
+        completed_at = CASE WHEN NOT EXISTS (SELECT 1 FROM payouts p WHERE p.batch_id = b.id AND p.status <> 'paid') THEN now() ELSE completed_at END
+    WHERE b.status = 'sending'
+      AND NOT EXISTS (SELECT 1 FROM payouts p WHERE p.batch_id = b.id AND p.chain_status = 'broadcast')
+  `);
+  return r.rowCount ?? 0;
 }
 
 export async function setBatchStatus(database: SalesDatabase, id: string, status: PayoutBatchStatus, fields: {
@@ -212,11 +236,13 @@ export async function setBatchStatus(database: SalesDatabase, id: string, status
 
 // --- on-chain state transitions per payout row (idempotent) ---
 
-export async function markPayoutBroadcast(database: SalesDatabase, payoutId: string, txHash: string, nonce: number): Promise<void> {
-  await database.pool.query(
-    "UPDATE payouts SET tx_hash = $2, nonce = $3, chain_status = 'broadcast', chain_error = NULL WHERE id = $1",
-    [payoutId, txHash, nonce],
+export async function markPayoutBroadcast(database: SalesDatabase, payoutId: string, txHash: string, nonce: number, rawTx: string): Promise<boolean> {
+  // Защита-в-глубину: не «бродкастим» уже освобождённую (rejected) или выплаченную (paid) строку.
+  const r = await database.pool.query(
+    "UPDATE payouts SET tx_hash = $2, nonce = $3, raw_tx = $4, chain_status = 'broadcast', chain_error = NULL WHERE id = $1 AND status = 'requested'",
+    [payoutId, txHash, nonce, rawTx],
   );
+  return (r.rowCount ?? 0) > 0;
 }
 
 // Безопасно вернуть баланс в оборот: помечает НЕ отправленную (sim-fail/reverted) строку как
@@ -233,6 +259,17 @@ export async function releasePayoutRow(database: SalesDatabase, payoutId: string
 // Межпроцессный лок отправки (HA): один отправитель на горячий кошелёк. Держится на выделенном
 // соединении всю отправку. Ключ фиксированный.
 const PAYOUT_SEND_LOCK_KEY = 918273645;
+const PAYOUT_PREPARE_LOCK_KEY = 918273646;
+
+/** Наибольший nonce среди ещё не завершённых (broadcast) транзакций — авторитетная «бронь» nonce,
+ * чтобы не выдать nonce ≤ уже отправленному (публичный RPC может не видеть in-flight tx BlockRazor). */
+export async function getMaxOutstandingNonce(database: SalesDatabase): Promise<number | null> {
+  const r = await database.pool.query<{ n: string | null }>(
+    "SELECT MAX(nonce)::text AS n FROM payouts WHERE chain_status = 'broadcast' AND nonce IS NOT NULL",
+  );
+  const n = r.rows[0]?.n;
+  return n === null || n === undefined ? null : Number(n);
+}
 
 export async function acquirePayoutSendLock(database: SalesDatabase): Promise<import("pg").PoolClient | null> {
   const client = await database.pool.connect();
@@ -251,11 +288,15 @@ export async function releasePayoutSendLock(client: import("pg").PoolClient): Pr
   finally { client.release(); }
 }
 
-export async function markPayoutConfirmed(database: SalesDatabase, payoutId: string): Promise<void> {
-  await database.pool.query(
-    "UPDATE payouts SET status = 'paid', chain_status = 'confirmed', paid_at = COALESCE(paid_at, now()), decided_at = COALESCE(decided_at, now()) WHERE id = $1",
+/** Помечает выплату подтверждённой. Claim-once: переход учитывается только у той стороны, что реально
+ * перевела строку из 'broadcast' → 'confirmed' (returns true), чтобы send() и поллер не слали дубль-
+ * уведомление на одну строку. Идемпотентно по деньгам (COALESCE). */
+export async function markPayoutConfirmed(database: SalesDatabase, payoutId: string): Promise<boolean> {
+  const r = await database.pool.query(
+    "UPDATE payouts SET status = 'paid', chain_status = 'confirmed', paid_at = COALESCE(paid_at, now()), decided_at = COALESCE(decided_at, now()) WHERE id = $1 AND chain_status = 'broadcast'",
     [payoutId],
   );
+  return (r.rowCount ?? 0) > 0;
 }
 
 export async function markPayoutFailed(database: SalesDatabase, payoutId: string, error: string): Promise<void> {
@@ -270,7 +311,7 @@ export async function markPayoutFailed(database: SalesDatabase, payoutId: string
 export async function listBroadcastPayouts(database: SalesDatabase, limit = 100): Promise<Array<PayoutRow & { batchId: string | null }>> {
   const r = await database.pool.query<Record<string, unknown>>(`
     SELECT po.id, po.partner_id, po.amount_nano::text AS amount_nano, po.status, po.wallet_address,
-           po.tx_hash, po.nonce, po.chain_status, po.chain_error, po.paid_at, po.batch_id,
+           po.tx_hash, po.nonce, po.raw_tx, po.chain_status, po.chain_error, po.paid_at, po.batch_id,
            p.telegram_username, p.email, p.display_name
     FROM payouts po JOIN partners p ON p.id = po.partner_id
     WHERE po.chain_status = 'broadcast' AND po.tx_hash IS NOT NULL
@@ -288,6 +329,7 @@ export async function listBroadcastPayouts(database: SalesDatabase, limit = 100)
     walletAddress: (row.wallet_address as string) ?? null,
     txHash: (row.tx_hash as string) ?? null,
     nonce: row.nonce === null || row.nonce === undefined ? null : Number(row.nonce),
+    rawTx: (row.raw_tx as string) ?? null,
     chainStatus: (row.chain_status as PayoutChainStatus) ?? null,
     chainError: (row.chain_error as string) ?? null,
     paidAt: (row.paid_at as Date) ?? null,

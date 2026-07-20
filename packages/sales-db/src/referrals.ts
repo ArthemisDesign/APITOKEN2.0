@@ -24,6 +24,16 @@ export async function upsertReferredUser(database: SalesDatabase, input: {
   return (result.rowCount ?? 0) > 0;
 }
 
+/** Партнёр, за которым закреплён пользователь (или null). Нужно для идемпотентной атрибуции: после
+ * краша между upsert и побочными эффектами повтор увидит won=false, но владельца можно перечитать. */
+export async function getReferredUserPartner(database: SalesDatabase, commerceUserId: string): Promise<string | null> {
+  const r = await database.pool.query<{ partner_id: string }>(
+    "SELECT partner_id FROM referred_users WHERE commerce_user_id = $1",
+    [commerceUserId],
+  );
+  return r.rows[0]?.partner_id ?? null;
+}
+
 export async function countReferredUsers(database: SalesDatabase, partnerId: string): Promise<number> {
   const result = await database.pool.query<{ count: string }>(
     "SELECT count(*)::text AS count FROM referred_users WHERE partner_id = $1",

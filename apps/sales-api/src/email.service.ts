@@ -82,11 +82,11 @@ export class EmailService implements OnModuleInit, OnApplicationShutdown {
         }
         try {
           await this.send(job);
-          await confirmPartnerEmail(this.database, job.id);
+          await confirmPartnerEmail(this.database, job.id, this.workerId);
         } catch (error) {
           const deliveryError = message(error);
           this.logger.error(`email ${job.id} delivery failed: ${deliveryError}`);
-          await retryPartnerEmail(this.database, job, deliveryError);
+          await retryPartnerEmail(this.database, job, deliveryError, this.workerId);
         }
       } catch (error) {
         this.logger.error(`email delivery iteration failed: ${message(error)}`);

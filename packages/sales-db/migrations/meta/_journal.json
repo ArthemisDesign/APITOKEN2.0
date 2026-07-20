@@ -78,6 +78,13 @@
       "when": 1784820000000,
       "tag": "0010_payout_nonce",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1784830000000,
+      "tag": "0011_payout_raw_tx",
+      "breakpoints": true
     }
   ]
 }

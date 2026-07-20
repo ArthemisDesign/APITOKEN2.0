@@ -5,7 +5,9 @@ import {
   releasePayoutSendLock,
   cancelPayoutBatch,
   createPayoutBatch,
+  finalizeStuckSendingBatches,
   getActiveBatch,
+  getMaxOutstandingNonce,
   getPayoutBatch,
   getPayoutCandidates,
   listBatchPayouts,
@@ -16,6 +18,7 @@ import {
   markPayoutConfirmed,
   markPayoutFailed,
   releasePayoutRow,
+  lastEndedPeriod,
   periodInPayoutWindow,
   setBatchStatus,
   windowEnd,
@@ -133,7 +136,11 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
     const existing = await getActiveBatch(this.database);
     if (existing) throw new PayoutBatchInProgressError("a payout batch is already in progress");
 
-    const candidates = await getPayoutCandidates(this.database, this.minNano());
+    // Граница начислений = конец периода, чьё окно выплат открыто (иначе — последний завершённый).
+    // Так батч платит только «разлоченные» деньги и совпадает с превью getDuePayoutList (уважает лок 7д).
+    const now = new Date();
+    const period = periodInPayoutWindow(now) ?? lastEndedPeriod(now);
+    const candidates = await getPayoutCandidates(this.database, this.minNano(), period.end);
     const recipients: { partnerId: string; amountNano: bigint; walletAddress: string }[] = [];
     const invalidAddresses: PayoutReport["invalidAddresses"] = [];
     for (const c of candidates) {
@@ -216,6 +223,19 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
    * Единственный вход в отправку: держит и in-memory флаг, и КРОСС-ПРОЦЕССНЫЙ pg advisory-lock, чтобы
    * ни второй инстанс (HA), ни параллельный sendOne не считали nonce одновременно.
    */
+  /**
+   * Стартовый nonce = max(on-chain 'pending' count, максимальный уже отправленный broadcast-nonce + 1).
+   * Публичный read-RPC может НЕ видеть in-flight tx BlockRazor, поэтому одного pendingNonce мало —
+   * иначе следующая строка возьмёт занятый nonce и застрянет. Персистнутый broadcast-nonce авторитетен.
+   */
+  private async computeStartNonce(chain: PayoutChain): Promise<number> {
+    const [pending, maxOutstanding] = await Promise.all([
+      chain.pendingNonce(),
+      getMaxOutstandingNonce(this.database),
+    ]);
+    return maxOutstanding === null ? pending : Math.max(pending, maxOutstanding + 1);
+  }
+
   private async withSendLock<T>(fn: () => Promise<T>): Promise<T> {
     if (this.sending) throw new PayoutBatchInProgressError("a payout send is already running");
     const lock = await acquirePayoutSendLock(this.database);
@@ -241,16 +261,20 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
       await chain.assertNetwork();
       await setBatchStatus(this.database, batchId, "sending");
       const rows = await listSendablePayouts(this.database, batchId); // читаем ВНУТРИ лока
-      let nonce = await chain.pendingNonce();
+      let nonce = await this.computeStartNonce(chain);
       for (const row of rows) {
         const result = await this.sendRow(chain, row, nonce);
         nonce = result.nextNonce;
         if (result.stop) break; // неопределённость/таймаут — не занимаем следующий nonce, дожмёт поллер
       }
+      // Финализация: пока есть 'broadcast'-строки — остаёмся 'sending' (дожмёт поллер). Если их нет —
+      // терминальный 'sent' (completed только если ВСЕ выплачены), иначе батч завис бы в 'sending'
+      // навсегда и заблокировал все будущие prepare() (DoS).
       const after = await listBatchPayouts(this.database, batchId);
+      const anyBroadcast = after.some((r) => r.chainStatus === "broadcast");
       const allPaid = after.every((r) => r.status === "paid");
-      await setBatchStatus(this.database, batchId, allPaid ? "sent" : "sending", { sent: true, completed: allPaid });
-      if (after.some((r) => r.chainStatus === "broadcast")) this.logger.log(`batch ${batchId}: tx confirming; poller will finalize`);
+      await setBatchStatus(this.database, batchId, anyBroadcast ? "sending" : "sent", { sent: true, completed: allPaid });
+      if (anyBroadcast) this.logger.log(`batch ${batchId}: tx confirming; poller will finalize`);
     });
     return this.report(batchId);
   }
@@ -263,11 +287,12 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
       const chain = this.getChain();
       await chain.assertNetwork();
       const target = await this.findRow(payoutId);
-      // 'broadcast'/'confirmed'/'paid' не пересылаем — судьба транзы решается поллером по её хешу.
-      if (!target || target.status === "paid" || target.chainStatus === "broadcast" || target.chainStatus === "confirmed") {
+      // 'broadcast'/'confirmed'/'paid'/'rejected' не пересылаем — иначе rejected→re-send = двойная выплата,
+      // а broadcast/confirmed решает поллер по хешу.
+      if (!target || target.status === "paid" || target.status === "rejected" || target.chainStatus === "broadcast" || target.chainStatus === "confirmed") {
         return { ok: false, row: target };
       }
-      const nonce = await chain.pendingNonce();
+      const nonce = await this.computeStartNonce(chain);
       await this.sendRow(chain, target, nonce);
       return { ok: true, row: await this.findRow(payoutId) };
     });
@@ -276,7 +301,7 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
   private async findRow(payoutId: string): Promise<PayoutRow | null> {
     const r = await this.database.pool.query<Record<string, unknown>>(`
       SELECT po.id, po.partner_id, po.amount_nano::text AS amount_nano, po.status, po.wallet_address,
-             po.tx_hash, po.nonce, po.chain_status, po.chain_error, po.paid_at,
+             po.tx_hash, po.nonce, po.raw_tx, po.chain_status, po.chain_error, po.paid_at,
              p.telegram_username, p.email, p.display_name
       FROM payouts po JOIN partners p ON p.id = po.partner_id WHERE po.id = $1
     `, [payoutId]);
@@ -288,6 +313,7 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
       displayName: (row.display_name as string) ?? null, amountNano: BigInt((row.amount_nano as string) ?? "0"),
       status: row.status as string, walletAddress: (row.wallet_address as string) ?? null,
       txHash: (row.tx_hash as string) ?? null, nonce: row.nonce === null || row.nonce === undefined ? null : Number(row.nonce),
+      rawTx: (row.raw_tx as string) ?? null,
       chainStatus: (row.chain_status as PayoutRow["chainStatus"]) ?? null,
       chainError: (row.chain_error as string) ?? null, paidAt: (row.paid_at as Date) ?? null,
     };
@@ -323,8 +349,10 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
       await markPayoutFailed(this.database, row.id, `sign failed: ${msg(err)}`);
       return { nextNonce: startNonce, stop: false };
     }
-    // сохраняем hash+nonce ДО бродкаста — с этого момента nonce «зарезервирован» этой транзакцией
-    await markPayoutBroadcast(this.database, row.id, signed.hash, signed.nonce);
+    // сохраняем hash+nonce+raw ДО бродкаста — с этого момента nonce «зарезервирован» этой транзакцией.
+    // Если строка уже не 'requested' (её успели release/paid) — НЕ бродкастим (защита от двойной выплаты).
+    const reserved = await markPayoutBroadcast(this.database, row.id, signed.hash, signed.nonce, signed.raw);
+    if (!reserved) return { nextNonce: startNonce, stop: false };
     // бродкаст с повторами ТОГО ЖЕ raw (никогда не переподписываем с новым nonce на неопределённости)
     let broadcastOk = false;
     for (let attempt = 0; attempt <= SEND_RETRIES; attempt += 1) {
@@ -345,8 +373,7 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
     // 3) подтверждение
     const conf = await chain.waitForConfirmation(signed.hash);
     if (conf?.status === "confirmed") {
-      await markPayoutConfirmed(this.database, row.id);
-      await this.notifyPaid(row, signed.hash);
+      if (await markPayoutConfirmed(this.database, row.id)) await this.notifyPaid(row, signed.hash);
       return { nextNonce: startNonce + 1, stop: false };
     }
     if (conf?.status === "reverted") {
@@ -362,38 +389,40 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
 
   async confirmBroadcasts(): Promise<number> {
     if (!this.isConfigured()) return 0;
-    const rows = await listBroadcastPayouts(this.database, 100);
-    if (rows.length === 0) return 0;
-    const chain = this.getChain();
-    let done = 0;
-    for (const row of rows) {
-      if (!row.txHash) continue;
-      try {
-        const conf = await chain.checkReceipt(row.txHash);
-        if (conf?.status === "confirmed") {
-          await markPayoutConfirmed(this.database, row.id);
-          await this.notifyPaid(row, row.txHash);
-          done += 1;
-        } else if (conf?.status === "reverted") {
-          await markPayoutFailed(this.database, row.id, "transaction reverted on-chain");
-          done += 1;
-        } else if (row.nonce !== null && row.walletAddress) {
-          // ещё не в блоке — детерминированно переподписываем ТОТ ЖЕ nonce (тот же хеш) и ре-бродкастим,
-          // чтобы «разлочить» возможный gap после потерянного ответа. Идемпотентно (тот же tx).
-          try {
-            const signed = await chain.signTransfer(row.walletAddress, row.amountNano, row.nonce);
-            if (signed.hash === row.txHash) await chain.broadcastRaw(signed.raw);
-          } catch {
-            // «already known» и сетевые — норм, попробуем на следующем тике
+    // Берём ТОТ ЖЕ send-лок, чтобы поллер не гонялся с send()/sendOne() на общих строках/батчах.
+    // Занят (идёт отправка) → пропускаем тик.
+    const lock = await acquirePayoutSendLock(this.database);
+    if (!lock) return 0;
+    try {
+      const chain = this.getChain();
+      const rows = await listBroadcastPayouts(this.database, 100);
+      let done = 0;
+      for (const row of rows) {
+        if (!row.txHash) continue;
+        try {
+          const conf = await chain.checkReceipt(row.txHash);
+          if (conf?.status === "confirmed") {
+            // claim-once: уведомляем только если ЭТА сторона реально перевела 'broadcast'→'confirmed'
+            if (await markPayoutConfirmed(this.database, row.id)) { await this.notifyPaid(row, row.txHash); done += 1; }
+          } else if (conf?.status === "reverted") {
+            await markPayoutFailed(this.database, row.id, "transaction reverted on-chain");
+            done += 1;
+          } else if (row.rawTx) {
+            // ещё не в блоке — ре-бродкастим СОХРАНЁННЫЙ raw (ровно тот же tx, идемпотентно), чтобы
+            // разлочить возможный gap после потерянного ответа. Никакой переподписи.
+            try { await chain.broadcastRaw(row.rawTx); } catch { /* «already known»/сеть — норм */ }
           }
+        } catch {
+          // сеть недоступна — попробуем на следующем тике
         }
-      } catch {
-        // сеть недоступна — попробуем на следующем тике
+        if (row.batchId) await this.finalizeBatchIfDone(row.batchId);
       }
-      // финализируем батч, если все строки закрыты
-      if (row.batchId) await this.finalizeBatchIfDone(row.batchId);
+      // Разблокируем застрявшие 'sending'-батчи без broadcast-строк (напр. краш во время send).
+      await finalizeStuckSendingBatches(this.database);
+      return done;
+    } finally {
+      await releasePayoutSendLock(lock);
     }
-    return done;
   }
 
   private async finalizeBatchIfDone(batchId: string): Promise<void> {

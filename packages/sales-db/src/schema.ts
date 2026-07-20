@@ -318,6 +318,7 @@ export const payouts = pgTable("payouts", {
   walletAddress: text("wallet_address"),
   txHash: text("tx_hash"),
   nonce: bigint("nonce", { mode: "number" }),
+  rawTx: text("raw_tx"),
   chainStatus: text("chain_status"), // pending | simulated | broadcast | confirmed | failed
   chainError: text("chain_error"),
 }, (table) => [

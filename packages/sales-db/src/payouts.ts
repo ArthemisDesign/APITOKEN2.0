@@ -152,6 +152,9 @@ export async function decidePayout(database: SalesDatabase, input: {
           paid_at = CASE WHEN $2::payout_status = 'paid' THEN now() ELSE paid_at END,
           admin_note = COALESCE($3, admin_note)
       WHERE id = $1 AND status = ANY($4::payout_status[])
+        -- НЕ трогаем строки, которыми управляет on-chain батч-движок (у них есть batch_id): иначе
+        -- ручной reject/paid может «освободить» уже отправленную транзакцию → двойная выплата.
+        AND batch_id IS NULL
       RETURNING ${PAYOUT_COLUMNS}
     `, [input.payoutId, transition.to, input.note, transition.from]);
     const row = result.rows[0];
