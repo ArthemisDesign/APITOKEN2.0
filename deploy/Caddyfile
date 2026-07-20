@@ -1,4 +1,8 @@
 {
+	# Clear client-supplied audit identity before forward_auth writes verified values. Caddy's
+	# default order is the reverse, which would erase the copied identity after authentication.
+	order request_header before forward_auth
+
 	# Runtime proxy errors include request headers. Redact every injected service credential so a
 	# failed upstream can never copy an internal key into journald.
 	log default {
@@ -14,18 +18,14 @@
 # Central database-backed admin authentication. The auth service checks the original hostname
 # against each account's domain grants and returns a trusted actor identity for downstream audit.
 (managed_admin_auth) {
-	# route preserves literal order. Without it, Caddy's directive sorting runs request_header after
-	# forward_auth and erases the verified identity that copy_headers just produced.
-	route {
-		request_header -X-Admin-Actor
-		request_header -X-Admin-Account-Id
-		forward_auth 127.0.0.1:8791 {
-			uri /v1/internal/admin-auth/verify
-			header_up Host 127.0.0.1:8791
-			header_up X-Admin-Key "<ADMIN_AUTH_KEY_PLACEHOLDER>"
-			header_up X-Admin-Domain {http.request.host}
-			copy_headers X-Admin-Actor X-Admin-Account-Id
-		}
+	request_header -X-Admin-Actor
+	request_header -X-Admin-Account-Id
+	forward_auth 127.0.0.1:8791 {
+		uri /v1/internal/admin-auth/verify
+		header_up Host 127.0.0.1:8791
+		header_up X-Admin-Key "<ADMIN_AUTH_KEY_PLACEHOLDER>"
+		header_up X-Admin-Domain {http.request.host}
+		copy_headers X-Admin-Actor X-Admin-Account-Id
 	}
 }
 

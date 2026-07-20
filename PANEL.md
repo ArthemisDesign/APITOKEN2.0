@@ -26,11 +26,12 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
   статус и grants для четырёх управляемых доменов. Control, commerce-admin и sales-admin ключи
   инжектятся только server-side и никогда не попадают в HTML, browser storage, ответы или логи.
 - Проверенная identity передаётся commerce как `x-admin-actor` и `x-admin-account-id` через
-  `forward_auth copy_headers`. Anti-spoof clear и authentication находятся в ordered `route`,
-  поэтому Caddy сначала удаляет клиентские подделки, затем устанавливает проверенную identity.
-  Downstream proxy сохраняет эти headers без override, чтобы аудит различал операторов и
-  self-service password rotation. Internal auth API закрыт на публичном `backend.apitoken.sale` и
-  доступен Caddy только через loopback.
+  `forward_auth copy_headers`. Global directive order ставит anti-spoof `request_header` clear перед
+  authentication, поэтому Caddy сначала удаляет клиентские подделки, затем устанавливает
+  проверенную identity, а auth остаётся перед terminal `handle` routes. Downstream proxy сохраняет
+  эти headers без override, чтобы аудит различал операторов и self-service password rotation.
+  Internal auth API закрыт на публичном `backend.apitoken.sale` и доступен Caddy только через
+  loopback.
 - Внешние vhost и приложения видят только стабильные origins `127.0.0.1:8790` (engine) и
   `127.0.0.1:8791` (commerce). Только эти два Caddy-balancer знают slot-порты; обычный
   application `503` не исключает живой slot, депулинг выполняется active `/ready` checks.
