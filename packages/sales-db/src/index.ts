@@ -13,4 +13,5 @@ export * from "./schema.js";
 export * from "./applications.js";
 export * from "./periods.js";
 export * from "./payout-periods.js";
+export * from "./analytics.js";
 export * from "./promo.js";

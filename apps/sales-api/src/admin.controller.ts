@@ -23,8 +23,19 @@ import {
   decidePayout,
   deletePartnerAdmin,
   getDuePayoutList,
+  getPartnerActivity,
+  getPartnerAnalytics,
+  getPartnerDailyEarnings,
   listApplications,
+  listDiscountLinks,
+  listPartnerAnalytics,
+  listPartnerPayouts,
+  listPartnerPromoCodes,
+  listPartnerTeam,
+  listReferredUsers,
+  PARTNER_ANALYTICS_SORTS,
   setPromoPermissions,
+  type PartnerAnalyticsSort,
   ApplicationAlreadyDecidedError,
   PartnerHasHistoryError,
   ReferralCodeCollisionError,
@@ -53,6 +64,27 @@ import {
 } from "./schemas.js";
 
 const uuidSchema = z.string().uuid();
+
+const analyticsQuerySchema = z.object({
+  sort: z.enum(PARTNER_ANALYTICS_SORTS).optional(),
+  dir: z.enum(["asc", "desc"]).optional(),
+  status: z.enum(["all", "active", "suspended", "pending"]).optional(),
+  q: z.string().max(120).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+});
+
+// NestJS сериализует ответ в JSON, а bigint кидает исключение — рекурсивно приводим bigint→строка,
+// Date→ISO. nano-поля из analytics уже строки; это для переиспользуемых функций (team/links/…).
+function jsonSafe<T>(value: T): unknown {
+  if (typeof value === "bigint") return value.toString();
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map(jsonSafe);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, jsonSafe(v)]));
+  }
+  return value;
+}
 
 @Controller("admin")
 @UseGuards(AdminKeyGuard)
@@ -108,6 +140,52 @@ export class AdminController {
         createdAt: partner.createdAt.toISOString(),
       })),
     };
+  }
+
+  /** Аналитика партнёров: сортируемый/фильтруемый/пагинируемый список для анализа 100+ рефоводов. */
+  @Get("partner-analytics")
+  @Header("Cache-Control", "no-store")
+  async partnerAnalytics(@Query() query: Record<string, string>): Promise<unknown> {
+    const parsed = analyticsQuerySchema.safeParse(query);
+    if (!parsed.success) throw new BadRequestException("invalid analytics query");
+    const q = parsed.data;
+    const result = await listPartnerAnalytics(this.database, {
+      ...(q.sort ? { sort: q.sort as PartnerAnalyticsSort } : {}),
+      ...(q.dir ? { dir: q.dir } : {}),
+      ...(q.status ? { status: q.status } : {}),
+      ...(q.q ? { search: q.q } : {}),
+      ...(q.limit !== undefined ? { limit: q.limit } : {}),
+      ...(q.offset !== undefined ? { offset: q.offset } : {}),
+    });
+    return jsonSafe(result);
+  }
+
+  /** Детальная карточка партнёра: агрегаты + графики + подсписки (команда/ссылки/промо/выплаты/рефералы). */
+  @Get("partners/:id/analytics")
+  @Header("Cache-Control", "no-store")
+  async partnerDetail(@Param("id") id: string): Promise<unknown> {
+    if (!uuidSchema.safeParse(id).success) throw new BadRequestException("invalid partner id");
+    const partner = await getPartnerAnalytics(this.database, id);
+    if (!partner) throw new NotFoundException("partner not found");
+    const [daily, team, discountLinks, promos, payouts, referrals] = await Promise.all([
+      getPartnerDailyEarnings(this.database, id, 30),
+      listPartnerTeam(this.database, id),
+      listDiscountLinks(this.database, id),
+      listPartnerPromoCodes(this.database, id),
+      listPartnerPayouts(this.database, id),
+      listReferredUsers(this.database, id),
+    ]);
+    return jsonSafe({ partner, daily, team, discountLinks, promos, payouts, referrals });
+  }
+
+  /** Лента действий партнёра (рефералы, депозиты, ссылки, промо, выплаты, входы, админ-действия). */
+  @Get("partners/:id/activity")
+  @Header("Cache-Control", "no-store")
+  async partnerActivity(@Param("id") id: string, @Query("limit") limit?: string): Promise<unknown> {
+    if (!uuidSchema.safeParse(id).success) throw new BadRequestException("invalid partner id");
+    const n = limit ? Number.parseInt(limit, 10) : 60;
+    const events = await getPartnerActivity(this.database, id, Number.isFinite(n) ? n : 60);
+    return jsonSafe({ events });
   }
 
   /** Включить/выключить промокоды партнёру и задать лимиты (номинал USD, количество). */

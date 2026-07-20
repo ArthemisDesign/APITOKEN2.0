@@ -307,3 +307,79 @@ export type AdminPayoutRow = {
   requestedAt: string;
   paidAt?: string | null;
 };
+
+// ---------------------------------------------------------------------------
+// Partner analytics (admin) — all *Nano are decimal strings, dates are ISO.
+// ---------------------------------------------------------------------------
+
+export type PartnerAnalyticsRow = {
+  id: string;
+  email: string | null;
+  telegramUsername: string | null;
+  displayName: string | null;
+  status: "active" | "suspended" | "pending";
+  referralCode: string;
+  parentId: string | null;
+  parentLabel: string | null;
+  commissionBps: number;
+  subCommissionBps: number;
+  referralDiscountEnabled: boolean;
+  referralDiscountBps: number;
+  promoEnabled: boolean;
+  depositsTotalNano: string;
+  deposits30dNano: string;
+  referredUsers: number;
+  convertedUsers: number;
+  spendTotalNano: string;
+  spend30dNano: string;
+  earnedTotalNano: string;
+  earned30dNano: string;
+  paidNano: string;
+  unpaidNano: string;
+  teamSize: number;
+  linksTotal: number;
+  linksUsed: number;
+  promosTotal: number;
+  promosUsed: number;
+  lastSeenAt: string | null;
+  lastReferralAt: string | null;
+  lastDepositAt: string | null;
+  createdAt: string;
+};
+
+export type PartnerAnalyticsTotals = {
+  total: number;
+  active: number;
+  depositsNano: string;
+  referredUsers: number;
+  convertedUsers: number;
+  unpaidNano: string;
+};
+
+export type PartnerAnalyticsList = { items: PartnerAnalyticsRow[]; totals: PartnerAnalyticsTotals };
+
+export type PartnerAnalyticsSortKey =
+  | "deposits_total" | "deposits_30d" | "referred_users" | "converted_users"
+  | "spend_total" | "spend_30d" | "earned_total" | "earned_30d" | "unpaid"
+  | "team_size" | "last_seen_at" | "created_at";
+
+export type PartnerActivityEvent = {
+  type: string;
+  at: string;
+  amountNano: string | null;
+  label: string;
+  meta: Record<string, unknown>;
+};
+
+export type PartnerDetailBundle = {
+  partner: PartnerAnalyticsRow;
+  daily: { date: string; spendNano: string; earnedNano: string }[];
+  team: {
+    id: string; email: string | null; telegramUsername: string | null; displayName: string | null;
+    status: string; commissionBps: number; referredUsers: number; theirEarnedNano: string; myOverrideNano: string;
+  }[];
+  discountLinks: { id: string; code: string; discountBps: number; note: string | null; consumedAt: string | null; createdAt: string }[];
+  promos: { id: string; code: string; valueNano: string; status: string; discountBps: number; redeemedAt: string | null; createdAt: string }[];
+  payouts: { id: string; amountNano: string; status: string; requestedAt: string; decidedAt: string | null; paidAt: string | null; adminNote: string | null }[];
+  referrals: { commerceUserId: string; attributedAt: string; spendNano: string; earnedNano: string }[];
+};
