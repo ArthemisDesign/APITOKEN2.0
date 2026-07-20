@@ -212,7 +212,20 @@ async fn overview(
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized"}))).into_response();
     }
     if let Some(v) = cache_get(&OVERVIEW_CACHE) { return Json(v).into_response(); }
-    let v = overview_value(&app).await;
+    let mut v = overview_value(&app).await;
+    // Разбивка спроса по engine-аккаунтам — только в HTTP-ответе панели; в историю
+    // (poller::metrics_loop пишет overview_value) её не кладём, чтобы не раздувать metrics.db.
+    if let Some(b) = &app.billing {
+        let accounts: Vec<_> = b.accounts().await.into_iter().map(|a| json!({
+            "account": a.id,
+            "handle": a.handle,
+            "balance_usd": (a.balance_nano as f64 / 1e9 * 100.0).round() / 100.0,
+            "spent_usd": (a.spent_nano as f64 / 1e9 * 100.0).round() / 100.0,
+            "mult": a.mult_bp as f64 / 10000.0,
+            "status": a.status,
+        })).collect();
+        v["accounts"] = json!(accounts);
+    }
     cache_put(&OVERVIEW_CACHE, &v);
     Json(v).into_response()
 }

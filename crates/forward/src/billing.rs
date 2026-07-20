@@ -135,6 +135,7 @@ enum ReadCmd {
     Account(String, oneshot::Sender<Option<AccountRow>>),
     AccountByHandle(String, oneshot::Sender<Option<AccountRow>>),
     Totals(oneshot::Sender<BillingTotals>),
+    AccountsList(oneshot::Sender<Vec<AccountRow>>),
     KeysByAccount(String, oneshot::Sender<Vec<KeyRow>>),
     Ledger(String, i64, oneshot::Sender<Vec<registry::LedgerRow>>),
     LedgerAfter(String, i64, i64, oneshot::Sender<Vec<registry::LedgerRow>>),
@@ -369,6 +370,7 @@ impl AsyncBilling {
                             let _ = r.send(registry::account_by_handle(&conn, &handle).ok().flatten());
                         }
                         ReadCmd::Totals(r) => { let _ = r.send(registry::billing_totals(&conn)); }
+                        ReadCmd::AccountsList(r) => { let _ = r.send(registry::account_list(&conn).unwrap_or_default()); }
                         ReadCmd::KeysByAccount(id, r) => { let _ = r.send(registry::keys_by_account(&conn, &id).unwrap_or_default()); }
                         ReadCmd::Ledger(id, lim, r) => { let _ = r.send(registry::ledger_recent(&conn, &id, lim).unwrap_or_default()); }
                         ReadCmd::LedgerAfter(id, after, lim, r) => {
@@ -611,6 +613,7 @@ impl AsyncBilling {
                         ReadCmd::Account(id,r) => answer!(r,pg.account_get(&id),None),
                         ReadCmd::AccountByHandle(handle,r) => answer!(r,pg.account_by_handle(&handle),None),
                         ReadCmd::Totals(r) => answer!(r,pg.billing_totals(),BillingTotals::default()),
+                        ReadCmd::AccountsList(r) => answer!(r,pg.account_list(),Vec::new()),
                         ReadCmd::KeysByAccount(id,r) => answer!(r,pg.keys_by_account(&id),Vec::new()),
                         ReadCmd::Ledger(id,lim,r) => answer!(r,pg.ledger_recent(&id,lim),Vec::new()),
                         ReadCmd::LedgerAfter(id,after,lim,r) => answer!(r,pg.ledger_after(&id,after,lim),Vec::new()),
@@ -670,6 +673,11 @@ impl AsyncBilling {
     pub async fn totals(&self) -> BillingTotals {
         let (r, rx) = oneshot::channel();
         if self.reader().send(ReadCmd::Totals(r)).is_err() { return BillingTotals::default(); }
+        rx.await.unwrap_or_default()
+    }
+    pub async fn accounts(&self) -> Vec<AccountRow> {
+        let (r, rx) = oneshot::channel();
+        if self.reader().send(ReadCmd::AccountsList(r)).is_err() { return Vec::new(); }
         rx.await.unwrap_or_default()
     }
     pub async fn keys_by_account(&self, account_id: &str) -> Vec<KeyRow> {

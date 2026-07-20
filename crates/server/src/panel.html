@@ -429,6 +429,20 @@ function render(ov,cap,subs){
           </tr>`}).join('')||'<tr><td colspan="8" class="muted l">нет подписок</td></tr>'}</tbody>
       </table></div></div>
 
+      <h2>Аккаунты движка · ${(ov.accounts||[]).length}</h2>
+      <div class="tbl"><div class="tbl-scroll"><table>
+        <thead><tr><th class="l">аккаунт</th><th class="l">handle</th><th>статус</th>
+          <th>баланс</th><th>потрачено</th><th>множитель</th></tr></thead>
+        <tbody>${(ov.accounts||[]).map(a=>`<tr>
+            <td class="l muted">${esc(a.account)}</td>
+            <td class="l" style="color:var(--txt);font-weight:600">${esc(a.handle||'—')}</td>
+            <td><span class="dot ${a.status==='active'?'ok':'bad'}"></span>${esc(a.status)}</td>
+            <td class="num">${usd(a.balance_usd)}</td>
+            <td class="num">${usd(a.spent_usd)}</td>
+            <td class="num">×${a.mult}</td>
+          </tr>`).join('')||'<tr><td colspan="6" class="muted l">нет аккаунтов</td></tr>'}</tbody>
+      </table></div></div>
+
       <details>
         <summary>Ёмкость по подпискам · ${ov.subs} (live util/cooling)</summary>
         <div class="tbl" style="margin-top:10px"><div class="tbl-scroll"><table>
