@@ -229,6 +229,8 @@ describe("completed Next.js migration", () => {
     expect(header).not.toContain('k="nav_faq"');
     expect(header).not.toContain("api.logout");
     expect(styles).toContain("header.nav{position:fixed");
+    expect(styles).toContain(".nav-links{display:flex;align-items:center;justify-content:space-evenly");
+    expect(styles).not.toContain(".nav-links{display:grid;grid-template-columns:");
     expect(styles).toContain("grid-template-columns:repeat(2,134px)");
     for (const control of ["term-close", "term-minimize", "term-zoom"]) expect(terminal).toContain(control);
     expect(terminal).not.toContain("onPointerMove");

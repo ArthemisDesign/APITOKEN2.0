@@ -15,6 +15,17 @@ const chromeCandidates = [
 ].filter(Boolean);
 
 const siteCaptures = [
+  ["header-wide-light", "/", 1920, 1080, "light"],
+  ["header-laptop-light", "/", 1280, 800, "light"],
+  ["header-laptop-authenticated-dark", "/?audit-auth=1", 1280, 800, "dark"],
+  ["header-laptop-russian-light", "/", 1280, 800, "light", "ru"],
+  ["header-collapse-boundary-light", "/", 1240, 800, "light"],
+  ["header-tablet-dark", "/", 768, 1024, "dark"],
+  ["header-tablet-menu-open-dark", "/", 768, 1024, "dark", "en", "menu-open"],
+  ["header-mobile-light", "/", 390, 844, "light"],
+  ["header-mobile-menu-open-light", "/", 390, 844, "light", "en", "menu-open"],
+  ["header-mobile-narrow-dark", "/", 320, 700, "dark"],
+  ["header-mobile-narrow-menu-open-dark", "/", 320, 700, "dark", "en", "menu-open"],
   ["home-desktop", "/", 1440, 1000, "light"],
   ["home-mobile", "/", 390, 844, "light"],
   ["home-dark", "/", 1440, 1000, "dark"],
@@ -292,7 +303,7 @@ function createCdpClient(webSocketUrl) {
   };
 }
 
-async function capturePage(client, [name, route, width, height, theme, language = "en"]) {
+async function capturePage(client, [name, route, width, height, theme, language = "en", state = "default"]) {
   await client.send("Emulation.setDeviceMetricsOverride", {
     width,
     height,
@@ -365,6 +376,10 @@ async function capturePage(client, [name, route, width, height, theme, language 
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     })()`,
   });
+  if (state === "menu-open") {
+    await client.send("Runtime.evaluate", { expression: `document.querySelector('.nav-burger')?.click()` });
+    await waitForCondition(client, `document.querySelector('.nav-burger')?.getAttribute('aria-expanded') === 'true'`, `${name} open navigation`);
+  }
   const { cssContentSize, contentSize } = await client.send("Page.getLayoutMetrics");
   // Chrome reports the legacy contentSize in physical pixels on Retina displays.
   // cssContentSize keeps the clip in CSS pixels and avoids a half-empty 2x canvas.

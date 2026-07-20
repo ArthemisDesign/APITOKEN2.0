@@ -166,9 +166,9 @@ section{scroll-margin-top:64px}
 .brand-mark.bm-light{display:inline-block}
 [data-theme="dark"] .brand-mark.bm-light{display:none}
 [data-theme="dark"] .brand-mark.bm-dark{display:inline-block}
-.nav-links{display:grid;grid-template-columns:132px 112px 82px 82px 64px;gap:4px;align-items:center;justify-content:center}
+.nav-links{display:flex;align-items:center;justify-content:space-evenly;gap:clamp(10px,1.2vw,22px);min-width:0;white-space:nowrap}
 .nav-links a{font-family:var(--font-mono);font-size:13px;color:var(--txt-3);transition:.15s;white-space:nowrap}
-.nav-links>a{text-align:center}
+.nav-links>a{flex:0 0 auto;text-align:center}
 .nav-links a:hover{color:var(--txt)}
 .nav-right{grid-column:3;display:flex;align-items:center;gap:12px;justify-self:end}
 .nav-actions{display:grid;grid-template-columns:repeat(2,134px);gap:10px}
@@ -530,6 +530,8 @@ footer{padding:64px 0 40px;border-bottom:0}
   .theme-tgl{margin-left:2px}
 }
 @media(max-width:380px){
+  .nav-in{padding-inline:12px;gap:6px}
+  .nav-right{gap:6px}
   .brand{font-size:14px}
   .hero-offer{padding:18px}
   .offer-free-head .ofa{font-size:52px}
@@ -537,6 +539,9 @@ footer{padding:64px 0 40px;border-bottom:0}
   .offer-table-head,.ot{padding-inline:10px}
   .ot-pay b{font-size:18px}
   .ot-get b{font-size:23px}
+}
+@media(max-width:340px){
+  .nav .brand-name{display:none}
 }
 
 /* auth buttons don't fit the bar on phones — hidden here, shown inside the burger menu instead */
@@ -546,7 +551,7 @@ footer{padding:64px 0 40px;border-bottom:0}
 .nav-auth-mobile{display:none}
 
 /* mobile nav open */
-.nav-links.open{display:flex;position:fixed;top:64px;left:0;right:0;flex-direction:column;background:var(--menu-bg);border-bottom:1px solid var(--line);padding:16px 24px;gap:14px}
+.nav-links.open{display:flex;position:fixed;top:64px;left:0;right:0;max-height:calc(100dvh - 64px);overflow-y:auto;flex-direction:column;background:var(--menu-bg);border-bottom:1px solid var(--line);padding:16px 24px;gap:14px}
 .nav-links.open .nav-auth-mobile{display:flex;gap:10px;margin-top:6px;padding-top:14px;border-top:1px solid var(--line)}
 .nav-links.open .nav-auth-mobile .btn{flex:1;justify-content:center}
 /* ".nav-links a" (class+tag) otherwise outguns ".btn-primary/.btn-ghost" (single class)

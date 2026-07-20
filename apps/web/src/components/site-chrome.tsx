@@ -22,10 +22,10 @@ function localizeHref(language: string, href: string): string {
 
 export function Brand() {
   const { language } = useI18n();
-  return <Link className="brand" href={language === "ru" ? "/ru" : "/"}>
+  return <Link className="brand" href={language === "ru" ? "/ru" : "/"} aria-label="apiToken.sale home">
     <Image className="brand-mark bm-light" src="/assets/logo-mark-light.png" width={24} height={24} alt="" />
     <Image className="brand-mark bm-dark" src="/assets/logo-mark-dark.png" width={24} height={24} alt="" />
-    apiToken.sale
+    <span className="brand-name">apiToken.sale</span>
   </Link>;
 }
 

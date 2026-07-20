@@ -132,6 +132,11 @@ The public-site scope includes home, plans, models, docs, integrations, authenti
 privacy, and support states. The dashboard scope includes overview, API keys, credits, usage, support,
 promos, profile, and security states.
 
+The `header-*` matrix covers the public header at 1920px desktop, 1280px laptop, the 1240px
+navigation-collapse boundary, 768px tablet, 390px mobile, and 320px narrow mobile widths. It includes
+authenticated, Russian, light/dark, and open-menu states so navigation wrapping and clipping can be
+reviewed independently of page content.
+
 The landing hero-offer matrix covers English and Russian, light and dark themes, and desktop and
 mobile layouts. `verifyHeroOfferLayout()` checks the card hierarchy, compact height, metadata
 alignment, vertical rhythm, equal tier-row heights, exact top-up/discount/API values, shared table
