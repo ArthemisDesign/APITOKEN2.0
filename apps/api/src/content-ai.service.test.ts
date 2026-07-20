@@ -8,8 +8,71 @@ const rules = {
   requiredDisclosure: "", forbidden: ["invented facts"],
 };
 
+const briefInput = {
+  sourceUrl: "https://x.com/example/status/1",
+  title: "Example post",
+  author: "Author",
+  content: "A short source post.",
+  references: [],
+  locale: "en" as const,
+};
+
 describe("content AI generation", () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  it("forces the exact brief schema through a tool response", async () => {
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as {
+        tools: Array<{ name: string; input_schema: { required: string[] } }>;
+        tool_choice: { name: string };
+      };
+      expect(request.tools[0]).toMatchObject({ name: "return_content" });
+      expect(request.tools[0]?.input_schema.required).toEqual(["briefMarkdown"]);
+      expect(request.tool_choice.name).toBe("return_content");
+      return messageResponse([{ type: "tool_use", name: "return_content", input: {
+        briefMarkdown: "# Verified brief\n\nConfirmed fact.",
+      } }]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(createService().generateBrief(briefInput))
+      .resolves.toBe("# Verified brief\n\nConfirmed fact.");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("accepts fenced JSON fallback and a legacy snake_case brief field", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => messageResponse([{ type: "text", text:
+      "```json\n{\"brief_markdown\":\"# Verified brief\\n\\nFallback content.\"}\n```",
+    }])));
+
+    await expect(createService().generateBrief(briefInput))
+      .resolves.toBe("# Verified brief\n\nFallback content.");
+  });
+
+  it("retries once after malformed JSON and accepts a corrected tool response", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(messageResponse([{ type: "text", text: "{\"briefMarkdown\":\"broken\nJSON\"}" }]))
+      .mockResolvedValueOnce(messageResponse([{ type: "tool_use", name: "return_content", input: {
+        briefMarkdown: "# Corrected brief",
+      } }]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(createService().generateBrief(briefInput)).resolves.toBe("# Corrected brief");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const retry = JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit | undefined)?.body)) as { system: string };
+    expect(retry.system).toContain("previous response did not match");
+  });
+
+  it("fails clearly after one retry when the brief stays empty", async () => {
+    const fetchMock = vi.fn(async () => messageResponse([{ type: "tool_use", name: "return_content", input: {
+      briefMarkdown: "",
+    } }]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(createService().generateBrief(briefInput))
+      .rejects.toThrow("AI response was not valid after an automatic retry");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 
   it("guarantees an external draft carries a canonical URL placeholder", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
@@ -42,4 +105,11 @@ function createService(): ContentAiService {
     CONTENT_STUDIO_AI_MODEL: "claude-sonnet-5",
     CONTENT_STUDIO_AI_MAX_TOKENS: 1_000,
   } as Environment));
+}
+
+function messageResponse(content: Array<Record<string, unknown>>): Response {
+  return new Response(JSON.stringify({ content, stop_reason: "tool_use" }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
 }
