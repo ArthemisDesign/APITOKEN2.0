@@ -11,6 +11,7 @@ import {
   formatUsd,
   type PeriodState,
   type Partner,
+  type PayoutRow,
 } from "@/lib/api";
 import { usePartner } from "@/components/partner-context";
 import { Badge, Button, Card, EmptyState, Field, Input, Loading, Notice, Table } from "@/components/ui";
@@ -173,11 +174,17 @@ export default function PayoutsPage() {
   const partner = usePartner();
   const [wallet, setWallet] = useState<string | null>(walletFromPartner(partner));
   const [state, setState] = useState<PeriodState | null>(null);
+  const [payments, setPayments] = useState<PayoutRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      setState(await api<PeriodState>("/v1/partner/periods"));
+      const [periods, payouts] = await Promise.all([
+        api<PeriodState>("/v1/partner/periods"),
+        api<{ items: PayoutRow[] }>("/v1/partner/payouts"),
+      ]);
+      setState(periods);
+      setPayments(payouts.items);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : t("Failed to load payouts.", "Не удалось загрузить выплаты."));
     }
@@ -204,6 +211,32 @@ export default function PayoutsPage() {
 
       <div className="stack">
         {state ? <PayoutTimeline state={state} /> : null}
+
+        {payments && payments.length > 0 ? (
+          <Card title={t("Payments", "Выплаты")} sub={t("On-chain USDT (BEP-20) transfers to your wallet.", "On-chain переводы USDT (BEP-20) на ваш кошелёк.")}>
+            <Table head={<><th>{t("Date", "Дата")}</th><th className="num">{t("Amount", "Сумма")}</th><th>{t("Status", "Статус")}</th><th>{t("Transaction", "Транзакция")}</th></>}>
+              {payments.map((p) => (
+                <tr key={p.id}>
+                  <td>{new Date(p.paidAt ?? p.requestedAt).toLocaleDateString(localeFor(lang), { day: "numeric", month: "short", year: "numeric" })}</td>
+                  <td className="num" style={{ fontWeight: 600 }}>{formatUsd(p.amountNano)}</td>
+                  <td>
+                    <Badge tone={p.status === "paid" ? "green" : p.chainStatus === "failed" ? "red" : "yellow"}>
+                      {p.status === "paid" ? t("Paid", "Выплачено") : p.chainStatus === "broadcast" ? t("Sending", "Отправляется") : p.status}
+                    </Badge>
+                  </td>
+                  <td>
+                    {p.explorerUrl ? (
+                      <a href={p.explorerUrl} target="_blank" rel="noreferrer" style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent-strong, #3b5bdb)" }}>
+                        {p.txHash?.slice(0, 10)}… ↗
+                      </a>
+                    ) : "—"}
+                  </td>
+                </tr>
+              ))}
+            </Table>
+          </Card>
+        ) : null}
+
         <div className="stat-grid" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
           <div className="stat-card">
             <div className="stat-label">{t("This period", "Текущий период")}</div>

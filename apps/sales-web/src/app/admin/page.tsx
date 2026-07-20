@@ -25,6 +25,7 @@ import {
   Table,
 } from "@/components/ui";
 import { PartnersTab } from "./partner-analytics";
+import { PayoutSendTab } from "./payout-send";
 
 const KEY_STORAGE = "sales_admin_key";
 
@@ -822,7 +823,7 @@ function PayoutListTab({ adminKey }: { adminKey: string }) {
   );
 }
 
-type Tab = "overview" | "onboarding" | "partners" | "payoutList" | "payouts";
+type Tab = "overview" | "onboarding" | "partners" | "payoutList" | "payouts" | "send";
 
 export default function AdminPage() {
   const [adminKey, setAdminKey] = useState<string | null>(null);
@@ -876,6 +877,7 @@ export default function AdminPage() {
             ["onboarding", "Onboarding"],
             ["partners", "Partners"],
             ["payoutList", "Payout list"],
+            ["send", "Send payouts"],
             ["payouts", "Payouts"],
           ] as Array<[Tab, string]>
         ).map(([id, label]) => (
@@ -895,6 +897,7 @@ export default function AdminPage() {
       {tab === "onboarding" ? <OnboardingTab adminKey={adminKey} /> : null}
       {tab === "partners" ? <PartnersTab adminKey={adminKey} /> : null}
       {tab === "payoutList" ? <PayoutListTab adminKey={adminKey} /> : null}
+      {tab === "send" ? <PayoutSendTab adminKey={adminKey} /> : null}
       {tab === "payouts" ? <PayoutsTab adminKey={adminKey} /> : null}
     </div>
   );

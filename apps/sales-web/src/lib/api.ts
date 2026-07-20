@@ -222,6 +222,9 @@ export type PayoutRow = {
   details?: unknown;
   requestedAt: string;
   paidAt: string | null;
+  txHash?: string | null;
+  chainStatus?: string | null;
+  explorerUrl?: string | null;
 };
 
 export type PeriodHistoryRow = {
@@ -382,4 +385,60 @@ export type PartnerDetailBundle = {
   promos: { id: string; code: string; valueNano: string; status: string; discountBps: number; redeemedAt: string | null; createdAt: string }[];
   payouts: { id: string; amountNano: string; status: string; requestedAt: string; decidedAt: string | null; paidAt: string | null; adminNote: string | null }[];
   referrals: { userMask: string; attributedAt: string; spendNano: string; earnedNano: string }[];
+};
+
+// ---------------------------------------------------------------------------
+// On-chain payout batches (admin). *Nano are decimal strings; wei are strings.
+// ---------------------------------------------------------------------------
+
+export type PayoutWindow = { open: boolean; opensAt: string | null; closesAt: string | null };
+
+export type PayoutEngine = { configured: boolean; window: PayoutWindow };
+
+export type PayoutBatchDto = {
+  id: string;
+  status: "preparing" | "prepared" | "sending" | "sent" | "failed" | "canceled";
+  hotWalletAddress: string | null;
+  totalNano: string;
+  recipientCount: number;
+  gasPriceGwei: string | null;
+  minNano: string;
+  note: string | null;
+  createdBy: string | null;
+  error: string | null;
+  createdAt: string;
+  preparedAt: string | null;
+  sentAt: string | null;
+  completedAt: string | null;
+};
+
+export type PayoutRowDto = {
+  id: string;
+  partnerId: string;
+  partner: string;
+  amountNano: string;
+  status: string;
+  walletAddress: string | null;
+  txHash: string | null;
+  chainStatus: string | null;
+  chainError: string | null;
+  paidAt: string | null;
+};
+
+export type PayoutReportDto = {
+  batch: PayoutBatchDto;
+  rows: PayoutRowDto[];
+  window: PayoutWindow;
+  chain: {
+    configured: boolean;
+    hotWalletAddress: string | null;
+    usdtBalanceNano: string | null;
+    bnbBalanceWei: string | null;
+    requiredUsdtNano: string;
+    requiredBnbWei: string | null;
+    sufficientUsdt: boolean | null;
+    sufficientBnb: boolean | null;
+    gasPriceGwei: string;
+  };
+  invalidAddresses: { partnerId: string; walletAddress: string; reason: string }[];
 };

@@ -429,6 +429,7 @@ export class PartnerController {
 function payoutView(payout: {
   id: string; amountNano: bigint; status: string; method: string; details: unknown;
   requestedAt: Date; decidedAt: Date | null; paidAt: Date | null; adminNote: string | null;
+  txHash: string | null; chainStatus: string | null;
 }): unknown {
   return {
     id: payout.id,
@@ -440,5 +441,9 @@ function payoutView(payout: {
     decidedAt: payout.decidedAt?.toISOString() ?? null,
     paidAt: payout.paidAt?.toISOString() ?? null,
     adminNote: payout.adminNote,
+    txHash: payout.txHash,
+    chainStatus: payout.chainStatus,
+    // Ссылка на транзакцию в обозревателе BNB Chain.
+    explorerUrl: payout.txHash ? `https://bscscan.com/tx/${payout.txHash}` : null,
   };
 }

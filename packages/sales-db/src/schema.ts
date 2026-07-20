@@ -282,6 +282,26 @@ export const commissionEntries = pgTable("commission_entries", {
     sql`((${table.usageEventId} IS NOT NULL)::int + (${table.topupId} IS NOT NULL)::int) = 1`),
 ]);
 
+// Один прогон пакетных on-chain выплат: prepare → (админ смотрит) → send. Отправка возможна ТОЛЬКО
+// в 3-дневное окно выплат (жёсткий гейт на бэкенде).
+export const payoutBatches = pgTable("payout_batches", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  // preparing | prepared | sending | sent | failed | canceled
+  status: text("status").notNull().default("prepared"),
+  hotWalletAddress: text("hot_wallet_address"),
+  totalNano: bigint("total_nano", { mode: "bigint" }).notNull().default(0n),
+  recipientCount: integer("recipient_count").notNull().default(0),
+  gasPriceGwei: text("gas_price_gwei"),
+  minNano: bigint("min_nano", { mode: "bigint" }).notNull().default(0n),
+  note: text("note"),
+  createdBy: text("created_by"),
+  error: text("error"),
+  createdAt,
+  preparedAt: timestamp("prepared_at", { withTimezone: true }),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+});
+
 export const payouts = pgTable("payouts", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   partnerId: uuid("partner_id").notNull().references(() => partners.id, { onDelete: "restrict" }),
@@ -293,9 +313,17 @@ export const payouts = pgTable("payouts", {
   decidedAt: timestamp("decided_at", { withTimezone: true }),
   paidAt: timestamp("paid_at", { withTimezone: true }),
   adminNote: text("admin_note"),
+  // on-chain поля (пакетная выплата)
+  batchId: uuid("batch_id").references(() => payoutBatches.id, { onDelete: "set null" }),
+  walletAddress: text("wallet_address"),
+  txHash: text("tx_hash"),
+  chainStatus: text("chain_status"), // pending | simulated | broadcast | confirmed | failed
+  chainError: text("chain_error"),
 }, (table) => [
   index("payouts_partner_idx").on(table.partnerId, table.requestedAt),
   index("payouts_status_idx").on(table.status, table.requestedAt),
+  index("payouts_batch_idx").on(table.batchId),
+  uniqueIndex("payouts_tx_hash_uidx").on(table.txHash).where(sql`${table.txHash} IS NOT NULL`),
   check("payouts_amount_check", sql`${table.amountNano} > 0`),
 ]);
 

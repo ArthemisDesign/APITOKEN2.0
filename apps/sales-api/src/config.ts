@@ -36,6 +36,22 @@ const environmentSchema = z.object({
   // Минимальный профит за окно выплат: 0 = платим любую сумму > 0 (по решению юзера).
   // Оставлен как knob на будущее; UI про него не упоминает.
   SALES_MIN_PAYOUT_USD: z.coerce.number().int().min(0).max(100_000).default(0),
+  // --- On-chain выплаты (USDT BEP-20). Секреты только server-side; браузеру/логам не отдаём.
+  // Пустая строка == не задано. Если ключ/RPC не заданы — движок выплат отключён (endpoints → 503).
+  PAYOUT_HOT_WALLET_KEY: z.preprocess((v) => (v === "" ? undefined : v), z.string().regex(/^(0x)?[0-9a-fA-F]{64}$/).optional()),
+  PAYOUT_SEND_RPC_URL: z.preprocess((v) => (v === "" ? undefined : v), z.string().url().optional()),
+  // Публичные BSC RPC для чтения (баланс/нонс/квитанции), через запятую, с фолбэком.
+  PAYOUT_READ_RPC_URLS: z.string().default(
+    "https://bsc-dataseed.binance.org,https://bsc-dataseed1.defibit.io,https://bsc-dataseed1.ninicoin.io,https://bsc.publicnode.com,https://binance.llamarpc.com",
+  ),
+  PAYOUT_USDT_CONTRACT: z.string().default("0x55d398326f99059fF775485246999027B3197955"),
+  PAYOUT_CHAIN_ID: z.coerce.number().int().default(56),
+  PAYOUT_GAS_PRICE_GWEI: z.string().default("0.05"),
+  PAYOUT_MIN_USD: z.coerce.number().min(0).max(100_000).default(0),
+  PAYOUT_CONFIRMATIONS: z.coerce.number().int().min(1).max(20).default(1),
+  // Жёсткий гейт окна выплат. true (по умолчанию) = отправка ФИЗИЧЕСКИ возможна только в 3-дневное
+  // окно; вне окна send-endpoints отвечают 423. false — только для теста/эксплуатации вручную.
+  PAYOUT_ENFORCE_WINDOW: z.enum(["true", "false"]).transform((v) => v === "true").default("true"),
 }).superRefine((value, context) => {
   if (value.EMAIL_DELIVERY_MODE === "smtp" && (!value.EMAIL_FROM || !value.SMTP_HOST || !value.SMTP_PORT)) {
     context.addIssue({ code: "custom", message: "EMAIL_FROM, SMTP_HOST and SMTP_PORT are required for SMTP delivery" });

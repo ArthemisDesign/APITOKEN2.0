@@ -14,6 +14,8 @@ export interface Payout {
   decidedAt: Date | null;
   paidAt: Date | null;
   adminNote: string | null;
+  txHash: string | null;
+  chainStatus: string | null;
 }
 
 export class InsufficientEarningsError extends Error {}
@@ -30,11 +32,13 @@ interface PayoutRow {
   decided_at: Date | null;
   paid_at: Date | null;
   admin_note: string | null;
+  tx_hash: string | null;
+  chain_status: string | null;
 }
 
 const PAYOUT_COLUMNS = `
   id, partner_id, amount_nano::text AS amount_nano, status, method, details,
-  requested_at, decided_at, paid_at, admin_note
+  requested_at, decided_at, paid_at, admin_note, tx_hash, chain_status
 `;
 
 function mapPayout(row: PayoutRow): Payout {
@@ -49,6 +53,8 @@ function mapPayout(row: PayoutRow): Payout {
     decidedAt: row.decided_at,
     paidAt: row.paid_at,
     adminNote: row.admin_note,
+    txHash: row.tx_hash,
+    chainStatus: row.chain_status,
   };
 }
 

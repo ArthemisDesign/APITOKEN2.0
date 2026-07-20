@@ -8,6 +8,7 @@ import { HealthController } from "./health.controller.js";
 import { InfrastructureModule } from "./infrastructure.module.js";
 import { InternalModule } from "./internal.module.js";
 import { PartnerModule } from "./partner.module.js";
+import { PayoutModule } from "./payout/payout.module.js";
 import { ReadinessService } from "./readiness.service.js";
 import { SyncService } from "./sync.service.js";
 
@@ -18,6 +19,7 @@ import { SyncService } from "./sync.service.js";
     AuthModule,
     PartnerModule,
     AdminModule,
+    PayoutModule,
     InternalModule,
   ],
   controllers: [HealthController],
