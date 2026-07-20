@@ -15,6 +15,7 @@ Run them on the production host as the `deploy` operator from `/opt/apitoken/rep
 | Commerce API | `/opt/apitoken/releases/<sha>` | `apitoken-api@3000.service` / `apitoken-api@3001.service` | `http://127.0.0.1:<port>/v1/ready` |
 | Rust engine | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api@8787.service` / `claude-api@8788.service` | `http://127.0.0.1:<port>/ready` |
 | Commerce worker | `/opt/apitoken/releases/<sha>` through `current` | `apitoken-worker.service` | process-active + exact cwd |
+| Content Studio | `/opt/apitoken/releases/<sha>` through `current` | `apitoken-content-studio.service` | `http://127.0.0.1:3500/api/health` + exact cwd |
 | PostgreSQL | `/var/lib/apitoken/postgres` | `apitoken-postgres.service` | forbidden to these scripts |
 
 The engine owns a separate `claude_engine` database and non-superuser login role in this PostgreSQL
@@ -24,8 +25,9 @@ Caddy health-routes that origin to the active engine slot.
 
 After the Stage-2 database cutover, use `deploy.sh --engine-bluegreen` followed by
 `engine-bluegreen.sh`; legacy restart mode refuses to run while the PostgreSQL credential is active.
-`api-bluegreen.sh` similarly owns commerce slots; `--with-worker` restarts the single worker from
-the same immutable commerce release. Any service name containing `postgres` is rejected before work begins.
+`api-bluegreen.sh` similarly owns commerce slots; `--with-worker` restarts the single worker and
+private Content Studio from the same immutable commerce release. Any service name containing
+`postgres` is rejected before work begins.
 
 ## One-time prerequisites
 

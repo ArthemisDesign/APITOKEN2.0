@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import manifest from "./app/manifest";
-import sitemap from "./app/sitemap";
+import { buildSitemap } from "./app/sitemap";
 import { buildRobotsTxt } from "./lib/robots";
 import {
   absoluteUrl,
@@ -15,7 +15,7 @@ import {
 
 describe("technical SEO", () => {
   it("publishes every canonical public route in the sitemap and excludes private flows", () => {
-    const urls = sitemap().map((entry) => entry.url);
+    const urls = buildSitemap().map((entry) => entry.url);
 
     for (const page of sitemapPages) {
       expect(urls).toContain(absoluteUrl(page.path));

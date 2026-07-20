@@ -6,6 +6,21 @@
 	}
 }
 
+# Admin-only commerce routes. The host-only key is injected by Caddy and never reaches a browser.
+(commerce_admin_backend) {
+	reverse_proxy 127.0.0.1:3000 127.0.0.1:3001 {
+		lb_policy round_robin
+		health_uri /v1/ready
+		health_interval 2s
+		health_timeout 2s
+		health_status 2xx
+		fail_duration 5s
+		max_fails 1
+		unhealthy_status 503
+		header_up x-admin-key "<COMMERCIAL_ADMIN_KEY_PLACEHOLDER>"
+	}
+}
+
 api.apitoken.sale {
 	@public_core path /v1/* /health /balance
 	handle @public_core {
@@ -90,17 +105,7 @@ panel.apitoken.sale {
 	@users path /admin/users /admin/users/*
 	handle @users {
 		rewrite * /v1{uri}
-		reverse_proxy 127.0.0.1:3000 127.0.0.1:3001 {
-			lb_policy round_robin
-			health_uri /v1/ready
-			health_interval 2s
-			health_timeout 2s
-			health_status 2xx
-			fail_duration 5s
-			max_fails 1
-			unhealthy_status 503
-			header_up x-admin-key "<COMMERCIAL_ADMIN_KEY_PLACEHOLDER>"
-		}
+		import commerce_admin_backend
 	}
 	# Партнёрская админка вынесена на отдельный сайт partners.panel.apitoken.sale (см. ниже).
 	# HTML панели отдаёт сам движок (GET /panel, вкомпилирован include_str!) — панель всегда
@@ -117,6 +122,18 @@ panel.apitoken.sale {
 			max_fails 1
 			unhealthy_status 503
 		}
+	}
+}
+
+# Private editorial workspace. Human access and same-origin API calls share the panel admins;
+# the commerce admin key stays server-side. The app also emits noindex headers as defence in depth.
+content-studio.apitoken.sale {
+	import panel_admins
+	handle /v1/* {
+		import commerce_admin_backend
+	}
+	handle {
+		reverse_proxy 127.0.0.1:3500
 	}
 }
 

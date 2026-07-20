@@ -13,8 +13,8 @@ usage() {
     'Cut the commerce API over between health-gated systemd slots.' \
     '' \
     'Options:' \
-    '  --with-worker        Restart the immutable worker after the API cutover' \
-    '                       (it runs from /opt/apitoken/releases/current)' \
+    '  --with-worker        Restart immutable companion services after the API cutover' \
+    '                       (worker and Content Studio run from releases/current)' \
     '  --target-port PORT   Keep the final API on port 3000 or 3001' \
     '  --timeout SECONDS    Readiness deadline per operation (default: 60)' \
     '  --dry-run            Print mutations without changing service state' \
@@ -33,6 +33,9 @@ COMMERCE_RELEASE_ROOT=${COMMERCE_RELEASE_ROOT:-/opt/apitoken/releases}
 DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}
 WORKER_SERVICE=apitoken-worker.service
 WORKER_SOURCE_ROOT=$COMMERCE_RELEASE_ROOT/current
+CONTENT_STUDIO_SERVICE=apitoken-content-studio.service
+CONTENT_STUDIO_SOURCE_ROOT=$COMMERCE_RELEASE_ROOT/current
+CONTENT_STUDIO_HEALTH_URL=http://127.0.0.1:3500/api/health
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -264,6 +267,39 @@ require_worker_stopped() {
   log "$WORKER_SERVICE is stopped; no old worker process overlaps the new one"
 }
 
+require_content_studio_active() {
+  local studio_pid studio_cwd deadline
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "dry-run: would require $CONTENT_STUDIO_SERVICE active on the immutable current release"
+    return 0
+  fi
+  deadline=$(( $(date +%s) + READINESS_TIMEOUT ))
+  while (( $(date +%s) < deadline )); do
+    if unit_is_active "$CONTENT_STUDIO_SERVICE"; then
+      studio_pid=$(systemctl show "$CONTENT_STUDIO_SERVICE" -p MainPID --value)
+      if [[ $studio_pid =~ ^[1-9][0-9]*$ ]]; then
+        studio_cwd=$(readlink -f -- "/proc/$studio_pid/cwd" 2>/dev/null || true)
+        if [[ $studio_cwd == "$CURRENT_RELEASE/apps/content-studio" ]] \
+          && http_returns_200 "$CONTENT_STUDIO_HEALTH_URL" 2; then
+          log "$CONTENT_STUDIO_SERVICE is active and healthy from immutable release $CURRENT_RELEASE"
+          return 0
+        fi
+      fi
+    fi
+    sleep 1
+  done
+  die "$CONTENT_STUDIO_SERVICE did not become healthy on immutable release $CURRENT_RELEASE within ${READINESS_TIMEOUT}s"
+}
+
+require_content_studio_stopped() {
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "dry-run: would require $CONTENT_STUDIO_SERVICE to be stopped before its new process starts"
+    return 0
+  fi
+  ! unit_is_active "$CONTENT_STUDIO_SERVICE" || die "$CONTENT_STUDIO_SERVICE is still active after stop"
+  log "$CONTENT_STUDIO_SERVICE is stopped"
+}
+
 ACTIVE_PORT=
 TARGET_PORT=
 CURRENT_RELEASE=
@@ -274,6 +310,7 @@ OLD_SLOT_STOPPED=0
 CUTOVER_ACTIVE=0
 CUTOVER_COMMITTED=0
 WORKER_TOUCHED=0
+CONTENT_STUDIO_TOUCHED=0
 
 stop_failed_target_after_old_ready() {
   local old_port=$1
@@ -387,6 +424,15 @@ recover_cutover() {
     fi
   fi
 
+  if [[ "$CONTENT_STUDIO_TOUCHED" == "1" ]] && ! unit_is_active "$CONTENT_STUDIO_SERVICE"; then
+    if systemctl_raw start "$CONTENT_STUDIO_SERVICE" && unit_is_active "$CONTENT_STUDIO_SERVICE"; then
+      log "recovery restored immutable $CONTENT_STUDIO_SERVICE"
+    else
+      warn "recovery could not restore $CONTENT_STUDIO_SERVICE"
+      recovery_failed=1
+    fi
+  fi
+
   if slot_is_ready 3000 || slot_is_ready 3001; then
     log "recovery verified that at least one API slot is ready"
   else
@@ -434,6 +480,7 @@ fi
 validate_service_unit "$(slot_unit 3000)"
 validate_service_unit "$(slot_unit 3001)"
 validate_service_unit "$WORKER_SERVICE"
+validate_service_unit "$CONTENT_STUDIO_SERVICE"
 COMMERCE_RELEASE_ROOT=$(canonicalize_release_root "$COMMERCE_RELEASE_ROOT" /opt/apitoken commerce)
 
 log "preflighting blue-green API cutover (dry-run=$DRY_RUN with-worker=$WITH_WORKER target=${REQUESTED_TARGET_PORT:-auto})"
@@ -556,6 +603,15 @@ if [[ "$WITH_WORKER" == "1" ]]; then
   log "starting $WORKER_SERVICE from $WORKER_SOURCE_ROOT"
   systemctl_command start "$WORKER_SERVICE"
   require_worker_active
+
+  CONTENT_STUDIO_TOUCHED=1
+  log "stopping immutable $CONTENT_STUDIO_SERVICE before restart"
+  systemctl_command stop "$CONTENT_STUDIO_SERVICE"
+  require_content_studio_stopped
+  log "starting $CONTENT_STUDIO_SERVICE from $CONTENT_STUDIO_SOURCE_ROOT"
+  systemctl_command start "$CONTENT_STUDIO_SERVICE"
+  require_content_studio_active
+  systemctl_command enable "$CONTENT_STUDIO_SERVICE"
 fi
 
 if [[ "$DRY_RUN" != "1" ]] && ! slot_serves_current_release "$TARGET_PORT" "$CURRENT_RELEASE"; then
@@ -571,7 +627,7 @@ fi
 
 commit_cutover
 if [[ "$DRY_RUN" == "1" ]]; then
-  log "dry-run complete; no API or worker service state changed"
+  log "dry-run complete; no API, worker, or Content Studio service state changed"
 else
   log "blue-green API cutover complete; port $TARGET_PORT serves release $(basename -- "$CURRENT_RELEASE")"
 fi

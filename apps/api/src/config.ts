@@ -47,6 +47,11 @@ const environmentSchema = z.object({
   EMAIL_VERIFICATION_TTL_SECONDS: z.coerce.number().int().min(900).max(604_800).default(86_400),
   PASSWORD_RESET_TTL_SECONDS: z.coerce.number().int().min(300).max(86_400).default(3_600),
   COMMERCIAL_ADMIN_KEY: z.string().min(32).optional(),
+  CONTENT_STUDIO_ENGINE_URL: z.string().url().default("https://api.apitoken.sale"),
+  CONTENT_STUDIO_ENGINE_KEY: z.preprocess((value) => value === "" ? undefined : value, z.string().min(20).optional()),
+  CONTENT_STUDIO_AI_MODEL: z.string().default("claude-sonnet-5"),
+  CONTENT_STUDIO_AI_MAX_TOKENS: z.coerce.number().int().min(512).max(64_000).default(12_000),
+  INDEXNOW_KEY: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).default("1308f989ba68a288dc5acf1423b445f8"),
   // Ключ internal-фида для sales bounded context (sales.apitoken.sale). Не задан — фид выключен.
   SALES_CONTROL_KEY: z.string().min(32).optional(),
   // База sales-api для обратного вызова (погашение промокодов). Не задано — промо выключено.
@@ -69,6 +74,9 @@ const environmentSchema = z.object({
   GITHUB_CLIENT_SECRET: z.string().min(1).optional(),
   GITHUB_REDIRECT_URI: z.string().url().optional(),
 }).superRefine((value, context) => {
+  if (value.NODE_ENV === "production" && !value.CONTENT_STUDIO_ENGINE_KEY) {
+    context.addIssue({ code: "custom", message: "CONTENT_STUDIO_ENGINE_KEY is required in production" });
+  }
   const configured = [
     value.DIGISELLER_SELLER_ID,
     value.DIGISELLER_API_KEY,

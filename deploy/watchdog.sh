@@ -286,7 +286,7 @@ reconcile_engine_runtime() {
 }
 
 final_verify_backend() {
-  local sha=$1 current worker_pid worker_cwd
+  local sha=$1 current worker_pid worker_cwd studio_pid studio_cwd
   current=$(readlink -f -- "$COMMERCE_RELEASE_ROOT/current")
   [[ $current == "$COMMERCE_RELEASE_ROOT/$sha" ]] || wd_die "commerce current is not $sha after cutover"
   curl --noproxy '*' --fail --silent --show-error --max-time 5 http://127.0.0.1:3000/v1/ready >/dev/null \
@@ -298,6 +298,14 @@ final_verify_backend() {
   worker_cwd=$(readlink -f -- "/proc/$worker_pid/cwd")
   [[ $worker_cwd == "$COMMERCE_RELEASE_ROOT/$sha/apps/worker" ]] \
     || wd_die "worker is not running immutable release $sha (cwd=$worker_cwd)"
+  systemctl is-active --quiet apitoken-content-studio.service || wd_die "content studio is not active after cutover"
+  studio_pid=$(systemctl show apitoken-content-studio.service -p MainPID --value)
+  [[ $studio_pid =~ ^[1-9][0-9]*$ ]] || wd_die "content studio has no MainPID"
+  studio_cwd=$(readlink -f -- "/proc/$studio_pid/cwd")
+  [[ $studio_cwd == "$COMMERCE_RELEASE_ROOT/$sha/apps/content-studio" ]] \
+    || wd_die "content studio is not running immutable release $sha (cwd=$studio_cwd)"
+  curl --noproxy '*' --fail --silent --show-error --max-time 5 http://127.0.0.1:3500/api/health >/dev/null \
+    || wd_die "content studio health endpoint is not ready after cutover"
 }
 
 deploy_engine() {
@@ -321,7 +329,7 @@ deploy_backend() {
   local sha=$1
   CURRENT_PHASE=deploying-backend
   CURRENT_PHASE_BEFORE_FAILURE=deploying-backend
-  status "building and blue-green deploying API plus worker; migrations explicitly skipped"
+  status "building and blue-green deploying API, worker, and Content Studio; migrations explicitly skipped"
   github_status pending deploy/backend "Backend blue-green deployment in progress"
   github_deployment_start backend production-backend https://backend.apitoken.sale/v1/ready
   "$CONTROLLER_ROOT/deploy.sh" --api-only --skip-migrate "$sha"
@@ -330,7 +338,7 @@ deploy_backend() {
   wd_atomic_write "$BACKEND_FILE" "$sha"
   github_deployment_success backend
   github_status success deploy/backend "Backend and worker verified in production"
-  wd_log "backend $sha passed final production verification"
+  wd_log "backend and Content Studio $sha passed final production verification"
 }
 
 deploy_sales() {

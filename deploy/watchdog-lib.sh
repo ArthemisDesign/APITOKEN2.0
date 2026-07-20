@@ -216,7 +216,7 @@ wd_path_is_engine() {
 
 wd_path_is_backend() {
   case "$1" in
-    apps/api/*|apps/worker/*|packages/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig.base.json|.node-version)
+    apps/api/*|apps/worker/*|apps/content-studio/*|packages/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig.base.json|.node-version)
       return 0
       ;;
     *) return 1 ;;

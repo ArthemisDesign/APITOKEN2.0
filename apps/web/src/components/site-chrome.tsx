@@ -47,6 +47,7 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
     <Link href={home ? "#how" : `${loc("/")}#how`}><T k="nav_how">How it works</T></Link>
     <Link href={loc("/integrations")}><T k="nav_int">Integrations</T></Link>
     <Link href={loc("/models")}><T k="nav_models">Models</T></Link>
+    <Link href="/blog">Blog</Link>
     <Link href={home ? "#pricing" : loc("/plans")}><T k="nav_pricing">Pricing</T></Link>
     <Link href={DOCS_URL} target="_blank" rel="noreferrer"><T k="nav_docs">Docs</T></Link>
   </>;

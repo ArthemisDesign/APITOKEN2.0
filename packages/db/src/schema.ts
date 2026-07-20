@@ -32,6 +32,15 @@ export const emailOutboxStatus = pgEnum("email_outbox_status", ["pending", "proc
 export const customerType = pgEnum("customer_type", ["b2c", "b2b"]);
 export const pricingJobStatus = pgEnum("pricing_job_status", ["pending", "processing", "retry", "confirmed"]);
 export const oauthProvider = pgEnum("oauth_provider", ["google", "github"]);
+export const contentProjectStatus = pgEnum("content_project_status", [
+  "imported",
+  "brief_ready",
+  "drafting",
+  "blog_published",
+  "distributed",
+]);
+export const contentDraftStatus = pgEnum("content_draft_status", ["draft", "approved"]);
+export const blogPostStatus = pgEnum("blog_post_status", ["draft", "published"]);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey(),
@@ -412,5 +421,133 @@ export const auditLog = pgTable("audit_log", {
   metadata: jsonb("metadata").notNull().default({}),
   createdAt,
 }, (table) => [index("audit_log_target_idx").on(table.targetType, table.targetId, table.createdAt)]);
+
+export const contentProjects = pgTable("content_projects", {
+  id: uuid("id").primaryKey(),
+  sourceUrl: text("source_url").notNull(),
+  sourcePlatform: text("source_platform").notNull(),
+  sourceTitle: text("source_title").notNull().default(""),
+  sourceAuthor: text("source_author"),
+  sourceContent: text("source_content").notNull().default(""),
+  sourcePublishedAt: timestamp("source_published_at", { withTimezone: true }),
+  sourceSnapshot: jsonb("source_snapshot").notNull().default({}),
+  primaryLocale: text("primary_locale").notNull().default("en"),
+  status: contentProjectStatus("status").notNull().default("imported"),
+  briefMarkdown: text("brief_markdown").notNull().default(""),
+  briefVersion: integer("brief_version").notNull().default(0),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  index("content_projects_status_updated_idx").on(table.status, table.updatedAt),
+  check("content_projects_locale_check", sql`${table.primaryLocale} IN ('en', 'ru')`),
+  check("content_projects_brief_version_check", sql`${table.briefVersion} >= 0`),
+]);
+
+export const contentSources = pgTable("content_sources", {
+  id: uuid("id").primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => contentProjects.id, { onDelete: "cascade" }),
+  url: text("url").notNull(),
+  title: text("title").notNull().default(""),
+  sourceType: text("source_type").notNull().default("reference"),
+  publisher: text("publisher"),
+  publishedAt: timestamp("published_at", { withTimezone: true }),
+  notes: text("notes").notNull().default(""),
+  createdAt,
+}, (table) => [
+  uniqueIndex("content_sources_project_url_uidx").on(table.projectId, table.url),
+  index("content_sources_project_idx").on(table.projectId, table.createdAt),
+]);
+
+export const platformProfiles = pgTable("platform_profiles", {
+  id: uuid("id").primaryKey(),
+  key: text("key").notNull(),
+  name: text("name").notNull(),
+  rules: jsonb("rules").notNull().default({}),
+  builtIn: boolean("built_in").notNull().default(false),
+  active: boolean("active").notNull().default(true),
+  createdAt,
+  updatedAt,
+}, (table) => [uniqueIndex("platform_profiles_key_uidx").on(table.key)]);
+
+export const contentDrafts = pgTable("content_drafts", {
+  id: uuid("id").primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => contentProjects.id, { onDelete: "cascade" }),
+  profileKey: text("profile_key").notNull(),
+  locale: text("locale").notNull().default("en"),
+  title: text("title").notNull().default(""),
+  excerpt: text("excerpt").notNull().default(""),
+  bodyMarkdown: text("body_markdown").notNull().default(""),
+  status: contentDraftStatus("status").notNull().default("draft"),
+  revision: integer("revision").notNull().default(1),
+  briefVersion: integer("brief_version").notNull().default(0),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  uniqueIndex("content_drafts_project_profile_locale_uidx").on(table.projectId, table.profileKey, table.locale),
+  index("content_drafts_project_idx").on(table.projectId, table.updatedAt),
+  check("content_drafts_locale_check", sql`${table.locale} IN ('en', 'ru')`),
+  check("content_drafts_revision_check", sql`${table.revision} > 0`),
+  check("content_drafts_brief_version_check", sql`${table.briefVersion} >= 0`),
+]);
+
+export const contentRevisions = pgTable("content_revisions", {
+  id: uuid("id").primaryKey(),
+  draftId: uuid("draft_id").notNull().references(() => contentDrafts.id, { onDelete: "cascade" }),
+  revision: integer("revision").notNull(),
+  scope: text("scope").notNull(),
+  instruction: text("instruction").notNull(),
+  before: jsonb("before").notNull(),
+  after: jsonb("after").notNull(),
+  createdAt,
+}, (table) => [
+  uniqueIndex("content_revisions_draft_revision_uidx").on(table.draftId, table.revision),
+  check("content_revisions_scope_check", sql`${table.scope} IN ('draft', 'platform', 'project', 'all')`),
+  check("content_revisions_revision_check", sql`${table.revision} > 1`),
+]);
+
+export const blogPosts = pgTable("blog_posts", {
+  id: uuid("id").primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => contentProjects.id, { onDelete: "restrict" }),
+  draftId: uuid("draft_id").notNull().references(() => contentDrafts.id, { onDelete: "restrict" }),
+  slug: text("slug").notNull(),
+  locale: text("locale").notNull().default("en"),
+  title: text("title").notNull(),
+  excerpt: text("excerpt").notNull(),
+  bodyMarkdown: text("body_markdown").notNull(),
+  authorName: text("author_name").notNull().default("apiToken.sale Editorial"),
+  seoTitle: text("seo_title").notNull(),
+  seoDescription: text("seo_description").notNull(),
+  sourceUrls: jsonb("source_urls").notNull().default([]),
+  relatedPaths: jsonb("related_paths").notNull().default([]),
+  status: blogPostStatus("status").notNull().default("draft"),
+  publishedAt: timestamp("published_at", { withTimezone: true }),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  uniqueIndex("blog_posts_project_uidx").on(table.projectId),
+  uniqueIndex("blog_posts_draft_uidx").on(table.draftId),
+  uniqueIndex("blog_posts_slug_locale_uidx").on(table.slug, table.locale),
+  index("blog_posts_status_published_idx").on(table.status, table.publishedAt),
+  check("blog_posts_locale_check", sql`${table.locale} IN ('en', 'ru')`),
+  check("blog_posts_publication_check", sql`
+    (${table.status} = 'draft' AND ${table.publishedAt} IS NULL)
+    OR (${table.status} = 'published' AND ${table.publishedAt} IS NOT NULL)
+  `),
+]);
+
+export const externalPublications = pgTable("external_publications", {
+  id: uuid("id").primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => contentProjects.id, { onDelete: "restrict" }),
+  draftId: uuid("draft_id").notNull().references(() => contentDrafts.id, { onDelete: "restrict" }),
+  platformKey: text("platform_key").notNull(),
+  url: text("url").notNull(),
+  publishedAt: timestamp("published_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt,
+}, (table) => [
+  uniqueIndex("external_publications_draft_uidx").on(table.draftId),
+  uniqueIndex("external_publications_url_uidx").on(table.url),
+  index("external_publications_project_idx").on(table.projectId, table.publishedAt),
+  check("external_publications_not_blog_check", sql`${table.platformKey} <> 'blog'`),
+]);
 
 export type EngineCreditRow = typeof engineCredits.$inferSelect;

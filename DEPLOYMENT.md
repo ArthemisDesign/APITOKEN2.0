@@ -133,7 +133,7 @@ test ${#SHA} -eq 40
 printf '%s\n' "$SHA"
 ```
 
-The controllers fetch and verify the supplied commit again. API and worker processes both run from
+The controllers fetch and verify the supplied commit again. API, worker, and Content Studio processes run from
 the immutable release selected by `/opt/apitoken/releases/current`; the host checkout is only the
 controller source and may retain reviewed host-specific files.
 
@@ -215,8 +215,9 @@ sudo systemctl start apitoken-worker.service
 systemctl is-active apitoken-worker.service
 ```
 
-`--with-worker` only stops and starts the unit; phase 1 (`deploy.sh --api-only`) must already have
-built and selected the release.
+`--with-worker` restarts the worker and Content Studio, then verifies the studio health endpoint and
+both exact working directories. Phase 1 (`deploy.sh --api-only`) must already have built and selected
+the release.
 
 ## Changes spanning engine and API
 

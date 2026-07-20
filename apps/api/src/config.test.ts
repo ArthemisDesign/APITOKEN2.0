@@ -35,6 +35,7 @@ describe("commercial API configuration", () => {
     const githubEnvironment = {
       ...requiredEnvironment,
       NODE_ENV: "production",
+      CONTENT_STUDIO_ENGINE_KEY: `sk-pool-${"x".repeat(32)}`,
       GITHUB_CLIENT_ID: "github-client-id",
       GITHUB_CLIENT_SECRET: "github-client-secret",
       GITHUB_REDIRECT_URI: "https://backend.apitoken.sale/v1/auth/github/callback",
@@ -45,5 +46,15 @@ describe("commercial API configuration", () => {
       ...githubEnvironment,
       GITHUB_REDIRECT_URI: "https://backend.apitoken.sale/v1/auth/github/other",
     })).toThrow("GITHUB_REDIRECT_URI must use the canonical production callback");
+  });
+
+  it("requires a dedicated Content Studio AI key in production", () => {
+    expect(() => validateEnvironment({ ...requiredEnvironment, NODE_ENV: "production" }))
+      .toThrow("CONTENT_STUDIO_ENGINE_KEY is required in production");
+    expect(validateEnvironment({
+      ...requiredEnvironment,
+      NODE_ENV: "production",
+      CONTENT_STUDIO_ENGINE_KEY: `sk-pool-${"x".repeat(32)}`,
+    }).CONTENT_STUDIO_ENGINE_KEY).toMatch(/^sk-pool-/);
   });
 });

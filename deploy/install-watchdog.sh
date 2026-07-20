@@ -39,7 +39,7 @@ install -o root -g root -m 0644 "$ROOT/deploy/commerce-postgres.compose.yaml" \
   /usr/local/lib/apitoken-watchdog/controller/commerce-postgres.compose.yaml
 for unit in \
   apitoken-api@.service apitoken-deploy-watchdog.service apitoken-deploy-watchdog.timer \
-  apitoken-worker.service claude-api@.service claude-api-backup.service claude-api-backup.timer \
+  apitoken-worker.service apitoken-content-studio.service claude-api@.service claude-api-backup.service claude-api-backup.timer \
   claude-api-fingerprint.service claude-api-fingerprint.timer; do
   install -o root -g root -m 0644 "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"
 done

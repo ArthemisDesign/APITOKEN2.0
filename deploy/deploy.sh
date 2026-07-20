@@ -162,6 +162,7 @@ write_release_marker() {
 validate_commerce_stage() {
   local directory=$1
   [[ -r "$directory/apps/api/dist/main.js" ]] || die "staged commerce API artifact is missing: $directory/apps/api/dist/main.js"
+  [[ -r "$directory/apps/content-studio/.next/BUILD_ID" ]] || die "staged content studio artifact is missing: $directory/apps/content-studio/.next/BUILD_ID"
   [[ -r "$directory/packages/db/dist/migrate.js" ]] || die "staged prebuilt migration artifact is missing: $directory/packages/db/dist/migrate.js"
 }
 

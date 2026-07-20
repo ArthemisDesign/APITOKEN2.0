@@ -34,7 +34,7 @@ function withoutRuPrefix(pathname: string): string {
 
 function usesPublicSiteShell(pathname: string): boolean {
   const path = withoutRuPrefix(pathname);
-  return publicSitePaths.has(path) || path.startsWith("/int-");
+  return publicSitePaths.has(path) || path.startsWith("/int-") || path === "/blog" || path.startsWith("/blog/");
 }
 
 function usesAuthShell(pathname: string): boolean {

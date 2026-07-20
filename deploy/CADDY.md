@@ -1,6 +1,6 @@
 # Caddy production routing
 
-`deploy/Caddyfile` is the complete intended production configuration for Caddy 2.11. It includes the public engine API, the blue-green commerce API, a loopback-only stable Control API origin, mail/autodiscovery, support routing, and the operator panel.
+`deploy/Caddyfile` is the complete intended production configuration for Caddy 2.11. It includes the public engine API, the blue-green commerce API, a loopback-only stable Control API origin, mail/autodiscovery, support routing, the operator panel, and the basic-auth-protected Content Studio.
 
 ## Host-only secrets
 

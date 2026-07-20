@@ -26,6 +26,10 @@ future browser at apitoken.sale
                                                     |-> commerce DB/role
                                                     `-> claude_engine DB/isolated role
 
+content-studio.apitoken.sale ---------------> Caddy basic auth
+                                                |-> Next.js workspace 127.0.0.1:3500
+                                                `-> admin API slots 127.0.0.1:3000/3001
+
 commercial host -- encrypted Borg/SSH --> 84.32.109.82:2223/backup/.repo
 ```
 
@@ -89,7 +93,7 @@ future frontend. Exact DNS records override the wildcard if they are added later
 ```text
 /opt/apitoken/repo             fetch-only deployment checkout and reviewed controller source
 /opt/apitoken/releases/<sha>   immutable commerce release directories
-/opt/apitoken/releases/current active API/worker commerce release symlink
+/opt/apitoken/releases/current active API/worker/Content Studio commerce release symlink
 /srv/claude-api/releases/<sha> immutable Rust engine release directories
 /srv/claude-api/releases/current active engine release symlink
 /var/lib/apitoken/watchdog     tested candidates, SHA baselines, quarantine and status state
@@ -116,6 +120,7 @@ systemd/apitoken-postgres.service
 systemd/apitoken-api.service          legacy untemplated API unit
 systemd/apitoken-api@.service         release-symlink API unit; instance name is the port
 systemd/apitoken-worker.service
+systemd/apitoken-content-studio.service
 systemd/claude-api.service          one-time SQLite-to-PostgreSQL bridge
 systemd/claude-api@.service         PostgreSQL-fenced blue/green slots
 systemd/claude-api-backup.service

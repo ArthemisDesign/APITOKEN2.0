@@ -245,3 +245,77 @@ export interface AuthUserView {
   customerType: "b2c" | "b2b";
   totpEnabled: boolean;
 }
+
+export const contentLocaleSchema = z.enum(["en", "ru"]);
+export const contentRevisionScopeSchema = z.enum(["draft", "platform", "project", "all"]);
+export const contentProfileKeySchema = z.string().trim().regex(/^[a-z][a-z0-9-]{1,39}$/);
+
+export const importContentProjectSchema = z.object({
+  sourceUrl: z.string().url().max(2_048),
+  locale: contentLocaleSchema.default("en"),
+  sourceContent: z.string().trim().max(100_000).optional(),
+}).strict();
+
+export const updateContentProjectSchema = z.object({
+  sourceTitle: z.string().trim().max(300).optional(),
+  sourceAuthor: z.string().trim().max(200).nullable().optional(),
+  sourceContent: z.string().trim().min(1).max(100_000).optional(),
+  briefMarkdown: z.string().trim().max(100_000).optional(),
+}).strict();
+
+export const contentSourceSchema = z.object({
+  url: z.string().url().max(2_048),
+  title: z.string().trim().max(300).default(""),
+  sourceType: z.enum(["primary", "reference", "verification"]).default("reference"),
+  publisher: z.string().trim().max(200).nullable().optional(),
+  notes: z.string().trim().max(2_000).default(""),
+}).strict();
+
+export const generateContentDraftsSchema = z.object({
+  profiles: z.array(contentProfileKeySchema).min(1).max(12),
+  locale: contentLocaleSchema,
+}).strict();
+
+export const updateContentDraftSchema = z.object({
+  title: z.string().trim().max(300).optional(),
+  excerpt: z.string().trim().max(500).optional(),
+  bodyMarkdown: z.string().trim().max(150_000).optional(),
+  status: z.enum(["draft", "approved"]).optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, "at least one draft field is required");
+
+export const reviseContentDraftSchema = z.object({
+  instruction: z.string().trim().min(3).max(4_000),
+  scope: contentRevisionScopeSchema.default("draft"),
+}).strict();
+
+export const publishBlogPostSchema = z.object({
+  slug: z.string().trim().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(120),
+  authorName: z.string().trim().min(1).max(120).default("apiToken.sale Editorial"),
+  seoTitle: z.string().trim().min(1).max(70),
+  seoDescription: z.string().trim().min(1).max(170),
+  relatedPaths: z.array(z.string().startsWith("/").max(300)).max(8).default([]),
+}).strict();
+
+export const recordExternalPublicationSchema = z.object({
+  url: z.string().url().max(2_048),
+}).strict();
+
+export const platformProfileRulesSchema = z.object({
+  language: contentLocaleSchema.optional(),
+  tone: z.string().trim().min(1).max(500),
+  audience: z.string().trim().min(1).max(500),
+  length: z.string().trim().min(1).max(200),
+  linkPolicy: z.string().trim().min(1).max(500),
+  requiredDisclosure: z.string().trim().max(500).default(""),
+  forbidden: z.array(z.string().trim().min(1).max(200)).max(20).default([]),
+}).strict();
+
+export const upsertPlatformProfileSchema = z.object({
+  key: contentProfileKeySchema,
+  name: z.string().trim().min(1).max(100),
+  rules: platformProfileRulesSchema,
+}).strict();
+
+export type ContentLocale = z.infer<typeof contentLocaleSchema>;
+export type ContentRevisionScope = z.infer<typeof contentRevisionScopeSchema>;
+export type PlatformProfileRules = z.infer<typeof platformProfileRulesSchema>;

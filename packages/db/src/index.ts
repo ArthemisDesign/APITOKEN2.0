@@ -12,4 +12,5 @@ export * from "./payments.js";
 export * from "./pricing.js";
 export * from "./totp.js";
 export * from "./sales-feed.js";
+export * from "./content-studio.js";
 export * from "./schema.js";

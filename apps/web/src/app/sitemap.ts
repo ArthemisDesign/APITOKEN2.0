@@ -2,10 +2,15 @@ import type { MetadataRoute } from "next";
 import { articlesForLocale, articleUpdatedDate, learnHubPath, learnPath, LOCALES } from "@/lib/learn";
 import { claudeModels, modelPath } from "@/lib/models";
 import { absoluteUrl, LAST_CONTENT_UPDATE, sitemapPages } from "@/lib/seo";
+import { blogPath, listBlogPosts, type PublicBlogPostSummary } from "@/lib/blog";
 
 const MODELS_LAUNCH = new Date("2026-07-17T00:00:00.000Z");
 
-export default function sitemap(): MetadataRoute.Sitemap {
+export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
+  return buildSitemap(await listBlogPosts());
+}
+
+export function buildSitemap(blogPosts: PublicBlogPostSummary[] = []): MetadataRoute.Sitemap {
   const corePages: MetadataRoute.Sitemap = sitemapPages.map((page) => ({
     url: absoluteUrl(page.path),
     lastModified: LAST_CONTENT_UPDATE,
@@ -15,6 +20,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
 
   const infoPages: MetadataRoute.Sitemap = [
     { url: absoluteUrl("/about"), changeFrequency: "monthly" as const, priority: 0.6 },
+    { url: absoluteUrl("/blog"), changeFrequency: "daily" as const, priority: 0.8 },
     { url: absoluteUrl("/contacts"), changeFrequency: "monthly" as const, priority: 0.5 },
     { url: absoluteUrl("/changelog"), changeFrequency: "weekly" as const, priority: 0.5 },
     { url: absoluteUrl("/status"), changeFrequency: "weekly" as const, priority: 0.4 },
@@ -61,5 +67,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
     })),
   ];
 
-  return [...corePages, ...ruCorePages, ...infoPages, ...toolPages, ...modelPages, ...learnHubs, ...learnPages];
+  const blogPages: MetadataRoute.Sitemap = blogPosts.map((post) => ({
+    url: absoluteUrl(blogPath(post)),
+    lastModified: new Date(post.updated_at),
+    changeFrequency: "monthly" as const,
+    priority: 0.8,
+  }));
+
+  return [...corePages, ...ruCorePages, ...infoPages, ...toolPages, ...modelPages, ...learnHubs, ...learnPages, ...blogPages];
 }

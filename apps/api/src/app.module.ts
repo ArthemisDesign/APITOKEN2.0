@@ -9,6 +9,7 @@ import { AuthModule } from "./auth.module.js";
 import { AccountModule } from "./account.module.js";
 import { AdminModule } from "./admin.module.js";
 import { SecurityModule } from "./security.module.js";
+import { ContentStudioModule } from "./content-studio.module.js";
 import { SalesFeedModule } from "./sales-feed.module.js";
 import { PromoController } from "./promo.controller.js";
 import { PromoService } from "./promo.service.js";
@@ -20,6 +21,7 @@ import { PromoService } from "./promo.service.js";
     AuthModule,
     AccountModule,
     AdminModule,
+    ContentStudioModule,
     SecurityModule,
     PaymentsModule,
     SalesFeedModule,

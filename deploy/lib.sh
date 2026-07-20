@@ -249,6 +249,7 @@ validate_commerce_release() {
   [[ -d "$directory" ]] || die "commerce release does not exist: $directory"
   validate_release_marker "$directory" "$expected_sha"
   [[ -r "$directory/apps/api/dist/main.js" ]] || die "commerce API artifact is missing: $directory/apps/api/dist/main.js"
+  [[ -r "$directory/apps/content-studio/.next/BUILD_ID" ]] || die "content studio artifact is missing: $directory/apps/content-studio/.next/BUILD_ID"
   [[ -r "$directory/packages/db/dist/migrate.js" ]] || die "prebuilt database migration artifact is missing: $directory/packages/db/dist/migrate.js"
 }
 
