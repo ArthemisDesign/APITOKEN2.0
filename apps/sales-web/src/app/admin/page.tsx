@@ -708,10 +708,12 @@ function ApplicationsCard({ adminKey }: { adminKey: string }) {
   );
 }
 
-// "10" / "12.5" (percent) -> bps (1250). Empty/invalid -> null.
-function pctToBps(value: string): number | null {
+// "10" / "12.5" (percent) -> bps (1250). Пусто -> undefined (омит, сервер подставит дефолт),
+// заполнено но не число -> null (ошибка валидации).
+function pctToBpsOptional(value: string): number | null | undefined {
   const s = value.trim();
-  if (s === "" || !/^\d{1,3}(\.\d{1,2})?$/.test(s)) return null;
+  if (s === "") return undefined;
+  if (!/^\d{1,3}(\.\d{1,2})?$/.test(s)) return null;
   const pct = Number(s);
   if (!Number.isFinite(pct)) return null;
   return Math.round(pct * 100);
@@ -721,12 +723,12 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
   const [items, setItems] = useState<InviteRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [username, setUsername] = useState("");
-  const [commissionPct, setCommissionPct] = useState("10");
-  const [subPct, setSubPct] = useState("10");
+  const [commissionPct, setCommissionPct] = useState("");
+  const [subPct, setSubPct] = useState("");
   const [discountEnabled, setDiscountEnabled] = useState(false);
-  const [discountPct, setDiscountPct] = useState("0");
-  const [promoCount, setPromoCount] = useState("0");
-  const [promoMaxUsd, setPromoMaxUsd] = useState("0");
+  const [discountPct, setDiscountPct] = useState("");
+  const [promoCount, setPromoCount] = useState("");
+  const [promoMaxUsd, setPromoMaxUsd] = useState("");
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState<{ inviteUrl: string; telegramUsername: string | null } | null>(null);
 
@@ -746,44 +748,46 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
   }, [load]);
 
   async function create() {
+    setError(null); // очищаем прошлую ошибку сразу при клике, чтобы не висела на валидном вводе
     const clean = username.trim().replace(/^@/, "");
     if (!/^[A-Za-z0-9_]{5,32}$/.test(clean)) {
       setError("Enter the sales partner's Telegram username (5–32 letters, digits, underscore).");
       return;
     }
-    const commissionBps = pctToBps(commissionPct);
-    const subCommissionBps = pctToBps(subPct);
-    const discountBps = pctToBps(discountPct);
+    // Пустое поле процента = «по умолчанию» (не отправляем — сервер подставит дефолт). Заполненное,
+    // но не число → ошибка. undefined = омит, null = невалидно.
+    const commissionBps = pctToBpsOptional(commissionPct);
+    const subCommissionBps = pctToBpsOptional(subPct);
+    const discountBps = pctToBpsOptional(discountPct);
     if (commissionBps === null || subCommissionBps === null || discountBps === null) {
       setError("Percents must be numbers like 10 or 12.5.");
       return;
     }
-    if (commissionBps > 10000 || subCommissionBps > 10000) {
+    if ((commissionBps ?? 0) > 10000 || (subCommissionBps ?? 0) > 10000) {
       setError("Commission percent cannot exceed 100%.");
       return;
     }
-    if (discountBps > 9000) {
+    if (discountEnabled && (discountBps ?? 0) > 9000) {
       setError("Referral discount cannot exceed 90%.");
       return;
     }
-    const count = Number(promoCount || "0");
-    const maxUsd = Number(promoMaxUsd || "0");
+    const count = promoCount.trim() === "" ? 0 : Number(promoCount);
+    const maxUsd = promoMaxUsd.trim() === "" ? 0 : Number(promoMaxUsd);
     if (!Number.isInteger(count) || count < 0 || !Number.isInteger(maxUsd) || maxUsd < 0) {
       setError("Promo count and max $ must be whole numbers.");
       return;
     }
     setBusy(true);
-    setError(null);
     try {
       const res = await api<{ inviteUrl: string; telegramUsername: string | null }>("/v1/admin/invites", {
         method: "POST",
         headers: adminHeaders(adminKey),
         body: {
           telegramUsername: clean,
-          commissionBps,
-          subCommissionBps,
+          ...(commissionBps !== undefined ? { commissionBps } : {}),
+          ...(subCommissionBps !== undefined ? { subCommissionBps } : {}),
           referralDiscountEnabled: discountEnabled,
-          referralDiscountBps: discountEnabled ? discountBps : 0,
+          referralDiscountBps: discountEnabled ? (discountBps ?? 0) : 0,
           promoMaxCount: count,
           promoMaxValueUsd: maxUsd,
         },
