@@ -48,6 +48,13 @@ export class AdminController {
     }
   }
 
+  @Get("checkouts/:id/refund-eligibility")
+  @Header("Cache-Control", "no-store")
+  async refundEligibility(@Param("id") id: string): Promise<unknown> {
+    if (!uuidSchema.safeParse(id).success) throw new BadRequestException("checkout ID must be a UUID");
+    return this.admin.refundEligibility(id);
+  }
+
   @Post("business-invites")
   @Header("Cache-Control", "no-store")
   async createBusinessInvite(@Body() body: unknown): Promise<unknown> {

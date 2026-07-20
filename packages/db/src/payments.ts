@@ -23,6 +23,80 @@ export interface AppliedPaymentEvent {
   checkoutStatus: CheckoutState | null;
 }
 
+/** Пополнение возвращаемо только в течение стольких дней с момента оплаты. */
+export const REFUND_WINDOW_DAYS = 5;
+
+export type RefundIneligibleReason =
+  | "ok"
+  | "not_found"
+  | "not_paid"
+  | "already_refunded"
+  | "window_expired"
+  | "balance_spent";
+
+export interface RefundEligibility {
+  eligible: boolean;
+  reason: RefundIneligibleReason;
+  paymentId: string | null;
+  paidAt: string | null; // ISO
+  windowDays: number;
+  ageDays: number | null;
+  realSpentSinceNano: string; // реальные деньги, потраченные ПОСЛЕ этого пополнения (nano); "0" = ничего
+}
+
+/**
+ * Авторитетная проверка права на возврат по правилу пользовательского соглашения: пополнение
+ * возвращаемо ТОЛЬКО если (а) с момента оплаты прошло ≤ REFUND_WINDOW_DAYS дней и (б) с этого
+ * пополнения не потрачено НИ рубля реальных денег. «Потрачено реально» = сумма real_funded_nano по
+ * списаниям после оплаты (бесплатное/промо в real_funded не входит — «бесплатное тратится первым»),
+ * поэтому мелкие траты, покрытые бонусом, право на возврат не убивают, а любой реальный расход —
+ * убивает. Только читает БД; ничего не проводит и не дебетует движок (исполнение возврата — отдельно).
+ */
+export async function evaluateRefundEligibility(
+  database: Database,
+  checkoutId: string,
+  now: Date = new Date(),
+  windowDays: number = REFUND_WINDOW_DAYS,
+): Promise<RefundEligibility> {
+  const base: RefundEligibility = {
+    eligible: false, reason: "not_found", paymentId: null, paidAt: null,
+    windowDays, ageDays: null, realSpentSinceNano: "0",
+  };
+
+  const paymentResult = await database.pool.query<{
+    id: string; user_id: string; status: string; anchor: Date | null;
+  }>(`
+    SELECT id, user_id, status, COALESCE(paid_at, created_at) AS anchor
+    FROM payments WHERE checkout_id = $1
+  `, [checkoutId]);
+  const payment = paymentResult.rows[0];
+  if (!payment) return base;
+
+  base.paymentId = payment.id;
+  base.paidAt = payment.anchor ? payment.anchor.toISOString() : null;
+  if (payment.status === "refunded" || payment.status === "disputed") {
+    return { ...base, reason: "already_refunded" };
+  }
+  if (payment.status !== "paid" || !payment.anchor) {
+    return { ...base, reason: "not_paid" };
+  }
+
+  const ageDays = (now.getTime() - payment.anchor.getTime()) / 86_400_000;
+  base.ageDays = ageDays;
+  if (ageDays > windowDays) return { ...base, reason: "window_expired" };
+
+  const spentResult = await database.pool.query<{ real: string }>(`
+    SELECT COALESCE(SUM(real_funded_nano), 0)::text AS real
+    FROM pricing_usage_events
+    WHERE user_id = $1 AND occurred_at >= $2
+  `, [payment.user_id, payment.anchor]);
+  const realSpent = BigInt(spentResult.rows[0]?.real ?? "0");
+  base.realSpentSinceNano = realSpent.toString();
+  if (realSpent > 0n) return { ...base, reason: "balance_spent" };
+
+  return { ...base, eligible: true, reason: "ok" };
+}
+
 /** Applies an independently verified provider state and, if paid, enqueues one exact engine credit. */
 export async function applyVerifiedCheckoutPaymentEvent(
   database: Database,

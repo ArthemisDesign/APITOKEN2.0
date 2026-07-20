@@ -4,6 +4,7 @@ import { ConfigService } from "@nestjs/config";
 import { multiplierForDiscount } from "@claude-api/contracts";
 import {
   createBusinessInvite,
+  evaluateRefundEligibility,
   getEngineAccountMapping,
   listAdminUserOverview,
   recordAdminCredit,
@@ -99,6 +100,25 @@ export class AdminService {
       discountPercent: input.discountPercent,
       expiresAt: expiresAt.toISOString(),
       inviteUrl: inviteUrl.toString(),
+    };
+  }
+
+  /**
+   * Право на возврат по правилу соглашения (≤5 дней с оплаты И реальные деньги не тратились).
+   * Отдаёт вердикт панели/поддержке, чтобы решение об оформлении возврата принималось кодом, а не на
+   * глаз. Само оформление возврата (дебет движка) — отдельный шаг.
+   */
+  async refundEligibility(checkoutId: string): Promise<Record<string, unknown>> {
+    const verdict = await evaluateRefundEligibility(this.database, checkoutId);
+    return {
+      checkout_id: checkoutId,
+      eligible: verdict.eligible,
+      reason: verdict.reason,
+      payment_id: verdict.paymentId,
+      paid_at: verdict.paidAt,
+      window_days: verdict.windowDays,
+      age_days: verdict.ageDays === null ? null : Math.round(verdict.ageDays * 100) / 100,
+      real_spent_since_usd: nanoToUsd(verdict.realSpentSinceNano),
     };
   }
 
