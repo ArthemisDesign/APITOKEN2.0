@@ -1,4 +1,4 @@
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, Logger } from "@nestjs/common";
 import {
   changeManagedAdminPassword,
   createManagedAdminAccount,
@@ -29,6 +29,8 @@ export const MANAGED_ADMIN_DOMAIN_DETAILS = [
 
 @Injectable()
 export class AdminAccountsService {
+  private readonly logger = new Logger(AdminAccountsService.name);
+
   constructor(@Inject(DATABASE) private readonly database: Database) {}
 
   domains(): Record<string, unknown> {
@@ -71,14 +73,33 @@ export class AdminAccountsService {
     actorId: string;
     reason: string;
   }): Promise<Record<string, unknown>> {
-    const account = await changeManagedAdminPassword(this.database, {
-      ...input,
-      passwordHash: await hash(input.password, passwordHashOptions()),
-    });
-    return {
-      account: serializeAccount(account),
-      changed_self: input.accountId === input.actorId,
-    };
+    const startedAt = Date.now();
+    try {
+      const account = await changeManagedAdminPassword(this.database, {
+        ...input,
+        passwordHash: await hash(input.password, passwordHashOptions()),
+      });
+      this.logger.log(JSON.stringify({
+        event: "admin_account.password_changed",
+        target_account_id: input.accountId,
+        actor_id: input.actorId,
+        changed_self: input.accountId === input.actorId,
+        duration_ms: Date.now() - startedAt,
+      }));
+      return {
+        account: serializeAccount(account),
+        changed_self: input.accountId === input.actorId,
+      };
+    } catch (error) {
+      this.logger.error(JSON.stringify({
+        event: "admin_account.password_change_failed",
+        target_account_id: input.accountId,
+        actor_id: input.actorId,
+        error: error instanceof Error ? error.name : "UnknownError",
+        duration_ms: Date.now() - startedAt,
+      }));
+      throw error;
+    }
   }
 
   async setDomains(input: {

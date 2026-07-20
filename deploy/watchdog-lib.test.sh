@@ -100,13 +100,24 @@ grep -Fq 'header_up X-Admin-Key "<ADMIN_AUTH_KEY_PLACEHOLDER>"' "$ROOT/deploy/Ca
 grep -Fq 'header_up X-Admin-Domain {http.request.host}' "$ROOT/deploy/Caddyfile"
 grep -Fq '@commerce_admin path /admin/*' "$ROOT/deploy/Caddyfile"
 grep -Fq 'handle_path /partner-admin/*' "$ROOT/deploy/Caddyfile"
-grep -Fq 'header_up x-admin-actor {header.X-Admin-Actor}' "$ROOT/deploy/Caddyfile"
-grep -Fq 'header_up x-admin-account-id {header.X-Admin-Account-Id}' "$ROOT/deploy/Caddyfile"
+grep -Fq 'header_up x-admin-actor {http.request.header.X-Admin-Actor}' "$ROOT/deploy/Caddyfile"
+grep -Fq 'header_up x-admin-account-id {http.request.header.X-Admin-Account-Id}' "$ROOT/deploy/Caddyfile"
+[[ $(grep -Fc 'reverse_proxy 127.0.0.1:3000 127.0.0.1:3001' "$ROOT/deploy/Caddyfile") == 1 ]]
+[[ $(grep -Fc 'reverse_proxy 127.0.0.1:8787 127.0.0.1:8788' "$ROOT/deploy/Caddyfile") == 1 ]]
+! grep -Fq 'unhealthy_status 503' "$ROOT/deploy/Caddyfile"
+! grep -Fq 'fail_duration' "$ROOT/deploy/Caddyfile"
+! grep -Fq 'max_fails' "$ROOT/deploy/Caddyfile"
+grep -Fq 'request>headers>X-Admin-Key replace REDACTED' "$ROOT/deploy/Caddyfile"
+grep -Fq 'COMMERCE_BASE_URL=http://127.0.0.1:8791' "$ROOT/apps/sales-api/.env.example"
+grep -Fq 'COMMERCE_BALANCER_URL=${COMMERCE_BALANCER_URL:-http://127.0.0.1:8791}' "$ROOT/deploy/sales-deploy.sh"
+grep -Fq 'configure_commerce_balancer' "$ROOT/deploy/sales-deploy.sh"
+grep -Fq 'COMMERCE_BALANCER_READY_URL=${COMMERCE_BALANCER_READY_URL:-http://127.0.0.1:8791/v1/ready}' "$ROOT/deploy/api-bluegreen.sh"
+[[ $(grep -Fc 'balancer_is_ready' "$ROOT/deploy/api-bluegreen.sh") -ge 6 ]]
 grep -Fq 'final_verify_admin_panel' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'require_retired_vhost panel.apitoken.sale' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'require_admin_auth_vhost content-studio.apitoken.sale' "$ROOT/deploy/watchdog.sh"
 grep -Fq "''|000|404|421" "$ROOT/deploy/watchdog.sh"
-grep -Fq 'data-admin-panel-version="3"' "$ROOT/crates/server/src/admin-panel.html"
+grep -Fq 'data-admin-panel-version="4"' "$ROOT/crates/server/src/admin-panel.html"
 [[ ! -e "$ROOT/crates/server/src/panel.html" ]]
 
 render_live="$TEMP/live.Caddyfile"

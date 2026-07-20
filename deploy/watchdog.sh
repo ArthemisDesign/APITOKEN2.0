@@ -292,6 +292,8 @@ final_verify_backend() {
   curl --noproxy '*' --fail --silent --show-error --max-time 5 http://127.0.0.1:3000/v1/ready >/dev/null \
     || curl --noproxy '*' --fail --silent --show-error --max-time 5 http://127.0.0.1:3001/v1/ready >/dev/null \
     || wd_die "no commerce API slot is ready after cutover"
+  curl --noproxy '*' --fail --silent --show-error --max-time 5 http://127.0.0.1:8791/v1/ready >/dev/null \
+    || wd_die "stable commerce balancer is not ready after cutover"
   systemctl is-active --quiet apitoken-worker.service || wd_die "worker is not active after cutover"
   worker_pid=$(systemctl show apitoken-worker.service -p MainPID --value)
   [[ $worker_pid =~ ^[1-9][0-9]*$ ]] || wd_die "worker has no MainPID"
@@ -335,7 +337,7 @@ final_verify_admin_panel() {
   local panel
   panel=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 \
     http://127.0.0.1:8790/admin-panel)
-  grep -Fq 'data-admin-panel-version="3"' <<<"$panel" \
+  grep -Fq 'data-admin-panel-version="4"' <<<"$panel" \
     || wd_die "deployed engine does not contain the current admin panel"
   require_admin_auth_vhost admin.apitoken.sale
   require_admin_auth_vhost admin.partners.apitoken.sale

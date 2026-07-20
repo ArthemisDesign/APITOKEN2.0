@@ -36,6 +36,7 @@ WORKER_SOURCE_ROOT=$COMMERCE_RELEASE_ROOT/current
 CONTENT_STUDIO_SERVICE=apitoken-content-studio.service
 CONTENT_STUDIO_SOURCE_ROOT=$COMMERCE_RELEASE_ROOT/current
 CONTENT_STUDIO_HEALTH_URL=http://127.0.0.1:3500/api/health
+COMMERCE_BALANCER_READY_URL=${COMMERCE_BALANCER_READY_URL:-http://127.0.0.1:8791/v1/ready}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -129,6 +130,10 @@ slot_is_draining() {
   local unit
   unit=$(slot_unit "$port")
   unit_is_active "$unit" && http_returns_503 "$(slot_url "$port")" "$max_time"
+}
+
+balancer_is_ready() {
+  http_returns_200 "$COMMERCE_BALANCER_READY_URL"
 }
 
 slot_serves_current_release() {
@@ -433,8 +438,8 @@ recover_cutover() {
     fi
   fi
 
-  if slot_is_ready 3000 || slot_is_ready 3001; then
-    log "recovery verified that at least one API slot is ready"
+  if (slot_is_ready 3000 || slot_is_ready 3001) && balancer_is_ready; then
+    log "recovery verified a ready API slot through the stable commerce balancer"
   else
     warn "CRITICAL: recovery could not establish a ready API slot; immediate operator intervention is required"
     recovery_failed=1
@@ -494,6 +499,9 @@ READY_3000=0
 READY_3001=0
 slot_is_ready 3000 && READY_3000=1
 slot_is_ready 3001 && READY_3001=1
+if [[ "$DRY_RUN" != "1" && "$READY_3000:$READY_3001" != "0:0" ]]; then
+  balancer_is_ready || die "stable commerce balancer is not ready at $COMMERCE_BALANCER_READY_URL"
+fi
 
 if [[ -n "$REQUESTED_TARGET_PORT" ]]; then
   TARGET_PORT=$REQUESTED_TARGET_PORT
@@ -565,6 +573,9 @@ if [[ "$API_SWITCH_NEEDED" == "1" ]]; then
   if [[ "$DRY_RUN" != "1" ]] && ! slot_serves_current_release "$TARGET_PORT" "$CURRENT_RELEASE"; then
     die "target port $TARGET_PORT lost readiness before Caddy inclusion could be committed"
   fi
+  if [[ "$DRY_RUN" != "1" ]] && ! balancer_is_ready; then
+    die "stable commerce balancer did not route to the admitted target"
+  fi
   NEW_SLOT_COMMITTED=1
   log "new slot $(slot_unit "$TARGET_PORT") is ready on releases/current and has passed the Caddy inclusion window"
 
@@ -584,6 +595,9 @@ if [[ "$API_SWITCH_NEEDED" == "1" ]]; then
 
     if [[ "$DRY_RUN" != "1" ]] && ! slot_serves_current_release "$TARGET_PORT" "$CURRENT_RELEASE"; then
       die "target port $TARGET_PORT lost readiness during old-slot pre-drain"
+    fi
+    if [[ "$DRY_RUN" != "1" ]] && ! balancer_is_ready; then
+      die "stable commerce balancer lost readiness during old-slot pre-drain"
     fi
     [[ "$NEW_SLOT_COMMITTED" == "1" ]] || die "refusing to stop old slot before the new slot is committed"
     log "new slot is still ready and old slot is depoolable; stopping old $(slot_unit "$ACTIVE_PORT") for bounded application drain"
@@ -616,6 +630,9 @@ fi
 
 if [[ "$DRY_RUN" != "1" ]] && ! slot_serves_current_release "$TARGET_PORT" "$CURRENT_RELEASE"; then
   die "target port $TARGET_PORT is not ready on the current release at final verification"
+fi
+if [[ "$DRY_RUN" != "1" ]] && ! balancer_is_ready; then
+  die "stable commerce balancer is not ready after cutover"
 fi
 
 # Boot persistence must follow the verified serving slot. Otherwise a reboot can

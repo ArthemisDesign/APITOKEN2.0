@@ -14,7 +14,7 @@ describe("validateEnvironment", () => {
     expect(environment.PORT).toBe(3100);
     expect(environment.HOST).toBe("127.0.0.1");
     expect(environment.SALES_SESSION_TTL_SECONDS).toBe(2_592_000);
-    expect(environment.COMMERCE_BASE_URL).toBe("http://127.0.0.1:3000");
+    expect(environment.COMMERCE_BASE_URL).toBe("http://127.0.0.1:8791");
     expect(environment.PUBLIC_SALES_BASE_URL).toBe("https://partners.apitoken.sale");
     expect(environment.PUBLIC_MAIN_SITE_URL).toBe("https://apitoken.sale");
     expect(environment.EMAIL_DELIVERY_MODE).toBe("log");

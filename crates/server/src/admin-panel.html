@@ -62,7 +62,7 @@ a.link{color:var(--blue);text-decoration:none}a.link:hover{text-decoration:under
 .card{border-right:0!important;border-top:1px solid var(--line)}.card:first-child{border-top:0}}
 </style>
 </head>
-<body data-admin-panel-version="3">
+<body data-admin-panel-version="4">
 <div id="app"></div>
 <script>
 const app=document.getElementById('app');
@@ -165,7 +165,9 @@ async function adminAction(button,domains){const action=button.dataset.adminActi
     const reason=prompt('Причина изменения доменов:');if(reason==null||reason.trim().length<3)return;if(!confirm('Сохранить доступ '+username+' к:\n'+selected.join('\n')))return;body={domains:selected,reason:reason.trim()}}
   if(action==='status'){const next=button.dataset.status==='active'?'disabled':'active',reason=prompt('Причина изменения статуса '+username+':');if(reason==null||reason.trim().length<3)return;
     if(!confirm((next==='disabled'?'Отключить ':'Включить ')+username+'?'))return;body={status:next,reason:reason.trim()}}
-  button.disabled=true;try{const result=await send('/admin/admin-accounts/'+id+'/'+action,'PATCH',body);alert('Готово.'+(result.changed_self?' Введите новый пароль при следующем запросе.':''));await admins()}catch(error){alert(error.message);button.disabled=false}}
+  button.disabled=true;let result;try{result=await send('/admin/admin-accounts/'+id+'/'+action,'PATCH',body)}catch(error){alert('Изменение не сохранено: '+error.message);button.disabled=false;return}
+  alert('Изменение сохранено.'+(result.changed_self?' Введите новый пароль при следующем запросе.':''));
+  try{await admins()}catch(error){alert('Изменение сохранено, но список не обновился: '+error.message);button.disabled=false}}
 
 async function allPartners(){let offset=0,items=[],totals=null;do{const data=await api('/partner-admin/partner-analytics?sort=created_at&dir=desc&limit=500&offset='+offset),batch=data.items||[];
   totals=data.totals;items=items.concat(batch);offset=items.length;if(!batch.length)break}while(totals&&items.length<totals.total);return{items,totals:totals||{total:items.length,active:0}}}

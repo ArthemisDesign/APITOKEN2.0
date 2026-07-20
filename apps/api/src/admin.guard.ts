@@ -8,14 +8,25 @@ export class AdminGuard implements CanActivate {
   constructor(private readonly config: ConfigService<Environment, true>) {}
 
   canActivate(context: ExecutionContext): boolean {
-    const configured = this.config.get("COMMERCIAL_ADMIN_KEY", { infer: true });
     const request = context.switchToHttp().getRequest<{ headers: Record<string, string | string[] | undefined> }>();
     const supplied = request.headers["x-admin-key"];
-    if (!configured || typeof supplied !== "string" || !safeEqual(configured, supplied)) {
+    if (!matchesConfiguredAdminKey(this.config, supplied)) {
       throw new UnauthorizedException("admin authentication required");
     }
     return true;
   }
+}
+
+export function matchesConfiguredAdminKey(
+  config: ConfigService<Environment, true>,
+  supplied: string | string[] | undefined,
+): boolean {
+  if (typeof supplied !== "string") return false;
+  const configured = [
+    config.get("COMMERCIAL_ADMIN_KEY", { infer: true }),
+    config.get("COMMERCIAL_ADMIN_PREVIOUS_KEY", { infer: true }),
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+  return configured.some((value) => safeEqual(value, supplied));
 }
 
 export function safeEqual(left: string, right: string): boolean {

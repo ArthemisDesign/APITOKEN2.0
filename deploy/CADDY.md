@@ -35,18 +35,18 @@ Do not use a stop/start cycle for a configuration update. A reload preserves Cad
 
 ## Commerce API blue-green behavior
 
-`backend.apitoken.sale` has two loopback slots:
+The only commerce slot selector is the loopback balancer `127.0.0.1:8791`, which has two slots:
 
 - blue/green slot A: `127.0.0.1:3000`
 - blue/green slot B: `127.0.0.1:3001`
 
-Caddy probes `GET /v1/ready` on each slot every 2 seconds with a 2-second timeout and accepts only a `2xx` response. A process that is starting, draining, or missing a required dependency must return `503` from `/v1/ready`; Caddy then removes that slot from new-request selection. When the endpoint returns `2xx` again, Caddy automatically makes the slot eligible.
+Caddy probes `GET /v1/ready` on each slot every 2 seconds with a 2-second timeout and accepts only a `2xx` response. A process that is starting, draining, or missing a required dependency must return `503` from `/v1/ready`; Caddy then removes that slot from new-request selection. When the endpoint returns `2xx` again, Caddy automatically makes the slot eligible. Every public/admin vhost and application targets `8791`, never `3000` or `3001`.
 
 For the first reload that adds `127.0.0.1:3001`, leave `apitoken-api@3001.service` stopped. Validate and reload Caddy while port 3000 continues serving. The new upstream initially dial-fails and Caddy's first active check marks it down; the configured dial-retry window covers the short interval before that health state is recorded. Start 3001 only through `api-bluegreen.sh` after the reload.
 
 Both API units name `/opt/apitoken/releases/current/apps/api`, but a running process retains the resolved immutable release it started from in its working directory, loaded modules, and open files. Moving `releases/current` is therefore safe while the old process remains alive. Restarting that old unit after the symlink moves would instead launch the new release and destroy the rollback anchor, so API unit lifecycle belongs to `api-bluegreen.sh` during a normal deploy.
 
-Passive checks complement the active gate. One dial/request failure within the 5-second `fail_duration`, or a proxied `503`, marks that slot unavailable immediately. `lb_try_duration 3s` with a 100 ms interval lets Caddy retry another eligible slot when a selected process has already stopped or refuses the connection. The retry window does not make non-idempotent requests generally replayable: Caddy always permits retry after a dial failure because no HTTP request reached the upstream, while its default post-connect retry match remains GET-only.
+Slot admission and removal use only the active readiness gate. Application-level `503` responses are intentionally not passive health failures: Caddy shares passive failure state globally by upstream address, so one legitimate `503` could otherwise remove the sole live slot from unrelated routes. A 2-second load-balancer retry window still covers selection and connection races while active checks converge.
 
 ### Cutover sequence
 
@@ -56,17 +56,18 @@ Passive checks complement the active gate. One dial/request failure within the 5
 4. Commit the verified target as the new availability anchor. If admission failed before this point, stop only the failed target and leave/confirm the old process ready; never restart old through the moved symlink.
 5. Send `SIGUSR1` to the old unit. The application immediately changes `/v1/ready` to `503` but keeps its listener open and continues in-flight work.
 6. Wait another 6 seconds for Caddy's active checker to depool the old slot. Before closing any listener, require the old endpoint to return exactly `503` and re-require the new slot to return `200` from the current release.
-7. Only after both checks pass, stop the old unit. Systemd's `SIGTERM` and the application's bounded drain complete in-flight shutdown. A connection-refusal race is still cushioned by Caddy's configured 3-second dial retry.
+7. Only after both checks pass, stop the old unit. Systemd's `SIGTERM` and the application's bounded drain complete in-flight shutdown. A connection-refusal race is still cushioned by the stable balancer's configured retry window.
 8. Leave the stopped port as the inactive slot for the next deployment.
 
 Rollback is state-aware rather than a blind reverse restart. Before pre-drain, the old process is the rollback anchor and a failed new slot is stopped alone. Once the new slot has been admitted and the old slot has drained/stopped, recovery keeps the verified new process. Restarting the old unit is a last-resort availability action only when it has already died/drained and no verified target remains; because `releases/current` has moved, that restart launches the new release and must be warned and readiness-verified explicitly.
 
-A `503` returned by a normal proxied request is recorded by the passive health checker, but that response has already been produced and is not safely replayed as an arbitrary POST. The readiness-first drain and wait in steps 4-5 are therefore required; passive health and dial retries are a race cushion, not a replacement for orderly draining.
+A `503` returned by a normal proxied request is returned only to that caller and does not depool the process. The readiness-first drain and wait in steps 4-6 are the sole slot-removal authority; connection retries are a race cushion, not a replacement for orderly draining.
 
 ## Engine blue-green and SSE
 
-`api.apitoken.sale` and the unified admin proxy use health-gated engine slots on
-`127.0.0.1:8787` and `127.0.0.1:8788`. Caddy probes `/ready`; `engine-bluegreen.sh` admits the new
+`api.apitoken.sale` and the unified admin proxy use only the stable `127.0.0.1:8790` engine
+balancer. That balancer alone knows health-gated slots `127.0.0.1:8787` and `127.0.0.1:8788`.
+Caddy probes `/ready`; `engine-bluegreen.sh` admits the new
 slot, sends `SIGUSR1` to make the old slot return 503 readiness, waits for depooling, then sends
 SIGTERM so established streams drain under the systemd deadline.
 

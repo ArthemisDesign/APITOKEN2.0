@@ -16,7 +16,7 @@ const environmentSchema = z.object({
     z.string().regex(/^[A-Za-z0-9_]{5,32}$/).optional(),
   ),
   SALES_ADMIN_KEY: z.string().min(32),
-  COMMERCE_BASE_URL: z.string().url().default("http://127.0.0.1:3000"),
+  COMMERCE_BASE_URL: z.string().url().default("http://127.0.0.1:8791"),
   SALES_CONTROL_KEY: z.string().min(32),
   PUBLIC_SALES_BASE_URL: z.string().url().default("https://partners.apitoken.sale"),
   PUBLIC_MAIN_SITE_URL: z.string().url().default("https://apitoken.sale"),

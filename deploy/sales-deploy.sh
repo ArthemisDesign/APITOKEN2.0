@@ -24,6 +24,7 @@ API_UNIT=apitoken-sales-api.service
 WEB_UNIT=apitoken-sales-web.service
 API_HEALTH=${SALES_API_HEALTH:-http://127.0.0.1:3100/v1/health}
 WEB_HEALTH=${SALES_WEB_HEALTH:-http://127.0.0.1:3200/}
+COMMERCE_BALANCER_URL=${COMMERCE_BALANCER_URL:-http://127.0.0.1:8791}
 HEALTH_RETRIES=${SALES_HEALTH_RETRIES:-30}
 HEALTH_INTERVAL=${SALES_HEALTH_INTERVAL:-2}
 
@@ -33,12 +34,51 @@ current_link="$RELEASE_ROOT/current"
 
 log() { printf '[sales-deploy] %s\n' "$*"; }
 die() { printf '[sales-deploy] ERROR: %s\n' "$*" >&2; exit 1; }
+ENV_TMP=
+cleanup() { [[ -z $ENV_TMP ]] || rm -f -- "$ENV_TMP"; }
+trap cleanup EXIT
 
 [[ -d $candidate && ! -L $candidate ]] || die "tested candidate is missing: $candidate"
 [[ -f $candidate/apps/sales-api/dist/main.js ]] || die "candidate has no built sales-api"
 [[ -d $candidate/apps/sales-web/.next ]] || die "candidate has no built sales-web"
 [[ -f $candidate/packages/sales-db/dist/migrate.js ]] || die "candidate has no built sales-db migrate"
 [[ -f $ENV_FILE ]] || die "sales env file missing: $ENV_FILE"
+
+configure_commerce_balancer() {
+  local status assignments tmp
+  [[ $COMMERCE_BALANCER_URL =~ ^http://127\.0\.0\.1:[0-9]+$ ]] \
+    || die "COMMERCE_BALANCER_URL must be a loopback HTTP origin with an explicit port"
+  status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 3 \
+    "$COMMERCE_BALANCER_URL/v1/ready" 2>/dev/null || true)
+  [[ $status == 200 ]] || die "stable commerce balancer is not ready (HTTP ${status:-000})"
+
+  assignments=$(awk -F= '$1 == "COMMERCE_BASE_URL" { found++ } END { print found + 0 }' "$ENV_FILE")
+  (( assignments <= 1 )) || die "$ENV_FILE contains duplicate COMMERCE_BASE_URL assignments"
+  if (( assignments == 1 )) && awk -F= -v expected="$COMMERCE_BALANCER_URL" '
+    $1 == "COMMERCE_BASE_URL" { ok = ($2 == expected) }
+    END { exit ok ? 0 : 1 }
+  ' "$ENV_FILE"; then
+    log "sales API already uses the stable commerce balancer"
+    return 0
+  fi
+
+  tmp=$(mktemp "$(dirname -- "$ENV_FILE")/.sales-env.XXXXXX")
+  ENV_TMP=$tmp
+  chmod 0600 "$tmp"
+  awk -F= -v url="$COMMERCE_BALANCER_URL" '
+    BEGIN { replaced = 0 }
+    $1 == "COMMERCE_BASE_URL" { print "COMMERCE_BASE_URL=" url; replaced = 1; next }
+    { print }
+    END { if (!replaced) print "COMMERCE_BASE_URL=" url }
+  ' "$ENV_FILE" >"$tmp"
+  chown --reference="$ENV_FILE" "$tmp"
+  chmod --reference="$ENV_FILE" "$tmp"
+  mv -f -- "$tmp" "$ENV_FILE"
+  ENV_TMP=
+  log "configured sales API to use the stable commerce balancer"
+}
+
+configure_commerce_balancer
 
 health_ok() {
   local url=$1 code

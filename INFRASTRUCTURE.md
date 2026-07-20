@@ -8,14 +8,13 @@ live below `/srv/claude-api/data` on the host.
 ## Current topology
 
 ```text
-api.apitoken.sale --------------------------> commercial host 84.32.48.2 (Chicago)
-                                                | reverse proxy
+api.apitoken.sale --------------------------> engine balancer 127.0.0.1:8790
                                                 |-> Rust core slot 127.0.0.1:8787
                                                 `-> Rust core slot 127.0.0.1:8788
 
 future browser at apitoken.sale
         |
-        `-> backend.apitoken.sale ----------> commercial host 84.32.48.2
+        `-> backend.apitoken.sale ----------> commerce balancer 127.0.0.1:8791
                                                 |-> NestJS API slots 127.0.0.1:3000/3001
                                                 |-> payment/email/pricing worker ------.
                                                 |                                      |
@@ -26,9 +25,9 @@ future browser at apitoken.sale
                                                     |-> commerce DB/role
                                                     `-> claude_engine DB/isolated role
 
-content-studio.apitoken.sale ---------------> Caddy basic auth
+content-studio.apitoken.sale ---------------> Caddy managed auth
                                                 |-> Next.js workspace 127.0.0.1:3500
-                                                `-> admin API slots 127.0.0.1:3000/3001
+                                                `-> commerce balancer 127.0.0.1:8791
 
 commercial host -- encrypted Borg/SSH --> 84.32.109.82:2223/backup/.repo
 ```
@@ -159,6 +158,9 @@ never be returned to clients or placed in frontend configuration.
   remains enabled after a normal cutover.
 - API and worker load `ENGINE_BASE_URL=http://127.0.0.1:8790`; Caddy binds that listener explicitly
   to loopback and routes only ready engine slots.
+- Sales and every commerce-facing Caddy route use `COMMERCE_BASE_URL=http://127.0.0.1:8791`;
+  public/admin routes never name API slots. Likewise, public/admin engine routes use `8790` and
+  never name engine slots. Only the two stable Caddy balancers own blue-green slot selection.
 - Public engine, commerce API, Caddy, worker, and the hourly dual-database backup timer are active.
 - The core public matcher exposes `/v1/*`, `/health`, and `/balance`; Control/admin routes remain
   private. Public liveness/readiness behavior is described in `deploy/CADDY.md`.

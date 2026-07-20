@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn embedded_admin_panel_exposes_all_operational_workflows_without_secrets() {
-        assert!(ADMIN_PANEL_HTML.contains("data-admin-panel-version=\"3\""));
+        assert!(ADMIN_PANEL_HTML.contains("data-admin-panel-version=\"4\""));
         for route in [
             "/admin/dashboard",
             "/admin/users",

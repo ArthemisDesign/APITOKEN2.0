@@ -13,8 +13,8 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
                        Caddy (admin.apitoken.sale)
                           ├─ /                         → engine GET /admin-panel
                           ├─ /overview /capacity
-                          │  /metrics /subs           → engine :8787/:8788 (+ control key)
-                          ├─ /admin/*                 → commerce :3000/:3001 /v1/admin/*
+                          │  /metrics /subs           → engine balancer :8790 (+ control key)
+                          ├─ /admin/*                 → commerce balancer :8791 /v1/admin/*
                           │                              (+ commerce admin key + actor)
                           └─ /partner-admin/*         → sales-api :3100 /v1/admin/*
                                                          (+ sales admin key)
@@ -28,6 +28,9 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
 - Проверенная identity передаётся commerce как `x-admin-actor` и `x-admin-account-id`, чтобы аудит
   различал операторов и self-service password rotation. Internal auth API закрыт на публичном
   `backend.apitoken.sale` и доступен Caddy только через loopback.
+- Внешние vhost и приложения видят только стабильные origins `127.0.0.1:8790` (engine) и
+  `127.0.0.1:8791` (commerce). Только эти два Caddy-balancer знают slot-порты; обычный
+  application `503` не исключает живой slot, депулинг выполняется active `/ready` checks.
 - Engine-данные (`/overview`, `/capacity`, `/subs`, `/metrics`) определены в
   `crates/server/src/http.rs`. `/overview` содержит полный список engine accounts без API-ключей.
 - Commerce-данные находятся в `apps/api` за `AdminGuard`; authoritative live balance по-прежнему

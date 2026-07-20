@@ -58,9 +58,12 @@ describe("admin operations HTTP contract", () => {
 });
 
 describe("admin key guard", () => {
-  it("accepts only the configured admin key", () => {
-    const guard = new AdminGuard({ get: () => "a".repeat(32) } as never);
+  it("accepts the current and temporary previous admin keys", () => {
+    const guard = new AdminGuard({
+      get: (name: string) => name === "COMMERCIAL_ADMIN_KEY" ? "a".repeat(32) : "b".repeat(32),
+    } as never);
     expect(guard.canActivate(contextWithKey("a".repeat(32)))).toBe(true);
+    expect(guard.canActivate(contextWithKey("b".repeat(32)))).toBe(true);
     expect(() => guard.canActivate(contextWithKey("wrong"))).toThrow(UnauthorizedException);
     expect(() => guard.canActivate(contextWithKey(undefined))).toThrow(UnauthorizedException);
   });

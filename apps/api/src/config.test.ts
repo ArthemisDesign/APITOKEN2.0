@@ -3,7 +3,7 @@ import { validateEnvironment } from "./config.js";
 
 const requiredEnvironment = {
   DATABASE_URL: "postgresql://commerce:password@127.0.0.1:5432/commerce",
-  ENGINE_BASE_URL: "http://127.0.0.1:8787",
+  ENGINE_BASE_URL: "http://127.0.0.1:8790",
   ENGINE_CONTROL_KEY: "c".repeat(32),
   AUTH_TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64url"),
 };
@@ -22,6 +22,18 @@ describe("commercial API configuration", () => {
       ...requiredEnvironment,
       EMAIL_VERIFICATION_REQUIRED: "false",
     }).EMAIL_VERIFICATION_REQUIRED).toBe(false);
+  });
+
+  it("accepts a temporary previous admin key only when it meets the key contract", () => {
+    expect(validateEnvironment({
+      ...requiredEnvironment,
+      COMMERCIAL_ADMIN_KEY: "a".repeat(32),
+      COMMERCIAL_ADMIN_PREVIOUS_KEY: "b".repeat(32),
+    }).COMMERCIAL_ADMIN_PREVIOUS_KEY).toBe("b".repeat(32));
+    expect(() => validateEnvironment({
+      ...requiredEnvironment,
+      COMMERCIAL_ADMIN_PREVIOUS_KEY: "too-short",
+    })).toThrow();
   });
 
   it("requires a complete GitHub OAuth configuration", () => {

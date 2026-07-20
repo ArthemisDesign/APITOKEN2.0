@@ -81,8 +81,8 @@ HTTP-фид в `apps/api` под ключом `SALES_CONTROL_KEY` (заголо�
 ## Env (apps/sales-api)
 
 `SALES_DATABASE_URL`, `SALES_TOKEN_ENCRYPTION_KEY`, `SALES_ADMIN_KEY`, `SALES_CONTROL_KEY`
-(тот же, что у apps/api), `COMMERCE_BASE_URL` (прод: `http://127.0.0.1:3000`… через локальный
-слот backend), `PUBLIC_SALES_BASE_URL`, `PUBLIC_MAIN_SITE_URL`, SMTP как у worker (Brevo),
+(тот же, что у apps/api), `COMMERCE_BASE_URL` (прод: стабильный Caddy-balancer
+`http://127.0.0.1:8791`), `PUBLIC_SALES_BASE_URL`, `PUBLIC_MAIN_SITE_URL`, SMTP как у worker (Brevo),
 `SALES_SESSION_TTL_SECONDS`, `SYNC_INTERVAL_MS`. Полный список — `apps/sales-api/.env.example`.
 
 ## Деплой (В ПРОДЕ с 2026-07-19)
@@ -117,9 +117,7 @@ https://partners.apitoken.sale работает. Как устроено на 84
   старый `sales.apitoken.sale` — 301 на partners) и
   loopback `http://127.0.0.1:8791` — стабильный health-gated origin commerce-backend поверх
   blue-green слотов 3000/3001 (аналог 8790 для движка); `COMMERCE_BASE_URL=http://127.0.0.1:8791`.
-  **Внимание:** systemd-юниты и Caddy-блоки применены на хосте вручную и НЕ закоммичены в
-  `systemd/`/`deploy/Caddyfile` — коммит этих путей ставит watchdog в pending до подтверждения
-  оператором (см. CONTRIBUTING); синхронизировать отдельным осознанным шагом.
+  `sales-deploy.sh` атомарно приводит root-only production env к этому адресу до рестарта API.
 - Синк проверен на живых данных: курсоры прошли всю историю usage-событий и топапов; фид
   отвечает 401 без ключа; verify-письмо реально ушло через Brevo.
 

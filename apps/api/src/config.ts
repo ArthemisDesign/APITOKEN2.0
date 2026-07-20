@@ -47,6 +47,8 @@ const environmentSchema = z.object({
   EMAIL_VERIFICATION_TTL_SECONDS: z.coerce.number().int().min(900).max(604_800).default(86_400),
   PASSWORD_RESET_TTL_SECONDS: z.coerce.number().int().min(300).max(86_400).default(3_600),
   COMMERCIAL_ADMIN_KEY: z.string().min(32).optional(),
+  // Temporary overlap used only for a zero-downtime service-key rotation.
+  COMMERCIAL_ADMIN_PREVIOUS_KEY: z.string().min(32).optional(),
   CONTENT_STUDIO_ENGINE_URL: z.string().url().default("https://api.apitoken.sale"),
   CONTENT_STUDIO_ENGINE_KEY: z.preprocess((value) => value === "" ? undefined : value, z.string().min(20).optional()),
   CONTENT_STUDIO_AI_MODEL: z.string().default("claude-sonnet-5"),

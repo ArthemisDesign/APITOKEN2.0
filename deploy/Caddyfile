@@ -1,3 +1,16 @@
+{
+	# Runtime proxy errors include request headers. Redact every injected service credential so a
+	# failed upstream can never copy an internal key into journald.
+	log default {
+		format filter {
+			request>headers>X-Admin-Key replace REDACTED
+			request>headers>X-Api-Key replace REDACTED
+			request>headers>X-Sales-Admin-Key replace REDACTED
+			request>headers>X-Crm-Ingest-Key replace REDACTED
+		}
+	}
+}
+
 # Central database-backed admin authentication. The auth service checks the original hostname
 # against each account's domain grants and returns a trusted actor identity for downstream audit.
 (managed_admin_auth) {
@@ -12,17 +25,24 @@
 	}
 }
 
+# Every non-balancer route targets one stable loopback origin. Only the two loopback sites below
+# know deployment slot ports; applications and public/admin vhosts never select a slot themselves.
+(engine_backend) {
+	reverse_proxy 127.0.0.1:8790 {
+		header_up Host 127.0.0.1:8790
+	}
+}
+
+(commerce_backend) {
+	reverse_proxy 127.0.0.1:8791 {
+		header_up Host 127.0.0.1:8791
+	}
+}
+
 # Admin-only commerce routes. The host-only key is injected by Caddy and never reaches a browser.
 (commerce_admin_backend) {
-	reverse_proxy 127.0.0.1:3000 127.0.0.1:3001 {
-		lb_policy round_robin
-		health_uri /v1/ready
-		health_interval 2s
-		health_timeout 2s
-		health_status 2xx
-		fail_duration 5s
-		max_fails 1
-		unhealthy_status 503
+	reverse_proxy 127.0.0.1:8791 {
+		header_up Host 127.0.0.1:8791
 		header_up x-admin-key "<COMMERCIAL_ADMIN_KEY_PLACEHOLDER>"
 	}
 }
@@ -35,9 +55,6 @@
 		health_interval 2s
 		health_timeout 2s
 		health_status 2xx
-		fail_duration 5s
-		max_fails 1
-		unhealthy_status 503
 		header_up x-sales-admin-key "<SALES_ADMIN_KEY_PLACEHOLDER>"
 	}
 }
@@ -45,20 +62,7 @@
 api.apitoken.sale {
 	@public_core path /v1/* /health /balance
 	handle @public_core {
-		reverse_proxy 127.0.0.1:8787 127.0.0.1:8788 {
-			lb_policy round_robin
-			lb_try_duration 2s
-			lb_try_interval 100ms
-
-			health_uri /ready
-			health_interval 2s
-			health_timeout 2s
-			health_status 2xx
-
-			fail_duration 5s
-			max_fails 1
-			unhealthy_status 503
-		}
+		import engine_backend
 	}
 	respond 404
 }
@@ -77,10 +81,6 @@ http://127.0.0.1:8790 {
 		health_interval 2s
 		health_timeout 2s
 		health_status 2xx
-
-		fail_duration 5s
-		max_fails 1
-		unhealthy_status 503
 	}
 }
 
@@ -90,20 +90,7 @@ backend.apitoken.sale {
 		respond 404
 	}
 	handle {
-		reverse_proxy 127.0.0.1:3000 127.0.0.1:3001 {
-			lb_policy round_robin
-			lb_try_duration 3s
-			lb_try_interval 100ms
-
-			health_uri /v1/ready
-			health_interval 2s
-			health_timeout 2s
-			health_status 2xx
-
-			fail_duration 5s
-			max_fails 1
-			unhealthy_status 503
-		}
+		import commerce_backend
 	}
 }
 
@@ -128,33 +115,19 @@ admin.apitoken.sale {
 	import managed_admin_auth
 	@admin_data path /overview /capacity /metrics /subs
 	handle @admin_data {
-		reverse_proxy 127.0.0.1:8787 127.0.0.1:8788 {
-			lb_policy round_robin
-			health_uri /ready
-			health_interval 2s
-			health_timeout 2s
-			health_status 2xx
-			fail_duration 5s
-			max_fails 1
-			unhealthy_status 503
+		reverse_proxy 127.0.0.1:8790 {
+			header_up Host 127.0.0.1:8790
 			header_up x-api-key "<ADMIN_CONTROL_KEY_PLACEHOLDER>"
 		}
 	}
 	@commerce_admin path /admin/*
 	handle @commerce_admin {
 		rewrite * /v1{uri}
-		reverse_proxy 127.0.0.1:3000 127.0.0.1:3001 {
-			lb_policy round_robin
-			health_uri /v1/ready
-			health_interval 2s
-			health_timeout 2s
-			health_status 2xx
-			fail_duration 5s
-			max_fails 1
-			unhealthy_status 503
+		reverse_proxy 127.0.0.1:8791 {
+			header_up Host 127.0.0.1:8791
 			header_up x-admin-key "<ADMIN_COMMERCIAL_KEY_PLACEHOLDER>"
-			header_up x-admin-actor {header.X-Admin-Actor}
-			header_up x-admin-account-id {header.X-Admin-Account-Id}
+			header_up x-admin-actor {http.request.header.X-Admin-Actor}
+			header_up x-admin-account-id {http.request.header.X-Admin-Account-Id}
 		}
 	}
 	handle_path /partner-admin/* {
@@ -163,16 +136,7 @@ admin.apitoken.sale {
 	}
 	handle {
 		rewrite * /admin-panel
-		reverse_proxy 127.0.0.1:8787 127.0.0.1:8788 {
-			lb_policy round_robin
-			health_uri /ready
-			health_interval 2s
-			health_timeout 2s
-			health_status 2xx
-			fail_duration 5s
-			max_fails 1
-			unhealthy_status 503
-		}
+		import engine_backend
 	}
 }
 
@@ -197,9 +161,6 @@ http://127.0.0.1:8791 {
 		health_interval 2s
 		health_timeout 2s
 		health_status 2xx
-		fail_duration 5s
-		max_fails 1
-		unhealthy_status 503
 	}
 }
 
