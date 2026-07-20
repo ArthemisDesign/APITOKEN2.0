@@ -460,6 +460,7 @@ mod tests {
             "/admin/topups",
             "/admin/business-invites",
             "/admin/audit",
+            "/admin/admin-accounts",
             "/balance-adjustments",
             "/sessions/revoke",
             "/totp/reset",

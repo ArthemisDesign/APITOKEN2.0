@@ -47,6 +47,8 @@ input,select{border:1px solid var(--line);background:var(--card);color:var(--tex
 input:focus,select:focus{outline:2px solid var(--blue);outline-offset:1px}.toolbar input{flex:1;min-width:220px}
 .form{display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:10px;align-items:end}.field{display:grid;gap:4px}
 .field label{font-size:10px;color:var(--muted);text-transform:uppercase}.json{max-width:340px;overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-size:10px}
+.checks{display:flex;flex-wrap:wrap;gap:7px}.check{display:flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:4px;padding:7px 9px;background:var(--soft)}
+.check input{margin:0;padding:0}.admin-form{grid-template-columns:1fr 1.2fr 2fr auto}.domain-list{max-width:420px;white-space:normal}
 footer{text-align:center;color:var(--muted);font-size:10px;padding:24px}.empty{text-align:left;color:var(--muted)}
 .bar{display:inline-block;vertical-align:middle;width:86px;height:6px;border-radius:4px;background:var(--soft);overflow:hidden;border:1px solid var(--line)}
 .bar i{display:block;height:100%;background:var(--blue)}.bar i.warn{background:var(--orange)}.bar i.bad{background:var(--red)}
@@ -64,9 +66,9 @@ a.link{color:var(--blue);text-decoration:none}a.link:hover{text-decoration:under
 <div id="app"></div>
 <script>
 const app=document.getElementById('app');
-const validTabs=['dashboard','accounts','users','topups','business','system','audit'];
+const validTabs=['dashboard','admins','accounts','users','topups','business','system','audit'];
 const getTab=()=>validTabs.includes(location.hash.slice(1))?location.hash.slice(1):'dashboard';
-let tab=getTab(),timer=null,usersCache=[];
+let tab=getTab(),timer=null,usersCache=[],adminDomainFilter='';
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const money=value=>'$'+Number(value||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const nanoMoney=value=>{try{let n=BigInt(String(value??'0')),neg=n<0n;if(neg)n=-n;const whole=n/1000000000n,cents=(n%1000000000n)/10000000n;
@@ -81,7 +83,7 @@ const duration=seconds=>{seconds=Math.max(0,Number(seconds)||0);const days=secon
   return days?days+'д '+hours+'ч':hours?hours+'ч '+minutes+'м':minutes+'м'};
 const ratio=value=>value==null?'∞':'×'+Number(value).toLocaleString('en-US',{maximumFractionDigits:Number(value)<10?1:0});
 function header(title,badge=''){return '<header><div class="brand">api<i>Token</i>.sale<small>admin · '+esc(title)+'</small></div><nav class="tabs">'+
-  [['dashboard','Сводка'],['accounts','Аккаунты'],['users','Пользователи'],['topups','Пополнения'],['business','B2B'],['system','Система'],['audit','Аудит']]
+  [['dashboard','Сводка'],['admins','Админы'],['accounts','Аккаунты'],['users','Пользователи'],['topups','Пополнения'],['business','B2B'],['system','Система'],['audit','Аудит']]
   .map(item=>'<button data-tab="'+item[0]+'" class="'+(tab===item[0]?'on':'')+'">'+item[1]+'</button>').join('')+
   '</nav><div class="right">'+badge+'<button class="theme" id="theme">◐</button></div></header>'}
 function page(title,body,badge=''){app.innerHTML=header(title,badge)+'<main>'+body+'</main>';bindCommon()}
@@ -94,7 +96,7 @@ async function api(path,options={}){const response=await fetch(path,{...options,
   throw new Error(message||('HTTP '+response.status))}return payload}
 async function send(path,method,body){return api(path,{method,body:JSON.stringify(body)})}
 async function refresh(){clearInterval(timer);tab=getTab();try{
-  if(tab==='dashboard')await dashboard();if(tab==='accounts')await accounts();if(tab==='users')await users();if(tab==='topups')await topups();
+  if(tab==='dashboard')await dashboard();if(tab==='admins')await admins();if(tab==='accounts')await accounts();if(tab==='users')await users();if(tab==='topups')await topups();
   if(tab==='business')await business();if(tab==='system')await system();if(tab==='audit')await audit();
 }catch(error){errorPage(tab,error)}timer=setInterval(refresh,tab==='system'?3000:20000)}
 addEventListener('hashchange',refresh);
@@ -129,6 +131,41 @@ async function dashboard(){const data=await api('/admin/dashboard'),u=data.users
     card('защищены 2FA',u.totp,'email подтверждено '+u.verified)+'</div>'+
     '<footer>Подробный единый список engine, commerce, partner и CRM-аккаунтов — во вкладке «Аккаунты».</footer>';
   page('сводка',body,pill(u.active+' active','ok'))}
+
+async function admins(){const suffix=adminDomainFilter?'?domain='+encodeURIComponent(adminDomainFilter):'',result=await Promise.all([
+  api('/admin/admin-accounts'+suffix),api('/admin/admin-accounts/domains')]),data=result[0],directory=result[1],accounts=data.accounts||[],domains=directory.domains||[];
+  const options='<option value="">все управляемые домены</option>'+domains.map(item=>'<option value="'+esc(item.domain)+'" '+(adminDomainFilter===item.domain?'selected':'')+'>'+esc(item.domain)+'</option>').join('');
+  const checks=domains.map((item,index)=>'<label class="check"><input type="checkbox" name="domains" value="'+esc(item.domain)+'" '+(index===0?'checked':'')+'>'+esc(item.label)+'</label>').join('');
+  const rows=accounts.map(account=>{const self=account.id===data.current_account_id,domainPills=(account.domains||[]).map(domain=>pill(domain,domain==='admin.apitoken.sale'?'ok':'')).join(' ');
+    const actions='<button class="btn" data-admin-action="password" data-id="'+esc(account.id)+'" data-username="'+esc(account.username)+'" data-self="'+(self?'1':'0')+'">пароль</button>'+
+      '<button class="btn" data-admin-action="domains" data-id="'+esc(account.id)+'" data-username="'+esc(account.username)+'" data-domains="'+esc((account.domains||[]).join(','))+'">домены</button>'+
+      '<button class="btn '+(account.status==='active'?'bad':'')+'" data-admin-action="status" data-id="'+esc(account.id)+'" data-username="'+esc(account.username)+'" data-status="'+esc(account.status)+'">'+(account.status==='active'?'отключить':'включить')+'</button>';
+    return '<tr><td class="left"><b>'+esc(account.username)+'</b>'+(self?' '+pill('вы','ok'):'')+'<div class="sub">'+esc(account.id)+'</div></td><td class="left domain-list">'+domainPills+
+      '</td><td>'+pill(account.status,account.status==='active'?'ok':'bad')+'</td><td>'+date(account.password_changed_at,true)+'</td><td>'+date(account.created_at,true)+'</td><td><div class="actions">'+actions+'</div></td></tr>'}).join('');
+  const external=(directory.external_domains||[]).map(item=>esc(item.domain)+' использует '+esc(item.account_system)).join(' · ');
+  const body='<div class="banner ok"><span class="dot"></span><div><b>Центральное управление администраторами</b><span class="muted">Один логин можно назначить на один или несколько внутренних доменов. '+external+'.</span></div></div>'+
+    '<h2>Новый администратор</h2><form id="admin-create" class="panel form admin-form"><div class="field"><label>Логин</label><input name="username" required maxlength="80" pattern="[A-Za-z0-9._@-]+" autocomplete="off" placeholder="new.admin"></div>'+
+    '<div class="field"><label>Пароль (минимум 12)</label><input name="password" type="password" required minlength="12" maxlength="200" autocomplete="new-password"></div><div class="field"><label>Доступ к доменам</label><div class="checks">'+checks+'</div></div><button class="btn" type="submit">создать</button></form>'+
+    '<h2>Администраторы</h2><div class="toolbar"><select id="admin-domain">'+options+'</select><span class="muted">Точный фильтр по домену · найдено '+accounts.length+'</span></div>'+
+    '<div class="table"><div class="scroll"><table><thead><tr><th class="left">администратор</th><th class="left">домены</th><th>статус</th><th>пароль изменён</th><th>создан</th><th>действия</th></tr></thead><tbody>'+(rows||empty(6))+'</tbody></table></div></div>'+
+    '<footer>Пароли хранятся только как Argon2id-хеши. Нельзя отключить или лишить main-admin доступа последнего активного администратора.</footer>';
+  page('администраторы',body,pill(accounts.filter(account=>account.status==='active').length+' active','ok'));bindAdmins(domains)}
+function bindAdmins(domains){const select=document.getElementById('admin-domain');select.onchange=()=>{adminDomainFilter=select.value;admins().catch(error=>errorPage('администраторы',error))};
+  const form=document.getElementById('admin-create');form.onsubmit=async event=>{event.preventDefault();const data=new FormData(form),selected=data.getAll('domains');
+    if(!selected.length)return alert('Выберите хотя бы один домен.');const reason=prompt('Причина создания администратора (3–300 символов):');if(reason==null||reason.trim().length<3)return;
+    const button=form.querySelector('button[type=submit]');button.disabled=true;try{await send('/admin/admin-accounts','POST',{username:data.get('username'),password:data.get('password'),domains:selected,reason:reason.trim()});
+      form.reset();alert('Администратор создан.');await admins()}catch(error){alert(error.message);button.disabled=false}};
+  document.querySelectorAll('[data-admin-action]').forEach(button=>button.onclick=()=>adminAction(button,domains))}
+async function adminAction(button,domains){const action=button.dataset.adminAction,username=button.dataset.username,id=button.dataset.id;let body;
+  if(action==='password'){const first=prompt('Новый пароль для '+username+' (минимум 12 символов):');if(first==null)return;if(first.length<12)return alert('Пароль слишком короткий.');
+    const second=prompt('Повторите новый пароль:');if(second!==first)return alert('Пароли не совпадают.');const reason=prompt('Причина смены пароля:');if(reason==null||reason.trim().length<3)return;
+    if(!confirm('Сменить пароль '+username+'?'+(button.dataset.self==='1'?'\nЭто ваш аккаунт: браузер запросит новые credentials.':'')))return;body={password:first,reason:reason.trim()}}
+  if(action==='domains'){const allowed=domains.map(item=>item.domain),current=button.dataset.domains||'',value=prompt('Домены для '+username+' через запятую:\n'+allowed.join('\n'),current);if(value==null)return;
+    const selected=[...new Set(value.split(',').map(item=>item.trim()).filter(Boolean))];if(!selected.length||selected.some(item=>!allowed.includes(item)))return alert('Укажите один или несколько доменов ровно как в списке.');
+    const reason=prompt('Причина изменения доменов:');if(reason==null||reason.trim().length<3)return;if(!confirm('Сохранить доступ '+username+' к:\n'+selected.join('\n')))return;body={domains:selected,reason:reason.trim()}}
+  if(action==='status'){const next=button.dataset.status==='active'?'disabled':'active',reason=prompt('Причина изменения статуса '+username+':');if(reason==null||reason.trim().length<3)return;
+    if(!confirm((next==='disabled'?'Отключить ':'Включить ')+username+'?'))return;body={status:next,reason:reason.trim()}}
+  button.disabled=true;try{const result=await send('/admin/admin-accounts/'+id+'/'+action,'PATCH',body);alert('Готово.'+(result.changed_self?' Введите новый пароль при следующем запросе.':''));await admins()}catch(error){alert(error.message);button.disabled=false}}
 
 async function allPartners(){let offset=0,items=[],totals=null;do{const data=await api('/partner-admin/partner-analytics?sort=created_at&dir=desc&limit=500&offset='+offset),batch=data.items||[];
   totals=data.totals;items=items.concat(batch);offset=items.length;if(!batch.length)break}while(totals&&items.length<totals.total);return{items,totals:totals||{total:items.length,active:0}}}

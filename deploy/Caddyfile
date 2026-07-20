@@ -79,19 +79,25 @@ http://127.0.0.1:8790 {
 }
 
 backend.apitoken.sale {
-	reverse_proxy 127.0.0.1:3000 127.0.0.1:3001 {
-		lb_policy round_robin
-		lb_try_duration 3s
-		lb_try_interval 100ms
+	# Service-to-service endpoints are reachable only through the stable loopback origin.
+	handle /v1/internal/* {
+		respond 404
+	}
+	handle {
+		reverse_proxy 127.0.0.1:3000 127.0.0.1:3001 {
+			lb_policy round_robin
+			lb_try_duration 3s
+			lb_try_interval 100ms
 
-		health_uri /v1/ready
-		health_interval 2s
-		health_timeout 2s
-		health_status 2xx
+			health_uri /v1/ready
+			health_interval 2s
+			health_timeout 2s
+			health_status 2xx
 
-		fail_duration 5s
-		max_fails 1
-		unhealthy_status 503
+			fail_duration 5s
+			max_fails 1
+			unhealthy_status 503
+		}
 	}
 }
 

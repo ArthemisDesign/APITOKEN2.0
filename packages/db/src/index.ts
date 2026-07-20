@@ -8,6 +8,7 @@ export * from "./checkouts.js";
 export * from "./credits.js";
 export * from "./engine.js";
 export * from "./admin-overview.js";
+export * from "./admin-accounts.js";
 export * from "./payments.js";
 export * from "./pricing.js";
 export * from "./totp.js";
