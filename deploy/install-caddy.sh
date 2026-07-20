@@ -22,7 +22,13 @@ awk '
   NR == FNR {
     # Каждая строка "user $2y$…" внутри basic_auth — отдельный админ (Q/R/M/…). Переносим ВСЕ,
     # чтобы применение шаблона не выкидывало учётки, добавленные в живой конфиг.
-    if ($1 != "header_up" && $2 ~ /^\$2/) auth = auth $0 ORS
+    # Группы учёток различаем по snippet-блоку: (crm_admins) — отдельный набор ТОЛЬКО для CRM.
+    if ($0 ~ /^\(crm_admins\)/) grp = "crm"
+    else if ($0 ~ /^\(/ || $0 ~ /^[a-z]/) grp = ""
+    if ($1 != "header_up" && $2 ~ /^\$2/) {
+      if (grp == "crm") crmauth = crmauth $0 ORS
+      else auth = auth $0 ORS
+    }
     if ($1 == "header_up" && $2 == "x-api-key") control = $0
     if ($1 == "header_up" && $2 == "x-admin-key") commadmin = $0
     if ($1 == "header_up" && $2 == "x-sales-admin-key") salesadmin = $0
@@ -46,6 +52,14 @@ awk '
     commadmin_used++
     next
   }
+  /<CRM_ADMIN_USERS_PLACEHOLDER>/ {
+    # Bootstrap: пока в живом конфиге нет блока (crm_admins) с учётками — рендерим запертую
+    # заглушку (пароль случайный и никому не известен), чтобы применение шаблона не падало.
+    if (crmauth == "") crmauth = "\t\tdisabled $2a$14$GkwhyxjgFuLvnJRxUDO5POFWymIfHL9NKsdtLIHo3lvrXIhvPaO2q" ORS
+    printf "%s", crmauth
+    crmauth_used++
+    next
+  }
   /<SALES_ADMIN_KEY_PLACEHOLDER>/ {
     if (salesadmin == "") exit 45
     print salesadmin
@@ -54,7 +68,7 @@ awk '
   }
   { print }
   END {
-    if (auth_used != 1 || control_used != 1 || commadmin_used != 1 || salesadmin_used != 1) exit 43
+    if (auth_used != 1 || control_used != 1 || commadmin_used != 1 || salesadmin_used != 1 || crmauth_used != 1) exit 43
   }
 ' "$LIVE" "$TEMPLATE" >"$tmp"
 

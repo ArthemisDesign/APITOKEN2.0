@@ -169,6 +169,31 @@ sales.apitoken.sale {
 	redir https://partners.apitoken.sale{uri} permanent
 }
 
+# CRM-портал (отдельный продукт «CRM & Parsing»). Вход по СВОИМ учёткам (Q_Sales/R_Sales/M_Sales) —
+# panel_admins сюда НЕ импортируем: эти логины дают доступ ТОЛЬКО к CRM, а админы панели сюда
+# автоматически не входят. Первичная вставка учёток — руками в живой конфиг (см. CRM_PORTAL.md);
+# до вставки install-caddy.sh рендерит locked-заглушку (user "disabled" со случайным паролем).
+(crm_admins) {
+	basic_auth {
+		<CRM_ADMIN_USERS_PLACEHOLDER>
+	}
+}
+
+crm.panel.apitoken.sale {
+	# Ингест для парсеров — МИМО basic_auth людей: авторизация ключом x-crm-ingest-key в crm-api.
+	handle /v1/ingest/* {
+		reverse_proxy 127.0.0.1:3400
+	}
+	handle /v1/* {
+		import crm_admins
+		reverse_proxy 127.0.0.1:3400
+	}
+	handle {
+		import crm_admins
+		reverse_proxy 127.0.0.1:3300
+	}
+}
+
 # Отдельный админ-сайт партнёрки. Вход — тот же basic_auth (Q/R/M), что и у панели.
 # Caddy инжектит x-sales-admin-key на /v1/* server-side → страница /admin не просит ключ.
 partners.panel.apitoken.sale {
