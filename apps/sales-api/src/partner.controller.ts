@@ -35,8 +35,8 @@ import {
   createPromoCode,
   listPartnerPromoCodes,
   disablePromoCode,
-  setPartnerReferralDiscount,
   createDiscountLink,
+  insertSalesAudit,
   listDiscountLinks,
   deleteDiscountLink,
   DiscountLinkCollisionError,
@@ -57,7 +57,6 @@ import {
   createInviteSchema,
   createPromoSchema,
   earningsQuerySchema,
-  partnerSetDiscountSchema,
   updateSettingsSchema,
   walletSchema,
 } from "./schemas.js";
@@ -225,22 +224,9 @@ export class PartnerController {
     }
   }
 
-  /**
-   * Партнёр с правом ставит скидку своим рефам (≤90%) из кабинета. Применяется как «пол» цены рефа
-   * (реф остаётся b2c на обычных тирах). Право проверяется на уровне БД; нет права → 403.
-   */
-  @Patch("referral-discount")
-  @HttpCode(200)
-  async setReferralDiscount(@CurrentAuth() current: RequestAuth, @Body() body: unknown): Promise<unknown> {
-    if (!current.partner.referralDiscountEnabled) {
-      throw new ForbiddenException("referral discount is not enabled for this account");
-    }
-    const parsed = partnerSetDiscountSchema.safeParse(body ?? {});
-    if (!parsed.success) throw new BadRequestException("invalid referral discount (0–90%)");
-    const ok = await setPartnerReferralDiscount(this.database, current.partner.id, parsed.data.referralDiscountBps);
-    if (!ok) throw new ForbiddenException("referral discount is not enabled for this account");
-    return { updated: true, referralDiscountBps: parsed.data.referralDiscountBps };
-  }
+  // Персональная скидка выдаётся ТОЛЬКО через одноразовые discount-links (см. ниже), лимит которых —
+  // потолок referral_discount_bps, выставляемый АДМИНОМ. Партнёрского эндпоинта менять свой потолок
+  // нет намеренно: иначе партнёр мог бы поднять себе скидку до глобальных 90% мимо лимита админа.
 
   @Get("invites")
   @Header("Cache-Control", "no-store")
@@ -413,6 +399,13 @@ export class PartnerController {
       payoutDetails: { network: "BSC", asset: "USDT (BEP-20)", address: parsed.data.address },
     });
     if (!updated) throw new UnauthorizedException("partner account is unavailable");
+    // Смена адреса выплат — самое чувствительное действие партнёра: пишем в audit-trail (виден в
+    // админ-ленте активности), чтобы подмена адреса перед выплатой не оставалась без следа.
+    await insertSalesAudit(this.database, {
+      actorType: "partner", actorId: current.partner.id,
+      action: "partner.wallet_changed", targetType: "partner", targetId: current.partner.id,
+      metadata: { method: PAYOUT_METHOD, address: parsed.data.address },
+    });
     return { partner: partnerView(updated) };
   }
 

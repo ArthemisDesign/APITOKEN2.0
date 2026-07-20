@@ -175,7 +175,14 @@ export class AdminController {
       listPartnerPayouts(this.database, id),
       listReferredUsers(this.database, id),
     ]);
-    return jsonSafe({ partner, daily, team, discountLinks, promos, payouts, referrals });
+    // Commerce identities stay masked even for admins: expose only an 8-char prefix, never the full UUID.
+    const maskedReferrals = referrals.map((r) => ({
+      userMask: `user-${r.commerceUserId.slice(0, 8)}…`,
+      attributedAt: r.attributedAt,
+      spendNano: r.spendNano,
+      earnedNano: r.earnedNano,
+    }));
+    return jsonSafe({ partner, daily, team, discountLinks, promos, payouts, referrals: maskedReferrals });
   }
 
   /** Лента действий партнёра (рефералы, депозиты, ссылки, промо, выплаты, входы, админ-действия). */

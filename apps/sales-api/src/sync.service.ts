@@ -96,19 +96,28 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
       for (const row of rows) {
         const resolved = await resolveReferralCode(this.database, row.code);
         if (resolved) {
-          await upsertReferredUser(this.database, {
+          const won = await upsertReferredUser(this.database, {
             commerceUserId: row.userId,
             partnerId: resolved.partnerId,
             referralCode: row.code,
             attributedAt: row.createdAt,
             sourceAttributionId: row.id,
           });
-          // Обычный реф-код → floor 0 (обычные b2c-тиры). Персональная ОДНОРАЗОВАЯ ссылка со скидкой
-          // → floor = её скидка, и ссылка гасится этим пользователем. Гашёная ссылка даёт floor 0.
-          if (resolved.discountLinkId && !resolved.discountLinkConsumed) {
-            await consumeDiscountLink(this.database, resolved.discountLinkId, row.userId);
+          // Только если ЭТА атрибуция реально закрепила юзера (upsert вставил строку). Если юзер уже
+          // был привязан к другому партнёру, upsert — no-op: НЕ гасим чужую одноразовую ссылку и НЕ
+          // применяем чужую скидку (иначе партнёр терял бы ссылку, а юзер получал незаслуженный floor).
+          if (won) {
+            // Персональная ОДНОРАЗОВАЯ ссылка со скидкой → гасим её этим пользователем.
+            if (resolved.discountLinkId && !resolved.discountLinkConsumed) {
+              await consumeDiscountLink(this.database, resolved.discountLinkId, row.userId);
+            }
+            // Скидочный floor шлём в commerce ТОЛЬКО когда он ненулевой. Обычный реф-код (floor 0,
+            // обычные b2c-тиры) не должен дёргать commerce-эндпоинт — иначе его недоступность стопорит
+            // вообще всю ленту атрибуции, включая рефералов без скидки (head-of-line stall).
+            if (resolved.discountBps > 0) {
+              await this.applyReferralDiscount(row.userId, resolved.discountBps);
+            }
           }
-          await this.applyReferralDiscount(row.userId, resolved.discountBps);
         }
         lastOk = row.id;
       }

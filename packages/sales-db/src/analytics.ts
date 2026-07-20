@@ -281,7 +281,7 @@ export async function getPartnerActivity(
        FROM payouts po WHERE po.partner_id = $1 AND po.decided_at IS NOT NULL)
     UNION ALL
     (SELECT 'login', s.created_at, NULL,
-            'Signed in', jsonb_build_object('ua', left(COALESCE(s.user_agent, ''), 80), 'ip', s.ip_address)
+            'Signed in', jsonb_build_object('ua', left(COALESCE(s.user_agent, ''), 80))
        FROM partner_sessions s WHERE s.partner_id = $1)
     UNION ALL
     (SELECT 'admin', a.created_at, NULL,
