@@ -14,14 +14,18 @@
 # Central database-backed admin authentication. The auth service checks the original hostname
 # against each account's domain grants and returns a trusted actor identity for downstream audit.
 (managed_admin_auth) {
-	request_header -X-Admin-Actor
-	request_header -X-Admin-Account-Id
-	forward_auth 127.0.0.1:8791 {
-		uri /v1/internal/admin-auth/verify
-		header_up Host 127.0.0.1:8791
-		header_up X-Admin-Key "<ADMIN_AUTH_KEY_PLACEHOLDER>"
-		header_up X-Admin-Domain {http.request.host}
-		copy_headers X-Admin-Actor X-Admin-Account-Id
+	# route preserves literal order. Without it, Caddy's directive sorting runs request_header after
+	# forward_auth and erases the verified identity that copy_headers just produced.
+	route {
+		request_header -X-Admin-Actor
+		request_header -X-Admin-Account-Id
+		forward_auth 127.0.0.1:8791 {
+			uri /v1/internal/admin-auth/verify
+			header_up Host 127.0.0.1:8791
+			header_up X-Admin-Key "<ADMIN_AUTH_KEY_PLACEHOLDER>"
+			header_up X-Admin-Domain {http.request.host}
+			copy_headers X-Admin-Actor X-Admin-Account-Id
+		}
 	}
 }
 
