@@ -185,9 +185,10 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
         {
           title: "7. Refunds",
           paragraphs: [
-            `You may request a refund of unused paid balance within 14 calendar days after the relevant payment by writing to ${SUPPORT_EMAIL} from the account email and including the order identifier. Consumed usage, promotional credit, and payment or network fees already incurred are not refundable.`,
-            "Approved refunds are limited to the unused amount attributable to that payment and are returned to the original payment method where technically possible. Identity, ownership, and anti-fraud checks may be required. Provider processing times apply. Nothing in this section limits mandatory consumer rights or remedies for a Service failure that cannot legally be excluded.",
-            "Please contact support before initiating a chargeback so we can investigate. Fraudulent or duplicate chargebacks may result in account suspension while the dispute is reviewed.",
+            `A top-up is refundable only if BOTH conditions are met: (a) you request it within 5 calendar days after that top-up, and (b) none of the balance from that top-up has been spent — the paid balance must be completely unused. Write to ${SUPPORT_EMAIL} from the account email and include the order identifier.`,
+            "Once any part of the paid balance has been consumed by API usage, that top-up is final and non-refundable in full — we do not refund partially used balances. Promotional credit, the welcome bonus, and payment or network fees already incurred are never refundable, and free credit is always spent before paid balance.",
+            "Eligible refunds are returned to the original payment method where technically possible. Identity, ownership, and anti-fraud checks may be required, and provider processing times apply. Outside the 5-day fully-unspent window, top-ups are non-refundable except where a mandatory consumer right or a remedy for a Service failure cannot legally be excluded.",
+            "Please contact support before initiating a chargeback so we can investigate. Because paid balance can be spent immediately, a chargeback on already-consumed usage is treated as unpaid usage; fraudulent or duplicate chargebacks may result in account suspension while the dispute is reviewed.",
           ],
         },
         {
@@ -211,10 +212,12 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
           ],
         },
         {
-          title: "11. Liability",
+          title: "11. Disclaimers and limitation of liability",
           paragraphs: [
-            "To the maximum extent permitted by law, apiToken.sale is not liable for indirect, incidental, special, punitive, or consequential losses, lost profits, lost data, or decisions made from model output. Our aggregate liability connected with the Service will not exceed the paid amount you added to the Service during the three months before the event giving rise to the claim.",
-            "These limitations do not apply where prohibited by law, including liability that cannot legally be limited. You remain responsible for your content, integrations, users, taxes, and compliance obligations.",
+            "The Service is provided “as is” and “as available”, without warranties of any kind, whether express, implied, or statutory, including any implied warranty of merchantability, fitness for a particular purpose, non-infringement, accuracy, availability, or uninterrupted or error-free operation. You use the Service, upstream models, and their outputs at your own risk.",
+            "To the maximum extent permitted by law, apiToken.sale is not liable for any indirect, incidental, special, punitive, or consequential losses, nor for lost profits, lost revenue, lost or corrupted data, business interruption, or any decision, action, or content produced from or relying on model output — including outages, delays, rate limits, suspension, upstream-provider behavior, inaccurate or blocked responses, or loss of paid or promotional balance. We are a reseller of access to third-party models and do not control, and are not responsible for, those models or their output.",
+            "To the maximum extent permitted by law, our total aggregate liability for all claims connected with the Service will not exceed the lesser of (a) the paid amount you added to the Service during the three months before the event giving rise to the claim, or (b) USD 100. Promotional credit and the welcome bonus have no cash value and are excluded from any liability calculation.",
+            "These limitations apply to the fullest extent permitted and do not exclude liability that cannot legally be limited, including mandatory consumer rights. You are solely responsible for your content, integrations, end users, use case, tax, and compliance obligations, and you agree to indemnify us against claims arising from your use of the Service or breach of this Agreement.",
           ],
         },
         {
@@ -385,9 +388,10 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
         {
           title: "7. Возвраты",
           paragraphs: [
-            `Запросить возврат неиспользованной части оплаченного баланса можно в течение 14 календарных дней после соответствующего платежа. Напишите с адреса аккаунта на ${SUPPORT_EMAIL} и укажите номер заказа. Уже использованные услуги, бонусы и фактически понесённые платёжные или сетевые комиссии не возвращаются.`,
-            "Одобренный возврат ограничен неиспользованной суммой, относящейся к этому платежу, и по возможности выполняется исходным способом оплаты. Мы вправе проверить личность, владение аккаунтом и отсутствие мошенничества. Срок обработки зависит от провайдера. Этот раздел не ограничивает обязательные права потребителя и способы защиты при сбое Сервиса, которые нельзя исключить по закону.",
-            "До оформления чарджбэка обратитесь в поддержку, чтобы мы могли провести проверку. Мошеннический или повторный чарджбэк может повлечь приостановку аккаунта на время спора.",
+            `Возврат пополнения возможен, только если одновременно выполнены два условия: (а) вы запросили его в течение 5 календарных дней после этого пополнения и (б) ни одна часть баланса этого пополнения не была потрачена — оплаченный баланс полностью не использован. Напишите с адреса аккаунта на ${SUPPORT_EMAIL} и укажите номер заказа.`,
+            "Как только любая часть оплаченного баланса израсходована на использование API, это пополнение считается окончательным и возврату не подлежит — частично использованные пополнения мы не возвращаем. Бонусы, приветственный бонус и уже понесённые платёжные или сетевые комиссии не возвращаются никогда; бесплатный баланс всегда тратится раньше оплаченного.",
+            "Возврат, соответствующий условиям, по возможности выполняется исходным способом оплаты. Мы вправе проверить личность, владение аккаунтом и отсутствие мошенничества; срок обработки зависит от провайдера. За пределами 5-дневного окна при полностью неиспользованном балансе пополнения возврату не подлежат, кроме случаев, когда обязательное право потребителя или способ защиты при сбое Сервиса нельзя исключить по закону.",
+            "До оформления чарджбэка обратитесь в поддержку, чтобы мы могли провести проверку. Поскольку оплаченный баланс может быть потрачен сразу, чарджбэк по уже израсходованному использованию рассматривается как неоплаченное использование; мошеннический или повторный чарджбэк может повлечь приостановку аккаунта на время спора.",
           ],
         },
         {
@@ -411,10 +415,12 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
           ],
         },
         {
-          title: "11. Ответственность",
+          title: "11. Отказ от гарантий и ограничение ответственности",
           paragraphs: [
-            "В максимально допустимой законом степени apiToken.sale не отвечает за косвенные, случайные, специальные, штрафные и последующие убытки, упущенную прибыль, потерю данных и решения, принятые на основе ответа модели. Совокупная ответственность по Сервису ограничена оплаченной суммой, зачисленной вами за три месяца до события, ставшего основанием требования.",
-            "Ограничения не действуют там, где они запрещены законом, включая ответственность, которую нельзя ограничить. Вы отвечаете за свой контент, интеграции, пользователей, налоги и выполнение обязательных требований.",
+            "Сервис предоставляется «как есть» и «по мере доступности», без каких-либо гарантий — прямых, подразумеваемых или установленных законом, включая гарантии пригодности для продажи, пригодности для конкретной цели, ненарушения прав, точности, доступности и бесперебойной или безошибочной работы. Вы используете Сервис, сторонние модели и их ответы на собственный риск.",
+            "В максимально допустимой законом степени apiToken.sale не отвечает за любые косвенные, случайные, специальные, штрафные и последующие убытки, а также за упущенную прибыль и выручку, потерю или повреждение данных, перерыв в деятельности и любые решения, действия или контент, созданные на основе ответа модели или полагающиеся на него — включая простои, задержки, лимиты, приостановку, поведение вышестоящих провайдеров, неточные или заблокированные ответы и утрату оплаченного или бонусного баланса. Мы являемся реселлером доступа к сторонним моделям и не контролируем эти модели и их ответы и не отвечаем за них.",
+            "В максимально допустимой законом степени совокупная ответственность по всем требованиям, связанным с Сервисом, не превышает меньшую из величин: (а) оплаченную сумму, зачисленную вами за три месяца до события, ставшего основанием требования, или (б) 100 долларов США. Бонусный и приветственный баланс не имеют денежной стоимости и в расчёт ответственности не включаются.",
+            "Ограничения действуют в максимально допустимой степени и не исключают ответственность, которую нельзя ограничить по закону, включая обязательные права потребителя. Вы единолично отвечаете за свой контент, интеграции, конечных пользователей, сценарий использования, налоги и соблюдение требований и обязуетесь возместить нам ущерб по претензиям, связанным с вашим использованием Сервиса или нарушением этого Соглашения.",
           ],
         },
         {
