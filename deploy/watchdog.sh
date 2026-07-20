@@ -308,6 +308,19 @@ final_verify_backend() {
     || wd_die "content studio health endpoint is not ready after cutover"
 }
 
+final_verify_admin_panel() {
+  local panel public_status
+  panel=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 \
+    http://127.0.0.1:8790/admin-panel)
+  grep -Fq 'data-admin-panel-version="2"' <<<"$panel" \
+    || wd_die "deployed engine does not contain the current admin panel"
+  public_status=$(curl --noproxy '*' --insecure --silent --show-error --max-time 5 \
+    --resolve admin.apitoken.sale:443:127.0.0.1 -o /dev/null -w '%{http_code}' \
+    https://admin.apitoken.sale/ 2>/dev/null || true)
+  [[ $public_status == 401 ]] \
+    || wd_die "admin.apitoken.sale is not reachable behind Basic Auth (HTTP ${public_status:-unreachable})"
+}
+
 deploy_engine() {
   local sha=$1
   CURRENT_PHASE=deploying-engine
@@ -451,6 +464,7 @@ main() {
 
   if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $engine_changed == 0 && $backend_changed == 0 && $sales_changed == 0 ]]; then
     reconcile_engine_runtime "$ENGINE_SHA"
+    final_verify_admin_panel
     CURRENT_PHASE=idle
     status "master already processed; production runtime aligned"
     wd_log "master $CANDIDATE_SHA is already processed and production is aligned"
@@ -503,6 +517,7 @@ main() {
   fi
 
   reconcile_engine_runtime "$ENGINE_SHA"
+  final_verify_admin_panel
 
   wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"
   rm -f -- "$PENDING_MIGRATION_FILE"

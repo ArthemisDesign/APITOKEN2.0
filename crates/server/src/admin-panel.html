@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>apiToken.sale · admin</title>
+<style>
+:root{--bg:#fff;--soft:#f5f5f4;--card:#fff;--line:#dededb;--text:#0a0a0a;--muted:#6b6a65;
+--blue:#3767f0;--blue-bg:#eef2ff;--green:#14804a;--green-bg:#edf9f2;--orange:#a56300;
+--orange-bg:#fff7e8;--red:#b42318;--red-bg:#fff0ef;--shadow:0 8px 30px rgba(10,10,10,.06);
+--mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+[data-theme=dark]{--bg:#0a0a0a;--soft:#151515;--card:#101010;--line:#292929;--text:#fff;--muted:#aaa;
+--blue:#7192ff;--blue-bg:#111936;--green:#55d98a;--green-bg:#102419;--orange:#ffc15c;
+--orange-bg:#281d09;--red:#ff8279;--red-bg:#2c1110;--shadow:none}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:13px/1.5 var(--mono);
+background-image:linear-gradient(rgba(120,120,120,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(120,120,120,.035) 1px,transparent 1px);
+background-size:44px 44px}button,input,select{font:inherit}header{height:62px;display:flex;align-items:center;gap:18px;
+padding:0 22px;border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--bg) 88%,transparent);
+backdrop-filter:blur(12px);position:sticky;top:0;z-index:10}.brand{font-size:16px;font-weight:800;white-space:nowrap}
+.brand i{color:var(--blue);font-style:normal}.brand small{font-size:10px;color:var(--muted);font-weight:500;margin-left:10px;
+letter-spacing:.1em;text-transform:uppercase}.tabs{height:100%;display:flex;overflow:auto}.tabs button{border:0;border-bottom:2px solid transparent;
+background:none;color:var(--muted);padding:0 12px;cursor:pointer;white-space:nowrap}.tabs button:hover,.tabs button.on{color:var(--text)}
+.tabs button.on{border-bottom-color:var(--blue);font-weight:700}.right{margin-left:auto;display:flex;gap:8px;align-items:center}
+.theme{border:1px solid var(--line);background:var(--card);color:var(--text);width:34px;height:32px;cursor:pointer}
+main{max-width:1320px;margin:auto;padding:24px}h1{font-size:20px;margin:0}h2{font-size:10px;text-transform:uppercase;
+letter-spacing:.13em;color:var(--muted);margin:28px 0 10px}.lead{color:var(--muted);margin:4px 0 20px}
+.banner{display:flex;gap:14px;align-items:center;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:var(--card);
+margin-bottom:20px}.banner.ok{border-color:var(--green);background:var(--green-bg)}.banner.warn{border-color:var(--orange);background:var(--orange-bg)}
+.banner.bad{border-color:var(--red);background:var(--red-bg)}.dot{width:9px;height:9px;border-radius:50%;background:var(--green);display:inline-block}
+.warn .dot,.dot.warn{background:var(--orange)}.bad .dot,.dot.bad{background:var(--red)}.banner b{display:block;font-size:14px}
+.muted{color:var(--muted)}.cards{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);
+border-radius:7px;overflow:hidden;background:var(--card);box-shadow:var(--shadow)}.card{padding:18px;border-right:1px solid var(--line)}
+.card:nth-child(4n){border-right:0}.card:nth-child(n+5){border-top:1px solid var(--line)}.label{font-size:10px;text-transform:uppercase;
+letter-spacing:.08em;color:var(--muted)}.value{font-size:27px;font-weight:800;margin-top:6px;letter-spacing:-.04em}.hint{color:var(--muted);font-size:11px;margin-top:4px}
+.panel,.table{border:1px solid var(--line);border-radius:7px;background:var(--card);box-shadow:var(--shadow);margin-bottom:16px}
+.panel{padding:17px}.scroll{overflow:auto}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th,td{padding:11px 13px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}th{font-size:10px;
+text-transform:uppercase;letter-spacing:.06em;color:var(--muted);background:var(--soft);font-weight:600}tr:last-child td{border:0}
+tbody tr:hover{background:var(--blue-bg)}th.left,td.left{text-align:left}.sub{font-size:10px;color:var(--muted);margin-top:2px}
+.pill{display:inline-block;border:1px solid var(--line);border-radius:4px;padding:1px 6px;margin:1px;font-size:10px;color:var(--muted)}
+.pill.ok{color:var(--green);border-color:var(--green)}.pill.warn{color:var(--orange);border-color:var(--orange)}
+.pill.bad{color:var(--red);border-color:var(--red)}.btn{border:1px solid var(--blue);background:var(--blue-bg);color:var(--blue);
+padding:5px 9px;border-radius:4px;cursor:pointer;white-space:nowrap}.btn:hover{background:var(--blue);color:#fff}
+.btn.warn{color:var(--orange);border-color:var(--orange);background:var(--orange-bg)}.btn.bad{color:var(--red);border-color:var(--red);background:var(--red-bg)}
+.btn[disabled]{opacity:.4;cursor:not-allowed}.actions{display:flex;gap:5px;justify-content:flex-end}.toolbar{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+input,select{border:1px solid var(--line);background:var(--card);color:var(--text);padding:9px 10px;border-radius:4px}
+input:focus,select:focus{outline:2px solid var(--blue);outline-offset:1px}.toolbar input{flex:1;min-width:220px}
+.form{display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:10px;align-items:end}.field{display:grid;gap:4px}
+.field label{font-size:10px;color:var(--muted);text-transform:uppercase}.json{max-width:340px;overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-size:10px}
+footer{text-align:center;color:var(--muted);font-size:10px;padding:24px}.empty{text-align:left;color:var(--muted)}
+@media(max-width:960px){header{padding:0 10px;gap:8px}.brand small,.right .pill{display:none}.tabs button{padding:0 8px}.cards{grid-template-columns:repeat(2,1fr)}
+.card:nth-child(2n){border-right:0}.card:nth-child(n+3){border-top:1px solid var(--line)}.form{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){main{padding:16px 10px}.brand{font-size:13px}.right{display:none}.cards,.form{grid-template-columns:1fr}
+.card{border-right:0!important;border-top:1px solid var(--line)}.card:first-child{border-top:0}}
+</style>
+</head>
+<body data-admin-panel-version="2">
+<div id="app"></div>
+<script>
+const app=document.getElementById('app');
+const validTabs=['dashboard','users','topups','business','system','audit'];
+const getTab=()=>validTabs.includes(location.hash.slice(1))?location.hash.slice(1):'dashboard';
+let tab=getTab(),timer=null,usersCache=[];
+const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+const money=value=>'$'+Number(value||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const date=(value,withTime=false)=>value?new Date(value).toLocaleString('ru-RU',withTime?{dateStyle:'short',timeStyle:'short'}:{dateStyle:'short'}):'—';
+const ago=value=>{if(!value)return'—';const seconds=Math.max(0,(Date.now()-new Date(value).getTime())/1000|0);
+  if(seconds<60)return'сейчас';if(seconds<3600)return(seconds/60|0)+'м';if(seconds<86400)return(seconds/3600|0)+'ч';return(seconds/86400|0)+'д'};
+const pill=(value,kind='')=>'<span class="pill '+kind+'">'+esc(value)+'</span>';
+const card=(label,value,hint)=>'<div class="card"><div class="label">'+esc(label)+'</div><div class="value">'+value+'</div><div class="hint">'+hint+'</div></div>';
+const empty=columns=>'<tr><td colspan="'+columns+'" class="empty">данных нет</td></tr>';
+function header(title,badge=''){return '<header><div class="brand">api<i>Token</i>.sale<small>admin · '+esc(title)+'</small></div><nav class="tabs">'+
+  [['dashboard','Сводка'],['users','Пользователи'],['topups','Пополнения'],['business','B2B'],['system','Система'],['audit','Аудит']]
+  .map(item=>'<button data-tab="'+item[0]+'" class="'+(tab===item[0]?'on':'')+'">'+item[1]+'</button>').join('')+
+  '</nav><div class="right">'+badge+'<button class="theme" id="theme">◐</button></div></header>'}
+function page(title,body,badge=''){app.innerHTML=header(title,badge)+'<main>'+body+'</main>';bindCommon()}
+function bindCommon(){document.querySelectorAll('[data-tab]').forEach(button=>button.onclick=()=>{location.hash=button.dataset.tab});
+  const theme=document.getElementById('theme');if(theme)theme.onclick=()=>{const next=document.documentElement.dataset.theme==='dark'?'light':'dark';
+  document.documentElement.dataset.theme=next;localStorage.setItem('admin-theme',next)}}
+function errorPage(title,error){page(title,'<div class="banner bad"><span class="dot"></span><div><b>Не удалось загрузить данные</b><span class="muted">'+esc(error.message||error)+'</span></div></div>')}
+async function api(path,options={}){const response=await fetch(path,{...options,headers:{'content-type':'application/json',...(options.headers||{})}});
+  const payload=await response.json().catch(()=>({}));if(!response.ok){const message=Array.isArray(payload.message)?payload.message.join(', '):payload.message;
+  throw new Error(message||('HTTP '+response.status))}return payload}
+async function send(path,method,body){return api(path,{method,body:JSON.stringify(body)})}
+async function refresh(){clearInterval(timer);tab=getTab();try{
+  if(tab==='dashboard')await dashboard();if(tab==='users')await users();if(tab==='topups')await topups();
+  if(tab==='business')await business();if(tab==='system')await system();if(tab==='audit')await audit();
+}catch(error){errorPage(tab,error)}timer=setInterval(refresh,tab==='system'?5000:20000)}
+addEventListener('hashchange',refresh);
+const savedTheme=localStorage.getItem('admin-theme');
+document.documentElement.dataset.theme=savedTheme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+
+async function dashboard(){const data=await api('/admin/dashboard'),u=data.users,t=data.topups,p=data.platform;
+  const state=p.engine_error?'warn':'ok';
+  const body='<div class="banner '+state+'"><span class="dot"></span><div><b>'+(p.engine_error?'Есть engine-аккаунты с ошибкой':'Коммерческий контур работает штатно')+
+    '</b><span class="muted">обновлено '+date(data.generated_at,true)+' · сессий '+p.active_sessions+' · engine errors '+p.engine_error+'</span></div></div>'+
+    '<h2>Клиенты и регистрации</h2><div class="cards">'+
+    card('всего клиентов',u.total,u.active+' активны · '+u.disabled+' отключены')+
+    card('OAuth-регистрации',u.registered_oauth,'сейчас OAuth-only '+u.oauth_only+' · hybrid '+u.hybrid)+
+    card('обычная регистрация',u.registered_password,'сейчас password-only '+u.password_only)+
+    card('новые за 30 дней',u.registered_30d,'24ч '+u.registered_24h+' · active 7д '+u.active_7d)+'</div>'+
+    '<h2>Деньги и пополнения</h2><div class="cards">'+
+    card('успешные пополнения',t.paid_count,t.paid_users+' платящих клиентов')+
+    card('пополнено всего',money(t.paid_usd),'30д '+money(t.paid_30d_usd)+' · '+t.paid_30d_count+' шт.')+
+    card('ручные начисления',t.manual_count,money(t.manual_usd)+' · 30д '+t.manual_30d_count)+
+    card('ожидают оплаты',t.pending_checkouts,'ошибок 30д '+t.failed_30d+' · возвратов '+t.refunded_count)+'</div>'+
+    '<h2>Платформа</h2><div class="cards">'+card('API-ключи',p.active_api_keys,'активны из '+p.total_api_keys)+
+    card('B2C / B2B',p.b2c_users+' / '+p.b2b_users,'клиенты по типу тарифа')+
+    card('engine active',p.engine_active,'pending '+p.engine_pending+' · disabled '+p.engine_disabled)+
+    card('защищены 2FA',u.totp,'email подтверждено '+u.verified)+'</div>'+
+    '<footer>Денежные агрегаты считаются на сервере целыми nano-USD; live-балансы — во вкладке «Пользователи».</footer>';
+  page('сводка',body,pill(u.active+' active','ok'))}
+
+async function users(){const result=await Promise.all([api('/admin/users'),api('/admin/dashboard')]);usersCache=result[0].users||[];renderUsers(result[1])}
+function renderUsers(dashboard){const totalBalance=usersCache.reduce((sum,user)=>sum+Number(user.balance_usd||0),0);
+  const totalSpent=usersCache.reduce((sum,user)=>sum+Number(user.spent_usd||0),0);
+  const rows=usersCache.map(user=>{const pay=user.payments||{},keys=user.api_keys||{},methods=user.auth_methods||[];
+    const statusKind=user.status==='disabled'?'bad':user.engine_live_status==='disabled'?'warn':'ok';
+    const tier=user.customer_type==='b2b'?'B2B':(['Starter','Builder','Pro','Studio','Scale'][user.tier]||'—');
+    const auth=methods.map(method=>pill(method)).join('')||'—';
+    const actions=(user.engine_account_id&&user.status==='active'?'<button class="btn" data-credit="'+esc(user.id)+'" data-email="'+esc(user.email)+'">+ баланс</button>':'')+
+      '<button class="btn" data-action="sessions" data-id="'+esc(user.id)+'" data-email="'+esc(user.email)+'">сессии</button>'+
+      (user.totp_enabled?'<button class="btn warn" data-action="totp" data-id="'+esc(user.id)+'" data-email="'+esc(user.email)+'">сброс 2FA</button>':'')+
+      '<button class="btn '+(user.status==='active'?'bad':'')+'" data-action="'+(user.status==='active'?'disable':'enable')+'" data-id="'+esc(user.id)+'" data-email="'+esc(user.email)+'">'+(user.status==='active'?'отключить':'включить')+'</button>';
+    return '<tr data-user-row data-search="'+esc((user.email+' '+(user.display_name||'')+' '+user.id).toLowerCase())+
+      '" data-status="'+esc(user.status)+'" data-auth="'+esc(methods.join(' '))+'"><td class="left"><span class="dot '+statusKind+'"></span> <b>'+esc(user.email)+
+      '</b><div class="sub">'+esc(user.display_name||'')+' · '+auth+(user.email_verified?pill('email ✓','ok'):pill('email ✗','warn'))+'</div></td>'+
+      '<td class="left">'+esc(tier)+'<div class="sub">'+(user.multiplier_bp==null?'—':(100-user.multiplier_bp/100)+'% скидка')+'</div></td>'+
+      '<td><b>'+(user.balance_usd==null?'—':money(user.balance_usd))+'</b></td><td>'+(user.spent_usd==null?'—':money(user.spent_usd))+
+      '<div class="sub">30д '+money(user.spent_30d_usd)+'</div></td><td>'+(pay.paid_count?money(pay.paid_total_usd)+'<div class="sub">'+pay.paid_count+' шт.</div>':'—')+
+      '</td><td>'+Number(keys.active||0)+'/'+Number(keys.total||0)+'</td><td>'+ago(user.last_seen_at)+'</td><td>'+date(user.created_at)+'</td><td><div class="actions">'+actions+'</div></td></tr>'}).join('');
+  const body='<h2>Сводка</h2><div class="cards">'+card('клиенты',usersCache.length,dashboard.users.registered_oauth+' OAuth-рег. · '+dashboard.users.registered_password+' обычных')+
+    card('активны 7 дней',dashboard.users.active_7d,dashboard.users.disabled+' отключены')+card('на балансах',money(totalBalance),'live из движка')+
+    card('потрачено',money(totalSpent),'по клиентскому прайсу')+'</div><h2>Все пользователи</h2>'+
+    '<div class="toolbar"><input id="search" type="search" placeholder="email, имя или UUID…"><select id="status"><option value="">все статусы</option>'+
+    '<option value="active">active</option><option value="disabled">disabled</option></select><select id="auth"><option value="">любая регистрация</option>'+
+    '<option value="password">password</option><option value="google">Google</option><option value="github">GitHub</option></select></div>'+
+    '<div class="table"><div class="scroll"><table><thead><tr><th class="left">пользователь</th><th class="left">тариф</th><th>баланс</th>'+
+    '<th>потрачено</th><th>пополнения</th><th>ключи</th><th>был(а)</th><th>регистрация</th><th>действия</th></tr></thead><tbody>'+
+    (rows||empty(9))+'</tbody></table></div></div><footer>Отключение синхронно блокирует engine-аккаунт и отзывает все сессии. Каждое действие аудируется.</footer>';
+  page('пользователи',body,pill(usersCache.length+' клиентов','ok'));bindUserPage()}
+function bindUserPage(){const search=document.getElementById('search'),status=document.getElementById('status'),auth=document.getElementById('auth');
+  const filter=()=>document.querySelectorAll('[data-user-row]').forEach(row=>{const query=search.value.trim().toLowerCase();
+    row.hidden=Boolean((query&&!row.dataset.search.includes(query))||(status.value&&row.dataset.status!==status.value)||(auth.value&&!row.dataset.auth.includes(auth.value)))});
+  search.oninput=filter;status.onchange=filter;auth.onchange=filter;
+  document.querySelectorAll('[data-credit]').forEach(button=>button.onclick=()=>creditUser(button));
+  document.querySelectorAll('[data-action]').forEach(button=>button.onclick=()=>userAction(button))}
+async function creditUser(button){const amount=prompt('Начислить '+button.dataset.email+'\\nСумма USD, целое число 1–99999:');
+  if(amount==null)return;const value=amount.trim();if(!/^[1-9][0-9]{0,4}$/.test(value))return alert('Нужно целое число от 1 до 99999.');
+  const reason=prompt('Причина начисления (3–300 символов):');if(reason==null||reason.trim().length<3)return;
+  if(!confirm('Начислить '+money(value)+' пользователю '+button.dataset.email+'?\\nПричина: '+reason.trim()))return;button.disabled=true;
+  const pendingKey='admin-credit-pending:'+button.dataset.credit,payloadSignature=value+'\\n'+reason.trim();let idempotencyKey=crypto.randomUUID();
+  try{const pending=JSON.parse(sessionStorage.getItem(pendingKey)||'null');if(pending?.signature===payloadSignature)idempotencyKey=pending.idempotencyKey}catch{}
+  sessionStorage.setItem(pendingKey,JSON.stringify({signature:payloadSignature,idempotencyKey}));
+  try{const result=await send('/admin/users/'+button.dataset.credit+'/balance-adjustments','POST',{amount_usd:value,reason:reason.trim(),idempotency_key:idempotencyKey});
+    sessionStorage.removeItem(pendingKey);alert('Готово. Новый баланс: '+money(result.balance_usd));await refresh()}
+  catch(error){alert(error.message+'\\nIdempotency key сохранён: повторите те же сумму и причину для безопасного retry.');button.disabled=false}}
+async function userAction(button){const action=button.dataset.action,labels={disable:'Отключить пользователя и отозвать сессии?',enable:'Включить пользователя?',
+  sessions:'Отозвать все активные сессии?',totp:'Сбросить 2FA и отозвать сессии?'};const reason=prompt('Причина действия для '+button.dataset.email+':');
+  if(reason==null||reason.trim().length<3)return;if(!confirm(labels[action]+'\\n'+button.dataset.email+'\\nПричина: '+reason.trim()))return;button.disabled=true;
+  try{let result;if(action==='disable'||action==='enable')result=await send('/admin/users/'+button.dataset.id+'/status','PATCH',{status:action==='disable'?'disabled':'active',reason:reason.trim()});
+    if(action==='sessions')result=await send('/admin/users/'+button.dataset.id+'/sessions/revoke','POST',{reason:reason.trim()});
+    if(action==='totp')result=await send('/admin/users/'+button.dataset.id+'/totp/reset','POST',{reason:reason.trim()});
+    alert('Готово'+(result.sessions_revoked!=null?' · сессий отозвано: '+result.sessions_revoked:''));await refresh()}catch(error){alert(error.message);button.disabled=false}}
+
+async function topups(){const data=await api('/admin/topups?limit=200'),payments=data.payments||[],checkouts=data.checkouts||[];
+  const paymentRows=payments.map(item=>'<tr><td class="left"><b>'+esc(item.email)+'</b><div class="sub">'+esc(item.user_id)+'</div></td><td>'+pill(item.provider)+
+    '</td><td><b>'+money(item.amount_usd)+'</b></td><td>'+pill(item.status,item.status==='paid'?'ok':'warn')+'</td><td>'+
+    pill(item.credit_status||'—',item.credit_status==='confirmed'?'ok':'warn')+'</td><td>'+date(item.paid_at,true)+'</td><td class="left muted">'+esc(item.provider_payment_id)+'</td></tr>').join('');
+  const checkoutRows=checkouts.map(item=>'<tr><td class="left"><b>'+esc(item.email)+'</b></td><td>'+pill(item.provider)+'</td><td><b>'+money(item.amount_usd)+
+    '</b></td><td>'+pill(item.status,item.status==='pending'?'warn':'bad')+'</td><td>'+date(item.created_at,true)+'</td><td>'+date(item.expires_at,true)+
+    '</td><td class="left muted">'+esc(item.provider_payment_id||'—')+'</td></tr>').join('');
+  const body='<h2>Подтверждённые платежи</h2><div class="table"><div class="scroll"><table><thead><tr><th class="left">клиент</th><th>провайдер</th><th>сумма</th>'+
+    '<th>платёж</th><th>зачисление</th><th>оплачен</th><th class="left">provider id</th></tr></thead><tbody>'+(paymentRows||empty(7))+'</tbody></table></div></div>'+
+    '<h2>Незавершённые и проблемные checkout</h2><div class="table"><div class="scroll"><table><thead><tr><th class="left">клиент</th><th>провайдер</th>'+
+    '<th>сумма</th><th>статус</th><th>создан</th><th>истекает</th><th class="left">provider id</th></tr></thead><tbody>'+(checkoutRows||empty(7))+
+    '</tbody></table></div></div><footer>Последние 200 записей. Worker зачисляет баланс только после верифицированного платежа.</footer>';
+  page('пополнения',body,pill(payments.length+' платежей','ok'))}
+
+async function business(){const result=await Promise.all([api('/admin/business-invites?limit=100'),api('/admin/users')]),invites=result[0].invites||[];
+  const clients=(result[1].users||[]).filter(user=>user.customer_type==='b2b');
+  const clientRows=clients.map(user=>'<tr><td class="left"><b>'+esc(user.email)+'</b><div class="sub">'+esc(user.id)+'</div></td><td><b>'+
+    (100-user.multiplier_bp/100)+'%</b></td><td>'+money(user.balance_usd)+'</td><td>'+pill(user.engine_account_status||'—',user.engine_account_status==='active'?'ok':'warn')+
+    '</td><td><button class="btn" data-pricing="'+esc(user.id)+'" data-email="'+esc(user.email)+'" data-discount="'+(100-user.multiplier_bp/100)+'">изменить скидку</button></td></tr>').join('');
+  const inviteRows=invites.map(invite=>{const state=invite.consumed_at?pill('использован','ok'):new Date(invite.expires_at)<new Date()?pill('истёк','bad'):pill('активен','warn');
+    return '<tr><td class="left"><b>'+esc(invite.email)+'</b><div class="sub">'+esc(invite.id)+'</div></td><td>'+invite.discount_percent+'%</td><td>'+state+
+    '</td><td>'+date(invite.expires_at,true)+'</td><td>'+date(invite.consumed_at,true)+'</td></tr>'}).join('');
+  const body='<h2>Новый B2B-инвайт</h2><form id="invite" class="panel form"><div class="field"><label>Email</label><input name="email" type="email" required placeholder="client@company.com"></div>'+
+    '<div class="field"><label>Скидка, %</label><input name="discount" type="number" min="0" max="100" value="70" required></div>'+
+    '<div class="field"><label>Срок, дней</label><input name="days" type="number" min="1" max="90" value="7" required></div><button class="btn" type="submit">создать инвайт</button></form>'+
+    '<h2>B2B-клиенты</h2><div class="table"><div class="scroll"><table><thead><tr><th class="left">клиент</th><th>скидка</th><th>баланс</th><th>engine</th><th></th></tr></thead><tbody>'+
+    (clientRows||empty(5))+'</tbody></table></div></div><h2>Последние инвайты</h2><div class="table"><div class="scroll"><table><thead><tr><th class="left">email</th>'+
+    '<th>скидка</th><th>статус</th><th>истекает</th><th>использован</th></tr></thead><tbody>'+(inviteRows||empty(5))+'</tbody></table></div></div>';
+  page('B2B',body,pill(clients.length+' клиентов','ok'));bindBusiness()}
+function bindBusiness(){const form=document.getElementById('invite');form.onsubmit=async event=>{event.preventDefault();const data=new FormData(form),button=form.querySelector('button');button.disabled=true;
+  try{const result=await send('/admin/business-invites','POST',{email:data.get('email'),discountPercent:Number(data.get('discount')),expiresInDays:Number(data.get('days'))});
+    await navigator.clipboard?.writeText(result.inviteUrl).catch(()=>{});alert('Инвайт создан и скопирован:\\n'+result.inviteUrl);await refresh()}catch(error){alert(error.message);button.disabled=false}};
+  document.querySelectorAll('[data-pricing]').forEach(button=>button.onclick=async()=>{const value=prompt('Новая скидка для '+button.dataset.email+' (0–100):',button.dataset.discount);
+    if(value==null)return;const discount=Number(value);if(!Number.isInteger(discount)||discount<0||discount>100)return alert('Нужно целое число от 0 до 100.');
+    if(!confirm('Установить скидку '+discount+'%?'))return;button.disabled=true;try{await send('/admin/business-users/'+button.dataset.pricing+'/pricing','PATCH',{discountPercent:discount});
+    alert('Изменение поставлено в очередь синхронизации.');await refresh()}catch(error){alert(error.message);button.disabled=false}})}
+
+async function system(){const result=await Promise.all([api('/overview'),api('/capacity').catch(()=>null),api('/subs').catch(()=>null)]),overview=result[0],capacity=result[1],subs=result[2];
+  const supply=overview.supply,health=supply.health,demand=overview.demand,recommend=overview.recommend;
+  const rows=(capacity?.per_sub||[]).map(item=>'<tr><td class="left"><span class="dot '+(item.cooling?'bad':'')+'"></span> '+esc(item.email)+'</td><td>'+
+    Math.round(item.util5h*100)+'%</td><td>'+Math.round(item.util7d*100)+'%</td><td>'+money(item.rem5h_usd)+'</td><td>'+money(item.rem7d_usd)+'</td><td>'+money(item.avail_7d_usd)+'</td></tr>').join('');
+  const subRows=(subs?.subs||[]).map(item=>'<tr><td class="left">'+esc(item.email)+'</td><td>'+pill(item.status,item.status==='active'?'ok':'warn')+'</td><td>'+date(item.added)+'</td><td>'+
+    Number(item.sub_days_left||0).toFixed(1)+' дн.</td><td class="left">'+esc(item.proxy_host||'—')+'</td><td>'+date(item.proxy_expire)+'</td></tr>').join('');
+  const state=health.cooling||recommend.gap>0?'warn':'ok';
+  const body='<div class="banner '+state+'"><span class="dot"></span><div><b>'+(state==='ok'?'Ёмкости хватает':'Нужно внимание к ёмкости')+'</b><span class="muted">подписок '+
+    overview.subs+' · cooling '+health.cooling+' · рекомендация '+(recommend.gap>0?'+'+recommend.gap:'ok')+'</span></div></div><h2>Предложение и спрос</h2><div class="cards">'+
+    card('доступно 5ч',money(supply.avail_usd['5h']),'headroom '+(overview.headroom['5h']==null?'∞':'×'+overview.headroom['5h']))+
+    card('доступно 7д',money(supply.avail_usd['7d']),'headroom '+(overview.headroom['7d']==null?'∞':'×'+overview.headroom['7d']))+
+    card('балансы клиентов',money(demand.balance_usd),'резерв '+money(demand.reserved_usd))+
+    card('потрачено',money(demand.spent_usd),demand.active_keys+' active keys')+'</div><h2>Live-ёмкость подписок</h2>'+
+    '<div class="table"><div class="scroll"><table><thead><tr><th class="left">подписка</th><th>util 5ч</th><th>util 7д</th><th>остаток 5ч</th><th>остаток 7д</th><th>доступно 7д</th></tr></thead><tbody>'+
+    (rows||empty(6))+'</tbody></table></div></div><h2>Жизненный цикл</h2><div class="table"><div class="scroll"><table><thead><tr><th class="left">подписка</th><th>статус</th>'+
+    '<th>добавлена</th><th>осталось</th><th class="left">прокси</th><th>прокси до</th></tr></thead><tbody>'+(subRows||empty(6))+'</tbody></table></div></div>';
+  page('система',body,pill(overview.subs+' подписок',state))}
+
+async function audit(){const rows=(await api('/admin/audit?limit=200')).rows||[],bodyRows=rows.map(item=>'<tr><td>'+date(item.created_at,true)+'</td><td class="left">'+
+  pill(item.action,item.action.startsWith('admin.')?'warn':'')+'</td><td class="left">'+esc(item.actor_type)+'<div class="sub">'+esc(item.actor_id||'system')+'</div></td><td class="left">'+
+  esc(item.target_type)+' · '+esc(item.target_id)+'</td><td class="left"><div class="json" title="'+esc(JSON.stringify(item.metadata||{}))+'">'+esc(JSON.stringify(item.metadata||{}))+'</div></td></tr>').join('');
+  page('аудит','<h2>Журнал действий</h2><div class="table"><div class="scroll"><table><thead><tr><th>время</th><th class="left">действие</th><th class="left">актор</th>'+
+  '<th class="left">цель</th><th class="left">метаданные</th></tr></thead><tbody>'+(bodyRows||empty(5))+'</tbody></table></div></div><footer>Последние 200 событий. Секреты и полные API-ключи не записываются.</footer>',pill(rows.length+' событий','ok'))}
+refresh();
+</script>
+</body>
+</html>

@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 /// Живой дашборд ёмкости (self-contained HTML; данные тянет с /capacity тем же origin).
 const PANEL_HTML: &str = include_str!("panel.html");
+const ADMIN_PANEL_HTML: &str = include_str!("admin-panel.html");
 
 /// TTL-кэш дашборд-эндпоинтов: панель поллит /overview и /capacity, а они делают O(n)-скан
 /// (capacity() под пул-локом + billing_totals full-scan). Кэш на 2с → при N поллерах пересчёт
@@ -64,6 +65,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
         .route("/subs", get(subs))
         .route("/metrics", get(metrics))
         .route("/panel", get(panel))
+        .route("/admin-panel", get(admin_panel))
         // Control-плоскость (`/admin/*`) — управление аккаунтами/ключами/балансом за control-ключом.
         // Контракт для будущей КОММЕРЦИИ (отдельный сервис). Движок — авторитет живого баланса.
         .route("/admin/account", post(admin::create_account))
@@ -142,6 +144,11 @@ async fn metrics(
 /// который панель спрашивает у пользователя и хранит в его браузере).
 async fn panel() -> Response {
     ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")], PANEL_HTML).into_response()
+}
+
+/// Dedicated admin.apitoken.sale UI. Kept separate from the existing /panel dashboard.
+async fn admin_panel() -> Response {
+    ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")], ADMIN_PANEL_HTML).into_response()
 }
 
 /// Доступная ёмкость пула в USD real-API-эквиваленте на горизонты 1ч/5ч/1д/7д.
@@ -450,5 +457,28 @@ mod tests {
                 json!({"ready": false, "reason": "authority_unavailable"}),
             )
         );
+    }
+
+    #[test]
+    fn embedded_admin_panel_exposes_operational_workflows_without_secrets() {
+        assert!(PANEL_HTML.contains("<title>apiToken.sale · панель</title>"));
+        assert!(!PANEL_HTML.contains("data-admin-panel-version=\"2\""));
+        assert!(ADMIN_PANEL_HTML.contains("data-admin-panel-version=\"2\""));
+        for route in [
+            "/admin/dashboard",
+            "/admin/users",
+            "/admin/topups",
+            "/admin/business-invites",
+            "/admin/audit",
+            "/balance-adjustments",
+            "/sessions/revoke",
+            "/totp/reset",
+        ] {
+            assert!(ADMIN_PANEL_HTML.contains(route), "missing admin workflow route {route}");
+        }
+        assert!(!ADMIN_PANEL_HTML.contains("COMMERCIAL_ADMIN_KEY"));
+        assert!(!ADMIN_PANEL_HTML.contains("CONTROL_KEY"));
+        assert!(ADMIN_PANEL_HTML.contains("sessionStorage.setItem(pendingKey"));
+        assert!(ADMIN_PANEL_HTML.contains("idempotency_key:idempotencyKey"));
     }
 }

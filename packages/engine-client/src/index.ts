@@ -104,6 +104,17 @@ export class EngineClient {
     return result;
   }
 
+  async setAccountStatus(accountId: string, status: "active" | "disabled"): Promise<void> {
+    const { response, payload } = await this.request(`/admin/account/${encodeURIComponent(accountId)}/status`, {
+      method: "POST",
+      body: JSON.stringify({ status }),
+    });
+    const result = payload as Record<string, unknown>;
+    if (result.account !== accountId || result.status !== status || result.updated !== 1) {
+      throw new EngineClientError("engine returned an invalid account status response", response.status, false);
+    }
+  }
+
   async listKeys(accountId: string): Promise<EngineApiKey[]> {
     const { response, payload } = await this.request(`/admin/account/${encodeURIComponent(accountId)}/keys`);
     const result = engineApiKeyListSchema.parse(payload);

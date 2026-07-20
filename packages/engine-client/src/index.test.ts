@@ -150,4 +150,21 @@ describe("EngineClient", () => {
     });
     await expect(client.setAccountMultiplier("acct_test", 10_001)).rejects.toThrow("multiplierBp");
   });
+
+  it("updates account status through the control API", async () => {
+    let request: { url: string; body: string } | undefined;
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async (input, init) => {
+        request = { url: String(input), body: String(init?.body) };
+        return Response.json({ account: "acct_test", status: "disabled", updated: 1 });
+      },
+    });
+    await expect(client.setAccountStatus("acct_test", "disabled")).resolves.toBeUndefined();
+    expect(request).toEqual({
+      url: "http://engine.test/admin/account/acct_test/status",
+      body: '{"status":"disabled"}',
+    });
+  });
 });
