@@ -12,8 +12,12 @@ export class OriginGuard implements CanActivate {
       method: string; url: string; headers: Record<string, string | string[] | undefined>;
     }>();
     if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return true;
-    const path = request.url.split("?", 1)[0];
+    const path = request.url.split("?", 1)[0] ?? request.url;
     if (path === "/v1/payments/cryptomus/webhook" || path === "/v1/payments/platega/webhook") return true;
+    // Внутренний контур sales↔commerce (/v1/internal/*): service-to-service под собственным
+    // ключом (SalesFeedGuard, x-api-key). Браузер кастомный заголовок кросс-сайт не пошлёт
+    // (CORS-preflight заблокирует) → CSRF невозможен, как и для x-admin-key ниже.
+    if (path.startsWith("/v1/internal/")) return true;
     // Origin-проверка — защита от CSRF из браузера. Запрос с валидным admin-ключом CSRF быть
     // не может (кастомный заголовок нельзя послать кросс-сайт без CORS), а приходит он с другого
     // origin — панели (Caddy panel.apitoken.sale инжектит ключ server-side). Пропускаем.
