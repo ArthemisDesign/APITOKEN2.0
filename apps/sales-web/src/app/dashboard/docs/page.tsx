@@ -95,6 +95,12 @@ export default function DocsPage() {
               <strong>{rate}</strong>
               {t(" of their spend.", " от его трат.")}
             </li>
+            <li>
+              {t(
+                "Commission accrues only while your account is active. A suspended or not-yet-approved account does not earn, and existing referrals' spend does not accrue during that time.",
+                "Комиссия начисляется только пока ваш аккаунт активен. Приостановленный или ещё не одобренный аккаунт не зарабатывает, и траты уже привлечённых рефералов в это время не начисляются.",
+              )}
+            </li>
           </ul>
         </Card>
 
@@ -102,14 +108,14 @@ export default function DocsPage() {
           <ul className="how-list">
             <li>
               {t(
-                "You can invite other sales partners and earn an override — a percentage of what they earn — up the chain.",
-                "Вы можете приглашать других сейлзов и получать override — процент от того, что зарабатывают они — вверх по цепочке.",
+                "You can invite other sales partners and earn an override — your separate sub-partner rate — on what partners below you earn, up to 10 levels deep. Each level earns your override rate applied to the level directly below it.",
+                "Вы можете приглашать других сейлзов и получать override — вашу отдельную ставку для суб-партнёров — с того, что зарабатывают партнёры под вами, на глубину до 10 уровней. Каждый уровень получает вашу override-ставку от уровня прямо под ним.",
               )}
             </li>
             <li>
               {t(
-                "You cannot grant a sub-partner a higher rate than your own. (The Team section opens soon.)",
-                "Нельзя дать суб-партнёру ставку выше своей собственной. (Раздел «Команда» откроется скоро.)",
+                "The override rate is set per partner and is separate from your direct commission; you cannot grant a sub-partner a higher rate than your own. (The Team section opens soon.)",
+                "Override-ставка задаётся индивидуально и отличается от вашей прямой комиссии; нельзя дать суб-партнёру ставку выше своей собственной. (Раздел «Команда» откроется скоро.)",
               )}
             </li>
           </ul>

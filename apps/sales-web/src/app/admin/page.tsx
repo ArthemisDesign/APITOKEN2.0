@@ -270,7 +270,9 @@ function PayoutsTab({ adminKey }: { adminKey: string }) {
   const load = useCallback(async () => {
     setItems(null);
     try {
-      const qs = filter === "pending" ? "?status=pending" : "";
+      // Бэкенд принимает только requested|approved|paid|rejected — "pending" даёт 422. Очередь на
+      // действие = requested (только что запрошенные выплаты).
+      const qs = filter === "pending" ? "?status=requested" : "";
       const res = await api<{ items: AdminPayoutRow[] }>(`/v1/admin/payouts${qs}`, {
         headers: adminHeaders(adminKey),
       });

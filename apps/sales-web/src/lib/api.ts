@@ -381,5 +381,5 @@ export type PartnerDetailBundle = {
   discountLinks: { id: string; code: string; discountBps: number; note: string | null; consumedAt: string | null; createdAt: string }[];
   promos: { id: string; code: string; valueNano: string; status: string; discountBps: number; redeemedAt: string | null; createdAt: string }[];
   payouts: { id: string; amountNano: string; status: string; requestedAt: string; decidedAt: string | null; paidAt: string | null; adminNote: string | null }[];
-  referrals: { commerceUserId: string; attributedAt: string; spendNano: string; earnedNano: string }[];
+  referrals: { userMask: string; attributedAt: string; spendNano: string; earnedNano: string }[];
 };

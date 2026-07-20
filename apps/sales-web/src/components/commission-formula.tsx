@@ -24,7 +24,7 @@ export function CommissionFormula({ commissionBps }: { commissionBps: number }) 
       }}
     >
       <div style={{ fontSize: 12, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-faint)", marginBottom: 12 }}>
-        {t("Your reward per $1 of list-price usage", "Ваша награда с $1 использования по прайсу")}
+        {t("Your reward per $1 of real-money, list-price usage", "Ваша награда с $1 реального (по прайсу) использования")}
       </div>
       <div style={{ fontSize: 30, fontWeight: 800, lineHeight: 1.25, letterSpacing: "-0.5px" }}>
         <span style={{ whiteSpace: "nowrap" }}>

@@ -446,7 +446,7 @@ function PartnerDrawer({
             <Section title={`Referred users (${detail.referrals.length})`}>
               {detail.referrals.length === 0 ? <Muted>No referrals yet.</Muted> : (
                 <MiniTable rows={detail.referrals.slice(0, 50).map((u) => [
-                  <span key="u" className="mono">{u.commerceUserId.slice(0, 8)}</span>,
+                  <span key="u" className="mono">{u.userMask}</span>,
                   formatDate(u.attributedAt),
                   formatUsd(u.spendNano) + " spend",
                   formatUsd(u.earnedNano) + " earned",

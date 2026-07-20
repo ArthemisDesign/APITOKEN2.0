@@ -89,8 +89,8 @@ export default function PromoPage() {
       <h1 className="page-title">{t("Promo codes", "Промокоды")}</h1>
       <p className="page-sub">
         {t(
-          "Give out promo codes that credit balance to new users on apitoken.sale. Anyone who redeems your code — if they aren't already referred — becomes your referral.",
-          "Раздавайте промокоды, которые начисляют баланс новым пользователям на apitoken.sale. Кто погасит ваш код — если он ещё ни за кем не закреплён — становится вашим рефералом.",
+          "Give out promo codes that credit balance to new users on apitoken.sale. Anyone who redeems your code — if they aren't already referred — becomes your referral. The promo balance itself is free credit: it's spent first and earns no commission — you earn only on their later real-money spend.",
+          "Раздавайте промокоды, которые начисляют баланс новым пользователям на apitoken.sale. Кто погасит ваш код — если он ещё ни за кем не закреплён — становится вашим рефералом. Сам промо-баланс — это бесплатные деньги: он тратится первым и комиссию не приносит; вы зарабатываете только на их последующих реальных тратах.",
         )}
       </p>
       {error ? <Notice kind="error">{error}</Notice> : null}
