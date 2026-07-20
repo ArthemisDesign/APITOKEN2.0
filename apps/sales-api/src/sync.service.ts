@@ -3,10 +3,11 @@ import { ConfigService } from "@nestjs/config";
 import { z } from "zod";
 import {
   advanceSyncCursor,
-  findPartnerByReferralCode,
+  consumeDiscountLink,
   getSyncCursor,
   recordReferredDeposit,
   recordReferredSpend,
+  resolveReferralCode,
   upsertReferredUser,
   type SalesDatabase,
   type SyncFeed,
@@ -93,20 +94,21 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
     let lastOk = after;
     try {
       for (const row of rows) {
-        const partner = await findPartnerByReferralCode(this.database, row.code);
-        if (partner) {
+        const resolved = await resolveReferralCode(this.database, row.code);
+        if (resolved) {
           await upsertReferredUser(this.database, {
             commerceUserId: row.userId,
-            partnerId: partner.id,
+            partnerId: resolved.partnerId,
             referralCode: row.code,
             attributedAt: row.createdAt,
             sourceAttributionId: row.id,
           });
-          // Реф ПАРТНЁРА остаётся b2c и идёт по обычным тирам; скидка сейлза применяется как
-          // «пол» (цена не хуже неё). Право давать скидку гейтится флагом partner; без него floor=0
-          // (обычный тир). Обычная сайтовая рефка сюда не попадёт — только партнёрские коды.
-          const floorBps = partner.referralDiscountEnabled ? partner.referralDiscountBps : 0;
-          await this.applyReferralDiscount(row.userId, floorBps);
+          // Обычный реф-код → floor 0 (обычные b2c-тиры). Персональная ОДНОРАЗОВАЯ ссылка со скидкой
+          // → floor = её скидка, и ссылка гасится этим пользователем. Гашёная ссылка даёт floor 0.
+          if (resolved.discountLinkId && !resolved.discountLinkConsumed) {
+            await consumeDiscountLink(this.database, resolved.discountLinkId, row.userId);
+          }
+          await this.applyReferralDiscount(row.userId, resolved.discountBps);
         }
         lastOk = row.id;
       }

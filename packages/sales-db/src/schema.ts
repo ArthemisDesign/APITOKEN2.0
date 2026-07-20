@@ -179,6 +179,8 @@ export const promoCodes = pgTable("promo_codes", {
   redeemedAt: timestamp("redeemed_at", { withTimezone: true }),
   // Идемпотентный ref для кредита движка на стороне commerce.
   redemptionRef: text("redemption_ref"),
+  // Спец-скидка промокода: >0 → редимщик получает скидку-«пол» (b2c + floor). 0 = обычный промо.
+  discountBps: integer("discount_bps").notNull().default(0),
   createdAt,
 }, (table) => [
   uniqueIndex("promo_codes_code_uidx").on(sql`upper(${table.code})`),
@@ -198,6 +200,22 @@ export const referredUsers = pgTable("referred_users", {
   uniqueIndex("referred_users_source_attribution_uidx").on(table.sourceAttributionId)
     .where(sql`${table.sourceAttributionId} IS NOT NULL`),
   index("referred_users_partner_idx").on(table.partnerId, table.attributedAt),
+]);
+
+// Персональные одноразовые ссылки со скидкой. Партнёр (с правом) выпускает под конкретного клиента;
+// первый привязанный по коду пользователь получает discount_bps как «пол» цены и гасит ссылку.
+export const partnerDiscountLinks = pgTable("partner_discount_links", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  partnerId: uuid("partner_id").notNull().references(() => partners.id, { onDelete: "restrict" }),
+  code: text("code").notNull(),
+  discountBps: integer("discount_bps").notNull(),
+  consumedByCommerceUserId: uuid("consumed_by_commerce_user_id"),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  createdAt,
+}, (table) => [
+  uniqueIndex("partner_discount_links_code_uidx").on(table.code),
+  index("partner_discount_links_partner_idx").on(table.partnerId, table.createdAt),
+  check("partner_discount_links_discount_check", sql`${table.discountBps} BETWEEN 0 AND 9000`),
 ]);
 
 export const syncCursors = pgTable("sync_cursors", {

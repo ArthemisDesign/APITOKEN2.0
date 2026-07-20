@@ -35,6 +35,10 @@ import {
   listPartnerPromoCodes,
   disablePromoCode,
   setPartnerReferralDiscount,
+  createDiscountLink,
+  listDiscountLinks,
+  DiscountLinkCollisionError,
+  DiscountLinkNotAllowedError,
   InviteCodeCollisionError,
   PromoNotAllowedError,
   PromoLimitError,
@@ -47,6 +51,7 @@ import { generateCode, partnerView } from "./auth.service.js";
 import { normalizeTelegramUsername } from "./telegram.js";
 import { SALES_DATABASE } from "./infrastructure.module.js";
 import {
+  createDiscountLinkSchema,
   createInviteSchema,
   createPromoSchema,
   earningsQuerySchema,
@@ -291,10 +296,14 @@ export class PartnerController {
       maxValueNano: current.partner.promoMaxValueNano.toString(),
       maxCount: current.partner.promoMaxCount,
       redeemUrl: `${new URL(this.config.get("PUBLIC_MAIN_SITE_URL", { infer: true })).origin}/dashboard?promo=`,
+      // Кабинет показывает, можно ли вешать спец-скидку и её максимум (право + макс партнёра).
+      discountAllowed: current.partner.referralDiscountEnabled,
+      maxDiscountBps: current.partner.referralDiscountBps,
       items: codes.map((c) => ({
         id: c.id,
         code: c.code,
         valueNano: c.valueNano.toString(),
+        discountBps: c.discountBps,
         status: c.status,
         redeemedAt: c.redeemedAt?.toISOString() ?? null,
         createdAt: c.createdAt.toISOString(),
@@ -314,12 +323,59 @@ export class PartnerController {
           partnerId: current.partner.id,
           code: generatePromoCode(),
           valueNano,
+          ...(parsed.data.discountBps !== undefined ? { discountBps: parsed.data.discountBps } : {}),
         });
-        return { id: promo.id, code: promo.code, valueNano: promo.valueNano.toString(), status: promo.status };
+        return { id: promo.id, code: promo.code, valueNano: promo.valueNano.toString(), discountBps: promo.discountBps, status: promo.status };
       } catch (error) {
         if (error instanceof PromoCodeCollisionError && attempt < 5) continue;
         if (error instanceof PromoNotAllowedError) throw new ForbiddenException(error.message);
         if (error instanceof PromoLimitError) throw new UnprocessableEntityException(error.message);
+        throw error;
+      }
+    }
+  }
+
+  /** Персональные одноразовые ссылки со скидкой (нужно право давать скидку). */
+  @Get("discount-links")
+  @Header("Cache-Control", "no-store")
+  async listLinks(@CurrentAuth() current: RequestAuth): Promise<unknown> {
+    const links = await listDiscountLinks(this.database, current.partner.id);
+    const origin = new URL(this.config.get("PUBLIC_MAIN_SITE_URL", { infer: true })).origin;
+    return {
+      enabled: current.partner.referralDiscountEnabled,
+      maxDiscountBps: current.partner.referralDiscountBps,
+      items: links.map((l) => ({
+        id: l.id,
+        code: l.code,
+        url: `${origin}/?ref=${l.code}`,
+        discountBps: l.discountBps,
+        consumed: l.consumedByCommerceUserId !== null,
+        consumedAt: l.consumedAt?.toISOString() ?? null,
+        createdAt: l.createdAt.toISOString(),
+      })),
+    };
+  }
+
+  @Post("discount-links")
+  @HttpCode(201)
+  async createLink(@CurrentAuth() current: RequestAuth, @Body() body: unknown): Promise<unknown> {
+    if (!current.partner.referralDiscountEnabled) {
+      throw new ForbiddenException("referral discount is not enabled for this account");
+    }
+    const parsed = createDiscountLinkSchema.safeParse(body ?? {});
+    if (!parsed.success) throw new BadRequestException("invalid discount (0–90%)");
+    const origin = new URL(this.config.get("PUBLIC_MAIN_SITE_URL", { infer: true })).origin;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        const link = await createDiscountLink(this.database, {
+          partnerId: current.partner.id,
+          code: generateCode(12),
+          discountBps: parsed.data.discountBps,
+        });
+        return { id: link.id, code: link.code, url: `${origin}/?ref=${link.code}`, discountBps: link.discountBps };
+      } catch (error) {
+        if (error instanceof DiscountLinkCollisionError && attempt < 5) continue;
+        if (error instanceof DiscountLinkNotAllowedError) throw new ForbiddenException(error.message);
         throw error;
       }
     }

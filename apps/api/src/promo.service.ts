@@ -3,6 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import {
   getEngineAccountMapping,
   recordReferralAttribution,
+  setReferralFloor,
   type Database,
 } from "@claude-api/db";
 import { EngineClient } from "@claude-api/engine-client";
@@ -25,6 +26,7 @@ interface SalesRedeemResponse {
   partnerId: string;
   referralCode: string;
   redemptionRef: string;
+  discountBps?: number;
   alreadyRedeemed: boolean;
 }
 
@@ -73,6 +75,15 @@ export class PromoService {
       await recordReferralAttribution(this.database, userId, redeemed.referralCode);
     } catch {
       // best-effort: не срываем успешный кредит из-за атрибуции
+    }
+
+    // 4) Спец-промо со скидкой → применяем скидку-«пол» редимщику (b2c остаётся, тиры работают).
+    if (redeemed.discountBps && redeemed.discountBps > 0) {
+      try {
+        await setReferralFloor(this.database, { userId, floorBps: redeemed.discountBps, actorId: "promo-discount" });
+      } catch {
+        // best-effort: кредит уже прошёл; скидку доедет асинхронный фид/повтор при следующей атрибуции
+      }
     }
 
     return {

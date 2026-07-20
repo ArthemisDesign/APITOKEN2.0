@@ -73,6 +73,7 @@ export class InternalController {
         partnerId: result.partnerId,
         referralCode: result.referralCode,
         redemptionRef: result.redemptionRef,
+        discountBps: result.discountBps,
         alreadyRedeemed: result.alreadyRedeemed,
       };
     } catch (error) {

@@ -8,6 +8,7 @@ export interface PromoCode {
   code: string;
   valueNano: bigint;
   status: PromoCodeStatus;
+  discountBps: number;
   redeemedByCommerceUserId: string | null;
   redeemedAt: Date | null;
   createdAt: Date;
@@ -26,13 +27,14 @@ interface PromoRow {
   code: string;
   value_nano: string;
   status: PromoCodeStatus;
+  discount_bps: number;
   redeemed_by_commerce_user_id: string | null;
   redeemed_at: Date | null;
   created_at: Date;
 }
 
 const PROMO_COLUMNS = `
-  id, partner_id, code, value_nano::text AS value_nano, status,
+  id, partner_id, code, value_nano::text AS value_nano, status, discount_bps,
   redeemed_by_commerce_user_id, redeemed_at, created_at
 `;
 
@@ -43,6 +45,7 @@ function mapPromo(row: PromoRow): PromoCode {
     code: row.code,
     valueNano: BigInt(row.value_nano),
     status: row.status,
+    discountBps: row.discount_bps,
     redeemedByCommerceUserId: row.redeemed_by_commerce_user_id,
     redeemedAt: row.redeemed_at,
     createdAt: row.created_at,
@@ -57,15 +60,20 @@ export async function createPromoCode(database: SalesDatabase, input: {
   partnerId: string;
   code: string;
   valueNano: bigint;
+  discountBps?: number; // >0 → редимщик получает спец-скидку (требует право на скидку, ≤ макс партнёра)
 }): Promise<PromoCode> {
   if (input.valueNano <= 0n) throw new PromoLimitError("promo value must be positive");
+  const discountBps = input.discountBps ?? 0;
+  if (discountBps < 0 || discountBps > 9000) throw new PromoLimitError("promo discount must be 0–90%");
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
     const partner = await client.query<{
       promo_enabled: boolean; promo_max_value_nano: string; promo_max_count: number; status: string;
+      referral_discount_enabled: boolean; referral_discount_bps: number;
     }>(
-      `SELECT promo_enabled, promo_max_value_nano::text AS promo_max_value_nano, promo_max_count, status
+      `SELECT promo_enabled, promo_max_value_nano::text AS promo_max_value_nano, promo_max_count, status,
+              referral_discount_enabled, referral_discount_bps
        FROM partners WHERE id = $1 FOR UPDATE`,
       [input.partnerId],
     );
@@ -79,6 +87,11 @@ export async function createPromoCode(database: SalesDatabase, input: {
       await client.query("ROLLBACK");
       throw new PromoLimitError("promo value exceeds the allowed maximum");
     }
+    // Спец-скидка на промо требует права давать скидку и не выше собственного максимума партнёра.
+    if (discountBps > 0 && (!row.referral_discount_enabled || discountBps > row.referral_discount_bps)) {
+      await client.query("ROLLBACK");
+      throw new PromoNotAllowedError("this partner cannot attach that discount to a promo code");
+    }
     const count = await client.query<{ n: string }>(
       "SELECT count(*)::text AS n FROM promo_codes WHERE partner_id = $1",
       [input.partnerId],
@@ -90,9 +103,9 @@ export async function createPromoCode(database: SalesDatabase, input: {
     let inserted;
     try {
       inserted = await client.query<PromoRow>(
-        `INSERT INTO promo_codes (partner_id, code, value_nano) VALUES ($1, $2, $3)
+        `INSERT INTO promo_codes (partner_id, code, value_nano, discount_bps) VALUES ($1, $2, $3, $4)
          RETURNING ${PROMO_COLUMNS}`,
-        [input.partnerId, input.code, input.valueNano.toString()],
+        [input.partnerId, input.code, input.valueNano.toString(), discountBps],
       );
     } catch (error) {
       await client.query("ROLLBACK");
@@ -136,6 +149,7 @@ export interface PromoRedemption {
   partnerId: string;
   referralCode: string;
   redemptionRef: string;
+  discountBps: number; // >0 → редимщику применяется спец-скидка (b2c + floor)
   alreadyRedeemed: boolean;
 }
 
@@ -155,10 +169,10 @@ export async function redeemPromoCode(database: SalesDatabase, input: {
     const found = await client.query<{
       id: string; partner_id: string; value_nano: string; status: PromoCodeStatus;
       redeemed_by_commerce_user_id: string | null; redemption_ref: string | null;
-      referral_code: string; partner_status: string; promo_enabled: boolean;
+      referral_code: string; partner_status: string; promo_enabled: boolean; discount_bps: number;
     }>(
       `SELECT pc.id, pc.partner_id, pc.value_nano::text AS value_nano, pc.status,
-              pc.redeemed_by_commerce_user_id, pc.redemption_ref, p.referral_code,
+              pc.redeemed_by_commerce_user_id, pc.redemption_ref, pc.discount_bps, p.referral_code,
               p.status AS partner_status, p.promo_enabled
        FROM promo_codes pc JOIN partners p ON p.id = pc.partner_id
        WHERE upper(pc.code) = upper($1)
@@ -180,6 +194,7 @@ export async function redeemPromoCode(database: SalesDatabase, input: {
         partnerId: promo.partner_id,
         referralCode: promo.referral_code,
         redemptionRef: promo.redemption_ref!,
+        discountBps: promo.discount_bps,
         alreadyRedeemed: true,
       };
     }
@@ -227,6 +242,7 @@ export async function redeemPromoCode(database: SalesDatabase, input: {
       partnerId: promo.partner_id,
       referralCode: promo.referral_code,
       redemptionRef: ref,
+      discountBps: promo.discount_bps,
       alreadyRedeemed: false,
     };
   } catch (error) {

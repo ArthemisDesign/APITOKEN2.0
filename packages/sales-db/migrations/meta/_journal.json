@@ -43,6 +43,13 @@
       "when": 1784700000000,
       "tag": "0005_referral_discount_permission",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784780000000,
+      "tag": "0006_personal_discount_links",
+      "breakpoints": true
     }
   ]
 }

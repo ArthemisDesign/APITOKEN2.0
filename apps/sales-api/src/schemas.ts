@@ -90,9 +90,15 @@ export const adminPayoutsQuerySchema = z.object({
   status: z.enum(["requested", "approved", "paid", "rejected"]).optional(),
 });
 
-// Партнёр создаёт промокод на целое число USD.
+// Партнёр создаёт промокод на целое число USD; опц. спец-скидка (если есть право), ≤ 90%.
 export const createPromoSchema = z.object({
   valueUsd: z.coerce.number().int().positive().max(100_000),
+  discountBps: referralDiscountBpsSchema.optional(),
+});
+
+// Партнёр выпускает персональную одноразовую ссылку со скидкой (≤90%, ≤ своего максимума).
+export const createDiscountLinkSchema = z.object({
+  discountBps: referralDiscountBpsSchema,
 });
 
 // Админ включает промо партнёру и задаёт лимиты (номинал в USD, количество кодов).
