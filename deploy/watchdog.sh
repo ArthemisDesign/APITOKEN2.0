@@ -308,17 +308,41 @@ final_verify_backend() {
     || wd_die "content studio health endpoint is not ready after cutover"
 }
 
+https_vhost_status() {
+  local host=$1
+  curl --noproxy '*' --insecure --silent --show-error --max-time 5 \
+    --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' \
+    "https://$host/" 2>/dev/null || true
+}
+
+require_basic_auth_vhost() {
+  local host=$1 status
+  status=$(https_vhost_status "$host")
+  [[ $status == 401 ]] \
+    || wd_die "$host is not reachable behind Basic Auth (HTTP ${status:-unreachable})"
+}
+
+require_retired_vhost() {
+  local host=$1 status
+  status=$(https_vhost_status "$host")
+  case "$status" in
+    ''|000|404|421) ;;
+    *) wd_die "retired hostname $host is still served (HTTP $status)" ;;
+  esac
+}
+
 final_verify_admin_panel() {
-  local panel public_status
+  local panel
   panel=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 \
     http://127.0.0.1:8790/admin-panel)
-  grep -Fq 'data-admin-panel-version="2"' <<<"$panel" \
+  grep -Fq 'data-admin-panel-version="3"' <<<"$panel" \
     || wd_die "deployed engine does not contain the current admin panel"
-  public_status=$(curl --noproxy '*' --insecure --silent --show-error --max-time 5 \
-    --resolve admin.apitoken.sale:443:127.0.0.1 -o /dev/null -w '%{http_code}' \
-    https://admin.apitoken.sale/ 2>/dev/null || true)
-  [[ $public_status == 401 ]] \
-    || wd_die "admin.apitoken.sale is not reachable behind Basic Auth (HTTP ${public_status:-unreachable})"
+  require_basic_auth_vhost admin.apitoken.sale
+  require_basic_auth_vhost admin.partners.apitoken.sale
+  require_basic_auth_vhost crm.apitoken.sale
+  require_retired_vhost panel.apitoken.sale
+  require_retired_vhost partners.panel.apitoken.sale
+  require_retired_vhost crm.panel.apitoken.sale
 }
 
 deploy_engine() {

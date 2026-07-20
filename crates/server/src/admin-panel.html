@@ -48,29 +48,40 @@ input:focus,select:focus{outline:2px solid var(--blue);outline-offset:1px}.toolb
 .form{display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:10px;align-items:end}.field{display:grid;gap:4px}
 .field label{font-size:10px;color:var(--muted);text-transform:uppercase}.json{max-width:340px;overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-size:10px}
 footer{text-align:center;color:var(--muted);font-size:10px;padding:24px}.empty{text-align:left;color:var(--muted)}
-@media(max-width:960px){header{padding:0 10px;gap:8px}.brand small,.right .pill{display:none}.tabs button{padding:0 8px}.cards{grid-template-columns:repeat(2,1fr)}
+.bar{display:inline-block;vertical-align:middle;width:86px;height:6px;border-radius:4px;background:var(--soft);overflow:hidden;border:1px solid var(--line)}
+.bar i{display:block;height:100%;background:var(--blue)}.bar i.warn{background:var(--orange)}.bar i.bad{background:var(--red)}
+.bar-label{display:inline-block;min-width:38px;margin-left:6px;color:var(--muted);font-size:10px;text-align:right}
+details{margin-top:14px}summary{cursor:pointer;color:var(--muted);padding:6px 0}summary:hover{color:var(--text)}
+a.link{color:var(--blue);text-decoration:none}a.link:hover{text-decoration:underline}.domain-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.domain{border:1px solid var(--line);border-radius:7px;background:var(--card);padding:14px}.domain b{display:block;margin-bottom:4px}.domain .sub{min-height:32px}
+@media(max-width:960px){header{padding:0 10px;gap:8px}.brand small,.right .pill{display:none}.tabs button{padding:0 8px}.cards,.domain-grid{grid-template-columns:repeat(2,1fr)}
 .card:nth-child(2n){border-right:0}.card:nth-child(n+3){border-top:1px solid var(--line)}.form{grid-template-columns:1fr 1fr}}
-@media(max-width:600px){main{padding:16px 10px}.brand{font-size:13px}.right{display:none}.cards,.form{grid-template-columns:1fr}
+@media(max-width:600px){main{padding:16px 10px}.brand{font-size:13px}.right{display:none}.cards,.form,.domain-grid{grid-template-columns:1fr}
 .card{border-right:0!important;border-top:1px solid var(--line)}.card:first-child{border-top:0}}
 </style>
 </head>
-<body data-admin-panel-version="2">
+<body data-admin-panel-version="3">
 <div id="app"></div>
 <script>
 const app=document.getElementById('app');
-const validTabs=['dashboard','users','topups','business','system','audit'];
+const validTabs=['dashboard','accounts','users','topups','business','system','audit'];
 const getTab=()=>validTabs.includes(location.hash.slice(1))?location.hash.slice(1):'dashboard';
 let tab=getTab(),timer=null,usersCache=[];
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const money=value=>'$'+Number(value||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const nanoMoney=value=>{try{let n=BigInt(String(value??'0')),neg=n<0n;if(neg)n=-n;const whole=n/1000000000n,cents=(n%1000000000n)/10000000n;
+  return(neg?'−':'')+'$'+whole.toLocaleString('en-US')+'.'+cents.toString().padStart(2,'0')}catch{return'$0.00'}};
 const date=(value,withTime=false)=>value?new Date(value).toLocaleString('ru-RU',withTime?{dateStyle:'short',timeStyle:'short'}:{dateStyle:'short'}):'—';
 const ago=value=>{if(!value)return'—';const seconds=Math.max(0,(Date.now()-new Date(value).getTime())/1000|0);
   if(seconds<60)return'сейчас';if(seconds<3600)return(seconds/60|0)+'м';if(seconds<86400)return(seconds/3600|0)+'ч';return(seconds/86400|0)+'д'};
 const pill=(value,kind='')=>'<span class="pill '+kind+'">'+esc(value)+'</span>';
 const card=(label,value,hint)=>'<div class="card"><div class="label">'+esc(label)+'</div><div class="value">'+value+'</div><div class="hint">'+hint+'</div></div>';
 const empty=columns=>'<tr><td colspan="'+columns+'" class="empty">данных нет</td></tr>';
+const duration=seconds=>{seconds=Math.max(0,Number(seconds)||0);const days=seconds/86400|0,hours=(seconds%86400)/3600|0,minutes=(seconds%3600)/60|0;
+  return days?days+'д '+hours+'ч':hours?hours+'ч '+minutes+'м':minutes+'м'};
+const ratio=value=>value==null?'∞':'×'+Number(value).toLocaleString('en-US',{maximumFractionDigits:Number(value)<10?1:0});
 function header(title,badge=''){return '<header><div class="brand">api<i>Token</i>.sale<small>admin · '+esc(title)+'</small></div><nav class="tabs">'+
-  [['dashboard','Сводка'],['users','Пользователи'],['topups','Пополнения'],['business','B2B'],['system','Система'],['audit','Аудит']]
+  [['dashboard','Сводка'],['accounts','Аккаунты'],['users','Пользователи'],['topups','Пополнения'],['business','B2B'],['system','Система'],['audit','Аудит']]
   .map(item=>'<button data-tab="'+item[0]+'" class="'+(tab===item[0]?'on':'')+'">'+item[1]+'</button>').join('')+
   '</nav><div class="right">'+badge+'<button class="theme" id="theme">◐</button></div></header>'}
 function page(title,body,badge=''){app.innerHTML=header(title,badge)+'<main>'+body+'</main>';bindCommon()}
@@ -83,17 +94,25 @@ async function api(path,options={}){const response=await fetch(path,{...options,
   throw new Error(message||('HTTP '+response.status))}return payload}
 async function send(path,method,body){return api(path,{method,body:JSON.stringify(body)})}
 async function refresh(){clearInterval(timer);tab=getTab();try{
-  if(tab==='dashboard')await dashboard();if(tab==='users')await users();if(tab==='topups')await topups();
+  if(tab==='dashboard')await dashboard();if(tab==='accounts')await accounts();if(tab==='users')await users();if(tab==='topups')await topups();
   if(tab==='business')await business();if(tab==='system')await system();if(tab==='audit')await audit();
-}catch(error){errorPage(tab,error)}timer=setInterval(refresh,tab==='system'?5000:20000)}
+}catch(error){errorPage(tab,error)}timer=setInterval(refresh,tab==='system'?3000:20000)}
 addEventListener('hashchange',refresh);
 const savedTheme=localStorage.getItem('admin-theme');
 document.documentElement.dataset.theme=savedTheme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
 
 async function dashboard(){const data=await api('/admin/dashboard'),u=data.users,t=data.topups,p=data.platform;
-  const state=p.engine_error?'warn':'ok';
-  const body='<div class="banner '+state+'"><span class="dot"></span><div><b>'+(p.engine_error?'Есть engine-аккаунты с ошибкой':'Коммерческий контур работает штатно')+
-    '</b><span class="muted">обновлено '+date(data.generated_at,true)+' · сессий '+p.active_sessions+' · engine errors '+p.engine_error+'</span></div></div>'+
+  const sources=await Promise.all([api('/overview').catch(()=>null),api('/partner-admin/overview').catch(()=>null)]),engine=sources[0],partners=sources[1];
+  const engineAccounts=engine?.accounts||[],crm=engineAccounts.find(account=>String(account.handle||'').toLowerCase()==='crm-parsing');
+  const degraded=p.engine_error||!engine||!partners||!crm,state=degraded?'warn':'ok';
+  const body='<div class="banner '+state+'"><span class="dot"></span><div><b>'+(degraded?'Есть контуры, требующие внимания':'Все административные контуры доступны')+
+    '</b><span class="muted">обновлено '+date(data.generated_at,true)+' · сессий '+p.active_sessions+' · engine errors '+p.engine_error+
+    ' · CRM '+(crm?esc(crm.status):'account missing')+'</span></div></div>'+
+    '<h2>Аккаунты по контурам</h2><div class="cards">'+
+    card('commerce accounts',u.total,u.active+' активны · '+u.disabled+' отключены')+
+    card('engine accounts',engine?engineAccounts.length:'—',engine?engineAccounts.filter(account=>account.status==='active').length+' active':'источник недоступен')+
+    card('partner accounts',partners?partners.partners:'—',partners?partners.activePartners+' active · '+partners.referredUsers+' referrals':'источник недоступен')+
+    card('CRM & Parsing',crm?esc(crm.status):'не найден',crm?esc(crm.handle)+' · '+money(crm.balance_usd):'нужен engine account crm-parsing')+'</div>'+
     '<h2>Клиенты и регистрации</h2><div class="cards">'+
     card('всего клиентов',u.total,u.active+' активны · '+u.disabled+' отключены')+
     card('OAuth-регистрации',u.registered_oauth,'сейчас OAuth-only '+u.oauth_only+' · hybrid '+u.hybrid)+
@@ -108,8 +127,33 @@ async function dashboard(){const data=await api('/admin/dashboard'),u=data.users
     card('B2C / B2B',p.b2c_users+' / '+p.b2b_users,'клиенты по типу тарифа')+
     card('engine active',p.engine_active,'pending '+p.engine_pending+' · disabled '+p.engine_disabled)+
     card('защищены 2FA',u.totp,'email подтверждено '+u.verified)+'</div>'+
-    '<footer>Денежные агрегаты считаются на сервере целыми nano-USD; live-балансы — во вкладке «Пользователи».</footer>';
+    '<footer>Подробный единый список engine, commerce, partner и CRM-аккаунтов — во вкладке «Аккаунты».</footer>';
   page('сводка',body,pill(u.active+' active','ok'))}
+
+async function allPartners(){let offset=0,items=[],totals=null;do{const data=await api('/partner-admin/partner-analytics?sort=created_at&dir=desc&limit=500&offset='+offset),batch=data.items||[];
+  totals=data.totals;items=items.concat(batch);offset=items.length;if(!batch.length)break}while(totals&&items.length<totals.total);return{items,totals:totals||{total:items.length,active:0}}}
+async function accounts(){const result=await Promise.all([api('/overview'),api('/admin/users'),allPartners()]),overview=result[0],commerce=result[1].users||[],partners=result[2];
+  const engine=overview.accounts||[],crm=engine.find(account=>String(account.handle||'').toLowerCase()==='crm-parsing');
+  const domains=[
+    ['admin.apitoken.sale','central admin','commerce + engine + partner account control',''],
+    ['admin.partners.apitoken.sale','partner admin','unchanged APIToken Partners operator console','https://admin.partners.apitoken.sale/admin'],
+    ['crm.apitoken.sale','CRM & Parsing',crm?'engine account '+crm.handle+' · '+crm.status:'engine account crm-parsing is missing','https://crm.apitoken.sale'],
+    ['content-studio.apitoken.sale','content studio','private editorial workspace','https://content-studio.apitoken.sale']
+  ];
+  const domainCards=domains.map(item=>'<div class="domain"><b>'+(item[3]?'<a class="link" target="_blank" rel="noreferrer" href="'+item[3]+'">'+esc(item[0])+'</a>':esc(item[0]))+
+    '</b>'+pill(item[1],item[0]==='crm.apitoken.sale'?(crm?'ok':'warn'):'ok')+'<div class="sub">'+esc(item[2])+'</div></div>').join('');
+  const engineRows=engine.map(account=>{const isCrm=String(account.handle||'').toLowerCase()==='crm-parsing',domain=isCrm?'crm.apitoken.sale':'api.apitoken.sale';return '<tr><td class="left"><b>'+esc(account.handle||'—')+
+    '</b><div class="sub">'+esc(account.account)+'</div></td><td class="left">'+esc(domain)+'</td><td>'+pill(account.status,account.status==='active'?'ok':'bad')+'</td><td><b>'+money(account.balance_usd)+
+    '</b></td><td>'+money(account.spent_usd)+'</td><td>×'+esc(account.mult)+'</td></tr>'}).join('');
+  const partnerRows=partners.items.map(partner=>'<tr><td class="left"><b>'+esc(partner.telegramUsername?'@'+partner.telegramUsername:(partner.email||partner.displayName||'—'))+
+    '</b><div class="sub">'+esc(partner.id)+' · '+esc(partner.referralCode)+'</div></td><td>'+pill(partner.status,partner.status==='active'?'ok':partner.status==='suspended'?'bad':'warn')+
+    '</td><td>'+partner.referredUsers+'</td><td>'+nanoMoney(partner.depositsTotalNano)+'</td><td>'+nanoMoney(partner.earnedTotalNano)+'</td><td>'+ago(partner.lastSeenAt)+'</td></tr>').join('');
+  const body='<div class="banner '+(crm?'ok':'warn')+'"><span class="dot"></span><div><b>Единый реестр аккаунтов</b><span class="muted">commerce '+commerce.length+
+    ' · engine '+engine.length+' · partners '+partners.items.length+' · CRM '+(crm?'connected':'missing')+'</span></div></div><h2>Внутренние домены</h2><div class="domain-grid">'+domainCards+
+    '</div><h2>Engine и service accounts</h2><div class="table"><div class="scroll"><table><thead><tr><th class="left">account</th><th class="left">домен</th><th>статус</th><th>баланс</th><th>потрачено</th><th>множитель</th></tr></thead><tbody>'+
+    (engineRows||empty(6))+'</tbody></table></div></div><h2>Partner accounts</h2><div class="table"><div class="scroll"><table><thead><tr><th class="left">партнёр</th><th>статус</th><th>рефералы</th><th>депозиты</th><th>заработано</th><th>был(а)</th></tr></thead><tbody>'+
+    (partnerRows||empty(6))+'</tbody></table></div></div><footer>Все '+commerce.length+' commerce-аккаунтов доступны с действиями во вкладке <a class="link" href="#users">«Пользователи»</a>; полный partner workflow остаётся на admin.partners.apitoken.sale.</footer>';
+  page('аккаунты',body,pill((commerce.length+engine.length+partners.items.length)+' записей',crm?'ok':'warn'))}
 
 async function users(){const result=await Promise.all([api('/admin/users'),api('/admin/dashboard')]);usersCache=result[0].users||[];renderUsers(result[1])}
 function renderUsers(dashboard){const totalBalance=usersCache.reduce((sum,user)=>sum+Number(user.balance_usd||0),0);
@@ -200,23 +244,39 @@ function bindBusiness(){const form=document.getElementById('invite');form.onsubm
     if(!confirm('Установить скидку '+discount+'%?'))return;button.disabled=true;try{await send('/admin/business-users/'+button.dataset.pricing+'/pricing','PATCH',{discountPercent:discount});
     alert('Изменение поставлено в очередь синхронизации.');await refresh()}catch(error){alert(error.message);button.disabled=false}})}
 
+function capacityBar(util){const percent=Math.min(100,Math.max(0,Math.round((Number(util)||0)*100))),kind=percent>=95?'bad':percent>=70?'warn':'';
+  return'<span class="bar"><i class="'+kind+'" style="width:'+percent+'%"></i></span><span class="bar-label">'+percent+'%</span>'}
+function systemVerdict(overview){const gap=overview.recommend.gap,h5=overview.headroom['5h'],h7=overview.headroom['7d'],target=overview.target_headroom;
+  const coverage=overview.coverage['7d'],cooling=overview.supply.health.cooling,total=overview.subs,critical=value=>value!=null&&value<1,tight=value=>value!=null&&value<target;
+  if(critical(h5)||critical(h7)||(total>0&&cooling>=total))return{kind:'bad',title:'Дефицит ёмкости — нужно +'+Math.max(1,gap)+' подписок',
+    detail:'headroom 5h '+ratio(h5)+' / 7d '+ratio(h7)+' · потребление близко к потолку'};
+  if(gap>0||tight(h5)||tight(h7)||coverage>1||cooling>0){const why=gap>0?'рекомендуется +'+gap+' подписок':tight(h5)||tight(h7)?'запас ниже цели ×'+target:
+    coverage>1?'балансы клиентов ×'+coverage+' к ёмкости':cooling+' подписок остывают';return{kind:'warn',title:'Под контролем, но нужно внимание',detail:why+' · headroom 5h '+ratio(h5)+' / 7d '+ratio(h7)}}
+  return{kind:'ok',title:'Запаса ёмкости хватает',detail:'headroom 5h '+ratio(h5)+' / 7d '+ratio(h7)+' · подписок '+total+', цель ×'+target+' выдержана'}}
 async function system(){const result=await Promise.all([api('/overview'),api('/capacity').catch(()=>null),api('/subs').catch(()=>null)]),overview=result[0],capacity=result[1],subs=result[2];
-  const supply=overview.supply,health=supply.health,demand=overview.demand,recommend=overview.recommend;
-  const rows=(capacity?.per_sub||[]).map(item=>'<tr><td class="left"><span class="dot '+(item.cooling?'bad':'')+'"></span> '+esc(item.email)+'</td><td>'+
-    Math.round(item.util5h*100)+'%</td><td>'+Math.round(item.util7d*100)+'%</td><td>'+money(item.rem5h_usd)+'</td><td>'+money(item.rem7d_usd)+'</td><td>'+money(item.avail_7d_usd)+'</td></tr>').join('');
-  const subRows=(subs?.subs||[]).map(item=>'<tr><td class="left">'+esc(item.email)+'</td><td>'+pill(item.status,item.status==='active'?'ok':'warn')+'</td><td>'+date(item.added)+'</td><td>'+
-    Number(item.sub_days_left||0).toFixed(1)+' дн.</td><td class="left">'+esc(item.proxy_host||'—')+'</td><td>'+date(item.proxy_expire)+'</td></tr>').join('');
-  const state=health.cooling||recommend.gap>0?'warn':'ok';
-  const body='<div class="banner '+state+'"><span class="dot"></span><div><b>'+(state==='ok'?'Ёмкости хватает':'Нужно внимание к ёмкости')+'</b><span class="muted">подписок '+
-    overview.subs+' · cooling '+health.cooling+' · рекомендация '+(recommend.gap>0?'+'+recommend.gap:'ok')+'</span></div></div><h2>Предложение и спрос</h2><div class="cards">'+
-    card('доступно 5ч',money(supply.avail_usd['5h']),'headroom '+(overview.headroom['5h']==null?'∞':'×'+overview.headroom['5h']))+
-    card('доступно 7д',money(supply.avail_usd['7d']),'headroom '+(overview.headroom['7d']==null?'∞':'×'+overview.headroom['7d']))+
-    card('балансы клиентов',money(demand.balance_usd),'резерв '+money(demand.reserved_usd))+
-    card('потрачено',money(demand.spent_usd),demand.active_keys+' active keys')+'</div><h2>Live-ёмкость подписок</h2>'+
-    '<div class="table"><div class="scroll"><table><thead><tr><th class="left">подписка</th><th>util 5ч</th><th>util 7д</th><th>остаток 5ч</th><th>остаток 7д</th><th>доступно 7д</th></tr></thead><tbody>'+
-    (rows||empty(6))+'</tbody></table></div></div><h2>Жизненный цикл</h2><div class="table"><div class="scroll"><table><thead><tr><th class="left">подписка</th><th>статус</th>'+
-    '<th>добавлена</th><th>осталось</th><th class="left">прокси</th><th>прокси до</th></tr></thead><tbody>'+(subRows||empty(6))+'</tbody></table></div></div>';
-  page('система',body,pill(overview.subs+' подписок',state))}
+  const supply=overview.supply,health=supply.health,demand=overview.demand,recommend=overview.recommend,verdict=systemVerdict(overview),mult=overview.ref_mult;
+  const horizonCards=[['7d','7 дней','7d'],['1d','1 день',null],['5h','5 часов (burst)','5h']].map(item=>{const available=supply.avail_usd[item[0]]||0,head=item[2]?overview.headroom[item[2]]:null;
+    return card('доступно · '+item[1],money(available),'клиентам ×'+mult+' = '+money(available*mult)+(item[2]?' · запас '+ratio(head):''))}).join('');
+  const liveRows=(capacity?.per_sub||[]).map(item=>'<tr><td class="left"><span class="dot '+(item.cooling?'bad':String(item.status).includes('warn')?'warn':'')+'"></span> '+esc(item.email)+
+    (item.calibrated?'':' <span class="muted">(калибровка)</span>')+'</td><td>'+capacityBar(item.util5h)+'</td><td>'+duration(item.reset5h_in)+'</td><td>'+capacityBar(item.util7d)+
+    '</td><td>'+duration(item.reset7d_in)+'</td><td><b>'+money(item.rem5h_usd)+'</b></td><td><b>'+money(item.rem7d_usd)+'</b></td><td><b>'+money(item.avail_7d_usd)+'</b></td></tr>').join('');
+  const lifecycleRows=(subs?.subs||[]).map(item=>{const days=Number(item.sub_days_left||0),dayKind=days<=0?'bad':days<7?'warn':'ok';return '<tr><td class="left"><b>'+esc(item.email)+
+    '</b></td><td>'+pill(item.status,item.status==='active'?'ok':'warn')+'</td><td>'+esc(String(item.added||'').slice(0,10)||'—')+'</td><td><span class="dot '+dayKind+'"></span>'+(days>0?days+' дн.':'—')+
+    '</td><td><b>'+(Number(item.peak_cap5h_usd)>0?money(item.peak_cap5h_usd):'—')+'</b></td><td><b>'+(Number(item.peak_cap7d_usd)>0?money(item.peak_cap7d_usd):'—')+
+    '</b></td><td class="left">'+esc(item.proxy_host||'—')+'</td><td>'+esc(String(item.proxy_expire||'').slice(0,10)||'—')+'</td></tr>'}).join('');
+  const accountRows=(overview.accounts||[]).map(account=>'<tr><td class="left muted">'+esc(account.account)+'</td><td class="left"><b>'+esc(account.handle||'—')+'</b></td><td>'+
+    pill(account.status,account.status==='active'?'ok':'bad')+'</td><td><b>'+money(account.balance_usd)+'</b></td><td><b>'+money(account.spent_usd)+'</b></td><td>×'+esc(account.mult)+'</td></tr>').join('');
+  const body='<div class="banner '+verdict.kind+'"><span class="dot"></span><div><b>'+esc(verdict.title)+'</b><span class="muted">'+esc(verdict.detail)+'</span></div></div>'+
+    '<h2>Предложение — real-API USD</h2><div class="cards">'+horizonCards+card('балансы клиентов',money(demand.balance_usd),'резерв '+money(demand.reserved_usd)+' · coverage 7d ×'+overview.coverage['7d'])+
+    '</div><h2>Флот и спрос</h2><div class="cards">'+card('подписки',overview.subs,health.healthy+' живых · '+health.cooling+' cooling')+
+    card('утилизация средняя',Math.round(supply.util['7d']*100)+'%','7d · '+Math.round(supply.util['5h']*100)+'% за 5h')+
+    card('всего потрачено',money(demand.spent_usd),'потенциальный спрос '+money(demand.potential_realapi_usd)+' real-API')+
+    card('рекомендация',recommend.gap>0?'+'+recommend.gap:'ok','нужно '+recommend.subs_needed+' подписок · есть '+overview.subs)+'</div>'+
+    '<h2>Жизненный цикл подписок'+(subs?' · замена через '+subs.lifetime_days+'д от добавления':'')+'</h2><div class="table"><div class="scroll"><table><thead><tr><th class="left">подписка</th><th>статус</th><th>добавлена</th><th>живёт ещё</th><th>пик 5h</th><th>пик 7d</th><th class="left">прокси</th><th>прокси до</th></tr></thead><tbody>'+
+    (lifecycleRows||empty(8))+'</tbody></table></div></div><h2>Аккаунты движка · '+(overview.accounts||[]).length+'</h2><div class="table"><div class="scroll"><table><thead><tr><th class="left">account</th><th class="left">handle</th><th>статус</th><th>баланс</th><th>потрачено</th><th>множитель</th></tr></thead><tbody>'+
+    (accountRows||empty(6))+'</tbody></table></div></div><details><summary>Ёмкость по подпискам · '+overview.subs+' (live util/cooling/reset)</summary><div class="table"><div class="scroll"><table><thead><tr><th class="left">подписка</th><th>5h</th><th>сброс</th><th>7d</th><th>сброс</th><th>остаток 5h</th><th>остаток 7d</th><th>доступно 7d</th></tr></thead><tbody>'+
+    (liveRows||empty(8))+'</tbody></table></div></div></details><footer>Обновление каждые 3с · «доступно» учитывает сбросы окон · «запас» = доступно ÷ текущее потребление · клиентам ×'+mult+'</footer>';
+  page('система',body,pill(overview.subs+' подписок',verdict.kind))}
 
 async function audit(){const rows=(await api('/admin/audit?limit=200')).rows||[],bodyRows=rows.map(item=>'<tr><td>'+date(item.created_at,true)+'</td><td class="left">'+
   pill(item.action,item.action.startsWith('admin.')?'warn':'')+'</td><td class="left">'+esc(item.actor_type)+'<div class="sub">'+esc(item.actor_id||'system')+'</div></td><td class="left">'+

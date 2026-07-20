@@ -17,8 +17,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// Живой дашборд ёмкости (self-contained HTML; данные тянет с /capacity тем же origin).
-const PANEL_HTML: &str = include_str!("panel.html");
+/// Unified self-contained administration UI. Data is routed by the admin Caddy vhost.
 const ADMIN_PANEL_HTML: &str = include_str!("admin-panel.html");
 
 /// TTL-кэш дашборд-эндпоинтов: панель поллит /overview и /capacity, а они делают O(n)-скан
@@ -64,7 +63,6 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
         .route("/overview", get(overview))
         .route("/subs", get(subs))
         .route("/metrics", get(metrics))
-        .route("/panel", get(panel))
         .route("/admin-panel", get(admin_panel))
         // Control-плоскость (`/admin/*`) — управление аккаунтами/ключами/балансом за control-ключом.
         // Контракт для будущей КОММЕРЦИИ (отдельный сервис). Движок — авторитет живого баланса.
@@ -140,13 +138,7 @@ async fn metrics(
     ([(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")], body).into_response()
 }
 
-/// Отдать HTML-панель (без авторизации — это только UI; данные /capacity требуют ключ,
-/// который панель спрашивает у пользователя и хранит в его браузере).
-async fn panel() -> Response {
-    ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")], PANEL_HTML).into_response()
-}
-
-/// Dedicated admin.apitoken.sale UI. Kept separate from the existing /panel dashboard.
+/// Unified admin.apitoken.sale UI. Human and data authorization is enforced by Caddy.
 async fn admin_panel() -> Response {
     ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")], ADMIN_PANEL_HTML).into_response()
 }
@@ -460,10 +452,8 @@ mod tests {
     }
 
     #[test]
-    fn embedded_admin_panel_exposes_operational_workflows_without_secrets() {
-        assert!(PANEL_HTML.contains("<title>apiToken.sale · панель</title>"));
-        assert!(!PANEL_HTML.contains("data-admin-panel-version=\"2\""));
-        assert!(ADMIN_PANEL_HTML.contains("data-admin-panel-version=\"2\""));
+    fn embedded_admin_panel_exposes_all_operational_workflows_without_secrets() {
+        assert!(ADMIN_PANEL_HTML.contains("data-admin-panel-version=\"3\""));
         for route in [
             "/admin/dashboard",
             "/admin/users",
@@ -473,11 +463,28 @@ mod tests {
             "/balance-adjustments",
             "/sessions/revoke",
             "/totp/reset",
+            "/partner-admin/partner-analytics",
+            "/overview",
+            "/capacity",
+            "/subs",
         ] {
             assert!(ADMIN_PANEL_HTML.contains(route), "missing admin workflow route {route}");
         }
+        for legacy_capability in [
+            "systemVerdict",
+            "target_headroom",
+            "coverage['7d']",
+            "reset5h_in",
+            "peak_cap5h_usd",
+            "Аккаунты движка",
+            "crm-parsing",
+        ] {
+            assert!(ADMIN_PANEL_HTML.contains(legacy_capability),
+                "missing migrated legacy capability {legacy_capability}");
+        }
         assert!(!ADMIN_PANEL_HTML.contains("COMMERCIAL_ADMIN_KEY"));
         assert!(!ADMIN_PANEL_HTML.contains("CONTROL_KEY"));
+        assert!(!ADMIN_PANEL_HTML.contains("SALES_ADMIN_KEY"));
         assert!(ADMIN_PANEL_HTML.contains("sessionStorage.setItem(pendingKey"));
         assert!(ADMIN_PANEL_HTML.contains("idempotency_key:idempotencyKey"));
     }

@@ -1,6 +1,6 @@
 NR == FNR {
-  # CRM credentials are a separate group. All other bcrypt rows belong to panel_admins, which is
-  # imported by both panel sites without duplicating secret-bearing lines in the rendered file.
+  # CRM credentials are a separate group. All other bcrypt rows belong to panel_admins, imported
+  # by the central admin surfaces without duplicating secret-bearing lines in the rendered file.
   if ($0 ~ /^\(crm_admins\)/) grp = "crm"
   else if ($0 ~ /^\(/ || $0 ~ /^[a-z]/) grp = ""
   if ($1 != "header_up" && $2 ~ /^\$2/) {
@@ -17,12 +17,6 @@ NR == FNR {
   if (auth == "") exit 41
   printf "%s", auth
   auth_used++
-  next
-}
-/<CONTROL_KEY_PLACEHOLDER>/ {
-  if (control == "") exit 42
-  print control
-  control_used++
   next
 }
 /<ADMIN_CONTROL_KEY_PLACEHOLDER>/ {
@@ -58,7 +52,7 @@ NR == FNR {
 }
 { print }
 END {
-  if (auth_used != 1 || control_used != 1 || admin_control_used != 1 ||
+  if (auth_used != 1 || admin_control_used != 1 ||
       commadmin_used != 1 || admin_commadmin_used != 1 ||
       crmauth_used != 1 || salesadmin_used != 1) exit 43
 }

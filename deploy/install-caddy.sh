@@ -17,8 +17,8 @@ cleanup() { rm -f "$tmp"; }
 trap cleanup EXIT
 
 # Preserve the production-only secret classes without placing any secret in argv, stdout, the
-# repository, or a world-readable temporary file. The dedicated admin host reuses the existing
-# panel_admins snippet while keeping separate routes and HTML.
+# repository, or a world-readable temporary file. The unified admin surfaces reuse the existing
+# panel_admins snippet while CRM keeps its separate credential group.
 chmod 0600 "$tmp"
 awk -f "$SCRIPT_DIR/render-caddy.awk" "$LIVE" "$TEMPLATE" >"$tmp"
 

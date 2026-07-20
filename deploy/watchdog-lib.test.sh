@@ -86,13 +86,21 @@ if wd_path_is_caddy deploy/watchdog.sh; then
   wd_die "non-Caddy infrastructure change requested a Caddy reload"
 fi
 
-grep -Fq 'panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'admin.apitoken.sale {' "$ROOT/deploy/Caddyfile"
+grep -Fq 'admin.partners.apitoken.sale {' "$ROOT/deploy/Caddyfile"
+grep -Fq 'crm.apitoken.sale {' "$ROOT/deploy/Caddyfile"
+! grep -Fq 'panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
+! grep -Fq 'partners.panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
+! grep -Fq 'crm.panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 [[ $(grep -Fc 'import panel_admins' "$ROOT/deploy/Caddyfile") -ge 3 ]]
 grep -Fq '@commerce_admin path /admin/*' "$ROOT/deploy/Caddyfile"
+grep -Fq 'handle_path /partner-admin/*' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up x-admin-actor {http.auth.user.id}' "$ROOT/deploy/Caddyfile"
 grep -Fq 'final_verify_admin_panel' "$ROOT/deploy/watchdog.sh"
-grep -Fq 'data-admin-panel-version="2"' "$ROOT/crates/server/src/admin-panel.html"
+grep -Fq 'require_retired_vhost panel.apitoken.sale' "$ROOT/deploy/watchdog.sh"
+grep -Fq "''|000|404|421" "$ROOT/deploy/watchdog.sh"
+grep -Fq 'data-admin-panel-version="3"' "$ROOT/crates/server/src/admin-panel.html"
+[[ ! -e "$ROOT/crates/server/src/panel.html" ]]
 
 render_live="$TEMP/live.Caddyfile"
 rendered_once="$TEMP/rendered-once.Caddyfile"
@@ -100,7 +108,7 @@ rendered_twice="$TEMP/rendered-twice.Caddyfile"
 {
   printf '(panel_admins) {\n\tbasic_auth {\n\t\tadmin $2y$test-hash\n\t}\n}\n'
   printf '(crm_admins) {\n\tbasic_auth {\n\t\tcrm $2y$crm-test-hash\n\t}\n}\n'
-  printf 'panel.apitoken.sale {\n'
+  printf 'admin.apitoken.sale {\n'
   printf '\theader_up x-api-key "test-control-secret"\n'
   printf '\theader_up x-admin-key "test-commerce-secret"\n'
   printf '\theader_up x-sales-admin-key "test-sales-secret"\n}\n'
@@ -110,7 +118,7 @@ awk -f "$ROOT/deploy/render-caddy.awk" "$rendered_once" "$ROOT/deploy/Caddyfile"
 for rendered in "$rendered_once" "$rendered_twice"; do
   [[ $(grep -Fc 'admin $2y$test-hash' "$rendered") == 1 ]]
   [[ $(grep -Fc 'crm $2y$crm-test-hash' "$rendered") == 1 ]]
-  [[ $(grep -Fc 'header_up x-api-key "test-control-secret"' "$rendered") == 2 ]]
+  [[ $(grep -Fc 'header_up x-api-key "test-control-secret"' "$rendered") == 1 ]]
   [[ $(grep -Fc 'header_up x-admin-key "test-commerce-secret"' "$rendered") == 2 ]]
   [[ $(grep -Fc 'header_up x-sales-admin-key "test-sales-secret"' "$rendered") == 1 ]]
   if grep -Eq '<[A-Z_]*PLACEHOLDER>' "$rendered"; then

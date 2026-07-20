@@ -1,94 +1,86 @@
-# PANEL.md — админ-панель admin.apitoken.sale
+# PANEL.md — единая админ-панель admin.apitoken.sale
 
-Единый центр управления для владельца: спрос/предложение пула, жизненный цикл подписок,
-пользователи, регистрации, деньги, безопасность, B2B и аудит коммерции. Существующий
-`panel.apitoken.sale` — отдельный dashboard и не меняется вместе с admin-сайтом. Читай этот файл
-ПЕРЕД тем, как развивать любую из панелей.
+`admin.apitoken.sale` — единый центр управления для владельца: commerce-пользователи и деньги,
+engine-аккаунты и ёмкость, партнёрские аккаунты, CRM service account, безопасность, B2B и аудит.
+Легаси `panel.apitoken.sale` удалён после переноса всех его функций сюда.
 
-## Архитектура (кто что делает)
+## Архитектура
 
 ```
 браузер ──basic_auth──▶ Caddy (admin.apitoken.sale)
-                          ├─ /                    → движок GET /admin-panel (HTML, include_str!)
+                          ├─ /                         → engine GET /admin-panel
                           ├─ /overview /capacity
-                          │  /metrics /subs      → движок :8787/:8788 (+ header_up x-api-key = CONTROL key)
-                          └─ /admin/*            → commerce-backend :3000/:3001 /v1/admin/*
-                                                   (+ header_up x-admin-key = COMMERCIAL_ADMIN_KEY)
+                          │  /metrics /subs           → engine :8787/:8788 (+ control key)
+                          ├─ /admin/*                 → commerce :3000/:3001 /v1/admin/*
+                          │                              (+ commerce admin key + actor)
+                          └─ /partner-admin/*         → sales-api :3100 /v1/admin/*
+                                                         (+ sales admin key)
 ```
 
-- **Один вход — basic auth Caddy.** Все секреты (control-ключ движка, admin-ключ коммерции)
-  инжектятся server-side; браузер их не видит. Caddy также передаёт проверенный Basic Auth login
-  как `x-admin-actor`, чтобы audit отличал администраторов. Admin API нельзя вызывать напрямую из public web.
-- **HTML admin-сайта живёт в `crates/server/src/admin-panel.html`** и вкомпилирован в бинарь движка
-  (`GET /admin-panel`, без авторизации — данные всё равно требуют ключей). Деплой движка = деплой admin,
-  статических копий НЕТ (раньше была `/srv/claude-api/panel/index.html` — упразднена, дрейфовала).
-- **Существующая панель изолирована:** `panel.apitoken.sale` продолжает получать `GET /panel`,
-  собранный из `crates/server/src/panel.html`, со своими прежними Caddy matchers. Новый admin host
-  имеет отдельный Caddy-блок и никогда не rewrite'ит запросы в `/panel`.
-- **Данные движка** (`/overview`, `/capacity`, `/subs`, `/metrics`) — `crates/server/src/http.rs`.
-- **Данные коммерции** — `apps/api/src/admin.controller.ts` и
-  `apps/api/src/admin-operations.controller.ts` (оба за `AdminGuard` по `x-admin-key`), агрегаты и
-  admin-транзакции — `packages/db/src/admin-overview.ts`, live-деньги — только через engine Control API.
-- **Регистрации** считаются по исходному способу: `auth.oauth_registered` = OAuth; отсутствие
-  этого события = обычная email/password регистрация. Текущие привязанные методы показываются
-  отдельно, поэтому поздний OAuth claim не переписывает происхождение аккаунта.
-- **Ручное начисление** принимает целые USD, UUID idempotency key и обязательную причину. Движок
-  кредитуется идемпотентно по `admin-credit:<uuid>`, audit_log дедуплицируется тем же ref. Подарок
-  не считается платным пополнением и не двигает prepay-тир.
-- **Отключение пользователя** сначала блокирует authoritative engine account, затем атомарно
-  отключает commerce-пользователя, mapping и все сессии. Включение согласует те же два контура.
+- HTML живёт только в `crates/server/src/admin-panel.html` и вкомпилирован в engine как
+  `GET /admin-panel`. Статических копий и второго panel HTML нет.
+- Caddy Basic Auth — единый human gate. Control, commerce-admin и sales-admin ключи инжектятся
+  только server-side и никогда не попадают в HTML, browser storage, ответы или логи.
+- Проверенный Basic Auth login передаётся commerce как `x-admin-actor`, чтобы аудит различал
+  операторов. Admin API не публикуется через клиентский web.
+- Engine-данные (`/overview`, `/capacity`, `/subs`, `/metrics`) определены в
+  `crates/server/src/http.rs`. `/overview` содержит полный список engine accounts без API-ключей.
+- Commerce-данные находятся в `apps/api` за `AdminGuard`; authoritative live balance по-прежнему
+  живёт только в engine.
+- Partner-данные читаются через sales admin API. Main admin получает только server-side proxy;
+  отдельная полная партнёрская админка остаётся тем же sales-web `/admin` на
+  `admin.partners.apitoken.sale`.
+- CRM-код находится в отдельном репозитории. Main admin показывает его engine service account
+  с handle `crm-parsing` и ссылку на `crm.apitoken.sale`.
 
-## Возможности администратора
+## Возможности
 
-- KPI: клиенты, новые и активные, OAuth/обычные регистрации, платящие клиенты, число и сумма
-  top-up, ручные начисления, checkout/refund/error, ключи, сессии и engine-account states.
+- Сводка всех контуров: commerce, engine, partners и CRM.
+- Аккаунты: все engine/service accounts, все partner accounts (с полной пагинацией источника),
+  commerce total и переход к полному пользовательскому workflow.
 - Пользователи: поиск/фильтры, live баланс/расход, платежи, ключи, тир, 2FA, начисление баланса,
   revoke всех сессий, сброс 2FA, enable/disable.
-- Деньги: последние подтверждённые платежи с состоянием engine credit и незавершённые checkout.
-- B2B: одноразовые email-bound invite-ссылки и изменение индивидуальной скидки.
-- Система: ёмкость, headroom, fleet health, lifecycle подписок и прокси.
-- Аудит: последние operator/user/provider события и причины административных действий.
+- Деньги: подтверждённые платежи, состояние engine credit, незавершённые checkout.
+- B2B: одноразовые email-bound invite-ссылки и индивидуальная скидка.
+- Система: полный бывший panel view — verdict, 1d/5h/7d supply, headroom, coverage, fleet demand,
+  рекомендации, lifecycle/peaks/proxy, все engine accounts и live util/reset/cooling по подпискам.
+- Аудит: operator/user/provider события и причины административных действий.
 
-## Как добавить новую вкладку / источник данных
+Ручное начисление принимает целые USD, UUID idempotency key и обязательную причину. Положительное
+зачисление идемпотентно; подарок не считается платным top-up. Отключение пользователя сначала
+блокирует authoritative engine account, затем commerce mapping и сессии.
 
-1. **Данные движка** → новый эндпоинт в `crates/server/src/http.rs` за `control_authed`
-   (или `readonly_authed`), добавить путь в матчер `@data` в `deploy/Caddyfile`.
-2. **Данные коммерции** → эндпоинт в `apps/api` за `AdminGuard`; в `deploy/Caddyfile` расширить
-   матчер `@commerce_admin` уже проксирует весь path `/admin/*` на `/v1/admin/*`.
-3. **UI** → вкладка в `admin-panel.html`: добавить кнопку, ветку в `refresh()`, свой
-   `render…()`. На 401 данных коммерции НЕ показывать экран ключа — только инлайн-ошибку.
-4. Деплой: обычный merge в master (watchdog). Изменения `deploy/Caddyfile` watchdog применяет сам
-   (`--apply-caddy`), секретные строки переносит из живого конфига `install-caddy.sh`. Финальный
-   watchdog-gate проверяет marker встроенного HTML и что `admin.apitoken.sale` отвечает `401` без
-   Basic Auth; незащищённая или не задеплоенная панель блокирует завершение rollout.
+## Домены
 
-## Партнёрская админка — вынесена на отдельный сайт
+- `admin.apitoken.sale` — единая главная админка.
+- `admin.partners.apitoken.sale` — прежнее содержимое partner admin, изменён только hostname.
+- `partners.apitoken.sale` — публичный партнёрский сайт, не менялся.
+- `crm.apitoken.sale` — прежнее содержимое CRM, изменён только hostname; CRM human credentials
+  остаются отдельной группой `crm_admins`.
+- `panel.apitoken.sale`, `partners.panel.apitoken.sale`, `crm.panel.apitoken.sale` — удалены без
+  redirect и должны считаться ошибкой production verification, если снова начнут обслуживаться.
 
-Раньше была вкладкой «Партнёры» в этой панели; теперь это **отдельный админ-сайт
-`partners.panel.apitoken.sale`** (тот же sales-web `/admin` + sales-api). Вход — оператор вводит
-`SALES_ADMIN_KEY` в KeyGate (ключ НЕ инжектится server-side, уходит как `x-sales-admin-key` из
-sessionStorage). Caddy: `/v1/*`→sales-api :3100, `/`→редирект на `/admin`, остальное→sales-web :3200.
-В этой панели маршрута `/partners-admin/*` и вкладки больше нет.
+## Как добавить источник данных
 
-## Секреты (три, все только server-side)
+1. Engine: новый endpoint за `control_authed`/`readonly_authed`, затем разрешить путь в
+   `@admin_data` Caddy.
+2. Commerce: endpoint за `AdminGuard`; `/admin/*` уже проксируется в `/v1/admin/*`.
+3. Sales: endpoint за `AdminKeyGuard`; main admin использует `/partner-admin/*`.
+4. UI: вкладка/ветка `refresh()` в `admin-panel.html`. Частичный источник должен показывать
+   degraded state, а не просить секрет у оператора.
+5. Деплой: обычный push в master. Watchdog применяет Caddy, проверяет marker HTML, Basic Auth на
+   трёх активных admin/CRM hosts и отсутствие трёх retired hosts.
+
+## Секреты
 
 | Секрет | Где живёт | Кто проверяет |
 |---|---|---|
-| basic auth админов (bcrypt, по строке на человека: `Q`, `R`, `M`, легаси `admin`) | `/etc/caddy/Caddyfile` | Caddy snippet `panel_admins`, imported by both isolated hosts |
-| CONTROL-ключ движка (`x-api-key`) | `/etc/caddy/Caddyfile` + env движка | движок `control_authed` |
-| `COMMERCIAL_ADMIN_KEY` (`x-admin-key`) | `/etc/caddy/Caddyfile` + `/etc/apitoken/api.env` | backend `AdminGuard` |
+| bcrypt admin group | live Caddy `panel_admins` | Caddy |
+| engine control key | live Caddy + engine env | `control_authed` |
+| `COMMERCIAL_ADMIN_KEY` | live Caddy + commerce env | `AdminGuard` |
+| `SALES_ADMIN_KEY` | live Caddy + sales env | `AdminKeyGuard` |
+| CRM bcrypt group | live Caddy `crm_admins` | Caddy |
 
-(`SALES_ADMIN_KEY` больше не инжектится Caddy — партнёрская админка на `partners.panel.apitoken.sale`
-принимает его от оператора через `x-sales-admin-key`; в этой панели его нет.)
-
-**Инвариант:** значение `x-admin-key` в Caddyfile ОБЯЗАНО совпадать с `COMMERCIAL_ADMIN_KEY` в
-`api.env` (реальный инцидент 2026-07-17: ключи разошлись → 401 → панель просила «ключ»).
-`install-caddy.sh` переносит строки секретов из живого Caddyfile по placeholder'ам
-(`<BASIC_AUTH_USERS_PLACEHOLDER>` — ВСЕ строки `user $2y$…` разом, `<CONTROL_KEY_PLACEHOLDER>`,
-`<COMMERCIAL_ADMIN_KEY_PLACEHOLDER>` и admin-копии control/admin placeholders) — новый секрет = новый placeholder + ветка в awk +
-ручная первичная вставка в живой конфиг.
-
-**Добавить/убрать админа:** `caddy hash-password --plaintext '<пароль>'` → добавить/удалить строку
-`<логин> <хэш>` в блоке `basic_auth` живого `/etc/caddy/Caddyfile` → `systemctl reload caddy`.
-Шаблонные применения (`--apply-caddy`) переносят все строки автоматически. Пароли хранятся только
-у людей; на сервере — только bcrypt.
+`deploy/render-caddy.awk` переносит секретные строки из live Caddy по placeholder-ам. Значения
+никогда не добавляются в репозиторий. Для изменения человека: сгенерировать bcrypt через
+`caddy hash-password`, изменить соответствующий live snippet и reload Caddy.

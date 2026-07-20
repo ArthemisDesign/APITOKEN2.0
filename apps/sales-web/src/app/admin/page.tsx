@@ -28,7 +28,7 @@ import { PartnersTab } from "./partner-analytics";
 
 const KEY_STORAGE = "sales_admin_key";
 
-// На partners.panel Caddy инжектит x-sales-admin-key после basic_auth → ключ не нужен (key="").
+// На admin.partners Caddy инжектит x-sales-admin-key после basic_auth → ключ не нужен (key="").
 // При прямом доступе (без инжекта) оператор вводит ключ в KeyGate.
 function adminHeaders(key: string): Record<string, string> {
   return key ? { "x-sales-admin-key": key } : {};
@@ -829,7 +829,7 @@ export default function AdminPage() {
 
   useEffect(() => {
     (async () => {
-      // partners.panel: Caddy инжектит ключ после basic_auth — пробуем без ключа.
+      // admin.partners: Caddy инжектит ключ после basic_auth — пробуем без ключа.
       try {
         await api("/v1/admin/overview");
         setAdminKey("");

@@ -20,7 +20,7 @@ export class OriginGuard implements CanActivate {
     if (path.startsWith("/v1/internal/")) return true;
     // Origin-проверка — защита от CSRF из браузера. Запрос с валидным admin-ключом CSRF быть
     // не может (кастомный заголовок нельзя послать кросс-сайт без CORS), а приходит он с другого
-    // origin — панели (Caddy panel.apitoken.sale инжектит ключ server-side). Пропускаем.
+    // origin — admin-сайта (Caddy admin.apitoken.sale инжектит ключ server-side). Пропускаем.
     const adminKey = this.config.get("COMMERCIAL_ADMIN_KEY", { infer: true });
     const supplied = request.headers["x-admin-key"];
     if (adminKey && typeof supplied === "string" && safeEqual(adminKey, supplied)) return true;

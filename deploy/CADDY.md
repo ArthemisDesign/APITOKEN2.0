@@ -1,10 +1,10 @@
 # Caddy production routing
 
-`deploy/Caddyfile` is the complete intended production configuration for Caddy 2.11. It includes the public engine API, the blue-green commerce API, a loopback-only stable Control API origin, mail/autodiscovery, support routing, the operator panel, and the basic-auth-protected Content Studio.
+`deploy/Caddyfile` is the complete intended production configuration for Caddy 2.11. It includes the public engine API, the blue-green commerce API, loopback-only stable origins, mail/autodiscovery, support routing, the unified admin, partner admin, CRM, and the basic-auth-protected Content Studio.
 
 ## Host-only secrets
 
-The repository intentionally contains the literal placeholders `<BCRYPT_HASH_PLACEHOLDER>` and `<CONTROL_KEY_PLACEHOLDER>`. The real bcrypt hash and engine control key live only in `/etc/caddy/Caddyfile` on the production host.
+The repository intentionally contains only named placeholders for bcrypt rows and engine/commerce/sales admin keys. The real values live only in `/etc/caddy/Caddyfile` on the production host and are carried forward by `deploy/render-caddy.awk`.
 
 Before validation or reload, splice the real values into the host copy without printing them, putting them in shell history, or committing them. Never reload the repository placeholders into production, and never copy the populated host file back into Git.
 
@@ -65,7 +65,7 @@ A `503` returned by a normal proxied request is recorded by the passive health c
 
 ## Engine blue-green and SSE
 
-`api.apitoken.sale` and the operator-panel proxy use health-gated engine slots on
+`api.apitoken.sale` and the unified admin proxy use health-gated engine slots on
 `127.0.0.1:8787` and `127.0.0.1:8788`. Caddy probes `/ready`; `engine-bluegreen.sh` admits the new
 slot, sends `SIGUSR1` to make the old slot return 503 readiness, waits for depooling, then sends
 SIGTERM so established streams drain under the systemd deadline.
