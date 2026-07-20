@@ -334,11 +334,19 @@ require_retired_vhost() {
 }
 
 final_verify_admin_panel() {
-  local panel
-  panel=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 \
-    http://127.0.0.1:8790/admin-panel)
-  grep -Fq 'data-admin-panel-version="4"' <<<"$panel" \
-    || wd_die "deployed engine does not contain the current admin panel"
+  local panel matched=0
+  # A just-stopped old slot can finish one keep-alive response while Caddy converges. Retry through
+  # one active-health window before declaring that the stable listener serves the wrong panel.
+  for _ in 1 2 3 4 5 6; do
+    panel=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 \
+      http://127.0.0.1:8790/admin-panel 2>/dev/null || true)
+    if grep -Fq 'data-admin-panel-version="4"' <<<"$panel"; then
+      matched=1
+      break
+    fi
+    sleep 1
+  done
+  [[ $matched == 1 ]] || wd_die "deployed engine does not contain the current admin panel"
   require_admin_auth_vhost admin.apitoken.sale
   require_admin_auth_vhost admin.partners.apitoken.sale
   require_admin_auth_vhost crm.apitoken.sale

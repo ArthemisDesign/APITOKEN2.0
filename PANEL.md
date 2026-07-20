@@ -25,9 +25,10 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
 - Caddy `forward_auth` — единый human gate. Commerce PostgreSQL хранит только password hashes,
   статус и grants для четырёх управляемых доменов. Control, commerce-admin и sales-admin ключи
   инжектятся только server-side и никогда не попадают в HTML, browser storage, ответы или логи.
-- Проверенная identity передаётся commerce как `x-admin-actor` и `x-admin-account-id`, чтобы аудит
-  различал операторов и self-service password rotation. Internal auth API закрыт на публичном
-  `backend.apitoken.sale` и доступен Caddy только через loopback.
+- Проверенная identity передаётся commerce как `x-admin-actor` и `x-admin-account-id` через
+  `forward_auth copy_headers`. Downstream proxy сохраняет эти request headers без override, чтобы
+  аудит различал операторов и self-service password rotation. Internal auth API закрыт на
+  публичном `backend.apitoken.sale` и доступен Caddy только через loopback.
 - Внешние vhost и приложения видят только стабильные origins `127.0.0.1:8790` (engine) и
   `127.0.0.1:8791` (commerce). Только эти два Caddy-balancer знают slot-порты; обычный
   application `503` не исключает живой slot, депулинг выполняется active `/ready` checks.

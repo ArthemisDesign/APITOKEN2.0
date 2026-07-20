@@ -100,8 +100,9 @@ grep -Fq 'header_up X-Admin-Key "<ADMIN_AUTH_KEY_PLACEHOLDER>"' "$ROOT/deploy/Ca
 grep -Fq 'header_up X-Admin-Domain {http.request.host}' "$ROOT/deploy/Caddyfile"
 grep -Fq '@commerce_admin path /admin/*' "$ROOT/deploy/Caddyfile"
 grep -Fq 'handle_path /partner-admin/*' "$ROOT/deploy/Caddyfile"
-grep -Fq 'header_up x-admin-actor {http.request.header.X-Admin-Actor}' "$ROOT/deploy/Caddyfile"
-grep -Fq 'header_up x-admin-account-id {http.request.header.X-Admin-Account-Id}' "$ROOT/deploy/Caddyfile"
+grep -Fq 'copy_headers X-Admin-Actor X-Admin-Account-Id' "$ROOT/deploy/Caddyfile"
+! grep -Fq 'header_up x-admin-actor' "$ROOT/deploy/Caddyfile"
+! grep -Fq 'header_up x-admin-account-id' "$ROOT/deploy/Caddyfile"
 [[ $(grep -Fc 'reverse_proxy 127.0.0.1:3000 127.0.0.1:3001' "$ROOT/deploy/Caddyfile") == 1 ]]
 [[ $(grep -Fc 'reverse_proxy 127.0.0.1:8787 127.0.0.1:8788' "$ROOT/deploy/Caddyfile") == 1 ]]
 ! grep -Fq 'unhealthy_status 503' "$ROOT/deploy/Caddyfile"

@@ -126,8 +126,6 @@ admin.apitoken.sale {
 		reverse_proxy 127.0.0.1:8791 {
 			header_up Host 127.0.0.1:8791
 			header_up x-admin-key "<ADMIN_COMMERCIAL_KEY_PLACEHOLDER>"
-			header_up x-admin-actor {http.request.header.X-Admin-Actor}
-			header_up x-admin-account-id {http.request.header.X-Admin-Account-Id}
 		}
 	}
 	handle_path /partner-admin/* {
