@@ -26,6 +26,12 @@ export function utcMonthStart(value = new Date()): Date {
   return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), 1));
 }
 
+// «Бесплатные» кредиты движка по префиксу ref: welcome-бонус и промо. Реальные депозиты
+// (platega:/cryptomus:) и прочее — платные (с них идёт реф-комиссия). null ref → платный.
+export function isFreeCreditRef(ref: string | null | undefined): boolean {
+  return typeof ref === "string" && (ref.startsWith("signup-bonus:") || ref.startsWith("promo:"));
+}
+
 /** Тир по НАКОПЛЕННОЙ сумме пополнений (`spendThresholdNano` = порог пополнения). 0 = none (<$100). */
 export function tierForTopups(cumulativeNano: bigint): number {
   let tier = 0;
@@ -285,8 +291,8 @@ export async function applyPricingLedgerPage(
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
-    const profileResult = await client.query<{ current_tier: number; pricing_month_start: Date }>(`
-      SELECT current_tier, pricing_month_start FROM customer_profiles
+    const profileResult = await client.query<{ current_tier: number; pricing_month_start: Date; free_balance_nano: string }>(`
+      SELECT current_tier, pricing_month_start, free_balance_nano::text AS free_balance_nano FROM customer_profiles
       WHERE user_id = $1 AND customer_type = 'b2c' FOR UPDATE
     `, [target.userId]);
     const profile = profileResult.rows[0];
@@ -294,21 +300,43 @@ export async function applyPricingLedgerPage(
       await client.query("ROLLBACK");
       return;
     }
+    // Курсор на старте: применяем эффекты (free-баланс, real_funded) ТОЛЬКО к записям выше него —
+    // это делает применение страницы идемпотентным к повторной подаче тех же записей (free-топапы
+    // не имеют ON CONFLICT, как у charge). customer_profiles залочена → обработка юзера сериализована.
+    const cursorRow = await client.query<{ last_ledger_id: string }>(
+      "SELECT last_ledger_id::text AS last_ledger_id FROM pricing_usage_cursors WHERE engine_account_id = $1 AND user_id = $2",
+      [target.engineAccountId, target.userId],
+    );
+    const startCursor = BigInt(cursorRow.rows[0]?.last_ledger_id ?? "0");
+    let freeBalance = BigInt(profile.free_balance_nano);
+    let freeBalanceChanged = false;
     let lastLedgerId = 0n;
     let insertedCharge = false;
     for (const entry of entries) {
       const ledgerId = BigInt(entry.id);
       if (ledgerId > lastLedgerId) lastLedgerId = ledgerId;
-      if (entry.kind !== "charge" || BigInt(entry.amount_nano) <= 0n) continue;
+      if (ledgerId <= startCursor) continue; // уже обработано ранее — не двоим эффекты
+      const amount = BigInt(entry.amount_nano);
+      // Бесплатные кредиты (welcome-бонус/промо) пополняют бесплатный баланс.
+      if (entry.kind === "topup" && amount > 0n && isFreeCreditRef(entry.ref)) {
+        freeBalance += amount;
+        freeBalanceChanged = true;
+        continue;
+      }
+      if (entry.kind !== "charge" || amount <= 0n) continue;
       const occurredAt = new Date(Number(BigInt(entry.ts)) * 1000);
+      // Бесплатное тратится первым: real_funded — часть, покрытая реальными деньгами.
+      const fromFree = amount < freeBalance ? amount : freeBalance;
+      const realFunded = amount - fromFree;
       const inserted = await client.query<{ id: string }>(`
         INSERT INTO pricing_usage_events (
-          id, user_id, engine_account_id, ledger_entry_id, amount_nano, occurred_at
-        ) VALUES ($1, $2, $3, $4, $5, $6)
+          id, user_id, engine_account_id, ledger_entry_id, amount_nano, real_funded_nano, occurred_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (engine_account_id, ledger_entry_id) DO NOTHING
         RETURNING id
-      `, [randomUUID(), target.userId, target.engineAccountId, ledgerId.toString(), entry.amount_nano, occurredAt]);
-      if (!inserted.rows[0]) continue;
+      `, [randomUUID(), target.userId, target.engineAccountId, ledgerId.toString(), entry.amount_nano, realFunded.toString(), occurredAt]);
+      if (!inserted.rows[0]) continue; // уже обработано — бесплатный баланс не трогаем повторно
+      if (fromFree > 0n) { freeBalance -= fromFree; freeBalanceChanged = true; }
       insertedCharge = true;
       const monthStart = utcMonthStart(occurredAt);
       await client.query(`
@@ -318,6 +346,12 @@ export async function applyPricingLedgerPage(
         ON CONFLICT (user_id, month_start) DO UPDATE
         SET spent_nano = pricing_months.spent_nano + EXCLUDED.spent_nano, updated_at = now()
       `, [randomUUID(), target.userId, monthStart, profile.current_tier, entry.amount_nano]);
+    }
+    if (freeBalanceChanged) {
+      await client.query(
+        "UPDATE customer_profiles SET free_balance_nano = $2, updated_at = now() WHERE user_id = $1",
+        [target.userId, freeBalance.toString()],
+      );
     }
     const reachedStablePageEnd = entries.length < PRICING_LEDGER_PAGE_SIZE;
     await client.query(`

@@ -115,7 +115,7 @@ export class PartnerController {
         availableNano: totals.availableNano.toString(),
       },
       last30d: {
-        depositNano: totals.last30dDepositNano.toString(),
+        spendNano: totals.last30dSpendNano.toString(),
         earnedNano: totals.last30dEarnedNano.toString(),
       },
     };
@@ -130,7 +130,7 @@ export class PartnerController {
         // Commerce identities stay masked: only a short uuid prefix is exposed to partners.
         userMask: `user-${referral.commerceUserId.slice(0, 8)}…`,
         attributedAt: referral.attributedAt.toISOString(),
-        depositNano: referral.depositNano.toString(),
+        spendNano: referral.spendNano.toString(),
         earnedNano: referral.earnedNano.toString(),
       })),
     };
@@ -146,7 +146,7 @@ export class PartnerController {
       days: parsed.data.days,
       items: series.map((point) => ({
         date: point.date,
-        depositNano: point.depositNano.toString(),
+        spendNano: point.spendNano.toString(),
         earnedNano: point.earnedNano.toString(),
       })),
     };

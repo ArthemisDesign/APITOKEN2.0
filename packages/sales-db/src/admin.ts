@@ -5,7 +5,7 @@ export interface SalesOverview {
   partners: number;
   activePartners: number;
   referredUsers: number;
-  totalDepositNano: bigint;
+  totalSpendNano: bigint;
   totalCommissionsNano: bigint;
   pendingPayoutsNano: bigint;
   paidPayoutsNano: bigint;
@@ -14,13 +14,13 @@ export interface SalesOverview {
 export async function getSalesOverview(database: SalesDatabase): Promise<SalesOverview> {
   const result = await database.pool.query<{
     partners: string; active_partners: string; referred_users: string;
-    total_deposit: string; total_commissions: string; pending_payouts: string; paid_payouts: string;
+    total_spend: string; total_commissions: string; pending_payouts: string; paid_payouts: string;
   }>(`
     SELECT
       (SELECT count(*) FROM partners)::text AS partners,
       (SELECT count(*) FROM partners WHERE status = 'active')::text AS active_partners,
       (SELECT count(*) FROM referred_users)::text AS referred_users,
-      COALESCE((SELECT SUM(amount_nano) FROM referred_topups), 0)::text AS total_deposit,
+      COALESCE((SELECT SUM(amount_nano) FROM partner_usage_events), 0)::text AS total_spend,
       COALESCE((SELECT SUM(amount_nano) FROM commission_entries), 0)::text AS total_commissions,
       COALESCE((SELECT SUM(amount_nano) FROM payouts WHERE status IN ('requested', 'approved')), 0)::text AS pending_payouts,
       COALESCE((SELECT SUM(amount_nano) FROM payouts WHERE status = 'paid'), 0)::text AS paid_payouts
@@ -30,7 +30,7 @@ export async function getSalesOverview(database: SalesDatabase): Promise<SalesOv
     partners: Number(row.partners),
     activePartners: Number(row.active_partners),
     referredUsers: Number(row.referred_users),
-    totalDepositNano: BigInt(row.total_deposit),
+    totalSpendNano: BigInt(row.total_spend),
     totalCommissionsNano: BigInt(row.total_commissions),
     pendingPayoutsNano: BigInt(row.pending_payouts),
     paidPayoutsNano: BigInt(row.paid_payouts),

@@ -79,7 +79,7 @@ export function EarningsChart({ items }: { items: EarningRow[] }) {
               fill="var(--accent)"
               opacity={0.85}
             >
-              <title>{`${b.row.date}: ${formatUsd(b.row.earnedNano)} earned (deposits ${formatUsd(b.row.depositNano)})`}</title>
+              <title>{`${b.row.date}: ${formatUsd(b.row.earnedNano)} earned (spend ${formatUsd(b.row.spendNano)})`}</title>
             </rect>
           </g>
         ))}

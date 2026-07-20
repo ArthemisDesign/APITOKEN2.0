@@ -70,7 +70,7 @@ export class AdminController {
       partners: overview.partners,
       activePartners: overview.activePartners,
       referredUsers: overview.referredUsers,
-      totalDepositNano: overview.totalDepositNano.toString(),
+      totalSpendNano: overview.totalSpendNano.toString(),
       totalCommissionsNano: overview.totalCommissionsNano.toString(),
       pendingPayoutsNano: overview.pendingPayoutsNano.toString(),
       paidPayoutsNano: overview.paidPayoutsNano.toString(),

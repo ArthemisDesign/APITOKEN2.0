@@ -63,11 +63,13 @@ export async function listUsageEventsAfter(
   limit: number,
 ): Promise<UsageEventFeedRow[]> {
   const lagCutoff = new Date(Date.now() - FEED_VISIBILITY_LAG_MS);
+  // amountNano = real_funded: часть списания, покрытая реальными деньгами (free-first). Реф-комиссия
+  // считается только с неё; бесплатная часть ($4/промо) в фид не идёт как база комиссии.
   return database.db
     .select({
       id: pricingUsageEvents.feedSeq,
       userId: pricingUsageEvents.userId,
-      amountNano: pricingUsageEvents.amountNano,
+      amountNano: pricingUsageEvents.realFundedNano,
       occurredAt: pricingUsageEvents.occurredAt,
     })
     .from(pricingUsageEvents)

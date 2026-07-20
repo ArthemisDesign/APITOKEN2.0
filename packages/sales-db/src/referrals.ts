@@ -5,7 +5,7 @@ export type SyncFeed = "attributions" | "usage_events" | "topups";
 export interface ReferredUserSummary {
   commerceUserId: string;
   attributedAt: Date;
-  depositNano: bigint;
+  spendNano: bigint;
   earnedNano: bigint;
 }
 
@@ -36,18 +36,18 @@ export async function listReferredUsers(database: SalesDatabase, partnerId: stri
   const result = await database.pool.query<{
     commerce_user_id: string;
     attributed_at: Date;
-    deposit_nano: string;
+    spend_nano: string;
     earned_nano: string;
   }>(`
     SELECT ru.commerce_user_id, ru.attributed_at,
       COALESCE((
-        SELECT SUM(rt.amount_nano) FROM referred_topups rt
-        WHERE rt.commerce_user_id = ru.commerce_user_id
-      ), 0)::text AS deposit_nano,
+        SELECT SUM(pue.amount_nano) FROM partner_usage_events pue
+        WHERE pue.commerce_user_id = ru.commerce_user_id
+      ), 0)::text AS spend_nano,
       COALESCE((
         SELECT SUM(ce.amount_nano)
         FROM commission_entries ce
-        JOIN referred_topups e ON e.id = ce.topup_id
+        JOIN partner_usage_events e ON e.id = ce.usage_event_id
         WHERE ce.partner_id = $1 AND e.commerce_user_id = ru.commerce_user_id
       ), 0)::text AS earned_nano
     FROM referred_users ru
@@ -57,7 +57,7 @@ export async function listReferredUsers(database: SalesDatabase, partnerId: stri
   return result.rows.map((row) => ({
     commerceUserId: row.commerce_user_id,
     attributedAt: row.attributed_at,
-    depositNano: BigInt(row.deposit_nano),
+    spendNano: BigInt(row.spend_nano),
     earnedNano: BigInt(row.earned_nano),
   }));
 }

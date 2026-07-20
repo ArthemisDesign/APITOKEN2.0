@@ -62,7 +62,7 @@ export default function ReferralsPage() {
               <>
                 <th>{t("User", "Пользователь")}</th>
                 <th>{t("Joined", "Присоединился")}</th>
-                <th className="num">{t("Deposits", "Пополнения")}</th>
+                <th className="num">{t("Spend", "Траты")}</th>
                 <th className="num">{t("You earned", "Вы заработали")}</th>
               </>
             }
@@ -71,7 +71,7 @@ export default function ReferralsPage() {
               <tr key={`${r.userMask}-${r.attributedAt}`}>
                 <td className="mono">{r.userMask}</td>
                 <td>{formatDate(r.attributedAt)}</td>
-                <td className="num">{formatUsd(r.depositNano)}</td>
+                <td className="num">{formatUsd(r.spendNano)}</td>
                 <td className="num" style={{ color: "var(--accent-strong)", fontWeight: 700 }}>
                   {formatUsd(r.earnedNano)}
                 </td>

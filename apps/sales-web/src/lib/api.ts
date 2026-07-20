@@ -175,17 +175,17 @@ export type Overview = {
     pendingPayoutNano: string;
     availableNano: string;
   };
-  last30d: { depositNano: string; earnedNano: string };
+  last30d: { spendNano: string; earnedNano: string };
 };
 
 export type ReferralRow = {
   userMask: string;
   attributedAt: string;
-  depositNano: string;
+  spendNano: string;
   earnedNano: string;
 };
 
-export type EarningRow = { date: string; depositNano: string; earnedNano: string };
+export type EarningRow = { date: string; spendNano: string; earnedNano: string };
 
 export type TeamRow = {
   id: string;

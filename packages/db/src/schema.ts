@@ -60,6 +60,9 @@ export const customerProfiles = pgTable("customer_profiles", {
   tierWindowSpentNano: bigint("tier_window_spent_nano", { mode: "bigint" }).notNull().default(sql`0`),
   // Скидка сейлза как «пол»: эффективный mult = min(тир-mult, 10000 - referral_floor_bps). 0 = нет.
   referralFloorBps: integer("referral_floor_bps").notNull().default(0),
+  // Бесплатный баланс (welcome-бонус/промо), ещё не израсходованный списаниями. Бесплатное тратится
+  // первым: комиссия рефа идёт только с части списания, покрытой РЕАЛЬНЫМИ деньгами (см. real_funded).
+  freeBalanceNano: bigint("free_balance_nano", { mode: "bigint" }).notNull().default(sql`0`),
   createdAt,
   updatedAt,
 }, (table) => [
@@ -130,6 +133,8 @@ export const pricingUsageEvents = pgTable("pricing_usage_events", {
   engineAccountId: text("engine_account_id").notNull(),
   ledgerEntryId: bigint("ledger_entry_id", { mode: "bigint" }).notNull(),
   amountNano: bigint("amount_nano", { mode: "bigint" }).notNull(),
+  // Часть списания, покрытая реальными деньгами (free-first). Реф-комиссия идёт только с неё.
+  realFundedNano: bigint("real_funded_nano", { mode: "bigint" }).notNull().default(sql`0`),
   occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
   // Монотонный курсор для внешних читателей (sales-фид). Порядок ~= порядок вставки; читатели
   // обязаны скрывать свежие строки (created_at близко к now), чтобы не терять in-flight вставки.

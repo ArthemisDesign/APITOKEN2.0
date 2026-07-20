@@ -90,7 +90,7 @@ export default function OverviewPage() {
           <div className="stat-label">{t("Referred users", "Приглашённые пользователи")}</div>
           <div className="stat-value">{overview.referredUsers}</div>
           <div className="stat-foot">
-            {formatUsd(overview.last30d.depositNano)} {t("deposits in 30d", "пополнений за 30 дн.")}
+            {formatUsd(overview.last30d.spendNano)} {t("real spend in 30d", "реальных трат за 30 дн.")}
           </div>
         </div>
         <div className="stat-card">
@@ -128,30 +128,27 @@ export default function OverviewPage() {
               {t("You earn ", "Вы получаете ")}
               <strong>{formatBps(overview.commissionBps)}</strong>
               {t(
-                " of the real money your referrals ",
-                " с реальных денег, которые ваши рефералы ",
+                " of what your referrals actually spend on API usage — the amount charged after their own discount.",
+                " от того, что ваши рефералы реально тратят на использование API — суммы, списанной после их собственной скидки.",
               )}
-              <strong>{t("deposit", "вносят")}</strong>
-              {t(" (top up with their own money).", " (пополняют своими деньгами).")}
             </li>
             <li>
               {t("Free credits never count: ", "Бесплатные средства не считаются: ")}
-              <strong>{t("welcome bonuses, promo codes", "приветственные бонусы, промокоды")}</strong>
               {t(
-                " and any gifted balance earn you nothing — only money paid in with real money.",
-                " и любой подаренный баланс комиссию не приносят — только деньги, внесённые реальными деньгами.",
+                "usage paid from a welcome bonus or promo balance earns you nothing — free money is spent first, and only spend covered by their real money counts.",
+                "использование, оплаченное из приветственного бонуса или промо-баланса, комиссию не приносит — бесплатное тратится первым, и засчитывается только трата, покрытая их реальными деньгами.",
               )}
             </li>
             <li>
-              {t("Example: your referral deposits ", "Пример: ваш реферал вносит ")}
+              {t("Example: your referral spends ", "Пример: ваш реферал тратит ")}
               <strong>$100</strong>
-              {t(" of their own money → you earn ", " своих денег → вы получаете ")}
+              {t(" of their real money on the API → you earn ", " реальных денег на API → вы получаете ")}
               <strong>{formatUsd((BigInt(overview.commissionBps) * 100n * 10n ** 9n / 10000n).toString())}</strong>.
             </li>
             <li>
               {t(
-                "Commission accrues on their deposits and is paid out in USDT (BEP-20).",
-                "Комиссия начисляется с их пополнений и выплачивается в USDT (BEP-20).",
+                "Commission accrues as they spend and is paid out in USDT (BEP-20).",
+                "Комиссия начисляется по мере их трат и выплачивается в USDT (BEP-20).",
               )}
             </li>
           </ul>
@@ -160,8 +157,8 @@ export default function OverviewPage() {
         <Card
           title={t("Last 30 days", "Последние 30 дней")}
           sub={t(
-            `${formatUsd(overview.last30d.earnedNano)} earned on ${formatUsd(overview.last30d.depositNano)} of referral deposits.`,
-            `${formatUsd(overview.last30d.earnedNano)} заработано с ${formatUsd(overview.last30d.depositNano)} пополнений рефералов.`,
+            `${formatUsd(overview.last30d.earnedNano)} earned on ${formatUsd(overview.last30d.spendNano)} of real referral spend.`,
+            `${formatUsd(overview.last30d.earnedNano)} заработано с ${formatUsd(overview.last30d.spendNano)} реальных трат рефералов.`,
           )}
         >
           <EarningsChart items={earnings} />

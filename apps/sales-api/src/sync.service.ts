@@ -6,6 +6,7 @@ import {
   findPartnerByReferralCode,
   getSyncCursor,
   recordReferredDeposit,
+  recordReferredSpend,
   upsertReferredUser,
   type SalesDatabase,
   type SyncFeed,
@@ -29,6 +30,15 @@ const topupSchema = z.object({
   userId: z.string().uuid(),
   amountNano: nanoStringSchema,
   paidAt: z.coerce.date(),
+});
+
+// Списание за API. amountNano = real_funded: часть, покрытая реальными деньгами (коммерция уже
+// вычла бесплатную часть по принципу «бесплатное тратится первым»). Может быть 0 → комиссии нет.
+const usageEventSchema = z.object({
+  id: feedIdSchema,
+  userId: z.string().uuid(),
+  amountNano: nanoStringSchema,
+  occurredAt: z.coerce.date(),
 });
 
 @Injectable()
@@ -65,6 +75,7 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
       try {
         await this.syncAttributions();
         await this.syncTopups();
+        await this.syncUsageEvents();
       } catch (error) {
         this.logger.error(`sync iteration failed: ${message(error)}`);
       }
@@ -140,6 +151,26 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
       });
     }
     await advanceSyncCursor(this.database, "topups", maxId(rows));
+  }
+
+  /**
+   * Списания за API. amountNano здесь = real_funded (коммерция уже вычла бесплатную часть по
+   * принципу «бесплатное тратится первым»), поэтому комиссия капает только с реальных денег.
+   */
+  private async syncUsageEvents(): Promise<void> {
+    const after = await getSyncCursor(this.database, "usage_events");
+    const rows = await this.fetchFeed("usage_events", `usage-events?after_id=${after}&limit=1000`, usageEventSchema);
+    if (!rows || rows.length === 0) return;
+    for (const row of rows) {
+      if (row.amountNano <= 0n) continue;
+      await recordReferredSpend(this.database, {
+        commerceEventId: row.id,
+        commerceUserId: row.userId,
+        amountNano: row.amountNano,
+        occurredAt: row.occurredAt,
+      });
+    }
+    await advanceSyncCursor(this.database, "usage_events", maxId(rows));
   }
 
   private async fetchFeed<T>(feed: SyncFeed, pathAndQuery: string, schema: z.ZodType<T, z.ZodTypeDef, unknown>): Promise<T[] | null> {
