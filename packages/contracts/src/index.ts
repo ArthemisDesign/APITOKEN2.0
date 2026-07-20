@@ -248,7 +248,7 @@ export interface AuthUserView {
 
 export const contentLocaleSchema = z.enum(["en", "ru"]);
 export const contentRevisionScopeSchema = z.enum(["draft", "platform", "project", "all"]);
-export const contentProfileKeySchema = z.string().trim().regex(/^[a-z][a-z0-9-]{1,39}$/);
+export const contentProfileKeySchema = z.string().trim().regex(/^[a-z][a-z0-9-]{0,39}$/);
 
 export const importContentProjectSchema = z.object({
   sourceUrl: z.string().url().max(2_048),

@@ -5,11 +5,39 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
   const response = await fetch(`/v1/admin/content${path}`, { ...init, headers, cache: "no-store" });
   if (!response.ok) {
-    const payload = await response.json().catch(() => null) as { message?: string | string[] } | null;
-    const message = Array.isArray(payload?.message) ? payload.message.join(". ") : payload?.message;
-    throw new Error(message || `Request failed (${response.status})`);
+    const payload = await response.json().catch(() => null) as { message?: unknown } | null;
+    throw new Error(apiErrorMessage(payload, response.status));
   }
   return response.json() as Promise<T>;
+}
+
+export function apiErrorMessage(payload: { message?: unknown } | null, status: number): string {
+  const message = payload?.message;
+  if (typeof message === "string" && message.trim()) return message;
+  if (Array.isArray(message)) {
+    const values = message.filter((item): item is string => typeof item === "string" && Boolean(item.trim()));
+    if (values.length > 0) return values.join(". ");
+  }
+  if (isRecord(message)) {
+    const formErrors = stringArray(message.formErrors);
+    const fieldErrors = isRecord(message.fieldErrors)
+      ? Object.entries(message.fieldErrors).flatMap(([field, errors]) =>
+        stringArray(errors).map((error) => `${field}: ${error}`))
+      : [];
+    const details = [...formErrors, ...fieldErrors];
+    if (details.length > 0) return details.join(". ");
+  }
+  return `Request failed (${status})`;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
+    : [];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export const studioApi = {
