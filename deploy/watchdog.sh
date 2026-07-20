@@ -315,11 +315,11 @@ https_vhost_status() {
     "https://$host/" 2>/dev/null || true
 }
 
-require_basic_auth_vhost() {
+require_admin_auth_vhost() {
   local host=$1 status
   status=$(https_vhost_status "$host")
   [[ $status == 401 ]] \
-    || wd_die "$host is not reachable behind Basic Auth (HTTP ${status:-unreachable})"
+    || wd_die "$host is not reachable behind managed admin auth (HTTP ${status:-unreachable})"
 }
 
 require_retired_vhost() {
@@ -337,9 +337,10 @@ final_verify_admin_panel() {
     http://127.0.0.1:8790/admin-panel)
   grep -Fq 'data-admin-panel-version="3"' <<<"$panel" \
     || wd_die "deployed engine does not contain the current admin panel"
-  require_basic_auth_vhost admin.apitoken.sale
-  require_basic_auth_vhost admin.partners.apitoken.sale
-  require_basic_auth_vhost crm.apitoken.sale
+  require_admin_auth_vhost admin.apitoken.sale
+  require_admin_auth_vhost admin.partners.apitoken.sale
+  require_admin_auth_vhost crm.apitoken.sale
+  require_admin_auth_vhost content-studio.apitoken.sale
   require_retired_vhost panel.apitoken.sale
   require_retired_vhost partners.panel.apitoken.sale
   require_retired_vhost crm.panel.apitoken.sale

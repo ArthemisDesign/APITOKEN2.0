@@ -7,7 +7,10 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
 ## Архитектура
 
 ```
-браузер ──basic_auth──▶ Caddy (admin.apitoken.sale)
+браузер ──Basic credentials──▶ Caddy forward_auth ──▶ commerce admin identity store
+                          │
+                          ▼
+                       Caddy (admin.apitoken.sale)
                           ├─ /                         → engine GET /admin-panel
                           ├─ /overview /capacity
                           │  /metrics /subs           → engine :8787/:8788 (+ control key)
@@ -19,10 +22,12 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
 
 - HTML живёт только в `crates/server/src/admin-panel.html` и вкомпилирован в engine как
   `GET /admin-panel`. Статических копий и второго panel HTML нет.
-- Caddy Basic Auth — единый human gate. Control, commerce-admin и sales-admin ключи инжектятся
-  только server-side и никогда не попадают в HTML, browser storage, ответы или логи.
-- Проверенный Basic Auth login передаётся commerce как `x-admin-actor`, чтобы аудит различал
-  операторов. Admin API не публикуется через клиентский web.
+- Caddy `forward_auth` — единый human gate. Commerce PostgreSQL хранит только password hashes,
+  статус и grants для четырёх управляемых доменов. Control, commerce-admin и sales-admin ключи
+  инжектятся только server-side и никогда не попадают в HTML, browser storage, ответы или логи.
+- Проверенная identity передаётся commerce как `x-admin-actor` и `x-admin-account-id`, чтобы аудит
+  различал операторов и self-service password rotation. Internal auth API закрыт на публичном
+  `backend.apitoken.sale` и доступен Caddy только через loopback.
 - Engine-данные (`/overview`, `/capacity`, `/subs`, `/metrics`) определены в
   `crates/server/src/http.rs`. `/overview` содержит полный список engine accounts без API-ключей.
 - Commerce-данные находятся в `apps/api` за `AdminGuard`; authoritative live balance по-прежнему
@@ -38,6 +43,9 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
 - Сводка всех контуров: commerce, engine, partners и CRM.
 - Аккаунты: все engine/service accounts, все partner accounts (с полной пагинацией источника),
   commerce total и переход к полному пользовательскому workflow.
+- Администраторы: создание identity с одним или несколькими domain grants, точный фильтр по домену,
+  password rotation любого account (включая текущий), enable/disable и защита последнего active
+  main-admin от lockout.
 - Пользователи: поиск/фильтры, live баланс/расход, платежи, ключи, тир, 2FA, начисление баланса,
   revoke всех сессий, сброс 2FA, enable/disable.
 - Деньги: подтверждённые платежи, состояние engine credit, незавершённые checkout.
@@ -55,8 +63,8 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
 - `admin.apitoken.sale` — единая главная админка.
 - `admin.partners.apitoken.sale` — прежнее содержимое partner admin, изменён только hostname.
 - `partners.apitoken.sale` — публичный партнёрский сайт, не менялся.
-- `crm.apitoken.sale` — прежнее содержимое CRM, изменён только hostname; CRM human credentials
-  остаются отдельной группой `crm_admins`.
+- `crm.apitoken.sale` — прежнее содержимое CRM, изменён только hostname; доступ выдаётся отдельным
+  domain grant и не появляется у main-admin identity автоматически.
 - `panel.apitoken.sale`, `partners.panel.apitoken.sale`, `crm.panel.apitoken.sale` — удалены без
   redirect и должны считаться ошибкой production verification, если снова начнут обслуживаться.
 
@@ -68,19 +76,19 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
 3. Sales: endpoint за `AdminKeyGuard`; main admin использует `/partner-admin/*`.
 4. UI: вкладка/ветка `refresh()` в `admin-panel.html`. Частичный источник должен показывать
    degraded state, а не просить секрет у оператора.
-5. Деплой: обычный push в master. Watchdog применяет Caddy, проверяет marker HTML, Basic Auth на
-   трёх активных admin/CRM hosts и отсутствие трёх retired hosts.
+5. Деплой: обычный push в master. Watchdog применяет Caddy, проверяет marker HTML, 401 human-auth
+   gate на четырёх active managed hosts и отсутствие трёх retired hosts.
 
 ## Секреты
 
 | Секрет | Где живёт | Кто проверяет |
 |---|---|---|
-| bcrypt admin group | live Caddy `panel_admins` | Caddy |
+| admin password hashes + domain grants | commerce PostgreSQL | `apps/api` internal auth |
 | engine control key | live Caddy + engine env | `control_authed` |
 | `COMMERCIAL_ADMIN_KEY` | live Caddy + commerce env | `AdminGuard` |
 | `SALES_ADMIN_KEY` | live Caddy + sales env | `AdminKeyGuard` |
-| CRM bcrypt group | live Caddy `crm_admins` | Caddy |
 
-`deploy/render-caddy.awk` переносит секретные строки из live Caddy по placeholder-ам. Значения
-никогда не добавляются в репозиторий. Для изменения человека: сгенерировать bcrypt через
-`caddy hash-password`, изменить соответствующий live snippet и reload Caddy.
+`deploy/render-caddy.awk` переносит service keys из live Caddy по placeholder-ам. Значения никогда
+не добавляются в репозиторий. Human admins создаются и изменяются во вкладке «Админы»; новые и
+rotated passwords хешируются Argon2id. Одноразовый cutover importer переносит старые Caddy bcrypt
+rows до reload и abort-ит cutover, если main-admin или CRM access не сохранён.

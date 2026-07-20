@@ -1,8 +1,12 @@
-# Общий набор админов (bcrypt: Q/R/M/…) для панельных сайтов. Один placeholder, чтобы
-# install-caddy.sh переносил учётки один раз, а vhost'ы подключали их через import.
-(panel_admins) {
-	basic_auth {
-		<BASIC_AUTH_USERS_PLACEHOLDER>
+# Central database-backed admin authentication. The auth service checks the original hostname
+# against each account's domain grants and returns a trusted actor identity for downstream audit.
+(managed_admin_auth) {
+	request_header -X-Admin-Actor
+	request_header -X-Admin-Account-Id
+	forward_auth 127.0.0.1:8791 {
+		uri /v1/internal/admin-auth/verify
+		header_up X-Admin-Domain {host}
+		copy_headers X-Admin-Actor X-Admin-Account-Id
 	}
 }
 
@@ -108,7 +112,7 @@ mail.apitoken.sale, autodiscover.apitoken.sale, autoconfig.apitoken.sale {
 # Private editorial workspace. Human access and same-origin API calls share the panel admins;
 # the commerce admin key stays server-side. The app also emits noindex headers as defence in depth.
 content-studio.apitoken.sale {
-	import panel_admins
+	import managed_admin_auth
 	handle /v1/* {
 		import commerce_admin_backend
 	}
@@ -119,7 +123,7 @@ content-studio.apitoken.sale {
 
 # Unified administration site for commerce, engine capacity, partner accounts and CRM visibility.
 admin.apitoken.sale {
-	import panel_admins
+	import managed_admin_auth
 	@admin_data path /overview /capacity /metrics /subs
 	handle @admin_data {
 		reverse_proxy 127.0.0.1:8787 127.0.0.1:8788 {
@@ -147,7 +151,8 @@ admin.apitoken.sale {
 			max_fails 1
 			unhealthy_status 503
 			header_up x-admin-key "<ADMIN_COMMERCIAL_KEY_PLACEHOLDER>"
-			header_up x-admin-actor {http.auth.user.id}
+			header_up x-admin-actor {header.X-Admin-Actor}
+			header_up x-admin-account-id {header.X-Admin-Account-Id}
 		}
 	}
 	handle_path /partner-admin/* {
@@ -164,9 +169,9 @@ admin.apitoken.sale {
 			health_status 2xx
 			fail_duration 5s
 			max_fails 1
-				unhealthy_status 503
-			}
+			unhealthy_status 503
 		}
+	}
 }
 
 # Support console (Chatwoot) + Telegram webhook ingress. Chatwoot слушает 127.0.0.1:3010
@@ -218,35 +223,25 @@ sales.apitoken.sale {
 	redir https://partners.apitoken.sale{uri} permanent
 }
 
-# CRM-портал (отдельный продукт «CRM & Parsing»). Вход по СВОИМ учёткам (Q_Sales/R_Sales/M_Sales) —
-# panel_admins сюда НЕ импортируем: эти логины дают доступ ТОЛЬКО к CRM, а админы панели сюда
-# автоматически не входят. Первичная вставка учёток — руками в живой конфиг (см. CRM_PORTAL.md);
-# до вставки install-caddy.sh рендерит locked-заглушку (user "disabled" со случайным паролем).
-(crm_admins) {
-	basic_auth {
-		<CRM_ADMIN_USERS_PLACEHOLDER>
-	}
-}
-
 crm.apitoken.sale {
-	# Ингест для парсеров — МИМО basic_auth людей: авторизация ключом x-crm-ingest-key в crm-api.
+	# Parser ingest bypasses human admin auth and remains protected by x-crm-ingest-key in crm-api.
 	handle /v1/ingest/* {
 		reverse_proxy 127.0.0.1:3400
 	}
 	handle /v1/* {
-		import crm_admins
+		import managed_admin_auth
 		reverse_proxy 127.0.0.1:3400
 	}
 	handle {
-		import crm_admins
+		import managed_admin_auth
 		reverse_proxy 127.0.0.1:3300
 	}
 }
 
-# Отдельный админ-сайт партнёрки. Вход — тот же basic_auth (Q/R/M), что и у центральной админки.
+# Separate partner admin application; content is unchanged and access is centrally domain-scoped.
 # Caddy инжектит x-sales-admin-key на /v1/* server-side → страница /admin не просит ключ.
 admin.partners.apitoken.sale {
-	import panel_admins
+	import managed_admin_auth
 	handle /v1/* {
 		import sales_admin_backend
 	}

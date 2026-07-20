@@ -89,15 +89,20 @@ fi
 grep -Fq 'admin.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'admin.partners.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'crm.apitoken.sale {' "$ROOT/deploy/Caddyfile"
+grep -Fq 'content-studio.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'partners.panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'crm.panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
-[[ $(grep -Fc 'import panel_admins' "$ROOT/deploy/Caddyfile") -ge 3 ]]
+[[ $(grep -Fc 'import managed_admin_auth' "$ROOT/deploy/Caddyfile") -ge 5 ]]
+grep -Fq 'forward_auth 127.0.0.1:8791' "$ROOT/deploy/Caddyfile"
+grep -Fq 'header_up X-Admin-Domain {host}' "$ROOT/deploy/Caddyfile"
 grep -Fq '@commerce_admin path /admin/*' "$ROOT/deploy/Caddyfile"
 grep -Fq 'handle_path /partner-admin/*' "$ROOT/deploy/Caddyfile"
-grep -Fq 'header_up x-admin-actor {http.auth.user.id}' "$ROOT/deploy/Caddyfile"
+grep -Fq 'header_up x-admin-actor {header.X-Admin-Actor}' "$ROOT/deploy/Caddyfile"
+grep -Fq 'header_up x-admin-account-id {header.X-Admin-Account-Id}' "$ROOT/deploy/Caddyfile"
 grep -Fq 'final_verify_admin_panel' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'require_retired_vhost panel.apitoken.sale' "$ROOT/deploy/watchdog.sh"
+grep -Fq 'require_admin_auth_vhost content-studio.apitoken.sale' "$ROOT/deploy/watchdog.sh"
 grep -Fq "''|000|404|421" "$ROOT/deploy/watchdog.sh"
 grep -Fq 'data-admin-panel-version="3"' "$ROOT/crates/server/src/admin-panel.html"
 [[ ! -e "$ROOT/crates/server/src/panel.html" ]]
@@ -106,8 +111,8 @@ render_live="$TEMP/live.Caddyfile"
 rendered_once="$TEMP/rendered-once.Caddyfile"
 rendered_twice="$TEMP/rendered-twice.Caddyfile"
 {
-  printf '(panel_admins) {\n\tbasic_auth {\n\t\tadmin $2y$test-hash\n\t}\n}\n'
-  printf '(crm_admins) {\n\tbasic_auth {\n\t\tcrm $2y$crm-test-hash\n\t}\n}\n'
+  printf '(panel_admins) {\n\tbasic_auth {\n\t\tadmin $2y$12$GkwhyxjgFuLvnJRxUDO5POFWymIfHL9NKsdtLIHo3lvrXIhvPaO2q\n\t}\n}\n'
+  printf '(crm_admins) {\n\tbasic_auth {\n\t\tcrm $2a$14$GkwhyxjgFuLvnJRxUDO5POFWymIfHL9NKsdtLIHo3lvrXIhvPaO2q\n\t}\n}\n'
   printf 'admin.apitoken.sale {\n'
   printf '\theader_up x-api-key "test-control-secret"\n'
   printf '\theader_up x-admin-key "test-commerce-secret"\n'
@@ -116,8 +121,9 @@ rendered_twice="$TEMP/rendered-twice.Caddyfile"
 awk -f "$ROOT/deploy/render-caddy.awk" "$render_live" "$ROOT/deploy/Caddyfile" >"$rendered_once"
 awk -f "$ROOT/deploy/render-caddy.awk" "$rendered_once" "$ROOT/deploy/Caddyfile" >"$rendered_twice"
 for rendered in "$rendered_once" "$rendered_twice"; do
-  [[ $(grep -Fc 'admin $2y$test-hash' "$rendered") == 1 ]]
-  [[ $(grep -Fc 'crm $2y$crm-test-hash' "$rendered") == 1 ]]
+  ! grep -Fq 'basic_auth' "$rendered"
+  ! grep -Fq '$2y$' "$rendered"
+  grep -Fq 'forward_auth 127.0.0.1:8791' "$rendered"
   [[ $(grep -Fc 'header_up x-api-key "test-control-secret"' "$rendered") == 1 ]]
   [[ $(grep -Fc 'header_up x-admin-key "test-commerce-secret"' "$rendered") == 2 ]]
   [[ $(grep -Fc 'header_up x-sales-admin-key "test-sales-secret"' "$rendered") == 1 ]]
@@ -125,6 +131,18 @@ for rendered in "$rendered_once" "$rendered_twice"; do
     wd_die "rendered Caddy fixture retained a secret placeholder"
   fi
 done
+
+legacy_export="$TEMP/legacy-admins.json"
+awk -f "$ROOT/deploy/export-legacy-admins.awk" "$render_live" >"$legacy_export"
+node - "$legacy_export" <<'NODE'
+const fs = require("node:fs");
+const value = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+if (value.accounts.length !== 2) process.exit(1);
+const panel = value.accounts.find((account) => account.username === "admin");
+const crm = value.accounts.find((account) => account.username === "crm");
+if (!panel || panel.domains.length !== 3 || !panel.domains.includes("admin.apitoken.sale")) process.exit(1);
+if (!crm || crm.domains.length !== 1 || crm.domains[0] !== "crm.apitoken.sale") process.exit(1);
+NODE
 
 watchdog_writable_paths=$(sed -n 's/^ReadWritePaths=//p' "$ROOT/systemd/apitoken-deploy-watchdog.service")
 for required_path in \

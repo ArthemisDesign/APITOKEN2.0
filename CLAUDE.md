@@ -18,10 +18,12 @@
 
 Внутренняя AI-CRM и парсинг (`crm.apitoken.sale`) больше НЕ живут в этом монорепо — они
 переехали в самостоятельный продукт **`github.com/Q666Q666Q/CRM-Parcing`** (пакеты `@crm/*`).
-Здесь остаётся только ИНФРА-роутинг под общий прод-сервер: блоки `(crm_admins)` и
-`crm.apitoken.sale` в `deploy/Caddyfile`, `CRM_ADMIN_USERS_PLACEHOLDER` в
-`deploy/install-caddy.sh`, юниты `systemd/apitoken-crm-*.service`. Их держим тут, потому что Caddy
-и watchdog на сервере централизованы в этом репозитории; НЕ удалять (снесёт прод-роут CRM).
+Здесь остаётся только ИНФРА-роутинг под общий прод-сервер: `crm.apitoken.sale` и общий
+`managed_admin_auth` в `deploy/Caddyfile`, а также юниты `systemd/apitoken-crm-*.service`.
+Human credentials и domain grants хранятся в commerce PostgreSQL и проверяются внутренним
+`apps/api` auth endpoint; CRM ingest по-прежнему обходит human auth и проверяет свой ingest key.
+Этот роутинг держим тут, потому что Caddy и watchdog на сервере централизованы в этом репозитории;
+НЕ удалять (снесёт прод-роут CRM).
 Код/доки/парсеры CRM правим в новом репозитории, деплой CRM — ручной (его `deploy/DEPLOY.md`),
 вне watchdog монорепо. Аккаунт движка `crm-parsing` и ключ «CRM & Parsing» — общие (виден в панели).
 

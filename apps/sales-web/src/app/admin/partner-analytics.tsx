@@ -16,7 +16,7 @@ import {
 } from "@/lib/api";
 import { Badge, Button, Card, EmptyState, Input, Loading, Notice, StatusBadge, Table } from "@/components/ui";
 
-// На admin.partners Caddy инжектит x-sales-admin-key после basic_auth → ключ пустой ("").
+// На admin.partners Caddy инжектит x-sales-admin-key после managed admin auth → ключ пустой ("").
 function adminHeaders(key: string): Record<string, string> {
   return key ? { "x-sales-admin-key": key } : {};
 }
