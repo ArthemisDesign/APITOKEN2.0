@@ -21,6 +21,7 @@ import {
 } from "@/components/ui";
 import { EarningsChart } from "@/components/earnings-chart";
 import { ReferralDiscountCard } from "@/components/referral-discount-card";
+import { CommissionFormula } from "@/components/commission-formula";
 import { useI18n } from "@/components/i18n";
 
 export default function OverviewPage() {
@@ -101,6 +102,8 @@ export default function OverviewPage() {
       </div>
 
       <div className="stack">
+        <CommissionFormula commissionBps={overview.commissionBps} />
+
         <Card
           title={t("Your referral link", "Ваша реферальная ссылка")}
           sub={t(

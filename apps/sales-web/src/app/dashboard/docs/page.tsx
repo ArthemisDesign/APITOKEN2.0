@@ -5,6 +5,7 @@
 
 import { formatBps } from "@/lib/api";
 import { usePartner } from "@/components/partner-context";
+import { CommissionFormula } from "@/components/commission-formula";
 import { useI18n } from "@/components/i18n";
 import { Card } from "@/components/ui";
 
@@ -69,6 +70,9 @@ export default function DocsPage() {
         </Card>
 
         <Card title={t("3. How commission is calculated", "3. Как считается комиссия")}>
+          <div style={{ marginBottom: 16 }}>
+            <CommissionFormula commissionBps={partner.commissionBps} />
+          </div>
           <ul className="how-list">
             <li>
               {t(
