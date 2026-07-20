@@ -32,14 +32,14 @@ export class InternalAdminAuthController {
   constructor(private readonly accounts: AdminAccountsService) {}
 
   @Get("verify")
+  @UseGuards(AdminGuard)
   @Header("Cache-Control", "no-store")
   async verify(
     @Headers("authorization") authorization: string | undefined,
     @Headers("x-admin-domain") domain: string | undefined,
-    @Headers("host") host: string | undefined,
     @Res({ passthrough: true }) response: ReplyLike,
   ): Promise<Record<string, unknown>> {
-    if (!isManagedAdminDomain(domain) || normalizedHost(host) !== domain) {
+    if (!isManagedAdminDomain(domain)) {
       throw new UnauthorizedException("admin authentication required");
     }
     const account = await this.accounts.authenticate({ authorization, domain });
@@ -69,8 +69,4 @@ export class InternalAdminAuthController {
       throw error;
     }
   }
-}
-
-function normalizedHost(value: string | undefined): string {
-  return (value ?? "").trim().toLowerCase().replace(/:\d+$/, "");
 }

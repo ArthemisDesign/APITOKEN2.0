@@ -51,13 +51,12 @@ describe("managed admin HTTP contract", () => {
 });
 
 describe("internal managed-admin verifier", () => {
-  it("rejects an untrusted host before checking credentials", async () => {
+  it("rejects an unknown managed domain before checking credentials", async () => {
     const fake = fakeAccounts();
     const controller = new InternalAdminAuthController(fake.service);
     const reply = { header: vi.fn() };
     await expect(controller.verify(
       "Basic abc",
-      "admin.apitoken.sale",
       "backend.apitoken.sale",
       reply,
     )).rejects.toBeInstanceOf(UnauthorizedException);
@@ -71,7 +70,6 @@ describe("internal managed-admin verifier", () => {
     fake.authenticate.mockResolvedValue({ id: accountId, username: "main-admin" });
     await expect(controller.verify(
       "Basic abc",
-      "admin.apitoken.sale",
       "admin.apitoken.sale",
       reply,
     )).resolves.toEqual({ authenticated: true });

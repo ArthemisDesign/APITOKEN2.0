@@ -10,6 +10,12 @@ NR == FNR {
   admin_control_used++
   next
 }
+/<ADMIN_AUTH_KEY_PLACEHOLDER>/ {
+  if (commadmin == "") exit 48
+  print commadmin
+  authkey_used++
+  next
+}
 /<COMMERCIAL_ADMIN_KEY_PLACEHOLDER>/ {
   if (commadmin == "") exit 44
   print commadmin
@@ -30,6 +36,6 @@ NR == FNR {
 }
 { print }
 END {
-  if (admin_control_used != 1 || commadmin_used != 1 ||
+  if (admin_control_used != 1 || authkey_used != 1 || commadmin_used != 1 ||
       admin_commadmin_used != 1 || salesadmin_used != 1) exit 43
 }

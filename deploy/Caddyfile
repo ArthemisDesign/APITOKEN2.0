@@ -5,7 +5,9 @@
 	request_header -X-Admin-Account-Id
 	forward_auth 127.0.0.1:8791 {
 		uri /v1/internal/admin-auth/verify
-		header_up X-Admin-Domain {host}
+		header_up Host 127.0.0.1:8791
+		header_up X-Admin-Key "<ADMIN_AUTH_KEY_PLACEHOLDER>"
+		header_up X-Admin-Domain {http.request.host}
 		copy_headers X-Admin-Actor X-Admin-Account-Id
 	}
 }

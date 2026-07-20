@@ -95,7 +95,9 @@ grep -Fq 'content-studio.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'crm.panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 [[ $(grep -Fc 'import managed_admin_auth' "$ROOT/deploy/Caddyfile") -ge 5 ]]
 grep -Fq 'forward_auth 127.0.0.1:8791' "$ROOT/deploy/Caddyfile"
-grep -Fq 'header_up X-Admin-Domain {host}' "$ROOT/deploy/Caddyfile"
+grep -Fq 'header_up Host 127.0.0.1:8791' "$ROOT/deploy/Caddyfile"
+grep -Fq 'header_up X-Admin-Key "<ADMIN_AUTH_KEY_PLACEHOLDER>"' "$ROOT/deploy/Caddyfile"
+grep -Fq 'header_up X-Admin-Domain {http.request.host}' "$ROOT/deploy/Caddyfile"
 grep -Fq '@commerce_admin path /admin/*' "$ROOT/deploy/Caddyfile"
 grep -Fq 'handle_path /partner-admin/*' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up x-admin-actor {header.X-Admin-Actor}' "$ROOT/deploy/Caddyfile"
@@ -126,6 +128,7 @@ for rendered in "$rendered_once" "$rendered_twice"; do
   grep -Fq 'forward_auth 127.0.0.1:8791' "$rendered"
   [[ $(grep -Fc 'header_up x-api-key "test-control-secret"' "$rendered") == 1 ]]
   [[ $(grep -Fc 'header_up x-admin-key "test-commerce-secret"' "$rendered") == 2 ]]
+  [[ $(grep -Fc 'header_up X-Admin-Key "test-commerce-secret"' "$rendered") == 1 ]]
   [[ $(grep -Fc 'header_up x-sales-admin-key "test-sales-secret"' "$rendered") == 1 ]]
   if grep -Eq '<[A-Z_]*PLACEHOLDER>' "$rendered"; then
     wd_die "rendered Caddy fixture retained a secret placeholder"
