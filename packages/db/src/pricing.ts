@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   B2C_PRICING_TIERS,
+  paymentProviderSchema,
   type EngineLedgerEntry,
 } from "@claude-api/contracts";
 import type { PoolClient } from "pg";
@@ -26,10 +27,16 @@ export function utcMonthStart(value = new Date()): Date {
   return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), 1));
 }
 
-// «Бесплатные» кредиты движка по префиксу ref: welcome-бонус и промо. Реальные депозиты
-// (platega:/cryptomus:) и прочее — платные (с них идёт реф-комиссия). null ref → платный.
+// РЕАЛЬНЫМИ (комиссионируемыми) считаем ТОЛЬКО депозиты через платёжные провайдеры:
+// engine ref = `${provider}:${providerPaymentId}` (см. payments.ts). Это whitelist, а не blacklist:
+// welcome-бонус (`signup-bonus:`), промо (`promo:`), админ-кредит (`admin-credit:`), пустой или
+// неизвестный ref — «бесплатное», комиссия по нему НЕ идёт. Так любой новый нереальный источник
+// денег по умолчанию бесплатный, и мы никогда случайно не выплатим комиссию с подарка.
+const REAL_MONEY_REF_PREFIXES: readonly string[] = paymentProviderSchema.options.map((p) => `${p}:`);
+
 export function isFreeCreditRef(ref: string | null | undefined): boolean {
-  return typeof ref === "string" && (ref.startsWith("signup-bonus:") || ref.startsWith("promo:"));
+  if (typeof ref !== "string") return true;
+  return !REAL_MONEY_REF_PREFIXES.some((prefix) => ref.startsWith(prefix));
 }
 
 /** Тир по НАКОПЛЕННОЙ сумме пополнений (`spendThresholdNano` = порог пополнения). 0 = none (<$100). */
@@ -288,6 +295,15 @@ export async function applyPricingLedgerPage(
   entries: readonly EngineLedgerEntry[],
 ): Promise<void> {
   if (entries.length === 0) return;
+  // Free-first требует ХРОНОЛОГИЧЕСКОГО порядка: топап должен фондировать последующие charge.
+  // Леджер-id движка монотонны по времени создания, поэтому сортируем страницу по id по возрастанию —
+  // иначе charge, пришедший в массиве раньше своего фондирующего топапа, завысил бы real_funded (и,
+  // как следствие, реф-комиссию). Это же делает продвижение курсора детерминированным.
+  const ordered = [...entries].sort((a, b) => {
+    const da = BigInt(a.id);
+    const db = BigInt(b.id);
+    return da < db ? -1 : da > db ? 1 : 0;
+  });
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
@@ -312,7 +328,7 @@ export async function applyPricingLedgerPage(
     let freeBalanceChanged = false;
     let lastLedgerId = 0n;
     let insertedCharge = false;
-    for (const entry of entries) {
+    for (const entry of ordered) {
       const ledgerId = BigInt(entry.id);
       if (ledgerId > lastLedgerId) lastLedgerId = ledgerId;
       if (ledgerId <= startCursor) continue; // уже обработано ранее — не двоим эффекты
@@ -323,6 +339,11 @@ export async function applyPricingLedgerPage(
         freeBalanceChanged = true;
         continue;
       }
+      // Только положительные charge создают real_funded/комиссию. Отрицательные `adjust`
+      // (рефанд/чарджбэк/админ-клобэк) здесь НЕ откатывают уже начисленную комиссию — это
+      // осознанный остаток (полный клобэк требует негативного real_funded по всей цепочке фида
+      // и завязан на engine-компенсацию рефанда). Игнорирование безопасно по направлению: оно
+      // может только НЕ доплатить, но не переплачивает.
       if (entry.kind !== "charge" || amount <= 0n) continue;
       const occurredAt = new Date(Number(BigInt(entry.ts)) * 1000);
       // Бесплатное тратится первым: real_funded — часть, покрытая реальными деньгами.
