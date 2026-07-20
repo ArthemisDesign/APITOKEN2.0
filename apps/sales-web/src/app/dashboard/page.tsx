@@ -68,8 +68,8 @@ export default function OverviewPage() {
         {t("You earn ", "Вы получаете ")}
         <strong>{formatBps(overview.commissionBps)}</strong>
         {t(
-          " of what your referrals actually spend on apitoken.sale — their real paid API usage, after their own discount. Not their top-ups, not list price. Paid out in USDT (BEP-20).",
-          " от того, что ваши рефералы реально тратят на apitoken.sale — их фактически оплаченного использования API, после их собственной скидки. Не от пополнений и не от прайс-листа. Выплаты в USDT (BEP-20).",
+          " of what your referrals actually spend on API usage — the amount charged after their own discount, and only the part paid with real money (free bonus/promo balance is spent first and never counts). Not their top-ups, not list price. Paid out in USDT (BEP-20).",
+          " от того, что ваши рефералы реально тратят на использование API — от суммы, списанной после их скидки, и только с части, оплаченной реальными деньгами (бесплатный бонус/промо тратится первым и не считается). Не от пополнений и не от прайс-листа. Выплаты в USDT (BEP-20).",
         )}
       </p>
 

@@ -3,6 +3,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   ForbiddenException,
   Get,
   Header,
@@ -37,6 +38,7 @@ import {
   setPartnerReferralDiscount,
   createDiscountLink,
   listDiscountLinks,
+  deleteDiscountLink,
   DiscountLinkCollisionError,
   DiscountLinkNotAllowedError,
   InviteCodeCollisionError,
@@ -349,6 +351,7 @@ export class PartnerController {
         code: l.code,
         url: `${origin}/?ref=${l.code}`,
         discountBps: l.discountBps,
+        note: l.note,
         consumed: l.consumedByCommerceUserId !== null,
         consumedAt: l.consumedAt?.toISOString() ?? null,
         createdAt: l.createdAt.toISOString(),
@@ -363,7 +366,7 @@ export class PartnerController {
       throw new ForbiddenException("referral discount is not enabled for this account");
     }
     const parsed = createDiscountLinkSchema.safeParse(body ?? {});
-    if (!parsed.success) throw new BadRequestException("invalid discount (0–90%)");
+    if (!parsed.success) throw new BadRequestException("invalid discount (1–90%)");
     const origin = new URL(this.config.get("PUBLIC_MAIN_SITE_URL", { infer: true })).origin;
     for (let attempt = 0; ; attempt += 1) {
       try {
@@ -371,14 +374,24 @@ export class PartnerController {
           partnerId: current.partner.id,
           code: generateCode(12),
           discountBps: parsed.data.discountBps,
+          note: parsed.data.note ?? null,
         });
-        return { id: link.id, code: link.code, url: `${origin}/?ref=${link.code}`, discountBps: link.discountBps };
+        return { id: link.id, code: link.code, url: `${origin}/?ref=${link.code}`, discountBps: link.discountBps, note: link.note };
       } catch (error) {
         if (error instanceof DiscountLinkCollisionError && attempt < 5) continue;
         if (error instanceof DiscountLinkNotAllowedError) throw new ForbiddenException(error.message);
         throw error;
       }
     }
+  }
+
+  @Delete("discount-links/:id")
+  @HttpCode(200)
+  async deleteLink(@CurrentAuth() current: RequestAuth, @Param("id") id: string): Promise<unknown> {
+    if (!/^[0-9a-f-]{36}$/.test(id)) throw new BadRequestException("invalid link id");
+    const ok = await deleteDiscountLink(this.database, current.partner.id, id);
+    if (!ok) throw new NotFoundException("discount link not found");
+    return { deleted: true };
   }
 
   @Post("promo-codes/:id/disable")

@@ -99,6 +99,7 @@ export const createPromoSchema = z.object({
 // Партнёр выпускает персональную одноразовую ссылку со скидкой (≤90%, ≤ своего максимума).
 export const createDiscountLinkSchema = z.object({
   discountBps: referralDiscountBpsSchema,
+  note: z.string().trim().max(120).optional(),
 });
 
 // Админ включает промо партнёру и задаёт лимиты (номинал в USD, количество кодов).

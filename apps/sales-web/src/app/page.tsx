@@ -15,8 +15,8 @@ export default function Landing() {
         <Brand />
         <p>
           {t(
-            "Invite-only partner program for apitoken.sale — earn a share of what your referrals actually spend on API usage.",
-            "Партнёрская программа apitoken.sale по приглашениям — зарабатывайте долю от того, что ваши рефералы реально тратят на использование API.",
+            "Invite-only partner program for apitoken.sale. You earn a share of what your referrals actually spend on the API — their real, after-discount usage, only the part paid with real money (not top-ups, not free bonus/promo credit).",
+            "Партнёрская программа apitoken.sale по приглашениям. Вы зарабатываете долю от того, что ваши рефералы реально тратят на API — их фактического расхода после скидки, только с части, оплаченной реальными деньгами (не с пополнений и не с бесплатного бонуса/промо).",
           )}
         </p>
         <div className="gate-actions">

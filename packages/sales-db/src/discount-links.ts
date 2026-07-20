@@ -7,6 +7,7 @@ export interface DiscountLink {
   id: string;
   code: string;
   discountBps: number;
+  note: string | null;
   consumedByCommerceUserId: string | null;
   consumedAt: Date | null;
   createdAt: Date;
@@ -19,6 +20,7 @@ interface DiscountLinkRow {
   id: string;
   code: string;
   discount_bps: number;
+  note: string | null;
   consumed_by_commerce_user_id: string | null;
   consumed_at: Date | null;
   created_at: Date;
@@ -29,11 +31,14 @@ function mapLink(row: DiscountLinkRow): DiscountLink {
     id: row.id,
     code: row.code,
     discountBps: row.discount_bps,
+    note: row.note,
     consumedByCommerceUserId: row.consumed_by_commerce_user_id,
     consumedAt: row.consumed_at,
     createdAt: row.created_at,
   };
 }
+
+const LINK_COLUMNS = "id, code, discount_bps, note, consumed_by_commerce_user_id, consumed_at, created_at";
 
 /**
  * Партнёр выпускает персональную ссылку со скидкой. Требует право (`referral_discount_enabled`) и
@@ -43,9 +48,10 @@ export async function createDiscountLink(database: SalesDatabase, input: {
   partnerId: string;
   code: string;
   discountBps: number;
+  note?: string | null;
 }): Promise<DiscountLink> {
-  if (input.discountBps < 0 || input.discountBps > 9000) {
-    throw new DiscountLinkNotAllowedError("discount must be between 0 and 90%");
+  if (input.discountBps <= 0 || input.discountBps > 9000) {
+    throw new DiscountLinkNotAllowedError("discount must be between 1 and 90%");
   }
   const client = await database.pool.connect();
   try {
@@ -66,10 +72,10 @@ export async function createDiscountLink(database: SalesDatabase, input: {
     let inserted;
     try {
       inserted = await client.query<DiscountLinkRow>(
-        `INSERT INTO partner_discount_links (partner_id, code, discount_bps)
-         VALUES ($1, $2, $3)
-         RETURNING id, code, discount_bps, consumed_by_commerce_user_id, consumed_at, created_at`,
-        [input.partnerId, input.code, input.discountBps],
+        `INSERT INTO partner_discount_links (partner_id, code, discount_bps, note)
+         VALUES ($1, $2, $3, $4)
+         RETURNING ${LINK_COLUMNS}`,
+        [input.partnerId, input.code, input.discountBps, input.note?.trim() || null],
       );
     } catch (error) {
       await client.query("ROLLBACK");
@@ -93,11 +99,19 @@ export async function createDiscountLink(database: SalesDatabase, input: {
 
 export async function listDiscountLinks(database: SalesDatabase, partnerId: string): Promise<DiscountLink[]> {
   const result = await database.pool.query<DiscountLinkRow>(
-    `SELECT id, code, discount_bps, consumed_by_commerce_user_id, consumed_at, created_at
-     FROM partner_discount_links WHERE partner_id = $1 ORDER BY created_at DESC`,
+    `SELECT ${LINK_COLUMNS} FROM partner_discount_links WHERE partner_id = $1 ORDER BY created_at DESC`,
     [partnerId],
   );
   return result.rows.map(mapLink);
+}
+
+/** Удаляет персональную ссылку партнёра (только свою). Возвращает true, если удалено. */
+export async function deleteDiscountLink(database: SalesDatabase, partnerId: string, linkId: string): Promise<boolean> {
+  const result = await database.pool.query(
+    "DELETE FROM partner_discount_links WHERE id = $1 AND partner_id = $2",
+    [linkId, partnerId],
+  );
+  return (result.rowCount ?? 0) > 0;
 }
 
 export interface ResolvedReferralCode {

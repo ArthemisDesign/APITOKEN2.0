@@ -209,6 +209,8 @@ export const partnerDiscountLinks = pgTable("partner_discount_links", {
   partnerId: uuid("partner_id").notNull().references(() => partners.id, { onDelete: "restrict" }),
   code: text("code").notNull(),
   discountBps: integer("discount_bps").notNull(),
+  // Подпись «для кого» — необязательная заметка партнёра.
+  note: text("note"),
   consumedByCommerceUserId: uuid("consumed_by_commerce_user_id"),
   consumedAt: timestamp("consumed_at", { withTimezone: true }),
   createdAt,

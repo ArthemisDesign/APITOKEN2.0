@@ -40,8 +40,8 @@ export default function ReferralsPage() {
       <h1 className="page-title">{t("Referrals", "Рефералы")}</h1>
       <p className="page-sub">
         {t(
-          "Users attributed to you. Identities are masked for their privacy. “Spend” is what each user has actually paid for API usage (after their own discount) — the base your commission is calculated from.",
-          "Пользователи, закреплённые за вами. Личности скрыты в целях конфиденциальности. «Расход» — это то, что каждый пользователь фактически заплатил за использование API (после своей скидки), и именно от этой суммы считается ваша комиссия.",
+          "Users attributed to you. Identities are masked for their privacy. “Spend” is their real-money API usage — the amount charged after their own discount, excluding anything paid from free bonus/promo balance. That is the base your commission is calculated from.",
+          "Пользователи, закреплённые за вами. Личности скрыты в целях конфиденциальности. «Расход» — это их реальные траты на API: сумма, списанная после их скидки, без учёта оплаченного из бесплатного бонуса/промо. Именно от неё считается ваша комиссия.",
         )}
       </p>
       {error ? <Notice kind="error">{error}</Notice> : null}

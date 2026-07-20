@@ -67,8 +67,8 @@ export default function SettingsPage() {
         <Card
           title={t("Your commission terms", "Ваши условия комиссии")}
           sub={t(
-            "You earn this share of what your referrals actually pay for API usage on apitoken.sale — their real spend after their own discount, not their top-ups or list price. Rate set individually by the program.",
-            "Вы получаете эту долю от того, что ваши рефералы реально платят за использование API на apitoken.sale — их фактического расхода после их собственной скидки, а не от пополнений или цены по прайс-листу. Ставка устанавливается программой индивидуально.",
+            "You earn this share of what your referrals actually spend on API usage — the amount charged after their own discount, and only the part paid with real money (free bonus/promo balance is spent first and never counts). Not their top-ups, not list price. Rate set individually by the program.",
+            "Вы получаете эту долю от того, что ваши рефералы реально тратят на использование API — от суммы, списанной после их скидки, и только с части, оплаченной реальными деньгами (бесплатный бонус/промо тратится первым и не считается). Не от пополнений и не от прайс-листа. Ставка устанавливается программой индивидуально.",
           )}
         >
           <div className="stat-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)", marginBottom: 0 }}>
