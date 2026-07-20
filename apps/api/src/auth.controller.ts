@@ -198,7 +198,7 @@ export class AuthController {
   async logout(@CurrentAuth() current: RequestAuth, @Res({ passthrough: true }) reply: ReplyLike): Promise<void> {
     await this.auth.logout(current.sessionId, current.user.id);
     reply.header("set-cookie", clearCookie());
-    reply.header("clear-site-data", '"cache", "cookies", "storage"');
+    reply.header("clear-site-data", '"cookies", "storage"');
   }
 
   @Get("providers")
