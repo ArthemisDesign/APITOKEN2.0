@@ -88,13 +88,18 @@ describe("content AI generation", () => {
 
   it("does not add a canonical placeholder to the first-party blog draft", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      content: [{ type: "text", text: JSON.stringify({ title: "Result", excerpt: "Summary", bodyMarkdown: "# Analysis\n\nSources." }) }],
+      content: [{ type: "text", text: JSON.stringify({
+        title: "Result", excerpt: "Summary",
+        bodyMarkdown: "# Analysis\n\nUseful content.\n\nFull analysis: {{CANONICAL_URL}}\n\n## Sources\n\nOriginal source.",
+      }) }],
     }), { status: 200, headers: { "content-type": "application/json" } })));
     const draft = await createService().generateDraft({
       brief: "Verified fact", sourceUrl: "https://example.com/source", profileKey: "blog",
       profileName: "apiToken.sale blog", rules, locale: "en",
     });
     expect(draft.bodyMarkdown).not.toContain("{{CANONICAL_URL}}");
+    expect(draft.bodyMarkdown).toContain("Useful content.");
+    expect(draft.bodyMarkdown).toContain("## Sources");
   });
 });
 

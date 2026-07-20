@@ -105,7 +105,10 @@ section. For every external version, include {{CANONICAL_URL}} exactly once as t
 apiToken.sale analysis; it is not the original source.`, {
       sourceUrl: input.sourceUrl, verifiedBrief: input.brief, platform: input.profileKey,
     });
-    if (input.profileKey !== "blog" && !document.bodyMarkdown.includes("{{CANONICAL_URL}}")) {
+    if (input.profileKey === "blog") {
+      document.bodyMarkdown = withoutCanonicalPlaceholder(document.bodyMarkdown);
+      if (!document.bodyMarkdown) throw new ServiceUnavailableException("AI returned an invalid blog draft");
+    } else if (!document.bodyMarkdown.includes("{{CANONICAL_URL}}")) {
       document.bodyMarkdown = `${document.bodyMarkdown}\n\nFull analysis: {{CANONICAL_URL}}`;
     }
     return document;
@@ -258,6 +261,14 @@ function parseJsonObject(text: string): unknown | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function withoutCanonicalPlaceholder(markdown: string): string {
+  return markdown.split(/\r?\n/)
+    .filter((line) => !line.includes("{{CANONICAL_URL}}"))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function languageName(locale: ContentLocale): string {
