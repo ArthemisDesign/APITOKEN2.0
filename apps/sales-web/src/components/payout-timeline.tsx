@@ -76,7 +76,7 @@ export function PayoutTimeline({ state }: { state: PeriodState }) {
 
   const laneWinEnd = (l: Lane) => l.end + (lockDays + windowDays) * DAY;
   const axisStart = Math.min(now, ...lanes.map((l) => l.start));
-  const axisEnd = Math.max(now, ...lanes.map(laneWinEnd)) + DAY;
+  const axisEnd = Math.max(now, ...lanes.map(laneWinEnd));
   const axisSpan = axisEnd - axisStart || 1;
   const leftPct = (ms: number) => `${Math.max(0, Math.min(100, ((ms - axisStart) / axisSpan) * 100))}%`;
   const widthPct = (a: number, b: number) => `${Math.max(0, ((b - a) / axisSpan) * 100)}%`;
@@ -143,7 +143,7 @@ export function PayoutTimeline({ state }: { state: PeriodState }) {
                   </span>
                   <span style={{ color: phaseColor[ph], fontWeight: 600 }}>{t(phaseText[ph]![0], phaseText[ph]![1])}</span>
                 </div>
-                <div style={{ position: "relative", height: 24, background: "var(--surface-2, rgba(127,127,127,0.06))", borderRadius: 6 }}>
+                <div style={{ position: "relative", height: 24 }}>
                   {segs(l).map((s, i) => (
                     <div
                       key={i}
