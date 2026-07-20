@@ -85,11 +85,11 @@ export function ReferralDiscountCard({ enabled, currentBps }: { enabled: boolean
       )}
     >
       {error ? <Notice kind="error">{error}</Notice> : null}
-      <div style={{ display: "grid", gridTemplateColumns: "120px 1fr auto", gap: 12, alignItems: "flex-end" }}>
-        <Field label={t("Discount %", "Скидка %")} hint={t(`1–${maxPct}%`, `1–${maxPct}%`)}>
+      <div style={{ display: "grid", gridTemplateColumns: "130px 1fr auto", gap: 12, alignItems: "end" }}>
+        <Field label={t(`Discount % (1–${maxPct})`, `Скидка % (1–${maxPct})`)}>
           <Input value={pct} onChange={(e) => setPct(e.target.value.replace(/[^\d.]/g, ""))} inputMode="decimal" placeholder="—" />
         </Field>
-        <Field label={t("For whom (optional)", "Для кого (необязательно)")} hint={t("A note so you remember", "Заметка, чтобы не путаться")}>
+        <Field label={t("For whom (optional)", "Для кого (необязательно)")}>
           <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder={t("e.g. client Acme", "напр. клиент Acme")} maxLength={120} />
         </Field>
         <Button onClick={issue} loading={busy}>
