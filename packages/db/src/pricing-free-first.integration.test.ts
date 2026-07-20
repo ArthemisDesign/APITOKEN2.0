@@ -41,9 +41,10 @@ describe.runIf(Boolean(connectionString))("applyPricingLedgerPage free-first acc
   });
 
   function entry(id: number, kind: "topup" | "charge" | "adjust", amountNano: bigint, ref: string | null): EngineLedgerEntry {
+    // EngineLedgerEntry.id / .ts are string-typed (nonNegativeIntegerSchema .transform(String)).
     return {
-      id, kind, amount_nano: amountNano.toString(), amount: amountNano.toString(),
-      key_masked: null, ref, balance_after_nano: null, ts: 1_700_000_000 + id, model: null,
+      id: String(id), kind, amount_nano: amountNano.toString(), amount: amountNano.toString(),
+      key_masked: null, ref, balance_after_nano: null, ts: String(1_700_000_000 + id), model: null,
     };
   }
   async function realFundedTotal(): Promise<bigint> {
