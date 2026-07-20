@@ -120,6 +120,13 @@
       "when": 1784780000000,
       "tag": "0016_content_studio",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1784870000000,
+      "tag": "0017_slim_blindfold",
+      "breakpoints": true
     }
   ]
 }

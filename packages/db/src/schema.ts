@@ -8,6 +8,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -421,6 +422,41 @@ export const auditLog = pgTable("audit_log", {
   metadata: jsonb("metadata").notNull().default({}),
   createdAt,
 }, (table) => [index("audit_log_target_idx").on(table.targetType, table.targetId, table.createdAt)]);
+
+export const adminAccounts = pgTable("admin_accounts", {
+  id: uuid("id").primaryKey(),
+  username: text("username").notNull(),
+  passwordHash: text("password_hash").notNull(),
+  status: text("status").notNull().default("active"),
+  passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  uniqueIndex("admin_accounts_username_lower_uidx").on(sql`lower(${table.username})`),
+  check("admin_accounts_username_check", sql`
+    ${table.username} = btrim(${table.username})
+    AND length(${table.username}) BETWEEN 1 AND 80
+    AND ${table.username} ~ '^[A-Za-z0-9._@-]+$'
+  `),
+  check("admin_accounts_password_hash_check", sql`length(${table.passwordHash}) BETWEEN 20 AND 512`),
+  check("admin_accounts_status_check", sql`${table.status} IN ('active', 'disabled')`),
+]);
+
+export const adminAccountDomains = pgTable("admin_account_domains", {
+  adminAccountId: uuid("admin_account_id").notNull()
+    .references(() => adminAccounts.id, { onDelete: "cascade" }),
+  domain: text("domain").notNull(),
+  createdAt,
+}, (table) => [
+  primaryKey({ columns: [table.adminAccountId, table.domain] }),
+  index("admin_account_domains_domain_idx").on(table.domain, table.adminAccountId),
+  check("admin_account_domains_domain_check", sql`${table.domain} IN (
+    'admin.apitoken.sale',
+    'admin.partners.apitoken.sale',
+    'crm.apitoken.sale',
+    'content-studio.apitoken.sale'
+  )`),
+]);
 
 export const contentProjects = pgTable("content_projects", {
   id: uuid("id").primaryKey(),
