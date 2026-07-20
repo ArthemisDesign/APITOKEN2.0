@@ -1,0 +1,25 @@
+[Unit]
+Description=API Token Sale internal CRM API (crm-api, port 3400)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+EnvironmentFile=/etc/apitoken/crm.env
+WorkingDirectory=/opt/apitoken/crm-releases/current/apps/crm-api
+ExecStart=/usr/bin/node --enable-source-maps /opt/apitoken/crm-releases/current/apps/crm-api/dist/main.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

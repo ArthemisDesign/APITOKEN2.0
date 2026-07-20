@@ -180,8 +180,18 @@ sales.apitoken.sale {
 }
 
 crm.panel.apitoken.sale {
-	import crm_admins
-	reverse_proxy 127.0.0.1:3300
+	# Ингест для парсеров — МИМО basic_auth людей: авторизация ключом x-crm-ingest-key в crm-api.
+	handle /v1/ingest/* {
+		reverse_proxy 127.0.0.1:3400
+	}
+	handle /v1/* {
+		import crm_admins
+		reverse_proxy 127.0.0.1:3400
+	}
+	handle {
+		import crm_admins
+		reverse_proxy 127.0.0.1:3300
+	}
 }
 
 # Отдельный админ-сайт партнёрки. Вход — тот же basic_auth (Q/R/M), что и у панели.
