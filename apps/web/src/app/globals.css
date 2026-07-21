@@ -587,6 +587,7 @@ footer{padding:64px 0 40px;border-bottom:0}
 .auth-card{width:100%;max-width:420px;border:1px solid var(--line);border-radius:10px;background:var(--bg-card);padding:36px 32px}
 .auth-card h1{font-size:26px;margin-bottom:8px}
 .auth-card .sub{color:var(--txt-3);font-size:14px;margin-bottom:26px}
+.auth-session-check{text-align:center}
 .auth-bonus{display:flex;align-items:flex-start;gap:11px;margin:-6px 0 22px;padding:13px 14px;
   border:1px solid var(--accent-line);border-radius:8px;background:var(--accent-soft);color:var(--txt)}
 .auth-bonus-mark{display:grid;place-items:center;width:25px;height:25px;flex:none;border-radius:50%;

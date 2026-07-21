@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { usesAuthShell, usesPublicSiteShell } from "./persistent-route-shell";
+import { usesAuthEntryGuard, usesAuthShell, usesPublicSiteShell } from "./persistent-route-shell";
 
 describe("persistent route shell routing", () => {
   it("wraps every marketing and public-information page", () => {
@@ -26,5 +26,14 @@ describe("persistent route shell routing", () => {
       expect(usesAuthShell(path), path).toBe(true);
     }
     expect(usesAuthShell("/ru/auth/callback")).toBe(false);
+  });
+
+  it("checks authentication before rendering every login and registration route", () => {
+    for (const path of ["/login", "/register", "/ru/login", "/ru/register"]) {
+      expect(usesAuthEntryGuard(path), path).toBe(true);
+    }
+    for (const path of ["/forgot-password", "/verify-email", "/auth/callback", "/dashboard"]) {
+      expect(usesAuthEntryGuard(path), path).toBe(false);
+    }
   });
 });

@@ -3,6 +3,7 @@
 import { usePathname } from "next/navigation";
 import { useEffect, type ReactNode } from "react";
 import { withoutRussianPrefix } from "@/lib/locale-routes";
+import { AuthEntryGuard } from "./auth-entry-guard";
 import { AuthShell } from "./auth-shell";
 import { MotionEffects } from "./motion-effects";
 import { SiteFooter, SiteHeader } from "./site-chrome";
@@ -39,6 +40,11 @@ export function usesAuthShell(pathname: string): boolean {
   return authPaths.has(withoutRussianPrefix(pathname)) || pathname.startsWith("/auth/");
 }
 
+export function usesAuthEntryGuard(pathname: string): boolean {
+  const path = withoutRussianPrefix(pathname);
+  return path === "/login" || path === "/register";
+}
+
 export function PersistentRouteShell({ children }: Readonly<{ children: ReactNode }>) {
   const pathname = usePathname();
   useEffect(() => {
@@ -58,6 +64,15 @@ export function PersistentRouteShell({ children }: Readonly<{ children: ReactNod
     </>;
   }
 
-  if (usesAuthShell(pathname)) return <AuthShell>{children}</AuthShell>;
+  if (usesAuthShell(pathname)) {
+    const language = pathname === "/ru" || pathname.startsWith("/ru/") ? "ru" : "en";
+    return (
+      <AuthShell>
+        {usesAuthEntryGuard(pathname)
+          ? <AuthEntryGuard key={pathname} dashboardHref={language === "ru" ? "/ru/dashboard" : "/dashboard"} language={language}>{children}</AuthEntryGuard>
+          : children}
+      </AuthShell>
+    );
+  }
   return children;
 }

@@ -47,7 +47,8 @@ describe("completed Next.js migration", () => {
     expect(shell).toContain("<SiteHeader home={home} />");
     expect(shell).toContain("<SiteFooter full />");
     expect(shell).toContain("<MotionEffects />");
-    expect(shell).toContain("<AuthShell>{children}</AuthShell>");
+    expect(shell).toContain("<AuthShell>");
+    expect(shell).toContain("<AuthEntryGuard");
     for (const route of ["/", "/models", "/integrations", "/plans", "/privacy", "/terms", "/support"]) expect(shell).toContain(`"${route}"`);
     for (const route of ["/login", "/register", "/forgot-password", "/reset-password", "/verify-email"]) expect(shell).toContain(`"${route}"`);
     expect(complianceLayout).toContain("<main>{children}</main>");
