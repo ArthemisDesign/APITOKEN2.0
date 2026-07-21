@@ -294,18 +294,26 @@ function systemVerdict(overview){const gap=overview.recommend.gap,h5=overview.he
   return{kind:'ok',title:'Запаса ёмкости хватает',detail:'headroom 5h '+ratio(h5)+' / 7d '+ratio(h7)+' · подписок '+total+', цель ×'+target+' выдержана'}}
 async function system(){const result=await Promise.all([api('/overview'),api('/capacity').catch(()=>null),api('/subs').catch(()=>null)]),overview=result[0],capacity=result[1],subs=result[2];
   const supply=overview.supply,health=supply.health,demand=overview.demand,recommend=overview.recommend,verdict=systemVerdict(overview),mult=overview.ref_mult;
+  // Мёртвые токены (401/403): /capacity даёт per-sub `dead` + маскированный email (первые 4 симв.+…).
+  // Кросс-ссылаемся в таблицу жизненного цикла (полный email) по префиксу, чтобы «active»-статус из БД
+  // не скрывал живую смерть токена. `capOpen` сохраняет раскрытие секции через 3с-перерисовку innerHTML.
+  const deadSet=new Set((capacity?.per_sub||[]).filter(s=>s.dead).map(s=>String(s.email).replace('…','')));
+  const isDead=email=>{const e=String(email);for(const p of deadSet){if(p&&e.startsWith(p))return true}return false};
+  const deadCount=(capacity?.dead)||0;
+  const capOpen=document.getElementById('cap-details')?.open?' open':'';
   const horizonCards=[['7d','7 дней','7d'],['1d','1 день',null],['5h','5 часов (burst)','5h']].map(item=>{const available=supply.avail_usd[item[0]]||0,head=item[2]?overview.headroom[item[2]]:null;
     return card('доступно · '+item[1],money(available),'клиентам ×'+mult+' = '+money(available*mult)+(item[2]?' · запас '+ratio(head):''))}).join('');
-  const liveRows=(capacity?.per_sub||[]).map(item=>'<tr><td class="left"><span class="dot '+(item.cooling?'bad':String(item.status).includes('warn')?'warn':'')+'"></span> '+esc(item.email)+
-    (item.calibrated?'':' <span class="muted">(калибровка)</span>')+'</td><td>'+capacityBar(item.util5h)+'</td><td>'+duration(item.reset5h_in)+'</td><td>'+capacityBar(item.util7d)+
+  const liveRows=(capacity?.per_sub||[]).map(item=>'<tr><td class="left"><span class="dot '+(item.dead||item.cooling?'bad':String(item.status).includes('warn')?'warn':'')+'"></span> '+esc(item.email)+
+    (item.dead?' '+pill('мёртв (401)','bad'):'')+(item.calibrated?'':' <span class="muted">(калибровка)</span>')+'</td><td>'+capacityBar(item.util5h)+'</td><td>'+duration(item.reset5h_in)+'</td><td>'+capacityBar(item.util7d)+
     '</td><td>'+duration(item.reset7d_in)+'</td><td><b>'+money(item.rem5h_usd)+'</b></td><td><b>'+money(item.rem7d_usd)+'</b></td><td><b>'+money(item.avail_7d_usd)+'</b></td></tr>').join('');
-  const lifecycleRows=(subs?.subs||[]).map(item=>{const days=Number(item.sub_days_left||0),dayKind=days<=0?'bad':days<7?'warn':'ok';return '<tr><td class="left"><b>'+esc(item.email)+
-    '</b></td><td>'+pill(item.status,item.status==='active'?'ok':'warn')+'</td><td>'+esc(String(item.added||'').slice(0,10)||'—')+'</td><td><span class="dot '+dayKind+'"></span>'+(days>0?days+' дн.':'—')+
+  const lifecycleRows=(subs?.subs||[]).map(item=>{const days=Number(item.sub_days_left||0),dayKind=days<=0?'bad':days<7?'warn':'ok',dead=isDead(item.email);return '<tr><td class="left"><b>'+esc(item.email)+
+    '</b></td><td>'+(dead?pill('токен мёртв (401)','bad'):pill(item.status,item.status==='active'?'ok':'warn'))+'</td><td>'+esc(String(item.added||'').slice(0,10)||'—')+'</td><td><span class="dot '+dayKind+'"></span>'+(days>0?days+' дн.':'—')+
     '</td><td><b>'+(Number(item.peak_cap5h_usd)>0?money(item.peak_cap5h_usd):'—')+'</b></td><td><b>'+(Number(item.peak_cap7d_usd)>0?money(item.peak_cap7d_usd):'—')+
     '</b></td><td class="left">'+esc(item.proxy_host||'—')+'</td><td>'+esc(String(item.proxy_expire||'').slice(0,10)||'—')+'</td></tr>'}).join('');
   const accountRows=(overview.accounts||[]).map(account=>'<tr><td class="left muted">'+esc(account.account)+'</td><td class="left"><b>'+esc(account.handle||'—')+'</b></td><td>'+
     pill(account.status,account.status==='active'?'ok':'bad')+'</td><td><b>'+money(account.balance_usd)+'</b></td><td><b>'+money(account.spent_usd)+'</b></td><td>×'+esc(account.mult)+'</td></tr>').join('');
-  const body='<div class="banner '+verdict.kind+'"><span class="dot"></span><div><b>'+esc(verdict.title)+'</b><span class="muted">'+esc(verdict.detail)+'</span></div></div>'+
+  const body=(deadCount?'<div class="banner bad"><span class="dot"></span><div><b>'+deadCount+' подписок с МЁРТВЫМ токеном (401)</b><span class="muted">ёмкость молча урезана — нужен свежий OAuth-токен (setup-token) на этот аккаунт</span></div></div>':'')+
+    '<div class="banner '+verdict.kind+'"><span class="dot"></span><div><b>'+esc(verdict.title)+'</b><span class="muted">'+esc(verdict.detail)+'</span></div></div>'+
     '<h2>Предложение — real-API USD</h2><div class="cards">'+horizonCards+card('балансы клиентов',money(demand.balance_usd),'резерв '+money(demand.reserved_usd)+' · coverage 7d ×'+overview.coverage['7d'])+
     '</div><h2>Флот и спрос</h2><div class="cards">'+card('подписки',overview.subs,health.healthy+' живых · '+health.cooling+' cooling')+
     card('утилизация средняя',Math.round(supply.util['7d']*100)+'%','7d · '+Math.round(supply.util['5h']*100)+'% за 5h')+
@@ -313,7 +321,7 @@ async function system(){const result=await Promise.all([api('/overview'),api('/c
     card('рекомендация',recommend.gap>0?'+'+recommend.gap:'ok','нужно '+recommend.subs_needed+' подписок · есть '+overview.subs)+'</div>'+
     '<h2>Жизненный цикл подписок'+(subs?' · замена через '+subs.lifetime_days+'д от добавления':'')+'</h2><div class="table"><div class="scroll"><table><thead><tr><th class="left">подписка</th><th>статус</th><th>добавлена</th><th>живёт ещё</th><th>пик 5h</th><th>пик 7d</th><th class="left">прокси</th><th>прокси до</th></tr></thead><tbody>'+
     (lifecycleRows||empty(8))+'</tbody></table></div></div><h2>Аккаунты движка · '+(overview.accounts||[]).length+'</h2><div class="table"><div class="scroll"><table><thead><tr><th class="left">account</th><th class="left">handle</th><th>статус</th><th>баланс</th><th>потрачено</th><th>множитель</th></tr></thead><tbody>'+
-    (accountRows||empty(6))+'</tbody></table></div></div><details><summary>Ёмкость по подпискам · '+overview.subs+' (live util/cooling/reset)</summary><div class="table"><div class="scroll"><table><thead><tr><th class="left">подписка</th><th>5h</th><th>сброс</th><th>7d</th><th>сброс</th><th>остаток 5h</th><th>остаток 7d</th><th>доступно 7d</th></tr></thead><tbody>'+
+    (accountRows||empty(6))+'</tbody></table></div></div><details id="cap-details"'+capOpen+'><summary>Ёмкость по подпискам · '+overview.subs+(deadCount?' · '+deadCount+' мёртвых':'')+' (live util/cooling/reset)</summary><div class="table"><div class="scroll"><table><thead><tr><th class="left">подписка</th><th>5h</th><th>сброс</th><th>7d</th><th>сброс</th><th>остаток 5h</th><th>остаток 7d</th><th>доступно 7d</th></tr></thead><tbody>'+
     (liveRows||empty(8))+'</tbody></table></div></div></details><footer>Обновление каждые 3с · «доступно» учитывает сбросы окон · «запас» = доступно ÷ текущее потребление · клиентам ×'+mult+'</footer>';
   page('система',body,pill(overview.subs+' подписок',verdict.kind))}
 

@@ -191,8 +191,11 @@ async fn probe(app: &AppState, sub: &Sub) {
                     );
                     app.pool.cool(&sub.email, secs);
                 }
-                401 | 403 => app.pool.cool(&sub.email, 900), // мёртвый токен, обнаружен на простое
-                _ => {}
+                401 | 403 => {
+                    app.pool.cool(&sub.email, 900);            // мёртвый токен, обнаружен на простое
+                    app.pool.set_auth_dead(&sub.email, true);  // ЯВНО помечаем dead → видно в /capacity/панели
+                }
+                _ => app.pool.set_auth_dead(&sub.email, false), // чистый probe прошёл → токен жив
             }
         }
         None => app.pool.set_util(&sub.email, None, None, None, None, None), // записать попытку (backoff)

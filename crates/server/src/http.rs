@@ -186,11 +186,14 @@ fn capacity_value(app: &AppState) -> serde_json::Value {
             "avail_1h_usd": round(c.avail_1h_usd), "avail_5h_usd": round(c.avail_5h_usd),
             "avail_1d_usd": round(c.avail_1d_usd), "avail_7d_usd": round(c.avail_7d_usd),
             "status": c.status, "cooling": c.cooling,
+            "dead": c.auth_dead,   // токен отвергнут Anthropic (401/403) → «мёртвая» подписка
         })
     }).collect();
+    let dead_count = caps.iter().filter(|c| c.auth_dead).count();
     json!({
         "now": pool::now(),
         "subs": subs.len(),
+        "dead": dead_count,             // >0 → есть мёртвые токены (401/403): ёмкость молча урезана
         "calibrated": all_calibrated,   // false → хотя бы одна подписка ещё на прайоре
         "available_usd": {              // суммарно по флоту, USD real-API-эквивалента
             "next_1h": round(a1), "next_5h": round(a5), "next_1d": round(a1d), "next_7d": round(a7d),

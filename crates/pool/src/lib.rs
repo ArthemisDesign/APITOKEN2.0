@@ -185,6 +185,7 @@ pub struct Cap {
     pub avail_7d_usd: f64,
     pub status: String,
     pub cooling: bool,
+    pub auth_dead: bool,    // токен отвергнут Anthropic (401/403) — «мёртвая» подписка
 }
 
 #[derive(Clone, Default, Debug)]
@@ -199,6 +200,10 @@ pub struct Live {
     /// `polled_ts` (тот пассивный сбор держит свежим на каждом ответе), иначе флуд 401/403 гнал бы
     /// непрерывный probe-трафик. Эфемерный, не персистится.
     pub last_probe_req: i64,
+    /// Токен отвергнут Anthropic (401/403 на probe) — «мёртвая» подписка. Эфемерно (НЕ персистится):
+    /// поллер переопределит на следующем цикле. Нужен, чтобы `/capacity`/панель ЯВНО показывали смерть
+    /// токена — иначе мёртвая подписка молча половинит ёмкость и видна лишь как 429 у клиентов.
+    pub auth_dead: bool,
     pub reset5h: i64,
     pub reset7d: i64,
     /// Сколько запросов сейчас «в полёте» на этой подписке (мягкий счётчик для веерного
@@ -525,6 +530,15 @@ impl Pool {
         let l = g.live.entry(email.to_string()).or_default();
         if l.cooling_until <= now() { l.cooling_until = 0; }
         l.last_used = now();
+        l.auth_dead = false; // живой 2xx-трафик доказал, что токен рабочий → снять «мёртвость»
+    }
+
+    /// Пометить/снять «мёртвость» токена (401/403 на чистом probe поллера = токен отвергнут Anthropic).
+    /// Ставит поллер на probe-401/403, снимает — на успешном probe/2xx. Эфемерно (не персистится).
+    pub fn set_auth_dead(&self, email: &str, dead: bool) {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let l = g.live.entry(email.to_string()).or_default();
+        l.auth_dead = dead;
     }
 
     /// Пометить подписку для НЕМЕДЛЕННОГО liveness-probe поллером (сброс `polled_ts` в 0 → `next_probe_at`
@@ -689,6 +703,7 @@ impl Pool {
                 avail_7d_usd: avail(604800),
                 status: l.status.clone(),
                 cooling: l.cooling_until > now,
+                auth_dead: l.auth_dead,
             }
         }).collect()
     }
