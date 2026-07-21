@@ -9,6 +9,7 @@ IMAGE=${WATCHDOG_POSTGRES_IMAGE:-postgres:18-alpine}
 PORT=${WATCHDOG_POSTGRES_PORT:-55432}
 USER_NAME=watchdog
 DATABASE=watchdog
+ENGINE_DATABASE=watchdog_engine
 PASSWORD=watchdog-local-disposable-only
 
 die() {
@@ -33,6 +34,11 @@ case "${1:-}" in
 
     for _ in $(seq 1 60); do
       if docker exec "$NAME" pg_isready -U "$USER_NAME" -d "$DATABASE" >/dev/null 2>&1; then
+        if ! docker exec "$NAME" createdb -U "$USER_NAME" "$ENGINE_DATABASE" >/dev/null 2>&1; then
+          docker logs --tail 100 "$NAME" >&2 || true
+          docker rm -f "$NAME" >/dev/null 2>&1 || true
+          die "could not create the disposable engine PostgreSQL database"
+        fi
         printf 'postgresql://%s:%s@127.0.0.1:%s/%s\n' "$USER_NAME" "$PASSWORD" "$PORT" "$DATABASE"
         exit 0
       fi
@@ -42,6 +48,15 @@ case "${1:-}" in
     docker rm -f "$NAME" >/dev/null 2>&1 || true
     die "disposable PostgreSQL did not become ready"
     ;;
+  engine-dsn)
+    if docker inspect -f '{{ index .Config.Labels "apitoken.watchdog" }}' "$NAME" 2>/dev/null \
+      | grep -qx 'test-database' \
+      && docker exec "$NAME" pg_isready -U "$USER_NAME" -d "$ENGINE_DATABASE" >/dev/null 2>&1; then
+      printf 'postgresql://%s:%s@127.0.0.1:%s/%s\n' "$USER_NAME" "$PASSWORD" "$PORT" "$ENGINE_DATABASE"
+      exit 0
+    fi
+    die "disposable engine PostgreSQL is not ready"
+    ;;
   stop)
     if docker inspect -f '{{ index .Config.Labels "apitoken.watchdog" }}' "$NAME" 2>/dev/null \
       | grep -qx 'test-database'; then
@@ -49,6 +64,6 @@ case "${1:-}" in
     fi
     ;;
   *)
-    die "usage: $0 start|stop"
+    die "usage: $0 start|engine-dsn|stop"
     ;;
 esac

@@ -145,7 +145,7 @@ run_as_ci() {
 }
 
 prepare_and_test_candidate() {
-  local sha=$1 candidate marker dsn manifest digest tree
+  local sha=$1 candidate marker dsn engine_dsn manifest digest tree
   candidate=$(candidate_for "$sha")
   marker=$(marker_for "$sha")
 
@@ -180,8 +180,10 @@ prepare_and_test_candidate() {
   run_as_ci env TEST_DATABASE_URL="$dsn" pnpm --dir "$candidate" \
     -r --workspace-concurrency=1 --if-present test
 
-  wd_log "running all Rust workspace tests"
-  run_as_ci cargo test --locked --workspace --manifest-path "$candidate/Cargo.toml"
+  engine_dsn=$(sudo -n "$TEST_DB_HELPER" engine-dsn)
+  wd_log "running all Rust workspace tests against separate disposable PostgreSQL"
+  run_as_ci env CLAUDE_API_TEST_DATABASE_URL="$engine_dsn" \
+    cargo test --locked --workspace --manifest-path "$candidate/Cargo.toml"
 
   wd_log "checking tracked whitespace and shell syntax"
   if [[ -n ${PROCESSED_SHA:-} && $PROCESSED_SHA != "$sha" ]]; then
