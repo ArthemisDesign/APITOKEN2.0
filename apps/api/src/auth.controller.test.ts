@@ -20,6 +20,37 @@ function currentAuth(userId = "alice-id"): RequestAuth {
   return { sessionId: "session-id", user };
 }
 
+describe("customer password length", () => {
+  it("accepts eight characters and rejects seven for registration and reset", async () => {
+    const register = vi.fn().mockResolvedValue({ user: currentAuth().user, session: null });
+    const resetPassword = vi.fn().mockResolvedValue(undefined);
+    const controller = new AuthController(
+      { register, resetPassword } as unknown as AuthService,
+      new ConfigService<Environment, true>({} as Environment),
+    );
+    const request = { headers: {} };
+    const reply = { header: vi.fn() };
+    const token = "A".repeat(43);
+
+    await expect(controller.register({
+      email: "alice@example.com",
+      password: "12345678",
+    }, request, reply)).resolves.toEqual({
+      user: currentAuth().user,
+      verificationRequired: true,
+    });
+    await expect(controller.register({
+      email: "alice@example.com",
+      password: "1234567",
+    }, request, reply)).rejects.toBeInstanceOf(BadRequestException);
+    await expect(controller.resetPassword({ token, password: "12345678" })).resolves.toBeUndefined();
+    await expect(controller.resetPassword({ token, password: "1234567" })).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(register).toHaveBeenCalledTimes(1);
+    expect(resetPassword).toHaveBeenCalledWith(token, "12345678");
+  });
+});
+
 describe("authenticated profile updates", () => {
   it("derives the target user from the authenticated session and trims the name", async () => {
     const updateProfile = vi.fn().mockResolvedValue({ ...currentAuth().user, displayName: "Alice Studio" });

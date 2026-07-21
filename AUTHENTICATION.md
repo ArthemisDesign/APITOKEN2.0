@@ -3,7 +3,7 @@
 ## Implemented email/password flow
 
 ```text
-POST /v1/auth/register  {"email":"user@example.com","password":"at least 12 characters","inviteToken"?:"..."}
+POST /v1/auth/register  {"email":"user@example.com","password":"at least 8 characters","inviteToken"?:"..."}
 POST /v1/auth/login     {"email":"user@example.com","password":"..."}
 POST /v1/auth/email/verify      {"token":"..."}
 POST /v1/auth/email/resend      {"email":"user@example.com"}

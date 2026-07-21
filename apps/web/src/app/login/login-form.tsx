@@ -37,7 +37,7 @@ export function LoginForm() {
     <WelcomeBonusNotice />
     <form onSubmit={submit} noValidate>
       <div className="field"><label htmlFor="email">{t("f_email")}</label><input id="email" name="email" type="email" autoComplete="email" placeholder="you@company.com" required /></div>
-      <div className="field"><label htmlFor="password">{t("f_password")}</label><input id="password" name="password" type="password" autoComplete="current-password" placeholder="••••••••••••" minLength={12} required /></div>
+      <div className="field"><label htmlFor="password">{t("f_password")}</label><input id="password" name="password" type="password" autoComplete="current-password" placeholder="••••••••" minLength={8} required /></div>
       <div className="auth-helper"><Link href="/forgot-password">Forgot password?</Link></div>
       <button className="btn btn-primary" type="submit" disabled={busy}>{busy ? "…" : t("login_btn")}</button>
       <Feedback message={message} success={success} />

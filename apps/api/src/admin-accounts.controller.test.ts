@@ -8,6 +8,22 @@ import { InternalAdminAuthController } from "./internal-admin-auth.controller.js
 const accountId = "11111111-1111-4111-8111-111111111111";
 
 describe("managed admin HTTP contract", () => {
+  it("accepts an eight-character password and rejects seven characters", async () => {
+    const fake = fakeAccounts();
+    const controller = new AdminAccountsController(fake.service);
+    fake.changePassword.mockResolvedValue({ changed_self: false });
+
+    await expect(controller.changePassword(accountId, {
+      password: "12345678",
+      reason: "scheduled credential rotation",
+    })).resolves.toEqual({ changed_self: false });
+    await expect(controller.changePassword(accountId, {
+      password: "1234567",
+      reason: "scheduled credential rotation",
+    })).rejects.toBeInstanceOf(BadRequestException);
+    expect(fake.changePassword).toHaveBeenCalledTimes(1);
+  });
+
   it("validates usernames, strong passwords, domains, reasons, and IDs", async () => {
     const fake = fakeAccounts();
     const controller = new AdminAccountsController(fake.service);

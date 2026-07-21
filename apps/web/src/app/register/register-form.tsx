@@ -24,7 +24,7 @@ export function RegisterForm() {
     const data = new FormData(event.currentTarget);
     const email = String(data.get("email") ?? "").trim();
     const password = String(data.get("password") ?? "");
-    if (password.length < 12) { setMessage("Password must be at least 12 characters"); setBusy(false); return; }
+    if (password.length < 8) { setMessage("Password must be at least 8 characters"); setBusy(false); return; }
     trackProductEvent("Sign Up Submitted", { method: "password", invited: Boolean(inviteToken), referred: Boolean(storedReferralCode()) });
     try {
       const result = await api.register({ email, password, inviteToken, referralCode: storedReferralCode() });
@@ -43,7 +43,7 @@ export function RegisterForm() {
     <WelcomeBonusNotice />
     <form onSubmit={submit} noValidate>
       <div className="field"><label htmlFor="email">{t("f_email")}</label><input id="email" name="email" type="email" autoComplete="email" placeholder="you@company.com" required /></div>
-      <div className="field"><label htmlFor="password">{t("f_password")}</label><input id="password" name="password" type="password" autoComplete="new-password" placeholder="minimum 12 characters" minLength={12} maxLength={128} required /></div>
+      <div className="field"><label htmlFor="password">{t("f_password")}</label><input id="password" name="password" type="password" autoComplete="new-password" placeholder="minimum 8 characters" minLength={8} maxLength={128} required /></div>
       <button className="btn btn-primary" type="submit" disabled={busy}>{busy ? "…" : t("reg_btn")}</button>
       <Feedback message={message} />
     </form>

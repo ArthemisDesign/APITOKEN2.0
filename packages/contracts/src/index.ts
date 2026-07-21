@@ -166,7 +166,7 @@ export interface CheckoutView {
 }
 
 export const authEmailSchema = z.string().trim().toLowerCase().email().max(254);
-export const authPasswordSchema = z.string().min(12).max(128)
+export const authPasswordSchema = z.string().min(8).max(128)
   .refine((value) => Buffer.byteLength(value, "utf8") <= 256, "password is too long");
 
 const credentialsSchema = z.object({
