@@ -228,7 +228,7 @@ export function Dashboard() {
         {error && <div className="banner banner-error">{error} <button className="btn btn-ghost btn-sm" onClick={load}>{copy.retry}</button></div>}
         {logoutError && <div className="banner banner-error">{logoutError} <button className="btn btn-ghost btn-sm" disabled={loggingOut} onClick={logout}>{copy.retry}</button></div>}
         {section === "overview" && <Overview account={account} keys={activeKeys} open={open} />}
-        {section === "keys" && <ApiKeys keys={keys} onChanged={load} open={open} user={user} />}
+        {section === "keys" && <ApiKeys keys={keys} onChanged={load} user={user} />}
         {section === "credits" && <Credits account={account} ledger={ledger} />}
         {section === "usage" && <Usage account={account} ledger={ledger} usage={usage} />}
         {section === "support" && <SupportPanel />}
@@ -350,7 +350,7 @@ function PricingBanner({ account }: { account: AccountView }) {
   </section>;
 }
 
-function ApiKeys({ keys, onChanged, open, user }: { keys: ApiKeyView[]; onChanged(): Promise<void>; open(section: Section): void; user: AuthUser }) {
+function ApiKeys({ keys, onChanged, user }: { keys: ApiKeyView[]; onChanged(): Promise<void>; user: AuthUser }) {
   const copy = useDashboardCopy();
   const { language } = useI18n();
   const localCopy = localDashboardCopy[language];
@@ -609,8 +609,7 @@ function ApiKeys({ keys, onChanged, open, user }: { keys: ApiKeyView[]; onChange
 
   return <section className="panel keys-panel">
     <div className="keys-heading-row"><PageHeading eyebrow={copy.keysEyebrow} title={copy.keysTitle} subtitle={copy.keysSubtitle} /><button ref={createTriggerRef} className="btn btn-primary keys-create-button" type="button" onClick={() => { setCreateOpen(true); setError(null); }}>＋ {localCopy.createKey}</button></div>
-    {issued && <aside className="card secret-card" aria-labelledby="issued-key-title"><div className="secret-head"><h2 id="issued-key-title">{copy.copyNewKeyNow}</h2><span className="chip">{copy.shownOnce}</span></div><p className="secret-warning">{copy.rawSecretWarning}</p><div className="secret-key-field"><code>{issued}</code><CopyButton value={issued} className="secret-copy" /></div><div className="secret-actions"><Link className="btn btn-primary btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{copy.openInDocs}</Link><button className="btn btn-ghost btn-sm" onClick={() => open("support")}>{copy.keysHelpCta}</button><button className="btn btn-ghost btn-sm" onClick={() => setIssued(null)}>{copy.savedKey}</button></div></aside>}
-    <QuickConnectDock issuedKey={issued} />
+    <QuickConnectDock key={issued ? "with-key" : "without-key"} issuedKey={issued} onDismissKey={() => setIssued(null)} />
     {error && !createOpen && !policyTarget && !revokeTarget && <div className="banner banner-error" role="alert">{error}</div>}
 
     <section className="dsec keys-manager" aria-label={copy.keysTitle}>
@@ -643,7 +642,6 @@ function ApiKeys({ keys, onChanged, open, user }: { keys: ApiKeyView[]; onChange
         })}</tbody>
       </table></div>
 
-      <div className="keys-help"><div className="keys-help-txt"><b>{copy.keysHelpTitle}</b><span>{copy.keysHelpText}</span></div><Link className="btn btn-ghost btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{localCopy.openDocs} ↗</Link></div>
     </section>
 
     {createOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) closeCreate(); }}><form ref={createModalRef} className="key-modal" role="dialog" aria-modal="true" aria-labelledby="create-key-title" aria-describedby="create-key-description" tabIndex={-1} onSubmit={create}>
@@ -675,45 +673,39 @@ function ApiKeys({ keys, onChanged, open, user }: { keys: ApiKeyView[]; onChange
   </section>;
 }
 
-function QuickConnectDock({ issuedKey }: { issuedKey: string | null }) {
+function TerminalCommands({ commands }: { commands: string }) {
+  return <code>{commands.split("\n").map((command, index) => {
+    const assignmentEnd = command.indexOf("=") + 1;
+    const prefix = assignmentEnd > 0 ? command.slice(0, assignmentEnd) : command;
+    const value = assignmentEnd > 0 ? command.slice(assignmentEnd) : "";
+    return <span className="agent-terminal-line" key={`${index}-${command}`}>{prefix}{assignmentEnd > 0 && <wbr />}{value || "\u00a0"}</span>;
+  })}</code>;
+}
+
+function QuickConnectDock({ issuedKey, onDismissKey }: { issuedKey: string | null; onDismissKey(): void }) {
   const copy = useDashboardCopy();
   const { language } = useI18n();
+  const [expanded, setExpanded] = useState(Boolean(issuedKey));
   const handoff = buildClaudeAgentHandoff({ apiKey: issuedKey, docsUrl: DOCS_URL, language });
   const terminalCommands = buildClaudeCodeCommands(issuedKey);
 
-  return <aside className={`card agent-connect-dock${issuedKey ? " has-live-key" : ""}`} aria-labelledby="agent-connect-title">
-    <div className="agent-connect-main">
-      <span className="eyebrow">{copy.agentDockEyebrow}</span>
-      <h2 id="agent-connect-title">{copy.agentDockTitle}</h2>
-      <p>{copy.agentDockText}</p>
-    </div>
-    <div className="agent-connect-actions">
-      <Link className="btn btn-ghost btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{copy.agentDockDocs} ↗</Link>
-    </div>
-    <div className="agent-terminal" aria-label={copy.agentDockTerminal}>
-      <div className="agent-terminal-head"><span><i /><i /><i />{copy.agentDockTerminal}</span><CopyButton
-        value={terminalCommands}
-        className="agent-connect-copy"
-        label={issuedKey ? copy.agentDockCopyTerminal : copy.agentDockCopyTemplate}
-        copiedLabel={copy.agentDockTerminalCopied}
-      /></div>
-      <pre><code>{terminalCommands}</code></pre>
-    </div>
-    <ol className="agent-connect-steps">
-      <li><span>1</span><div><strong>{copy.agentDockStepOne}</strong><p>{copy.agentDockStepOneText}</p></div></li>
-      <li><span>2</span><div><strong>{copy.agentDockStepTwo}</strong><p>{copy.agentDockStepTwoText}</p></div></li>
-      <li><span>3</span><div><strong>{copy.agentDockStepThree}</strong><p>{copy.agentDockStepThreeText}</p></div></li>
-    </ol>
-    <div className="agent-handoff-option">
-      <div><span className="agent-handoff-icon" aria-hidden="true">↗</span><div><strong>{copy.agentDockAgentTitle}</strong><p>{copy.agentDockAgentText}</p></div></div>
-      <CopyButton
-        value={handoff}
-        className="agent-handoff-copy"
-        label={issuedKey ? copy.agentDockCopyWithKey : copy.agentDockCopy}
-        copiedLabel={copy.agentDockCopied}
-      />
-    </div>
-    <p className={`agent-connect-note${issuedKey ? " secret-note" : ""}`}><span aria-hidden="true">{issuedKey ? "⚠" : "ⓘ"}</span><span><strong>{issuedKey ? copy.agentDockKeyIncluded : copy.agentDockKeyPlaceholder}</strong> {issuedKey ? copy.agentDockSecretNote : copy.agentDockTemplateNote}</span></p>
+  return <aside className={`agent-connect-dock${expanded ? " is-open" : ""}${issuedKey ? " has-live-key" : ""}`} aria-labelledby="agent-connect-title">
+    <button className="agent-connect-summary" type="button" aria-expanded={expanded} aria-controls="agent-connect-body" onClick={() => setExpanded((current) => !current)}>
+      <span className="agent-connect-icon" aria-hidden="true">&gt;_</span>
+      <span className="agent-connect-main"><span>{copy.agentDockEyebrow}</span><strong id="agent-connect-title">{copy.agentDockTitle}</strong><small>{copy.agentDockText}</small></span>
+      <span className={`agent-connect-state${issuedKey ? " ready" : ""}`}><i />{issuedKey ? copy.agentDockKeyIncluded : copy.agentDockKeyPlaceholder}</span>
+      <span className="agent-connect-chevron" aria-hidden="true">⌄</span>
+    </button>
+    {expanded && <div className="agent-connect-body" id="agent-connect-body">
+      {issuedKey && <div className="agent-key-reveal secret-card"><div className="agent-key-reveal-head"><div><strong>{copy.copyNewKeyNow}</strong><span>{copy.rawSecretWarning}</span></div><span className="chip">{copy.shownOnce}</span></div><div className="secret-key-field"><code>{issuedKey}</code><CopyButton value={issuedKey} className="secret-copy" /></div></div>}
+      <div className="agent-connect-path" aria-label={copy.agentDockEyebrow}><span><b>1</b>{copy.agentDockStepOne}</span><i>→</i><span><b>2</b>{copy.agentDockStepTwo}</span><i>→</i><span><b>3</b>{copy.agentDockStepThree}</span></div>
+      <div className="agent-terminal" aria-label={copy.agentDockTerminal}>
+        <div className="agent-terminal-head"><span><i /><i /><i />{copy.agentDockTerminal}</span><CopyButton value={terminalCommands} className="agent-connect-copy" label={issuedKey ? copy.agentDockCopyTerminal : copy.agentDockCopyTemplate} copiedLabel={copy.agentDockTerminalCopied} /></div>
+        <pre><TerminalCommands commands={terminalCommands} /></pre>
+      </div>
+      <div className="agent-connect-footer"><div><strong>{copy.agentDockAgentTitle}</strong><span>{copy.agentDockAgentText}</span></div><div className="agent-connect-footer-actions"><CopyButton value={handoff} className="agent-handoff-copy" label={issuedKey ? copy.agentDockCopyWithKey : copy.agentDockCopy} copiedLabel={copy.agentDockCopied} /><Link className="btn btn-ghost btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{copy.agentDockDocs} ↗</Link>{issuedKey && <button type="button" className="btn btn-ghost btn-sm" onClick={onDismissKey}>{copy.savedKey}</button>}</div></div>
+      <p className={`agent-connect-note${issuedKey ? " secret-note" : ""}`}><span aria-hidden="true">{issuedKey ? "⚠" : "ⓘ"}</span><span>{issuedKey ? copy.agentDockSecretNote : copy.agentDockTemplateNote}</span></p>
+    </div>}
   </aside>;
 }
 
