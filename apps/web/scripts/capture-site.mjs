@@ -79,7 +79,7 @@ const dashboardCaptures = [
   ["dashboard-keys-russian-light", "/dashboard?view=keys", 1440, 1000, "light", "ru"],
   ["dashboard-keys-russian-dark", "/dashboard?view=keys", 1440, 1000, "dark", "ru"],
   ["dashboard-keys-create-light", "/dashboard?view=keys", 1440, 1000, "light", "en", "key-create-open"],
-  ["dashboard-keys-policy-light", "/dashboard?view=keys", 1440, 1000, "light", "en", "key-policy-open"],
+  ["dashboard-keys-edit-light", "/dashboard?view=keys", 1440, 1000, "light", "en", "key-edit-open"],
   ["dashboard-keys-revoke-dark", "/dashboard?view=keys", 1440, 1000, "dark", "en", "key-revoke-open"],
   ["dashboard-topup-light", "/dashboard?view=credits", 1440, 1000, "light"],
   ["dashboard-topup-dark", "/dashboard?view=credits", 1440, 1000, "dark"],
@@ -104,7 +104,7 @@ const dashboardCaptures = [
   ["dashboard-keys-mobile-russian-light", "/dashboard?view=keys", 390, 844, "light", "ru"],
   ["dashboard-keys-mobile-russian-dark", "/dashboard?view=keys", 390, 844, "dark", "ru"],
   ["dashboard-keys-create-mobile-dark", "/dashboard?view=keys", 390, 844, "dark", "en", "key-create-open"],
-  ["dashboard-keys-policy-mobile-russian-dark", "/dashboard?view=keys", 390, 844, "dark", "ru", "key-policy-open"],
+  ["dashboard-keys-edit-mobile-russian-dark", "/dashboard?view=keys", 390, 844, "dark", "ru", "key-edit-open"],
 ];
 
 const scopedCaptures = auditScope === "dashboard" ? dashboardCaptures :
@@ -293,6 +293,16 @@ const dashboardFixtureScript = `(() => {
       key.expiresAt = body.expiresAt;
       return json(key);
     }
+    const keyMatch = path.match(new RegExp("^/api-keys/([^/]+)$"));
+    if (keyMatch && (init.method || "GET").toUpperCase() === "PATCH") {
+      const body = JSON.parse(String(init.body || "{}"));
+      window.__auditLastApiKeyRename = body;
+      window.__auditApiKeyRenameCalls = (window.__auditApiKeyRenameCalls || 0) + 1;
+      const key = keys.find((candidate) => candidate.id === decodeURIComponent(keyMatch[1]));
+      if (!key) return json({ message: "API key not found" }, 404);
+      key.label = body.label;
+      return json(key);
+    }
     if (path === "/account/ledger") return json({ entries });
     if (path === "/account/usage") return json(usage);
     if (path === "/auth/logout") return Promise.resolve(new Response(null, { status: 204 }));
@@ -466,13 +476,13 @@ async function capturePage(client, [name, route, width, height, theme, language 
     await clickSelector(client, ".key-menu .danger");
     await waitForCondition(client, `Boolean(document.querySelector('.key-revoke-modal[role="alertdialog"]'))`, `${name} revoke-key dialog`);
   }
-  if (state === "key-policy-open") {
+  if (state === "key-edit-open") {
     await waitForCondition(client, `Boolean(document.querySelector('.key-row .key-menu summary'))`, `${name} API key rows`);
     await client.send("Runtime.evaluate", { expression: `document.querySelector('.key-row')?.scrollIntoView({ block: 'center' })` });
     await client.send("Runtime.evaluate", { awaitPromise: true, expression: `new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))` });
     await clickSelector(client, ".key-row .key-menu summary");
-    await clickSelector(client, '.key-row [data-key-action="edit-policy"]');
-    await waitForCondition(client, `Boolean(document.querySelector('.key-policy-modal[role="dialog"]'))`, `${name} edit-policy dialog`);
+    await clickSelector(client, '.key-row [data-key-action="edit"]');
+    await waitForCondition(client, `Boolean(document.querySelector('.key-edit-modal[role="dialog"]'))`, `${name} edit-key dialog`);
   }
   const { cssContentSize, contentSize } = await client.send("Page.getLayoutMetrics");
   // Chrome reports the legacy contentSize in physical pixels on Retina displays.
@@ -480,7 +490,7 @@ async function capturePage(client, [name, route, width, height, theme, language 
   const measuredSize = cssContentSize ?? contentSize;
   const pageHeight = Math.ceil(measuredSize.height);
   const pageWidth = Math.ceil(measuredSize.width);
-  const modalState = state === "key-create-open" || state === "key-policy-open" || state === "key-revoke-open";
+  const modalState = state === "key-create-open" || state === "key-edit-open" || state === "key-revoke-open";
   const screenshot = await client.send("Page.captureScreenshot", modalState ? {
     format: "png",
     fromSurface: true,
@@ -965,53 +975,84 @@ async function verifyApiKeysLayout(client) {
     await client.send("Runtime.evaluate", { expression: `document.querySelector('.key-row')?.scrollIntoView({ block: 'center' })` });
     await client.send("Runtime.evaluate", { awaitPromise: true, expression: `new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))` });
     await clickSelector(client, ".key-menu summary");
-    await client.send("Runtime.evaluate", { expression: `document.querySelector('[data-key-action="edit-policy"]')?.click()` });
-    await waitForCondition(client, `Boolean(document.querySelector('.key-policy-modal[role="dialog"]'))`, `${layoutCase.name} policy dialog`);
+    const editMenuResult = await client.send("Runtime.evaluate", {
+      expression: `JSON.stringify(Array.from(document.querySelector('.key-row .key-menu-pop')?.querySelectorAll('button:not(.danger)') ?? []).map((button) => button.textContent?.trim()))`,
+      returnByValue: true,
+    });
+    const editMenuItems = JSON.parse(editMenuResult.result.value);
+    const expectedEditLabel = layoutCase.language === "ru" ? "Изменить" : "Edit";
+    if (editMenuItems.length !== 1 || editMenuItems[0] !== expectedEditLabel) {
+      throw new Error(`API keys ${layoutCase.name} must expose one edit action: ${JSON.stringify(editMenuItems)}`);
+    }
+    await client.send("Runtime.evaluate", { expression: `document.querySelector('[data-key-action="edit"]')?.click()` });
+    await waitForCondition(client, `Boolean(document.querySelector('.key-edit-modal[role="dialog"]'))`, `${layoutCase.name} edit dialog`);
     const policyDialogResult = await client.send("Runtime.evaluate", {
-      expression: `(() => { const dialog=document.querySelector('.key-policy-modal'); const r=dialog.getBoundingClientRect(); return JSON.stringify({fields:dialog.querySelectorAll('.key-field').length,left:r.left,right:r.right,top:r.top,bottom:r.bottom,scrollWidth:dialog.scrollWidth,clientWidth:dialog.clientWidth,focusInside:dialog.contains(document.activeElement),limit:dialog.querySelector('.key-money-field input')?.value,expiry:dialog.querySelector('input[type="date"]')?.value}); })()`,
+      expression: `(() => { const dialog=document.querySelector('.key-edit-modal'); const r=dialog.getBoundingClientRect(); return JSON.stringify({fields:dialog.querySelectorAll('.key-field').length,left:r.left,right:r.right,top:r.top,bottom:r.bottom,scrollWidth:dialog.scrollWidth,clientWidth:dialog.clientWidth,focusInside:dialog.contains(document.activeElement),label:dialog.querySelector('.key-field input:not([type])')?.value,limit:dialog.querySelector('.key-money-field input')?.value,expiry:dialog.querySelector('input[type="date"]')?.value}); })()`,
       returnByValue: true,
     });
     const policyDialog = JSON.parse(policyDialogResult.result.value);
-    if (policyDialog.fields < 3 || policyDialog.left < -1 || policyDialog.right > layoutCase.width + 1 || policyDialog.top < -1 || policyDialog.bottom > layoutCase.height + 1 || policyDialog.scrollWidth > policyDialog.clientWidth + 1 || !policyDialog.focusInside || policyDialog.limit !== "" || !policyDialog.expiry) {
-      throw new Error(`API keys ${layoutCase.name} policy dialog failed: ${JSON.stringify(policyDialog)}`);
+    if (policyDialog.fields !== 3 || policyDialog.left < -1 || policyDialog.right > layoutCase.width + 1 || policyDialog.top < -1 || policyDialog.bottom > layoutCase.height + 1 || policyDialog.scrollWidth > policyDialog.clientWidth + 1 || !policyDialog.focusInside || !policyDialog.label || policyDialog.limit !== "" || !policyDialog.expiry) {
+      throw new Error(`API keys ${layoutCase.name} edit dialog failed: ${JSON.stringify(policyDialog)}`);
     }
     if (layoutCase.name === "desktop-light-en") {
       await client.send("Runtime.evaluate", { expression: `(() => {
         const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
         const fill = (selector,value) => { const input=document.querySelector(selector); set.call(input,value); input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new Event('change',{bubbles:true})); };
-        fill('.key-policy-modal .key-money-field input','0.25');
+        fill('.key-edit-modal .key-money-field input','0.25');
       })()` });
-      await clickSelector(client, ".key-policy-modal .key-modal-actions .btn-primary");
-      await waitForCondition(client, `Boolean(document.querySelector('.key-policy-modal .banner-error[role="alert"]')) && !window.__auditApiKeyPolicyCalls`, `${layoutCase.name} local policy floor`);
+      await clickSelector(client, ".key-edit-modal .key-modal-actions .btn-primary");
+      await waitForCondition(client, `Boolean(document.querySelector('.key-edit-modal .banner-error[role="alert"]')) && !window.__auditApiKeyPolicyCalls && !window.__auditApiKeyRenameCalls`, `${layoutCase.name} local policy floor`);
       await client.send("Runtime.evaluate", { expression: `(() => {
         const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
         const fill = (selector,value) => { const input=document.querySelector(selector); set.call(input,value); input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new Event('change',{bubbles:true})); };
-        fill('.key-policy-modal .key-money-field input','20.000000001'); fill('.key-policy-modal input[type="date"]','2099-02-01'); fill('.key-policy-modal .tfa-code','654321');
+        fill('.key-edit-modal .key-money-field input','20.000000001');
       })()` });
-      await clickSelector(client, ".key-policy-modal .key-modal-actions .btn-primary");
-      await waitForCondition(client, `!document.querySelector('.key-policy-modal') && window.__auditApiKeyPolicyCalls === 1`, `${layoutCase.name} policy submission`);
+      await waitForCondition(client, `Boolean(document.querySelector('.key-edit-modal .tfa-code'))`, `${layoutCase.name} policy verification field`);
+      await client.send("Runtime.evaluate", { expression: `(() => {
+        const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+        const fill = (selector,value) => { const input=document.querySelector(selector); set.call(input,value); input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new Event('change',{bubbles:true})); };
+        fill('.key-edit-modal .key-field input:not([type])','CI Production'); fill('.key-edit-modal input[type="date"]','2099-02-01'); fill('.key-edit-modal .tfa-code','654321');
+      })()` });
+      await clickSelector(client, ".key-edit-modal .key-modal-actions .btn-primary");
+      await waitForCondition(client, `!document.querySelector('.key-edit-modal') && window.__auditApiKeyPolicyCalls === 1 && window.__auditApiKeyRenameCalls === 1`, `${layoutCase.name} edit submission`);
       const updated = await client.send("Runtime.evaluate", { expression: `JSON.stringify(window.__auditLastApiKeyPolicyUpdate)`, returnByValue: true });
       const updatedPayload = JSON.parse(updated.result.value);
+      const renamed = await client.send("Runtime.evaluate", { expression: `JSON.stringify(window.__auditLastApiKeyRename)`, returnByValue: true });
+      const renamedPayload = JSON.parse(renamed.result.value);
       const expectedPolicyExpiration = new Date("2099-02-01T23:59:59.999").toISOString();
-      if (updatedPayload.spendLimitUsd !== "20.000000001" || updatedPayload.expiresAt !== expectedPolicyExpiration || updatedPayload.totpCode !== "654321") {
-        throw new Error(`API keys policy payload failed: ${JSON.stringify(updatedPayload)}`);
+      if (updatedPayload.spendLimitUsd !== "20.000000001" || updatedPayload.expiresAt !== expectedPolicyExpiration || updatedPayload.totpCode !== "654321" || renamedPayload.label !== "CI Production") {
+        throw new Error(`API keys edit payload failed: ${JSON.stringify({ updatedPayload, renamedPayload })}`);
       }
 
+      try {
+        await waitForCondition(client, `Boolean(document.querySelector('.key-menu summary'))`, `${layoutCase.name} refreshed API key rows`);
+      } catch (error) {
+        const refreshState = await client.send("Runtime.evaluate", {
+          expression: `JSON.stringify({ path: location.pathname + location.search, body: document.body.innerText.slice(0, 1000), error: document.querySelector('.banner-error')?.textContent })`,
+          returnByValue: true,
+        });
+        throw new Error(`${error instanceof Error ? error.message : error} Browser state: ${refreshState.result.value}`);
+      }
       await clickSelector(client, ".key-menu summary");
-      await client.send("Runtime.evaluate", { expression: `document.querySelector('[data-key-action="edit-policy"]')?.click()` });
-      await waitForCondition(client, `Boolean(document.querySelector('.key-policy-modal'))`, `${layoutCase.name} reopen policy dialog`);
+      await client.send("Runtime.evaluate", { expression: `document.querySelector('[data-key-action="edit"]')?.click()` });
+      await waitForCondition(client, `Boolean(document.querySelector('.key-edit-modal'))`, `${layoutCase.name} reopen edit dialog`);
       await client.send("Runtime.evaluate", { expression: `(() => {
         window.__auditFailNextApiKeyPolicy = true;
         const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
         const fill = (selector,value) => { const input=document.querySelector(selector); set.call(input,value); input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new Event('change',{bubbles:true})); };
-        fill('.key-policy-modal .key-money-field input','21'); fill('.key-policy-modal .tfa-code','123456');
+        fill('.key-edit-modal .key-money-field input','21');
       })()` });
-      await clickSelector(client, ".key-policy-modal .key-modal-actions .btn-primary");
-      await waitForCondition(client, `Boolean(document.querySelector('.key-policy-modal .banner-error[role="alert"]')) && window.__auditApiKeyPolicyCalls === 2`, `${layoutCase.name} policy conflict visibility`);
+      await waitForCondition(client, `Boolean(document.querySelector('.key-edit-modal .tfa-code'))`, `${layoutCase.name} conflict verification field`);
+      await client.send("Runtime.evaluate", { expression: `(() => {
+        const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+        const input=document.querySelector('.key-edit-modal .tfa-code'); set.call(input,'123456'); input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new Event('change',{bubbles:true}));
+      })()` });
+      await clickSelector(client, ".key-edit-modal .key-modal-actions .btn-primary");
+      await waitForCondition(client, `Boolean(document.querySelector('.key-edit-modal .banner-error[role="alert"]')) && window.__auditApiKeyPolicyCalls === 2 && window.__auditApiKeyRenameCalls === 1`, `${layoutCase.name} policy conflict visibility`);
     }
     await client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
     await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
-    await waitForCondition(client, `!document.querySelector('.key-policy-modal') && document.activeElement?.matches('.key-menu summary')`, `${layoutCase.name} policy focus restoration`);
+    await waitForCondition(client, `!document.querySelector('.key-edit-modal') && document.activeElement?.matches('.key-menu summary')`, `${layoutCase.name} edit focus restoration`);
 
     if (layoutCase.name === "desktop-light-en") {
       await clickSelector(client, ".key-menu summary");
