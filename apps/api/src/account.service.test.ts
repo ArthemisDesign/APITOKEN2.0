@@ -68,6 +68,23 @@ describe.runIf(Boolean(connectionString))("commercial account and engine integra
     expect(listed.keys[0]).not.toHaveProperty("key");
     expect(listed.keys[0]).toMatchObject({ id: apiKeyId, keyMasked: `sk-pool-aaaa…aaaa` });
 
+    const policy = await service.updateApiKeyPolicy(aliceId, apiKeyId, {
+      spendLimitUsd: null,
+      expiresAt: "2099-02-01T00:00:00.000Z",
+    }) as Record<string, unknown>;
+    expect(policy).toMatchObject({ spendLimitNano: null, expiresAt: "2099-02-01T00:00:00.000Z" });
+    expect(engine.policyUpdates).toEqual([{
+      account: "acct_alice", keyId: "key_issued", spendLimitNano: null, expiresTs: 4_073_587_200,
+    }]);
+    await expect(service.updateApiKeyPolicy(bobId, apiKeyId, {
+      spendLimitUsd: null, expiresAt: null,
+    })).rejects.toThrow("API key not found");
+    expect(engine.policyUpdates).toHaveLength(1);
+    engine.rejectNextPolicyUpdate = true;
+    await expect(service.updateApiKeyPolicy(aliceId, apiKeyId, {
+      spendLimitUsd: "1", expiresAt: null,
+    })).rejects.toThrow("spend limit cannot be below billed and reserved usage");
+
     await expect(service.disableApiKey(bobId, apiKeyId)).resolves.toBe(false);
     expect(engine.disabledKeyIds).toEqual([]);
     await expect(service.disableApiKey(aliceId, apiKeyId)).resolves.toBe(true);
@@ -141,10 +158,16 @@ async function createUser(
 
 class FakeEngine {
   readonly disabledKeyIds: string[] = [];
+  readonly policyUpdates: Array<{
+    account: string; keyId: string; spendLimitNano: string | null; expiresTs: number | null;
+  }> = [];
+  rejectNextPolicyUpdate = false;
   readonly signupCredits: Array<{ account: string; amountNano: string; reference: string }> = [];
   readonly missingAccountIds = new Set<string>();
   recoveredAccountId = "acct_alice";
   private issued = false;
+  private spendLimitNano: string | null = "25500000000";
+  private expiresTs: number | null = 4_070_908_800;
   readonly client = new EngineClient({
     baseUrl: "http://engine.test",
     controlKey: "test-control-key",
@@ -173,6 +196,28 @@ class FakeEngine {
         spend_limit_nano: body.spend_limit_nano ?? null, expires_ts: body.expires_ts ?? null,
       });
     }
+    const policyMatch = path.match(/^\/admin\/account\/([^/]+)\/key-id\/([^/]+)\/policy$/);
+    if (policyMatch && init?.method === "POST") {
+      if (this.rejectNextPolicyUpdate) {
+        this.rejectNextPolicyUpdate = false;
+        return Response.json({
+          error: "spend limit is below settled and reserved usage", code: "limit_below_committed",
+        }, { status: 409 });
+      }
+      const body = JSON.parse(String(init.body)) as {
+        spend_limit_nano: string | null; expires_ts: number | null;
+      };
+      this.spendLimitNano = body.spend_limit_nano;
+      this.expiresTs = body.expires_ts;
+      this.policyUpdates.push({
+        account: policyMatch[1]!, keyId: policyMatch[2]!,
+        spendLimitNano: body.spend_limit_nano, expiresTs: body.expires_ts,
+      });
+      return Response.json({
+        key_id: policyMatch[2], spend_limit_nano: body.spend_limit_nano,
+        expires_ts: body.expires_ts, updated: 1,
+      });
+    }
     if (path === "/admin/key-id/key_issued/status") {
       this.disabledKeyIds.push("key_issued");
       return Response.json({ key_id: "key_issued", status: "disabled", updated: 1 });
@@ -183,7 +228,7 @@ class FakeEngine {
         keys: this.issued ? [{
           key_id: "key_issued", key_masked: "sk-pool-aaaa…aaaa", label: "production",
           status: "active", spent_nano: 0, spent: "$0.000000000",
-          reserved_nano: 0, spend_limit_nano: "25500000000", expires_ts: 4_070_908_800,
+          reserved_nano: 0, spend_limit_nano: this.spendLimitNano, expires_ts: this.expiresTs,
           created_ts: 1_700_000_000, last_used_ts: null,
         }] : [],
       });

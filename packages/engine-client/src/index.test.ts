@@ -100,6 +100,11 @@ describe("EngineClient", () => {
             key: "sk-pool-secret", key_id: "key_public", account: "acct_test", label: "prod",
           });
         }
+        if (url.endsWith("/policy")) {
+          return Response.json({
+            key_id: "key_public", spend_limit_nano: null, expires_ts: 4_070_908_800, updated: 1,
+          });
+        }
         if (url.includes("/key-id/")) {
           return Response.json({ key_id: "key_public", status: "disabled", updated: 1 });
         }
@@ -125,9 +130,33 @@ describe("EngineClient", () => {
       expires_ts: 4_070_908_800,
     });
     await expect(client.listKeys("acct_test")).resolves.toMatchObject([{ spent_nano: "0" }]);
+    await expect(client.replaceKeyPolicy("acct_test", "key_public", {
+      spendLimitNano: null,
+      expiresAt,
+    })).resolves.toBeUndefined();
+    expect(requests.at(-1)).toEqual({
+      url: "http://engine.test/admin/account/acct_test/key-id/key_public/policy",
+      body: '{"spend_limit_nano":null,"expires_ts":4070908800}',
+    });
     await expect(client.disableKey("key_public")).resolves.toBeUndefined();
     expect(requests.at(-1)?.url).toContain("/admin/key-id/key_public/status");
     expect(requests.at(-1)?.body).not.toContain("sk-pool-secret");
+  });
+
+  it("validates replacement policies before contacting the engine", async () => {
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async () => { throw new Error("validation should happen before fetch"); },
+    });
+    await expect(client.replaceKeyPolicy("acct_test", "key_public", {
+      spendLimitNano: 0n,
+      expiresAt: null,
+    })).rejects.toThrow("positive signed 64-bit");
+    await expect(client.replaceKeyPolicy("acct_test", "key_public", {
+      spendLimitNano: null,
+      expiresAt: new Date(0),
+    })).rejects.toThrow("whole second in the future");
   });
 
   it("reads a bounded ledger without numeric money conversion", async () => {

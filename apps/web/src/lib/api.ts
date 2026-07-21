@@ -212,6 +212,12 @@ export const api = {
   renameApiKey: (id: string, label: string) => request<ApiKeyView>(`/api-keys/${encodeURIComponent(id)}`, {
     method: "PATCH", body: JSON.stringify({ label }),
   }),
+  updateApiKeyPolicy: (
+    id: string,
+    input: { spendLimitUsd: string | null; expiresAt: string | null; totpCode?: string },
+  ) => request<ApiKeyView>(`/api-keys/${encodeURIComponent(id)}/policy`, {
+    method: "PATCH", body: JSON.stringify(input),
+  }),
   revokeApiKey: (id: string) => request<void>(`/api-keys/${encodeURIComponent(id)}`, { method: "DELETE" }),
   createCheckout: (amountUsd: string, paymentMethod?: number) => request<CheckoutView>("/checkouts", {
     method: "POST",

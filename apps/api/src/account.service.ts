@@ -1,4 +1,4 @@
-import { Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import {
   findOwnedApiKey,
   getPricingView,
@@ -10,7 +10,7 @@ import {
   type StoredApiKey,
 } from "@claude-api/db";
 import { EngineClient, EngineClientError } from "@claude-api/engine-client";
-import type { CreateApiKey, EngineApiKey } from "@claude-api/contracts";
+import type { CreateApiKey, EngineApiKey, UpdateApiKeyPolicy } from "@claude-api/contracts";
 import { DATABASE, ENGINE_CLIENT } from "./infrastructure.module.js";
 import { createFundedEngineAccount } from "./engine-provisioning.js";
 
@@ -268,6 +268,55 @@ export class AccountService {
     if (!updated) {
       throw new EngineClientError("engine omitted the renamed API key", undefined, false);
     }
+    const stored = await syncEngineApiKey(this.database, {
+      userId,
+      engineAccountId: owned.engineAccountId,
+      engineKeyId: updated.key_id,
+      label: updated.label,
+      keyMasked: validateMaskedApiKey(updated.key_masked),
+      status: updated.status,
+    });
+    return apiKeyView(stored, updated);
+  }
+
+  async updateApiKeyPolicy(
+    userId: string,
+    apiKeyId: string,
+    input: UpdateApiKeyPolicy,
+  ): Promise<unknown> {
+    const owned = await findOwnedApiKey(this.database, userId, apiKeyId);
+    if (!owned) throw new NotFoundException("API key not found");
+
+    const current = (await this.engine.listKeys(owned.engineAccountId))
+      .find((key) => key.key_id === owned.engineKeyId);
+    if (!current) throw new NotFoundException("API key not found");
+
+    const spendLimitNano = input.spendLimitUsd === null ? null : usdToNano(input.spendLimitUsd);
+    const committedNano = BigInt(current.spent_nano) + BigInt(current.reserved_nano);
+    if (spendLimitNano !== null && spendLimitNano < committedNano) {
+      throw new ConflictException("spend limit cannot be below billed and reserved usage");
+    }
+    try {
+      await this.engine.replaceKeyPolicy(owned.engineAccountId, owned.engineKeyId, {
+        spendLimitNano,
+        expiresAt: input.expiresAt === null ? null : new Date(input.expiresAt),
+      });
+    } catch (error) {
+      if (error instanceof EngineClientError && error.status === 404) {
+        throw new NotFoundException("API key not found");
+      }
+      if (error instanceof EngineClientError && error.status === 409) {
+        throw new ConflictException("spend limit cannot be below billed and reserved usage");
+      }
+      if (error instanceof EngineClientError && error.status === 400) {
+        throw new BadRequestException("expiration must be in the future");
+      }
+      throw error;
+    }
+
+    const updated = (await this.engine.listKeys(owned.engineAccountId))
+      .find((key) => key.key_id === owned.engineKeyId);
+    if (!updated) throw new EngineClientError("engine omitted the updated API key", undefined, false);
     const stored = await syncEngineApiKey(this.database, {
       userId,
       engineAccountId: owned.engineAccountId,

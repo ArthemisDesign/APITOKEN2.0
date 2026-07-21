@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createApiKeySchema } from "@claude-api/contracts";
+import { createApiKeySchema, updateApiKeyPolicySchema } from "@claude-api/contracts";
 
 afterEach(() => vi.useRealTimers());
 
@@ -30,5 +30,22 @@ describe("API key policy input", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2030-01-01T00:00:00.100Z"));
     expect(createApiKeySchema.safeParse({ expiresAt: "2030-01-01T00:00:00.900Z" }).success).toBe(false);
+  });
+
+  it("requires explicit nullable replacement fields and preserves exact nano precision", () => {
+    expect(updateApiKeyPolicySchema.parse({
+      spendLimitUsd: "1.000000001",
+      expiresAt: null,
+      totpCode: "123456",
+    })).toEqual({ spendLimitUsd: "1.000000001", expiresAt: null, totpCode: "123456" });
+    expect(updateApiKeyPolicySchema.parse({
+      spendLimitUsd: null,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    })).toEqual({ spendLimitUsd: null, expiresAt: "2099-01-01T00:00:00.000Z" });
+    expect(updateApiKeyPolicySchema.safeParse({ spendLimitUsd: null }).success).toBe(false);
+    expect(updateApiKeyPolicySchema.safeParse({ expiresAt: null }).success).toBe(false);
+    expect(updateApiKeyPolicySchema.safeParse({
+      spendLimitUsd: "1.0000000001", expiresAt: null,
+    }).success).toBe(false);
   });
 });

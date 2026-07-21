@@ -41,6 +41,11 @@ export interface IssueEngineKeyOptions {
   expiresAt?: Date;
 }
 
+export interface ReplaceEngineKeyPolicyOptions {
+  spendLimitNano: bigint | null;
+  expiresAt: Date | null;
+}
+
 const maxSignedI64 = 9_223_372_036_854_775_807n;
 
 export class EngineClient {
@@ -172,6 +177,34 @@ export class EngineClient {
     const result = payload as Record<string, unknown>;
     if (result.key_id !== keyId || result.updated !== 1) {
       throw new EngineClientError("engine returned an invalid key label response", response.status, false);
+    }
+  }
+
+  async replaceKeyPolicy(
+    accountId: string,
+    keyId: string,
+    options: ReplaceEngineKeyPolicyOptions,
+  ): Promise<void> {
+    if (options.spendLimitNano !== null &&
+        (options.spendLimitNano <= 0n || options.spendLimitNano > maxSignedI64)) {
+      throw new RangeError("spendLimitNano must be null or a positive signed 64-bit integer");
+    }
+    if (options.expiresAt !== null &&
+        (!Number.isFinite(options.expiresAt.getTime()) ||
+         Math.floor(options.expiresAt.getTime() / 1000) <= Math.floor(Date.now() / 1000))) {
+      throw new RangeError("expiresAt must be null or a valid date at least one whole second in the future");
+    }
+    const body = {
+      spend_limit_nano: options.spendLimitNano?.toString() ?? null,
+      expires_ts: options.expiresAt === null ? null : Math.floor(options.expiresAt.getTime() / 1000),
+    };
+    const { response, payload } = await this.request(
+      `/admin/account/${encodeURIComponent(accountId)}/key-id/${encodeURIComponent(keyId)}/policy`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+    const result = payload as Record<string, unknown>;
+    if (result.key_id !== keyId || result.updated !== 1) {
+      throw new EngineClientError("engine returned an invalid key policy response", response.status, false);
     }
   }
 

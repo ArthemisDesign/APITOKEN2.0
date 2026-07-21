@@ -24,7 +24,8 @@ describe("browser API client", () => {
   });
 
   it("serializes API key policies without numeric money conversion", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: "key" }), { status: 200 }));
+    const fetchMock = vi.fn().mockImplementation(async () =>
+      new Response(JSON.stringify({ id: "key" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     await api.createApiKey({
       label: "Production", spendLimitUsd: "9007199254740993.25",
@@ -34,6 +35,21 @@ describe("browser API client", () => {
     expect(JSON.parse(String(request.body))).toEqual({
       label: "Production", spendLimitUsd: "9007199254740993.25",
       expiresAt: "2099-01-01T00:00:00.000Z", totpCode: "123456",
+    });
+
+    fetchMock.mockClear();
+    await api.updateApiKeyPolicy("9d8ac711-43c0-47f1-95af-a4a8ad6a89fe", {
+      spendLimitUsd: null,
+      expiresAt: "2099-02-01T00:00:00.000Z",
+      totpCode: "654321",
+    });
+    const [url, policyRequest] = fetchMock.mock.calls[0]! as [string, RequestInit];
+    expect(url).toBe("https://backend.apitoken.sale/v1/api-keys/9d8ac711-43c0-47f1-95af-a4a8ad6a89fe/policy");
+    expect(policyRequest.method).toBe("PATCH");
+    expect(JSON.parse(String(policyRequest.body))).toEqual({
+      spendLimitUsd: null,
+      expiresAt: "2099-02-01T00:00:00.000Z",
+      totpCode: "654321",
     });
   });
 

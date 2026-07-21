@@ -205,26 +205,43 @@ export const totpCodeBodySchema = z.object({ code: totpCodeSchema }).strict();
 
 const maxSignedI64 = 9_223_372_036_854_775_807n;
 const usdAmountPattern = /^(?:0\.\d{1,2}|[1-9]\d*(?:\.\d{1,2})?)$/;
+const preciseUsdAmountPattern = /^(?:0\.\d{1,9}|[1-9]\d*(?:\.\d{1,9})?)$/;
+
+function usdAmountWithinEngineRange(value: string, pattern: RegExp): boolean {
+  if (!pattern.test(value)) return true;
+  const [whole = "0", fraction = ""] = value.split(".");
+  const nano = BigInt(whole) * 1_000_000_000n + BigInt(fraction.padEnd(9, "0"));
+  return nano > 0n && nano <= maxSignedI64;
+}
+
+const futureExpirationSchema = z.string().datetime({ offset: true })
+  .refine((value) => Math.floor(Date.parse(value) / 1000) > Math.floor(Date.now() / 1000),
+    "expiresAt must be at least one whole second in the future");
 
 export const createApiKeySchema = z.object({
   label: z.string().trim().min(1).max(64).optional(),
   spendLimitUsd: z.string().trim()
     .regex(usdAmountPattern, "spendLimitUsd must be a positive USD amount with at most 2 decimals")
-    .refine((value) => {
-      if (!usdAmountPattern.test(value)) return true;
-      const [whole = "0", fraction = ""] = value.split(".");
-      const nano = BigInt(whole) * 1_000_000_000n + BigInt(fraction.padEnd(9, "0"));
-      return nano > 0n && nano <= maxSignedI64;
-    }, "spendLimitUsd must be positive and within the engine maximum")
+    .refine((value) => usdAmountWithinEngineRange(value, usdAmountPattern),
+      "spendLimitUsd must be positive and within the engine maximum")
     .optional(),
-  expiresAt: z.string().datetime({ offset: true })
-    .refine((value) => Math.floor(Date.parse(value) / 1000) > Math.floor(Date.now() / 1000),
-      "expiresAt must be at least one whole second in the future")
-    .optional(),
+  expiresAt: futureExpirationSchema.optional(),
   totpCode: totpCodeSchema.optional(),
 }).strict();
 
 export type CreateApiKey = z.infer<typeof createApiKeySchema>;
+
+export const updateApiKeyPolicySchema = z.object({
+  spendLimitUsd: z.string().trim()
+    .regex(preciseUsdAmountPattern, "spendLimitUsd must be a positive USD amount with at most 9 decimals")
+    .refine((value) => usdAmountWithinEngineRange(value, preciseUsdAmountPattern),
+      "spendLimitUsd must be positive and within the engine maximum")
+    .nullable(),
+  expiresAt: futureExpirationSchema.nullable(),
+  totpCode: totpCodeSchema.optional(),
+}).strict();
+
+export type UpdateApiKeyPolicy = z.infer<typeof updateApiKeyPolicySchema>;
 
 export const renameApiKeySchema = z.object({
   label: z.string().trim().min(1).max(64),

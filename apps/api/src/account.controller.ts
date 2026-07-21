@@ -16,7 +16,7 @@ import {
   UnauthorizedException,
   UseGuards,
 } from "@nestjs/common";
-import { createApiKeySchema, renameApiKeySchema } from "@claude-api/contracts";
+import { createApiKeySchema, renameApiKeySchema, updateApiKeyPolicySchema } from "@claude-api/contracts";
 import { EngineClientError } from "@claude-api/engine-client";
 import { z } from "zod";
 import { AccountService, isRetryableEngineFailure } from "./account.service.js";
@@ -85,6 +85,24 @@ export class AccountController {
     const parsed = renameApiKeySchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     return this.withEngineErrors(() => this.accounts.renameApiKey(current.user.id, id, parsed.data.label));
+  }
+
+  @Patch("api-keys/:id/policy")
+  @Header("Cache-Control", "no-store")
+  async updateApiKeyPolicy(
+    @CurrentAuth() current: RequestAuth,
+    @Param("id") id: string,
+    @Body() body: unknown,
+  ): Promise<unknown> {
+    if (!uuidSchema.safeParse(id).success) throw new BadRequestException("API key ID must be a UUID");
+    const parsed = updateApiKeyPolicySchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    if (current.user.totpEnabled) {
+      if (!parsed.data.totpCode) throw new UnauthorizedException("2fa_required");
+      const ok = await this.totp.verify(current.user.id, parsed.data.totpCode);
+      if (!ok) throw new UnauthorizedException("2fa_invalid");
+    }
+    return this.withEngineErrors(() => this.accounts.updateApiKeyPolicy(current.user.id, id, parsed.data));
   }
 
   @Delete("api-keys/:id")
