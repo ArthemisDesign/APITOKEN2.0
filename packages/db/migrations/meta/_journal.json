@@ -127,6 +127,13 @@
       "when": 1784870000000,
       "tag": "0017_slim_blindfold",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784880000000,
+      "tag": "0018_referral_floor_95",
+      "breakpoints": true
     }
   ]
 }

@@ -77,7 +77,7 @@ export const customerProfiles = pgTable("customer_profiles", {
   updatedAt,
 }, (table) => [
   check("customer_profiles_multiplier_check", sql`${table.multiplierBp} BETWEEN 0 AND 10000`),
-  check("customer_profiles_referral_floor_check", sql`${table.referralFloorBps} BETWEEN 0 AND 9000`),
+  check("customer_profiles_referral_floor_check", sql`${table.referralFloorBps} BETWEEN 0 AND 9500`),
   // Expanded in 0008. Contract only in a later release after no deployed writer can emit tier 5.
   check("customer_profiles_tier_check", sql`${table.currentTier} IS NULL OR ${table.currentTier} BETWEEN 0 AND 5`),
   check("customer_profiles_type_tier_check", sql`
