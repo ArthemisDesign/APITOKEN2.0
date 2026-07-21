@@ -187,7 +187,7 @@ pub struct Cap {
     pub cooling: bool,
     pub auth_dead: bool,    // токен отвергнут Anthropic (корроборированно) — «мёртвая» подписка (state==Dead)
     pub auth_state: String, // durable: "healthy" | "suspect" | "dead"
-    pub dead_reason: String,// "authentication_error" (re-auth) | "permission_error" (banned) | "" 
+    pub dead_reason: String,// "authentication_error" (re-auth) | "permission_error" (banned) | ""
     pub dead_since_ts: i64, // когда стала dead (0 = не dead)
 }
 
