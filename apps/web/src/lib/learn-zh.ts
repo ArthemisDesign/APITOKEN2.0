@@ -464,7 +464,7 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "完整的 Claude 系列——Opus、Sonnet 和 Haiku——都在一把密钥下。",
           "标准的 Anthropic 行为：流式输出、工具调用、系统提示。",
-          "控制台中的按密钥消费上限和 token 级用量。",
+          "每把密钥可选终身累计消费上限和到期日期，并在控制台查看 token 级用量。",
         ] },
         { type: "p", text: "你使用 Cursor 的方式毫无变化；只是把密钥来源从 Anthropic 换成了 apitoken.sale。" },
       ] },
@@ -787,7 +787,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "分别适合什么", blocks: [
         { type: "list", items: [
-          "apiToken.sale——带递进折扣和按密钥管控的原生 Anthropic 端点。",
+          "apiToken.sale——带递进折扣、密钥终身累计消费上限和可选到期日期的原生 Anthropic 端点。",
           "通用转售商——如果你已经在用它的其他提供方，可能适合你。",
           "两者都移除了 Anthropic 账户门槛；差别在于价格，以及 Claude 接入有多原生。",
         ] },
@@ -927,7 +927,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "在永不过期的预付余额上，官方消费最高立省 80%。",
           "即时、自助开通——无需 Anthropic 账户、无需排队、不限计费国家。",
           "支持银行卡或加密货币付款。",
-          "控制台内提供按密钥的消费管控和 token 级用量明细。",
+          "每把密钥可选终身累计消费上限和到期日期，并在控制台查看 token 级用量明细。",
         ] },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
@@ -952,7 +952,7 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "对外呈现标准的 Anthropic Messages API，让工具无需改动即可使用。",
           "处理接入和计费——在这里，就是折扣预付余额。",
-          "增加按密钥的管控，例如消费上限和用量可见性。",
+          "增加按密钥的终身累计消费上限、可选到期日期和用量可见性。",
         ] },
       ] },
       { h2: "原生，而非转译层", blocks: [
@@ -963,25 +963,25 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "原生 Anthropic API，让工具和 SDK 无需改动即可使用。",
           "透明的按 token 计费，可在控制台审计。",
-          "按密钥的管控：消费上限、模型限定、轮换。",
+          "按密钥的管控：可选的终身累计消费上限和到期日期。",
           "无绑定——预付余额永不过期。",
         ] },
       ] },
     ],
     faq: [
       { q: "网关会改变 API 吗？", a: "不会。原生 Claude 网关讲的是标准的 Anthropic Messages API，因此你的工具和 SDK 无需改动。" },
-      { q: "为什么用网关而不直接用 Anthropic？", a: "为了折扣、无需 Anthropic 账户即可即时开通，以及按密钥的消费管控。" },
+      { q: "为什么用网关而不直接用 Anthropic？", a: "为了折扣、无需 Anthropic 账户即可即时开通，以及为单独密钥设置可选的终身累计消费上限和到期日期。" },
     ],
   },
   "claude-api-rate-limits": {
     title: "Claude API 速率限制",
     h1: "理解 Claude API 速率限制",
-    description: "apiToken.sale 上速率限制如何运作、429 意味着什么，以及如何通过退避与按密钥上限来处理，保护你的预付余额。",
+    description: "apiToken.sale 上的 429 意味着什么、如何通过 Retry-After 与退避处理，以及密钥消费护栏与吞吐限制有何不同。",
     keywords: ["claude api 速率限制", "claude api 429", "anthropic 限流", "claude api 吞吐", "claude api 重试"],
     dek: "速率限制让网关保持稳定、让你的余额更安全。妥善处理它意味着工具更顺滑、不浪费开销。",
     sections: [
-      { h2: "保护性的按密钥限制", blocks: [
-        { type: "p", text: "apiToken.sale 不采用固定的公开 RPM 表，而是施加保护性的按密钥和网关级限制。你还可以在控制台为每把密钥设置自己的上限，将吞吐拆分到不同工具。" },
+      { h2: "流量限制与消费护栏", blocks: [
+        { type: "p", text: "apiToken.sale 不公布固定的 RPM 表。429 可能表示网关或上游容量限制。控制台不能配置请求吞吐；可用的按密钥护栏是可选的终身累计消费上限和到期日期。" },
       ] },
       { h2: "处理 429", blocks: [
         { type: "list", items: [
@@ -993,7 +993,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "Claude API 的速率限制是多少？", a: "apiToken.sale 采用保护性的按密钥和网关级限制，加上你自行配置的按密钥上限，而不是一个固定的公开 RPM 数字。" },
+      { q: "Claude API 的速率限制是多少？", a: "apiToken.sale 不公布固定的 RPM 数字。遇到 429 时请遵守 Retry-After、进行退避并降低并发；如需持续更高的吞吐，请联系支持。" },
       { q: "遇到 429 该怎么办？", a: "遵守 Retry-After、进行退避并降低并发；如需持续更高的限额请联系支持。" },
     ],
   },
@@ -1049,7 +1049,7 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-api-best-practices": {
     title: "Claude API 最佳实践",
     h1: "Claude API 最佳实践",
-    description: "在 apitoken.sale 上使用 Claude API 的实用最佳实践：模型选择、提示缓存、流式输出、按密钥上限，以及密钥的安全处理。",
+    description: "在 apitoken.sale 上使用 Claude API 的实用最佳实践：模型选择、提示缓存、流式输出、密钥终身累计消费上限、到期日期，以及安全处理密钥。",
     keywords: ["claude api 最佳实践", "claude api 技巧", "claude api 生产环境", "claude api 使用规范", "anthropic api 最佳实践"],
     dek: "一份简短的清单，帮你在生产环境中从 Claude API 获得可靠又经济的结果。",
     sections: [
@@ -1058,7 +1058,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "为每项任务挑选能胜任的最便宜模型；仅在需要时升级。",
           "缓存大而稳定的上下文，以大幅削减输入成本。",
           "为灵敏的智能体和界面使用流式响应。",
-          "设置按密钥的消费上限，并为每个工具轮换密钥。",
+          "为每把密钥设置可选的终身累计消费上限和到期日期。",
           "用 Retry-After 和退避处理 429。",
           "关注 token 级用量明细，尽早发现浪费。",
         ] },
@@ -1068,14 +1068,14 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "把 max_tokens 限制在每次响应实际所需的范围。",
           "对 429/5xx 采用指数退避重试，而非紧密循环。",
-          "按环境分开使用密钥，将限流和泄露的影响隔离。",
+          "为不同环境使用名称清晰的单独密钥，泄露时无需更换所有客户端的密钥。",
           "每周复查 token 级用量，尽早发现回退。",
         ] },
       ] },
     ],
     faq: [
       { q: "最有效的最佳实践是什么？", a: "让模型与任务匹配，并缓存重复的上下文——两者结合最能削减成本。" },
-      { q: "如何保护密钥安全？", a: "使用按密钥上限、限定 IDE 用途的密钥，并在控制台无停机轮换密钥。" },
+      { q: "如何保护密钥安全？", a: "将密钥存入密钥管理器，设置合适的终身累计消费上限和到期日期，并立即吊销已暴露的密钥。" },
     ],
   },
   "claude-code-api-key": {
@@ -1136,16 +1136,16 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-api-key-security": {
     title: "保护你的 Claude API 密钥",
     h1: "让你的 Claude API 密钥保持安全",
-    description: "如何在 apiToken.sale 上保护 Claude API 密钥：按密钥消费上限、限定 IDE 用途的密钥、IP 管控、不停机轮换，以及绝不提交密钥。",
+    description: "如何在 apiToken.sale 上保护 Claude API 密钥：终身累计消费上限、可选到期日期、名称清晰的单独密钥、及时吊销和安全存储。",
     keywords: ["claude api 密钥安全", "保护 api 密钥", "轮换 claude api 密钥", "claude api 密钥管理", "anthropic 密钥安全"],
     dek: "你的密钥会花掉真实余额，所以要把它当作凭据对待。apiToken.sale 提供多种管控，在密钥万一泄露时限制影响范围。",
     sections: [
       { h2: "限制风险的管控", blocks: [
         { type: "list", items: [
-          "设置按密钥的每日和每月消费上限。",
-          "为每个工具或环境签发单独的密钥。",
-          "从控制台不停机轮换密钥。",
-          "在支持的情况下限制可用模型或 IP 范围。",
+          "为密钥设置终身累计消费上限。",
+          "如果临时访问应自动结束，请选择到期日期。",
+          "为每个工具或环境签发名称清晰的单独密钥。",
+          "要更换密钥，请先创建新密钥、更新客户端，再吊销旧密钥。",
         ] },
       ] },
       { h2: "基本卫生习惯", blocks: [
@@ -1158,14 +1158,14 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "密钥泄露时如何把损失降到最低？", a: "使用按密钥消费上限和限定用途的密钥，然后从控制台不停机轮换该密钥。" },
+      { q: "密钥泄露时如何把损失降到最低？", a: "使用终身累计消费上限和到期日期，为不同客户端保留名称清晰的单独密钥，并立即吊销已暴露的密钥。" },
       { q: "密钥应该存在哪里？", a: "存在环境变量或密钥管理器中——绝不提交到 git 或在聊天中分享。" },
     ],
   },
   "claude-api-for-ai-agents": {
     title: "面向 AI 智能体的 Claude API",
     h1: "将 Claude API 用于 AI 智能体",
-    description: "用 apitoken.sale 在 Claude API 上构建 AI 智能体：一把密钥通用所有模型，配合流式输出、工具调用、提示缓存和消费上限，让长时间运行也负担得起。",
+    description: "用 apitoken.sale 在 Claude API 上构建 AI 智能体：一把密钥通用所有模型，配合流式输出、工具调用、提示缓存和密钥终身累计消费上限，控制长时间运行的成本。",
     keywords: ["claude api 智能体", "claude ai 智能体 api", "claude 工具调用", "claude 智能体框架", "claude api 自动化"],
     dek: "智能体工作负载既耗 token 又长时间运行，这让模型选择、缓存和成本控制变得最为关键。以下是 apitoken.sale 如何契合智能体。",
     sections: [
@@ -1174,14 +1174,14 @@ export const learnZh: Record<string, LocalizedContent> = {
           "流式输出和工具调用——两者都是 Anthropic Messages API 的标准能力。",
           "模型路由：Haiku 处理廉价步骤，Sonnet 负责推理，Opus 应对最难的任务。",
           "为重复的系统提示和工具定义使用提示缓存。",
-          "按密钥的消费上限，让失控的循环无法耗尽你的余额。",
+          "密钥终身累计消费上限，让失控循环无法花费超过该密钥的上限。",
         ] },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "一个成本感知的智能体循环", blocks: [
         { type: "p", text: "一个实用的模式：把规划和推理路由到 Sonnet，把廉价的子步骤和解析交给 Haiku，仅将最难的调用升级到 Opus。缓存系统提示和工具定义，让重复上下文几乎免费。" },
         { type: "list", items: [
-          "设置按密钥消费上限，让失控循环无法耗尽余额。",
+          "设置密钥终身累计消费上限，让失控循环无法花费超过上限。",
           "使用流式输出，让智能体能够基于部分输出行动。",
           "关注 token 用量，以调优哪些步骤用哪个模型。",
         ] },
@@ -1189,7 +1189,7 @@ export const learnZh: Record<string, LocalizedContent> = {
     ],
     faq: [
       { q: "Claude API 适合做智能体吗？", a: "适合——具备流式输出、工具调用、模型路由和提示缓存，全都在一把 apitoken.sale 密钥下，并带消费管控。" },
-      { q: "如何压低智能体成本？", a: "把廉价步骤路由到 Haiku，缓存重复上下文，并设置按密钥的消费上限。" },
+      { q: "如何压低智能体成本？", a: "把廉价步骤路由到 Haiku，缓存重复上下文，并为智能体密钥设置终身累计消费上限。" },
     ],
   },
   "claude-api-langchain": {

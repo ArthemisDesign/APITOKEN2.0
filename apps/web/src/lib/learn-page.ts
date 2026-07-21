@@ -10,13 +10,20 @@ import {
   learnMarkdownPath,
   learnPath,
   learnUi,
-  localePrefix,
   LOCALES,
   ogLocale,
   resolveArticle,
   type Locale,
 } from "./learn";
 import { absoluteUrl, breadcrumbNode, createPageMetadata, SITE_ORIGIN } from "./seo";
+
+function localizedHomePath(locale: Locale): string {
+  return locale === "ru" ? "/ru" : "/";
+}
+
+function localizedDocsPath(locale: Locale): string {
+  return locale === "ru" ? "/ru/docs" : "/docs";
+}
 
 function hubAlternates(): Record<string, string> {
   const languages: Record<string, string> = {};
@@ -36,8 +43,10 @@ export function buildArticleMetadata(slug: string, locale: Locale): Metadata | n
   // static image entirely so the file convention supplies it. zh/ko keep og.png
   // (CJK/Hangul fonts are not bundled for the image generator).
   const usesGeneratedOg = locale === "en" || locale === "ru";
-  const { images: _ogImages, ...ogRest } = base.openGraph ?? {};
-  const { images: _twImages, ...twRest } = base.twitter ?? {};
+  const ogRest = { ...(base.openGraph ?? {}) };
+  const twRest = { ...(base.twitter ?? {}) };
+  delete ogRest.images;
+  delete twRest.images;
   const openGraph = {
     ...(usesGeneratedOg ? ogRest : base.openGraph),
     type: "article" as const,
@@ -62,13 +71,12 @@ export function buildArticleJsonLd(slug: string, locale: Locale) {
   if (!article) return null;
   const ui = learnUi[locale];
   const url = absoluteUrl(learnPath(slug, locale));
-  const homePath = locale === "en" ? "/" : `${localePrefix(locale)}/`;
   return {
     "@context": "https://schema.org",
     "@graph": [
       breadcrumbNode([
-        { name: ui.crumbHome, path: homePath },
-        { name: ui.crumbDocs, path: "/docs" },
+        { name: ui.crumbHome, path: localizedHomePath(locale) },
+        { name: ui.crumbDocs, path: localizedDocsPath(locale) },
         { name: ui.crumbGuides, path: learnHubPath(locale) },
         { name: article.content.h1, path: learnPath(slug, locale) },
       ]),
@@ -114,13 +122,12 @@ export function buildHubMetadata(locale: Locale): Metadata {
 
 export function buildHubJsonLd(locale: Locale) {
   const ui = learnUi[locale];
-  const homePath = locale === "en" ? "/" : `${localePrefix(locale)}/`;
   return {
     "@context": "https://schema.org",
     "@graph": [
       breadcrumbNode([
-        { name: ui.crumbHome, path: homePath },
-        { name: ui.crumbDocs, path: "/docs" },
+        { name: ui.crumbHome, path: localizedHomePath(locale) },
+        { name: ui.crumbDocs, path: localizedDocsPath(locale) },
         { name: ui.crumbGuides, path: learnHubPath(locale) },
       ]),
       {

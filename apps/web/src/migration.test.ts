@@ -142,7 +142,7 @@ describe("completed Next.js migration", () => {
     expect(routes).not.toContain('"refer"');
     expect(routes).not.toContain('"orders"');
     expect(dashboard).not.toContain('section === "security"');
-    expect(routes).not.toContain('"security"');
+    expect(routes).toContain('value === "security"');
     expect(dashboard).not.toMatch(/href=[{\"]+\/dashboard\//);
     expect(routes).toContain('language === "ru" ? "/ru/dashboard" : "/dashboard"');
     expect(dashboard).toContain("const [section, setSection] = useState<Section>(() => parseDashboardSection(searchParams.get(\"view\")))");

@@ -1,17 +1,22 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
+import { withoutRussianPrefix } from "@/lib/locale-routes";
 import { AuthShell } from "./auth-shell";
 import { MotionEffects } from "./motion-effects";
 import { SiteFooter, SiteHeader } from "./site-chrome";
 
 const publicSitePaths = new Set([
   "/",
+  "/about",
+  "/changelog",
+  "/contacts",
   "/integrations",
   "/models",
   "/plans",
   "/privacy",
+  "/status",
   "/support",
   "/terms",
   "/tools/claude-api-cost-calculator",
@@ -25,27 +30,26 @@ const authPaths = new Set([
   "/verify-email",
 ]);
 
-// Treat /ru mirrors of the marketing pages the same as their English paths.
-function withoutRuPrefix(pathname: string): string {
-  if (pathname === "/ru") return "/";
-  if (pathname.startsWith("/ru/")) return pathname.slice(3);
-  return pathname;
+export function usesPublicSiteShell(pathname: string): boolean {
+  const path = withoutRussianPrefix(pathname);
+  return publicSitePaths.has(path) || path.startsWith("/int-") || path.startsWith("/models/") || path === "/blog" || path.startsWith("/blog/");
 }
 
-function usesPublicSiteShell(pathname: string): boolean {
-  const path = withoutRuPrefix(pathname);
-  return publicSitePaths.has(path) || path.startsWith("/int-") || path === "/blog" || path.startsWith("/blog/");
-}
-
-function usesAuthShell(pathname: string): boolean {
-  return authPaths.has(pathname) || pathname.startsWith("/auth/");
+export function usesAuthShell(pathname: string): boolean {
+  return authPaths.has(withoutRussianPrefix(pathname)) || pathname.startsWith("/auth/");
 }
 
 export function PersistentRouteShell({ children }: Readonly<{ children: ReactNode }>) {
   const pathname = usePathname();
+  useEffect(() => {
+    const main = document.querySelector("main");
+    if (!main) return;
+    if (!main.id) main.id = "main-content";
+    if (!main.hasAttribute("tabindex")) main.setAttribute("tabindex", "-1");
+  }, [pathname]);
 
   if (usesPublicSiteShell(pathname)) {
-    const home = withoutRuPrefix(pathname) === "/";
+    const home = withoutRussianPrefix(pathname) === "/";
     return <>
       <SiteHeader home={home} />
       {children}

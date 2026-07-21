@@ -467,7 +467,7 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "전체 Claude 라인업(Opus, Sonnet, Haiku)을 키 하나로.",
           "표준 Anthropic 동작: 스트리밍, 도구 사용, 시스템 프롬프트.",
-          "대시보드에서 키별 소비 상한과 토큰 단위 사용량.",
+          "키마다 선택 가능한 평생 누적 지출 한도와 만료일, 그리고 대시보드의 토큰 단위 사용량.",
         ] },
         { type: "p", text: "Cursor 사용 방식은 전혀 바뀌지 않으며, Anthropic 대신 apitoken.sale에서 키를 조달할 뿐입니다." },
       ] },
@@ -790,7 +790,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "각각 언제 맞을까", blocks: [
         { type: "list", items: [
-          "apitoken.sale — 누진 할인과 키별 제어를 갖춘 네이티브 Anthropic 엔드포인트.",
+          "apitoken.sale — 누진 할인, 키의 평생 누적 지출 한도, 선택 가능한 만료일을 갖춘 네이티브 Anthropic 엔드포인트.",
           "범용 리셀러 — 이미 그곳의 다른 제공자를 쓰고 있다면 맞을 수 있습니다.",
           "둘 다 Anthropic 계정 장벽을 없애며, 차이는 가격과 Claude 접근이 얼마나 네이티브인가입니다.",
         ] },
@@ -930,7 +930,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "만료되지 않는 선불 잔액에 공식 소비 대비 최대 80% 할인.",
           "즉시, 셀프 서비스 접근 — Anthropic 계정, 대기열, 청구 국가 없음.",
           "은행 카드 또는 암호화폐로 결제.",
-          "키별 지출 제어와 대시보드의 토큰 단위 사용량.",
+          "키마다 선택 가능한 평생 누적 지출 한도와 만료일, 그리고 대시보드의 토큰 단위 사용량.",
         ] },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
@@ -955,7 +955,7 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "표준 Anthropic Messages API를 제시해 도구가 그대로 작동합니다.",
           "접근과 과금을 처리합니다 — 여기서는 할인된 선불 잔액.",
-          "소비 상한, 사용량 가시성 같은 키별 제어를 더합니다.",
+          "키별 평생 누적 지출 한도, 선택 가능한 만료일, 사용량 가시성을 더합니다.",
         ] },
       ] },
       { h2: "번역 계층이 아닌 네이티브", blocks: [
@@ -966,25 +966,25 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "네이티브 Anthropic API — 도구와 SDK가 그대로 작동.",
           "대시보드에서 감사할 수 있는 투명한 토큰 단위 과금.",
-          "키별 제어: 소비 상한, 모델 범위 지정, 로테이션.",
+          "키별 제어: 선택 가능한 평생 누적 지출 한도와 만료일.",
           "락인 없음 — 만료되지 않는 선불 잔액.",
         ] },
       ] },
     ],
     faq: [
       { q: "게이트웨이가 API를 바꾸나요?", a: "아니요. 네이티브 Claude 게이트웨이는 표준 Anthropic Messages API를 사용하므로 도구와 SDK가 그대로입니다." },
-      { q: "왜 Anthropic을 직접 쓰지 않고 게이트웨이를 쓰나요?", a: "할인, Anthropic 계정 없는 즉시 접근, 키별 소비 제어를 위해서입니다." },
+      { q: "왜 Anthropic을 직접 쓰지 않고 게이트웨이를 쓰나요?", a: "할인, Anthropic 계정 없는 즉시 접근, 개별 키의 선택 가능한 평생 누적 지출 한도와 만료일을 위해서입니다." },
     ],
   },
   "claude-api-rate-limits": {
     title: "Claude API 요청 한도",
     h1: "Claude API 요청 한도 이해하기",
-    description: "apiToken.sale에서 요청 한도가 작동하는 방식, 429가 의미하는 것, 그리고 선불 잔액을 보호하기 위해 백오프와 키별 상한으로 대처하는 방법.",
+    description: "apiToken.sale에서 429가 의미하는 것, Retry-After와 백오프로 처리하는 방법, 키 지출 가드레일과 처리량 제한의 차이.",
     keywords: ["claude api 요청 한도", "claude api 429", "anthropic rate limit", "claude api 처리량", "claude api 재시도"],
     dek: "요청 한도는 게이트웨이를 안정적으로 유지하고 잔액을 안전하게 지킵니다. 이를 잘 다루면 도구가 더 매끄럽게 돌아가고 낭비되는 지출이 없습니다.",
     sections: [
-      { h2: "보호형, 키별 한도", blocks: [
-        { type: "p", text: "고정된 공개 RPM 표 대신, apiToken.sale은 보호형 키별·게이트웨이 한도를 적용합니다. 대시보드에서 직접 키별 상한을 설정해 도구 간 처리량을 나눌 수도 있습니다." },
+      { h2: "트래픽 제한과 지출 가드레일", blocks: [
+        { type: "p", text: "apiToken.sale은 고정된 RPM 표를 공개하지 않습니다. 429는 게이트웨이 또는 업스트림 용량 제한을 뜻할 수 있습니다. 대시보드에서는 요청 처리량을 설정하지 않으며, 사용 가능한 키별 가드레일은 선택 가능한 평생 누적 지출 한도와 만료일입니다." },
       ] },
       { h2: "429 처리하기", blocks: [
         { type: "list", items: [
@@ -996,7 +996,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "Claude API 요청 한도는 어떻게 되나요?", a: "apiToken.sale은 고정된 공개 RPM 수치 대신 보호형 키별·게이트웨이 한도와 여러분이 직접 설정하는 키별 상한을 사용합니다." },
+      { q: "Claude API 요청 한도는 어떻게 되나요?", a: "apiToken.sale은 고정된 RPM 수치를 공개하지 않습니다. 429가 발생하면 Retry-After를 따르고 백오프하며 동시성을 줄이세요. 지속적으로 더 높은 처리량이 필요하면 지원팀에 문의하세요." },
       { q: "429가 뜨면 어떻게 해야 하나요?", a: "Retry-After를 존중하고 백오프하며 동시성을 줄이세요. 지속적으로 더 높은 한도가 필요하면 지원팀에 문의하세요." },
     ],
   },
@@ -1052,7 +1052,7 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-api-best-practices": {
     title: "Claude API 모범 사례",
     h1: "Claude API 모범 사례",
-    description: "apitoken.sale에서의 Claude API 실전 모범 사례: 모델 선택, 프롬프트 캐싱, 스트리밍, 키별 상한, 안전한 키 관리.",
+    description: "apitoken.sale에서의 Claude API 실전 모범 사례: 모델 선택, 프롬프트 캐싱, 스트리밍, 키의 평생 누적 지출 한도와 만료일, 안전한 키 관리.",
     keywords: ["claude api 모범 사례", "claude api 팁", "claude api 프로덕션", "claude api 가이드라인", "anthropic api 모범 사례"],
     dek: "프로덕션에서 Claude API로 안정적이고 경제적인 결과를 얻기 위한 짧은 체크리스트입니다.",
     sections: [
@@ -1061,7 +1061,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "각 작업을 처리할 수 있는 가장 값싼 모델을 고르고, 필요할 때만 상위 모델로 올리세요.",
           "크고 안정적인 컨텍스트를 캐시해 입력 비용을 크게 줄이세요.",
           "반응성 좋은 에이전트와 UI를 위해 응답을 스트리밍하세요.",
-          "키별 소비 상한을 설정하고 도구마다 키를 로테이션하세요.",
+          "각 키에 선택 가능한 평생 누적 지출 한도와 만료일을 설정하세요.",
           "429는 Retry-After와 백오프로 처리하세요.",
           "토큰 단위 사용량 분석을 살펴 낭비를 일찍 잡으세요.",
         ] },
@@ -1071,14 +1071,14 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "max_tokens를 각 응답이 실제로 필요한 만큼으로 제한하세요.",
           "429/5xx는 촘촘한 반복 대신 지수 백오프로 재시도하세요.",
-          "환경마다 키를 분리해 한도와 유출을 격리하세요.",
+          "환경마다 이름이 분명한 별도 키를 사용해 유출 시 모든 클라이언트의 키를 바꾸지 않도록 하세요.",
           "매주 토큰 단위 사용량을 검토해 회귀를 일찍 잡으세요.",
         ] },
       ] },
     ],
     faq: [
       { q: "가장 효과적인 모범 사례는 무엇인가요?", a: "작업에 모델을 맞추고 반복되는 컨텍스트를 캐시하는 것입니다. 둘을 합치면 비용이 가장 크게 줄어듭니다." },
-      { q: "키를 어떻게 안전하게 지키나요?", a: "키별 상한, IDE 범위 지정 키를 사용하고, 대시보드에서 다운타임 없이 키를 로테이션하세요." },
+      { q: "키를 어떻게 안전하게 지키나요?", a: "키를 시크릿 매니저에 저장하고 적절한 평생 누적 지출 한도와 만료일을 설정하며, 노출된 키는 즉시 폐기하세요." },
     ],
   },
   "claude-code-api-key": {
@@ -1139,16 +1139,16 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-api-key-security": {
     title: "Claude API 키 보안",
     h1: "Claude API 키를 안전하게 지키기",
-    description: "apiToken.sale에서 Claude API 키를 보호하는 방법: 키별 지출 상한, IDE 범위 키, IP 제어, 다운타임 없는 순환, 그리고 키를 절대 커밋하지 않기.",
+    description: "apiToken.sale에서 Claude API 키를 보호하는 방법: 평생 누적 지출 한도, 선택 가능한 만료일, 이름이 분명한 별도 키, 즉시 폐기, 안전한 시크릿 저장.",
     keywords: ["claude api 키 보안", "api 키 보호", "claude api 키 순환", "claude api 키 관리", "anthropic 키 보안"],
     dek: "여러분의 키는 실제 잔액을 소비하므로 자격 증명처럼 다뤄야 합니다. apiToken.sale은 키가 유출되더라도 피해 범위를 제한하는 제어 수단을 제공합니다.",
     sections: [
       { h2: "위험을 제한하는 제어", blocks: [
         { type: "list", items: [
-          "키별 일일·월별 지출 상한을 설정하세요.",
-          "도구나 환경마다 별도의 키를 발급하세요.",
-          "대시보드에서 다운타임 없이 키를 순환하세요.",
-          "지원되는 경우 허용 모델이나 IP 범위를 제한하세요.",
+          "키에 평생 누적 지출 한도를 설정하세요.",
+          "임시 접근이 자동으로 끝나야 한다면 만료일을 선택하세요.",
+          "도구나 환경마다 이름이 분명한 별도 키를 발급하세요.",
+          "키를 교체하려면 새 키를 만들고 클라이언트를 업데이트한 뒤 기존 키를 폐기하세요.",
         ] },
       ] },
       { h2: "기본 위생 수칙", blocks: [
@@ -1161,14 +1161,14 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "키가 유출되면 피해를 어떻게 제한하나요?", a: "키별 지출 상한과 범위 키를 사용한 뒤, 대시보드에서 다운타임 없이 키를 순환하세요." },
+      { q: "키가 유출되면 피해를 어떻게 제한하나요?", a: "평생 누적 지출 한도와 만료일을 사용하고 클라이언트별로 이름이 분명한 키를 유지하며 노출된 키를 즉시 폐기하세요." },
       { q: "키를 어디에 저장해야 하나요?", a: "환경 변수나 시크릿 매니저에 저장하세요. 절대 git에 커밋하거나 채팅에 공유하지 마세요." },
     ],
   },
   "claude-api-for-ai-agents": {
     title: "AI 에이전트를 위한 Claude API",
     h1: "AI 에이전트에 Claude API 사용하기",
-    description: "apitoken.sale로 Claude API 위에 AI 에이전트를 구축하세요. 모든 모델용 하나의 키, 스트리밍, 도구 사용, 프롬프트 캐싱, 그리고 긴 실행을 감당 가능하게 유지하는 소비 상한.",
+    description: "apitoken.sale로 Claude API 위에 AI 에이전트를 구축하세요. 모든 모델용 하나의 키, 스트리밍, 도구 사용, 프롬프트 캐싱, 그리고 긴 실행 비용을 제어하는 키의 평생 누적 지출 한도.",
     keywords: ["claude api 에이전트", "claude ai 에이전트 api", "claude 도구 사용", "claude 에이전트 프레임워크", "claude api 자동화"],
     dek: "에이전트형 워크로드는 토큰을 많이 쓰고 오래 실행되므로 모델 선택, 캐싱, 비용 제어가 가장 중요합니다. apitoken.sale이 에이전트에 어떻게 맞는지 살펴봅니다.",
     sections: [
@@ -1177,14 +1177,14 @@ export const learnKo: Record<string, LocalizedContent> = {
           "스트리밍과 도구 사용 — 둘 다 Anthropic Messages API의 표준.",
           "모델 라우팅: 값싼 단계는 Haiku, 추론은 Sonnet, 가장 어려운 것은 Opus.",
           "반복되는 시스템 프롬프트와 도구 정의를 위한 프롬프트 캐싱.",
-          "폭주하는 루프가 잔액을 소진하지 못하도록 하는 키별 소비 상한.",
+          "폭주하는 루프가 키의 한도를 넘겨 지출하지 못하도록 하는 평생 누적 지출 한도.",
         ] },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "비용을 의식한 에이전트 루프", blocks: [
         { type: "p", text: "실전 패턴: 계획과 추론은 Sonnet으로, 값싼 하위 단계와 파싱은 Haiku로 라우팅하고, 가장 어려운 호출만 Opus로 올리세요. 시스템 프롬프트와 도구 정의를 캐시해 반복되는 컨텍스트를 거의 무료로 만드세요." },
         { type: "list", items: [
-          "폭주하는 루프가 잔액을 소진하지 못하도록 키별 소비 상한을 설정하세요.",
+          "폭주하는 루프가 한도를 넘겨 지출하지 못하도록 키의 평생 누적 지출 한도를 설정하세요.",
           "에이전트가 부분 출력에 반응할 수 있도록 스트리밍하세요.",
           "토큰 사용량을 살펴 어떤 단계가 어떤 모델을 쓸지 조정하세요.",
         ] },
@@ -1192,7 +1192,7 @@ export const learnKo: Record<string, LocalizedContent> = {
     ],
     faq: [
       { q: "Claude API가 에이전트에 좋나요?", a: "네. 스트리밍, 도구 사용, 모델 라우팅, 프롬프트 캐싱을 모두 하나의 apitoken.sale 키와 소비 제어로 제공합니다." },
-      { q: "에이전트 비용을 어떻게 낮추나요?", a: "값싼 단계는 Haiku로 라우팅하고, 반복되는 컨텍스트를 캐시하며, 키별 소비 상한을 설정하세요." },
+      { q: "에이전트 비용을 어떻게 낮추나요?", a: "값싼 단계는 Haiku로 라우팅하고 반복되는 컨텍스트를 캐시하며 에이전트 키에 평생 누적 지출 한도를 설정하세요." },
     ],
   },
   "claude-api-langchain": {

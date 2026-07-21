@@ -4,6 +4,7 @@ import { Analytics, type BeforeSendEvent } from "@vercel/analytics/next";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef } from "react";
 import { detectAiSource } from "@/lib/ai-source";
+import { documentLanguageForPathname } from "@/lib/locale-routes";
 import { coarseAcquisition, trackFirstProductEvent } from "@/lib/product-analytics";
 import { YANDEX_METRIKA_ID } from "@/lib/yandex-metrika";
 
@@ -51,10 +52,10 @@ export function SiteAnalytics() {
     trackFirstProductEvent("touch", "First Touch", coarseAcquisition());
   }, []);
 
-  // Keep <html lang> in sync with the localized route subtree (root layout
-  // renders lang="en"; hreflang tags carry the authoritative signal for Google).
+  // Keep the document language correct during client-side locale navigation too.
+  // The server-rendered value comes from the request path in proxy.ts.
   useEffect(() => {
-    const lang = pathname.startsWith("/zh") ? "zh-CN" : pathname.startsWith("/ru") ? "ru" : pathname.startsWith("/ko") ? "ko" : "en";
+    const lang = documentLanguageForPathname(pathname);
     if (document.documentElement.lang !== lang) document.documentElement.lang = lang;
   }, [pathname]);
 

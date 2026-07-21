@@ -3,26 +3,20 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { localeHref, localeRoute } from "@/lib/locale-routes";
 import { DOCS_URL } from "@/lib/site-links";
 import { useI18n } from "./i18n-provider";
 import { T } from "./translated";
 
-// Internal paths that have a /ru mirror — so links inside the Russian site
-// stay in Russian (no cross-locale dead-ends for crawlers).
-const RU_MIRRORED = new Set(["/models", "/integrations", "/plans", "/privacy", "/terms", "/support"]);
 function localizeHref(language: string, href: string): string {
-  if (language !== "ru" || !href.startsWith("/")) return href;
-  const base = href.split(/[#?]/)[0];
-  const mirrored = base === "/" || RU_MIRRORED.has(base) || base.startsWith("/int-") || base === "/docs/learn" || base.startsWith("/docs/learn/");
-  if (!mirrored) return href;
-  return href === "/" ? "/ru" : `/ru${href}`;
+  return localeHref(href, language === "ru" ? "ru" : "en");
 }
 
 export function Brand() {
   const { language } = useI18n();
-  return <Link className="brand" href={language === "ru" ? "/ru" : "/"} aria-label="apiToken.sale home">
+  return <Link className="brand" href={localeHref("/", language)} aria-label="apiToken.sale home">
     <Image className="brand-mark bm-light" src="/assets/logo-mark-light.png" width={24} height={24} alt="" />
     <Image className="brand-mark bm-dark" src="/assets/logo-mark-dark.png" width={24} height={24} alt="" />
     <span className="brand-name">apiToken.sale</span>
@@ -34,42 +28,65 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
+  const burgerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => { api.me().then(() => setAuthenticated(true)).catch(() => setAuthenticated(false)); }, []);
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => setMenuOpen(false));
     return () => window.cancelAnimationFrame(frame);
   }, [pathname]);
+  useEffect(() => {
+    if (!menuOpen) return;
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      setMenuOpen(false);
+      window.requestAnimationFrame(() => burgerRef.current?.focus());
+    }
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [menuOpen]);
 
   const ru = language === "ru";
-  const loc = (path: string) => (ru ? (path === "/" ? "/ru" : `/ru${path}`) : path);
+  const loc = (path: string) => localeHref(path, language);
+  const englishPath = localeRoute(pathname, "en") ?? pathname;
+  const russianPath = localeRoute(pathname, "ru");
+  const languageLabel = ru ? "Язык" : "Language";
+  const russianUnavailable = ru ? "Русская версия недоступна" : "Russian version unavailable";
   const links = <>
     <Link href={home ? "#how" : `${loc("/")}#how`}><T k="nav_how">How it works</T></Link>
     <Link href={loc("/integrations")}><T k="nav_int">Integrations</T></Link>
     <Link href={loc("/models")}><T k="nav_models">Models</T></Link>
-    <Link href="/blog">Blog</Link>
+    <Link href={loc("/docs/learn")}><T k="nav_guides">Guides</T></Link>
     <Link href={home ? "#pricing" : loc("/plans")}><T k="nav_pricing">Pricing</T></Link>
     <Link href={DOCS_URL} target="_blank" rel="noreferrer"><T k="nav_docs">Docs</T></Link>
   </>;
 
-  const renderActions = () => authenticated ? <Link className="btn btn-primary" href="/dashboard">{t("dash")}</Link> : <>
-    <Link className="btn btn-ghost" href="/login">{t("login")}</Link>
-    <Link className="btn btn-primary" href="/register">{t("signup")}</Link>
+  const renderActions = () => authenticated ? <Link className="btn btn-primary" href={loc("/dashboard")}>{t("dash")}</Link> : <>
+    <Link className="btn btn-ghost" href={loc("/login")}>{t("login")}</Link>
+    <Link className="btn btn-primary" href={loc("/register")}>{t("signup")}</Link>
   </>;
 
   return <header className="nav">
+    <a className="skip-link" href="#main-content">{ru ? "К содержимому" : "Skip to content"}</a>
     <div className="wrap nav-in">
       <Brand />
-      {!compact && <nav className={`nav-links ${menuOpen ? "open" : ""}`}>
+      {!compact && <nav id="site-navigation" className={`nav-links ${menuOpen ? "open" : ""}`} aria-label={ru ? "Основная навигация" : "Primary navigation"} onClick={(event) => {
+        if ((event.target as HTMLElement).closest("a")) setMenuOpen(false);
+      }}>
         {links}
         <div className="nav-auth-mobile">{renderActions()}</div>
       </nav>}
       <div className="nav-right">
-        <div className="lang"><Link className={language === "en" ? "active" : ""} href={ru ? (pathname.replace(/^\/ru/, "") || "/") : pathname} hrefLang="en">EN</Link><Link className={language === "ru" ? "active" : ""} href={ru ? pathname : (pathname === "/" ? "/ru" : `/ru${pathname}`)} hrefLang="ru">RU</Link></div>
+        <nav className="lang" aria-label={languageLabel}>
+          <Link className={language === "en" ? "active" : ""} aria-current={language === "en" ? "page" : undefined} href={englishPath} hrefLang="en">EN</Link>
+          {russianPath
+            ? <Link className={language === "ru" ? "active" : ""} aria-current={language === "ru" ? "page" : undefined} href={russianPath} hrefLang="ru">RU</Link>
+            : <button type="button" disabled aria-disabled="true" title={russianUnavailable}>RU</button>}
+        </nav>
         <ThemeToggle />
         {!compact && <div className={`nav-actions ${authenticated ? "authenticated" : ""}`}>{renderActions()}</div>}
       </div>
-      {!compact && <button className="nav-burger" aria-label="Menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>☰</button>}
+      {!compact && <button ref={burgerRef} type="button" className="nav-burger" aria-label={menuOpen ? (ru ? "Закрыть меню" : "Close menu") : (ru ? "Открыть меню" : "Open menu")} aria-controls="site-navigation" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>{menuOpen ? "×" : "☰"}</button>}
     </div>
   </header>;
 }

@@ -7,5 +7,5 @@ import { coreMetadata, coreRu } from "@/lib/seo-core";
 export const metadata: Metadata = coreMetadata("/privacy", seoPages.privacy, coreRu.privacy, "ru");
 
 export default function RuPrivacyPage() {
-  return <><JsonLd data={breadcrumbJsonLd([{ name: "Главная", path: "/ru" }, { name: "Конфиденциальность", path: "/ru/privacy" }])} /><LegalPage kind="privacy" /></>;
+  return <><JsonLd data={breadcrumbJsonLd([{ name: "Главная", path: "/ru" }, { name: "Конфиденциальность", path: "/ru/privacy" }])} /><main><LegalPage kind="privacy" /></main></>;
 }

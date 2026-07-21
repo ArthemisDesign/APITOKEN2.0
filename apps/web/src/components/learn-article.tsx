@@ -14,6 +14,8 @@ import {
   type Locale,
   type ResolvedArticle,
 } from "@/lib/learn";
+import { localeHref } from "@/lib/locale-routes";
+import { LearnHubBrowser } from "./learn-hub-browser";
 
 // Deterministic pick so the CTA varies across the cluster without being random.
 function pickIndex(seed: string, n: number): number {
@@ -29,14 +31,22 @@ const LANG_LABEL: Record<Locale, string> = { en: "EN", ru: "RU", zh: "中文", k
 function LearnLangSwitch({ current, locales, hrefFor }: { current: Locale; locales: Locale[]; hrefFor: (locale: Locale) => string }) {
   if (locales.length < 2) return null;
   return (
-    <div className="learn-lang" aria-label="Language">
+    <nav className="learn-lang" aria-label="Language">
       {locales.map((locale) =>
         locale === current
-          ? <span className="learn-lang-on" key={locale} aria-current="true">{LANG_LABEL[locale]}</span>
+          ? <span className="learn-lang-on" key={locale} aria-current="page">{LANG_LABEL[locale]}</span>
           : <Link className="learn-lang-off" hrefLang={locale === "zh" ? "zh-CN" : locale} href={hrefFor(locale)} key={locale}>{LANG_LABEL[locale]}</Link>,
       )}
-    </div>
+    </nav>
   );
+}
+
+function docsPath(locale: Locale): string {
+  return locale === "ru" ? "/ru/docs" : "/docs";
+}
+
+function registrationPath(locale: Locale): string {
+  return locale === "ru" ? "/ru/register" : "/register";
 }
 
 export function LearnHubView({ locale }: { locale: Locale }) {
@@ -51,7 +61,7 @@ export function LearnHubView({ locale }: { locale: Locale }) {
       <div className="page-hero">
         <div className="wrap">
           <div className="learn-hero-top">
-            <Link className="auth-back" href="/docs">{ui.docsBack}</Link>
+            <Link className="auth-back" href={docsPath(locale)}>{ui.docsBack}</Link>
             <LearnLangSwitch current={locale} locales={LOCALES} hrefFor={(target) => learnHubPath(target)} />
           </div>
           <span className="eyebrow">{ui.guidesEyebrow}</span>
@@ -60,35 +70,23 @@ export function LearnHubView({ locale }: { locale: Locale }) {
         </div>
       </div>
 
-      <section className="borderless">
-        <div className="wrap">
-          {CLUSTER_ORDER.map((cluster) => {
-            const items = articles.filter((article) => article.cluster === cluster);
-            if (items.length === 0) return null;
-            return (
-              <div className="learn-cluster" key={cluster}>
-                <div className="learn-cluster-head">
-                  <h2 className="docs-h3">{labels[cluster].label}</h2>
-                  <p className="docs-para">{labels[cluster].blurb}</p>
-                </div>
-                <div className="learn-grid">
-                  {items.map((article) => (
-                    <Link className="learn-card" href={learnPath(article.slug, locale)} key={article.slug}>
-                      <strong>{article.content.h1}</strong>
-                      <span>{article.content.description}</span>
-                    </Link>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
+      <LearnHubBrowser
+        locale={locale}
+        clusterOrder={CLUSTER_ORDER}
+        labels={labels}
+        articles={articles.map((article) => ({
+          slug: article.slug,
+          cluster: article.cluster,
+          title: article.content.h1,
+          description: article.content.description,
+          href: learnPath(article.slug, locale),
+        }))}
+      />
     </main>
   );
 }
 
-function Block({ block }: { block: LearnBlock }) {
+function Block({ block, locale }: { block: LearnBlock; locale: Locale }) {
   switch (block.type) {
     case "p":
       return <p className="docs-para">{block.text}</p>;
@@ -120,7 +118,7 @@ function Block({ block }: { block: LearnBlock }) {
         </div>
       );
     case "link":
-      return <p className="docs-para"><Link href={block.href}>{block.text} →</Link></p>;
+      return <p className="docs-para"><Link href={localeHref(block.href, locale === "ru" ? "ru" : "en")}>{block.text} →</Link></p>;
     default:
       return null;
   }
@@ -143,7 +141,7 @@ export function LearnArticleView({ article }: { article: ResolvedArticle }) {
         <div className="wrap">
           <div className="learn-hero-top">
             <nav className="crumbs" aria-label="Breadcrumb">
-              <Link href="/docs">{ui.crumbDocs}</Link>
+              <Link href={docsPath(locale)}>{ui.crumbDocs}</Link>
               <span aria-hidden="true">/</span>
               <Link href={learnHubPath(locale)}>{ui.crumbGuides}</Link>
               <span aria-hidden="true">/</span>
@@ -163,7 +161,7 @@ export function LearnArticleView({ article }: { article: ResolvedArticle }) {
           {content.sections.map((section, sectionIndex) => (
             <div className="learn-section" key={section.h2}>
               <h2 className="docs-h3">{section.h2}</h2>
-              {section.blocks.map((block, index) => <Block key={index} block={block} />)}
+              {section.blocks.map((block, index) => <Block key={index} block={block} locale={locale} />)}
               {sectionIndex === 0 && seeAlso && (
                 <p className="learn-seealso">{ui.seeAlso} <Link href={learnPath(seeAlso.slug, locale)}>{seeAlso.content.h1}</Link></p>
               )}
@@ -187,8 +185,8 @@ export function LearnArticleView({ article }: { article: ResolvedArticle }) {
           <div className="learn-cta">
             <p>{ctaText}</p>
             <div className="hero-cta page-actions">
-              <Link className="btn btn-primary" href="/register">{ui.getKey}</Link>
-              <Link className="btn btn-ghost" href="/docs">{ui.readDocs}</Link>
+              <Link className="btn btn-primary" href={registrationPath(locale)}>{ui.getKey}</Link>
+              <Link className="btn btn-ghost" href={docsPath(locale)}>{ui.readDocs}</Link>
             </div>
           </div>
 

@@ -22,4 +22,8 @@ describe("dashboard URL state", () => {
     expect(parseDashboardSection("refer")).toBe("overview");
     expect(parseDashboardSection("orders")).toBe("overview");
   });
+
+  it("keeps the retired security URL useful by opening Profile", () => {
+    expect(parseDashboardSection("security")).toBe("profile");
+  });
 });

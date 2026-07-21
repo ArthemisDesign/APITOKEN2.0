@@ -14,8 +14,8 @@ export const metadata: Metadata = {
 const entries = [
   { date: "2026-07", title: "Guides in Russian and Chinese", body: "The full Claude API guide library is now available in English, Russian and Simplified Chinese with per-language URLs." },
   { date: "2026-07", title: "Guide library expanded", body: "Added new guides covering gateways, rate limits, streaming, prompt caching, key security, and building AI agents on Claude." },
-  { date: "2026-06", title: "Claude Opus 4.8 available", body: "Opus 4.8 is available on the same API3 key and prepaid balance as Opus 4.7, Sonnet 5, Sonnet 4.6 and Haiku 4.5." },
-  { date: "2026-06", title: "Per-key spend controls", body: "Set daily and monthly spend caps per key, scope keys to tools, and rotate keys without downtime from the dashboard." },
+  { date: "2026-06", title: "Claude Opus 4.8 available", body: "Opus 4.8 is available on the same API key and prepaid balance as Opus 4.7, Sonnet 5, Sonnet 4.6 and Haiku 4.5." },
+  { date: "2026-07", title: "Per-key lifetime guardrails", body: "Set an optional lifetime spending limit and expiration date when you create a key, then update or remove either guardrail from the dashboard." },
   { date: "2026-05", title: "Progressive discount tiers", body: "B2C accounts start 60% below official spend and progress up to 80% off as cumulative top-ups grow." },
 ];
 

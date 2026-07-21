@@ -20,6 +20,7 @@ import { dashboardHref, parseDashboardSection, type DashboardSection } from "./d
 
 type Section = DashboardSection;
 type KeyStatusFilter = "active" | "disabled" | "all";
+type OptionalDataSource = "keys" | "ledger" | "usage";
 
 const NANO_PER_USD = 1_000_000_000n;
 const BASIS_POINTS = 10_000n;
@@ -55,8 +56,8 @@ const localDashboardCopy = {
     invalidCheckoutUrl: "The payment provider returned an unsafe checkout address. Payment was not opened.",
     invalidWholeUsd: "Enter a positive whole USD amount using digits only, without decimals, signs, separators, or leading zeros.",
     editKey: "Edit", editKeyTitle: "Edit API key", editKeyHelp: "Update the name, spending limit, or expiration in one place. Limit changes apply to new requests immediately.", labelRequired: "Enter a label before saving.", updateKeyError: "Unable to update API key",
-    filterLabel: "Filter API keys", activeFilter: "Enabled", disabledFilter: "Revoked", allFilter: "All",
-    noActiveKeys: "No enabled API keys.", noDisabledKeys: "No revoked API keys.", activeStatus: "Active", disabledStatus: "Revoked",
+    filterLabel: "Filter API keys", activeFilter: "Not revoked", disabledFilter: "Revoked", allFilter: "All",
+    noActiveKeys: "No non-revoked API keys.", noDisabledKeys: "No revoked API keys.", activeStatus: "Active", disabledStatus: "Revoked",
     createKey: "Create key", createKeyTitle: "Create an API key", createKeyHelp: "Add optional guardrails now. The secret is shown only once.",
     keyName: "Key name", keyNameHint: "For example, Production or CI", spendLimit: "Spending limit", spendLimitHint: "Lifetime platform spend cap in USD", optional: "Optional", expiration: "Expiration date", noExpiration: "Never expires", expirationHint: "Expires at the end of this day in your local time.",
     cancel: "Cancel", creating: "Creating…", invalidSpendLimit: "Enter a positive USD amount with up to 2 decimals.", invalidExpiration: "Choose a future expiration date.",
@@ -76,8 +77,8 @@ const localDashboardCopy = {
     invalidCheckoutUrl: "Платёжный сервис вернул небезопасный адрес. Страница оплаты не была открыта.",
     invalidWholeUsd: "Введите целую положительную сумму в USD только цифрами: без дробей, знаков, разделителей и ведущих нулей.",
     editKey: "Изменить", editKeyTitle: "Изменить API-ключ", editKeyHelp: "Измените название, лимит расходов или срок действия. Ограничения сразу применяются к новым запросам.", labelRequired: "Введите название перед сохранением.", updateKeyError: "Не удалось изменить API-ключ",
-    filterLabel: "Фильтр API-ключей", activeFilter: "Включённые", disabledFilter: "Отозванные", allFilter: "Все",
-    noActiveKeys: "Включённых API-ключей нет.", noDisabledKeys: "Отозванных API-ключей нет.", activeStatus: "Активен", disabledStatus: "Отозван",
+    filterLabel: "Фильтр API-ключей", activeFilter: "Не отозваны", disabledFilter: "Отозванные", allFilter: "Все",
+    noActiveKeys: "Неотозванных API-ключей нет.", noDisabledKeys: "Отозванных API-ключей нет.", activeStatus: "Активен", disabledStatus: "Отозван",
     createKey: "Создать ключ", createKeyTitle: "Создать API-ключ", createKeyHelp: "При необходимости задайте ограничения. Секрет будет показан только один раз.",
     keyName: "Название ключа", keyNameHint: "Например, Production или CI", spendLimit: "Лимит расходов", spendLimitHint: "Общий лимит расходов платформы в USD", optional: "Необязательно", expiration: "Дата истечения", noExpiration: "Без срока", expirationHint: "Ключ истечёт в конце выбранного дня по вашему местному времени.",
     cancel: "Отмена", creating: "Создаём…", invalidSpendLimit: "Введите положительную сумму USD максимум с 2 знаками после запятой.", invalidExpiration: "Выберите будущую дату истечения.",
@@ -117,11 +118,14 @@ export function Dashboard() {
   const copy = dashboardCopy[language];
   const localCopy = localDashboardCopy[language];
   const [section, setSection] = useState<Section>(() => parseDashboardSection(searchParams.get("view")));
+  const [policyNow] = useState(() => Date.now());
   const [user, setUser] = useState<AuthUser | null>(null);
   const [account, setAccount] = useState<AccountView | null>(null);
   const [keys, setKeys] = useState<ApiKeyView[]>([]);
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [usage, setUsage] = useState<UsageView | null>(null);
+  const [dataErrors, setDataErrors] = useState<Partial<Record<OptionalDataSource, true>>>({});
+  const [dataPending, setDataPending] = useState<Record<OptionalDataSource, boolean>>({ keys: true, ledger: true, usage: true });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [logoutError, setLogoutError] = useState<string | null>(null);
@@ -129,36 +133,78 @@ export function Dashboard() {
   const [sideOpen, setSideOpen] = useState(false);
   const analyticsLoaded = useRef(false);
   const initialSection = useRef(section);
+  const lifecycleGeneration = useRef(0);
+  const optionalRequestGeneration = useRef<Record<OptionalDataSource, number>>({ keys: 0, ledger: 0, usage: 0 });
+
+  const retryOptional = useCallback(async (source: OptionalDataSource, showPending = true) => {
+    const lifecycle = lifecycleGeneration.current;
+    const request = ++optionalRequestGeneration.current[source];
+    if (showPending) setDataPending((current) => ({ ...current, [source]: true }));
+    setDataErrors((current) => {
+      const next = { ...current };
+      delete next[source];
+      return next;
+    });
+    try {
+      if (source === "keys") {
+        const result = await api.apiKeys();
+        if (lifecycle !== lifecycleGeneration.current || request !== optionalRequestGeneration.current[source]) return;
+        setKeys(result.keys);
+      } else if (source === "ledger") {
+        const result = await api.ledger(100);
+        if (lifecycle !== lifecycleGeneration.current || request !== optionalRequestGeneration.current[source]) return;
+        setLedger(result.entries);
+        if (result.entries.some((entry) => entry.kind === "topup")) trackFirstProductEvent("topup", "First Top Up", { detected_in: "dashboard" });
+        if (result.entries.some((entry) => entry.kind === "charge")) trackFirstProductEvent("api_usage", "First API Usage", { detected_in: "dashboard" });
+      } else {
+        const result = await api.usage("30d");
+        if (lifecycle !== lifecycleGeneration.current || request !== optionalRequestGeneration.current[source]) return;
+        setUsage(result);
+        if (result.requests > 0) trackFirstProductEvent("api_usage", "First API Usage", { detected_in: "dashboard" });
+      }
+    } catch {
+      // A post-mutation background refresh must not unmount the key manager:
+      // doing so would discard a newly issued secret that can only be shown once.
+      if (showPending && lifecycle === lifecycleGeneration.current && request === optionalRequestGeneration.current[source]) {
+        setDataErrors((current) => ({ ...current, [source]: true }));
+      }
+    } finally {
+      if (showPending && lifecycle === lifecycleGeneration.current && request === optionalRequestGeneration.current[source]) {
+        setDataPending((current) => ({ ...current, [source]: false }));
+      }
+    }
+  }, []);
 
   const load = useCallback(async () => {
+    const lifecycle = ++lifecycleGeneration.current;
+    setLoading(true);
     setError(null);
     try {
-      const [{ user: current }, accountView, keyList, ledgerView, usageView] = await Promise.all([
-        // usage() терпимо к отсутствию эндпоинта: пока движок не отдаёт per-model — секция покажет pending.
-        api.me(), api.account(), api.apiKeys(), api.ledger(100), api.usage("30d").catch(() => null),
-      ]);
-      setUser(current); setAccount(accountView); setKeys(keyList.keys); setLedger(ledgerView.entries); setUsage(usageView);
+      const [identity, accountView] = await Promise.all([api.me(), api.account()]);
+      if (lifecycle !== lifecycleGeneration.current) return;
+      const { user: current } = identity;
+      setUser(current); setAccount(accountView);
+      setLoading(false);
       if (!analyticsLoaded.current) {
         analyticsLoaded.current = true;
         trackProductEvent("Dashboard Opened", { section: initialSection.current, customer_type: current.customerType });
         trackFirstProductEvent("dashboard", "First Dashboard Open", { customer_type: current.customerType });
-        if (ledgerView.entries.some((entry) => entry.kind === "topup")) {
-          trackFirstProductEvent("topup", "First Top Up", { detected_in: "dashboard" });
-        }
-        if ((usageView?.requests ?? 0) > 0 || ledgerView.entries.some((entry) => entry.kind === "charge")) {
-          trackFirstProductEvent("api_usage", "First API Usage", { detected_in: "dashboard" });
-        }
       }
+      // Optional sections hydrate independently after the account shell is ready.
+      void Promise.all([retryOptional("keys"), retryOptional("ledger"), retryOptional("usage")]);
     } catch (cause) {
+      if (lifecycle !== lifecycleGeneration.current) return;
       if (cause instanceof ApiError && cause.status === 401) { router.replace("/login"); return; }
-      setError(cause instanceof Error ? cause.message : copy.loadError);
-    } finally { setLoading(false); }
-  }, [copy.loadError, router]);
+      setError(cause instanceof Error ? cause.message : dashboardCopy.en.loadError);
+    } finally {
+      if (lifecycle === lifecycleGeneration.current) setLoading(false);
+    }
+  }, [retryOptional, router]);
 
   useEffect(() => {
     document.body.classList.add("app-body");
     const timer = window.setTimeout(() => { void load(); }, 0);
-    return () => { window.clearTimeout(timer); document.body.classList.remove("app-body"); };
+    return () => { lifecycleGeneration.current += 1; window.clearTimeout(timer); document.body.classList.remove("app-body"); };
   }, [load]);
 
   useEffect(() => {
@@ -168,6 +214,12 @@ export function Dashboard() {
     window.addEventListener("popstate", syncSectionFromHistory);
     return () => window.removeEventListener("popstate", syncSectionFromHistory);
   }, []);
+
+  useEffect(() => {
+    if (searchParams.get("view") === "security") {
+      window.history.replaceState(null, "", dashboardHref("profile", language));
+    }
+  }, [language, searchParams]);
 
   async function logout() {
     if (loggingOut) return;
@@ -188,7 +240,20 @@ export function Dashboard() {
   if (loading) return <div className="dashboard-loading"><span className="brand">apiToken.sale</span><p>{copy.loading}</p></div>;
   if (!user || !account) return <div className="wrap guard ym-hide-content"><div className="auth-card"><p>{error ?? copy.loginPrompt}</p><Link className="btn btn-primary" href="/login">{copy.login}</Link></div></div>;
 
-  const activeKeys = keys.filter((key) => key.status === "active");
+  const usableKeys = keys.filter((key) => isApiKeyUsable(key, policyNow));
+  const sourceNotices: Array<{ source: OptionalDataSource; message: string; pending: boolean }> = [];
+  if (section === "overview" || section === "keys") {
+    if (dataPending.keys) sourceNotices.push({ source: "keys", message: copy.keysDataLoading, pending: true });
+    else if (dataErrors.keys) sourceNotices.push({ source: "keys", message: copy.keysDataUnavailable, pending: false });
+  }
+  if (section === "credits" || section === "usage" || section === "promos") {
+    if (dataPending.ledger) sourceNotices.push({ source: "ledger", message: copy.ledgerDataLoading, pending: true });
+    else if (dataErrors.ledger) sourceNotices.push({ source: "ledger", message: copy.ledgerDataUnavailable, pending: false });
+  }
+  if (section === "usage") {
+    if (dataPending.usage) sourceNotices.push({ source: "usage", message: copy.usageDataLoading, pending: true });
+    else if (dataErrors.usage) sourceNotices.push({ source: "usage", message: copy.usageDataUnavailable, pending: false });
+  }
   return <div className="app ym-hide-content">
     <aside className={`side ${sideOpen ? "open" : ""}`}>
       <Link className="brand side-brand" href="/"><BrandImages />apiToken.sale</Link>
@@ -225,13 +290,14 @@ export function Dashboard() {
       <div className="app-body-in">
         {error && <div className="banner banner-error">{error} <button className="btn btn-ghost btn-sm" onClick={load}>{copy.retry}</button></div>}
         {logoutError && <div className="banner banner-error">{logoutError} <button className="btn btn-ghost btn-sm" disabled={loggingOut} onClick={logout}>{copy.retry}</button></div>}
-        {section === "overview" && <Overview account={account} keys={activeKeys} open={open} />}
-        {section === "keys" && <ApiKeys keys={keys} onChanged={load} user={user} />}
-        {section === "credits" && <Credits account={account} ledger={ledger} />}
-        {section === "usage" && <Usage account={account} ledger={ledger} usage={usage} />}
+        {sourceNotices.map((notice) => <div className={`banner dashboard-data-notice${notice.pending ? "" : " banner-error"}`} role="status" key={notice.source}><span>{notice.message}</span>{!notice.pending && <button className="btn btn-ghost btn-sm" onClick={() => void retryOptional(notice.source)}>{copy.retry}</button>}</div>)}
+        {section === "overview" && <Overview account={account} user={user} usableKeys={usableKeys} totalKeys={keys.length} keysAvailable={!dataPending.keys && !dataErrors.keys} open={open} />}
+        {section === "keys" && !dataPending.keys && !dataErrors.keys && <ApiKeys keys={keys} onChanged={() => retryOptional("keys", false)} user={user} />}
+        {section === "credits" && <Credits account={account} ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
+        {section === "usage" && usage && <Usage account={account} ledger={ledger} usage={usage} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
         {section === "support" && <SupportPanel />}
         {section === "profile" && <Profile user={user} onUpdated={setUser} />}
-        {section === "promos" && <PromoPanel />}
+        {section === "promos" && <PromoPanel ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} ledgerMayBePartial={ledger.length >= 100} />}
       </div>
     </main>
   </div>;
@@ -245,7 +311,14 @@ function PageHeading({ eyebrow, title, subtitle }: { eyebrow: string; title: str
   return <header className="page-heading"><span className="eyebrow">{eyebrow}</span><h1 className="p-h1">{title}</h1><p className="p-sub">{subtitle}</p></header>;
 }
 
-function Overview({ account, keys, open }: { account: AccountView; keys: ApiKeyView[]; open(section: Section): void }) {
+function Overview({ account, user, usableKeys, totalKeys, keysAvailable, open }: {
+  account: AccountView;
+  user: AuthUser;
+  usableKeys: ApiKeyView[];
+  totalKeys: number;
+  keysAvailable: boolean;
+  open(section: Section): void;
+}) {
   const copy = useDashboardCopy();
   const multiplierBp = paymentBasisPoints(account);
   const discount = discountOf(account);
@@ -253,6 +326,12 @@ function Overview({ account, keys, open }: { account: AccountView; keys: ApiKeyV
   // Реализованная ценность: сколько официального Claude API уже получено за реально списанное.
   const officialUsedNano = officialNanoFromCharged(BigInt(account.spentNano), multiplierBp);
   const hasSpent = BigInt(account.spentNano) > 0n;
+  const engineReady = account.status === "active" && user.engineAccountStatus === "active";
+  const keysReady = engineReady && keysAvailable && usableKeys.length > 0;
+  const keyStatusText = !keysAvailable ? copy.keysUnavailable
+    : !engineReady ? copy.engineNotReady
+      : keysReady ? copy.keysReady
+        : totalKeys > 0 ? copy.keysNeedAttention : copy.noKeysOverview;
   return <section className="panel">
     <div className="overview-core">
       <article className="card overview-balance-card">
@@ -267,9 +346,9 @@ function Overview({ account, keys, open }: { account: AccountView; keys: ApiKeyV
       </article>
       <div className="overview-actions">
         <article className="card overview-action-card">
-          <div><span className="dlabel">{copy.activeKeys}</span><strong>{keys.length}</strong></div>
-          <p>{keys.length ? copy.keysReady : copy.noKeysOverview}</p>
-          <button className="btn btn-ghost btn-sm" onClick={() => open("keys")}>{keys.length ? copy.manageKeys : copy.getKey}</button>
+          <div><span className="dlabel">{copy.activeKeys}</span><strong>{keysAvailable ? usableKeys.length : "—"}</strong></div>
+          <p>{keyStatusText}</p>
+          <button className="btn btn-ghost btn-sm" onClick={() => open("keys")}>{totalKeys > 0 ? copy.manageKeys : copy.getKey}</button>
         </article>
         <article className="card overview-action-card">
           <div><span className="dlabel">{copy.claudeApiReceived}</span><strong>{hasSpent ? `≈ ${formatNanoUsd(officialUsedNano)}` : "—"}</strong></div>
@@ -748,6 +827,11 @@ function keyPolicy(key: ApiKeyView, now: number): {
   return { health, expired, expiresSoon, limitReached, nearLimit };
 }
 
+export function isApiKeyUsable(key: ApiKeyView, now: number): boolean {
+  const policy = keyPolicy(key, now);
+  return key.status === "active" && !policy.expired && !policy.limitReached;
+}
+
 function formatRelativeDate(value: string, language: "en" | "ru"): string {
   const elapsedDays = Math.floor((Date.now() - Date.parse(value)) / 86_400_000);
   if (elapsedDays <= 0) return language === "ru" ? "Сегодня" : "Today";
@@ -758,7 +842,7 @@ function formatRelativeDate(value: string, language: "en" | "ru"): string {
 
 const TOPUP_PRESETS = [100, 250, 500, 1000] as const;
 
-function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntry[] }) {
+function Credits({ account, ledger, ledgerAvailable }: { account: AccountView; ledger: LedgerEntry[]; ledgerAvailable: boolean }) {
   const copy = useDashboardCopy();
   const { language } = useI18n();
   const localCopy = localDashboardCopy[language];
@@ -816,12 +900,12 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
   const topups = ledger.filter((entry) => entry.kind === "topup");
   const ledgerMayBePartial = ledger.length >= 100;
 
-  return <section className="panel"><PageHeading eyebrow={copy.keysEyebrow} title={copy.creditsTitle} subtitle={copy.creditsSubtitle} />
+  return <section className="panel"><PageHeading eyebrow={copy.creditsEyebrow} title={copy.creditsTitle} subtitle={copy.creditsSubtitle} />
     <div className="credits-stack">
       <div className="ov-stats bill3 tc-stats">
         <div className="ovstat"><span className="dlabel">{copy.currentBalance}</span><b className="num">{normalizeUsd(account.balanceUsd)}</b><span className="dtrend">{BigInt(account.balanceNano) > 0n ? interpolate(copy.valueOfBalance, { value: formatNanoUsd(balanceApiNano) }) : copy.available}</span></div>
         <Stat label={copy.used} value={formatNanoUsd(account.spentNano)} detail={copy.balanceAfterDiscount} />
-        <div className="ovstat"><span className="dlabel">{partnerRate ? copy.partnerRateLabel : copy.currentTier}</span><b className="num">{isB2c ? (currentIdx >= 0 ? tierName(copy, B2C_PRICING_MILESTONES[currentIdx].code) : copy.noTierYet) : fixedRateName}</b><span className="dtrend">{discountOf(account)}% {copy.discount} · {formatMultiplier(paymentBasisPoints(account))} {copy.valueMultiplier}</span></div>
+        <div className="ovstat"><span className="dlabel">{partnerRate ? copy.partnerRateLabel : copy.currentTier}</span><b className="num tc-tier-name">{isB2c ? (currentIdx >= 0 ? tierName(copy, B2C_PRICING_MILESTONES[currentIdx].code) : copy.noTierYet) : fixedRateName}</b><span className="dtrend">{discountOf(account)}% {copy.discount} · {formatMultiplier(paymentBasisPoints(account))} {copy.valueMultiplier}</span></div>
       </div>
 
       <div className="card topup-convert">
@@ -859,8 +943,8 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
 
       <PricingBanner account={account} />
 
-      {ledgerMayBePartial && <div className="banner">{localCopy.partialLedger}</div>}
-      <section className="dsec credits-history"><div className="dsec-head"><h2 id="topup-history-title">{copy.topupHistory}</h2></div>
+      {ledgerAvailable && ledgerMayBePartial && <div className="banner">{localCopy.partialLedger}</div>}
+      {ledgerAvailable && <section className="dsec credits-history"><div className="dsec-head"><h2 id="topup-history-title">{copy.topupHistory}</h2></div>
         <div className="table-scroll"><table className="mtable topup-history-table" aria-labelledby="topup-history-title" role="table">
           <thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">{copy.date}</th><th scope="col" role="columnheader" className="tnum">{copy.histPaid}</th><th scope="col" role="columnheader">{copy.histDiscount}</th><th scope="col" role="columnheader" className="tnum">{copy.histApiValue}</th><th scope="col" role="columnheader">{copy.reference}</th></tr></thead>
           <tbody role="rowgroup">{topups.length === 0 ? <tr role="row"><td role="cell" colSpan={5} className="empty-cell">{copy.noTopups}</td></tr> : topups.map((entry) => {
@@ -876,18 +960,18 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
             </tr>;
           })}</tbody>
         </table></div>
-      </section>
+      </section>}
     </div>
   </section>;
 }
 
 
-function Usage({ account, ledger, usage }: { account: AccountView; ledger: LedgerEntry[]; usage: UsageView | null }) {
+function Usage({ account, ledger, usage, ledgerAvailable }: { account: AccountView; ledger: LedgerEntry[]; usage: UsageView; ledgerAvailable: boolean }) {
   const copy = useDashboardCopy();
   const { language } = useI18n();
   const localCopy = localDashboardCopy[language];
   const locale = language === "ru" ? "ru-RU" : "en-US";
-  const models = usage?.models ?? [];
+  const models = usage.models;
   const modelOfficialTotal = models.reduce((sum, model) => sum + BigInt(model.officialNano), 0n);
 
   // Скидка определяет, сколько реального Claude API стоит каждый списанный доллар:
@@ -908,14 +992,12 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
   const assignColor = (id: string) => { if (!modelColor.has(id)) modelColor.set(id, MODEL_COLORS[modelColor.size % MODEL_COLORS.length]!); };
   for (const model of models) assignColor(model.model);
 
-  // Окно графика — ТЕКУЩИЙ КАЛЕНДАРНЫЙ МЕСЯЦ (1-е … последнее число), как в референсе:
-  // «сегодня» оказывается не у правого края, а внутри шкалы. Время читаем один раз при монтировании.
+  // Match the authoritative /usage?window=30d aggregate: today plus the preceding 29 local days.
+  // The bars still come from the bounded ledger endpoint, so they are explicitly labelled as visible entries.
   const [nowMs] = useState(() => Date.now());
   const todayMs = startOfDay(nowMs);
-  const monthAnchor = new Date(nowMs);
-  const mYear = monthAnchor.getFullYear(), mMon = monthAnchor.getMonth();
-  const daysInMonth = new Date(mYear, mMon + 1, 0).getDate();
-  const days = Array.from({ length: daysInMonth }, (_, index) => new Date(mYear, mMon, index + 1).getTime());
+  const today = new Date(todayMs);
+  const days = Array.from({ length: 30 }, (_, index) => new Date(today.getFullYear(), today.getMonth(), today.getDate() - (29 - index)).getTime());
 
   // День → (модель → официальная ценность $). Модель берём из charge.model, иначе «прочее».
   const UNKNOWN_MODEL = "__other__";
@@ -938,9 +1020,8 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
   const maxValue = series.reduce((max, point) => bigintMax(max, point.value), 0n);
   const scale = niceNanoScale(maxValue);
   const gridTicks = Array.from({ length: scale.divisions + 1 }, (_, index) => scale.max - BigInt(index) * scale.step); // сверху вниз
-  const activeDays = series.filter((point) => point.value > 0n).length;
-  const windowOfficialNano = series.reduce((sum, point) => sum + point.value, 0n);
-  const windowCharges = charges.filter((charge) => { const b = startOfDay(ledgerMs(charge.timestamp)); return b >= days[0]! && b <= days[days.length - 1]!; }).length;
+  const summaryOfficialNano = BigInt(usage.totalOfficialNano);
+  const summaryRequests = usage.requests;
   const peak = series.reduce((best, point) => (point.value > best.value ? point : best), { day: todayMs, value: 0n, segs: [] as { id: string; value: bigint }[] });
   const LABEL_COUNT = 7;
   const axisMarks = [...new Set(Array.from({ length: LABEL_COUNT }, (_, i) => Math.round(i * (days.length - 1) / (LABEL_COUNT - 1))))];
@@ -965,10 +1046,12 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
     keyMap.set(key, row);
   }
   const keyRows = [...keyMap.values()].sort((a, b) => compareBigInt(b.netNano, a.netNano));
+  const sampledChargedNano = charges.reduce((sum, charge) => sum + BigInt(charge.amountNano), 0n);
+  const sampledOfficialNano = officialNanoFromCharged(sampledChargedNano, multiplierBp);
 
   return <section className="panel"><PageHeading eyebrow={copy.usageEyebrow} title={copy.usageTitle} subtitle={copy.usageSubtitle} />
     <div className="banner">💡 <b>{copy.sessionSavingTitle}</b><span> {copy.sessionSavingText}</span></div>
-    {ledgerMayBePartial && <div className="banner">{localCopy.partialLedger}</div>}
+    {ledgerAvailable && ledgerMayBePartial && <div className="banner">{localCopy.partialLedger}</div>}
 
     <div className="ov-stats bill4">
       <div className="ovstat"><span className="dlabel">{copy.claudeApiReceived}</span><b className="num accent">{formatNanoUsd(officialReceivedNano)}</b><span className="dtrend">{copy.atOfficialPrices}</span></div>
@@ -977,24 +1060,24 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
       <div className="ovstat"><span className="dlabel">{copy.availableBalance}</span><b className="num">{normalizeUsd(account.balanceUsd)}</b><span className="dtrend">{BigInt(account.balanceNano) > 0n ? interpolate(copy.valueOfBalance, { value: formatNanoUsd(officialNanoFromCharged(BigInt(account.balanceNano), multiplierBp)) }) : copy.available}</span></div>
     </div>
 
-    <div className="usage-graph">
-      <div className="uchart">
+    <div className={`usage-graph${ledgerAvailable ? "" : " usage-graph-summary-only"}`}>
+      {ledgerAvailable && <div className="uchart">
         <div className="uchart-head"><b>{copy.usageOverTime}</b><span>{copy.chartWindowLabel}</span></div>
         {maxValue === 0n ? <div className="uchart-empty">{copy.noChargesPeriod}</div> : <>
           <div className="uchart-grid">
             <div className="uchart-yaxis">{gridTicks.map((tick, i) => <span key={i}>{formatAxisNanoUsd(tick)}</span>)}</div>
             <div className="uchart-plotwrap">
               <div className="uchart-lines">{gridTicks.map((_, i) => <i key={i} />)}</div>
-              <div className="uchart-plot" onMouseLeave={() => setHoverDay(null)}>
-                {series.map((point, index) => <div key={point.day} className={`uchart-col${hoverDay === index ? " is-hover" : ""}`} onMouseEnter={() => setHoverDay(index)}>
+              <div className="uchart-plot" onMouseLeave={(event) => { if (!event.currentTarget.contains(document.activeElement)) setHoverDay(null); }}>
+                {series.map((point, index) => <button type="button" key={point.day} className={`uchart-col${hoverDay === index ? " is-hover" : ""}`} aria-label={interpolate(copy.chartDayLabel, { date: fmtDay(point.day, locale), value: formatNanoUsdSmart(point.value) })} onMouseEnter={() => setHoverDay(index)} onFocus={() => setHoverDay(index)} onBlur={() => setHoverDay((current) => current === index ? null : current)} onClick={() => setHoverDay((current) => current === index ? null : index)} onKeyDown={(event) => { if (event.key === "Escape") { setHoverDay(null); event.currentTarget.blur(); } }}>
                   <div className="uchart-col-fill">
                     {point.segs.map((seg) => <div key={seg.id} className="uchart-seg" style={{ height: `${boundedPercent(seg.value, scale.max)}%`, background: modelColor.get(seg.id) }} />)}
                   </div>
-                </div>)}
+                </button>)}
                 {hoverDay !== null && series[hoverDay] && series[hoverDay]!.value > 0n && (() => {
                   const point = series[hoverDay]!;
                   const leftPct = Math.min(92, Math.max(8, (hoverDay + 0.5) / days.length * 100));
-                  return <div className="chart-tip" style={{ left: `${leftPct}%`, bottom: `${boundedPercent(point.value, scale.max)}%` }}>
+                  return <div className="chart-tip" role="tooltip" style={{ left: `${leftPct}%`, bottom: `${boundedPercent(point.value, scale.max)}%` }}>
                     <div className="chart-tip-h">{fmtDay(point.day, locale)}</div>
                     {point.segs.map((seg) => <div key={seg.id} className="chart-tip-row"><span className="chart-tip-dot" style={{ background: modelColor.get(seg.id) }} /><span className="chart-tip-nm">{seg.id === UNKNOWN_MODEL ? copy.otherModels : modelLabel(seg.id)}</span><b>{formatNanoUsdSmart(seg.value)}</b></div>)}
                     <div className="chart-tip-total"><span>{copy.chartTotal}</span><b>{formatNanoUsdSmart(point.value)}</b></div>
@@ -1005,17 +1088,17 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
             </div>
           </div>
         </>}
-      </div>
+      </div>}
       <div className="usum">
         <span className="usum-t">{copy.periodSummary}</span>
-        <div className="usum-row"><span>{copy.officialSpend}</span><b className="accent">{formatNanoUsd(windowOfficialNano)}</b></div>
-        <div className="usum-row"><span>{copy.chargeEvents}</span><b>{windowCharges}</b></div>
-        <div className="usum-row"><span>{copy.peakDay}</span><b>{peak.value > 0n ? `${fmtDay(peak.day, locale)} · ${formatNanoUsd(peak.value)}` : "—"}</b></div>
-        <div className="usum-row"><span>{copy.dailyAverage}</span><b>{activeDays > 0 ? formatNanoUsd(roundDivide(windowOfficialNano, BigInt(activeDays))) : "—"}</b></div>
+        <div className="usum-row"><span>{copy.officialSpend}</span><b className="accent">{formatNanoUsd(summaryOfficialNano)}</b></div>
+        <div className="usum-row"><span>{copy.chargeEvents}</span><b>{summaryRequests.toLocaleString(locale)}</b></div>
+        {ledgerAvailable && <div className="usum-row"><span>{copy.peakDay}</span><b>{peak.value > 0n ? `${fmtDay(peak.day, locale)} · ${formatNanoUsd(peak.value)}` : "—"}</b></div>}
+        <div className="usum-row"><span>{copy.dailyAverage}</span><b>{summaryOfficialNano > 0n ? formatNanoUsd(roundDivide(summaryOfficialNano, 30n)) : "—"}</b></div>
       </div>
     </div>
 
-    {usage && <section className="dsec">
+    <section className="dsec">
       <div className="dsec-head analytics-heading"><div><h2>{copy.tokensAndModels}</h2><p>{copy.tokensAndModelsSub}</p></div></div>
       {models.length === 0 ? <div className="empty-box">{copy.tokensPending}</div> : <>
         <div className="tok-buckets">
@@ -1026,19 +1109,20 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
           {usage.buckets.webSearch.requests > 0 && <div className="tokb"><span className="dlabel">{copy.webSearchLabel}</span><b>{usage.buckets.webSearch.requests.toLocaleString(locale)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.webSearch.officialNano)}</span></div>}
         </div>
         <div className="mdist-wrap">
-          <div className="mdist" role="img" aria-label={copy.tokensAndModels} onMouseLeave={() => setMdistHover(null)}>
-            {mdistPlaced.map((seg, index) => <div key={seg.model.model} className={`mdist-seg${mdistHover === index ? " is-hover" : ""}`} style={{ width: `${seg.share * 100}%`, background: modelColor.get(seg.model.model) }} onMouseEnter={() => setMdistHover(index)} />)}
+          <div className="mdist" role="group" aria-label={copy.tokensAndModels} onMouseLeave={(event) => { if (!event.currentTarget.contains(document.activeElement)) setMdistHover(null); }}>
+            {mdistPlaced.map((seg, index) => <button type="button" aria-label={`${modelLabel(seg.model.model)} · ${fmtNanoUsd(seg.model.officialNano)} · ${(seg.share * 100).toFixed(seg.share < 0.1 ? 1 : 0)}%`} key={seg.model.model} className={`mdist-seg${mdistHover === index ? " is-hover" : ""}`} style={{ width: `${seg.share * 100}%`, background: modelColor.get(seg.model.model) }} onMouseEnter={() => setMdistHover(index)} onFocus={() => setMdistHover(index)} onBlur={() => setMdistHover((current) => current === index ? null : current)} onClick={() => setMdistHover((current) => current === index ? null : index)} />)}
           </div>
           {mdistHover !== null && mdistPlaced[mdistHover] && (() => {
             const seg = mdistPlaced[mdistHover]!;
             const leftPct = Math.min(92, Math.max(8, seg.center * 100));
-            return <div className="chart-tip mdist-tip" style={{ left: `${leftPct}%` }}>
+            return <div className="chart-tip mdist-tip" role="tooltip" style={{ left: `${leftPct}%` }}>
               <div className="chart-tip-row"><span className="chart-tip-dot" style={{ background: modelColor.get(seg.model.model) }} /><span className="chart-tip-nm">{modelLabel(seg.model.model)}</span><b>{fmtNanoUsd(seg.model.officialNano)}</b></div>
               <div className="chart-tip-total"><span>{copy.shareOfUse}</span><b>{(seg.share * 100).toFixed(seg.share < 0.1 ? 1 : 0)}%</b></div>
             </div>;
           })()}
         </div>
-        <div className="table-scroll"><table className="mtable"><thead><tr><th>{copy.model}</th><th className="tnum">{copy.requests}</th><th className="tnum">{copy.inputShort}</th><th className="tnum">{copy.outputShort}</th><th className="tnum">{copy.cacheRdShort}</th><th className="tnum">{copy.cacheWrShort}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
+        <p className="table-scroll-hint" id="models-table-scroll-hint">{copy.tableScrollHint}</p>
+        <div className="table-scroll" role="region" tabIndex={0} aria-label={`${copy.tokensAndModels}. ${copy.tableScrollHint}`}><table className="mtable"><thead><tr><th>{copy.model}</th><th className="tnum">{copy.requests}</th><th className="tnum">{copy.inputShort}</th><th className="tnum">{copy.outputShort}</th><th className="tnum">{copy.cacheRdShort}</th><th className="tnum">{copy.cacheWrShort}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
           <tbody>{models.map((model, index) => <tr key={model.model}>
             <td><span className="tkmdl"><span className="tkmdl-dot" style={{ background: MODEL_COLORS[index % MODEL_COLORS.length] }} />{modelLabel(model.model)}</span></td>
             <td className="tnum">{model.requests.toLocaleString(locale)}</td>
@@ -1050,17 +1134,18 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
             <td className="tnum mprice">{fmtNanoUsd(model.chargedNano)}</td>
           </tr>)}</tbody></table></div>
       </>}
-    </section>}
+    </section>
 
-    <section className="dsec">
+    {ledgerAvailable && <section className="dsec">
       <div className="dsec-head analytics-heading"><div><h2>{copy.usageByKey}</h2><p>{copy.usageByKeySub}</p></div></div>
       <div className="ubreak-sum">
         <div><span className="dlabel">{copy.keysCount}</span><b>{keyRows.length}</b></div>
-        <div><span className="dlabel">{copy.requests}</span><b>{charges.length}</b></div>
-        <div><span className="dlabel">{copy.officialValueCol}</span><b>{formatNanoUsd(officialReceivedNano)}</b></div>
-        <div><span className="dlabel">{copy.chargedCol}</span><b>{formatNanoUsd(account.spentNano)}</b></div>
+        <div><span className="dlabel">{copy.visibleCharges}</span><b>{charges.length}</b></div>
+        <div><span className="dlabel">{copy.officialValueCol}</span><b>{formatNanoUsd(sampledOfficialNano)}</b></div>
+        <div><span className="dlabel">{copy.chargedCol}</span><b>{formatNanoUsd(sampledChargedNano)}</b></div>
       </div>
-      <div className="table-scroll"><table className="mtable"><thead><tr><th>{copy.apiKey}</th><th className="tnum">{copy.requests}</th><th className="tnum">{copy.discount}</th><th className="tnum">{copy.valueColumn}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
+      <p className="table-scroll-hint">{copy.tableScrollHint}</p>
+      <div className="table-scroll" role="region" tabIndex={0} aria-label={`${copy.usageByKey}. ${copy.tableScrollHint}`}><table className="mtable"><thead><tr><th>{copy.apiKey}</th><th className="tnum">{copy.visibleCharges}</th><th className="tnum">{copy.discount}</th><th className="tnum">{copy.valueColumn}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
         <tbody>{keyRows.length === 0 ? <tr><td colSpan={6} className="empty-cell">{copy.noChargesPeriod}</td></tr> : keyRows.map((row) => <tr key={row.key}>
           <td><code>{row.key === "__system__" ? copy.systemCharge : row.key}</code></td>
           <td className="tnum">{row.count}</td>
@@ -1069,9 +1154,9 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
           <td className="tnum">{formatNanoUsd(officialNanoFromCharged(row.netNano, multiplierBp))}</td>
           <td className="tnum mprice">{formatNanoUsd(row.netNano)}</td>
         </tr>)}</tbody></table></div>
-    </section>
+    </section>}
 
-    <LedgerHistory ledger={ledger} />
+    {ledgerAvailable && <LedgerHistory ledger={ledger} />}
   </section>;
 }
 
@@ -1207,6 +1292,7 @@ function TwoFactorCard({ user, onUpdated }: { user: AuthUser; onUpdated(user: Au
   return <div className="card tfa-card">
     <div className="tfa-head"><b>{copy.twoFactorTitle}</b>{user.totpEnabled ? <span className="pill pill-good">{copy.twoFactorOn}</span> : <span className="pill pill-soft">{copy.twoFactorOff}</span>}</div>
     <p className="p-sub tfa-help">{copy.twoFactorGateHelp}</p>
+    <p className="p-sub tfa-recovery">{copy.twoFactorRecoveryHelp}</p>
     {user.totpEnabled
       ? (disarming
         ? <><p className="p-sub">{copy.twoFactorDisableHelp}</p>{codeRow(confirmDisable, copy.twoFactorDisable)}</>
@@ -1245,7 +1331,7 @@ function Profile({ user, onUpdated }: { user: AuthUser; onUpdated(user: AuthUser
       setSaveError(cause instanceof Error ? cause.message : copy.profileSaveError);
     } finally { setSaving(false); }
   }
-  return <section className="panel"><PageHeading eyebrow={copy.navAccount} title={copy.profileTitle} subtitle={copy.profileSubtitle} /><div className="prof-grid"><form className="card" onSubmit={saveProfile}><h2>{copy.profileTitle}</h2><div className="set-row"><label className="set-l" htmlFor="profile-email">{copy.email}</label><input id="profile-email" className="set-in" value={user.email} disabled readOnly /></div><div className="set-row"><label className="set-l" htmlFor="profile-display-name">{copy.displayName}</label><input id="profile-display-name" className="set-in" value={displayName} maxLength={80} autoComplete="name" onChange={(event) => { setDisplayName(event.target.value); setSaved(false); setSaveError(null); }} /></div><div className="set-row profile-id-row"><span className="set-l">{copy.userId}</span><span className="uid-wrap"><input className="set-in" value={user.id} aria-label={copy.userId} disabled readOnly /><CopyButton value={user.id} className="uid-copy-button" /></span></div><p className="p-sub">{copy.supportId}</p><div className="profile-meta"><span className="pill">{user.customerType.toUpperCase()}</span><span className="pill pill-soft">Email {user.emailVerified ? copy.verified : copy.pending}</span></div><div className="prof-save"><button className="btn btn-primary btn-sm" type="submit" disabled={saving || unchanged || trimmedName.length === 0}>{saving ? copy.saving : copy.save}</button>{saved && <span className="set-saved always-visible profile-save-success" role="status">{copy.profileSaved}</span>}{saveError && <span className="profile-save-error" role="alert">{saveError}</span>}</div></form>
+  return <section className="panel"><PageHeading eyebrow={copy.navAccount} title={copy.profileTitle} subtitle={copy.profileSubtitle} /><div className="prof-grid"><form className="card" onSubmit={saveProfile}><h2>{copy.profileTitle}</h2><div className="set-row"><label className="set-l" htmlFor="profile-email">{copy.email}</label><input id="profile-email" className="set-in profile-email-input" title={user.email} value={user.email} disabled readOnly /></div><div className="set-row"><label className="set-l" htmlFor="profile-display-name">{copy.displayName}</label><input id="profile-display-name" className="set-in" value={displayName} maxLength={80} autoComplete="name" onChange={(event) => { setDisplayName(event.target.value); setSaved(false); setSaveError(null); }} /></div><div className="set-row profile-id-row"><span className="set-l">{copy.userId}</span><span className="uid-wrap"><input className="set-in" value={user.id} aria-label={copy.userId} disabled readOnly /><CopyButton value={user.id} className="uid-copy-button" /></span></div><p className="p-sub">{copy.supportId}</p><div className="profile-meta"><span className="pill">{user.customerType.toUpperCase()}</span><span className="pill pill-soft">Email {user.emailVerified ? copy.verified : copy.pending}</span></div><div className="prof-save"><button className="btn btn-primary btn-sm" type="submit" disabled={saving || unchanged || trimmedName.length === 0}>{saving ? copy.saving : copy.save}</button>{saved && <span className="set-saved always-visible profile-save-success" role="status">{copy.profileSaved}</span>}{saveError && <span className="profile-save-error" role="alert">{saveError}</span>}</div></form>
     <div className="prof-side"><TwoFactorCard user={user} onUpdated={onUpdated} /></div></div>
   </section>;
 }
@@ -1255,13 +1341,16 @@ function SupportPanel() {
   return <section className="panel"><PageHeading eyebrow={copy.supportEyebrow} title={copy.supportTitle} subtitle={copy.supportSubtitle} /><SupportContent /></section>;
 }
 
-function PromoPanel() {
+function PromoPanel({ ledger, ledgerAvailable, ledgerMayBePartial }: { ledger: LedgerEntry[]; ledgerAvailable: boolean; ledgerMayBePartial: boolean }) {
   const copy = useDashboardCopy();
+  const { language } = useI18n();
+  const localCopy = localDashboardCopy[language];
   const search = useSearchParams();
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<{ usd: string; balance?: string } | null>(null);
+  const activations = ledger.filter((entry) => entry.kind !== "charge" && entry.reference?.startsWith("promo:"));
 
   useEffect(() => {
     const prefill = search.get("promo");
@@ -1289,7 +1378,7 @@ function PromoPanel() {
 
   return (
     <section className="panel">
-      <PageHeading eyebrow={copy.navGrowth} title={copy.promoTitle} subtitle={copy.promoSubtitle} />
+      <PageHeading eyebrow={copy.promoEyebrow} title={copy.promoTitle} subtitle={copy.promoSubtitle} />
       <div className="card ref-linkcard">
         {done ? (
           <div className="banner banner-accent">
@@ -1297,9 +1386,11 @@ function PromoPanel() {
             {done.balance ? ` · ${done.balance}` : ""}
           </div>
         ) : null}
-        {error ? <div className="banner banner-error">{error}</div> : null}
+        {error ? <div className="banner banner-error" role="alert">{error}</div> : null}
         <form className="ref-row" onSubmit={redeem}>
+          <label className="ref-code-label" htmlFor="promo-code">{copy.promoInput}</label>
           <input
+            id="promo-code"
             className="set-in"
             placeholder={copy.promoInput}
             value={code}
@@ -1313,6 +1404,23 @@ function PromoPanel() {
           </button>
         </form>
       </div>
+      {ledgerAvailable && ledgerMayBePartial && <div className="banner">{localCopy.partialLedger}</div>}
+      {ledgerAvailable && <section className="dsec promo-history">
+        <div className="dsec-head"><h2 id="promo-history-title">{copy.myActivations}</h2></div>
+        <div className="table-scroll" role="region" tabIndex={0} aria-label={`${copy.myActivations}. ${copy.tableScrollHint}`}>
+          <table className="mtable" aria-labelledby="promo-history-title">
+            <thead><tr><th>{copy.date}</th><th>{copy.code}</th><th className="tnum">{copy.reward}</th></tr></thead>
+            <tbody>{activations.length === 0 ? <tr><td colSpan={3} className="empty-cell">{copy.noPromos}</td></tr> : activations.map((entry) => {
+              const referenceId = entry.reference?.slice("promo:".length) ?? "";
+              return <tr key={entry.id}>
+                <td data-label={copy.date}>{formatLedgerTime(entry.timestamp, language)}</td>
+                <td data-label={copy.code}><span className="promo-ledger-label" title={entry.reference ?? undefined}>{copy.promoCredit}{referenceId ? ` · …${referenceId.slice(-8)}` : ""}</span></td>
+                <td className="tnum" data-label={copy.reward}>+{formatNanoUsd(BigInt(entry.amountNano))}</td>
+              </tr>;
+            })}</tbody>
+          </table>
+        </div>
+      </section>}
     </section>
   );
 }

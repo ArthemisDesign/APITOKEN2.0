@@ -7,5 +7,5 @@ import { coreMetadata, coreRu } from "@/lib/seo-core";
 export const metadata: Metadata = coreMetadata("/plans", seoPages.plans, coreRu.plans, "ru");
 
 export default function RuPlansPage() {
-  return <><JsonLd data={breadcrumbJsonLd([{ name: "Главная", path: "/ru" }, { name: "Цены", path: "/ru/plans" }])} /><PlansContent /></>;
+  return <><JsonLd data={breadcrumbJsonLd([{ name: "Главная", path: "/ru" }, { name: "Цены", path: "/ru/plans" }])} /><main><PlansContent /></main></>;
 }

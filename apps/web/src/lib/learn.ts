@@ -727,7 +727,7 @@ export const learnArticles: LearnArticle[] = [
         { type: "list", items: [
           "The full Claude line — Opus, Sonnet and Haiku — on one key.",
           "Standard Anthropic behaviour: streaming, tool use, system prompts.",
-          "Per-key spend caps and token-level usage in the dashboard.",
+          "An optional lifetime spending limit and expiration date per key, plus token-level usage in the dashboard.",
         ] },
         { type: "p", text: "Nothing about how you use Cursor changes; you simply source the key from apiToken.sale instead of Anthropic." },
       ] },
@@ -1227,7 +1227,7 @@ export const learnArticles: LearnArticle[] = [
       ] },
       { h2: "When each fits", blocks: [
         { type: "list", items: [
-          "apiToken.sale — a native Anthropic endpoint with a progressive discount and per-key controls.",
+          "apiToken.sale — a native Anthropic endpoint with a progressive discount, lifetime key spending limits and optional expiration.",
           "A generic reseller — may suit you if you already use its other providers.",
           "Both remove the Anthropic-account barrier; the difference is price and how native the Claude access is.",
         ] },
@@ -1385,7 +1385,7 @@ export const learnArticles: LearnArticle[] = [
           "Up to 80% off official spend on prepaid balance that never expires.",
           "Instant, self-serve access — no Anthropic account, waitlist or billing country.",
           "Pay by bank card or cryptocurrency.",
-          "Per-key spend controls and token-level usage in the dashboard.",
+          "An optional lifetime spending limit and expiration date per key, plus token-level usage in the dashboard.",
         ] },
         cta(),
       ] },
@@ -1416,7 +1416,7 @@ export const learnArticles: LearnArticle[] = [
         { type: "list", items: [
           "Presents the standard Anthropic Messages API so tools work unchanged.",
           "Handles access and billing — here, prepaid balance at a discount.",
-          "Adds per-key controls like spend caps and usage visibility.",
+          "Adds per-key lifetime spending limits, optional expiration and usage visibility.",
         ] },
       ] },
       { h2: "Native, not a translation layer", blocks: [
@@ -1427,14 +1427,14 @@ export const learnArticles: LearnArticle[] = [
         { type: "list", items: [
           "Native Anthropic API, so tools and SDKs work unchanged.",
           "Transparent per-token billing you can audit in a dashboard.",
-          "Per-key controls: spend caps, model scoping, rotation.",
+          "Per-key controls: an optional lifetime spending limit and expiration date.",
           "No lock-in — prepaid balance that never expires.",
         ] },
       ] },
     ],
     faq: [
       { q: "Does a gateway change the API?", a: "No. A native Claude gateway speaks the standard Anthropic Messages API, so your tools and SDKs are unchanged." },
-      { q: "Why use a gateway instead of Anthropic directly?", a: "For a discount, instant access without an Anthropic account, and per-key spend controls." },
+      { q: "Why use a gateway instead of Anthropic directly?", a: "For a discount, instant access without an Anthropic account, and optional lifetime spending limits and expiration dates for individual keys." },
     ],
     related: ["apitoken-vs-anthropic-direct", "claude-api-key-security", "cheapest-claude-api", "anthropic-sdk-base-url"],
   },
@@ -1443,12 +1443,12 @@ export const learnArticles: LearnArticle[] = [
     cluster: "explain",
     title: "Claude API Rate Limits",
     h1: "Understanding Claude API rate limits",
-    description: "How rate limits work on apiToken.sale, what a 429 means, and how to handle it with backoff and per-key caps to protect your prepaid balance.",
+    description: "What a 429 means on apiToken.sale, how to handle it with Retry-After and backoff, and how key spending guardrails differ from throughput limits.",
     keywords: ["claude api rate limits", "claude api 429", "anthropic rate limit", "claude api throughput", "claude api retry", "claude api pricing", "claude api tokens", "how claude api works", "claude api explained", "anthropic api"],
     dek: "Rate limits keep the gateway stable and your balance safe. Handling them well means smoother tools and no wasted spend.",
     sections: [
-      { h2: "Protective, per-key limits", blocks: [
-        { type: "p", text: "Rather than a fixed public RPM table, apiToken.sale applies protective per-key and gateway limits. You can also set your own per-key caps in the dashboard to split throughput across tools." },
+      { h2: "Traffic limits and spending guardrails", blocks: [
+        { type: "p", text: "apiToken.sale does not publish a fixed RPM table. A 429 can represent a gateway or upstream capacity limit. The dashboard does not configure request throughput: its per-key guardrails are an optional lifetime spending limit and expiration date." },
       ] },
       { h2: "Handling a 429", blocks: [
         { type: "list", items: [
@@ -1460,7 +1460,7 @@ export const learnArticles: LearnArticle[] = [
       ] },
     ],
     faq: [
-      { q: "What are the Claude API rate limits?", a: "apiToken.sale uses protective per-key and gateway limits plus your own configurable per-key caps, rather than a fixed public RPM number." },
+      { q: "What are the Claude API rate limits?", a: "apiToken.sale does not publish a fixed RPM number. If you receive a 429, honor Retry-After, back off and reduce concurrency; contact support when you need sustained higher throughput." },
       { q: "What should I do on a 429?", a: "Respect Retry-After, back off, and reduce concurrency; contact support for sustained higher limits." },
     ],
     related: ["claude-api-best-practices", "claude-api-streaming", "how-billing-works", "claude-api-key-security"],
@@ -1525,7 +1525,7 @@ export const learnArticles: LearnArticle[] = [
     cluster: "explain",
     title: "Claude API Best Practices",
     h1: "Claude API best practices",
-    description: "Practical best practices for the Claude API on apiToken.sale: model choice, prompt caching, streaming, per-key caps, and secure key handling.",
+    description: "Practical best practices for the Claude API on apiToken.sale: model choice, prompt caching, streaming, lifetime key spending limits, expiration, and secure key handling.",
     keywords: ["claude api best practices", "claude api tips", "claude api production", "claude api guidelines", "anthropic api best practices", "claude api key", "anthropic-compatible api", "claude api base url", "claude api setup", "claude api integration"],
     dek: "A short checklist to get reliable, economical results from the Claude API in production.",
     sections: [
@@ -1534,7 +1534,7 @@ export const learnArticles: LearnArticle[] = [
           "Pick the cheapest model that can do each task; escalate only when needed.",
           "Cache large, stable context to slash input cost.",
           "Stream responses for responsive agents and UIs.",
-          "Set per-key spend caps and rotate keys per tool.",
+          "Set an optional lifetime spending limit and expiration date on each key.",
           "Handle 429s with Retry-After and backoff.",
           "Watch the token-level usage breakdown to catch waste early.",
         ] },
@@ -1544,14 +1544,14 @@ export const learnArticles: LearnArticle[] = [
         { type: "list", items: [
           "Cap max_tokens to what each response actually needs.",
           "Retry 429/5xx with exponential backoff, not tight loops.",
-          "Separate keys per environment so limits and leaks are contained.",
+          "Use separate, clearly named keys per environment so a leak can be revoked without replacing every client.",
           "Review token-level usage weekly to catch regressions early.",
         ] },
       ] },
     ],
     faq: [
       { q: "What is the most impactful best practice?", a: "Match the model to the task and cache repeated context — together they cut cost the most." },
-      { q: "How do I keep keys safe?", a: "Use per-key caps, IDE-scoped keys, and rotate keys without downtime from the dashboard." },
+      { q: "How do I keep keys safe?", a: "Store keys in a secret manager, set an appropriate lifetime spending limit and expiration date, and revoke a key immediately if it is exposed." },
     ],
     related: ["save-tokens-on-claude-api", "claude-api-rate-limits", "claude-api-key-security", "best-claude-model-for-coding"],
   },
@@ -1623,16 +1623,16 @@ export const learnArticles: LearnArticle[] = [
     cluster: "integrate",
     title: "Securing Your Claude API Key",
     h1: "Keep your Claude API key secure",
-    description: "How to protect a Claude API key on apiToken.sale: per-key spend caps, IDE-scoped keys, IP controls, rotation without downtime, and never committing keys.",
+    description: "How to protect a Claude API key on apiToken.sale with a lifetime spending limit, optional expiration, separate named keys, prompt revocation, and safe secret storage.",
     keywords: ["claude api key security", "protect api key", "rotate claude api key", "claude api key management", "secure anthropic key"],
     dek: "Your key spends real balance, so treat it like a credential. apiToken.sale gives you controls to limit blast radius if a key ever leaks.",
     sections: [
       { h2: "Controls that limit risk", blocks: [
         { type: "list", items: [
-          "Set per-key daily and monthly spend caps.",
-          "Issue a separate key per tool or environment.",
-          "Rotate keys without downtime from the dashboard.",
-          "Restrict allowed models or IP ranges where supported.",
+          "Set a lifetime spending limit for the key.",
+          "Choose an expiration date when temporary access should end automatically.",
+          "Issue a separate, clearly named key per tool or environment.",
+          "To replace a key, create the replacement, update the client, then revoke the old key.",
         ] },
       ] },
       { h2: "Basic hygiene", blocks: [
@@ -1645,7 +1645,7 @@ export const learnArticles: LearnArticle[] = [
       ] },
     ],
     faq: [
-      { q: "How do I limit damage if a key leaks?", a: "Use per-key spend caps and scoped keys, then rotate the key without downtime from the dashboard." },
+      { q: "How do I limit damage if a key leaks?", a: "Use a lifetime spending limit and expiration date, keep separate named keys per client, and revoke the exposed key immediately." },
       { q: "Where should I store my key?", a: "In environment variables or a secret manager — never committed to git or shared in chats." },
     ],
     related: ["claude-api-best-practices", "claude-api-rate-limits", "claude-code-api-key", "how-billing-works"],
@@ -1655,7 +1655,7 @@ export const learnArticles: LearnArticle[] = [
     cluster: "explain",
     title: "Claude API for AI Agents",
     h1: "Using the Claude API for AI agents",
-    description: "Build AI agents on the Claude API with apiToken.sale: one key for every model, streaming, tool use, prompt caching and spend caps to keep long runs affordable.",
+    description: "Build AI agents on the Claude API with apiToken.sale: one key for every model, streaming, tool use, prompt caching and a lifetime key spending limit for long-run cost control.",
     keywords: ["claude api agents", "claude ai agent api", "claude tool use", "claude agent framework", "claude api for automation"],
     dek: "Agentic workloads are token-hungry and long-running, which makes model choice, caching and cost control matter most. Here is how apiToken.sale fits agents.",
     sections: [
@@ -1664,14 +1664,14 @@ export const learnArticles: LearnArticle[] = [
           "Streaming and tool use — both standard on the Anthropic Messages API.",
           "Model routing: Haiku for cheap steps, Sonnet for reasoning, Opus for the hardest.",
           "Prompt caching for repeated system prompts and tool definitions.",
-          "Per-key spend caps so a runaway loop cannot drain your balance.",
+          "A per-key lifetime spending limit so a runaway loop cannot spend beyond that key's cap.",
         ] },
         cta(),
       ] },
       { h2: "A cost-aware agent loop", blocks: [
         { type: "p", text: "A practical pattern: route planning and reasoning to Sonnet, cheap sub-steps and parsing to Haiku, and escalate only the hardest calls to Opus. Cache the system prompt and tool definitions so repeated context is nearly free." },
         { type: "list", items: [
-          "Set a per-key spend cap so a runaway loop cannot drain balance.",
+          "Set a per-key lifetime spending limit so a runaway loop cannot spend beyond the cap.",
           "Stream so the agent can act on partial output.",
           "Watch token usage to tune which steps use which model.",
         ] },
@@ -1679,7 +1679,7 @@ export const learnArticles: LearnArticle[] = [
     ],
     faq: [
       { q: "Is the Claude API good for agents?", a: "Yes — with streaming, tool use, model routing and prompt caching, all on one apiToken.sale key with spend controls." },
-      { q: "How do I keep agent costs down?", a: "Route cheap steps to Haiku, cache repeated context, and set per-key spend caps." },
+      { q: "How do I keep agent costs down?", a: "Route cheap steps to Haiku, cache repeated context, and set a lifetime spending limit on the agent's key." },
     ],
     related: ["claude-api-streaming", "claude-api-prompt-caching", "save-tokens-on-claude-api", "claude-api-key-security"],
   },
