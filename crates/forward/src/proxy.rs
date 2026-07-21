@@ -305,6 +305,88 @@ fn err_retry(code: StatusCode, kind: &str, msg: &str, retry_after: i64) -> Respo
         .unwrap()
 }
 
+/// HTTP-статус `overloaded_error` у НАСТОЯЩЕГО Anthropic — 529 (не 503). Держим точь-в-точь,
+/// чтобы синтетический ответ был неотличим от api.anthropic.com (SDK Anthropic знает 529 как
+/// retryable overloaded). Через `from_u16` — 529 вне «именованных» констант `http`.
+fn http_overloaded() -> StatusCode {
+    StatusCode::from_u16(529).expect("529 is a valid HTTP status code")
+}
+
+/// Внутренняя причина СИНТЕТИЧЕСКОЙ (не-upstream) ошибки движка. Единственная точка, где рождаются
+/// НАШИ ответы клиенту. НИКОГДА не сериализуется как есть — только выбирает Anthropic-аутентичный
+/// публичный триплет `{status, error.type, message}`. Смысл: клиент считает, что говорит с
+/// api.anthropic.com, и НЕ должен видеть наши внутренности («subscription/pool/upstream/billing
+/// authority/cooling»). Настоящую причину несут метрики и локальный лог (`eprintln`), не тело ответа.
+///
+/// Что клиент ЗАКОННО должен знать (контракт продукта, задокументирован в docs-portal) — остаётся:
+/// `InvalidKey` (401), `LowBalance` (402 — состояние аккаунта, «пополни баланс»), `NotFound` (404),
+/// `BodyTooLarge`/`BadRequest`/`BadBeta` (4xx валидация). Всё «наше» (нет ёмкости/пул пуст/брейкер/
+/// authority/сбой апстрим-соединения) схлопывается в ретраибл `Overloaded`/`RateLimited`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum LocalErr {
+    /// Транзиентная нехватка ёмкости на НАШЕЙ стороне: пул пуст, breaker разомкнут (брауноут
+    /// апстрима), authority недоступен/зафенсен, сбой соединения/сети с апстримом, серверная
+    /// перегрузка. Клиенту — 529 `overloaded_error` «Overloaded» (retryable), опц. Retry-After.
+    Overloaded,
+    /// Весь флот за лимитом (все подписки cooling) ИЛИ клиент превысил свою конкурентность.
+    /// Клиенту это выглядит как обычный рейт-лимит: 429 `rate_limit_error` + Retry-After.
+    RateLimited,
+    /// Неизвестный/заблокированный клиентский ключ. 401 `authentication_error`.
+    InvalidKey,
+    /// Недостаточно средств на балансе аккаунта или достигнут лимит расхода ключа. Это ЗАКОННАЯ
+    /// ошибка состояния аккаунта (клиент — платящий пользователь с предоплаченным балансом; docs
+    /// определяют 402 именно так). 402 `invalid_request_error`.
+    LowBalance,
+    /// Эндпоинт не поддерживается на квоте подписки. 404 `not_found_error`.
+    NotFound,
+    /// Тело запроса больше лимита. 413 `request_too_large`.
+    BodyTooLarge,
+    /// Не удалось прочитать/разобрать тело запроса. 400 `invalid_request_error`.
+    BadRequest,
+    /// Некорректный `anthropic-beta` заголовок. 400 `invalid_request_error`.
+    BadBeta,
+    /// Внутренний сбой движка (сериализация тела/сборка ответа). 500 `api_error`.
+    Internal,
+}
+
+impl LocalErr {
+    /// Публичный триплет `(status, error.type, message)`. ТОЛЬКО аутентичные Anthropic-тексты и типы;
+    /// ни одного упоминания подписок/пула/upstream/authority/cooling.
+    fn parts(self) -> (StatusCode, &'static str, &'static str) {
+        match self {
+            LocalErr::Overloaded => (http_overloaded(), "overloaded_error", "Overloaded"),
+            LocalErr::RateLimited => (
+                StatusCode::TOO_MANY_REQUESTS, "rate_limit_error",
+                "Number of requests has exceeded your rate limit. Please try again later.",
+            ),
+            LocalErr::InvalidKey => (StatusCode::UNAUTHORIZED, "authentication_error", "invalid x-api-key"),
+            LocalErr::LowBalance => (
+                StatusCode::PAYMENT_REQUIRED, "invalid_request_error",
+                "insufficient balance or key spending limit reached for this request",
+            ),
+            LocalErr::NotFound => (StatusCode::NOT_FOUND, "not_found_error", "Not Found"),
+            LocalErr::BodyTooLarge => (
+                StatusCode::PAYLOAD_TOO_LARGE, "request_too_large",
+                "Request exceeds the maximum allowed number of bytes.",
+            ),
+            LocalErr::BadRequest => (StatusCode::BAD_REQUEST, "invalid_request_error", "Could not parse request body."),
+            LocalErr::BadBeta => (StatusCode::BAD_REQUEST, "invalid_request_error", "invalid anthropic-beta header"),
+            LocalErr::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "api_error", "Internal server error"),
+        }
+    }
+}
+
+/// ЕДИНЫЙ санитайзер синтетических ошибок: внутренняя причина → Anthropic-аутентичный публичный
+/// ответ. `retry_after` (сек) добавляет `Retry-After` для retryable-причин. Настоящая причина
+/// НЕ попадает в тело — она уже отражена в метриках/логах у места вызова.
+fn local_err(reason: LocalErr, retry_after: Option<i64>) -> Response {
+    let (code, kind, msg) = reason.parts();
+    match retry_after {
+        Some(secs) => err_retry(code, kind, msg, secs),
+        None => err_response(code, kind, msg),
+    }
+}
+
 /// Точный баланс-лимит метерного ключа: сколько OUTPUT-токенов и какой hold клиент может позволить
 /// остатком баланса `bal` (client-нанодоллары, т.е. с учётом наценки). Гарантии («ни на токен/цент
 /// больше баланса»):
@@ -467,7 +549,9 @@ pub async fn forward(
     req: axum::extract::Request,
 ) -> Response {
     if !app.authority_ready.load(AtomicOrdering::Acquire) {
-        return err_retry(StatusCode::SERVICE_UNAVAILABLE, "api_error", "billing authority unavailable", 2);
+        // Инстанс зафенсен/authority недоступен — НАША внутренняя причина. Клиенту — транзиентный
+        // retryable overload (ретрай, вероятно, попадёт на здоровый инстанс), без слова «authority».
+        return local_err(LocalErr::Overloaded, Some(2));
     }
     // ГЛОБАЛЬНЫЙ анти-DoS потолок: занимаем слот ДО авторизации (иначе флуд неверными ключами насытил
     // бы пул DB-читателей мимо fair-share). Держится до конца обработки; стрим ответа его уже не занимает
@@ -476,7 +560,7 @@ pub async fn forward(
         Ok(p) => p,
         Err(_) => {
             Metrics::inc(&app.metrics.breaker_rejects);
-            return err_retry(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error", "server busy", 2);
+            return local_err(LocalErr::Overloaded, Some(2));
         }
     };
     let (parts, body) = req.into_parts();
@@ -484,11 +568,10 @@ pub async fn forward(
     match authz {
         Authz::Unauthorized => {
             Metrics::inc(&app.metrics.auth_failures);
-            return err_response(StatusCode::UNAUTHORIZED, "authentication_error", "invalid api key");
+            return local_err(LocalErr::InvalidKey, None);
         }
         Authz::PaymentRequired =>
-            return err_response(StatusCode::PAYMENT_REQUIRED, "invalid_request_error",
-                                "insufficient balance — top up your key"),
+            return local_err(LocalErr::LowBalance, None),
         Authz::Admin | Authz::Metered { .. } => {}
     }
     // ALLOWLIST эндпоинтов: форвардим на пул ТОЛЬКО то, что доступно на квоте ПОДПИСКИ Claude Max
@@ -496,7 +579,7 @@ pub async fn forward(
     // (user:batch/developer), которого у подписки НЕТ → на них Anthropic отдаёт 403/401/404. Не роутим
     // их на подписку (иначе застудили бы её и слили бы backend-scope в ошибке), а отдаём чистый 404.
     if !is_supported_endpoint(&parts.method, parts.uri.path()) {
-        return err_response(StatusCode::NOT_FOUND, "not_found_error", "this endpoint is not available");
+        return local_err(LocalErr::NotFound, None);
     }
     Metrics::inc(&app.metrics.requests);
     // fair-share ПО АККАУНТУ: не даём одному клиенту (профилю) набить флот бёрстом одновременных
@@ -506,8 +589,7 @@ pub async fn forward(
     let mut key_guard = if let Authz::Metered { account_id, .. } = &authz {
         if !app.key_limiter.try_acquire(account_id, app.cfg.max_inflight_per_key) {
             Metrics::inc(&app.metrics.key_throttled);
-            return err_retry(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error",
-                             "too many concurrent requests — slow down", 1);
+            return local_err(LocalErr::RateLimited, Some(1));
         }
         Some(KeyGuard { limiter: app.key_limiter.clone(), key: account_id.clone() })
     } else {
@@ -531,9 +613,9 @@ pub async fn forward(
     let raw = match read_body_limited(body, BODY_LIMIT).await {
         Ok(b) => b,
         Err(BodyReadError::TooLarge) =>
-            return err_response(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large", "request too large"),
+            return local_err(LocalErr::BodyTooLarge, None),
         Err(BodyReadError::Read) =>
-            return err_response(StatusCode::BAD_REQUEST, "invalid_request_error", "body read error"),
+            return local_err(LocalErr::BadRequest, None),
     };
 
     // тело: один парс — вытаскиваем модель + max_tokens (для тарификации/резерва) и инжектим
@@ -573,8 +655,7 @@ pub async fn forward(
     // лишних DB-записей (reserve+возврат) на каждый запрос thundering-herd. Резерва ещё нет — возвращать нечего.
     if let Some(retry) = app.breaker.open_for(pool::now()) {
         Metrics::inc(&app.metrics.breaker_rejects);
-        return err_retry(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error",
-                         "upstream temporarily unavailable", retry);
+        return local_err(LocalErr::Overloaded, Some(retry));
     }
 
     // БАЛАНС-ЛИМИТ метерного ключа (точный контроль: клиент не получит ни токена/цента сверх баланса).
@@ -629,8 +710,7 @@ pub async fn forward(
         }
         let (eff_mt, hold) = match reserved_pair {
             Some(x) => x,
-            None => return err_response(StatusCode::PAYMENT_REQUIRED, "invalid_request_error",
-                                        "insufficient balance or key spending limit for this request"),
+            None => return local_err(LocalErr::LowBalance, None),
         };
         // урезали под баланс → правим max_tokens в теле ПОСЛЕ финального eff_mt (мог уменьшиться на
         // ретрае): Anthropic остановит генерацию ровно тут.
@@ -652,8 +732,7 @@ pub async fn forward(
         .and_then(|v| v.to_str().ok()).unwrap_or(&app.cfg.anthropic_version).to_string();
     let beta = match merged_beta(&parts.headers, &app.cfg.default_beta) {
         Ok(v) => v,
-        Err(()) => return err_response(StatusCode::BAD_REQUEST, "invalid_request_error",
-                                       "invalid anthropic-beta header"),
+        Err(()) => return local_err(LocalErr::BadBeta, None),
     };
 
     // Гладкий UX: транзиентную нехватку ёмкости (все подписки cooling/за util_cap / breaker /
@@ -668,8 +747,9 @@ pub async fn forward(
     // (500 на каждой подписке) в одиночку размыкал бы глобальный breaker и клал сервис всем. Реальный
     // аутейдж тилит breaker числом РАЗНЫХ запросов, а не веером одного.
     let mut backend_fail_recorded = false;
-    let mut last_local = err_response(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error",
-                                     "no subscriptions available in pool");
+    // Дефолт терминала, если ни одной подписки не выбрали и нет реального upstream-ответа (пул пуст).
+    // Клиенту — обезличенный retryable overload, без слова «pool/subscriptions».
+    let mut last_local = local_err(LocalErr::Overloaded, None);
     // Последний РЕАЛЬНЫЙ ответ Anthropic удерживаем до конца ротации. Если успеха не будет, именно он
     // уходит клиенту со своим body/request-id/retry headers; synthetic допустим только без response.
     let mut last_upstream: Option<(StatusCode, wreq::Response)> = None;
@@ -739,7 +819,7 @@ pub async fn forward(
             Err(e) => {
                 app.pool.mark_cooling(&sub.email, 10); // битый прокси → cooling (слот закроет guard)
                 eprintln!("⚠ прокси {}: {e}", sub.email); // детали ТОЛЬКО в лог (не клиенту)
-                last_local = err_response(StatusCode::BAD_GATEWAY, "api_error", "upstream connection error");
+                last_local = local_err(LocalErr::Overloaded, None);
                 continue;
             }
         };
@@ -783,8 +863,7 @@ pub async fn forward(
                 }
                 match serde_json::to_vec(v) {
                     Ok(b) => bytes::Bytes::from(b),
-                    Err(_) => return err_response(StatusCode::INTERNAL_SERVER_ERROR, "api_error",
-                                                  "request could not be processed"),
+                    Err(_) => return local_err(LocalErr::Internal, None),
                 }
             }
             None => body_bytes.clone(), // не-JSON тело → как есть
@@ -809,7 +888,7 @@ pub async fn forward(
                 app.pool.mark_cooling(&sub.email, 15);
                 if !backend_fail_recorded { app.breaker.record_fail(pool::now(), &sub.email); backend_fail_recorded = true; }
                 eprintln!("⚠ upstream {}: {e}", sub.email); // детали (email/сеть) ТОЛЬКО в лог
-                last_local = err_response(StatusCode::BAD_GATEWAY, "api_error", "upstream unavailable");
+                last_local = local_err(LocalErr::Overloaded, None);
                 backend_tries += 1;
                 if backend_tries >= app.cfg.max_tries.max(1) { break; }
                 continue;
@@ -895,10 +974,7 @@ pub async fn forward(
                         Some("delivery-marker-failed"), None,
                     );
                     if let Some(g) = hold_guard.as_mut() { g.disarm(); }
-                    return err_retry(
-                        StatusCode::SERVICE_UNAVAILABLE, "api_error",
-                        "billing authority unavailable", 2,
-                    );
+                    return local_err(LocalErr::Overloaded, Some(2));
                 }
             }
             let capacity = match (&guard.billing, &guard.capacity_lease_id) {
@@ -963,8 +1039,7 @@ pub async fn forward(
     }
     Metrics::inc(&app.metrics.exhausted);
     let retry = app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs);
-    return err_retry(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error",
-              "all subscriptions are rate-limited — retry shortly", retry);
+    return local_err(LocalErr::RateLimited, Some(retry));
     } // 'smooth: loop
 }
 
@@ -1054,7 +1129,7 @@ fn stream_back(st: StatusCode, resp: wreq::Response, meter: Option<MeterCtx>,
         None => Body::from_stream(stream),
     };
     builder.body(body).unwrap_or_else(|_| {
-        err_response(StatusCode::INTERNAL_SERVER_ERROR, "api_error", "response build error")
+        local_err(LocalErr::Internal, None)
     })
 }
 
@@ -1212,5 +1287,67 @@ mod tests {
         // переполнения нет: огромный баланс и max_tokens
         let (_, h) = cap_to_balance(i64::MAX as i128, 100, 0, &p, 2000, u64::MAX).unwrap();
         assert!(h >= 0);
+    }
+
+    /// Все синтетические причины перебираем в одном месте (гарантия, что тест покрывает КАЖДУЮ).
+    const ALL_LOCAL_ERRS: [LocalErr; 9] = [
+        LocalErr::Overloaded, LocalErr::RateLimited, LocalErr::InvalidKey, LocalErr::LowBalance,
+        LocalErr::NotFound, LocalErr::BodyTooLarge, LocalErr::BadRequest, LocalErr::BadBeta,
+        LocalErr::Internal,
+    ];
+
+    #[test]
+    fn local_err_never_leaks_internal_architecture() {
+        // Клиент считает, что говорит с api.anthropic.com. НИ ОДНО публичное поле (тип+сообщение)
+        // синтетической ошибки не должно раскрывать наши внутренности: подписки, пул, upstream,
+        // authority/fencing, cooling/ротацию, персоны/флот, oauth-инжект. Регрессия-гард: если кто-то
+        // добавит вариант с текстом «no subscriptions…» — тест упадёт.
+        let forbidden = [
+            "subscription", "pool", "upstream", "authority", "cooling", "rotat",
+            "persona", "fleet", "oauth", "in-house", "in house", "quota",
+        ];
+        for reason in ALL_LOCAL_ERRS {
+            let (_code, kind, msg) = reason.parts();
+            let hay = format!("{kind} {msg}").to_lowercase();
+            for term in forbidden {
+                assert!(!hay.contains(term), "{reason:?} leaks internal term {term:?}: {hay:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn local_err_maps_to_authentic_anthropic_triples() {
+        // Статус+тип каждой причины совпадают с настоящим Anthropic (иначе ответ отличим от API).
+        let cases = [
+            (LocalErr::Overloaded, 529u16, "overloaded_error"),
+            (LocalErr::RateLimited, 429, "rate_limit_error"),
+            (LocalErr::InvalidKey, 401, "authentication_error"),
+            (LocalErr::LowBalance, 402, "invalid_request_error"),
+            (LocalErr::NotFound, 404, "not_found_error"),
+            (LocalErr::BodyTooLarge, 413, "request_too_large"),
+            (LocalErr::BadRequest, 400, "invalid_request_error"),
+            (LocalErr::BadBeta, 400, "invalid_request_error"),
+            (LocalErr::Internal, 500, "api_error"),
+        ];
+        for (reason, want_code, want_type) in cases {
+            let (code, kind, _msg) = reason.parts();
+            assert_eq!(code.as_u16(), want_code, "{reason:?} wrong status");
+            assert_eq!(kind, want_type, "{reason:?} wrong error.type");
+        }
+        // overloaded=529 достижим (вне именованных констант http) и валиден.
+        assert_eq!(http_overloaded().as_u16(), 529);
+    }
+
+    #[test]
+    fn local_err_body_is_anthropic_error_envelope() {
+        // Тело — ровно Anthropic-конверт {"type":"error","error":{"type":...,"message":...}},
+        // а Retry-After ставится только у retryable-причин.
+        for reason in ALL_LOCAL_ERRS {
+            let (_c, kind, msg) = reason.parts();
+            let body = serde_json::json!({"type":"error","error":{"type":kind,"message":msg}});
+            assert_eq!(body["type"], "error");
+            assert_eq!(body["error"]["type"], kind);
+            assert!(body["error"]["message"].as_str().map(|m| !m.is_empty()).unwrap_or(false));
+        }
     }
 }
