@@ -14,6 +14,7 @@ import { ThemeToggle } from "@/components/site-chrome";
 import { SupportContent } from "@/components/compliance-pages";
 import { dashboardCopy, type DashboardCopy } from "@/lib/dashboard-copy";
 import { DOCS_URL } from "@/lib/site-links";
+import { buildClaudeAgentHandoff, buildClaudeCodeCommands } from "@/lib/claude-connection";
 import { checkoutAmountBucket, trackFirstProductEvent, trackProductEvent } from "@/lib/product-analytics";
 import { dashboardHref, parseDashboardSection, type DashboardSection } from "./dashboard-route";
 
@@ -506,6 +507,7 @@ function ApiKeys({ keys, onChanged, open, user }: { keys: ApiKeyView[]; onChange
   return <section className="panel keys-panel">
     <div className="keys-heading-row"><PageHeading eyebrow={copy.keysEyebrow} title={copy.keysTitle} subtitle={copy.keysSubtitle} /><button ref={createTriggerRef} className="btn btn-primary keys-create-button" type="button" onClick={() => { setCreateOpen(true); setError(null); }}>＋ {localCopy.createKey}</button></div>
     {issued && <aside className="card secret-card" aria-labelledby="issued-key-title"><div className="secret-head"><h2 id="issued-key-title">{copy.copyNewKeyNow}</h2><span className="chip">{copy.shownOnce}</span></div><p className="secret-warning">{copy.rawSecretWarning}</p><div className="secret-key-field"><code>{issued}</code><CopyButton value={issued} className="secret-copy" /></div><div className="secret-actions"><Link className="btn btn-primary btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{copy.openInDocs}</Link><button className="btn btn-ghost btn-sm" onClick={() => open("support")}>{copy.keysHelpCta}</button><button className="btn btn-ghost btn-sm" onClick={() => setIssued(null)}>{copy.savedKey}</button></div></aside>}
+    <QuickConnectDock issuedKey={issued} />
     {error && !createOpen && !revokeTarget && <div className="banner banner-error" role="alert">{error}</div>}
 
     <section className="dsec keys-manager" aria-label={copy.keysTitle}>
@@ -555,6 +557,48 @@ function ApiKeys({ keys, onChanged, open, user }: { keys: ApiKeyView[]; onChange
 
     {revokeTarget && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) closeRevoke(); }}><div ref={revokeModalRef} className="key-modal key-revoke-modal" role="alertdialog" aria-modal="true" aria-labelledby="revoke-key-title" aria-describedby="revoke-key-description" tabIndex={-1}><div className="key-modal-head"><div><span className="eyebrow danger-text">{localCopy.revokeKey}</span><h2 id="revoke-key-title">{localCopy.revokeTitle}</h2><p><strong>{revokeTarget.label || copy.unlabelledKey}</strong> · <code>{revokeTarget.keyMasked}</code></p></div></div><p id="revoke-key-description">{localCopy.revokeBody}</p>{error && <div className="banner banner-error" role="alert">{error}</div>}<div className="key-modal-actions"><button type="button" className="btn btn-ghost" disabled={busy} onClick={closeRevoke}>{localCopy.cancel}</button><button type="button" className="btn btn-danger" disabled={busy} autoFocus onClick={() => void revoke()}>{localCopy.confirmRevoke}</button></div></div></div>}
   </section>;
+}
+
+function QuickConnectDock({ issuedKey }: { issuedKey: string | null }) {
+  const copy = useDashboardCopy();
+  const { language } = useI18n();
+  const handoff = buildClaudeAgentHandoff({ apiKey: issuedKey, docsUrl: DOCS_URL, language });
+  const terminalCommands = buildClaudeCodeCommands(issuedKey);
+
+  return <aside className={`card agent-connect-dock${issuedKey ? " has-live-key" : ""}`} aria-labelledby="agent-connect-title">
+    <div className="agent-connect-main">
+      <span className="eyebrow">{copy.agentDockEyebrow}</span>
+      <h2 id="agent-connect-title">{copy.agentDockTitle}</h2>
+      <p>{copy.agentDockText}</p>
+    </div>
+    <div className="agent-connect-actions">
+      <Link className="btn btn-ghost btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{copy.agentDockDocs} ↗</Link>
+    </div>
+    <div className="agent-terminal" aria-label={copy.agentDockTerminal}>
+      <div className="agent-terminal-head"><span><i /><i /><i />{copy.agentDockTerminal}</span><CopyButton
+        value={terminalCommands}
+        className="agent-connect-copy"
+        label={issuedKey ? copy.agentDockCopyTerminal : copy.agentDockCopyTemplate}
+        copiedLabel={copy.agentDockTerminalCopied}
+      /></div>
+      <pre><code>{terminalCommands}</code></pre>
+    </div>
+    <ol className="agent-connect-steps">
+      <li><span>1</span><div><strong>{copy.agentDockStepOne}</strong><p>{copy.agentDockStepOneText}</p></div></li>
+      <li><span>2</span><div><strong>{copy.agentDockStepTwo}</strong><p>{copy.agentDockStepTwoText}</p></div></li>
+      <li><span>3</span><div><strong>{copy.agentDockStepThree}</strong><p>{copy.agentDockStepThreeText}</p></div></li>
+    </ol>
+    <div className="agent-handoff-option">
+      <div><span className="agent-handoff-icon" aria-hidden="true">↗</span><div><strong>{copy.agentDockAgentTitle}</strong><p>{copy.agentDockAgentText}</p></div></div>
+      <CopyButton
+        value={handoff}
+        className="agent-handoff-copy"
+        label={issuedKey ? copy.agentDockCopyWithKey : copy.agentDockCopy}
+        copiedLabel={copy.agentDockCopied}
+      />
+    </div>
+    <p className={`agent-connect-note${issuedKey ? " secret-note" : ""}`}><span aria-hidden="true">{issuedKey ? "⚠" : "ⓘ"}</span><span><strong>{issuedKey ? copy.agentDockKeyIncluded : copy.agentDockKeyPlaceholder}</strong> {issuedKey ? copy.agentDockSecretNote : copy.agentDockTemplateNote}</span></p>
+  </aside>;
 }
 
 function keyPolicy(key: ApiKeyView, now: number): {
@@ -1144,7 +1188,7 @@ function PromoPanel() {
 }
 
 
-function CopyButton({ value, className }: { value: string; className?: string }) {
+function CopyButton({ value, className, label, copiedLabel }: { value: string; className?: string; label?: string; copiedLabel?: string }) {
   const copyText = useDashboardCopy();
   const [copied, setCopied] = useState(false);
   async function copy() {
@@ -1167,7 +1211,7 @@ function CopyButton({ value, className }: { value: string; className?: string })
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1_200);
   }
-  return <button type="button" className={`btn btn-ghost btn-sm${className ? ` ${className}` : ""}`} onClick={copy}>{copied ? copyText.copied : copyText.copy}</button>;
+  return <button type="button" className={`btn btn-ghost btn-sm${className ? ` ${className}` : ""}`} onClick={copy}>{copied ? (copiedLabel ?? copyText.copied) : (label ?? copyText.copy)}</button>;
 }
 
 function formatLedgerTime(timestamp: string, language: "en" | "ru"): string {
