@@ -1,10 +1,9 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
-import { AuthIntro, Feedback } from "@/components/auth-shell";
+import { AuthIntro, Feedback, LocalizedAuthLink } from "@/components/auth-shell";
 import { useI18n } from "@/components/i18n-provider";
 import { trackProductEvent } from "@/lib/product-analytics";
 
@@ -133,6 +132,6 @@ export function VerifyEmail() {
     <AuthIntro title={t.title} subtitle={email ? t.sentTo.replace("{email}", email) : t.subtitle} />
     <Feedback message={message} success={success} />
     {ready && !hasToken && email && <button className="btn btn-primary" disabled={busy} onClick={resend}>{busy ? "…" : t.resend}</button>}
-    <div className="auth-alt"><Link href="/login">{t.back}</Link></div>
+    <div className="auth-alt"><LocalizedAuthLink href="/login">{t.back}</LocalizedAuthLink></div>
   </>;
 }

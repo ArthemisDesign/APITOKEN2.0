@@ -6,10 +6,10 @@ export const metadata: Metadata = createNoIndexMetadata("Page not found", "The r
 
 export default function NotFound() {
   return (
-    <main className="auth-page">
+    <main className="auth-shell" id="main-content" tabIndex={-1} aria-labelledby="not-found-title">
       <div className="auth-card" style={{ textAlign: "center" }}>
         <span className="eyebrow">404</span>
-        <h1>Page not found</h1>
+        <h1 id="not-found-title">Page not found</h1>
         <p className="auth-sub">This page took a wrong turn. Your API key is unaffected.</p>
         <Link className="btn btn-primary" href="/">Back home</Link>
       </div>

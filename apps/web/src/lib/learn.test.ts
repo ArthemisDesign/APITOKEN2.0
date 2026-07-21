@@ -70,4 +70,28 @@ describe("learn localization", () => {
       expect(flatten(resolved)).toContain("claude-opus-4-8");
     }
   });
+
+  it("describes only the implemented key guardrails in every locale", () => {
+    const localized = Object.fromEntries(LOCALES.map((locale) => [
+      locale,
+      JSON.stringify({
+        rateLimits: resolveArticle("claude-api-rate-limits", locale)!.content,
+        security: resolveArticle("claude-api-key-security", locale)!.content,
+      }),
+    ])) as Record<(typeof LOCALES)[number], string>;
+
+    expect(localized.en).toContain("lifetime spending limit");
+    expect(localized.en).toContain("expiration date");
+    expect(localized.ru).toContain("общий лимит расходов");
+    expect(localized.ru).toContain("дата истечения");
+    expect(localized.ko).toContain("평생 누적 지출 한도");
+    expect(localized.ko).toContain("만료일");
+    expect(localized.zh).toContain("终身累计消费上限");
+    expect(localized.zh).toContain("到期日期");
+
+    expect(localized.en).not.toMatch(/daily and monthly|model scoping|IP controls|rotation without downtime|configurable per-key caps/i);
+    expect(localized.ru).not.toMatch(/дневн.*месячн|ограничение моделей|контроль по IP|без простоя/i);
+    expect(localized.ko).not.toMatch(/일일.*월별|모델 범위 지정|IP 제어|다운타임 없이/i);
+    expect(localized.zh).not.toMatch(/每日.*每月|模型限定|IP 管控|不停机轮换/i);
+  });
 });

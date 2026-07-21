@@ -53,6 +53,7 @@ const siteCaptures = [
   ["docs-dark", "/docs", 1440, 1000, "dark"],
   ["docs-mobile", "/docs", 390, 844, "light"],
   ["docs-mobile-dark", "/docs", 390, 844, "dark"],
+  ["docs-mobile-russian", "/docs", 390, 844, "light", "ru"],
   ["integrations-desktop", "/integrations", 1440, 1000, "light"],
   ["integration-guide-desktop", "/int-claude-code", 1440, 1000, "light"],
   ["login-desktop", "/login", 1440, 1000, "light"],
@@ -68,6 +69,45 @@ const siteCaptures = [
   ["support-mobile", "/support", 390, 844, "light"],
   ["support-dark", "/support", 1440, 1000, "dark"],
   ["support-russian", "/support", 1440, 1000, "light", "ru"],
+  ["about-desktop", "/about", 1440, 1000, "light"],
+  ["about-mobile-dark", "/about", 390, 844, "dark"],
+  ["contacts-desktop", "/contacts", 1440, 1000, "light"],
+  ["contacts-mobile-dark", "/contacts", 390, 844, "dark"],
+  ["changelog-desktop", "/changelog", 1440, 1000, "light"],
+  ["changelog-mobile-dark", "/changelog", 390, 844, "dark"],
+  ["blog-desktop", "/blog", 1440, 1000, "light"],
+  ["blog-mobile-dark", "/blog", 390, 844, "dark"],
+  ["status-desktop", "/status", 1440, 1000, "light"],
+  ["status-mobile-dark", "/status", 390, 844, "dark"],
+  ["calculator-desktop", "/tools/claude-api-cost-calculator", 1440, 1000, "light"],
+  ["calculator-mobile-dark", "/tools/claude-api-cost-calculator", 390, 844, "dark"],
+  ["calculator-mobile-language-disabled", "/tools/claude-api-cost-calculator", 390, 844, "light"],
+  ["model-detail-desktop", "/models/claude-opus-4-8", 1440, 1000, "light"],
+  ["model-detail-mobile-dark", "/models/claude-opus-4-8", 390, 844, "dark"],
+  ["integrations-mobile-dark", "/integrations", 390, 844, "dark"],
+  ["integration-guide-mobile-dark", "/int-claude-code", 390, 844, "dark"],
+  ["login-mobile-dark", "/login", 390, 844, "dark"],
+  ["login-mobile-russian", "/login", 390, 844, "light", "ru"],
+  ["forgot-password-desktop", "/forgot-password", 1440, 1000, "light"],
+  ["forgot-password-mobile-dark", "/forgot-password", 390, 844, "dark"],
+  ["reset-password-desktop", "/reset-password", 1440, 1000, "light"],
+  ["reset-password-mobile-dark", "/reset-password", 390, 844, "dark"],
+  ["verify-email-desktop", "/verify-email", 1440, 1000, "light"],
+  ["verify-email-mobile-dark", "/verify-email", 390, 844, "dark"],
+  ["oauth-callback-desktop", "/auth/callback", 1440, 1000, "light"],
+  ["oauth-callback-mobile-dark", "/auth/callback", 390, 844, "dark"],
+  ["learn-index-desktop", "/docs/learn", 1440, 1000, "light"],
+  ["learn-index-mobile-dark", "/docs/learn", 390, 844, "dark"],
+  ["learn-index-russian-mobile", "/ru/docs/learn", 390, 844, "light", "ru"],
+  ["learn-index-korean-mobile", "/ko/docs/learn", 390, 844, "light", "ko"],
+  ["learn-index-chinese-mobile", "/zh/docs/learn", 390, 844, "light", "zh-CN"],
+  ["learn-article-desktop", "/docs/learn/how-to-buy-claude-api-key", 1440, 1000, "light"],
+  ["learn-article-mobile-dark", "/docs/learn/how-to-buy-claude-api-key", 390, 844, "dark"],
+  ["learn-article-russian-mobile", "/ru/docs/learn/how-to-buy-claude-api-key", 390, 844, "light", "ru"],
+  ["learn-article-korean-mobile", "/ko/docs/learn/how-to-buy-claude-api-key", 390, 844, "light", "ko"],
+  ["learn-article-chinese-mobile", "/zh/docs/learn/how-to-buy-claude-api-key", 390, 844, "light", "zh-CN"],
+  ["not-found-desktop", "/missing-audit-route", 1440, 1000, "light"],
+  ["not-found-mobile-dark", "/missing-audit-route", 390, 844, "dark"],
 ];
 
 const dashboardCaptures = [
@@ -95,9 +135,9 @@ const dashboardCaptures = [
   ["dashboard-promos-dark", "/dashboard?view=promos", 1440, 1000, "dark"],
   ["dashboard-profile-light", "/dashboard?view=profile", 1440, 1000, "light"],
   ["dashboard-profile-dark", "/dashboard?view=profile", 1440, 1000, "dark"],
-  ["dashboard-security-light", "/dashboard?view=security", 1440, 1000, "light"],
-  ["dashboard-security-dark", "/dashboard?view=security", 1440, 1000, "dark"],
   ["dashboard-overview-mobile", "/dashboard", 390, 844, "light"],
+  ["dashboard-overview-mobile-dark", "/dashboard", 390, 844, "dark"],
+  ["dashboard-overview-mobile-russian", "/dashboard", 390, 844, "dark", "ru"],
   ["dashboard-keys-mobile-light", "/dashboard?view=keys", 390, 844, "light"],
   ["dashboard-keys-tablet-light", "/dashboard?view=keys", 820, 1000, "light"],
   ["dashboard-keys-mobile-dark", "/dashboard?view=keys", 390, 844, "dark"],
@@ -105,11 +145,23 @@ const dashboardCaptures = [
   ["dashboard-keys-mobile-russian-dark", "/dashboard?view=keys", 390, 844, "dark", "ru"],
   ["dashboard-keys-create-mobile-dark", "/dashboard?view=keys", 390, 844, "dark", "en", "key-create-open"],
   ["dashboard-keys-edit-mobile-russian-dark", "/dashboard?view=keys", 390, 844, "dark", "ru", "key-edit-open"],
+  ["dashboard-usage-mobile-light", "/dashboard?view=usage", 390, 844, "light"],
+  ["dashboard-usage-mobile-dark", "/dashboard?view=usage", 390, 844, "dark"],
+  ["dashboard-support-mobile-light", "/dashboard?view=support", 390, 844, "light"],
+  ["dashboard-support-mobile-dark", "/dashboard?view=support", 390, 844, "dark"],
+  ["dashboard-promos-mobile-light", "/dashboard?view=promos", 390, 844, "light"],
+  ["dashboard-promos-mobile-dark", "/dashboard?view=promos", 390, 844, "dark"],
+  ["dashboard-profile-mobile-light", "/dashboard?view=profile", 390, 844, "light"],
+  ["dashboard-profile-mobile-dark", "/dashboard?view=profile", 390, 844, "dark"],
 ];
 
 const scopedCaptures = auditScope === "dashboard" ? dashboardCaptures :
   auditScope === "all" ? [...siteCaptures, ...dashboardCaptures] : siteCaptures;
-const captures = auditFilter.size > 0 ? scopedCaptures.filter(([name]) => auditFilter.has(name)) : scopedCaptures;
+const filteredCaptures = auditFilter.size > 0 ? scopedCaptures.filter(([name]) => auditFilter.has(name)) : scopedCaptures;
+const auditStartAt = process.env.AUDIT_START_AT;
+const startIndex = auditStartAt ? filteredCaptures.findIndex(([name]) => name === auditStartAt) : 0;
+if (auditStartAt && startIndex < 0) throw new Error(`AUDIT_START_AT did not match a capture: ${auditStartAt}`);
+const captures = filteredCaptures.slice(startIndex);
 const shouldVerifyCredits = process.env.AUDIT_VERIFY_CREDITS === "1" ||
   (process.env.AUDIT_VERIFY_CREDITS !== "0" && captures.some(([name]) => name.startsWith("dashboard-topup-")));
 const shouldVerifyKeys = process.env.AUDIT_VERIFY_KEYS === "1" ||
@@ -484,6 +536,77 @@ async function capturePage(client, [name, route, width, height, theme, language 
     await clickSelector(client, '.key-row [data-key-action="edit"]');
     await waitForCondition(client, `Boolean(document.querySelector('.key-edit-modal[role="dialog"]'))`, `${name} edit-key dialog`);
   }
+  const visualStateResult = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const h1 = document.querySelector('h1');
+      const header = document.querySelector('header.nav');
+      const footer = document.querySelector('footer');
+      const modelPriceTable = document.querySelector('.model-detail .tier-table-wrap, .model-detail .model-price-table, main .tier-table-wrap');
+      const modelPriceCards = document.querySelector('.model-pricing-mobile');
+      const modelPriceRows = (modelPriceTable?.querySelectorAll('tbody tr').length ?? 0) + (modelPriceCards?.querySelectorAll('.model-pricing-card').length ?? 0);
+      const notFoundCard = document.querySelector('main .auth-card');
+      const notFoundRect = notFoundCard?.getBoundingClientRect();
+      const feedback = document.querySelector('.auth-msg');
+      const russianControl = [...document.querySelectorAll('.lang button, .lang a')]
+        .find((control) => control.textContent?.trim() === 'RU');
+      const promoEmpty = document.querySelector('.promo-history .empty-cell');
+      const promoEmptyRect = promoEmpty?.getBoundingClientRect();
+      const promoContainerRect = promoEmpty?.closest('.table-scroll')?.getBoundingClientRect();
+      const overflowElements = [...document.querySelectorAll('body *')].flatMap((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.left < -1 || rect.right > innerWidth + 1
+          ? [{ tag: element.tagName, className: element.className?.toString().slice(0, 120), left: Math.round(rect.left), right: Math.round(rect.right), width: Math.round(rect.width) }]
+          : [];
+      }).slice(0, 12);
+      return JSON.stringify({
+        href: location.href,
+        pathname: location.pathname,
+        language: document.documentElement.lang,
+        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        bodyWidth: document.body.scrollWidth,
+        viewportWidth: document.documentElement.clientWidth,
+        h1: h1?.textContent?.trim() ?? '',
+        hasMain: Boolean(document.querySelector('main')),
+        hasHeader: Boolean(header),
+        hasFooter: Boolean(footer),
+        modelPriceVisible: Boolean(
+          (modelPriceTable && getComputedStyle(modelPriceTable).display !== 'none' && modelPriceTable.getBoundingClientRect().height > 0)
+          || (modelPriceCards && getComputedStyle(modelPriceCards).display !== 'none' && modelPriceCards.getBoundingClientRect().height > 0)
+        ),
+        modelPriceRows,
+        notFoundCentered: Boolean(notFoundRect && Math.abs((notFoundRect.left + notFoundRect.width / 2) - innerWidth / 2) < 3 && notFoundRect.top >= 40),
+        feedbackClass: feedback?.className ?? '',
+        feedbackRole: feedback?.getAttribute('role') ?? '',
+        russianUnavailable: russianControl instanceof HTMLButtonElement && russianControl.disabled,
+        overflowElements,
+        promoEmptyFits: !promoEmpty || Boolean(promoEmptyRect && promoContainerRect && promoEmpty.scrollWidth <= promoEmpty.clientWidth + 1 && promoEmptyRect.left >= promoContainerRect.left - 1 && promoEmptyRect.right <= promoContainerRect.right + 1),
+      });
+    })()`,
+    returnByValue: true,
+  });
+  const visualState = JSON.parse(visualStateResult.result.value);
+  const expectedNotFound = name.startsWith("not-found-");
+  if (visualState.overflow > 1 || visualState.bodyWidth > visualState.viewportWidth + 1) {
+    throw new Error(`${name} has page-level horizontal overflow: ${JSON.stringify(visualState)}`);
+  }
+  if (!visualState.hasMain || (!expectedNotFound && /page not found/i.test(visualState.h1))) {
+    throw new Error(`${name} rendered the wrong page state: ${JSON.stringify(visualState)}`);
+  }
+  if (expectedNotFound && (!/page not found/i.test(visualState.h1) || !visualState.notFoundCentered)) {
+    throw new Error(`${name} 404 layout is not centered: ${JSON.stringify(visualState)}`);
+  }
+  if (name === "model-detail-mobile-dark" && (!visualState.modelPriceVisible || visualState.modelPriceRows === 0)) {
+    throw new Error(`${name} hides model pricing: ${JSON.stringify(visualState)}`);
+  }
+  if (name.startsWith("oauth-callback-") && visualState.feedbackClass && (!visualState.feedbackClass.includes("err") || visualState.feedbackRole !== "alert")) {
+    throw new Error(`${name} presents a callback failure as success: ${JSON.stringify(visualState)}`);
+  }
+  if (["about-desktop", "about-mobile-dark", "contacts-desktop", "contacts-mobile-dark", "changelog-desktop", "changelog-mobile-dark", "blog-desktop", "blog-mobile-dark", "status-desktop", "status-mobile-dark", "calculator-desktop", "calculator-mobile-dark", "calculator-mobile-language-disabled", "model-detail-desktop", "model-detail-mobile-dark"].includes(name) && !visualState.russianUnavailable) {
+    throw new Error(`${name} offers a Russian route that does not exist: ${JSON.stringify(visualState)}`);
+  }
+  if (name.startsWith("dashboard-promos-mobile-") && !visualState.promoEmptyFits) {
+    throw new Error(`${name} clips its empty promo history state: ${JSON.stringify(visualState)}`);
+  }
   const { cssContentSize, contentSize } = await client.send("Page.getLayoutMetrics");
   // Chrome reports the legacy contentSize in physical pixels on Retina displays.
   // cssContentSize keeps the clip in CSS pixels and avoids a half-empty 2x canvas.
@@ -503,7 +626,7 @@ async function capturePage(client, [name, route, width, height, theme, language 
   });
   const filename = `${name}.png`;
   await writeFile(path.join(outputDirectory, filename), Buffer.from(screenshot.data, "base64"));
-  return { name, route, theme, language, width: modalState ? width : pageWidth, height: modalState ? height : pageHeight, file: filename };
+  return { name, route, finalPath: visualState.pathname, theme, language, width: modalState ? width : pageWidth, height: modalState ? height : pageHeight, file: filename };
 }
 
 async function waitForCondition(client, expression, description, timeoutMs = 8_000) {
@@ -544,6 +667,60 @@ async function clickSelector(client, selector) {
   const y = rect.y + rect.height / 2;
   await client.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
   await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+}
+
+async function verifyServerDocumentLanguages() {
+  const cases = [
+    ["/", "en"],
+    ["/ru/docs", "ru"],
+    ["/ko/docs/learn", "ko"],
+    ["/zh/docs/learn", "zh-CN"],
+  ];
+  for (const [route, language] of cases) {
+    const response = await fetch(new URL(route, baseUrl), { redirect: "error" });
+    const html = await response.text();
+    const renderedLanguage = html.match(/<html[^>]*\slang=["']([^"']+)["']/i)?.[1];
+    if (!response.ok || renderedLanguage !== language) {
+      throw new Error(`Server document language failed for ${route}: ${response.status}, lang=${renderedLanguage ?? "missing"}`);
+    }
+  }
+  process.stdout.write("Verified server-rendered document languages for EN, RU, KO, and ZH routes\n");
+}
+
+async function verifyMobileNavigation(client) {
+  await setViewport(client, 390, 844);
+  const loaded = client.once("Page.loadEventFired");
+  await client.send("Page.navigate", { url: new URL("/", baseUrl).href });
+  await loaded;
+  await waitForCondition(client, `Boolean(document.querySelector('.nav-burger'))`, "mobile navigation trigger");
+  await clickSelector(client, ".nav-burger");
+  await waitForCondition(client, `document.querySelector('.nav-burger')?.getAttribute('aria-expanded') === 'true'`, "open mobile navigation");
+  const controls = await client.send("Runtime.evaluate", { expression: `document.querySelector('.nav-burger')?.getAttribute('aria-controls')`, returnByValue: true });
+  if (controls.result.value !== "site-navigation") throw new Error("Mobile navigation trigger does not identify its controlled menu.");
+  await clickSelector(client, '.nav-links a[href="#how"]');
+  await waitForCondition(client, `location.hash === '#how' && document.querySelector('.nav-burger')?.getAttribute('aria-expanded') === 'false'`, "hash navigation to close the mobile menu");
+  await clickSelector(client, ".nav-burger");
+  await client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
+  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
+  await waitForCondition(client, `document.querySelector('.nav-burger')?.getAttribute('aria-expanded') === 'false' && document.activeElement === document.querySelector('.nav-burger')`, "Escape to close and restore mobile-menu focus");
+  process.stdout.write("Verified mobile menu hash, Escape, focus, and ARIA behavior\n");
+}
+
+async function verifyLearnHubFiltering(client) {
+  await setViewport(client, 390, 844);
+  const loaded = client.once("Page.loadEventFired");
+  await client.send("Page.navigate", { url: new URL("/docs/learn", baseUrl).href });
+  await loaded;
+  await waitForCondition(client, `document.querySelectorAll('.learn-card').length > 20 && Boolean(document.querySelector('.learn-search input'))`, "the searchable Learn hub");
+  const initial = await client.send("Runtime.evaluate", { expression: `document.querySelectorAll('.learn-card').length`, returnByValue: true });
+  await clickSelector(client, ".learn-search input");
+  await client.send("Input.insertText", { text: "Cursor" });
+  await waitForCondition(client, `document.querySelectorAll('.learn-card').length > 0 && document.querySelectorAll('.learn-card').length < ${Number(initial.result.value)}`, "Learn search results");
+  await clickSelector(client, ".learn-filters button:nth-child(2)");
+  await waitForCondition(client, `Boolean(document.querySelector('.learn-empty'))`, "combined Learn search and topic filters");
+  await clickSelector(client, ".learn-empty button");
+  await waitForCondition(client, `document.querySelectorAll('.learn-card').length === ${Number(initial.result.value)} && document.querySelector('.learn-search input')?.value === ''`, "cleared Learn filters");
+  process.stdout.write("Verified Learn search, topics, result count, empty state, and clear action\n");
 }
 
 async function verifyHeroOfferLayout(client) {
@@ -961,7 +1138,23 @@ async function verifyApiKeysLayout(client) {
         fill('.key-money-field input','25.50'); fill('.key-field input[type="date"]','2099-01-01'); fill('.key-field .tfa-code','123456');
       })()` });
       await clickSelector(client, ".key-modal-actions .btn-primary");
-      await waitForCondition(client, `Boolean(document.querySelector('.secret-card')) && !document.querySelector('.key-modal')`, `${layoutCase.name} create submission`);
+      try {
+        await waitForCondition(client, `Boolean(document.querySelector('.secret-card')) && !document.querySelector('.key-modal')`, `${layoutCase.name} create submission`);
+      } catch (error) {
+        const diagnostic = await client.send("Runtime.evaluate", {
+          expression: `JSON.stringify({
+            message: document.querySelector('.key-modal .banner-error')?.textContent?.trim(),
+            values: [...document.querySelectorAll('.key-modal input')].map((input) => ({ type: input.type, value: input.value })),
+            payload: window.__auditLastApiKeyCreate,
+            modalOpen: Boolean(document.querySelector('.key-modal')),
+            secretVisible: Boolean(document.querySelector('.secret-card')),
+            dockClass: document.querySelector('.agent-connect-dock')?.className,
+            dockText: document.querySelector('.agent-connect-dock')?.textContent?.slice(0, 300),
+          })`,
+          returnByValue: true,
+        });
+        throw new Error(`${error instanceof Error ? error.message : error} Browser state: ${diagnostic.result.value}`);
+      }
       const created = await client.send("Runtime.evaluate", { expression: `JSON.stringify(window.__auditLastApiKeyCreate)`, returnByValue: true });
       const payload = JSON.parse(created.result.value);
       const expectedExpiration = new Date("2099-01-01T23:59:59.999").toISOString();
@@ -1351,7 +1544,7 @@ async function verifyPersistentSiteRouting(client) {
   });
 
   const transitions = [
-    [`.prod a[href="/models"]`, "/models"],
+    [`header.nav a[href="/models"]`, "/models"],
     [`header.nav a[href="/integrations"]`, "/integrations"],
     [`.steps a[href="/int-claude-code"]`, "/int-claude-code"],
     [`.auth-back[href="/integrations"]`, "/integrations"],
@@ -1383,7 +1576,9 @@ async function verifyPersistentSiteRouting(client) {
       returnByValue: true,
     });
     const state = JSON.parse(result.result.value);
-    if (!state.sentinel || !state.sameHeader || !state.sameFooter || !state.sameBackground || state.authChecks !== 0 || state.language !== "en" || state.theme !== "dark") {
+    // SupportContent performs one intentional identity lookup to personalize its
+    // Telegram deep link; the persistent header itself must not remount/refetch.
+    if (!state.sentinel || !state.sameHeader || !state.sameFooter || !state.sameBackground || state.authChecks > 1 || state.language !== "en" || state.theme !== "dark") {
       throw new Error(`Public shell changed while navigating to ${pathname}: ${JSON.stringify(state)}`);
     }
   }
@@ -1395,7 +1590,7 @@ async function verifyComplianceRouting(client) {
     expression: `localStorage.setItem('lang', 'ru'); localStorage.setItem('theme', 'dark');`,
   });
   const loaded = client.once("Page.loadEventFired");
-  await client.send("Page.navigate", { url: new URL("/privacy", baseUrl).href });
+  await client.send("Page.navigate", { url: new URL("/ru/privacy", baseUrl).href });
   await loaded;
   await waitForCondition(
     client,
@@ -1417,23 +1612,23 @@ async function verifyComplianceRouting(client) {
         if (url.includes('/auth/me')) window.__complianceAuthChecks += 1;
         return window.__complianceOriginalFetch(...args);
       };
-      document.querySelector('.compliance-nav a[href="/terms"]')?.click();`,
+      document.querySelector('.compliance-nav a[href="/ru/terms"]')?.click();`,
   });
   await waitForCondition(
     client,
-    `location.pathname === '/terms' && document.querySelector('h1')?.textContent?.trim() === 'Пользовательское соглашение'`,
+    `location.pathname === '/ru/terms' && document.querySelector('h1')?.textContent?.trim() === 'Пользовательское соглашение'`,
     "client navigation to the User Agreement",
   );
-  await client.send("Runtime.evaluate", { expression: `document.querySelector('.compliance-nav a[href="/support"]')?.click()` });
+  await client.send("Runtime.evaluate", { expression: `document.querySelector('.compliance-nav a[href="/ru/support"]')?.click()` });
   await waitForCondition(
     client,
-    `location.pathname === '/support' && document.querySelector('h1')?.textContent?.trim() === 'Связаться с apiToken.sale'`,
+    `location.pathname === '/ru/support' && document.querySelector('h1')?.textContent?.trim() === 'apiToken Support'`,
     "client navigation to Support",
   );
-  await client.send("Runtime.evaluate", { expression: `document.querySelector('.compliance-nav a[href="/plans"]')?.click()` });
+  await client.send("Runtime.evaluate", { expression: `document.querySelector('.compliance-nav a[href="/ru/plans"]')?.click()` });
   await waitForCondition(
     client,
-    `location.pathname === '/plans' && document.querySelector('h1')?.textContent?.trim() === 'Тарифы и цены'`,
+    `location.pathname === '/ru/plans' && document.querySelector('h1')?.textContent?.trim() === 'Тарифы и цены'`,
     "client navigation to Pricing",
   );
   const result = await client.send("Runtime.evaluate", {
@@ -1449,7 +1644,7 @@ async function verifyComplianceRouting(client) {
     returnByValue: true,
   });
   const state = JSON.parse(result.result.value);
-  if (!state.sameHeader || state.authChecks !== 0 || !state.sameAuthText || state.language !== "ru" || state.storedLanguage !== "ru" || state.theme !== "dark" || state.storedTheme !== "dark") {
+  if (!state.sameHeader || state.authChecks !== 1 || !state.sameAuthText || state.language !== "ru" || state.storedLanguage !== "ru" || state.theme !== "dark" || state.storedTheme !== "dark") {
     throw new Error(`Compliance shell was not preserved: ${JSON.stringify(state)}`);
   }
   process.stdout.write("Verified persistent compliance shell, language, theme, and authentication menu state\n");
@@ -1458,6 +1653,7 @@ async function verifyComplianceRouting(client) {
 const chrome = await findChrome();
 const port = 9222 + Math.floor(Math.random() * 500);
 await mkdir(outputDirectory, { recursive: true });
+await verifyServerDocumentLanguages();
 
 const browser = spawn(chrome, [
   "--headless=new",
@@ -1495,6 +1691,8 @@ try {
   if (shouldVerifyKeys) await verifyApiKeysLayout(client);
   if (shouldVerifyCredits) await verifyCreditsLayout(client);
   if (shouldVerifyDocsTheme) await verifyDocsTheme(client);
+  if (captures.some(([name]) => name.startsWith("header-mobile"))) await verifyMobileNavigation(client);
+  if (captures.some(([name]) => name.startsWith("learn-index-"))) await verifyLearnHubFiltering(client);
   if (process.env.AUDIT_VERIFY_SITE_ROUTING === "1") await verifyPersistentSiteRouting(client);
   if (process.env.AUDIT_VERIFY_COMPLIANCE === "1") await verifyComplianceRouting(client);
   await writeFile(path.join(outputDirectory, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);

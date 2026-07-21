@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useI18n } from "@/components/i18n-provider";
 import { ThemeToggle } from "@/components/site-chrome";
+import { localeHref } from "@/lib/locale-routes";
 import { B2C_PRICING_MILESTONES, formatWholeUsd } from "@/lib/pricing-tiers";
 
 const BASE_URL = "https://api.apitoken.sale";
@@ -282,18 +283,19 @@ export function DocsPortal() {
 
   return <div className="docs-site">
     <header className="docs-header">
-      <Link className="docs-brand" href="/"><BrandMark /><span>apiToken.sale</span><i>{t.documentation}</i></Link>
+      <a className="skip-link" href="#main-content">{language === "ru" ? "К содержимому" : "Skip to content"}</a>
+      <Link className="docs-brand" href={localeHref("/", language)}><BrandMark /><span>apiToken.sale</span><i>{t.documentation}</i></Link>
       <div className="docs-header-actions">
-        <div className="lang"><button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}>EN</button><button className={language === "ru" ? "active" : ""} onClick={() => setLanguage("ru")}>RU</button></div>
+        <div className="lang" role="group" aria-label={language === "ru" ? "Язык" : "Language"}><button type="button" aria-pressed={language === "en"} className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}>EN</button><button type="button" aria-pressed={language === "ru"} className={language === "ru" ? "active" : ""} onClick={() => setLanguage("ru")}>RU</button></div>
         <ThemeToggle />
-        <Link className="btn btn-ghost btn-sm docs-back" href="/">{t.back}</Link>
-        <Link className="btn btn-primary btn-sm" href="/dashboard">{t.dashboard}</Link>
+        <Link className="btn btn-ghost btn-sm docs-back" href={localeHref("/", language)}>{t.back}</Link>
+        <Link className="btn btn-primary btn-sm" href={localeHref("/dashboard", language)}>{t.dashboard}</Link>
       </div>
     </header>
     <div className="docs-layout">
       <aside className="docs-sidebar"><span>{t.onThisPage}</span><nav><a href="#overview">{t.overview}</a><a href="#quickstart">{t.quickstart}</a><a href="#authentication">{t.authentication}</a><a href="#tools">{t.tools}</a><a href="#sdks">{t.sdks}</a><a href="#errors">{t.errors}</a><a href="#pricing">{t.pricing}</a></nav></aside>
-      <main className="docs-main">
-        <section className="docs-hero" id="overview"><span className="eyebrow">{t.eyebrow}</span><h1>{t.title}</h1><p>{t.lead}</p><div className="hero-cta"><Link className="btn btn-primary" href="/dashboard?view=keys">{t.openKeys}</Link><Link className="btn btn-ghost" href="/docs/learn">Claude API guides</Link></div></section>
+      <main className="docs-main" id="main-content" tabIndex={-1}>
+        <section className="docs-hero" id="overview"><span className="eyebrow">{t.eyebrow}</span><h1>{t.title}</h1><p>{t.lead}</p><div className="hero-cta"><Link className="btn btn-primary" href={localeHref("/dashboard?view=keys", language)}>{t.openKeys}</Link><Link className="btn btn-ghost" href={localeHref("/docs/learn", language)}>Claude API guides</Link></div></section>
 
         <section className="docs-section">
           <div className="docs-section-heading"><span>01</span><div><h2>{t.oneEndpoint}</h2><p>{t.oneEndpointText}</p></div></div>

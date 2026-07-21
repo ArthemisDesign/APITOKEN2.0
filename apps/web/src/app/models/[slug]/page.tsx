@@ -32,6 +32,12 @@ export default async function ModelPage({ params }: { params: Promise<Params> })
     .map((relatedSlug) => resolveArticle(relatedSlug, "en"))
     .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
   const others = claudeModels.filter((entry) => entry.slug !== slug);
+  const priceRows = [
+    { rate: "Input", official: formatUsd(model.inputPerM), from: priceFrom(model.inputPerM), best: priceBest(model.inputPerM) },
+    { rate: "Output", official: formatUsd(model.outputPerM), from: priceFrom(model.outputPerM), best: priceBest(model.outputPerM) },
+    { rate: "Cache read", official: formatUsd(model.cacheReadPerM), from: priceFrom(model.cacheReadPerM), best: priceBest(model.cacheReadPerM) },
+    { rate: "Cache write (5m)", official: formatUsd(model.cacheWrite5mPerM), from: priceFrom(model.cacheWrite5mPerM), best: priceBest(model.cacheWrite5mPerM) },
+  ];
 
   const structuredData = {
     "@context": "https://schema.org",
@@ -86,7 +92,7 @@ export default async function ModelPage({ params }: { params: Promise<Params> })
         <div className="wrap learn-body">
           <div className="learn-section">
             <h2 className="docs-h3">Pricing per 1M tokens</h2>
-            <div className="tier-table-wrap">
+            <div className="tier-table-wrap model-pricing-table-wrap">
               <table className="tier-table">
                 <thead>
                   <tr>
@@ -97,32 +103,24 @@ export default async function ModelPage({ params }: { params: Promise<Params> })
                   </tr>
                 </thead>
                 <tbody>
-                  <tr>
-                    <td>Input</td>
-                    <td>{formatUsd(model.inputPerM)}</td>
-                    <td>{priceFrom(model.inputPerM)}</td>
-                    <td>{priceBest(model.inputPerM)}</td>
-                  </tr>
-                  <tr>
-                    <td>Output</td>
-                    <td>{formatUsd(model.outputPerM)}</td>
-                    <td>{priceFrom(model.outputPerM)}</td>
-                    <td>{priceBest(model.outputPerM)}</td>
-                  </tr>
-                  <tr>
-                    <td>Cache read</td>
-                    <td>{formatUsd(model.cacheReadPerM)}</td>
-                    <td>{priceFrom(model.cacheReadPerM)}</td>
-                    <td>{priceBest(model.cacheReadPerM)}</td>
-                  </tr>
-                  <tr>
-                    <td>Cache write (5m)</td>
-                    <td>{formatUsd(model.cacheWrite5mPerM)}</td>
-                    <td>{priceFrom(model.cacheWrite5mPerM)}</td>
-                    <td>{priceBest(model.cacheWrite5mPerM)}</td>
-                  </tr>
+                  {priceRows.map((row) => <tr key={row.rate}>
+                    <td>{row.rate}</td>
+                    <td>{row.official}</td>
+                    <td>{row.from}</td>
+                    <td>{row.best}</td>
+                  </tr>)}
                 </tbody>
               </table>
+            </div>
+            <div className="model-pricing-mobile" aria-label="Pricing per 1M tokens">
+              {priceRows.map((row) => <article className="model-pricing-card" key={row.rate}>
+                <h3>{row.rate}</h3>
+                <dl>
+                  <div><dt>Official Anthropic</dt><dd>{row.official}</dd></div>
+                  <div><dt>Here, from (−60%)</dt><dd>{row.from}</dd></div>
+                  <div><dt>Here, best (−80%)</dt><dd>{row.best}</dd></div>
+                </dl>
+              </article>)}
             </div>
             <p className="docs-para">Every request is metered at the official rate first, then your progressive B2C discount (60% at the start, up to 80% as cumulative top-ups grow) is subtracted before it touches your prepaid balance. Context window: {model.context}. Max output: {model.maxOutput}.</p>
           </div>

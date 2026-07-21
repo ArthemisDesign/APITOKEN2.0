@@ -1,17 +1,16 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 import { api, ApiError } from "@/lib/api";
 import { captureReferralCode, storedReferralCode } from "@/lib/referral";
-import { AuthIntro, Feedback, WelcomeBonusNotice } from "@/components/auth-shell";
+import { AuthIntro, Feedback, LocalizedAuthLink, WelcomeBonusNotice } from "@/components/auth-shell";
 import { SocialAuth } from "@/components/social-auth";
 import { useI18n } from "@/components/i18n-provider";
 import { trackProductEvent } from "@/lib/product-analytics";
 
 export function RegisterForm() {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   const router = useRouter();
   const search = useSearchParams();
   const inviteToken = search.get("invite") ?? undefined;
@@ -24,7 +23,7 @@ export function RegisterForm() {
     const data = new FormData(event.currentTarget);
     const email = String(data.get("email") ?? "").trim();
     const password = String(data.get("password") ?? "");
-    if (password.length < 8) { setMessage("Password must be at least 8 characters"); setBusy(false); return; }
+    if (password.length < 8) { setMessage(language === "ru" ? "Пароль должен содержать не менее 8 символов" : "Password must be at least 8 characters"); setBusy(false); return; }
     trackProductEvent("Sign Up Submitted", { method: "password", invited: Boolean(inviteToken), referred: Boolean(storedReferralCode()) });
     try {
       const result = await api.register({ email, password, inviteToken, referralCode: storedReferralCode() });
@@ -33,7 +32,7 @@ export function RegisterForm() {
       else router.replace("/dashboard");
     } catch (error) {
       trackProductEvent("Sign Up Failed", { method: "password", status: error instanceof ApiError ? error.status : 0 });
-      setMessage(error instanceof ApiError ? error.message : "Unable to create the account right now");
+      setMessage(error instanceof ApiError ? error.message : language === "ru" ? "Сейчас не удалось создать аккаунт" : "Unable to create the account right now");
       setBusy(false);
     }
   }
@@ -48,6 +47,6 @@ export function RegisterForm() {
       <Feedback message={message} />
     </form>
     <SocialAuth inviteToken={inviteToken} />
-    <div className="auth-alt"><span>{t("have_acc")}</span> <Link href="/login">{t("to_login")}</Link></div>
+    <div className="auth-alt"><span>{t("have_acc")}</span> <LocalizedAuthLink href="/login">{t("to_login")}</LocalizedAuthLink></div>
   </>;
 }

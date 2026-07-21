@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useI18n, type Language } from "./i18n-provider";
 import { api } from "@/lib/api";
+import { localeHref } from "@/lib/locale-routes";
 
 const SUPPORT_EMAIL = "apitokensale@gmail.com";
 // apiToken Support — живой Telegram-бот первой линии (Claude Sonnet 5 через наш движок,
@@ -506,7 +507,7 @@ export function ComplianceNav({ current }: { current: "privacy" | "terms" | "sup
     : { privacy: "Privacy Policy", terms: "User Agreement", support: "Support", pricing: "Prices & tariffs" };
   const links = [{ id: "privacy", href: "/privacy" }, { id: "terms", href: "/terms" }, { id: "support", href: "/support" }, { id: "pricing", href: "/plans" }] as const;
   return <nav className="compliance-nav" aria-label={language === "ru" ? "Правовая и коммерческая информация" : "Legal and commercial information"}>
-    {links.map((link) => <Link className={current === link.id ? "active" : ""} href={link.href} key={link.id}>{labels[link.id]}</Link>)}
+    {links.map((link) => <Link className={current === link.id ? "active" : ""} href={localeHref(link.href, language)} key={link.id}>{labels[link.id]}</Link>)}
   </nav>;
 }
 
@@ -588,7 +589,7 @@ export function SupportContent() {
 
       <div className="support-notes">
         <div className="support-note"><span className="support-note-ic" aria-hidden="true">{SUPPORT_IC_SHIELD}</span><p>{copy.security}</p></div>
-        <div className="support-note"><span className="support-note-ic" aria-hidden="true">{SUPPORT_IC_MONEY}</span><p>{copy.refunds} <Link href="/terms">{language === "ru" ? "Соглашение →" : "User Agreement →"}</Link></p></div>
+        <div className="support-note"><span className="support-note-ic" aria-hidden="true">{SUPPORT_IC_MONEY}</span><p>{copy.refunds} <Link href={localeHref("/terms", language)}>{language === "ru" ? "Соглашение →" : "User Agreement →"}</Link></p></div>
       </div>
 
       <div className="support-footline">
