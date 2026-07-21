@@ -615,6 +615,11 @@ footer{padding:64px 0 40px;border-bottom:0}
 .pricing-discount b{font-size:28px;line-height:1;color:var(--accent);font-variant-numeric:tabular-nums}
 .pricing-discount span{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt-3)}
 .pricing-banner-business p{margin:0;color:var(--txt-2);font-size:13px}
+.pricing-banner-partner{background:color-mix(in srgb,var(--accent) 6%,var(--bg-card));gap:16px}
+.pricing-partner-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
+  overflow:hidden;border:1px solid var(--accent-line);border-radius:8px;background:var(--bg-card)}
+@media (max-width:640px){.pricing-partner-facts{grid-template-columns:1fr}
+  .pricing-partner-facts .pricing-status-item+.pricing-status-item{border-left:0;border-top:1px solid var(--accent-line)}}
 .pricing-banner-milestones{background:color-mix(in srgb,var(--accent) 6%,var(--bg-card));gap:18px}
 .pricing-milestone-status{display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr) minmax(0,.9fr);
   overflow:hidden;border:1px solid var(--accent-line);border-radius:8px;background:var(--bg-card)}

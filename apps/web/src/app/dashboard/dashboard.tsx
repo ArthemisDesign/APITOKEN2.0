@@ -270,6 +270,25 @@ function PricingBanner({ account }: { account: AccountView }) {
   const pricing = account.pricing;
   if (!pricing) return null;
   if (pricing.customerType === "b2b") return <section className="pricing-banner pricing-banner-business"><div className="pricing-summary"><div><span className="pricing-kicker">{copy.currentPricing}</span><strong>{copy.businessAgreement}</strong></div><div className="pricing-discount"><b>{pricing.discountPercent}%</b><span>{copy.discount}</span><em className="pricing-mult">{multFromDiscount(pricing.discountPercent)} {copy.valueMultiplier}</em></div></div><p>{copy.negotiatedRate}</p></section>;
+  // Партнёрская фиксированная ставка (реф-ссылка сейлза). Реферал остаётся b2c, но платит по «полу»
+  // скидки, а не по прогрессивным тирам — прячем лестницу/удержание, показываем фикс-ставку.
+  if (isPartnerRate(account)) {
+    const paymentBp = paymentBasisPoints(account);
+    const discount = discountOf(account);
+    const exampleNano = officialNanoFromCharged(100n * NANO_PER_USD, paymentBp);
+    return <section className="pricing-banner pricing-banner-business pricing-banner-partner">
+      <div className="pricing-summary">
+        <div><span className="pricing-kicker">{copy.partnerRateKicker}</span><strong>{copy.partnerRate}</strong></div>
+        <div className="pricing-discount"><b>{discount}%</b><span>{copy.discount}</span><em className="pricing-mult">{formatMultiplier(paymentBp)} {copy.valueMultiplier}</em></div>
+      </div>
+      <div className="pricing-partner-facts">
+        <div className="pricing-status-item"><span>{copy.partnerYouPay}</span><strong>{formatPerDollar(paymentBp)}</strong><small>{copy.partnerYouPayHint}</small></div>
+        <div className="pricing-status-item"><span>{copy.partnerExample}</span><strong>$100 → ≈ {formatNanoUsd(exampleNano)}</strong><small>{copy.partnerExampleHint}</small></div>
+        <div className="pricing-status-item pricing-status-ok"><span>{copy.partnerFixed}</span><strong>{copy.partnerFixedValue}</strong><small>{copy.partnerFixedHint}</small></div>
+      </div>
+      <p>{copy.partnerExplainer}</p>
+    </section>;
+  }
   const currentIndex = Math.max(0, B2C_PRICING_MILESTONES.findIndex((tier) => tier.code === pricing.tier));
   const currentTier = B2C_PRICING_MILESTONES[currentIndex]!;
   const progress = pricingMilestoneProgress(pricing.tier, pricing.spentNano);
@@ -427,7 +446,10 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
   // Prepay-модель: тир определяется НАКОПЛЕННОЙ суммой пополнений (не расходом). Показываем, какой
   // тир даёт пополнение на введённую сумму, ценность по его скидке и условие удержания (50%/30 дней).
   const pricing = account.pricing;
-  const isB2c = pricing?.customerType === "b2c";
+  // Партнёрская фикс-ставка → выходим из прогрессивной тир-логики (ставка не зависит от суммы пополнения).
+  const partnerRate = isPartnerRate(account);
+  const isB2c = pricing?.customerType === "b2c" && !partnerRate;
+  const fixedRateName = partnerRate ? copy.partnerRate : copy.businessRate;
   const amountNano = amountValid ? BigInt(amount) * NANO_PER_USD : 0n;
   const currentIdx = pricing?.customerType === "b2c" ? B2C_PRICING_MILESTONES.findIndex((milestone) => milestone.code === pricing.tier) : -1;
   const cumulativeNano = pricing?.customerType === "b2c" ? BigInt(pricing.spentNano) + amountNano : amountNano;
@@ -456,7 +478,7 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
       <div className="ov-stats bill3 tc-stats">
         <div className="ovstat"><span className="dlabel">{copy.currentBalance}</span><b className="num">{normalizeUsd(account.balanceUsd)}</b><span className="dtrend">{BigInt(account.balanceNano) > 0n ? interpolate(copy.valueOfBalance, { value: formatNanoUsd(balanceApiNano) }) : copy.available}</span></div>
         <Stat label={copy.used} value={formatNanoUsd(account.spentNano)} detail={copy.balanceAfterDiscount} />
-        <div className="ovstat"><span className="dlabel">{copy.currentTier}</span><b className="num">{isB2c ? (currentIdx >= 0 ? tierName(copy, B2C_PRICING_MILESTONES[currentIdx].code) : copy.noTierYet) : copy.businessRate}</b><span className="dtrend">{discountOf(account)}% {copy.discount} · {formatMultiplier(paymentBasisPoints(account))} {copy.valueMultiplier}</span></div>
+        <div className="ovstat"><span className="dlabel">{partnerRate ? copy.partnerRateLabel : copy.currentTier}</span><b className="num">{isB2c ? (currentIdx >= 0 ? tierName(copy, B2C_PRICING_MILESTONES[currentIdx].code) : copy.noTierYet) : fixedRateName}</b><span className="dtrend">{discountOf(account)}% {copy.discount} · {formatMultiplier(paymentBasisPoints(account))} {copy.valueMultiplier}</span></div>
       </div>
 
       <div className="card topup-convert">
@@ -470,7 +492,7 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
           <div className={`tc-receive ${hasTier ? "tc-receive-up" : ""}`}>
             <span className="tc-recv-label">{copy.youReceive}</span>
             <b className="tc-recv-value">{amountNano > 0n ? `≈ ${formatNanoUsd(apiValueNano)}` : "—"}</b>
-            <span className="tc-recv-sub">{amountNano <= 0n ? copy.enterAmount : hasTier ? `${copy.inClaudeApi} · ${interpolate(copy.atTier, { tier: reachedTier ? tierName(copy, reachedTier.code) : copy.businessRate, discount })}` : `${copy.inClaudeApi} · ${copy.noDiscountYet}`}</span>
+            <span className="tc-recv-sub">{amountNano <= 0n ? copy.enterAmount : hasTier ? `${copy.inClaudeApi} · ${interpolate(copy.atTier, { tier: reachedTier ? tierName(copy, reachedTier.code) : fixedRateName, discount })}` : `${copy.inClaudeApi} · ${copy.noDiscountYet}`}</span>
             <div className="tc-recv-meta"><span className="tc-badge">−{discount}%</span><span className="tc-badge tc-badge-soft">{formatMultiplier(topupPaymentBp)} {copy.valueMultiplier}</span></div>
           </div>
         </div>
@@ -528,7 +550,9 @@ function Usage({ account, ledger, usage }: { account: AccountView; ledger: Ledge
   // Скидка определяет, сколько реального Claude API стоит каждый списанный доллар:
   // клиент платит multiplierBp от официальной цены → официальная ценность = списано × 10000 / multiplierBp.
   const multiplierBp = paymentBasisPoints(account);
-  const discount = account.pricing?.discountPercent ?? discountOf(account);
+  // discountOf учитывает партнёрский пол (effectiveDiscountPercent), тогда как pricing.discountPercent —
+  // это тир-скидка. Для реферала с фикс-ставкой показываем реальную (эффективную) скидку.
+  const discount = discountOf(account);
   const netChargedNano = BigInt(account.spentNano);
   const officialReceivedNano = officialNanoFromCharged(netChargedNano, multiplierBp);
 
@@ -994,14 +1018,35 @@ function interpolate(template: string, values: Record<string, string | number>):
   return Object.entries(values).reduce((value, [key, replacement]) => value.replaceAll(`{${key}}`, String(replacement)), template);
 }
 
+// --- Партнёрская (фиксированная) скидка по реф-ссылке сейлза ---
+// Реферал остаётся b2c, но commerce ставит ему «пол» скидки (referral_floor_bps): фиксированная
+// ставка поверх/вместо прогрессивных тиров. Если floor > 0 — дашборд показывает её как партнёрскую,
+// а реальная доля оплаты берётся из effectiveMultiplierBp (пол переопределяет тир).
+function partnerFloorBps(account: AccountView): number {
+  const p = account.pricing;
+  return p && p.customerType === "b2c" ? (p.referralFloorBps ?? 0) : 0;
+}
+function isPartnerRate(account: AccountView): boolean {
+  return partnerFloorBps(account) > 0;
+}
+
 // --- Скидка → сколько реального Claude API получает клиент ---
 // multiplierBp = доля оплаты в базисных пунктах (4000 = платит 40% = скидка 60% = ×2.5 ценности).
 function paymentBasisPoints(account: AccountView): bigint {
-  const bp = account.pricing?.multiplierBp ?? account.markupBasisPoints;
+  const p = account.pricing;
+  // Партнёрский пол перекрывает тир: реальная ставка = effectiveMultiplierBp (напр. 500 = платит 5%).
+  if (p && p.customerType === "b2c" && (p.referralFloorBps ?? 0) > 0 && p.effectiveMultiplierBp && p.effectiveMultiplierBp > 0) {
+    return BigInt(p.effectiveMultiplierBp);
+  }
+  const bp = p?.multiplierBp ?? account.markupBasisPoints;
   return BigInt(bp && bp > 0 ? bp : 4_000);
 }
 function discountOf(account: AccountView): number {
-  if (account.pricing) return account.pricing.discountPercent;
+  const p = account.pricing;
+  if (p && p.customerType === "b2c" && (p.referralFloorBps ?? 0) > 0) {
+    return p.effectiveDiscountPercent ?? p.discountPercent;
+  }
+  if (p) return p.discountPercent;
   const discountBp = bigintMax(0n, BASIS_POINTS - paymentBasisPoints(account));
   return Number(roundDivide(discountBp, 100n));
 }

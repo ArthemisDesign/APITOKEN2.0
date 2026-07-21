@@ -49,6 +49,11 @@ export interface B2CPricing {
   tier: string;
   discountPercent: number;
   multiplierBp: number;
+  // Фиксированная партнёрская скидка (реф-ссылка сейлза). 0 = нет. Если > 0 — реальная ставка/скидка
+  // берутся из effective* (пол переопределяет тир), и дашборд показывает «партнёрскую ставку».
+  referralFloorBps?: number;
+  effectiveMultiplierBp?: number;
+  effectiveDiscountPercent?: number;
   spentNano: string;
   retentionSpendNano: string;
   windowSpentNano?: string;
