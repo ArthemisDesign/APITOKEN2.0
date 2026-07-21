@@ -2,7 +2,7 @@
 
 use crate::{
     pg::{Owner, PgStore}, AccountRow, BillingTotals, KeyAuth, KeyPolicyUpdate, KeyRow, LedgerRow, PoolStateRow, Sub,
-    SubAdmin, SubRow, UsageModelAgg,
+    SubAdmin, SubHealth, SubRow, UsageModelAgg,
 };
 use anyhow::{bail, Result};
 use rusqlite::Connection;
@@ -92,6 +92,18 @@ impl Authority {
     }
     pub fn subs_admin(&mut self) -> Result<Vec<SubAdmin>> {
         match self { Self::Sqlite(c) => crate::subs_admin(c), Self::Postgres(pg) => pg.subs_admin() }
+    }
+    /// Durable auth-health of subscriptions (authoritative: survives restart / blue-green).
+    pub fn load_sub_health(&mut self, fleet: Option<&str>) -> Result<Vec<SubHealth>> {
+        match self { Self::Sqlite(c) => crate::load_sub_health(c, fleet), Self::Postgres(pg) => pg.load_sub_health(fleet) }
+    }
+    /// Persist one subscription's auth-health verdict. PostgreSQL requires the owner epoch (fenced).
+    pub fn save_sub_health(&mut self, owner: Option<&Owner>, h: &SubHealth) -> Result<usize> {
+        match self {
+            Self::Sqlite(c) => crate::save_sub_health(c, h),
+            Self::Postgres(pg) => pg.save_sub_health(
+                owner.ok_or_else(|| anyhow::anyhow!("PostgreSQL sub-health write requires owner epoch"))?, h),
+        }
     }
 
     pub fn account_create(&mut self, id: &str, handle: Option<&str>, mult_bp: i64) -> Result<()> {

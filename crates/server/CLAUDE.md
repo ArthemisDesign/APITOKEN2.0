@@ -37,7 +37,11 @@
   probe не срабатывает. `LIVENESS_INTERVAL` — как редко пинговать простаивающую (проверка живости токена).
   `persist_loop` — write-through персист состояния пула по событию cooling (`pool.on_change` → `Notify`)
   + редкий safety-flush; на старте `serve` восстанавливает состояние через `pool.import_state`.
-- `main.rs` — clap CLI: `serve` и `sub add/add-file/list/rm/status/proxy/fleet`.
+  `poll_loop` также ведёт **durable auth-health**: probe кормит `pool.record_probe` (машина dead-детекта),
+  изменившийся вердикт персистится owner-fenced (`save_sub_health`); suspect/dead probe-ятся НЕЗАВИСИМО
+  от cooling (`SUSPECT_INTERVAL`/`DEAD_RESURRECT_INTERVAL`), чтобы добрать корроборацию/ресуррекцию. На
+  старте `serve` сеет вердикт через `pool.import_health` (мёртвые сразу вне ротации, переживают рестарт).
+- `main.rs` — clap CLI: `serve` и `sub add/add-file/list/rm/status/proxy/fleet/set-plan/detect-plan/health`.
 
 **Инварианты:**
 - Новую env-переменную заводи ТОЛЬКО тут и прокидывай дальше через конфиг-структуры.

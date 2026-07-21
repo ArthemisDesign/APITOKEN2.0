@@ -185,8 +185,105 @@ pub struct Cap {
     pub avail_7d_usd: f64,
     pub status: String,
     pub cooling: bool,
-    pub auth_dead: bool,    // токен отвергнут Anthropic (401/403) — «мёртвая» подписка
+    pub auth_dead: bool,    // токен отвергнут Anthropic (корроборированно) — «мёртвая» подписка (state==Dead)
+    pub auth_state: String, // durable: "healthy" | "suspect" | "dead"
+    pub dead_reason: String,// "authentication_error" (re-auth) | "permission_error" (banned) | "" 
+    pub dead_since_ts: i64, // когда стала dead (0 = не dead)
 }
+
+/// Durable-вердикт живости токена подписки. Один 401/403 — НЕ приговор (транзиент/битый запрос);
+/// `Dead` ставится только по КОРРЕЛИРОВАННЫМ чистым probe (см. `record_probe`). Персистится в
+/// engine PostgreSQL (`subs.auth_state`), переживает рестарт/blue-green — в отличие от старого
+/// эфемерного `auth_dead`-бита, который поллер терял на каждом деплое.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum AuthState {
+    #[default]
+    Healthy,
+    /// Auth падает, но ещё не доказано терминально — под наблюдением, форсированно re-probe-ится.
+    Suspect,
+    /// Токен корроборированно мёртв/забанен. Исключён из ротации; авто-ревайв при смене токена или
+    /// успешном медленном resurrection-probe.
+    Dead,
+}
+
+impl AuthState {
+    pub fn as_str(self) -> &'static str {
+        match self { AuthState::Healthy => "healthy", AuthState::Suspect => "suspect", AuthState::Dead => "dead" }
+    }
+    pub fn from_str(s: &str) -> Self {
+        match s { "dead" => AuthState::Dead, "suspect" => AuthState::Suspect, _ => AuthState::Healthy }
+    }
+}
+
+/// Корроборация: `Dead` только после стольких чистых 401/403-probe подряд, растянутых на ≥ окно.
+const DEAD_STREAK: i64 = 3;
+/// …и только если первый отказ серии был не позже, чем `DEAD_MIN_SECS` назад (≥30 мин) — так
+/// транзиентный блип никогда не доводит до терминала, а настоящий бан — доводит за ~30 мин.
+const DEAD_MIN_SECS: i64 = 1800;
+
+/// Короткий отпечаток токена подписки — стабильная метка «к какому токену относится auth-вердикт».
+/// Не секрет (одностороннний хэш), но сравнение fp детектит замену токена (авто-ревайв). Общий для
+/// поллера (`record_probe`) и `replace_subs`, чтобы метки совпадали.
+pub fn token_fp(token: &str) -> String {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(token, &mut h);
+    format!("{:016x}", std::hash::Hasher::finish(&h))
+}
+
+/// Чистая машина auth-health одного probe (детерминирована по `now` → тестируема без системных часов).
+/// Один 401/403 НЕ убивает: нужна серия `DEAD_STREAK` за ≥`DEAD_MIN_SECS`. 2xx (чистый probe) снимает
+/// подозрение/смерть. Смена токена (fp) обнуляет вердикт о старом токене (авто-ревайв).
+fn apply_probe(l: &mut Live, http: u16, token_fp: &str, now: i64) {
+    l.polled_ts = now; // probe заякорил интервал liveness/suspect/dead
+    if !token_fp.is_empty() && l.auth_token_fp != token_fp {
+        l.auth_token_fp = token_fp.to_string();
+        reset_auth_healthy(l);
+    }
+    match http {
+        401 | 403 => {
+            l.auth_fail_streak += 1;
+            if l.first_auth_fail_ts == 0 { l.first_auth_fail_ts = now; }
+            l.last_auth_fail_ts = now;
+            l.last_auth_http = http as i64;
+            let reason = if http == 403 { "permission_error" } else { "authentication_error" };
+            if l.auth_state == AuthState::Healthy { l.auth_state = AuthState::Suspect; }
+            if l.auth_fail_streak >= DEAD_STREAK && now - l.first_auth_fail_ts >= DEAD_MIN_SECS {
+                l.auth_state = AuthState::Dead;
+                if l.dead_since_ts == 0 { l.dead_since_ts = now; }
+                l.dead_reason = reason.to_string();
+            }
+        }
+        c if (200..300).contains(&c) => reset_auth_healthy(l), // чистый probe → токен жив
+        _ => {} // 429/5xx/прочее — не auth-сигнал, состояние не трогаем
+    }
+}
+
+/// Сбросить auth-health `Live` в healthy (чистый probe/2xx/смена токена/ручной revive).
+fn reset_auth_healthy(l: &mut Live) {    l.auth_state = AuthState::Healthy;
+    l.auth_fail_streak = 0;
+    l.first_auth_fail_ts = 0;
+    l.last_auth_fail_ts = 0;
+    l.last_auth_http = 0;
+    l.dead_since_ts = 0;
+    l.dead_reason.clear();
+}
+
+/// Собрать durable-строку auth-health из `Live` (для персиста/сравнения «изменилось ли»).
+fn health_row(email: &str, l: &Live) -> registry::SubHealth {
+    registry::SubHealth {
+        email: email.to_string(),
+        auth_state: l.auth_state.as_str().to_string(),
+        auth_fail_streak: l.auth_fail_streak,
+        first_auth_fail_ts: l.first_auth_fail_ts,
+        last_auth_fail_ts: l.last_auth_fail_ts,
+        last_auth_http: l.last_auth_http,
+        dead_since_ts: l.dead_since_ts,
+        dead_reason: l.dead_reason.clone(),
+        auth_token_fp: l.auth_token_fp.clone(),
+    }
+}
+
+
 
 #[derive(Clone, Default, Debug)]
 pub struct Live {
@@ -200,10 +297,18 @@ pub struct Live {
     /// `polled_ts` (тот пассивный сбор держит свежим на каждом ответе), иначе флуд 401/403 гнал бы
     /// непрерывный probe-трафик. Эфемерный, не персистится.
     pub last_probe_req: i64,
-    /// Токен отвергнут Anthropic (401/403 на probe) — «мёртвая» подписка. Эфемерно (НЕ персистится):
-    /// поллер переопределит на следующем цикле. Нужен, чтобы `/capacity`/панель ЯВНО показывали смерть
-    /// токена — иначе мёртвая подписка молча половинит ёмкость и видна лишь как 429 у клиентов.
-    pub auth_dead: bool,
+    /// Durable auth-health (переживает рестарт через `subs.auth_state`). Заменяет старый эфемерный
+    /// `auth_dead`-бит: теперь смерть коррелирована (N probe за ≥T) и авторитетна. Поллер ведёт эти
+    /// поля через `record_probe`, server персистит вердикт в PostgreSQL.
+    pub auth_state: AuthState,
+    pub auth_fail_streak: i64,
+    pub first_auth_fail_ts: i64,
+    pub last_auth_fail_ts: i64,
+    pub last_auth_http: i64,
+    pub dead_since_ts: i64,
+    pub dead_reason: String,
+    /// Отпечаток токена, к которому относится вердикт. Смена (authbot заменил токен) → авто-ревайв.
+    pub auth_token_fp: String,
     pub reset5h: i64,
     pub reset7d: i64,
     /// Сколько запросов сейчас «в полёте» на этой подписке (мягкий счётчик для веерного
@@ -258,6 +363,12 @@ pub struct RouteStats {
 fn is_cooling(g: &Inner, e: &str, now: i64) -> bool {
     g.live.get(e).map(|l| l.cooling_until > now).unwrap_or(false)
 }
+/// Подписка корроборированно мертва (токен забанен/отвергнут) → НЕ шлём на неё живой трафик.
+/// Исключается из ротации/placement/пина полностью (гарантированный 401 клиенту хуже, чем
+/// прозрачный Overloaded). Ревайв — авто при смене токена / успешном resurrection-probe, либо вручную.
+fn is_dead(g: &Inner, e: &str) -> bool {
+    g.live.get(e).map(|l| l.auth_state == AuthState::Dead).unwrap_or(false)
+}
 /// Единая «живая» утилизация окна для capacity И маршрутизации: последний заголовок + наш расход
 /// после него / измеренная (либо тарифная прайорная) ёмкость. Прошедший reset обнуляет окно.
 fn live_util(g: &Inner, e: &str, scale: f64, w: u8, now: i64, p5: f64, p7: f64) -> f64 {
@@ -292,6 +403,7 @@ fn select_best_with_policy(g: &Inner, exclude: &HashSet<String>, now: i64, rsv: 
 
     g.subs.iter()
         .filter(|s| !exclude.contains(&s.email))
+        .filter(|s| !is_dead(g, &s.email)) // мёртвые (забанены) — вне ротации
         .filter(|s| allow_cooling_fallback || !is_cooling(g, &s.email, now))
         .min_by(|a, b| {
             let cooling_order = is_cooling(g, &a.email, now).cmp(&is_cooling(g, &b.email, now));
@@ -357,6 +469,7 @@ fn place_best(g: &Inner, now: i64, rsv: &Reserve, p5: f64, p7: f64) -> Option<Su
     let eligible = g.subs.iter().filter(|s| {
         let (c5, c7) = rsv.caps(&s.email);
         !is_cooling(g, &s.email, now)
+            && !is_dead(g, &s.email) // мёртвые (забанены) не принимают новые сессии
             && live_util(g, &s.email, plan_scale(&s.plan), 7, now, p5, p7) < c7
             && live_util(g, &s.email, plan_scale(&s.plan), 5, now, p5, p7) < c5
             && inflight_of(g, &s.email) < max_inflight()
@@ -418,6 +531,18 @@ impl Pool {
         let keep: HashSet<String> = subs.iter().map(|s| s.email.clone()).collect();
         let now = now();
         g.live.retain(|k, v| keep.contains(k) || v.cooling_until > now);
+        // Смена токена существующей подписки (authbot заменил) → вердикт о СТАРОМ токене недействителен:
+        // авто-ревайв в ПАМЯТИ сразу (не ждём probe), чтобы забаненная-и-перевыпущенная вернулась в строй.
+        // Durable-строку в БД сбрасывает add/add_file (ON CONFLICT), здесь чиним in-memory зеркало.
+        for s in &subs {
+            let fp = token_fp(&s.token);
+            if let Some(l) = g.live.get_mut(&s.email) {
+                if !l.auth_token_fp.is_empty() && l.auth_token_fp != fp {
+                    reset_auth_healthy(l);
+                    l.auth_token_fp = fp;
+                }
+            }
+        }
         g.subs = subs;
     }
 
@@ -471,7 +596,8 @@ impl Pool {
                 let deep_cooling = cooling > now && cooling - now >= REBIND_AFTER;
                 let (c5, c7) = rsv.caps(&home);
                 let over_cap = e5 >= c5 || e7 >= c7;
-                if !deep_cooling && !over_cap {
+                let home_dead = is_dead(&g, &home); // забаненный дом → пере-привязка (не пиним 401)
+                if !deep_cooling && !over_cap && !home_dead {
                     // дом всё ещё «наш» — кэш тёплый; либо пин, либо кратковременный спилл
                     if let Some(b) = g.bindings.get_mut(&session) { b.last_seen = now; }
                     let busy = cooling > now || inflight_of(&g, &home) >= max_inflight();
@@ -530,15 +656,69 @@ impl Pool {
         let l = g.live.entry(email.to_string()).or_default();
         if l.cooling_until <= now() { l.cooling_until = 0; }
         l.last_used = now();
-        l.auth_dead = false; // живой 2xx-трафик доказал, что токен рабочий → снять «мёртвость»
+        // Живой 2xx/4xx-трафик доказал, что токен рабочий → снять «мёртвость»/подозрение в ПАМЯТИ.
+        // Durable-вердикт в БД скорректирует ближайший чистый probe (record_probe → persist healthy).
+        reset_auth_healthy(l);
     }
 
-    /// Пометить/снять «мёртвость» токена (401/403 на чистом probe поллера = токен отвергнут Anthropic).
-    /// Ставит поллер на probe-401/403, снимает — на успешном probe/2xx. Эфемерно (не персистится).
-    pub fn set_auth_dead(&self, email: &str, dead: bool) {
+    /// Скормить результат ФОНОВОГО probe в durable-машину auth-health. Возвращает `Some(SubHealth)`,
+    /// когда durable-поле изменилось (вызывающий персистит вердикт в PostgreSQL), иначе `None`.
+    /// Один 401/403 НЕ убивает — нужна серия `DEAD_STREAK` за ≥`DEAD_MIN_SECS`. Только чистые probe
+    /// поллера зовут это (не живой трафик — там вина могла быть в запросе клиента).
+    pub fn record_probe(&self, email: &str, http: u16, token_fp: &str) -> Option<registry::SubHealth> {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let l = g.live.entry(email.to_string()).or_default();
-        l.auth_dead = dead;
+        let before = health_row(email, l);
+        apply_probe(l, http, token_fp, now());
+        let after = health_row(email, l);
+        if before != after { Some(after) } else { None }
+    }
+
+    /// Оператор/старт: применить durable auth-health из БД к in-memory состоянию. Мёртвые сразу
+    /// исключаются из ротации; suspect — под наблюдением поллера.
+    pub fn import_health(&self, rows: Vec<registry::SubHealth>) {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let known: HashSet<String> = g.subs.iter().map(|s| s.email.clone()).collect();
+        for r in rows {
+            if !known.contains(&r.email) { continue; }
+            let l = g.live.entry(r.email.clone()).or_default();
+            l.auth_state = AuthState::from_str(&r.auth_state);
+            l.auth_fail_streak = r.auth_fail_streak.max(0);
+            l.first_auth_fail_ts = r.first_auth_fail_ts;
+            l.last_auth_fail_ts = r.last_auth_fail_ts;
+            l.last_auth_http = r.last_auth_http;
+            l.dead_since_ts = r.dead_since_ts;
+            l.dead_reason = r.dead_reason;
+            l.auth_token_fp = r.auth_token_fp;
+        }
+    }
+
+    /// Оператор: вручную вернуть подписку в строй (после ручной проверки/замены). Возвращает вердикт
+    /// для персиста. In-memory сразу healthy → снова в ротации.
+    pub fn revive(&self, email: &str) -> Option<registry::SubHealth> {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if !g.subs.iter().any(|s| s.email == email) { return None; } // ревайвим только известную подписку
+        let l = g.live.entry(email.to_string()).or_default();
+        reset_auth_healthy(l);
+        Some(health_row(email, l))
+    }
+
+    /// Оператор: вручную пометить подписку мёртвой (например, знаем о бане вне 401-детекта).
+    pub fn kill(&self, email: &str, reason: &str) -> Option<registry::SubHealth> {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if !g.subs.iter().any(|s| s.email == email) { return None; } // килим только известную подписку
+        let l = g.live.entry(email.to_string()).or_default();
+        let now = now();
+        l.auth_state = AuthState::Dead;
+        if l.dead_since_ts == 0 { l.dead_since_ts = now; }
+        l.dead_reason = if reason.is_empty() { "operator".to_string() } else { reason.to_string() };
+        Some(health_row(email, l))
+    }
+
+    /// Подписка мёртва (токен отвергнут корроборированно)? Быстрая проверка для forward.
+    pub fn is_auth_dead(&self, email: &str) -> bool {
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        g.live.get(email).map(|l| l.auth_state == AuthState::Dead).unwrap_or(false)
     }
 
     /// Пометить подписку для НЕМЕДЛЕННОГО liveness-probe поллером (сброс `polled_ts` в 0 → `next_probe_at`
@@ -703,7 +883,10 @@ impl Pool {
                 avail_7d_usd: avail(604800),
                 status: l.status.clone(),
                 cooling: l.cooling_until > now,
-                auth_dead: l.auth_dead,
+                auth_dead: l.auth_state == AuthState::Dead,
+                auth_state: l.auth_state.as_str().to_string(),
+                dead_reason: l.dead_reason.clone(),
+                dead_since_ts: l.dead_since_ts,
             }
         }).collect()
     }
@@ -1229,5 +1412,137 @@ mod tests {
         p.set_util("a", Some(0.3), None, None, None, None); // polled_ts снова > 0
         p.request_probe("a");
         assert!(p.snapshot()[0].1.polled_ts > 0, "второй request_probe в окне дебаунса — no-op");
+    }
+
+    // ── Durable auth-health: корроборированный dead-детект ──────────────────────────────────
+
+    /// Один 401/403 — НЕ приговор: только `Suspect`. Терминал `Dead` требует серии за ≥ окно.
+    #[test]
+    fn single_auth_fail_is_only_suspect() {
+        let mut l = Live::default();
+        apply_probe(&mut l, 401, "fp1", 1_000_000);
+        assert_eq!(l.auth_state, AuthState::Suspect);
+        assert_eq!(l.auth_fail_streak, 1);
+        assert_eq!(l.last_auth_http, 401);
+    }
+
+    /// Три 401 подряд, но в пределах `DEAD_MIN_SECS` (транзиентный блип) → всё ещё `Suspect`, НЕ `Dead`.
+    /// Это ключевая защита от ложных приговоров: серия должна быть РАСТЯНУТА во времени.
+    #[test]
+    fn rapid_fails_within_window_do_not_kill() {
+        let mut l = Live::default();
+        let t = 1_000_000;
+        apply_probe(&mut l, 401, "fp1", t);
+        apply_probe(&mut l, 401, "fp1", t + 10);
+        apply_probe(&mut l, 401, "fp1", t + 20);
+        assert_eq!(l.auth_fail_streak, 3);
+        assert_eq!(l.auth_state, AuthState::Suspect, "streak≥3, но <30мин → ещё не dead");
+    }
+
+    /// Серия 401 растянута на ≥`DEAD_MIN_SECS` → корроборировано `Dead` с причиной re-auth.
+    #[test]
+    fn corroborated_fails_over_window_go_dead() {
+        let mut l = Live::default();
+        let t = 1_000_000;
+        apply_probe(&mut l, 401, "fp1", t);
+        apply_probe(&mut l, 401, "fp1", t + 600);
+        apply_probe(&mut l, 401, "fp1", t + DEAD_MIN_SECS + 1);
+        assert_eq!(l.auth_state, AuthState::Dead);
+        assert_eq!(l.dead_reason, "authentication_error");
+        assert_eq!(l.dead_since_ts, t + DEAD_MIN_SECS + 1);
+    }
+
+    /// 403 → причина permission_error (аккаунт заблокирован/забанен, а не просто re-auth).
+    #[test]
+    fn permission_error_reason_for_403() {
+        let mut l = Live::default();
+        let t = 2_000_000;
+        apply_probe(&mut l, 403, "fp", t);
+        apply_probe(&mut l, 403, "fp", t + 900);
+        apply_probe(&mut l, 403, "fp", t + DEAD_MIN_SECS + 5);
+        assert_eq!(l.auth_state, AuthState::Dead);
+        assert_eq!(l.dead_reason, "permission_error");
+    }
+
+    /// Чистый 2xx-probe снимает подозрение/смерть (токен доказал живость).
+    #[test]
+    fn clean_probe_clears_suspect_and_dead() {
+        let mut l = Live::default();
+        let t = 3_000_000;
+        for i in 0..3 { apply_probe(&mut l, 401, "fp", t + i * (DEAD_MIN_SECS / 2 + 1)); }
+        assert_eq!(l.auth_state, AuthState::Dead);
+        apply_probe(&mut l, 200, "fp", t + 10 * DEAD_MIN_SECS);
+        assert_eq!(l.auth_state, AuthState::Healthy);
+        assert_eq!(l.auth_fail_streak, 0);
+        assert_eq!(l.dead_since_ts, 0);
+    }
+
+    /// Смена токена (authbot заменил) обнуляет вердикт о старом токене → авто-ревайв.
+    #[test]
+    fn token_change_resets_verdict() {
+        let mut l = Live::default();
+        let t = 4_000_000;
+        for i in 0..3 { apply_probe(&mut l, 401, "old", t + i * (DEAD_MIN_SECS / 2 + 1)); }
+        assert_eq!(l.auth_state, AuthState::Dead);
+        // новый отпечаток токена → сброс к healthy ДО оценки текущего http (тут даже 401 не важен)
+        apply_probe(&mut l, 200, "new", t + 10 * DEAD_MIN_SECS);
+        assert_eq!(l.auth_state, AuthState::Healthy);
+        assert_eq!(l.auth_token_fp, "new");
+    }
+
+    /// Мёртвая подписка ИСКЛЮЧЕНА из ротации (не шлём гарантированный 401 клиенту).
+    #[test]
+    fn dead_subscription_excluded_from_selection() {
+        let p = pool(&["a", "b"]);
+        p.kill("a", "permission_error");
+        // pick никогда не вернёт мёртвую a
+        for _ in 0..10 { assert_eq!(picked(&p), "b"); }
+        // route (новая сессия) тоже минует мёртвую
+        assert_eq!(p.route(12345).unwrap().email, "b");
+        // если ОБЕ мертвы — пул честно пуст (forward отдаст Overloaded, а не 401)
+        p.kill("b", "authentication_error");
+        assert!(p.pick(&none(), false).is_none(), "все мёртвы → нет кандидата (не зависаем в 401)");
+    }
+
+    /// Ручной revive возвращает мёртвую подписку в строй; is_auth_dead это отражает.
+    #[test]
+    fn revive_returns_dead_sub_to_rotation() {
+        let p = pool(&["a", "b"]);
+        p.kill("a", "operator");
+        assert!(p.is_auth_dead("a"));
+        p.revive("a");
+        assert!(!p.is_auth_dead("a"));
+        // после revive снова участвует в выборе (least-loaded может выбрать a)
+        p.set_util("b", Some(0.9), Some(0.9), None, None, None); // нагрузим b → выберут a
+        assert_eq!(picked(&p), "a");
+    }
+
+    /// import_health (старт из БД) применяет durable-вердикт: мёртвая сразу вне ротации, переживает
+    /// рестарт (в отличие от старого эфемерного auth_dead, который сбрасывался healthy на деплой).
+    #[test]
+    fn import_health_restores_dead_across_restart() {
+        let p = pool(&["a", "b"]);
+        p.import_health(vec![registry::SubHealth {
+            email: "a".into(), auth_state: "dead".into(), auth_fail_streak: 3,
+            dead_since_ts: 999, dead_reason: "permission_error".into(), auth_token_fp: "fp".into(),
+            ..Default::default()
+        }]);
+        assert!(p.is_auth_dead("a"));
+        assert_eq!(picked(&p), "b", "восстановленная из БД мёртвая — вне ротации");
+    }
+
+    /// record_probe возвращает строку для персиста ТОЛЬКО при изменении durable-полей (иначе None →
+    /// поллер не пишет лишнего в БД на каждый здоровый probe). Первый probe фиксирует token-fp (1 запись).
+    #[test]
+    fn record_probe_persists_only_on_change() {
+        let p = pool(&["a"]);
+        // первый probe фиксирует отпечаток токена (полезно) → изменение → Some
+        assert!(p.record_probe("a", 200, "fp").is_some());
+        // второй ИДЕНТИЧНЫЙ здоровый probe: durable-поля не изменились → None (нет лишней записи)
+        assert!(p.record_probe("a", 200, "fp").is_none());
+        // 401 → Suspect: изменение → Some
+        let changed = p.record_probe("a", 401, "fp");
+        assert!(changed.is_some());
+        assert_eq!(changed.unwrap().auth_state, "suspect");
     }
 }

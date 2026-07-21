@@ -225,6 +225,8 @@ enum SubOp {
     SetPlan { email: String, plan: String },
     /// Определить тариф из /api/oauth/profile (без email — все без тарифа)
     DetectPlan { email: Option<String> },
+    /// Durable auth-health подписок (healthy | suspect | dead) — что движок узнал по probe.
+    Health,
 }
 
 fn main() -> Result<()> {
@@ -624,6 +626,27 @@ fn sub_cmd(op: SubOp) -> Result<()> {
             drop(db);
             for e in targets { println!("{e} → {}", detect_and_store(&s, &e)); }
         }
+        SubOp::Health => {
+            let rows = db.load_sub_health(None)?;
+            let mut dead = 0;
+            for h in &rows {
+                if h.auth_state == "healthy" { continue; } // печатаем только небанальное
+                if h.auth_state == "dead" { dead += 1; }
+                let reason = match h.dead_reason.as_str() {
+                    "permission_error" => "banned",
+                    "authentication_error" => "re-auth",
+                    "" => "—",
+                    other => other,
+                };
+                println!("{}\t{}\tstreak={}\tlast_http={}\treason={}\tdead_since={}",
+                    h.email, h.auth_state.to_uppercase(), h.auth_fail_streak,
+                    if h.last_auth_http == 0 { "—".into() } else { h.last_auth_http.to_string() },
+                    reason,
+                    if h.dead_since_ts == 0 { "—".into() } else { h.dead_since_ts.to_string() });
+            }
+            println!("— итого: {} мёртвых, {} под наблюдением (из {} подписок) · БД: {}",
+                dead, rows.iter().filter(|h| h.auth_state == "suspect").count(), rows.len(), config.label());
+        }
     }
     Ok(())
 }
@@ -652,7 +675,7 @@ async fn serve() -> Result<()> {
     let startup_fleet = s.fleet.clone();
     let startup_billing = s.billing;
     let startup_is_postgres = authority.is_postgres();
-    let (owner, subs, recovery, pool_rows, sqlite_reconcile) = tokio::task::spawn_blocking(move || {
+    let (owner, subs, recovery, pool_rows, health_rows, sqlite_reconcile) = tokio::task::spawn_blocking(move || {
         let mut db = startup_authority.connect()?;
         db.migrate()?;
         let owner = db.claim_instance(&startup_instance, 30)?;
@@ -666,6 +689,9 @@ async fn serve() -> Result<()> {
         }
         let subs = db.load_active(startup_fleet.as_deref())?;
         let pool_rows = db.load_pool_state()?;
+        // Durable auth-health: чтобы мёртвые (забаненные) подписки сразу были вне ротации и помечены
+        // на панели, а не «воскресали» здоровыми на каждый рестарт (старый эфемерный auth_dead-баг).
+        let health_rows = db.load_sub_health(startup_fleet.as_deref())?;
         let sqlite_reconcile = if startup_billing && !startup_is_postgres {
             Some(
                 db.sqlite_connection()
@@ -675,7 +701,7 @@ async fn serve() -> Result<()> {
         } else {
             None
         };
-        Ok::<_, anyhow::Error>((owner, subs, recovery, pool_rows, sqlite_reconcile))
+        Ok::<_, anyhow::Error>((owner, subs, recovery, pool_rows, health_rows, sqlite_reconcile))
     })
     .await
     .context("engine authority startup task failed")??;
@@ -744,6 +770,9 @@ async fn serve() -> Result<()> {
     let restored = pool_rows.len();
     app.pool.import_state(pool_rows);
     if restored > 0 { eprintln!("восстановлено состояние пула: {restored} подписок"); }
+    let dead_restored = health_rows.iter().filter(|h| h.auth_state == "dead").count();
+    app.pool.import_health(health_rows);
+    if dead_restored > 0 { eprintln!("восстановлено auth-health: {dead_restored} мёртвых подписок (вне ротации)"); }
     if let Some(owner) = owner.clone() {
         tokio::spawn(poller::owner_heartbeat_loop(
             authority.clone(), owner, authority_ready.clone(),

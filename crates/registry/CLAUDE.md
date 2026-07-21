@@ -33,6 +33,12 @@
   Мягкая миграция старой модели «key=кошелёк» → аккаунт per-key (`migrate_legacy_keys`).
 - Публичный тип [`Sub`] (email/token/proxy/fleet) — контракт для `pool`/`forward`. Меняешь его —
   проверь оба потребителя.
+- **Durable auth-health подписки** (детект забаненного токена): additive-колонки на `subs`
+  (`auth_state`/`auth_fail_streak`/`dead_since_ts`/`dead_reason`/`auth_token_fp`, migration `0003`).
+  `SubHealth` + `load_sub_health(fleet)` / `save_sub_health(owner,&h)` — вердикт пишет ТОЛЬКО поллер
+  (owner-fenced в PostgreSQL, как деньги/pool_state); машина состояний живёт в `pool`, registry лишь
+  персистит готовую строку. `subs_admin` отдаёт вердикт панели. `add`/`add_file` сбрасывают health в
+  healthy при (пере)выпуске токена (авто-ревайв). PostgreSQL — authority; SQLite-зеркало лишь для сборки.
 - **Персист состояния пула (таблица `pool_state`)** — CAS-versioned and owner-epoch fenced. Atomic
   `capacity_leases` validate cooldown/utilization/inflight and increment inflight in one transaction.
   `leader_leases` elect exactly one poller. `PoolStateRow` (примитивы, registry

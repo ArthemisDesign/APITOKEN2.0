@@ -938,7 +938,12 @@ pub async fn forward(
                 last_upstream = Some((st, resp));
                 continue;
             }
-            app.pool.mark_healthy(&sub.email);          // повтор/нет альтернативы → вина запроса
+            // Повтор/нет альтернативы → отдаём РЕАЛЬНЫЙ 401/403 клиенту (может быть вина запроса), но
+            // НЕ штампуем токен «здоровым» (старый баг: маскировал реально мёртвый токен, когда он
+            // последний/единственный). Вердикт о живости выносит ТОЛЬКО поллер по чистым probe — просим
+            // его проверить эту подписку (dead-детект durable в pool::record_probe).
+            app.pool.request_probe(&sub.email);
+            if let Some(p) = &app.probe_poke { p.notify_one(); }
             // Запрос-детерминированный 401/403 возвращаем БАЙТ-В-БАЙТ: body/request-id/error type
             // принадлежат Anthropic и нужны SDK-диагностике; секретные auth headers уже фильтруются.
             return stream_back(st, resp, None, None);

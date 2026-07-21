@@ -82,28 +82,40 @@ pub async fn metrics_loop(app: AppState, metrics_db: String, retention_days: i64
 /// Простаивающую подписку пингуем не чаще этого (сек). Не для «поймать сброс» (он вычисляется), а
 /// лишь для проверки живости токена. Под боевым трафиком `polled_ts` свеж → probe не срабатывает.
 const LIVENESS_INTERVAL: i64 = 300;
+/// Suspect (auth падает, но ещё не приговор): probe чаще и НЕЗАВИСИМО от cooling — иначе `cool(900)`
+/// после 401/403-probe отложил бы следующий probe и мы не добрали бы корроборацию за ~30 мин.
+const SUSPECT_INTERVAL: i64 = 600;
+/// Dead (токен корроборированно мёртв): медленный resurrection-probe — авто-ревайв, если токен снова
+/// заработал (заменён/разбанен), не долбя забаненный аккаунт часто. Тоже cooling-независимо.
+const DEAD_RESURRECT_INTERVAL: i64 = 3600;
 /// Потолок одновременных probe (медленный прокси не блокирует остальных).
 const PROBE_CONCURRENCY: usize = 16;
 /// Потолок сна (сек) — верхняя граница ожидания, чтобы liveness не растягивался бесконечно.
 const MAX_SLEEP: i64 = 300;
 
 /// Когда подписка «созреет» для активного probe. `polled_ts==0` (никогда не опрошена) → сейчас.
-/// Пока подписка в COOLING — её состояние АВТОРИТЕТНО (reset вычислен локально, quarantine активен),
-/// probe не нужен и ВРЕДЕН: долбил бы забаненный (401/403) аккаунт внутри 900с-карантина каждые 300с
-/// (амплификация бан-сигнала) или слал бы трафик на 429-лимитированный на дни. Поэтому не probe-им до
-/// конца cooling — тогда и обновим liveness. `max` держит инвариант единой точки (due-фильтр == сон).
+/// - **Dead/Suspect** — probe по своему интервалу и НЕЗАВИСИМО от cooling: dead уже вне ротации
+///   (`is_dead`), suspect обычно cooled после 401/403, но корроборацию/ресуррекцию надо продолжать.
+/// - **Healthy** — прежняя логика: пока подписка в COOLING, её состояние АВТОРИТЕТНО (reset вычислен,
+///   quarantine активен), probe не нужен и ВРЕДЕН (амплификация бан-сигнала) → откладываем до конца
+///   cooling. `max` держит инвариант единой точки (due-фильтр == сон).
 fn next_probe_at(email: &str, live: &pool::Live) -> i64 {
-    // Per-persona джиттер (0..LIVENESS_INTERVAL/2, стабилен по email): если трафик встал по всему флоту
-    // в момент T, без джиттера все idle-подписки созрели бы РОВНО в T+300 → синхронный залп идентичных
-    // probe (временна́я корреляция поверх фингерпринта). Джиттер разводит их во времени. Cooling НЕ
-    // джиттерим — он авторитетен (reset вычислен точно).
-    let base = if live.polled_ts == 0 { 0 } else {
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(email, &mut h);
-        let jitter = (std::hash::Hasher::finish(&h) % (LIVENESS_INTERVAL as u64 / 2)) as i64;
-        live.polled_ts + LIVENESS_INTERVAL + jitter
-    };
-    base.max(live.cooling_until)
+    match live.auth_state {
+        pool::AuthState::Dead => live.polled_ts + DEAD_RESURRECT_INTERVAL,
+        pool::AuthState::Suspect => live.polled_ts + SUSPECT_INTERVAL,
+        pool::AuthState::Healthy => {
+            // Per-persona джиттер (0..LIVENESS_INTERVAL/2, стабилен по email): без него весь idle-флот
+            // созрел бы РОВНО в T+300 → синхронный залп идентичных probe (временна́я корреляция поверх
+            // фингерпринта). Джиттер разводит их. Cooling НЕ джиттерим — он авторитетен.
+            let base = if live.polled_ts == 0 { 0 } else {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                std::hash::Hash::hash(email, &mut h);
+                let jitter = (std::hash::Hasher::finish(&h) % (LIVENESS_INTERVAL as u64 / 2)) as i64;
+                live.polled_ts + LIVENESS_INTERVAL + jitter
+            };
+            base.max(live.cooling_until)
+        }
+    }
 }
 
 /// Перечитывание реестра: подхватываем добавленные/убранные подписки. Спит 30с (локальная БД,
@@ -167,8 +179,10 @@ fn probe_cool_secs_429(
 }
 
 /// Один liveness-probe: читаем лимиты подписки и применяем. Сетевой сбой всё равно фиксируем
-/// (`set_util` c None двигает `polled_ts`) — иначе поллер спинил бы по мёртвому прокси.
-async fn probe(app: &AppState, sub: &Sub) {
+/// (`set_util` c None двигает `polled_ts`) — иначе поллер спинил бы по мёртвому прокси. Результат
+/// probe (401/403/2xx) кормит durable-машину auth-health; изменившийся вердикт персистится (fenced).
+async fn probe(app: &AppState, authority: &registry::authority::AuthorityConfig,
+               owner: Option<&registry::pg::Owner>, sub: &Sub) {
     let client = match app.clients.get(&sub.proxy, &sub.email) {
         Ok(c) => c,
         Err(_) => { app.pool.set_util(&sub.email, None, None, None, None, None); return; }
@@ -182,23 +196,45 @@ async fn probe(app: &AppState, sub: &Sub) {
                     // AUDIT-TODO(C59): expose claim/Retry-After and one public 429-cooling helper from
                     // `forward`, then delete this claim-less fallback from the composition crate.
                     let secs = probe_cool_secs_429(
-                        r.util5h,
-                        r.util7d,
-                        r.reset5h,
-                        r.reset7d,
-                        pool::now(),
-                        app.cfg.cool_secs,
+                        r.util5h, r.util7d, r.reset5h, r.reset7d, pool::now(), app.cfg.cool_secs,
                     );
                     app.pool.cool(&sub.email, secs);
                 }
                 401 | 403 => {
-                    app.pool.cool(&sub.email, 900);            // мёртвый токен, обнаружен на простое
-                    app.pool.set_auth_dead(&sub.email, true);  // ЯВНО помечаем dead → видно в /capacity/панели
+                    // Убираем из ротации на время наблюдения (suspect не должен быть placement-магнитом),
+                    // но next_probe_at для suspect/dead cooling-независим → корроборация продолжается.
+                    app.pool.cool(&sub.email, 900);
                 }
-                _ => app.pool.set_auth_dead(&sub.email, false), // чистый probe прошёл → токен жив
+                _ => {}
+            }
+            // Durable auth-health: один 401/403 НЕ приговор; `record_probe` копит серию и ставит Dead
+            // только по корроборации (DEAD_STREAK за ≥DEAD_MIN_SECS). Вердикт-изменение персистим
+            // (leader/owner-fenced) → переживает рестарт/blue-green, панель показывает авторитетно.
+            if let Some(health) = app.pool.record_probe(&sub.email, r.http, &pool::token_fp(&sub.token)) {
+                persist_health(authority, owner, health).await;
             }
         }
         None => app.pool.set_util(&sub.email, None, None, None, None, None), // записать попытку (backoff)
+    }
+}
+
+/// Персист durable-вердикта auth-health одной подписки (owner-fenced в PostgreSQL). Синхронный
+/// клиент → blocking-пул, как persist_state_cas/ledger_prune.
+async fn persist_health(authority: &registry::authority::AuthorityConfig,
+                        owner: Option<&registry::pg::Owner>, health: registry::SubHealth) {
+    let config = authority.clone();
+    let owner = owner.cloned();
+    let email = health.email.clone();
+    let state = health.auth_state.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        let mut conn = config.connect()?;
+        conn.save_sub_health(owner.as_ref(), &health)?;
+        Ok::<_, anyhow::Error>(())
+    }).await;
+    match res {
+        Ok(Ok(())) => { if state == "dead" { eprintln!("🚫 подписка {email} помечена DEAD (токен отвергнут Anthropic)"); } }
+        Ok(Err(e)) => eprintln!("⚠ персист auth-health {email} не удался: {e}"),
+        Err(e) => eprintln!("⚠ персист auth-health {email}: задача упала: {e}"),
     }
 }
 
@@ -310,7 +346,9 @@ pub async fn poll_loop(app: AppState, authority: registry::authority::AuthorityC
             for sub in due {
                 if set.len() >= PROBE_CONCURRENCY { set.join_next().await; }
                 let app = app.clone();
-                set.spawn(async move { probe(&app, &sub).await; });
+                let authority = authority.clone();
+                let owner = owner.clone();
+                set.spawn(async move { probe(&app, &authority, owner.as_ref(), &sub).await; });
             }
             while set.join_next().await.is_some() {}
         }
@@ -377,6 +415,31 @@ mod tests {
         l.cooling_until = now + 500;
         assert_eq!(next_probe_at(em, &l), now + 500, "probe откладывается до конца cooling");
         assert!(next_probe_at(em, &l) > now);
+    }
+
+    /// Suspect/Dead — probe НЕЗАВИСИМО от cooling: их надо продолжать проверять (корроборация/
+    /// ресуррекция), даже пока подписка cooled после 401/403-probe. Иначе cool(900) заморозил бы вердикт.
+    #[test]
+    fn suspect_and_dead_probe_ignore_cooling() {
+        let now = pool::now();
+        let em = "s@test.io";
+        // suspect, только что cooled(900) 401-probe-ом → всё равно созреет по SUSPECT_INTERVAL
+        let suspect = pool::Live {
+            polled_ts: now - SUSPECT_INTERVAL - 1, cooling_until: now + 900,
+            auth_state: pool::AuthState::Suspect, ..Default::default()
+        };
+        assert!(next_probe_at(em, &suspect) <= now, "suspect probe-ится, не глядя на cooling");
+        // dead — редкий resurrection-probe по DEAD_RESURRECT_INTERVAL, тоже cooling-независимо
+        let dead = pool::Live {
+            polled_ts: now - DEAD_RESURRECT_INTERVAL - 1, cooling_until: now + 900,
+            auth_state: pool::AuthState::Dead, ..Default::default()
+        };
+        assert!(next_probe_at(em, &dead) <= now, "dead получает медленный resurrection-probe");
+        // но dead, недавно опрошенный, НЕ созрел (медленный интервал держит редкость)
+        let dead_fresh = pool::Live {
+            polled_ts: now - 10, auth_state: pool::AuthState::Dead, ..Default::default()
+        };
+        assert!(next_probe_at(em, &dead_fresh) > now, "dead не долбим часто");
     }
 
     #[test]

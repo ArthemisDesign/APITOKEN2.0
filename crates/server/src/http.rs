@@ -186,14 +186,19 @@ fn capacity_value(app: &AppState) -> serde_json::Value {
             "avail_1h_usd": round(c.avail_1h_usd), "avail_5h_usd": round(c.avail_5h_usd),
             "avail_1d_usd": round(c.avail_1d_usd), "avail_7d_usd": round(c.avail_7d_usd),
             "status": c.status, "cooling": c.cooling,
-            "dead": c.auth_dead,   // токен отвергнут Anthropic (401/403) → «мёртвая» подписка
+            "dead": c.auth_dead,   // токен отвергнут Anthropic (корроборированно) → «мёртвая» подписка
+            "auth_state": c.auth_state,       // "healthy" | "suspect" | "dead" (durable)
+            "dead_reason": c.dead_reason,     // "authentication_error" (re-auth) | "permission_error" (banned)
+            "dead_since": c.dead_since_ts,    // когда стала dead (0 = нет)
         })
     }).collect();
     let dead_count = caps.iter().filter(|c| c.auth_dead).count();
+    let suspect_count = caps.iter().filter(|c| c.auth_state == "suspect").count();
     json!({
         "now": pool::now(),
         "subs": subs.len(),
-        "dead": dead_count,             // >0 → есть мёртвые токены (401/403): ёмкость молча урезана
+        "dead": dead_count,             // >0 → есть мёртвые токены (401/403): вне ротации, нужна замена
+        "suspect": suspect_count,       // auth падает, под наблюдением (ещё не приговор)
         "calibrated": all_calibrated,   // false → хотя бы одна подписка ещё на прайоре
         "available_usd": {              // суммарно по флоту, USD real-API-эквивалента
             "next_1h": round(a1), "next_5h": round(a5), "next_1d": round(a1d), "next_7d": round(a7d),
@@ -332,11 +337,17 @@ async fn subs(
             "proxy_host": s.proxy_host,
             "proxy_expire": s.proxy_expire,   // из IPRoyal (пусто, пока authbot-loop не заполнил)
             "proxy_ok": s.proxy_ok,
+            // Durable auth-health (авторитетно из БД, переживает рестарт) — панель показывает «токен
+            // мёртв (бан/re-auth)» здесь, а не только по эфемерному /capacity-флагу.
+            "auth_state": s.auth_state,       // "healthy" | "suspect" | "dead"
+            "dead_reason": s.dead_reason,     // "authentication_error" (re-auth) | "permission_error" (banned)
+            "dead_since_ts": s.dead_since_ts,
             "peak_cap5h_usd": r2(pk5),         // истинный ПИК ёмкости на дистанции (не EMA)
             "peak_cap7d_usd": r2(pk7),
         })
     }).collect();
-    let v = json!({"now": now, "lifetime_days": SUB_LIFETIME_DAYS, "subs": list});
+    let dead = rows.iter().filter(|s| s.auth_state == "dead").count();
+    let v = json!({"now": now, "lifetime_days": SUB_LIFETIME_DAYS, "dead": dead, "subs": list});
     cache_put(&SUBS_CACHE, &v);
     Json(v).into_response()
 }
