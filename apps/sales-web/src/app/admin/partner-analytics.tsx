@@ -328,11 +328,11 @@ function PartnerDrawer({
 
   function editDiscount() {
     const cur = p.referralDiscountEnabled ? String(p.referralDiscountBps / 100) : "off";
-    const v = window.prompt(`Referral discount right for ${label}\nPercent 0–90 (price floor for their referrals), or "off".`, cur);
+    const v = window.prompt(`Referral discount right for ${label}\nPercent 0–95 (price floor for their referrals), or "off".`, cur);
     if (v == null) return;
     if (v.trim().toLowerCase() === "off") return void patch({ referralDiscountEnabled: false, referralDiscountBps: 0 });
     const pct = Number(v.trim());
-    if (!Number.isFinite(pct) || pct < 0 || pct > 90) return setError("Discount must be 0–90.");
+    if (!Number.isFinite(pct) || pct < 0 || pct > 95) return setError("Discount must be 0–95.");
     void patch({ referralDiscountEnabled: true, referralDiscountBps: Math.round(pct * 100) });
   }
 

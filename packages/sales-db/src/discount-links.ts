@@ -50,8 +50,8 @@ export async function createDiscountLink(database: SalesDatabase, input: {
   discountBps: number;
   note?: string | null;
 }): Promise<DiscountLink> {
-  if (input.discountBps <= 0 || input.discountBps > 9000) {
-    throw new DiscountLinkNotAllowedError("discount must be between 1 and 90%");
+  if (input.discountBps <= 0 || input.discountBps > 9500) {
+    throw new DiscountLinkNotAllowedError("discount must be between 1 and 95%");
   }
   const client = await database.pool.connect();
   try {

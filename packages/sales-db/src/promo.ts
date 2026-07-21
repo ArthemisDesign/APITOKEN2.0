@@ -64,7 +64,7 @@ export async function createPromoCode(database: SalesDatabase, input: {
 }): Promise<PromoCode> {
   if (input.valueNano <= 0n) throw new PromoLimitError("promo value must be positive");
   const discountBps = input.discountBps ?? 0;
-  if (discountBps < 0 || discountBps > 9000) throw new PromoLimitError("promo discount must be 0–90%");
+  if (discountBps < 0 || discountBps > 9500) throw new PromoLimitError("promo discount must be 0–95%");
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");

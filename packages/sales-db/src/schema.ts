@@ -63,7 +63,7 @@ export const partners = pgTable("partners", {
   index("partners_parent_idx").on(table.parentPartnerId),
   check("partners_commission_bps_check", sql`${table.commissionBps} BETWEEN 0 AND 10000`),
   check("partners_sub_commission_bps_check", sql`${table.subCommissionBps} BETWEEN 0 AND 10000`),
-  check("partners_referral_discount_check", sql`${table.referralDiscountBps} BETWEEN 0 AND 9000`),
+  check("partners_referral_discount_check", sql`${table.referralDiscountBps} BETWEEN 0 AND 9500`),
 ]);
 
 export const partnerSessions = pgTable("partner_sessions", {
@@ -144,7 +144,7 @@ export const partnerInvites = pgTable("partner_invites", {
   index("partner_invites_partner_idx").on(table.partnerId, table.createdAt),
   check("partner_invites_commission_bps_check", sql`${table.commissionBps} IS NULL OR ${table.commissionBps} BETWEEN 0 AND 10000`),
   check("partner_invites_sub_commission_bps_check", sql`${table.subCommissionBps} IS NULL OR ${table.subCommissionBps} BETWEEN 0 AND 10000`),
-  check("partner_invites_referral_discount_check", sql`${table.referralDiscountBps} BETWEEN 0 AND 9000`),
+  check("partner_invites_referral_discount_check", sql`${table.referralDiscountBps} BETWEEN 0 AND 9500`),
 ]);
 
 // Заявки «с улицы»: подписанный Telegram-вход без аккаунта и инвайта → заявка на
@@ -217,7 +217,7 @@ export const partnerDiscountLinks = pgTable("partner_discount_links", {
 }, (table) => [
   uniqueIndex("partner_discount_links_code_uidx").on(table.code),
   index("partner_discount_links_partner_idx").on(table.partnerId, table.createdAt),
-  check("partner_discount_links_discount_check", sql`${table.discountBps} BETWEEN 0 AND 9000`),
+  check("partner_discount_links_discount_check", sql`${table.discountBps} BETWEEN 0 AND 9500`),
 ]);
 
 export const syncCursors = pgTable("sync_cursors", {

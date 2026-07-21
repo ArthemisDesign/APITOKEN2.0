@@ -184,11 +184,11 @@ export async function setBusinessPricing(database: Database, input: {
  */
 export async function setReferralFloor(database: Database, input: {
   userId: string;
-  floorBps: number; // 0..9000 (скидка ≤ 90%); 0 = снять пол
+  floorBps: number; // 0..9500 (скидка ≤ 95%); 0 = снять пол
   actorId: string;
 }): Promise<{ applied: boolean; multiplierBp: number | null }> {
-  if (!Number.isInteger(input.floorBps) || input.floorBps < 0 || input.floorBps > 9000) {
-    throw new RangeError("referral floor must be an integer between 0 and 9000 bps (≤90%)");
+  if (!Number.isInteger(input.floorBps) || input.floorBps < 0 || input.floorBps > 9500) {
+    throw new RangeError("referral floor must be an integer between 0 and 9500 bps (≤95%)");
   }
   const client = await database.pool.connect();
   try {

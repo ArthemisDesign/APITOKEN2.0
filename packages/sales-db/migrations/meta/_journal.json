@@ -85,6 +85,13 @@
       "when": 1784830000000,
       "tag": "0011_payout_raw_tx",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1784890000000,
+      "tag": "0012_referral_discount_95",
+      "breakpoints": true
     }
   ]
 }

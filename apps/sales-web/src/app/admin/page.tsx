@@ -546,8 +546,8 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
       setError("Commission percent cannot exceed 100%.");
       return;
     }
-    if (discountEnabled && (discountBps ?? 0) > 9000) {
-      setError("Referral discount cannot exceed 90%.");
+    if (discountEnabled && (discountBps ?? 0) > 9500) {
+      setError("Referral discount cannot exceed 95%.");
       return;
     }
     const count = promoCount.trim() === "" ? 0 : Number(promoCount);
@@ -626,7 +626,7 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
               placeholder="10"
             />
           </Field>
-          <Field label="Referral discount %" hint={discountEnabled ? "Floor: their users never pay above this · max 90%" : "Enable below to allow this partner to give a discount"}>
+          <Field label="Referral discount %" hint={discountEnabled ? "Floor: their users never pay above this · max 95%" : "Enable below to allow this partner to give a discount"}>
             <Input
               value={discountPct}
               onChange={(e) => setDiscountPct(e.target.value.replace(/[^\d.]/g, ""))}
