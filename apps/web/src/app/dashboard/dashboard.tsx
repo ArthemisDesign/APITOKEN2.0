@@ -454,12 +454,44 @@ function ApiKeys({ keys, onChanged, user }: { keys: ApiKeyView[]; onChanged(): P
   const createModalRef = useRef<HTMLFormElement>(null);
   const editModalRef = useRef<HTMLFormElement>(null);
   const revokeModalRef = useRef<HTMLDivElement>(null);
+  const keysPanelRef = useRef<HTMLElement>(null);
   const dialogReturnFocusRef = useRef<HTMLElement | null>(null);
   const busyRef = useRef(busy);
 
   useEffect(() => {
     const interval = window.setInterval(() => setPolicyNow(Date.now()), 60_000);
     return () => window.clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const panel = keysPanelRef.current;
+    if (!panel) return;
+
+    const closeMenusExcept = (currentMenu: HTMLDetailsElement | null = null) => {
+      panel.querySelectorAll<HTMLDetailsElement>(".key-menu[open]").forEach((menu) => {
+        if (menu !== currentMenu) menu.removeAttribute("open");
+      });
+    };
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const menu = target?.closest(".key-menu");
+      closeMenusExcept(menu instanceof HTMLDetailsElement ? menu : null);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      const menu = panel.querySelector<HTMLDetailsElement>(".key-menu[open]");
+      if (!menu) return;
+      event.preventDefault();
+      menu.removeAttribute("open");
+      menu.querySelector<HTMLElement>("summary")?.focus();
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
   }, []);
 
   useEffect(() => { busyRef.current = busy; }, [busy]);
@@ -689,7 +721,7 @@ function ApiKeys({ keys, onChanged, user }: { keys: ApiKeyView[]; onChanged(): P
     ? (BigInt(editTarget.spentNano) + BigInt(editTarget.reservedNano ?? "0")).toString()
     : "0";
 
-  return <section className="panel keys-panel">
+  return <section ref={keysPanelRef} className="panel keys-panel">
     <div className="keys-heading-row"><PageHeading eyebrow={copy.keysEyebrow} title={copy.keysTitle} subtitle={copy.keysSubtitle} /><button ref={createTriggerRef} className="btn btn-primary keys-create-button" type="button" onClick={() => { setCreateOpen(true); setError(null); }}>＋ {localCopy.createKey}</button></div>
     <QuickConnectDock key={issued ? "with-key" : "without-key"} issuedKey={issued} onDismissKey={() => setIssued(null)} />
     {error && !createOpen && !editTarget && !revokeTarget && <div className="banner banner-error" role="alert">{error}</div>}
