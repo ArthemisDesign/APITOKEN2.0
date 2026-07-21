@@ -145,7 +145,7 @@ async function admins(){const suffix=adminDomainFilter?'?domain='+encodeURICompo
   const external=(directory.external_domains||[]).map(item=>esc(item.domain)+' использует '+esc(item.account_system)).join(' · ');
   const body='<div class="banner ok"><span class="dot"></span><div><b>Центральное управление администраторами</b><span class="muted">Один логин можно назначить на один или несколько внутренних доменов. '+external+'.</span></div></div>'+
     '<h2>Новый администратор</h2><form id="admin-create" class="panel form admin-form"><div class="field"><label>Логин</label><input name="username" required maxlength="80" pattern="[A-Za-z0-9._@-]+" autocomplete="off" placeholder="new.admin"></div>'+
-    '<div class="field"><label>Пароль (минимум 12)</label><input name="password" type="password" required minlength="12" maxlength="200" autocomplete="new-password"></div><div class="field"><label>Доступ к доменам</label><div class="checks">'+checks+'</div></div><button class="btn" type="submit">создать</button></form>'+
+    '<div class="field"><label>Пароль (минимум 8)</label><input name="password" type="password" required minlength="8" maxlength="200" autocomplete="new-password"></div><div class="field"><label>Доступ к доменам</label><div class="checks">'+checks+'</div></div><button class="btn" type="submit">создать</button></form>'+
     '<h2>Администраторы</h2><div class="toolbar"><select id="admin-domain">'+options+'</select><span class="muted">Точный фильтр по домену · найдено '+accounts.length+'</span></div>'+
     '<div class="table"><div class="scroll"><table><thead><tr><th class="left">администратор</th><th class="left">домены</th><th>статус</th><th>пароль изменён</th><th>создан</th><th>действия</th></tr></thead><tbody>'+(rows||empty(6))+'</tbody></table></div></div>'+
     '<footer>Пароли хранятся только как Argon2id-хеши. Нельзя отключить или лишить main-admin доступа последнего активного администратора.</footer>';
@@ -157,7 +157,7 @@ function bindAdmins(domains){const select=document.getElementById('admin-domain'
       form.reset();alert('Администратор создан.');await admins()}catch(error){alert(error.message);button.disabled=false}};
   document.querySelectorAll('[data-admin-action]').forEach(button=>button.onclick=()=>adminAction(button,domains))}
 async function adminAction(button,domains){const action=button.dataset.adminAction,username=button.dataset.username,id=button.dataset.id;let body;
-  if(action==='password'){const first=prompt('Новый пароль для '+username+' (минимум 12 символов):');if(first==null)return;if(first.length<12)return alert('Пароль слишком короткий.');
+  if(action==='password'){const first=prompt('Новый пароль для '+username+' (минимум 8 символов):');if(first==null)return;if(first.length<8)return alert('Пароль слишком короткий.');
     const second=prompt('Повторите новый пароль:');if(second!==first)return alert('Пароли не совпадают.');const reason=prompt('Причина смены пароля:');if(reason==null||reason.trim().length<3)return;
     if(!confirm('Сменить пароль '+username+'?'+(button.dataset.self==='1'?'\nЭто ваш аккаунт: браузер запросит новые credentials.':'')))return;body={password:first,reason:reason.trim()}}
   if(action==='domains'){const allowed=domains.map(item=>item.domain),current=button.dataset.domains||'',value=prompt('Домены для '+username+' через запятую:\n'+allowed.join('\n'),current);if(value==null)return;

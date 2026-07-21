@@ -76,6 +76,21 @@ describe("completed Next.js migration", () => {
     expect(messages).toContain("При регистрации по email и паролю бонус не начисляется");
   });
 
+  it("uses an eight-character password minimum throughout authentication forms", () => {
+    const login = readFileSync(join(appRoot, "login", "login-form.tsx"), "utf8");
+    const register = readFileSync(join(appRoot, "register", "register-form.tsx"), "utf8");
+    const reset = readFileSync(join(appRoot, "reset-password", "reset-password-form.tsx"), "utf8");
+
+    expect(login).toContain("minLength={8}");
+    for (const source of [register, reset]) {
+      expect(source).toContain("password.length < 8");
+      expect(source).toContain("at least 8 characters");
+      expect(source).toContain("minLength={8}");
+      expect(source).not.toContain("12 characters");
+      expect(source).not.toContain("minLength={12}");
+    }
+  });
+
   it("loads Vercel Analytics once and strips sensitive URL data", () => {
     const rootLayout = readFileSync(join(appRoot, "layout.tsx"), "utf8");
     const analytics = readFileSync(join(root, "components", "site-analytics.tsx"), "utf8");

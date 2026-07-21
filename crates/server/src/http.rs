@@ -488,5 +488,8 @@ mod tests {
         assert!(!ADMIN_PANEL_HTML.contains("SALES_ADMIN_KEY"));
         assert!(ADMIN_PANEL_HTML.contains("sessionStorage.setItem(pendingKey"));
         assert!(ADMIN_PANEL_HTML.contains("idempotency_key:idempotencyKey"));
+        assert!(ADMIN_PANEL_HTML.contains("Пароль (минимум 8)"));
+        assert!(ADMIN_PANEL_HTML.contains("minlength=\"8\""));
+        assert!(ADMIN_PANEL_HTML.contains("first.length<8"));
     }
 }

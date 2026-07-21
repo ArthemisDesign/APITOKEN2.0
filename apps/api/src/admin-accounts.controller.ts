@@ -25,7 +25,7 @@ import { AdminAccountsService, isManagedAdminDomain } from "./admin-accounts.ser
 import { AdminGuard } from "./admin.guard.js";
 
 const usernameSchema = z.string().trim().regex(/^[A-Za-z0-9._@-]{1,80}$/);
-const passwordSchema = z.string().min(12).max(200);
+const passwordSchema = z.string().min(8).max(200);
 const reasonSchema = z.string().trim().min(3).max(300);
 const domainSchema = z.enum(MANAGED_ADMIN_DOMAINS);
 const domainsSchema = z.array(domainSchema).min(1).max(MANAGED_ADMIN_DOMAINS.length)
