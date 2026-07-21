@@ -206,10 +206,17 @@ impl PgStore {
             tx.commit()?;
             return Ok(Some(balance));
         }
+        // Овердрафт-буфер: funded-запрос НЕ роняем из-за гонки конкурентных резервов. Пускаем, пока
+        // ПОСЛЕ-баланс не ниже пола −OVERDRAFT_NANO (`balance-hold >= -OVERDRAFT` ⇔ `balance >= hold-OVERDRAFT`).
+        // Гейт атомарен на строке аккаунта → суммарный баланс НИКОГДА не уходит ниже −$1 даже под
+        // конкуренцией (каждый успешный резерв гарантирует post_balance ≥ −$1; за полом любой h>0 отбит).
+        // Стоимость: аккаунт может получить максимум $1 в долг (per-account, не per-request) — принятый
+        // размен на «ноль ложных 402». Синхронно с `metering::OVERDRAFT_NANO`.
+        const OVERDRAFT_NANO: i64 = 1_000_000_000; // $1
         let Some(row) = tx.query_opt(
             "UPDATE accounts SET balance_nano=balance_nano-$1, reserved_nano=reserved_nano+$1 \
-             WHERE id=$2 AND status='active' AND balance_nano >= $1 RETURNING balance_nano",
-            &[&hold, &account_id],
+             WHERE id=$2 AND status='active' AND balance_nano >= $1 - $3 RETURNING balance_nano",
+            &[&hold, &account_id, &OVERDRAFT_NANO],
         )? else {
             tx.rollback()?;
             return Ok(None);
@@ -1427,6 +1434,24 @@ mod tests {
         assert_eq!(recovered.canceled_before_delivery,1);
         assert_eq!(recovered.charged_after_delivery,1);
         assert_eq!(pg.account_get("acct").unwrap().unwrap().reserved_nano,0);
+
+        // Овердрафт-буфер ($1): funded-запрос НЕ роняем из-за гонки — баланс может уйти в лёгкий минус
+        // до пола −$1 (−1e9 nano), но НИКОГДА ниже; за полом любой положительный hold отбит.
+        pg.account_create("od-acct", None, 10_000).unwrap();
+        pg.key_issue("od-key", "od-acct", None).unwrap();
+        pg.account_topup("od-acct", 1_000, Some("od-seed")).unwrap();          // balance = 1000 nano
+        // hold ≫ баланса, но в пределах balance+$1 → овердрафт пускает; баланс → −$0.999999
+        assert_eq!(pg.reserve_request(&owner,"od-1","od-acct","od-key",1_000_000_000,60).unwrap(),Some(-999_999_000));
+        // добираем РОВНО до пола −$1 (граница включительно)
+        assert_eq!(pg.reserve_request(&owner,"od-2","od-acct","od-key",1_000,60).unwrap(),Some(-1_000_000_000));
+        // на полу −$1 любой положительный hold отбит (защита от бесконечного долга)
+        assert_eq!(pg.reserve_request(&owner,"od-3","od-acct","od-key",1,60).unwrap(),None);
+        // на свежем аккаунте hold СВЕРХ balance+$1 → отказ (за буфером), обычный в пределах — ок
+        pg.account_create("od-acct2", None, 10_000).unwrap();
+        pg.key_issue("od-key2", "od-acct2", None).unwrap();
+        pg.account_topup("od-acct2", 1_000, Some("od-seed2")).unwrap();        // balance = 1000 nano
+        assert_eq!(pg.reserve_request(&owner,"od-4","od-acct2","od-key2",1_000_002_000,60).unwrap(),None);
+        assert_eq!(pg.reserve_request(&owner,"od-5","od-acct2","od-key2",1_000,60).unwrap(),Some(0));
 
         // Pool state is versioned CAS and fenced by owner epoch.
         let mut state = pg.load_pool_state().unwrap();

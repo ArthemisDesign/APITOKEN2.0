@@ -15,8 +15,12 @@
   spent + ledger-строка), `key_issue(account_id,label)/get/list/set_status/set_status_by_id/remove/clear`;
   `api_keys.key_id` — стабильный не-секретный control-plane ID для отзыва без хранения полного ключа,
   `key_account` (JOIN ключ→аккаунт для авторизации), обёртка `Billing` (Mutex<Conn>). Подсчёт стоимости
-  (токены→нано) сюда НЕ лезет — это `metering`; registry принимает готовую сумму. **Инвариант денег:**
-  `charge≤hold≤balance` держится на уровне АККАУНТА. `reservations.request_id` is the ownership key;
+  (токены→нано) сюда НЕ лезет — это `metering`; registry принимает готовую сумму. **Инвариант денег
+  (с овердрафт-буфером):** резерв держит ПОЛ баланса на −$1 (`OVERDRAFT_NANO`, синхронно с
+  `metering::OVERDRAFT_NANO`) — funded-запрос НЕ роняется 402 из-за гонки конкурентных резервов; за полом
+  любой положительный hold отбит (макс $1 в долг per-account). Settle списывает РЕАЛЬНОЕ (`actual`
+  может быть > hold — из остатка баланса), forward-кап держит списание в пределах hold+$1. То есть
+  `hold ≤ balance+$1` и `charge ≤ hold+$1` на уровне АККАУНТА. `reservations.request_id` is the ownership key;
   `settlement_outbox` retries until the same transaction updates balances and inserts the unique
   `(kind,request_id)` charge. Upstream request IDs are audit metadata, never the money identity.
   Cursor consumers use `ledger_after(account, after_id, limit)` (oldest-first); account pricing uses

@@ -34,6 +34,11 @@ pub struct ProxyConfig {
     pub max_inflight_per_key: u32,
     pub util_cap: f64,             // клиентский потолок утилизации окна (для /pool)
     pub cool_secs: i64,            // cooling при 429 без известного reset
+    /// Гладкий UX: сколько миллисекунд движок может ТИХО ждать+ретраить ротацию при транзиентной
+    /// нехватке ёмкости (все подписки cooling/за util_cap, breaker, upstream-429), прежде чем отдать
+    /// клиенту ошибку. Решение pre-stream → для клиента невидимо (стрим ещё не начат). 0 = выключено
+    /// (мгновенный отбой, старое поведение). Env `CLAUDE_API_SMOOTH_WAIT_MS`.
+    pub smooth_wait_ms: u64,
     pub poll: bool,                // включён ли фоновый поллер (для /pool)
     pub inject_identity: bool,     // инжектить Claude Code identity в system
     pub identity: String,          // сама строка идентичности

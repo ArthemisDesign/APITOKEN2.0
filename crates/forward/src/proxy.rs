@@ -321,14 +321,16 @@ const DEFAULT_WEB_USES: u64 = 20;
 
 fn cap_to_balance(bal: i128, input_est: i128, web_buf: i128, p: &metering::Prices,
                   mult_bp: i64, client_mt: u64) -> Option<(u64, i64)> {
-    if bal <= 0 { return None; }
-    // Наценка ≤ 0 = бесплатный ключ (charge всегда 0) → не лимитируем, hold 0.
+    // Наценка ≤ 0 = бесплатный ключ (charge всегда 0) → не лимитируем, hold 0 (баланс не двигается).
     if mult_bp <= 0 { return Some((client_mt, 0)); }
+    // Овердрафт-буфер: доступное = balance + $1. Funded-юзера НЕ роняем 402 из-за гонки конкурентных
+    // резервов — атомарный резерв (registry) всё равно держит пол баланса на −$1. За полом (bal ≤ −$1) → None.
+    let ceil = bal + metering::OVERDRAFT_NANO;
+    if ceil <= 0 { return None; }
     // Работаем в RAW-нано (до наценки). Максимальная RAW-стоимость `x_max`, чья КЛИЕНТСКАЯ цена
-    // (apply_multiplier, round-half-up) гарантированно ≤ bal: apply_multiplier(X)=(X·m+5000)/10000 ≤ bal
-    // при X ≤ ⌊bal·10000/m⌋ (тогда X·m ≤ bal·10000 → (X·m+5000)/10000 ≤ bal, т.к. 5000<10000). Так
-    // `hold=apply_multiplier(ceiling) ≤ bal` держится ПО ПОСТРОЕНИЮ, без клампа (клампа-щели округления нет).
-    let x_max = bal.saturating_mul(10000) / (mult_bp as i128);
+    // (apply_multiplier, round-half-up) гарантированно ≤ ceil (=bal+$1): X ≤ ⌊ceil·10000/m⌋ → X·m ≤
+    // ceil·10000 → (X·m+5000)/10000 ≤ ceil. Так `hold=apply_multiplier(ceiling) ≤ bal+$1` по построению.
+    let x_max = ceil.saturating_mul(10000) / (mult_bp as i128);
     let fixed_raw = input_est * p.cache_write_1h + web_buf; // вход worst-case + буфер поисков (RAW)
     if fixed_raw > x_max { return None; }                   // не тянет даже вход worst-case → 402
     let out = p.output.max(1);
@@ -339,7 +341,9 @@ fn cap_to_balance(bal: i128, input_est: i128, web_buf: i128, p: &metering::Price
     // charge = apply_multiplier(real_raw) ≤ hold, т.к. real_raw ≤ ceiling_raw (реальных input-токенов
     // ≤ байт=input_est, ставка входа ≤ cw1h, output ≤ eff_mt). Итог: charge ≤ hold ≤ bal — жёстко.
     let ceiling_raw = fixed_raw + (eff_mt as i128) * p.output;
-    let hold = metering::apply_multiplier(ceiling_raw, mult_bp) as i64;
+    // Кламп к i64::MAX: овердрафт-буфер (bal+$1) при абсурдном балансе мог бы толкнуть hold за i64,
+    // и `as i64` обернул бы его в отрицательный. Реальные балансы недостижимы близко к i64::MAX.
+    let hold = metering::apply_multiplier(ceiling_raw, mult_bp).min(i64::MAX as i128) as i64;
     Some((eff_mt, hold))
 }
 
@@ -600,23 +604,42 @@ pub async fn forward(
         // не блокирует обычные запросы; при включённом — покрывает ровно заявленный max_uses).
         let web_buf = (web_uses as i128) * metering::WEB_SEARCH_NANO;
         let client_mt = if max_tokens > 0 { max_tokens.min(2_000_000) } else { 4096 };
-        let (eff_mt, hold) = match cap_to_balance(bal, input_est, web_buf, &p, *mult_bp, client_mt) {
+        // РЕЗЕРВ по АККАУНТУ с ПЕРЕ-РЕЗЕРВОМ под свежий баланс: funded-юзера НЕ роняем 402 из-за гонки
+        // конкурентных резервов. `bal` из authorize оптимистичен; если атомарный reserve отказал (соседние
+        // holds увели баланс за пол −$1, или per-key лимит), перечитываем АКТУАЛЬНЫЙ баланс, дорезаем
+        // output под него+буфер и повторяем. None-путь reserve строки НЕ создаёт → тот же request_id
+        // безопасно повторить с меньшим hold (идемпотентность не триггерится). Ограничено 4 попытками:
+        // строго убывающий hold сходится быстро; иначе честный 402 (реально за полом даже с буфером).
+        let mut cur = cap_to_balance(bal, input_est, web_buf, &p, *mult_bp, client_mt);
+        let mut reserved_pair: Option<(u64, i64)> = None;
+        for _ in 0..4 {
+            let (eff_mt, hold) = match cur {
+                Some(x) => x,
+                None => break,
+            };
+            if billing.reserve_request(&engine_request_id, account_id, key, hold).await.is_some() {
+                reserved_pair = Some((eff_mt, hold));
+                break;
+            }
+            let fresh = billing.account(account_id).await.map(|a| a.balance_nano as i128).unwrap_or(0);
+            match cap_to_balance(fresh, input_est, web_buf, &p, *mult_bp, client_mt) {
+                Some((e, h)) if h < hold => cur = Some((e, h)), // строго меньше → сходится, ретрай
+                _ => { cur = None; break; }                     // не уменьшить/не влезает → 402
+            }
+        }
+        let (eff_mt, hold) = match reserved_pair {
             Some(x) => x,
             None => return err_response(StatusCode::PAYMENT_REQUIRED, "invalid_request_error",
                                         "insufficient balance or key spending limit for this request"),
         };
-        // урезали под баланс → правим max_tokens в теле: Anthropic остановит генерацию ровно тут
+        // урезали под баланс → правим max_tokens в теле ПОСЛЕ финального eff_mt (мог уменьшиться на
+        // ретрае): Anthropic остановит генерацию ровно тут.
         if eff_mt < max_tokens {
             if let Some(v) = parsed.as_mut() {
                 v["max_tokens"] = serde_json::json!(eff_mt);
             }
         }
-        // РЕЗЕРВ по АККАУНТУ (общий баланс на все ключи юзера); гонки атомарны на уровне аккаунта.
-        match billing.reserve_request(&engine_request_id, account_id, key, hold).await {
-            Some(_) => reserved = Some((engine_request_id.clone(), account_id.clone(), key.clone(), hold)),
-            None => return err_response(StatusCode::PAYMENT_REQUIRED, "invalid_request_error",
-                                        "insufficient balance or key spending limit for this request"),
-        }
+        reserved = Some((engine_request_id.clone(), account_id.clone(), key.clone(), hold));
     }
     // Гард резерва: на любом не-успешном исходе И при отмене запроса вернёт hold клиенту. Создаём
     // ДО пересборки тела — если она упадёт и мы вернёмся, Drop гарда вернёт hold (без утечки).
@@ -633,7 +656,14 @@ pub async fn forward(
                                        "invalid anthropic-beta header"),
     };
 
+    // Гладкий UX: транзиентную нехватку ёмкости (все подписки cooling/за util_cap / breaker /
+    // upstream-429) НЕ отдаём клиенту сразу — тихо ждём до бюджета и повторяем весь раунд ротации.
+    // Решение принимается ДО начала стрима, поэтому для клиента это лишь чуть больший TTFB, не ошибка.
+    let smooth_deadline = std::time::Instant::now()
+        + std::time::Duration::from_millis(app.cfg.smooth_wait_ms);
+    'smooth: loop {
     let mut tried: HashSet<String> = HashSet::new();
+    let mut transient_hint: Option<i64> = None; // Some(secs) → раунд уперся в транзиент → ждём+ретрай
     // Один запрос вносит в breaker максимум ОДИН backend-фейл (не `max_tries`): иначе poison-запрос
     // (500 на каждой подписке) в одиночку размыкал бы глобальный breaker и клал сервис всем. Реальный
     // аутейдж тилит breaker числом РАЗНЫХ запросов, а не веером одного.
@@ -657,11 +687,10 @@ pub async fn forward(
         // следующей ротации. Если у нас есть реальный upstream response — возвращаем его прозрачно.
         if let Some(retry) = app.breaker.open_for(pool::now()) {
             Metrics::inc(&app.metrics.breaker_rejects);
-            if let Some((st, resp)) = last_upstream.take() {
-                return stream_back(st, resp, None, None);
-            }
-            return err_retry(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error",
-                             "upstream temporarily unavailable", retry);
+            // Брейкер разомкнут (брауноут апстрима) — транзиент. Тихо ждём+ретраим до бюджета
+            // (breaker сам закроется по record_ok), клиенту 503 отдаём лишь при исчерпании бюджета.
+            transient_hint = Some(retry);
+            break;
         }
         // Первая попытка — cache-first роутинг сессии (пин/placement/спилл в `route`). Дальше —
         // load-based `pick` (дом/пробованные уже в `tried`; cooling-подписки пул исключает сам).
@@ -677,13 +706,12 @@ pub async fn forward(
         // 429 (ban-signal + «автоматный» кластер, ровно то, чего избегаем). Быстрый прозрачный отбой
         // клиенту с точным Retry-After = soonest_ready (он откатится сам). hold вернёт hold_guard на return.
         if app.pool.is_cooling(&sub.email) {
+            // Не-cooling подписок не осталось (весь флот за лимитом/в кулдауне). НЕ шлём живой трафик
+            // на отлимиченный аккаунт. Вместо мгновенного 429 — помечаем транзиент; хвост раунда
+            // тихо ждёт до soonest_ready и ретраит (подписка успеет освободиться), 429 — лишь по бюджету.
             Metrics::inc(&app.metrics.exhausted);
-            if let Some((st, resp)) = last_upstream.take() {
-                return stream_back(st, resp, None, None);
-            }
-            let retry = app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs);
-            return err_retry(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error",
-                             "all subscriptions are rate-limited — retry shortly", retry);
+            transient_hint = Some(app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs));
+            break;
         }
         attempt += 1;
         tried.insert(sub.email.clone());
@@ -767,11 +795,10 @@ pub async fn forward(
         // этого момента; предыдущий upstream response (если был) приоритетнее локальной синтетики.
         if let Some(retry) = app.breaker.open_for(pool::now()) {
             Metrics::inc(&app.metrics.breaker_rejects);
-            if let Some((st, resp)) = last_upstream.take() {
-                return stream_back(st, resp, None, None);
-            }
-            return err_retry(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error",
-                             "upstream temporarily unavailable", retry);
+            // Брейкер разомкнут (брауноут апстрима) — транзиент. Тихо ждём+ретраим до бюджета
+            // (breaker сам закроется по record_ok), клиенту 503 отдаём лишь при исчерпании бюджета.
+            transient_hint = Some(retry);
+            break;
         }
 
         let resp = match rb.send().await {
@@ -904,20 +931,41 @@ pub async fn forward(
         let stream_key_guard = if st.is_success() { key_guard.take() } else { None };
         return stream_back(st, resp, meter, stream_key_guard);
     }
-    // Резерв вернёт `hold_guard` на return; слот последней попытки уже закрыл её `guard`.
-    // Любой реально полученный Anthropic response приоритетнее локальной классификации исчерпания.
-    if let Some((st, resp)) = last_upstream {
-        stream_back(st, resp, None, None)
-    } else if backend_tries >= app.cfg.max_tries.max(1) || tried.is_empty() {
-        last_local
-    } else {
-        // Ни одного upstream response не было (например, все кандидаты уже cooling) → только тогда
-        // синтезируем локальный 429 с readiness всего пула.
-        Metrics::inc(&app.metrics.exhausted);
-        let retry = app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs);
-        err_retry(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error",
-                  "all subscriptions are rate-limited — retry shortly", retry)
+    // Итог раунда. Транзиентную нехватку (нет реального upstream-ответа И backend-бюджет цел) тихо
+    // ждём и ретраим до smooth_deadline; всё остальное — отдаём клиенту. Резерв держит hold_guard,
+    // слоты закрыты guard'ами последней попытки — на continue 'smooth утечки нет (RAII).
+    let backend_exhausted = backend_tries >= app.cfg.max_tries.max(1);
+    // Транзиент = не хард-аутейдж апстрима, и был реальный шанс: явная подсказка (все cooling/breaker),
+    // синтетическое исчерпание (нет last_upstream, но подписки пробовались), либо upstream отдал 429.
+    let is_transient = !backend_exhausted
+        && (transient_hint.is_some()
+            || (last_upstream.is_none() && !tried.is_empty())
+            || last_upstream.as_ref().map(|(st, _)| st.as_u16() == 429).unwrap_or(false));
+    if is_transient {
+        let remaining = smooth_deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .as_millis();
+        let hint = transient_hint
+            .or_else(|| app.pool.soonest_ready())
+            .unwrap_or(app.cfg.cool_secs);
+        if let Some(step) = smooth_step(hint, remaining) {
+            tokio::time::sleep(step).await;
+            continue 'smooth;
+        }
     }
+    // Терминал: реальный Anthropic-ответ приоритетнее локальной классификации; иначе backend-аутейдж
+    // (или пул пуст) → last_local; иначе синтетический 429 с readiness всего пула.
+    if let Some((st, resp)) = last_upstream {
+        return stream_back(st, resp, None, None);
+    }
+    if backend_exhausted || tried.is_empty() {
+        return last_local;
+    }
+    Metrics::inc(&app.metrics.exhausted);
+    let retry = app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs);
+    return err_retry(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error",
+              "all subscriptions are rate-limited — retry shortly", retry);
+    } // 'smooth: loop
 }
 
 /// Ответ — SSE-стрим? (по content-type). Определяет способ парсинга usage.
@@ -974,6 +1022,17 @@ fn cool_secs_429(resp: &wreq::Response, lim: &Limits, now: i64) -> i64 {
         .clamp(0, MAX_COOL_SECS)
 }
 
+/// Гладкий UX: сколько ТИХО ждать перед следующим раундом ротации. `hint_secs` — подсказка готовности
+/// (soonest_ready / Retry-After), `remaining_ms` — остаток бюджета. `None` → бюджет исчерпан (пора
+/// отдать клиенту ошибку). Шаг зажат в [250мс, 2с] и не больше остатка: так пул перечитывается часто
+/// (подписка могла освободиться раньше hint), а один длинный сон не «проглатывает» весь бюджет.
+fn smooth_step(hint_secs: i64, remaining_ms: u128) -> Option<std::time::Duration> {
+    if remaining_ms == 0 { return None; }
+    let hint_ms = (hint_secs.max(0) as u128).saturating_mul(1000);
+    let step = hint_ms.clamp(250, 2000).min(remaining_ms);
+    Some(std::time::Duration::from_millis(step as u64))
+}
+
 /// Отдать ответ апстрима клиенту байт-в-байт (стримом — работает и для SSE).
 /// Если задан `meter` — оборачиваем тело в tee-метеринг: клиент получает те же байты,
 /// а на завершении стрима списываем стоимость с ключа (тело клиенту НЕ задерживается).
@@ -1008,6 +1067,17 @@ mod tests {
             util5h: Some(u5), util7d: Some(u7), status: None,
             reset5h: Some(r5), reset7d: Some(r7), claim: claim.map(|s| s.to_string()),
         }
+    }
+
+    #[test]
+    fn smooth_step_bounds() {
+        use std::time::Duration;
+        assert_eq!(smooth_step(0, 0), None);                                    // бюджет исчерпан
+        assert_eq!(smooth_step(100, 0), None);                                  // исчерпан даже при большом hint
+        assert_eq!(smooth_step(10, 10_000), Some(Duration::from_millis(2000))); // hint велик → кап 2с
+        assert_eq!(smooth_step(0, 10_000), Some(Duration::from_millis(250)));   // hint 0 → пол 250мс
+        assert_eq!(smooth_step(5, 300), Some(Duration::from_millis(300)));      // остаток < шага → остаток
+        assert_eq!(smooth_step(1, 10_000), Some(Duration::from_millis(1000)));  // hint 1с в диапазоне
     }
 
     #[test]
@@ -1108,21 +1178,22 @@ mod tests {
     #[test]
     fn cap_to_balance_enforces_budget() {
         let p = metering::model_prices("claude-haiku-4-5"); // input 1000, output 5000, cw1h 2000
-        // ИНВАРИАНТ на широком диапазоне (наценки, балансы): hold ≤ bal И charge(worst usage) ≤ hold,
-        // И один лишний output-токен пробил бы баланс (точность отруба «ни на токен больше»).
+        let od = metering::OVERDRAFT_NANO;
+        // ИНВАРИАНТ с овердрафт-буфером: hold ≤ bal+$1 (funded не роняем; резерв держит пол −$1),
+        // charge(worst usage) ≤ hold, и +1 output-токен пробил бы bal+$1 (точность отруба «ни на токен больше»).
         for &m in &[10000i64, 2000, 900, 33333] { // ×1.0, ×0.2 (прод), ×0.09, ×3.33
             for &bal in &[500_000i128, 2_000_000, 50_000_000, 10_000_000_000] {
                 let ib = 137i128; // байты входа
                 if let Some((eff, hold)) = cap_to_balance(bal, ib, 0, &p, m, 100_000) {
-                    assert!((hold as i128) <= bal, "hold {hold} > bal {bal} (m={m})");
+                    assert!((hold as i128) <= bal + od, "hold {hold} > bal+$1 ({}) (m={m})", bal + od);
                     let real = ib * p.cache_write_1h + (eff as i128) * p.output; // worst-case usage
                     assert!(metering::apply_multiplier(real, m) <= hold as i128,
                             "charge > hold (m={m}, bal={bal}, eff={eff})");
-                    // если урезали балансом (eff < запрошенного) — +1 токен обязан пробить баланс
+                    // если урезали (eff < запрошенного) — +1 токен обязан пробить bal+$1
                     if eff < 100_000 {
                         let over = ib * p.cache_write_1h + ((eff + 1) as i128) * p.output;
-                        assert!(metering::apply_multiplier(over, m) > bal,
-                                "eff+1 должен превышать баланс (m={m}, bal={bal}, eff={eff})");
+                        assert!(metering::apply_multiplier(over, m) > bal + od,
+                                "eff+1 должен пробить bal+$1 (m={m}, bal={bal}, eff={eff})");
                     }
                 }
             }
@@ -1132,11 +1203,12 @@ mod tests {
         assert_eq!(eff, 50);
         // бесплатный ключ (наценка 0) → не лимитируем, hold 0
         assert_eq!(cap_to_balance(1_000, 999_999, 0, &p, 0, 12345), Some((12345, 0)));
-        // баланс не тянет даже вход → None (отказ, не отрицательный баланс)
-        assert!(cap_to_balance(100, 100_000, 0, &p, 2000, 10).is_none());
-        assert!(cap_to_balance(0, 10, 0, &p, 2000, 10).is_none());
-        // web_buf ($0.20) режет бюджет только при web_search: малый баланс + буфер → None
-        assert!(cap_to_balance(1_000_000, 100, 20 * metering::WEB_SEARCH_NANO, &p, 10000, 10).is_none());
+        // funded (bal>0) НЕ роняем: овердрафт-буфер $1 покрывает — прежние балансовые «None» теперь Some
+        assert!(cap_to_balance(100, 100_000, 0, &p, 2000, 10).is_some());
+        assert!(cap_to_balance(0, 10, 0, &p, 2000, 10).is_some());
+        // отказ ТОЛЬКО когда вход worst-case не влезает даже в bal+$1, либо аккаунт уже на полу −$1
+        assert!(cap_to_balance(100, 600_000, 0, &p, 10000, 10).is_none()); // fixed_raw > bal+$1
+        assert!(cap_to_balance(-od, 10, 0, &p, 2000, 10).is_none());       // ровно на полу −$1
         // переполнения нет: огромный баланс и max_tokens
         let (_, h) = cap_to_balance(i64::MAX as i128, 100, 0, &p, 2000, u64::MAX).unwrap();
         assert!(h >= 0);
