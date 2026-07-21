@@ -1168,6 +1168,10 @@ async function verifyApiKeysLayout(client) {
     await client.send("Runtime.evaluate", { expression: `document.querySelector('.key-row')?.scrollIntoView({ block: 'center' })` });
     await client.send("Runtime.evaluate", { awaitPromise: true, expression: `new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))` });
     await clickSelector(client, ".key-menu summary");
+    await waitForCondition(client, `Boolean(document.querySelector('.key-menu[open]'))`, `${layoutCase.name} API key menu opens`);
+    await clickSelector(client, ".keys-search input");
+    await waitForCondition(client, `!document.querySelector('.key-menu[open]')`, `${layoutCase.name} API key menu outside-click dismissal`);
+    await clickSelector(client, ".key-menu summary");
     const editMenuResult = await client.send("Runtime.evaluate", {
       expression: `JSON.stringify(Array.from(document.querySelector('.key-row .key-menu-pop')?.querySelectorAll('button:not(.danger)') ?? []).map((button) => button.textContent?.trim()))`,
       returnByValue: true,
