@@ -180,19 +180,23 @@ impl TeeMeter {
             // могут совместно увести общий баланс аккаунта ниже нуля из-за неучтённого preflight-overhead.
             // AUDIT-TODO(C53): резервировать по count_tokens точного post-injection запроса с tool overhead.
             let hold_cap = b.hold.max(0) as i128;
+            // Списываем РЕАЛЬНОЕ, а не clamp до hold: деньги на аккаунте есть, а clamp молча терял разницу
+            // (недобор). registry settle умеет actual>hold — списывает из остатка баланса (допустимый
+            // овердрафт). Кап на hold+$1 бьётся с овердрафт-буфером резерва: один запрос не спишет больше
+            // hold+буфер даже при аномальном usage (пол убытка ограничен).
+            let charge_ceiling = hold_cap + metering::OVERDRAFT_NANO;
             if computed_charge > hold_cap {
-                // Разбивка usage в лог: hold порезан балансом, а какая-то корзина его пробила.
-                // Без этой разбивки (только charge/hold) не видно ВИНОВНОЙ корзины — а значит
-                // нельзя корректно расширить preflight-резерв (C53/C55). Токены не секрет.
+                // Разбивка usage: реальный расход пробил (порезанный балансом) hold — обычно cache_read
+                // либо аномалия. Списываем реальное до hold+$1; разбивка нужна для точного preflight-резерва.
                 eprintln!(
                     "⚠ billing charge превысил hold: charge_nano={computed_charge} hold_nano={hold_cap}; \
-                     clamp | model={price_model} us_geo={us_inference} real_nano={real} \
+                     charge real до hold+$1 | model={price_model} us_geo={us_inference} real_nano={real} \
                      in={} out={} cr={} cw5={} cw1={} web={}",
                     usage.input_tokens, usage.output_tokens, usage.cache_read_tokens,
                     usage.cache_write_5m_tokens, usage.cache_write_1h_tokens, usage.web_search_requests,
                 );
             }
-            let charge_i64 = computed_charge.clamp(0, hold_cap) as i64;
+            let charge_i64 = computed_charge.clamp(0, charge_ceiling) as i64;
             // AUDIT-TODO(C55): учитывать inference_geo premium и в preflight-резерве, чтобы hold был верхней границей.
             // Разбивка токенов/модели для клиентского дашборда — пишется рядом с charge (аналитика).
             // Только при авторитетном usage; C8-preserved hold не изображаем как токеновое событие.
