@@ -4,7 +4,7 @@
 //! idempotency boundary; owner epochs fence stale instances. PostgreSQL is the recovery floor.
 
 use crate::{
-    mask_proxy, AccountRow, BillingTotals, KeyAuth, KeyRow, LedgerRow, PoolStateRow, Sub,
+    mask_proxy, AccountRow, BillingTotals, KeyAuth, KeyPolicyUpdate, KeyRow, LedgerRow, PoolStateRow, Sub,
     SubAdmin, SubRow, UsageEventInput, UsageModelAgg,
 };
 use anyhow::{bail, Context, Result};
@@ -877,6 +877,31 @@ impl PgStore {
     pub fn key_set_label_by_id(&mut self, key_id: &str, label: &str) -> Result<usize> {
         Ok(self.client.execute("UPDATE api_keys SET label=$1 WHERE key_id=$2", &[&label,&key_id])? as usize)
     }
+    pub fn key_set_policy_by_id(
+        &mut self,
+        account_id: &str,
+        key_id: &str,
+        spend_limit_nano: Option<i64>,
+        expires_ts: Option<i64>,
+    ) -> Result<KeyPolicyUpdate> {
+        let updated = self.client.execute(
+            "UPDATE api_keys SET spend_limit_nano=$3,expires_ts=$4 \
+             WHERE key_id=$1 AND account_id=$2 \
+               AND ($3::bigint IS NULL OR (reserved_nano<=$3 AND spent_nano<=$3-reserved_nano)) \
+               AND ($4::bigint IS NULL OR $4>EXTRACT(EPOCH FROM clock_timestamp())::bigint)",
+            &[&key_id,&account_id,&spend_limit_nano,&expires_ts],
+        )?;
+        if updated == 1 { return Ok(KeyPolicyUpdate::Updated); }
+        let exists: bool = self.client.query_one(
+            "SELECT EXISTS(SELECT 1 FROM api_keys WHERE key_id=$1 AND account_id=$2)",
+            &[&key_id,&account_id],
+        )?.get(0);
+        if !exists { return Ok(KeyPolicyUpdate::NotFound); }
+        if expires_ts.is_some_and(|expires| expires <= now()) {
+            return Ok(KeyPolicyUpdate::ExpiryNotFuture);
+        }
+        Ok(KeyPolicyUpdate::LimitBelowUsage)
+    }
     pub fn key_remove(&mut self, key: &str) -> Result<usize> {
         Ok(self.client.execute("DELETE FROM api_keys WHERE key=$1", &[&key])? as usize)
     }
@@ -1244,6 +1269,15 @@ mod tests {
         assert_eq!(pg.reserve_request(&owner,"policy-1","policy-acct","limited-key",500,60).unwrap(),Some(500));
         assert_eq!(pg.reserve_request(&owner,"policy-1","policy-acct","limited-key",500,60).unwrap(),Some(500));
         assert_eq!(pg.key_get("limited-key").unwrap().unwrap().reserved_nano,500);
+        let limited_key_id = pg.key_get("limited-key").unwrap().unwrap().key_id;
+        assert_eq!(
+            pg.key_set_policy_by_id("policy-acct",&limited_key_id,Some(499),None).unwrap(),
+            KeyPolicyUpdate::LimitBelowUsage,
+        );
+        assert_eq!(
+            pg.key_set_policy_by_id("policy-acct",&limited_key_id,Some(700),Some(now() + 120)).unwrap(),
+            KeyPolicyUpdate::Updated,
+        );
         assert_eq!(pg.reserve_request(&owner,"policy-2","policy-acct","limited-key",300,60).unwrap(),None);
         assert_eq!(pg.cancel_request("policy-1").unwrap(),Some(1_000));
         assert_eq!(pg.cancel_request("policy-1").unwrap(),Some(1_000));
@@ -1256,6 +1290,21 @@ mod tests {
         assert_eq!(pg.reserve_request(&owner,"policy-over","policy-acct","limited-key",1,60).unwrap(),None);
         pg.key_issue_with_policy("expired-key", "policy-acct", None, None, Some(now())).unwrap();
         assert_eq!(pg.reserve_request(&owner,"policy-expired","policy-acct","expired-key",1,60).unwrap(),None);
+        let expired_key_id = pg.key_get("expired-key").unwrap().unwrap().key_id;
+        assert_eq!(
+            pg.key_set_policy_by_id("policy-acct",&expired_key_id,None,Some(now() + 60)).unwrap(),
+            KeyPolicyUpdate::Updated,
+        );
+        assert!(pg.reserve_request(&owner,"policy-extended","policy-acct","expired-key",1,60).unwrap().is_some());
+        pg.cancel_request("policy-extended").unwrap();
+        assert_eq!(
+            pg.key_set_policy_by_id("policy-acct",&expired_key_id,None,None).unwrap(),
+            KeyPolicyUpdate::Updated,
+        );
+        assert_eq!(
+            pg.key_set_policy_by_id("policy-acct","key_missing",None,None).unwrap(),
+            KeyPolicyUpdate::NotFound,
+        );
         pg.key_issue_with_policy("disabled-key", "policy-acct", None, None, None).unwrap();
         pg.key_set_status("disabled-key","disabled").unwrap();
         assert_eq!(pg.reserve_request(&owner,"policy-disabled","policy-acct","disabled-key",1,60).unwrap(),None);
@@ -1287,6 +1336,49 @@ mod tests {
             if result.is_some() { pg.cancel_request(&request_id).unwrap(); }
         }
         assert_eq!(pg.key_get("concurrent-limited-key").unwrap().unwrap().reserved_nano,0);
+
+        // A reserve racing a stricter policy replacement must serialize on the key row. The two
+        // incompatible operations can never both succeed.
+        pg.account_create("policy-update-race-acct", None, 10_000).unwrap();
+        pg.account_topup("policy-update-race-acct", 1_000, Some("policy-update-race-seed")).unwrap();
+        pg.key_issue_with_policy(
+            "policy-update-race-key","policy-update-race-acct",None,Some(1_000),None,
+        ).unwrap();
+        let race_key_id = pg.key_get("policy-update-race-key").unwrap().unwrap().key_id;
+        let race_barrier = Arc::new(Barrier::new(3));
+        let reserve_url = url.clone();
+        let reserve_owner = owner.clone();
+        let reserve_barrier = Arc::clone(&race_barrier);
+        let reserve_join = std::thread::spawn(move || {
+            let mut connection = PgStore::connect(&reserve_url).unwrap();
+            reserve_barrier.wait();
+            connection.reserve_request(
+                &reserve_owner,"policy-update-race-request","policy-update-race-acct",
+                "policy-update-race-key",400,60,
+            ).unwrap().is_some()
+        });
+        let update_url = url.clone();
+        let update_barrier = Arc::clone(&race_barrier);
+        let update_join = std::thread::spawn(move || {
+            let mut connection = PgStore::connect(&update_url).unwrap();
+            update_barrier.wait();
+            connection.key_set_policy_by_id(
+                "policy-update-race-acct",&race_key_id,Some(300),None,
+            ).unwrap() == KeyPolicyUpdate::Updated
+        });
+        race_barrier.wait();
+        let reserve_won = reserve_join.join().unwrap();
+        let update_won = update_join.join().unwrap();
+        assert_ne!(reserve_won,update_won,"exactly one incompatible racing operation must succeed");
+        let raced_key = pg.key_get("policy-update-race-key").unwrap().unwrap();
+        if let Some(limit) = raced_key.spend_limit_nano {
+            assert!(raced_key.spent_nano + raced_key.reserved_nano <= limit);
+        }
+        assert_eq!(
+            pg.account_get("policy-update-race-acct").unwrap().unwrap().reserved_nano,
+            raced_key.reserved_nano,
+        );
+        if reserve_won { pg.cancel_request("policy-update-race-request").unwrap(); }
 
         assert_eq!(pg.reserve_request(&owner,"req-1","acct","key",600,60).unwrap(),Some(400));
         assert_eq!(pg.reserve_request(&owner,"req-1","acct","key",600,60).unwrap(),Some(400));

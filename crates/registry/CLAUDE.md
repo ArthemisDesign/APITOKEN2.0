@@ -24,7 +24,8 @@
   Optional per-key `spend_limit_nano` and `expires_ts` are engine-authoritative. Reservation updates
   key `reserved_nano` in the same transaction and enforces
   `spent_nano + reserved_nano + hold <= spend_limit_nano`; settlement atomically converts the hold
-  into actual spend or releases it.
+  into actual spend or releases it. Mutable policy replacement is account-scoped and atomic with
+  reservations; a non-null new limit must cover both settled and reserved usage.
   Мягкая миграция старой модели «key=кошелёк» → аккаунт per-key (`migrate_legacy_keys`).
 - Публичный тип [`Sub`] (email/token/proxy/fleet) — контракт для `pool`/`forward`. Меняешь его —
   проверь оба потребителя.

@@ -1,7 +1,7 @@
 //! Backend selector used by the composition and async actor layers during the controlled cutover.
 
 use crate::{
-    pg::{Owner, PgStore}, AccountRow, BillingTotals, KeyAuth, KeyRow, LedgerRow, PoolStateRow, Sub,
+    pg::{Owner, PgStore}, AccountRow, BillingTotals, KeyAuth, KeyPolicyUpdate, KeyRow, LedgerRow, PoolStateRow, Sub,
     SubAdmin, SubRow, UsageModelAgg,
 };
 use anyhow::{bail, Result};
@@ -147,6 +147,12 @@ impl Authority {
     }
     pub fn key_set_label_by_id(&mut self, key_id: &str, label: &str) -> Result<usize> {
         match self { Self::Sqlite(c) => crate::key_set_label_by_id(c,key_id,label), Self::Postgres(pg) => pg.key_set_label_by_id(key_id,label) }
+    }
+    pub fn key_set_policy_by_id(&mut self, account_id: &str, key_id: &str, spend_limit_nano: Option<i64>, expires_ts: Option<i64>) -> Result<KeyPolicyUpdate> {
+        match self {
+            Self::Sqlite(c) => crate::key_set_policy_by_id(c,account_id,key_id,spend_limit_nano,expires_ts),
+            Self::Postgres(pg) => pg.key_set_policy_by_id(account_id,key_id,spend_limit_nano,expires_ts),
+        }
     }
     pub fn key_remove(&mut self, key: &str) -> Result<usize> {
         match self { Self::Sqlite(c) => crate::key_remove(c,key), Self::Postgres(pg) => pg.key_remove(key) }

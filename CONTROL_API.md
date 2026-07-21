@@ -121,6 +121,11 @@ POST /admin/key                         {"account_id", "label"?,
                                                                      → 200 {key:"sk-pool-…", key_id:"key_…", account,
                                                                             spend_limit_nano,expires_ts}  (key виден 1 раз!)
 POST /admin/key-id/{key_id}/status      {"status":"active"|"disabled"} → 200 {updated} | 404 (рекомендуется)
+POST /admin/account/{id}/key-id/{key_id}/policy
+                                        {"spend_limit_nano":string|null,
+                                         "expires_ts":integer|null}
+                                                                     → 200 {key_id,spend_limit_nano,
+                                                                            expires_ts,updated} | 404 | 409
 POST /admin/key/{key}/status            {"status":"active"|"disabled"}  → 200 {updated} | 404
 ```
 
@@ -132,10 +137,15 @@ POST /admin/key/{key}/status            {"status":"active"|"disabled"}  → 200 
 for that key. `expires_ts` is an optional future Unix timestamp in seconds. The engine enforces both
 again inside the atomic reservation transaction, including in-flight holds, so concurrent requests
 cannot cross a key's cap. `NULL` means unlimited/no expiration and preserves legacy behavior.
+The policy endpoint is an account-scoped full replacement: both nullable fields are required.
+It can increase or clear a limit and extend or clear expiry without changing key status. A new
+limit below `spent_nano + reserved_nano` is rejected atomically with `409` and code
+`limit_below_committed`, so an edit cannot invalidate an in-flight reservation.
 
 ### Коды ошибок
 `400` неверное тело · `401` нет/неверный control-ключ · `404` аккаунт/ключ не найден ·
-`409` не удалось создать (коллизия) · `503` биллинг выключен. На клиентском `/v1`: `402` баланс ≤ 0.
+`409` конфликт создания или лимит ниже уже списанного+зарезервированного · `503` биллинг выключен.
+На клиентском `/v1`: `402` баланс ≤ 0.
 
 ### Пример: полный цикл (bash)
 ```bash

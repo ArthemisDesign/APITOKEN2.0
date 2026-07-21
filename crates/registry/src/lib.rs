@@ -417,6 +417,15 @@ pub struct KeyRow {
     pub status: String,
 }
 
+/// Result of atomically replacing a key's mutable spending policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyPolicyUpdate {
+    Updated,
+    NotFound,
+    LimitBelowUsage,
+    ExpiryNotFuture,
+}
+
 /// Выпустить ключ ПОД аккаунт (баланс — на аккаунте, ключ лишь ссылается). `label` — имя ключа.
 pub fn key_issue(conn: &Connection, key: &str, account_id: &str, label: Option<&str>) -> Result<()> {
     key_issue_with_policy(conn, key, account_id, label, None, None)
@@ -917,6 +926,35 @@ pub fn key_set_status_by_id(conn: &Connection, key_id: &str, status: &str) -> Re
 /// Change key label through its non-secret control-plane identifier.
 pub fn key_set_label_by_id(conn: &Connection, key_id: &str, label: &str) -> Result<usize> {
     Ok(conn.execute("UPDATE api_keys SET label=?2 WHERE key_id=?1", rusqlite::params![key_id, label])?)
+}
+
+/// Atomically replace a key policy without allowing a new limit to undercut committed or in-flight
+/// usage. `None` clears the corresponding guardrail.
+pub fn key_set_policy_by_id(
+    conn: &Connection,
+    account_id: &str,
+    key_id: &str,
+    spend_limit_nano: Option<i64>,
+    expires_ts: Option<i64>,
+) -> Result<KeyPolicyUpdate> {
+    let updated = conn.execute(
+        "UPDATE api_keys SET spend_limit_nano=?3, expires_ts=?4 \
+         WHERE key_id=?1 AND account_id=?2 \
+           AND (?3 IS NULL OR (reserved_nano<=?3 AND spent_nano<=?3-reserved_nano)) \
+           AND (?4 IS NULL OR ?4>CAST(strftime('%s','now') AS INTEGER))",
+        rusqlite::params![key_id, account_id, spend_limit_nano, expires_ts],
+    )?;
+    if updated == 1 { return Ok(KeyPolicyUpdate::Updated); }
+    let exists = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM api_keys WHERE key_id=?1 AND account_id=?2)",
+        rusqlite::params![key_id, account_id],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !exists { return Ok(KeyPolicyUpdate::NotFound); }
+    if expires_ts.is_some_and(|expires| expires <= now()) {
+        return Ok(KeyPolicyUpdate::ExpiryNotFuture);
+    }
+    Ok(KeyPolicyUpdate::LimitBelowUsage)
 }
 
 /// Удалить ключ НАВСЕГДА (в отличие от set_status 'disabled' — строка исчезает).
@@ -1514,6 +1552,57 @@ mod tests {
         key_set_status(&c, "limited", "disabled").unwrap();
         assert_eq!(account_reserve_for_key(&c, "acct", "limited", 1).unwrap(), None);
         assert!(!key_account(&c, "limited").unwrap().unwrap().active_at(now()));
+    }
+
+    #[test]
+    fn key_policy_can_be_replaced_without_undercutting_live_usage() {
+        let c = db();
+        account_create(&c, "acct", None, 10_000).unwrap();
+        account_topup(&c, "acct", 2_000, None).unwrap();
+        key_issue_with_policy(&c, "mutable", "acct", None, Some(1_000), Some(now() + 60)).unwrap();
+        let key_id = key_get(&c, "mutable").unwrap().unwrap().key_id;
+
+        assert_eq!(account_reserve_for_key(&c, "acct", "mutable", 600).unwrap(), Some(1_400));
+        assert_eq!(
+            key_set_policy_by_id(&c, "acct", &key_id, Some(599), None).unwrap(),
+            KeyPolicyUpdate::LimitBelowUsage,
+        );
+        assert_eq!(key_get(&c, "mutable").unwrap().unwrap().spend_limit_nano, Some(1_000));
+        assert_eq!(
+            key_set_policy_by_id(&c, "acct", &key_id, Some(600), None).unwrap(),
+            KeyPolicyUpdate::Updated,
+        );
+        account_settle(&c, "acct", "mutable", 600, 500, None, None).unwrap();
+        assert_eq!(
+            key_set_policy_by_id(&c, "acct", &key_id, Some(499), None).unwrap(),
+            KeyPolicyUpdate::LimitBelowUsage,
+        );
+
+        let future = now() + 3_600;
+        assert_eq!(
+            key_set_policy_by_id(&c, "acct", &key_id, None, Some(future)).unwrap(),
+            KeyPolicyUpdate::Updated,
+        );
+        let updated = key_get(&c, "mutable").unwrap().unwrap();
+        assert_eq!((updated.spend_limit_nano, updated.expires_ts), (None, Some(future)));
+        assert_eq!(
+            key_set_policy_by_id(&c, "acct", &key_id, None, None).unwrap(),
+            KeyPolicyUpdate::Updated,
+        );
+        key_set_status_by_id(&c, &key_id, "disabled").unwrap();
+        assert_eq!(
+            key_set_policy_by_id(&c, "acct", &key_id, None, Some(now() + 7_200)).unwrap(),
+            KeyPolicyUpdate::Updated,
+        );
+        assert!(!key_account(&c, "mutable").unwrap().unwrap().active_at(now()));
+        assert_eq!(
+            key_set_policy_by_id(&c, "other-account", &key_id, None, None).unwrap(),
+            KeyPolicyUpdate::NotFound,
+        );
+        assert_eq!(
+            key_set_policy_by_id(&c, "acct", "key_missing", None, None).unwrap(),
+            KeyPolicyUpdate::NotFound,
+        );
     }
 
     #[test]

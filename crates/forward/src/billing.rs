@@ -15,7 +15,7 @@
 //! `settle_detached` шлёт команду writer'у без ожидания (`mpsc::send` не блокирует и не требует
 //! рантайма). Гарантия денег: осиротевшее при краше вернёт `reconcile` на старте. Ничего не застревает.
 
-use registry::{AccountRow, BillingTotals, KeyAuth, KeyRow};
+use registry::{AccountRow, BillingTotals, KeyAuth, KeyPolicyUpdate, KeyRow};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -120,6 +120,10 @@ enum WriteCmd {
     KeyStatus { key: String, status: String, reply: oneshot::Sender<usize> },
     KeyStatusById { key_id: String, status: String, reply: oneshot::Sender<usize> },
     KeyLabelById { key_id: String, label: String, reply: oneshot::Sender<usize> },
+    KeyPolicyById {
+        account_id: String, key_id: String, spend_limit_nano: Option<i64>, expires_ts: Option<i64>,
+        reply: oneshot::Sender<Option<KeyPolicyUpdate>>,
+    },
     MarkDelivering { request_id: String, lease_secs: i64, reply: oneshot::Sender<bool> },
     AcquireCapacity {
         lease_id: String, request_id: String, email: String, lease_secs: i64,
@@ -286,6 +290,11 @@ impl AsyncBilling {
                     WriteCmd::KeyStatus { key, status, reply } => { let _ = reply.send(registry::key_set_status(&conn, &key, &status).unwrap_or(0)); }
                     WriteCmd::KeyStatusById { key_id, status, reply } => { let _ = reply.send(registry::key_set_status_by_id(&conn, &key_id, &status).unwrap_or(0)); }
                     WriteCmd::KeyLabelById { key_id, label, reply } => { let _ = reply.send(registry::key_set_label_by_id(&conn, &key_id, &label).unwrap_or(0)); }
+                    WriteCmd::KeyPolicyById { account_id, key_id, spend_limit_nano, expires_ts, reply } => {
+                        let _ = reply.send(registry::key_set_policy_by_id(
+                            &conn,&account_id,&key_id,spend_limit_nano,expires_ts,
+                        ).ok());
+                    }
                     WriteCmd::MarkDelivering { reply, .. } => { let _ = reply.send(true); }
                     WriteCmd::AcquireCapacity { lease_id, request_id, email, lease_secs, reply, .. } => {
                         let _ = reply.send(Some(registry::pg::CapacityLease {
@@ -579,6 +588,11 @@ impl AsyncBilling {
                         WriteCmd::KeyLabelById { key_id, label, reply } => {
                             let _ = reply.send(pg.key_set_label_by_id(&key_id,&label).unwrap_or(0));
                         }
+                        WriteCmd::KeyPolicyById { account_id, key_id, spend_limit_nano, expires_ts, reply } => {
+                            let _ = reply.send(pg.key_set_policy_by_id(
+                                &account_id,&key_id,spend_limit_nano,expires_ts,
+                            ).ok());
+                        }
                         WriteCmd::Flush(reply) => {
                             loop {
                                 match pg.drain_outbox(10_000) {
@@ -651,21 +665,11 @@ impl AsyncBilling {
     }
 
     pub async fn key_auth(&self, key: &str) -> Option<KeyAuth> {
-        // TTL-кэш: под нагрузкой множество запросов одного ключа коллапсируют в один read.
-        if !self.auth_ttl.is_zero() {
-            if let Some((auth, at)) = self.auth_cache.lock().unwrap_or_else(|e| e.into_inner()).get(key) {
-                if at.elapsed() < self.auth_ttl && auth.spend_limit_nano.is_none() && auth.expires_ts.is_none() {
-                    return Some(auth.clone());
-                }
-            }
-        }
+        // Policies are mutable. Even an unrestricted cached key can gain a limit or expiry on a
+        // different engine instance, so authorization must always read the shared authority.
         let (r, rx) = oneshot::channel();
         self.reader().send(ReadCmd::KeyAuth(key.into(), r)).ok()?;
-        let auth = rx.await.ok().flatten()?;
-        if !self.auth_ttl.is_zero() && auth.spend_limit_nano.is_none() && auth.expires_ts.is_none() {
-            self.auth_cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key.into(), (auth.clone(), Instant::now()));
-        }
-        Some(auth)
+        rx.await.ok().flatten()
     }
     pub async fn get(&self, key: &str) -> Option<KeyRow> {
         let (r, rx) = oneshot::channel();
@@ -837,6 +841,21 @@ impl AsyncBilling {
             key_id: key_id.into(), label: label.into(), reply: r,
         }).is_err() { return 0; }
         rx.await.unwrap_or(0)
+    }
+    pub async fn key_policy_by_id(
+        &self,
+        account_id: &str,
+        key_id: &str,
+        spend_limit_nano: Option<i64>,
+        expires_ts: Option<i64>,
+    ) -> Option<KeyPolicyUpdate> {
+        let (reply, result) = oneshot::channel();
+        if self.writer.send(WriteCmd::KeyPolicyById {
+            account_id: account_id.into(), key_id: key_id.into(), spend_limit_nano, expires_ts, reply,
+        }).is_err() { return None; }
+        let updated = result.await.ok().flatten();
+        if matches!(updated, Some(KeyPolicyUpdate::Updated)) { self.auth_cache_clear(); }
+        updated
     }
     /// Дренаж очереди writer'а (барьер): ждёт, пока ВСЕ ранее поставленные команды (в т.ч.
     /// fire-and-forget `settle_detached`) применятся. Вызывать на graceful shutdown ПОСЛЕ дренажа

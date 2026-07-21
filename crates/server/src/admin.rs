@@ -11,7 +11,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use forward::{control_authed, AppState};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::net::SocketAddr;
 
 /// Гейт control-плоскости: admin/control-ключ (или loopback-dev). Возвращает 401-ответ, если нет прав.
@@ -412,6 +412,74 @@ pub async fn key_label_by_id(
     let n = b.key_label_by_id(&key_id, &label).await;
     if n == 0 { return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown key"}))).into_response(); }
     Json(json!({"key_id": key_id, "label": label, "updated": n})).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeyPolicyReq {
+    // Values deliberately use `Value`: unlike `Option<T>`, this keeps JSON null distinct from a
+    // missing field, so replacement requests must explicitly choose keep/remove for both controls.
+    spend_limit_nano: Value,
+    expires_ts: Value,
+}
+
+/// POST /admin/account/{account_id}/key-id/{key_id}/policy — replace both mutable guardrails.
+/// Null removes a guardrail. A limit below settled + reserved usage is rejected atomically.
+pub async fn key_policy_by_id(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path((account_id, key_id)): Path<(String, String)>,
+    Json(req): Json<KeyPolicyReq>,
+) -> Response {
+    if let Some(r) = deny(&app, &headers, &peer) { return r; }
+    let spend_limit_nano = match req.spend_limit_nano {
+        Value::Null => None,
+        Value::String(value) => match value.parse::<i64>() {
+            Ok(parsed) if parsed > 0 => Some(parsed),
+            _ => return (StatusCode::BAD_REQUEST,
+                Json(json!({"error": "spend_limit_nano must be null or a positive integer string"}))).into_response(),
+        },
+        _ => return (StatusCode::BAD_REQUEST,
+            Json(json!({"error": "spend_limit_nano must be null or a positive integer string"}))).into_response(),
+    };
+    let expires_ts = match req.expires_ts {
+        Value::Null => None,
+        Value::Number(value) => match value.as_i64() {
+            Some(parsed) => Some(parsed),
+            None => return (StatusCode::BAD_REQUEST,
+                Json(json!({"error": "expires_ts must be null or a future integer timestamp"}))).into_response(),
+        },
+        _ => return (StatusCode::BAD_REQUEST,
+            Json(json!({"error": "expires_ts must be null or a future integer timestamp"}))).into_response(),
+    };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64).unwrap_or(0);
+    if expires_ts.is_some_and(|expires| expires <= now) {
+        return (StatusCode::BAD_REQUEST,
+            Json(json!({"error": "expires_ts must be null or in the future"}))).into_response();
+    }
+    let b = match billing(&app) { Ok(b) => b, Err(r) => return r };
+    match b.key_policy_by_id(&account_id, &key_id, spend_limit_nano, expires_ts).await {
+        Some(registry::KeyPolicyUpdate::Updated) => Json(json!({
+            "key_id": key_id,
+            "spend_limit_nano": spend_limit_nano,
+            "expires_ts": expires_ts,
+            "updated": 1,
+        })).into_response(),
+        Some(registry::KeyPolicyUpdate::NotFound) =>
+            (StatusCode::NOT_FOUND, Json(json!({"error": "unknown key"}))).into_response(),
+        Some(registry::KeyPolicyUpdate::LimitBelowUsage) =>
+            (StatusCode::CONFLICT, Json(json!({
+                "error": "spend limit is below settled and reserved usage",
+                "code": "limit_below_committed",
+            }))).into_response(),
+        Some(registry::KeyPolicyUpdate::ExpiryNotFuture) =>
+            (StatusCode::BAD_REQUEST,
+                Json(json!({"error": "expires_ts must be null or in the future"}))).into_response(),
+        None => (StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "policy update failed"}))).into_response(),
+    }
 }
 
 #[derive(Deserialize)]
