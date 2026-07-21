@@ -44,7 +44,12 @@ fn key_row(row: &Row) -> KeyRow {
         account_id: row.get(2),
         label: row.get(3),
         spent_nano: row.get(4),
-        status: row.get(5),
+        reserved_nano: row.get(5),
+        spend_limit_nano: row.get(6),
+        expires_ts: row.get(7),
+        created_ts: row.get(8),
+        last_used_ts: row.get(9),
+        status: row.get(10),
     }
 }
 
@@ -210,6 +215,17 @@ impl PgStore {
             return Ok(None);
         };
         let balance: i64 = row.get(0);
+        let key_updated = tx.execute(
+            "UPDATE api_keys SET reserved_nano=reserved_nano+$1 \
+             WHERE key=$2 AND account_id=$3 AND status='active' \
+               AND (expires_ts IS NULL OR expires_ts>floor(EXTRACT(EPOCH FROM clock_timestamp()))::bigint) \
+               AND (spend_limit_nano IS NULL OR spent_nano+reserved_nano+$1<=spend_limit_nano)",
+            &[&hold, &key, &account_id],
+        )?;
+        if key_updated != 1 {
+            tx.rollback()?;
+            return Ok(None);
+        }
         tx.execute(
             "INSERT INTO reservations(request_id,account_id,key,hold_nano,balance_after_reserve_nano, \
              owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts) \
@@ -360,8 +376,22 @@ impl PgStore {
              reserved_nano=reserved_nano-$1 WHERE id=$3 AND reserved_nano >= $1 RETURNING balance_nano",
             &[&hold, &actual, &account_id],
         ).context("reservation/account aggregate invariant failed")?.get(0);
+        let key_updated = tx.execute(
+            "UPDATE api_keys SET spent_nano=spent_nano+$1, \
+             reserved_nano=CASE WHEN reserved_nano >= $2 THEN reserved_nano-$2 ELSE reserved_nano END \
+             WHERE key=$3 AND (reserved_nano >= $2 OR spend_limit_nano IS NULL)",
+            &[&actual, &hold, &account_key],
+        )?;
+        if key_updated != 1 {
+            let key_still_exists = tx.query_opt(
+                "SELECT 1 FROM api_keys WHERE key=$1",
+                &[&account_key],
+            )?.is_some();
+            if key_still_exists {
+                bail!("reservation/key aggregate invariant failed");
+            }
+        }
         if actual > 0 {
-            tx.execute("UPDATE api_keys SET spent_nano=spent_nano+$1 WHERE key=$2", &[&actual, &account_key])?;
             tx.execute(
                 "INSERT INTO ledger(account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts,model) \
                  VALUES($1,$2,'charge',$3,$4,$5,$6,$7,NULLIF($8,'')) ON CONFLICT DO NOTHING",
@@ -776,40 +806,65 @@ impl PgStore {
     }
 
     pub fn key_issue(&mut self, key: &str, account_id: &str, label: Option<&str>) -> Result<()> {
+        self.key_issue_with_policy(key, account_id, label, None, None)
+    }
+    pub fn key_issue_with_policy(
+        &mut self,
+        key: &str,
+        account_id: &str,
+        label: Option<&str>,
+        spend_limit_nano: Option<i64>,
+        expires_ts: Option<i64>,
+    ) -> Result<()> {
         let ts = now();
         self.client.execute(
-            "INSERT INTO api_keys(key,key_id,account_id,label,status,created_ts,created) \
-             VALUES($1,'key_' || md5(random()::text || clock_timestamp()::text),$2,$3,'active',$4,$5) \
-             ON CONFLICT(key) DO UPDATE SET account_id=EXCLUDED.account_id,label=EXCLUDED.label,status='active'",
-            &[&key,&account_id,&label,&ts,&chrono_like(ts)],
+            "INSERT INTO api_keys(key,key_id,account_id,label,spend_limit_nano,expires_ts,status,created_ts,created) \
+             VALUES($1,'key_' || md5(random()::text || clock_timestamp()::text),$2,$3,$4,$5,'active',$6,$7) \
+             ON CONFLICT(key) DO UPDATE SET account_id=EXCLUDED.account_id,label=EXCLUDED.label, \
+             spend_limit_nano=EXCLUDED.spend_limit_nano,expires_ts=EXCLUDED.expires_ts,status='active'",
+            &[&key,&account_id,&label,&spend_limit_nano,&expires_ts,&ts,&chrono_like(ts)],
         )?;
         Ok(())
     }
     pub fn key_account(&mut self, key: &str) -> Result<Option<KeyAuth>> {
         Ok(self.client.query_opt(
-            "SELECT a.id,a.mult_bp,a.balance_nano,(k.status='active' AND a.status='active') \
+            "SELECT a.id,a.mult_bp,a.balance_nano,k.spent_nano,k.reserved_nano, \
+             k.spend_limit_nano,k.expires_ts,(k.status='active' AND a.status='active') \
              FROM api_keys k JOIN accounts a ON a.id=k.account_id WHERE k.key=$1",
             &[&key],
         )?.map(|row| KeyAuth {
-            account_id: row.get(0), mult_bp: row.get(1), balance_nano: row.get(2), active: row.get(3),
+            account_id: row.get(0), mult_bp: row.get(1), balance_nano: row.get(2),
+            spent_nano: row.get(3), reserved_nano: row.get(4), spend_limit_nano: row.get(5),
+            expires_ts: row.get(6), active: row.get(7),
         }))
     }
     pub fn key_get(&mut self, key: &str) -> Result<Option<KeyRow>> {
         Ok(self.client.query_opt(
-            "SELECT key,key_id,account_id,label,spent_nano,status FROM api_keys WHERE key=$1",
+            "SELECT k.key,k.key_id,k.account_id,k.label,k.spent_nano,k.reserved_nano, \
+             k.spend_limit_nano,k.expires_ts,k.created_ts, \
+             (SELECT MAX(u.ts) FROM usage_events u WHERE u.account_id=k.account_id AND u.key=k.key), \
+             k.status \
+             FROM api_keys k WHERE k.key=$1",
             &[&key],
         )?.map(|r| key_row(&r)))
     }
     pub fn key_list(&mut self) -> Result<Vec<KeyRow>> {
         Ok(self.client.query(
-            "SELECT key,key_id,account_id,label,spent_nano,status FROM api_keys ORDER BY created_ts",
+            "SELECT k.key,k.key_id,k.account_id,k.label,k.spent_nano,k.reserved_nano, \
+             k.spend_limit_nano,k.expires_ts,k.created_ts,u.last_used_ts,k.status \
+             FROM api_keys k LEFT JOIN ( \
+               SELECT key,MAX(ts) AS last_used_ts FROM usage_events GROUP BY key \
+             ) u ON u.key=k.key ORDER BY k.created_ts",
             &[],
         )?.into_iter().map(|r| key_row(&r)).collect())
     }
     pub fn keys_by_account(&mut self, account_id: &str) -> Result<Vec<KeyRow>> {
         Ok(self.client.query(
-            "SELECT key,key_id,account_id,label,spent_nano,status FROM api_keys \
-             WHERE account_id=$1 ORDER BY created_ts",
+            "SELECT k.key,k.key_id,k.account_id,k.label,k.spent_nano,k.reserved_nano, \
+             k.spend_limit_nano,k.expires_ts,k.created_ts,u.last_used_ts,k.status \
+             FROM api_keys k LEFT JOIN ( \
+               SELECT key,MAX(ts) AS last_used_ts FROM usage_events WHERE account_id=$1 GROUP BY key \
+             ) u ON u.key=k.key WHERE k.account_id=$1 ORDER BY k.created_ts",
             &[&account_id],
         )?.into_iter().map(|r| key_row(&r)).collect())
     }
@@ -998,21 +1053,25 @@ impl PgStore {
         }
         {
             let mut stmt = sqlite.prepare(
-                "SELECT key,key_id,account_id,label,spent_nano,COALESCE(status,'active'), \
-                 COALESCE(created_ts,0),COALESCE(created,'') FROM api_keys ORDER BY key",
+                "SELECT key,key_id,account_id,label,spent_nano,reserved_nano,spend_limit_nano,expires_ts, \
+                 COALESCE(status,'active'),COALESCE(created_ts,0),COALESCE(created,'') \
+                 FROM api_keys ORDER BY key",
             )?;
             let rows = stmt.query_map([], |r| Ok((
                 r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, Option<String>>(2)?,
-                r.get::<_, Option<String>>(3)?,r.get::<_, i64>(4)?,r.get::<_, String>(5)?,
-                r.get::<_, i64>(6)?,r.get::<_, String>(7)?,
+                r.get::<_, Option<String>>(3)?,r.get::<_, i64>(4)?,r.get::<_, i64>(5)?,
+                r.get::<_, Option<i64>>(6)?,r.get::<_, Option<i64>>(7)?,r.get::<_, String>(8)?,
+                r.get::<_, i64>(9)?,r.get::<_, String>(10)?,
             )))?;
             for row in rows {
-                let (key,key_id,account_id,label,spent,status,created_ts,created) = row?;
+                let (key,key_id,account_id,label,spent,reserved,spend_limit,expires,status,created_ts,created) = row?;
                 let account_id = account_id.context("legacy key has no account_id after SQLite migration")?;
                 tx.execute(
-                    "INSERT INTO api_keys(key,key_id,account_id,label,spent_nano,status,created_ts,created) \
-                     VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
-                    &[&key,&key_id,&account_id,&label,&spent,&status,&created_ts,&created],
+                    "INSERT INTO api_keys(key,key_id,account_id,label,spent_nano,reserved_nano, \
+                     spend_limit_nano,expires_ts,status,created_ts,created) \
+                     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+                    &[&key,&key_id,&account_id,&label,&spent,&reserved,&spend_limit,&expires,
+                      &status,&created_ts,&created],
                 )?;
                 report.keys += 1;
             }
@@ -1179,6 +1238,56 @@ mod tests {
         assert!(pg.account_topup("acct", 999, Some("seed")).is_err());
 
         let owner = pg.claim_instance("engine-a", 60).unwrap();
+        pg.account_create("policy-acct", None, 10_000).unwrap();
+        pg.account_topup("policy-acct", 1_000, Some("policy-seed")).unwrap();
+        pg.key_issue_with_policy("limited-key", "policy-acct", Some("limited"), Some(700), Some(now() + 60)).unwrap();
+        assert_eq!(pg.reserve_request(&owner,"policy-1","policy-acct","limited-key",500,60).unwrap(),Some(500));
+        assert_eq!(pg.reserve_request(&owner,"policy-1","policy-acct","limited-key",500,60).unwrap(),Some(500));
+        assert_eq!(pg.key_get("limited-key").unwrap().unwrap().reserved_nano,500);
+        assert_eq!(pg.reserve_request(&owner,"policy-2","policy-acct","limited-key",300,60).unwrap(),None);
+        assert_eq!(pg.cancel_request("policy-1").unwrap(),Some(1_000));
+        assert_eq!(pg.cancel_request("policy-1").unwrap(),Some(1_000));
+        assert_eq!(pg.reserve_request(&owner,"policy-3","policy-acct","limited-key",700,60).unwrap(),Some(300));
+        assert_eq!(pg.settle_request("policy-3",650,None,None).unwrap(),Some(350));
+        let limited = pg.key_get("limited-key").unwrap().unwrap();
+        assert_eq!((limited.spent_nano,limited.reserved_nano,limited.spend_limit_nano),(650,0,Some(700)));
+        assert_eq!(pg.reserve_request(&owner,"policy-boundary","policy-acct","limited-key",50,60).unwrap(),Some(300));
+        assert_eq!(pg.settle_request("policy-boundary",50,None,None).unwrap(),Some(300));
+        assert_eq!(pg.reserve_request(&owner,"policy-over","policy-acct","limited-key",1,60).unwrap(),None);
+        pg.key_issue_with_policy("expired-key", "policy-acct", None, None, Some(now())).unwrap();
+        assert_eq!(pg.reserve_request(&owner,"policy-expired","policy-acct","expired-key",1,60).unwrap(),None);
+        pg.key_issue_with_policy("disabled-key", "policy-acct", None, None, None).unwrap();
+        pg.key_set_status("disabled-key","disabled").unwrap();
+        assert_eq!(pg.reserve_request(&owner,"policy-disabled","policy-acct","disabled-key",1,60).unwrap(),None);
+
+        pg.account_create("concurrent-policy-acct", None, 10_000).unwrap();
+        pg.account_topup("concurrent-policy-acct", 1_000, Some("concurrent-policy-seed")).unwrap();
+        pg.key_issue_with_policy("concurrent-limited-key", "concurrent-policy-acct", None, Some(700), None).unwrap();
+        let policy_barrier = Arc::new(Barrier::new(3));
+        let mut policy_joins = Vec::new();
+        for n in 0..2 {
+            let url = url.clone();
+            let owner = owner.clone();
+            let barrier = Arc::clone(&policy_barrier);
+            policy_joins.push(std::thread::spawn(move || {
+                let mut connection = PgStore::connect(&url).unwrap();
+                let request_id = format!("concurrent-policy-{n}");
+                barrier.wait();
+                let result = connection.reserve_request(
+                    &owner,&request_id,"concurrent-policy-acct","concurrent-limited-key",400,60,
+                ).unwrap();
+                (request_id,result)
+            }));
+        }
+        policy_barrier.wait();
+        let policy_results: Vec<_> = policy_joins.into_iter().map(|join| join.join().unwrap()).collect();
+        assert_eq!(policy_results.iter().filter(|(_, result)| result.is_some()).count(),1,
+                   "concurrent reservations must not jointly cross a key cap");
+        for (request_id,result) in policy_results {
+            if result.is_some() { pg.cancel_request(&request_id).unwrap(); }
+        }
+        assert_eq!(pg.key_get("concurrent-limited-key").unwrap().unwrap().reserved_nano,0);
+
         assert_eq!(pg.reserve_request(&owner,"req-1","acct","key",600,60).unwrap(),Some(400));
         assert_eq!(pg.reserve_request(&owner,"req-1","acct","key",600,60).unwrap(),Some(400));
         assert!(pg.mark_delivering(&owner,"req-1",60).unwrap());

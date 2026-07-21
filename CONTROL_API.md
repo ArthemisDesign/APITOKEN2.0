@@ -104,7 +104,10 @@ POST /admin/account/{id}/credit         {"usd"?|"amount_nano"?, "ref"?} → 200 
                                         (идемпотентно по ref; usd отрицательный = коррекция)
 POST /admin/account/{id}/status         {"status":"active"|"disabled"}  → 200 {updated} | 404
 POST /admin/account/{id}/pricing        {"mult_bp":0..10000}             → 200 {account,mult_bp,updated} | 404
-GET  /admin/account/{id}/keys                                        → 200 {keys:[{key_id,key_masked,label,status,spent_nano}]}
+GET  /admin/account/{id}/keys                                        → 200 {keys:[{key_id,key_masked,label,status,
+                                                                            spent_nano,reserved_nano,
+                                                                            spend_limit_nano,expires_ts,
+                                                                            created_ts,last_used_ts}]}
 GET  /admin/account/{id}/ledger?limit=N[&after_id=ID]                 → 200 {entries:[{id,kind,amount_nano,ref,ts,...}]}
 ```
 
@@ -113,7 +116,10 @@ returned oldest-first with `id > after_id`; this is the durable worker cursor fo
 
 ### Ключи доступа
 ```
-POST /admin/key                         {"account_id", "label"?}     → 200 {key:"sk-pool-…", key_id:"key_…", account}  (key виден 1 раз!)
+POST /admin/key                         {"account_id", "label"?,
+                                         "spend_limit_nano"?, "expires_ts"?}
+                                                                     → 200 {key:"sk-pool-…", key_id:"key_…", account,
+                                                                            spend_limit_nano,expires_ts}  (key виден 1 раз!)
 POST /admin/key-id/{key_id}/status      {"status":"active"|"disabled"} → 200 {updated} | 404 (рекомендуется)
 POST /admin/key/{key}/status            {"status":"active"|"disabled"}  → 200 {updated} | 404
 ```
@@ -121,6 +127,11 @@ POST /admin/key/{key}/status            {"status":"active"|"disabled"}  → 200 
 `key_id` не даёт доступа к `/v1` и безопасен для хранения в коммерческой PostgreSQL. Новый backend
 должен отзывать ключ по `key_id`, чтобы никогда не сохранять пригодный к использованию `sk-pool-…`.
 Старый endpoint с полным ключом оставлен для обратной совместимости и CLI.
+
+`spend_limit_nano` is an optional positive decimal string and caps lifetime charged platform spend
+for that key. `expires_ts` is an optional future Unix timestamp in seconds. The engine enforces both
+again inside the atomic reservation transaction, including in-flight holds, so concurrent requests
+cannot cross a key's cap. `NULL` means unlimited/no expiration and preserves legacy behavior.
 
 ### Коды ошибок
 `400` неверное тело · `401` нет/неверный control-ключ · `404` аккаунт/ключ не найден ·

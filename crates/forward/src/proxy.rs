@@ -251,7 +251,7 @@ enum Authz {
     /// Ключ клиента → АККАУНТ с балансом. Тарифицируем и списываем с БАЛАНСА АККАУНТА (общего на
     /// все ключи юзера); `key` — для атрибуции расхода по ключу. `mult_bp` — наценка аккаунта.
     /// `balance_nano` несём из авторизации → резерв-блок НЕ перечитывает баланс из БД (−1 запрос).
-    Metered { account_id: String, key: String, mult_bp: i64, balance_nano: i64 },
+    Metered { account_id: String, key: String, mult_bp: i64, available_nano: i64 },
     /// Ключ/аккаунт есть, но баланс ≤ 0.
     PaymentRequired,
     /// Ключ неизвестен/заблокирован (ключ или аккаунт).
@@ -265,14 +265,18 @@ async fn authorize(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> Au
     if authed(app, headers, peer) { return Authz::Admin; }
     if let (Some(billing), Some(k)) = (&app.billing, client_key(headers)) {
         if let Some(a) = billing.key_auth(&k).await {
-            if !a.active {
-                return Authz::Unauthorized; // ключ или аккаунт неактивен
+            if !a.active_at(pool::now()) {
+                return Authz::Unauthorized;
             }
             if a.balance_nano <= 0 {
                 return Authz::PaymentRequired;
             }
+            let available_nano = a.spend_limit_nano
+                .map(|limit| limit.saturating_sub(a.spent_nano).saturating_sub(a.reserved_nano).max(0))
+                .map(|remaining| remaining.min(a.balance_nano))
+                .unwrap_or(a.balance_nano);
             return Authz::Metered {
-                account_id: a.account_id, key: k, mult_bp: a.mult_bp, balance_nano: a.balance_nano,
+                account_id: a.account_id, key: k, mult_bp: a.mult_bp, available_nano,
             };
         }
     }
@@ -582,11 +586,11 @@ pub async fn forward(
     // `GET /v1/models` бесплатны у Anthropic; для них резерв (по MAX-тарифу пустой модели) мог бы 402-ить
     // клиента с малым балансом на бесплатном листинге/подсчёте — а настоящий API их отдаёт независимо.
     let billable = parts.method == Method::POST && parts.uri.path() == "/v1/messages";
-    if let (true, Authz::Metered { account_id, key, mult_bp, balance_nano }, Some(billing)) = (billable, &authz, &app.billing) {
+    if let (true, Authz::Metered { account_id, key, mult_bp, available_nano }, Some(billing)) = (billable, &authz, &app.billing) {
         // баланс несём из authorize (свежая выборка) — без повторного чтения. Гонку с параллельными
         // запросами всё равно ловит АТОМАРНЫЙ reserve (WHERE balance>=hold): stale-баланс лишь мог бы
         // дать чуть больший cap, но reserve тогда честно откажет (402), в минус не уводя.
-        let bal = *balance_nano as i128;
+        let bal = *available_nano as i128;
         // РЕЗЕРВ по model_prices_RESERVE: распознанная модель → её цена; нераспознанный алиас →
         // MAX-тариф. Иначе резерв по дешёвому дефолту, а списание по (дорогой) модели ОТВЕТА пробили
         // бы hold → баланс в минус до −2×. Списание (finalize) остаётся по реальной модели ответа.
@@ -599,7 +603,7 @@ pub async fn forward(
         let (eff_mt, hold) = match cap_to_balance(bal, input_est, web_buf, &p, *mult_bp, client_mt) {
             Some(x) => x,
             None => return err_response(StatusCode::PAYMENT_REQUIRED, "invalid_request_error",
-                                        "insufficient balance for this request — top up your key"),
+                                        "insufficient balance or key spending limit for this request"),
         };
         // урезали под баланс → правим max_tokens в теле: Anthropic остановит генерацию ровно тут
         if eff_mt < max_tokens {
@@ -611,7 +615,7 @@ pub async fn forward(
         match billing.reserve_request(&engine_request_id, account_id, key, hold).await {
             Some(_) => reserved = Some((engine_request_id.clone(), account_id.clone(), key.clone(), hold)),
             None => return err_response(StatusCode::PAYMENT_REQUIRED, "invalid_request_error",
-                                        "insufficient balance for this request — top up your key"),
+                                        "insufficient balance or key spending limit for this request"),
         }
     }
     // Гард резерва: на любом не-успешном исходе И при отмене запроса вернёт hold клиенту. Создаём

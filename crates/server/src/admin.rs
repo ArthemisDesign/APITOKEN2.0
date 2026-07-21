@@ -117,6 +117,11 @@ pub async fn list_keys(
         "status": k.status,
         "spent_nano": k.spent_nano,
         "spent": metering::nano_to_usd_string(k.spent_nano as i128),
+        "reserved_nano": k.reserved_nano,
+        "spend_limit_nano": k.spend_limit_nano,
+        "expires_ts": k.expires_ts,
+        "created_ts": k.created_ts,
+        "last_used_ts": k.last_used_ts,
     })).collect();
     Json(json!({"account": id, "keys": keys})).into_response()
 }
@@ -299,6 +304,8 @@ pub async fn account_pricing(
 pub struct IssueKeyReq {
     account_id: String,
     label: Option<String>,
+    spend_limit_nano: Option<String>,
+    expires_ts: Option<i64>,
 }
 
 /// POST /admin/key — выпустить ключ доступа к аккаунту. Тело: {account_id, label?}. → {key, account}.
@@ -314,14 +321,34 @@ pub async fn issue_key(
     if b.account(&req.account_id).await.is_none() {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "unknown account"}))).into_response();
     }
+    let label = req.label.map(|value| value.trim().to_owned());
+    if label.as_ref().is_some_and(|value| value.is_empty() || value.chars().count() > 64) {
+        return (StatusCode::BAD_REQUEST,
+            Json(json!({"error": "label must be 1..64 characters after trimming"}))).into_response();
+    }
+    let spend_limit_nano = match req.spend_limit_nano {
+        Some(value) => match value.parse::<i64>() {
+            Ok(parsed) if parsed > 0 => Some(parsed),
+            _ => return (StatusCode::BAD_REQUEST,
+                Json(json!({"error": "spend_limit_nano must be a positive integer string"}))).into_response(),
+        },
+        None => None,
+    };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64).unwrap_or(0);
+    if req.expires_ts.is_some_and(|expires| expires <= now) {
+        return (StatusCode::BAD_REQUEST,
+            Json(json!({"error": "expires_ts must be in the future"}))).into_response();
+    }
     let key = match crate::gen_key() {
         Ok(k) => k,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     };
-    if b.issue_key(&key, &req.account_id, req.label.as_deref()).await {
+    if b.issue_key(&key, &req.account_id, label.as_deref(), spend_limit_nano, req.expires_ts).await {
         match b.get(&key).await {
             Some(row) => (StatusCode::OK, Json(json!({
-                "key": key, "key_id": row.key_id, "account": req.account_id, "label": req.label,
+                "key": key, "key_id": row.key_id, "account": req.account_id, "label": label,
+                "spend_limit_nano": row.spend_limit_nano, "expires_ts": row.expires_ts,
             }))).into_response(),
             None => (StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": "issued key could not be read"}))).into_response(),

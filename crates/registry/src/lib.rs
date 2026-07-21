@@ -92,6 +92,8 @@ pub fn open(path: &str) -> Result<Connection> {
     // Stable public identifier for control-plane key management. The usable `key` remains secret;
     // dashboards and the commercial backend can revoke by `key_id` without persisting that secret.
     let _ = c.execute("ALTER TABLE api_keys ADD COLUMN key_id TEXT", []);
+    let _ = c.execute("ALTER TABLE api_keys ADD COLUMN spend_limit_nano INTEGER", []);
+    let _ = c.execute("ALTER TABLE api_keys ADD COLUMN expires_ts INTEGER", []);
     let _ = c.execute(
         "UPDATE api_keys SET key_id = 'key_' || lower(hex(randomblob(16))) WHERE key_id IS NULL", []);
     let _ = c.execute(
@@ -185,7 +187,7 @@ fn migrate_legacy_keys(c: &Connection) -> Result<()> {
             |r| r.get(0),
         )?;
         let updated = tx.execute(
-            "UPDATE api_keys SET account_id=?1 WHERE key=?2 AND account_id IS NULL",
+            "UPDATE api_keys SET account_id=?1, reserved_nano=0 WHERE key=?2 AND account_id IS NULL",
             rusqlite::params![acct, key],
         )?;
         if updated != 1 {
@@ -407,16 +409,34 @@ pub struct KeyRow {
     pub account_id: Option<String>,
     pub label: Option<String>,
     pub spent_nano: i64, // расход по ЭТОМУ ключу (атрибуция; баланс общий на аккаунте)
+    pub reserved_nano: i64,
+    pub spend_limit_nano: Option<i64>,
+    pub expires_ts: Option<i64>,
+    pub created_ts: i64,
+    pub last_used_ts: Option<i64>,
     pub status: String,
 }
 
 /// Выпустить ключ ПОД аккаунт (баланс — на аккаунте, ключ лишь ссылается). `label` — имя ключа.
 pub fn key_issue(conn: &Connection, key: &str, account_id: &str, label: Option<&str>) -> Result<()> {
+    key_issue_with_policy(conn, key, account_id, label, None, None)
+}
+
+pub fn key_issue_with_policy(
+    conn: &Connection,
+    key: &str,
+    account_id: &str,
+    label: Option<&str>,
+    spend_limit_nano: Option<i64>,
+    expires_ts: Option<i64>,
+) -> Result<()> {
     conn.execute(
-        "INSERT INTO api_keys(key, key_id, account_id, label, spent_nano, status, created_ts, created) \
-         VALUES(?1, 'key_' || lower(hex(randomblob(16))), ?2, ?3, 0, 'active', ?4, ?5) \
-         ON CONFLICT(key) DO UPDATE SET account_id=excluded.account_id, label=excluded.label, status='active'",
-        rusqlite::params![key, account_id, label, now(), chrono_like(now())],
+        "INSERT INTO api_keys(key, key_id, account_id, label, spent_nano, reserved_nano, \
+         spend_limit_nano, expires_ts, status, created_ts, created) \
+         VALUES(?1, 'key_' || lower(hex(randomblob(16))), ?2, ?3, 0, 0, ?4, ?5, 'active', ?6, ?7) \
+         ON CONFLICT(key) DO UPDATE SET account_id=excluded.account_id, label=excluded.label, \
+         spend_limit_nano=excluded.spend_limit_nano, expires_ts=excluded.expires_ts, status='active'",
+        rusqlite::params![key, account_id, label, spend_limit_nano, expires_ts, now(), chrono_like(now())],
     )?;
     Ok(())
 }
@@ -450,7 +470,17 @@ pub struct KeyAuth {
     pub account_id: String,
     pub mult_bp: i64,
     pub balance_nano: i64,
+    pub spent_nano: i64,
+    pub reserved_nano: i64,
+    pub spend_limit_nano: Option<i64>,
+    pub expires_ts: Option<i64>,
     pub active: bool, // ключ активен И аккаунт активен
+}
+
+impl KeyAuth {
+    pub fn active_at(&self, ts: i64) -> bool {
+        self.active && self.expires_ts.is_none_or(|expires| expires > ts)
+    }
 }
 
 /// Создать аккаунт. `handle` (TG id/email) опционален и уникален (когда задан).
@@ -574,7 +604,7 @@ pub fn account_topup(conn: &Connection, id: &str, amount_nano: i64, reference: O
 /// Горячая money-операция для group-commit (reserve/settle) — writer'а. Ссылки (не owned): вызывающий
 /// (billing) держит команды, registry лишь применяет их SQL в ОДНОЙ транзакции.
 pub enum HotOp<'a> {
-    Reserve { account_id: &'a str, hold: i64 },
+    Reserve { account_id: &'a str, key: &'a str, hold: i64 },
     Settle { account_id: &'a str, key: &'a str, hold: i64, actual: i64,
              reference: Option<&'a str>, usage: Option<&'a UsageEventInput> },
 }
@@ -590,7 +620,8 @@ pub fn apply_hot_batch(conn: &Connection, ops: &[HotOp]) -> Result<Vec<Option<i6
     let mut out = Vec::with_capacity(ops.len());
     for op in ops {
         out.push(match op {
-            HotOp::Reserve { account_id, hold } => account_reserve(&tx, account_id, *hold).ok().flatten(),
+            HotOp::Reserve { account_id, key, hold } =>
+                account_reserve_for_key(&tx, account_id, key, *hold).ok().flatten(),
             HotOp::Settle { account_id, key, hold, actual, reference, usage } =>
                 account_settle_in(&tx, account_id, key, *hold, *actual, *reference, *usage).ok().flatten(),
         });
@@ -611,6 +642,52 @@ pub fn account_reserve(conn: &Connection, id: &str, hold_nano: i64) -> Result<Op
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),
     }
+}
+
+/// Reserve against both the shared account balance and one key's lifetime spending policy.
+pub fn account_reserve_for_key(
+    conn: &Connection,
+    id: &str,
+    key: &str,
+    hold_nano: i64,
+) -> Result<Option<i64>> {
+    let hold = hold_nano.max(0);
+    conn.execute_batch("SAVEPOINT key_policy_reserve")?;
+    let balance = match conn.query_row(
+        "UPDATE accounts SET balance_nano=balance_nano-?1, reserved_nano=reserved_nano+?1 \
+         WHERE id=?2 AND status='active' AND balance_nano>=?1 RETURNING balance_nano",
+        rusqlite::params![hold, id],
+        |r| r.get::<_, i64>(0),
+    ) {
+        Ok(value) => value,
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            conn.execute_batch("ROLLBACK TO key_policy_reserve; RELEASE key_policy_reserve")?;
+            return Ok(None);
+        }
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK TO key_policy_reserve; RELEASE key_policy_reserve");
+            return Err(error.into());
+        }
+    };
+    let updated = match conn.execute(
+        "UPDATE api_keys SET reserved_nano=reserved_nano+?1 \
+         WHERE key=?2 AND account_id=?3 AND COALESCE(status,'active')='active' \
+           AND (expires_ts IS NULL OR expires_ts>CAST(strftime('%s','now') AS INTEGER)) \
+           AND (spend_limit_nano IS NULL OR spent_nano+reserved_nano+?1<=spend_limit_nano)",
+        rusqlite::params![hold, key, id],
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK TO key_policy_reserve; RELEASE key_policy_reserve");
+            return Err(error.into());
+        }
+    };
+    if updated != 1 {
+        conn.execute_batch("ROLLBACK TO key_policy_reserve; RELEASE key_policy_reserve")?;
+        return Ok(None);
+    }
+    conn.execute_batch("RELEASE key_policy_reserve")?;
+    Ok(Some(balance))
 }
 
 /// Закрыть резерв аккаунта: баланс += hold − actual, spent += actual, reserved −= hold; per-key
@@ -649,8 +726,11 @@ pub fn account_settle_in(conn: &Connection, id: &str, key: &str, hold_nano: i64,
         Err(e) => return Err(e.into()),
     };
     if let Some(b) = bal {
-        conn.execute("UPDATE api_keys SET spent_nano = spent_nano + ?1 WHERE key = ?2",
-                   rusqlite::params![actual, key])?;
+        conn.execute(
+            "UPDATE api_keys SET spent_nano=spent_nano+?1, \
+             reserved_nano=MAX(0,reserved_nano-?2) WHERE key=?3",
+            rusqlite::params![actual, hold, key],
+        )?;
         if actual > 0 {
             // Модель за списанием — из usage того же запроса (пустую строку не пишем → NULL).
             let model = usage.map(|u| u.model.as_str()).filter(|m| !m.is_empty());
@@ -666,13 +746,15 @@ pub fn account_settle_in(conn: &Connection, id: &str, key: &str, hold_nano: i64,
 /// Резолв ключа в аккаунт для авторизации запроса (JOIN api_keys→accounts).
 pub fn key_account(conn: &Connection, key: &str) -> Result<Option<KeyAuth>> {
     match conn.query_row(
-        "SELECT a.id, a.mult_bp, a.balance_nano, \
+        "SELECT a.id, a.mult_bp, a.balance_nano, k.spent_nano, k.reserved_nano, \
+         k.spend_limit_nano, k.expires_ts, \
          (COALESCE(k.status,'active')='active' AND COALESCE(a.status,'active')='active') \
          FROM api_keys k JOIN accounts a ON a.id = k.account_id WHERE k.key = ?1",
         rusqlite::params![key],
         |r| Ok(KeyAuth {
             account_id: r.get(0)?, mult_bp: r.get(1)?, balance_nano: r.get(2)?,
-            active: r.get::<_, i64>(3)? != 0,
+            spent_nano: r.get(3)?, reserved_nano: r.get(4)?, spend_limit_nano: r.get(5)?,
+            expires_ts: r.get(6)?, active: r.get::<_, i64>(7)? != 0,
         })) {
         Ok(a) => Ok(Some(a)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -800,7 +882,11 @@ pub fn usage_prune(conn: &Connection, older_than_ts: i64) -> Result<usize> {
 /// Прочитать ключ (для авторизации/`/balance`).
 pub fn key_get(conn: &Connection, key: &str) -> Result<Option<KeyRow>> {
     let row = conn.query_row(
-        "SELECT key, key_id, account_id, label, spent_nano, COALESCE(status,'active') FROM api_keys WHERE key=?1",
+        "SELECT k.key,k.key_id,k.account_id,k.label,k.spent_nano,k.reserved_nano, \
+         k.spend_limit_nano,k.expires_ts,COALESCE(k.created_ts,0), \
+         (SELECT MAX(u.ts) FROM usage_events u WHERE u.account_id=k.account_id AND u.key=k.key), \
+         COALESCE(k.status,'active') \
+         FROM api_keys k WHERE k.key=?1",
         rusqlite::params![key],
         |r| Ok(KeyRow {
             key: r.get::<_, String>(0)?,
@@ -808,7 +894,8 @@ pub fn key_get(conn: &Connection, key: &str) -> Result<Option<KeyRow>> {
             account_id: r.get::<_, Option<String>>(2)?,
             label: r.get::<_, Option<String>>(3)?,
             spent_nano: r.get::<_, i64>(4)?,
-            status: r.get::<_, String>(5)?,
+            reserved_nano: r.get(5)?, spend_limit_nano: r.get(6)?, expires_ts: r.get(7)?,
+            created_ts: r.get(8)?, last_used_ts: r.get(9)?, status: r.get(10)?,
         }),
     );
     match row {
@@ -845,15 +932,19 @@ pub fn key_clear(conn: &Connection) -> Result<usize> {
 /// Ключи КОНКРЕТНОГО аккаунта (для дашборда коммерции: список ключей юзера). Ключ маскируется на выводе.
 pub fn keys_by_account(conn: &Connection, account_id: &str) -> Result<Vec<KeyRow>> {
     let mut stmt = conn.prepare(
-        "SELECT key, key_id, account_id, label, spent_nano, COALESCE(status,'active') \
-         FROM api_keys WHERE account_id=?1 ORDER BY COALESCE(created_ts,0)")?;
+        "SELECT k.key,k.key_id,k.account_id,k.label,k.spent_nano,k.reserved_nano, \
+         k.spend_limit_nano,k.expires_ts,COALESCE(k.created_ts,0),u.last_used_ts, \
+         COALESCE(k.status,'active') FROM api_keys k LEFT JOIN ( \
+           SELECT key,MAX(ts) AS last_used_ts FROM usage_events WHERE account_id=?1 GROUP BY key \
+         ) u ON u.key=k.key WHERE k.account_id=?1 ORDER BY COALESCE(k.created_ts,0)")?;
     let rows = stmt.query_map(rusqlite::params![account_id], |r| Ok(KeyRow {
         key: r.get::<_, String>(0)?,
         key_id: r.get::<_, String>(1)?,
         account_id: r.get::<_, Option<String>>(2)?,
         label: r.get::<_, Option<String>>(3)?,
         spent_nano: r.get::<_, i64>(4)?,
-        status: r.get::<_, String>(5)?,
+        reserved_nano: r.get(5)?, spend_limit_nano: r.get(6)?, expires_ts: r.get(7)?,
+        created_ts: r.get(8)?, last_used_ts: r.get(9)?, status: r.get(10)?,
     }))?;
     Ok(rows.filter_map(|x| x.ok()).collect())
 }
@@ -910,15 +1001,19 @@ pub fn ledger_after(conn: &Connection, account_id: &str, after_id: i64, limit: i
 /// Все ключи (для CLI-листинга; ключ маскируется на стороне вывода).
 pub fn key_list(conn: &Connection) -> Result<Vec<KeyRow>> {
     let mut stmt = conn.prepare(
-        "SELECT key, key_id, account_id, label, spent_nano, COALESCE(status,'active') \
-         FROM api_keys ORDER BY COALESCE(created_ts,0)")?;
+        "SELECT k.key,k.key_id,k.account_id,k.label,k.spent_nano,k.reserved_nano, \
+         k.spend_limit_nano,k.expires_ts,COALESCE(k.created_ts,0),u.last_used_ts, \
+         COALESCE(k.status,'active') FROM api_keys k LEFT JOIN ( \
+           SELECT key,MAX(ts) AS last_used_ts FROM usage_events GROUP BY key \
+         ) u ON u.key=k.key ORDER BY COALESCE(k.created_ts,0)")?;
     let rows = stmt.query_map([], |r| Ok(KeyRow {
         key: r.get::<_, String>(0)?,
         key_id: r.get::<_, String>(1)?,
         account_id: r.get::<_, Option<String>>(2)?,
         label: r.get::<_, Option<String>>(3)?,
         spent_nano: r.get::<_, i64>(4)?,
-        status: r.get::<_, String>(5)?,
+        reserved_nano: r.get(5)?, spend_limit_nano: r.get(6)?, expires_ts: r.get(7)?,
+        created_ts: r.get(8)?, last_used_ts: r.get(9)?, status: r.get(10)?,
     }))?;
     Ok(rows.filter_map(|x| x.ok()).collect())
 }
@@ -1258,9 +1353,9 @@ mod tests {
         acct_with_key(&c, "a", "k", 1_000_000_000, 4000); // $1
         // 3 резерва по 400M в одной пачке: 3-й видит списания первых двух → отказ (None).
         let ops = vec![
-            HotOp::Reserve { account_id: "a", hold: 400_000_000 },
-            HotOp::Reserve { account_id: "a", hold: 400_000_000 },
-            HotOp::Reserve { account_id: "a", hold: 400_000_000 },
+            HotOp::Reserve { account_id: "a", key: "k", hold: 400_000_000 },
+            HotOp::Reserve { account_id: "a", key: "k", hold: 400_000_000 },
+            HotOp::Reserve { account_id: "a", key: "k", hold: 400_000_000 },
         ];
         let r = apply_hot_batch(&c, &ops).unwrap();
         assert_eq!(r[0], Some(600_000_000));
@@ -1387,6 +1482,38 @@ mod tests {
         assert_eq!(updated.status, "disabled");
         assert_eq!(updated.label.as_deref(), Some("renamed"));
         assert_eq!(key_set_label_by_id(&c, "key_missing", "unused").unwrap(), 0);
+    }
+
+    #[test]
+    fn per_key_policy_gates_reservations_and_releases_allowance() {
+        let c = db();
+        account_create(&c, "acct", None, 10_000).unwrap();
+        account_topup(&c, "acct", 1_000, None).unwrap();
+        key_issue_with_policy(&c, "limited", "acct", Some("limited"), Some(700), Some(now() + 60)).unwrap();
+
+        assert_eq!(account_reserve_for_key(&c, "acct", "limited", 500).unwrap(), Some(500));
+        assert_eq!(account_reserve_for_key(&c, "acct", "limited", 300).unwrap(), None);
+        let account = account_get(&c, "acct").unwrap().unwrap();
+        assert_eq!((account.balance_nano, account.reserved_nano), (500, 500));
+
+        account_settle(&c, "acct", "limited", 500, 400, None, None).unwrap();
+        let key = key_get(&c, "limited").unwrap().unwrap();
+        assert_eq!((key.spent_nano, key.reserved_nano, key.spend_limit_nano), (400, 0, Some(700)));
+
+        assert_eq!(account_reserve_for_key(&c, "acct", "limited", 300).unwrap(), Some(300));
+        account_settle(&c, "acct", "limited", 300, 0, None, None).unwrap();
+        assert_eq!(key_get(&c, "limited").unwrap().unwrap().reserved_nano, 0);
+
+        key_issue_with_policy(&c, "expired", "acct", None, None, Some(now())).unwrap();
+        assert_eq!(account_reserve_for_key(&c, "acct", "expired", 1).unwrap(), None);
+        assert_eq!(account_get(&c, "acct").unwrap().unwrap().reserved_nano, 0);
+        let expired_auth = key_account(&c, "expired").unwrap().unwrap();
+        assert!(expired_auth.active);
+        assert!(!expired_auth.active_at(now()), "expiry is exclusive at the exact second");
+
+        key_set_status(&c, "limited", "disabled").unwrap();
+        assert_eq!(account_reserve_for_key(&c, "acct", "limited", 1).unwrap(), None);
+        assert!(!key_account(&c, "limited").unwrap().unwrap().active_at(now()));
     }
 
     #[test]

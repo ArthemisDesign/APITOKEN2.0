@@ -28,6 +28,8 @@ SQLite живут на выделенных потоках, НЕ на async-во
 outbox, а writer retry-ит до commit. RAII cancel закрывает именно этот request ID. Резерв под баланс
 с урезанием `max_tokens` (`cap_to_balance`)
 → клиент не получит ни токена/цента сверх баланса. 4xx/ошибки/ротация НЕ тарифицируются.
+Для policy-ключей cap берёт минимум из баланса аккаунта и оставшегося lifetime-лимита. Такие ключи
+обходят auth TTL cache; срок и лимит повторно проверяются в атомарной транзакции reserve.
 
 **Что внутри:** `ProxyConfig`, `AppState`, `Clients` (кэш http-клиентов по прокси),
 `limits_from_headers`/`Limits` (unified-ratelimit из ответа), `poll_sub` (активный опрос idle),

@@ -21,6 +21,10 @@
   `(kind,request_id)` charge. Upstream request IDs are audit metadata, never the money identity.
   Cursor consumers use `ledger_after(account, after_id, limit)` (oldest-first); account pricing uses
   `account_set_mult_bp`.
+  Optional per-key `spend_limit_nano` and `expires_ts` are engine-authoritative. Reservation updates
+  key `reserved_nano` in the same transaction and enforces
+  `spent_nano + reserved_nano + hold <= spend_limit_nano`; settlement atomically converts the hold
+  into actual spend or releases it.
   Мягкая миграция старой модели «key=кошелёк» → аккаунт per-key (`migrate_legacy_keys`).
 - Публичный тип [`Sub`] (email/token/proxy/fleet) — контракт для `pool`/`forward`. Меняешь его —
   проверь оба потребителя.

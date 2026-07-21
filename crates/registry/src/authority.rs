@@ -121,6 +121,12 @@ impl Authority {
     pub fn key_issue(&mut self, key: &str, account_id: &str, label: Option<&str>) -> Result<()> {
         match self { Self::Sqlite(c) => crate::key_issue(c,key,account_id,label), Self::Postgres(pg) => pg.key_issue(key,account_id,label) }
     }
+    pub fn key_issue_with_policy(&mut self, key: &str, account_id: &str, label: Option<&str>, spend_limit_nano: Option<i64>, expires_ts: Option<i64>) -> Result<()> {
+        match self {
+            Self::Sqlite(c) => crate::key_issue_with_policy(c,key,account_id,label,spend_limit_nano,expires_ts),
+            Self::Postgres(pg) => pg.key_issue_with_policy(key,account_id,label,spend_limit_nano,expires_ts),
+        }
+    }
     pub fn key_account(&mut self, key: &str) -> Result<Option<KeyAuth>> {
         match self { Self::Sqlite(c) => crate::key_account(c,key), Self::Postgres(pg) => pg.key_account(key) }
     }

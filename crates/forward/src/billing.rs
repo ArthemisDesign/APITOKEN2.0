@@ -111,7 +111,10 @@ enum WriteCmd {
     /// Control-плоскость (редкие управляющие записи из `/admin/*`) — через ТОТ ЖЕ writer, чтобы
     /// сохранить дисциплину единственного писателя (никаких гонок/BUSY с reserve/settle).
     CreateAccount { id: String, handle: Option<String>, mult_bp: i64, reply: oneshot::Sender<bool> },
-    IssueKey { key: String, account_id: String, label: Option<String>, reply: oneshot::Sender<bool> },
+    IssueKey {
+        key: String, account_id: String, label: Option<String>, spend_limit_nano: Option<i64>,
+        expires_ts: Option<i64>, reply: oneshot::Sender<bool>,
+    },
     AccountStatus { id: String, status: String, reply: oneshot::Sender<usize> },
     AccountMultiplier { id: String, mult_bp: i64, reply: oneshot::Sender<usize> },
     KeyStatus { key: String, status: String, reply: oneshot::Sender<usize> },
@@ -189,7 +192,7 @@ impl AsyncBilling {
                 // пачка) + bounded латентность/память. Под низкой нагрузкой пачка=1 (канал пуст).
                 const MAX_WRITE_BATCH: usize = 256;
                 let is_hot = |c: &WriteCmd| matches!(c, WriteCmd::Reserve { .. } | WriteCmd::Settle { .. });
-                let refund_canceled_reserve = |_request_id: &str, account_id: &str, _key: &str,
+                let refund_canceled_reserve = |_request_id: &str, account_id: &str, key: &str,
                                                hold: i64, handoff: &AtomicU8| {
                     if handoff.compare_exchange(
                         RESERVE_HANDOFF_CANCELED,
@@ -199,7 +202,7 @@ impl AsyncBilling {
                     ).is_err() {
                         return;
                     }
-                    match registry::account_settle(&conn, account_id, "", hold, 0, None, None) {
+                    match registry::account_settle(&conn, account_id, key, hold, 0, None, None) {
                         Ok(Some(_)) => handoff.store(RESERVE_HANDOFF_REFUNDED, Ordering::Release),
                         Ok(None) => {
                             eprintln!("billing reserve cancellation refund failed: account not found");
@@ -273,7 +276,11 @@ impl AsyncBilling {
                         let _ = reply.send(registry::account_topup(&conn, &account_id, amount, reference.as_deref()).ok().flatten());
                     }
                     WriteCmd::CreateAccount { id, handle, mult_bp, reply } => { let _ = reply.send(registry::account_create(&conn, &id, handle.as_deref(), mult_bp).is_ok()); }
-                    WriteCmd::IssueKey { key, account_id, label, reply } => { let _ = reply.send(registry::key_issue(&conn, &key, &account_id, label.as_deref()).is_ok()); }
+                    WriteCmd::IssueKey { key, account_id, label, spend_limit_nano, expires_ts, reply } => {
+                        let _ = reply.send(registry::key_issue_with_policy(
+                            &conn,&key,&account_id,label.as_deref(),spend_limit_nano,expires_ts,
+                        ).is_ok());
+                    }
                     WriteCmd::AccountStatus { id, status, reply } => { let _ = reply.send(registry::account_set_status(&conn, &id, &status).unwrap_or(0)); }
                     WriteCmd::AccountMultiplier { id, mult_bp, reply } => { let _ = reply.send(registry::account_set_mult_bp(&conn, &id, mult_bp).unwrap_or(0)); }
                     WriteCmd::KeyStatus { key, status, reply } => { let _ = reply.send(registry::key_set_status(&conn, &key, &status).unwrap_or(0)); }
@@ -293,7 +300,7 @@ impl AsyncBilling {
                 // Одна горячая команда в СВОЕЙ транзакции (fallback батча) + reply/refund как раньше.
                 let apply_hot_single = |cmd: WriteCmd| match cmd {
                     WriteCmd::Reserve { request_id, account_id, key, hold, handoff, reply } => {
-                        let res = registry::account_reserve(&conn, &account_id, hold).ok().flatten();
+                        let res = registry::account_reserve_for_key(&conn, &account_id, &key, hold).ok().flatten();
                         finish_reserve(request_id, account_id, key, hold, handoff, reply, res);
                     }
                     WriteCmd::Settle { account_id, key, hold, actual, reference, usage, reply, .. } => {
@@ -319,7 +326,8 @@ impl AsyncBilling {
                         }
                     }
                     let ops: Vec<registry::HotOp> = batch.iter().map(|c| match c {
-                        WriteCmd::Reserve { account_id, hold, .. } => registry::HotOp::Reserve { account_id, hold: *hold },
+                        WriteCmd::Reserve { account_id, key, hold, .. } =>
+                            registry::HotOp::Reserve { account_id, key, hold: *hold },
                         WriteCmd::Settle { account_id, key, hold, actual, reference, usage, .. } =>
                             registry::HotOp::Settle { account_id, key, hold: *hold, actual: *actual,
                                 reference: reference.as_deref(), usage: if *actual > 0 { usage.as_ref() } else { None } },
@@ -551,8 +559,10 @@ impl AsyncBilling {
                         WriteCmd::CreateAccount { id, handle, mult_bp, reply } => {
                             let _ = reply.send(pg.account_create(&id,handle.as_deref(),mult_bp).is_ok());
                         }
-                        WriteCmd::IssueKey { key, account_id, label, reply } => {
-                            let _ = reply.send(pg.key_issue(&key,&account_id,label.as_deref()).is_ok());
+                        WriteCmd::IssueKey { key, account_id, label, spend_limit_nano, expires_ts, reply } => {
+                            let _ = reply.send(pg.key_issue_with_policy(
+                                &key,&account_id,label.as_deref(),spend_limit_nano,expires_ts,
+                            ).is_ok());
                         }
                         WriteCmd::AccountStatus { id, status, reply } => {
                             let _ = reply.send(pg.account_set_status(&id,&status).unwrap_or(0));
@@ -644,13 +654,15 @@ impl AsyncBilling {
         // TTL-кэш: под нагрузкой множество запросов одного ключа коллапсируют в один read.
         if !self.auth_ttl.is_zero() {
             if let Some((auth, at)) = self.auth_cache.lock().unwrap_or_else(|e| e.into_inner()).get(key) {
-                if at.elapsed() < self.auth_ttl { return Some(auth.clone()); }
+                if at.elapsed() < self.auth_ttl && auth.spend_limit_nano.is_none() && auth.expires_ts.is_none() {
+                    return Some(auth.clone());
+                }
             }
         }
         let (r, rx) = oneshot::channel();
         self.reader().send(ReadCmd::KeyAuth(key.into(), r)).ok()?;
         let auth = rx.await.ok().flatten()?;
-        if !self.auth_ttl.is_zero() {
+        if !self.auth_ttl.is_zero() && auth.spend_limit_nano.is_none() && auth.expires_ts.is_none() {
             self.auth_cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key.into(), (auth.clone(), Instant::now()));
         }
         Some(auth)
@@ -778,10 +790,12 @@ impl AsyncBilling {
         }).is_err() { return false; }
         rx.await.unwrap_or(false)
     }
-    pub async fn issue_key(&self, key: &str, account_id: &str, label: Option<&str>) -> bool {
+    pub async fn issue_key(&self, key: &str, account_id: &str, label: Option<&str>,
+                           spend_limit_nano: Option<i64>, expires_ts: Option<i64>) -> bool {
         let (r, rx) = oneshot::channel();
         if self.writer.send(WriteCmd::IssueKey {
-            key: key.into(), account_id: account_id.into(), label: label.map(|s| s.into()), reply: r,
+            key: key.into(), account_id: account_id.into(), label: label.map(|s| s.into()),
+            spend_limit_nano, expires_ts, reply: r,
         }).is_err() { return false; }
         rx.await.unwrap_or(false)
     }
@@ -832,5 +846,47 @@ impl AsyncBilling {
         if self.writer.send(WriteCmd::Flush(r)).is_ok() {
             let _ = rx.await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[tokio::test]
+    async fn canceled_sqlite_reserve_handoff_releases_key_allowance() {
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-billing-handoff-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+        let billing = AsyncBilling::start(path_string, 1).unwrap();
+        assert!(billing.create_account("acct", None, 10_000).await);
+        assert_eq!(billing.topup("acct", 1_000, Some("seed")).await, Some(1_000));
+        assert!(billing.issue_key("limited", "acct", None, Some(700), None).await);
+
+        let handoff = Arc::new(AtomicU8::new(RESERVE_HANDOFF_CANCELED));
+        let (reply, response) = oneshot::channel();
+        billing.writer.send(WriteCmd::Reserve {
+            request_id: "canceled-before-handoff".into(),
+            account_id: "acct".into(),
+            key: "limited".into(),
+            hold: 500,
+            handoff: Arc::clone(&handoff),
+            reply,
+        }).unwrap();
+        assert!(response.await.is_err());
+        billing.flush().await;
+
+        let account = billing.account("acct").await.unwrap();
+        let key = billing.get("limited").await.unwrap();
+        assert_eq!((account.balance_nano, account.reserved_nano), (1_000, 0));
+        assert_eq!(key.reserved_nano, 0);
+        assert_eq!(handoff.load(Ordering::Acquire), RESERVE_HANDOFF_REFUNDED);
+
+        drop(billing);
+        let _ = std::fs::remove_file(path);
     }
 }

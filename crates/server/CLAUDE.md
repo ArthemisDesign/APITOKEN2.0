@@ -26,6 +26,8 @@
   создаёт аккаунты/ключи и кредитует (идемпотентно по `ref`). Полный контракт — `CONTROL_API.md`.
   Account pricing is updated by `/admin/account/{id}/pricing`; cursor ledger reads use `after_id` for
   the commercial pricing worker.
+  Key issue/list also carries optional `spend_limit_nano`/`expires_ts` policy metadata; validation is
+  at this HTTP boundary while enforcement remains in registry reservation transactions.
 - `poller.rs` — СОБЫТИЙНЫЕ циклы: `reload_loop` (перечитать реестр; будит поллер `Notify` при
   изменении флота) + `poll_loop` (liveness-only probe созревших подписок конкурентно, затем сон
   РОВНО до ближайшего due-времени или до `poke`). Фиксированного тика нет: reset вычисляется

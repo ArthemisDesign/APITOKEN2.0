@@ -374,8 +374,9 @@ async fn balance(State(app): State<AppState>, headers: HeaderMap) -> Response {
     // ключ → аккаунт → баланс аккаунта (общий на все ключи юзера) + расход именно этого ключа
     let krow = billing.get(&key).await;
     let acct = match billing.key_auth(&key).await {
-        Some(a) => billing.account(&a.account_id).await,
+        Some(a) if a.active_at(pool::now()) => billing.account(&a.account_id).await,
         None => None,
+        Some(_) => None,
     };
     match (krow, acct) {
         (Some(k), Some(a)) => Json(json!({
