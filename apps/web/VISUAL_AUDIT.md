@@ -123,7 +123,7 @@ Capture definitions live near the top of `scripts/capture-site.mjs`. Each defini
 `language` is optional and defaults to `en`. Current conventions are:
 
 - desktop: `1440 x 1000`;
-- tablet: `768 x 1024`;
+- tablet: `768–820 x 1000–1024`;
 - mobile: `390 x 844`;
 - themes: `light` and `dark`;
 - localized states: `en` and `ru` where applicable.
@@ -202,8 +202,10 @@ When a dashboard design depends on new API data:
    data into the script.
 5. Add an interaction assertion when the UI changes state after a click.
 
-The API-key fixture intentionally contains one active and one disabled key. That lets the audit verify
-the `1 / 1 / 2` filter counts and the Active, Disabled, and All interactions.
+The API-key fixture includes enabled, revoked, near-limit, expiring, expired, and limit-reached
+records. That lets the audit verify `4 / 1 / 5` filter counts, every policy state, search, the
+responsive desktop/tablet/mobile table-card layout, the TOTP-enabled create flow and payload, and the
+revoke confirmation/error path.
 
 ## Browser assertions
 
@@ -222,10 +224,10 @@ An assertion function should:
 - throw an error containing serialized browser state that explains a failure;
 - print one concise success line after all cases pass.
 
-The API-key assertion currently checks all eight English/Russian, light/dark, and desktop/mobile cases.
-It verifies alignment, spacing between the toolbar and cards, a visually distinct toolbar surface,
-single-row controls, equal mobile tab widths, no horizontal overflow, translated accessibility labels,
-counts, and filter interactions.
+The API-key assertion currently checks nine English/Russian, light/dark, and desktop/tablet/mobile
+cases. It verifies alignment, table/card spacing, single-row controls, equal mobile tab widths, no
+horizontal overflow, translated accessibility labels, counts, search and filter interactions, all
+policy states, the complete TOTP-enabled create flow, and revoke error/focus restoration behavior.
 
 ## Adding a new visual audit
 

@@ -10,6 +10,7 @@ import {
   type StoredApiKey,
 } from "@claude-api/db";
 import { EngineClient, EngineClientError } from "@claude-api/engine-client";
+import type { CreateApiKey, EngineApiKey } from "@claude-api/contracts";
 import { DATABASE, ENGINE_CLIENT } from "./infrastructure.module.js";
 import { createFundedEngineAccount } from "./engine-provisioning.js";
 
@@ -196,15 +197,21 @@ export class AccountService {
         keyMasked,
         status: key.status,
       });
-      keys.push(apiKeyView(stored, key.spent_nano, key.spent));
+      keys.push(apiKeyView(stored, key));
     }
     return { keys };
   }
 
-  async createApiKey(userId: string, label?: string): Promise<unknown> {
+  async createApiKey(userId: string, input: CreateApiKey): Promise<unknown> {
+    const spendLimitNano = input.spendLimitUsd === undefined ? undefined : usdToNano(input.spendLimitUsd);
+    const expiresAt = input.expiresAt === undefined ? undefined : new Date(input.expiresAt);
     const { accountId, value: issued } = await this.withEngineAccountId(
       userId,
-      (id) => this.engine.issueKey(id, label),
+      (id) => this.engine.issueKey(id, {
+        ...(input.label !== undefined ? { label: input.label } : {}),
+        ...(spendLimitNano !== undefined ? { spendLimitNano } : {}),
+        ...(expiresAt !== undefined ? { expiresAt } : {}),
+      }),
     );
     const keyMasked = maskApiKey(issued.key);
     let stored: StoredApiKey;
@@ -225,7 +232,22 @@ export class AccountService {
       }
       throw error;
     }
-    return { ...apiKeyView(stored, "0", "$0.000000000"), key: issued.key };
+    return {
+      ...apiKeyView(stored, {
+        key_id: issued.key_id,
+        key_masked: keyMasked,
+        label: issued.label,
+        status: "active",
+        spent_nano: "0",
+        spent: "$0.000000000",
+        reserved_nano: "0",
+        spend_limit_nano: issued.spend_limit_nano,
+        expires_ts: issued.expires_ts,
+        created_ts: "0",
+        last_used_ts: null,
+      }),
+      key: issued.key,
+    };
   }
 
   async renameApiKey(userId: string, apiKeyId: string, label: string): Promise<unknown> {
@@ -254,7 +276,7 @@ export class AccountService {
       keyMasked: validateMaskedApiKey(updated.key_masked),
       status: updated.status,
     });
-    return apiKeyView(stored, updated.spent_nano, updated.spent);
+    return apiKeyView(stored, updated);
   }
 
   async disableApiKey(userId: string, apiKeyId: string): Promise<boolean> {
@@ -303,16 +325,32 @@ function validateMaskedApiKey(value: string): string {
   return value;
 }
 
-function apiKeyView(stored: StoredApiKey, spentNano: string, spentUsd: string): Record<string, unknown> {
+function apiKeyView(stored: StoredApiKey, engine: EngineApiKey): Record<string, unknown> {
   return {
     id: stored.id,
     label: stored.label,
     keyMasked: stored.keyMasked,
     status: stored.status,
-    spentNano,
-    spentUsd,
-    createdAt: stored.createdAt.toISOString(),
+    spentNano: engine.spent_nano,
+    spentUsd: engine.spent,
+    reservedNano: engine.reserved_nano,
+    spendLimitNano: engine.spend_limit_nano,
+    expiresAt: secondsToIso(engine.expires_ts),
+    lastUsedAt: secondsToIso(engine.last_used_ts),
+    createdAt: secondsToIso(engine.created_ts) ?? stored.createdAt.toISOString(),
   };
+}
+
+function usdToNano(value: string): bigint {
+  const [whole = "0", fraction = ""] = value.split(".");
+  return BigInt(whole) * 1_000_000_000n + BigInt(fraction.padEnd(9, "0"));
+}
+
+function secondsToIso(value: string | null): string | null {
+  if (value === null) return null;
+  if (BigInt(value) <= 0n) return null;
+  const milliseconds = Number(value) * 1000;
+  return Number.isSafeInteger(milliseconds) ? new Date(milliseconds).toISOString() : null;
 }
 
 function maskApiKey(key: string): string {

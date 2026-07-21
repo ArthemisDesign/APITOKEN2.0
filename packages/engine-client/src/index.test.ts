@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { EngineClient } from "./index.js";
+
+afterEach(() => vi.useRealTimers());
 
 describe("EngineClient", () => {
   it("sends nanodollars without floating-point conversion", async () => {
@@ -33,6 +35,23 @@ describe("EngineClient", () => {
       status: 422,
       retryable: false,
     });
+  });
+
+  it("rejects policy values that cannot be represented safely by the engine", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-01-01T00:00:00.100Z"));
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async () => { throw new Error("validation should happen before fetch"); },
+    });
+
+    await expect(client.issueKey("acct_test", {
+      spendLimitNano: 9_223_372_036_854_775_808n,
+    })).rejects.toThrow("signed 64-bit");
+    await expect(client.issueKey("acct_test", {
+      expiresAt: new Date("2030-01-01T00:00:00.900Z"),
+    })).rejects.toThrow("whole second");
   });
 
   it("does not send the control key to the public health endpoint", async () => {
@@ -94,8 +113,17 @@ describe("EngineClient", () => {
       },
     });
 
-    const issued = await client.issueKey("acct_test", "prod");
+    const expiresAt = new Date("2099-01-01T00:00:00.000Z");
+    const issued = await client.issueKey("acct_test", {
+      label: "prod", spendLimitNano: 9_007_199_254_740_993_123n, expiresAt,
+    });
     expect(issued.key_id).toBe("key_public");
+    expect(JSON.parse(requests[0]!.body)).toEqual({
+      account_id: "acct_test",
+      label: "prod",
+      spend_limit_nano: "9007199254740993123",
+      expires_ts: 4_070_908_800,
+    });
     await expect(client.listKeys("acct_test")).resolves.toMatchObject([{ spent_nano: "0" }]);
     await expect(client.disableKey("key_public")).resolves.toBeUndefined();
     expect(requests.at(-1)?.url).toContain("/admin/key-id/key_public/status");

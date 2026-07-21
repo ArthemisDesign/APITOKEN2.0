@@ -25,6 +25,10 @@ export interface ApiKeyView {
   status: "active" | "disabled";
   spentNano: string;
   spentUsd: string;
+  reservedNano?: string;
+  spendLimitNano: string | null;
+  expiresAt: string | null;
+  lastUsedAt: string | null;
   createdAt: string;
   key?: string;
 }
@@ -199,8 +203,8 @@ export const api = {
   ledger: (limit = 50) => request<{ entries: LedgerEntry[] }>(`/account/ledger?limit=${limit}`),
   usage: (window = "30d") => request<UsageView>(`/account/usage?window=${encodeURIComponent(window)}`),
   apiKeys: () => request<{ keys: ApiKeyView[] }>("/api-keys"),
-  createApiKey: (label?: string, totpCode?: string) => request<ApiKeyView>("/api-keys", {
-    method: "POST", body: JSON.stringify({ ...(label ? { label } : {}), ...(totpCode ? { totpCode } : {}) }),
+  createApiKey: (input: { label?: string; spendLimitUsd?: string; expiresAt?: string; totpCode?: string }) => request<ApiKeyView>("/api-keys", {
+    method: "POST", body: JSON.stringify(input),
   }),
   totpSetup: () => request<TotpSetup>("/security/totp/setup", { method: "POST" }),
   totpEnable: (code: string) => request<void>("/security/totp/enable", { method: "POST", body: JSON.stringify({ code }) }),

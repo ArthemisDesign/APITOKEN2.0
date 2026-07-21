@@ -35,6 +35,14 @@ export interface EngineClientOptions {
   fetch?: typeof globalThis.fetch;
 }
 
+export interface IssueEngineKeyOptions {
+  label?: string;
+  spendLimitNano?: bigint;
+  expiresAt?: Date;
+}
+
+const maxSignedI64 = 9_223_372_036_854_775_807n;
+
 export class EngineClient {
   private readonly baseUrl: string;
   private readonly controlKey: string;
@@ -122,9 +130,20 @@ export class EngineClient {
     return result.keys;
   }
 
-  async issueKey(accountId: string, label?: string): Promise<IssuedEngineApiKey> {
+  async issueKey(accountId: string, options: IssueEngineKeyOptions = {}): Promise<IssuedEngineApiKey> {
+    if (options.spendLimitNano !== undefined &&
+        (options.spendLimitNano <= 0n || options.spendLimitNano > maxSignedI64)) {
+      throw new RangeError("spendLimitNano must be a positive signed 64-bit integer");
+    }
+    if (options.expiresAt !== undefined &&
+        (!Number.isFinite(options.expiresAt.getTime()) ||
+         Math.floor(options.expiresAt.getTime() / 1000) <= Math.floor(Date.now() / 1000))) {
+      throw new RangeError("expiresAt must be a valid date at least one whole second in the future");
+    }
     const body: Record<string, unknown> = { account_id: accountId };
-    if (label !== undefined) body.label = label;
+    if (options.label !== undefined) body.label = options.label;
+    if (options.spendLimitNano !== undefined) body.spend_limit_nano = options.spendLimitNano.toString();
+    if (options.expiresAt !== undefined) body.expires_ts = Math.floor(options.expiresAt.getTime() / 1000);
     const { response, payload } = await this.request("/admin/key", {
       method: "POST",
       body: JSON.stringify(body),

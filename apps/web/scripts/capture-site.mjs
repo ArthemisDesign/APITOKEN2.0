@@ -78,6 +78,8 @@ const dashboardCaptures = [
   ["dashboard-keys-dark", "/dashboard?view=keys", 1440, 1000, "dark"],
   ["dashboard-keys-russian-light", "/dashboard?view=keys", 1440, 1000, "light", "ru"],
   ["dashboard-keys-russian-dark", "/dashboard?view=keys", 1440, 1000, "dark", "ru"],
+  ["dashboard-keys-create-light", "/dashboard?view=keys", 1440, 1000, "light", "en", "key-create-open"],
+  ["dashboard-keys-revoke-dark", "/dashboard?view=keys", 1440, 1000, "dark", "en", "key-revoke-open"],
   ["dashboard-topup-light", "/dashboard?view=credits", 1440, 1000, "light"],
   ["dashboard-topup-dark", "/dashboard?view=credits", 1440, 1000, "dark"],
   ["dashboard-topup-tablet-light", "/dashboard?view=credits", 768, 1024, "light"],
@@ -96,9 +98,11 @@ const dashboardCaptures = [
   ["dashboard-security-dark", "/dashboard?view=security", 1440, 1000, "dark"],
   ["dashboard-overview-mobile", "/dashboard", 390, 844, "light"],
   ["dashboard-keys-mobile-light", "/dashboard?view=keys", 390, 844, "light"],
+  ["dashboard-keys-tablet-light", "/dashboard?view=keys", 820, 1000, "light"],
   ["dashboard-keys-mobile-dark", "/dashboard?view=keys", 390, 844, "dark"],
   ["dashboard-keys-mobile-russian-light", "/dashboard?view=keys", 390, 844, "light", "ru"],
   ["dashboard-keys-mobile-russian-dark", "/dashboard?view=keys", 390, 844, "dark", "ru"],
+  ["dashboard-keys-create-mobile-dark", "/dashboard?view=keys", 390, 844, "dark", "en", "key-create-open"],
 ];
 
 const scopedCaptures = auditScope === "dashboard" ? dashboardCaptures :
@@ -132,6 +136,7 @@ const dashboardFixtureScript = `(() => {
     passwordEnabled: false,
     engineAccountStatus: "active",
     customerType: "b2c",
+    totpEnabled: true,
   };
   const account = {
     balanceNano: "4000000000",
@@ -163,9 +168,49 @@ const dashboardFixtureScript = `(() => {
     label: "Production",
     keyMasked: "sk-pool-a5b5••••••••eeb",
     status: "active",
-    spentNano: "12000000000",
-    spentUsd: "12.00",
+    spentNano: "14000000000",
+    spentUsd: "14.00",
+    reservedNano: "0",
+    spendLimitNano: "15000000000",
+    expiresAt: new Date(Date.now() + 30 * 86400000).toISOString(),
+    lastUsedAt: new Date(Date.now() - 2 * 3600000).toISOString(),
     createdAt: "2026-07-15T08:30:00.000Z",
+  }, {
+    id: "2138f7aa-634c-4475-94d9-2cf3ded858ec",
+    label: "CI deploy",
+    keyMasked: "sk-pool-45e1••••••••bc8",
+    status: "active",
+    spentNano: "500000000",
+    spentUsd: "0.50",
+    reservedNano: "0",
+    spendLimitNano: null,
+    expiresAt: new Date(Date.now() + 3 * 86400000).toISOString(),
+    lastUsedAt: new Date(Date.now() - 86400000).toISOString(),
+    createdAt: "2026-07-17T11:00:00.000Z",
+  }, {
+    id: "57206bb3-4fdc-4be2-b3fd-87cd174c401b",
+    label: null,
+    keyMasked: "sk-pool-f367••••••••94ea",
+    status: "active",
+    spentNano: "1000000000",
+    spentUsd: "1.00",
+    reservedNano: "0",
+    spendLimitNano: "1000000000",
+    expiresAt: null,
+    lastUsedAt: null,
+    createdAt: "2026-07-16T10:10:00.000Z",
+  }, {
+    id: "a1402825-0b99-42dc-b8ac-5381e1efb47b",
+    label: "Legacy bot",
+    keyMasked: "sk-pool-b221••••••••f09",
+    status: "active",
+    spentNano: "250000000",
+    spentUsd: "0.25",
+    reservedNano: "0",
+    spendLimitNano: null,
+    expiresAt: new Date(Date.now() - 86400000).toISOString(),
+    lastUsedAt: new Date(Date.now() - 5 * 86400000).toISOString(),
+    createdAt: "2026-07-09T09:00:00.000Z",
   }, {
     id: "9c56809f-2c35-49cb-932e-7569ddf0d2e8",
     label: "Staging",
@@ -173,6 +218,10 @@ const dashboardFixtureScript = `(() => {
     status: "disabled",
     spentNano: "2500000000",
     spentUsd: "2.50",
+    reservedNano: "0",
+    spendLimitNano: null,
+    expiresAt: null,
+    lastUsedAt: "2026-07-10T10:00:00.000Z",
     createdAt: "2026-07-08T14:20:00.000Z",
   }];
   const nowS = Math.floor(Date.now() / 1000), DAY = 86400;
@@ -217,7 +266,13 @@ const dashboardFixtureScript = `(() => {
       return json({ user });
     }
     if (path === "/account") return json(account);
-    if (path === "/api-keys") return json({ keys });
+    if (path === "/api-keys") {
+      if ((init.method || "GET").toUpperCase() === "POST") {
+        window.__auditLastApiKeyCreate = JSON.parse(String(init.body || "{}"));
+        return json({ key: "sk-pool-audit-secret", id: "audit-created" });
+      }
+      return json({ keys });
+    }
     if (path === "/account/ledger") return json({ entries });
     if (path === "/account/usage") return json(usage);
     if (path === "/auth/logout") return Promise.resolve(new Response(null, { status: 204 }));
@@ -379,6 +434,15 @@ async function capturePage(client, [name, route, width, height, theme, language 
   if (state === "menu-open") {
     await client.send("Runtime.evaluate", { expression: `document.querySelector('.nav-burger')?.click()` });
     await waitForCondition(client, `document.querySelector('.nav-burger')?.getAttribute('aria-expanded') === 'true'`, `${name} open navigation`);
+  }
+  if (state === "key-create-open") {
+    await clickSelector(client, ".keys-create-button");
+    await waitForCondition(client, `Boolean(document.querySelector('.key-modal[role="dialog"]'))`, `${name} create-key dialog`);
+  }
+  if (state === "key-revoke-open") {
+    await clickSelector(client, ".key-menu summary");
+    await clickSelector(client, ".key-menu .danger");
+    await waitForCondition(client, `Boolean(document.querySelector('.key-revoke-modal[role="alertdialog"]'))`, `${name} revoke-key dialog`);
   }
   const { cssContentSize, contentSize } = await client.send("Page.getLayoutMetrics");
   // Chrome reports the legacy contentSize in physical pixels on Retina displays.
@@ -718,14 +782,15 @@ async function verifyCreditsLayout(client) {
 
 async function verifyApiKeysLayout(client) {
   const cases = [
-    { name: "desktop-light-en", width: 1440, height: 1000, theme: "light", language: "en", label: "Filter API keys", disabled: "Disabled" },
-    { name: "desktop-dark-en", width: 1440, height: 1000, theme: "dark", language: "en", label: "Filter API keys", disabled: "Disabled" },
-    { name: "desktop-light-ru", width: 1440, height: 1000, theme: "light", language: "ru", label: "Фильтр API-ключей", disabled: "Отключён" },
-    { name: "desktop-dark-ru", width: 1440, height: 1000, theme: "dark", language: "ru", label: "Фильтр API-ключей", disabled: "Отключён" },
-    { name: "mobile-light-en", width: 390, height: 844, theme: "light", language: "en", label: "Filter API keys", disabled: "Disabled" },
-    { name: "mobile-dark-en", width: 390, height: 844, theme: "dark", language: "en", label: "Filter API keys", disabled: "Disabled" },
-    { name: "mobile-light-ru", width: 390, height: 844, theme: "light", language: "ru", label: "Фильтр API-ключей", disabled: "Отключён" },
-    { name: "mobile-dark-ru", width: 390, height: 844, theme: "dark", language: "ru", label: "Фильтр API-ключей", disabled: "Отключён" },
+    { name: "desktop-light-en", width: 1440, height: 1000, theme: "light", language: "en", label: "Filter API keys", disabled: "Revoked" },
+    { name: "desktop-dark-en", width: 1440, height: 1000, theme: "dark", language: "en", label: "Filter API keys", disabled: "Revoked" },
+    { name: "desktop-light-ru", width: 1440, height: 1000, theme: "light", language: "ru", label: "Фильтр API-ключей", disabled: "Отозван" },
+    { name: "desktop-dark-ru", width: 1440, height: 1000, theme: "dark", language: "ru", label: "Фильтр API-ключей", disabled: "Отозван" },
+    { name: "tablet-light-en", width: 820, height: 1000, theme: "light", language: "en", label: "Filter API keys", disabled: "Revoked" },
+    { name: "mobile-light-en", width: 390, height: 844, theme: "light", language: "en", label: "Filter API keys", disabled: "Revoked" },
+    { name: "mobile-dark-en", width: 390, height: 844, theme: "dark", language: "en", label: "Filter API keys", disabled: "Revoked" },
+    { name: "mobile-light-ru", width: 390, height: 844, theme: "light", language: "ru", label: "Фильтр API-ключей", disabled: "Отозван" },
+    { name: "mobile-dark-ru", width: 390, height: 844, theme: "dark", language: "ru", label: "Фильтр API-ключей", disabled: "Отозван" },
   ];
 
   for (const layoutCase of cases) {
@@ -758,7 +823,7 @@ async function verifyApiKeysLayout(client) {
     try {
       await waitForCondition(
         client,
-        `document.documentElement.lang === ${JSON.stringify(layoutCase.language)} && Boolean(document.querySelector('.keyrow'))`,
+        `document.documentElement.lang === ${JSON.stringify(layoutCase.language)} && Boolean(document.querySelector('.key-row'))`,
         `${layoutCase.name} API key manager`,
       );
     } catch (error) {
@@ -771,7 +836,7 @@ async function verifyApiKeysLayout(client) {
           bodyText: document.body.innerText.slice(0, 500),
           loading: Boolean(document.querySelector('.dashboard-loading')),
           guard: Boolean(document.querySelector('.guard')),
-          keyRows: document.querySelectorAll('.keyrow').length,
+          keyRows: document.querySelectorAll('.key-row').length,
           controls: [...document.querySelectorAll('.lang button, .lang a')].map((button) => ({ label: button.textContent?.trim(), active: button.classList.contains('active') })),
         })`,
         returnByValue: true,
@@ -783,13 +848,13 @@ async function verifyApiKeysLayout(client) {
     const result = await client.send("Runtime.evaluate", {
       expression: `(() => {
         const rect = (selector) => document.querySelector(selector)?.getBoundingClientRect();
-        const heading = rect('.keys-section-head');
+        const heading = rect('.keys-heading-row');
         const toolbar = rect('.keys-toolbar');
         const tabs = rect('.keys-filter-tabs');
-        const keys = rect('.keys');
-        const key = rect('.keyrow');
+        const keys = rect('.key-table-wrap');
+        const key = rect('.key-row');
         const toolbarStyle = getComputedStyle(document.querySelector('.keys-toolbar'));
-        const keyStyle = getComputedStyle(document.querySelector('.keyrow'));
+        const keyStyle = getComputedStyle(document.querySelector(innerWidth <= 900 ? '.key-row' : '.key-table-wrap'));
         const tabRects = [...document.querySelectorAll('.keys-filter-tab')].map((element) => element.getBoundingClientRect());
         return JSON.stringify({
           language: document.documentElement.lang,
@@ -804,26 +869,65 @@ async function verifyApiKeysLayout(client) {
           label: document.querySelector('.keys-filter-tabs')?.getAttribute('aria-label'),
           counts: [...document.querySelectorAll('.keys-filter-tab b')].map((element) => element.textContent?.trim()),
           activeFilter: document.querySelector('.keys-filter-tab[aria-pressed="true"]')?.dataset.keyFilter,
+          policyStates: ['near-limit','expires-soon','limit','expired'].map((state) => Boolean(document.querySelector('.key-row-' + state))),
         });
       })()`,
       returnByValue: true,
     });
     const state = JSON.parse(result.result.value);
     const expectedTheme = layoutCase.theme === "dark" ? "dark" : "light";
-    if (state.language !== layoutCase.language || state.theme !== expectedTheme || state.overflow > 1 || !state.aligned || !state.separated || !state.distinctSurface || !state.controlsFit || state.tabRows !== 1 || !state.equalMobileTabs || state.label !== layoutCase.label || state.counts.join(",") !== "1,1,2" || state.activeFilter !== "active") {
+    if (state.language !== layoutCase.language || state.theme !== expectedTheme || state.overflow > 1 || !state.aligned || !state.separated || !state.distinctSurface || !state.controlsFit || state.tabRows !== 1 || !state.equalMobileTabs || state.label !== layoutCase.label || state.counts.join(",") !== "4,1,5" || state.activeFilter !== "active" || state.policyStates.some((present) => !present)) {
       throw new Error(`API keys ${layoutCase.name} layout failed: ${JSON.stringify(state)}`);
     }
 
     await clickSelector(client, '[data-key-filter="disabled"]');
     await waitForCondition(
       client,
-      `document.querySelector('[data-key-filter="disabled"]')?.getAttribute('aria-pressed') === 'true' && document.querySelectorAll('.keyrow').length === 1 && document.querySelector('.keyrow .pill')?.textContent?.trim() === ${JSON.stringify(layoutCase.disabled)}`,
+      `document.querySelector('[data-key-filter="disabled"]')?.getAttribute('aria-pressed') === 'true' && document.querySelectorAll('.key-row').length === 1 && document.querySelector('.key-row .key-status')?.textContent?.trim() === ${JSON.stringify(layoutCase.disabled)}`,
       `${layoutCase.name} disabled-key filter`,
     );
     await clickSelector(client, '[data-key-filter="all"]');
-    await waitForCondition(client, `document.querySelectorAll('.keyrow').length === 2`, `${layoutCase.name} all-key filter`);
+    await waitForCondition(client, `document.querySelectorAll('.key-row').length === 5`, `${layoutCase.name} all-key filter`);
+    await client.send("Runtime.evaluate", { expression: `(() => { const input=document.querySelector('.keys-search input'); const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set; set.call(input,'CI'); input.dispatchEvent(new Event('input',{bubbles:true})); })()` });
+    await waitForCondition(client, `document.querySelectorAll('.key-row').length === 1 && document.querySelector('.key-name-cell')?.textContent?.includes('CI')`, `${layoutCase.name} key search`);
+    await clickSelector(client, ".keys-create-button");
+    await waitForCondition(client, `Boolean(document.querySelector('.key-modal[role="dialog"]'))`, `${layoutCase.name} create dialog`);
+    const dialogResult = await client.send("Runtime.evaluate", {
+      expression: `(() => { const dialog=document.querySelector('.key-modal'); const r=dialog.getBoundingClientRect(); return JSON.stringify({fields:dialog.querySelectorAll('.key-field').length,left:r.left,right:r.right,top:r.top,bottom:r.bottom,scrollWidth:dialog.scrollWidth,clientWidth:dialog.clientWidth}); })()`,
+      returnByValue: true,
+    });
+    const dialog = JSON.parse(dialogResult.result.value);
+    if (dialog.fields < 4 || dialog.left < -1 || dialog.right > layoutCase.width + 1 || dialog.top < -1 || dialog.bottom > layoutCase.height + 1 || dialog.scrollWidth > dialog.clientWidth + 1) {
+      throw new Error(`API keys ${layoutCase.name} create dialog failed: ${JSON.stringify(dialog)}`);
+    }
+    if (layoutCase.name === "desktop-light-en") {
+      await client.send("Runtime.evaluate", { expression: `(() => {
+        const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+        const fill = (selector,value) => { const input=document.querySelector(selector); set.call(input,value); input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new Event('change',{bubbles:true})); };
+        fill('.key-money-field input','25.50'); fill('.key-field input[type="date"]','2099-01-01'); fill('.key-field .tfa-code','123456');
+      })()` });
+      await clickSelector(client, ".key-modal-actions .btn-primary");
+      await waitForCondition(client, `Boolean(document.querySelector('.secret-card')) && !document.querySelector('.key-modal')`, `${layoutCase.name} create submission`);
+      const created = await client.send("Runtime.evaluate", { expression: `JSON.stringify(window.__auditLastApiKeyCreate)`, returnByValue: true });
+      const payload = JSON.parse(created.result.value);
+      const expectedExpiration = new Date("2099-01-01T23:59:59.999").toISOString();
+      if (payload.spendLimitUsd !== "25.50" || payload.expiresAt !== expectedExpiration || payload.totpCode !== "123456") {
+        throw new Error(`API keys create payload failed: ${JSON.stringify(payload)}`);
+      }
+
+      await clickSelector(client, ".key-menu summary");
+      await clickSelector(client, ".key-menu .danger");
+      await waitForCondition(client, `Boolean(document.querySelector('.key-revoke-modal'))`, `${layoutCase.name} revoke confirmation`);
+      await clickSelector(client, ".key-revoke-modal .btn-danger");
+      await waitForCondition(client, `Boolean(document.querySelector('.key-revoke-modal .banner-error[role="alert"]'))`, `${layoutCase.name} revoke error visibility`);
+      await client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
+      await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
+      await waitForCondition(client, `!document.querySelector('.key-revoke-modal') && document.activeElement?.matches('.key-menu summary')`, `${layoutCase.name} revoke focus restoration`);
+    } else {
+      await clickSelector(client, ".key-modal-close");
+    }
   }
-  process.stdout.write("Verified API key filter distinction, alignment, responsive layout, translations, themes, and interactions\n");
+  process.stdout.write("Verified API key table/cards, policy states, search, filters, create dialog, translations, themes, and responsive layout\n");
 }
 
 async function verifyDocsTheme(client) {

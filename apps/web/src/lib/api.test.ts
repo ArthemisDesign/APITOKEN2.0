@@ -23,6 +23,20 @@ describe("browser API client", () => {
     expect(JSON.parse(String(request.body))).toEqual({ amountUsd: "9007199254740993", provider: "platega" });
   });
 
+  it("serializes API key policies without numeric money conversion", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: "key" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await api.createApiKey({
+      label: "Production", spendLimitUsd: "9007199254740993.25",
+      expiresAt: "2099-01-01T00:00:00.000Z", totpCode: "123456",
+    });
+    const request = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toEqual({
+      label: "Production", spendLimitUsd: "9007199254740993.25",
+      expiresAt: "2099-01-01T00:00:00.000Z", totpCode: "123456",
+    });
+  });
+
   it("updates only the display name through the authenticated profile endpoint", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ user: { id: "u", displayName: "Alice" } }), {
       status: 200, headers: { "content-type": "application/json" },

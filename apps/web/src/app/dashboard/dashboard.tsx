@@ -54,8 +54,15 @@ const localDashboardCopy = {
     invalidCheckoutUrl: "The payment provider returned an unsafe checkout address. Payment was not opened.",
     invalidWholeUsd: "Enter a positive whole USD amount using digits only, without decimals, signs, separators, or leading zeros.",
     editLabel: "Rename", saveLabel: "Save", cancelLabel: "Cancel", labelRequired: "Enter a label before saving.", renameKeyError: "Unable to rename API key",
-    filterLabel: "Filter API keys", activeFilter: "Active", disabledFilter: "Disabled", allFilter: "All",
-    noActiveKeys: "No active API keys.", noDisabledKeys: "No disabled API keys.", activeStatus: "Active", disabledStatus: "Disabled",
+    filterLabel: "Filter API keys", activeFilter: "Enabled", disabledFilter: "Revoked", allFilter: "All",
+    noActiveKeys: "No enabled API keys.", noDisabledKeys: "No revoked API keys.", activeStatus: "Active", disabledStatus: "Revoked",
+    createKey: "Create key", createKeyTitle: "Create an API key", createKeyHelp: "Add optional guardrails now. The secret is shown only once.",
+    keyName: "Key name", keyNameHint: "For example, Production or CI", spendLimit: "Spending limit", spendLimitHint: "Lifetime platform spend cap in USD", optional: "Optional", expiration: "Expiration date", noExpiration: "Never expires", expirationHint: "Expires at the end of this day in your local time.",
+    cancel: "Cancel", creating: "Creating…", invalidSpendLimit: "Enter a positive USD amount with up to 2 decimals.", invalidExpiration: "Choose a future expiration date.",
+    searchKeys: "Search by name or key suffix", sortBy: "Sort by", sortNewest: "Newest", sortName: "Name", sortSpend: "Highest spend", sortLastUsed: "Recently billed",
+    colName: "Name", colKey: "Key", colLastUsed: "Last billed", colSpend: "Spend", colLimit: "Limit", colExpires: "Expires", colStatus: "Status", colActions: "Actions",
+    never: "Never", neverUsed: "No billed usage", unlimited: "Unlimited", expiredStatus: "Expired", limitReachedStatus: "Limit reached", expiresSoonStatus: "Expires soon", nearLimitStatus: "Near limit", moreActions: "More actions", openDocs: "Integration guide", revokeKey: "Revoke key",
+    revokeTitle: "Revoke this key?", revokeBody: "Requests using this key will stop immediately. This action cannot be undone.", confirmRevoke: "Revoke key", noSearchResults: "No API keys match your search.",
     partialLedger: "Showing only the latest 100 ledger entries. Usage, key, transaction, and top-up totals based on this list may be incomplete.",
     topupNextRemaining: "Add {amount} more to reach {tier} (−{discount}%).",
     payWith: "Payment method",
@@ -65,8 +72,15 @@ const localDashboardCopy = {
     invalidCheckoutUrl: "Платёжный сервис вернул небезопасный адрес. Страница оплаты не была открыта.",
     invalidWholeUsd: "Введите целую положительную сумму в USD только цифрами: без дробей, знаков, разделителей и ведущих нулей.",
     editLabel: "Переименовать", saveLabel: "Сохранить", cancelLabel: "Отмена", labelRequired: "Введите название перед сохранением.", renameKeyError: "Не удалось переименовать API-ключ",
-    filterLabel: "Фильтр API-ключей", activeFilter: "Активные", disabledFilter: "Отключённые", allFilter: "Все",
-    noActiveKeys: "Активных API-ключей нет.", noDisabledKeys: "Отключённых API-ключей нет.", activeStatus: "Активен", disabledStatus: "Отключён",
+    filterLabel: "Фильтр API-ключей", activeFilter: "Включённые", disabledFilter: "Отозванные", allFilter: "Все",
+    noActiveKeys: "Включённых API-ключей нет.", noDisabledKeys: "Отозванных API-ключей нет.", activeStatus: "Активен", disabledStatus: "Отозван",
+    createKey: "Создать ключ", createKeyTitle: "Создать API-ключ", createKeyHelp: "При необходимости задайте ограничения. Секрет будет показан только один раз.",
+    keyName: "Название ключа", keyNameHint: "Например, Production или CI", spendLimit: "Лимит расходов", spendLimitHint: "Общий лимит расходов платформы в USD", optional: "Необязательно", expiration: "Дата истечения", noExpiration: "Без срока", expirationHint: "Ключ истечёт в конце выбранного дня по вашему местному времени.",
+    cancel: "Отмена", creating: "Создаём…", invalidSpendLimit: "Введите положительную сумму USD максимум с 2 знаками после запятой.", invalidExpiration: "Выберите будущую дату истечения.",
+    searchKeys: "Поиск по названию или окончанию ключа", sortBy: "Сортировка", sortNewest: "Сначала новые", sortName: "По названию", sortSpend: "По расходам", sortLastUsed: "Недавние списания",
+    colName: "Название", colKey: "Ключ", colLastUsed: "Последнее списание", colSpend: "Расход", colLimit: "Лимит", colExpires: "Истекает", colStatus: "Статус", colActions: "Действия",
+    never: "Никогда", neverUsed: "Списаний не было", unlimited: "Без лимита", expiredStatus: "Истёк", limitReachedStatus: "Лимит исчерпан", expiresSoonStatus: "Скоро истечёт", nearLimitStatus: "Лимит близко", moreActions: "Другие действия", openDocs: "Инструкция подключения", revokeKey: "Отозвать ключ",
+    revokeTitle: "Отозвать этот ключ?", revokeBody: "Запросы с этим ключом сразу перестанут работать. Действие нельзя отменить.", confirmRevoke: "Отозвать ключ", noSearchResults: "По вашему запросу ключи не найдены.",
     partialLedger: "Показаны только последние 100 записей журнала. Итоги использования, ключей, операций и пополнений по этому списку могут быть неполными.",
     topupNextRemaining: "Добавьте ещё {amount}, чтобы получить {tier} (−{discount}%).",
     payWith: "Способ оплаты",
@@ -331,40 +345,132 @@ function ApiKeys({ keys, onChanged, open, user }: { keys: ApiKeyView[]; onChange
   const copy = useDashboardCopy();
   const { language } = useI18n();
   const localCopy = localDashboardCopy[language];
+  const locale = language === "ru" ? "ru-RU" : "en-US";
   const [issued, setIssued] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
   const [label, setLabel] = useState("");
+  const [spendLimit, setSpendLimit] = useState("");
+  const [expirationDate, setExpirationDate] = useState("");
   const [totpCode, setTotpCode] = useState("");
   const [filter, setFilter] = useState<KeyStatusFilter>("active");
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<"newest" | "name" | "spend" | "last-used">("newest");
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameLabel, setRenameLabel] = useState("");
+  const [revokeTarget, setRevokeTarget] = useState<ApiKeyView | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  async function create() {
+  const [policyNow, setPolicyNow] = useState(() => Date.now());
+  const createTriggerRef = useRef<HTMLButtonElement>(null);
+  const createModalRef = useRef<HTMLFormElement>(null);
+  const revokeModalRef = useRef<HTMLDivElement>(null);
+  const dialogReturnFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setPolicyNow(Date.now()), 60_000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const modal = createOpen ? createModalRef.current : revokeTarget ? revokeModalRef.current : null;
+    if (!modal) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const focusableSelector = "button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex='-1'])";
+    const focusFirst = () => (modal.querySelector<HTMLElement>("[autofocus]") ?? modal.querySelector<HTMLElement>(focusableSelector) ?? modal).focus();
+    const frame = window.requestAnimationFrame(focusFirst);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (busy) return;
+        if (createOpen) closeCreate(); else closeRevoke();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = [...modal.querySelectorAll<HTMLElement>(focusableSelector)];
+      if (focusable.length === 0) { event.preventDefault(); modal.focus(); return; }
+      const first = focusable[0]!, last = focusable.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [busy, createOpen, revokeTarget]);
+
+  function closeCreate() {
+    if (busy) return;
+    setCreateOpen(false); setError(null);
+    window.requestAnimationFrame(() => createTriggerRef.current?.focus());
+  }
+
+  function openRevoke(key: ApiKeyView, returnTarget?: HTMLElement | null) {
+    dialogReturnFocusRef.current = returnTarget ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    setError(null); setRevokeTarget(key);
+  }
+
+  function closeRevoke() {
+    if (busy) return;
+    setRevokeTarget(null); setError(null);
+    const returnTarget = dialogReturnFocusRef.current;
+    window.requestAnimationFrame(() => returnTarget?.focus());
+  }
+
+  async function create(event: FormEvent) {
+    event.preventDefault();
     if (user.totpEnabled && !/^\d{6}$/.test(totpCode)) { setError(copy.twoFactorCodeRequired); return; }
+    const trimmedLimit = spendLimit.trim();
+    if (trimmedLimit &&
+        (!/^(?:0\.\d{1,2}|[1-9]\d*(?:\.\d{1,2})?)$/.test(trimmedLimit) || Number(trimmedLimit) <= 0)) {
+      setError(localCopy.invalidSpendLimit); return;
+    }
+    let expiresAt: string | undefined;
+    if (expirationDate) {
+      const date = new Date(`${expirationDate}T23:59:59.999`);
+      if (!Number.isFinite(date.getTime()) || date.getTime() <= Date.now()) {
+        setError(localCopy.invalidExpiration); return;
+      }
+      expiresAt = date.toISOString();
+    }
     setBusy(true); setError(null);
     try {
-      const created = await api.createApiKey(label.trim() || undefined, user.totpEnabled ? totpCode : undefined);
-      trackProductEvent("API Key Created", { has_label: Boolean(label.trim()), two_factor: user.totpEnabled });
+      const created = await api.createApiKey({
+        ...(label.trim() ? { label: label.trim() } : {}),
+        ...(trimmedLimit ? { spendLimitUsd: trimmedLimit } : {}),
+        ...(expiresAt ? { expiresAt } : {}),
+        ...(user.totpEnabled ? { totpCode } : {}),
+      });
+      trackProductEvent("API Key Created", {
+        has_label: Boolean(label.trim()), has_limit: Boolean(trimmedLimit), has_expiration: Boolean(expiresAt),
+        two_factor: user.totpEnabled,
+      });
       trackFirstProductEvent("api_key", "First API Key Created", { two_factor: user.totpEnabled });
       setIssued(created.key ?? null);
-      setLabel(""); setTotpCode("");
+      setLabel(""); setSpendLimit(""); setExpirationDate(""); setTotpCode(""); setCreateOpen(false);
       await onChanged();
-    }
-    catch (cause) {
+    } catch (cause) {
       const message = cause instanceof ApiError && (cause.message === "2fa_required" || cause.message === "2fa_invalid")
         ? copy.twoFactorCodeInvalid
         : cause instanceof Error ? cause.message : copy.createKeyError;
       setError(message);
-    }
-    finally { setBusy(false); }
+    } finally { setBusy(false); }
   }
-  async function revoke(id: string) {
-    if (!window.confirm(copy.revokeConfirm)) return;
+
+  async function revoke() {
+    if (!revokeTarget) return;
     setBusy(true); setError(null);
-    try { await api.revokeApiKey(id); trackProductEvent("API Key Revoked"); await onChanged(); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : copy.revokeKeyError); }
+    try {
+      await api.revokeApiKey(revokeTarget.id); trackProductEvent("API Key Revoked");
+      setRevokeTarget(null); await onChanged();
+      const returnTarget = dialogReturnFocusRef.current;
+      window.requestAnimationFrame(() => returnTarget?.focus());
+    } catch (cause) { setError(cause instanceof Error ? cause.message : copy.revokeKeyError); }
     finally { setBusy(false); }
   }
+
   function beginRename(key: ApiKeyView) {
     setRenamingId(key.id); setRenameLabel(key.label ?? ""); setError(null);
   }
@@ -377,40 +483,103 @@ function ApiKeys({ keys, onChanged, open, user }: { keys: ApiKeyView[]; onChange
     catch (cause) { setError(cause instanceof Error ? cause.message : localCopy.renameKeyError); }
     finally { setBusy(false); }
   }
+
   const counts = {
     active: keys.filter((key) => key.status === "active").length,
     disabled: keys.filter((key) => key.status === "disabled").length,
     all: keys.length,
   };
+  const query = search.trim().toLocaleLowerCase(locale);
   const sortedKeys = [...keys]
     .filter((key) => filter === "all" || key.status === filter)
-    .sort((left, right) => Number(left.status !== "active") - Number(right.status !== "active"));
-  const emptyMessage = filter === "active" ? localCopy.noActiveKeys : filter === "disabled" ? localCopy.noDisabledKeys : copy.noKeys;
-  return <section className="panel"><PageHeading eyebrow={copy.keysEyebrow} title={copy.keysTitle} subtitle={copy.keysSubtitle} />
+    .filter((key) => !query || (key.label ?? copy.unlabelledKey).toLocaleLowerCase(locale).includes(query) || key.keyMasked.toLocaleLowerCase(locale).includes(query))
+    .sort((left, right) => {
+      if (sort === "name") return (left.label ?? copy.unlabelledKey).localeCompare(right.label ?? copy.unlabelledKey, locale);
+      if (sort === "spend") return compareBigInt(BigInt(right.spentNano), BigInt(left.spentNano));
+      if (sort === "last-used") return Date.parse(right.lastUsedAt ?? "1970-01-01") - Date.parse(left.lastUsedAt ?? "1970-01-01");
+      return Date.parse(right.createdAt) - Date.parse(left.createdAt);
+    });
+  const emptyMessage = search.trim() ? localCopy.noSearchResults : filter === "active" ? localCopy.noActiveKeys : filter === "disabled" ? localCopy.noDisabledKeys : copy.noKeys;
+  const todayDate = new Date(policyNow);
+  const today = new Date(todayDate.getTime() - todayDate.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+
+  return <section className="panel keys-panel">
+    <div className="keys-heading-row"><PageHeading eyebrow={copy.keysEyebrow} title={copy.keysTitle} subtitle={copy.keysSubtitle} /><button ref={createTriggerRef} className="btn btn-primary keys-create-button" type="button" onClick={() => { setCreateOpen(true); setError(null); }}>＋ {localCopy.createKey}</button></div>
     {issued && <aside className="card secret-card" aria-labelledby="issued-key-title"><div className="secret-head"><h2 id="issued-key-title">{copy.copyNewKeyNow}</h2><span className="chip">{copy.shownOnce}</span></div><p className="secret-warning">{copy.rawSecretWarning}</p><div className="secret-key-field"><code>{issued}</code><CopyButton value={issued} className="secret-copy" /></div><div className="secret-actions"><Link className="btn btn-primary btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{copy.openInDocs}</Link><button className="btn btn-ghost btn-sm" onClick={() => open("support")}>{copy.keysHelpCta}</button><button className="btn btn-ghost btn-sm" onClick={() => setIssued(null)}>{copy.savedKey}</button></div></aside>}
-    <section className="dsec"><div className="dsec-head keys-section-head"><h2>{copy.universalKeys}</h2><div className="key-create"><input className="set-in" value={label} onChange={(event) => setLabel(event.target.value)} maxLength={64} placeholder={copy.optionalLabel} />{user.totpEnabled && <input className="set-in tfa-code key-2fa" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={totpCode} onChange={(event) => { setTotpCode(event.target.value.replace(/\D/g, "").slice(0, 6)); setError(null); }} placeholder={copy.twoFactorCodePlaceholder} aria-label={copy.twoFactorCodeLabel} />}<button className="btn btn-primary btn-sm" disabled={busy} onClick={create}>＋ {copy.newKey}</button></div></div>{error && <div className="banner banner-error">{error}</div>}
+    {error && !createOpen && !revokeTarget && <div className="banner banner-error" role="alert">{error}</div>}
+
+    <section className="dsec keys-manager" aria-label={copy.keysTitle}>
       <div className="keys-toolbar">
-        <span className="keys-filter-label"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M5.5 10h9M8 15h4" /></svg>{localCopy.filterLabel}</span>
-        <div className="keys-filter-tabs" role="group" aria-label={localCopy.filterLabel}>
-          {(["active", "disabled", "all"] as const).map((status) => <button key={status} type="button" data-key-filter={status} className={`keys-filter-tab ${filter === status ? "on" : ""}`} aria-pressed={filter === status} onClick={() => setFilter(status)}><span>{status === "active" ? localCopy.activeFilter : status === "disabled" ? localCopy.disabledFilter : localCopy.allFilter}</span><b>{counts[status]}</b></button>)}
+        <label className="keys-search"><span aria-hidden="true">⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={localCopy.searchKeys} aria-label={localCopy.searchKeys} /></label>
+        <div className="keys-toolbar-right">
+          <label className="keys-sort"><span>{localCopy.sortBy}</span><select value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}><option value="newest">{localCopy.sortNewest}</option><option value="name">{localCopy.sortName}</option><option value="spend">{localCopy.sortSpend}</option><option value="last-used">{localCopy.sortLastUsed}</option></select></label>
+          <div className="keys-filter-tabs" role="group" aria-label={localCopy.filterLabel}>
+            {(["active", "disabled", "all"] as const).map((status) => <button key={status} type="button" data-key-filter={status} className={`keys-filter-tab ${filter === status ? "on" : ""}`} aria-pressed={filter === status} onClick={() => setFilter(status)}><span>{status === "active" ? localCopy.activeFilter : status === "disabled" ? localCopy.disabledFilter : localCopy.allFilter}</span><b>{counts[status]}</b></button>)}
+          </div>
         </div>
       </div>
-      <div className="keys">{sortedKeys.length === 0 ? <div className="empty-box">{emptyMessage}</div> : sortedKeys.map((key) => <div className="keyrow" key={key.id}>
-        <div className="kval">{renamingId === key.id ? <div className="key-create"><input className="set-in" value={renameLabel} maxLength={64} autoFocus onChange={(event) => setRenameLabel(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && renameLabel.trim()) void saveRename(key.id); if (event.key === "Escape") cancelRename(); }} /><button className="btn btn-primary btn-sm" disabled={busy || !renameLabel.trim()} onClick={() => void saveRename(key.id)}>{localCopy.saveLabel}</button><button className="btn btn-ghost btn-sm" disabled={busy} onClick={cancelRename}>{localCopy.cancelLabel}</button></div> : key.label || copy.unlabelledKey}</div>
-        <div className="kmeta"><code>{key.keyMasked}</code><span>· {copy.created} {new Date(key.createdAt).toLocaleDateString(language === "ru" ? "ru-RU" : "en-US")} · {copy.spent} {formatNanoUsd(key.spentNano)}</span></div>
-        <div className="kacts">
-          <span className={`pill ${key.status === "active" ? "" : "pill-soft"}`}>{key.status === "active" ? localCopy.activeStatus : localCopy.disabledStatus}</span>
-          {renamingId !== key.id && <button className="btn btn-ghost btn-sm" disabled={busy} aria-label={`${localCopy.editLabel}: ${key.label || copy.unlabelledKey}`} title={localCopy.editLabel} onClick={() => beginRename(key)}>✎</button>}
-          {key.status === "active" ? <><Link className="btn btn-ghost btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{copy.docsShort}</Link><button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => revoke(key.id)}>{copy.revoke}</button></> : <button className="btn btn-ghost btn-sm" disabled>{copy.docsShort}</button>}
-        </div>
-      </div>)}</div>
-      <div className="keys-help">
-        <span className="keys-help-ic" aria-hidden="true"><svg viewBox="0 0 24 24" width="19" height="19" fill="currentColor"><path d="M22 2 2.5 10.6c-.9.4-.9 1.6.1 1.9l4.6 1.4 1.8 5.6c.3.9 1.4 1.1 2 .4l2.5-2.8 4.7 3.4c.8.6 2 .1 2.2-.9L23.9 3.3C24.1 2.3 23 1.5 22 2ZM9 13.6l8.3-5.7-6.4 6.9-.1 3.4L9 13.6Z" /></svg></span>
-        <div className="keys-help-txt"><b>{copy.keysHelpTitle}</b><span>{copy.keysHelpText}</span></div>
-        <button className="btn btn-ghost btn-sm" onClick={() => open("support")}>{copy.keysHelpCta}</button>
-      </div>
+
+      <div className="key-table-wrap"><table className="key-table">
+        <thead><tr><th>{localCopy.colName}</th><th>{localCopy.colKey}</th><th>{localCopy.colLastUsed}</th><th className="key-num">{localCopy.colSpend}</th><th>{localCopy.colLimit}</th><th>{localCopy.colExpires}</th><th>{localCopy.colStatus}</th><th><span className="sr-only">{localCopy.colActions}</span></th></tr></thead>
+        <tbody>{sortedKeys.length === 0 ? <tr><td colSpan={8} className="empty-cell">{emptyMessage}</td></tr> : sortedKeys.map((key) => {
+          const policy = keyPolicy(key, policyNow);
+          const health = policy.health;
+          const statusText = key.status === "disabled" ? localCopy.disabledStatus : health === "expired" ? localCopy.expiredStatus : health === "limit" ? localCopy.limitReachedStatus : localCopy.activeStatus;
+          return <tr key={key.id} className={`key-row key-row-${health}`}>
+            <td data-label={localCopy.colName} className="key-name-cell">{renamingId === key.id ? <form className="key-rename" onSubmit={(event) => { event.preventDefault(); void saveRename(key.id); }}><input className="set-in" value={renameLabel} maxLength={64} autoFocus onChange={(event) => setRenameLabel(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") cancelRename(); }} /><button className="btn btn-primary btn-sm" disabled={busy || !renameLabel.trim()}>{localCopy.saveLabel}</button><button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={cancelRename}>{localCopy.cancelLabel}</button></form> : <><strong>{key.label || copy.unlabelledKey}</strong><span>{copy.created} {new Date(key.createdAt).toLocaleDateString(locale)}</span></>}</td>
+            <td data-label={localCopy.colKey}><code className="key-mask">{key.keyMasked}</code></td>
+            <td data-label={localCopy.colLastUsed}>{key.lastUsedAt ? formatRelativeDate(key.lastUsedAt, language) : localCopy.neverUsed}</td>
+            <td data-label={localCopy.colSpend} className="key-num">{formatNanoUsd(key.spentNano)}</td>
+            <td data-label={localCopy.colLimit}>{key.spendLimitNano ? <span className={policy.limitReached || policy.nearLimit ? "key-policy-warn" : ""}>{formatNanoUsd(key.spendLimitNano)}{policy.nearLimit && !policy.limitReached && <small>{localCopy.nearLimitStatus}</small>}</span> : localCopy.unlimited}</td>
+            <td data-label={localCopy.colExpires}>{key.expiresAt ? <span className={policy.expired || policy.expiresSoon ? "key-policy-warn" : ""}>{new Date(key.expiresAt).toLocaleDateString(locale)}{policy.expiresSoon && !policy.expired && <small>{localCopy.expiresSoonStatus}</small>}</span> : localCopy.never}</td>
+            <td data-label={localCopy.colStatus}><span className={`key-status key-status-${health}`}><i aria-hidden="true" />{statusText}</span></td>
+            <td data-label={localCopy.colActions} className="key-actions-cell"><details className="key-menu"><summary aria-label={`${localCopy.moreActions}: ${key.label || copy.unlabelledKey}`}>•••</summary><div className="key-menu-pop"><button type="button" disabled={busy} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); beginRename(key); }}>{localCopy.editLabel}</button><Link href={DOCS_URL} target="_blank" rel="noreferrer">{localCopy.openDocs} ↗</Link>{key.status === "active" && <button type="button" className="danger" disabled={busy} onClick={(event) => { const details = event.currentTarget.closest("details"); const summary = details?.querySelector<HTMLElement>("summary"); details?.removeAttribute("open"); openRevoke(key, summary); }}>{localCopy.revokeKey}</button>}</div></details></td>
+          </tr>;
+        })}</tbody>
+      </table></div>
+
+      <div className="keys-help"><div className="keys-help-txt"><b>{copy.keysHelpTitle}</b><span>{copy.keysHelpText}</span></div><Link className="btn btn-ghost btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{localCopy.openDocs} ↗</Link></div>
     </section>
+
+    {createOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) closeCreate(); }}><form ref={createModalRef} className="key-modal" role="dialog" aria-modal="true" aria-labelledby="create-key-title" aria-describedby="create-key-description" tabIndex={-1} onSubmit={create}>
+      <div className="key-modal-head"><div><span className="eyebrow">{copy.keysEyebrow}</span><h2 id="create-key-title">{localCopy.createKeyTitle}</h2><p id="create-key-description">{localCopy.createKeyHelp}</p></div><button type="button" className="key-modal-close" onClick={closeCreate} aria-label={localCopy.cancel}>×</button></div>
+      <div className="key-modal-fields">
+        <label className="key-field"><span>{localCopy.keyName} <small>{localCopy.optional}</small></span><input className="set-in" value={label} onChange={(event) => { setLabel(event.target.value); setError(null); }} maxLength={64} placeholder={localCopy.keyNameHint} autoFocus /></label>
+        <label className="key-field"><span>{localCopy.spendLimit} <small>{localCopy.optional}</small></span><div className="key-money-field"><b>$</b><input className="set-in" inputMode="decimal" value={spendLimit} onChange={(event) => { setSpendLimit(event.target.value); setError(null); }} placeholder="100.00" /></div><em>{localCopy.spendLimitHint}</em></label>
+        <label className="key-field"><span>{localCopy.expiration} <small>{localCopy.optional}</small></span><input className="set-in" type="date" min={today} value={expirationDate} onChange={(event) => { setExpirationDate(event.target.value); setError(null); }} /><em>{expirationDate ? localCopy.expirationHint : localCopy.noExpiration}</em></label>
+        {user.totpEnabled && <label className="key-field key-field-wide"><span>{copy.twoFactorCodeLabel}</span><input className="set-in tfa-code" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={totpCode} onChange={(event) => { setTotpCode(event.target.value.replace(/\D/g, "").slice(0, 6)); setError(null); }} placeholder={copy.twoFactorCodePlaceholder} /></label>}
+      </div>
+      {error && <div className="banner banner-error" role="alert">{error}</div>}
+      <div className="key-modal-actions"><button type="button" className="btn btn-ghost" disabled={busy} onClick={closeCreate}>{localCopy.cancel}</button><button className="btn btn-primary" disabled={busy}>{busy ? localCopy.creating : localCopy.createKey}</button></div>
+    </form></div>}
+
+    {revokeTarget && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) closeRevoke(); }}><div ref={revokeModalRef} className="key-modal key-revoke-modal" role="alertdialog" aria-modal="true" aria-labelledby="revoke-key-title" aria-describedby="revoke-key-description" tabIndex={-1}><div className="key-modal-head"><div><span className="eyebrow danger-text">{localCopy.revokeKey}</span><h2 id="revoke-key-title">{localCopy.revokeTitle}</h2><p><strong>{revokeTarget.label || copy.unlabelledKey}</strong> · <code>{revokeTarget.keyMasked}</code></p></div></div><p id="revoke-key-description">{localCopy.revokeBody}</p>{error && <div className="banner banner-error" role="alert">{error}</div>}<div className="key-modal-actions"><button type="button" className="btn btn-ghost" disabled={busy} onClick={closeRevoke}>{localCopy.cancel}</button><button type="button" className="btn btn-danger" disabled={busy} autoFocus onClick={() => void revoke()}>{localCopy.confirmRevoke}</button></div></div></div>}
   </section>;
+}
+
+function keyPolicy(key: ApiKeyView, now: number): {
+  health: "active" | "disabled" | "expired" | "expires-soon" | "limit" | "near-limit";
+  expired: boolean; expiresSoon: boolean; limitReached: boolean; nearLimit: boolean;
+} {
+  const expired = Boolean(key.expiresAt && Date.parse(key.expiresAt) <= now);
+  const expiresSoon = Boolean(key.expiresAt && !expired && Date.parse(key.expiresAt) - now <= 7 * 86_400_000);
+  let limitReached = false, nearLimit = false;
+  if (key.spendLimitNano) {
+    const committed = BigInt(key.spentNano) + BigInt(key.reservedNano ?? "0");
+    const limit = BigInt(key.spendLimitNano);
+    limitReached = committed >= limit;
+    nearLimit = !limitReached && committed * 10n >= limit * 9n;
+  }
+  const health = key.status === "disabled" ? "disabled" : expired ? "expired" : limitReached ? "limit" : nearLimit ? "near-limit" : expiresSoon ? "expires-soon" : "active";
+  return { health, expired, expiresSoon, limitReached, nearLimit };
+}
+
+function formatRelativeDate(value: string, language: "en" | "ru"): string {
+  const elapsedDays = Math.floor((Date.now() - Date.parse(value)) / 86_400_000);
+  if (elapsedDays <= 0) return language === "ru" ? "Сегодня" : "Today";
+  if (elapsedDays === 1) return language === "ru" ? "Вчера" : "Yesterday";
+  if (elapsedDays < 30) return language === "ru" ? `${elapsedDays} дн. назад` : `${elapsedDays}d ago`;
+  return new Date(value).toLocaleDateString(language === "ru" ? "ru-RU" : "en-US");
 }
 
 const TOPUP_PRESETS = [100, 250, 500, 1000] as const;

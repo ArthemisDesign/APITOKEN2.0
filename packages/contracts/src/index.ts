@@ -39,6 +39,11 @@ export const engineApiKeySchema = z.object({
   status: z.enum(["active", "disabled"]),
   spent_nano: nonNegativeIntegerSchema,
   spent: z.string(),
+  reserved_nano: nonNegativeIntegerSchema.nullish().transform((value) => value ?? "0"),
+  spend_limit_nano: nonNegativeIntegerSchema.nullish().transform((value) => value ?? null),
+  expires_ts: nonNegativeIntegerSchema.nullish().transform((value) => value ?? null),
+  created_ts: nonNegativeIntegerSchema.nullish().transform((value) => value ?? "0"),
+  last_used_ts: nonNegativeIntegerSchema.nullish().transform((value) => value ?? null),
 });
 
 export type EngineApiKey = z.infer<typeof engineApiKeySchema>;
@@ -53,6 +58,8 @@ export const issuedEngineApiKeySchema = z.object({
   key_id: z.string().startsWith("key_"),
   account: z.string().startsWith("acct_"),
   label: z.string().nullable(),
+  spend_limit_nano: nonNegativeIntegerSchema.nullish().transform((value) => value ?? null),
+  expires_ts: nonNegativeIntegerSchema.nullish().transform((value) => value ?? null),
 });
 
 export type IssuedEngineApiKey = z.infer<typeof issuedEngineApiKeySchema>;
@@ -196,10 +203,28 @@ export const updateProfileSchema = z.object({ displayName: displayNameSchema }).
 export const totpCodeSchema = z.string().regex(/^\d{6}$/);
 export const totpCodeBodySchema = z.object({ code: totpCodeSchema }).strict();
 
+const maxSignedI64 = 9_223_372_036_854_775_807n;
+const usdAmountPattern = /^(?:0\.\d{1,2}|[1-9]\d*(?:\.\d{1,2})?)$/;
+
 export const createApiKeySchema = z.object({
-  label: z.string().trim().min(1).max(100).optional(),
+  label: z.string().trim().min(1).max(64).optional(),
+  spendLimitUsd: z.string().trim()
+    .regex(usdAmountPattern, "spendLimitUsd must be a positive USD amount with at most 2 decimals")
+    .refine((value) => {
+      if (!usdAmountPattern.test(value)) return true;
+      const [whole = "0", fraction = ""] = value.split(".");
+      const nano = BigInt(whole) * 1_000_000_000n + BigInt(fraction.padEnd(9, "0"));
+      return nano > 0n && nano <= maxSignedI64;
+    }, "spendLimitUsd must be positive and within the engine maximum")
+    .optional(),
+  expiresAt: z.string().datetime({ offset: true })
+    .refine((value) => Math.floor(Date.parse(value) / 1000) > Math.floor(Date.now() / 1000),
+      "expiresAt must be at least one whole second in the future")
+    .optional(),
   totpCode: totpCodeSchema.optional(),
 }).strict();
+
+export type CreateApiKey = z.infer<typeof createApiKeySchema>;
 
 export const renameApiKeySchema = z.object({
   label: z.string().trim().min(1).max(64),

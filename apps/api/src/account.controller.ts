@@ -71,7 +71,7 @@ export class AccountController {
       const ok = await this.totp.verify(current.user.id, parsed.data.totpCode);
       if (!ok) throw new UnauthorizedException("2fa_invalid");
     }
-    return this.withEngineErrors(() => this.accounts.createApiKey(current.user.id, parsed.data.label));
+    return this.withEngineErrors(() => this.accounts.createApiKey(current.user.id, parsed.data));
   }
 
   @Patch("api-keys/:id")

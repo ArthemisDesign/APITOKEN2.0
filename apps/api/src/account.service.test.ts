@@ -50,9 +50,14 @@ describe.runIf(Boolean(connectionString))("commercial account and engine integra
   });
 
   it("returns a raw key once, stores no usable secret, and enforces ownership on revocation", async () => {
-    const created = await service.createApiKey(aliceId, "production") as Record<string, unknown>;
+    const created = await service.createApiKey(aliceId, {
+      label: "production", spendLimitUsd: "25.50", expiresAt: "2099-01-01T00:00:00.000Z",
+    }) as Record<string, unknown>;
     expect(created.key).toBe(rawKey);
-    expect(created).toMatchObject({ label: "production", status: "active", spentNano: "0" });
+    expect(created).toMatchObject({
+      label: "production", status: "active", spentNano: "0",
+      spendLimitNano: "25500000000", expiresAt: "2099-01-01T00:00:00.000Z",
+    });
 
     const persisted = await database.pool.query("SELECT * FROM api_keys WHERE user_id = $1", [aliceId]);
     expect(JSON.stringify(persisted.rows)).not.toContain(rawKey);
@@ -162,7 +167,11 @@ class FakeEngine {
     }
     if (path === "/admin/key" && init?.method === "POST") {
       this.issued = true;
-      return Response.json({ key: rawKey, key_id: "key_issued", account: "acct_alice", label: "production" });
+      const body = JSON.parse(String(init.body)) as { spend_limit_nano?: string; expires_ts?: number };
+      return Response.json({
+        key: rawKey, key_id: "key_issued", account: "acct_alice", label: "production",
+        spend_limit_nano: body.spend_limit_nano ?? null, expires_ts: body.expires_ts ?? null,
+      });
     }
     if (path === "/admin/key-id/key_issued/status") {
       this.disabledKeyIds.push("key_issued");
@@ -174,6 +183,8 @@ class FakeEngine {
         keys: this.issued ? [{
           key_id: "key_issued", key_masked: "sk-pool-aaaa…aaaa", label: "production",
           status: "active", spent_nano: 0, spent: "$0.000000000",
+          reserved_nano: 0, spend_limit_nano: "25500000000", expires_ts: 4_070_908_800,
+          created_ts: 1_700_000_000, last_used_ts: null,
         }] : [],
       });
     }
