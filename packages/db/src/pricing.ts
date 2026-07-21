@@ -85,7 +85,7 @@ export async function lockBusinessInvite(
 export async function getPricingView(database: Database, userId: string): Promise<Record<string, unknown> | null> {
   const result = await database.pool.query<PricingViewRow>(`
     SELECT cp.customer_type, cp.current_tier, cp.multiplier_bp, cp.pricing_month_start,
-           cp.cumulative_topup_nano, cp.tier_window_start, cp.tier_window_spent_nano
+           cp.cumulative_topup_nano, cp.tier_window_start, cp.tier_window_spent_nano, cp.referral_floor_bps
     FROM customer_profiles cp
     WHERE cp.user_id = $1
   `, [userId]);
@@ -107,6 +107,10 @@ export async function getPricingView(database: Database, userId: string): Promis
   const tier = B2C_PRICING_TIERS[currentTier]!;
   const nextTier = B2C_PRICING_TIERS[currentTier + 1];
   const cumulative = BigInt(row.cumulative_topup_nano);
+  // Скидочный «пол» партнёра (реф-ссылка сейлза). Если задан — реальная цена = min(тир, 100−floor),
+  // и клиент показывает фиксированную партнёрскую ставку вместо тир-лестницы.
+  const floorBps = row.referral_floor_bps ?? 0;
+  const effectiveBp = effectiveMultiplierBp(tier.multiplierBp, floorBps);
   return {
     customerType: "b2c",
     pricingMode: "progressive",
@@ -114,6 +118,10 @@ export async function getPricingView(database: Database, userId: string): Promis
     tier: tier.code,
     discountPercent: tier.discountPercent,
     multiplierBp: tier.multiplierBp,
+    // Фиксированная партнёрская скидка (0 = нет): floor и итоговая эффективная ставка/скидка.
+    referralFloorBps: floorBps,
+    effectiveMultiplierBp: effectiveBp,
+    effectiveDiscountPercent: 100 - effectiveBp / 100,
     spentNano: cumulative.toString(),
     retentionSpendNano: tier.holdNano.toString(),
     windowSpentNano: BigInt(row.tier_window_spent_nano).toString(),
@@ -775,4 +783,5 @@ interface PricingViewRow {
   cumulative_topup_nano: string;
   tier_window_start: Date | null;
   tier_window_spent_nano: string;
+  referral_floor_bps: number | null;
 }
