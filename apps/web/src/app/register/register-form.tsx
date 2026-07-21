@@ -8,6 +8,7 @@ import { captureReferralCode, storedReferralCode } from "@/lib/referral";
 import { AuthIntro, Feedback, WelcomeBonusNotice } from "@/components/auth-shell";
 import { SocialAuth } from "@/components/social-auth";
 import { useI18n } from "@/components/i18n-provider";
+import { trackProductEvent } from "@/lib/product-analytics";
 
 export function RegisterForm() {
   const { t } = useI18n();
@@ -24,11 +25,14 @@ export function RegisterForm() {
     const email = String(data.get("email") ?? "").trim();
     const password = String(data.get("password") ?? "");
     if (password.length < 12) { setMessage("Password must be at least 12 characters"); setBusy(false); return; }
+    trackProductEvent("Sign Up Submitted", { method: "password", invited: Boolean(inviteToken), referred: Boolean(storedReferralCode()) });
     try {
       const result = await api.register({ email, password, inviteToken, referralCode: storedReferralCode() });
+      trackProductEvent("Sign Up Succeeded", { method: "password", verification_required: result.verificationRequired, invited: Boolean(inviteToken), referred: Boolean(storedReferralCode()) });
       if (result.verificationRequired) router.replace(`/verify-email?email=${encodeURIComponent(email)}`);
       else router.replace("/dashboard");
     } catch (error) {
+      trackProductEvent("Sign Up Failed", { method: "password", status: error instanceof ApiError ? error.status : 0 });
       setMessage(error instanceof ApiError ? error.message : "Unable to create the account right now");
       setBusy(false);
     }

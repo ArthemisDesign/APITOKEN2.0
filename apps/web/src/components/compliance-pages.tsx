@@ -87,8 +87,8 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
         {
           title: "7. Cookies and local storage",
           paragraphs: [
-            "The Service uses an essential secure, HttpOnly session cookie to keep you signed in. Language and theme preferences may be stored in your browser's local storage. These technologies are required for the requested functionality and are not used by us to sell advertising profiles.",
-            "We use Vercel Web Analytics for anonymous, aggregated page-view statistics. It does not use third-party analytics cookies. Vercel creates a short-lived visitor hash from a request and discards the visitor-session identifier after 24 hours. apiToken.sale removes query strings and URL fragments before an analytics event is sent.",
+            "The Service uses an essential secure, HttpOnly session cookie to keep you signed in. Language, theme, referral attribution, and anonymous first-use milestone markers may be stored in your browser's local storage. These technologies support the requested functionality and product measurement and are not used by us to sell advertising profiles.",
+            "We use Vercel Web Analytics for anonymous, aggregated page-view and product-funnel statistics, such as completed login, API-key creation, checkout, and first-use milestones. Event properties use coarse categories and exclude account identifiers, email addresses, secrets, raw referral or promo codes, and exact payment amounts. Vercel Web Analytics does not use third-party analytics cookies. apiToken.sale removes sensitive query parameters and URL fragments before analytics events are sent.",
             "We also use Yandex Metrica for page-view and interaction analytics, including click maps, outbound-link tracking, and Session Replay. Yandex Metrica may use cookies and browser storage to distinguish visits. apiToken.sale removes query strings and URL fragments from page-view URLs, masks authentication and dashboard content from Session Replay, and prevents API-key fields and examples from being recorded.",
           ],
         },
@@ -290,8 +290,8 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
         {
           title: "7. Cookie и локальное хранилище",
           paragraphs: [
-            "Сервис использует обязательный защищённый HttpOnly cookie сессии, чтобы сохранять вход в аккаунт. Язык и тема могут храниться в локальном хранилище браузера. Эти технологии нужны для запрошенных функций и не используются нами для продажи рекламных профилей.",
-            "Мы используем Vercel Web Analytics для анонимной агрегированной статистики просмотров. Сервис аналитики не использует сторонние cookie. Vercel создаёт краткосрочный хеш посетителя из запроса и удаляет идентификатор сессии посетителя через 24 часа. apiToken.sale удаляет параметры запроса и фрагменты URL до отправки события аналитики.",
+            "Сервис использует обязательный защищённый HttpOnly cookie сессии, чтобы сохранять вход в аккаунт. Язык, тема, реферальная атрибуция и анонимные отметки первых действий могут храниться в локальном хранилище браузера. Эти технологии нужны для работы функций и измерения продукта и не используются нами для продажи рекламных профилей.",
+            "Мы используем Vercel Web Analytics для анонимной агрегированной статистики просмотров и продуктовой воронки, например успешного входа, создания API-ключа, оформления платежа и первых действий. Свойства событий содержат только укрупнённые категории и не включают идентификаторы аккаунта, email, секреты, исходные реферальные или промокоды и точные суммы платежей. Vercel Web Analytics не использует сторонние аналитические cookie. apiToken.sale удаляет чувствительные параметры запроса и фрагменты URL до отправки событий аналитики.",
             "Мы также используем Яндекс Метрику для аналитики просмотров и взаимодействий, включая карту кликов, отслеживание внешних ссылок и Вебвизор. Яндекс Метрика может использовать cookie и хранилище браузера, чтобы различать визиты. apiToken.sale удаляет параметры запроса и фрагменты из URL просмотров, скрывает содержимое авторизации и личного кабинета от Вебвизора и запрещает запись полей и примеров с API-ключами.",
           ],
         },

@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { AuthIntro, Feedback } from "@/components/auth-shell";
 import { useI18n } from "@/components/i18n-provider";
+import { trackProductEvent } from "@/lib/product-analytics";
 
 const copy = {
   en: {
@@ -88,6 +89,7 @@ export function VerifyEmail() {
     setMessageKey("verifying");
     setSuccess(false);
     api.verifyEmail(token).then(() => {
+      trackProductEvent("Email Verified");
       setMessageKey("verified");
       setSuccess(true);
       window.setTimeout(() => { router.replace("/dashboard"); }, 500);

@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState, type CSSProperties, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import {
   api, ApiError, type AccountView, type ApiKeyView, type AuthUser, type CheckoutView, type LedgerEntry, type TotpSetup, type UsageView,
 } from "@/lib/api";
@@ -14,6 +14,7 @@ import { ThemeToggle } from "@/components/site-chrome";
 import { SupportContent } from "@/components/compliance-pages";
 import { dashboardCopy, type DashboardCopy } from "@/lib/dashboard-copy";
 import { DOCS_URL } from "@/lib/site-links";
+import { checkoutAmountBucket, trackFirstProductEvent, trackProductEvent } from "@/lib/product-analytics";
 import { dashboardHref, parseDashboardSection, type DashboardSection } from "./dashboard-route";
 
 type Section = DashboardSection;
@@ -105,6 +106,8 @@ export function Dashboard() {
   const [logoutError, setLogoutError] = useState<string | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
   const [sideOpen, setSideOpen] = useState(false);
+  const analyticsLoaded = useRef(false);
+  const initialSection = useRef(section);
 
   const load = useCallback(async () => {
     setError(null);
@@ -114,6 +117,17 @@ export function Dashboard() {
         api.me(), api.account(), api.apiKeys(), api.ledger(100), api.usage("30d").catch(() => null),
       ]);
       setUser(current); setAccount(accountView); setKeys(keyList.keys); setLedger(ledgerView.entries); setUsage(usageView);
+      if (!analyticsLoaded.current) {
+        analyticsLoaded.current = true;
+        trackProductEvent("Dashboard Opened", { section: initialSection.current, customer_type: current.customerType });
+        trackFirstProductEvent("dashboard", "First Dashboard Open", { customer_type: current.customerType });
+        if (ledgerView.entries.some((entry) => entry.kind === "topup")) {
+          trackFirstProductEvent("topup", "First Top Up", { detected_in: "dashboard" });
+        }
+        if ((usageView?.requests ?? 0) > 0 || ledgerView.entries.some((entry) => entry.kind === "charge")) {
+          trackFirstProductEvent("api_usage", "First API Usage", { detected_in: "dashboard" });
+        }
+      }
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 401) { router.replace("/login"); return; }
       setError(cause instanceof Error ? cause.message : copy.loadError);
@@ -145,6 +159,7 @@ export function Dashboard() {
   function open(next: Section) {
     setSideOpen(false);
     setSection(next);
+    trackProductEvent("Dashboard Section Viewed", { section: next });
     window.history.pushState(null, "", dashboardHref(next, language));
     window.scrollTo({ top: 0, behavior: "auto" });
   }
@@ -310,6 +325,8 @@ function ApiKeys({ keys, onChanged, open, user }: { keys: ApiKeyView[]; onChange
     setBusy(true); setError(null);
     try {
       const created = await api.createApiKey(label.trim() || undefined, user.totpEnabled ? totpCode : undefined);
+      trackProductEvent("API Key Created", { has_label: Boolean(label.trim()), two_factor: user.totpEnabled });
+      trackFirstProductEvent("api_key", "First API Key Created", { two_factor: user.totpEnabled });
       setIssued(created.key ?? null);
       setLabel(""); setTotpCode("");
       await onChanged();
@@ -325,7 +342,7 @@ function ApiKeys({ keys, onChanged, open, user }: { keys: ApiKeyView[]; onChange
   async function revoke(id: string) {
     if (!window.confirm(copy.revokeConfirm)) return;
     setBusy(true); setError(null);
-    try { await api.revokeApiKey(id); await onChanged(); }
+    try { await api.revokeApiKey(id); trackProductEvent("API Key Revoked"); await onChanged(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : copy.revokeKeyError); }
     finally { setBusy(false); }
   }
@@ -337,7 +354,7 @@ function ApiKeys({ keys, onChanged, open, user }: { keys: ApiKeyView[]; onChange
     const nextLabel = renameLabel.trim();
     if (!nextLabel) { setError(localCopy.labelRequired); return; }
     setBusy(true); setError(null);
-    try { await api.renameApiKey(id, nextLabel); await onChanged(); cancelRename(); }
+    try { await api.renameApiKey(id, nextLabel); trackProductEvent("API Key Renamed"); await onChanged(); cancelRename(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : localCopy.renameKeyError); }
     finally { setBusy(false); }
   }
@@ -395,6 +412,9 @@ function Credits({ account, ledger }: { account: AccountView; ledger: LedgerEntr
     setBusy(true); setError(null);
     try {
       const created = await api.createCheckout(amount, method); setCheckout(created);
+      const methodName = method === 2 ? "sbp" : method === 11 ? "card" : method === 13 ? "crypto" : "other";
+      trackProductEvent("Checkout Created", { provider: created.provider, payment_method: methodName, amount_bucket: checkoutAmountBucket(amount) });
+      trackFirstProductEvent("checkout", "First Checkout Created", { provider: created.provider, payment_method: methodName, amount_bucket: checkoutAmountBucket(amount) });
       if (created.checkoutUrl) {
         const checkoutUrl = safeCheckoutUrl(created.checkoutUrl, created.provider);
         if (!checkoutUrl) { setError(localCopy.invalidCheckoutUrl); return; }
@@ -801,13 +821,13 @@ function TwoFactorCard({ user, onUpdated }: { user: AuthUser; onUpdated(user: Au
   }
   async function confirmEnable() {
     setBusy(true); setError(null);
-    try { await api.totpEnable(code); await refresh(); setSetup(null); setCode(""); }
+    try { await api.totpEnable(code); trackProductEvent("Two Factor Enabled"); await refresh(); setSetup(null); setCode(""); }
     catch { setError(copy.twoFactorCodeInvalid); }
     finally { setBusy(false); }
   }
   async function confirmDisable() {
     setBusy(true); setError(null);
-    try { await api.totpDisable(code); await refresh(); setDisarming(false); setCode(""); }
+    try { await api.totpDisable(code); trackProductEvent("Two Factor Disabled"); await refresh(); setDisarming(false); setCode(""); }
     catch { setError(copy.twoFactorCodeInvalid); }
     finally { setBusy(false); }
   }
@@ -851,6 +871,7 @@ function Profile({ user, onUpdated }: { user: AuthUser; onUpdated(user: AuthUser
     setSaving(true); setSaved(false); setSaveError(null);
     try {
       const result = await api.updateProfile(trimmedName);
+      trackProductEvent("Profile Updated");
       onUpdated(result.user); setDisplayName(result.user.displayName); setSaved(true);
       window.setTimeout(() => setSaved(false), 2_000);
     } catch (cause) {
@@ -877,6 +898,8 @@ function PromoPanel() {
 
   useEffect(() => {
     const prefill = search.get("promo");
+    // URL state is browser-owned and intentionally hydrated after mount.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (prefill && /^[A-Za-z0-9]{4,32}$/.test(prefill)) setCode(prefill.toUpperCase());
   }, [search]);
 
@@ -887,6 +910,7 @@ function PromoPanel() {
     setBusy(true); setError(null); setDone(null);
     try {
       const res = await api.redeemPromo(clean);
+      trackProductEvent("Promo Redeemed");
       setDone({ usd: res.credited_usd, balance: res.balance });
       setCode("");
     } catch (err) {

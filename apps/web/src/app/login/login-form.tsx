@@ -7,6 +7,7 @@ import { api, ApiError } from "@/lib/api";
 import { AuthIntro, Feedback, WelcomeBonusNotice } from "@/components/auth-shell";
 import { SocialAuth } from "@/components/social-auth";
 import { useI18n } from "@/components/i18n-provider";
+import { trackProductEvent, trackSuccessfulLogin } from "@/lib/product-analytics";
 
 export function LoginForm() {
   const { t } = useI18n();
@@ -18,11 +19,14 @@ export function LoginForm() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setMessage(null); setSuccess(false);
+    trackProductEvent("Login Submitted", { method: "password" });
     const data = new FormData(event.currentTarget);
     try {
       await api.login({ email: String(data.get("email") ?? "").trim(), password: String(data.get("password") ?? "") });
+      trackSuccessfulLogin("password");
       router.replace("/dashboard");
     } catch (error) {
+      trackProductEvent("Login Failed", { method: "password", status: error instanceof ApiError ? error.status : 0 });
       setMessage(error instanceof ApiError ? error.message : "Unable to log in right now");
       setBusy(false);
     }
