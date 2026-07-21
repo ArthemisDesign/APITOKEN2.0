@@ -5,7 +5,7 @@
 
 use crate::{
     mask_proxy, AccountRow, BillingTotals, KeyAuth, KeyPolicyUpdate, KeyRow, LedgerRow, PoolStateRow, Sub,
-    SubAdmin, SubRow, UsageEventInput, UsageModelAgg,
+    SubAdmin, SubHealth, SubRow, UsageEventInput, UsageModelAgg,
 };
 use anyhow::{bail, Context, Result};
 use postgres::{Client, NoTls, Row, Transaction};
@@ -659,7 +659,9 @@ impl PgStore {
         tx.execute(
             "INSERT INTO subs(email,token,proxy,status,fleet,added_ts,added) \
              VALUES($1,$2,$3,'active',$4,$5,$6) ON CONFLICT(email) DO UPDATE SET \
-             token=EXCLUDED.token,proxy=EXCLUDED.proxy,status='active',fleet=EXCLUDED.fleet",
+             token=EXCLUDED.token,proxy=EXCLUDED.proxy,status='active',fleet=EXCLUDED.fleet, \
+             auth_state='healthy',auth_fail_streak=0,first_auth_fail_ts=NULL,last_auth_fail_ts=NULL, \
+             last_auth_http=NULL,dead_since_ts=NULL,dead_reason=NULL,auth_token_fp=NULL",
             &[&email,&token,&proxy,&fleet,&ts,&chrono_like(ts)],
         )?;
         tx.execute("INSERT INTO pool_state(email) VALUES($1) ON CONFLICT DO NOTHING", &[&email])?;
@@ -673,7 +675,9 @@ impl PgStore {
         tx.execute(
             "INSERT INTO subs(email,token_file,proxy,status,fleet,added_ts,added) \
              VALUES($1,$2,$3,'active',$4,$5,$6) ON CONFLICT(email) DO UPDATE SET \
-             token_file=EXCLUDED.token_file,proxy=EXCLUDED.proxy,status='active',fleet=EXCLUDED.fleet",
+             token_file=EXCLUDED.token_file,proxy=EXCLUDED.proxy,status='active',fleet=EXCLUDED.fleet, \
+             auth_state='healthy',auth_fail_streak=0,first_auth_fail_ts=NULL,last_auth_fail_ts=NULL, \
+             last_auth_http=NULL,dead_since_ts=NULL,dead_reason=NULL,auth_token_fp=NULL",
             &[&email,&token_file,&proxy,&fleet,&ts,&chrono_like(ts)],
         )?;
         tx.execute("INSERT INTO pool_state(email) VALUES($1) ON CONFLICT DO NOTHING", &[&email])?;
@@ -728,7 +732,9 @@ impl PgStore {
     pub fn subs_admin(&mut self) -> Result<Vec<SubAdmin>> {
         Ok(self.client.query(
             "SELECT email,status,fleet,COALESCE(NULLIF(token,''),NULLIF(token_file,'')),proxy, \
-             proxy_expire,proxy_ok,added_ts,added FROM subs ORDER BY added_ts",
+             proxy_expire,proxy_ok,added_ts,added, \
+             COALESCE(auth_state,'healthy'),COALESCE(dead_reason,''),COALESCE(dead_since_ts,0) \
+             FROM subs ORDER BY added_ts",
             &[],
         )?.into_iter().map(|row| {
             let proxy: String = row.get(4);
@@ -737,9 +743,56 @@ impl PgStore {
                 has_token: row.get::<_, Option<String>>(3).is_some_and(|s| !s.is_empty()),
                 proxy_host: mask_proxy(&proxy), proxy_expire: row.get(5), proxy_ok: row.get(6),
                 added_ts: row.get(7), added: row.get(8),
+                auth_state: row.get(9), dead_reason: row.get(10), dead_since_ts: row.get(11),
             }
         }).collect())
     }
+
+    /// Load durable auth-health for every subscription (engine seeds in-memory state at startup).
+    pub fn load_sub_health(&mut self, fleet: Option<&str>) -> Result<Vec<SubHealth>> {
+        Ok(self.client.query(
+            "SELECT email,COALESCE(auth_state,'healthy'),COALESCE(auth_fail_streak,0), \
+             COALESCE(first_auth_fail_ts,0),COALESCE(last_auth_fail_ts,0),COALESCE(last_auth_http,0), \
+             COALESCE(dead_since_ts,0),COALESCE(dead_reason,''),COALESCE(auth_token_fp,'') \
+             FROM subs WHERE ($1::text IS NULL OR fleet=$1) ORDER BY added_ts",
+            &[&fleet],
+        )?.into_iter().map(|row| SubHealth {
+            email: row.get(0),
+            auth_state: row.get(1),
+            auth_fail_streak: row.get::<_, i32>(2) as i64,
+            first_auth_fail_ts: row.get(3),
+            last_auth_fail_ts: row.get(4),
+            last_auth_http: row.get::<_, i32>(5) as i64,
+            dead_since_ts: row.get(6),
+            dead_reason: row.get(7),
+            auth_token_fp: row.get(8),
+        }).collect())
+    }
+
+    /// Persist one subscription's durable auth-health verdict. Owner-fenced: a stale/fenced engine
+    /// (lost the epoch) must not stamp health, exactly like money/pool-state writes.
+    pub fn save_sub_health(&mut self, owner: &Owner, h: &SubHealth) -> Result<usize> {
+        let ts = now();
+        let mut tx = self.client.transaction()?;
+        Self::assert_owner(&mut tx, owner, ts)?;
+        let streak = h.auth_fail_streak as i32;
+        let http = h.last_auth_http as i32;
+        let first = (h.first_auth_fail_ts != 0).then_some(h.first_auth_fail_ts);
+        let last = (h.last_auth_fail_ts != 0).then_some(h.last_auth_fail_ts);
+        let http = (http != 0).then_some(http);
+        let dead_since = (h.dead_since_ts != 0).then_some(h.dead_since_ts);
+        let reason = (!h.dead_reason.is_empty()).then_some(h.dead_reason.as_str());
+        let fp = (!h.auth_token_fp.is_empty()).then_some(h.auth_token_fp.as_str());
+        let n = tx.execute(
+            "UPDATE subs SET auth_state=$1,auth_fail_streak=$2,first_auth_fail_ts=$3, \
+             last_auth_fail_ts=$4,last_auth_http=$5,dead_since_ts=$6,dead_reason=$7,auth_token_fp=$8 \
+             WHERE email=$9",
+            &[&h.auth_state,&streak,&first,&last,&http,&dead_since,&reason,&fp,&h.email],
+        )?;
+        tx.commit()?;
+        Ok(n as usize)
+    }
+
 
     // -- Accounts, keys, ledger, analytics ---------------------------------------------------
 

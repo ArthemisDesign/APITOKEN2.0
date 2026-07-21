@@ -38,6 +38,16 @@ const COLS: &[(&str, &str)] = &[
     ("proxy_expire", "TEXT"),      // дата истечения прокси из IPRoyal (ISO), "" = неизвестно
     ("proxy_checked_ts", "INTEGER"), // ts последней health-проверки прокси (fingerprint-free)
     ("proxy_ok", "INTEGER"),       // 1=жив / 0=мёртв на последней проверке (NULL=не проверялся)
+    // Durable auth-health (движок пишет из коррелированных probe; переживает рестарт). Зеркало
+    // engine PostgreSQL migration 0003. Токен-fingerprint даёт авто-ревайв при замене токена.
+    ("auth_state", "TEXT"),        // 'healthy' | 'suspect' | 'dead'
+    ("auth_fail_streak", "INTEGER"),
+    ("first_auth_fail_ts", "INTEGER"),
+    ("last_auth_fail_ts", "INTEGER"),
+    ("last_auth_http", "INTEGER"),
+    ("dead_since_ts", "INTEGER"),
+    ("dead_reason", "TEXT"),
+    ("auth_token_fp", "TEXT"),
 ];
 
 pub fn open(path: &str) -> Result<Connection> {
@@ -259,7 +269,9 @@ pub fn add(conn: &Connection, email: &str, token: &str, proxy: &str, fleet: &str
         "INSERT INTO subs(email, token, proxy, status, fleet, added_ts, added) \
          VALUES(?1, ?2, ?3, 'active', ?4, ?5, ?6) \
          ON CONFLICT(email) DO UPDATE SET token=excluded.token, proxy=excluded.proxy, \
-         status='active', fleet=excluded.fleet",
+         status='active', fleet=excluded.fleet, \
+         auth_state='healthy', auth_fail_streak=0, first_auth_fail_ts=NULL, last_auth_fail_ts=NULL, \
+         last_auth_http=NULL, dead_since_ts=NULL, dead_reason=NULL, auth_token_fp=NULL",
         rusqlite::params![email, token, proxy, fleet, now(), chrono_like(now())],
     )?;
     Ok(())
@@ -270,7 +282,9 @@ pub fn add_file(conn: &Connection, email: &str, token_file: &str, proxy: &str, f
         "INSERT INTO subs(email, token_file, proxy, status, fleet, added_ts, added) \
          VALUES(?1, ?2, ?3, 'active', ?4, ?5, ?6) \
          ON CONFLICT(email) DO UPDATE SET token_file=excluded.token_file, proxy=excluded.proxy, \
-         status='active', fleet=excluded.fleet",
+         status='active', fleet=excluded.fleet, \
+         auth_state='healthy', auth_fail_streak=0, first_auth_fail_ts=NULL, last_auth_fail_ts=NULL, \
+         last_auth_http=NULL, dead_since_ts=NULL, dead_reason=NULL, auth_token_fp=NULL",
         rusqlite::params![email, token_file, proxy, fleet, now(), chrono_like(now())],
     )?;
     Ok(())
@@ -370,13 +384,36 @@ pub struct SubAdmin {
     pub proxy_ok: Option<bool>, // None = не проверялся (здоровье в осн. из движка/органики)
     pub added_ts: i64,          // момент добавления токена (срок жизни = added_ts + N дней)
     pub added: String,
+    /// Durable auth-health (авторитетно из БД, переживает рестарт): 'healthy'|'suspect'|'dead'.
+    pub auth_state: String,
+    pub dead_reason: String,    // '' если не dead
+    pub dead_since_ts: i64,     // 0 если не dead
 }
+
+/// Durable auth-health одной подписки. Движок (поллер) пишет это из КОРРЕЛИРОВАННЫХ чистых probe:
+/// один 401/403 не приговор (может быть транзиент/битый запрос), но N подряд за ≥T минут = мёртвый
+/// токен/бан. Переживает рестарт и blue/green (в отличие от эфемерного in-memory `auth_dead`).
+/// Примитивы-сентинелы (0/"" = «нет») — чтобы `pool` не тащил Option через слой.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SubHealth {
+    pub email: String,
+    pub auth_state: String,       // 'healthy' | 'suspect' | 'dead'
+    pub auth_fail_streak: i64,
+    pub first_auth_fail_ts: i64,  // 0 = нет текущей серии отказов
+    pub last_auth_fail_ts: i64,
+    pub last_auth_http: i64,      // 0 = нет
+    pub dead_since_ts: i64,       // 0 = не dead
+    pub dead_reason: String,      // '' = нет
+    pub auth_token_fp: String,    // отпечаток токена, к которому относится вердикт (смена → авто-ревайв)
+}
+
 
 pub fn subs_admin(conn: &Connection) -> Result<Vec<SubAdmin>> {
     let mut stmt = conn.prepare(
         "SELECT email, COALESCE(status,'active'), COALESCE(fleet,'prod'), \
          COALESCE(NULLIF(token,''), NULLIF(token_file,'')), COALESCE(proxy,''), \
-         COALESCE(proxy_expire,''), proxy_ok, COALESCE(added_ts,0), COALESCE(added,'') \
+         COALESCE(proxy_expire,''), proxy_ok, COALESCE(added_ts,0), COALESCE(added,''), \
+         COALESCE(auth_state,'healthy'), COALESCE(dead_reason,''), COALESCE(dead_since_ts,0) \
          FROM subs ORDER BY COALESCE(added_ts,0)")?;
     let rows = stmt.query_map([], |r| {
         let proxy: String = r.get(4)?;
@@ -390,10 +427,56 @@ pub fn subs_admin(conn: &Connection) -> Result<Vec<SubAdmin>> {
             proxy_ok: r.get::<_, Option<i64>>(6)?.map(|n| n != 0),
             added_ts: r.get(7)?,
             added: r.get(8)?,
+            auth_state: r.get(9)?,
+            dead_reason: r.get(10)?,
+            dead_since_ts: r.get(11)?,
         })
     })?;
     Ok(rows.filter_map(|x| x.ok()).collect())
 }
+
+/// Загрузить durable auth-health всех подписок (движок сеет им in-memory состояние на старте).
+pub fn load_sub_health(conn: &Connection, fleet: Option<&str>) -> Result<Vec<SubHealth>> {
+    let mut stmt = conn.prepare(
+        "SELECT email, COALESCE(auth_state,'healthy'), COALESCE(auth_fail_streak,0), \
+         COALESCE(first_auth_fail_ts,0), COALESCE(last_auth_fail_ts,0), COALESCE(last_auth_http,0), \
+         COALESCE(dead_since_ts,0), COALESCE(dead_reason,''), COALESCE(auth_token_fp,''), \
+         COALESCE(fleet,'prod') FROM subs")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((SubHealth {
+            email: r.get(0)?,
+            auth_state: r.get(1)?,
+            auth_fail_streak: r.get(2)?,
+            first_auth_fail_ts: r.get(3)?,
+            last_auth_fail_ts: r.get(4)?,
+            last_auth_http: r.get(5)?,
+            dead_since_ts: r.get(6)?,
+            dead_reason: r.get(7)?,
+            auth_token_fp: r.get(8)?,
+        }, r.get::<_, String>(9)?))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (h, sfleet) = row?;
+        if let Some(f) = fleet { if f != sfleet { continue; } }
+        out.push(h);
+    }
+    Ok(out)
+}
+
+/// Записать durable auth-health одной подписки (движок → БД). Идемпотентный upsert по email.
+pub fn save_sub_health(conn: &Connection, h: &SubHealth) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE subs SET auth_state=?1, auth_fail_streak=?2, first_auth_fail_ts=?3, \
+         last_auth_fail_ts=?4, last_auth_http=?5, dead_since_ts=?6, dead_reason=?7, auth_token_fp=?8 \
+         WHERE email=?9",
+        rusqlite::params![
+            h.auth_state, h.auth_fail_streak, h.first_auth_fail_ts, h.last_auth_fail_ts,
+            h.last_auth_http, h.dead_since_ts, h.dead_reason, h.auth_token_fp, h.email
+        ],
+    )?)
+}
+
 
 // ── Биллинг: ключи клиентов с USD-балансом (нанодоллары) ─────────────────────
 //

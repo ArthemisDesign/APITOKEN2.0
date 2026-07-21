@@ -294,25 +294,25 @@ function systemVerdict(overview){const gap=overview.recommend.gap,h5=overview.he
   return{kind:'ok',title:'Запаса ёмкости хватает',detail:'headroom 5h '+ratio(h5)+' / 7d '+ratio(h7)+' · подписок '+total+', цель ×'+target+' выдержана'}}
 async function system(){const result=await Promise.all([api('/overview'),api('/capacity').catch(()=>null),api('/subs').catch(()=>null)]),overview=result[0],capacity=result[1],subs=result[2];
   const supply=overview.supply,health=supply.health,demand=overview.demand,recommend=overview.recommend,verdict=systemVerdict(overview),mult=overview.ref_mult;
-  // Мёртвые токены (401/403): /capacity даёт per-sub `dead` + маскированный email (первые 4 симв.+…).
-  // Кросс-ссылаемся в таблицу жизненного цикла (полный email) по префиксу, чтобы «active»-статус из БД
-  // не скрывал живую смерть токена. `capOpen` сохраняет раскрытие секции через 3с-перерисовку innerHTML.
-  const deadSet=new Set((capacity?.per_sub||[]).filter(s=>s.dead).map(s=>String(s.email).replace('…','')));
-  const isDead=email=>{const e=String(email);for(const p of deadSet){if(p&&e.startsWith(p))return true}return false};
-  const deadCount=(capacity?.dead)||0;
+  // Мёртвые токены теперь DURABLE: движок пишет auth_state ('healthy'|'suspect'|'dead') прямо в БД по
+  // коррелированным probe, и /subs (жизненный цикл) отдаёт его по-строчно — больше НЕ угадываем по
+  // 4-символьному префиксу из /capacity. `capOpen` сохраняет раскрытие секции через 3с-перерисовку.
+  const deadCount=(subs?.dead)??(capacity?.dead)??0;
+  const suspectCount=(capacity?.suspect)||0;
+  const deadLabel=r=>r==='permission_error'?'токен мёртв · бан':r==='authentication_error'?'токен мёртв · нужен re-auth':'токен мёртв';
   const capOpen=document.getElementById('cap-details')?.open?' open':'';
   const horizonCards=[['7d','7 дней','7d'],['1d','1 день',null],['5h','5 часов (burst)','5h']].map(item=>{const available=supply.avail_usd[item[0]]||0,head=item[2]?overview.headroom[item[2]]:null;
     return card('доступно · '+item[1],money(available),'клиентам ×'+mult+' = '+money(available*mult)+(item[2]?' · запас '+ratio(head):''))}).join('');
-  const liveRows=(capacity?.per_sub||[]).map(item=>'<tr><td class="left"><span class="dot '+(item.dead||item.cooling?'bad':String(item.status).includes('warn')?'warn':'')+'"></span> '+esc(item.email)+
-    (item.dead?' '+pill('мёртв (401)','bad'):'')+(item.calibrated?'':' <span class="muted">(калибровка)</span>')+'</td><td>'+capacityBar(item.util5h)+'</td><td>'+duration(item.reset5h_in)+'</td><td>'+capacityBar(item.util7d)+
+  const liveRows=(capacity?.per_sub||[]).map(item=>'<tr><td class="left"><span class="dot '+(item.dead||item.cooling?'bad':item.auth_state==='suspect'||String(item.status).includes('warn')?'warn':'')+'"></span> '+esc(item.email)+
+    (item.dead?' '+pill(deadLabel(item.dead_reason),'bad'):item.auth_state==='suspect'?' '+pill('под наблюдением (auth)','warn'):'')+(item.calibrated?'':' <span class="muted">(калибровка)</span>')+'</td><td>'+capacityBar(item.util5h)+'</td><td>'+duration(item.reset5h_in)+'</td><td>'+capacityBar(item.util7d)+
     '</td><td>'+duration(item.reset7d_in)+'</td><td><b>'+money(item.rem5h_usd)+'</b></td><td><b>'+money(item.rem7d_usd)+'</b></td><td><b>'+money(item.avail_7d_usd)+'</b></td></tr>').join('');
-  const lifecycleRows=(subs?.subs||[]).map(item=>{const days=Number(item.sub_days_left||0),dayKind=days<=0?'bad':days<7?'warn':'ok',dead=isDead(item.email);return '<tr><td class="left"><b>'+esc(item.email)+
-    '</b></td><td>'+(dead?pill('токен мёртв (401)','bad'):pill(item.status,item.status==='active'?'ok':'warn'))+'</td><td>'+esc(String(item.added||'').slice(0,10)||'—')+'</td><td><span class="dot '+dayKind+'"></span>'+(days>0?days+' дн.':'—')+
+  const lifecycleRows=(subs?.subs||[]).map(item=>{const days=Number(item.sub_days_left||0),dayKind=days<=0?'bad':days<7?'warn':'ok',dead=item.auth_state==='dead',suspect=item.auth_state==='suspect';return '<tr><td class="left"><b>'+esc(item.email)+
+    '</b></td><td>'+(dead?pill(deadLabel(item.dead_reason),'bad'):suspect?pill('под наблюдением (auth)','warn'):pill(item.status,item.status==='active'?'ok':'warn'))+'</td><td>'+esc(String(item.added||'').slice(0,10)||'—')+'</td><td><span class="dot '+dayKind+'"></span>'+(days>0?days+' дн.':'—')+
     '</td><td><b>'+(Number(item.peak_cap5h_usd)>0?money(item.peak_cap5h_usd):'—')+'</b></td><td><b>'+(Number(item.peak_cap7d_usd)>0?money(item.peak_cap7d_usd):'—')+
     '</b></td><td class="left">'+esc(item.proxy_host||'—')+'</td><td>'+esc(String(item.proxy_expire||'').slice(0,10)||'—')+'</td></tr>'}).join('');
   const accountRows=(overview.accounts||[]).map(account=>'<tr><td class="left muted">'+esc(account.account)+'</td><td class="left"><b>'+esc(account.handle||'—')+'</b></td><td>'+
     pill(account.status,account.status==='active'?'ok':'bad')+'</td><td><b>'+money(account.balance_usd)+'</b></td><td><b>'+money(account.spent_usd)+'</b></td><td>×'+esc(account.mult)+'</td></tr>').join('');
-  const body=(deadCount?'<div class="banner bad"><span class="dot"></span><div><b>'+deadCount+' подписок с МЁРТВЫМ токеном (401)</b><span class="muted">ёмкость молча урезана — нужен свежий OAuth-токен (setup-token) на этот аккаунт</span></div></div>':'')+
+  const body=(deadCount?'<div class="banner bad"><span class="dot"></span><div><b>'+deadCount+' подписок с МЁРТВЫМ токеном</b><span class="muted">вне ротации — нужен свежий OAuth-токен (setup-token) на этот аккаунт'+(suspectCount?' · '+suspectCount+' под наблюдением':'')+'</span></div></div>':suspectCount?'<div class="banner warn"><span class="dot"></span><div><b>'+suspectCount+' подписок под наблюдением (auth падает)</b><span class="muted">движок корроборирует чистыми probe; при подтверждении — пометит DEAD</span></div></div>':'')+
     '<div class="banner '+verdict.kind+'"><span class="dot"></span><div><b>'+esc(verdict.title)+'</b><span class="muted">'+esc(verdict.detail)+'</span></div></div>'+
     '<h2>Предложение — real-API USD</h2><div class="cards">'+horizonCards+card('балансы клиентов',money(demand.balance_usd),'резерв '+money(demand.reserved_usd)+' · coverage 7d ×'+overview.coverage['7d'])+
     '</div><h2>Флот и спрос</h2><div class="cards">'+card('подписки',overview.subs,health.healthy+' живых · '+health.cooling+' cooling')+
