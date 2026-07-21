@@ -114,15 +114,16 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
           // одноразовую ссылку и не даём незаслуженный floor). consume/apply идемпотентны.
           const ownerPartnerId = won ? resolved.partnerId : await getReferredUserPartner(this.database, row.userId);
           if (ownerPartnerId === resolved.partnerId) {
-            // Персональная ОДНОРАЗОВАЯ ссылка со скидкой → гасим её этим пользователем.
-            if (resolved.discountLinkId && !resolved.discountLinkConsumed) {
-              await consumeDiscountLink(this.database, resolved.discountLinkId, row.userId);
-            }
-            // Скидочный floor шлём в commerce ТОЛЬКО когда он ненулевой. Обычный реф-код (floor 0,
-            // обычные b2c-тиры) не должен дёргать commerce-эндпоинт — иначе его недоступность стопорит
-            // вообще всю ленту атрибуции, включая рефералов без скидки (head-of-line stall).
+            // ПОРЯДОК ВАЖЕН: сначала применяем скидочный floor в commerce, и ТОЛЬКО потом гасим
+            // одноразовую ссылку. Если бы гасили первой, а apply бросил (напр. commerce отверг сумму) —
+            // ссылка бы «сгорела», курсор бы застрял, а на ретрае resolveReferralCode вернул бы у
+            // гашёной ссылки discountBps=0 → скидка терялась бы навсегда. Apply идёт только при floor>0
+            // (обычный реф-код с floor 0 не должен дёргать commerce и стопорить всю ленту).
             if (resolved.discountBps > 0) {
               await this.applyReferralDiscount(row.userId, resolved.discountBps);
+            }
+            if (resolved.discountLinkId && !resolved.discountLinkConsumed) {
+              await consumeDiscountLink(this.database, resolved.discountLinkId, row.userId);
             }
           }
         }

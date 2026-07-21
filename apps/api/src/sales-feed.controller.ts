@@ -125,5 +125,5 @@ export class SalesFeedController {
 
 const referralDiscountSchema = z.object({
   userId: z.string().uuid(),
-  floorBps: z.number().int().min(0).max(9000),
+  floorBps: z.number().int().min(0).max(9500),
 });
