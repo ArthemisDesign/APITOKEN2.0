@@ -11,7 +11,7 @@ path = "src/lib.rs"
 registry = { path = "../registry" }
 pool = { path = "../pool" }
 metering = { path = "../metering" }
-tokio = { version = "1", features = ["sync", "rt"] }
+tokio = { version = "1", features = ["sync", "rt", "time"] }
 anyhow = "1"
 axum = "0.8"
 # TLS-транспорт: wreq (форк reqwest на BoringSSL/boring2). Claude Code 2.1.195 = Bun 1.4.0 = BoringSSL,

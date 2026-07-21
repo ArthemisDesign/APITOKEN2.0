@@ -204,6 +204,8 @@ impl Settings {
                 max_inflight_per_key: ev("CLAUDE_API_MAX_INFLIGHT_PER_KEY").and_then(|s| s.parse().ok()).unwrap_or(20),
                 util_cap: ev_frac("CLAUDE_API_UTIL_CAP", 0.95),
                 cool_secs: ev("CLAUDE_API_COOL_SECS").and_then(|s| s.parse().ok()).unwrap_or(300),
+                // Гладкий UX: тихий wait+retry ротации при транзиентной нехватке (деф 8с). 0 = выкл.
+                smooth_wait_ms: ev("CLAUDE_API_SMOOTH_WAIT_MS").and_then(|s| s.parse().ok()).unwrap_or(8000),
                 poll: ev_bool("CLAUDE_API_POLL", true),
                 inject_identity: ev_bool("CLAUDE_API_INJECT_IDENTITY", true),
                 identity: ev_or("CLAUDE_API_IDENTITY", CLAUDE_CODE_IDENTITY),

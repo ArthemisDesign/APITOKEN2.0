@@ -633,7 +633,14 @@ pub async fn forward(
                                        "invalid anthropic-beta header"),
     };
 
+    // Гладкий UX: транзиентную нехватку ёмкости (все подписки cooling/за util_cap / breaker /
+    // upstream-429) НЕ отдаём клиенту сразу — тихо ждём до бюджета и повторяем весь раунд ротации.
+    // Решение принимается ДО начала стрима, поэтому для клиента это лишь чуть больший TTFB, не ошибка.
+    let smooth_deadline = std::time::Instant::now()
+        + std::time::Duration::from_millis(app.cfg.smooth_wait_ms);
+    'smooth: loop {
     let mut tried: HashSet<String> = HashSet::new();
+    let mut transient_hint: Option<i64> = None; // Some(secs) → раунд уперся в транзиент → ждём+ретрай
     // Один запрос вносит в breaker максимум ОДИН backend-фейл (не `max_tries`): иначе poison-запрос
     // (500 на каждой подписке) в одиночку размыкал бы глобальный breaker и клал сервис всем. Реальный
     // аутейдж тилит breaker числом РАЗНЫХ запросов, а не веером одного.
@@ -657,11 +664,10 @@ pub async fn forward(
         // следующей ротации. Если у нас есть реальный upstream response — возвращаем его прозрачно.
         if let Some(retry) = app.breaker.open_for(pool::now()) {
             Metrics::inc(&app.metrics.breaker_rejects);
-            if let Some((st, resp)) = last_upstream.take() {
-                return stream_back(st, resp, None, None);
-            }
-            return err_retry(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error",
-                             "upstream temporarily unavailable", retry);
+            // Брейкер разомкнут (брауноут апстрима) — транзиент. Тихо ждём+ретраим до бюджета
+            // (breaker сам закроется по record_ok), клиенту 503 отдаём лишь при исчерпании бюджета.
+            transient_hint = Some(retry);
+            break;
         }
         // Первая попытка — cache-first роутинг сессии (пин/placement/спилл в `route`). Дальше —
         // load-based `pick` (дом/пробованные уже в `tried`; cooling-подписки пул исключает сам).
@@ -677,13 +683,12 @@ pub async fn forward(
         // 429 (ban-signal + «автоматный» кластер, ровно то, чего избегаем). Быстрый прозрачный отбой
         // клиенту с точным Retry-After = soonest_ready (он откатится сам). hold вернёт hold_guard на return.
         if app.pool.is_cooling(&sub.email) {
+            // Не-cooling подписок не осталось (весь флот за лимитом/в кулдауне). НЕ шлём живой трафик
+            // на отлимиченный аккаунт. Вместо мгновенного 429 — помечаем транзиент; хвост раунда
+            // тихо ждёт до soonest_ready и ретраит (подписка успеет освободиться), 429 — лишь по бюджету.
             Metrics::inc(&app.metrics.exhausted);
-            if let Some((st, resp)) = last_upstream.take() {
-                return stream_back(st, resp, None, None);
-            }
-            let retry = app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs);
-            return err_retry(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error",
-                             "all subscriptions are rate-limited — retry shortly", retry);
+            transient_hint = Some(app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs));
+            break;
         }
         attempt += 1;
         tried.insert(sub.email.clone());
@@ -767,11 +772,10 @@ pub async fn forward(
         // этого момента; предыдущий upstream response (если был) приоритетнее локальной синтетики.
         if let Some(retry) = app.breaker.open_for(pool::now()) {
             Metrics::inc(&app.metrics.breaker_rejects);
-            if let Some((st, resp)) = last_upstream.take() {
-                return stream_back(st, resp, None, None);
-            }
-            return err_retry(StatusCode::SERVICE_UNAVAILABLE, "overloaded_error",
-                             "upstream temporarily unavailable", retry);
+            // Брейкер разомкнут (брауноут апстрима) — транзиент. Тихо ждём+ретраим до бюджета
+            // (breaker сам закроется по record_ok), клиенту 503 отдаём лишь при исчерпании бюджета.
+            transient_hint = Some(retry);
+            break;
         }
 
         let resp = match rb.send().await {
@@ -904,20 +908,41 @@ pub async fn forward(
         let stream_key_guard = if st.is_success() { key_guard.take() } else { None };
         return stream_back(st, resp, meter, stream_key_guard);
     }
-    // Резерв вернёт `hold_guard` на return; слот последней попытки уже закрыл её `guard`.
-    // Любой реально полученный Anthropic response приоритетнее локальной классификации исчерпания.
-    if let Some((st, resp)) = last_upstream {
-        stream_back(st, resp, None, None)
-    } else if backend_tries >= app.cfg.max_tries.max(1) || tried.is_empty() {
-        last_local
-    } else {
-        // Ни одного upstream response не было (например, все кандидаты уже cooling) → только тогда
-        // синтезируем локальный 429 с readiness всего пула.
-        Metrics::inc(&app.metrics.exhausted);
-        let retry = app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs);
-        err_retry(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error",
-                  "all subscriptions are rate-limited — retry shortly", retry)
+    // Итог раунда. Транзиентную нехватку (нет реального upstream-ответа И backend-бюджет цел) тихо
+    // ждём и ретраим до smooth_deadline; всё остальное — отдаём клиенту. Резерв держит hold_guard,
+    // слоты закрыты guard'ами последней попытки — на continue 'smooth утечки нет (RAII).
+    let backend_exhausted = backend_tries >= app.cfg.max_tries.max(1);
+    // Транзиент = не хард-аутейдж апстрима, и был реальный шанс: явная подсказка (все cooling/breaker),
+    // синтетическое исчерпание (нет last_upstream, но подписки пробовались), либо upstream отдал 429.
+    let is_transient = !backend_exhausted
+        && (transient_hint.is_some()
+            || (last_upstream.is_none() && !tried.is_empty())
+            || last_upstream.as_ref().map(|(st, _)| st.as_u16() == 429).unwrap_or(false));
+    if is_transient {
+        let remaining = smooth_deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .as_millis();
+        let hint = transient_hint
+            .or_else(|| app.pool.soonest_ready())
+            .unwrap_or(app.cfg.cool_secs);
+        if let Some(step) = smooth_step(hint, remaining) {
+            tokio::time::sleep(step).await;
+            continue 'smooth;
+        }
     }
+    // Терминал: реальный Anthropic-ответ приоритетнее локальной классификации; иначе backend-аутейдж
+    // (или пул пуст) → last_local; иначе синтетический 429 с readiness всего пула.
+    if let Some((st, resp)) = last_upstream {
+        return stream_back(st, resp, None, None);
+    }
+    if backend_exhausted || tried.is_empty() {
+        return last_local;
+    }
+    Metrics::inc(&app.metrics.exhausted);
+    let retry = app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs);
+    return err_retry(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error",
+              "all subscriptions are rate-limited — retry shortly", retry);
+    } // 'smooth: loop
 }
 
 /// Ответ — SSE-стрим? (по content-type). Определяет способ парсинга usage.
@@ -974,6 +999,17 @@ fn cool_secs_429(resp: &wreq::Response, lim: &Limits, now: i64) -> i64 {
         .clamp(0, MAX_COOL_SECS)
 }
 
+/// Гладкий UX: сколько ТИХО ждать перед следующим раундом ротации. `hint_secs` — подсказка готовности
+/// (soonest_ready / Retry-After), `remaining_ms` — остаток бюджета. `None` → бюджет исчерпан (пора
+/// отдать клиенту ошибку). Шаг зажат в [250мс, 2с] и не больше остатка: так пул перечитывается часто
+/// (подписка могла освободиться раньше hint), а один длинный сон не «проглатывает» весь бюджет.
+fn smooth_step(hint_secs: i64, remaining_ms: u128) -> Option<std::time::Duration> {
+    if remaining_ms == 0 { return None; }
+    let hint_ms = (hint_secs.max(0) as u128).saturating_mul(1000);
+    let step = hint_ms.clamp(250, 2000).min(remaining_ms);
+    Some(std::time::Duration::from_millis(step as u64))
+}
+
 /// Отдать ответ апстрима клиенту байт-в-байт (стримом — работает и для SSE).
 /// Если задан `meter` — оборачиваем тело в tee-метеринг: клиент получает те же байты,
 /// а на завершении стрима списываем стоимость с ключа (тело клиенту НЕ задерживается).
@@ -1008,6 +1044,17 @@ mod tests {
             util5h: Some(u5), util7d: Some(u7), status: None,
             reset5h: Some(r5), reset7d: Some(r7), claim: claim.map(|s| s.to_string()),
         }
+    }
+
+    #[test]
+    fn smooth_step_bounds() {
+        use std::time::Duration;
+        assert_eq!(smooth_step(0, 0), None);                                    // бюджет исчерпан
+        assert_eq!(smooth_step(100, 0), None);                                  // исчерпан даже при большом hint
+        assert_eq!(smooth_step(10, 10_000), Some(Duration::from_millis(2000))); // hint велик → кап 2с
+        assert_eq!(smooth_step(0, 10_000), Some(Duration::from_millis(250)));   // hint 0 → пол 250мс
+        assert_eq!(smooth_step(5, 300), Some(Duration::from_millis(300)));      // остаток < шага → остаток
+        assert_eq!(smooth_step(1, 10_000), Some(Duration::from_millis(1000)));  // hint 1с в диапазоне
     }
 
     #[test]
