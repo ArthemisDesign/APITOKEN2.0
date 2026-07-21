@@ -216,10 +216,12 @@ impl AuthState {
 }
 
 /// Корроборация: `Dead` только после стольких чистых 401/403-probe подряд, растянутых на ≥ окно.
-const DEAD_STREAK: i64 = 3;
-/// …и только если первый отказ серии был не позже, чем `DEAD_MIN_SECS` назад (≥30 мин) — так
-/// транзиентный блип никогда не доводит до терминала, а настоящий бан — доводит за ~30 мин.
-const DEAD_MIN_SECS: i64 = 1800;
+/// Чистый probe поллера НЕ несёт клиентского ввода → 401/403 на нём однозначен (не «битый запрос»),
+/// поэтому порога 2 достаточно; окно ниже лишь отсекает мгновенный транзиентный блип Anthropic.
+const DEAD_STREAK: i64 = 2;
+/// …и только если первый отказ серии был не позже, чем `DEAD_MIN_SECS` назад (≥5 мин) — так
+/// одиночный блип не доводит до терминала, а настоящий бан/revoke — за ~5 мин (2 probe в 5 минут).
+const DEAD_MIN_SECS: i64 = 300;
 
 /// Короткий отпечаток токена подписки — стабильная метка «к какому токену относится auth-вердикт».
 /// Не секрет (одностороннний хэш), но сравнение fp детектит замену токена (авто-ревайв). Общий для
@@ -1426,8 +1428,8 @@ mod tests {
         assert_eq!(l.last_auth_http, 401);
     }
 
-    /// Три 401 подряд, но в пределах `DEAD_MIN_SECS` (транзиентный блип) → всё ещё `Suspect`, НЕ `Dead`.
-    /// Это ключевая защита от ложных приговоров: серия должна быть РАСТЯНУТА во времени.
+    /// Несколько 401 подряд, но в пределах `DEAD_MIN_SECS` (транзиентный блип) → всё ещё `Suspect`,
+    /// НЕ `Dead`. Защита от ложного приговора: серия должна быть РАСТЯНУТА во времени (≥5 мин).
     #[test]
     fn rapid_fails_within_window_do_not_kill() {
         let mut l = Live::default();
@@ -1436,20 +1438,21 @@ mod tests {
         apply_probe(&mut l, 401, "fp1", t + 10);
         apply_probe(&mut l, 401, "fp1", t + 20);
         assert_eq!(l.auth_fail_streak, 3);
-        assert_eq!(l.auth_state, AuthState::Suspect, "streak≥3, но <30мин → ещё не dead");
+        assert_eq!(l.auth_state, AuthState::Suspect, "streak набран, но <5мин → ещё не dead");
     }
 
-    /// Серия 401 растянута на ≥`DEAD_MIN_SECS` → корроборировано `Dead` с причиной re-auth.
+    /// Два 401-probe, растянутых на ≥`DEAD_MIN_SECS` (2 вызова в 5 минут) → корроборировано `Dead`
+    /// с причиной re-auth. Это ровно политика «2 звонка за 5 минут».
     #[test]
     fn corroborated_fails_over_window_go_dead() {
         let mut l = Live::default();
         let t = 1_000_000;
         apply_probe(&mut l, 401, "fp1", t);
-        apply_probe(&mut l, 401, "fp1", t + 600);
-        apply_probe(&mut l, 401, "fp1", t + DEAD_MIN_SECS + 1);
-        assert_eq!(l.auth_state, AuthState::Dead);
+        assert_eq!(l.auth_state, AuthState::Suspect, "первый 401 → только suspect");
+        apply_probe(&mut l, 401, "fp1", t + DEAD_MIN_SECS);
+        assert_eq!(l.auth_state, AuthState::Dead, "второй 401 через 5 мин → dead");
         assert_eq!(l.dead_reason, "authentication_error");
-        assert_eq!(l.dead_since_ts, t + DEAD_MIN_SECS + 1);
+        assert_eq!(l.dead_since_ts, t + DEAD_MIN_SECS);
     }
 
     /// 403 → причина permission_error (аккаунт заблокирован/забанен, а не просто re-auth).
@@ -1458,7 +1461,6 @@ mod tests {
         let mut l = Live::default();
         let t = 2_000_000;
         apply_probe(&mut l, 403, "fp", t);
-        apply_probe(&mut l, 403, "fp", t + 900);
         apply_probe(&mut l, 403, "fp", t + DEAD_MIN_SECS + 5);
         assert_eq!(l.auth_state, AuthState::Dead);
         assert_eq!(l.dead_reason, "permission_error");
