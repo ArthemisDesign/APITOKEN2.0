@@ -12,6 +12,7 @@ use postgres::{Client, NoTls, Row, Transaction};
 
 const MIGRATION_0001: &str = include_str!("../migrations_pg/0001_engine_authority.sql");
 const MIGRATION_0002: &str = include_str!("../migrations_pg/0002_api_key_policies.sql");
+const MIGRATION_0003: &str = include_str!("../migrations_pg/0003_subscription_auth_health.sql");
 
 fn now() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -123,6 +124,8 @@ impl PgStore {
             .context("apply engine PostgreSQL migration 0001")?;
         tx.batch_execute(MIGRATION_0002)
             .context("apply engine PostgreSQL migration 0002")?;
+        tx.batch_execute(MIGRATION_0003)
+            .context("apply engine PostgreSQL migration 0003")?;
         tx.commit()?;
         Ok(())
     }
