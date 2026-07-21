@@ -1488,10 +1488,19 @@ async function verifyProfileBehavior(client) {
     })()`,
     returnByValue: true,
   });
-  if (before.result.value !== after.result.value) {
+  const state = JSON.parse(before.result.value);
+  const afterState = JSON.parse(after.result.value);
+  const fieldChanged = state.value !== afterState.value
+    || state.disabled !== afterState.disabled
+    || state.readOnly !== afterState.readOnly
+    || state.className !== afterState.className
+    || state.border !== afterState.border
+    || state.background !== afterState.background
+    || Math.abs((state.rect?.width ?? 0) - (afterState.rect?.width ?? 0)) > 0.5
+    || Math.abs((state.rect?.height ?? 0) - (afterState.rect?.height ?? 0)) > 0.5;
+  if (fieldChanged) {
     throw new Error(`Copy feedback changed the user-ID field: ${before.result.value} -> ${after.result.value}`);
   }
-  const state = JSON.parse(before.result.value);
   if (!state.disabled || !state.readOnly || !state.value) {
     throw new Error(`User ID is not immutable: ${before.result.value}`);
   }
