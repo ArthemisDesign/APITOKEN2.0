@@ -8,7 +8,7 @@ import {
   formatUsd,
   type ReferralRow,
 } from "@/lib/api";
-import { EmptyState, Loading, Notice, Table } from "@/components/ui";
+import { Badge, EmptyState, Loading, Notice, StatusBadge, Table } from "@/components/ui";
 import { useI18n } from "@/components/i18n";
 
 export default function ReferralsPage() {
@@ -61,22 +61,57 @@ export default function ReferralsPage() {
             head={
               <>
                 <th>{t("User", "Пользователь")}</th>
-                <th>{t("Joined", "Присоединился")}</th>
+                <th>{t("Plan", "Тип")}</th>
+                <th className="num">{t("Discount", "Скидка")}</th>
+                <th className="num">{t("Balance", "Баланс")}</th>
+                <th className="num">{t("Top-ups", "Пополнения")}</th>
                 <th className="num">{t("Spend", "Траты")}</th>
                 <th className="num">{t("You earned", "Вы заработали")}</th>
               </>
             }
           >
-            {items.map((r) => (
-              <tr key={`${r.userMask}-${r.attributedAt}`}>
-                <td className="mono">{r.userMask}</td>
-                <td>{formatDate(r.attributedAt)}</td>
-                <td className="num">{formatUsd(r.spendNano)}</td>
-                <td className="num" style={{ color: "var(--accent-strong)", fontWeight: 700 }}>
-                  {formatUsd(r.earnedNano)}
-                </td>
-              </tr>
-            ))}
+            {items.map((r) => {
+              const isPartner = (r.referralFloorBps ?? 0) > 0;
+              return (
+                <tr key={`${r.userMask}-${r.attributedAt}`}>
+                  <td className="mono">
+                    {r.userMask}
+                    <div style={{ color: "var(--text-dim)", fontSize: "12px", marginTop: "2px" }}>
+                      {t("joined", "с")} {formatDate(r.attributedAt)}
+                    </div>
+                  </td>
+                  <td>
+                    {r.customerType === "b2b" ? (
+                      <Badge tone="green">B2B</Badge>
+                    ) : r.customerType === "b2c" ? (
+                      isPartner ? (
+                        <Badge tone="yellow">{t("B2C · partner rate", "B2C · партнёрская")}</Badge>
+                      ) : (
+                        <Badge tone="neutral">B2C</Badge>
+                      )
+                    ) : (
+                      <span style={{ color: "var(--text-dim)" }}>—</span>
+                    )}
+                    {r.status && r.status !== "active" ? (
+                      <div style={{ marginTop: "4px" }}>
+                        <StatusBadge status={r.status} />
+                      </div>
+                    ) : null}
+                  </td>
+                  <td className="num">
+                    {r.discountPercent != null ? `${r.discountPercent}%` : <span style={{ color: "var(--text-dim)" }}>—</span>}
+                  </td>
+                  <td className="num">
+                    {r.balanceNano != null ? formatUsd(r.balanceNano) : <span style={{ color: "var(--text-dim)" }}>—</span>}
+                  </td>
+                  <td className="num">{formatUsd(r.topupNano)}</td>
+                  <td className="num">{formatUsd(r.spendNano)}</td>
+                  <td className="num" style={{ color: "var(--accent-strong)", fontWeight: 700 }}>
+                    {formatUsd(r.earnedNano)}
+                  </td>
+                </tr>
+              );
+            })}
           </Table>
         )
       ) : null}

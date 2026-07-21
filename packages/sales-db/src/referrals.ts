@@ -7,6 +7,7 @@ export interface ReferredUserSummary {
   attributedAt: Date;
   spendNano: bigint;
   earnedNano: bigint;
+  topupNano: bigint;
 }
 
 export async function upsertReferredUser(database: SalesDatabase, input: {
@@ -48,6 +49,7 @@ export async function listReferredUsers(database: SalesDatabase, partnerId: stri
     attributed_at: Date;
     spend_nano: string;
     earned_nano: string;
+    topup_nano: string;
   }>(`
     SELECT ru.commerce_user_id, ru.attributed_at,
       COALESCE((
@@ -59,7 +61,11 @@ export async function listReferredUsers(database: SalesDatabase, partnerId: stri
         FROM commission_entries ce
         JOIN partner_usage_events e ON e.id = ce.usage_event_id
         WHERE ce.partner_id = $1 AND e.commerce_user_id = ru.commerce_user_id
-      ), 0)::text AS earned_nano
+      ), 0)::text AS earned_nano,
+      COALESCE((
+        SELECT SUM(rt.amount_nano) FROM referred_topups rt
+        WHERE rt.commerce_user_id = ru.commerce_user_id
+      ), 0)::text AS topup_nano
     FROM referred_users ru
     WHERE ru.partner_id = $1
     ORDER BY ru.attributed_at DESC
@@ -69,6 +75,7 @@ export async function listReferredUsers(database: SalesDatabase, partnerId: stri
     attributedAt: row.attributed_at,
     spendNano: BigInt(row.spend_nano),
     earnedNano: BigInt(row.earned_nano),
+    topupNano: BigInt(row.topup_nano),
   }));
 }
 

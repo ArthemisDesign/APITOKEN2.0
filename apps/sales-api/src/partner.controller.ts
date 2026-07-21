@@ -51,6 +51,7 @@ import type { Environment } from "./config.js";
 import { CurrentAuth, type RequestAuth, SessionAuthGuard } from "./auth.guard.js";
 import { generateCode, partnerView } from "./auth.service.js";
 import { normalizeTelegramUsername } from "./telegram.js";
+import { CommerceService } from "./commerce.service.js";
 import { SALES_DATABASE } from "./infrastructure.module.js";
 import {
   createDiscountLinkSchema,
@@ -87,6 +88,7 @@ export class PartnerController {
   constructor(
     @Inject(SALES_DATABASE) private readonly database: SalesDatabase,
     private readonly config: ConfigService<Environment, true>,
+    private readonly commerce: CommerceService,
   ) {}
 
   @Get("overview")
@@ -131,14 +133,27 @@ export class PartnerController {
   @Header("Cache-Control", "no-store")
   async referrals(@CurrentAuth() current: RequestAuth): Promise<unknown> {
     const referrals = await listReferredUsers(this.database, current.partner.id);
+    // Обогащаем авторитетными данными коммерции/движка (тип, скидка, floor, баланс). Best-effort:
+    // при недоступности commerce карта пуста и строки показывают только локальные поля.
+    const profiles = await this.commerce.referralProfiles(referrals.map((r) => r.commerceUserId));
     return {
-      items: referrals.map((referral) => ({
-        // Commerce identities stay masked: only a short uuid prefix is exposed to partners.
-        userMask: `user-${referral.commerceUserId.slice(0, 8)}…`,
-        attributedAt: referral.attributedAt.toISOString(),
-        spendNano: referral.spendNano.toString(),
-        earnedNano: referral.earnedNano.toString(),
-      })),
+      items: referrals.map((referral) => {
+        const profile = profiles.get(referral.commerceUserId);
+        return {
+          // Commerce identities stay masked: only a short uuid prefix is exposed to partners.
+          userMask: `user-${referral.commerceUserId.slice(0, 8)}…`,
+          attributedAt: referral.attributedAt.toISOString(),
+          spendNano: referral.spendNano.toString(),
+          earnedNano: referral.earnedNano.toString(),
+          topupNano: referral.topupNano.toString(),
+          // Коммерческие поля (могут отсутствовать, если commerce недоступен).
+          customerType: profile?.customerType ?? null,
+          discountPercent: profile?.discountPercent ?? null,
+          referralFloorBps: profile?.referralFloorBps ?? null,
+          balanceNano: profile?.balanceNano ?? null,
+          status: profile?.status ?? null,
+        };
+      }),
     };
   }
 

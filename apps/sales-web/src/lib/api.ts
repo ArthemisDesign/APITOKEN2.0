@@ -183,6 +183,13 @@ export type ReferralRow = {
   attributedAt: string;
   spendNano: string;
   earnedNano: string;
+  topupNano: string;
+  // Обогащение из commerce/движка — может быть null, если commerce временно недоступен.
+  customerType: "b2c" | "b2b" | null;
+  discountPercent: number | null;
+  referralFloorBps: number | null;
+  balanceNano: string | null;
+  status: string | null;
 };
 
 export type EarningRow = { date: string; spendNano: string; earnedNano: string };
