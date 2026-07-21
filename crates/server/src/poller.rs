@@ -83,8 +83,9 @@ pub async fn metrics_loop(app: AppState, metrics_db: String, retention_days: i64
 /// лишь для проверки живости токена. Под боевым трафиком `polled_ts` свеж → probe не срабатывает.
 const LIVENESS_INTERVAL: i64 = 300;
 /// Suspect (auth падает, но ещё не приговор): probe чаще и НЕЗАВИСИМО от cooling — иначе `cool(900)`
-/// после 401/403-probe отложил бы следующий probe и мы не добрали бы корроборацию за ~30 мин.
-const SUSPECT_INTERVAL: i64 = 600;
+/// после 401/403-probe отложил бы следующий probe. 300с → второй probe приходит на ~5-й минуте, и
+/// (при DEAD_STREAK=2, DEAD_MIN_SECS=300) подписка становится DEAD ровно на 2-м вызове в 5 минут.
+const SUSPECT_INTERVAL: i64 = 300;
 /// Dead (токен корроборированно мёртв): медленный resurrection-probe — авто-ревайв, если токен снова
 /// заработал (заменён/разбанен), не долбя забаненный аккаунт часто. Тоже cooling-независимо.
 const DEAD_RESURRECT_INTERVAL: i64 = 3600;
