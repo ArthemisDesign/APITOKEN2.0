@@ -181,7 +181,16 @@ impl TeeMeter {
             // AUDIT-TODO(C53): резервировать по count_tokens точного post-injection запроса с tool overhead.
             let hold_cap = b.hold.max(0) as i128;
             if computed_charge > hold_cap {
-                eprintln!("⚠ billing charge превысил hold: charge_nano={computed_charge} hold_nano={hold_cap}; clamp");
+                // Разбивка usage в лог: hold порезан балансом, а какая-то корзина его пробила.
+                // Без этой разбивки (только charge/hold) не видно ВИНОВНОЙ корзины — а значит
+                // нельзя корректно расширить preflight-резерв (C53/C55). Токены не секрет.
+                eprintln!(
+                    "⚠ billing charge превысил hold: charge_nano={computed_charge} hold_nano={hold_cap}; \
+                     clamp | model={price_model} us_geo={us_inference} real_nano={real} \
+                     in={} out={} cr={} cw5={} cw1={} web={}",
+                    usage.input_tokens, usage.output_tokens, usage.cache_read_tokens,
+                    usage.cache_write_5m_tokens, usage.cache_write_1h_tokens, usage.web_search_requests,
+                );
             }
             let charge_i64 = computed_charge.clamp(0, hold_cap) as i64;
             // AUDIT-TODO(C55): учитывать inference_geo premium и в preflight-резерве, чтобы hold был верхней границей.
