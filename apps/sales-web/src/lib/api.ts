@@ -391,7 +391,7 @@ export type PartnerDetailBundle = {
 // On-chain payout batches (admin). *Nano are decimal strings; wei are strings.
 // ---------------------------------------------------------------------------
 
-export type PayoutWindow = { open: boolean; opensAt: string | null; closesAt: string | null };
+export type PayoutWindow = { open: boolean; opensAt: string | null; closesAt: string | null; enforced?: boolean };
 
 export type PayoutEngine = { configured: boolean; window: PayoutWindow };
 

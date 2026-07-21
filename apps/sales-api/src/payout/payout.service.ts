@@ -116,10 +116,15 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
     return this.chain;
   }
 
-  windowInfo(now = new Date()): { open: boolean; opensAt: string | null; closesAt: string | null } {
+  windowInfo(now = new Date()): { open: boolean; opensAt: string | null; closesAt: string | null; enforced: boolean } {
+    const enforced = this.config.get("PAYOUT_ENFORCE_WINDOW", { infer: true });
     const period = periodInPayoutWindow(now);
-    if (!period) return { open: false, opensAt: null, closesAt: null };
-    return { open: true, opensAt: windowStart(period).toISOString(), closesAt: windowEnd(period).toISOString() };
+    // Если гейт окна выключен (PAYOUT_ENFORCE_WINDOW=false) — отправка разрешена всегда, показываем open.
+    if (!enforced) {
+      return { open: true, opensAt: period ? windowStart(period).toISOString() : null, closesAt: period ? windowEnd(period).toISOString() : null, enforced: false };
+    }
+    if (!period) return { open: false, opensAt: null, closesAt: null, enforced: true };
+    return { open: true, opensAt: windowStart(period).toISOString(), closesAt: windowEnd(period).toISOString(), enforced: true };
   }
 
   /** Жёсткий гейт: отправка возможна ТОЛЬКО в 3-дневное окно выплат (если PAYOUT_ENFORCE_WINDOW). */

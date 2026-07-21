@@ -32,6 +32,7 @@ function bnb(wei: string | null): string {
   return `${whole}.${frac} BNB`;
 }
 function fmtWindow(w: PayoutEngine["window"]): string {
+  if (w.enforced === false) return "gate OFF (test mode) — sending allowed anytime";
   if (w.open) return `open until ${formatDate(w.closesAt)}`;
   return "closed — sending is disabled outside the 3-day payout window";
 }
