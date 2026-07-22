@@ -215,6 +215,34 @@ export const authSessions = pgTable("auth_sessions", {
   index("auth_sessions_expiry_idx").on(table.expiresAt),
 ]);
 
+export const signupProfiles = pgTable("signup_profiles", {
+  userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  emailCanonical: text("email_canonical").notNull(),
+  ipAddress: text("ip_address"),
+  ipSubnet: text("ip_subnet"),
+  userAgent: text("user_agent"),
+  deviceHash: text("device_hash"),
+  bonusGranted: boolean("bonus_granted").notNull().default(false),
+  flaggedReason: text("flagged_reason"),
+  createdAt,
+}, (table) => [
+  // Один welcome-бонус на устройство/подсеть/канонический email — атомарно на уровне БД.
+  uniqueIndex("signup_bonus_device_uidx").on(table.deviceHash).where(sql`${table.bonusGranted}`),
+  uniqueIndex("signup_bonus_subnet_uidx").on(table.ipSubnet).where(sql`${table.bonusGranted}`),
+  uniqueIndex("signup_bonus_email_uidx").on(table.emailCanonical).where(sql`${table.bonusGranted}`),
+  index("signup_profiles_subnet_idx").on(table.ipSubnet, table.createdAt),
+]);
+
+export const deviceSightings = pgTable("device_sightings", {
+  deviceHash: text("device_hash").notNull(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.deviceHash, table.userId] }),
+  index("device_sightings_user_idx").on(table.userId),
+]);
+
 export const authRateLimits = pgTable("auth_rate_limits", {
   keyHash: text("key_hash").primaryKey(),
   attempts: integer("attempts").notNull().default(0),
