@@ -1004,9 +1004,14 @@ async fn serve() -> Result<()> {
         },
     };
     let restored = pool_rows.len();
-    app.pool.import_state(pool_rows);
+    let repaired_calibrations = app.pool.import_state(pool_rows);
     if restored > 0 {
         eprintln!("восстановлено состояние пула: {restored} подписок");
+    }
+    if repaired_calibrations > 0 {
+        eprintln!(
+            "pool calibration: quarantined {repaired_calibrations} implausible persisted estimate(s)"
+        );
     }
     let dead_restored = health_rows
         .iter()
@@ -1038,12 +1043,18 @@ async fn serve() -> Result<()> {
         app.pool
             .set_on_change(std::sync::Arc::new(move || pk.notify_one()));
     }
+    let repair_persist_poke = persist_poke.clone();
     tokio::spawn(poller::persist_loop(
         app.clone(),
         authority.clone(),
         owner.clone(),
         persist_poke,
     ));
+    if repaired_calibrations > 0 {
+        // `Notify` retains one permit even if the task has not reached `notified()` yet. Persist the
+        // sanitized estimate immediately instead of waiting for the two-minute safety flush.
+        repair_persist_poke.notify_one();
+    }
 
     tokio::spawn(poller::reload_loop(
         app.clone(),

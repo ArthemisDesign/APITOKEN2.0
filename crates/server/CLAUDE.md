@@ -37,6 +37,8 @@
   probe не срабатывает. `LIVENESS_INTERVAL` — как редко пинговать простаивающую (проверка живости токена).
   `persist_loop` — write-through персист состояния пула по событию cooling (`pool.on_change` → `Notify`)
   + редкий safety-flush; на старте `serve` восстанавливает состояние через `pool.import_state`.
+  Если import карантинил implausible legacy calibration, `serve` сразу будит persist-loop, чтобы
+  repaired prior-fallback не остался лишь in-memory до safety-flush.
   `poll_loop` также ведёт **durable auth-health**: probe кормит `pool.record_probe` (машина dead-детекта),
   изменившийся вердикт персистится owner-fenced (`save_sub_health`); suspect/dead probe-ятся НЕЗАВИСИМО
   от cooling (`SUSPECT_INTERVAL`/`DEAD_RESURRECT_INTERVAL`), чтобы добрать корроборацию/ресуррекцию. На

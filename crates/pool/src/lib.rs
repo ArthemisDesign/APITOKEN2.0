@@ -139,6 +139,35 @@ const CALIB_ALPHA: f64 = 0.3; // вес нового наблюдения в EMA
                               // Калибруем только на Δutil ≥ 3%: util в заголовках Anthropic ЛАГАЕТ (сразу после расхода
                               // занижен) и квантован ~1% — на мелком Δutil cap раздувается. Больший порог = чище от лага.
 const CALIB_MIN_DELTA: f64 = 0.03;
+/// A measured window far outside its plan-scaled prior is timing noise, not capacity. In particular,
+/// response headers arrive before streaming usage is settled, so concurrent requests can otherwise
+/// pair a provider utilization jump with only a few already-finished cheap requests.
+const CALIB_MIN_PRIOR_FACTOR: f64 = 0.25;
+const CALIB_MAX_PRIOR_FACTOR: f64 = 4.0;
+
+fn plausible_cap(cap: f64, prior_cap: f64) -> bool {
+    cap.is_finite()
+        && prior_cap.is_finite()
+        && prior_cap > 0.0
+        && cap >= prior_cap * CALIB_MIN_PRIOR_FACTOR
+        && cap <= prior_cap * CALIB_MAX_PRIOR_FACTOR
+}
+
+fn validated_cap(cap: f64, prior_cap: f64) -> f64 {
+    if cap > 0.0 && plausible_cap(cap, prior_cap) {
+        cap
+    } else {
+        0.0
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CalibSample {
+    util: f64,
+    spent_total: f64,
+    prior_cap: f64,
+    safe: bool,
+}
 
 /// Один шаг калибровки окна. Копим интервал (util_anchor→new_util) против расхода
 /// (spent_anchor→spent_total); когда Δutil перерос порог — ёмкость = ΔUSD/Δutil (EMA),
@@ -153,10 +182,15 @@ fn calib_window(
     anchor: &mut f64,
     spent_anchor: &mut f64,
     cap: &mut f64,
-    new_util: f64,
-    spent_total: f64,
     calib_n: &mut u32,
+    sample: CalibSample,
 ) {
+    let CalibSample {
+        util: new_util,
+        spent_total,
+        prior_cap,
+        safe: sample_safe,
+    } = sample;
     if !*seeded {
         // первое наблюдение: засеваем якорь реальным util (а не 0), чтобы первый интервал
         // калибровки мерил от фактического старта окна, а не от нуля.
@@ -176,28 +210,29 @@ fn calib_window(
         return; // Δutil ещё мал — копим (якорь НЕ двигаем, ΔUSD не теряется)
     }
     let du = spent_total - *spent_anchor;
-    if du > 0.0 {
+    if sample_safe && du > 0.0 {
         // Защита от ЧУЖОГО использования аккаунта (подписка — живой Max владельца): util мог вырасти
         // из-за его расхода, а не нашего. Калибруем ТОЛЬКО если наш ΔUSD объясняет заметную долю
-        // Δutil при текущем cap (иначе obs=du/d занижает cap, аккаунт недоиспользуется). До первой
-        // калибровки (cap≤0, бутстрап) — пускаем всегда.
-        let ours_explains = *cap <= 0.0 || du >= d * *cap * CALIB_MIN_SHARE;
-        if ours_explains {
+        // Δutil при текущем cap (иначе obs=du/d занижает cap, аккаунт недоиспользуется). Bootstrap
+        // проверяем против тарифного прайора: нулевая cap больше не означает «принять любой шум».
+        let baseline = if plausible_cap(*cap, prior_cap) {
+            *cap
+        } else {
+            prior_cap
+        };
+        let obs = du / d;
+        let ours_explains = du >= d * baseline * CALIB_MIN_SHARE;
+        if ours_explains && plausible_cap(obs, prior_cap) {
             // ёмкость = ΔUSD/Δutil; клампим, чтобы шумный квантованный шаг не швырнул cap
-            let mut obs = du / d;
-            if *cap > 0.0 {
-                obs = obs.clamp(*cap / CALIB_MAX_JUMP, *cap * CALIB_MAX_JUMP);
-            }
-            *cap = if *cap > 0.0 {
-                *cap * (1.0 - CALIB_ALPHA) + obs * CALIB_ALPHA
-            } else {
-                obs
-            };
+            let obs = obs.clamp(baseline / CALIB_MAX_JUMP, baseline * CALIB_MAX_JUMP);
+            // Even the first accepted sample is blended with the plan prior. One observation means
+            // some evidence, not enough confidence to replace the safe prior wholesale.
+            *cap = baseline * (1.0 - CALIB_ALPHA) + obs * CALIB_ALPHA;
             *calib_n += 1;
         }
     }
-    // util перерос порог — пере-заякориваемся В ЛЮБОМ случае (даже если ΔUSD=0: это скачок
-    // базовой линии — чужой трафик/рестарт, а не наш расход; иначе якорь застревал бы на нуле).
+    // util перерос порог — пере-заякориваемся В ЛЮБОМ случае (даже если ΔUSD=0, observation
+    // implausible, or concurrent streams made timing ambiguous). Иначе якорь застревал бы на шуме.
     *anchor = new_util;
     *spent_anchor = spent_total;
 }
@@ -1249,7 +1284,18 @@ impl Pool {
         r7: Option<i64>,
     ) {
         let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        let scale = g
+            .subs
+            .iter()
+            .find(|sub| sub.email == email)
+            .map(|sub| plan_scale(&sub.plan))
+            .unwrap_or_else(|| plan_scale(""));
+        let prior5 = self.prior5h_usd * scale;
+        let prior7 = self.prior7d_usd * scale;
         let l = g.live.entry(email.to_string()).or_default();
+        // The selected request itself owns one slot. More than one means response headers and
+        // completed spend can belong to different concurrent requests, so the sample is unsafe.
+        let calibration_safe = l.inflight <= 1;
 
         // КАЛИБРОВКА ёмкости окон: cap = ΔUSD/Δutil. Якоря на окно двигаем только когда Δutil
         // перерос порог (иначе мелкие шаги util теряли бы накопленный ΔUSD). При сбросе окна —
@@ -1261,9 +1307,13 @@ impl Pool {
                 &mut l.util5_anchor,
                 &mut l.spent5_anchor_usd,
                 &mut l.cap5h_usd,
-                n5,
-                spent_total,
                 &mut l.calib_n,
+                CalibSample {
+                    util: n5,
+                    spent_total,
+                    prior_cap: prior5,
+                    safe: calibration_safe,
+                },
             );
         }
         if let Some(n7) = u7 {
@@ -1273,9 +1323,13 @@ impl Pool {
                 &mut l.util7_anchor,
                 &mut l.spent7_anchor_usd,
                 &mut l.cap7d_usd,
-                n7,
-                spent_total,
                 &mut ignore,
+                CalibSample {
+                    util: n7,
+                    spent_total,
+                    prior_cap: prior7,
+                    safe: calibration_safe,
+                },
             );
         }
         // якорь «живой» утилизации = состояние на момент этого заголовка
@@ -1450,13 +1504,21 @@ impl Pool {
             .collect()
     }
 
-    /// Восстановить состояние на старте (после build пула из реестра). Возвращаем только осмысленное:
+    /// Восстановить состояние на старте (после build пула из реестра). Возвращаем число строк, где
+    /// implausible legacy calibration was quarantined so composition can persist the repair quickly.
+    /// Возвращаем только осмысленное:
     /// cooling (если ещё в будущем — бан на дни переживает рестарт), калибровку ёмкости, spent, util/
     /// reset; засеваем якоря калибровки восстановленной точкой, чтобы продолжить, а не мерить с нуля.
-    pub fn import_state(&self, rows: Vec<registry::PoolStateRow>) {
+    pub fn import_state(&self, rows: Vec<registry::PoolStateRow>) -> usize {
         let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
         let now = now();
         let known: HashSet<String> = g.subs.iter().map(|s| s.email.clone()).collect();
+        let scales: HashMap<String, f64> = g
+            .subs
+            .iter()
+            .map(|sub| (sub.email.clone(), plan_scale(&sub.plan)))
+            .collect();
+        let mut repaired = 0usize;
         for r in rows {
             // Активным восстанавливаем всё. Неактивным удерживаем строку только пока важен будущий
             // cooling: replace_subs потом сольёт её в live при реактивации и не пустит трафик в бан.
@@ -1467,12 +1529,17 @@ impl Pool {
             if r.cooling_until > now {
                 l.cooling_until = r.cooling_until;
             }
-            if r.cap5h_usd > 0.0 {
-                l.cap5h_usd = r.cap5h_usd;
-            }
-            if r.cap7d_usd > 0.0 {
-                l.cap7d_usd = r.cap7d_usd;
-            }
+            let scale = scales
+                .get(&r.email)
+                .copied()
+                .unwrap_or_else(|| plan_scale(""));
+            let cap5 = validated_cap(r.cap5h_usd, self.prior5h_usd * scale);
+            let cap7 = validated_cap(r.cap7d_usd, self.prior7d_usd * scale);
+            let bad5 = (r.calib_n > 0 || r.cap5h_usd != 0.0) && cap5 == 0.0;
+            let bad7 = r.cap7d_usd != 0.0 && cap7 == 0.0;
+            repaired += usize::from(bad5 || bad7);
+            l.cap5h_usd = cap5;
+            l.cap7d_usd = cap7;
             l.spent_total_usd = r.spent_total_usd;
             l.unpersisted_spend_usd = 0.0;
             l.spent_at_header_usd = r.spent_total_usd;
@@ -1480,7 +1547,7 @@ impl Pool {
             l.util7d = r.util7d;
             l.reset5h = r.reset5h;
             l.reset7d = r.reset7d;
-            l.calib_n = r.calib_n.max(0) as u32;
+            l.calib_n = if bad5 { 0 } else { r.calib_n.max(0) as u32 };
             l.persist_version = r.version.max(0);
             // засеять якоря калибровки восстановленной точкой (продолжаем EMA, не мерим с нуля)
             l.seed5 = true;
@@ -1494,6 +1561,7 @@ impl Pool {
             l.polled_ts = now - (stable_hash64(r.email.as_bytes()) % 240) as i64;
             l.last_used = now;
         }
+        repaired
     }
 
     /// Accept versions returned by a successful fenced PostgreSQL CAS write without replacing live
@@ -1537,15 +1605,33 @@ impl Pool {
         }
 
         let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        let scales: HashMap<String, f64> = g
+            .subs
+            .iter()
+            .map(|sub| (sub.email.clone(), plan_scale(&sub.plan)))
+            .collect();
         for row in rows {
+            let scale = scales
+                .get(&row.email)
+                .copied()
+                .unwrap_or_else(|| plan_scale(""));
+            let prior5 = self.prior5h_usd * scale;
+            let prior7 = self.prior7d_usd * scale;
+            let remote5 = validated_cap(row.cap5h_usd, prior5);
+            let remote7 = validated_cap(row.cap7d_usd, prior7);
+            let remote5_bad = (row.calib_n > 0 || row.cap5h_usd != 0.0) && remote5 == 0.0;
             let live = g.live.entry(row.email).or_default();
             live.cooling_until = live.cooling_until.max(row.cooling_until);
             let persisted_local = (live.spent_total_usd - live.unpersisted_spend_usd).max(0.0);
             live.spent_total_usd =
                 persisted_local.max(row.spent_total_usd) + live.unpersisted_spend_usd;
-            live.cap5h_usd = conservative_cap(live.cap5h_usd, row.cap5h_usd);
-            live.cap7d_usd = conservative_cap(live.cap7d_usd, row.cap7d_usd);
-            live.calib_n = live.calib_n.max(row.calib_n.max(0) as u32);
+            live.cap5h_usd = conservative_cap(validated_cap(live.cap5h_usd, prior5), remote5);
+            live.cap7d_usd = conservative_cap(validated_cap(live.cap7d_usd, prior7), remote7);
+            if live.cap5h_usd == 0.0 || remote5_bad {
+                live.calib_n = 0;
+            } else {
+                live.calib_n = live.calib_n.max(row.calib_n.max(0) as u32);
+            }
             merge_window(&mut live.util5h, &mut live.reset5h, row.util5h, row.reset5h);
             merge_window(&mut live.util7d, &mut live.reset7d, row.util7d, row.reset7d);
             live.persist_version = live.persist_version.max(row.version.max(0));
@@ -1706,6 +1792,168 @@ mod tests {
         assert!((c.cap5h_usd - 50.0).abs() < 1e-6, "cap5={}", c.cap5h_usd);
         // остаток 5h = 50 * (1 - 0.10) = $45
         assert!((c.rem5h_usd - 45.0).abs() < 1e-6, "rem5={}", c.rem5h_usd);
+    }
+
+    /// A provider-utilization jump paired with only tiny already-settled concurrent requests must
+    /// not replace a Max20 prior with a cents-sized window estimate.
+    #[test]
+    fn calibration_rejects_implausible_or_concurrent_bootstrap_samples() {
+        let mut seeded = true;
+        let mut anchor = 0.20;
+        let mut spent_anchor = 0.0;
+        let mut cap = 0.0;
+        let mut samples = 0;
+
+        // This reproduces the production failure shape: about $0.00126 happened to be settled while
+        // the provider utilization moved four points. obs=$0.0315 against a $300 plan prior.
+        calib_window(
+            &mut seeded,
+            &mut anchor,
+            &mut spent_anchor,
+            &mut cap,
+            &mut samples,
+            CalibSample {
+                util: 0.24,
+                spent_total: 0.00126,
+                prior_cap: 300.0,
+                safe: true,
+            },
+        );
+        assert_eq!(cap, 0.0, "implausible bootstrap must keep using the prior");
+        assert_eq!(samples, 0);
+
+        // Even a numerically plausible observation is ambiguous while another stream is active.
+        calib_window(
+            &mut seeded,
+            &mut anchor,
+            &mut spent_anchor,
+            &mut cap,
+            &mut samples,
+            CalibSample {
+                util: 0.28,
+                spent_total: 12.00126,
+                prior_cap: 300.0,
+                safe: false,
+            },
+        );
+        assert_eq!(cap, 0.0);
+        assert_eq!(samples, 0);
+
+        // The unsafe interval was re-anchored. A later isolated $12 / 4% sample calibrates safely.
+        calib_window(
+            &mut seeded,
+            &mut anchor,
+            &mut spent_anchor,
+            &mut cap,
+            &mut samples,
+            CalibSample {
+                util: 0.32,
+                spent_total: 24.00126,
+                prior_cap: 300.0,
+                safe: true,
+            },
+        );
+        assert!((cap - 300.0).abs() < 1e-6, "cap={cap}");
+        assert_eq!(samples, 1);
+    }
+
+    #[test]
+    fn set_util_only_calibrates_an_isolated_stream() {
+        let p = pool(&["a"]);
+        p.set_util("a", Some(0.0), Some(0.0), None, None, None);
+        p.mark_used("a");
+        p.mark_used("a");
+        p.record_spend("a", 5 * 1_000_000_000);
+        p.set_util("a", Some(0.10), None, None, None, None);
+        assert!(
+            !p.capacity()[0].calibrated,
+            "two in-flight streams make the spend/header pairing ambiguous"
+        );
+        p.mark_done("a");
+        p.mark_done("a");
+
+        p.mark_used("a");
+        p.record_spend("a", 5 * 1_000_000_000);
+        p.set_util("a", Some(0.20), None, None, None, None);
+        p.mark_done("a");
+        let cap = &p.capacity()[0];
+        assert!(cap.calibrated);
+        assert!((cap.cap5h_usd - 50.0).abs() < 1e-6);
+    }
+
+    /// Startup quarantines legacy poisoned calibration and the CAS rebase path cannot restore it.
+    /// Placement immediately falls back to the plan prior, so the healthy empty subscription wins.
+    #[test]
+    fn import_repairs_implausible_capacity_and_restores_placement() {
+        let p = Pool::new(
+            vec![sub("igna"), sub("bole")],
+            Reserve::new(0.10, 0.03, 0.0),
+            300.0,
+            1420.0,
+        );
+        let rows = vec![
+            registry::PoolStateRow {
+                email: "igna".into(),
+                cooling_until: 0,
+                cap5h_usd: 242.86,
+                cap7d_usd: 1464.54,
+                spent_total_usd: 100.0,
+                util5h: 0.44,
+                util7d: 0.46,
+                reset5h: now() + WIN5_SECS,
+                reset7d: now() + WIN7_SECS,
+                calib_n: 5,
+                version: 7,
+                spent_delta_usd: 0.0,
+            },
+            registry::PoolStateRow {
+                email: "bole".into(),
+                cooling_until: 0,
+                cap5h_usd: 0.0315,
+                cap7d_usd: 0.0,
+                spent_total_usd: 6.2,
+                util5h: 0.0,
+                util7d: 0.25,
+                reset5h: now() + WIN5_SECS,
+                reset7d: now() + WIN7_SECS,
+                calib_n: 1,
+                version: 9,
+                spent_delta_usd: 0.0,
+            },
+        ];
+        assert_eq!(p.import_state(rows), 1);
+
+        let bole = p
+            .capacity()
+            .into_iter()
+            .find(|cap| cap.email == "bole")
+            .unwrap();
+        assert!(!bole.calibrated);
+        assert!((bole.cap5h_usd - 300.0).abs() < 1e-6);
+        assert_eq!(p.peek_affinity_home().unwrap().email, "bole");
+
+        // A stale writer/CAS reload still contains the poisoned value. It must not re-enter memory.
+        p.merge_persisted_state(vec![registry::PoolStateRow {
+            email: "bole".into(),
+            cooling_until: 0,
+            cap5h_usd: 0.0315,
+            cap7d_usd: 0.0,
+            spent_total_usd: 6.2,
+            util5h: 0.0,
+            util7d: 0.25,
+            reset5h: now() + WIN5_SECS,
+            reset7d: now() + WIN7_SECS,
+            calib_n: 1,
+            version: 10,
+            spent_delta_usd: 0.0,
+        }]);
+        let repaired = p
+            .export_state()
+            .into_iter()
+            .find(|row| row.email == "bole")
+            .unwrap();
+        assert_eq!(repaired.cap5h_usd, 0.0);
+        assert_eq!(repaired.calib_n, 0);
     }
 
     /// Живая утилизация: расход между заголовками сразу уменьшает остаток.
