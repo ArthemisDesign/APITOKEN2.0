@@ -189,5 +189,11 @@ grep -Fq 'DEPLOY_BUILD_CACHE_ROOT=/var/lib/apitoken/watchdog/deploy-build-cache'
   "$ROOT/deploy/deploy.sh" || wd_die 'release builder does not pin the writable build cache'
 grep -Fq '/var/lib/apitoken/watchdog/deploy-build-cache/cargo' \
   "$ROOT/deploy/install-watchdog.sh" || wd_die 'watchdog installer does not create the release build cache'
+grep -Fq 'tokio-postgres-rustls' "$ROOT/crates/registry/Cargo.toml" \
+  || wd_die 'engine PostgreSQL transport must use rustls alongside the BoringSSL forward transport'
+if grep -Eq '^[[:space:]]*(postgres-native-tls|native-tls)[[:space:]]*=' \
+  "$ROOT/crates/registry/Cargo.toml"; then
+  wd_die 'OpenSSL-compatible PostgreSQL TLS cannot be linked with the BoringSSL forward transport'
+fi
 
 printf 'watchdog migration and engine topology tests passed\n'

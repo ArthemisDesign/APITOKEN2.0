@@ -10,7 +10,7 @@ use crate::{
 use anyhow::{bail, Context, Result};
 use postgres::config::{Host, SslMode};
 use postgres::{Client, Row, Transaction};
-use postgres_native_tls::MakeTlsConnector;
+use tokio_postgres_rustls::MakeRustlsConnect;
 
 const MIGRATION_0001: &str = include_str!("../migrations_pg/0001_engine_authority.sql");
 const MIGRATION_0002: &str = include_str!("../migrations_pg/0002_api_key_policies.sql");
@@ -176,11 +176,12 @@ impl PgStore {
         if remote_tcp && config.get_ssl_mode() != SslMode::Require {
             bail!("remote PostgreSQL requires sslmode=require");
         }
-        let connector = native_tls::TlsConnector::builder()
-            .build()
-            .context("build PostgreSQL TLS connector")?;
+        // The forward transport statically links BoringSSL through wreq. Keep PostgreSQL on
+        // rustls so a single engine binary never links two libraries that export OpenSSL's ABI.
+        let (connector, _certificate_load_errors) = MakeRustlsConnect::with_native_certs()
+            .map_err(|errors| anyhow::anyhow!("load native certificates: {errors:?}"))?;
         let mut client = config
-            .connect(MakeTlsConnector::new(connector))
+            .connect(connector)
             .context("connect engine PostgreSQL")?;
         client
             .batch_execute(
