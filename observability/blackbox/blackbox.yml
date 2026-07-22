@@ -1,0 +1,28 @@
+modules:
+  http_2xx:
+    prober: http
+    timeout: 8s
+    http:
+      method: GET
+      preferred_ip_protocol: ip4
+      follow_redirects: true
+      fail_if_ssl: false
+      fail_if_not_ssl: false
+
+  http_auth_gate:
+    prober: http
+    timeout: 8s
+    http:
+      method: GET
+      preferred_ip_protocol: ip4
+      follow_redirects: false
+      valid_status_codes: [401]
+
+  http_support:
+    prober: http
+    timeout: 8s
+    http:
+      method: GET
+      preferred_ip_protocol: ip4
+      follow_redirects: true
+      valid_status_codes: [200, 406]

@@ -7,6 +7,7 @@ export const MANAGED_ADMIN_DOMAINS = [
   "admin.partners.apitoken.sale",
   "crm.apitoken.sale",
   "content-studio.apitoken.sale",
+  "monitoring.apitoken.sale",
 ] as const;
 
 export type ManagedAdminDomain = typeof MANAGED_ADMIN_DOMAINS[number];

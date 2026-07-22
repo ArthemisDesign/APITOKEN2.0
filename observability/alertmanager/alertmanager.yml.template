@@ -1,0 +1,39 @@
+global:
+  resolve_timeout: 5m
+  smtp_smarthost: __SMTP_SMARTHOST__
+  smtp_from: __SMTP_FROM__
+  smtp_auth_username: __SMTP_USERNAME__
+  smtp_auth_password: __SMTP_PASSWORD__
+  smtp_require_tls: true
+
+route:
+  receiver: production-email
+  group_by: [alertname, component, severity]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: [severity="critical"]
+      group_wait: 10s
+      repeat_interval: 1h
+
+receivers:
+  - name: production-email
+    email_configs:
+      - to: __ALERT_EMAIL_TO__
+        send_resolved: true
+        headers:
+          Subject: '[apiToken.sale][{{ .Status | toUpper }}][{{ .CommonLabels.severity }}] {{ .CommonLabels.alertname }}'
+        html: |-
+          <h2>{{ .Status | toUpper }}: {{ .CommonLabels.alertname }}</h2>
+          {{ range .Alerts }}
+          <p><strong>{{ .Annotations.summary }}</strong><br>
+          {{ .Annotations.description }}<br>
+          Component: {{ .Labels.component }}<br>
+          Runbook: {{ .Annotations.runbook }}</p>
+          {{ end }}
+
+inhibit_rules:
+  - source_matchers: [alertname="MonitoringTargetDown"]
+    target_matchers: [severity="warning"]
+    equal: [job, instance]

@@ -31,7 +31,7 @@ $1 ~ /\./ && $2 == "{" {
 group != "" && $2 ~ /^\$2[aby]\$/ {
   if ($1 == "disabled") next
   if (group == "panel") {
-    emit($1, $2, "[\"admin.apitoken.sale\",\"admin.partners.apitoken.sale\",\"content-studio.apitoken.sale\"]")
+    emit($1, $2, "[\"admin.apitoken.sale\",\"admin.partners.apitoken.sale\",\"content-studio.apitoken.sale\",\"monitoring.apitoken.sale\"]")
     panel_rows++
   } else if (group == "crm") {
     emit($1, $2, "[\"crm.apitoken.sale\"]")

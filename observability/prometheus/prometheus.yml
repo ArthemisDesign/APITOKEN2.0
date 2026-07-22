@@ -1,0 +1,143 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    environment: production
+    site: apitoken-sale
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["127.0.0.1:9093"]
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["127.0.0.1:9090"]
+
+  - job_name: node
+    static_configs:
+      - targets: ["127.0.0.1:9100"]
+
+  - job_name: postgres
+    static_configs:
+      - targets: ["127.0.0.1:9187"]
+
+  - job_name: caddy
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:2019"]
+
+  - job_name: claude-engine
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/engine_metrics_token
+    static_configs:
+      - targets: ["127.0.0.1:8790"]
+
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["127.0.0.1:9093"]
+
+  - job_name: grafana
+    static_configs:
+      - targets: ["127.0.0.1:3600"]
+
+  - job_name: loki
+    static_configs:
+      - targets: ["127.0.0.1:3101"]
+
+  - job_name: alloy
+    static_configs:
+      - targets: ["127.0.0.1:12345"]
+
+  - job_name: blackbox-exporter
+    static_configs:
+      - targets: ["127.0.0.1:9115"]
+
+  - job_name: public-http
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: ["https://api.apitoken.sale/health"]
+        labels: { component: claude-engine }
+      - targets: ["https://backend.apitoken.sale/v1/ready"]
+        labels: { component: commerce-api }
+      - targets: ["https://apitoken.sale/status"]
+        labels: { component: public-web }
+      - targets: ["https://partners.apitoken.sale/v1/ready"]
+        labels: { component: sales-api }
+      - targets: ["https://partners.apitoken.sale/"]
+        labels: { component: sales-web }
+      - targets: ["https://mail.apitoken.sale/"]
+        labels: { component: mail }
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+
+  - job_name: protected-http
+    metrics_path: /probe
+    params:
+      module: [http_auth_gate]
+    static_configs:
+      - targets: ["https://admin.apitoken.sale/"]
+        labels: { component: main-admin }
+      - targets: ["https://admin.partners.apitoken.sale/"]
+        labels: { component: sales-admin }
+      - targets: ["https://crm.apitoken.sale/"]
+        labels: { component: crm }
+      - targets: ["https://content-studio.apitoken.sale/"]
+        labels: { component: content-studio }
+      - targets: ["https://monitoring.apitoken.sale/"]
+        labels: { component: monitoring }
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+
+  - job_name: support-http
+    metrics_path: /probe
+    params:
+      module: [http_support]
+    static_configs:
+      - targets: ["https://support.apitoken.sale/"]
+        labels: { component: support }
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+
+  - job_name: loopback-http
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: ["http://127.0.0.1:3400/v1/health"]
+        labels: { component: crm-api }
+      - targets: ["http://127.0.0.1:3300/"]
+        labels: { component: crm-web }
+      - targets: ["http://127.0.0.1:3500/"]
+        labels: { component: content-studio-local }
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115

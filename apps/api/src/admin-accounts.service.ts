@@ -25,6 +25,7 @@ export const MANAGED_ADMIN_DOMAIN_DETAILS = [
   { domain: "admin.partners.apitoken.sale", label: "Partners admin" },
   { domain: "crm.apitoken.sale", label: "CRM" },
   { domain: "content-studio.apitoken.sale", label: "Content Studio" },
+  { domain: "monitoring.apitoken.sale", label: "Monitoring" },
 ] as const satisfies readonly { domain: ManagedAdminDomain; label: string }[];
 
 @Injectable()

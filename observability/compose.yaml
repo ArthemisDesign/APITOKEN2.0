@@ -1,0 +1,172 @@
+name: apitoken-monitoring
+
+services:
+  prometheus:
+    image: quay.io/prometheus/prometheus:v3.12.0@sha256:69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac
+    restart: unless-stopped
+    network_mode: host
+    user: "0:0"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --storage.tsdb.retention.size=24GB
+      - --web.listen-address=127.0.0.1:9090
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - ./secrets/engine_metrics_token:/run/secrets/engine_metrics_token:ro
+      - prometheus-data:/prometheus
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+
+  alertmanager:
+    image: quay.io/prometheus/alertmanager:v0.32.1@sha256:51a825c2a40acc3e338fdd00d622e01ec090f72be2b3ea46be0839cd47a4d286
+    restart: unless-stopped
+    network_mode: host
+    user: "0:0"
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.listen-address=127.0.0.1:9093
+    volumes:
+      - ./rendered/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=32m
+    security_opt:
+      - no-new-privileges:true
+
+  grafana:
+    image: grafana/grafana:13.1.0@sha256:121a7a9ece6dc10b969f1f96eed64b4f07dfac0d0b8abc070f7cb83bbde86f63
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      GF_SERVER_HTTP_ADDR: 127.0.0.1
+      GF_SERVER_HTTP_PORT: "3600"
+      GF_SERVER_DOMAIN: monitoring.apitoken.sale
+      GF_SERVER_ROOT_URL: https://monitoring.apitoken.sale
+      GF_SECURITY_ADMIN_USER: monitoring-admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_PROXY_ENABLED: "true"
+      GF_AUTH_PROXY_HEADER_NAME: X-WEBAUTH-USER
+      GF_AUTH_PROXY_HEADER_PROPERTY: username
+      GF_AUTH_PROXY_AUTO_SIGN_UP: "true"
+      GF_AUTH_PROXY_ENABLE_LOGIN_TOKEN: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_AUTO_ASSIGN_ORG_ROLE: Viewer
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_LOG_MODE: console
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+
+  loki:
+    image: grafana/loki:3.7.2@sha256:191d4fdfb7264f16989f0a57f320872620a5a7c2ceeec6229212c4190ec49b86
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - -config.file=/etc/loki/loki.yml
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+
+  alloy:
+    image: grafana/alloy:v1.16.1@sha256:51aeb9d829239345070619dad3edd6873186f913c84f45b365b74574fcb38ec0
+    restart: unless-stopped
+    network_mode: host
+    user: "0:0"
+    command:
+      - run
+      - --server.http.listen-addr=127.0.0.1:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /etc/machine-id:/etc/machine-id:ro
+      - /run/log/journal:/run/log/journal:ro
+      - /var/log/journal:/var/log/journal:ro
+      - alloy-data:/var/lib/alloy/data
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:v1.11.1@sha256:0f422f62c15f154af8d8572b23d623aebfb10cec73a5c654d18f911f3f9df241
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    command:
+      - --web.listen-address=127.0.0.1:9100
+      - --path.rootfs=/host
+      - --collector.systemd
+      - --collector.processes
+      - --collector.textfile.directory=/var/lib/node_exporter/textfile_collector
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/credentials/.+|var/lib/docker/.+)($|/)
+    volumes:
+      - /:/host:ro,rslave
+      - /run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro
+      - /var/lib/apitoken/monitoring/textfile:/var/lib/node_exporter/textfile_collector:ro
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=unconfined
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.19.1@sha256:e96064f876226d94bb6ce48a4c4b3dd76edba91168ec1ab024e5c4b959310b0f
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      DATA_SOURCE_NAME: postgresql://apitoken_monitoring:${MONITORING_POSTGRES_PASSWORD:?MONITORING_POSTGRES_PASSWORD is required}@127.0.0.1:5433/postgres?sslmode=disable
+      PG_EXPORTER_AUTO_DISCOVER_DATABASES: "true"
+    command:
+      - --web.listen-address=127.0.0.1:9187
+      - --log.level=warn
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=32m
+    security_opt:
+      - no-new-privileges:true
+
+  blackbox-exporter:
+    image: quay.io/prometheus/blackbox-exporter:v0.28.0@sha256:e753ff9f3fc458d02cca5eddab5a77e1c175eee484a8925ac7d524f04366c2fc
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - --config.file=/etc/blackbox/blackbox.yml
+      - --web.listen-address=127.0.0.1:9115
+    volumes:
+      - ./blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=32m
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  prometheus-data:
+  alertmanager-data:
+  grafana-data:
+  loki-data:
+  alloy-data:

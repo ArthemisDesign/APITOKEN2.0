@@ -147,6 +147,7 @@ const panelDomains: ManagedAdminDomain[] = [
   "admin.apitoken.sale",
   "admin.partners.apitoken.sale",
   "content-studio.apitoken.sale",
+  "monitoring.apitoken.sale",
 ];
 
 async function createMain(service: AdminAccountsService): Promise<AccountResponse> {

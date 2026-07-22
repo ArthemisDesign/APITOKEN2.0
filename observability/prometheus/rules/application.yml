@@ -1,0 +1,210 @@
+groups:
+  - name: caddy-ingress
+    rules:
+      - alert: CaddyUpstreamFiveXxRateHigh
+        expr: |
+          (
+            sum by (host) (rate(caddy_http_request_duration_seconds_count{handler="reverse_proxy",code=~"5.."}[5m]))
+            /
+            sum by (host) (rate(caddy_http_request_duration_seconds_count{handler="reverse_proxy"}[5m]))
+          ) > 0.05
+          and
+          sum by (host) (rate(caddy_http_request_duration_seconds_count{handler="reverse_proxy"}[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          component: caddy
+        annotations:
+          summary: '{{ $labels.host }} is returning more than 5% upstream 5xx responses'
+          description: 'The per-host reverse-proxy 5xx ratio has remained elevated for ten minutes.'
+          runbook: 'MONITORING.md#publicendpointdown'
+
+  - name: claude-engine
+    rules:
+      - alert: EngineCircuitBreakerOpen
+        expr: claude_api_breaker_open == 1
+        for: 1m
+        labels:
+          severity: critical
+          component: claude-engine
+        annotations:
+          summary: 'Claude engine circuit breaker is open'
+          description: 'The engine is rejecting traffic because upstream failures crossed the safety threshold.'
+          runbook: 'MONITORING.md#enginecircuitbreakeropen'
+
+      - alert: EngineHasNoSubscriptions
+        expr: claude_api_subs < 1
+        for: 2m
+        labels:
+          severity: critical
+          component: claude-engine
+        annotations:
+          summary: 'Claude engine has no available subscriptions'
+          description: 'No subscription is currently loaded into the production engine pool.'
+          runbook: 'MONITORING.md#enginehasnosubscriptions'
+
+      - alert: EngineAllSubscriptionsCooling
+        expr: claude_api_subs > 0 and claude_api_cooling >= claude_api_subs
+        for: 2m
+        labels:
+          severity: critical
+          component: claude-engine
+        annotations:
+          summary: 'Every Claude subscription is cooling'
+          description: 'The pool has no immediately usable subscription capacity.'
+          runbook: 'MONITORING.md#engineallsubscriptionscooling'
+
+      - alert: EngineUpstreamRateLimited
+        expr: increase(claude_api_upstream_429_total[10m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: claude-engine
+        annotations:
+          summary: 'Claude upstream rate limiting is elevated'
+          description: 'More than ten upstream 429 responses were recorded in ten minutes.'
+          runbook: 'MONITORING.md#engineupstreamratelimited'
+
+      - alert: EngineUpstreamAuthFailures
+        expr: increase(claude_api_upstream_auth_total[5m]) > 0
+        labels:
+          severity: critical
+          component: claude-engine
+        annotations:
+          summary: 'Claude upstream rejected subscription authentication'
+          description: 'At least one new upstream authentication failure was observed.'
+          runbook: 'MONITORING.md#engineupstreamauthfailures'
+
+      - alert: EngineUpstreamServerErrors
+        expr: increase(claude_api_upstream_5xx_total[10m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: claude-engine
+        annotations:
+          summary: 'Claude upstream 5xx responses are elevated'
+          description: 'More than ten upstream server failures were recorded in ten minutes.'
+          runbook: 'MONITORING.md#engineupstreamservererrors'
+
+  - name: durable-business-state
+    rules:
+      - alert: DurableQueueBacklog
+        expr: apitoken_queue_ready > 25
+        for: 10m
+        labels:
+          severity: warning
+          component: '{{ $labels.queue }}'
+        annotations:
+          summary: '{{ $labels.queue }} has a sustained backlog'
+          description: '{{ $value }} durable jobs are ready or retrying.'
+          runbook: 'MONITORING.md#durablequeuebacklog'
+
+      - alert: DurableQueueOldestItemStale
+        expr: apitoken_queue_oldest_ready_seconds > 900
+        for: 5m
+        labels:
+          severity: critical
+          component: '{{ $labels.queue }}'
+        annotations:
+          summary: 'Oldest {{ $labels.queue }} job is over fifteen minutes old'
+          description: 'A ready/retry job has not completed for {{ $value | humanizeDuration }}.'
+          runbook: 'MONITORING.md#durablequeueoldestitemstale'
+
+      - alert: DurableQueueDeadItems
+        expr: apitoken_queue_dead > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: '{{ $labels.queue }}'
+        annotations:
+          summary: '{{ $labels.queue }} contains terminally failed items'
+          description: '{{ $value }} durable jobs require operator investigation.'
+          runbook: 'MONITORING.md#durablequeuedeaditems'
+
+      - alert: FailedWebhooksPresent
+        expr: apitoken_webhook_failed > 0
+        for: 2m
+        labels:
+          severity: critical
+          component: payments
+        annotations:
+          summary: 'Payment webhooks are in failed state'
+          description: '{{ $value }} verified webhook events have failed processing.'
+          runbook: 'MONITORING.md#failedwebhookspresent'
+
+      - alert: StaleCheckoutSessions
+        expr: apitoken_checkout_stale > 0
+        for: 15m
+        labels:
+          severity: warning
+          component: payments
+        annotations:
+          summary: 'Checkout sessions have remained incomplete for over one hour'
+          description: '{{ $value }} checkout sessions are stale.'
+          runbook: 'MONITORING.md#stalecheckoutsessions'
+
+      - alert: EngineSettlementBacklog
+        expr: apitoken_engine_settlement_pending > 0
+        for: 5m
+        labels:
+          severity: critical
+          component: engine-settlement
+        annotations:
+          summary: 'Engine settlement outbox is not draining'
+          description: '{{ $value }} request settlements are pending or processing.'
+          runbook: 'MONITORING.md#enginesettlementbacklog'
+
+      - alert: EngineExpiredLeasePresent
+        expr: apitoken_engine_expired_active_leases > 0
+        for: 2m
+        labels:
+          severity: critical
+          component: engine-authority
+        annotations:
+          summary: 'Engine contains expired leases still marked active'
+          description: '{{ $value }} capacity or reservation leases require reconciliation.'
+          runbook: 'MONITORING.md#engineexpiredleasepresent'
+
+      - alert: BackupStale
+        expr: apitoken_backup_age_seconds > 5400
+        for: 10m
+        labels:
+          severity: critical
+          component: backup
+        annotations:
+          summary: '{{ $labels.database }} backup is stale'
+          description: 'The last validated dump is {{ $value | humanizeDuration }} old.'
+          runbook: 'MONITORING.md#backupstale'
+
+      - alert: BackupMissing
+        expr: apitoken_backup_present == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: backup
+        annotations:
+          summary: '{{ $labels.database }} backup is missing'
+          description: 'No current dump exists for this production database.'
+          runbook: 'MONITORING.md#backupmissing'
+
+      - alert: SalesReferralReconciliationBacklog
+        expr: apitoken_sales_pending_referral_events > 0
+        for: 15m
+        labels:
+          severity: warning
+          component: sales-reconciliation
+        annotations:
+          summary: 'Sales referral feed has buffered events'
+          description: '{{ $value }} spend/top-up events arrived before their referral attribution and remain buffered.'
+          runbook: 'MONITORING.md#salesreferralreconciliationbacklog'
+
+      - alert: SalesPayoutBatchFailed
+        expr: apitoken_sales_failed_payout_batches > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: sales-payouts
+        annotations:
+          summary: 'A sales payout batch is failed'
+          description: '{{ $value }} payout batches require manual review.'
+          runbook: 'MONITORING.md#salespayoutbatchfailed'

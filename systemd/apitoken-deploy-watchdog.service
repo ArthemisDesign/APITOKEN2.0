@@ -21,4 +21,4 @@ PrivateTmp=true
 ProtectHome=read-only
 ProtectSystem=full
 # Exact tested infrastructure updates may replace only the controller-owned operational files.
-ReadWritePaths=/var/lib/apitoken/watchdog /opt/apitoken /srv/claude-api/releases /run/lock /usr/local/lib/apitoken-watchdog /usr/local/bin /etc/systemd/system /etc/caddy
+ReadWritePaths=/var/lib/apitoken/watchdog /var/lib/apitoken/monitoring /opt/apitoken /srv/claude-api/releases /srv/claude-api/data /run/lock /usr/local/lib/apitoken-watchdog /usr/local/bin /etc/systemd/system /etc/caddy /etc/apitoken

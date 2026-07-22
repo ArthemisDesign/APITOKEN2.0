@@ -1,0 +1,40 @@
+loki.relabel "journal" {
+  forward_to = [loki.write.local.receiver]
+
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+
+  rule {
+    source_labels = ["__journal_syslog_identifier"]
+    target_label  = "syslog_identifier"
+  }
+
+  rule {
+    source_labels = ["__journal_priority_keyword"]
+    target_label  = "level"
+  }
+}
+
+loki.source.journal "volatile" {
+  path          = "/run/log/journal"
+  max_age       = "24h"
+  labels        = { environment = "production", host = constants.hostname, job = "systemd-journal" }
+  relabel_rules = loki.relabel.journal.rules
+  forward_to    = [loki.relabel.journal.receiver]
+}
+
+loki.source.journal "persistent" {
+  path          = "/var/log/journal"
+  max_age       = "24h"
+  labels        = { environment = "production", host = constants.hostname, job = "systemd-journal" }
+  relabel_rules = loki.relabel.journal.rules
+  forward_to    = [loki.relabel.journal.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://127.0.0.1:3101/loki/api/v1/push"
+  }
+}

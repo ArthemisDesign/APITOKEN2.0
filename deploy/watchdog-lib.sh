@@ -237,7 +237,7 @@ wd_path_is_sales() {
 
 wd_path_is_infrastructure() {
   case "$1" in
-    deploy/*|systemd/*|compose.yaml)
+    deploy/*|systemd/*|observability/*|compose.yaml)
       return 0
       ;;
     *) return 1 ;;

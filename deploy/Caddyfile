@@ -3,6 +3,11 @@
 	# default order is the reverse, which would erase the copied identity after authentication.
 	order request_header before forward_auth
 
+	# The admin endpoint is loopback-only; Prometheus scrapes per-vhost request/latency metrics.
+	metrics {
+		per_host
+	}
+
 	# Runtime proxy errors include request headers. Redact every injected service credential so a
 	# failed upstream can never copy an internal key into journald.
 	log default {
@@ -111,6 +116,16 @@ content-studio.apitoken.sale {
 	}
 	handle {
 		reverse_proxy 127.0.0.1:3500
+	}
+}
+
+# Private production telemetry. Grafana trusts only the actor header injected after the central
+# managed-admin credential has been verified for this exact hostname.
+monitoring.apitoken.sale {
+	request_header -X-WEBAUTH-USER
+	import managed_admin_auth
+	reverse_proxy 127.0.0.1:3600 {
+		header_up X-WEBAUTH-USER {http.request.header.X-Admin-Actor}
 	}
 }
 

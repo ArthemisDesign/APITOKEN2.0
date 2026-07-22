@@ -78,6 +78,7 @@ done
 wd_path_is_infrastructure deploy/watchdog.sh
 wd_path_is_infrastructure systemd/apitoken-deploy-watchdog.service
 wd_path_is_infrastructure compose.yaml
+wd_path_is_infrastructure observability/prometheus/prometheus.yml
 if wd_path_is_infrastructure .github/workflows/indexnow.yml; then
   wd_die "GitHub-only workflow changes must not require a production-host infrastructure install"
 fi
@@ -90,6 +91,7 @@ grep -Fq 'admin.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'admin.partners.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'crm.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'content-studio.apitoken.sale {' "$ROOT/deploy/Caddyfile"
+grep -Fq 'monitoring.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'partners.panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'crm.panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
@@ -116,8 +118,12 @@ grep -Fq 'configure_commerce_balancer' "$ROOT/deploy/sales-deploy.sh"
 grep -Fq 'COMMERCE_BALANCER_READY_URL=${COMMERCE_BALANCER_READY_URL:-http://127.0.0.1:8791/v1/ready}' "$ROOT/deploy/api-bluegreen.sh"
 [[ $(grep -Fc 'balancer_is_ready' "$ROOT/deploy/api-bluegreen.sh") -ge 6 ]]
 grep -Fq 'final_verify_admin_panel' "$ROOT/deploy/watchdog.sh"
+grep -Fq 'monitoring-config.test.sh' "$ROOT/deploy/watchdog.sh"
+grep -Fq 'TEST_SALES_DATABASE_URL=' "$ROOT/deploy/watchdog.sh"
+grep -Fq 'sales-dsn)' "$ROOT/deploy/watchdog-test-db.sh"
 grep -Fq 'require_retired_vhost panel.apitoken.sale' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'require_admin_auth_vhost content-studio.apitoken.sale' "$ROOT/deploy/watchdog.sh"
+grep -Fq 'require_admin_auth_vhost monitoring.apitoken.sale' "$ROOT/deploy/watchdog.sh"
 grep -Fq "''|000|404|421" "$ROOT/deploy/watchdog.sh"
 grep -Fq 'data-admin-panel-version="4"' "$ROOT/crates/server/src/admin-panel.html"
 [[ ! -e "$ROOT/crates/server/src/panel.html" ]]
@@ -156,14 +162,16 @@ const value = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 if (value.accounts.length !== 2) process.exit(1);
 const panel = value.accounts.find((account) => account.username === "admin");
 const crm = value.accounts.find((account) => account.username === "crm");
-if (!panel || panel.domains.length !== 3 || !panel.domains.includes("admin.apitoken.sale")) process.exit(1);
+if (!panel || panel.domains.length !== 4 || !panel.domains.includes("admin.apitoken.sale") ||
+    !panel.domains.includes("monitoring.apitoken.sale")) process.exit(1);
 if (!crm || crm.domains.length !== 1 || crm.domains[0] !== "crm.apitoken.sale") process.exit(1);
 NODE
 
 watchdog_writable_paths=$(sed -n 's/^ReadWritePaths=//p' "$ROOT/systemd/apitoken-deploy-watchdog.service")
 for required_path in \
   /var/lib/apitoken/watchdog /opt/apitoken /srv/claude-api/releases /run/lock \
-  /usr/local/lib/apitoken-watchdog /usr/local/bin /etc/systemd/system /etc/caddy; do
+  /usr/local/lib/apitoken-watchdog /usr/local/bin /etc/systemd/system /etc/caddy \
+  /etc/apitoken /srv/claude-api/data /var/lib/apitoken/monitoring; do
   if ! tr ' ' '\n' <<<"$watchdog_writable_paths" | grep -Fxq "$required_path"; then
     wd_die "watchdog service cannot update required operational path: $required_path"
   fi

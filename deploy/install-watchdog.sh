@@ -30,6 +30,8 @@ install -o root -g root -m 0755 "$ROOT/deploy/watchdog-migrate.sh" /usr/local/li
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-infrastructure.sh" /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-github.sh" /usr/local/lib/apitoken-watchdog/watchdog-github
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-control.sh" /usr/local/bin/apitoken-watchdog
+install -o root -g root -m 0755 "$ROOT/deploy/collect-monitoring-metrics.sh" /usr/local/lib/apitoken-watchdog/collect-monitoring-metrics.sh
+install -o root -g root -m 0755 "$ROOT/deploy/apitoken-db-dump" /usr/local/lib/apitoken-watchdog/apitoken-db-dump
 install -o root -g root -m 0755 "$ROOT/deploy/deploy.sh" /usr/local/lib/apitoken-watchdog/controller/deploy.sh
 install -o root -g root -m 0644 "$ROOT/deploy/lib.sh" /usr/local/lib/apitoken-watchdog/controller/lib.sh
 install -o root -g root -m 0755 "$ROOT/deploy/api-bluegreen.sh" /usr/local/lib/apitoken-watchdog/controller/api-bluegreen.sh
@@ -39,8 +41,10 @@ install -o root -g root -m 0644 "$ROOT/deploy/commerce-postgres.compose.yaml" \
   /usr/local/lib/apitoken-watchdog/controller/commerce-postgres.compose.yaml
 for unit in \
   apitoken-api@.service apitoken-deploy-watchdog.service apitoken-deploy-watchdog.timer \
-  apitoken-worker.service apitoken-content-studio.service claude-api@.service claude-api-backup.service claude-api-backup.timer \
-  claude-api-fingerprint.service claude-api-fingerprint.timer; do
+  apitoken-postgres.service apitoken-worker.service apitoken-content-studio.service claude-api@.service claude-api-backup.service claude-api-backup.timer \
+  claude-api-fingerprint.service claude-api-fingerprint.timer \
+  apitoken-sales-api.service apitoken-sales-web.service \
+  apitoken-monitoring-collector.service apitoken-monitoring-collector.timer; do
   install -o root -g root -m 0644 "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"
 done
 install -d -o root -g deploy -m 0775 /run/lock
@@ -95,5 +99,6 @@ fi
 rm -f -- /var/lib/apitoken/watchdog/pending-infrastructure.sha \
   /var/lib/apitoken/watchdog/infrastructure-approved.sha
 systemctl daemon-reload
+"$ROOT/deploy/install-monitoring.sh"
 systemctl enable --now apitoken-deploy-watchdog.timer
 echo 'watchdog installed and timer enabled; verify with: sudo apitoken-watchdog status'

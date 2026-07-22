@@ -145,7 +145,7 @@ run_as_ci() {
 }
 
 prepare_and_test_candidate() {
-  local sha=$1 candidate marker dsn engine_dsn manifest digest tree
+  local sha=$1 candidate marker dsn engine_dsn sales_dsn manifest digest tree
   candidate=$(candidate_for "$sha")
   marker=$(marker_for "$sha")
 
@@ -175,9 +175,13 @@ prepare_and_test_candidate() {
 
   dsn=$(sudo -n "$TEST_DB_HELPER" start)
   TEST_DB_STARTED=1
-  wd_log "running commerce migrations and all TypeScript tests against disposable PostgreSQL"
+  wd_log "running commerce migrations against disposable PostgreSQL"
   run_as_ci env DATABASE_URL="$dsn" node "$candidate/packages/db/dist/migrate.js"
-  run_as_ci env TEST_DATABASE_URL="$dsn" pnpm --dir "$candidate" \
+  sales_dsn=$(sudo -n "$TEST_DB_HELPER" sales-dsn)
+  wd_log "running sales migrations against a separate disposable PostgreSQL database"
+  run_as_ci env SALES_DATABASE_URL="$sales_dsn" node "$candidate/packages/sales-db/dist/migrate.js"
+  wd_log "running all TypeScript tests against their migrated disposable databases"
+  run_as_ci env TEST_DATABASE_URL="$dsn" TEST_SALES_DATABASE_URL="$sales_dsn" pnpm --dir "$candidate" \
     -r --workspace-concurrency=1 --if-present test
 
   engine_dsn=$(sudo -n "$TEST_DB_HELPER" engine-dsn)
@@ -193,6 +197,7 @@ prepare_and_test_candidate() {
     bash -n "$shell_file"
   done < <(find "$candidate/deploy" -type f -name '*.sh' -print0)
   run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"
+  run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"
 
   sudo -n "$TEST_DB_HELPER" stop
   TEST_DB_STARTED=0
@@ -336,7 +341,7 @@ require_retired_vhost() {
 }
 
 final_verify_admin_panel() {
-  local panel matched=0
+  local panel matched=0 response monitoring_ready=0
   # A just-stopped old slot can finish one keep-alive response while Caddy converges. Retry through
   # one active-health window before declaring that the stable listener serves the wrong panel.
   for _ in 1 2 3 4 5 6; do
@@ -353,6 +358,25 @@ final_verify_admin_panel() {
   require_admin_auth_vhost admin.partners.apitoken.sale
   require_admin_auth_vhost crm.apitoken.sale
   require_admin_auth_vhost content-studio.apitoken.sale
+  require_admin_auth_vhost monitoring.apitoken.sale
+  curl --noproxy '*' --fail --silent --show-error --max-time 5 http://127.0.0.1:3600/api/health >/dev/null \
+    || wd_die "Grafana is not healthy on its loopback listener"
+  curl --noproxy '*' --fail --silent --show-error --max-time 5 http://127.0.0.1:9090/-/ready >/dev/null \
+    || wd_die "Prometheus is not ready on its loopback listener"
+  # Wait across several scrape intervals: the engine may have restarted after monitoring itself,
+  # and Caddy may still be completing first-certificate activation for the new protected hostname.
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
+      --data-urlencode 'query=min(up) == 1 and min(probe_success{job=~"public-http|protected-http|support-http|loopback-http"}) == 1 and (time() - apitoken_monitoring_collector_last_success_unixtime < 180)' \
+      http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
+    if jq --exit-status '.status == "success" and (.data.result | length) > 0' \
+      >/dev/null 2>&1 <<<"$response"; then
+      monitoring_ready=1
+      break
+    fi
+    sleep 5
+  done
+  [[ $monitoring_ready == 1 ]] || wd_die "monitoring targets, synthetics, or business collector are not healthy"
   require_retired_vhost panel.apitoken.sale
   require_retired_vhost partners.panel.apitoken.sale
   require_retired_vhost crm.panel.apitoken.sale

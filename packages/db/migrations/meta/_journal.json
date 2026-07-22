@@ -134,6 +134,13 @@
       "when": 1784880000000,
       "tag": "0018_referral_floor_95",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1784890000000,
+      "tag": "0019_monitoring_admin",
+      "breakpoints": true
     }
   ]
 }

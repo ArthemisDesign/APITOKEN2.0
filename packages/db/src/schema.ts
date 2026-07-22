@@ -454,7 +454,8 @@ export const adminAccountDomains = pgTable("admin_account_domains", {
     'admin.apitoken.sale',
     'admin.partners.apitoken.sale',
     'crm.apitoken.sale',
-    'content-studio.apitoken.sale'
+    'content-studio.apitoken.sale',
+    'monitoring.apitoken.sale'
   )`),
 ]);
 
