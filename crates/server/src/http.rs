@@ -132,6 +132,9 @@ async fn metrics(
          # TYPE claude_api_affinity_native_hits_total counter\nclaude_api_affinity_native_hits_total {}\n\
          # TYPE claude_api_affinity_transcript_hits_total counter\nclaude_api_affinity_transcript_hits_total {}\n\
          # TYPE claude_api_affinity_cache_root_hits_total counter\nclaude_api_affinity_cache_root_hits_total {}\n\
+         # TYPE claude_api_affinity_cache_root_writes_total counter\nclaude_api_affinity_cache_root_writes_total {}\n\
+         # TYPE claude_api_affinity_cache_root_warm_placements_total counter\nclaude_api_affinity_cache_root_warm_placements_total {}\n\
+         # TYPE claude_api_affinity_cache_root_cold_placements_total counter\nclaude_api_affinity_cache_root_cold_placements_total {}\n\
          # TYPE claude_api_affinity_claims_total counter\nclaude_api_affinity_claims_total {}\n\
          # TYPE claude_api_affinity_rebinds_total counter\nclaude_api_affinity_rebinds_total {}\n\
          # TYPE claude_api_inflight gauge\nclaude_api_inflight {}\n\
@@ -156,6 +159,9 @@ async fn metrics(
         affinity.native_hits,
         affinity.transcript_hits,
         affinity.cache_root_hits,
+        affinity.cache_root_writes,
+        affinity.cache_root_warm_placements,
+        affinity.cache_root_cold_placements,
         affinity.claims,
         affinity.rebinds,
         inflight,

@@ -655,6 +655,39 @@ fn select_best_non_cooling(
 /// Так новые сессии наливаются в самые пустые аккаунты, но не сверх человеческого конверта; когда
 /// эмптейший упёрся в конверт — перелив на следующий по ёмкости. Никого под конвертом → не зависаем
 /// (обычный `select_best`, эффект — краткая деградация естественности под пиком).
+fn placement_free(g: &Inner, s: &Sub, now: i64, p5: f64, p7: f64) -> f64 {
+    let l = g.live.get(&s.email);
+    let sc = plan_scale(&s.plan); // прайор по тарифу (Pro/Max5 меньше Max20) до калибровки
+    let cap5 = l
+        .map(|l| l.cap5h_usd)
+        .filter(|c| *c > 0.0)
+        .unwrap_or(p5 * sc);
+    let cap7 = l
+        .map(|l| l.cap7d_usd)
+        .filter(|c| *c > 0.0)
+        .unwrap_or(p7 * sc);
+    (cap5 * (1.0 - live_util(g, &s.email, sc, 5, now, p5, p7)))
+        .min(cap7 * (1.0 - live_util(g, &s.email, sc, 7, now, p5, p7)))
+}
+
+fn placement_eligible(
+    g: &Inner,
+    s: &Sub,
+    exclude: &HashSet<String>,
+    now: i64,
+    rsv: &Reserve,
+    p5: f64,
+    p7: f64,
+) -> bool {
+    let (c5, c7) = rsv.caps(&s.email);
+    !exclude.contains(&s.email)
+        && !is_cooling(g, &s.email, now)
+        && !is_dead(g, &s.email)
+        && live_util(g, &s.email, plan_scale(&s.plan), 7, now, p5, p7) < c7
+        && live_util(g, &s.email, plan_scale(&s.plan), 5, now, p5, p7) < c5
+        && inflight_of(g, &s.email) < max_inflight()
+}
+
 fn place_best(
     g: &Inner,
     exclude: &HashSet<String>,
@@ -663,33 +696,14 @@ fn place_best(
     p5: f64,
     p7: f64,
 ) -> Option<Sub> {
-    let free = |s: &Sub| -> f64 {
-        let l = g.live.get(&s.email);
-        let sc = plan_scale(&s.plan); // прайор по тарифу (Pro/Max5 меньше Max20) до калибровки
-        let cap5 = l
-            .map(|l| l.cap5h_usd)
-            .filter(|c| *c > 0.0)
-            .unwrap_or(p5 * sc);
-        let cap7 = l
-            .map(|l| l.cap7d_usd)
-            .filter(|c| *c > 0.0)
-            .unwrap_or(p7 * sc);
-        (cap5 * (1.0 - live_util(g, &s.email, plan_scale(&s.plan), 5, now, p5, p7)))
-            .min(cap7 * (1.0 - live_util(g, &s.email, plan_scale(&s.plan), 7, now, p5, p7)))
-    };
     let lru = |e: &str| g.live.get(e).map(|l| l.last_used).unwrap_or(0);
-    let eligible = g.subs.iter().filter(|s| {
-        let (c5, c7) = rsv.caps(&s.email);
-        !exclude.contains(&s.email)
-            && !is_cooling(g, &s.email, now)
-            && !is_dead(g, &s.email) // мёртвые (забанены) не принимают новые сессии
-            && live_util(g, &s.email, plan_scale(&s.plan), 7, now, p5, p7) < c7
-            && live_util(g, &s.email, plan_scale(&s.plan), 5, now, p5, p7) < c5
-            && inflight_of(g, &s.email) < max_inflight()
-    });
+    let eligible = g
+        .subs
+        .iter()
+        .filter(|s| placement_eligible(g, s, exclude, now, rsv, p5, p7));
     let best = eligible.max_by(|a, b| {
-        free(a)
-            .partial_cmp(&free(b))
+        placement_free(g, a, now, p5, p7)
+            .partial_cmp(&placement_free(g, b, now, p5, p7))
             .unwrap_or(Equal) // больше свободной ёмкости
             .then(inflight_of(g, &b.email).cmp(&inflight_of(g, &a.email))) // при равенстве — меньше in-flight (веер)
             .then(lru(&b.email).cmp(&lru(&a.email)))
@@ -837,6 +851,73 @@ impl Pool {
             self.prior5h_usd,
             self.prior7d_usd,
         )
+    }
+
+    /// Capacity-aware soft placement for a shared prompt-cache root. It first seeds a small number
+    /// of healthy homes (normally two), then prefers the best warm one while it remains reasonably
+    /// close to the fleet's best free capacity. Opaque warm IDs are advisory and grant no capacity.
+    pub fn peek_affinity_home_with_warm<F>(
+        &self,
+        warm_homes: &[String],
+        min_warm_replicas: usize,
+        min_capacity_ratio: f64,
+        identify: F,
+    ) -> Option<Sub>
+    where
+        F: Fn(&str) -> String,
+    {
+        let g = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let now = now();
+        let (p5, p7) = (self.prior5h_usd, self.prior7d_usd);
+        let exclude = HashSet::new();
+        let global = place_best(&g, &exclude, now, &self.reserve, p5, p7)?;
+        if warm_homes.is_empty() {
+            return Some(global);
+        }
+
+        let warm_ids: HashSet<&str> = warm_homes.iter().map(String::as_str).collect();
+        let is_warm = |sub: &Sub| warm_ids.contains(identify(&sub.email).as_str());
+        let better = |a: &&Sub, b: &&Sub| {
+            placement_free(&g, a, now, p5, p7)
+                .partial_cmp(&placement_free(&g, b, now, p5, p7))
+                .unwrap_or(Equal)
+                .then(inflight_of(&g, &b.email).cmp(&inflight_of(&g, &a.email)))
+        };
+        let eligible: Vec<&Sub> = g
+            .subs
+            .iter()
+            .filter(|sub| placement_eligible(&g, sub, &exclude, now, &self.reserve, p5, p7))
+            .collect();
+        let warm_count = eligible.iter().filter(|sub| is_warm(sub)).count();
+        let ratio = min_capacity_ratio.clamp(0.0, 1.0);
+        let global_free = placement_free(&g, &global, now, p5, p7).max(0.0);
+
+        // A common root must not collapse every independent session onto its first home. Seed a
+        // second competitive home once, after which both can receive cache-preserving placements.
+        if warm_count < min_warm_replicas {
+            if let Some(unwarmed) = eligible
+                .iter()
+                .copied()
+                .filter(|sub| !is_warm(sub))
+                .max_by(better)
+            {
+                if placement_free(&g, unwarmed, now, p5, p7) >= global_free * ratio {
+                    return Some((*unwarmed).clone());
+                }
+            }
+        }
+
+        if let Some(warm) = eligible
+            .iter()
+            .copied()
+            .filter(|sub| is_warm(sub))
+            .max_by(better)
+        {
+            if placement_free(&g, warm, now, p5, p7) >= global_free * ratio {
+                return Some((*warm).clone());
+            }
+        }
+        Some(global)
     }
 
     /// Route a lineage whose preferred home is stored by the caller (normally keyed and shared in
@@ -2031,6 +2112,53 @@ mod tests {
             }
             other => panic!("unexpected rebound route: {other:?}"),
         }
+    }
+
+    #[test]
+    fn cache_root_seeds_a_second_competitive_home() {
+        let p = pool(&["a", "b"]);
+        p.set_util("a", Some(0.10), Some(0.10), None, None, None);
+        p.set_util("b", Some(0.10), Some(0.10), None, None, None);
+        let selected = p
+            .peek_affinity_home_with_warm(&["opaque-a".into()], 2, 0.70, |email| {
+                format!("opaque-{email}")
+            })
+            .unwrap();
+        assert_eq!(selected.email, "b");
+    }
+
+    #[test]
+    fn cache_root_prefers_warm_home_when_capacity_is_close() {
+        let p = pool(&["a", "b", "c"]);
+        p.set_util("a", Some(0.20), Some(0.20), None, None, None);
+        p.set_util("b", Some(0.30), Some(0.30), None, None, None);
+        p.set_util("c", Some(0.10), Some(0.10), None, None, None);
+        let selected = p
+            .peek_affinity_home_with_warm(
+                &["opaque-a".into(), "opaque-b".into()],
+                2,
+                0.70,
+                |email| format!("opaque-{email}"),
+            )
+            .unwrap();
+        assert_eq!(selected.email, "a");
+    }
+
+    #[test]
+    fn cache_root_yields_to_materially_better_capacity() {
+        let p = pool(&["a", "b", "c"]);
+        p.set_util("a", Some(0.80), Some(0.80), None, None, None);
+        p.set_util("b", Some(0.85), Some(0.85), None, None, None);
+        p.set_util("c", Some(0.10), Some(0.10), None, None, None);
+        let selected = p
+            .peek_affinity_home_with_warm(
+                &["opaque-a".into(), "opaque-b".into()],
+                2,
+                0.70,
+                |email| format!("opaque-{email}"),
+            )
+            .unwrap();
+        assert_eq!(selected.email, "c");
     }
 
     #[test]

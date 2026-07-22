@@ -7,22 +7,24 @@
 use axum::http::HeaderMap;
 use redis::aio::ConnectionManager;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
 
 const HASH_CONTEXT: &str = "claude-api/cache-affinity/v1";
 const REDIS_PREFIX: &str = "claude-api:aff:v1";
+const REDIS_ROOT_PREFIX: &str = "claude-api:aff:v2";
 const DEFAULT_LOCAL_CAP: usize = 100_000;
 const CACHE_ROOT_MIN_BYTES: usize = 4 * 1024;
+const CACHE_ROOT_TTL_5M: u64 = 5 * 60;
+const CACHE_ROOT_TTL_1H: u64 = 60 * 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AffinitySource {
     Native,
     Transcript,
-    CacheRoot,
     New,
 }
 
@@ -30,7 +32,6 @@ pub enum AffinitySource {
 enum AliasKind {
     Native,
     Transcript,
-    CacheRoot,
 }
 
 #[derive(Clone, Debug)]
@@ -39,11 +40,18 @@ struct Alias {
     kind: AliasKind,
 }
 
+#[derive(Clone, Debug)]
+struct CacheRoot {
+    digest: String,
+    ttl_secs: u64,
+}
+
 /// Opaque request-derived identity. It contains only keyed digests, never customer content or IDs.
 #[derive(Clone, Debug)]
 pub struct AffinityInput {
     account_tag: String,
     aliases: Vec<Alias>,
+    cache_root: Option<CacheRoot>,
     pub cacheable_bytes: usize,
 }
 
@@ -51,6 +59,25 @@ impl AffinityInput {
     fn primary(&self) -> &Alias {
         // Construction requires at least one message and therefore at least one transcript alias.
         &self.aliases[0]
+    }
+
+    /// A strong client/harness session ID is an isolation boundary. Once present, transcript or
+    /// cache similarity may guide placement but can never make it inherit another session.
+    fn resolution_aliases(&self) -> &[Alias] {
+        if self.primary().kind == AliasKind::Native {
+            let native_count = self
+                .aliases
+                .iter()
+                .take_while(|alias| alias.kind == AliasKind::Native)
+                .count();
+            &self.aliases[..native_count]
+        } else {
+            &self.aliases
+        }
+    }
+
+    fn has_cache_root(&self) -> bool {
+        self.cache_root.is_some()
     }
 }
 
@@ -71,6 +98,9 @@ pub struct AffinityStats {
     pub native_hits: u64,
     pub transcript_hits: u64,
     pub cache_root_hits: u64,
+    pub cache_root_writes: u64,
+    pub cache_root_warm_placements: u64,
+    pub cache_root_cold_placements: u64,
     pub claims: u64,
     pub rebinds: u64,
 }
@@ -84,6 +114,9 @@ struct Stats {
     native_hits: AtomicU64,
     transcript_hits: AtomicU64,
     cache_root_hits: AtomicU64,
+    cache_root_writes: AtomicU64,
+    cache_root_warm_placements: AtomicU64,
+    cache_root_cold_placements: AtomicU64,
     claims: AtomicU64,
     rebinds: AtomicU64,
 }
@@ -104,6 +137,7 @@ struct LocalSession {
 struct LocalState {
     aliases: HashMap<String, LocalAlias>,
     sessions: HashMap<String, LocalSession>,
+    roots: HashMap<String, HashMap<String, i64>>,
 }
 
 /// Shared, fail-open affinity store. Redis connection creation is lazy so an unavailable Redis at
@@ -194,19 +228,49 @@ impl AffinityStore {
             "x-claude-code-session-id",
             "x-conversation-id",
             "x-session-id",
+            "session-id",
+            "x-thread-id",
+            "x-session-affinity",
         ] {
             let Some(value) = headers.get(header).and_then(|value| value.to_str().ok()) else {
                 continue;
             };
             let value = value.trim();
-            if value.is_empty() || value.len() > 512 {
+            if !valid_native_id(value) {
                 continue;
             }
+            aliases.push(Alias {
+                // Normalize across transports: the same harness can move an ID between a generic
+                // session header and a provider-specific one without losing its warm home.
+                digest: self.digest_parts(b"native", &[value.as_bytes()]),
+                kind: AliasKind::Native,
+            });
+            // One-release compatibility bridge for active v1 header-specific bindings. It is still
+            // a strong alias and therefore cannot fall through to transcript/cache similarity.
             aliases.push(Alias {
                 digest: self.digest_parts(b"native", &[header.as_bytes(), value.as_bytes()]),
                 kind: AliasKind::Native,
             });
             break;
+        }
+        if aliases.is_empty() {
+            let metadata = body.get("metadata").and_then(Value::as_object);
+            for field in ["session_id", "conversation_id", "thread_id"] {
+                let value = body.get(field).and_then(Value::as_str).or_else(|| {
+                    metadata
+                        .and_then(|values| values.get(field))
+                        .and_then(Value::as_str)
+                });
+                let Some(value) = value.map(str::trim).filter(|value| valid_native_id(value))
+                else {
+                    continue;
+                };
+                aliases.push(Alias {
+                    digest: self.digest_parts(b"native", &[value.as_bytes()]),
+                    kind: AliasKind::Native,
+                });
+                break;
+            }
         }
 
         let mut base = blake3::Hasher::new_keyed(&self.key);
@@ -250,19 +314,24 @@ impl AffinityStore {
         // deepest prefix observed on the preceding request. Native remains the highest-confidence key.
         transcript.reverse();
         aliases.extend(transcript);
-        let explicit_root = ["system", "tools"]
+        let explicit_root_ttl = ["system", "tools"]
             .iter()
             .filter_map(|field| body.get(*field))
-            .any(contains_cache_control);
-        if root_cacheable_bytes >= CACHE_ROOT_MIN_BYTES || explicit_root {
-            aliases.push(Alias {
-                digest: hex_digest(&base_digest),
-                kind: AliasKind::CacheRoot,
-            });
-        }
+            .filter_map(cache_control_ttl)
+            .min();
+        let cache_root =
+            if root_cacheable_bytes >= CACHE_ROOT_MIN_BYTES || explicit_root_ttl.is_some() {
+                Some(CacheRoot {
+                    digest: hex_digest(&base_digest),
+                    ttl_secs: explicit_root_ttl.unwrap_or(CACHE_ROOT_TTL_5M),
+                })
+            } else {
+                None
+            };
         Some(AffinityInput {
             account_tag,
             aliases,
+            cache_root,
             cacheable_bytes,
         })
     }
@@ -330,6 +399,62 @@ impl AffinityStore {
         }
     }
 
+    /// Return every live subscription known to hold this request's shared system/tools cache. A
+    /// cache root is deliberately only a soft placement hint: it never resolves a conversation.
+    pub async fn warm_homes(&self, input: &AffinityInput) -> Vec<String> {
+        if input.cache_root.is_none() {
+            return Vec::new();
+        }
+        let mut homes: HashSet<String> = self.local_warm_homes(input).into_iter().collect();
+        match self.redis_warm_homes(input).await {
+            Ok(redis_homes) => homes.extend(redis_homes),
+            Err(()) => {
+                self.stats.redis_errors.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        if !homes.is_empty() {
+            self.stats.cache_root_hits.fetch_add(1, Ordering::Relaxed);
+        }
+        let mut homes: Vec<String> = homes.into_iter().collect();
+        homes.sort_unstable();
+        homes
+    }
+
+    /// Record cache warmth only after a successful upstream response. L1 is updated synchronously;
+    /// Redis is written in the background so an affinity optimization never delays response bytes.
+    pub fn mark_cache_warm(self: &Arc<Self>, input: &AffinityInput, home: &str) {
+        if input.cache_root.is_none() {
+            return;
+        }
+        self.local_mark_cache_warm(input, home);
+        self.stats.cache_root_writes.fetch_add(1, Ordering::Relaxed);
+        if self.client.is_none() {
+            return;
+        }
+        let this = Arc::clone(self);
+        let input = input.clone();
+        let home = home.to_string();
+        tokio::spawn(async move {
+            if this.redis_mark_cache_warm(&input, &home).await.is_err() {
+                this.stats.redis_errors.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+    }
+
+    /// Record whether a newly placed cacheable request reused an already-warm home or deliberately
+    /// seeded a cold one. Aggregate counters reveal placement behavior without exposing identities.
+    pub fn record_cache_root_placement(&self, input: &AffinityInput, warm: bool) {
+        if !input.has_cache_root() {
+            return;
+        }
+        let counter = if warm {
+            &self.stats.cache_root_warm_placements
+        } else {
+            &self.stats.cache_root_cold_placements
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Compare-and-set the preferred home. A failed Redis update is harmless: the local process uses
     /// the new home and a later request revalidates any stale shared preference against PostgreSQL.
     pub async fn rebind(&self, resolution: &mut AffinityResolution, new_home: &str) {
@@ -362,6 +487,15 @@ impl AffinityStore {
             native_hits: self.stats.native_hits.load(Ordering::Relaxed),
             transcript_hits: self.stats.transcript_hits.load(Ordering::Relaxed),
             cache_root_hits: self.stats.cache_root_hits.load(Ordering::Relaxed),
+            cache_root_writes: self.stats.cache_root_writes.load(Ordering::Relaxed),
+            cache_root_warm_placements: self
+                .stats
+                .cache_root_warm_placements
+                .load(Ordering::Relaxed),
+            cache_root_cold_placements: self
+                .stats
+                .cache_root_cold_placements
+                .load(Ordering::Relaxed),
             claims: self.stats.claims.load(Ordering::Relaxed),
             rebinds: self.stats.rebinds.load(Ordering::Relaxed),
         }
@@ -375,9 +509,6 @@ impl AffinityStore {
             AffinitySource::Transcript => {
                 self.stats.transcript_hits.fetch_add(1, Ordering::Relaxed);
             }
-            AffinitySource::CacheRoot => {
-                self.stats.cache_root_hits.fetch_add(1, Ordering::Relaxed);
-            }
             AffinitySource::New => {}
         }
     }
@@ -389,7 +520,7 @@ impl AffinityStore {
     fn local_resolve(&self, input: &AffinityInput) -> Option<AffinityResolution> {
         let now = pool::now();
         let mut state = self.local.lock().unwrap_or_else(|error| error.into_inner());
-        for alias in &input.aliases {
+        for alias in input.resolution_aliases() {
             let key = Self::local_key(&input.account_tag, &alias.digest);
             let Some(binding) = state.aliases.get(&key).cloned() else {
                 continue;
@@ -409,19 +540,59 @@ impl AffinityStore {
                 continue;
             }
             return Some(AffinityResolution {
-                // A cache root is shared placement knowledge, not a conversation identity. Fork a
-                // fresh lineage immediately so later rebinds never drag unrelated conversations.
-                session_id: if alias.kind == AliasKind::CacheRoot {
-                    input.primary().digest.clone()
-                } else {
-                    binding.session_id
-                },
+                session_id: binding.session_id,
                 home: session.home,
                 source: source_for(alias.kind),
                 account_tag: input.account_tag.clone(),
             });
         }
         None
+    }
+
+    fn local_warm_homes(&self, input: &AffinityInput) -> Vec<String> {
+        let Some(root) = &input.cache_root else {
+            return Vec::new();
+        };
+        let now = pool::now();
+        let key = Self::local_key(&input.account_tag, &root.digest);
+        let mut state = self.local.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(homes) = state.roots.get_mut(&key) else {
+            return Vec::new();
+        };
+        homes.retain(|_, expires_at| *expires_at > now);
+        let result = homes.keys().cloned().collect();
+        if homes.is_empty() {
+            state.roots.remove(&key);
+        }
+        result
+    }
+
+    fn local_mark_cache_warm(&self, input: &AffinityInput, home: &str) {
+        let Some(root) = &input.cache_root else {
+            return;
+        };
+        let now = pool::now();
+        let expires_at = now.saturating_add(root.ttl_secs as i64);
+        let key = Self::local_key(&input.account_tag, &root.digest);
+        let mut state = self.local.lock().unwrap_or_else(|error| error.into_inner());
+        if state.roots.len() >= self.local_cap && !state.roots.contains_key(&key) {
+            state.roots.retain(|_, homes| {
+                homes.retain(|_, expiry| *expiry > now);
+                !homes.is_empty()
+            });
+            if state.roots.len() >= self.local_cap {
+                let remove = state.roots.len() / 4 + 1;
+                let keys: Vec<String> = state.roots.keys().take(remove).cloned().collect();
+                for key in keys {
+                    state.roots.remove(&key);
+                }
+            }
+        }
+        state
+            .roots
+            .entry(key)
+            .or_default()
+            .insert(home.to_string(), expires_at);
     }
 
     fn local_store_resolution(
@@ -502,6 +673,10 @@ impl AffinityStore {
         format!("{REDIS_PREFIX}:{{{account_tag}}}:s:{session}")
     }
 
+    fn redis_root_key(account_tag: &str, root: &str) -> String {
+        format!("{REDIS_ROOT_PREFIX}:{{{account_tag}}}:r:{root}")
+    }
+
     async fn connection(&self) -> Result<Option<ConnectionManager>, ()> {
         let Some(client) = &self.client else {
             return Ok(None);
@@ -544,10 +719,11 @@ impl AffinityStore {
             return Ok(None);
         };
         let keys: Vec<String> = input
-            .aliases
+            .resolution_aliases()
             .iter()
             .map(|alias| Self::redis_alias_key(&input.account_tag, &alias.digest))
             .collect();
+        let aliases = input.resolution_aliases();
         let query = async {
             let values: Vec<Option<String>> = redis::cmd("MGET")
                 .arg(&keys)
@@ -565,13 +741,9 @@ impl AffinityStore {
                     .map_err(|_| ())?;
                 if let Some(home) = home.filter(|home| !home.is_empty()) {
                     return Ok(Some(AffinityResolution {
-                        session_id: if input.aliases[index].kind == AliasKind::CacheRoot {
-                            input.primary().digest.clone()
-                        } else {
-                            session_id
-                        },
+                        session_id,
                         home,
-                        source: source_for(input.aliases[index].kind),
+                        source: source_for(aliases[index].kind),
                         account_tag: input.account_tag.clone(),
                     }));
                 }
@@ -585,6 +757,79 @@ impl AffinityStore {
                 Err(())
             }
             Err(_) => {
+                self.reset_connection().await;
+                Err(())
+            }
+        }
+    }
+
+    async fn redis_warm_homes(&self, input: &AffinityInput) -> Result<Vec<String>, ()> {
+        let Some(root) = &input.cache_root else {
+            return Ok(Vec::new());
+        };
+        let Some(mut connection) = self.connection().await? else {
+            return Ok(Vec::new());
+        };
+        let key = Self::redis_root_key(&input.account_tag, &root.digest);
+        let now = pool::now();
+        let query = async {
+            let _: i64 = redis::cmd("ZREMRANGEBYSCORE")
+                .arg(&key)
+                .arg("-inf")
+                .arg(now)
+                .query_async(&mut connection)
+                .await
+                .map_err(|_| ())?;
+            redis::cmd("ZRANGEBYSCORE")
+                .arg(&key)
+                .arg(now.saturating_add(1))
+                .arg("+inf")
+                .query_async::<Vec<String>>(&mut connection)
+                .await
+                .map_err(|_| ())
+        };
+        match tokio::time::timeout(self.timeout, query).await {
+            Ok(Ok(homes)) => Ok(homes),
+            _ => {
+                self.reset_connection().await;
+                Err(())
+            }
+        }
+    }
+
+    async fn redis_mark_cache_warm(&self, input: &AffinityInput, home: &str) -> Result<(), ()> {
+        let Some(root) = &input.cache_root else {
+            return Ok(());
+        };
+        let Some(mut connection) = self.connection().await? else {
+            return Ok(());
+        };
+        let key = Self::redis_root_key(&input.account_tag, &root.digest);
+        let now = pool::now();
+        let expires_at = now.saturating_add(root.ttl_secs as i64);
+        let script = redis::Script::new(
+            "redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1]); \
+             redis.call('ZADD', KEYS[1], ARGV[2], ARGV[3]); \
+             local current = redis.call('TTL', KEYS[1]); \
+             local wanted = tonumber(ARGV[4]); \
+             if current < wanted then redis.call('EXPIRE', KEYS[1], wanted); end; \
+             return 1",
+        );
+        let mut invocation = script.prepare_invoke();
+        invocation
+            .key(key)
+            .arg(now)
+            .arg(expires_at)
+            .arg(home)
+            .arg(root.ttl_secs);
+        match tokio::time::timeout(
+            self.timeout,
+            invocation.invoke_async::<i64>(&mut connection),
+        )
+        .await
+        {
+            Ok(Ok(_)) => Ok(()),
+            _ => {
                 self.reset_connection().await;
                 Err(())
             }
@@ -788,17 +1033,34 @@ fn source_for(kind: AliasKind) -> AffinitySource {
     match kind {
         AliasKind::Native => AffinitySource::Native,
         AliasKind::Transcript => AffinitySource::Transcript,
-        AliasKind::CacheRoot => AffinitySource::CacheRoot,
     }
 }
 
-fn contains_cache_control(value: &Value) -> bool {
+fn valid_native_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 512
+}
+
+fn cache_control_ttl(value: &Value) -> Option<u64> {
     match value {
-        Value::Array(values) => values.iter().any(contains_cache_control),
+        Value::Array(values) => values.iter().filter_map(cache_control_ttl).min(),
         Value::Object(values) => {
-            values.contains_key("cache_control") || values.values().any(contains_cache_control)
+            let local = values.get("cache_control").map(|control| {
+                if control
+                    .get("ttl")
+                    .and_then(Value::as_str)
+                    .is_some_and(|ttl| ttl.eq_ignore_ascii_case("1h"))
+                {
+                    CACHE_ROOT_TTL_1H
+                } else {
+                    CACHE_ROOT_TTL_5M
+                }
+            });
+            local
+                .into_iter()
+                .chain(values.values().filter_map(cache_control_ttl).min())
+                .min()
         }
-        _ => false,
+        _ => None,
     }
 }
 
@@ -854,15 +1116,17 @@ mod tests {
     use axum::http::HeaderValue;
     use serde_json::json;
 
-    fn store() -> AffinityStore {
-        AffinityStore::new(
-            None,
-            Some("test-secret-at-least-32-characters"),
-            3600,
-            3600,
-            20,
+    fn store() -> Arc<AffinityStore> {
+        Arc::new(
+            AffinityStore::new(
+                None,
+                Some("test-secret-at-least-32-characters"),
+                3600,
+                3600,
+                20,
+            )
+            .unwrap(),
         )
-        .unwrap()
     }
 
     #[test]
@@ -904,7 +1168,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_cache_root_warms_new_conversation_then_forks_lineage() {
+    async fn cache_root_is_soft_and_never_resolves_a_new_conversation() {
         let store = store();
         let headers = HeaderMap::new();
         let body = |message: &str| {
@@ -916,17 +1180,62 @@ mod tests {
         };
         let first = store.infer("acct", &headers, &body("one")).unwrap();
         let first_resolution = store.claim(&first, "opaque-home").await;
+        store.remember(&first, &first_resolution).await;
+        store.mark_cache_warm(&first, "opaque-home");
 
         let second = store.infer("acct", &headers, &body("two")).unwrap();
-        let root_resolution = store.resolve(&second).await.unwrap();
-        assert_eq!(root_resolution.source, AffinitySource::CacheRoot);
-        assert_eq!(root_resolution.home, first_resolution.home);
-        assert_ne!(root_resolution.session_id, first_resolution.session_id);
+        assert!(store.resolve(&second).await.is_none());
+        assert_eq!(store.warm_homes(&second).await, vec!["opaque-home"]);
+    }
 
-        store.remember(&second, &root_resolution).await;
-        let continued = store.resolve(&second).await.unwrap();
-        assert_eq!(continued.source, AffinitySource::Transcript);
-        assert_eq!(continued.session_id, root_resolution.session_id);
+    #[tokio::test]
+    async fn distinct_native_sessions_never_inherit_matching_transcript() {
+        let store = store();
+        let body = json!({
+            "model":"claude-test",
+            "system":[{"type":"text","text":"shared root","cache_control":{"type":"ephemeral"}}],
+            "messages":[{"role":"user","content":"identical first turn"}]
+        });
+        let headers = |session: &'static str| {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-session-id", HeaderValue::from_static(session));
+            headers
+        };
+        let first = store.infer("acct", &headers("session-a"), &body).unwrap();
+        let first_resolution = store.claim(&first, "home-a").await;
+        store.remember(&first, &first_resolution).await;
+        store.mark_cache_warm(&first, "home-a");
+
+        let second = store.infer("acct", &headers("session-b"), &body).unwrap();
+        assert!(store.resolve(&second).await.is_none());
+        assert_eq!(store.warm_homes(&second).await, vec!["home-a"]);
+
+        let second_resolution = store.claim(&second, "home-b").await;
+        assert_ne!(second_resolution.session_id, first_resolution.session_id);
+        assert_eq!(store.resolve(&second).await.unwrap().home, "home-b");
+    }
+
+    #[tokio::test]
+    async fn cache_root_tracks_multiple_warm_homes() {
+        let store = store();
+        let input = store
+            .infer(
+                "acct",
+                &HeaderMap::new(),
+                &json!({
+                    "system":[{"type":"text","text":"shared","cache_control":{"type":"ephemeral"}}],
+                    "messages":[{"role":"user","content":"one"}]
+                }),
+            )
+            .unwrap();
+        store.mark_cache_warm(&input, "home-b");
+        store.mark_cache_warm(&input, "home-a");
+        store.record_cache_root_placement(&input, true);
+        store.record_cache_root_placement(&input, false);
+        assert_eq!(store.warm_homes(&input).await, vec!["home-a", "home-b"]);
+        assert_eq!(store.stats().cache_root_writes, 2);
+        assert_eq!(store.stats().cache_root_warm_placements, 1);
+        assert_eq!(store.stats().cache_root_cold_placements, 1);
     }
 
     #[test]
@@ -949,6 +1258,109 @@ mod tests {
         assert!(!store
             .home_id("private-subscription@example.test")
             .contains("private"));
+    }
+
+    #[test]
+    fn generic_body_session_ids_are_supported_and_transport_normalized() {
+        let store = store();
+        let body_input = store
+            .infer(
+                "acct",
+                &HeaderMap::new(),
+                &json!({
+                    "metadata":{"session_id":"portable-session"},
+                    "messages":[{"role":"user","content":"hi"}]
+                }),
+            )
+            .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-conversation-id",
+            HeaderValue::from_static("portable-session"),
+        );
+        let header_input = store
+            .infer(
+                "acct",
+                &headers,
+                &json!({"messages":[{"role":"user","content":"different"}]}),
+            )
+            .unwrap();
+        assert_eq!(body_input.primary().kind, AliasKind::Native);
+        assert_eq!(body_input.primary().digest, header_input.primary().digest);
+    }
+
+    #[tokio::test]
+    async fn normalized_native_id_adopts_an_active_legacy_header_binding() {
+        let store = store();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-session-id",
+            HeaderValue::from_static("already-running-session"),
+        );
+        let current = store
+            .infer(
+                "acct",
+                &headers,
+                &json!({"messages":[{"role":"user","content":"hi"}]}),
+            )
+            .unwrap();
+        let mut legacy = current.clone();
+        legacy.aliases.remove(0);
+        let claimed = store.claim(&legacy, "existing-home").await;
+
+        let resolved = store.resolve(&current).await.unwrap();
+        assert_eq!(resolved.session_id, claimed.session_id);
+        assert_eq!(resolved.home, "existing-home");
+        assert_eq!(resolved.source, AffinitySource::Native);
+    }
+
+    #[test]
+    fn cache_root_ttl_follows_anthropic_cache_control() {
+        let store = store();
+        let body = |ttl: Option<&str>| {
+            let mut control = json!({"type":"ephemeral"});
+            if let Some(ttl) = ttl {
+                control["ttl"] = json!(ttl);
+            }
+            json!({
+                "system":[{"type":"text","text":"shared","cache_control":control}],
+                "messages":[{"role":"user","content":"hi"}]
+            })
+        };
+        assert_eq!(
+            store
+                .infer("acct", &HeaderMap::new(), &body(None))
+                .unwrap()
+                .cache_root
+                .unwrap()
+                .ttl_secs,
+            CACHE_ROOT_TTL_5M
+        );
+        assert_eq!(
+            store
+                .infer("acct", &HeaderMap::new(), &body(Some("1h")))
+                .unwrap()
+                .cache_root
+                .unwrap()
+                .ttl_secs,
+            CACHE_ROOT_TTL_1H
+        );
+        let mixed = json!({
+            "system":[
+                {"type":"text","text":"long","cache_control":{"type":"ephemeral","ttl":"1h"}},
+                {"type":"text","text":"short","cache_control":{"type":"ephemeral"}}
+            ],
+            "messages":[{"role":"user","content":"hi"}]
+        });
+        assert_eq!(
+            store
+                .infer("acct", &HeaderMap::new(), &mixed)
+                .unwrap()
+                .cache_root
+                .unwrap()
+                .ttl_secs,
+            CACHE_ROOT_TTL_5M
+        );
     }
 
     #[test]
@@ -1079,12 +1491,15 @@ mod tests {
             .await
             .unwrap();
 
-        let first =
-            AffinityStore::new(Some(url), Some("shared-test-secret"), 3600, 60, 200).unwrap();
-        let second =
-            AffinityStore::new(Some(url), Some("shared-test-secret"), 3600, 60, 200).unwrap();
-        let third =
-            AffinityStore::new(Some(url), Some("shared-test-secret"), 3600, 60, 200).unwrap();
+        let first = Arc::new(
+            AffinityStore::new(Some(url), Some("shared-test-secret"), 3600, 60, 200).unwrap(),
+        );
+        let second = Arc::new(
+            AffinityStore::new(Some(url), Some("shared-test-secret"), 3600, 60, 200).unwrap(),
+        );
+        let third = Arc::new(
+            AffinityStore::new(Some(url), Some("shared-test-secret"), 3600, 60, 200).unwrap(),
+        );
         let mut headers = HeaderMap::new();
         headers.insert(
             "x-claude-code-session-id",
@@ -1114,24 +1529,53 @@ mod tests {
         assert_eq!(resolved.source, AffinitySource::Native);
         assert_eq!(third.stats().redis_hits, 1);
 
-        let root_body = |message: &str| {
+        let root_body = |session: &str, message: &str| {
             json!({
                 "model":"claude-test",
+                "session_id":session,
                 "system":[{"type":"text","text":"shared Redis root","cache_control":{"type":"ephemeral"}}],
                 "messages":[{"role":"user","content":message}]
             })
         };
         let root_first = first
-            .infer("root-account", &HeaderMap::new(), &root_body("one"))
+            .infer(
+                "root-account",
+                &HeaderMap::new(),
+                &root_body("root-session-a", "one"),
+            )
             .unwrap();
         let root_claim = first.claim(&root_first, &home).await;
         first.remember(&root_first, &root_claim).await;
+        first.mark_cache_warm(&root_first, &home);
         let root_second = third
-            .infer("root-account", &HeaderMap::new(), &root_body("two"))
+            .infer(
+                "root-account",
+                &HeaderMap::new(),
+                &root_body("root-session-b", "two"),
+            )
             .unwrap();
-        let root_hit = third.resolve(&root_second).await.unwrap();
-        assert_eq!(root_hit.source, AffinitySource::CacheRoot);
-        assert_ne!(root_hit.session_id, root_claim.session_id);
+        assert!(third.resolve(&root_second).await.is_none());
+        let mut root_homes = Vec::new();
+        for _ in 0..50 {
+            root_homes = third.warm_homes(&root_second).await;
+            if root_homes == vec![home.clone()] {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(root_homes, vec![home.clone()]);
+
+        second.mark_cache_warm(&root_second, &competing_home);
+        for _ in 0..50 {
+            root_homes = third.warm_homes(&root_second).await;
+            if root_homes.len() == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let mut expected_homes = vec![competing_home.clone(), home.clone()];
+        expected_homes.sort_unstable();
+        assert_eq!(root_homes, expected_homes);
 
         let keys: Vec<String> = redis::cmd("KEYS")
             .arg("*")
@@ -1147,12 +1591,23 @@ mod tests {
             {
                 dump.push_str(&value);
             }
+            if let Ok(values) = redis::cmd("ZRANGE")
+                .arg(key)
+                .arg(0)
+                .arg(-1)
+                .query_async::<Vec<String>>(&mut connection)
+                .await
+            {
+                dump.push_str(&values.join(" "));
+            }
         }
         assert!(!dump.contains("private-account"));
         assert!(!dump.contains("private-native-session"));
         assert!(!dump.contains("private prompt text"));
         assert!(!dump.contains("root-account"));
         assert!(!dump.contains("shared Redis root"));
+        assert!(!dump.contains("root-session-a"));
+        assert!(!dump.contains("root-session-b"));
         assert!(!dump.contains("private-subscription"));
         assert!(!dump.contains("other-subscription"));
     }

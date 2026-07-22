@@ -26,6 +26,11 @@ read-only hint до distributed claim; `route_affinity` повторно вал�
   `place_best`: capacity-weighted placement (макс свободной USD-ёмкости) среди персон под конвертом
   конкуррентности (`inflight < MAX_INFLIGHT`); caller атомарно меняет shared binding.
 
+Shared cache-root НЕ lineage: `peek_affinity_home_with_warm` получает несколько opaque warm homes,
+прогревает минимум два конкурентных дома (если второй имеет ≥70% лучшей свободной ёмкости), затем
+предпочитает лучший тёплый. Сильно более свободная холодная персона побеждает и сама становится тёплой
+после успешного ответа. Это soft hint; все обычные health/reserve/inflight проверки остаются теми же.
+
 Continuation использует hard 100% cap, а новый placement — мягкий `Reserve`; ценный большой префикс
 может один раз кратко подождать busy/cooling дом до spill. Legacy `route(u64)` и bounded `bindings`
 оставлены для совместимости тестов/внутренних callers. Сетей, env и persistence в pool нет.

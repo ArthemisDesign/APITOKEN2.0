@@ -36,17 +36,21 @@ outbox, а writer retry-ит до commit. RAII cancel закрывает име�
 `detect_plan` (тариф из /api/oauth/profile), `forward` (axum-хендлер), `authed`.
 
 **Cache-first роутинг без client opt-in (`affinity.rs`):** tenant = metered `account_id` (все ключи
-аккаунта разделяют кэш) или отдельный admin scope. `AffinityStore::infer` считается ДО identity-инжекта:
-native `x-claude-code-session-id`/conversation header имеет приоритет; для любого обычного API-клиента
-строятся rolling keyed-хэши каждого канонического message-prefix вместе с cache-shape
-(`model/system/tools/thinking/context_management`). Запрос сохраняет все свои prefix aliases, поэтому
-следующий растущий turn находится по самому глубокому уже известному префиксу без разбора ответа.
-Большой/явно cache-controlled общий `system+tools` даёт низкоприоритетный cache-root hint для новой
-conversation; она сразу fork-ается в отдельный session lineage и проходит мягкий placement cap.
-Local L1 всегда включён; optional Redis L2 делит TTL-привязки между slots. Redis хранит только keyed
-digests tenant/native/transcript/subscription и fail-open: сеть/timeout/eviction не участвуют в auth,
-money или capacity. Первая попытка = `pool.route_affinity` (place/pin/brief wait/spill/rebind), ретраи =
-`pool.pick`. PostgreSQL capacity lease ниже остаётся авторитетным. SSE по-прежнему byte-for-byte.
+аккаунта разделяют кэш) или отдельный admin scope. `AffinityStore::infer` считается ДО identity-инжекта.
+Strong session IDs принимаются из Claude Code/generic session-conversation-thread headers и одноимённых
+top-level/`metadata` body-полей; они нормализуются в keyed digest и являются ЖЁСТКОЙ границей: новый ID
+никогда не наследует transcript/root другой сессии. Без ID строятся rolling keyed-хэши каждого
+канонического message-prefix вместе с cache-shape (`model/system/tools/thinking/context_management`),
+поэтому растущий classic API history находит самый глубокий известный префикс без разбора ответа.
+Большой/явно cache-controlled общий `system+tools` хранится ОТДЕЛЬНО как soft cache-root → множество
+тёплых homes (5m/1h TTL из cache_control), записывается только после upstream 2xx и никогда не разрешает
+conversation. Pool сначала прогревает два конкурентных home, затем выбирает тёплый, пока его свободная
+ёмкость не хуже 70% лучшей; так общий system/tools не сваливает независимые сессии на один аккаунт.
+Local L1 всегда включён; optional Redis L2 делит TTL-привязки и ZSET тёплых homes между slots. Redis
+хранит только keyed digests tenant/native/transcript/subscription и fail-open: сеть/timeout/eviction не
+участвуют в auth, money или capacity. Первая попытка = `pool.route_affinity`
+(place/pin/brief wait/spill/rebind), ретраи = `pool.pick`. PostgreSQL capacity lease ниже остаётся
+авторитетным. SSE по-прежнему byte-for-byte.
 In-flight держится всю жизнь стрима: успех → `mark_healthy`, `end_stream` из tee-метеринга (`meter.rs`)
 снимает слот на завершении/обрыве; 4xx → `mark_ok`.
 

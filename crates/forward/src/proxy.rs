@@ -26,6 +26,9 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+const CACHE_ROOT_MIN_WARM_HOMES: usize = 2;
+const CACHE_ROOT_MIN_CAPACITY_RATIO: f64 = 0.70;
+
 /// Гард слота конкуррентности персоны. На ЛЮБОМ не-стриминговом исходе попытки (ошибка/ротация/4xx)
 /// и — главное — при ОТМЕНЕ запроса (клиент отключился, future хендлера дропнут на await) декрементит
 /// in-flight ровно один раз. Разоружается на успехе: слот переходит стриму и снимается в `end_stream`.
@@ -864,6 +867,11 @@ pub async fn forward(
         Some(input) => app.affinity.resolve(input).await,
         None => None,
     };
+    let affinity_started_new = affinity_input.is_some() && affinity_resolution.is_none();
+    let affinity_warm_homes = match (affinity_input.as_ref(), affinity_resolution.as_ref()) {
+        (Some(input), None) => app.affinity.warm_homes(input).await,
+        _ => Vec::new(),
+    };
     let mut persona_session = affinity_resolution
         .as_ref()
         .map(|resolution| pool::stable_hash64(resolution.session_id.as_bytes()));
@@ -1005,10 +1013,7 @@ pub async fn forward(
     let mut affinity_wait_available = affinity_input.as_ref().is_some_and(|input| {
         app.cfg.affinity_wait_ms > 0 && input.cacheable_bytes >= app.cfg.affinity_wait_min_bytes
     });
-    // Cache-root hits are warm placement hints for a NEW conversation, not hard-cap continuations.
-    let mut affinity_newly_claimed = affinity_resolution
-        .as_ref()
-        .is_some_and(|resolution| resolution.source == crate::AffinitySource::CacheRoot);
+    let mut affinity_newly_claimed = false;
 
     // Гладкий UX: транзиентную нехватку ёмкости (все подписки cooling/за util_cap / breaker /
     // upstream-429) НЕ отдаём клиенту сразу — тихо ждём до бюджета и повторяем весь раунд ротации.
@@ -1054,7 +1059,12 @@ pub async fn forward(
             let affinity_sub = if attempt == 0 {
                 if let Some(input) = affinity_input.as_ref() {
                     if affinity_resolution.is_none() {
-                        if let Some(proposed) = app.pool.peek_affinity_home() {
+                        if let Some(proposed) = app.pool.peek_affinity_home_with_warm(
+                            &affinity_warm_homes,
+                            CACHE_ROOT_MIN_WARM_HOMES,
+                            CACHE_ROOT_MIN_CAPACITY_RATIO,
+                            |email| app.affinity.home_id(email),
+                        ) {
                             let proposed_home = app.affinity.home_id(&proposed.email);
                             affinity_resolution =
                                 Some(app.affinity.claim(input, &proposed_home).await);
@@ -1358,6 +1368,17 @@ pub async fn forward(
             // конкуррентности. 4xx не меряем — резерв возвращаем, слот освобождаем сразу.
             let meter = if st.is_success() {
                 app.pool.mark_healthy(&sub.email);
+                // count_tokens is successful but does not populate Anthropic's prompt cache.
+                if let (true, Some(input)) = (billable, affinity_input.as_ref()) {
+                    let home = app.affinity.home_id(&sub.email);
+                    if affinity_started_new {
+                        app.affinity.record_cache_root_placement(
+                            input,
+                            affinity_warm_homes.iter().any(|warm| warm == &home),
+                        );
+                    }
+                    app.affinity.mark_cache_warm(input, &home);
+                }
                 if let (Some((request_id, account_id, key, hold)), Some(billing)) =
                     (reserved.as_ref(), app.billing.as_ref())
                 {
