@@ -40,6 +40,10 @@ pub struct ProxyConfig {
     /// клиенту ошибку. Решение pre-stream → для клиента невидимо (стрим ещё не начат). 0 = выключено
     /// (мгновенный отбой, старое поведение). Env `CLAUDE_API_SMOOTH_WAIT_MS`.
     pub smooth_wait_ms: u64,
+    /// Maximum invisible pre-stream wait for a valuable warm cache lineage before spilling.
+    pub affinity_wait_ms: u64,
+    /// Approximate canonical request-prefix size required to spend the affinity wait budget.
+    pub affinity_wait_min_bytes: usize,
     pub poll: bool,            // включён ли фоновый поллер (для /pool)
     pub inject_identity: bool, // инжектить Claude Code identity в system
     pub identity: String,      // сама строка идентичности

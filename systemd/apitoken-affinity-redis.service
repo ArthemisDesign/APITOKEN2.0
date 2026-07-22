@@ -1,0 +1,17 @@
+[Unit]
+Description=API Token cache-affinity Redis
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/srv/claude-api/data/server.env
+ExecStart=/usr/bin/docker compose -f /usr/local/lib/apitoken-watchdog/controller/affinity-redis.compose.yaml up -d --wait
+ExecStop=/usr/bin/docker compose -f /usr/local/lib/apitoken-watchdog/controller/affinity-redis.compose.yaml down
+TimeoutStartSec=180
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target

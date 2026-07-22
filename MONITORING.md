@@ -180,6 +180,12 @@ auth state and remove confirmed-dead subscriptions from service.
 Compare failures across subscriptions and public upstream status. The engine breaker should limit
 cascading damage while the condition persists.
 
+## EngineAffinityRedisErrors
+
+Check `apitoken-affinity-redis.service`, its container health and disk space. Engine traffic is
+intentionally fail-open on local affinity, so restore Redis without restarting healthy engine slots;
+expect only a temporary reduction in cross-slot prompt-cache hits.
+
 ## DurableQueueBacklog
 
 Check the owning worker/service, its database lock/lease fields, retry schedule, and downstream

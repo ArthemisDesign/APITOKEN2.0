@@ -10,9 +10,9 @@
                                                                         │
   server::http (роутер) ── авторизует клиента, отдаёт fallback ──►  forward::forward
                                                                         │
-  forward: инжект Claude Code identity + oauth-заголовки,               │
-          pool::route → cache-first: пин сессии на «домашнюю» персону   │
-          (cache-hit) / capacity-weighted placement / спилл; ретраи →   │
+  forward: автоматически выводит cache-lineage (native session header   │
+          или канонические префиксы истории), L1→Redis affinity;        │
+          pool::route_affinity → пин / placement / wait / spill; ретраи →│
           pool::pick (наименее загруженная),                            │
           Bearer подписки + её прокси                                   ▼
                                                             api.anthropic.com
@@ -30,8 +30,8 @@
 └───────────────┬────────────────────────────────────────────┘
                 ▼
 ┌────────────────────────────────────────────────────────────┐
-│ forward  — прозрачный форвардинг /v1/* + поллер лимитов     │
-│   ProxyConfig · AppState · Clients · poll_sub · forward     │
+│ forward  — прозрачный форвардинг /v1/* + affinity + поллер  │
+│   AffinityStore(L1→Redis) · Clients · poll_sub · forward    │
 └───────────────┬────────────────────────────────────────────┘
                 ▼
 ┌────────────────────────────────────────────────────────────┐
@@ -68,6 +68,12 @@
 - **Ротация до стрима** — статус ответа проверяется до отдачи тела, поэтому переключение подписок
   при 429/5xx не рвёт клиентский стрим.
 - **env только в server** — нижние слои чисто-функциональны и тестируемы без окружения.
+- **Redis — только shared cache-affinity.** Никакого client-supplied session ID: native harness ID
+  используется автоматически, обычный API связывается rolling-хэшами канонических префиксов истории.
+  Большой/явно cache-controlled общий system/tools root может подсказать тёплый дом новой conversation,
+  после чего она сразу получает отдельный lineage и не связывает rebind разных диалогов.
+  Ключи и значения — keyed BLAKE3 digests (без prompt/API key/account/subscription ID). Local L1
+  остаётся всегда; таймаут/отказ/eviction Redis fail-open и влияет только на prompt-cache hit rate.
 - **PostgreSQL — durable authority.** Generated request IDs own exact reservation rows. Settlement
   first lands in a durable outbox, then atomically closes that exact reservation, updates the account,
   and inserts a charge unique on `(kind, request_id)`. SQLite is retained only as the guarded import

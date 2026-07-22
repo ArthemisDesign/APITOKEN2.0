@@ -6,8 +6,8 @@
 **Владелец-ветка:** `comp/forward`.
 
 **Границы (жёстко):**
-- Зависит от `pool`, `registry`, `metering`, `axum`, `reqwest`, `serde_json`, `futures-util`, `bytes`,
-  `tokio`[sync,rt] + `anyhow` (для DB-актора биллинга).
+- Зависит от `pool`, `registry`, `metering`, `axum`, `wreq`, `redis`, `serde_json`, `futures-util`,
+  `bytes`, `tokio`[sync,rt] + `anyhow` (для DB-актора биллинга).
 - НЕ читает env и НЕ содержит CLI/управляющих роутов (`/health`, `/pool`, `/balance`) — это `server`.
 - Конфиг получает готовым: [`ProxyConfig`] наполняет `server::config`; биллинг — async DB-актор `Option<Arc<AsyncBilling>>` в `AppState` (1 writer + N readers).
 
@@ -35,12 +35,18 @@ outbox, а writer retry-ит до commit. RAII cancel закрывает име�
 `limits_from_headers`/`Limits` (unified-ratelimit из ответа), `poll_sub` (активный опрос idle),
 `detect_plan` (тариф из /api/oauth/profile), `forward` (axum-хендлер), `authed`.
 
-**Cache-first роутинг сессии:** `session_key(headers, body)` = хэш кэшируемого префикса (клиентский
-ключ + `system` + `messages[0]`) — стабильный id диалога (большой статический префикс живёт в
-prompt-cache и не меняется от хода к ходу). Считается ДО инжекта identity (по исходному контенту).
-Первая попытка цикла = `pool.route(session)` → пин на тёплый дом / capacity-weighted placement /
-спилл при кратком давлении (вся логика в pool). Ретраи после 429/5xx → load-based `pool.pick` (дом
-уже в `tried`, привязка сессии цела). Не messages-запрос → `session=None`, сразу load-based.
+**Cache-first роутинг без client opt-in (`affinity.rs`):** tenant = metered `account_id` (все ключи
+аккаунта разделяют кэш) или отдельный admin scope. `AffinityStore::infer` считается ДО identity-инжекта:
+native `x-claude-code-session-id`/conversation header имеет приоритет; для любого обычного API-клиента
+строятся rolling keyed-хэши каждого канонического message-prefix вместе с cache-shape
+(`model/system/tools/thinking/context_management`). Запрос сохраняет все свои prefix aliases, поэтому
+следующий растущий turn находится по самому глубокому уже известному префиксу без разбора ответа.
+Большой/явно cache-controlled общий `system+tools` даёт низкоприоритетный cache-root hint для новой
+conversation; она сразу fork-ается в отдельный session lineage и проходит мягкий placement cap.
+Local L1 всегда включён; optional Redis L2 делит TTL-привязки между slots. Redis хранит только keyed
+digests tenant/native/transcript/subscription и fail-open: сеть/timeout/eviction не участвуют в auth,
+money или capacity. Первая попытка = `pool.route_affinity` (place/pin/brief wait/spill/rebind), ретраи =
+`pool.pick`. PostgreSQL capacity lease ниже остаётся авторитетным. SSE по-прежнему byte-for-byte.
 In-flight держится всю жизнь стрима: успех → `mark_healthy`, `end_stream` из tee-метеринга (`meter.rs`)
 снимает слот на завершении/обрыве; 4xx → `mark_ok`.
 

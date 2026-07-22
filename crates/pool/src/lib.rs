@@ -428,6 +428,29 @@ pub struct RouteStats {
     pub place: u64,
 }
 
+/// Outcome of routing a shared cache lineage whose preferred home is held outside this crate.
+/// The caller owns persistence; the pool remains pure in-memory scheduling and slot accounting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AffinityDisposition {
+    Placed,
+    Pinned,
+    Spilled,
+    Rebound,
+}
+
+#[derive(Clone, Debug)]
+pub enum AffinityRoute {
+    Selected {
+        sub: Sub,
+        disposition: AffinityDisposition,
+    },
+    /// A valuable warm lineage may briefly wait for its home before asking again with no wait.
+    Wait {
+        millis: u64,
+    },
+    Exhausted,
+}
+
 fn is_cooling(g: &Inner, e: &str, now: i64) -> bool {
     g.live
         .get(e)
@@ -597,7 +620,14 @@ fn select_best_non_cooling(
 /// Так новые сессии наливаются в самые пустые аккаунты, но не сверх человеческого конверта; когда
 /// эмптейший упёрся в конверт — перелив на следующий по ёмкости. Никого под конвертом → не зависаем
 /// (обычный `select_best`, эффект — краткая деградация естественности под пиком).
-fn place_best(g: &Inner, now: i64, rsv: &Reserve, p5: f64, p7: f64) -> Option<Sub> {
+fn place_best(
+    g: &Inner,
+    exclude: &HashSet<String>,
+    now: i64,
+    rsv: &Reserve,
+    p5: f64,
+    p7: f64,
+) -> Option<Sub> {
     let free = |s: &Sub| -> f64 {
         let l = g.live.get(&s.email);
         let sc = plan_scale(&s.plan); // прайор по тарифу (Pro/Max5 меньше Max20) до калибровки
@@ -615,7 +645,8 @@ fn place_best(g: &Inner, now: i64, rsv: &Reserve, p5: f64, p7: f64) -> Option<Su
     let lru = |e: &str| g.live.get(e).map(|l| l.last_used).unwrap_or(0);
     let eligible = g.subs.iter().filter(|s| {
         let (c5, c7) = rsv.caps(&s.email);
-        !is_cooling(g, &s.email, now)
+        !exclude.contains(&s.email)
+            && !is_cooling(g, &s.email, now)
             && !is_dead(g, &s.email) // мёртвые (забанены) не принимают новые сессии
             && live_util(g, &s.email, plan_scale(&s.plan), 7, now, p5, p7) < c7
             && live_util(g, &s.email, plan_scale(&s.plan), 5, now, p5, p7) < c5
@@ -630,7 +661,7 @@ fn place_best(g: &Inner, now: i64, rsv: &Reserve, p5: f64, p7: f64) -> Option<Su
     }); // затем давнее использование
     match best {
         Some(s) => Some(s.clone()),
-        None => select_best(g, &HashSet::new(), now, &Reserve::FULL, p5, p7), // все за конвертом → не зависаем
+        None => select_best(g, exclude, now, &Reserve::FULL, p5, p7), // все за конвертом → не зависаем
     }
 }
 
@@ -758,6 +789,136 @@ impl Pool {
         selected
     }
 
+    /// Read-only placement hint used before a distributed affinity claim. The eventual call to
+    /// [`route_affinity`](Self::route_affinity) revalidates the winner and atomically reserves its
+    /// in-flight slot, so this hint never grants capacity by itself.
+    pub fn peek_affinity_home(&self) -> Option<Sub> {
+        let g = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        place_best(
+            &g,
+            &HashSet::new(),
+            now(),
+            &self.reserve,
+            self.prior5h_usd,
+            self.prior7d_usd,
+        )
+    }
+
+    /// Route a lineage whose preferred home is stored by the caller (normally keyed and shared in
+    /// Redis). `identify` converts a subscription email into that opaque home ID without teaching
+    /// this pure scheduler about secrets or network storage.
+    ///
+    /// Continuations use a hard 100% utilization cap rather than the softer new-placement reserve.
+    /// Short cooling or a full concurrency envelope can briefly wait once, then spill while keeping
+    /// the home. Missing/dead/deep-cooling/hard-capped homes are permanently rebound.
+    pub fn route_affinity<F>(
+        &self,
+        preferred_home: &str,
+        max_wait_ms: u64,
+        newly_claimed: bool,
+        identify: F,
+    ) -> AffinityRoute
+    where
+        F: Fn(&str) -> String,
+    {
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        let now = now();
+        let (p5, p7) = (self.prior5h_usd, self.prior7d_usd);
+        let home_sub = g
+            .subs
+            .iter()
+            .find(|sub| identify(&sub.email) == preferred_home)
+            .cloned();
+
+        if let Some(home_sub) = home_sub {
+            let home = home_sub.email.clone();
+            let cooling_until = g.live.get(&home).map(|l| l.cooling_until).unwrap_or(0);
+            let cooling_for = cooling_until.saturating_sub(now);
+            let scale = plan_scale(&home_sub.plan);
+            let (cap5, cap7) = if newly_claimed {
+                self.reserve.caps(&home)
+            } else {
+                (1.0, 1.0)
+            };
+            let over_cap = live_util(&g, &home, scale, 5, now, p5, p7) >= cap5
+                || live_util(&g, &home, scale, 7, now, p5, p7) >= cap7;
+            let permanently_unavailable =
+                is_dead(&g, &home) || over_cap || cooling_for >= REBIND_AFTER;
+
+            if !permanently_unavailable {
+                let busy = cooling_for > 0 || inflight_of(&g, &home) >= max_inflight();
+                if busy && max_wait_ms > 0 {
+                    let millis = if cooling_for > 0 {
+                        (cooling_for as u64)
+                            .saturating_mul(1000)
+                            .min(max_wait_ms)
+                            .max(1)
+                    } else {
+                        max_wait_ms.clamp(1, 50)
+                    };
+                    return AffinityRoute::Wait { millis };
+                }
+                if !busy {
+                    if newly_claimed {
+                        g.route_place += 1;
+                    } else {
+                        g.route_pin += 1;
+                    }
+                    let live = g.live.entry(home.clone()).or_default();
+                    live.last_used = now;
+                    live.inflight = live.inflight.saturating_add(1);
+                    return AffinityRoute::Selected {
+                        sub: home_sub,
+                        disposition: if newly_claimed {
+                            AffinityDisposition::Placed
+                        } else {
+                            AffinityDisposition::Pinned
+                        },
+                    };
+                }
+
+                let exclude: HashSet<String> = std::iter::once(home).collect();
+                if let Some(sub) = select_best_non_cooling(&g, &exclude, now, &self.reserve, p5, p7)
+                {
+                    g.route_spill += 1;
+                    let live = g.live.entry(sub.email.clone()).or_default();
+                    live.last_used = now;
+                    live.inflight = live.inflight.saturating_add(1);
+                    return AffinityRoute::Selected {
+                        sub,
+                        disposition: AffinityDisposition::Spilled,
+                    };
+                }
+                return AffinityRoute::Exhausted;
+            }
+
+            let exclude: HashSet<String> = std::iter::once(home).collect();
+            if let Some(sub) = place_best(&g, &exclude, now, &self.reserve, p5, p7) {
+                g.route_place += 1;
+                let live = g.live.entry(sub.email.clone()).or_default();
+                live.last_used = now;
+                live.inflight = live.inflight.saturating_add(1);
+                return AffinityRoute::Selected {
+                    sub,
+                    disposition: AffinityDisposition::Rebound,
+                };
+            }
+            return AffinityRoute::Exhausted;
+        }
+
+        if let Some(sub) = place_best(&g, &HashSet::new(), now, &self.reserve, p5, p7) {
+            g.route_place += 1;
+            let live = g.live.entry(sub.email.clone()).or_default();
+            live.last_used = now;
+            live.inflight = live.inflight.saturating_add(1);
+            return AffinityRoute::Selected {
+                sub,
+                disposition: AffinityDisposition::Rebound,
+            };
+        }
+        AffinityRoute::Exhausted
+    }
+
     /// **Cache-first роутинг сессии** (первая попытка запроса). Держит диалог на «домашней» персоне,
     /// пока жив prompt-кэш, и раскладывает новые сессии по флоту с учётом ёмкости и конверта:
     ///
@@ -834,7 +995,7 @@ impl Pool {
         }
 
         // новая сессия или пере-привязка → capacity-weighted placement, записать дом
-        let chosen = place_best(&g, now, &rsv, p5, p7)?;
+        let chosen = place_best(&g, &HashSet::new(), now, &rsv, p5, p7)?;
         g.route_place += 1;
         if g.bindings.len() >= BINDINGS_CAP {
             let cutoff = now - AFFINITY_TTL;
@@ -1581,6 +1742,86 @@ mod tests {
             let selected = p.route(s).unwrap().email;
             assert_eq!(selected, home);
             p.mark_done(&selected);
+        }
+    }
+
+    #[test]
+    fn shared_affinity_places_pins_and_rebinds_opaque_home() {
+        let p = pool(&["a", "b"]);
+        p.set_util("a", Some(0.05), Some(0.05), None, None, None);
+        p.set_util("b", Some(0.30), Some(0.30), None, None, None);
+        let hinted = p.peek_affinity_home().unwrap();
+        assert_eq!(hinted.email, "a");
+        let identify = |email: &str| format!("opaque-{email}");
+
+        let first = p.route_affinity(&identify(&hinted.email), 0, true, identify);
+        let first_email = match first {
+            AffinityRoute::Selected { sub, disposition } => {
+                assert_eq!(disposition, AffinityDisposition::Placed);
+                sub.email
+            }
+            other => panic!("unexpected first route: {other:?}"),
+        };
+        assert_eq!(first_email, "a");
+        p.mark_done(&first_email);
+
+        match p.route_affinity("opaque-a", 0, false, identify) {
+            AffinityRoute::Selected { sub, disposition } => {
+                assert_eq!(sub.email, "a");
+                assert_eq!(disposition, AffinityDisposition::Pinned);
+                p.mark_done(&sub.email);
+            }
+            other => panic!("unexpected pinned route: {other:?}"),
+        }
+
+        p.mark_cooling("a", REBIND_AFTER + 1);
+        match p.route_affinity("opaque-a", 0, false, identify) {
+            AffinityRoute::Selected { sub, disposition } => {
+                assert_eq!(sub.email, "b");
+                assert_eq!(disposition, AffinityDisposition::Rebound);
+                p.mark_done(&sub.email);
+            }
+            other => panic!("unexpected rebound route: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shared_affinity_waits_once_then_spills_without_rebind() {
+        let p = pool(&["a", "b"]);
+        p.set_util("a", Some(0.05), Some(0.05), None, None, None);
+        p.set_util("b", Some(0.30), Some(0.30), None, None, None);
+        let identify = |email: &str| format!("opaque-{email}");
+        let home = match p.route_affinity("opaque-a", 0, true, identify) {
+            AffinityRoute::Selected { sub, .. } => sub.email,
+            other => panic!("unexpected placement: {other:?}"),
+        };
+        for _ in 1..max_inflight() {
+            p.mark_used(&home);
+        }
+
+        assert!(matches!(
+            p.route_affinity("opaque-a", 200, false, identify),
+            AffinityRoute::Wait { millis: 50 }
+        ));
+        match p.route_affinity("opaque-a", 0, false, identify) {
+            AffinityRoute::Selected { sub, disposition } => {
+                assert_eq!(sub.email, "b");
+                assert_eq!(disposition, AffinityDisposition::Spilled);
+                p.mark_done(&sub.email);
+            }
+            other => panic!("unexpected spill: {other:?}"),
+        }
+
+        for _ in 0..max_inflight() {
+            p.mark_done(&home);
+        }
+        match p.route_affinity("opaque-a", 0, false, identify) {
+            AffinityRoute::Selected { sub, disposition } => {
+                assert_eq!(sub.email, "a");
+                assert_eq!(disposition, AffinityDisposition::Pinned);
+                p.mark_done(&sub.email);
+            }
+            other => panic!("unexpected return home: {other:?}"),
         }
     }
 

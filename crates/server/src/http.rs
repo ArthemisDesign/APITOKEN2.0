@@ -109,6 +109,7 @@ async fn metrics(
     }
     let m = &app.metrics;
     let rs = app.pool.route_stats();
+    let affinity = app.affinity.stats();
     let (inflight, cooling) = app.pool.gauges();
     let breaker_open = app.breaker.open_for(pool::now()).is_some() as u8;
     let g = |c| Metrics::get(c);
@@ -124,6 +125,15 @@ async fn metrics(
          # TYPE claude_api_route_pin_total counter\nclaude_api_route_pin_total {}\n\
          # TYPE claude_api_route_spill_total counter\nclaude_api_route_spill_total {}\n\
          # TYPE claude_api_route_place_total counter\nclaude_api_route_place_total {}\n\
+         # TYPE claude_api_affinity_local_hits_total counter\nclaude_api_affinity_local_hits_total {}\n\
+         # TYPE claude_api_affinity_redis_hits_total counter\nclaude_api_affinity_redis_hits_total {}\n\
+         # TYPE claude_api_affinity_misses_total counter\nclaude_api_affinity_misses_total {}\n\
+         # TYPE claude_api_affinity_redis_errors_total counter\nclaude_api_affinity_redis_errors_total {}\n\
+         # TYPE claude_api_affinity_native_hits_total counter\nclaude_api_affinity_native_hits_total {}\n\
+         # TYPE claude_api_affinity_transcript_hits_total counter\nclaude_api_affinity_transcript_hits_total {}\n\
+         # TYPE claude_api_affinity_cache_root_hits_total counter\nclaude_api_affinity_cache_root_hits_total {}\n\
+         # TYPE claude_api_affinity_claims_total counter\nclaude_api_affinity_claims_total {}\n\
+         # TYPE claude_api_affinity_rebinds_total counter\nclaude_api_affinity_rebinds_total {}\n\
          # TYPE claude_api_inflight gauge\nclaude_api_inflight {}\n\
          # TYPE claude_api_subs gauge\nclaude_api_subs {}\n\
          # TYPE claude_api_cooling gauge\nclaude_api_cooling {}\n\
@@ -139,6 +149,15 @@ async fn metrics(
         rs.pin,
         rs.spill,
         rs.place,
+        affinity.local_hits,
+        affinity.redis_hits,
+        affinity.misses,
+        affinity.redis_errors,
+        affinity.native_hits,
+        affinity.transcript_hits,
+        affinity.cache_root_hits,
+        affinity.claims,
+        affinity.rebinds,
         inflight,
         app.pool.len(),
         cooling,

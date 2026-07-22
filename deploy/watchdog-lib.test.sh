@@ -79,6 +79,7 @@ wd_path_is_infrastructure deploy/watchdog.sh
 wd_path_is_infrastructure systemd/apitoken-deploy-watchdog.service
 wd_path_is_infrastructure compose.yaml
 wd_path_is_infrastructure observability/prometheus/prometheus.yml
+wd_path_is_infrastructure deploy/affinity-redis.compose.yaml
 if wd_path_is_infrastructure .github/workflows/indexnow.yml; then
   wd_die "GitHub-only workflow changes must not require a production-host infrastructure install"
 fi
@@ -93,6 +94,19 @@ grep -Fq 'crm.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'content-studio.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'monitoring.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
+
+# Shared cache affinity must remain host-local, durable enough for cache continuity, and optional
+# for engine availability. PostgreSQL continues to own all financial/capacity correctness.
+grep -Fq '127.0.0.1:6379:6379' "$ROOT/deploy/affinity-redis.compose.yaml"
+grep -Fq 'redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952' \
+  "$ROOT/deploy/affinity-redis.compose.yaml"
+grep -Fq -- '--appendonly' "$ROOT/deploy/affinity-redis.compose.yaml"
+grep -Fq 'everysec' "$ROOT/deploy/affinity-redis.compose.yaml"
+grep -Fq 'Wants=network-online.target apitoken-affinity-redis.service' \
+  "$ROOT/systemd/claude-api@.service"
+! grep -Fq 'Requires=apitoken-affinity-redis.service' "$ROOT/systemd/claude-api@.service"
+grep -Fq 'CLAUDE_API_AFFINITY_SECRET' "$ROOT/deploy/install-watchdog.sh"
+grep -Fq 'apitoken-affinity-redis.service' "$ROOT/deploy/install-watchdog.sh"
 ! grep -Fq 'partners.panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'crm.panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 [[ $(grep -Fc 'import managed_admin_auth' "$ROOT/deploy/Caddyfile") -ge 5 ]]

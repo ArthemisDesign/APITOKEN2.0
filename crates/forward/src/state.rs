@@ -1,5 +1,6 @@
 //! Общее состояние форвардинга, клонируется в каждый axum-хендлер.
 
+use crate::affinity::AffinityStore;
 use crate::billing::AsyncBilling;
 use crate::breaker::Breaker;
 use crate::config::ProxyConfig;
@@ -18,6 +19,9 @@ pub struct AppState {
     /// Local data directory path remains the home of non-authoritative metrics.db.
     pub data_db_path: Arc<String>,
     pub pool: Arc<Pool>,
+    /// Ephemeral cache-lineage affinity. Local L1 is always available; Redis, when configured,
+    /// shares bindings across engine slots. It never authorizes money or capacity.
+    pub affinity: Arc<AffinityStore>,
     pub clients: Arc<Clients>,
     /// Биллинг клиентов (async DB-актор — синхронный SQLite не блокирует воркеры).
     /// `None` → биллинг выключен (только env-ключи/localhost).

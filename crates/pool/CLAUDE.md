@@ -9,25 +9,26 @@
 - Опрос лимитов (сеть) и форвардинг — НЕ здесь, это `forward`. Сюда приходят уже готовые
   значения утилизации через `set_util(...)`.
 
-**Что внутри:** `Pool` (Mutex-состояние: subs/live/**bindings** + прайоры ёмкости), `Live` (util/reset/
-status/cooling/inflight + калибровка), `route` (cache-first планировщик сессий), `pick` (ротация/
+**Что внутри:** `Pool` (RwLock-состояние: subs/live/legacy **bindings** + прайоры ёмкости), `Live` (util/reset/
+status/cooling/inflight + калибровка), `route_affinity`/legacy `route`, `pick` (ротация/
 спилл), `mark_used`/`mark_ok`/`mark_healthy`/`end_stream`/`mark_cooling`/`cool`, `set_util`,
 `record_spend`, `capacity`, `snapshot`. Общие предикаты — `select_best` (ротация) и `place_best`
 (capacity-weighted placement) как свободные функции над `Inner`.
 
-**Cache-first планировщик (сессии → персоны):** единица планирования — СЕССИЯ (диалог), не запрос.
-`route(session)` (первая попытка запроса) держит диалог на «домашней» персоне, пока жив prompt-кэш:
+**Cache-first планировщик (lineage → персона):** shared binding принадлежит `forward::AffinityStore`;
+pool не знает Redis/секретов и получает только opaque preferred home. `peek_affinity_home` даёт
+read-only hint до distributed claim; `route_affinity` повторно валидирует его и атомарно занимает слот:
 - **пин** — свежая привязка к здоровому дому → та же подписка (кэш тёплый, паттерн одного юзера);
 - **спилл** — дом «ещё наш» (кэш не остыл, не глубокий бан, под потолком), но временно занят
   (бёрст-cooling < `REBIND_AFTER` или `inflight ≥ MAX_INFLIGHT`) → один запрос уходит на пул через
   `select_best`, **привязка сохраняется** (следующий запрос вернётся на тёплый дом);
-- **(пере)привязка** — дома нет / привязка протухла (`AFFINITY_TTL`) / дом глубоко недоступен →
+- **(пере)привязка** — дома нет / дом dead, ≥100% hard cap или глубоко недоступен →
   `place_best`: capacity-weighted placement (макс свободной USD-ёмкости) среди персон под конвертом
-  конкуррентности (`inflight < MAX_INFLIGHT`) → запись в `bindings`.
+  конкуррентности (`inflight < MAX_INFLIGHT`); caller атомарно меняет shared binding.
 
-Таблица `bindings` (session→email+last_seen) ограничена `BINDINGS_CAP`, протухшее вытесняется лениво.
-Инвариант «пул не зависает» сохранён (фильтры ослабляются, placement падает на `select_best`).
-session-ключ (хэш кэшируемого префикса: client-key + system + messages[0]) считает `forward`.
+Continuation использует hard 100% cap, а новый placement — мягкий `Reserve`; ценный большой префикс
+может один раз кратко подождать busy/cooling дом до spill. Legacy `route(u64)` и bounded `bindings`
+оставлены для совместимости тестов/внутренних callers. Сетей, env и persistence в pool нет.
 
 **Персист (переживание рестарта):** `export_state`/`import_state` (через `registry::PoolStateRow`)
 переносят durable-состояние — cooling (бан на дни не забывается при деплое), калибровку ёмкости,

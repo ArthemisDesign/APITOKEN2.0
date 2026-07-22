@@ -8,6 +8,7 @@
 //! и `registry` (тип Sub). НЕ читает окружение и НЕ содержит CLI/роутинг управляющих
 //! эндпоинтов — это делает крейт `server` (композиция).
 
+mod affinity;
 mod billing;
 mod breaker;
 mod config;
@@ -19,6 +20,9 @@ mod proxy;
 mod state;
 mod upstream;
 
+pub use affinity::{
+    AffinityInput, AffinityResolution, AffinitySource, AffinityStats, AffinityStore,
+};
 pub use billing::AsyncBilling;
 pub use breaker::Breaker;
 pub use config::{ProxyConfig, CLAUDE_CODE_IDENTITY};

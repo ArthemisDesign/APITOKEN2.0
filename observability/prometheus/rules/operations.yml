@@ -145,7 +145,7 @@ groups:
           runbook: 'MONITORING.md#hostclockskew'
 
       - alert: ProjectSystemdUnitFailed
-        expr: node_systemd_unit_state{name=~"(apitoken-(api@.+|worker|content-studio|sales-api|sales-web|crm-api|crm-web|deploy-watchdog|monitoring-collector)|claude-api@.+)\\.service",state="failed"} == 1
+        expr: node_systemd_unit_state{name=~"(apitoken-(api@.+|worker|content-studio|sales-api|sales-web|crm-api|crm-web|deploy-watchdog|monitoring-collector|affinity-redis)|claude-api@.+)\\.service",state="failed"} == 1
         for: 1m
         labels:
           severity: critical

@@ -194,6 +194,7 @@ fn skip_req_header(name: &str) -> bool {
         "x-app" | "anthropic-dangerous-direct-browser-access" | "accept" |
         "host" | "content-length" | "connection" | "authorization" | "x-api-key"
         | "anthropic-beta" | "anthropic-version" | "user-agent" | "accept-encoding"
+        | "x-claude-code-session-id" | "x-conversation-id" | "x-session-id"
         | "transfer-encoding" | "upgrade" | "proxy-connection" | "proxy-authorization"
         | "keep-alive" | "te" | "trailer"
         // Клиентские forwarding/hop-заголовки НЕ пробрасываем апстриму: они раскрыли бы цепочку прокси
@@ -238,30 +239,6 @@ pub fn client_key(headers: &HeaderMap) -> Option<String> {
         .map(str::trim)
         .filter(|key| !key.is_empty())
         .map(str::to_string)
-}
-
-/// Идентификатор «сессии» диалога для cache-first роутинга (`pool::route`). Якорь = стабильный
-/// **кэшируемый префикс**: клиентский ключ + `system` + ПЕРВОЕ сообщение (`messages[0]`). Именно этот
-/// большой статический префикс живёт в prompt-cache и НЕ меняется от хода к ходу (диалог растёт в
-/// хвост) — поэтому вся история консистентно садится на одну персону → cache-hit + паттерн одного
-/// юзера. `None` → не messages-запрос: роутинг сессии не нужен, идём load-based [`pool::pick`].
-/// Считаем ДО инжекта identity — по исходному контенту клиента (наш system-блок якорь не смещает).
-fn session_key(headers: &HeaderMap, v: &Value) -> Option<u64> {
-    let first = v
-        .get("messages")
-        .and_then(Value::as_array)
-        .and_then(|m| m.first())?;
-    let mut material = Vec::new();
-    if let Some(k) = client_key(headers) {
-        material.extend_from_slice(k.as_bytes());
-    }
-    material.push(0);
-    if let Some(sys) = v.get("system") {
-        material.extend_from_slice(sys.to_string().as_bytes());
-    }
-    material.push(0);
-    material.extend_from_slice(first.to_string().as_bytes());
-    Some(pool::stable_hash64(&material))
 }
 
 /// Админ-доступ: env-ключи `CLAUDE_API_KEYS`, либо loopback-пир ТОЛЬКО если `trust_loopback`
@@ -332,7 +309,7 @@ pub fn readonly_authed(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -
 /// Результат авторизации запроса.
 enum Authz {
     /// Админ (env-ключ/localhost) — без тарификации.
-    Admin,
+    Admin { affinity_scope: String },
     /// Ключ клиента → АККАУНТ с балансом. Тарифицируем и списываем с БАЛАНСА АККАУНТА (общего на
     /// все ключи юзера); `key` — для атрибуции расхода по ключу. `mult_bp` — наценка аккаунта.
     /// `balance_nano` несём из авторизации → резерв-блок НЕ перечитывает баланс из БД (−1 запрос).
@@ -349,12 +326,24 @@ enum Authz {
     Unavailable,
 }
 
+impl Authz {
+    fn affinity_scope(&self) -> Option<&str> {
+        match self {
+            Authz::Admin { affinity_scope } => Some(affinity_scope),
+            Authz::Metered { account_id, .. } => Some(account_id),
+            Authz::Unauthorized | Authz::Unavailable => None,
+        }
+    }
+}
+
 /// Порядок для МАСШТАБА: сначала админ (env-ключ/loopback) — проверка В ПАМЯТИ, без похода в БД
 /// (админ-трафик не грузит биллинг-мьютекс). Только если не админ — клиентский ключ → аккаунт
 /// (ОДНА DB-выборка, несёт баланс для резерва → без повторного чтения).
 async fn authorize(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> Authz {
     if authed(app, headers, peer) {
-        return Authz::Admin;
+        return Authz::Admin {
+            affinity_scope: client_key(headers).unwrap_or_else(|| "loopback-admin".to_string()),
+        };
     }
     if let (Some(billing), Some(k)) = (&app.billing, client_key(headers)) {
         match billing.key_auth(&k).await {
@@ -737,13 +726,13 @@ pub async fn forward(
     let (parts, body) = req.into_parts();
     let billable = parts.method == Method::POST && parts.uri.path() == "/v1/messages";
     let authz = authorize(&app, &parts.headers, &peer).await;
-    match authz {
+    match &authz {
         Authz::Unauthorized => {
             Metrics::inc(&app.metrics.auth_failures);
             return local_err(LocalErr::InvalidKey, None);
         }
         Authz::Unavailable => return local_err(LocalErr::Overloaded, Some(2)),
-        Authz::Admin | Authz::Metered { .. } => {}
+        Authz::Admin { .. } | Authz::Metered { .. } => {}
     }
     // ALLOWLIST эндпоинтов: форвардим на пул ТОЛЬКО то, что доступно на квоте ПОДПИСКИ Claude Max
     // (messages/count_tokens/models). Batches/Files/Agents/Sessions требуют scope OAuth-токена
@@ -819,7 +808,7 @@ pub async fn forward(
     let mut max_tokens: u64 = 0;
     let mut requested_fast = false;
     let mut requested_us_inference = false;
-    let mut session: Option<u64> = None; // sticky-ключ диалога (см. session_key) — для pool.pick_sticky
+    let mut affinity_input = None;
     let mut parsed = serde_json::from_slice::<Value>(&raw).ok();
     // `parsed` (если тело — JSON) держим как ФИНАЛИЗИРУЕМЫЙ шаблон: инжектим identity/cap max_tokens
     // здесь, а per-sub metadata.user_id — в цикле per-подписка, и сериализуем тело per-attempt. `body_bytes`
@@ -862,11 +851,22 @@ pub async fn forward(
                 }
             }
         }
-        session = session_key(&parts.headers, v); // ДО инжекта — по исходному контенту клиента
+        // Infer from the untouched client request. Native harness IDs win; ordinary API clients are
+        // linked by canonical transcript prefixes. The account (not individual API key) is the tenant.
+        if let Some(scope) = authz.affinity_scope() {
+            affinity_input = app.affinity.infer(scope, &parts.headers, v);
+        }
         if app.cfg.inject_identity {
             inject_identity(v, &app.cfg.identity);
         }
     }
+    let mut affinity_resolution = match affinity_input.as_ref() {
+        Some(input) => app.affinity.resolve(input).await,
+        None => None,
+    };
+    let mut persona_session = affinity_resolution
+        .as_ref()
+        .map(|resolution| pool::stable_hash64(resolution.session_id.as_bytes()));
 
     // Circuit breaker разомкнут (брауноут апстрима) → быстрый отбой ДО резерва: в аутейдж не делаем
     // лишних DB-записей (reserve+возврат) на каждый запрос thundering-herd. Резерва ещё нет — возвращать нечего.
@@ -1002,6 +1002,14 @@ pub async fn forward(
         Err(()) => return local_err(LocalErr::BadBeta, None),
     };
 
+    let mut affinity_wait_available = affinity_input.as_ref().is_some_and(|input| {
+        app.cfg.affinity_wait_ms > 0 && input.cacheable_bytes >= app.cfg.affinity_wait_min_bytes
+    });
+    // Cache-root hits are warm placement hints for a NEW conversation, not hard-cap continuations.
+    let mut affinity_newly_claimed = affinity_resolution
+        .as_ref()
+        .is_some_and(|resolution| resolution.source == crate::AffinitySource::CacheRoot);
+
     // Гладкий UX: транзиентную нехватку ёмкости (все подписки cooling/за util_cap / breaker /
     // upstream-429) НЕ отдаём клиенту сразу — тихо ждём до бюджета и повторяем весь раунд ротации.
     // Решение принимается ДО начала стрима, поэтому для клиента это лишь чуть больший TTFB, не ошибка.
@@ -1040,15 +1048,69 @@ pub async fn forward(
                 transient_hint = Some(retry);
                 break;
             }
-            // Первая попытка — cache-first роутинг сессии (пин/placement/спилл в `route`). Дальше —
-            // load-based `pick` (дом/пробованные уже в `tried`; cooling-подписки пул исключает сам).
-            let sub = match session
-                .filter(|_| attempt == 0)
-                .and_then(|s| app.pool.route(s))
-                .or_else(|| app.pool.pick(&tried, false))
-            {
-                Some(s) => s,
-                None => break,
+            // First attempt uses shared cache affinity. Redis only proposes an opaque home; the pool
+            // revalidates live health/capacity and reserves the local slot atomically. Retries remain
+            // load-based and PostgreSQL below is still the authoritative distributed capacity gate.
+            let affinity_sub = if attempt == 0 {
+                if let Some(input) = affinity_input.as_ref() {
+                    if affinity_resolution.is_none() {
+                        if let Some(proposed) = app.pool.peek_affinity_home() {
+                            let proposed_home = app.affinity.home_id(&proposed.email);
+                            affinity_resolution =
+                                Some(app.affinity.claim(input, &proposed_home).await);
+                            affinity_newly_claimed = true;
+                            persona_session = affinity_resolution.as_ref().map(|resolution| {
+                                pool::stable_hash64(resolution.session_id.as_bytes())
+                            });
+                        }
+                    }
+
+                    let mut selected = None;
+                    if let Some(resolution) = affinity_resolution.as_mut() {
+                        loop {
+                            let wait_ms = if affinity_wait_available {
+                                app.cfg.affinity_wait_ms
+                            } else {
+                                0
+                            };
+                            match app.pool.route_affinity(
+                                &resolution.home,
+                                wait_ms,
+                                affinity_newly_claimed,
+                                |email| app.affinity.home_id(email),
+                            ) {
+                                pool::AffinityRoute::Wait { millis } => {
+                                    affinity_wait_available = false;
+                                    tokio::time::sleep(std::time::Duration::from_millis(millis))
+                                        .await;
+                                }
+                                pool::AffinityRoute::Selected { sub, disposition } => {
+                                    if disposition == pool::AffinityDisposition::Rebound {
+                                        let new_home = app.affinity.home_id(&sub.email);
+                                        app.affinity.rebind(resolution, &new_home).await;
+                                    }
+                                    app.affinity.remember(input, resolution).await;
+                                    affinity_newly_claimed = false;
+                                    selected = Some((sub, disposition));
+                                    break;
+                                }
+                                pool::AffinityRoute::Exhausted => break,
+                            }
+                        }
+                    }
+                    selected
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let (sub, affinity_disposition) = match affinity_sub {
+                Some((sub, disposition)) => (sub, Some(disposition)),
+                None => match app.pool.pick(&tried, false) {
+                    Some(sub) => (sub, None),
+                    None => break,
+                },
             };
             // route/pick отдали cooling-персону → значит НЕТ ни одной не-cooling (весь оставшийся флот за
             // лимитом). НЕ шлём живой клиентский трафик на отлимиченный аккаунт: это гарантированный свежий
@@ -1069,6 +1131,12 @@ pub async fn forward(
             // cooldown/utilization/inflight validation and increments capacity in the same transaction.
             let capacity_lease_id = format!("{}:{attempt}", engine_request_id);
             let capacity_lease = if let Some(billing) = &app.billing {
+                let authority_util_cap =
+                    if affinity_disposition == Some(pool::AffinityDisposition::Pinned) {
+                        1.0
+                    } else {
+                        app.cfg.util_cap
+                    };
                 match billing
                     .acquire_capacity(
                         &capacity_lease_id,
@@ -1076,7 +1144,7 @@ pub async fn forward(
                         &sub.email,
                         3600,
                         pool::max_inflight(),
-                        app.cfg.util_cap,
+                        authority_util_cap,
                     )
                     .await
                 {
@@ -1125,7 +1193,7 @@ pub async fn forward(
                 // Реальный CC шлёт его на каждый запрос; синтезируем от session-ключа.
                 .header(
                     "x-claude-code-session-id",
-                    crate::upstream::persona_session_id(&sub.email, session),
+                    crate::upstream::persona_session_id(&sub.email, persona_session),
                 )
                 // x-client-request-id — случайный per-request uuid (реальный CC шлёт на каждый запрос).
                 .header("x-client-request-id", &engine_request_id);
@@ -1149,7 +1217,7 @@ pub async fn forward(
                     if billable {
                         set_persona_user_id_if_absent(
                             v,
-                            crate::upstream::persona_user_id(&sub.email, session),
+                            crate::upstream::persona_user_id(&sub.email, persona_session),
                         );
                         // billing-header первым system-блоком (как реальный CC): cc_version флот-константна,
                         // cch стабилен per-подписка. Идемпотентно — на ротации заменяет, не дублирует.

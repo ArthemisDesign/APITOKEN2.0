@@ -21,6 +21,12 @@ pub struct Settings {
     pub readiness_delay_secs: u64, // задержка после снятия readiness перед дренажем (деф 3с)
     pub drain_deadline_secs: u64, // предел graceful-дренажа до принудительного обрыва (деф 540с)
     pub max_inflight: i64, // потолок параллельных запросов на подписку (деф 6; выше = больше параллели, риск бана)
+    /// Optional shared L2 for ephemeral cache affinity. PostgreSQL remains authoritative.
+    pub redis_url: Option<String>,
+    pub affinity_secret: Option<String>,
+    pub affinity_ttl_secs: u64,
+    pub affinity_local_ttl_secs: u64,
+    pub affinity_redis_timeout_ms: u64,
     pub proxy: ProxyConfig,
 }
 
@@ -261,6 +267,26 @@ impl Settings {
             // Потолок параллельных запросов на подписку. Дефолт 6 (человеческий конверт/анти-бан).
             // Высокое значение снимает потолок concurrency — больше параллели ценой риска бан-сигнала.
             max_inflight: bounded_i64("CLAUDE_API_MAX_INFLIGHT", 6, 1, 1_024),
+            redis_url: ev("CLAUDE_API_REDIS_URL"),
+            affinity_secret: ev("CLAUDE_API_AFFINITY_SECRET"),
+            affinity_ttl_secs: bounded_u64(
+                "CLAUDE_API_AFFINITY_TTL_SECS",
+                3600,
+                60,
+                24 * 3600,
+            ),
+            affinity_local_ttl_secs: bounded_u64(
+                "CLAUDE_API_AFFINITY_LOCAL_TTL_SECS",
+                300,
+                1,
+                3600,
+            ),
+            affinity_redis_timeout_ms: bounded_u64(
+                "CLAUDE_API_AFFINITY_REDIS_TIMEOUT_MS",
+                35,
+                1,
+                500,
+            ),
             proxy: ProxyConfig {
                 api_keys,
                 control_keys,
@@ -279,6 +305,18 @@ impl Settings {
                 cool_secs: bounded_i64("CLAUDE_API_COOL_SECS", 300, 1, 8 * 24 * 3600),
                 // Гладкий UX: тихий wait+retry ротации при транзиентной нехватке (деф 8с). 0 = выкл.
                 smooth_wait_ms: bounded_u64("CLAUDE_API_SMOOTH_WAIT_MS", 8_000, 0, 60_000),
+                affinity_wait_ms: bounded_u64(
+                    "CLAUDE_API_AFFINITY_WAIT_MS",
+                    250,
+                    0,
+                    2_000,
+                ),
+                affinity_wait_min_bytes: bounded_usize(
+                    "CLAUDE_API_AFFINITY_WAIT_MIN_BYTES",
+                    16 * 1024,
+                    0,
+                    32 * 1024 * 1024,
+                ),
                 poll: ev_bool("CLAUDE_API_POLL", true),
                 inject_identity: ev_bool("CLAUDE_API_INJECT_IDENTITY", true),
                 identity: ev_or("CLAUDE_API_IDENTITY", CLAUDE_CODE_IDENTITY),

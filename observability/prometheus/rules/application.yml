@@ -86,6 +86,17 @@ groups:
           description: 'More than ten upstream server failures were recorded in ten minutes.'
           runbook: 'MONITORING.md#engineupstreamservererrors'
 
+      - alert: EngineAffinityRedisErrors
+        expr: increase(claude_api_affinity_redis_errors_total[10m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: claude-engine
+        annotations:
+          summary: 'Claude cache-affinity Redis is degraded'
+          description: 'Shared affinity operations are failing; requests remain available on local fail-open affinity.'
+          runbook: 'MONITORING.md#engineaffinityrediserrors'
+
   - name: durable-business-state
     rules:
       - alert: DurableQueueBacklog

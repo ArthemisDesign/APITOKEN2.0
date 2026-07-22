@@ -13,7 +13,7 @@
   Здесь — проводка: env → `ProxyConfig`/`Pool`/`Clients` → `AppState` → роутер + циклы.
 
 **Что внутри:**
-- `config.rs` — `Settings` (db_path/bind/fleet + `ProxyConfig`) из env.
+- `config.rs` — `Settings` (db_path/bind/fleet/Redis affinity + `ProxyConfig`) из env.
 - `http.rs` — роутер: `/health`, `/pool`, `/balance`, `/capacity` (управляющие) + `/admin-panel`
   (единый `admin-panel.html` для admin.apitoken.sale; архитектура — корневой `PANEL.md`) +
   `/admin/*` (control-плоскость,
@@ -45,6 +45,7 @@
 
 **Инварианты:**
 - Новую env-переменную заводи ТОЛЬКО тут и прокидывай дальше через конфиг-структуры.
+- Redis здесь только конфигурируется; `AffinityStore` живёт в `forward`, а pool остаётся без сети.
 - Управляющие эндпоинты (`/health`, `/pool`, `/capacity`, `/admin/*`) — здесь; остальное → форвардинг.
 - **Три класса ключей (разделение секретов):** `CLAUDE_API_KEYS` (forwarding-admin: неметеренный /v1
   + всё), `CLAUDE_API_CONTROL_KEY` (control-плоскость `/admin/*`: аккаунты/деньги, для коммерции),

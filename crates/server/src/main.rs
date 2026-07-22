@@ -959,6 +959,24 @@ async fn serve() -> Result<()> {
     let authority_ready = Arc::new(AtomicBool::new(true));
     spawn_pre_drain_signal(accepting.clone());
     let fleet_size = subs.len();
+    let affinity = Arc::new(
+        forward::AffinityStore::new(
+            s.redis_url.as_deref(),
+            s.affinity_secret.as_deref(),
+            s.affinity_ttl_secs,
+            s.affinity_local_ttl_secs,
+            s.affinity_redis_timeout_ms,
+        )
+        .context("initialize cache affinity")?,
+    );
+    eprintln!(
+        "cache affinity: local L1 + {} L2",
+        if affinity.redis_configured() {
+            "Redis"
+        } else {
+            "no shared"
+        }
+    );
     let app = AppState {
         cfg: Arc::new(s.proxy.clone()),
         authority: Arc::new(authority.clone()),
@@ -969,6 +987,7 @@ async fn serve() -> Result<()> {
             s.cap5h_usd,
             s.cap7d_usd,
         )),
+        affinity,
         clients: Arc::new(Clients::new(&s.proxy)),
         billing,
         authority_ready: authority_ready.clone(),

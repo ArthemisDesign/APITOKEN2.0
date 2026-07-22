@@ -1,0 +1,34 @@
+name: apitoken-affinity
+
+services:
+  affinity-redis:
+    image: redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952
+    restart: unless-stopped
+    environment:
+      CLAUDE_API_REDIS_PASSWORD: ${CLAUDE_API_REDIS_PASSWORD:?CLAUDE_API_REDIS_PASSWORD is required}
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --requirepass
+      - ${CLAUDE_API_REDIS_PASSWORD:?CLAUDE_API_REDIS_PASSWORD is required}
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - /var/lib/apitoken/affinity-redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$CLAUDE_API_REDIS_PASSWORD redis-cli ping | grep -qx PONG"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

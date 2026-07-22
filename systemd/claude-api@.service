@@ -1,8 +1,8 @@
 # PostgreSQL-fenced engine slot. Instance name is the loopback port (8787 or 8788).
 [Unit]
 Description=claude-api PostgreSQL engine slot on port %i
-After=network-online.target
-Wants=network-online.target
+After=network-online.target apitoken-affinity-redis.service
+Wants=network-online.target apitoken-affinity-redis.service
 
 [Service]
 Type=simple

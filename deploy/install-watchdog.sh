@@ -9,6 +9,7 @@ source "$ROOT/deploy/watchdog-lib.sh"
 command -v systemctl >/dev/null || { echo 'systemd is required' >&2; exit 1; }
 command -v curl >/dev/null || { echo 'curl is required' >&2; exit 1; }
 command -v jq >/dev/null || { echo 'jq is required' >&2; exit 1; }
+command -v openssl >/dev/null || { echo 'openssl is required' >&2; exit 1; }
 id deploy >/dev/null 2>&1 || { echo 'deploy user is required' >&2; exit 1; }
 id apitoken-ci >/dev/null 2>&1 || useradd --system --home-dir /var/lib/apitoken/watchdog/ci-home --create-home --shell /usr/sbin/nologin apitoken-ci
 if ! id -Gn apitoken-ci | tr ' ' '\n' | grep -Fxq deploy; then
@@ -45,14 +46,41 @@ install -o root -g root -m 0755 "$ROOT/deploy/engine-bluegreen.sh" /usr/local/li
 install -o root -g root -m 0755 "$ROOT/deploy/sales-deploy.sh" /usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh
 install -o root -g root -m 0644 "$ROOT/deploy/commerce-postgres.compose.yaml" \
   /usr/local/lib/apitoken-watchdog/controller/commerce-postgres.compose.yaml
+install -o root -g root -m 0644 "$ROOT/deploy/affinity-redis.compose.yaml" \
+  /usr/local/lib/apitoken-watchdog/controller/affinity-redis.compose.yaml
 for unit in \
   apitoken-api@.service apitoken-deploy-watchdog.service apitoken-deploy-watchdog.timer \
-  apitoken-postgres.service apitoken-worker.service apitoken-content-studio.service claude-api@.service claude-api-backup.service claude-api-backup.timer \
+  apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api@.service claude-api-backup.service claude-api-backup.timer \
   claude-api-fingerprint.service claude-api-fingerprint.timer \
   apitoken-sales-api.service apitoken-sales-web.service \
   apitoken-monitoring-collector.service apitoken-monitoring-collector.timer; do
   install -o root -g root -m 0644 "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"
 done
+
+# Shared affinity is deliberately ephemeral, but its keyed identifiers and Redis password must be
+# stable across engine restarts. Provision them once without printing secret values. The engine
+# keeps working from local memory if this service is unavailable.
+server_env=/srv/claude-api/data/server.env
+install -d -o deploy -g deploy -m 0750 /srv/claude-api/data
+[[ ! -L $server_env ]] || { echo "$server_env must not be a symlink" >&2; exit 1; }
+if [[ ! -e $server_env ]]; then
+  install -o deploy -g deploy -m 0600 /dev/null "$server_env"
+fi
+chown deploy:deploy "$server_env"
+chmod 0600 "$server_env"
+if ! grep -Eq '^CLAUDE_API_REDIS_PASSWORD=.+$' "$server_env"; then
+  printf 'CLAUDE_API_REDIS_PASSWORD=%s\n' "$(openssl rand -hex 32)" >>"$server_env"
+fi
+if ! grep -Eq '^CLAUDE_API_AFFINITY_SECRET=.+$' "$server_env"; then
+  printf 'CLAUDE_API_AFFINITY_SECRET=%s\n' "$(openssl rand -hex 32)" >>"$server_env"
+fi
+if ! grep -Eq '^CLAUDE_API_REDIS_URL=.+$' "$server_env"; then
+  redis_password=$(sed -n 's/^CLAUDE_API_REDIS_PASSWORD=//p' "$server_env" | tail -n 1)
+  [[ $redis_password =~ ^[0-9a-fA-F]{64}$ ]] \
+    || { echo 'managed Redis password must be 64 hex characters' >&2; exit 1; }
+  printf 'CLAUDE_API_REDIS_URL=redis://default:%s@127.0.0.1:6379/0\n' "$redis_password" >>"$server_env"
+fi
+install -d -o root -g root -m 0700 /var/lib/apitoken/affinity-redis
 install -d -o root -g deploy -m 0775 /run/lock
 for lock in apitoken-watchdog apitoken-deploy apitoken-db-migrate; do
   touch "/run/lock/$lock.lock"; chown root:deploy "/run/lock/$lock.lock"; chmod 0664 "/run/lock/$lock.lock"
@@ -106,5 +134,7 @@ rm -f -- /var/lib/apitoken/watchdog/pending-infrastructure.sha \
   /var/lib/apitoken/watchdog/infrastructure-approved.sha
 systemctl daemon-reload
 "$ROOT/deploy/install-monitoring.sh"
+systemctl enable apitoken-affinity-redis.service
+systemctl restart apitoken-affinity-redis.service
 systemctl enable --now apitoken-deploy-watchdog.timer
 echo 'watchdog installed and timer enabled; verify with: sudo apitoken-watchdog status'
