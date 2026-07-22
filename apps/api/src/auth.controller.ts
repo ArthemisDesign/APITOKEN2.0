@@ -46,8 +46,15 @@ import {
 } from "./auth.service.js";
 import { OAuthProviderError } from "./auth-providers.js";
 
+import { randomBytes } from "node:crypto";
+
 interface ReplyLike { header(name: string, value: string | string[]): void }
 interface RequestLike { headers: Record<string, string | string[] | undefined>; ip?: string }
+
+// Долгоживущая анонимная метка браузера для антифрода (бонус-дедуп + журнал устройств).
+// Сервер хранит только SHA-256 от значения. Куки нет/подтёрта → сигнал просто отсутствует.
+const DEVICE_COOKIE = "apitoken_device";
+const DEVICE_COOKIE_TTL_SECONDS = 2 * 365 * 24 * 3600;
 const oauthCallbackSchema = z.object({ code: z.string().min(1), state: authTokenSchema, error: z.string().optional() });
 
 @Controller("auth")
@@ -60,7 +67,9 @@ export class AuthController {
     if (!parsed.success) throw new BadRequestException("invalid registration data");
     try {
       const result = await this.auth.register({ ...parsed.data, ...requestMetadata(request) });
-      if (result.session) this.setSession(reply, result.session);
+      const device = issueDeviceCookie(request, this.secureCookies());
+      if (result.session) this.setSession(reply, result.session, device ? [device] : []);
+      else if (device) reply.header("set-cookie", device);
       return { user: result.user, verificationRequired: result.session === null };
     } catch (error) {
       if (error instanceof EmailAlreadyRegisteredError) throw new ConflictException("email is already registered");
@@ -77,7 +86,8 @@ export class AuthController {
     if (!parsed.success) throw new UnauthorizedException("invalid email or password");
     try {
       const session = await this.auth.login({ ...parsed.data, ...requestMetadata(request) });
-      this.setSession(reply, session);
+      const device = issueDeviceCookie(request, this.secureCookies());
+      this.setSession(reply, session, device ? [device] : []);
       return { user: session.user };
     } catch (error) {
       if (error instanceof InvalidCredentialsError) throw new UnauthorizedException("invalid email or password");
@@ -94,7 +104,8 @@ export class AuthController {
     if (!parsed.success) throw new BadRequestException("invalid verification token");
     try {
       const session = await this.auth.verifyEmail({ ...parsed.data, ...requestMetadata(request) });
-      this.setSession(reply, session);
+      const device = issueDeviceCookie(request, this.secureCookies());
+      this.setSession(reply, session, device ? [device] : []);
       return { user: session.user };
     } catch (error) {
       if (error instanceof InvalidAuthTokenError) throw new BadRequestException(error.message);
@@ -148,9 +159,10 @@ export class AuthController {
   startGoogle(
     @Query("invite") invite: string | undefined,
     @Query("ref") ref: string | undefined,
+    @Req() request: RequestLike,
     @Res({ passthrough: true }) reply: ReplyLike,
   ) {
-    return this.startOAuth("google", invite, ref, reply);
+    return this.startOAuth("google", invite, ref, request, reply);
   }
 
   @Get("github")
@@ -158,9 +170,10 @@ export class AuthController {
   startGitHub(
     @Query("invite") invite: string | undefined,
     @Query("ref") ref: string | undefined,
+    @Req() request: RequestLike,
     @Res({ passthrough: true }) reply: ReplyLike,
   ) {
-    return this.startOAuth("github", invite, ref, reply);
+    return this.startOAuth("github", invite, ref, request, reply);
   }
 
   @Get("google/callback")
@@ -215,12 +228,23 @@ export class AuthController {
     };
   }
 
-  private async startOAuth(provider: OAuthProvider, invite: string | undefined, ref: string | undefined, reply: ReplyLike) {
+  private async startOAuth(
+    provider: OAuthProvider,
+    invite: string | undefined,
+    ref: string | undefined,
+    request: RequestLike,
+    reply: ReplyLike,
+  ) {
     if (invite !== undefined && !authTokenSchema.safeParse(invite).success) throw new BadRequestException("invalid invite token");
     // ref валидируется мягко в auth.service (normalizeReferralCode); мусор просто игнорируется.
     try {
       const result = await this.auth.beginOAuth(provider, invite, ref);
-      reply.header("set-cookie", oauthCookie(result.state, this.secureCookies()));
+      // Device-метку ставим ДО редиректа в провайдера — callback уже видит её и может
+      // сверить бонус-дедуп по устройству.
+      const cookies = [oauthCookie(result.state, this.secureCookies())];
+      const device = issueDeviceCookie(request, this.secureCookies());
+      if (device) cookies.push(device);
+      reply.header("set-cookie", cookies);
       reply.header("cache-control", "no-store");
       return { url: result.authorizationUrl, statusCode: 302 };
     } catch (error) {
@@ -245,7 +269,10 @@ export class AuthController {
         stateCookie: readCookieHeader(request.headers.cookie, "apitoken_oauth_state"),
         ...requestMetadata(request),
       });
-      reply.header("set-cookie", [clearOAuthCookie(this.secureCookies()), sessionCookie(session, this.config)]);
+      const cookies = [clearOAuthCookie(this.secureCookies()), sessionCookie(session, this.config)];
+      const device = issueDeviceCookie(request, this.secureCookies());
+      if (device) cookies.push(device);
+      reply.header("set-cookie", cookies);
       reply.header("cache-control", "no-store");
       return { url: new URL(`/auth/callback?provider=${provider}`, this.config.get("PUBLIC_APP_BASE_URL", { infer: true })).toString(), statusCode: 302 };
     } catch (error) {
@@ -264,7 +291,7 @@ export class AuthController {
     return { url: url.toString(), statusCode: 302 };
   }
 
-  private setSession(reply: ReplyLike, session: AuthSession): void {
+  private setSession(reply: ReplyLike, session: AuthSession, extraCookies: string[] = []): void {
     const secure = this.config.get("NODE_ENV", { infer: true }) === "production";
     const parts = [
       `${sessionCookieName()}=${session.token}`,
@@ -274,7 +301,8 @@ export class AuthController {
       `Max-Age=${this.config.get("SESSION_TTL_SECONDS", { infer: true })}`,
     ];
     if (secure) parts.push("Secure");
-    reply.header("set-cookie", parts.join("; "));
+    const cookie = parts.join("; ");
+    reply.header("set-cookie", extraCookies.length > 0 ? [cookie, ...extraCookies] : cookie);
     reply.header("cache-control", "no-store");
   }
 
@@ -283,11 +311,25 @@ export class AuthController {
   }
 }
 
-function requestMetadata(request: RequestLike): { userAgent: string | null; ipAddress: string | null } {
+function requestMetadata(request: RequestLike): {
+  userAgent: string | null; ipAddress: string | null; deviceToken: string | null;
+} {
   return {
     userAgent: typeof request.headers["user-agent"] === "string" ? request.headers["user-agent"] : null,
     ipAddress: request.ip ?? null,
+    deviceToken: readCookieHeader(request.headers.cookie, DEVICE_COOKIE),
   };
+}
+
+function deviceCookie(token: string, secure: boolean): string {
+  return `${DEVICE_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${DEVICE_COOKIE_TTL_SECONDS}${secure ? "; Secure" : ""}`;
+}
+
+/** Set-Cookie для новой device-метки, либо null, когда валидная уже стоит. */
+function issueDeviceCookie(request: RequestLike, secure: boolean): string | null {
+  const existing = readCookieHeader(request.headers.cookie, DEVICE_COOKIE);
+  if (existing && /^[A-Za-z0-9_-]{43}$/.test(existing)) return null;
+  return deviceCookie(randomBytes(32).toString("base64url"), secure);
 }
 
 function clearCookie(): string {

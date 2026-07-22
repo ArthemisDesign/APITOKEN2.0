@@ -1,5 +1,6 @@
 export * from "./client.js";
 export * from "./migrate.js";
+export * from "./antifraud.js";
 export * from "./auth.js";
 export * from "./auth-secrets.js";
 export * from "./email.js";

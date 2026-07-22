@@ -23,6 +23,9 @@ async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter({
     logger: false,
     bodyLimit: 1_048_576,
+    // Единственный hop перед нами — Caddy на loopback; иначе request.ip навсегда 127.0.0.1,
+    // а весь антифрод по IP слеп. Доверяем X-Forwarded-For только от loopback.
+    trustProxy: ["127.0.0.1", "::1"],
   }), { rawBody: true });
   const readiness = app.get(ReadinessService);
   process.on("SIGUSR1", () => {

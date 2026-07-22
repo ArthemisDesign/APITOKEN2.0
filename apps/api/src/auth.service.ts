@@ -4,8 +4,16 @@ import { ConfigService } from "@nestjs/config";
 import { hash, verify, argon2id } from "argon2";
 import { B2C_SIGNUP_BONUS_BALANCE_NANO, type AuthUserView } from "@claude-api/contracts";
 import {
+  canonicalizeEmail,
+  claimSignupBonus,
   completeExternalSignIn,
   consumeEmailVerification,
+  countRecentSubnetSignups,
+  flagSignupProfile,
+  ipSubnetOf,
+  recordDeviceSighting,
+  releaseSignupBonus,
+  upsertSignupProfile,
   consumeOAuthTransaction,
   consumePasswordReset,
   consumeAuthRateLimit,
@@ -35,6 +43,10 @@ import { OAuthProviderRegistry } from "./auth-providers.js";
 import { createFundedEngineAccount } from "./engine-provisioning.js";
 
 const dummyHash = hash("not-a-real-user-password", passwordHashOptions());
+
+// Волна регистраций из одной подсети: сверх этого числа за окно бонус не выдаётся (флаг).
+const SUBNET_SIGNUP_MAXIMUM = 3;
+const SUBNET_SIGNUP_WINDOW_SECONDS = 86_400;
 
 export interface AuthSession {
   sessionId: string;
@@ -75,8 +87,10 @@ export class AuthService {
     referralCode?: string | undefined;
     userAgent: string | null;
     ipAddress: string | null;
+    deviceToken?: string | null;
   }): Promise<RegistrationResult> {
     await this.enforceRateLimits("register", input.email, input.ipAddress, 5, 20, 3600);
+    await this.enforceSubnetSignupLimit(input.ipAddress);
     const passwordHash = await hash(input.password, passwordHashOptions());
     const verificationRequired = this.emailVerificationRequired();
     const verification = verificationRequired ? this.createAuthEmailSecret("verify_email") : undefined;
@@ -88,12 +102,13 @@ export class AuthService {
       verification,
     );
     await this.attributeReferral(user.id, input.referralCode);
+    await this.recordSignupProfile(user, input);
     if (verificationRequired) return { user: userView(user), session: null };
     await this.provisionEngineAccount(user, user.engineMultiplierBp, false);
     // Атрибуция уже записана выше → применяем скидку-«пол» синхронно, до выдачи сессии,
     // чтобы первый же /account дашборда вернул правильную ставку (без ожидания sales-фида).
     await this.applyReferralFloorFromAttribution(user.id);
-    const session = await this.issueSession(user, input.userAgent, input.ipAddress);
+    const session = await this.issueSession(user, input.userAgent, input.ipAddress, input.deviceToken ?? null);
     return { user: session.user, session };
   }
 
@@ -140,7 +155,9 @@ export class AuthService {
     }
   }
 
-  async login(input: { email: string; password: string; userAgent: string | null; ipAddress: string | null }): Promise<AuthSession> {
+  async login(input: {
+    email: string; password: string; userAgent: string | null; ipAddress: string | null; deviceToken?: string | null;
+  }): Promise<AuthSession> {
     const keys = await this.enforceRateLimits("login", input.email, input.ipAddress, 10, 50, 900);
     const user = await findPasswordUser(this.database, input.email);
     const candidateHash = user?.passwordHash ?? await dummyHash;
@@ -158,7 +175,7 @@ export class AuthService {
     }
     await this.provisionEngineAccount(user, await this.multiplierForUser(user.id), false);
     await clearAuthRateLimit(this.database, keys);
-    return this.issueSession(user, input.userAgent, input.ipAddress);
+    return this.issueSession(user, input.userAgent, input.ipAddress, input.deviceToken ?? null);
   }
 
   async authenticate(token: string): Promise<{ sessionId: string; user: AuthUserView } | null> {
@@ -172,7 +189,7 @@ export class AuthService {
   }
 
   async verifyEmail(input: {
-    token: string; userAgent: string | null; ipAddress: string | null;
+    token: string; userAgent: string | null; ipAddress: string | null; deviceToken?: string | null;
   }): Promise<AuthSession> {
     const userId = await consumeEmailVerification(this.database, tokenHash(input.token));
     if (!userId) throw new InvalidAuthTokenError("email verification link is invalid or expired");
@@ -181,7 +198,7 @@ export class AuthService {
     await this.provisionEngineAccount(user, await this.multiplierForUser(user.id), false);
     // Реф-код был записан ещё при register(); движок-аккаунт только что активирован → floor сразу.
     await this.applyReferralFloorFromAttribution(user.id);
-    return this.issueSession(user, input.userAgent, input.ipAddress);
+    return this.issueSession(user, input.userAgent, input.ipAddress, input.deviceToken ?? null);
   }
 
   async resendVerification(email: string, ipAddress: string | null): Promise<void> {
@@ -242,6 +259,7 @@ export class AuthService {
     stateCookie: string | null;
     userAgent: string | null;
     ipAddress: string | null;
+    deviceToken?: string | null;
   }): Promise<AuthSession> {
     if (!input.stateCookie || !safeTokenEqual(input.state, input.stateCookie)) {
       throw new InvalidOAuthTransactionError("OAuth browser state is invalid");
@@ -267,8 +285,8 @@ export class AuthService {
       await this.attributeReferral(user.id, transaction.referralCode);
       await this.applyReferralFloorFromAttribution(user.id);
     }
-    await this.grantOAuthWelcomeBonus(user);
-    return this.issueSession(user, input.userAgent, input.ipAddress);
+    await this.maybeGrantSignupBonus(user, input);
+    return this.issueSession(user, input.userAgent, input.ipAddress, input.deviceToken ?? null);
   }
 
   providerStatus(): { google: boolean; github: boolean } {
@@ -285,7 +303,12 @@ export class AuthService {
     return user ? userView(user) : null;
   }
 
-  private async issueSession(user: AuthUser, userAgent: string | null, ipAddress: string | null): Promise<AuthSession> {
+  private async issueSession(
+    user: AuthUser,
+    userAgent: string | null,
+    ipAddress: string | null,
+    deviceToken: string | null = null,
+  ): Promise<AuthSession> {
     const token = randomBytes(32).toString("base64url");
     const ttlSeconds = this.config.get("SESSION_TTL_SECONDS", { infer: true });
     const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
@@ -296,6 +319,15 @@ export class AuthService {
       userAgent: userAgent?.slice(0, 500) ?? null,
       ipAddress: ipAddress?.slice(0, 100) ?? null,
     });
+    // Журнал «браузер→аккаунты»: связывает мульти-аккаунты одного устройства навсегда.
+    const deviceHash = deviceHashOf(deviceToken);
+    if (deviceHash) {
+      try {
+        await recordDeviceSighting(this.database, deviceHash, user.id);
+      } catch {
+        // best-effort: сбой журнала не должен ломать вход
+      }
+    }
     return { sessionId, token, expiresAt, user: userView(user) };
   }
 
@@ -340,20 +372,78 @@ export class AuthService {
     return result.rows[0]?.mult_bp ?? 4000;
   }
 
-  private async grantOAuthWelcomeBonus(user: AuthUser): Promise<void> {
+  /** Идемпотентная запись антифрод-профиля регистрации; сбой не ломает auth-поток. */
+  private async recordSignupProfile(
+    user: AuthUser,
+    meta: { userAgent: string | null; ipAddress: string | null; deviceToken?: string | null },
+  ): Promise<{ bonusGranted: boolean }> {
+    try {
+      return await upsertSignupProfile(this.database, {
+        userId: user.id,
+        emailCanonical: canonicalizeEmail(user.email),
+        ipAddress: meta.ipAddress?.slice(0, 100) ?? null,
+        ipSubnet: ipSubnetOf(meta.ipAddress),
+        userAgent: meta.userAgent,
+        deviceHash: deviceHashOf(meta.deviceToken ?? null),
+      });
+    } catch {
+      // считаем бонус уже выданным → в сомнительной ситуации бонус НЕ выдаём
+      return { bonusGranted: true };
+    }
+  }
+
+  /**
+   * Welcome-бонус с антифрод-гейтом. В кластер достаточно попасть ЛЮБЫМ одним признаком:
+   * то же устройство (device-cookie), та же /24|/64 подсеть или тот же канонический email,
+   * что у уже выданного бонуса, — тогда аккаунт создаётся, но бонус молча не выдаётся.
+   * Клейм атомарен (частичные unique-индексы), поэтому конкурентная волна тоже получает один.
+   */
+  private async maybeGrantSignupBonus(
+    user: AuthUser,
+    meta: { userAgent: string | null; ipAddress: string | null; deviceToken?: string | null },
+  ): Promise<void> {
     if (user.customerType !== "b2c" || user.engineAccountStatus !== "active") return;
+    const profile = await this.recordSignupProfile(user, meta);
+    if (profile.bonusGranted) return;
+    const subnet = ipSubnetOf(meta.ipAddress);
+    if (subnet && await countRecentSubnetSignups(this.database, subnet, SUBNET_SIGNUP_WINDOW_SECONDS) > SUBNET_SIGNUP_MAXIMUM) {
+      await flagSignupProfile(this.database, user.id, "subnet-velocity");
+      return;
+    }
+    const claim = await claimSignupBonus(this.database, user.id);
+    if (!claim.claimed) return;
     const result = await this.database.pool.query<{ engine_account_id: string | null }>(`
       SELECT engine_account_id
       FROM engine_accounts
       WHERE user_id = $1 AND status = 'active'
     `, [user.id]);
     const engineAccountId = result.rows[0]?.engine_account_id;
-    if (!engineAccountId) return;
-    await this.engine.creditAccount(
-      engineAccountId,
-      B2C_SIGNUP_BONUS_BALANCE_NANO,
-      `signup-bonus:${user.id}`,
-    );
+    if (!engineAccountId) {
+      await releaseSignupBonus(this.database, user.id);
+      return;
+    }
+    try {
+      await this.engine.creditAccount(
+        engineAccountId,
+        B2C_SIGNUP_BONUS_BALANCE_NANO,
+        `signup-bonus:${user.id}`,
+      );
+    } catch (error) {
+      // зачисление идемпотентно по ref — освобождаем клейм, следующий вход попробует снова
+      await releaseSignupBonus(this.database, user.id);
+      throw error;
+    }
+  }
+
+  private async enforceSubnetSignupLimit(ipAddress: string | null): Promise<void> {
+    const subnet = ipSubnetOf(ipAddress);
+    if (!subnet) return;
+    const allowed = await consumeAuthRateLimit(this.database, {
+      keyHash: rateKey(`register:subnet:${subnet}`),
+      maximum: 10,
+      windowSeconds: 86_400,
+    });
+    if (!allowed) throw new AuthRateLimitedError("too many registrations");
   }
 
   private emailVerificationRequired(): boolean {
@@ -450,6 +540,12 @@ function passwordHashOptions(): Parameters<typeof hash>[1] {
 
 function tokenHash(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+// Device-cookie: 32 байта base64url (43 символа). Иной формат → сигнала нет (null).
+function deviceHashOf(token: string | null): string | null {
+  if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
+  return tokenHash(token);
 }
 
 function rateKey(value: string): string {
