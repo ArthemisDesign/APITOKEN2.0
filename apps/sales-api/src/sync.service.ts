@@ -44,6 +44,11 @@ const usageEventSchema = z.object({
   occurredAt: z.coerce.date(),
 });
 
+export interface FeedPage<T extends { id: bigint }> {
+  items: T[];
+  nextCursor: bigint;
+}
+
 @Injectable()
 export class SyncService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(SyncService.name);
@@ -91,8 +96,9 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
 
   private async syncAttributions(): Promise<void> {
     const after = await getSyncCursor(this.database, "attributions");
-    const rows = await this.fetchFeed("attributions", `attributions?after_id=${after}&limit=500`, attributionSchema);
-    if (!rows || rows.length === 0) return;
+    const page = await this.fetchFeed("attributions", `attributions?after_id=${after}&limit=500`, attributionSchema);
+    if (!page || page.items.length === 0) return;
+    const rows = page.items;
     // Продвигаем курсор только по успешно обработанным строкам (rows идут по возрастанию id).
     // Флип в B2B идемпотентен; сбой останавливает батч (курсор до последней хорошей строки),
     // чтобы упавшая строка повторилась на следующем тике — at-least-once, без head-of-line stall.
@@ -158,9 +164,9 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
    */
   private async syncTopups(): Promise<void> {
     const after = await getSyncCursor(this.database, "topups");
-    const rows = await this.fetchFeed("topups", `topups?after_id=${after}&limit=500`, topupSchema);
-    if (!rows || rows.length === 0) return;
-    for (const row of rows) {
+    const page = await this.fetchFeed("topups", `topups?after_id=${after}&limit=500`, topupSchema);
+    if (!page) return;
+    for (const row of page.items) {
       if (row.amountNano <= 0n) continue;
       await recordReferredDeposit(this.database, {
         commercePaymentId: row.paymentId,
@@ -169,7 +175,7 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
         paidAt: row.paidAt,
       });
     }
-    await advanceSyncCursor(this.database, "topups", maxId(rows));
+    if (page.nextCursor > after) await advanceSyncCursor(this.database, "topups", page.nextCursor);
   }
 
   /**
@@ -178,9 +184,9 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
    */
   private async syncUsageEvents(): Promise<void> {
     const after = await getSyncCursor(this.database, "usage_events");
-    const rows = await this.fetchFeed("usage_events", `usage-events?after_id=${after}&limit=1000`, usageEventSchema);
-    if (!rows || rows.length === 0) return;
-    for (const row of rows) {
+    const page = await this.fetchFeed("usage_events", `usage-events?after_id=${after}&limit=1000`, usageEventSchema);
+    if (!page) return;
+    for (const row of page.items) {
       if (row.amountNano <= 0n) continue;
       await recordReferredSpend(this.database, {
         commerceEventId: row.id,
@@ -189,10 +195,14 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
         occurredAt: row.occurredAt,
       });
     }
-    await advanceSyncCursor(this.database, "usage_events", maxId(rows));
+    if (page.nextCursor > after) await advanceSyncCursor(this.database, "usage_events", page.nextCursor);
   }
 
-  private async fetchFeed<T>(feed: SyncFeed, pathAndQuery: string, schema: z.ZodType<T, z.ZodTypeDef, unknown>): Promise<T[] | null> {
+  private async fetchFeed<T extends { id: bigint }>(
+    feed: SyncFeed,
+    pathAndQuery: string,
+    schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  ): Promise<FeedPage<T> | null> {
     const base = this.config.get("COMMERCE_BASE_URL", { infer: true });
     const url = new URL(`/v1/internal/sales/${pathAndQuery}`, base);
     const response = await fetch(url, {
@@ -209,18 +219,33 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
     }
     if (!response.ok) throw new Error(`commerce feed ${feed} responded ${response.status}`);
     this.missingFeedLogged.delete(feed);
-    const body: unknown = await response.json();
-    // Канонический формат фида коммерции (apps/api sales-feed.controller): { items: [...] }.
-    const items = body !== null && typeof body === "object" && Array.isArray((body as { items?: unknown }).items)
-      ? (body as { items: unknown[] }).items
-      : body;
-    if (!Array.isArray(items)) throw new Error(`commerce feed ${feed} returned an unexpected body shape`);
-    return items.map((item) => schema.parse(item));
+    return parseFeedPage(await response.json(), schema, feed);
   }
 
   private async sleep(milliseconds: number): Promise<void> {
     await Promise.race([new Promise((resolve) => setTimeout(resolve, milliseconds)), this.stopSignal]);
   }
+}
+
+/** Accepts the canonical page object and the pre-page legacy array during rolling deployments. */
+export function parseFeedPage<T extends { id: bigint }>(
+  body: unknown,
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  feed: SyncFeed,
+): FeedPage<T> {
+  const isObject = body !== null && typeof body === "object" && !Array.isArray(body);
+  const rawItems = isObject && Array.isArray((body as { items?: unknown }).items)
+    ? (body as { items: unknown[] }).items
+    : body;
+  if (!Array.isArray(rawItems)) throw new Error(`commerce feed ${feed} returned an unexpected body shape`);
+  const items = rawItems.map((item) => schema.parse(item));
+  const itemCursor = maxId(items);
+  const rawNextCursor = isObject ? (body as { nextCursor?: unknown }).nextCursor : undefined;
+  const nextCursor = rawNextCursor === undefined ? itemCursor : feedIdSchema.parse(rawNextCursor);
+  if (nextCursor < itemCursor) {
+    throw new Error(`commerce feed ${feed} returned a cursor behind its items`);
+  }
+  return { items, nextCursor };
 }
 
 function maxId(rows: readonly { id: bigint }[]): bigint {

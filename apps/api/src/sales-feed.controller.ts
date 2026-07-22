@@ -84,28 +84,30 @@ export class SalesFeedController {
 
   @Get("usage-events")
   async usageEvents(@Query("after_id") afterId?: string, @Query("limit") limit?: string) {
-    const rows = await listUsageEventsAfter(this.database, parseCursor(afterId), parseLimit(limit, 1000, 2000));
+    const page = await listUsageEventsAfter(this.database, parseCursor(afterId), parseLimit(limit, 1000, 2000));
     return {
-      items: rows.map((row) => ({
+      items: page.items.map((row) => ({
         id: row.id.toString(),
         userId: row.userId,
         amountNano: row.amountNano.toString(),
         occurredAt: row.occurredAt.toISOString(),
       })),
+      nextCursor: page.nextCursor.toString(),
     };
   }
 
   @Get("topups")
   async topups(@Query("after_id") afterId?: string, @Query("limit") limit?: string) {
-    const rows = await listPaidTopupsAfter(this.database, parseCursor(afterId), parseLimit(limit, 500, 1000));
+    const page = await listPaidTopupsAfter(this.database, parseCursor(afterId), parseLimit(limit, 500, 1000));
     return {
-      items: rows.map((row) => ({
+      items: page.items.map((row) => ({
         id: row.id.toString(),
         paymentId: row.paymentId,
         userId: row.userId,
         amountNano: row.amountNano.toString(),
         paidAt: row.paidAt.toISOString(),
       })),
+      nextCursor: page.nextCursor.toString(),
     };
   }
 

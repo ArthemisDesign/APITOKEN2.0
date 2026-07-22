@@ -30,6 +30,13 @@ export interface TopupFeedRow {
   paidAt: Date;
 }
 
+export interface SalesFeedPage<T> {
+  items: T[];
+  // The source watermark advances even when every row in the scanned page belongs to an ordinary
+  // customer. Without it, sales would repeatedly scan the same filtered tail forever.
+  nextCursor: bigint;
+}
+
 /** Идемпотентно записывает атрибуцию регистрации к реф-коду (первый код побеждает). */
 export async function recordReferralAttribution(database: Database, userId: string, code: string): Promise<void> {
   await database.db
@@ -72,32 +79,43 @@ export async function listUsageEventsAfter(
   database: Database,
   afterId: bigint,
   limit: number,
-): Promise<UsageEventFeedRow[]> {
+): Promise<SalesFeedPage<UsageEventFeedRow>> {
   const lagCutoff = new Date(Date.now() - FEED_VISIBILITY_LAG_MS);
   // amountNano = real_funded: часть списания, покрытая реальными деньгами (free-first). Реф-комиссия
   // считается только с неё; бесплатная часть ($4/промо) в фид не идёт как база комиссии.
-  return database.db
+  const rows = await database.db
     .select({
       id: pricingUsageEvents.feedSeq,
       userId: pricingUsageEvents.userId,
       amountNano: pricingUsageEvents.realFundedNano,
       occurredAt: pricingUsageEvents.occurredAt,
+      attributedUserId: referralAttributions.userId,
     })
     .from(pricingUsageEvents)
     // The sales database cannot distinguish a temporarily late attribution from a customer who
     // was never referred. Filter at the commerce authority, where that distinction is durable, so
     // ordinary customer spend cannot accumulate forever in pending_referral_events.
-    .innerJoin(referralAttributions, eq(referralAttributions.userId, pricingUsageEvents.userId))
+    .leftJoin(referralAttributions, eq(referralAttributions.userId, pricingUsageEvents.userId))
     .where(and(gt(pricingUsageEvents.feedSeq, afterId), lt(pricingUsageEvents.createdAt, lagCutoff)))
     .orderBy(asc(pricingUsageEvents.feedSeq))
     .limit(limit);
+  return {
+    items: rows
+      .filter((row) => row.attributedUserId !== null)
+      .map(({ attributedUserId: _attributedUserId, ...row }) => row),
+    nextCursor: rows.at(-1)?.id ?? afterId,
+  };
 }
 
 /**
  * Оплаченные пополнения. Курсор — микросекунды epoch от paid_at (НЕ feed_seq: paid_at
  * проставляется позже insert, и просроченный feed_seq выпал бы из курсора навсегда).
  */
-export async function listPaidTopupsAfter(database: Database, afterId: bigint, limit: number): Promise<TopupFeedRow[]> {
+export async function listPaidTopupsAfter(
+  database: Database,
+  afterId: bigint,
+  limit: number,
+): Promise<SalesFeedPage<TopupFeedRow>> {
   const lagCutoff = new Date(Date.now() - FEED_VISIBILITY_LAG_MS);
   const paidMicros = sql<string>`(extract(epoch from ${payments.paidAt}) * 1000000)::bigint`;
   const rows = await database.db
@@ -107,9 +125,10 @@ export async function listPaidTopupsAfter(database: Database, afterId: bigint, l
       userId: payments.userId,
       amountNano: payments.amountNano,
       paidAt: payments.paidAt,
+      attributedUserId: referralAttributions.userId,
     })
     .from(payments)
-    .innerJoin(referralAttributions, eq(referralAttributions.userId, payments.userId))
+    .leftJoin(referralAttributions, eq(referralAttributions.userId, payments.userId))
     .where(and(
       eq(payments.status, "paid"),
       gt(paidMicros, sql`${afterId}`),
@@ -117,13 +136,18 @@ export async function listPaidTopupsAfter(database: Database, afterId: bigint, l
     ))
     .orderBy(asc(paidMicros))
     .limit(limit);
-  return rows.map((row) => ({
-    id: BigInt(row.id),
-    paymentId: row.paymentId,
-    userId: row.userId,
-    amountNano: row.amountNano,
-    paidAt: row.paidAt as Date,
-  }));
+  return {
+    items: rows
+      .filter((row) => row.attributedUserId !== null)
+      .map((row) => ({
+        id: BigInt(row.id),
+        paymentId: row.paymentId,
+        userId: row.userId,
+        amountNano: row.amountNano,
+        paidAt: row.paidAt as Date,
+      })),
+    nextCursor: rows.at(-1) ? BigInt(rows.at(-1)!.id) : afterId,
+  };
 }
 
 // Профиль реферала для витрины партнёра: тип (b2b/b2c), скидка/floor и маппинг на engine-аккаунт

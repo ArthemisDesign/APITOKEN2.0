@@ -74,9 +74,17 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
     await insertUsage(referred, 2, occurredAt);
     await insertUsage(ordinaryAfter, 3, occurredAt);
 
-    const rows = await listUsageEventsAfter(database, 0n, 100);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ userId: referred, amountNano: 750n });
+    const page = await listUsageEventsAfter(database, 0n, 100);
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]).toMatchObject({ userId: referred, amountNano: 750n });
+    expect(page.nextCursor).toBe(3n);
+
+    const firstPage = await listUsageEventsAfter(database, 0n, 1);
+    expect(firstPage.items).toEqual([]);
+    expect(firstPage.nextCursor).toBe(1n);
+    const secondPage = await listUsageEventsAfter(database, firstPage.nextCursor, 1);
+    expect(secondPage.items).toHaveLength(1);
+    expect(secondPage.items[0]).toMatchObject({ userId: referred, amountNano: 750n });
   });
 
   it("excludes ordinary customer top-ups while preserving referred top-ups", async () => {
@@ -89,8 +97,16 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
     const referredPaymentId = await insertPaidTopup(referred, "referred", new Date(base + 1_000));
     await insertPaidTopup(ordinaryAfter, "ordinary-after", new Date(base + 2_000));
 
-    const rows = await listPaidTopupsAfter(database, 0n, 100);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ userId: referred, paymentId: referredPaymentId, amountNano: 1_000_000_000n });
+    const page = await listPaidTopupsAfter(database, 0n, 100);
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]).toMatchObject({ userId: referred, paymentId: referredPaymentId, amountNano: 1_000_000_000n });
+    expect(page.nextCursor).toBe(BigInt((base + 2_000) * 1_000));
+
+    const firstPage = await listPaidTopupsAfter(database, 0n, 1);
+    expect(firstPage.items).toEqual([]);
+    expect(firstPage.nextCursor).toBe(BigInt(base * 1_000));
+    const secondPage = await listPaidTopupsAfter(database, firstPage.nextCursor, 1);
+    expect(secondPage.items).toHaveLength(1);
+    expect(secondPage.items[0]).toMatchObject({ userId: referred, paymentId: referredPaymentId });
   });
 });
