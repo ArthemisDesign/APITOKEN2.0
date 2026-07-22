@@ -1,5 +1,33 @@
 import { describe, expect, it } from "vitest";
-import { canonicalizeEmail, ipSubnetOf } from "./antifraud.js";
+import { canonicalizeEmail, ipSubnetOf, isBonusEligibleEmailDomain } from "./antifraud.js";
+
+describe("isBonusEligibleEmailDomain", () => {
+  it("allows popular providers", () => {
+    expect(isBonusEligibleEmailDomain("user@gmail.com")).toBe(true);
+    expect(isBonusEligibleEmailDomain("user@GoogleMail.com")).toBe(true);
+    expect(isBonusEligibleEmailDomain("user@yandex.ru")).toBe(true);
+    expect(isBonusEligibleEmailDomain("user@icloud.com")).toBe(true);
+    expect(isBonusEligibleEmailDomain("user@naver.com")).toBe(true);
+  });
+
+  it("denies providers without mandatory SMS verification", () => {
+    expect(isBonusEligibleEmailDomain("user@proton.me")).toBe(false);
+    expect(isBonusEligibleEmailDomain("user@protonmail.com")).toBe(false);
+    expect(isBonusEligibleEmailDomain("user@gmx.de")).toBe(false);
+  });
+
+  it("denies Microsoft family and Chinese freemail", () => {
+    expect(isBonusEligibleEmailDomain("helddon@outlook.com")).toBe(false);
+    expect(isBonusEligibleEmailDomain("user@hotmail.com")).toBe(false);
+    expect(isBonusEligibleEmailDomain("108608598@qq.com")).toBe(false);
+    expect(isBonusEligibleEmailDomain("user@163.com")).toBe(false);
+  });
+
+  it("denies temp and custom domains", () => {
+    expect(isBonusEligibleEmailDomain("mrwav9t6e75i@animatimg.com")).toBe(false);
+    expect(isBonusEligibleEmailDomain("ffz@mail.nodeloc.cc")).toBe(false);
+  });
+});
 
 describe("canonicalizeEmail", () => {
   it("collapses gmail dots and plus aliases", () => {

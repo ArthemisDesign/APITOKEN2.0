@@ -11,6 +11,7 @@ import {
   countRecentSubnetSignups,
   flagSignupProfile,
   ipSubnetOf,
+  isBonusEligibleEmailDomain,
   recordDeviceSighting,
   releaseSignupBonus,
   upsertSignupProfile,
@@ -405,6 +406,12 @@ export class AuthService {
     if (user.customerType !== "b2c" || user.engineAccountStatus !== "active") return;
     const profile = await this.recordSignupProfile(user, meta);
     if (profile.bonusGranted) return;
+    // Подарок — только популярным почтовым провайдерам; GitHub OAuth пускает любой
+    // верифицированный ящик, включая одноразовые домены — эту дыру закрывает allowlist.
+    if (!isBonusEligibleEmailDomain(user.email)) {
+      await flagSignupProfile(this.database, user.id, "email-domain");
+      return;
+    }
     const subnet = ipSubnetOf(meta.ipAddress);
     if (subnet && await countRecentSubnetSignups(this.database, subnet, SUBNET_SIGNUP_WINDOW_SECONDS) > SUBNET_SIGNUP_MAXIMUM) {
       await flagSignupProfile(this.database, user.id, "subnet-velocity");

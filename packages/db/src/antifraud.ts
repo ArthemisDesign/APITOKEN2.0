@@ -11,6 +11,32 @@ import type { Database } from "./client.js";
  * unique-индексы (WHERE bonus_granted) закрывают гонку конкурентных регистраций.
  */
 
+/**
+ * Welcome-бонус — только провайдерам, где регистрация ящика требует подтверждения по SMS
+ * (проверено 2026-07: Gmail — телефон/QR с доверенного устройства; Yahoo/AOL — телефон
+ * обязателен; Apple ID — номер + обычно устройство; Яндекс — телефон при полной регистрации;
+ * Mail.ru — VK ID + телефон; Naver — корейский real-name). Осознанно ВНЕ списка: Proton
+ * (регистрация без телефона by design), Microsoft (outlook/hotmail/live — главный канал
+ * абуз-волны 2026-07-22), китайские freemail (qq/163/126 — телефонные фермы + та же волна),
+ * temp- и кастомные домены. Аккаунт с прочим доменом работает нормально — просто без подарка.
+ */
+const BONUS_EMAIL_DOMAINS = new Set([
+  "gmail.com", // googlemail canonicalized сюда же
+  "yandex.ru", "yandex.com", "ya.ru",
+  "mail.ru", "bk.ru", "inbox.ru", "list.ru",
+  "icloud.com", "me.com", "mac.com",
+  "yahoo.com", "ymail.com",
+  "aol.com",
+  "naver.com",
+]);
+
+/** true, если домен email в бонус-allowlist'е (сравнение по канонической форме). */
+export function isBonusEligibleEmailDomain(email: string): boolean {
+  const canonical = canonicalizeEmail(email);
+  const at = canonical.lastIndexOf("@");
+  return at !== -1 && BONUS_EMAIL_DOMAINS.has(canonical.slice(at + 1));
+}
+
 /** gmail/googlemail: точки и +alias схлопываются; прочие домены — только +alias. */
 export function canonicalizeEmail(email: string): string {
   const lower = email.trim().toLowerCase();
