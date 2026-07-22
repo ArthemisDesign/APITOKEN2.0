@@ -95,7 +95,7 @@ future frontend. Exact DNS records override the wildcard if they are added later
 /opt/apitoken/releases/current active API/worker/Content Studio commerce release symlink
 /srv/claude-api/releases/<sha> immutable Rust engine release directories
 /srv/claude-api/releases/current active engine release symlink
-/var/lib/apitoken/watchdog     tested candidates, SHA baselines, quarantine and status state
+/var/lib/apitoken/watchdog     24-hour tested-candidate workspaces, SHA baselines, quarantine and status state
 /usr/local/lib/apitoken-watchdog root-owned automatic delivery controller
 /var/lib/apitoken/postgres     PostgreSQL container data
 /var/lib/apitoken/backups      application-consistent database export staging

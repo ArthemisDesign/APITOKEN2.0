@@ -20,6 +20,53 @@ wd_validate_sha() {
   [[ ${1:-} =~ ^[0-9a-f]{40}$ ]] || wd_die "expected a full 40-character lowercase commit SHA"
 }
 
+wd_path_mtime_epoch() {
+  local path=$1
+  if stat -c '%Y' -- "$path" >/dev/null 2>&1; then
+    stat -c '%Y' -- "$path"
+  else
+    stat -f '%m' -- "$path"
+  fi
+}
+
+# Print NUL-delimited direct child directories that are safe watchdog candidates and whose
+# directory mtime is strictly older than the supplied epoch. Selection is deliberately pure;
+# watchdog.sh performs the privileged deletion only while holding the global watchdog lock.
+wd_candidate_dirs_older_than() {
+  [[ $# -eq 3 ]] || wd_die "candidate retention selection requires candidate/marker roots and a cutoff epoch"
+  local root=$1 marker_root=$2 cutoff=$3 candidate name marker age_path modified
+  [[ $root == /* && -d $root && ! -L $root ]] \
+    || wd_die "candidate root must be an absolute, non-symlink directory: $root"
+  [[ $marker_root == /* && -d $marker_root && ! -L $marker_root ]] \
+    || wd_die "candidate marker root must be an absolute, non-symlink directory: $marker_root"
+  [[ $cutoff =~ ^[0-9]+$ ]] || wd_die "candidate retention cutoff must be an epoch integer"
+
+  while IFS= read -r -d '' candidate; do
+    [[ -d $candidate && ! -L $candidate ]] || continue
+    name=${candidate##*/}
+    [[ $name =~ ^[0-9a-f]{40}$ ]] || continue
+    marker="$marker_root/$name.tested"
+    age_path=$candidate
+    # Successful candidates receive their marker only after the complete test gate. Give those
+    # builds a full 24 hours from test completion; interrupted/failed builds fall back to the
+    # workspace directory mtime.
+    if [[ -f $marker && ! -L $marker ]]; then
+      age_path=$marker
+    fi
+    if ! modified=$(wd_path_mtime_epoch "$age_path"); then
+      wd_warn "cannot read candidate mtime; retention skipped $candidate"
+      continue
+    fi
+    [[ $modified =~ ^[0-9]+$ ]] || {
+      wd_warn "candidate has an invalid mtime; retention skipped $candidate"
+      continue
+    }
+    if (( modified < cutoff )); then
+      printf '%s\0' "$candidate"
+    fi
+  done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -print0)
+}
+
 # A PostgreSQL-backed engine deployment has exactly one steady-state writer. Both slots may be
 # ready briefly during a controlled cutover, but that overlap must never survive the controller.
 # Arguments are active, ready, current-release, enabled for 8787 and 8788, then legacy active/enabled.

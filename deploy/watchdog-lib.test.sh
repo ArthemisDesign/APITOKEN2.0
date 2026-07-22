@@ -7,6 +7,52 @@ source "$ROOT/deploy/watchdog-lib.sh"
 
 TEMP=$(mktemp -d)
 trap 'rm -rf -- "$TEMP"' EXIT
+
+# Candidate retention selects only direct, real SHA directories strictly older than the cutoff.
+# It must not follow symlinks or touch malformed entries.
+candidate_root="$TEMP/candidates"
+mkdir -p "$candidate_root"
+old_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+boundary_sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+new_sha=cccccccccccccccccccccccccccccccccccccccc
+symlink_sha=dddddddddddddddddddddddddddddddddddddddd
+marked_new_sha=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+marked_old_sha=ffffffffffffffffffffffffffffffffffffffff
+mkdir -p "$candidate_root/$old_sha" "$candidate_root/$boundary_sha" \
+  "$candidate_root/$new_sha" "$candidate_root/$marked_new_sha" \
+  "$candidate_root/$marked_old_sha" "$candidate_root/not-a-sha" "$TEMP/outside-candidate"
+ln -s -- "$TEMP/outside-candidate" "$candidate_root/$symlink_sha"
+touch "$TEMP/$marked_new_sha.tested" "$TEMP/$marked_old_sha.tested"
+candidate_cutoff=1800000000
+node - "$candidate_root/$old_sha" "$candidate_root/$boundary_sha" \
+  "$candidate_root/$new_sha" "$candidate_root/$marked_new_sha" \
+  "$candidate_root/$marked_old_sha" "$candidate_root/not-a-sha" "$TEMP/outside-candidate" \
+  "$TEMP/$marked_new_sha.tested" "$TEMP/$marked_old_sha.tested" "$candidate_cutoff" <<'NODE'
+const fs = require("node:fs");
+const [oldPath, boundaryPath, newPath, markedNewPath, markedOldPath, malformedPath, outsidePath,
+  markedNewMarker, markedOldMarker, cutoffText] = process.argv.slice(2);
+const cutoff = Number(cutoffText);
+fs.utimesSync(oldPath, cutoff - 1, cutoff - 1);
+fs.utimesSync(boundaryPath, cutoff, cutoff);
+fs.utimesSync(newPath, cutoff + 1, cutoff + 1);
+fs.utimesSync(markedNewPath, cutoff - 1, cutoff - 1);
+fs.utimesSync(markedOldPath, cutoff + 1, cutoff + 1);
+fs.utimesSync(malformedPath, cutoff - 1, cutoff - 1);
+fs.utimesSync(outsidePath, cutoff - 1, cutoff - 1);
+fs.utimesSync(markedNewMarker, cutoff + 1, cutoff + 1);
+fs.utimesSync(markedOldMarker, cutoff - 1, cutoff - 1);
+NODE
+expired_candidates=()
+while IFS= read -r -d '' expired_candidate; do
+  expired_candidates+=("$expired_candidate")
+done < <(wd_candidate_dirs_older_than "$candidate_root" "$TEMP" "$candidate_cutoff")
+[[ ${#expired_candidates[@]} -eq 2 ]] \
+  || wd_die "candidate retention selected an unsafe or non-expired directory"
+printf '%s\n' "${expired_candidates[@]}" | grep -Fxq "$candidate_root/$old_sha" \
+  || wd_die "candidate retention did not select an expired untested workspace"
+printf '%s\n' "${expired_candidates[@]}" | grep -Fxq "$candidate_root/$marked_old_sha" \
+  || wd_die "candidate retention did not use the test-completion marker age"
+
 for fixture in baseline appended tampered; do
   mkdir -p "$TEMP/$fixture/packages/db"
   cp -R -- "$ROOT/packages/db/migrations" "$TEMP/$fixture/packages/db/migrations"
@@ -134,6 +180,8 @@ grep -Fq 'COMMERCE_BALANCER_READY_URL=${COMMERCE_BALANCER_READY_URL:-http://127.
 grep -Fq 'final_verify_admin_panel' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'monitoring-config.test.sh' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'TEST_SALES_DATABASE_URL=' "$ROOT/deploy/watchdog.sh"
+grep -Fq 'CANDIDATE_RETENTION_SECONDS=$((24 * 60 * 60))' "$ROOT/deploy/watchdog.sh"
+grep -Fq 'prune_expired_candidates' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'sales-dsn)' "$ROOT/deploy/watchdog-test-db.sh"
 grep -Fq 'require_retired_vhost panel.apitoken.sale' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'require_admin_auth_vhost content-studio.apitoken.sale' "$ROOT/deploy/watchdog.sh"
@@ -210,4 +258,4 @@ if grep -Eq '^[[:space:]]*(postgres-native-tls|native-tls)[[:space:]]*=' \
   wd_die 'OpenSSL-compatible PostgreSQL TLS cannot be linked with the BoringSSL forward transport'
 fi
 
-printf 'watchdog migration and engine topology tests passed\n'
+printf 'watchdog retention, migration, and engine topology tests passed\n'

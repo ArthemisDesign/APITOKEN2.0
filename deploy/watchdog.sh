@@ -11,6 +11,7 @@ REMOTE=origin
 BRANCH=master
 STATE_ROOT=/var/lib/apitoken/watchdog
 CANDIDATE_ROOT=$STATE_ROOT/candidates
+CANDIDATE_RETENTION_SECONDS=$((24 * 60 * 60))
 CI_USER=apitoken-ci
 CI_HOME=$STATE_ROOT/ci-home
 CI_TOOLCHAIN=/opt/apitoken-watchdog/rust-toolchain
@@ -134,6 +135,47 @@ candidate_is_tested() {
   actual_digest=$(wd_manifest_digest "$STATE_ROOT/.candidate-manifest.$$")
   rm -f -- "$STATE_ROOT/.candidate-manifest.$$"
   [[ $marker_digest == "$actual_digest" ]]
+}
+
+prune_expired_candidates() {
+  local now cutoff candidate sha marker pruned=0 failed=0 phase_set=0
+  now=$(date +%s)
+  [[ $now =~ ^[0-9]+$ ]] || {
+    wd_warn "cannot determine current epoch; candidate retention skipped"
+    return 0
+  }
+  cutoff=$((now - CANDIDATE_RETENTION_SECONDS))
+
+  while IFS= read -r -d '' candidate; do
+    # wd_candidate_dirs_older_than already restricts output to direct, non-symlink SHA
+    # directories. Revalidate at the destructive boundary as defence in depth.
+    sha=${candidate##*/}
+    if [[ ${candidate%/*} != "$CANDIDATE_ROOT" || ! $sha =~ ^[0-9a-f]{40}$ || \
+          ! -d $candidate || -L $candidate ]]; then
+      wd_warn "unsafe candidate retention target skipped: $candidate"
+      failed=$((failed + 1))
+      continue
+    fi
+    if (( phase_set == 0 )); then
+      CURRENT_PHASE=pruning
+      status "removing watchdog build candidates older than 24 hours"
+      phase_set=1
+    fi
+    if sudo -n rm -rf --one-file-system -- "$candidate"; then
+      marker=$(marker_for "$sha")
+      sudo -n rm -f -- "$marker" \
+        || wd_warn "removed candidate $sha but could not remove its test marker"
+      pruned=$((pruned + 1))
+    else
+      wd_warn "failed to remove expired candidate $sha"
+      failed=$((failed + 1))
+    fi
+  done < <(wd_candidate_dirs_older_than "$CANDIDATE_ROOT" "$STATE_ROOT" "$cutoff")
+
+  if (( pruned > 0 || failed > 0 )); then
+    wd_log "candidate retention finished: removed=$pruned failed=$failed max_age_seconds=$CANDIDATE_RETENTION_SECONDS"
+  fi
+  return 0
 }
 
 run_as_ci() {
@@ -469,6 +511,8 @@ main() {
   [[ $(id -un) == deploy ]] || wd_die "watchdog service must run as deploy"
   [[ -d $SOURCE_REPO/.git ]] || wd_die "source repository is missing: $SOURCE_REPO"
   [[ -d $STATE_ROOT && ! -L $STATE_ROOT ]] || wd_die "watchdog state is not installed"
+  [[ -d $CANDIDATE_ROOT && ! -L $CANDIDATE_ROOT ]] \
+    || wd_die "candidate root is not a regular directory: $CANDIDATE_ROOT"
   require_fixed_file "$WATCHDOG_LOCK"
   require_fixed_file "$DEPLOY_LOCK"
   require_fixed_directory "$CONTROLLER_ROOT"
@@ -486,6 +530,12 @@ main() {
     wd_log "another watchdog cycle is still running"
     exit 0
   fi
+
+  # Candidate trees are build/test workspaces, not production releases. The exclusive lock makes
+  # every directory idle here, so expired read-only trees can be removed without racing a test,
+  # migration, infrastructure install, or deployment. A quarantined SHA can still be retried after
+  # expiry; candidate_is_tested will rebuild it from the source repository.
+  prune_expired_candidates
 
   CURRENT_PHASE=fetching
   status "fetching $REMOTE/$BRANCH"

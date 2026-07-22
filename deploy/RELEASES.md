@@ -109,4 +109,9 @@ Keep at least:
 
 Old SHA directories may be removed manually only after confirming that neither link targets them and no process is running from them. Never make an old release writable and never delete or modify a release while a process uses it.
 
-The scripts perform no automatic garbage collection. Retention remains an explicit, non-destructive operator decision.
+The scripts perform no automatic garbage collection of immutable production releases. Retention
+remains an explicit, non-destructive operator decision. This does not apply to temporary watchdog
+build/test candidates under `/var/lib/apitoken/watchdog/candidates`: the watchdog removes those
+workspaces and their test markers automatically 24 hours after successful test completion, while
+holding its exclusive lock. An incomplete workspace without a marker ages from its directory mtime.
+A later explicit retry rebuilds an expired candidate before using it.
