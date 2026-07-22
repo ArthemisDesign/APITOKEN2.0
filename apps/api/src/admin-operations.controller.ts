@@ -80,6 +80,23 @@ export class AdminOperationsController {
     }));
   }
 
+  @Post("users/:id/bonus/revoke")
+  @Header("Cache-Control", "no-store")
+  async revokeBonus(
+    @Param("id") id: string,
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<Record<string, unknown>> {
+    assertUserId(id);
+    const parsed = securityActionSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    return this.mapErrors(() => this.operations.revokeSignupBonus({
+      userId: id,
+      reason: parsed.data.reason,
+      actorId: adminActor(actorHeader),
+    }));
+  }
+
   @Patch("users/:id/status")
   @Header("Cache-Control", "no-store")
   async setUserStatus(

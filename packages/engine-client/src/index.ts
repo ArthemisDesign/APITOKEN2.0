@@ -117,6 +117,22 @@ export class EngineClient {
     return result;
   }
 
+  /**
+   * Списание (отрицательный credit движка): отзыв welcome-бонуса и подобные корректировки.
+   * `amountNano` — положительная величина списания; идемпотентно по `ref` (UNIQUE в леджере).
+   */
+  async debitAccount(accountId: string, amountNano: bigint, reference: string): Promise<EngineCreditResult> {
+    if (amountNano <= 0n) throw new RangeError("amountNano must be positive");
+    const body = JSON.stringify({ amount_nano: (-amountNano).toString(), ref: reference });
+    const { response, payload } = await this.request(`/admin/account/${encodeURIComponent(accountId)}/credit`, {
+      method: "POST",
+      body,
+    });
+    const result = engineCreditResultSchema.parse(payload);
+    this.assertAccount(result.account, accountId, response);
+    return result;
+  }
+
   async setAccountStatus(accountId: string, status: "active" | "disabled"): Promise<void> {
     const { response, payload } = await this.request(`/admin/account/${encodeURIComponent(accountId)}/status`, {
       method: "POST",

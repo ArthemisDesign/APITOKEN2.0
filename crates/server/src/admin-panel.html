@@ -202,6 +202,7 @@ function renderUsers(dashboard){const totalBalance=usersCache.reduce((sum,user)=
     const tier=user.customer_type==='b2b'?'B2B':(['Starter','Builder','Pro','Studio','Scale'][user.tier]||'—');
     const auth=methods.map(method=>pill(method)).join('')||'—';
     const actions=(user.engine_account_id&&user.status==='active'?'<button class="btn" data-credit="'+esc(user.id)+'" data-email="'+esc(user.email)+'">+ баланс</button>':'')+
+      (user.engine_account_id?'<button class="btn warn" data-action="bonus" data-id="'+esc(user.id)+'" data-email="'+esc(user.email)+'">− бонус</button>':'')+
       '<button class="btn" data-action="sessions" data-id="'+esc(user.id)+'" data-email="'+esc(user.email)+'">сессии</button>'+
       (user.totp_enabled?'<button class="btn warn" data-action="totp" data-id="'+esc(user.id)+'" data-email="'+esc(user.email)+'">сброс 2FA</button>':'')+
       '<button class="btn '+(user.status==='active'?'bad':'')+'" data-action="'+(user.status==='active'?'disable':'enable')+'" data-id="'+esc(user.id)+'" data-email="'+esc(user.email)+'">'+(user.status==='active'?'отключить':'включить')+'</button>';
@@ -239,12 +240,17 @@ async function creditUser(button){const amount=prompt('Начислить '+butt
     sessionStorage.removeItem(pendingKey);alert('Готово. Новый баланс: '+money(result.balance_usd));await refresh()}
   catch(error){alert(error.message+'\\nIdempotency key сохранён: повторите те же сумму и причину для безопасного retry.');button.disabled=false}}
 async function userAction(button){const action=button.dataset.action,labels={disable:'Отключить пользователя и отозвать сессии?',enable:'Включить пользователя?',
-  sessions:'Отозвать все активные сессии?',totp:'Сбросить 2FA и отозвать сессии?'};const reason=prompt('Причина действия для '+button.dataset.email+':');
+  sessions:'Отозвать все активные сессии?',totp:'Сбросить 2FA и отозвать сессии?',
+  bonus:'Отозвать welcome-бонус ($4) и заблокировать его повторную выдачу? Списание идемпотентно: уже отозванный бонус не спишется второй раз.'};
+  const reason=prompt('Причина действия для '+button.dataset.email+':');
   if(reason==null||reason.trim().length<3)return;if(!confirm(labels[action]+'\\n'+button.dataset.email+'\\nПричина: '+reason.trim()))return;button.disabled=true;
   try{let result;if(action==='disable'||action==='enable')result=await send('/admin/users/'+button.dataset.id+'/status','PATCH',{status:action==='disable'?'disabled':'active',reason:reason.trim()});
     if(action==='sessions')result=await send('/admin/users/'+button.dataset.id+'/sessions/revoke','POST',{reason:reason.trim()});
     if(action==='totp')result=await send('/admin/users/'+button.dataset.id+'/totp/reset','POST',{reason:reason.trim()});
-    alert('Готово'+(result.sessions_revoked!=null?' · сессий отозвано: '+result.sessions_revoked:''));await refresh()}catch(error){alert(error.message);button.disabled=false}}
+    if(action==='bonus')result=await send('/admin/users/'+button.dataset.id+'/bonus/revoke','POST',{reason:reason.trim()});
+    alert('Готово'+(result.sessions_revoked!=null?' · сессий отозвано: '+result.sessions_revoked:'')+
+      (result.balance_usd!=null?' · новый баланс: $'+result.balance_usd+(result.idempotent_replay?' (уже был отозван ранее)':''):''));
+    await refresh()}catch(error){alert(error.message);button.disabled=false}}
 
 async function topups(){const data=await api('/admin/topups?limit=200'),payments=data.payments||[],checkouts=data.checkouts||[];
   const paymentRows=payments.map(item=>'<tr><td class="left"><b>'+esc(item.email)+'</b><div class="sub">'+esc(item.user_id)+'</div></td><td>'+pill(item.provider)+

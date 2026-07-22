@@ -1,6 +1,9 @@
 import { Inject, Injectable } from "@nestjs/common";
+import { B2C_SIGNUP_BONUS_BALANCE_NANO } from "@claude-api/contracts";
 import {
+  canonicalizeEmail,
   findAdminCreditByRef,
+  markSignupProfileAdminRevoked,
   getAdminDashboard,
   getAdminUserControlTarget,
   getEngineAccountMapping,
@@ -172,6 +175,66 @@ export class AdminOperationsService {
     return {
       user_id: input.userId,
       credited_usd: input.amountUsd,
+      balance_nano: result.balance_nano,
+      balance_usd: nanoToUsd(result.balance_nano),
+      idempotent_replay: false,
+    };
+  }
+
+  /**
+   * Ручной отзыв welcome-бонуса: идемпотентное списание ровно бонусной суммы с движка
+   * (ref `bonus-revoke:<user_id>` — тот же неймспейс, что у ручных отзывов через Control API,
+   * поэтому уже отозванный бонус не спишется второй раз) + пометка антифрод-профиля,
+   * чтобы бонус не был заклеймлен повторно. Paid-баланс не разделяется от бонусного на
+   * движке, поэтому при потраченном бонусе баланс может уйти в минус — это блокирует ключи.
+   */
+  async revokeSignupBonus(input: {
+    userId: string;
+    reason: string;
+    actorId: string;
+  }): Promise<Record<string, unknown>> {
+    const ref = `bonus-revoke:${input.userId}`;
+    const mapping = await getEngineAccountMapping(this.database, input.userId);
+    if (!mapping?.engineAccountId) throw new AdminOperationError(404, "user has no engine account record");
+
+    const email = await this.database.pool.query<{ email: string }>(
+      "SELECT email FROM users WHERE id = $1",
+      [input.userId],
+    );
+    if (!email.rows[0]) throw new AdminOperationError(404, "user not found");
+
+    const existing = await findAdminCreditByRef(this.database, ref);
+    if (existing) {
+      await markSignupProfileAdminRevoked(this.database, {
+        userId: input.userId,
+        emailCanonical: canonicalizeEmail(email.rows[0].email),
+      });
+      return {
+        user_id: input.userId,
+        revoked_usd: nanoToUsd(B2C_SIGNUP_BONUS_BALANCE_NANO.toString()),
+        balance_nano: existing.balanceAfterNano,
+        balance_usd: nanoToUsd(existing.balanceAfterNano),
+        idempotent_replay: true,
+      };
+    }
+
+    const result = await this.engine.debitAccount(mapping.engineAccountId, B2C_SIGNUP_BONUS_BALANCE_NANO, ref);
+    await recordAdminCredit(this.database, {
+      userId: input.userId,
+      engineAccountId: mapping.engineAccountId,
+      amountNano: -B2C_SIGNUP_BONUS_BALANCE_NANO,
+      ref,
+      balanceAfterNano: result.balance_nano,
+      reason: input.reason,
+      actorId: input.actorId,
+    });
+    await markSignupProfileAdminRevoked(this.database, {
+      userId: input.userId,
+      emailCanonical: canonicalizeEmail(email.rows[0].email),
+    });
+    return {
+      user_id: input.userId,
+      revoked_usd: nanoToUsd(B2C_SIGNUP_BONUS_BALANCE_NANO.toString()),
       balance_nano: result.balance_nano,
       balance_usd: nanoToUsd(result.balance_nano),
       idempotent_replay: false,

@@ -140,6 +140,22 @@ export async function releaseSignupBonus(database: Database, userId: string): Pr
   await database.pool.query("UPDATE signup_profiles SET bonus_granted = false WHERE user_id = $1", [userId]);
 }
 
+/**
+ * Админский отзыв бонуса: помечает профиль (создав при отсутствии — юзер мог зарегистрироваться
+ * до антифрода), чтобы клейм не прошёл повторно. Перезаписывает существующий флаг осознанно:
+ * ручное решение админа сильнее автоматического.
+ */
+export async function markSignupProfileAdminRevoked(
+  database: Database,
+  input: { userId: string; emailCanonical: string },
+): Promise<void> {
+  await database.pool.query(`
+    INSERT INTO signup_profiles (user_id, email_canonical, flagged_reason)
+    VALUES ($1, $2, 'admin-revoked')
+    ON CONFLICT (user_id) DO UPDATE SET flagged_reason = 'admin-revoked'
+  `, [input.userId, input.emailCanonical]);
+}
+
 export async function flagSignupProfile(database: Database, userId: string, reason: string): Promise<void> {
   await database.pool.query(
     "UPDATE signup_profiles SET flagged_reason = COALESCE(flagged_reason, $2) WHERE user_id = $1",
