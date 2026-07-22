@@ -126,12 +126,11 @@ POST /admin/account/{id}/key-id/{key_id}/policy
                                          "expires_ts":integer|null}
                                                                      → 200 {key_id,spend_limit_nano,
                                                                             expires_ts,updated} | 404 | 409
-POST /admin/key/{key}/status            {"status":"active"|"disabled"}  → 200 {updated} | 404
 ```
 
 `key_id` не даёт доступа к `/v1` и безопасен для хранения в коммерческой PostgreSQL. Новый backend
 должен отзывать ключ по `key_id`, чтобы никогда не сохранять пригодный к использованию `sk-pool-…`.
-Старый endpoint с полным ключом оставлен для обратной совместимости и CLI.
+Полный ключ никогда помещается в URL; legacy endpoint удалён.
 
 `spend_limit_nano` is an optional positive decimal string and caps lifetime charged platform spend
 for that key. `expires_ts` is an optional future Unix timestamp in seconds. The engine enforces both

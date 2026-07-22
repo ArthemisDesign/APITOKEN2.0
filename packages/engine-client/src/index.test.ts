@@ -190,6 +190,24 @@ describe("EngineClient", () => {
     expect(requestedUrl).toContain("after_id=9007199254740993123&limit=1000");
   });
 
+  it("acknowledges an exact durable ledger cursor", async () => {
+    let request: { url: string; body: string } | undefined;
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async (input, init) => {
+        request = { url: String(input), body: String(init?.body) };
+        return Response.json({ account: "acct_test", consumer: "pricing", last_id: "42" });
+      },
+    });
+    await expect(client.acknowledgeLedger("acct_test", 42n)).resolves.toBeUndefined();
+    expect(request).toEqual({
+      url: "http://engine.test/admin/account/acct_test/ledger/ack",
+      body: '{"last_id":"42"}',
+    });
+    await expect(client.acknowledgeLedger("acct_test", -1n)).rejects.toThrow("lastId");
+  });
+
   it("updates account pricing through the control API", async () => {
     let request: { url: string; body: string } | undefined;
     const client = new EngineClient({

@@ -7,8 +7,8 @@ use crate::keylimiter::KeyLimiter;
 use crate::metrics::Metrics;
 use crate::upstream::Clients;
 use pool::Pool;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -32,8 +32,8 @@ pub struct AppState {
     pub key_limiter: Arc<KeyLimiter>,
     /// ГЛОБАЛЬНЫЙ потолок одновременной обработки запросов (анти-DoS): флуд неверными ключами или
     /// тяжёлыми телами не должен насытить пул DB-читателей/память сверх лимита. Разрешение держится
-    /// на время обработки (парсинг+авторизация+резерв+запрос апстрима), отпускается перед стримом →
-    /// длинные стримы потолок НЕ занимают. Переполнение → 503. Connection-level slowloris/idle-таймауты —
+    /// до EOF/ошибки/Drop response body, включая длинный SSE-стрим. Переполнение → 503.
+    /// Connection-level slowloris/idle-таймауты —
     /// это reverse-proxy (Caddy/nginx/CF, Фаза 3 вместе с TLS), здесь бьём по стоимости обработки.
     pub concurrency: Arc<tokio::sync::Semaphore>,
     /// Разбудить liveness-поллер вне расписания (forward зовёт после `pool.request_probe`, когда

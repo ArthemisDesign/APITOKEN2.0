@@ -13,16 +13,22 @@ pub struct KeyLimiter {
 }
 
 impl KeyLimiter {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Занять слот для `key`. `cap == 0` → без лимита (всегда true). Возвращает false, если потолок
     /// уже достигнут (при этом счётчик НЕ увеличивается). Карта растёт только по активным ключам,
     /// пустые записи вычищаются в [`release`] → память ограничена числом одновременных клиентов.
     pub fn try_acquire(&self, key: &str, cap: u32) -> bool {
-        if cap == 0 { return true; }
+        if cap == 0 {
+            return true;
+        }
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let n = g.entry(key.to_string()).or_insert(0);
-        if *n >= cap { return false; }
+        if *n >= cap {
+            return false;
+        }
         *n += 1;
         true
     }
@@ -32,7 +38,9 @@ impl KeyLimiter {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(n) = g.get_mut(key) {
             *n = n.saturating_sub(1);
-            if *n == 0 { g.remove(key); }
+            if *n == 0 {
+                g.remove(key);
+            }
         }
     }
 }
@@ -46,7 +54,10 @@ mod tests {
         let l = KeyLimiter::new();
         assert!(l.try_acquire("k", 2));
         assert!(l.try_acquire("k", 2));
-        assert!(!l.try_acquire("k", 2), "3-й одновременный сверх потолка → отказ");
+        assert!(
+            !l.try_acquire("k", 2),
+            "3-й одновременный сверх потолка → отказ"
+        );
         l.release("k");
         assert!(l.try_acquire("k", 2), "после release слот снова свободен");
         // другой ключ не затронут
@@ -56,6 +67,8 @@ mod tests {
     #[test]
     fn zero_cap_is_unlimited() {
         let l = KeyLimiter::new();
-        for _ in 0..1000 { assert!(l.try_acquire("k", 0)); }
+        for _ in 0..1000 {
+            assert!(l.try_acquire("k", 0));
+        }
     }
 }

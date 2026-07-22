@@ -38,13 +38,18 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
 
 /// Снапшот ёмкости ПО КАЖДОЙ подписке (email полный — metrics.db не публичен). На дистанции даёт
 /// реальный потолок: `MAX(cap5h/cap7d)` по подписке (не только текущая EMA-калибровка).
-pub fn insert_sub_snapshots(c: &Connection, ts: i64, subs: &[(String, f64, f64, f64, f64)]) -> rusqlite::Result<()> {
+pub fn insert_sub_snapshots(
+    c: &Connection,
+    ts: i64,
+    subs: &[(String, f64, f64, f64, f64)],
+) -> rusqlite::Result<()> {
     for (email, cap5h, cap7d, util5h, util7d) in subs {
         // raw-история (подрезается) — для тренда/анализа
         c.execute(
             "INSERT OR REPLACE INTO sub_snapshots(email,ts,cap5h,cap7d,util5h,util7d) \
              VALUES(?1,?2,?3,?4,?5,?6)",
-            rusqlite::params![email, ts, cap5h, cap7d, util5h, util7d])?;
+            rusqlite::params![email, ts, cap5h, cap7d, util5h, util7d],
+        )?;
         // durable-пик (НЕ подрезается): истинный max за всю дистанцию, переживает prune и рестарт
         c.execute(
             "INSERT INTO sub_peaks(email,max_cap5h,max_cap7d,samples,updated_ts) VALUES(?1,?2,?3,1,?4) \
@@ -61,8 +66,14 @@ pub fn insert_sub_snapshots(c: &Connection, ts: i64, subs: &[(String, f64, f64, 
 /// (email, max_cap5h, max_cap7d, samples).
 pub fn sub_maxes(c: &Connection) -> rusqlite::Result<Vec<(String, f64, f64, i64)>> {
     let mut stmt = c.prepare("SELECT email, max_cap5h, max_cap7d, samples FROM sub_peaks")?;
-    let rows = stmt.query_map([], |r| Ok((
-        r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?, r.get::<_, i64>(3)?)))?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, f64>(1)?,
+            r.get::<_, f64>(2)?,
+            r.get::<_, i64>(3)?,
+        ))
+    })?;
     Ok(rows.filter_map(|x| x.ok()).collect())
 }
 
@@ -85,7 +96,7 @@ pub fn insert_snapshot(c: &Connection, o: &Value) -> rusqlite::Result<()> {
             f("/supply/util/5h"), f("/supply/util/7d"),
             i("/supply/health/healthy"), i("/supply/health/cooling"),
             f("/demand/balance_usd"), f("/demand/reserved_usd"), f("/demand/spent_usd"),
-            i("/demand/active_keys"), f("/demand/potential_realapi_usd"), f("/coverage/7d"),
+            i("/demand/active_accounts"), f("/demand/potential_realapi_usd"), f("/coverage/7d"),
             f("/headroom/5h"), f("/headroom/7d"), i("/recommend/subs_needed"), i("/recommend/gap"),
         ],
     )?;
@@ -96,8 +107,14 @@ pub fn insert_snapshot(c: &Connection, o: &Value) -> rusqlite::Result<()> {
 /// Пиковые max(cap) при этом НЕ теряем осознанно: обрезаем raw-историю, но пик уже «зафиксирован»
 /// в старых данных; для долгой памяти пика retention ставь щедро (деф 90д) или считай max в приложении.
 pub fn prune(c: &Connection, older_than_ts: i64) -> rusqlite::Result<usize> {
-    let n = c.execute("DELETE FROM snapshots WHERE ts < ?1", rusqlite::params![older_than_ts])?;
-    let _ = c.execute("DELETE FROM sub_snapshots WHERE ts < ?1", rusqlite::params![older_than_ts]);
+    let n = c.execute(
+        "DELETE FROM snapshots WHERE ts < ?1",
+        rusqlite::params![older_than_ts],
+    )?;
+    let _ = c.execute(
+        "DELETE FROM sub_snapshots WHERE ts < ?1",
+        rusqlite::params![older_than_ts],
+    );
     Ok(n)
 }
 
@@ -106,7 +123,11 @@ mod tests {
     use super::*;
     #[test]
     fn insert_and_read_back() {
-        let p = format!("{}/metrics_test_{}.db", std::env::temp_dir().display(), std::process::id());
+        let p = format!(
+            "{}/metrics_test_{}.db",
+            std::env::temp_dir().display(),
+            std::process::id()
+        );
         let _ = std::fs::remove_file(&p);
         let c = open(&p).unwrap();
         let o = serde_json::json!({
@@ -115,17 +136,21 @@ mod tests {
                        "cap_usd": {"5h": 20.0, "7d": 100.0}, "consumed_usd": {"5h": 1.0, "7d": 5.0},
                        "util": {"5h": 0.05, "7d": 0.05}, "health": {"healthy": 2, "cooling": 1}},
             "demand": {"balance_usd": 500.0, "reserved_usd": 1.0, "spent_usd": 9.0,
-                       "active_keys": 4, "potential_realapi_usd": 2500.0},
+                       "active_accounts": 4, "potential_realapi_usd": 2500.0},
             "headroom": {"5h": null, "7d": 8.0}, "coverage": {"7d": 62.5},
             "recommend": {"subs_needed": 1, "gap": -2}
         });
         insert_snapshot(&c, &o).unwrap();
-        let (ts, subs, bal, h7, gap): (i64, i64, f64, Option<f64>, i64) = c.query_row(
-            "SELECT ts,subs,balance_usd,headroom7d,gap FROM snapshots",
-            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap();
+        let (ts, subs, bal, h7, gap): (i64, i64, f64, Option<f64>, i64) = c
+            .query_row(
+                "SELECT ts,subs,balance_usd,headroom7d,gap FROM snapshots",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
         assert_eq!((ts, subs, gap), (1000, 3, -2));
         assert_eq!(bal, 500.0);
-        assert_eq!(h7, Some(8.0));   // headroom5h был null → NULL, 7d=8.0
+        assert_eq!(h7, Some(8.0)); // headroom5h был null → NULL, 7d=8.0
         let _ = std::fs::remove_file(&p);
     }
 }

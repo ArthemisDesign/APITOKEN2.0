@@ -110,11 +110,16 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
 
   private async syncTarget(target: PricingSyncTarget): Promise<void> {
     let cursor = await getPricingUsageCursor(this.database, target);
+    // If the previous acknowledgement failed after the commerce transaction committed, replay the
+    // durable cursor before fetching. Otherwise an idle ledger would never give retention another
+    // opportunity to observe that already-applied page.
+    await this.engine.acknowledgeLedger(target.engineAccountId, cursor);
     for (;;) {
       const entries = await this.engine.getLedgerAfter(target.engineAccountId, cursor, 1000);
       if (entries.length === 0) return;
       await applyPricingLedgerPage(this.database, target, entries);
       cursor = BigInt(entries.at(-1)!.id);
+      await this.engine.acknowledgeLedger(target.engineAccountId, cursor);
       if (entries.length < 1000) return;
     }
   }
