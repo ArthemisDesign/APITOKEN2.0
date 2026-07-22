@@ -177,4 +177,17 @@ for required_path in \
   fi
 done
 
+for cache_environment in \
+  'Environment=CARGO_HOME=/var/lib/apitoken/watchdog/deploy-build-cache/cargo' \
+  'Environment=XDG_CACHE_HOME=/var/lib/apitoken/watchdog/deploy-build-cache/xdg-cache' \
+  'Environment=XDG_CONFIG_HOME=/var/lib/apitoken/watchdog/deploy-build-cache/xdg-config' \
+  'Environment=XDG_DATA_HOME=/var/lib/apitoken/watchdog/deploy-build-cache/xdg-data'; do
+  grep -Fxq "$cache_environment" "$ROOT/systemd/apitoken-deploy-watchdog.service" \
+    || wd_die "watchdog service is missing writable build cache environment: $cache_environment"
+done
+grep -Fq 'DEPLOY_BUILD_CACHE_ROOT=/var/lib/apitoken/watchdog/deploy-build-cache' \
+  "$ROOT/deploy/deploy.sh" || wd_die 'release builder does not pin the writable build cache'
+grep -Fq '/var/lib/apitoken/watchdog/deploy-build-cache/cargo' \
+  "$ROOT/deploy/install-watchdog.sh" || wd_die 'watchdog installer does not create the release build cache'
+
 printf 'watchdog migration and engine topology tests passed\n'
