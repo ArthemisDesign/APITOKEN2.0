@@ -90,6 +90,9 @@ export class AuthService {
     await this.attributeReferral(user.id, input.referralCode);
     if (verificationRequired) return { user: userView(user), session: null };
     await this.provisionEngineAccount(user, user.engineMultiplierBp, false);
+    // Атрибуция уже записана выше → применяем скидку-«пол» синхронно, до выдачи сессии,
+    // чтобы первый же /account дашборда вернул правильную ставку (без ожидания sales-фида).
+    await this.applyReferralFloorFromAttribution(user.id);
     const session = await this.issueSession(user, input.userAgent, input.ipAddress);
     return { user: session.user, session };
   }
@@ -169,6 +172,8 @@ export class AuthService {
     const user = await getAuthUser(this.database, userId);
     if (!user) throw new InvalidAuthTokenError("email verification user is unavailable");
     await this.provisionEngineAccount(user, await this.multiplierForUser(user.id), false);
+    // Реф-код был записан ещё при register(); движок-аккаунт только что активирован → floor сразу.
+    await this.applyReferralFloorFromAttribution(user.id);
     return this.issueSession(user, input.userAgent, input.ipAddress);
   }
 
@@ -244,9 +249,14 @@ export class AuthService {
     const user = await completeExternalSignIn(this.database, identity, transaction.inviteTokenHash);
     if (user.status !== "active") throw new InvalidOAuthTransactionError("account is disabled");
     await this.provisionEngineAccount(user, user.engineMultiplierBp, false);
-    // Реф партнёра остаётся обычным b2c и получает welcome-бонус, как все. Реф-код лишь закрепляет
-    // атрибуцию (sales-фид подхватит для комиссии + применит скидку-«пол» партнёра асинхронно).
-    if (transaction.referralCode) await this.attributeReferral(user.id, transaction.referralCode);
+    // Реф партнёра остаётся обычным b2c и получает welcome-бонус, как все. Реф-код закрепляет
+    // атрибуцию (sales-фид подхватит для комиссии + гасит одноразовую ссылку). Скидку-«пол»
+    // применяем ЗДЕСЬ ЖЕ, синхронно — идентично password/email-verify, чтобы OAuth-реферал видел
+    // свою ставку с первого захода, а не через async-фид (~30с).
+    if (transaction.referralCode) {
+      await this.attributeReferral(user.id, transaction.referralCode);
+      await this.applyReferralFloorFromAttribution(user.id);
+    }
     await this.grantOAuthWelcomeBonus(user);
     return this.issueSession(user, input.userAgent, input.ipAddress);
   }
@@ -375,9 +385,6 @@ export class AuthService {
       `, [user.id, account.account]);
       if (completed.rowCount === 1) {
         user.engineAccountStatus = "active";
-        // Реферал по скидочной ссылке должен видеть свою ставку СРАЗУ — применяем «пол» синхронно,
-        // не дожидаясь асинхронного sales-фида. Best-effort и идемпотентно с фидом.
-        await this.applyReferralFloorFromAttribution(user.id);
         return;
       }
 
