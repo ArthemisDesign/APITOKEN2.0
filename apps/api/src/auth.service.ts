@@ -377,7 +377,7 @@ export class AuthService {
   private async recordSignupProfile(
     user: AuthUser,
     meta: { userAgent: string | null; ipAddress: string | null; deviceToken?: string | null },
-  ): Promise<{ bonusGranted: boolean }> {
+  ): Promise<{ bonusGranted: boolean; flaggedReason: string | null }> {
     try {
       return await upsertSignupProfile(this.database, {
         userId: user.id,
@@ -389,7 +389,7 @@ export class AuthService {
       });
     } catch {
       // считаем бонус уже выданным → в сомнительной ситуации бонус НЕ выдаём
-      return { bonusGranted: true };
+      return { bonusGranted: true, flaggedReason: null };
     }
   }
 
@@ -405,7 +405,7 @@ export class AuthService {
   ): Promise<void> {
     if (user.customerType !== "b2c" || user.engineAccountStatus !== "active") return;
     const profile = await this.recordSignupProfile(user, meta);
-    if (profile.bonusGranted) return;
+    if (profile.bonusGranted || profile.flaggedReason !== null) return;
     // Подарок — только популярным почтовым провайдерам; GitHub OAuth пускает любой
     // верифицированный ящик, включая одноразовые домены — эту дыру закрывает allowlist.
     if (!isBonusEligibleEmailDomain(user.email)) {

@@ -92,8 +92,8 @@ export interface SignupProfileInput {
 export async function upsertSignupProfile(
   database: Database,
   input: SignupProfileInput,
-): Promise<{ bonusGranted: boolean }> {
-  const result = await database.pool.query<{ bonus_granted: boolean }>(`
+): Promise<{ bonusGranted: boolean; flaggedReason: string | null }> {
+  const result = await database.pool.query<{ bonus_granted: boolean; flagged_reason: string | null }>(`
     INSERT INTO signup_profiles (user_id, email_canonical, ip_address, ip_subnet, user_agent, device_hash)
     VALUES ($1, $2, $3, $4, $5, $6)
     ON CONFLICT (user_id) DO UPDATE SET
@@ -101,10 +101,13 @@ export async function upsertSignupProfile(
       ip_subnet = COALESCE(signup_profiles.ip_subnet, EXCLUDED.ip_subnet),
       user_agent = COALESCE(signup_profiles.user_agent, EXCLUDED.user_agent),
       device_hash = COALESCE(signup_profiles.device_hash, EXCLUDED.device_hash)
-    RETURNING bonus_granted
+    RETURNING bonus_granted, flagged_reason
   `, [input.userId, input.emailCanonical, input.ipAddress, input.ipSubnet,
       input.userAgent?.slice(0, 500) ?? null, input.deviceHash]);
-  return { bonusGranted: result.rows[0]?.bonus_granted ?? false };
+  return {
+    bonusGranted: result.rows[0]?.bonus_granted ?? false,
+    flaggedReason: result.rows[0]?.flagged_reason ?? null,
+  };
 }
 
 export type SignupBonusClaim =
@@ -117,8 +120,10 @@ export type SignupBonusClaim =
  */
 export async function claimSignupBonus(database: Database, userId: string): Promise<SignupBonusClaim> {
   try {
+    // Флагнутый профиль (velocity/домен/дубль) НЕ клеймит никогда — иначе абузер пережидает
+    // окно velocity и добирает бонусы повторным входом.
     const result = await database.pool.query(
-      "UPDATE signup_profiles SET bonus_granted = true WHERE user_id = $1 AND NOT bonus_granted",
+      "UPDATE signup_profiles SET bonus_granted = true WHERE user_id = $1 AND NOT bonus_granted AND flagged_reason IS NULL",
       [userId],
     );
     return result.rowCount === 1 ? { claimed: true } : { claimed: false, reason: "already-granted" };
