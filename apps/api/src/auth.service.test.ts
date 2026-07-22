@@ -218,7 +218,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
       exchangeCallback: async () => ({
         provider: "github",
         subject: "github-user-42",
-        email: "developer@example.com",
+        email: "developer@gmail.com",
         emailVerified: true,
         displayName: "Developer",
         metadata: { login: "developer" },
@@ -247,7 +247,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
       provider: "github", code: "temporary-code", state, stateCookie: state, userAgent: null, ipAddress: null,
     });
     expect(session.user).toMatchObject({
-      email: "developer@example.com", displayName: "Developer", emailVerified: true, passwordEnabled: false, engineAccountStatus: "active", totpEnabled: false,
+      email: "developer@gmail.com", displayName: "Developer", emailVerified: true, passwordEnabled: false, engineAccountStatus: "active", totpEnabled: false,
     });
     expect(creditAccount).toHaveBeenCalledOnce();
     expect(creditAccount).toHaveBeenCalledWith(
@@ -270,7 +270,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
         exchangeCallback: async () => ({
           provider: providerCode,
           subject: `${providerCode}-claim-42`,
-          email: "claimed@example.com",
+          email: "claimed@gmail.com",
           emailVerified: true,
           displayName: "Claimed User",
           metadata: { login: "claimed" },
@@ -295,14 +295,14 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
         new OAuthProviderRegistry([externalProvider]),
       );
       const registration = await oauthAuth.register({
-        email: "claimed@example.com",
+        email: "claimed@gmail.com",
         password: "correct horse battery staple",
         userAgent: "password-browser",
         ipAddress: "192.0.2.20",
       });
       expect(registration.session).not.toBeNull();
       expect(creditAccount).not.toHaveBeenCalled();
-      await oauthAuth.requestPasswordReset("claimed@example.com", "192.0.2.20");
+      await oauthAuth.requestPasswordReset("claimed@gmail.com", "192.0.2.20");
 
       const started = await oauthAuth.beginOAuth(providerCode);
       const state = new URL(started.authorizationUrl).searchParams.get("state")!;
@@ -317,7 +317,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
 
       expect(session.user).toMatchObject({
         id: registration.user.id,
-        email: "claimed@example.com",
+        email: "claimed@gmail.com",
         emailVerified: true,
         passwordEnabled: false,
         engineAccountStatus: "active",
@@ -333,7 +333,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
         user: { id: registration.user.id },
       });
       await expect(oauthAuth.login({
-        email: "claimed@example.com",
+        email: "claimed@gmail.com",
         password: "correct horse battery staple",
         userAgent: null,
         ipAddress: "192.0.2.22",
