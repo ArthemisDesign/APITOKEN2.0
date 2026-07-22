@@ -150,6 +150,7 @@ function HeroDiscount() {
       <h2 className="offer-free-head"><span className="ofa">$10</span><T k="offer_free_label" as="span" className="off-tag">Free</T></h2>
       <T k="offer_free_sub" as="p" className="offer-free-sub">Claude API usage at official prices</T>
       <T k="offer_free_note" as="p" className="offer-free-note">For new accounts created with Google or GitHub</T>
+      <T k="offer_free_terms" as="p" className="offer-free-terms">Granted after automated anti-fraud screening; may be withheld for duplicate or linked accounts.</T>
     </div>
     <div className="offer-rate-head">
       <T k="offer_note" as="h3">Your balance goes further</T>
