@@ -367,7 +367,7 @@ final_verify_admin_panel() {
   # and Caddy may still be completing first-certificate activation for the new protected hostname.
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
     response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
-      --data-urlencode 'query=min(up) == 1 and min(probe_success{job=~"public-http|protected-http|support-http|loopback-http"}) == 1 and (time() - apitoken_monitoring_collector_last_success_unixtime < 180)' \
+      --data-urlencode 'query=min(up) == 1 and min(probe_success{job=~"public-http|protected-http|support-http|loopback-http"}) == 1 and min(time() - apitoken_monitoring_collector_last_success_unixtime) < 180' \
       http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
     if jq --exit-status '.status == "success" and (.data.result | length) > 0' \
       >/dev/null 2>&1 <<<"$response"; then

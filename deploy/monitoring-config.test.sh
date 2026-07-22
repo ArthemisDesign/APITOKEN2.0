@@ -26,6 +26,14 @@ grep -Fq -- '-f /usr/local/lib/apitoken-watchdog/controller/commerce-postgres.co
   "$ROOT/deploy/apitoken-db-dump"
 ! grep -Fq '/opt/apitoken/repo' "$ROOT/deploy/apitoken-db-dump"
 
+# Every operand in the watchdog's PromQL `and` expression must have the same empty label set.
+# Aggregate collector freshness just like target and synthetic health, or vector matching yields
+# no result even while every underlying series is healthy.
+grep -Fq 'and min(time() - apitoken_monitoring_collector_last_success_unixtime) < 180' \
+  "$ROOT/deploy/watchdog.sh"
+! grep -Fq 'and (time() - apitoken_monitoring_collector_last_success_unixtime < 180)' \
+  "$ROOT/deploy/watchdog.sh"
+
 for dashboard in "$ROOT"/observability/grafana/dashboards/*.json; do
   node -e 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))' "$dashboard"
 done
