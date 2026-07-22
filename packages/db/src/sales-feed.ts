@@ -38,6 +38,17 @@ export async function recordReferralAttribution(database: Database, userId: stri
     .onConflictDoNothing({ target: referralAttributions.userId });
 }
 
+/** Реф-код, по которому пользователь пришёл (или null). Нужен для синхронного применения скидки-«пола»
+ * сразу при провижининге движок-аккаунта — чтобы реферал видел свою ставку, не дожидаясь sales-фида. */
+export async function getReferralAttributionCode(database: Database, userId: string): Promise<string | null> {
+  const rows = await database.db
+    .select({ code: referralAttributions.code })
+    .from(referralAttributions)
+    .where(eq(referralAttributions.userId, userId))
+    .limit(1);
+  return rows[0]?.code ?? null;
+}
+
 export async function listReferralAttributionsAfter(
   database: Database,
   afterId: bigint,

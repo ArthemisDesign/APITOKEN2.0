@@ -19,6 +19,8 @@ import {
   encryptAuthToken,
   queueAuthEmailForAddress,
   recordReferralAttribution,
+  getReferralAttributionCode,
+  setReferralFloor,
   resolveAuthSession,
   revokeAuthSession,
   updateUserDisplayName,
@@ -99,6 +101,32 @@ export class AuthService {
       await recordReferralAttribution(this.database, userId, referralCode.toLowerCase());
     } catch {
       // не логируем код — этого достаточно для диагностики по user_id через БД
+    }
+  }
+
+  /**
+   * Сразу при первой активации движок-аккаунта применяем скидку-«пол» персональной реф-ссылки,
+   * чтобы реферал увидел свою ставку с ПЕРВОГО захода (иначе floor доезжает лишь async sales-фидом,
+   * и до тех пор дашборд показывает обычный b2c). Read-only резолв в sales; гашение ссылки остаётся
+   * за фидом. Полностью best-effort и идемпотентно: если sales недоступен — фид применит floor позже.
+   */
+  private async applyReferralFloorFromAttribution(userId: string): Promise<void> {
+    const base = this.config.get("SALES_API_URL", { infer: true });
+    const key = this.config.get("SALES_CONTROL_KEY", { infer: true });
+    if (!base || !key) return;
+    try {
+      const code = await getReferralAttributionCode(this.database, userId);
+      if (!code) return;
+      const url = new URL(`/v1/internal/partners/referral-discount?code=${encodeURIComponent(code)}`, base);
+      const response = await fetch(url, { headers: { "x-api-key": key }, signal: AbortSignal.timeout(4_000) });
+      if (!response.ok) return;
+      const body = (await response.json()) as { discountBps?: unknown };
+      const discountBps = typeof body.discountBps === "number" ? body.discountBps : 0;
+      if (discountBps > 0) {
+        await setReferralFloor(this.database, { userId, floorBps: discountBps, actorId: "referral-signup" });
+      }
+    } catch {
+      // best-effort: async sales-фид применит floor при следующем тике
     }
   }
 
@@ -347,6 +375,9 @@ export class AuthService {
       `, [user.id, account.account]);
       if (completed.rowCount === 1) {
         user.engineAccountStatus = "active";
+        // Реферал по скидочной ссылке должен видеть свою ставку СРАЗУ — применяем «пол» синхронно,
+        // не дожидаясь асинхронного sales-фида. Best-effort и идемпотентно с фидом.
+        await this.applyReferralFloorFromAttribution(user.id);
         return;
       }
 

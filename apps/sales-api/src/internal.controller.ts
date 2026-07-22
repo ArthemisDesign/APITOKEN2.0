@@ -22,6 +22,7 @@ import { z } from "zod";
 import {
   findPartnerByReferralCode,
   redeemPromoCode,
+  resolveReferralCode,
   PromoAlreadyRedeemedError,
   PromoNotFoundError,
   UserAlreadyRedeemedError,
@@ -105,6 +106,18 @@ export class InternalPartnersController {
     // Только активный партнёр триггерит B2B; иначе код трактуется как обычный (реф получит бонус).
     if (!partner || partner.status !== "active") return { found: false };
     return { found: true, partnerId: partner.id, referralDiscountBps: partner.referralDiscountBps };
+  }
+
+  // Скидка-«пол» персональной ссылки по её коду — read-only (гашение остаётся за async-фидом).
+  // commerce зовёт это СРАЗУ при провижининге движок-аккаунта, чтобы реферал видел ставку немедленно.
+  // Обычный реф-код партнёра → discountBps=0 (floor не применяется). Гашёная ссылка тоже → 0.
+  @Get("referral-discount")
+  @Header("Cache-Control", "no-store")
+  async referralDiscount(@Query("code") code?: string): Promise<unknown> {
+    const parsed = resolveSchema.safeParse({ code });
+    if (!parsed.success) return { discountBps: 0 };
+    const resolved = await resolveReferralCode(this.database, parsed.data.code.toLowerCase());
+    return { discountBps: resolved?.discountBps ?? 0 };
   }
 }
 

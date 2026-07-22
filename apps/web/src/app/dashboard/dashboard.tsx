@@ -215,6 +215,29 @@ export function Dashboard() {
     return () => window.removeEventListener("popstate", syncSectionFromHistory);
   }, []);
 
+  // Тихо переподтягиваем аккаунт при возврате фокуса: партнёрская скидка-«пол» реферала обычно
+  // применяется синхронно при регистрации, но если она доехала async-фидом уже после открытия
+  // дашборда — так витрина (панель «Партнёрская ставка») обновится без ручной перезагрузки.
+  useEffect(() => {
+    let cancelled = false;
+    async function refreshAccount() {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const fresh = await api.account();
+        if (!cancelled) setAccount(fresh);
+      } catch {
+        // тихо: это лишь фоновое обновление, ошибки уже покрыты основной загрузкой
+      }
+    }
+    document.addEventListener("visibilitychange", refreshAccount);
+    window.addEventListener("focus", refreshAccount);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", refreshAccount);
+      window.removeEventListener("focus", refreshAccount);
+    };
+  }, []);
+
   useEffect(() => {
     if (searchParams.get("view") === "security") {
       window.history.replaceState(null, "", dashboardHref("profile", language));
