@@ -141,6 +141,13 @@
       "when": 1784890000000,
       "tag": "0019_monitoring_admin",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1784900000000,
+      "tag": "0020_email_outbox_canceled",
+      "breakpoints": true
     }
   ]
 }

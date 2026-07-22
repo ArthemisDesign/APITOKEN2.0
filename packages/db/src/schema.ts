@@ -29,7 +29,13 @@ export const engineAdjustmentStatus = pgEnum("engine_adjustment_status", ["pendi
 export const apiKeyStatus = pgEnum("api_key_status", ["active", "disabled"]);
 export const checkoutStatus = pgEnum("checkout_status", ["creating", "pending", "paid", "canceled", "refunded", "failed"]);
 export const authTokenPurpose = pgEnum("auth_token_purpose", ["verify_email", "reset_password"]);
-export const emailOutboxStatus = pgEnum("email_outbox_status", ["pending", "processing", "sent", "failed"]);
+export const emailOutboxStatus = pgEnum("email_outbox_status", [
+  "pending",
+  "processing",
+  "sent",
+  "failed",
+  "canceled",
+]);
 export const customerType = pgEnum("customer_type", ["b2c", "b2b"]);
 export const pricingJobStatus = pgEnum("pricing_job_status", ["pending", "processing", "retry", "confirmed"]);
 export const oauthProvider = pgEnum("oauth_provider", ["google", "github"]);

@@ -193,7 +193,9 @@ application’s idempotent retry path.
 ## DurableQueueDeadItems
 
 Review the terminal error and associated audit/payment event. Resolve the cause before manually
-requeueing; all money mutations must remain idempotent.
+requeueing; all money mutations must remain idempotent. Intentionally obsolete commerce email jobs
+use the separate `canceled` state and `apitoken_queue_canceled` metric. Never relabel a genuine
+delivery failure as canceled merely to silence this alert.
 
 ## FailedWebhooksPresent
 

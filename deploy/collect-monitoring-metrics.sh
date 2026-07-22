@@ -38,6 +38,8 @@ cat >"$temporary" <<'METRICS'
 # TYPE apitoken_queue_ready gauge
 # HELP apitoken_queue_dead Durable jobs in a terminal failed state.
 # TYPE apitoken_queue_dead gauge
+# HELP apitoken_queue_canceled Durable jobs intentionally canceled because their work became obsolete.
+# TYPE apitoken_queue_canceled gauge
 # HELP apitoken_queue_oldest_ready_seconds Age of the oldest ready or retrying durable job.
 # TYPE apitoken_queue_oldest_ready_seconds gauge
 # HELP apitoken_webhook_failed Payment webhook events in failed state.
@@ -66,6 +68,7 @@ SELECT 'apitoken_queue_dead{queue="engine_pricing"} 0';
 SELECT 'apitoken_queue_oldest_ready_seconds{queue="engine_pricing"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM engine_pricing_jobs WHERE status IN ('pending','retry');
 SELECT 'apitoken_queue_ready{queue="commerce_email"} ' || count(*) FROM email_outbox WHERE status = 'pending';
 SELECT 'apitoken_queue_dead{queue="commerce_email"} ' || count(*) FROM email_outbox WHERE status = 'failed';
+SELECT 'apitoken_queue_canceled{queue="commerce_email"} ' || count(*) FROM email_outbox WHERE status = 'canceled';
 SELECT 'apitoken_queue_oldest_ready_seconds{queue="commerce_email"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM email_outbox WHERE status = 'pending';
 SELECT 'apitoken_webhook_failed ' || count(*) FROM webhook_events WHERE status = 'failed';
 SELECT 'apitoken_checkout_stale ' || count(*) FROM checkout_sessions WHERE status IN ('creating','pending') AND created_at < now() - interval '1 hour';

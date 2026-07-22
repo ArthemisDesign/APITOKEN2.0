@@ -2,11 +2,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   claimNextEmail,
   confirmEmail,
+  consumeEmailVerification,
   createDatabase,
   createEmailUser,
   decodeAuthEncryptionKey,
   decryptAuthToken,
   encryptAuthToken,
+  queueAuthEmailForAddress,
   type Database,
 } from "./index.js";
 
@@ -46,6 +48,48 @@ describe.runIf(Boolean(connectionString))("durable authentication email", () => 
     `);
     expect(stored.rows).toEqual([{
       status: "sent", provider_message_id: "smtp-message-id", locked_at: null, locked_by: null,
+    }]);
+  });
+
+  it("cancels obsolete unsent verification messages after the user verifies", async () => {
+    const firstTokenHash = "first-token-hash";
+    const user = await createEmailUser(database, "cancel@example.com", "password-hash", undefined, {
+      tokenHash: firstTokenHash,
+      encryptedToken: encryptAuthToken("b".repeat(43), key),
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    await expect(queueAuthEmailForAddress(database, {
+      email: user.email,
+      purpose: "verify_email",
+      tokenHash: "second-token-hash",
+      encryptedToken: encryptAuthToken("c".repeat(43), key),
+      expiresAt: new Date(Date.now() + 86_400_000),
+    })).resolves.toBe(true);
+
+    await expect(consumeEmailVerification(database, firstTokenHash)).resolves.toBe(user.id);
+    const stored = await database.pool.query(`
+      SELECT status, last_error FROM email_outbox ORDER BY created_at
+    `);
+    expect(stored.rows).toEqual([
+      { status: "canceled", last_error: "superseded after successful email verification" },
+      { status: "canceled", last_error: "superseded after successful email verification" },
+    ]);
+    await expect(claimNextEmail(database, "worker-after-verification")).resolves.toBeNull();
+  });
+
+  it("keeps malformed jobs in the genuine failed state", async () => {
+    await createEmailUser(database, "malformed@example.com", "password-hash", undefined, {
+      tokenHash: "malformed-token-hash",
+      encryptedToken: encryptAuthToken("d".repeat(43), key),
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    await database.pool.query("UPDATE email_outbox SET payload = '{}'::jsonb");
+
+    await expect(claimNextEmail(database, "worker-malformed")).resolves.toBeNull();
+    const stored = await database.pool.query("SELECT status, last_error FROM email_outbox");
+    expect(stored.rows).toEqual([{
+      status: "failed",
+      last_error: "invalid encrypted token payload",
     }]);
   });
 

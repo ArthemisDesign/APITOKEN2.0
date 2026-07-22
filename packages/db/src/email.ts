@@ -84,6 +84,14 @@ export async function consumeEmailVerification(database: Database, tokenHash: st
       WHERE user_id = $1 AND purpose = 'verify_email' AND used_at IS NULL
     `, [token.user_id]);
     await client.query("UPDATE users SET email_verified = true, updated_at = now() WHERE id = $1", [token.user_id]);
+    // A user may request several verification messages before using one. Once verification wins,
+    // the remaining unsent messages are intentionally obsolete, not delivery failures.
+    await client.query(`
+      UPDATE email_outbox
+      SET status = 'canceled', locked_at = NULL, locked_by = NULL,
+          last_error = 'superseded after successful email verification', updated_at = now()
+      WHERE user_id = $1 AND template = 'verify_email' AND status = 'pending'
+    `, [token.user_id]);
     await client.query(`
       INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id)
       VALUES ('user', $1, 'auth.email_verified', 'user', $1)
