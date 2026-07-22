@@ -18,6 +18,12 @@ fi
 install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/controller
 install -d -o deploy -g deploy -m 0751 /var/lib/apitoken/watchdog /var/lib/apitoken/watchdog/candidates
 install -d -o deploy -g deploy -m 0750 /var/lib/apitoken/watchdog/ci-home
+install -d -o deploy -g deploy -m 0750 \
+  /var/lib/apitoken/watchdog/deploy-build-cache \
+  /var/lib/apitoken/watchdog/deploy-build-cache/cargo \
+  /var/lib/apitoken/watchdog/deploy-build-cache/xdg-cache \
+  /var/lib/apitoken/watchdog/deploy-build-cache/xdg-config \
+  /var/lib/apitoken/watchdog/deploy-build-cache/xdg-data
 # Candidate tests need traverse-only access through these parents. State contents remain unlistable.
 chmod o+x /var/lib/apitoken /var/lib/apitoken/watchdog /var/lib/apitoken/watchdog/candidates
 chown apitoken-ci:apitoken-ci /var/lib/apitoken/watchdog/ci-home

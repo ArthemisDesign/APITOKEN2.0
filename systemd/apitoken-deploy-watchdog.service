@@ -8,6 +8,10 @@ Type=oneshot
 User=deploy
 Group=deploy
 Environment=HOME=/home/deploy
+Environment=CARGO_HOME=/var/lib/apitoken/watchdog/deploy-build-cache/cargo
+Environment=XDG_CACHE_HOME=/var/lib/apitoken/watchdog/deploy-build-cache/xdg-cache
+Environment=XDG_CONFIG_HOME=/var/lib/apitoken/watchdog/deploy-build-cache/xdg-config
+Environment=XDG_DATA_HOME=/var/lib/apitoken/watchdog/deploy-build-cache/xdg-data
 Environment=PATH=/home/deploy/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/lib/apitoken-watchdog/watchdog.sh
 TimeoutStartSec=45min

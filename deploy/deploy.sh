@@ -114,6 +114,14 @@ ENGINE_SERVICE=${ENGINE_SERVICE:-claude-api.service}
 LEGACY_API_SERVICE=${LEGACY_API_SERVICE:-apitoken-api.service}
 SYSTEMD_UNIT_DIR=${SYSTEMD_UNIT_DIR:-/etc/systemd/system}
 
+# The watchdog runs with ProtectHome=read-only. Release builds must never depend on a warm cache
+# under /home/deploy: new locked dependencies need a controller-owned writable cache on first use.
+DEPLOY_BUILD_CACHE_ROOT=/var/lib/apitoken/watchdog/deploy-build-cache
+export CARGO_HOME="$DEPLOY_BUILD_CACHE_ROOT/cargo"
+export XDG_CACHE_HOME="$DEPLOY_BUILD_CACHE_ROOT/xdg-cache"
+export XDG_CONFIG_HOME="$DEPLOY_BUILD_CACHE_ROOT/xdg-config"
+export XDG_DATA_HOME="$DEPLOY_BUILD_CACHE_ROOT/xdg-data"
+
 [[ "$SOURCE_REPO" == /* ]] || die "SOURCE_REPO must be absolute"
 [[ "$API_ENV_FILE" == /* ]] || die "API_ENV_FILE must be absolute"
 [[ "$SYSTEMD_UNIT_DIR" == "/etc/systemd/system" ]] || die "SYSTEMD_UNIT_DIR is fixed at /etc/systemd/system"
