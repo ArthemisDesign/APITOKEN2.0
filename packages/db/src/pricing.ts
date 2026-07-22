@@ -218,8 +218,13 @@ export async function setReferralFloor(database: Database, input: {
       return { applied: false, multiplierBp: null };
     }
     const tierMult = B2C_PRICING_TIERS[row.current_tier]!.multiplierBp;
-    const multiplierBp = effectiveMultiplierBp(tierMult, input.floorBps);
-    if (row.referral_floor_bps === input.floorBps && row.multiplier_bp === multiplierBp) {
+    // «Пол» скидки — МОНОТОНЕН: floorBps>0 только ПОДНИМАЕТ (GREATEST). Колонка одна, но пишут в неё
+    // три независимых источника (промо, партнёрская ссылка, sales-фид) — при абсолютной записи они
+    // затирали друг друга и клиент молча терял лучшую скидку. Теперь берём максимум (лучшее клиенту).
+    // floorBps===0 — единственный путь ЯВНОГО сброса пола (напр. отзыв), обходит GREATEST.
+    const effectiveFloor = input.floorBps === 0 ? 0 : Math.max(row.referral_floor_bps, input.floorBps);
+    const multiplierBp = effectiveMultiplierBp(tierMult, effectiveFloor);
+    if (row.referral_floor_bps === effectiveFloor && row.multiplier_bp === multiplierBp) {
       await client.query("ROLLBACK");
       return { applied: false, multiplierBp };
     }
@@ -227,7 +232,7 @@ export async function setReferralFloor(database: Database, input: {
       UPDATE customer_profiles
       SET referral_floor_bps = $2, multiplier_bp = $3, updated_at = now()
       WHERE user_id = $1
-    `, [input.userId, input.floorBps, multiplierBp]);
+    `, [input.userId, effectiveFloor, multiplierBp]);
     await client.query(`
       UPDATE engine_accounts SET mult_bp = $2, updated_at = now() WHERE user_id = $1
     `, [input.userId, multiplierBp]);
@@ -242,7 +247,7 @@ export async function setReferralFloor(database: Database, input: {
     await client.query(`
       INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
       VALUES ('system', $1, 'pricing.referral_floor', 'user', $2, $3::jsonb)
-    `, [input.actorId, input.userId, JSON.stringify({ floorBps: input.floorBps, multiplierBp })]);
+    `, [input.actorId, input.userId, JSON.stringify({ requestedFloorBps: input.floorBps, effectiveFloorBps: effectiveFloor, multiplierBp })]);
     await client.query("COMMIT");
     return { applied: true, multiplierBp };
   } catch (error) {

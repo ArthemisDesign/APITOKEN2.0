@@ -120,8 +120,15 @@ export class AuthService {
     try {
       const code = await getReferralAttributionCode(this.database, userId);
       if (!code) return;
-      const url = new URL(`/v1/internal/partners/referral-discount?code=${encodeURIComponent(code)}`, base);
-      const response = await fetch(url, { headers: { "x-api-key": key }, signal: AbortSignal.timeout(4_000) });
+      // POST (мутирует): АТОМАРНО закрепляет одноразовую ссылку за этим юзером и возвращает скидку
+      // только если он её владелец. Второй регистрант той же ссылки получит 0 — гонка закрыта.
+      const url = new URL("/v1/internal/partners/referral-discount", base);
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": key },
+        body: JSON.stringify({ code, commerceUserId: userId }),
+        signal: AbortSignal.timeout(4_000),
+      });
       if (!response.ok) return;
       const body = (await response.json()) as { discountBps?: unknown };
       const discountBps = typeof body.discountBps === "number" ? body.discountBps : 0;
@@ -129,7 +136,7 @@ export class AuthService {
         await setReferralFloor(this.database, { userId, floorBps: discountBps, actorId: "referral-signup" });
       }
     } catch {
-      // best-effort: async sales-фид применит floor при следующем тике
+      // best-effort: async sales-фид (idempotent claim) применит floor владельцу при следующем тике
     }
   }
 
@@ -250,10 +257,13 @@ export class AuthService {
     if (user.status !== "active") throw new InvalidOAuthTransactionError("account is disabled");
     await this.provisionEngineAccount(user, user.engineMultiplierBp, false);
     // Реф партнёра остаётся обычным b2c и получает welcome-бонус, как все. Реф-код закрепляет
-    // атрибуцию (sales-фид подхватит для комиссии + гасит одноразовую ссылку). Скидку-«пол»
+    // атрибуцию (sales-фид подхватит для комиссии + атомарно закрепит одноразовую ссылку). Скидку-«пол»
     // применяем ЗДЕСЬ ЖЕ, синхронно — идентично password/email-verify, чтобы OAuth-реферал видел
     // свою ставку с первого захода, а не через async-фид (~30с).
-    if (transaction.referralCode) {
+    // ТОЛЬКО для НОВОГО аккаунта: этот callback обслуживает и вход существующих юзеров — иначе
+    // существующий платящий клиент мог бы залогиниться через ?ref= и само-выдать себе скидку +
+    // сжечь чужую одноразовую ссылку + начать капать комиссию партнёру.
+    if (transaction.referralCode && user.isNewAccount) {
       await this.attributeReferral(user.id, transaction.referralCode);
       await this.applyReferralFloorFromAttribution(user.id);
     }

@@ -78,11 +78,21 @@ export class PromoService {
     }
 
     // 4) Спец-промо со скидкой → применяем скидку-«пол» редимщику (b2c остаётся, тиры работают).
+    // ВНИМАНИЕ: в отличие от партнёрских ссылок, промо-скидку async sales-фид НЕ переприменяет
+    // (он деривит floor только из partner_discount_links, а не из promo). Поэтому здесь ретраим
+    // локально и не глотаем окончательный сбой молча — иначе редим прошёл, а floor не встал.
     if (redeemed.discountBps && redeemed.discountBps > 0) {
-      try {
-        await setReferralFloor(this.database, { userId, floorBps: redeemed.discountBps, actorId: "promo-discount" });
-      } catch {
-        // best-effort: кредит уже прошёл; скидку доедет асинхронный фид/повтор при следующей атрибуции
+      let floorApplied = false;
+      for (let attempt = 0; attempt < 3 && !floorApplied; attempt += 1) {
+        try {
+          await setReferralFloor(this.database, { userId, floorBps: redeemed.discountBps, actorId: "promo-discount" });
+          floorApplied = true;
+        } catch {
+          // повторяем; финальный сбой логируем ниже (кредит уже зачислен — редим не откатываем)
+        }
+      }
+      if (!floorApplied) {
+        this.logger.error(`promo floor apply failed for ${userId} ref=${redeemed.redemptionRef} bps=${redeemed.discountBps}`);
       }
     }
 

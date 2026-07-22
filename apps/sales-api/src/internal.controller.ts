@@ -22,7 +22,7 @@ import { z } from "zod";
 import {
   findPartnerByReferralCode,
   redeemPromoCode,
-  resolveReferralCode,
+  claimReferralDiscount,
   PromoAlreadyRedeemedError,
   PromoNotFoundError,
   UserAlreadyRedeemedError,
@@ -108,18 +108,24 @@ export class InternalPartnersController {
     return { found: true, partnerId: partner.id, referralDiscountBps: partner.referralDiscountBps };
   }
 
-  // Скидка-«пол» персональной ссылки по её коду — read-only (гашение остаётся за async-фидом).
-  // commerce зовёт это СРАЗУ при провижининге движок-аккаунта, чтобы реферал видел ставку немедленно.
-  // Обычный реф-код партнёра → discountBps=0 (floor не применяется). Гашёная ссылка тоже → 0.
-  @Get("referral-discount")
-  @Header("Cache-Control", "no-store")
-  async referralDiscount(@Query("code") code?: string): Promise<unknown> {
-    const parsed = resolveSchema.safeParse({ code });
+  // АТОМАРНО закрепляет одноразовую скидочную ссылку за юзером и возвращает её скидку, только если
+  // он владелец. commerce зовёт это при активации движок-аккаунта — реферал видит ставку сразу, а
+  // одноразовая ссылка НЕ может дать скидку второму. Обычный реф-код / гашёная-другим ссылка → 0.
+  // POST, т.к. мутирует (consume). Идемпотентно по (code,user).
+  @Post("referral-discount")
+  @HttpCode(200)
+  async referralDiscount(@Body() body: unknown): Promise<unknown> {
+    const parsed = claimSchema.safeParse(body);
     if (!parsed.success) return { discountBps: 0 };
-    const resolved = await resolveReferralCode(this.database, parsed.data.code.toLowerCase());
-    return { discountBps: resolved?.discountBps ?? 0 };
+    const { discountBps } = await claimReferralDiscount(this.database, parsed.data.code.toLowerCase(), parsed.data.commerceUserId);
+    return { discountBps };
   }
 }
+
+const claimSchema = z.object({
+  code: z.string().trim().regex(/^[A-Za-z0-9_-]{3,32}$/),
+  commerceUserId: z.string().uuid(),
+});
 
 function safeEqual(left: string, right: string): boolean {
   const a = createHash("sha256").update(left).digest();

@@ -90,7 +90,7 @@ export async function completeExternalSignIn(
   businessInviteTokenHash: string | null,
 ): Promise<RegisteredAuthUser> {
   const existing = await findExternalAuthUser(database, identity.provider, identity.subject);
-  if (existing) return { ...existing, engineMultiplierBp: await multiplierForUser(database, existing.id) };
+  if (existing) return { ...existing, engineMultiplierBp: await multiplierForUser(database, existing.id), isNewAccount: false };
 
   const client = await database.pool.connect();
   const userId = randomUUID();
@@ -157,6 +157,7 @@ export async function completeExternalSignIn(
         customerType: claimedAccount.customer_type,
         totpEnabled: claimedAccount.totp_enabled,
         engineMultiplierBp: claimedAccount.engine_multiplier_bp,
+        isNewAccount: false,
       };
     }
     const invite = businessInviteTokenHash
@@ -209,12 +210,13 @@ export async function completeExternalSignIn(
       customerType,
       totpEnabled: false,
       engineMultiplierBp,
+      isNewAccount: true,
     };
   } catch (error) {
     await client.query("ROLLBACK");
     if (isUniqueViolation(error)) {
       const raced = await findExternalAuthUser(database, identity.provider, identity.subject);
-      if (raced) return { ...raced, engineMultiplierBp: await multiplierForUser(database, raced.id) };
+      if (raced) return { ...raced, engineMultiplierBp: await multiplierForUser(database, raced.id), isNewAccount: false };
     }
     throw error;
   } finally {

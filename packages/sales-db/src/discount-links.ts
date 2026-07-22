@@ -153,6 +153,28 @@ export async function resolveReferralCode(database: SalesDatabase, code: string)
   };
 }
 
+/**
+ * АТОМАРНО закрепляет одноразовую ссылку за пользователем (first-wins) и возвращает её скидку,
+ * ЕСЛИ пользователь — владелец: только что выиграл гонку ИЛИ уже был владельцем (идемпотентный
+ * повтор). Если ссылка уже погашена ДРУГИМ — возвращает 0 (floor не даётся). Обычный реф-код или
+ * несуществующий код → 0. Один UPDATE закрывает гонку: одноразовая ссылка НИКОГДА не даёт скидку
+ * более чем одному пользователю. Используется и синхронным путём при регистрации, и async-фидом
+ * (idempotent backfill владельцу, если синхронное применение упало). Заменяет пару resolve+consume
+ * для скидочной части, устраняя окно, где read-only резолв выдавал floor нескольким регистрациям.
+ */
+export async function claimReferralDiscount(database: SalesDatabase, code: string, commerceUserId: string): Promise<{ discountBps: number }> {
+  const claimed = await database.pool.query<{ discount_bps: number }>(
+    `UPDATE partner_discount_links dl
+     SET consumed_by_commerce_user_id = $2, consumed_at = COALESCE(dl.consumed_at, now())
+     FROM partners p
+     WHERE dl.code = $1 AND p.id = dl.partner_id AND p.status = 'active'
+       AND (dl.consumed_by_commerce_user_id IS NULL OR dl.consumed_by_commerce_user_id = $2)
+     RETURNING dl.discount_bps`,
+    [code, commerceUserId],
+  );
+  return { discountBps: claimed.rows[0]?.discount_bps ?? 0 };
+}
+
 /** Гасит персональную ссылку первым привязанным пользователем (идемпотентно, first-wins). */
 export async function consumeDiscountLink(database: SalesDatabase, linkId: string, commerceUserId: string): Promise<void> {
   await database.pool.query(

@@ -3,7 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import { z } from "zod";
 import {
   advanceSyncCursor,
-  consumeDiscountLink,
+  claimReferralDiscount,
   getSyncCursor,
   recordReferredDeposit,
   recordReferredSpend,
@@ -113,17 +113,16 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
           // между upsert и consume). Если юзер закреплён за ДРУГИМ партнёром — не трогаем (не жжём чужую
           // одноразовую ссылку и не даём незаслуженный floor). consume/apply идемпотентны.
           const ownerPartnerId = won ? resolved.partnerId : await getReferredUserPartner(this.database, row.userId);
-          if (ownerPartnerId === resolved.partnerId) {
-            // ПОРЯДОК ВАЖЕН: сначала применяем скидочный floor в commerce, и ТОЛЬКО потом гасим
-            // одноразовую ссылку. Если бы гасили первой, а apply бросил (напр. commerce отверг сумму) —
-            // ссылка бы «сгорела», курсор бы застрял, а на ретрае resolveReferralCode вернул бы у
-            // гашёной ссылки discountBps=0 → скидка терялась бы навсегда. Apply идёт только при floor>0
-            // (обычный реф-код с floor 0 не должен дёргать commerce и стопорить всю ленту).
-            if (resolved.discountBps > 0) {
-              await this.applyReferralDiscount(row.userId, resolved.discountBps);
-            }
-            if (resolved.discountLinkId && !resolved.discountLinkConsumed) {
-              await consumeDiscountLink(this.database, resolved.discountLinkId, row.userId);
+          if (ownerPartnerId === resolved.partnerId && resolved.discountLinkId) {
+            // Скидочная ссылка: АТОМАРНО закрепляем её за этим юзером (claim = consume+resolve одним
+            // UPDATE, идемпотентно по (code,user)). Победитель получает floor — либо впервые, либо как
+            // backfill, если синхронное применение при регистрации упало; проигравший (ссылка уже
+            // погашена другим) получает строго 0 и floor НЕ применяется. Это закрывает и гонку
+            // «одна ссылка → скидка нескольким», и потерю floor при сбое apply. Обычный реф-код
+            // (без discountLinkId) сюда не заходит — floor 0, атрибуция/комиссия уже сделаны выше.
+            const { discountBps } = await claimReferralDiscount(this.database, row.code, row.userId);
+            if (discountBps > 0) {
+              await this.applyReferralDiscount(row.userId, discountBps);
             }
           }
         }
