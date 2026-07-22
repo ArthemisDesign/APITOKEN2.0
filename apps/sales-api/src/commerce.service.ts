@@ -62,4 +62,36 @@ export class CommerceService {
     }
     return map;
   }
+
+  /**
+   * Явная установка/смена «пола» скидки ДЕЙСТВУЮЩЕМУ рефералу (партнёр из кабинета или админ).
+   * override=true на стороне commerce: абсолютная запись, разрешено понижение и сброс (0).
+   * НЕ best-effort: вызывающий должен знать результат, поэтому ошибки транспорта пробрасываем.
+   * applied=false при недоступном профиле (b2b/нет тира) или когда значение уже такое.
+   */
+  async setReferralDiscount(
+    userId: string,
+    floorBps: number,
+    actorId: "sales-partner" | "sales-admin",
+  ): Promise<{ applied: boolean; multiplierBp: number | null }> {
+    const base = this.config.get("COMMERCE_BASE_URL", { infer: true });
+    const response = await fetch(new URL("/v1/internal/sales/referral-discount", base), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": this.config.get("SALES_CONTROL_KEY", { infer: true }),
+      },
+      body: JSON.stringify({ userId, floorBps, override: true, actorId }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) throw new Error(`referral-discount responded ${response.status}`);
+    const body = referralDiscountResultSchema.safeParse(await response.json());
+    if (!body.success) throw new Error("referral-discount returned an unexpected payload");
+    return body.data;
+  }
 }
+
+const referralDiscountResultSchema = z.object({
+  applied: z.boolean(),
+  multiplierBp: z.number().int().nullable(),
+});

@@ -180,6 +180,8 @@ export type Overview = {
 
 export type ReferralRow = {
   userMask: string;
+  // Машинная ссылка на реферала (8-hex префикс) для действий: смена партнёрской ставки.
+  userRef?: string;
   attributedAt: string;
   spendNano: string;
   earnedNano: string;
@@ -391,7 +393,10 @@ export type PartnerDetailBundle = {
   discountLinks: { id: string; code: string; discountBps: number; note: string | null; consumedAt: string | null; createdAt: string }[];
   promos: { id: string; code: string; valueNano: string; status: string; discountBps: number; redeemedAt: string | null; createdAt: string }[];
   payouts: { id: string; amountNano: string; status: string; requestedAt: string; decidedAt: string | null; paidAt: string | null; adminNote: string | null }[];
-  referrals: { userMask: string; attributedAt: string; spendNano: string; earnedNano: string }[];
+  referrals: {
+    userMask: string; userRef?: string; attributedAt: string; spendNano: string; earnedNano: string;
+    customerType?: "b2c" | "b2b" | null; discountPercent?: number | null; referralFloorBps?: number | null;
+  }[];
 };
 
 // ---------------------------------------------------------------------------

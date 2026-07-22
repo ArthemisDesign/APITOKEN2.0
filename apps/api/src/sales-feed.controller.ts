@@ -124,7 +124,10 @@ export class SalesFeedController {
     const result = await setReferralFloor(this.database, {
       userId: parsed.data.userId,
       floorBps: parsed.data.floorBps,
-      actorId: "sales-referral",
+      actorId: parsed.data.actorId ?? "sales-referral",
+      // Явная смена процента действующему рефералу (партнёр/админ из sales-кабинета): абсолютная
+      // запись, разрешает понижение. Автоматические пути поле не шлют — монотонность сохранена.
+      override: parsed.data.override ?? false,
     });
     return { applied: result.applied, multiplierBp: result.multiplierBp };
   }
@@ -187,6 +190,8 @@ async function mapWithConcurrency<T, R>(items: readonly T[], limit: number, fn: 
 const referralDiscountSchema = z.object({
   userId: z.string().uuid(),
   floorBps: z.number().int().min(0).max(9500),
+  override: z.boolean().optional(),
+  actorId: z.enum(["sales-referral", "sales-partner", "sales-admin"]).optional(),
 });
 
 const referralProfilesSchema = z.object({

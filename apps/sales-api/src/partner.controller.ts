@@ -29,6 +29,7 @@ import {
   listPartnerPayouts,
   listPartnerTeam,
   listReferredUsers,
+  resolveReferredUserByPrefix,
   getPartnerPeriodState,
   getPartnerPeriodHistory,
   updatePartnerSettings,
@@ -58,6 +59,8 @@ import {
   createInviteSchema,
   createPromoSchema,
   earningsQuerySchema,
+  referralUserRefSchema,
+  setReferralDiscountSchema,
   updateSettingsSchema,
   walletSchema,
 } from "./schemas.js";
@@ -142,6 +145,8 @@ export class PartnerController {
         return {
           // Commerce identities stay masked: only a short uuid prefix is exposed to partners.
           userMask: `user-${referral.commerceUserId.slice(0, 8)}…`,
+          // Тот же префикс как машинная ссылка для действий над рефералом (смена процента).
+          userRef: referral.commerceUserId.slice(0, 8),
           attributedAt: referral.attributedAt.toISOString(),
           spendNano: referral.spendNano.toString(),
           earnedNano: referral.earnedNano.toString(),
@@ -154,6 +159,50 @@ export class PartnerController {
           status: profile?.status ?? null,
         };
       }),
+    };
+  }
+
+  /**
+   * Смена партнёрской ставки ДЕЙСТВУЮЩЕМУ рефералу: перевод обычного b2c-реферала на партнёрскую
+   * ставку (floor>0) или изменение уже действующего процента; 0 — снять ставку (обратно на тиры).
+   * Требует права давать скидку; процент ≤ собственного потолка партнёра (админского лимита).
+   * Реферал остаётся b2c: его кабинет сам переключится на «партнёрскую ставку» (floor>0).
+   */
+  @Post("referrals/:userRef/discount")
+  @HttpCode(200)
+  async setReferralDiscount(
+    @CurrentAuth() current: RequestAuth,
+    @Param("userRef") userRef: string,
+    @Body() body: unknown,
+  ): Promise<unknown> {
+    if (!current.partner.referralDiscountEnabled) {
+      throw new ForbiddenException("referral discount is not enabled for this account");
+    }
+    const ref = referralUserRefSchema.safeParse(userRef);
+    if (!ref.success) throw new BadRequestException("invalid referral reference");
+    const parsed = setReferralDiscountSchema.safeParse(body ?? {});
+    if (!parsed.success) throw new BadRequestException("invalid discount");
+    // Потолок партнёра — как у discount-links: не выше выданного админом referral_discount_bps.
+    if (parsed.data.discountBps > current.partner.referralDiscountBps) {
+      throw new UnprocessableEntityException("discount exceeds your allowed maximum");
+    }
+    const commerceUserId = await resolveReferredUserByPrefix(this.database, current.partner.id, ref.data);
+    if (commerceUserId === null) throw new NotFoundException("referral not found");
+    if (commerceUserId === "ambiguous") throw new UnprocessableEntityException("ambiguous referral reference");
+    const result = await this.commerce.setReferralDiscount(commerceUserId, parsed.data.discountBps, "sales-partner");
+    // applied=false с multiplierBp=null — профиль не подходит (b2b / аккаунт ещё не активирован).
+    if (!result.applied && result.multiplierBp === null) {
+      throw new UnprocessableEntityException("this referral is not eligible for a partner rate (b2b or inactive account)");
+    }
+    await insertSalesAudit(this.database, {
+      actorType: "partner", actorId: current.partner.id,
+      action: "referral.discount_set", targetType: "referred_user", targetId: commerceUserId,
+      metadata: { discountBps: parsed.data.discountBps, multiplierBp: result.multiplierBp },
+    });
+    return {
+      userRef: ref.data,
+      discountBps: parsed.data.discountBps,
+      multiplierBp: result.multiplierBp,
     };
   }
 

@@ -194,6 +194,10 @@ export async function setReferralFloor(database: Database, input: {
   userId: string;
   floorBps: number; // 0..9500 (скидка ≤ 95%); 0 = снять пол
   actorId: string;
+  // Явная АБСОЛЮТНАЯ установка пола (партнёр/админ меняет процент действующему рефералу):
+  // обходит монотонный GREATEST и позволяет ПОНИЗИТЬ floor. Автоматические пути (signup,
+  // sales-фид, промо) обязаны оставлять override=false — иначе replay затрёт лучшую скидку.
+  override?: boolean;
 }): Promise<{ applied: boolean; multiplierBp: number | null }> {
   if (!Number.isInteger(input.floorBps) || input.floorBps < 0 || input.floorBps > 9500) {
     throw new RangeError("referral floor must be an integer between 0 and 9500 bps (≤95%)");
@@ -222,7 +226,9 @@ export async function setReferralFloor(database: Database, input: {
     // три независимых источника (промо, партнёрская ссылка, sales-фид) — при абсолютной записи они
     // затирали друг друга и клиент молча терял лучшую скидку. Теперь берём максимум (лучшее клиенту).
     // floorBps===0 — единственный путь ЯВНОГО сброса пола (напр. отзыв), обходит GREATEST.
-    const effectiveFloor = input.floorBps === 0 ? 0 : Math.max(row.referral_floor_bps, input.floorBps);
+    const effectiveFloor = input.override === true
+      ? input.floorBps
+      : input.floorBps === 0 ? 0 : Math.max(row.referral_floor_bps, input.floorBps);
     const multiplierBp = effectiveMultiplierBp(tierMult, effectiveFloor);
     if (row.referral_floor_bps === effectiveFloor && row.multiplier_bp === multiplierBp) {
       await client.query("ROLLBACK");
@@ -247,7 +253,7 @@ export async function setReferralFloor(database: Database, input: {
     await client.query(`
       INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
       VALUES ('system', $1, 'pricing.referral_floor', 'user', $2, $3::jsonb)
-    `, [input.actorId, input.userId, JSON.stringify({ requestedFloorBps: input.floorBps, effectiveFloorBps: effectiveFloor, multiplierBp })]);
+    `, [input.actorId, input.userId, JSON.stringify({ requestedFloorBps: input.floorBps, effectiveFloorBps: effectiveFloor, multiplierBp, override: input.override === true })]);
     await client.query("COMMIT");
     return { applied: true, multiplierBp };
   } catch (error) {

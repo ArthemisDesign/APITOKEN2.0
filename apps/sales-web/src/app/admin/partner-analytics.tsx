@@ -336,6 +336,31 @@ function PartnerDrawer({
     void patch({ referralDiscountEnabled: true, referralDiscountBps: Math.round(pct * 100) });
   }
 
+  // Партнёрская ставка конкретному рефералу: перевод b2c-реферала на фикс-процент или смена/снятие (0).
+  function editReferralRate(u: { userMask: string; userRef?: string; referralFloorBps?: number | null }) {
+    if (!u.userRef) return;
+    const cur = u.referralFloorBps ? String(u.referralFloorBps / 100) : "";
+    const v = window.prompt(`Partner rate for ${u.userMask}\nPercent 0–95 (price floor; 0 removes the rate, back to tiers).`, cur);
+    if (v == null) return;
+    const pct = Number(v.trim());
+    if (!Number.isFinite(pct) || pct < 0 || pct > 95) return setError("Rate must be 0–95.");
+    void (async () => {
+      setBusy(true);
+      setError(null);
+      try {
+        await api(`/v1/admin/partners/${row.id}/referrals/${u.userRef}/discount`, {
+          method: "POST", headers: adminHeaders(adminKey), body: { discountBps: Math.round(pct * 100) },
+        });
+        await reload();
+        onChanged();
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : "Rate update failed.");
+      } finally {
+        setBusy(false);
+      }
+    })();
+  }
+
   function editPromo() {
     const v = window.prompt(`Promo codes for ${label}\n"maxUSD/count" to enable (e.g. 20/10), or "off".`, p.promoEnabled ? "" : "off");
     if (v == null) return;
@@ -447,10 +472,20 @@ function PartnerDrawer({
               {detail.referrals.length === 0 ? <Muted>No referrals yet.</Muted> : (
                 <MiniTable rows={detail.referrals.slice(0, 50).map((u) => [
                   <span key="u" className="mono">{u.userMask}</span>,
+                  u.customerType === "b2b"
+                    ? <Badge key="t" tone="green">B2B</Badge>
+                    : u.customerType === "b2c"
+                      ? ((u.referralFloorBps ?? 0) > 0
+                        ? <Badge key="t" tone="yellow">partner {u.discountPercent != null ? `${u.discountPercent}%` : ""}</Badge>
+                        : <span key="t">B2C{u.discountPercent != null ? ` · ${u.discountPercent}%` : ""}</span>)
+                      : "—",
                   formatDate(u.attributedAt),
                   formatUsd(u.spendNano) + " spend",
                   formatUsd(u.earnedNano) + " earned",
-                ])} cols={["User", "Joined", "Spend", "Earned"]} />
+                  u.userRef && u.customerType === "b2c"
+                    ? <Button key="a" size="sm" variant="ghost" disabled={busy} onClick={() => editReferralRate(u)}>Set&nbsp;rate</Button>
+                    : "—",
+                ])} cols={["User", "Type", "Joined", "Spend", "Earned", ""]} />
               )}
             </Section>
 

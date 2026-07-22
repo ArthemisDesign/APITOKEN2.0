@@ -77,6 +77,15 @@ export const partnerSetDiscountSchema = z.object({
   referralDiscountBps: referralDiscountBpsSchema,
 });
 
+// Смена процента ДЕЙСТВУЮЩЕМУ рефералу (партнёр — в пределах своего потолка, админ — до 95%).
+// 0 = снять партнёрскую ставку (реферал возвращается на обычные b2c-тиры).
+export const setReferralDiscountSchema = z.object({
+  discountBps: referralDiscountBpsSchema,
+});
+
+// Маскированная ссылка на реферала: первые 8 hex его uuid (ровно то, что в userMask/userRef).
+export const referralUserRefSchema = z.string().regex(/^[0-9a-f]{8}$/);
+
 export const adminPayoutDecisionSchema = z.object({
   action: z.enum(["approve", "reject", "paid"]),
   note: z.string().trim().min(1).max(2000).optional(),

@@ -33,6 +33,8 @@ import {
   listPartnerPromoCodes,
   listPartnerTeam,
   listReferredUsers,
+  resolveReferredUserByPrefix,
+  insertSalesAudit,
   PARTNER_ANALYTICS_SORTS,
   setPromoPermissions,
   type PartnerAnalyticsSort,
@@ -50,6 +52,7 @@ import {
 } from "@claude-api/sales-db";
 import type { Environment } from "./config.js";
 import { AdminKeyGuard } from "./admin.guard.js";
+import { CommerceService } from "./commerce.service.js";
 import { generateCode } from "./auth.service.js";
 import { SALES_DATABASE } from "./infrastructure.module.js";
 import { normalizeTelegramUsername } from "./telegram.js";
@@ -61,6 +64,8 @@ import {
   adminPayoutDecisionSchema,
   adminPayoutsQuerySchema,
   adminPromoSchema,
+  referralUserRefSchema,
+  setReferralDiscountSchema,
 } from "./schemas.js";
 
 const uuidSchema = z.string().uuid();
@@ -92,6 +97,7 @@ export class AdminController {
   constructor(
     @Inject(SALES_DATABASE) private readonly database: SalesDatabase,
     private readonly config: ConfigService<Environment, true>,
+    private readonly commerce: CommerceService,
   ) {}
 
   @Get("overview")
@@ -175,14 +181,55 @@ export class AdminController {
       listPartnerPayouts(this.database, id),
       listReferredUsers(this.database, id),
     ]);
+    // Обогащаем рефералов типом/скидкой из commerce (best-effort: при недоступности — только локальные поля).
+    const profiles = await this.commerce.referralProfiles(referrals.map((r) => r.commerceUserId));
     // Commerce identities stay masked even for admins: expose only an 8-char prefix, never the full UUID.
-    const maskedReferrals = referrals.map((r) => ({
-      userMask: `user-${r.commerceUserId.slice(0, 8)}…`,
-      attributedAt: r.attributedAt,
-      spendNano: r.spendNano,
-      earnedNano: r.earnedNano,
-    }));
+    const maskedReferrals = referrals.map((r) => {
+      const profile = profiles.get(r.commerceUserId);
+      return {
+        userMask: `user-${r.commerceUserId.slice(0, 8)}…`,
+        userRef: r.commerceUserId.slice(0, 8),
+        attributedAt: r.attributedAt,
+        spendNano: r.spendNano,
+        earnedNano: r.earnedNano,
+        customerType: profile?.customerType ?? null,
+        discountPercent: profile?.discountPercent ?? null,
+        referralFloorBps: profile?.referralFloorBps ?? null,
+      };
+    });
     return jsonSafe({ partner, daily, team, discountLinks, promos, payouts, referrals: maskedReferrals });
+  }
+
+  /**
+   * Админ ставит/меняет партнёрскую ставку рефералу партнёра :id (или снимает её нулём).
+   * Абсолютная запись (override) — можно и понижать; лимит только глобальный (≤95%),
+   * потолок самого партнёра админа не ограничивает.
+   */
+  @Post("partners/:id/referrals/:userRef/discount")
+  @HttpCode(200)
+  async setReferralDiscount(
+    @Param("id") id: string,
+    @Param("userRef") userRef: string,
+    @Body() body: unknown,
+  ): Promise<unknown> {
+    if (!uuidSchema.safeParse(id).success) throw new BadRequestException("invalid partner id");
+    const ref = referralUserRefSchema.safeParse(userRef);
+    if (!ref.success) throw new BadRequestException("invalid referral reference");
+    const parsed = setReferralDiscountSchema.safeParse(body ?? {});
+    if (!parsed.success) throw new BadRequestException("invalid discount");
+    const commerceUserId = await resolveReferredUserByPrefix(this.database, id, ref.data);
+    if (commerceUserId === null) throw new NotFoundException("referral not found");
+    if (commerceUserId === "ambiguous") throw new UnprocessableEntityException("ambiguous referral reference");
+    const result = await this.commerce.setReferralDiscount(commerceUserId, parsed.data.discountBps, "sales-admin");
+    if (!result.applied && result.multiplierBp === null) {
+      throw new UnprocessableEntityException("this referral is not eligible for a partner rate (b2b or inactive account)");
+    }
+    await insertSalesAudit(this.database, {
+      actorType: "admin", actorId: "admin",
+      action: "referral.discount_set", targetType: "referred_user", targetId: commerceUserId,
+      metadata: { partnerId: id, discountBps: parsed.data.discountBps, multiplierBp: result.multiplierBp },
+    });
+    return { userRef: ref.data, discountBps: parsed.data.discountBps, multiplierBp: result.multiplierBp };
   }
 
   /** Лента действий партнёра (рефералы, депозиты, ссылки, промо, выплаты, входы, админ-действия). */

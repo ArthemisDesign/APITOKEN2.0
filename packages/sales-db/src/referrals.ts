@@ -35,6 +35,27 @@ export async function getReferredUserPartner(database: SalesDatabase, commerceUs
   return r.rows[0]?.partner_id ?? null;
 }
 
+/**
+ * Разрешает маскированную ссылку на реферала (первые 8 hex uuid — ровно то, что видит партнёр как
+ * `user-XXXXXXXX…`) в полный commerce_user_id, СТРОГО в границах рефералов одного партнёра.
+ * Полный uuid наружу не выходит: и партнёрка, и админка оперируют только префиксом.
+ * null — не найден; "ambiguous" — коллизия префикса (теоретическая), пусть вызывающий отдаст 409.
+ */
+export async function resolveReferredUserByPrefix(
+  database: SalesDatabase,
+  partnerId: string,
+  prefix: string,
+): Promise<string | null | "ambiguous"> {
+  if (!/^[0-9a-f]{8}$/.test(prefix)) return null;
+  const result = await database.pool.query<{ commerce_user_id: string }>(
+    "SELECT commerce_user_id FROM referred_users WHERE partner_id = $1 AND commerce_user_id::text LIKE $2 LIMIT 2",
+    [partnerId, `${prefix}%`],
+  );
+  if (result.rows.length === 0) return null;
+  if (result.rows.length > 1) return "ambiguous";
+  return result.rows[0]!.commerce_user_id;
+}
+
 export async function countReferredUsers(database: SalesDatabase, partnerId: string): Promise<number> {
   const result = await database.pool.query<{ count: string }>(
     "SELECT count(*)::text AS count FROM referred_users WHERE partner_id = $1",
