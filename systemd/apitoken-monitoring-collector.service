@@ -7,6 +7,10 @@ After=docker.service apitoken-postgres.service
 Type=oneshot
 User=root
 Group=root
+RuntimeDirectory=apitoken-monitoring-collector
+RuntimeDirectoryMode=0700
+Environment=HOME=/run/apitoken-monitoring-collector
+Environment=DOCKER_CONFIG=/run/apitoken-monitoring-collector
 ExecStart=/usr/local/lib/apitoken-watchdog/collect-monitoring-metrics.sh
 NoNewPrivileges=true
 PrivateTmp=true

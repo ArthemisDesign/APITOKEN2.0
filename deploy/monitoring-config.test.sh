@@ -11,6 +11,21 @@ role_sql=$(printf '%s\n' "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHER
 [[ $role_sql == 'DO $$ BEGIN '* ]]
 [[ $role_sql != *'\$\$'* ]]
 
+# ProtectHome hides /root. Give the Docker CLI an accessible, empty config directory so it can
+# still discover the system-wide Compose plugin used by the collector.
+collector_unit="$ROOT/systemd/apitoken-monitoring-collector.service"
+grep -Fxq 'RuntimeDirectory=apitoken-monitoring-collector' "$collector_unit"
+grep -Fxq 'Environment=HOME=/run/apitoken-monitoring-collector' "$collector_unit"
+grep -Fxq 'Environment=DOCKER_CONFIG=/run/apitoken-monitoring-collector' "$collector_unit"
+
+backup_unit="$ROOT/systemd/claude-api-backup.service"
+grep -Fxq 'RuntimeDirectory=apitoken-db-backup' "$backup_unit"
+grep -Fxq 'Environment=HOME=/run/apitoken-db-backup' "$backup_unit"
+grep -Fxq 'Environment=DOCKER_CONFIG=/run/apitoken-db-backup' "$backup_unit"
+grep -Fq -- '-f /usr/local/lib/apitoken-watchdog/controller/commerce-postgres.compose.yaml' \
+  "$ROOT/deploy/apitoken-db-dump"
+! grep -Fq '/opt/apitoken/repo' "$ROOT/deploy/apitoken-db-dump"
+
 for dashboard in "$ROOT"/observability/grafana/dashboards/*.json; do
   node -e 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))' "$dashboard"
 done
