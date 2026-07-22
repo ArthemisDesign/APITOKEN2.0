@@ -84,6 +84,10 @@ export async function listUsageEventsAfter(
       occurredAt: pricingUsageEvents.occurredAt,
     })
     .from(pricingUsageEvents)
+    // The sales database cannot distinguish a temporarily late attribution from a customer who
+    // was never referred. Filter at the commerce authority, where that distinction is durable, so
+    // ordinary customer spend cannot accumulate forever in pending_referral_events.
+    .innerJoin(referralAttributions, eq(referralAttributions.userId, pricingUsageEvents.userId))
     .where(and(gt(pricingUsageEvents.feedSeq, afterId), lt(pricingUsageEvents.createdAt, lagCutoff)))
     .orderBy(asc(pricingUsageEvents.feedSeq))
     .limit(limit);
@@ -105,6 +109,7 @@ export async function listPaidTopupsAfter(database: Database, afterId: bigint, l
       paidAt: payments.paidAt,
     })
     .from(payments)
+    .innerJoin(referralAttributions, eq(referralAttributions.userId, payments.userId))
     .where(and(
       eq(payments.status, "paid"),
       gt(paidMicros, sql`${afterId}`),
