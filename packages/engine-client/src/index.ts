@@ -239,6 +239,14 @@ export class EngineClient {
     return result.entries;
   }
 
+  async acknowledgeLedger(accountId: string, lastId: bigint): Promise<void> {
+    if (lastId < 0n) throw new RangeError("lastId must not be negative");
+    await this.request(`/admin/account/${encodeURIComponent(accountId)}/ledger/ack`, {
+      method: "POST",
+      body: JSON.stringify({ last_id: lastId.toString() }),
+    });
+  }
+
   async setAccountMultiplier(accountId: string, multiplierBp: number): Promise<void> {
     if (!Number.isInteger(multiplierBp) || multiplierBp < 0 || multiplierBp > 10_000) {
       throw new RangeError("multiplierBp must be an integer from 0 to 10000");

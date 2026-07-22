@@ -19,16 +19,17 @@ use clap::{Parser, Subcommand};
 use config::Settings;
 use forward::{detect_plan, AppState, Clients, PlanDetect};
 use pool::Pool;
-use std::net::SocketAddr;
 use std::future::IntoFuture;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 // Fail-closed bounded defaults until these knobs are represented by validated Settings fields.
 // AUDIT-TODO(C60/C89): add typed, range-checked fields in config.rs before restoring env overrides.
-const KEY_AUTH_TTL_MS: u64 = 1000;
-const MAX_CONCURRENT: usize = 1024;
+// A non-SSE response may require a 32 MiB usage document copy. Keep the aggregate buffer envelope
+// comfortably below systemd MemoryMax=2G, leaving room for request JSON, TLS and runtime overhead.
+const MAX_CONCURRENT: usize = 24;
 const LEDGER_RETENTION_DAYS: i64 = 30;
 const METRICS_RETENTION_DAYS: i64 = 90;
 
@@ -48,7 +49,8 @@ fn acquire_instance_lock(db_path: &str) -> Result<std::fs::File> {
     }
 
     let lock_path = format!("{db_path}.lock");
-    if let Some(parent) = std::path::Path::new(&lock_path).parent()
+    if let Some(parent) = std::path::Path::new(&lock_path)
+        .parent()
         .filter(|p| !p.as_os_str().is_empty())
     {
         std::fs::create_dir_all(parent)
@@ -58,6 +60,7 @@ fn acquire_instance_lock(db_path: &str) -> Result<std::fs::File> {
         .create(true)
         .read(true)
         .write(true)
+        .truncate(false)
         .open(&lock_path)
         .with_context(|| format!("открыть lock-файл {lock_path}"))?;
 
@@ -87,7 +90,7 @@ fn acquire_instance_lock(db_path: &str) -> Result<std::fs::File> {
 
     file.set_len(0)?;
     file.seek(SeekFrom::Start(0))?;
-    write!(file, "{}\n", std::process::id())?;
+    writeln!(file, "{}", std::process::id())?;
     Ok(file)
 }
 
@@ -97,7 +100,10 @@ fn acquire_instance_lock(_db_path: &str) -> Result<std::fs::File> {
 }
 
 #[derive(Parser)]
-#[command(name = "claude-api", about = "Пул Claude-подписок как прозрачный /v1 API")]
+#[command(
+    name = "claude-api",
+    about = "Пул Claude-подписок как прозрачный /v1 API"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -125,9 +131,11 @@ enum Cmd {
     /// Консистентный бэкап БД (VACUUM INTO) с ротацией. Ставится по systemd-таймеру.
     Backup {
         /// Каталог для снимков (деф: <cfg>/backups).
-        #[arg(long)] out: Option<String>,
+        #[arg(long)]
+        out: Option<String>,
         /// Сколько последних снимков хранить (деф 24).
-        #[arg(long, default_value = "24")] keep: usize,
+        #[arg(long, default_value = "24")]
+        keep: usize,
     },
     /// Engine PostgreSQL schema/import operations. These never print the database DSN.
     Db {
@@ -140,7 +148,8 @@ enum Cmd {
 enum DbOp {
     /// Apply engine schema then atomically import a fully drained SQLite authority.
     MigratePostgres {
-        #[arg(long)] sqlite: Option<String>,
+        #[arg(long)]
+        sqlite: Option<String>,
     },
     /// Apply/verify the PostgreSQL schema without importing data.
     VerifyPostgres,
@@ -150,49 +159,85 @@ enum DbOp {
 enum AccountOp {
     /// Создать аккаунт (баланс 0). Печатает id. --handle — внешняя идентичность (TG id/email).
     Create {
-        #[arg(long)] handle: Option<String>,
+        #[arg(long)]
+        handle: Option<String>,
         /// Наценка × 10000 (2000 = ×0.20). По умолчанию — из CLAUDE_API_MULT_BP.
-        #[arg(long)] mult_bp: Option<i64>,
+        #[arg(long)]
+        mult_bp: Option<i64>,
         /// Задать id явно (иначе сгенерируется acct_…).
-        #[arg(long)] id: Option<String>,
+        #[arg(long)]
+        id: Option<String>,
     },
     /// Пополнить баланс аккаунта на USD (можно отрицательное — коррекция). --ref — метка платежа.
-    #[command(allow_negative_numbers = true)] // чтобы `--usd -100` (коррекция) не парсился как флаг
-    Topup { id: String, #[arg(long)] usd: f64, #[arg(long)] r#ref: Option<String> },
+    #[command(allow_negative_numbers = true)]
+    // чтобы `--usd -100` (коррекция) не парсился как флаг
+    Topup {
+        id: String,
+        #[arg(long)]
+        usd: f64,
+        #[arg(long)]
+        r#ref: Option<String>,
+    },
     /// Показать баланс/расход аккаунта.
-    Balance { id: String },
+    Balance {
+        id: String,
+    },
     /// Список аккаунтов.
     List,
     /// Заблокировать/разблокировать аккаунт (все его ключи тоже перестают/начинают работать).
-    Disable { id: String },
-    Enable { id: String },
+    Disable {
+        id: String,
+    },
+    Enable {
+        id: String,
+    },
     /// Удалить аккаунт НАВСЕГДА вместе с ключами и историей (нужен --yes).
-    Rm { id: String, #[arg(long)] yes: bool },
+    Rm {
+        id: String,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
 enum KeyOp {
     /// Выпустить ключ ПОД аккаунт. Без --key-file генерится и печатается ОДИН раз.
     Issue {
-        #[arg(long)] account: String,
+        #[arg(long)]
+        account: String,
         /// Имя ключа (проект/член команды) — для атрибуции расхода.
-        #[arg(long)] label: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
         /// Прочитать заданный ключ из mode-0600 файла; без флага ключ генерируется.
-        #[arg(long)] key_file: Option<String>,
+        #[arg(long)]
+        key_file: Option<String>,
     },
     /// Показать ключ: аккаунт, метка, расход по ключу, баланс аккаунта.
-    Balance { #[arg(long)] key_file: String },
+    Balance {
+        #[arg(long)]
+        key_file: String,
+    },
     /// Список ключей (ключ маскируется).
     List,
     /// Заблокировать ключ.
-    Disable { #[arg(long)] key_file: String },
+    Disable {
+        #[arg(long)]
+        key_file: String,
+    },
     /// Разблокировать ключ.
-    Enable { #[arg(long)] key_file: String },
+    Enable {
+        #[arg(long)]
+        key_file: String,
+    },
     /// Удалить ключ НАВСЕГДА (баланс аккаунта не трогается).
-    Rm { #[arg(long)] key_file: String },
+    Rm {
+        #[arg(long)]
+        key_file: String,
+    },
     /// Удалить ВСЕ ключи (нужен --yes). Балансы аккаунтов НЕ трогаются.
     Clear {
-        #[arg(long)] yes: bool,
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -201,10 +246,13 @@ enum SubOp {
     /// Добавить подписку, читая секреты из mode-0600 файлов.
     AddFile {
         email: String,
-        #[arg(long)] token_file: String,
+        #[arg(long)]
+        token_file: String,
         /// Файл с proxy URL; не передавайте credentialed URL через argv.
-        #[arg(long)] proxy_file: Option<String>,
-        #[arg(long, default_value = "prod")] fleet: String,
+        #[arg(long)]
+        proxy_file: Option<String>,
+        #[arg(long, default_value = "prod")]
+        fleet: String,
     },
     /// Список подписок
     List,
@@ -212,13 +260,19 @@ enum SubOp {
     Rm { email: String },
     /// Удалить ВСЕ подписки (нужен --yes; --fleet ограничивает флотом)
     Clear {
-        #[arg(long)] yes: bool,
-        #[arg(long)] fleet: Option<String>,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        fleet: Option<String>,
     },
     /// Сменить статус (active | paused | disabled)
     Status { email: String, status: String },
     /// Сменить прокси, читая URL из mode-0600 файла.
-    Proxy { email: String, #[arg(long)] proxy_file: String },
+    Proxy {
+        email: String,
+        #[arg(long)]
+        proxy_file: String,
+    },
     /// Сменить флот (dev | prod | ...)
     Fleet { email: String, fleet: String },
     /// Задать тариф вручную (pro | max5 | max20)
@@ -251,7 +305,9 @@ fn authority_config(s: &Settings) -> registry::authority::AuthorityConfig {
 
 fn db_cmd(op: DbOp) -> Result<()> {
     let s = Settings::from_env();
-    let url = s.database_url.as_deref()
+    let url = s
+        .database_url
+        .as_deref()
         .context("CLAUDE_API_DATABASE_URL is required for PostgreSQL database commands")?;
     let mut pg = registry::pg::PgStore::connect(url)?;
     pg.migrate()?;
@@ -288,12 +344,17 @@ fn backup_cmd(out: Option<String>, keep: usize) -> Result<()> {
         bail!("PostgreSQL authority requires pgBackRest/WAL-G or managed PITR; SQLite VACUUM backup is disabled");
     }
     let dir = out.unwrap_or_else(|| {
-        let p = std::path::Path::new(&s.db_path).parent()
-            .map(|d| d.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
+        let p = std::path::Path::new(&s.db_path)
+            .parent()
+            .map(|d| d.to_string_lossy().into_owned())
+            .unwrap_or_else(|| ".".into());
         format!("{p}/backups")
     });
     std::fs::create_dir_all(&dir)?;
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
     let path = format!("{dir}/subscriptions.db.bak-{ts}");
     let conn = registry::open(&s.db_path)?;
     registry::backup_to(&conn, &path)?;
@@ -302,7 +363,11 @@ fn backup_cmd(out: Option<String>, keep: usize) -> Result<()> {
     // ротация: оставляем `keep` самых свежих snapshot'ов, старые удаляем
     let mut snaps: Vec<_> = std::fs::read_dir(&dir)?
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_name().to_string_lossy().starts_with("subscriptions.db.bak-"))
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("subscriptions.db.bak-")
+        })
         .map(|e| e.path())
         .collect();
     snaps.sort(); // имена с epoch-ts → лексикографически = хронологически
@@ -330,12 +395,22 @@ fn account_cmd(op: AccountOp) -> Result<()> {
     let config = authority_config(&s);
     let mut db = config.connect()?;
     match op {
-        AccountOp::Create { handle, mult_bp, id } => {
-            let id = match id { Some(i) => i, None => gen_account_id()? };
+        AccountOp::Create {
+            handle,
+            mult_bp,
+            id,
+        } => {
+            let id = match id {
+                Some(i) => i,
+                None => gen_account_id()?,
+            };
             let mult = mult_bp.unwrap_or(s.mult_bp);
             db.account_create(&id, handle.as_deref(), mult)?;
-            println!("✓ аккаунт создан: {id}  ·  наценка ×{}  ·  handle={}",
-                mult as f64 / 10000.0, handle.as_deref().unwrap_or("—"));
+            println!(
+                "✓ аккаунт создан: {id}  ·  наценка ×{}  ·  handle={}",
+                mult as f64 / 10000.0,
+                handle.as_deref().unwrap_or("—")
+            );
             println!("  выпустить ключ:  claude-api key issue --account {id}");
         }
         AccountOp::Topup { id, usd, r#ref } => {
@@ -345,25 +420,48 @@ fn account_cmd(op: AccountOp) -> Result<()> {
             }
         }
         AccountOp::Balance { id } => match db.account_get(&id)? {
-            Some(a) => println!("{}\tбаланс={}\tпотрачено={}\tрезерв={}\tнаценка=×{}\tstatus={}\thandle={}",
-                a.id, usd_str(a.balance_nano), usd_str(a.spent_nano), usd_str(a.reserved_nano),
-                a.mult_bp as f64 / 10000.0, a.status, a.handle.as_deref().unwrap_or("—")),
+            Some(a) => println!(
+                "{}\tбаланс={}\tпотрачено={}\tрезерв={}\tнаценка=×{}\tstatus={}\thandle={}",
+                a.id,
+                usd_str(a.balance_nano),
+                usd_str(a.spent_nano),
+                usd_str(a.reserved_nano),
+                a.mult_bp as f64 / 10000.0,
+                a.status,
+                a.handle.as_deref().unwrap_or("—")
+            ),
             None => println!("аккаунт не найден: {id}"),
         },
         AccountOp::List => {
             let rows = db.account_list()?;
-            if rows.is_empty() { println!("(аккаунтов нет) · БД: {}", config.label()); return Ok(()); }
+            if rows.is_empty() {
+                println!("(аккаунтов нет) · БД: {}", config.label());
+                return Ok(());
+            }
             for a in rows {
-                println!("{}\tбаланс={}\tпотрачено={}\tнаценка=×{}\tstatus={}\thandle={}",
-                    a.id, usd_str(a.balance_nano), usd_str(a.spent_nano),
-                    a.mult_bp as f64 / 10000.0, a.status, a.handle.as_deref().unwrap_or("—"));
+                println!(
+                    "{}\tбаланс={}\tпотрачено={}\tнаценка=×{}\tstatus={}\thandle={}",
+                    a.id,
+                    usd_str(a.balance_nano),
+                    usd_str(a.spent_nano),
+                    a.mult_bp as f64 / 10000.0,
+                    a.status,
+                    a.handle.as_deref().unwrap_or("—")
+                );
             }
         }
-        AccountOp::Disable { id } => println!("обновлено: {}", db.account_set_status(&id, "disabled")?),
-        AccountOp::Enable { id } => println!("обновлено: {}", db.account_set_status(&id, "active")?),
+        AccountOp::Disable { id } => {
+            println!("обновлено: {}", db.account_set_status(&id, "disabled")?)
+        }
+        AccountOp::Enable { id } => {
+            println!("обновлено: {}", db.account_set_status(&id, "active")?)
+        }
         AccountOp::Rm { id, yes } => {
-            if !yes { println!("нужен --yes: удалит аккаунт {id} с ключами и историей"); }
-            else { println!("удалено аккаунтов: {}", db.account_remove(&id)?); }
+            if !yes {
+                println!("нужен --yes: удалит аккаунт {id} с ключами и историей");
+            } else {
+                println!("деактивировано аккаунтов: {}", db.account_remove(&id)?);
+            }
         }
     }
     Ok(())
@@ -401,18 +499,22 @@ fn mask_proxy(proxy: &str) -> String {
         return "<proxy-redacted>".into();
     };
     if scheme.is_empty()
-        || !scheme.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+        || !scheme
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
     {
         return "<proxy-redacted>".into();
     }
 
-    let authority = rest.split(|c| matches!(c, '/' | '?' | '#')).next().unwrap_or_default();
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
     let host_port = authority.rsplit('@').next().unwrap_or_default();
     let port = if let Some(bracketed) = host_port.strip_prefix('[') {
-        bracketed.split_once("]:")
+        bracketed
+            .split_once("]:")
             .and_then(|(_, p)| p.parse::<u16>().ok())
     } else {
-        host_port.rsplit_once(':')
+        host_port
+            .rsplit_once(':')
             .and_then(|(host, p)| (!host.is_empty()).then_some(p))
             .and_then(|p| p.parse::<u16>().ok())
     };
@@ -428,9 +530,10 @@ fn mask_proxy(proxy: &str) -> String {
 fn read_secret_file(path: &str, kind: &str) -> Result<String> {
     use std::io::Read;
 
-    let mut file = std::fs::File::open(path)
-        .with_context(|| format!("открыть файл секрета {kind}"))?;
-    let metadata = file.metadata()
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("открыть файл секрета {kind}"))?;
+    let metadata = file
+        .metadata()
         .with_context(|| format!("прочитать metadata файла секрета {kind}"))?;
     if !metadata.is_file() {
         bail!("файл секрета {kind} не является обычным файлом");
@@ -449,7 +552,7 @@ fn read_secret_file(path: &str, kind: &str) -> Result<String> {
     let mut value = String::new();
     file.read_to_string(&mut value)
         .with_context(|| format!("прочитать файл секрета {kind}"))?;
-    let value = value.trim_end_matches(|c| c == '\r' || c == '\n').to_string();
+    let value = value.trim_end_matches(['\r', '\n']).to_string();
     if value.is_empty() {
         bail!("файл секрета {kind} пуст");
     }
@@ -475,10 +578,15 @@ fn key_cmd(op: KeyOp) -> Result<()> {
     let config = authority_config(&s);
     let mut db = config.connect()?;
     match op {
-        KeyOp::Issue { account, label, key_file } => {
+        KeyOp::Issue {
+            account,
+            label,
+            key_file,
+        } => {
             // проверяем, что аккаунт есть (иначе ключ никуда не резолвится)
             if db.account_get(&account)?.is_none() {
-                println!("аккаунт не найден: {account} (создай: claude-api account create)"); return Ok(());
+                println!("аккаунт не найден: {account} (создай: claude-api account create)");
+                return Ok(());
             }
             let generated = key_file.is_none();
             let key = match key_file {
@@ -491,30 +599,48 @@ fn key_cmd(op: KeyOp) -> Result<()> {
             } else {
                 println!("✓ ключ выпущен: {}", mask_key(&key));
             }
-            println!("  аккаунт: {account}  ·  метка: {}  (баланс общий с аккаунтом)",
-                label.as_deref().unwrap_or("—"));
+            println!(
+                "  аккаунт: {account}  ·  метка: {}  (баланс общий с аккаунтом)",
+                label.as_deref().unwrap_or("—")
+            );
         }
         KeyOp::Balance { key_file } => {
             let key = read_secret_file(&key_file, "customer API key")?;
             match db.key_get(&key)? {
                 Some(r) => {
                     let acct = r.account_id.clone().unwrap_or_default();
-                    let abal = db.account_get(&acct)?
-                        .map(|a| usd_str(a.balance_nano)).unwrap_or_else(|| "?".into());
-                    println!("{}\tаккаунт={}\tметка={}\tрасход_ключа={}\tбаланс_аккаунта={}\tstatus={}",
-                        mask_key(&r.key), acct, r.label.as_deref().unwrap_or("—"),
-                        usd_str(r.spent_nano), abal, r.status);
+                    let abal = db
+                        .account_get(&acct)?
+                        .map(|a| usd_str(a.balance_nano))
+                        .unwrap_or_else(|| "?".into());
+                    println!(
+                        "{}\tаккаунт={}\tметка={}\tрасход_ключа={}\tбаланс_аккаунта={}\tstatus={}",
+                        mask_key(&r.key),
+                        acct,
+                        r.label.as_deref().unwrap_or("—"),
+                        usd_str(r.spent_nano),
+                        abal,
+                        r.status
+                    );
                 }
                 None => println!("ключ не найден: {}", mask_key(&key)),
             }
         }
         KeyOp::List => {
             let rows = db.key_list()?;
-            if rows.is_empty() { println!("(ключей нет) · БД: {}", config.label()); return Ok(()); }
+            if rows.is_empty() {
+                println!("(ключей нет) · БД: {}", config.label());
+                return Ok(());
+            }
             for r in rows {
-                println!("{}\tаккаунт={}\tметка={}\tрасход_ключа={}\tstatus={}",
-                    mask_key(&r.key), r.account_id.as_deref().unwrap_or("—"),
-                    r.label.as_deref().unwrap_or("—"), usd_str(r.spent_nano), r.status);
+                println!(
+                    "{}\tаккаунт={}\tметка={}\tрасход_ключа={}\tstatus={}",
+                    mask_key(&r.key),
+                    r.account_id.as_deref().unwrap_or("—"),
+                    r.label.as_deref().unwrap_or("—"),
+                    usd_str(r.spent_nano),
+                    r.status
+                );
             }
         }
         KeyOp::Disable { key_file } => {
@@ -530,8 +656,11 @@ fn key_cmd(op: KeyOp) -> Result<()> {
             println!("удалено ключей: {}", db.key_remove(&key)?);
         }
         KeyOp::Clear { yes } => {
-            if !yes { println!("нужен --yes: удалит ВСЕ ключи (балансы клиентов пропадут)"); }
-            else { println!("удалено ключей: {}", db.key_clear()?); }
+            if !yes {
+                println!("нужен --yes: удалит ВСЕ ключи (балансы клиентов пропадут)");
+            } else {
+                println!("удалено ключей: {}", db.key_clear()?);
+            }
         }
     }
     Ok(())
@@ -540,7 +669,8 @@ fn key_cmd(op: KeyOp) -> Result<()> {
 /// Определить тариф подписки (профиль Anthropic через её прокси) и записать в реестр.
 /// Возвращает человекочитаемую строку итога.
 fn detect_and_store(s: &Settings, email: &str) -> String {
-    let (tok, proxy) = match authority_config(s).connect()
+    let (tok, proxy) = match authority_config(s)
+        .connect()
         .and_then(|mut db| db.get_creds(email))
     {
         Ok(Some(c)) => c,
@@ -553,19 +683,26 @@ fn detect_and_store(s: &Settings, email: &str) -> String {
         Err(_) => return format!("proxy {}: не удалось создать клиент", mask_proxy(&proxy)),
     };
     let ua = forward::persona_ua(&s.proxy, email);
-    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(e) => return format!("runtime: {e}"),
     };
     match runtime.block_on(detect_plan(&client, &s.proxy, &tok, &ua)) {
         PlanDetect::Plan(p) => {
-            match authority_config(s).connect().and_then(|mut db| db.set_plan(email, &p)) {
+            match authority_config(s)
+                .connect()
+                .and_then(|mut db| db.set_plan(email, &p))
+            {
                 Ok(_) => format!("тариф: {p}"),
                 Err(e) => format!("тариф определён ({p}), но запись в db не удалась: {e}"),
             }
         }
-        PlanDetect::NoScope =>
-            "тариф: noscope (у токена нет scope user:profile — задай вручную: sub set-plan)".into(),
+        PlanDetect::NoScope => {
+            "тариф: noscope (у токена нет scope user:profile — задай вручную: sub set-plan)".into()
+        }
         PlanDetect::Err(e) => format!("тариф: не определён ({e})"),
     }
 }
@@ -575,7 +712,12 @@ fn sub_cmd(op: SubOp) -> Result<()> {
     let config = authority_config(&s);
     let mut db = config.connect()?;
     match op {
-        SubOp::AddFile { email, token_file, proxy_file, fleet } => {
+        SubOp::AddFile {
+            email,
+            token_file,
+            proxy_file,
+            fleet,
+        } => {
             let token = read_secret_file(&token_file, "subscription token")?;
             let proxy = match proxy_file {
                 Some(path) => read_secret_file(&path, "proxy URL")?,
@@ -585,67 +727,125 @@ fn sub_cmd(op: SubOp) -> Result<()> {
             // Тариф НЕ детектим синтетическим запросом к Anthropic: у OAuth-токенов нет scope
             // user:profile → всё равно NoScope, а лишний запрос = фингерпринт. Ёмкость калибруется
             // из боевого трафика; при необходимости тариф задаётся вручную (`sub set-plan`).
-            println!("✓ добавлена {email} (fleet={fleet}, proxy={})", mask_proxy(&proxy));
+            println!(
+                "✓ добавлена {email} (fleet={fleet}, proxy={})",
+                mask_proxy(&proxy)
+            );
         }
         SubOp::List => {
             let rows = db.list_subs()?;
-            if rows.is_empty() { println!("(подписок нет) · БД: {}", config.label()); return Ok(()); }
+            if rows.is_empty() {
+                println!("(подписок нет) · БД: {}", config.label());
+                return Ok(());
+            }
             for r in rows {
-                println!("{}\tstatus={}\tfleet={}\tplan={}\ttoken={}\tproxy={}",
-                    r.email, r.status, r.fleet,
+                println!(
+                    "{}\tstatus={}\tfleet={}\tplan={}\ttoken={}\tproxy={}",
+                    r.email,
+                    r.status,
+                    r.fleet,
                     if r.plan.is_empty() { "—" } else { &r.plan },
                     if r.has_token { "есть" } else { "НЕТ" },
-                    mask_proxy(&r.proxy));
+                    mask_proxy(&r.proxy)
+                );
             }
         }
-        SubOp::Rm { email } => { println!("удалено строк: {}", db.remove_sub(&email)?); }
+        SubOp::Rm { email } => {
+            println!("деактивировано подписок: {}", db.remove_sub(&email)?);
+        }
         SubOp::Clear { yes, fleet } => {
             if !yes {
                 let n = db.list_subs()?.len();
-                println!("⚠️  удалит ВСЕ подписки{} — {n} шт. Повтори с --yes для подтверждения.",
-                    fleet.as_deref().map(|f| format!(" флота {f}")).unwrap_or_default());
+                println!(
+                    "⚠️  удалит ВСЕ подписки{} — {n} шт. Повтори с --yes для подтверждения.",
+                    fleet
+                        .as_deref()
+                        .map(|f| format!(" флота {f}"))
+                        .unwrap_or_default()
+                );
             } else {
                 let n = db.clear_subs(fleet.as_deref())?;
-                println!("✓ удалено подписок: {n}{}", fleet.as_deref().map(|f| format!(" (флот {f})")).unwrap_or_default());
+                println!(
+                    "✓ удалено подписок: {n}{}",
+                    fleet
+                        .as_deref()
+                        .map(|f| format!(" (флот {f})"))
+                        .unwrap_or_default()
+                );
             }
         }
-        SubOp::Status { email, status } => { println!("обновлено: {}", db.set_sub_status(&email, &status)?); }
+        SubOp::Status { email, status } => {
+            println!("обновлено: {}", db.set_sub_status(&email, &status)?);
+        }
         SubOp::Proxy { email, proxy_file } => {
             let proxy = read_secret_file(&proxy_file, "proxy URL")?;
             println!("обновлено: {}", db.set_proxy(&email, &proxy)?);
         }
-        SubOp::Fleet { email, fleet } => { println!("обновлено: {}", db.set_fleet(&email, &fleet)?); }
-        SubOp::SetPlan { email, plan } => { println!("обновлено: {} (plan={plan})", db.set_plan(&email, &plan)?); }
+        SubOp::Fleet { email, fleet } => {
+            println!("обновлено: {}", db.set_fleet(&email, &fleet)?);
+        }
+        SubOp::SetPlan { email, plan } => {
+            println!("обновлено: {} (plan={plan})", db.set_plan(&email, &plan)?);
+        }
         SubOp::DetectPlan { email } => {
             let targets: Vec<String> = match email {
                 Some(e) => vec![e],
-                None => db.list_subs()?.into_iter()
-                    .filter(|r| r.plan.is_empty()).map(|r| r.email).collect(),
+                None => db
+                    .list_subs()?
+                    .into_iter()
+                    .filter(|r| r.plan.is_empty())
+                    .map(|r| r.email)
+                    .collect(),
             };
-            if targets.is_empty() { println!("нечего определять (у всех тариф уже задан)"); }
+            if targets.is_empty() {
+                println!("нечего определять (у всех тариф уже задан)");
+            }
             drop(db);
-            for e in targets { println!("{e} → {}", detect_and_store(&s, &e)); }
+            for e in targets {
+                println!("{e} → {}", detect_and_store(&s, &e));
+            }
         }
         SubOp::Health => {
             let rows = db.load_sub_health(None)?;
             let mut dead = 0;
             for h in &rows {
-                if h.auth_state == "healthy" { continue; } // печатаем только небанальное
-                if h.auth_state == "dead" { dead += 1; }
+                if h.auth_state == "healthy" {
+                    continue;
+                } // печатаем только небанальное
+                if h.auth_state == "dead" {
+                    dead += 1;
+                }
                 let reason = match h.dead_reason.as_str() {
                     "permission_error" => "banned",
                     "authentication_error" => "re-auth",
                     "" => "—",
                     other => other,
                 };
-                println!("{}\t{}\tstreak={}\tlast_http={}\treason={}\tdead_since={}",
-                    h.email, h.auth_state.to_uppercase(), h.auth_fail_streak,
-                    if h.last_auth_http == 0 { "—".into() } else { h.last_auth_http.to_string() },
+                println!(
+                    "{}\t{}\tstreak={}\tlast_http={}\treason={}\tdead_since={}",
+                    h.email,
+                    h.auth_state.to_uppercase(),
+                    h.auth_fail_streak,
+                    if h.last_auth_http == 0 {
+                        "—".into()
+                    } else {
+                        h.last_auth_http.to_string()
+                    },
                     reason,
-                    if h.dead_since_ts == 0 { "—".into() } else { h.dead_since_ts.to_string() });
+                    if h.dead_since_ts == 0 {
+                        "—".into()
+                    } else {
+                        h.dead_since_ts.to_string()
+                    }
+                );
             }
-            println!("— итого: {} мёртвых, {} под наблюдением (из {} подписок) · БД: {}",
-                dead, rows.iter().filter(|h| h.auth_state == "suspect").count(), rows.len(), config.label());
+            println!(
+                "— итого: {} мёртвых, {} под наблюдением (из {} подписок) · БД: {}",
+                dead,
+                rows.iter().filter(|h| h.auth_state == "suspect").count(),
+                rows.len(),
+                config.label()
+            );
         }
     }
     Ok(())
@@ -675,46 +875,57 @@ async fn serve() -> Result<()> {
     let startup_fleet = s.fleet.clone();
     let startup_billing = s.billing;
     let startup_is_postgres = authority.is_postgres();
-    let (owner, subs, recovery, pool_rows, health_rows, sqlite_reconcile) = tokio::task::spawn_blocking(move || {
-        let mut db = startup_authority.connect()?;
-        db.migrate()?;
-        let owner = db.claim_instance(&startup_instance, 30)?;
-        let mut recovery = registry::pg::ReconcileReport::default();
-        if let Some(current) = owner.as_ref() {
-            let pg = db.postgres()?;
-            recovery = pg.reconcile_expired(10_000)?;
-            if !pg.heartbeat_instance(current, 30)? {
-                bail!("engine PostgreSQL owner epoch was fenced during startup");
+    let (owner, subs, recovery, pool_rows, health_rows, sqlite_reconcile) =
+        tokio::task::spawn_blocking(move || {
+            let mut db = startup_authority.connect()?;
+            db.migrate()?;
+            let owner = db.claim_instance(&startup_instance, 30)?;
+            let mut recovery = registry::pg::ReconcileReport::default();
+            if let Some(current) = owner.as_ref() {
+                let pg = db.postgres()?;
+                recovery = pg.reconcile_expired(10_000)?;
+                if !pg.heartbeat_instance(current, 30)? {
+                    bail!("engine PostgreSQL owner epoch was fenced during startup");
+                }
             }
-        }
-        let subs = db.load_active(startup_fleet.as_deref())?;
-        let pool_rows = db.load_pool_state()?;
-        // Durable auth-health: чтобы мёртвые (забаненные) подписки сразу были вне ротации и помечены
-        // на панели, а не «воскресали» здоровыми на каждый рестарт (старый эфемерный auth_dead-баг).
-        let health_rows = db.load_sub_health(startup_fleet.as_deref())?;
-        let sqlite_reconcile = if startup_billing && !startup_is_postgres {
-            Some(
-                db.sqlite_connection()
-                    .and_then(registry::reconcile_reservations)
-                    .map_err(|e| e.to_string()),
-            )
-        } else {
-            None
-        };
-        Ok::<_, anyhow::Error>((owner, subs, recovery, pool_rows, health_rows, sqlite_reconcile))
-    })
-    .await
-    .context("engine authority startup task failed")??;
+            let subs = db.load_active(startup_fleet.as_deref())?;
+            let pool_rows = db.load_pool_state()?;
+            // Durable auth-health: чтобы мёртвые (забаненные) подписки сразу были вне ротации и помечены
+            // на панели, а не «воскресали» здоровыми на каждый рестарт (старый эфемерный auth_dead-баг).
+            let health_rows = db.load_sub_health(startup_fleet.as_deref())?;
+            let sqlite_reconcile = if startup_billing && !startup_is_postgres {
+                Some(
+                    db.sqlite_connection()
+                        .and_then(registry::reconcile_reservations)
+                        .map_err(|e| e.to_string()),
+                )
+            } else {
+                None
+            };
+            Ok::<_, anyhow::Error>((
+                owner,
+                subs,
+                recovery,
+                pool_rows,
+                health_rows,
+                sqlite_reconcile,
+            ))
+        })
+        .await
+        .context("engine authority startup task failed")??;
     if recovery != registry::pg::ReconcileReport::default() {
         eprintln!(
             "PostgreSQL recovery: canceled={} full_hold={} outbox={}",
-            recovery.canceled_before_delivery, recovery.charged_after_delivery,
+            recovery.canceled_before_delivery,
+            recovery.charged_after_delivery,
             recovery.processed_outbox,
         );
     }
     if let Some(result) = sqlite_reconcile {
         match result {
-            Ok(n) if n > 0 => eprintln!("реконсиляция резервов: возвращено {n} ключам (краш-остатки)"),
+            Ok(n) if n > 0 => {
+                eprintln!("реконсиляция резервов: возвращено {n} ключам (краш-остатки)")
+            }
             Err(e) => eprintln!("⚠ reconcile резервов не удался: {e}"),
             _ => {}
         }
@@ -732,9 +943,7 @@ async fn serve() -> Result<()> {
         let billing_authority = authority.clone();
         let billing_owner = owner.clone();
         let actor = tokio::task::spawn_blocking(move || {
-            forward::AsyncBilling::start_authority(
-                billing_authority, billing_owner, readers, KEY_AUTH_TTL_MS,
-            )
+            forward::AsyncBilling::start_authority(billing_authority, billing_owner, readers, 0)
         })
         .await
         .context("billing authority startup task failed")??;
@@ -749,33 +958,57 @@ async fn serve() -> Result<()> {
     let accepting = Arc::new(AtomicBool::new(true));
     let authority_ready = Arc::new(AtomicBool::new(true));
     spawn_pre_drain_signal(accepting.clone());
+    let fleet_size = subs.len();
     let app = AppState {
         cfg: Arc::new(s.proxy.clone()),
         authority: Arc::new(authority.clone()),
         data_db_path: Arc::new(s.db_path.clone()),
-        pool: Arc::new(Pool::new(subs,
+        pool: Arc::new(Pool::new(
+            subs,
             pool::Reserve::new(s.reserve5h, s.reserve7d, s.reserve_jitter),
-            s.cap5h_usd, s.cap7d_usd)),
+            s.cap5h_usd,
+            s.cap7d_usd,
+        )),
         clients: Arc::new(Clients::new(&s.proxy)),
         billing,
         authority_ready: authority_ready.clone(),
-        breaker: Arc::new(forward::Breaker::new()),
+        breaker: Arc::new(forward::Breaker::new(fleet_size)),
         metrics: Arc::new(forward::Metrics::new()),
         key_limiter: Arc::new(forward::KeyLimiter::new()),
-        // Глобальный потолок одновременной обработки (анти-DoS). Деф 1024 — с запасом под легит-нагрузку
-        // (нагрузочный тест давал ~1000 req/с), но отсекает флуд от бесконтрольного роста.
+        // Глобальный потолок одновременной обработки (анти-DoS). Permit живёт до EOF/drop response;
+        // 24 максимальных 32 MiB JSON-ответа держат accumulator-envelope не выше 768 MiB.
         concurrency: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT)),
-        probe_poke: if s.proxy.poll { Some(poke.clone()) } else { None },
+        probe_poke: if s.proxy.poll {
+            Some(poke.clone())
+        } else {
+            None
+        },
     };
     let restored = pool_rows.len();
     app.pool.import_state(pool_rows);
-    if restored > 0 { eprintln!("восстановлено состояние пула: {restored} подписок"); }
-    let dead_restored = health_rows.iter().filter(|h| h.auth_state == "dead").count();
+    if restored > 0 {
+        eprintln!("восстановлено состояние пула: {restored} подписок");
+    }
+    let dead_restored = health_rows
+        .iter()
+        .filter(|h| h.auth_state == "dead")
+        .count();
     app.pool.import_health(health_rows);
-    if dead_restored > 0 { eprintln!("восстановлено auth-health: {dead_restored} мёртвых подписок (вне ротации)"); }
+    if dead_restored > 0 {
+        eprintln!("восстановлено auth-health: {dead_restored} мёртвых подписок (вне ротации)");
+    }
     if let Some(owner) = owner.clone() {
         tokio::spawn(poller::owner_heartbeat_loop(
-            authority.clone(), owner, authority_ready.clone(),
+            authority.clone(),
+            owner.clone(),
+            authority_ready.clone(),
+        ));
+    }
+    if app.billing.is_some() {
+        tokio::spawn(poller::billing_recovery_loop(
+            authority.clone(),
+            owner.clone(),
+            authority_ready.clone(),
         ));
     }
 
@@ -783,33 +1016,50 @@ async fn serve() -> Result<()> {
     let persist_poke = std::sync::Arc::new(tokio::sync::Notify::new());
     {
         let pk = persist_poke.clone();
-        app.pool.set_on_change(std::sync::Arc::new(move || pk.notify_one()));
+        app.pool
+            .set_on_change(std::sync::Arc::new(move || pk.notify_one()));
     }
     tokio::spawn(poller::persist_loop(
-        app.clone(), authority.clone(), owner.clone(), persist_poke,
+        app.clone(),
+        authority.clone(),
+        owner.clone(),
+        persist_poke,
     ));
 
-    tokio::spawn(poller::reload_loop(app.clone(), authority.clone(), s.fleet.clone(), poke.clone()));
+    tokio::spawn(poller::reload_loop(
+        app.clone(),
+        authority.clone(),
+        s.fleet.clone(),
+        poke.clone(),
+    ));
     // Фоновая обрезка ledger под масштаб; bounded default до переноса настройки в Settings.
     if s.billing {
         tokio::spawn(poller::ledger_prune_loop(
-            authority.clone(), LEDGER_RETENTION_DAYS,
+            authority.clone(),
+            LEDGER_RETENTION_DAYS,
         ));
     }
     if s.proxy.poll {
         tokio::spawn(poller::poll_loop(
-            app.clone(), authority.clone(), owner.clone(), poke.clone(),
+            app.clone(),
+            authority.clone(),
+            owner.clone(),
+            poke.clone(),
         ));
         eprintln!("поллер лимитов: событийный (liveness-only)");
     }
     // Коллектор истории метрик: снапшоты агрегата (спрос/предложение/headroom) в отдельную metrics.db.
     // Фундамент под capacity-planning и предсказательную модель; bounded retention 90д.
     {
-        let mdir = std::path::Path::new(&s.db_path).parent()
-            .map(|d| d.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
+        let mdir = std::path::Path::new(&s.db_path)
+            .parent()
+            .map(|d| d.to_string_lossy().into_owned())
+            .unwrap_or_else(|| ".".into());
         let metrics_db = format!("{mdir}/metrics.db");
         tokio::spawn(poller::metrics_loop(
-            app.clone(), metrics_db, METRICS_RETENTION_DAYS,
+            app.clone(),
+            metrics_db,
+            METRICS_RETENTION_DAYS,
         ));
         eprintln!(
             "коллектор истории: metrics.db (снапшот/60с, retention {METRICS_RETENTION_DAYS}д)"
@@ -817,16 +1067,26 @@ async fn serve() -> Result<()> {
     }
     if s.proxy.api_keys.is_empty() {
         if s.proxy.trust_loopback {
-            eprintln!("⚠️  CLAUDE_API_KEYS не заданы — админ ТОЛЬКО с loopback (bind {})", s.bind);
+            eprintln!(
+                "⚠️  CLAUDE_API_KEYS не заданы — админ ТОЛЬКО с loopback (bind {})",
+                s.bind
+            );
         } else {
-            eprintln!("🛑 CLAUDE_API_KEYS не заданы, а bind {} НЕ loopback — сервер ОТКЛОНЯЕТ все \
-                       запросы (за реверс-прокси peer виден как 127.0.0.1). Задай CLAUDE_API_KEYS.", s.bind);
+            eprintln!(
+                "🛑 CLAUDE_API_KEYS не заданы, а bind {} НЕ loopback — сервер ОТКЛОНЯЕТ все \
+                       запросы (за реверс-прокси peer виден как 127.0.0.1). Задай CLAUDE_API_KEYS.",
+                s.bind
+            );
         }
     }
 
     let listener = tokio::net::TcpListener::bind(&s.bind).await?;
-    eprintln!("claude-api слушает http://{}  (подписок: {n}, апстрим {}, реестр {})",
-        s.bind, s.proxy.upstream, authority.label());
+    eprintln!(
+        "claude-api слушает http://{}  (подписок: {n}, апстрим {}, реестр {})",
+        s.bind,
+        s.proxy.upstream,
+        authority.label()
+    );
     // Graceful shutdown: сначала снимаем readiness и даём балансировщику убрать инстанс, затем axum
     // дренирует in-flight стримы. Общий deadline включает propagation-delay, дренаж и billing FIFO-flush.
     let flush_app = app.clone();
@@ -881,9 +1141,17 @@ async fn serve() -> Result<()> {
     // обязательный FIFO-барьер: ограничение дренажа не должно превращаться в потерянную выручку.
     if let Some(b) = &flush_app.billing {
         let flushed_in_deadline = match shutdown_deadline {
-            Some(deadline) => tokio::time::timeout_at(deadline, b.flush()).await.is_ok(),
+            Some(deadline) => match tokio::time::timeout_at(deadline, b.flush()).await {
+                Ok(result) => {
+                    result.context("billing writer failed during graceful shutdown")?;
+                    true
+                }
+                Err(_) => false,
+            },
             None => {
-                b.flush().await;
+                b.flush()
+                    .await
+                    .context("billing writer failed during graceful shutdown")?;
                 true
             }
         };
@@ -892,14 +1160,14 @@ async fn serve() -> Result<()> {
                 "⚠ graceful shutdown: billing flush не уложился в deadline; продолжаю обязательный flush"
             );
             // Never convert a slow money-writer into lost revenue by exiting on a local timeout.
-            // AUDIT-TODO(C12): make AsyncBilling::flush return Result so a closed writer is distinguishable
-            // from an acknowledged FIFO barrier, then fail shutdown loudly on the former.
-            b.flush().await;
+            b.flush()
+                .await
+                .context("billing writer failed after shutdown deadline")?;
         }
     }
-    if let Err(e) = poller::persist_state_cas(
-        &flush_app, &flush_authority, flush_owner.as_ref(), 8,
-    ).await {
+    if let Err(e) =
+        poller::persist_state_cas(&flush_app, &flush_authority, flush_owner.as_ref(), 8).await
+    {
         eprintln!("⚠ финальный флаш не удался после CAS retry: {e}");
     }
     drop(instance_lock);
@@ -909,11 +1177,15 @@ async fn serve() -> Result<()> {
 
 /// Ждать сигнала завершения: SIGINT (Ctrl-C) или SIGTERM (деплой/systemd stop).
 async fn shutdown_signal() {
-    let ctrl_c = async { let _ = tokio::signal::ctrl_c().await; };
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
     #[cfg(unix)]
     let term = async {
         match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut s) => { s.recv().await; }
+            Ok(mut s) => {
+                s.recv().await;
+            }
             Err(_) => std::future::pending::<()>().await,
         }
     };
@@ -931,7 +1203,9 @@ fn spawn_pre_drain_signal(accepting: Arc<AtomicBool>) {
             Ok(mut signal) => {
                 if signal.recv().await.is_some() {
                     accepting.store(false, Ordering::Release);
-                    eprintln!("pre-drain: readiness снята по SIGUSR1; listener остаётся для in-flight");
+                    eprintln!(
+                        "pre-drain: readiness снята по SIGUSR1; listener остаётся для in-flight"
+                    );
                 }
             }
             Err(e) => eprintln!("⚠ SIGUSR1 pre-drain handler unavailable: {e}"),

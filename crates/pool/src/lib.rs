@@ -10,8 +10,7 @@
 use registry::Sub;
 use std::cmp::Ordering::Equal;
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// **Запас окна на подписку** (headroom): не роутим сверх `1 − base`, оставляя буфер, чтобы (а) не
@@ -26,23 +25,40 @@ pub struct Reserve {
 }
 
 impl Default for Reserve {
-    fn default() -> Self { Reserve { base5h: 0.10, base7d: 0.03, jitter: 0.02 } }
+    fn default() -> Self {
+        Reserve {
+            base5h: 0.10,
+            base7d: 0.03,
+            jitter: 0.02,
+        }
+    }
 }
 
 impl Reserve {
     /// Без запаса (для ослабления фильтра «не зависать»: под пиком дотягиваем до 100%, чем 429 клиенту).
-    pub const FULL: Reserve = Reserve { base5h: 0.0, base7d: 0.0, jitter: 0.0 };
-    pub fn new(base5h: f64, base7d: f64, jitter: f64) -> Self { Reserve { base5h, base7d, jitter } }
+    pub const FULL: Reserve = Reserve {
+        base5h: 0.0,
+        base7d: 0.0,
+        jitter: 0.0,
+    };
+    pub fn new(base5h: f64, base7d: f64, jitter: f64) -> Self {
+        Reserve {
+            base5h,
+            base7d,
+            jitter,
+        }
+    }
 
     /// Эффективные потолки (cap5h, cap7d) для подписки: `1 − (base ± jitter)`. Джиттер детерминирован
     /// по (email, окно) → стабилен во времени, но у каждой подписки свой порог и по 5h, и по 7d.
     fn caps(&self, email: &str) -> (f64, f64) {
         let jit = |salt: u8| -> f64 {
-            if self.jitter <= 0.0 { return 0.0; }
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            email.hash(&mut h);
-            salt.hash(&mut h);
-            let r = (h.finish() % 2001) as f64 / 1000.0 - 1.0; // равномерно в [-1, 1]
+            if self.jitter <= 0.0 {
+                return 0.0;
+            }
+            let mut material = email.as_bytes().to_vec();
+            material.push(salt);
+            let r = (stable_hash64(&material) % 2001) as f64 / 1000.0 - 1.0;
             r * self.jitter
         };
         let c5 = (1.0 - (self.base5h + jit(5))).clamp(0.5, 1.0);
@@ -52,7 +68,10 @@ impl Reserve {
 }
 
 pub fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 // ── Cache-first планировщик: сессии → персоны ────────────────────────────────
@@ -72,8 +91,12 @@ const REBIND_AFTER: i64 = 60;
 /// (больше параллели, но выше риск бан-сигнала — держать осознанно).
 static MAX_INFLIGHT_CELL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(6);
 #[inline]
-pub fn max_inflight() -> i64 { MAX_INFLIGHT_CELL.load(std::sync::atomic::Ordering::Relaxed) }
-pub fn set_max_inflight(v: i64) { MAX_INFLIGHT_CELL.store(v.max(1), std::sync::atomic::Ordering::Relaxed); }
+pub fn max_inflight() -> i64 {
+    MAX_INFLIGHT_CELL.load(std::sync::atomic::Ordering::Relaxed)
+}
+pub fn set_max_inflight(v: i64) {
+    MAX_INFLIGHT_CELL.store(v.max(1), std::sync::atomic::Ordering::Relaxed);
+}
 /// Потолок таблицы привязок (память). Переполнение → вытесняем самые старые по last_seen.
 const BINDINGS_CAP: usize = 100_000;
 
@@ -112,21 +135,28 @@ fn plan_scale(plan: &str) -> f64 {
         _ => 0.25,
     }
 }
-const CALIB_ALPHA: f64 = 0.3;        // вес нового наблюдения в EMA
-// Калибруем только на Δutil ≥ 3%: util в заголовках Anthropic ЛАГАЕТ (сразу после расхода
-// занижен) и квантован ~1% — на мелком Δutil cap раздувается. Больший порог = чище от лага.
+const CALIB_ALPHA: f64 = 0.3; // вес нового наблюдения в EMA
+                              // Калибруем только на Δutil ≥ 3%: util в заголовках Anthropic ЛАГАЕТ (сразу после расхода
+                              // занижен) и квантован ~1% — на мелком Δutil cap раздувается. Больший порог = чище от лага.
 const CALIB_MIN_DELTA: f64 = 0.03;
 
 /// Один шаг калибровки окна. Копим интервал (util_anchor→new_util) против расхода
 /// (spent_anchor→spent_total); когда Δutil перерос порог — ёмкость = ΔUSD/Δutil (EMA),
 /// сдвигаем якорь. Сброс окна (util упал ниже якоря) → пере-заякориваемся без калибровки.
-const CALIB_MAX_JUMP: f64 = 4.0;     // одно наблюдение не двигает cap больше чем в 4× (стабильность)
+const CALIB_MAX_JUMP: f64 = 4.0; // одно наблюдение не двигает cap больше чем в 4× (стабильность)
 /// Минимальная доля Δutil, которую должен объяснять НАШ расход, чтобы калибровать (иначе util
 /// раздут чужим использованием аккаунта → не портим cap, только ре-заякориваемся).
 const CALIB_MIN_SHARE: f64 = 0.5;
 
-fn calib_window(seeded: &mut bool, anchor: &mut f64, spent_anchor: &mut f64, cap: &mut f64,
-                new_util: f64, spent_total: f64, calib_n: &mut u32) {
+fn calib_window(
+    seeded: &mut bool,
+    anchor: &mut f64,
+    spent_anchor: &mut f64,
+    cap: &mut f64,
+    new_util: f64,
+    spent_total: f64,
+    calib_n: &mut u32,
+) {
     if !*seeded {
         // первое наблюдение: засеваем якорь реальным util (а не 0), чтобы первый интервал
         // калибровки мерил от фактического старта окна, а не от нуля.
@@ -155,8 +185,14 @@ fn calib_window(seeded: &mut bool, anchor: &mut f64, spent_anchor: &mut f64, cap
         if ours_explains {
             // ёмкость = ΔUSD/Δutil; клампим, чтобы шумный квантованный шаг не швырнул cap
             let mut obs = du / d;
-            if *cap > 0.0 { obs = obs.clamp(*cap / CALIB_MAX_JUMP, *cap * CALIB_MAX_JUMP); }
-            *cap = if *cap > 0.0 { *cap * (1.0 - CALIB_ALPHA) + obs * CALIB_ALPHA } else { obs };
+            if *cap > 0.0 {
+                obs = obs.clamp(*cap / CALIB_MAX_JUMP, *cap * CALIB_MAX_JUMP);
+            }
+            *cap = if *cap > 0.0 {
+                *cap * (1.0 - CALIB_ALPHA) + obs * CALIB_ALPHA
+            } else {
+                obs
+            };
             *calib_n += 1;
         }
     }
@@ -170,24 +206,25 @@ fn calib_window(seeded: &mut bool, anchor: &mut f64, spent_anchor: &mut f64, cap
 #[derive(Clone, Debug)]
 pub struct Cap {
     pub email: String,
-    pub calibrated: bool,   // была ли хоть одна реальная калибровка (иначе цифры — прайор)
-    pub util5h: f64,        // «живая» утилизация (заголовок + наш расход − rollover)
+    pub calibrated: bool, // была ли хоть одна реальная калибровка (иначе цифры — прайор)
+    pub util5h: f64,      // «живая» утилизация (заголовок + наш расход − rollover)
     pub util7d: f64,
-    pub reset5h_in: i64,    // секунд до сброса 5h окна (0 если неизвестно/прошло)
+    pub reset5h_in: i64, // секунд до сброса 5h окна (0 если неизвестно/прошло)
     pub reset7d_in: i64,
-    pub cap5h_usd: f64,     // калиброванная (или прайорная) ёмкость окна
+    pub cap5h_usd: f64, // калиброванная (или прайорная) ёмкость окна
     pub cap7d_usd: f64,
-    pub rem5h_usd: f64,     // остаток в текущем окне
+    pub rem5h_usd: f64, // остаток в текущем окне
     pub rem7d_usd: f64,
-    pub avail_1h_usd: f64,  // доступно на горизонте (учёт сбросов внутри горизонта)
+    pub avail_1h_usd: f64, // доступно на горизонте (учёт сбросов внутри горизонта)
     pub avail_5h_usd: f64,
     pub avail_1d_usd: f64,
     pub avail_7d_usd: f64,
     pub status: String,
     pub cooling: bool,
-    pub auth_dead: bool,    // токен отвергнут Anthropic (корроборированно) — «мёртвая» подписка (state==Dead)
+    pub routable: bool,
+    pub auth_dead: bool, // токен отвергнут Anthropic (корроборированно) — «мёртвая» подписка (state==Dead)
     pub auth_state: String, // durable: "healthy" | "suspect" | "dead"
-    pub dead_reason: String,// "authentication_error" (re-auth) | "permission_error" (banned) | ""
+    pub dead_reason: String, // "authentication_error" (re-auth) | "permission_error" (banned) | ""
     pub dead_since_ts: i64, // когда стала dead (0 = не dead)
 }
 
@@ -208,10 +245,18 @@ pub enum AuthState {
 
 impl AuthState {
     pub fn as_str(self) -> &'static str {
-        match self { AuthState::Healthy => "healthy", AuthState::Suspect => "suspect", AuthState::Dead => "dead" }
+        match self {
+            AuthState::Healthy => "healthy",
+            AuthState::Suspect => "suspect",
+            AuthState::Dead => "dead",
+        }
     }
-    pub fn from_str(s: &str) -> Self {
-        match s { "dead" => AuthState::Dead, "suspect" => AuthState::Suspect, _ => AuthState::Healthy }
+    pub fn from_persisted(s: &str) -> Self {
+        match s {
+            "dead" => AuthState::Dead,
+            "suspect" => AuthState::Suspect,
+            _ => AuthState::Healthy,
+        }
     }
 }
 
@@ -227,9 +272,18 @@ const DEAD_MIN_SECS: i64 = 300;
 /// Не секрет (одностороннний хэш), но сравнение fp детектит замену токена (авто-ревайв). Общий для
 /// поллера (`record_probe`) и `replace_subs`, чтобы метки совпадали.
 pub fn token_fp(token: &str) -> String {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    std::hash::Hash::hash(token, &mut h);
-    format!("{:016x}", std::hash::Hasher::finish(&h))
+    blake3::hash(token.as_bytes()).to_hex()[..16].to_string()
+}
+
+/// Stable hash for durable routing/persona jitter. Unlike `DefaultHasher`, its algorithm is an
+/// explicit cross-release contract, so a Rust upgrade cannot reshuffle the fleet after restart.
+pub fn stable_hash64(value: &[u8]) -> u64 {
+    let digest = blake3::hash(value);
+    u64::from_le_bytes(
+        digest.as_bytes()[..8]
+            .try_into()
+            .expect("fixed BLAKE3 digest"),
+    )
 }
 
 /// Чистая машина auth-health одного probe (детерминирована по `now` → тестируема без системных часов).
@@ -244,14 +298,24 @@ fn apply_probe(l: &mut Live, http: u16, token_fp: &str, now: i64) {
     match http {
         401 | 403 => {
             l.auth_fail_streak += 1;
-            if l.first_auth_fail_ts == 0 { l.first_auth_fail_ts = now; }
+            if l.first_auth_fail_ts == 0 {
+                l.first_auth_fail_ts = now;
+            }
             l.last_auth_fail_ts = now;
             l.last_auth_http = http as i64;
-            let reason = if http == 403 { "permission_error" } else { "authentication_error" };
-            if l.auth_state == AuthState::Healthy { l.auth_state = AuthState::Suspect; }
+            let reason = if http == 403 {
+                "permission_error"
+            } else {
+                "authentication_error"
+            };
+            if l.auth_state == AuthState::Healthy {
+                l.auth_state = AuthState::Suspect;
+            }
             if l.auth_fail_streak >= DEAD_STREAK && now - l.first_auth_fail_ts >= DEAD_MIN_SECS {
                 l.auth_state = AuthState::Dead;
-                if l.dead_since_ts == 0 { l.dead_since_ts = now; }
+                if l.dead_since_ts == 0 {
+                    l.dead_since_ts = now;
+                }
                 l.dead_reason = reason.to_string();
             }
         }
@@ -261,7 +325,8 @@ fn apply_probe(l: &mut Live, http: u16, token_fp: &str, now: i64) {
 }
 
 /// Сбросить auth-health `Live` в healthy (чистый probe/2xx/смена токена/ручной revive).
-fn reset_auth_healthy(l: &mut Live) {    l.auth_state = AuthState::Healthy;
+fn reset_auth_healthy(l: &mut Live) {
+    l.auth_state = AuthState::Healthy;
     l.auth_fail_streak = 0;
     l.first_auth_fail_ts = 0;
     l.last_auth_fail_ts = 0;
@@ -284,8 +349,6 @@ fn health_row(email: &str, l: &Live) -> registry::SubHealth {
         auth_token_fp: l.auth_token_fp.clone(),
     }
 }
-
-
 
 #[derive(Clone, Default, Debug)]
 pub struct Live {
@@ -322,6 +385,9 @@ pub struct Live {
     pub cap7d_usd: f64,
     /// Монотонный суммарный расход подписки (USD real-API) — не сбрасывается.
     pub spent_total_usd: f64,
+    /// Local spend not yet atomically added to the shared durable total. Keeping this as a delta
+    /// prevents concurrent engine instances from losing each other's spend through last-writer-wins.
+    pub unpersisted_spend_usd: f64,
     /// Значение `spent_total` на момент последнего заголовка — для «живой» утилизации
     /// (util_header + расход_с_тех_пор / cap).
     pub spent_at_header_usd: f64,
@@ -363,26 +429,40 @@ pub struct RouteStats {
 }
 
 fn is_cooling(g: &Inner, e: &str, now: i64) -> bool {
-    g.live.get(e).map(|l| l.cooling_until > now).unwrap_or(false)
+    g.live
+        .get(e)
+        .map(|l| l.cooling_until > now)
+        .unwrap_or(false)
 }
 /// Подписка корроборированно мертва (токен забанен/отвергнут) → НЕ шлём на неё живой трафик.
 /// Исключается из ротации/placement/пина полностью (гарантированный 401 клиенту хуже, чем
 /// прозрачный Overloaded). Ревайв — авто при смене токена / успешном resurrection-probe, либо вручную.
 fn is_dead(g: &Inner, e: &str) -> bool {
-    g.live.get(e).map(|l| l.auth_state == AuthState::Dead).unwrap_or(false)
+    g.live
+        .get(e)
+        .map(|l| l.auth_state == AuthState::Dead)
+        .unwrap_or(false)
 }
 /// Единая «живая» утилизация окна для capacity И маршрутизации: последний заголовок + наш расход
 /// после него / измеренная (либо тарифная прайорная) ёмкость. Прошедший reset обнуляет окно.
 fn live_util(g: &Inner, e: &str, scale: f64, w: u8, now: i64, p5: f64, p7: f64) -> f64 {
-    let Some(l) = g.live.get(e) else { return 0.0; };
+    let Some(l) = g.live.get(e) else {
+        return 0.0;
+    };
     let (util, reset, measured_cap, prior_cap) = if w == 7 {
         (l.util7d, l.reset7d, l.cap7d_usd, p7)
     } else {
         (l.util5h, l.reset5h, l.cap5h_usd, p5)
     };
-    if reset != 0 && now >= reset { return 0.0; }
+    if reset != 0 && now >= reset {
+        return 0.0;
+    }
 
-    let cap = if measured_cap > 0.0 { measured_cap } else { prior_cap * scale };
+    let cap = if measured_cap > 0.0 {
+        measured_cap
+    } else {
+        prior_cap * scale
+    };
     let since_header = (l.spent_total_usd - l.spent_at_header_usd).max(0.0);
     (util + since_header / cap).clamp(0.0, 1.0)
 }
@@ -392,9 +472,21 @@ fn inflight_of(g: &Inner, e: &str) -> i64 {
 
 /// Общий ротационный выбор. `allow_cooling_fallback=false` нужен для spill: внутреннее давление
 /// конкуррентности не должно превращаться в длинный Retry-After от чужой cooling-персоны.
-fn select_best_with_policy(g: &Inner, exclude: &HashSet<String>, now: i64, rsv: &Reserve,
-                           p5: f64, p7: f64, allow_cooling_fallback: bool) -> Option<Sub> {
-    let warn = |e: &str| g.live.get(e).map(|l| l.status.contains("warning")).unwrap_or(false);
+fn select_best_with_policy(
+    g: &Inner,
+    exclude: &HashSet<String>,
+    now: i64,
+    rsv: &Reserve,
+    p5: f64,
+    p7: f64,
+    allow_cooling_fallback: bool,
+) -> Option<Sub> {
+    let warn = |e: &str| {
+        g.live
+            .get(e)
+            .map(|l| l.status.contains("warning"))
+            .unwrap_or(false)
+    };
     let lru = |e: &str| g.live.get(e).map(|l| l.last_used).unwrap_or(0);
     let over_cap = |s: &Sub| -> bool {
         let (c5, c7) = rsv.caps(&s.email);
@@ -403,13 +495,16 @@ fn select_best_with_policy(g: &Inner, exclude: &HashSet<String>, now: i64, rsv: 
     };
     let over_envelope = |s: &Sub| inflight_of(g, &s.email) >= max_inflight();
 
-    g.subs.iter()
+    g.subs
+        .iter()
         .filter(|s| !exclude.contains(&s.email))
         .filter(|s| !is_dead(g, &s.email)) // мёртвые (забанены) — вне ротации
         .filter(|s| allow_cooling_fallback || !is_cooling(g, &s.email, now))
         .min_by(|a, b| {
             let cooling_order = is_cooling(g, &a.email, now).cmp(&is_cooling(g, &b.email, now));
-            if cooling_order != Equal { return cooling_order; }
+            if cooling_order != Equal {
+                return cooling_order;
+            }
 
             // Конверт — полноценный tier: пока есть кандидат ниже MAX_INFLIGHT, перегруженный не
             // выбирается. Если весь доступный tier уже переполнен, сначала берём минимальный inflight,
@@ -417,23 +512,55 @@ fn select_best_with_policy(g: &Inner, exclude: &HashSet<String>, now: i64, rsv: 
             let a_over = over_envelope(a);
             let b_over = over_envelope(b);
             let envelope_order = a_over.cmp(&b_over);
-            if envelope_order != Equal { return envelope_order; }
+            if envelope_order != Equal {
+                return envelope_order;
+            }
             if a_over && b_over {
-                return inflight_of(g, &a.email).cmp(&inflight_of(g, &b.email))
+                return inflight_of(g, &a.email)
+                    .cmp(&inflight_of(g, &b.email))
                     .then_with(|| over_cap(a).cmp(&over_cap(b)))
-                    .then_with(|| live_util(g, &a.email, plan_scale(&a.plan), 7, now, p5, p7)
-                        .partial_cmp(&live_util(g, &b.email, plan_scale(&b.plan), 7, now, p5, p7)).unwrap_or(Equal))
-                    .then_with(|| live_util(g, &a.email, plan_scale(&a.plan), 5, now, p5, p7)
-                        .partial_cmp(&live_util(g, &b.email, plan_scale(&b.plan), 5, now, p5, p7)).unwrap_or(Equal))
+                    .then_with(|| {
+                        live_util(g, &a.email, plan_scale(&a.plan), 7, now, p5, p7)
+                            .partial_cmp(&live_util(
+                                g,
+                                &b.email,
+                                plan_scale(&b.plan),
+                                7,
+                                now,
+                                p5,
+                                p7,
+                            ))
+                            .unwrap_or(Equal)
+                    })
+                    .then_with(|| {
+                        live_util(g, &a.email, plan_scale(&a.plan), 5, now, p5, p7)
+                            .partial_cmp(&live_util(
+                                g,
+                                &b.email,
+                                plan_scale(&b.plan),
+                                5,
+                                now,
+                                p5,
+                                p7,
+                            ))
+                            .unwrap_or(Equal)
+                    })
                     .then_with(|| warn(&a.email).cmp(&warn(&b.email)))
                     .then_with(|| lru(&a.email).cmp(&lru(&b.email)));
             }
 
-            over_cap(a).cmp(&over_cap(b))
-                .then_with(|| live_util(g, &a.email, plan_scale(&a.plan), 7, now, p5, p7)
-                    .partial_cmp(&live_util(g, &b.email, plan_scale(&b.plan), 7, now, p5, p7)).unwrap_or(Equal))
-                .then_with(|| live_util(g, &a.email, plan_scale(&a.plan), 5, now, p5, p7)
-                    .partial_cmp(&live_util(g, &b.email, plan_scale(&b.plan), 5, now, p5, p7)).unwrap_or(Equal))
+            over_cap(a)
+                .cmp(&over_cap(b))
+                .then_with(|| {
+                    live_util(g, &a.email, plan_scale(&a.plan), 7, now, p5, p7)
+                        .partial_cmp(&live_util(g, &b.email, plan_scale(&b.plan), 7, now, p5, p7))
+                        .unwrap_or(Equal)
+                })
+                .then_with(|| {
+                    live_util(g, &a.email, plan_scale(&a.plan), 5, now, p5, p7)
+                        .partial_cmp(&live_util(g, &b.email, plan_scale(&b.plan), 5, now, p5, p7))
+                        .unwrap_or(Equal)
+                })
                 .then_with(|| warn(&a.email).cmp(&warn(&b.email)))
                 .then_with(|| inflight_of(g, &a.email).cmp(&inflight_of(g, &b.email)))
                 .then_with(|| lru(&a.email).cmp(&lru(&b.email)))
@@ -442,14 +569,26 @@ fn select_best_with_policy(g: &Inner, exclude: &HashSet<String>, now: i64, rsv: 
 }
 
 /// Ротационный выбор (ретраи/обычный трафик): не зависает, cooling ослабляется только если иных нет.
-fn select_best(g: &Inner, exclude: &HashSet<String>, now: i64, rsv: &Reserve,
-               p5: f64, p7: f64) -> Option<Sub> {
+fn select_best(
+    g: &Inner,
+    exclude: &HashSet<String>,
+    now: i64,
+    rsv: &Reserve,
+    p5: f64,
+    p7: f64,
+) -> Option<Sub> {
     select_best_with_policy(g, exclude, now, rsv, p5, p7, true)
 }
 
 /// Строгий spill: cooling-кандидаты не возвращаем даже как fallback.
-fn select_best_non_cooling(g: &Inner, exclude: &HashSet<String>, now: i64, rsv: &Reserve,
-                           p5: f64, p7: f64) -> Option<Sub> {
+fn select_best_non_cooling(
+    g: &Inner,
+    exclude: &HashSet<String>,
+    now: i64,
+    rsv: &Reserve,
+    p5: f64,
+    p7: f64,
+) -> Option<Sub> {
     select_best_with_policy(g, exclude, now, rsv, p5, p7, false)
 }
 
@@ -462,8 +601,14 @@ fn place_best(g: &Inner, now: i64, rsv: &Reserve, p5: f64, p7: f64) -> Option<Su
     let free = |s: &Sub| -> f64 {
         let l = g.live.get(&s.email);
         let sc = plan_scale(&s.plan); // прайор по тарифу (Pro/Max5 меньше Max20) до калибровки
-        let cap5 = l.map(|l| l.cap5h_usd).filter(|c| *c > 0.0).unwrap_or(p5 * sc);
-        let cap7 = l.map(|l| l.cap7d_usd).filter(|c| *c > 0.0).unwrap_or(p7 * sc);
+        let cap5 = l
+            .map(|l| l.cap5h_usd)
+            .filter(|c| *c > 0.0)
+            .unwrap_or(p5 * sc);
+        let cap7 = l
+            .map(|l| l.cap7d_usd)
+            .filter(|c| *c > 0.0)
+            .unwrap_or(p7 * sc);
         (cap5 * (1.0 - live_util(g, &s.email, plan_scale(&s.plan), 5, now, p5, p7)))
             .min(cap7 * (1.0 - live_util(g, &s.email, plan_scale(&s.plan), 7, now, p5, p7)))
     };
@@ -476,10 +621,13 @@ fn place_best(g: &Inner, now: i64, rsv: &Reserve, p5: f64, p7: f64) -> Option<Su
             && live_util(g, &s.email, plan_scale(&s.plan), 5, now, p5, p7) < c5
             && inflight_of(g, &s.email) < max_inflight()
     });
-    let best = eligible.max_by(|a, b|
-        free(a).partial_cmp(&free(b)).unwrap_or(Equal)                    // больше свободной ёмкости
-            .then(inflight_of(g, &b.email).cmp(&inflight_of(g, &a.email)))// при равенстве — меньше in-flight (веер)
-            .then(lru(&b.email).cmp(&lru(&a.email))));                    // затем давнее использование
+    let best = eligible.max_by(|a, b| {
+        free(a)
+            .partial_cmp(&free(b))
+            .unwrap_or(Equal) // больше свободной ёмкости
+            .then(inflight_of(g, &b.email).cmp(&inflight_of(g, &a.email))) // при равенстве — меньше in-flight (веер)
+            .then(lru(&b.email).cmp(&lru(&a.email)))
+    }); // затем давнее использование
     match best {
         Some(s) => Some(s.clone()),
         None => select_best(g, &HashSet::new(), now, &Reserve::FULL, p5, p7), // все за конвертом → не зависаем
@@ -487,7 +635,9 @@ fn place_best(g: &Inner, now: i64, rsv: &Reserve, p5: f64, p7: f64) -> Option<Su
 }
 
 pub struct Pool {
-    inner: Mutex<Inner>,
+    /// Read-heavy snapshots/capacity queries run concurrently. Routing and state transitions use
+    /// the write side so choice plus slot reservation remains atomic.
+    inner: RwLock<Inner>,
     reserve: Reserve, // per-подписочный запас окон (headroom + антифингерпринт-джиттер)
     prior5h_usd: f64, // прайор ёмкости 5h окна до калибровки (env, деф под Max 20x)
     prior7d_usd: f64, // прайор ёмкости 7d окна
@@ -503,13 +653,25 @@ impl Pool {
     /// измеренной ёмкости.
     pub fn new(subs: Vec<Sub>, reserve: Reserve, prior5h: f64, prior7d: f64) -> Self {
         Pool {
-            inner: Mutex::new(Inner {
-                subs, live: HashMap::new(), bindings: HashMap::new(),
-                route_pin: 0, route_spill: 0, route_place: 0,
+            inner: RwLock::new(Inner {
+                subs,
+                live: HashMap::new(),
+                bindings: HashMap::new(),
+                route_pin: 0,
+                route_spill: 0,
+                route_place: 0,
             }),
             reserve,
-            prior5h_usd: if prior5h > 0.0 { prior5h } else { PRIOR_CAP5H_USD },
-            prior7d_usd: if prior7d > 0.0 { prior7d } else { PRIOR_CAP7D_USD },
+            prior5h_usd: if prior5h > 0.0 {
+                prior5h
+            } else {
+                PRIOR_CAP5H_USD
+            },
+            prior7d_usd: if prior7d > 0.0 {
+                prior7d
+            } else {
+                PRIOR_CAP7D_USD
+            },
             on_change: Mutex::new(None),
         }
     }
@@ -519,7 +681,14 @@ impl Pool {
         *self.on_change.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
     }
     fn signal_change(&self) {
-        if let Some(f) = self.on_change.lock().unwrap_or_else(|e| e.into_inner()).as_ref() { f(); }
+        if let Some(f) = self
+            .on_change
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            f();
+        }
     }
 
     /// Заменить список подписок (из БД), сохранив волатильное состояние существующих.
@@ -529,10 +698,11 @@ impl Pool {
     /// `import_state` работает только на старте, reload `pool_state` не перечитывает — поэтому
     /// удерживаем cooling здесь, в памяти. Протухший cooling отсеется на следующем replace_subs.
     pub fn replace_subs(&self, subs: Vec<Sub>) {
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
         let keep: HashSet<String> = subs.iter().map(|s| s.email.clone()).collect();
         let now = now();
-        g.live.retain(|k, v| keep.contains(k) || v.cooling_until > now);
+        g.live
+            .retain(|k, v| keep.contains(k) || v.cooling_until > now);
         // Смена токена существующей подписки (authbot заменил) → вердикт о СТАРОМ токене недействителен:
         // авто-ревайв в ПАМЯТИ сразу (не ждём probe), чтобы забаненная-и-перевыпущенная вернулась в строй.
         // Durable-строку в БД сбрасывает add/add_file (ON CONFLICT), здесь чиним in-memory зеркало.
@@ -548,22 +718,44 @@ impl Pool {
         g.subs = subs;
     }
 
-    pub fn len(&self) -> usize { self.inner.lock().unwrap_or_else(|e| e.into_inner()).subs.len() }
-    pub fn is_empty(&self) -> bool { self.inner.lock().unwrap_or_else(|e| e.into_inner()).subs.is_empty() }
+    pub fn len(&self) -> usize {
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .subs
+            .len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .subs
+            .is_empty()
+    }
 
     /// Подписка сейчас в cooling? Быстрый отбой в forward: если `route`/`pick` вернули cooling-персону
     /// (значит НЕТ ни одной не-cooling), нельзя слать на неё живой трафик — будет свежий 429 (ban-signal).
     pub fn is_cooling(&self, email: &str) -> bool {
-        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let g = self.inner.read().unwrap_or_else(|e| e.into_inner());
         is_cooling(&g, email, now())
     }
 
     /// Наименее загруженная живая подписка не из `exclude` (для ретраев ротации/спилла).
     /// allow_full=true → до 100% (приоритетные ходы), иначе per-подписочный запас (`self.reserve`).
     pub fn pick(&self, exclude: &HashSet<String>, allow_full: bool) -> Option<Sub> {
-        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let rsv = if allow_full { Reserve::FULL } else { self.reserve };
-        select_best(&g, exclude, now(), &rsv, self.prior5h_usd, self.prior7d_usd)
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        let rsv = if allow_full {
+            Reserve::FULL
+        } else {
+            self.reserve
+        };
+        let selected = select_best(&g, exclude, now(), &rsv, self.prior5h_usd, self.prior7d_usd);
+        if let Some(sub) = &selected {
+            let live = g.live.entry(sub.email.clone()).or_default();
+            live.last_used = now();
+            live.inflight = live.inflight.saturating_add(1);
+        }
+        selected
     }
 
     /// **Cache-first роутинг сессии** (первая попытка запроса). Держит диалог на «домашней» персоне,
@@ -578,19 +770,27 @@ impl Pool {
     ///
     /// Ретраи ПОСЛЕ 429/5xx идут не сюда, а в [`pick`] (дом уже исключён через `tried`).
     pub fn route(&self, session: u64) -> Option<Sub> {
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
         let now = now();
         let rsv = self.reserve;
         let (p5, p7) = (self.prior5h_usd, self.prior7d_usd);
 
         // берём привязку как owned-значения → отпускаем borrow таблицы, дальше свободно мутируем g
-        if let Some((home, last_seen)) = g.bindings.get(&session).map(|b| (b.email.clone(), b.last_seen)) {
+        if let Some((home, last_seen)) = g
+            .bindings
+            .get(&session)
+            .map(|b| (b.email.clone(), b.last_seen))
+        {
             let fresh = now - last_seen < AFFINITY_TTL;
             let exists = g.subs.iter().any(|s| s.email == home);
             if fresh && exists {
                 let cooling = g.live.get(&home).map(|l| l.cooling_until).unwrap_or(0);
-                let home_scale = g.subs.iter().find(|s| s.email == home)
-                    .map(|s| plan_scale(&s.plan)).unwrap_or_else(|| plan_scale(""));
+                let home_scale = g
+                    .subs
+                    .iter()
+                    .find(|s| s.email == home)
+                    .map(|s| plan_scale(&s.plan))
+                    .unwrap_or_else(|| plan_scale(""));
                 let (e5, e7) = (
                     live_util(&g, &home, home_scale, 5, now, p5, p7),
                     live_util(&g, &home, home_scale, 7, now, p5, p7),
@@ -601,19 +801,33 @@ impl Pool {
                 let home_dead = is_dead(&g, &home); // забаненный дом → пере-привязка (не пиним 401)
                 if !deep_cooling && !over_cap && !home_dead {
                     // дом всё ещё «наш» — кэш тёплый; либо пин, либо кратковременный спилл
-                    if let Some(b) = g.bindings.get_mut(&session) { b.last_seen = now; }
+                    if let Some(b) = g.bindings.get_mut(&session) {
+                        b.last_seen = now;
+                    }
                     let busy = cooling > now || inflight_of(&g, &home) >= max_inflight();
                     if !busy {
                         g.route_pin += 1;
-                        return g.subs.iter().find(|s| s.email == home).cloned(); // ПИН (cache-hit)
+                        let selected = g.subs.iter().find(|s| s.email == home).cloned();
+                        if let Some(sub) = &selected {
+                            let live = g.live.entry(sub.email.clone()).or_default();
+                            live.last_used = now;
+                            live.inflight = live.inflight.saturating_add(1);
+                        }
+                        return selected;
                     }
                     // временно занят → спилл ЭТОГО запроса, дом за сессией сохраняем. Cooling-
                     // альтернативы здесь запрещены: если здоровой замены нет, ослабляем конверт на
                     // собственном доме, а не превращаем busy в ложный fleet-exhaustion Retry-After.
                     g.route_spill += 1;
                     let ex: HashSet<String> = std::iter::once(home.clone()).collect();
-                    return select_best_non_cooling(&g, &ex, now, &rsv, p5, p7)
+                    let selected = select_best_non_cooling(&g, &ex, now, &rsv, p5, p7)
                         .or_else(|| g.subs.iter().find(|s| s.email == home).cloned());
+                    if let Some(sub) = &selected {
+                        let live = g.live.entry(sub.email.clone()).or_default();
+                        live.last_used = now;
+                        live.inflight = live.inflight.saturating_add(1);
+                    }
+                    return selected;
                 }
                 // deep_cooling || over_cap → пере-привязка ниже
             }
@@ -626,37 +840,55 @@ impl Pool {
             let cutoff = now - AFFINITY_TTL;
             g.bindings.retain(|_, b| b.last_seen >= cutoff); // сперва протухшие
             if g.bindings.len() >= BINDINGS_CAP {
-                // всё ещё полно (все свежие) — грубо срезаем половину самых старых
-                let mut v: Vec<(u64, i64)> = g.bindings.iter().map(|(k, b)| (*k, b.last_seen)).collect();
-                v.sort_by_key(|(_, t)| *t);
-                for (k, _) in v.into_iter().take(BINDINGS_CAP / 2) { g.bindings.remove(&k); }
+                // Линейный selection вместо O(n log n) сортировки всех 100k bindings.
+                let mut v: Vec<(u64, i64)> =
+                    g.bindings.iter().map(|(k, b)| (*k, b.last_seen)).collect();
+                let midpoint = BINDINGS_CAP / 2;
+                v.select_nth_unstable_by_key(midpoint, |(_, last_seen)| *last_seen);
+                for (k, _) in v.into_iter().take(midpoint) {
+                    g.bindings.remove(&k);
+                }
             }
         }
-        g.bindings.insert(session, Binding { email: chosen.email.clone(), last_seen: now });
+        g.bindings.insert(
+            session,
+            Binding {
+                email: chosen.email.clone(),
+                last_seen: now,
+            },
+        );
+        let live = g.live.entry(chosen.email.clone()).or_default();
+        live.last_used = now;
+        live.inflight = live.inflight.saturating_add(1);
         Some(chosen)
     }
 
-    /// Взяли подписку в работу (pick): отметить время и +1 в in-flight.
+    /// Manual slot acquisition retained for maintenance/tests. Request routing uses atomic
+    /// `pick`/`route`, which choose and increment under this same lock.
     pub fn mark_used(&self, email: &str) {
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
         let l = g.live.entry(email.to_string()).or_default();
         l.last_used = now();
         if l.inflight >= max_inflight() {
             // Не скрываем реальную нагрузку клампом: попытка уже выбрана и forward сейчас её пошлёт.
             // Лог без email/токена делает окно гонки наблюдаемым до атомарной lease-миграции.
-            eprintln!("pool: in-flight envelope oversubscribed (current={})", l.inflight);
+            eprintln!(
+                "pool: in-flight envelope oversubscribed (current={})",
+                l.inflight
+            );
         }
         l.inflight = l.inflight.saturating_add(1);
-        // AUDIT-TODO(C43): route/pick должны атомарно резервировать слот и возвращать RAII lease.
     }
 
     /// Подписка здорова: снять истёкший cooling, обновить last_used. In-flight НЕ трогаем — слотом
     /// владеет вызывающий (в forward — `InflightGuard`/`end_stream`), чтобы не было двойного учёта.
     /// Годится и для успеха (стрим ещё течёт), и для клиентской 4xx (подписка ни при чём).
     pub fn mark_healthy(&self, email: &str) {
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
         let l = g.live.entry(email.to_string()).or_default();
-        if l.cooling_until <= now() { l.cooling_until = 0; }
+        if l.cooling_until <= now() {
+            l.cooling_until = 0;
+        }
         l.last_used = now();
         // Живой 2xx/4xx-трафик доказал, что токен рабочий → снять «мёртвость»/подозрение в ПАМЯТИ.
         // Durable-вердикт в БД скорректирует ближайший чистый probe (record_probe → persist healthy).
@@ -667,24 +899,49 @@ impl Pool {
     /// когда durable-поле изменилось (вызывающий персистит вердикт в PostgreSQL), иначе `None`.
     /// Один 401/403 НЕ убивает — нужна серия `DEAD_STREAK` за ≥`DEAD_MIN_SECS`. Только чистые probe
     /// поллера зовут это (не живой трафик — там вина могла быть в запросе клиента).
-    pub fn record_probe(&self, email: &str, http: u16, token_fp: &str) -> Option<registry::SubHealth> {
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+    pub fn record_probe(
+        &self,
+        email: &str,
+        http: u16,
+        token_fp: &str,
+    ) -> Option<registry::SubHealth> {
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
         let l = g.live.entry(email.to_string()).or_default();
         let before = health_row(email, l);
         apply_probe(l, http, token_fp, now());
         let after = health_row(email, l);
-        if before != after { Some(after) } else { None }
+        if before != after {
+            Some(after)
+        } else {
+            None
+        }
     }
 
     /// Оператор/старт: применить durable auth-health из БД к in-memory состоянию. Мёртвые сразу
     /// исключаются из ротации; suspect — под наблюдением поллера.
     pub fn import_health(&self, rows: Vec<registry::SubHealth>) {
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
         let known: HashSet<String> = g.subs.iter().map(|s| s.email.clone()).collect();
+        let current_fingerprints: HashMap<String, String> = g
+            .subs
+            .iter()
+            .map(|sub| (sub.email.clone(), token_fp(&sub.token)))
+            .collect();
         for r in rows {
-            if !known.contains(&r.email) { continue; }
+            if !known.contains(&r.email) {
+                continue;
+            }
             let l = g.live.entry(r.email.clone()).or_default();
-            l.auth_state = AuthState::from_str(&r.auth_state);
+            let current_fingerprint = current_fingerprints
+                .get(&r.email)
+                .cloned()
+                .unwrap_or_default();
+            if !r.auth_token_fp.is_empty() && r.auth_token_fp != current_fingerprint {
+                reset_auth_healthy(l);
+                l.auth_token_fp = current_fingerprint;
+                continue;
+            }
+            l.auth_state = AuthState::from_persisted(&r.auth_state);
             l.auth_fail_streak = r.auth_fail_streak.max(0);
             l.first_auth_fail_ts = r.first_auth_fail_ts;
             l.last_auth_fail_ts = r.last_auth_fail_ts;
@@ -698,8 +955,10 @@ impl Pool {
     /// Оператор: вручную вернуть подписку в строй (после ручной проверки/замены). Возвращает вердикт
     /// для персиста. In-memory сразу healthy → снова в ротации.
     pub fn revive(&self, email: &str) -> Option<registry::SubHealth> {
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if !g.subs.iter().any(|s| s.email == email) { return None; } // ревайвим только известную подписку
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        if !g.subs.iter().any(|s| s.email == email) {
+            return None;
+        } // ревайвим только известную подписку
         let l = g.live.entry(email.to_string()).or_default();
         reset_auth_healthy(l);
         Some(health_row(email, l))
@@ -707,20 +966,31 @@ impl Pool {
 
     /// Оператор: вручную пометить подписку мёртвой (например, знаем о бане вне 401-детекта).
     pub fn kill(&self, email: &str, reason: &str) -> Option<registry::SubHealth> {
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if !g.subs.iter().any(|s| s.email == email) { return None; } // килим только известную подписку
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        if !g.subs.iter().any(|s| s.email == email) {
+            return None;
+        } // килим только известную подписку
         let l = g.live.entry(email.to_string()).or_default();
         let now = now();
         l.auth_state = AuthState::Dead;
-        if l.dead_since_ts == 0 { l.dead_since_ts = now; }
-        l.dead_reason = if reason.is_empty() { "operator".to_string() } else { reason.to_string() };
+        if l.dead_since_ts == 0 {
+            l.dead_since_ts = now;
+        }
+        l.dead_reason = if reason.is_empty() {
+            "operator".to_string()
+        } else {
+            reason.to_string()
+        };
         Some(health_row(email, l))
     }
 
     /// Подписка мёртва (токен отвергнут корроборированно)? Быстрая проверка для forward.
     pub fn is_auth_dead(&self, email: &str) -> bool {
-        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        g.live.get(email).map(|l| l.auth_state == AuthState::Dead).unwrap_or(false)
+        let g = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        g.live
+            .get(email)
+            .map(|l| l.auth_state == AuthState::Dead)
+            .unwrap_or(false)
     }
 
     /// Пометить подписку для НЕМЕДЛЕННОГО liveness-probe поллером (сброс `polled_ts` в 0 → `next_probe_at`
@@ -730,13 +1000,15 @@ impl Pool {
     /// магнитом за ~1 цикл поллера, а НЕ за LIVENESS_INTERVAL — и БЕЗ cooling здесь (иначе crafted-запрос
     /// студил бы флот = DoS). In-flight/cooling не трогаем.
     pub fn request_probe(&self, email: &str) {
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
         if let Some(l) = g.live.get_mut(email) {
             // Дебаунс по ОТДЕЛЬНОМУ last_probe_req (не polled_ts — его пассивный сбор держит свежим на
             // каждом ответе, включая тот 401/403, что нас позвал → дебаунс по нему заблокировал бы и
             // легитимный probe). Форсим не чаще раза в ~15с: флуд crafted-401/403 не гонит probe-трафик.
             let now = now();
-            if l.last_probe_req >= now - 15 { return; }
+            if l.last_probe_req >= now - 15 {
+                return;
+            }
             l.last_probe_req = now;
             l.polled_ts = 0; // → next_probe_at сразу due, поллер проверит чистым probe
         }
@@ -745,7 +1017,7 @@ impl Pool {
     /// Стрим ответа завершён или оборван клиентом → освобождаем слот конкуррентности персоны.
     /// Парен с `mark_used`+`mark_healthy` (успех); вызывается из tee-метеринга forward. Клампится в 0.
     pub fn end_stream(&self, email: &str) {
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
         let l = g.live.entry(email.to_string()).or_default();
         l.inflight = (l.inflight - 1).max(0);
         l.last_used = now();
@@ -756,7 +1028,7 @@ impl Pool {
     /// отмену запроса. Сигналит durable-изменение (персист бана).
     pub fn mark_cooling(&self, email: &str, secs: i64) {
         {
-            let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
             let deadline = now().saturating_add(secs.max(1));
             let l = g.live.entry(email.to_string()).or_default();
             l.cooling_until = l.cooling_until.max(deadline);
@@ -767,7 +1039,7 @@ impl Pool {
     /// Студить БЕЗ трогания in-flight — для фонового поллера (он не делал `mark_used`).
     pub fn cool(&self, email: &str, secs: i64) {
         {
-            let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
             let deadline = now().saturating_add(secs.max(1));
             let l = g.live.entry(email.to_string()).or_default();
             l.cooling_until = l.cooling_until.max(deadline);
@@ -779,7 +1051,7 @@ impl Pool {
     /// `mark_used`. Зовётся из `InflightGuard::drop` в forward на ЛЮБОМ не-стриминговом исходе попытки
     /// (ошибка/ротация/4xx/отмена запроса) — так декремент ровно один и не теряется при cancel future.
     pub fn mark_done(&self, email: &str) {
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
         let l = g.live.entry(email.to_string()).or_default();
         l.inflight = (l.inflight - 1).max(0);
     }
@@ -787,10 +1059,12 @@ impl Pool {
     /// Через сколько секунд освободится ближайшая остывающая подписка (для `Retry-After` при
     /// исчерпании пула). None → остывающих нет.
     pub fn soonest_ready(&self) -> Option<i64> {
-        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let g = self.inner.read().unwrap_or_else(|e| e.into_inner());
         let now = now();
-        g.live.values()
-            .map(|l| l.cooling_until - now)
+        g.subs
+            .iter()
+            .filter_map(|sub| g.live.get(&sub.email))
+            .map(|live| live.cooling_until - now)
             .filter(|&d| d > 0)
             .min()
     }
@@ -798,14 +1072,22 @@ impl Pool {
     /// Учесть реальный расход запроса (USD real-API, ×1.0 до наценки) — монотонно.
     /// Питает калибровку ёмкости окон и «живую» утилизацию. Вызывается из tee-метеринга forward.
     pub fn record_spend(&self, email: &str, real_nano: i128) {
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
         let l = g.live.entry(email.to_string()).or_default();
         l.spent_total_usd += (real_nano as f64) / 1e9;
+        l.unpersisted_spend_usd += (real_nano as f64) / 1e9;
     }
 
-    pub fn set_util(&self, email: &str, u5: Option<f64>, u7: Option<f64>,
-                    status: Option<String>, r5: Option<i64>, r7: Option<i64>) {
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+    pub fn set_util(
+        &self,
+        email: &str,
+        u5: Option<f64>,
+        u7: Option<f64>,
+        status: Option<String>,
+        r5: Option<i64>,
+        r7: Option<i64>,
+    ) {
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
         let l = g.live.entry(email.to_string()).or_default();
 
         // КАЛИБРОВКА ёмкости окон: cap = ΔUSD/Δutil. Якоря на окно двигаем только когда Δutil
@@ -813,102 +1095,171 @@ impl Pool {
         // пере-заякориваемся без калибровки.
         let spent_total = l.spent_total_usd;
         if let Some(n5) = u5 {
-            calib_window(&mut l.seed5, &mut l.util5_anchor, &mut l.spent5_anchor_usd,
-                         &mut l.cap5h_usd, n5, spent_total, &mut l.calib_n);
+            calib_window(
+                &mut l.seed5,
+                &mut l.util5_anchor,
+                &mut l.spent5_anchor_usd,
+                &mut l.cap5h_usd,
+                n5,
+                spent_total,
+                &mut l.calib_n,
+            );
         }
         if let Some(n7) = u7 {
             let mut ignore = 0; // 7d не увеличивает calib_n (флаг «калибровано» ведём по 5h)
-            calib_window(&mut l.seed7, &mut l.util7_anchor, &mut l.spent7_anchor_usd,
-                         &mut l.cap7d_usd, n7, spent_total, &mut ignore);
+            calib_window(
+                &mut l.seed7,
+                &mut l.util7_anchor,
+                &mut l.spent7_anchor_usd,
+                &mut l.cap7d_usd,
+                n7,
+                spent_total,
+                &mut ignore,
+            );
         }
         // якорь «живой» утилизации = состояние на момент этого заголовка
         l.spent_at_header_usd = spent_total;
 
-        if let Some(v) = u5 { l.util5h = v; }
-        if let Some(v) = u7 { l.util7d = v; }
-        if let Some(v) = status { l.status = v; }
-        if let Some(v) = r5 { l.reset5h = v; }
-        if let Some(v) = r7 { l.reset7d = v; }
+        if let Some(v) = u5 {
+            l.util5h = v;
+        }
+        if let Some(v) = u7 {
+            l.util7d = v;
+        }
+        if let Some(v) = status {
+            l.status = v;
+        }
+        if let Some(v) = r5 {
+            l.reset5h = v;
+        }
+        if let Some(v) = r7 {
+            l.reset7d = v;
+        }
         l.polled_ts = now();
     }
 
     /// Доступность по каждой подписке (USD real-API-эквивалента) на горизонты 1ч/5ч/1д/7д.
     /// Чистая математика над состоянием — пересчитывается на каждый вызов, без сети.
     pub fn capacity(&self) -> Vec<Cap> {
-        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let g = self.inner.read().unwrap_or_else(|e| e.into_inner());
         let now = now();
         let (p5, p7) = (self.prior5h_usd, self.prior7d_usd);
-        g.subs.iter().map(|s| {
-            let l = g.live.get(&s.email).cloned().unwrap_or_default();
-            let sc = plan_scale(&s.plan); // прайор масштабируем по тарифу (Pro/Max5 меньше Max20)
-            let cap5 = if l.cap5h_usd > 0.0 { l.cap5h_usd } else { p5 * sc };
-            let cap7 = if l.cap7d_usd > 0.0 { l.cap7d_usd } else { p7 * sc };
+        g.subs
+            .iter()
+            .map(|s| {
+                let l = g.live.get(&s.email).cloned().unwrap_or_default();
+                let sc = plan_scale(&s.plan); // прайор масштабируем по тарифу (Pro/Max5 меньше Max20)
+                let cap5 = if l.cap5h_usd > 0.0 {
+                    l.cap5h_usd
+                } else {
+                    p5 * sc
+                };
+                let cap7 = if l.cap7d_usd > 0.0 {
+                    l.cap7d_usd
+                } else {
+                    p7 * sc
+                };
 
-            // эффективный reset: если ещё не наблюдали заголовок — считаем, что окно сбросится
-            // через полный период от now (нейтральная оценка, чтобы горизонты не схлопывались).
-            let er5 = if l.reset5h > 0 { l.reset5h } else { now + WIN5_SECS };
-            let er7 = if l.reset7d > 0 { l.reset7d } else { now + WIN7_SECS };
+                // эффективный reset: если ещё не наблюдали заголовок — считаем, что окно сбросится
+                // через полный период от now (нейтральная оценка, чтобы горизонты не схлопывались).
+                let er5 = if l.reset5h > 0 {
+                    l.reset5h
+                } else {
+                    now + WIN5_SECS
+                };
+                let er7 = if l.reset7d > 0 {
+                    l.reset7d
+                } else {
+                    now + WIN7_SECS
+                };
 
-            // Та же «живая» утилизация, что используется route/pick/place: один источник истины.
-            let u5 = live_util(&g, &s.email, sc, 5, now, p5, p7);
-            let u7 = live_util(&g, &s.email, sc, 7, now, p5, p7);
-            let rem5 = cap5 * (1.0 - u5);
-            let rem7 = cap7 * (1.0 - u7);
+                // Та же «живая» утилизация, что используется route/pick/place: один источник истины.
+                let u5 = live_util(&g, &s.email, sc, 5, now, p5, p7);
+                let u7 = live_util(&g, &s.email, sc, 7, now, p5, p7);
+                let rem5 = cap5 * (1.0 - u5);
+                let rem7 = cap7 * (1.0 - u7);
+                let auth_dead = l.auth_state == AuthState::Dead;
+                let cooling = l.cooling_until > now;
 
-            // сколько сбросов окна попадает в (now, now+H] — окно наливается заново (квота, не rate).
-            // reset мог УЖЕ пройти (idle-подписка) — нормализуем к следующему будущему сбросу,
-            // иначе считали бы прошлые сбросы как будущие и завышали доступность.
-            let resets = |reset: i64, win: i64, h: i64| -> i64 {
-                // Строгое `>`: при reset==now окно уже считается сброшенным в `live` (now>=reset → rem
-                // полное), поэтому ЭТУ точку нельзя ещё раз считать будущим сбросом — иначе одно окно
-                // учтено дважды. Нормализуем к следующему сбросу (now+win), согласованно с `live`.
-                let next = if reset > now { reset } else { reset + ((now - reset) / win + 1) * win };
-                if next > now + h { 0 } else { 1 + (now + h - next) / win }
-            };
-            let avail = |h: i64| -> f64 {
-                let a5 = rem5 + resets(er5, WIN5_SECS, h) as f64 * cap5;
-                let a7 = rem7 + resets(er7, WIN7_SECS, h) as f64 * cap7;
-                a5.min(a7)
-            };
+                // сколько сбросов окна попадает в (now, now+H] — окно наливается заново (квота, не rate).
+                // reset мог УЖЕ пройти (idle-подписка) — нормализуем к следующему будущему сбросу,
+                // иначе считали бы прошлые сбросы как будущие и завышали доступность.
+                let resets = |reset: i64, win: i64, h: i64| -> i64 {
+                    // Строгое `>`: при reset==now окно уже считается сброшенным в `live` (now>=reset → rem
+                    // полное), поэтому ЭТУ точку нельзя ещё раз считать будущим сбросом — иначе одно окно
+                    // учтено дважды. Нормализуем к следующему сбросу (now+win), согласованно с `live`.
+                    let next = if reset > now {
+                        reset
+                    } else {
+                        reset + ((now - reset) / win + 1) * win
+                    };
+                    if next > now + h {
+                        0
+                    } else {
+                        1 + (now + h - next) / win
+                    }
+                };
+                let avail = |h: i64| -> f64 {
+                    if auth_dead {
+                        return 0.0;
+                    }
+                    let a5 = rem5 + resets(er5, WIN5_SECS, h) as f64 * cap5;
+                    let a7 = rem7 + resets(er7, WIN7_SECS, h) as f64 * cap7;
+                    let quota = a5.min(a7);
+                    let unavailable = l.cooling_until.saturating_sub(now).clamp(0, h);
+                    quota * (h - unavailable) as f64 / h as f64
+                };
 
-            Cap {
-                email: s.email.clone(),
-                calibrated: l.calib_n > 0,
-                util5h: u5, util7d: u7,
-                reset5h_in: (er5 - now).max(0),
-                reset7d_in: (er7 - now).max(0),
-                cap5h_usd: cap5, cap7d_usd: cap7,
-                rem5h_usd: rem5, rem7d_usd: rem7,
-                avail_1h_usd: avail(3600),
-                avail_5h_usd: avail(18000),
-                avail_1d_usd: avail(86400),
-                avail_7d_usd: avail(604800),
-                status: l.status.clone(),
-                cooling: l.cooling_until > now,
-                auth_dead: l.auth_state == AuthState::Dead,
-                auth_state: l.auth_state.as_str().to_string(),
-                dead_reason: l.dead_reason.clone(),
-                dead_since_ts: l.dead_since_ts,
-            }
-        }).collect()
+                Cap {
+                    email: s.email.clone(),
+                    calibrated: l.calib_n > 0,
+                    util5h: u5,
+                    util7d: u7,
+                    reset5h_in: (er5 - now).max(0),
+                    reset7d_in: (er7 - now).max(0),
+                    cap5h_usd: cap5,
+                    cap7d_usd: cap7,
+                    rem5h_usd: rem5,
+                    rem7d_usd: rem7,
+                    avail_1h_usd: avail(3600),
+                    avail_5h_usd: avail(18000),
+                    avail_1d_usd: avail(86400),
+                    avail_7d_usd: avail(604800),
+                    status: l.status.clone(),
+                    cooling,
+                    routable: !auth_dead && !cooling,
+                    auth_dead,
+                    auth_state: l.auth_state.as_str().to_string(),
+                    dead_reason: l.dead_reason.clone(),
+                    dead_since_ts: l.dead_since_ts,
+                }
+            })
+            .collect()
     }
 
     /// Снапшот для /pool (без секретов) + список подписок для поллера.
     pub fn snapshot(&self) -> Vec<(Sub, Live)> {
-        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        g.subs.iter().map(|s| (s.clone(), g.live.get(&s.email).cloned().unwrap_or_default())).collect()
+        let g = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        g.subs
+            .iter()
+            .map(|s| (s.clone(), g.live.get(&s.email).cloned().unwrap_or_default()))
+            .collect()
     }
 
     /// Счётчики исходов роутинга (наблюдаемость `/metrics`).
     pub fn route_stats(&self) -> RouteStats {
-        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        RouteStats { pin: g.route_pin, spill: g.route_spill, place: g.route_place }
+        let g = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        RouteStats {
+            pin: g.route_pin,
+            spill: g.route_spill,
+            place: g.route_place,
+        }
     }
 
     /// Суммарный in-flight по флоту (gauge) + число остывающих (для `/metrics`; утечку слота
     /// сразу видно по монотонному росту in-flight при простое).
     pub fn gauges(&self) -> (i64, usize) {
-        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let g = self.inner.read().unwrap_or_else(|e| e.into_inner());
         let now = now();
         let inflight: i64 = g.live.values().map(|l| l.inflight).sum();
         let cooling = g.live.values().filter(|l| l.cooling_until > now).count();
@@ -918,38 +1269,51 @@ impl Pool {
     /// Экспорт durable-состояния для персиста, включая временно неактивные подписки с удержанным
     /// cooling. Иначе следующий safety-flush после рестарта мог бы стереть dormant-бан до реактивации.
     pub fn export_state(&self) -> Vec<registry::PoolStateRow> {
-        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        g.live.iter().map(|(email, l)| registry::PoolStateRow {
-            email: email.clone(),
-            cooling_until: l.cooling_until,
-            cap5h_usd: l.cap5h_usd,
-            cap7d_usd: l.cap7d_usd,
-            spent_total_usd: l.spent_total_usd,
-            util5h: l.util5h,
-            util7d: l.util7d,
-            reset5h: l.reset5h,
-            reset7d: l.reset7d,
-            calib_n: l.calib_n as i64,
-            version: l.persist_version,
-        }).collect()
+        let g = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        g.live
+            .iter()
+            .map(|(email, l)| registry::PoolStateRow {
+                email: email.clone(),
+                cooling_until: l.cooling_until,
+                cap5h_usd: l.cap5h_usd,
+                cap7d_usd: l.cap7d_usd,
+                spent_total_usd: l.spent_total_usd,
+                spent_delta_usd: l.unpersisted_spend_usd,
+                util5h: l.util5h,
+                util7d: l.util7d,
+                reset5h: l.reset5h,
+                reset7d: l.reset7d,
+                calib_n: l.calib_n as i64,
+                version: l.persist_version,
+            })
+            .collect()
     }
 
     /// Восстановить состояние на старте (после build пула из реестра). Возвращаем только осмысленное:
     /// cooling (если ещё в будущем — бан на дни переживает рестарт), калибровку ёмкости, spent, util/
     /// reset; засеваем якоря калибровки восстановленной точкой, чтобы продолжить, а не мерить с нуля.
     pub fn import_state(&self, rows: Vec<registry::PoolStateRow>) {
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
         let now = now();
         let known: HashSet<String> = g.subs.iter().map(|s| s.email.clone()).collect();
         for r in rows {
             // Активным восстанавливаем всё. Неактивным удерживаем строку только пока важен будущий
             // cooling: replace_subs потом сольёт её в live при реактивации и не пустит трафик в бан.
-            if !known.contains(&r.email) && r.cooling_until <= now { continue; }
+            if !known.contains(&r.email) && r.cooling_until <= now {
+                continue;
+            }
             let l = g.live.entry(r.email.clone()).or_default();
-            if r.cooling_until > now { l.cooling_until = r.cooling_until; }
-            if r.cap5h_usd > 0.0 { l.cap5h_usd = r.cap5h_usd; }
-            if r.cap7d_usd > 0.0 { l.cap7d_usd = r.cap7d_usd; }
+            if r.cooling_until > now {
+                l.cooling_until = r.cooling_until;
+            }
+            if r.cap5h_usd > 0.0 {
+                l.cap5h_usd = r.cap5h_usd;
+            }
+            if r.cap7d_usd > 0.0 {
+                l.cap7d_usd = r.cap7d_usd;
+            }
             l.spent_total_usd = r.spent_total_usd;
+            l.unpersisted_spend_usd = 0.0;
             l.spent_at_header_usd = r.spent_total_usd;
             l.util5h = r.util5h;
             l.util7d = r.util7d;
@@ -958,24 +1322,30 @@ impl Pool {
             l.calib_n = r.calib_n.max(0) as u32;
             l.persist_version = r.version.max(0);
             // засеять якоря калибровки восстановленной точкой (продолжаем EMA, не мерим с нуля)
-            l.seed5 = true; l.util5_anchor = r.util5h; l.spent5_anchor_usd = r.spent_total_usd;
-            l.seed7 = true; l.util7_anchor = r.util7d; l.spent7_anchor_usd = r.spent_total_usd;
+            l.seed5 = true;
+            l.util5_anchor = r.util5h;
+            l.spent5_anchor_usd = r.spent_total_usd;
+            l.seed7 = true;
+            l.util7_anchor = r.util7d;
+            l.spent7_anchor_usd = r.spent_total_usd;
             // разбросать «свежесть» по подпискам, чтобы поллер не пробил весь восстановленный флот
             // разом на старте (иначе все polled_ts==0 → залповый probe со всех IP).
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            r.email.hash(&mut h);
-            l.polled_ts = now - (h.finish() % 240) as i64;
+            l.polled_ts = now - (stable_hash64(r.email.as_bytes()) % 240) as i64;
             l.last_used = now;
         }
     }
 
     /// Accept versions returned by a successful fenced PostgreSQL CAS write without replacing live
     /// utilization/cooling values that may have advanced while persistence was in flight.
-    pub fn accept_persist_versions(&self, versions: &[(String, i64)]) {
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        for (email, version) in versions {
+    pub fn accept_persist_versions(&self, acknowledged: &[(String, i64, f64)]) {
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        for (email, version, spent_delta) in acknowledged {
             if let Some(live) = g.live.get_mut(email) {
                 live.persist_version = live.persist_version.max(*version);
+                // Spend can advance after export_state while the database write is in flight.
+                // Acknowledge only the exported increment; leave the concurrent tail for the next save.
+                live.unpersisted_spend_usd =
+                    (live.unpersisted_spend_usd - spent_delta.max(0.0)).max(0.0);
             }
         }
     }
@@ -991,7 +1361,12 @@ impl Pool {
                 _ => local,
             }
         }
-        fn merge_window(local_util: &mut f64, local_reset: &mut i64, remote_util: f64, remote_reset: i64) {
+        fn merge_window(
+            local_util: &mut f64,
+            local_reset: &mut i64,
+            remote_util: f64,
+            remote_reset: i64,
+        ) {
             if remote_reset > *local_reset {
                 *local_reset = remote_reset;
                 *local_util = remote_util;
@@ -1000,11 +1375,13 @@ impl Pool {
             }
         }
 
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
         for row in rows {
             let live = g.live.entry(row.email).or_default();
             live.cooling_until = live.cooling_until.max(row.cooling_until);
-            live.spent_total_usd = live.spent_total_usd.max(row.spent_total_usd);
+            let persisted_local = (live.spent_total_usd - live.unpersisted_spend_usd).max(0.0);
+            live.spent_total_usd =
+                persisted_local.max(row.spent_total_usd) + live.unpersisted_spend_usd;
             live.cap5h_usd = conservative_cap(live.cap5h_usd, row.cap5h_usd);
             live.cap7d_usd = conservative_cap(live.cap7d_usd, row.cap7d_usd);
             live.calib_n = live.calib_n.max(row.calib_n.max(0) as u32);
@@ -1020,14 +1397,29 @@ mod tests {
     use super::*;
 
     fn sub(email: &str) -> Sub {
-        Sub { email: email.into(), token: "t".into(), proxy: String::new(), fleet: "prod".into(), plan: "max20".into() }
+        Sub {
+            email: email.into(),
+            token: "t".into(),
+            proxy: String::new(),
+            fleet: "prod".into(),
+            plan: "max20".into(),
+        }
     }
     fn pool(emails: &[&str]) -> Pool {
         // запас 0.05/0.05 без джиттера → потолки окон 0.95 (детерминизм, как со старым util_cap).
-        Pool::new(emails.iter().map(|e| sub(e)).collect(), Reserve::new(0.05, 0.05, 0.0), 50.0, 1500.0)
+        Pool::new(
+            emails.iter().map(|e| sub(e)).collect(),
+            Reserve::new(0.05, 0.05, 0.0),
+            50.0,
+            1500.0,
+        )
     }
-    fn none() -> HashSet<String> { HashSet::new() }
-    fn picked(p: &Pool) -> String { p.pick(&none(), false).unwrap().email }
+    fn none() -> HashSet<String> {
+        HashSet::new()
+    }
+    fn picked(p: &Pool) -> String {
+        p.pick(&none(), false).unwrap().email
+    }
 
     /// Стратегия «беречь 7d»: выбираем подписку с наименьшим недельным util, даже если её 5h выше.
     #[test]
@@ -1067,9 +1459,17 @@ mod tests {
         let p = pool(&["a", "b"]);
         p.mark_cooling("a", 300);
         p.mark_cooling("b", 300);
-        let picked = p.pick(&none(), false).expect("pick не зависает даже когда все cooling");
-        assert!(p.is_cooling(&picked.email), "is_cooling обязан видеть, что pick вернул cooling-подписку");
-        assert!(p.soonest_ready().is_some(), "есть время до готовности для Retry-After");
+        let picked = p
+            .pick(&none(), false)
+            .expect("pick не зависает даже когда все cooling");
+        assert!(
+            p.is_cooling(&picked.email),
+            "is_cooling обязан видеть, что pick вернул cooling-подписку"
+        );
+        assert!(
+            p.soonest_ready().is_some(),
+            "есть время до готовности для Retry-After"
+        );
     }
 
     /// Бан (cooling) переживает выпадение подписки из ростера и его обновление (флап) — иначе
@@ -1078,8 +1478,11 @@ mod tests {
     fn cooling_survives_roster_flap() {
         let p = pool(&["a", "b"]);
         p.mark_cooling("a", 3600);
-        p.replace_subs(vec![sub("b")]);          // "a" выпала из активного набора
-        assert!(p.is_cooling("a"), "cooling пережил replace_subs (бан не забыт)");
+        p.replace_subs(vec![sub("b")]); // "a" выпала из активного набора
+        assert!(
+            p.is_cooling("a"),
+            "cooling пережил replace_subs (бан не забыт)"
+        );
     }
 
     /// Cooling исключает подписку, пока есть живая альтернатива.
@@ -1118,11 +1521,25 @@ mod tests {
         let future5 = now() + WIN5_SECS;
         let future7 = now() + WIN7_SECS;
         // якорь: util 0
-        p.set_util("a", Some(0.0), Some(0.0), None, Some(future5), Some(future7));
+        p.set_util(
+            "a",
+            Some(0.0),
+            Some(0.0),
+            None,
+            Some(future5),
+            Some(future7),
+        );
         // потратили $5 real-API
         p.record_spend("a", 5 * 1_000_000_000);
         // новый заголовок: 5h вырос на 0.10 (→ cap5 = 5/0.10 = $50), 7d на 0.004 (< min_delta → 7d не калибруем)
-        p.set_util("a", Some(0.10), Some(0.004), None, Some(future5), Some(future7));
+        p.set_util(
+            "a",
+            Some(0.10),
+            Some(0.004),
+            None,
+            Some(future5),
+            Some(future7),
+        );
         let c = &p.capacity()[0];
         assert!(c.calibrated);
         assert!((c.cap5h_usd - 50.0).abs() < 1e-6, "cap5={}", c.cap5h_usd);
@@ -1144,17 +1561,27 @@ mod tests {
         // тратим ещё $10 БЕЗ нового заголовка → остаток должен упасть на ~$10
         p.record_spend("a", 10 * 1_000_000_000);
         let after = p.capacity()[0].rem5h_usd;
-        assert!((before - after - 10.0).abs() < 0.5, "before={before} after={after}");
+        assert!(
+            (before - after - 10.0).abs() < 0.5,
+            "before={before} after={after}"
+        );
     }
 
     /// Cache-first: сессия липнет к своему дому, пока тот здоров (кэш тёплый).
     #[test]
     fn route_pins_session_to_home() {
         let p = pool(&["a", "b", "c", "d"]);
-        for e in ["a", "b", "c", "d"] { p.set_util(e, Some(0.1), Some(0.1), None, None, None); }
+        for e in ["a", "b", "c", "d"] {
+            p.set_util(e, Some(0.1), Some(0.1), None, None, None);
+        }
         let s = 123456789u64;
         let home = p.route(s).unwrap().email;
-        for _ in 0..10 { assert_eq!(p.route(s).unwrap().email, home); }
+        p.mark_done(&home);
+        for _ in 0..10 {
+            let selected = p.route(s).unwrap().email;
+            assert_eq!(selected, home);
+            p.mark_done(&selected);
+        }
     }
 
     /// Placement новой сессии — capacity-weighted: садим на персону с бóльшим свободным окном.
@@ -1172,7 +1599,9 @@ mod tests {
         let p = pool(&["a", "b"]);
         p.set_util("a", Some(0.05), Some(0.05), None, None, None); // эмптейший…
         p.set_util("b", Some(0.20), Some(0.20), None, None, None);
-        for _ in 0..max_inflight() { p.mark_used("a"); }             // …но забит до конверта
+        for _ in 0..max_inflight() {
+            p.mark_used("a");
+        } // …но забит до конверта
         assert_eq!(p.route(777).unwrap().email, "b");
     }
 
@@ -1184,11 +1613,15 @@ mod tests {
         p.set_util("a", Some(0.05), Some(0.05), None, None, None);
         p.set_util("b", Some(0.20), Some(0.20), None, None, None);
         let s = 999u64;
-        let home = p.route(s).unwrap().email;         // сел на эмптейший (a)
-        for _ in 0..max_inflight() { p.mark_used(&home); } // забили дом до конверта
+        let home = p.route(s).unwrap().email; // сел на эмптейший (a)
+        for _ in 0..max_inflight() {
+            p.mark_used(&home);
+        } // забили дом до конверта
         let spilled = p.route(s).unwrap().email;
         assert_ne!(spilled, home, "занятый дом → спилл на другой");
-        for _ in 0..max_inflight() { p.end_stream(&home); } // слоты освободились
+        for _ in 0..max_inflight() {
+            p.end_stream(&home);
+        } // слоты освободились
         assert_eq!(p.route(s).unwrap().email, home, "вернулись на тёплый дом");
     }
 
@@ -1196,20 +1629,28 @@ mod tests {
     #[test]
     fn route_rebinds_on_deep_cooling() {
         let p = pool(&["a", "b"]);
-        for e in ["a", "b"] { p.set_util(e, Some(0.1), Some(0.1), None, None, None); }
+        for e in ["a", "b"] {
+            p.set_util(e, Some(0.1), Some(0.1), None, None, None);
+        }
         let s = 314u64;
         let home = p.route(s).unwrap().email;
-        p.mark_cooling(&home, 300);                    // глубокий бан
+        p.mark_cooling(&home, 300); // глубокий бан
         let rebound = p.route(s).unwrap().email;
         assert_ne!(rebound, home, "глубокий cooling → пере-привязка");
-        assert_eq!(p.route(s).unwrap().email, rebound, "новая привязка стабильна");
+        assert_eq!(
+            p.route(s).unwrap().email,
+            rebound,
+            "новая привязка стабильна"
+        );
     }
 
     /// Разные сессии раскладываются по флоту (нагрузка распределена, а не в одну персону).
     #[test]
     fn route_spreads_sessions_across_fleet() {
         let p = pool(&["a", "b", "c", "d"]);
-        for e in ["a", "b", "c", "d"] { p.set_util(e, Some(0.1), Some(0.1), None, None, None); }
+        for e in ["a", "b", "c", "d"] {
+            p.set_util(e, Some(0.1), Some(0.1), None, None, None);
+        }
         let mut seen = HashSet::new();
         for s in 0..200u64 {
             let e = p.route(s).unwrap().email;
@@ -1217,7 +1658,11 @@ mod tests {
             p.mark_used(&e);
             seen.insert(e);
         }
-        assert!(seen.len() >= 3, "сессии должны разложиться по флоту, got {}", seen.len());
+        assert!(
+            seen.len() >= 3,
+            "сессии должны разложиться по флоту, got {}",
+            seen.len()
+        );
     }
 
     /// Персист: export→import переносит cooling и калибровку через «рестарт».
@@ -1237,47 +1682,120 @@ mod tests {
         let c = &p2.capacity()[0];
         assert!(c.calibrated, "калибровка восстановлена");
         assert!((c.cap5h_usd - 50.0).abs() < 1e-6, "cap5={}", c.cap5h_usd);
-        assert!(p2.soonest_ready().map(|s| s > 0).unwrap_or(false), "cooling пережил рестарт");
+        assert!(
+            p2.soonest_ready().map(|s| s > 0).unwrap_or(false),
+            "cooling пережил рестарт"
+        );
     }
 
     #[test]
     fn cas_rebase_is_conservative_and_accepts_newer_window() {
         let p = pool(&["a"]);
         p.import_state(vec![registry::PoolStateRow {
-            email: "a".into(), cooling_until: now() + 60,
-            cap5h_usd: 50.0, cap7d_usd: 500.0, spent_total_usd: 10.0,
-            util5h: 0.4, util7d: 0.3, reset5h: 100, reset7d: 100,
-            calib_n: 4, version: 2,
+            email: "a".into(),
+            cooling_until: now() + 60,
+            cap5h_usd: 50.0,
+            cap7d_usd: 500.0,
+            spent_total_usd: 10.0,
+            util5h: 0.4,
+            util7d: 0.3,
+            reset5h: 100,
+            reset7d: 100,
+            calib_n: 4,
+            version: 2,
+            spent_delta_usd: 0.0,
         }]);
         p.merge_persisted_state(vec![registry::PoolStateRow {
-            email: "a".into(), cooling_until: now() + 120,
-            cap5h_usd: 80.0, cap7d_usd: 400.0, spent_total_usd: 12.0,
-            util5h: 0.6, util7d: 0.1, reset5h: 100, reset7d: 200,
-            calib_n: 5, version: 3,
+            email: "a".into(),
+            cooling_until: now() + 120,
+            cap5h_usd: 80.0,
+            cap7d_usd: 400.0,
+            spent_total_usd: 12.0,
+            util5h: 0.6,
+            util7d: 0.1,
+            reset5h: 100,
+            reset7d: 200,
+            calib_n: 5,
+            version: 3,
+            spent_delta_usd: 0.0,
         }]);
-        let row = p.export_state().into_iter().find(|r| r.email == "a").unwrap();
+        let row = p
+            .export_state()
+            .into_iter()
+            .find(|r| r.email == "a")
+            .unwrap();
         assert_eq!(row.version, 3);
-        assert_eq!(row.cap5h_usd, 50.0, "a race must not inflate calibrated capacity");
+        assert_eq!(
+            row.cap5h_usd, 50.0,
+            "a race must not inflate calibrated capacity"
+        );
         assert_eq!(row.cap7d_usd, 400.0);
-        assert_eq!(row.util5h, 0.6, "same window keeps the conservative utilization");
+        assert_eq!(
+            row.util5h, 0.6,
+            "same window keeps the conservative utilization"
+        );
         assert_eq!(row.reset7d, 200);
-        assert_eq!(row.util7d, 0.1, "a newer provider window replaces the expired one");
+        assert_eq!(
+            row.util7d, 0.1,
+            "a newer provider window replaces the expired one"
+        );
         assert!(row.cooling_until >= now() + 119);
+    }
+
+    #[test]
+    fn persistence_ack_preserves_spend_recorded_during_write() {
+        let p = pool(&["a"]);
+        p.record_spend("a", 1_000_000_000);
+        let exported = p
+            .export_state()
+            .into_iter()
+            .find(|row| row.email == "a")
+            .unwrap();
+        assert_eq!(exported.spent_delta_usd, 1.0);
+
+        // Simulate traffic arriving after export_state but before the database write completes.
+        p.record_spend("a", 2_000_000_000);
+        p.accept_persist_versions(&[("a".to_string(), 1, exported.spent_delta_usd)]);
+
+        let remaining = p
+            .export_state()
+            .into_iter()
+            .find(|row| row.email == "a")
+            .unwrap();
+        assert_eq!(remaining.version, 1);
+        assert_eq!(remaining.spent_total_usd, 3.0);
+        assert_eq!(remaining.spent_delta_usd, 2.0);
     }
 
     /// Тариф масштабирует прайор ёмкости: Pro-подписка до калибровки НЕ считается как Max20.
     #[test]
     fn plan_scales_prior_capacity() {
         let mk = |e: &str, plan: &str| Sub {
-            email: e.into(), token: "t".into(), proxy: String::new(), fleet: "prod".into(), plan: plan.into(),
+            email: e.into(),
+            token: "t".into(),
+            proxy: String::new(),
+            fleet: "prod".into(),
+            plan: plan.into(),
         };
-        let p = Pool::new(vec![mk("pro@x", "pro"), mk("m20@x", "max20")],
-                          Reserve::new(0.05, 0.05, 0.0), 50.0, 1500.0);
+        let p = Pool::new(
+            vec![mk("pro@x", "pro"), mk("m20@x", "max20")],
+            Reserve::new(0.05, 0.05, 0.0),
+            50.0,
+            1500.0,
+        );
         let caps = p.capacity();
         let pro = caps.iter().find(|c| c.email == "pro@x").unwrap();
         let m20 = caps.iter().find(|c| c.email == "m20@x").unwrap();
-        assert!((pro.cap7d_usd - 75.0).abs() < 1e-6, "pro cap7={} (=1500×0.05)", pro.cap7d_usd);
-        assert!((m20.cap7d_usd - 1500.0).abs() < 1e-6, "m20 cap7={}", m20.cap7d_usd);
+        assert!(
+            (pro.cap7d_usd - 75.0).abs() < 1e-6,
+            "pro cap7={} (=1500×0.05)",
+            pro.cap7d_usd
+        );
+        assert!(
+            (m20.cap7d_usd - 1500.0).abs() < 1e-6,
+            "m20 cap7={}",
+            m20.cap7d_usd
+        );
         // новая сессия садится на Max20 (там больше реальной свободной ёмкости)
         assert_eq!(p.route(1).unwrap().email, "m20@x");
     }
@@ -1289,7 +1807,9 @@ mod tests {
         let p = pool(&["a"]);
         let hits = Arc::new(AtomicU32::new(0));
         let h = hits.clone();
-        p.set_on_change(Arc::new(move || { h.fetch_add(1, Ordering::SeqCst); }));
+        p.set_on_change(Arc::new(move || {
+            h.fetch_add(1, Ordering::SeqCst);
+        }));
         p.mark_cooling("a", 60);
         p.cool("a", 60);
         assert_eq!(hits.load(Ordering::SeqCst), 2);
@@ -1299,7 +1819,12 @@ mod tests {
     #[test]
     fn reserve_keeps_headroom() {
         // запас 5h=10% (порог 0.90), без джиттера
-        let p = Pool::new(vec![sub("a"), sub("b")], Reserve::new(0.10, 0.03, 0.0), 50.0, 1500.0);
+        let p = Pool::new(
+            vec![sub("a"), sub("b")],
+            Reserve::new(0.10, 0.03, 0.0),
+            50.0,
+            1500.0,
+        );
         p.set_util("a", Some(0.93), Some(0.10), None, None, None); // 5h за запасом (>0.90)
         p.set_util("b", Some(0.50), Some(0.10), None, None, None); // под запасом
         assert_eq!(picked(&p), "b"); // a бережём (headroom), берём b
@@ -1310,8 +1835,14 @@ mod tests {
     fn reserve_jitter_varies_thresholds() {
         let r = Reserve::new(0.10, 0.03, 0.02);
         let mut caps5 = std::collections::HashSet::new();
-        for i in 0..50 { caps5.insert(format!("{:.4}", r.caps(&format!("u{i}@x.io")).0)); }
-        assert!(caps5.len() >= 5, "пороги 5h должны различаться по флоту, got {}", caps5.len());
+        for i in 0..50 {
+            caps5.insert(format!("{:.4}", r.caps(&format!("u{i}@x.io")).0));
+        }
+        assert!(
+            caps5.len() >= 5,
+            "пороги 5h должны различаться по флоту, got {}",
+            caps5.len()
+        );
         // все в разумном коридоре 1−(0.10±0.02) = [0.88, 0.92]
         for i in 0..50 {
             let c5 = r.caps(&format!("u{i}@x.io")).0;
@@ -1347,8 +1878,14 @@ mod tests {
         let p = pool(&["a", "b"]);
         p.set_util("a", Some(0.10), Some(0.10), None, None, None);
         p.set_util("b", Some(0.00), Some(0.11), None, None, None);
-        for _ in 0..max_inflight() { p.mark_used("a"); }
-        assert_eq!(picked(&p), "b", "слегка более горячий, но свободный b должен разгрузить a");
+        for _ in 0..max_inflight() {
+            p.mark_used("a");
+        }
+        assert_eq!(
+            picked(&p),
+            "b",
+            "слегка более горячий, но свободный b должен разгрузить a"
+        );
     }
 
     /// Локально известный расход сразу участвует в reserve-гейте, не ждёт следующего util-заголовка.
@@ -1360,28 +1897,39 @@ mod tests {
         p.set_util("a", Some(0.85), Some(0.10), None, Some(f5), Some(f7));
         p.set_util("b", Some(0.50), Some(0.11), None, Some(f5), Some(f7));
         {
-            let mut g = p.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let mut g = p.inner.write().unwrap_or_else(|e| e.into_inner());
             let a = g.live.get_mut("a").unwrap();
             a.cap5h_usd = 50.0;
             a.cap7d_usd = 1500.0;
         }
         assert_eq!(picked(&p), "a", "до расхода меньший 7d util выигрывает");
         p.record_spend("a", 5 * 1_000_000_000); // live 5h = cap 0.95, а eligibility требует strict <
-        assert_eq!(picked(&p), "b", "после расхода a должна выйти за reserve-cap немедленно");
+        assert_eq!(
+            picked(&p),
+            "b",
+            "после расхода a должна выйти за reserve-cap немедленно"
+        );
     }
 
     /// Busy-дом не спиллирует на cooling-альтернативу и не создаёт ложный долгий fleet exhaustion.
     #[test]
     fn spill_does_not_choose_cooling_alternative() {
         let p = pool(&["a", "b"]);
-        for e in ["a", "b"] { p.set_util(e, Some(0.1), Some(0.1), None, None, None); }
+        for e in ["a", "b"] {
+            p.set_util(e, Some(0.1), Some(0.1), None, None, None);
+        }
         let session = 4242;
         let home = p.route(session).unwrap().email;
         let other = if home == "a" { "b" } else { "a" };
         p.mark_cooling(other, 3600);
-        for _ in 0..max_inflight() { p.mark_used(&home); }
+        for _ in 0..max_inflight() {
+            p.mark_used(&home);
+        }
         let chosen = p.route(session).unwrap();
-        assert_eq!(chosen.email, home, "без здоровой альтернативы ослабляем конверт на доме");
+        assert_eq!(
+            chosen.email, home,
+            "без здоровой альтернативы ослабляем конверт на доме"
+        );
         assert!(!p.is_cooling(&chosen.email));
     }
 
@@ -1394,11 +1942,20 @@ mod tests {
 
         let restarted = pool(&["b"]); // a неактивна в момент старта
         restarted.import_state(rows);
-        assert!(restarted.is_cooling("a"), "dormant future cooling нельзя отбрасывать");
-        assert!(restarted.export_state().iter().any(|r| r.email == "a"),
-                "safety-flush обязан сохранить dormant cooling");
+        assert!(
+            restarted.is_cooling("a"),
+            "dormant future cooling нельзя отбрасывать"
+        );
+        assert!(
+            restarted.export_state().iter().any(|r| r.email == "a"),
+            "safety-flush обязан сохранить dormant cooling"
+        );
         restarted.replace_subs(vec![sub("a"), sub("b")]);
-        assert_eq!(picked(&restarted), "b", "реактивированная a остаётся в cooling");
+        assert_eq!(
+            picked(&restarted),
+            "b",
+            "реактивированная a остаётся в cooling"
+        );
     }
 
     /// request_probe сбрасывает polled_ts в 0 → подписка «созревает» для немедленного clean-probe
@@ -1407,13 +1964,23 @@ mod tests {
     fn request_probe_marks_due() {
         let p = pool(&["a"]);
         p.set_util("a", Some(0.2), Some(0.1), None, None, None); // двигает polled_ts в now()
-        assert!(p.snapshot()[0].1.polled_ts > 0, "после set_util polled_ts свеж");
+        assert!(
+            p.snapshot()[0].1.polled_ts > 0,
+            "после set_util polled_ts свеж"
+        );
         p.request_probe("a");
-        assert_eq!(p.snapshot()[0].1.polled_ts, 0, "request_probe → polled_ts=0 (due сейчас)");
+        assert_eq!(
+            p.snapshot()[0].1.polled_ts,
+            0,
+            "request_probe → polled_ts=0 (due сейчас)"
+        );
         // дебаунс: повторный форс в окне 15с — no-op, даже если пассивный сбор снова обновил polled_ts
         p.set_util("a", Some(0.3), None, None, None, None); // polled_ts снова > 0
         p.request_probe("a");
-        assert!(p.snapshot()[0].1.polled_ts > 0, "второй request_probe в окне дебаунса — no-op");
+        assert!(
+            p.snapshot()[0].1.polled_ts > 0,
+            "второй request_probe в окне дебаунса — no-op"
+        );
     }
 
     // ── Durable auth-health: корроборированный dead-детект ──────────────────────────────────
@@ -1438,7 +2005,11 @@ mod tests {
         apply_probe(&mut l, 401, "fp1", t + 10);
         apply_probe(&mut l, 401, "fp1", t + 20);
         assert_eq!(l.auth_fail_streak, 3);
-        assert_eq!(l.auth_state, AuthState::Suspect, "streak набран, но <5мин → ещё не dead");
+        assert_eq!(
+            l.auth_state,
+            AuthState::Suspect,
+            "streak набран, но <5мин → ещё не dead"
+        );
     }
 
     /// Два 401-probe, растянутых на ≥`DEAD_MIN_SECS` (2 вызова в 5 минут) → корроборировано `Dead`
@@ -1448,9 +2019,17 @@ mod tests {
         let mut l = Live::default();
         let t = 1_000_000;
         apply_probe(&mut l, 401, "fp1", t);
-        assert_eq!(l.auth_state, AuthState::Suspect, "первый 401 → только suspect");
+        assert_eq!(
+            l.auth_state,
+            AuthState::Suspect,
+            "первый 401 → только suspect"
+        );
         apply_probe(&mut l, 401, "fp1", t + DEAD_MIN_SECS);
-        assert_eq!(l.auth_state, AuthState::Dead, "второй 401 через 5 мин → dead");
+        assert_eq!(
+            l.auth_state,
+            AuthState::Dead,
+            "второй 401 через 5 мин → dead"
+        );
         assert_eq!(l.dead_reason, "authentication_error");
         assert_eq!(l.dead_since_ts, t + DEAD_MIN_SECS);
     }
@@ -1471,7 +2050,9 @@ mod tests {
     fn clean_probe_clears_suspect_and_dead() {
         let mut l = Live::default();
         let t = 3_000_000;
-        for i in 0..3 { apply_probe(&mut l, 401, "fp", t + i * (DEAD_MIN_SECS / 2 + 1)); }
+        for i in 0..3 {
+            apply_probe(&mut l, 401, "fp", t + i * (DEAD_MIN_SECS / 2 + 1));
+        }
         assert_eq!(l.auth_state, AuthState::Dead);
         apply_probe(&mut l, 200, "fp", t + 10 * DEAD_MIN_SECS);
         assert_eq!(l.auth_state, AuthState::Healthy);
@@ -1484,7 +2065,9 @@ mod tests {
     fn token_change_resets_verdict() {
         let mut l = Live::default();
         let t = 4_000_000;
-        for i in 0..3 { apply_probe(&mut l, 401, "old", t + i * (DEAD_MIN_SECS / 2 + 1)); }
+        for i in 0..3 {
+            apply_probe(&mut l, 401, "old", t + i * (DEAD_MIN_SECS / 2 + 1));
+        }
         assert_eq!(l.auth_state, AuthState::Dead);
         // новый отпечаток токена → сброс к healthy ДО оценки текущего http (тут даже 401 не важен)
         apply_probe(&mut l, 200, "new", t + 10 * DEAD_MIN_SECS);
@@ -1498,12 +2081,17 @@ mod tests {
         let p = pool(&["a", "b"]);
         p.kill("a", "permission_error");
         // pick никогда не вернёт мёртвую a
-        for _ in 0..10 { assert_eq!(picked(&p), "b"); }
+        for _ in 0..10 {
+            assert_eq!(picked(&p), "b");
+        }
         // route (новая сессия) тоже минует мёртвую
         assert_eq!(p.route(12345).unwrap().email, "b");
         // если ОБЕ мертвы — пул честно пуст (forward отдаст Overloaded, а не 401)
         p.kill("b", "authentication_error");
-        assert!(p.pick(&none(), false).is_none(), "все мёртвы → нет кандидата (не зависаем в 401)");
+        assert!(
+            p.pick(&none(), false).is_none(),
+            "все мёртвы → нет кандидата (не зависаем в 401)"
+        );
     }
 
     /// Ручной revive возвращает мёртвую подписку в строй; is_auth_dead это отражает.
@@ -1525,12 +2113,36 @@ mod tests {
     fn import_health_restores_dead_across_restart() {
         let p = pool(&["a", "b"]);
         p.import_health(vec![registry::SubHealth {
-            email: "a".into(), auth_state: "dead".into(), auth_fail_streak: 3,
-            dead_since_ts: 999, dead_reason: "permission_error".into(), auth_token_fp: "fp".into(),
+            email: "a".into(),
+            auth_state: "dead".into(),
+            auth_fail_streak: 3,
+            dead_since_ts: 999,
+            dead_reason: "permission_error".into(),
+            auth_token_fp: token_fp("t"),
             ..Default::default()
         }]);
         assert!(p.is_auth_dead("a"));
-        assert_eq!(picked(&p), "b", "восстановленная из БД мёртвая — вне ротации");
+        assert_eq!(
+            picked(&p),
+            "b",
+            "восстановленная из БД мёртвая — вне ротации"
+        );
+    }
+
+    #[test]
+    fn import_health_discards_verdict_for_replaced_token() {
+        let p = pool(&["a"]);
+        p.import_health(vec![registry::SubHealth {
+            email: "a".into(),
+            auth_state: "dead".into(),
+            auth_fail_streak: 3,
+            dead_since_ts: 999,
+            dead_reason: "permission_error".into(),
+            auth_token_fp: token_fp("old-token"),
+            ..Default::default()
+        }]);
+        assert!(!p.is_auth_dead("a"));
+        assert_eq!(picked(&p), "a");
     }
 
     /// record_probe возвращает строку для персиста ТОЛЬКО при изменении durable-полей (иначе None →

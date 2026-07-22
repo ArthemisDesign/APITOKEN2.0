@@ -20,23 +20,57 @@ pub struct Settings {
     pub reserve_jitter: f64, // ± разброс порога между подписками (антифингерпринт; деф 0.02)
     pub readiness_delay_secs: u64, // задержка после снятия readiness перед дренажем (деф 3с)
     pub drain_deadline_secs: u64, // предел graceful-дренажа до принудительного обрыва (деф 540с)
-    pub max_inflight: i64,   // потолок параллельных запросов на подписку (деф 6; выше = больше параллели, риск бана)
+    pub max_inflight: i64, // потолок параллельных запросов на подписку (деф 6; выше = больше параллели, риск бана)
     pub proxy: ProxyConfig,
 }
 
 fn ev(k: &str) -> Option<String> {
-    env::var(k).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    env::var(k)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
-fn ev_or(k: &str, d: &str) -> String { ev(k).unwrap_or_else(|| d.to_string()) }
+fn ev_or(k: &str, d: &str) -> String {
+    ev(k).unwrap_or_else(|| d.to_string())
+}
 fn ev_bool(k: &str, d: bool) -> bool {
-    match ev(k) { Some(v) => !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"), None => d }
+    match ev(k) {
+        Some(v) => !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"),
+        None => d,
+    }
 }
 fn ev_opt_in(k: &str) -> bool {
     ev(k).is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
+fn bounded_u64(k: &str, default: u64, min: u64, max: u64) -> u64 {
+    match ev(k).and_then(|value| value.parse::<u64>().ok()) {
+        Some(value) => value.clamp(min, max),
+        None => default.clamp(min, max),
+    }
+}
+
+fn bounded_usize(k: &str, default: usize, min: usize, max: usize) -> usize {
+    bounded_u64(k, default as u64, min as u64, max as u64) as usize
+}
+
+fn bounded_i64(k: &str, default: i64, min: i64, max: i64) -> i64 {
+    match ev(k).and_then(|value| value.parse::<i64>().ok()) {
+        Some(value) => value.clamp(min, max),
+        None => default.clamp(min, max),
+    }
+}
+
+fn finite_nonnegative(k: &str, default: f64, max: f64) -> f64 {
+    match ev(k).and_then(|value| value.parse::<f64>().ok()) {
+        Some(value) if value.is_finite() => value.clamp(0.0, max),
+        _ => default,
+    }
+}
+
 fn parse_mult_bp(k: &str, v: &str, allow_zero: bool) -> Result<i64, String> {
-    let parsed = v.parse::<i64>()
+    let parsed = v
+        .parse::<i64>()
         .map_err(|_| format!("{k}={v:?}: ожидается целое число в диапазоне 1..=10000"))?;
     if (1..=10_000).contains(&parsed) || (allow_zero && parsed == 0) {
         Ok(parsed)
@@ -45,7 +79,9 @@ fn parse_mult_bp(k: &str, v: &str, allow_zero: bool) -> Result<i64, String> {
             "{k}=0 запрещён без CLAUDE_API_ALLOW_ZERO_MULT_BP=1 (явный opt-in бесплатного тарифа)"
         ))
     } else {
-        Err(format!("{k}={parsed}: значение должно быть в диапазоне 1..=10000"))
+        Err(format!(
+            "{k}={parsed}: значение должно быть в диапазоне 1..=10000"
+        ))
     }
 }
 
@@ -57,11 +93,14 @@ fn ev_mult_bp(k: &str, d: i64, allow_zero: bool) -> i64 {
 }
 
 fn validate_upstream(v: &str, allow_insecure_loopback: bool) -> Result<String, String> {
-    let uri = v.parse::<axum::http::Uri>()
+    let uri = v
+        .parse::<axum::http::Uri>()
         .map_err(|_| "CLAUDE_API_UPSTREAM: ожидается абсолютный URL".to_string())?;
-    let scheme = uri.scheme_str()
+    let scheme = uri
+        .scheme_str()
         .ok_or_else(|| "CLAUDE_API_UPSTREAM: URL должен содержать схему".to_string())?;
-    let authority = uri.authority()
+    let authority = uri
+        .authority()
         .ok_or_else(|| "CLAUDE_API_UPSTREAM: URL должен содержать host".to_string())?;
 
     if authority.as_str().contains('@') {
@@ -78,10 +117,12 @@ fn validate_upstream(v: &str, allow_insecure_loopback: bool) -> Result<String, S
     }
 
     let host = authority.host();
-    let ip_literal = host.strip_prefix('[')
+    let ip_literal = host
+        .strip_prefix('[')
         .and_then(|h| h.strip_suffix(']'))
         .unwrap_or(host);
-    let loopback = ip_literal.parse::<IpAddr>()
+    let loopback = ip_literal
+        .parse::<IpAddr>()
         .is_ok_and(|ip| ip.is_loopback());
     if allow_insecure_loopback && scheme.eq_ignore_ascii_case("http") && loopback {
         return Ok(v.trim_end_matches('/').to_string());
@@ -95,26 +136,43 @@ fn ev_upstream() -> String {
     validate_upstream(
         &upstream,
         ev_opt_in("CLAUDE_API_ALLOW_INSECURE_LOOPBACK_UPSTREAM"),
-    ).unwrap_or_else(|msg| panic!("{msg}"))
+    )
+    .unwrap_or_else(|msg| panic!("{msg}"))
 }
 
 /// UA-список из env. Разделитель `|`, а НЕ `,`: реальный UA Claude Code содержит запятую
 /// (`(external, sdk-cli)`), split(',') порвал бы одиночный UA на фрагменты → битый UA всему флоту.
 fn split_ua_list(s: &str) -> Vec<String> {
-    s.split('|').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
+    s.split('|')
+        .map(|x| x.trim().to_string())
+        .filter(|x| !x.is_empty())
+        .collect()
 }
 /// Доля [0,1] из env с КЛАМПОМ + предупреждением при выходе за диапазон. Частая ошибка оператора:
 /// `RESERVE_7D=3` (имел в виду 3%) → 3.0 → «резерв 300%» → пул считается исчерпанным → отказы всем.
 /// Кламп страхует деньги/ёмкость; не-число → дефолт (с логом, не тихо).
 fn ev_frac(k: &str, d: f64) -> f64 {
-    match ev(k) { None => d, Some(v) => clamp_frac(k, &v, d) }
+    match ev(k) {
+        None => d,
+        Some(v) => clamp_frac(k, &v, d),
+    }
 }
 /// Чистая логика ev_frac (тестируемая без env): парс доли + кламп/предупреждение.
 fn clamp_frac(k: &str, v: &str, d: f64) -> f64 {
     match v.parse::<f64>() {
-        Ok(x) if (0.0..=1.0).contains(&x) => x,
-        Ok(x) => { eprintln!("⚠ {k}={x} вне [0,1] — кламплю (это ДОЛЯ окна, не проценты)"); x.clamp(0.0, 1.0) }
-        Err(_) => { eprintln!("⚠ {k}={v:?} не число — беру дефолт {d}"); d }
+        Ok(x) if x.is_finite() && (0.0..=1.0).contains(&x) => x,
+        Ok(x) if x.is_finite() => {
+            eprintln!("⚠ {k}={x} вне [0,1] — кламплю (это ДОЛЯ окна, не проценты)");
+            x.clamp(0.0, 1.0)
+        }
+        Ok(_) => {
+            eprintln!("⚠ {k} не может быть NaN/inf — беру дефолт {d}");
+            d
+        }
+        Err(_) => {
+            eprintln!("⚠ {k}={v:?} не число — беру дефолт {d}");
+            d
+        }
     }
 }
 
@@ -128,8 +186,10 @@ impl Settings {
         let database_url = ev("CLAUDE_API_DATABASE_URL");
         let instance_id = ev("CLAUDE_API_INSTANCE_ID").unwrap_or_else(|| {
             let host = ev("HOSTNAME").unwrap_or_else(|| "engine".into());
-            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos()).unwrap_or(0);
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
             format!("{host}:{}:{ts:x}", std::process::id())
         });
         let host = ev_or("CLAUDE_API_HOST", "0.0.0.0");
@@ -138,21 +198,35 @@ impl Settings {
         // loopback-bind. Без opt-in — false даже на loopback: закрывает footgun «за реверс-прокси
         // (nginx→127.0.0.1) все пиры видны как 127.0.0.1 → аноним получает админ-доступ». Экспонированный
         // bind (0.0.0.0) не доверяет loopback никогда; управляющие роуты требуют CLAUDE_API_KEYS.
-        let trust_loopback = ev("CLAUDE_API_TRUST_LOOPBACK").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false)
+        let trust_loopback = ev("CLAUDE_API_TRUST_LOOPBACK")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
             && matches!(host.as_str(), "127.0.0.1" | "::1" | "localhost");
-        let parse_keys = |name: &str| ev(name).map(|s| {
-            s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect::<Vec<_>>()
-        }).unwrap_or_default();
+        let parse_keys = |name: &str| {
+            ev(name)
+                .map(|s| {
+                    s.split(',')
+                        .map(|x| x.trim().to_string())
+                        .filter(|x| !x.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
         let api_keys = parse_keys("CLAUDE_API_KEYS");
         let control_keys = parse_keys("CLAUDE_API_CONTROL_KEY");
         let panel_keys = parse_keys("CLAUDE_API_PANEL_KEY");
         // Слабый управляющий ключ = онлайн-брутфорс денег/форвардинга (throttle нет — см. reverse-proxy).
         // Предупреждаем громко при старте, если admin/control-ключ короче 24 символов (наши генераторы
         // дают 48-hex; короткий = операторская парольная фраза, брутфорсибельна).
-        for (name, keys) in [("CLAUDE_API_KEYS", &api_keys), ("CLAUDE_API_CONTROL_KEY", &control_keys)] {
+        for (name, keys) in [
+            ("CLAUDE_API_KEYS", &api_keys),
+            ("CLAUDE_API_CONTROL_KEY", &control_keys),
+        ] {
             if keys.iter().any(|k| k.len() < 24) {
-                eprintln!("⚠️  {name}: есть ключ короче 24 символов — слабый для управляющего доступа. \
-                           Задай длинный случайный (напр. openssl rand -hex 24).");
+                eprintln!(
+                    "⚠️  {name}: есть ключ короче 24 символов — слабый для управляющего доступа. \
+                           Задай длинный случайный (напр. openssl rand -hex 24)."
+                );
             }
         }
         // Наценка по умолчанию (×0.20): нужна и в Settings, и в ProxyConfig (для /admin/account) →
@@ -163,7 +237,6 @@ impl Settings {
             2000,
             ev_opt_in("CLAUDE_API_ALLOW_ZERO_MULT_BP"),
         );
-        // AUDIT-TODO(C33): продублировать этот инвариант в Control API account creation перед persistence.
         Settings {
             db_path,
             database_url,
@@ -174,8 +247,8 @@ impl Settings {
             // Наценка по умолчанию: клиент платит 20% от реального API-эквивалента (×0.20).
             mult_bp,
             // Прайоры ёмкости окон (0 → дефолт пула под Max 20x; калибровка их уточняет).
-            cap5h_usd: ev("CLAUDE_API_CAP5H_USD").and_then(|s| s.parse().ok()).unwrap_or(0.0),
-            cap7d_usd: ev("CLAUDE_API_CAP7D_USD").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+            cap5h_usd: finite_nonnegative("CLAUDE_API_CAP5H_USD", 0.0, 1_000_000.0),
+            cap7d_usd: finite_nonnegative("CLAUDE_API_CAP7D_USD", 0.0, 10_000_000.0),
             // Запас окон (headroom) с джиттером: бережём 10%/3%, порог отсечения слегка разный по
             // подпискам, чтобы флот не резался на одном проценте (антифингерпринт).
             reserve5h: ev_frac("CLAUDE_API_RESERVE_5H", 0.10),
@@ -183,13 +256,11 @@ impl Settings {
             reserve_jitter: ev_frac("CLAUDE_API_RESERVE_JITTER", 0.02),
             // Fail-closed clamps: readiness-delay ≤ 30с; drain-deadline в [5, 595]с — оставляем
             // headroom под systemd TimeoutStopSec=600 и исключаем переполнение Instant + deadline.
-            readiness_delay_secs: ev("CLAUDE_API_READINESS_DELAY_SECS")
-                .and_then(|s| s.parse::<u64>().ok()).unwrap_or(3).min(30),
-            drain_deadline_secs: ev("CLAUDE_API_DRAIN_DEADLINE_SECS")
-                .and_then(|s| s.parse::<u64>().ok()).unwrap_or(540).clamp(5, 595),
+            readiness_delay_secs: bounded_u64("CLAUDE_API_READINESS_DELAY_SECS", 3, 0, 30),
+            drain_deadline_secs: bounded_u64("CLAUDE_API_DRAIN_DEADLINE_SECS", 540, 5, 595),
             // Потолок параллельных запросов на подписку. Дефолт 6 (человеческий конверт/анти-бан).
             // Высокое значение снимает потолок concurrency — больше параллели ценой риска бан-сигнала.
-            max_inflight: ev("CLAUDE_API_MAX_INFLIGHT").and_then(|s| s.parse::<i64>().ok()).unwrap_or(6).max(1),
+            max_inflight: bounded_i64("CLAUDE_API_MAX_INFLIGHT", 6, 1, 1_024),
             proxy: ProxyConfig {
                 api_keys,
                 control_keys,
@@ -199,13 +270,15 @@ impl Settings {
                 // OAuth-токены можно отправлять только на канонический Anthropic origin. Локальный HTTP
                 // mock разрешается исключительно явным opt-in и только на literal loopback IP.
                 upstream: ev_upstream(),
-                max_tries: ev("CLAUDE_API_MAX_TRIES").and_then(|s| s.parse().ok()).unwrap_or(3),
+                max_tries: bounded_usize("CLAUDE_API_MAX_TRIES", 3, 1, 10),
                 // Fair-share: потолок одновременных запросов на клиентский ключ (кит не набивает флот).
-                max_inflight_per_key: ev("CLAUDE_API_MAX_INFLIGHT_PER_KEY").and_then(|s| s.parse().ok()).unwrap_or(20),
+                max_inflight_per_key: bounded_usize(
+                    "CLAUDE_API_MAX_INFLIGHT_PER_KEY", 20, 1, 1_024,
+                ) as u32,
                 util_cap: ev_frac("CLAUDE_API_UTIL_CAP", 0.95),
-                cool_secs: ev("CLAUDE_API_COOL_SECS").and_then(|s| s.parse().ok()).unwrap_or(300),
+                cool_secs: bounded_i64("CLAUDE_API_COOL_SECS", 300, 1, 8 * 24 * 3600),
                 // Гладкий UX: тихий wait+retry ротации при транзиентной нехватке (деф 8с). 0 = выкл.
-                smooth_wait_ms: ev("CLAUDE_API_SMOOTH_WAIT_MS").and_then(|s| s.parse().ok()).unwrap_or(8000),
+                smooth_wait_ms: bounded_u64("CLAUDE_API_SMOOTH_WAIT_MS", 8_000, 0, 60_000),
                 poll: ev_bool("CLAUDE_API_POLL", true),
                 inject_identity: ev_bool("CLAUDE_API_INJECT_IDENTITY", true),
                 identity: ev_or("CLAUDE_API_IDENTITY", CLAUDE_CODE_IDENTITY),
@@ -235,9 +308,9 @@ impl Settings {
                 user_agent: ev_or("CLAUDE_API_UA", "claude-cli/2.1.195 (external, sdk-cli)"),
                 user_agents: split_ua_list(&ev_or("CLAUDE_API_UA", "claude-cli/2.1.195 (external, sdk-cli)")),
                 // Разброс patch-версии UA между персонами (антифингерпринт флота). 0/1 → выключено.
-                ua_spread: ev("CLAUDE_API_UA_SPREAD").and_then(|s| s.parse().ok()).unwrap_or(8),
+                ua_spread: bounded_usize("CLAUDE_API_UA_SPREAD", 8, 1, 100) as u32,
                 anthropic_version: ev_or("CLAUDE_API_ANTHROPIC_VERSION", "2023-06-01"),
-                connect_timeout: ev("CLAUDE_API_CONNECT_TIMEOUT").and_then(|s| s.parse().ok()).unwrap_or(30),
+                connect_timeout: bounded_u64("CLAUDE_API_CONNECT_TIMEOUT", 30, 1, 120),
                 // Отпечаток Stainless-SDK клиента Claude Code. Дефолты — правдоподобные; ТОЧНЫЕ значения
                 // снимаются с живого claude (refresh-fingerprint.sh) и кладутся в config.env. Флот-константны.
                 x_app: ev_or("CLAUDE_API_X_APP", "cli"),
@@ -273,11 +346,13 @@ mod tests {
 
     #[test]
     fn frac_clamps_percent_typo_and_rejects_garbage() {
-        assert_eq!(clamp_frac("k", "0.03", 0.5), 0.03);   // норм доля
-        assert_eq!(clamp_frac("k", "3", 0.5), 1.0);       // «3» (проценты вместо доли) → кламп в 1.0
-        assert_eq!(clamp_frac("k", "-1", 0.5), 0.0);      // отрицательное → 0
-        assert_eq!(clamp_frac("k", "хлам", 0.5), 0.5);    // не число → дефолт
-        assert_eq!(clamp_frac("k", "0,1", 0.5), 0.5);     // запятая-десятичная (опечатка) → дефолт
+        assert_eq!(clamp_frac("k", "0.03", 0.5), 0.03); // норм доля
+        assert_eq!(clamp_frac("k", "3", 0.5), 1.0); // «3» (проценты вместо доли) → кламп в 1.0
+        assert_eq!(clamp_frac("k", "-1", 0.5), 0.0); // отрицательное → 0
+        assert_eq!(clamp_frac("k", "NaN", 0.5), 0.5);
+        assert_eq!(clamp_frac("k", "inf", 0.5), 0.5);
+        assert_eq!(clamp_frac("k", "хлам", 0.5), 0.5); // не число → дефолт
+        assert_eq!(clamp_frac("k", "0,1", 0.5), 0.5); // запятая-десятичная (опечатка) → дефолт
     }
 
     #[test]

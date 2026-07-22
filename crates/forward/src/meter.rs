@@ -42,9 +42,14 @@ pub struct MeterCtx {
     pub capacity: Option<(Arc<AsyncBilling>, String)>,
 }
 
-/// Копим до 32 МиБ тела для парсинга usage. Реальный ответ (даже 128k output) — сильно меньше;
-/// потолок лишь страхует от аномально большого потока (тогда возможен недосчёт хвоста — не крэш).
-const ACC_CAP: usize = 32 * 1024 * 1024;
+/// Non-SSE usage is a trailing field of one JSON document, so retain at most the public response
+/// limit. SSE is filtered incrementally: only message_start/message_delta/error events are kept;
+/// content deltas pass through byte-for-byte without a second in-memory copy.
+const JSON_ACC_CAP: usize = 32 * 1024 * 1024;
+const SSE_USAGE_CAP: usize = 1024 * 1024;
+const SSE_LINE_CAP: usize = 1024 * 1024;
+const STREAM_LEASE_SECS: i64 = 3_600;
+const STREAM_LEASE_RENEW_SECS: u64 = 300;
 
 fn usage_has_us_inference(usage: &serde_json::Value) -> bool {
     usage
@@ -80,44 +85,126 @@ fn sse_has_us_inference(sse: &str) -> bool {
     false
 }
 
-fn apply_us_inference_premium(real: i128, usage: &metering::Usage) -> i128 {
-    // Data-residency premium applies to token categories, not fixed-price web-search requests.
-    let web_search = (usage.web_search_requests as i128) * metering::WEB_SEARCH_NANO;
-    metering::apply_multiplier(real - web_search, 11_000) + web_search
-}
-
 /// Стрим-обёртка: пропускает чанки клиенту и копит их копию; на конце — списывает.
 pub struct TeeMeter {
     inner: ByteStream,
     acc: Vec<u8>,
+    sse_line: Vec<u8>,
+    sse_drop_line: bool,
+    lease_heartbeat: Option<tokio::task::JoinHandle<()>>,
     ctx: Option<MeterCtx>, // берётся ровно один раз (finalize идемпотентен)
 }
 
 impl TeeMeter {
     pub fn new(inner: ByteStream, ctx: MeterCtx) -> Self {
-        TeeMeter { inner, acc: Vec::new(), ctx: Some(ctx) }
+        let request_id = ctx.bill.as_ref().map(|bill| bill.request_id.clone());
+        let capacity_lease_id = ctx.capacity.as_ref().map(|(_, lease_id)| lease_id.clone());
+        let billing = ctx
+            .bill
+            .as_ref()
+            .map(|bill| bill.billing.clone())
+            .or_else(|| ctx.capacity.as_ref().map(|(billing, _)| billing.clone()));
+        let lease_heartbeat = billing.map(|billing| {
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(STREAM_LEASE_RENEW_SECS))
+                        .await;
+                    if !matches!(
+                        billing
+                            .renew_stream_leases(
+                                request_id.as_deref(),
+                                capacity_lease_id.as_deref(),
+                                STREAM_LEASE_SECS,
+                            )
+                            .await,
+                        Ok(true)
+                    ) {
+                        eprintln!("stream lease renewal failed; live response remains fail-closed");
+                        return;
+                    }
+                }
+            })
+        });
+        TeeMeter {
+            inner,
+            acc: Vec::new(),
+            sse_line: Vec::new(),
+            sse_drop_line: false,
+            lease_heartbeat,
+            ctx: Some(ctx),
+        }
+    }
+
+    fn retain_sse_usage(&mut self, chunk: &[u8]) {
+        for &byte in chunk {
+            if self.sse_drop_line {
+                if byte == b'\n' {
+                    self.sse_drop_line = false;
+                }
+                continue;
+            }
+            if byte != b'\n' {
+                if self.sse_line.len() < SSE_LINE_CAP {
+                    self.sse_line.push(byte);
+                } else {
+                    self.sse_line.clear();
+                    self.sse_drop_line = true;
+                }
+                continue;
+            }
+
+            let line = std::mem::take(&mut self.sse_line);
+            let Ok(line) = std::str::from_utf8(&line) else {
+                continue;
+            };
+            let Some(json) = line.trim_start().strip_prefix("data:").map(str::trim) else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+                continue;
+            };
+            let relevant = matches!(
+                value.get("type").and_then(serde_json::Value::as_str),
+                Some("message_start" | "message_delta" | "error")
+            );
+            if relevant && self.acc.len().saturating_add(line.len() + 8) <= SSE_USAGE_CAP {
+                self.acc.extend_from_slice(b"data: ");
+                self.acc.extend_from_slice(json.as_bytes());
+                self.acc.extend_from_slice(b"\n\n");
+            }
+        }
     }
 
     fn finalize(&mut self) {
-        let ctx = match self.ctx.take() { Some(c) => c, None => return };
+        let ctx = match self.ctx.take() {
+            Some(c) => c,
+            None => return,
+        };
+        if let Some(heartbeat) = self.lease_heartbeat.take() {
+            heartbeat.abort();
+        }
         // стрим завершён/оборван → освободить слот конкуррентности персоны (парен с mark_used).
         // Делаем ПЕРВЫМ и безусловно, даже если usage пустой (иначе in-flight подтёк бы).
         ctx.pool.end_stream(&ctx.email);
         if let Some((billing, lease_id)) = &ctx.capacity {
             billing.release_capacity(lease_id);
         }
-        let (usage, served_model, incomplete_non_sse, us_inference) = if ctx.is_sse {
+        let (usage, served_model, incomplete_non_sse, us_inference, speed) = if ctx.is_sse {
             let s = String::from_utf8_lossy(&self.acc);
             // ошибка ВНУТРИ стрима после 200 (overloaded посреди генерации) — HTTP-код её не отражал,
             // ротация уже невозможна; логируем, чтобы не была «тихой» (клиент получил её байт-в-байт).
             if metering::sse_has_error(&s) {
-                eprintln!("⚠ SSE-error после 200 на {} — стрим нёс error-евент", ctx.email);
+                eprintln!(
+                    "⚠ SSE-error после 200 на {} — стрим нёс error-евент",
+                    ctx.email
+                );
             }
             (
                 metering::usage_from_sse(&s),
                 metering::model_from_sse(&s),
                 false,
                 sse_has_us_inference(&s),
+                metering::speed_from_sse(&s),
             )
         } else {
             let response = serde_json::from_slice::<serde_json::Value>(&self.acc).ok();
@@ -130,6 +217,7 @@ impl TeeMeter {
                 metering::model_from_response_json(&self.acc),
                 response.is_none(),
                 us_inference,
+                metering::speed_from_response_json(&self.acc),
             )
         };
         // Тарифицируем по МОДЕЛИ ИЗ ОТВЕТА (авторитетный сервёный id): клиент мог прислать алиас или
@@ -146,16 +234,21 @@ impl TeeMeter {
         // Реальная стоимость (×1.0, до наценки). 0, если usage нет — count_tokens/models/любой 200
         // без usage/обрыв до message_start. ВАЖНО: даже при 0 нельзя просто выйти — иначе hold висел
         // бы в reserved_nano до рестарта (тихая утечка баланса клиента на штатном count_tokens).
-        let base_real = if usage.is_zero() {
-            0
+        let fast = speed
+            .as_deref()
+            .is_some_and(|speed| speed.eq_ignore_ascii_case("fast"));
+        let prices = metering::model_prices_for_speed_at(price_model, now_unix, fast);
+        let base_breakdown = if usage.is_zero() {
+            metering::CostBreakdown::default()
         } else {
-            metering::cost_nanodollars(&usage, &metering::model_prices_at(price_model, now_unix))
+            metering::cost_breakdown(&usage, &prices)
         };
-        let real = if us_inference && base_real > 0 {
-            apply_us_inference_premium(base_real, &usage)
+        let breakdown = if us_inference {
+            base_breakdown.apply_token_multiplier(11_000)
         } else {
-            base_real
+            base_breakdown
         };
+        let real = breakdown.total();
 
         // расход в пул только когда он реально был (0 калибровку не двигает)
         if real > 0 {
@@ -165,12 +258,15 @@ impl TeeMeter {
         // Резерв метерного ключа закрываем ВСЕГДА: actual = charge (0 при usage=0 → полный возврат
         // hold). settle возвращает hold и списывает actual → итог по паре reserve→settle = −actual.
         if let Some(b) = ctx.bill {
-            // Неполный non-SSE JSON означает, что клиент оборвал чтение до хвостового usage. Возврат hold
-            // превратил бы уже полученный контент в бесплатный; локально безопаснее сохранить весь резерв.
-            // AUDIT-TODO(C8): продолжать дренировать upstream после downstream-disconnect и settle по usage.
+            // TeeMeter::drop продолжает дренировать upstream после downstream-disconnect, поэтому сюда
+            // обычно приходит authoritative usage. Истинно оборванный upstream без usage списывает 0 и
+            // оставляет явный диагностический сигнал вместо бездоказательного списания всего hold.
             let computed_charge = if incomplete_non_sse {
-                eprintln!("⚠ неполный non-SSE ответ: сохраняем полный billing hold");
-                b.hold.max(0) as i128
+                // A missing authoritative usage object is not proof that the provider consumed the
+                // maximum reservation. Downstream cancellation is drained asynchronously in Drop;
+                // a genuine upstream truncation is settled at zero and surfaced for reconciliation.
+                eprintln!("⚠ incomplete non-SSE response without authoritative usage; charge=0");
+                0
             } else if real > 0 {
                 metering::apply_multiplier(real, b.mult_bp)
             } else {
@@ -197,7 +293,6 @@ impl TeeMeter {
                 );
             }
             let charge_i64 = computed_charge.clamp(0, charge_ceiling) as i64;
-            // AUDIT-TODO(C55): учитывать inference_geo premium и в preflight-резерве, чтобы hold был верхней границей.
             // Разбивка токенов/модели для клиентского дашборда — пишется рядом с charge (аналитика).
             // Только при авторитетном usage; C8-preserved hold не изображаем как токеновое событие.
             let usage_event = if charge_i64 > 0 && real > 0 {
@@ -210,6 +305,19 @@ impl TeeMeter {
                     cache_write_1h_tokens: usage.cache_write_1h_tokens as i64,
                     web_search_requests: usage.web_search_requests as i64,
                     real_nano: real.clamp(0, i64::MAX as i128) as i64,
+                    speed: speed.unwrap_or_else(|| "standard".to_string()),
+                    inference_geo: if us_inference {
+                        "us".to_string()
+                    } else {
+                        String::new()
+                    },
+                    input_nano: breakdown.input.clamp(0, i64::MAX as i128) as i64,
+                    output_nano: breakdown.output.clamp(0, i64::MAX as i128) as i64,
+                    cache_read_nano: breakdown.cache_read.clamp(0, i64::MAX as i128) as i64,
+                    cache_write_5m_nano: breakdown.cache_write_5m.clamp(0, i64::MAX as i128) as i64,
+                    cache_write_1h_nano: breakdown.cache_write_1h.clamp(0, i64::MAX as i128) as i64,
+                    web_search_nano: breakdown.web_search.clamp(0, i64::MAX as i128) as i64,
+                    priced_ts: now_unix,
                 })
             } else {
                 None
@@ -235,7 +343,11 @@ impl TeeMeter {
                 eprintln!(
                     "💵 ключ …{tail}: −{} [{}]",
                     metering::nano_to_usd_string(charge_i64 as i128),
-                    if price_model.is_empty() { "?" } else { price_model }
+                    if price_model.is_empty() {
+                        "?"
+                    } else {
+                        price_model
+                    }
                 );
             }
         }
@@ -248,7 +360,10 @@ impl Stream for TeeMeter {
         let me = self.get_mut();
         match me.inner.as_mut().poll_next(cx) {
             Poll::Ready(Some(Ok(chunk))) => {
-                if me.acc.len().saturating_add(chunk.len()) <= ACC_CAP {
+                let is_sse = me.ctx.as_ref().is_some_and(|ctx| ctx.is_sse);
+                if is_sse {
+                    me.retain_sse_usage(&chunk);
+                } else if me.acc.len().saturating_add(chunk.len()) <= JSON_ACC_CAP {
                     me.acc.extend_from_slice(&chunk);
                 }
                 Poll::Ready(Some(Ok(chunk)))
@@ -268,6 +383,45 @@ impl Stream for TeeMeter {
 // взят в poll_next → здесь no-op.
 impl Drop for TeeMeter {
     fn drop(&mut self) {
-        self.finalize();
+        if self.ctx.is_none() {
+            return;
+        }
+
+        // A downstream disconnect must not turn an unknown partial JSON body into a maximum charge.
+        // Keep reading the already-started upstream response in a bounded background task so its
+        // authoritative final usage can settle the request. The stream carries the capacity/global
+        // guards, so those remain held until the drain completes.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let inner = std::mem::replace(&mut self.inner, Box::pin(futures_util::stream::empty()));
+            let ctx = self.ctx.take();
+            let acc = std::mem::take(&mut self.acc);
+            let sse_line = std::mem::take(&mut self.sse_line);
+            let sse_drop_line = self.sse_drop_line;
+            let lease_heartbeat = self.lease_heartbeat.take();
+            handle.spawn(async move {
+                use futures_util::StreamExt;
+                let mut meter = TeeMeter {
+                    inner,
+                    acc,
+                    sse_line,
+                    sse_drop_line,
+                    lease_heartbeat,
+                    ctx,
+                };
+                while let Some(frame) = meter.inner.next().await {
+                    let Ok(chunk) = frame else { break };
+                    let is_sse = meter.ctx.as_ref().is_some_and(|ctx| ctx.is_sse);
+                    if is_sse {
+                        meter.retain_sse_usage(&chunk);
+                    } else if meter.acc.len().saturating_add(chunk.len()) <= JSON_ACC_CAP {
+                        meter.acc.extend_from_slice(&chunk);
+                    }
+                }
+                meter.finalize();
+            });
+        } else {
+            // Only possible outside the HTTP runtime (for example during abnormal teardown).
+            self.finalize();
+        }
     }
 }

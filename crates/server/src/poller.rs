@@ -6,7 +6,8 @@
 //! обновляет `polled_ts`). Момент сброса окна вычисляется локально (`reset` — абсолютный timestamp),
 //! поэтому его НЕ надо «ловить» опросом. Активный probe нужен лишь чтобы (а) впервые узнать лимиты
 //! новой подписки, (б) редко проверить, что токен простаивающей подписки ещё жив. Никакого
-//! периодического скана: спим ровно до ближайшего due-времени или до сигнала об изменении флота.
+//! фиксированного скана подписок: спим ровно до ближайшего due-времени или до сигнала об изменении
+//! флота. Billing recovery и retention остаются отдельными короткими maintenance-циклами.
 
 use forward::{persona_ua, poll_sub, AppState};
 use registry::Sub;
@@ -16,29 +17,116 @@ use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
 
-/// Как часто прогонять обрезку ledger (сек). Раз в 6ч — с запасом (задача дешёвая, рост не взрывной).
-const LEDGER_PRUNE_INTERVAL: u64 = 6 * 3600;
+/// Run bounded retention continuously enough to keep pace with request-volume tables.
+const LEDGER_PRUNE_INTERVAL: u64 = 60;
+
+/// Recovery must outlive startup: reservations deliberately carry leases, so an immediate restart
+/// cannot recover them until a later pass. A short leader lease permits blue/green overlap without
+/// duplicate scanning; request-level advisory locks keep settlement idempotent as a second fence.
+const BILLING_RECOVERY_INTERVAL: u64 = 5;
+const BILLING_RECOVERY_LEADER_TTL: i64 = 15;
+const BILLING_RECOVERY_BATCH: usize = 10_000;
+
+pub async fn billing_recovery_loop(
+    authority: registry::authority::AuthorityConfig,
+    owner: Option<registry::pg::Owner>,
+    authority_ready: Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
+
+    loop {
+        if authority_ready.load(Ordering::Acquire) {
+            let config = authority.clone();
+            let current = owner.clone();
+            let recovered = tokio::task::spawn_blocking(move || {
+                let mut authority = config.connect()?;
+                if let Some(current) = current.as_ref() {
+                    let pg = authority.postgres()?;
+                    if !pg.acquire_leader(
+                        current,
+                        "billing-recovery",
+                        BILLING_RECOVERY_LEADER_TTL,
+                    )? {
+                        return Ok::<_, anyhow::Error>(None);
+                    }
+                }
+                Ok(Some(authority.reconcile_expired(BILLING_RECOVERY_BATCH)?))
+            })
+            .await;
+
+            match recovered {
+                Ok(Ok(Some(report)))
+                    if report.canceled_before_delivery > 0
+                        || report.charged_after_delivery > 0
+                        || report.processed_outbox > 0 =>
+                {
+                    eprintln!(
+                        "billing recovery: canceled={}, charged={}, outbox={}",
+                        report.canceled_before_delivery,
+                        report.charged_after_delivery,
+                        report.processed_outbox,
+                    );
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(err)) => eprintln!("billing recovery pass failed: {err:#}"),
+                Err(err) => eprintln!("billing recovery task failed: {err}"),
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(BILLING_RECOVERY_INTERVAL)).await;
+    }
+}
 
 /// Фоновая обрезка ledger под масштаб: удаляем bulk-строки списаний старше `retention_days`
 /// (topup/adjust не трогаем). Синхронный SQLite → на blocking-пул. При 1000 юзеров бережёт БД от
 /// раздувания журналом per-request-списаний, не теряя ни текущих сумм, ни истории пополнений.
-pub async fn ledger_prune_loop(authority: registry::authority::AuthorityConfig, retention_days: i64) {
-    if retention_days <= 0 { return; } // 0/отриц. → обрезка выключена
+pub async fn ledger_prune_loop(
+    authority: registry::authority::AuthorityConfig,
+    retention_days: i64,
+) {
+    if retention_days <= 0 {
+        return;
+    } // 0/отриц. → обрезка выключена
     loop {
         tokio::time::sleep(Duration::from_secs(LEDGER_PRUNE_INTERVAL)).await;
         let cutoff = pool::now() - retention_days * 86400;
         let db = authority.clone();
         let res = tokio::task::spawn_blocking(move || {
             db.connect().and_then(|mut c| {
-                let led = c.ledger_prune(cutoff)?;
-                // usage_events (аналитика) — та же ретенция, чтобы таблица не росла вечно.
-                let usg = c.usage_prune(cutoff).unwrap_or(0);
-                Ok((led, usg))
+                let mut led = 0usize;
+                let mut usg = 0usize;
+                let mut lifecycle = registry::pg::MaintenanceReport::default();
+                for _ in 0..20 {
+                    let ledger_batch = c.ledger_prune(cutoff)?;
+                    let usage_batch = c.usage_prune(cutoff)?;
+                    let life = c.maintenance_prune(cutoff)?;
+                    led += ledger_batch;
+                    usg += usage_batch;
+                    lifecycle.outbox += life.outbox;
+                    lifecycle.reservations += life.reservations;
+                    lifecycle.capacity_leases += life.capacity_leases;
+                    lifecycle.engine_instances += life.engine_instances;
+                    let full = ledger_batch >= 5_000
+                        || usage_batch >= 5_000
+                        || life.outbox >= 5_000
+                        || life.reservations >= 5_000
+                        || life.capacity_leases >= 5_000;
+                    if !full {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Ok((led, usg, lifecycle))
             })
-        }).await;
+        })
+        .await;
         match res {
-            Ok(Ok((led, usg))) if led > 0 || usg > 0 =>
-                eprintln!("ledger: обрезано {led} списаний, {usg} usage-строк (>{retention_days}д)"),
+            Ok(Ok((led, usg, life))) if led > 0 || usg > 0 || life.outbox > 0
+                || life.reservations > 0 || life.capacity_leases > 0 || life.engine_instances > 0 =>
+                eprintln!(
+                    "retention: ledger={led}, usage={usg}, outbox={}, reservations={}, capacity={}, instances={} (>{retention_days}d)",
+                    life.outbox, life.reservations, life.capacity_leases, life.engine_instances,
+                ),
             Ok(Err(e)) => eprintln!("⚠ ledger-обрезка не удалась: {e}"),
             Err(e) => eprintln!("⚠ ledger-обрезка: задача упала: {e}"),
             _ => {}
@@ -53,15 +141,31 @@ pub async fn metrics_loop(app: AppState, metrics_db: String, retention_days: i64
     const SNAP_SECS: u64 = 60;
     let mut ticks: u64 = 0;
     loop {
-        let snap = crate::http::overview_value(&app).await; // тот же агрегат, что и /overview
+        let snap = match crate::http::overview_value(&app).await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                eprintln!("⚠ metrics snapshot skipped: billing authority unavailable: {error:#}");
+                tokio::time::sleep(Duration::from_secs(SNAP_SECS)).await;
+                continue;
+            }
+        }; // тот же агрегат, что и /overview
         let now = pool::now();
         // Пер-подписочный снапшот ёмкости: на дистанции даёт истинный ПИК (max cap5h/cap7d), которого
         // текущая EMA-калибровка не показывает (она усредняет). Полный email — metrics.db не публичен.
-        let subs: Vec<(String, f64, f64, f64, f64)> = app.pool.capacity().into_iter()
-            .map(|c| (c.email, c.cap5h_usd, c.cap7d_usd, c.util5h, c.util7d)).collect();
+        let subs: Vec<(String, f64, f64, f64, f64)> = app
+            .pool
+            .capacity()
+            .into_iter()
+            .map(|c| (c.email, c.cap5h_usd, c.cap7d_usd, c.util5h, c.util7d))
+            .collect();
         let db = metrics_db.clone();
-        let cutoff = if retention_days > 0 { now - retention_days * 86400 } else { 0 };
-        let do_prune = retention_days > 0 && ticks % 60 == 0; // ~раз в час
+        let cutoff = if retention_days > 0 {
+            now - retention_days * 86400
+        } else {
+            0
+        };
+        // Примерно раз в час.
+        let do_prune = retention_days > 0 && ticks.is_multiple_of(60);
         // Запись в SQLite — на blocking-потоке (не блокируем async-воркер). Открываем per-write:
         // снапшоты редки (60с), проще, чем таскать не-Sync Connection через .await.
         let _ = tokio::task::spawn_blocking(move || {
@@ -108,10 +212,11 @@ fn next_probe_at(email: &str, live: &pool::Live) -> i64 {
             // Per-persona джиттер (0..LIVENESS_INTERVAL/2, стабилен по email): без него весь idle-флот
             // созрел бы РОВНО в T+300 → синхронный залп идентичных probe (временна́я корреляция поверх
             // фингерпринта). Джиттер разводит их. Cooling НЕ джиттерим — он авторитетен.
-            let base = if live.polled_ts == 0 { 0 } else {
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                std::hash::Hash::hash(email, &mut h);
-                let jitter = (std::hash::Hasher::finish(&h) % (LIVENESS_INTERVAL as u64 / 2)) as i64;
+            let base = if live.polled_ts == 0 {
+                0
+            } else {
+                let jitter =
+                    (pool::stable_hash64(email.as_bytes()) % (LIVENESS_INTERVAL as u64 / 2)) as i64;
                 live.polled_ts + LIVENESS_INTERVAL + jitter
             };
             base.max(live.cooling_until)
@@ -122,20 +227,27 @@ fn next_probe_at(email: &str, live: &pool::Live) -> i64 {
 /// Перечитывание реестра: подхватываем добавленные/убранные подписки. Спит 30с (локальная БД,
 /// дёшево), но будит поллер `poke` ТОЛЬКО когда набор реально изменился (онбординг новой подписки
 /// не ждёт liveness-таймера).
-pub async fn reload_loop(app: AppState, authority: registry::authority::AuthorityConfig,
-                         fleet: Option<String>, poke: Arc<Notify>) {
+pub async fn reload_loop(
+    app: AppState,
+    authority: registry::authority::AuthorityConfig,
+    fleet: Option<String>,
+    poke: Arc<Notify>,
+) {
     let mut prev: HashSet<String> = HashSet::new();
     loop {
         // синхронный SQLite → на blocking-пул, чтобы не держать async-воркер (пусть и на 30с редко)
         let (db, fl) = (authority.clone(), fleet.clone());
         let loaded = tokio::task::spawn_blocking(move || {
             db.connect().and_then(|mut c| c.load_active(fl.as_deref()))
-        }).await.unwrap_or_else(|e| Err(anyhow::anyhow!("reload task panicked: {e}")));
+        })
+        .await
+        .unwrap_or_else(|e| Err(anyhow::anyhow!("reload task panicked: {e}")));
         match loaded {
             Err(e) => eprintln!("⚠ reload реестра не удался (держим прежний список): {e}"),
             Ok(subs) => {
                 let cur: HashSet<String> = subs.iter().map(|s| s.email.clone()).collect();
                 let membership_changed = cur != prev;
+                app.breaker.set_fleet_size(subs.len());
                 // ВСЕГДА заменяем: подхватываем смену token/proxy того же email (внешняя
                 // перепровизия authbot/CLI на живом сервере) — иначе держали бы протухший до рестарта.
                 // replace_subs сохраняет volatile-состояние существующих (retain по email).
@@ -166,7 +278,9 @@ fn probe_cool_secs_429(
     fallback_secs: i64,
 ) -> i64 {
     let future = |reset: Option<i64>| {
-        reset.filter(|t| *t > now).map(|t| t.saturating_sub(now).max(1))
+        reset
+            .filter(|t| *t > now)
+            .map(|t| t.saturating_sub(now).max(1))
     };
     let (u5, u7) = (util5h.unwrap_or(0.0), util7d.unwrap_or(0.0));
     let reset = if u7 >= PROBE_QUOTA_UTIL {
@@ -182,22 +296,41 @@ fn probe_cool_secs_429(
 /// Один liveness-probe: читаем лимиты подписки и применяем. Сетевой сбой всё равно фиксируем
 /// (`set_util` c None двигает `polled_ts`) — иначе поллер спинил бы по мёртвому прокси. Результат
 /// probe (401/403/2xx) кормит durable-машину auth-health; изменившийся вердикт персистится (fenced).
-async fn probe(app: &AppState, authority: &registry::authority::AuthorityConfig,
-               owner: Option<&registry::pg::Owner>, sub: &Sub) {
+async fn probe(
+    app: &AppState,
+    authority: &registry::authority::AuthorityConfig,
+    owner: Option<&registry::pg::Owner>,
+    sub: &Sub,
+) {
     let client = match app.clients.get(&sub.proxy, &sub.email) {
         Ok(c) => c,
-        Err(_) => { app.pool.set_util(&sub.email, None, None, None, None, None); return; }
+        Err(_) => {
+            app.pool.set_util(&sub.email, None, None, None, None, None);
+            return;
+        }
     };
     let ua = persona_ua(&app.cfg, &sub.email);
     match poll_sub(&client, &app.cfg, &sub.token, &ua, &sub.email).await {
         Some(r) => {
-            app.pool.set_util(&sub.email, r.util5h, r.util7d, r.status.clone(), r.reset5h, r.reset7d);
+            app.pool.set_util(
+                &sub.email,
+                r.util5h,
+                r.util7d,
+                r.status.clone(),
+                r.reset5h,
+                r.reset7d,
+            );
             match r.http {
                 429 => {
                     // AUDIT-TODO(C59): expose claim/Retry-After and one public 429-cooling helper from
                     // `forward`, then delete this claim-less fallback from the composition crate.
                     let secs = probe_cool_secs_429(
-                        r.util5h, r.util7d, r.reset5h, r.reset7d, pool::now(), app.cfg.cool_secs,
+                        r.util5h,
+                        r.util7d,
+                        r.reset5h,
+                        r.reset7d,
+                        pool::now(),
+                        app.cfg.cool_secs,
                     );
                     app.pool.cool(&sub.email, secs);
                 }
@@ -211,7 +344,10 @@ async fn probe(app: &AppState, authority: &registry::authority::AuthorityConfig,
             // Durable auth-health: один 401/403 НЕ приговор; `record_probe` копит серию и ставит Dead
             // только по корроборации (DEAD_STREAK за ≥DEAD_MIN_SECS). Вердикт-изменение персистим
             // (leader/owner-fenced) → переживает рестарт/blue-green, панель показывает авторитетно.
-            if let Some(health) = app.pool.record_probe(&sub.email, r.http, &pool::token_fp(&sub.token)) {
+            if let Some(health) =
+                app.pool
+                    .record_probe(&sub.email, r.http, &pool::token_fp(&sub.token))
+            {
                 persist_health(authority, owner, health).await;
             }
         }
@@ -221,8 +357,11 @@ async fn probe(app: &AppState, authority: &registry::authority::AuthorityConfig,
 
 /// Персист durable-вердикта auth-health одной подписки (owner-fenced в PostgreSQL). Синхронный
 /// клиент → blocking-пул, как persist_state_cas/ledger_prune.
-async fn persist_health(authority: &registry::authority::AuthorityConfig,
-                        owner: Option<&registry::pg::Owner>, health: registry::SubHealth) {
+async fn persist_health(
+    authority: &registry::authority::AuthorityConfig,
+    owner: Option<&registry::pg::Owner>,
+    health: registry::SubHealth,
+) {
     let config = authority.clone();
     let owner = owner.cloned();
     let email = health.email.clone();
@@ -231,9 +370,14 @@ async fn persist_health(authority: &registry::authority::AuthorityConfig,
         let mut conn = config.connect()?;
         conn.save_sub_health(owner.as_ref(), &health)?;
         Ok::<_, anyhow::Error>(())
-    }).await;
+    })
+    .await;
     match res {
-        Ok(Ok(())) => { if state == "dead" { eprintln!("🚫 подписка {email} помечена DEAD (токен отвергнут Anthropic)"); } }
+        Ok(Ok(())) => {
+            if state == "dead" {
+                eprintln!("🚫 подписка {email} помечена DEAD (токен отвергнут Anthropic)");
+            }
+        }
         Ok(Err(e)) => eprintln!("⚠ персист auth-health {email} не удался: {e}"),
         Err(e) => eprintln!("⚠ персист auth-health {email}: задача упала: {e}"),
     }
@@ -256,29 +400,47 @@ pub async fn persist_state_cas(
     let mut last_error = String::from("pool-state persistence did not run");
     for attempt in 0..attempts {
         let rows = app.pool.export_state();
-        if rows.is_empty() { return Ok(()); }
+        if rows.is_empty() {
+            return Ok(());
+        }
         let config = authority.clone();
         let write_owner = owner.cloned();
         let saved = tokio::task::spawn_blocking(move || {
             let mut conn = config.connect()?;
             let versions = conn.save_pool_state(write_owner.as_ref(), &rows)?;
+            let acknowledged: Vec<(String, i64, f64)> = versions
+                .into_iter()
+                .map(|(email, version)| {
+                    let delta = rows
+                        .iter()
+                        .find(|row| row.email == email)
+                        .map(|row| row.spent_delta_usd)
+                        .unwrap_or(0.0);
+                    (email, version, delta)
+                })
+                .collect();
             let _ = conn.wal_checkpoint();
-            Ok::<_, anyhow::Error>(versions)
-        }).await;
+            Ok::<_, anyhow::Error>(acknowledged)
+        })
+        .await;
         match saved {
-            Ok(Ok(versions)) => {
-                app.pool.accept_persist_versions(&versions);
+            Ok(Ok(acknowledged)) => {
+                app.pool.accept_persist_versions(&acknowledged);
                 return Ok(());
             }
             Ok(Err(err)) => last_error = err.to_string(),
             Err(err) => last_error = format!("pool-state writer task failed: {err}"),
         }
 
-        if attempt + 1 == attempts { break; }
+        if attempt + 1 == attempts {
+            break;
+        }
         let config = authority.clone();
         match tokio::task::spawn_blocking(move || {
             config.connect().and_then(|mut conn| conn.load_pool_state())
-        }).await {
+        })
+        .await
+        {
             Ok(Ok(rows)) => app.pool.merge_persisted_state(rows),
             Ok(Err(err)) => last_error = format!("{last_error}; CAS rebase failed: {err}"),
             Err(err) => last_error = format!("{last_error}; CAS rebase task failed: {err}"),
@@ -291,8 +453,12 @@ pub async fn persist_state_cas(
 /// Персист состояния пула: **write-through по событию** cooling (`poke` из `pool.on_change`) —
 /// бан переживает рестарт почти сразу; плюс редкий safety-flush для калибровки. Не фиксированный
 /// снапшот «раз в N»: под тишиной (нет cooling) пишем лишь раз в `PERSIST_SAFETY`.
-pub async fn persist_loop(app: AppState, authority: registry::authority::AuthorityConfig,
-                          owner: Option<registry::pg::Owner>, poke: Arc<Notify>) {
+pub async fn persist_loop(
+    app: AppState,
+    authority: registry::authority::AuthorityConfig,
+    owner: Option<registry::pg::Owner>,
+    poke: Arc<Notify>,
+) {
     loop {
         tokio::select! {
             _ = poke.notified() => { tokio::time::sleep(Duration::from_secs(PERSIST_DEBOUNCE)).await; }
@@ -308,8 +474,12 @@ pub async fn persist_loop(app: AppState, authority: registry::authority::Authori
 
 /// Событийный liveness-поллер: probe-ит созревшие подписки конкурентно, затем спит РОВНО до
 /// ближайшего due-времени (или до `poke` при изменении флота). Фиксированного тика нет.
-pub async fn poll_loop(app: AppState, authority: registry::authority::AuthorityConfig,
-                       owner: Option<registry::pg::Owner>, poke: Arc<Notify>) {
+pub async fn poll_loop(
+    app: AppState,
+    authority: registry::authority::AuthorityConfig,
+    owner: Option<registry::pg::Owner>,
+    poke: Arc<Notify>,
+) {
     loop {
         // PostgreSQL lease-epoch elects exactly one active poller. No Redlock and no best-effort race.
         if let Some(owner) = owner.as_ref() {
@@ -317,8 +487,11 @@ pub async fn poll_loop(app: AppState, authority: registry::authority::AuthorityC
             let owner = owner.clone();
             let leader = tokio::task::spawn_blocking(move || {
                 let mut db = config.connect()?;
-                db.postgres()?.acquire_leader(&owner, "subscription-poller", 30)
-            }).await.unwrap_or_else(|e| Err(anyhow::anyhow!("poller leader task failed: {e}")));
+                db.postgres()?
+                    .acquire_leader(&owner, "subscription-poller", 30)
+            })
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("poller leader task failed: {e}")));
             match leader {
                 Ok(true) => {}
                 Ok(false) => {
@@ -337,25 +510,63 @@ pub async fn poll_loop(app: AppState, authority: registry::authority::AuthorityC
         }
         let now = pool::now();
         let snap = app.pool.snapshot();
-        let due: Vec<Sub> = snap.iter()
+        let due: Vec<Sub> = snap
+            .iter()
             .filter(|(s, l)| next_probe_at(&s.email, l) <= now)
             .map(|(s, _)| s.clone())
             .collect();
 
         if !due.is_empty() {
             let mut set: JoinSet<()> = JoinSet::new();
-            for sub in due {
-                if set.len() >= PROBE_CONCURRENCY { set.join_next().await; }
+            let mut due = due.into_iter();
+            for sub in due.by_ref().take(PROBE_CONCURRENCY) {
                 let app = app.clone();
                 let authority = authority.clone();
                 let owner = owner.clone();
-                set.spawn(async move { probe(&app, &authority, owner.as_ref(), &sub).await; });
+                set.spawn(async move {
+                    probe(&app, &authority, owner.as_ref(), &sub).await;
+                });
             }
-            while set.join_next().await.is_some() {}
+            let mut renew = tokio::time::interval(Duration::from_secs(10));
+            renew.tick().await;
+            while !set.is_empty() {
+                tokio::select! {
+                    joined = set.join_next() => {
+                        if joined.is_some() {
+                            if let Some(sub) = due.next() {
+                                let app = app.clone();
+                                let authority = authority.clone();
+                                let owner = owner.clone();
+                                set.spawn(async move { probe(&app, &authority, owner.as_ref(), &sub).await; });
+                            }
+                        }
+                    }
+                    _ = renew.tick(), if owner.is_some() => {
+                        let config = authority.clone();
+                        let current = owner.clone().expect("guarded by owner.is_some()");
+                        let renewed = tokio::task::spawn_blocking(move || {
+                            let mut db = config.connect()?;
+                            db.postgres()?.acquire_leader(&current, "subscription-poller", 30)
+                        }).await;
+                        if !matches!(renewed, Ok(Ok(true))) {
+                            eprintln!("poller leader renewal lost; aborting outstanding probes");
+                            set.abort_all();
+                            while set.join_next().await.is_some() {}
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         // спим до ближайшего due (событийно), но не дольше MAX_SLEEP; будимся раньше по `poke`.
-        let next = app.pool.snapshot().iter().map(|(s, l)| next_probe_at(&s.email, l)).min().unwrap_or(now + MAX_SLEEP);
+        let next = app
+            .pool
+            .snapshot()
+            .iter()
+            .map(|(s, l)| next_probe_at(&s.email, l))
+            .min()
+            .unwrap_or(now + MAX_SLEEP);
         let max_sleep = if owner.is_some() { 10 } else { MAX_SLEEP };
         let sleep_s = (next - pool::now()).clamp(1, max_sleep);
         tokio::select! {
@@ -380,7 +591,8 @@ pub async fn owner_heartbeat_loop(
         let renewed = tokio::task::spawn_blocking(move || {
             let mut db = config.connect()?;
             db.heartbeat_instance(&current, 30)
-        }).await;
+        })
+        .await;
         match renewed {
             Ok(Ok(true)) => authority_ready.store(true, Ordering::Release),
             Ok(Ok(false)) => {
@@ -390,7 +602,9 @@ pub async fn owner_heartbeat_loop(
             }
             Ok(Err(err)) => {
                 authority_ready.store(false, Ordering::Release);
-                eprintln!("⚠ engine owner heartbeat failed; readiness removed until recovery: {err}");
+                eprintln!(
+                    "⚠ engine owner heartbeat failed; readiness removed until recovery: {err}"
+                );
             }
             Err(err) => {
                 authority_ready.store(false, Ordering::Release);
@@ -409,12 +623,22 @@ mod tests {
         let now = pool::now();
         let em = "probe@test.io";
         // давно опрошена (с запасом на джиттер ≤ LIVENESS_INTERVAL/2) → созрела
-        let mut l = pool::Live { polled_ts: now - LIVENESS_INTERVAL * 2, ..Default::default() };
-        assert!(next_probe_at(em, &l) <= now, "idle-подписка должна созреть для liveness-probe");
+        let mut l = pool::Live {
+            polled_ts: now - LIVENESS_INTERVAL * 2,
+            ..Default::default()
+        };
+        assert!(
+            next_probe_at(em, &l) <= now,
+            "idle-подписка должна созреть для liveness-probe"
+        );
         // в cooling → НЕ probe-им до конца cooling (не долбим забаненный/лимитированный аккаунт)
         l.polled_ts = now - 310;
         l.cooling_until = now + 500;
-        assert_eq!(next_probe_at(em, &l), now + 500, "probe откладывается до конца cooling");
+        assert_eq!(
+            next_probe_at(em, &l),
+            now + 500,
+            "probe откладывается до конца cooling"
+        );
         assert!(next_probe_at(em, &l) > now);
     }
 
@@ -426,19 +650,31 @@ mod tests {
         let em = "s@test.io";
         // suspect, только что cooled(900) 401-probe-ом → всё равно созреет по SUSPECT_INTERVAL
         let suspect = pool::Live {
-            polled_ts: now - SUSPECT_INTERVAL - 1, cooling_until: now + 900,
-            auth_state: pool::AuthState::Suspect, ..Default::default()
+            polled_ts: now - SUSPECT_INTERVAL - 1,
+            cooling_until: now + 900,
+            auth_state: pool::AuthState::Suspect,
+            ..Default::default()
         };
-        assert!(next_probe_at(em, &suspect) <= now, "suspect probe-ится, не глядя на cooling");
+        assert!(
+            next_probe_at(em, &suspect) <= now,
+            "suspect probe-ится, не глядя на cooling"
+        );
         // dead — редкий resurrection-probe по DEAD_RESURRECT_INTERVAL, тоже cooling-независимо
         let dead = pool::Live {
-            polled_ts: now - DEAD_RESURRECT_INTERVAL - 1, cooling_until: now + 900,
-            auth_state: pool::AuthState::Dead, ..Default::default()
+            polled_ts: now - DEAD_RESURRECT_INTERVAL - 1,
+            cooling_until: now + 900,
+            auth_state: pool::AuthState::Dead,
+            ..Default::default()
         };
-        assert!(next_probe_at(em, &dead) <= now, "dead получает медленный resurrection-probe");
+        assert!(
+            next_probe_at(em, &dead) <= now,
+            "dead получает медленный resurrection-probe"
+        );
         // но dead, недавно опрошенный, НЕ созрел (медленный интервал держит редкость)
         let dead_fresh = pool::Live {
-            polled_ts: now - 10, auth_state: pool::AuthState::Dead, ..Default::default()
+            polled_ts: now - 10,
+            auth_state: pool::AuthState::Dead,
+            ..Default::default()
         };
         assert!(next_probe_at(em, &dead_fresh) > now, "dead не долбим часто");
     }
@@ -475,14 +711,7 @@ mod tests {
             3600,
         );
         assert_eq!(
-            probe_cool_secs_429(
-                None,
-                Some(1.0),
-                None,
-                Some(i64::MAX),
-                now,
-                300,
-            ),
+            probe_cool_secs_429(None, Some(1.0), None, Some(i64::MAX), now, 300,),
             MAX_PROBE_COOL_SECS,
         );
     }
