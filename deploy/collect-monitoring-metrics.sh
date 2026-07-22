@@ -68,7 +68,9 @@ SELECT 'apitoken_queue_dead{queue="engine_pricing"} 0';
 SELECT 'apitoken_queue_oldest_ready_seconds{queue="engine_pricing"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM engine_pricing_jobs WHERE status IN ('pending','retry');
 SELECT 'apitoken_queue_ready{queue="commerce_email"} ' || count(*) FROM email_outbox WHERE status = 'pending';
 SELECT 'apitoken_queue_dead{queue="commerce_email"} ' || count(*) FROM email_outbox WHERE status = 'failed';
-SELECT 'apitoken_queue_canceled{queue="commerce_email"} ' || count(*) FROM email_outbox WHERE status = 'canceled';
+-- Infrastructure installs before application migrations. Cast the enum to text so this collector
+-- remains valid both before and after the canceled status is introduced.
+SELECT 'apitoken_queue_canceled{queue="commerce_email"} ' || count(*) FROM email_outbox WHERE status::text = 'canceled';
 SELECT 'apitoken_queue_oldest_ready_seconds{queue="commerce_email"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM email_outbox WHERE status = 'pending';
 SELECT 'apitoken_webhook_failed ' || count(*) FROM webhook_events WHERE status = 'failed';
 SELECT 'apitoken_checkout_stale ' || count(*) FROM checkout_sessions WHERE status IN ('creating','pending') AND created_at < now() - interval '1 hour';

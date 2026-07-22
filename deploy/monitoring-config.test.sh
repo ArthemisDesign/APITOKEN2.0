@@ -89,7 +89,7 @@ grep -Fq 'apitoken_backup_present{database="%s"}' "$ROOT/deploy/collect-monitori
 grep -Fq 'apitoken_queue_dead{queue="commerce_email"}' "$ROOT/deploy/collect-monitoring-metrics.sh"
 grep -Fq "FROM email_outbox WHERE status = 'failed'" "$ROOT/deploy/collect-monitoring-metrics.sh"
 grep -Fq 'apitoken_queue_canceled{queue="commerce_email"}' "$ROOT/deploy/collect-monitoring-metrics.sh"
-grep -Fq "FROM email_outbox WHERE status = 'canceled'" "$ROOT/deploy/collect-monitoring-metrics.sh"
+grep -Fq "FROM email_outbox WHERE status::text = 'canceled'" "$ROOT/deploy/collect-monitoring-metrics.sh"
 for database in commerce claude_engine sales apitoken_crm; do
   grep -Fq "$database" "$ROOT/deploy/apitoken-db-dump"
 done
