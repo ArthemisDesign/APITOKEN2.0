@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, oauthUrl, type ProviderStatus } from "@/lib/api";
-import { storedReferralCode } from "@/lib/referral";
+import { captureReferralCode, storedReferralCode } from "@/lib/referral";
 import { useI18n } from "./i18n-provider";
 import { GitHubLogo, GoogleLogo } from "./provider-logos";
 import { trackProductEvent } from "@/lib/product-analytics";
@@ -14,9 +14,14 @@ export function SocialAuth({ inviteToken }: { inviteToken?: string }) {
   // B2B до welcome-бонуса. Читаем на клиенте после монтирования.
   const [ref, setRef] = useState<string | undefined>(undefined);
   useEffect(() => { api.providers().then(setProviders).catch(() => setProviders(null)); }, []);
-  // Hydrate browser-only referral attribution after mount.
+  // Hydrate browser-only referral attribution after mount. Сначала фиксируем ?ref= из ТЕКУЩЕГО URL
+  // (last-click wins), затем читаем — чтобы прямой заход на /register?ref=CODE + клик по OAuth не
+  // зависел от порядка mount-эффектов и не улетел со старым застрявшим кодом.
   // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { setRef(storedReferralCode()); }, []);
+  useEffect(() => {
+    captureReferralCode(new URLSearchParams(window.location.search).get("ref"));
+    setRef(storedReferralCode());
+  }, []);
   if (!providers?.google.enabled && !providers?.github.enabled) return null;
   return (
     <>
