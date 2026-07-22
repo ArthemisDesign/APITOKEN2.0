@@ -382,7 +382,7 @@ function PricingBanner({ account }: { account: AccountView }) {
         <div className="pricing-discount"><b>{discount}%</b><span>{copy.discount}</span><em className="pricing-mult">{formatMultiplier(paymentBp)} {copy.valueMultiplier}</em></div>
       </div>
       <div className="pricing-partner-facts">
-        <div className="pricing-status-item"><span>{copy.partnerYouPay}</span><strong>{formatPerDollar(paymentBp)}</strong><small>{copy.partnerYouPayHint}</small></div>
+        <div className="pricing-status-item"><span>{copy.partnerYouPay}</span><strong>{`$${formatFixedRatio(paymentBp, BASIS_POINTS, 2)}`}</strong><small>{copy.partnerYouPayHint}</small></div>
         <div className="pricing-status-item"><span>{copy.partnerExample}</span><strong>$100 → ≈ {formatNanoUsd(exampleNano)}</strong><small>{copy.partnerExampleHint}</small></div>
         <div className="pricing-status-item pricing-status-ok"><span>{copy.partnerFixed}</span><strong>{copy.partnerFixedValue}</strong><small>{copy.partnerFixedHint}</small></div>
       </div>
