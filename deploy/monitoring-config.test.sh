@@ -5,6 +5,12 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 TEMP=$(mktemp -d)
 trap 'rm -rf -- "$TEMP"' EXIT
 
+# PostgreSQL DO blocks must reach psql as $$, never as the backslash commands that psql
+# interprets from \$\$. Exercise the same shell quoting used by the production installer.
+role_sql=$(printf '%s\n' "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'apitoken_monitoring') THEN CREATE ROLE apitoken_monitoring LOGIN; END IF; END \$\$;")
+[[ $role_sql == 'DO $$ BEGIN '* ]]
+[[ $role_sql != *'\$\$'* ]]
+
 for dashboard in "$ROOT"/observability/grafana/dashboards/*.json; do
   node -e 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))' "$dashboard"
 done

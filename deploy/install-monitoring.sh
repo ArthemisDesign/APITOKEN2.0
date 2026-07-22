@@ -84,8 +84,8 @@ fi
 monitoring_postgres_password=$(awk -F= '$1 == "MONITORING_POSTGRES_PASSWORD" { print substr($0, index($0, "=") + 1) }' "$ENV_FILE")
 [[ $monitoring_postgres_password =~ ^[a-f0-9]{64}$ ]] || die "MONITORING_POSTGRES_PASSWORD must be 64 lowercase hex characters"
 escaped_postgres_password=${monitoring_postgres_password//\'/\'\'}
-{
-  printf "DO \\\$\\\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'apitoken_monitoring') THEN CREATE ROLE apitoken_monitoring LOGIN; END IF; END \\\$\\\$;\n"
+monitoring_role_sql=$({
+  printf '%s\n' "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'apitoken_monitoring') THEN CREATE ROLE apitoken_monitoring LOGIN; END IF; END \$\$;"
   printf "ALTER ROLE apitoken_monitoring WITH LOGIN PASSWORD '%s';\n" "$escaped_postgres_password"
   printf 'GRANT pg_monitor TO apitoken_monitoring;\n'
   printf 'GRANT CONNECT ON DATABASE commerce TO apitoken_monitoring;\n'
@@ -95,7 +95,10 @@ escaped_postgres_password=${monitoring_postgres_password//\'/\'\'}
       printf 'GRANT CONNECT ON DATABASE %s TO apitoken_monitoring;\n' "$database"
     fi
   done
-} | docker compose --env-file "$POSTGRES_ENV" -f "$POSTGRES_COMPOSE" exec -T commerce-postgres \
+})
+[[ $monitoring_role_sql == 'DO $$ BEGIN '* ]] || die 'generated PostgreSQL role bootstrap has invalid dollar quoting'
+[[ $monitoring_role_sql != *'\$\$'* ]] || die 'generated PostgreSQL role bootstrap contains escaped dollar quoting'
+printf '%s\n' "$monitoring_role_sql" | docker compose --env-file "$POSTGRES_ENV" -f "$POSTGRES_COMPOSE" exec -T commerce-postgres \
   psql -U commerce -d postgres --no-psqlrc --set ON_ERROR_STOP=1 >/dev/null
 
 install -d -o root -g root -m 0755 "$STAGE"
