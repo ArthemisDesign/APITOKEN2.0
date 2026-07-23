@@ -8,6 +8,14 @@
 		per_host
 	}
 
+	# Requests traverse TWO Caddy hops (public vhost → loopback slot origin). Without this the
+	# second hop discards the first hop's X-Forwarded-For and every backend sees 127.0.0.1 as the
+	# client, blinding session audit and signup anti-fraud. Trust XFF only when the sender itself
+	# is loopback (the first hop); internet clients can never spoof their way past it.
+	servers {
+		trusted_proxies static 127.0.0.1/8 ::1
+	}
+
 	# Runtime proxy errors include request headers. Redact every injected service credential so a
 	# failed upstream can never copy an internal key into journald.
 	log default {
