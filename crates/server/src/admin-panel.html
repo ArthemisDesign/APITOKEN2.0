@@ -60,9 +60,16 @@ a.link{color:var(--blue);text-decoration:none}a.link:hover{text-decoration:under
 .card:nth-child(2n){border-right:0}.card:nth-child(n+3){border-top:1px solid var(--line)}.form{grid-template-columns:1fr 1fr}}
 @media(max-width:600px){main{padding:16px 10px}.brand{font-size:13px}.right{display:none}.cards,.form,.domain-grid{grid-template-columns:1fr}
 .card{border-right:0!important;border-top:1px solid var(--line)}.card:first-child{border-top:0}}
+.overlay{position:fixed;inset:0;z-index:90;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--bg) 40%,transparent);backdrop-filter:blur(2px)}
+.dialog{width:min(430px,92vw);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:18px 18px 14px;box-shadow:0 18px 50px rgba(0,0,0,.35)}
+.dialog h3{margin:0 0 4px;font-size:14px}.dialog .dlg-sub{margin:0 0 12px;color:var(--muted);word-break:break-all}
+.dlg-label{display:block;margin:10px 0 0;color:var(--muted)}.dlg-label input{display:block;width:100%;margin-top:4px}
+.dlg-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+.toast{position:fixed;right:16px;bottom:16px;z-index:95;max-width:420px;padding:10px 14px;border-radius:6px;border:1px solid var(--blue);background:var(--card);color:var(--text);box-shadow:0 10px 30px rgba(0,0,0,.3);word-break:break-word}
+.toast.bad{border-color:var(--red)}.toast+.toast{bottom:70px}
 </style>
 </head>
-<body data-admin-panel-version="4">
+<body data-admin-panel-version="5">
 <div id="app"></div>
 <script>
 const app=document.getElementById('app');
@@ -70,6 +77,22 @@ const validTabs=['dashboard','admins','accounts','users','topups','business','sy
 const getTab=()=>validTabs.includes(location.hash.slice(1))?location.hash.slice(1):'dashboard';
 let tab=getTab(),timer=null,usersCache=[],adminDomainFilter='';
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+// Встроенные модалки вместо window.prompt/confirm: браузеры (или галка «блокировать диалоги»)
+// молча глушат нативные диалоги, и кнопки выглядят «мёртвыми». Промис → значения полей | null.
+function dialog(options){return new Promise(resolve=>{const overlay=document.createElement('div');overlay.className='overlay';
+  overlay.innerHTML='<div class="dialog"><h3>'+esc(options.title)+'</h3>'+(options.message?'<p class="dlg-sub">'+esc(options.message)+'</p>':'')+
+    (options.fields||[]).map(field=>'<label class="dlg-label">'+esc(field.label)+'<input type="'+esc(field.type||'text')+'" name="'+esc(field.name)+'" value="'+esc(field.value||'')+'" autocomplete="off"></label>').join('')+
+    '<div class="dlg-actions"><button class="btn" data-dlg="cancel">Отмена</button><button class="btn '+(options.danger?'bad':'')+'" data-dlg="ok">'+esc(options.confirmLabel||'Подтвердить')+'</button></div></div>';
+  const done=value=>{overlay.remove();resolve(value)};
+  overlay.addEventListener('mousedown',event=>{if(event.target===overlay)done(null)});
+  overlay.querySelector('[data-dlg=cancel]').onclick=()=>done(null);
+  overlay.querySelector('[data-dlg=ok]').onclick=()=>{const values={};overlay.querySelectorAll('input').forEach(input=>values[input.name]=input.value);done(values)};
+  overlay.addEventListener('keydown',event=>{if(event.key==='Escape')done(null);
+    if(event.key==='Enter'){event.preventDefault();overlay.querySelector('[data-dlg=ok]').click()}});
+  document.body.appendChild(overlay);const first=overlay.querySelector('input');(first||overlay.querySelector('[data-dlg=ok]')).focus()})}
+function toast(message,kind){const note=document.createElement('div');note.className='toast'+(kind==='bad'?' bad':'');
+  note.textContent=message;document.body.appendChild(note);setTimeout(()=>note.remove(),kind==='bad'?9000:5000)}
+addEventListener('error',event=>toast('JS: '+event.message,'bad'));
 const money=value=>'$'+Number(value||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const nanoMoney=value=>{try{let n=BigInt(String(value??'0')),neg=n<0n;if(neg)n=-n;const whole=n/1000000000n,cents=(n%1000000000n)/10000000n;
   return(neg?'−':'')+'$'+whole.toLocaleString('en-US')+'.'+cents.toString().padStart(2,'0')}catch{return'$0.00'}};
@@ -152,22 +175,33 @@ async function admins(){const suffix=adminDomainFilter?'?domain='+encodeURICompo
   page('администраторы',body,pill(accounts.filter(account=>account.status==='active').length+' active','ok'));bindAdmins(domains)}
 function bindAdmins(domains){const select=document.getElementById('admin-domain');select.onchange=()=>{adminDomainFilter=select.value;admins().catch(error=>errorPage('администраторы',error))};
   const form=document.getElementById('admin-create');form.onsubmit=async event=>{event.preventDefault();const data=new FormData(form),selected=data.getAll('domains');
-    if(!selected.length)return alert('Выберите хотя бы один домен.');const reason=prompt('Причина создания администратора (3–300 символов):');if(reason==null||reason.trim().length<3)return;
-    const button=form.querySelector('button[type=submit]');button.disabled=true;try{await send('/admin/admin-accounts','POST',{username:data.get('username'),password:data.get('password'),domains:selected,reason:reason.trim()});
-      form.reset();alert('Администратор создан.');await admins()}catch(error){alert(error.message);button.disabled=false}};
+    if(!selected.length)return toast('Выберите хотя бы один домен.','bad');
+    const values=await dialog({title:'Создать администратора',message:String(data.get('username')||''),confirmLabel:'Создать',
+      fields:[{name:'reason',label:'Причина создания (3–300 символов)'}]});
+    if(!values)return;const reason=(values.reason||'').trim();if(reason.length<3)return toast('Причина: минимум 3 символа.','bad');
+    const button=form.querySelector('button[type=submit]');button.disabled=true;try{await send('/admin/admin-accounts','POST',{username:data.get('username'),password:data.get('password'),domains:selected,reason});
+      form.reset();toast('Администратор создан.');await admins()}catch(error){toast(error.message,'bad');button.disabled=false}};
   document.querySelectorAll('[data-admin-action]').forEach(button=>button.onclick=()=>adminAction(button,domains))}
 async function adminAction(button,domains){const action=button.dataset.adminAction,username=button.dataset.username,id=button.dataset.id;let body;
-  if(action==='password'){const first=prompt('Новый пароль для '+username+' (минимум 8 символов):');if(first==null)return;if(first.length<8)return alert('Пароль слишком короткий.');
-    const second=prompt('Повторите новый пароль:');if(second!==first)return alert('Пароли не совпадают.');const reason=prompt('Причина смены пароля:');if(reason==null||reason.trim().length<3)return;
-    if(!confirm('Сменить пароль '+username+'?'+(button.dataset.self==='1'?'\nЭто ваш аккаунт: браузер запросит новые credentials.':'')))return;body={password:first,reason:reason.trim()}}
-  if(action==='domains'){const allowed=domains.map(item=>item.domain),current=button.dataset.domains||'',value=prompt('Домены для '+username+' через запятую:\n'+allowed.join('\n'),current);if(value==null)return;
-    const selected=[...new Set(value.split(',').map(item=>item.trim()).filter(Boolean))];if(!selected.length||selected.some(item=>!allowed.includes(item)))return alert('Укажите один или несколько доменов ровно как в списке.');
-    const reason=prompt('Причина изменения доменов:');if(reason==null||reason.trim().length<3)return;if(!confirm('Сохранить доступ '+username+' к:\n'+selected.join('\n')))return;body={domains:selected,reason:reason.trim()}}
-  if(action==='status'){const next=button.dataset.status==='active'?'disabled':'active',reason=prompt('Причина изменения статуса '+username+':');if(reason==null||reason.trim().length<3)return;
-    if(!confirm((next==='disabled'?'Отключить ':'Включить ')+username+'?'))return;body={status:next,reason:reason.trim()}}
-  button.disabled=true;let result;try{result=await send('/admin/admin-accounts/'+id+'/'+action,'PATCH',body)}catch(error){alert('Изменение не сохранено: '+error.message);button.disabled=false;return}
-  alert('Изменение сохранено.'+(result.changed_self?' Введите новый пароль при следующем запросе.':''));
-  try{await admins()}catch(error){alert('Изменение сохранено, но список не обновился: '+error.message);button.disabled=false}}
+  if(action==='password'){const values=await dialog({title:'Сменить пароль '+username,confirmLabel:'Сменить',
+      message:button.dataset.self==='1'?'Это ваш аккаунт: браузер запросит новые credentials.':'',
+      fields:[{name:'first',label:'Новый пароль (минимум 8 символов)',type:'password'},{name:'second',label:'Повторите пароль',type:'password'},{name:'reason',label:'Причина'}]});
+    if(!values)return;if((values.first||'').length<8)return toast('Пароль слишком короткий.','bad');
+    if(values.second!==values.first)return toast('Пароли не совпадают.','bad');
+    if((values.reason||'').trim().length<3)return toast('Причина: минимум 3 символа.','bad');body={password:values.first,reason:values.reason.trim()}}
+  if(action==='domains'){const allowed=domains.map(item=>item.domain);
+    const values=await dialog({title:'Домены для '+username,message:'Через запятую. Доступные: '+allowed.join(', '),confirmLabel:'Сохранить',
+      fields:[{name:'value',label:'Домены',value:button.dataset.domains||''},{name:'reason',label:'Причина'}]});
+    if(!values)return;const selected=[...new Set((values.value||'').split(',').map(item=>item.trim()).filter(Boolean))];
+    if(!selected.length||selected.some(item=>!allowed.includes(item)))return toast('Укажите один или несколько доменов ровно как в списке.','bad');
+    if((values.reason||'').trim().length<3)return toast('Причина: минимум 3 символа.','bad');body={domains:selected,reason:values.reason.trim()}}
+  if(action==='status'){const next=button.dataset.status==='active'?'disabled':'active';
+    const values=await dialog({title:(next==='disabled'?'Отключить ':'Включить ')+username,confirmLabel:'Выполнить',danger:next==='disabled',
+      fields:[{name:'reason',label:'Причина'}]});
+    if(!values)return;if((values.reason||'').trim().length<3)return toast('Причина: минимум 3 символа.','bad');body={status:next,reason:values.reason.trim()}}
+  button.disabled=true;let result;try{result=await send('/admin/admin-accounts/'+id+'/'+action,'PATCH',body)}catch(error){toast('Изменение не сохранено: '+error.message,'bad');button.disabled=false;return}
+  toast('Изменение сохранено.'+(result.changed_self?' Введите новый пароль при следующем запросе.':''));
+  try{await admins()}catch(error){toast('Изменение сохранено, но список не обновился: '+error.message,'bad');button.disabled=false}}
 
 async function allPartners(){let offset=0,items=[],totals=null;do{const data=await api('/partner-admin/partner-analytics?sort=created_at&dir=desc&limit=500&offset='+offset),batch=data.items||[];
   totals=data.totals;items=items.concat(batch);offset=items.length;if(!batch.length)break}while(totals&&items.length<totals.total);return{items,totals:totals||{total:items.length,active:0}}}
@@ -229,28 +263,31 @@ function bindUserPage(){const search=document.getElementById('search'),status=do
   search.oninput=filter;status.onchange=filter;auth.onchange=filter;
   document.querySelectorAll('[data-credit]').forEach(button=>button.onclick=()=>creditUser(button));
   document.querySelectorAll('[data-action]').forEach(button=>button.onclick=()=>userAction(button))}
-async function creditUser(button){const amount=prompt('Начислить '+button.dataset.email+'\\nСумма USD, целое число 1–99999:');
-  if(amount==null)return;const value=amount.trim();if(!/^[1-9][0-9]{0,4}$/.test(value))return alert('Нужно целое число от 1 до 99999.');
-  const reason=prompt('Причина начисления (3–300 символов):');if(reason==null||reason.trim().length<3)return;
-  if(!confirm('Начислить '+money(value)+' пользователю '+button.dataset.email+'?\\nПричина: '+reason.trim()))return;button.disabled=true;
-  const pendingKey='admin-credit-pending:'+button.dataset.credit,payloadSignature=value+'\\n'+reason.trim();let idempotencyKey=crypto.randomUUID();
+async function creditUser(button){
+  const values=await dialog({title:'Начислить баланс',message:button.dataset.email,confirmLabel:'Начислить',
+    fields:[{name:'amount',label:'Сумма USD — целое число 1–99999'},{name:'reason',label:'Причина (3–300 символов)'}]});
+  if(!values)return;const value=(values.amount||'').trim(),reason=(values.reason||'').trim();
+  if(!/^[1-9][0-9]{0,4}$/.test(value))return toast('Сумма: целое число от 1 до 99999.','bad');
+  if(reason.length<3)return toast('Причина: минимум 3 символа.','bad');button.disabled=true;
+  const pendingKey='admin-credit-pending:'+button.dataset.credit,payloadSignature=value+'\n'+reason;let idempotencyKey=crypto.randomUUID();
   try{const pending=JSON.parse(sessionStorage.getItem(pendingKey)||'null');if(pending?.signature===payloadSignature)idempotencyKey=pending.idempotencyKey}catch{}
   sessionStorage.setItem(pendingKey,JSON.stringify({signature:payloadSignature,idempotencyKey}));
-  try{const result=await send('/admin/users/'+button.dataset.credit+'/balance-adjustments','POST',{amount_usd:value,reason:reason.trim(),idempotency_key:idempotencyKey});
-    sessionStorage.removeItem(pendingKey);alert('Готово. Новый баланс: '+money(result.balance_usd));await refresh()}
-  catch(error){alert(error.message+'\\nIdempotency key сохранён: повторите те же сумму и причину для безопасного retry.');button.disabled=false}}
-async function userAction(button){const action=button.dataset.action,labels={disable:'Отключить пользователя и отозвать сессии?',enable:'Включить пользователя?',
-  sessions:'Отозвать все активные сессии?',totp:'Сбросить 2FA и отозвать сессии?',
-  bonus:'Отозвать welcome-бонус ($4) и заблокировать его повторную выдачу? Списание идемпотентно: уже отозванный бонус не спишется второй раз.'};
-  const reason=prompt('Причина действия для '+button.dataset.email+':');
-  if(reason==null||reason.trim().length<3)return;if(!confirm(labels[action]+'\\n'+button.dataset.email+'\\nПричина: '+reason.trim()))return;button.disabled=true;
-  try{let result;if(action==='disable'||action==='enable')result=await send('/admin/users/'+button.dataset.id+'/status','PATCH',{status:action==='disable'?'disabled':'active',reason:reason.trim()});
-    if(action==='sessions')result=await send('/admin/users/'+button.dataset.id+'/sessions/revoke','POST',{reason:reason.trim()});
-    if(action==='totp')result=await send('/admin/users/'+button.dataset.id+'/totp/reset','POST',{reason:reason.trim()});
-    if(action==='bonus')result=await send('/admin/users/'+button.dataset.id+'/bonus/revoke','POST',{reason:reason.trim()});
-    alert('Готово'+(result.sessions_revoked!=null?' · сессий отозвано: '+result.sessions_revoked:'')+
+  try{const result=await send('/admin/users/'+button.dataset.credit+'/balance-adjustments','POST',{amount_usd:value,reason,idempotency_key:idempotencyKey});
+    sessionStorage.removeItem(pendingKey);toast('Готово. Новый баланс: '+money(result.balance_usd));await refresh()}
+  catch(error){toast(error.message+' — idempotency key сохранён: повторите те же сумму и причину для безопасного retry.','bad');button.disabled=false}}
+async function userAction(button){const action=button.dataset.action,labels={disable:'Отключить пользователя и отозвать сессии',enable:'Включить пользователя',
+  sessions:'Отозвать все активные сессии',totp:'Сбросить 2FA и отозвать сессии',
+  bonus:'Отозвать welcome-бонус ($4). Идемпотентно: уже отозванный не спишется второй раз'};
+  const values=await dialog({title:labels[action],message:button.dataset.email,confirmLabel:'Выполнить',
+    danger:action==='disable'||action==='bonus',fields:[{name:'reason',label:'Причина (3–300 символов)'}]});
+  if(!values)return;const reason=(values.reason||'').trim();if(reason.length<3)return toast('Причина: минимум 3 символа.','bad');button.disabled=true;
+  try{let result;if(action==='disable'||action==='enable')result=await send('/admin/users/'+button.dataset.id+'/status','PATCH',{status:action==='disable'?'disabled':'active',reason});
+    if(action==='sessions')result=await send('/admin/users/'+button.dataset.id+'/sessions/revoke','POST',{reason});
+    if(action==='totp')result=await send('/admin/users/'+button.dataset.id+'/totp/reset','POST',{reason});
+    if(action==='bonus')result=await send('/admin/users/'+button.dataset.id+'/bonus/revoke','POST',{reason});
+    toast('Готово'+(result.sessions_revoked!=null?' · сессий отозвано: '+result.sessions_revoked:'')+
       (result.balance_usd!=null?' · новый баланс: $'+result.balance_usd+(result.idempotent_replay?' (уже был отозван ранее)':''):''));
-    await refresh()}catch(error){alert(error.message);button.disabled=false}}
+    await refresh()}catch(error){toast(error.message,'bad');button.disabled=false}}
 
 async function topups(){const data=await api('/admin/topups?limit=200'),payments=data.payments||[],checkouts=data.checkouts||[];
   const paymentRows=payments.map(item=>'<tr><td class="left"><b>'+esc(item.email)+'</b><div class="sub">'+esc(item.user_id)+'</div></td><td>'+pill(item.provider)+
@@ -283,11 +320,13 @@ async function business(){const result=await Promise.all([api('/admin/business-i
   page('B2B',body,pill(clients.length+' клиентов','ok'));bindBusiness()}
 function bindBusiness(){const form=document.getElementById('invite');form.onsubmit=async event=>{event.preventDefault();const data=new FormData(form),button=form.querySelector('button');button.disabled=true;
   try{const result=await send('/admin/business-invites','POST',{email:data.get('email'),discountPercent:Number(data.get('discount')),expiresInDays:Number(data.get('days'))});
-    await navigator.clipboard?.writeText(result.inviteUrl).catch(()=>{});alert('Инвайт создан и скопирован:\\n'+result.inviteUrl);await refresh()}catch(error){alert(error.message);button.disabled=false}};
-  document.querySelectorAll('[data-pricing]').forEach(button=>button.onclick=async()=>{const value=prompt('Новая скидка для '+button.dataset.email+' (0–100):',button.dataset.discount);
-    if(value==null)return;const discount=Number(value);if(!Number.isInteger(discount)||discount<0||discount>100)return alert('Нужно целое число от 0 до 100.');
-    if(!confirm('Установить скидку '+discount+'%?'))return;button.disabled=true;try{await send('/admin/business-users/'+button.dataset.pricing+'/pricing','PATCH',{discountPercent:discount});
-    alert('Изменение поставлено в очередь синхронизации.');await refresh()}catch(error){alert(error.message);button.disabled=false}})}
+    await navigator.clipboard?.writeText(result.inviteUrl).catch(()=>{});toast('Инвайт создан и скопирован: '+result.inviteUrl);await refresh()}catch(error){toast(error.message,'bad');button.disabled=false}};
+  document.querySelectorAll('[data-pricing]').forEach(button=>button.onclick=async()=>{
+    const values=await dialog({title:'Скидка для '+button.dataset.email,confirmLabel:'Установить',
+      fields:[{name:'value',label:'Скидка, % (целое 0–100)',value:button.dataset.discount}]});
+    if(!values)return;const discount=Number(values.value);if(!Number.isInteger(discount)||discount<0||discount>100)return toast('Нужно целое число от 0 до 100.','bad');
+    button.disabled=true;try{await send('/admin/business-users/'+button.dataset.pricing+'/pricing','PATCH',{discountPercent:discount});
+    toast('Изменение поставлено в очередь синхронизации.');await refresh()}catch(error){toast(error.message,'bad');button.disabled=false}})}
 
 function capacityBar(util){const percent=Math.min(100,Math.max(0,Math.round((Number(util)||0)*100))),kind=percent>=95?'bad':percent>=70?'warn':'';
   return'<span class="bar"><i class="'+kind+'" style="width:'+percent+'%"></i></span><span class="bar-label">'+percent+'%</span>'}
