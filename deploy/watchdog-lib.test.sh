@@ -187,7 +187,7 @@ grep -Fq 'require_retired_vhost panel.apitoken.sale' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'require_admin_auth_vhost content-studio.apitoken.sale' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'require_admin_auth_vhost monitoring.apitoken.sale' "$ROOT/deploy/watchdog.sh"
 grep -Fq "''|000|404|421" "$ROOT/deploy/watchdog.sh"
-grep -Fq 'data-admin-panel-version="4"' "$ROOT/crates/server/src/admin-panel.html"
+grep -Fq 'data-admin-panel-version="5"' "$ROOT/crates/server/src/admin-panel.html"
 [[ ! -e "$ROOT/crates/server/src/panel.html" ]]
 
 render_live="$TEMP/live.Caddyfile"
