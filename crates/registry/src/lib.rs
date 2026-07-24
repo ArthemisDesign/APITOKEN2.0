@@ -1725,6 +1725,42 @@ pub fn usage_by_model(
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// Агрегат расхода ПО АККАУНТАМ за окно (ts ≥ `since_ts`): списано клиенту (charge) +
+/// real-API стоимость + число запросов. Для панели «кто тратит» (сегодня/7д/30д).
+#[derive(Debug, Clone, Default)]
+pub struct SpendAccountAgg {
+    pub account_id: String,
+    pub handle: String,
+    pub requests: i64,
+    pub charge_nano: i64,
+    pub real_nano: i64,
+    pub last_ts: i64,
+}
+
+pub fn spend_by_account(
+    conn: &Connection,
+    since_ts: i64,
+    limit: i64,
+) -> Result<Vec<SpendAccountAgg>> {
+    let mut stmt = conn.prepare(
+        "SELECT u.account_id, COALESCE(a.handle,''), COUNT(*), \
+         COALESCE(SUM(u.charge_nano),0), COALESCE(SUM(u.real_nano),0), COALESCE(MAX(u.ts),0) \
+         FROM usage_events u LEFT JOIN accounts a ON a.id=u.account_id \
+         WHERE u.ts>=?1 GROUP BY u.account_id ORDER BY SUM(u.charge_nano) DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![since_ts, limit], |r| {
+        Ok(SpendAccountAgg {
+            account_id: r.get(0)?,
+            handle: r.get(1)?,
+            requests: r.get(2)?,
+            charge_nano: r.get(3)?,
+            real_nano: r.get(4)?,
+            last_ts: r.get(5)?,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 /// Обрезать usage_events под масштаб (как ledger_prune): удалить строки старше `older_than_ts`
 /// батчами, отдавая write-lock между ними. Возвращает удалённое.
 pub fn usage_prune(conn: &Connection, older_than_ts: i64) -> Result<usize> {

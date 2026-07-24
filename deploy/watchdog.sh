@@ -474,7 +474,7 @@ final_verify_admin_panel() {
   for _ in 1 2 3 4 5 6; do
     panel=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 \
       http://127.0.0.1:8790/admin-panel 2>/dev/null || true)
-    if grep -Fq 'data-admin-panel-version="6"' <<<"$panel"; then
+    if grep -Fq 'data-admin-panel-version="7"' <<<"$panel"; then
       matched=1
       break
     fi

@@ -62,6 +62,9 @@ a.link{color:var(--blue);text-decoration:none}a.link:hover{text-decoration:under
 .card{border-right:0!important;border-top:1px solid var(--line)}.card:first-child{border-top:0}}
 .overlay{position:fixed;inset:0;z-index:90;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--bg) 40%,transparent);backdrop-filter:blur(2px)}
 .dialog{width:min(430px,92vw);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:18px 18px 14px;box-shadow:0 18px 50px rgba(0,0,0,.35)}
+.dialog.wide{width:min(760px,94vw);max-height:86vh;overflow-y:auto}
+.spend-tabs{display:flex;gap:6px;margin:0 0 10px}.spend-tabs .btn.on{border-color:var(--accent);color:var(--accent)}
+[data-spend-stats]{cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px}
 .dialog h3{margin:0 0 4px;font-size:14px}.dialog .dlg-sub{margin:0 0 12px;color:var(--muted);word-break:break-all}
 .dlg-label{display:block;margin:10px 0 0;color:var(--muted)}.dlg-label input{display:block;width:100%;margin-top:4px}
 .dlg-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
@@ -69,7 +72,7 @@ a.link{color:var(--blue);text-decoration:none}a.link:hover{text-decoration:under
 .toast.bad{border-color:var(--red)}.toast+.toast{bottom:70px}
 </style>
 </head>
-<body data-admin-panel-version="6">
+<body data-admin-panel-version="7">
 <div id="app"></div>
 <script>
 const app=document.getElementById('app');
@@ -111,6 +114,7 @@ function header(title,badge=''){return '<header><div class="brand">api<i>Token</
   '</nav><div class="right">'+badge+'<button class="theme" id="theme">◐</button></div></header>'}
 function page(title,body,badge=''){app.innerHTML=header(title,badge)+'<main>'+body+'</main>';bindCommon()}
 function bindCommon(){document.querySelectorAll('[data-tab]').forEach(button=>button.onclick=()=>{location.hash=button.dataset.tab});
+  document.querySelectorAll('[data-spend-stats]').forEach(element=>element.onclick=()=>spendStats());
   const theme=document.getElementById('theme');if(theme)theme.onclick=()=>{const next=document.documentElement.dataset.theme==='dark'?'light':'dark';
   document.documentElement.dataset.theme=next;localStorage.setItem('admin-theme',next)}}
 function errorPage(title,error){page(title,'<div class="banner bad"><span class="dot"></span><div><b>Не удалось загрузить данные</b><span class="muted">'+esc(error.message||error)+'</span></div></div>')}
@@ -200,6 +204,28 @@ async function adminAction(button,domains){const action=button.dataset.adminActi
   toast('Изменение сохранено.'+(result.changed_self?' Введите новый пароль при следующем запросе.':''));
   try{await admins()}catch(error){toast('Изменение сохранено, но список не обновился: '+error.message,'bad');button.disabled=false}}
 
+// Разбивка «кто тратит» по окнам 24ч/7д/30д: списано клиенту (с его множителем) vs real-API
+// эквивалент + эффективная скидка. Открывается кликом по «потрачено» в таблицах/карточке.
+async function spendStats(){let data;try{data=await api('/spend-stats')}catch(error){return toast('Статистика расхода не загрузилась: '+error.message,'bad')}
+  const periods=[['d1','Сутки (24ч)'],['d7','7 дней'],['d30','30 дней']];
+  const discount=(charge,real)=>real>0?Math.round((1-charge/real)*100)+'%':'—';
+  const overlay=document.createElement('div');overlay.className='overlay';
+  const render=key=>{const period=data.periods[key]||{accounts:[]};
+    const rows=(period.accounts||[]).map(item=>'<tr><td class="left"><b>'+esc(item.handle||'—')+'</b><div class="sub">'+esc(item.account)+'</div></td><td>'+item.requests+
+      '</td><td><b>'+money(item.charge_usd)+'</b></td><td>'+money(item.real_usd)+'</td><td>'+discount(item.charge_usd,item.real_usd)+'</td><td>'+ago(item.last_ts*1000)+'</td></tr>').join('');
+    return '<div class="cards">'+card('списано клиентам',money(period.charge_usd),period.requests+' запросов')+
+      card('real-API эквивалент',money(period.real_usd),'средняя скидка '+discount(period.charge_usd,period.real_usd))+'</div>'+
+      '<div class="table"><div class="scroll"><table><thead><tr><th class="left">account</th><th>запросы</th><th>списано</th><th>real-API</th><th>скидка</th><th>активность</th></tr></thead><tbody>'+
+      (rows||empty(6))+'</tbody></table></div></div>'};
+  overlay.innerHTML='<div class="dialog wide"><h3>Кто тратит</h3><p class="dlg-sub">«списано» — по множителю аккаунта · «real-API» — полный эквивалент Anthropic · топ-50 за окно</p>'+
+    '<div class="spend-tabs">'+periods.map((item,index)=>'<button class="btn'+(index===0?' on':'')+'" data-period="'+item[0]+'">'+item[1]+'</button>').join('')+'</div>'+
+    '<div id="spend-body">'+render('d1')+'</div><div class="dlg-actions"><button class="btn" data-dlg="cancel">Закрыть</button></div></div>';
+  overlay.addEventListener('mousedown',event=>{if(event.target===overlay)overlay.remove()});
+  overlay.querySelector('[data-dlg=cancel]').onclick=()=>overlay.remove();
+  overlay.addEventListener('keydown',event=>{if(event.key==='Escape')overlay.remove()});
+  overlay.querySelectorAll('[data-period]').forEach(button=>button.onclick=()=>{overlay.querySelectorAll('[data-period]').forEach(other=>other.classList.remove('on'));
+    button.classList.add('on');overlay.querySelector('#spend-body').innerHTML=render(button.dataset.period)});
+  document.body.appendChild(overlay)}
 async function allPartners(){let offset=0,items=[],totals=null;do{const data=await api('/partner-admin/partner-analytics?sort=created_at&dir=desc&limit=500&offset='+offset),batch=data.items||[];
   totals=data.totals;items=items.concat(batch);offset=items.length;if(!batch.length)break}while(totals&&items.length<totals.total);return{items,totals:totals||{total:items.length,active:0}}}
 async function accounts(){const result=await Promise.all([api('/overview'),api('/admin/users'),allPartners()]),overview=result[0],commerce=result[1].users||[],partners=result[2];
@@ -220,7 +246,7 @@ async function accounts(){const result=await Promise.all([api('/overview'),api('
     '</td><td>'+partner.referredUsers+'</td><td>'+nanoMoney(partner.depositsTotalNano)+'</td><td>'+nanoMoney(partner.earnedTotalNano)+'</td><td>'+ago(partner.lastSeenAt)+'</td></tr>').join('');
   const body='<div class="banner '+(crm?'ok':'warn')+'"><span class="dot"></span><div><b>Единый реестр аккаунтов</b><span class="muted">commerce '+commerce.length+
     ' · engine '+engine.length+' · partners '+partners.items.length+' · CRM '+(crm?'connected':'missing')+'</span></div></div><h2>Внутренние домены</h2><div class="domain-grid">'+domainCards+
-    '</div><h2>Engine и service accounts</h2><div class="table"><div class="scroll"><table><thead><tr><th class="left">account</th><th class="left">домен</th><th>статус</th><th>баланс</th><th>потрачено</th><th>множитель</th></tr></thead><tbody>'+
+    '</div><h2>Engine и service accounts</h2><div class="table"><div class="scroll"><table><thead><tr><th class="left">account</th><th class="left">домен</th><th>статус</th><th>баланс</th><th><span data-spend-stats title="Разбивка: сутки / 7 дней / 30 дней">потрачено</span></th><th>множитель</th></tr></thead><tbody>'+
     (engineRows||empty(6))+'</tbody></table></div></div><h2>Partner accounts</h2><div class="table"><div class="scroll"><table><thead><tr><th class="left">партнёр</th><th>статус</th><th>рефералы</th><th>депозиты</th><th>заработано</th><th>был(а)</th></tr></thead><tbody>'+
     (partnerRows||empty(6))+'</tbody></table></div></div><footer>Все '+commerce.length+' commerce-аккаунтов доступны с действиями во вкладке <a class="link" href="#users">«Пользователи»</a>; полный partner workflow остаётся на admin.partners.apitoken.sale.</footer>';
   page('аккаунты',body,pill((commerce.length+engine.length+partners.items.length)+' записей',crm?'ok':'warn'))}
@@ -251,7 +277,7 @@ function renderUsers(dashboard){const totalBalance=usersCache.reduce((sum,user)=
     '<option value="active">active</option><option value="disabled">disabled</option></select><select id="auth"><option value="">любая регистрация</option>'+
     '<option value="password">password</option><option value="google">Google</option><option value="github">GitHub</option></select></div>'+
     '<div class="table"><div class="scroll"><table><thead><tr><th class="left">пользователь</th><th class="left">тариф</th><th>баланс</th>'+
-    '<th>потрачено</th><th>пополнения</th><th>ключи</th><th>был(а)</th><th>регистрация</th><th>действия</th></tr></thead><tbody>'+
+    '<th><span data-spend-stats title="Разбивка: сутки / 7 дней / 30 дней">потрачено</span></th><th>пополнения</th><th>ключи</th><th>был(а)</th><th>регистрация</th><th>действия</th></tr></thead><tbody>'+
     (rows||empty(9))+'</tbody></table></div></div><footer>Отключение синхронно блокирует engine-аккаунт и отзывает все сессии. Каждое действие аудируется.</footer>';
   page('пользователи',body,pill(usersCache.length+' клиентов','ok'));bindUserPage()}
 function bindUserPage(){const search=document.getElementById('search'),status=document.getElementById('status'),auth=document.getElementById('auth');
@@ -361,10 +387,10 @@ async function system(){const result=await Promise.all([api('/overview'),api('/c
     '<h2>Предложение — real-API USD</h2><div class="cards">'+horizonCards+card('балансы клиентов',money(demand.balance_usd),'резерв '+money(demand.reserved_usd)+' · coverage 7d ×'+overview.coverage['7d'])+
     '</div><h2>Флот и спрос</h2><div class="cards">'+card('подписки',overview.subs,health.healthy+' живых · '+health.cooling+' cooling')+
     card('утилизация средняя',Math.round(supply.util['7d']*100)+'%','7d · '+Math.round(supply.util['5h']*100)+'% за 5h')+
-    card('всего потрачено',money(demand.spent_usd),'потенциальный спрос '+money(demand.potential_realapi_usd)+' real-API')+
+    '<div class="card" data-spend-stats title="Разбивка: сутки / 7 дней / 30 дней"><div class="label">всего потрачено · разбивка</div><div class="value">'+money(demand.spent_usd)+'</div><div class="hint">потенциальный спрос '+money(demand.potential_realapi_usd)+' real-API</div></div>'+
     card('рекомендация',recommend.gap>0?'+'+recommend.gap:'ok','нужно '+recommend.subs_needed+' подписок · есть '+overview.subs)+'</div>'+
     '<h2>Жизненный цикл подписок'+(subs?' · замена через '+subs.lifetime_days+'д от добавления':'')+'</h2><div class="table"><div class="scroll"><table><thead><tr><th class="left">подписка</th><th>статус</th><th>добавлена</th><th>живёт ещё</th><th>пик 5h</th><th>пик 7d</th><th class="left">прокси</th><th>прокси до</th></tr></thead><tbody>'+
-    (lifecycleRows||empty(8))+'</tbody></table></div></div><h2>Аккаунты движка · '+(overview.accounts||[]).length+'</h2><div class="table"><div class="scroll"><table><thead><tr><th class="left">account</th><th class="left">handle</th><th>статус</th><th>баланс</th><th>потрачено</th><th>множитель</th></tr></thead><tbody>'+
+    (lifecycleRows||empty(8))+'</tbody></table></div></div><h2>Аккаунты движка · '+(overview.accounts||[]).length+'</h2><div class="table"><div class="scroll"><table><thead><tr><th class="left">account</th><th class="left">handle</th><th>статус</th><th>баланс</th><th><span data-spend-stats title="Разбивка: сутки / 7 дней / 30 дней">потрачено</span></th><th>множитель</th></tr></thead><tbody>'+
     (accountRows||empty(6))+'</tbody></table></div></div><details id="cap-details"'+capOpen+'><summary>Ёмкость по подпискам · '+overview.subs+(deadCount?' · '+deadCount+' мёртвых':'')+' (live util/cooling/reset)</summary><div class="table"><div class="scroll"><table><thead><tr><th class="left">подписка</th><th>5h</th><th>сброс</th><th>7d</th><th>сброс</th><th>остаток 5h</th><th>остаток 7d</th><th>доступно 7d</th></tr></thead><tbody>'+
     (liveRows||empty(8))+'</tbody></table></div></div></details><footer>Обновление каждые 3с · «доступно» учитывает сбросы окон · «запас» = доступно ÷ текущее потребление · клиентам ×'+mult+'</footer>';
   page('система',body,pill(overview.subs+' подписок',verdict.kind))}

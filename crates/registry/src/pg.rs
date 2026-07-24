@@ -5,7 +5,7 @@
 
 use crate::{
     mask_proxy, AccountRow, BillingTotals, KeyAuth, KeyPolicyUpdate, KeyRow, LedgerRow,
-    PoolStateRow, Sub, SubAdmin, SubHealth, SubRow, UsageEventInput, UsageModelAgg,
+    PoolStateRow, SpendAccountAgg, Sub, SubAdmin, SubHealth, SubRow, UsageEventInput, UsageModelAgg,
 };
 use anyhow::{bail, Context, Result};
 use postgres::config::{Host, SslMode};
@@ -1403,6 +1403,32 @@ impl PgStore {
             input_nano:r.get(10),output_nano:r.get(11),cache_read_nano:r.get(12),
             cache_write_5m_nano:r.get(13),cache_write_1h_nano:r.get(14),web_search_nano:r.get(15),
         }).collect())
+    }
+    pub fn spend_by_account(
+        &mut self,
+        since_ts: i64,
+        limit: i64,
+    ) -> Result<Vec<SpendAccountAgg>> {
+        Ok(self
+            .client
+            .query(
+                "SELECT u.account_id, COALESCE(a.handle,''), COUNT(*)::bigint, \
+                 COALESCE(SUM(u.charge_nano),0)::bigint, COALESCE(SUM(u.real_nano),0)::bigint, \
+                 COALESCE(MAX(u.ts),0)::bigint \
+                 FROM usage_events u LEFT JOIN accounts a ON a.id=u.account_id \
+                 WHERE u.ts>=$1 GROUP BY u.account_id ORDER BY SUM(u.charge_nano) DESC LIMIT $2",
+                &[&since_ts, &limit],
+            )?
+            .into_iter()
+            .map(|r| SpendAccountAgg {
+                account_id: r.get(0),
+                handle: r.get(1),
+                requests: r.get(2),
+                charge_nano: r.get(3),
+                real_nano: r.get(4),
+                last_ts: r.get(5),
+            })
+            .collect())
     }
     pub fn usage_prune(&mut self, older_than_ts: i64) -> Result<usize> {
         Ok(self.client.execute(

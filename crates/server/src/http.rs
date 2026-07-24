@@ -30,17 +30,23 @@ const DASH_TTL: std::time::Duration = std::time::Duration::from_secs(2);
 type DashCache =
     std::sync::OnceLock<std::sync::Mutex<Option<(std::time::Instant, serde_json::Value)>>>;
 static OVERVIEW_CACHE: DashCache = std::sync::OnceLock::new();
+/// /spend-stats сканирует usage_events за 30 дней — TTL длиннее дашбордного.
+const SPEND_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+static SPEND_CACHE: DashCache = std::sync::OnceLock::new();
 static CAPACITY_CACHE: DashCache = std::sync::OnceLock::new();
 static SUBS_CACHE: DashCache = std::sync::OnceLock::new();
 /// Планируемый срок жизни подписки — ровно N дней от добавления токена (`added_ts`). Это НЕ срок
 /// самого OAuth-токена (opaque, недоступен), а наш горизонт планирования замены.
 const SUB_LIFETIME_DAYS: i64 = 30;
 fn cache_get(cell: &DashCache) -> Option<serde_json::Value> {
+    cache_get_ttl(cell, DASH_TTL)
+}
+fn cache_get_ttl(cell: &DashCache, ttl: std::time::Duration) -> Option<serde_json::Value> {
     cell.get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .unwrap()
         .as_ref()
-        .filter(|(t, _)| t.elapsed() < DASH_TTL)
+        .filter(|(t, _)| t.elapsed() < ttl)
         .map(|(_, v)| v.clone())
 }
 fn cache_put(cell: &DashCache, v: &serde_json::Value) {
@@ -71,6 +77,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
         .route("/balance", get(balance))
         .route("/capacity", get(capacity))
         .route("/overview", get(overview))
+        .route("/spend-stats", get(spend_stats))
         .route("/subs", get(subs))
         .route("/metrics", get(metrics))
         .route("/admin-panel", get(admin_panel))
@@ -587,6 +594,82 @@ async fn overview(
     Json(v).into_response()
 }
 
+/// Панель «кто тратит»: разбивка расхода по engine-аккаунтам за окна 24ч/7д/30д.
+/// На каждую строку — списано клиенту (charge, с его множителем) И real-API эквивалент,
+/// чтобы был виден эффект скидки. Гейт — control-ключ, как у /overview.
+async fn spend_stats(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if !control_authed(&app, &headers, &peer) {
+        Metrics::inc(&app.metrics.auth_failures);
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "unauthorized"})),
+        )
+            .into_response();
+    }
+    let Some(b) = &app.billing else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "billing authority unavailable"})),
+        )
+            .into_response();
+    };
+    if let Some(v) = cache_get_ttl(&SPEND_CACHE, SPEND_TTL) {
+        return Json(v).into_response();
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let r2 = |nano: i64| (nano as f64 / 1e9 * 100.0).round() / 100.0;
+    let mut periods = serde_json::Map::new();
+    for (key, secs) in [("d1", 86_400i64), ("d7", 7 * 86_400), ("d30", 30 * 86_400)] {
+        let rows = match b.spend_by_account(now - secs, 50).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                eprintln!("billing spend stats query failed: {error:#}");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({"error": "billing authority unavailable"})),
+                )
+                    .into_response();
+            }
+        };
+        let (mut charge_total, mut real_total, mut requests_total) = (0i64, 0i64, 0i64);
+        let accounts: Vec<_> = rows
+            .iter()
+            .map(|row| {
+                charge_total += row.charge_nano;
+                real_total += row.real_nano;
+                requests_total += row.requests;
+                json!({
+                    "account": row.account_id,
+                    "handle": row.handle,
+                    "requests": row.requests,
+                    "charge_usd": r2(row.charge_nano),
+                    "real_usd": r2(row.real_nano),
+                    "last_ts": row.last_ts,
+                })
+            })
+            .collect();
+        periods.insert(
+            key.into(),
+            json!({
+                "charge_usd": r2(charge_total),
+                "real_usd": r2(real_total),
+                "requests": requests_total,
+                "accounts": accounts,
+            }),
+        );
+    }
+    let v = json!({"now": now, "periods": periods});
+    cache_put(&SPEND_CACHE, &v);
+    Json(v).into_response()
+}
+
 /// Вычисление control-room агрегата (без авторизации) — переиспользуется хендлером `/overview`
 /// И фоновым коллектором истории (`poller::metrics_loop`). Считается на лету из пула + биллинга.
 pub(crate) async fn overview_value(app: &AppState) -> anyhow::Result<serde_json::Value> {
@@ -1060,7 +1143,7 @@ mod tests {
 
     #[test]
     fn embedded_admin_panel_exposes_all_operational_workflows_without_secrets() {
-        assert!(ADMIN_PANEL_HTML.contains("data-admin-panel-version=\"6\""));
+        assert!(ADMIN_PANEL_HTML.contains("data-admin-panel-version=\"7\""));
         for route in [
             "/admin/dashboard",
             "/admin/users",

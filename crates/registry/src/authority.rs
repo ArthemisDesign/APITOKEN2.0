@@ -2,8 +2,8 @@
 
 use crate::{
     pg::{Owner, PgStore},
-    AccountRow, BillingTotals, KeyAuth, KeyPolicyUpdate, KeyRow, LedgerRow, PoolStateRow, Sub,
-    SubAdmin, SubHealth, SubRow, UsageModelAgg,
+    AccountRow, BillingTotals, KeyAuth, KeyPolicyUpdate, KeyRow, LedgerRow, PoolStateRow,
+    SpendAccountAgg, Sub, SubAdmin, SubHealth, SubRow, UsageModelAgg,
 };
 use anyhow::{bail, Result};
 use rusqlite::Connection;
@@ -365,6 +365,16 @@ impl Authority {
         match self {
             Self::Sqlite(c) => crate::usage_by_model(c, account_id, since_ts),
             Self::Postgres(pg) => pg.usage_by_model(account_id, since_ts),
+        }
+    }
+    pub fn spend_by_account(
+        &mut self,
+        since_ts: i64,
+        limit: i64,
+    ) -> Result<Vec<SpendAccountAgg>> {
+        match self {
+            Self::Sqlite(c) => crate::spend_by_account(c, since_ts, limit),
+            Self::Postgres(pg) => pg.spend_by_account(since_ts, limit),
         }
     }
     pub fn usage_prune(&mut self, older_than_ts: i64) -> Result<usize> {

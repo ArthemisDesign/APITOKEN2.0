@@ -140,7 +140,7 @@ monitoring.apitoken.sale {
 # Unified administration site for commerce, engine capacity, partner accounts and CRM visibility.
 admin.apitoken.sale {
 	import managed_admin_auth
-	@admin_data path /overview /capacity /metrics /subs
+	@admin_data path /overview /capacity /metrics /subs /spend-stats
 	handle @admin_data {
 		reverse_proxy 127.0.0.1:8790 {
 			header_up Host 127.0.0.1:8790
