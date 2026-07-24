@@ -106,7 +106,11 @@ fi
 
 (
   cd "$source_dir/codex-rs"
-  cargo test --locked --release -p codex-core apitoken_openai_compat -- --nocapture
+  # These two patch proofs are library unit tests. Restrict Cargo to that target: an unfiltered
+  # release test invocation also starts unrelated integration-test constructors, whose upstream
+  # arg0 safety guard deliberately rejects their temporary CODEX_HOME on Linux.
+  cargo test --locked --release -p codex-core --lib \
+    apitoken_openai_compat -- --nocapture
   # The official app-server integration harness deliberately passes a debug-only isolation flag
   # to the spawned production binary. Running this one test with --release removes that flag from
   # clap and fails before the request-capture assertion is reached.

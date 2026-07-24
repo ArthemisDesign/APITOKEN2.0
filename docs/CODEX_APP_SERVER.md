@@ -93,8 +93,8 @@ The source pin and all expected digests live in
 2. verifies commit `25af12f7e61572b0bc18ddb1008be543b91519b0`;
 3. verifies the upstream lockfile and local patch digests;
 4. applies the patch with `git apply --check`;
-5. runs the patch-specific core tests plus the official app-server request-capture test proving
-   that empty instruction overrides omit the upstream `instructions` field;
+5. runs the patch-specific core library tests plus the official app-server request-capture test
+   proving that empty instruction overrides omit the upstream `instructions` field;
 6. runs a locked release build;
 7. installs an immutable, content-addressed binary and atomically updates `codex`.
 
