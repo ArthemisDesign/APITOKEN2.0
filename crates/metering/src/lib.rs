@@ -64,9 +64,9 @@ const fn nano(dollars_per_mtoken_x1000: i128) -> i128 {
     dollars_per_mtoken_x1000
 }
 
-/// Known Opus 4.8 tariff. Unknown response models deliberately use `MAX_PRICES` below: a newly
+/// Current Opus tariff (4.5–5). Unknown response models deliberately use `MAX_PRICES` below: a newly
 /// introduced expensive model must never be silently billed at a cheaper historical fallback.
-const OPUS_48_PRICES: Prices = Prices {
+const OPUS_CURRENT_PRICES: Prices = Prices {
     input: 5000,
     cache_read: 500,
     cache_write_5m: 6250,
@@ -83,7 +83,7 @@ const MAX_PRICES: Prices = Prices {
     cache_write_1h: 30000,
     output: 75000,
 };
-const FAST_OPUS_48_PRICES: Prices = Prices {
+const FAST_OPUS_CURRENT_PRICES: Prices = Prices {
     input: 10000,
     cache_read: 1000,
     cache_write_5m: 12500,
@@ -147,8 +147,8 @@ pub fn model_prices_for_speed_at(model: &str, now_unix: i64, fast: bool) -> Pric
         return model_prices_at(model, now_unix);
     }
     let model = model.to_ascii_lowercase();
-    if model.contains("opus-4-8") {
-        FAST_OPUS_48_PRICES
+    if model == "claude-opus-5" || model.contains("opus-4-8") {
+        FAST_OPUS_CURRENT_PRICES
     } else {
         // Opus 4.7 has the highest published fast tariff. It is also the conservative fallback for
         // an unknown model that nevertheless reports speed=fast.
@@ -195,15 +195,16 @@ fn model_prices_matched_at(model: &str, now_unix: i64) -> Option<Prices> {
     if m.contains("fable") || m.contains("mythos") {
         return p(10000, 1000, 12500, 20000, 50000); // $10 / 1.0 / 12.5 / 20 / 50
     }
-    // Opus: 4.5–4.8 = $5/$25; Opus 3 / 4.0 / 4.1 = $15/$75 (старший тариф). Opus 4.0 приходит как
+    // Opus: 4.5–5 = $5/$25; Opus 3 / 4.0 / 4.1 = $15/$75 (старший тариф). Opus 4.0 приходит как
     // date-id `claude-opus-4-20250514` или голым алиасом — обе формы матчим ЯВНО: подстрока
     // "opus-4-0" их НЕ ловит (после `opus-4-` идёт `2`), падали бы в дефолт $5 = недосписание втрое.
-    if m.contains("opus-4-8")
+    if m == "claude-opus-5"
+        || m.contains("opus-4-8")
         || m.contains("opus-4-7")
         || m.contains("opus-4-6")
         || m.contains("opus-4-5")
     {
-        return Some(OPUS_48_PRICES); // $5 / 0.50 / 6.25 / 10 / 25
+        return Some(OPUS_CURRENT_PRICES); // $5 / 0.50 / 6.25 / 10 / 25
     }
     if m.contains("opus-4-1")
         || m == "claude-opus-4-20250514"
@@ -551,7 +552,7 @@ mod tests {
     // ── цены: 1M токенов каждой корзины = точная официальная ставка ────────────
     #[test]
     fn prices_exact_per_million() {
-        let opus = model_prices("claude-opus-4-8");
+        let opus = model_prices("claude-opus-5");
         // 1M output Opus = ровно $25.00
         let u = Usage {
             output_tokens: 1_000_000,
@@ -718,7 +719,8 @@ mod tests {
         assert_eq!(out1m("claude-opus-4"), 75 * NANO_PER_USD);
         assert_eq!(out1m("claude-opus-4-1-20250805"), 75 * NANO_PER_USD);
         assert_eq!(out1m("claude-3-opus-20240229"), 75 * NANO_PER_USD);
-        // Opus 4.5–4.8 = $25/M.
+        // Opus 4.5–5 = $25/M.
+        assert_eq!(out1m("claude-opus-5"), 25 * NANO_PER_USD);
         assert_eq!(out1m("claude-opus-4-8"), 25 * NANO_PER_USD);
         assert_eq!(out1m("claude-opus-4-5"), 25 * NANO_PER_USD);
         // Sonnet любого поколения = $15/M (обе схемы именования)
@@ -744,6 +746,7 @@ mod tests {
         for mdl in [
             "claude-haiku-4-5",
             "claude-sonnet-5",
+            "claude-opus-5",
             "claude-opus-4-8",
             "claude-fable-5",
             "claude-opus-4-20250514",
@@ -762,6 +765,7 @@ mod tests {
         // MAX ≥ output ЛЮБОЙ известной модели (иначе резерв не покрыл бы charge)
         for mdl in [
             "claude-fable-5",
+            "claude-opus-5",
             "claude-opus-4-8",
             "claude-opus-4-20250514",
             "claude-sonnet-5",
@@ -773,6 +777,22 @@ mod tests {
         }
         // СПИСАНИЕ неизвестного тоже fail-safe: не недобираем цену будущей дорогой модели.
         assert_eq!(model_prices("claude-opus-4-0").output, 75000);
+        assert_eq!(model_prices("claude-opus-5-1").output, 75000);
+    }
+
+    #[test]
+    fn opus5_fast_mode_uses_published_tariff() {
+        let standard = model_prices_for_speed_at("claude-opus-5", SONNET5_STD_START, false);
+        let fast = model_prices_for_speed_at("claude-opus-5", SONNET5_STD_START, true);
+
+        assert_eq!(standard, OPUS_CURRENT_PRICES);
+        assert_eq!(fast, FAST_OPUS_CURRENT_PRICES);
+        assert_eq!(fast.input, 10_000);
+        assert_eq!(fast.output, 50_000);
+        assert_eq!(
+            model_prices_reserve_for_speed_at("claude-opus-5", SONNET5_STD_START, true),
+            fast
+        );
     }
 
     #[test]
