@@ -254,7 +254,7 @@ wd_range_files() {
 
 wd_path_is_engine() {
   case "$1" in
-    crates/*|vendor/*|Cargo.toml|Cargo.lock|config.env.example|server.env.example|schema/*|tests/*|tools/refresh-fingerprint.sh)
+    crates/*|vendor/*|Cargo.toml|Cargo.lock|config.env.example|server.env.example|schema/*|tests/*|tools/refresh-fingerprint.sh|tools/codex-app-server/*)
       return 0
       ;;
     *) return 1 ;;

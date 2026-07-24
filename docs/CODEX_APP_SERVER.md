@@ -230,6 +230,20 @@ Disabling it leaves the Claude path, database schema and balances unchanged. The
 migration for this provider. Full engine rollback remains the normal pinned-SHA watchdog rollback;
 the pre-Codex production baseline is recorded in the deployment log before activation.
 
+The initial production build was independently verified on 2026-07-24:
+
+- pre-Codex engine baseline: `10e21891643af8c01a9fe4b171095fc10a51683d`;
+- Codex-capable engine release: `2299ca91c88324d3ac4bbc3039d0bcf913ed21b8`;
+- pinned-builder correction: `a325c50ed8bd22ea665c913b44291aef5a1c9201`;
+- Linux Codex SHA-256:
+  `8f8226ed19ea65f4315aca39a8db9f9e5165ccbfcc9a7d4e6c7c8f7f51e6de2d`.
+
+The host-local environment is not committed. Activation first preserves a pre-Codex copy of
+`config.env`, then changes the shared environment without restarting the serving slot. A subsequent
+engine-scoped commit makes the watchdog build a fresh slot, whose eager Codex preflight must pass
+before blue-green promotion. Both `config.env.example` and `tools/codex-app-server/*` are classified
+as engine paths so future activation-contract or pinned-tooling changes cannot bypass that gate.
+
 ## CLIProxyAPI audit
 
 The implementation was compared against

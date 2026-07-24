@@ -105,6 +105,8 @@ wd_path_is_sales apps/api/src/main.ts && wd_die "commerce api wrongly classified
 wd_path_is_sales crates/server/src/http.rs && wd_die "engine wrongly classified as sales"
 wd_path_is_backend packages/sales-db/src/schema.ts || wd_die "sales-db should also be backend class (shared packages)"
 wd_path_is_backend apps/content-studio/src/app/page.tsx || wd_die "content studio must trigger commerce deployment"
+wd_path_is_engine tools/codex-app-server/build-pinned.sh \
+  || wd_die "pinned Codex tooling must trigger an engine deployment"
 
 wd_engine_topology_is_steady 1 1 1 1 0 0 0 0 0 0
 wd_engine_topology_is_steady 0 0 0 0 1 1 1 1 0 0
