@@ -230,6 +230,20 @@ Disabling it leaves the Claude path, database schema and balances unchanged. The
 migration for this provider. Full engine rollback remains the normal pinned-SHA watchdog rollback;
 the pre-Codex production baseline is recorded in the deployment log before activation.
 
+The production kill-switch drill on 2026-07-24 promoted off-phase engine SHA
+`ba6fa42f7b430d3798a89a4cc0847f8ed725d472` through the complete watchdog gate. Its process
+reported `claude_api_codex_enabled 0`, `claude_api_codex_process_live 0`, and no Codex rate-limit
+snapshot. A public Anthropic Messages request still completed on `claude-haiku-4-5-20251001` and
+settled exact usage with zero reservation left behind. The temporary account and key were disabled
+and their balance returned to zero. Before the drill, the exact enabled config was preserved as the
+root-only mode-0400 file `config.env.pre-killswitch-20260724-cec33a1`; its SHA-256 is
+`e751548aa8f0f2089d9f995525e674dda1036cbb468e367841ebd774cc5820a7`.
+
+The full engine rollback controller was also preflighted against immutable pre-Codex release
+`10e21891643af8c01a9fe4b171095fc10a51683d` in `--engine-bluegreen --dry-run` mode. It validated
+the release and calculated the exact `current`/`previous` link transaction without changing links,
+services, locks, or database state.
+
 The initial production build was independently verified on 2026-07-24:
 
 - pre-Codex engine baseline: `10e21891643af8c01a9fe4b171095fc10a51683d`;
