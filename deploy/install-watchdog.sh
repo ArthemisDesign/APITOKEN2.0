@@ -35,6 +35,14 @@ install -o root -g root -m 0755 "$ROOT/deploy/watchdog-test-db.sh" /usr/local/li
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-backup.sh" /usr/local/lib/apitoken-watchdog/watchdog-backup.sh
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-migrate.sh" /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-infrastructure.sh" /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh
+install -o root -g root -m 0755 "$ROOT/deploy/watchdog-retention.sh" /usr/local/lib/apitoken-watchdog/watchdog-retention.sh
+# The sudo policy and its validating installer are delivered like any other operational definition,
+# but applying them is a deliberate operator action (deploy/install-sudoers.sh) rather than an
+# automatic step: a bad policy cannot be repaired by the pipeline that the policy governs.
+install -o root -g root -m 0755 "$ROOT/deploy/install-sudoers.sh" /usr/local/lib/apitoken-watchdog/install-sudoers.sh
+install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/sudoers.d
+install -o root -g root -m 0644 "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  /usr/local/lib/apitoken-watchdog/sudoers.d/95-apitoken-deploy
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-github.sh" /usr/local/lib/apitoken-watchdog/watchdog-github
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-control.sh" /usr/local/bin/apitoken-watchdog
 install -o root -g root -m 0755 "$ROOT/deploy/collect-monitoring-metrics.sh" /usr/local/lib/apitoken-watchdog/collect-monitoring-metrics.sh
@@ -43,6 +51,8 @@ install -o root -g root -m 0755 "$ROOT/deploy/deploy.sh" /usr/local/lib/apitoken
 install -o root -g root -m 0644 "$ROOT/deploy/lib.sh" /usr/local/lib/apitoken-watchdog/controller/lib.sh
 install -o root -g root -m 0755 "$ROOT/deploy/api-bluegreen.sh" /usr/local/lib/apitoken-watchdog/controller/api-bluegreen.sh
 install -o root -g root -m 0755 "$ROOT/deploy/engine-bluegreen.sh" /usr/local/lib/apitoken-watchdog/controller/engine-bluegreen.sh
+# Required by the watchdog's post-admission recovery path.
+install -o root -g root -m 0755 "$ROOT/deploy/rollback.sh" /usr/local/lib/apitoken-watchdog/controller/rollback.sh
 install -o root -g root -m 0755 "$ROOT/deploy/sales-deploy.sh" /usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh
 install -o root -g root -m 0644 "$ROOT/deploy/commerce-postgres.compose.yaml" \
   /usr/local/lib/apitoken-watchdog/controller/commerce-postgres.compose.yaml

@@ -88,10 +88,14 @@ The same free GitHub API integration creates deployment records for the affected
 make the production history and final environment URL visible next to Vercel's deployments; they do
 not run code on GitHub infrastructure.
 
-Changes to `deploy/`, `systemd/`, `compose.yaml`, or `.github/` are deliberately not installed as
-ordinary application code. The tests still run, but `deploy/watchdog` remains pending until an
-operator reviews and applies the exact candidate definitions and approves that SHA. This protects
-Caddy, systemd, and the watchdog itself from self-modifying deployments.
+Changes to `deploy/`, `systemd/`, `observability/`, or `compose.yaml` are delivered automatically,
+like application code, but through a stricter path. Only after the exact immutable candidate passes
+the complete test gate does a fixed root-owned bridge re-verify its SHA, tree, and clean worktree
+against the test marker, then install that candidate's own controllers and systemd definitions
+before component delivery continues. A changed Caddy template is rendered against the live host
+secrets, validated, and reloaded with an automatic rollback copy; the repository file with its
+placeholders is never copied over production. Changes under `.github/` do not touch the production
+host and therefore need no host-install stage.
 
 The operator and recovery commands are in [`DEPLOYMENT.md`](DEPLOYMENT.md); deployment controller
 internals are in [`deploy/README.md`](deploy/README.md).
