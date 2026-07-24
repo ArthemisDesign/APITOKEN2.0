@@ -1,0 +1,144 @@
+# Least-privilege sudo policy for the automatic deployment pipeline.
+#
+# Installed by deploy/install-sudoers.sh, which validates it with `visudo -c` before replacing the
+# live file. Lexically ordered AFTER any legacy 90-deploy file so it wins on last-match.
+#
+# THREAT MODEL
+# ------------
+# The watchdog runs as `deploy` and executes candidate-derived build/test code (as the separate
+# unprivileged `apitoken-ci` user). The design in DEPLOYMENT.md and deploy/README.md assumes
+# `deploy` holds only narrowly scoped sudo. An unrestricted NOPASSWD:ALL voids that assumption: it
+# lets the deploy operator read the GitHub reporting credential and every application secret in
+# /etc/apitoken, and rewrite the root-owned controllers that are supposed to be fixed trust anchors.
+#
+# This policy grants exactly the operations the pipeline performs and nothing else. In particular
+# `deploy` must NOT be able to read /etc/apitoken/*.env, write /usr/local/lib/apitoken-watchdog,
+# or run an arbitrary interpreter as root.
+
+Cmnd_Alias APITOKEN_HELPERS = \
+    /usr/local/lib/apitoken-watchdog/watchdog-test-db, \
+    /usr/local/lib/apitoken-watchdog/watchdog-test-db [A-Za-z-]*, \
+    /usr/local/lib/apitoken-watchdog/watchdog-backup.sh [0-9a-f]*, \
+    /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh [0-9a-f]*, \
+    /usr/local/lib/apitoken-watchdog/watchdog-retention.sh [0-9]*, \
+    /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh [0-9a-f]*, \
+    /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh [0-9a-f]* --apply-caddy, \
+    /usr/local/lib/apitoken-watchdog/watchdog-github *, \
+    /usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh [0-9a-f]*
+
+# Candidate workspaces are built as apitoken-ci and finalized root-owned/read-only. The watchdog
+# flips ownership and write bits around the test gate and removes expired trees. Restricted to the
+# candidate root so this cannot be aimed at /etc or a release directory.
+Cmnd_Alias APITOKEN_CANDIDATES = \
+    /usr/bin/chown -R apitoken-ci\:apitoken-ci -- /var/lib/apitoken/watchdog/candidates/[0-9a-f]*, \
+    /usr/bin/chown -R root\:root -- /var/lib/apitoken/watchdog/candidates/[0-9a-f]*, \
+    /usr/bin/chmod -R a-w -- /var/lib/apitoken/watchdog/candidates/[0-9a-f]*, \
+    /usr/bin/chmod -R u+w -- /var/lib/apitoken/watchdog/candidates/[0-9a-f]*, \
+    /usr/bin/rm -rf --one-file-system -- /var/lib/apitoken/watchdog/candidates/[0-9a-f]*, \
+    /usr/bin/rm -f -- /var/lib/apitoken/watchdog/[0-9a-f]*.tested
+
+# Immutable release retention. Releases are finalized read-only, so write bits are restored before
+# removal. Both roots are fixed; the trailing SHA pattern prevents aiming at a parent directory.
+Cmnd_Alias APITOKEN_RELEASES = \
+    /usr/bin/chmod -R u+w -- /srv/claude-api/releases/[0-9a-f]*, \
+    /usr/bin/chmod -R u+w -- /opt/apitoken/releases/[0-9a-f]*, \
+    /usr/bin/rm -rf --one-file-system -- /srv/claude-api/releases/[0-9a-f]*, \
+    /usr/bin/rm -rf --one-file-system -- /opt/apitoken/releases/[0-9a-f]*
+
+# Candidate build/test execution as the unprivileged CI account.
+Cmnd_Alias APITOKEN_CI = /usr/bin/env *
+
+# Service lifecycle for project units only. Deliberately excludes PostgreSQL: the deploy controllers
+# already refuse any unit name containing `postgres`, and this enforces the same boundary in policy.
+Cmnd_Alias APITOKEN_UNITS = \
+    /usr/bin/systemctl start claude-api@[0-9]*.service, \
+    /usr/bin/systemctl stop claude-api@[0-9]*.service, \
+    /usr/bin/systemctl enable claude-api@[0-9]*.service, \
+    /usr/bin/systemctl disable claude-api@[0-9]*.service, \
+    /usr/bin/systemctl restart claude-api@[0-9]*.service, \
+    /usr/bin/systemctl kill * claude-api@[0-9]*.service, \
+    /usr/bin/systemctl start apitoken-api@[0-9]*.service, \
+    /usr/bin/systemctl stop apitoken-api@[0-9]*.service, \
+    /usr/bin/systemctl enable apitoken-api@[0-9]*.service, \
+    /usr/bin/systemctl disable apitoken-api@[0-9]*.service, \
+    /usr/bin/systemctl restart apitoken-api@[0-9]*.service, \
+    /usr/bin/systemctl kill * apitoken-api@[0-9]*.service, \
+    /usr/bin/systemctl start apitoken-worker.service, \
+    /usr/bin/systemctl stop apitoken-worker.service, \
+    /usr/bin/systemctl restart apitoken-worker.service, \
+    /usr/bin/systemctl start apitoken-content-studio.service, \
+    /usr/bin/systemctl stop apitoken-content-studio.service, \
+    /usr/bin/systemctl restart apitoken-content-studio.service, \
+    /usr/bin/systemctl start apitoken-sales-api.service apitoken-sales-web.service, \
+    /usr/bin/systemctl stop apitoken-sales-api.service apitoken-sales-web.service, \
+    /usr/bin/systemctl restart apitoken-sales-api.service apitoken-sales-web.service, \
+    /usr/bin/systemctl start apitoken-sales-*.service, \
+    /usr/bin/systemctl stop apitoken-sales-*.service, \
+    /usr/bin/systemctl restart apitoken-sales-*.service, \
+    /usr/bin/systemctl start claude-api.service, \
+    /usr/bin/systemctl stop claude-api.service, \
+    /usr/bin/systemctl enable claude-api.service, \
+    /usr/bin/systemctl disable claude-api.service, \
+    /usr/bin/systemctl start claude-api-backup.service, \
+    /usr/bin/systemctl reset-failed claude-api-backup.service, \
+    /usr/bin/systemctl daemon-reload
+
+# Read-only introspection. `show`/`is-*` reveal no secrets and are used by every readiness gate.
+Cmnd_Alias APITOKEN_INSPECT = \
+    /usr/bin/systemctl show *, \
+    /usr/bin/systemctl is-active *, \
+    /usr/bin/systemctl is-enabled *, \
+    /usr/bin/systemctl is-failed *, \
+    /usr/bin/systemctl list-units *, \
+    /usr/bin/systemctl list-unit-files *, \
+    /usr/bin/systemctl status *, \
+    /usr/bin/systemctl list-timers *
+
+# Operator tooling: `apitoken-watchdog status|run|retry|logs`. Reading the deployment journal is
+# required for triage and exposes no secret, because neither the watchdog nor its helpers ever log
+# credentials. Journal access is restricted to the pipeline's own units rather than granted wholesale.
+# Policy self-management. Without this the change is one-way: once the unrestricted grant is gone,
+# the deploy operator could no longer run the installer to update or repair its own policy, and
+# recovery would require console access. The installer validates with `visudo -c`, keeps timestamped
+# rollback copies, and restores the previous policy automatically if verification fails — so this is
+# a narrower privilege than it appears. The installed installer is root-owned and not writable by
+# deploy, and `install`/`cp` into the watchdog library remain denied below.
+Cmnd_Alias APITOKEN_POLICY = \
+    /usr/local/lib/apitoken-watchdog/install-sudoers.sh, \
+    /usr/local/lib/apitoken-watchdog/install-sudoers.sh --check
+
+Cmnd_Alias APITOKEN_OPERATOR = \
+    /usr/local/bin/apitoken-watchdog, \
+    /usr/local/bin/apitoken-watchdog status, \
+    /usr/local/bin/apitoken-watchdog run, \
+    /usr/local/bin/apitoken-watchdog logs, \
+    /usr/local/bin/apitoken-watchdog retry [0-9a-f]*, \
+    /usr/bin/systemctl start apitoken-deploy-watchdog.service, \
+    /usr/bin/journalctl -u apitoken-deploy-watchdog.service *, \
+    /usr/bin/journalctl -u apitoken-deploy-watchdog.service, \
+    /usr/bin/journalctl -n [0-9]* -u apitoken-deploy-watchdog.service *, \
+    /usr/bin/journalctl --no-pager -u apitoken-deploy-watchdog.service *
+
+# Caddy config validation and reload during an infrastructure change.
+Cmnd_Alias APITOKEN_CADDY = \
+    /usr/bin/caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile, \
+    /usr/bin/grep -q * /etc/caddy/Caddyfile, \
+    /usr/bin/test -s /etc/caddy/Caddyfile
+
+# Existence/size probes on root-only environment files. `test` reveals only presence, never content.
+Cmnd_Alias APITOKEN_PROBE = \
+    /usr/bin/test -f /etc/apitoken/api.env, \
+    /usr/bin/test -s /etc/apitoken/engine-postgres.env, \
+    /usr/bin/test -f /etc/systemd/system/claude-api@.service
+
+deploy ALL=(root) NOPASSWD: APITOKEN_HELPERS, APITOKEN_CANDIDATES, APITOKEN_RELEASES, \
+    APITOKEN_UNITS, APITOKEN_INSPECT, APITOKEN_OPERATOR, APITOKEN_POLICY, APITOKEN_CADDY, \
+    APITOKEN_PROBE
+deploy ALL=(apitoken-ci) NOPASSWD: APITOKEN_CI
+
+# Deny-list defence in depth. Even if a command spec above is later widened by accident, these
+# must never be reachable: they would expose the GitHub reporting credential or application
+# secrets, or let the deploy operator replace a fixed root-owned trust anchor.
+deploy ALL=(ALL) !/usr/bin/cat /etc/apitoken/*, !/usr/bin/su, !/bin/su, \
+    !/usr/bin/install * /usr/local/lib/apitoken-watchdog/*, \
+    !/usr/bin/cp * /usr/local/lib/apitoken-watchdog/*
