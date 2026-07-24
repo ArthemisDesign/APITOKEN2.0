@@ -199,12 +199,22 @@ fi
 # Install this installer at its fixed root-owned path. The policy permits `deploy` to run exactly
 # that path, which is what keeps the change reversible: without it, removing the unrestricted grant
 # would also remove the ability to repair or update the policy without console access.
+#
+# Skip each copy when the source already IS the destination. Running the installed copy is the
+# documented recovery path, and `install` treats same-file as an error — which would make the very
+# command an operator reaches for during recovery exit non-zero.
 INSTALLED_SELF=/usr/local/lib/apitoken-watchdog/install-sudoers.sh
+INSTALLED_POLICY=/usr/local/lib/apitoken-watchdog/sudoers.d/95-apitoken-deploy
 if [[ -d /usr/local/lib/apitoken-watchdog ]]; then
-  install -o root -g root -m 0755 "${BASH_SOURCE[0]}" "$INSTALLED_SELF"
+  self=$(readlink -f -- "${BASH_SOURCE[0]}")
+  if [[ $self != "$(readlink -f -- "$INSTALLED_SELF" 2>/dev/null)" ]]; then
+    install -o root -g root -m 0755 "$self" "$INSTALLED_SELF"
+  fi
   install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/sudoers.d
-  install -o root -g root -m 0644 "$SOURCE" /usr/local/lib/apitoken-watchdog/sudoers.d/95-apitoken-deploy
-  log "installed the policy installer and its source at their fixed root-owned paths"
+  if [[ $(readlink -f -- "$SOURCE") != "$(readlink -f -- "$INSTALLED_POLICY" 2>/dev/null)" ]]; then
+    install -o root -g root -m 0644 "$SOURCE" "$INSTALLED_POLICY"
+  fi
+  log "policy installer and its source are current at their fixed root-owned paths"
 fi
 
 log "least-privilege sudo policy installed and verified"
