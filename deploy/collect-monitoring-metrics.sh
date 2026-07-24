@@ -140,27 +140,36 @@ fi
   printf '# HELP apitoken_watchdog_pending_migration Whether a migration was started but not committed.\n'
   printf '# TYPE apitoken_watchdog_pending_migration gauge\n'
 
-  if [[ -f $WATCHDOG_STATE/rejected.sha && ! -L $WATCHDOG_STATE/rejected.sha ]]; then
+  # Deployment state is observational: it must never fail the collector, which also exports the
+  # money-bearing queue and backup metrics. The unit runs with an empty CapabilityBoundingSet, so
+  # root has no CAP_DAC_OVERRIDE and an unexpectedly restrictive mode reads as unreadable rather
+  # than as an error. Treat anything unreadable as unknown, exactly like a missing file.
+  if [[ -f $WATCHDOG_STATE/rejected.sha && ! -L $WATCHDOG_STATE/rejected.sha && -r $WATCHDOG_STATE/rejected.sha ]]; then
     printf 'apitoken_watchdog_quarantined 1\n'
   else
     printf 'apitoken_watchdog_quarantined 0\n'
   fi
-  if [[ -f $WATCHDOG_STATE/pending-migration.sha && ! -L $WATCHDOG_STATE/pending-migration.sha ]]; then
+  if [[ -f $WATCHDOG_STATE/pending-migration.sha && ! -L $WATCHDOG_STATE/pending-migration.sha && -r $WATCHDOG_STATE/pending-migration.sha ]]; then
     printf 'apitoken_watchdog_pending_migration 1\n'
   else
     printf 'apitoken_watchdog_pending_migration 0\n'
   fi
 
   status_file=$WATCHDOG_STATE/status
-  if [[ -f $status_file && ! -L $status_file ]]; then
-    status_modified=$(stat -c %Y -- "$status_file")
-    printf 'apitoken_watchdog_status_age_seconds %s\n' "$((now - status_modified))"
+  if [[ -f $status_file && ! -L $status_file && -r $status_file ]]; then
+    status_modified=$(stat -c %Y -- "$status_file" 2>/dev/null || printf '0')
+    if [[ $status_modified =~ ^[0-9]+$ ]] && (( status_modified > 0 )); then
+      printf 'apitoken_watchdog_status_age_seconds %s\n' "$((now - status_modified))"
+    else
+      printf 'apitoken_watchdog_status_age_seconds %s\n' "$WATCHDOG_STATUS_MISSING_AGE_SECONDS"
+    fi
     # phase=<value> is the first field written by the watchdog's atomic status write.
-    phase=$(sed -n 's/^phase=\([A-Za-z-]\{1,32\}\).*/\1/p' "$status_file" | head -n 1)
+    phase=$(sed -n 's/^phase=\([A-Za-z-]\{1,32\}\).*/\1/p' "$status_file" 2>/dev/null | head -n 1)
     printf 'apitoken_watchdog_phase{phase="%s"} 1\n' "${phase:-unknown}"
   else
-    # No status file means the watchdog has never completed a cycle on this host. Report a large
-    # age rather than omitting the series, so the staleness alert fires instead of going blind.
+    # No readable status file means the watchdog has never completed a cycle here, or the file is
+    # not visible to this sandbox. Report a large age rather than omitting the series, so the
+    # staleness alert fires instead of going blind.
     printf 'apitoken_watchdog_status_age_seconds %s\n' "$WATCHDOG_STATUS_MISSING_AGE_SECONDS"
     printf 'apitoken_watchdog_phase{phase="unknown"} 1\n'
   fi

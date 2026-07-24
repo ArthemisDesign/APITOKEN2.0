@@ -148,6 +148,15 @@ fi
 # Infrastructure delivery is fully automatic; remove markers from the retired approval workflow.
 rm -f -- /var/lib/apitoken/watchdog/pending-infrastructure.sha \
   /var/lib/apitoken/watchdog/infrastructure-approved.sha
+# Deployment observability files must be readable by the monitoring collector, which runs with an
+# empty CapabilityBoundingSet and therefore has no CAP_DAC_OVERRIDE to bypass a 0640 mode. They hold
+# only a phase, public commit SHAs, a fixed detail string, and timestamps — no secret.
+for observable in status rejected.sha pending-migration.sha; do
+  if [[ -f /var/lib/apitoken/watchdog/$observable ]]; then
+    chmod 0644 "/var/lib/apitoken/watchdog/$observable"
+  fi
+done
+
 systemctl daemon-reload
 "$ROOT/deploy/install-monitoring.sh"
 systemctl enable apitoken-affinity-redis.service

@@ -74,7 +74,10 @@ github_deployment_success() {
 
 status() {
   local detail=$1
-  wd_atomic_write "$STATUS_FILE" "phase=$CURRENT_PHASE sha=${CANDIDATE_SHA:-none} detail=$detail updated_at=$(date -u +%FT%TZ)"
+  # World-readable: the monitoring collector runs with an empty CapabilityBoundingSet, so it has no
+  # CAP_DAC_OVERRIDE and cannot read a 0640 file even as root. The status line contains only a
+  # phase, a public commit SHA, a fixed detail string, and a timestamp — no secret.
+  wd_atomic_write "$STATUS_FILE" "phase=$CURRENT_PHASE sha=${CANDIDATE_SHA:-none} detail=$detail updated_at=$(date -u +%FT%TZ)" 0644
 }
 
 fail() {
@@ -92,7 +95,7 @@ fail() {
     wd_warn "watchdog cycle failed at line $line before selecting a candidate; retrying next cycle"
     exit "$rc"
   fi
-  wd_atomic_write "$REJECTED_FILE" "$CANDIDATE_SHA"
+  wd_atomic_write "$REJECTED_FILE" "$CANDIDATE_SHA" 0644
   CURRENT_PHASE=failed
   status "command failed at line $line (exit $rc); candidate quarantined"
   if [[ -x $GITHUB_HELPER ]]; then
@@ -624,7 +627,7 @@ apply_migrations_before_deploy() {
   applied_digest=$(wd_manifest_digest "$DB_MANIFEST")
   rm -f -- "$manifest"
   if [[ $digest != "$applied_digest" ]]; then
-    wd_atomic_write "$PENDING_MIGRATION_FILE" "$sha"
+    wd_atomic_write "$PENDING_MIGRATION_FILE" "$sha" 0644
     CURRENT_PHASE=migrating
     CURRENT_PHASE_BEFORE_FAILURE=migrating
     status "tests passed; backing up and applying tested database migrations before application deploy"

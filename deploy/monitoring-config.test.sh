@@ -113,6 +113,28 @@ done
 grep -Fq 'WATCHDOG_STATUS_MISSING_AGE_SECONDS=86400' "$ROOT/deploy/collect-monitoring-metrics.sh" \
   || { printf 'a missing watchdog status must report a stale age\n' >&2; exit 1; }
 
+# The collector unit runs with an empty CapabilityBoundingSet, so root has no CAP_DAC_OVERRIDE and
+# cannot read a 0640 file. Deployment state must therefore be world-readable, and the collector must
+# treat unreadable state as unknown rather than failing: it also exports the money-bearing queue and
+# backup metrics, and must not be taken down by an observational read.
+grep -Fq 'CapabilityBoundingSet=' "$ROOT/systemd/apitoken-monitoring-collector.service" \
+  || { printf 'collector unit no longer drops capabilities; revisit the readability assumption\n' >&2; exit 1; }
+for readable_guard in \
+  '-r $WATCHDOG_STATE/rejected.sha' \
+  '-r $WATCHDOG_STATE/pending-migration.sha' \
+  '-r $status_file'; do
+  grep -Fq -e "$readable_guard" "$ROOT/deploy/collect-monitoring-metrics.sh" \
+    || { printf 'collector does not guard readability of %s\n' "$readable_guard" >&2; exit 1; }
+done
+grep -Fq '"$STATUS_FILE" "phase=' "$ROOT/deploy/watchdog.sh" \
+  || { printf 'watchdog status write changed shape\n' >&2; exit 1; }
+grep -Eq 'wd_atomic_write "\$STATUS_FILE".*0644' "$ROOT/deploy/watchdog.sh" \
+  || { printf 'the watchdog status file must be collector-readable (0644)\n' >&2; exit 1; }
+grep -Eq 'wd_atomic_write "\$REJECTED_FILE" "\$CANDIDATE_SHA" 0644' "$ROOT/deploy/watchdog.sh" \
+  || { printf 'the quarantine marker must be collector-readable (0644)\n' >&2; exit 1; }
+grep -Fq 'for observable in status rejected.sha pending-migration.sha' "$ROOT/deploy/install-watchdog.sh" \
+  || { printf 'the installer does not relax pre-existing 0640 state files\n' >&2; exit 1; }
+
 grep -Fq 'apitoken_queue_dead{queue="commerce_email"}' "$ROOT/deploy/collect-monitoring-metrics.sh"
 grep -Fq "FROM email_outbox WHERE status = 'failed'" "$ROOT/deploy/collect-monitoring-metrics.sh"
 grep -Fq 'apitoken_queue_canceled{queue="commerce_email"}' "$ROOT/deploy/collect-monitoring-metrics.sh"
