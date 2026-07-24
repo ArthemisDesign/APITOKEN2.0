@@ -20,6 +20,120 @@ wd_validate_sha() {
   [[ ${1:-} =~ ^[0-9a-f]{40}$ ]] || wd_die "expected a full 40-character lowercase commit SHA"
 }
 
+# Run a command with bounded retries and linear backoff. Intended for transient network work such
+# as the GitHub fetch, where a single DNS/TLS blip must not look like a code failure. The final
+# attempt's exit status is returned unchanged so the caller can still fail closed.
+wd_retry() {
+  [[ $# -ge 3 ]] || wd_die "retry requires attempts, backoff seconds, and a command"
+  local attempts=$1 backoff=$2 attempt=1 rc=0
+  shift 2
+  [[ $attempts =~ ^[1-9][0-9]*$ ]] || wd_die "retry attempts must be a positive integer"
+  [[ $backoff =~ ^[0-9]+$ ]] || wd_die "retry backoff must be a non-negative integer"
+  while :; do
+    rc=0
+    "$@" || rc=$?
+    (( rc != 0 )) || return 0
+    (( attempt < attempts )) || return "$rc"
+    wd_warn "attempt $attempt of $attempts failed (exit $rc); retrying in $((backoff * attempt))s"
+    sleep "$((backoff * attempt))"
+    attempt=$((attempt + 1))
+  done
+}
+
+# Print NUL-delimited immutable release directories that are safe to remove, newest-first retention.
+# A release is protected when it is `current`/`previous`, within the newest `keep` by mtime, or
+# named in the protected list (used for live PID-resolved releases and recorded component SHAs).
+# Selection is deliberately pure; the caller performs the privileged deletion under the deploy lock.
+wd_prunable_release_dirs() {
+  [[ $# -ge 2 ]] || wd_die "release retention selection requires a release root and keep count"
+  local root=$1 keep=$2 protected=() name link resolved canonical_root candidate kept=0
+  shift 2
+  protected=("$@")
+  [[ $root == /* && -d $root && ! -L $root ]] \
+    || wd_die "release root must be an absolute, non-symlink directory: $root"
+  [[ $keep =~ ^[0-9]+$ ]] || wd_die "release retention keep count must be a non-negative integer"
+
+  # Compare resolved link targets against the resolved root: a release root reached through a
+  # symlinked parent must still recognise its own current/previous targets as in-root.
+  canonical_root=$(readlink -f -- "$root")
+
+  for link in current previous; do
+    if [[ -L $root/$link ]]; then
+      resolved=$(readlink -f -- "$root/$link" 2>/dev/null) || continue
+      [[ ${resolved%/*} == "$canonical_root" ]] || continue
+      protected+=("${resolved##*/}")
+    fi
+  done
+
+  # Newest first by directory mtime, so `keep` always retains the most recent releases.
+  while IFS= read -r candidate; do
+    name=${candidate##*/}
+    [[ $name =~ ^[0-9a-f]{40}$ ]] || continue
+    [[ -d $candidate && ! -L $candidate ]] || continue
+    if wd_list_contains "$name" "${protected[@]}"; then
+      continue
+    fi
+    if (( kept < keep )); then
+      kept=$((kept + 1))
+      continue
+    fi
+    printf '%s\0' "$candidate"
+  done < <(wd_dirs_newest_first "$root")
+}
+
+wd_list_contains() {
+  local needle=$1 item
+  shift
+  for item in "$@"; do
+    [[ $item == "$needle" ]] || continue
+    return 0
+  done
+  return 1
+}
+
+wd_dirs_newest_first() {
+  local root=$1 path modified
+  while IFS= read -r -d '' path; do
+    [[ -d $path && ! -L $path ]] || continue
+    modified=$(wd_path_mtime_epoch "$path" 2>/dev/null) || continue
+    [[ $modified =~ ^[0-9]+$ ]] || continue
+    printf '%s\t%s\n' "$modified" "$path"
+  done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -print0) \
+    | sort -rn -k1,1 | cut -f2-
+}
+
+# Print NUL-delimited pre-deploy dump files older than the newest `keep` per database. The hourly
+# `<database>.dump` rotation artifacts are never selected: only the `<database>.pre-deploy-<sha>.dump`
+# snapshots that accumulate once per deployment.
+wd_prunable_predeploy_dumps() {
+  [[ $# -eq 2 ]] || wd_die "dump retention selection requires a backup root and keep count"
+  local root=$1 keep=$2 database dump name kept modified
+  [[ $root == /* && -d $root && ! -L $root ]] \
+    || wd_die "backup root must be an absolute, non-symlink directory: $root"
+  [[ $keep =~ ^[0-9]+$ ]] || wd_die "dump retention keep count must be a non-negative integer"
+
+  for database in commerce claude_engine sales apitoken_crm; do
+    kept=0
+    while IFS= read -r dump; do
+      name=${dump##*/}
+      [[ $name == "$database.pre-deploy-"*.dump ]] || continue
+      [[ -f $dump && ! -L $dump ]] || continue
+      if (( kept < keep )); then
+        kept=$((kept + 1))
+        continue
+      fi
+      printf '%s\0' "$dump"
+    done < <(
+      for dump in "$root/$database.pre-deploy-"*.dump; do
+        [[ -f $dump && ! -L $dump ]] || continue
+        modified=$(wd_path_mtime_epoch "$dump" 2>/dev/null) || continue
+        [[ $modified =~ ^[0-9]+$ ]] || continue
+        printf '%s\t%s\n' "$modified" "$dump"
+      done | sort -rn -k1,1 | cut -f2-
+    )
+  done
+}
+
 wd_path_mtime_epoch() {
   local path=$1
   if stat -c '%Y' -- "$path" >/dev/null 2>&1; then

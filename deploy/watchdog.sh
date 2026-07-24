@@ -12,6 +12,12 @@ BRANCH=master
 STATE_ROOT=/var/lib/apitoken/watchdog
 CANDIDATE_ROOT=$STATE_ROOT/candidates
 CANDIDATE_RETENTION_SECONDS=$((24 * 60 * 60))
+# Immutable releases and per-deployment dumps accumulate once per delivery and nothing else removes
+# them. Keep enough history for multi-step rollback and forensics, bounded so disk use cannot grow
+# without limit. `current`, `previous`, the recorded component SHAs, and any release backing a live
+# process are always retained regardless of these counts.
+RELEASE_RETENTION_KEEP=10
+PREDEPLOY_DUMP_RETENTION_KEEP=10
 CI_USER=apitoken-ci
 CI_HOME=$STATE_ROOT/ci-home
 CI_TOOLCHAIN=/opt/apitoken-watchdog/rust-toolchain
@@ -20,6 +26,7 @@ TEST_DB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-test-db
 BACKUP_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-backup.sh
 MIGRATION_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
 INFRASTRUCTURE_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh
+RETENTION_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-retention.sh
 SALES_RUNNER=/usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh
 GITHUB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-github
 WATCHDOG_LOCK=/run/lock/apitoken-watchdog.lock
@@ -76,12 +83,19 @@ fail() {
   if (( TEST_DB_STARTED == 1 )); then
     sudo -n "$TEST_DB_HELPER" stop >/dev/null 2>&1 || true
   fi
-  if [[ -n ${CANDIDATE_SHA:-} && $CANDIDATE_SHA =~ ^[0-9a-f]{40}$ ]]; then
-    wd_atomic_write "$REJECTED_FILE" "$CANDIDATE_SHA"
+  # A failure before a candidate is even identified (fetch, lock, state validation) is an
+  # infrastructure problem, not a verdict on any commit. Quarantining nothing here would be
+  # meaningless, and reporting a red status against a SHA we never tested would be wrong.
+  if [[ -z ${CANDIDATE_SHA:-} || ! ${CANDIDATE_SHA:-} =~ ^[0-9a-f]{40}$ ]]; then
+    CURRENT_PHASE=failed
+    status "pre-candidate failure at line $line (exit $rc); no commit was evaluated"
+    wd_warn "watchdog cycle failed at line $line before selecting a candidate; retrying next cycle"
+    exit "$rc"
   fi
+  wd_atomic_write "$REJECTED_FILE" "$CANDIDATE_SHA"
   CURRENT_PHASE=failed
   status "command failed at line $line (exit $rc); candidate quarantined"
-  if [[ -x $GITHUB_HELPER && ${CANDIDATE_SHA:-} =~ ^[0-9a-f]{40}$ ]]; then
+  if [[ -x $GITHUB_HELPER ]]; then
     if [[ -n $ACTIVE_DEPLOYMENT_ID ]]; then
       sudo -n "$GITHUB_HELPER" deployment-status "$ACTIVE_DEPLOYMENT_ID" failure \
         "deployment failed closed at $CURRENT_PHASE" "$ACTIVE_DEPLOYMENT_ENV" "$ACTIVE_DEPLOYMENT_URL" \
@@ -175,6 +189,74 @@ prune_expired_candidates() {
   if (( pruned > 0 || failed > 0 )); then
     wd_log "candidate retention finished: removed=$pruned failed=$failed max_age_seconds=$CANDIDATE_RETENTION_SECONDS"
   fi
+  return 0
+}
+
+# Releases backing a live process must never be removed, even if retention counting would otherwise
+# reach them. Resolve every relevant unit's MainPID to the release directory it actually executes
+# from, exactly like the readiness gates do, rather than trusting the symlinks alone.
+live_release_shas() {
+  local unit pid resolved name
+  for unit in claude-api@8787.service claude-api@8788.service \
+    apitoken-api@3000.service apitoken-api@3001.service \
+    apitoken-worker.service apitoken-content-studio.service; do
+    systemctl is-active --quiet "$unit" || continue
+    pid=$(systemctl show "$unit" -p MainPID --value)
+    [[ $pid =~ ^[1-9][0-9]*$ ]] || continue
+    for resolved in "$(readlink -f -- "/proc/$pid/exe" 2>/dev/null)" \
+      "$(readlink -f -- "/proc/$pid/cwd" 2>/dev/null)"; do
+      [[ -n $resolved ]] || continue
+      # Walk up to the SHA-named release directory under either release root.
+      while [[ $resolved == /*/* ]]; do
+        name=${resolved##*/}
+        if [[ $name =~ ^[0-9a-f]{40}$ ]]; then
+          printf '%s\n' "$name"
+          break
+        fi
+        resolved=${resolved%/*}
+      done
+    done
+  done
+}
+
+prune_expired_releases() {
+  local root=$1 label=$2 protected=() sha removed=0 failed=0 release
+
+  mapfile -t protected < <(live_release_shas)
+  for sha in "${ENGINE_SHA:-}" "${BACKEND_SHA:-}" "${PROCESSED_SHA:-}" "${SALES_SHA:-}"; do
+    [[ $sha =~ ^[0-9a-f]{40}$ ]] && protected+=("$sha")
+  done
+
+  while IFS= read -r -d '' release; do
+    # wd_prunable_release_dirs already excludes links, non-SHA names, and protected releases.
+    # Revalidate at the destructive boundary as defence in depth.
+    sha=${release##*/}
+    if [[ ${release%/*} != "$root" || ! $sha =~ ^[0-9a-f]{40}$ || ! -d $release || -L $release ]]; then
+      wd_warn "unsafe $label retention target skipped: $release"
+      failed=$((failed + 1))
+      continue
+    fi
+    # Releases are finalized read-only; restore write bits on the tree before removing it.
+    sudo -n chmod -R u+w -- "$release" 2>/dev/null || true
+    if sudo -n rm -rf --one-file-system -- "$release"; then
+      removed=$((removed + 1))
+    else
+      wd_warn "failed to remove expired $label release $sha"
+      failed=$((failed + 1))
+    fi
+  done < <(wd_prunable_release_dirs "$root" "$RELEASE_RETENTION_KEEP" "${protected[@]}")
+
+  if (( removed > 0 || failed > 0 )); then
+    wd_log "$label release retention finished: removed=$removed failed=$failed keep=$RELEASE_RETENTION_KEEP"
+  fi
+  return 0
+}
+
+prune_expired_dumps() {
+  # The backup root is root-only (0700) and unreadable by deploy, so both selection and deletion
+  # happen inside the fixed root helper. It prints its own summary.
+  sudo -n "$RETENTION_HELPER" "$PREDEPLOY_DUMP_RETENTION_KEEP" \
+    || wd_warn "pre-deploy dump retention did not complete"
   return 0
 }
 
@@ -424,6 +506,50 @@ final_verify_admin_panel() {
   require_retired_vhost crm.panel.apitoken.sale
 }
 
+# Post-admission recovery. Before admission the blue-green controllers already fail closed and
+# leave the old slot serving, so rollback would be both unnecessary and riskier than doing nothing.
+# Once the new slot has been admitted and the old one drained, however, a failed final verification
+# means a possibly-bad release is serving traffic with no automatic way back. `previous` still
+# points at the last verified release, so re-selecting it and re-running the same health-gated
+# controller is the safest available action.
+#
+# This is best-effort by design: it never masks the original failure. The candidate stays
+# quarantined and the pipeline still fails closed either way; a successful rollback only changes
+# what is serving while the operator investigates.
+attempt_rollback() {
+  local component=$1 selector=$2 controller=$3 previous_link=$4 previous_sha
+
+  if [[ ! -L $previous_link ]]; then
+    wd_warn "$component rollback unavailable: no previous release is recorded"
+    return 1
+  fi
+  previous_sha=$(basename -- "$(readlink -f -- "$previous_link")")
+  if [[ ! $previous_sha =~ ^[0-9a-f]{40}$ ]]; then
+    wd_warn "$component rollback unavailable: previous release is not a SHA release ($previous_sha)"
+    return 1
+  fi
+
+  wd_warn "$component verification failed after traffic was committed; rolling back to $previous_sha"
+  if ! "$CONTROLLER_ROOT/rollback.sh" "$selector"; then
+    wd_warn "$component rollback selection failed; production still serves the unverified release"
+    return 1
+  fi
+  if ! "$CONTROLLER_ROOT/$controller"; then
+    wd_warn "$component rollback cutover failed; inspect slots before any further mutation"
+    return 1
+  fi
+  wd_log "$component rolled back to previously verified release $previous_sha"
+  return 0
+}
+
+rollback_engine() {
+  attempt_rollback engine --engine-bluegreen engine-bluegreen.sh "$ENGINE_RELEASE_ROOT/previous"
+}
+
+rollback_backend() {
+  attempt_rollback backend --api-only api-bluegreen.sh "$COMMERCE_RELEASE_ROOT/previous"
+}
+
 deploy_engine() {
   local sha=$1
   CURRENT_PHASE=deploying-engine
@@ -434,7 +560,13 @@ deploy_engine() {
   sudo -n "$BACKUP_RUNNER" "$sha"
   "$CONTROLLER_ROOT/deploy.sh" --engine-bluegreen "$sha"
   "$CONTROLLER_ROOT/engine-bluegreen.sh"
-  final_verify_engine "$sha"
+  # The controller has admitted the new slot and drained the old one by this point. A verification
+  # failure now leaves an unverified release serving, so recover before failing closed.
+  # `engine_runtime_aligned` is the non-fatal predicate; `final_verify_engine` would exit here.
+  if ! engine_runtime_aligned "$sha"; then
+    rollback_engine || true
+    wd_die "engine runtime is not in a single-slot steady state after cutover: $ENGINE_RUNTIME_DETAIL"
+  fi
   wd_atomic_write "$ENGINE_FILE" "$sha"
   github_deployment_success engine
   github_status success deploy/engine "Engine verified in production"
@@ -450,7 +582,13 @@ deploy_backend() {
   github_deployment_start backend production-backend https://backend.apitoken.sale/v1/ready
   "$CONTROLLER_ROOT/deploy.sh" --api-only --skip-migrate "$sha"
   "$CONTROLLER_ROOT/api-bluegreen.sh" --with-worker
-  final_verify_backend "$sha"
+  # As with the engine: traffic is already committed to the new slot here. Run the verifier in a
+  # subshell so its internal wd_die becomes a testable status instead of exiting this process, then
+  # recover before failing closed. The message is re-emitted by the subshell on stderr.
+  if ! ( final_verify_backend "$sha" ); then
+    rollback_backend || true
+    wd_die "commerce API, worker, or Content Studio failed verification after cutover"
+  fi
   wd_atomic_write "$BACKEND_FILE" "$sha"
   github_deployment_success backend
   github_status success deploy/backend "Backend and worker verified in production"
@@ -520,6 +658,7 @@ main() {
   require_fixed_file "$BACKUP_RUNNER"
   require_fixed_file "$MIGRATION_RUNNER"
   require_fixed_file "$INFRASTRUCTURE_RUNNER"
+  require_fixed_file "$RETENTION_HELPER"
   require_fixed_file "$SALES_RUNNER"
   require_fixed_file "$GITHUB_HELPER"
   require_fixed_directory "$CI_TOOLCHAIN"
@@ -539,7 +678,9 @@ main() {
 
   CURRENT_PHASE=fetching
   status "fetching $REMOTE/$BRANCH"
-  git -C "$SOURCE_REPO" fetch --no-tags "$REMOTE" \
+  # GitHub reachability is not a property of the candidate. Absorb transient DNS/TLS/network
+  # failures here so they never reach the failure path at all.
+  wd_retry 3 5 git -C "$SOURCE_REPO" fetch --no-tags "$REMOTE" \
     "+refs/heads/$BRANCH:refs/remotes/$REMOTE/$BRANCH"
   remote_ref="refs/remotes/$REMOTE/$BRANCH"
   CANDIDATE_SHA=$(git -C "$SOURCE_REPO" rev-parse "$remote_ref^{commit}")
@@ -560,6 +701,15 @@ main() {
     wd_log "candidate $CANDIDATE_SHA is quarantined; waiting for a newer commit or explicit retry"
     exit 0
   fi
+
+  # Releases and per-deployment dumps are pruned here, after the recorded component SHAs are loaded
+  # (they are protected inputs) and while the exclusive watchdog lock guarantees no deploy, rollback,
+  # or migration is in flight. Anything backing a live process is protected independently of counts.
+  CURRENT_PHASE=pruning
+  status "applying immutable release and pre-deploy dump retention"
+  prune_expired_releases "$ENGINE_RELEASE_ROOT" engine
+  prune_expired_releases "$COMMERCE_RELEASE_ROOT" commerce
+  prune_expired_dumps
 
   wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" wd_path_is_infrastructure \
     && infra_changed=1

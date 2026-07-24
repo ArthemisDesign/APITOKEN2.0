@@ -25,7 +25,9 @@ case "${1:-}" in
     else
       printf 'watchdog has no status yet\n'
     fi
-    for entry in processed engine backend rejected pending-migration; do
+    # Sales has its own release baseline and deploys independently of the commerce backend, so it
+    # must be visible here or an operator cannot tell which sales release is live.
+    for entry in processed engine backend sales rejected pending-migration; do
       if [[ -r $STATE_ROOT/$entry.sha ]]; then
         printf '%s=%s\n' "$entry" "$(<"$STATE_ROOT/$entry.sha")"
       fi

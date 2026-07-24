@@ -19,7 +19,9 @@ database state only. Grafana users are auto-provisioned as viewers.
 - Sales: API/web health, email queue, referral reconciliation buffer, and payout-batch failures.
 - CRM, Content Studio, public web, support, and mail: process/systemd health, HTTP probes, and logs.
 - Deployments and recovery: watchdog/timer state and current backups for `commerce`,
-  `claude_engine`, `sales`, and `apitoken_crm`.
+  `claude_engine`, `sales`, and `apitoken_crm`. The collector also exports the delivery pipeline's
+  own state — quarantine, status freshness, current phase, and uncommitted-migration marker — so a
+  failed or stalled deployment pages the operator instead of waiting to be noticed in GitHub.
 - Logs: host journald in Loki for 14 days. Prometheus metrics are retained for 30 days or 24 GB,
   whichever limit is reached first.
 
@@ -232,6 +234,49 @@ Run `claude-api-backup.service`, check its result, then validate each dump with 
 
 Treat any missing dump for the four named databases as critical. Run the backup service and verify
 ownership, mode 0600, archive readability, size, and timestamp.
+
+## DeployQuarantined
+
+A commit failed production delivery and is blocked from automatic retry. Read the failing stage with
+`sudo apitoken-watchdog status` and `sudo apitoken-watchdog logs`; the quarantined SHA is in
+`rejected.sha`. Production is unchanged for whichever stages did not run — a failed test never
+deploys, a failed commerce migration never starts the backend, and a failed engine migration or
+readiness check never receives traffic.
+
+Fix the cause with a **new commit**. Do not retry the same SHA to repair a code, test, or migration
+failure. `sudo apitoken-watchdog retry <sha>` is only for a failure proven transient, and never
+permission to edit the immutable candidate or the production database by hand.
+
+Note that `DeployQuarantined` covers failures routed through the watchdog's `ERR` trap. A validation
+helper that calls `wd_die` exits directly, which does not run that trap, so such a failure fails
+closed and is logged but leaves no `rejected.sha` marker. `DeployPipelineStale` and
+`DeployStuckInPhase` remain the backstops for that case; always confirm the phase and the journal
+rather than treating a missing quarantine marker as proof that delivery succeeded.
+
+## DeployPipelineStale
+
+The watchdog writes its status file every cycle, roughly once a minute, so an age above fifteen
+minutes means delivery has stopped. Check `apitoken-deploy-watchdog.timer` is active and the service
+is not stuck: a cycle holds an exclusive `flock`, so one hung run blocks all later polls. Inspect the
+current phase before intervening — a long `testing` or `deploying-*` phase is a running deployment,
+not a stall, and killing it mid-cutover is far worse than waiting.
+
+## DeployStuckInPhase
+
+Delivery has stayed in one non-idle phase for 45 minutes, which exceeds the unit's own
+`TimeoutStartSec`. Identify the phase from the alert label, then inspect that stage's work: a hung
+build or test as `apitoken-ci`, a migration waiting on a PostgreSQL lock, or a blue-green controller
+waiting on a readiness probe that never passes. Prefer letting systemd enforce its timeout over
+killing the unit, and never restart an application slot manually between release selection and
+cutover.
+
+## DeployMigrationUncommitted
+
+The `pending-migration.sha` marker survived a full cycle, meaning a migration began but its manifest
+was never committed. Treat the commerce schema as possibly ahead of the recorded manifest. Do not
+deploy, retry, or hand-edit the database. Compare the applied Drizzle journal against
+`database-migrations.manifest`, and recover from the pre-deployment dump preserved for that SHA under
+`/var/lib/apitoken/backups` if the schema is genuinely inconsistent.
 
 ## SalesReferralReconciliationBacklog
 

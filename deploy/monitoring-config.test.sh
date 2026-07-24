@@ -86,6 +86,33 @@ grep -Fq 'to: "alerts@example.test"' "$TEMP/alertmanager.yml"
 ! grep -Eq '__[A-Z0-9_]+__' "$TEMP/alertmanager.yml"
 
 grep -Fq 'apitoken_backup_present{database="%s"}' "$ROOT/deploy/collect-monitoring-metrics.sh"
+
+# Deployment-pipeline visibility. A failed or stalled delivery is otherwise only observable in the
+# GitHub UI, so the collector must export it and the rules must alert on it.
+for watchdog_metric in \
+  'apitoken_watchdog_quarantined' \
+  'apitoken_watchdog_status_age_seconds' \
+  'apitoken_watchdog_phase' \
+  'apitoken_watchdog_pending_migration'; do
+  grep -Fq "$watchdog_metric" "$ROOT/deploy/collect-monitoring-metrics.sh" \
+    || { printf 'collector does not export %s\n' "$watchdog_metric" >&2; exit 1; }
+  grep -Fq "$watchdog_metric" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'no alert rule consumes %s\n' "$watchdog_metric" >&2; exit 1; }
+done
+for watchdog_alert in DeployQuarantined DeployPipelineStale DeployStuckInPhase DeployMigrationUncommitted; do
+  grep -Fq "alert: $watchdog_alert" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'missing deployment alert %s\n' "$watchdog_alert" >&2; exit 1; }
+  # Every alert must carry a runbook anchor that actually exists in MONITORING.md.
+  anchor=$(printf '%s' "$watchdog_alert" | tr '[:upper:]' '[:lower:]')
+  grep -Fq "MONITORING.md#$anchor" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'alert %s has no runbook anchor\n' "$watchdog_alert" >&2; exit 1; }
+  grep -Fqi "## $watchdog_alert" "$ROOT/MONITORING.md" \
+    || { printf 'MONITORING.md has no runbook section for %s\n' "$watchdog_alert" >&2; exit 1; }
+done
+# A missing status file must read as stale, never as a fresh zero.
+grep -Fq 'WATCHDOG_STATUS_MISSING_AGE_SECONDS=86400' "$ROOT/deploy/collect-monitoring-metrics.sh" \
+  || { printf 'a missing watchdog status must report a stale age\n' >&2; exit 1; }
+
 grep -Fq 'apitoken_queue_dead{queue="commerce_email"}' "$ROOT/deploy/collect-monitoring-metrics.sh"
 grep -Fq "FROM email_outbox WHERE status = 'failed'" "$ROOT/deploy/collect-monitoring-metrics.sh"
 grep -Fq 'apitoken_queue_canceled{queue="commerce_email"}' "$ROOT/deploy/collect-monitoring-metrics.sh"

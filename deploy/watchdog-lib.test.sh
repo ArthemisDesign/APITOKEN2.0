@@ -97,6 +97,115 @@ if wd_manifest_is_append_only "$TEMP/baseline.manifest" "$TEMP/tampered-journal.
   wd_die "manifest accepted an edited historical journal entry"
 fi
 
+# Bounded retry: transient failures are absorbed, permanent ones still surface their exit status.
+retry_attempts_file="$TEMP/retry-attempts"
+printf '0\n' >"$retry_attempts_file"
+flaky_command() {
+  local count
+  count=$(<"$retry_attempts_file")
+  count=$((count + 1))
+  printf '%s\n' "$count" >"$retry_attempts_file"
+  (( count >= 3 ))
+}
+wd_retry 3 0 flaky_command || wd_die "retry did not absorb a transient failure"
+[[ $(<"$retry_attempts_file") == 3 ]] || wd_die "retry did not stop at the first success"
+if wd_retry 2 0 false; then
+  wd_die "retry reported success for a permanently failing command"
+fi
+
+# Release retention: current/previous and explicitly protected SHAs survive regardless of age, the
+# newest `keep` are retained, and only genuine SHA directories are ever selected.
+release_root="$TEMP/releases"
+mkdir -p "$release_root"
+release_shas=(
+  1111111111111111111111111111111111111111
+  2222222222222222222222222222222222222222
+  3333333333333333333333333333333333333333
+  4444444444444444444444444444444444444444
+  5555555555555555555555555555555555555555
+)
+for release_sha in "${release_shas[@]}"; do
+  mkdir -p "$release_root/$release_sha"
+done
+mkdir -p "$release_root/not-a-release"
+ln -s "$release_root/${release_shas[4]}" "$release_root/current"
+ln -s "$release_root/${release_shas[3]}" "$release_root/previous"
+node - "$release_root" "${release_shas[@]}" <<'NODE'
+const fs = require("node:fs");
+const [root, ...shas] = process.argv.slice(2);
+// Oldest first, so index 0 is the least recently modified release.
+shas.forEach((sha, index) => {
+  const when = 1700000000 + index;
+  fs.utimesSync(`${root}/${sha}`, when, when);
+});
+NODE
+
+# keep=1 retains the newest unprotected release plus current/previous. Of the three unprotected
+# releases (…111, …222, …333), the newest (…333) is kept and the two oldest are selected.
+prunable_releases=()
+while IFS= read -r -d '' prunable_release; do
+  prunable_releases+=("${prunable_release##*/}")
+done < <(wd_prunable_release_dirs "$release_root" 1)
+[[ ${#prunable_releases[@]} -eq 2 ]] \
+  || wd_die "release retention selected ${#prunable_releases[@]} directories, expected 2"
+printf '%s\n' "${prunable_releases[@]}" | grep -Fxq "${release_shas[0]}" \
+  || wd_die "release retention did not select the oldest release"
+printf '%s\n' "${prunable_releases[@]}" | grep -Fxq "${release_shas[1]}" \
+  || wd_die "release retention did not select the second-oldest release"
+for protected_release in "${release_shas[4]}" "${release_shas[3]}" "${release_shas[2]}" not-a-release; do
+  if printf '%s\n' "${prunable_releases[@]}" | grep -Fxq "$protected_release"; then
+    wd_die "release retention selected a protected or non-release entry: $protected_release"
+  fi
+done
+
+# An explicitly protected SHA (a live PID's release, or a recorded component baseline) must survive
+# even when retention counting would otherwise reach it.
+protected_selection=()
+while IFS= read -r -d '' prunable_release; do
+  protected_selection+=("${prunable_release##*/}")
+done < <(wd_prunable_release_dirs "$release_root" 1 "${release_shas[0]}")
+if printf '%s\n' "${protected_selection[@]}" | grep -Fxq "${release_shas[0]}"; then
+  wd_die "release retention removed an explicitly protected live release"
+fi
+
+# keep=0 with no protected list still must not touch current/previous.
+zero_keep_selection=()
+while IFS= read -r -d '' prunable_release; do
+  zero_keep_selection+=("${prunable_release##*/}")
+done < <(wd_prunable_release_dirs "$release_root" 0)
+[[ ${#zero_keep_selection[@]} -eq 3 ]] \
+  || wd_die "keep=0 retention must still protect current and previous"
+
+# Pre-deploy dump retention is per-database and must never select the hourly rotation artifact.
+dump_root="$TEMP/backups"
+mkdir -p "$dump_root"
+for database in commerce claude_engine; do
+  : >"$dump_root/$database.dump"
+  for index in 1 2 3; do
+    dump_sha=$(printf '%040d' "$index")
+    : >"$dump_root/$database.pre-deploy-$dump_sha.dump"
+    node -e 'const fs=require("node:fs");const w=1700000000+Number(process.argv[2]);fs.utimesSync(process.argv[1],w,w);' \
+      "$dump_root/$database.pre-deploy-$dump_sha.dump" "$index"
+  done
+done
+: >"$dump_root/commerce-pre-offboard-20260715T102931Z.dump"
+
+prunable_dumps=()
+while IFS= read -r -d '' prunable_dump; do
+  prunable_dumps+=("${prunable_dump##*/}")
+done < <(wd_prunable_predeploy_dumps "$dump_root" 2)
+# Two databases, three snapshots each, keep the newest two: exactly one per database is selected.
+[[ ${#prunable_dumps[@]} -eq 2 ]] \
+  || wd_die "dump retention selected ${#prunable_dumps[@]} files, expected 2"
+for retained_dump in commerce.dump claude_engine.dump commerce-pre-offboard-20260715T102931Z.dump; do
+  if printf '%s\n' "${prunable_dumps[@]}" | grep -Fxq "$retained_dump"; then
+    wd_die "dump retention selected a non-pre-deploy artifact: $retained_dump"
+  fi
+done
+oldest_dump_sha=$(printf '%040d' 1)
+printf '%s\n' "${prunable_dumps[@]}" | grep -Fxq "commerce.pre-deploy-$oldest_dump_sha.dump" \
+  || wd_die "dump retention did not select the oldest commerce snapshot"
+
 # Path classifiers: sales vs backend/engine/infra separation.
 wd_path_is_sales apps/sales-api/src/main.ts || wd_die "sales-api not classified as sales"
 wd_path_is_sales apps/sales-web/src/app/page.tsx || wd_die "sales-web not classified as sales"
@@ -184,6 +293,63 @@ grep -Fq 'monitoring-config.test.sh' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'TEST_SALES_DATABASE_URL=' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'CANDIDATE_RETENTION_SECONDS=$((24 * 60 * 60))' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'prune_expired_candidates' "$ROOT/deploy/watchdog.sh"
+
+# Retention, retry, and post-admission recovery must stay wired into the watchdog itself.
+grep -Fq 'prune_expired_releases "$ENGINE_RELEASE_ROOT" engine' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'engine release retention is not wired into the watchdog cycle'
+grep -Fq 'prune_expired_releases "$COMMERCE_RELEASE_ROOT" commerce' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'commerce release retention is not wired into the watchdog cycle'
+grep -Fq 'prune_expired_dumps' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'pre-deploy dump retention is not wired into the watchdog cycle'
+grep -Fq 'wd_retry 3 5 git -C "$SOURCE_REPO" fetch' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the GitHub fetch is not retried before failing a cycle'
+grep -Fq 'rollback_engine' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'engine post-admission rollback is not wired into the watchdog'
+grep -Fq 'rollback_backend' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'backend post-admission rollback is not wired into the watchdog'
+# Rollback recovery requires the controller to be installed alongside the blue-green scripts.
+grep -Fq 'controller/rollback.sh' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'the rollback controller is not installed for automatic recovery'
+grep -Fq 'watchdog-retention.sh' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'the dump retention helper is not installed'
+
+# A pre-candidate failure must never quarantine a commit: no SHA has been evaluated at that point.
+grep -Fq 'no commit was evaluated' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'pre-candidate failures are not separated from candidate quarantine'
+
+# Operator visibility: sales has an independent release lifecycle and must appear in status.
+grep -Fq 'for entry in processed engine backend sales rejected pending-migration' \
+  "$ROOT/deploy/watchdog-control.sh" || wd_die 'watchdog status does not report the sales baseline'
+
+# The least-privilege sudo policy must exist, deny the reporting credential, and be installed by a
+# validating installer rather than hand-edited.
+sudoers_policy="$ROOT/deploy/sudoers.d/95-apitoken-deploy"
+[[ -f $sudoers_policy ]] || wd_die 'the least-privilege sudo policy is missing'
+if grep -Eq '^[^#]*NOPASSWD:[[:space:]]*ALL' "$sudoers_policy"; then
+  wd_die 'the sudo policy grants unrestricted NOPASSWD:ALL'
+fi
+grep -Fq 'visudo -c -f' "$ROOT/deploy/install-sudoers.sh" \
+  || wd_die 'the sudoers installer does not validate before installing'
+grep -Fq 'github-watchdog.env' "$ROOT/deploy/install-sudoers.sh" \
+  || wd_die 'the sudoers installer does not verify the reporting credential stays unreadable'
+# The policy must permit re-running its own installer. Without this, removing the unrestricted
+# grant is irreversible without console access.
+grep -Fq '/usr/local/lib/apitoken-watchdog/install-sudoers.sh' "$sudoers_policy" \
+  || wd_die 'the sudo policy is not self-repairable: the installer path is not permitted'
+grep -Fq 'APITOKEN_POLICY' "$sudoers_policy" \
+  || wd_die 'the policy self-management alias is missing'
+# Operator tooling must survive the restriction.
+grep -Fq '/usr/local/bin/apitoken-watchdog status' "$sudoers_policy" \
+  || wd_die 'the sudo policy breaks apitoken-watchdog status'
+# Every Cmnd_Alias must be referenced by a grant line, or the privilege is silently not granted.
+while IFS= read -r declared_alias; do
+  grep -Fq "$declared_alias" <<<"$(grep -E '^deploy ALL=' -A2 "$sudoers_policy")" \
+    || wd_die "sudo policy declares unused alias $declared_alias"
+done < <(grep -oE '^Cmnd_Alias [A-Z_]+' "$sudoers_policy" | awk '{print $2}')
+# The installer and its policy are delivered together with the other operational definitions.
+grep -Fq 'install-sudoers.sh' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'the sudoers installer is not delivered to the host'
+
 grep -Fq 'sales-dsn)' "$ROOT/deploy/watchdog-test-db.sh"
 grep -Fq 'require_retired_vhost panel.apitoken.sale' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'require_admin_auth_vhost content-studio.apitoken.sale' "$ROOT/deploy/watchdog.sh"

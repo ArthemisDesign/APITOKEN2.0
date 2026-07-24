@@ -198,6 +198,50 @@ groups:
           description: 'No current dump exists for this production database.'
           runbook: 'MONITORING.md#backupmissing'
 
+      - alert: DeployQuarantined
+        expr: apitoken_watchdog_quarantined == 1
+        for: 2m
+        labels:
+          severity: critical
+          component: deployment
+        annotations:
+          summary: 'A commit failed production delivery and is quarantined'
+          description: 'The watchdog rejected the current master candidate; no later stage will run until a newer commit or an explicit retry.'
+          runbook: 'MONITORING.md#deployquarantined'
+
+      - alert: DeployPipelineStale
+        expr: apitoken_watchdog_status_age_seconds > 900
+        for: 5m
+        labels:
+          severity: critical
+          component: deployment
+        annotations:
+          summary: 'The deploy watchdog has not reported for over 15 minutes'
+          description: 'The poll loop runs every minute. A status file {{ $value | humanizeDuration }} old means delivery is no longer running.'
+          runbook: 'MONITORING.md#deploypipelinestale'
+
+      - alert: DeployStuckInPhase
+        expr: apitoken_watchdog_phase{phase!~"idle|quarantined"} == 1
+        for: 45m
+        labels:
+          severity: warning
+          component: deployment
+        annotations:
+          summary: 'Deployment has remained in phase {{ $labels.phase }} for 45 minutes'
+          description: 'A normal delivery completes in minutes. The unit deadline is 45 minutes, so this indicates a hung build, migration, or cutover.'
+          runbook: 'MONITORING.md#deploystuckinphase'
+
+      - alert: DeployMigrationUncommitted
+        expr: apitoken_watchdog_pending_migration == 1
+        for: 15m
+        labels:
+          severity: critical
+          component: deployment
+        annotations:
+          summary: 'A production migration started but was never committed'
+          description: 'The pending-migration marker survived a full cycle. The database may be partially migrated relative to the recorded manifest.'
+          runbook: 'MONITORING.md#deploymigrationuncommitted'
+
       - alert: SalesReferralReconciliationBacklog
         expr: apitoken_sales_pending_referral_events > 0
         for: 15m

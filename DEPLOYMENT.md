@@ -87,6 +87,41 @@ command line, or repository file. The watchdog calls a fixed root-owned bridge t
 scoped sudo; tested candidate code runs as `apitoken-ci` and cannot read the credential. Revoke and
 replace it immediately if its file permissions, logs, or host boundary are compromised.
 
+### Least-privilege sudo policy
+
+The `deploy` operator holds only the privileges the pipeline actually uses, defined in
+`deploy/sudoers.d/95-apitoken-deploy`. This is what makes the sentence above true: with an
+unrestricted `NOPASSWD: ALL` grant, `deploy` can read the GitHub credential and every
+`/etc/apitoken/*.env` secret, and can replace the root-owned controllers that are meant to be fixed
+trust anchors.
+
+Applying the policy is a deliberate operator action, not an automatic deployment step — a policy
+that locks out the pipeline cannot be repaired by the pipeline it governs:
+
+```bash
+sudo deploy/install-sudoers.sh --check
+sudo deploy/install-sudoers.sh
+sudo apitoken-watchdog status
+```
+
+The installer validates the candidate with `visudo -c` (treating warnings as fatal, since an unused
+alias means an intended privilege is silently not granted), saves timestamped rollback copies under
+`/root/sudoers-backups`, removes the legacy unrestricted grant, then verifies every privilege the
+pipeline needs and every privilege it must not have. If any check fails it restores the previous
+policy automatically and exits non-zero. It also removes `apitoken-ci` from the `deploy` group, so
+candidate-derived test code can no longer write group-writable files in the deployment checkout.
+
+The policy deliberately permits `deploy` to re-run the installer at its fixed root-owned path.
+Without that, removing the unrestricted grant would be irreversible without console access.
+
+When changing the policy, run `--check` first and keep a second session open until
+`sudo apitoken-watchdog status` and a real watchdog cycle have both succeeded.
+
+If you guard the change with a `systemd-run --on-active` timer that restores the old policy, note
+that the installed policy deliberately does not permit stopping arbitrary units, so you cannot
+cancel that timer once the policy is active. Either let it fire and re-run the installer afterwards
+(its own path is permitted), or cancel the timer before applying the policy.
+
 ## Non-negotiable rules
 
 - Use a full 40-character Git SHA that passed the integrated suite.
@@ -279,6 +314,34 @@ deploy/api-bluegreen.sh
 
 An explicit existing SHA may follow the selector. Rollback changes links and slots but never reverses
 a database migration. A release whose migration breaks the prior binary is not rollout-safe.
+
+### Automatic post-admission rollback
+
+Before traffic is admitted, the blue-green controllers already fail closed: the old slot keeps
+serving and nothing is rolled back. Once the new slot has been admitted and the old one drained,
+however, a failed final verification would otherwise leave an unverified release serving with no
+automatic way back. In that window only, the watchdog re-selects `previous` and re-runs the same
+health-gated controller.
+
+This never masks the failure: the candidate is still quarantined and `deploy/watchdog` still goes
+red. A successful rollback only changes what is serving while you investigate. If the rollback
+itself fails, the warning says so explicitly — inspect the slots before any further mutation.
+
+## Retention
+
+Every delivery creates an immutable release per affected component and a validated pre-deployment
+dump per database. Nothing else removes them, so the watchdog prunes both at the start of each
+cycle, while it holds the exclusive lock and no deploy, rollback, or migration is in flight.
+
+- Build candidates: removed after 24 hours (measured from test completion when a marker exists).
+- Immutable releases: the newest ten per component root are kept.
+- Pre-deployment dumps: the newest ten per database are kept.
+
+`current`, `previous`, the recorded component SHAs, and any release backing a live process are
+always retained regardless of those counts. Live releases are resolved from each unit's `MainPID`
+through `/proc/<pid>/exe` and `/proc/<pid>/cwd`, exactly like the readiness gates, rather than
+trusting the symlinks alone. The hourly `<database>.dump` rotation artifacts are never pruned — they
+remain the authoritative recovery objects.
 
 ## Failure behavior
 
