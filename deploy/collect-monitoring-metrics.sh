@@ -9,6 +9,10 @@ COMPOSE_FILE=${MONITORING_POSTGRES_COMPOSE_FILE:-/usr/local/lib/apitoken-watchdo
 POSTGRES_ENV=${MONITORING_POSTGRES_ENV:-/etc/apitoken/postgres.env}
 OUTPUT_DIR=${MONITORING_TEXTFILE_DIR:-/var/lib/apitoken/monitoring/textfile}
 BACKUP_ROOT=${MONITORING_BACKUP_ROOT:-/var/lib/apitoken/backups}
+WATCHDOG_STATE=${MONITORING_WATCHDOG_STATE:-/var/lib/apitoken/watchdog}
+# Deliberately larger than any alert threshold: a missing status file must read as "stale", never
+# as a fresh zero.
+WATCHDOG_STATUS_MISSING_AGE_SECONDS=86400
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { printf 'monitoring collector must run as root\n' >&2; exit 1; }
 [[ -f $COMPOSE_FILE && ! -L $COMPOSE_FILE ]] || { printf 'PostgreSQL compose definition is missing\n' >&2; exit 1; }
@@ -121,6 +125,45 @@ fi
   printf '# HELP apitoken_monitoring_collector_last_success_unixtime Unix time of the last complete collector run.\n'
   printf '# TYPE apitoken_monitoring_collector_last_success_unixtime gauge\n'
   printf 'apitoken_monitoring_collector_last_success_unixtime %s\n' "$now"
+} >>"$temporary"
+
+# Deployment pipeline state. The watchdog reports per-commit results to GitHub, but a quarantined
+# candidate or a stalled poll loop is otherwise invisible from the host. Export it so a failed
+# delivery pages the operator instead of waiting to be noticed in a browser.
+{
+  printf '# HELP apitoken_watchdog_quarantined Whether a candidate commit failed and is blocked from retry.\n'
+  printf '# TYPE apitoken_watchdog_quarantined gauge\n'
+  printf '# HELP apitoken_watchdog_status_age_seconds Age of the watchdog status file.\n'
+  printf '# TYPE apitoken_watchdog_status_age_seconds gauge\n'
+  printf '# HELP apitoken_watchdog_phase Current watchdog phase, as a label on a constant series.\n'
+  printf '# TYPE apitoken_watchdog_phase gauge\n'
+  printf '# HELP apitoken_watchdog_pending_migration Whether a migration was started but not committed.\n'
+  printf '# TYPE apitoken_watchdog_pending_migration gauge\n'
+
+  if [[ -f $WATCHDOG_STATE/rejected.sha && ! -L $WATCHDOG_STATE/rejected.sha ]]; then
+    printf 'apitoken_watchdog_quarantined 1\n'
+  else
+    printf 'apitoken_watchdog_quarantined 0\n'
+  fi
+  if [[ -f $WATCHDOG_STATE/pending-migration.sha && ! -L $WATCHDOG_STATE/pending-migration.sha ]]; then
+    printf 'apitoken_watchdog_pending_migration 1\n'
+  else
+    printf 'apitoken_watchdog_pending_migration 0\n'
+  fi
+
+  status_file=$WATCHDOG_STATE/status
+  if [[ -f $status_file && ! -L $status_file ]]; then
+    status_modified=$(stat -c %Y -- "$status_file")
+    printf 'apitoken_watchdog_status_age_seconds %s\n' "$((now - status_modified))"
+    # phase=<value> is the first field written by the watchdog's atomic status write.
+    phase=$(sed -n 's/^phase=\([A-Za-z-]\{1,32\}\).*/\1/p' "$status_file" | head -n 1)
+    printf 'apitoken_watchdog_phase{phase="%s"} 1\n' "${phase:-unknown}"
+  else
+    # No status file means the watchdog has never completed a cycle on this host. Report a large
+    # age rather than omitting the series, so the staleness alert fires instead of going blind.
+    printf 'apitoken_watchdog_status_age_seconds %s\n' "$WATCHDOG_STATUS_MISSING_AGE_SECONDS"
+    printf 'apitoken_watchdog_phase{phase="unknown"} 1\n'
+  fi
 } >>"$temporary"
 
 mv -f -- "$temporary" "$OUTPUT_DIR/apitoken.prom"
