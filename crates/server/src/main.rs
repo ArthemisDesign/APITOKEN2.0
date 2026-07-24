@@ -977,6 +977,18 @@ async fn serve() -> Result<()> {
             "no shared"
         }
     );
+    let codex = if let Some(config) = s.codex.clone() {
+        let gateway =
+            Arc::new(forward::CodexGateway::new(config).context("initialize Codex provider")?);
+        gateway
+            .preflight()
+            .await
+            .context("validate Codex provider")?;
+        eprintln!("Codex app-server provider preflight passed");
+        Some(gateway)
+    } else {
+        None
+    };
     let app = AppState {
         cfg: Arc::new(s.proxy.clone()),
         authority: Arc::new(authority.clone()),
@@ -989,6 +1001,7 @@ async fn serve() -> Result<()> {
         )),
         affinity,
         clients: Arc::new(Clients::new(&s.proxy)),
+        codex,
         billing,
         authority_ready: authority_ready.clone(),
         breaker: Arc::new(forward::Breaker::new(fleet_size)),

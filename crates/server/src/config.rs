@@ -1,8 +1,8 @@
 //! Композиционный конфиг: читает ВСЁ окружение и собирает настройки сервера +
 //! [`forward::ProxyConfig`]. Единственное место в проекте, где читается env.
 
-use forward::{ProxyConfig, CLAUDE_CODE_IDENTITY};
-use std::{env, net::IpAddr};
+use forward::{CodexConfig, CodexModel, CodexPrices, ProxyConfig, CLAUDE_CODE_IDENTITY};
+use std::{collections::BTreeMap, env, net::IpAddr};
 
 pub struct Settings {
     pub db_path: String,
@@ -27,6 +27,9 @@ pub struct Settings {
     pub affinity_ttl_secs: u64,
     pub affinity_local_ttl_secs: u64,
     pub affinity_redis_timeout_ms: u64,
+    /// Optional second provider. Disabled by default; enabling it requires a pinned binary and a
+    /// dedicated ChatGPT-authenticated CODEX_HOME.
+    pub codex: Option<CodexConfig>,
     pub proxy: ProxyConfig,
 }
 
@@ -146,6 +149,185 @@ fn ev_upstream() -> String {
     .unwrap_or_else(|msg| panic!("{msg}"))
 }
 
+fn codex_model_catalog() -> Vec<CodexModel> {
+    let prices = |input, cached_input, cache_write_input, output| CodexPrices {
+        input,
+        cached_input,
+        cache_write_input,
+        output,
+        long_context_threshold: 272_000,
+        long_input_basis_points: 20_000,
+        long_output_basis_points: 15_000,
+    };
+    let efforts = |with_max: bool| {
+        let mut values = vec!["none", "low", "medium", "high", "xhigh"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if with_max {
+            values.push("max".to_string());
+        }
+        values
+    };
+    let model =
+        |id: &str, upstream: &str, model_prices: CodexPrices, with_max: bool| -> CodexModel {
+            CodexModel {
+                id: id.to_string(),
+                upstream: upstream.to_string(),
+                // Public `/v1/models` keeps the field for SDK compatibility without inventing an
+                // upstream creation timestamp that app-server does not provide.
+                created: 0,
+                owned_by: "apitoken".to_string(),
+                max_output_tokens: 128_000,
+                reasoning_efforts: efforts(with_max),
+                prices: model_prices,
+            }
+        };
+    vec![
+        model(
+            "gpt-5.6",
+            "gpt-5.6-sol",
+            prices(5_000, 500, 6_250, 30_000),
+            true,
+        ),
+        model(
+            "gpt-5.6-sol",
+            "gpt-5.6-sol",
+            prices(5_000, 500, 6_250, 30_000),
+            true,
+        ),
+        model(
+            "gpt-5.6-terra",
+            "gpt-5.6-terra",
+            prices(2_500, 250, 3_125, 15_000),
+            true,
+        ),
+        model(
+            "gpt-5.6-luna",
+            "gpt-5.6-luna",
+            prices(1_000, 100, 1_250, 6_000),
+            true,
+        ),
+        model(
+            "gpt-5.5",
+            "gpt-5.5",
+            prices(5_000, 500, 5_000, 30_000),
+            false,
+        ),
+        model(
+            "gpt-5.4",
+            "gpt-5.4",
+            prices(2_500, 250, 2_500, 15_000),
+            false,
+        ),
+    ]
+}
+
+fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Option<CodexConfig> {
+    if !ev_bool("CLAUDE_API_CODEX_ENABLED", false) {
+        return None;
+    }
+    let requested_models = ev_or(
+        "CLAUDE_API_CODEX_MODELS",
+        "gpt-5.6,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5,gpt-5.4",
+    )
+    .split(',')
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(str::to_string)
+    .collect::<Vec<_>>();
+    let catalog = codex_model_catalog();
+    let mut models = Vec::with_capacity(requested_models.len());
+    for requested in requested_models {
+        let Some(model) = catalog.iter().find(|model| model.id == requested) else {
+            panic!(
+                "CLAUDE_API_CODEX_MODELS contains unsupported model {requested:?}; \
+                 use a model from the pinned Codex price catalog"
+            );
+        };
+        if models
+            .iter()
+            .any(|existing: &CodexModel| existing.id == model.id)
+        {
+            continue;
+        }
+        models.push(model.clone());
+    }
+    if models.is_empty() {
+        panic!("CLAUDE_API_CODEX_MODELS must contain at least one model");
+    }
+
+    let mut child_proxy_env = BTreeMap::new();
+    for name in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    ] {
+        if let Some(value) = ev(name) {
+            child_proxy_env.insert(name.to_string(), value);
+        }
+    }
+
+    Some(CodexConfig {
+        enabled: true,
+        binary: ev_or(
+            "CLAUDE_API_CODEX_BIN",
+            "/srv/claude-api/data/codex/bin/codex",
+        ),
+        binary_sha256: ev("CLAUDE_API_CODEX_BIN_SHA256").unwrap_or_else(|| {
+            panic!("CLAUDE_API_CODEX_BIN_SHA256 is required when CLAUDE_API_CODEX_ENABLED=true")
+        }),
+        expected_version: ev_or("CLAUDE_API_CODEX_VERSION", "codex-cli 0.145.0"),
+        codex_home: ev_or("CLAUDE_API_CODEX_HOME", "/srv/claude-api/data/codex/home"),
+        work_dir: ev_or(
+            "CLAUDE_API_CODEX_WORK_DIR",
+            "/srv/claude-api/data/codex/work",
+        ),
+        startup_timeout_ms: bounded_u64(
+            "CLAUDE_API_CODEX_STARTUP_TIMEOUT_MS",
+            20_000,
+            1_000,
+            120_000,
+        ),
+        request_timeout_ms: bounded_u64("CLAUDE_API_CODEX_RPC_TIMEOUT_MS", 15_000, 500, 120_000),
+        turn_timeout_ms: bounded_u64(
+            "CLAUDE_API_CODEX_TURN_TIMEOUT_MS",
+            600_000,
+            5_000,
+            3_600_000,
+        ),
+        max_concurrent_turns: bounded_usize("CLAUDE_API_CODEX_MAX_CONCURRENT", 4, 1, 64),
+        reserve_overhead_tokens: bounded_u64(
+            "CLAUDE_API_CODEX_RESERVE_OVERHEAD_TOKENS",
+            16_384,
+            0,
+            262_144,
+        ),
+        history_ttl_secs: bounded_u64(
+            "CLAUDE_API_CODEX_HISTORY_TTL_SECS",
+            24 * 3600,
+            60,
+            7 * 24 * 3600,
+        ),
+        history_local_cap: bounded_usize("CLAUDE_API_CODEX_HISTORY_LOCAL_CAP", 10_000, 16, 100_000),
+        history_redis_url: redis_url,
+        history_secret,
+        history_redis_timeout_ms: bounded_u64(
+            "CLAUDE_API_CODEX_HISTORY_REDIS_TIMEOUT_MS",
+            100,
+            1,
+            2_000,
+        ),
+        child_proxy_env,
+        models,
+    })
+}
+
 /// UA-список из env. Разделитель `|`, а НЕ `,`: реальный UA Claude Code содержит запятую
 /// (`(external, sdk-cli)`), split(',') порвал бы одиночный UA на фрагменты → битый UA всему флоту.
 fn split_ua_list(s: &str) -> Vec<String> {
@@ -243,6 +425,9 @@ impl Settings {
             2000,
             ev_opt_in("CLAUDE_API_ALLOW_ZERO_MULT_BP"),
         );
+        let redis_url = ev("CLAUDE_API_REDIS_URL");
+        let affinity_secret = ev("CLAUDE_API_AFFINITY_SECRET");
+        let codex = codex_config(redis_url.clone(), affinity_secret.clone());
         Settings {
             db_path,
             database_url,
@@ -267,8 +452,8 @@ impl Settings {
             // Потолок параллельных запросов на подписку. Дефолт 6 (человеческий конверт/анти-бан).
             // Высокое значение снимает потолок concurrency — больше параллели ценой риска бан-сигнала.
             max_inflight: bounded_i64("CLAUDE_API_MAX_INFLIGHT", 6, 1, 1_024),
-            redis_url: ev("CLAUDE_API_REDIS_URL"),
-            affinity_secret: ev("CLAUDE_API_AFFINITY_SECRET"),
+            redis_url,
+            affinity_secret,
             affinity_ttl_secs: bounded_u64(
                 "CLAUDE_API_AFFINITY_TTL_SECS",
                 3600,
@@ -287,6 +472,7 @@ impl Settings {
                 1,
                 500,
             ),
+            codex,
             proxy: ProxyConfig {
                 api_keys,
                 control_keys,

@@ -1,0 +1,10 @@
+# Audited official OpenAI Codex source pin. The installer refuses every other revision.
+CODEX_GIT_URL='https://github.com/openai/codex.git'
+CODEX_GIT_TAG='rust-v0.145.0'
+CODEX_GIT_COMMIT='25af12f7e61572b0bc18ddb1008be543b91519b0'
+CODEX_EXPECTED_VERSION='codex-cli 0.145.0'
+CODEX_PATCH='0001-api-compat-dynamic-tools-only.patch'
+CODEX_PATCH_SHA256='3b42e694dc5d4771d8d111e9f5338ef7f661f36223b787d7c609e3dc6353e9cb'
+CODEX_ORIGINAL_LOCK_SHA256='e0843448b5767ff36a2a3b15212feb480cd4eaafe8a0c0ca08547e3c7da03a05'
+# Cargo normalizes release workspace package versions from 0.0.0 to 0.145.0 before --locked builds.
+CODEX_NORMALIZED_LOCK_SHA256='ffa26a770e6bce911f93f2e170d8a76bf27abb4c4696bb81a9a65940de1f217e'

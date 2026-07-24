@@ -30,8 +30,8 @@
 └───────────────┬────────────────────────────────────────────┘
                 ▼
 ┌────────────────────────────────────────────────────────────┐
-│ forward  — прозрачный форвардинг /v1/* + affinity + поллер  │
-│   AffinityStore(L1→Redis) · Clients · poll_sub · forward    │
+│ forward  — Claude forwarding + optional Codex adapter       │
+│   AffinityStore · Clients · poll_sub · codex app-server     │
 └───────────────┬────────────────────────────────────────────┘
                 ▼
 ┌────────────────────────────────────────────────────────────┐
@@ -62,8 +62,13 @@
 
 ## Ключевые решения
 
-- **Форвардинг, а не CLI.** Прокси шлёт сырой HTTP на api.anthropic.com на OAuth-токене подписки —
-  поэтому для клиента это настоящий Anthropic API (в отличие от обёртки над `claude` CLI).
+- **Claude: форвардинг, а не CLI.** Прокси шлёт сырой HTTP на api.anthropic.com на OAuth-токене
+  подписки — поэтому Claude-ответ идёт байт-в-байт, в отличие от CLI-обёртки.
+- **Codex: отдельная строгая граница.** Опциональные `/v1/responses`, `/v1/chat/completions` и
+  OpenAI model-discovery проходят через pinned official `codex app-server`; это совместимый
+  текстовый subset, а не прозрачный OpenAI Platform forwarding. Патч удаляет локальные Codex
+  instructions/tools/context, оставляя только явный клиентский контекст. Transport не читает auth
+  store, требует ChatGPT account type, attests binary SHA/version и не меняет Claude path.
 - **Identity-инжект** — цена работы на подписочном токене; вынесен в конфиг, тюнится без пересборки.
 - **Ротация до стрима** — статус ответа проверяется до отдачи тела, поэтому переключение подписок
   при 429/5xx не рвёт клиентский стрим.
@@ -89,6 +94,9 @@
 Полная схема request lifecycle, fencing, cutover и операционные инварианты описаны в
 [`docs/STAGE2_POSTGRES_AUTHORITY.md`](docs/STAGE2_POSTGRES_AUTHORITY.md). Production runbook —
 [`DEPLOYMENT.md`](DEPLOYMENT.md).
+
+Граница совместимости, pinned build, prompt isolation, авторизация и rollback Codex-провайдера
+описаны отдельно в [`docs/CODEX_APP_SERVER.md`](docs/CODEX_APP_SERVER.md).
 
 Детали конфигурации — `config.env.example` / `server.env.example`. Деплой —
 `systemd/claude-api@.service` + `deploy/engine-bluegreen.sh` (legacy cutover unit remains one-time only).

@@ -6,13 +6,16 @@
 //!   *             — форвардинг на api.anthropic.com (см. forward::forward)
 
 use crate::admin;
-use axum::extract::{ConnectInfo, FromRef, State};
+use axum::extract::{ConnectInfo, FromRef, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::Router;
-use forward::{authed, client_key, control_authed, forward, readonly_authed, AppState, Metrics};
-use serde_json::json;
+use forward::{
+    authed, client_key, control_authed, forward, openai_chat_completions, openai_model,
+    openai_models, openai_responses, readonly_authed, AppState, Metrics,
+};
+use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -92,8 +95,165 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             "/admin/account/{account_id}/key-id/{key_id}/policy",
             post(admin::key_policy_by_id),
         )
-        .fallback(forward)
+        // OpenAI-compatible text surface backed by the official Codex app-server. These
+        // dispatchers preserve the exact legacy Claude fallback while Codex is disabled and
+        // disambiguate the shared `/v1/models` namespace by documented client headers.
+        .route("/v1/responses", post(responses_dispatch))
+        .route(
+            "/v1/responses/{*rest}",
+            any(unsupported_openai_subroute_dispatch),
+        )
+        .route("/v1/chat/completions", post(chat_completions_dispatch))
+        .route(
+            "/v1/chat/completions/{*rest}",
+            any(unsupported_openai_subroute_dispatch),
+        )
+        .route("/v1/models", get(models_dispatch))
+        .route("/v1/models/{model_id}", get(model_dispatch))
+        .fallback(provider_fallback_dispatch)
         .with_state(HttpState { app, accepting })
+}
+
+fn explicitly_anthropic(headers: &HeaderMap) -> bool {
+    headers.contains_key("anthropic-version") || headers.contains_key("anthropic-beta")
+}
+
+fn prefers_anthropic(headers: &HeaderMap) -> bool {
+    explicitly_anthropic(headers)
+        || (headers.contains_key("x-api-key")
+            && !headers.contains_key(axum::http::header::AUTHORIZATION))
+}
+
+async fn responses_dispatch(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: axum::extract::Request,
+) -> Response {
+    if app.codex.is_none() {
+        return forward(State(app), ConnectInfo(peer), request).await;
+    }
+    openai_responses(State(app), ConnectInfo(peer), request).await
+}
+
+async fn chat_completions_dispatch(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: axum::extract::Request,
+) -> Response {
+    if app.codex.is_none() {
+        return forward(State(app), ConnectInfo(peer), request).await;
+    }
+    openai_chat_completions(State(app), ConnectInfo(peer), request).await
+}
+
+async fn models_dispatch(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: axum::extract::Request,
+) -> Response {
+    if app.codex.is_none() || prefers_anthropic(request.headers()) {
+        return forward(State(app), ConnectInfo(peer), request).await;
+    }
+    openai_models(State(app), ConnectInfo(peer), request.headers().clone()).await
+}
+
+async fn model_dispatch(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(model_id): Path<String>,
+    request: axum::extract::Request,
+) -> Response {
+    if app.codex.is_none() || prefers_anthropic(request.headers()) {
+        return forward(State(app), ConnectInfo(peer), request).await;
+    }
+    openai_model(
+        State(app),
+        ConnectInfo(peer),
+        request.headers().clone(),
+        Path(model_id),
+    )
+    .await
+}
+
+async fn unsupported_openai_subroute_dispatch(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: axum::extract::Request,
+) -> Response {
+    // An x-api-key without Anthropic protocol headers is still a valid gateway credential for an
+    // OpenAI-shaped request. Only explicit Anthropic protocol markers may preserve the legacy
+    // fallback for these otherwise unambiguously OpenAI route prefixes.
+    if app.codex.is_none() || explicitly_anthropic(request.headers()) {
+        return forward(State(app), ConnectInfo(peer), request).await;
+    }
+    (
+        StatusCode::NOT_FOUND,
+        Json(unsupported_openai_endpoint_error()),
+    )
+        .into_response()
+}
+
+async fn provider_fallback_dispatch(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: axum::extract::Request,
+) -> Response {
+    if app.codex.is_some()
+        && is_known_openai_route_family(request.uri().path())
+        && !explicitly_anthropic(request.headers())
+    {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(unsupported_openai_endpoint_error()),
+        )
+            .into_response();
+    }
+    forward(State(app), ConnectInfo(peer), request).await
+}
+
+fn is_known_openai_route_family(path: &str) -> bool {
+    let Some(root) = path
+        .strip_prefix("/v1/")
+        .and_then(|path| path.split('/').next())
+    else {
+        return false;
+    };
+    matches!(
+        root,
+        "assistants"
+            | "audio"
+            | "batches"
+            | "chat"
+            | "completions"
+            | "containers"
+            | "edits"
+            | "embeddings"
+            | "evals"
+            | "files"
+            | "fine_tuning"
+            | "images"
+            | "models"
+            | "moderations"
+            | "organization"
+            | "projects"
+            | "realtime"
+            | "responses"
+            | "threads"
+            | "uploads"
+            | "vector_stores"
+            | "videos"
+    )
+}
+
+fn unsupported_openai_endpoint_error() -> serde_json::Value {
+    json!({
+        "error": {
+            "message": "The requested endpoint is not supported.",
+            "type": "invalid_request_error",
+            "param": Value::Null,
+            "code": Value::Null
+        }
+    })
 }
 
 /// Prometheus-метрики (admin-авторизация). Ключевое: `route_pin/place` = доля cache-hit,
@@ -172,7 +332,7 @@ async fn metrics(
     // Наблюдаемость трат: агрегаты по клиентским ключам (USD) — только когда биллинг включён И вызов
     // авторизован CONTROL-ключом. Выручка/остатки клиентов — коммерческая тайна: панельному (read-only)
     // ключу их НЕ отдаём (он видит лишь операционные метрики inflight/breaker/429).
-    let body = match &app.billing {
+    let mut body = match &app.billing {
         Some(b) if control_authed(&app, &headers, &peer) => match b.totals().await {
             Ok(t) => {
                 let usd = |n: i64| n as f64 / 1e9;
@@ -192,6 +352,72 @@ async fn metrics(
         },
         _ => body, // биллинг выключен ИЛИ вызов не control → только операционные метрики
     };
+    use std::fmt::Write as _;
+    let _ = writeln!(
+        body,
+        "# TYPE claude_api_codex_enabled gauge\nclaude_api_codex_enabled {}",
+        u8::from(app.codex.is_some())
+    );
+    let codex_status = if let Some(codex) = &app.codex {
+        Some(codex.operational_status().await)
+    } else {
+        None
+    };
+    let _ = writeln!(
+        body,
+        "# TYPE claude_api_codex_process_live gauge\nclaude_api_codex_process_live {}",
+        u8::from(
+            codex_status
+                .as_ref()
+                .is_some_and(|status| status.process_live)
+        )
+    );
+    let limits = codex_status.and_then(|status| status.rate_limits);
+    let _ = writeln!(
+        body,
+        "# TYPE claude_api_codex_rate_limit_snapshot_available gauge\n\
+         claude_api_codex_rate_limit_snapshot_available {}\n\
+         # TYPE claude_api_codex_rate_limit_reached gauge\n\
+         claude_api_codex_rate_limit_reached {}",
+        u8::from(limits.is_some()),
+        u8::from(limits.as_ref().is_some_and(|limits| limits.reached))
+    );
+    if let Some(limits) = limits {
+        let _ = writeln!(
+            body,
+            "# TYPE claude_api_codex_rate_limit_snapshot_timestamp_seconds gauge\n\
+             claude_api_codex_rate_limit_snapshot_timestamp_seconds {}\n\
+             # TYPE claude_api_codex_rate_limit_used_percent gauge\n\
+             # TYPE claude_api_codex_rate_limit_window_minutes gauge\n\
+             # TYPE claude_api_codex_rate_limit_resets_at_seconds gauge",
+            limits.observed_at
+        );
+        for (window_name, window) in [
+            ("primary", limits.primary.as_ref()),
+            ("secondary", limits.secondary.as_ref()),
+        ] {
+            let Some(window) = window else {
+                continue;
+            };
+            let _ = writeln!(
+                body,
+                "claude_api_codex_rate_limit_used_percent{{window=\"{window_name}\"}} {}",
+                window.used_percent
+            );
+            if let Some(duration) = window.window_duration_mins {
+                let _ = writeln!(
+                    body,
+                    "claude_api_codex_rate_limit_window_minutes{{window=\"{window_name}\"}} {duration}"
+                );
+            }
+            if let Some(resets_at) = window.resets_at {
+                let _ = writeln!(
+                    body,
+                    "claude_api_codex_rate_limit_resets_at_seconds{{window=\"{window_name}\"}} {resets_at}"
+                );
+            }
+        }
+    }
     (
         [(
             axum::http::header::CONTENT_TYPE,
@@ -766,6 +992,70 @@ mod tests {
                 json!({"ready": false, "reason": "authority_unavailable"}),
             )
         );
+    }
+
+    #[test]
+    fn shared_models_route_preserves_x_api_key_anthropic_clients() {
+        let mut headers = HeaderMap::new();
+        assert!(!prefers_anthropic(&headers));
+
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer customer-key".parse().unwrap(),
+        );
+        assert!(!prefers_anthropic(&headers));
+
+        headers.insert("x-api-key", "customer-key".parse().unwrap());
+        assert!(!prefers_anthropic(&headers));
+
+        headers.remove(axum::http::header::AUTHORIZATION);
+        assert!(prefers_anthropic(&headers));
+        assert!(!explicitly_anthropic(&headers));
+
+        headers.clear();
+        headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
+        assert!(prefers_anthropic(&headers));
+        assert!(explicitly_anthropic(&headers));
+    }
+
+    #[test]
+    fn unsupported_openai_subroutes_use_generic_openai_error_shape() {
+        let error = unsupported_openai_endpoint_error();
+        assert_eq!(error["error"]["type"], "invalid_request_error");
+        assert_eq!(
+            error["error"]["message"],
+            "The requested endpoint is not supported."
+        );
+        let serialized = error.to_string();
+        assert!(!serialized.contains("Codex"));
+        assert!(!serialized.contains("app-server"));
+        assert!(!serialized.contains("ChatGPT"));
+        assert!(!serialized.contains("Anthropic"));
+    }
+
+    #[test]
+    fn known_unsupported_openai_families_never_match_anthropic_messages() {
+        for path in [
+            "/v1/embeddings",
+            "/v1/images/generations",
+            "/v1/audio/transcriptions",
+            "/v1/files",
+            "/v1/batches/batch_1",
+            "/v1/assistants",
+            "/v1/responses/resp_1",
+            "/v1/completions",
+        ] {
+            assert!(is_known_openai_route_family(path), "{path}");
+        }
+        for path in [
+            "/v1/messages",
+            "/v1/messages/count_tokens",
+            "/admin/dashboard",
+            "/ready",
+            "/unknown",
+        ] {
+            assert!(!is_known_openai_route_family(path), "{path}");
+        }
     }
 
     #[test]

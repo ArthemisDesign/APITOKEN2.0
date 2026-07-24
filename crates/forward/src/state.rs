@@ -3,6 +3,7 @@
 use crate::affinity::AffinityStore;
 use crate::billing::AsyncBilling;
 use crate::breaker::Breaker;
+use crate::codex::CodexGateway;
 use crate::config::ProxyConfig;
 use crate::keylimiter::KeyLimiter;
 use crate::metrics::Metrics;
@@ -23,6 +24,9 @@ pub struct AppState {
     /// shares bindings across engine slots. It never authorizes money or capacity.
     pub affinity: Arc<AffinityStore>,
     pub clients: Arc<Clients>,
+    /// Optional OpenAI-compatible text provider backed by an official Codex app-server child.
+    /// It owns no OAuth material; the child reads the dedicated authenticated `CODEX_HOME`.
+    pub codex: Option<Arc<CodexGateway>>,
     /// Биллинг клиентов (async DB-актор — синхронный SQLite не блокирует воркеры).
     /// `None` → биллинг выключен (только env-ключи/localhost).
     pub billing: Option<Arc<AsyncBilling>>,

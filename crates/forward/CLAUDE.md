@@ -1,7 +1,8 @@
 # crates/forward — CLAUDE.md
 
-**Роль:** прозрачный форвардинг `/v1/*` на api.anthropic.com (Шаг B) + поллер лимитов.
-Сердце «неотличимости от оригинального API».
+**Роль:** прозрачный форвардинг Claude `/v1/*` на api.anthropic.com (Шаг B) + поллер лимитов;
+отдельно — optional strict OpenAI-compatible text adapter через pinned official
+`codex app-server`. Claude byte-for-byte path и Codex translation path не смешивать.
 
 **Владелец-ветка:** `comp/forward`.
 
@@ -33,7 +34,10 @@ outbox, а writer retry-ит до commit. RAII cancel закрывает име�
 
 **Что внутри:** `ProxyConfig`, `AppState`, `Clients` (кэш http-клиентов по прокси),
 `limits_from_headers`/`Limits` (unified-ratelimit из ответа), `poll_sub` (активный опрос idle),
-`detect_plan` (тариф из /api/oauth/profile), `forward` (axum-хендлер), `authed`.
+`detect_plan` (тариф из /api/oauth/profile), `forward` (axum-хендлер), `authed`;
+`codex/` содержит typed app-server transport, Responses/Chat adapters, tenant-bound history,
+Codex admission/settlement и reconstruction SSE events. Env для него по-прежнему читает только
+`server::config`.
 
 **Cache-first роутинг без client opt-in (`affinity.rs`):** tenant = metered `account_id` (все ключи
 аккаунта разделяют кэш) или отдельный admin scope. `AffinityStore::infer` считается ДО identity-инжекта.
@@ -122,6 +126,18 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    `Overloaded`/`RateLimited`. Законные ошибки состояния аккаунта клиент ЗНАТЬ должен и они остаются:
    `InvalidKey` (401), `LowBalance` (**402**, контракт docs-portal). Новую ошибку добавляй ТОЛЬКО как
    вариант `LocalErr` (не сырой `err_response`); regression-тест `local_err_never_leaks_*` это гейтит.
+
+**Инварианты Codex adapter (не применять к Claude byte-for-byte path):**
+1. Только official `codex app-server` и ChatGPT-owned auth store; токены не читать и не replay-ить.
+2. Проверять exact binary SHA-256/version до запуска; child `env_clear`, только allowlisted proxy env.
+3. Model-visible initial context = explicit client system/developer + transcript + dynamic client
+   tools. Codex personality/environment/project/plugin/skill/permission/built-in tools запрещены.
+4. Raw reasoning text не публиковать; только provider summary. `encrypted_content` — только по
+   явному Responses `include`, но хранить tenant-bound для корректной continuity.
+5. Неподдерживаемые параметры отклонять, не игнорировать. Usage для settlement брать из
+   authoritative completed app-server turn.
+6. Не заявлять OpenAI ownership: public `owned_by` остаётся `apitoken`; полный scope и runbook —
+   `docs/CODEX_APP_SERVER.md`.
 
 
 **Тюнинг под живой Anthropic** (identity/beta/UA/version) — через поля `ProxyConfig`, которые

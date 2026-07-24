@@ -11,6 +11,7 @@
 mod affinity;
 mod billing;
 mod breaker;
+pub mod codex;
 mod config;
 mod keylimiter;
 mod meter;
@@ -25,6 +26,11 @@ pub use affinity::{
 };
 pub use billing::AsyncBilling;
 pub use breaker::Breaker;
+pub use codex::{
+    openai_chat_completions, openai_model, openai_models, openai_responses, CodexConfig,
+    CodexGateway, CodexModel, CodexOperationalStatus, CodexPrices, CodexRateLimitWindow,
+    CodexRateLimits,
+};
 pub use config::{ProxyConfig, CLAUDE_CODE_IDENTITY};
 pub use keylimiter::KeyLimiter;
 pub use metrics::Metrics;

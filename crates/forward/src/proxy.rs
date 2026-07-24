@@ -73,7 +73,7 @@ impl Drop for InflightGuard {
 /// Гард резерва баланса. На любом не-успешном исходе И при отмене запроса возвращает удержанный
 /// hold клиенту (`settle` с actual=0). Разоружается на успехе — там hold закрывает tee-метеринг
 /// фактической стоимостью. Без гарда отмена запроса НАВСЕГДА списывала бы удержанное (деньги клиента).
-struct HoldGuard {
+pub(crate) struct HoldGuard {
     billing: Option<Arc<crate::billing::AsyncBilling>>,
     account_id: String,
     key: String,
@@ -82,7 +82,24 @@ struct HoldGuard {
     armed: bool,
 }
 impl HoldGuard {
-    fn disarm(&mut self) {
+    pub(crate) fn new(
+        billing: Option<Arc<crate::billing::AsyncBilling>>,
+        account_id: String,
+        key: String,
+        hold: i64,
+        request_id: String,
+    ) -> Self {
+        Self {
+            billing,
+            account_id,
+            key,
+            hold,
+            request_id,
+            armed: true,
+        }
+    }
+
+    pub(crate) fn disarm(&mut self) {
         self.armed = false;
     }
 }
@@ -108,9 +125,14 @@ impl Drop for HoldGuard {
 
 /// Гард fair-share-слота аккаунта: на ошибке/отмене освобождается при выходе из `forward`, а на
 /// успешном ответе переносится в body-stream и живёт до EOF/ошибки/Drop.
-struct KeyGuard {
+pub(crate) struct KeyGuard {
     limiter: Arc<crate::keylimiter::KeyLimiter>,
     key: String,
+}
+impl KeyGuard {
+    pub(crate) fn new(limiter: Arc<crate::keylimiter::KeyLimiter>, key: String) -> Self {
+        Self { limiter, key }
+    }
 }
 impl Drop for KeyGuard {
     fn drop(&mut self) {
@@ -310,7 +332,7 @@ pub fn readonly_authed(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -
 }
 
 /// Результат авторизации запроса.
-enum Authz {
+pub(crate) enum Authz {
     /// Админ (env-ключ/localhost) — без тарификации.
     Admin { affinity_scope: String },
     /// Ключ клиента → АККАУНТ с балансом. Тарифицируем и списываем с БАЛАНСА АККАУНТА (общего на
@@ -330,7 +352,7 @@ enum Authz {
 }
 
 impl Authz {
-    fn affinity_scope(&self) -> Option<&str> {
+    pub(crate) fn affinity_scope(&self) -> Option<&str> {
         match self {
             Authz::Admin { affinity_scope } => Some(affinity_scope),
             Authz::Metered { account_id, .. } => Some(account_id),
@@ -342,7 +364,7 @@ impl Authz {
 /// Порядок для МАСШТАБА: сначала админ (env-ключ/loopback) — проверка В ПАМЯТИ, без похода в БД
 /// (админ-трафик не грузит биллинг-мьютекс). Только если не админ — клиентский ключ → аккаунт
 /// (ОДНА DB-выборка, несёт баланс для резерва → без повторного чтения).
-async fn authorize(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> Authz {
+pub(crate) async fn authorize(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> Authz {
     if authed(app, headers, peer) {
         return Authz::Admin {
             affinity_scope: client_key(headers).unwrap_or_else(|| "loopback-admin".to_string()),

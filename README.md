@@ -130,6 +130,10 @@ client.messages.create(model="claude-opus-4-8", max_tokens=256,
 Watchdog автоматически создаёт Redis/affinity secrets и управляет локальным
 [`apitoken-affinity-redis.service`](systemd/apitoken-affinity-redis.service).
 
+Опциональный pinned `codex app-server` транспорт для строгого OpenAI-compatible text subset
+описан в [`docs/CODEX_APP_SERVER.md`](docs/CODEX_APP_SERVER.md). Он выключен по умолчанию и не
+изменяет существующий Claude-маршрут.
+
 ## Безопасность
 
 В репозиторий **не попадают**: `subscriptions.db`, токены, прокси с паролями, `*.env`, `target/`

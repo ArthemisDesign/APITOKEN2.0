@@ -1,0 +1,148 @@
+diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
+index a3f29eb..c5b2a97 100644
+--- a/codex-rs/core/src/lib.rs
++++ b/codex-rs/core/src/lib.rs
+@@ -5,6 +5,8 @@
+ // the TUI or the tracing stack).
+ #![deny(clippy::print_stdout, clippy::print_stderr)]
+-
++
++pub(crate) const APITOKEN_OPENAI_COMPAT_CLIENT: &str = "apitoken_openai_compat";
++
+ mod apply_patch;
+ mod apps;
+ mod audio_preparation;
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 2f6dcf5..9572875 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -3210,6 +3210,21 @@ impl Session {
+         world_state: &WorldState,
+         mcp: &McpRuntimeSnapshot,
+     ) -> Vec<ResponseItem> {
++        // API compatibility threads must not inherit Codex CLI personality, environment, plugin,
++        // skill, realtime, token-budget, collaboration, or extension prompt fragments. The
++        // explicit request-owned developer instructions are the complete initial context.
++        if turn_context.app_server_client_name.as_deref()
++            == Some(crate::APITOKEN_OPENAI_COMPAT_CLIENT)
++        {
++            return turn_context
++                .developer_instructions
++                .as_ref()
++                .filter(|instructions| !instructions.is_empty())
++                .map(|instructions| vec![instructions.clone()])
++                .and_then(crate::context_manager::updates::build_developer_update_item)
++                .into_iter()
++                .collect();
++        }
+         let mut developer_sections = Vec::<String>::with_capacity(8);
+         let mut contextual_user_sections = Vec::<String>::with_capacity(2);
+         let mut separate_developer_sections = Vec::<String>::new();
+diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
+index aab5206..8b857b7 100644
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -8346,6 +8346,28 @@ async fn build_initial_context_includes_prompt_fragments_from_extensions() {
+     );
+ }
+-
++
++#[tokio::test]
++async fn apitoken_openai_compat_initial_context_is_only_explicit_developer_instructions() {
++    let (mut session, mut turn_context) = make_session_and_context().await;
++    session.services.extensions = prompt_extension_test_registry();
++    session
++        .services
++        .thread_extension_data
++        .insert(PromptExtensionTestState);
++    turn_context.realtime_active = true;
++    turn_context.app_server_client_name = Some(crate::APITOKEN_OPENAI_COMPAT_CLIENT.to_string());
++    turn_context.developer_instructions = Some("customer developer instructions".to_string());
++    let turn_context = Arc::new(turn_context);
++
++    let initial_context = build_initial_context(&session, &turn_context).await;
++
++    assert_eq!(initial_context.len(), 1);
++    assert_eq!(
++        developer_input_texts(&initial_context),
++        vec!["customer developer instructions"]
++    );
++}
++
+ #[tokio::test]
+ async fn build_initial_context_includes_turn_context_fragments_from_extensions() {
+     let (mut session, mut turn_context) = make_session_and_context().await;
+diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
+index 1694c1b..bc2d9b6 100644
+--- a/codex-rs/core/src/tools/spec_plan.rs
++++ b/codex-rs/core/src/tools/spec_plan.rs
+@@ -186,6 +186,14 @@ fn build_tool_specs_and_registry(
+         wait_agent_timeouts: wait_agent_timeout_options(turn_context),
+     };
+     let mut planned_tools = PlannedTools::default();
++    // The API compatibility gateway supplies the complete public tool set through dynamicTools.
++    // Do not expose Codex CLI tools, hosted tools, extensions, MCP, code mode, or tool search to
++    // an API customer. This client-name gate leaves every stock Codex surface unchanged.
++    if turn_context.app_server_client_name.as_deref() == Some(crate::APITOKEN_OPENAI_COMPAT_CLIENT)
++    {
++        add_dynamic_tools(&context, &mut planned_tools);
++        return build_model_visible_specs_and_registry(turn_context, planned_tools);
++    }
+     add_tool_sources(&context, &mut planned_tools);
+     apply_direct_model_only_namespace_overrides(turn_context, &mut planned_tools);
+     append_tool_search_executor(&context, &mut planned_tools);
+@@ -239,7 +247,11 @@ fn build_model_visible_specs_and_registry(
+             continue;
+         }
+         let exposure = runtime.exposure();
+-        if exposure.is_direct() && !is_hidden_by_code_mode_only(turn_context, &tool_name, exposure)
++        let api_compat_client = turn_context.app_server_client_name.as_deref()
++            == Some(crate::APITOKEN_OPENAI_COMPAT_CLIENT);
++        if exposure.is_direct()
++            && (api_compat_client
++                || !is_hidden_by_code_mode_only(turn_context, &tool_name, exposure))
+         {
+             let spec = runtime.spec();
+             specs.push(spec_for_model_request(
+diff --git a/codex-rs/core/src/tools/spec_plan_tests.rs b/codex-rs/core/src/tools/spec_plan_tests.rs
+index 6d51754..4361dc1 100644
+--- a/codex-rs/core/src/tools/spec_plan_tests.rs
++++ b/codex-rs/core/src/tools/spec_plan_tests.rs
+@@ -412,6 +412,36 @@ fn dynamic_tool(namespace: Option<&str>, name: &str, defer_loading: bool) -> Dyn
+     }
+ }
+-
++
++#[tokio::test]
++async fn apitoken_openai_compat_exposes_only_customer_dynamic_tools() {
++    let plan = probe_with(
++        |turn| {
++            turn.app_server_client_name = Some(crate::APITOKEN_OPENAI_COMPAT_CLIENT.to_string());
++            set_features(
++                turn,
++                &[
++                    Feature::CodeMode,
++                    Feature::CodeModeOnly,
++                    Feature::StandaloneWebSearch,
++                    Feature::MultiAgentV2,
++                ],
++            );
++        },
++        ToolPlanInputs {
++            dynamic_tools: vec![dynamic_tool(
++                None,
++                "customer_function",
++                /*defer_loading*/ false,
++            )],
++            ..ToolPlanInputs::default()
++        },
++    )
++    .await;
++
++    assert_eq!(plan.visible_names, vec!["customer_function"]);
++    assert_eq!(plan.registered_names, vec!["customer_function"]);
++}
++
+ fn plugin_candidates(presentation: ToolSuggestPresentation) -> ToolSuggestCandidates {
+     ToolSuggestCandidates {
+         tools: vec![DiscoverableTool::Plugin(Box::new(DiscoverablePluginInfo {

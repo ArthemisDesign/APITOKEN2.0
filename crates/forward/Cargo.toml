@@ -11,7 +11,7 @@ path = "src/lib.rs"
 registry = { path = "../registry" }
 pool = { path = "../pool" }
 metering = { path = "../metering" }
-tokio = { version = "1", features = ["sync", "rt", "time"] }
+tokio = { version = "1", features = ["sync", "rt", "time", "process", "io-util", "macros"] }
 anyhow = "1"
 axum = "0.8"
 # TLS-транспорт: wreq (форк reqwest на BoringSSL/boring2). Claude Code 2.1.195 = Bun 1.4.0 = BoringSSL,
@@ -20,9 +20,12 @@ axum = "0.8"
 # (см. nodetls::bun_emulation). API близок к reqwest (Client/RequestBuilder/Response/bytes_stream/json).
 # Сборка требует clang+cmake (BoringSSL) — есть на сервере.
 wreq = { version = "6.0.0-rc.29", default-features = false, features = ["tokio-rt", "stream", "json", "socks", "gzip", "brotli"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures-util = "0.3"
 bytes = "1"
 blake3 = "1"
 getrandom = "0.3"
+chacha20poly1305 = "0.10"
+sha2 = "0.10"
 redis = { version = "1.4.1", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
