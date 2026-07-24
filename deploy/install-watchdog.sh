@@ -12,8 +12,14 @@ command -v jq >/dev/null || { echo 'jq is required' >&2; exit 1; }
 command -v openssl >/dev/null || { echo 'openssl is required' >&2; exit 1; }
 id deploy >/dev/null 2>&1 || { echo 'deploy user is required' >&2; exit 1; }
 id apitoken-ci >/dev/null 2>&1 || useradd --system --home-dir /var/lib/apitoken/watchdog/ci-home --create-home --shell /usr/sbin/nologin apitoken-ci
-if ! id -Gn apitoken-ci | tr ' ' '\n' | grep -Fxq deploy; then
-  usermod -a -G deploy apitoken-ci
+# apitoken-ci must NOT be in the deploy group. That membership let candidate-derived test code write
+# deploy-group-writable tracked files in the deployment checkout, undermining the isolation the test
+# gate depends on. install-sudoers.sh removes it; re-adding it here would silently undo that on the
+# next infrastructure install. The CI account needs only its own home plus traverse access to the
+# candidate root, both granted directly below.
+if id -Gn apitoken-ci | tr ' ' '\n' | grep -Fxq deploy; then
+  gpasswd -d apitoken-ci deploy >/dev/null \
+    || echo 'warning: could not remove apitoken-ci from the deploy group' >&2
 fi
 
 install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/controller
