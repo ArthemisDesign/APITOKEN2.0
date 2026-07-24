@@ -247,6 +247,12 @@ Fix the cause with a **new commit**. Do not retry the same SHA to repair a code,
 failure. `sudo apitoken-watchdog retry <sha>` is only for a failure proven transient, and never
 permission to edit the immutable candidate or the production database by hand.
 
+Note that `DeployQuarantined` covers failures routed through the watchdog's `ERR` trap. A validation
+helper that calls `wd_die` exits directly, which does not run that trap, so such a failure fails
+closed and is logged but leaves no `rejected.sha` marker. `DeployPipelineStale` and
+`DeployStuckInPhase` remain the backstops for that case; always confirm the phase and the journal
+rather than treating a missing quarantine marker as proof that delivery succeeded.
+
 ## DeployPipelineStale
 
 The watchdog writes its status file every cycle, roughly once a minute, so an age above fifteen
