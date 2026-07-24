@@ -117,6 +117,11 @@ Without that, removing the unrestricted grant would be irreversible without cons
 When changing the policy, run `--check` first and keep a second session open until
 `sudo apitoken-watchdog status` and a real watchdog cycle have both succeeded.
 
+If you guard the change with a `systemd-run --on-active` timer that restores the old policy, note
+that the installed policy deliberately does not permit stopping arbitrary units, so you cannot
+cancel that timer once the policy is active. Either let it fire and re-run the installer afterwards
+(its own path is permitted), or cancel the timer before applying the policy.
+
 ## Non-negotiable rules
 
 - Use a full 40-character Git SHA that passed the integrated suite.
