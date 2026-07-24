@@ -45,7 +45,11 @@ Cmnd_Alias APITOKEN_RELEASES = \
     /usr/bin/rm -rf --one-file-system -- /srv/claude-api/releases/[0-9a-f]*, \
     /usr/bin/rm -rf --one-file-system -- /opt/apitoken/releases/[0-9a-f]*
 
-# Candidate build/test execution as the unprivileged CI account.
+# Candidate build/test execution as the unprivileged CI account. The wildcard is deliberate: the
+# test gate runs arbitrary package scripts from the candidate, and enumerating them is neither
+# possible nor useful. It is safe because the target is `apitoken-ci`, NOT root — this is a
+# de-escalation. `deploy` already outranks that account, so this grants no privilege it lacks; it
+# only provides the clean environment the isolated build needs. See the (apitoken-ci) grant below.
 Cmnd_Alias APITOKEN_CI = /usr/bin/env *
 
 # Service lifecycle for project units only. Deliberately excludes PostgreSQL: the deploy controllers
