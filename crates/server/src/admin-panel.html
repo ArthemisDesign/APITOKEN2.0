@@ -72,7 +72,7 @@ a.link{color:var(--blue);text-decoration:none}a.link:hover{text-decoration:under
 .toast.bad{border-color:var(--red)}.toast+.toast{bottom:70px}
 </style>
 </head>
-<body data-admin-panel-version="7">
+<body data-admin-panel-version="8">
 <div id="app"></div>
 <script>
 const app=document.getElementById('app');
@@ -206,12 +206,17 @@ async function adminAction(button,domains){const action=button.dataset.adminActi
 
 // Разбивка «кто тратит» по окнам 24ч/7д/30д: списано клиенту (с его множителем) vs real-API
 // эквивалент + эффективная скидка. Открывается кликом по «потрачено» в таблицах/карточке.
-async function spendStats(){let data;try{data=await api('/spend-stats')}catch(error){return toast('Статистика расхода не загрузилась: '+error.message,'bad')}
+async function spendStats(){let data,emailById={};
+  try{const results=await Promise.all([api('/spend-stats'),api('/admin/users').catch(()=>({users:[]}))]);data=results[0];
+    (results[1].users||[]).forEach(user=>{if(user.id)emailById[user.id]=user.email})}
+  catch(error){return toast('Статистика расхода не загрузилась: '+error.message,'bad')}
+  const displayName=handle=>{const match=/^user:(.+)$/.exec(handle||'');
+    return match&&emailById[match[1]]?emailById[match[1]]:(handle||'—')};
   const periods=[['d1','Сутки (24ч)'],['d7','7 дней'],['d30','30 дней']];
   const discount=(charge,real)=>real>0?Math.round((1-charge/real)*100)+'%':'—';
   const overlay=document.createElement('div');overlay.className='overlay';
   const render=key=>{const period=data.periods[key]||{accounts:[]};
-    const rows=(period.accounts||[]).map(item=>'<tr><td class="left"><b>'+esc(item.handle||'—')+'</b><div class="sub">'+esc(item.account)+'</div></td><td>'+item.requests+
+    const rows=(period.accounts||[]).map(item=>'<tr><td class="left"><b>'+esc(displayName(item.handle))+'</b><div class="sub">'+esc(item.handle&&displayName(item.handle)!==item.handle?item.handle:item.account)+'</div></td><td>'+item.requests+
       '</td><td><b>'+money(item.charge_usd)+'</b></td><td>'+money(item.real_usd)+'</td><td>'+discount(item.charge_usd,item.real_usd)+'</td><td>'+ago(item.last_ts*1000)+'</td></tr>').join('');
     return '<div class="cards">'+card('списано клиентам',money(period.charge_usd),period.requests+' запросов')+
       card('real-API эквивалент',money(period.real_usd),'средняя скидка '+discount(period.charge_usd,period.real_usd))+'</div>'+
