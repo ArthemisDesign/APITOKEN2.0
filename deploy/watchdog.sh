@@ -485,17 +485,30 @@ require_retired_vhost() {
 }
 
 final_verify_admin_panel() {
-  local panel matched=0 response monitoring_ready=0
-  # A just-stopped old slot can finish one keep-alive response while Caddy converges. Retry through
-  # one active-health window before declaring that the stable listener serves the wrong panel.
-  for _ in 1 2 3 4 5 6; do
+  local panel matched=0 streak=0 response monitoring_ready=0
+  # The stable listener round-robins both engine slots with a 2s active-health interval, so for
+  # several seconds after a cutover the retiring slot can still answer 200 with the previous panel.
+  # One matching answer is therefore not proof: require a short streak of them, over a window
+  # comfortably longer than health convergence plus drain, so this asserts the old slot has left
+  # rotation rather than racing it.
+  #
+  # Observed on 2026-07-25: cutover completed at 08:53:19 and the previous 6x1s window gave up at
+  # 08:53:27, quarantining a promotion that was in fact correct — the panel served the new version
+  # moments later. The check only ever fires on a panel-version bump, which is exactly when it has
+  # to be trustworthy.
+  for _ in $(seq 1 20); do
     panel=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 \
       http://127.0.0.1:8790/admin-panel 2>/dev/null || true)
     if grep -Fq 'data-admin-panel-version="9"' <<<"$panel"; then
-      matched=1
-      break
+      streak=$((streak + 1))
+      if (( streak >= 3 )); then
+        matched=1
+        break
+      fi
+    else
+      streak=0
     fi
-    sleep 1
+    sleep 3
   done
   [[ $matched == 1 ]] || wd_die "deployed engine does not contain the current admin panel"
   require_admin_auth_vhost admin.apitoken.sale

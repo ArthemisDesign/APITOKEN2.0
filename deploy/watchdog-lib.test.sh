@@ -294,6 +294,14 @@ grep -Fq 'configure_commerce_balancer' "$ROOT/deploy/sales-deploy.sh"
 grep -Fq 'COMMERCE_BALANCER_READY_URL=${COMMERCE_BALANCER_READY_URL:-http://127.0.0.1:8791/v1/ready}' "$ROOT/deploy/api-bluegreen.sh"
 [[ $(grep -Fc 'balancer_is_ready' "$ROOT/deploy/api-bluegreen.sh") -ge 6 ]]
 grep -Fq 'final_verify_admin_panel' "$ROOT/deploy/watchdog.sh"
+# The panel check runs immediately after cutover, while the stable listener still round-robins the
+# retiring slot. It must require a streak of current answers rather than accepting the first one,
+# and its window must stay well above Caddy's 2s active-health convergence: a one-second window
+# quarantined a correct promotion on 2026-07-25.
+grep -Fq 'streak >= 3' "$ROOT/deploy/watchdog.sh" \
+  || wd_die "the admin-panel check must require consecutive current answers, not a single one"
+grep -Fq 'for _ in $(seq 1 20); do' "$ROOT/deploy/watchdog.sh" \
+  || wd_die "the admin-panel convergence window must outlast blue-green cutover and health checks"
 grep -Fq 'monitoring-config.test.sh' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'TEST_SALES_DATABASE_URL=' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'CANDIDATE_RETENTION_SECONDS=$((24 * 60 * 60))' "$ROOT/deploy/watchdog.sh"
