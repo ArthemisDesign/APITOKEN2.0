@@ -82,7 +82,16 @@ status() {
 
 fail() {
   local rc=$? line=${BASH_LINENO[0]:-unknown}
+  # Clear first: this handler is registered on EXIT as well as ERR, and must never re-enter itself
+  # when it exits below.
   trap - ERR EXIT INT TERM
+
+  # The EXIT trap also fires on a successful cycle and on the deliberate `exit 0` paths (already
+  # processed, quarantined, another cycle holding the lock). Those are not failures.
+  if (( rc == 0 )); then
+    return 0
+  fi
+
   if (( TEST_DB_STARTED == 1 )); then
     sudo -n "$TEST_DB_HELPER" stop >/dev/null 2>&1 || true
   fi
@@ -116,7 +125,15 @@ fail() {
   wd_warn "candidate ${CANDIDATE_SHA:-unknown} failed at line $line and will not be retried automatically"
   exit "$rc"
 }
-trap fail ERR INT TERM
+# Registered on EXIT as well as ERR. `wd_die` — used by 30+ validation call sites — terminates with
+# `exit`, which does NOT run an ERR trap, so those failures previously bypassed quarantine and left
+# no red commit status: the pipeline stopped correctly but reported nothing and blocked no retry.
+# EXIT catches every abnormal termination path; `fail` returns immediately when the status is 0, so
+# successful cycles and the deliberate `exit 0` paths are unaffected.
+#
+# Subshells do not inherit this trap (verified on bash 5.2), so a `wd_die` inside a subshell used as
+# a condition — such as the post-admission backend verification — still fails only that subshell.
+trap fail ERR EXIT INT TERM
 
 require_fixed_file() {
   local path=$1 owner
