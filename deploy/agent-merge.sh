@@ -47,8 +47,17 @@ done
 am_log() { printf '[agent-merge] %s\n' "$*"; }
 am_die() { printf '[agent-merge] ERROR: %s\n' "$*" >&2; exit 1; }
 
-# BSD (macOS) and GNU (Linux contributors, production host) disagree about stat.
-am_mtime() { stat -f %m -- "$1" 2>/dev/null || stat -c %Y -- "$1" 2>/dev/null || printf '0'; }
+# BSD (macOS) and GNU (Linux contributors, production host) disagree about stat, and they disagree
+# dangerously: GNU reads -f as --file-system, then EXITS 0 while printing `File: "/tmp"` instead of a
+# number. Feeding that to $(( )) makes bash treat `File` as a variable name, which under set -u kills
+# the script. So try GNU first and validate that whatever came back is actually digits.
+am_mtime() {
+  local mtime
+  mtime=$(stat -c %Y -- "$1" 2>/dev/null || printf '')
+  [[ $mtime =~ ^[0-9]+$ ]] || mtime=$(stat -f %m -- "$1" 2>/dev/null || printf '')
+  [[ $mtime =~ ^[0-9]+$ ]] || mtime=0
+  printf '%s' "$mtime"
+}
 am_now() { date +%s; }
 
 am_gate() {

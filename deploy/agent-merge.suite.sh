@@ -39,6 +39,11 @@ git init --quiet --bare "$ORIGIN"
 git --git-dir="$ORIGIN" symbolic-ref HEAD refs/heads/master
 PRIMARY=$TEMP/primary
 git_quiet clone --quiet "$ORIGIN" "$PRIMARY"
+# The merge rebases with plain `git`, so the identity must live in the fixture repository itself.
+# Relying on ambient identity passes on a developer machine, where git auto-detects user@hostname,
+# and fatals on a host whose hostname has no domain.
+git_quiet -C "$PRIMARY" config user.name 'Merge Path Tests'
+git_quiet -C "$PRIMARY" config user.email 'tests@example.invalid'
 git_quiet -C "$PRIMARY" symbolic-ref HEAD refs/heads/master
 printf 'base\n' >"$PRIMARY/file.txt"
 git_quiet -C "$PRIMARY" add file.txt
@@ -206,6 +211,15 @@ git --git-dir="$ORIGIN" merge-base --is-ancestor "$landed_c" "$(git --git-dir="$
   || wd_die 'landed history is missing commits'
 
 # --- portability: no tools that are absent on a stock macOS contributor machine ---------------------
+# The mtime helper must return digits on THIS platform. GNU stat exits 0 while printing `File: "..."`
+# for the BSD flag, and that text reaching $(( )) is an unbound-variable crash under set -u, not a
+# fallback. This is the failure that quarantined three SHAs: it cannot reproduce on macOS.
+mtime_probe=$(bash -c "$(sed -n '/^am_mtime()/,/^}/p' "$MERGE"); am_mtime /tmp" 2>&1)
+[[ $mtime_probe =~ ^[0-9]+$ ]] \
+  || wd_die "am_mtime must return digits on this platform, got: $mtime_probe"
+(( mtime_probe > 0 )) || wd_die 'am_mtime returned 0, so lock staleness would be meaningless'
+grep -Eq 'stat -f %m[^\n]*\|\|[[:space:]]*stat -c' "$MERGE" \
+  && wd_die 'the BSD stat form must not be tried first: GNU stat exits 0 with non-numeric output'
 grep -Eq '(^|[^-])\bflock\b' "$MERGE" && wd_die 'agent-merge.sh depends on flock, absent on macOS'
 grep -q '\bgh \(api\|pr\|auth\)' "$MERGE" && wd_die 'agent-merge.sh depends on the gh CLI'
 grep -Fq 'stat -f %m' "$MERGE" || wd_die 'agent-merge.sh must read mtime portably on BSD'
@@ -262,15 +276,13 @@ printf 'not json' | bash "$GUARD" >/dev/null 2>&1 \
   || wd_die 'the git guard must fail open on an unparseable payload'
 
 # --- the workflow is actually wired into the repository ---------------------------------------------
-# The suite runs strictly in the merge gate. It is not enforced in the production gate: the watchdog
-# installed on the host still invokes deploy/agent-merge.test.sh, which is now a report-only shim, so
-# a host-environment difference can no longer quarantine a SHA and trap its own fix.
+# Back in the production gate, having been verified on the host itself rather than only on macOS.
 grep -Fq 'deploy/agent-merge.suite.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the merge-path suite'
-grep -Fq 'exit 0' "$ROOT/deploy/agent-merge.test.sh" \
-  || wd_die 'the production-gate shim must never fail closed while the host still invokes it'
 grep -Fq 'agent-merge.suite.sh' "$ROOT/deploy/watchdog.sh" \
-  && wd_die 'the merge-path suite is back in the production gate before being diagnosed'
+  || wd_die 'the production gate does not run the merge-path suite'
+[[ ! -e $ROOT/deploy/agent-merge.test.sh ]] \
+  || wd_die 'the report-only shim outlived its purpose; the installed watchdog no longer calls it'
 grep -Fq 'guard-git.sh' "$ROOT/.claude/settings.json" \
   || wd_die 'the git guard is not registered as a PreToolUse hook'
 grep -Fq '.claude/worktrees/' "$ROOT/.gitignore" \
