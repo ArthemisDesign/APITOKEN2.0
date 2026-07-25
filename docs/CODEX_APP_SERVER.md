@@ -216,6 +216,30 @@ rather than inferring it from the model string. Streaming delivery is bounded: a
 app-server transport indefinitely. Its already-started turn is still drained to authoritative usage
 and settled, matching the existing Claude disconnect invariant.
 
+## Buying accounts: the authbot device flow
+
+A Claude subscription is a token, so the authbot writes it to the registry and the engine reloads
+it. A ChatGPT subscription has no token we may keep, so the unit that grows this pool is a
+directory. `crates/authbot` therefore drives `codex login --device-auth` itself:
+
+1. the seller is paid through the existing offer flow and supplies a proxy and the account address;
+2. the bot creates `<CLAUDE_API_CODEX_HOMES_DIR>/<slug>` mode 0700 and starts the device flow in a
+   PTY with that `CODEX_HOME`, sending the login through the seller's proxy so the purchase and the
+   later traffic do not look like two different users;
+3. the seller opens the printed link, enters the one-time code (valid 15 minutes) and approves;
+4. the pinned CLI polls OpenAI itself and exits — unlike the Claude flow there is no `code#state`
+   to paste back;
+5. the bot confirms with `codex login status` that the profile is a ChatGPT login, writes the
+   optional `proxy.url` (0600), and stops touching the directory.
+
+The bot never reads, prints or forwards anything from the auth store. A flow that expires, is
+refused, or completes as an API-key login leaves no directory behind, so an unfinished purchase
+cannot enter the pool. The engine admits the account on its next health tick — no restart, no
+config edit, no root.
+
+Operationally the bot is still deployed by hand: it is a workspace crate now, so the watchdog gates
+it, but nothing restarts `claude-authbot.service` for you.
+
 ## Verification and activation
 
 Before enabling production traffic:

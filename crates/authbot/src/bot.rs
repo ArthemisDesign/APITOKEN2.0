@@ -53,13 +53,24 @@ fn product_kb() -> Keyboard {
         vec![("Claude Pro".into(), "noffer:pro".into())],
         vec![("Claude 5x".into(), "noffer:5x".into())],
         vec![("Claude 20x".into(), "noffer:20x".into())],
+        vec![("ChatGPT Plus".into(), "noffer:gptplus".into())],
+        vec![("ChatGPT Pro".into(), "noffer:gptpro".into())],
     ]
+}
+
+/// ChatGPT-подписка передаётся device-флоу в отдельный CODEX_HOME, а не токеном в реестр.
+/// Продукт оффера — единственное, что отличает две ветки передачи доступа.
+fn is_codex_product(product: &str) -> bool {
+    let p = product.to_lowercase();
+    p.contains("chatgpt") || p.contains("gpt")
 }
 fn tier_name(code: &str) -> Option<&'static str> {
     match code {
         "pro" => Some("Claude Pro"),
         "5x" => Some("Claude 5x"),
         "20x" => Some("Claude 20x"),
+        "gptplus" => Some("ChatGPT Plus"),
+        "gptpro" => Some("ChatGPT Pro"),
         _ => None,
     }
 }
@@ -253,6 +264,23 @@ pub async fn on_message(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>,
                     let _ = store.set_want(chat, "ho_code");
                 }
             }
+            "cx_proxy" => {
+                let purl = proxy_url(text);
+                if purl.is_empty() {
+                    let _ = bot.send(chat, "Не похоже на прокси. Пришли <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.").await;
+                } else {
+                    let _ = store.set_hproxy(chat, &purl);
+                    let _ = store.set_want(chat, "cx_email");
+                    let _ = bot.send(chat, "Прокси принят ✅\n<b>Шаг 2/3.</b> Пришли <b>email</b> аккаунта ChatGPT.").await;
+                }
+            }
+            "cx_email" => {
+                if !looks_like_email(text) {
+                    let _ = bot.send(chat, "Это не похоже на email. Пришли адрес аккаунта ещё раз.").await;
+                } else {
+                    start_codex_handoff(bot, store, cfg, chat, text, &rec.hproxy).await;
+                }
+            }
             "ho_code" => {
                 match extract_code_state(text) {
                     Some(cs) => do_feed_token(bot, store, cfg, chat, &cs).await,
@@ -389,6 +417,89 @@ async fn do_feed_token(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, chat: i
     }
 }
 
+/// Какой сценарий передачи доступа нужен по этому офферу.
+///
+/// Claude отдаётся токеном в реестр, ChatGPT — device-флоу в отдельный CODEX_HOME. Шаг с прокси
+/// общий, различаются только шаги после него, поэтому ветку выбираем один раз здесь, по продукту.
+fn handoff_steps(store: &Store, oid: i64) -> (&'static str, &'static str) {
+    let codex = store
+        .get_offer(oid)
+        .ok()
+        .flatten()
+        .map(|o| is_codex_product(&o.product))
+        .unwrap_or(false);
+    if codex { ("cx_proxy", "cx_email") } else { ("ho_proxy", "ho_email") }
+}
+
+/// Передача ChatGPT-подписки: device-флоу в свой CODEX_HOME.
+///
+/// В отличие от Claude здесь нет второго шага с `code#state`: codex сам опрашивает OpenAI и
+/// завершается, поэтому продавцу достаточно открыть ссылку и ввести код. Ждём в фоне, чтобы не
+/// заморозить приём сообщений, и ничего из auth store не читаем и не пересылаем.
+async fn start_codex_handoff(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>,
+                             chat: i64, email: &str, proxy: &str) {
+    let (bin, dir, em, px) = (cfg.codex_bin.clone(), cfg.codex_homes_dir.clone(),
+                              email.trim().to_string(), proxy.to_string());
+    let _ = bot.send(chat, "⏳ Готовлю авторизацию ChatGPT…").await;
+    let started = tokio::task::spawn_blocking({
+        let (em, px, bin, dir) = (em.clone(), px.clone(), bin.clone(), dir.clone());
+        move || crate::codex_login::start(chat, &em, &px, &bin, &dir)
+    })
+    .await;
+    let auth = match started {
+        Ok(Ok(auth)) => auth,
+        Ok(Err(e)) => {
+            let _ = bot.send(chat, &format!("❌ {}", esc(&e.to_string()))).await;
+            return;
+        }
+        Err(_) => {
+            let _ = bot.send(chat, "❌ Внутренняя ошибка запуска.").await;
+            return;
+        }
+    };
+    let _ = store.set_want(chat, "");
+    let _ = bot.send(chat, &format!(
+        "🔗 <b>Шаг 3/3.</b> Открой ссылку, войди нужным аккаунтом ChatGPT и введи одноразовый код:\n\n\
+         {url}\n\nКод: <code>{code}</code>\n\n\
+         Код живёт 15 минут. Как только подтвердишь вход — сообщу здесь, ничего присылать не нужно.",
+        url = esc(&auth.url), code = esc(&auth.code))).await;
+
+    let (bot2, store2, cfg2) = (bot.clone(), store.clone(), cfg.clone());
+    tokio::spawn(async move {
+        let outcome = tokio::task::spawn_blocking(move || crate::codex_login::wait(chat, &bin)).await;
+        match outcome {
+            Ok(crate::codex_login::Outcome::Authorized { label, has_proxy }) => {
+                let _ = store2.set_hproxy(chat, "");
+                let _ = bot2.send(chat, &format!(
+                    "✅ <b>Готово!</b> Доступ передан, подписка <code>{}</code> принята. Спасибо за сделку! 🤝",
+                    esc(&label))).await;
+                notify_admins(&bot2, &cfg2, &format!(
+                    "✅ <b>ChatGPT-доступ получен</b>: аккаунт <code>{}</code> добавлен в пул Codex (прокси: {}). \
+                     Движок подхватит его ближайшим health-тиком.",
+                    esc(&label), if has_proxy { "свой" } else { "общий" }), None).await;
+            }
+            Ok(crate::codex_login::Outcome::Expired) => {
+                let _ = store2.set_want(chat, "cx_email");
+                let _ = bot2.send(chat,
+                    "❌ Вход не подтверждён — код истёк. Пришли <b>email</b> заново, дам свежий код.").await;
+            }
+            Ok(crate::codex_login::Outcome::NotChatgpt) => {
+                let _ = store2.set_want(chat, "cx_email");
+                let _ = bot2.send(chat,
+                    "❌ Это не подписка ChatGPT (похоже на вход по API-ключу). Нужен аккаунт с активной \
+                     подпиской Plus/Pro. Пришли <b>email</b> заново.").await;
+            }
+            Ok(crate::codex_login::Outcome::Failed(why)) => {
+                let _ = store2.set_want(chat, "cx_email");
+                let _ = bot2.send(chat, &format!("❌ Не получилось: {}. Пришли <b>email</b> заново.", esc(&why))).await;
+            }
+            Err(_) => {
+                let _ = bot2.send(chat, "❌ Внутренняя ошибка ожидания.").await;
+            }
+        }
+    });
+}
+
 /// После оплаты (сумма > $10): авто-выпуск UK ISP прокси через IPRoyal и красивая выдача
 /// продавцу. Ставит его в шаг ho_email. При ошибке — фолбэк на ручной ввод прокси продавцом.
 async fn deliver_issued_proxy(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>,
@@ -398,19 +509,22 @@ async fn deliver_issued_proxy(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>,
     match crate::iproyal::Iproyal::new(&cfg.iproyal_key).issue_uk_isp_30d().await {
         Ok(px) => {
             let _ = store.mark_offer_proxy_issued(oid);
+            let (_, email_step) = handoff_steps(store, oid);
             let _ = store.set_hproxy(seller_chat, &px.url());
-            let _ = store.set_want(seller_chat, "ho_email");
+            let _ = store.set_want(seller_chat, email_step);
+            let account = if email_step == "cx_email" { "ChatGPT" } else { "Claude" };
             let _ = bot.send(seller_chat, &format!(
                 "🔑 <b>Прокси выпущен</b> — UK · {city} (HTTP)\n\n\
                  <code>{compact}</code>\nURL: <code>{url}</code>\n\n\
-                 <b>Шаг 2/3.</b> Зайди в аккаунт Claude через этот прокси (HTTP) и пришли <b>email</b> аккаунта.",
+                 <b>Шаг 2/3.</b> Зайди в аккаунт {account} через этот прокси (HTTP) и пришли <b>email</b> аккаунта.",
                 city = esc(&px.city), compact = esc(&px.compact()), url = esc(&px.url()))).await;
             let _ = bot.send(admin_chat, &format!(
                 "✅ Прокси по офферу #{oid} выпущен (UK · {}, заказ IPRoyal #{}) и отправлен продавцу.",
                 esc(&px.city), px.order_id)).await;
         }
         Err(e) => {
-            let _ = store.set_want(seller_chat, "ho_proxy");
+            let (proxy_step, _) = handoff_steps(store, oid);
+            let _ = store.set_want(seller_chat, proxy_step);
             let _ = bot.send(seller_chat,
                 "⚠️ Авто-выпуск прокси временно не удался. <b>Передача доступа, шаг 1/3.</b>\n\
                  Пришли <b>прокси</b> аккаунта: <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.").await;
@@ -514,7 +628,8 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                     if amount > 10.0 && !already && !cfg.iproyal_key.is_empty() {
                         deliver_issued_proxy(bot, store, cfg, chat, seller_chat, oid, &hash).await;
                     } else {
-                        let _ = store.set_want(seller_chat, "ho_proxy");
+                        let (proxy_step, _) = handoff_steps(store, oid);
+                        let _ = store.set_want(seller_chat, proxy_step);
                         let _ = bot.send(chat, "Продавцу отправлена инструкция по передаче доступа (ручной прокси).").await;
                         let _ = bot.send(seller_chat, &format!(
                             "💸 <b>Оплата отправлена!</b> tx: <code>{}</code>\n\n<b>Передача доступа, шаг 1/3.</b>\n\

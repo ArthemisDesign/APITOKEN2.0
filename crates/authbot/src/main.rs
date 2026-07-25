@@ -7,6 +7,7 @@
 //! Фаза 1: ядро + офферы + продавцы. Выплаты (alloy) и выпуск setup-token (PTY) — Фазы 2–3.
 
 mod bot;
+mod codex_login;
 mod db;
 mod iproyal;
 mod setup_token;
@@ -29,6 +30,8 @@ pub struct Config {
     pub bsc_python: String, // venv-python с web3 (для bsc_pay CLI)
     pub bsc_script: String, // путь к bsc_pay.py
     pub iproyal_key: String, // ключ IPRoyal reseller API (авто-выпуск прокси); пусто = выкл
+    pub codex_bin: String,   // пиннованный codex CLI (device-флоу покупки ChatGPT-подписки)
+    pub codex_homes_dir: String, // каталог, который сканирует движок: подкаталог = аккаунт в пуле
 }
 
 fn env_opt(k: &str) -> Option<String> {
@@ -220,6 +223,10 @@ async fn main() -> Result<()> {
         bsc_script: env_opt("AUTH_BOT_BSC_SCRIPT")
             .unwrap_or_else(|| "/srv/claude-api/tools/authbot/bsc_pay.py".into()),
         iproyal_key: env_opt("AUTH_BOT_IPROYAL_KEY").unwrap_or_default(),
+        codex_bin: env_opt("AUTH_BOT_CODEX_BIN")
+            .unwrap_or_else(|| "/srv/claude-api/data/codex/bin/codex".into()),
+        codex_homes_dir: env_opt("AUTH_BOT_CODEX_HOMES_DIR")
+            .unwrap_or_else(|| "/srv/claude-api/data/codex-homes".into()),
     });
     let store = Arc::new(Store::open(&state_db())?);
     let bot = Bot::new(&token);
