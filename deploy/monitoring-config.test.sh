@@ -136,6 +136,36 @@ grep -Fq 'MONITORING.md#proxyupstreampairdown' "$ROOT/observability/prometheus/r
   || { printf 'alert ProxyUpstreamPairDown has no runbook anchor\n' >&2; exit 1; }
 grep -Fqi '## ProxyUpstreamPairDown' "$ROOT/MONITORING.md" \
   || { printf 'MONITORING.md has no runbook section for ProxyUpstreamPairDown\n' >&2; exit 1; }
+# The optional Codex provider is a separate failure domain: its homes can expire, cool or exhaust
+# their subscription windows without any Claude signal moving. Every gauge the engine exports for it
+# must be consumed by a rule, and every rule must have a runbook section.
+for codex_metric in \
+  'claude_api_codex_process_live' \
+  'claude_api_codex_homes_available' \
+  'claude_api_codex_home_authenticated' \
+  'claude_api_codex_home_rate_limit_used_percent'; do
+  grep -Fq "$codex_metric" "$ROOT/crates/server/src/http.rs" \
+    || { printf 'engine does not export %s\n' "$codex_metric" >&2; exit 1; }
+  grep -Fq "$codex_metric" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'no alert rule consumes %s\n' "$codex_metric" >&2; exit 1; }
+done
+for codex_alert in CodexProviderDown CodexNoAvailableHomes CodexHomeUnauthenticated \
+  CodexHomeNearRateLimit; do
+  grep -Fq "alert: $codex_alert" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'missing Codex alert %s\n' "$codex_alert" >&2; exit 1; }
+  anchor=$(printf '%s' "$codex_alert" | tr '[:upper:]' '[:lower:]')
+  grep -Fq "MONITORING.md#$anchor" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'alert %s has no runbook anchor\n' "$codex_alert" >&2; exit 1; }
+  grep -Fqi "## $codex_alert" "$ROOT/MONITORING.md" \
+    || { printf 'MONITORING.md has no runbook section for %s\n' "$codex_alert" >&2; exit 1; }
+done
+# Alerting on a disabled provider would page for a surface nobody is serving.
+for gated_alert in CodexProviderDown CodexNoAvailableHomes; do
+  grep -F "alert: $gated_alert" -A 2 "$ROOT/observability/prometheus/rules/application.yml" \
+    | grep -Fq 'claude_api_codex_enabled == 1' \
+    || { printf '%s is not gated on the provider being enabled\n' "$gated_alert" >&2; exit 1; }
+done
+
 # A missing status file must read as stale, never as a fresh zero.
 grep -Fq 'WATCHDOG_STATUS_MISSING_AGE_SECONDS=86400' "$ROOT/deploy/collect-monitoring-metrics.sh" \
   || { printf 'a missing watchdog status must report a stale age\n' >&2; exit 1; }

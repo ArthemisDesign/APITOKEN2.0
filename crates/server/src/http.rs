@@ -379,7 +379,7 @@ async fn metrics(
                 .is_some_and(|status| status.process_live)
         )
     );
-    let limits = codex_status.and_then(|status| status.rate_limits);
+    let limits = codex_status.as_ref().and_then(|status| status.rate_limits.clone());
     let _ = writeln!(
         body,
         "# TYPE claude_api_codex_rate_limit_snapshot_available gauge\n\
@@ -421,6 +421,58 @@ async fn metrics(
                 let _ = writeln!(
                     body,
                     "claude_api_codex_rate_limit_resets_at_seconds{{window=\"{window_name}\"}} {resets_at}"
+                );
+            }
+        }
+    }
+    // Pool health. Homes are labelled by their configured index only: a path or account identity
+    // must never reach a metric label.
+    if let Some(status) = &codex_status {
+        let _ = writeln!(
+            body,
+            "# TYPE claude_api_codex_homes gauge\nclaude_api_codex_homes {}\n\
+             # TYPE claude_api_codex_homes_available gauge\nclaude_api_codex_homes_available {}\n\
+             # TYPE claude_api_codex_homes_authenticated gauge\nclaude_api_codex_homes_authenticated {}",
+            status.homes.len(),
+            status.available,
+            status.homes.iter().filter(|home| home.auth_ok).count(),
+        );
+        if let Some(ready_at) = status.soonest_ready {
+            let _ = writeln!(
+                body,
+                "# TYPE claude_api_codex_soonest_ready_seconds gauge\n\
+                 claude_api_codex_soonest_ready_seconds {ready_at}"
+            );
+        }
+        let _ = writeln!(
+            body,
+            "# TYPE claude_api_codex_home_process_live gauge\n\
+             # TYPE claude_api_codex_home_authenticated gauge\n\
+             # TYPE claude_api_codex_home_cooling_until_seconds gauge\n\
+             # TYPE claude_api_codex_home_inflight_turns gauge\n\
+             # TYPE claude_api_codex_home_rate_limit_used_percent gauge"
+        );
+        for home in &status.homes {
+            let index = home.index;
+            let _ = writeln!(
+                body,
+                "claude_api_codex_home_process_live{{home=\"{index}\"}} {}\n\
+                 claude_api_codex_home_authenticated{{home=\"{index}\"}} {}\n\
+                 claude_api_codex_home_cooling_until_seconds{{home=\"{index}\"}} {}\n\
+                 claude_api_codex_home_inflight_turns{{home=\"{index}\"}} {}",
+                u8::from(home.process_live),
+                u8::from(home.auth_ok),
+                home.cooling_until,
+                home.inflight,
+            );
+            if let Some(used) = home
+                .rate_limits
+                .as_ref()
+                .and_then(|limits| limits.max_used_percent())
+            {
+                let _ = writeln!(
+                    body,
+                    "claude_api_codex_home_rate_limit_used_percent{{home=\"{index}\"}} {used}"
                 );
             }
         }
@@ -655,6 +707,29 @@ async fn spend_stats(
                 })
             })
             .collect();
+        // Which upstream earned the window. Both providers settle into the same money tables, so
+        // this split comes from the explicit provider column rather than from a model-name guess.
+        let providers: Vec<_> = match b.spend_by_provider(now - secs).await {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|row| {
+                    json!({
+                        "provider": row.provider,
+                        "requests": row.requests,
+                        "charge_usd": r2(row.charge_nano),
+                        "real_usd": r2(row.real_nano),
+                    })
+                })
+                .collect(),
+            Err(error) => {
+                eprintln!("billing provider spend query failed: {error:#}");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({"error": "billing authority unavailable"})),
+                )
+                    .into_response();
+            }
+        };
         periods.insert(
             key.into(),
             json!({
@@ -662,6 +737,7 @@ async fn spend_stats(
                 "real_usd": r2(real_total),
                 "requests": requests_total,
                 "accounts": accounts,
+                "providers": providers,
             }),
         );
     }
@@ -1143,7 +1219,11 @@ mod tests {
 
     #[test]
     fn embedded_admin_panel_exposes_all_operational_workflows_without_secrets() {
-        assert!(ADMIN_PANEL_HTML.contains("data-admin-panel-version=\"8\""));
+        assert!(ADMIN_PANEL_HTML.contains("data-admin-panel-version=\"9\""));
+        // The spend breakdown must separate the Claude fleet from the Codex pool: both settle into
+        // the same money tables, so an unattributed total hides which upstream earned it.
+        assert!(ADMIN_PANEL_HTML.contains("period.providers"));
+        assert!(ADMIN_PANEL_HTML.contains("OpenAI (Codex)"));
         for route in [
             "/admin/dashboard",
             "/admin/users",

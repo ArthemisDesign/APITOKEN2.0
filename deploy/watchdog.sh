@@ -491,7 +491,7 @@ final_verify_admin_panel() {
   for _ in 1 2 3 4 5 6; do
     panel=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 \
       http://127.0.0.1:8790/admin-panel 2>/dev/null || true)
-    if grep -Fq 'data-admin-panel-version="8"' <<<"$panel"; then
+    if grep -Fq 'data-admin-panel-version="9"' <<<"$panel"; then
       matched=1
       break
     fi
@@ -524,6 +524,65 @@ final_verify_admin_panel() {
   require_retired_vhost panel.apitoken.sale
   require_retired_vhost partners.panel.apitoken.sale
   require_retired_vhost crm.panel.apitoken.sale
+}
+
+# Post-promotion smoke for the optional OpenAI-compatible surface.
+#
+# The Claude path is verified by /ready and the panel check, but a Codex regression is invisible to
+# both: the provider can be enabled, attested and started while its home pool has no usable account,
+# or while the public routes have silently fallen back to the Anthropic path. Neither needs an API
+# key to detect. The provider is optional, so everything here is skipped when it is switched off.
+final_verify_codex_surface() {
+  local response envelope enabled=0
+
+  for _ in 1 2 3 4 5 6; do
+    response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
+      --data-urlencode 'query=claude_api_codex_enabled == 1' \
+      http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
+    if jq --exit-status '.status == "success" and (.data.result | length) > 0' \
+      >/dev/null 2>&1 <<<"$response"; then
+      enabled=1
+      break
+    fi
+    sleep 5
+  done
+  if (( enabled == 0 )); then
+    wd_log "Codex provider is disabled; skipping OpenAI-compatible surface verification"
+    return 0
+  fi
+
+  # A live child is not enough: every home may be quarantined or out of window headroom, which
+  # serves customers nothing but retryable errors.
+  local pool_ready=0
+  for _ in 1 2 3 4 5 6; do
+    response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
+      --data-urlencode 'query=claude_api_codex_process_live == 1 and claude_api_codex_homes_available >= 1' \
+      http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
+    if jq --exit-status '.status == "success" and (.data.result | length) > 0' \
+      >/dev/null 2>&1 <<<"$response"; then
+      pool_ready=1
+      break
+    fi
+    sleep 5
+  done
+  (( pool_ready == 1 )) \
+    || wd_die "Codex provider is enabled but no authenticated home can accept a request"
+
+  # Prove the OpenAI route is actually served by the Codex adapter rather than falling through to
+  # the Anthropic path: only the adapter answers with an OpenAI-shaped error envelope carrying
+  # `code`/`param`. The request names a parameter the adapter rejects by contract, so it can never
+  # start a turn, reach a ChatGPT subscription or spend quota — whether or not this loopback caller
+  # is trusted as an admin. An unauthenticated engine answers `invalid_api_key` for the same reason.
+  envelope=$(curl --noproxy '*' --silent --show-error --max-time 5 \
+    -H 'content-type: application/json' \
+    -d '{"model":"gpt-5.6","input":"ping","temperature":0.5}' \
+    http://127.0.0.1:8790/v1/responses 2>/dev/null || true)
+  jq --exit-status '.error.type == "invalid_request_error"
+      and (.error.code == "invalid_api_key" or .error.param != null)' \
+    >/dev/null 2>&1 <<<"$envelope" \
+    || wd_die "/v1/responses did not answer with the OpenAI-compatible error envelope"
+
+  wd_log "Codex OpenAI-compatible surface verified: pool has capacity and serves its own envelope"
 }
 
 # Post-admission recovery. Before admission the blue-green controllers already fail closed and
@@ -746,6 +805,7 @@ main() {
   if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $engine_changed == 0 && $backend_changed == 0 && $sales_changed == 0 ]]; then
     reconcile_engine_runtime "$ENGINE_SHA"
     final_verify_admin_panel
+    final_verify_codex_surface
     CURRENT_PHASE=idle
     status "master already processed; production runtime aligned"
     wd_log "master $CANDIDATE_SHA is already processed and production is aligned"
@@ -799,6 +859,7 @@ main() {
 
   reconcile_engine_runtime "$ENGINE_SHA"
   final_verify_admin_panel
+  final_verify_codex_surface
 
   wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"
   rm -f -- "$PENDING_MIGRATION_FILE"

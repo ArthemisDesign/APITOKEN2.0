@@ -1,7 +1,7 @@
 //! Композиционный конфиг: читает ВСЁ окружение и собирает настройки сервера +
 //! [`forward::ProxyConfig`]. Единственное место в проекте, где читается env.
 
-use forward::{CodexConfig, CodexModel, CodexPrices, ProxyConfig, CLAUDE_CODE_IDENTITY};
+use forward::{CodexConfig, CodexModel, ProxyConfig, CLAUDE_CODE_IDENTITY};
 use std::{collections::BTreeMap, env, net::IpAddr};
 
 pub struct Settings {
@@ -149,78 +149,53 @@ fn ev_upstream() -> String {
     .unwrap_or_else(|msg| panic!("{msg}"))
 }
 
-fn codex_model_catalog() -> Vec<CodexModel> {
-    let prices = |input, cached_input, cache_write_input, output| CodexPrices {
-        input,
-        cached_input,
-        cache_write_input,
-        output,
-        long_context_threshold: 272_000,
-        long_input_basis_points: 20_000,
-        long_output_basis_points: 15_000,
-    };
-    let efforts = |with_max: bool| {
-        let mut values = vec!["none", "low", "medium", "high", "xhigh"]
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        if with_max {
-            values.push("max".to_string());
+/// Advertised OpenAI-compatible models, resolved from the audited catalog in `metering`.
+///
+/// The composition layer only chooses which pinned ids are enabled; it never declares a rate. A
+/// price change is a reviewed `metering::codex` commit with an effective date, exactly like the
+/// Claude tariffs.
+fn codex_model_catalog(now_unix: i64) -> Vec<CodexModel> {
+    metering::codex_catalog_at(now_unix)
+        .into_iter()
+        .map(|spec| CodexModel {
+            id: spec.id.to_string(),
+            upstream: spec.upstream.to_string(),
+            // Public `/v1/models` keeps the field for SDK compatibility without inventing an
+            // upstream creation timestamp that app-server does not provide.
+            created: 0,
+            owned_by: "apitoken".to_string(),
+            max_output_tokens: spec.max_output_tokens,
+            reasoning_efforts: spec
+                .reasoning_efforts
+                .iter()
+                .map(|effort| (*effort).to_string())
+                .collect(),
+            prices: spec.prices,
+        })
+        .collect()
+}
+
+/// Authenticated Codex profiles, in pool order.
+///
+/// `CLAUDE_API_CODEX_HOMES` is the pool form; `CLAUDE_API_CODEX_HOME` remains the single-home
+/// spelling so an existing production environment keeps working unchanged. Duplicates are rejected:
+/// two children sharing one auth store would corrupt its token refresh and would also double-count
+/// one subscription's capacity in the pool.
+fn codex_homes() -> Vec<String> {
+    let configured = ev("CLAUDE_API_CODEX_HOMES")
+        .or_else(|| ev("CLAUDE_API_CODEX_HOME"))
+        .unwrap_or_else(|| "/srv/claude-api/data/codex/home".to_string());
+    let mut homes: Vec<String> = Vec::new();
+    for home in configured.split(',').map(str::trim).filter(|v| !v.is_empty()) {
+        if homes.iter().any(|existing| existing == home) {
+            panic!("CLAUDE_API_CODEX_HOMES lists {home:?} more than once; every home needs its own authentication store");
         }
-        values
-    };
-    let model =
-        |id: &str, upstream: &str, model_prices: CodexPrices, with_max: bool| -> CodexModel {
-            CodexModel {
-                id: id.to_string(),
-                upstream: upstream.to_string(),
-                // Public `/v1/models` keeps the field for SDK compatibility without inventing an
-                // upstream creation timestamp that app-server does not provide.
-                created: 0,
-                owned_by: "apitoken".to_string(),
-                max_output_tokens: 128_000,
-                reasoning_efforts: efforts(with_max),
-                prices: model_prices,
-            }
-        };
-    vec![
-        model(
-            "gpt-5.6",
-            "gpt-5.6-sol",
-            prices(5_000, 500, 6_250, 30_000),
-            true,
-        ),
-        model(
-            "gpt-5.6-sol",
-            "gpt-5.6-sol",
-            prices(5_000, 500, 6_250, 30_000),
-            true,
-        ),
-        model(
-            "gpt-5.6-terra",
-            "gpt-5.6-terra",
-            prices(2_500, 250, 3_125, 15_000),
-            true,
-        ),
-        model(
-            "gpt-5.6-luna",
-            "gpt-5.6-luna",
-            prices(1_000, 100, 1_250, 6_000),
-            true,
-        ),
-        model(
-            "gpt-5.5",
-            "gpt-5.5",
-            prices(5_000, 500, 5_000, 30_000),
-            false,
-        ),
-        model(
-            "gpt-5.4",
-            "gpt-5.4",
-            prices(2_500, 250, 2_500, 15_000),
-            false,
-        ),
-    ]
+        homes.push(home.to_string());
+    }
+    if homes.is_empty() {
+        panic!("CLAUDE_API_CODEX_HOMES must contain at least one absolute CODEX_HOME path");
+    }
+    homes
 }
 
 fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Option<CodexConfig> {
@@ -236,7 +211,7 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
     .filter(|value| !value.is_empty())
     .map(str::to_string)
     .collect::<Vec<_>>();
-    let catalog = codex_model_catalog();
+    let catalog = codex_model_catalog(pool::now());
     let mut models = Vec::with_capacity(requested_models.len());
     for requested in requested_models {
         let Some(model) = catalog.iter().find(|model| model.id == requested) else {
@@ -283,7 +258,7 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
             panic!("CLAUDE_API_CODEX_BIN_SHA256 is required when CLAUDE_API_CODEX_ENABLED=true")
         }),
         expected_version: ev_or("CLAUDE_API_CODEX_VERSION", "codex-cli 0.145.0"),
-        codex_home: ev_or("CLAUDE_API_CODEX_HOME", "/srv/claude-api/data/codex/home"),
+        homes: codex_homes(),
         work_dir: ev_or(
             "CLAUDE_API_CODEX_WORK_DIR",
             "/srv/claude-api/data/codex/work",
@@ -302,6 +277,13 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
             3_600_000,
         ),
         max_concurrent_turns: bounded_usize("CLAUDE_API_CODEX_MAX_CONCURRENT", 4, 1, 64),
+        admit_below_used_percent: bounded_i64("CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT", 95, 1, 100),
+        health_probe_interval_secs: bounded_u64(
+            "CLAUDE_API_CODEX_HEALTH_INTERVAL_SECS",
+            300,
+            30,
+            3_600,
+        ),
         reserve_overhead_tokens: bounded_u64(
             "CLAUDE_API_CODEX_RESERVE_OVERHEAD_TOKENS",
             16_384,

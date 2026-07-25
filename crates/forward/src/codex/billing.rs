@@ -64,7 +64,7 @@ impl PendingCodexAdmission {
                 Some(billing),
             ) => {
                 let estimated = estimated_input_tokens.saturating_add(reserve_overhead_tokens);
-                let base = reserve_cost(model, estimated);
+                let base = reserve_cost(model, estimated, pool::now());
                 let hold =
                     metering::apply_multiplier(base, *mult_bp).clamp(1, i64::MAX as i128) as i64;
                 let request_id = crate::upstream::fresh_request_id();
@@ -123,14 +123,15 @@ impl CodexAdmission {
         let Some(mut reservation) = self.reservation.take() else {
             return;
         };
-        let priced = price_usage(model, usage);
+        let now = pool::now();
+        let priced = price_usage(model, usage, now);
         let computed_charge = metering::apply_multiplier(priced.real_nano, reservation.mult_bp);
         let ceiling = reservation.hold.max(0) as i128 + metering::OVERDRAFT_NANO;
         let charge = computed_charge.clamp(0, ceiling).min(i64::MAX as i128) as i64;
-        let now = pool::now();
         let usage_event = if priced.real_nano > 0 {
             Some(registry::UsageEventInput {
                 model: model.id.clone(),
+                provider: registry::PROVIDER_OPENAI.to_string(),
                 input_tokens: priced.normal_input.min(i64::MAX as u64) as i64,
                 output_tokens: usage.output_tokens.min(i64::MAX as u64) as i64,
                 cache_read_tokens: priced.cached_input.min(i64::MAX as u64) as i64,
@@ -221,18 +222,27 @@ pub(crate) async fn begin_admission(
     })
 }
 
-fn reserve_cost(model: &CodexModel, estimated_input_tokens: u64) -> i128 {
-    let long = estimated_input_tokens > model.prices.long_context_threshold;
-    let input_rate = model.prices.input.max(model.prices.cache_write_input);
+/// Rates for this model as of `now`. The pinned, effective-dated catalog in `metering` is
+/// authoritative, so a reviewed price change takes effect at its own epoch without a restart. The
+/// config-resolved rate remains the fallback for a model the catalog no longer advertises, which
+/// keeps an in-flight settlement priced exactly as it was admitted.
+fn effective_prices(model: &CodexModel, now: i64) -> metering::CodexPrices {
+    metering::codex_prices_at(&model.id, now).unwrap_or(model.prices)
+}
+
+fn reserve_cost(model: &CodexModel, estimated_input_tokens: u64, now: i64) -> i128 {
+    let prices = effective_prices(model, now);
+    let long = estimated_input_tokens > prices.long_context_threshold;
+    let input_rate = prices.input.max(prices.cache_write_input);
     let input_rate = if long {
-        metering::apply_multiplier(input_rate, model.prices.long_input_basis_points)
+        metering::apply_multiplier(input_rate, prices.long_input_basis_points)
     } else {
         input_rate
     };
     let output_rate = if long {
-        metering::apply_multiplier(model.prices.output, model.prices.long_output_basis_points)
+        metering::apply_multiplier(prices.output, prices.long_output_basis_points)
     } else {
-        model.prices.output
+        prices.output
     };
     (estimated_input_tokens as i128)
         .saturating_mul(input_rate)
@@ -251,36 +261,37 @@ struct PricedUsage {
     real_nano: i128,
 }
 
-fn price_usage(model: &CodexModel, usage: &CodexUsage) -> PricedUsage {
+fn price_usage(model: &CodexModel, usage: &CodexUsage, now: i64) -> PricedUsage {
+    let prices = effective_prices(model, now);
     let cached_input = usage.cached_input_tokens.min(usage.input_tokens);
     let remaining = usage.input_tokens.saturating_sub(cached_input);
     let cache_write_input = usage.cache_write_input_tokens.min(remaining);
     let normal_input = remaining.saturating_sub(cache_write_input);
-    let long = usage.input_tokens > model.prices.long_context_threshold;
+    let long = usage.input_tokens > prices.long_context_threshold;
     let input_multiplier = if long {
-        model.prices.long_input_basis_points
+        prices.long_input_basis_points
     } else {
         10_000
     };
     let output_multiplier = if long {
-        model.prices.long_output_basis_points
+        prices.long_output_basis_points
     } else {
         10_000
     };
     let input_nano = metering::apply_multiplier(
-        (normal_input as i128).saturating_mul(model.prices.input),
+        (normal_input as i128).saturating_mul(prices.input),
         input_multiplier,
     );
     let cached_nano = metering::apply_multiplier(
-        (cached_input as i128).saturating_mul(model.prices.cached_input),
+        (cached_input as i128).saturating_mul(prices.cached_input),
         input_multiplier,
     );
     let cache_write_nano = metering::apply_multiplier(
-        (cache_write_input as i128).saturating_mul(model.prices.cache_write_input),
+        (cache_write_input as i128).saturating_mul(prices.cache_write_input),
         input_multiplier,
     );
     let output_nano = metering::apply_multiplier(
-        (usage.output_tokens as i128).saturating_mul(model.prices.output),
+        (usage.output_tokens as i128).saturating_mul(prices.output),
         output_multiplier,
     );
     PricedUsage {
@@ -334,6 +345,7 @@ mod tests {
                 output_tokens: 20,
                 ..CodexUsage::default()
             },
+            0,
         );
         assert_eq!(priced.normal_input, 500);
         assert_eq!(priced.cached_input, 400);
@@ -359,6 +371,7 @@ mod tests {
                 output_tokens: 10,
                 ..CodexUsage::default()
             },
+            0,
         );
         assert_eq!(priced.input_nano, 150_000 * 5_000 * 2);
         assert_eq!(priced.cached_nano, 100_000 * 500 * 2);
@@ -368,7 +381,42 @@ mod tests {
 
     #[test]
     fn reserve_covers_full_output_and_cache_write_rate() {
-        let hold = reserve_cost(&model(), 1_000);
+        let hold = reserve_cost(&model(), 1_000, 0);
         assert_eq!(hold, 1_000 * 6_250 + 128_000 * 30_000);
+    }
+
+    #[test]
+    fn pricing_comes_from_the_audited_catalog_not_the_config_copy() {
+        // A config whose embedded rate drifted from the pinned catalog must still bill the
+        // catalog rate: `metering` is the single audited source of money.
+        let mut drifted = model();
+        drifted.prices.input = 1;
+        drifted.prices.output = 1;
+        let usage = CodexUsage {
+            input_tokens: 1_000,
+            output_tokens: 20,
+            ..CodexUsage::default()
+        };
+        let priced = price_usage(&drifted, &usage, 0);
+        assert_eq!(priced.input_nano, 1_000 * 5_000);
+        assert_eq!(priced.output_nano, 20 * 30_000);
+    }
+
+    #[test]
+    fn a_model_outside_the_catalog_keeps_the_rate_it_was_admitted_with() {
+        // Nothing can configure such a model today, but an in-flight settlement for a model the
+        // catalog stopped advertising must never silently reprice to a default.
+        let mut retired = model();
+        retired.id = "gpt-retired".to_string();
+        retired.prices.input = 7_000;
+        let priced = price_usage(
+            &retired,
+            &CodexUsage {
+                input_tokens: 10,
+                ..CodexUsage::default()
+            },
+            0,
+        );
+        assert_eq!(priced.input_nano, 10 * 7_000);
     }
 }

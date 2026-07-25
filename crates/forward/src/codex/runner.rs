@@ -3,10 +3,14 @@
 //! Request-local instructions and exact injected Responses items preserve OpenAI's stateless
 //! semantics. A Codex thread is never reused as hidden conversational state.
 
-use super::{new_id, AppServerEvent, CodexGateway, CodexModel, CodexProcess, ProcessError};
+use super::{
+    new_id, AppServerEvent, CodexGateway, CodexHome, CodexModel, CodexProcess, HomeSelection,
+    ProcessError,
+};
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, OwnedSemaphorePermit};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CodexUsage {
@@ -90,12 +94,90 @@ pub(crate) struct CodexTurnResult {
 }
 
 impl CodexGateway {
+    /// Run one turn on the best available home, rotating on account-fault errors.
+    ///
+    /// Rotation mirrors the Claude path's blame classification. A usage limit or a dead login is
+    /// that home's fault, so the pool moves to another home without spending the transport budget;
+    /// a dead child or an RPC timeout is a backend fault and is retried exactly once. Nothing is
+    /// ever retried after the first byte has reached the client: the public stream must never
+    /// replay or interleave two attempts.
     pub(crate) async fn run_turn(
         &self,
         request: CodexTurnRequest,
         updates: Option<mpsc::Sender<TurnUpdate>>,
     ) -> Result<CodexTurnResult, ProcessError> {
-        let _turn_permit = self.acquire_turn().await?;
+        let emitted = Arc::new(AtomicBool::new(false));
+        let mut tried = Vec::new();
+        let mut transport_retries_left = 1usize;
+        let mut last_error: Option<ProcessError> = None;
+        loop {
+            let (home, permit) = match self.select_home(&tried).await {
+                HomeSelection::Ready(home, permit) => (home, permit),
+                HomeSelection::Busy => {
+                    return Err(last_error.unwrap_or(ProcessError::Busy));
+                }
+                HomeSelection::Unavailable { ready_at } => {
+                    return Err(last_error.unwrap_or_else(|| ProcessError::UsageLimitExceeded {
+                        retry_after: retry_after_from(ready_at),
+                    }));
+                }
+            };
+            tried.push(home.index());
+            let result = home
+                .run_turn(request.clone(), updates.clone(), &emitted, permit)
+                .await;
+            let error = match result {
+                Ok(result) => {
+                    home.mark_healthy();
+                    return Ok(result);
+                }
+                Err(error) => error,
+            };
+            home.note_turn_error(&error);
+            // A client fault is deterministic: another home would reject it identically.
+            if matches!(
+                error,
+                ProcessError::BadRequest
+                    | ProcessError::ContextWindowExceeded
+                    | ProcessError::Rpc { .. }
+            ) {
+                return Err(error);
+            }
+            // Output already left for the client, so the attempt is no longer replaceable.
+            if emitted.load(Ordering::Acquire) {
+                return Err(error);
+            }
+            let account_fault = matches!(
+                error,
+                ProcessError::UsageLimitExceeded { .. }
+                    | ProcessError::AuthenticationRequired
+                    | ProcessError::SubscriptionRequired
+            );
+            if !account_fault {
+                if transport_retries_left == 0 {
+                    return Err(error);
+                }
+                transport_retries_left -= 1;
+            }
+            last_error = Some(error);
+        }
+    }
+}
+
+/// Seconds a client should wait for the pool to recover, bounded to a sane advertised value.
+fn retry_after_from(ready_at: Option<i64>) -> Option<u64> {
+    let ready_at = ready_at?;
+    Some(ready_at.saturating_sub(pool::now()).clamp(1, 7 * 24 * 3600) as u64)
+}
+
+impl CodexHome {
+    pub(crate) async fn run_turn(
+        &self,
+        request: CodexTurnRequest,
+        updates: Option<mpsc::Sender<TurnUpdate>>,
+        emitted: &Arc<AtomicBool>,
+        _turn_permit: OwnedSemaphorePermit,
+    ) -> Result<CodexTurnResult, ProcessError> {
         let (process, thread_response) = self.start_thread(&request).await?;
         let thread_id = thread_response
             .pointer("/thread/id")
@@ -124,6 +206,7 @@ impl CodexGateway {
                 &mut events.receiver,
                 request,
                 updates,
+                emitted,
             )
             .await;
         process.unregister_turn(&thread_id).await;
@@ -142,8 +225,7 @@ impl CodexGateway {
     async fn start_thread(
         &self,
         request: &CodexTurnRequest,
-    ) -> Result<(Arc<CodexProcess>, Value), ProcessError> {
-        let params = json!({
+    ) -> Result<(Arc<CodexProcess>, Value), ProcessError> {        let params = json!({
             "model": request.model.upstream,
             "cwd": self.config().work_dir,
             "approvalPolicy": "never",
@@ -179,6 +261,7 @@ impl CodexGateway {
         receiver: &mut mpsc::Receiver<AppServerEvent>,
         request: CodexTurnRequest,
         updates: Option<mpsc::Sender<TurnUpdate>>,
+        emitted: &Arc<AtomicBool>,
     ) -> Result<CodexTurnResult, ProcessError> {
         if !request.injected_items.is_empty() {
             process
@@ -248,6 +331,7 @@ impl CodexGateway {
                                     .to_string();
                                 send_update(
                                     &updates,
+                                    emitted,
                                     TurnUpdate::TextDelta {
                                         item_id,
                                         delta: delta.to_string(),
@@ -264,6 +348,7 @@ impl CodexGateway {
                                 };
                                 send_update(
                                     &updates,
+                                    emitted,
                                     TurnUpdate::ReasoningSummaryPartAdded {
                                         item_id: item_id.to_string(),
                                         summary_index,
@@ -281,6 +366,7 @@ impl CodexGateway {
                                 };
                                 send_update(
                                     &updates,
+                                    emitted,
                                     TurnUpdate::ReasoningSummaryDelta {
                                         item_id: item_id.to_string(),
                                         summary_index,
@@ -318,7 +404,7 @@ impl CodexGateway {
                                             },
                                         );
                                     if !duplicate_function_call {
-                                        send_update(&updates, TurnUpdate::RawItem(item.clone()))
+                                        send_update(&updates, emitted, TurnUpdate::RawItem(item.clone()))
                                             .await;
                                         output.push(item);
                                     }
@@ -433,7 +519,7 @@ impl CodexGateway {
                                 "arguments": arguments,
                                 "status": "completed"
                             });
-                            send_update(&updates, TurnUpdate::RawItem(item.clone())).await;
+                            send_update(&updates, emitted, TurnUpdate::RawItem(item.clone())).await;
                             output.push(item);
                         }
                         terminal_function_call = true;
@@ -600,11 +686,22 @@ impl Drop for TurnRegistrationGuard {
     }
 }
 
-async fn send_update(updates: &Option<mpsc::Sender<TurnUpdate>>, update: TurnUpdate) {
+/// Deliver one streaming update and record that model output has left this attempt.
+///
+/// The `emitted` flag is what makes pre-stream retry safe: once a delta has been handed to the
+/// public stream the turn is no longer replaceable, and the gateway must surface the failure
+/// instead of starting a second attempt that would interleave with it.
+async fn send_update(
+    updates: &Option<mpsc::Sender<TurnUpdate>>,
+    emitted: &Arc<AtomicBool>,
+    update: TurnUpdate,
+) {
     if let Some(sender) = updates {
         // Preserve every delta while the downstream exists. Once it disconnects, send fails
         // immediately and the upstream event loop continues through authoritative usage/settlement.
-        let _ = sender.send(update).await;
+        if sender.send(update).await.is_ok() {
+            emitted.store(true, Ordering::Release);
+        }
     }
 }
 
@@ -690,6 +787,12 @@ if [ "${1-}" = "--version" ]; then
 fi
 log_file='__LOG_PATH__'
 mode='__MODE__'
+# Pool tests run several homes against this one attested binary, so per-home behaviour is selected
+# by a file inside each CODEX_HOME rather than by a second script with a different digest.
+if [ -f "$CODEX_HOME/mode" ]; then
+  mode=$(cat "$CODEX_HOME/mode")
+  log_file="$CODEX_HOME/requests.jsonl"
+fi
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$log_file"
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
@@ -703,6 +806,8 @@ while IFS= read -r line; do
     *'"method":"account/rateLimits/read"'*)
       if [ "$mode" = "usage_limit" ]; then
         printf '{"id":%s,"result":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":4102444800},"secondary":null,"rateLimitReachedType":"rate_limit_reached","spendControlReached":false}}}\n' "$id"
+      elif [ "$mode" = "near_limit" ]; then
+        printf '{"id":%s,"result":{"rateLimits":{"primary":{"usedPercent":97,"windowDurationMins":300,"resetsAt":4102444800},"secondary":null,"rateLimitReachedType":null,"spendControlReached":false}}}\n' "$id"
       else
         printf '{"id":%s,"result":{"rateLimits":{"primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":4102444800},"secondary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":4102444800},"rateLimitReachedType":null,"spendControlReached":false}}}\n' "$id"
       fi
@@ -712,7 +817,7 @@ while IFS= read -r line; do
       ;;
     *'"method":"turn/start"'*)
       printf '{"id":%s,"result":{"turn":{"id":"turn-1"}}}\n' "$id"
-      if [ "$mode" = "text" ]; then
+      if [ "$mode" = "text" ] || [ "$mode" = "near_limit" ]; then
         printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg-1","delta":"hello"}}'
         printf '%s\n' '{"method":"rawResponseItem/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"type":"message","id":"msg-1","role":"assistant","content":[{"type":"output_text","text":"hello"}]}}}'
         printf '%s\n' '{"method":"rawResponse/completed","params":{"threadId":"thread-1","turnId":"turn-1","usage":{"inputTokens":101,"cachedInputTokens":41,"cacheWriteInputTokens":7,"outputTokens":23,"reasoningOutputTokens":11,"totalTokens":124}}}'
@@ -736,6 +841,11 @@ while IFS= read -r line; do
         printf '%s\n' '{"method":"rawResponse/completed","params":{"threadId":"thread-1","turnId":"turn-1","usage":{"inputTokens":23,"cachedInputTokens":3,"cacheWriteInputTokens":0,"outputTokens":14,"reasoningOutputTokens":2,"totalTokens":37}}}'
       elif [ "$mode" = "usage_limit" ]; then
         printf '%s\n' '{"method":"error","params":{"threadId":"thread-1","turnId":"turn-1","error":{"message":"sensitive upstream diagnostic","codexErrorInfo":"usageLimitExceeded"},"willRetry":false}}'
+      elif [ "$mode" = "die" ]; then
+        exit 0
+      elif [ "$mode" = "stream_then_die" ]; then
+        printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg-1","delta":"partial"}}'
+        exit 0
       else
         printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg-1","delta":"ready"}}'
       fi
@@ -762,7 +872,7 @@ done
             binary: binary.to_str().unwrap().to_string(),
             binary_sha256: digest,
             expected_version: "codex-cli test".to_string(),
-            codex_home: root.to_str().unwrap().to_string(),
+            homes: vec![root.to_str().unwrap().to_string()],
             work_dir: root.to_str().unwrap().to_string(),
             // The workspace test runner executes several fake child processes in parallel.
             // Leave enough scheduler headroom for the digest + version preflight under CI load;
@@ -771,6 +881,8 @@ done
             request_timeout_ms: 2_000,
             turn_timeout_ms: 2_000,
             max_concurrent_turns: 1,
+            admit_below_used_percent: 95,
+            health_probe_interval_secs: 300,
             reserve_overhead_tokens: 0,
             history_ttl_secs: 600,
             history_local_cap: 32,
@@ -784,6 +896,61 @@ done
             Arc::new(CodexGateway::new(config).unwrap()),
             TestWorkspace { root, log },
         )
+    }
+
+    /// A pool of homes served by one attested binary, each with its own scripted behaviour.
+    ///
+    /// Returns the gateway, the workspace, and each home's request log so a test can prove which
+    /// home actually served the turn.
+    fn fake_pool_gateway(modes: &[&str]) -> (Arc<CodexGateway>, TestWorkspace, Vec<PathBuf>) {
+        let (gateway, workspace) = fake_gateway("text");
+        let _ = gateway;
+        let root = workspace.root.clone();
+        let binary = root.join("fake-codex");
+        let script = std::fs::read_to_string(&binary).unwrap();
+        let digest = format!("{:x}", Sha256::digest(script.as_bytes()));
+        let mut homes = Vec::with_capacity(modes.len());
+        let mut logs = Vec::with_capacity(modes.len());
+        for (index, mode) in modes.iter().enumerate() {
+            let home = root.join(format!("home{index}"));
+            std::fs::create_dir(&home).unwrap();
+            std::fs::write(home.join("mode"), mode.as_bytes()).unwrap();
+            logs.push(home.join("requests.jsonl"));
+            homes.push(home.to_str().unwrap().to_string());
+        }
+        let config = CodexConfig {
+            enabled: true,
+            binary: binary.to_str().unwrap().to_string(),
+            binary_sha256: digest,
+            expected_version: "codex-cli test".to_string(),
+            homes,
+            work_dir: root.to_str().unwrap().to_string(),
+            startup_timeout_ms: 10_000,
+            request_timeout_ms: 2_000,
+            turn_timeout_ms: 2_000,
+            max_concurrent_turns: 1,
+            admit_below_used_percent: 95,
+            health_probe_interval_secs: 300,
+            reserve_overhead_tokens: 0,
+            history_ttl_secs: 600,
+            history_local_cap: 32,
+            history_redis_url: None,
+            history_secret: Some("test".to_string()),
+            history_redis_timeout_ms: 10,
+            child_proxy_env: BTreeMap::new(),
+            models: vec![test_model()],
+        };
+        (
+            Arc::new(CodexGateway::new(config).unwrap()),
+            workspace,
+            logs,
+        )
+    }
+
+    fn served_turn(log: &Path) -> bool {
+        logged_requests(log)
+            .iter()
+            .any(|request| request.get("method").and_then(Value::as_str) == Some("turn/start"))
     }
 
     fn logged_requests(path: &Path) -> Vec<Value> {
@@ -1020,5 +1187,110 @@ done
             }
         ));
         assert!(!error.to_string().contains("sensitive upstream diagnostic"));
+    }
+
+    #[tokio::test]
+    async fn a_home_at_its_usage_limit_rotates_to_a_healthy_home() {
+        let (gateway, _workspace, logs) = fake_pool_gateway(&["usage_limit", "text"]);
+        let result = gateway
+            .run_turn(turn_request(test_model()), None)
+            .await
+            .unwrap();
+        assert_eq!(result.usage.input_tokens, 101);
+        assert!(served_turn(&logs[0]), "the limited home was tried first");
+        assert!(served_turn(&logs[1]), "the healthy home served the request");
+        // The limited home leaves the rotation until its window resets, exactly like a cooling
+        // Claude subscription.
+        let status = gateway.operational_status().await;
+        assert!(status.homes[0].cooling_until > pool::now());
+        assert_eq!(status.homes[1].cooling_until, 0);
+        assert_eq!(status.available, 1);
+    }
+
+    #[tokio::test]
+    async fn every_home_limited_returns_one_retryable_wait_not_a_provider_error() {
+        let (gateway, _workspace, _logs) = fake_pool_gateway(&["usage_limit", "usage_limit"]);
+        let error = gateway
+            .run_turn(turn_request(test_model()), None)
+            .await
+            .unwrap_err();
+        // The client is told to retry after the soonest reset, never that an account was banned.
+        assert!(matches!(
+            error,
+            ProcessError::UsageLimitExceeded {
+                retry_after: Some(seconds)
+            } if seconds > 0
+        ));
+        let status = gateway.operational_status().await;
+        assert_eq!(status.available, 0);
+        assert!(status.soonest_ready.is_some());
+    }
+
+    #[tokio::test]
+    async fn window_headroom_keeps_a_nearly_exhausted_home_out_of_rotation() {
+        let (gateway, _workspace, logs) = fake_pool_gateway(&["near_limit", "text"]);
+        // Preflight is what populates the snapshot the admission gate reads, exactly as in serve.
+        gateway.preflight().await.unwrap();
+        gateway
+            .run_turn(turn_request(test_model()), None)
+            .await
+            .unwrap();
+        assert!(
+            !served_turn(&logs[0]),
+            "a home at 97% must not be admitted below the 95% headroom"
+        );
+        assert!(served_turn(&logs[1]));
+        let status = gateway.operational_status().await;
+        assert_eq!(status.available, 1);
+    }
+
+    #[tokio::test]
+    async fn a_dead_child_is_retried_once_on_another_home() {
+        let (gateway, _workspace, logs) = fake_pool_gateway(&["die", "text"]);
+        let result = gateway
+            .run_turn(turn_request(test_model()), None)
+            .await
+            .unwrap();
+        assert_eq!(result.usage.input_tokens, 101);
+        assert!(served_turn(&logs[0]));
+        assert!(served_turn(&logs[1]));
+    }
+
+    #[tokio::test]
+    async fn a_transport_fault_does_not_quarantine_the_subscription() {
+        let (gateway, _workspace, _logs) = fake_pool_gateway(&["die", "text"]);
+        gateway
+            .run_turn(turn_request(test_model()), None)
+            .await
+            .unwrap();
+        let status = gateway.operational_status().await;
+        // The child is the fault, not the account: cool briefly, never for the auth quarantine.
+        let cooling_for = status.homes[0].cooling_until - pool::now();
+        assert!(
+            cooling_for > 0 && cooling_for <= 10,
+            "transport cooling was {cooling_for}s"
+        );
+        assert!(status.homes[0].auth_ok);
+    }
+
+    #[tokio::test]
+    async fn a_failure_after_the_first_delta_is_never_retried_on_another_home() {
+        let (gateway, _workspace, logs) = fake_pool_gateway(&["stream_then_die", "text"]);
+        let (updates_tx, mut updates_rx) = mpsc::channel(8);
+        let run = gateway.run_turn(turn_request(test_model()), Some(updates_tx));
+        let collect = async {
+            let mut seen = Vec::new();
+            while let Some(update) = updates_rx.recv().await {
+                seen.push(update);
+            }
+            seen
+        };
+        let (result, updates) = tokio::join!(run, collect);
+        assert!(result.is_err());
+        assert_eq!(updates.len(), 1, "one delta reached the public stream");
+        assert!(
+            !served_turn(&logs[1]),
+            "a second attempt would interleave with output the client already has"
+        );
     }
 }

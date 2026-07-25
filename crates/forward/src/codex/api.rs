@@ -370,7 +370,7 @@ async fn authorize_models(
 async fn available_upstream_models(
     gateway: &CodexGateway,
 ) -> Result<HashSet<String>, ProcessError> {
-    let process = gateway.process().await?;
+    let process = gateway.any_process().await?;
     let mut available = HashSet::new();
     let mut seen_cursors = HashSet::new();
     let mut cursor: Option<String> = None;
@@ -2096,6 +2096,127 @@ mod tests {
     use crate::codex::{CodexConfig, CodexPrices};
     use std::collections::BTreeMap;
 
+    /// Every public error the OpenAI-compatible surface can produce.
+    fn all_public_errors() -> Vec<ApiError> {
+        let mut errors = vec![
+            ApiError::invalid("test", None::<String>),
+            ApiError::not_found("test", None::<String>),
+            ApiError::unavailable(),
+            ApiError::rate_limited(),
+            ApiError::rate_limited_for(Some(42)),
+        ];
+        for admission in [
+            AdmissionError::Unauthorized,
+            AdmissionError::Unavailable,
+            AdmissionError::Busy,
+            AdmissionError::LowBalance,
+        ] {
+            errors.push(ApiError::from(admission));
+        }
+        for process in [
+            ProcessError::Disabled,
+            ProcessError::Busy,
+            ProcessError::InvalidConfig("codex_home must be absolute".to_string()),
+            ProcessError::VersionMismatch {
+                expected: "codex-cli 0.145.0".to_string(),
+                actual: "codex-cli 0.1.0".to_string(),
+            },
+            ProcessError::DigestMismatch {
+                expected: "a".repeat(64),
+                actual: "b".repeat(64),
+            },
+            ProcessError::Spawn("permission denied /srv/claude-api/data/codex/home".to_string()),
+            ProcessError::Closed,
+            ProcessError::Timeout("turn completion"),
+            ProcessError::Protocol("app-server served unexpected model".to_string()),
+            ProcessError::Rpc {
+                code: -32602,
+                message: "sensitive upstream diagnostic".to_string(),
+            },
+            ProcessError::Rpc {
+                code: -32000,
+                message: "sensitive upstream diagnostic".to_string(),
+            },
+            ProcessError::ContextWindowExceeded,
+            ProcessError::UsageLimitExceeded {
+                retry_after: Some(60),
+            },
+            ProcessError::BadRequest,
+            ProcessError::AuthenticationRequired,
+            ProcessError::SubscriptionRequired,
+        ] {
+            errors.push(ApiError::from(process));
+        }
+        errors
+    }
+
+    #[test]
+    fn public_errors_never_leak_internal_architecture() {
+        // The client believes it is talking to an OpenAI-compatible endpoint. No public field may
+        // reveal how the provider is built: the home pool, the app-server child, the pinned binary,
+        // the ChatGPT profile behind it, or any upstream diagnostic text. This is the Codex twin of
+        // `proxy::tests::local_err_never_leaks_internal_architecture`.
+        let forbidden = [
+            "codex",
+            "app-server",
+            "app server",
+            "chatgpt",
+            "subscription",
+            "home",
+            "pool",
+            "upstream",
+            "authority",
+            "cooling",
+            "rotat",
+            "binary",
+            "digest",
+            "sha256",
+            "profile",
+            "device",
+            "/srv/",
+            "sensitive upstream diagnostic",
+        ];
+        for error in all_public_errors() {
+            let haystack = format!("{} {}", error.kind, error.message).to_lowercase();
+            for term in forbidden {
+                assert!(
+                    !haystack.contains(term),
+                    "public error leaks internal term {term:?}: {haystack:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn public_errors_keep_openai_shaped_status_and_type_pairs() {
+        // A client's retry logic keys on these pairs; an internal fault must always be retryable
+        // rather than surfacing as a client error it would never retry.
+        for error in all_public_errors() {
+            let expected_kind = match error.status {
+                StatusCode::BAD_REQUEST => "invalid_request_error",
+                StatusCode::UNAUTHORIZED => "invalid_request_error",
+                StatusCode::NOT_FOUND => "invalid_request_error",
+                StatusCode::PAYMENT_REQUIRED => "insufficient_quota",
+                StatusCode::TOO_MANY_REQUESTS => "rate_limit_error",
+                StatusCode::SERVICE_UNAVAILABLE => "server_error",
+                other => panic!("unexpected public status {other}"),
+            };
+            assert_eq!(error.kind, expected_kind, "status {}", error.status);
+        }
+    }
+
+    #[test]
+    fn a_subscription_limit_is_advertised_with_a_wait_a_client_can_honour() {
+        let limited = ApiError::from(ProcessError::UsageLimitExceeded {
+            retry_after: Some(123),
+        });
+        assert_eq!(limited.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(limited.retry_after, Some(123));
+        // A limit with no published reset must still carry a usable wait, never none.
+        let unknown = ApiError::from(ProcessError::UsageLimitExceeded { retry_after: None });
+        assert!(unknown.retry_after.is_some_and(|seconds| seconds > 0));
+    }
+
     fn model() -> CodexModel {
         CodexModel {
             id: "gpt-5.6".to_string(),
@@ -2125,12 +2246,14 @@ mod tests {
             binary: "/tmp/codex".to_string(),
             binary_sha256: "0".repeat(64),
             expected_version: "codex-cli test".to_string(),
-            codex_home: "/tmp/codex-home".to_string(),
+            homes: vec!["/tmp/codex-home".to_string()],
             work_dir: "/tmp/codex-work".to_string(),
             startup_timeout_ms: 1_000,
             request_timeout_ms: 1_000,
             turn_timeout_ms: 1_000,
             max_concurrent_turns: 1,
+            admit_below_used_percent: 95,
+            health_probe_interval_secs: 300,
             reserve_overhead_tokens: 0,
             history_ttl_secs: 600,
             history_local_cap: 32,

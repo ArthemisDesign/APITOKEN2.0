@@ -199,6 +199,7 @@ pub fn open(path: &str) -> Result<Connection> {
         ("cache_write_1h_nano", "INTEGER NOT NULL DEFAULT 0"),
         ("web_search_nano", "INTEGER NOT NULL DEFAULT 0"),
         ("priced_ts", "INTEGER NOT NULL DEFAULT 0"),
+        ("provider", "TEXT NOT NULL DEFAULT 'anthropic'"),
     ] {
         let _ = c.execute(
             &format!("ALTER TABLE usage_events ADD COLUMN {name} {ty}"),
@@ -1219,11 +1220,26 @@ fn ledger_add(
     Ok(())
 }
 
+/// Traffic predates provider attribution, or was queued by an engine release that only served
+/// Claude. Either way the Claude fleet is the only upstream it could have used.
+pub const PROVIDER_ANTHROPIC: &str = "anthropic";
+/// The OpenAI-compatible Codex home pool.
+pub const PROVIDER_OPENAI: &str = "openai";
+
+fn default_provider() -> String {
+    PROVIDER_ANTHROPIC.to_string()
+}
+
 /// Разбивка одного оплаченного запроса по корзинам токенов + модель (owned — переживает канал
 /// биллинг-актора). `real_nano` — стоимость по официальным ценам (×1.0, до наценки).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct UsageEventInput {
     pub model: String,
+    /// Upstream that served the request: `anthropic` for the Claude fleet, `openai` for the
+    /// Codex home pool. Defaulted on deserialization so settlement rows queued by a previous
+    /// engine release stay readable across a blue-green promotion.
+    #[serde(default = "default_provider")]
+    pub provider: String,
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub cache_read_tokens: i64,
@@ -1635,8 +1651,9 @@ pub fn usage_event_add(
         "INSERT INTO usage_events(account_id, key, model, input_tokens, output_tokens, \
          cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, web_search_requests, \
          real_nano, charge_nano, ref, ts, speed, inference_geo, input_nano, output_nano, \
-         cache_read_nano, cache_write_5m_nano, cache_write_1h_nano, web_search_nano, priced_ts) \
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
+         cache_read_nano, cache_write_5m_nano, cache_write_1h_nano, web_search_nano, priced_ts, \
+         provider) \
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
         rusqlite::params![
             account_id,
             key,
@@ -1659,7 +1676,8 @@ pub fn usage_event_add(
             u.cache_write_5m_nano,
             u.cache_write_1h_nano,
             u.web_search_nano,
-            u.priced_ts
+            u.priced_ts,
+            u.provider
         ],
     )?;
     Ok(())
@@ -1756,6 +1774,33 @@ pub fn spend_by_account(
             charge_nano: r.get(3)?,
             real_nano: r.get(4)?,
             last_ts: r.get(5)?,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Расход по ПРОВАЙДЕРУ за окно (ts ≥ `since_ts`). Claude-флот и Codex-пул сеттлятся в одни и те же
+/// денежные таблицы, поэтому «сколько заработал каждый апстрим» читается только из явной колонки.
+#[derive(Debug, Clone, Default)]
+pub struct SpendProviderAgg {
+    pub provider: String,
+    pub requests: i64,
+    pub charge_nano: i64,
+    pub real_nano: i64,
+}
+
+pub fn spend_by_provider(conn: &Connection, since_ts: i64) -> Result<Vec<SpendProviderAgg>> {
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(NULLIF(provider,''),'anthropic'), COUNT(*), \
+         COALESCE(SUM(charge_nano),0), COALESCE(SUM(real_nano),0) \
+         FROM usage_events WHERE ts>=?1 GROUP BY 1 ORDER BY SUM(charge_nano) DESC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![since_ts], |r| {
+        Ok(SpendProviderAgg {
+            provider: r.get(0)?,
+            requests: r.get(1)?,
+            charge_nano: r.get(2)?,
+            real_nano: r.get(3)?,
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -2537,8 +2582,68 @@ mod tests {
         assert!(usage_by_model(&c, "a", 0).unwrap().is_empty());
     }
 
-    /// settle пишет usage_event В ТОЙ ЖЕ операции (один коммит); при actual=0 usage НЕ пишется.
+    /// Оба апстрима сеттлятся в одни и те же денежные таблицы, поэтому «кто заработал» должно
+    /// читаться из явной колонки, а не угадываться по имени модели.
     #[test]
+    fn spend_is_attributed_to_the_serving_provider() {
+        let c = db();
+        acct_with_key(&c, "a", "k", 100_000_000_000, 4000);
+        let claude = UsageEventInput {
+            model: "claude-opus-5".into(),
+            provider: PROVIDER_ANTHROPIC.into(),
+            real_nano: 20_000_000,
+            ..Default::default()
+        };
+        let codex = UsageEventInput {
+            model: "gpt-5.6".into(),
+            provider: PROVIDER_OPENAI.into(),
+            real_nano: 5_000_000,
+            ..Default::default()
+        };
+        usage_event_add(&c, "a", Some("k"), &claude, 8_000_000, Some("req1")).unwrap();
+        usage_event_add(&c, "a", Some("k"), &codex, 2_000_000, Some("req2")).unwrap();
+        usage_event_add(&c, "a", Some("k"), &codex, 3_000_000, Some("req3")).unwrap();
+
+        let rows = spend_by_provider(&c, 0).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].provider, PROVIDER_ANTHROPIC);
+        assert_eq!(rows[0].requests, 1);
+        assert_eq!(rows[0].charge_nano, 8_000_000);
+        assert_eq!(rows[1].provider, PROVIDER_OPENAI);
+        assert_eq!(rows[1].requests, 2);
+        assert_eq!(rows[1].charge_nano, 5_000_000);
+        assert_eq!(rows[1].real_nano, 10_000_000);
+        // Окно отсекает по ts, как и остальные агрегаты панели.
+        assert!(spend_by_provider(&c, now() + 10_000).unwrap().is_empty());
+    }
+
+    /// Строка, записанная релизом без атрибуции, должна читаться как Claude, а не выпадать из
+    /// разбивки: blue-green оставляет предыдущий слот пишущим во время промоушена.
+    #[test]
+    fn usage_written_before_attribution_reads_as_the_claude_fleet() {
+        let c = db();
+        acct_with_key(&c, "a", "k", 10_000_000_000, 4000);
+        let legacy = UsageEventInput {
+            model: "claude-opus-5".into(),
+            real_nano: 1_000_000,
+            ..Default::default()
+        };
+        usage_event_add(&c, "a", Some("k"), &legacy, 1_000_000, Some("req1")).unwrap();
+        c.execute("UPDATE usage_events SET provider=''", []).unwrap();
+        let rows = spend_by_provider(&c, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].provider, PROVIDER_ANTHROPIC);
+
+        // The queued settlement payload is JSON: a row serialized by the previous release carries
+        // every field except this one, and must still decode instead of poisoning the outbox.
+        let mut payload: serde_json::Value = serde_json::to_value(&legacy).unwrap();
+        payload.as_object_mut().unwrap().remove("provider");
+        let decoded: UsageEventInput = serde_json::from_value(payload).unwrap();
+        assert_eq!(decoded.provider, PROVIDER_ANTHROPIC);
+        assert_eq!(decoded.model, "claude-opus-5");
+    }
+
+    /// settle пишет usage_event В ТОЙ ЖЕ операции (один коммит); при actual=0 usage НЕ пишется.    #[test]
     fn settle_writes_usage_event_in_same_tx() {
         let c = db();
         acct_with_key(&c, "a", "k", 10_000_000_000, 4000);

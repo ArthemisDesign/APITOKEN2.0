@@ -12,6 +12,9 @@
 
 use serde_json::Value;
 
+pub mod codex;
+pub use codex::{codex_catalog_at, codex_prices_at, CodexModelSpec, CodexPriceEpoch, CodexPrices};
+
 pub const NANO_PER_USD: i128 = 1_000_000_000;
 pub const WEB_SEARCH_NANO: i128 = 10_000_000; // $0.01 за web_search-запрос
 

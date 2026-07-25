@@ -97,6 +97,54 @@ groups:
           description: 'Shared affinity operations are failing; requests remain available on local fail-open affinity.'
           runbook: 'MONITORING.md#engineaffinityrediserrors'
 
+  # The OpenAI-compatible Codex provider is optional and fail-closed. Every rule below is gated on
+  # claude_api_codex_enabled so a deployment with the provider switched off stays silent.
+  - name: codex-provider
+    rules:
+      - alert: CodexProviderDown
+        expr: claude_api_codex_enabled == 1 and claude_api_codex_process_live == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: codex-provider
+        annotations:
+          summary: 'Codex provider has no live app-server'
+          description: 'The OpenAI-compatible surface cannot serve any request: no configured home has a live child.'
+          runbook: 'MONITORING.md#codexproviderdown'
+
+      - alert: CodexNoAvailableHomes
+        expr: claude_api_codex_enabled == 1 and claude_api_codex_homes_available < 1
+        for: 5m
+        labels:
+          severity: critical
+          component: codex-provider
+        annotations:
+          summary: 'Every Codex home is cooling or rate limited'
+          description: 'The Codex pool has no home that can accept a request; clients are receiving retryable 429/503 responses.'
+          runbook: 'MONITORING.md#codexnoavailablehomes'
+
+      - alert: CodexHomeUnauthenticated
+        expr: claude_api_codex_home_authenticated == 0
+        for: 15m
+        labels:
+          severity: warning
+          component: codex-provider
+        annotations:
+          summary: 'Codex home {{ $labels.home }} is not authenticated'
+          description: 'Its ChatGPT device login no longer passes account/read. Pool capacity is degraded until an operator re-runs the device flow.'
+          runbook: 'MONITORING.md#codexhomeunauthenticated'
+
+      - alert: CodexHomeNearRateLimit
+        expr: claude_api_codex_home_rate_limit_used_percent > 90
+        for: 10m
+        labels:
+          severity: warning
+          component: codex-provider
+        annotations:
+          summary: 'Codex home {{ $labels.home }} is close to its subscription window limit'
+          description: 'The home stops being admitted at the configured headroom; remaining pool capacity should be checked before it is reached.'
+          runbook: 'MONITORING.md#codexhomenearratelimit'
+
   - name: durable-business-state
     rules:
       - alert: DurableQueueBacklog

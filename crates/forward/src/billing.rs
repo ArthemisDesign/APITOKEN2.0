@@ -337,6 +337,10 @@ enum ReadCmd {
         i64,
         oneshot::Sender<anyhow::Result<Vec<registry::SpendAccountAgg>>>,
     ),
+    SpendByProvider(
+        i64,
+        oneshot::Sender<anyhow::Result<Vec<registry::SpendProviderAgg>>>,
+    ),
 }
 
 /// Async-фасад биллинга: writer-канал + пул reader-каналов. Клонируется (в `Arc`) во все хендлеры.
@@ -565,6 +569,9 @@ impl AsyncBilling {
                             }
                             ReadCmd::SpendByAccount(since, lim, r) => {
                                 let _ = r.send(registry::spend_by_account(&conn, since, lim));
+                            }
+                            ReadCmd::SpendByProvider(since, r) => {
+                                let _ = r.send(registry::spend_by_provider(&conn, since));
                             }
                         }
                     }
@@ -861,6 +868,9 @@ impl AsyncBilling {
                             ReadCmd::SpendByAccount(since, lim, r) => {
                                 answer!(r, pg.spend_by_account(since, lim))
                             }
+                            ReadCmd::SpendByProvider(since, r) => {
+                                answer!(r, pg.spend_by_provider(since))
+                            }
                         }
                     }
                 })?;
@@ -1150,6 +1160,19 @@ impl AsyncBilling {
         let (r, rx) = oneshot::channel();
         self.reader()
             .send(ReadCmd::SpendByAccount(since_ts, limit, r))
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+    /// Расход по провайдеру за окно — панель показывает вклад Claude-флота и Codex-пула отдельно.
+    pub async fn spend_by_provider(
+        &self,
+        since_ts: i64,
+    ) -> anyhow::Result<Vec<registry::SpendProviderAgg>> {
+        let (r, rx) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::SpendByProvider(since_ts, r))
             .await
             .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
         rx.await

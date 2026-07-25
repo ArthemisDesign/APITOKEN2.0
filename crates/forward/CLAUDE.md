@@ -128,6 +128,15 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    вариант `LocalErr` (не сырой `err_response`); regression-тест `local_err_never_leaks_*` это гейтит.
 
 **Инварианты Codex adapter (не применять к Claude byte-for-byte path):**
+0. **Пул homes = тот же дисциплинарный минимум, что и Claude-флот.** `CodexGateway` держит N
+   `CodexHome` (каждый — свой `CODEX_HOME`, свой attested child, свой семафор turn'ов, своё
+   cooling/auth-состояние). Выбор — наименее загруженный по (usedPercent, inflight); классификация
+   вины как в `proxy.rs`: usage-limit/auth → вина АККАУНТА (cooling до reset / 900s карантин, бюджет
+   ретраев НЕ тратят, крутимся по пулу), мёртвый child/timeout → вина ТРАНСПОРТА (короткий cooling,
+   ровно один ретрай), 400/context/rpc → вина КЛИЕНТА (не студим, не ретраим). **Ретрай только ДО
+   первого delta:** `emitted`-флаг в `send_update` — как только байт ушёл клиенту, вторая попытка
+   запрещена. Все homes за лимитом → один OpenAI-shaped 429 с ближайшим reset, а не ошибка
+   конкретного аккаунта. Homes адресуются ИНДЕКСОМ (в логах/метриках нет путей и identity).
 1. Только official `codex app-server` и ChatGPT-owned auth store; токены не читать и не replay-ить.
 2. Проверять exact binary SHA-256/version до запуска; child `env_clear`, только allowlisted proxy env.
 3. Model-visible initial context = explicit client system/developer + transcript + dynamic client
@@ -138,6 +147,11 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    authoritative completed app-server turn.
 6. Не заявлять OpenAI ownership: public `owned_by` остаётся `apitoken`; полный scope и runbook —
    `docs/CODEX_APP_SERVER.md`.
+7. **Цены — только из `metering::codex`** (audited, effective-dated таблица, как Claude-тарифы).
+   `forward` цену не объявляет; reserve и settle резолвят её по одному и тому же clock.
+8. **Санитайзер ошибок:** публичный конверт не должен раскрывать пул/child/binary/ChatGPT-профиль
+   или upstream-текст. Гейтит `codex::api::tests::public_errors_never_leak_internal_architecture`
+   (близнец `local_err_never_leaks_*`).
 
 
 **Тюнинг под живой Anthropic** (identity/beta/UA/version) — через поля `ProxyConfig`, которые

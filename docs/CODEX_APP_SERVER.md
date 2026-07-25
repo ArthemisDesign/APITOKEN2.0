@@ -38,7 +38,10 @@ OpenAI SDK client
 ```
 
 The transport never reads or replays ChatGPT bearer tokens. Authentication remains owned by the
-official Codex binary in a dedicated `CODEX_HOME`. The Rust child launcher:
+official Codex binary in its own dedicated `CODEX_HOME`. Every configured home runs one supervised
+child of the same attested binary; homes share nothing else, and are identified everywhere by their
+configured index so no path or account identity reaches a log or a metric label. The Rust child
+launcher:
 
 - verifies the exact executable SHA-256 and exact `codex --version` before use;
 - starts with an empty inherited environment and adds only fixed runtime values plus an allowlist of
@@ -49,11 +52,18 @@ official Codex binary in a dedicated `CODEX_HOME`. The Rust child launcher:
 - redacts child stderr and never logs account identity, credentials, prompts or response bodies.
 
 When the provider is enabled, server startup must complete that binary attestation, app-server
-initialization and `account/read` subscription check before the slot can become ready; it also
-attempts an initial rate-limit snapshot without making that observability endpoint a hard
-availability dependency. A failed Codex activation therefore cannot be promoted by the watchdog
-while the previous Claude-capable slot is still healthy. Later child failures are restarted on
-demand.
+initialization and `account/read` subscription check for at least one home before the slot can
+become ready; it also attempts an initial rate-limit snapshot without making that observability
+endpoint a hard availability dependency. A failed Codex activation therefore cannot be promoted by
+the watchdog while the previous Claude-capable slot is still healthy. Requiring *every* home to pass
+would reintroduce the single point of failure the pool exists to remove — one expired device login
+would block every future deployment — so a home that fails preflight starts quarantined and is
+reported by `CodexHomeUnauthenticated` instead. Later child failures are restarted on demand.
+
+A background health loop re-reads `account/read` and the rate-limit snapshot for every home on
+`CLAUDE_API_CODEX_HEALTH_INTERVAL_SECS`. A device login expires with no traffic on it, so without
+that sweep a dead home would stay silently unusable until a customer request selected it. The same
+loop lets a re-authenticated home rejoin the rotation without an engine restart.
 
 Each API request uses an ephemeral app-server thread. Public continuity is reconstructed from the
 client's exact input or a tenant-bound encrypted `previous_response_id` history record. A response
@@ -142,15 +152,24 @@ CLAUDE_API_CODEX_ENABLED=1
 CLAUDE_API_CODEX_BIN=/srv/claude-api/data/codex/bin/codex
 CLAUDE_API_CODEX_BIN_SHA256=<sha256 emitted by build-pinned.sh>
 CLAUDE_API_CODEX_VERSION=codex-cli 0.145.0
-CLAUDE_API_CODEX_HOME=/srv/claude-api/data/codex/home
+CLAUDE_API_CODEX_HOMES=/srv/claude-api/data/codex/home,/srv/claude-api/data/codex/home2
 CLAUDE_API_CODEX_WORK_DIR=/srv/claude-api/data/codex/work
 CLAUDE_API_CODEX_MODELS=gpt-5.6,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5,gpt-5.4
 CLAUDE_API_CODEX_MAX_CONCURRENT=4
 ```
 
+`CLAUDE_API_CODEX_HOMES` is the pool form and lists each authenticated profile in rotation order;
+`CLAUDE_API_CODEX_HOME` remains the single-home spelling, so an existing environment keeps working
+unchanged. Listing one directory twice is a startup error: two children sharing one auth store would
+corrupt its token refresh and would double-count one subscription's capacity. `MAX_CONCURRENT` is
+per home. Provision each additional home exactly like the first — `0700`, owned by the engine user —
+and authenticate it separately with the device flow above.
+
 Optional controls:
 
 ```dotenv
+CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT=95
+CLAUDE_API_CODEX_HEALTH_INTERVAL_SECS=300
 CLAUDE_API_CODEX_STARTUP_TIMEOUT_MS=20000
 CLAUDE_API_CODEX_RPC_TIMEOUT_MS=15000
 CLAUDE_API_CODEX_TURN_TIMEOUT_MS=600000
@@ -185,10 +204,15 @@ reviewed again whenever the Codex/model pin changes; it is never updated remotel
 Admission makes a conservative input estimate and reserves provider-hidden overhead; settlement
 refunds the difference using exact upstream usage.
 
-App-server rate-limit notifications are cached and exported as process/rate-limit metrics. A reached
-subscription window produces an OpenAI-shaped `429` with `Retry-After`. There is one authenticated
-Codex home in the initial implementation, not the existing multi-subscription Claude rotation pool.
-Streaming delivery is bounded: a client that stops consuming frames cannot block the shared
+App-server rate-limit notifications are cached and exported as process/rate-limit metrics, per home
+and in aggregate. A home stops being admitted once a reported window reaches
+`CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT` (95% by default), so the wall is met by a clean `429`
+carrying the real reset instead of mid-turn; a missing snapshot is treated as available because that
+endpoint is observational and must never become a hard availability dependency. When every home is
+cooling or out of headroom the client receives one OpenAI-shaped `429` with the soonest recovery,
+never an individual account's error. Settled traffic is attributed with an explicit `provider`
+column (`anthropic` / `openai`) so the admin spend breakdown reports which upstream earned a request
+rather than inferring it from the model string. Streaming delivery is bounded: a client that stops consuming frames cannot block the shared
 app-server transport indefinitely. Its already-started turn is still drained to authoritative usage
 and settled, matching the existing Claude disconnect invariant.
 
@@ -206,16 +230,18 @@ Before enabling production traffic:
 8. Verify system/developer prompt precedence and absence of Codex helper behavior.
 9. Verify disconnect drain with exact usage settlement, tenant history isolation and rate-limit
    mapping.
-10. Point an unmodified official OpenAI SDK at the gateway and verify model listing, Responses,
+10. With more than one home configured, verify rotation: exhausting or de-authenticating one home
+    must move traffic to another without a client-visible error, and
+    `claude_api_codex_homes_available` must fall by exactly one.
+11. Point an unmodified official OpenAI SDK at the gateway and verify model listing, Responses,
     typed Responses streaming, Chat Completions and Chat streaming.
-11. Verify unsupported nested routes return OpenAI-shaped `404` responses and never reach Claude.
-12. Enable through the normal watchdog/blue-green promotion and wait for `/ready` plus smoke checks.
+12. Verify unsupported nested routes return OpenAI-shaped `404` responses and never reach Claude.
+13. Enable through the normal watchdog/blue-green promotion and wait for `/ready` plus smoke checks.
 
 ## Deliberate first-release gaps
 
-The highest-value follow-ups are a pool of isolated `CODEX_HOME` accounts with health-aware
-scheduling, `/v1/responses/compact`, `/v1/responses/input_tokens`, stored-response lifecycle routes
-and the Responses WebSocket transport. They require explicit semantics and tests; the gateway does
+The highest-value follow-ups are `/v1/responses/compact`, `/v1/responses/input_tokens`,
+stored-response lifecycle routes and the Responses WebSocket transport. They require explicit semantics and tests; the gateway does
 not pretend to support them today. A remotely mutable model/price catalog is intentionally avoided:
 the live app-server catalog is intersected with an operator-reviewed, pinned billing catalog so an
 upstream metadata change cannot silently alter customer charging.
