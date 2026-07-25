@@ -21,6 +21,10 @@ bash -n "$GUARD" || wd_die '.claude/hooks/guard-git.sh does not parse'
 TEMP=$(mktemp -d)
 trap 'rm -rf -- "$TEMP"' EXIT
 
+# Neutralize the developer's own git configuration. Without this the credential-fallback scenario
+# would consult the real credential helper and pull a contributor's live GitHub token into a test
+# fixture, and unrelated global settings could change what the scenarios exercise.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 git_quiet() { git -c user.name=test -c user.email=test@example.com -c commit.gpgsign=false "$@"; }
 
 # A bare origin plus a primary clone, exactly the topology contributors and agents share.
@@ -69,8 +73,8 @@ run_merge() {  # $1 = tree, rest = extra env assignments / flags
       AGENT_MERGE_DEPLOY_WAIT_S=6 \
       AGENT_MERGE_COOLDOWN_S=0 \
       AGENT_MERGE_STALE_S=0 \
-      AGENT_MERGE_GATE_CMD="${GATE_STUB:-true}" \
-      AGENT_MERGE_STATUS_CMD="${STATUS_STUB:-printf success}" \
+      AGENT_MERGE_GATE_CMD="${GATE_STUB-true}" \
+      AGENT_MERGE_STATUS_CMD="${STATUS_STUB-printf success}" \
       "$@" bash "$tree/deploy/agent-merge.sh" ) 2>&1
 }
 
@@ -201,6 +205,8 @@ grep -Fq 'stat -f %m' "$MERGE" || wd_die 'agent-merge.sh must read mtime portabl
 grep -Fq 'stat -c %Y' "$MERGE" || wd_die 'agent-merge.sh must read mtime portably on GNU'
 grep -Fq -- '--allow-primary-tree' "$MERGE" \
   || wd_die 'human contributors in a plain clone need an escape hatch'
+grep -Fq 'GIT_CONFIG_GLOBAL=/dev/null' "${BASH_SOURCE[0]}" \
+  || wd_die 'this suite must never consult a real credential helper'
 # The production gate runs this suite on a host provisioned for node, not python.
 for portable in "$MERGE" "$GUARD" "${BASH_SOURCE[0]}"; do
   grep -Eq 'python[0-9]?[[:space:]]+-' "$portable" \
@@ -263,5 +269,41 @@ for document in CLAUDE.md AGENTS.md BRANCHES.md CONTRIBUTING.md; do
 done
 grep -Fq 'git checkout comp/forward' "$ROOT/BRANCHES.md" \
   && wd_die 'BRANCHES.md still teaches agents to switch branches in a shared tree'
+
+# --- the token comes from git's own credential store, and never leaks -------------------------------
+# A contributor who can push necessarily has a credential for this remote, so the status checks must
+# work with no GITHUB_TOKEN and no setup at all.
+mkdir -p "$TEMP/bin"
+curl_log=$TEMP/curl-stdin.log
+cat >"$TEMP/bin/curl" <<CURL
+#!/usr/bin/env bash
+# Records the curl configuration handed to it on stdin, then answers like the status API.
+cat >>"$curl_log"
+printf '{"state":"success"}'
+CURL
+chmod +x "$TEMP/bin/curl"
+git_quiet -C "$PRIMARY" config credential.helper \
+  '!f() { test "$1" = get && printf "username=x\npassword=fake-keychain-token\n"; }; f'
+
+tree_f=$(new_agent_worktree agent-f feat/agent-f)
+STATUS_STUB='' run_merge "$tree_f" PATH="$TEMP/bin:$PATH" >"$TEMP/credential.log" \
+  || wd_die "the credential fallback path failed: $(cat "$TEMP/credential.log")"
+grep -Fq 'Authorization: Bearer fake-keychain-token' "$curl_log" \
+  || wd_die 'the status check did not reuse the credential git already holds'
+grep -Fq 'fake-keychain-token' "$TEMP/credential.log" \
+  && wd_die 'the token leaked into the merge output'
+grep -Eq -- '-H[[:space:]]*.?Authorization' "$MERGE" \
+  && wd_die 'the token must reach curl through -K, never argv, where the process list exposes it'
+grep -Fq -- '-K -' "$MERGE" || wd_die 'the status check must read its credential header from stdin'
+grep -Fq 'GIT_TERMINAL_PROMPT=0' "$MERGE" \
+  || wd_die 'a contributor without a credential helper must never be prompted or hung'
+
+# No helper and no GITHUB_TOKEN degrades to the cooldown, and never to a silent success claim.
+git_quiet -C "$PRIMARY" config credential.helper \
+  '!f() { test "$1" = get && printf "\n"; }; f'
+tree_g=$(new_agent_worktree agent-g feat/agent-g)
+STATUS_STUB='' run_merge "$tree_g" PATH="$TEMP/bin:$PATH" GITHUB_TOKEN='' >"$TEMP/nocred.log" \
+  || wd_die "a missing credential must not fail the merge: $(cat "$TEMP/nocred.log")"
+git_quiet -C "$PRIMARY" config --unset credential.helper
 
 printf 'agent worktree isolation, serialized merge, and git guard tests passed\n'

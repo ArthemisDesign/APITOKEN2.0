@@ -64,16 +64,45 @@ am_gate() {
   git -C "$ROOT" diff --check
 }
 
+# Resolves a GitHub token without asking anybody to configure one. $GITHUB_TOKEN wins when set;
+# otherwise we reuse the credential git already uses to push to this remote, which every
+# contributor who can push necessarily has. GIT_TERMINAL_PROMPT=0 keeps a contributor without a
+# credential helper (an SSH remote, say) from being prompted or hung: git fails, we degrade to
+# 'unknown' and the merge falls back to a blind cooldown.
+am_token() {
+  if [[ -n ${GITHUB_TOKEN:-} ]]; then
+    printf '%s' "$GITHUB_TOKEN"
+    return
+  fi
+  local remote_url host=github.com
+  remote_url=$(git -C "$ROOT" remote get-url "$AGENT_MERGE_REMOTE" 2>/dev/null || printf '')
+  if [[ $remote_url == https://* ]]; then
+    # An https remote names its own host, which may be a GitHub Enterprise instance.
+    host=${remote_url#https://}
+    host=${host%%/*}
+    host=${host#*@}
+  fi
+  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true \
+    git -C "$ROOT" credential fill 2>/dev/null <<EOF | sed -n 's/^password=//p' | head -n 1
+protocol=https
+host=$host
+
+EOF
+}
+
 # Prints the combined GitHub commit status for a SHA: success, pending, failure, error or unknown.
+# The token is passed to curl through -K so it never reaches argv, a log line, or the process list,
+# the same discipline deploy/watchdog-github.sh uses on the production host.
 am_status() {
   if [[ -n ${AGENT_MERGE_STATUS_CMD:-} ]]; then
     eval "$AGENT_MERGE_STATUS_CMD $1" || printf 'unknown'
     return
   fi
-  [[ -n ${GITHUB_TOKEN:-} ]] || { printf 'unknown'; return; }
-  curl -fsSL --max-time 30 -H "Authorization: Bearer $GITHUB_TOKEN" \
-    -H 'Accept: application/vnd.github+json' \
-    "https://api.github.com/repos/$AGENT_MERGE_REPO/commits/$1/status" 2>/dev/null \
+  local token
+  token=$(am_token)
+  [[ -n $token ]] || { printf 'unknown'; return; }
+  curl -fsSL --max-time 30 -K - \
+    "https://api.github.com/repos/$AGENT_MERGE_REPO/commits/$1/status" 2>/dev/null <<EOF \
     | node -e '
 let raw = "";
 process.stdin.on("data", (chunk) => { raw += chunk; });
@@ -81,6 +110,9 @@ process.stdin.on("end", () => {
   try { process.stdout.write(String(JSON.parse(raw)?.state ?? "unknown")); } catch { process.stdout.write("unknown"); }
 });
 ' 2>/dev/null || printf 'unknown'
+header = "Authorization: Bearer $token"
+header = "Accept: application/vnd.github+json"
+EOF
 }
 
 # --- preflight ---------------------------------------------------------------------------------
@@ -143,7 +175,8 @@ case "$(am_status "$previous")" in
   pending)
     am_die "$AGENT_MERGE_TARGET is still deploying at $previous: wait for deploy/watchdog and retry" ;;
   unknown)
-    am_log "WARNING: cannot read the commit status of $previous (no GITHUB_TOKEN?) — check GitHub yourself" ;;
+    am_log "WARNING: cannot read the commit status of $previous — no GITHUB_TOKEN and no usable
+  git credential for this remote. Check deploy/watchdog on GitHub yourself before relying on this." ;;
 esac
 
 # --- rebase, re-gate the exact tree we push, push ------------------------------------------------
