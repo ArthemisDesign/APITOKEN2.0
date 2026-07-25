@@ -83,7 +83,6 @@ run_merge() {  # $1 = tree, rest = extra env assignments / flags
       AGENT_MERGE_LOCK_WAIT_S=2 \
       AGENT_MERGE_POLL_S=1 \
       AGENT_MERGE_DEPLOY_WAIT_S=6 \
-      AGENT_MERGE_COOLDOWN_S=0 \
       AGENT_MERGE_STALE_S=0 \
       AGENT_MERGE_GATE_CMD="${GATE_STUB-true}" \
       AGENT_MERGE_STATUS_CMD="${STATUS_STUB-printf success}" \
@@ -124,10 +123,15 @@ GATE_STUB='exit 7' expect_failure 'a red gate' '' run_merge "$tree_a"
   || wd_die 'a failing gate still pushed to master'
 [[ ! -d $TEMP/lock ]] || wd_die 'a failing gate left the merge lock behind'
 
-# --- never stack onto a red or in-flight target ---------------------------------------------------
-STATUS_STUB='printf failure' expect_failure 'stacking onto a red master' 'is RED' run_merge "$tree_a"
-STATUS_STUB='printf pending' expect_failure 'stacking onto a deploying master' 'still deploying' \
+# --- production is checked before the expensive gate ---------------------------------------------
+preflight_gate_log=$TEMP/preflight-gate.log
+GATE_STUB="printf gate >>$preflight_gate_log" STATUS_STUB='printf failure' \
+  expect_failure 'stacking onto a red master' 'is RED' run_merge "$tree_a"
+[[ ! -s $preflight_gate_log ]] || wd_die 'the full gate ran before the existing deployment was checked'
+GATE_STUB="printf gate >>$preflight_gate_log" STATUS_STUB='printf pending' \
+  expect_failure 'stacking onto a deploying master' 'waiting for deploy/watchdog autonomously' \
   run_merge "$tree_a"
+[[ ! -s $preflight_gate_log ]] || wd_die 'the full gate ran while the existing deployment was pending'
 [[ $(git --git-dir="$ORIGIN" rev-parse master) == "$before" ]] \
   || wd_die 'a refused merge still pushed to master'
 
@@ -326,18 +330,17 @@ broken='{"state":"failure","statuses":[{"context":"deploy/watchdog","state":"fai
 
 tree_f=$(new_agent_worktree agent-f feat/agent-f)
 pushed=$(git --git-dir="$ORIGIN" rev-parse master)
-set_responses "$partial"
-STATUS_STUB='' expect_failure 'a combined success with no verdict context' 'still deploying' \
-  run_merge "$tree_f" PATH="$TEMP/bin:$PATH" GITHUB_TOKEN=''
-[[ $(git --git-dir="$ORIGIN" rev-parse master) == "$pushed" ]] \
-  || wd_die 'a partially reported target was treated as ready to merge onto'
-
-# --- the token comes from git's own credential store, and never leaks -------------------------------
-# A contributor who can push necessarily has a credential for this remote, so the status checks must
-# work with no GITHUB_TOKEN and no setup at all.
-set_responses "$finished"
+# The existing SHA first has only Vercel's partial combined success, then gets its watchdog verdict.
+# The merge must wait by itself before running the gate and continue without asking anybody.
+set_responses "$partial" "$finished"
 STATUS_STUB='' run_merge "$tree_f" PATH="$TEMP/bin:$PATH" GITHUB_TOKEN='' >"$TEMP/credential.log" \
   || wd_die "the credential fallback path failed: $(cat "$TEMP/credential.log")"
+grep -Fq 'waiting for deploy/watchdog autonomously' "$TEMP/credential.log" \
+  || wd_die 'a partial combined success was treated as a finished deployment'
+
+# --- the token comes from git's own credential store, and never leaks -------------------------------
+# A contributor who can push normally already has a credential for this remote, so the status checks
+# work with no GITHUB_TOKEN and no setup at all.
 grep -Fq 'Authorization: Bearer fake-keychain-token' "$curl_log" \
   || wd_die 'the status check did not reuse the credential git already holds'
 grep -Fq 'fake-keychain-token' "$TEMP/credential.log" \
@@ -350,6 +353,16 @@ grep -Fq 'GIT_TERMINAL_PROMPT=0' "$MERGE" \
   || wd_die 'a contributor without a credential helper must never be prompted or hung'
 pushed=$(git --git-dir="$ORIGIN" rev-parse master)
 
+# A transient API/JSON failure after the push must be retried, never converted into a blind cooldown
+# and a request for somebody else to prove the deployment.
+tree_i=$(new_agent_worktree agent-i feat/agent-i)
+set_responses "$finished" "$finished" 'not-json' "$finished"
+STATUS_STUB='' run_merge "$tree_i" PATH="$TEMP/bin:$PATH" GITHUB_TOKEN='' >"$TEMP/transient.log" \
+  || wd_die "a transient status failure was not retried: $(cat "$TEMP/transient.log")"
+grep -Fq 'temporarily unavailable; retrying autonomously' "$TEMP/transient.log" \
+  || wd_die 'a transient status failure was not reported as an autonomous retry'
+pushed=$(git --git-dir="$ORIGIN" rev-parse master)
+
 # --- a red target blocks unrelated work but never blocks its own repair ------------------------------
 set_responses "$broken"
 tree_h=$(new_agent_worktree agent-h feat/agent-h)
@@ -359,7 +372,7 @@ STATUS_STUB='' expect_failure 'stacking unrelated work on a red target' 'is RED'
   || wd_die 'unrelated work landed on a red target'
 # The repair for that failure must be able to land, or a red master wedges delivery for everyone.
 # The target is red when we check it, and its own deployment is green once it lands.
-set_responses "$broken" "$finished"
+set_responses "$broken" "$broken" "$finished"
 MERGE_FLAGS=--fix-red STATUS_STUB='' run_merge "$tree_h" PATH="$TEMP/bin:$PATH" GITHUB_TOKEN='' \
   >"$TEMP/fixred.log" || wd_die "a repair could not land on a red target: $(cat "$TEMP/fixred.log")"
 grep -Fq 'proceeding because --fix-red' "$TEMP/fixred.log" \
@@ -368,15 +381,21 @@ grep -Fq 'proceeding because --fix-red' "$TEMP/fixred.log" \
   || wd_die 'the repair did not land'
 pushed=$(git --git-dir="$ORIGIN" rev-parse master)
 
-# No helper and no GITHUB_TOKEN degrades to the cooldown, and never to a silent success claim.
+# No helper and no GITHUB_TOKEN fails closed before the gate or merge. The agent repairs its own
+# credential path and reruns; the workflow must never delegate token supply or green proof to a human.
 git_quiet -C "$PRIMARY" config credential.helper \
   '!f() { test "$1" = get && printf "\n"; }; f'
 tree_g=$(new_agent_worktree agent-g feat/agent-g)
-STATUS_STUB='' run_merge "$tree_g" PATH="$TEMP/bin:$PATH" GITHUB_TOKEN='' >"$TEMP/nocred.log" \
-  || wd_die "a missing credential must not fail the merge: $(cat "$TEMP/nocred.log")"
-grep -Fq 'cannot read commit status' "$TEMP/nocred.log" \
-  || wd_die 'a missing credential must be reported, not silently treated as green'
+STATUS_STUB='' expect_failure 'a missing reusable credential' \
+  'autonomous GitHub deployment-status access is unavailable' \
+  run_merge "$tree_g" PATH="$TEMP/bin:$PATH" GITHUB_TOKEN=''
+[[ $(git --git-dir="$ORIGIN" rev-parse master) == "$pushed" ]] \
+  || wd_die 'a merge proceeded without autonomous deployment-status access'
 git_quiet -C "$PRIMARY" config --unset credential.helper
+grep -Fq 'Check deploy/watchdog on GitHub yourself' "$MERGE" \
+  && wd_die 'the merge workflow still delegates deployment proof to a human'
+grep -Fq 'blind cooldown' "$MERGE" \
+  && wd_die 'the merge workflow still silently accepts an unknown deployment'
 
 # --- the guard does not fail open when node is missing ----------------------------------------------
 mkdir -p "$TEMP/nonode"

@@ -10,7 +10,7 @@
 #   * it runs the full gate on the exact tree it pushes, after the rebase;
 #   * it refuses to stack work on a red or still-deploying master.
 #
-# Usage:  deploy/agent-merge.sh [--allow-primary-tree] [--dry-run]
+# Usage:  deploy/agent-merge.sh [--allow-primary-tree] [--dry-run] [--fix-red]
 #
 # Agents must run it from their own worktree with no arguments. Human contributors working in a
 # plain clone pass --allow-primary-tree.
@@ -26,7 +26,6 @@ AGENT_MERGE_LOCK_WAIT_S=${AGENT_MERGE_LOCK_WAIT_S:-3600}
 AGENT_MERGE_STALE_S=${AGENT_MERGE_STALE_S:-5400}
 AGENT_MERGE_DEPLOY_WAIT_S=${AGENT_MERGE_DEPLOY_WAIT_S:-2400}
 AGENT_MERGE_POLL_S=${AGENT_MERGE_POLL_S:-60}
-AGENT_MERGE_COOLDOWN_S=${AGENT_MERGE_COOLDOWN_S:-300}
 AGENT_MERGE_PUSH_ATTEMPTS=${AGENT_MERGE_PUSH_ATTEMPTS:-3}
 # The context that means the production pipeline reached a verdict. Anything else is a partial view.
 AGENT_MERGE_REQUIRED_CONTEXT=${AGENT_MERGE_REQUIRED_CONTEXT:-deploy/watchdog}
@@ -83,9 +82,9 @@ am_gate() {
 
 # Resolves a GitHub token without asking anybody to configure one. $GITHUB_TOKEN wins when set;
 # otherwise we reuse the credential git already uses to push to this remote, which every
-# contributor who can push necessarily has. GIT_TERMINAL_PROMPT=0 keeps a contributor without a
-# credential helper (an SSH remote, say) from being prompted or hung: git fails, we degrade to
-# 'unknown' and the merge falls back to a blind cooldown.
+# contributor who can push normally already has. GIT_TERMINAL_PROMPT=0 keeps a contributor without
+# a credential helper (an SSH remote, say) from being prompted or hung. Missing status access fails
+# closed before the gate or merge; it is never delegated to a human as a token/proof request.
 am_token() {
   if [[ -n ${GITHUB_TOKEN:-} ]]; then
     printf '%s' "$GITHUB_TOKEN"
@@ -105,6 +104,15 @@ protocol=https
 host=$host
 
 EOF
+}
+
+am_require_status_access() {
+  [[ -n ${AGENT_MERGE_STATUS_CMD:-} ]] && return
+  local token
+  token=$(am_token)
+  [[ -n $token ]] || am_die 'autonomous GitHub deployment-status access is unavailable: git has no
+  reusable HTTPS credential for this remote. No gate or merge was attempted. Repair the local git
+  credential helper/remote authentication and rerun; never ask a human for a token or green proof.'
 }
 
 # Prints the verdict for a SHA: success, pending, failure, error or unknown.
@@ -145,6 +153,38 @@ header = "Accept: application/vnd.github+json"
 EOF
 }
 
+am_wait_for_target_ready() {
+  local sha=$1 waited=0 verdict
+  while (( waited < AGENT_MERGE_DEPLOY_WAIT_S )); do
+    verdict=$(am_status "$sha")
+    case "$verdict" in
+      success)
+        am_log "$AGENT_MERGE_REQUIRED_CONTEXT is GREEN for existing $AGENT_MERGE_TARGET $sha"
+        return ;;
+      failure|error)
+        # Recovering a red master means merging a new commit on top of it, so this is refusable but
+        # not forbidden. --fix-red is for the commit that repairs the failure, never unrelated work.
+        if (( FIX_RED )); then
+          am_log "WARNING: $AGENT_MERGE_TARGET is RED at $sha; proceeding because --fix-red was given"
+          return
+        fi
+        am_die "$AGENT_MERGE_TARGET is RED at $sha: land the repair for that failure with
+  --fix-red, or wait. Never stack unrelated work on a red target, and never retry the red SHA." ;;
+      pending)
+        am_log "$AGENT_MERGE_TARGET is still deploying at $sha; waiting for $AGENT_MERGE_REQUIRED_CONTEXT autonomously (${waited}s)" ;;
+      unknown)
+        am_log "deployment-status lookup for $sha is temporarily unavailable; retrying autonomously (${waited}s)" ;;
+      *)
+        am_log "unexpected deployment status '$verdict' for $sha; retrying autonomously (${waited}s)" ;;
+    esac
+    sleep "$AGENT_MERGE_POLL_S"
+    waited=$(( waited + AGENT_MERGE_POLL_S ))
+  done
+  am_die "could not verify a green $AGENT_MERGE_REQUIRED_CONTEXT for existing $AGENT_MERGE_TARGET
+  $sha within ${AGENT_MERGE_DEPLOY_WAIT_S}s. No merge was attempted. Diagnose the status API or
+  credential helper and rerun; never ask a human for a token or deployment proof."
+}
+
 # --- preflight ---------------------------------------------------------------------------------
 git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || am_die 'not a git repository'
 
@@ -165,6 +205,14 @@ BRANCH=$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)
   || am_die 'working tree is dirty: commit your own paths (never git add -A) or clean it up'
 git -C "$ROOT" rev-parse --verify -q "$BRANCH@{upstream}" >/dev/null \
   || am_die "branch has no upstream: git push -u $AGENT_MERGE_REMOTE HEAD"
+
+# Check production before spending time on the local gate. The same verdict is checked again under
+# the merge lock because master can move while the gate runs.
+am_require_status_access
+git -C "$ROOT" fetch "$AGENT_MERGE_REMOTE"
+previous=$(git -C "$ROOT" rev-parse "$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET")
+am_log "checking $AGENT_MERGE_REQUIRED_CONTEXT for existing $AGENT_MERGE_TARGET $previous before the gate"
+am_wait_for_target_ready "$previous"
 
 # Fail fast, before queueing behind anyone, on a tree that cannot pass anyway.
 am_log "running the full gate on $(git -C "$ROOT" rev-parse --short HEAD) before queueing"
@@ -198,22 +246,8 @@ am_log 'merge lock acquired'
 # --- never stack onto a red or in-flight target --------------------------------------------------
 git -C "$ROOT" fetch "$AGENT_MERGE_REMOTE"
 previous=$(git -C "$ROOT" rev-parse "$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET")
-case "$(am_status "$previous")" in
-  failure|error)
-    # Recovering a red master means merging a new commit on top of it, so this is refusable but not
-    # forbidden. --fix-red is for the commit that repairs the failure, never for unrelated work.
-    if (( FIX_RED )); then
-      am_log "WARNING: $AGENT_MERGE_TARGET is RED at $previous; proceeding because --fix-red was given"
-    else
-      am_die "$AGENT_MERGE_TARGET is RED at $previous: land the repair for that failure with
-  --fix-red, or wait. Never stack unrelated work on a red target, and never retry the red SHA."
-    fi ;;
-  pending)
-    am_die "$AGENT_MERGE_TARGET is still deploying at $previous: wait for deploy/watchdog and retry" ;;
-  unknown)
-    am_log "WARNING: cannot read the commit status of $previous — no GITHUB_TOKEN and no usable
-  git credential for this remote. Check deploy/watchdog on GitHub yourself before relying on this." ;;
-esac
+am_log "rechecking $AGENT_MERGE_REQUIRED_CONTEXT for locked $AGENT_MERGE_TARGET $previous"
+am_wait_for_target_ready "$previous"
 
 # --- rebase, re-gate the exact tree we push, push ------------------------------------------------
 pushed=''
@@ -248,14 +282,12 @@ while (( waited < AGENT_MERGE_DEPLOY_WAIT_S )); do
       am_die "deploy/watchdog is RED for $pushed: fix it on a NEW branch with a NEW commit;
   never retry this SHA" ;;
     unknown)
-      am_log "cannot read commit status; holding a ${AGENT_MERGE_COOLDOWN_S}s cooldown so the host
-  picks up exactly this SHA, then check deploy/watchdog on GitHub yourself"
-      sleep "$AGENT_MERGE_COOLDOWN_S"
-      exit 0 ;;
+      am_log "deployment-status lookup for $pushed is temporarily unavailable; retrying autonomously (${waited}s)" ;;
   esac
   am_log "waiting for deploy/watchdog on $pushed (${waited}s)"
   sleep "$AGENT_MERGE_POLL_S"
   waited=$(( waited + AGENT_MERGE_POLL_S ))
 done
 am_die "deploy/watchdog did not settle for $pushed within ${AGENT_MERGE_DEPLOY_WAIT_S}s:
-  check GitHub before anyone merges again"
+  diagnose the status API or watchdog logs before another merge; never ask a human for a token or
+  deployment proof"

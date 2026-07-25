@@ -44,13 +44,17 @@ engine, commerce API, commerce worker, and commerce PostgreSQL migrations.
 
 5. Push the branch and land it with `./deploy/agent-merge.sh` (add `--allow-primary-tree` when you
    work in a plain clone rather than a worktree). That script is the only supported way to reach
-   `master`: it runs the gate above, takes a machine-wide merge lock, refuses to queue behind a red
-   or still-deploying `master`, rebases, re-runs the gate on the exact SHA it pushes, and holds the
-   lock until `deploy/watchdog` reports on that SHA. Merging or pushing to `master` by hand races
-   the production deployment of whoever merged a minute earlier. A direct push to `master` has the
-   same production meaning and should be exceptional.
-6. Watch the commit statuses and production deployments in GitHub. Work is complete only when
-   `deploy/watchdog` is green.
+   `master`. Before the expensive gate, and again under the machine-wide merge lock, it reads the
+   existing SHA's `deploy/watchdog` context through the GitHub API. It automatically reuses the
+   credential already configured for `git push` (`git credential`, macOS Keychain), so neither
+   `gh` nor a separately exported `GITHUB_TOKEN` is required. Pending or temporarily unavailable
+   status is polled by the script itself. It then rebases, re-runs the gate on the exact SHA it
+   pushes, and holds the lock until `deploy/watchdog` reports on that SHA. Merging or pushing to
+   `master` by hand races the production deployment of whoever merged a minute earlier.
+6. AI agents never ask a person to provide a GitHub token or prove that a deployment is green. If
+   no reusable credential exists, repair the local Git credential helper and rerun; never merge
+   blind. Work is complete only when the script reports the exact pushed SHA's `deploy/watchdog`
+   context green, and the agent includes that verdict in its final report.
 
 Do not trigger a second deployment to repair a red one. Fix the failure on a new branch and merge a
 new commit. An operator may retry the same SHA only when the failure was proven transient and the
