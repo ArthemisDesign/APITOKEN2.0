@@ -114,19 +114,72 @@ cargo run -p claude-api -- sub list
 Smoke без живых подписок — мок-апстрим (`CLAUDE_API_UPSTREAM=http://127.0.0.1:PORT`): проверяет
 форвардинг, инжект identity, ротацию при 429, стрим. Пример — в истории/`README.md`.
 
-## Рабочий цикл коммита
+## Жизненный цикл агента: изоляция → работа → мёрж
 
-1. Определи компонент → перейди на его `comp/*`-ветку (или заведи feature-ветку от неё).
-2. Меняй код в границах крейта; держи `cargo build` зелёным.
-3. Обнови документацию, если поменялись границы/поведение (`crates/<x>/CLAUDE.md`, `ARCHITECTURE.md`).
-4. Коммить по одному логическому изменению; секреты не стейджить (`git add <пути>`, не `git add -A`).
-5. Если нужна commerce-миграция, сначала влей отдельный expand-only commit и дождись зелёных
-   `deploy/migration` и `deploy/watchdog`; только потом вливай зависимый application-код. Никогда
-   не меняй и не удаляй существующую миграцию. Правила — `packages/db/MIGRATIONS.md`.
-6. Влей в `master` только полностью готовую к production работу. Watchdog автоматически тестирует
-   точный SHA, делает backup, применяет новые миграции и лишь затем blue-green деплоит затронутые
-   engine/backend. Не запускай обычный deploy или production-миграцию через SSH.
-7. Проверь GitHub contexts `deploy/tests`, `deploy/migration`, `deploy/engine`, `deploy/backend` и
-   итоговый `deploy/watchdog`. Красный SHA не ретраить кодовой правкой на сервере — исправить новым
-   коммитом. Полный workflow — `CONTRIBUTING.md`.
-8. Trailer: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
+Над репозиторием одновременно работает несколько агентов и людей. **Ветка не изолирует.**
+Рабочее дерево одно на каталог: `git checkout` в общем каталоге переносит чужие незакоммиченные
+правки на твою ветку и переписывает файлы под соседом. Изолирует только отдельный worktree.
+Правила ниже продублированы в `AGENTS.md` и принудительно проверяются хуком
+`.claude/hooks/guard-git.sh`.
+
+### 1. Старт — свой worktree
+
+Первым делом убедись, что ты в собственном каталоге и на собственной ветке:
+
+```bash
+git rev-parse --show-toplevel      # твой каталог, НЕ основной клон
+git rev-parse --abbrev-ref HEAD    # твоя ветка, НЕ master
+```
+
+Если worktree ещё не создан — создай и больше не покидай его:
+
+```bash
+git fetch origin
+git worktree add ~/wt/<task> -b <type>/<task> origin/master
+cd ~/wt/<task>
+```
+
+### 2. Работа — запрещённые команды
+
+Без явной команды человека НИКОГДА: `git checkout <branch>`, `git switch`, `git stash`,
+`git reset --hard`, `git clean -f`, `git merge`, `git rebase`, `git push` в чужую ветку или в
+`master`, `git worktree remove`. Кажется, что нужна одна из них — остановись и спроси.
+Стейджим только свои пути (`git add crates/forward/...`); `git add -A` и `git add .` запрещены —
+они утаскивают файлы соседа в твой коммит.
+
+### 3. Атрибуция — что считать своей работой
+
+Твоя работа — это коммиты на твоей ветке, а НЕ состояние дерева:
+
+```bash
+git diff --stat origin/master...HEAD    # только это идёт в отчёт
+```
+
+Увидел в `git status` изменения, которых не делал: не откатывай, не чини, не объясняй их
+происхождение. Одна строка «в дереве есть посторонние изменения» — и продолжай свою задачу.
+Файл, прочитанный давно, перечитай перед правкой; не описывай содержимое по памяти из контекста.
+
+### 4. Проверка и документация
+
+Меняй код в границах крейта, держи `cargo build` зелёным, коммить по одному логическому
+изменению. Обнови документацию, если поменялись границы/поведение (`crates/<x>/CLAUDE.md`,
+`ARCHITECTURE.md`). Если нужна commerce-миграция — сначала отдельный expand-only коммит, и только
+после зелёных `deploy/migration` и `deploy/watchdog` зависимый application-код. Существующую
+миграцию не менять и не удалять (`packages/db/MIGRATIONS.md`).
+
+### 5. Мёрж в master — одной командой
+
+```bash
+git push -u origin HEAD
+./deploy/agent-merge.sh          # человек в обычном клоне: --allow-primary-tree
+```
+
+Скрипт сам прогоняет полный gate, берёт машинный merge-lock, отказывается вставать в очередь за
+красным или ещё деплоящимся `master`, ребейзит, перепроверяет gate на ТОМ САМОМ SHA, который
+пушит, и держит lock до зелёного `deploy/watchdog`. Мёржить в `master` вручную запрещено:
+`master` — это production trigger, и watchdog деплоит ровно один SHA за раз.
+
+Красный SHA не ретраить — исправлять новым коммитом на новой ветке. Не запускай deploy или
+production-миграцию через SSH. Полный workflow — `CONTRIBUTING.md`.
+
+Trailer: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.

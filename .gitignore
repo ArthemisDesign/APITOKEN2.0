@@ -28,6 +28,7 @@ active_proxy
 *.token
 *.fifo
 .claude-*/
+.claude/worktrees/
 secrets*
 
 # Local database volumes

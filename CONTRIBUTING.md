@@ -10,6 +10,20 @@ engine, commerce API, commerce worker, and commerce PostgreSQL migrations.
 ## Contributor and AI-agent workflow
 
 1. Fetch the current remote state and work on the appropriate `comp/*` or short feature branch.
+   Several agents and contributors share this repository, and a branch is not an isolation
+   boundary: one working tree has one checked-out branch, so switching branches in a shared
+   directory rewrites a co-resident worker's files and carries their uncommitted changes onto your
+   branch. Take the branch in a dedicated worktree instead:
+
+   ```bash
+   git worktree add ~/wt/<task> -b <type>/<task> origin/master
+   cd ~/wt/<task>
+   ```
+
+   AI agents must work this way, must not switch, stash, reset, clean, merge or rebase any branch,
+   and must stage explicit paths rather than `git add -A`. An agent reports its work as
+   `git diff --stat origin/master...HEAD`, never as working-tree status: anything else in the tree
+   may belong to another agent and must not be reverted, repaired, or explained.
 2. If the change needs a schema update, deliver it in two production commits. First merge the
    additive/expand migration without code that depends on it, then wait for `deploy/migration` and
    `deploy/watchdog` to turn green. Only then merge the dependent application change. Never edit,
@@ -28,8 +42,13 @@ engine, commerce API, commerce worker, and commerce PostgreSQL migrations.
    git diff --check
    ```
 
-5. Push the branch and merge it into `master` only when it is ready for production. A direct push
-   to `master` has the same production meaning and should be exceptional.
+5. Push the branch and land it with `./deploy/agent-merge.sh` (add `--allow-primary-tree` when you
+   work in a plain clone rather than a worktree). That script is the only supported way to reach
+   `master`: it runs the gate above, takes a machine-wide merge lock, refuses to queue behind a red
+   or still-deploying `master`, rebases, re-runs the gate on the exact SHA it pushes, and holds the
+   lock until `deploy/watchdog` reports on that SHA. Merging or pushing to `master` by hand races
+   the production deployment of whoever merged a minute earlier. A direct push to `master` has the
+   same production meaning and should be exceptional.
 6. Watch the commit statuses and production deployments in GitHub. Work is complete only when
    `deploy/watchdog` is green.
 
