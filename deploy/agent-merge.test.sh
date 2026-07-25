@@ -23,8 +23,14 @@ trap 'rm -rf -- "$TEMP"' EXIT
 
 # Neutralize the developer's own git configuration. Without this the credential-fallback scenario
 # would consult the real credential helper and pull a contributor's live GitHub token into a test
-# fixture, and unrelated global settings could change what the scenarios exercise.
+# fixture, and unrelated global settings could change what the scenarios exercise. HOME is redirected
+# too, so the isolation holds on a git older than the 2.32 that introduced GIT_CONFIG_GLOBAL.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+mkdir -p "$TEMP/home"
+export HOME=$TEMP/home
+# A token inherited from the surrounding environment (a CI runner, a developer's profile) must never
+# decide what these scenarios exercise.
+unset GITHUB_TOKEN
 git_quiet() { git -c user.name=test -c user.email=test@example.com -c commit.gpgsign=false "$@"; }
 
 # A bare origin plus a primary clone, exactly the topology contributors and agents share.
@@ -67,6 +73,7 @@ new_agent_worktree() {  # $1 = name, $2 = branch
 run_merge() {  # $1 = tree, rest = extra env assignments / flags
   local tree=$1; shift
   ( cd "$tree" && env \
+      HOME="$TEMP/home" \
       AGENT_MERGE_LOCK="$TEMP/lock" \
       AGENT_MERGE_LOCK_WAIT_S=2 \
       AGENT_MERGE_POLL_S=1 \
@@ -75,7 +82,7 @@ run_merge() {  # $1 = tree, rest = extra env assignments / flags
       AGENT_MERGE_STALE_S=0 \
       AGENT_MERGE_GATE_CMD="${GATE_STUB-true}" \
       AGENT_MERGE_STATUS_CMD="${STATUS_STUB-printf success}" \
-      "$@" bash "$tree/deploy/agent-merge.sh" ) 2>&1
+      "$@" bash "$tree/deploy/agent-merge.sh" ${MERGE_FLAGS-} ) 2>&1
 }
 
 expect_failure() {  # $1 = description, $2 = expected substring, rest = command
@@ -270,33 +277,77 @@ done
 grep -Fq 'git checkout comp/forward' "$ROOT/BRANCHES.md" \
   && wd_die 'BRANCHES.md still teaches agents to switch branches in a shared tree'
 
-# --- the token comes from git's own credential store, and never leaks -------------------------------
-# A contributor who can push necessarily has a credential for this remote, so the status checks must
-# work with no GITHUB_TOKEN and no setup at all.
+# --- the verdict is one named context, never the combined state -------------------------------------
+# GitHub reports a combined "success" as soon as the contexts posted so far are green, so a SHA whose
+# gate has not started yet looks green while Vercel is the only reporter. Treating that as a finished
+# deployment is what announced 316691e as green a minute before deploy/tests failed.
 mkdir -p "$TEMP/bin"
 curl_log=$TEMP/curl-stdin.log
+response=$TEMP/curl-response.json
 cat >"$TEMP/bin/curl" <<CURL
 #!/usr/bin/env bash
-# Records the curl configuration handed to it on stdin, then answers like the status API.
+# Records the curl configuration handed to it on stdin, then replays the next canned status payload
+# (the last one repeats), so a scenario can model a target that changes verdict between calls.
 cat >>"$curl_log"
-printf '{"state":"success"}'
+call=\$(( \$(cat "$TEMP/curl-calls" 2>/dev/null || printf 0) + 1 ))
+printf '%s' "\$call" >"$TEMP/curl-calls"
+total=\$(grep -c '' "$response")
+(( call <= total )) || call=\$total
+sed -n "\${call}p" "$response"
 CURL
 chmod +x "$TEMP/bin/curl"
+# Sets the canned status payloads, one per call, and resets the call counter.
+set_responses() { printf '%s\n' "$@" >"$response"; printf 0 >"$TEMP/curl-calls"; }
 git_quiet -C "$PRIMARY" config credential.helper \
   '!f() { test "$1" = get && printf "username=x\npassword=fake-keychain-token\n"; }; f'
 
+partial='{"state":"success","statuses":[{"context":"Vercel","state":"success"}]}'
+finished='{"state":"success","statuses":[{"context":"Vercel","state":"success"},{"context":"deploy/watchdog","state":"success"}]}'
+broken='{"state":"failure","statuses":[{"context":"deploy/watchdog","state":"failure"}]}'
+
 tree_f=$(new_agent_worktree agent-f feat/agent-f)
-STATUS_STUB='' run_merge "$tree_f" PATH="$TEMP/bin:$PATH" >"$TEMP/credential.log" \
+pushed=$(git --git-dir="$ORIGIN" rev-parse master)
+set_responses "$partial"
+STATUS_STUB='' expect_failure 'a combined success with no verdict context' 'still deploying' \
+  run_merge "$tree_f" PATH="$TEMP/bin:$PATH" GITHUB_TOKEN=''
+[[ $(git --git-dir="$ORIGIN" rev-parse master) == "$pushed" ]] \
+  || wd_die 'a partially reported target was treated as ready to merge onto'
+
+# --- the token comes from git's own credential store, and never leaks -------------------------------
+# A contributor who can push necessarily has a credential for this remote, so the status checks must
+# work with no GITHUB_TOKEN and no setup at all.
+set_responses "$finished"
+STATUS_STUB='' run_merge "$tree_f" PATH="$TEMP/bin:$PATH" GITHUB_TOKEN='' >"$TEMP/credential.log" \
   || wd_die "the credential fallback path failed: $(cat "$TEMP/credential.log")"
 grep -Fq 'Authorization: Bearer fake-keychain-token' "$curl_log" \
   || wd_die 'the status check did not reuse the credential git already holds'
 grep -Fq 'fake-keychain-token' "$TEMP/credential.log" \
   && wd_die 'the token leaked into the merge output'
+grep -Fq 'GREEN' "$TEMP/credential.log" || wd_die 'a finished green deployment was not recognized'
 grep -Eq -- '-H[[:space:]]*.?Authorization' "$MERGE" \
   && wd_die 'the token must reach curl through -K, never argv, where the process list exposes it'
 grep -Fq -- '-K -' "$MERGE" || wd_die 'the status check must read its credential header from stdin'
 grep -Fq 'GIT_TERMINAL_PROMPT=0' "$MERGE" \
   || wd_die 'a contributor without a credential helper must never be prompted or hung'
+pushed=$(git --git-dir="$ORIGIN" rev-parse master)
+
+# --- a red target blocks unrelated work but never blocks its own repair ------------------------------
+set_responses "$broken"
+tree_h=$(new_agent_worktree agent-h feat/agent-h)
+STATUS_STUB='' expect_failure 'stacking unrelated work on a red target' 'is RED' \
+  run_merge "$tree_h" PATH="$TEMP/bin:$PATH" GITHUB_TOKEN=''
+[[ $(git --git-dir="$ORIGIN" rev-parse master) == "$pushed" ]] \
+  || wd_die 'unrelated work landed on a red target'
+# The repair for that failure must be able to land, or a red master wedges delivery for everyone.
+# The target is red when we check it, and its own deployment is green once it lands.
+set_responses "$broken" "$finished"
+MERGE_FLAGS=--fix-red STATUS_STUB='' run_merge "$tree_h" PATH="$TEMP/bin:$PATH" GITHUB_TOKEN='' \
+  >"$TEMP/fixred.log" || wd_die "a repair could not land on a red target: $(cat "$TEMP/fixred.log")"
+grep -Fq 'proceeding because --fix-red' "$TEMP/fixred.log" \
+  || wd_die 'the red override was not reported'
+[[ $(git --git-dir="$ORIGIN" rev-parse master) != "$pushed" ]] \
+  || wd_die 'the repair did not land'
+pushed=$(git --git-dir="$ORIGIN" rev-parse master)
 
 # No helper and no GITHUB_TOKEN degrades to the cooldown, and never to a silent success claim.
 git_quiet -C "$PRIMARY" config credential.helper \
@@ -304,6 +355,17 @@ git_quiet -C "$PRIMARY" config credential.helper \
 tree_g=$(new_agent_worktree agent-g feat/agent-g)
 STATUS_STUB='' run_merge "$tree_g" PATH="$TEMP/bin:$PATH" GITHUB_TOKEN='' >"$TEMP/nocred.log" \
   || wd_die "a missing credential must not fail the merge: $(cat "$TEMP/nocred.log")"
+grep -Fq 'cannot read commit status' "$TEMP/nocred.log" \
+  || wd_die 'a missing credential must be reported, not silently treated as green'
 git_quiet -C "$PRIMARY" config --unset credential.helper
+
+# --- the guard does not fail open when node is missing ----------------------------------------------
+mkdir -p "$TEMP/nonode"
+for tool in bash sed tr cat grep; do
+  ln -sf "$(command -v "$tool")" "$TEMP/nonode/$tool" 2>/dev/null || true
+done
+printf '{"tool_input":{"command":"git checkout master"}}' \
+  | env PATH="$TEMP/nonode" bash "$GUARD" >/dev/null 2>&1 \
+  && wd_die 'the git guard fails open when node is unavailable'
 
 printf 'agent worktree isolation, serialized merge, and git guard tests passed\n'

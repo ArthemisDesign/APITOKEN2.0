@@ -28,13 +28,17 @@ AGENT_MERGE_DEPLOY_WAIT_S=${AGENT_MERGE_DEPLOY_WAIT_S:-2400}
 AGENT_MERGE_POLL_S=${AGENT_MERGE_POLL_S:-60}
 AGENT_MERGE_COOLDOWN_S=${AGENT_MERGE_COOLDOWN_S:-300}
 AGENT_MERGE_PUSH_ATTEMPTS=${AGENT_MERGE_PUSH_ATTEMPTS:-3}
+# The context that means the production pipeline reached a verdict. Anything else is a partial view.
+AGENT_MERGE_REQUIRED_CONTEXT=${AGENT_MERGE_REQUIRED_CONTEXT:-deploy/watchdog}
 
 ALLOW_PRIMARY_TREE=0
 DRY_RUN=0
+FIX_RED=0
 for argument in "$@"; do
   case "$argument" in
     --allow-primary-tree) ALLOW_PRIMARY_TREE=1 ;;
     --dry-run) DRY_RUN=1 ;;
+    --fix-red) FIX_RED=1 ;;
     -h|--help) sed -n '2,16p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) printf 'agent-merge: unknown argument: %s\n' "$argument" >&2; exit 1 ;;
   esac
@@ -83,14 +87,22 @@ am_token() {
     host=${host#*@}
   fi
   GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true \
-    git -C "$ROOT" credential fill 2>/dev/null <<EOF | sed -n 's/^password=//p' | head -n 1
+    git -C "$ROOT" credential fill 2>/dev/null <<EOF | sed -n 's/^password=//p' | head -n 1 || printf ''
 protocol=https
 host=$host
 
 EOF
 }
 
-# Prints the combined GitHub commit status for a SHA: success, pending, failure, error or unknown.
+# Prints the verdict for a SHA: success, pending, failure, error or unknown.
+#
+# Deliberately NOT the combined status. GitHub reports a combined state of "success" as soon as
+# every context posted so far is green, and the fast ones (Vercel) post a minute before the host
+# posts deploy/tests. Polling the combined state therefore reports a green deployment for a SHA
+# whose gate has not started, which is exactly how 316691e was announced as green and then failed.
+# The verdict is the state of the one context that means the pipeline finished; its absence is
+# pending, never success.
+#
 # The token is passed to curl through -K so it never reaches argv, a log line, or the process list,
 # the same discipline deploy/watchdog-github.sh uses on the production host.
 am_status() {
@@ -107,9 +119,14 @@ am_status() {
 let raw = "";
 process.stdin.on("data", (chunk) => { raw += chunk; });
 process.stdin.on("end", () => {
-  try { process.stdout.write(String(JSON.parse(raw)?.state ?? "unknown")); } catch { process.stdout.write("unknown"); }
+  const required = process.argv[1];
+  try {
+    const payload = JSON.parse(raw);
+    const verdict = (payload.statuses || []).find((s) => s.context === required);
+    process.stdout.write(verdict ? String(verdict.state) : "pending");
+  } catch { process.stdout.write("unknown"); }
 });
-' 2>/dev/null || printf 'unknown'
+' "$AGENT_MERGE_REQUIRED_CONTEXT" 2>/dev/null || printf 'unknown'
 header = "Authorization: Bearer $token"
 header = "Accept: application/vnd.github+json"
 EOF
@@ -170,8 +187,14 @@ git -C "$ROOT" fetch "$AGENT_MERGE_REMOTE"
 previous=$(git -C "$ROOT" rev-parse "$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET")
 case "$(am_status "$previous")" in
   failure|error)
-    am_die "$AGENT_MERGE_TARGET is RED at $previous: fix it with a new commit on a new branch,
-  never by retrying or stacking on top of it" ;;
+    # Recovering a red master means merging a new commit on top of it, so this is refusable but not
+    # forbidden. --fix-red is for the commit that repairs the failure, never for unrelated work.
+    if (( FIX_RED )); then
+      am_log "WARNING: $AGENT_MERGE_TARGET is RED at $previous; proceeding because --fix-red was given"
+    else
+      am_die "$AGENT_MERGE_TARGET is RED at $previous: land the repair for that failure with
+  --fix-red, or wait. Never stack unrelated work on a red target, and never retry the red SHA."
+    fi ;;
   pending)
     am_die "$AGENT_MERGE_TARGET is still deploying at $previous: wait for deploy/watchdog and retry" ;;
   unknown)

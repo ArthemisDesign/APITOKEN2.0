@@ -17,7 +17,15 @@ process.stdin.on("data", (chunk) => { raw += chunk; });
 process.stdin.on("end", () => {
   try { console.log(JSON.parse(raw)?.tool_input?.command ?? ""); } catch { console.log(""); }
 });
-' 2>/dev/null) || exit 0
+' 2>/dev/null) || command_line=''
+
+# A guard that fails open is not a guard. If node is unavailable, fall back to a coarse extraction
+# so destructive commands are still caught; a false positive here costs one blocked call, a false
+# negative costs another agent's work.
+if [[ -z $command_line ]] && ! command -v node >/dev/null 2>&1; then
+  command_line=$(printf '%s' "$payload" \
+    | sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/p')
+fi
 [[ -n $command_line ]] || exit 0
 
 # The sanctioned way to land work performs its own rebase and push; never second-guess it.
