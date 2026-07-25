@@ -73,6 +73,25 @@ for unit in \
   install -o root -g root -m 0644 "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"
 done
 
+# Journald storage must be an explicit decision rather than a side effect of boot ordering. Under
+# the default `Storage=auto` journald picks volatile-vs-persistent once at start by testing whether
+# /var/log/journal exists, and that directory only appears because Docker creates it for the Alloy
+# bind mount in observability/compose.yaml. The result was a journal in /run (tmpfs), pinned at its
+# RuntimeMaxUse cap and discarded on every reboot.
+journald_dropin=/etc/systemd/journald.conf.d/10-apitoken.conf
+install -d -o root -g root -m 0755 /etc/systemd/journald.conf.d
+# journald only writes to a persistent directory owned by the journal group; the Docker-created one
+# is root:root 0755. Fix ownership before the restart, or journald silently stays volatile.
+install -d -o root -g systemd-journal -m 2755 /var/log/journal
+# This installer runs on every infrastructure commit, so restart only on an actual content change:
+# an unconditional restart would interrupt logging on each unrelated deployment.
+if ! cmp -s "$ROOT/systemd/journald-apitoken.conf" "$journald_dropin"; then
+  install -o root -g root -m 0644 "$ROOT/systemd/journald-apitoken.conf" "$journald_dropin"
+  systemctl restart systemd-journald
+  # Move whatever the runtime journal still holds onto the now-persistent store.
+  journalctl --flush
+fi
+
 # Shared affinity is deliberately ephemeral, but its keyed identifiers and Redis password must be
 # stable across engine restarts. Provision them once without printing secret values. The engine
 # keeps working from local memory if this service is unavailable.

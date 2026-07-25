@@ -109,6 +109,63 @@ for watchdog_alert in DeployQuarantined DeployPipelineStale DeployStuckInPhase D
   grep -Fqi "## $watchdog_alert" "$ROOT/MONITORING.md" \
     || { printf 'MONITORING.md has no runbook section for %s\n' "$watchdog_alert" >&2; exit 1; }
 done
+
+# The journal must be an explicit, bounded, persistent store. Under the default `Storage=auto`
+# journald decided volatile-vs-persistent from whether the Docker-created /var/log/journal existed,
+# put the journal in tmpfs, and lost it on every reboot; the SystemMaxUse default of 10% of the
+# filesystem is also far too large for the production array.
+journald_dropin=$ROOT/systemd/journald-apitoken.conf
+for journald_setting in Storage=persistent SystemMaxUse=8G SystemMaxFileSize=512M MaxRetentionSec=90day; do
+  grep -Fxq "$journald_setting" "$journald_dropin" \
+    || { printf 'journald drop-in is missing %s\n' "$journald_setting" >&2; exit 1; }
+done
+# Installing the drop-in without applying it would leave the journal volatile until the next reboot,
+# and applying it unconditionally would interrupt logging on every unrelated infrastructure commit.
+grep -Fq 'journald.conf.d/10-apitoken.conf' "$ROOT/deploy/install-watchdog.sh" \
+  || { printf 'the journald drop-in is never installed\n' >&2; exit 1; }
+grep -Fq 'cmp -s "$ROOT/systemd/journald-apitoken.conf"' "$ROOT/deploy/install-watchdog.sh" \
+  || { printf 'the journald restart is not guarded by a content comparison\n' >&2; exit 1; }
+grep -Fq 'install -d -o root -g systemd-journal -m 2755 /var/log/journal' "$ROOT/deploy/install-watchdog.sh" \
+  || { printf 'the persistent journal directory ownership is not corrected\n' >&2; exit 1; }
+
+# Caddy no longer logs failed active health probes, because blue-green keeps one slot of each pair
+# deliberately stopped. That removed signal must stay covered by an alert on upstream health.
+grep -Fq 'alert: ProxyUpstreamPairDown' "$ROOT/observability/prometheus/rules/operations.yml" \
+  || { printf 'the excluded health-check logger has no replacement alert\n' >&2; exit 1; }
+grep -Fq 'MONITORING.md#proxyupstreampairdown' "$ROOT/observability/prometheus/rules/operations.yml" \
+  || { printf 'alert ProxyUpstreamPairDown has no runbook anchor\n' >&2; exit 1; }
+grep -Fqi '## ProxyUpstreamPairDown' "$ROOT/MONITORING.md" \
+  || { printf 'MONITORING.md has no runbook section for ProxyUpstreamPairDown\n' >&2; exit 1; }
+# The optional Codex provider is a separate failure domain: its homes can expire, cool or exhaust
+# their subscription windows without any Claude signal moving. Every gauge the engine exports for it
+# must be consumed by a rule, and every rule must have a runbook section.
+for codex_metric in \
+  'claude_api_codex_process_live' \
+  'claude_api_codex_homes_available' \
+  'claude_api_codex_home_authenticated' \
+  'claude_api_codex_home_rate_limit_used_percent'; do
+  grep -Fq "$codex_metric" "$ROOT/crates/server/src/http.rs" \
+    || { printf 'engine does not export %s\n' "$codex_metric" >&2; exit 1; }
+  grep -Fq "$codex_metric" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'no alert rule consumes %s\n' "$codex_metric" >&2; exit 1; }
+done
+for codex_alert in CodexProviderDown CodexNoAvailableHomes CodexHomeUnauthenticated \
+  CodexHomeNearRateLimit; do
+  grep -Fq "alert: $codex_alert" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'missing Codex alert %s\n' "$codex_alert" >&2; exit 1; }
+  anchor=$(printf '%s' "$codex_alert" | tr '[:upper:]' '[:lower:]')
+  grep -Fq "MONITORING.md#$anchor" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'alert %s has no runbook anchor\n' "$codex_alert" >&2; exit 1; }
+  grep -Fqi "## $codex_alert" "$ROOT/MONITORING.md" \
+    || { printf 'MONITORING.md has no runbook section for %s\n' "$codex_alert" >&2; exit 1; }
+done
+# Alerting on a disabled provider would page for a surface nobody is serving.
+for gated_alert in CodexProviderDown CodexNoAvailableHomes; do
+  grep -F "alert: $gated_alert" -A 2 "$ROOT/observability/prometheus/rules/application.yml" \
+    | grep -Fq 'claude_api_codex_enabled == 1' \
+    || { printf '%s is not gated on the provider being enabled\n' "$gated_alert" >&2; exit 1; }
+done
+
 # A missing status file must read as stale, never as a fresh zero.
 grep -Fq 'WATCHDOG_STATUS_MISSING_AGE_SECONDS=86400' "$ROOT/deploy/collect-monitoring-metrics.sh" \
   || { printf 'a missing watchdog status must report a stale age\n' >&2; exit 1; }

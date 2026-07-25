@@ -23,7 +23,12 @@ database state only. Grafana users are auto-provisioned as viewers.
   own state — quarantine, status freshness, current phase, and uncommitted-migration marker — so a
   failed or stalled deployment pages the operator instead of waiting to be noticed in GitHub.
 - Logs: host journald in Loki for 14 days. Prometheus metrics are retained for 30 days or 24 GB,
-  whichever limit is reached first.
+  whichever limit is reached first. The journal itself is persistent and bounded by
+  `systemd/journald-apitoken.conf` (8 GB, 90 days); without that drop-in journald falls back to
+  `Storage=auto`, which put the journal in tmpfs and discarded it on every reboot. Caddy's active
+  health-check logger is excluded in `deploy/Caddyfile`: blue-green keeps one slot of each pair
+  stopped on purpose, so those probes failed once per second forever and drowned out real entries.
+  `ProxyUpstreamPairDown` covers the condition those lines were nominally reporting.
 
 The Grafana and telemetry volumes are not business records. Dashboards and alert rules are
 provisioned from Git, so telemetry can be rebuilt. The four PostgreSQL custom-format dumps remain
@@ -90,6 +95,28 @@ a networking error.
 Run the failing URL locally with `curl --resolve <host>:443:127.0.0.1`. Check Caddy and the named
 upstream unit. A protected endpoint must return 401 without credentials; a 200 is an authentication
 bypass and should be treated as a security incident.
+
+## ProxyUpstreamPairDown
+
+Both slots of a blue-green pair are failing their Caddy health check, so the stable loopback origin
+(`127.0.0.1:8790` for the engine, `127.0.0.1:8791` for the commerce API) has nothing to route to.
+
+Exactly one slot per pair is supposed to be running — the other is stopped and disabled by the
+blue-green controller — so this alert means the *serving* slot died, not that a spare is idle.
+
+```bash
+systemctl is-active claude-api@8787.service claude-api@8788.service
+systemctl is-active apitoken-api@3000.service apitoken-api@3001.service
+curl -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8790/ready
+curl -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8791/v1/ready
+sudo apitoken-watchdog status
+```
+
+The watchdog reconverges the engine pair on its next idle cycle through the readiness-gated
+controller. If it cannot, recover the slot manually with `deploy/engine-bluegreen.sh` (engine) or
+`deploy/api-bluegreen.sh` (commerce API). Caddy no longer logs individual failed health probes —
+that logger is excluded because a stopped slot is expected state — so use the unit journals and
+`caddy_reverse_proxy_upstreams_healthy` rather than looking for proxy log lines.
 
 ## CertificateExpiresSoon
 
@@ -187,6 +214,38 @@ cascading damage while the condition persists.
 Check `apitoken-affinity-redis.service`, its container health and disk space. Engine traffic is
 intentionally fail-open on local affinity, so restore Redis without restarting healthy engine slots;
 expect only a temporary reduction in cross-slot prompt-cache hits.
+
+## CodexProviderDown
+
+Only the OpenAI-compatible surface is affected; Claude routing is independent. Check
+`claude_api_codex_home_process_live` per home to see whether every child failed or only one.
+Restarting a child is automatic and lazy, so a persistent zero means the binary attestation, the
+`CODEX_HOME` permissions, or the pinned version no longer matches `docs/CODEX_APP_SERVER.md`. Do not
+edit the pinned build on the host; correct it with a commit and let the watchdog rebuild the slot.
+`CLAUDE_API_CODEX_ENABLED=0` is the provider-only kill switch if the surface must be withdrawn while
+the cause is investigated.
+
+## CodexNoAvailableHomes
+
+Every home is cooling or outside its window headroom, so clients are being told to retry. Read
+`claude_api_codex_home_cooling_until_seconds` and `claude_api_codex_home_rate_limit_used_percent` to
+tell a subscription-limit outage (windows genuinely exhausted — wait for the reset or add a home)
+from an authentication outage (`claude_api_codex_home_authenticated == 0` — re-run the device flow).
+Never bypass cooling: hammering a limited or rejected ChatGPT profile is a ban signal.
+
+## CodexHomeUnauthenticated
+
+That home's device login expired or was revoked. Re-authenticate exactly as
+`docs/CODEX_APP_SERVER.md` describes, as the unprivileged engine user and against that home's own
+`CODEX_HOME`. Never copy, print or archive an auth store, and never point two homes at one store. The
+health probe clears the quarantine on its own once `account/read` passes again; no restart is needed.
+
+## CodexHomeNearRateLimit
+
+The home stops being admitted at `CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT` (95% by default), which
+is expected behaviour rather than a fault. Confirm the remaining homes can absorb the load before the
+window is reached; if they cannot, the pool needs another authenticated home rather than a lower
+headroom.
 
 ## DurableQueueBacklog
 
