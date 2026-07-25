@@ -293,6 +293,15 @@ grep -Fq 'COMMERCE_BALANCER_URL=${COMMERCE_BALANCER_URL:-http://127.0.0.1:8791}'
 grep -Fq 'configure_commerce_balancer' "$ROOT/deploy/sales-deploy.sh"
 grep -Fq 'COMMERCE_BALANCER_READY_URL=${COMMERCE_BALANCER_READY_URL:-http://127.0.0.1:8791/v1/ready}' "$ROOT/deploy/api-bluegreen.sh"
 [[ $(grep -Fc 'balancer_is_ready' "$ROOT/deploy/api-bluegreen.sh") -ge 6 ]]
+# The disposable test database publishes a fixed host port. It must sit below the kernel ephemeral
+# range, or an unrelated outbound connection can be assigned that exact source port and the container
+# fails to bind — which quarantines a healthy candidate for reasons that have nothing to do with it.
+test_db_port=$(sed -n 's/^PORT=${WATCHDOG_POSTGRES_PORT:-\([0-9]*\)}$/\1/p' "$ROOT/deploy/watchdog-test-db.sh")
+[[ -n $test_db_port ]] \
+  || wd_die "could not read the disposable test database port"
+(( test_db_port < 32768 )) \
+  || wd_die "test database port $test_db_port is inside the ephemeral range and will collide"
+
 grep -Fq 'final_verify_admin_panel' "$ROOT/deploy/watchdog.sh"
 # The panel check runs immediately after cutover, while the stable listener still round-robins the
 # retiring slot. It must require a streak of current answers rather than accepting the first one,
