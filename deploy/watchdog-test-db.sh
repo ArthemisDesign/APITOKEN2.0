@@ -6,7 +6,12 @@ set -euo pipefail
 
 NAME=apitoken-watchdog-postgres
 IMAGE=${WATCHDOG_POSTGRES_IMAGE:-postgres:18-alpine}
-PORT=${WATCHDOG_POSTGRES_PORT:-55432}
+# Must stay BELOW the kernel ephemeral range (net.ipv4.ip_local_port_range, 32768-60999 here).
+# The previous 55432 sat inside it, so any outbound loopback connection could be handed that exact
+# source port and the container then failed to bind with "address already in use". That is what
+# quarantined d3a3698 twice on 2026-07-25: Caddy's keep-alive to engine slot 8787 held
+# 127.0.0.1:55432 while the test database tried to publish it.
+PORT=${WATCHDOG_POSTGRES_PORT:-15432}
 USER_NAME=watchdog
 DATABASE=watchdog
 ENGINE_DATABASE=watchdog_engine
