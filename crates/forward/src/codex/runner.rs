@@ -107,7 +107,7 @@ impl CodexGateway {
         updates: Option<mpsc::Sender<TurnUpdate>>,
     ) -> Result<CodexTurnResult, ProcessError> {
         let emitted = Arc::new(AtomicBool::new(false));
-        let mut tried = Vec::new();
+        let mut tried: Vec<String> = Vec::new();
         let mut transport_retries_left = 1usize;
         let mut last_error: Option<ProcessError> = None;
         loop {
@@ -122,7 +122,7 @@ impl CodexGateway {
                     }));
                 }
             };
-            tried.push(home.index());
+            tried.push(home.id().to_string());
             let result = home
                 .run_turn(request.clone(), updates.clone(), &emitted, permit)
                 .await;
@@ -873,6 +873,7 @@ done
             binary_sha256: digest,
             expected_version: "codex-cli test".to_string(),
             homes: vec![root.to_str().unwrap().to_string()],
+            homes_dir: None,
             work_dir: root.to_str().unwrap().to_string(),
             // The workspace test runner executes several fake child processes in parallel.
             // Leave enough scheduler headroom for the digest + version preflight under CI load;
@@ -924,6 +925,7 @@ done
             binary_sha256: digest,
             expected_version: "codex-cli test".to_string(),
             homes,
+            homes_dir: Some(root.join("pool").to_str().unwrap().to_string()),
             work_dir: root.to_str().unwrap().to_string(),
             startup_timeout_ms: 10_000,
             request_timeout_ms: 2_000,
@@ -1187,6 +1189,65 @@ done
             }
         ));
         assert!(!error.to_string().contains("sensitive upstream diagnostic"));
+    }
+
+    /// A purchased account must start serving without a restart, a config edit or root — that is
+    /// the whole point of scanning a directory instead of listing homes in the environment.
+    #[tokio::test]
+    async fn an_account_finished_after_startup_joins_the_live_pool() {
+        let (gateway, workspace, _logs) = fake_pool_gateway(&["text"]);
+        gateway.preflight().await.unwrap();
+        assert_eq!(gateway.operational_status().await.homes.len(), 1);
+
+        // The authbot creates the directory first and authenticates it a moment later. While the
+        // device flow is outstanding the home must stay invisible, or requests would be routed to
+        // an account nobody has finished buying.
+        let pool_dir = workspace.root.join("pool");
+        std::fs::create_dir_all(&pool_dir).unwrap();
+        let bought = pool_dir.join("acct-new");
+        std::fs::create_dir_all(&bought).unwrap();
+        std::fs::write(bought.join("mode"), b"text").unwrap();
+        gateway.rediscover().await;
+        assert_eq!(
+            gateway.operational_status().await.homes.len(),
+            1,
+            "a half-finished purchase must not join the pool"
+        );
+
+        std::fs::write(bought.join("auth.json"), b"{}").unwrap();
+        gateway.rediscover().await;
+        let status = gateway.operational_status().await;
+        assert_eq!(status.homes.len(), 2, "the finished account joined the pool");
+
+        // And it can actually serve: the new home starts its own attested child on demand.
+        let result = gateway
+            .run_turn(turn_request(test_model()), None)
+            .await
+            .unwrap();
+        assert_eq!(result.usage.input_tokens, 101);
+    }
+
+    /// Removing a directory retires the account; an unreadable scan must never empty the pool.
+    #[tokio::test]
+    async fn a_removed_account_leaves_the_pool_but_a_failed_scan_never_empties_it() {
+        let (gateway, workspace, _logs) = fake_pool_gateway(&["text"]);
+        let pool_dir = workspace.root.join("pool");
+        std::fs::create_dir_all(&pool_dir).unwrap();
+        let bought = pool_dir.join("acct-temp");
+        std::fs::create_dir_all(&bought).unwrap();
+        std::fs::write(bought.join("mode"), b"text").unwrap();
+        std::fs::write(bought.join("auth.json"), b"{}").unwrap();
+        gateway.rediscover().await;
+        assert_eq!(gateway.operational_status().await.homes.len(), 2);
+
+        std::fs::remove_dir_all(&bought).unwrap();
+        gateway.rediscover().await;
+        assert_eq!(gateway.operational_status().await.homes.len(), 1);
+
+        // The explicit home has no directory to scan away, so the pool keeps serving from it.
+        std::fs::remove_dir_all(&pool_dir).unwrap();
+        gateway.rediscover().await;
+        assert_eq!(gateway.operational_status().await.homes.len(), 1);
     }
 
     #[tokio::test]

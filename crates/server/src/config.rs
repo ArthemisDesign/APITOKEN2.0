@@ -198,6 +198,25 @@ fn codex_homes() -> Vec<String> {
     homes
 }
 
+/// Directory scanned for profiles the authbot has finished buying.
+///
+/// Defaulted rather than required: the pool directory simply may not exist yet, which reads as an
+/// empty pool. Set it to an empty value to disable discovery and pin the pool to the explicit list.
+fn codex_homes_dir() -> Option<String> {
+    let configured = ev_or(
+        "CLAUDE_API_CODEX_HOMES_DIR",
+        "/srv/claude-api/data/codex-homes",
+    );
+    let configured = configured.trim().to_string();
+    if configured.is_empty() {
+        return None;
+    }
+    if !std::path::Path::new(&configured).is_absolute() {
+        panic!("CLAUDE_API_CODEX_HOMES_DIR must be an absolute path");
+    }
+    Some(configured)
+}
+
 fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Option<CodexConfig> {
     if !ev_bool("CLAUDE_API_CODEX_ENABLED", false) {
         return None;
@@ -259,6 +278,7 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
         }),
         expected_version: ev_or("CLAUDE_API_CODEX_VERSION", "codex-cli 0.145.0"),
         homes: codex_homes(),
+        homes_dir: codex_homes_dir(),
         work_dir: ev_or(
             "CLAUDE_API_CODEX_WORK_DIR",
             "/srv/claude-api/data/codex/work",

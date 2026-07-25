@@ -1,6 +1,6 @@
 //! Multiplexed newline-delimited JSON-RPC transport for `codex app-server`.
 
-use super::CodexConfig;
+use super::{CodexConfig, CodexHomeSpec};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
@@ -211,12 +211,12 @@ pub struct CodexProcess {
 impl CodexProcess {
     /// Start one supervised child bound to exactly one authenticated `CODEX_HOME`. Every home in
     /// the pool runs its own attested child; they share nothing but the pinned binary.
-    pub async fn spawn(cfg: Arc<CodexConfig>, home: &str) -> Result<Self, ProcessError> {
-        validate_config(&cfg, home)?;
+    pub async fn spawn(cfg: Arc<CodexConfig>, spec: &CodexHomeSpec) -> Result<Self, ProcessError> {
+        validate_config(&cfg, &spec.path)?;
         verify_binary_digest(&cfg).await?;
-        verify_version(&cfg, home).await?;
+        verify_version(&cfg, &spec.path).await?;
 
-        let mut command = child_command(&cfg, home);
+        let mut command = child_command(&cfg, spec);
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -583,17 +583,38 @@ async fn verify_version(cfg: &CodexConfig, home: &str) -> Result<(), ProcessErro
     Ok(())
 }
 
-fn child_command(cfg: &CodexConfig, home: &str) -> Command {
+fn child_command(cfg: &CodexConfig, spec: &CodexHomeSpec) -> Command {
     let mut command = Command::new(&cfg.binary);
     command
         .env_clear()
-        .env("CODEX_HOME", home)
+        .env("CODEX_HOME", &spec.path)
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
         .env("NO_COLOR", "1")
         .env("TERM", "dumb")
         .current_dir(&cfg.work_dir);
-    for (name, value) in &cfg.child_proxy_env {
-        command.env(name, value);
+    match &spec.proxy {
+        // A dedicated egress for this account. One address serving every ChatGPT profile is itself
+        // a fleet signal, exactly as it is on the Claude side. Only the standard proxy variables
+        // are set — no TLS or user-agent impersonation is added, so this changes where the official
+        // client connects from and nothing about how it identifies itself.
+        Some(proxy) => {
+            for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+                command.env(name, proxy);
+            }
+            for name in ["http_proxy", "https_proxy", "all_proxy"] {
+                command.env(name, proxy);
+            }
+            // The shared NO_PROXY still applies: it carves out destinations, it does not select one.
+            if let Some(no_proxy) = cfg.child_proxy_env.get("NO_PROXY") {
+                command.env("NO_PROXY", no_proxy);
+                command.env("no_proxy", no_proxy);
+            }
+        }
+        None => {
+            for (name, value) in &cfg.child_proxy_env {
+                command.env(name, value);
+            }
+        }
     }
     // Keep model-visible context as close to a normal API call as app-server permits. The pinned
     // build additionally disables built-in native tools for this client name; customer functions

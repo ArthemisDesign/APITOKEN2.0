@@ -7,22 +7,23 @@ mod api;
 mod billing;
 mod chat;
 mod config;
+mod discovery;
 mod history;
 mod process;
 mod runner;
 
 pub use api::{model as openai_model, models as openai_models, responses as openai_responses};
 pub use chat::completions as openai_chat_completions;
-pub use config::{CodexConfig, CodexModel, CodexPrices};
+pub use config::{CodexConfig, CodexHomeSpec, CodexModel, CodexPrices};
 pub use history::{HistoryError, StoredHistory};
 pub(crate) use process::{AppServerEvent, CodexProcess, ProcessError};
 pub use process::{CodexRateLimitWindow, CodexRateLimits};
 pub(crate) use runner::{CodexTurnRequest, CodexTurnResult, CodexUsage, TurnUpdate};
 
 use history::HistoryStore;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 
 /// A home whose device login no longer authenticates is quarantined rather than retried in a hot
 /// loop: repeatedly hammering a rejected profile is both useless and a ban signal. It matches the
@@ -51,7 +52,8 @@ pub(crate) fn new_id(prefix: &str) -> String {
 /// path or account identity: metrics and logs must not carry customer or subscription identity.
 #[derive(Clone, Debug)]
 pub struct CodexHomeStatus {
-    pub index: usize,
+    /// Stable, non-identifying id. Never a path and never an account identity.
+    pub id: String,
     pub process_live: bool,
     pub auth_ok: bool,
     pub cooling_until: i64,
@@ -75,9 +77,12 @@ pub struct CodexOperationalStatus {
 
 /// One authenticated `CODEX_HOME` and the child that serves it.
 pub(crate) struct CodexHome {
-    index: usize,
+    spec: CodexHomeSpec,
+    /// Position in the discovered pool: explicit homes first, then scanned ones in name order.
+    /// Only a tie-break for selection, so it may be renumbered freely as the pool changes; the
+    /// stable identity used for labels is `spec.id`.
+    order: AtomicUsize,
     cfg: Arc<CodexConfig>,
-    home: String,
     process: Mutex<Option<Arc<CodexProcess>>>,
     process_start: Mutex<()>,
     turns: Arc<Semaphore>,
@@ -88,12 +93,12 @@ pub(crate) struct CodexHome {
 }
 
 impl CodexHome {
-    fn new(index: usize, cfg: Arc<CodexConfig>, home: String) -> Self {
+    fn new(cfg: Arc<CodexConfig>, spec: CodexHomeSpec, order: usize) -> Self {
         let max_turns = cfg.max_concurrent_turns.max(1);
         Self {
-            index,
+            spec,
+            order: AtomicUsize::new(order),
             cfg,
-            home,
             process: Mutex::new(None),
             process_start: Mutex::new(()),
             turns: Arc::new(Semaphore::new(max_turns)),
@@ -103,8 +108,17 @@ impl CodexHome {
         }
     }
 
-    pub(crate) fn index(&self) -> usize {
-        self.index
+    /// Stable, non-identifying id used in logs and metric labels.
+    pub(crate) fn id(&self) -> &str {
+        &self.spec.id
+    }
+
+    fn path(&self) -> &str {
+        &self.spec.path
+    }
+
+    fn order(&self) -> usize {
+        self.order.load(Ordering::Relaxed)
     }
 
     fn config(&self) -> &CodexConfig {
@@ -163,7 +177,8 @@ impl CodexHome {
             }
         }
 
-        let process = Arc::new(CodexProcess::spawn(self.cfg.clone(), &self.home).await?);
+        let process =
+            Arc::new(CodexProcess::spawn(self.cfg.clone(), &self.spec).await?);
         *self.process.lock().await = Some(process.clone());
         Ok(process)
     }
@@ -221,7 +236,7 @@ impl CodexHome {
         let _ = admit_below_percent;
         let _ = now;
         CodexHomeStatus {
-            index: self.index,
+            id: self.spec.id.clone(),
             process_live: process.is_some(),
             auth_ok: self.auth_ok.load(Ordering::Relaxed),
             cooling_until: self.cooling_until(),
@@ -257,7 +272,9 @@ enum HomeSelection {
 /// are recovered lazily. Existing Claude routing is completely independent when Codex is disabled.
 pub struct CodexGateway {
     cfg: Arc<CodexConfig>,
-    homes: Vec<Arc<CodexHome>>,
+    /// Rediscovered on every health tick, so an account the authbot finishes buying joins the pool
+    /// without a restart. Readers take a snapshot; the lock is never held across a turn.
+    homes: RwLock<Vec<Arc<CodexHome>>>,
     history: Arc<HistoryStore>,
 }
 
@@ -270,21 +287,69 @@ impl CodexGateway {
             cfg.history_local_cap,
             cfg.history_redis_timeout_ms,
         )?;
-        if cfg.homes.is_empty() {
-            anyhow::bail!("Codex provider requires at least one authenticated CODEX_HOME");
+        if cfg.homes.is_empty() && cfg.homes_dir.is_none() {
+            anyhow::bail!(
+                "Codex provider requires at least one authenticated CODEX_HOME or a homes directory"
+            );
         }
         let cfg = Arc::new(cfg);
-        let homes = cfg
-            .homes
-            .iter()
+        let specs = discovery::discover(&cfg.homes, cfg.homes_dir.as_deref());
+        if specs.is_empty() {
+            anyhow::bail!("Codex provider found no authenticated CODEX_HOME to serve from");
+        }
+        let homes = specs
+            .into_iter()
             .enumerate()
-            .map(|(index, home)| Arc::new(CodexHome::new(index, cfg.clone(), home.clone())))
+            .map(|(order, spec)| Arc::new(CodexHome::new(cfg.clone(), spec, order)))
             .collect();
         Ok(Self {
             cfg,
-            homes,
+            homes: RwLock::new(homes),
             history: Arc::new(history),
         })
+    }
+
+    /// Snapshot of the current pool.
+    async fn homes(&self) -> Vec<Arc<CodexHome>> {
+        self.homes.read().await.clone()
+    }
+
+    /// Reconcile the pool with what is on disk.
+    ///
+    /// An existing home keeps its live child and its cooling/auth state — rediscovery must never
+    /// reset a quarantine or drop a warm process. A home whose directory disappeared leaves the
+    /// pool; its child is dropped and killed with it.
+    async fn rediscover(&self) {
+        let specs = discovery::discover(&self.cfg.homes, self.cfg.homes_dir.as_deref());
+        let mut homes = self.homes.write().await;
+        let mut next: Vec<Arc<CodexHome>> = Vec::with_capacity(specs.len());
+        for (order, spec) in specs.into_iter().enumerate() {
+            match homes.iter().find(|home| home.path() == spec.path) {
+                // Keep the live instance. A changed proxy only takes effect on the next child
+                // start, which is correct: restarting a healthy child to re-read egress would
+                // interrupt in-flight turns.
+                Some(existing) => {
+                    existing.order.store(order, Ordering::Relaxed);
+                    next.push(existing.clone());
+                }
+                None => {
+                    eprintln!("Codex home {} joined the pool", spec.id);
+                    next.push(Arc::new(CodexHome::new(self.cfg.clone(), spec, order)));
+                }
+            }
+        }
+        for gone in homes.iter() {
+            if !next.iter().any(|home| home.path() == gone.path()) {
+                eprintln!("Codex home {} left the pool", gone.id());
+            }
+        }
+        if next.is_empty() {
+            // Never empty the pool from a scan: a transient unreadable directory would otherwise
+            // take the whole provider down while the previous homes were still serving.
+            eprintln!("Codex rediscovery found no homes; keeping the current pool");
+            return;
+        }
+        *homes = next;
     }
 
     pub fn config(&self) -> &CodexConfig {
@@ -304,13 +369,14 @@ impl CodexGateway {
     /// Preference order is lowest observed window utilisation, then fewest in-flight turns. That
     /// spreads load away from a subscription approaching its limit before it hits one, instead of
     /// discovering the wall mid-turn.
-    async fn select_home(&self, exclude: &[usize]) -> HomeSelection {
+    async fn select_home(&self, exclude: &[String]) -> HomeSelection {
         let now = pool::now();
         let admit_below = self.admit_below_percent();
-        let mut candidates = Vec::with_capacity(self.homes.len());
+        let pool_homes = self.homes().await;
+        let mut candidates = Vec::with_capacity(pool_homes.len());
         let mut soonest: Option<i64> = None;
-        for home in &self.homes {
-            if exclude.contains(&home.index) {
+        for home in &pool_homes {
+            if exclude.iter().any(|id| id == home.id()) {
                 continue;
             }
             if home.is_cooling(now) {
@@ -323,13 +389,15 @@ impl CodexGateway {
                 soonest = Some(soonest.map_or(ready_at, |v: i64| v.min(ready_at)));
                 continue;
             }
-            let used = limits.and_then(|limits| limits.max_used_percent()).unwrap_or(0);
+            let used = limits
+                .and_then(|limits: CodexRateLimits| limits.max_used_percent())
+                .unwrap_or(0);
             candidates.push((used, home.inflight(), home.clone()));
         }
         if candidates.is_empty() {
             return HomeSelection::Unavailable { ready_at: soonest };
         }
-        candidates.sort_by_key(|(used, inflight, home)| (*used, *inflight, home.index));
+        candidates.sort_by_key(|(used, inflight, home)| (*used, *inflight, home.order()));
         for (_, _, home) in candidates {
             if let Some(permit) = home.try_acquire_turn() {
                 return HomeSelection::Ready(home, permit);
@@ -342,8 +410,9 @@ impl CodexGateway {
     pub(crate) async fn any_process(&self) -> Result<Arc<CodexProcess>, ProcessError> {
         let now = pool::now();
         let mut last_error = ProcessError::Closed;
-        let mut ordered: Vec<_> = self.homes.iter().collect();
-        ordered.sort_by_key(|home| (home.is_cooling(now), home.index));
+        let pool_homes = self.homes().await;
+        let mut ordered: Vec<_> = pool_homes.iter().collect();
+        ordered.sort_by_key(|home| (home.is_cooling(now), home.order()));
         for home in ordered {
             match home.process().await {
                 Ok(process) => return Ok(process),
@@ -367,7 +436,8 @@ impl CodexGateway {
     pub async fn preflight(&self) -> anyhow::Result<()> {
         let mut healthy = 0usize;
         let mut last_class = "closed";
-        for home in &self.homes {
+        let pool_homes = self.homes().await;
+        for home in &pool_homes {
             match home.process().await {
                 Ok(_) => {
                     home.mark_healthy();
@@ -376,20 +446,17 @@ impl CodexGateway {
                 Err(error) => {
                     last_class = error.diagnostic_class();
                     home.note_process_error(&error);
-                    eprintln!(
-                        "Codex home {} failed preflight [{}]",
-                        home.index, last_class
-                    );
+                    eprintln!("Codex home {} failed preflight [{}]", home.id(), last_class);
                 }
             }
         }
         if healthy == 0 {
             anyhow::bail!("Codex app-server preflight failed [{last_class}]");
         }
-        if healthy < self.homes.len() {
+        if healthy < pool_homes.len() {
             eprintln!(
                 "Codex provider starting with {healthy}/{} authenticated homes",
-                self.homes.len()
+                pool_homes.len()
             );
         }
         Ok(())
@@ -401,7 +468,10 @@ impl CodexGateway {
     /// otherwise stay silently dead until the pool needed it. Quarantined homes are probed too, so
     /// a re-authenticated profile returns to service without a restart.
     pub async fn probe_health(&self) {
-        for home in &self.homes {
+        // Pick up accounts finished since the last tick before probing, so a new home is health
+        // checked on the same pass that admits it.
+        self.rediscover().await;
+        for home in &self.homes().await {
             let process = match home.process().await {
                 Ok(process) => process,
                 Err(error) => {
@@ -424,10 +494,11 @@ impl CodexGateway {
     pub async fn operational_status(&self) -> CodexOperationalStatus {
         let now = pool::now();
         let admit_below = self.admit_below_percent();
-        let mut homes = Vec::with_capacity(self.homes.len());
+        let pool_homes = self.homes().await;
+        let mut homes = Vec::with_capacity(pool_homes.len());
         let mut available = 0usize;
         let mut soonest: Option<i64> = None;
-        for home in &self.homes {
+        for home in &pool_homes {
             let status = home.status(admit_below, now).await;
             let usable = !home.is_cooling(now)
                 && CodexHome::within_headroom(status.rate_limits.as_ref(), admit_below);

@@ -31,6 +31,20 @@ impl CodexModel {
     }
 }
 
+/// One authenticated profile in the pool, as discovered on disk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodexHomeSpec {
+    /// Absolute path used as the child's `CODEX_HOME`.
+    pub path: String,
+    /// Stable, non-identifying id used in logs and metric labels. Derived from the directory name,
+    /// so it survives restarts and does not shift when another home is added or removed — and it
+    /// never carries the account's identity.
+    pub id: String,
+    /// Optional dedicated egress for this account's child, read from the home. `None` falls back to
+    /// the gateway-wide proxy environment.
+    pub proxy: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct CodexConfig {
     pub enabled: bool,
@@ -40,11 +54,13 @@ pub struct CodexConfig {
     pub binary_sha256: String,
     /// Exact `codex --version` output expected from the pinned build.
     pub expected_version: String,
-    /// Dedicated authenticated profiles, in configured order. Each becomes one supervised child
-    /// with its own `CODEX_HOME`, its own health state and its own subscription window. Homes are
-    /// referred to by index everywhere else so that no path or account identity reaches a log or a
-    /// metric label.
+    /// Explicitly configured profiles. Each becomes one supervised child with its own `CODEX_HOME`,
+    /// its own health state and its own subscription window.
     pub homes: Vec<String>,
+    /// Directory scanned for additional profiles, so an account purchased by the authbot joins the
+    /// pool without a restart, a config edit or root. A subdirectory counts only once it holds a
+    /// completed auth store; a half-finished purchase is invisible to the pool.
+    pub homes_dir: Option<String>,
     /// Empty, non-sensitive working directory used for ephemeral API threads.
     pub work_dir: String,
     pub startup_timeout_ms: u64,

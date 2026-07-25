@@ -1030,6 +1030,7 @@ mod tests {
             binary_sha256: "0".repeat(64),
             expected_version: "codex-cli test".to_string(),
             homes: vec!["/tmp/home".to_string()],
+            homes_dir: None,
             work_dir: "/tmp/work".to_string(),
             startup_timeout_ms: 1,
             request_timeout_ms: 1,

@@ -453,7 +453,7 @@ async fn metrics(
              # TYPE claude_api_codex_home_rate_limit_used_percent gauge"
         );
         for home in &status.homes {
-            let index = home.index;
+            let index = &home.id;
             let _ = writeln!(
                 body,
                 "claude_api_codex_home_process_live{{home=\"{index}\"}} {}\n\
