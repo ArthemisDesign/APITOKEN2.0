@@ -180,31 +180,40 @@ validate_engine_stage() {
   [[ -x "$directory/authbot" ]] || die "staged authbot binary is missing: $directory/authbot"
 }
 
-# Restart the subscription bot only when its binary actually changed.
+# Restart the subscription bot only when the binary it is running differs from the one just shipped.
 #
-# A restart drops any device-authorization the bot is walking a seller through — those sessions are
-# live child processes, not database rows — so restarting it on every unrelated engine deploy would
-# randomly break purchases in progress. Comparing the shipped binaries makes the restart happen
-# exactly when there is a new bot to run.
+# A restart drops any device authorization the bot is walking a seller through — those sessions are
+# live child processes, not database rows — so restarting on every unrelated engine deploy would
+# break purchases in progress for no reason. Comparing against the RUNNING process rather than the
+# previous release is what makes this both correct and self-healing: a release path changes on every
+# deploy even when the bot is byte-identical, and conversely a bot left behind by an earlier failure
+# must be picked up even though the last two releases agree.
 #
 # A bot that fails to restart does not justify rolling back an engine release: it produces
 # subscriptions, it does not serve requests. Report it loudly and let the deployment stand.
 restart_authbot_if_changed() {
-  local previous=$1 current=$2
+  local current=$1
   local unit=claude-authbot.service
   if [[ "$DRY_RUN" == "1" ]]; then
-    log "dry-run: would compare $previous/authbot with $current/authbot and restart $unit if it changed"
+    log "dry-run: would restart $unit unless it already runs $current/authbot"
     return 0
   fi
-  if ! privileged_command test -f "/etc/systemd/system/$unit"; then
+  # Unit files are world-readable; asking for this under sudo only earns a policy denial that
+  # would look exactly like "the unit is absent".
+  if [[ ! -f "/etc/systemd/system/$unit" ]]; then
     log "$unit is not installed on this host; skipping the authbot restart"
     return 0
   fi
-  if [[ -n "$previous" && -x "$previous/authbot" ]] && cmp -s "$previous/authbot" "$current/authbot"; then
-    log "authbot binary is unchanged; leaving $unit and any in-flight authorization alone"
-    return 0
+  local pid exe
+  pid=$(systemctl show "$unit" -p MainPID --value 2>/dev/null || true)
+  if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+    exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)
+    if [[ -n "$exe" && -f "$exe" ]] && cmp -s "$exe" "$current/authbot"; then
+      log "authbot already runs this exact binary; leaving $unit and any in-flight authorization alone"
+      return 0
+    fi
   fi
-  log "authbot binary changed; restarting $unit"
+  log "restarting $unit onto the freshly released authbot"
   if ! privileged_command systemctl restart "$unit"; then
     log "WARNING: $unit did not restart; the pool will not be replenished until it is fixed"
   fi
@@ -569,7 +578,7 @@ activate_release_links() {
   fi
 
   if [[ "$DEPLOY_ENGINE" == "1" ]]; then
-    restart_authbot_if_changed "$ENGINE_ORIGINAL" "$ENGINE_RELEASE"
+    restart_authbot_if_changed "$ENGINE_RELEASE"
   fi
 
   if [[ "$DRY_RUN" != "1" ]]; then

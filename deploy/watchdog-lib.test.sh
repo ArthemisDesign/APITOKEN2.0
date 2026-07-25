@@ -318,8 +318,12 @@ grep -Fq '/usr/bin/systemctl restart claude-authbot.service' "$ROOT/deploy/sudoe
   || wd_die "the deploy user cannot restart the authbot"
 # Restarting on every engine deploy would kill a device authorization the bot is walking a seller
 # through, so the restart must stay conditional on the binary actually changing.
-grep -Fq 'cmp -s "$previous/authbot" "$current/authbot"' "$ROOT/deploy/deploy.sh" \
-  || wd_die "the authbot restart must be conditional on a changed binary"
+grep -Fq 'cmp -s "$exe" "$current/authbot"' "$ROOT/deploy/deploy.sh" \
+  || wd_die "the authbot restart must compare the running binary, not release paths"
+# Asking for a world-readable unit file under sudo earns a policy denial that is indistinguishable
+# from the unit being absent — which is exactly how the first attempt silently skipped the restart.
+! grep -Fq 'privileged_command test -f "/etc/systemd/system/$unit"' "$ROOT/deploy/deploy.sh" \
+  || wd_die "the authbot unit check must not require sudo"
 
 grep -Fq 'final_verify_admin_panel' "$ROOT/deploy/watchdog.sh"
 # The panel check runs immediately after cutover, while the stable listener still round-robins the
