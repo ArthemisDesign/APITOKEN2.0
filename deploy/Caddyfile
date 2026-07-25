@@ -25,6 +25,15 @@
 			request>headers>X-Sales-Admin-Key replace REDACTED
 			request>headers>X-Crm-Ingest-Key replace REDACTED
 		}
+
+		# Blue-green keeps exactly one slot of each pair stopped and disabled, but both slots stay
+		# listed as upstreams so either can serve. The active health checker therefore polls a
+		# deliberately dead address every 2s forever and logs a "connection refused" INFO line each
+		# time — a steady 1 line/s that was 98% of everything matching the journal error panel and
+		# ~44% of all journal lines. Drop the logger entirely; a stopped slot is expected state, and
+		# a genuinely dead pair is caught by the ProxyUpstreamPairDown alert on
+		# caddy_reverse_proxy_upstreams_healthy, which is a stronger signal than these lines were.
+		exclude http.handlers.reverse_proxy.health_checker.active
 	}
 }
 

@@ -22,6 +22,25 @@ groups:
           description: 'The HTTP/TLS probe for {{ $labels.instance }} has failed for more than two minutes.'
           runbook: 'MONITORING.md#publicendpointdown'
 
+      # Caddy's active health checker no longer logs failed probes: blue-green keeps one slot of each
+      # pair deliberately stopped, so those lines were constant noise and are excluded in the
+      # Caddyfile. Alert on the condition that actually matters instead — every slot of a pair
+      # unhealthy at once, which means the stable loopback origin has nothing left to route to.
+      # A normal cutover admits the new slot before draining the old one, so the sum never
+      # legitimately reaches zero.
+      - alert: ProxyUpstreamPairDown
+        expr: |
+          (sum(caddy_reverse_proxy_upstreams_healthy{upstream=~"127\\.0\\.0\\.1:(8787|8788)"}) == 0)
+          or (sum(caddy_reverse_proxy_upstreams_healthy{upstream=~"127\\.0\\.0\\.1:(3000|3001)"}) == 0)
+        for: 2m
+        labels:
+          severity: critical
+          component: ingress
+        annotations:
+          summary: 'Every slot of a blue-green upstream pair is unhealthy'
+          description: 'No engine (8787/8788) or commerce API (3000/3001) slot has passed its Caddy health check for more than two minutes.'
+          runbook: 'MONITORING.md#proxyupstreampairdown'
+
       - alert: CertificateExpiresSoon
         expr: (probe_ssl_earliest_cert_expiry{job=~"public-http|protected-http|support-http"} - time()) < 14 * 24 * 3600
         for: 15m

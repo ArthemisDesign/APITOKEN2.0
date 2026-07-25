@@ -283,6 +283,11 @@ grep -Fq 'copy_headers X-Admin-Actor X-Admin-Account-Id' "$ROOT/deploy/Caddyfile
 ! grep -Fq 'fail_duration' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'max_fails' "$ROOT/deploy/Caddyfile"
 grep -Fq 'request>headers>X-Admin-Key replace REDACTED' "$ROOT/deploy/Caddyfile"
+# Both slots of each pair stay listed as upstreams while exactly one runs, so the active health
+# checker fails against a deliberately stopped address once every two seconds forever. Excluding
+# that logger is what keeps the journal and the Grafana error panel readable; losing the line
+# silently reintroduces roughly one junk entry per second.
+[[ $(grep -Fc 'exclude http.handlers.reverse_proxy.health_checker.active' "$ROOT/deploy/Caddyfile") == 1 ]]
 grep -Fq 'COMMERCE_BASE_URL=http://127.0.0.1:8791' "$ROOT/apps/sales-api/.env.example"
 grep -Fq 'COMMERCE_BALANCER_URL=${COMMERCE_BALANCER_URL:-http://127.0.0.1:8791}' "$ROOT/deploy/sales-deploy.sh"
 grep -Fq 'configure_commerce_balancer' "$ROOT/deploy/sales-deploy.sh"
