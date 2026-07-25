@@ -985,6 +985,7 @@ async fn serve() -> Result<()> {
             .await
             .context("validate Codex provider")?;
         eprintln!("Codex app-server provider preflight passed");
+        tokio::spawn(poller::codex_health_loop(gateway.clone()));
         Some(gateway)
     } else {
         None

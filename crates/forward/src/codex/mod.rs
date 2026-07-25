@@ -1,7 +1,7 @@
 //! OpenAI-compatible text API backed by the official Codex app-server protocol.
 //!
-//! The transport speaks newline-delimited JSON-RPC v2 to a pinned Codex child. It never reads or
-//! replays ChatGPT bearer tokens: authentication remains owned by the official Codex profile.
+//! The transport speaks newline-delimited JSON-RPC v2 to pinned Codex children. It never reads or
+//! replays ChatGPT bearer tokens: authentication remains owned by the official Codex profiles.
 
 mod api;
 mod billing;
@@ -20,8 +20,19 @@ pub use process::{CodexRateLimitWindow, CodexRateLimits};
 pub(crate) use runner::{CodexTurnRequest, CodexTurnResult, CodexUsage, TurnUpdate};
 
 use history::HistoryStore;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+
+/// A home whose device login no longer authenticates is quarantined rather than retried in a hot
+/// loop: repeatedly hammering a rejected profile is both useless and a ban signal. It matches the
+/// Claude `AUTH_QUARANTINE` for the same reason. The background health probe can clear it early.
+const AUTH_QUARANTINE_SECS: i64 = 900;
+/// A transport fault is the child's problem, not the account's. Cool briefly so a crash-looping
+/// child stops absorbing requests, but do not take its subscription capacity out of the pool.
+const TRANSPORT_COOL_SECS: i64 = 10;
+/// Fallback wait advertised to a client when every home is limited but no window published a reset.
+const DEFAULT_LIMIT_RETRY_SECS: u64 = 60;
 
 pub(crate) fn new_id(prefix: &str) -> String {
     let mut random = [0u8; 16];
@@ -36,60 +47,108 @@ pub(crate) fn new_id(prefix: &str) -> String {
     format!("{prefix}_{hex}")
 }
 
+/// Per-home operational state. Homes are identified by their index in the configured list, never by
+/// path or account identity: metrics and logs must not carry customer or subscription identity.
 #[derive(Clone, Debug)]
-pub struct CodexOperationalStatus {
+pub struct CodexHomeStatus {
+    pub index: usize,
     pub process_live: bool,
+    pub auth_ok: bool,
+    pub cooling_until: i64,
+    pub inflight: usize,
     pub rate_limits: Option<CodexRateLimits>,
 }
 
-/// Owns and restarts the pinned app-server process. The composition layer calls `preflight` before
-/// exposing a configured provider, while later transport failures are recovered lazily. Existing
-/// Claude routing is completely independent when Codex is disabled.
-pub struct CodexGateway {
-    cfg: Arc<CodexConfig>,
-    process: Mutex<Option<Arc<CodexProcess>>>,
-    process_start: Mutex<()>,
-    history: Arc<HistoryStore>,
-    turns: Arc<Semaphore>,
+#[derive(Clone, Debug)]
+pub struct CodexOperationalStatus {
+    /// True when at least one home has a live child. Kept as the provider-level liveness signal.
+    pub process_live: bool,
+    /// Snapshot of the most constrained home, for the provider-level rate-limit metrics.
+    pub rate_limits: Option<CodexRateLimits>,
+    pub homes: Vec<CodexHomeStatus>,
+    /// Homes that could accept a request right now (live-or-startable, not cooling, within
+    /// headroom).
+    pub available: usize,
+    /// Unix time when the first unavailable home is expected back, if any is cooling.
+    pub soonest_ready: Option<i64>,
 }
 
-impl CodexGateway {
-    pub fn new(cfg: CodexConfig) -> anyhow::Result<Self> {
-        let history = HistoryStore::new(
-            cfg.history_redis_url.as_deref(),
-            cfg.history_secret.as_deref(),
-            cfg.history_ttl_secs,
-            cfg.history_local_cap,
-            cfg.history_redis_timeout_ms,
-        )?;
-        Ok(Self {
-            turns: Arc::new(Semaphore::new(cfg.max_concurrent_turns.max(1))),
-            cfg: Arc::new(cfg),
+/// One authenticated `CODEX_HOME` and the child that serves it.
+pub(crate) struct CodexHome {
+    index: usize,
+    cfg: Arc<CodexConfig>,
+    home: String,
+    process: Mutex<Option<Arc<CodexProcess>>>,
+    process_start: Mutex<()>,
+    turns: Arc<Semaphore>,
+    max_turns: usize,
+    cooling_until: AtomicI64,
+    /// Last known verdict of `account/read`. Startup and the health probe both write it.
+    auth_ok: AtomicBool,
+}
+
+impl CodexHome {
+    fn new(index: usize, cfg: Arc<CodexConfig>, home: String) -> Self {
+        let max_turns = cfg.max_concurrent_turns.max(1);
+        Self {
+            index,
+            cfg,
+            home,
             process: Mutex::new(None),
             process_start: Mutex::new(()),
-            history: Arc::new(history),
-        })
+            turns: Arc::new(Semaphore::new(max_turns)),
+            max_turns,
+            cooling_until: AtomicI64::new(0),
+            auth_ok: AtomicBool::new(true),
+        }
     }
 
-    pub fn config(&self) -> &CodexConfig {
+    pub(crate) fn index(&self) -> usize {
+        self.index
+    }
+
+    fn config(&self) -> &CodexConfig {
         &self.cfg
     }
 
-    pub(crate) fn history(&self) -> &HistoryStore {
-        &self.history
+    fn inflight(&self) -> usize {
+        self.max_turns.saturating_sub(self.turns.available_permits())
     }
 
-    pub(crate) async fn acquire_turn(
-        &self,
-    ) -> Result<tokio::sync::OwnedSemaphorePermit, ProcessError> {
-        self.turns
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| ProcessError::Busy)
+    fn cooling_until(&self) -> i64 {
+        self.cooling_until.load(Ordering::Relaxed)
     }
 
-    /// Return a live, subscription-authenticated process. Startup is serialized, but normal
-    /// JSON-RPC requests and independent turns are multiplexed over the same child.
+    fn is_cooling(&self, now: i64) -> bool {
+        self.cooling_until() > now
+    }
+
+    /// Extend cooling to at least `until`. Cooling is never shortened by a later, weaker signal.
+    fn cool_until(&self, until: i64) {
+        self.cooling_until.fetch_max(until, Ordering::Relaxed);
+    }
+
+    fn cool_for(&self, secs: i64) {
+        self.cool_until(pool::now().saturating_add(secs.max(1)));
+    }
+
+    /// A completed turn proves the home is healthy: clear cooling and restore the auth verdict.
+    fn mark_healthy(&self) {
+        self.cooling_until.store(0, Ordering::Relaxed);
+        self.auth_ok.store(true, Ordering::Relaxed);
+    }
+
+    fn mark_auth_failed(&self) {
+        self.auth_ok.store(false, Ordering::Relaxed);
+        self.cool_for(AUTH_QUARANTINE_SECS);
+    }
+
+    fn try_acquire_turn(&self) -> Option<OwnedSemaphorePermit> {
+        self.turns.clone().try_acquire_owned().ok()
+    }
+
+    /// Return a live, subscription-authenticated process. Startup is serialized per home, but
+    /// normal JSON-RPC requests and independent turns are multiplexed over the same child.
     pub(crate) async fn process(&self) -> Result<Arc<CodexProcess>, ProcessError> {
         if let Some(process) = self.process.lock().await.as_ref().cloned() {
             if process.is_live() {
@@ -104,21 +163,18 @@ impl CodexGateway {
             }
         }
 
-        let process = Arc::new(CodexProcess::spawn(self.cfg.clone()).await?);
+        let process = Arc::new(CodexProcess::spawn(self.cfg.clone(), &self.home).await?);
         *self.process.lock().await = Some(process.clone());
         Ok(process)
     }
 
-    /// Verify the pinned executable, start app-server, complete protocol initialization and prove
-    /// that the dedicated profile is authenticated with a ChatGPT subscription. Returning only a
-    /// diagnostic class keeps account metadata, paths and child messages out of composition logs.
-    pub async fn preflight(&self) -> anyhow::Result<()> {
-        self.process().await.map(|_| ()).map_err(|error| {
-            anyhow::anyhow!(
-                "Codex app-server preflight failed [{}]",
-                error.diagnostic_class()
-            )
-        })
+    async fn live_process(&self) -> Option<Arc<CodexProcess>> {
+        self.process
+            .lock()
+            .await
+            .as_ref()
+            .filter(|process| process.is_live())
+            .cloned()
     }
 
     pub(crate) async fn invalidate(&self, process: &Arc<CodexProcess>) {
@@ -131,19 +187,309 @@ impl CodexGateway {
         }
     }
 
+    async fn rate_limits(&self) -> Option<CodexRateLimits> {
+        match self.live_process().await {
+            Some(process) => process.rate_limits().await,
+            None => None,
+        }
+    }
+
+    /// Whether the cached snapshot says this home is inside the configured window headroom.
+    ///
+    /// A missing snapshot is treated as available on purpose: the rate-limit endpoint is
+    /// observational and must never become a hard availability dependency. Discovering the wall
+    /// mid-turn is still handled by cooling on `usageLimitExceeded`.
+    fn within_headroom(limits: Option<&CodexRateLimits>, admit_below_percent: i64) -> bool {
+        let Some(limits) = limits else {
+            return true;
+        };
+        if limits.reached {
+            return false;
+        }
+        match limits.max_used_percent() {
+            Some(used) => used < admit_below_percent,
+            None => true,
+        }
+    }
+
+    async fn status(&self, admit_below_percent: i64, now: i64) -> CodexHomeStatus {
+        let process = self.live_process().await;
+        let rate_limits = match &process {
+            Some(process) => process.rate_limits().await,
+            None => None,
+        };
+        let _ = admit_below_percent;
+        let _ = now;
+        CodexHomeStatus {
+            index: self.index,
+            process_live: process.is_some(),
+            auth_ok: self.auth_ok.load(Ordering::Relaxed),
+            cooling_until: self.cooling_until(),
+            inflight: self.inflight(),
+            rate_limits,
+        }
+    }
+
+    /// When this home is expected to be usable again.
+    async fn ready_at(&self, admit_below_percent: i64) -> i64 {
+        let cooling = self.cooling_until();
+        let limited_until = match self.rate_limits().await {
+            Some(limits) if !Self::within_headroom(Some(&limits), admit_below_percent) => limits
+                .soonest_reset_at_or_above(admit_below_percent)
+                .unwrap_or_else(|| pool::now().saturating_add(DEFAULT_LIMIT_RETRY_SECS as i64)),
+            _ => 0,
+        };
+        cooling.max(limited_until)
+    }
+}
+
+/// Outcome of choosing a home for one request.
+enum HomeSelection {
+    Ready(Arc<CodexHome>, OwnedSemaphorePermit),
+    /// Homes are usable but all of their turn slots are taken.
+    Busy,
+    /// Every home is cooling or out of window headroom; `ready_at` is the soonest recovery.
+    Unavailable { ready_at: Option<i64> },
+}
+
+/// Owns and restarts the pinned app-server processes for every configured home. The composition
+/// layer calls `preflight` before exposing a configured provider, while later transport failures
+/// are recovered lazily. Existing Claude routing is completely independent when Codex is disabled.
+pub struct CodexGateway {
+    cfg: Arc<CodexConfig>,
+    homes: Vec<Arc<CodexHome>>,
+    history: Arc<HistoryStore>,
+}
+
+impl CodexGateway {
+    pub fn new(cfg: CodexConfig) -> anyhow::Result<Self> {
+        let history = HistoryStore::new(
+            cfg.history_redis_url.as_deref(),
+            cfg.history_secret.as_deref(),
+            cfg.history_ttl_secs,
+            cfg.history_local_cap,
+            cfg.history_redis_timeout_ms,
+        )?;
+        if cfg.homes.is_empty() {
+            anyhow::bail!("Codex provider requires at least one authenticated CODEX_HOME");
+        }
+        let cfg = Arc::new(cfg);
+        let homes = cfg
+            .homes
+            .iter()
+            .enumerate()
+            .map(|(index, home)| Arc::new(CodexHome::new(index, cfg.clone(), home.clone())))
+            .collect();
+        Ok(Self {
+            cfg,
+            homes,
+            history: Arc::new(history),
+        })
+    }
+
+    pub fn config(&self) -> &CodexConfig {
+        &self.cfg
+    }
+
+    pub(crate) fn history(&self) -> &HistoryStore {
+        &self.history
+    }
+
+    fn admit_below_percent(&self) -> i64 {
+        self.cfg.admit_below_used_percent
+    }
+
+    /// Choose the least-loaded usable home and take one of its turn slots.
+    ///
+    /// Preference order is lowest observed window utilisation, then fewest in-flight turns. That
+    /// spreads load away from a subscription approaching its limit before it hits one, instead of
+    /// discovering the wall mid-turn.
+    async fn select_home(&self, exclude: &[usize]) -> HomeSelection {
+        let now = pool::now();
+        let admit_below = self.admit_below_percent();
+        let mut candidates = Vec::with_capacity(self.homes.len());
+        let mut soonest: Option<i64> = None;
+        for home in &self.homes {
+            if exclude.contains(&home.index) {
+                continue;
+            }
+            if home.is_cooling(now) {
+                soonest = Some(soonest.map_or(home.cooling_until(), |v: i64| v.min(home.cooling_until())));
+                continue;
+            }
+            let limits = home.rate_limits().await;
+            if !CodexHome::within_headroom(limits.as_ref(), admit_below) {
+                let ready_at = home.ready_at(admit_below).await;
+                soonest = Some(soonest.map_or(ready_at, |v: i64| v.min(ready_at)));
+                continue;
+            }
+            let used = limits.and_then(|limits| limits.max_used_percent()).unwrap_or(0);
+            candidates.push((used, home.inflight(), home.clone()));
+        }
+        if candidates.is_empty() {
+            return HomeSelection::Unavailable { ready_at: soonest };
+        }
+        candidates.sort_by_key(|(used, inflight, home)| (*used, *inflight, home.index));
+        for (_, _, home) in candidates {
+            if let Some(permit) = home.try_acquire_turn() {
+                return HomeSelection::Ready(home, permit);
+            }
+        }
+        HomeSelection::Busy
+    }
+
+    /// A process from any usable home, for provider-level reads such as model discovery.
+    pub(crate) async fn any_process(&self) -> Result<Arc<CodexProcess>, ProcessError> {
+        let now = pool::now();
+        let mut last_error = ProcessError::Closed;
+        let mut ordered: Vec<_> = self.homes.iter().collect();
+        ordered.sort_by_key(|home| (home.is_cooling(now), home.index));
+        for home in ordered {
+            match home.process().await {
+                Ok(process) => return Ok(process),
+                Err(error) => {
+                    home.note_process_error(&error);
+                    last_error = error;
+                }
+            }
+        }
+        Err(last_error)
+    }
+
+    /// Verify the pinned executable, start app-server, complete protocol initialization and prove
+    /// that each dedicated profile is authenticated with a ChatGPT subscription.
+    ///
+    /// At least one home must pass. Requiring *every* home would reintroduce the single point of
+    /// failure this pool exists to remove: one expired device login would block every future
+    /// deployment. A home that fails here starts quarantined and is reported by the health metrics
+    /// and `CodexHomeUnauthenticated` alert instead. Returning only a diagnostic class keeps account
+    /// metadata, paths and child messages out of composition logs.
+    pub async fn preflight(&self) -> anyhow::Result<()> {
+        let mut healthy = 0usize;
+        let mut last_class = "closed";
+        for home in &self.homes {
+            match home.process().await {
+                Ok(_) => {
+                    home.mark_healthy();
+                    healthy += 1;
+                }
+                Err(error) => {
+                    last_class = error.diagnostic_class();
+                    home.note_process_error(&error);
+                    eprintln!(
+                        "Codex home {} failed preflight [{}]",
+                        home.index, last_class
+                    );
+                }
+            }
+        }
+        if healthy == 0 {
+            anyhow::bail!("Codex app-server preflight failed [{last_class}]");
+        }
+        if healthy < self.homes.len() {
+            eprintln!(
+                "Codex provider starting with {healthy}/{} authenticated homes",
+                self.homes.len()
+            );
+        }
+        Ok(())
+    }
+
+    /// Read-only health sweep over every home, run by the composition layer's background loop.
+    ///
+    /// A device login expires with no traffic on it, so a home that is never selected would
+    /// otherwise stay silently dead until the pool needed it. Quarantined homes are probed too, so
+    /// a re-authenticated profile returns to service without a restart.
+    pub async fn probe_health(&self) {
+        for home in &self.homes {
+            let process = match home.process().await {
+                Ok(process) => process,
+                Err(error) => {
+                    home.note_process_error(&error);
+                    continue;
+                }
+            };
+            match process.probe().await {
+                Ok(()) => home.mark_healthy(),
+                Err(error) => {
+                    home.note_process_error(&error);
+                    home.invalidate(&process).await;
+                }
+            }
+        }
+    }
+
     /// Read only cached operational state. Metrics collection never starts a provider process or
     /// triggers an authentication or network request.
     pub async fn operational_status(&self) -> CodexOperationalStatus {
-        let process = self.process.lock().await.as_ref().cloned();
-        match process {
-            Some(process) => CodexOperationalStatus {
-                process_live: process.is_live(),
-                rate_limits: process.rate_limits().await,
-            },
-            None => CodexOperationalStatus {
-                process_live: false,
-                rate_limits: None,
-            },
+        let now = pool::now();
+        let admit_below = self.admit_below_percent();
+        let mut homes = Vec::with_capacity(self.homes.len());
+        let mut available = 0usize;
+        let mut soonest: Option<i64> = None;
+        for home in &self.homes {
+            let status = home.status(admit_below, now).await;
+            let usable = !home.is_cooling(now)
+                && CodexHome::within_headroom(status.rate_limits.as_ref(), admit_below);
+            if usable {
+                available += 1;
+            } else {
+                let ready_at = home.ready_at(admit_below).await;
+                if ready_at > now {
+                    soonest = Some(soonest.map_or(ready_at, |v: i64| v.min(ready_at)));
+                }
+            }
+            homes.push(status);
+        }
+        // Provider-level snapshot reports the most constrained home: that is the one an operator
+        // needs to see before the pool loses capacity.
+        let rate_limits = homes
+            .iter()
+            .filter_map(|home| home.rate_limits.clone())
+            .max_by_key(|limits| limits.max_used_percent().unwrap_or(0));
+        CodexOperationalStatus {
+            process_live: homes.iter().any(|home| home.process_live),
+            rate_limits,
+            available,
+            soonest_ready: soonest,
+            homes,
+        }
+    }
+}
+
+impl CodexHome {
+    /// Apply the cooling policy for a failure observed outside a turn (startup, probe, discovery).
+    fn note_process_error(&self, error: &ProcessError) {
+        match error {
+            ProcessError::AuthenticationRequired | ProcessError::SubscriptionRequired => {
+                self.mark_auth_failed()
+            }
+            ProcessError::UsageLimitExceeded { retry_after } => {
+                self.cool_for(retry_after.unwrap_or(DEFAULT_LIMIT_RETRY_SECS) as i64)
+            }
+            // A configuration or attestation fault is not transient and must not be retried in a
+            // hot loop; the deployment gate is the place that fixes it.
+            ProcessError::InvalidConfig(_)
+            | ProcessError::DigestMismatch { .. }
+            | ProcessError::VersionMismatch { .. }
+            | ProcessError::Disabled => self.cool_for(AUTH_QUARANTINE_SECS),
+            _ => self.cool_for(TRANSPORT_COOL_SECS),
+        }
+    }
+
+    /// Blame classification for a failed turn, mirroring the Claude rotation policy.
+    ///
+    /// A usage limit or a dead login belongs to this home's subscription, so it leaves the rotation
+    /// until its window resets or an operator re-authenticates. A client fault belongs to the
+    /// request and must not cool a healthy account — otherwise one malformed request could quietly
+    /// drain the pool.
+    pub(crate) fn note_turn_error(&self, error: &ProcessError) {
+        match error {
+            ProcessError::BadRequest
+            | ProcessError::ContextWindowExceeded
+            | ProcessError::Rpc { .. }
+            | ProcessError::Busy => {}
+            other => self.note_process_error(other),
         }
     }
 }

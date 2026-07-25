@@ -6,21 +6,9 @@
 
 use std::collections::BTreeMap;
 
-/// Official API-equivalent token rates in nanodollars per token.
-///
-/// The values are intentionally attached to each advertised model rather than inferred from a
-/// substring at settlement time. Updating a public alias therefore cannot silently change money.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CodexPrices {
-    pub input: i128,
-    pub cached_input: i128,
-    pub cache_write_input: i128,
-    pub output: i128,
-    /// OpenAI applies long-context pricing to the whole request above this input-token boundary.
-    pub long_context_threshold: u64,
-    pub long_input_basis_points: i64,
-    pub long_output_basis_points: i64,
-}
+/// Token rates are owned by the audited, effective-dated catalog in `metering`. `forward` never
+/// declares a price of its own; it receives the resolved rates in this config.
+pub use metering::CodexPrices;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodexModel {
@@ -52,14 +40,23 @@ pub struct CodexConfig {
     pub binary_sha256: String,
     /// Exact `codex --version` output expected from the pinned build.
     pub expected_version: String,
-    /// Dedicated authenticated profile. The child receives this as `CODEX_HOME`.
-    pub codex_home: String,
+    /// Dedicated authenticated profiles, in configured order. Each becomes one supervised child
+    /// with its own `CODEX_HOME`, its own health state and its own subscription window. Homes are
+    /// referred to by index everywhere else so that no path or account identity reaches a log or a
+    /// metric label.
+    pub homes: Vec<String>,
     /// Empty, non-sensitive working directory used for ephemeral API threads.
     pub work_dir: String,
     pub startup_timeout_ms: u64,
     pub request_timeout_ms: u64,
     pub turn_timeout_ms: u64,
+    /// Concurrent turns allowed per home.
     pub max_concurrent_turns: usize,
+    /// Stop admitting a home once a reported window reaches this utilisation, keeping headroom so
+    /// the wall is met by a clean 429 with a real reset rather than mid-turn.
+    pub admit_below_used_percent: i64,
+    /// How often the background loop re-checks each home's authentication and window snapshot.
+    pub health_probe_interval_secs: u64,
     /// Conservative preflight allowance for provider-hidden/runtime tokens that are not present in
     /// the public JSON body.
     pub reserve_overhead_tokens: u64,

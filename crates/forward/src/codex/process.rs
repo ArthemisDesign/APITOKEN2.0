@@ -112,6 +112,27 @@ pub struct CodexRateLimits {
     pub observed_at: i64,
 }
 
+impl CodexRateLimits {
+    fn windows(&self) -> impl Iterator<Item = &CodexRateLimitWindow> {
+        self.primary.iter().chain(self.secondary.iter())
+    }
+
+    /// Highest utilisation across the reported windows. `None` means no window was reported and the
+    /// caller must treat utilisation as unknown rather than as zero-or-full.
+    pub fn max_used_percent(&self) -> Option<i64> {
+        self.windows().map(|window| window.used_percent).max()
+    }
+
+    /// Soonest reset among the windows at or above `threshold_percent`. This is what a client
+    /// should wait for before the provider can serve again.
+    pub fn soonest_reset_at_or_above(&self, threshold_percent: i64) -> Option<i64> {
+        self.windows()
+            .filter(|window| window.used_percent >= threshold_percent)
+            .filter_map(|window| window.resets_at)
+            .min()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum AppServerEvent {
     Notification {
@@ -188,12 +209,14 @@ pub struct CodexProcess {
 }
 
 impl CodexProcess {
-    pub async fn spawn(cfg: Arc<CodexConfig>) -> Result<Self, ProcessError> {
-        validate_config(&cfg)?;
+    /// Start one supervised child bound to exactly one authenticated `CODEX_HOME`. Every home in
+    /// the pool runs its own attested child; they share nothing but the pinned binary.
+    pub async fn spawn(cfg: Arc<CodexConfig>, home: &str) -> Result<Self, ProcessError> {
+        validate_config(&cfg, home)?;
         verify_binary_digest(&cfg).await?;
-        verify_version(&cfg).await?;
+        verify_version(&cfg, home).await?;
 
-        let mut command = child_command(&cfg);
+        let mut command = child_command(&cfg, home);
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -385,6 +408,24 @@ impl CodexProcess {
         validate_subscription_account(&response)
     }
 
+    /// Read-only liveness of the authenticated profile, used by the background health loop.
+    ///
+    /// A device login expires without any traffic touching it, so the pool must learn about a dead
+    /// home before a customer request does. The check reuses the same `account/read` semantics as
+    /// startup and refreshes the rate-limit snapshot the admission gate reads.
+    pub(crate) async fn probe(&self) -> Result<(), ProcessError> {
+        self.require_subscription().await?;
+        if let Err(error) = self.refresh_rate_limits().await {
+            // The snapshot is observational. A profile that answered `account/read` is usable even
+            // when this endpoint is briefly unavailable.
+            eprintln!(
+                "Codex rate-limit snapshot unavailable [{}]",
+                error.diagnostic_class()
+            );
+        }
+        Ok(())
+    }
+
     async fn refresh_rate_limits(&self) -> Result<(), ProcessError> {
         let response = self
             .request_with_timeout(
@@ -447,13 +488,13 @@ impl CodexProcess {
     }
 }
 
-fn validate_config(cfg: &CodexConfig) -> Result<(), ProcessError> {
+fn validate_config(cfg: &CodexConfig, home: &str) -> Result<(), ProcessError> {
     if !cfg.enabled {
         return Err(ProcessError::Disabled);
     }
     for (name, value) in [
         ("binary", cfg.binary.as_str()),
-        ("codex_home", cfg.codex_home.as_str()),
+        ("codex_home", home),
         ("work_dir", cfg.work_dir.as_str()),
     ] {
         if value.is_empty() || !Path::new(value).is_absolute() {
@@ -514,13 +555,13 @@ async fn verify_binary_digest(cfg: &CodexConfig) -> Result<(), ProcessError> {
     Ok(())
 }
 
-async fn verify_version(cfg: &CodexConfig) -> Result<(), ProcessError> {
+async fn verify_version(cfg: &CodexConfig, home: &str) -> Result<(), ProcessError> {
     let output = tokio::time::timeout(
         std::time::Duration::from_millis(cfg.startup_timeout_ms.max(1)),
         Command::new(&cfg.binary)
             .arg("--version")
             .env_clear()
-            .env("CODEX_HOME", &cfg.codex_home)
+            .env("CODEX_HOME", home)
             .output(),
     )
     .await
@@ -542,11 +583,11 @@ async fn verify_version(cfg: &CodexConfig) -> Result<(), ProcessError> {
     Ok(())
 }
 
-fn child_command(cfg: &CodexConfig) -> Command {
+fn child_command(cfg: &CodexConfig, home: &str) -> Command {
     let mut command = Command::new(&cfg.binary);
     command
         .env_clear()
-        .env("CODEX_HOME", &cfg.codex_home)
+        .env("CODEX_HOME", home)
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
         .env("NO_COLOR", "1")
         .env("TERM", "dumb")

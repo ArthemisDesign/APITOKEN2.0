@@ -72,7 +72,7 @@ a.link{color:var(--blue);text-decoration:none}a.link:hover{text-decoration:under
 .toast.bad{border-color:var(--red)}.toast+.toast{bottom:70px}
 </style>
 </head>
-<body data-admin-panel-version="8">
+<body data-admin-panel-version="9">
 <div id="app"></div>
 <script>
 const app=document.getElementById('app');
@@ -216,10 +216,15 @@ async function spendStats(){let data,emailById={};
   const discount=(charge,real)=>real>0?Math.round((1-charge/real)*100)+'%':'—';
   const overlay=document.createElement('div');overlay.className='overlay';
   const render=key=>{const period=data.periods[key]||{accounts:[]};
+    const providerLabel=name=>name==='openai'?'OpenAI (Codex)':name==='anthropic'?'Claude (подписки)':name;
+    const providerRows=(period.providers||[]).map(item=>'<tr><td class="left"><b>'+esc(providerLabel(item.provider))+'</b></td><td>'+item.requests+
+      '</td><td><b>'+money(item.charge_usd)+'</b></td><td>'+money(item.real_usd)+'</td><td>'+discount(item.charge_usd,item.real_usd)+'</td></tr>').join('');
     const rows=(period.accounts||[]).map(item=>'<tr><td class="left"><b>'+esc(displayName(item.handle))+'</b><div class="sub">'+esc(item.handle&&displayName(item.handle)!==item.handle?item.handle:item.account)+'</div></td><td>'+item.requests+
       '</td><td><b>'+money(item.charge_usd)+'</b></td><td>'+money(item.real_usd)+'</td><td>'+discount(item.charge_usd,item.real_usd)+'</td><td>'+ago(item.last_ts*1000)+'</td></tr>').join('');
     return '<div class="cards">'+card('списано клиентам',money(period.charge_usd),period.requests+' запросов')+
       card('real-API эквивалент',money(period.real_usd),'средняя скидка '+discount(period.charge_usd,period.real_usd))+'</div>'+
+      '<h3>По провайдерам</h3><div class="table"><div class="scroll"><table><thead><tr><th class="left">провайдер</th><th>запросы</th><th>списано</th><th>real-API</th><th>скидка</th></tr></thead><tbody>'+
+      (providerRows||empty(5))+'</tbody></table></div></div>'+
       '<div class="table"><div class="scroll"><table><thead><tr><th class="left">account</th><th>запросы</th><th>списано</th><th>real-API</th><th>скидка</th><th>активность</th></tr></thead><tbody>'+
       (rows||empty(6))+'</tbody></table></div></div>'};
   overlay.innerHTML='<div class="dialog wide"><h3>Кто тратит</h3><p class="dlg-sub">«списано» — по множителю аккаунта · «real-API» — полный эквивалент Anthropic · топ-50 за окно</p>'+

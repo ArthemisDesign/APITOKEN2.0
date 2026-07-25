@@ -5,7 +5,7 @@
 
 use crate::{
     mask_proxy, AccountRow, BillingTotals, KeyAuth, KeyPolicyUpdate, KeyRow, LedgerRow,
-    PoolStateRow, SpendAccountAgg, Sub, SubAdmin, SubHealth, SubRow, UsageEventInput, UsageModelAgg,
+    PoolStateRow, SpendAccountAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow, UsageEventInput, UsageModelAgg,
 };
 use anyhow::{bail, Context, Result};
 use postgres::config::{Host, SslMode};
@@ -16,6 +16,7 @@ const MIGRATION_0001: &str = include_str!("../migrations_pg/0001_engine_authorit
 const MIGRATION_0002: &str = include_str!("../migrations_pg/0002_api_key_policies.sql");
 const MIGRATION_0003: &str = include_str!("../migrations_pg/0003_subscription_auth_health.sql");
 const MIGRATION_0004: &str = include_str!("../migrations_pg/0004_audit_hardening.sql");
+const MIGRATION_0005: &str = include_str!("../migrations_pg/0005_provider_attribution.sql");
 
 fn now() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -203,6 +204,8 @@ impl PgStore {
             .context("apply engine PostgreSQL migration 0003")?;
         tx.batch_execute(MIGRATION_0004)
             .context("apply engine PostgreSQL migration 0004")?;
+        tx.batch_execute(MIGRATION_0005)
+            .context("apply engine PostgreSQL migration 0005")?;
         tx.commit()?;
         Ok(())
     }
@@ -435,15 +438,16 @@ impl PgStore {
             "INSERT INTO settlement_outbox(request_id,actual_nano,disposition,reference,model,input_tokens, \
              output_tokens,cache_read_tokens,cache_write_5m_tokens,cache_write_1h_tokens,web_search_requests, \
              real_nano,speed,inference_geo,input_nano,output_nano,cache_read_nano,cache_write_5m_nano, \
-             cache_write_1h_nano,web_search_nano,priced_ts,state,created_ts,updated_ts) \
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21, \
-                    'pending',$22,$22) \
+             cache_write_1h_nano,web_search_nano,priced_ts,provider,state,created_ts,updated_ts) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22, \
+                    'pending',$23,$23) \
              ON CONFLICT(request_id) DO NOTHING",
             &[&request_id, &actual, &disposition, &reference, &u.model, &u.input_tokens,
               &u.output_tokens, &u.cache_read_tokens, &u.cache_write_5m_tokens,
               &u.cache_write_1h_tokens, &u.web_search_requests, &u.real_nano, &u.speed,
               &u.inference_geo, &u.input_nano, &u.output_nano, &u.cache_read_nano,
-              &u.cache_write_5m_nano, &u.cache_write_1h_nano, &u.web_search_nano, &u.priced_ts, &ts],
+              &u.cache_write_5m_nano, &u.cache_write_1h_nano, &u.web_search_nano, &u.priced_ts,
+              &u.provider, &ts],
         )?;
         if inserted == 0 {
             let row = tx.query_one(
@@ -514,7 +518,7 @@ impl PgStore {
             "SELECT o.actual_nano,o.disposition,o.reference,o.model,o.input_tokens,o.output_tokens, \
              o.cache_read_tokens,o.cache_write_5m_tokens,o.cache_write_1h_tokens,o.web_search_requests, \
              o.real_nano,o.speed,o.inference_geo,o.input_nano,o.output_nano,o.cache_read_nano, \
-             o.cache_write_5m_nano,o.cache_write_1h_nano,o.web_search_nano,o.priced_ts, \
+             o.cache_write_5m_nano,o.cache_write_1h_nano,o.web_search_nano,o.priced_ts,o.provider, \
              o.state,r.account_id,r.key,r.hold_nano,r.state \
              FROM settlement_outbox o JOIN reservations r USING(request_id) \
              WHERE o.request_id=$1 FOR UPDATE OF o,r",
@@ -523,9 +527,10 @@ impl PgStore {
             tx.rollback()?;
             return Ok(None);
         };
-        let outbox_state: String = row.get(20);
-        let reservation_state: String = row.get(24);
-        let account_id: String = row.get(21);
+        let provider: String = row.get(20);
+        let outbox_state: String = row.get(21);
+        let reservation_state: String = row.get(25);
+        let account_id: String = row.get(22);
         if outbox_state == "done" || matches!(reservation_state.as_str(), "settled" | "canceled") {
             let balance = tx
                 .query_opt(
@@ -545,8 +550,8 @@ impl PgStore {
         let disposition: String = row.get(1);
         let reference: Option<String> = row.get(2);
         let model: String = row.get(3);
-        let account_key: String = row.get(22);
-        let hold: i64 = row.get(23);
+        let account_key: String = row.get(23);
+        let hold: i64 = row.get(24);
         let balance: i64 = tx.query_one(
             "UPDATE accounts SET balance_nano=balance_nano+$1-$2, spent_nano=spent_nano+$2, \
              reserved_nano=reserved_nano-$1 WHERE id=$3 AND reserved_nano >= $1 RETURNING balance_nano",
@@ -593,14 +598,14 @@ impl PgStore {
                     "INSERT INTO usage_events(request_id,account_id,key,model,input_tokens,output_tokens, \
                      cache_read_tokens,cache_write_5m_tokens,cache_write_1h_tokens,web_search_requests, \
                      real_nano,charge_nano,ref,ts,speed,inference_geo,input_nano,output_nano,cache_read_nano, \
-                     cache_write_5m_nano,cache_write_1h_nano,web_search_nano,priced_ts) \
-                     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) \
+                     cache_write_5m_nano,cache_write_1h_nano,web_search_nano,priced_ts,provider) \
+                     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) \
                      ON CONFLICT(request_id) DO NOTHING",
                     &[&request_id,&account_id,&account_key,&model,&input_tokens,&output_tokens,
                       &cache_read_tokens,&cache_write_5m_tokens,&cache_write_1h_tokens,
                       &web_search_requests,&real_nano,&actual,&reference,&ts,&speed,&inference_geo,
                       &input_nano,&output_nano,&cache_read_nano,&cache_write_5m_nano,
-                      &cache_write_1h_nano,&web_search_nano,&priced_ts],
+                      &cache_write_1h_nano,&web_search_nano,&priced_ts,&provider],
                 )?;
             }
         }
@@ -1431,6 +1436,25 @@ impl PgStore {
             })
             .collect())
     }
+    pub fn spend_by_provider(&mut self, since_ts: i64) -> Result<Vec<SpendProviderAgg>> {
+        Ok(self
+            .client
+            .query(
+                "SELECT COALESCE(NULLIF(provider,''),'anthropic'), COUNT(*)::bigint, \
+                 COALESCE(SUM(charge_nano),0)::bigint, COALESCE(SUM(real_nano),0)::bigint \
+                 FROM usage_events WHERE ts>=$1 GROUP BY 1 ORDER BY SUM(charge_nano) DESC",
+                &[&since_ts],
+            )?
+            .into_iter()
+            .map(|r| SpendProviderAgg {
+                provider: r.get(0),
+                requests: r.get(1),
+                charge_nano: r.get(2),
+                real_nano: r.get(3),
+            })
+            .collect())
+    }
+
     pub fn usage_prune(&mut self, older_than_ts: i64) -> Result<usize> {
         Ok(self.client.execute(
             "DELETE FROM usage_events WHERE id IN ( \

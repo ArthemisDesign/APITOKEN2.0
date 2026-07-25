@@ -215,6 +215,38 @@ Check `apitoken-affinity-redis.service`, its container health and disk space. En
 intentionally fail-open on local affinity, so restore Redis without restarting healthy engine slots;
 expect only a temporary reduction in cross-slot prompt-cache hits.
 
+## CodexProviderDown
+
+Only the OpenAI-compatible surface is affected; Claude routing is independent. Check
+`claude_api_codex_home_process_live` per home to see whether every child failed or only one.
+Restarting a child is automatic and lazy, so a persistent zero means the binary attestation, the
+`CODEX_HOME` permissions, or the pinned version no longer matches `docs/CODEX_APP_SERVER.md`. Do not
+edit the pinned build on the host; correct it with a commit and let the watchdog rebuild the slot.
+`CLAUDE_API_CODEX_ENABLED=0` is the provider-only kill switch if the surface must be withdrawn while
+the cause is investigated.
+
+## CodexNoAvailableHomes
+
+Every home is cooling or outside its window headroom, so clients are being told to retry. Read
+`claude_api_codex_home_cooling_until_seconds` and `claude_api_codex_home_rate_limit_used_percent` to
+tell a subscription-limit outage (windows genuinely exhausted — wait for the reset or add a home)
+from an authentication outage (`claude_api_codex_home_authenticated == 0` — re-run the device flow).
+Never bypass cooling: hammering a limited or rejected ChatGPT profile is a ban signal.
+
+## CodexHomeUnauthenticated
+
+That home's device login expired or was revoked. Re-authenticate exactly as
+`docs/CODEX_APP_SERVER.md` describes, as the unprivileged engine user and against that home's own
+`CODEX_HOME`. Never copy, print or archive an auth store, and never point two homes at one store. The
+health probe clears the quarantine on its own once `account/read` passes again; no restart is needed.
+
+## CodexHomeNearRateLimit
+
+The home stops being admitted at `CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT` (95% by default), which
+is expected behaviour rather than a fault. Confirm the remaining homes can absorb the load before the
+window is reached; if they cannot, the pool needs another authenticated home rather than a lower
+headroom.
+
 ## DurableQueueBacklog
 
 Check the owning worker/service, its database lock/lease fields, retry schedule, and downstream

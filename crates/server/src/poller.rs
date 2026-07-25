@@ -137,8 +137,22 @@ pub async fn ledger_prune_loop(
 /// Коллектор истории: раз в минуту пишет снапшот агрегата (спрос/предложение/headroom/рекомендация)
 /// в ОТДЕЛЬНУЮ metrics.db. Фундамент под capacity-planning и предсказательную модель — учиться она
 /// будет на накопленной истории. Не мешает биллингу (своя БД, blocking-поток, редкая запись).
-pub async fn metrics_loop(app: AppState, metrics_db: String, retention_days: i64) {
-    const SNAP_SECS: u64 = 60;
+/// Periodic read-only health sweep over the Codex home pool.
+///
+/// A ChatGPT device login expires on its own schedule, with no request traffic to reveal it. Without
+/// this loop a home would stay silently unusable until a customer request selected it — and a pool
+/// of one would mean a total provider outage discovered by the customer. The sweep also refreshes
+/// the rate-limit snapshot that the admission gate and the `/metrics` gauges read, and it lets a
+/// re-authenticated home rejoin the rotation without an engine restart.
+pub async fn codex_health_loop(gateway: Arc<forward::CodexGateway>) {
+    let interval = Duration::from_secs(gateway.config().health_probe_interval_secs.max(30));
+    loop {
+        tokio::time::sleep(interval).await;
+        gateway.probe_health().await;
+    }
+}
+
+pub async fn metrics_loop(app: AppState, metrics_db: String, retention_days: i64) {    const SNAP_SECS: u64 = 60;
     let mut ticks: u64 = 0;
     loop {
         let snap = match crate::http::overview_value(&app).await {
