@@ -1416,7 +1416,8 @@ impl PgStore {
                  COALESCE(SUM(u.charge_nano),0)::bigint, COALESCE(SUM(u.real_nano),0)::bigint, \
                  COALESCE(MAX(u.ts),0)::bigint \
                  FROM usage_events u LEFT JOIN accounts a ON a.id=u.account_id \
-                 WHERE u.ts>=$1 GROUP BY u.account_id ORDER BY SUM(u.charge_nano) DESC LIMIT $2",
+                 WHERE u.ts>=$1 GROUP BY u.account_id, a.handle \
+                 ORDER BY SUM(u.charge_nano) DESC LIMIT $2",
                 &[&since_ts, &limit],
             )?
             .into_iter()

@@ -1746,7 +1746,7 @@ pub fn spend_by_account(
         "SELECT u.account_id, COALESCE(a.handle,''), COUNT(*), \
          COALESCE(SUM(u.charge_nano),0), COALESCE(SUM(u.real_nano),0), COALESCE(MAX(u.ts),0) \
          FROM usage_events u LEFT JOIN accounts a ON a.id=u.account_id \
-         WHERE u.ts>=?1 GROUP BY u.account_id ORDER BY SUM(u.charge_nano) DESC LIMIT ?2",
+         WHERE u.ts>=?1 GROUP BY u.account_id, a.handle ORDER BY SUM(u.charge_nano) DESC LIMIT ?2",
     )?;
     let rows = stmt.query_map(rusqlite::params![since_ts, limit], |r| {
         Ok(SpendAccountAgg {
