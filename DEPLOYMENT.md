@@ -34,7 +34,12 @@ Affected database, engine, and backend stages also appear as GitHub deployment r
 only: builds and deployments run on the existing production host, so no paid GitHub runner is used.
 
 The watchdog polls `origin/master` about once per minute. A failure quarantines that SHA and stops
-the pipeline; neither later migrations nor application cutovers are attempted. Commerce migration
+the pipeline; neither later migrations nor application cutovers are attempted. This holds for every
+abnormal termination — a failing command, an interrupt, or a validation failure raised internally —
+so a stopped pipeline always leaves a quarantine marker and a red commit status rather than stopping
+silently. A failure before any commit is selected (an unreachable remote, a missing state file) is
+an infrastructure fault rather than a verdict on a commit: it is logged and retried on the next
+cycle without quarantining anything. Commerce migration
 failure always blocks the backend. Engine migration or readiness failure leaves the serving engine
 slot untouched. On every idle cycle it also requires exactly one PostgreSQL engine slot to be
 active, ready, selected on the recorded release, and enabled. If an out-of-band service command

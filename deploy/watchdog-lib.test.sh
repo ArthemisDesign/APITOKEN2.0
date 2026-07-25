@@ -317,6 +317,64 @@ grep -Fq 'watchdog-retention.sh' "$ROOT/deploy/install-watchdog.sh" \
 grep -Fq 'no commit was evaluated' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'pre-candidate failures are not separated from candidate quarantine'
 
+# `wd_die` terminates with `exit`, which does not run an ERR trap. Without EXIT in the trap list,
+# every wd_die validation failure would fail closed but silently: no quarantine, no red status.
+grep -Eq '^trap fail ERR EXIT INT TERM$' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the watchdog failure handler must be registered on EXIT so wd_die quarantines'
+# ...but an EXIT trap also fires on success, so it must return early on a zero status or every
+# successful cycle would report itself as a failure.
+grep -Fq '(( rc == 0 ))' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the failure handler does not exempt successful exits from quarantine'
+
+# Behavioural check of the exact handler shape, rather than trusting the greps above. Subshells must
+# not inherit the trap, or the post-admission rollback path (which runs its verifier in a subshell)
+# would quarantine from inside the subshell instead of recovering.
+trap_fixture="$TEMP/trap-fixture.sh"
+cat >"$trap_fixture" <<'FIXTURE'
+#!/usr/bin/env bash
+set -euo pipefail
+set -E
+wd_die(){ printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+fail() {
+  local rc=$?
+  trap - ERR EXIT INT TERM
+  if (( rc == 0 )); then return 0; fi
+  if [[ -z ${CANDIDATE_SHA:-} ]]; then printf 'PRECANDIDATE\n'; exit "$rc"; fi
+  printf 'QUARANTINED\n'
+  exit "$rc"
+}
+trap fail ERR EXIT INT TERM
+case "$1" in
+  success) CANDIDATE_SHA=abc; printf 'OK\n' ;;
+  exit0) CANDIDATE_SHA=abc; printf 'OK\n'; exit 0 ;;
+  die_precandidate) wd_die 'missing required file' ;;
+  die_candidate) CANDIDATE_SHA=abc; wd_die 'candidate checkout mismatch' ;;
+  command_failure) CANDIDATE_SHA=abc; false ;;
+  subshell) CANDIDATE_SHA=abc
+    verify(){ wd_die 'verification failed'; }
+    if ! ( verify ); then printf 'RECOVERED\n'; fi
+    printf 'CONTINUED\n' ;;
+esac
+FIXTURE
+chmod +x "$trap_fixture"
+
+trap_case_output() { "$trap_fixture" "$1" 2>/dev/null || true; }
+[[ $(trap_case_output success) == OK ]] \
+  || wd_die 'a successful cycle must not report a failure'
+[[ $(trap_case_output exit0) == OK ]] \
+  || wd_die 'a deliberate exit 0 (already processed / quarantined) must not report a failure'
+[[ $(trap_case_output die_precandidate) == PRECANDIDATE ]] \
+  || wd_die 'wd_die before a candidate is selected must not quarantine'
+[[ $(trap_case_output die_candidate) == QUARANTINED ]] \
+  || wd_die 'wd_die after a candidate is selected must quarantine it'
+[[ $(trap_case_output command_failure) == QUARANTINED ]] \
+  || wd_die 'a failing command must still quarantine the candidate'
+# The subshell must be caught by its caller so recovery runs; it must NOT quarantine from inside.
+subshell_result=$(trap_case_output subshell)
+[[ $subshell_result == $'RECOVERED\nCONTINUED' ]] \
+  || wd_die "a wd_die inside a condition subshell must not quarantine (got: $subshell_result)"
+
+
 # Operator visibility: sales has an independent release lifecycle and must appear in status.
 grep -Fq 'for entry in processed engine backend sales rejected pending-migration' \
   "$ROOT/deploy/watchdog-control.sh" || wd_die 'watchdog status does not report the sales baseline'
