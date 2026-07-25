@@ -68,7 +68,7 @@ for unit in \
   apitoken-api@.service apitoken-deploy-watchdog.service apitoken-deploy-watchdog.timer \
   apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api@.service claude-api-backup.service claude-api-backup.timer \
   claude-api-fingerprint.service claude-api-fingerprint.timer \
-  apitoken-sales-api.service apitoken-sales-web.service \
+  apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \
   apitoken-monitoring-collector.service apitoken-monitoring-collector.timer; do
   install -o root -g root -m 0644 "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"
 done

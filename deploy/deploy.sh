@@ -177,6 +177,37 @@ validate_commerce_stage() {
 validate_engine_stage() {
   local directory=$1
   [[ -x "$directory/claude-api" ]] || die "staged engine binary is missing: $directory/claude-api"
+  [[ -x "$directory/authbot" ]] || die "staged authbot binary is missing: $directory/authbot"
+}
+
+# Restart the subscription bot only when its binary actually changed.
+#
+# A restart drops any device-authorization the bot is walking a seller through — those sessions are
+# live child processes, not database rows — so restarting it on every unrelated engine deploy would
+# randomly break purchases in progress. Comparing the shipped binaries makes the restart happen
+# exactly when there is a new bot to run.
+#
+# A bot that fails to restart does not justify rolling back an engine release: it produces
+# subscriptions, it does not serve requests. Report it loudly and let the deployment stand.
+restart_authbot_if_changed() {
+  local previous=$1 current=$2
+  local unit=claude-authbot.service
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "dry-run: would compare $previous/authbot with $current/authbot and restart $unit if it changed"
+    return 0
+  fi
+  if ! privileged_command test -f "/etc/systemd/system/$unit"; then
+    log "$unit is not installed on this host; skipping the authbot restart"
+    return 0
+  fi
+  if [[ -n "$previous" && -x "$previous/authbot" ]] && cmp -s "$previous/authbot" "$current/authbot"; then
+    log "authbot binary is unchanged; leaving $unit and any in-flight authorization alone"
+    return 0
+  fi
+  log "authbot binary changed; restarting $unit"
+  if ! privileged_command systemctl restart "$unit"; then
+    log "WARNING: $unit did not restart; the pool will not be replenished until it is fixed"
+  fi
 }
 
 fetch_release_commit() {
@@ -253,6 +284,11 @@ prepare_engine_release() {
   log "building engine release $ENGINE_RELEASE"
   run env CARGO_TARGET_DIR="$ENGINE_STAGE/target" cargo build --locked --release -p claude-api --manifest-path "$ENGINE_SOURCE_DIR/Cargo.toml"
   run install -m 0755 -- "$ENGINE_STAGE/target/release/claude-api" "$ENGINE_STAGE/claude-api"
+  # The authbot replenishes the pool the engine serves from. It used to be built by hand into a
+  # scratch target directory, which meant the running bot could silently be months older than the
+  # tested commit. Ship it from the same immutable release as the engine.
+  run env CARGO_TARGET_DIR="$ENGINE_STAGE/target" cargo build --locked --release -p authbot --manifest-path "$ENGINE_SOURCE_DIR/Cargo.toml"
+  run install -m 0755 -- "$ENGINE_STAGE/target/release/authbot" "$ENGINE_STAGE/authbot"
   run rm -rf -- "$ENGINE_STAGE/target"
   if [[ "$DRY_RUN" != "1" ]]; then
     validate_engine_stage "$ENGINE_STAGE"
@@ -530,6 +566,10 @@ activate_release_links() {
     set_journaled_release_link "$COMMERCE_RELEASE" "$COMMERCE_RELEASE_ROOT/current"
   elif [[ "$DEPLOY_API" == "1" ]]; then
     log "commerce API already runs release $SHA; preserving the real previous link"
+  fi
+
+  if [[ "$DEPLOY_ENGINE" == "1" ]]; then
+    restart_authbot_if_changed "$ENGINE_ORIGINAL" "$ENGINE_RELEASE"
   fi
 
   if [[ "$DRY_RUN" != "1" ]]; then

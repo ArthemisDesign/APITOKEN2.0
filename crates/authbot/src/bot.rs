@@ -682,6 +682,87 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn store() -> Arc<Store> {
+        let path = format!(
+            "{}/authbot_bot_test_{}_{}.db",
+            std::env::temp_dir().display(),
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let _ = std::fs::remove_file(&path);
+        Arc::new(Store::open(&path).unwrap())
+    }
+
+    /// Продукт оффера — ЕДИНСТВЕННОЕ, что разводит две несовместимые передачи доступа: Claude
+    /// отдаётся токеном в реестр, ChatGPT — device-флоу в каталог. Ошибка здесь молча уводит
+    /// продавца не в тот сценарий, поэтому фиксируем все продуктовые ярлыки, которые бот создаёт.
+    #[test]
+    fn product_decides_which_handover_the_seller_gets() {
+        for codex in ["ChatGPT Plus", "ChatGPT Pro", "chatgpt plus", "GPT-5 аккаунт"] {
+            assert!(is_codex_product(codex), "{codex} must use the device flow");
+        }
+        for claude in ["Claude Pro", "Claude 5x", "Claude 20x", "claude pro"] {
+            assert!(!is_codex_product(claude), "{claude} must use the token flow");
+        }
+    }
+
+    /// Каждая кнопка продукта должна резолвиться в имя, которое потом правильно классифицируется.
+    /// Иначе новый ярлык в меню тихо уедет в Claude-ветку.
+    #[test]
+    fn every_product_button_resolves_and_classifies() {
+        for row in product_kb() {
+            for (label, data) in row {
+                let code = data.strip_prefix("noffer:").expect("product button");
+                let name = tier_name(code).expect("every button has a product name");
+                assert_eq!(name, label, "button label and product name must match");
+                assert_eq!(
+                    is_codex_product(name),
+                    label.to_lowercase().contains("chatgpt"),
+                    "{label} classified into the wrong handover"
+                );
+            }
+        }
+    }
+
+    /// Шаги передачи доступа выбираются по офферу. Неизвестный оффер обязан деградировать в
+    /// Claude-ветку, а не отправлять продавца в device-флоу под чужой продукт.
+    #[test]
+    fn handoff_steps_follow_the_offer_product() {
+        let store = store();
+        let claude = store.create_offer("Claude 20x", "$100", 1, 2).unwrap();
+        let chatgpt = store.create_offer("ChatGPT Pro", "$200", 1, 2).unwrap();
+        assert_eq!(handoff_steps(&store, claude), ("ho_proxy", "ho_email"));
+        assert_eq!(handoff_steps(&store, chatgpt), ("cx_proxy", "cx_email"));
+        assert_eq!(handoff_steps(&store, 9_999), ("ho_proxy", "ho_email"));
+    }
+
+    /// Шаги двух веток не должны пересекаться: одно и то же состояние в обеих отправило бы
+    /// продавца в чужой обработчик после перезапуска бота.
+    #[test]
+    fn the_two_handovers_never_share_a_step_name() {
+        let store = store();
+        let claude = store.create_offer("Claude Pro", "$50", 1, 2).unwrap();
+        let chatgpt = store.create_offer("ChatGPT Plus", "$60", 1, 2).unwrap();
+        let (cp, ce) = handoff_steps(&store, claude);
+        let (xp, xe) = handoff_steps(&store, chatgpt);
+        assert!(![cp, ce].contains(&xp) && ![cp, ce].contains(&xe));
+    }
+
+    /// Прокси продавца приходит в разных формах; в реестр и в `proxy.url` должен уходить URL.
+    #[test]
+    fn seller_proxy_forms_normalise_to_a_url() {
+        assert_eq!(proxy_url("1.2.3.4:8080:user:pass"), "http://user:pass@1.2.3.4:8080");
+        assert_eq!(proxy_url("1.2.3.4:8080"), "http://1.2.3.4:8080");
+        assert_eq!(proxy_url("http://user:pass@1.2.3.4:8080"), "http://user:pass@1.2.3.4:8080");
+        assert_eq!(proxy_url("  "), "");
+        assert_eq!(proxy_url("не прокси"), "");
+    }
+
     use super::extract_code_state;
     #[test]
     fn parse_callback_url_and_codestate() {

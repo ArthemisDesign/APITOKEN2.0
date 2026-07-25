@@ -1,0 +1,37 @@
+# Бот пополнения пула: покупает подписки у продавцов и передаёт их движку.
+#
+# Claude-подписка становится строкой-токеном в реестре, ChatGPT-подписка — каталогом CODEX_HOME,
+# который движок сканирует. Поэтому боту нужен доступ на запись в каталог покупок и к пиннованному
+# codex CLI, но НЕ нужен root и не нужны права на конфиг движка.
+#
+# Бинарь берётся из той же неизменяемой релизной директории, что и движок: раньше он собирался
+# вручную в scratch-каталог, и запущенный бот мог оказаться на месяцы старше протестированного
+# коммита. Перезапуском управляет deploy.sh — только когда бинарь реально изменился, чтобы не
+# рвать device-авторизацию, которую бот в этот момент ведёт с продавцом.
+[Unit]
+Description=claude-api authbot (subscription purchasing → this project's pool)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+EnvironmentFile=/srv/claude-api/data/authbot.env
+ExecStart=/srv/claude-api/releases/current/authbot
+WorkingDirectory=/srv/claude-api/data
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+# Пишет состояние бота, каталоги купленных аккаунтов и токены подписок.
+ReadWritePaths=/srv/claude-api/data
+
+[Install]
+WantedBy=multi-user.target

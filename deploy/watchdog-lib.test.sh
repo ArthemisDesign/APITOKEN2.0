@@ -302,6 +302,25 @@ test_db_port=$(sed -n 's/^PORT=${WATCHDOG_POSTGRES_PORT:-\([0-9]*\)}$/\1/p' "$RO
 (( test_db_port < 32768 )) \
   || wd_die "test database port $test_db_port is inside the ephemeral range and will collide"
 
+# The authbot produces the subscriptions the engine serves from, so it must ship from the same
+# tested, immutable release rather than a hand-built scratch binary that can drift for months.
+grep -Fq 'cargo build --locked --release -p authbot' "$ROOT/deploy/deploy.sh" \
+  || wd_die "the release does not build the authbot"
+grep -Fq '"$ENGINE_STAGE/authbot"' "$ROOT/deploy/deploy.sh" \
+  || wd_die "the authbot binary is not installed into the engine release"
+grep -Fq 'staged authbot binary is missing' "$ROOT/deploy/deploy.sh" \
+  || wd_die "a release without an authbot binary must fail closed"
+grep -Fq 'ExecStart=/srv/claude-api/releases/current/authbot' "$ROOT/systemd/claude-authbot.service" \
+  || wd_die "the authbot unit must run the binary from the current release"
+grep -Fq 'claude-authbot.service' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die "the authbot unit is never installed"
+grep -Fq '/usr/bin/systemctl restart claude-authbot.service' "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die "the deploy user cannot restart the authbot"
+# Restarting on every engine deploy would kill a device authorization the bot is walking a seller
+# through, so the restart must stay conditional on the binary actually changing.
+grep -Fq 'cmp -s "$previous/authbot" "$current/authbot"' "$ROOT/deploy/deploy.sh" \
+  || wd_die "the authbot restart must be conditional on a changed binary"
+
 grep -Fq 'final_verify_admin_panel' "$ROOT/deploy/watchdog.sh"
 # The panel check runs immediately after cutover, while the stable listener still round-robins the
 # retiring slot. It must require a streak of current answers rather than accepting the first one,
