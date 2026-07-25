@@ -342,7 +342,6 @@ prepare_and_test_candidate() {
   done < <(find "$candidate/deploy" -type f -name '*.sh' -print0)
   run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"
   run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"
-  run_as_ci bash "$candidate/deploy/agent-merge.test.sh"
 
   sudo -n "$TEST_DB_HELPER" stop
   TEST_DB_STARTED=0

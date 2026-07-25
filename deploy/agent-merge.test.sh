@@ -262,8 +262,14 @@ printf 'not json' | bash "$GUARD" >/dev/null 2>&1 \
   || wd_die 'the git guard must fail open on an unparseable payload'
 
 # --- the workflow is actually wired into the repository ---------------------------------------------
+# These tests run in the merge gate, not in the production gate: twice they quarantined a SHA for an
+# environment difference on the host rather than a real defect, and an infrastructure test that
+# blocks delivery costs more than it protects. Diagnose with `sudo apitoken-watchdog logs`, then
+# re-register in deploy/watchdog.sh.
+grep -Fq 'deploy/agent-merge.test.sh' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the merge gate does not run the merge-path tests'
 grep -Fq 'agent-merge.test.sh' "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'the production gate does not run the merge-path tests'
+  && wd_die 'the merge-path tests are back in the production gate before being diagnosed'
 grep -Fq 'guard-git.sh' "$ROOT/.claude/settings.json" \
   || wd_die 'the git guard is not registered as a PreToolUse hook'
 grep -Fq '.claude/worktrees/' "$ROOT/.gitignore" \
