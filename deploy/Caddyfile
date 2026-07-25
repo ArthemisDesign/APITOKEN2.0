@@ -216,6 +216,13 @@ crm.apitoken.sale {
 	handle /v1/ingest/* {
 		reverse_proxy 127.0.0.1:3400
 	}
+	# Public broadcast tracking-link redirect /r/<token> — NO admin auth (a cold Telegram recipient
+	# clicks it). crm-api logs the per-recipient click and 302s to the landing with UTM. The token is
+	# unguessable; the endpoint only records a click and redirects, so it is safe to expose publicly.
+	handle /r/* {
+		rewrite * /v1{uri}
+		reverse_proxy 127.0.0.1:3400
+	}
 	handle /v1/* {
 		import managed_admin_auth
 		reverse_proxy 127.0.0.1:3400
