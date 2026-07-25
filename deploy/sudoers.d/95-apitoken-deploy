@@ -132,7 +132,7 @@ Cmnd_Alias APITOKEN_CADDY = \
 # Existence/size probes on root-only environment files. `test` reveals only presence, never content.
 Cmnd_Alias APITOKEN_PROBE = \
     /usr/bin/test -f /etc/apitoken/api.env, \
-    /usr/bin/test -s /etc/apitoken/engine-postgres.env, \
+    /usr/bin/test -s /srv/claude-api/data/engine-postgres.env, \
     /usr/bin/test -f /etc/systemd/system/claude-api@.service
 
 deploy ALL=(root) NOPASSWD: APITOKEN_HELPERS, APITOKEN_CANDIDATES, APITOKEN_RELEASES, \
