@@ -79,17 +79,28 @@ done
 # bind mount in observability/compose.yaml. The result was a journal in /run (tmpfs), pinned at its
 # RuntimeMaxUse cap and discarded on every reboot.
 journald_dropin=/etc/systemd/journald.conf.d/10-apitoken.conf
-install -d -o root -g root -m 0755 /etc/systemd/journald.conf.d
-# journald only writes to a persistent directory owned by the journal group; the Docker-created one
-# is root:root 0755. Fix ownership before the restart, or journald silently stays volatile.
-install -d -o root -g systemd-journal -m 2755 /var/log/journal
-# This installer runs on every infrastructure commit, so restart only on an actual content change:
-# an unconditional restart would interrupt logging on each unrelated deployment.
-if ! cmp -s "$ROOT/systemd/journald-apitoken.conf" "$journald_dropin"; then
-  install -o root -g root -m 0644 "$ROOT/systemd/journald-apitoken.conf" "$journald_dropin"
-  systemctl restart systemd-journald
-  # Move whatever the runtime journal still holds onto the now-persistent store.
-  journalctl --flush
+# The controller runs under ProtectSystem=full, so /etc is read-only apart from the paths its unit
+# lists in ReadWritePaths. That unit now grants /etc/systemd, but a unit change only takes effect
+# for the NEXT invocation: this service is Type=oneshot, and the run that installs the new
+# definition is still executing inside the namespace it started with. So the first deployment after
+# that grant cannot yet create the drop-in directory, and failing here would abort the whole
+# infrastructure install for a log-configuration detail. Attempt it, and skip loudly if the
+# namespace is still the old one — the next infrastructure deployment applies it.
+if install -d -o root -g root -m 0755 /etc/systemd/journald.conf.d 2>/dev/null; then
+  # journald only writes to a persistent directory owned by the journal group; the Docker-created
+  # one is root:root 0755. Fix ownership before the restart, or journald silently stays volatile.
+  install -d -o root -g systemd-journal -m 2755 /var/log/journal
+  # This installer runs on every infrastructure commit, so restart only on an actual content change:
+  # an unconditional restart would interrupt logging on each unrelated deployment.
+  if ! cmp -s "$ROOT/systemd/journald-apitoken.conf" "$journald_dropin"; then
+    install -o root -g root -m 0644 "$ROOT/systemd/journald-apitoken.conf" "$journald_dropin"
+    systemctl restart systemd-journald
+    # Move whatever the runtime journal still holds onto the now-persistent store.
+    journalctl --flush
+  fi
+else
+  echo 'journald drop-in skipped: /etc/systemd is read-only in this namespace;' \
+    'the next infrastructure deployment will apply it' >&2
 fi
 
 # Shared affinity is deliberately ephemeral, but its keyed identifiers and Redis password must be
