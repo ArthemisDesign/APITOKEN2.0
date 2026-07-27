@@ -4,17 +4,30 @@ import Link from "next/link";
 import { useState } from "react";
 import { BrandMark, ThemeToggle } from "@/components/chrome";
 
-export type ShellSection = "profile" | "docs";
+export type ShellSection = "profile" | "docs" | "stock" | "monitor";
 
-const NAV: { section: ShellSection; href: string; label: string; icon: string }[] = [
+interface NavItem {
+  section: ShellSection;
+  href: string;
+  label: string;
+  icon: string;
+}
+
+/**
+ * Два разных контура, и смешивать их нельзя: покупателю нечего делать в админке,
+ * а админу незачем уходить из неё в клиентские страницы посреди работы.
+ */
+const CLIENT_NAV: NavItem[] = [
   { section: "profile", href: "/profile", label: "Расход ключа", icon: "◧" },
   { section: "docs", href: "/docs", label: "Документация", icon: "❑" },
 ];
 
-/**
- * Тот же каркас, что у дашборда: разделы слева, содержимое справа. Пункты —
- * обычные ссылки, потому что страницы здесь серверные и живут на своих адресах.
- */
+const ADMIN_NAV: NavItem[] = [
+  { section: "stock", href: "/admin", label: "Склад ключей", icon: "◧" },
+  { section: "monitor", href: "/admin/monitor", label: "Наблюдение", icon: "◔" },
+];
+
+/** Тот же каркас, что у дашборда: разделы слева, содержимое справа. */
 export function AppShell({
   section,
   title,
@@ -27,17 +40,19 @@ export function AppShell({
   children: React.ReactNode;
 }) {
   const [sideOpen, setSideOpen] = useState(false);
+  const isAdmin = section === "stock" || section === "monitor";
+  const nav = isAdmin ? ADMIN_NAV : CLIENT_NAV;
 
   return (
     <div className="app">
       <aside className={`side ${sideOpen ? "open" : ""}`}>
-        <Link className="brand side-brand" href="/profile">
+        <Link className="brand side-brand" href={isAdmin ? "/admin" : "/profile"}>
           <BrandMark />
           apiToken
-          <i className="openkeys-mark">openKeys</i>
+          <i className="openkeys-mark">{isAdmin ? "admin" : "openKeys"}</i>
         </Link>
         <nav className="side-nav">
-          {NAV.map((item) => (
+          {nav.map((item) => (
             <div key={item.section} className="side-nav-item">
               <Link
                 className={`side-link ${section === item.section ? "on" : ""}`}
@@ -54,14 +69,16 @@ export function AppShell({
           <div className="side-tools">
             <ThemeToggle />
           </div>
-          <nav className="side-legal" aria-label="Ссылки">
-            <a href="https://apitoken.sale" target="_blank" rel="noreferrer">
-              apiToken.sale
-            </a>
-            <a href="https://apitoken.sale/docs/learn" target="_blank" rel="noreferrer">
-              Гайды по Claude API
-            </a>
-          </nav>
+          {isAdmin ? null : (
+            <nav className="side-legal" aria-label="Ссылки">
+              <a href="https://apitoken.sale" target="_blank" rel="noreferrer">
+                apiToken.sale
+              </a>
+              <a href="https://apitoken.sale/docs/learn" target="_blank" rel="noreferrer">
+                Гайды по Claude API
+              </a>
+            </nav>
+          )}
         </div>
       </aside>
       <button

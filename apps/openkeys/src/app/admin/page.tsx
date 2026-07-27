@@ -252,7 +252,7 @@ export default function AdminPage() {
 
   if (checking) {
     return (
-      <AppShell section="profile" title="Админка">
+      <AppShell section="stock" title="Админка">
         <div className="app-body">
           <div className="app-body-in">
             <div className="empty-box">Проверяем сессию…</div>
@@ -264,7 +264,7 @@ export default function AdminPage() {
 
   if (!authorized) {
     return (
-      <AppShell section="profile" title="Админка">
+      <AppShell section="stock" title="Админка">
         <div className="app-body">
           <div className="app-body-in">
             <section className="wrap openkeys-narrow">
@@ -310,13 +310,10 @@ export default function AdminPage() {
 
   return (
     <AppShell
-      section="profile"
+      section="stock"
       title="Выпуск ключей"
       actions={
         <>
-          <Link className="btn btn-ghost btn-sm" href="/admin/monitor">
-            Наблюдение
-          </Link>
           <button className="btn btn-primary btn-sm" type="button" onClick={() => setShowIssueForm((open) => !open)}>
             {showIssueForm ? "Закрыть" : "Выпустить пачку"}
           </button>

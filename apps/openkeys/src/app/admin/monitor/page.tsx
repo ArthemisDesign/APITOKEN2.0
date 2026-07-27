@@ -72,7 +72,7 @@ export default function MonitorPage() {
 
   if (!authorized) {
     return (
-      <AppShell section="profile" title="Наблюдение">
+      <AppShell section="monitor" title="Наблюдение">
         <div className="app-body">
           <div className="app-body-in">
             <div className="empty-box">
@@ -91,13 +91,10 @@ export default function MonitorPage() {
 
   return (
     <AppShell
-      section="profile"
+      section="monitor"
       title="Наблюдение за ключами"
       actions={
         <>
-          <Link className="btn btn-ghost btn-sm" href="/admin">
-            Склад
-          </Link>
           <button className="btn btn-ghost btn-sm" type="button" disabled={loading} onClick={() => void refresh()}>
             {loading ? "Обновляем…" : "Обновить"}
           </button>
