@@ -327,6 +327,32 @@ validation_unknown=$(git -C "$validation_repo" rev-parse HEAD)
 wd_range_has_unknown_validation_path "$validation_repo" "$validation_docs" "$validation_unknown" \
   || wd_die "an unclassified path did not fail safe into complete validation"
 
+# A deleted component file still requires that component's lane. A rename is deliberately exposed
+# as an old-path deletion plus a new-path addition, so moving code cannot escape its former owner.
+mkdir -p "$validation_repo/crates"
+printf 'removed\n' >"$validation_repo/crates/deleted.rs"
+git -C "$validation_repo" add crates/deleted.rs
+git -C "$validation_repo" commit --quiet -m deletion-base
+validation_deletion_base=$(git -C "$validation_repo" rev-parse HEAD)
+git -C "$validation_repo" rm --quiet crates/deleted.rs
+git -C "$validation_repo" commit --quiet -m deletion
+validation_deletion=$(git -C "$validation_repo" rev-parse HEAD)
+wd_range_has_class "$validation_repo" "$validation_deletion_base" "$validation_deletion" \
+  wd_path_is_engine || wd_die "a deleted engine path did not require Rust validation"
+
+mkdir -p "$validation_repo/crates"
+printf 'renamed\n' >"$validation_repo/crates/renamed.rs"
+git -C "$validation_repo" add crates/renamed.rs
+git -C "$validation_repo" commit --quiet -m rename-base
+validation_rename_base=$(git -C "$validation_repo" rev-parse HEAD)
+git -C "$validation_repo" mv crates/renamed.rs docs/renamed.md
+git -C "$validation_repo" commit --quiet -m rename
+validation_rename=$(git -C "$validation_repo" rev-parse HEAD)
+wd_range_has_class "$validation_repo" "$validation_rename_base" "$validation_rename" \
+  wd_path_is_engine || wd_die "a renamed-away engine path did not require Rust validation"
+wd_range_has_class "$validation_repo" "$validation_rename_base" "$validation_rename" \
+  wd_path_is_validation_neutral || wd_die "a renamed documentation destination was not classified"
+
 # Both the gate and release promoter must hash the same mandatory runtime entrypoints.
 artifact_tree="$TEMP/artifact-tree"
 artifact_paths=(

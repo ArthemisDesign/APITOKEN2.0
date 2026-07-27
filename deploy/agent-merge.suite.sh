@@ -12,9 +12,13 @@ source "$ROOT/deploy/watchdog-lib.sh"
 
 MERGE=$ROOT/deploy/agent-merge.sh
 GUARD=$ROOT/.claude/hooks/guard-git.sh
+WATCHDOG_LIB=$ROOT/deploy/watchdog-lib.sh
+SCCACHE_WRAPPER=$ROOT/deploy/sccache-cargo.sh
 
 [[ -x $MERGE ]] || wd_die 'deploy/agent-merge.sh must be executable'
 [[ -x $GUARD ]] || wd_die '.claude/hooks/guard-git.sh must be executable'
+[[ -f $WATCHDOG_LIB ]] || wd_die 'deploy/watchdog-lib.sh is required'
+[[ -x $SCCACHE_WRAPPER ]] || wd_die 'deploy/sccache-cargo.sh must be executable'
 bash -n "$MERGE" || wd_die 'deploy/agent-merge.sh does not parse'
 bash -n "$GUARD" || wd_die '.claude/hooks/guard-git.sh does not parse'
 
@@ -51,14 +55,17 @@ git_quiet -C "$PRIMARY" commit --quiet -m 'base'
 git_quiet -C "$PRIMARY" push --quiet origin master
 
 # The merge script resolves its own repository from its location, so every scenario gets a copy of
-# the two scripts inside the throwaway tree.
+# the scripts it may load inside the throwaway tree.
 install_scripts() {
   mkdir -p -- "$1/deploy" "$1/.claude/hooks"
   cp -- "$MERGE" "$1/deploy/agent-merge.sh"
   cp -- "$GUARD" "$1/.claude/hooks/guard-git.sh"
+  cp -- "$WATCHDOG_LIB" "$1/deploy/watchdog-lib.sh"
+  cp -- "$SCCACHE_WRAPPER" "$1/deploy/sccache-cargo.sh"
 }
 install_scripts "$PRIMARY"
-git_quiet -C "$PRIMARY" add deploy .claude
+git_quiet -C "$PRIMARY" add deploy/agent-merge.sh deploy/watchdog-lib.sh \
+  deploy/sccache-cargo.sh .claude/hooks/guard-git.sh
 git_quiet -C "$PRIMARY" commit --quiet -m 'tooling'
 git_quiet -C "$PRIMARY" push --quiet origin master
 
@@ -85,6 +92,10 @@ run_merge() {  # $1 = tree, rest = extra env assignments / flags
       AGENT_MERGE_DEPLOY_WAIT_S=6 \
       AGENT_MERGE_STALE_S=0 \
       AGENT_MERGE_GATE_CMD="${GATE_STUB-true}" \
+      AGENT_MERGE_TYPESCRIPT_GATE_CMD="${TYPESCRIPT_GATE_STUB-}" \
+      AGENT_MERGE_RUST_GATE_CMD="${RUST_GATE_STUB-}" \
+      AGENT_MERGE_DEPLOYMENT_GATE_CMD="${DEPLOYMENT_GATE_STUB-}" \
+      AGENT_MERGE_STATIC_GATE_CMD="${STATIC_GATE_STUB-}" \
       AGENT_MERGE_STATUS_CMD="${STATUS_STUB-printf success}" \
       AGENT_MERGE_VALIDATION_REQUEST_CMD="${VALIDATION_REQUEST_STUB-printf 1}" \
       AGENT_MERGE_VALIDATION_STATUS_CMD="${VALIDATION_STATUS_STUB-printf success}" \
@@ -124,6 +135,58 @@ GATE_STUB='exit 7' expect_failure 'a red gate' '' run_merge "$tree_a"
 [[ $(git --git-dir="$ORIGIN" rev-parse master) == "$before" ]] \
   || wd_die 'a failing gate still pushed to master'
 [[ ! -d $TEMP/lock ]] || wd_die 'a failing gate left the merge lock behind'
+
+# --- the default local gate selects only relevant lanes and fails closed -------------------------
+new_gate_worktree() {  # $1 = name, $2 = changed path
+  local name=$1 path=$2 tree=$TEMP/gate-$name
+  git_quiet -C "$PRIMARY" worktree add --quiet -b "feat/gate-$name" "$tree" origin/master
+  install_scripts "$tree"
+  mkdir -p -- "$(dirname -- "$tree/$path")"
+  printf '# %s\n' "$name" >>"$tree/$path"
+  git_quiet -C "$tree" add "$path"
+  git_quiet -C "$tree" commit --quiet -m "gate $name"
+  git_quiet -C "$tree" push --quiet -u origin "feat/gate-$name"
+  printf '%s' "$tree"
+}
+
+assert_gate_selection() {  # $1=name $2=path $3=typescript $4=rust $5=deployment
+  local name=$1 path=$2 typescript=$3 rust=$4 deployment=$5
+  local tree lane lane_expected
+  local lane_log=$TEMP/gate-$name.lanes output=$TEMP/gate-$name.log
+  tree=$(new_gate_worktree "$name" "$path")
+  GATE_STUB='' MERGE_FLAGS=--dry-run \
+    TYPESCRIPT_GATE_STUB="printf '%s\\n' typescript >>'$lane_log'" \
+    RUST_GATE_STUB="printf '%s\\n' rust >>'$lane_log'" \
+    DEPLOYMENT_GATE_STUB="printf '%s\\n' deployment >>'$lane_log'" \
+    STATIC_GATE_STUB="printf '%s\\n' static >>'$lane_log'" \
+    run_merge "$tree" >"$output" \
+    || wd_die "path-aware gate scenario $name failed: $(cat "$output")"
+  grep -Fq "local gate selection: typescript=$typescript rust=$rust deployment=$deployment static=1" \
+    "$output" || wd_die "path-aware gate scenario $name selected the wrong lanes: $(cat "$output")"
+  for lane in typescript rust deployment static; do
+    lane_expected=0
+    case "$lane" in
+      typescript) lane_expected=$typescript ;;
+      rust) lane_expected=$rust ;;
+      deployment) lane_expected=$deployment ;;
+      static) lane_expected=1 ;;
+    esac
+    if (( lane_expected == 1 )); then
+      grep -Fxq "$lane" "$lane_log" \
+        || wd_die "path-aware gate scenario $name did not execute selected $lane lane"
+    elif grep -Fxq "$lane" "$lane_log"; then
+      wd_die "path-aware gate scenario $name executed unselected $lane lane"
+    fi
+  done
+}
+
+assert_gate_selection docs docs/path-aware.md 0 0 0
+assert_gate_selection typescript apps/path-aware.ts 1 0 0
+assert_gate_selection rust crates/path-aware.rs 0 1 0
+assert_gate_selection infrastructure deploy/path-aware.test.sh 0 0 1
+assert_gate_selection workflow AGENTS.md 0 0 1
+assert_gate_selection unknown mystery/runtime.xyz 1 1 1
+assert_gate_selection gate-machinery deploy/sccache-cargo.sh 1 1 1
 
 # A feature SHA that fails the production host's trusted gate must never reach the merge lock or
 # master, even if its local gate passed.
@@ -366,12 +429,22 @@ for parallel_gate_contract in \
   'am_gate_typescript & typescript_pid=$!' \
   'am_gate_rust & rust_pid=$!' \
   'am_gate_deployment & deployment_pid=$!' \
+  'am_gate_static "$base" "$target" & static_pid=$!' \
   'wait "$typescript_pid" || typescript_rc=$?' \
   'wait "$rust_pid" || rust_rc=$?' \
   'wait "$deployment_pid" || deployment_rc=$?' \
-  'local gate lanes failed (typescript=$typescript_rc rust=$rust_rc deployment=$deployment_rc)'; do
+  'wait "$static_pid" || static_rc=$?' \
+  'local gate lanes failed (typescript=$typescript_rc rust=$rust_rc deployment=$deployment_rc static=$static_rc)'; do
   grep -Fq -- "$parallel_gate_contract" "$ROOT/deploy/agent-merge.sh" \
     || wd_die "merge path lost parallel local-gate contract: $parallel_gate_contract"
+done
+for path_gate_contract in \
+  'diff --name-only --no-renames --diff-filter=ACDMRTUXB' \
+  'wd_range_has_unknown_validation_path' \
+  'local gate machinery changed; forcing every expensive lane' \
+  'am_gate "$previous" "$candidate"'; do
+  grep -Fq -- "$path_gate_contract" "$ROOT/deploy/agent-merge.sh" \
+    || wd_die "merge path lost fail-closed path-aware contract: $path_gate_contract"
 done
 grep -Fq 'agent-merge.suite.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the merge-path suite'

@@ -7,8 +7,9 @@
 #   * it never checks out master, so it cannot disturb a co-resident working tree;
 #   * it holds a machine-wide lock across the merge AND the deployment that follows, so two
 #     candidates can never be tested or deployed on top of each other;
-#   * it runs the local full gate and trusted production-host validation on the exact tree it
-#     pushes, overlapping them when possible and repeating both only when the SHA changes;
+#   * it runs a fail-closed path-aware local gate and trusted production-host validation on the
+#     exact tree it pushes, overlapping them when possible and repeating both only when the SHA
+#     changes;
 #   * it refuses to stack work on a red or still-deploying master.
 #
 # Usage:  deploy/agent-merge.sh [--allow-primary-tree] [--dry-run] [--fix-red]
@@ -63,6 +64,10 @@ am_now() { date +%s; }
 
 am_gate_typescript() (
   cd "$ROOT"
+  if [[ -n ${AGENT_MERGE_TYPESCRIPT_GATE_CMD:-} ]]; then
+    eval "$AGENT_MERGE_TYPESCRIPT_GATE_CMD"
+    return
+  fi
   pnpm install --frozen-lockfile
   pnpm build
   pnpm typecheck
@@ -71,20 +76,53 @@ am_gate_typescript() (
 
 am_gate_rust() (
   cd "$ROOT"
+  if [[ -n ${AGENT_MERGE_RUST_GATE_CMD:-} ]]; then
+    eval "$AGENT_MERGE_RUST_GATE_CMD"
+    return
+  fi
   bash "$ROOT/deploy/sccache-cargo.sh" cargo test --locked --workspace
 )
 
 am_gate_deployment() (
   cd "$ROOT"
+  if [[ -n ${AGENT_MERGE_DEPLOYMENT_GATE_CMD:-} ]]; then
+    eval "$AGENT_MERGE_DEPLOYMENT_GATE_CMD"
+    return
+  fi
   bash "$ROOT/deploy/lib.test.sh"
   # The merge path tests itself on every merge, strictly. It is deliberately not enforced in the
   # production gate: the watchdog installed on the host still calls deploy/agent-merge.test.sh, now a
   # report-only shim, so a host-environment difference cannot quarantine a SHA and trap its own fix.
   bash "$ROOT/deploy/agent-merge.suite.sh"
-  # shellcheck disable=SC2046
-  bash -n $(find "$ROOT/deploy" -type f -name '*.sh') "$ROOT/deploy/apitoken-db-dump"
-  git -C "$ROOT" diff --check
 )
+
+am_gate_static() (
+  cd "$ROOT"
+  if [[ -n ${AGENT_MERGE_STATIC_GATE_CMD:-} ]]; then
+    eval "$AGENT_MERGE_STATIC_GATE_CMD"
+    return
+  fi
+  while IFS= read -r -d '' script; do
+    bash -n "$script"
+  done < <(find "$ROOT/deploy" -type f -name '*.sh' -print0)
+  bash -n "$ROOT/deploy/apitoken-db-dump"
+  git -C "$ROOT" diff --check "$1..$2"
+)
+
+# Selector and cache changes must prove the complete gate even if a changed classifier would call
+# them cheap. Keep this list local to the merge client so it is evaluated before sourcing the
+# candidate's otherwise unchanged shared classifiers.
+am_range_changes_local_gate() {
+  local base=$1 target=$2 path
+  while IFS= read -r path; do
+    case "$path" in
+      deploy/agent-merge.sh|deploy/agent-merge.suite.sh|deploy/watchdog-lib.sh|deploy/sccache-cargo.sh)
+        return 0
+        ;;
+    esac
+  done < <(git -C "$ROOT" diff --name-only --no-renames --diff-filter=ACDMRTUXB "$base..$target")
+  return 1
+}
 
 am_gate() {
   if [[ -n ${AGENT_MERGE_GATE_CMD:-} ]]; then
@@ -92,19 +130,66 @@ am_gate() {
     return
   fi
 
-  # Keep these lanes in step with the complete gate in CONTRIBUTING.md. They are independent, so
-  # run them concurrently but always reap all three before reporting a failure.
-  local typescript_pid rust_pid deployment_pid
-  local typescript_rc=0 rust_rc=0 deployment_rc=0
-  am_log 'running local TypeScript, Rust, and deployment gates in parallel'
-  am_gate_typescript & typescript_pid=$!
-  am_gate_rust & rust_pid=$!
-  am_gate_deployment & deployment_pid=$!
-  wait "$typescript_pid" || typescript_rc=$?
-  wait "$rust_pid" || rust_rc=$?
-  wait "$deployment_pid" || deployment_rc=$?
-  (( typescript_rc == 0 && rust_rc == 0 && deployment_rc == 0 )) \
-    || am_die "local gate lanes failed (typescript=$typescript_rc rust=$rust_rc deployment=$deployment_rc)"
+  [[ $# -eq 2 ]] || am_die 'local gate requires an exact base and target SHA'
+  local base=$1 target=$2
+  [[ $base =~ ^[0-9a-f]{40}$ && $target =~ ^[0-9a-f]{40}$ ]] \
+    || am_die 'local gate requires full 40-character lowercase commit SHAs'
+  git -C "$ROOT" cat-file -e "$base^{commit}" 2>/dev/null \
+    || am_die "local gate base $base is unavailable"
+  git -C "$ROOT" cat-file -e "$target^{commit}" 2>/dev/null \
+    || am_die "local gate target $target is unavailable"
+  git -C "$ROOT" merge-base --is-ancestor "$base" "$target" \
+    || am_die "local gate base $base is not an ancestor of target $target"
+  git -C "$ROOT" diff --name-only --no-renames --diff-filter=ACDMRTUXB \
+    "$base..$target" >/dev/null \
+    || am_die "local gate could not inspect $base..$target"
+
+  local typescript_required=0 rust_required=0 deployment_required=0
+  if am_range_changes_local_gate "$base" "$target"; then
+    typescript_required=1
+    rust_required=1
+    deployment_required=1
+    am_log 'local gate machinery changed; forcing every expensive lane'
+  else
+    # shellcheck source=deploy/watchdog-lib.sh
+    source "$ROOT/deploy/watchdog-lib.sh"
+    wd_range_has_class "$ROOT" "$base" "$target" wd_path_is_typescript \
+      && typescript_required=1
+    wd_range_has_class "$ROOT" "$base" "$target" wd_path_is_engine \
+      && rust_required=1
+    if wd_range_has_class "$ROOT" "$base" "$target" wd_path_is_infrastructure \
+      || wd_range_has_class "$ROOT" "$base" "$target" wd_path_is_merge_workflow; then
+      deployment_required=1
+    fi
+    if wd_range_has_unknown_validation_path "$ROOT" "$base" "$target"; then
+      typescript_required=1
+      rust_required=1
+      deployment_required=1
+      am_log 'unclassified path found; forcing every expensive lane'
+    fi
+  fi
+
+  # Selected lanes are independent. Start all of them plus the always-on static lane before waiting,
+  # and reap every child even after a failure so no candidate-owned process leaks into the merge.
+  local typescript_pid= rust_pid= deployment_pid= static_pid=
+  local typescript_rc=0 rust_rc=0 deployment_rc=0 static_rc=0
+  am_log "local gate selection: typescript=$typescript_required rust=$rust_required deployment=$deployment_required static=1"
+  if (( typescript_required == 1 )); then
+    am_gate_typescript & typescript_pid=$!
+  fi
+  if (( rust_required == 1 )); then
+    am_gate_rust & rust_pid=$!
+  fi
+  if (( deployment_required == 1 )); then
+    am_gate_deployment & deployment_pid=$!
+  fi
+  am_gate_static "$base" "$target" & static_pid=$!
+  if [[ -n $typescript_pid ]]; then wait "$typescript_pid" || typescript_rc=$?; fi
+  if [[ -n $rust_pid ]]; then wait "$rust_pid" || rust_rc=$?; fi
+  if [[ -n $deployment_pid ]]; then wait "$deployment_pid" || deployment_rc=$?; fi
+  wait "$static_pid" || static_rc=$?
+  (( typescript_rc == 0 && rust_rc == 0 && deployment_rc == 0 && static_rc == 0 )) \
+    || am_die "local gate lanes failed (typescript=$typescript_rc rust=$rust_rc deployment=$deployment_rc static=$static_rc)"
 }
 
 # Resolves a GitHub token without asking anybody to configure one. $GITHUB_TOKEN wins when set;
@@ -411,8 +496,8 @@ am_log "rebasing the candidate onto committed $AGENT_MERGE_TARGET $previous befo
 git -C "$ROOT" rebase "$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET"
 
 # Fail fast, before queueing behind anyone, on a tree that cannot pass anyway. The host receives
-# the exact already-pushed SHA first, so its path-aware gate runs concurrently with this local full
-# gate. Neither result is trusted for a different SHA.
+# the exact already-pushed SHA first, so its path-aware gate runs concurrently with this local
+# path-aware gate. Neither result is trusted for a different SHA.
 candidate=$(git -C "$ROOT" rev-parse HEAD)
 am_publish_validation_sha "$candidate"
 validation_id=
@@ -425,8 +510,8 @@ else
     || am_die "GitHub returned an invalid trusted validation deployment id"
   am_log "requested trusted host validation for $candidate (deployment $validation_id)"
 fi
-am_log "running the full gate on $(git -C "$ROOT" rev-parse --short HEAD) before queueing"
-am_gate
+am_log "running the path-aware local gate on $(git -C "$ROOT" rev-parse --short HEAD) before queueing"
+am_gate "$previous" "$candidate"
 GATED_SHA=$(git -C "$ROOT" rev-parse HEAD)
 [[ $GATED_SHA == "$candidate" ]] || am_die "the candidate SHA changed while its local gate ran"
 VALIDATED_SHA=
@@ -495,10 +580,10 @@ for attempt in $(seq 1 "$AGENT_MERGE_PUSH_ATTEMPTS"); do
       am_log "requested trusted host validation for rebased SHA $candidate (deployment $validation_id)"
     fi
     if [[ $candidate == "$GATED_SHA" ]]; then
-      am_log "reusing the local full gate for $candidate while renewing trusted host validation"
+      am_log "reusing the local path-aware gate for $candidate while renewing trusted host validation"
     else
       am_log "re-running the local gate because the rebased SHA changed to $(git -C "$ROOT" rev-parse --short HEAD)"
-      am_gate
+      am_gate "$previous" "$candidate"
       [[ $(git -C "$ROOT" rev-parse HEAD) == "$candidate" ]] \
         || am_die "the rebased candidate SHA changed while its local gate ran"
       GATED_SHA=$candidate

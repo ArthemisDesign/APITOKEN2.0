@@ -388,7 +388,9 @@ wd_range_files() {
   if [[ -z $base || $base == "$target" ]]; then
     return 0
   fi
-  git -C "$repo" diff --name-only --diff-filter=ACMRTUXB "$base..$target"
+  # Disable rename collapsing so a move is classified as both a deletion from its old component
+  # and an addition to its new one. Deletions must also trigger the lane that owned the removed path.
+  git -C "$repo" diff --name-only --no-renames --diff-filter=ACDMRTUXB "$base..$target"
 }
 
 wd_path_is_engine() {

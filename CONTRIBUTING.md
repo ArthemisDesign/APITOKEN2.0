@@ -42,12 +42,15 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    git diff --check
    ```
 
-   The merge script preserves this full scope while running its independent TypeScript, Rust, and
-   deployment lanes concurrently. Rust compilation goes through a checksum-pinned `sccache`; its
-   binary, 10 GiB object cache, and Cargo 1.91+ intermediate build directory live in the clone's git
-   common directory and are reused by all linked worktrees. Final Cargo targets remain local to each
-   worktree. The wrapper falls back to uncached Cargo if its one-time bootstrap is unavailable; set
-   `SCCACHE_DISABLE=1` for an explicit uncached run.
+   The merge script selects TypeScript, Rust, and deployment lanes from the exact committed diff and
+   runs the selected independent lanes concurrently. Shell syntax and exact-range whitespace checks
+   always run. Documentation-only changes can therefore stay cheap; an unknown path, deletion or
+   rename is handled conservatively, and a change to the merge selector, shared classifier, merge
+   regression suite, or Rust cache wrapper forces every lane. Rust compilation goes through a
+   checksum-pinned `sccache`; its binary, 10 GiB object cache, and Cargo 1.91+ intermediate build
+   directory live in the clone's git common directory and are reused by all linked worktrees. Final
+   Cargo targets remain local to each worktree. The wrapper falls back to uncached Cargo if its
+   one-time bootstrap is unavailable; set `SCCACHE_DISABLE=1` for an explicit uncached run.
 
 5. Push the branch and land it with `./deploy/agent-merge.sh` (add `--allow-primary-tree` when you
    work in a plain clone rather than a worktree). That script is the only supported way to reach
@@ -58,13 +61,13 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    `git push` (`git credential`, macOS Keychain), so neither `gh` nor a separately exported
    `GITHUB_TOKEN` is required. Temporarily unavailable status is polled by the script itself every
    five seconds. Before queueing, it requests trusted production-host validation for the exact
-   rebased and pushed feature SHA, then overlaps that path-aware host gate with the complete local
-   gate. It takes the merge lock only after both pass. A later target move or push race that changes
-   the SHA republishes the feature branch and repeats both gates for that new SHA; an unchanged SHA
-   reuses both results. Once the same SHA reaches `master`, the host consumes its root-owned frozen
-   candidate instead of testing it again. The script holds the lock until `deploy/watchdog` reports
-   on the pushed SHA. Merging or pushing to `master` by hand races the production deployment of
-   whoever merged immediately before it.
+   rebased and pushed feature SHA, then overlaps that path-aware host gate with the fail-closed
+   path-aware local gate. It takes the merge lock only after both pass. A later target move or push
+   race that changes the SHA republishes the feature branch and repeats both gates for that new SHA;
+   an unchanged SHA reuses both results. Once the same SHA reaches `master`, the host consumes its
+   root-owned frozen candidate instead of testing it again. The script holds the lock until
+   `deploy/watchdog` reports on the pushed SHA. Merging or pushing to `master` by hand races the
+   production deployment of whoever merged immediately before it.
 6. AI agents never ask a person to provide a GitHub token or prove that a deployment is green. If
    no reusable credential exists, repair the local Git credential helper and rerun; never merge
    blind. Work is complete only when the script reports the exact pushed SHA's `deploy/watchdog`

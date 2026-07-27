@@ -39,11 +39,11 @@ so no paid GitHub runner is used.
 Alongside the serialized production watchdog, a low-priority candidate-validator service may run
 two transient `candidate-validation` deployments concurrently for exact SHAs reachable from pushed
 feature branches. The merge client first rebases onto the latest committed `master`, then creates
-that request before its local full gate, so local validation, trusted-host validation, and an active
-parent rollout may overlap. Each host worker has its own disposable PostgreSQL port, Cargo target,
-status file, and immutable candidate tree. Git fetches are briefly serialized, and work for the
-same SHA has a per-SHA lock so production waits for and reuses that exact build instead of rebuilding
-it.
+that request before its fail-closed path-aware local gate, so local validation, trusted-host
+validation, and an active parent rollout may overlap. Each host worker has its own disposable
+PostgreSQL port, Cargo target, status file, and immutable candidate tree. Git fetches are briefly
+serialized, and work for the same SHA has a per-SHA lock so production waits for and reuses that
+exact build instead of rebuilding it.
 
 The candidate selector tests only the feature delta from the committed parent. Before reporting
 green, the worker fetches `master` again and requires the current committed tip still to be an
