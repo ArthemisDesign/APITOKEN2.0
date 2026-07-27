@@ -468,9 +468,12 @@ wd_path_is_codex_tooling tools/codex-app-server/build-pinned.sh \
 if wd_path_is_codex_tooling crates/forward/src/codex/api.rs; then
   wd_die "gateway-only changes must not rebuild the pinned upstream Codex binary"
 fi
-grep -Fq 'WEB_HEALTH=${OPENKEYS_WEB_HEALTH:-http://127.0.0.1:3410/docs}' \
+grep -Fq 'WEB_HEALTH=${OPENKEYS_WEB_HEALTH:-http://127.0.0.1:3410/api/ready}' \
   "$ROOT/deploy/openkeys-deploy.sh" \
-  || wd_die "OpenKeys rollout health must tolerate the intentional product-root redirect"
+  || wd_die "OpenKeys rollout must gate on dependency readiness"
+grep -Fq 'WEB_ROLLBACK_HEALTH=${OPENKEYS_WEB_ROLLBACK_HEALTH:-http://127.0.0.1:3410/docs}' \
+  "$ROOT/deploy/openkeys-deploy.sh" \
+  || wd_die "OpenKeys rollback health must remain compatible with the previous release"
 
 wd_engine_topology_is_steady 1 1 1 1 0 0 0 0 0 0
 wd_engine_topology_is_steady 0 0 0 0 1 1 1 1 0 0
