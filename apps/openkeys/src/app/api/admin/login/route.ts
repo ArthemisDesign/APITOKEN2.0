@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { loadConfig } from "@/lib/config";
-import { SESSION_COOKIE, credentialsValid, issueSessionValue } from "@/lib/session";
+import { SESSION_COOKIE, authenticate, issueSessionValue } from "@/lib/session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,11 +18,12 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (!user || !password) return NextResponse.json({ error: "invalid_credentials" }, { status: 401 });
 
   const config = loadConfig();
-  if (!credentialsValid(user, password, config)) {
+  const authenticated = authenticate(user, password, config);
+  if (!authenticated) {
     return NextResponse.json({ error: "invalid_credentials" }, { status: 401 });
   }
 
-  const session = issueSessionValue(config);
+  const session = issueSessionValue(authenticated, config);
   const response = NextResponse.json({ ok: true });
   response.cookies.set(SESSION_COOKIE, session.value, {
     httpOnly: true,

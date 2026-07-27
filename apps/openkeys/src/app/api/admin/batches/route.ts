@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { loadConfig } from "@/lib/config";
 import { MAX_BATCH_QUANTITY, issueBatch, listBatches } from "@/lib/keys";
 import { formatUsd, usdStringToNano } from "@/lib/money";
-import { isAdminAuthenticated } from "@/lib/session";
+import { currentAdmin } from "@/lib/session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,7 +12,7 @@ function unauthorized(): NextResponse {
 }
 
 export async function GET(): Promise<NextResponse> {
-  if (!(await isAdminAuthenticated())) return unauthorized();
+  if (!(await currentAdmin())) return unauthorized();
 
   const batches = await listBatches();
   return NextResponse.json({
@@ -29,7 +29,8 @@ export async function GET(): Promise<NextResponse> {
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
-  if (!(await isAdminAuthenticated())) return unauthorized();
+  const admin = await currentAdmin();
+  if (!admin) return unauthorized();
 
   let body: { faceValueUsd?: unknown; quantity?: unknown; multBp?: unknown; label?: unknown; note?: unknown };
   try {
@@ -54,7 +55,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       multBp,
       label: typeof body.label === "string" && body.label.trim() !== "" ? body.label.trim() : null,
       note: typeof body.note === "string" && body.note.trim() !== "" ? body.note.trim() : null,
-      createdBy: config.adminUser,
+      createdBy: admin,
     });
 
     return NextResponse.json({

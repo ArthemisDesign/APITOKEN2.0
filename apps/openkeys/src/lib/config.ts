@@ -17,17 +17,51 @@ function optionalInt(name: string, fallback: number): number {
   return Number(raw);
 }
 
+export interface AdminAccount {
+  user: string;
+  password: string;
+}
+
 export interface OpenkeysConfig {
   databaseUrl: string;
   engineBaseUrl: string;
   engineControlKey: string;
   enginePublicBaseUrl: string;
-  adminUser: string;
-  adminPassword: string;
+  adminAccounts: AdminAccount[];
   sessionSecret: string;
   sessionTtlSeconds: number;
   defaultMultBp: number;
   publicBaseUrl: string;
+}
+
+/**
+ * Учётки админки. Основная пара живёт в OPENKEYS_ADMIN_USER/PASSWORD, дополнительные —
+ * в OPENKEYS_ADMIN_ACCOUNTS как `user:password`, разделённые запятой или переводом строки.
+ * Пароль может содержать двоеточия: делим по первому.
+ */
+function parseAdminAccounts(): AdminAccount[] {
+  const accounts: AdminAccount[] = [];
+  const primaryUser = process.env.OPENKEYS_ADMIN_USER;
+  const primaryPassword = process.env.OPENKEYS_ADMIN_PASSWORD;
+  if (primaryUser && primaryPassword) {
+    accounts.push({ user: primaryUser, password: primaryPassword });
+  }
+
+  for (const entry of (process.env.OPENKEYS_ADMIN_ACCOUNTS ?? "").split(/[,\n]/)) {
+    const trimmed = entry.trim();
+    if (trimmed === "") continue;
+
+    const separator = trimmed.indexOf(":");
+    if (separator <= 0 || separator === trimmed.length - 1) {
+      throw new Error("OPENKEYS_ADMIN_ACCOUNTS entries must look like user:password");
+    }
+    const user = trimmed.slice(0, separator);
+    if (accounts.some((account) => account.user === user)) continue;
+    accounts.push({ user, password: trimmed.slice(separator + 1) });
+  }
+
+  if (accounts.length === 0) throw new Error("at least one admin account is required");
+  return accounts;
 }
 
 export function loadConfig(): OpenkeysConfig {
@@ -44,8 +78,7 @@ export function loadConfig(): OpenkeysConfig {
     engineBaseUrl: process.env.ENGINE_BASE_URL ?? "http://127.0.0.1:8790",
     engineControlKey: required("ENGINE_CONTROL_KEY"),
     enginePublicBaseUrl: process.env.ENGINE_PUBLIC_BASE_URL ?? "https://api.apitoken.sale",
-    adminUser: required("OPENKEYS_ADMIN_USER"),
-    adminPassword: required("OPENKEYS_ADMIN_PASSWORD"),
+    adminAccounts: parseAdminAccounts(),
     sessionSecret,
     sessionTtlSeconds: optionalInt("OPENKEYS_SESSION_TTL_SECONDS", 12 * 60 * 60),
     defaultMultBp,
