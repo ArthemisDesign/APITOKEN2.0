@@ -246,6 +246,9 @@ sales.apitoken.sale {
 # а всё остальное обязано быть доступно покупателю без авторизации.
 # Порт 3410, а НЕ 3400: 3400 занят crm-api (см. блок crm.apitoken.sale ниже).
 openkeys.apitoken.sale {
+	request_body {
+		max_size 32KB
+	}
 	reverse_proxy 127.0.0.1:3410
 }
 

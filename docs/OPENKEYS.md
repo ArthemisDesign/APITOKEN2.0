@@ -14,7 +14,7 @@ api.anthropic.com. Никакого курса, который нельзя пр
 |---|---|
 | `apps/openkeys` | Next.js на порту 3410: публичные страницы, доки, `/u/<token>`, `/usage`, админка `/admin` |
 | `packages/openkeys-db` | Своя PostgreSQL-схема (`openkeys_batches`, `openkeys_keys`) и раннер миграций |
-| `deploy/openkeys-deploy.sh` | Выкат: промоушен релиза, миграции, атомарный симлинк, health-gate, откат |
+| `deploy/openkeys-deploy.sh` | Выкат: промоушен релиза, миграции, атомарный симлинк, readiness-gate, откат |
 | `systemd/apitoken-openkeys.service` | Юнит сервиса |
 
 Границы контекста: OpenKeys **не** трогает commerce и sales. С движком общается только через
@@ -76,7 +76,10 @@ sudo bash deploy/install-watchdog.sh
 `wd_path_is_openkeys` относит к контексту `apps/openkeys/*`, `packages/openkeys-db/*`,
 `packages/engine-client/*`, `packages/contracts/*` и корневые манифесты. На каждый кандидат
 миграции openkeys прогоняются против отдельной одноразовой PostgreSQL (`watchdog-test-db
-openkeys-dsn`), и только потом идёт выкат с health-gate на `http://127.0.0.1:3410/`.
+openkeys-dsn`), и только потом идёт выкат с readiness-gate на
+`http://127.0.0.1:3410/api/ready`. Readiness проверяет конфигурацию, PostgreSQL и Control API
+движка, не раскрывая наружу причину отказа. База `openkeys` входит в регулярный и обязательный
+pre-deploy backup вместе с остальными PostgreSQL-контекстами.
 
 GitHub-контекст называется `deploy/openkeys`; собственный baseline лежит в
 `$STATE_ROOT/openkeys.sha`, поэтому изменения только в OpenKeys не трогают ни движок, ни backend.
