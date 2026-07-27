@@ -2,7 +2,7 @@ import type { Language } from "@/components/i18n-provider";
 
 const en = {
   navStart: "Start", navOverview: "Overview", navDevelopers: "Developers", navKeys: "API keys", navDocs: "Docs",
-  navBilling: "Billing", navTopUp: "Credits",
+  navBilling: "Billing", navTopUp: "Balance",
   navGrowth: "Growth", navPromos: "Promo codes",
   navActivity: "Activity", navUsage: "Usage",
   navAccount: "Account", navProfile: "Profile", navSecurity: "Security",
@@ -11,7 +11,7 @@ const en = {
   keysHelpTitle: "Stuck connecting your key?", keysHelpText: "Our AI support walks you through wiring it into your tool or SDK.", keysHelpCta: "Get help",
   loading: "Loading your account…", loadError: "Unable to load your account", loginPrompt: "Please log in to open your dashboard.",
   login: "Log in", logout: "Log out", closeMenu: "Close menu", menu: "Menu", topUp: "Top up", retry: "Retry",
-  creditsLabel: "Credits", openProfile: "Open profile",
+  creditsLabel: "Balance", openProfile: "Open profile",
   manageKeys: "Manage API keys", getKey: "Get an API key", apiKey: "API key", used: "Used",
   balanceAfterDiscount: "Balance charged after discount", activeKeys: "API access", copy: "Copy", copied: "Copied",
   platformBalance: "Available credit", availableOnPlatform: "Available to spend on apiToken.sale", officialApiValue: "Equivalent Claude API usage",
@@ -125,6 +125,7 @@ const en = {
   bucketAttributionNote: "This value predates detailed token-bucket attribution. It is shown separately so bucket values reconcile exactly to the official total.",
   model: "Model", inputShort: "Input", outputShort: "Output", cacheShort: "Cache", cacheRdShort: "Cache rd", cacheWrShort: "Cache wr",
   profileTitle: "Profile", profileSubtitle: "Verified account details from the commercial backend.", email: "Email",
+  accountDetails: "Account details",
   displayName: "Display name", userId: "User ID", supportId: "Keep this ID handy when asking support to inspect API usage or billing events.",
   verified: "verified", pending: "pending", save: "Save", saving: "Saving…", profileSaved: "Saved", profileSaveError: "Unable to save your display name",
   telegram: "Telegram", notConnected: "Not connected", telegramHelp: "Connect Telegram to receive balance and usage updates.",
@@ -151,6 +152,8 @@ const en = {
   promoPending: "", myActivations: "My activations", code: "Code", reward: "Reward",
   date: "Date", promoCredit: "Promo credit", noPromos: "No promo-code activations are visible in your recent ledger.",
   promoInput: "Promo code", promoAdded: "Added to your balance:", promoInvalid: "Enter a valid promo code.",
+  promoPlaceholder: "For example, WELCOME26",
+  promoHelp: "Codes come from our news channel and partners — each one credits balance to your account once.",
 } as const;
 
 export type DashboardCopy = { [K in keyof typeof en]: string };
@@ -280,6 +283,7 @@ const ru: DashboardCopy = {
   bucketAttributionNote: "Эта ценность появилась до подробного учёта по типам токенов. Она показана отдельно, чтобы сумма категорий точно совпадала с общим итогом.",
   model: "Модель", inputShort: "Вход", outputShort: "Выход", cacheShort: "Кэш", cacheRdShort: "Кэш чт", cacheWrShort: "Кэш зп",
   profileTitle: "Профиль", profileSubtitle: "Подтверждённые данные аккаунта из коммерческого бэкенда.", email: "Email",
+  accountDetails: "Данные аккаунта",
   displayName: "Имя", userId: "ID пользователя", supportId: "Сохраните этот ID: он поможет поддержке найти данные по использованию API или оплате.",
   verified: "подтверждён", pending: "ожидает подтверждения", save: "Сохранить", saving: "Сохраняем…", profileSaved: "Сохранено", profileSaveError: "Не удалось сохранить имя",
   telegram: "Telegram", notConnected: "Не подключён", telegramHelp: "Подключите Telegram для уведомлений о балансе и использовании.",
@@ -306,6 +310,8 @@ const ru: DashboardCopy = {
   promoPending: "", myActivations: "Мои активации", code: "Код", reward: "Награда",
   date: "Дата", promoCredit: "Промо-начисление", noPromos: "В недавней истории нет активаций промокодов.",
   promoInput: "Промокод", promoAdded: "Начислено на баланс:", promoInvalid: "Введите корректный промокод.",
+  promoPlaceholder: "Например, WELCOME26",
+  promoHelp: "Промокоды публикуются в нашем новостном канале и у партнёров — каждый код один раз пополняет ваш баланс.",
 };
 
 export const dashboardCopy: Record<Language, DashboardCopy> = { en, ru };

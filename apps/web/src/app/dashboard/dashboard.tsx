@@ -100,15 +100,31 @@ const localDashboardCopy = {
   },
 } as const;
 
-const navigation: Array<{ section?: Section; label: keyof DashboardCopy; icon: string; href?: string; group?: keyof DashboardCopy }> = [
-  { group: "navStart", section: "overview", label: "navOverview", icon: "▦" },
-  { group: "navDevelopers", section: "keys", label: "navKeys", icon: "⚿" },
-  { href: DOCS_URL, label: "navDocs", icon: "↗" },
-  { group: "navBilling", section: "credits", label: "navTopUp", icon: "＋" },
-  { group: "navGrowth", section: "promos", label: "navPromos", icon: "%" },
-  { group: "navActivity", section: "usage", label: "navUsage", icon: "◔" },
-  { group: "navSupportGroup", section: "support", label: "navSupport", icon: "☏" },
-  { group: "navAccount", section: "profile", label: "navProfile", icon: "◍" },
+const NAV_ICONS = {
+  grid: <><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>,
+  key: <><circle cx="8" cy="15" r="4.5" /><path d="m11 12 9-9" /><path d="m16 7 3 3" /></>,
+  external: <><path d="M14 4h6v6" /><path d="M20 4 11 13" /><path d="M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" /></>,
+  wallet: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 10h18" /><path d="M7 15h4" /></>,
+  percent: <><path d="M19 5 5 19" /><circle cx="7" cy="7" r="2.5" /><circle cx="17" cy="17" r="2.5" /></>,
+  chart: <><path d="M4 20V11" /><path d="M10 20V4" /><path d="M16 20v-6" /><path d="M2 20h20" /></>,
+  chat: <><path d="M21 12a8.5 8.5 0 0 1-8.5 8.5c-1.6 0-3.1-.4-4.4-1.2L3 21l1.7-5.1A8.5 8.5 0 1 1 21 12z" /></>,
+  user: <><circle cx="12" cy="8" r="4" /><path d="M4 21c1.4-3.7 4.6-6 8-6s6.6 2.3 8 6" /></>,
+} as const;
+type NavIconId = keyof typeof NAV_ICONS;
+
+function NavIcon({ id }: { id: NavIconId }) {
+  return <svg viewBox="0 0 24 24" aria-hidden="true">{NAV_ICONS[id]}</svg>;
+}
+
+const navigation: Array<{ section?: Section; label: keyof DashboardCopy; icon: NavIconId; href?: string; group?: keyof DashboardCopy }> = [
+  { group: "navStart", section: "overview", label: "navOverview", icon: "grid" },
+  { group: "navDevelopers", section: "keys", label: "navKeys", icon: "key" },
+  { href: DOCS_URL, label: "navDocs", icon: "external" },
+  { group: "navBilling", section: "credits", label: "navTopUp", icon: "wallet" },
+  { group: "navGrowth", section: "promos", label: "navPromos", icon: "percent" },
+  { group: "navActivity", section: "usage", label: "navUsage", icon: "chart" },
+  { group: "navSupportGroup", section: "support", label: "navSupport", icon: "chat" },
+  { group: "navAccount", section: "profile", label: "navProfile", icon: "user" },
 ];
 
 function useDashboardCopy(): DashboardCopy {
@@ -288,8 +304,8 @@ export function Dashboard() {
       <nav className="side-nav">
         {navigation.map((item, index) => <div key={`${item.label}-${index}`} className="side-nav-item">
           {item.group && <span className="side-group">{copy[item.group]}</span>}
-          {item.href ? <Link className="side-link" href={item.href} target="_blank" rel="noreferrer"><span className="si">{item.icon}</span><span>{copy[item.label]}</span></Link> :
-            <button data-dashboard-section={item.section} className={section === item.section ? "on" : ""} aria-current={section === item.section ? "page" : undefined} onClick={() => open(item.section!)}><span className="si">{item.icon}</span><span>{copy[item.label]}</span></button>}
+          {item.href ? <Link className="side-link" href={item.href} target="_blank" rel="noreferrer"><span className="si"><NavIcon id={item.icon} /></span><span>{copy[item.label]}</span></Link> :
+            <button data-dashboard-section={item.section} className={section === item.section ? "on" : ""} aria-current={section === item.section ? "page" : undefined} onClick={() => open(item.section!)}><span className="si"><NavIcon id={item.icon} /></span><span>{copy[item.label]}</span></button>}
         </div>)}
       </nav>
       <div className="side-foot">
@@ -335,8 +351,10 @@ export function Dashboard() {
           ledgerState={dataPending.ledger ? "loading" : dataErrors.ledger ? "unavailable" : "ready"}
           open={open}
         />}
+        {section === "keys" && dataPending.keys && !dataErrors.keys && <KeysSkeleton />}
         {section === "keys" && !dataPending.keys && !dataErrors.keys && <ApiKeys keys={keys} onChanged={() => retryOptional("keys", false)} user={user} />}
         {section === "credits" && <Credits account={account} ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
+        {section === "usage" && !usage && dataPending.usage && <UsageSkeleton />}
         {section === "usage" && usage && <Usage account={account} keys={keys} ledger={ledger} usage={usage} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
         {section === "support" && <SupportPanel />}
         {section === "profile" && <Profile user={user} onUpdated={setUser} />}
@@ -352,6 +370,24 @@ function BrandImages() {
 
 function PageHeading({ eyebrow, title, subtitle }: { eyebrow: string; title: string; subtitle: string }) {
   return <header className="page-heading"><span className="eyebrow">{eyebrow}</span><h1 className="p-h1">{title}</h1><p className="p-sub">{subtitle}</p></header>;
+}
+
+// Section-level loading placeholders: same silhouette as the final layout so the
+// panel does not jump when data lands (replaces the previous blank panel + text banner).
+function KeysSkeleton() {
+  return <section className="panel keys-skel" aria-hidden="true">
+    <div className="skl skl-page-title" /><div className="skl skl-page-sub" />
+    <div className="skl skl-toolbar" />
+    <div>{[0, 1, 2, 3].map((row) => <div className="skl skl-row" key={row} />)}</div>
+  </section>;
+}
+
+function UsageSkeleton() {
+  return <section className="panel" aria-hidden="true">
+    <div className="skl skl-page-title" /><div className="skl skl-page-sub" />
+    <div className="ov-stats bill4">{[0, 1, 2, 3].map((card) => <div className="skl skl-stat" key={card} />)}</div>
+    <div className="skl skl-chart" />
+  </section>;
 }
 
 type OverviewDataState = "loading" | "unavailable" | "ready";
@@ -408,6 +444,7 @@ function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usag
   else if (lowBalance) alert = { tone: "warning", title: copy.balanceLowTitle, text: copy.balanceLowText, action: "credits" };
 
   return <section className="panel overview-panel">
+    <h1 className="sr-only">{copy.navOverview}</h1>
     {alert && <div className={`overview-alert ${alert.tone}`} role="status">
       <span className="overview-alert-icon" aria-hidden="true">!</span>
       <div><strong>{alert.title}</strong><span>{alert.text}</span></div>
@@ -909,7 +946,7 @@ function ApiKeys({ keys, onChanged, user }: { keys: ApiKeyView[]; onChanged(): P
 
     <section className="dsec keys-manager" aria-label={copy.keysTitle}>
       <div className="keys-manager-head">
-        <div className="keys-manager-title"><span className="eyebrow">{copy.keysEyebrow}</span><h2>{localCopy.keysListTitle}</h2></div>
+        <div className="keys-manager-title"><h2>{localCopy.keysListTitle}</h2></div>
         <div className="keys-manager-actions">
           <span className="keys-manager-summary">{interpolate(localCopy.keysListSummary, { shown: sortedKeys.length, total: keys.length })}</span>
           <button ref={createTriggerRef} className="btn btn-primary keys-create-button" type="button" onClick={() => { setCreateOpen(true); setError(null); }}>＋ {localCopy.createKey}</button>
@@ -1331,6 +1368,7 @@ function Usage({ account, keys, ledger, usage, ledgerAvailable }: { account: Acc
             </div>;
           })()}
         </div>
+        <div className="mdist-legend">{mdistPlaced.map((seg) => <span key={seg.model.model}><i style={{ background: modelColor.get(seg.model.model) }} />{modelLabel(seg.model.model)}<b>{(seg.share * 100).toFixed(seg.share < 0.1 ? 1 : 0)}%</b></span>)}</div>
         <p className="table-scroll-hint" id="models-table-scroll-hint">{copy.tableScrollHint}</p>
         <div className="table-scroll" role="region" tabIndex={0} aria-label={`${copy.tokensAndModels}. ${copy.tableScrollHint}`}><table className="mtable"><thead><tr><th>{copy.model}</th><th className="tnum">{copy.billedEvents}</th><th className="tnum">{copy.inputShort}</th><th className="tnum">{copy.outputShort}</th><th className="tnum">{copy.cacheRdShort}</th><th className="tnum">{copy.cacheWrShort}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
           <tbody>{models.map((model, index) => <tr key={model.model}>
@@ -1549,7 +1587,7 @@ function Profile({ user, onUpdated }: { user: AuthUser; onUpdated(user: AuthUser
       setSaveError(cause instanceof Error ? cause.message : copy.profileSaveError);
     } finally { setSaving(false); }
   }
-  return <section className="panel"><PageHeading eyebrow={copy.navAccount} title={copy.profileTitle} subtitle={copy.profileSubtitle} /><div className="prof-grid"><form className="card" onSubmit={saveProfile}><h2>{copy.profileTitle}</h2><div className="set-row"><label className="set-l" htmlFor="profile-email">{copy.email}</label><input id="profile-email" className="set-in profile-email-input" title={user.email} value={user.email} disabled readOnly /></div><div className="set-row"><label className="set-l" htmlFor="profile-display-name">{copy.displayName}</label><input id="profile-display-name" className="set-in" value={displayName} maxLength={80} autoComplete="name" onChange={(event) => { setDisplayName(event.target.value); setSaved(false); setSaveError(null); }} /></div><div className="set-row profile-id-row"><span className="set-l">{copy.userId}</span><span className="uid-wrap"><input className="set-in" value={user.id} aria-label={copy.userId} disabled readOnly /><CopyButton value={user.id} className="uid-copy-button" /></span></div><p className="p-sub">{copy.supportId}</p><div className="profile-meta"><span className="pill">{user.customerType.toUpperCase()}</span><span className="pill pill-soft">Email {user.emailVerified ? copy.verified : copy.pending}</span></div><div className="prof-save"><button className="btn btn-primary btn-sm" type="submit" disabled={saving || unchanged || trimmedName.length === 0}>{saving ? copy.saving : copy.save}</button>{saved && <span className="set-saved always-visible profile-save-success" role="status">{copy.profileSaved}</span>}{saveError && <span className="profile-save-error" role="alert">{saveError}</span>}</div></form>
+  return <section className="panel"><PageHeading eyebrow={copy.navAccount} title={copy.profileTitle} subtitle={copy.profileSubtitle} /><div className="prof-grid"><form className="card" onSubmit={saveProfile}><h2>{copy.accountDetails}</h2><div className="set-row"><label className="set-l" htmlFor="profile-email">{copy.email}</label><input id="profile-email" className="set-in profile-email-input" title={user.email} value={user.email} disabled readOnly /></div><div className="set-row"><label className="set-l" htmlFor="profile-display-name">{copy.displayName}</label><input id="profile-display-name" className="set-in" value={displayName} maxLength={80} autoComplete="name" onChange={(event) => { setDisplayName(event.target.value); setSaved(false); setSaveError(null); }} /></div><div className="set-row profile-id-row"><span className="set-l">{copy.userId}</span><span className="uid-wrap"><input className="set-in" value={user.id} aria-label={copy.userId} disabled readOnly /><CopyButton value={user.id} className="uid-copy-button" /></span></div><p className="p-sub">{copy.supportId}</p><div className="profile-meta"><span className="pill">{user.customerType.toUpperCase()}</span><span className="pill pill-soft">Email {user.emailVerified ? copy.verified : copy.pending}</span></div><div className="prof-save"><button className="btn btn-primary btn-sm" type="submit" disabled={saving || unchanged || trimmedName.length === 0}>{saving ? copy.saving : copy.save}</button>{saved && <span className="set-saved always-visible profile-save-success" role="status">{copy.profileSaved}</span>}{saveError && <span className="profile-save-error" role="alert">{saveError}</span>}</div></form>
     <div className="prof-side"><TwoFactorCard user={user} onUpdated={onUpdated} /></div></div>
   </section>;
 }
@@ -1610,7 +1648,7 @@ function PromoPanel({ ledger, ledgerAvailable, ledgerMayBePartial }: { ledger: L
           <input
             id="promo-code"
             className="set-in"
-            placeholder={copy.promoInput}
+            placeholder={copy.promoPlaceholder}
             value={code}
             onChange={(e) => setCode(e.target.value.toUpperCase())}
             maxLength={32}
@@ -1621,14 +1659,16 @@ function PromoPanel({ ledger, ledgerAvailable, ledgerMayBePartial }: { ledger: L
             {busy ? "…" : copy.activate}
           </button>
         </form>
+        <p className="promo-hint">{copy.promoHelp}</p>
       </div>
       {ledgerAvailable && ledgerMayBePartial && <div className="banner">{localCopy.partialLedger}</div>}
       {ledgerAvailable && <section className="dsec promo-history">
         <div className="dsec-head"><h2 id="promo-history-title">{copy.myActivations}</h2></div>
+        {activations.length === 0 ? <div className="empty-box">{copy.noPromos}</div> :
         <div className="table-scroll" role="region" tabIndex={0} aria-label={`${copy.myActivations}. ${copy.tableScrollHint}`}>
           <table className="mtable" aria-labelledby="promo-history-title">
             <thead><tr><th>{copy.date}</th><th>{copy.code}</th><th className="tnum">{copy.reward}</th></tr></thead>
-            <tbody>{activations.length === 0 ? <tr><td colSpan={3} className="empty-cell">{copy.noPromos}</td></tr> : activations.map((entry) => {
+            <tbody>{activations.map((entry) => {
               const referenceId = entry.reference?.slice("promo:".length) ?? "";
               return <tr key={entry.id}>
                 <td data-label={copy.date}>{formatLedgerTime(entry.timestamp, language)}</td>
@@ -1637,7 +1677,7 @@ function PromoPanel({ ledger, ledgerAvailable, ledgerMayBePartial }: { ledger: L
               </tr>;
             })}</tbody>
           </table>
-        </div>
+        </div>}
       </section>}
     </section>
   );
