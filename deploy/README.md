@@ -4,7 +4,14 @@ For copy-paste production commands, preflight, worker handling, rollback, backup
 verification gate, start with [`../DEPLOYMENT.md`](../DEPLOYMENT.md). This file documents controller
 internals and first-environment procedures.
 
-These scripts build immutable SHA-addressed releases, move release links atomically, and activate processes with exact-systemd-unit readiness gates. Commerce and PostgreSQL-backed engine deploys are two-phase: `deploy.sh` selects the release without touching their serving slots, then the matching blue-green controller owns admission, pre-drain, and shutdown. They never restart PostgreSQL, never write into a finalized release, and never treat an arbitrary HTTP 2xx on the expected port as proof that the selected unit started.
+These scripts finalize immutable SHA-addressed releases, move release links atomically, and activate
+processes with exact-systemd-unit readiness gates. The automatic watchdog passes
+`--tested-candidate`: `deploy.sh` validates and promotes the frozen build instead of compiling it a
+second time. Manual/bootstrap use retains the standalone checkout-and-build fallback. Commerce and
+PostgreSQL-backed engine deploys are two-phase: `deploy.sh` selects the release without touching
+their serving slots, then the matching blue-green controller owns admission, pre-drain, and
+shutdown. They never restart PostgreSQL, never write into a finalized release, and never treat an
+arbitrary HTTP 2xx on the expected port as proof that the selected unit started.
 
 Run them on the production host as the `deploy` operator from `/opt/apitoken/repo`, with narrowly scoped `sudo` access for application-unit and unit-file operations.
 
@@ -144,7 +151,8 @@ A normal deploy:
 
 1. validates roots, lock files, unit names, timeout, and poll interval;
 2. preflights and captures both `current` and `previous` for every selected component, rejecting broken, non-symlink, out-of-root, or non-SHA targets before builds or migrations;
-3. builds only in staging, or strictly validates every required artifact in an existing SHA release;
+3. promotes the watchdog-tested candidate, builds only in staging for standalone/manual use, or
+   strictly validates every required artifact in an existing SHA release;
 4. runs the locked, prebuilt commerce migration before moving the API release link;
 5. installs `ERR`, `EXIT`, `INT`, and `TERM` recovery traps before the first link mutation;
 6. when the target differs from `current`, records the old `current` as `previous` and atomically changes `current`;

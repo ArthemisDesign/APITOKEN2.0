@@ -135,7 +135,7 @@ GATE_STUB="printf gate >>$preflight_gate_log" STATUS_STUB='printf pending' \
 [[ $(git --git-dir="$ORIGIN" rev-parse master) == "$before" ]] \
   || wd_die 'a refused merge still pushed to master'
 
-# --- happy path: fast-forward, gate re-run on the pushed SHA, lock released ------------------------
+# --- happy path: unchanged SHA reuses its exact gate, lock released -------------------------------
 gate_log=$TEMP/gate.log
 GATE_STUB="git rev-parse HEAD >>$gate_log" run_merge "$tree_a" >"$TEMP/happy.log" \
   || wd_die "the happy path failed: $(cat "$TEMP/happy.log")"
@@ -145,6 +145,10 @@ pushed=$(git --git-dir="$ORIGIN" rev-parse master)
   || wd_die 'master does not point at the branch tip that was tested'
 tail -n 1 "$gate_log" | grep -Fxq "$pushed" \
   || wd_die 'the gate did not run on the exact SHA that was pushed'
+[[ $(wc -l <"$gate_log" | tr -d ' ') == 1 ]] \
+  || wd_die 'an unchanged SHA was wastefully tested more than once'
+grep -Fq 'reusing the full gate already passed by unchanged SHA' "$TEMP/happy.log" \
+  || wd_die 'the unchanged-SHA gate reuse was not reported'
 [[ ! -d $TEMP/lock ]] || wd_die 'the merge lock was not released'
 grep -Fq 'GREEN' "$TEMP/happy.log" || wd_die 'the merge did not wait for a green deployment'
 
@@ -179,40 +183,63 @@ tree_d=$(new_agent_worktree agent-d feat/agent-d)
 # agent-d lands first, so agent-c is stale by the time it reaches the lock.
 run_merge "$tree_d" >/dev/null || wd_die 'agent-d could not land'
 landed_d=$(git --git-dir="$ORIGIN" rev-parse master)
-run_merge "$tree_c" >/dev/null || wd_die 'agent-c could not land after the target moved'
+stale_gate_log=$TEMP/stale-gate.log
+GATE_STUB="git rev-parse HEAD >>$stale_gate_log" run_merge "$tree_c" >"$TEMP/stale-target.log" \
+  || wd_die 'agent-c could not land after the target moved'
 landed_c=$(git --git-dir="$ORIGIN" rev-parse master)
 git --git-dir="$ORIGIN" merge-base --is-ancestor "$landed_d" "$landed_c" \
   || wd_die 'a merge discarded a commit that had already landed on master'
+[[ $(wc -l <"$stale_gate_log" | tr -d ' ') == 2 ]] \
+  || wd_die 'a rebase that changed the candidate SHA did not force exactly one new gate'
+tail -n 1 "$stale_gate_log" | grep -Fxq "$landed_c" \
+  || wd_die 'the rebased SHA was not the last tree tested before push'
 
 # An out-of-band push between the gate and our push (a human bypassing the lock) must be absorbed by
 # the retry loop, never by a force push.
 tree_e=$(new_agent_worktree agent-e feat/agent-e)
 race_marker=$TEMP/race.count
-cat >"$TEMP/race-gate.sh" <<RACE
+race_clone=$TEMP/race-clone
+git_quiet clone --quiet "$ORIGIN" "$race_clone"
+git_quiet -C "$race_clone" config user.name 'Out-of-band Writer'
+git_quiet -C "$race_clone" config user.email 'race@example.invalid'
+race_hooks=$TEMP/race-hooks
+mkdir -p "$race_hooks"
+cat >"$race_hooks/pre-push" <<RACE
 #!/usr/bin/env bash
 set -euo pipefail
-# The first call is the fail-fast gate before the lock; the second is the post-rebase gate that runs
-# immediately before the push. Racing there is what the retry loop exists for.
-printf 'x' >>"$race_marker"
-if [[ \$(wc -c <"$race_marker") -eq 2 ]]; then
-  printf 'out-of-band\n' >"$PRIMARY/interloper.txt"
-  git -c user.name=t -c user.email=t@e -C "$PRIMARY" add interloper.txt
-  git -c user.name=t -c user.email=t@e -C "$PRIMARY" commit --quiet -m 'out-of-band commit'
-  git -C "$PRIMARY" push --quiet origin HEAD:master
+# Git exports its own repository variables to hooks. Clear them before invoking the independent
+# writer clone, or commands scoped to that clone would mutate the pushing worktree's index instead.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR
+# Move master during the first real push. The original push must be rejected, then the retry must
+# absorb, rebase onto, and re-test this commit before trying again.
+if [[ ! -e "$race_marker" ]]; then
+  : >"$race_marker"
+  git -C "$race_clone" fetch --quiet origin master
+  git -C "$race_clone" reset --hard --quiet origin/master
+  printf 'out-of-band\n' >"$race_clone/interloper.txt"
+  git -C "$race_clone" add interloper.txt
+  git -C "$race_clone" commit --quiet -m 'out-of-band commit'
+  git -C "$race_clone" push --quiet origin HEAD:master
 fi
 RACE
-: >"$race_marker"
+chmod +x "$race_hooks/pre-push"
+git_quiet -C "$tree_e" config core.hooksPath "$race_hooks"
+rm -f -- "$race_marker"
 git_quiet -C "$PRIMARY" fetch --quiet origin
 git_quiet -C "$PRIMARY" reset --hard --quiet origin/master
-GATE_STUB="bash $TEMP/race-gate.sh" run_merge "$tree_e" >"$TEMP/race.log" \
+race_gate_log=$TEMP/race-gate.log
+GATE_STUB="git rev-parse HEAD >>$race_gate_log" run_merge "$tree_e" >"$TEMP/race.log" \
   || wd_die "the push race was not absorbed: $(cat "$TEMP/race.log")"
 grep -Fq 'moved under us, retrying' "$TEMP/race.log" || wd_die 'the push race did not trigger a retry'
+[[ $(wc -l <"$race_gate_log" | tr -d ' ') == 2 ]] \
+  || wd_die 'a push race that changed the SHA did not force exactly one new gate'
 git --git-dir="$ORIGIN" cat-file -e "master:interloper.txt" \
   || wd_die 'the retry force-pushed over an out-of-band commit'
 git --git-dir="$ORIGIN" merge-base --is-ancestor "$landed_c" "$(git --git-dir="$ORIGIN" rev-parse master)" \
   || wd_die 'the retry discarded previously landed history'
 [[ $(git --git-dir="$ORIGIN" log --oneline master | wc -l | tr -d ' ') -ge 7 ]] \
   || wd_die 'landed history is missing commits'
+git_quiet -C "$tree_e" config --unset core.hooksPath
 
 # --- portability: no tools that are absent on a stock macOS contributor machine ---------------------
 # The mtime helper must return digits on THIS platform. GNU stat exits 0 while printing `File: "..."`

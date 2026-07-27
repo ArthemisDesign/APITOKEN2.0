@@ -58,8 +58,9 @@ Release roots are canonicalized. Commerce releases must stay below `/opt/apitoke
 
 For a new release the controller:
 
-1. checks out the exact fetched commit into a temporary path;
-2. installs/builds inside that temporary path;
+1. validates and copies the root-owned watchdog candidate when `--tested-candidate` is supplied, or
+   checks out the exact fetched commit into a temporary path for standalone/manual use;
+2. preserves the candidate's tested artifacts, or installs/builds inside the manual staging path;
 3. validates the API entry point and prebuilt migration, or the engine binary;
 4. writes `.release-sha` while still staging;
 5. recursively removes write permission from the staged tree;

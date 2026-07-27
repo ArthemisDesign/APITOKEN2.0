@@ -5,7 +5,7 @@ requests are safe: only a commit that reaches `master` is considered for product
 SSH to the host to deploy ordinary engine/backend changes or to run their migration manually.
 
 The customer frontend remains an independent Vercel deployment. This workflow covers the Rust
-engine, commerce API, commerce worker, and commerce PostgreSQL migrations.
+engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreSQL migrations.
 
 ## Contributor and AI-agent workflow
 
@@ -48,9 +48,11 @@ engine, commerce API, commerce worker, and commerce PostgreSQL migrations.
    existing SHA's `deploy/watchdog` context through the GitHub API. It automatically reuses the
    credential already configured for `git push` (`git credential`, macOS Keychain), so neither
    `gh` nor a separately exported `GITHUB_TOKEN` is required. Pending or temporarily unavailable
-   status is polled by the script itself. It then rebases, re-runs the gate on the exact SHA it
-   pushes, and holds the lock until `deploy/watchdog` reports on that SHA. Merging or pushing to
-   `master` by hand races the production deployment of whoever merged a minute earlier.
+   status is polled by the script itself every five seconds. It then rebases and compares the
+   resulting full SHA with the SHA that already passed the gate. An unchanged SHA reuses that result;
+   a rebase or push race that changes the SHA runs the complete gate again before push. The script
+   holds the lock until `deploy/watchdog` reports on the pushed SHA. Merging or pushing to `master`
+   by hand races the production deployment of whoever merged immediately before it.
 6. AI agents never ask a person to provide a GitHub token or prove that a deployment is green. If
    no reusable credential exists, repair the local Git credential helper and rerun; never merge
    blind. Work is complete only when the script reports the exact pushed SHA's `deploy/watchdog`
@@ -62,19 +64,23 @@ tested tree has not changed.
 
 ## What happens after `master` changes
 
-The production host polls the read-only Git remote approximately once per minute and isolates the
-exact 40-character SHA. It then:
+The production host polls the read-only Git remote every five seconds and isolates the exact
+40-character SHA. Validation is path-aware: TypeScript changes select the pnpm/database lane, engine
+changes select the Rust lane, deployment changes select the operational regression suites, and any
+unknown path fails safe into every lane. When both language lanes are selected they run concurrently.
+The host then:
 
-1. installs dependencies from the lockfile and builds all TypeScript packages;
-2. starts disposable PostgreSQL, runs the candidate migrations there, and runs all TypeScript tests;
-3. runs the complete locked Rust workspace tests plus shell/whitespace checks;
+1. installs/builds/tests the selected TypeScript lane against disposable PostgreSQL and/or runs the
+   selected locked Rust workspace lane against its separate database, using one shared Cargo target;
+2. builds production engine binaries in that same tested Rust lane when an engine rollout is needed,
+   records runtime-artifact digests, and freezes the candidate;
+3. runs shell/whitespace checks and the deployment suites selected for operational changes;
 4. makes fresh validated backups of both production databases and applies any new, append-only
    commerce migrations from that exact tested candidate under the migration lock;
 5. starts an affected engine candidate only in the inactive slot; its ordered engine migrations run
    transactionally under the engine advisory lock, and failed migration/readiness can never admit it;
-6. deploys only the affected engine and/or backend components through their health-gated
-   blue-green controllers, restarts the single worker with the backend release, and verifies the
-   exact production SHA;
+6. promotes the already-tested engine and commerce artifacts—without recompiling them—then deploys
+   only affected components through their health-gated controllers and verifies the exact SHA;
 7. records final status on the GitHub commit.
 
 If any test, backup, migration, deployment, readiness check, or final verification fails, the SHA
@@ -96,10 +102,12 @@ commit in GitHub to see:
 
 | Context | Meaning |
 |---|---|
-| `deploy/tests` | Isolated build, disposable-database migration test, TypeScript tests, Rust tests, and static checks |
+| `deploy/tests` | Selected isolated TypeScript/database, Rust, and operational validation lanes |
 | `deploy/migration` | Production backup and automatic migration gate, or no migration required |
 | `deploy/engine` | Engine blue-green deployment and final exact-release verification, or no engine change |
 | `deploy/backend` | Commerce API/worker deployment and final exact-release verification, or no backend change |
+| `deploy/sales` | Sales portal deployment and health verification, or no sales change |
+| `deploy/openkeys` | OpenKeys deployment and health verification, or no OpenKeys change |
 | `deploy/watchdog` | Overall delivery result; this is the status to use as the final merge/deploy signal |
 
 `pending` means the host is testing, installing, or deploying the candidate. `failure`/`error`
@@ -107,15 +115,16 @@ means the commit did not complete production delivery. A green component status 
 red overall status.
 
 The same free GitHub API integration creates deployment records for the affected
-`production-database`, `production-engine`, and `production-backend` environments. Those records
-make the production history and final environment URL visible next to Vercel's deployments; they do
-not run code on GitHub infrastructure.
+`production-database`, `production-engine`, `production-backend`, `production-sales`, and
+`production-openkeys` environments. Those records make the production history and final environment
+URL visible next to Vercel's deployments; they do not run code on GitHub infrastructure.
 
 Changes to `deploy/`, `systemd/`, `observability/`, or `compose.yaml` are delivered automatically,
 like application code, but through a stricter path. Only after the exact immutable candidate passes
-the complete test gate does a fixed root-owned bridge re-verify its SHA, tree, and clean worktree
-against the test marker, then install that candidate's own controllers and systemd definitions
-before component delivery continues. A changed Caddy template is rendered against the live host
+its selected gate does a fixed root-owned bridge re-verify its SHA, tree, and clean worktree against
+the test marker, then install that candidate's own controllers and systemd definitions. The running
+old controller leaves the overall status pending and exits; the next five-second poll resumes from
+the same frozen candidate under the newly installed controller. A changed Caddy template is rendered against the live host
 secrets, validated, and reloaded with an automatic rollback copy; the repository file with its
 placeholders is never copied over production. Changes under `.github/` do not touch the production
 host and therefore need no host-install stage.

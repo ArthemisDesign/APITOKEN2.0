@@ -23,17 +23,20 @@ only after its migration and overall statuses are green may dependent applicatio
 
 | Context | Gate |
 |---|---|
-| `deploy/tests` | Complete isolated TypeScript/Rust/database/static test suite |
+| `deploy/tests` | Path-selected isolated TypeScript/database, Rust, and operational test lanes |
 | `deploy/migration` | Validated database backups plus exact tested commerce migrator, or no commerce migration needed |
 | `deploy/engine` | Exact-release engine rollout, or no engine change |
 | `deploy/backend` | Exact-release API/worker rollout, or no backend change |
+| `deploy/sales` | Exact tested Sales release rollout, or no sales change |
+| `deploy/openkeys` | Exact tested OpenKeys release rollout, or no OpenKeys change |
 | `deploy/watchdog` | End-to-end result |
 
-Affected database, engine, and backend stages also appear as GitHub deployment records in the
-`production-database`, `production-engine`, and `production-backend` environments. This is reporting
-only: builds and deployments run on the existing production host, so no paid GitHub runner is used.
+Affected stages also appear as GitHub deployment records in the `production-database`,
+`production-engine`, `production-backend`, `production-sales`, and `production-openkeys`
+environments. This is reporting only: builds and deployments run on the existing production host,
+so no paid GitHub runner is used.
 
-The watchdog polls `origin/master` about once per minute. A failure quarantines that SHA and stops
+The watchdog polls `origin/master` every five seconds. A failure quarantines that SHA and stops
 the pipeline; neither later migrations nor application cutovers are attempted. This holds for every
 abnormal termination — a failing command, an interrupt, or a validation failure raised internally —
 so a stopped pipeline always leaves a quarantine marker and a red commit status rather than stopping
@@ -41,8 +44,9 @@ silently. A failure before any commit is selected (an unreachable remote, a miss
 an infrastructure fault rather than a verdict on a commit: it is logged and retried on the next
 cycle without quarantining anything. Commerce migration
 failure always blocks the backend. Engine migration or readiness failure leaves the serving engine
-slot untouched. On every idle cycle it also requires exactly one PostgreSQL engine slot to be
-active, ready, selected on the recorded release, and enabled. If an out-of-band service command
+slot untouched. Expensive retention and production-alignment checks remain on a separate one-minute
+idle cadence, where the watchdog requires exactly one PostgreSQL engine slot to be active, ready,
+selected on the recorded release, and enabled. If an out-of-band service command
 reactivates the inactive slot, the watchdog reconverges through the same readiness-gated controller;
 it never stops the availability anchor before another current slot is verified. Normal releases
 require no SSH command.
@@ -53,10 +57,11 @@ sudo apitoken-watchdog status
 sudo apitoken-watchdog logs
 ```
 
-Operational-definition changes (`deploy/`, `systemd/`, `compose.yaml`) are also automatic. Only
-after the exact immutable candidate passes the complete test gate, a fixed root-owned bridge verifies
-its SHA/tree/test marker, installs its watchdog controllers and systemd definitions, and continues
-component delivery. A changed Caddy template is rendered with the existing production secrets,
+Operational-definition changes (`deploy/`, `systemd/`, `compose.yaml`) are also automatic. After
+the exact immutable candidate passes the selected path-aware gate, a fixed root-owned bridge verifies
+its SHA/tree/test marker and installs its watchdog controllers and systemd definitions. The old
+controller then exits with `deploy/watchdog` still pending; the next five-second poll reuses the same
+frozen candidate and continues under the new controller. A changed Caddy template is rendered with the existing production secrets,
 validated, reloaded with automatic rollback, and never copied with repository placeholders. GitHub
 workflow changes do not alter the production host and therefore need no host-install stage.
 

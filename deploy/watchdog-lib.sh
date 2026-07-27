@@ -161,7 +161,7 @@ wd_candidate_dirs_older_than() {
     [[ $name =~ ^[0-9a-f]{40}$ ]] || continue
     marker="$marker_root/$name.tested"
     age_path=$candidate
-    # Successful candidates receive their marker only after the complete test gate. Give those
+    # Successful candidates receive their marker only after every selected validation lane. Give those
     # builds a full 24 hours from test completion; interrupted/failed builds fall back to the
     # workspace directory mtime.
     if [[ -f $marker && ! -L $marker ]]; then
@@ -236,6 +236,29 @@ wd_sha256_stdin() {
   else
     shasum -a 256 | awk '{print $1}'
   fi
+}
+
+# Hash the small, mandatory runtime entrypoints from every deployable TypeScript surface. The
+# candidate tree itself is frozen after validation; this digest is an additional identity check that
+# proves the release promoter is copying the build that passed the gate, not rebuilding it later.
+wd_typescript_artifact_digest() {
+  local tree=$1 relative
+  local artifacts=(
+    apps/api/dist/main.js
+    apps/worker/dist/main.js
+    apps/content-studio/.next/BUILD_ID
+    apps/sales-api/dist/main.js
+    apps/sales-web/.next/BUILD_ID
+    apps/openkeys/.next/BUILD_ID
+    packages/db/dist/migrate.js
+    packages/sales-db/dist/migrate.js
+    packages/openkeys-db/dist/migrate.js
+  )
+  for relative in "${artifacts[@]}"; do
+    [[ -f $tree/$relative && ! -L $tree/$relative ]] \
+      || wd_die "tested TypeScript artifact is missing or unsafe: $tree/$relative"
+    printf '%s  %s\n' "$(wd_sha256_file "$tree/$relative")" "$relative"
+  done | wd_sha256_stdin
 }
 
 wd_migration_manifest() {
@@ -375,6 +398,17 @@ wd_path_is_engine() {
   esac
 }
 
+# All pnpm workspace source and its shared build inputs belong to the TypeScript validation lane,
+# including Vercel-only surfaces that do not map to a host deployment component.
+wd_path_is_typescript() {
+  case "$1" in
+    apps/*|packages/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig*.json|.node-version)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 wd_path_is_backend() {
   case "$1" in
     apps/api/*|apps/worker/*|apps/content-studio/*|packages/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig.base.json|.node-version)
@@ -420,6 +454,24 @@ wd_path_is_caddy() {
   [[ $1 == deploy/Caddyfile ]]
 }
 
+wd_path_is_merge_workflow() {
+  case "$1" in
+    .claude/*|AGENTS.md|CLAUDE.md|BRANCHES.md|CONTRIBUTING.md)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+wd_path_is_validation_neutral() {
+  case "$1" in
+    *.md|docs/*|.github/*|.gitignore|.gitattributes|LICENSE|LICENSE.*)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 wd_range_has_class() {
   local repo=$1 base=$2 target=$3 classifier=$4 path
   while IFS= read -r path; do
@@ -427,6 +479,24 @@ wd_range_has_class() {
     if "$classifier" "$path"; then
       return 0
     fi
+  done < <(wd_range_files "$repo" "$base" "$target")
+  return 1
+}
+
+# Unknown paths fail safe into every expensive lane. This lets documentation-only commits stay fast
+# without making a newly added code area silently untested.
+wd_range_has_unknown_validation_path() {
+  local repo=$1 base=$2 target=$3 path
+  while IFS= read -r path; do
+    [[ -n $path ]] || continue
+    if wd_path_is_typescript "$path" \
+      || wd_path_is_engine "$path" \
+      || wd_path_is_infrastructure "$path" \
+      || wd_path_is_merge_workflow "$path" \
+      || wd_path_is_validation_neutral "$path"; then
+      continue
+    fi
+    return 0
   done < <(wd_range_files "$repo" "$base" "$target")
   return 1
 }

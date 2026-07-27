@@ -25,7 +25,7 @@ AGENT_MERGE_LOCK=${AGENT_MERGE_LOCK:-$HOME/.claude-api/master-merge.lock}
 AGENT_MERGE_LOCK_WAIT_S=${AGENT_MERGE_LOCK_WAIT_S:-3600}
 AGENT_MERGE_STALE_S=${AGENT_MERGE_STALE_S:-5400}
 AGENT_MERGE_DEPLOY_WAIT_S=${AGENT_MERGE_DEPLOY_WAIT_S:-2400}
-AGENT_MERGE_POLL_S=${AGENT_MERGE_POLL_S:-60}
+AGENT_MERGE_POLL_S=${AGENT_MERGE_POLL_S:-5}
 AGENT_MERGE_PUSH_ATTEMPTS=${AGENT_MERGE_PUSH_ATTEMPTS:-3}
 # The context that means the production pipeline reached a verdict. Anything else is a partial view.
 AGENT_MERGE_REQUIRED_CONTEXT=${AGENT_MERGE_REQUIRED_CONTEXT:-deploy/watchdog}
@@ -217,6 +217,7 @@ am_wait_for_target_ready "$previous"
 # Fail fast, before queueing behind anyone, on a tree that cannot pass anyway.
 am_log "running the full gate on $(git -C "$ROOT" rev-parse --short HEAD) before queueing"
 am_gate
+GATED_SHA=$(git -C "$ROOT" rev-parse HEAD)
 
 # --- lock --------------------------------------------------------------------------------------
 mkdir -p -- "$(dirname -- "$AGENT_MERGE_LOCK")"
@@ -253,10 +254,16 @@ am_wait_for_target_ready "$previous"
 pushed=''
 for attempt in $(seq 1 "$AGENT_MERGE_PUSH_ATTEMPTS"); do
   git -C "$ROOT" rebase "$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET"
-  am_log "re-running the gate on the rebased tree $(git -C "$ROOT" rev-parse --short HEAD)"
-  am_gate
+  candidate=$(git -C "$ROOT" rev-parse HEAD)
+  if [[ $candidate == "$GATED_SHA" ]]; then
+    am_log "reusing the full gate already passed by unchanged SHA $(git -C "$ROOT" rev-parse --short HEAD)"
+  else
+    am_log "re-running the gate because the rebased SHA changed to $(git -C "$ROOT" rev-parse --short HEAD)"
+    am_gate
+    GATED_SHA=$candidate
+  fi
   if (( DRY_RUN )); then
-    am_log "dry run: would push $(git -C "$ROOT" rev-parse HEAD) to $AGENT_MERGE_TARGET"
+    am_log "dry run: would push $candidate to $AGENT_MERGE_TARGET"
     exit 0
   fi
   if git -C "$ROOT" push "$AGENT_MERGE_REMOTE" "HEAD:$AGENT_MERGE_TARGET"; then
@@ -265,6 +272,9 @@ for attempt in $(seq 1 "$AGENT_MERGE_PUSH_ATTEMPTS"); do
   fi
   am_log "$AGENT_MERGE_TARGET moved under us, retrying ($attempt/$AGENT_MERGE_PUSH_ATTEMPTS)"
   git -C "$ROOT" fetch "$AGENT_MERGE_REMOTE"
+  previous=$(git -C "$ROOT" rev-parse "$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET")
+  am_log "checking $AGENT_MERGE_REQUIRED_CONTEXT for newly moved $AGENT_MERGE_TARGET $previous"
+  am_wait_for_target_ready "$previous"
 done
 [[ -n $pushed ]] \
   || am_die "could not fast-forward $AGENT_MERGE_TARGET after $AGENT_MERGE_PUSH_ATTEMPTS attempts"

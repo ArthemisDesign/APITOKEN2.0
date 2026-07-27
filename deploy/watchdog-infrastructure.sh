@@ -43,4 +43,8 @@ if (( APPLY_CADDY == 1 )); then
   CADDY_TEMPLATE="$CANDIDATE/deploy/Caddyfile" "$CANDIDATE/deploy/install-caddy.sh"
 fi
 
+# This is the controller handoff fence. Record it only after the installer and the optional Caddy
+# transaction both succeed; writing it earlier would make a retry skip a failed infrastructure step.
+wd_atomic_write "$STATE_ROOT/infrastructure.sha" "$SHA" 0640
+chown root:deploy "$STATE_ROOT/infrastructure.sha"
 wd_log "installed operational definitions from tested candidate $SHA"

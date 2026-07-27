@@ -20,6 +20,7 @@ RELEASE_RETENTION_KEEP=10
 PREDEPLOY_DUMP_RETENTION_KEEP=10
 CI_USER=apitoken-ci
 CI_HOME=$STATE_ROOT/ci-home
+CI_CARGO_TARGET=$CI_HOME/cargo-target
 CI_TOOLCHAIN=/opt/apitoken-watchdog/rust-toolchain
 CONTROLLER_ROOT=/usr/local/lib/apitoken-watchdog/controller
 TEST_DB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-test-db
@@ -36,6 +37,7 @@ ENGINE_RELEASE_ROOT=/srv/claude-api/releases
 COMMERCE_RELEASE_ROOT=/opt/apitoken/releases
 
 PROCESSED_FILE=$STATE_ROOT/processed.sha
+INFRASTRUCTURE_FILE=$STATE_ROOT/infrastructure.sha
 ENGINE_FILE=$STATE_ROOT/engine.sha
 BACKEND_FILE=$STATE_ROOT/backend.sha
 SALES_FILE=$STATE_ROOT/sales.sha
@@ -44,6 +46,8 @@ REJECTED_FILE=$STATE_ROOT/rejected.sha
 PENDING_MIGRATION_FILE=$STATE_ROOT/pending-migration.sha
 DB_MANIFEST=$STATE_ROOT/database-migrations.manifest
 STATUS_FILE=$STATE_ROOT/status
+IDLE_MAINTENANCE_FILE=$STATE_ROOT/last-idle-maintenance.epoch
+IDLE_MAINTENANCE_SECONDS=60
 
 CURRENT_PHASE=starting
 TEST_DB_STARTED=0
@@ -120,6 +124,8 @@ fail() {
       migrating) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/migration "Migration failed; application deploy blocked" >/dev/null 2>&1 || true ;;
       deploying-engine) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/engine "Engine rollout failed closed" >/dev/null 2>&1 || true ;;
       deploying-backend) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/backend "Backend rollout failed closed" >/dev/null 2>&1 || true ;;
+      deploying-sales) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/sales "Sales rollout failed closed" >/dev/null 2>&1 || true ;;
+      deploying-openkeys) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/openkeys "OpenKeys rollout failed closed" >/dev/null 2>&1 || true ;;
     esac
     sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/watchdog \
       "Production pipeline failed closed; inspect watchdog logs" >/dev/null 2>&1 || true
@@ -160,17 +166,53 @@ candidate_for() {
 }
 
 candidate_is_tested() {
-  local sha=$1 marker candidate marker_sha marker_digest actual_digest
+  local sha=$1 typescript_required=$2 rust_required=$3 static_required=$4 engine_artifacts_required=$5
+  local marker candidate marker_sha marker_tree candidate_sha candidate_tree marker_digest actual_digest
+  local marker_flag expected_hash actual_hash
   marker=$(marker_for "$sha")
   candidate=$(candidate_for "$sha")
   [[ -d $candidate && ! -L $candidate ]] || return 1
+  [[ $(stat -c '%u' -- "$candidate" 2>/dev/null) == 0 ]] || return 1
   marker_sha=$(wd_marker_value "$marker" sha 2>/dev/null) || return 1
   [[ $marker_sha == "$sha" ]] || return 1
+  marker_tree=$(wd_marker_value "$marker" tree 2>/dev/null) || return 1
+  candidate_sha=$(git -c safe.directory="$candidate" -C "$candidate" rev-parse 'HEAD^{commit}' 2>/dev/null) \
+    || return 1
+  candidate_tree=$(git -c safe.directory="$candidate" -C "$candidate" rev-parse 'HEAD^{tree}' 2>/dev/null) \
+    || return 1
+  [[ $candidate_sha == "$sha" && $candidate_tree == "$marker_tree" ]] || return 1
+  [[ -z $(git -c safe.directory="$candidate" -C "$candidate" \
+    status --porcelain --untracked-files=no 2>/dev/null) ]] || return 1
   marker_digest=$(wd_marker_value "$marker" migration_digest 2>/dev/null) || return 1
   wd_migration_manifest "$candidate" >"$STATE_ROOT/.candidate-manifest.$$"
   actual_digest=$(wd_manifest_digest "$STATE_ROOT/.candidate-manifest.$$")
   rm -f -- "$STATE_ROOT/.candidate-manifest.$$"
-  [[ $marker_digest == "$actual_digest" ]]
+  [[ $marker_digest == "$actual_digest" ]] || return 1
+
+  for marker_flag in \
+    "typescript_tested:$typescript_required" \
+    "rust_tested:$rust_required" \
+    "static_tested:$static_required" \
+    "engine_artifacts:$engine_artifacts_required"; do
+    if [[ ${marker_flag#*:} == 1 ]]; then
+      [[ $(wd_marker_value "$marker" "${marker_flag%%:*}" 2>/dev/null) == 1 ]] || return 1
+    fi
+  done
+
+  if (( typescript_required == 1 )); then
+    expected_hash=$(wd_marker_value "$marker" typescript_artifact_digest 2>/dev/null) || return 1
+    actual_hash=$(wd_typescript_artifact_digest "$candidate") || return 1
+    [[ $actual_hash == "$expected_hash" ]] || return 1
+  fi
+  if (( engine_artifacts_required == 1 )); then
+    expected_hash=$(wd_marker_value "$marker" engine_binary_sha256 2>/dev/null) || return 1
+    actual_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/engine/claude-api") || return 1
+    [[ $actual_hash == "$expected_hash" ]] || return 1
+    expected_hash=$(wd_marker_value "$marker" authbot_binary_sha256 2>/dev/null) || return 1
+    actual_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/engine/authbot") || return 1
+    [[ $actual_hash == "$expected_hash" ]] || return 1
+  fi
+  return 0
 }
 
 prune_expired_candidates() {
@@ -286,16 +328,62 @@ run_as_ci() {
   sudo -n -u "$CI_USER" env \
     HOME="$CI_HOME" \
     CARGO_HOME="$CI_HOME/.cargo" \
+    CARGO_TARGET_DIR="$CI_CARGO_TARGET" \
     PATH="$CI_TOOLCHAIN/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     "$@"
 }
 
+test_typescript_lane() {
+  local candidate=$1 dsn=$2 sales_dsn=$3 openkeys_dsn=$4
+  wd_log "running frozen TypeScript install, build, typecheck, migrations, and tests"
+  run_as_ci pnpm --dir "$candidate" install --frozen-lockfile
+  run_as_ci pnpm --dir "$candidate" build
+  run_as_ci pnpm --dir "$candidate" typecheck
+  run_as_ci env DATABASE_URL="$dsn" node "$candidate/packages/db/dist/migrate.js"
+  run_as_ci env SALES_DATABASE_URL="$sales_dsn" node "$candidate/packages/sales-db/dist/migrate.js"
+  run_as_ci env OPENKEYS_DATABASE_URL="$openkeys_dsn" node "$candidate/packages/openkeys-db/dist/migrate.js"
+  run_as_ci env TEST_DATABASE_URL="$dsn" TEST_SALES_DATABASE_URL="$sales_dsn" \
+    TEST_OPENKEYS_DATABASE_URL="$openkeys_dsn" pnpm --dir "$candidate" \
+    -r --workspace-concurrency=1 --if-present test
+}
+
+test_rust_lane() {
+  local candidate=$1 engine_dsn=$2 build_artifacts=$3
+  wd_log "running the locked Rust workspace tests from the shared target cache"
+  run_as_ci env CLAUDE_API_TEST_DATABASE_URL="$engine_dsn" \
+    cargo test --locked --workspace --manifest-path "$candidate/Cargo.toml"
+  if (( build_artifacts == 1 )); then
+    wd_log "building the production engine and authbot once, from the tested candidate"
+    run_as_ci cargo build --locked --release -p claude-api -p authbot \
+      --manifest-path "$candidate/Cargo.toml"
+    run_as_ci install -d -m 0755 "$candidate/.deploy-artifacts/engine"
+    run_as_ci install -m 0755 "$CI_CARGO_TARGET/release/claude-api" \
+      "$candidate/.deploy-artifacts/engine/claude-api"
+    run_as_ci install -m 0755 "$CI_CARGO_TARGET/release/authbot" \
+      "$candidate/.deploy-artifacts/engine/authbot"
+  fi
+}
+
+run_candidate_lane() {
+  # ERR is inherited by asynchronous functions under `set -E`. The parent owns quarantine and
+  # database cleanup after it has joined both lanes; a child must only return its lane status.
+  trap - ERR EXIT INT TERM
+  "$@"
+}
+
 prepare_and_test_candidate() {
-  local sha=$1 candidate marker dsn engine_dsn sales_dsn openkeys_dsn manifest digest tree
+  local sha=$1 typescript_required=$2 rust_required=$3 static_required=$4 engine_artifacts_required=$5
+  local candidate marker dsn= engine_dsn= sales_dsn= openkeys_dsn= manifest digest tree
+  local typescript_pid= rust_pid= typescript_rc=0 rust_rc=0
+  local typescript_digest=none engine_hash=none authbot_hash=none
   candidate=$(candidate_for "$sha")
   marker=$(marker_for "$sha")
 
-  if candidate_is_tested "$sha"; then
+  (( engine_artifacts_required == 0 || rust_required == 1 )) \
+    || wd_die "engine artifacts cannot be prepared without the Rust validation lane"
+
+  if candidate_is_tested "$sha" "$typescript_required" "$rust_required" \
+    "$static_required" "$engine_artifacts_required"; then
     wd_log "reusing test-passed immutable candidate $sha"
     return 0
   fi
@@ -314,30 +402,32 @@ prepare_and_test_candidate() {
   [[ $(git -C "$candidate" rev-parse HEAD) == "$sha" ]] || wd_die "candidate checkout mismatch"
   sudo -n chown -R "$CI_USER:$CI_USER" -- "$candidate"
 
-  wd_log "running frozen install and complete build for $sha as isolated user $CI_USER"
-  run_as_ci pnpm --dir "$candidate" install --frozen-lockfile
-  run_as_ci pnpm --dir "$candidate" build
-  run_as_ci pnpm --dir "$candidate" typecheck
+  if (( typescript_required == 1 || rust_required == 1 )); then
+    dsn=$(sudo -n "$TEST_DB_HELPER" start)
+    TEST_DB_STARTED=1
+  fi
+  if (( typescript_required == 1 )); then
+    sales_dsn=$(sudo -n "$TEST_DB_HELPER" sales-dsn)
+    openkeys_dsn=$(sudo -n "$TEST_DB_HELPER" openkeys-dsn)
+    run_candidate_lane test_typescript_lane "$candidate" "$dsn" "$sales_dsn" "$openkeys_dsn" &
+    typescript_pid=$!
+  fi
+  if (( rust_required == 1 )); then
+    engine_dsn=$(sudo -n "$TEST_DB_HELPER" engine-dsn)
+    run_candidate_lane test_rust_lane "$candidate" "$engine_dsn" "$engine_artifacts_required" &
+    rust_pid=$!
+  fi
 
-  dsn=$(sudo -n "$TEST_DB_HELPER" start)
-  TEST_DB_STARTED=1
-  wd_log "running commerce migrations against disposable PostgreSQL"
-  run_as_ci env DATABASE_URL="$dsn" node "$candidate/packages/db/dist/migrate.js"
-  sales_dsn=$(sudo -n "$TEST_DB_HELPER" sales-dsn)
-  wd_log "running sales migrations against a separate disposable PostgreSQL database"
-  run_as_ci env SALES_DATABASE_URL="$sales_dsn" node "$candidate/packages/sales-db/dist/migrate.js"
-  openkeys_dsn=$(sudo -n "$TEST_DB_HELPER" openkeys-dsn)
-  wd_log "running openkeys migrations against a separate disposable PostgreSQL database"
-  run_as_ci env OPENKEYS_DATABASE_URL="$openkeys_dsn" node "$candidate/packages/openkeys-db/dist/migrate.js"
-  wd_log "running all TypeScript tests against their migrated disposable databases"
-  run_as_ci env TEST_DATABASE_URL="$dsn" TEST_SALES_DATABASE_URL="$sales_dsn" \
-    TEST_OPENKEYS_DATABASE_URL="$openkeys_dsn" pnpm --dir "$candidate" \
-    -r --workspace-concurrency=1 --if-present test
-
-  engine_dsn=$(sudo -n "$TEST_DB_HELPER" engine-dsn)
-  wd_log "running all Rust workspace tests against separate disposable PostgreSQL"
-  run_as_ci env CLAUDE_API_TEST_DATABASE_URL="$engine_dsn" \
-    cargo test --locked --workspace --manifest-path "$candidate/Cargo.toml"
+  # The two language suites are independent once their disposable databases exist. Wait for both
+  # even when one fails so no candidate-owned process survives into cleanup or a later cycle.
+  if [[ -n $typescript_pid ]]; then wait "$typescript_pid" || typescript_rc=$?; fi
+  if [[ -n $rust_pid ]]; then wait "$rust_pid" || rust_rc=$?; fi
+  if (( TEST_DB_STARTED == 1 )); then
+    sudo -n "$TEST_DB_HELPER" stop
+    TEST_DB_STARTED=0
+  fi
+  (( typescript_rc == 0 )) || wd_die "TypeScript candidate lane failed (exit $typescript_rc)"
+  (( rust_rc == 0 )) || wd_die "Rust candidate lane failed (exit $rust_rc)"
 
   wd_log "checking tracked whitespace and shell syntax"
   if [[ -n ${PROCESSED_SHA:-} && $PROCESSED_SHA != "$sha" ]]; then
@@ -346,12 +436,12 @@ prepare_and_test_candidate() {
   while IFS= read -r -d '' shell_file; do
     bash -n "$shell_file"
   done < <(find "$candidate/deploy" -type f -name '*.sh' -print0)
-  run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"
-  run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"
-  run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"
-
-  sudo -n "$TEST_DB_HELPER" stop
-  TEST_DB_STARTED=0
+  if (( static_required == 1 )); then
+    wd_log "running deployment and merge-workflow regression suites"
+    run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"
+    run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"
+    run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"
+  fi
 
   [[ -z $(run_as_ci git -C "$candidate" status --porcelain --untracked-files=no) ]] \
     || wd_die "tests modified tracked candidate files"
@@ -359,21 +449,35 @@ prepare_and_test_candidate() {
   wd_migration_manifest "$candidate" >"$manifest"
   digest=$(wd_manifest_digest "$manifest")
   tree=$(run_as_ci git -C "$candidate" rev-parse 'HEAD^{tree}')
+  if (( typescript_required == 1 )); then
+    typescript_digest=$(wd_typescript_artifact_digest "$candidate")
+  fi
+  if (( engine_artifacts_required == 1 )); then
+    engine_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/engine/claude-api")
+    authbot_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/engine/authbot")
+  fi
   {
     printf 'sha=%s\n' "$sha"
     printf 'tree=%s\n' "$tree"
     printf 'migration_digest=%s\n' "$digest"
+    printf 'typescript_tested=%s\n' "$typescript_required"
+    printf 'rust_tested=%s\n' "$rust_required"
+    printf 'static_tested=%s\n' "$static_required"
+    printf 'engine_artifacts=%s\n' "$engine_artifacts_required"
+    printf 'typescript_artifact_digest=%s\n' "$typescript_digest"
+    printf 'engine_binary_sha256=%s\n' "$engine_hash"
+    printf 'authbot_binary_sha256=%s\n' "$authbot_hash"
     printf 'completed_at=%s\n' "$(date -u +%FT%TZ)"
   } >"${marker}.tmp.$$"
   chmod 0640 "${marker}.tmp.$$"
   mv -f -- "${marker}.tmp.$$" "$marker"
   rm -f -- "$manifest"
 
-  # Manual migration consumes the exact tested build. Root ownership plus removed write bits keeps
-  # it stable between the green test result and explicit operator approval.
+  # Every deployment consumes this exact build. Root ownership plus removed write bits keeps it
+  # stable between the green test result and release promotion.
   sudo -n chown -R root:root -- "$candidate"
   sudo -n chmod -R a-w -- "$candidate"
-  wd_log "candidate $sha passed the complete isolated test gate"
+  wd_log "candidate $sha passed every selected isolated validation lane"
 }
 
 final_verify_engine() {
@@ -656,11 +760,11 @@ deploy_engine() {
   local sha=$1
   CURRENT_PHASE=deploying-engine
   CURRENT_PHASE_BEFORE_FAILURE=deploying-engine
-  status "backing up PostgreSQL before building and blue-green deploying engine"
+  status "backing up PostgreSQL before promoting and blue-green deploying the tested engine"
   github_status pending deploy/engine "Engine blue-green deployment in progress"
   github_deployment_start engine production-engine https://api.apitoken.sale/health
   sudo -n "$BACKUP_RUNNER" "$sha"
-  "$CONTROLLER_ROOT/deploy.sh" --engine-bluegreen "$sha"
+  "$CONTROLLER_ROOT/deploy.sh" --engine-bluegreen --tested-candidate "$(candidate_for "$sha")" "$sha"
   "$CONTROLLER_ROOT/engine-bluegreen.sh"
   # The controller has admitted the new slot and drained the old one by this point. A verification
   # failure now leaves an unverified release serving, so recover before failing closed.
@@ -679,10 +783,11 @@ deploy_backend() {
   local sha=$1
   CURRENT_PHASE=deploying-backend
   CURRENT_PHASE_BEFORE_FAILURE=deploying-backend
-  status "building and blue-green deploying API, worker, and Content Studio; migrations explicitly skipped"
+  status "promoting and blue-green deploying tested API, worker, and Content Studio artifacts"
   github_status pending deploy/backend "Backend blue-green deployment in progress"
   github_deployment_start backend production-backend https://backend.apitoken.sale/v1/ready
-  "$CONTROLLER_ROOT/deploy.sh" --api-only --skip-migrate "$sha"
+  "$CONTROLLER_ROOT/deploy.sh" --api-only --skip-migrate \
+    --tested-candidate "$(candidate_for "$sha")" "$sha"
   "$CONTROLLER_ROOT/api-bluegreen.sh" --with-worker
   # As with the engine: traffic is already committed to the new slot here. Run the verifier in a
   # subshell so its internal wd_die becomes a testable status instead of exiting this process, then
@@ -759,9 +864,26 @@ apply_migrations_before_deploy() {
   return 0
 }
 
+idle_maintenance_due() {
+  local now last
+  now=$(date +%s)
+  [[ $now =~ ^[0-9]+$ ]] || return 0
+  if ! wd_read_line "$IDLE_MAINTENANCE_FILE"; then
+    return 0
+  fi
+  last=$REPLY
+  [[ $last =~ ^[0-9]+$ ]] || return 0
+  (( now - last >= IDLE_MAINTENANCE_SECONDS ))
+}
+
+mark_idle_maintenance_complete() {
+  wd_atomic_write "$IDLE_MAINTENANCE_FILE" "$(date +%s)" 0644
+}
+
 main() {
   local remote_ref rejected infra_changed=0 caddy_changed=0 engine_changed=0 backend_changed=0 sales_changed=0
-  local openkeys_changed=0
+  local openkeys_changed=0 typescript_required=0 rust_required=0 static_required=0
+  local engine_artifacts_required=0 infrastructure_validation_changed=0 unknown_validation_path=0
 
   [[ $(id -un) == deploy ]] || wd_die "watchdog service must run as deploy"
   [[ -d $SOURCE_REPO/.git ]] || wd_die "source repository is missing: $SOURCE_REPO"
@@ -788,12 +910,6 @@ main() {
     exit 0
   fi
 
-  # Candidate trees are build/test workspaces, not production releases. The exclusive lock makes
-  # every directory idle here, so expired read-only trees can be removed without racing a test,
-  # migration, infrastructure install, or deployment. A quarantined SHA can still be retried after
-  # expiry; candidate_is_tested will rebuild it from the source repository.
-  prune_expired_candidates
-
   CURRENT_PHASE=fetching
   status "fetching $REMOTE/$BRANCH"
   # GitHub reachability is not a property of the candidate. Absorb transient DNS/TLS/network
@@ -805,11 +921,13 @@ main() {
   wd_validate_sha "$CANDIDATE_SHA"
 
   PROCESSED_SHA=$(wd_read_sha "$PROCESSED_FILE")
+  INFRASTRUCTURE_SHA=$(wd_read_sha "$INFRASTRUCTURE_FILE" 2>/dev/null || printf '%s\n' "$PROCESSED_SHA")
   ENGINE_SHA=$(wd_read_sha "$ENGINE_FILE")
   BACKEND_SHA=$(wd_read_sha "$BACKEND_FILE")
   SALES_SHA=$(wd_read_sha "$SALES_FILE" 2>/dev/null || printf '')
   OPENKEYS_SHA=$(wd_read_sha "$OPENKEYS_FILE" 2>/dev/null || printf '')
   wd_require_ancestor "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" processed
+  wd_require_ancestor "$SOURCE_REPO" "$INFRASTRUCTURE_SHA" "$CANDIDATE_SHA" infrastructure
   wd_require_ancestor "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" engine
   wd_require_ancestor "$SOURCE_REPO" "$BACKEND_SHA" "$CANDIDATE_SHA" backend
   [[ -z $SALES_SHA ]] || wd_require_ancestor "$SOURCE_REPO" "$SALES_SHA" "$CANDIDATE_SHA" sales
@@ -822,18 +940,9 @@ main() {
     exit 0
   fi
 
-  # Releases and per-deployment dumps are pruned here, after the recorded component SHAs are loaded
-  # (they are protected inputs) and while the exclusive watchdog lock guarantees no deploy, rollback,
-  # or migration is in flight. Anything backing a live process is protected independently of counts.
-  CURRENT_PHASE=pruning
-  status "applying immutable release and pre-deploy dump retention"
-  prune_expired_releases "$ENGINE_RELEASE_ROOT" engine
-  prune_expired_releases "$COMMERCE_RELEASE_ROOT" commerce
-  prune_expired_dumps
-
-  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" wd_path_is_infrastructure \
+  wd_range_has_class "$SOURCE_REPO" "$INFRASTRUCTURE_SHA" "$CANDIDATE_SHA" wd_path_is_infrastructure \
     && infra_changed=1
-  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" wd_path_is_caddy \
+  wd_range_has_class "$SOURCE_REPO" "$INFRASTRUCTURE_SHA" "$CANDIDATE_SHA" wd_path_is_caddy \
     && caddy_changed=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_engine \
     && engine_changed=1
@@ -853,26 +962,67 @@ main() {
       && openkeys_changed=1
   fi
 
-  if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $engine_changed == 0 && $backend_changed == 0 \
+  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" wd_path_is_typescript \
+    && typescript_required=1
+  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" wd_path_is_engine \
+    && rust_required=1
+  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" wd_path_is_infrastructure \
+    && infrastructure_validation_changed=1
+  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" wd_path_is_merge_workflow \
+    && static_required=1
+  wd_range_has_unknown_validation_path "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" \
+    && unknown_validation_path=1
+  (( backend_changed == 0 && sales_changed == 0 && openkeys_changed == 0 )) \
+    || typescript_required=1
+  (( infrastructure_validation_changed == 0 )) || static_required=1
+  if (( unknown_validation_path == 1 )); then
+    typescript_required=1
+    rust_required=1
+    static_required=1
+  fi
+  engine_artifacts_required=$engine_changed
+
+  if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $infra_changed == 0 \
+        && $engine_changed == 0 && $backend_changed == 0 \
         && $sales_changed == 0 && $openkeys_changed == 0 ]]; then
-    reconcile_engine_runtime "$ENGINE_SHA"
-    final_verify_admin_panel
-    final_verify_codex_surface
+    if idle_maintenance_due; then
+      CURRENT_PHASE=maintaining
+      status "running periodic retention and production-alignment checks"
+      prune_expired_candidates
+      prune_expired_releases "$ENGINE_RELEASE_ROOT" engine
+      prune_expired_releases "$COMMERCE_RELEASE_ROOT" commerce
+      prune_expired_dumps
+      reconcile_engine_runtime "$ENGINE_SHA"
+      final_verify_admin_panel
+      final_verify_codex_surface
+      mark_idle_maintenance_complete
+    fi
     CURRENT_PHASE=idle
     status "master already processed; production runtime aligned"
-    wd_log "master $CANDIDATE_SHA is already processed and production is aligned"
+    wd_log "master $CANDIDATE_SHA is already processed"
     exit 0
   fi
 
-  github_status pending deploy/watchdog "Production pipeline started"
-  github_status pending deploy/tests "Complete isolated validation in progress"
+  # Candidate trees and immutable releases are pruned only for real delivery work or the periodic
+  # maintenance pass above. The five-second update poll therefore stays cheap while master is idle.
+  CURRENT_PHASE=pruning
+  status "applying candidate, release, and pre-deploy dump retention"
+  prune_expired_candidates
+  prune_expired_releases "$ENGINE_RELEASE_ROOT" engine
+  prune_expired_releases "$COMMERCE_RELEASE_ROOT" commerce
+  prune_expired_dumps
 
-  prepare_and_test_candidate "$CANDIDATE_SHA"
-  github_status success deploy/tests "Complete isolated validation passed"
+  github_status pending deploy/watchdog "Production pipeline started"
+  github_status pending deploy/tests "Path-aware isolated validation in progress"
+
+  prepare_and_test_candidate "$CANDIDATE_SHA" "$typescript_required" "$rust_required" \
+    "$static_required" "$engine_artifacts_required"
+  github_status success deploy/tests "Selected isolated validation lanes passed"
   rm -f -- "$REJECTED_FILE"
 
   if (( infra_changed == 1 )); then
     CURRENT_PHASE=installing-infrastructure
+    CURRENT_PHASE_BEFORE_FAILURE=installing-infrastructure
     status "installing exact tested operational definitions"
     github_status pending deploy/watchdog "Installing exact tested operational definitions"
     if (( caddy_changed == 1 )); then
@@ -880,7 +1030,13 @@ main() {
     else
       sudo -n "$INFRASTRUCTURE_RUNNER" "$CANDIDATE_SHA"
     fi
-    wd_log "exact tested operational definitions installed automatically"
+    [[ $(wd_read_sha "$INFRASTRUCTURE_FILE") == "$CANDIDATE_SHA" ]] \
+      || wd_die "infrastructure installer did not record the exact installed candidate"
+    CURRENT_PHASE=handoff
+    status "operational definitions installed; next five-second poll continues with the new controller"
+    github_status pending deploy/watchdog "New controller installed; continuing on next poll"
+    wd_log "exact tested operational definitions installed; handing off before any green verdict"
+    exit 0
   fi
 
   if (( backend_changed == 1 )); then
@@ -917,6 +1073,9 @@ main() {
     if [[ -z ${OPENKEYS_SHA:-} ]]; then wd_atomic_write "$OPENKEYS_FILE" "$CANDIDATE_SHA"; fi
   fi
 
+  CURRENT_PHASE=verifying
+  CURRENT_PHASE_BEFORE_FAILURE=verifying
+  status "running final cross-component production verification"
   reconcile_engine_runtime "$ENGINE_SHA"
   final_verify_admin_panel
   final_verify_codex_surface

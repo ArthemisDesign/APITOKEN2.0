@@ -207,6 +207,11 @@ printf '%s\n' "${prunable_dumps[@]}" | grep -Fxq "commerce.pre-deploy-$oldest_du
   || wd_die "dump retention did not select the oldest commerce snapshot"
 
 # Path classifiers: sales vs backend/engine/infra separation.
+wd_path_is_typescript apps/web/src/app/page.tsx || wd_die "web app not classified for TypeScript validation"
+wd_path_is_typescript packages/contracts/src/index.ts || wd_die "workspace package not classified for TypeScript validation"
+wd_path_is_merge_workflow .claude/hooks/guard-git.sh || wd_die "git guard not classified as merge workflow"
+wd_path_is_validation_neutral docs/STAGE2_POSTGRES_AUTHORITY.md \
+  || wd_die "documentation should be validation-neutral"
 wd_path_is_sales apps/sales-api/src/main.ts || wd_die "sales-api not classified as sales"
 wd_path_is_sales apps/sales-web/src/app/page.tsx || wd_die "sales-web not classified as sales"
 wd_path_is_sales packages/sales-db/src/schema.ts || wd_die "sales-db not classified as sales"
@@ -243,6 +248,97 @@ fi
 wd_path_is_caddy deploy/Caddyfile
 if wd_path_is_caddy deploy/watchdog.sh; then
   wd_die "non-Caddy infrastructure change requested a Caddy reload"
+fi
+
+# Documentation-only ranges stay cheap, but any new unclassified area fails safe into the complete
+# validation set until its owner adds an explicit classifier.
+validation_repo="$TEMP/validation-repo"
+git init --quiet "$validation_repo"
+git -C "$validation_repo" config user.name test
+git -C "$validation_repo" config user.email test@example.invalid
+git -C "$validation_repo" commit --quiet --allow-empty -m base
+validation_base=$(git -C "$validation_repo" rev-parse HEAD)
+mkdir -p "$validation_repo/docs"
+printf 'known\n' >"$validation_repo/docs/known.md"
+git -C "$validation_repo" add docs/known.md
+git -C "$validation_repo" commit --quiet -m docs
+validation_docs=$(git -C "$validation_repo" rev-parse HEAD)
+if wd_range_has_unknown_validation_path "$validation_repo" "$validation_base" "$validation_docs"; then
+  wd_die "documentation-only range was treated as unknown code"
+fi
+mkdir -p "$validation_repo/mystery"
+printf 'unknown\n' >"$validation_repo/mystery/runtime.xyz"
+git -C "$validation_repo" add mystery/runtime.xyz
+git -C "$validation_repo" commit --quiet -m unknown
+validation_unknown=$(git -C "$validation_repo" rev-parse HEAD)
+wd_range_has_unknown_validation_path "$validation_repo" "$validation_docs" "$validation_unknown" \
+  || wd_die "an unclassified path did not fail safe into complete validation"
+
+# Both the gate and release promoter must hash the same mandatory runtime entrypoints.
+artifact_tree="$TEMP/artifact-tree"
+artifact_paths=(
+  apps/api/dist/main.js
+  apps/worker/dist/main.js
+  apps/content-studio/.next/BUILD_ID
+  apps/sales-api/dist/main.js
+  apps/sales-web/.next/BUILD_ID
+  apps/openkeys/.next/BUILD_ID
+  packages/db/dist/migrate.js
+  packages/sales-db/dist/migrate.js
+  packages/openkeys-db/dist/migrate.js
+)
+for artifact_path in "${artifact_paths[@]}"; do
+  mkdir -p "$artifact_tree/$(dirname -- "$artifact_path")"
+  printf '%s\n' "$artifact_path" >"$artifact_tree/$artifact_path"
+done
+watchdog_artifact_digest=$(wd_typescript_artifact_digest "$artifact_tree")
+deploy_artifact_digest=$(bash -c \
+  'source "$1"; tested_typescript_artifact_digest "$2"' _ "$ROOT/deploy/lib.sh" "$artifact_tree")
+[[ $watchdog_artifact_digest == "$deploy_artifact_digest" ]] \
+  || wd_die "watchdog and release promoter disagree on the TypeScript artifact identity"
+printf 'tampered\n' >>"$artifact_tree/apps/api/dist/main.js"
+[[ $(wd_typescript_artifact_digest "$artifact_tree") != "$watchdog_artifact_digest" ]] \
+  || wd_die "artifact identity did not detect a changed runtime entrypoint"
+
+# Exercise the release-side marker check without requiring root in this hermetic fixture. Production
+# still supplies the real stat_owner_uid implementation; only the fixture's owner result is stubbed.
+tested_candidate="$TEMP/tested-candidate"
+cp -R "$artifact_tree" "$tested_candidate"
+git init --quiet "$tested_candidate"
+git -C "$tested_candidate" config user.name test
+git -C "$tested_candidate" config user.email test@example.invalid
+git -C "$tested_candidate" commit --quiet --allow-empty -m candidate
+tested_sha=$(git -C "$tested_candidate" rev-parse HEAD)
+tested_tree=$(git -C "$tested_candidate" rev-parse 'HEAD^{tree}')
+mkdir -p "$tested_candidate/.deploy-artifacts/engine"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$tested_candidate/.deploy-artifacts/engine/claude-api"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$tested_candidate/.deploy-artifacts/engine/authbot"
+chmod +x "$tested_candidate/.deploy-artifacts/engine/claude-api" \
+  "$tested_candidate/.deploy-artifacts/engine/authbot"
+tested_marker="$TEMP/tested-candidate.marker"
+{
+  printf 'sha=%s\n' "$tested_sha"
+  printf 'tree=%s\n' "$tested_tree"
+  printf 'typescript_tested=1\n'
+  printf 'rust_tested=1\n'
+  printf 'engine_artifacts=1\n'
+  printf 'typescript_artifact_digest=%s\n' "$(wd_typescript_artifact_digest "$tested_candidate")"
+  printf 'engine_binary_sha256=%s\n' \
+    "$(wd_sha256_file "$tested_candidate/.deploy-artifacts/engine/claude-api")"
+  printf 'authbot_binary_sha256=%s\n' \
+    "$(wd_sha256_file "$tested_candidate/.deploy-artifacts/engine/authbot")"
+} >"$tested_marker"
+validate_candidate_fixture() {
+  bash -c '
+    source "$1"
+    stat_owner_uid(){ printf "0\n"; }
+    validate_tested_candidate "$2" "$3" "$4" 1 1
+  ' _ "$ROOT/deploy/lib.sh" "$tested_candidate" "$tested_marker" "$tested_sha"
+}
+validate_candidate_fixture || wd_die "release promoter rejected an intact tested candidate"
+printf 'post-marker mutation\n' >>"$tested_candidate/apps/api/dist/main.js"
+if validate_candidate_fixture >/dev/null 2>&1; then
+  wd_die "release promoter accepted a runtime artifact changed after the test marker"
 fi
 
 grep -Fq 'admin.apitoken.sale {' "$ROOT/deploy/Caddyfile"
@@ -315,10 +411,12 @@ test_db_port=$(sed -n 's/^PORT=${WATCHDOG_POSTGRES_PORT:-\([0-9]*\)}$/\1/p' "$RO
 (( test_db_port < 32768 )) \
   || wd_die "test database port $test_db_port is inside the ephemeral range and will collide"
 
-# The authbot produces the subscriptions the engine serves from, so it must ship from the same
-# tested, immutable release rather than a hand-built scratch binary that can drift for months.
-grep -Fq 'cargo build --locked --release -p authbot' "$ROOT/deploy/deploy.sh" \
-  || wd_die "the release does not build the authbot"
+# The authbot produces the subscriptions the engine serves from, so the production watchdog builds
+# it once beside the tested engine and the release controller only promotes those exact binaries.
+grep -Fq 'cargo build --locked --release -p claude-api -p authbot' "$ROOT/deploy/watchdog.sh" \
+  || wd_die "the candidate gate does not build both production engine artifacts"
+grep -Fq '"$TESTED_CANDIDATE/.deploy-artifacts/engine/authbot"' "$ROOT/deploy/deploy.sh" \
+  || wd_die "the release controller does not promote the tested authbot"
 grep -Fq '"$ENGINE_STAGE/authbot"' "$ROOT/deploy/deploy.sh" \
   || wd_die "the authbot binary is not installed into the engine release"
 grep -Fq 'staged authbot binary is missing' "$ROOT/deploy/deploy.sh" \
@@ -348,9 +446,8 @@ grep -Fq 'streak >= 3' "$ROOT/deploy/watchdog.sh" \
 grep -Fq 'for _ in $(seq 1 20); do' "$ROOT/deploy/watchdog.sh" \
   || wd_die "the admin-panel convergence window must outlast blue-green cutover and health checks"
 
-# The candidate installs its own next watchdog after this gate succeeds. Pin every stage that makes
-# the candidate trustworthy so a later watchdog cannot silently self-install after dropping a
-# language suite, its live-database fixture, or a repository-integrity check.
+# The path-aware candidate gate must keep every lane and its selection/fallback contract. TypeScript
+# and Rust run concurrently when both are selected; unknown paths select all lanes.
 gate_contract=(
   'pnpm --dir "$candidate" install --frozen-lockfile'
   'pnpm --dir "$candidate" build'
@@ -368,6 +465,15 @@ gate_contract=(
   'run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"'
   'run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"'
   'status --porcelain --untracked-files=no'
+  'run_candidate_lane test_typescript_lane "$candidate" "$dsn" "$sales_dsn" "$openkeys_dsn" &'
+  'run_candidate_lane test_rust_lane "$candidate" "$engine_dsn" "$engine_artifacts_required" &'
+  'wait "$typescript_pid"'
+  'wait "$rust_pid"'
+  'wd_range_has_unknown_validation_path "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA"'
+  'typescript_tested=%s'
+  'rust_tested=%s'
+  'static_tested=%s'
+  'engine_artifacts=%s'
 )
 for required_stage in "${gate_contract[@]}"; do
   grep -Fq -- "$required_stage" "$ROOT/deploy/watchdog.sh" \
@@ -514,9 +620,10 @@ subshell_result=$(trap_case_output subshell)
   || wd_die "a wd_die inside a condition subshell must not quarantine (got: $subshell_result)"
 
 
-# Operator visibility: sales has an independent release lifecycle and must appear in status.
-grep -Fq 'for entry in processed engine backend sales rejected pending-migration' \
-  "$ROOT/deploy/watchdog-control.sh" || wd_die 'watchdog status does not report the sales baseline'
+# Operator visibility: independent controller and application baselines must appear in status.
+grep -Fq 'for entry in processed infrastructure engine backend sales openkeys rejected pending-migration' \
+  "$ROOT/deploy/watchdog-control.sh" \
+  || wd_die 'watchdog status omits an independent deployment baseline'
 
 # The least-privilege sudo policy must exist, deny the reporting credential, and be installed by a
 # validating installer rather than hand-edited.
@@ -641,6 +748,45 @@ grep -Fq 'DEPLOY_BUILD_CACHE_ROOT=/var/lib/apitoken/watchdog/deploy-build-cache'
   "$ROOT/deploy/deploy.sh" || wd_die 'release builder does not pin the writable build cache'
 grep -Fq '/var/lib/apitoken/watchdog/deploy-build-cache/cargo' \
   "$ROOT/deploy/install-watchdog.sh" || wd_die 'watchdog installer does not create the release build cache'
+grep -Fq 'CARGO_TARGET_DIR="$CI_CARGO_TARGET"' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'candidate Rust builds do not share one persistent target cache'
+grep -Fq '/var/lib/apitoken/watchdog/ci-home/cargo-target' \
+  "$ROOT/deploy/install-watchdog.sh" || wd_die 'watchdog installer does not create the shared CI target'
+
+# Five-second update detection must not turn retention and deep production probes into five-second
+# busy work. Those checks remain on a separate minute maintenance cadence.
+grep -Fxq 'OnUnitInactiveSec=5s' "$ROOT/systemd/apitoken-deploy-watchdog.timer" \
+  || wd_die 'production update polling is not five seconds'
+grep -Fq 'AGENT_MERGE_POLL_S=${AGENT_MERGE_POLL_S:-5}' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'merge/deployment status polling is not five seconds'
+grep -Fq 'IDLE_MAINTENANCE_SECONDS=60' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'deep idle maintenance is not decoupled from the fast update poll'
+
+# A self-update records the installed controller SHA and exits pending. Only the next invocation,
+# running the new operational definitions, is allowed to deploy components and publish overall green.
+grep -Fq 'wd_atomic_write "$STATE_ROOT/infrastructure.sha" "$SHA"' \
+  "$ROOT/deploy/watchdog-infrastructure.sh" \
+  || wd_die 'infrastructure transaction does not record its exact SHA'
+grep -Fq 'CURRENT_PHASE=handoff' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'watchdog self-update has no controller handoff'
+grep -Fq 'New controller installed; continuing on next poll' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'controller handoff does not keep the overall verdict pending'
+handoff_line=$(grep -nF 'CURRENT_PHASE=handoff' "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
+processed_line=$(grep -nF 'wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"' \
+  "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
+[[ -n $handoff_line && -n $processed_line && $handoff_line -lt $processed_line ]] \
+  || wd_die 'self-update handoff is not fenced before the processed/green path'
+
+# Core releases promote the frozen candidate, while manual deployments retain their fallback build.
+grep -Fq -- '--tested-candidate "$(candidate_for "$sha")"' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'core deployments do not consume the tested candidate'
+grep -Fq 'promoting the exact tested commerce build' "$ROOT/deploy/deploy.sh" \
+  || wd_die 'commerce is rebuilt after the candidate gate'
+grep -Fq 'promoting exact tested engine binaries' "$ROOT/deploy/deploy.sh" \
+  || wd_die 'engine is rebuilt after the candidate gate'
+[[ $(grep -Fc 'production-(database|engine|backend|sales|openkeys)' \
+  "$ROOT/deploy/watchdog-github.sh") == 2 ]] \
+  || wd_die 'GitHub deployment reporting does not allow the OpenKeys environment'
 grep -Fq 'tokio-postgres-rustls' "$ROOT/crates/registry/Cargo.toml" \
   || wd_die 'engine PostgreSQL transport must use rustls alongside the BoringSSL forward transport'
 if grep -Eq '^[[:space:]]*(postgres-native-tls|native-tls)[[:space:]]*=' \

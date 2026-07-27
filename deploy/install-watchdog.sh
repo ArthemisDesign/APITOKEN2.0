@@ -25,6 +25,8 @@ fi
 install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/controller
 install -d -o deploy -g deploy -m 0751 /var/lib/apitoken/watchdog /var/lib/apitoken/watchdog/candidates
 install -d -o deploy -g deploy -m 0750 /var/lib/apitoken/watchdog/ci-home
+install -d -o apitoken-ci -g apitoken-ci -m 0750 \
+  /var/lib/apitoken/watchdog/ci-home/cargo-target
 install -d -o deploy -g deploy -m 0750 \
   /var/lib/apitoken/watchdog/deploy-build-cache \
   /var/lib/apitoken/watchdog/deploy-build-cache/cargo \

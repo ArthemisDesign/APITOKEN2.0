@@ -1,5 +1,5 @@
 [Unit]
-Description=API Token Sale tested automatic engine/backend deploy watchdog
+Description=API Token Sale tested automatic production deploy watchdog
 After=network-online.target docker.service apitoken-postgres.service
 Wants=network-online.target
 

@@ -1,11 +1,11 @@
 [Unit]
-Description=Poll GitHub master for tested engine/backend deployments
+Description=Poll GitHub master for tested production deployments
 
 [Timer]
 OnBootSec=2min
-OnUnitInactiveSec=60s
-AccuracySec=5s
-RandomizedDelaySec=10s
+OnUnitInactiveSec=5s
+AccuracySec=1s
+RandomizedDelaySec=0
 Unit=apitoken-deploy-watchdog.service
 
 [Install]

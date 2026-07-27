@@ -34,6 +34,111 @@ validate_sha() {
   [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "release SHA must be the full 40-character lowercase commit hash"
 }
 
+sha256_file() {
+  local path=$1
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -- "$path" | awk '{print $1}'
+  else
+    shasum -a 256 -- "$path" | awk '{print $1}'
+  fi
+}
+
+sha256_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    shasum -a 256 | awk '{print $1}'
+  fi
+}
+
+tested_marker_value() {
+  local marker=$1 key=$2 line value found=0
+  [[ -f "$marker" && ! -L "$marker" ]] || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      "$key="*)
+        (( found == 0 )) || die "duplicate $key in tested marker $marker"
+        value=${line#*=}
+        found=1
+        ;;
+    esac
+  done <"$marker"
+  (( found == 1 )) || return 1
+  printf '%s\n' "$value"
+}
+
+tested_typescript_artifact_digest() {
+  local tree=$1 relative
+  local artifacts=(
+    apps/api/dist/main.js
+    apps/worker/dist/main.js
+    apps/content-studio/.next/BUILD_ID
+    apps/sales-api/dist/main.js
+    apps/sales-web/.next/BUILD_ID
+    apps/openkeys/.next/BUILD_ID
+    packages/db/dist/migrate.js
+    packages/sales-db/dist/migrate.js
+    packages/openkeys-db/dist/migrate.js
+  )
+  for relative in "${artifacts[@]}"; do
+    [[ -f "$tree/$relative" && ! -L "$tree/$relative" ]] \
+      || die "tested TypeScript artifact is missing or unsafe: $tree/$relative"
+    printf '%s  %s\n' "$(sha256_file "$tree/$relative")" "$relative"
+  done | sha256_stdin
+}
+
+# Validate the root-owned candidate and its gate marker before an unprivileged release builder copies
+# anything. Runtime artifacts are promoted from this tree; they are never compiled a second time.
+validate_tested_candidate() {
+  local candidate=$1 marker=$2 expected_sha=$3 need_typescript=$4 need_engine=$5
+  local marker_sha marker_tree candidate_sha candidate_tree expected_digest actual_digest artifact digest_key
+
+  [[ -d "$candidate" && ! -L "$candidate" ]] || die "tested candidate is missing or unsafe: $candidate"
+  [[ "$(stat_owner_uid "$candidate")" == 0 ]] || die "tested candidate must be root-owned: $candidate"
+  [[ -f "$marker" && ! -L "$marker" ]] || die "tested candidate marker is missing: $marker"
+  marker_sha=$(tested_marker_value "$marker" sha) || die "tested candidate marker has no SHA"
+  marker_tree=$(tested_marker_value "$marker" tree) || die "tested candidate marker has no tree"
+  [[ "$marker_sha" == "$expected_sha" ]] || die "tested candidate marker SHA mismatch"
+
+  candidate_sha=$(git -c safe.directory="$candidate" -C "$candidate" rev-parse 'HEAD^{commit}')
+  candidate_tree=$(git -c safe.directory="$candidate" -C "$candidate" rev-parse 'HEAD^{tree}')
+  [[ "$candidate_sha" == "$expected_sha" && "$candidate_tree" == "$marker_tree" ]] \
+    || die "tested candidate identity changed after validation"
+  [[ -z "$(git -c safe.directory="$candidate" -C "$candidate" status --porcelain --untracked-files=no)" ]] \
+    || die "tested candidate has tracked modifications"
+
+  if [[ "$need_typescript" == 1 ]]; then
+    [[ "$(tested_marker_value "$marker" typescript_tested)" == 1 ]] \
+      || die "candidate did not pass the TypeScript lane"
+    expected_digest=$(tested_marker_value "$marker" typescript_artifact_digest) \
+      || die "candidate marker has no TypeScript artifact digest"
+    actual_digest=$(tested_typescript_artifact_digest "$candidate")
+    [[ "$actual_digest" == "$expected_digest" ]] \
+      || die "tested TypeScript artifacts changed before release promotion"
+  fi
+  if [[ "$need_engine" == 1 ]]; then
+    [[ "$(tested_marker_value "$marker" rust_tested)" == 1 ]] \
+      || die "candidate did not pass the Rust lane"
+    [[ "$(tested_marker_value "$marker" engine_artifacts)" == 1 ]] \
+      || die "candidate has no tested production engine artifacts"
+    for artifact in claude-api authbot; do
+      [[ -x "$candidate/.deploy-artifacts/engine/$artifact" \
+          && ! -L "$candidate/.deploy-artifacts/engine/$artifact" ]] \
+        || die "tested engine artifact is missing or unsafe: $artifact"
+      if [[ "$artifact" == claude-api ]]; then
+        digest_key=engine_binary_sha256
+      else
+        digest_key=authbot_binary_sha256
+      fi
+      expected_digest=$(tested_marker_value "$marker" "$digest_key") \
+        || die "candidate marker has no digest for $artifact"
+      actual_digest=$(sha256_file "$candidate/.deploy-artifacts/engine/$artifact")
+      [[ "$actual_digest" == "$expected_digest" ]] \
+        || die "tested engine artifact changed before release promotion: $artifact"
+    done
+  fi
+}
+
 validate_timeout() {
   local timeout=$1
   [[ "$timeout" =~ ^[1-9][0-9]*$ ]] || die "readiness timeout must be a positive integer"

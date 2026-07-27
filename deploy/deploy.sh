@@ -16,6 +16,8 @@ usage() {
     '  --engine-only       Build, activate, restart, and probe only the Rust engine' \
     '  --engine-bluegreen  Build and select only the Rust engine; engine-bluegreen.sh owns slots' \
     '  --api-only          Build, migrate, and point current for a later blue-green API cutover' \
+    '  --tested-candidate PATH' \
+    '                      Promote artifacts from the watchdog-tested immutable candidate' \
     '  --bootstrap         Prepare the first release, create both current links, then install/start units' \
     '  --skip-migrate      Skip the commerce database migration (explicit override)' \
     '  --timeout SECONDS   Readiness deadline per service (default: 60)' \
@@ -32,6 +34,7 @@ SKIP_MIGRATE=0
 READINESS_TIMEOUT=${READINESS_TIMEOUT_SECONDS:-60}
 SHA=
 MODE_SELECTED=
+TESTED_CANDIDATE=
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -64,6 +67,11 @@ while [[ $# -gt 0 ]]; do
     --skip-migrate)
       SKIP_MIGRATE=1
       shift
+      ;;
+    --tested-candidate)
+      [[ $# -ge 2 ]] || die "--tested-candidate requires a path"
+      TESTED_CANDIDATE=$2
+      shift 2
       ;;
     --timeout)
       [[ $# -ge 2 ]] || die "--timeout requires a value"
@@ -113,6 +121,8 @@ API_SERVICE=${API_SERVICE:-apitoken-api@3000.service}
 ENGINE_SERVICE=${ENGINE_SERVICE:-claude-api.service}
 LEGACY_API_SERVICE=${LEGACY_API_SERVICE:-apitoken-api.service}
 SYSTEMD_UNIT_DIR=${SYSTEMD_UNIT_DIR:-/etc/systemd/system}
+TESTED_CANDIDATE_ROOT=/var/lib/apitoken/watchdog/candidates
+TESTED_MARKER=
 
 # The watchdog runs with ProtectHome=read-only. Release builds must never depend on a warm cache
 # under /home/deploy: new locked dependencies need a controller-owned writable cache on first use.
@@ -129,6 +139,11 @@ validate_service_unit "$API_SERVICE"
 validate_service_unit "$ENGINE_SERVICE"
 validate_service_unit "$LEGACY_API_SERVICE"
 [[ "$API_SERVICE" != "$LEGACY_API_SERVICE" ]] || die "template and legacy API units must be different"
+if [[ -n "$TESTED_CANDIDATE" ]]; then
+  [[ "$TESTED_CANDIDATE" == "$TESTED_CANDIDATE_ROOT/$SHA" ]] \
+    || die "--tested-candidate must be the fixed watchdog candidate for $SHA"
+  TESTED_MARKER="/var/lib/apitoken/watchdog/$SHA.tested"
+fi
 
 COMMERCE_RELEASE="$COMMERCE_RELEASE_ROOT/$SHA"
 ENGINE_RELEASE="$ENGINE_RELEASE_ROOT/$SHA"
@@ -248,12 +263,20 @@ prepare_commerce_release() {
 
   COMMERCE_STAGE="$COMMERCE_RELEASE_ROOT/.${SHA}.tmp.$$"
   [[ ! -e "$COMMERCE_STAGE" && ! -L "$COMMERCE_STAGE" ]] || die "staging path already exists: $COMMERCE_STAGE"
-  log "creating commerce release $COMMERCE_RELEASE"
-  checkout_stage "$COMMERCE_STAGE"
-  run pnpm --dir "$COMMERCE_STAGE" install --frozen-lockfile
-  run pnpm --dir "$COMMERCE_STAGE" build
-  # db:migrate itself builds; deployment must instead prebuild this artifact before finalization.
-  run pnpm --dir "$COMMERCE_STAGE" --filter @claude-api/db build
+  if [[ -n "$TESTED_CANDIDATE" ]]; then
+    log "promoting the exact tested commerce build into $COMMERCE_RELEASE"
+    run cp -a --reflink=auto --no-preserve=ownership -- "$TESTED_CANDIDATE" "$COMMERCE_STAGE"
+    # The frozen source modes are preserved by cp. The new copy is owned by deploy, so temporarily
+    # restore only owner write access for its release marker before freezing it again.
+    run chmod -R u+w -- "$COMMERCE_STAGE"
+  else
+    log "creating commerce release $COMMERCE_RELEASE"
+    checkout_stage "$COMMERCE_STAGE"
+    run pnpm --dir "$COMMERCE_STAGE" install --frozen-lockfile
+    run pnpm --dir "$COMMERCE_STAGE" build
+    # db:migrate itself builds; deployment must instead prebuild this artifact before finalization.
+    run pnpm --dir "$COMMERCE_STAGE" --filter @claude-api/db build
+  fi
   if [[ "$DRY_RUN" != "1" ]]; then
     validate_commerce_stage "$COMMERCE_STAGE"
   fi
@@ -286,19 +309,27 @@ prepare_engine_release() {
     return 0
   fi
 
-  prepare_engine_source
   ENGINE_STAGE="$ENGINE_RELEASE_ROOT/.${SHA}.tmp.$$"
   [[ ! -e "$ENGINE_STAGE" && ! -L "$ENGINE_STAGE" ]] || die "staging path already exists: $ENGINE_STAGE"
   run install -d -- "$ENGINE_STAGE"
-  log "building engine release $ENGINE_RELEASE"
-  run env CARGO_TARGET_DIR="$ENGINE_STAGE/target" cargo build --locked --release -p claude-api --manifest-path "$ENGINE_SOURCE_DIR/Cargo.toml"
-  run install -m 0755 -- "$ENGINE_STAGE/target/release/claude-api" "$ENGINE_STAGE/claude-api"
-  # The authbot replenishes the pool the engine serves from. It used to be built by hand into a
-  # scratch target directory, which meant the running bot could silently be months older than the
-  # tested commit. Ship it from the same immutable release as the engine.
-  run env CARGO_TARGET_DIR="$ENGINE_STAGE/target" cargo build --locked --release -p authbot --manifest-path "$ENGINE_SOURCE_DIR/Cargo.toml"
-  run install -m 0755 -- "$ENGINE_STAGE/target/release/authbot" "$ENGINE_STAGE/authbot"
-  run rm -rf -- "$ENGINE_STAGE/target"
+  if [[ -n "$TESTED_CANDIDATE" ]]; then
+    log "promoting exact tested engine binaries into $ENGINE_RELEASE"
+    run install -m 0755 -- "$TESTED_CANDIDATE/.deploy-artifacts/engine/claude-api" \
+      "$ENGINE_STAGE/claude-api"
+    run install -m 0755 -- "$TESTED_CANDIDATE/.deploy-artifacts/engine/authbot" \
+      "$ENGINE_STAGE/authbot"
+  else
+    prepare_engine_source
+    log "building engine release $ENGINE_RELEASE"
+    run env CARGO_TARGET_DIR="$ENGINE_STAGE/target" cargo build --locked --release -p claude-api --manifest-path "$ENGINE_SOURCE_DIR/Cargo.toml"
+    run install -m 0755 -- "$ENGINE_STAGE/target/release/claude-api" "$ENGINE_STAGE/claude-api"
+    # The authbot replenishes the pool the engine serves from. It used to be built by hand into a
+    # scratch target directory, which meant the running bot could silently be months older than the
+    # tested commit. Ship it from the same immutable release as the engine.
+    run env CARGO_TARGET_DIR="$ENGINE_STAGE/target" cargo build --locked --release -p authbot --manifest-path "$ENGINE_SOURCE_DIR/Cargo.toml"
+    run install -m 0755 -- "$ENGINE_STAGE/target/release/authbot" "$ENGINE_STAGE/authbot"
+    run rm -rf -- "$ENGINE_STAGE/target"
+  fi
   if [[ "$DRY_RUN" != "1" ]]; then
     validate_engine_stage "$ENGINE_STAGE"
   fi
@@ -605,7 +636,12 @@ fi
 if [[ "$DEPLOY_ENGINE" == "1" ]]; then
   run install -d -- "$ENGINE_RELEASE_ROOT"
 fi
-fetch_release_commit
+if [[ -n "$TESTED_CANDIDATE" ]]; then
+  validate_tested_candidate "$TESTED_CANDIDATE" "$TESTED_MARKER" "$SHA" \
+    "$DEPLOY_API" "$DEPLOY_ENGINE"
+else
+  fetch_release_commit
+fi
 
 if [[ "$DEPLOY_API" == "1" ]]; then
   prepare_commerce_release
