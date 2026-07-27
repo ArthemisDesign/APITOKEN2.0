@@ -1039,7 +1039,7 @@ async function verifyApiKeysLayout(client) {
     try {
       await waitForCondition(
         client,
-        `Boolean(document.querySelector('.keys-toolbar')) && document.querySelectorAll('.keys-filter-tab').length === 5 && document.querySelectorAll('.keys-health-card').length === 4 && Boolean(document.querySelector('.lang button, .lang a'))`,
+        `Boolean(document.querySelector('.keys-toolbar')) && document.querySelectorAll('.keys-filter-tab').length === 5 && document.querySelectorAll('.keys-health-card').length === 0 && Boolean(document.querySelector('.lang button, .lang a'))`,
         `${layoutCase.name} API key manager shell`,
       );
     } catch (error) {
@@ -1090,7 +1090,6 @@ async function verifyApiKeysLayout(client) {
       expression: `(() => {
         const rect = (selector) => document.querySelector(selector)?.getBoundingClientRect();
         const heading = rect('.keys-heading-row');
-        const health = rect('.keys-health-grid');
         const dock = rect('.agent-connect-dock');
         const manager = rect('.keys-manager-head');
         const createButton = rect('.keys-create-button');
@@ -1105,9 +1104,9 @@ async function verifyApiKeysLayout(client) {
           language: document.documentElement.lang,
           theme: document.documentElement.dataset.theme || 'light',
           overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-          aligned: Boolean(heading && health && dock && manager && toolbar && keys &&
-            Math.max(heading.left, health.left, dock.left, manager.left, toolbar.left, keys.left) - Math.min(heading.left, health.left, dock.left, manager.left, toolbar.left, keys.left) < 2 &&
-            Math.max(health.right, dock.right, manager.right, toolbar.right, keys.right) - Math.min(health.right, dock.right, manager.right, toolbar.right, keys.right) < 2),
+          aligned: Boolean(heading && dock && manager && toolbar && keys &&
+            Math.max(heading.left, dock.left, manager.left, toolbar.left, keys.left) - Math.min(heading.left, dock.left, manager.left, toolbar.left, keys.left) < 2 &&
+            Math.max(dock.right, manager.right, toolbar.right, keys.right) - Math.min(dock.right, manager.right, toolbar.right, keys.right) < 2),
           separated: Boolean(toolbar && key && key.top - toolbar.bottom >= 12),
           distinctSurface: toolbarStyle.backgroundColor !== keyStyle.backgroundColor && toolbarStyle.borderRadius !== keyStyle.borderRadius,
           createButtonCount: document.querySelectorAll('.keys-create-button').length,
@@ -1121,7 +1120,7 @@ async function verifyApiKeysLayout(client) {
           label: document.querySelector('.keys-filter-tabs')?.getAttribute('aria-label'),
           counts: [...document.querySelectorAll('.keys-filter-tab b')].map((element) => element.textContent?.trim()),
           activeFilter: document.querySelector('.keys-filter-tab[aria-pressed="true"]')?.dataset.keyFilter,
-          healthValues: [...document.querySelectorAll('.keys-health-card strong')].map((element) => element.textContent?.trim()),
+          healthCards: document.querySelectorAll('.keys-health-card').length,
           policyStates: ['near-limit','expires-soon','limit','expired'].map((state) => Boolean(document.querySelector('.key-row-' + state))),
         });
       })()`,
@@ -1130,7 +1129,7 @@ async function verifyApiKeysLayout(client) {
     const state = JSON.parse(result.result.value);
     const expectedTheme = layoutCase.theme === "dark" ? "dark" : "light";
     const expectedTabRows = layoutCase.width > 620 ? 1 : 3;
-    if (state.language !== layoutCase.language || state.theme !== expectedTheme || state.overflow > 1 || !state.aligned || !state.separated || !state.distinctSurface || state.createButtonCount !== 1 || !state.createInManager || state.createInHero || !state.createNearList || !state.createFullWidthOnMobile || !state.controlsFit || state.tabRows !== expectedTabRows || !state.equalTabHeights || state.label !== layoutCase.label || state.counts.join(",") !== "4,2,4,1,5" || state.activeFilter !== "current" || state.healthValues.join(",") !== "2,2,2,$18.25" || state.policyStates.some((present) => !present)) {
+    if (state.language !== layoutCase.language || state.theme !== expectedTheme || state.overflow > 1 || !state.aligned || !state.separated || !state.distinctSurface || state.createButtonCount !== 1 || !state.createInManager || state.createInHero || !state.createNearList || !state.createFullWidthOnMobile || !state.controlsFit || state.tabRows !== expectedTabRows || !state.equalTabHeights || state.label !== layoutCase.label || state.counts.join(",") !== "4,2,4,1,5" || state.activeFilter !== "current" || state.healthCards !== 0 || state.policyStates.some((present) => !present)) {
       throw new Error(`API keys ${layoutCase.name} layout failed: ${JSON.stringify(state)}`);
     }
 

@@ -986,17 +986,6 @@ footer{padding:64px 0 40px;border-bottom:0}
 .keys-heading-row{margin-bottom:24px}
 .keys-heading-row .page-heading{margin-bottom:0}
 .keys-create-button{flex:none}
-.keys-health-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:0 0 22px}
-.keys-health-card{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 12px;min-height:104px;padding:17px 18px;
-  overflow:hidden;border:1px solid var(--line);border-radius:10px;background:var(--bg-card);box-shadow:var(--shadow)}
-.keys-health-card::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:var(--line-strong)}
-.keys-health-card>span{align-self:start;font:700 9px/1.35 var(--font-mono);letter-spacing:.075em;text-transform:uppercase;color:var(--txt-4)}
-.keys-health-card>strong{grid-column:2;grid-row:1/3;align-self:center;font:700 25px/1 var(--font-mono);letter-spacing:-.04em;color:var(--txt);font-variant-numeric:tabular-nums}
-.keys-health-card>small{align-self:end;font:10px/1.45 var(--font-mono);color:var(--txt-3)}
-.keys-health-good::before{background:#16a34a}.keys-health-good>strong{color:#16a34a}
-.keys-health-danger::before{background:var(--danger)}.keys-health-danger>strong{color:var(--danger)}
-.keys-health-warn::before{background:#d97706}.keys-health-warn>strong{color:#d97706}
-.keys-health-spend::before{background:var(--accent)}.keys-health-spend>strong{color:var(--accent);font-size:21px}
 .keys-panel .agent-connect-dock{margin-bottom:28px}
 .keys-manager{margin-top:0}
 .keys-manager-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin:0 0 13px}
@@ -1103,7 +1092,6 @@ footer{padding:64px 0 40px;border-bottom:0}
 .btn-danger{border-color:var(--danger);background:var(--danger);color:#fff}.btn-danger:hover{filter:brightness(1.06)}
 
 @media(max-width:1180px){
-  .keys-health-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .keys-toolbar{align-items:stretch;flex-direction:column}.keys-search{max-width:none}.keys-toolbar-right{justify-content:space-between}
   .key-table th,.key-table td{padding-inline:10px}.key-table{font-size:10px}.key-mask{font-size:10px}
 }
@@ -1120,8 +1108,6 @@ footer{padding:64px 0 40px;border-bottom:0}
   .key-modal-fields{grid-template-columns:1fr}.key-field{grid-column:1!important}
 }
 @media(max-width:520px){
-  .keys-health-card{grid-template-columns:1fr;gap:5px;min-height:116px}.keys-health-card>strong{grid-column:1;grid-row:2;align-self:start;font-size:22px}.keys-health-card>small{grid-row:3}
-  .keys-health-spend>strong{font-size:19px}
   .keys-toolbar{padding:8px}.keys-filter-tabs{grid-template-columns:repeat(2,minmax(0,1fr))}.keys-filter-tab{min-height:42px;white-space:normal}.keys-filter-tab:last-child{grid-column:1/-1}
   .modal-backdrop{align-items:end;padding:0}.key-modal{width:100%;max-height:92vh;padding:22px 18px;border-radius:16px 16px 0 0}.key-modal-actions .btn{flex:1;justify-content:center}
   .key-create-guardrail-grid{grid-template-columns:1fr}

@@ -65,7 +65,6 @@ const localDashboardCopy = {
     savePolicy: "Save changes", savingPolicy: "Saving…", invalidPolicySpendLimit: "Enter a positive USD amount with up to 9 decimals.",
     policyBelowCommitted: "The limit cannot be below billed and reserved usage ({amount}).", policyReactivates: "Increasing or removing this guardrail can make the key usable immediately.",
     searchKeys: "Search by name or key suffix", sortBy: "Sort by", sortNewest: "Newest", sortName: "Name", sortSpend: "Highest spend", sortLastUsed: "Recently billed",
-    keyHealthSummary: "API key health summary", usableNow: "Working now", usableNowHelp: "Can make requests", blockedNow: "Blocked", blockedNowHelp: "Expired or at limit", watchlist: "Watchlist", watchlistHelp: "Near a guardrail", totalKeySpend: "Total key spend", totalKeySpendHelp: "Lifetime billed usage",
     keysListTitle: "Your API keys", keysListSummary: "Showing {shown} of {total} keys",
     colName: "Integration", colKey: "Credential", colLastUsed: "Last billed", colSpend: "Usage", colLimit: "Limit", colExpires: "Expires", colStatus: "Status", colActions: "Actions",
     spentOfLimit: "{spent} of {limit}", spentWithoutLimit: "{spent} spent · no limit", createdOn: "Created {date}", createFirstKey: "Create your first key", clearSearch: "Clear search", viewCurrentKeys: "View current keys",
@@ -89,7 +88,6 @@ const localDashboardCopy = {
     savePolicy: "Сохранить изменения", savingPolicy: "Сохраняем…", invalidPolicySpendLimit: "Введите положительную сумму USD максимум с 9 знаками после запятой.",
     policyBelowCommitted: "Лимит не может быть меньше уже списанной и зарезервированной суммы ({amount}).", policyReactivates: "Повышение или снятие ограничения может сразу снова активировать ключ.",
     searchKeys: "Поиск по названию или окончанию ключа", sortBy: "Сортировка", sortNewest: "Сначала новые", sortName: "По названию", sortSpend: "По расходам", sortLastUsed: "Недавние списания",
-    keyHealthSummary: "Сводка состояния API-ключей", usableNow: "Работают", usableNowHelp: "Могут отправлять запросы", blockedNow: "Заблокированы", blockedNowHelp: "Истекли или исчерпали лимит", watchlist: "Под наблюдением", watchlistHelp: "Близки к ограничению", totalKeySpend: "Расход по ключам", totalKeySpendHelp: "За всё время",
     keysListTitle: "Ваши API-ключи", keysListSummary: "Показано {shown} из {total}",
     colName: "Интеграция", colKey: "Учётные данные", colLastUsed: "Последнее списание", colSpend: "Использование", colLimit: "Лимит", colExpires: "Истекает", colStatus: "Статус", colActions: "Действия",
     spentOfLimit: "{spent} из {limit}", spentWithoutLimit: "Потрачено {spent} · без лимита", createdOn: "Создан {date}", createFirstKey: "Создать первый ключ", clearSearch: "Очистить поиск", viewCurrentKeys: "Показать текущие ключи",
@@ -903,20 +901,8 @@ function ApiKeys({ keys, onChanged, user }: { keys: ApiKeyView[]; onChanged(): P
   const policyCommittedNano = editTarget
     ? (BigInt(editTarget.spentNano) + BigInt(editTarget.reservedNano ?? "0")).toString()
     : "0";
-  const policyStates = keys.map((key) => ({ key, policy: keyPolicy(key, policyNow) }));
-  const usableCount = policyStates.filter(({ key, policy }) => key.status === "active" && !policy.expired && !policy.limitReached).length;
-  const blockedCount = policyStates.filter(({ key, policy }) => key.status === "active" && (policy.expired || policy.limitReached)).length;
-  const watchlistCount = policyStates.filter(({ key, policy }) => key.status === "active" && (policy.expiresSoon || policy.nearLimit)).length;
-  const totalKeySpend = keys.reduce((sum, key) => sum + BigInt(key.spentNano), 0n);
-
   return <section ref={keysPanelRef} className="panel keys-panel">
     <div className="keys-heading-row"><PageHeading eyebrow={copy.keysEyebrow} title={copy.keysTitle} subtitle={copy.keysSubtitle} /></div>
-    <div className="keys-health-grid" aria-label={localCopy.keyHealthSummary}>
-      <article className="keys-health-card keys-health-good"><span>{localCopy.usableNow}</span><strong>{usableCount}</strong><small>{localCopy.usableNowHelp}</small></article>
-      <article className={`keys-health-card${blockedCount > 0 ? " keys-health-danger" : ""}`}><span>{localCopy.blockedNow}</span><strong>{blockedCount}</strong><small>{localCopy.blockedNowHelp}</small></article>
-      <article className={`keys-health-card${watchlistCount > 0 ? " keys-health-warn" : ""}`}><span>{localCopy.watchlist}</span><strong>{watchlistCount}</strong><small>{localCopy.watchlistHelp}</small></article>
-      <article className="keys-health-card keys-health-spend"><span>{localCopy.totalKeySpend}</span><strong>{formatNanoUsd(totalKeySpend)}</strong><small>{localCopy.totalKeySpendHelp}</small></article>
-    </div>
     <QuickConnectDock key={issued ? "with-key" : "without-key"} issuedKey={issued} defaultExpanded={keys.length === 0} onDismissKey={() => setIssued(null)} />
     {error && !createOpen && !editTarget && !revokeTarget && <div className="banner banner-error" role="alert">{error}</div>}
 
