@@ -43,6 +43,12 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/controller/deploy.sh
   install -o root -g root -m 0644 "$ROOT/deploy/lib.sh" \
     /usr/local/lib/apitoken-watchdog/controller/lib.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/commerce-release-bundle.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/commerce-release-bundle.sh
+  install -o root -g root -m 0644 "$ROOT/deploy/release-tree-digest.mjs" \
+    /usr/local/lib/apitoken-watchdog/controller/release-tree-digest.mjs
+  install -o root -g root -m 0755 "$ROOT/deploy/content-studio-start.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/content-studio-start.sh
   install -o root -g root -m 0755 "$ROOT/deploy/api-bluegreen.sh" \
     /usr/local/lib/apitoken-watchdog/controller/api-bluegreen.sh
   install -o root -g root -m 0755 "$ROOT/deploy/engine-bluegreen.sh" \

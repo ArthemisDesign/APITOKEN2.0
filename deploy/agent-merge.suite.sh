@@ -418,6 +418,8 @@ grep -Fq 'deploy/typescript-build-contexts.test.sh' "$ROOT/deploy/agent-merge.sh
   || wd_die 'the merge gate does not run the component-aware build suite'
 grep -Fq 'deploy/typescript-test-groups.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the parallel TypeScript-group suite'
+grep -Fq 'deploy/commerce-release-bundle.test.sh' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the merge gate does not run the compact release-bundle suite'
 grep -Fq 'deploy/sccache-cargo.sh" cargo test --locked --workspace' \
   "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run Rust tests through the shared compilation cache'

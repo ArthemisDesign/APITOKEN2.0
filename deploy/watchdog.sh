@@ -386,6 +386,13 @@ candidate_is_tested() {
         [[ $actual_hash == "$expected_hash" ]] || return 1
       done
     fi
+    if wd_typescript_component_list_contains "$required_typescript_components" commerce; then
+      expected_hash=$(wd_marker_value "$marker" commerce_release_bundle_sha256 2>/dev/null) \
+        || return 1
+      [[ $expected_hash =~ ^[0-9a-f]{64}$ ]] || return 1
+      actual_hash=$(wd_commerce_release_bundle_digest "$candidate") || return 1
+      [[ $actual_hash == "$expected_hash" ]] || return 1
+    fi
   fi
   if (( engine_artifacts_required == 1 )); then
     expected_hash=$(wd_marker_value "$marker" engine_binary_sha256 2>/dev/null) || return 1
@@ -581,6 +588,10 @@ test_typescript_lane() {
     TEST_OPENKEYS_DATABASE_URL="$openkeys_dsn" \
     TYPESCRIPT_TEST_COMPONENTS="$lane_components" \
     bash "$candidate/deploy/typescript-test-groups.sh" "$candidate" "${test_packages[@]}"
+  if wd_typescript_component_list_contains "$lane_components" commerce; then
+    wd_log "assembling the tested compact commerce release bundle"
+    run_as_ci bash "$candidate/deploy/commerce-release-bundle.sh" "$candidate"
+  fi
 }
 
 test_rust_lane() {
@@ -636,6 +647,7 @@ test_static_lane() {
     run_as_ci bash "$candidate/deploy/typescript-build-contexts.test.sh"
     run_as_ci bash "$candidate/deploy/typescript-artifact-cache.test.sh"
     run_as_ci bash "$candidate/deploy/typescript-test-groups.test.sh"
+    run_as_ci bash "$candidate/deploy/commerce-release-bundle.test.sh"
     run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"
   fi
 }
@@ -658,6 +670,7 @@ prepare_and_test_candidate_unlocked() {
   local typescript_components=none typescript_digest=none component
   local typescript_digest_commerce=none typescript_digest_sales=none
   local typescript_digest_openkeys=none typescript_digest_web=none
+  local commerce_release_bundle_hash=none
   local engine_hash=none authbot_hash=none codex_hash=none
   local codex_source_commit=none codex_version=none
   candidate=$(candidate_for "$sha")
@@ -771,6 +784,9 @@ prepare_and_test_candidate_unlocked() {
       && wd_typescript_component_list_contains "$typescript_components" openkeys; then
       typescript_digest=$(wd_typescript_artifact_digest "$candidate")
     fi
+    if wd_typescript_component_list_contains "$typescript_components" commerce; then
+      commerce_release_bundle_hash=$(wd_commerce_release_bundle_digest "$candidate")
+    fi
   fi
   if (( engine_artifacts_required == 1 )); then
     engine_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/engine/claude-api")
@@ -807,6 +823,7 @@ prepare_and_test_candidate_unlocked() {
     printf 'typescript_artifact_digest_sales=%s\n' "$typescript_digest_sales"
     printf 'typescript_artifact_digest_openkeys=%s\n' "$typescript_digest_openkeys"
     printf 'typescript_artifact_digest_web=%s\n' "$typescript_digest_web"
+    printf 'commerce_release_bundle_sha256=%s\n' "$commerce_release_bundle_hash"
     printf 'engine_binary_sha256=%s\n' "$engine_hash"
     printf 'authbot_binary_sha256=%s\n' "$authbot_hash"
     printf 'codex_binary_sha256=%s\n' "$codex_hash"

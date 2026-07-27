@@ -132,6 +132,17 @@ tested_typescript_component_list_contains() {
   return 1
 }
 
+tested_commerce_release_bundle_digest() {
+  local candidate=$1
+  local digest_script=$candidate/deploy/release-tree-digest.mjs
+  local bundle=$candidate/.deploy-artifacts/commerce-release
+  [[ -f "$digest_script" && ! -L "$digest_script" ]] \
+    || die "tested commerce release digest helper is missing or unsafe"
+  [[ -d "$bundle" && ! -L "$bundle" ]] \
+    || die "tested commerce release bundle is missing or unsafe"
+  node "$digest_script" "$bundle"
+}
+
 # Validate the root-owned candidate and its gate marker before an unprivileged release builder copies
 # anything. Runtime artifacts are promoted from this tree; they are never compiled a second time.
 validate_tested_candidate() {
@@ -176,6 +187,15 @@ validate_tested_candidate() {
     fi
     [[ "$actual_digest" == "$expected_digest" ]] \
       || die "tested TypeScript artifacts changed before release promotion"
+    if [[ "$typescript_component" == commerce ]]; then
+      expected_digest=$(tested_marker_value "$marker" commerce_release_bundle_sha256) \
+        || die "candidate marker has no commerce release bundle digest"
+      [[ "$expected_digest" =~ ^[0-9a-f]{64}$ ]] \
+        || die "candidate commerce release bundle digest is malformed"
+      actual_digest=$(tested_commerce_release_bundle_digest "$candidate")
+      [[ "$actual_digest" == "$expected_digest" ]] \
+        || die "tested commerce release bundle changed before promotion"
+    fi
   fi
   if [[ "$need_engine" == 1 ]]; then
     [[ "$(tested_marker_value "$marker" rust_tested)" == 1 ]] \
@@ -420,10 +440,22 @@ validate_release_marker() {
   [[ "$actual" == "$expected_sha" ]] || die "release marker mismatch in $directory: expected $expected_sha, found $actual"
 }
 
+content_studio_runtime_directory() {
+  local release=$1
+  local app=$release/apps/content-studio
+  local standalone=$app/.next/standalone/apps/content-studio
+  if [[ -f "$standalone/server.js" && ! -L "$standalone/server.js" ]]; then
+    printf '%s\n' "$standalone"
+  else
+    printf '%s\n' "$app"
+  fi
+}
+
 validate_commerce_release() {
   local root=$1
   local directory=$2
   local expected_sha=$3
+  local bundle_format
 
   path_is_direct_release "$root" "$directory" || die "invalid commerce release path: $directory"
   [[ -d "$directory" ]] || die "commerce release does not exist: $directory"
@@ -434,6 +466,17 @@ validate_commerce_release() {
   if [[ -r "$directory/apps/content-studio/package.json" ]]; then
     [[ -r "$directory/apps/content-studio/.next/BUILD_ID" ]] \
       || die "content studio artifact is missing: $directory/apps/content-studio/.next/BUILD_ID"
+  fi
+  if [[ -e "$directory/.release-bundle-format" || -L "$directory/.release-bundle-format" ]]; then
+    [[ -f "$directory/.release-bundle-format" && ! -L "$directory/.release-bundle-format" ]] \
+      || die "commerce release bundle format marker is unsafe"
+    IFS= read -r bundle_format <"$directory/.release-bundle-format" \
+      || die "commerce release bundle format marker is unreadable"
+    [[ "$bundle_format" == 1 ]] || die "unsupported commerce release bundle format: $bundle_format"
+    [[ -r "$directory/apps/content-studio/.next/standalone/apps/content-studio/server.js" ]] \
+      || die "standalone content studio server is missing"
+    [[ -d "$directory/apps/content-studio/.next/standalone/apps/content-studio/.next/static" ]] \
+      || die "standalone content studio static assets are missing"
   fi
   [[ -r "$directory/packages/db/dist/migrate.js" ]] || die "prebuilt database migration artifact is missing: $directory/packages/db/dist/migrate.js"
 }

@@ -129,6 +129,7 @@ am_gate_deployment() (
   bash "$ROOT/deploy/typescript-build-contexts.test.sh"
   bash "$ROOT/deploy/typescript-artifact-cache.test.sh"
   bash "$ROOT/deploy/typescript-test-groups.test.sh"
+  bash "$ROOT/deploy/commerce-release-bundle.test.sh"
   # The merge path tests itself on every merge, strictly. It is deliberately not enforced in the
   # production gate: the watchdog installed on the host still calls deploy/agent-merge.test.sh, now a
   # report-only shim, so a host-environment difference cannot quarantine a SHA and trap its own fix.
@@ -161,7 +162,9 @@ am_range_changes_local_gate() {
       deploy/typescript-scope.mjs|deploy/typescript-scope.test.sh|\
       deploy/typescript-build-contexts.sh|deploy/typescript-build-contexts.test.sh|\
       deploy/typescript-artifact-cache.test.sh|\
-      deploy/typescript-test-groups.sh|deploy/typescript-test-groups.test.sh)
+      deploy/typescript-test-groups.sh|deploy/typescript-test-groups.test.sh|\
+      deploy/commerce-release-bundle.sh|deploy/commerce-release-bundle.test.sh|\
+      deploy/release-tree-digest.mjs|deploy/content-studio-start.sh)
         return 0
         ;;
     esac

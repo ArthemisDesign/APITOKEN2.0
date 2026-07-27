@@ -502,7 +502,8 @@ for validation_only_path in \
   deploy/next-cache.sh \
   deploy/typescript-scope.mjs \
   deploy/typescript-build-contexts.sh \
-  deploy/typescript-test-groups.sh; do
+  deploy/typescript-test-groups.sh \
+  deploy/commerce-release-bundle.test.sh; do
   wd_path_is_infrastructure "$validation_only_path" \
     || wd_die "deployment tooling path escaped operational validation: $validation_only_path"
   if wd_path_requires_infrastructure_install "$validation_only_path"; then
@@ -521,6 +522,9 @@ for controller_definition in \
   deploy/watchdog-codex-promote.sh \
   deploy/deploy.sh \
   deploy/lib.sh \
+  deploy/commerce-release-bundle.sh \
+  deploy/release-tree-digest.mjs \
+  deploy/content-studio-start.sh \
   deploy/api-bluegreen.sh \
   deploy/engine-bluegreen.sh \
   deploy/rollback.sh \
@@ -833,6 +837,11 @@ tested_sha=$(git -C "$tested_candidate" rev-parse HEAD)
 tested_tree=$(git -C "$tested_candidate" rev-parse 'HEAD^{tree}')
 mkdir -p "$tested_candidate/.deploy-artifacts/engine"
 mkdir -p "$tested_candidate/.deploy-artifacts/codex"
+mkdir -p "$tested_candidate/.deploy-artifacts/commerce-release/apps/api"
+mkdir -p "$tested_candidate/deploy"
+cp "$ROOT/deploy/release-tree-digest.mjs" "$tested_candidate/deploy/release-tree-digest.mjs"
+printf 'tested bundle\n' \
+  >"$tested_candidate/.deploy-artifacts/commerce-release/apps/api/main.js"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$tested_candidate/.deploy-artifacts/engine/claude-api"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$tested_candidate/.deploy-artifacts/engine/authbot"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$tested_candidate/.deploy-artifacts/codex/codex"
@@ -850,6 +859,8 @@ tested_marker="$TEMP/tested-candidate.marker"
   printf 'engine_artifacts=1\n'
   printf 'codex_artifacts=1\n'
   printf 'typescript_artifact_digest=%s\n' "$(wd_typescript_artifact_digest "$tested_candidate")"
+  printf 'commerce_release_bundle_sha256=%s\n' \
+    "$(wd_commerce_release_bundle_digest "$tested_candidate")"
   printf 'engine_binary_sha256=%s\n' \
     "$(wd_sha256_file "$tested_candidate/.deploy-artifacts/engine/claude-api")"
   printf 'authbot_binary_sha256=%s\n' \
@@ -888,6 +899,11 @@ git init --quiet "$component_candidate"
 git -C "$component_candidate" config user.name test
 git -C "$component_candidate" config user.email test@example.invalid
 git -C "$component_candidate" commit --quiet --allow-empty -m component-candidate
+mkdir -p "$component_candidate/.deploy-artifacts/commerce-release/apps/api"
+mkdir -p "$component_candidate/deploy"
+cp "$ROOT/deploy/release-tree-digest.mjs" "$component_candidate/deploy/release-tree-digest.mjs"
+printf 'component bundle\n' \
+  >"$component_candidate/.deploy-artifacts/commerce-release/apps/api/main.js"
 component_sha=$(git -C "$component_candidate" rev-parse HEAD)
 component_tree=$(git -C "$component_candidate" rev-parse 'HEAD^{tree}')
 component_marker="$TEMP/component-candidate.marker"
@@ -898,6 +914,8 @@ component_marker="$TEMP/component-candidate.marker"
   printf 'typescript_components=commerce\n'
   printf 'typescript_artifact_digest_commerce=%s\n' \
     "$(wd_typescript_component_artifact_digest "$component_candidate" commerce)"
+  printf 'commerce_release_bundle_sha256=%s\n' \
+    "$(wd_commerce_release_bundle_digest "$component_candidate")"
 } >"$component_marker"
 bash -c '
   source "$1"
@@ -1105,6 +1123,7 @@ gate_contract=(
   'TEST_DATABASE_URL="$dsn" TEST_SALES_DATABASE_URL="$sales_dsn"'
   'TYPESCRIPT_TEST_COMPONENTS="$lane_components"'
   'typescript-test-groups.sh" "$candidate" "${test_packages[@]}"'
+  'commerce-release-bundle.sh" "$candidate"'
   'CLAUDE_API_TEST_DATABASE_URL="$engine_dsn"'
   'cargo test --locked --workspace --manifest-path "$candidate/Cargo.toml"'
   'git -C "$SOURCE_REPO" diff --check "$diff_base..$sha"'
@@ -1119,6 +1138,7 @@ gate_contract=(
   'run_as_ci bash "$candidate/deploy/typescript-build-contexts.test.sh"'
   'run_as_ci bash "$candidate/deploy/typescript-artifact-cache.test.sh"'
   'run_as_ci bash "$candidate/deploy/typescript-test-groups.test.sh"'
+  'run_as_ci bash "$candidate/deploy/commerce-release-bundle.test.sh"'
   'run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"'
   'status --porcelain --untracked-files=no'
   'run_candidate_lane test_typescript_lane "$candidate" "$dsn" "$sales_dsn" "$openkeys_dsn"'
@@ -1147,6 +1167,7 @@ gate_contract=(
   'typescript_artifact_digest_sales=%s'
   'typescript_artifact_digest_openkeys=%s'
   'typescript_artifact_digest_web=%s'
+  'commerce_release_bundle_sha256=%s'
 )
 for required_stage in "${gate_contract[@]}"; do
   grep -Fq -- "$required_stage" "$ROOT/deploy/watchdog.sh" \

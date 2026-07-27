@@ -241,6 +241,28 @@ wd_sha256_stdin() {
   fi
 }
 
+wd_commerce_release_bundle_digest() {
+  local candidate=$1
+  local digest_script=$candidate/deploy/release-tree-digest.mjs
+  local bundle=$candidate/.deploy-artifacts/commerce-release
+  [[ -f $digest_script && ! -L $digest_script ]] \
+    || wd_die "commerce release digest helper is missing or unsafe"
+  [[ -d $bundle && ! -L $bundle ]] \
+    || wd_die "commerce release bundle is missing or unsafe"
+  node "$digest_script" "$bundle"
+}
+
+wd_content_studio_runtime_directory() {
+  local release=$1
+  local app=$release/apps/content-studio
+  local standalone=$app/.next/standalone/apps/content-studio
+  if [[ -f $standalone/server.js && ! -L $standalone/server.js ]]; then
+    printf '%s\n' "$standalone"
+  else
+    printf '%s\n' "$app"
+  fi
+}
+
 # Hash the mandatory runtime entrypoints for one independently deployable TypeScript context. The
 # candidate tree is frozen after validation; these digests prove each release promoter consumes the
 # exact component build that passed the gate, without requiring unrelated component artifacts.
@@ -619,7 +641,9 @@ wd_path_is_controller_definition() {
     deploy/watchdog-backup.sh|deploy/watchdog-migrate.sh|deploy/watchdog-infrastructure.sh|\
     deploy/watchdog-retention.sh|deploy/watchdog-codex-promote.sh|\
     deploy/watchdog-github.sh|deploy/watchdog-control.sh|\
-    deploy/deploy.sh|deploy/lib.sh|deploy/api-bluegreen.sh|deploy/engine-bluegreen.sh|\
+    deploy/deploy.sh|deploy/lib.sh|deploy/commerce-release-bundle.sh|\
+    deploy/release-tree-digest.mjs|deploy/content-studio-start.sh|\
+    deploy/api-bluegreen.sh|deploy/engine-bluegreen.sh|\
     deploy/rollback.sh|deploy/sales-deploy.sh|deploy/openkeys-deploy.sh)
       return 0
       ;;
