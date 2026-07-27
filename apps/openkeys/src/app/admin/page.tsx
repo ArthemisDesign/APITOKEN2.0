@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/app-shell";
 
@@ -313,6 +314,9 @@ export default function AdminPage() {
       title="Выпуск ключей"
       actions={
         <>
+          <Link className="btn btn-ghost btn-sm" href="/admin/monitor">
+            Наблюдение
+          </Link>
           <button className="btn btn-primary btn-sm" type="button" onClick={() => setShowIssueForm((open) => !open)}>
             {showIssueForm ? "Закрыть" : "Выпустить пачку"}
           </button>

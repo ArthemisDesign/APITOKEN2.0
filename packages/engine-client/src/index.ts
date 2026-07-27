@@ -174,15 +174,20 @@ export class EngineClient {
     return key;
   }
 
-  async disableKey(keyId: string): Promise<void> {
+  /** Движок принимает active|disabled, поэтому отключение обратимо. */
+  async setKeyStatus(keyId: string, status: "active" | "disabled"): Promise<void> {
     const { response, payload } = await this.request(`/admin/key-id/${encodeURIComponent(keyId)}/status`, {
       method: "POST",
-      body: '{"status":"disabled"}',
+      body: JSON.stringify({ status }),
     });
     const result = payload as Record<string, unknown>;
-    if (result.key_id !== keyId || result.status !== "disabled" || result.updated !== 1) {
+    if (result.key_id !== keyId || result.status !== status || result.updated !== 1) {
       throw new EngineClientError("engine returned an invalid key status response", response.status, false);
     }
+  }
+
+  async disableKey(keyId: string): Promise<void> {
+    await this.setKeyStatus(keyId, "disabled");
   }
 
   async renameKey(keyId: string, label: string): Promise<void> {

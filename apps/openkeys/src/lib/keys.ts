@@ -345,6 +345,120 @@ export async function removeAllStock(createdBy: string): Promise<number> {
   return removed;
 }
 
+export interface MonitorRow {
+  id: string;
+  status: StockStatus;
+  keyMasked: string;
+  label: string | null;
+  faceValue: string;
+  viewUrl: string;
+  createdAt: string;
+  deliveredAt: string | null;
+  /** Живые данные движка. null, если аккаунт не ответил — строку всё равно показываем. */
+  remaining: string | null;
+  spent: string | null;
+  spentNano: string | null;
+  enabled: boolean | null;
+}
+
+/** Живой опрос движка идёт пачками: последовательно это минуты на полусотне ключей. */
+const MONITOR_CONCURRENCY = 8;
+
+/**
+ * Наблюдение за проданными ключами: остаток и расход берём напрямую у движка,
+ * поэтому цифры здесь всегда актуальные, а не снимок на момент выпуска.
+ */
+export async function loadKeyMonitor(createdBy: string, limit = 300): Promise<MonitorRow[]> {
+  const config = loadConfig();
+  const { db } = getDatabase();
+  const rows = await db
+    .select({
+      id: openkeysKeys.id,
+      keyMasked: openkeysKeys.keyMasked,
+      viewToken: openkeysKeys.viewToken,
+      engineAccountId: openkeysKeys.engineAccountId,
+      engineKeyId: openkeysKeys.engineKeyId,
+      faceValueNano: openkeysKeys.faceValueNano,
+      multBp: openkeysKeys.multBp,
+      createdAt: openkeysKeys.createdAt,
+      deliveredAt: openkeysKeys.deliveredAt,
+      label: openkeysBatches.label,
+    })
+    .from(openkeysKeys)
+    .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
+    .where(eq(openkeysBatches.createdBy, createdBy))
+    .orderBy(desc(openkeysKeys.createdAt))
+    .limit(limit);
+
+  const engine = getEngineClient();
+  const result: MonitorRow[] = [];
+
+  for (let offset = 0; offset < rows.length; offset += MONITOR_CONCURRENCY) {
+    const slice = rows.slice(offset, offset + MONITOR_CONCURRENCY);
+    const loaded = await Promise.all(
+      slice.map(async (row) => {
+        let remaining: string | null = null;
+        let spent: string | null = null;
+        let spentNano: string | null = null;
+        let enabled: boolean | null = null;
+
+        try {
+          const [account, keys] = await Promise.all([
+            engine.getAccount(row.engineAccountId),
+            engine.listKeys(row.engineAccountId),
+          ]);
+          remaining = formatUsd(balanceToOfficialNano(BigInt(account.balance_nano), row.multBp));
+          const spentOfficial = balanceToOfficialNano(BigInt(account.spent_nano), row.multBp);
+          spent = formatUsd(spentOfficial);
+          spentNano = spentOfficial.toString();
+          enabled = keys.find((key) => key.key_id === row.engineKeyId)?.status !== "disabled";
+        } catch {
+          // Недоступный аккаунт не должен прятать строку: сам ключ у нас есть,
+          // и админ должен видеть его в списке даже без свежих цифр.
+        }
+
+        return {
+          id: row.id,
+          status: stockStatusOf(row),
+          keyMasked: row.keyMasked,
+          label: row.label,
+          faceValue: formatUsd(row.faceValueNano, 0),
+          viewUrl: `${config.publicBaseUrl}/profile/${row.viewToken}`,
+          createdAt: row.createdAt.toISOString(),
+          deliveredAt: row.deliveredAt?.toISOString() ?? null,
+          remaining,
+          spent,
+          spentNano,
+          enabled,
+        };
+      }),
+    );
+    result.push(...loaded);
+  }
+
+  return result;
+}
+
+/** Включение и отключение ключа. Запись у нас остаётся — это не удаление. */
+export async function setKeyEnabled(id: string, createdBy: string, enabled: boolean): Promise<boolean> {
+  const { db } = getDatabase();
+  if (!(await ownsKey(id, createdBy))) return false;
+
+  const [row] = await db
+    .select({ engineKeyId: openkeysKeys.engineKeyId })
+    .from(openkeysKeys)
+    .where(eq(openkeysKeys.id, id))
+    .limit(1);
+  if (!row) return false;
+
+  await getEngineClient().setKeyStatus(row.engineKeyId, enabled ? "active" : "disabled");
+  await db
+    .update(openkeysKeys)
+    .set({ status: enabled ? "active" : "disabled", disabledAt: enabled ? null : new Date() })
+    .where(eq(openkeysKeys.id, id));
+  return true;
+}
+
 export interface BatchSummary {
   id: string;
   label: string | null;
