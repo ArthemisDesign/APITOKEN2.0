@@ -6,29 +6,12 @@
 //! Все записи идут через тот же single-writer актор биллинга (`AsyncBilling`) — дисциплина единого
 //! писателя, никаких гонок с reserve/settle горячего пути.
 
-use axum::extract::{ConnectInfo, Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
-use forward::{control_authed, AppState};
+use forward::AppState;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::net::SocketAddr;
-
-/// Гейт control-плоскости: admin/control-ключ (или loopback-dev). Возвращает 401-ответ, если нет прав.
-fn deny(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> Option<Response> {
-    if control_authed(app, headers, peer) {
-        None
-    } else {
-        forward::Metrics::inc(&app.metrics.auth_failures); // спайк = скан/брутфорс control-ключа
-        Some(
-            (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({"error": "unauthorized"})),
-            )
-                .into_response(),
-        )
-    }
-}
 
 /// Биллинг обязателен для control-операций (аккаунты/деньги живут в нём). Нет → 503.
 /// (Err-вариант — axum `Response`, намеренно «большой»: это ранний ответ ошибки, не горячий путь.)
@@ -70,13 +53,8 @@ pub struct CreateAccountReq {
 /// POST /admin/account — создать аккаунт. Тело: {handle?, mult_bp?}. → {account, mult_bp, handle}.
 pub async fn create_account(
     State(app): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(req): Json<CreateAccountReq>,
 ) -> Response {
-    if let Some(r) = deny(&app, &headers, &peer) {
-        return r;
-    }
     let b = match billing(&app) {
         Ok(b) => b,
         Err(r) => return r,
@@ -122,15 +100,7 @@ pub async fn create_account(
 }
 
 /// GET /admin/account/{id} — состояние аккаунта (баланс/резерв/spent/статус). → 404 если нет.
-pub async fn get_account(
-    State(app): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Response {
-    if let Some(r) = deny(&app, &headers, &peer) {
-        return r;
-    }
+pub async fn get_account(State(app): State<AppState>, Path(id): Path<String>) -> Response {
     let b = match billing(&app) {
         Ok(b) => b,
         Err(r) => return r,
@@ -165,15 +135,7 @@ fn mask(k: &str) -> String {
 }
 
 /// GET /admin/account/{id}/keys — ключи аккаунта (маскированные) + метаданные для дашборда.
-pub async fn list_keys(
-    State(app): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Response {
-    if let Some(r) = deny(&app, &headers, &peer) {
-        return r;
-    }
+pub async fn list_keys(State(app): State<AppState>, Path(id): Path<String>) -> Response {
     let b = match billing(&app) {
         Ok(b) => b,
         Err(r) => return r,
@@ -230,14 +192,9 @@ pub struct LedgerAckReq {
 /// detail only below this watermark, so a lagging/restarted worker cannot lose events.
 pub async fn ack_ledger(
     State(app): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Path(id): Path<String>,
     Json(req): Json<LedgerAckReq>,
 ) -> Response {
-    if let Some(response) = deny(&app, &headers, &peer) {
-        return response;
-    }
     let billing = match billing(&app) {
         Ok(billing) => billing,
         Err(response) => return response,
@@ -269,14 +226,9 @@ pub async fn ack_ledger(
 /// kind: topup (пополнение) | charge (списание) | adjust (коррекция). Для дашборда «расход/платежи».
 pub async fn list_ledger(
     State(app): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Path(id): Path<String>,
     Query(q): Query<LedgerQuery>,
 ) -> Response {
-    if let Some(r) = deny(&app, &headers, &peer) {
-        return r;
-    }
     let b = match billing(&app) {
         Ok(b) => b,
         Err(r) => return r,
@@ -342,14 +294,9 @@ fn qualified_topup_ref(reference: &str) -> bool {
 /// Идемпотентно по `ref` (повторный вебхук платежа НЕ задвоит). → {account, balance_nano}.
 pub async fn credit_account(
     State(app): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Path(id): Path<String>,
     Json(req): Json<CreditReq>,
 ) -> Response {
-    if let Some(r) = deny(&app, &headers, &peer) {
-        return r;
-    }
     let b = match billing(&app) {
         Ok(b) => b,
         Err(r) => return r,
@@ -416,14 +363,9 @@ fn valid_status(s: &str) -> bool {
 /// POST /admin/account/{id}/status — active|disabled. → {updated}.
 pub async fn account_status(
     State(app): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Path(id): Path<String>,
     Json(req): Json<StatusReq>,
 ) -> Response {
-    if let Some(r) = deny(&app, &headers, &peer) {
-        return r;
-    }
     if !valid_status(&req.status) {
         return (
             StatusCode::BAD_REQUEST,
@@ -457,14 +399,9 @@ pub struct PricingReq {
 /// POST /admin/account/{id}/pricing — change the multiplier used for future charges.
 pub async fn account_pricing(
     State(app): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Path(id): Path<String>,
     Json(req): Json<PricingReq>,
 ) -> Response {
-    if let Some(r) = deny(&app, &headers, &peer) {
-        return r;
-    }
     if !(0..=10_000).contains(&req.mult_bp) {
         return (
             StatusCode::BAD_REQUEST,
@@ -500,15 +437,7 @@ pub struct IssueKeyReq {
 
 /// POST /admin/key — выпустить ключ доступа к аккаунту. Тело: {account_id, label?}. → {key, account}.
 /// Аккаунт обязан существовать (иначе висячий ключ). Сам ключ показываем ЕДИНСТВЕННЫЙ раз.
-pub async fn issue_key(
-    State(app): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Json(req): Json<IssueKeyReq>,
-) -> Response {
-    if let Some(r) = deny(&app, &headers, &peer) {
-        return r;
-    }
+pub async fn issue_key(State(app): State<AppState>, Json(req): Json<IssueKeyReq>) -> Response {
     let b = match billing(&app) {
         Ok(b) => b,
         Err(r) => return r,
@@ -607,14 +536,9 @@ pub async fn issue_key(
 /// POST /admin/key-id/{key_id}/status — revoke/enable through a stable non-secret identifier.
 pub async fn key_status_by_id(
     State(app): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Path(key_id): Path<String>,
     Json(req): Json<StatusReq>,
 ) -> Response {
-    if let Some(r) = deny(&app, &headers, &peer) {
-        return r;
-    }
     if !valid_status(&req.status) {
         return (
             StatusCode::BAD_REQUEST,
@@ -639,14 +563,9 @@ pub async fn key_status_by_id(
 /// POST /admin/key-id/{key_id}/label — rename through a stable non-secret identifier.
 pub async fn key_label_by_id(
     State(app): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Path(key_id): Path<String>,
     Json(req): Json<LabelReq>,
 ) -> Response {
-    if let Some(r) = deny(&app, &headers, &peer) {
-        return r;
-    }
     let label = req.label.trim().to_owned();
     if label.is_empty() || label.chars().count() > 64 {
         return (
@@ -682,14 +601,9 @@ pub struct KeyPolicyReq {
 /// Null removes a guardrail. A limit below settled + reserved usage is rejected atomically.
 pub async fn key_policy_by_id(
     State(app): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Path((account_id, key_id)): Path<(String, String)>,
     Json(req): Json<KeyPolicyReq>,
 ) -> Response {
-    if let Some(r) = deny(&app, &headers, &peer) {
-        return r;
-    }
     let spend_limit_nano = match req.spend_limit_nano {
         Value::Null => None,
         Value::String(value) => match value.parse::<i64>() {
@@ -809,14 +723,9 @@ fn window_since(window: &str) -> (String, i64) {
 /// Долларовый эквивалент по корзинам считаем здесь (per-model суммы токенов × официальные ставки).
 pub async fn list_usage(
     State(app): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Path(id): Path<String>,
     Query(q): Query<UsageQuery>,
 ) -> Response {
-    if let Some(r) = deny(&app, &headers, &peer) {
-        return r;
-    }
     let b = match billing(&app) {
         Ok(b) => b,
         Err(r) => return r,

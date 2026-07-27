@@ -6,8 +6,9 @@
 //!   *             — форвардинг на api.anthropic.com (см. forward::forward)
 
 use crate::admin;
-use axum::extract::{ConnectInfo, FromRef, Path, State};
+use axum::extract::{ConnectInfo, FromRef, Path, Request, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{any, get, post};
 use axum::Router;
@@ -72,7 +73,131 @@ impl FromRef<HttpState> for AppState {
     }
 }
 
+macro_rules! define_admin_routes {
+    ($(($route_fn:ident, $method:ident, $pattern:literal, $sample:literal, $handler:path)),+ $(,)?) => {
+        #[cfg(test)]
+        const ADMIN_ROUTE_CASES: &[(axum::http::Method, &str)] = &[
+            $((axum::http::Method::$method, $sample),)+
+        ];
+
+        fn admin_router(app: &AppState) -> Router<HttpState> {
+            Router::new()
+                $(.route($pattern, $route_fn($handler)))+
+                .route_layer(middleware::from_fn_with_state(
+                    app.clone(),
+                    require_control_auth,
+                ))
+        }
+    };
+}
+
+define_admin_routes!(
+    (
+        post,
+        POST,
+        "/admin/account",
+        "/admin/account",
+        admin::create_account
+    ),
+    (
+        get,
+        GET,
+        "/admin/account/{id}",
+        "/admin/account/test-account",
+        admin::get_account
+    ),
+    (
+        post,
+        POST,
+        "/admin/account/{id}/credit",
+        "/admin/account/test-account/credit",
+        admin::credit_account
+    ),
+    (
+        post,
+        POST,
+        "/admin/account/{id}/status",
+        "/admin/account/test-account/status",
+        admin::account_status
+    ),
+    (
+        post,
+        POST,
+        "/admin/account/{id}/pricing",
+        "/admin/account/test-account/pricing",
+        admin::account_pricing
+    ),
+    (
+        get,
+        GET,
+        "/admin/account/{id}/keys",
+        "/admin/account/test-account/keys",
+        admin::list_keys
+    ),
+    (
+        get,
+        GET,
+        "/admin/account/{id}/ledger",
+        "/admin/account/test-account/ledger",
+        admin::list_ledger
+    ),
+    (
+        post,
+        POST,
+        "/admin/account/{id}/ledger/ack",
+        "/admin/account/test-account/ledger/ack",
+        admin::ack_ledger
+    ),
+    (
+        get,
+        GET,
+        "/admin/account/{id}/usage",
+        "/admin/account/test-account/usage",
+        admin::list_usage
+    ),
+    (post, POST, "/admin/key", "/admin/key", admin::issue_key),
+    (
+        post,
+        POST,
+        "/admin/key-id/{key_id}/status",
+        "/admin/key-id/test-key/status",
+        admin::key_status_by_id
+    ),
+    (
+        post,
+        POST,
+        "/admin/key-id/{key_id}/label",
+        "/admin/key-id/test-key/label",
+        admin::key_label_by_id
+    ),
+    (
+        post,
+        POST,
+        "/admin/account/{account_id}/key-id/{key_id}/policy",
+        "/admin/account/test-account/key-id/test-key/policy",
+        admin::key_policy_by_id
+    ),
+);
+
+async fn require_control_auth(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if control_authed(&app, request.headers(), &peer) {
+        return next.run(request).await;
+    }
+    Metrics::inc(&app.metrics.auth_failures);
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({"error": "unauthorized"})),
+    )
+        .into_response()
+}
+
 pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
+    let admin = admin_router(&app);
     Router::new()
         .route("/health", get(health))
         .route("/live", get(health))
@@ -87,25 +212,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
         .route("/admin-panel", get(admin_panel))
         // Control-плоскость (`/admin/*`) — управление аккаунтами/ключами/балансом за control-ключом.
         // Контракт для будущей КОММЕРЦИИ (отдельный сервис). Движок — авторитет живого баланса.
-        .route("/admin/account", post(admin::create_account))
-        .route("/admin/account/{id}", get(admin::get_account))
-        .route("/admin/account/{id}/credit", post(admin::credit_account))
-        .route("/admin/account/{id}/status", post(admin::account_status))
-        .route("/admin/account/{id}/pricing", post(admin::account_pricing))
-        .route("/admin/account/{id}/keys", get(admin::list_keys))
-        .route("/admin/account/{id}/ledger", get(admin::list_ledger))
-        .route("/admin/account/{id}/ledger/ack", post(admin::ack_ledger))
-        .route("/admin/account/{id}/usage", get(admin::list_usage))
-        .route("/admin/key", post(admin::issue_key))
-        .route(
-            "/admin/key-id/{key_id}/status",
-            post(admin::key_status_by_id),
-        )
-        .route("/admin/key-id/{key_id}/label", post(admin::key_label_by_id))
-        .route(
-            "/admin/account/{account_id}/key-id/{key_id}/policy",
-            post(admin::key_policy_by_id),
-        )
+        .merge(admin)
         // OpenAI-compatible text surface backed by the official Codex app-server. Caddy marks
         // requests from openai.api.apitoken.sale; every unmarked request preserves the exact
         // legacy Claude fallback, regardless of its authentication headers.
@@ -1044,6 +1151,85 @@ async fn pool_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use tower::ServiceExt;
+
+    fn admin_auth_test_app() -> AppState {
+        let mut cfg = crate::config::Settings::from_env().proxy;
+        cfg.api_keys = vec!["admin-key".to_string()];
+        cfg.control_keys = vec!["control-key".to_string()];
+        cfg.panel_keys = vec!["panel-key".to_string()];
+        cfg.trust_loopback = false;
+
+        let clients = Arc::new(forward::Clients::new(&cfg));
+        AppState {
+            cfg: Arc::new(cfg),
+            authority: Arc::new(registry::authority::AuthorityConfig::new(
+                ":memory:".to_string(),
+                None,
+            )),
+            data_db_path: Arc::new(":memory:".to_string()),
+            pool: Arc::new(pool::Pool::new(
+                Vec::new(),
+                pool::Reserve::new(0.1, 0.03, 0.02),
+                0.0,
+                0.0,
+            )),
+            affinity: Arc::new(forward::AffinityStore::new(None, None, 3_600, 300, 35).unwrap()),
+            clients,
+            codex: None,
+            billing: None,
+            authority_ready: Arc::new(AtomicBool::new(true)),
+            breaker: Arc::new(forward::Breaker::new(0)),
+            metrics: Arc::new(Metrics::new()),
+            key_limiter: Arc::new(forward::KeyLimiter::new()),
+            concurrency: Arc::new(tokio::sync::Semaphore::new(16)),
+            probe_poke: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn every_admin_route_enforces_the_control_key_lattice() {
+        assert_eq!(ADMIN_ROUTE_CASES.len(), 13);
+        let service = router(admin_auth_test_app(), Arc::new(AtomicBool::new(true)));
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+
+        for (method, path) in ADMIN_ROUTE_CASES {
+            for (credential, expect_unauthorized) in [
+                (None, true),
+                (Some("panel-key"), true),
+                (Some("control-key"), false),
+                (Some("admin-key"), false),
+            ] {
+                let mut request = Request::builder()
+                    .method(method.clone())
+                    .uri(*path)
+                    .body(Body::empty())
+                    .unwrap();
+                request.extensions_mut().insert(peer);
+                if let Some(key) = credential {
+                    request
+                        .headers_mut()
+                        .insert("x-api-key", key.parse().unwrap());
+                }
+
+                let status = service.clone().oneshot(request).await.unwrap().status();
+                if expect_unauthorized {
+                    assert_eq!(
+                        status,
+                        StatusCode::UNAUTHORIZED,
+                        "{method} {path} accepted credential {credential:?}"
+                    );
+                } else {
+                    assert_ne!(
+                        status,
+                        StatusCode::UNAUTHORIZED,
+                        "{method} {path} rejected credential {credential:?}"
+                    );
+                }
+            }
+        }
+    }
 
     fn capacity(email: &str, available: f64, routable: bool, calibrated: bool) -> pool::Cap {
         pool::Cap {
