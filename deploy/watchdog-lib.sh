@@ -396,6 +396,17 @@ wd_path_is_sales() {
   esac
 }
 
+# OpenKeys bounded context (openkeys.apitoken.sale). Свой релизный корень
+# (/opt/apitoken/openkeys-releases) и своя БД, независимо от commerce и sales.
+wd_path_is_openkeys() {
+  case "$1" in
+    apps/openkeys/*|packages/openkeys-db/*|packages/engine-client/*|packages/contracts/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig.base.json|.node-version)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 wd_path_is_infrastructure() {
   case "$1" in
     deploy/*|systemd/*|observability/*|compose.yaml)

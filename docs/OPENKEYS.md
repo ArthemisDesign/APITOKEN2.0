@@ -1,0 +1,79 @@
+# OpenKeys — предоплаченные ключи без регистрации
+
+`openkeys.apitoken.sale` — витрина для ключей, которые продаются готовыми (FunPay и подобные
+площадки). Покупателю не нужны регистрация, почта и карта: он получает ключ и личную ссылку на
+страницу расхода.
+
+Ключевое отличие от конкурентов: **номинал задаётся в долларах официального прайса Anthropic**,
+а не во внутренних «токенах». «Ключ на $50» — это ровно столько работы, сколько $50 на
+api.anthropic.com. Никакого курса, который нельзя проверить.
+
+## Состав
+
+| Компонент | Что это |
+|---|---|
+| `apps/openkeys` | Next.js на порту 3400: публичные страницы, доки, `/u/<token>`, `/usage`, админка `/admin` |
+| `packages/openkeys-db` | Своя PostgreSQL-схема (`openkeys_batches`, `openkeys_keys`) и раннер миграций |
+| `deploy/openkeys-deploy.sh` | Выкат: промоушен релиза, миграции, атомарный симлинк, health-gate, откат |
+| `systemd/apitoken-openkeys.service` | Юнит сервиса |
+
+Границы контекста: OpenKeys **не** трогает commerce и sales. С движком общается только через
+Control API из `CONTROL_API.md` — как и весь остальной коммерческий слой.
+
+## Модель данных
+
+Один проданный ключ = один аккаунт движка. Так баланс принадлежит ровно этому ключу, и страница
+расхода может показывать остаток, ничего не зная о пользователе.
+
+Полный секрет `sk-pool-…` **не хранится**: он показывается админу один раз при выпуске. У нас
+остаются `engine_account_id`, `engine_key_id`, маска и `view_token` — случайный 128-битный
+идентификатор публичной страницы расхода.
+
+Зачисление на баланс движка считается как `face_value_nano * mult_bp / 10000`. При `mult_bp = 4000`
+(скидка 60%) ключ с номиналом $50 получает $20 реального баланса, а страница расхода показывает
+покупателю остаток обратно в официальном эквиваленте.
+
+## Переменные окружения (`/etc/apitoken/openkeys.env`, root-only, 0600)
+
+| Переменная | Назначение |
+|---|---|
+| `OPENKEYS_DATABASE_URL` | DSN к своей БД openkeys |
+| `ENGINE_CONTROL_KEY` | Control API движка. Только server-side, в браузер не уходит |
+| `ENGINE_BASE_URL` | По умолчанию `http://127.0.0.1:8790` — стабильный loopback-origin, не слот |
+| `ENGINE_PUBLIC_BASE_URL` | По умолчанию `https://api.apitoken.sale`, используется для `/balance` при поиске по ключу |
+| `OPENKEYS_ADMIN_USER` | Логин админки |
+| `OPENKEYS_ADMIN_PASSWORD` | Пароль админки |
+| `OPENKEYS_SESSION_SECRET` | Секрет подписи сессионной куки, минимум 32 символа |
+| `OPENKEYS_DEFAULT_MULT_BP` | Множитель по умолчанию (4000 = клиент платит 40% прайса) |
+| `OPENKEYS_PUBLIC_BASE_URL` | Базовый адрес для ссылок вида `/u/<token>` |
+| `OPENKEYS_SESSION_TTL_SECONDS` | Время жизни сессии админки, по умолчанию 12 часов |
+
+Учётка админки действует **только на этом домене**: кука подписывается отдельным секретом и
+ставится на `openkeys.apitoken.sale`, никакой связи с `admin.partners.*` или панелью нет.
+
+## Первый запуск на сервере
+
+```bash
+# 1. Создать базу и записать env (root)
+sudo -u postgres createdb openkeys
+install -o root -g root -m 0600 /dev/null /etc/apitoken/openkeys.env
+# заполнить переменными из таблицы выше
+
+# 2. Раскатить обновлённые юниты, sudoers и контроллеры
+sudo bash deploy/install-watchdog.sh
+
+# 3. Дальше выкат автоматический: watchdog увидит изменения в apps/openkeys
+#    или packages/openkeys-db и вызовет openkeys-deploy.sh
+```
+
+Пароль и секрет сессии в репозиторий не коммитим — только в `/etc/apitoken/openkeys.env`.
+
+## Что проверяет watchdog
+
+`wd_path_is_openkeys` относит к контексту `apps/openkeys/*`, `packages/openkeys-db/*`,
+`packages/engine-client/*`, `packages/contracts/*` и корневые манифесты. На каждый кандидат
+миграции openkeys прогоняются против отдельной одноразовой PostgreSQL (`watchdog-test-db
+openkeys-dsn`), и только потом идёт выкат с health-gate на `http://127.0.0.1:3400/`.
+
+GitHub-контекст называется `deploy/openkeys`; собственный baseline лежит в
+`$STATE_ROOT/openkeys.sha`, поэтому изменения только в OpenKeys не трогают ни движок, ни backend.

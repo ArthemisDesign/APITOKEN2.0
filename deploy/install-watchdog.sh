@@ -61,6 +61,7 @@ install -o root -g root -m 0755 "$ROOT/deploy/engine-bluegreen.sh" /usr/local/li
 # Required by the watchdog's post-admission recovery path.
 install -o root -g root -m 0755 "$ROOT/deploy/rollback.sh" /usr/local/lib/apitoken-watchdog/controller/rollback.sh
 install -o root -g root -m 0755 "$ROOT/deploy/sales-deploy.sh" /usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh
+install -o root -g root -m 0755 "$ROOT/deploy/openkeys-deploy.sh" /usr/local/lib/apitoken-watchdog/controller/openkeys-deploy.sh
 install -o root -g root -m 0644 "$ROOT/deploy/commerce-postgres.compose.yaml" \
   /usr/local/lib/apitoken-watchdog/controller/commerce-postgres.compose.yaml
 install -o root -g root -m 0644 "$ROOT/deploy/affinity-redis.compose.yaml" \
@@ -71,6 +72,7 @@ for unit in \
   apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api@.service claude-api-backup.service claude-api-backup.timer \
   claude-api-fingerprint.service claude-api-fingerprint.timer \
   apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \
+  apitoken-openkeys.service \
   apitoken-monitoring-collector.service apitoken-monitoring-collector.timer; do
   install -o root -g root -m 0644 "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"
 done

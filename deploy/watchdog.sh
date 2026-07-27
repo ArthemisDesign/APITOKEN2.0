@@ -28,6 +28,7 @@ MIGRATION_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
 INFRASTRUCTURE_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh
 RETENTION_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-retention.sh
 SALES_RUNNER=/usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh
+OPENKEYS_RUNNER=/usr/local/lib/apitoken-watchdog/controller/openkeys-deploy.sh
 GITHUB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-github
 WATCHDOG_LOCK=/run/lock/apitoken-watchdog.lock
 DEPLOY_LOCK=/run/lock/apitoken-deploy.lock
@@ -38,6 +39,7 @@ PROCESSED_FILE=$STATE_ROOT/processed.sha
 ENGINE_FILE=$STATE_ROOT/engine.sha
 BACKEND_FILE=$STATE_ROOT/backend.sha
 SALES_FILE=$STATE_ROOT/sales.sha
+OPENKEYS_FILE=$STATE_ROOT/openkeys.sha
 REJECTED_FILE=$STATE_ROOT/rejected.sha
 PENDING_MIGRATION_FILE=$STATE_ROOT/pending-migration.sha
 DB_MANIFEST=$STATE_ROOT/database-migrations.manifest
@@ -243,7 +245,7 @@ prune_expired_releases() {
   local root=$1 label=$2 protected=() sha removed=0 failed=0 release
 
   mapfile -t protected < <(live_release_shas)
-  for sha in "${ENGINE_SHA:-}" "${BACKEND_SHA:-}" "${PROCESSED_SHA:-}" "${SALES_SHA:-}"; do
+  for sha in "${ENGINE_SHA:-}" "${BACKEND_SHA:-}" "${PROCESSED_SHA:-}" "${SALES_SHA:-}" "${OPENKEYS_SHA:-}"; do
     [[ $sha =~ ^[0-9a-f]{40}$ ]] && protected+=("$sha")
   done
 
@@ -289,7 +291,7 @@ run_as_ci() {
 }
 
 prepare_and_test_candidate() {
-  local sha=$1 candidate marker dsn engine_dsn sales_dsn manifest digest tree
+  local sha=$1 candidate marker dsn engine_dsn sales_dsn openkeys_dsn manifest digest tree
   candidate=$(candidate_for "$sha")
   marker=$(marker_for "$sha")
 
@@ -324,8 +326,12 @@ prepare_and_test_candidate() {
   sales_dsn=$(sudo -n "$TEST_DB_HELPER" sales-dsn)
   wd_log "running sales migrations against a separate disposable PostgreSQL database"
   run_as_ci env SALES_DATABASE_URL="$sales_dsn" node "$candidate/packages/sales-db/dist/migrate.js"
+  openkeys_dsn=$(sudo -n "$TEST_DB_HELPER" openkeys-dsn)
+  wd_log "running openkeys migrations against a separate disposable PostgreSQL database"
+  run_as_ci env OPENKEYS_DATABASE_URL="$openkeys_dsn" node "$candidate/packages/openkeys-db/dist/migrate.js"
   wd_log "running all TypeScript tests against their migrated disposable databases"
-  run_as_ci env TEST_DATABASE_URL="$dsn" TEST_SALES_DATABASE_URL="$sales_dsn" pnpm --dir "$candidate" \
+  run_as_ci env TEST_DATABASE_URL="$dsn" TEST_SALES_DATABASE_URL="$sales_dsn" \
+    TEST_OPENKEYS_DATABASE_URL="$openkeys_dsn" pnpm --dir "$candidate" \
     -r --workspace-concurrency=1 --if-present test
 
   engine_dsn=$(sudo -n "$TEST_DB_HELPER" engine-dsn)
@@ -705,6 +711,20 @@ deploy_sales() {
   wd_log "sales $sha promoted and verified (partners.apitoken.sale)"
 }
 
+deploy_openkeys() {
+  local sha=$1
+  CURRENT_PHASE=deploying-openkeys
+  CURRENT_PHASE_BEFORE_FAILURE=deploying-openkeys
+  status "promoting and health-gating the OpenKeys portal (own release lifecycle)"
+  github_status pending deploy/openkeys "OpenKeys portal deployment in progress"
+  github_deployment_start openkeys production-openkeys https://openkeys.apitoken.sale/
+  "$OPENKEYS_RUNNER" "$sha"
+  wd_atomic_write "$OPENKEYS_FILE" "$sha"
+  github_deployment_success openkeys
+  github_status success deploy/openkeys "OpenKeys portal verified in production"
+  wd_log "openkeys $sha promoted and verified (openkeys.apitoken.sale)"
+}
+
 apply_migrations_before_deploy() {
   local sha=$1 candidate manifest digest applied_digest
   candidate=$(candidate_for "$sha")
@@ -741,6 +761,7 @@ apply_migrations_before_deploy() {
 
 main() {
   local remote_ref rejected infra_changed=0 caddy_changed=0 engine_changed=0 backend_changed=0 sales_changed=0
+  local openkeys_changed=0
 
   [[ $(id -un) == deploy ]] || wd_die "watchdog service must run as deploy"
   [[ -d $SOURCE_REPO/.git ]] || wd_die "source repository is missing: $SOURCE_REPO"
@@ -756,6 +777,7 @@ main() {
   require_fixed_file "$INFRASTRUCTURE_RUNNER"
   require_fixed_file "$RETENTION_HELPER"
   require_fixed_file "$SALES_RUNNER"
+  require_fixed_file "$OPENKEYS_RUNNER"
   require_fixed_file "$GITHUB_HELPER"
   require_fixed_directory "$CI_TOOLCHAIN"
   [[ -f $DB_MANIFEST && ! -L $DB_MANIFEST ]] || wd_die "database migration baseline is missing"
@@ -786,10 +808,12 @@ main() {
   ENGINE_SHA=$(wd_read_sha "$ENGINE_FILE")
   BACKEND_SHA=$(wd_read_sha "$BACKEND_FILE")
   SALES_SHA=$(wd_read_sha "$SALES_FILE" 2>/dev/null || printf '')
+  OPENKEYS_SHA=$(wd_read_sha "$OPENKEYS_FILE" 2>/dev/null || printf '')
   wd_require_ancestor "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" processed
   wd_require_ancestor "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" engine
   wd_require_ancestor "$SOURCE_REPO" "$BACKEND_SHA" "$CANDIDATE_SHA" backend
   [[ -z $SALES_SHA ]] || wd_require_ancestor "$SOURCE_REPO" "$SALES_SHA" "$CANDIDATE_SHA" sales
+  [[ -z $OPENKEYS_SHA ]] || wd_require_ancestor "$SOURCE_REPO" "$OPENKEYS_SHA" "$CANDIDATE_SHA" openkeys
 
   if rejected=$(wd_read_sha "$REJECTED_FILE" 2>/dev/null) && [[ $rejected == "$CANDIDATE_SHA" ]]; then
     CURRENT_PHASE=quarantined
@@ -818,8 +842,13 @@ main() {
   # Sales has its own release baseline; fall back to processed on first run (before sales.sha exists).
   wd_range_has_class "$SOURCE_REPO" "${SALES_SHA:-$PROCESSED_SHA}" "$CANDIDATE_SHA" wd_path_is_sales \
     && sales_changed=1
+  # OpenKeys тоже держит собственную релизную базу; до появления openkeys.sha
+  # отсчитываем от processed, как и для sales.
+  wd_range_has_class "$SOURCE_REPO" "${OPENKEYS_SHA:-$PROCESSED_SHA}" "$CANDIDATE_SHA" wd_path_is_openkeys \
+    && openkeys_changed=1
 
-  if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $engine_changed == 0 && $backend_changed == 0 && $sales_changed == 0 ]]; then
+  if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $engine_changed == 0 && $backend_changed == 0 \
+        && $sales_changed == 0 && $openkeys_changed == 0 ]]; then
     reconcile_engine_runtime "$ENGINE_SHA"
     final_verify_admin_panel
     final_verify_codex_surface
@@ -874,6 +903,14 @@ main() {
     if [[ -z ${SALES_SHA:-} ]]; then wd_atomic_write "$SALES_FILE" "$CANDIDATE_SHA"; fi
   fi
 
+  if (( openkeys_changed == 1 )); then
+    deploy_openkeys "$CANDIDATE_SHA"
+  else
+    github_status success deploy/openkeys "No openkeys changes"
+    # First run before openkeys.sha exists: adopt the current commit as the baseline.
+    if [[ -z ${OPENKEYS_SHA:-} ]]; then wd_atomic_write "$OPENKEYS_FILE" "$CANDIDATE_SHA"; fi
+  fi
+
   reconcile_engine_runtime "$ENGINE_SHA"
   final_verify_admin_panel
   final_verify_codex_surface
@@ -883,7 +920,7 @@ main() {
   CURRENT_PHASE=idle
   status "candidate tested and all selected components verified in production"
   github_status success deploy/watchdog "All selected production components verified"
-  wd_log "watchdog completed $CANDIDATE_SHA (engine=$engine_changed backend=$backend_changed sales=$sales_changed)"
+  wd_log "watchdog completed $CANDIDATE_SHA (engine=$engine_changed backend=$backend_changed sales=$sales_changed openkeys=$openkeys_changed)"
 }
 
 main "$@"

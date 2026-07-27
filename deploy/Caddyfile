@@ -239,6 +239,15 @@ sales.apitoken.sale {
 	redir https://partners.apitoken.sale{uri} permanent
 }
 
+# OpenKeys — предоплаченные ключи без регистрации (продажа на FunPay и т.п.).
+# Весь домен обслуживает одно Next.js-приложение (:3400): публичные доки,
+# страницы расхода /u/* и собственная админка /admin с логином из openkeys.env.
+# Basic-auth на уровне Caddy тут НЕ нужен: /admin закрыт логином приложения,
+# а всё остальное обязано быть доступно покупателю без авторизации.
+openkeys.apitoken.sale {
+	reverse_proxy 127.0.0.1:3400
+}
+
 crm.apitoken.sale {
 	# Parser ingest bypasses human admin auth and remains protected by x-crm-ingest-key in crm-api.
 	handle /v1/ingest/* {

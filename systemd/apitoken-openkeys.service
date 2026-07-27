@@ -1,0 +1,25 @@
+[Unit]
+Description=API Token Sale OpenKeys portal (openkeys.apitoken.sale, port 3400)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/apitoken/openkeys-releases/current/apps/openkeys
+EnvironmentFile=/etc/apitoken/openkeys.env
+ExecStart=/opt/apitoken/openkeys-releases/current/apps/openkeys/node_modules/.bin/next start -H 127.0.0.1 -p 3400
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
