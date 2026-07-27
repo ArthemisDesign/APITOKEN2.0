@@ -37,13 +37,17 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    pnpm build
    pnpm typecheck
    pnpm test
-   cargo test --locked --workspace
+   bash deploy/sccache-cargo.sh cargo test --locked --workspace
    bash -n deploy/*.sh deploy/apitoken-db-dump
    git diff --check
    ```
 
    The merge script preserves this full scope while running its independent TypeScript, Rust, and
-   deployment lanes concurrently.
+   deployment lanes concurrently. Rust compilation goes through a checksum-pinned `sccache`; its
+   binary, 10 GiB object cache, and Cargo 1.91+ intermediate build directory live in the clone's git
+   common directory and are reused by all linked worktrees. Final Cargo targets remain local to each
+   worktree. The wrapper falls back to uncached Cargo if its one-time bootstrap is unavailable; set
+   `SCCACHE_DISABLE=1` for an explicit uncached run.
 
 5. Push the branch and land it with `./deploy/agent-merge.sh` (add `--allow-primary-tree` when you
    work in a plain clone rather than a worktree). That script is the only supported way to reach

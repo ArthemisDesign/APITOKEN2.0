@@ -347,6 +347,21 @@ grep -Fq 'deploy/agent-merge.suite.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the merge-path suite'
 grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the activation-journal suite'
+grep -Fq 'deploy/sccache-cargo.sh" cargo test --locked --workspace' \
+  "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the merge gate does not run Rust tests through the shared compilation cache'
+for sccache_contract in \
+  'git-common-dir' \
+  'worktree list --porcelain' \
+  'SCCACHE_BASEDIRS' \
+  'SCCACHE_SERVER_UDS' \
+  'CARGO_INCREMENTAL=0' \
+  'CARGO_BUILD_BUILD_DIR' \
+  'SCCACHE_CACHE_SIZE' \
+  'SCCACHE_VERSION=0.15.0'; do
+  grep -Fq -- "$sccache_contract" "$ROOT/deploy/sccache-cargo.sh" \
+    || wd_die "shared Rust cache lost required contract: $sccache_contract"
+done
 for parallel_gate_contract in \
   'am_gate_typescript & typescript_pid=$!' \
   'am_gate_rust & rust_pid=$!' \

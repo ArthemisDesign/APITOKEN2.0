@@ -71,7 +71,7 @@ am_gate_typescript() (
 
 am_gate_rust() (
   cd "$ROOT"
-  cargo test --locked --workspace
+  bash "$ROOT/deploy/sccache-cargo.sh" cargo test --locked --workspace
 )
 
 am_gate_deployment() (
