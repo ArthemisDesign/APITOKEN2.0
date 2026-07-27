@@ -896,7 +896,7 @@ function ApiKeys({ keys, onChanged, user }: { keys: ApiKeyView[]; onChanged(): P
   const totalKeySpend = keys.reduce((sum, key) => sum + BigInt(key.spentNano), 0n);
 
   return <section ref={keysPanelRef} className="panel keys-panel">
-    <div className="keys-heading-row"><PageHeading eyebrow={copy.keysEyebrow} title={copy.keysTitle} subtitle={copy.keysSubtitle} /><button ref={createTriggerRef} className="btn btn-primary keys-create-button" type="button" onClick={() => { setCreateOpen(true); setError(null); }}>＋ {localCopy.createKey}</button></div>
+    <div className="keys-heading-row"><PageHeading eyebrow={copy.keysEyebrow} title={copy.keysTitle} subtitle={copy.keysSubtitle} /></div>
     <div className="keys-health-grid" aria-label={localCopy.keyHealthSummary}>
       <article className="keys-health-card keys-health-good"><span>{localCopy.usableNow}</span><strong>{usableCount}</strong><small>{localCopy.usableNowHelp}</small></article>
       <article className={`keys-health-card${blockedCount > 0 ? " keys-health-danger" : ""}`}><span>{localCopy.blockedNow}</span><strong>{blockedCount}</strong><small>{localCopy.blockedNowHelp}</small></article>
@@ -907,7 +907,13 @@ function ApiKeys({ keys, onChanged, user }: { keys: ApiKeyView[]; onChanged(): P
     {error && !createOpen && !editTarget && !revokeTarget && <div className="banner banner-error" role="alert">{error}</div>}
 
     <section className="dsec keys-manager" aria-label={copy.keysTitle}>
-      <div className="keys-manager-head"><div><span className="eyebrow">{copy.keysEyebrow}</span><h2>{localCopy.keysListTitle}</h2></div><span>{interpolate(localCopy.keysListSummary, { shown: sortedKeys.length, total: keys.length })}</span></div>
+      <div className="keys-manager-head">
+        <div className="keys-manager-title"><span className="eyebrow">{copy.keysEyebrow}</span><h2>{localCopy.keysListTitle}</h2></div>
+        <div className="keys-manager-actions">
+          <span className="keys-manager-summary">{interpolate(localCopy.keysListSummary, { shown: sortedKeys.length, total: keys.length })}</span>
+          <button ref={createTriggerRef} className="btn btn-primary keys-create-button" type="button" onClick={() => { setCreateOpen(true); setError(null); }}>＋ {localCopy.createKey}</button>
+        </div>
+      </div>
       <div className="keys-toolbar">
         <label className="keys-search"><span aria-hidden="true">⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={localCopy.searchKeys} aria-label={localCopy.searchKeys} /></label>
         <div className="keys-toolbar-right">

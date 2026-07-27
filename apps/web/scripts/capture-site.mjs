@@ -1085,6 +1085,7 @@ async function verifyApiKeysLayout(client) {
         const health = rect('.keys-health-grid');
         const dock = rect('.agent-connect-dock');
         const manager = rect('.keys-manager-head');
+        const createButton = rect('.keys-create-button');
         const toolbar = rect('.keys-toolbar');
         const tabs = rect('.keys-filter-tabs');
         const keys = rect('.key-table-wrap');
@@ -1101,6 +1102,11 @@ async function verifyApiKeysLayout(client) {
             Math.max(health.right, dock.right, manager.right, toolbar.right, keys.right) - Math.min(health.right, dock.right, manager.right, toolbar.right, keys.right) < 2),
           separated: Boolean(toolbar && key && key.top - toolbar.bottom >= 12),
           distinctSurface: toolbarStyle.backgroundColor !== keyStyle.backgroundColor && toolbarStyle.borderRadius !== keyStyle.borderRadius,
+          createButtonCount: document.querySelectorAll('.keys-create-button').length,
+          createInManager: Boolean(document.querySelector('.keys-manager-head .keys-create-button')),
+          createInHero: Boolean(document.querySelector('.keys-heading-row .keys-create-button')),
+          createNearList: Boolean(createButton && manager && createButton.top >= manager.top - 1 && createButton.bottom <= manager.bottom + 1),
+          createFullWidthOnMobile: innerWidth > 620 || Boolean(createButton && manager && Math.abs(createButton.width - manager.width) < 2),
           controlsFit: Boolean(tabs && tabs.right <= innerWidth + 1 && document.querySelector('.keys-filter-tabs').scrollWidth <= document.querySelector('.keys-filter-tabs').clientWidth + 1),
           tabRows: new Set(tabRects.map((entry) => Math.round(entry.top))).size,
           equalTabHeights: Math.max(...tabRects.map((entry) => entry.height)) - Math.min(...tabRects.map((entry) => entry.height)) < 2,
@@ -1116,7 +1122,7 @@ async function verifyApiKeysLayout(client) {
     const state = JSON.parse(result.result.value);
     const expectedTheme = layoutCase.theme === "dark" ? "dark" : "light";
     const expectedTabRows = layoutCase.width > 620 ? 1 : 3;
-    if (state.language !== layoutCase.language || state.theme !== expectedTheme || state.overflow > 1 || !state.aligned || !state.separated || !state.distinctSurface || !state.controlsFit || state.tabRows !== expectedTabRows || !state.equalTabHeights || state.label !== layoutCase.label || state.counts.join(",") !== "4,2,4,1,5" || state.activeFilter !== "current" || state.healthValues.join(",") !== "2,2,2,$18.25" || state.policyStates.some((present) => !present)) {
+    if (state.language !== layoutCase.language || state.theme !== expectedTheme || state.overflow > 1 || !state.aligned || !state.separated || !state.distinctSurface || state.createButtonCount !== 1 || !state.createInManager || state.createInHero || !state.createNearList || !state.createFullWidthOnMobile || !state.controlsFit || state.tabRows !== expectedTabRows || !state.equalTabHeights || state.label !== layoutCase.label || state.counts.join(",") !== "4,2,4,1,5" || state.activeFilter !== "current" || state.healthValues.join(",") !== "2,2,2,$18.25" || state.policyStates.some((present) => !present)) {
       throw new Error(`API keys ${layoutCase.name} layout failed: ${JSON.stringify(state)}`);
     }
 

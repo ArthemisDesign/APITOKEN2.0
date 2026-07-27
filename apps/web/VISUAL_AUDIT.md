@@ -205,7 +205,8 @@ When a dashboard design depends on new API data:
 The API-key fixture includes enabled, revoked, near-limit, expiring, expired, and limit-reached
 records. That lets the audit verify the Current / Working / Needs attention / Revoked / All counts
 (`4 / 2 / 4 / 1 / 5`), every policy state, the health summary, search, the responsive
-desktop/tablet/mobile table-card layout, the TOTP-enabled create flow and payload, and the revoke
+desktop/tablet/mobile table-card layout, the create action's placement beside the key list and
+full-width mobile treatment, the TOTP-enabled create flow and payload, and the revoke
 confirmation/error path.
 
 ## Browser assertions
