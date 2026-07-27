@@ -48,11 +48,14 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    existing SHA's `deploy/watchdog` context through the GitHub API. It automatically reuses the
    credential already configured for `git push` (`git credential`, macOS Keychain), so neither
    `gh` nor a separately exported `GITHUB_TOKEN` is required. Pending or temporarily unavailable
-   status is polled by the script itself every five seconds. It then rebases and compares the
-   resulting full SHA with the SHA that already passed the gate. An unchanged SHA reuses that result;
-   a rebase or push race that changes the SHA runs the complete gate again before push. The script
-   holds the lock until `deploy/watchdog` reports on the pushed SHA. Merging or pushing to `master`
-   by hand races the production deployment of whoever merged immediately before it.
+   status is polled by the script itself every five seconds. Before queueing, it requests trusted
+   production-host validation for the exact pushed feature SHA, then overlaps that path-aware host
+   gate with the complete local gate. It takes the merge lock only after both pass. A rebase or push
+   race that changes the SHA republishes the feature branch and repeats both gates for that new SHA;
+   an unchanged SHA reuses both results. Once the same SHA reaches `master`, the host consumes its
+   root-owned frozen candidate instead of testing it again. The script holds the lock until
+   `deploy/watchdog` reports on the pushed SHA. Merging or pushing to `master` by hand races the
+   production deployment of whoever merged immediately before it.
 6. AI agents never ask a person to provide a GitHub token or prove that a deployment is green. If
    no reusable credential exists, repair the local Git credential helper and rerun; never merge
    blind. Work is complete only when the script reports the exact pushed SHA's `deploy/watchdog`
@@ -120,9 +123,9 @@ The same free GitHub API integration creates deployment records for the affected
 `production-openkeys` environments. Those records make the production history and final environment
 URL visible next to Vercel's deployments; they do not run code on GitHub infrastructure.
 
-The idle host also accepts exact-SHA requests in the transient `candidate-validation` environment.
-It fetches only a SHA reachable from an already-pushed branch, requires every production baseline
-to be its ancestor, runs the same path-aware gate, and freezes the result in the root-owned
+The merge client sends exact-SHA requests through the transient `candidate-validation` environment.
+The idle host fetches only a SHA reachable from an already-pushed branch, requires every production
+baseline to be its ancestor, runs the same path-aware gate, and freezes the result in the root-owned
 candidate cache. Production work always takes priority. A red feature candidate updates only its
 own validation deployment and `deploy/tests`; it cannot quarantine or change the healthy production
 verdict.

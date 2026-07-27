@@ -3,7 +3,7 @@
 #
 # Everything runs against throwaway repositories under a temporary directory: no network, no
 # pnpm/cargo, no access to the real merge lock, and nothing outside $TEMP is written. The gate and
-# the GitHub status lookup are injected through AGENT_MERGE_GATE_CMD / AGENT_MERGE_STATUS_CMD.
+# the GitHub status and trusted-validation operations are injected through AGENT_MERGE_*_CMD.
 set -euo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -86,6 +86,8 @@ run_merge() {  # $1 = tree, rest = extra env assignments / flags
       AGENT_MERGE_STALE_S=0 \
       AGENT_MERGE_GATE_CMD="${GATE_STUB-true}" \
       AGENT_MERGE_STATUS_CMD="${STATUS_STUB-printf success}" \
+      AGENT_MERGE_VALIDATION_REQUEST_CMD="${VALIDATION_REQUEST_STUB-printf 1}" \
+      AGENT_MERGE_VALIDATION_STATUS_CMD="${VALIDATION_STATUS_STUB-printf success}" \
       "$@" bash "$tree/deploy/agent-merge.sh" ${MERGE_FLAGS-} ) 2>&1
 }
 
@@ -123,6 +125,16 @@ GATE_STUB='exit 7' expect_failure 'a red gate' '' run_merge "$tree_a"
   || wd_die 'a failing gate still pushed to master'
 [[ ! -d $TEMP/lock ]] || wd_die 'a failing gate left the merge lock behind'
 
+# A feature SHA that fails the production host's trusted gate must never reach the merge lock or
+# master, even if its local gate passed.
+host_gate_log=$TEMP/host-gate.log
+GATE_STUB="printf gate >>$host_gate_log" VALIDATION_STATUS_STUB='printf failure' \
+  expect_failure 'a red trusted host gate' 'trusted host validation' run_merge "$tree_a"
+[[ -s $host_gate_log ]] || wd_die 'the local gate did not run alongside trusted host validation'
+[[ $(git --git-dir="$ORIGIN" rev-parse master) == "$before" ]] \
+  || wd_die 'a host-rejected feature SHA still reached master'
+[[ ! -d $TEMP/lock ]] || wd_die 'a failed trusted host gate reached the merge lock'
+
 # --- production is checked before the expensive gate ---------------------------------------------
 preflight_gate_log=$TEMP/preflight-gate.log
 GATE_STUB="printf gate >>$preflight_gate_log" STATUS_STUB='printf failure' \
@@ -137,7 +149,10 @@ GATE_STUB="printf gate >>$preflight_gate_log" STATUS_STUB='printf pending' \
 
 # --- happy path: unchanged SHA reuses its exact gate, lock released -------------------------------
 gate_log=$TEMP/gate.log
-GATE_STUB="git rev-parse HEAD >>$gate_log" run_merge "$tree_a" >"$TEMP/happy.log" \
+validation_log=$TEMP/happy-validation.log
+GATE_STUB="test -s $validation_log; git rev-parse HEAD >>$gate_log" \
+  VALIDATION_REQUEST_STUB="bash -c 'printf \"%s\\n\" \"\$1\" >>\"$validation_log\"; printf 1' _" \
+  run_merge "$tree_a" >"$TEMP/happy.log" \
   || wd_die "the happy path failed: $(cat "$TEMP/happy.log")"
 pushed=$(git --git-dir="$ORIGIN" rev-parse master)
 [[ $pushed != "$before" ]] || wd_die 'the happy path did not advance master'
@@ -147,8 +162,12 @@ tail -n 1 "$gate_log" | grep -Fxq "$pushed" \
   || wd_die 'the gate did not run on the exact SHA that was pushed'
 [[ $(wc -l <"$gate_log" | tr -d ' ') == 1 ]] \
   || wd_die 'an unchanged SHA was wastefully tested more than once'
-grep -Fq 'reusing the full gate already passed by unchanged SHA' "$TEMP/happy.log" \
-  || wd_die 'the unchanged-SHA gate reuse was not reported'
+[[ $(wc -l <"$validation_log" | tr -d ' ') == 1 ]] \
+  || wd_die 'an unchanged SHA requested trusted host validation more than once'
+grep -Fxq "$pushed" "$validation_log" \
+  || wd_die 'trusted host validation was not requested for the exact pushed SHA'
+grep -Fq 'reusing the local and trusted host gates already passed by unchanged SHA' "$TEMP/happy.log" \
+  || wd_die 'the unchanged-SHA dual-gate reuse was not reported'
 [[ ! -d $TEMP/lock ]] || wd_die 'the merge lock was not released'
 grep -Fq 'GREEN' "$TEMP/happy.log" || wd_die 'the merge did not wait for a green deployment'
 
@@ -184,15 +203,22 @@ tree_d=$(new_agent_worktree agent-d feat/agent-d)
 run_merge "$tree_d" >/dev/null || wd_die 'agent-d could not land'
 landed_d=$(git --git-dir="$ORIGIN" rev-parse master)
 stale_gate_log=$TEMP/stale-gate.log
-GATE_STUB="git rev-parse HEAD >>$stale_gate_log" run_merge "$tree_c" >"$TEMP/stale-target.log" \
+stale_validation_log=$TEMP/stale-validation.log
+GATE_STUB="git rev-parse HEAD >>$stale_gate_log" \
+  VALIDATION_REQUEST_STUB="bash -c 'printf \"%s\\n\" \"\$1\" >>\"$stale_validation_log\"; printf 1' _" \
+  run_merge "$tree_c" >"$TEMP/stale-target.log" \
   || wd_die 'agent-c could not land after the target moved'
 landed_c=$(git --git-dir="$ORIGIN" rev-parse master)
 git --git-dir="$ORIGIN" merge-base --is-ancestor "$landed_d" "$landed_c" \
   || wd_die 'a merge discarded a commit that had already landed on master'
 [[ $(wc -l <"$stale_gate_log" | tr -d ' ') == 2 ]] \
   || wd_die 'a rebase that changed the candidate SHA did not force exactly one new gate'
+[[ $(wc -l <"$stale_validation_log" | tr -d ' ') == 2 ]] \
+  || wd_die 'a rebase that changed the candidate SHA did not request exactly one new host gate'
 tail -n 1 "$stale_gate_log" | grep -Fxq "$landed_c" \
   || wd_die 'the rebased SHA was not the last tree tested before push'
+tail -n 1 "$stale_validation_log" | grep -Fxq "$landed_c" \
+  || wd_die 'the rebased SHA was not the last tree validated by the trusted host'
 
 # An out-of-band push between the gate and our push (a human bypassing the lock) must be absorbed by
 # the retry loop, never by a force push.
@@ -228,11 +254,16 @@ rm -f -- "$race_marker"
 git_quiet -C "$PRIMARY" fetch --quiet origin
 git_quiet -C "$PRIMARY" reset --hard --quiet origin/master
 race_gate_log=$TEMP/race-gate.log
-GATE_STUB="git rev-parse HEAD >>$race_gate_log" run_merge "$tree_e" >"$TEMP/race.log" \
+race_validation_log=$TEMP/race-validation.log
+GATE_STUB="git rev-parse HEAD >>$race_gate_log" \
+  VALIDATION_REQUEST_STUB="bash -c 'printf \"%s\\n\" \"\$1\" >>\"$race_validation_log\"; printf 1' _" \
+  run_merge "$tree_e" >"$TEMP/race.log" \
   || wd_die "the push race was not absorbed: $(cat "$TEMP/race.log")"
 grep -Fq 'moved under us, retrying' "$TEMP/race.log" || wd_die 'the push race did not trigger a retry'
 [[ $(wc -l <"$race_gate_log" | tr -d ' ') == 2 ]] \
   || wd_die 'a push race that changed the SHA did not force exactly one new gate'
+[[ $(wc -l <"$race_validation_log" | tr -d ' ') == 2 ]] \
+  || wd_die 'a push race that changed the SHA did not force exactly one new trusted host gate'
 git --git-dir="$ORIGIN" cat-file -e "master:interloper.txt" \
   || wd_die 'the retry force-pushed over an out-of-band commit'
 git --git-dir="$ORIGIN" merge-base --is-ancestor "$landed_c" "$(git --git-dir="$ORIGIN" rev-parse master)" \
@@ -316,6 +347,16 @@ grep -Fq 'agent-merge.suite.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the merge-path suite'
 grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the activation-journal suite'
+for trusted_gate_contract in \
+  'transient_environment: true' \
+  'production_environment: false' \
+  'candidate-validation' \
+  'am_publish_validation_sha "$candidate"' \
+  'am_wait_for_validation "$validation_id" "$candidate"' \
+  'candidate == "$GATED_SHA" && $candidate == "$VALIDATED_SHA"'; do
+  grep -Fq -- "$trusted_gate_contract" "$ROOT/deploy/agent-merge.sh" \
+    || wd_die "merge path lost trusted exact-SHA validation contract: $trusted_gate_contract"
+done
 [[ ! -e $ROOT/deploy/agent-merge.test.sh ]] \
   || wd_die 'the report-only shim outlived its purpose; the installed watchdog no longer calls it'
 grep -Fq 'guard-git.sh' "$ROOT/.claude/settings.json" \
@@ -418,10 +459,10 @@ git_quiet -C "$PRIMARY" config credential.helper \
   '!f() { test "$1" = get && printf "\n"; }; f'
 tree_g=$(new_agent_worktree agent-g feat/agent-g)
 STATUS_STUB='' expect_failure 'a missing reusable credential' \
-  'autonomous GitHub deployment-status access is unavailable' \
+  'autonomous GitHub deployment/validation access is unavailable' \
   run_merge "$tree_g" PATH="$TEMP/bin:$PATH" GITHUB_TOKEN=''
 [[ $(git --git-dir="$ORIGIN" rev-parse master) == "$pushed" ]] \
-  || wd_die 'a merge proceeded without autonomous deployment-status access'
+  || wd_die 'a merge proceeded without autonomous deployment/validation access'
 git_quiet -C "$PRIMARY" config --unset credential.helper
 grep -Fq 'Check deploy/watchdog on GitHub yourself' "$MERGE" \
   && wd_die 'the merge workflow still delegates deployment proof to a human'

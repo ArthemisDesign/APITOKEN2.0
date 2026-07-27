@@ -7,7 +7,8 @@
 #   * it never checks out master, so it cannot disturb a co-resident working tree;
 #   * it holds a machine-wide lock across the merge AND the deployment that follows, so two
 #     candidates can never be tested or deployed on top of each other;
-#   * it runs the full gate on the exact tree it pushes, after the rebase;
+#   * it runs the local full gate and trusted production-host validation on the exact tree it
+#     pushes, overlapping them when possible and repeating both only when the SHA changes;
 #   * it refuses to stack work on a red or still-deploying master.
 #
 # Usage:  deploy/agent-merge.sh [--allow-primary-tree] [--dry-run] [--fix-red]
@@ -29,6 +30,7 @@ AGENT_MERGE_POLL_S=${AGENT_MERGE_POLL_S:-5}
 AGENT_MERGE_PUSH_ATTEMPTS=${AGENT_MERGE_PUSH_ATTEMPTS:-3}
 # The context that means the production pipeline reached a verdict. Anything else is a partial view.
 AGENT_MERGE_REQUIRED_CONTEXT=${AGENT_MERGE_REQUIRED_CONTEXT:-deploy/watchdog}
+AGENT_MERGE_VALIDATION_ENVIRONMENT=${AGENT_MERGE_VALIDATION_ENVIRONMENT:-candidate-validation}
 
 ALLOW_PRIMARY_TREE=0
 DRY_RUN=0
@@ -108,10 +110,14 @@ EOF
 }
 
 am_require_status_access() {
-  [[ -n ${AGENT_MERGE_STATUS_CMD:-} ]] && return
+  if [[ -n ${AGENT_MERGE_STATUS_CMD:-} \
+        && -n ${AGENT_MERGE_VALIDATION_REQUEST_CMD:-} \
+        && -n ${AGENT_MERGE_VALIDATION_STATUS_CMD:-} ]]; then
+    return
+  fi
   local token
   token=$(am_token)
-  [[ -n $token ]] || am_die 'autonomous GitHub deployment-status access is unavailable: git has no
+  [[ -n $token ]] || am_die 'autonomous GitHub deployment/validation access is unavailable: git has no
   reusable HTTPS credential for this remote. No gate or merge was attempted. Repair the local git
   credential helper/remote authentication and rerun; never ask a human for a token or green proof.'
 }
@@ -152,6 +158,127 @@ process.stdin.on("end", () => {
 header = "Authorization: Bearer $token"
 header = "Accept: application/vnd.github+json"
 EOF
+}
+
+am_validation_request() {
+  local sha=$1 token body response deployment_id
+  if [[ -n ${AGENT_MERGE_VALIDATION_REQUEST_CMD:-} ]]; then
+    eval "$AGENT_MERGE_VALIDATION_REQUEST_CMD $sha"
+    return
+  fi
+  token=$(am_token)
+  [[ -n $token ]] || return 1
+  body=$(node -e '
+const [ref, environment, branch] = process.argv.slice(1);
+process.stdout.write(JSON.stringify({
+  ref,
+  environment,
+  description: `Trusted pre-merge validation for ${branch}`,
+  auto_merge: false,
+  required_contexts: [],
+  transient_environment: true,
+  production_environment: false,
+}));
+' "$sha" "$AGENT_MERGE_VALIDATION_ENVIRONMENT" "$BRANCH")
+  response=$(curl -fsSL --max-time 30 -K - -X POST \
+    "https://api.github.com/repos/$AGENT_MERGE_REPO/deployments" -d "$body" <<EOF
+header = "Authorization: Bearer $token"
+header = "Accept: application/vnd.github+json"
+header = "X-GitHub-Api-Version: 2022-11-28"
+header = "Content-Type: application/json"
+EOF
+  ) || return 1
+  deployment_id=$(node -e '
+let raw = "";
+process.stdin.on("data", (chunk) => { raw += chunk; });
+process.stdin.on("end", () => {
+  try {
+    const id = JSON.parse(raw).id;
+    if (!Number.isSafeInteger(id) || id < 1) process.exit(1);
+    process.stdout.write(String(id));
+  } catch { process.exit(1); }
+});
+' <<<"$response") || return 1
+  [[ $deployment_id =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s' "$deployment_id"
+}
+
+am_validation_status() {
+  local deployment_id=$1 token response
+  if [[ -n ${AGENT_MERGE_VALIDATION_STATUS_CMD:-} ]]; then
+    eval "$AGENT_MERGE_VALIDATION_STATUS_CMD $deployment_id" || printf 'unknown'
+    return
+  fi
+  token=$(am_token)
+  [[ -n $token ]] || { printf 'unknown'; return; }
+  response=$(curl -fsSL --max-time 30 -K - \
+    "https://api.github.com/repos/$AGENT_MERGE_REPO/deployments/$deployment_id/statuses?per_page=100" <<EOF
+header = "Authorization: Bearer $token"
+header = "Accept: application/vnd.github+json"
+header = "X-GitHub-Api-Version: 2022-11-28"
+EOF
+  ) || { printf 'unknown'; return; }
+  node -e '
+let raw = "";
+process.stdin.on("data", (chunk) => { raw += chunk; });
+process.stdin.on("end", () => {
+  try {
+    const statuses = JSON.parse(raw);
+    if (!Array.isArray(statuses)) throw new Error("not an array");
+    const states = statuses.map((status) => String(status.state || ""));
+    // A later successful request may auto-inactivate an older environment deployment. An exact
+    // deployment that recorded success still passed even if its newest status is now inactive.
+    if (states.includes("success")) process.stdout.write("success");
+    else process.stdout.write(states[0] || "queued");
+  } catch { process.stdout.write("unknown"); }
+});
+' <<<"$response" 2>/dev/null || printf 'unknown'
+}
+
+VALIDATION_FAILURE_DETAIL=
+am_wait_for_validation() {
+  local deployment_id=$1 sha=$2 waited=0 verdict
+  VALIDATION_FAILURE_DETAIL=
+  while (( waited < AGENT_MERGE_DEPLOY_WAIT_S )); do
+    verdict=$(am_validation_status "$deployment_id")
+    case "$verdict" in
+      success)
+        am_log "trusted host validation is GREEN for $sha (deployment $deployment_id)"
+        return 0
+        ;;
+      failure|error|inactive)
+        VALIDATION_FAILURE_DETAIL="reported $verdict"
+        return 1
+        ;;
+      queued|pending|in_progress)
+        am_log "trusted host validation is $verdict for $sha; waiting autonomously (${waited}s)"
+        ;;
+      unknown)
+        am_log "trusted validation lookup for $sha is temporarily unavailable; retrying autonomously (${waited}s)"
+        ;;
+      *)
+        am_log "unexpected trusted validation status '$verdict' for $sha; retrying autonomously (${waited}s)"
+        ;;
+    esac
+    sleep "$AGENT_MERGE_POLL_S"
+    waited=$(( waited + AGENT_MERGE_POLL_S ))
+  done
+  VALIDATION_FAILURE_DETAIL="did not settle within ${AGENT_MERGE_DEPLOY_WAIT_S}s"
+  return 1
+}
+
+am_publish_validation_sha() {
+  local sha=$1 remote_sha
+  [[ $(git -C "$ROOT" rev-parse HEAD) == "$sha" ]] \
+    || am_die "refusing to publish a validation ref for a SHA other than HEAD"
+  remote_sha=$(git -C "$ROOT" rev-parse "$AGENT_MERGE_REMOTE/$BRANCH" 2>/dev/null || printf '')
+  [[ $remote_sha != "$sha" ]] || return 0
+  am_log "publishing exact candidate $sha on its feature branch for trusted host validation"
+  git -C "$ROOT" push --force-with-lease "$AGENT_MERGE_REMOTE" \
+    "HEAD:refs/heads/$BRANCH"
+  remote_sha=$(git -C "$ROOT" rev-parse "$AGENT_MERGE_REMOTE/$BRANCH" 2>/dev/null || printf '')
+  [[ $remote_sha == "$sha" ]] \
+    || am_die "feature branch did not publish the exact candidate required for host validation"
 }
 
 am_wait_for_target_ready() {
@@ -215,10 +342,41 @@ previous=$(git -C "$ROOT" rev-parse "$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET")
 am_log "checking $AGENT_MERGE_REQUIRED_CONTEXT for existing $AGENT_MERGE_TARGET $previous before the gate"
 am_wait_for_target_ready "$previous"
 
-# Fail fast, before queueing behind anyone, on a tree that cannot pass anyway.
+# Fail fast, before queueing behind anyone, on a tree that cannot pass anyway. The host receives
+# the exact already-pushed SHA first, so its path-aware gate runs concurrently with this local full
+# gate. Neither result is trusted for a different SHA.
+candidate=$(git -C "$ROOT" rev-parse HEAD)
+am_publish_validation_sha "$candidate"
+validation_id=
+if (( DRY_RUN )); then
+  am_log "dry run: skipping the external trusted-host validation request"
+else
+  validation_id=$(am_validation_request "$candidate") \
+    || am_die "could not create trusted host validation for $candidate"
+  [[ $validation_id =~ ^[1-9][0-9]*$ ]] \
+    || am_die "GitHub returned an invalid trusted validation deployment id"
+  am_log "requested trusted host validation for $candidate (deployment $validation_id)"
+fi
 am_log "running the full gate on $(git -C "$ROOT" rev-parse --short HEAD) before queueing"
 am_gate
 GATED_SHA=$(git -C "$ROOT" rev-parse HEAD)
+[[ $GATED_SHA == "$candidate" ]] || am_die "the candidate SHA changed while its local gate ran"
+VALIDATED_SHA=
+if (( DRY_RUN )); then
+  VALIDATED_SHA=$candidate
+elif am_wait_for_validation "$validation_id" "$candidate"; then
+  VALIDATED_SHA=$candidate
+else
+  # Another serialized merge may land while our two gates run. Its new production baseline can
+  # legitimately make this old request fail the ancestry fence; keep the local result, then rebase
+  # and request validation for the new exact SHA under the lock.
+  git -C "$ROOT" fetch "$AGENT_MERGE_REMOTE"
+  latest_target=$(git -C "$ROOT" rev-parse "$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET")
+  if [[ $latest_target == "$previous" ]]; then
+    am_die "trusted host validation for $candidate $VALIDATION_FAILURE_DETAIL; no merge was attempted"
+  fi
+  am_log "discarding stale host validation for $candidate because $AGENT_MERGE_TARGET moved to $latest_target"
+fi
 
 # --- lock --------------------------------------------------------------------------------------
 mkdir -p -- "$(dirname -- "$AGENT_MERGE_LOCK")"
@@ -256,13 +414,37 @@ pushed=''
 for attempt in $(seq 1 "$AGENT_MERGE_PUSH_ATTEMPTS"); do
   git -C "$ROOT" rebase "$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET"
   candidate=$(git -C "$ROOT" rev-parse HEAD)
-  if [[ $candidate == "$GATED_SHA" ]]; then
-    am_log "reusing the full gate already passed by unchanged SHA $(git -C "$ROOT" rev-parse --short HEAD)"
+  if [[ $candidate == "$GATED_SHA" && $candidate == "$VALIDATED_SHA" ]]; then
+    am_log "reusing the local and trusted host gates already passed by unchanged SHA $(git -C "$ROOT" rev-parse --short HEAD)"
   else
-    am_log "re-running the gate because the rebased SHA changed to $(git -C "$ROOT" rev-parse --short HEAD)"
-    am_gate
-    GATED_SHA=$candidate
+    am_publish_validation_sha "$candidate"
+    validation_id=
+    if (( ! DRY_RUN )); then
+      validation_id=$(am_validation_request "$candidate") \
+        || am_die "could not create trusted host validation for rebased SHA $candidate"
+      [[ $validation_id =~ ^[1-9][0-9]*$ ]] \
+        || am_die "GitHub returned an invalid trusted validation deployment id"
+      am_log "requested trusted host validation for rebased SHA $candidate (deployment $validation_id)"
+    fi
+    if [[ $candidate == "$GATED_SHA" ]]; then
+      am_log "reusing the local full gate for $candidate while renewing trusted host validation"
+    else
+      am_log "re-running the local gate because the rebased SHA changed to $(git -C "$ROOT" rev-parse --short HEAD)"
+      am_gate
+      [[ $(git -C "$ROOT" rev-parse HEAD) == "$candidate" ]] \
+        || am_die "the rebased candidate SHA changed while its local gate ran"
+      GATED_SHA=$candidate
+    fi
+    if (( DRY_RUN )); then
+      VALIDATED_SHA=$candidate
+    elif am_wait_for_validation "$validation_id" "$candidate"; then
+      VALIDATED_SHA=$candidate
+    else
+      am_die "trusted host validation for rebased SHA $candidate $VALIDATION_FAILURE_DETAIL"
+    fi
   fi
+  [[ $candidate == "$GATED_SHA" && $candidate == "$VALIDATED_SHA" ]] \
+    || am_die "refusing to push a candidate that did not pass both exact-SHA gates"
   if (( DRY_RUN )); then
     am_log "dry run: would push $candidate to $AGENT_MERGE_TARGET"
     exit 0
