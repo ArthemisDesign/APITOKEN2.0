@@ -678,6 +678,11 @@ if (( ${#SHARED_PACKAGES[@]} > 0 )); then
   run_build 4 "${SHARED_PACKAGES[@]}"
 fi
 
+if (( ${#BUILD_CONTEXTS[@]} == 0 )); then
+  log 'all selected TypeScript contexts restored from complete artifacts'
+  exit 0
+fi
+
 CONTEXT_PIDS=()
 CONTEXT_LABELS=()
 start_context() {
@@ -730,8 +735,4 @@ trap - HUP INT TERM
 for context in "${BUILD_CONTEXTS[@]}"; do
   artifact_cache_save "$context"
 done
-if (( ${#BUILD_CONTEXTS[@]} == 0 )); then
-  log 'all selected TypeScript contexts restored from complete artifacts'
-else
-  log 'all selected TypeScript contexts built'
-fi
+log 'all selected TypeScript contexts built'
