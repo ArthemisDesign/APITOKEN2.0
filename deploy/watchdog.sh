@@ -181,26 +181,27 @@ status() {
 }
 
 github_phase_failure() {
-  local phase=$1
+  local phase=$1 diagnostic=${2:-"deployment failed closed at $1"}
   [[ -x $GITHUB_HELPER ]] || return 0
   if [[ -n $ACTIVE_DEPLOYMENT_ID ]]; then
     sudo -n "$GITHUB_HELPER" deployment-status "$ACTIVE_DEPLOYMENT_ID" failure \
-      "deployment failed closed at $phase" "$ACTIVE_DEPLOYMENT_ENV" "$ACTIVE_DEPLOYMENT_URL" \
+      "$diagnostic" "$ACTIVE_DEPLOYMENT_ENV" "$ACTIVE_DEPLOYMENT_URL" \
       >/dev/null 2>&1 || true
   fi
   case $phase in
-    testing) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/tests "Validation failed; production unchanged" >/dev/null 2>&1 || true ;;
-    migrating) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/migration "Migration failed; application deploy blocked" >/dev/null 2>&1 || true ;;
-    deploying-engine) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/engine "Engine rollout failed closed" >/dev/null 2>&1 || true ;;
-    deploying-backend) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/backend "Backend rollout failed closed" >/dev/null 2>&1 || true ;;
-    deploying-sales) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/sales "Sales rollout failed closed" >/dev/null 2>&1 || true ;;
-    deploying-openkeys) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/openkeys "OpenKeys rollout failed closed" >/dev/null 2>&1 || true ;;
+    testing) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/tests "$diagnostic" >/dev/null 2>&1 || true ;;
+    migrating) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/migration "$diagnostic" >/dev/null 2>&1 || true ;;
+    deploying-engine) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/engine "$diagnostic" >/dev/null 2>&1 || true ;;
+    deploying-backend) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/backend "$diagnostic" >/dev/null 2>&1 || true ;;
+    deploying-sales) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/sales "$diagnostic" >/dev/null 2>&1 || true ;;
+    deploying-openkeys) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/openkeys "$diagnostic" >/dev/null 2>&1 || true ;;
   esac
 }
 
 fail() {
   local rc=$? line=${BASH_LINENO[0]:-unknown}
   local failed_phase=${CURRENT_PHASE_BEFORE_FAILURE:-$CURRENT_PHASE}
+  local diagnostic
   # Clear first: this handler is registered on EXIT as well as ERR, and must never re-enter itself
   # when it exits below.
   trap - ERR EXIT INT TERM
@@ -226,10 +227,11 @@ fail() {
   wd_atomic_write "$REJECTED_FILE" "$CANDIDATE_SHA" 0644
   CURRENT_PHASE=failed
   status "command failed at line $line (exit $rc); candidate quarantined"
+  diagnostic="phase=$failed_phase; line=$line; exit=$rc; candidate quarantined"
   if [[ -x $GITHUB_HELPER ]]; then
-    github_phase_failure "$failed_phase"
+    github_phase_failure "$failed_phase" "$diagnostic"
     sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/watchdog \
-      "Production pipeline failed closed; inspect watchdog logs" >/dev/null 2>&1 || true
+      "$diagnostic" >/dev/null 2>&1 || true
   fi
   wd_warn "candidate ${CANDIDATE_SHA:-unknown} failed at line $line and will not be retried automatically"
   exit "$rc"
@@ -1075,19 +1077,27 @@ load_production_baselines() {
 }
 
 shadow_validation_exit() {
-  local rc=$1
+  local rc=$1 summary
   trap - ERR EXIT INT TERM
+
+  # Preserve the full mode-0600 validator transcript in journald while keeping the GitHub-facing
+  # diagnostic deliberately short and limited to known non-secret failure markers.
+  if [[ -f ${SHADOW_LOG_FILE:-} && ! -L ${SHADOW_LOG_FILE:-} ]]; then
+    cat -- "$SHADOW_LOG_FILE" >&8 || true
+  fi
   (( rc != 0 )) || return 0
 
   if (( TEST_DB_STARTED == 1 )); then
     test_db stop >/dev/null 2>&1 || true
   fi
+  summary=$(wd_validation_failure_summary "$SHADOW_LOG_FILE" "$rc" \
+    "${CURRENT_PHASE_BEFORE_FAILURE:-${CURRENT_PHASE:-unknown}}")
   sudo -n "$GITHUB_HELPER" deployment-status "$SHADOW_DEPLOYMENT_ID" failure \
-    "Trusted candidate validation failed; production unchanged" candidate-validation "" \
+    "$summary" candidate-validation "" \
     >/dev/null 2>&1 || true
   sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/tests \
-    "Trusted candidate validation failed; production unchanged" >/dev/null 2>&1 || true
-  wd_warn "trusted shadow validation failed for $CANDIDATE_SHA; production remains unchanged"
+    "$summary" >/dev/null 2>&1 || true
+  wd_warn "trusted shadow validation failed for $CANDIDATE_SHA: $summary; production remains unchanged" >&8 2>&8
   exit "$rc"
 }
 
@@ -1103,8 +1113,15 @@ run_shadow_candidate_validation() (
   local committed_master=$4 current_master
   CI_CARGO_TARGET="$CI_HOME/cargo-target-shadow-$TEST_DB_SLOT"
   STATUS_FILE="$STATE_ROOT/candidate-validation-$TEST_DB_SLOT.status"
+  SHADOW_LOG_FILE="$STATE_ROOT/candidate-validation-$TEST_DB_SLOT.log"
   VALIDATION_BASE_SHA=$committed_master
   TEST_DB_STARTED=0
+  exec 8>&1 9>&2
+  rm -f -- "$SHADOW_LOG_FILE"
+  umask 077
+  : >"$SHADOW_LOG_FILE"
+  chmod 0600 "$SHADOW_LOG_FILE"
+  exec >>"$SHADOW_LOG_FILE" 2>&1
   trap 'exit 130' INT
   trap 'exit 143' TERM
   trap 'shadow_validation_exit "$?"' EXIT

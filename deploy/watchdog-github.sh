@@ -48,6 +48,7 @@ case "${1:-}" in
     [[ $# -ge 6 && $# -le 7 ]] || { echo 'usage: deployment-status ID STATE DESCRIPTION ENVIRONMENT ENVIRONMENT_URL [LOG_URL]' >&2; exit 2; }
     [[ $2 =~ ^[1-9][0-9]*$ ]] || { echo 'invalid deployment id' >&2; exit 2; }
     [[ $3 =~ ^(error|failure|inactive|in_progress|queued|pending|success)$ ]] || { echo 'invalid deployment state' >&2; exit 2; }
+    ((${#4} <= 140)) || { echo 'description is too long' >&2; exit 2; }
     [[ $5 =~ ^(candidate-validation|production-(database|engine|backend|sales|openkeys))$ ]] || { echo 'invalid environment' >&2; exit 2; }
     body=$(jq -cn --arg state "$3" --arg description "$4" --arg environment "$5" \
       --arg environment_url "$6" --arg log_url "${7:-}" \

@@ -16,6 +16,21 @@ wd_die() {
   exit 1
 }
 
+# Produce a GitHub-safe, bounded diagnostic from a private validator transcript. Only known
+# failure markers are eligible; URLs/DSNs and common secret assignments are redacted defensively.
+wd_validation_failure_summary() {
+  [[ $# -eq 3 ]] || wd_die "validation failure summary requires log path, exit code, and phase"
+  local log_file=$1 rc=$2 phase=$3 detail=''
+  if [[ -f $log_file && ! -L $log_file ]]; then
+    detail=$(grep -E '\[watchdog\] ERROR:|ERR_PNPM|ELIFECYCLE|test lane\(s\) failed|migration failed|candidate lane failed' \
+      "$log_file" | tail -n 1 || true)
+    detail=$(printf '%s' "$detail" | sed -E \
+      $'s/\x1b\[[0-9;]*[[:alpha:]]//g; s#[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]+#URL_REDACTED#g; s/([A-Z_]*(TOKEN|KEY|SECRET|PASSWORD)[A-Z_]*)=[^[:space:]]+/\1=REDACTED/g; s/[[:cntrl:]]/ /g')
+  fi
+  [[ -n $detail ]] || detail="validator exited with code $rc"
+  printf 'phase=%s; %.100s' "$phase" "$detail"
+}
+
 wd_validate_sha() {
   [[ ${1:-} =~ ^[0-9a-f]{40}$ ]] || wd_die "expected a full 40-character lowercase commit SHA"
 }

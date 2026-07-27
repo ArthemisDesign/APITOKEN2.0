@@ -14,6 +14,22 @@ source "$ROOT/deploy/watchdog-lib.sh"
 TEMP=$(mktemp -d)
 trap 'rm -rf -- "$TEMP"' EXIT
 
+# Candidate diagnostics must identify the failing lane while never copying a DSN or credential to
+# GitHub's public commit/deployment status descriptions.
+diagnostic_log="$TEMP/candidate.log"
+printf '%s\n' \
+  '[watchdog] ERROR: TypeScript candidate lane failed (exit 1) postgresql://user:pass@db/openkeys ENGINE_CONTROL_KEY=super-secret' \
+  >"$diagnostic_log"
+diagnostic=$(wd_validation_failure_summary "$diagnostic_log" 1 testing)
+[[ $diagnostic == *'phase=testing'* && $diagnostic == *'TypeScript candidate lane failed'* ]] \
+  || wd_die "candidate diagnostic lost its phase or lane: $diagnostic"
+[[ $diagnostic != *'user:pass'* && $diagnostic != *'super-secret'* \
+    && $diagnostic == *'URL_REDACTED'* && $diagnostic == *'REDACTED'* ]] \
+  || wd_die "candidate diagnostic leaked a secret or skipped redaction: $diagnostic"
+empty_diagnostic=$(wd_validation_failure_summary "$TEMP/missing.log" 7 shadow-validation)
+[[ $empty_diagnostic == 'phase=shadow-validation; validator exited with code 7' ]] \
+  || wd_die "candidate diagnostic fallback is unstable: $empty_diagnostic"
+
 # Controller-only handoff uses exec, so the new process must retain the same open-file-description
 # lock rather than reacquiring by pathname. Exercise that Linux contract when flock/procfs exist.
 if command -v flock >/dev/null 2>&1 && [[ -d /proc/$$/fd ]]; then
@@ -1707,6 +1723,15 @@ for required_stage in "${shadow_contract[@]}"; do
 done
 shadow_body=$(sed -n '/^shadow_validation_exit()/,/^final_verify_engine()/p' \
   "$ROOT/deploy/watchdog.sh")
+grep -Fq 'wd_validation_failure_summary "$SHADOW_LOG_FILE" "$rc"' <<<"$shadow_body" \
+  || wd_die 'trusted candidate failures are published without a diagnostic summary'
+grep -Fq 'candidate-validation-$TEST_DB_SLOT.log' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'trusted candidate validation does not retain its bounded slot transcript'
+grep -Fq 'selected?.description' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the merge client discards trusted-host failure descriptions'
+grep -Fq 'diagnostic="phase=$failed_phase; line=$line; exit=$rc; candidate quarantined"' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'production failures do not publish their phase, line, and exit code'
 if grep -Fq 'REJECTED_FILE' <<<"$shadow_body"; then
   wd_die 'a failed feature validation can quarantine production'
 fi

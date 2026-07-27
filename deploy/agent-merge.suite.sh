@@ -198,10 +198,20 @@ GATE_STUB="printf gate >>$host_gate_log" VALIDATION_STATUS_STUB='printf failure'
   || wd_die 'a host-rejected feature SHA still reached master'
 [[ ! -d $TEMP/lock ]] || wd_die 'a failed trusted host gate reached the merge lock'
 
+# The host's bounded, sanitized failure reason must reach the agent instead of collapsing into a
+# generic red verdict that forces blind retries with new SHAs.
+VALIDATION_STATUS_STUB=$'printf "failure\tphase=testing; TypeScript candidate lane failed (exit 1)"' \
+  expect_failure 'an explained trusted host failure' \
+    'phase=testing; TypeScript candidate lane failed (exit 1)' run_merge "$tree_a"
+
 # --- production is checked before the expensive gate ---------------------------------------------
 preflight_gate_log=$TEMP/preflight-gate.log
 GATE_STUB="printf gate >>$preflight_gate_log" STATUS_STUB='printf failure' \
   expect_failure 'stacking onto a red master' 'is RED' run_merge "$tree_a"
+GATE_STUB="printf gate >>$preflight_gate_log" \
+  STATUS_STUB=$'printf "failure\tphase=migrating; line=1684; exit=1; candidate quarantined"' \
+  expect_failure 'an explained red master' \
+    'phase=migrating; line=1684; exit=1; candidate quarantined' run_merge "$tree_a"
 [[ ! -s $preflight_gate_log ]] || wd_die 'the full gate ran before the existing deployment was checked'
 GATE_STUB="printf gate >>$preflight_gate_log" STATUS_STUB='printf pending' \
   expect_failure 'pushing before a deploying parent is green' 'could not verify a green' \

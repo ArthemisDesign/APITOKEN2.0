@@ -314,13 +314,28 @@ process.stdin.on("end", () => {
   try {
     const payload = JSON.parse(raw);
     const verdict = (payload.statuses || []).find((s) => s.context === required);
-    process.stdout.write(verdict ? String(verdict.state) : "pending");
+    const state = verdict ? String(verdict.state) : "pending";
+    const description = String(verdict?.description || "").replace(/[\t\r\n]/g, " ");
+    process.stdout.write(`${state}\t${description}`);
   } catch { process.stdout.write("unknown"); }
 });
 ' "$AGENT_MERGE_REQUIRED_CONTEXT" 2>/dev/null || printf 'unknown'
 header = "Authorization: Bearer $token"
 header = "Accept: application/vnd.github+json"
 EOF
+}
+
+AM_STATUS_STATE=
+AM_STATUS_DESCRIPTION=
+am_read_status() {
+  local result
+  result=$(am_status "$1")
+  AM_STATUS_STATE=${result%%$'\t'*}
+  AM_STATUS_DESCRIPTION=
+  if [[ $result != "$AM_STATUS_STATE" ]]; then
+    AM_STATUS_DESCRIPTION=${result#*$'\t'}
+  fi
+  return 0
 }
 
 am_validation_request() {
@@ -391,8 +406,12 @@ process.stdin.on("end", () => {
     const states = statuses.map((status) => String(status.state || ""));
     // A later successful request may auto-inactivate an older environment deployment. An exact
     // deployment that recorded success still passed even if its newest status is now inactive.
-    if (states.includes("success")) process.stdout.write("success");
-    else process.stdout.write(states[0] || "queued");
+    let selected;
+    if (states.includes("success")) selected = statuses.find((status) => status.state === "success");
+    else selected = statuses[0];
+    const state = String(selected?.state || "queued");
+    const description = String(selected?.description || "").replace(/[\t\r\n]/g, " ");
+    process.stdout.write(`${state}\t${description}`);
   } catch { process.stdout.write("unknown"); }
 });
 ' <<<"$response" 2>/dev/null || printf 'unknown'
@@ -400,17 +419,22 @@ process.stdin.on("end", () => {
 
 VALIDATION_FAILURE_DETAIL=
 am_wait_for_validation() {
-  local deployment_id=$1 sha=$2 waited=0 verdict
+  local deployment_id=$1 sha=$2 waited=0 result verdict description
   VALIDATION_FAILURE_DETAIL=
   while (( waited < AGENT_MERGE_DEPLOY_WAIT_S )); do
-    verdict=$(am_validation_status "$deployment_id")
+    result=$(am_validation_status "$deployment_id")
+    verdict=${result%%$'\t'*}
+    description=
+    if [[ $result != "$verdict" ]]; then
+      description=${result#*$'\t'}
+    fi
     case "$verdict" in
       success)
         am_log "trusted host validation is GREEN for $sha (deployment $deployment_id)"
         return 0
         ;;
       failure|error|inactive)
-        VALIDATION_FAILURE_DETAIL="reported $verdict"
+        VALIDATION_FAILURE_DETAIL="reported $verdict${description:+: $description}"
         return 1
         ;;
       queued|pending|in_progress)
@@ -447,7 +471,8 @@ am_publish_validation_sha() {
 am_require_target_gateable() {
   local sha=$1 waited=0 verdict
   while (( waited < AGENT_MERGE_DEPLOY_WAIT_S )); do
-    verdict=$(am_status "$sha")
+    am_read_status "$sha"
+    verdict=$AM_STATUS_STATE
     case "$verdict" in
       success)
         am_log "$AGENT_MERGE_REQUIRED_CONTEXT is GREEN for existing $AGENT_MERGE_TARGET $sha"
@@ -465,7 +490,7 @@ am_require_target_gateable() {
           am_log "WARNING: $AGENT_MERGE_TARGET is RED at $sha; proceeding because --fix-red was given"
           return
         fi
-        am_die "$AGENT_MERGE_TARGET is RED at $sha: land the repair for that failure with
+        am_die "$AGENT_MERGE_TARGET is RED at $sha${AM_STATUS_DESCRIPTION:+: $AM_STATUS_DESCRIPTION}: land the repair for that failure with
   --fix-red, or wait. Never stack unrelated work on a red target, and never retry the red SHA."
         ;;
       unknown)
@@ -485,7 +510,8 @@ am_require_target_gateable() {
 am_wait_for_target_ready() {
   local sha=$1 waited=0 verdict
   while (( waited < AGENT_MERGE_DEPLOY_WAIT_S )); do
-    verdict=$(am_status "$sha")
+    am_read_status "$sha"
+    verdict=$AM_STATUS_STATE
     case "$verdict" in
       success)
         am_log "$AGENT_MERGE_REQUIRED_CONTEXT is GREEN for existing $AGENT_MERGE_TARGET $sha"
@@ -497,7 +523,7 @@ am_wait_for_target_ready() {
           am_log "WARNING: $AGENT_MERGE_TARGET is RED at $sha; proceeding because --fix-red was given"
           return
         fi
-        am_die "$AGENT_MERGE_TARGET is RED at $sha: land the repair for that failure with
+        am_die "$AGENT_MERGE_TARGET is RED at $sha${AM_STATUS_DESCRIPTION:+: $AM_STATUS_DESCRIPTION}: land the repair for that failure with
   --fix-red, or wait. Never stack unrelated work on a red target, and never retry the red SHA." ;;
       pending)
         am_log "$AGENT_MERGE_TARGET is still deploying at $sha; waiting for $AGENT_MERGE_REQUIRED_CONTEXT autonomously (${waited}s)" ;;
@@ -674,12 +700,13 @@ am_log "pushed $pushed to $AGENT_MERGE_TARGET"
 # --- hold the lock until our own deployment settles ----------------------------------------------
 waited=0
 while (( waited < AGENT_MERGE_DEPLOY_WAIT_S )); do
-  case "$(am_status "$pushed")" in
+  am_read_status "$pushed"
+  case "$AM_STATUS_STATE" in
     success)
       am_log "deploy/watchdog is GREEN for $pushed"
       exit 0 ;;
     failure|error)
-      am_die "deploy/watchdog is RED for $pushed: fix it on a NEW branch with a NEW commit;
+      am_die "deploy/watchdog is RED for $pushed${AM_STATUS_DESCRIPTION:+: $AM_STATUS_DESCRIPTION}: fix it on a NEW branch with a NEW commit;
   never retry this SHA" ;;
     unknown)
       am_log "deployment-status lookup for $pushed is temporarily unavailable; retrying autonomously (${waited}s)" ;;
