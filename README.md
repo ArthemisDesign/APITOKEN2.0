@@ -131,8 +131,9 @@ Watchdog автоматически создаёт Redis/affinity secrets и у�
 [`apitoken-affinity-redis.service`](systemd/apitoken-affinity-redis.service).
 
 Опциональный pinned `codex app-server` транспорт для строгого OpenAI-compatible text subset
-описан в [`docs/CODEX_APP_SERVER.md`](docs/CODEX_APP_SERVER.md). Он выключен по умолчанию и не
-изменяет существующий Claude-маршрут.
+доступен только через `https://openai.api.apitoken.sale/v1` и описан в
+[`docs/CODEX_APP_SERVER.md`](docs/CODEX_APP_SERVER.md). Он выключен по умолчанию и не изменяет
+существующий Claude-маршрут на `https://api.apitoken.sale`.
 
 ## Безопасность
 

@@ -56,6 +56,17 @@
 (engine_backend) {
 	reverse_proxy 127.0.0.1:8790 {
 		header_up Host 127.0.0.1:8790
+		header_up -X-Apitoken-Api-Plane
+	}
+}
+
+# The OpenAI-compatible hostname shares the health-gated engine slots but carries an internal
+# provider marker. The ordinary engine backend above always strips a client-spoofed marker, so
+# authentication headers can never switch api.apitoken.sale away from Claude.
+(openai_engine_backend) {
+	reverse_proxy 127.0.0.1:8790 {
+		header_up Host 127.0.0.1:8790
+		header_up X-Apitoken-Api-Plane openai
 	}
 }
 
@@ -89,6 +100,14 @@ api.apitoken.sale {
 	@public_core path /v1/* /health /balance
 	handle @public_core {
 		import engine_backend
+	}
+	respond 404
+}
+
+openai.api.apitoken.sale {
+	@public_core path /v1/* /health /balance
+	handle @public_core {
+		import openai_engine_backend
 	}
 	respond 404
 }

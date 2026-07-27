@@ -14,7 +14,9 @@
 
 **Что внутри:**
 - `config.rs` — `Settings` (db_path/bind/fleet/Redis affinity + `ProxyConfig`) из env.
-- `http.rs` — роутер: `/health`, `/pool`, `/balance`, `/capacity` (управляющие) + `/admin-panel`
+- `http.rs` — роутер: `/health`, `/pool`, `/balance`, `/capacity` (управляющие) +
+  hostname-selected Claude/OpenAI API plane (trusted marker from Caddy; client auth headers never
+  choose a provider) + `/admin-panel`
   (единый `admin-panel.html` для admin.apitoken.sale; архитектура — корневой `PANEL.md`) +
   `/admin/*` (control-плоскость,
   см. `admin.rs`) + fallback на `forward::forward`. Выпуск ключа возвращает не-секретный `key_id`,

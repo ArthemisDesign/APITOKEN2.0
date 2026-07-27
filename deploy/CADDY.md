@@ -65,8 +65,11 @@ A `503` returned by a normal proxied request is returned only to that caller and
 
 ## Engine blue-green and SSE
 
-`api.apitoken.sale` and the unified admin proxy use only the stable `127.0.0.1:8790` engine
-balancer. That balancer alone knows health-gated slots `127.0.0.1:8787` and `127.0.0.1:8788`.
+`api.apitoken.sale`, `openai.api.apitoken.sale`, and the unified admin proxy use only the stable
+`127.0.0.1:8790` engine balancer. That balancer alone knows health-gated slots
+`127.0.0.1:8787` and `127.0.0.1:8788`. Caddy strips the internal API-plane marker from
+`api.apitoken.sale` and injects it only for `openai.api.apitoken.sale`; client authentication
+headers never select the provider.
 Caddy probes `/ready`; `engine-bluegreen.sh` admits the new
 slot, sends `SIGUSR1` to make the old slot return 503 readiness, waits for depooling, then sends
 SIGTERM so established streams drain under the systemd deadline.
@@ -85,7 +88,8 @@ The retry window applies only while Caddy is selecting and connecting to an upst
 - an orderly blue-green drain leaves an established SSE on the old process until completion;
 - an ungraceful process death still disconnects that stream and requires client/application retry.
 
-The public engine matcher remains restricted to `/v1/*`, `/health`, and `/balance`; all other paths on `api.apitoken.sale` return `404`.
+Both public engine matchers remain restricted to `/v1/*`, `/health`, and `/balance`; all other
+paths on `api.apitoken.sale` and `openai.api.apitoken.sale` return `404`.
 
 ## References
 

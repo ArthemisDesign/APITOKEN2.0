@@ -589,6 +589,7 @@ final_verify_codex_surface() {
   # is trusted as an admin. An unauthenticated engine answers `invalid_api_key` for the same reason.
   envelope=$(curl --noproxy '*' --silent --show-error --max-time 5 \
     -H 'content-type: application/json' \
+    -H 'X-Apitoken-Api-Plane: openai' \
     -d '{"model":"gpt-5.6","input":"ping","temperature":0.5}' \
     http://127.0.0.1:8790/v1/responses 2>/dev/null || true)
   jq --exit-status '.error.type == "invalid_request_error"

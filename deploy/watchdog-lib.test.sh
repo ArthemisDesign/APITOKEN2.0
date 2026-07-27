@@ -246,6 +246,8 @@ if wd_path_is_caddy deploy/watchdog.sh; then
 fi
 
 grep -Fq 'admin.apitoken.sale {' "$ROOT/deploy/Caddyfile"
+grep -Fq 'api.apitoken.sale {' "$ROOT/deploy/Caddyfile"
+grep -Fq 'openai.api.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'admin.partners.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'crm.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'content-studio.apitoken.sale {' "$ROOT/deploy/Caddyfile"
@@ -272,6 +274,15 @@ grep -Fq 'order request_header before forward_auth' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up Host 127.0.0.1:8791' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up X-Admin-Key "<ADMIN_AUTH_KEY_PLACEHOLDER>"' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up X-Admin-Domain {http.request.host}' "$ROOT/deploy/Caddyfile"
+[[ $(grep -Fc 'header_up -X-Apitoken-Api-Plane' "$ROOT/deploy/Caddyfile") == 1 ]]
+[[ $(grep -Fc 'header_up X-Apitoken-Api-Plane openai' "$ROOT/deploy/Caddyfile") == 1 ]]
+[[ $(grep -Fc 'import openai_engine_backend' "$ROOT/deploy/Caddyfile") == 1 ]]
+claude_api_vhost=$(sed -n '/^api\.apitoken\.sale {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
+openai_api_vhost=$(sed -n '/^openai\.api\.apitoken\.sale {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
+grep -Fq 'import engine_backend' <<<"$claude_api_vhost"
+! grep -Fq 'openai_engine_backend' <<<"$claude_api_vhost"
+grep -Fq 'import openai_engine_backend' <<<"$openai_api_vhost"
+grep -Fq -- "-H 'X-Apitoken-Api-Plane: openai'" "$ROOT/deploy/watchdog.sh"
 grep -Fq '@commerce_admin path /admin/*' "$ROOT/deploy/Caddyfile"
 grep -Fq 'handle_path /partner-admin/*' "$ROOT/deploy/Caddyfile"
 grep -Fq 'copy_headers X-Admin-Actor X-Admin-Account-Id' "$ROOT/deploy/Caddyfile"

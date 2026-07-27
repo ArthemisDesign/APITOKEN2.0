@@ -65,10 +65,12 @@
 - **Claude: форвардинг, а не CLI.** Прокси шлёт сырой HTTP на api.anthropic.com на OAuth-токене
   подписки — поэтому Claude-ответ идёт байт-в-байт, в отличие от CLI-обёртки.
 - **Codex: отдельная строгая граница.** Опциональные `/v1/responses`, `/v1/chat/completions` и
-  OpenAI model-discovery проходят через pinned official `codex app-server`; это совместимый
-  текстовый subset, а не прозрачный OpenAI Platform forwarding. Патч удаляет локальные Codex
-  instructions/tools/context, оставляя только явный клиентский контекст. Transport не читает auth
-  store, требует ChatGPT account type, attests binary SHA/version и не меняет Claude path.
+  OpenAI model-discovery на `openai.api.apitoken.sale` проходят через pinned official
+  `codex app-server`; это совместимый текстовый subset, а не прозрачный OpenAI Platform forwarding.
+  `api.apitoken.sale` остаётся исключительно Claude-плоскостью: auth-заголовки провайдера не
+  выбирают. Патч удаляет локальные Codex instructions/tools/context, оставляя только явный
+  клиентский контекст. Transport не читает auth store, требует ChatGPT account type, attests binary
+  SHA/version и не меняет Claude path.
 - **Identity-инжект** — цена работы на подписочном токене; вынесен в конфиг, тюнится без пересборки.
 - **Ротация до стрима** — статус ответа проверяется до отдачи тела, поэтому переключение подписок
   при 429/5xx не рвёт клиентский стрим.

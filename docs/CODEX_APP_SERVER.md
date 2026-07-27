@@ -3,7 +3,9 @@
 ## Scope and compatibility boundary
 
 The optional Codex provider runs the official OpenAI `codex app-server` as a supervised local
-JSON-RPC child. It exposes a deliberately strict, SDK-compatible text subset:
+JSON-RPC child. Its public base URL is `https://openai.api.apitoken.sale/v1`; the existing
+`https://api.apitoken.sale` hostname remains exclusively Anthropic-compatible. It exposes a
+deliberately strict, SDK-compatible text subset:
 
 | Public route | Status |
 |---|---|
@@ -16,9 +18,9 @@ Images, video, audio, embeddings, batches, files, assistants, fine-tuning, WebSo
 stored-response retrieval and administrative OpenAI Platform endpoints are not implemented.
 Unsupported descendants of the implemented surfaces, including `/v1/responses/compact`,
 `/v1/responses/input_tokens`, stored-response retrieval/cancel/input-items routes and nested Chat
-Completions paths, return an OpenAI-shaped `404` for normal OpenAI requests. Known unsupported
-OpenAI route families are also rejected locally instead of being sent to Anthropic. Only a request
-carrying an explicit Anthropic protocol header preserves the pre-existing Claude fallback.
+Completions paths, return an OpenAI-shaped `404`. Every other route on the OpenAI-compatible
+hostname is also rejected locally instead of being sent to Anthropic. Only a request sent to that
+hostname enters this provider; authentication headers never select a provider.
 Sampling/output controls that app-server cannot enforce are rejected as OpenAI-shaped `400` errors
 instead of being silently ignored. In particular, non-default `temperature`, `top_p`, token caps,
 `stop`, penalties, logprobs, `seed`, and multi-choice output are not accepted.
@@ -189,10 +191,11 @@ lower-case spellings, may reach the child. No custom TLS fingerprinting, user-ag
 private endpoint replay is used. A proxy therefore changes network egress but does not impersonate
 another OpenAI client.
 
-The shared `/v1/models` path chooses the OpenAI-compatible catalog for Bearer-authenticated OpenAI
-clients. Existing Anthropic clients remain on the Claude path when they send Anthropic protocol
-headers or use `x-api-key` without a Bearer header. Model objects use `owned_by: "apitoken"` and do
-not falsely claim OpenAI ownership.
+The `/v1/models` path on `openai.api.apitoken.sale` returns the OpenAI-compatible catalog.
+The same path on `api.apitoken.sale`, like every other path on that hostname, preserves the original
+Anthropic contract regardless of whether the client authenticates with `x-api-key`,
+`Authorization: Bearer`, or both. Model objects use `owned_by: "apitoken"` and do not falsely claim
+OpenAI ownership.
 
 ## Usage, rate limits and billing
 

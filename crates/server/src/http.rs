@@ -22,6 +22,10 @@ use std::sync::Arc;
 
 /// Unified self-contained administration UI. Data is routed by the admin Caddy vhost.
 const ADMIN_PANEL_HTML: &str = include_str!("admin-panel.html");
+/// Caddy removes this internal marker on the Claude hostname and sets it only for
+/// `openai.api.apitoken.sale`. Provider selection must never depend on client auth headers.
+const API_PLANE_HEADER: &str = "x-apitoken-api-plane";
+const OPENAI_API_PLANE: &[u8] = b"openai";
 
 /// TTL-кэш дашборд-эндпоинтов: панель поллит /overview и /capacity, а они делают O(n)-скан
 /// (capacity() под пул-локом + billing_totals full-scan). Кэш на 2с → при N поллерах пересчёт
@@ -102,9 +106,9 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             "/admin/account/{account_id}/key-id/{key_id}/policy",
             post(admin::key_policy_by_id),
         )
-        // OpenAI-compatible text surface backed by the official Codex app-server. These
-        // dispatchers preserve the exact legacy Claude fallback while Codex is disabled and
-        // disambiguate the shared `/v1/models` namespace by documented client headers.
+        // OpenAI-compatible text surface backed by the official Codex app-server. Caddy marks
+        // requests from openai.api.apitoken.sale; every unmarked request preserves the exact
+        // legacy Claude fallback, regardless of its authentication headers.
         .route("/v1/responses", post(responses_dispatch))
         .route(
             "/v1/responses/{*rest}",
@@ -121,14 +125,10 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
         .with_state(HttpState { app, accepting })
 }
 
-fn explicitly_anthropic(headers: &HeaderMap) -> bool {
-    headers.contains_key("anthropic-version") || headers.contains_key("anthropic-beta")
-}
-
-fn prefers_anthropic(headers: &HeaderMap) -> bool {
-    explicitly_anthropic(headers)
-        || (headers.contains_key("x-api-key")
-            && !headers.contains_key(axum::http::header::AUTHORIZATION))
+fn is_openai_plane(headers: &HeaderMap) -> bool {
+    headers
+        .get(API_PLANE_HEADER)
+        .is_some_and(|value| value.as_bytes() == OPENAI_API_PLANE)
 }
 
 async fn responses_dispatch(
@@ -136,7 +136,7 @@ async fn responses_dispatch(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: axum::extract::Request,
 ) -> Response {
-    if app.codex.is_none() {
+    if !is_openai_plane(request.headers()) {
         return forward(State(app), ConnectInfo(peer), request).await;
     }
     openai_responses(State(app), ConnectInfo(peer), request).await
@@ -147,7 +147,7 @@ async fn chat_completions_dispatch(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: axum::extract::Request,
 ) -> Response {
-    if app.codex.is_none() {
+    if !is_openai_plane(request.headers()) {
         return forward(State(app), ConnectInfo(peer), request).await;
     }
     openai_chat_completions(State(app), ConnectInfo(peer), request).await
@@ -158,7 +158,7 @@ async fn models_dispatch(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: axum::extract::Request,
 ) -> Response {
-    if app.codex.is_none() || prefers_anthropic(request.headers()) {
+    if !is_openai_plane(request.headers()) {
         return forward(State(app), ConnectInfo(peer), request).await;
     }
     openai_models(State(app), ConnectInfo(peer), request.headers().clone()).await
@@ -170,7 +170,7 @@ async fn model_dispatch(
     Path(model_id): Path<String>,
     request: axum::extract::Request,
 ) -> Response {
-    if app.codex.is_none() || prefers_anthropic(request.headers()) {
+    if !is_openai_plane(request.headers()) {
         return forward(State(app), ConnectInfo(peer), request).await;
     }
     openai_model(
@@ -187,10 +187,7 @@ async fn unsupported_openai_subroute_dispatch(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: axum::extract::Request,
 ) -> Response {
-    // An x-api-key without Anthropic protocol headers is still a valid gateway credential for an
-    // OpenAI-shaped request. Only explicit Anthropic protocol markers may preserve the legacy
-    // fallback for these otherwise unambiguously OpenAI route prefixes.
-    if app.codex.is_none() || explicitly_anthropic(request.headers()) {
+    if !is_openai_plane(request.headers()) {
         return forward(State(app), ConnectInfo(peer), request).await;
     }
     (
@@ -205,10 +202,7 @@ async fn provider_fallback_dispatch(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: axum::extract::Request,
 ) -> Response {
-    if app.codex.is_some()
-        && is_known_openai_route_family(request.uri().path())
-        && !explicitly_anthropic(request.headers())
-    {
+    if is_openai_plane(request.headers()) {
         return (
             StatusCode::NOT_FOUND,
             Json(unsupported_openai_endpoint_error()),
@@ -216,40 +210,6 @@ async fn provider_fallback_dispatch(
             .into_response();
     }
     forward(State(app), ConnectInfo(peer), request).await
-}
-
-fn is_known_openai_route_family(path: &str) -> bool {
-    let Some(root) = path
-        .strip_prefix("/v1/")
-        .and_then(|path| path.split('/').next())
-    else {
-        return false;
-    };
-    matches!(
-        root,
-        "assistants"
-            | "audio"
-            | "batches"
-            | "chat"
-            | "completions"
-            | "containers"
-            | "edits"
-            | "embeddings"
-            | "evals"
-            | "files"
-            | "fine_tuning"
-            | "images"
-            | "models"
-            | "moderations"
-            | "organization"
-            | "projects"
-            | "realtime"
-            | "responses"
-            | "threads"
-            | "uploads"
-            | "vector_stores"
-            | "videos"
-    )
 }
 
 fn unsupported_openai_endpoint_error() -> serde_json::Value {
@@ -1154,27 +1114,26 @@ mod tests {
     }
 
     #[test]
-    fn shared_models_route_preserves_x_api_key_anthropic_clients() {
+    fn api_plane_is_hostname_selected_and_auth_header_agnostic() {
         let mut headers = HeaderMap::new();
-        assert!(!prefers_anthropic(&headers));
+        assert!(!is_openai_plane(&headers));
 
         headers.insert(
             axum::http::header::AUTHORIZATION,
             "Bearer customer-key".parse().unwrap(),
         );
-        assert!(!prefers_anthropic(&headers));
+        assert!(!is_openai_plane(&headers));
 
         headers.insert("x-api-key", "customer-key".parse().unwrap());
-        assert!(!prefers_anthropic(&headers));
-
-        headers.remove(axum::http::header::AUTHORIZATION);
-        assert!(prefers_anthropic(&headers));
-        assert!(!explicitly_anthropic(&headers));
-
-        headers.clear();
         headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
-        assert!(prefers_anthropic(&headers));
-        assert!(explicitly_anthropic(&headers));
+        headers.insert("anthropic-beta", "test-feature".parse().unwrap());
+        assert!(!is_openai_plane(&headers));
+
+        headers.insert(API_PLANE_HEADER, "anthropic".parse().unwrap());
+        assert!(!is_openai_plane(&headers));
+
+        headers.insert(API_PLANE_HEADER, "openai".parse().unwrap());
+        assert!(is_openai_plane(&headers));
     }
 
     #[test]
@@ -1190,31 +1149,6 @@ mod tests {
         assert!(!serialized.contains("app-server"));
         assert!(!serialized.contains("ChatGPT"));
         assert!(!serialized.contains("Anthropic"));
-    }
-
-    #[test]
-    fn known_unsupported_openai_families_never_match_anthropic_messages() {
-        for path in [
-            "/v1/embeddings",
-            "/v1/images/generations",
-            "/v1/audio/transcriptions",
-            "/v1/files",
-            "/v1/batches/batch_1",
-            "/v1/assistants",
-            "/v1/responses/resp_1",
-            "/v1/completions",
-        ] {
-            assert!(is_known_openai_route_family(path), "{path}");
-        }
-        for path in [
-            "/v1/messages",
-            "/v1/messages/count_tokens",
-            "/admin/dashboard",
-            "/ready",
-            "/unknown",
-        ] {
-            assert!(!is_known_openai_route_family(path), "{path}");
-        }
     }
 
     #[test]
