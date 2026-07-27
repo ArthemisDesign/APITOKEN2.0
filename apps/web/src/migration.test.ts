@@ -197,10 +197,14 @@ describe("completed Next.js migration", () => {
     expect(dashboardCopy).toContain('navOverview: "Overview"');
     expect(dashboardCopy).toContain('navOverview: "Обзор"');
     expect(dashboard).toContain("user.totpEnabled");
-    expect(dashboard).toContain('className="overview-core"');
+    expect(dashboard).toContain('className="overview-primary-grid"');
+    expect(dashboard).toContain('className="overview-metrics-grid"');
+    expect(dashboard).toContain('className="card overview-activity"');
     expect(dashboard).toContain("officialBalance");
-    expect(dashboardCopy).toContain('platformBalance: "Platform balance"');
-    expect(dashboardCopy).toContain('platformBalance: "Баланс платформы"');
+    expect(dashboardCopy).toContain('platformBalance: "Available credit"');
+    expect(dashboardCopy).toContain('platformBalance: "Доступный баланс"');
+    expect(dashboardCopy).toContain('usageLast30Days: "Usage · 30 days"');
+    expect(dashboardCopy).toContain('usageLast30Days: "Использование · 30 дней"');
     expect(dashboard).not.toContain('title="API keys" subtitle="Create and revoke keys"');
   });
 

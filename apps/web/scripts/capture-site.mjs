@@ -113,6 +113,7 @@ const siteCaptures = [
 const dashboardCaptures = [
   ["dashboard-overview-light", "/dashboard", 1440, 1000, "light"],
   ["dashboard-overview-dark", "/dashboard", 1440, 1000, "dark"],
+  ["dashboard-overview-russian-light", "/dashboard", 1440, 1000, "light", "ru"],
   ["dashboard-overview-russian", "/dashboard", 1440, 1000, "dark", "ru"],
   ["dashboard-keys-light", "/dashboard?view=keys", 1440, 1000, "light"],
   ["dashboard-keys-dark", "/dashboard?view=keys", 1440, 1000, "dark"],
@@ -137,6 +138,7 @@ const dashboardCaptures = [
   ["dashboard-profile-dark", "/dashboard?view=profile", 1440, 1000, "dark"],
   ["dashboard-overview-mobile", "/dashboard", 390, 844, "light"],
   ["dashboard-overview-mobile-dark", "/dashboard", 390, 844, "dark"],
+  ["dashboard-overview-mobile-russian-light", "/dashboard", 390, 844, "light", "ru"],
   ["dashboard-overview-mobile-russian", "/dashboard", 390, 844, "dark", "ru"],
   ["dashboard-keys-mobile-light", "/dashboard?view=keys", 390, 844, "light"],
   ["dashboard-keys-tablet-light", "/dashboard?view=keys", 820, 1000, "light"],

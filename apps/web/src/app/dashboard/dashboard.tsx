@@ -271,7 +271,7 @@ export function Dashboard() {
 
   const usableKeys = keys.filter((key) => isApiKeyUsable(key, policyNow));
   const sourceNotices: Array<{ source: OptionalDataSource; message: string; pending: boolean }> = [];
-  if (section === "overview" || section === "keys") {
+  if (section === "keys") {
     if (dataPending.keys) sourceNotices.push({ source: "keys", message: copy.keysDataLoading, pending: true });
     else if (dataErrors.keys) sourceNotices.push({ source: "keys", message: copy.keysDataUnavailable, pending: false });
   }
@@ -309,18 +309,29 @@ export function Dashboard() {
     <main className="app-main">
       <header className="app-top"><button className="app-burger" onClick={() => setSideOpen(true)} aria-label={copy.menu}>☰</button><div className="app-top-h"><div className="app-title">{copy[navigation.find((item) => item.section === section)?.label ?? "navOverview"]}</div></div>
         <div className="app-top-actions">
-          <button className="app-top-bal" onClick={() => open("credits")} title={copy.navTopUp}>
+          {section === "overview" ? <button className="btn btn-primary btn-sm app-top-up" onClick={() => open("credits")}>{copy.topUp}</button> : <button className="app-top-bal" onClick={() => open("credits")} title={copy.navTopUp}>
             <span className="atb-ic" aria-hidden="true" />
             <span className="atb-label">{copy.creditsLabel}</span>
             <span className={`atb-val${BigInt(account.balanceNano) < 0n ? " atb-neg" : ""}`}>{formatNanoUsd(account.balanceNano)}</span>
-          </button>
+          </button>}
         </div>
       </header>
       <div className="app-body-in">
         {error && <div className="banner banner-error">{error} <button className="btn btn-ghost btn-sm" onClick={load}>{copy.retry}</button></div>}
         {logoutError && <div className="banner banner-error">{logoutError} <button className="btn btn-ghost btn-sm" disabled={loggingOut} onClick={logout}>{copy.retry}</button></div>}
         {sourceNotices.map((notice) => <div className={`banner dashboard-data-notice${notice.pending ? "" : " banner-error"}`} role="status" key={notice.source}><span>{notice.message}</span>{!notice.pending && <button className="btn btn-ghost btn-sm" onClick={() => void retryOptional(notice.source)}>{copy.retry}</button>}</div>)}
-        {section === "overview" && <Overview account={account} user={user} usableKeys={usableKeys} totalKeys={keys.length} keysAvailable={!dataPending.keys && !dataErrors.keys} open={open} />}
+        {section === "overview" && <Overview
+          account={account}
+          user={user}
+          usableKeys={usableKeys}
+          totalKeys={keys.length}
+          keysState={dataPending.keys ? "loading" : dataErrors.keys ? "unavailable" : "ready"}
+          usage={usage}
+          usageState={dataPending.usage ? "loading" : dataErrors.usage ? "unavailable" : "ready"}
+          ledger={ledger}
+          ledgerState={dataPending.ledger ? "loading" : dataErrors.ledger ? "unavailable" : "ready"}
+          open={open}
+        />}
         {section === "keys" && !dataPending.keys && !dataErrors.keys && <ApiKeys keys={keys} onChanged={() => retryOptional("keys", false)} user={user} />}
         {section === "credits" && <Credits account={account} ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
         {section === "usage" && usage && <Usage account={account} ledger={ledger} usage={usage} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
@@ -340,53 +351,165 @@ function PageHeading({ eyebrow, title, subtitle }: { eyebrow: string; title: str
   return <header className="page-heading"><span className="eyebrow">{eyebrow}</span><h1 className="p-h1">{title}</h1><p className="p-sub">{subtitle}</p></header>;
 }
 
-function Overview({ account, user, usableKeys, totalKeys, keysAvailable, open }: {
+type OverviewDataState = "loading" | "unavailable" | "ready";
+
+function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usageState, ledger, ledgerState, open }: {
   account: AccountView;
   user: AuthUser;
   usableKeys: ApiKeyView[];
   totalKeys: number;
-  keysAvailable: boolean;
+  keysState: OverviewDataState;
+  usage: UsageView | null;
+  usageState: OverviewDataState;
+  ledger: LedgerEntry[];
+  ledgerState: OverviewDataState;
   open(section: Section): void;
 }) {
   const copy = useDashboardCopy();
+  const { language } = useI18n();
+  const locale = language === "ru" ? "ru-RU" : "en-US";
   const multiplierBp = paymentBasisPoints(account);
   const discount = discountOf(account);
   const officialBalanceNano = officialNanoFromCharged(BigInt(account.balanceNano), multiplierBp);
-  // Реализованная ценность: сколько официального Claude API уже получено за реально списанное.
-  const officialUsedNano = officialNanoFromCharged(BigInt(account.spentNano), multiplierBp);
-  const hasSpent = BigInt(account.spentNano) > 0n;
   const engineReady = account.status === "active" && user.engineAccountStatus === "active";
-  const keysReady = engineReady && keysAvailable && usableKeys.length > 0;
-  const keyStatusText = !keysAvailable ? copy.keysUnavailable
-    : !engineReady ? copy.engineNotReady
-      : keysReady ? copy.keysReady
-        : totalKeys > 0 ? copy.keysNeedAttention : copy.noKeysOverview;
-  return <section className="panel">
-    <div className="overview-core">
+  const keysReady = engineReady && keysState === "ready" && usableKeys.length > 0;
+  const accessTone = keysState === "loading" ? "neutral"
+    : keysState === "unavailable" || !engineReady || (totalKeys > 0 && !keysReady) ? "warning"
+      : keysReady ? "success" : "setup";
+  const accessLabel = keysState === "loading" ? copy.checking
+    : keysState === "unavailable" ? copy.statusUnavailable
+      : !engineReady || totalKeys > 0 && !keysReady ? copy.needsAttention
+        : keysReady ? copy.ready : copy.setupRequired;
+  const keyStatusText = keysState === "loading" ? copy.checkingKeyStatus
+    : keysState === "unavailable" ? copy.keysUnavailable
+      : !engineReady ? copy.engineNotReady
+        : keysReady ? copy.keysReady
+          : totalKeys > 0 ? copy.keysNeedAttention : copy.noKeysOverview;
+  const balanceNano = BigInt(account.balanceNano);
+  const lowBalance = balanceNano > 0n && balanceNano <= 5n * NANO_PER_USD;
+  const recentActivity = ledgerState === "ready"
+    ? [...ledger].sort((left, right) => ledgerMs(right.timestamp) - ledgerMs(left.timestamp)).slice(0, 3)
+    : [];
+  const pricing = account.pricing;
+  const progressivePricing = pricing?.customerType === "b2c" && !isPartnerRate(account) ? pricing : null;
+  const isProgressive = progressivePricing !== null;
+  const pricingTitle = !pricing ? copy.standardPricing
+    : pricing.customerType === "b2b" ? copy.businessAgreement
+      : isPartnerRate(account) ? copy.partnerRate : tierName(copy, pricing.tier);
+  const showOnboarding = engineReady && keysState === "ready" && totalKeys === 0;
+
+  let alert: { tone: "danger" | "warning"; title: string; text: string; action: "credits" | "keys" } | null = null;
+  if (!engineReady) alert = { tone: "danger", title: copy.apiAccessBlocked, text: copy.engineNotReady, action: "keys" };
+  else if (keysState === "ready" && totalKeys > 0 && usableKeys.length === 0) alert = { tone: "warning", title: copy.keysNeedAttentionTitle, text: copy.keysNeedAttention, action: "keys" };
+  else if (balanceNano <= 0n) alert = { tone: "danger", title: copy.balanceEmptyTitle, text: copy.balanceEmptyText, action: "credits" };
+  else if (lowBalance) alert = { tone: "warning", title: copy.balanceLowTitle, text: copy.balanceLowText, action: "credits" };
+
+  return <section className="panel overview-panel">
+    {alert && <div className={`overview-alert ${alert.tone}`} role="status">
+      <span className="overview-alert-icon" aria-hidden="true">!</span>
+      <div><strong>{alert.title}</strong><span>{alert.text}</span></div>
+      <button className="btn btn-ghost btn-sm" onClick={() => open(alert.action)}>{alert.action === "credits" ? copy.topUp : copy.manageKeys}</button>
+    </div>}
+
+    <div className="overview-primary-grid">
       <article className="card overview-balance-card">
-        <span className="eyebrow">{copy.platformBalance}</span>
-        <div className="overview-balance-values">
-          <div><strong>{normalizeUsd(account.balanceUsd)}</strong><span>{copy.availableOnPlatform}</span></div>
-          <span className="overview-value-arrow" aria-hidden="true">→</span>
-          <div><strong>≈ {formatNanoUsd(officialBalanceNano)}</strong><span>{copy.officialApiValue}</span></div>
+        <div className="overview-card-head">
+          <span className="overview-card-label">{copy.platformBalance}</span>
+          <span className="overview-rate-chip">{discount}% {copy.discount} · {formatMultiplier(multiplierBp)}</span>
         </div>
-        <p>{interpolate(copy.balanceValueAtDiscount, { discount })}</p>
-        <button className="btn btn-primary btn-sm" onClick={() => open("credits")}>{copy.topUp}</button>
-      </article>
-      <div className="overview-actions">
-        <article className="card overview-action-card">
-          <div><span className="dlabel">{copy.activeKeys}</span><strong>{keysAvailable ? usableKeys.length : "—"}</strong></div>
-          <p>{keyStatusText}</p>
-          <button className="btn btn-ghost btn-sm" onClick={() => open("keys")}>{totalKeys > 0 ? copy.manageKeys : copy.getKey}</button>
-        </article>
-        <article className="card overview-action-card">
-          <div><span className="dlabel">{copy.claudeApiReceived}</span><strong>{hasSpent ? `≈ ${formatNanoUsd(officialUsedNano)}` : "—"}</strong></div>
-          <p>{hasSpent ? interpolate(copy.receivedFromCharged, { charged: formatNanoUsd(account.spentNano), mult: formatMultiplier(multiplierBp) }) : copy.receivedEmpty}</p>
+        <strong className="overview-balance-number">{normalizeUsd(account.balanceUsd)}</strong>
+        <p className="overview-balance-value">{copy.worthApproximately} <b>≈ {formatNanoUsd(officialBalanceNano)}</b> {copy.inClaudeApiUsage}</p>
+        <p className="overview-balance-rate">{interpolate(copy.payPerOfficialDollar, { rate: formatPaymentRate(multiplierBp) })}</p>
+        <div className="overview-card-actions">
+          <button className="btn btn-primary btn-sm" onClick={() => open("credits")}>{copy.topUp}</button>
           <button className="btn btn-ghost btn-sm" onClick={() => open("usage")}>{copy.viewUsage}</button>
-        </article>
-      </div>
+        </div>
+      </article>
+
+      <article className={`card overview-access-card ${accessTone}`}>
+        <div className="overview-card-head">
+          <span className="overview-card-label">{copy.apiAccess}</span>
+          <span className={`overview-status ${accessTone}`}><i aria-hidden="true" />{accessLabel}</span>
+        </div>
+        <strong className="overview-access-value">{keysState === "ready" ? usableKeys.length : "—"}</strong>
+        <span className="overview-access-unit">{copy.usableKeys}</span>
+        <p>{keyStatusText}</p>
+        <button className="btn btn-ghost btn-sm" onClick={() => open("keys")}>{totalKeys > 0 ? copy.manageKeys : copy.getKey}</button>
+      </article>
     </div>
-    <PricingBanner account={account} />
+
+    {showOnboarding && <section className="card overview-onboarding">
+      <div className="overview-onboarding-copy">
+        <span className="overview-card-label">{copy.quickStart}</span>
+        <h2>{copy.startFirstRequest}</h2>
+        <p>{copy.startFirstRequestText}</p>
+      </div>
+      <ol>
+        <li><span>1</span><div><strong>{copy.createFirstKey}</strong><small>{copy.createFirstKeyHint}</small></div></li>
+        <li><span>2</span><div><strong>{copy.connectYourTool}</strong><small>{copy.connectYourToolHint}</small></div></li>
+        <li><span>3</span><div><strong>{copy.makeFirstRequest}</strong><small>{copy.makeFirstRequestHint}</small></div></li>
+      </ol>
+      <button className="btn btn-primary btn-sm" onClick={() => open("keys")}>{copy.getKey}</button>
+    </section>}
+
+    <div className="overview-metrics-grid">
+      <article className="card overview-metric-card">
+        <div className="overview-card-head"><span className="overview-card-label">{copy.usageLast30Days}</span><span className="overview-metric-mark" aria-hidden="true">↗</span></div>
+        <strong>{usageState === "ready" && usage ? formatNanoUsd(usage.totalOfficialNano) : "—"}</strong>
+        <p>{usageState === "loading" ? copy.loadingUsageSummary
+          : usageState === "unavailable" || !usage ? copy.usageSummaryUnavailable
+            : interpolate(copy.usageChargedAndRequests, { charged: formatNanoUsd(usage.totalChargedNano), requests: usage.requests.toLocaleString(locale) })}</p>
+        <button className="link plain-button overview-card-link" onClick={() => open("usage")}>{copy.viewUsage} →</button>
+      </article>
+
+      <article className="card overview-metric-card overview-pricing-card">
+        <div className="overview-card-head"><span className="overview-card-label">{copy.currentPricing}</span><span className="overview-metric-mark" aria-hidden="true">%</span></div>
+        <strong>{pricingTitle}</strong>
+        <p><b>{discount}% {copy.discount}</b> · {formatMultiplier(multiplierBp)} {copy.valueMultiplier}</p>
+        <span className="overview-pricing-foot">{interpolate(copy.payPerOfficialDollar, { rate: formatPaymentRate(multiplierBp) })}</span>
+      </article>
+
+      <article className="card overview-metric-card overview-milestone-card">
+        {progressivePricing?.nextTier ? <>
+          <div className="overview-card-head"><span className="overview-card-label">{copy.nextMilestone}</span><span className="overview-metric-mark" aria-hidden="true">→</span></div>
+          <strong>{tierName(copy, progressivePricing.nextTier.tier)} · {progressivePricing.nextTier.discountPercent}%</strong>
+          <p>{interpolate(copy.remainingToUnlock, { amount: formatNanoUsd(progressivePricing.nextTier.remainingNano) })}</p>
+          <div className="overview-progress" role="progressbar" aria-label={copy.tierProgressLabel} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(boundedPercent(BigInt(progressivePricing.spentNano), BigInt(progressivePricing.nextTier.spendThresholdNano)))}>
+            <span style={{ width: `${boundedPercent(BigInt(progressivePricing.spentNano), BigInt(progressivePricing.nextTier.spendThresholdNano))}%` }} />
+          </div>
+          <small>{interpolate(copy.topupsTowardTier, { current: formatNanoUsd(progressivePricing.spentNano), target: formatNanoUsd(progressivePricing.nextTier.spendThresholdNano) })}</small>
+        </> : <>
+          <div className="overview-card-head"><span className="overview-card-label">{isProgressive ? copy.milestonesComplete : copy.pricingTerms}</span><span className="overview-metric-mark" aria-hidden="true">✓</span></div>
+          <strong>{isProgressive ? copy.highestTierReached : copy.fixedRate}</strong>
+          <p>{isProgressive ? copy.highestTierSummary : copy.fixedRateSummary}</p>
+        </>}
+        <Link className="link overview-card-link" href={`${DOCS_URL}#pricing`}>{copy.howTiersWork} →</Link>
+      </article>
+    </div>
+
+    <section className="card overview-activity">
+      <div className="overview-activity-head">
+        <div><span className="overview-card-label">{copy.recentActivity}</span><h2>{copy.latestAccountActivity}</h2></div>
+        <button className="link plain-button overview-card-link" onClick={() => open("usage")}>{copy.viewAllActivity} →</button>
+      </div>
+      {ledgerState === "loading" ? <div className="overview-activity-empty">{copy.loadingRecentActivity}</div>
+        : ledgerState === "unavailable" ? <div className="overview-activity-empty">{copy.recentActivityUnavailable}</div>
+          : recentActivity.length === 0 ? <div className="overview-activity-empty">{copy.noLedger}</div>
+            : <div className="overview-activity-list">{recentActivity.map((entry) => {
+              const amount = BigInt(entry.amountNano);
+              const isCharge = entry.kind === "charge";
+              const isTopup = entry.kind === "topup";
+              const activityLabel = isCharge ? copy.apiUsageActivity : isTopup ? copy.topupType : copy.adjustType;
+              const activityDetail = entry.model ? modelLabel(entry.model) : entry.keyMasked ?? entry.reference ?? copy.accountAdjustment;
+              const amountPrefix = isCharge ? "−" : amount > 0n ? "+" : "";
+              return <div className="overview-activity-row" key={entry.id}>
+                <span className={`overview-activity-icon ${entry.kind}`} aria-hidden="true">{isCharge ? "↗" : isTopup ? "+" : "±"}</span>
+                <div className="overview-activity-name"><strong>{activityLabel}</strong><span>{activityDetail}</span></div>
+                <time dateTime={new Date(ledgerMs(entry.timestamp)).toISOString()}>{formatOverviewActivityTime(entry.timestamp, language)}</time>
+                <b className={isCharge ? "charge" : isTopup ? "topup" : ""}>{amountPrefix}{formatNanoUsd(absoluteBigInt(amount))}</b>
+              </div>;
+            })}</div>}
+    </section>
   </section>;
 }
 
@@ -1560,6 +1683,12 @@ function formatLedgerTime(timestamp: string, language: "en" | "ru"): string {
   return new Date(milliseconds).toLocaleString(language === "ru" ? "ru-RU" : "en-US");
 }
 
+function formatOverviewActivityTime(timestamp: string, language: "en" | "ru"): string {
+  return new Date(ledgerMs(timestamp)).toLocaleString(language === "ru" ? "ru-RU" : "en-US", {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+}
+
 function tierName(copy: DashboardCopy, tier: string): string {
   const names: Record<string, string> = {
     starter: copy.tierStarter, builder: copy.tierBuilder, pro: copy.tierPro, studio: copy.tierStudio, scale: copy.tierScale,
@@ -1629,6 +1758,10 @@ function formatNanoUsd(value: string | bigint, minimumFractionDigits = 0, maximu
 }
 function formatMultiplier(multiplierBp: bigint): string {
   return `×${formatFixedRatio(BASIS_POINTS, multiplierBp, 2)}`;
+}
+function formatPaymentRate(multiplierBp: bigint): string {
+  const cents = roundDivide(multiplierBp * 100n, BASIS_POINTS);
+  return `${cents / 100n}.${(cents % 100n).toString().padStart(2, "0")}`;
 }
 function formatPerDollar(multiplierBp: bigint): string {
   return `$${formatFixedRatio(BASIS_POINTS, multiplierBp, 2)}`;
