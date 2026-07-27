@@ -1727,6 +1727,10 @@ grep -Fq 'wd_validation_failure_summary "$SHADOW_LOG_FILE" "$rc"' <<<"$shadow_bo
   || wd_die 'trusted candidate failures are published without a diagnostic summary'
 grep -Fq 'candidate-validation-$TEST_DB_SLOT.log' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'trusted candidate validation does not retain its bounded slot transcript'
+grep -Fq 'previous_umask=$(umask)' <<<"$shadow_body" \
+  || wd_die 'trusted candidate validation does not preserve the controller umask'
+grep -Fq 'umask "$previous_umask"' <<<"$shadow_body" \
+  || wd_die 'trusted candidate validation leaks its transcript-only umask into Git fetches'
 grep -Fq 'selected?.description' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge client discards trusted-host failure descriptions'
 grep -Fq 'diagnostic="phase=$failed_phase; line=$line; exit=$rc; candidate quarantined"' \

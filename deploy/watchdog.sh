@@ -1110,7 +1110,7 @@ run_shadow_candidate_validation() (
   SHADOW_DEPLOYMENT_ID=$1
   CANDIDATE_SHA=$2
   TEST_DB_SLOT=$3
-  local committed_master=$4 current_master
+  local committed_master=$4 current_master previous_umask
   CI_CARGO_TARGET="$CI_HOME/cargo-target-shadow-$TEST_DB_SLOT"
   STATUS_FILE="$STATE_ROOT/candidate-validation-$TEST_DB_SLOT.status"
   SHADOW_LOG_FILE="$STATE_ROOT/candidate-validation-$TEST_DB_SLOT.log"
@@ -1118,9 +1118,11 @@ run_shadow_candidate_validation() (
   TEST_DB_STARTED=0
   exec 8>&1 9>&2
   rm -f -- "$SHADOW_LOG_FILE"
+  previous_umask=$(umask)
   umask 077
   : >"$SHADOW_LOG_FILE"
   chmod 0600 "$SHADOW_LOG_FILE"
+  umask "$previous_umask"
   exec >>"$SHADOW_LOG_FILE" 2>&1
   trap 'exit 130' INT
   trap 'exit 143' TERM
