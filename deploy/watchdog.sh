@@ -842,10 +842,16 @@ main() {
   # Sales has its own release baseline; fall back to processed on first run (before sales.sha exists).
   wd_range_has_class "$SOURCE_REPO" "${SALES_SHA:-$PROCESSED_SHA}" "$CANDIDATE_SHA" wd_path_is_sales \
     && sales_changed=1
-  # OpenKeys тоже держит собственную релизную базу; до появления openkeys.sha
-  # отсчитываем от processed, как и для sales.
-  wd_range_has_class "$SOURCE_REPO" "${OPENKEYS_SHA:-$PROCESSED_SHA}" "$CANDIDATE_SHA" wd_path_is_openkeys \
-    && openkeys_changed=1
+  # OpenKeys держит собственную релизную базу. Пока openkeys.sha не существует,
+  # диапазон processed..candidate может быть уже пустым (инфраструктурный шаг
+  # прошёл раньше), поэтому первый запуск деплоим безусловно — иначе контекст
+  # никогда не получит свой первый релиз.
+  if [[ -z ${OPENKEYS_SHA:-} ]]; then
+    openkeys_changed=1
+  else
+    wd_range_has_class "$SOURCE_REPO" "$OPENKEYS_SHA" "$CANDIDATE_SHA" wd_path_is_openkeys \
+      && openkeys_changed=1
+  fi
 
   if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $engine_changed == 0 && $backend_changed == 0 \
         && $sales_changed == 0 && $openkeys_changed == 0 ]]; then
