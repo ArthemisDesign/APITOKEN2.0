@@ -582,16 +582,18 @@ final_verify_codex_surface() {
   (( pool_ready == 1 )) \
     || wd_die "Codex provider is enabled but no authenticated home can accept a request"
 
-  # Prove the OpenAI route is actually served by the Codex adapter rather than falling through to
-  # the Anthropic path: only the adapter answers with an OpenAI-shaped error envelope carrying
-  # `code`/`param`. The request names a parameter the adapter rejects by contract, so it can never
-  # start a turn, reach a ChatGPT subscription or spend quota — whether or not this loopback caller
-  # is trusted as an admin. An unauthenticated engine answers `invalid_api_key` for the same reason.
+  # Prove the public OpenAI hostname is actually served by the Codex adapter rather than falling
+  # through to the Anthropic path: only the adapter answers with an OpenAI-shaped error envelope
+  # carrying `code`/`param`. Resolve the public hostname to loopback so this validates Caddy's
+  # hostname boundary and marker injection without depending on external DNS or hairpin routing.
+  # The request names a parameter the adapter rejects by contract, so it can never start a turn,
+  # reach a ChatGPT subscription or spend quota. An unauthenticated engine answers
+  # `invalid_api_key` before request validation for the same reason.
   envelope=$(curl --noproxy '*' --silent --show-error --max-time 5 \
+    --resolve openai.api.apitoken.sale:443:127.0.0.1 \
     -H 'content-type: application/json' \
-    -H 'X-Apitoken-Api-Plane: openai' \
     -d '{"model":"gpt-5.6","input":"ping","temperature":0.5}' \
-    http://127.0.0.1:8790/v1/responses 2>/dev/null || true)
+    https://openai.api.apitoken.sale/v1/responses 2>/dev/null || true)
   jq --exit-status '.error.type == "invalid_request_error"
       and (.error.code == "invalid_api_key" or .error.param != null)' \
     >/dev/null 2>&1 <<<"$envelope" \
