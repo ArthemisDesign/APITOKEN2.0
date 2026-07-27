@@ -195,7 +195,8 @@ export async function resolveViewTokenByApiKey(apiKey: string): Promise<string |
   return row?.viewToken ?? null;
 }
 
-export type StockStatus = "stock" | "delivered" | "removed";
+/** Удалённых статусов нет: удаление стирает запись, остаётся склад и выданные. */
+export type StockStatus = "stock" | "delivered";
 
 export interface StockKey {
   id: string;
@@ -211,13 +212,10 @@ export interface StockKey {
   label: string | null;
   createdAt: string;
   deliveredAt: string | null;
-  removedAt: string | null;
 }
 
-function stockStatusOf(row: { deliveredAt: Date | null; removedAt: Date | null }): StockStatus {
-  if (row.removedAt) return "removed";
-  if (row.deliveredAt) return "delivered";
-  return "stock";
+function stockStatusOf(row: { deliveredAt: Date | null }): StockStatus {
+  return row.deliveredAt ? "delivered" : "stock";
 }
 
 /**
@@ -236,7 +234,7 @@ export async function listKeys(createdBy: string, limit = 500): Promise<StockKey
       faceValueNano: openkeysKeys.faceValueNano,
       createdAt: openkeysKeys.createdAt,
       deliveredAt: openkeysKeys.deliveredAt,
-      removedAt: openkeysKeys.removedAt,
+
       secretCiphertext: openkeysKeys.secretCiphertext,
       secretNonce: openkeysKeys.secretNonce,
       label: openkeysBatches.label,
@@ -266,7 +264,7 @@ export async function listKeys(createdBy: string, limit = 500): Promise<StockKey
       label: row.label,
       createdAt: row.createdAt.toISOString(),
       deliveredAt: row.deliveredAt?.toISOString() ?? null,
-      removedAt: row.removedAt?.toISOString() ?? null,
+
     };
   });
 }
@@ -282,7 +280,7 @@ export async function markKeyDelivered(id: string, createdBy: string): Promise<b
   const updated = await db
     .update(openkeysKeys)
     .set({ deliveredAt: new Date(), secretCiphertext: null, secretNonce: null })
-    .where(and(eq(openkeysKeys.id, id), isNull(openkeysKeys.deliveredAt), isNull(openkeysKeys.removedAt)))
+    .where(and(eq(openkeysKeys.id, id), isNull(openkeysKeys.deliveredAt)))
     .returning({ id: openkeysKeys.id });
   return updated.length > 0;
 }
@@ -300,8 +298,9 @@ async function ownsKey(id: string, createdBy: string): Promise<boolean> {
 }
 
 /**
- * Снятие со склада: ключ отключается в движке, иначе «удалённый» ключ остался бы
- * рабочим. Деньги остаются на аккаунте — их всегда можно вернуть в оборот.
+ * Удаление ключа. Сначала отключаем его в движке — иначе удалённый из нашей базы
+ * ключ остался бы рабочим и раздавал бы деньги, о которых мы уже ничего не знаем, —
+ * и только потом стираем запись. Выданные ключи не удаляем: они живут в истории.
  */
 export async function removeKey(id: string, createdBy: string): Promise<boolean> {
   const { db } = getDatabase();
@@ -310,16 +309,40 @@ export async function removeKey(id: string, createdBy: string): Promise<boolean>
   const [row] = await db
     .select({ engineKeyId: openkeysKeys.engineKeyId })
     .from(openkeysKeys)
-    .where(and(eq(openkeysKeys.id, id), isNull(openkeysKeys.removedAt)))
+    .where(eq(openkeysKeys.id, id))
     .limit(1);
   if (!row) return false;
 
   await getEngineClient().disableKey(row.engineKeyId);
-  await db
-    .update(openkeysKeys)
-    .set({ removedAt: new Date(), status: "disabled", secretCiphertext: null, secretNonce: null })
-    .where(eq(openkeysKeys.id, id));
+  await db.delete(openkeysKeys).where(eq(openkeysKeys.id, id));
   return true;
+}
+
+/**
+ * Удаление всего склада разом. Ключи отключаются по одному: частичный успех
+ * лучше, чем отказ целиком, поэтому счётчик показывает, сколько реально ушло.
+ */
+export async function removeAllStock(createdBy: string): Promise<number> {
+  const { db } = getDatabase();
+  const rows = await db
+    .select({ id: openkeysKeys.id, engineKeyId: openkeysKeys.engineKeyId })
+    .from(openkeysKeys)
+    .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
+    .where(and(eq(openkeysBatches.createdBy, createdBy), isNull(openkeysKeys.deliveredAt)));
+
+  const engine = getEngineClient();
+  let removed = 0;
+  for (const row of rows) {
+    try {
+      await engine.disableKey(row.engineKeyId);
+      await db.delete(openkeysKeys).where(eq(openkeysKeys.id, row.id));
+      removed += 1;
+    } catch {
+      // Ключ, который не удалось отключить, оставляем в базе: удалить запись
+      // о рабочем ключе значит потерять его из виду навсегда.
+    }
+  }
+  return removed;
 }
 
 export interface BatchSummary {

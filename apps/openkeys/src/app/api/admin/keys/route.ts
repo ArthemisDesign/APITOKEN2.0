@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { listBatches, listKeys, markKeyDelivered, removeKey } from "@/lib/keys";
+import { listBatches, listKeys, markKeyDelivered, removeAllStock, removeKey } from "@/lib/keys";
 import { currentAdmin } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -31,11 +31,15 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const id = typeof body.id === "string" ? body.id : "";
   const action = body.action;
-  if (!id || (action !== "deliver" && action !== "remove")) {
-    return NextResponse.json({ error: "invalid_body" }, { status: 400 });
-  }
 
   try {
+    if (action === "remove_all") {
+      return NextResponse.json({ ok: true, removed: await removeAllStock(admin) });
+    }
+    if (!id || (action !== "deliver" && action !== "remove")) {
+      return NextResponse.json({ error: "invalid_body" }, { status: 400 });
+    }
+
     const applied = action === "deliver" ? await markKeyDelivered(id, admin) : await removeKey(id, admin);
     if (!applied) return NextResponse.json({ error: "not_found" }, { status: 404 });
     return NextResponse.json({ ok: true });

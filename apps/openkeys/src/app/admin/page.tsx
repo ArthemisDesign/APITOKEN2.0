@@ -6,7 +6,7 @@ import { AppShell } from "@/components/app-shell";
 const BASE_URL = "https://api.apitoken.sale";
 const DOCS_URL = "https://openkeys.apitoken.sale/docs";
 
-type StockStatus = "stock" | "delivered" | "removed";
+type StockStatus = "stock" | "delivered";
 
 interface StockKey {
   id: string;
@@ -20,7 +20,6 @@ interface StockKey {
   label: string | null;
   createdAt: string;
   deliveredAt: string | null;
-  removedAt: string | null;
 }
 
 interface BatchRow {
@@ -34,12 +33,13 @@ interface BatchRow {
 const STATUS_LABEL: Record<StockStatus, string> = {
   stock: "на складе",
   delivered: "выдан",
-  removed: "снят",
 };
 
-/** Готовое сообщение покупателю: адрес, ключ, профиль и инструкция. */
+/** Готовое сообщение покупателю: баланс, адрес, ключ, профиль и инструкция. */
 function handoverText(key: StockKey): string {
   return [
+    `Баланс ключа: ${key.faceValue} по прайсу Anthropic`,
+    "",
     `ANTHROPIC_BASE_URL=${BASE_URL}`,
     `ANTHROPIC_API_KEY=${key.secret ?? ""}`,
     "",
@@ -200,7 +200,7 @@ export default function AdminPage() {
   }
 
   async function updateKey(id: string, action: "deliver" | "remove") {
-    if (action === "remove" && !window.confirm("Снять ключ со склада? Он будет отключён и перестанет работать.")) {
+    if (action === "remove" && !window.confirm("Удалить ключ? Он будет отключён и исчезнет из системы.")) {
       return;
     }
     setBusy(true);
@@ -214,6 +214,28 @@ export default function AdminPage() {
       if (!response.ok) {
         const payload = (await response.json()) as { error?: string };
         setError(payload.error ?? "Не удалось изменить статус ключа");
+        return;
+      }
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeAll(count: number) {
+    if (!window.confirm(`Удалить все ${count} ключей со склада? Они будут отключены и исчезнут из системы.`)) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/admin/keys", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "remove_all" }),
+      });
+      if (!response.ok) {
+        setError("Не удалось очистить склад");
         return;
       }
       await refresh();
@@ -334,9 +356,26 @@ export default function AdminPage() {
             <div className="dsec-head analytics-heading">
               <div>
                 <h2>Склад · {stock.length}</h2>
-                <p>Ключи, готовые к продаже. Они остаются здесь до отметки «выдан» или снятия.</p>
+                <p>Ключи, готовые к продаже. «Выдан» прячет ключ в историю, «Удалить» стирает его из системы.</p>
               </div>
+              {stock.length > 0 ? (
+                <button
+                  className="btn btn-ghost btn-sm openkeys-danger"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void removeAll(stock.length)}
+                >
+                  Удалить всё
+                </button>
+              ) : null}
             </div>
+
+            {stock.some((key) => !key.secret) ? (
+              <div className="banner">
+                Часть ключей выпущена до появления склада, их секрет не сохранился — выдать такой ключ уже нельзя,
+                его можно только удалить.
+              </div>
+            ) : null}
 
             {stock.length === 0 ? (
               <div className="empty-box">Склад пуст — выпустите пачку кнопкой сверху</div>
@@ -347,10 +386,17 @@ export default function AdminPage() {
                     <h3>
                       {groupKeys[0]!.faceValue} · {groupKeys.length} шт.
                     </h3>
-                    <CopyButton
-                      value={groupKeys.map((key) => handoverText(key)).join("\n\n———\n\n")}
-                      label="Скопировать группу"
-                    />
+                    {/* В групповое копирование берём только ключи с секретом: строка
+                        без ключа в сообщении покупателю хуже, чем её отсутствие. */}
+                    {groupKeys.some((key) => key.secret) ? (
+                      <CopyButton
+                        value={groupKeys
+                          .filter((key) => key.secret)
+                          .map((key) => handoverText(key))
+                          .join("\n\n———\n\n")}
+                        label={`Скопировать ${groupKeys.filter((key) => key.secret).length} шт.`}
+                      />
+                    ) : null}
                   </div>
                   {groupKeys.map((key) => (
                     <KeyCard key={key.id} keyRow={key} busy={busy} onUpdate={updateKey} />
@@ -458,7 +504,7 @@ export default function AdminPage() {
             <div className="dsec-head analytics-heading">
               <div>
                 <h2>История</h2>
-                <p>Выданные и снятые ключи. Секрет здесь уже недоступен — остаётся маска и профиль.</p>
+                <p>Выданные ключи. Секрет здесь уже недоступен — остаётся маска и профиль.</p>
               </div>
             </div>
             <div className="table-scroll" role="region" tabIndex={0} aria-label="История ключей">
@@ -488,14 +534,14 @@ export default function AdminPage() {
                           <code className="key-mask">{key.keyMasked}</code>
                         </td>
                         <td>
-                          <span className={`pill ${key.status === "removed" ? "pill-muted" : "pill-good"}`}>
+                          <span className="pill pill-good">
                             {STATUS_LABEL[key.status]}
                           </span>
                         </td>
                         <td>{key.label ?? "—"}</td>
                         <td className="tnum">{key.faceValue}</td>
                         <td className="tnum">{key.createdAt.slice(0, 10)}</td>
-                        <td className="tnum">{(key.deliveredAt ?? key.removedAt ?? "").slice(0, 10) || "—"}</td>
+                        <td className="tnum">{(key.deliveredAt ?? "").slice(0, 10) || "—"}</td>
                         <td>
                           <a href={key.viewUrl} target="_blank" rel="noreferrer">
                             открыть
