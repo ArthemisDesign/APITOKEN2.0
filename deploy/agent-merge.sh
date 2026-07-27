@@ -64,7 +64,7 @@ am_now() { date +%s; }
 
 am_gate_typescript() (
   local base=$1 target=$2 force_full=$3 scope_output='' mode=full package
-  local common_dir next_cache_root context_list
+  local common_dir next_cache_root artifact_cache_root context_list
   local filters=() test_packages=() build_contexts=()
   cd "$ROOT"
   if [[ -n ${AGENT_MERGE_TYPESCRIPT_GATE_CMD:-} ]]; then
@@ -76,6 +76,7 @@ am_gate_typescript() (
   pnpm install --frozen-lockfile
   common_dir=$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)
   next_cache_root="$common_dir/codex-tools/next-cache"
+  artifact_cache_root="$common_dir/codex-tools/typescript-artifacts"
   NEXT_CACHE_ROOT="$next_cache_root" bash "$ROOT/deploy/next-cache.sh" restore "$ROOT"
   if (( force_full == 0 )) \
     && scope_output=$(node "$ROOT/deploy/typescript-scope.mjs" "$ROOT" "$base" "$target"); then
@@ -94,7 +95,8 @@ am_gate_typescript() (
   fi
   IFS=, read -r -a build_contexts <<<"$context_list"
   am_log "building complete TypeScript context(s): $context_list"
-  bash "$ROOT/deploy/typescript-build-contexts.sh" "$ROOT" "${build_contexts[@]}"
+  TYPESCRIPT_ARTIFACT_CACHE_ROOT="$artifact_cache_root" \
+    bash "$ROOT/deploy/typescript-build-contexts.sh" "$ROOT" "${build_contexts[@]}"
   NEXT_CACHE_ROOT="$next_cache_root" bash "$ROOT/deploy/next-cache.sh" save "$ROOT"
   if (( ${#filters[@]} == 0 )); then
     am_log 'TypeScript scope is shared, empty, or unavailable; checking the full workspace'
@@ -125,6 +127,7 @@ am_gate_deployment() (
   bash "$ROOT/deploy/next-cache.test.sh"
   bash "$ROOT/deploy/typescript-scope.test.sh"
   bash "$ROOT/deploy/typescript-build-contexts.test.sh"
+  bash "$ROOT/deploy/typescript-artifact-cache.test.sh"
   bash "$ROOT/deploy/typescript-test-groups.test.sh"
   # The merge path tests itself on every merge, strictly. It is deliberately not enforced in the
   # production gate: the watchdog installed on the host still calls deploy/agent-merge.test.sh, now a
@@ -157,6 +160,7 @@ am_range_changes_local_gate() {
       deploy/next-cache.sh|deploy/next-cache.test.sh|\
       deploy/typescript-scope.mjs|deploy/typescript-scope.test.sh|\
       deploy/typescript-build-contexts.sh|deploy/typescript-build-contexts.test.sh|\
+      deploy/typescript-artifact-cache.test.sh|\
       deploy/typescript-test-groups.sh|deploy/typescript-test-groups.test.sh)
         return 0
         ;;

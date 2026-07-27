@@ -838,6 +838,7 @@ gate_contract=(
   'pnpm --dir "$candidate" install --frozen-lockfile'
   'NEXT_CACHE_ROOT="$CI_NEXT_CACHE_ROOT"'
   'bash "$candidate/deploy/next-cache.sh" restore "$candidate"'
+  'TYPESCRIPT_ARTIFACT_CACHE_ROOT="$CI_TYPESCRIPT_ARTIFACT_CACHE_ROOT"'
   'typescript-build-contexts.sh'
   '"$candidate" "${build_contexts[@]}"'
   'bash "$candidate/deploy/next-cache.sh" save "$candidate"'
@@ -860,6 +861,7 @@ gate_contract=(
   'run_as_ci bash "$candidate/deploy/next-cache.test.sh"'
   'run_as_ci bash "$candidate/deploy/typescript-scope.test.sh"'
   'run_as_ci bash "$candidate/deploy/typescript-build-contexts.test.sh"'
+  'run_as_ci bash "$candidate/deploy/typescript-artifact-cache.test.sh"'
   'run_as_ci bash "$candidate/deploy/typescript-test-groups.test.sh"'
   'run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"'
   'status --porcelain --untracked-files=no'
@@ -896,6 +898,7 @@ done
 # controller, so exercise the newly candidate-owned build helper from here as well.
 bash "$ROOT/deploy/sccache-cargo.test.sh"
 bash "$ROOT/deploy/typescript-build-contexts.test.sh"
+bash "$ROOT/deploy/typescript-artifact-cache.test.sh"
 
 # `pnpm -r --if-present test` deliberately tolerates packages with no suite. Keep that tolerance
 # explicit: deleting a test script from a covered package, or adding a new workspace package without

@@ -22,6 +22,7 @@ CI_USER=apitoken-ci
 CI_HOME=$STATE_ROOT/ci-home
 CI_CARGO_TARGET=$CI_HOME/cargo-target
 CI_NEXT_CACHE_ROOT=$CI_HOME/next-cache
+CI_TYPESCRIPT_ARTIFACT_CACHE_ROOT=$CI_HOME/typescript-artifacts
 CI_TOOLCHAIN=/opt/apitoken-watchdog/rust-toolchain
 CONTROLLER_ROOT=/usr/local/lib/apitoken-watchdog/controller
 CONTROLLER_ENTRYPOINT=/usr/local/lib/apitoken-watchdog/watchdog.sh
@@ -490,8 +491,8 @@ test_typescript_lane() {
   fi
   IFS=, read -r -a build_contexts <<<"$lane_components"
   wd_log "building complete TypeScript context(s): $lane_components"
-  run_as_ci bash "$candidate/deploy/typescript-build-contexts.sh" \
-    "$candidate" "${build_contexts[@]}"
+  run_as_ci env TYPESCRIPT_ARTIFACT_CACHE_ROOT="$CI_TYPESCRIPT_ARTIFACT_CACHE_ROOT" \
+    bash "$candidate/deploy/typescript-build-contexts.sh" "$candidate" "${build_contexts[@]}"
   run_as_ci env NEXT_CACHE_ROOT="$CI_NEXT_CACHE_ROOT" \
     bash "$candidate/deploy/next-cache.sh" save "$candidate"
   if (( ${#filters[@]} == 0 )); then
@@ -553,6 +554,7 @@ test_static_lane() {
     run_as_ci bash "$candidate/deploy/next-cache.test.sh"
     run_as_ci bash "$candidate/deploy/typescript-scope.test.sh"
     run_as_ci bash "$candidate/deploy/typescript-build-contexts.test.sh"
+    run_as_ci bash "$candidate/deploy/typescript-artifact-cache.test.sh"
     run_as_ci bash "$candidate/deploy/typescript-test-groups.test.sh"
     run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"
   fi

@@ -28,7 +28,13 @@ verify only the artifacts it consumes. Typecheck/tests still use the changed pac
 (workspace consumers plus their prerequisites). Shared inputs, selector changes, deletions, and
 unknown scopes force every context. The four Next.js apps restore host-local `.next/cache` archives
 before building and publish only complete, symlink-free archives afterward; cache damage is treated
-as a miss, never a deployment failure.
+as a miss, never a deployment failure. A second content-addressed cache stores each context's
+complete runtime outputs under an exact tracked-input, toolchain, platform, and build-environment
+key. Exact hits skip shared and application builds; every cached file and executable mode is
+manifest-verified. Cache trees stay symlink-free; generated links are recreated only from verified
+workspace-relative metadata whose installed target remains inside the candidate. Misses, corruption,
+unsafe links, and save contention fall back to the normal build. Entries are isolated by context
+and bounded to six recent keys.
 TypeScript tests run in four joined isolation groups: commerce, sales, OpenKeys, and database-free
 packages. Each database group stays serial internally, while the independent groups overlap and
 all selected groups are reaped before the candidate receives a verdict.
