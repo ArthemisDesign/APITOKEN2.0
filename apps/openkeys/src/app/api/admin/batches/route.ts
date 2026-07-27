@@ -12,20 +12,10 @@ function unauthorized(): NextResponse {
 }
 
 export async function GET(): Promise<NextResponse> {
-  if (!(await currentAdmin())) return unauthorized();
+  const admin = await currentAdmin();
+  if (!admin) return unauthorized();
 
-  const batches = await listBatches();
-  return NextResponse.json({
-    batches: batches.map((batch) => ({
-      id: batch.id,
-      label: batch.label,
-      note: batch.note,
-      quantity: batch.quantity,
-      multBp: batch.multBp,
-      faceValue: formatUsd(batch.faceValueNano, 0),
-      createdAt: batch.createdAt.toISOString(),
-    })),
-  });
+  return NextResponse.json({ batches: await listBatches(admin) });
 }
 
 export async function POST(request: Request): Promise<NextResponse> {

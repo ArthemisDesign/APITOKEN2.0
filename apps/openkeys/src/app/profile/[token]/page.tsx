@@ -3,7 +3,7 @@ import { KeyProfile } from "@/components/key-profile";
 import { loadUsageByViewToken } from "@/lib/keys";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Профиль ключа — OpenKeys" };
+export const metadata = { title: "Профиль ключа — apiToken" };
 
 /** Персональная ссылка, которую покупатель получает вместе с ключом. */
 export default async function KeyProfilePage({ params }: { params: Promise<{ token: string }> }) {

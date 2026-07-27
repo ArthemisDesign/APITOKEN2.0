@@ -2495,3 +2495,12 @@ body.app-body .bg-decor{display:none!important}
 .openkeys-issued{display:grid;gap:10px;margin-bottom:14px}
 .openkeys-issued-foot{display:flex;flex-wrap:wrap;gap:10px;margin-top:4px}
 .field-hint{display:block;margin-top:6px;font-size:12px;color:var(--txt-4)}
+.openkeys-mark{font-style:normal;font-size:10px;letter-spacing:.08em;text-transform:lowercase;
+  color:var(--txt-4);border:1px solid var(--line);border-radius:99px;padding:2px 7px;margin-left:8px}
+.openkeys-group{margin-bottom:22px}
+.openkeys-group-head{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  margin:0 0 10px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.openkeys-group-head h3{margin:0;font-size:15px}
+.openkeys-issued-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px}
+.openkeys-danger{color:var(--danger)}
+.openkeys-danger:hover{border-color:var(--danger);color:var(--danger)}

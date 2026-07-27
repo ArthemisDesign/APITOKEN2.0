@@ -33,7 +33,8 @@ export function AppShell({
       <aside className={`side ${sideOpen ? "open" : ""}`}>
         <Link className="brand side-brand" href="/profile">
           <BrandMark />
-          OpenKeys
+          apiToken
+          <i className="openkeys-mark">openKeys</i>
         </Link>
         <nav className="side-nav">
           {NAV.map((item) => (

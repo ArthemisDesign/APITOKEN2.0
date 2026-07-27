@@ -3,7 +3,7 @@ import "./globals.css";
 import "./anim.css";
 
 export const metadata: Metadata = {
-  title: "OpenKeys — Claude API без регистрации",
+  title: "apiToken — Claude API без регистрации",
   description:
     "Готовые ключи к Claude API с номиналом в долларах официального прайса Anthropic. Без регистрации и привязки карты.",
   robots: { index: false, follow: false },

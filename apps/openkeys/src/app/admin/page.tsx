@@ -4,20 +4,31 @@ import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/app-shell";
 
 const BASE_URL = "https://api.apitoken.sale";
+const DOCS_URL = "https://openkeys.apitoken.sale/docs";
 
 type StockStatus = "stock" | "delivered" | "removed";
 
 interface StockKey {
   id: string;
+  batchId: string;
   status: StockStatus;
   secret: string | null;
   keyMasked: string;
   viewUrl: string;
   faceValue: string;
+  faceValueNano: string;
   label: string | null;
   createdAt: string;
   deliveredAt: string | null;
   removedAt: string | null;
+}
+
+interface BatchRow {
+  id: string;
+  label: string | null;
+  faceValue: string;
+  quantity: number;
+  createdAt: string;
 }
 
 const STATUS_LABEL: Record<StockStatus, string> = {
@@ -26,14 +37,14 @@ const STATUS_LABEL: Record<StockStatus, string> = {
   removed: "снят",
 };
 
-/** Готовое сообщение покупателю: адрес, ключ и ссылка на его профиль. */
+/** Готовое сообщение покупателю: адрес, ключ, профиль и инструкция. */
 function handoverText(key: StockKey): string {
   return [
     `ANTHROPIC_BASE_URL=${BASE_URL}`,
     `ANTHROPIC_API_KEY=${key.secret ?? ""}`,
     "",
     `Остаток и расход: ${key.viewUrl}`,
-    "Как подключить: https://openkeys.apitoken.sale/docs",
+    `Как подключить: ${DOCS_URL}`,
   ].join("\n");
 }
 
@@ -55,10 +66,69 @@ function CopyButton({ value, label, primary = false }: { value: string; label: s
   );
 }
 
+function KeyCard({
+  keyRow,
+  busy,
+  onUpdate,
+}: {
+  keyRow: StockKey;
+  busy: boolean;
+  onUpdate(id: string, action: "deliver" | "remove"): void;
+}) {
+  return (
+    <article className="card openkeys-issued">
+      <div className="openkeys-issued-head">
+        <span className="pill">{keyRow.faceValue}</span>
+        {keyRow.label ? <span className="chip">{keyRow.label}</span> : null}
+        <span className="field-hint">{keyRow.createdAt.slice(0, 10)}</span>
+      </div>
+      <div className="secret-key-field">
+        <code>{keyRow.secret ?? keyRow.keyMasked}</code>
+        {keyRow.secret ? <CopyButton value={keyRow.secret} label="Ключ" /> : null}
+      </div>
+      <div className="secret-key-field">
+        <code>{BASE_URL}</code>
+        <CopyButton value={BASE_URL} label="Base URL" />
+      </div>
+      <div className="secret-key-field">
+        <code>{keyRow.viewUrl}</code>
+        <CopyButton value={keyRow.viewUrl} label="Профиль" />
+      </div>
+      <div className="secret-key-field">
+        <code>{DOCS_URL}</code>
+        <CopyButton value={DOCS_URL} label="Документация" />
+      </div>
+      <div className="openkeys-issued-foot">
+        <CopyButton value={handoverText(keyRow)} label="Сообщение покупателю" primary />
+        <button
+          className="btn btn-ghost btn-sm"
+          type="button"
+          disabled={busy}
+          onClick={() => onUpdate(keyRow.id, "deliver")}
+        >
+          Выдан
+        </button>
+        <button
+          className="btn btn-ghost btn-sm openkeys-danger"
+          type="button"
+          disabled={busy}
+          onClick={() => onUpdate(keyRow.id, "remove")}
+        >
+          Удалить
+        </button>
+      </div>
+    </article>
+  );
+}
+
 export default function AdminPage() {
   const [authorized, setAuthorized] = useState(false);
   const [checking, setChecking] = useState(true);
+  const [admin, setAdmin] = useState<string | null>(null);
   const [keys, setKeys] = useState<StockKey[]>([]);
+  const [batches, setBatches] = useState<BatchRow[]>([]);
+  const [openBatch, setOpenBatch] = useState<string | null>(null);
+  const [showIssueForm, setShowIssueForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -69,9 +139,11 @@ export default function AdminPage() {
       setChecking(false);
       return;
     }
-    const payload = (await response.json()) as { keys: StockKey[] };
+    const payload = (await response.json()) as { admin: string; keys: StockKey[]; batches: BatchRow[] };
     setAuthorized(true);
+    setAdmin(payload.admin);
     setKeys(payload.keys);
+    setBatches(payload.batches);
     setChecking(false);
   }, []);
 
@@ -120,6 +192,7 @@ export default function AdminPage() {
         setError(payload.error ?? "Не удалось выпустить ключи");
         return;
       }
+      setShowIssueForm(false);
       await refresh();
     } finally {
       setBusy(false);
@@ -173,7 +246,7 @@ export default function AdminPage() {
           <div className="app-body-in">
             <section className="wrap openkeys-narrow">
               <div className="page-heading">
-                <span className="eyebrow">OpenKeys</span>
+                <span className="eyebrow">apiToken</span>
                 <h1 className="p-h1">Вход в админку</h1>
               </div>
               <form className="card" onSubmit={login}>
@@ -199,101 +272,186 @@ export default function AdminPage() {
 
   const stock = keys.filter((key) => key.status === "stock");
   const history = keys.filter((key) => key.status !== "stock");
-  const allStockText = stock.map((key) => handoverText(key)).join("\n\n———\n\n");
+
+  // Склад группируем по номиналу: продавать удобнее пачками одного достоинства.
+  const groups = new Map<string, StockKey[]>();
+  for (const key of stock) {
+    const bucket = groups.get(key.faceValueNano);
+    if (bucket) bucket.push(key);
+    else groups.set(key.faceValueNano, [key]);
+  }
+  const groupList = [...groups.entries()].sort(([left], [right]) => {
+    const difference = BigInt(right) - BigInt(left);
+    return difference > 0n ? 1 : difference < 0n ? -1 : 0;
+  });
 
   return (
     <AppShell
       section="profile"
       title="Выпуск ключей"
       actions={
-        <button className="btn btn-ghost btn-sm" type="button" onClick={logout}>
-          Выйти
-        </button>
+        <>
+          <button className="btn btn-primary btn-sm" type="button" onClick={() => setShowIssueForm((open) => !open)}>
+            {showIssueForm ? "Закрыть" : "Выпустить пачку"}
+          </button>
+          <button className="btn btn-ghost btn-sm" type="button" onClick={logout}>
+            Выйти
+          </button>
+        </>
       }
     >
       <div className="app-body">
         <div className="app-body-in">
-          <form className="card" onSubmit={issue}>
-            <div className="openkeys-form-grid">
-              <div className="field">
-                <label htmlFor="faceValueUsd">Номинал ключа, $</label>
-                <input id="faceValueUsd" name="faceValueUsd" defaultValue="50" inputMode="numeric" />
-                <span className="field-hint">баланс Claude API</span>
+          {admin ? <p className="field-hint">Показаны только ключи, выпущенные под учёткой {admin}.</p> : null}
+          {error ? <div className="banner banner-error">{error}</div> : null}
+
+          {showIssueForm ? (
+            <form className="card" onSubmit={issue}>
+              <div className="openkeys-form-grid">
+                <div className="field">
+                  <label htmlFor="faceValueUsd">Номинал ключа, $</label>
+                  <input id="faceValueUsd" name="faceValueUsd" defaultValue="50" inputMode="numeric" />
+                  <span className="field-hint">баланс Claude API</span>
+                </div>
+                <div className="field">
+                  <label htmlFor="quantity">Количество</label>
+                  <input id="quantity" name="quantity" defaultValue="1" inputMode="numeric" />
+                  <span className="field-hint">до 100 за раз</span>
+                </div>
+                <div className="field">
+                  <label htmlFor="label">Метка партии</label>
+                  <input id="label" name="label" placeholder="funpay-july" />
+                  <span className="field-hint">чтобы отличать поставки</span>
+                </div>
               </div>
-              <div className="field">
-                <label htmlFor="quantity">Количество</label>
-                <input id="quantity" name="quantity" defaultValue="1" inputMode="numeric" />
-                <span className="field-hint">до 100 за раз</span>
-              </div>
-              <div className="field">
-                <label htmlFor="label">Метка партии</label>
-                <input id="label" name="label" placeholder="funpay-july" />
-                <span className="field-hint">чтобы отличать поставки</span>
-              </div>
-            </div>
-            {error ? <div className="banner banner-error">{error}</div> : null}
-            <button className="btn btn-primary" type="submit" disabled={busy}>
-              {busy ? "Выпускаем…" : "Выпустить"}
-            </button>
-          </form>
+              <button className="btn btn-primary" type="submit" disabled={busy}>
+                {busy ? "Выпускаем…" : "Выпустить"}
+              </button>
+            </form>
+          ) : null}
 
           <section className="dsec">
             <div className="dsec-head analytics-heading">
               <div>
                 <h2>Склад · {stock.length}</h2>
-                <p>Ключи, готовые к продаже. После отметки «выдан» ключ уходит в историю.</p>
+                <p>Ключи, готовые к продаже. Они остаются здесь до отметки «выдан» или снятия.</p>
               </div>
-              {stock.length > 0 ? (
-                <div className="overview-card-actions">
-                  <CopyButton value={allStockText} label="Скопировать весь склад" />
-                </div>
-              ) : null}
             </div>
 
             {stock.length === 0 ? (
-              <div className="empty-box">Склад пуст — выпустите ключи формой выше</div>
+              <div className="empty-box">Склад пуст — выпустите пачку кнопкой сверху</div>
             ) : (
-              stock.map((key) => (
-                <article className="card openkeys-issued" key={key.id}>
-                  <div className="openkeys-issued-head">
-                    <span className="pill">{key.faceValue}</span>
-                    {key.label ? <span className="chip">{key.label}</span> : null}
-                    <span className="muted-note">{key.createdAt.slice(0, 10)}</span>
+              groupList.map(([faceValueNano, groupKeys]) => (
+                <div key={faceValueNano} className="openkeys-group">
+                  <div className="openkeys-group-head">
+                    <h3>
+                      {groupKeys[0]!.faceValue} · {groupKeys.length} шт.
+                    </h3>
+                    <CopyButton
+                      value={groupKeys.map((key) => handoverText(key)).join("\n\n———\n\n")}
+                      label="Скопировать группу"
+                    />
                   </div>
-                  <div className="secret-key-field">
-                    <code>{key.secret ?? key.keyMasked}</code>
-                    {key.secret ? <CopyButton value={key.secret} label="Ключ" /> : null}
-                  </div>
-                  <div className="secret-key-field">
-                    <code>{BASE_URL}</code>
-                    <CopyButton value={BASE_URL} label="Base URL" />
-                  </div>
-                  <div className="secret-key-field">
-                    <code>{key.viewUrl}</code>
-                    <CopyButton value={key.viewUrl} label="Профиль" />
-                  </div>
-                  <div className="openkeys-issued-foot">
-                    <CopyButton value={handoverText(key)} label="Сообщение покупателю" primary />
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void updateKey(key.id, "deliver")}
-                    >
-                      Выдан
-                    </button>
-                    <button
-                      className="btn btn-ghost btn-sm openkeys-danger"
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void updateKey(key.id, "remove")}
-                    >
-                      Удалить
-                    </button>
-                  </div>
-                </article>
+                  {groupKeys.map((key) => (
+                    <KeyCard key={key.id} keyRow={key} busy={busy} onUpdate={updateKey} />
+                  ))}
+                </div>
               ))
             )}
+          </section>
+
+          <section className="dsec">
+            <div className="dsec-head analytics-heading">
+              <div>
+                <h2>Партии</h2>
+                <p>Откройте партию, чтобы увидеть выпущенные в ней ключи.</p>
+              </div>
+            </div>
+            <div className="table-scroll" role="region" tabIndex={0} aria-label="Партии">
+              <table className="mtable">
+                <thead>
+                  <tr>
+                    <th>Дата</th>
+                    <th>Метка</th>
+                    <th className="tnum">Номинал</th>
+                    <th className="tnum">Шт.</th>
+                    <th className="tnum">На складе</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {batches.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="empty-cell">
+                        Пока ничего не выпускали
+                      </td>
+                    </tr>
+                  ) : (
+                    batches.map((batch) => {
+                      const inStock = keys.filter(
+                        (key) => key.batchId === batch.id && key.status === "stock",
+                      ).length;
+                      return (
+                        <tr key={batch.id}>
+                          <td>{batch.createdAt.slice(0, 10)}</td>
+                          <td>{batch.label ?? "—"}</td>
+                          <td className="tnum">{batch.faceValue}</td>
+                          <td className="tnum">{batch.quantity}</td>
+                          <td className="tnum">{inStock}</td>
+                          <td>
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              type="button"
+                              onClick={() => setOpenBatch((current) => (current === batch.id ? null : batch.id))}
+                            >
+                              {openBatch === batch.id ? "Скрыть" : "Открыть"}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {openBatch ? (
+              <div className="openkeys-group">
+                <div className="openkeys-group-head">
+                  <h3>Ключи партии</h3>
+                </div>
+                <div className="table-scroll" role="region" tabIndex={0} aria-label="Ключи партии">
+                  <table className="mtable">
+                    <thead>
+                      <tr>
+                        <th>Ключ</th>
+                        <th>Статус</th>
+                        <th className="tnum">Номинал</th>
+                        <th>Профиль</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {keys
+                        .filter((key) => key.batchId === openBatch)
+                        .map((key) => (
+                          <tr key={key.id}>
+                            <td>
+                              <code className="key-mask">{key.keyMasked}</code>
+                            </td>
+                            <td>{STATUS_LABEL[key.status]}</td>
+                            <td className="tnum">{key.faceValue}</td>
+                            <td>
+                              <a href={key.viewUrl} target="_blank" rel="noreferrer">
+                                открыть
+                              </a>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : null}
           </section>
 
           <section className="dsec">

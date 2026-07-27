@@ -199,12 +199,15 @@ export type StockStatus = "stock" | "delivered" | "removed";
 
 export interface StockKey {
   id: string;
+  batchId: string;
   status: StockStatus;
   /** Секрет доступен только пока ключ лежит на складе. */
   secret: string | null;
   keyMasked: string;
   viewUrl: string;
   faceValue: string;
+  /** Номинал строкой нанодолларов — по нему группируем склад. */
+  faceValueNano: string;
   label: string | null;
   createdAt: string;
   deliveredAt: string | null;
@@ -217,13 +220,17 @@ function stockStatusOf(row: { deliveredAt: Date | null; removedAt: Date | null }
   return "stock";
 }
 
-/** Весь склад и история одним запросом: строк здесь мало, а порядок нужен общий. */
-export async function listKeys(limit = 500): Promise<StockKey[]> {
+/**
+ * Склад и история одним запросом: строк мало, а порядок нужен общий.
+ * Видно только то, что выпустил сам админ — партии принадлежат тому, кто их создал.
+ */
+export async function listKeys(createdBy: string, limit = 500): Promise<StockKey[]> {
   const config = loadConfig();
   const { db } = getDatabase();
   const rows = await db
     .select({
       id: openkeysKeys.id,
+      batchId: openkeysKeys.batchId,
       keyMasked: openkeysKeys.keyMasked,
       viewToken: openkeysKeys.viewToken,
       faceValueNano: openkeysKeys.faceValueNano,
@@ -235,7 +242,8 @@ export async function listKeys(limit = 500): Promise<StockKey[]> {
       label: openkeysBatches.label,
     })
     .from(openkeysKeys)
-    .leftJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
+    .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
+    .where(eq(openkeysBatches.createdBy, createdBy))
     .orderBy(desc(openkeysKeys.createdAt))
     .limit(limit);
 
@@ -248,11 +256,13 @@ export async function listKeys(limit = 500): Promise<StockKey[]> {
 
     return {
       id: row.id,
+      batchId: row.batchId,
       status,
       secret,
       keyMasked: row.keyMasked,
       viewUrl: `${config.publicBaseUrl}/profile/${row.viewToken}`,
       faceValue: formatUsd(row.faceValueNano, 0),
+      faceValueNano: row.faceValueNano.toString(),
       label: row.label,
       createdAt: row.createdAt.toISOString(),
       deliveredAt: row.deliveredAt?.toISOString() ?? null,
@@ -265,8 +275,10 @@ export async function listKeys(limit = 500): Promise<StockKey[]> {
  * Отметка «выдан»: ключ уходит со склада в историю. Секрет стираем — он уже у
  * покупателя, а хранить его дальше значит держать лишний риск без пользы.
  */
-export async function markKeyDelivered(id: string): Promise<boolean> {
+export async function markKeyDelivered(id: string, createdBy: string): Promise<boolean> {
   const { db } = getDatabase();
+  if (!(await ownsKey(id, createdBy))) return false;
+
   const updated = await db
     .update(openkeysKeys)
     .set({ deliveredAt: new Date(), secretCiphertext: null, secretNonce: null })
@@ -275,12 +287,26 @@ export async function markKeyDelivered(id: string): Promise<boolean> {
   return updated.length > 0;
 }
 
+/** Ключ принадлежит тому, кто выпустил его партию: чужой трогать нельзя. */
+async function ownsKey(id: string, createdBy: string): Promise<boolean> {
+  const { db } = getDatabase();
+  const [row] = await db
+    .select({ id: openkeysKeys.id })
+    .from(openkeysKeys)
+    .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
+    .where(and(eq(openkeysKeys.id, id), eq(openkeysBatches.createdBy, createdBy)))
+    .limit(1);
+  return row !== undefined;
+}
+
 /**
  * Снятие со склада: ключ отключается в движке, иначе «удалённый» ключ остался бы
  * рабочим. Деньги остаются на аккаунте — их всегда можно вернуть в оборот.
  */
-export async function removeKey(id: string): Promise<boolean> {
+export async function removeKey(id: string, createdBy: string): Promise<boolean> {
   const { db } = getDatabase();
+  if (!(await ownsKey(id, createdBy))) return false;
+
   const [row] = await db
     .select({ engineKeyId: openkeysKeys.engineKeyId })
     .from(openkeysKeys)
@@ -299,15 +325,26 @@ export async function removeKey(id: string): Promise<boolean> {
 export interface BatchSummary {
   id: string;
   label: string | null;
-  note: string | null;
-  faceValueNano: bigint;
-  multBp: number;
+  faceValue: string;
   quantity: number;
-  createdAt: Date;
-  createdBy: string;
+  createdAt: string;
 }
 
-export async function listBatches(limit = 50): Promise<BatchSummary[]> {
+/** Партии этого админа. Состав партии страница берёт из общего списка ключей. */
+export async function listBatches(createdBy: string, limit = 200): Promise<BatchSummary[]> {
   const { db } = getDatabase();
-  return db.select().from(openkeysBatches).orderBy(desc(openkeysBatches.createdAt)).limit(limit);
+  const rows = await db
+    .select()
+    .from(openkeysBatches)
+    .where(eq(openkeysBatches.createdBy, createdBy))
+    .orderBy(desc(openkeysBatches.createdAt))
+    .limit(limit);
+
+  return rows.map((row) => ({
+    id: row.id,
+    label: row.label,
+    faceValue: formatUsd(row.faceValueNano, 0),
+    quantity: row.quantity,
+    createdAt: row.createdAt.toISOString(),
+  }));
 }

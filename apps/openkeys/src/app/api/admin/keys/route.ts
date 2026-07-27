@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { listKeys, markKeyDelivered, removeKey } from "@/lib/keys";
+import { listBatches, listKeys, markKeyDelivered, removeKey } from "@/lib/keys";
 import { currentAdmin } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -10,13 +10,17 @@ function unauthorized(): NextResponse {
 }
 
 export async function GET(): Promise<NextResponse> {
-  if (!(await currentAdmin())) return unauthorized();
-  return NextResponse.json({ keys: await listKeys() });
+  const admin = await currentAdmin();
+  if (!admin) return unauthorized();
+
+  const [keys, batches] = await Promise.all([listKeys(admin), listBatches(admin)]);
+  return NextResponse.json({ admin, keys, batches });
 }
 
-/** Отметка «выдан» или снятие со склада. */
+/** Отметка «выдан» или снятие со склада. Чужие ключи недоступны. */
 export async function POST(request: Request): Promise<NextResponse> {
-  if (!(await currentAdmin())) return unauthorized();
+  const admin = await currentAdmin();
+  if (!admin) return unauthorized();
 
   let body: { id?: unknown; action?: unknown };
   try {
@@ -32,7 +36,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   try {
-    const applied = action === "deliver" ? await markKeyDelivered(id) : await removeKey(id);
+    const applied = action === "deliver" ? await markKeyDelivered(id, admin) : await removeKey(id, admin);
     if (!applied) return NextResponse.json({ error: "not_found" }, { status: 404 });
     return NextResponse.json({ ok: true });
   } catch {
