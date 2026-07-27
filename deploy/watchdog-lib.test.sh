@@ -385,6 +385,7 @@ const root = process.argv[2];
 const required = new Set([
   "apps/api",
   "apps/content-studio",
+  "apps/openkeys",
   "apps/sales-api",
   "apps/web",
   "apps/worker",
@@ -396,6 +397,10 @@ const required = new Set([
 const explicitlyTestless = new Set([
   "apps/sales-web",
   "packages/contracts",
+  // Только схема, пул и раннер миграций: собственной логики, которую можно
+  // проверить в отрыве от PostgreSQL, здесь нет. Денежная арифметика OpenKeys
+  // живёт в apps/openkeys и покрыта там.
+  "packages/openkeys-db",
 ]);
 const discovered = [];
 for (const parent of ["apps", "packages"]) {

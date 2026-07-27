@@ -6,7 +6,8 @@
     "dev": "next dev -p 3400",
     "build": "next build",
     "start": "next start -p 3400",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --no-file-parallelism"
   },
   "dependencies": {
     "@claude-api/engine-client": "workspace:*",
@@ -23,6 +24,7 @@
     "@types/pg": "^8.15.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
-    "typescript": "^5.8.0"
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
   }
 }
