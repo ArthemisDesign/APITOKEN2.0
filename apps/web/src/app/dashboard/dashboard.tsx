@@ -305,7 +305,7 @@ export function Dashboard() {
       </div>
     </aside>
     <button className={`side-scrim ${sideOpen ? "show" : ""}`} onClick={() => setSideOpen(false)} aria-label={copy.closeMenu} />
-    <main className="app-main">
+    <main className={`app-main${section === "overview" ? " app-main-overview" : ""}`}>
       <header className="app-top">
         <div className="app-top-in">
           <button className="app-burger" onClick={() => setSideOpen(true)} aria-label={copy.menu}>☰</button>

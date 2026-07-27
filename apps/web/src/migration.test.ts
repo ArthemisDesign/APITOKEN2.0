@@ -204,8 +204,11 @@ describe("completed Next.js migration", () => {
     expect(dashboard).toContain('className="app-top-in"');
     expect(dashboard).toContain('className="overview-pricing-facts"');
     expect(dashboard.match(/copy\.payPerOfficialDollar/g)).toHaveLength(1);
-    expect(styles).toContain(".overview-primary-grid,.overview-metrics-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}");
-    expect(styles).toContain(".overview-balance-card{container-type:inline-size;display:flex;grid-column:span 2;");
+    expect(dashboard).toContain('className={`app-main${section === "overview" ? " app-main-overview" : ""}`}');
+    expect(styles).toContain(".overview-primary-grid{display:grid;grid-template-columns:minmax(0,1.68fr) minmax(320px,.82fr);gap:20px}");
+    expect(styles).toContain(".overview-metrics-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}");
+    expect(styles).toContain(".overview-panel{display:grid;gap:20px;font-family:var(--font-ui)");
+    expect(styles).toContain(".overview-balance-card{position:relative;container-type:inline-size;display:flex;");
     expect(styles).toContain("@media(max-width:960px){\n  .overview-primary-grid{grid-template-columns:1fr}\n  .overview-balance-card{grid-column:auto}");
     expect(dashboard).toContain("officialBalance");
     expect(dashboardCopy).toContain('platformBalance: "Available credit"');
