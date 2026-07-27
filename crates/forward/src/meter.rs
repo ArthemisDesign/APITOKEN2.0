@@ -44,7 +44,9 @@ pub struct MeterCtx {
 
 /// Non-SSE usage is a trailing field of one JSON document, so retain at most the public response
 /// limit. SSE is filtered incrementally: only message_start/message_delta/error events are kept;
-/// content deltas pass through byte-for-byte without a second in-memory copy.
+/// content deltas pass through byte-for-byte without a second in-memory copy. Their delivered UTF-8
+/// byte count and observed web-search calls are tracked separately for a conservative truncated-
+/// stream charge when the terminal message_delta never arrives.
 const JSON_ACC_CAP: usize = 32 * 1024 * 1024;
 const SSE_USAGE_CAP: usize = 1024 * 1024;
 const SSE_LINE_CAP: usize = 1024 * 1024;
@@ -91,6 +93,9 @@ pub struct TeeMeter {
     acc: Vec<u8>,
     sse_line: Vec<u8>,
     sse_drop_line: bool,
+    sse_delta_bytes: u64,
+    sse_web_search_requests: u64,
+    sse_output_tokens: Option<u64>,
     lease_heartbeat: Option<tokio::task::JoinHandle<()>>,
     ctx: Option<MeterCtx>, // берётся ровно один раз (finalize идемпотентен)
 }
@@ -130,6 +135,9 @@ impl TeeMeter {
             acc: Vec::new(),
             sse_line: Vec::new(),
             sse_drop_line: false,
+            sse_delta_bytes: 0,
+            sse_web_search_requests: 0,
+            sse_output_tokens: None,
             lease_heartbeat,
             ctx: Some(ctx),
         }
@@ -163,8 +171,47 @@ impl TeeMeter {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
                 continue;
             };
+            let event_type = value.get("type").and_then(serde_json::Value::as_str);
+            match event_type {
+                Some("content_block_start") => {
+                    let block = value.get("content_block");
+                    if block
+                        .and_then(|block| block.get("type"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some("server_tool_use")
+                        && block
+                            .and_then(|block| block.get("name"))
+                            .and_then(serde_json::Value::as_str)
+                            == Some("web_search")
+                    {
+                        self.sse_web_search_requests =
+                            self.sse_web_search_requests.saturating_add(1);
+                    }
+                }
+                Some("content_block_delta") => {
+                    if let Some(delta) = value.get("delta") {
+                        for field in ["text", "thinking", "partial_json"] {
+                            if let Some(text) = delta.get(field).and_then(serde_json::Value::as_str)
+                            {
+                                self.sse_delta_bytes =
+                                    self.sse_delta_bytes.saturating_add(text.len() as u64);
+                            }
+                        }
+                    }
+                }
+                Some("message_delta") => {
+                    if let Some(output_tokens) = value
+                        .get("usage")
+                        .and_then(|usage| usage.get("output_tokens"))
+                        .and_then(serde_json::Value::as_u64)
+                    {
+                        self.sse_output_tokens = Some(output_tokens);
+                    }
+                }
+                _ => {}
+            }
             let relevant = matches!(
-                value.get("type").and_then(serde_json::Value::as_str),
+                event_type,
                 Some("message_start" | "message_delta" | "error")
             );
             if relevant && self.acc.len().saturating_add(line.len() + 8) <= SSE_USAGE_CAP {
@@ -191,6 +238,13 @@ impl TeeMeter {
         }
         let (usage, served_model, incomplete_non_sse, us_inference, speed) = if ctx.is_sse {
             let s = String::from_utf8_lossy(&self.acc);
+            let mut usage = metering::usage_from_sse(&s);
+            usage.web_search_requests = usage.web_search_requests.max(self.sse_web_search_requests);
+            if let Some(output_tokens) = self.sse_output_tokens {
+                usage.output_tokens = output_tokens;
+            } else {
+                usage.output_tokens = usage.output_tokens.max(self.sse_delta_bytes);
+            }
             // ошибка ВНУТРИ стрима после 200 (overloaded посреди генерации) — HTTP-код её не отражал,
             // ротация уже невозможна; логируем, чтобы не была «тихой» (клиент получил её байт-в-байт).
             if metering::sse_has_error(&s) {
@@ -200,7 +254,7 @@ impl TeeMeter {
                 );
             }
             (
-                metering::usage_from_sse(&s),
+                usage,
                 metering::model_from_sse(&s),
                 false,
                 sse_has_us_inference(&s),
@@ -355,6 +409,230 @@ impl TeeMeter {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::StreamExt;
+    use pool::Reserve;
+    use registry::Sub;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const ACCOUNT_ID: &str = "acct";
+    const KEY: &str = "sk-pool-meter-test";
+    const EMAIL: &str = "subscription@example.test";
+    const TOPUP_NANO: i64 = 1_000_000_000;
+    const HOLD_NANO: i64 = 500_000_000;
+
+    struct BilledSse {
+        delivered: Vec<u8>,
+        balance_nano: i64,
+        reserved_nano: i64,
+        usage: registry::UsageModelAgg,
+    }
+
+    async fn bill_sse(sse: &[u8], drop_after_first_chunk: bool) -> BilledSse {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-tee-meter-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let billing = Arc::new(
+            AsyncBilling::start(path.to_string_lossy().into_owned(), 1)
+                .expect("start test billing"),
+        );
+        billing
+            .create_account(ACCOUNT_ID, None, 10_000)
+            .await
+            .unwrap();
+        billing
+            .topup(ACCOUNT_ID, TOPUP_NANO, Some("seed"))
+            .await
+            .unwrap();
+        billing
+            .issue_key(KEY, ACCOUNT_ID, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            billing
+                .reserve_request("request", ACCOUNT_ID, KEY, HOLD_NANO)
+                .await
+                .unwrap(),
+            Some(TOPUP_NANO - HOLD_NANO)
+        );
+
+        let pool = Arc::new(Pool::new(
+            vec![Sub {
+                email: EMAIL.into(),
+                token: "secret".into(),
+                proxy: String::new(),
+                fleet: "test".into(),
+                plan: "max20".into(),
+            }],
+            Reserve::FULL,
+            50.0,
+            1_500.0,
+        ));
+        pool.mark_used(EMAIL);
+
+        // Seventeen-byte chunks split both SSE lines and multi-byte UTF-8 code points. The exact
+        // upstream bytes must still be returned unchanged while the side-channel meter observes
+        // complete logical events.
+        let frames = sse
+            .chunks(17)
+            .map(Bytes::copy_from_slice)
+            .map(Ok::<_, std::io::Error>)
+            .collect::<Vec<_>>();
+        let inner: ByteStream = Box::pin(futures_util::stream::iter(frames));
+        let mut meter = TeeMeter::new(
+            inner,
+            MeterCtx {
+                pool,
+                email: EMAIL.into(),
+                model: "claude-sonnet-4-6".into(),
+                is_sse: true,
+                bill: Some(BillCtx {
+                    billing: Arc::clone(&billing),
+                    account_id: ACCOUNT_ID.into(),
+                    key: KEY.into(),
+                    mult_bp: 10_000,
+                    hold: HOLD_NANO,
+                    request_id: "request".into(),
+                    reference: None,
+                }),
+                capacity: None,
+            },
+        );
+        let mut delivered = Vec::new();
+        if drop_after_first_chunk {
+            delivered.extend_from_slice(&meter.next().await.unwrap().unwrap());
+            drop(meter);
+        } else {
+            while let Some(frame) = meter.next().await {
+                delivered.extend_from_slice(&frame.unwrap());
+            }
+        }
+
+        let account = loop {
+            billing.flush().await.unwrap();
+            let account = billing.account(ACCOUNT_ID).await.unwrap().unwrap();
+            if account.reserved_nano == 0 {
+                break account;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        };
+        let mut usage = billing.usage_by_model(ACCOUNT_ID, 0).await.unwrap();
+        assert_eq!(usage.len(), 1);
+        let outcome = BilledSse {
+            delivered,
+            balance_nano: account.balance_nano,
+            reserved_nano: account.reserved_nano,
+            usage: usage.remove(0),
+        };
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+        outcome
+    }
+
+    fn message_start() -> String {
+        format!(
+            "data: {}\n\n",
+            serde_json::json!({
+                "type": "message_start",
+                "message": {
+                    "model": "claude-sonnet-4-6",
+                    "usage": {"input_tokens": 10, "output_tokens": 1}
+                }
+            })
+        )
+    }
+
+    #[tokio::test]
+    async fn truncated_sse_charges_delivered_utf8_bytes_and_web_search() {
+        let text = "🙂".repeat(1_000);
+        assert_eq!(text.len(), 4_000);
+        let sse = format!(
+            "{}data: {}\n\ndata: {}\n\n",
+            message_start(),
+            serde_json::json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "server_tool_use",
+                    "id": "srvtoolu_1",
+                    "name": "web_search"
+                }
+            }),
+            serde_json::json!({
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "text_delta", "text": text}
+            }),
+        );
+
+        let outcome = bill_sse(sse.as_bytes(), false).await;
+        assert_eq!(outcome.delivered, sse.as_bytes());
+        assert_eq!(outcome.reserved_nano, 0);
+        // Sonnet: 10 input * 3,000 + 4,000 output * 15,000 + one $0.01 web search.
+        assert_eq!(outcome.balance_nano, TOPUP_NANO - 70_030_000);
+        assert_eq!(outcome.usage.input_tokens, 10);
+        assert_eq!(outcome.usage.output_tokens, 4_000);
+        assert_eq!(outcome.usage.web_search_requests, 1);
+        assert_eq!(outcome.usage.charge_nano, 70_030_000);
+    }
+
+    #[tokio::test]
+    async fn terminal_sse_usage_overrides_observed_delta_bytes() {
+        let text = "🙂".repeat(1_000);
+        let sse = format!(
+            "{}data: {}\n\ndata: {}\n\n",
+            message_start(),
+            serde_json::json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": text}
+            }),
+            serde_json::json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 2}
+            }),
+        );
+
+        let outcome = bill_sse(sse.as_bytes(), false).await;
+        assert_eq!(outcome.delivered, sse.as_bytes());
+        assert_eq!(outcome.reserved_nano, 0);
+        assert_eq!(outcome.balance_nano, TOPUP_NANO - 60_000);
+        assert_eq!(outcome.usage.input_tokens, 10);
+        assert_eq!(outcome.usage.output_tokens, 2);
+        assert_eq!(outcome.usage.web_search_requests, 0);
+        assert_eq!(outcome.usage.charge_nano, 60_000);
+    }
+
+    #[tokio::test]
+    async fn downstream_abort_drains_truncated_upstream_before_billing() {
+        let text = "🙂".repeat(1_000);
+        let sse = format!(
+            "{}data: {}\n\n",
+            message_start(),
+            serde_json::json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": text}
+            }),
+        );
+
+        let outcome = bill_sse(sse.as_bytes(), true).await;
+        assert_eq!(outcome.delivered, &sse.as_bytes()[..17]);
+        assert_eq!(outcome.reserved_nano, 0);
+        assert_eq!(outcome.balance_nano, TOPUP_NANO - 60_030_000);
+        assert_eq!(outcome.usage.output_tokens, 4_000);
+        assert_eq!(outcome.usage.charge_nano, 60_030_000);
+    }
+}
+
 impl Stream for TeeMeter {
     type Item = Result<Bytes, std::io::Error>;
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -398,6 +676,9 @@ impl Drop for TeeMeter {
             let acc = std::mem::take(&mut self.acc);
             let sse_line = std::mem::take(&mut self.sse_line);
             let sse_drop_line = self.sse_drop_line;
+            let sse_delta_bytes = self.sse_delta_bytes;
+            let sse_web_search_requests = self.sse_web_search_requests;
+            let sse_output_tokens = self.sse_output_tokens;
             let lease_heartbeat = self.lease_heartbeat.take();
             handle.spawn(async move {
                 use futures_util::StreamExt;
@@ -406,6 +687,9 @@ impl Drop for TeeMeter {
                     acc,
                     sse_line,
                     sse_drop_line,
+                    sse_delta_bytes,
+                    sse_web_search_requests,
+                    sse_output_tokens,
                     lease_heartbeat,
                     ctx,
                 };
