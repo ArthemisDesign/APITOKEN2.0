@@ -1029,7 +1029,7 @@ async function verifyApiKeysLayout(client) {
     try {
       await waitForCondition(
         client,
-        `Boolean(document.querySelector('.keys-toolbar')) && document.querySelectorAll('.keys-filter-tab').length === 3 && Boolean(document.querySelector('.lang button, .lang a'))`,
+        `Boolean(document.querySelector('.keys-toolbar')) && document.querySelectorAll('.keys-filter-tab').length === 5 && document.querySelectorAll('.keys-health-card').length === 4 && Boolean(document.querySelector('.lang button, .lang a'))`,
         `${layoutCase.name} API key manager shell`,
       );
     } catch (error) {
@@ -1080,6 +1080,9 @@ async function verifyApiKeysLayout(client) {
       expression: `(() => {
         const rect = (selector) => document.querySelector(selector)?.getBoundingClientRect();
         const heading = rect('.keys-heading-row');
+        const health = rect('.keys-health-grid');
+        const dock = rect('.agent-connect-dock');
+        const manager = rect('.keys-manager-head');
         const toolbar = rect('.keys-toolbar');
         const tabs = rect('.keys-filter-tabs');
         const keys = rect('.key-table-wrap');
@@ -1091,15 +1094,18 @@ async function verifyApiKeysLayout(client) {
           language: document.documentElement.lang,
           theme: document.documentElement.dataset.theme || 'light',
           overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-          aligned: Boolean(heading && toolbar && keys && Math.abs(heading.left - toolbar.left) < 2 && Math.abs(toolbar.left - keys.left) < 2 && Math.abs(toolbar.right - keys.right) < 2),
+          aligned: Boolean(heading && health && dock && manager && toolbar && keys &&
+            Math.max(heading.left, health.left, dock.left, manager.left, toolbar.left, keys.left) - Math.min(heading.left, health.left, dock.left, manager.left, toolbar.left, keys.left) < 2 &&
+            Math.max(health.right, dock.right, manager.right, toolbar.right, keys.right) - Math.min(health.right, dock.right, manager.right, toolbar.right, keys.right) < 2),
           separated: Boolean(toolbar && key && key.top - toolbar.bottom >= 12),
           distinctSurface: toolbarStyle.backgroundColor !== keyStyle.backgroundColor && toolbarStyle.borderRadius !== keyStyle.borderRadius,
           controlsFit: Boolean(tabs && tabs.right <= innerWidth + 1 && document.querySelector('.keys-filter-tabs').scrollWidth <= document.querySelector('.keys-filter-tabs').clientWidth + 1),
           tabRows: new Set(tabRects.map((entry) => Math.round(entry.top))).size,
-          equalMobileTabs: innerWidth >= 620 || Math.max(...tabRects.map((entry) => entry.width)) - Math.min(...tabRects.map((entry) => entry.width)) < 2,
+          equalTabHeights: Math.max(...tabRects.map((entry) => entry.height)) - Math.min(...tabRects.map((entry) => entry.height)) < 2,
           label: document.querySelector('.keys-filter-tabs')?.getAttribute('aria-label'),
           counts: [...document.querySelectorAll('.keys-filter-tab b')].map((element) => element.textContent?.trim()),
           activeFilter: document.querySelector('.keys-filter-tab[aria-pressed="true"]')?.dataset.keyFilter,
+          healthValues: [...document.querySelectorAll('.keys-health-card strong')].map((element) => element.textContent?.trim()),
           policyStates: ['near-limit','expires-soon','limit','expired'].map((state) => Boolean(document.querySelector('.key-row-' + state))),
         });
       })()`,
@@ -1107,10 +1113,23 @@ async function verifyApiKeysLayout(client) {
     });
     const state = JSON.parse(result.result.value);
     const expectedTheme = layoutCase.theme === "dark" ? "dark" : "light";
-    if (state.language !== layoutCase.language || state.theme !== expectedTheme || state.overflow > 1 || !state.aligned || !state.separated || !state.distinctSurface || !state.controlsFit || state.tabRows !== 1 || !state.equalMobileTabs || state.label !== layoutCase.label || state.counts.join(",") !== "4,1,5" || state.activeFilter !== "active" || state.policyStates.some((present) => !present)) {
+    const expectedTabRows = layoutCase.width > 620 ? 1 : 3;
+    if (state.language !== layoutCase.language || state.theme !== expectedTheme || state.overflow > 1 || !state.aligned || !state.separated || !state.distinctSurface || !state.controlsFit || state.tabRows !== expectedTabRows || !state.equalTabHeights || state.label !== layoutCase.label || state.counts.join(",") !== "4,2,4,1,5" || state.activeFilter !== "current" || state.healthValues.join(",") !== "2,2,2,$18.25" || state.policyStates.some((present) => !present)) {
       throw new Error(`API keys ${layoutCase.name} layout failed: ${JSON.stringify(state)}`);
     }
 
+    await clickSelector(client, '[data-key-filter="working"]');
+    await waitForCondition(
+      client,
+      `document.querySelector('[data-key-filter="working"]')?.getAttribute('aria-pressed') === 'true' && document.querySelectorAll('.key-row').length === 2 && !document.querySelector('.key-row-expired,.key-row-limit')`,
+      `${layoutCase.name} working-key filter`,
+    );
+    await clickSelector(client, '[data-key-filter="attention"]');
+    await waitForCondition(
+      client,
+      `document.querySelector('[data-key-filter="attention"]')?.getAttribute('aria-pressed') === 'true' && document.querySelectorAll('.key-row').length === 4`,
+      `${layoutCase.name} attention-key filter`,
+    );
     await clickSelector(client, '[data-key-filter="disabled"]');
     await waitForCondition(
       client,
@@ -1173,12 +1192,16 @@ async function verifyApiKeysLayout(client) {
     await waitForCondition(client, `!document.querySelector('.key-menu[open]')`, `${layoutCase.name} API key menu outside-click dismissal`);
     await clickSelector(client, ".key-menu summary");
     const editMenuResult = await client.send("Runtime.evaluate", {
-      expression: `JSON.stringify(Array.from(document.querySelector('.key-row .key-menu-pop')?.querySelectorAll('button:not(.danger)') ?? []).map((button) => button.textContent?.trim()))`,
+      expression: `JSON.stringify({
+        edit: document.querySelector('.key-row .key-edit-action')?.textContent?.trim(),
+        docs: Boolean(document.querySelector('.key-row .key-menu-pop a')),
+        extraEditButtons: document.querySelectorAll('.key-row .key-menu-pop button:not(.danger)').length,
+      })`,
       returnByValue: true,
     });
     const editMenuItems = JSON.parse(editMenuResult.result.value);
     const expectedEditLabel = layoutCase.language === "ru" ? "Изменить" : "Edit";
-    if (editMenuItems.length !== 1 || editMenuItems[0] !== expectedEditLabel) {
+    if (editMenuItems.edit !== expectedEditLabel || !editMenuItems.docs || editMenuItems.extraEditButtons !== 0) {
       throw new Error(`API keys ${layoutCase.name} must expose one edit action: ${JSON.stringify(editMenuItems)}`);
     }
     await client.send("Runtime.evaluate", { expression: `document.querySelector('[data-key-action="edit"]')?.click()` });
@@ -1249,7 +1272,7 @@ async function verifyApiKeysLayout(client) {
     }
     await client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
     await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
-    await waitForCondition(client, `!document.querySelector('.key-edit-modal') && document.activeElement?.matches('.key-menu summary')`, `${layoutCase.name} edit focus restoration`);
+    await waitForCondition(client, `!document.querySelector('.key-edit-modal') && document.activeElement?.matches('.key-edit-action')`, `${layoutCase.name} edit focus restoration`);
 
     if (layoutCase.name === "desktop-light-en") {
       await clickSelector(client, ".key-menu summary");

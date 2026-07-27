@@ -19,7 +19,7 @@ import { checkoutAmountBucket, trackFirstProductEvent, trackProductEvent } from 
 import { dashboardHref, parseDashboardSection, type DashboardSection } from "./dashboard-route";
 
 type Section = DashboardSection;
-type KeyStatusFilter = "active" | "disabled" | "all";
+type KeyStatusFilter = "current" | "working" | "attention" | "disabled" | "all";
 type OptionalDataSource = "keys" | "ledger" | "usage";
 
 const NANO_PER_USD = 1_000_000_000n;
@@ -56,16 +56,19 @@ const localDashboardCopy = {
     invalidCheckoutUrl: "The payment provider returned an unsafe checkout address. Payment was not opened.",
     invalidWholeUsd: "Enter a positive whole USD amount using digits only, without decimals, signs, separators, or leading zeros.",
     editKey: "Edit", editKeyTitle: "Edit API key", editKeyHelp: "Update the name, spending limit, or expiration in one place. Limit changes apply to new requests immediately.", labelRequired: "Enter a label before saving.", updateKeyError: "Unable to update API key",
-    filterLabel: "Filter API keys", activeFilter: "Not revoked", disabledFilter: "Revoked", allFilter: "All",
-    noActiveKeys: "No non-revoked API keys.", noDisabledKeys: "No revoked API keys.", activeStatus: "Active", disabledStatus: "Revoked",
+    filterLabel: "Filter API keys", currentFilter: "Current", workingFilter: "Working", attentionFilter: "Needs attention", disabledFilter: "Revoked", allFilter: "All",
+    noActiveKeys: "No current API keys.", noWorkingKeys: "No working API keys.", noAttentionKeys: "No keys need attention.", noDisabledKeys: "No revoked API keys.", activeStatus: "Working", disabledStatus: "Revoked",
     createKey: "Create key", createKeyTitle: "Create an API key", createKeyHelp: "Add optional guardrails now. The secret is shown only once.",
-    keyName: "Key name", keyNameHint: "For example, Production or CI", spendLimit: "Spending limit", spendLimitHint: "Lifetime platform spend cap in USD", optional: "Optional", expiration: "Expiration date", noExpiration: "Never expires", expirationHint: "Expires at the end of this day in your local time.",
+    keyName: "Key name", keyNameHint: "For example, Production or CI", keyNameHelp: "Use the environment or tool name so this credential stays recognizable.", guardrailsTitle: "Usage guardrails", guardrailsHelp: "Optional limits protect a leaked or forgotten credential without affecting your other keys.", spendLimit: "Spending limit", spendLimitHint: "Lifetime platform spend cap in USD", optional: "Optional", expiration: "Expiration date", noExpiration: "Never expires", expirationHint: "Expires at the end of this day in your local time.",
     cancel: "Cancel", creating: "Creating…", invalidSpendLimit: "Enter a positive USD amount with up to 2 decimals.", invalidExpiration: "Choose a future expiration date.",
     committedSpend: "Billed and reserved", policyLimitHint: "Leave empty for unlimited. Up to 9 decimal places.", policyExpirationHint: "Leave empty to keep this key from expiring.",
     savePolicy: "Save changes", savingPolicy: "Saving…", invalidPolicySpendLimit: "Enter a positive USD amount with up to 9 decimals.",
     policyBelowCommitted: "The limit cannot be below billed and reserved usage ({amount}).", policyReactivates: "Increasing or removing this guardrail can make the key usable immediately.",
     searchKeys: "Search by name or key suffix", sortBy: "Sort by", sortNewest: "Newest", sortName: "Name", sortSpend: "Highest spend", sortLastUsed: "Recently billed",
-    colName: "Name", colKey: "Key", colLastUsed: "Last billed", colSpend: "Spend", colLimit: "Limit", colExpires: "Expires", colStatus: "Status", colActions: "Actions",
+    keyHealthSummary: "API key health summary", usableNow: "Working now", usableNowHelp: "Can make requests", blockedNow: "Blocked", blockedNowHelp: "Expired or at limit", watchlist: "Watchlist", watchlistHelp: "Near a guardrail", totalKeySpend: "Total key spend", totalKeySpendHelp: "Lifetime billed usage",
+    keysListTitle: "Your API keys", keysListSummary: "Showing {shown} of {total} keys",
+    colName: "Integration", colKey: "Credential", colLastUsed: "Last billed", colSpend: "Usage", colLimit: "Limit", colExpires: "Expires", colStatus: "Status", colActions: "Actions",
+    spentOfLimit: "{spent} of {limit}", spentWithoutLimit: "{spent} spent · no limit", createdOn: "Created {date}", createFirstKey: "Create your first key", clearSearch: "Clear search", viewCurrentKeys: "View current keys",
     never: "Never", neverUsed: "No billed usage", unlimited: "Unlimited", expiredStatus: "Expired", limitReachedStatus: "Limit reached", expiresSoonStatus: "Expires soon", nearLimitStatus: "Near limit", moreActions: "More actions", openDocs: "Integration guide", revokeKey: "Revoke key",
     revokeTitle: "Revoke this key?", revokeBody: "Requests using this key will stop immediately. This action cannot be undone.", confirmRevoke: "Revoke key", noSearchResults: "No API keys match your search.",
     partialLedger: "Showing only the latest 100 ledger entries. Usage, key, transaction, and top-up totals based on this list may be incomplete.",
@@ -77,16 +80,19 @@ const localDashboardCopy = {
     invalidCheckoutUrl: "Платёжный сервис вернул небезопасный адрес. Страница оплаты не была открыта.",
     invalidWholeUsd: "Введите целую положительную сумму в USD только цифрами: без дробей, знаков, разделителей и ведущих нулей.",
     editKey: "Изменить", editKeyTitle: "Изменить API-ключ", editKeyHelp: "Измените название, лимит расходов или срок действия. Ограничения сразу применяются к новым запросам.", labelRequired: "Введите название перед сохранением.", updateKeyError: "Не удалось изменить API-ключ",
-    filterLabel: "Фильтр API-ключей", activeFilter: "Не отозваны", disabledFilter: "Отозванные", allFilter: "Все",
-    noActiveKeys: "Неотозванных API-ключей нет.", noDisabledKeys: "Отозванных API-ключей нет.", activeStatus: "Активен", disabledStatus: "Отозван",
+    filterLabel: "Фильтр API-ключей", currentFilter: "Текущие", workingFilter: "Работают", attentionFilter: "Требуют внимания", disabledFilter: "Отозваны", allFilter: "Все",
+    noActiveKeys: "Текущих API-ключей нет.", noWorkingKeys: "Работающих API-ключей нет.", noAttentionKeys: "Нет ключей, требующих внимания.", noDisabledKeys: "Отозванных API-ключей нет.", activeStatus: "Работает", disabledStatus: "Отозван",
     createKey: "Создать ключ", createKeyTitle: "Создать API-ключ", createKeyHelp: "При необходимости задайте ограничения. Секрет будет показан только один раз.",
-    keyName: "Название ключа", keyNameHint: "Например, Production или CI", spendLimit: "Лимит расходов", spendLimitHint: "Общий лимит расходов платформы в USD", optional: "Необязательно", expiration: "Дата истечения", noExpiration: "Без срока", expirationHint: "Ключ истечёт в конце выбранного дня по вашему местному времени.",
+    keyName: "Название ключа", keyNameHint: "Например, Production или CI", keyNameHelp: "Укажите среду или инструмент, чтобы потом легко узнать этот ключ.", guardrailsTitle: "Ограничения использования", guardrailsHelp: "Необязательные ограничения защищают забытый или утёкший ключ, не затрагивая остальные.", spendLimit: "Лимит расходов", spendLimitHint: "Общий лимит расходов платформы в USD", optional: "Необязательно", expiration: "Дата истечения", noExpiration: "Без срока", expirationHint: "Ключ истечёт в конце выбранного дня по вашему местному времени.",
     cancel: "Отмена", creating: "Создаём…", invalidSpendLimit: "Введите положительную сумму USD максимум с 2 знаками после запятой.", invalidExpiration: "Выберите будущую дату истечения.",
     committedSpend: "Списано и зарезервировано", policyLimitHint: "Оставьте пустым, чтобы убрать лимит. До 9 знаков после запятой.", policyExpirationHint: "Оставьте пустым, чтобы ключ не истекал.",
     savePolicy: "Сохранить изменения", savingPolicy: "Сохраняем…", invalidPolicySpendLimit: "Введите положительную сумму USD максимум с 9 знаками после запятой.",
     policyBelowCommitted: "Лимит не может быть меньше уже списанной и зарезервированной суммы ({amount}).", policyReactivates: "Повышение или снятие ограничения может сразу снова активировать ключ.",
     searchKeys: "Поиск по названию или окончанию ключа", sortBy: "Сортировка", sortNewest: "Сначала новые", sortName: "По названию", sortSpend: "По расходам", sortLastUsed: "Недавние списания",
-    colName: "Название", colKey: "Ключ", colLastUsed: "Последнее списание", colSpend: "Расход", colLimit: "Лимит", colExpires: "Истекает", colStatus: "Статус", colActions: "Действия",
+    keyHealthSummary: "Сводка состояния API-ключей", usableNow: "Работают", usableNowHelp: "Могут отправлять запросы", blockedNow: "Заблокированы", blockedNowHelp: "Истекли или исчерпали лимит", watchlist: "Под наблюдением", watchlistHelp: "Близки к ограничению", totalKeySpend: "Расход по ключам", totalKeySpendHelp: "За всё время",
+    keysListTitle: "Ваши API-ключи", keysListSummary: "Показано {shown} из {total}",
+    colName: "Интеграция", colKey: "Учётные данные", colLastUsed: "Последнее списание", colSpend: "Использование", colLimit: "Лимит", colExpires: "Истекает", colStatus: "Статус", colActions: "Действия",
+    spentOfLimit: "{spent} из {limit}", spentWithoutLimit: "Потрачено {spent} · без лимита", createdOn: "Создан {date}", createFirstKey: "Создать первый ключ", clearSearch: "Очистить поиск", viewCurrentKeys: "Показать текущие ключи",
     never: "Никогда", neverUsed: "Списаний не было", unlimited: "Без лимита", expiredStatus: "Истёк", limitReachedStatus: "Лимит исчерпан", expiresSoonStatus: "Скоро истечёт", nearLimitStatus: "Лимит близко", moreActions: "Другие действия", openDocs: "Инструкция подключения", revokeKey: "Отозвать ключ",
     revokeTitle: "Отозвать этот ключ?", revokeBody: "Запросы с этим ключом сразу перестанут работать. Действие нельзя отменить.", confirmRevoke: "Отозвать ключ", noSearchResults: "По вашему запросу ключи не найдены.",
     partialLedger: "Показаны только последние 100 записей журнала. Итоги использования, ключей, операций и пополнений по этому списку могут быть неполными.",
@@ -461,7 +467,7 @@ function ApiKeys({ keys, onChanged, user }: { keys: ApiKeyView[]; onChanged(): P
   const [spendLimit, setSpendLimit] = useState("");
   const [expirationDate, setExpirationDate] = useState("");
   const [totpCode, setTotpCode] = useState("");
-  const [filter, setFilter] = useState<KeyStatusFilter>("active");
+  const [filter, setFilter] = useState<KeyStatusFilter>("current");
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<"newest" | "name" | "spend" | "last-used">("newest");
   const [editTarget, setEditTarget] = useState<ApiKeyView | null>(null);
@@ -568,6 +574,7 @@ function ApiKeys({ keys, onChanged, user }: { keys: ApiKeyView[]; onChanged(): P
   }
 
   function openEdit(key: ApiKeyView, returnTarget?: HTMLElement | null) {
+    keysPanelRef.current?.querySelectorAll<HTMLDetailsElement>(".key-menu[open]").forEach((menu) => menu.removeAttribute("open"));
     dialogReturnFocusRef.current = returnTarget ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     setEditLabel(key.label ?? "");
     setPolicySpendLimit(key.spendLimitNano ? nanoToUsdInput(key.spendLimitNano) : "");
@@ -715,14 +722,24 @@ function ApiKeys({ keys, onChanged, user }: { keys: ApiKeyView[]; onChanged(): P
     finally { setBusy(false); }
   }
 
-  const counts = {
-    active: keys.filter((key) => key.status === "active").length,
-    disabled: keys.filter((key) => key.status === "disabled").length,
+  const matchesFilter = (key: ApiKeyView, selectedFilter: KeyStatusFilter) => {
+    const policy = keyPolicy(key, policyNow);
+    if (selectedFilter === "current") return key.status === "active";
+    if (selectedFilter === "working") return key.status === "active" && !policy.expired && !policy.limitReached;
+    if (selectedFilter === "attention") return key.status === "active" && (policy.expired || policy.expiresSoon || policy.limitReached || policy.nearLimit);
+    if (selectedFilter === "disabled") return key.status === "disabled";
+    return true;
+  };
+  const counts: Record<KeyStatusFilter, number> = {
+    current: keys.filter((key) => matchesFilter(key, "current")).length,
+    working: keys.filter((key) => matchesFilter(key, "working")).length,
+    attention: keys.filter((key) => matchesFilter(key, "attention")).length,
+    disabled: keys.filter((key) => matchesFilter(key, "disabled")).length,
     all: keys.length,
   };
   const query = search.trim().toLocaleLowerCase(locale);
   const sortedKeys = [...keys]
-    .filter((key) => filter === "all" || key.status === filter)
+    .filter((key) => matchesFilter(key, filter))
     .filter((key) => !query || (key.label ?? copy.unlabelledKey).toLocaleLowerCase(locale).includes(query) || key.keyMasked.toLocaleLowerCase(locale).includes(query))
     .sort((left, right) => {
       if (sort === "name") return (left.label ?? copy.unlabelledKey).localeCompare(right.label ?? copy.unlabelledKey, locale);
@@ -730,7 +747,13 @@ function ApiKeys({ keys, onChanged, user }: { keys: ApiKeyView[]; onChanged(): P
       if (sort === "last-used") return Date.parse(right.lastUsedAt ?? "1970-01-01") - Date.parse(left.lastUsedAt ?? "1970-01-01");
       return Date.parse(right.createdAt) - Date.parse(left.createdAt);
     });
-  const emptyMessage = search.trim() ? localCopy.noSearchResults : filter === "active" ? localCopy.noActiveKeys : filter === "disabled" ? localCopy.noDisabledKeys : copy.noKeys;
+  const emptyMessage = search.trim()
+    ? localCopy.noSearchResults
+    : filter === "current" ? localCopy.noActiveKeys
+      : filter === "working" ? localCopy.noWorkingKeys
+        : filter === "attention" ? localCopy.noAttentionKeys
+          : filter === "disabled" ? localCopy.noDisabledKeys
+            : copy.noKeys;
   const todayDate = new Date(policyNow);
   const today = new Date(todayDate.getTime() - todayDate.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
   const labelDirty = Boolean(editTarget) && editLabel.trim() !== (editTarget?.label ?? "").trim();
@@ -743,38 +766,60 @@ function ApiKeys({ keys, onChanged, user }: { keys: ApiKeyView[]; onChanged(): P
   const policyCommittedNano = editTarget
     ? (BigInt(editTarget.spentNano) + BigInt(editTarget.reservedNano ?? "0")).toString()
     : "0";
+  const policyStates = keys.map((key) => ({ key, policy: keyPolicy(key, policyNow) }));
+  const usableCount = policyStates.filter(({ key, policy }) => key.status === "active" && !policy.expired && !policy.limitReached).length;
+  const blockedCount = policyStates.filter(({ key, policy }) => key.status === "active" && (policy.expired || policy.limitReached)).length;
+  const watchlistCount = policyStates.filter(({ key, policy }) => key.status === "active" && (policy.expiresSoon || policy.nearLimit)).length;
+  const totalKeySpend = keys.reduce((sum, key) => sum + BigInt(key.spentNano), 0n);
 
   return <section ref={keysPanelRef} className="panel keys-panel">
     <div className="keys-heading-row"><PageHeading eyebrow={copy.keysEyebrow} title={copy.keysTitle} subtitle={copy.keysSubtitle} /><button ref={createTriggerRef} className="btn btn-primary keys-create-button" type="button" onClick={() => { setCreateOpen(true); setError(null); }}>＋ {localCopy.createKey}</button></div>
-    <QuickConnectDock key={issued ? "with-key" : "without-key"} issuedKey={issued} onDismissKey={() => setIssued(null)} />
+    <div className="keys-health-grid" aria-label={localCopy.keyHealthSummary}>
+      <article className="keys-health-card keys-health-good"><span>{localCopy.usableNow}</span><strong>{usableCount}</strong><small>{localCopy.usableNowHelp}</small></article>
+      <article className={`keys-health-card${blockedCount > 0 ? " keys-health-danger" : ""}`}><span>{localCopy.blockedNow}</span><strong>{blockedCount}</strong><small>{localCopy.blockedNowHelp}</small></article>
+      <article className={`keys-health-card${watchlistCount > 0 ? " keys-health-warn" : ""}`}><span>{localCopy.watchlist}</span><strong>{watchlistCount}</strong><small>{localCopy.watchlistHelp}</small></article>
+      <article className="keys-health-card keys-health-spend"><span>{localCopy.totalKeySpend}</span><strong>{formatNanoUsd(totalKeySpend)}</strong><small>{localCopy.totalKeySpendHelp}</small></article>
+    </div>
+    <QuickConnectDock key={issued ? "with-key" : "without-key"} issuedKey={issued} defaultExpanded={keys.length === 0} onDismissKey={() => setIssued(null)} />
     {error && !createOpen && !editTarget && !revokeTarget && <div className="banner banner-error" role="alert">{error}</div>}
 
     <section className="dsec keys-manager" aria-label={copy.keysTitle}>
+      <div className="keys-manager-head"><div><span className="eyebrow">{copy.keysEyebrow}</span><h2>{localCopy.keysListTitle}</h2></div><span>{interpolate(localCopy.keysListSummary, { shown: sortedKeys.length, total: keys.length })}</span></div>
       <div className="keys-toolbar">
         <label className="keys-search"><span aria-hidden="true">⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={localCopy.searchKeys} aria-label={localCopy.searchKeys} /></label>
         <div className="keys-toolbar-right">
           <label className="keys-sort"><span>{localCopy.sortBy}</span><select value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}><option value="newest">{localCopy.sortNewest}</option><option value="name">{localCopy.sortName}</option><option value="spend">{localCopy.sortSpend}</option><option value="last-used">{localCopy.sortLastUsed}</option></select></label>
           <div className="keys-filter-tabs" role="group" aria-label={localCopy.filterLabel}>
-            {(["active", "disabled", "all"] as const).map((status) => <button key={status} type="button" data-key-filter={status} className={`keys-filter-tab ${filter === status ? "on" : ""}`} aria-pressed={filter === status} onClick={() => setFilter(status)}><span>{status === "active" ? localCopy.activeFilter : status === "disabled" ? localCopy.disabledFilter : localCopy.allFilter}</span><b>{counts[status]}</b></button>)}
+            {(["current", "working", "attention", "disabled", "all"] as const).map((status) => <button key={status} type="button" data-key-filter={status} className={`keys-filter-tab ${filter === status ? "on" : ""}`} aria-pressed={filter === status} onClick={() => setFilter(status)}><span>{status === "current" ? localCopy.currentFilter : status === "working" ? localCopy.workingFilter : status === "attention" ? localCopy.attentionFilter : status === "disabled" ? localCopy.disabledFilter : localCopy.allFilter}</span><b>{counts[status]}</b></button>)}
           </div>
         </div>
       </div>
 
       <div className="key-table-wrap"><table className="key-table">
-        <thead><tr><th>{localCopy.colName}</th><th>{localCopy.colKey}</th><th>{localCopy.colLastUsed}</th><th className="key-num">{localCopy.colSpend}</th><th>{localCopy.colLimit}</th><th>{localCopy.colExpires}</th><th>{localCopy.colStatus}</th><th><span className="sr-only">{localCopy.colActions}</span></th></tr></thead>
-        <tbody>{sortedKeys.length === 0 ? <tr><td colSpan={8} className="empty-cell">{emptyMessage}</td></tr> : sortedKeys.map((key) => {
+        <thead><tr><th>{localCopy.colName}</th><th>{localCopy.colKey}</th><th>{localCopy.colSpend}</th><th>{localCopy.colExpires}</th><th>{localCopy.colStatus}</th><th><span className="sr-only">{localCopy.colActions}</span></th></tr></thead>
+        <tbody>{sortedKeys.length === 0 ? <tr><td colSpan={6} className="empty-cell"><div className="keys-empty"><strong>{emptyMessage}</strong>{keys.length === 0 ? <button type="button" className="btn btn-primary btn-sm" onClick={() => { setCreateOpen(true); setError(null); }}>{localCopy.createFirstKey}</button> : search.trim() ? <button type="button" className="btn btn-ghost btn-sm" onClick={() => setSearch("")}>{localCopy.clearSearch}</button> : filter !== "current" ? <button type="button" className="btn btn-ghost btn-sm" onClick={() => setFilter("current")}>{localCopy.viewCurrentKeys}</button> : null}</div></td></tr> : sortedKeys.map((key) => {
           const policy = keyPolicy(key, policyNow);
           const health = policy.health;
-          const statusText = key.status === "disabled" ? localCopy.disabledStatus : health === "expired" ? localCopy.expiredStatus : health === "limit" ? localCopy.limitReachedStatus : localCopy.activeStatus;
+          const statusText = key.status === "disabled"
+            ? localCopy.disabledStatus
+            : health === "expired" ? localCopy.expiredStatus
+              : health === "limit" ? localCopy.limitReachedStatus
+                : health === "expires-soon" ? localCopy.expiresSoonStatus
+                  : health === "near-limit" ? localCopy.nearLimitStatus
+                    : localCopy.activeStatus;
+          const committed = BigInt(key.spentNano) + BigInt(key.reservedNano ?? "0");
+          const limit = key.spendLimitNano ? BigInt(key.spendLimitNano) : null;
+          const usagePercent = limit && limit > 0n ? Number((committed * 10_000n) / limit > 10_000n ? 10_000n : (committed * 10_000n) / limit) / 100 : 0;
+          const usageText = limit
+            ? interpolate(localCopy.spentOfLimit, { spent: formatNanoUsd(committed), limit: formatNanoUsd(limit) })
+            : interpolate(localCopy.spentWithoutLimit, { spent: formatNanoUsd(committed) });
           return <tr key={key.id} className={`key-row key-row-${health}`}>
-            <td data-label={localCopy.colName} className="key-name-cell"><strong>{key.label || copy.unlabelledKey}</strong><span>{copy.created} {new Date(key.createdAt).toLocaleDateString(locale)}</span></td>
-            <td data-label={localCopy.colKey}><code className="key-mask">{key.keyMasked}</code></td>
-            <td data-label={localCopy.colLastUsed}>{key.lastUsedAt ? formatRelativeDate(key.lastUsedAt, language) : localCopy.neverUsed}</td>
-            <td data-label={localCopy.colSpend} className="key-num">{formatNanoUsd(key.spentNano)}</td>
-            <td data-label={localCopy.colLimit}>{key.spendLimitNano ? <span className={policy.limitReached || policy.nearLimit ? "key-policy-warn" : ""}>{formatNanoUsd(key.spendLimitNano)}{policy.nearLimit && !policy.limitReached && <small>{localCopy.nearLimitStatus}</small>}</span> : localCopy.unlimited}</td>
-            <td data-label={localCopy.colExpires}>{key.expiresAt ? <span className={policy.expired || policy.expiresSoon ? "key-policy-warn" : ""}>{new Date(key.expiresAt).toLocaleDateString(locale)}{policy.expiresSoon && !policy.expired && <small>{localCopy.expiresSoonStatus}</small>}</span> : localCopy.never}</td>
+            <td data-label={localCopy.colName} className="key-name-cell"><strong>{key.label || copy.unlabelledKey}</strong><span>{interpolate(localCopy.createdOn, { date: new Date(key.createdAt).toLocaleDateString(locale) })}</span></td>
+            <td data-label={localCopy.colKey} className="key-credential-cell"><code className="key-mask">{key.keyMasked}</code><span>{localCopy.colLastUsed}: {key.lastUsedAt ? formatRelativeDate(key.lastUsedAt, language) : localCopy.neverUsed}</span></td>
+            <td data-label={localCopy.colSpend} className="key-usage-cell"><div><strong>{formatNanoUsd(committed)}</strong><span>{limit ? `/ ${formatNanoUsd(limit)}` : localCopy.unlimited}</span></div>{limit && <span className={`key-usage-track${policy.limitReached || policy.nearLimit ? " warn" : ""}`} role="progressbar" aria-label={usageText} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(usagePercent)}><i style={{ width: `${usagePercent}%` }} /></span>}<small>{usageText}</small></td>
+            <td data-label={localCopy.colExpires} className="key-guardrail-cell"><span className={policy.expired || policy.expiresSoon ? "key-policy-warn" : ""}><b>{localCopy.colExpires}</b><em>{key.expiresAt ? new Date(key.expiresAt).toLocaleDateString(locale) : localCopy.never}</em>{policy.expiresSoon && !policy.expired && <small>{localCopy.expiresSoonStatus}</small>}</span></td>
             <td data-label={localCopy.colStatus}><span className={`key-status key-status-${health}`}><i aria-hidden="true" />{statusText}</span></td>
-            <td data-label={localCopy.colActions} className="key-actions-cell"><details className="key-menu"><summary aria-label={`${localCopy.moreActions}: ${key.label || copy.unlabelledKey}`}>•••</summary><div className="key-menu-pop"><button type="button" data-key-action="edit" disabled={busy} onClick={(event) => { const details = event.currentTarget.closest("details"); const summary = details?.querySelector<HTMLElement>("summary"); details?.removeAttribute("open"); openEdit(key, summary); }}>{localCopy.editKey}</button><Link href={DOCS_URL} target="_blank" rel="noreferrer">{localCopy.openDocs} ↗</Link>{key.status === "active" && <button type="button" className="danger" disabled={busy} onClick={(event) => { const details = event.currentTarget.closest("details"); const summary = details?.querySelector<HTMLElement>("summary"); details?.removeAttribute("open"); openRevoke(key, summary); }}>{localCopy.revokeKey}</button>}</div></details></td>
+            <td data-label={localCopy.colActions} className="key-actions-cell"><div className="key-actions"><button type="button" className="key-edit-action" data-key-action="edit" disabled={busy} onClick={(event) => openEdit(key, event.currentTarget)}>{localCopy.editKey}</button><details className="key-menu"><summary aria-label={`${localCopy.moreActions}: ${key.label || copy.unlabelledKey}`}>•••</summary><div className="key-menu-pop"><Link href={DOCS_URL} target="_blank" rel="noreferrer">{localCopy.openDocs} ↗</Link>{key.status === "active" && <button type="button" className="danger" disabled={busy} onClick={(event) => { const details = event.currentTarget.closest("details"); const summary = details?.querySelector<HTMLElement>("summary"); details?.removeAttribute("open"); openRevoke(key, summary); }}>{localCopy.revokeKey}</button>}</div></details></div></td>
           </tr>;
         })}</tbody>
       </table></div>
@@ -784,9 +829,11 @@ function ApiKeys({ keys, onChanged, user }: { keys: ApiKeyView[]; onChanged(): P
     {createOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) closeCreate(); }}><form ref={createModalRef} className="key-modal" role="dialog" aria-modal="true" aria-labelledby="create-key-title" aria-describedby="create-key-description" tabIndex={-1} onSubmit={create}>
       <div className="key-modal-head"><div><span className="eyebrow">{copy.keysEyebrow}</span><h2 id="create-key-title">{localCopy.createKeyTitle}</h2><p id="create-key-description">{localCopy.createKeyHelp}</p></div><button type="button" className="key-modal-close" onClick={closeCreate} aria-label={localCopy.cancel}>×</button></div>
       <div className="key-modal-fields">
-        <label className="key-field"><span>{localCopy.keyName} <small>{localCopy.optional}</small></span><input className="set-in" value={label} onChange={(event) => { setLabel(event.target.value); setError(null); }} maxLength={64} placeholder={localCopy.keyNameHint} autoFocus /></label>
-        <label className="key-field"><span>{localCopy.spendLimit} <small>{localCopy.optional}</small></span><div className="key-money-field"><b>$</b><input className="set-in" inputMode="decimal" value={spendLimit} onChange={(event) => { setSpendLimit(event.target.value); setError(null); }} placeholder="100.00" /></div><em>{localCopy.spendLimitHint}</em></label>
-        <label className="key-field"><span>{localCopy.expiration} <small>{localCopy.optional}</small></span><input className="set-in" type="date" min={today} value={expirationDate} onChange={(event) => { setExpirationDate(event.target.value); setError(null); }} /><em>{expirationDate ? localCopy.expirationHint : localCopy.noExpiration}</em></label>
+        <label className="key-field key-field-wide"><span>{localCopy.keyName} <small>{localCopy.optional}</small></span><input className="set-in" value={label} onChange={(event) => { setLabel(event.target.value); setError(null); }} maxLength={64} placeholder={localCopy.keyNameHint} autoFocus /><em>{localCopy.keyNameHelp}</em></label>
+        <fieldset className="key-create-guardrails"><legend>{localCopy.guardrailsTitle} <small>{localCopy.optional}</small></legend><p>{localCopy.guardrailsHelp}</p><div className="key-create-guardrail-grid">
+          <label className="key-field"><span>{localCopy.spendLimit}</span><div className="key-money-field"><b>$</b><input className="set-in" inputMode="decimal" value={spendLimit} onChange={(event) => { setSpendLimit(event.target.value); setError(null); }} placeholder="100.00" /></div><em>{localCopy.spendLimitHint}</em></label>
+          <label className="key-field"><span>{localCopy.expiration}</span><input className="set-in" type="date" min={today} value={expirationDate} onChange={(event) => { setExpirationDate(event.target.value); setError(null); }} /><em>{expirationDate ? localCopy.expirationHint : localCopy.noExpiration}</em></label>
+        </div></fieldset>
         {user.totpEnabled && <label className="key-field key-field-wide"><span>{copy.twoFactorCodeLabel}</span><input className="set-in tfa-code" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={totpCode} onChange={(event) => { setTotpCode(event.target.value.replace(/\D/g, "").slice(0, 6)); setError(null); }} placeholder={copy.twoFactorCodePlaceholder} /></label>}
       </div>
       {error && <div className="banner banner-error" role="alert">{error}</div>}
@@ -798,7 +845,7 @@ function ApiKeys({ keys, onChanged, user }: { keys: ApiKeyView[]; onChanged(): P
       <div className="key-policy-summary"><div><span>{localCopy.colKey}</span><code>{editTarget.keyMasked}</code></div><div><span>{localCopy.committedSpend}</span><b>{formatNanoUsd(policyCommittedNano)}</b></div></div>
       {(editTargetState?.expired || editTargetState?.limitReached) && <p className="key-policy-reactivate"><span aria-hidden="true">ⓘ</span>{localCopy.policyReactivates}</p>}
       <div className="key-modal-fields">
-        <label className="key-field"><span>{localCopy.keyName}</span><input className="set-in" value={editLabel} onChange={(event) => { setEditLabel(event.target.value); setError(null); }} maxLength={64} placeholder={localCopy.keyNameHint} autoFocus /></label>
+        <label className="key-field key-field-wide"><span>{localCopy.keyName}</span><input className="set-in" value={editLabel} onChange={(event) => { setEditLabel(event.target.value); setError(null); }} maxLength={64} placeholder={localCopy.keyNameHint} autoFocus /></label>
         {editTarget.status === "active" && <><label className="key-field"><span>{localCopy.spendLimit}</span><div className="key-money-field"><b>$</b><input className="set-in" inputMode="decimal" value={policySpendLimit} onChange={(event) => { setPolicySpendLimit(event.target.value); setError(null); }} placeholder={localCopy.unlimited} /></div><em>{localCopy.policyLimitHint}</em></label>
         <label className="key-field"><span>{localCopy.expiration}</span><input className="set-in" type="date" min={today} value={policyExpirationDate} onChange={(event) => { setPolicyExpirationDate(event.target.value); setError(null); }} /><em>{localCopy.policyExpirationHint}</em></label>
         {policyDirty && user.totpEnabled && <label className="key-field key-field-wide"><span>{copy.twoFactorCodeLabel}</span><input className="set-in tfa-code" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={policyTotpCode} onChange={(event) => { setPolicyTotpCode(event.target.value.replace(/\D/g, "").slice(0, 6)); setError(null); }} placeholder={copy.twoFactorCodePlaceholder} /></label>}</>}
@@ -820,10 +867,10 @@ function TerminalCommands({ commands }: { commands: string }) {
   })}</code>;
 }
 
-function QuickConnectDock({ issuedKey, onDismissKey }: { issuedKey: string | null; onDismissKey(): void }) {
+function QuickConnectDock({ issuedKey, defaultExpanded, onDismissKey }: { issuedKey: string | null; defaultExpanded: boolean; onDismissKey(): void }) {
   const copy = useDashboardCopy();
   const { language } = useI18n();
-  const [expanded, setExpanded] = useState(Boolean(issuedKey));
+  const [expanded, setExpanded] = useState(Boolean(issuedKey) || defaultExpanded);
   const handoff = buildClaudeAgentHandoff({ apiKey: issuedKey, docsUrl: DOCS_URL, language });
   const terminalCommands = buildClaudeCodeCommands(issuedKey);
 
