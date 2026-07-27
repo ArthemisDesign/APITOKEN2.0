@@ -109,6 +109,9 @@ importers:
 
   apps/openkeys:
     dependencies:
+      '@claude-api/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@claude-api/engine-client':
         specifier: workspace:*
         version: link:../../packages/engine-client
