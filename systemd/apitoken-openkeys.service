@@ -1,5 +1,5 @@
 [Unit]
-Description=API Token Sale OpenKeys portal (openkeys.apitoken.sale, port 3400)
+Description=API Token Sale OpenKeys portal (openkeys.apitoken.sale, port 3410)
 After=network-online.target
 Wants=network-online.target
 
@@ -9,7 +9,7 @@ User=deploy
 Group=deploy
 WorkingDirectory=/opt/apitoken/openkeys-releases/current/apps/openkeys
 EnvironmentFile=/etc/apitoken/openkeys.env
-ExecStart=/opt/apitoken/openkeys-releases/current/apps/openkeys/node_modules/.bin/next start -H 127.0.0.1 -p 3400
+ExecStart=/opt/apitoken/openkeys-releases/current/apps/openkeys/node_modules/.bin/next start -H 127.0.0.1 -p 3410
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30

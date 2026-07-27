@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 3400",
+    "dev": "next dev -p 3410",
     "build": "next build",
-    "start": "next start -p 3400",
+    "start": "next start -p 3410",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --no-file-parallelism"
   },
