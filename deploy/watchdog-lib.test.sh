@@ -461,6 +461,7 @@ gate_contract=(
   'git -C "$SOURCE_REPO" diff --check "$PROCESSED_SHA..$sha"'
   'find "$candidate/deploy" -type f -name '\''*.sh'\'' -print0'
   'bash -n "$shell_file"'
+  'run_as_ci bash "$candidate/deploy/lib.test.sh"'
   'run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"'
   'run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"'
   'run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"'

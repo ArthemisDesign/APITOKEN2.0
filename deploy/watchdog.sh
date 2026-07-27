@@ -438,6 +438,7 @@ prepare_and_test_candidate() {
   done < <(find "$candidate/deploy" -type f -name '*.sh' -print0)
   if (( static_required == 1 )); then
     wd_log "running deployment and merge-workflow regression suites"
+    run_as_ci bash "$candidate/deploy/lib.test.sh"
     run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"
     run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"
     run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"

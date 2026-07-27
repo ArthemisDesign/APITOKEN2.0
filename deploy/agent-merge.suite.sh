@@ -310,8 +310,12 @@ printf 'not json' | bash "$GUARD" >/dev/null 2>&1 \
 # Back in the production gate, having been verified on the host itself rather than only on macOS.
 grep -Fq 'deploy/agent-merge.suite.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the merge-path suite'
+grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the merge gate does not run the activation-journal suite'
 grep -Fq 'agent-merge.suite.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the merge-path suite'
+grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the production gate does not run the activation-journal suite'
 [[ ! -e $ROOT/deploy/agent-merge.test.sh ]] \
   || wd_die 'the report-only shim outlived its purpose; the installed watchdog no longer calls it'
 grep -Fq 'guard-git.sh' "$ROOT/.claude/settings.json" \
