@@ -1,0 +1,70 @@
+import { NextResponse } from "next/server";
+import { loadConfig } from "@/lib/config";
+import { MAX_BATCH_QUANTITY, issueBatch, listBatches } from "@/lib/keys";
+import { formatUsd, usdStringToNano } from "@/lib/money";
+import { isAdminAuthenticated } from "@/lib/session";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+function unauthorized(): NextResponse {
+  return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+}
+
+export async function GET(): Promise<NextResponse> {
+  if (!(await isAdminAuthenticated())) return unauthorized();
+
+  const batches = await listBatches();
+  return NextResponse.json({
+    batches: batches.map((batch) => ({
+      id: batch.id,
+      label: batch.label,
+      note: batch.note,
+      quantity: batch.quantity,
+      multBp: batch.multBp,
+      faceValue: formatUsd(batch.faceValueNano, 0),
+      createdAt: batch.createdAt.toISOString(),
+    })),
+  });
+}
+
+export async function POST(request: Request): Promise<NextResponse> {
+  if (!(await isAdminAuthenticated())) return unauthorized();
+
+  let body: { faceValueUsd?: unknown; quantity?: unknown; multBp?: unknown; label?: unknown; note?: unknown };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return NextResponse.json({ error: "invalid_body" }, { status: 400 });
+  }
+
+  const config = loadConfig();
+  const quantity = Number(body.quantity ?? 1);
+  const multBp = body.multBp === undefined || body.multBp === "" ? config.defaultMultBp : Number(body.multBp);
+
+  try {
+    const faceValueNano = usdStringToNano(String(body.faceValueUsd ?? "").trim());
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_BATCH_QUANTITY) {
+      throw new Error(`Количество ключей должно быть от 1 до ${MAX_BATCH_QUANTITY}`);
+    }
+
+    const result = await issueBatch({
+      faceValueNano,
+      quantity,
+      multBp,
+      label: typeof body.label === "string" && body.label.trim() !== "" ? body.label.trim() : null,
+      note: typeof body.note === "string" && body.note.trim() !== "" ? body.note.trim() : null,
+      createdBy: config.adminUser,
+    });
+
+    return NextResponse.json({
+      batchId: result.batchId,
+      faceValue: formatUsd(faceValueNano, 0),
+      multBp,
+      keys: result.keys,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Не удалось выпустить ключи";
+    return NextResponse.json({ error: message }, { status: 400 });
+  }
+}
