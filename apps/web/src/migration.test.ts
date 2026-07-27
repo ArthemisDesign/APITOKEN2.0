@@ -200,6 +200,9 @@ describe("completed Next.js migration", () => {
     expect(dashboard).toContain('className="overview-primary-grid"');
     expect(dashboard).toContain('className="overview-metrics-grid"');
     expect(dashboard).toContain('className="card overview-activity"');
+    expect(dashboard).toContain('className="app-top-in"');
+    expect(dashboard).toContain('className="overview-pricing-facts"');
+    expect(dashboard.match(/copy\.payPerOfficialDollar/g)).toHaveLength(1);
     expect(dashboard).toContain("officialBalance");
     expect(dashboardCopy).toContain('platformBalance: "Available credit"');
     expect(dashboardCopy).toContain('platformBalance: "Доступный баланс"');

@@ -111,10 +111,18 @@ const siteCaptures = [
 ];
 
 const dashboardCaptures = [
+  ["dashboard-overview-wide-light", "/dashboard", 1728, 996, "light"],
+  ["dashboard-overview-wide-dark", "/dashboard", 1728, 996, "dark"],
+  ["dashboard-overview-wide-russian-light", "/dashboard", 1728, 996, "light", "ru"],
+  ["dashboard-overview-wide-russian-dark", "/dashboard", 1728, 996, "dark", "ru"],
   ["dashboard-overview-light", "/dashboard", 1440, 1000, "light"],
   ["dashboard-overview-dark", "/dashboard", 1440, 1000, "dark"],
   ["dashboard-overview-russian-light", "/dashboard", 1440, 1000, "light", "ru"],
   ["dashboard-overview-russian", "/dashboard", 1440, 1000, "dark", "ru"],
+  ["dashboard-overview-compact-light", "/dashboard", 1180, 900, "light"],
+  ["dashboard-overview-compact-russian-dark", "/dashboard", 1180, 900, "dark", "ru"],
+  ["dashboard-overview-tablet-dark", "/dashboard", 900, 1000, "dark"],
+  ["dashboard-overview-tablet-russian-light", "/dashboard", 900, 1000, "light", "ru"],
   ["dashboard-keys-light", "/dashboard?view=keys", 1440, 1000, "light"],
   ["dashboard-keys-dark", "/dashboard?view=keys", 1440, 1000, "dark"],
   ["dashboard-keys-russian-light", "/dashboard?view=keys", 1440, 1000, "light", "ru"],
@@ -194,10 +202,10 @@ const dashboardFixtureScript = `(() => {
     totpEnabled: true,
   };
   const account = {
-    balanceNano: "4000000000",
+    balanceNano: "240170000000",
     reservedNano: "0",
-    spentNano: "12000000000",
-    balanceUsd: "4.00",
+    spentNano: "262752000000",
+    balanceUsd: "240.17",
     markupBasisPoints: 4000,
     status: "active",
     pricing: {
@@ -207,14 +215,14 @@ const dashboardFixtureScript = `(() => {
       tier: "starter",
       discountPercent: 60,
       multiplierBp: 4000,
-      spentNano: "12000000000",
+      spentNano: "0",
       retentionSpendNano: "0",
       nextTier: {
         tier: "builder",
         discountPercent: 65,
         spendThresholdNano: "100000000000",
-        remainingNano: "88000000000",
-        visibleOfficialUsageUsd: "286.00",
+        remainingNano: "100000000000",
+        visibleOfficialUsageUsd: "600.43",
       },
     },
   };
@@ -247,8 +255,8 @@ const dashboardFixtureScript = `(() => {
     label: null,
     keyMasked: "sk-pool-f367••••••••94ea",
     status: "active",
-    spentNano: "1000000000",
-    spentUsd: "1.00",
+    spentNano: "500000000",
+    spentUsd: "0.50",
     reservedNano: "0",
     spendLimitNano: "1000000000",
     expiresAt: null,
@@ -263,7 +271,7 @@ const dashboardFixtureScript = `(() => {
     spentUsd: "0.25",
     reservedNano: "0",
     spendLimitNano: null,
-    expiresAt: new Date(Date.now() - 86400000).toISOString(),
+    expiresAt: new Date(Date.now() + 60 * 86400000).toISOString(),
     lastUsedAt: new Date(Date.now() - 5 * 86400000).toISOString(),
     createdAt: "2026-07-09T09:00:00.000Z",
   }, {
@@ -293,7 +301,7 @@ const dashboardFixtureScript = `(() => {
   const entries = chg.map((c, i) => ({ id: "c" + i, kind: "charge", amountNano: c[1], amountUsd: "$" + (Number(c[1]) / 1e9).toFixed(6), keyMasked: "sk-pool-a5b5••••••••eeb", reference: "req_0" + i, model: c[2], balanceAfterNano: null, timestamp: String(nowS - c[0] * DAY - i * 137) }));
   entries.push({ id: "t0", kind: "topup", amountNano: "12000000000", amountUsd: "$12.000000", discountPercent: 60, keyMasked: null, reference: "cryptomus_9f2c1a", balanceAfterNano: null, timestamp: String(nowS - 3 * DAY) });
   const usage = {
-    window: "30d", requests: 59, totalOfficialNano: "20234893050", totalChargedNano: "8093957220",
+    window: "30d", requests: 4154, totalOfficialNano: "656880000000", totalChargedNano: "262752000000",
     buckets: {
       input: { tokens: 3781269, officialNano: "15124021000" },
       output: { tokens: 15168, officialNano: "228560000" },
@@ -302,9 +310,9 @@ const dashboardFixtureScript = `(() => {
       webSearch: { requests: 0, officialNano: "0" },
     },
     models: [
-      { model: "claude-opus-4-8", requests: 27, inputTokens: 1890211, outputTokens: 5100, cacheReadTokens: 2256400, cacheWrite5mTokens: 282050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "12469567500", chargedNano: "4987827000" },
-      { model: "claude-sonnet-5", requests: 27, inputTokens: 1890954, outputTokens: 5072, cacheReadTokens: 2256400, cacheWrite5mTokens: 282050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "7483549500", chargedNano: "2993419800" },
-      { model: "claude-haiku-4-5-20251001", requests: 5, inputTokens: 104, outputTokens: 4996, cacheReadTokens: 354058, cacheWrite5mTokens: 177029, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "281776050", chargedNano: "112710420" },
+      { model: "claude-opus-4-8", requests: 3000, inputTokens: 1890211, outputTokens: 5100, cacheReadTokens: 2256400, cacheWrite5mTokens: 282050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "394128000000", chargedNano: "157651200000" },
+      { model: "claude-sonnet-5", requests: 1000, inputTokens: 1890954, outputTokens: 5072, cacheReadTokens: 2256400, cacheWrite5mTokens: 282050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "197064000000", chargedNano: "78825600000" },
+      { model: "claude-haiku-4-5-20251001", requests: 154, inputTokens: 104, outputTokens: 4996, cacheReadTokens: 354058, cacheWrite5mTokens: 177029, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "65688000000", chargedNano: "26275200000" },
     ],
   };
   window.fetch = (input, init = {}) => {

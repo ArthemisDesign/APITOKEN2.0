@@ -307,13 +307,17 @@ export function Dashboard() {
     </aside>
     <button className={`side-scrim ${sideOpen ? "show" : ""}`} onClick={() => setSideOpen(false)} aria-label={copy.closeMenu} />
     <main className="app-main">
-      <header className="app-top"><button className="app-burger" onClick={() => setSideOpen(true)} aria-label={copy.menu}>☰</button><div className="app-top-h"><div className="app-title">{copy[navigation.find((item) => item.section === section)?.label ?? "navOverview"]}</div></div>
-        <div className="app-top-actions">
-          {section === "overview" ? <button className="btn btn-primary btn-sm app-top-up" onClick={() => open("credits")}>{copy.topUp}</button> : <button className="app-top-bal" onClick={() => open("credits")} title={copy.navTopUp}>
-            <span className="atb-ic" aria-hidden="true" />
-            <span className="atb-label">{copy.creditsLabel}</span>
-            <span className={`atb-val${BigInt(account.balanceNano) < 0n ? " atb-neg" : ""}`}>{formatNanoUsd(account.balanceNano)}</span>
-          </button>}
+      <header className="app-top">
+        <div className="app-top-in">
+          <button className="app-burger" onClick={() => setSideOpen(true)} aria-label={copy.menu}>☰</button>
+          <div className="app-top-h"><div className="app-title">{copy[navigation.find((item) => item.section === section)?.label ?? "navOverview"]}</div></div>
+          <div className="app-top-actions">
+            {section === "overview" ? <button className="btn btn-primary btn-sm app-top-up" onClick={() => open("credits")}>{copy.topUp}</button> : <button className="app-top-bal" onClick={() => open("credits")} title={copy.navTopUp}>
+              <span className="atb-ic" aria-hidden="true" />
+              <span className="atb-label">{copy.creditsLabel}</span>
+              <span className={`atb-val${BigInt(account.balanceNano) < 0n ? " atb-neg" : ""}`}>{formatNanoUsd(account.balanceNano)}</span>
+            </button>}
+          </div>
         </div>
       </header>
       <div className="app-body-in">
@@ -417,12 +421,16 @@ function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usag
           <span className="overview-card-label">{copy.platformBalance}</span>
           <span className="overview-rate-chip">{discount}% {copy.discount} · {formatMultiplier(multiplierBp)}</span>
         </div>
-        <strong className="overview-balance-number">{normalizeUsd(account.balanceUsd)}</strong>
-        <p className="overview-balance-value">{copy.worthApproximately} <b>≈ {formatNanoUsd(officialBalanceNano)}</b> {copy.inClaudeApiUsage}</p>
-        <p className="overview-balance-rate">{interpolate(copy.payPerOfficialDollar, { rate: formatPaymentRate(multiplierBp) })}</p>
-        <div className="overview-card-actions">
-          <button className="btn btn-primary btn-sm" onClick={() => open("credits")}>{copy.topUp}</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => open("usage")}>{copy.viewUsage}</button>
+        <div className="overview-balance-main">
+          <strong className="overview-balance-number">{normalizeUsd(account.balanceUsd)}</strong>
+          <div className="overview-balance-detail">
+            <p className="overview-balance-value">{copy.worthApproximately} <b>≈ {formatNanoUsd(officialBalanceNano)}</b> {copy.inClaudeApiUsage}</p>
+            <p className="overview-balance-rate">{interpolate(copy.payPerOfficialDollar, { rate: formatPaymentRate(multiplierBp) })}</p>
+            <div className="overview-card-actions">
+              <button className="btn btn-primary btn-sm" onClick={() => open("credits")}>{copy.topUp}</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => open("usage")}>{copy.viewUsage}</button>
+            </div>
+          </div>
         </div>
       </article>
 
@@ -431,10 +439,14 @@ function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usag
           <span className="overview-card-label">{copy.apiAccess}</span>
           <span className={`overview-status ${accessTone}`}><i aria-hidden="true" />{accessLabel}</span>
         </div>
-        <strong className="overview-access-value">{keysState === "ready" ? usableKeys.length : "—"}</strong>
-        <span className="overview-access-unit">{copy.usableKeys}</span>
-        <p>{keyStatusText}</p>
-        <button className="btn btn-ghost btn-sm" onClick={() => open("keys")}>{totalKeys > 0 ? copy.manageKeys : copy.getKey}</button>
+        <div className="overview-access-body">
+          <div className="overview-access-count">
+            <strong className="overview-access-value">{keysState === "ready" ? usableKeys.length : "—"}</strong>
+            <span className="overview-access-unit">{copy.usableKeys}</span>
+          </div>
+          <p>{keyStatusText}</p>
+          <button className="btn btn-ghost btn-sm" onClick={() => open("keys")}>{totalKeys > 0 ? copy.manageKeys : copy.getKey}</button>
+        </div>
       </article>
     </div>
 
@@ -465,8 +477,10 @@ function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usag
       <article className="card overview-metric-card overview-pricing-card">
         <div className="overview-card-head"><span className="overview-card-label">{copy.currentPricing}</span><span className="overview-metric-mark" aria-hidden="true">%</span></div>
         <strong>{pricingTitle}</strong>
-        <p><b>{discount}% {copy.discount}</b> · {formatMultiplier(multiplierBp)} {copy.valueMultiplier}</p>
-        <span className="overview-pricing-foot">{interpolate(copy.payPerOfficialDollar, { rate: formatPaymentRate(multiplierBp) })}</span>
+        <div className="overview-pricing-facts">
+          <span><small>{copy.discount}</small><b>{discount}%</b></span>
+          <span><small>{copy.valueMultiplier}</small><b>{formatMultiplier(multiplierBp)}</b></span>
+        </div>
       </article>
 
       <article className="card overview-metric-card overview-milestone-card">
