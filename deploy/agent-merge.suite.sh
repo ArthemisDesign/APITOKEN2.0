@@ -466,12 +466,18 @@ grep -Fq 'agent-merge.suite.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the merge-path suite'
 grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the activation-journal suite'
-for typescript_group_contract in \
-  'typescript-test-groups.sh" "$ROOT" "${test_packages[@]}"' \
-  'typescript-test-groups.sh" "$candidate" "${test_packages[@]}"'; do
-  grep -Fq -- "$typescript_group_contract" "$ROOT/deploy/agent-merge.sh" \
-    "$ROOT/deploy/watchdog.sh" \
-    || wd_die "deployment gates lost parallel TypeScript tests: $typescript_group_contract"
+# Требуем сам запуск с набором пакетов, а не дословную цитату аргументов: точное
+# написание уже однажды сломалось от правки переносимости (пустой массив под set -u
+# в bash 3.2), хотя гарантия — «гейт гоняет параллельные TypeScript-тесты» — не менялась.
+for typescript_group_gate in \
+  "$ROOT/deploy/agent-merge.sh:\$ROOT" \
+  "$ROOT/deploy/watchdog.sh:\$candidate"; do
+  typescript_group_file=${typescript_group_gate%:*}
+  typescript_group_root=${typescript_group_gate##*:}
+  grep -Fq -- "typescript-test-groups.sh\" \"$typescript_group_root\"" "$typescript_group_file" \
+    || wd_die "deployment gates lost parallel TypeScript tests: $typescript_group_file"
+  grep -Fq -- 'test_packages[@]' "$typescript_group_file" \
+    || wd_die "deployment gates no longer pass the selected packages: $typescript_group_file"
 done
 for trusted_gate_contract in \
   'transient_environment: true' \
