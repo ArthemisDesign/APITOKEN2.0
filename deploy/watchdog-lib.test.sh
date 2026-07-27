@@ -894,6 +894,7 @@ done
 
 # The previous installed controller reaches this suite before it can hand off to the candidate
 # controller, so exercise the newly candidate-owned build helper from here as well.
+bash "$ROOT/deploy/sccache-cargo.test.sh"
 bash "$ROOT/deploy/typescript-build-contexts.test.sh"
 
 # `pnpm -r --if-present test` deliberately tolerates packages with no suite. Keep that tolerance

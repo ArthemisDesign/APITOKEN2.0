@@ -410,6 +410,8 @@ grep -Fq 'deploy/agent-merge.suite.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the merge-path suite'
 grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the activation-journal suite'
+grep -Fq 'deploy/sccache-cargo.test.sh' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the merge gate does not test serialized sccache startup'
 grep -Fq 'deploy/next-cache.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the persistent Next.js cache suite'
 grep -Fq 'deploy/typescript-build-contexts.test.sh' "$ROOT/deploy/agent-merge.sh" \
@@ -424,6 +426,8 @@ for sccache_contract in \
   'worktree list --porcelain' \
   'SCCACHE_BASEDIRS' \
   'SCCACHE_SERVER_UDS' \
+  'sc_start_server_serialized' \
+  'continuing uncached' \
   'CARGO_INCREMENTAL=0' \
   'CARGO_BUILD_BUILD_DIR' \
   'SCCACHE_CACHE_SIZE' \

@@ -549,6 +549,7 @@ test_static_lane() {
     run_as_ci bash "$candidate/deploy/lib.test.sh"
     run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"
     run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"
+    run_as_ci bash "$candidate/deploy/sccache-cargo.test.sh"
     run_as_ci bash "$candidate/deploy/next-cache.test.sh"
     run_as_ci bash "$candidate/deploy/typescript-scope.test.sh"
     run_as_ci bash "$candidate/deploy/typescript-build-contexts.test.sh"

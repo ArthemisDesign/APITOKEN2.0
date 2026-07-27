@@ -121,6 +121,7 @@ am_gate_deployment() (
     return
   fi
   bash "$ROOT/deploy/lib.test.sh"
+  bash "$ROOT/deploy/sccache-cargo.test.sh"
   bash "$ROOT/deploy/next-cache.test.sh"
   bash "$ROOT/deploy/typescript-scope.test.sh"
   bash "$ROOT/deploy/typescript-build-contexts.test.sh"
@@ -152,7 +153,8 @@ am_range_changes_local_gate() {
   while IFS= read -r path; do
     case "$path" in
       deploy/agent-merge.sh|deploy/agent-merge.suite.sh|deploy/watchdog-lib.sh|\
-      deploy/sccache-cargo.sh|deploy/next-cache.sh|deploy/next-cache.test.sh|\
+      deploy/sccache-cargo.sh|deploy/sccache-cargo.test.sh|\
+      deploy/next-cache.sh|deploy/next-cache.test.sh|\
       deploy/typescript-scope.mjs|deploy/typescript-scope.test.sh|\
       deploy/typescript-build-contexts.sh|deploy/typescript-build-contexts.test.sh|\
       deploy/typescript-test-groups.sh|deploy/typescript-test-groups.test.sh)

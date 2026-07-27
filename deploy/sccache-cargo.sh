@@ -120,6 +120,61 @@ sc_cargo_supports_shared_build_dir() {
   (( major > 1 || (major == 1 && minor >= 91) ))
 }
 
+sc_path_mtime() {
+  local value
+  value=$(stat -c '%Y' -- "$1" 2>/dev/null || printf '')
+  [[ $value =~ ^[0-9]+$ ]] || value=$(stat -f '%m' -- "$1" 2>/dev/null || printf '')
+  [[ $value =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$value"
+}
+
+# sccache clients normally auto-start their daemon. Two independent merge gates can reach the same
+# cold UDS together, though, and both daemon children then try to create it; one compiler receives
+# `Server startup failed: File exists`. Serialize only this millisecond-scale startup, not Cargo.
+sc_start_server_serialized() (
+  local lock_dir=$1 attempt=0 acquired=0 now modified
+  local server_env=(
+    env
+    "SCCACHE_DIR=$cache_dir"
+    "SCCACHE_BASEDIRS=$base_dirs"
+    "SCCACHE_SERVER_UDS=$server_uds"
+    "SCCACHE_CACHE_SIZE=${SCCACHE_CACHE_SIZE:-10G}"
+  )
+
+  while (( attempt < 200 )); do
+    if mkdir "$lock_dir" 2>/dev/null; then
+      acquired=1
+      break
+    fi
+    attempt=$((attempt + 1))
+    if (( attempt % 20 == 0 )); then
+      now=$(date +%s)
+      modified=$(sc_path_mtime "$lock_dir" 2>/dev/null || printf '')
+      if [[ $now =~ ^[0-9]+$ && $modified =~ ^[0-9]+$ ]] \
+        && (( now - modified > 30 )); then
+        # The lock directory is deliberately empty. rmdir cannot remove a replaced/non-empty path.
+        rmdir "$lock_dir" 2>/dev/null || true
+      fi
+    fi
+    sleep 0.05
+  done
+  (( acquired == 1 )) || return 1
+  trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  if "${server_env[@]}" "$sccache_bin" --start-server >/dev/null 2>&1; then
+    return 0
+  fi
+  # A pre-upgrade wrapper does not share this lock and may have won the same startup race. Give its
+  # daemon a short completion window and accept it only after an actual client probe succeeds.
+  for _ in 1 2 3 4 5; do
+    "${server_env[@]}" "$sccache_bin" --show-stats >/dev/null 2>&1 && return 0
+    sleep 0.1
+  done
+  return 1
+)
+
 (( $# > 0 )) || sc_die 'pass the Cargo command to run'
 if [[ ${SCCACHE_DISABLE:-0} == 1 ]]; then
   sc_log 'cache disabled explicitly'
@@ -140,13 +195,18 @@ base_dirs=${SCCACHE_BASEDIRS:-$(sc_worktree_bases)}
 server_id=$(printf '%s' "$base_dirs" | cksum | awk '{print $1}')
 server_uds=${SCCACHE_SERVER_UDS:-"/tmp/claude-api-sccache-$(id -u)-$server_id.sock"}
 build_env=()
-mkdir -p "$cache_dir"
+mkdir -p "$cache_dir" "$common_dir/codex-tools"
 if sc_cargo_supports_shared_build_dir; then
   mkdir -p "$build_dir"
   build_env=("CARGO_BUILD_BUILD_DIR=$build_dir")
   sc_log "using $("$sccache_bin" --version) with shared compiler and Cargo build caches"
 else
   sc_log "using $("$sccache_bin" --version); Cargo before 1.91 cannot share its build directory"
+fi
+server_lock="$common_dir/codex-tools/sccache-server-$server_id.lock"
+if ! sc_start_server_serialized "$server_lock"; then
+  sc_log 'WARNING: shared sccache server did not become ready; continuing uncached'
+  exec "$@"
 fi
 exec env \
   RUSTC_WRAPPER="$sccache_bin" \
