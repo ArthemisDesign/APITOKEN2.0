@@ -1,3 +1,160 @@
+diff --git a/codex-rs/app-server-protocol/src/protocol/v2/thread.rs b/codex-rs/app-server-protocol/src/protocol/v2/thread.rs
+index acebeb5..fc9c5c4 100644
+--- a/codex-rs/app-server-protocol/src/protocol/v2/thread.rs
++++ b/codex-rs/app-server-protocol/src/protocol/v2/thread.rs
+@@ -18,6 +18,8 @@ use codex_protocol::config_types::CollaborationMode;
+ use codex_protocol::config_types::MultiAgentMode;
+ use codex_protocol::config_types::Personality;
+ use codex_protocol::config_types::ReasoningSummary;
++pub use codex_protocol::dynamic_tools::DynamicToolCustomFormat;
++pub use codex_protocol::dynamic_tools::DynamicToolCustomSpec;
+ pub use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
+ pub use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
+ pub use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
+diff --git a/codex-rs/app-server/src/request_processors.rs b/codex-rs/app-server/src/request_processors.rs
+index a6d1794..e0140ff 100644
+--- a/codex-rs/app-server/src/request_processors.rs
++++ b/codex-rs/app-server/src/request_processors.rs
+@@ -60,6 +60,7 @@ use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditResponse;
+ use codex_app_server_protocol::ConversationGitInfo;
+ use codex_app_server_protocol::ConversationSummary;
+ use codex_app_server_protocol::DeprecationNoticeNotification;
++use codex_app_server_protocol::DynamicToolCustomSpec;
+ use codex_app_server_protocol::DynamicToolFunctionSpec;
+ use codex_app_server_protocol::DynamicToolNamespaceTool;
+ use codex_app_server_protocol::DynamicToolSpec;
+diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
+index 7f1a30a..48cd734 100644
+--- a/codex-rs/app-server/src/request_processors/thread_processor.rs
++++ b/codex-rs/app-server/src/request_processors/thread_processor.rs
+@@ -233,6 +233,8 @@ fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
+     const DYNAMIC_TOOL_NAME_MAX_LEN: usize = 128;
+     const DYNAMIC_TOOL_NAMESPACE_MAX_LEN: usize = 64;
+     const DYNAMIC_TOOL_NAMESPACE_DESCRIPTION_MAX_LEN: usize = 1024;
++    const DYNAMIC_CUSTOM_TOOL_DESCRIPTION_MAX_LEN: usize = 16 * 1024;
++    const DYNAMIC_CUSTOM_TOOL_GRAMMAR_MAX_LEN: usize = 256 * 1024;
+     const DYNAMIC_TOOL_IDENTIFIER_PATTERN: &str = "^[a-zA-Z0-9_-]+$";
+     const RESERVED_RESPONSES_NAMESPACES: &[&str] = &[
+         "api_tool",
+@@ -319,6 +321,52 @@ fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
+         Ok(())
+     }
+-
++
++    fn validate_custom_tool<'a>(
++        tool: &'a DynamicToolCustomSpec,
++        seen: &mut HashSet<&'a str>,
++    ) -> Result<(), String> {
++        let name = tool.name.trim();
++        if name.is_empty() {
++            return Err("dynamic custom tool name must not be empty".to_string());
++        }
++        if name != tool.name {
++            return Err(format!(
++                "dynamic custom tool name has leading/trailing whitespace: {}",
++                escape_identifier_for_error(&tool.name),
++            ));
++        }
++        validate_dynamic_tool_identifier(
++            name,
++            "dynamic custom tool name",
++            DYNAMIC_TOOL_NAME_MAX_LEN,
++        )?;
++        if name == "mcp" || name.starts_with("mcp__") {
++            return Err(format!("dynamic custom tool name is reserved: {name}"));
++        }
++        if !seen.insert(name) {
++            return Err(format!("duplicate dynamic tool name: {name}"));
++        }
++        if tool.description.len() > DYNAMIC_CUSTOM_TOOL_DESCRIPTION_MAX_LEN {
++            return Err(format!(
++                "dynamic custom tool description must be at most {DYNAMIC_CUSTOM_TOOL_DESCRIPTION_MAX_LEN} bytes"
++            ));
++        }
++        if tool.format.r#type != "grammar" {
++            return Err("dynamic custom tool format type must be grammar".to_string());
++        }
++        if tool.format.syntax != "lark" {
++            return Err("dynamic custom tool grammar syntax must be lark".to_string());
++        }
++        if tool.format.definition.is_empty()
++            || tool.format.definition.len() > DYNAMIC_CUSTOM_TOOL_GRAMMAR_MAX_LEN
++        {
++            return Err(format!(
++                "dynamic custom tool grammar must be 1-{DYNAMIC_CUSTOM_TOOL_GRAMMAR_MAX_LEN} bytes"
++            ));
++        }
++        Ok(())
++    }
++
+     let mut seen_tools = HashSet::new();
+     let mut seen_namespaces = HashSet::new();
+     for spec in tools {
+@@ -326,6 +374,9 @@ fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
+             DynamicToolSpec::Function(tool) => {
+                 validate_dynamic_tool(tool, /*namespace*/ None, &mut seen_tools)?;
+             }
++            DynamicToolSpec::Custom(tool) => {
++                validate_custom_tool(tool, &mut seen_tools)?;
++            }
+             DynamicToolSpec::Namespace(namespace) => {
+                 let name = namespace.name.trim();
+                 if name.is_empty() {
+@@ -1222,6 +1273,7 @@ impl ThreadRequestProcessor {
+             .map(|tool| match tool {
+                 DynamicToolSpec::Function(_) => 1,
+                 DynamicToolSpec::Namespace(namespace) => namespace.tools.len(),
++                DynamicToolSpec::Custom(_) => 1,
+             })
+             .sum();
+         let mut thread_extension_init = ExtensionDataInit::new();
+diff --git a/codex-rs/app-server/src/request_processors/thread_processor_tests.rs b/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
+index 38a94ab..faf9a1e 100644
+--- a/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
++++ b/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
+@@ -215,6 +215,41 @@ mod thread_processor_behavior_tests {
+         validate_dynamic_tools(&tools).expect("valid schema");
+     }
+-
++
++    #[test]
++    fn apitoken_openai_compat_validate_dynamic_tools_accepts_lark_custom_tool() {
++        let tools = vec![DynamicToolSpec::Custom(
++            codex_app_server_protocol::DynamicToolCustomSpec {
++                name: "exec".to_string(),
++                description: "Execute source".to_string(),
++                format: codex_app_server_protocol::DynamicToolCustomFormat {
++                    r#type: "grammar".to_string(),
++                    syntax: "lark".to_string(),
++                    definition: "start: /[\\s\\S]+/".to_string(),
++                },
++            },
++        )];
++
++        validate_dynamic_tools(&tools).expect("valid custom tool");
++    }
++
++    #[test]
++    fn apitoken_openai_compat_validate_dynamic_tools_rejects_non_lark_custom_tool() {
++        let tools = vec![DynamicToolSpec::Custom(
++            codex_app_server_protocol::DynamicToolCustomSpec {
++                name: "exec".to_string(),
++                description: "Execute source".to_string(),
++                format: codex_app_server_protocol::DynamicToolCustomFormat {
++                    r#type: "grammar".to_string(),
++                    syntax: "regex".to_string(),
++                    definition: ".*".to_string(),
++                },
++            },
++        )];
++
++        let error = validate_dynamic_tools(&tools).expect_err("invalid custom tool");
++        assert!(error.contains("lark"), "unexpected error: {error}");
++    }
++
+     #[test]
+     fn validate_dynamic_tools_accepts_same_name_in_different_namespaces() {
+         let tools = vec![
 diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
 index a3f29eb..c5b2a97 100644
 --- a/codex-rs/core/src/lib.rs
@@ -72,8 +229,165 @@ index aab5206..8b857b7 100644
  #[tokio::test]
  async fn build_initial_context_includes_turn_context_fragments_from_extensions() {
      let (mut session, mut turn_context) = make_session_and_context().await;
+diff --git a/codex-rs/core/src/tools/handlers/dynamic.rs b/codex-rs/core/src/tools/handlers/dynamic.rs
+index 4b8fa03..5c09443 100644
+--- a/codex-rs/core/src/tools/handlers/dynamic.rs
++++ b/codex-rs/core/src/tools/handlers/dynamic.rs
+@@ -9,6 +9,7 @@ use crate::tools::handlers::parse_arguments;
+ use crate::tools::registry::CoreToolRuntime;
+ use crate::tools::registry::ToolExecutor;
+ use crate::tools::registry::ToolExposure;
++use codex_protocol::dynamic_tools::DynamicToolCustomSpec;
+ use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
+ use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
+ use codex_protocol::dynamic_tools::DynamicToolResponse;
+@@ -16,6 +17,8 @@ use codex_protocol::items::DynamicToolCallItem;
+ use codex_protocol::items::DynamicToolCallStatus;
+ use codex_protocol::items::TurnItem;
+ use codex_protocol::models::FunctionCallOutputContentItem;
++use codex_tools::FreeformTool;
++use codex_tools::FreeformToolFormat;
+ use codex_tools::ResponsesApiNamespace;
+ use codex_tools::ResponsesApiNamespaceTool;
+ use codex_tools::ToolName;
+@@ -33,6 +36,13 @@ pub struct DynamicToolHandler {
+     tool_name: ToolName,
+     spec: ToolSpec,
+     exposure: ToolExposure,
++    payload_kind: DynamicToolPayloadKind,
++}
++
++#[derive(Clone, Copy)]
++enum DynamicToolPayloadKind {
++    Function,
++    Custom,
+ }
+-
++
+ impl DynamicToolHandler {
+@@ -78,8 +88,40 @@ impl DynamicToolHandler {
+             } else {
+                 ToolExposure::Direct
+             },
++            payload_kind: DynamicToolPayloadKind::Function,
+         })
+     }
++
++    pub fn new_custom(tool: &DynamicToolCustomSpec) -> Self {
++        Self {
++            tool_name: ToolName::new(/*namespace*/ None, tool.name.clone()),
++            spec: ToolSpec::Freeform(FreeformTool {
++                name: tool.name.clone(),
++                description: tool.description.clone(),
++                format: FreeformToolFormat {
++                    r#type: tool.format.r#type.clone(),
++                    syntax: tool.format.syntax.clone(),
++                    definition: tool.format.definition.clone(),
++                },
++            }),
++            exposure: ToolExposure::Direct,
++            payload_kind: DynamicToolPayloadKind::Custom,
++        }
++    }
++
++    fn callback_arguments(&self, payload: ToolPayload) -> Result<Value, FunctionCallError> {
++        match (self.payload_kind, payload) {
++            (DynamicToolPayloadKind::Function, ToolPayload::Function { arguments }) => {
++                parse_arguments(&arguments)
++            }
++            (DynamicToolPayloadKind::Custom, ToolPayload::Custom { input }) => {
++                Ok(Value::String(input))
++            }
++            _ => Err(FunctionCallError::RespondToModel(
++                "dynamic tool handler received unsupported payload".to_string(),
++            )),
++        }
++    }
+ }
+-
++
+ impl ToolExecutor<ToolInvocation> for DynamicToolHandler {
+@@ -123,16 +165,7 @@ impl DynamicToolHandler {
+             ..
+         } = invocation;
+-
++
+-        let arguments = match payload {
+-            ToolPayload::Function { arguments } => arguments,
+-            _ => {
+-                return Err(FunctionCallError::RespondToModel(
+-                    "dynamic tool handler received unsupported payload".to_string(),
+-                ));
+-            }
+-        };
+-
+-        let args: Value = parse_arguments(&arguments)?;
++        let args = self.callback_arguments(payload)?;
+         let response = request_dynamic_tool(
+             &session,
+             turn.as_ref(),
+@@ -162,7 +195,56 @@ impl DynamicToolHandler {
+     }
+ }
+-
++
+-impl CoreToolRuntime for DynamicToolHandler {}
++impl CoreToolRuntime for DynamicToolHandler {
++    fn matches_kind(&self, payload: &ToolPayload) -> bool {
++        matches!(
++            (self.payload_kind, payload),
++            (
++                DynamicToolPayloadKind::Function,
++                ToolPayload::Function { .. }
++            ) | (DynamicToolPayloadKind::Custom, ToolPayload::Custom { .. })
++        )
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use codex_protocol::dynamic_tools::DynamicToolCustomFormat;
++
++    #[test]
++    fn apitoken_openai_compat_custom_dynamic_tool_preserves_raw_input() {
++        let handler = DynamicToolHandler::new_custom(&DynamicToolCustomSpec {
++            name: "exec".to_string(),
++            description: "Execute source".to_string(),
++            format: DynamicToolCustomFormat {
++                r#type: "grammar".to_string(),
++                syntax: "lark".to_string(),
++                definition: "start: /[\\s\\S]+/".to_string(),
++            },
++        });
++
++        let ToolSpec::Freeform(spec) = handler.spec() else {
++            panic!("custom dynamic tool must remain a freeform tool");
++        };
++        assert_eq!(spec.name, "exec");
++        assert_eq!(spec.format.syntax, "lark");
++        assert_eq!(
++            handler
++                .callback_arguments(ToolPayload::Custom {
++                    input: "text('ok')".to_string(),
++                })
++                .expect("custom input"),
++            Value::String("text('ok')".to_string())
++        );
++        assert!(handler.matches_kind(&ToolPayload::Custom {
++            input: String::new(),
++        }));
++        assert!(!handler.matches_kind(&ToolPayload::Function {
++            arguments: "{}".to_string(),
++        }));
++    }
++}
+-
++
+ #[expect(
+     clippy::await_holding_invalid_type,
 diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
-index 1694c1b..bc2d9b6 100644
+index 1694c1b..f16c8e6 100644
 --- a/codex-rs/core/src/tools/spec_plan.rs
 +++ b/codex-rs/core/src/tools/spec_plan.rs
 @@ -186,6 +186,14 @@ fn build_tool_specs_and_registry(
@@ -104,11 +418,21 @@ index 1694c1b..bc2d9b6 100644
          {
              let spec = runtime.spec();
              specs.push(spec_for_model_request(
+@@ -884,6 +896,9 @@ fn add_dynamic_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plan
+                     planned_tools.add(handler);
+                 }
+             }
++            DynamicToolSpec::Custom(tool) => {
++                planned_tools.add(DynamicToolHandler::new_custom(tool));
++            }
+         }
+     }
+ }
 diff --git a/codex-rs/core/src/tools/spec_plan_tests.rs b/codex-rs/core/src/tools/spec_plan_tests.rs
-index 6d51754..4361dc1 100644
+index 6d51754..68d58af 100644
 --- a/codex-rs/core/src/tools/spec_plan_tests.rs
 +++ b/codex-rs/core/src/tools/spec_plan_tests.rs
-@@ -412,6 +412,36 @@ fn dynamic_tool(namespace: Option<&str>, name: &str, defer_loading: bool) -> Dyn
+@@ -412,6 +412,49 @@ fn dynamic_tool(namespace: Option<&str>, name: &str, defer_loading: bool) -> Dyn
      }
  }
 -
@@ -129,20 +453,72 @@ index 6d51754..4361dc1 100644
 +            );
 +        },
 +        ToolPlanInputs {
-+            dynamic_tools: vec![dynamic_tool(
-+                None,
-+                "customer_function",
-+                /*defer_loading*/ false,
-+            )],
++            dynamic_tools: vec![
++                dynamic_tool(None, "customer_function", /*defer_loading*/ false),
++                DynamicToolSpec::Custom(codex_protocol::dynamic_tools::DynamicToolCustomSpec {
++                    name: "exec".to_string(),
++                    description: "Execute source".to_string(),
++                    format: codex_protocol::dynamic_tools::DynamicToolCustomFormat {
++                        r#type: "grammar".to_string(),
++                        syntax: "lark".to_string(),
++                        definition: "start: /[\\s\\S]+/".to_string(),
++                    },
++                }),
++            ],
 +            ..ToolPlanInputs::default()
 +        },
 +    )
 +    .await;
 +
-+    assert_eq!(plan.visible_names, vec!["customer_function"]);
-+    assert_eq!(plan.registered_names, vec!["customer_function"]);
++    assert_eq!(plan.visible_names, vec!["customer_function", "exec"]);
++    assert_eq!(plan.registered_names, vec!["customer_function", "exec"]);
++    let ToolSpec::Freeform(exec) = &plan.visible_specs[1] else {
++        panic!("exec must remain a freeform Responses tool");
++    };
++    assert_eq!(exec.format.r#type, "grammar");
++    assert_eq!(exec.format.syntax, "lark");
++    assert_eq!(exec.format.definition, "start: /[\\s\\S]+/");
 +}
 +
  fn plugin_candidates(presentation: ToolSuggestPresentation) -> ToolSuggestCandidates {
      ToolSuggestCandidates {
          tools: vec![DiscoverableTool::Plugin(Box::new(DiscoverablePluginInfo {
+diff --git a/codex-rs/protocol/src/dynamic_tools.rs b/codex-rs/protocol/src/dynamic_tools.rs
+index bbe92b8..0d0fcc6 100644
+--- a/codex-rs/protocol/src/dynamic_tools.rs
++++ b/codex-rs/protocol/src/dynamic_tools.rs
+@@ -13,6 +13,7 @@ use ts_rs::TS;
+ pub enum DynamicToolSpec {
+     Function(DynamicToolFunctionSpec),
+     Namespace(DynamicToolNamespaceSpec),
++    Custom(DynamicToolCustomSpec),
+ }
+-
++
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
+@@ -35,6 +36,24 @@ pub struct DynamicToolNamespaceSpec {
+     pub tools: Vec<DynamicToolNamespaceTool>,
+ }
+-
++
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
++#[serde(rename_all = "camelCase")]
++#[ts(export_to = "v2/")]
++pub struct DynamicToolCustomSpec {
++    pub name: String,
++    pub description: String,
++    pub format: DynamicToolCustomFormat,
++}
++
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
++#[serde(rename_all = "camelCase")]
++#[ts(export_to = "v2/")]
++pub struct DynamicToolCustomFormat {
++    pub r#type: String,
++    pub syntax: String,
++    pub definition: String,
++}
++
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
+ #[serde(tag = "type", rename_all = "camelCase")]
+ #[ts(tag = "type", export_to = "v2/")]

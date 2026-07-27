@@ -25,6 +25,10 @@ use tokio::sync::mpsc;
 pub(super) const OPENAI_BODY_LIMIT: usize = 8 * 1024 * 1024;
 pub(super) const MAX_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
 const MAX_TOOLS: usize = 128;
+const MAX_CLIENT_METADATA_KEYS: usize = 32;
+const MAX_CLIENT_METADATA_VALUE_BYTES: usize = 16 * 1024;
+const MAX_PROMPT_CACHE_KEY_BYTES: usize = 256;
+const MAX_CUSTOM_TOOL_GRAMMAR_BYTES: usize = 256 * 1024;
 pub(super) const STREAM_FRAME_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Debug)]
@@ -170,9 +174,11 @@ pub(super) struct ParsedResponsesRequest {
     pub(super) input: NormalizedInput,
     pub(super) instructions: Option<String>,
     previous_response_id: Option<String>,
+    prompt_cache_key: Option<String>,
     reasoning_effort: Option<String>,
     reasoning_summary: Option<String>,
     output_schema: Option<Value>,
+    verbosity: Option<String>,
     text: Value,
     original_tools: Vec<Value>,
     dynamic_tools: Vec<Value>,
@@ -488,6 +494,7 @@ pub(super) async fn prepare_turn(
         reasoning_effort: request.reasoning_effort.clone(),
         reasoning_summary: request.reasoning_summary.clone(),
         output_schema: request.output_schema.clone(),
+        verbosity: request.verbosity.clone(),
     };
     Ok(PreparedTurn {
         request,
@@ -521,6 +528,10 @@ pub(super) fn parse_responses_request(
             "stream",
             "include",
             "stream_options",
+            "client_metadata",
+            "prompt_cache_key",
+            "safety_identifier",
+            "service_tier",
         ],
     )?;
     let model_id = required_string(object, "model")?;
@@ -533,7 +544,8 @@ pub(super) fn parse_responses_request(
     let input_value = object.get("input").ok_or_else(|| {
         ApiError::invalid("Missing required parameter: input.", Some("input".into()))
     })?;
-    let input = normalize_responses_input(input_value)?;
+    let (input_value, additional_tools) = extract_additional_tools(input_value)?;
+    let input = normalize_responses_input(&input_value)?;
     let instructions = optional_string(object, "instructions")?;
     if instructions
         .as_ref()
@@ -557,14 +569,38 @@ pub(super) fn parse_responses_request(
             Some("previous_response_id".to_string()),
         ));
     }
+    let prompt_cache_key = optional_string(object, "prompt_cache_key")?;
+    if prompt_cache_key.as_ref().is_some_and(|key| {
+        key.is_empty()
+            || key.len() > MAX_PROMPT_CACHE_KEY_BYTES
+            || key.chars().any(char::is_control)
+    }) {
+        return Err(ApiError::invalid(
+            format!(
+                "prompt_cache_key must be 1-{MAX_PROMPT_CACHE_KEY_BYTES} bytes without control characters."
+            ),
+            Some("prompt_cache_key".to_string()),
+        ));
+    }
+    validate_client_metadata(object.get("client_metadata"))?;
+    validate_optional_identifier(object.get("safety_identifier"), "safety_identifier")?;
+    validate_service_tier(object.get("service_tier"))?;
     let (reasoning_effort, reasoning_summary) =
         parse_reasoning(object.get("reasoning"), &public_model)?;
-    let (text, output_schema) = parse_text(object.get("text"))?;
+    let (text, output_schema, verbosity) = parse_text(object.get("text"))?;
     let tool_choice = object
         .get("tool_choice")
         .cloned()
         .unwrap_or_else(|| Value::String("auto".to_string()));
-    let (original_tools, mut dynamic_tools) = parse_responses_tools(object.get("tools"))?;
+    let top_level_tools = parse_responses_tools(object.get("tools"))?;
+    if additional_tools.is_some() && !top_level_tools.0.is_empty() {
+        return Err(ApiError::invalid(
+            "Top-level tools cannot be combined with an input additional_tools item.",
+            Some("tools".to_string()),
+        ));
+    }
+    let tools_from_input = additional_tools.is_some();
+    let (original_tools, mut dynamic_tools) = additional_tools.unwrap_or(top_level_tools);
     match tool_choice.as_str() {
         Some("auto") if !original_tools.is_empty() => {}
         Some("auto" | "none") => dynamic_tools.clear(),
@@ -576,7 +612,7 @@ pub(super) fn parse_responses_request(
         }
     }
     let parallel_tool_calls = optional_bool(object, "parallel_tool_calls")?.unwrap_or(true);
-    if !parallel_tool_calls && !dynamic_tools.is_empty() {
+    if !parallel_tool_calls && !dynamic_tools.is_empty() && !tools_from_input {
         return Err(ApiError::invalid(
             "parallel_tool_calls=false is not supported by this endpoint.",
             Some("parallel_tool_calls".to_string()),
@@ -629,9 +665,11 @@ pub(super) fn parse_responses_request(
         input,
         instructions,
         previous_response_id,
+        prompt_cache_key,
         reasoning_effort,
         reasoning_summary,
         output_schema,
+        verbosity,
         text,
         original_tools,
         dynamic_tools,
@@ -691,6 +729,73 @@ fn optional_bool(object: &Map<String, Value>, field: &str) -> Result<Option<bool
     }
 }
 
+fn validate_client_metadata(value: Option<&Value>) -> Result<(), ApiError> {
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return Ok(());
+    };
+    let metadata = value.as_object().ok_or_else(|| {
+        ApiError::invalid(
+            "client_metadata must be an object.",
+            Some("client_metadata".to_string()),
+        )
+    })?;
+    if metadata.len() > MAX_CLIENT_METADATA_KEYS {
+        return Err(ApiError::invalid(
+            format!("client_metadata may contain at most {MAX_CLIENT_METADATA_KEYS} keys."),
+            Some("client_metadata".to_string()),
+        ));
+    }
+    for (key, value) in metadata {
+        if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
+            return Err(ApiError::invalid(
+                "client_metadata keys must be 1-128 bytes without control characters.",
+                Some("client_metadata".to_string()),
+            ));
+        }
+        let Some(value) = value.as_str() else {
+            return Err(ApiError::invalid(
+                "client_metadata values must be strings.",
+                Some(format!("client_metadata.{key}")),
+            ));
+        };
+        if value.len() > MAX_CLIENT_METADATA_VALUE_BYTES || value.chars().any(char::is_control) {
+            return Err(ApiError::invalid(
+                format!(
+                    "client_metadata values must be at most {MAX_CLIENT_METADATA_VALUE_BYTES} bytes without control characters."
+                ),
+                Some(format!("client_metadata.{key}")),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_optional_identifier(value: Option<&Value>, field: &str) -> Result<(), ApiError> {
+    match value {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::String(value))
+            if !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control) =>
+        {
+            Ok(())
+        }
+        Some(_) => Err(ApiError::invalid(
+            format!("{field} must be null or a 1-256 byte string without control characters."),
+            Some(field.to_string()),
+        )),
+    }
+}
+
+fn validate_service_tier(value: Option<&Value>) -> Result<(), ApiError> {
+    match value {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::String(value)) if matches!(value.as_str(), "auto" | "default") => Ok(()),
+        Some(_) => Err(ApiError::invalid(
+            "Only service_tier=null, \"auto\", or \"default\" is supported.",
+            Some("service_tier".to_string()),
+        )),
+    }
+}
+
 fn parse_reasoning(
     value: Option<&Value>,
     model: &CodexModel,
@@ -704,7 +809,16 @@ fn parse_reasoning(
             Some("reasoning".to_string()),
         )
     })?;
-    reject_unsupported_fields(object, &["effort", "summary"])?;
+    reject_unsupported_fields(object, &["effort", "summary", "context"])?;
+    if object
+        .get("context")
+        .is_some_and(|context| !context.is_null() && context.as_str() != Some("all_turns"))
+    {
+        return Err(ApiError::invalid(
+            "Only reasoning.context=\"all_turns\" is supported.",
+            Some("reasoning.context".to_string()),
+        ));
+    }
     let effort = optional_string(object, "effort")?;
     if let Some(effort) = &effort {
         if !model.supports_effort(effort) {
@@ -730,17 +844,28 @@ fn parse_reasoning(
     Ok((effort, summary))
 }
 
-fn parse_text(value: Option<&Value>) -> Result<(Value, Option<Value>), ApiError> {
+fn parse_text(value: Option<&Value>) -> Result<(Value, Option<Value>, Option<String>), ApiError> {
     let Some(value) = value.filter(|value| !value.is_null()) else {
-        return Ok((json!({"format": {"type": "text"}}), None));
+        return Ok((json!({"format": {"type": "text"}}), None, None));
     };
     let object = value
         .as_object()
         .ok_or_else(|| ApiError::invalid("text must be an object.", Some("text".to_string())))?;
-    reject_unsupported_fields(object, &["format"])?;
-    let Some(format) = object.get("format") else {
-        return Ok((json!({"format": {"type": "text"}}), None));
-    };
+    reject_unsupported_fields(object, &["format", "verbosity"])?;
+    let verbosity = optional_string(object, "verbosity")?;
+    if verbosity
+        .as_deref()
+        .is_some_and(|verbosity| !matches!(verbosity, "low" | "medium" | "high"))
+    {
+        return Err(ApiError::invalid(
+            "text.verbosity must be low, medium, or high.",
+            Some("text.verbosity".to_string()),
+        ));
+    }
+    let format = object
+        .get("format")
+        .cloned()
+        .unwrap_or_else(|| json!({"type": "text"}));
     let format_object = format.as_object().ok_or_else(|| {
         ApiError::invalid(
             "text.format must be an object.",
@@ -764,7 +889,281 @@ fn parse_text(value: Option<&Value>) -> Result<(Value, Option<Value>), ApiError>
             ))
         }
     };
-    Ok((value.clone(), schema))
+    let mut normalized = object.clone();
+    normalized.insert("format".to_string(), format);
+    Ok((Value::Object(normalized), schema, verbosity))
+}
+
+fn extract_additional_tools(
+    input: &Value,
+) -> Result<(Value, Option<(Vec<Value>, Vec<Value>)>), ApiError> {
+    let Some(items) = input.as_array() else {
+        return Ok((input.clone(), None));
+    };
+    let mut filtered = Vec::with_capacity(items.len());
+    let mut parsed_tools = None;
+    for (index, item) in items.iter().enumerate() {
+        if item.get("type").and_then(Value::as_str) != Some("additional_tools") {
+            filtered.push(item.clone());
+            continue;
+        }
+        if parsed_tools.is_some() {
+            return Err(ApiError::invalid(
+                "input may contain at most one additional_tools item.",
+                Some(format!("input.{index}")),
+            ));
+        }
+        let object = item.as_object().ok_or_else(|| {
+            ApiError::invalid(
+                "additional_tools must be an object.",
+                Some(format!("input.{index}")),
+            )
+        })?;
+        reject_unsupported_fields(object, &["type", "role", "tools"])?;
+        if object.get("role").and_then(Value::as_str) != Some("developer") {
+            return Err(ApiError::invalid(
+                "additional_tools.role must be \"developer\".",
+                Some(format!("input.{index}.role")),
+            ));
+        }
+        parsed_tools = Some(parse_additional_tools(
+            object.get("tools"),
+            &format!("input.{index}.tools"),
+        )?);
+    }
+    Ok((Value::Array(filtered), parsed_tools))
+}
+
+fn parse_additional_tools(
+    value: Option<&Value>,
+    param: &str,
+) -> Result<(Vec<Value>, Vec<Value>), ApiError> {
+    let tools = value.and_then(Value::as_array).ok_or_else(|| {
+        ApiError::invalid(
+            "additional_tools.tools must be an array.",
+            Some(param.to_string()),
+        )
+    })?;
+    let mut dynamic = Vec::with_capacity(tools.len());
+    let mut names = HashSet::new();
+    let mut namespaces = HashSet::new();
+    let mut callable_count = 0usize;
+    for (index, tool) in tools.iter().enumerate() {
+        let tool_param = format!("{param}.{index}");
+        let object = tool.as_object().ok_or_else(|| {
+            ApiError::invalid(
+                "Each additional tool must be an object.",
+                Some(tool_param.clone()),
+            )
+        })?;
+        match object.get("type").and_then(Value::as_str) {
+            Some("function") => {
+                let parsed = parse_additional_function(object, &tool_param)?;
+                if !names.insert(parsed["name"].as_str().unwrap_or_default().to_string()) {
+                    return Err(ApiError::invalid(
+                        "Additional tool names must be unique.",
+                        Some(format!("{tool_param}.name")),
+                    ));
+                }
+                callable_count += 1;
+                dynamic.push(parsed);
+            }
+            Some("custom") => {
+                let parsed = parse_additional_custom(object, &tool_param)?;
+                if !names.insert(parsed["name"].as_str().unwrap_or_default().to_string()) {
+                    return Err(ApiError::invalid(
+                        "Additional tool names must be unique.",
+                        Some(format!("{tool_param}.name")),
+                    ));
+                }
+                callable_count += 1;
+                dynamic.push(parsed);
+            }
+            Some("namespace") => {
+                reject_unsupported_fields(object, &["type", "name", "description", "tools"])?;
+                let name = required_string(object, "name")?;
+                validate_dynamic_tool_identifier(name, &format!("{tool_param}.name"), 64)?;
+                if !namespaces.insert(name.to_string()) {
+                    return Err(ApiError::invalid(
+                        "Additional tool namespace names must be unique.",
+                        Some(format!("{tool_param}.name")),
+                    ));
+                }
+                let description =
+                    optional_tool_description(object, &format!("{tool_param}.description"))?;
+                let children = object
+                    .get("tools")
+                    .and_then(Value::as_array)
+                    .filter(|children| !children.is_empty())
+                    .ok_or_else(|| {
+                        ApiError::invalid(
+                            "Additional tool namespaces require a non-empty tools array.",
+                            Some(format!("{tool_param}.tools")),
+                        )
+                    })?;
+                let mut child_names = HashSet::new();
+                let mut parsed_children = Vec::with_capacity(children.len());
+                for (child_index, child) in children.iter().enumerate() {
+                    let child_param = format!("{tool_param}.tools.{child_index}");
+                    let child_object = child.as_object().ok_or_else(|| {
+                        ApiError::invalid(
+                            "Each namespaced tool must be an object.",
+                            Some(child_param.clone()),
+                        )
+                    })?;
+                    if child_object.get("type").and_then(Value::as_str) != Some("function") {
+                        return Err(ApiError::invalid(
+                            "Only function tools are supported inside a namespace.",
+                            Some(format!("{child_param}.type")),
+                        ));
+                    }
+                    let parsed = parse_additional_function(child_object, &child_param)?;
+                    let child_name = parsed["name"].as_str().unwrap_or_default().to_string();
+                    if !child_names.insert(child_name) {
+                        return Err(ApiError::invalid(
+                            "Namespaced tool names must be unique.",
+                            Some(format!("{child_param}.name")),
+                        ));
+                    }
+                    callable_count += 1;
+                    parsed_children.push(parsed);
+                }
+                dynamic.push(json!({
+                    "type": "namespace",
+                    "name": name,
+                    "description": description,
+                    "tools": parsed_children
+                }));
+            }
+            _ => {
+                return Err(ApiError::invalid(
+                    "Additional tool type must be function, custom, or namespace.",
+                    Some(format!("{tool_param}.type")),
+                ))
+            }
+        }
+        if callable_count > MAX_TOOLS {
+            return Err(ApiError::invalid(
+                format!("additional_tools may contain at most {MAX_TOOLS} callable tools."),
+                Some(param.to_string()),
+            ));
+        }
+    }
+    Ok((tools.clone(), dynamic))
+}
+
+fn parse_additional_function(object: &Map<String, Value>, param: &str) -> Result<Value, ApiError> {
+    reject_unsupported_fields(
+        object,
+        &["type", "name", "description", "parameters", "strict"],
+    )?;
+    if object
+        .get("strict")
+        .is_some_and(|strict| !strict.is_null() && strict.as_bool() != Some(false))
+    {
+        return Err(ApiError::invalid(
+            "strict=true additional tools are not supported.",
+            Some(format!("{param}.strict")),
+        ));
+    }
+    let name = required_string(object, "name")?;
+    validate_dynamic_tool_identifier(name, &format!("{param}.name"), 128)?;
+    let description = optional_tool_description(object, &format!("{param}.description"))?;
+    let parameters = object
+        .get("parameters")
+        .cloned()
+        .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
+    if !parameters.is_object() {
+        return Err(ApiError::invalid(
+            "Function parameters must be a JSON Schema object.",
+            Some(format!("{param}.parameters")),
+        ));
+    }
+    Ok(json!({
+        "type": "function",
+        "name": name,
+        "description": description,
+        "inputSchema": parameters,
+        "deferLoading": false
+    }))
+}
+
+fn parse_additional_custom(object: &Map<String, Value>, param: &str) -> Result<Value, ApiError> {
+    reject_unsupported_fields(object, &["type", "name", "description", "format"])?;
+    let name = required_string(object, "name")?;
+    validate_dynamic_tool_identifier(name, &format!("{param}.name"), 128)?;
+    let description = optional_tool_description(object, &format!("{param}.description"))?;
+    let format = object
+        .get("format")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            ApiError::invalid(
+                "Custom tools require a format object.",
+                Some(format!("{param}.format")),
+            )
+        })?;
+    reject_unsupported_fields(format, &["type", "syntax", "definition"])?;
+    if required_string(format, "type")? != "grammar" {
+        return Err(ApiError::invalid(
+            "Custom tool format.type must be \"grammar\".",
+            Some(format!("{param}.format.type")),
+        ));
+    }
+    if required_string(format, "syntax")? != "lark" {
+        return Err(ApiError::invalid(
+            "Custom tool format.syntax must be \"lark\".",
+            Some(format!("{param}.format.syntax")),
+        ));
+    }
+    let definition = required_string(format, "definition")?;
+    if definition.is_empty() || definition.len() > MAX_CUSTOM_TOOL_GRAMMAR_BYTES {
+        return Err(ApiError::invalid(
+            format!("Custom tool grammar must be 1-{MAX_CUSTOM_TOOL_GRAMMAR_BYTES} bytes."),
+            Some(format!("{param}.format.definition")),
+        ));
+    }
+    Ok(json!({
+        "type": "custom",
+        "name": name,
+        "description": description,
+        "format": {
+            "type": "grammar",
+            "syntax": "lark",
+            "definition": definition
+        }
+    }))
+}
+
+fn optional_tool_description(object: &Map<String, Value>, param: &str) -> Result<String, ApiError> {
+    match object.get("description") {
+        None | Some(Value::Null) => Ok(String::new()),
+        Some(Value::String(description)) => Ok(description.clone()),
+        Some(_) => Err(ApiError::invalid(
+            "Tool description must be a string.",
+            Some(param.to_string()),
+        )),
+    }
+}
+
+fn validate_dynamic_tool_identifier(
+    name: &str,
+    param: &str,
+    max_len: usize,
+) -> Result<(), ApiError> {
+    if name.is_empty()
+        || name.len() > max_len
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(ApiError::invalid(
+            format!(
+                "Dynamic tool identifiers must be 1-{max_len} ASCII letters, digits, underscore, or hyphen."
+            ),
+            Some(param.to_string()),
+        ));
+    }
+    Ok(())
 }
 
 fn parse_responses_tools(value: Option<&Value>) -> Result<(Vec<Value>, Vec<Value>), ApiError> {
@@ -929,7 +1328,11 @@ fn normalize_response_item(item: &Value, index: usize) -> Result<Value, ApiError
         })?;
     match kind {
         "message" => normalize_message_item(object, index),
-        "reasoning" | "function_call" | "function_call_output" => Ok(item.clone()),
+        "reasoning"
+        | "function_call"
+        | "function_call_output"
+        | "custom_tool_call"
+        | "custom_tool_call_output" => Ok(item.clone()),
         _ => Err(ApiError::invalid(
             format!("Input item type {kind:?} is not supported by this text-only endpoint."),
             Some(format!("input.{index}.type")),
@@ -1077,7 +1480,7 @@ fn response_object(
         "output": output,
         "parallel_tool_calls": request.parallel_tool_calls,
         "previous_response_id": request.previous_response_id,
-        "prompt_cache_key": Value::Null,
+        "prompt_cache_key": request.prompt_cache_key,
         "reasoning": {
             "effort": request.reasoning_effort,
             "summary": request.reasoning_summary
@@ -1174,7 +1577,7 @@ fn normalize_output_item_with_options(
                         .and_then(|value| serde_json::to_string(value).ok())
                 })
                 .unwrap_or_else(|| "{}".to_string());
-            Some(json!({
+            let mut output = json!({
                 "id": item.get("id").and_then(Value::as_str)
                     .map(str::to_string).unwrap_or_else(|| new_id("fc")),
                 "type": "function_call",
@@ -1183,7 +1586,27 @@ fn normalize_output_item_with_options(
                     .map(str::to_string).unwrap_or_else(|| new_id("call")),
                 "name": item.get("name").and_then(Value::as_str).unwrap_or("unknown"),
                 "arguments": arguments
-            }))
+            });
+            if let Some(namespace) = item.get("namespace").and_then(Value::as_str) {
+                output["namespace"] = Value::String(namespace.to_string());
+            }
+            Some(output)
+        }
+        "custom_tool_call" => {
+            let mut output = json!({
+                "id": item.get("id").and_then(Value::as_str)
+                    .map(str::to_string).unwrap_or_else(|| new_id("ctc")),
+                "type": "custom_tool_call",
+                "status": "completed",
+                "call_id": item.get("call_id").and_then(Value::as_str)
+                    .map(str::to_string).unwrap_or_else(|| new_id("call")),
+                "name": item.get("name").and_then(Value::as_str).unwrap_or("unknown"),
+                "input": item.get("input").and_then(Value::as_str).unwrap_or("")
+            });
+            if let Some(namespace) = item.get("namespace").and_then(Value::as_str) {
+                output["namespace"] = Value::String(namespace.to_string());
+            }
+            Some(output)
         }
         "reasoning" => {
             let summary = item
@@ -1972,6 +2395,8 @@ async fn emit_completed_item(
     started["status"] = Value::String("in_progress".to_string());
     if started.get("type").and_then(Value::as_str) == Some("function_call") {
         started["arguments"] = Value::String(String::new());
+    } else if started.get("type").and_then(Value::as_str) == Some("custom_tool_call") {
+        started["input"] = Value::String(String::new());
     } else if started.get("type").and_then(Value::as_str) == Some("reasoning") {
         started["summary"] = json!([]);
         if let Some(item) = started.as_object_mut() {
@@ -2021,6 +2446,42 @@ async fn emit_completed_item(
                 "item_id": item_id,
                 "output_index": output_index,
                 "arguments": arguments
+            }),
+        )
+        .await
+        {
+            return false;
+        }
+        *sequence += 1;
+    }
+    if item.get("type").and_then(Value::as_str) == Some("custom_tool_call") {
+        let input = item.get("input").and_then(Value::as_str).unwrap_or("");
+        let item_id = item.get("id").and_then(Value::as_str).unwrap_or("");
+        if !send_sse(
+            sender,
+            "response.custom_tool_call_input.delta",
+            json!({
+                "type": "response.custom_tool_call_input.delta",
+                "sequence_number": *sequence,
+                "item_id": item_id,
+                "output_index": output_index,
+                "delta": input
+            }),
+        )
+        .await
+        {
+            return false;
+        }
+        *sequence += 1;
+        if !send_sse(
+            sender,
+            "response.custom_tool_call_input.done",
+            json!({
+                "type": "response.custom_tool_call_input.done",
+                "sequence_number": *sequence,
+                "item_id": item_id,
+                "output_index": output_index,
+                "input": input
             }),
         )
         .await
@@ -2374,6 +2835,137 @@ mod tests {
     }
 
     #[test]
+    fn official_codex_cli_request_shape_translates_all_additional_tool_kinds() {
+        let parsed = parse_responses_request(
+            &gateway(),
+            json!({
+                "model": "gpt-5.6",
+                "input": [
+                    {
+                        "type": "additional_tools",
+                        "role": "developer",
+                        "tools": [
+                            {
+                                "type": "custom",
+                                "name": "exec",
+                                "description": "Run source",
+                                "format": {
+                                    "type": "grammar",
+                                    "syntax": "lark",
+                                    "definition": "start: /[\\s\\S]+/"
+                                }
+                            },
+                            {
+                                "type": "function",
+                                "name": "wait",
+                                "description": "Wait for a task",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {"id": {"type": "string"}},
+                                    "required": ["id"]
+                                },
+                                "strict": false
+                            },
+                            {
+                                "type": "namespace",
+                                "name": "collaboration",
+                                "description": "Agent coordination",
+                                "tools": [{
+                                    "type": "function",
+                                    "name": "list_agents",
+                                    "description": "List agents",
+                                    "parameters": {
+                                        "type": "object",
+                                        "properties": {}
+                                    },
+                                    "strict": false
+                                }]
+                            }
+                        ]
+                    },
+                    {
+                        "role": "developer",
+                        "content": "Follow the caller's policy."
+                    },
+                    {
+                        "role": "user",
+                        "content": "Reply briefly."
+                    }
+                ],
+                "include": ["reasoning.encrypted_content"],
+                "parallel_tool_calls": false,
+                "tool_choice": "auto",
+                "reasoning": {"effort": "low", "context": "all_turns"},
+                "text": {"verbosity": "low"},
+                "prompt_cache_key": "session-123",
+                "client_metadata": {
+                    "session_id": "session-123",
+                    "turn_id": "turn-456",
+                    "x-codex-turn-metadata": "opaque"
+                },
+                "store": false,
+                "stream": true
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(parsed.prompt_cache_key.as_deref(), Some("session-123"));
+        assert_eq!(parsed.verbosity.as_deref(), Some("low"));
+        assert_eq!(parsed.reasoning_effort.as_deref(), Some("low"));
+        assert!(!parsed.parallel_tool_calls);
+        assert!(parsed.stream);
+        assert_eq!(parsed.original_tools.len(), 3);
+        assert_eq!(parsed.dynamic_tools.len(), 3);
+        assert_eq!(parsed.dynamic_tools[0]["type"], "custom");
+        assert_eq!(parsed.dynamic_tools[0]["name"], "exec");
+        assert_eq!(
+            parsed.dynamic_tools[0]["format"]["definition"],
+            "start: /[\\s\\S]+/"
+        );
+        assert_eq!(
+            parsed.dynamic_tools[1]["inputSchema"]["required"],
+            json!(["id"])
+        );
+        assert_eq!(parsed.dynamic_tools[2]["type"], "namespace");
+        assert_eq!(parsed.dynamic_tools[2]["name"], "collaboration");
+        assert_eq!(parsed.dynamic_tools[2]["tools"][0]["name"], "list_agents");
+        assert_eq!(parsed.input.canonical_items.len(), 2);
+        assert_eq!(parsed.input.prior_items.len(), 1);
+        assert_eq!(
+            parsed.input.turn_input,
+            vec![json!({"type": "text", "text": "Reply briefly."})]
+        );
+    }
+
+    #[test]
+    fn codex_diagnostic_metadata_is_bounded_and_reasoning_context_is_exact() {
+        let metadata_error = parse_responses_request(
+            &gateway(),
+            json!({
+                "model": "gpt-5.6",
+                "input": "hi",
+                "client_metadata": {"turn_id": 42}
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(
+            metadata_error.param.as_deref(),
+            Some("client_metadata.turn_id")
+        );
+
+        let reasoning_error = parse_responses_request(
+            &gateway(),
+            json!({
+                "model": "gpt-5.6",
+                "input": "hi",
+                "reasoning": {"context": "last_turn"}
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(reasoning_error.param.as_deref(), Some("reasoning.context"));
+    }
+
+    #[test]
     fn strict_function_tools_are_rejected_instead_of_silently_downgraded() {
         let error = parse_responses_request(
             &gateway(),
@@ -2517,6 +3109,22 @@ mod tests {
     }
 
     #[test]
+    fn custom_tool_call_normalization_preserves_only_public_fields() {
+        let output = normalize_output_item(&json!({
+            "type": "custom_tool_call",
+            "id": "ctc_1",
+            "call_id": "call_1",
+            "name": "exec",
+            "input": "text('ok')",
+            "internal_provider_metadata": {"must": "not escape"}
+        }))
+        .unwrap();
+        assert_eq!(output["type"], "custom_tool_call");
+        assert_eq!(output["input"], "text('ok')");
+        assert!(output.get("internal_provider_metadata").is_none());
+    }
+
+    #[test]
     fn reasoning_encrypted_content_requires_explicit_include() {
         let default_request =
             parse_responses_request(&gateway(), json!({"model": "gpt-5.6", "input": "hi"}))
@@ -2570,6 +3178,41 @@ mod tests {
         assert!(frames[2].contains("\"text\":\"final\""));
         assert!(frames[3].contains("\"type\":\"response.reasoning_summary_part.done\""));
         assert!(frames[4].starts_with("event: response.output_item.done\n"));
+    }
+
+    #[tokio::test]
+    async fn custom_tool_call_emits_the_responses_stream_lifecycle() {
+        let (sender, mut receiver) = mpsc::channel(8);
+        let mut sequence = 0;
+        assert!(
+            emit_completed_item(
+                &sender,
+                &mut sequence,
+                0,
+                &json!({
+                    "id": "ctc_1",
+                    "type": "custom_tool_call",
+                    "status": "completed",
+                    "call_id": "call_1",
+                    "name": "exec",
+                    "input": "text('ok')"
+                }),
+            )
+            .await
+        );
+        drop(sender);
+
+        let frames = std::iter::from_fn(|| receiver.try_recv().ok())
+            .map(|frame| String::from_utf8(frame.to_vec()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(frames.len(), 4);
+        assert!(frames[0].starts_with("event: response.output_item.added\n"));
+        assert!(frames[0].contains("\"input\":\"\""));
+        assert!(frames[1].starts_with("event: response.custom_tool_call_input.delta\n"));
+        assert!(frames[1].contains("\"delta\":\"text('ok')\""));
+        assert!(frames[2].starts_with("event: response.custom_tool_call_input.done\n"));
+        assert!(frames[2].contains("\"input\":\"text('ok')\""));
+        assert!(frames[3].starts_with("event: response.output_item.done\n"));
     }
 
     #[tokio::test]

@@ -139,12 +139,16 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    конкретного аккаунта. Homes адресуются ИНДЕКСОМ (в логах/метриках нет путей и identity).
 1. Только official `codex app-server` и ChatGPT-owned auth store; токены не читать и не replay-ить.
 2. Проверять exact binary SHA-256/version до запуска; child `env_clear`, только allowlisted proxy env.
-3. Model-visible initial context = explicit client system/developer + transcript + dynamic client
-   tools. Codex personality/environment/project/plugin/skill/permission/built-in tools запрещены.
+3. Model-visible initial context = explicit client system/developer + transcript + request-local
+   dynamic client tools (function, namespace/function и custom Lark grammar). Codex
+   personality/environment/project/plugin/skill/permission/built-in tools запрещены. Custom tool
+   выполняет клиент: gateway возвращает raw input и никогда не исполняет его сам.
 4. Raw reasoning text не публиковать; только provider summary. `encrypted_content` — только по
    явному Responses `include`, но хранить tenant-bound для корректной continuity.
-5. Неподдерживаемые параметры отклонять, не игнорировать. Usage для settlement брать из
-   authoritative completed app-server turn.
+5. Неподдерживаемые generation-параметры отклонять, не игнорировать. Ограниченные диагностические
+   compatibility-поля текущего Codex (`client_metadata`, `safety_identifier`) разрешено валидировать
+   и отбрасывать без логирования/форвардинга; `prompt_cache_key` валидируется и только отражается в
+   публичном ответе. Usage для settlement брать из authoritative completed app-server turn.
 6. Не заявлять OpenAI ownership: public `owned_by` остаётся `apitoken`; полный scope и runbook —
    `docs/CODEX_APP_SERVER.md`.
 7. **Цены — только из `metering::codex`** (audited, effective-dated таблица, как Claude-тарифы).

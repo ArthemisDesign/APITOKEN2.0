@@ -44,6 +44,13 @@ systemd/monitoring/stateful definitions, and unknown deployment files fail close
 installer. Every mode records the exact tested infrastructure SHA before handing off to the next
 five-second poll.
 
+Pinned Codex tooling has its own artifact flag inside the engine lane. The isolated candidate builds
+and tests the audited upstream pin once. During engine release selection,
+`deploy.sh --promote-codex` invokes a fixed least-privilege root helper while holding the shared deploy lock;
+the helper verifies the candidate marker and digest, installs a content-addressed executable, and
+atomically updates only the Codex path/version/digest lines in the existing secret-bearing engine
+environment. Engine slots never consume an untested host-local rebuild.
+
 Before a feature verdict becomes green, the host refetches `master` and requires its current tip to
 remain an ancestor of the exact candidate. The locked merge still waits for the parent’s overall
 green verdict. An incompatible target move produces a new rebased SHA and a new pair of gates.

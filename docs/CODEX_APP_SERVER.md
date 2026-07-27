@@ -29,6 +29,74 @@ This is not the OpenAI Platform API and must not be represented as an OpenAI-ope
 ChatGPT subscriptions and OpenAI Platform API billing are separate products. Confirm that the
 applicable subscription terms permit the intended commercial workload before customer-facing use.
 
+## Customer connection
+
+The same `sk-pool-…` key and prepaid balance work on both public hosts, but the wire protocols and
+authentication headers are different. OpenAI-compatible requests use a bearer token:
+
+```bash
+export APITOKEN_API_KEY='sk-pool-…'
+
+curl https://openai.api.apitoken.sale/v1/responses \
+  -H "Authorization: Bearer $APITOKEN_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "gpt-5.6-sol",
+    "input": "Reply with exactly: connected"
+  }'
+```
+
+Clients must discover the current model intersection from `GET /v1/models`; they must not assume
+that every OpenAI model name is available. An official OpenAI SDK needs only its key and base URL
+changed:
+
+```python
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["APITOKEN_API_KEY"],
+    base_url="https://openai.api.apitoken.sale/v1",
+)
+print(client.responses.create(
+    model="gpt-5.6-sol",
+    input="Reply with exactly: connected",
+).output_text)
+```
+
+Current Codex CLI releases can use a named overlay without replacing the user's normal login or
+default configuration. Create `~/.codex/apitoken.config.toml`:
+
+```toml
+model = "gpt-5.6-sol"
+model_provider = "apitoken"
+
+[model_providers.apitoken]
+name = "apiToken.sale"
+base_url = "https://openai.api.apitoken.sale/v1"
+wire_api = "responses"
+env_key = "APITOKEN_API_KEY"
+```
+
+Then keep the key in the environment and select the profile explicitly:
+
+```bash
+export APITOKEN_API_KEY='sk-pool-…'
+codex --profile apitoken
+```
+
+The gateway accepts the current CLI's Responses compatibility fields: bounded
+`client_metadata`, `prompt_cache_key`, `reasoning.context="all_turns"`, `text.verbosity`, and the
+developer `additional_tools` input item. Function tools, function namespaces and Lark-grammar
+custom tools are translated into request-local app-server dynamic tools. Custom tool calls are
+returned to Codex, which executes them on the customer's machine and submits their output in the
+next request; the gateway never executes a customer's `exec` source.
+
+Diagnostic `client_metadata` and `safety_identifier` values are validated and discarded at the
+public boundary. They are never logged or forwarded to the pooled account. `prompt_cache_key` is
+validated and echoed for protocol compatibility, but the official app-server remains responsible
+for upstream cache behavior.
+
 ## Architecture and trust boundary
 
 ```text
@@ -79,7 +147,7 @@ It makes the model-visible context contain only:
 
 1. the client's explicit system/developer instructions;
 2. the client's conversation items;
-3. the client's declared function tools.
+3. the client's declared function, namespaced function and custom grammar tools.
 
 Codex personality text, environment context, project instructions, plugin/skill descriptions,
 collaboration instructions, permission prompts and built-in Codex tools are excluded. Empty
@@ -105,20 +173,21 @@ The source pin and all expected digests live in
 2. verifies commit `25af12f7e61572b0bc18ddb1008be543b91519b0`;
 3. verifies the upstream lockfile and local patch digests;
 4. applies the patch with `git apply --check`;
-5. runs the patch-specific core library tests plus the official app-server request-capture test
-   proving that empty instruction overrides omit the upstream `instructions` field;
+5. runs the patch-specific core and app-server library tests, including custom-tool preservation
+   and validation, plus the official app-server request-capture test proving that empty instruction
+   overrides omit the upstream `instructions` field;
 6. runs a locked release build;
 7. installs an immutable, content-addressed binary and atomically updates `codex`.
 
 Production layout:
 
 ```text
-/srv/claude-api/data/codex/bin   root-owned, 0755 directory, 0555 binaries
+/srv/claude-api/data/codex/bin   root-owned, 0755 directory, 0555 versioned binaries
 /srv/claude-api/data/codex/home  deploy-owned, 0700, authentication state
 /srv/claude-api/data/codex/work  deploy-owned, 0700, empty working directory
 ```
 
-Build without touching the running engine:
+For a standalone/bootstrap audit, build without touching the running engine:
 
 ```bash
 sudo /opt/apitoken/repo/tools/codex-app-server/build-pinned.sh \
@@ -127,6 +196,15 @@ sudo /opt/apitoken/repo/tools/codex-app-server/build-pinned.sh \
 
 Record the emitted `CODEX_BINARY_SHA256`; enabling the provider without the matching digest is a
 startup error.
+
+Normal production delivery is automatic. A change under `tools/codex-app-server/` selects a
+dedicated candidate lane that runs this complete pinned build and its patch tests as
+`apitoken-ci`. The marker binds the resulting regular executable, source commit, version and
+SHA-256 to the exact candidate. While holding the normal deploy lock, the fixed root helper copies
+only that tested executable to a content-addressed path, atomically updates the three Codex lines in
+`config.env` without reading it into logs, and advances the convenience `codex` symlink. A new
+engine slot therefore starts with one immutable path and its matching digest; no second build and no
+manual SSH deployment are involved.
 
 ## Authentication
 
@@ -151,7 +229,7 @@ The provider is fail-closed and off by default:
 
 ```dotenv
 CLAUDE_API_CODEX_ENABLED=1
-CLAUDE_API_CODEX_BIN=/srv/claude-api/data/codex/bin/codex
+CLAUDE_API_CODEX_BIN=/srv/claude-api/data/codex/bin/codex-<source-commit>-<sha256>
 CLAUDE_API_CODEX_BIN_SHA256=<sha256 emitted by build-pinned.sh>
 CLAUDE_API_CODEX_VERSION=codex-cli 0.145.0
 CLAUDE_API_CODEX_HOMES=/srv/claude-api/data/codex/home,/srv/claude-api/data/codex/home2
@@ -240,8 +318,9 @@ refused, or completes as an API-key login leaves no directory behind, so an unfi
 cannot enter the pool. The engine admits the account on its next health tick — no restart, no
 config edit, no root.
 
-Operationally the bot is still deployed by hand: it is a workspace crate now, so the watchdog gates
-it, but nothing restarts `claude-authbot.service` for you.
+The authbot is built beside the engine and promoted from the same immutable candidate. The release
+controller restarts `claude-authbot.service` only when its running executable differs, so an
+unrelated engine deploy does not interrupt an in-progress device authorization.
 
 ## Verification and activation
 
@@ -262,8 +341,10 @@ Before enabling production traffic:
     `claude_api_codex_homes_available` must fall by exactly one.
 11. Point an unmodified official OpenAI SDK at the gateway and verify model listing, Responses,
     typed Responses streaming, Chat Completions and Chat streaming.
-12. Verify unsupported nested routes return OpenAI-shaped `404` responses and never reach Claude.
-13. Enable through the normal watchdog/blue-green promotion and wait for `/ready` plus smoke checks.
+12. Point an unmodified current Codex CLI profile at the gateway and verify both a text-only turn
+    and a custom `exec` call/output round trip.
+13. Verify unsupported nested routes return OpenAI-shaped `404` responses and never reach Claude.
+14. Enable through the normal watchdog/blue-green promotion and wait for `/ready` plus smoke checks.
 
 ## Deliberate first-release gaps
 

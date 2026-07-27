@@ -464,6 +464,15 @@ wd_path_is_engine() {
   esac
 }
 
+wd_path_is_codex_tooling() {
+  case "$1" in
+    tools/codex-app-server/*)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 # All pnpm workspace source and its shared build inputs belong to the TypeScript validation lane,
 # including Vercel-only surfaces that do not map to a host deployment component.
 wd_path_is_typescript() {
@@ -561,7 +570,8 @@ wd_path_is_controller_definition() {
     deploy/watchdog.sh|deploy/watchdog-lib.sh|deploy/validation-plan.sh|\
     deploy/watchdog-test-db.sh|\
     deploy/watchdog-backup.sh|deploy/watchdog-migrate.sh|deploy/watchdog-infrastructure.sh|\
-    deploy/watchdog-retention.sh|deploy/watchdog-github.sh|deploy/watchdog-control.sh|\
+    deploy/watchdog-retention.sh|deploy/watchdog-codex-promote.sh|\
+    deploy/watchdog-github.sh|deploy/watchdog-control.sh|\
     deploy/deploy.sh|deploy/lib.sh|deploy/api-bluegreen.sh|deploy/engine-bluegreen.sh|\
     deploy/rollback.sh|deploy/sales-deploy.sh|deploy/openkeys-deploy.sh)
       return 0

@@ -18,6 +18,7 @@ usage() {
     '  --api-only          Build, migrate, and point current for a later blue-green API cutover' \
     '  --tested-candidate PATH' \
     '                      Promote artifacts from the watchdog-tested immutable candidate' \
+    '  --promote-codex    Promote its tested Codex binary and atomically attest it in config.env' \
     '  --bootstrap         Prepare the first release, create both current links, then install/start units' \
     '  --skip-migrate      Skip the commerce database migration (explicit override)' \
     '  --timeout SECONDS   Readiness deadline per service (default: 60)' \
@@ -35,6 +36,7 @@ READINESS_TIMEOUT=${READINESS_TIMEOUT_SECONDS:-60}
 SHA=
 MODE_SELECTED=
 TESTED_CANDIDATE=
+PROMOTE_CODEX=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -73,6 +75,10 @@ while [[ $# -gt 0 ]]; do
       TESTED_CANDIDATE=$2
       shift 2
       ;;
+    --promote-codex)
+      PROMOTE_CODEX=1
+      shift
+      ;;
     --timeout)
       [[ $# -ge 2 ]] || die "--timeout requires a value"
       READINESS_TIMEOUT=$2
@@ -107,6 +113,10 @@ fi
 if [[ "$DEPLOY_API" != "1" && "$SKIP_MIGRATE" == "1" ]]; then
   warn "--skip-migrate has no effect when the commerce API is not selected"
 fi
+if [[ "$PROMOTE_CODEX" == "1" ]]; then
+  [[ "$DEPLOY_ENGINE" == "1" && -n "$TESTED_CANDIDATE" ]] \
+    || die "--promote-codex requires an engine deployment from --tested-candidate"
+fi
 
 SOURCE_REPO=${SOURCE_REPO:-/opt/apitoken/repo}
 COMMERCE_RELEASE_ROOT=$(canonicalize_release_root "${COMMERCE_RELEASE_ROOT:-/opt/apitoken/releases}" /opt/apitoken commerce)
@@ -123,6 +133,7 @@ LEGACY_API_SERVICE=${LEGACY_API_SERVICE:-apitoken-api.service}
 SYSTEMD_UNIT_DIR=${SYSTEMD_UNIT_DIR:-/etc/systemd/system}
 TESTED_CANDIDATE_ROOT=/var/lib/apitoken/watchdog/candidates
 TESTED_MARKER=
+CODEX_PROMOTION_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-codex-promote.sh
 
 # The watchdog runs with ProtectHome=read-only. Release builds must never depend on a warm cache
 # under /home/deploy: new locked dependencies need a controller-owned writable cache on first use.
@@ -638,7 +649,7 @@ if [[ "$DEPLOY_ENGINE" == "1" ]]; then
 fi
 if [[ -n "$TESTED_CANDIDATE" ]]; then
   validate_tested_candidate "$TESTED_CANDIDATE" "$TESTED_MARKER" "$SHA" \
-    "$DEPLOY_API" "$DEPLOY_ENGINE"
+    "$DEPLOY_API" "$DEPLOY_ENGINE" commerce "$PROMOTE_CODEX"
 else
   fetch_release_commit
 fi
@@ -648,6 +659,10 @@ if [[ "$DEPLOY_API" == "1" ]]; then
 fi
 if [[ "$DEPLOY_ENGINE" == "1" ]]; then
   prepare_engine_release
+fi
+if [[ "$PROMOTE_CODEX" == "1" ]]; then
+  log "promoting the exact tested Codex binary and its runtime attestation"
+  privileged_command "$CODEX_PROMOTION_HELPER" "$SHA"
 fi
 if [[ "$DEPLOY_API" == "1" ]]; then
   run_locked_migration

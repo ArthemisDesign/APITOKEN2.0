@@ -22,6 +22,7 @@ Cmnd_Alias APITOKEN_HELPERS = \
     /usr/local/lib/apitoken-watchdog/watchdog-backup.sh [0-9a-f]*, \
     /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh [0-9a-f]*, \
     /usr/local/lib/apitoken-watchdog/watchdog-retention.sh [0-9]*, \
+    /usr/local/lib/apitoken-watchdog/watchdog-codex-promote.sh [0-9a-f]*, \
     /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh [0-9a-f]*, \
     /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh [0-9a-f]* --controller-only, \
     /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh [0-9a-f]* --caddy-only, \

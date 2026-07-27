@@ -43,6 +43,12 @@ readiness verifies the target `MainPID` executable. A running old slot retains i
 immutable binary after `current` moves; `engine-bluegreen.sh` admits the target before draining it.
 `claude-api.service` exists only as the bridge through the first SQLite-to-PostgreSQL cutover.
 
+The optional official Codex child has a parallel content-addressed artifact root under
+`/srv/claude-api/data/codex/bin`. It is not rebuilt while assembling an engine release. When pinned
+Codex tooling changed, the watchdog marker supplies the tested executable digest and the fixed
+promotion helper atomically selects its immutable path in `config.env` before a new engine slot is
+started.
+
 ## Link validity
 
 `current` and `previous` may be either:

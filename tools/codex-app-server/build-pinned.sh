@@ -111,6 +111,8 @@ fi
   # arg0 safety guard deliberately rejects their temporary CODEX_HOME on Linux.
   cargo test --locked --release -p codex-core --lib \
     apitoken_openai_compat -- --nocapture
+  cargo test --locked --release -p codex-app-server --lib \
+    apitoken_openai_compat -- --nocapture
   # The official app-server integration harness deliberately passes a debug-only isolation flag
   # to the spawned production binary. Running this one test with --release removes that flag from
   # clap and fails before the request-capture assertion is reached.

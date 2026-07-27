@@ -151,6 +151,8 @@ require_permitted 'unit introspection' /usr/bin/systemctl show apitoken-api@3000
 require_permitted 'backup runner' /usr/local/lib/apitoken-watchdog/watchdog-backup.sh "$sample_sha"
 require_permitted 'migration runner' /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh "$sample_sha"
 require_permitted 'retention helper' /usr/local/lib/apitoken-watchdog/watchdog-retention.sh 10
+require_permitted 'Codex promotion helper' \
+  /usr/local/lib/apitoken-watchdog/watchdog-codex-promote.sh "$sample_sha"
 require_permitted 'infrastructure runner' /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh "$sample_sha"
 require_permitted 'controller-only infrastructure runner' \
   /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh "$sample_sha" --controller-only

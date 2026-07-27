@@ -137,6 +137,7 @@ tested_typescript_component_list_contains() {
 validate_tested_candidate() {
   local candidate=$1 marker=$2 expected_sha=$3 need_typescript=$4 need_engine=$5
   local typescript_component=${6:-commerce}
+  local need_codex=${7:-0}
   local marker_sha marker_tree candidate_sha candidate_tree expected_digest actual_digest artifact digest_key
   local marker_components
 
@@ -196,6 +197,20 @@ validate_tested_candidate() {
       [[ "$actual_digest" == "$expected_digest" ]] \
         || die "tested engine artifact changed before release promotion: $artifact"
     done
+  fi
+  if [[ "$need_codex" == 1 ]]; then
+    [[ "$(tested_marker_value "$marker" codex_artifacts)" == 1 ]] \
+      || die "candidate has no tested Codex artifact"
+    artifact="$candidate/.deploy-artifacts/codex/codex"
+    [[ -x "$artifact" && -f "$artifact" && ! -L "$artifact" ]] \
+      || die "tested Codex artifact is missing or unsafe"
+    expected_digest=$(tested_marker_value "$marker" codex_binary_sha256) \
+      || die "candidate marker has no Codex artifact digest"
+    [[ "$expected_digest" =~ ^[0-9a-f]{64}$ ]] \
+      || die "candidate Codex artifact digest is malformed"
+    actual_digest=$(sha256_file "$artifact")
+    [[ "$actual_digest" == "$expected_digest" ]] \
+      || die "tested Codex artifact changed before release promotion"
   fi
 }
 

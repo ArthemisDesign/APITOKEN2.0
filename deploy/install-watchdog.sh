@@ -33,6 +33,8 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-retention.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-retention.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/watchdog-codex-promote.sh" \
+    /usr/local/lib/apitoken-watchdog/watchdog-codex-promote.sh
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-github.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-github
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-control.sh" \

@@ -261,6 +261,11 @@ wd_path_is_backend packages/contracts/src/index.ts \
 wd_path_is_backend apps/content-studio/src/app/page.tsx || wd_die "content studio must trigger commerce deployment"
 wd_path_is_engine tools/codex-app-server/build-pinned.sh \
   || wd_die "pinned Codex tooling must trigger an engine deployment"
+wd_path_is_codex_tooling tools/codex-app-server/build-pinned.sh \
+  || wd_die "pinned Codex tooling must request a tested Codex artifact"
+if wd_path_is_codex_tooling crates/forward/src/codex/api.rs; then
+  wd_die "gateway-only changes must not rebuild the pinned upstream Codex binary"
+fi
 grep -Fq 'WEB_HEALTH=${OPENKEYS_WEB_HEALTH:-http://127.0.0.1:3410/docs}' \
   "$ROOT/deploy/openkeys-deploy.sh" \
   || wd_die "OpenKeys rollout health must tolerate the intentional product-root redirect"
@@ -330,6 +335,7 @@ for controller_definition in \
   deploy/watchdog-lib.sh \
   deploy/validation-plan.sh \
   deploy/watchdog-infrastructure.sh \
+  deploy/watchdog-codex-promote.sh \
   deploy/deploy.sh \
   deploy/lib.sh \
   deploy/api-bluegreen.sh \
@@ -643,10 +649,13 @@ git -C "$tested_candidate" commit --quiet --allow-empty -m candidate
 tested_sha=$(git -C "$tested_candidate" rev-parse HEAD)
 tested_tree=$(git -C "$tested_candidate" rev-parse 'HEAD^{tree}')
 mkdir -p "$tested_candidate/.deploy-artifacts/engine"
+mkdir -p "$tested_candidate/.deploy-artifacts/codex"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$tested_candidate/.deploy-artifacts/engine/claude-api"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$tested_candidate/.deploy-artifacts/engine/authbot"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$tested_candidate/.deploy-artifacts/codex/codex"
 chmod +x "$tested_candidate/.deploy-artifacts/engine/claude-api" \
-  "$tested_candidate/.deploy-artifacts/engine/authbot"
+  "$tested_candidate/.deploy-artifacts/engine/authbot" \
+  "$tested_candidate/.deploy-artifacts/codex/codex"
 tested_marker="$TEMP/tested-candidate.marker"
 {
   printf 'sha=%s\n' "$tested_sha"
@@ -656,17 +665,22 @@ tested_marker="$TEMP/tested-candidate.marker"
   printf 'typescript_base=%s\n' "$tested_sha"
   printf 'rust_tested=1\n'
   printf 'engine_artifacts=1\n'
+  printf 'codex_artifacts=1\n'
   printf 'typescript_artifact_digest=%s\n' "$(wd_typescript_artifact_digest "$tested_candidate")"
   printf 'engine_binary_sha256=%s\n' \
     "$(wd_sha256_file "$tested_candidate/.deploy-artifacts/engine/claude-api")"
   printf 'authbot_binary_sha256=%s\n' \
     "$(wd_sha256_file "$tested_candidate/.deploy-artifacts/engine/authbot")"
+  printf 'codex_binary_sha256=%s\n' \
+    "$(wd_sha256_file "$tested_candidate/.deploy-artifacts/codex/codex")"
+  printf 'codex_source_commit=25af12f7e61572b0bc18ddb1008be543b91519b0\n'
+  printf 'codex_version=codex-cli 0.145.0\n'
 } >"$tested_marker"
 validate_candidate_fixture() {
   bash -c '
     source "$1"
     stat_owner_uid(){ printf "0\n"; }
-    validate_tested_candidate "$2" "$3" "$4" 1 1
+    validate_tested_candidate "$2" "$3" "$4" 1 1 commerce 1
   ' _ "$ROOT/deploy/lib.sh" "$tested_candidate" "$tested_marker" "$tested_sha"
 }
 validate_candidate_fixture || wd_die "release promoter rejected an intact tested candidate"
@@ -822,6 +836,23 @@ grep -Fq 'cmp -s "$exe" "$current/authbot"' "$ROOT/deploy/deploy.sh" \
 ! grep -Fq 'privileged_command test -f "/etc/systemd/system/$unit"' "$ROOT/deploy/deploy.sh" \
   || wd_die "the authbot unit check must not require sudo"
 
+# A pinned-tooling change must build the official Codex binary in the isolated candidate and
+# promote only that digest through a fixed root helper while the release lock is held.
+grep -Fq 'test_codex_lane' "$ROOT/deploy/watchdog.sh" \
+  || wd_die "pinned Codex tooling has no isolated build lane"
+grep -Fq 'VALIDATION_CODEX_ARTIFACTS_REQUIRED=1' "$ROOT/deploy/watchdog.sh" \
+  || wd_die "Codex tooling changes do not request their production artifact"
+grep -Fq 'privileged_command "$CODEX_PROMOTION_HELPER" "$SHA"' "$ROOT/deploy/deploy.sh" \
+  || wd_die "release controller does not promote the tested Codex artifact under its lock"
+grep -Fq 'watchdog-codex-promote.sh' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die "fixed Codex promotion helper is not installed"
+grep -Fq '/usr/local/lib/apitoken-watchdog/watchdog-codex-promote.sh [0-9a-f]*' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die "deploy user cannot invoke the fixed Codex promotion helper"
+grep -Fq "require_permitted 'Codex promotion helper'" \
+  "$ROOT/deploy/install-sudoers.sh" \
+  || wd_die "sudo policy installer does not verify Codex promotion access"
+
 grep -Fq 'final_verify_admin_panel' "$ROOT/deploy/watchdog.sh"
 # The panel check runs immediately after cutover, while the stable listener still round-robins the
 # retiring slot. It must require a streak of current answers rather than accepting the first one,
@@ -857,6 +888,7 @@ gate_contract=(
   'bash -n "$shell_file"'
   'run_as_ci bash "$candidate/deploy/lib.test.sh"'
   'run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"'
+  'run_as_ci bash "$candidate/deploy/watchdog-codex-promote.test.sh"'
   'run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"'
   'run_as_ci bash "$candidate/deploy/next-cache.test.sh"'
   'run_as_ci bash "$candidate/deploy/typescript-scope.test.sh"'
@@ -867,9 +899,11 @@ gate_contract=(
   'status --porcelain --untracked-files=no'
   'run_candidate_lane test_typescript_lane "$candidate" "$dsn" "$sales_dsn" "$openkeys_dsn"'
   'run_candidate_lane test_rust_lane "$candidate" "$engine_dsn" "$engine_artifacts_required" &'
+  'run_candidate_lane test_codex_lane "$candidate" &'
   'run_candidate_lane test_static_lane "$candidate" "$sha" "$static_required" &'
   'wait "$typescript_pid"'
   'wait "$rust_pid"'
+  'wait "$codex_pid"'
   'wait "$static_pid"'
   'Static candidate lane failed'
   'wd_infrastructure_install_scope'
@@ -880,6 +914,7 @@ gate_contract=(
   'rust_tested=%s'
   'static_tested=%s'
   'engine_artifacts=%s'
+  'codex_artifacts=%s'
   'validation_plan_format=%s'
   'validation_policy_sha256=%s'
   'validation_plan_sha256=%s'
@@ -1236,7 +1271,7 @@ processed_line=$(grep -nF 'wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"' \
 # Stateful component rollouts use three joined lanes. Engine and commerce remain ordered behind
 # their shared deploy lock; bounded sales/OpenKeys roots can make progress concurrently.
 rollout_contract=(
-  'run_rollout_lane deploy_core_components "$CANDIDATE_SHA" "$engine_changed" "$backend_changed" &'
+  'run_rollout_lane deploy_core_components "$CANDIDATE_SHA" "$engine_changed"'
   'run_rollout_lane deploy_sales "$CANDIDATE_SHA" &'
   'run_rollout_lane deploy_openkeys "$CANDIDATE_SHA" &'
   'wait "$core_pid"'
@@ -1257,7 +1292,7 @@ core_backend_line=$(grep -nF 'deploy_backend "$sha"' <<<"$core_body" | cut -d: -
 backup_line=$(grep -nF 'sudo -n "$BACKUP_RUNNER" "$CANDIDATE_SHA"' \
   "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
 core_start_line=$(grep -nF \
-  'run_rollout_lane deploy_core_components "$CANDIDATE_SHA" "$engine_changed" "$backend_changed" &' \
+  'run_rollout_lane deploy_core_components "$CANDIDATE_SHA" "$engine_changed"' \
   "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
 [[ -n $backup_line && -n $core_start_line && $backup_line -lt $core_start_line ]] \
   || wd_die 'production backup can race an independent database rollout'

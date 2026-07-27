@@ -8,6 +8,7 @@ use super::{
     ProcessError,
 };
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
@@ -67,6 +68,7 @@ pub(crate) struct CodexTurnRequest {
     pub reasoning_effort: Option<String>,
     pub reasoning_summary: Option<String>,
     pub output_schema: Option<Value>,
+    pub verbosity: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -225,7 +227,8 @@ impl CodexHome {
     async fn start_thread(
         &self,
         request: &CodexTurnRequest,
-    ) -> Result<(Arc<CodexProcess>, Value), ProcessError> {        let params = json!({
+    ) -> Result<(Arc<CodexProcess>, Value), ProcessError> {
+        let mut params = json!({
             "model": request.model.upstream,
             "cwd": self.config().work_dir,
             "approvalPolicy": "never",
@@ -238,6 +241,9 @@ impl CodexHome {
             "dynamicTools": request.dynamic_tools,
             "experimentalRawEvents": true
         });
+        if let Some(verbosity) = &request.verbosity {
+            params["config"] = json!({"model_verbosity": verbosity});
+        }
         let mut last_error = ProcessError::Closed;
         for attempt in 0..2 {
             let process = self.process().await?;
@@ -263,6 +269,13 @@ impl CodexHome {
         updates: Option<mpsc::Sender<TurnUpdate>>,
         emitted: &Arc<AtomicBool>,
     ) -> Result<CodexTurnResult, ProcessError> {
+        let custom_tool_names = request
+            .dynamic_tools
+            .iter()
+            .filter(|tool| tool.get("type").and_then(Value::as_str) == Some("custom"))
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect::<HashSet<_>>();
         if !request.injected_items.is_empty() {
             process
                 .request(
@@ -304,7 +317,7 @@ impl CodexHome {
             let mut usage = CodexUsage::default();
             let mut saw_raw_usage = false;
             let mut saw_raw_response_completed = false;
-            let mut terminal_function_call = false;
+            let mut terminal_tool_call = false;
             let mut interrupt_sent = false;
             let mut completed = false;
 
@@ -381,31 +394,40 @@ impl CodexHome {
                             "rawResponseItem/completed" => {
                                 if let Some(mut item) = params.get("item").cloned() {
                                     ensure_output_item_id(&mut item);
-                                    let is_function_call = item.get("type").and_then(Value::as_str)
-                                        == Some("function_call");
-                                    if is_function_call {
-                                        terminal_function_call = true;
+                                    let is_tool_call = matches!(
+                                        item.get("type").and_then(Value::as_str),
+                                        Some("function_call" | "custom_tool_call")
+                                    );
+                                    if is_tool_call {
+                                        terminal_tool_call = true;
                                     }
                                     // Depending on app-server event ordering, the callback may be
                                     // observed before its raw response item. The callback fallback
-                                    // already carries the same public function call; never emit a
+                                    // already carries the same public tool call; never emit a
                                     // second item for the same call_id.
-                                    let duplicate_function_call = is_function_call
+                                    let duplicate_tool_call = is_tool_call
                                         && item.get("call_id").and_then(Value::as_str).is_some_and(
                                             |call_id| {
                                                 output.iter().any(|candidate| {
-                                                    candidate.get("type").and_then(Value::as_str)
-                                                        == Some("function_call")
-                                                        && candidate
-                                                            .get("call_id")
-                                                            .and_then(Value::as_str)
-                                                            == Some(call_id)
+                                                    matches!(
+                                                        candidate
+                                                            .get("type")
+                                                            .and_then(Value::as_str),
+                                                        Some("function_call" | "custom_tool_call")
+                                                    ) && candidate
+                                                        .get("call_id")
+                                                        .and_then(Value::as_str)
+                                                        == Some(call_id)
                                                 })
                                             },
                                         );
-                                    if !duplicate_function_call {
-                                        send_update(&updates, emitted, TurnUpdate::RawItem(item.clone()))
-                                            .await;
+                                    if !duplicate_tool_call {
+                                        send_update(
+                                            &updates,
+                                            emitted,
+                                            TurnUpdate::RawItem(item.clone()),
+                                        )
+                                        .await;
                                         output.push(item);
                                     }
                                 }
@@ -418,7 +440,7 @@ impl CodexHome {
                                     usage.add_assign(&CodexUsage::from_value(raw_usage));
                                     saw_raw_usage = true;
                                 }
-                                if terminal_function_call && !interrupt_sent {
+                                if terminal_tool_call && !interrupt_sent {
                                     process
                                         .request(
                                             "turn/interrupt",
@@ -439,7 +461,7 @@ impl CodexHome {
                                     .and_then(Value::as_str)
                                     .unwrap_or("failed");
                                 let deliberate_interrupt =
-                                    status == "interrupted" && terminal_function_call;
+                                    status == "interrupted" && terminal_tool_call;
                                 if status != "completed" && !deliberate_interrupt {
                                     if let Some(error) = classify_turn_error(
                                         &process,
@@ -500,30 +522,18 @@ impl CodexHome {
                             .and_then(Value::as_str)
                             .unwrap_or("call_unknown");
                         if !output.iter().any(|item| {
-                            item.get("type").and_then(Value::as_str) == Some("function_call")
-                                && item.get("call_id").and_then(Value::as_str) == Some(call_id)
+                            matches!(
+                                item.get("type").and_then(Value::as_str),
+                                Some("function_call" | "custom_tool_call")
+                            ) && item.get("call_id").and_then(Value::as_str) == Some(call_id)
                         }) {
-                            let arguments = params
-                                .get("arguments")
-                                .map(|arguments| {
-                                    serde_json::to_string(arguments)
-                                        .unwrap_or_else(|_| "{}".to_string())
-                                })
-                                .unwrap_or_else(|| "{}".to_string());
-                            let item = json!({
-                                "id": new_id("fc"),
-                                "type": "function_call",
-                                "call_id": call_id,
-                                "name": params.get("tool").and_then(Value::as_str)
-                                    .unwrap_or("unknown"),
-                                "arguments": arguments,
-                                "status": "completed"
-                            });
+                            let item =
+                                callback_tool_call_item(&params, call_id, &custom_tool_names);
                             send_update(&updates, emitted, TurnUpdate::RawItem(item.clone())).await;
                             output.push(item);
                         }
-                        terminal_function_call = true;
-                        // Function execution belongs to the public API client. Keep app-server's
+                        terminal_tool_call = true;
+                        // Tool execution belongs to the public API client. Keep app-server's
                         // callback pending until the upstream response publishes its authoritative
                         // usage, then interrupt without fabricating a tool result or starting a
                         // follow-up sampling request.
@@ -566,6 +576,46 @@ impl CodexHome {
     }
 }
 
+fn callback_tool_call_item(
+    params: &Value,
+    call_id: &str,
+    custom_tool_names: &HashSet<String>,
+) -> Value {
+    let name = params
+        .get("tool")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let is_custom =
+        params.get("namespace").is_none_or(Value::is_null) && custom_tool_names.contains(name);
+    let mut item = if is_custom {
+        json!({
+            "id": new_id("ctc"),
+            "type": "custom_tool_call",
+            "call_id": call_id,
+            "name": name,
+            "input": params.get("arguments").and_then(Value::as_str).unwrap_or(""),
+            "status": "completed"
+        })
+    } else {
+        let arguments = params
+            .get("arguments")
+            .map(|arguments| serde_json::to_string(arguments).unwrap_or_else(|_| "{}".to_string()))
+            .unwrap_or_else(|| "{}".to_string());
+        json!({
+            "id": new_id("fc"),
+            "type": "function_call",
+            "call_id": call_id,
+            "name": name,
+            "arguments": arguments,
+            "status": "completed"
+        })
+    };
+    if let Some(namespace) = params.get("namespace").and_then(Value::as_str) {
+        item["namespace"] = Value::String(namespace.to_string());
+    }
+    item
+}
+
 fn ensure_output_item_id(item: &mut Value) {
     if item.get("id").and_then(Value::as_str).is_some() {
         return;
@@ -573,6 +623,7 @@ fn ensure_output_item_id(item: &mut Value) {
     let prefix = match item.get("type").and_then(Value::as_str) {
         Some("message") => "msg",
         Some("function_call") => "fc",
+        Some("custom_tool_call") => "ctc",
         Some("reasoning") => "rs",
         _ => return,
     };
@@ -768,6 +819,7 @@ mod tests {
             reasoning_effort: Some("medium".to_string()),
             reasoning_summary: Some("auto".to_string()),
             output_schema: None,
+            verbosity: None,
         }
     }
 
@@ -839,6 +891,10 @@ while IFS= read -r line; do
         printf '%s\n' '{"id":"callback-2","method":"item/tool/call","params":{"threadId":"thread-1","turnId":"turn-1","callId":"call-2","tool":"get_weather","arguments":{"city":"Paris"}}}'
         printf '%s\n' '{"method":"rawResponseItem/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"id":"fc-upstream-2","type":"function_call","call_id":"call-2","name":"get_weather","arguments":"{\"city\":\"Paris\"}","status":"completed"}}}'
         printf '%s\n' '{"method":"rawResponse/completed","params":{"threadId":"thread-1","turnId":"turn-1","usage":{"inputTokens":23,"cachedInputTokens":3,"cacheWriteInputTokens":0,"outputTokens":14,"reasoningOutputTokens":2,"totalTokens":37}}}'
+      elif [ "$mode" = "custom_tool" ]; then
+        printf '%s\n' '{"id":"callback-1","method":"item/tool/call","params":{"threadId":"thread-1","turnId":"turn-1","callId":"call-custom-1","tool":"exec","arguments":"text('\''ok'\'')"}}'
+        printf '%s\n' '{"method":"rawResponseItem/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"id":"ctc-upstream","type":"custom_tool_call","call_id":"call-custom-1","name":"exec","input":"text('\''ok'\'')","status":"completed"}}}'
+        printf '%s\n' '{"method":"rawResponse/completed","params":{"threadId":"thread-1","turnId":"turn-1","usage":{"inputTokens":29,"cachedInputTokens":5,"cacheWriteInputTokens":0,"outputTokens":9,"reasoningOutputTokens":3,"totalTokens":38}}}'
       elif [ "$mode" = "usage_limit" ]; then
         printf '%s\n' '{"method":"error","params":{"threadId":"thread-1","turnId":"turn-1","error":{"message":"sensitive upstream diagnostic","codexErrorInfo":"usageLimitExceeded"},"willRetry":false}}'
       elif [ "$mode" = "die" ]; then
@@ -852,7 +908,7 @@ while IFS= read -r line; do
       ;;
     *'"method":"turn/interrupt"'*)
       printf '{"id":%s,"result":{}}\n' "$id"
-      if [ "$mode" = "tool" ] || [ "$mode" = "parallel_tool" ]; then
+      if [ "$mode" = "tool" ] || [ "$mode" = "parallel_tool" ] || [ "$mode" = "custom_tool" ]; then
         printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-1","turnId":"turn-1","turn":{"status":"interrupted"}}}'
       fi
       ;;
@@ -1117,6 +1173,73 @@ done
         assert!(!requests
             .iter()
             .any(|request| request["id"] == "callback-1" || request["id"] == "callback-2"));
+    }
+
+    #[tokio::test]
+    async fn customer_custom_tool_call_is_returned_as_raw_input() {
+        let (gateway, workspace) = fake_gateway("custom_tool");
+        let mut request = turn_request(test_model());
+        request.dynamic_tools = vec![json!({
+            "type": "custom",
+            "name": "exec",
+            "description": "Execute source",
+            "format": {
+                "type": "grammar",
+                "syntax": "lark",
+                "definition": "start: /[\\s\\S]+/"
+            }
+        })];
+        let result = gateway.run_turn(request, None).await.unwrap();
+
+        assert_eq!(result.output.len(), 1);
+        assert_eq!(result.output[0]["type"], "custom_tool_call");
+        assert!(result.output[0]["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("ctc_")));
+        assert_eq!(result.output[0]["call_id"], "call-custom-1");
+        assert_eq!(result.output[0]["name"], "exec");
+        assert_eq!(result.output[0]["input"], "text('ok')");
+        assert_eq!(result.usage.input_tokens, 29);
+        assert_eq!(result.usage.output_tokens, 9);
+        assert_eq!(result.usage.total_tokens, 38);
+        let requests = logged_requests(&workspace.log);
+        assert!(requests
+            .iter()
+            .any(|request| request["method"] == "turn/interrupt"));
+        assert!(!requests.iter().any(|request| request["id"] == "callback-1"));
+    }
+
+    #[test]
+    fn callback_fallback_distinguishes_namespaced_function_and_custom_calls() {
+        let custom_tool_names = HashSet::from(["exec".to_string()]);
+        let function = callback_tool_call_item(
+            &json!({
+                "tool": "list_agents",
+                "namespace": "collaboration",
+                "arguments": {"path_prefix": "/root"}
+            }),
+            "call-function",
+            &custom_tool_names,
+        );
+        assert_eq!(function["type"], "function_call");
+        assert_eq!(function["namespace"], "collaboration");
+        assert_eq!(function["arguments"], r#"{"path_prefix":"/root"}"#);
+
+        let custom = callback_tool_call_item(
+            &json!({"tool": "exec", "arguments": "text('ok')"}),
+            "call-custom",
+            &custom_tool_names,
+        );
+        assert_eq!(custom["type"], "custom_tool_call");
+        assert_eq!(custom["input"], "text('ok')");
+
+        let string_function = callback_tool_call_item(
+            &json!({"tool": "echo", "arguments": "plain text"}),
+            "call-string-function",
+            &custom_tool_names,
+        );
+        assert_eq!(string_function["type"], "function_call");
+        assert_eq!(string_function["arguments"], r#""plain text""#);
     }
 
     #[tokio::test]

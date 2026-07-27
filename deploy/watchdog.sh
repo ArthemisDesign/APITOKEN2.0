@@ -70,6 +70,7 @@ VALIDATION_TYPESCRIPT_BASE_SHA=
 VALIDATION_RUST_REQUIRED=0
 VALIDATION_STATIC_REQUIRED=0
 VALIDATION_ENGINE_ARTIFACTS_REQUIRED=0
+VALIDATION_CODEX_ARTIFACTS_REQUIRED=0
 VALIDATION_PLAN_FORMAT=1
 VALIDATION_POLICY_SHA256=
 VALIDATION_PLAN_SHA256=
@@ -230,6 +231,7 @@ candidate_is_tested() {
   local sha=$1 typescript_required=$2 typescript_full=$3 typescript_base=$4
   local rust_required=$5 static_required=$6 engine_artifacts_required=$7
   local validation_policy_sha256=$8 required_typescript_components=$9
+  local codex_artifacts_required=${10}
   local marker candidate marker_sha marker_tree candidate_sha candidate_tree marker_digest actual_digest
   local marker_flag marker_typescript_full expected_hash actual_hash manifest
   local marker_plan_format marker_policy marker_plan marker_plan_actual
@@ -291,7 +293,8 @@ candidate_is_tested() {
     "typescript_full:$typescript_full" \
     "rust_tested:$rust_required" \
     "static_tested:$static_required" \
-    "engine_artifacts:$engine_artifacts_required"; do
+    "engine_artifacts:$engine_artifacts_required" \
+    "codex_artifacts:$codex_artifacts_required"; do
     if [[ ${marker_flag#*:} == 1 ]]; then
       [[ $(wd_marker_value "$marker" "${marker_flag%%:*}" 2>/dev/null) == 1 ]] || return 1
     fi
@@ -333,6 +336,19 @@ candidate_is_tested() {
     expected_hash=$(wd_marker_value "$marker" authbot_binary_sha256 2>/dev/null) || return 1
     actual_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/engine/authbot") || return 1
     [[ $actual_hash == "$expected_hash" ]] || return 1
+  fi
+  if (( codex_artifacts_required == 1 )); then
+    [[ -f $candidate/.deploy-artifacts/codex/codex \
+        && ! -L $candidate/.deploy-artifacts/codex/codex \
+        && -x $candidate/.deploy-artifacts/codex/codex ]] || return 1
+    expected_hash=$(wd_marker_value "$marker" codex_binary_sha256 2>/dev/null) || return 1
+    [[ $expected_hash =~ ^[0-9a-f]{64}$ ]] || return 1
+    actual_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/codex/codex") || return 1
+    [[ $actual_hash == "$expected_hash" ]] || return 1
+    [[ $(wd_marker_value "$marker" codex_source_commit 2>/dev/null) =~ ^[0-9a-f]{40}$ ]] \
+      || return 1
+    [[ $(wd_marker_value "$marker" codex_version 2>/dev/null) \
+        =~ ^codex-cli\ [0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
   fi
   return 0
 }
@@ -535,6 +551,20 @@ test_rust_lane() {
   fi
 }
 
+test_codex_lane() {
+  local candidate=$1 stage artifact_root built_binary
+  stage="$candidate/.deploy-artifacts/codex-stage"
+  artifact_root="$candidate/.deploy-artifacts/codex"
+  wd_log "building and testing the pinned official Codex binary from its attested source"
+  run_as_ci "$candidate/tools/codex-app-server/build-pinned.sh" --install-dir "$stage"
+  built_binary=$(readlink -f -- "$stage/codex")
+  [[ $built_binary == "$stage"/codex-* && -f $built_binary && ! -L $built_binary ]] \
+    || wd_die "pinned Codex builder produced an unsafe artifact"
+  run_as_ci install -d -m 0755 "$artifact_root"
+  run_as_ci install -m 0555 "$built_binary" "$artifact_root/codex"
+  run_as_ci rm -rf -- "$stage"
+}
+
 test_static_lane() {
   local candidate=$1 sha=$2 run_regression_suites=$3 shell_file
   local diff_base=${VALIDATION_BASE_SHA:-${PROCESSED_SHA:-}}
@@ -549,6 +579,7 @@ test_static_lane() {
     wd_log "running deployment and merge-workflow regression suites"
     run_as_ci bash "$candidate/deploy/lib.test.sh"
     run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"
+    run_as_ci bash "$candidate/deploy/watchdog-codex-promote.test.sh"
     run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"
     run_as_ci bash "$candidate/deploy/sccache-cargo.test.sh"
     run_as_ci bash "$candidate/deploy/next-cache.test.sh"
@@ -571,12 +602,15 @@ prepare_and_test_candidate_unlocked() {
   local sha=$1 typescript_required=$2 typescript_full=$3 typescript_base=$4
   local rust_required=$5 static_required=$6 engine_artifacts_required=$7
   local validation_policy_sha256=$8 validation_plan_sha256=$9
+  local codex_artifacts_required=${10}
   local candidate marker dsn= engine_dsn= sales_dsn= openkeys_dsn= manifest digest tree
-  local typescript_pid= rust_pid= static_pid= typescript_rc=0 rust_rc=0 static_rc=0
+  local typescript_pid= rust_pid= codex_pid= static_pid=
+  local typescript_rc=0 rust_rc=0 codex_rc=0 static_rc=0
   local typescript_components=none typescript_digest=none component
   local typescript_digest_commerce=none typescript_digest_sales=none
   local typescript_digest_openkeys=none typescript_digest_web=none
-  local engine_hash=none authbot_hash=none
+  local engine_hash=none authbot_hash=none codex_hash=none
+  local codex_source_commit=none codex_version=none
   candidate=$(candidate_for "$sha")
   marker=$(marker_for "$sha")
 
@@ -591,7 +625,7 @@ prepare_and_test_candidate_unlocked() {
 
   if candidate_is_tested "$sha" "$typescript_required" "$typescript_full" "$typescript_base" \
     "$rust_required" "$static_required" "$engine_artifacts_required" \
-    "$validation_policy_sha256" "$typescript_components"; then
+    "$validation_policy_sha256" "$typescript_components" "$codex_artifacts_required"; then
     wd_log "reusing test-passed immutable candidate $sha"
     return 0
   fi
@@ -633,6 +667,10 @@ prepare_and_test_candidate_unlocked() {
     run_candidate_lane test_rust_lane "$candidate" "$engine_dsn" "$engine_artifacts_required" &
     rust_pid=$!
   fi
+  if (( codex_artifacts_required == 1 )); then
+    run_candidate_lane test_codex_lane "$candidate" &
+    codex_pid=$!
+  fi
   run_candidate_lane test_static_lane "$candidate" "$sha" "$static_required" &
   static_pid=$!
 
@@ -640,6 +678,7 @@ prepare_and_test_candidate_unlocked() {
   # child even when one fails so no candidate-owned process survives into cleanup or a later cycle.
   if [[ -n $typescript_pid ]]; then wait "$typescript_pid" || typescript_rc=$?; fi
   if [[ -n $rust_pid ]]; then wait "$rust_pid" || rust_rc=$?; fi
+  if [[ -n $codex_pid ]]; then wait "$codex_pid" || codex_rc=$?; fi
   wait "$static_pid" || static_rc=$?
   if (( TEST_DB_STARTED == 1 )); then
     test_db stop
@@ -647,6 +686,7 @@ prepare_and_test_candidate_unlocked() {
   fi
   (( typescript_rc == 0 )) || wd_die "TypeScript candidate lane failed (exit $typescript_rc)"
   (( rust_rc == 0 )) || wd_die "Rust candidate lane failed (exit $rust_rc)"
+  (( codex_rc == 0 )) || wd_die "Codex candidate lane failed (exit $codex_rc)"
   (( static_rc == 0 )) || wd_die "Static candidate lane failed (exit $static_rc)"
 
   [[ -z $(run_as_ci git -C "$candidate" status --porcelain --untracked-files=no) ]] \
@@ -687,6 +727,17 @@ prepare_and_test_candidate_unlocked() {
     engine_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/engine/claude-api")
     authbot_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/engine/authbot")
   fi
+  if (( codex_artifacts_required == 1 )); then
+    codex_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/codex/codex")
+    codex_version=$(run_as_ci "$candidate/.deploy-artifacts/codex/codex" --version)
+    [[ $codex_version =~ ^codex-cli\ [0-9]+\.[0-9]+\.[0-9]+$ ]] \
+      || wd_die "tested Codex binary reported a malformed version"
+    codex_source_commit=$(sed -n \
+      "s/^CODEX_GIT_COMMIT='\\([0-9a-f]\\{40\\}\\)'$/\\1/p" \
+      "$candidate/tools/codex-app-server/UPSTREAM.pin")
+    [[ $codex_source_commit =~ ^[0-9a-f]{40}$ ]] \
+      || wd_die "Codex source pin is malformed"
+  fi
   {
     printf 'sha=%s\n' "$sha"
     printf 'tree=%s\n' "$tree"
@@ -697,6 +748,7 @@ prepare_and_test_candidate_unlocked() {
     printf 'rust_tested=%s\n' "$rust_required"
     printf 'static_tested=%s\n' "$static_required"
     printf 'engine_artifacts=%s\n' "$engine_artifacts_required"
+    printf 'codex_artifacts=%s\n' "$codex_artifacts_required"
     printf 'validation_plan_format=%s\n' "$VALIDATION_PLAN_FORMAT"
     printf 'validation_policy_sha256=%s\n' "$validation_policy_sha256"
     printf 'validation_plan_sha256=%s\n' "$validation_plan_sha256"
@@ -708,6 +760,9 @@ prepare_and_test_candidate_unlocked() {
     printf 'typescript_artifact_digest_web=%s\n' "$typescript_digest_web"
     printf 'engine_binary_sha256=%s\n' "$engine_hash"
     printf 'authbot_binary_sha256=%s\n' "$authbot_hash"
+    printf 'codex_binary_sha256=%s\n' "$codex_hash"
+    printf 'codex_source_commit=%s\n' "$codex_source_commit"
+    printf 'codex_version=%s\n' "$codex_version"
     printf 'completed_at=%s\n' "$(date -u +%FT%TZ)"
   } >"${marker}.tmp.${BASHPID:-$$}"
   chmod 0640 "${marker}.tmp.${BASHPID:-$$}"
@@ -916,6 +971,7 @@ select_candidate_validation_requirements() {
   VALIDATION_STATIC_REQUIRED=$((installed_static_required || PARSED_PLAN_STATIC_REQUIRED))
   VALIDATION_ENGINE_ARTIFACTS_REQUIRED=$((installed_engine_artifacts_required \
     || PARSED_PLAN_ENGINE_ARTIFACTS_REQUIRED))
+  VALIDATION_CODEX_ARTIFACTS_REQUIRED=0
   VALIDATION_POLICY_SHA256=$PARSED_PLAN_POLICY
 
   if (( installed_typescript_required == 0 )); then
@@ -931,6 +987,12 @@ select_candidate_validation_requirements() {
   else
     VALIDATION_TYPESCRIPT_BASE_SHA=$processed_base
     VALIDATION_TYPESCRIPT_FULL=1
+  fi
+  # Keep the public plan envelope at format 1 during this staged controller upgrade. Older
+  # production controllers can validate the feature candidate, while the newly installed
+  # controller adds this artifact requirement before any production promotion.
+  if wd_range_has_class "$SOURCE_REPO" "$engine_base" "$target" wd_path_is_codex_tooling; then
+    VALIDATION_CODEX_ARTIFACTS_REQUIRED=1
   fi
   (( VALIDATION_ENGINE_ARTIFACTS_REQUIRED == 0 )) || VALIDATION_RUST_REQUIRED=1
   (( VALIDATION_TYPESCRIPT_FULL == 0 )) || VALIDATION_TYPESCRIPT_REQUIRED=1
@@ -1010,7 +1072,7 @@ run_shadow_candidate_validation() (
     "$VALIDATION_TYPESCRIPT_FULL" "$VALIDATION_TYPESCRIPT_BASE_SHA" \
     "$VALIDATION_RUST_REQUIRED" "$VALIDATION_STATIC_REQUIRED" \
     "$VALIDATION_ENGINE_ARTIFACTS_REQUIRED" "$VALIDATION_POLICY_SHA256" \
-    "$VALIDATION_PLAN_SHA256"
+    "$VALIDATION_PLAN_SHA256" "$VALIDATION_CODEX_ARTIFACTS_REQUIRED"
 
   # A different agent may have landed while this gate ran. Accept an advanced master only when it
   # is still an ancestor of this exact candidate; otherwise the request is stale and the merge
@@ -1390,13 +1452,17 @@ rollback_backend() {
 }
 
 deploy_engine() {
-  local sha=$1
+  local sha=$1 codex_changed=$2
+  local deploy_args=(--engine-bluegreen --tested-candidate "$(candidate_for "$sha")")
   CURRENT_PHASE=deploying-engine
   CURRENT_PHASE_BEFORE_FAILURE=deploying-engine
   status "promoting and blue-green deploying the tested engine"
   github_status pending deploy/engine "Engine blue-green deployment in progress"
   github_deployment_start engine production-engine https://api.apitoken.sale/health
-  "$CONTROLLER_ROOT/deploy.sh" --engine-bluegreen --tested-candidate "$(candidate_for "$sha")" "$sha"
+  if (( codex_changed == 1 )); then
+    deploy_args+=(--promote-codex)
+  fi
+  "$CONTROLLER_ROOT/deploy.sh" "${deploy_args[@]}" "$sha"
   "$CONTROLLER_ROOT/engine-bluegreen.sh"
   # The controller has admitted the new slot and drained the old one by this point. A verification
   # failure now leaves an unverified release serving, so recover before failing closed.
@@ -1463,10 +1529,10 @@ deploy_openkeys() {
 }
 
 deploy_core_components() {
-  local sha=$1 engine_changed=$2 backend_changed=$3
+  local sha=$1 engine_changed=$2 backend_changed=$3 codex_changed=$4
   # The engine and commerce controllers deliberately share apitoken-deploy.lock. Keep their
   # cutovers ordered inside one lane while sales/OpenKeys use their independent roots and units.
-  if (( engine_changed == 1 )); then deploy_engine "$sha"; fi
+  if (( engine_changed == 1 )); then deploy_engine "$sha" "$codex_changed"; fi
   if (( backend_changed == 1 )); then deploy_backend "$sha"; fi
 }
 
@@ -1523,9 +1589,10 @@ mark_idle_maintenance_complete() {
 main() {
   local resume_sha=${1:-}
   local remote_ref rejected infra_scope=none infra_changed=0 caddy_changed=0 engine_changed=0 backend_changed=0 sales_changed=0
-  local openkeys_changed=0 typescript_required=0 typescript_full=0 typescript_base=
+  local openkeys_changed=0 codex_changed=0 typescript_required=0 typescript_full=0 typescript_base=
   local rust_required=0 static_required=0
-  local engine_artifacts_required=0 validation_policy_sha256= validation_plan_sha256=
+  local engine_artifacts_required=0 codex_artifacts_required=0
+  local validation_policy_sha256= validation_plan_sha256=
   local core_pid= sales_pid= openkeys_pid= core_rc=0 sales_rc=0 openkeys_rc=0
 
   [[ $(id -un) == deploy ]] || wd_die "watchdog service must run as deploy"
@@ -1606,6 +1673,8 @@ main() {
     && caddy_changed=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_engine \
     && engine_changed=1
+  wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_codex_tooling \
+    && codex_changed=1
   wd_range_has_class "$SOURCE_REPO" "$BACKEND_SHA" "$CANDIDATE_SHA" wd_path_is_backend \
     && backend_changed=1
   # Sales has its own release baseline; fall back to processed on first run (before sales.sha exists).
@@ -1629,6 +1698,7 @@ main() {
   rust_required=$VALIDATION_RUST_REQUIRED
   static_required=$VALIDATION_STATIC_REQUIRED
   engine_artifacts_required=$VALIDATION_ENGINE_ARTIFACTS_REQUIRED
+  codex_artifacts_required=$VALIDATION_CODEX_ARTIFACTS_REQUIRED
   validation_policy_sha256=$VALIDATION_POLICY_SHA256
   validation_plan_sha256=$VALIDATION_PLAN_SHA256
 
@@ -1667,7 +1737,7 @@ main() {
 
   prepare_and_test_candidate "$CANDIDATE_SHA" "$typescript_required" "$typescript_full" \
     "$typescript_base" "$rust_required" "$static_required" "$engine_artifacts_required" \
-    "$validation_policy_sha256" "$validation_plan_sha256"
+    "$validation_policy_sha256" "$validation_plan_sha256" "$codex_artifacts_required"
   github_status success deploy/tests "Selected isolated validation lanes passed"
   rm -f -- "$REJECTED_FILE"
 
@@ -1739,7 +1809,8 @@ main() {
   CURRENT_PHASE_BEFORE_FAILURE=deploying-components
   status "deploying independent production component lanes in parallel"
   if (( engine_changed == 1 || backend_changed == 1 )); then
-    run_rollout_lane deploy_core_components "$CANDIDATE_SHA" "$engine_changed" "$backend_changed" &
+    run_rollout_lane deploy_core_components "$CANDIDATE_SHA" "$engine_changed" \
+      "$backend_changed" "$codex_changed" &
     core_pid=$!
   fi
   if (( sales_changed == 1 )); then
@@ -1773,7 +1844,7 @@ main() {
   CURRENT_PHASE=idle
   status "candidate tested and all selected components verified in production"
   github_status success deploy/watchdog "All selected production components verified"
-  wd_log "watchdog completed $CANDIDATE_SHA (engine=$engine_changed backend=$backend_changed sales=$sales_changed openkeys=$openkeys_changed)"
+  wd_log "watchdog completed $CANDIDATE_SHA (engine=$engine_changed codex=$codex_changed backend=$backend_changed sales=$sales_changed openkeys=$openkeys_changed)"
 }
 
 case "${1:-}" in
