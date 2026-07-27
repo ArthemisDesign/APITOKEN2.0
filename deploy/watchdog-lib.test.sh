@@ -294,7 +294,8 @@ for validation_only_path in \
   deploy/test-stage2-e2e.sh \
   deploy/sccache-cargo.sh \
   deploy/next-cache.sh \
-  deploy/typescript-scope.mjs; do
+  deploy/typescript-scope.mjs \
+  deploy/typescript-test-groups.sh; do
   wd_path_is_infrastructure "$validation_only_path" \
     || wd_die "deployment tooling path escaped operational validation: $validation_only_path"
   if wd_path_requires_infrastructure_install "$validation_only_path"; then
@@ -462,11 +463,21 @@ wd_range_changes_typescript_gate "$validation_repo" \
 wd_range_requires_full_typescript_scope "$validation_repo" \
   "$validation_typescript_selector" "$validation_next_cache" \
   || wd_die "a Next.js cache helper change did not force full validation"
+printf 'groups\n' >"$validation_repo/deploy/typescript-test-groups.sh"
+git -C "$validation_repo" add deploy/typescript-test-groups.sh
+git -C "$validation_repo" commit --quiet -m typescript-test-groups
+validation_test_groups=$(git -C "$validation_repo" rev-parse HEAD)
+wd_range_changes_typescript_gate "$validation_repo" \
+  "$validation_next_cache" "$validation_test_groups" \
+  || wd_die "a TypeScript test-group change did not identify gate machinery"
+wd_range_requires_full_typescript_scope "$validation_repo" \
+  "$validation_next_cache" "$validation_test_groups" \
+  || wd_die "a TypeScript test-group change did not force full validation"
 git -C "$validation_repo" rm --quiet apps/example/index.ts
 git -C "$validation_repo" commit --quiet -m typescript-deletion
 validation_typescript_deletion=$(git -C "$validation_repo" rev-parse HEAD)
 wd_range_requires_full_typescript_scope "$validation_repo" \
-  "$validation_next_cache" "$validation_typescript_deletion" \
+  "$validation_test_groups" "$validation_typescript_deletion" \
   || wd_die "a deleted TypeScript workspace path did not force full validation"
 
 # A deleted component file still requires that component's lane. A rename is deliberately exposed
@@ -693,7 +704,7 @@ gate_contract=(
   'DATABASE_URL="$dsn" node "$candidate/packages/db/dist/migrate.js"'
   'SALES_DATABASE_URL="$sales_dsn" node "$candidate/packages/sales-db/dist/migrate.js"'
   'TEST_DATABASE_URL="$dsn" TEST_SALES_DATABASE_URL="$sales_dsn"'
-  '-r --workspace-concurrency=1 --if-present test'
+  'typescript-test-groups.sh" "$candidate" "${test_packages[@]}"'
   'CLAUDE_API_TEST_DATABASE_URL="$engine_dsn"'
   'cargo test --locked --workspace --manifest-path "$candidate/Cargo.toml"'
   'git -C "$SOURCE_REPO" diff --check "$diff_base..$sha"'
@@ -704,6 +715,7 @@ gate_contract=(
   'run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"'
   'run_as_ci bash "$candidate/deploy/next-cache.test.sh"'
   'run_as_ci bash "$candidate/deploy/typescript-scope.test.sh"'
+  'run_as_ci bash "$candidate/deploy/typescript-test-groups.test.sh"'
   'run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"'
   'status --porcelain --untracked-files=no'
   'run_candidate_lane test_typescript_lane "$candidate" "$dsn" "$sales_dsn" "$openkeys_dsn"'

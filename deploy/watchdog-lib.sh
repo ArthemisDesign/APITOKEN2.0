@@ -466,7 +466,7 @@ wd_path_requires_infrastructure_install() {
   case "$1" in
     deploy/*.md|deploy/*.test.sh|deploy/agent-merge.sh|deploy/agent-merge.suite.sh|\
     deploy/test-stage2-e2e.sh|deploy/sccache-cargo.sh|deploy/next-cache.sh|\
-    deploy/typescript-scope.mjs)
+    deploy/typescript-scope.mjs|deploy/typescript-test-groups.sh)
       return 1
       ;;
     deploy/*|systemd/*|observability/*|compose.yaml)
@@ -582,7 +582,7 @@ wd_range_changes_typescript_gate() {
   local repo=$1 base=$2 target=$3 path
   while IFS= read -r path; do
     case "$path" in
-      deploy/typescript-scope.mjs|deploy/next-cache.sh) return 0 ;;
+      deploy/typescript-scope.mjs|deploy/next-cache.sh|deploy/typescript-test-groups.sh) return 0 ;;
     esac
   done < <(wd_range_files "$repo" "$base" "$target")
   return 1
@@ -596,7 +596,7 @@ wd_range_requires_full_typescript_scope() {
   while IFS= read -r path; do
     case "$path" in
       package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.node-version|tsconfig*.json|\
-      deploy/typescript-scope.mjs|deploy/next-cache.sh)
+      deploy/typescript-scope.mjs|deploy/next-cache.sh|deploy/typescript-test-groups.sh)
         return 0
         ;;
     esac

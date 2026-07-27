@@ -412,6 +412,8 @@ grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the activation-journal suite'
 grep -Fq 'deploy/next-cache.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the persistent Next.js cache suite'
+grep -Fq 'deploy/typescript-test-groups.test.sh' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the merge gate does not run the parallel TypeScript-group suite'
 grep -Fq 'deploy/sccache-cargo.sh" cargo test --locked --workspace' \
   "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run Rust tests through the shared compilation cache'
@@ -453,6 +455,7 @@ for path_gate_contract in \
   'wd_range_has_unknown_validation_path' \
   'next-cache.sh' \
   'typescript-scope.mjs' \
+  'typescript-test-groups.sh' \
   'typescript_full=1' \
   'local gate machinery changed; forcing every expensive lane' \
   'am_gate "$previous" "$candidate"'; do
@@ -463,6 +466,13 @@ grep -Fq 'agent-merge.suite.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the merge-path suite'
 grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the activation-journal suite'
+for typescript_group_contract in \
+  'typescript-test-groups.sh" "$ROOT" "${test_packages[@]}"' \
+  'typescript-test-groups.sh" "$candidate" "${test_packages[@]}"'; do
+  grep -Fq -- "$typescript_group_contract" "$ROOT/deploy/agent-merge.sh" \
+    "$ROOT/deploy/watchdog.sh" \
+    || wd_die "deployment gates lost parallel TypeScript tests: $typescript_group_contract"
+done
 for trusted_gate_contract in \
   'transient_environment: true' \
   'production_environment: false' \

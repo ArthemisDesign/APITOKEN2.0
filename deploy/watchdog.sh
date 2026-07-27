@@ -407,7 +407,7 @@ run_as_ci() {
 test_typescript_lane() {
   local candidate=$1 dsn=$2 sales_dsn=$3 openkeys_dsn=$4
   local base=$5 target=$6 force_full=$7 scope_output= mode= package
-  local filters=()
+  local filters=() test_packages=()
   wd_log "running frozen TypeScript install, build, typecheck, migrations, and tests"
   run_as_ci pnpm --dir "$candidate" install --frozen-lockfile
   # Every deployable entrypoint is built because the immutable candidate becomes the release
@@ -425,6 +425,7 @@ test_typescript_lane() {
       while IFS= read -r package; do
         [[ $package == filtered || -z $package ]] && continue
         filters+=("--filter=$package")
+        test_packages+=("$package")
       done <<<"$scope_output"
     fi
   fi
@@ -439,15 +440,9 @@ test_typescript_lane() {
   run_as_ci env DATABASE_URL="$dsn" node "$candidate/packages/db/dist/migrate.js"
   run_as_ci env SALES_DATABASE_URL="$sales_dsn" node "$candidate/packages/sales-db/dist/migrate.js"
   run_as_ci env OPENKEYS_DATABASE_URL="$openkeys_dsn" node "$candidate/packages/openkeys-db/dist/migrate.js"
-  if (( ${#filters[@]} == 0 )); then
-    run_as_ci env TEST_DATABASE_URL="$dsn" TEST_SALES_DATABASE_URL="$sales_dsn" \
-      TEST_OPENKEYS_DATABASE_URL="$openkeys_dsn" pnpm --dir "$candidate" \
-      -r --workspace-concurrency=1 --if-present test
-  else
-    run_as_ci env TEST_DATABASE_URL="$dsn" TEST_SALES_DATABASE_URL="$sales_dsn" \
-      TEST_OPENKEYS_DATABASE_URL="$openkeys_dsn" pnpm --dir "$candidate" \
-      "${filters[@]}" -r --workspace-concurrency=1 --if-present --fail-if-no-match test
-  fi
+  run_as_ci env TEST_DATABASE_URL="$dsn" TEST_SALES_DATABASE_URL="$sales_dsn" \
+    TEST_OPENKEYS_DATABASE_URL="$openkeys_dsn" \
+    bash "$candidate/deploy/typescript-test-groups.sh" "$candidate" "${test_packages[@]}"
 }
 
 test_rust_lane() {
@@ -484,6 +479,7 @@ test_static_lane() {
     run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"
     run_as_ci bash "$candidate/deploy/next-cache.test.sh"
     run_as_ci bash "$candidate/deploy/typescript-scope.test.sh"
+    run_as_ci bash "$candidate/deploy/typescript-test-groups.test.sh"
     run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"
   fi
 }

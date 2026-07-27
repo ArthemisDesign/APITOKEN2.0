@@ -26,6 +26,9 @@ changed package closure (workspace consumers plus their prerequisites). Shared i
 force the full workspace; filtered markers also bind reuse to the exact diff base. The four Next.js
 apps restore host-local `.next/cache` archives before building and publish only complete,
 symlink-free archives afterward; cache damage is treated as a miss, never a deployment failure.
+TypeScript tests run in four joined isolation groups: commerce, sales, OpenKeys, and database-free
+packages. Each database group stays serial internally, while the independent groups overlap and
+all selected groups are reaped before the candidate receives a verdict.
 Operational self-updates are content-aware: controller-only ranges copy the fixed root-owned
 controller bundle, and Caddy-only ranges validate/reload only Caddy. Mixed changes, deletions,
 systemd/monitoring/stateful definitions, and unknown deployment files fail closed to the complete
