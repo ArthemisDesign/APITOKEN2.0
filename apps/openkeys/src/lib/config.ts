@@ -65,7 +65,9 @@ function parseAdminAccounts(): AdminAccount[] {
 }
 
 export function loadConfig(): OpenkeysConfig {
-  const defaultMultBp = optionalInt("OPENKEYS_DEFAULT_MULT_BP", 4000);
+  // 10000 = ключ несёт баланс Claude API один к одному: $50 номинала — это
+  // ровно $50 работы по официальному прайсу. Никаких скидочных тиров здесь нет.
+  const defaultMultBp = optionalInt("OPENKEYS_DEFAULT_MULT_BP", 10_000);
   if (defaultMultBp < 1 || defaultMultBp > 10_000) {
     throw new Error("OPENKEYS_DEFAULT_MULT_BP must be between 1 and 10000");
   }

@@ -47,6 +47,12 @@ export const openkeysKeys = pgTable(
     engineAccountId: text("engine_account_id").notNull(),
     engineKeyId: text("engine_key_id").notNull(),
     keyMasked: text("key_masked").notNull(),
+    /**
+     * SHA-256 самого секрета. Сам ключ не храним, но по хешу можем узнать его,
+     * когда покупатель придёт продлевать: тогда ключ можно привязать к обычному
+     * аккаунту на основном сайте и увести человека в стандартный клиентский путь.
+     */
+    keySha256: text("key_sha256"),
     faceValueNano: bigint("face_value_nano", { mode: "bigint" }).notNull(),
     multBp: integer("mult_bp").notNull(),
     status: openkeysKeyStatus("status").notNull().default("active"),
@@ -56,6 +62,7 @@ export const openkeysKeys = pgTable(
   (table) => [
     uniqueIndex("openkeys_keys_view_token_key").on(table.viewToken),
     uniqueIndex("openkeys_keys_engine_key_id_key").on(table.engineKeyId),
+    uniqueIndex("openkeys_keys_key_sha256_key").on(table.keySha256),
     index("openkeys_keys_batch_id_idx").on(table.batchId),
   ],
 );

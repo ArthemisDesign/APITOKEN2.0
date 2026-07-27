@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { SiteHeader } from "@/components/chrome";
+import { AppShell } from "@/components/app-shell";
 import type { KeyUsageView } from "@/lib/keys";
 import {
   MODEL_COLORS,
@@ -44,7 +44,7 @@ function CopyButton({ value, label = "Скопировать" }: { value: string
   );
 }
 
-export function KeyUsage({ view }: { view: KeyUsageView }) {
+export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; showSignOut?: boolean }) {
   const [hoverDay, setHoverDay] = useState<number | null>(null);
   const [mdistHover, setMdistHover] = useState<number | null>(null);
 
@@ -52,7 +52,6 @@ export function KeyUsage({ view }: { view: KeyUsageView }) {
   const faceValueNano = BigInt(view.faceValueNano);
   const officialRemaining = BigInt(view.officialRemainingNano);
   const officialSpent = BigInt(view.officialSpentNano);
-  const discount = Math.round((10_000 - view.multBp) / 100);
   const usedPercent = faceValueNano > 0n ? boundedPercent(faceValueNano - officialRemaining, faceValueNano) : 0;
 
   const models = usage?.models ?? [];
@@ -122,9 +121,9 @@ export function KeyUsage({ view }: { view: KeyUsageView }) {
   );
 
   return (
-    <>
-      <SiteHeader />
-      <main className="app-body" id="main-content">
+    <AppShell section="profile" title="Расход ключа">
+
+      <div className="app-body">
       <div className="app-body-in">
         <div className="page-heading">
           <span className="eyebrow">Баланс ключа</span>
@@ -139,9 +138,7 @@ export function KeyUsage({ view }: { view: KeyUsageView }) {
           <article className="card overview-balance-card">
             <div className="overview-card-head">
               <span className="overview-card-label">Остаток ключа</span>
-              <span className="overview-rate-chip">
-                скидка {discount}% · номинал {formatNanoUsd(faceValueNano, 0, 0)}
-              </span>
+              <span className="overview-rate-chip">номинал {formatNanoUsd(faceValueNano, 0, 0)}</span>
             </div>
             <div className="overview-balance-main">
               <strong className="overview-balance-number">{formatNanoUsd(officialRemaining, 2, 2)}</strong>
@@ -160,9 +157,28 @@ export function KeyUsage({ view }: { view: KeyUsageView }) {
                   <Link className="btn btn-primary btn-sm" href="/docs">
                     Как подключить
                   </Link>
-                  <a className="btn btn-ghost btn-sm" href="https://apitoken.sale/docs" target="_blank" rel="noreferrer">
-                    Полная документация
-                  </a>
+                  {showSignOut ? (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => {
+                        void fetch("/api/usage/logout", { method: "POST" }).then(() => {
+                          window.location.assign("/profile");
+                        });
+                      }}
+                    >
+                      Выйти
+                    </button>
+                  ) : (
+                    <a
+                      className="btn btn-ghost btn-sm"
+                      href="https://apitoken.sale/docs"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Полная документация
+                    </a>
+                  )}
                 </div>
               </div>
             </div>
@@ -192,7 +208,7 @@ export function KeyUsage({ view }: { view: KeyUsageView }) {
           <div className="ovstat">
             <span className="dlabel">Списано с ключа</span>
             <b className="num">{formatNanoUsd(summaryChargedNano)}</b>
-            <span className="dtrend">по вашей ставке</span>
+            <span className="dtrend">за 30 дней</span>
           </div>
           <div className="ovstat">
             <span className="dlabel">Запросов</span>
@@ -200,9 +216,9 @@ export function KeyUsage({ view }: { view: KeyUsageView }) {
             <span className="dtrend">за 30 дней</span>
           </div>
           <div className="ovstat">
-            <span className="dlabel">Скидка</span>
-            <b className="num">{discount}%</b>
-            <span className="dtrend">×{(view.multBp / 10_000).toFixed(2)} от прайса</span>
+            <span className="dlabel">Номинал ключа</span>
+            <b className="num">{formatNanoUsd(faceValueNano, 0, 0)}</b>
+            <span className="dtrend">баланс Claude API</span>
           </div>
         </div>
 
@@ -483,7 +499,7 @@ export function KeyUsage({ view }: { view: KeyUsageView }) {
           </section>
         )}
       </div>
-      </main>
-    </>
+      </div>
+    </AppShell>
   );
 }

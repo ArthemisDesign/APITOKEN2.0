@@ -2,9 +2,9 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { SiteHeader } from "@/components/chrome";
+import { AppShell } from "@/components/app-shell";
 
-export default function UsageLookupPage() {
+export function KeyLogin() {
   const router = useRouter();
   const [key, setKey] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -24,8 +24,7 @@ export default function UsageLookupPage() {
         setError("Ключ не найден. Проверьте, что скопировали его целиком.");
         return;
       }
-      const payload = (await response.json()) as { viewToken: string };
-      router.push(`/u/${payload.viewToken}`);
+      router.refresh();
     } catch {
       setError("Не удалось связаться с сервером. Попробуйте ещё раз.");
     } finally {
@@ -34,16 +33,16 @@ export default function UsageLookupPage() {
   }
 
   return (
-    <>
-      <SiteHeader />
-      <main id="main-content">
+    <AppShell section="profile" title="Вход по ключу">
+
+      <div className="app-body">
         <section className="wrap openkeys-narrow">
           <div className="page-heading">
-            <span className="eyebrow">Мой расход</span>
-            <h1 className="p-h1">Остаток по ключу</h1>
+            <span className="eyebrow">Профиль ключа</span>
+            <h1 className="p-h1">Вход по ключу</h1>
             <p className="p-sub">
-              Вставьте ключ — откроется его страница расхода. Ключ нигде не сохраняется и нужен только для того, чтобы
-              найти нужный баланс.
+              Вставьте свой ключ — откроется его профиль с остатком и расходом. Ключ проверяется у сервера и не
+              сохраняется в браузере: в куке остаётся только ссылка на этот профиль.
             </p>
           </div>
 
@@ -61,11 +60,11 @@ export default function UsageLookupPage() {
             </div>
             {error ? <div className="banner banner-error">{error}</div> : null}
             <button className="btn btn-primary" type="submit" disabled={busy || key.trim() === ""}>
-              {busy ? "Проверяем…" : "Показать расход"}
+              {busy ? "Проверяем…" : "Войти"}
             </button>
           </form>
         </section>
-      </main>
-    </>
+      </div>
+    </AppShell>
   );
 }

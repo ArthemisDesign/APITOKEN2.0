@@ -66,31 +66,3 @@ export function BrandMark() {
     </>
   );
 }
-
-export function SiteHeader() {
-  return (
-    <header className="nav">
-      <a className="skip-link" href="#main-content">
-        К содержимому
-      </a>
-      <div className="wrap nav-in openkeys-nav-in">
-        <Link className="brand" href="/">
-          <BrandMark />
-          <span className="brand-name">OpenKeys</span>
-        </Link>
-        <nav className="nav-links" id="site-navigation">
-          <Link href="/docs">Подключение</Link>
-          <Link href="/usage">Мой расход</Link>
-        </nav>
-        <div className="nav-right">
-          <ThemeToggle />
-          <div className="nav-actions">
-            <a className="btn btn-ghost btn-sm" href="https://apitoken.sale" target="_blank" rel="noreferrer">
-              apiToken.sale
-            </a>
-          </div>
-        </div>
-      </div>
-    </header>
-  );
-}

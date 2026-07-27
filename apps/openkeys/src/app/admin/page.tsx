@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { SiteHeader } from "@/components/chrome";
+import { AppShell } from "@/components/app-shell";
 
 const BASE_URL = "https://api.apitoken.sale";
 
@@ -109,7 +109,6 @@ export default function AdminPage() {
         body: JSON.stringify({
           faceValueUsd: form.get("faceValueUsd"),
           quantity: Number(form.get("quantity")),
-          multBp: form.get("multBp"),
           label: form.get("label"),
         }),
       });
@@ -133,22 +132,22 @@ export default function AdminPage() {
 
   if (checking) {
     return (
-      <>
-        <SiteHeader />
-        <main id="main-content">
+      <AppShell section="profile" title="Админка">
+
+        <div className="app-body">
           <section className="wrap openkeys-narrow">
             <div className="empty-box">Проверяем сессию…</div>
           </section>
-        </main>
-      </>
+        </div>
+      </AppShell>
     );
   }
 
   if (!authorized) {
     return (
-      <>
-        <SiteHeader />
-        <main id="main-content">
+      <AppShell section="profile" title="Админка">
+
+        <div className="app-body">
           <section className="wrap openkeys-narrow">
             <div className="page-heading">
               <span className="eyebrow">OpenKeys</span>
@@ -169,8 +168,8 @@ export default function AdminPage() {
               </button>
             </form>
           </section>
-        </main>
-      </>
+        </div>
+      </AppShell>
     );
   }
 
@@ -178,9 +177,9 @@ export default function AdminPage() {
   const csv = issued?.map((key) => `${key.secret},${key.viewUrl}`).join("\n") ?? "";
 
   return (
-    <>
-      <SiteHeader />
-      <main className="app-body" id="main-content">
+    <AppShell section="profile" title="Выпуск ключей">
+
+      <div className="app-body">
         <div className="app-body-in">
           <div className="dsec-head analytics-heading">
             <div className="page-heading openkeys-heading-flush">
@@ -204,11 +203,6 @@ export default function AdminPage() {
                 <label htmlFor="quantity">Количество</label>
                 <input id="quantity" name="quantity" defaultValue="1" inputMode="numeric" />
                 <span className="field-hint">до 100 за раз</span>
-              </div>
-              <div className="field">
-                <label htmlFor="multBp">Множитель, bp</label>
-                <input id="multBp" name="multBp" placeholder="4000" inputMode="numeric" />
-                <span className="field-hint">4000 = скидка 60%</span>
               </div>
               <div className="field">
                 <label htmlFor="label">Метка партии</label>
@@ -275,13 +269,12 @@ export default function AdminPage() {
                     <th>Метка</th>
                     <th className="tnum">Номинал</th>
                     <th className="tnum">Шт.</th>
-                    <th className="tnum">Скидка</th>
                   </tr>
                 </thead>
                 <tbody>
                   {batches.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="empty-cell">
+                      <td colSpan={4} className="empty-cell">
                         Пока ничего не выпускали
                       </td>
                     </tr>
@@ -292,7 +285,6 @@ export default function AdminPage() {
                         <td>{batch.label ?? "—"}</td>
                         <td className="tnum">{batch.faceValue}</td>
                         <td className="tnum">{batch.quantity}</td>
-                        <td className="tnum">{Math.round((10_000 - batch.multBp) / 100)}%</td>
                       </tr>
                     ))
                   )}
@@ -301,7 +293,7 @@ export default function AdminPage() {
             </div>
           </section>
         </div>
-      </main>
-    </>
+      </div>
+    </AppShell>
   );
 }

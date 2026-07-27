@@ -1,5 +1,5 @@
 import "server-only";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { EngineUsage } from "@claude-api/contracts";
 import { openkeysBatches, openkeysKeys } from "@claude-api/openkeys-db";
 import { desc, eq } from "drizzle-orm";
@@ -29,6 +29,15 @@ export interface IssuedKey {
 
 function maskKey(secret: string): string {
   return `${secret.slice(0, 12)}…${secret.slice(-4)}`;
+}
+
+/**
+ * Отпечаток ключа. Сам секрет не храним — его достаточно узнать: когда покупатель
+ * придёт продлевать, по хешу находим запись, а вместе с ней аккаунт движка, и
+ * можем привязать ключ к обычному аккаунту на основном сайте.
+ */
+export function keyDigest(secret: string): string {
+  return createHash("sha256").update(secret).digest("hex");
 }
 
 /**
@@ -81,6 +90,7 @@ export async function issueBatch(input: IssueBatchInput): Promise<{ batchId: str
       engineAccountId: account.account,
       engineKeyId: key.key_id,
       keyMasked: maskKey(key.key),
+      keySha256: keyDigest(key.key),
       faceValueNano: input.faceValueNano,
       multBp: input.multBp,
     });
@@ -88,7 +98,7 @@ export async function issueBatch(input: IssueBatchInput): Promise<{ batchId: str
     issued.push({
       secret: key.key,
       viewToken,
-      viewUrl: `${config.publicBaseUrl}/u/${viewToken}`,
+      viewUrl: `${config.publicBaseUrl}/profile/${viewToken}`,
       keyMasked: maskKey(key.key),
     });
   }

@@ -1,14 +1,7 @@
-import { notFound } from "next/navigation";
-import { loadUsageByViewToken } from "@/lib/keys";
-import { KeyUsage } from "./key-usage";
+import { redirect } from "next/navigation";
 
-export const dynamic = "force-dynamic";
-export const metadata = { title: "Расход ключа — OpenKeys" };
-
-export default async function KeyUsagePage({ params }: { params: Promise<{ token: string }> }) {
+/** Ссылки первой волны выдавались как /u/<token>; они должны продолжать работать. */
+export default async function LegacyKeyLinkPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
-  const view = await loadUsageByViewToken(token);
-  if (!view) notFound();
-
-  return <KeyUsage view={view} />;
+  redirect(`/profile/${token}`);
 }

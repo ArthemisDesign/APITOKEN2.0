@@ -3,8 +3,8 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ThemeToggle, useLanguage } from "@/components/chrome";
-import { B2C_PRICING_MILESTONES, formatWholeUsd } from "@/lib/pricing-tiers";
+import { AppShell } from "@/components/app-shell";
+import { useLanguage } from "@/components/chrome";
 
 const BASE_URL = "https://api.apitoken.sale";
 const MESSAGES_URL = `${BASE_URL}/v1/messages`;
@@ -26,6 +26,22 @@ export ANTHROPIC_API_KEY="sk-pool-•••"
 
 # Start Claude Code normally
 claude`;
+const CACHE_SNIPPET = `curl https://api.apitoken.sale/v1/messages \\
+  -H "x-api-key: sk-pool-•••" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -H "content-type: application/json" \\
+  -d '{
+    "model": "claude-opus-4-8",
+    "max_tokens": 1024,
+    "system": [
+      {
+        "type": "text",
+        "text": "<длинная неизменная инструкция или документ>",
+        "cache_control": { "type": "ephemeral" }
+      }
+    ],
+    "messages": [{ "role": "user", "content": "Вопрос по документу" }]
+  }'`;
 const CURSOR = `Provider: Anthropic
 Base URL: https://api.apitoken.sale
 API key: sk-pool-•••
@@ -78,10 +94,30 @@ const copy = {
     tools: "Developer tools",
     sdks: "Official SDKs",
     errors: "Errors",
-    pricing: "Pricing & tiers",
+    cache: "Prompt caching",
+    cacheTitle: "Prompt caching",
+    cacheLead: "The single biggest lever on how fast your key is spent. Repeated context served from cache is billed at roughly a tenth of normal input.",
+    cacheWhyHead: "Why it matters here",
+    cacheWhyText: "An agent resends the whole conversation on every turn: the system prompt, the files it read, the previous replies. Without caching you pay full input price for that context on every single turn. With caching the repeated prefix is charged at the cache-read rate instead.",
+    cacheNotice: "Your key is charged exactly what the request costs: input, output, cache writes and cache reads are metered separately and each at its own rate. Caching is not a discount we grant — it is a cheaper way to send the same request, and the saving lands on your balance.",
+    cacheHowHead: "How to turn it on",
+    cacheHowText: "Mark the stable part of the prompt with cache_control. Everything before that marker becomes the cached prefix; put volatile content — the current question, timestamps, per-request ids — after it.",
+    cacheSnippetLabel: "Caching a long system prompt",
+    cacheSnippetText: "The first request writes the cache, every following request reads it.",
+    cacheRulesHead: "Rules worth knowing",
+    cacheRules: [
+      "The cache is a prefix match: a single changed byte anywhere in the prefix invalidates everything after it.",
+      "Render order is tools → system → messages, so keep stable content first and volatile content last.",
+      "A cache write costs about 1.25× normal input, a read about 0.1×. Two requests already pay it back.",
+      "The default entry lives 5 minutes; each read refreshes it. A one-hour TTL is available and costs 2× to write.",
+      "Do not interpolate the current time, a request id or a user name into the system prompt — that defeats caching entirely.",
+      "Claude Code, Cursor and Cline enable caching themselves; you mostly need to avoid breaking the prefix.",
+    ],
+    cacheCheckHead: "How to check it works",
+    cacheCheckText: "Every response reports cache_creation_input_tokens and cache_read_input_tokens in its usage block. If the read counter stays at zero across identical requests, something in the prefix is changing. Your key page also shows cache reads and writes as separate buckets.",
     eyebrow: "ANTHROPIC MESSAGES API · CONNECTION GUIDE",
     title: "Connect to the Claude API in three steps",
-    lead: "apiToken.sale provides prepaid, discounted access to the real Anthropic Claude API. Create an sk-pool key, point any compatible client at https://api.apitoken.sale, and send a standard Messages API request.",
+    lead: "Your key carries a prepaid balance on the real Anthropic Claude API. Create an sk-pool key, point any compatible client at https://api.apitoken.sale, and send a standard Messages API request.",
     openKeys: "Open API keys",
     gettingStarted: "Getting started path",
     stepKey: "Create an sk-pool key",
@@ -170,10 +206,30 @@ const copy = {
     tools: "Инструменты разработчика",
     sdks: "Официальные SDK",
     errors: "Ошибки",
-    pricing: "Цены и тарифы",
+    cache: "Кэширование",
+    cacheTitle: "Кэширование промптов",
+    cacheLead: "Главный рычаг, определяющий, как быстро расходуется ключ. Повторяющийся контекст, отданный из кэша, стоит примерно в десять раз дешевле обычного ввода.",
+    cacheWhyHead: "Почему это важно именно здесь",
+    cacheWhyText: "Агент пересылает весь диалог на каждом ходу: системный промпт, прочитанные файлы, предыдущие ответы. Без кэша вы платите за этот контекст полную входную ставку каждый раз. С кэшем повторяющийся префикс тарифицируется по ставке чтения кэша.",
+    cacheNotice: "С ключа списывается ровно то, что стоит запрос: вход, выход, запись и чтение кэша считаются отдельно и каждый по своей ставке. Кэш — это не скидка, которую мы даём, а более дешёвый способ отправить тот же запрос, и экономия остаётся на вашем балансе.",
+    cacheHowHead: "Как включить",
+    cacheHowText: "Отметьте неизменную часть промпта через cache_control. Всё, что стоит до этой отметки, становится кэшируемым префиксом; переменное — текущий вопрос, время, идентификаторы запроса — размещайте после неё.",
+    cacheSnippetLabel: "Кэшируем длинный системный промпт",
+    cacheSnippetText: "Первый запрос пишет кэш, все последующие его читают.",
+    cacheRulesHead: "Что стоит знать",
+    cacheRules: [
+      "Кэш работает по совпадению префикса: один изменившийся байт в начале обесценивает всё, что идёт после.",
+      "Порядок сборки — tools → system → messages, поэтому стабильное держите в начале, изменчивое в конце.",
+      "Запись кэша стоит около 1,25× обычного ввода, чтение — около 0,1×. Двух запросов уже достаточно, чтобы это окупилось.",
+      "Запись живёт 5 минут, каждое чтение продлевает её. Есть часовой TTL, его запись стоит 2×.",
+      "Не подставляйте в системный промпт текущее время, идентификатор запроса или имя пользователя — это полностью ломает кэш.",
+      "Claude Code, Cursor и Cline включают кэш сами; от вас требуется в основном не ломать префикс.",
+    ],
+    cacheCheckHead: "Как проверить, что работает",
+    cacheCheckText: "В каждом ответе в блоке usage приходят cache_creation_input_tokens и cache_read_input_tokens. Если счётчик чтения остаётся нулевым на одинаковых запросах — что-то в префиксе меняется. На странице вашего ключа чтение и запись кэша тоже показаны отдельными корзинами.",
     eyebrow: "ANTHROPIC MESSAGES API · РУКОВОДСТВО ПО ПОДКЛЮЧЕНИЮ",
     title: "Подключитесь к Claude API за три шага",
-    lead: "apiToken.sale предоставляет предоплаченный доступ к настоящему Anthropic Claude API со скидкой. Создайте ключ sk-pool-…, укажите для совместимого клиента адрес https://api.apitoken.sale и отправьте стандартный запрос Messages API.",
+    lead: "Ваш ключ несёт предоплаченный баланс на настоящем Anthropic Claude API. Создайте ключ sk-pool-…, укажите для совместимого клиента адрес https://api.apitoken.sale и отправьте стандартный запрос Messages API.",
     openKeys: "Открыть API-ключи",
     gettingStarted: "Порядок подключения",
     stepKey: "Создайте ключ sk-pool",
@@ -279,21 +335,16 @@ export function DocsPortal() {
     ? code.replaceAll("sk-pool-•••", activeKey).replaceAll("$APITOKEN_API_KEY", activeKey)
     : code;
 
-  return <div className="docs-site">
-    <header className="docs-header">
-      <a className="skip-link" href="#main-content">{language === "ru" ? "К содержимому" : "Skip to content"}</a>
-      <Link className="docs-brand" href={"/"}><BrandMark /><span>apiToken.sale</span><i>{t.documentation}</i></Link>
-      <div className="docs-header-actions">
-        <div className="lang" role="group" aria-label={language === "ru" ? "Язык" : "Language"}><button type="button" aria-pressed={language === "en"} className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}>EN</button><button type="button" aria-pressed={language === "ru"} className={language === "ru" ? "active" : ""} onClick={() => setLanguage("ru")}>RU</button></div>
-        <ThemeToggle />
-        <Link className="btn btn-ghost btn-sm docs-back" href={"/"}>{t.back}</Link>
-        <Link className="btn btn-primary btn-sm" href={"/usage"}>{t.dashboard}</Link>
-      </div>
-    </header>
+  return <AppShell
+    section="docs"
+    title={t.documentation}
+    actions={<div className="lang" role="group" aria-label={language === "ru" ? "Язык" : "Language"}><button type="button" aria-pressed={language === "en"} className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}>EN</button><button type="button" aria-pressed={language === "ru"} className={language === "ru" ? "active" : ""} onClick={() => setLanguage("ru")}>RU</button></div>}
+  >
+    <div className="docs-site">
     <div className="docs-layout">
-      <aside className="docs-sidebar"><span>{t.onThisPage}</span><nav><a href="#overview">{t.overview}</a><a href="#quickstart">{t.quickstart}</a><a href="#authentication">{t.authentication}</a><a href="#tools">{t.tools}</a><a href="#sdks">{t.sdks}</a><a href="#errors">{t.errors}</a><a href="#pricing">{t.pricing}</a></nav></aside>
+      <aside className="docs-sidebar"><span>{t.onThisPage}</span><nav><a href="#overview">{t.overview}</a><a href="#quickstart">{t.quickstart}</a><a href="#authentication">{t.authentication}</a><a href="#tools">{t.tools}</a><a href="#sdks">{t.sdks}</a><a href="#errors">{t.errors}</a><a href="#cache">{t.cache}</a></nav></aside>
       <main className="docs-main" id="main-content" tabIndex={-1}>
-        <section className="docs-hero" id="overview"><span className="eyebrow">{t.eyebrow}</span><h1>{t.title}</h1><p>{t.lead}</p><div className="hero-cta"><Link className="btn btn-primary" href={"/usage"}>{t.openKeys}</Link><Link className="btn btn-ghost" href={"https://apitoken.sale/docs/learn"}>Claude API guides</Link></div></section>
+        <section className="docs-hero" id="overview"><span className="eyebrow">{t.eyebrow}</span><h1>{t.title}</h1><p>{t.lead}</p><div className="hero-cta"><Link className="btn btn-primary" href={"/profile"}>{t.openKeys}</Link><Link className="btn btn-ghost" href={"https://apitoken.sale/docs/learn"}>Claude API guides</Link></div></section>
 
         <section className="docs-section">
           <div className="docs-section-heading"><span>01</span><div><h2>{t.oneEndpoint}</h2><p>{t.oneEndpointText}</p></div></div>
@@ -343,21 +394,22 @@ export function DocsPortal() {
           <div className="docs-checklist"><h3>{t.production}</h3><ul>{t.checklist.map((item) => <li key={item}>{item}</li>)}</ul></div>
         </section>
 
-        <section className="docs-section" id="pricing">
-          <div className="docs-section-heading"><span>07</span><div><h2>{t.pricingTitle}</h2><p>{t.pricingLead}</p></div></div>
-          <h3 className="docs-h3">{t.billingHead}</h3><p className="docs-para">{t.billingText}</p><div className="docs-notice">{t.billingExample}</div>
-          <h3 className="docs-h3">{t.tiersHead}</h3><p className="docs-para">{t.tiersText}</p>
-          <div className="table-scroll"><table className="mtable docs-errors"><thead><tr><th>{t.tierColTier}</th><th>{t.tierColDiscount}</th><th>{t.tierColValue}</th><th>{t.tierColGet}</th><th>{t.tierColKeep}</th></tr></thead>
-            <tbody>{B2C_PRICING_MILESTONES.map((tier) => <tr key={tier.code}><td><b>{tier.label}</b></td><td>−{tier.discountPercent}%</td><td>×{(100 / (100 - tier.discountPercent)).toLocaleString(language === "ru" ? "ru-RU" : "en-US", { maximumFractionDigits: 2 })}</td><td>{Number(tier.platformSpendUsd) === 0 ? t.tierBaseCell : formatWholeUsd(tier.platformSpendUsd)}</td><td>{Number(tier.holdUsd) === 0 ? "—" : formatWholeUsd(tier.holdUsd)}</td></tr>)}</tbody>
-          </table></div>
-          <h3 className="docs-h3">{t.keepHead}</h3><p className="docs-para">{t.keepText}</p><div className="docs-notice">{t.keepFree}</div>
-          <h3 className="docs-h3">{t.exampleHead}</h3><p className="docs-para">{t.exampleText}</p>
+        <section className="docs-section" id="cache">
+          <div className="docs-section-heading"><span>07</span><div><h2>{t.cacheTitle}</h2><p>{t.cacheLead}</p></div></div>
+          <h3 className="docs-h3">{t.cacheWhyHead}</h3><p className="docs-para">{t.cacheWhyText}</p>
+          <div className="docs-notice">{t.cacheNotice}</div>
+          <h3 className="docs-h3">{t.cacheHowHead}</h3><p className="docs-para">{t.cacheHowText}</p>
+          <CodeBlock title={t.cacheSnippetLabel} description={t.cacheSnippetText} code={withKey(CACHE_SNIPPET)} copyLabel={t.copy} copiedLabel={t.copied} />
+          <h3 className="docs-h3">{t.cacheRulesHead}</h3>
+          <div className="docs-checklist"><ul>{t.cacheRules.map((item) => <li key={item}>{item}</li>)}</ul></div>
+          <h3 className="docs-h3">{t.cacheCheckHead}</h3><p className="docs-para">{t.cacheCheckText}</p>
         </section>
 
         <footer className="docs-footer">{t.footer}</footer>
       </main>
     </div>
-  </div>;
+    </div>
+  </AppShell>;
 }
 
 function BrandMark() {

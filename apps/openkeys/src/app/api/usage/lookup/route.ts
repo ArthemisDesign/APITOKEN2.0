@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 import { resolveViewTokenByApiKey } from "@/lib/keys";
+import { USAGE_SESSION_COOKIE, USAGE_SESSION_MAX_AGE } from "@/lib/usage-session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Публичный: отдаёт ссылку на страницу расхода по самому ключу. Ключ не логируем. */
+/**
+ * Публичный вход по ключу. Ключ проверяется у движка и никуда не пишется:
+ * в куку кладём только ссылку на баланс, поэтому утечка куки не отдаёт секрет.
+ */
 export async function POST(request: Request): Promise<NextResponse> {
   let body: { key?: unknown };
   try {
@@ -19,5 +23,13 @@ export async function POST(request: Request): Promise<NextResponse> {
   const viewToken = await resolveViewTokenByApiKey(key);
   if (!viewToken) return NextResponse.json({ error: "not_found" }, { status: 404 });
 
-  return NextResponse.json({ viewToken });
+  const response = NextResponse.json({ viewToken });
+  response.cookies.set(USAGE_SESSION_COOKIE, viewToken, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: true,
+    path: "/",
+    maxAge: USAGE_SESSION_MAX_AGE,
+  });
+  return response;
 }
