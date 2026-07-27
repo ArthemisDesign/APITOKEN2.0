@@ -1,43 +1,64 @@
 import Link from "next/link";
+import { SiteHeader } from "@/components/chrome";
 
 export default function HomePage() {
   return (
-    <main>
-      <h1>Claude API по готовому ключу</h1>
-      <p className="muted">
-        Ключ выдаётся с номиналом в долларах <strong>официального прайса Anthropic</strong>: «ключ на $50» — это
-        ровно столько же работы, сколько $50 на api.anthropic.com. Никакой внутренней валюты и пересчёта в
-        «миллиарды токенов».
-      </p>
+    <>
+      <SiteHeader />
+      <main id="main-content">
+        <section className="wrap openkeys-hero">
+          <div className="page-heading">
+            <span className="eyebrow">Claude API</span>
+            <h1 className="p-h1">Готовый ключ. Без регистрации.</h1>
+            <p className="p-sub">
+              Номинал ключа — в долларах <b>официального прайса Anthropic</b>. «Ключ на $50» даёт ровно столько же
+              работы, сколько $50 на api.anthropic.com. Никакой внутренней валюты и «миллиардов токенов», курс которых
+              нельзя проверить.
+            </p>
+          </div>
 
-      <div className="card">
-        <h2 style={{ marginTop: 0 }}>Как это работает</h2>
-        <p>
-          Вы покупаете ключ, вставляете его в свой инструмент и работаете. Регистрация, почта и карта не нужны —
-          ключ самодостаточен, а остаток виден по личной ссылке, которая приходит вместе с ним.
-        </p>
-        <pre>
-          <code>{`export ANTHROPIC_API_KEY=sk-pool-…
-export ANTHROPIC_BASE_URL=https://api.apitoken.sale`}</code>
-        </pre>
-        <p className="muted">
-          Работает без изменений в коде: Claude Code, Cursor, Cline, Roo Code, официальный SDK Anthropic и обычный
-          curl. Подробности — в <Link href="/docs">инструкции по подключению</Link>.
-        </p>
-      </div>
+          <div className="overview-primary-grid">
+            <article className="card overview-balance-card">
+              <div className="overview-card-head">
+                <span className="overview-card-label">Подключение</span>
+                <span className="chip">две строки</span>
+              </div>
+              <pre className="openkeys-pre">
+                <code>{`export ANTHROPIC_BASE_URL="https://api.apitoken.sale"
+export ANTHROPIC_API_KEY="sk-pool-ваш-ключ"
 
-      <div className="card">
-        <h2 style={{ marginTop: 0 }}>Что важно знать про расход</h2>
-        <p>
-          Списывается ровно то, что стоит запрос по прайсу Anthropic: вход, выход и кэш считаются отдельно и по
-          своим ставкам. Повторный контекст, который попал в кэш, стоит примерно в десять раз дешевле обычного
-          ввода — на длинных сессиях с агентом это основная часть экономии.
-        </p>
-        <p className="muted">
-          Остаток и потраченное всегда можно посмотреть по своей ссылке или на странице{" "}
-          <Link href="/usage">«Мой расход»</Link>, введя туда сам ключ.
-        </p>
-      </div>
-    </main>
+claude`}</code>
+              </pre>
+              <p className="overview-balance-rate">
+                Работает без правок в коде: Claude Code, Cursor, Cline, Roo Code, официальный SDK и обычный curl.
+              </p>
+              <div className="overview-card-actions">
+                <Link className="btn btn-primary btn-sm" href="/docs">
+                  Документация
+                </Link>
+                <Link className="btn btn-ghost btn-sm" href="/usage">
+                  Проверить остаток
+                </Link>
+              </div>
+            </article>
+
+            <article className="card overview-access-card">
+              <div className="overview-card-head">
+                <span className="overview-card-label">Что видно по ключу</span>
+              </div>
+              <ul className="openkeys-list">
+                <li>Остаток и расход в долларах прайса Anthropic</li>
+                <li>Разбивка по моделям и по типам токенов</li>
+                <li>Вход, выход и кэш — каждый по своей ставке</li>
+                <li>График расхода по дням за 30 дней</li>
+              </ul>
+              <p className="overview-balance-rate">
+                Персональная ссылка приходит вместе с ключом, авторизация не нужна.
+              </p>
+            </article>
+          </div>
+        </section>
+      </main>
+    </>
   );
 }

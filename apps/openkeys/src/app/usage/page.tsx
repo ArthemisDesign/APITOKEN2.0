@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { SiteHeader } from "@/components/chrome";
 
 export default function UsageLookupPage() {
   const router = useRouter();
@@ -33,29 +34,38 @@ export default function UsageLookupPage() {
   }
 
   return (
-    <main>
-      <h1>Мой расход</h1>
-      <p className="muted">
-        Вставьте свой ключ — покажем остаток и потраченное. Ключ никуда не сохраняется и нужен только для того,
-        чтобы найти нужный баланс.
-      </p>
+    <>
+      <SiteHeader />
+      <main id="main-content">
+        <section className="wrap openkeys-narrow">
+          <div className="page-heading">
+            <span className="eyebrow">Мой расход</span>
+            <h1 className="p-h1">Остаток по ключу</h1>
+            <p className="p-sub">
+              Вставьте ключ — откроется его страница расхода. Ключ нигде не сохраняется и нужен только для того, чтобы
+              найти нужный баланс.
+            </p>
+          </div>
 
-      <form className="card" onSubmit={submit}>
-        <label>
-          API-ключ
-          <input
-            value={key}
-            onChange={(event) => setKey(event.target.value)}
-            placeholder="sk-pool-…"
-            autoComplete="off"
-            spellCheck={false}
-          />
-        </label>
-        {error ? <p className="error">{error}</p> : null}
-        <button type="submit" disabled={busy || key.trim() === ""}>
-          {busy ? "Проверяем…" : "Показать баланс"}
-        </button>
-      </form>
-    </main>
+          <form className="card" onSubmit={submit}>
+            <div className="field">
+              <label htmlFor="apikey">API-ключ</label>
+              <input
+                id="apikey"
+                value={key}
+                onChange={(event) => setKey(event.target.value)}
+                placeholder="sk-pool-…"
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </div>
+            {error ? <div className="banner banner-error">{error}</div> : null}
+            <button className="btn btn-primary" type="submit" disabled={busy || key.trim() === ""}>
+              {busy ? "Проверяем…" : "Показать расход"}
+            </button>
+          </form>
+        </section>
+      </main>
+    </>
   );
 }

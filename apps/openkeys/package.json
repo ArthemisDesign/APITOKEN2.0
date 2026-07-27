@@ -10,6 +10,7 @@
     "test": "vitest run --no-file-parallelism"
   },
   "dependencies": {
+    "@claude-api/contracts": "workspace:*",
     "@claude-api/engine-client": "workspace:*",
     "@claude-api/openkeys-db": "workspace:*",
     "drizzle-orm": "^0.45.2",

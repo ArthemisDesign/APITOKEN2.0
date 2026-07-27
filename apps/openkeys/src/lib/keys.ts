@@ -1,5 +1,6 @@
 import "server-only";
 import { randomBytes } from "node:crypto";
+import type { EngineUsage } from "@claude-api/contracts";
 import { openkeysBatches, openkeysKeys } from "@claude-api/openkeys-db";
 import { desc, eq } from "drizzle-orm";
 import { loadConfig } from "./config";
@@ -99,36 +100,57 @@ export interface KeyUsageView {
   viewToken: string;
   keyMasked: string;
   status: "active" | "disabled";
-  createdAt: Date;
-  faceValueNano: bigint;
+  createdAt: string;
+  faceValueNano: string;
   multBp: number;
-  balanceNano: bigint;
-  spentNano: bigint;
+  balanceNano: string;
+  spentNano: string;
   /** Остаток и расход, пересчитанные в официальный прайс Anthropic. */
-  officialRemainingNano: bigint;
-  officialSpentNano: bigint;
+  officialRemainingNano: string;
+  officialSpentNano: string;
+  /** Полная статистика движка за окно — та же, что рисует дашборд. */
+  usage: EngineUsage | null;
 }
 
-export async function loadUsageByViewToken(viewToken: string): Promise<KeyUsageView | null> {
+/**
+ * Всё, что нужно странице расхода. Статистику берём тем же вызовом Control API,
+ * что и дашборд, поэтому цифры совпадают до нанодоллара. bigint приводим к строкам:
+ * server component не может передать bigint в client component.
+ */
+export async function loadUsageByViewToken(
+  viewToken: string,
+  window = "30d",
+): Promise<KeyUsageView | null> {
   const { db } = getDatabase();
   const [row] = await db.select().from(openkeysKeys).where(eq(openkeysKeys.viewToken, viewToken)).limit(1);
   if (!row) return null;
 
-  const account = await getEngineClient().getAccount(row.engineAccountId);
+  const engine = getEngineClient();
+  const account = await engine.getAccount(row.engineAccountId);
   const balanceNano = BigInt(account.balance_nano);
   const spentNano = BigInt(account.spent_nano);
+
+  // Аккаунт без единого запроса — нормальное состояние только что проданного ключа,
+  // а не ошибка: показываем пустой расход вместо страницы с ошибкой.
+  let usage: EngineUsage | null = null;
+  try {
+    usage = await engine.getUsage(row.engineAccountId, window);
+  } catch {
+    usage = null;
+  }
 
   return {
     viewToken: row.viewToken,
     keyMasked: row.keyMasked,
     status: account.status === "disabled" ? "disabled" : row.status,
-    createdAt: row.createdAt,
-    faceValueNano: row.faceValueNano,
+    createdAt: row.createdAt.toISOString(),
+    faceValueNano: row.faceValueNano.toString(),
     multBp: row.multBp,
-    balanceNano,
-    spentNano,
-    officialRemainingNano: balanceToOfficialNano(balanceNano, row.multBp),
-    officialSpentNano: balanceToOfficialNano(spentNano, row.multBp),
+    balanceNano: balanceNano.toString(),
+    spentNano: spentNano.toString(),
+    officialRemainingNano: balanceToOfficialNano(balanceNano, row.multBp).toString(),
+    officialSpentNano: balanceToOfficialNano(spentNano, row.multBp).toString(),
+    usage,
   };
 }
 

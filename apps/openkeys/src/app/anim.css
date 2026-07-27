@@ -1,0 +1,115 @@
+/* apiToken.sale — premium motion layer. Tasteful, GPU-friendly, respects reduced-motion. */
+
+/* ---------- hero entrance (runs on load) ---------- */
+.hero-grid > div:first-child > *{opacity:0;transform:translateY(22px);
+  transition:opacity .7s cubic-bezier(.16,.8,.28,1),transform .7s cubic-bezier(.16,.8,.28,1)}
+.hero.loaded .hero-grid > div:first-child > *{opacity:1;transform:none}
+.hero.loaded .hero-grid > div:first-child > .eyebrow{transition-delay:.05s}
+.hero.loaded .hero-grid > div:first-child > h1{transition-delay:.14s}
+.hero.loaded .hero-grid > div:first-child > .lead{transition-delay:.26s}
+.hero.loaded .hero-grid > div:first-child > .hero-cta{transition-delay:.36s}
+
+/* ---------- animated aurora in hero background ---------- */
+.hero::before{content:"";position:absolute;inset:-20% -10% auto auto;width:60%;height:120%;
+  pointer-events:none;z-index:0;opacity:.55;
+  background:
+    radial-gradient(38% 42% at 72% 20%, color-mix(in srgb,var(--accent) 22%,transparent), transparent 70%),
+    radial-gradient(30% 34% at 88% 46%, color-mix(in srgb,var(--accent) 16%,transparent), transparent 72%);
+  filter:blur(14px);animation:auroraDrift 16s ease-in-out infinite alternate}
+@keyframes auroraDrift{0%{transform:translate3d(0,0,0) rotate(0deg)}
+  50%{transform:translate3d(-3%,4%,0) rotate(4deg)}100%{transform:translate3d(2%,-2%,0) rotate(-3deg)}}
+
+/* ---------- scroll reveal (generic) with child stagger ---------- */
+[data-reveal]{opacity:0;transform:translateY(24px);
+  transition:opacity .7s cubic-bezier(.16,.8,.28,1),transform .7s cubic-bezier(.16,.8,.28,1)}
+[data-reveal].in{opacity:1;transform:none}
+[data-reveal-stagger] > *{opacity:0;transform:translateY(22px);
+  transition:opacity .6s cubic-bezier(.16,.8,.28,1),transform .6s cubic-bezier(.16,.8,.28,1)}
+[data-reveal-stagger].in > *{opacity:1;transform:none}
+[data-reveal-stagger].in > *:nth-child(1){transition-delay:.02s}
+[data-reveal-stagger].in > *:nth-child(2){transition-delay:.10s}
+[data-reveal-stagger].in > *:nth-child(3){transition-delay:.18s}
+[data-reveal-stagger].in > *:nth-child(4){transition-delay:.26s}
+[data-reveal-stagger].in > *:nth-child(5){transition-delay:.34s}
+[data-reveal-stagger].in > *:nth-child(6){transition-delay:.42s}
+
+/* keep existing .reveal but smoother */
+.reveal{opacity:0;transform:translateY(20px);transition:opacity .7s cubic-bezier(.16,.8,.28,1),transform .7s cubic-bezier(.16,.8,.28,1)}
+.reveal.in{opacity:1;transform:none}
+
+/* ---------- premium hover on cards ---------- */
+.step,.tier,.price,.mtable,.dcard{will-change:transform}
+.step,.tier,.price{transition:transform .28s cubic-bezier(.16,.8,.28,1),border-color .28s ease,box-shadow .28s ease,background-color .35s ease}
+.step:hover,.tier:hover,.price:hover{
+  transform:translateY(-6px);border-color:var(--accent-line);
+  box-shadow:0 18px 44px -18px color-mix(in srgb,var(--accent) 45%,transparent)}
+
+/* ---------- button shine + spring ---------- */
+.btn{position:relative;overflow:hidden;
+  transition:transform .18s cubic-bezier(.16,.8,.28,1),background-color .18s ease,box-shadow .22s ease,border-color .18s ease}
+.btn::after{content:"";position:absolute;top:0;left:-120%;width:60%;height:100%;
+  background:linear-gradient(100deg,transparent,rgba(255,255,255,.35),transparent);
+  transform:skewX(-18deg);transition:none}
+.btn:hover{transform:translateY(-2px)}
+.btn-primary:hover{box-shadow:0 10px 26px -8px color-mix(in srgb,var(--accent) 70%,transparent)}
+.btn:hover::after{left:130%;transition:left .6s ease}
+.btn:active{transform:translateY(0) scale(.98)}
+
+/* ---------- nav scrolled state ---------- */
+header.nav{transition:box-shadow .3s ease,background-color .3s ease,border-color .3s ease}
+header.nav.scrolled{box-shadow:0 8px 30px -18px rgba(10,10,10,.35)}
+
+/* ---------- count-up numbers stay stable width ---------- */
+.stat b{font-variant-numeric:tabular-nums}
+
+/* ---------- decorative background layer ---------- */
+.bg-decor{position:fixed;inset:0;z-index:-1;pointer-events:none;overflow:hidden;
+  transition:transform .5s cubic-bezier(.16,.8,.28,1)}
+.bg-decor .px{display:none!important}
+@keyframes pxDrift{
+  0%{transform:translateY(0) rotate(0deg)}
+  100%{transform:translateY(var(--rise,-40px)) rotate(24deg)}}
+.bg-decor .glow{position:absolute;border-radius:50%;filter:blur(80px);
+  background:radial-gradient(circle,color-mix(in srgb,var(--accent) 24%,transparent),transparent 70%);
+  will-change:transform}
+.bg-decor .g1{width:46vw;height:46vw;left:-14vw;top:-12vw;opacity:.45;
+  animation:glowPulse 14s ease-in-out infinite alternate}
+.bg-decor .g2{width:40vw;height:40vw;right:-12vw;top:34%;opacity:.34;
+  animation:glowPulse 18s ease-in-out -2s infinite alternate}
+.bg-decor .g3{width:36vw;height:36vw;left:22%;bottom:-16vw;opacity:.26;
+  animation:glowPulse 20s ease-in-out -1s infinite alternate}
+@keyframes glowPulse{0%{transform:scale(1) translate(0,0)}
+  100%{transform:scale(1.16) translate(3%,-4%)}}
+[data-theme="dark"] .bg-decor .glow{filter:blur(90px)}
+
+/* ---------- animated vector wave field ---------- */
+.wave-field{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.wave-field .wl{fill:none;stroke:var(--accent);stroke-width:var(--sw,1.4);
+  opacity:var(--o,.14);vector-effect:non-scaling-stroke;stroke-linecap:round;
+  transform-box:fill-box;transform-origin:left center;will-change:transform;
+  animation:waveScroll var(--dur,40s) linear var(--dl,0s) infinite}
+.wave-field .wl path{vector-effect:non-scaling-stroke}
+@keyframes waveScroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+[data-theme="dark"] .wave-field .wl{opacity:calc(var(--o,.14) + .04)}
+
+/* Декоративные волны отключены по просьбе. Чтобы вернуть — revert коммита с этим правилом. */
+.wave-field{display:none}
+
+/* ---------- lighten heavy background on phones / weak devices ---------- */
+@media (max-width:760px){
+  .bg-decor .glow{filter:blur(45px)}          /* cheaper blur */
+  .bg-decor .g3{display:none}                  /* one fewer glow */
+  .wave-field{display:none}                    /* matches the original low-power path */
+}
+/* touch devices: no cursor parallax anyway → keep field static-ish */
+@media (hover:none){
+  .bg-decor{transition:none}
+}
+
+/* ---------- accessibility ---------- */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation:none !important;transition-duration:.001s !important}
+  .hero-grid > div:first-child > *,.term-stage,.term,[data-reveal],[data-reveal-stagger] > *,.reveal{opacity:1 !important;transform:none !important;filter:none !important}
+  .bg-decor .px{display:none}
+  .wave-field{display:none}
+}
