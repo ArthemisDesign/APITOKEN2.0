@@ -1731,6 +1731,14 @@ grep -Fq 'previous_umask=$(umask)' <<<"$shadow_body" \
   || wd_die 'trusted candidate validation does not preserve the controller umask'
 grep -Fq 'umask "$previous_umask"' <<<"$shadow_body" \
   || wd_die 'trusted candidate validation leaks its transcript-only umask into Git fetches'
+grep -Fq 'validation-plan-unreadable-target-v1' "$ROOT/deploy/validation-plan.sh" \
+  || wd_die 'an unreadable freshly fetched candidate cannot request a fail-closed repair gate'
+for conservative_field in \
+  'typescript_required=1' 'typescript_full=1' 'rust_required=1' \
+  'static_required=1' 'engine_artifacts_required=1'; do
+  grep -Fq "printf '$conservative_field\\n'" "$ROOT/deploy/validation-plan.sh" \
+    || wd_die "unreadable-target fallback omitted $conservative_field"
+done
 grep -Fq 'selected?.description' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge client discards trusted-host failure descriptions'
 grep -Fq 'diagnostic="phase=$failed_phase; line=$line; exit=$rc; candidate quarantined"' \
