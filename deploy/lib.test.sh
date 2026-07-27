@@ -8,6 +8,16 @@ source "$ROOT/deploy/lib.sh"
 TEMP=$(realpath -- "$(mktemp -d)")
 trap 'rm -rf -- "$TEMP"' EXIT
 
+# `mapfile` is a bash 4 builtin, and macOS still ships bash 3.2 — contributors run this suite
+# locally through the merge gate, so read the file portably instead.
+read_lines_into() {
+  local array_name=$1 line
+  eval "$array_name=()"
+  while IFS= read -r line || [[ -n $line ]]; do
+    eval "$array_name+=(\"\$line\")"
+  done <"$2"
+}
+
 # Production is GNU/Linux and deliberately uses `mv -T` so a release link can never be treated as
 # a directory. macOS/BSD `mv` has the same safe replacement behavior for this symlink-only fixture
 # but lacks `-T`; adapt only the test process so contributors can run the suite locally.
@@ -84,7 +94,7 @@ restore_target_link() {
 restore_activation_links || fail "restoring changed release links failed"
 assert_link "$restore_root/current" "$restore_root/$OLD_A"
 assert_link "$restore_root/previous" "$restore_root/$OLD_B"
-mapfile -t restore_order <"$TEMP/restore-order"
+read_lines_into restore_order "$TEMP/restore-order"
 [[ ${#restore_order[@]} == 2 ]] || fail "restore did not visit both changed links"
 [[ ${restore_order[0]} == "$restore_root/previous" && ${restore_order[1]} == "$restore_root/current" ]] \
   || fail "release links were not restored in reverse capture order"
@@ -187,7 +197,7 @@ assert_link "$abort_root/current" "$abort_root/$OLD_A"
   || fail "activation abort did not restore an originally absent link"
 [[ $(grep -Fc 'recovered' "$TEMP/recovery-calls") == 1 ]] \
   || fail "activation recovery callback did not run exactly once"
-mapfile -t abort_restore_order <"$TEMP/abort-restore-order"
+read_lines_into abort_restore_order "$TEMP/abort-restore-order"
 [[ ${abort_restore_order[0]} == "$abort_root/previous" \
     && ${abort_restore_order[1]} == "$abort_root/current" ]] \
   || fail "activation abort did not unwind links in reverse order"
