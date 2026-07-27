@@ -2,6 +2,15 @@
 set -eEuo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+
+# The trusted controller performs final packaging as the unprivileged deploy account after these
+# suites run as the isolated CI owner. Keep the tracked checkout readable even if an older
+# controller cloned it under a restrictive transcript umask. Generated dependency trees are not
+# part of this handoff and may be changing concurrently, so leave them alone.
+find "$ROOT" \
+  \( -path "$ROOT/.git" -o -name node_modules \) -prune -o \
+  -type d -exec chmod go+rx {} + -o -type f -exec chmod go+r {} +
+
 # shellcheck source=deploy/lib.sh
 source "$ROOT/deploy/lib.sh"
 
