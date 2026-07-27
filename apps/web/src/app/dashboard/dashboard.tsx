@@ -299,7 +299,7 @@ export function Dashboard() {
     else if (dataErrors.usage) sourceNotices.push({ source: "usage", message: copy.usageDataUnavailable, pending: false });
   }
   return <div className="app ym-hide-content">
-    <aside className={`side ${sideOpen ? "open" : ""}`}>
+    <aside className={`side ${sideOpen ? "open" : ""}`} data-lang={language}>
       <Link className="brand side-brand" href="/"><BrandImages />apiToken.sale</Link>
       <nav className="side-nav">
         {navigation.map((item, index) => <div key={`${item.label}-${index}`} className="side-nav-item">

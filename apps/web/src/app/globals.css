@@ -1495,6 +1495,13 @@ body.app-body .bg-decor{display:none!important}
 .side-nav .side-link{display:flex;align-items:center;gap:12px;min-height:42px;padding:10px 12px;border:1px solid transparent;border-radius:8px;
   font-family:var(--font-mono);font-size:13px;color:var(--txt-3);transition:.14s}
 .side-nav .side-link:hover{background:var(--bg-soft);color:var(--txt)}
+/* RU labels are wider and the legal row wraps to two lines, which pushes the 100vh sidebar a few
+   dozen px past the fold and shows a scrollbar (EN fits). Tighten the vertical rhythm for RU only
+   so the whole menu + footer fits without scrolling; EN spacing stays untouched. */
+.side[data-lang="ru"] .side-group{padding-top:10px}
+.side[data-lang="ru"] .side-nav{gap:3px;padding-bottom:10px}
+.side[data-lang="ru"] .side-nav button,.side[data-lang="ru"] .side-nav .side-link{min-height:38px}
+.side[data-lang="ru"] .side-foot{gap:10px;padding-top:12px}
 .app-top-h{flex:1;display:flex;flex-direction:column;line-height:1.2}
 
 .page-heading{display:flex;flex-direction:column;align-items:flex-start;margin-bottom:28px}
