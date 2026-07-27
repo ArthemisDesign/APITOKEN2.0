@@ -75,6 +75,23 @@ export async function reconcileIssuanceJobs(staleBefore = new Date(Date.now() - 
   return reconciled;
 }
 
+const RECONCILER_STATE = Symbol.for("openkeys.issuance-reconciler");
+
+/** Keep compensation independent of an operator opening the admin page after a crash. */
+export function startIssuanceReconciler(): void {
+  const state = globalThis as typeof globalThis & { [RECONCILER_STATE]?: NodeJS.Timeout };
+  if (state[RECONCILER_STATE]) return;
+  const run = () => void reconcileIssuanceJobs().catch((error) => {
+    console.error("openkeys issuance reconciliation cycle failed", {
+      error: error instanceof Error ? error.name : "UnknownError",
+    });
+  });
+  run();
+  const timer = setInterval(run, 60_000);
+  timer.unref();
+  state[RECONCILER_STATE] = timer;
+}
+
 function maskKey(secret: string): string {
   return `${secret.slice(0, 12)}…${secret.slice(-4)}`;
 }
