@@ -347,6 +347,17 @@ grep -Fq 'deploy/agent-merge.suite.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the merge-path suite'
 grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the activation-journal suite'
+for parallel_gate_contract in \
+  'am_gate_typescript & typescript_pid=$!' \
+  'am_gate_rust & rust_pid=$!' \
+  'am_gate_deployment & deployment_pid=$!' \
+  'wait "$typescript_pid" || typescript_rc=$?' \
+  'wait "$rust_pid" || rust_rc=$?' \
+  'wait "$deployment_pid" || deployment_rc=$?' \
+  'local gate lanes failed (typescript=$typescript_rc rust=$rust_rc deployment=$deployment_rc)'; do
+  grep -Fq -- "$parallel_gate_contract" "$ROOT/deploy/agent-merge.sh" \
+    || wd_die "merge path lost parallel local-gate contract: $parallel_gate_contract"
+done
 grep -Fq 'agent-merge.suite.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the merge-path suite'
 grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/watchdog.sh" \

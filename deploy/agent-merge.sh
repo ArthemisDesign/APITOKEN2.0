@@ -61,18 +61,21 @@ am_mtime() {
 }
 am_now() { date +%s; }
 
-am_gate() {
-  if [[ -n ${AGENT_MERGE_GATE_CMD:-} ]]; then
-    ( cd "$ROOT" && eval "$AGENT_MERGE_GATE_CMD" )
-    return
-  fi
-  # Keep in step with the complete gate in CONTRIBUTING.md.
+am_gate_typescript() (
   cd "$ROOT"
   pnpm install --frozen-lockfile
   pnpm build
   pnpm typecheck
   pnpm test
+)
+
+am_gate_rust() (
+  cd "$ROOT"
   cargo test --locked --workspace
+)
+
+am_gate_deployment() (
+  cd "$ROOT"
   bash "$ROOT/deploy/lib.test.sh"
   # The merge path tests itself on every merge, strictly. It is deliberately not enforced in the
   # production gate: the watchdog installed on the host still calls deploy/agent-merge.test.sh, now a
@@ -81,6 +84,27 @@ am_gate() {
   # shellcheck disable=SC2046
   bash -n $(find "$ROOT/deploy" -type f -name '*.sh') "$ROOT/deploy/apitoken-db-dump"
   git -C "$ROOT" diff --check
+)
+
+am_gate() {
+  if [[ -n ${AGENT_MERGE_GATE_CMD:-} ]]; then
+    ( cd "$ROOT" && eval "$AGENT_MERGE_GATE_CMD" )
+    return
+  fi
+
+  # Keep these lanes in step with the complete gate in CONTRIBUTING.md. They are independent, so
+  # run them concurrently but always reap all three before reporting a failure.
+  local typescript_pid rust_pid deployment_pid
+  local typescript_rc=0 rust_rc=0 deployment_rc=0
+  am_log 'running local TypeScript, Rust, and deployment gates in parallel'
+  am_gate_typescript & typescript_pid=$!
+  am_gate_rust & rust_pid=$!
+  am_gate_deployment & deployment_pid=$!
+  wait "$typescript_pid" || typescript_rc=$?
+  wait "$rust_pid" || rust_rc=$?
+  wait "$deployment_pid" || deployment_rc=$?
+  (( typescript_rc == 0 && rust_rc == 0 && deployment_rc == 0 )) \
+    || am_die "local gate lanes failed (typescript=$typescript_rc rust=$rust_rc deployment=$deployment_rc)"
 }
 
 # Resolves a GitHub token without asking anybody to configure one. $GITHUB_TOKEN wins when set;

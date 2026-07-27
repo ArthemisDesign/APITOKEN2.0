@@ -42,6 +42,9 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    git diff --check
    ```
 
+   The merge script preserves this full scope while running its independent TypeScript, Rust, and
+   deployment lanes concurrently.
+
 5. Push the branch and land it with `./deploy/agent-merge.sh` (add `--allow-primary-tree` when you
    work in a plain clone rather than a worktree). That script is the only supported way to reach
    `master`. Before the expensive gate it rejects a red target, rebases onto the latest committed
