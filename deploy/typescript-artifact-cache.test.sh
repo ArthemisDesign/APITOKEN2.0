@@ -146,9 +146,12 @@ if find "$CACHE" -type l -print -quit | grep -q .; then
 fi
 
 : >"$STATE/builds"
-PATH="$TEMP/bin:$PATH" ARTIFACT_CACHE_TEST_STATE="$STATE" FAIL_IF_BUILD_CALLED=1 \
+if ! PATH="$TEMP/bin:$PATH" ARTIFACT_CACHE_TEST_STATE="$STATE" FAIL_IF_BUILD_CALLED=1 \
   TYPESCRIPT_ARTIFACT_CACHE_ROOT="$CACHE" \
-  bash "$RUNNER" "$FIXTURE" commerce sales openkeys web >/dev/null
+  bash "$RUNNER" "$FIXTURE" commerce sales openkeys web >"$STATE/warm.log"; then
+  cat "$STATE/warm.log" >&2
+  fail 'warm exact cache command failed'
+fi
 [[ ! -s $STATE/builds ]] || fail 'warm exact cache ran a build'
 [[ -f $FIXTURE/apps/web/.next/server/runtime.js ]] \
   || fail 'warm cache did not restore a complete Next output'

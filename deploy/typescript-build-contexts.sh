@@ -526,28 +526,34 @@ artifact_cache_clear() {
 }
 
 artifact_cache_restore() {
-  local context=$1 key component_root entry
+  local context=$1 key component_root entry restore_error
   (( CACHE_ENABLED == 1 )) || return 1
   key=$(artifact_cache_key "$context") || return 1
   [[ $key =~ ^[0-9a-f]{64}$ ]] || return 1
   component_root=$CACHE_ROOT/$context
   entry=$component_root/$key
   [[ -d $component_root && ! -L $component_root && -d $entry && ! -L $entry ]] || return 1
-  if artifact_cache_files restore "$entry" "$context" "$key" 2>/dev/null; then
+  if restore_error=$(artifact_cache_files restore "$entry" "$context" "$key" 2>&1); then
     log "$context artifact cache hit ($key)"
     return 0
   fi
-  log "$context artifact cache entry is corrupt; rebuilding"
+  restore_error=${restore_error%%$'\n'*}
+  log "$context artifact cache entry is corrupt (${restore_error:-verification failed}); rebuilding"
   artifact_cache_files clear "$CACHE_ROOT" "$context" "$key" >/dev/null 2>&1 || true
   return 1
 }
 
 artifact_cache_prune() {
-  local component_root=$1 kept=0 entry name
+  local component_root=$1 protected_entry=$2 kept=0 entry name
   local ordered=()
+  if [[ -d $protected_entry && ! -L $protected_entry \
+        && ${protected_entry%/*} == "$component_root" ]]; then
+    ordered+=("$protected_entry")
+  fi
   while IFS= read -r entry; do ordered+=("$entry"); done < <(
     for entry in "$component_root"/*; do
       [[ -d $entry && ! -L $entry ]] || continue
+      [[ $entry != "$protected_entry" ]] || continue
       name=${entry##*/}
       [[ $name =~ ^[0-9a-f]{64}$ ]] || continue
       if stat -c %Y -- "$entry" >/dev/null 2>&1; then
@@ -617,7 +623,9 @@ artifact_cache_save() {
     rm -rf -- "$temp" 2>/dev/null || true
   fi
   rmdir -- "$lock" 2>/dev/null || true
-  artifact_cache_prune "$component_root"
+  # Multiple entries can be published within one filesystem timestamp tick. Always retain the
+  # entry completed by this invocation instead of relying on an arbitrary lexical tie-break.
+  artifact_cache_prune "$component_root" "$entry"
   return 0
 }
 
