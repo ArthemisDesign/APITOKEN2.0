@@ -455,6 +455,21 @@ wd_path_is_infrastructure() {
   esac
 }
 
+# Deployment tests and the contributor-side merge workflow must exercise the operational
+# regression lane, but changing them cannot alter the installed production controller. New deploy
+# files fail safe into installation until they are explicitly proven local-only here.
+wd_path_requires_infrastructure_install() {
+  case "$1" in
+    deploy/*.md|deploy/*.test.sh|deploy/agent-merge.sh|deploy/agent-merge.suite.sh|deploy/test-stage2-e2e.sh)
+      return 1
+      ;;
+    deploy/*|systemd/*|observability/*|compose.yaml)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 wd_path_is_caddy() {
   [[ $1 == deploy/Caddyfile ]]
 }

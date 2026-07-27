@@ -955,7 +955,8 @@ main() {
     exit 0
   fi
 
-  wd_range_has_class "$SOURCE_REPO" "$INFRASTRUCTURE_SHA" "$CANDIDATE_SHA" wd_path_is_infrastructure \
+  wd_range_has_class "$SOURCE_REPO" "$INFRASTRUCTURE_SHA" "$CANDIDATE_SHA" \
+    wd_path_requires_infrastructure_install \
     && infra_changed=1
   wd_range_has_class "$SOURCE_REPO" "$INFRASTRUCTURE_SHA" "$CANDIDATE_SHA" wd_path_is_caddy \
     && caddy_changed=1

@@ -252,6 +252,31 @@ wd_path_is_infrastructure deploy/affinity-redis.compose.yaml
 if wd_path_is_infrastructure .github/workflows/indexnow.yml; then
   wd_die "GitHub-only workflow changes must not require a production-host infrastructure install"
 fi
+for runtime_definition in \
+  deploy/watchdog.sh \
+  deploy/watchdog-lib.sh \
+  deploy/install-watchdog.sh \
+  deploy/Caddyfile \
+  systemd/apitoken-deploy-watchdog.service \
+  observability/prometheus/prometheus.yml \
+  compose.yaml; do
+  wd_path_requires_infrastructure_install "$runtime_definition" \
+    || wd_die "runtime definition did not request infrastructure installation: $runtime_definition"
+done
+for validation_only_path in \
+  deploy/README.md \
+  deploy/lib.test.sh \
+  deploy/watchdog-lib.test.sh \
+  deploy/monitoring-config.test.sh \
+  deploy/agent-merge.sh \
+  deploy/agent-merge.suite.sh \
+  deploy/test-stage2-e2e.sh; do
+  wd_path_is_infrastructure "$validation_only_path" \
+    || wd_die "deployment tooling path escaped operational validation: $validation_only_path"
+  if wd_path_requires_infrastructure_install "$validation_only_path"; then
+    wd_die "validation-only path requested a production-host reinstall: $validation_only_path"
+  fi
+done
 wd_path_is_caddy deploy/Caddyfile
 if wd_path_is_caddy deploy/watchdog.sh; then
   wd_die "non-Caddy infrastructure change requested a Caddy reload"
@@ -480,6 +505,7 @@ gate_contract=(
   'wait "$rust_pid"'
   'wait "$static_pid"'
   'Static candidate lane failed'
+  'wd_path_requires_infrastructure_install'
   'wd_range_has_unknown_validation_path "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA"'
   'typescript_tested=%s'
   'rust_tested=%s'

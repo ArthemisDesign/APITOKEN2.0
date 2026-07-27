@@ -57,13 +57,16 @@ sudo apitoken-watchdog status
 sudo apitoken-watchdog logs
 ```
 
-Operational-definition changes (`deploy/`, `systemd/`, `compose.yaml`) are also automatic. After
-the exact immutable candidate passes the selected path-aware gate, a fixed root-owned bridge verifies
-its SHA/tree/test marker and installs its watchdog controllers and systemd definitions. The old
-controller then exits with `deploy/watchdog` still pending; the next five-second poll reuses the same
-frozen candidate and continues under the new controller. A changed Caddy template is rendered with the existing production secrets,
-validated, reloaded with automatic rollback, and never copied with repository placeholders. GitHub
-workflow changes do not alter the production host and therefore need no host-install stage.
+Runtime operational-definition changes (`deploy/`, `systemd/`, `compose.yaml`) are also automatic.
+After the exact immutable candidate passes the selected path-aware gate, a fixed root-owned bridge
+verifies its SHA/tree/test marker and installs its watchdog controllers and systemd definitions. The
+old controller then exits with `deploy/watchdog` still pending; the next five-second poll reuses the
+same frozen candidate and continues under the new controller. Test-only deployment scripts,
+documentation, and the contributor-side merge workflow still run the operational regression lane
+but do not reinstall the production controller. A changed Caddy template is rendered with the
+existing production secrets, validated, reloaded with automatic rollback, and never copied with
+repository placeholders. GitHub workflow changes do not alter the production host and therefore
+need no host-install stage.
 
 An operator can request an immediate poll or retry a proven transient failure:
 
