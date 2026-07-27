@@ -244,6 +244,9 @@ wd_path_is_backend packages/contracts/src/index.ts \
 wd_path_is_backend apps/content-studio/src/app/page.tsx || wd_die "content studio must trigger commerce deployment"
 wd_path_is_engine tools/codex-app-server/build-pinned.sh \
   || wd_die "pinned Codex tooling must trigger an engine deployment"
+grep -Fq 'WEB_HEALTH=${OPENKEYS_WEB_HEALTH:-http://127.0.0.1:3410/docs}' \
+  "$ROOT/deploy/openkeys-deploy.sh" \
+  || wd_die "OpenKeys rollout health must tolerate the intentional product-root redirect"
 
 wd_engine_topology_is_steady 1 1 1 1 0 0 0 0 0 0
 wd_engine_topology_is_steady 0 0 0 0 1 1 1 1 0 0

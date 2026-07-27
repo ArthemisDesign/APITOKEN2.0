@@ -21,7 +21,10 @@ CANDIDATE_ROOT=${OPENKEYS_CANDIDATE_ROOT:-/var/lib/apitoken/watchdog/candidates}
 RELEASE_ROOT=${OPENKEYS_RELEASE_ROOT:-/opt/apitoken/openkeys-releases}
 ENV_FILE=${OPENKEYS_ENV_FILE:-/etc/apitoken/openkeys.env}
 WEB_UNIT=apitoken-openkeys.service
-WEB_HEALTH=${OPENKEYS_WEB_HEALTH:-http://127.0.0.1:3410/}
+# The product root may intentionally redirect (currently to /docs). Probe a stable page that
+# returns 200 in both the previous release and the candidate, so a valid redirect is not mistaken
+# for an unhealthy process and rollback health remains testable.
+WEB_HEALTH=${OPENKEYS_WEB_HEALTH:-http://127.0.0.1:3410/docs}
 HEALTH_RETRIES=${OPENKEYS_HEALTH_RETRIES:-30}
 HEALTH_INTERVAL=${OPENKEYS_HEALTH_INTERVAL:-2}
 
