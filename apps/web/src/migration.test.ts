@@ -193,6 +193,7 @@ describe("completed Next.js migration", () => {
   it("keeps the dashboard bilingual and authentication-aware", () => {
     const dashboard = readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8");
     const dashboardCopy = readFileSync(join(root, "lib", "dashboard-copy.ts"), "utf8");
+    const styles = readFileSync(join(appRoot, "globals.css"), "utf8");
     expect(dashboard).toContain("dashboardCopy[language]");
     expect(dashboardCopy).toContain('navOverview: "Overview"');
     expect(dashboardCopy).toContain('navOverview: "Обзор"');
@@ -203,6 +204,9 @@ describe("completed Next.js migration", () => {
     expect(dashboard).toContain('className="app-top-in"');
     expect(dashboard).toContain('className="overview-pricing-facts"');
     expect(dashboard.match(/copy\.payPerOfficialDollar/g)).toHaveLength(1);
+    expect(styles).toContain(".overview-primary-grid,.overview-metrics-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}");
+    expect(styles).toContain(".overview-balance-card{container-type:inline-size;display:flex;grid-column:span 2;");
+    expect(styles).toContain("@media(max-width:960px){\n  .overview-primary-grid{grid-template-columns:1fr}\n  .overview-balance-card{grid-column:auto}");
     expect(dashboard).toContain("officialBalance");
     expect(dashboardCopy).toContain('platformBalance: "Available credit"');
     expect(dashboardCopy).toContain('platformBalance: "Доступный баланс"');

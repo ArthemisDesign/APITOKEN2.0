@@ -1520,12 +1520,12 @@ body.app-body .bg-decor{display:none!important}
 .overview-alert strong{font-size:13px;color:var(--txt)}
 .overview-alert>div>span{font-size:12.5px;line-height:1.45;color:var(--txt-3)}
 
-.overview-primary-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,.68fr);gap:18px}
+.overview-primary-grid,.overview-metrics-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
 .overview-card-head{display:flex;align-items:center;justify-content:space-between;gap:14px;min-width:0}
 .overview-card-label{font:600 10px/1.4 var(--font-mono);letter-spacing:.09em;text-transform:uppercase;color:var(--txt-4)}
 .overview-rate-chip{flex:none;padding:5px 9px;border:1px solid var(--accent-line);border-radius:99px;background:var(--accent-soft);
   font:600 10px/1.2 var(--font-mono);color:var(--accent);white-space:nowrap}
-.overview-balance-card{container-type:inline-size;display:flex;min-height:220px;flex-direction:column;padding:24px 26px}
+.overview-balance-card{container-type:inline-size;display:flex;grid-column:span 2;min-height:220px;flex-direction:column;padding:24px 26px}
 .overview-balance-main{display:flex;flex:1;min-width:0;flex-direction:column}
 .overview-balance-number{display:block;margin-top:18px;font-size:clamp(42px,5vw,54px);line-height:.95;letter-spacing:-.065em;color:var(--txt);font-variant-numeric:tabular-nums}
 .overview-balance-detail{display:flex;min-width:0;flex:1;flex-direction:column}
@@ -1565,7 +1565,6 @@ body.app-body .bg-decor{display:none!important}
 .overview-onboarding li strong{font-size:11px;line-height:1.35;color:var(--txt)}
 .overview-onboarding li small{font-size:10px;line-height:1.4;color:var(--txt-4)}
 
-.overview-metrics-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
 .overview-metric-card{display:flex;min-height:174px;flex-direction:column;padding:20px 22px}
 .overview-metric-mark{display:grid;place-items:center;width:25px;height:25px;border-radius:7px;background:var(--bg-soft);
   font:600 11px var(--font-mono);color:var(--txt-4)}
@@ -1928,6 +1927,7 @@ body.app-body .bg-decor{display:none!important}
 }
 @media(max-width:960px){
   .overview-primary-grid{grid-template-columns:1fr}
+  .overview-balance-card{grid-column:auto}
   .overview-access-card{min-height:164px}
 }
 @media(max-width:820px){
