@@ -337,7 +337,7 @@ export function Dashboard() {
         />}
         {section === "keys" && !dataPending.keys && !dataErrors.keys && <ApiKeys keys={keys} onChanged={() => retryOptional("keys", false)} user={user} />}
         {section === "credits" && <Credits account={account} ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
-        {section === "usage" && usage && <Usage account={account} ledger={ledger} usage={usage} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
+        {section === "usage" && usage && <Usage account={account} keys={keys} ledger={ledger} usage={usage} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
         {section === "support" && <SupportPanel />}
         {section === "profile" && <Profile user={user} onUpdated={setUser} />}
         {section === "promos" && <PromoPanel ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} ledgerMayBePartial={ledger.length >= 100} />}
@@ -1198,7 +1198,7 @@ function Credits({ account, ledger, ledgerAvailable }: { account: AccountView; l
 }
 
 
-function Usage({ account, ledger, usage, ledgerAvailable }: { account: AccountView; ledger: LedgerEntry[]; usage: UsageView; ledgerAvailable: boolean }) {
+function Usage({ account, keys, ledger, usage, ledgerAvailable }: { account: AccountView; keys: ApiKeyView[]; ledger: LedgerEntry[]; usage: UsageView; ledgerAvailable: boolean }) {
   const copy = useDashboardCopy();
   const { language } = useI18n();
   const locale = language === "ru" ? "ru-RU" : "en-US";
@@ -1252,6 +1252,7 @@ function Usage({ account, ledger, usage, ledgerAvailable }: { account: AccountVi
   const [mdistHover, setMdistHover] = useState<number | null>(null);
 
   const keyRows = [...usage.keys].sort((left, right) => compareBigInt(BigInt(right.officialNano), BigInt(left.officialNano)));
+  const keyLabels = new Map(keys.flatMap((key) => key.label ? [[key.keyMasked, key.label] as const] : []));
   const ledgerMayBePartial = ledger.length >= 100;
   const legacyOfficialNano = BigInt(usage.buckets.unattributedLegacy.officialNano);
 
@@ -1354,12 +1355,14 @@ function Usage({ account, ledger, usage, ledgerAvailable }: { account: AccountVi
         <div><span className="dlabel">{copy.chargedCol}</span><b>{formatNanoUsd(summaryChargedNano)}</b></div>
       </div>
       <p className="table-scroll-hint">{copy.tableScrollHint}</p>
-      <div className="table-scroll" role="region" tabIndex={0} aria-label={`${copy.usageByKey}. ${copy.tableScrollHint}`}><table className="mtable"><thead><tr><th>{copy.apiKey}</th><th className="tnum">{copy.billedEvents}</th><th className="tnum">{copy.effectiveDiscount}</th><th className="tnum">{copy.effectiveValue}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
-        <tbody>{keyRows.length === 0 ? <tr><td colSpan={6} className="empty-cell">{copy.noChargesPeriod}</td></tr> : keyRows.map((row) => <tr key={row.keyMasked ?? "__system__"}>
-          <td><code>{row.keyMasked ?? copy.systemCharge}</code></td>
+      <div className="table-scroll" role="region" tabIndex={0} aria-label={`${copy.usageByKey}. ${copy.tableScrollHint}`}><table className="mtable usage-key-table"><thead><tr><th>{copy.apiKey}</th><th className="tnum">{copy.billedEvents}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
+        <tbody>{keyRows.length === 0 ? <tr><td colSpan={4} className="empty-cell">{copy.noChargesPeriod}</td></tr> : keyRows.map((row) => <tr key={row.keyMasked ?? "__system__"}>
+          <td>{row.keyMasked === null
+            ? <span className="usage-key-label">{copy.systemCharge}</span>
+            : keyLabels.has(row.keyMasked)
+              ? <span className="usage-key-label">{keyLabels.get(row.keyMasked)}</span>
+              : <code>{row.keyMasked}</code>}</td>
           <td className="tnum">{row.requests.toLocaleString(locale)}</td>
-          <td className="tnum">{formatEffectiveDiscount(BigInt(row.officialNano), BigInt(row.chargedNano))}</td>
-          <td className="tnum"><span className="ubadge">{formatEffectiveValue(BigInt(row.officialNano), BigInt(row.chargedNano))}</span></td>
           <td className="tnum">{formatNanoUsd(row.officialNano)}</td>
           <td className="tnum mprice">{formatNanoUsd(row.chargedNano)}</td>
         </tr>)}</tbody></table></div>
@@ -1434,17 +1437,6 @@ function formatBilledEventCount(count: number, locale: string, copy: DashboardCo
   const template = plural === "one" ? copy.billedEventOne : plural === "few" ? copy.billedEventsFew : copy.apiRequestsN;
   return interpolate(template, { n: count });
 }
-function formatEffectiveDiscount(officialNano: bigint, chargedNano: bigint): string {
-  if (officialNano <= 0n) return "—";
-  const discountNano = officialNano > chargedNano ? officialNano - chargedNano : 0n;
-  const tenths = roundDivide(discountNano * 1_000n, officialNano);
-  return `${tenths / 10n}.${tenths % 10n}%`;
-}
-function formatEffectiveValue(officialNano: bigint, chargedNano: bigint): string {
-  if (officialNano <= 0n || chargedNano <= 0n) return "—";
-  return `${formatFixedRatio(officialNano, chargedNano, 2)}×`;
-}
-
 // «Красивая» шкала оси Y на целых нано-USD. В number переводятся только ограниченные отношения для CSS.
 function niceNanoScale(max: bigint): { max: bigint; step: bigint; divisions: number } {
   const divisions = 4;

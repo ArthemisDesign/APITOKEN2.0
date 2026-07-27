@@ -100,6 +100,7 @@ fixture prevents dashboard browser requests from reaching the configured API.
 | `AUDIT_FILTER` | empty | Comma-separated capture names. Empty means every capture in the selected scope. |
 | `CHROME_PATH` | auto-detected | Explicit Chrome or Chromium executable. |
 | `AUDIT_VERIFY_KEYS` | automatic | `1` forces API-key assertions; `0` disables them. They run automatically when a selected capture starts with `dashboard-keys-`. |
+| `AUDIT_VERIFY_USAGE` | automatic | `1` forces usage-by-key assertions; `0` disables them. They run automatically when a selected capture starts with `dashboard-usage-`. |
 | `AUDIT_VERIFY_CREDITS` | automatic | `1` forces Credits assertions; `0` disables them. They run automatically when a selected capture starts with `dashboard-topup-`. |
 | `AUDIT_VERIFY_DOCS_THEME` | automatic | `1` forces docs theme assertions; `0` disables them. They run automatically when a selected capture starts with `docs-`. |
 | `AUDIT_VERIFY_HERO` | automatic | `1` forces landing hero-offer assertions; `0` disables them. They run automatically when a selected capture starts with `home-`. |
@@ -230,6 +231,9 @@ The API-key assertion currently checks nine English/Russian, light/dark, and des
 cases. It verifies alignment, table/card spacing, single-row controls, equal mobile tab widths, no
 horizontal overflow, translated accessibility labels, counts, search and filter interactions, all
 policy states, the complete TOTP-enabled create flow, and revoke error/focus restoration behavior.
+
+The usage-by-key assertion verifies that named keys replace masked credentials, unnamed keys retain
+the safe masked fallback, and the table contains only key-specific usage columns.
 
 ## Adding a new visual audit
 

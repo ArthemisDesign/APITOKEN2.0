@@ -178,6 +178,8 @@ const shouldVerifyCredits = process.env.AUDIT_VERIFY_CREDITS === "1" ||
   (process.env.AUDIT_VERIFY_CREDITS !== "0" && captures.some(([name]) => name.startsWith("dashboard-topup-")));
 const shouldVerifyKeys = process.env.AUDIT_VERIFY_KEYS === "1" ||
   (process.env.AUDIT_VERIFY_KEYS !== "0" && captures.some(([name]) => name.startsWith("dashboard-keys-")));
+const shouldVerifyUsage = process.env.AUDIT_VERIFY_USAGE === "1" ||
+  (process.env.AUDIT_VERIFY_USAGE !== "0" && captures.some(([name]) => name.startsWith("dashboard-usage-")));
 const shouldVerifyDocsTheme = process.env.AUDIT_VERIFY_DOCS_THEME === "1" ||
   (process.env.AUDIT_VERIFY_DOCS_THEME !== "0" && captures.some(([name]) => name.startsWith("docs-")));
 const shouldVerifyPricing = process.env.AUDIT_VERIFY_PRICING === "1" ||
@@ -326,7 +328,7 @@ const dashboardFixtureScript = `(() => {
     ],
     keys: [
       { keyMasked: "sk-pool-a5b5••••••••eeb", requests: 45, officialNano: "18000000000", chargedNano: "7200000000" },
-      { keyMasked: "sk-pool-45e1••••••••bc8", requests: 14, officialNano: "4984893050", chargedNano: "1993957220" },
+      { keyMasked: "sk-pool-f367••••••••94ea", requests: 14, officialNano: "4984893050", chargedNano: "1993957220" },
     ],
   };
   window.fetch = (input, init = {}) => {
@@ -1025,6 +1027,43 @@ async function verifyCreditsLayout(client) {
     }
   }
   process.stdout.write("Verified Credits alignment, responsive stacking, history layout, and preset interaction\n");
+}
+
+async function verifyUsageByKeyTable(client) {
+  await setViewport(client, 1440, 1000);
+  await client.send("Runtime.evaluate", {
+    expression: `localStorage.setItem('theme', 'light'); localStorage.setItem('lang', 'en');`,
+  });
+  const loaded = client.once("Page.loadEventFired");
+  await client.send("Page.navigate", { url: new URL("/dashboard?view=usage", baseUrl).href });
+  await loaded;
+  await waitForCondition(
+    client,
+    `document.querySelectorAll('.usage-key-table tbody tr').length === 2`,
+    "the API-key usage table",
+  );
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const table = document.querySelector('.usage-key-table');
+      const headers = [...table.querySelectorAll('thead th')].map((cell) => cell.textContent.trim());
+      const rows = [...table.querySelectorAll('tbody tr')].map((row) => ({
+        label: row.cells[0]?.textContent?.trim(),
+        masked: Boolean(row.cells[0]?.querySelector('code')),
+        cells: row.cells.length,
+      }));
+      return JSON.stringify({ headers, rows, text: table.textContent });
+    })()`,
+    returnByValue: true,
+  });
+  const state = JSON.parse(result.result.value);
+  if (state.headers.join("|") !== "API key|Billed events|List-price value|Charged" ||
+      state.rows.length !== 2 || state.rows.some((row) => row.cells !== 4) ||
+      state.rows[0].label !== "Production" || state.rows[0].masked ||
+      state.rows[1].label !== "sk-pool-f367••••••••94ea" || !state.rows[1].masked ||
+      state.text.includes("Effective discount") || state.text.includes("Effective value")) {
+    throw new Error(`Usage-by-key semantics failed: ${JSON.stringify(state)}`);
+  }
+  process.stdout.write("Verified named-key labels, masked fallback, and key-specific usage columns\n");
 }
 
 async function verifyApiKeysLayout(client) {
@@ -1755,6 +1794,7 @@ try {
   if (shouldVerifyPricing) await verifyPricingCardsLayout(client);
   if (shouldVerifyKeys) await verifyApiKeysLayout(client);
   if (shouldVerifyCredits) await verifyCreditsLayout(client);
+  if (shouldVerifyUsage) await verifyUsageByKeyTable(client);
   if (shouldVerifyDocsTheme) await verifyDocsTheme(client);
   if (captures.some(([name]) => name.startsWith("header-mobile"))) await verifyMobileNavigation(client);
   if (captures.some(([name]) => name.startsWith("learn-index-"))) await verifyLearnHubFiltering(client);
