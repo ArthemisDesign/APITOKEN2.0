@@ -487,7 +487,8 @@ wd_path_is_caddy() {
 # the full installer.
 wd_path_is_controller_definition() {
   case "$1" in
-    deploy/watchdog.sh|deploy/watchdog-lib.sh|deploy/watchdog-test-db.sh|\
+    deploy/watchdog.sh|deploy/watchdog-lib.sh|deploy/validation-plan.sh|\
+    deploy/watchdog-test-db.sh|\
     deploy/watchdog-backup.sh|deploy/watchdog-migrate.sh|deploy/watchdog-infrastructure.sh|\
     deploy/watchdog-retention.sh|deploy/watchdog-github.sh|deploy/watchdog-control.sh|\
     deploy/deploy.sh|deploy/lib.sh|deploy/api-bluegreen.sh|deploy/engine-bluegreen.sh|\

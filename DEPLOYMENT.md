@@ -86,8 +86,12 @@ sudo apitoken-watchdog logs
 Runtime operational-definition changes (`deploy/`, `systemd/`, `compose.yaml`) are also automatic.
 After the exact immutable candidate passes the selected path-aware gate, a fixed root-owned bridge
 verifies its SHA/tree/test marker and installs its watchdog controllers and systemd definitions. The
-old controller then exits with `deploy/watchdog` still pending; the next five-second poll reuses the
-same frozen candidate and continues under the new controller. Test-only deployment scripts,
+installed and exact-candidate controllers each emit a versioned validation plan; the host runs
+their union, and the frozen marker binds both the effective plan and the candidate policy digest.
+A controller-only update then transfers the already-held deployment lock directly to the new
+root-owned controller, without another poll or validation pass. Caddy-only updates continue in the
+same process. A full systemd transaction keeps `deploy/watchdog` pending until the next five-second
+poll because only a fresh manager invocation receives the updated service sandbox. Test-only deployment scripts,
 documentation, and the contributor-side merge workflow still run the operational regression lane
 but do not reinstall the production controller. A changed Caddy template is rendered with the
 existing production secrets, validated, reloaded with automatic rollback, and never copied with

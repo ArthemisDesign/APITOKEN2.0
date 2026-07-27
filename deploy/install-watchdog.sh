@@ -21,6 +21,8 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/watchdog.sh
   install -o root -g root -m 0644 "$ROOT/deploy/watchdog-lib.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-lib.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/validation-plan.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/validation-plan.sh
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-test-db.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-test-db
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-backup.sh" \

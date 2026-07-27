@@ -1,12 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ ${1:-} == --assert-inherited-flock ]]; then
+  [[ -e /proc/$$/fd/5 ]] || { printf 'lock descriptor was not inherited\n' >&2; exit 1; }
+  flock -n 5 || { printf 'inherited descriptor no longer owns its lock\n' >&2; exit 1; }
+  exit 0
+fi
+
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=deploy/watchdog-lib.sh
 source "$ROOT/deploy/watchdog-lib.sh"
 
 TEMP=$(mktemp -d)
 trap 'rm -rf -- "$TEMP"' EXIT
+
+# Controller-only handoff uses exec, so the new process must retain the same open-file-description
+# lock rather than reacquiring by pathname. Exercise that Linux contract when flock/procfs exist.
+if command -v flock >/dev/null 2>&1 && [[ -d /proc/$$/fd ]]; then
+  inherited_lock="$TEMP/inherited.lock"
+  exec 5<>"$inherited_lock"
+  flock -n 5
+  bash "$0" --assert-inherited-flock
+  flock -u 5
+  exec 5>&-
+fi
 
 # Atomic state writes are shared by parallel rollout lanes. Bash keeps `$$` constant in asynchronous
 # subshells, so this test proves each writer uses a unique temporary path and leaves one valid value.
@@ -275,6 +292,7 @@ fi
 for runtime_definition in \
   deploy/watchdog.sh \
   deploy/watchdog-lib.sh \
+  deploy/validation-plan.sh \
   deploy/install-watchdog.sh \
   deploy/Caddyfile \
   systemd/apitoken-deploy-watchdog.service \
@@ -309,6 +327,7 @@ fi
 for controller_definition in \
   deploy/watchdog.sh \
   deploy/watchdog-lib.sh \
+  deploy/validation-plan.sh \
   deploy/watchdog-infrastructure.sh \
   deploy/deploy.sh \
   deploy/lib.sh \
@@ -419,6 +438,44 @@ git -C "$validation_repo" commit --quiet -m unknown
 validation_unknown=$(git -C "$validation_repo" rev-parse HEAD)
 wd_range_has_unknown_validation_path "$validation_repo" "$validation_docs" "$validation_unknown" \
   || wd_die "an unclassified path did not fail safe into complete validation"
+
+# The versioned planner is an executable contract, not only a collection of classifiers. Verify the
+# cheap known-path envelope and the fail-closed unknown-path envelope with explicit baselines.
+plan_value() {
+  local plan=$1 key=$2 value
+  value=$(grep -E "^${key}=" <<<"$plan")
+  [[ $(grep -Ec "^${key}=" <<<"$plan") == 1 ]] \
+    || wd_die "validation plan did not contain exactly one $key"
+  printf '%s\n' "${value#*=}"
+}
+
+docs_plan=$(bash "$ROOT/deploy/validation-plan.sh" "$validation_repo" "$validation_docs" \
+  "$validation_base" "$validation_base" "$validation_base" "$validation_base" "$validation_base")
+[[ $(plan_value "$docs_plan" validation_plan_format) == 1 ]] \
+  || wd_die "validation plan format is not versioned"
+[[ $(plan_value "$docs_plan" validation_policy_sha256) =~ ^[0-9a-f]{64}$ ]] \
+  || wd_die "validation plan policy is not content-addressed"
+for flag in typescript_required typescript_full rust_required static_required engine_artifacts_required; do
+  [[ $(plan_value "$docs_plan" "$flag") == 0 ]] \
+    || wd_die "documentation-only validation plan enabled $flag"
+done
+
+installed_planner_root="$TEMP/installed-planner"
+mkdir -p "$installed_planner_root/controller"
+cp "$ROOT/deploy/validation-plan.sh" "$installed_planner_root/controller/validation-plan.sh"
+cp "$ROOT/deploy/watchdog-lib.sh" "$installed_planner_root/watchdog-lib.sh"
+installed_docs_plan=$(bash "$installed_planner_root/controller/validation-plan.sh" \
+  "$validation_repo" "$validation_docs" "$validation_base" "$validation_base" \
+  "$validation_base" "$validation_base" "$validation_base")
+[[ $installed_docs_plan == "$docs_plan" ]] \
+  || wd_die "installed and repository planner layouts produced different policies"
+
+unknown_plan=$(bash "$ROOT/deploy/validation-plan.sh" "$validation_repo" "$validation_unknown" \
+  "$validation_docs" "$validation_docs" "$validation_docs" "$validation_docs" "$validation_docs")
+for flag in typescript_required typescript_full rust_required static_required engine_artifacts_required; do
+  [[ $(plan_value "$unknown_plan" "$flag") == 1 ]] \
+    || wd_die "unknown-path validation plan did not fail closed for $flag"
+done
 
 # Package edits stay filterable, while shared inputs, selector changes, and deleted package paths
 # force a complete TypeScript workspace check.
@@ -733,6 +790,9 @@ gate_contract=(
   'rust_tested=%s'
   'static_tested=%s'
   'engine_artifacts=%s'
+  'validation_plan_format=%s'
+  'validation_policy_sha256=%s'
+  'validation_plan_sha256=%s'
 )
 for required_stage in "${gate_contract[@]}"; do
   grep -Fq -- "$required_stage" "$ROOT/deploy/watchdog.sh" \
@@ -1038,13 +1098,16 @@ grep -Fq 'AGENT_MERGE_POLL_S=${AGENT_MERGE_POLL_S:-5}' "$ROOT/deploy/agent-merge
 grep -Fq 'IDLE_MAINTENANCE_SECONDS=60' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'deep idle maintenance is not decoupled from the fast update poll'
 
-# A self-update records the installed controller SHA and exits pending. Only the next invocation,
-# running the new operational definitions, is allowed to deploy components and publish overall green.
+# A controller-only self-update records the exact installed SHA and transfers the already-held lock
+# directly into the new root-owned controller. Full systemd changes still require a fresh manager
+# invocation because the current process retains its old mount namespace.
 grep -Fq 'wd_atomic_write "$STATE_ROOT/infrastructure.sha" "$SHA"' \
   "$ROOT/deploy/watchdog-infrastructure.sh" \
   || wd_die 'infrastructure transaction does not record its exact SHA'
 grep -Fq 'install_controller_definitions' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'watchdog installer has no narrow controller transaction'
+grep -Fq '"$ROOT/deploy/validation-plan.sh"' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'watchdog installer does not install the versioned validation planner'
 controller_exit_line=$(grep -nF "echo 'production watchdog controller definitions installed'" \
   "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
 full_unit_line=$(grep -nF 'for unit in \' "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
@@ -1056,11 +1119,14 @@ for narrow_option in --controller-only --caddy-only; do
   grep -Fq -- "$narrow_option" "$ROOT/deploy/watchdog-infrastructure.sh" \
     || wd_die "root infrastructure bridge rejects narrow option $narrow_option"
 done
-grep -Fq 'CURRENT_PHASE=handoff' "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'watchdog self-update has no controller handoff'
-grep -Fq 'New controller installed; continuing on next poll' "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'controller handoff does not keep the overall verdict pending'
-handoff_line=$(grep -nF 'CURRENT_PHASE=handoff' "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
+grep -Fq 'exec "$CONTROLLER_ENTRYPOINT" --resume "$CANDIDATE_SHA"' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'controller-only update does not continue in the installed controller'
+grep -Fq 'controller resume requires the inherited watchdog lock' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'new controller can resume without the inherited deployment lock'
+grep -Fq 'System definitions installed; continuing on next poll' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'full system update does not defer to the refreshed systemd sandbox'
+handoff_line=$(grep -nF 'exec "$CONTROLLER_ENTRYPOINT" --resume "$CANDIDATE_SHA"' \
+  "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
 processed_line=$(grep -nF 'wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"' \
   "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
 [[ -n $handoff_line && -n $processed_line && $handoff_line -lt $processed_line ]] \

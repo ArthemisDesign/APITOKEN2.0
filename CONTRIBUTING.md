@@ -157,8 +157,11 @@ Changes to `deploy/`, `systemd/`, `observability/`, or `compose.yaml` are delive
 like application code, but through a stricter path. Only after the exact immutable candidate passes
 its selected gate does a fixed root-owned bridge re-verify its SHA, tree, and clean worktree against
 the test marker, then install that candidate's own controllers and systemd definitions. The running
-old controller leaves the overall status pending and exits; the next five-second poll resumes from
-the same frozen candidate under the newly installed controller. A changed Caddy template is rendered against the live host
+and candidate controllers contribute versioned validation plans; the host validates their union and
+binds the marker to that plan and the candidate policy digest. Controller-only updates transfer the
+held deployment lock directly into the newly installed root-owned controller, so they neither wait
+for another poll nor repeat a sufficient exact-SHA gate. Full systemd updates remain pending for the
+next five-second poll so a fresh process receives the new sandbox. A changed Caddy template is rendered against the live host
 secrets, validated, and reloaded with an automatic rollback copy; the repository file with its
 placeholders is never copied over production. Changes under `.github/` do not touch the production
 host and therefore need no host-install stage.

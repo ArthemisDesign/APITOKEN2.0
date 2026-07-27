@@ -24,6 +24,8 @@ CI_CARGO_TARGET=$CI_HOME/cargo-target
 CI_NEXT_CACHE_ROOT=$CI_HOME/next-cache
 CI_TOOLCHAIN=/opt/apitoken-watchdog/rust-toolchain
 CONTROLLER_ROOT=/usr/local/lib/apitoken-watchdog/controller
+CONTROLLER_ENTRYPOINT=/usr/local/lib/apitoken-watchdog/watchdog.sh
+VALIDATION_PLANNER=$CONTROLLER_ROOT/validation-plan.sh
 TEST_DB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-test-db
 BACKUP_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-backup.sh
 MIGRATION_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
@@ -67,6 +69,9 @@ VALIDATION_TYPESCRIPT_BASE_SHA=
 VALIDATION_RUST_REQUIRED=0
 VALIDATION_STATIC_REQUIRED=0
 VALIDATION_ENGINE_ARTIFACTS_REQUIRED=0
+VALIDATION_PLAN_FORMAT=1
+VALIDATION_POLICY_SHA256=
+VALIDATION_PLAN_SHA256=
 
 github_status() {
   sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" "$1" "$2" "$3"
@@ -223,8 +228,12 @@ candidate_for() {
 candidate_is_tested() {
   local sha=$1 typescript_required=$2 typescript_full=$3 typescript_base=$4
   local rust_required=$5 static_required=$6 engine_artifacts_required=$7
+  local validation_policy_sha256=$8
   local marker candidate marker_sha marker_tree candidate_sha candidate_tree marker_digest actual_digest
   local marker_flag marker_typescript_full expected_hash actual_hash manifest
+  local marker_plan_format marker_policy marker_plan marker_plan_actual
+  local marker_typescript_required marker_typescript_base marker_rust_required
+  local marker_static_required marker_engine_artifacts
   marker=$(marker_for "$sha")
   candidate=$(candidate_for "$sha")
   [[ -d $candidate && ! -L $candidate ]] || return 1
@@ -246,6 +255,36 @@ candidate_is_tested() {
   rm -f -- "$manifest"
   [[ $marker_digest == "$actual_digest" ]] || return 1
 
+  # Markers written by this controller are bound to both the candidate policy implementation and
+  # the exact union plan. A legacy marker can be admitted once during the staged controller
+  # upgrade, but only through the same lane/artifact checks below; a partially upgraded marker is
+  # never accepted.
+  marker_plan_format=$(wd_marker_value "$marker" validation_plan_format 2>/dev/null || printf '')
+  marker_policy=$(wd_marker_value "$marker" validation_policy_sha256 2>/dev/null || printf '')
+  marker_plan=$(wd_marker_value "$marker" validation_plan_sha256 2>/dev/null || printf '')
+  if [[ -n $marker_plan_format || -n $marker_policy || -n $marker_plan ]]; then
+    [[ $marker_plan_format == "$VALIDATION_PLAN_FORMAT" ]] || return 1
+    [[ $marker_policy == "$validation_policy_sha256" ]] || return 1
+    [[ $marker_plan =~ ^[0-9a-f]{64}$ ]] || return 1
+    marker_typescript_required=$(wd_marker_value "$marker" typescript_tested 2>/dev/null) \
+      || return 1
+    marker_typescript_full=$(wd_marker_value "$marker" typescript_full 2>/dev/null) || return 1
+    marker_typescript_base=$(wd_marker_value "$marker" typescript_base 2>/dev/null) || return 1
+    marker_rust_required=$(wd_marker_value "$marker" rust_tested 2>/dev/null) || return 1
+    marker_static_required=$(wd_marker_value "$marker" static_tested 2>/dev/null) || return 1
+    marker_engine_artifacts=$(wd_marker_value "$marker" engine_artifacts 2>/dev/null) || return 1
+    for marker_flag in "$marker_typescript_required" "$marker_typescript_full" \
+      "$marker_rust_required" "$marker_static_required" "$marker_engine_artifacts"; do
+      [[ $marker_flag == 0 || $marker_flag == 1 ]] || return 1
+    done
+    [[ $marker_typescript_base =~ ^[0-9a-f]{40}$ ]] || return 1
+    marker_plan_actual=$(validation_plan_digest_values \
+      "$marker_plan_format" "$marker_policy" "$marker_typescript_required" \
+      "$marker_typescript_full" "$marker_typescript_base" "$marker_rust_required" \
+      "$marker_static_required" "$marker_engine_artifacts")
+    [[ $marker_plan == "$marker_plan_actual" ]] || return 1
+  fi
+
   for marker_flag in \
     "typescript_tested:$typescript_required" \
     "typescript_full:$typescript_full" \
@@ -260,8 +299,9 @@ candidate_is_tested() {
   if (( typescript_required == 1 )); then
     marker_typescript_full=$(wd_marker_value "$marker" typescript_full 2>/dev/null) || return 1
     if [[ $marker_typescript_full != 1 ]]; then
-      [[ $(wd_marker_value "$marker" typescript_base 2>/dev/null) == "$typescript_base" ]] \
-        || return 1
+      marker_typescript_base=$(wd_marker_value "$marker" typescript_base 2>/dev/null) || return 1
+      git -C "$SOURCE_REPO" merge-base --is-ancestor "$marker_typescript_base" "$typescript_base" \
+        2>/dev/null || return 1
     fi
     expected_hash=$(wd_marker_value "$marker" typescript_artifact_digest 2>/dev/null) || return 1
     actual_hash=$(wd_typescript_artifact_digest "$candidate") || return 1
@@ -494,6 +534,7 @@ run_candidate_lane() {
 prepare_and_test_candidate_unlocked() {
   local sha=$1 typescript_required=$2 typescript_full=$3 typescript_base=$4
   local rust_required=$5 static_required=$6 engine_artifacts_required=$7
+  local validation_policy_sha256=$8 validation_plan_sha256=$9
   local candidate marker dsn= engine_dsn= sales_dsn= openkeys_dsn= manifest digest tree
   local typescript_pid= rust_pid= static_pid= typescript_rc=0 rust_rc=0 static_rc=0
   local typescript_digest=none engine_hash=none authbot_hash=none
@@ -504,7 +545,8 @@ prepare_and_test_candidate_unlocked() {
     || wd_die "engine artifacts cannot be prepared without the Rust validation lane"
 
   if candidate_is_tested "$sha" "$typescript_required" "$typescript_full" "$typescript_base" \
-    "$rust_required" "$static_required" "$engine_artifacts_required"; then
+    "$rust_required" "$static_required" "$engine_artifacts_required" \
+    "$validation_policy_sha256"; then
     wd_log "reusing test-passed immutable candidate $sha"
     return 0
   fi
@@ -585,6 +627,9 @@ prepare_and_test_candidate_unlocked() {
     printf 'rust_tested=%s\n' "$rust_required"
     printf 'static_tested=%s\n' "$static_required"
     printf 'engine_artifacts=%s\n' "$engine_artifacts_required"
+    printf 'validation_plan_format=%s\n' "$VALIDATION_PLAN_FORMAT"
+    printf 'validation_policy_sha256=%s\n' "$validation_policy_sha256"
+    printf 'validation_plan_sha256=%s\n' "$validation_plan_sha256"
     printf 'typescript_artifact_digest=%s\n' "$typescript_digest"
     printf 'engine_binary_sha256=%s\n' "$engine_hash"
     printf 'authbot_binary_sha256=%s\n' "$authbot_hash"
@@ -614,18 +659,147 @@ prepare_and_test_candidate() {
   exec 9>&-
 }
 
-typescript_scope_choose_older_base() {
-  local candidate=$1
-  [[ -n $candidate ]] || return 0
-  if git -C "$SOURCE_REPO" merge-base --is-ancestor \
-    "$candidate" "$VALIDATION_TYPESCRIPT_BASE_SHA"; then
-    VALIDATION_TYPESCRIPT_BASE_SHA=$candidate
-  elif ! git -C "$SOURCE_REPO" merge-base --is-ancestor \
-    "$VALIDATION_TYPESCRIPT_BASE_SHA" "$candidate"; then
-    # All component baselines should be points on the same protected master history. If they are
-    # unexpectedly incomparable, a full workspace check is the only unambiguous safe scope.
-    VALIDATION_TYPESCRIPT_FULL=1
+PARSED_PLAN_FORMAT=
+PARSED_PLAN_POLICY=
+PARSED_PLAN_TYPESCRIPT_REQUIRED=
+PARSED_PLAN_TYPESCRIPT_FULL=
+PARSED_PLAN_TYPESCRIPT_BASE=
+PARSED_PLAN_RUST_REQUIRED=
+PARSED_PLAN_STATIC_REQUIRED=
+PARSED_PLAN_ENGINE_ARTIFACTS_REQUIRED=
+
+parse_validation_plan() {
+  local output=$1 line key value
+  local seen_format=0 seen_policy=0 seen_typescript_required=0 seen_typescript_full=0
+  local seen_typescript_base=0 seen_rust_required=0 seen_static_required=0
+  local seen_engine_artifacts=0
+
+  PARSED_PLAN_FORMAT=
+  PARSED_PLAN_POLICY=
+  PARSED_PLAN_TYPESCRIPT_REQUIRED=
+  PARSED_PLAN_TYPESCRIPT_FULL=
+  PARSED_PLAN_TYPESCRIPT_BASE=
+  PARSED_PLAN_RUST_REQUIRED=
+  PARSED_PLAN_STATIC_REQUIRED=
+  PARSED_PLAN_ENGINE_ARTIFACTS_REQUIRED=
+
+  while IFS= read -r line; do
+    [[ $line == *=* ]] || return 1
+    key=${line%%=*}
+    value=${line#*=}
+    case "$key" in
+      validation_plan_format)
+        (( seen_format == 0 )) || return 1
+        PARSED_PLAN_FORMAT=$value
+        seen_format=1
+        ;;
+      validation_policy_sha256)
+        (( seen_policy == 0 )) || return 1
+        PARSED_PLAN_POLICY=$value
+        seen_policy=1
+        ;;
+      typescript_required)
+        (( seen_typescript_required == 0 )) || return 1
+        PARSED_PLAN_TYPESCRIPT_REQUIRED=$value
+        seen_typescript_required=1
+        ;;
+      typescript_full)
+        (( seen_typescript_full == 0 )) || return 1
+        PARSED_PLAN_TYPESCRIPT_FULL=$value
+        seen_typescript_full=1
+        ;;
+      typescript_base)
+        (( seen_typescript_base == 0 )) || return 1
+        PARSED_PLAN_TYPESCRIPT_BASE=$value
+        seen_typescript_base=1
+        ;;
+      rust_required)
+        (( seen_rust_required == 0 )) || return 1
+        PARSED_PLAN_RUST_REQUIRED=$value
+        seen_rust_required=1
+        ;;
+      static_required)
+        (( seen_static_required == 0 )) || return 1
+        PARSED_PLAN_STATIC_REQUIRED=$value
+        seen_static_required=1
+        ;;
+      engine_artifacts_required)
+        (( seen_engine_artifacts == 0 )) || return 1
+        PARSED_PLAN_ENGINE_ARTIFACTS_REQUIRED=$value
+        seen_engine_artifacts=1
+        ;;
+      *) return 1 ;;
+    esac
+  done <<<"$output"
+
+  (( seen_format == 1 && seen_policy == 1 && seen_typescript_required == 1 \
+    && seen_typescript_full == 1 && seen_typescript_base == 1 \
+    && seen_rust_required == 1 && seen_static_required == 1 \
+    && seen_engine_artifacts == 1 )) || return 1
+  [[ $PARSED_PLAN_FORMAT == "$VALIDATION_PLAN_FORMAT" ]] || return 1
+  [[ $PARSED_PLAN_POLICY =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ $PARSED_PLAN_TYPESCRIPT_BASE =~ ^[0-9a-f]{40}$ ]] || return 1
+  for value in \
+    "$PARSED_PLAN_TYPESCRIPT_REQUIRED" "$PARSED_PLAN_TYPESCRIPT_FULL" \
+    "$PARSED_PLAN_RUST_REQUIRED" "$PARSED_PLAN_STATIC_REQUIRED" \
+    "$PARSED_PLAN_ENGINE_ARTIFACTS_REQUIRED"; do
+    [[ $value == 0 || $value == 1 ]] || return 1
+  done
+  (( PARSED_PLAN_TYPESCRIPT_FULL == 0 || PARSED_PLAN_TYPESCRIPT_REQUIRED == 1 )) || return 1
+  (( PARSED_PLAN_ENGINE_ARTIFACTS_REQUIRED == 0 || PARSED_PLAN_RUST_REQUIRED == 1 )) || return 1
+}
+
+candidate_validation_plan() {
+  local target=$1 processed_base=$2 engine_base=$3 backend_base=$4 sales_base=$5 openkeys_base=$6
+  local temporary output rc=0
+  temporary=$(mktemp -d "$STATE_ROOT/.validation-plan.XXXXXX")
+  chmod 0755 "$temporary"
+  if ! git -C "$SOURCE_REPO" archive "$target" \
+    deploy/validation-plan.sh deploy/watchdog-lib.sh | tar -x -C "$temporary"; then
+    rm -rf -- "$temporary"
+    return 1
   fi
+  if [[ ! -f $temporary/deploy/validation-plan.sh \
+        || -L $temporary/deploy/validation-plan.sh \
+        || ! -f $temporary/deploy/watchdog-lib.sh \
+        || -L $temporary/deploy/watchdog-lib.sh ]]; then
+    rm -rf -- "$temporary"
+    return 1
+  fi
+  chmod 0755 "$temporary/deploy" "$temporary/deploy/validation-plan.sh"
+  chmod 0644 "$temporary/deploy/watchdog-lib.sh"
+  output=$(
+    run_as_ci timeout --signal=TERM --kill-after=5s 30s \
+      env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory \
+      GIT_CONFIG_VALUE_0="$SOURCE_REPO" bash "$temporary/deploy/validation-plan.sh" \
+      "$SOURCE_REPO" "$target" "$processed_base" "$engine_base" "$backend_base" \
+      "$sales_base" "$openkeys_base"
+  ) || rc=$?
+  rm -rf -- "$temporary"
+  (( rc == 0 )) || return "$rc"
+  printf '%s\n' "$output"
+}
+
+validation_plan_digest_values() {
+  [[ $# -eq 8 ]] || wd_die "validation plan digest requires eight fields"
+  printf '%s\n' \
+    "validation_plan_format=$1" \
+    "validation_policy_sha256=$2" \
+    "typescript_required=$3" \
+    "typescript_full=$4" \
+    "typescript_base=$5" \
+    "rust_required=$6" \
+    "static_required=$7" \
+    "engine_artifacts_required=$8" \
+    | wd_sha256_stdin
+}
+
+validation_plan_digest() {
+  validation_plan_digest_values \
+    "$VALIDATION_PLAN_FORMAT" "$VALIDATION_POLICY_SHA256" \
+    "$VALIDATION_TYPESCRIPT_REQUIRED" "$VALIDATION_TYPESCRIPT_FULL" \
+    "$VALIDATION_TYPESCRIPT_BASE_SHA" "$VALIDATION_RUST_REQUIRED" \
+    "$VALIDATION_STATIC_REQUIRED" "$VALIDATION_ENGINE_ARTIFACTS_REQUIRED"
 }
 
 select_candidate_validation_requirements() {
@@ -635,60 +809,57 @@ select_candidate_validation_requirements() {
   local backend_base=${committed_base:-$BACKEND_SHA}
   local sales_base=${committed_base:-${SALES_SHA:-$PROCESSED_SHA}}
   local openkeys_base=${committed_base:-${OPENKEYS_SHA:-$PROCESSED_SHA}}
-  local infrastructure_validation_changed=0 unknown_validation_path=0
+  local installed_output candidate_output
+  local installed_typescript_required installed_typescript_full installed_typescript_base
+  local installed_rust_required installed_static_required installed_engine_artifacts_required
 
-  VALIDATION_TYPESCRIPT_REQUIRED=0
-  VALIDATION_TYPESCRIPT_FULL=0
-  VALIDATION_TYPESCRIPT_BASE_SHA=$processed_base
-  VALIDATION_RUST_REQUIRED=0
-  VALIDATION_STATIC_REQUIRED=0
-  VALIDATION_ENGINE_ARTIFACTS_REQUIRED=0
+  installed_output=$(
+    "$VALIDATION_PLANNER" "$SOURCE_REPO" "$target" "$processed_base" "$engine_base" \
+      "$backend_base" "$sales_base" "$openkeys_base"
+  ) || wd_die "installed validation planner failed for candidate $target"
+  parse_validation_plan "$installed_output" \
+    || wd_die "installed validation planner returned a malformed plan for $target"
+  installed_typescript_required=$PARSED_PLAN_TYPESCRIPT_REQUIRED
+  installed_typescript_full=$PARSED_PLAN_TYPESCRIPT_FULL
+  installed_typescript_base=$PARSED_PLAN_TYPESCRIPT_BASE
+  installed_rust_required=$PARSED_PLAN_RUST_REQUIRED
+  installed_static_required=$PARSED_PLAN_STATIC_REQUIRED
+  installed_engine_artifacts_required=$PARSED_PLAN_ENGINE_ARTIFACTS_REQUIRED
 
-  wd_range_has_class "$SOURCE_REPO" "$processed_base" "$target" wd_path_is_typescript \
-    && VALIDATION_TYPESCRIPT_REQUIRED=1
-  if wd_range_changes_typescript_gate "$SOURCE_REPO" "$processed_base" "$target"; then
-    VALIDATION_TYPESCRIPT_REQUIRED=1
+  # Execute only the tiny pure planner from the exact candidate as the unprivileged CI account.
+  # The host plan remains a floor; candidate policy can add work but cannot remove it.
+  candidate_output=$(candidate_validation_plan "$target" "$processed_base" "$engine_base" \
+    "$backend_base" "$sales_base" "$openkeys_base") \
+    || wd_die "exact candidate validation planner failed for $target"
+  parse_validation_plan "$candidate_output" \
+    || wd_die "exact candidate validation planner returned a malformed plan for $target"
+
+  VALIDATION_TYPESCRIPT_REQUIRED=$((installed_typescript_required \
+    || PARSED_PLAN_TYPESCRIPT_REQUIRED))
+  VALIDATION_TYPESCRIPT_FULL=$((installed_typescript_full || PARSED_PLAN_TYPESCRIPT_FULL))
+  VALIDATION_RUST_REQUIRED=$((installed_rust_required || PARSED_PLAN_RUST_REQUIRED))
+  VALIDATION_STATIC_REQUIRED=$((installed_static_required || PARSED_PLAN_STATIC_REQUIRED))
+  VALIDATION_ENGINE_ARTIFACTS_REQUIRED=$((installed_engine_artifacts_required \
+    || PARSED_PLAN_ENGINE_ARTIFACTS_REQUIRED))
+  VALIDATION_POLICY_SHA256=$PARSED_PLAN_POLICY
+
+  if (( installed_typescript_required == 0 )); then
+    VALIDATION_TYPESCRIPT_BASE_SHA=$PARSED_PLAN_TYPESCRIPT_BASE
+  elif (( PARSED_PLAN_TYPESCRIPT_REQUIRED == 0 )); then
+    VALIDATION_TYPESCRIPT_BASE_SHA=$installed_typescript_base
+  elif git -C "$SOURCE_REPO" merge-base --is-ancestor \
+    "$PARSED_PLAN_TYPESCRIPT_BASE" "$installed_typescript_base"; then
+    VALIDATION_TYPESCRIPT_BASE_SHA=$PARSED_PLAN_TYPESCRIPT_BASE
+  elif git -C "$SOURCE_REPO" merge-base --is-ancestor \
+    "$installed_typescript_base" "$PARSED_PLAN_TYPESCRIPT_BASE"; then
+    VALIDATION_TYPESCRIPT_BASE_SHA=$installed_typescript_base
+  else
+    VALIDATION_TYPESCRIPT_BASE_SHA=$processed_base
     VALIDATION_TYPESCRIPT_FULL=1
   fi
-  wd_range_has_class "$SOURCE_REPO" "$processed_base" "$target" wd_path_is_infrastructure \
-    && infrastructure_validation_changed=1
-  wd_range_has_class "$SOURCE_REPO" "$processed_base" "$target" wd_path_is_merge_workflow \
-    && VALIDATION_STATIC_REQUIRED=1
-  wd_range_has_unknown_validation_path "$SOURCE_REPO" "$processed_base" "$target" \
-    && unknown_validation_path=1
-
-  # A component baseline can lag processed after an interrupted rollout. Select validation from
-  # each runtime's own baseline as well as from processed, so a frozen candidate is always strong
-  # enough for the exact component work that may consume it.
-  if wd_range_has_class "$SOURCE_REPO" "$engine_base" "$target" wd_path_is_engine; then
-    VALIDATION_RUST_REQUIRED=1
-    VALIDATION_ENGINE_ARTIFACTS_REQUIRED=1
-  fi
-  if wd_range_has_class "$SOURCE_REPO" "$backend_base" "$target" wd_path_is_backend; then
-    VALIDATION_TYPESCRIPT_REQUIRED=1
-    typescript_scope_choose_older_base "$backend_base"
-  fi
-  if wd_range_has_class "$SOURCE_REPO" "$sales_base" "$target" wd_path_is_sales; then
-    VALIDATION_TYPESCRIPT_REQUIRED=1
-    typescript_scope_choose_older_base "$sales_base"
-  fi
-  if wd_range_has_class "$SOURCE_REPO" "$openkeys_base" "$target" wd_path_is_openkeys; then
-    VALIDATION_TYPESCRIPT_REQUIRED=1
-    typescript_scope_choose_older_base "$openkeys_base"
-  fi
-
-  (( infrastructure_validation_changed == 0 )) || VALIDATION_STATIC_REQUIRED=1
-  if (( unknown_validation_path == 1 )); then
-    VALIDATION_TYPESCRIPT_REQUIRED=1
-    VALIDATION_TYPESCRIPT_FULL=1
-    VALIDATION_RUST_REQUIRED=1
-    VALIDATION_STATIC_REQUIRED=1
-  fi
-  if (( VALIDATION_TYPESCRIPT_REQUIRED == 1 )) \
-    && wd_range_requires_full_typescript_scope "$SOURCE_REPO" \
-      "$VALIDATION_TYPESCRIPT_BASE_SHA" "$target"; then
-    VALIDATION_TYPESCRIPT_FULL=1
-  fi
+  (( VALIDATION_ENGINE_ARTIFACTS_REQUIRED == 0 )) || VALIDATION_RUST_REQUIRED=1
+  (( VALIDATION_TYPESCRIPT_FULL == 0 )) || VALIDATION_TYPESCRIPT_REQUIRED=1
+  VALIDATION_PLAN_SHA256=$(validation_plan_digest)
 }
 
 load_production_baselines() {
@@ -763,7 +934,8 @@ run_shadow_candidate_validation() (
   prepare_and_test_candidate "$CANDIDATE_SHA" "$VALIDATION_TYPESCRIPT_REQUIRED" \
     "$VALIDATION_TYPESCRIPT_FULL" "$VALIDATION_TYPESCRIPT_BASE_SHA" \
     "$VALIDATION_RUST_REQUIRED" "$VALIDATION_STATIC_REQUIRED" \
-    "$VALIDATION_ENGINE_ARTIFACTS_REQUIRED"
+    "$VALIDATION_ENGINE_ARTIFACTS_REQUIRED" "$VALIDATION_POLICY_SHA256" \
+    "$VALIDATION_PLAN_SHA256"
 
   # A different agent may have landed while this gate ran. Accept an advanced master only when it
   # is still an ancestor of this exact candidate; otherwise the request is stale and the merge
@@ -798,6 +970,7 @@ candidate_validator_main() {
   require_fixed_file "$CANDIDATE_VALIDATOR_LOCK"
   require_fixed_file "$SOURCE_FETCH_LOCK"
   require_fixed_file "$TEST_DB_HELPER"
+  require_fixed_file "$VALIDATION_PLANNER"
   require_fixed_file "$GITHUB_HELPER"
   require_fixed_directory "$CI_TOOLCHAIN"
   [[ -f $DB_MANIFEST && ! -L $DB_MANIFEST ]] || wd_die "database migration baseline is missing"
@@ -1273,10 +1446,11 @@ mark_idle_maintenance_complete() {
 }
 
 main() {
+  local resume_sha=${1:-}
   local remote_ref rejected infra_scope=none infra_changed=0 caddy_changed=0 engine_changed=0 backend_changed=0 sales_changed=0
   local openkeys_changed=0 typescript_required=0 typescript_full=0 typescript_base=
   local rust_required=0 static_required=0
-  local engine_artifacts_required=0
+  local engine_artifacts_required=0 validation_policy_sha256= validation_plan_sha256=
   local core_pid= sales_pid= openkeys_pid= core_rc=0 sales_rc=0 openkeys_rc=0
 
   [[ $(id -un) == deploy ]] || wd_die "watchdog service must run as deploy"
@@ -1295,14 +1469,22 @@ main() {
   require_fixed_file "$RETENTION_HELPER"
   require_fixed_file "$SALES_RUNNER"
   require_fixed_file "$OPENKEYS_RUNNER"
+  require_fixed_file "$VALIDATION_PLANNER"
   require_fixed_file "$GITHUB_HELPER"
   require_fixed_directory "$CI_TOOLCHAIN"
   [[ -f $DB_MANIFEST && ! -L $DB_MANIFEST ]] || wd_die "database migration baseline is missing"
 
-  exec 7<>"$WATCHDOG_LOCK"
-  if ! flock -n 7; then
-    wd_log "another watchdog cycle is still running"
-    exit 0
+  if [[ -n $resume_sha ]]; then
+    wd_validate_sha "$resume_sha"
+    [[ -e /proc/$$/fd/7 && $(readlink -f -- "/proc/$$/fd/7") == "$WATCHDOG_LOCK" ]] \
+      || wd_die "controller resume requires the inherited watchdog lock"
+    flock -n 7 || wd_die "controller resume no longer owns the inherited watchdog lock"
+  else
+    exec 7<>"$WATCHDOG_LOCK"
+    if ! flock -n 7; then
+      wd_log "another watchdog cycle is still running"
+      exit 0
+    fi
   fi
 
   CURRENT_PHASE=fetching
@@ -1313,8 +1495,17 @@ main() {
   remote_ref="refs/remotes/$REMOTE/$BRANCH"
   CANDIDATE_SHA=$(git -C "$SOURCE_REPO" rev-parse "$remote_ref^{commit}")
   wd_validate_sha "$CANDIDATE_SHA"
+  if [[ -n $resume_sha && $CANDIDATE_SHA != "$resume_sha" ]]; then
+    CURRENT_PHASE=handoff
+    status "master advanced during controller handoff; next poll will select the newer candidate"
+    wd_log "controller handoff expected $resume_sha but master is now $CANDIDATE_SHA"
+    exit 0
+  fi
 
   load_production_baselines
+  if [[ -n $resume_sha && $INFRASTRUCTURE_SHA != "$resume_sha" ]]; then
+    wd_die "controller handoff fence does not match the installed candidate"
+  fi
   wd_require_ancestor "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" processed
   wd_require_ancestor "$SOURCE_REPO" "$INFRASTRUCTURE_SHA" "$CANDIDATE_SHA" infrastructure
   wd_require_ancestor "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" engine
@@ -1363,6 +1554,8 @@ main() {
   rust_required=$VALIDATION_RUST_REQUIRED
   static_required=$VALIDATION_STATIC_REQUIRED
   engine_artifacts_required=$VALIDATION_ENGINE_ARTIFACTS_REQUIRED
+  validation_policy_sha256=$VALIDATION_POLICY_SHA256
+  validation_plan_sha256=$VALIDATION_PLAN_SHA256
 
   if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $infra_changed == 0 \
         && $engine_changed == 0 && $backend_changed == 0 \
@@ -1398,7 +1591,8 @@ main() {
   github_status pending deploy/tests "Path-aware isolated validation in progress"
 
   prepare_and_test_candidate "$CANDIDATE_SHA" "$typescript_required" "$typescript_full" \
-    "$typescript_base" "$rust_required" "$static_required" "$engine_artifacts_required"
+    "$typescript_base" "$rust_required" "$static_required" "$engine_artifacts_required" \
+    "$validation_policy_sha256" "$validation_plan_sha256"
   github_status success deploy/tests "Selected isolated validation lanes passed"
   rm -f -- "$REJECTED_FILE"
 
@@ -1418,11 +1612,24 @@ main() {
     fi
     [[ $(wd_read_sha "$INFRASTRUCTURE_FILE") == "$CANDIDATE_SHA" ]] \
       || wd_die "infrastructure installer did not record the exact installed candidate"
-    CURRENT_PHASE=handoff
-    status "operational definitions installed; next five-second poll continues with the new controller"
-    github_status pending deploy/watchdog "New controller installed; continuing on next poll"
-    wd_log "exact tested operational definitions installed; handing off before any green verdict"
-    exit 0
+    if [[ $infra_scope == controller ]]; then
+      CURRENT_PHASE=handoff
+      status "operational definitions installed; continuing immediately with the new controller"
+      github_status pending deploy/watchdog "New controller installed; continuing immediately"
+      wd_log "exact tested controller installed; transferring the held lock to the new controller"
+      require_fixed_file "$CONTROLLER_ENTRYPOINT"
+      exec "$CONTROLLER_ENTRYPOINT" --resume "$CANDIDATE_SHA"
+    elif [[ $infra_scope == caddy ]]; then
+      wd_log "exact tested Caddy configuration installed; continuing the same deployment cycle"
+    else
+      # A full transaction may change this service's systemd sandbox. The current process still has
+      # the old namespace, so only a manager-spawned next cycle may consume the new privileges.
+      CURRENT_PHASE=handoff
+      status "system definitions installed; next five-second poll starts the updated service"
+      github_status pending deploy/watchdog "System definitions installed; continuing on next poll"
+      wd_log "full infrastructure transaction installed; deferring to a fresh systemd invocation"
+      exit 0
+    fi
   fi
 
   if (( backend_changed == 1 )); then
@@ -1499,11 +1706,15 @@ case "${1:-}" in
     [[ $# -eq 1 ]] || wd_die "usage: watchdog.sh --candidate-validator"
     candidate_validator_main
     ;;
+  --resume)
+    [[ $# -eq 2 ]] || wd_die "usage: watchdog.sh --resume <installed-sha>"
+    main "$2"
+    ;;
   '')
     main
     ;;
   *)
-    wd_die "usage: watchdog.sh [--candidate-validator]"
+    wd_die "usage: watchdog.sh [--candidate-validator|--resume <installed-sha>]"
     ;;
 esac
 trap - ERR EXIT INT TERM
