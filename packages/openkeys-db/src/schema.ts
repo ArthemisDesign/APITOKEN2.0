@@ -56,6 +56,17 @@ export const openkeysKeys = pgTable(
     faceValueNano: bigint("face_value_nano", { mode: "bigint" }).notNull(),
     multBp: integer("mult_bp").notNull(),
     status: openkeysKeyStatus("status").notNull().default("active"),
+    /**
+     * Секрет в AES-256-GCM, чтобы ключ можно было выдать покупателю позже, а не
+     * только в момент выпуска. Обнуляется, как только ключ помечен выданным или
+     * снятым: дальше хранить его незачем.
+     */
+    secretCiphertext: text("secret_ciphertext"),
+    secretNonce: text("secret_nonce"),
+    /** Отмечен как переданный покупателю. */
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    /** Снят со склада: ключ отключён в движке и больше не выдаётся. */
+    removedAt: timestamp("removed_at", { withTimezone: true }),
     createdAt,
     disabledAt: timestamp("disabled_at", { withTimezone: true }),
   },

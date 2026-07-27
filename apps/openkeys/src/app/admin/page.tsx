@@ -5,27 +5,32 @@ import { AppShell } from "@/components/app-shell";
 
 const BASE_URL = "https://api.apitoken.sale";
 
-interface IssuedKey {
-  secret: string;
-  viewToken: string;
-  viewUrl: string;
-  keyMasked: string;
-}
+type StockStatus = "stock" | "delivered" | "removed";
 
-interface BatchRow {
+interface StockKey {
   id: string;
-  label: string | null;
-  quantity: number;
-  multBp: number;
+  status: StockStatus;
+  secret: string | null;
+  keyMasked: string;
+  viewUrl: string;
   faceValue: string;
+  label: string | null;
   createdAt: string;
+  deliveredAt: string | null;
+  removedAt: string | null;
 }
 
-/** Готовое сообщение покупателю: адрес, ключ и ссылка на его расход. */
-function handoverText(key: IssuedKey): string {
+const STATUS_LABEL: Record<StockStatus, string> = {
+  stock: "на складе",
+  delivered: "выдан",
+  removed: "снят",
+};
+
+/** Готовое сообщение покупателю: адрес, ключ и ссылка на его профиль. */
+function handoverText(key: StockKey): string {
   return [
     `ANTHROPIC_BASE_URL=${BASE_URL}`,
-    `ANTHROPIC_API_KEY=${key.secret}`,
+    `ANTHROPIC_API_KEY=${key.secret ?? ""}`,
     "",
     `Остаток и расход: ${key.viewUrl}`,
     "Как подключить: https://openkeys.apitoken.sale/docs",
@@ -53,21 +58,20 @@ function CopyButton({ value, label, primary = false }: { value: string; label: s
 export default function AdminPage() {
   const [authorized, setAuthorized] = useState(false);
   const [checking, setChecking] = useState(true);
-  const [batches, setBatches] = useState<BatchRow[]>([]);
-  const [issued, setIssued] = useState<IssuedKey[] | null>(null);
+  const [keys, setKeys] = useState<StockKey[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
-    const response = await fetch("/api/admin/batches", { cache: "no-store" });
+    const response = await fetch("/api/admin/keys", { cache: "no-store" });
     if (response.status === 401) {
       setAuthorized(false);
       setChecking(false);
       return;
     }
-    const payload = (await response.json()) as { batches: BatchRow[] };
+    const payload = (await response.json()) as { keys: StockKey[] };
     setAuthorized(true);
-    setBatches(payload.batches);
+    setKeys(payload.keys);
     setChecking(false);
   }, []);
 
@@ -100,7 +104,6 @@ export default function AdminPage() {
     event.preventDefault();
     setBusy(true);
     setError(null);
-    setIssued(null);
     const form = new FormData(event.currentTarget);
     try {
       const response = await fetch("/api/admin/batches", {
@@ -112,12 +115,34 @@ export default function AdminPage() {
           label: form.get("label"),
         }),
       });
-      const payload = (await response.json()) as { keys?: IssuedKey[]; error?: string };
+      const payload = (await response.json()) as { error?: string };
       if (!response.ok) {
         setError(payload.error ?? "Не удалось выпустить ключи");
         return;
       }
-      setIssued(payload.keys ?? []);
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateKey(id: string, action: "deliver" | "remove") {
+    if (action === "remove" && !window.confirm("Снять ключ со склада? Он будет отключён и перестанет работать.")) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/admin/keys", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, action }),
+      });
+      if (!response.ok) {
+        const payload = (await response.json()) as { error?: string };
+        setError(payload.error ?? "Не удалось изменить статус ключа");
+        return;
+      }
       await refresh();
     } finally {
       setBusy(false);
@@ -127,17 +152,15 @@ export default function AdminPage() {
   async function logout() {
     await fetch("/api/admin/logout", { method: "POST" });
     setAuthorized(false);
-    setIssued(null);
   }
 
   if (checking) {
     return (
       <AppShell section="profile" title="Админка">
-
         <div className="app-body">
-          <section className="wrap openkeys-narrow">
+          <div className="app-body-in">
             <div className="empty-box">Проверяем сессию…</div>
-          </section>
+          </div>
         </div>
       </AppShell>
     );
@@ -146,58 +169,56 @@ export default function AdminPage() {
   if (!authorized) {
     return (
       <AppShell section="profile" title="Админка">
-
         <div className="app-body">
-          <section className="wrap openkeys-narrow">
-            <div className="page-heading">
-              <span className="eyebrow">OpenKeys</span>
-              <h1 className="p-h1">Вход в админку</h1>
-            </div>
-            <form className="card" onSubmit={login}>
-              <div className="field">
-                <label htmlFor="user">Логин</label>
-                <input id="user" name="user" autoComplete="username" />
+          <div className="app-body-in">
+            <section className="wrap openkeys-narrow">
+              <div className="page-heading">
+                <span className="eyebrow">OpenKeys</span>
+                <h1 className="p-h1">Вход в админку</h1>
               </div>
-              <div className="field">
-                <label htmlFor="password">Пароль</label>
-                <input id="password" name="password" type="password" autoComplete="current-password" />
-              </div>
-              {error ? <div className="banner banner-error">{error}</div> : null}
-              <button className="btn btn-primary" type="submit" disabled={busy}>
-                {busy ? "Проверяем…" : "Войти"}
-              </button>
-            </form>
-          </section>
+              <form className="card" onSubmit={login}>
+                <div className="field">
+                  <label htmlFor="user">Логин</label>
+                  <input id="user" name="user" autoComplete="username" />
+                </div>
+                <div className="field">
+                  <label htmlFor="password">Пароль</label>
+                  <input id="password" name="password" type="password" autoComplete="current-password" />
+                </div>
+                {error ? <div className="banner banner-error">{error}</div> : null}
+                <button className="btn btn-primary" type="submit" disabled={busy}>
+                  {busy ? "Проверяем…" : "Войти"}
+                </button>
+              </form>
+            </section>
+          </div>
         </div>
       </AppShell>
     );
   }
 
-  const allKeysText = issued?.map((key) => handoverText(key)).join("\n\n———\n\n") ?? "";
-  const csv = issued?.map((key) => `${key.secret},${key.viewUrl}`).join("\n") ?? "";
+  const stock = keys.filter((key) => key.status === "stock");
+  const history = keys.filter((key) => key.status !== "stock");
+  const allStockText = stock.map((key) => handoverText(key)).join("\n\n———\n\n");
 
   return (
-    <AppShell section="profile" title="Выпуск ключей">
-
+    <AppShell
+      section="profile"
+      title="Выпуск ключей"
+      actions={
+        <button className="btn btn-ghost btn-sm" type="button" onClick={logout}>
+          Выйти
+        </button>
+      }
+    >
       <div className="app-body">
         <div className="app-body-in">
-          <div className="dsec-head analytics-heading">
-            <div className="page-heading openkeys-heading-flush">
-              <span className="eyebrow">OpenKeys</span>
-              <h1 className="p-h1">Выпуск ключей</h1>
-              <p className="p-sub">Номинал задаётся в долларах официального прайса Anthropic.</p>
-            </div>
-            <button className="btn btn-ghost btn-sm" type="button" onClick={logout}>
-              Выйти
-            </button>
-          </div>
-
           <form className="card" onSubmit={issue}>
             <div className="openkeys-form-grid">
               <div className="field">
                 <label htmlFor="faceValueUsd">Номинал ключа, $</label>
                 <input id="faceValueUsd" name="faceValueUsd" defaultValue="50" inputMode="numeric" />
-                <span className="field-hint">по прайсу Anthropic</span>
+                <span className="field-hint">баланс Claude API</span>
               </div>
               <div className="field">
                 <label htmlFor="quantity">Количество</label>
@@ -216,24 +237,32 @@ export default function AdminPage() {
             </button>
           </form>
 
-          {issued ? (
-            <section className="dsec">
-              <div className="dsec-head analytics-heading">
-                <div>
-                  <h2>Выпущено {issued.length} шт.</h2>
-                  <p>Секреты показываются один раз — мы их не храним. Скопируйте до перезагрузки страницы.</p>
-                </div>
-                <div className="overview-card-actions">
-                  <CopyButton value={allKeysText} label="Всё для покупателя" primary />
-                  <CopyButton value={csv} label="CSV" />
-                </div>
+          <section className="dsec">
+            <div className="dsec-head analytics-heading">
+              <div>
+                <h2>Склад · {stock.length}</h2>
+                <p>Ключи, готовые к продаже. После отметки «выдан» ключ уходит в историю.</p>
               </div>
+              {stock.length > 0 ? (
+                <div className="overview-card-actions">
+                  <CopyButton value={allStockText} label="Скопировать весь склад" />
+                </div>
+              ) : null}
+            </div>
 
-              {issued.map((key) => (
-                <article className="card openkeys-issued" key={key.viewToken}>
+            {stock.length === 0 ? (
+              <div className="empty-box">Склад пуст — выпустите ключи формой выше</div>
+            ) : (
+              stock.map((key) => (
+                <article className="card openkeys-issued" key={key.id}>
+                  <div className="openkeys-issued-head">
+                    <span className="pill">{key.faceValue}</span>
+                    {key.label ? <span className="chip">{key.label}</span> : null}
+                    <span className="muted-note">{key.createdAt.slice(0, 10)}</span>
+                  </div>
                   <div className="secret-key-field">
-                    <code>{key.secret}</code>
-                    <CopyButton value={key.secret} label="Ключ" />
+                    <code>{key.secret ?? key.keyMasked}</code>
+                    {key.secret ? <CopyButton value={key.secret} label="Ключ" /> : null}
                   </div>
                   <div className="secret-key-field">
                     <code>{BASE_URL}</code>
@@ -241,50 +270,79 @@ export default function AdminPage() {
                   </div>
                   <div className="secret-key-field">
                     <code>{key.viewUrl}</code>
-                    <CopyButton value={key.viewUrl} label="Ссылка на расход" />
+                    <CopyButton value={key.viewUrl} label="Профиль" />
                   </div>
                   <div className="openkeys-issued-foot">
                     <CopyButton value={handoverText(key)} label="Сообщение покупателю" primary />
-                    <a className="btn btn-ghost btn-sm" href={key.viewUrl} target="_blank" rel="noreferrer">
-                      Открыть расход
-                    </a>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void updateKey(key.id, "deliver")}
+                    >
+                      Выдан
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-sm openkeys-danger"
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void updateKey(key.id, "remove")}
+                    >
+                      Удалить
+                    </button>
                   </div>
                 </article>
-              ))}
-            </section>
-          ) : null}
+              ))
+            )}
+          </section>
 
           <section className="dsec">
             <div className="dsec-head analytics-heading">
               <div>
-                <h2>Партии</h2>
-                <p>История выпусков.</p>
+                <h2>История</h2>
+                <p>Выданные и снятые ключи. Секрет здесь уже недоступен — остаётся маска и профиль.</p>
               </div>
             </div>
-            <div className="table-scroll" role="region" tabIndex={0} aria-label="Партии">
+            <div className="table-scroll" role="region" tabIndex={0} aria-label="История ключей">
               <table className="mtable">
                 <thead>
                   <tr>
-                    <th>Дата</th>
+                    <th>Ключ</th>
+                    <th>Статус</th>
                     <th>Метка</th>
                     <th className="tnum">Номинал</th>
-                    <th className="tnum">Шт.</th>
+                    <th className="tnum">Выпущен</th>
+                    <th className="tnum">Событие</th>
+                    <th>Профиль</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {batches.length === 0 ? (
+                  {history.length === 0 ? (
                     <tr>
-                      <td colSpan={4} className="empty-cell">
-                        Пока ничего не выпускали
+                      <td colSpan={7} className="empty-cell">
+                        Пока ничего не выдано и не снято
                       </td>
                     </tr>
                   ) : (
-                    batches.map((batch) => (
-                      <tr key={batch.id}>
-                        <td>{batch.createdAt.slice(0, 10)}</td>
-                        <td>{batch.label ?? "—"}</td>
-                        <td className="tnum">{batch.faceValue}</td>
-                        <td className="tnum">{batch.quantity}</td>
+                    history.map((key) => (
+                      <tr key={key.id}>
+                        <td>
+                          <code className="key-mask">{key.keyMasked}</code>
+                        </td>
+                        <td>
+                          <span className={`pill ${key.status === "removed" ? "pill-muted" : "pill-good"}`}>
+                            {STATUS_LABEL[key.status]}
+                          </span>
+                        </td>
+                        <td>{key.label ?? "—"}</td>
+                        <td className="tnum">{key.faceValue}</td>
+                        <td className="tnum">{key.createdAt.slice(0, 10)}</td>
+                        <td className="tnum">{(key.deliveredAt ?? key.removedAt ?? "").slice(0, 10) || "—"}</td>
+                        <td>
+                          <a href={key.viewUrl} target="_blank" rel="noreferrer">
+                            открыть
+                          </a>
+                        </td>
                       </tr>
                     ))
                   )}
