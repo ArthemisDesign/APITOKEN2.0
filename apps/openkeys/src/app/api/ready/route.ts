@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { loadConfig } from "@/lib/config";
 import { getDatabase } from "@/lib/db";
 import { getEngineClient } from "@/lib/engine";
+import { assertSecretBoxReady } from "@/lib/secret-box";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,6 +11,7 @@ export const dynamic = "force-dynamic";
 export async function GET(): Promise<NextResponse> {
   try {
     loadConfig();
+    assertSecretBoxReady();
     const { pool } = getDatabase();
     const [database, engine] = await Promise.all([
       pool.query("SELECT 1"),

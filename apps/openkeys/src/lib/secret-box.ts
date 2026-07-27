@@ -41,6 +41,11 @@ function decryptionKey(keyId: string): Buffer {
   return key;
 }
 
+/** Fail readiness before an operator can enter a stock flow with a missing or invalid active key. */
+export function assertSecretBoxReady(): void {
+  activeKey();
+}
+
 export interface SealedSecret {
   ciphertext: string;
   nonce: string;

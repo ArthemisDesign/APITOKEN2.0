@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openSecret, sealSecret } from "./secret-box";
+import { assertSecretBoxReady, openSecret, sealSecret } from "./secret-box";
 
 describe("secret box", () => {
   beforeEach(() => {
@@ -33,5 +33,11 @@ describe("secret box", () => {
     expect(old.keyId).toBe("old");
     expect(current.keyId).toBe("new");
     expect(openSecret(old, "row-a")).toBe("stock-secret");
+  });
+
+  it("fails readiness for an unavailable active KID", () => {
+    process.env.OPENKEYS_SECRET_KEYS = `old:${"22".repeat(32)}`;
+    process.env.OPENKEYS_SECRET_ACTIVE_KID = "missing";
+    expect(() => assertSecretBoxReady()).toThrow("not present in the keyring");
   });
 });
