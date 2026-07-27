@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { loadKeyMonitor, setKeyEnabled } from "@/lib/keys";
 import { currentAdmin } from "@/lib/session";
+import { guardRequest, readJsonLimited } from "@/lib/request-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,12 +19,14 @@ export async function GET(): Promise<NextResponse> {
 
 /** Включение и отключение ключа. Чужие ключи недоступны. */
 export async function POST(request: Request): Promise<NextResponse> {
+  const rejected = guardRequest(request, "admin-monitor", 60, 60_000);
+  if (rejected) return rejected;
   const admin = await currentAdmin();
   if (!admin) return unauthorized();
 
   let body: { id?: unknown; enabled?: unknown };
   try {
-    body = (await request.json()) as typeof body;
+    body = await readJsonLimited<typeof body>(request);
   } catch {
     return NextResponse.json({ error: "invalid_body" }, { status: 400 });
   }

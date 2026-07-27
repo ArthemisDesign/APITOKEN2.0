@@ -160,6 +160,18 @@ grep -Fq 'MONITORING.md#proxyupstreampairdown' "$ROOT/observability/prometheus/r
   || { printf 'alert ProxyUpstreamPairDown has no runbook anchor\n' >&2; exit 1; }
 grep -Fqi '## ProxyUpstreamPairDown' "$ROOT/MONITORING.md" \
   || { printf 'MONITORING.md has no runbook section for ProxyUpstreamPairDown\n' >&2; exit 1; }
+
+# OpenKeys has a dedicated port and failure domain; do not attribute it to the legacy CRM service.
+grep -Fq 'targets: ["http://127.0.0.1:3410/api/ready"]' "$ROOT/observability/prometheus/prometheus.yml" \
+  || { printf 'OpenKeys loopback readiness probe is missing\n' >&2; exit 1; }
+grep -F 'targets: ["http://127.0.0.1:3410/api/ready"]' -A 1 \
+  "$ROOT/observability/prometheus/prometheus.yml" | grep -Fq 'component: openkeys' \
+  || { printf 'OpenKeys readiness probe has the wrong component label\n' >&2; exit 1; }
+grep -Fq 'targets: ["https://openkeys.apitoken.sale/api/ready"]' \
+  "$ROOT/observability/prometheus/prometheus.yml" \
+  || { printf 'OpenKeys external readiness probe is missing\n' >&2; exit 1; }
+[[ $(grep -c 'crm-web|openkeys' "$ROOT/observability/prometheus/rules/operations.yml") -eq 2 ]] \
+  || { printf 'OpenKeys is missing from systemd failure or restart-loop alerts\n' >&2; exit 1; }
 # The optional Codex provider is a separate failure domain: its homes can expire, cool or exhaust
 # their subscription windows without any Claude signal moving. Every gauge the engine exports for it
 # must be consumed by a rule, and every rule must have a runbook section.

@@ -2,7 +2,7 @@ import { cookies } from "next/headers";
 import { KeyLogin } from "@/components/key-login";
 import { KeyProfile } from "@/components/key-profile";
 import { loadUsageByViewToken } from "@/lib/keys";
-import { USAGE_SESSION_COOKIE } from "@/lib/usage-session";
+import { usageSessionToken, USAGE_SESSION_COOKIE } from "@/lib/usage-session";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Профиль ключа — apiToken" };
@@ -14,7 +14,7 @@ export const metadata = { title: "Профиль ключа — apiToken" };
  */
 export default async function ProfilePage() {
   const store = await cookies();
-  const viewToken = store.get(USAGE_SESSION_COOKIE)?.value;
+  const viewToken = usageSessionToken(store.get(USAGE_SESSION_COOKIE)?.value);
   if (!viewToken) return <KeyLogin />;
 
   const view = await loadUsageByViewToken(viewToken);

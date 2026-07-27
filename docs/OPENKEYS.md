@@ -45,6 +45,9 @@ Control API из `CONTROL_API.md` — как и весь остальной ко
 | `OPENKEYS_ADMIN_PASSWORD` | Её пароль |
 | `OPENKEYS_ADMIN_ACCOUNTS` | Дополнительные учётки как `user:password`, через запятую или перевод строки |
 | `OPENKEYS_SESSION_SECRET` | Секрет подписи сессионной куки, минимум 32 символа |
+| `OPENKEYS_SECRET_KEY` | 32-байтный ключ AES в hex (64 символа); резервируется отдельно от дампа БД |
+| `OPENKEYS_SECRET_KEYS` | Keyring для ротации: `kid:64-hex,kid2:64-hex`; старые ключи сохраняются до re-encryption |
+| `OPENKEYS_SECRET_ACTIVE_KID` | KID ключа из keyring, которым шифруются новые складские секреты |
 | `OPENKEYS_DEFAULT_MULT_BP` | Множитель по умолчанию (4000 = клиент платит 40% прайса) |
 | `OPENKEYS_PUBLIC_BASE_URL` | Базовый адрес для ссылок вида `/u/<token>` |
 | `OPENKEYS_SESSION_TTL_SECONDS` | Время жизни сессии админки, по умолчанию 12 часов |
@@ -69,7 +72,9 @@ sudo bash deploy/install-watchdog.sh
 #    или packages/openkeys-db и вызовет openkeys-deploy.sh
 ```
 
-Пароль и секрет сессии в репозиторий не коммитим — только в `/etc/apitoken/openkeys.env`.
+Пароль, секрет сессии и `OPENKEYS_SECRET_KEY` в репозиторий не коммитим — только в
+`/etc/apitoken/openkeys.env`. Без отдельной защищённой резервной копии `OPENKEYS_SECRET_KEY`
+дамп PostgreSQL не позволяет восстановить ещё не выданные складские секреты.
 
 ## Что проверяет watchdog
 

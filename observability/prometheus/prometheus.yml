@@ -123,13 +123,28 @@ scrape_configs:
       - target_label: __address__
         replacement: 127.0.0.1:9115
 
+  - job_name: openkeys-http
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: ["https://openkeys.apitoken.sale/api/ready"]
+        labels: { component: openkeys }
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+
   - job_name: loopback-http
     metrics_path: /probe
     params:
       module: [http_2xx]
     static_configs:
       - targets: ["http://127.0.0.1:3410/api/ready"]
-        labels: { component: crm-api }
+        labels: { component: openkeys }
       - targets: ["http://127.0.0.1:3300/"]
         labels: { component: crm-web }
       - targets: ["http://127.0.0.1:3500/"]

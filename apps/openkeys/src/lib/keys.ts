@@ -1,8 +1,8 @@
 import "server-only";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { EngineUsage } from "@claude-api/contracts";
-import { openkeysBatches, openkeysKeys } from "@claude-api/openkeys-db";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { openkeysBatches, openkeysIssuanceJobs, openkeysKeys } from "@claude-api/openkeys-db";
+import { and, desc, eq, inArray, isNull, lt } from "drizzle-orm";
 import { loadConfig } from "./config";
 import { getDatabase } from "./db";
 import { getEngineClient } from "./engine";
@@ -35,8 +35,52 @@ export class BatchIssuanceError extends Error {
   }
 }
 
+const UNFINISHED_ISSUANCE = ["pending", "account_created", "credited", "key_issued"] as const;
+
+/** Disable accounts left mid-flight by a crashed process; safe to call from every admin read. */
+export async function reconcileIssuanceJobs(staleBefore = new Date(Date.now() - 60_000)): Promise<number> {
+  const { db } = getDatabase();
+  const jobs = await db
+    .select()
+    .from(openkeysIssuanceJobs)
+    .where(and(inArray(openkeysIssuanceJobs.status, [...UNFINISHED_ISSUANCE]), lt(openkeysIssuanceJobs.updatedAt, staleBefore)))
+    .limit(100);
+  const engine = getEngineClient();
+  let reconciled = 0;
+  for (const job of jobs) {
+    try {
+      if (job.engineKeyId) {
+        const [persisted] = await db
+          .select({ id: openkeysKeys.id })
+          .from(openkeysKeys)
+          .where(eq(openkeysKeys.engineKeyId, job.engineKeyId))
+          .limit(1);
+        if (persisted) {
+          await db.update(openkeysIssuanceJobs).set({ status: "completed", updatedAt: new Date(), lastError: null })
+            .where(eq(openkeysIssuanceJobs.id, job.id));
+          reconciled += 1;
+          continue;
+        }
+      }
+      if (job.engineAccountId) await engine.setAccountStatus(job.engineAccountId, "disabled");
+      await db
+        .update(openkeysIssuanceJobs)
+        .set({ status: "compensated", updatedAt: new Date(), lastError: "reconciled after interrupted issuance" })
+        .where(and(eq(openkeysIssuanceJobs.id, job.id), inArray(openkeysIssuanceJobs.status, [...UNFINISHED_ISSUANCE])));
+      reconciled += 1;
+    } catch (error) {
+      console.error("openkeys issuance reconciliation failed", { jobId: job.id, accountId: job.engineAccountId });
+    }
+  }
+  return reconciled;
+}
+
 function maskKey(secret: string): string {
   return `${secret.slice(0, 12)}…${secret.slice(-4)}`;
+}
+
+function secretContext(input: { id: string; batchId: string; viewToken: string; engineAccountId: string }): string {
+  return `openkeys:v2:${input.id}:${input.batchId}:${input.viewToken}:${input.engineAccountId}`;
 }
 
 /**
@@ -59,6 +103,8 @@ export async function issueBatch(input: IssueBatchInput): Promise<{ batchId: str
   if (!Number.isInteger(input.multBp) || input.multBp < 1 || input.multBp > 10_000) {
     throw new Error("Множитель должен быть от 1 до 10000 basis points");
   }
+
+  await reconcileIssuanceJobs();
 
   const config = loadConfig();
   const { db } = getDatabase();
@@ -84,19 +130,37 @@ export async function issueBatch(input: IssueBatchInput): Promise<{ batchId: str
   for (let index = 0; index < input.quantity; index += 1) {
     const viewToken = randomBytes(16).toString("base64url");
     let accountId: string | null = null;
+    const [job] = await db
+      .insert(openkeysIssuanceJobs)
+      .values({ batchId: batch.id, itemIndex: index })
+      .returning({ id: openkeysIssuanceJobs.id });
+    if (!job) throw new Error("Не удалось создать журнал выпуска");
     try {
       const account = await engine.createAccount({
         handle: `openkeys-${viewToken.slice(0, 16)}`,
         multBp: input.multBp,
       });
       accountId = account.account;
+      await db.update(openkeysIssuanceJobs).set({
+        status: "account_created", engineAccountId: account.account, updatedAt: new Date(),
+      }).where(eq(openkeysIssuanceJobs.id, job.id));
 
       // ref идемпотентен на стороне движка: повторная попытка не задвоит зачисление.
       await engine.creditAccount(account.account, balanceNano, `openkeys:${batch.id}:${index}`);
+      await db.update(openkeysIssuanceJobs).set({ status: "credited", updatedAt: new Date() })
+        .where(eq(openkeysIssuanceJobs.id, job.id));
       const key = await engine.issueKey(account.account, { label: `openkeys ${viewToken.slice(0, 8)}` });
-      const sealed = sealSecret(key.key);
+      await db.update(openkeysIssuanceJobs).set({
+        status: "key_issued", engineKeyId: key.key_id, updatedAt: new Date(),
+      }).where(eq(openkeysIssuanceJobs.id, job.id));
+      const id = randomUUID();
+      const sealed = sealSecret(
+        key.key,
+        secretContext({ id, batchId: batch.id, viewToken, engineAccountId: account.account }),
+      );
 
       await db.insert(openkeysKeys).values({
+        id,
         batchId: batch.id,
         viewToken,
         engineAccountId: account.account,
@@ -105,28 +169,45 @@ export async function issueBatch(input: IssueBatchInput): Promise<{ batchId: str
         keySha256: keyDigest(key.key),
         secretCiphertext: sealed.ciphertext,
         secretNonce: sealed.nonce,
+        secretVersion: 2,
+        secretKeyId: sealed.keyId,
         faceValueNano: input.faceValueNano,
         multBp: input.multBp,
       });
-
       issued.push({
         secret: key.key,
         viewToken,
         viewUrl: `${config.publicBaseUrl}/profile/${viewToken}`,
         keyMasked: maskKey(key.key),
       });
+      try {
+        await db.update(openkeysIssuanceJobs).set({ status: "completed", updatedAt: new Date() })
+          .where(eq(openkeysIssuanceJobs.id, job.id));
+      } catch {
+        // The durable key row is authoritative; reconciliation will recognize it and complete the job.
+        console.error("openkeys issuance journal completion failed", { jobId: job.id, batchId: batch.id, index });
+      }
     } catch (error) {
       // Never leave funded credentials usable when their secret/local mapping was not durably stored.
+      let compensated = accountId === null;
       if (accountId) {
         try {
           await engine.setAccountStatus(accountId, "disabled");
+          compensated = true;
         } catch {
           console.error("openkeys issuance compensation failed", { accountId, batchId: batch.id, index });
         }
       }
-      if (issued.length === 0) {
-        await db.delete(openkeysBatches).where(eq(openkeysBatches.id, batch.id));
-      } else {
+      try {
+        await db.update(openkeysIssuanceJobs).set({
+          status: compensated ? "compensated" : undefined,
+          updatedAt: new Date(),
+          lastError: error instanceof Error ? error.message.slice(0, 500) : "issuance failed",
+        }).where(eq(openkeysIssuanceJobs.id, job.id));
+      } catch {
+        console.error("openkeys issuance journal failure update failed", { jobId: job.id, batchId: batch.id, index });
+      }
+      if (issued.length > 0) {
         await db.update(openkeysBatches).set({ quantity: issued.length }).where(eq(openkeysBatches.id, batch.id));
       }
       throw new BatchIssuanceError(issued.length, { cause: error });
@@ -157,10 +238,29 @@ export interface KeyUsageView {
  * что и дашборд, поэтому цифры совпадают до нанодоллара. bigint приводим к строкам:
  * server component не может передать bigint в client component.
  */
+const usageLoads = new Map<string, { expiresAt: number; promise: Promise<KeyUsageView | null> }>();
+
 export async function loadUsageByViewToken(
   viewToken: string,
   window = "30d",
 ): Promise<KeyUsageView | null> {
+  if (!/^[A-Za-z0-9_-]{22}$/.test(viewToken)) return null;
+  const cacheKey = `${viewToken}:${window}`;
+  const now = Date.now();
+  const cached = usageLoads.get(cacheKey);
+  if (cached && cached.expiresAt > now) return cached.promise;
+  if (cached) usageLoads.delete(cacheKey);
+  if (usageLoads.size >= 1_000) usageLoads.delete(usageLoads.keys().next().value as string);
+
+  const promise = loadUsageUncached(viewToken, window).catch((error) => {
+    usageLoads.delete(cacheKey);
+    throw error;
+  });
+  usageLoads.set(cacheKey, { expiresAt: now + 5_000, promise });
+  return promise;
+}
+
+async function loadUsageUncached(viewToken: string, window: string): Promise<KeyUsageView | null> {
   const { db } = getDatabase();
   const [row] = await db.select().from(openkeysKeys).where(eq(openkeysKeys.viewToken, viewToken)).limit(1);
   if (!row) return null;
@@ -221,7 +321,7 @@ export async function resolveViewTokenByApiKey(apiKey: string): Promise<string |
   return row?.viewToken ?? null;
 }
 
-/** Удалённых статусов нет: удаление стирает запись, остаётся склад и выданные. */
+/** Снятые ключи остаются tombstone-записями, но не входят в склад и историю выдачи. */
 export type StockStatus = "stock" | "delivered";
 
 export interface StockKey {
@@ -249,6 +349,7 @@ function stockStatusOf(row: { deliveredAt: Date | null }): StockStatus {
  * Видно только то, что выпустил сам админ — партии принадлежат тому, кто их создал.
  */
 export async function listKeys(createdBy: string, limit = 500): Promise<StockKey[]> {
+  await reconcileIssuanceJobs();
   const config = loadConfig();
   const { db } = getDatabase();
   const rows = await db
@@ -257,17 +358,20 @@ export async function listKeys(createdBy: string, limit = 500): Promise<StockKey
       batchId: openkeysKeys.batchId,
       keyMasked: openkeysKeys.keyMasked,
       viewToken: openkeysKeys.viewToken,
+      engineAccountId: openkeysKeys.engineAccountId,
       faceValueNano: openkeysKeys.faceValueNano,
       createdAt: openkeysKeys.createdAt,
       deliveredAt: openkeysKeys.deliveredAt,
 
       secretCiphertext: openkeysKeys.secretCiphertext,
       secretNonce: openkeysKeys.secretNonce,
+      secretVersion: openkeysKeys.secretVersion,
+      secretKeyId: openkeysKeys.secretKeyId,
       label: openkeysBatches.label,
     })
     .from(openkeysKeys)
     .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
-    .where(eq(openkeysBatches.createdBy, createdBy))
+    .where(and(eq(openkeysBatches.createdBy, createdBy), isNull(openkeysKeys.removedAt)))
     .orderBy(desc(openkeysKeys.createdAt))
     .limit(limit);
 
@@ -275,7 +379,10 @@ export async function listKeys(createdBy: string, limit = 500): Promise<StockKey
     const status = stockStatusOf(row);
     const secret =
       status === "stock" && row.secretCiphertext && row.secretNonce
-        ? openSecret({ ciphertext: row.secretCiphertext, nonce: row.secretNonce })
+        ? openSecret(
+            { ciphertext: row.secretCiphertext, nonce: row.secretNonce, keyId: row.secretKeyId },
+            row.secretVersion === 2 ? secretContext(row) : undefined,
+          )
         : null;
 
     return {
@@ -318,7 +425,7 @@ async function ownsKey(id: string, createdBy: string): Promise<boolean> {
     .select({ id: openkeysKeys.id })
     .from(openkeysKeys)
     .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
-    .where(and(eq(openkeysKeys.id, id), eq(openkeysBatches.createdBy, createdBy)))
+    .where(and(eq(openkeysKeys.id, id), eq(openkeysBatches.createdBy, createdBy), isNull(openkeysKeys.removedAt)))
     .limit(1);
   return row !== undefined;
 }
@@ -333,14 +440,25 @@ export async function removeKey(id: string, createdBy: string): Promise<boolean>
   if (!(await ownsKey(id, createdBy))) return false;
 
   const [row] = await db
-    .select({ engineKeyId: openkeysKeys.engineKeyId })
+    .select({ engineKeyId: openkeysKeys.engineKeyId, deliveredAt: openkeysKeys.deliveredAt })
     .from(openkeysKeys)
     .where(eq(openkeysKeys.id, id))
     .limit(1);
-  if (!row) return false;
+  if (!row || row.deliveredAt) return false;
 
   await getEngineClient().disableKey(row.engineKeyId);
-  await db.delete(openkeysKeys).where(eq(openkeysKeys.id, id));
+  await db
+    .update(openkeysKeys)
+    .set({
+      status: "disabled",
+      disabledAt: new Date(),
+      removedAt: new Date(),
+      removedBy: createdBy,
+      removalReason: "manual stock removal",
+      secretCiphertext: null,
+      secretNonce: null,
+    })
+    .where(and(eq(openkeysKeys.id, id), isNull(openkeysKeys.removedAt)));
   return true;
 }
 
@@ -354,14 +472,29 @@ export async function removeAllStock(createdBy: string): Promise<number> {
     .select({ id: openkeysKeys.id, engineKeyId: openkeysKeys.engineKeyId })
     .from(openkeysKeys)
     .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
-    .where(and(eq(openkeysBatches.createdBy, createdBy), isNull(openkeysKeys.deliveredAt)));
+    .where(and(
+      eq(openkeysBatches.createdBy, createdBy),
+      isNull(openkeysKeys.deliveredAt),
+      isNull(openkeysKeys.removedAt),
+    ));
 
   const engine = getEngineClient();
   let removed = 0;
   for (const row of rows) {
     try {
       await engine.disableKey(row.engineKeyId);
-      await db.delete(openkeysKeys).where(eq(openkeysKeys.id, row.id));
+      await db
+        .update(openkeysKeys)
+        .set({
+          status: "disabled",
+          disabledAt: new Date(),
+          removedAt: new Date(),
+          removedBy: createdBy,
+          removalReason: "bulk stock removal",
+          secretCiphertext: null,
+          secretNonce: null,
+        })
+        .where(and(eq(openkeysKeys.id, row.id), isNull(openkeysKeys.removedAt)));
       removed += 1;
     } catch {
       // Ключ, который не удалось отключить, оставляем в базе: удалить запись
@@ -412,7 +545,7 @@ export async function loadKeyMonitor(createdBy: string, limit = 300): Promise<Mo
     })
     .from(openkeysKeys)
     .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
-    .where(eq(openkeysBatches.createdBy, createdBy))
+    .where(and(eq(openkeysBatches.createdBy, createdBy), isNull(openkeysKeys.removedAt)))
     .orderBy(desc(openkeysKeys.createdAt))
     .limit(limit);
 

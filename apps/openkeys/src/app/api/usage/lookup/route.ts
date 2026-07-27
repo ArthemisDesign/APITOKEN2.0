@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { resolveViewTokenByApiKey } from "@/lib/keys";
-import { USAGE_SESSION_COOKIE, USAGE_SESSION_MAX_AGE } from "@/lib/usage-session";
+import { issueUsageSession, USAGE_SESSION_COOKIE, USAGE_SESSION_MAX_AGE } from "@/lib/usage-session";
 import { guardRequest, readJsonLimited } from "@/lib/request-guard";
 
 export const runtime = "nodejs";
@@ -27,7 +27,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (!viewToken) return NextResponse.json({ error: "not_found" }, { status: 404 });
 
   const response = NextResponse.json({ viewToken });
-  response.cookies.set(USAGE_SESSION_COOKIE, viewToken, {
+  response.cookies.set(USAGE_SESSION_COOKIE, issueUsageSession(viewToken), {
     httpOnly: true,
     sameSite: "lax",
     secure: true,
