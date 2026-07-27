@@ -545,8 +545,20 @@ done < <(grep -oE '^Cmnd_Alias [A-Z_]+' "$sudoers_policy" | awk '{print $2}')
 # The installer and its policy are delivered together with the other operational definitions.
 grep -Fq 'install-sudoers.sh' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'the sudoers installer is not delivered to the host'
-grep -Fxq '/usr/local/lib/apitoken-watchdog/install-sudoers.sh' "$ROOT/deploy/install-watchdog.sh" \
-  || wd_die 'tested infrastructure does not atomically apply its executable sudo policy'
+grep -Fq 'apitoken-sudoers-install.service' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'the isolated sudoers installer unit is not delivered to the host'
+grep -Fxq 'ExecStart=/usr/local/lib/apitoken-watchdog/install-sudoers.sh' \
+  "$ROOT/systemd/apitoken-sudoers-install.service" \
+  || wd_die 'the isolated sudoers installer unit does not run the fixed root-owned installer'
+if grep -Fxq '/usr/local/lib/apitoken-watchdog/install-sudoers.sh' \
+  "$ROOT/deploy/install-watchdog.sh"; then
+  wd_die 'the sudoers installer runs inside the watchdog read-only mount namespace'
+fi
+sudoers_reload_line=$(grep -nF 'systemctl daemon-reload' "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+sudoers_start_line=$(grep -nF 'systemctl start apitoken-sudoers-install.service' \
+  "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+[[ -n $sudoers_reload_line && -n $sudoers_start_line && $sudoers_start_line -gt $sudoers_reload_line ]] \
+  || wd_die 'the isolated sudoers installer is not started after daemon-reload'
 # install-watchdog.sh must never re-add apitoken-ci to the deploy group: that would silently undo
 # the isolation fix on the next infrastructure install, and the two installers would fight.
 if grep -Eq 'usermod -a -G deploy apitoken-ci' "$ROOT/deploy/install-watchdog.sh"; then

@@ -42,15 +42,14 @@ install -o root -g root -m 0755 "$ROOT/deploy/watchdog-backup.sh" /usr/local/lib
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-migrate.sh" /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-infrastructure.sh" /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-retention.sh" /usr/local/lib/apitoken-watchdog/watchdog-retention.sh
-# The sudo policy and its validating installer are delivered together, then applied while the
-# infrastructure runner is already root. The installer validates before replacement, verifies every
-# live privilege as `deploy`, and restores the old policy on any failure. Applying here is necessary:
-# a controller and its least-privilege contract must become active in the same infrastructure cycle.
+# The sudo policy and its validating installer are delivered together. They are applied below by a
+# dedicated root oneshot after daemon-reload: this installer inherits the watchdog's read-only
+# /root and /etc mount namespace even though its effective user is root, while a manager-spawned
+# unit gets its own namespace and can keep rollback copies before replacing /etc/sudoers.d.
 install -o root -g root -m 0755 "$ROOT/deploy/install-sudoers.sh" /usr/local/lib/apitoken-watchdog/install-sudoers.sh
 install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/sudoers.d
 install -o root -g root -m 0644 "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   /usr/local/lib/apitoken-watchdog/sudoers.d/95-apitoken-deploy
-/usr/local/lib/apitoken-watchdog/install-sudoers.sh
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-github.sh" /usr/local/lib/apitoken-watchdog/watchdog-github
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-control.sh" /usr/local/bin/apitoken-watchdog
 install -o root -g root -m 0755 "$ROOT/deploy/collect-monitoring-metrics.sh" /usr/local/lib/apitoken-watchdog/collect-monitoring-metrics.sh
@@ -68,6 +67,7 @@ install -o root -g root -m 0644 "$ROOT/deploy/affinity-redis.compose.yaml" \
   /usr/local/lib/apitoken-watchdog/controller/affinity-redis.compose.yaml
 for unit in \
   apitoken-api@.service apitoken-deploy-watchdog.service apitoken-deploy-watchdog.timer \
+  apitoken-sudoers-install.service \
   apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api@.service claude-api-backup.service claude-api-backup.timer \
   claude-api-fingerprint.service claude-api-fingerprint.timer \
   apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \
@@ -190,6 +190,9 @@ for observable in status rejected.sha pending-migration.sha; do
 done
 
 systemctl daemon-reload
+# This unit validates the candidate, saves a rollback copy, replaces the policy, verifies every
+# required and forbidden privilege as `deploy`, and restores the old policy on any failure.
+systemctl start apitoken-sudoers-install.service
 "$ROOT/deploy/install-monitoring.sh"
 systemctl enable apitoken-affinity-redis.service
 systemctl restart apitoken-affinity-redis.service
