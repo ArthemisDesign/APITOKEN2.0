@@ -36,12 +36,12 @@ for sha in "$TARGET" "$PROCESSED_BASE" "$ENGINE_BASE" "$BACKEND_BASE" \
   "$SALES_BASE" "$OPENKEYS_BASE"; do
   wd_validate_sha "$sha"
   if ! git -c safe.directory="$REPO" -C "$REPO" cat-file -e "$sha^{commit}" 2>/dev/null; then
-    [[ $sha == "$TARGET" ]] || wd_die "validation-plan baseline is unavailable: $sha"
     # The privileged controller extracted this exact planner from TARGET immediately before
-    # invoking it. If the isolated CI user cannot read the freshly fetched loose Git object (for
-    # example after a restrictive inherited umask), fail closed to every validation lane. This
-    # lets a candidate repair the isolation boundary without allowing its policy to weaken the
-    # already trusted host plan.
+    # invoking it and validated every baseline before passing it here. If the isolated CI user
+    # cannot read either a freshly fetched target or an older baseline loose object (for example
+    # after a restrictive inherited umask), fail closed to every validation lane. This lets a
+    # candidate repair the isolation boundary without allowing its policy to weaken the already
+    # trusted host plan.
     fallback_policy=$(
       printf 'validation-plan-unreadable-target-v1\ntarget=%s\n' "$TARGET" | wd_sha256_stdin
     )

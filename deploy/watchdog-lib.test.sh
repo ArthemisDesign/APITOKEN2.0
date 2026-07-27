@@ -1733,6 +1733,9 @@ grep -Fq 'umask "$previous_umask"' <<<"$shadow_body" \
   || wd_die 'trusted candidate validation leaks its transcript-only umask into Git fetches'
 grep -Fq 'validation-plan-unreadable-target-v1' "$ROOT/deploy/validation-plan.sh" \
   || wd_die 'an unreadable freshly fetched candidate cannot request a fail-closed repair gate'
+if grep -Fq 'validation-plan baseline is unavailable' "$ROOT/deploy/validation-plan.sh"; then
+  wd_die 'an unreadable trusted baseline still blocks the fail-closed repair gate'
+fi
 grep -Fq -- '-type d -exec chmod go+rx {} + -o -type f -exec chmod go+r {} +' \
   "$ROOT/deploy/lib.test.sh" \
   || wd_die 'the first trusted suite cannot repair a restrictive candidate checkout umask'
