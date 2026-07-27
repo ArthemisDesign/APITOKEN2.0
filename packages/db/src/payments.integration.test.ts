@@ -165,7 +165,7 @@ describe.runIf(Boolean(connectionString))("whole-USD checkout persistence", () =
         SELECT
           (SELECT status FROM payments WHERE checkout_id = $1) AS payment_status,
           (SELECT status FROM checkout_sessions WHERE id = $1) AS checkout_status,
-          (SELECT status FROM engine_credits ec
+          (SELECT ec.status FROM engine_credits ec
              JOIN payments p ON p.id = ec.payment_id
             WHERE p.checkout_id = $1) AS credit_status,
           (SELECT last_error FROM engine_credits ec
@@ -198,7 +198,7 @@ describe.runIf(Boolean(connectionString))("whole-USD checkout persistence", () =
       SELECT
         (SELECT status FROM payments WHERE checkout_id = $1) AS payment_status,
         (SELECT status FROM checkout_sessions WHERE id = $1) AS checkout_status,
-        (SELECT status FROM engine_credits ec
+        (SELECT ec.status FROM engine_credits ec
            JOIN payments p ON p.id = ec.payment_id
           WHERE p.checkout_id = $1) AS credit_status,
         (SELECT count(*)::int FROM webhook_events
@@ -235,7 +235,7 @@ describe.runIf(Boolean(connectionString))("whole-USD checkout persistence", () =
         (SELECT count(*)::int FROM engine_credits ec
            JOIN payments p ON p.id = ec.payment_id
           WHERE p.checkout_id = $1) AS credit_count,
-        (SELECT status FROM engine_credits ec
+        (SELECT ec.status FROM engine_credits ec
            JOIN payments p ON p.id = ec.payment_id
           WHERE p.checkout_id = $1) AS credit_status
     `, [session.id]);
