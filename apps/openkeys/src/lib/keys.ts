@@ -28,6 +28,13 @@ export interface IssuedKey {
   keyMasked: string;
 }
 
+export class BatchIssuanceError extends Error {
+  constructor(readonly issuedCount: number, options?: ErrorOptions) {
+    super(`Выпуск прерван после ${issuedCount} из запрошенных ключей`, options);
+    this.name = "BatchIssuanceError";
+  }
+}
+
 function maskKey(secret: string): string {
   return `${secret.slice(0, 12)}…${secret.slice(-4)}`;
 }
@@ -76,35 +83,54 @@ export async function issueBatch(input: IssueBatchInput): Promise<{ batchId: str
   const issued: IssuedKey[] = [];
   for (let index = 0; index < input.quantity; index += 1) {
     const viewToken = randomBytes(16).toString("base64url");
-    const account = await engine.createAccount({
-      handle: `openkeys-${viewToken.slice(0, 16)}`,
-      multBp: input.multBp,
-    });
+    let accountId: string | null = null;
+    try {
+      const account = await engine.createAccount({
+        handle: `openkeys-${viewToken.slice(0, 16)}`,
+        multBp: input.multBp,
+      });
+      accountId = account.account;
 
-    // ref идемпотентен на стороне движка: повторная попытка не задвоит зачисление.
-    await engine.creditAccount(account.account, balanceNano, `openkeys:${batch.id}:${index}`);
-    const key = await engine.issueKey(account.account, { label: `openkeys ${viewToken.slice(0, 8)}` });
-    const sealed = sealSecret(key.key);
+      // ref идемпотентен на стороне движка: повторная попытка не задвоит зачисление.
+      await engine.creditAccount(account.account, balanceNano, `openkeys:${batch.id}:${index}`);
+      const key = await engine.issueKey(account.account, { label: `openkeys ${viewToken.slice(0, 8)}` });
+      const sealed = sealSecret(key.key);
 
-    await db.insert(openkeysKeys).values({
-      batchId: batch.id,
-      viewToken,
-      engineAccountId: account.account,
-      engineKeyId: key.key_id,
-      keyMasked: maskKey(key.key),
-      keySha256: keyDigest(key.key),
-      secretCiphertext: sealed.ciphertext,
-      secretNonce: sealed.nonce,
-      faceValueNano: input.faceValueNano,
-      multBp: input.multBp,
-    });
+      await db.insert(openkeysKeys).values({
+        batchId: batch.id,
+        viewToken,
+        engineAccountId: account.account,
+        engineKeyId: key.key_id,
+        keyMasked: maskKey(key.key),
+        keySha256: keyDigest(key.key),
+        secretCiphertext: sealed.ciphertext,
+        secretNonce: sealed.nonce,
+        faceValueNano: input.faceValueNano,
+        multBp: input.multBp,
+      });
 
-    issued.push({
-      secret: key.key,
-      viewToken,
-      viewUrl: `${config.publicBaseUrl}/profile/${viewToken}`,
-      keyMasked: maskKey(key.key),
-    });
+      issued.push({
+        secret: key.key,
+        viewToken,
+        viewUrl: `${config.publicBaseUrl}/profile/${viewToken}`,
+        keyMasked: maskKey(key.key),
+      });
+    } catch (error) {
+      // Never leave funded credentials usable when their secret/local mapping was not durably stored.
+      if (accountId) {
+        try {
+          await engine.setAccountStatus(accountId, "disabled");
+        } catch {
+          console.error("openkeys issuance compensation failed", { accountId, batchId: batch.id, index });
+        }
+      }
+      if (issued.length === 0) {
+        await db.delete(openkeysBatches).where(eq(openkeysBatches.id, batch.id));
+      } else {
+        await db.update(openkeysBatches).set({ quantity: issued.length }).where(eq(openkeysBatches.id, batch.id));
+      }
+      throw new BatchIssuanceError(issued.length, { cause: error });
+    }
   }
 
   return { batchId: batch.id, keys: issued };

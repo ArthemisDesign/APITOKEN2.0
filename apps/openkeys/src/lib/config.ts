@@ -14,7 +14,25 @@ function optionalInt(name: string, fallback: number): number {
   const raw = process.env[name];
   if (raw === undefined || raw === "") return fallback;
   if (!/^\d+$/.test(raw)) throw new Error(`${name} must be a positive integer`);
-  return Number(raw);
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) throw new Error(`${name} must be a safe integer`);
+  return value;
+}
+
+function baseUrl(name: string, fallback: string, allowLoopbackHttp = false): string {
+  const raw = process.env[name] ?? fallback;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`${name} must be an absolute URL`);
+  }
+  const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "::1";
+  if (url.protocol !== "https:" && !(allowLoopbackHttp && loopback && url.protocol === "http:")) {
+    throw new Error(`${name} must use HTTPS${allowLoopbackHttp ? " or loopback HTTP" : ""}`);
+  }
+  if (url.username || url.password || url.search || url.hash) throw new Error(`${name} must not contain credentials or parameters`);
+  return url.origin;
 }
 
 export interface AdminAccount {
@@ -44,6 +62,7 @@ function parseAdminAccounts(): AdminAccount[] {
   const primaryUser = process.env.OPENKEYS_ADMIN_USER;
   const primaryPassword = process.env.OPENKEYS_ADMIN_PASSWORD;
   if (primaryUser && primaryPassword) {
+    if (primaryUser.length > 128 || primaryPassword.length > 1024) throw new Error("admin credentials are too long");
     accounts.push({ user: primaryUser, password: primaryPassword });
   }
 
@@ -56,8 +75,10 @@ function parseAdminAccounts(): AdminAccount[] {
       throw new Error("OPENKEYS_ADMIN_ACCOUNTS entries must look like user:password");
     }
     const user = trimmed.slice(0, separator);
+    const password = trimmed.slice(separator + 1);
+    if (user.length > 128 || password.length > 1024) throw new Error("admin credentials are too long");
     if (accounts.some((account) => account.user === user)) continue;
-    accounts.push({ user, password: trimmed.slice(separator + 1) });
+    accounts.push({ user, password });
   }
 
   if (accounts.length === 0) throw new Error("at least one admin account is required");
@@ -75,15 +96,20 @@ export function loadConfig(): OpenkeysConfig {
   const sessionSecret = required("OPENKEYS_SESSION_SECRET");
   if (sessionSecret.length < 32) throw new Error("OPENKEYS_SESSION_SECRET must be at least 32 chars");
 
+  const sessionTtlSeconds = optionalInt("OPENKEYS_SESSION_TTL_SECONDS", 12 * 60 * 60);
+  if (sessionTtlSeconds < 300 || sessionTtlSeconds > 7 * 24 * 60 * 60) {
+    throw new Error("OPENKEYS_SESSION_TTL_SECONDS must be between 300 and 604800");
+  }
+
   return {
     databaseUrl: required("OPENKEYS_DATABASE_URL"),
-    engineBaseUrl: process.env.ENGINE_BASE_URL ?? "http://127.0.0.1:8790",
+    engineBaseUrl: baseUrl("ENGINE_BASE_URL", "http://127.0.0.1:8790", true),
     engineControlKey: required("ENGINE_CONTROL_KEY"),
-    enginePublicBaseUrl: process.env.ENGINE_PUBLIC_BASE_URL ?? "https://api.apitoken.sale",
+    enginePublicBaseUrl: baseUrl("ENGINE_PUBLIC_BASE_URL", "https://api.apitoken.sale"),
     adminAccounts: parseAdminAccounts(),
     sessionSecret,
-    sessionTtlSeconds: optionalInt("OPENKEYS_SESSION_TTL_SECONDS", 12 * 60 * 60),
+    sessionTtlSeconds,
     defaultMultBp,
-    publicBaseUrl: process.env.OPENKEYS_PUBLIC_BASE_URL ?? "https://openkeys.apitoken.sale",
+    publicBaseUrl: baseUrl("OPENKEYS_PUBLIC_BASE_URL", "https://openkeys.apitoken.sale"),
   };
 }

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { loadConfig } from "@/lib/config";
-import { MAX_BATCH_QUANTITY, issueBatch, listBatches } from "@/lib/keys";
+import { BatchIssuanceError, MAX_BATCH_QUANTITY, issueBatch, listBatches } from "@/lib/keys";
 import { formatUsd, usdStringToNano } from "@/lib/money";
 import { currentAdmin } from "@/lib/session";
 import { guardRequest, readJsonLimited } from "@/lib/request-guard";
@@ -58,6 +58,12 @@ export async function POST(request: Request): Promise<NextResponse> {
       keys: result.keys,
     });
   } catch (error) {
+    if (error instanceof BatchIssuanceError) {
+      return NextResponse.json(
+        { error: error.message, issuedCount: error.issuedCount },
+        { status: 502 },
+      );
+    }
     const message = error instanceof Error ? error.message : "Не удалось выпустить ключи";
     return NextResponse.json({ error: message }, { status: 400 });
   }
