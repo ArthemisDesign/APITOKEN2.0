@@ -321,17 +321,17 @@ export function Dashboard() {
       </div>
     </aside>
     <button className={`side-scrim ${sideOpen ? "show" : ""}`} onClick={() => setSideOpen(false)} aria-label={copy.closeMenu} />
-    <main className={`app-main${section === "overview" ? " app-main-overview" : ""}`}>
+    <main className="app-main">
       <header className="app-top">
         <div className="app-top-in">
           <button className="app-burger" onClick={() => setSideOpen(true)} aria-label={copy.menu}>☰</button>
           <div className="app-top-h"><div className="app-title">{copy[navigation.find((item) => item.section === section)?.label ?? "navOverview"]}</div></div>
           <div className="app-top-actions">
-            {section === "overview" ? <button className="btn btn-primary btn-sm app-top-up" onClick={() => open("credits")}>{copy.topUp}</button> : <button className="app-top-bal" onClick={() => open("credits")} title={copy.navTopUp}>
+            <button className="app-top-bal" onClick={() => open("credits")} title={copy.navTopUp}>
               <span className="atb-ic" aria-hidden="true" />
               <span className="atb-label">{copy.creditsLabel}</span>
               <span className={`atb-val${BigInt(account.balanceNano) < 0n ? " atb-neg" : ""}`}>{formatNanoUsd(account.balanceNano)}</span>
-            </button>}
+            </button>
           </div>
         </div>
       </header>

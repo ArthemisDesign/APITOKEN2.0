@@ -204,10 +204,12 @@ describe("completed Next.js migration", () => {
     expect(dashboard).toContain('className="app-top-in"');
     expect(dashboard).toContain('className="overview-pricing-facts"');
     expect(dashboard.match(/copy\.payPerOfficialDollar/g)).toHaveLength(1);
-    expect(dashboard).toContain('className={`app-main${section === "overview" ? " app-main-overview" : ""}`}');
+    expect(dashboard).toContain('<main className="app-main">');
+    expect(dashboard).not.toContain("app-main-overview");
+    expect(dashboard).not.toContain("app-top-up");
     expect(styles).toContain(".overview-primary-grid{display:grid;grid-template-columns:minmax(0,1.68fr) minmax(320px,.82fr);gap:20px}");
     expect(styles).toContain(".overview-metrics-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}");
-    expect(styles).toContain(".overview-panel{display:grid;gap:20px;font-family:var(--font-ui)");
+    expect(styles).toContain(".overview-panel{display:grid;gap:20px}");
     expect(styles).toContain(".overview-balance-card{position:relative;container-type:inline-size;display:flex;");
     expect(styles).toContain("@media(max-width:960px){\n  .overview-primary-grid{grid-template-columns:1fr}\n  .overview-balance-card{grid-column:auto}");
     expect(dashboard).toContain("officialBalance");
