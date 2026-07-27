@@ -67,7 +67,7 @@ tested tree has not changed.
 The production host polls the read-only Git remote every five seconds and isolates the exact
 40-character SHA. Validation is path-aware: TypeScript changes select the pnpm/database lane, engine
 changes select the Rust lane, deployment changes select the operational regression suites, and any
-unknown path fails safe into every lane. When both language lanes are selected they run concurrently.
+unknown path fails safe into every lane. Selected language and operational lanes run concurrently.
 The host then:
 
 1. installs/builds/tests the selected TypeScript lane against disposable PostgreSQL and/or runs the
@@ -80,7 +80,8 @@ The host then:
 5. starts an affected engine candidate only in the inactive slot; its ordered engine migrations run
    transactionally under the engine advisory lock, and failed migration/readiness can never admit it;
 6. promotes the already-tested engine and commerce artifacts—without recompiling them—then deploys
-   only affected components through their health-gated controllers and verifies the exact SHA;
+   affected bounded contexts concurrently where their release roots, databases, and units are
+   independent; engine and commerce remain ordered behind their shared deployment lock;
 7. records final status on the GitHub commit.
 
 If any test, backup, migration, deployment, readiness check, or final verification fails, the SHA

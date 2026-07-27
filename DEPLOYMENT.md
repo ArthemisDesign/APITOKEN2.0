@@ -68,6 +68,13 @@ existing production secrets, validated, reloaded with automatic rollback, and ne
 repository placeholders. GitHub workflow changes do not alter the production host and therefore
 need no host-install stage.
 
+After any required commerce migration and engine pre-deploy backup finish, component delivery uses
+joined failure-isolated lanes. Engine and commerce stay serial because both blue-green controllers
+own the same deployment lock. Sales and OpenKeys use separate databases, release roots, symlinks,
+units, and rollback paths, so their health-gated rollouts may run concurrently with that core lane.
+Final cross-component verification and the overall green verdict run only after every started lane
+succeeds.
+
 An operator can request an immediate poll or retry a proven transient failure:
 
 ```bash

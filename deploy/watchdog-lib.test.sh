@@ -8,6 +8,22 @@ source "$ROOT/deploy/watchdog-lib.sh"
 TEMP=$(mktemp -d)
 trap 'rm -rf -- "$TEMP"' EXIT
 
+# Atomic state writes are shared by parallel rollout lanes. Bash keeps `$$` constant in asynchronous
+# subshells, so this test proves each writer uses a unique temporary path and leaves one valid value.
+parallel_state="$TEMP/parallel-state"
+parallel_pids=()
+for value in $(seq 1 32); do
+  wd_atomic_write "$parallel_state" "$value" 0644 &
+  parallel_pids+=("$!")
+done
+for parallel_pid in "${parallel_pids[@]}"; do wait "$parallel_pid"; done
+parallel_value=$(<"$parallel_state")
+[[ $parallel_value =~ ^([1-9]|[12][0-9]|3[0-2])$ ]] \
+  || wd_die "parallel atomic writes left an invalid state value: $parallel_value"
+if find "$TEMP" -maxdepth 1 -name 'parallel-state.tmp.*' -print -quit | grep -q .; then
+  wd_die "parallel atomic writes left a temporary file behind"
+fi
+
 # Candidate retention selects only direct, real SHA directories strictly older than the cutoff.
 # It must not follow symlinks or touch malformed entries.
 candidate_root="$TEMP/candidates"
@@ -813,6 +829,41 @@ processed_line=$(grep -nF 'wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"' \
   "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
 [[ -n $handoff_line && -n $processed_line && $handoff_line -lt $processed_line ]] \
   || wd_die 'self-update handoff is not fenced before the processed/green path'
+
+# Stateful component rollouts use three joined lanes. Engine and commerce remain ordered behind
+# their shared deploy lock; bounded sales/OpenKeys roots can make progress concurrently.
+rollout_contract=(
+  'run_rollout_lane deploy_core_components "$CANDIDATE_SHA" "$engine_changed" "$backend_changed" &'
+  'run_rollout_lane deploy_sales "$CANDIDATE_SHA" &'
+  'run_rollout_lane deploy_openkeys "$CANDIDATE_SHA" &'
+  'wait "$core_pid"'
+  'wait "$sales_pid"'
+  'wait "$openkeys_pid"'
+  'component rollout lanes failed'
+  'github_phase_failure "$phase"'
+)
+for required_stage in "${rollout_contract[@]}"; do
+  grep -Fq -- "$required_stage" "$ROOT/deploy/watchdog.sh" \
+    || wd_die "parallel rollout contract lost required stage: $required_stage"
+done
+core_body=$(sed -n '/^deploy_core_components()/,/^}/p' "$ROOT/deploy/watchdog.sh")
+core_engine_line=$(grep -nF 'deploy_engine "$sha"' <<<"$core_body" | cut -d: -f1)
+core_backend_line=$(grep -nF 'deploy_backend "$sha"' <<<"$core_body" | cut -d: -f1)
+[[ -n $core_engine_line && -n $core_backend_line && $core_engine_line -lt $core_backend_line ]] \
+  || wd_die 'engine and backend escaped their serial shared-lock lane'
+backup_line=$(grep -nF 'sudo -n "$BACKUP_RUNNER" "$CANDIDATE_SHA"' \
+  "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
+core_start_line=$(grep -nF \
+  'run_rollout_lane deploy_core_components "$CANDIDATE_SHA" "$engine_changed" "$backend_changed" &' \
+  "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
+[[ -n $backup_line && -n $core_start_line && $backup_line -lt $core_start_line ]] \
+  || wd_die 'production backup can race an independent database rollout'
+grep -Fq 'DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}' \
+  "$ROOT/deploy/engine-bluegreen.sh" \
+  || wd_die 'engine controller lost the shared deploy lock'
+grep -Fq 'DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}' \
+  "$ROOT/deploy/api-bluegreen.sh" \
+  || wd_die 'backend controller lost the shared deploy lock'
 
 # Core releases promote the frozen candidate, while manual deployments retain their fallback build.
 grep -Fq -- '--tested-candidate "$(candidate_for "$sha")"' "$ROOT/deploy/watchdog.sh" \

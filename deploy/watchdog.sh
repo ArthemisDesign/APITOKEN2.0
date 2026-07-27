@@ -86,8 +86,27 @@ status() {
   wd_atomic_write "$STATUS_FILE" "phase=$CURRENT_PHASE sha=${CANDIDATE_SHA:-none} detail=$detail updated_at=$(date -u +%FT%TZ)" 0644
 }
 
+github_phase_failure() {
+  local phase=$1
+  [[ -x $GITHUB_HELPER ]] || return 0
+  if [[ -n $ACTIVE_DEPLOYMENT_ID ]]; then
+    sudo -n "$GITHUB_HELPER" deployment-status "$ACTIVE_DEPLOYMENT_ID" failure \
+      "deployment failed closed at $phase" "$ACTIVE_DEPLOYMENT_ENV" "$ACTIVE_DEPLOYMENT_URL" \
+      >/dev/null 2>&1 || true
+  fi
+  case $phase in
+    testing) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/tests "Validation failed; production unchanged" >/dev/null 2>&1 || true ;;
+    migrating) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/migration "Migration failed; application deploy blocked" >/dev/null 2>&1 || true ;;
+    deploying-engine) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/engine "Engine rollout failed closed" >/dev/null 2>&1 || true ;;
+    deploying-backend) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/backend "Backend rollout failed closed" >/dev/null 2>&1 || true ;;
+    deploying-sales) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/sales "Sales rollout failed closed" >/dev/null 2>&1 || true ;;
+    deploying-openkeys) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/openkeys "OpenKeys rollout failed closed" >/dev/null 2>&1 || true ;;
+  esac
+}
+
 fail() {
   local rc=$? line=${BASH_LINENO[0]:-unknown}
+  local failed_phase=${CURRENT_PHASE_BEFORE_FAILURE:-$CURRENT_PHASE}
   # Clear first: this handler is registered on EXIT as well as ERR, and must never re-enter itself
   # when it exits below.
   trap - ERR EXIT INT TERM
@@ -114,19 +133,7 @@ fail() {
   CURRENT_PHASE=failed
   status "command failed at line $line (exit $rc); candidate quarantined"
   if [[ -x $GITHUB_HELPER ]]; then
-    if [[ -n $ACTIVE_DEPLOYMENT_ID ]]; then
-      sudo -n "$GITHUB_HELPER" deployment-status "$ACTIVE_DEPLOYMENT_ID" failure \
-        "deployment failed closed at $CURRENT_PHASE" "$ACTIVE_DEPLOYMENT_ENV" "$ACTIVE_DEPLOYMENT_URL" \
-        >/dev/null 2>&1 || true
-    fi
-    case ${CURRENT_PHASE_BEFORE_FAILURE:-$CURRENT_PHASE} in
-      testing) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/tests "Validation failed; production unchanged" >/dev/null 2>&1 || true ;;
-      migrating) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/migration "Migration failed; application deploy blocked" >/dev/null 2>&1 || true ;;
-      deploying-engine) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/engine "Engine rollout failed closed" >/dev/null 2>&1 || true ;;
-      deploying-backend) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/backend "Backend rollout failed closed" >/dev/null 2>&1 || true ;;
-      deploying-sales) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/sales "Sales rollout failed closed" >/dev/null 2>&1 || true ;;
-      deploying-openkeys) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/openkeys "OpenKeys rollout failed closed" >/dev/null 2>&1 || true ;;
-    esac
+    github_phase_failure "$failed_phase"
     sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/watchdog \
       "Production pipeline failed closed; inspect watchdog logs" >/dev/null 2>&1 || true
   fi
@@ -142,6 +149,25 @@ fail() {
 # Subshells do not inherit this trap (verified on bash 5.2), so a `wd_die` inside a subshell used as
 # a condition — such as the post-admission backend verification — still fails only that subshell.
 trap fail ERR EXIT INT TERM
+
+rollout_lane_exit() {
+  local rc=$1 phase=${CURRENT_PHASE_BEFORE_FAILURE:-$CURRENT_PHASE}
+  trap - ERR EXIT INT TERM
+  (( rc != 0 )) || return 0
+  set +e
+  github_phase_failure "$phase"
+  wd_warn "parallel rollout lane failed during $phase (exit $rc); waiting lanes will still be joined"
+  exit "$rc"
+}
+
+run_rollout_lane() {
+  # Each asynchronous lane owns its deployment ID and component phase. Report its specific failure
+  # from that subshell, but leave quarantine and the overall watchdog verdict to the parent after
+  # every sibling has reached a safe terminal state.
+  trap - ERR EXIT INT TERM
+  trap 'rollout_lane_exit "$?"' EXIT
+  "$@"
+}
 
 require_fixed_file() {
   local path=$1 owner
@@ -775,10 +801,9 @@ deploy_engine() {
   local sha=$1
   CURRENT_PHASE=deploying-engine
   CURRENT_PHASE_BEFORE_FAILURE=deploying-engine
-  status "backing up PostgreSQL before promoting and blue-green deploying the tested engine"
+  status "promoting and blue-green deploying the tested engine"
   github_status pending deploy/engine "Engine blue-green deployment in progress"
   github_deployment_start engine production-engine https://api.apitoken.sale/health
-  sudo -n "$BACKUP_RUNNER" "$sha"
   "$CONTROLLER_ROOT/deploy.sh" --engine-bluegreen --tested-candidate "$(candidate_for "$sha")" "$sha"
   "$CONTROLLER_ROOT/engine-bluegreen.sh"
   # The controller has admitted the new slot and drained the old one by this point. A verification
@@ -845,6 +870,14 @@ deploy_openkeys() {
   wd_log "openkeys $sha promoted and verified (openkeys.apitoken.sale)"
 }
 
+deploy_core_components() {
+  local sha=$1 engine_changed=$2 backend_changed=$3
+  # The engine and commerce controllers deliberately share apitoken-deploy.lock. Keep their
+  # cutovers ordered inside one lane while sales/OpenKeys use their independent roots and units.
+  if (( engine_changed == 1 )); then deploy_engine "$sha"; fi
+  if (( backend_changed == 1 )); then deploy_backend "$sha"; fi
+}
+
 apply_migrations_before_deploy() {
   local sha=$1 candidate manifest digest applied_digest
   candidate=$(candidate_for "$sha")
@@ -899,6 +932,7 @@ main() {
   local remote_ref rejected infra_changed=0 caddy_changed=0 engine_changed=0 backend_changed=0 sales_changed=0
   local openkeys_changed=0 typescript_required=0 rust_required=0 static_required=0
   local engine_artifacts_required=0 infrastructure_validation_changed=0 unknown_validation_path=0
+  local core_pid= sales_pid= openkeys_pid= core_rc=0 sales_rc=0 openkeys_rc=0
 
   [[ $(id -un) == deploy ]] || wd_die "watchdog service must run as deploy"
   [[ -d $SOURCE_REPO/.git ]] || wd_die "source repository is missing: $SOURCE_REPO"
@@ -1061,33 +1095,53 @@ main() {
     github_status success deploy/migration "No commerce migration changes"
   fi
 
+  # The validated backup includes engine and sales databases. Complete it before any independent
+  # lane can migrate sales while the engine lane snapshots production.
   if (( engine_changed == 1 )); then
-    deploy_engine "$CANDIDATE_SHA"
-    ENGINE_SHA=$CANDIDATE_SHA
-  else
-    github_status success deploy/engine "No engine changes"
-  fi
-  if (( backend_changed == 1 )); then
-    deploy_backend "$CANDIDATE_SHA"
-  else
-    github_status success deploy/backend "No backend changes"
+    CURRENT_PHASE=deploying-engine
+    CURRENT_PHASE_BEFORE_FAILURE=deploying-engine
+    status "creating the validated backup before concurrent component rollouts"
+    sudo -n "$BACKUP_RUNNER" "$CANDIDATE_SHA"
   fi
 
-  if (( sales_changed == 1 )); then
-    deploy_sales "$CANDIDATE_SHA"
-  else
+  if (( engine_changed == 0 )); then github_status success deploy/engine "No engine changes"; fi
+  if (( backend_changed == 0 )); then github_status success deploy/backend "No backend changes"; fi
+  if (( sales_changed == 0 )); then
     github_status success deploy/sales "No sales changes"
     # First run before sales.sha exists: adopt the current commit as the sales baseline.
     if [[ -z ${SALES_SHA:-} ]]; then wd_atomic_write "$SALES_FILE" "$CANDIDATE_SHA"; fi
   fi
-
-  if (( openkeys_changed == 1 )); then
-    deploy_openkeys "$CANDIDATE_SHA"
-  else
+  if (( openkeys_changed == 0 )); then
     github_status success deploy/openkeys "No openkeys changes"
     # First run before openkeys.sha exists: adopt the current commit as the baseline.
     if [[ -z ${OPENKEYS_SHA:-} ]]; then wd_atomic_write "$OPENKEYS_FILE" "$CANDIDATE_SHA"; fi
   fi
+
+  CURRENT_PHASE=deploying-components
+  CURRENT_PHASE_BEFORE_FAILURE=deploying-components
+  status "deploying independent production component lanes in parallel"
+  if (( engine_changed == 1 || backend_changed == 1 )); then
+    run_rollout_lane deploy_core_components "$CANDIDATE_SHA" "$engine_changed" "$backend_changed" &
+    core_pid=$!
+  fi
+  if (( sales_changed == 1 )); then
+    run_rollout_lane deploy_sales "$CANDIDATE_SHA" &
+    sales_pid=$!
+  fi
+  if (( openkeys_changed == 1 )); then
+    run_rollout_lane deploy_openkeys "$CANDIDATE_SHA" &
+    openkeys_pid=$!
+  fi
+
+  # Always join every started lane before quarantine/final verification. A failed lane owns its
+  # component-specific failure status; this parent owns the single overall verdict.
+  if [[ -n $core_pid ]]; then wait "$core_pid" || core_rc=$?; fi
+  if [[ -n $sales_pid ]]; then wait "$sales_pid" || sales_rc=$?; fi
+  if [[ -n $openkeys_pid ]]; then wait "$openkeys_pid" || openkeys_rc=$?; fi
+  if (( core_rc != 0 || sales_rc != 0 || openkeys_rc != 0 )); then
+    wd_die "component rollout lanes failed (core=$core_rc sales=$sales_rc openkeys=$openkeys_rc)"
+  fi
+  if (( engine_changed == 1 )); then ENGINE_SHA=$CANDIDATE_SHA; fi
 
   CURRENT_PHASE=verifying
   CURRENT_PHASE_BEFORE_FAILURE=verifying

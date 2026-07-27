@@ -214,7 +214,9 @@ wd_read_sha() {
 
 wd_atomic_write() {
   local path=$1 value=$2 mode=${3:-0640} temporary
-  temporary="${path}.tmp.$$"
+  # `$$` is unchanged in Bash asynchronous subshells. BASHPID is unique per rollout lane, so
+  # concurrent component status/baseline writes cannot clobber one another's temporary file.
+  temporary="${path}.tmp.${BASHPID:-$$}"
   [[ $path == /* ]] || wd_die "state path must be absolute: $path"
   printf '%s\n' "$value" >"$temporary"
   chmod "$mode" "$temporary"
