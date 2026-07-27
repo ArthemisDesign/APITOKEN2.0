@@ -519,18 +519,9 @@ test_typescript_lane() {
     run_as_ci pnpm --dir "$candidate" "${filters[@]}" \
       -r --if-present --fail-if-no-match typecheck
   fi
-  if wd_typescript_component_list_contains "$lane_components" commerce; then
-    run_as_ci env DATABASE_URL="$dsn" node "$candidate/packages/db/dist/migrate.js"
-  fi
-  if wd_typescript_component_list_contains "$lane_components" sales; then
-    run_as_ci env SALES_DATABASE_URL="$sales_dsn" node "$candidate/packages/sales-db/dist/migrate.js"
-  fi
-  if wd_typescript_component_list_contains "$lane_components" openkeys; then
-    run_as_ci env OPENKEYS_DATABASE_URL="$openkeys_dsn" \
-      node "$candidate/packages/openkeys-db/dist/migrate.js"
-  fi
   run_as_ci env TEST_DATABASE_URL="$dsn" TEST_SALES_DATABASE_URL="$sales_dsn" \
     TEST_OPENKEYS_DATABASE_URL="$openkeys_dsn" \
+    TYPESCRIPT_TEST_COMPONENTS="$lane_components" \
     bash "$candidate/deploy/typescript-test-groups.sh" "$candidate" "${test_packages[@]}"
 }
 

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run workspace tests in independent isolation domains. Packages sharing one test database remain
-# serial inside their group; groups use separate databases (or no database) and run concurrently.
+# Run workspace tests in independent isolation domains. Each selected database context migrates its
+# own disposable database inside the same background lane as its tests, so migrations overlap each
+# other and the database-free tests without creating a global barrier.
 
 die() { printf '[typescript-tests] ERROR: %s\n' "$*" >&2; exit 1; }
 log() { printf '[typescript-tests] %s\n' "$*"; }
@@ -13,6 +14,36 @@ WORKSPACE=$(cd -- "$1" && pwd)
 shift
 [[ -f $WORKSPACE/package.json && ! -L $WORKSPACE/package.json ]] \
   || die "workspace package.json is missing"
+
+TEST_COMPONENTS=${TYPESCRIPT_TEST_COMPONENTS:-}
+SELECTED_COMPONENTS=()
+if [[ -n $TEST_COMPONENTS ]]; then
+  IFS=, read -r -a SELECTED_COMPONENTS <<<"$TEST_COMPONENTS"
+  seen_components=()
+  for selected_component in "${SELECTED_COMPONENTS[@]}"; do
+    case "$selected_component" in
+      commerce|sales|openkeys|web) ;;
+      *) die "unknown TypeScript test component: $selected_component" ;;
+    esac
+    for seen_component in ${seen_components[@]+"${seen_components[@]}"}; do
+      [[ $seen_component != "$selected_component" ]] \
+        || die "duplicate TypeScript test component: $selected_component"
+    done
+    seen_components+=("$selected_component")
+  done
+  canonical_components=
+  for expected_component in commerce sales openkeys web; do
+    for selected_component in "${SELECTED_COMPONENTS[@]}"; do
+      [[ $selected_component != "$expected_component" ]] || {
+        if [[ -n $canonical_components ]]; then canonical_components+=,; fi
+        canonical_components+=$expected_component
+        break
+      }
+    done
+  done
+  [[ $canonical_components == "$TEST_COMPONENTS" ]] \
+    || die "TypeScript test components are not canonical: $TEST_COMPONENTS"
+fi
 
 PURE_PACKAGES=(
   @claude-api/content-studio
@@ -110,6 +141,43 @@ package_is_requested() {
   return 1
 }
 
+component_is_selected() {
+  local expected=$1 selected
+  for selected in ${SELECTED_COMPONENTS[@]+"${SELECTED_COMPONENTS[@]}"}; do
+    [[ $selected != "$expected" ]] || return 0
+  done
+  return 1
+}
+
+run_component_migration() {
+  local label=$1 dsn='' variable='' artifact=''
+  component_is_selected "$label" || return 0
+  case "$label" in
+    commerce)
+      dsn=${TEST_DATABASE_URL:-}
+      variable=DATABASE_URL
+      artifact=packages/db/dist/migrate.js
+      ;;
+    sales)
+      dsn=${TEST_SALES_DATABASE_URL:-}
+      variable=SALES_DATABASE_URL
+      artifact=packages/sales-db/dist/migrate.js
+      ;;
+    openkeys)
+      dsn=${TEST_OPENKEYS_DATABASE_URL:-}
+      variable=OPENKEYS_DATABASE_URL
+      artifact=packages/openkeys-db/dist/migrate.js
+      ;;
+    *) return 0 ;;
+  esac
+  [[ -n $dsn ]] || die "$label test component has no disposable database URL"
+  [[ -f $WORKSPACE/$artifact && ! -L $WORKSPACE/$artifact ]] \
+    || die "$label migration artifact is missing: $artifact"
+  log "migrating the $label disposable database"
+  env "$variable=$dsn" node "$WORKSPACE/$artifact"
+  log "$label disposable database migrated"
+}
+
 # Раскрытие через ${x[@]+…}: в bash 3.2 (macOS) обращение к пустому массиву под
 # set -u — ошибка «unbound variable», а пустой список пакетов здесь нормален.
 for requested in ${REQUESTED_PACKAGES[@]+"${REQUESTED_PACKAGES[@]}"}; do
@@ -119,19 +187,31 @@ for requested in ${REQUESTED_PACKAGES[@]+"${REQUESTED_PACKAGES[@]}"}; do
 done
 
 run_group() {
-  local label=$1 concurrency=$2 package
+  local label=$1 concurrency=$2 package migration_required=0
   local filters=()
   shift 2
   for package in "$@"; do
     package_is_requested "$package" || continue
     filters+=("--filter=$package")
   done
-  if (( ${#filters[@]} == 0 )); then
+  case "$label" in
+    commerce|sales|openkeys)
+      component_is_selected "$label" && migration_required=1
+      ;;
+  esac
+  if (( ${#filters[@]} == 0 && migration_required == 0 )); then
     log "$label group skipped by package scope"
     return 0
   fi
-  log "starting $label group (${#filters[@]} package(s), workspace concurrency $concurrency)"
-  pnpm --dir "$WORKSPACE" "${filters[@]}" -r \
+  log "starting $label lane (${#filters[@]} test package(s), migration=$migration_required)"
+  run_component_migration "$label"
+  if (( ${#filters[@]} == 0 )); then
+    log "$label lane passed with migration only"
+    return 0
+  fi
+  # Candidate builds already produced and verified dependency artifacts. Suppress package
+  # pretest hooks here so application tests do not rebuild those dependencies a second time.
+  pnpm --config.enable-pre-post-scripts=false --dir "$WORKSPACE" "${filters[@]}" -r \
     --workspace-concurrency="$concurrency" --if-present --fail-if-no-match test
 }
 
@@ -164,7 +244,7 @@ start_group openkeys 1 "${OPENKEYS_PACKAGES[@]}"
 failures=()
 for index in "${!GROUP_PIDS[@]}"; do
   if wait "${GROUP_PIDS[$index]}"; then
-    log "${GROUP_LABELS[$index]} group passed"
+    log "${GROUP_LABELS[$index]} lane passed"
   else
     failures+=("${GROUP_LABELS[$index]}")
   fi
@@ -172,5 +252,5 @@ done
 trap - HUP INT TERM
 
 (( ${#failures[@]} == 0 )) \
-  || die "test group(s) failed: ${failures[*]}"
-log 'all selected TypeScript test groups passed'
+  || die "test lane(s) failed: ${failures[*]}"
+log 'all selected TypeScript test lanes passed'

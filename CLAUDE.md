@@ -188,7 +188,8 @@ whitespace проверки выполняются всегда; TypeScript, Rus
 inputs и удаления проверяют весь workspace, а `.next/cache` переиспользуется между worktree и
 host-кандидатами. Полные runtime-артефакты каждого TypeScript-контекста также переиспользуются по
 content-addressed ключу точных tracked inputs, platform/toolchain и build environment; повреждение
-кэша означает обычный rebuild. Оба результата переиспользуются
+кэша означает обычный rebuild. Миграции трёх disposable TypeScript-БД идут параллельно в своих
+test lanes, а package `pretest` не пересобирает уже проверенные candidate-артефакты. Оба результата переиспользуются
 только если SHA не изменился; иначе feature-ветка обновляется и оба gate повторяются для нового
 SHA. После push хост переиспользует тот же замороженный кандидат без
 повторного теста, а скрипт держит lock до

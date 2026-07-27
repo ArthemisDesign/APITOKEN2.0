@@ -36,8 +36,12 @@ workspace-relative metadata whose installed target remains inside the candidate.
 unsafe links, and save contention fall back to the normal build. Entries are isolated by context
 and bounded to six recent keys.
 TypeScript tests run in four joined isolation groups: commerce, sales, OpenKeys, and database-free
-packages. Each database group stays serial internally, while the independent groups overlap and
-all selected groups are reaped before the candidate receives a verdict.
+packages. Each selected database migration now runs at the head of its own group, so all three
+migrations and the database-free tests overlap; that group's tests begin only after its own schema
+is ready. Database groups stay serial internally, candidate tests suppress package `pretest`
+dependency rebuilds because the complete artifacts were already verified, and every selected lane
+is reaped before the candidate receives a verdict. Operational regression helpers run once per
+static gate rather than being nested again inside the watchdog library suite.
 Operational self-updates are content-aware: controller-only ranges copy the fixed root-owned
 controller bundle, and Caddy-only ranges validate/reload only Caddy. Mixed changes, deletions,
 systemd/monitoring/stateful definitions, and unknown deployment files fail closed to the complete

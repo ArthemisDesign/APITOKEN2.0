@@ -877,9 +877,8 @@ gate_contract=(
   'typescript-scope.mjs'
   '"${filters[@]}"'
   '--fail-if-no-match typecheck'
-  'DATABASE_URL="$dsn" node "$candidate/packages/db/dist/migrate.js"'
-  'SALES_DATABASE_URL="$sales_dsn" node "$candidate/packages/sales-db/dist/migrate.js"'
   'TEST_DATABASE_URL="$dsn" TEST_SALES_DATABASE_URL="$sales_dsn"'
+  'TYPESCRIPT_TEST_COMPONENTS="$lane_components"'
   'typescript-test-groups.sh" "$candidate" "${test_packages[@]}"'
   'CLAUDE_API_TEST_DATABASE_URL="$engine_dsn"'
   'cargo test --locked --workspace --manifest-path "$candidate/Cargo.toml"'
@@ -928,12 +927,10 @@ for required_stage in "${gate_contract[@]}"; do
   grep -Fq -- "$required_stage" "$ROOT/deploy/watchdog.sh" \
     || wd_die "candidate gate contract lost required stage: $required_stage"
 done
-
-# The previous installed controller reaches this suite before it can hand off to the candidate
-# controller, so exercise the newly candidate-owned build helper from here as well.
-bash "$ROOT/deploy/sccache-cargo.test.sh"
-bash "$ROOT/deploy/typescript-build-contexts.test.sh"
-bash "$ROOT/deploy/typescript-artifact-cache.test.sh"
+if grep -Eq '^bash "\$ROOT/deploy/(sccache-cargo|typescript-build-contexts|typescript-artifact-cache)\.test\.sh"$' \
+  "$ROOT/deploy/watchdog-lib.test.sh"; then
+  wd_die 'watchdog library suite duplicated a helper regression already owned by the static gate'
+fi
 
 # `pnpm -r --if-present test` deliberately tolerates packages with no suite. Keep that tolerance
 # explicit: deleting a test script from a covered package, or adding a new workspace package without
