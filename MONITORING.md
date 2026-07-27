@@ -284,6 +284,19 @@ active single-writer engine topology before retrying.
 Confirm the owning engine instance is dead/fenced and let the authority reconciliation workflow
 recover the lease. Never delete live reservations directly.
 
+## BalanceDivergenceDetected
+
+Stop manual credits, refunds, and destructive maintenance until the affected authority state is
+understood. The gauge is the maximum absolute per-account difference between durable
+`topup`/`adjust` funding and `balance_nano + spent_nano + reserved_nano`; any non-zero value violates
+money conservation.
+
+Take validated `commerce` and `claude_engine` dumps before investigating. Compare the account's
+funding ledger, completed charge total, and non-terminal reservation holds without editing rows.
+Correlate every top-up or adjustment reference with its commerce payment, bonus, promo, refund, or
+admin audit record. Repair only through an idempotent application workflow and keep the original
+evidence; never silence the alert by directly changing account aggregates or deleting ledger rows.
+
 ## BackupStale
 
 Run `claude-api-backup.service`, check its result, then validate each dump with `pg_restore

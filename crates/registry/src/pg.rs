@@ -2514,5 +2514,56 @@ mod tests {
             &[],
         ).unwrap().get(0);
         assert_eq!(aggregate, 0);
+
+        // Cross-authority conservation: commerce-originated topups/adjustments are the only
+        // funding source, while the engine may retain them as balance, completed spend, or an
+        // in-flight hold. Pin this per account so opposing errors cannot cancel in a global sum.
+        const DIVERGENCE_SQL: &str = "\
+            WITH funding AS ( \
+              SELECT account_id, COALESCE(SUM(amount_nano),0)::bigint AS funded_nano \
+              FROM ledger WHERE kind IN ('topup','adjust') GROUP BY account_id \
+            ) \
+            SELECT COALESCE(MAX(ABS( \
+              a.balance_nano + a.spent_nano + a.reserved_nano \
+              - COALESCE(f.funded_nano,0) \
+            )),0)::bigint \
+            FROM accounts a LEFT JOIN funding f ON f.account_id=a.id";
+        let divergence: i64 = pg.client.query_one(DIVERGENCE_SQL, &[]).unwrap().get(0);
+        assert_eq!(
+            divergence, 0,
+            "every account must conserve all durable funding"
+        );
+
+        let hold_mismatches: i64 = pg
+            .client
+            .query_one(
+                "WITH holds AS ( \
+                   SELECT account_id,COALESCE(SUM(hold_nano),0)::bigint AS held_nano \
+                   FROM reservations WHERE state NOT IN ('settled','canceled') GROUP BY account_id \
+                 ) \
+                 SELECT COUNT(*)::bigint FROM accounts a LEFT JOIN holds h ON h.account_id=a.id \
+                 WHERE a.reserved_nano <> COALESCE(h.held_nano,0)",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            hold_mismatches, 0,
+            "reserved aggregates must equal their source holds"
+        );
+
+        // Prove the production gauge's equation is sensitive rather than a zero-valued tautology.
+        pg.client.batch_execute("BEGIN").unwrap();
+        pg.client
+            .execute(
+                "UPDATE accounts SET balance_nano=balance_nano+17 WHERE id='acct'",
+                &[],
+            )
+            .unwrap();
+        let corrupted: i64 = pg.client.query_one(DIVERGENCE_SQL, &[]).unwrap().get(0);
+        assert_eq!(corrupted, 17);
+        pg.client.batch_execute("ROLLBACK").unwrap();
+        let restored: i64 = pg.client.query_one(DIVERGENCE_SQL, &[]).unwrap().get(0);
+        assert_eq!(restored, 0);
     }
 }

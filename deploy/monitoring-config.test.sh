@@ -110,6 +110,30 @@ for watchdog_alert in DeployQuarantined DeployPipelineStale DeployStuckInPhase D
     || { printf 'MONITORING.md has no runbook section for %s\n' "$watchdog_alert" >&2; exit 1; }
 done
 
+# Money conservation must be a closed collector -> alert -> runbook loop. Pin the operands as well
+# as the metric name so a constant-zero replacement cannot satisfy this static contract.
+reconciliation_metric=apitoken_balance_divergence_nano
+for required in \
+  "$reconciliation_metric" \
+  "kind IN ('topup', 'adjust')" \
+  'account.balance_nano::numeric' \
+  'account.spent_nano::numeric' \
+  'account.reserved_nano::numeric'; do
+  grep -Fq "$required" "$ROOT/deploy/collect-monitoring-metrics.sh" \
+    || { printf 'balance reconciliation collector is missing %s\n' "$required" >&2; exit 1; }
+done
+grep -Fq "$reconciliation_metric" "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'no alert rule consumes %s\n' "$reconciliation_metric" >&2; exit 1; }
+grep -Fq 'alert: BalanceDivergenceDetected' "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'missing balance-divergence alert\n' >&2; exit 1; }
+grep -Fq 'severity: critical' \
+  <(grep -F 'alert: BalanceDivergenceDetected' -A 8 "$ROOT/observability/prometheus/rules/application.yml") \
+  || { printf 'balance-divergence alert is not critical\n' >&2; exit 1; }
+grep -Fq 'MONITORING.md#balancedivergencedetected' "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'balance-divergence alert has no runbook anchor\n' >&2; exit 1; }
+grep -Fqi '## BalanceDivergenceDetected' "$ROOT/MONITORING.md" \
+  || { printf 'MONITORING.md has no balance-divergence runbook\n' >&2; exit 1; }
+
 # The journal must be an explicit, bounded, persistent store. Under the default `Storage=auto`
 # journald decided volatile-vs-persistent from whether the Docker-created /var/log/journal existed,
 # put the journal in tmpfs, and lost it on every reboot; the SystemMaxUse default of 10% of the

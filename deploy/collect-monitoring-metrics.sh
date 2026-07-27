@@ -54,6 +54,8 @@ cat >"$temporary" <<'METRICS'
 # TYPE apitoken_engine_settlement_pending gauge
 # HELP apitoken_engine_expired_active_leases Expired engine leases still marked active.
 # TYPE apitoken_engine_expired_active_leases gauge
+# HELP apitoken_balance_divergence_nano Maximum absolute per-account divergence between durable funding and balance plus charged or held nanodollars.
+# TYPE apitoken_balance_divergence_nano gauge
 # HELP apitoken_sales_pending_referral_events Sales events buffered pending attribution reconciliation.
 # TYPE apitoken_sales_pending_referral_events gauge
 # HELP apitoken_sales_failed_payout_batches Sales payout batches in failed state.
@@ -87,6 +89,25 @@ SELECT 'apitoken_engine_expired_active_leases ' || (
   (SELECT count(*) FROM capacity_leases WHERE state = 'active' AND lease_until < EXTRACT(EPOCH FROM now())::bigint)
   + (SELECT count(*) FROM reservations WHERE state IN ('reserved','delivering','settlement_pending') AND lease_until < EXTRACT(EPOCH FROM now())::bigint)
 );
+-- Every commerce-originated credit or debit is recorded as an idempotent topup/adjust ledger row.
+-- Account aggregates must conserve that funding across completed charges and in-flight holds.
+WITH funding AS (
+  SELECT account_id, COALESCE(SUM(amount_nano), 0)::numeric AS funded_nano
+  FROM ledger
+  WHERE kind IN ('topup', 'adjust')
+  GROUP BY account_id
+), divergence AS (
+  SELECT ABS(
+    account.balance_nano::numeric
+    + account.spent_nano::numeric
+    + account.reserved_nano::numeric
+    - COALESCE(funding.funded_nano, 0)
+  ) AS amount_nano
+  FROM accounts account
+  LEFT JOIN funding ON funding.account_id = account.id
+)
+SELECT 'apitoken_balance_divergence_nano ' || COALESCE(MAX(amount_nano), 0)
+FROM divergence;
 SQL
 fi
 

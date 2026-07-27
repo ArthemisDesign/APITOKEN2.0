@@ -224,6 +224,17 @@ groups:
           description: '{{ $value }} capacity or reservation leases require reconciliation.'
           runbook: 'MONITORING.md#engineexpiredleasepresent'
 
+      - alert: BalanceDivergenceDetected
+        expr: apitoken_balance_divergence_nano > 0
+        for: 2m
+        labels:
+          severity: critical
+          component: engine-authority
+        annotations:
+          summary: 'Engine account balance conservation failed'
+          description: 'At least one account differs from durable funding by {{ $value }} nanodollars after completed charges and active holds.'
+          runbook: 'MONITORING.md#balancedivergencedetected'
+
       - alert: BackupStale
         expr: apitoken_backup_age_seconds > 5400
         for: 10m
