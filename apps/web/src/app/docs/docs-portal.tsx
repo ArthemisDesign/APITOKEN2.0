@@ -393,7 +393,7 @@ export function DocsPortal() {
           <div className="docs-section-heading"><span>05</span><div><h2>{t.openai}</h2><p>{t.openaiText}</p></div></div>
           <div className="docs-essential-grid" style={{ marginBottom: 14 }}><Endpoint label={t.baseUrl} value={OPENAI_BASE_URL} copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label={t.authHeader} value={withKey("Authorization: Bearer sk-pool-•••")} copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label="Models" value={`${OPENAI_BASE_URL}/models`} copyLabel={t.copy} copiedLabel={t.copied} /></div>
           <div className="docs-notice" style={{ marginBottom: 14 }}>{t.openaiNotice}</div>
-          <div className="docs-two-col"><CodeBlock title={t.openaiRequest} description={t.openaiRequestText} code={withKey(OPENAI_CURL)} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.openaiPython} description={t.openaiPythonText} code={withKey(OPENAI_PYTHON)} copyLabel={t.copy} copiedLabel={t.copied} /></div>
+          <div className="docs-two-col" style={{ marginBottom: 18 }}><CodeBlock title={t.openaiRequest} description={t.openaiRequestText} code={withKey(OPENAI_CURL)} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.openaiPython} description={t.openaiPythonText} code={withKey(OPENAI_PYTHON)} copyLabel={t.copy} copiedLabel={t.copied} /></div>
           <div className="docs-two-col"><CodeBlock title={t.codex} description={t.codexText} code={CODEX_PROFILE} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.codexRun} description={t.codexRunText} code={withKey(CODEX_RUN)} copyLabel={t.copy} copiedLabel={t.copied} /></div>
         </section>
 

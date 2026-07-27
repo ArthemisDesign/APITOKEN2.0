@@ -8,6 +8,7 @@ import { useLanguage } from "@/components/chrome";
 
 const BASE_URL = "https://api.apitoken.sale";
 const MESSAGES_URL = `${BASE_URL}/v1/messages`;
+const OPENAI_BASE_URL = "https://openai.api.apitoken.sale/v1";
 const CURL = `curl https://api.apitoken.sale/v1/messages \
   -H "x-api-key: $APITOKEN_API_KEY" \
   -H "anthropic-version: 2023-06-01" \
@@ -76,6 +77,38 @@ const message = await client.messages.create({
 for (const block of message.content) {
   if (block.type === "text") console.log(block.text);
 }`;
+const OPENAI_CURL = `curl https://openai.api.apitoken.sale/v1/responses \
+  -H "Authorization: Bearer $APITOKEN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-5.6-sol",
+    "input": "Reply with exactly: connected"
+  }'`;
+const OPENAI_PYTHON = `import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["APITOKEN_API_KEY"],
+    base_url="https://openai.api.apitoken.sale/v1",
+)
+
+response = client.responses.create(
+    model="gpt-5.6-sol",
+    input="Reply with exactly: connected",
+)
+print(response.output_text)`;
+const CODEX_PROFILE = `# ~/.codex/apitoken.config.toml
+model = "gpt-5.6-sol"
+model_provider = "apitoken"
+
+[model_providers.apitoken]
+name = "apiToken.sale"
+base_url = "https://openai.api.apitoken.sale/v1"
+wire_api = "responses"
+env_key = "APITOKEN_API_KEY"`;
+const CODEX_RUN = `# Keep the key in your shell, not in the TOML file
+export APITOKEN_API_KEY="sk-pool-•••"
+codex --profile apitoken`;
 
 function cleanApiKey(value: string) {
   const key = value.trim();
@@ -92,6 +125,7 @@ const copy = {
     quickstart: "Quick start",
     authentication: "Authentication",
     tools: "Developer tools",
+    openai: "OpenAI-compatible API & Codex",
     sdks: "Official SDKs",
     errors: "Errors",
     cache: "Prompt caching",
@@ -144,6 +178,16 @@ const copy = {
     claudeCodeText: "Set the endpoint and key in the shell, then run Claude Code normally. No project configuration is required.",
     editors: "Cursor, Cline, Continue, and Zed",
     editorsText: "Select Anthropic as the provider and enter these four values. Field names vary slightly by tool.",
+    openaiText: "Use the same sk-pool key and prepaid balance on the dedicated OpenAI-compatible text endpoint. Authenticate with Authorization: Bearer and discover the currently available models with GET /v1/models.",
+    openaiNotice: "This is an independent OpenAI-compatible service, not the OpenAI Platform and not an OpenAI-operated endpoint. It supports model discovery, Responses, and Chat Completions for text, including SSE streaming. Images, audio, files, realtime, assistants, batches, fine-tuning, and other OpenAI Platform services are not available.",
+    openaiRequest: "Responses API",
+    openaiRequestText: "Send a standard Responses request to the dedicated host. gpt-5.6-sol is currently available; use GET /v1/models instead of assuming a model ID.",
+    openaiPython: "OpenAI Python SDK",
+    openaiPythonText: "Set base_url on the official SDK and pass the same sk-pool key. Keep the key in a server-side environment variable or secret manager in production.",
+    codex: "Codex profile",
+    codexText: "Save this as ~/.codex/apitoken.config.toml. The named profile leaves your normal Codex login and default configuration untouched.",
+    codexRun: "Run Codex",
+    codexRunText: "Export your sk-pool key in the shell, then select the named profile explicitly.",
     sdksText: "Use the official Anthropic SDKs with a custom base URL. Request parameters, response objects, and streaming behavior remain the same.",
     python: "Python SDK",
     pythonText: "The client reads the sk-pool key from ANTHROPIC_API_KEY; base_url points requests to apiToken.sale.",
@@ -193,7 +237,7 @@ const copy = {
     keepFree: "Starter 60% is the permanent base tier. It never expires and has no minimum top-up or spend requirement.",
     exampleHead: "Example from top-up to renewal",
     exampleText: "Reach $250 in cumulative top-ups to unlock Pro at 70%. Keep Pro by spending at least $125 from the balance in every rolling 30-day window. If spend falls below $125, the account moves to Builder at 65%. While Pro remains active, another $250 in top-ups brings the cumulative total to $500 and unlocks Studio at 75%.",
-    footer: "apiToken.sale documentation · Anthropic-compatible Claude access",
+    footer: "apiToken.sale documentation · Claude and OpenAI-compatible text access",
   },
   ru: {
     documentation: "Документация",
@@ -204,6 +248,7 @@ const copy = {
     quickstart: "Быстрый старт",
     authentication: "Аутентификация",
     tools: "Инструменты разработчика",
+    openai: "OpenAI-совместимый API и Codex",
     sdks: "Официальные SDK",
     errors: "Ошибки",
     cache: "Кэширование",
@@ -256,6 +301,16 @@ const copy = {
     claudeCodeText: "Задайте адрес и ключ в оболочке, затем запускайте Claude Code как обычно. Настраивать проект не требуется.",
     editors: "Cursor, Cline, Continue и Zed",
     editorsText: "Выберите Anthropic как провайдера и укажите эти четыре значения. Названия полей могут немного отличаться.",
+    openaiText: "Используйте тот же ключ sk-pool и единый предоплаченный баланс на отдельном OpenAI-совместимом текстовом API. Передавайте ключ в Authorization: Bearer, а актуальные модели получайте через GET /v1/models.",
+    openaiNotice: "Это независимый OpenAI-совместимый сервис, а не OpenAI Platform и не endpoint под управлением OpenAI. Поддерживаются список моделей, Responses и Chat Completions для текста, включая SSE-потоки. Изображения, аудио, файлы, realtime, assistants, batches, fine-tuning и другие сервисы OpenAI Platform недоступны.",
+    openaiRequest: "Responses API",
+    openaiRequestText: "Отправьте стандартный запрос Responses на отдельный хост. Модель gpt-5.6-sol доступна сейчас; получайте список через GET /v1/models, а не полагайтесь на неизменность ID.",
+    openaiPython: "OpenAI SDK для Python",
+    openaiPythonText: "Укажите base_url в официальном SDK и передайте тот же ключ sk-pool. В production храните ключ в серверной переменной окружения или менеджере секретов.",
+    codex: "Профиль Codex",
+    codexText: "Сохраните этот файл как ~/.codex/apitoken.config.toml. Именованный профиль не меняет обычный вход и настройки Codex по умолчанию.",
+    codexRun: "Запуск Codex",
+    codexRunText: "Экспортируйте ключ sk-pool в оболочке, затем явно выберите именованный профиль.",
     sdksText: "Используйте официальные SDK Anthropic с собственным базовым URL. Параметры запросов, объекты ответов и потоковая передача не меняются.",
     python: "Python SDK",
     pythonText: "Клиент читает ключ sk-pool из ANTHROPIC_API_KEY, а base_url направляет запросы в apiToken.sale.",
@@ -305,7 +360,7 @@ const copy = {
     keepFree: "Starter со скидкой 60% — постоянный базовый тариф. Он не истекает и не требует минимального пополнения или расхода.",
     exampleHead: "Пример от пополнения до продления",
     exampleText: "Накопите $250 пополнений, чтобы открыть Pro со скидкой 70%. Для сохранения Pro расходуйте с баланса не менее $125 за каждые скользящие 30 дней. Если расходы окажутся ниже $125, аккаунт перейдёт на Builder со скидкой 65%. Пока Pro остаётся активным, ещё $250 пополнений увеличат общую сумму до $500 и откроют Studio со скидкой 75%.",
-    footer: "Документация apiToken.sale · Anthropic-совместимый доступ к Claude",
+    footer: "Документация apiToken.sale · Claude и OpenAI-совместимый текстовый доступ",
   },
 } as const;
 
@@ -342,7 +397,7 @@ export function DocsPortal() {
   >
     <div className="docs-site">
     <div className="docs-layout">
-      <aside className="docs-sidebar"><span>{t.onThisPage}</span><nav><a href="#overview">{t.overview}</a><a href="#quickstart">{t.quickstart}</a><a href="#authentication">{t.authentication}</a><a href="#tools">{t.tools}</a><a href="#sdks">{t.sdks}</a><a href="#errors">{t.errors}</a><a href="#cache">{t.cache}</a></nav></aside>
+      <aside className="docs-sidebar"><span>{t.onThisPage}</span><nav><a href="#overview">{t.overview}</a><a href="#quickstart">{t.quickstart}</a><a href="#authentication">{t.authentication}</a><a href="#tools">{t.tools}</a><a href="#openai">{t.openai}</a><a href="#sdks">{t.sdks}</a><a href="#errors">{t.errors}</a><a href="#cache">{t.cache}</a></nav></aside>
       <main className="docs-main" id="main-content" tabIndex={-1}>
         <section className="docs-hero" id="overview"><span className="eyebrow">{t.eyebrow}</span><h1>{t.title}</h1><p>{t.lead}</p><div className="hero-cta"><Link className="btn btn-primary" href={"/profile"}>{t.openKeys}</Link><Link className="btn btn-ghost" href={"https://apitoken.sale/docs/learn"}>Claude API guides</Link></div></section>
 
@@ -383,19 +438,27 @@ export function DocsPortal() {
           <div className="docs-two-col"><CodeBlock title={t.claudeCode} description={t.claudeCodeText} code={withKey(CLAUDE_CODE)} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.editors} description={t.editorsText} code={withKey(CURSOR)} copyLabel={t.copy} copiedLabel={t.copied} /></div>
         </section>
 
+        <section className="docs-section" id="openai">
+          <div className="docs-section-heading"><span>05</span><div><h2>{t.openai}</h2><p>{t.openaiText}</p></div></div>
+          <div className="docs-essential-grid" style={{ marginBottom: 14 }}><Endpoint label={t.baseUrl} value={OPENAI_BASE_URL} copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label={t.authHeader} value={withKey("Authorization: Bearer sk-pool-•••")} copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label="Models" value={`${OPENAI_BASE_URL}/models`} copyLabel={t.copy} copiedLabel={t.copied} /></div>
+          <div className="docs-notice" style={{ marginBottom: 14 }}>{t.openaiNotice}</div>
+          <div className="docs-two-col" style={{ marginBottom: 18 }}><CodeBlock title={t.openaiRequest} description={t.openaiRequestText} code={withKey(OPENAI_CURL)} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.openaiPython} description={t.openaiPythonText} code={withKey(OPENAI_PYTHON)} copyLabel={t.copy} copiedLabel={t.copied} /></div>
+          <div className="docs-two-col"><CodeBlock title={t.codex} description={t.codexText} code={CODEX_PROFILE} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.codexRun} description={t.codexRunText} code={withKey(CODEX_RUN)} copyLabel={t.copy} copiedLabel={t.copied} /></div>
+        </section>
+
         <section className="docs-section" id="sdks">
-          <div className="docs-section-heading"><span>05</span><div><h2>{t.sdks}</h2><p>{t.sdksText}</p></div></div>
+          <div className="docs-section-heading"><span>06</span><div><h2>{t.sdks}</h2><p>{t.sdksText}</p></div></div>
           <div className="docs-two-col"><CodeBlock title={t.python} description={t.pythonText} code={PYTHON} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.typescript} description={t.typescriptText} code={TYPESCRIPT} copyLabel={t.copy} copiedLabel={t.copied} /></div>
         </section>
 
         <section className="docs-section" id="errors">
-          <div className="docs-section-heading"><span>06</span><div><h2>{t.errorTitle}</h2><p>{t.errorText}</p></div></div>
+          <div className="docs-section-heading"><span>07</span><div><h2>{t.errorTitle}</h2><p>{t.errorText}</p></div></div>
           <div className="table-scroll"><table className="mtable docs-errors"><thead><tr><th>{t.status}</th><th>{t.meaning}</th><th>{t.action}</th></tr></thead><tbody><ErrorRow code="401" meaning={t.e401} action={t.a401} labels={t} /><ErrorRow code="402" meaning={t.e402} action={t.a402} labels={t} /><ErrorRow code="429" meaning={t.e429} action={t.a429} labels={t} /><ErrorRow code="5xx" meaning={t.e5xx} action={t.a5xx} labels={t} /></tbody></table></div>
           <div className="docs-checklist"><h3>{t.production}</h3><ul>{t.checklist.map((item) => <li key={item}>{item}</li>)}</ul></div>
         </section>
 
         <section className="docs-section" id="cache">
-          <div className="docs-section-heading"><span>07</span><div><h2>{t.cacheTitle}</h2><p>{t.cacheLead}</p></div></div>
+          <div className="docs-section-heading"><span>08</span><div><h2>{t.cacheTitle}</h2><p>{t.cacheLead}</p></div></div>
           <h3 className="docs-h3">{t.cacheWhyHead}</h3><p className="docs-para">{t.cacheWhyText}</p>
           <div className="docs-notice">{t.cacheNotice}</div>
           <h3 className="docs-h3">{t.cacheHowHead}</h3><p className="docs-para">{t.cacheHowText}</p>
