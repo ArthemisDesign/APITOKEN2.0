@@ -1683,9 +1683,9 @@ pub fn usage_event_add(
     Ok(())
 }
 
-/// Агрегат usage по модели за окно (ts ≥ `since_ts`). Суммы токенов по корзинам + real/charge nano
-/// + число запросов. Долларовый эквивалент по корзинам считает вызывающий (server, через metering).
-#[derive(Debug, Clone, Default)]
+/// Агрегат usage по модели за окно. Суммы токенов по корзинам + immutable real/charge nano
+/// + число тарифицируемых событий.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UsageModelAgg {
     pub model: String,
     pub requests: i64,
@@ -1705,10 +1705,37 @@ pub struct UsageModelAgg {
     pub web_search_nano: i64,
 }
 
-pub fn usage_by_model(
+/// Точный дневной срез того же usage-окна. `day_ts` — начало UTC-дня в unix-секундах.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UsageDailyAgg {
+    pub day_ts: i64,
+    pub requests: i64,
+    pub real_nano: i64,
+    pub charge_nano: i64,
+}
+
+/// Точный per-key срез usage-окна. Полный ключ остаётся внутри engine-процесса и маскируется
+/// HTTP-слоем до ответа control API.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UsageKeyAgg {
+    pub key: Option<String>,
+    pub requests: i64,
+    pub real_nano: i64,
+    pub charge_nano: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UsageReport {
+    pub models: Vec<UsageModelAgg>,
+    pub daily: Vec<UsageDailyAgg>,
+    pub keys: Vec<UsageKeyAgg>,
+}
+
+fn usage_by_model_between(
     conn: &Connection,
     account_id: &str,
     since_ts: i64,
+    until_ts: i64,
 ) -> Result<Vec<UsageModelAgg>> {
     let mut stmt = conn.prepare(
         "SELECT COALESCE(model,''), COUNT(*), \
@@ -1719,8 +1746,10 @@ pub fn usage_by_model(
          COALESCE(SUM(input_nano),0), COALESCE(SUM(output_nano),0), \
          COALESCE(SUM(cache_read_nano),0), COALESCE(SUM(cache_write_5m_nano),0), \
          COALESCE(SUM(cache_write_1h_nano),0), COALESCE(SUM(web_search_nano),0) \
-         FROM usage_events WHERE account_id=?1 AND ts>=?2 GROUP BY model ORDER BY SUM(real_nano) DESC")?;
-    let rows = stmt.query_map(rusqlite::params![account_id, since_ts], |r| {
+         FROM usage_events WHERE account_id=?1 AND ts>=?2 AND ts<?3 \
+         GROUP BY model ORDER BY SUM(real_nano) DESC, model",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![account_id, since_ts, until_ts], |r| {
         Ok(UsageModelAgg {
             model: r.get(0)?,
             requests: r.get(1)?,
@@ -1740,7 +1769,73 @@ pub fn usage_by_model(
             web_search_nano: r.get(15)?,
         })
     })?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+pub fn usage_by_model(
+    conn: &Connection,
+    account_id: &str,
+    since_ts: i64,
+) -> Result<Vec<UsageModelAgg>> {
+    usage_by_model_between(conn, account_id, since_ts, i64::MAX)
+}
+
+/// Один согласованный usage-отчёт на полуинтервале `[since_ts, until_ts)`. Все три среза
+/// читаются из одного snapshot, поэтому параллельный settle не может попасть только в часть отчёта.
+pub fn usage_report(
+    conn: &Connection,
+    account_id: &str,
+    since_ts: i64,
+    until_ts: i64,
+) -> Result<UsageReport> {
+    if until_ts <= since_ts {
+        return Ok(UsageReport::default());
+    }
+    let transaction = conn.unchecked_transaction()?;
+    let models = usage_by_model_between(&transaction, account_id, since_ts, until_ts)?;
+    let daily = {
+        let mut stmt = transaction.prepare(
+            "SELECT (ts / 86400) * 86400 AS day_ts, COUNT(*), \
+             COALESCE(SUM(real_nano),0), COALESCE(SUM(charge_nano),0) \
+             FROM usage_events WHERE account_id=?1 AND ts>=?2 AND ts<?3 \
+             GROUP BY day_ts ORDER BY day_ts",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![account_id, since_ts, until_ts], |r| {
+                Ok(UsageDailyAgg {
+                    day_ts: r.get(0)?,
+                    requests: r.get(1)?,
+                    real_nano: r.get(2)?,
+                    charge_nano: r.get(3)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows
+    };
+    let keys = {
+        let mut stmt = transaction.prepare(
+            "SELECT key, COUNT(*), COALESCE(SUM(real_nano),0), COALESCE(SUM(charge_nano),0) \
+             FROM usage_events WHERE account_id=?1 AND ts>=?2 AND ts<?3 \
+             GROUP BY key ORDER BY SUM(real_nano) DESC, key",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![account_id, since_ts, until_ts], |r| {
+                Ok(UsageKeyAgg {
+                    key: r.get(0)?,
+                    requests: r.get(1)?,
+                    real_nano: r.get(2)?,
+                    charge_nano: r.get(3)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows
+    };
+    transaction.commit()?;
+    Ok(UsageReport {
+        models,
+        daily,
+        keys,
+    })
 }
 
 /// Агрегат расхода ПО АККАУНТАМ за окно (ts ≥ `since_ts`): списано клиенту (charge) +
@@ -2580,6 +2675,93 @@ mod tests {
         // prune всего → таблица пуста
         assert!(usage_prune(&c, now() + 10_000).unwrap() >= 3);
         assert!(usage_by_model(&c, "a", 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn usage_report_uses_one_exact_window_for_daily_and_key_totals() {
+        let c = db();
+        acct_with_key(&c, "a", "k", 100_000_000_000, 4000);
+        let day_one = 20_000 * 86_400;
+        let day_two = day_one + 86_400;
+        let first = UsageEventInput {
+            model: "claude-opus-4-8".into(),
+            input_tokens: 10,
+            real_nano: 20_000_000,
+            input_nano: 20_000_000,
+            ..Default::default()
+        };
+        let second = UsageEventInput {
+            model: "claude-opus-4-8".into(),
+            output_tokens: 10,
+            real_nano: 30_000_000,
+            output_nano: 30_000_000,
+            ..Default::default()
+        };
+        let third = UsageEventInput {
+            model: "claude-sonnet-5".into(),
+            cache_read_tokens: 10,
+            real_nano: 5_000_000,
+            cache_read_nano: 5_000_000,
+            ..Default::default()
+        };
+        usage_event_add(&c, "a", Some("k"), &first, 8_000_000, Some("r1")).unwrap();
+        usage_event_add(&c, "a", Some("k"), &second, 12_000_000, Some("r2")).unwrap();
+        usage_event_add(&c, "a", Some("k-other"), &third, 2_000_000, Some("r3")).unwrap();
+        c.execute(
+            "UPDATE usage_events SET ts=CASE ref \
+             WHEN 'r1' THEN ?1 WHEN 'r2' THEN ?2 ELSE ?3 END",
+            rusqlite::params![day_one + 100, day_one + 200, day_two + 10],
+        )
+        .unwrap();
+
+        let report = usage_report(&c, "a", day_one + 150, day_two + 100).unwrap();
+        assert_eq!(report.models.len(), 2);
+        assert_eq!(
+            report.daily,
+            vec![
+                UsageDailyAgg {
+                    day_ts: day_one,
+                    requests: 1,
+                    real_nano: 30_000_000,
+                    charge_nano: 12_000_000,
+                },
+                UsageDailyAgg {
+                    day_ts: day_two,
+                    requests: 1,
+                    real_nano: 5_000_000,
+                    charge_nano: 2_000_000,
+                },
+            ]
+        );
+        assert_eq!(
+            report.keys,
+            vec![
+                UsageKeyAgg {
+                    key: Some("k".into()),
+                    requests: 1,
+                    real_nano: 30_000_000,
+                    charge_nano: 12_000_000,
+                },
+                UsageKeyAgg {
+                    key: Some("k-other".into()),
+                    requests: 1,
+                    real_nano: 5_000_000,
+                    charge_nano: 2_000_000,
+                },
+            ]
+        );
+        assert_eq!(
+            report.daily.iter().map(|row| row.real_nano).sum::<i64>(),
+            report.models.iter().map(|row| row.real_nano).sum::<i64>(),
+        );
+        assert_eq!(
+            report.keys.iter().map(|row| row.charge_nano).sum::<i64>(),
+            report.models.iter().map(|row| row.charge_nano).sum::<i64>(),
+        );
+        assert_eq!(
+            usage_report(&c, "a", day_two, day_two).unwrap(),
+            UsageReport::default()
+        );
     }
 
     /// Оба апстрима сеттлятся в одни и те же денежные таблицы, поэтому «кто заработал» должно

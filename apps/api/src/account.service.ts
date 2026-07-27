@@ -156,6 +156,8 @@ export class AccountService {
     const usage = await this.withEngineAccount(userId, (accountId) => this.engine.getUsage(accountId, window));
     return {
       window: usage.window,
+      sinceTs: usage.since_ts,
+      untilTs: usage.until_ts,
       requests: usage.requests,
       totalOfficialNano: usage.total_official_nano,
       totalChargedNano: usage.total_charged_nano,
@@ -165,6 +167,7 @@ export class AccountService {
         cacheRead: { tokens: usage.buckets.cache_read.tokens, officialNano: usage.buckets.cache_read.official_nano },
         cacheWrite: { tokens: usage.buckets.cache_write.tokens, officialNano: usage.buckets.cache_write.official_nano },
         webSearch: { requests: usage.buckets.web_search.requests, officialNano: usage.buckets.web_search.official_nano },
+        unattributedLegacy: { officialNano: usage.buckets.unattributed_legacy.official_nano },
       },
       models: usage.models.map((model) => ({
         model: model.model,
@@ -177,6 +180,18 @@ export class AccountService {
         webSearchRequests: model.web_search_requests,
         officialNano: model.official_nano,
         chargedNano: model.charged_nano,
+      })),
+      daily: usage.daily.map((day) => ({
+        dayTs: day.day_ts,
+        requests: day.requests,
+        officialNano: day.official_nano,
+        chargedNano: day.charged_nano,
+      })),
+      keys: usage.keys.map((key) => ({
+        keyMasked: key.key_masked,
+        requests: key.requests,
+        officialNano: key.official_nano,
+        chargedNano: key.charged_nano,
       })),
     };
   }

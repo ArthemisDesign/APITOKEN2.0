@@ -941,6 +941,8 @@ footer{padding:64px 0 40px;border-bottom:0}
 
 /* Usage — token buckets + per-model distribution */
 .tok-buckets{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:16px}
+.tokb-legacy{background:color-mix(in srgb,var(--accent) 5%,var(--bg-card))}
+.bucket-note{margin:-5px 0 16px;color:var(--txt-4);font-family:var(--font-mono);font-size:11px;line-height:1.55}
 .tokb{background:var(--bg-card);padding:14px 18px;display:flex;flex-direction:column;gap:5px;min-width:0}
 .tokb .dlabel{font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt-4)}
 .tokb>b{font-family:var(--font-mono);font-size:20px;color:var(--txt);font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
@@ -953,7 +955,7 @@ footer{padding:64px 0 40px;border-bottom:0}
 .mdist-tip{bottom:calc(100% + 8px);transform:translate(-50%,0)}
 .tkmdl{display:inline-flex;align-items:center;gap:8px;font-family:var(--font-mono);font-weight:600;color:var(--txt);white-space:nowrap}
 .tkmdl-dot{width:9px;height:9px;border-radius:3px;flex:none}
-@media(max-width:820px){.tok-buckets{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:820px){.tok-buckets{grid-template-columns:repeat(2,minmax(0,1fr))}.tokb-legacy{grid-column:1/-1}}
 
 /* Transactions history — grouped by day, expandable (no infinite flat list) */
 .txh{display:flex;flex-direction:column;gap:14px}

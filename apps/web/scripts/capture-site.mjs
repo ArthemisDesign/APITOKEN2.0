@@ -138,6 +138,7 @@ const dashboardCaptures = [
   ["dashboard-topup-mobile-russian", "/dashboard?view=credits", 390, 844, "light", "ru"],
   ["dashboard-usage-light", "/dashboard?view=usage", 1440, 1000, "light"],
   ["dashboard-usage-dark", "/dashboard?view=usage", 1440, 1000, "dark"],
+  ["dashboard-usage-russian-light", "/dashboard?view=usage", 1440, 1000, "light", "ru"],
   ["dashboard-support-dark", "/dashboard?view=support", 1440, 1000, "dark"],
   ["dashboard-support-light", "/dashboard?view=support", 1440, 1000, "light"],
   ["dashboard-promos-light", "/dashboard?view=promos", 1440, 1000, "light"],
@@ -157,6 +158,7 @@ const dashboardCaptures = [
   ["dashboard-keys-edit-mobile-russian-dark", "/dashboard?view=keys", 390, 844, "dark", "ru", "key-edit-open"],
   ["dashboard-usage-mobile-light", "/dashboard?view=usage", 390, 844, "light"],
   ["dashboard-usage-mobile-dark", "/dashboard?view=usage", 390, 844, "dark"],
+  ["dashboard-usage-mobile-russian-dark", "/dashboard?view=usage", 390, 844, "dark", "ru"],
   ["dashboard-support-mobile-light", "/dashboard?view=support", 390, 844, "light"],
   ["dashboard-support-mobile-dark", "/dashboard?view=support", 390, 844, "dark"],
   ["dashboard-promos-mobile-light", "/dashboard?view=promos", 390, 844, "light"],
@@ -300,19 +302,31 @@ const dashboardFixtureScript = `(() => {
   ];
   const entries = chg.map((c, i) => ({ id: "c" + i, kind: "charge", amountNano: c[1], amountUsd: "$" + (Number(c[1]) / 1e9).toFixed(6), keyMasked: "sk-pool-a5b5••••••••eeb", reference: "req_0" + i, model: c[2], balanceAfterNano: null, timestamp: String(nowS - c[0] * DAY - i * 137) }));
   entries.push({ id: "t0", kind: "topup", amountNano: "12000000000", amountUsd: "$12.000000", discountPercent: 60, keyMasked: null, reference: "cryptomus_9f2c1a", balanceAfterNano: null, timestamp: String(nowS - 3 * DAY) });
+  const todayUtc = Math.floor(nowS / DAY) * DAY;
   const usage = {
-    window: "30d", requests: 4154, totalOfficialNano: "656880000000", totalChargedNano: "262752000000",
+    window: "30d", sinceTs: nowS - 30 * DAY, untilTs: nowS, requests: 59, totalOfficialNano: "22984893050", totalChargedNano: "9193957220",
     buckets: {
       input: { tokens: 3781269, officialNano: "15124021000" },
       output: { tokens: 15168, officialNano: "228560000" },
       cacheRead: { tokens: 4866858, officialNano: "1840525800" },
       cacheWrite: { tokens: 741129, officialNano: "3041786250" },
       webSearch: { requests: 0, officialNano: "0" },
+      unattributedLegacy: { officialNano: "2750000000" },
     },
     models: [
-      { model: "claude-opus-4-8", requests: 3000, inputTokens: 1890211, outputTokens: 5100, cacheReadTokens: 2256400, cacheWrite5mTokens: 282050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "394128000000", chargedNano: "157651200000" },
-      { model: "claude-sonnet-5", requests: 1000, inputTokens: 1890954, outputTokens: 5072, cacheReadTokens: 2256400, cacheWrite5mTokens: 282050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "197064000000", chargedNano: "78825600000" },
-      { model: "claude-haiku-4-5-20251001", requests: 154, inputTokens: 104, outputTokens: 4996, cacheReadTokens: 354058, cacheWrite5mTokens: 177029, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "65688000000", chargedNano: "26275200000" },
+      { model: "claude-opus-4-8", requests: 27, inputTokens: 1890211, outputTokens: 5100, cacheReadTokens: 2256400, cacheWrite5mTokens: 282050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "15219567500", chargedNano: "6087827000" },
+      { model: "claude-sonnet-5", requests: 27, inputTokens: 1890954, outputTokens: 5072, cacheReadTokens: 2256400, cacheWrite5mTokens: 282050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "7483549500", chargedNano: "2993419800" },
+      { model: "claude-haiku-4-5-20251001", requests: 5, inputTokens: 104, outputTokens: 4996, cacheReadTokens: 354058, cacheWrite5mTokens: 177029, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "281776050", chargedNano: "112710420" },
+    ],
+    daily: [
+      { dayTs: todayUtc - 3 * DAY, requests: 20, officialNano: "8000000000", chargedNano: "3200000000" },
+      { dayTs: todayUtc - 2 * DAY, requests: 16, officialNano: "6000000000", chargedNano: "2400000000" },
+      { dayTs: todayUtc - DAY, requests: 13, officialNano: "5000000000", chargedNano: "2000000000" },
+      { dayTs: todayUtc, requests: 10, officialNano: "3984893050", chargedNano: "1593957220" },
+    ],
+    keys: [
+      { keyMasked: "sk-pool-a5b5••••••••eeb", requests: 45, officialNano: "18000000000", chargedNano: "7200000000" },
+      { keyMasked: "sk-pool-45e1••••••••bc8", requests: 14, officialNano: "4984893050", chargedNano: "1993957220" },
     ],
   };
   window.fetch = (input, init = {}) => {

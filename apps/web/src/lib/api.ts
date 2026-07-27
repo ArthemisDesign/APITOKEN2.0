@@ -111,8 +111,22 @@ export interface UsageModelRow {
   officialNano: string;
   chargedNano: string;
 }
+export interface UsageDailyRow {
+  dayTs: number;
+  requests: number;
+  officialNano: string;
+  chargedNano: string;
+}
+export interface UsageKeyRow {
+  keyMasked: string | null;
+  requests: number;
+  officialNano: string;
+  chargedNano: string;
+}
 export interface UsageView {
   window: string;
+  sinceTs: number;
+  untilTs: number;
   requests: number;
   totalOfficialNano: string;
   totalChargedNano: string;
@@ -122,8 +136,11 @@ export interface UsageView {
     cacheRead: UsageBucket;
     cacheWrite: UsageBucket;
     webSearch: UsageWebSearchBucket;
+    unattributedLegacy: { officialNano: string };
   };
   models: UsageModelRow[];
+  daily: UsageDailyRow[];
+  keys: UsageKeyRow[];
 }
 
 export interface CheckoutView {

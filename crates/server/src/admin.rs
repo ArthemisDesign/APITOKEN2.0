@@ -696,15 +696,20 @@ pub struct UsageQuery {
     window: Option<String>,
 }
 
-/// Окно вида "30d"/"7d"/"24h"/"90d"/"all" → нижняя граница ts (unix-сек). Дефолт — 30 дней.
-fn window_since(window: &str) -> (String, i64) {
+/// Окно вида "30d"/"7d"/"24h"/"90d"/"all" → фиксированный полуинтервал unix-секунд.
+/// Верхняя граница фиксирует отчёт: параллельный settle не может попасть только в один из срезов.
+fn window_bounds(window: &str) -> (String, i64, i64) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    window_bounds_at(window, now)
+}
+
+fn window_bounds_at(window: &str, now: i64) -> (String, i64, i64) {
     let w = window.trim();
     if w.eq_ignore_ascii_case("all") {
-        return ("all".into(), 0);
+        return ("all".into(), 0, now);
     }
     let (num, unit_secs) = if let Some(n) = w.strip_suffix('h') {
         (n.parse::<i64>().ok(), 3_600)
@@ -713,14 +718,64 @@ fn window_since(window: &str) -> (String, i64) {
     } else {
         (None, 0)
     };
-    match num {
-        Some(n) if n > 0 => (w.to_string(), now - n * unit_secs),
-        _ => ("30d".into(), now - 30 * 86_400), // дефолт при пустом/битом окне
+    match num.and_then(|n| n.checked_mul(unit_secs).filter(|_| n > 0)) {
+        Some(duration) => (w.to_string(), now.saturating_sub(duration), now),
+        None => ("30d".into(), now.saturating_sub(30 * 86_400), now),
     }
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct UsageSummary {
+    input_nano: i128,
+    output_nano: i128,
+    cache_read_nano: i128,
+    cache_write_nano: i128,
+    web_search_nano: i128,
+    unattributed_nano: i128,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_write_tokens: i64,
+    web_search_requests: i64,
+    total_official_nano: i128,
+    total_charged_nano: i128,
+    billed_events: i64,
+}
+
+fn summarize_usage(aggs: &[registry::UsageModelAgg]) -> UsageSummary {
+    let mut summary = UsageSummary::default();
+    for model in aggs {
+        let stored_components = model.input_nano as i128
+            + model.output_nano as i128
+            + model.cache_read_nano as i128
+            + model.cache_write_5m_nano as i128
+            + model.cache_write_1h_nano as i128
+            + model.web_search_nano as i128;
+        if stored_components == 0 && model.real_nano > 0 {
+            summary.unattributed_nano += model.real_nano as i128;
+        } else {
+            summary.input_nano += model.input_nano as i128;
+            summary.output_nano += model.output_nano as i128;
+            summary.cache_read_nano += model.cache_read_nano as i128;
+            summary.cache_write_nano +=
+                model.cache_write_5m_nano as i128 + model.cache_write_1h_nano as i128;
+            summary.web_search_nano += model.web_search_nano as i128;
+        }
+        summary.input_tokens += model.input_tokens;
+        summary.output_tokens += model.output_tokens;
+        summary.cache_read_tokens += model.cache_read_tokens;
+        summary.cache_write_tokens +=
+            model.cache_write_5m_tokens + model.cache_write_1h_tokens;
+        summary.web_search_requests += model.web_search_requests;
+        summary.total_official_nano += model.real_nano as i128;
+        summary.total_charged_nano += model.charge_nano as i128;
+        summary.billed_events += model.requests;
+    }
+    summary
+}
+
 /// GET /admin/account/{id}/usage?window=30d — разбивка расхода по токенам/моделям для дашборда.
-/// Долларовый эквивалент по корзинам считаем здесь (per-model суммы токенов × официальные ставки).
+/// Dollar-значения — сохранённые immutable компоненты settlement, а не пересчёт по текущему прайсу.
 pub async fn list_usage(
     State(app): State<AppState>,
     Path(id): Path<String>,
@@ -741,47 +796,22 @@ pub async fn list_usage(
         }
         Err(error) => return authority_unavailable("account lookup", error),
     }
-    let (window, since) = window_since(q.window.as_deref().unwrap_or("30d"));
-    let aggs = match b.usage_by_model(&id, since).await {
-        Ok(aggs) => aggs,
+    let (window, since, until) = window_bounds(q.window.as_deref().unwrap_or("30d"));
+    let report = match b.usage_report(&id, since, until).await {
+        Ok(report) => report,
         Err(error) => return authority_unavailable("usage aggregation", error),
     };
+    let registry::UsageReport {
+        models: aggs,
+        daily,
+        keys,
+    } = report;
 
-    // Sum immutable monetary components captured at settlement. Legacy rows created before
-    // migration 0004 retain their exact real_nano total but cannot be truthfully split across
-    // buckets; report that amount as unattributed instead of repricing history at today's tariff.
-    let (mut in_n, mut out_n, mut cr_n, mut cw_n, mut ws_n): (i128, i128, i128, i128, i128) =
-        (0, 0, 0, 0, 0);
-    let mut unattributed_n: i128 = 0;
-    let (mut in_t, mut out_t, mut cr_t, mut cw_t, mut ws_r): (i64, i64, i64, i64, i64) =
-        (0, 0, 0, 0, 0);
-    let (mut total_official, mut total_charged, mut total_requests): (i128, i128, i64) = (0, 0, 0);
+    // Legacy rows retain their exact total but cannot be truthfully split across token buckets.
+    let summary = summarize_usage(&aggs);
     let models: Vec<_> = aggs
         .iter()
         .map(|m| {
-            let stored_components = m.input_nano as i128
-                + m.output_nano as i128
-                + m.cache_read_nano as i128
-                + m.cache_write_5m_nano as i128
-                + m.cache_write_1h_nano as i128
-                + m.web_search_nano as i128;
-            if stored_components == 0 && m.real_nano > 0 {
-                unattributed_n += m.real_nano as i128;
-            } else {
-                in_n += m.input_nano as i128;
-                out_n += m.output_nano as i128;
-                cr_n += m.cache_read_nano as i128;
-                cw_n += m.cache_write_5m_nano as i128 + m.cache_write_1h_nano as i128;
-                ws_n += m.web_search_nano as i128;
-            }
-            in_t += m.input_tokens;
-            out_t += m.output_tokens;
-            cr_t += m.cache_read_tokens;
-            cw_t += m.cache_write_5m_tokens + m.cache_write_1h_tokens;
-            ws_r += m.web_search_requests;
-            total_official += m.real_nano as i128;
-            total_charged += m.charge_nano as i128;
-            total_requests += m.requests;
             json!({
                 "model": m.model,
                 "requests": m.requests,
@@ -796,22 +826,135 @@ pub async fn list_usage(
             })
         })
         .collect();
+    let daily: Vec<_> = daily
+        .into_iter()
+        .map(|day| {
+            json!({
+                "day_ts": day.day_ts,
+                "requests": day.requests,
+                "official_nano": day.real_nano.to_string(),
+                "charged_nano": day.charge_nano.to_string(),
+            })
+        })
+        .collect();
+    let keys: Vec<_> = keys
+        .into_iter()
+        .map(|key| {
+            json!({
+                "key_masked": key.key.as_deref().map(mask),
+                "requests": key.requests,
+                "official_nano": key.real_nano.to_string(),
+                "charged_nano": key.charge_nano.to_string(),
+            })
+        })
+        .collect();
 
     Json(json!({
         "account": id,
         "window": window,
-        "requests": total_requests,
-        "total_official_nano": total_official.to_string(),
-        "total_charged_nano": total_charged.to_string(),
+        "since_ts": since,
+        "until_ts": until,
+        "requests": summary.billed_events,
+        "total_official_nano": summary.total_official_nano.to_string(),
+        "total_charged_nano": summary.total_charged_nano.to_string(),
         "buckets": {
-            "input": { "tokens": in_t, "official_nano": in_n.to_string() },
-            "output": { "tokens": out_t, "official_nano": out_n.to_string() },
-            "cache_read": { "tokens": cr_t, "official_nano": cr_n.to_string() },
-            "cache_write": { "tokens": cw_t, "official_nano": cw_n.to_string() },
-            "web_search": { "requests": ws_r, "official_nano": ws_n.to_string() },
-            "unattributed_legacy": { "official_nano": unattributed_n.to_string() },
+            "input": { "tokens": summary.input_tokens, "official_nano": summary.input_nano.to_string() },
+            "output": { "tokens": summary.output_tokens, "official_nano": summary.output_nano.to_string() },
+            "cache_read": { "tokens": summary.cache_read_tokens, "official_nano": summary.cache_read_nano.to_string() },
+            "cache_write": { "tokens": summary.cache_write_tokens, "official_nano": summary.cache_write_nano.to_string() },
+            "web_search": { "requests": summary.web_search_requests, "official_nano": summary.web_search_nano.to_string() },
+            "unattributed_legacy": { "official_nano": summary.unattributed_nano.to_string() },
         },
         "models": models,
+        "daily": daily,
+        "keys": keys,
     }))
     .into_response()
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::{summarize_usage, window_bounds_at, UsageSummary};
+    use registry::UsageModelAgg;
+
+    #[test]
+    fn usage_windows_are_fixed_half_open_intervals() {
+        let now = 2_000_000_000;
+        assert_eq!(
+            window_bounds_at("30d", now),
+            ("30d".into(), now - 30 * 86_400, now)
+        );
+        assert_eq!(
+            window_bounds_at("24h", now),
+            ("24h".into(), now - 24 * 3_600, now)
+        );
+        assert_eq!(window_bounds_at("all", now), ("all".into(), 0, now));
+    }
+
+    #[test]
+    fn invalid_or_overflowing_usage_windows_fall_back_safely() {
+        let now = 2_000_000_000;
+        let expected = ("30d".into(), now - 30 * 86_400, now);
+        assert_eq!(window_bounds_at("broken", now), expected);
+        assert_eq!(window_bounds_at("999999999999999999d", now), expected);
+    }
+
+    #[test]
+    fn stored_buckets_and_legacy_value_reconcile_exactly_without_overflow() {
+        let modern = UsageModelAgg {
+            requests: 2,
+            input_tokens: 10,
+            output_tokens: 20,
+            cache_read_tokens: 30,
+            cache_write_5m_tokens: 4,
+            cache_write_1h_tokens: 5,
+            web_search_requests: 6,
+            real_nano: 21,
+            charge_nano: 8,
+            input_nano: 1,
+            output_nano: 2,
+            cache_read_nano: 3,
+            cache_write_5m_nano: 4,
+            cache_write_1h_nano: 5,
+            web_search_nano: 6,
+            ..Default::default()
+        };
+        let legacy = UsageModelAgg {
+            requests: 3,
+            input_tokens: 7,
+            real_nano: i64::MAX,
+            charge_nano: i64::MAX,
+            ..Default::default()
+        };
+
+        let summary = summarize_usage(&[modern, legacy]);
+        assert_eq!(
+            summary,
+            UsageSummary {
+                input_nano: 1,
+                output_nano: 2,
+                cache_read_nano: 3,
+                cache_write_nano: 9,
+                web_search_nano: 6,
+                unattributed_nano: i64::MAX as i128,
+                input_tokens: 17,
+                output_tokens: 20,
+                cache_read_tokens: 30,
+                cache_write_tokens: 9,
+                web_search_requests: 6,
+                total_official_nano: i64::MAX as i128 + 21,
+                total_charged_nano: i64::MAX as i128 + 8,
+                billed_events: 5,
+            }
+        );
+        assert_eq!(
+            summary.input_nano
+                + summary.output_nano
+                + summary.cache_read_nano
+                + summary.cache_write_nano
+                + summary.web_search_nano
+                + summary.unattributed_nano,
+            summary.total_official_nano
+        );
+    }
 }

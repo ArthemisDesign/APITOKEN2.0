@@ -5,11 +5,12 @@
 
 use crate::{
     mask_proxy, AccountRow, BillingTotals, KeyAuth, KeyPolicyUpdate, KeyRow, LedgerRow,
-    PoolStateRow, SpendAccountAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow, UsageEventInput, UsageModelAgg,
+    PoolStateRow, SpendAccountAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow,
+    UsageDailyAgg, UsageEventInput, UsageKeyAgg, UsageModelAgg, UsageReport,
 };
 use anyhow::{bail, Context, Result};
 use postgres::config::{Host, SslMode};
-use postgres::{Client, Row, Transaction};
+use postgres::{Client, IsolationLevel, Row, Transaction};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 const MIGRATION_0001: &str = include_str!("../migrations_pg/0001_engine_authority.sql");
@@ -1390,6 +1391,14 @@ impl PgStore {
         account_id: &str,
         since_ts: i64,
     ) -> Result<Vec<UsageModelAgg>> {
+        self.usage_by_model_between(account_id, since_ts, i64::MAX)
+    }
+    fn usage_by_model_between(
+        &mut self,
+        account_id: &str,
+        since_ts: i64,
+        until_ts: i64,
+    ) -> Result<Vec<UsageModelAgg>> {
         Ok(self.client.query(
             "SELECT COALESCE(model,''),COUNT(*)::bigint,COALESCE(SUM(input_tokens),0)::bigint, \
              COALESCE(SUM(output_tokens),0)::bigint,COALESCE(SUM(cache_read_tokens),0)::bigint, \
@@ -1398,9 +1407,10 @@ impl PgStore {
              COALESCE(SUM(charge_nano),0)::bigint,COALESCE(SUM(input_nano),0)::bigint, \
              COALESCE(SUM(output_nano),0)::bigint,COALESCE(SUM(cache_read_nano),0)::bigint, \
              COALESCE(SUM(cache_write_5m_nano),0)::bigint,COALESCE(SUM(cache_write_1h_nano),0)::bigint, \
-             COALESCE(SUM(web_search_nano),0)::bigint FROM usage_events WHERE account_id=$1 AND ts >= $2 \
-             GROUP BY model ORDER BY SUM(real_nano) DESC",
-            &[&account_id,&since_ts],
+             COALESCE(SUM(web_search_nano),0)::bigint FROM usage_events \
+             WHERE account_id=$1 AND ts >= $2 AND ts < $3 \
+             GROUP BY model ORDER BY SUM(real_nano) DESC, model",
+            &[&account_id,&since_ts,&until_ts],
         )?.into_iter().map(|r| UsageModelAgg {
             model:r.get(0),requests:r.get(1),input_tokens:r.get(2),output_tokens:r.get(3),
             cache_read_tokens:r.get(4),cache_write_5m_tokens:r.get(5),cache_write_1h_tokens:r.get(6),
@@ -1409,11 +1419,80 @@ impl PgStore {
             cache_write_5m_nano:r.get(13),cache_write_1h_nano:r.get(14),web_search_nano:r.get(15),
         }).collect())
     }
-    pub fn spend_by_account(
+    pub fn usage_report(
         &mut self,
+        account_id: &str,
         since_ts: i64,
-        limit: i64,
-    ) -> Result<Vec<SpendAccountAgg>> {
+        until_ts: i64,
+    ) -> Result<UsageReport> {
+        if until_ts <= since_ts {
+            return Ok(UsageReport::default());
+        }
+        let mut transaction = self
+            .client
+            .build_transaction()
+            .isolation_level(IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()?;
+        let models = transaction.query(
+            "SELECT COALESCE(model,''),COUNT(*)::bigint,COALESCE(SUM(input_tokens),0)::bigint, \
+             COALESCE(SUM(output_tokens),0)::bigint,COALESCE(SUM(cache_read_tokens),0)::bigint, \
+             COALESCE(SUM(cache_write_5m_tokens),0)::bigint,COALESCE(SUM(cache_write_1h_tokens),0)::bigint, \
+             COALESCE(SUM(web_search_requests),0)::bigint,COALESCE(SUM(real_nano),0)::bigint, \
+             COALESCE(SUM(charge_nano),0)::bigint,COALESCE(SUM(input_nano),0)::bigint, \
+             COALESCE(SUM(output_nano),0)::bigint,COALESCE(SUM(cache_read_nano),0)::bigint, \
+             COALESCE(SUM(cache_write_5m_nano),0)::bigint,COALESCE(SUM(cache_write_1h_nano),0)::bigint, \
+             COALESCE(SUM(web_search_nano),0)::bigint FROM usage_events \
+             WHERE account_id=$1 AND ts >= $2 AND ts < $3 \
+             GROUP BY model ORDER BY SUM(real_nano) DESC, model",
+            &[&account_id, &since_ts, &until_ts],
+        )?.into_iter().map(|r| UsageModelAgg {
+            model:r.get(0),requests:r.get(1),input_tokens:r.get(2),output_tokens:r.get(3),
+            cache_read_tokens:r.get(4),cache_write_5m_tokens:r.get(5),cache_write_1h_tokens:r.get(6),
+            web_search_requests:r.get(7),real_nano:r.get(8),charge_nano:r.get(9),
+            input_nano:r.get(10),output_nano:r.get(11),cache_read_nano:r.get(12),
+            cache_write_5m_nano:r.get(13),cache_write_1h_nano:r.get(14),web_search_nano:r.get(15),
+        }).collect();
+        let daily = transaction
+            .query(
+                "SELECT (ts / 86400) * 86400 AS day_ts, COUNT(*)::bigint, \
+             COALESCE(SUM(real_nano),0)::bigint, COALESCE(SUM(charge_nano),0)::bigint \
+             FROM usage_events WHERE account_id=$1 AND ts >= $2 AND ts < $3 \
+             GROUP BY day_ts ORDER BY day_ts",
+                &[&account_id, &since_ts, &until_ts],
+            )?
+            .into_iter()
+            .map(|r| UsageDailyAgg {
+                day_ts: r.get(0),
+                requests: r.get(1),
+                real_nano: r.get(2),
+                charge_nano: r.get(3),
+            })
+            .collect();
+        let keys = transaction
+            .query(
+                "SELECT key, COUNT(*)::bigint, COALESCE(SUM(real_nano),0)::bigint, \
+             COALESCE(SUM(charge_nano),0)::bigint \
+             FROM usage_events WHERE account_id=$1 AND ts >= $2 AND ts < $3 \
+             GROUP BY key ORDER BY SUM(real_nano) DESC, key",
+                &[&account_id, &since_ts, &until_ts],
+            )?
+            .into_iter()
+            .map(|r| UsageKeyAgg {
+                key: r.get(0),
+                requests: r.get(1),
+                real_nano: r.get(2),
+                charge_nano: r.get(3),
+            })
+            .collect();
+        transaction.commit()?;
+        Ok(UsageReport {
+            models,
+            daily,
+            keys,
+        })
+    }
+    pub fn spend_by_account(&mut self, since_ts: i64, limit: i64) -> Result<Vec<SpendAccountAgg>> {
         Ok(self
             .client
             .query(

@@ -16,6 +16,7 @@ import { dashboardCopy, type DashboardCopy } from "@/lib/dashboard-copy";
 import { DOCS_URL } from "@/lib/site-links";
 import { buildClaudeAgentHandoff, buildClaudeCodeCommands } from "@/lib/claude-connection";
 import { checkoutAmountBucket, trackFirstProductEvent, trackProductEvent } from "@/lib/product-analytics";
+import { buildUtcUsageSeries, usageWindowDays } from "@/lib/usage-series";
 import { dashboardHref, parseDashboardSection, type DashboardSection } from "./dashboard-route";
 
 type Section = DashboardSection;
@@ -70,7 +71,7 @@ const localDashboardCopy = {
     spentOfLimit: "{spent} of {limit}", spentWithoutLimit: "{spent} spent · no limit", createdOn: "Created {date}", createFirstKey: "Create your first key", clearSearch: "Clear search", viewCurrentKeys: "View current keys",
     never: "Never", neverUsed: "No billed usage", unlimited: "Unlimited", expiredStatus: "Expired", limitReachedStatus: "Limit reached", expiresSoonStatus: "Expires soon", nearLimitStatus: "Near limit", moreActions: "More actions", openDocs: "Integration guide", revokeKey: "Revoke key",
     revokeTitle: "Revoke this key?", revokeBody: "Requests using this key will stop immediately. This action cannot be undone.", confirmRevoke: "Revoke key", noSearchResults: "No API keys match your search.",
-    partialLedger: "Showing only the latest 100 ledger entries. Usage, key, transaction, and top-up totals based on this list may be incomplete.",
+    partialLedger: "Showing only the latest 100 ledger entries. Earlier transaction and top-up details are not shown.",
     topupNextRemaining: "Add {amount} more to reach {tier} (−{discount}%).",
     payWith: "Payment method",
   },
@@ -93,7 +94,7 @@ const localDashboardCopy = {
     spentOfLimit: "{spent} из {limit}", spentWithoutLimit: "Потрачено {spent} · без лимита", createdOn: "Создан {date}", createFirstKey: "Создать первый ключ", clearSearch: "Очистить поиск", viewCurrentKeys: "Показать текущие ключи",
     never: "Никогда", neverUsed: "Списаний не было", unlimited: "Без лимита", expiredStatus: "Истёк", limitReachedStatus: "Лимит исчерпан", expiresSoonStatus: "Скоро истечёт", nearLimitStatus: "Лимит близко", moreActions: "Другие действия", openDocs: "Инструкция подключения", revokeKey: "Отозвать ключ",
     revokeTitle: "Отозвать этот ключ?", revokeBody: "Запросы с этим ключом сразу перестанут работать. Действие нельзя отменить.", confirmRevoke: "Отозвать ключ", noSearchResults: "По вашему запросу ключи не найдены.",
-    partialLedger: "Показаны только последние 100 записей журнала. Итоги использования, ключей, операций и пополнений по этому списку могут быть неполными.",
+    partialLedger: "Показаны только последние 100 записей журнала. Более ранние операции и пополнения не показаны.",
     topupNextRemaining: "Добавьте ещё {amount}, чтобы получить {tier} (−{discount}%).",
     payWith: "Способ оплаты",
   },
@@ -1200,62 +1201,45 @@ function Credits({ account, ledger, ledgerAvailable }: { account: AccountView; l
 function Usage({ account, ledger, usage, ledgerAvailable }: { account: AccountView; ledger: LedgerEntry[]; usage: UsageView; ledgerAvailable: boolean }) {
   const copy = useDashboardCopy();
   const { language } = useI18n();
-  const localCopy = localDashboardCopy[language];
   const locale = language === "ru" ? "ru-RU" : "en-US";
   const models = usage.models;
   const modelOfficialTotal = models.reduce((sum, model) => sum + BigInt(model.officialNano), 0n);
 
-  // Скидка определяет, сколько реального Claude API стоит каждый списанный доллар:
-  // клиент платит multiplierBp от официальной цены → официальная ценность = списано × 10000 / multiplierBp.
+  // The current rate is only used for current pricing and remaining-balance projections.
+  // Historical usage amounts below come directly from the engine's settled usage rows.
   const multiplierBp = paymentBasisPoints(account);
-  // discountOf учитывает партнёрский пол (effectiveDiscountPercent), тогда как pricing.discountPercent —
-  // это тир-скидка. Для реферала с фикс-ставкой показываем реальную (эффективную) скидку.
   const discount = discountOf(account);
-  const netChargedNano = BigInt(account.spentNano);
-  const officialReceivedNano = officialNanoFromCharged(netChargedNano, multiplierBp);
 
-  const charges = ledger.filter((entry) => entry.kind === "charge");
-  const ledgerMayBePartial = ledger.length >= 100;
-
-  // Стабильный цвет на модель: сначала порядок из агрегата usage.models (совпадает с таблицей ниже),
-  // затем модели, встреченные только в ledger. Один и тот же id → один цвет во всех графиках.
+  // Stable model colours are shared by the distribution bar and model table.
   const modelColor = new Map<string, string>();
   const assignColor = (id: string) => { if (!modelColor.has(id)) modelColor.set(id, MODEL_COLORS[modelColor.size % MODEL_COLORS.length]!); };
   for (const model of models) assignColor(model.model);
 
-  // Match the authoritative /usage?window=30d aggregate: today plus the preceding 29 local days.
-  // The bars still come from the bounded ledger endpoint, so they are explicitly labelled as visible entries.
-  const [nowMs] = useState(() => Date.now());
-  const todayMs = startOfDay(nowMs);
-  const today = new Date(todayMs);
-  const days = Array.from({ length: 30 }, (_, index) => new Date(today.getFullYear(), today.getMonth(), today.getDate() - (29 - index)).getTime());
-
-  // День → (модель → официальная ценность $). Модель берём из charge.model, иначе «прочее».
-  const UNKNOWN_MODEL = "__other__";
-  const perDay = new Map<number, Map<string, bigint>>();
-  for (const charge of charges) {
-    const bucket = startOfDay(ledgerMs(charge.timestamp));
-    if (bucket < days[0]! || bucket > days[days.length - 1]!) continue;
-    const id = charge.model || UNKNOWN_MODEL;
-    assignColor(id);
-    const slot = perDay.get(bucket) ?? new Map<string, bigint>();
-    const officialNano = officialNanoFromCharged(BigInt(charge.amountNano), multiplierBp);
-    slot.set(id, (slot.get(id) ?? 0n) + officialNano);
-    perDay.set(bucket, slot);
-  }
-  const series = days.map((day) => {
-    const byModel = perDay.get(day);
-    const segs = byModel ? [...byModel.entries()].map(([id, value]) => ({ id, value })).sort((a, b) => compareBigInt(b.value, a.value)) : [];
-    return { day, value: segs.reduce((sum, seg) => sum + seg.value, 0n), segs };
-  });
+  const series = buildUtcUsageSeries(usage.sinceTs, usage.untilTs, usage.daily).map((point) => ({
+    day: point.dayTs * 1_000,
+    requests: point.requests,
+    value: BigInt(point.officialNano),
+    charged: BigInt(point.chargedNano),
+  }));
   const maxValue = series.reduce((max, point) => bigintMax(max, point.value), 0n);
   const scale = niceNanoScale(maxValue);
-  const gridTicks = Array.from({ length: scale.divisions + 1 }, (_, index) => scale.max - BigInt(index) * scale.step); // сверху вниз
+  const gridTicks = Array.from({ length: scale.divisions + 1 }, (_, index) => scale.max - BigInt(index) * scale.step);
   const summaryOfficialNano = BigInt(usage.totalOfficialNano);
+  const summaryChargedNano = BigInt(usage.totalChargedNano);
   const summaryRequests = usage.requests;
-  const peak = series.reduce((best, point) => (point.value > best.value ? point : best), { day: todayMs, value: 0n, segs: [] as { id: string; value: bigint }[] });
+  const peak = series.reduce((best, point) => (point.value > best.value ? point : best), {
+    day: usage.sinceTs * 1_000,
+    requests: 0,
+    value: 0n,
+    charged: 0n,
+  });
+  const averageDays = BigInt(usageWindowDays(usage.sinceTs, usage.untilTs));
   const LABEL_COUNT = 7;
-  const axisMarks = [...new Set(Array.from({ length: LABEL_COUNT }, (_, i) => Math.round(i * (days.length - 1) / (LABEL_COUNT - 1))))];
+  const axisMarkCount = Math.min(LABEL_COUNT, series.length);
+  const axisMarks = series.length === 0 ? [] : [...new Set(Array.from(
+    { length: axisMarkCount },
+    (_, index) => Math.round(index * (series.length - 1) / Math.max(1, axisMarkCount - 1)),
+  ))];
 
   // Разбивка модель-бара (mdist) с центрами сегментов — для наведения/подсказки.
   const modelShares = models.map((model) => modelOfficialTotal > 0n ? boundedRatio(BigInt(model.officialNano), modelOfficialTotal) : 1 / models.length);
@@ -1267,32 +1251,22 @@ function Usage({ account, ledger, usage, ledgerAvailable }: { account: AccountVi
   const [hoverDay, setHoverDay] = useState<number | null>(null);
   const [mdistHover, setMdistHover] = useState<number | null>(null);
 
-  // Разбивка списаний по API-ключу — наш аналог per-endpoint из референса.
-  const keyMap = new Map<string, { key: string; count: number; netNano: bigint }>();
-  for (const charge of charges) {
-    const key = charge.keyMasked ?? "__system__";
-    const row = keyMap.get(key) ?? { key, count: 0, netNano: 0n };
-    row.count += 1;
-    row.netNano += BigInt(charge.amountNano);
-    keyMap.set(key, row);
-  }
-  const keyRows = [...keyMap.values()].sort((a, b) => compareBigInt(b.netNano, a.netNano));
-  const sampledChargedNano = charges.reduce((sum, charge) => sum + BigInt(charge.amountNano), 0n);
-  const sampledOfficialNano = officialNanoFromCharged(sampledChargedNano, multiplierBp);
+  const keyRows = [...usage.keys].sort((left, right) => compareBigInt(BigInt(right.officialNano), BigInt(left.officialNano)));
+  const ledgerMayBePartial = ledger.length >= 100;
+  const legacyOfficialNano = BigInt(usage.buckets.unattributedLegacy.officialNano);
 
   return <section className="panel"><PageHeading eyebrow={copy.usageEyebrow} title={copy.usageTitle} subtitle={copy.usageSubtitle} />
     <div className="banner">💡 <b>{copy.sessionSavingTitle}</b><span> {copy.sessionSavingText}</span></div>
-    {ledgerAvailable && ledgerMayBePartial && <div className="banner">{localCopy.partialLedger}</div>}
 
     <div className="ov-stats bill4">
-      <div className="ovstat"><span className="dlabel">{copy.claudeApiReceived}</span><b className="num accent">{formatNanoUsd(officialReceivedNano)}</b><span className="dtrend">{copy.atOfficialPrices}</span></div>
-      <Stat label={copy.balanceCharged} value={formatNanoUsd(account.spentNano)} detail={copy.afterDiscount} />
-      <div className="ovstat"><span className="dlabel">{copy.activeDiscount}</span><b className="num">{discount}%</b><span className="dtrend">{formatMultiplier(multiplierBp)} {copy.valueMultiplier}</span></div>
+      <div className="ovstat"><span className="dlabel">{copy.officialValue30d}</span><b className="num accent">{formatNanoUsd(summaryOfficialNano)}</b><span className="dtrend">{copy.listPriceEquivalent}</span></div>
+      <Stat label={copy.charged30d} value={formatNanoUsd(summaryChargedNano)} detail={copy.settledCredits} />
+      <div className="ovstat"><span className="dlabel">{copy.activeDiscount}</span><b className="num">{discount}%</b><span className="dtrend">{formatMultiplier(multiplierBp)} {copy.currentValue}</span></div>
       <div className="ovstat"><span className="dlabel">{copy.availableBalance}</span><b className="num">{normalizeUsd(account.balanceUsd)}</b><span className="dtrend">{BigInt(account.balanceNano) > 0n ? interpolate(copy.valueOfBalance, { value: formatNanoUsd(officialNanoFromCharged(BigInt(account.balanceNano), multiplierBp)) }) : copy.available}</span></div>
     </div>
 
-    <div className={`usage-graph${ledgerAvailable ? "" : " usage-graph-summary-only"}`}>
-      {ledgerAvailable && <div className="uchart">
+    <div className="usage-graph">
+      <div className="uchart">
         <div className="uchart-head"><b>{copy.usageOverTime}</b><span>{copy.chartWindowLabel}</span></div>
         {maxValue === 0n ? <div className="uchart-empty">{copy.noChargesPeriod}</div> : <>
           <div className="uchart-grid">
@@ -1300,45 +1274,49 @@ function Usage({ account, ledger, usage, ledgerAvailable }: { account: AccountVi
             <div className="uchart-plotwrap">
               <div className="uchart-lines">{gridTicks.map((_, i) => <i key={i} />)}</div>
               <div className="uchart-plot" onMouseLeave={(event) => { if (!event.currentTarget.contains(document.activeElement)) setHoverDay(null); }}>
-                {series.map((point, index) => <button type="button" key={point.day} className={`uchart-col${hoverDay === index ? " is-hover" : ""}`} aria-label={interpolate(copy.chartDayLabel, { date: fmtDay(point.day, locale), value: formatNanoUsdSmart(point.value) })} onMouseEnter={() => setHoverDay(index)} onFocus={() => setHoverDay(index)} onBlur={() => setHoverDay((current) => current === index ? null : current)} onClick={() => setHoverDay((current) => current === index ? null : index)} onKeyDown={(event) => { if (event.key === "Escape") { setHoverDay(null); event.currentTarget.blur(); } }}>
+                {series.map((point, index) => <button type="button" key={point.day} className={`uchart-col${hoverDay === index ? " is-hover" : ""}`} aria-label={interpolate(copy.chartDayLabel, { date: fmtUtcDay(point.day, locale), value: formatNanoUsdSmart(point.value) })} onMouseEnter={() => setHoverDay(index)} onFocus={() => setHoverDay(index)} onBlur={() => setHoverDay((current) => current === index ? null : current)} onClick={() => setHoverDay((current) => current === index ? null : index)} onKeyDown={(event) => { if (event.key === "Escape") { setHoverDay(null); event.currentTarget.blur(); } }}>
                   <div className="uchart-col-fill">
-                    {point.segs.map((seg) => <div key={seg.id} className="uchart-seg" style={{ height: `${boundedPercent(seg.value, scale.max)}%`, background: modelColor.get(seg.id) }} />)}
+                    {point.value > 0n && <div className="uchart-seg" style={{ height: `${boundedPercent(point.value, scale.max)}%`, background: MODEL_COLORS[0] }} />}
                   </div>
                 </button>)}
                 {hoverDay !== null && series[hoverDay] && series[hoverDay]!.value > 0n && (() => {
                   const point = series[hoverDay]!;
-                  const leftPct = Math.min(92, Math.max(8, (hoverDay + 0.5) / days.length * 100));
+                  const leftPct = Math.min(92, Math.max(8, (hoverDay + 0.5) / series.length * 100));
                   return <div className="chart-tip" role="tooltip" style={{ left: `${leftPct}%`, bottom: `${boundedPercent(point.value, scale.max)}%` }}>
-                    <div className="chart-tip-h">{fmtDay(point.day, locale)}</div>
-                    {point.segs.map((seg) => <div key={seg.id} className="chart-tip-row"><span className="chart-tip-dot" style={{ background: modelColor.get(seg.id) }} /><span className="chart-tip-nm">{seg.id === UNKNOWN_MODEL ? copy.otherModels : modelLabel(seg.id)}</span><b>{formatNanoUsdSmart(seg.value)}</b></div>)}
-                    <div className="chart-tip-total"><span>{copy.chartTotal}</span><b>{formatNanoUsdSmart(point.value)}</b></div>
+                    <div className="chart-tip-h">{fmtUtcDay(point.day, locale)}</div>
+                    <div className="chart-tip-row"><span className="chart-tip-dot" style={{ background: MODEL_COLORS[0] }} /><span className="chart-tip-nm">{copy.officialValueCol}</span><b>{formatNanoUsdSmart(point.value)}</b></div>
+                    <div className="chart-tip-total"><span>{copy.chargedCol}</span><b>{formatNanoUsdSmart(point.charged)}</b></div>
+                    <div className="chart-tip-total"><span>{copy.billedEvents}</span><b>{point.requests.toLocaleString(locale)}</b></div>
                   </div>;
                 })()}
               </div>
-              <div className="uchart-axis">{axisMarks.map((mark) => <span key={mark} style={{ left: `${(mark + 0.5) / days.length * 100}%` }}>{fmtDay(days[mark]!, locale)}</span>)}</div>
+              <div className="uchart-axis">{axisMarks.map((mark) => <span key={mark} style={{ left: `${(mark + 0.5) / series.length * 100}%` }}>{fmtUtcDay(series[mark]!.day, locale)}</span>)}</div>
             </div>
           </div>
         </>}
-      </div>}
+      </div>
       <div className="usum">
         <span className="usum-t">{copy.periodSummary}</span>
         <div className="usum-row"><span>{copy.officialSpend}</span><b className="accent">{formatNanoUsd(summaryOfficialNano)}</b></div>
-        <div className="usum-row"><span>{copy.chargeEvents}</span><b>{summaryRequests.toLocaleString(locale)}</b></div>
-        {ledgerAvailable && <div className="usum-row"><span>{copy.peakDay}</span><b>{peak.value > 0n ? `${fmtDay(peak.day, locale)} · ${formatNanoUsd(peak.value)}` : "—"}</b></div>}
-        <div className="usum-row"><span>{copy.dailyAverage}</span><b>{summaryOfficialNano > 0n ? formatNanoUsd(roundDivide(summaryOfficialNano, 30n)) : "—"}</b></div>
+        <div className="usum-row"><span>{copy.chargedCol}</span><b>{formatNanoUsd(summaryChargedNano)}</b></div>
+        <div className="usum-row"><span>{copy.billedEvents}</span><b>{summaryRequests.toLocaleString(locale)}</b></div>
+        <div className="usum-row"><span>{copy.peakDay}</span><b>{peak.value > 0n ? `${fmtUtcDay(peak.day, locale)} · ${formatNanoUsd(peak.value)}` : "—"}</b></div>
+        <div className="usum-row"><span>{copy.dailyAverage}</span><b>{summaryOfficialNano > 0n ? formatNanoUsd(roundDivide(summaryOfficialNano, averageDays)) : "—"}</b></div>
       </div>
     </div>
 
     <section className="dsec">
       <div className="dsec-head analytics-heading"><div><h2>{copy.tokensAndModels}</h2><p>{copy.tokensAndModelsSub}</p></div></div>
+      <div className="tok-buckets">
+        <div className="tokb"><span className="dlabel">{copy.inputTokens}</span><b>{fmtTokens(usage.buckets.input.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.input.officialNano)}</span></div>
+        <div className="tokb"><span className="dlabel">{copy.outputTokens}</span><b>{fmtTokens(usage.buckets.output.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.output.officialNano)}</span></div>
+        <div className="tokb"><span className="dlabel">{copy.cacheReadLabel}</span><b>{fmtTokens(usage.buckets.cacheRead.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.cacheRead.officialNano)}</span></div>
+        <div className="tokb"><span className="dlabel">{copy.cacheWriteLabel}</span><b>{fmtTokens(usage.buckets.cacheWrite.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.cacheWrite.officialNano)}</span></div>
+        {usage.buckets.webSearch.requests > 0 && <div className="tokb"><span className="dlabel">{copy.webSearchLabel}</span><b>{usage.buckets.webSearch.requests.toLocaleString(locale)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.webSearch.officialNano)}</span></div>}
+        {legacyOfficialNano > 0n && <div className="tokb tokb-legacy"><span className="dlabel">{copy.legacyUnattributed}</span><b>{copy.historicalUsage}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.unattributedLegacy.officialNano)}</span></div>}
+      </div>
+      {legacyOfficialNano > 0n && <p className="bucket-note">{copy.bucketAttributionNote}</p>}
       {models.length === 0 ? <div className="empty-box">{copy.tokensPending}</div> : <>
-        <div className="tok-buckets">
-          <div className="tokb"><span className="dlabel">{copy.inputTokens}</span><b>{fmtTokens(usage.buckets.input.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.input.officialNano)}</span></div>
-          <div className="tokb"><span className="dlabel">{copy.outputTokens}</span><b>{fmtTokens(usage.buckets.output.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.output.officialNano)}</span></div>
-          <div className="tokb"><span className="dlabel">{copy.cacheReadLabel}</span><b>{fmtTokens(usage.buckets.cacheRead.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.cacheRead.officialNano)}</span></div>
-          <div className="tokb"><span className="dlabel">{copy.cacheWriteLabel}</span><b>{fmtTokens(usage.buckets.cacheWrite.tokens)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.cacheWrite.officialNano)}</span></div>
-          {usage.buckets.webSearch.requests > 0 && <div className="tokb"><span className="dlabel">{copy.webSearchLabel}</span><b>{usage.buckets.webSearch.requests.toLocaleString(locale)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.webSearch.officialNano)}</span></div>}
-        </div>
         <div className="mdist-wrap">
           <div className="mdist" role="group" aria-label={copy.tokensAndModels} onMouseLeave={(event) => { if (!event.currentTarget.contains(document.activeElement)) setMdistHover(null); }}>
             {mdistPlaced.map((seg, index) => <button type="button" aria-label={`${modelLabel(seg.model.model)} · ${fmtNanoUsd(seg.model.officialNano)} · ${(seg.share * 100).toFixed(seg.share < 0.1 ? 1 : 0)}%`} key={seg.model.model} className={`mdist-seg${mdistHover === index ? " is-hover" : ""}`} style={{ width: `${seg.share * 100}%`, background: modelColor.get(seg.model.model) }} onMouseEnter={() => setMdistHover(index)} onFocus={() => setMdistHover(index)} onBlur={() => setMdistHover((current) => current === index ? null : current)} onClick={() => setMdistHover((current) => current === index ? null : index)} />)}
@@ -1353,7 +1331,7 @@ function Usage({ account, ledger, usage, ledgerAvailable }: { account: AccountVi
           })()}
         </div>
         <p className="table-scroll-hint" id="models-table-scroll-hint">{copy.tableScrollHint}</p>
-        <div className="table-scroll" role="region" tabIndex={0} aria-label={`${copy.tokensAndModels}. ${copy.tableScrollHint}`}><table className="mtable"><thead><tr><th>{copy.model}</th><th className="tnum">{copy.requests}</th><th className="tnum">{copy.inputShort}</th><th className="tnum">{copy.outputShort}</th><th className="tnum">{copy.cacheRdShort}</th><th className="tnum">{copy.cacheWrShort}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
+        <div className="table-scroll" role="region" tabIndex={0} aria-label={`${copy.tokensAndModels}. ${copy.tableScrollHint}`}><table className="mtable"><thead><tr><th>{copy.model}</th><th className="tnum">{copy.billedEvents}</th><th className="tnum">{copy.inputShort}</th><th className="tnum">{copy.outputShort}</th><th className="tnum">{copy.cacheRdShort}</th><th className="tnum">{copy.cacheWrShort}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
           <tbody>{models.map((model, index) => <tr key={model.model}>
             <td><span className="tkmdl"><span className="tkmdl-dot" style={{ background: MODEL_COLORS[index % MODEL_COLORS.length] }} />{modelLabel(model.model)}</span></td>
             <td className="tnum">{model.requests.toLocaleString(locale)}</td>
@@ -1367,36 +1345,37 @@ function Usage({ account, ledger, usage, ledgerAvailable }: { account: AccountVi
       </>}
     </section>
 
-    {ledgerAvailable && <section className="dsec">
+    <section className="dsec">
       <div className="dsec-head analytics-heading"><div><h2>{copy.usageByKey}</h2><p>{copy.usageByKeySub}</p></div></div>
       <div className="ubreak-sum">
         <div><span className="dlabel">{copy.keysCount}</span><b>{keyRows.length}</b></div>
-        <div><span className="dlabel">{copy.visibleCharges}</span><b>{charges.length}</b></div>
-        <div><span className="dlabel">{copy.officialValueCol}</span><b>{formatNanoUsd(sampledOfficialNano)}</b></div>
-        <div><span className="dlabel">{copy.chargedCol}</span><b>{formatNanoUsd(sampledChargedNano)}</b></div>
+        <div><span className="dlabel">{copy.billedEvents}</span><b>{summaryRequests.toLocaleString(locale)}</b></div>
+        <div><span className="dlabel">{copy.officialValueCol}</span><b>{formatNanoUsd(summaryOfficialNano)}</b></div>
+        <div><span className="dlabel">{copy.chargedCol}</span><b>{formatNanoUsd(summaryChargedNano)}</b></div>
       </div>
       <p className="table-scroll-hint">{copy.tableScrollHint}</p>
-      <div className="table-scroll" role="region" tabIndex={0} aria-label={`${copy.usageByKey}. ${copy.tableScrollHint}`}><table className="mtable"><thead><tr><th>{copy.apiKey}</th><th className="tnum">{copy.visibleCharges}</th><th className="tnum">{copy.discount}</th><th className="tnum">{copy.valueColumn}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
-        <tbody>{keyRows.length === 0 ? <tr><td colSpan={6} className="empty-cell">{copy.noChargesPeriod}</td></tr> : keyRows.map((row) => <tr key={row.key}>
-          <td><code>{row.key === "__system__" ? copy.systemCharge : row.key}</code></td>
-          <td className="tnum">{row.count}</td>
-          <td className="tnum">{discount}%</td>
-          <td className="tnum"><span className="ubadge">{formatMultiplier(multiplierBp)}</span></td>
-          <td className="tnum">{formatNanoUsd(officialNanoFromCharged(row.netNano, multiplierBp))}</td>
-          <td className="tnum mprice">{formatNanoUsd(row.netNano)}</td>
+      <div className="table-scroll" role="region" tabIndex={0} aria-label={`${copy.usageByKey}. ${copy.tableScrollHint}`}><table className="mtable"><thead><tr><th>{copy.apiKey}</th><th className="tnum">{copy.billedEvents}</th><th className="tnum">{copy.effectiveDiscount}</th><th className="tnum">{copy.effectiveValue}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
+        <tbody>{keyRows.length === 0 ? <tr><td colSpan={6} className="empty-cell">{copy.noChargesPeriod}</td></tr> : keyRows.map((row) => <tr key={row.keyMasked ?? "__system__"}>
+          <td><code>{row.keyMasked ?? copy.systemCharge}</code></td>
+          <td className="tnum">{row.requests.toLocaleString(locale)}</td>
+          <td className="tnum">{formatEffectiveDiscount(BigInt(row.officialNano), BigInt(row.chargedNano))}</td>
+          <td className="tnum"><span className="ubadge">{formatEffectiveValue(BigInt(row.officialNano), BigInt(row.chargedNano))}</span></td>
+          <td className="tnum">{formatNanoUsd(row.officialNano)}</td>
+          <td className="tnum mprice">{formatNanoUsd(row.chargedNano)}</td>
         </tr>)}</tbody></table></div>
-    </section>}
+    </section>
 
-    {ledgerAvailable && <LedgerHistory ledger={ledger} />}
+    {ledgerAvailable && <LedgerHistory ledger={ledger} mayBePartial={ledgerMayBePartial} />}
   </section>;
 }
 
 // История ledger сгруппирована по дням: компактные строки-дни (кол-во запросов + сумма), каждая
 // раскрывается в отдельные списания. Топапы/коррекции — отдельными выделенными строками. Так вместо
 // «вечного полотна» из сотен per-request строк видно читаемую сводку, а детали — по клику.
-function LedgerHistory({ ledger }: { ledger: LedgerEntry[] }) {
+function LedgerHistory({ ledger, mayBePartial = false }: { ledger: LedgerEntry[]; mayBePartial?: boolean }) {
   const copy = useDashboardCopy();
   const { language } = useI18n();
+  const localCopy = localDashboardCopy[language];
   const locale = language === "ru" ? "ru-RU" : "en-US";
   if (ledger.length === 0) return <section className="dsec"><h2>{copy.transactions}</h2><div className="empty-box">{copy.noLedger}</div></section>;
 
@@ -1411,6 +1390,7 @@ function LedgerHistory({ ledger }: { ledger: LedgerEntry[] }) {
   const CAP = 50;
 
   return <section className="dsec"><h2>{copy.transactions}</h2>
+    {mayBePartial && <div className="banner">{localCopy.partialLedger}</div>}
     <div className="txh">
       {days.map((group) => {
         const chargeNano = group.charges.reduce((sum, entry) => sum + BigInt(entry.amountNano), 0n);
@@ -1422,7 +1402,7 @@ function LedgerHistory({ ledger }: { ledger: LedgerEntry[] }) {
             <span className="txh-ev-amt">{entry.kind === "topup" ? "+" : ""}{formatNanoUsdSmart(BigInt(entry.amountNano))}</span>
           </div>)}
           {group.charges.length > 0 && <details className="txh-charges">
-            <summary><span className="txh-sum-l"><span className="txh-ic" aria-hidden="true">▸</span>{interpolate(copy.apiRequestsN, { n: group.charges.length })}</span><span className="txh-sum-amt">−{formatNanoUsdSmart(chargeNano)}</span></summary>
+            <summary><span className="txh-sum-l"><span className="txh-ic" aria-hidden="true">▸</span>{formatBilledEventCount(group.charges.length, locale, copy)}</span><span className="txh-sum-amt">−{formatNanoUsdSmart(chargeNano)}</span></summary>
             <div className="txh-list">
               {group.charges.slice(0, CAP).map((entry) => <div className="txh-row" key={entry.id}>
                 <span className="txh-time">{new Date(ledgerMs(entry.timestamp)).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
@@ -1448,7 +1428,22 @@ function formatNanoUsdSmart(value: bigint): string {
 
 function startOfDay(ms: number): number { const date = new Date(ms); date.setHours(0, 0, 0, 0); return date.getTime(); }
 function ledgerMs(timestamp: string): number { const numeric = Number(timestamp); return numeric < 10_000_000_000 ? numeric * 1_000 : numeric; }
-function fmtDay(ms: number, locale: string): string { return new Date(ms).toLocaleDateString(locale, { month: "numeric", day: "numeric" }); }
+function fmtUtcDay(ms: number, locale: string): string { return new Date(ms).toLocaleDateString(locale, { month: "numeric", day: "numeric", timeZone: "UTC" }); }
+function formatBilledEventCount(count: number, locale: string, copy: DashboardCopy): string {
+  const plural = new Intl.PluralRules(locale).select(count);
+  const template = plural === "one" ? copy.billedEventOne : plural === "few" ? copy.billedEventsFew : copy.apiRequestsN;
+  return interpolate(template, { n: count });
+}
+function formatEffectiveDiscount(officialNano: bigint, chargedNano: bigint): string {
+  if (officialNano <= 0n) return "—";
+  const discountNano = officialNano > chargedNano ? officialNano - chargedNano : 0n;
+  const tenths = roundDivide(discountNano * 1_000n, officialNano);
+  return `${tenths / 10n}.${tenths % 10n}%`;
+}
+function formatEffectiveValue(officialNano: bigint, chargedNano: bigint): string {
+  if (officialNano <= 0n || chargedNano <= 0n) return "—";
+  return `${formatFixedRatio(officialNano, chargedNano, 2)}×`;
+}
 
 // «Красивая» шкала оси Y на целых нано-USD. В number переводятся только ограниченные отношения для CSS.
 function niceNanoScale(max: bigint): { max: bigint; step: bigint; divisions: number } {

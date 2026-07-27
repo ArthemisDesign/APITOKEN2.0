@@ -94,6 +94,9 @@ const usageWebSearchBucketSchema = z.object({
   requests: z.coerce.number().int().nonnegative(),
   official_nano: decimalIntegerSchema,
 });
+const usageMoneyOnlyBucketSchema = z.object({
+  official_nano: decimalIntegerSchema,
+});
 export const engineUsageModelSchema = z.object({
   model: z.string(),
   requests: z.coerce.number().int().nonnegative(),
@@ -109,6 +112,8 @@ export const engineUsageModelSchema = z.object({
 export const engineUsageSchema = z.object({
   account: z.string().startsWith("acct_"),
   window: z.string(),
+  since_ts: z.coerce.number().int().nonnegative(),
+  until_ts: z.coerce.number().int().nonnegative(),
   requests: z.coerce.number().int().nonnegative(),
   total_official_nano: decimalIntegerSchema,
   total_charged_nano: decimalIntegerSchema,
@@ -118,8 +123,21 @@ export const engineUsageSchema = z.object({
     cache_read: usageBucketSchema,
     cache_write: usageBucketSchema,
     web_search: usageWebSearchBucketSchema,
+    unattributed_legacy: usageMoneyOnlyBucketSchema,
   }),
   models: z.array(engineUsageModelSchema),
+  daily: z.array(z.object({
+    day_ts: z.coerce.number().int().nonnegative(),
+    requests: z.coerce.number().int().nonnegative(),
+    official_nano: decimalIntegerSchema,
+    charged_nano: decimalIntegerSchema,
+  })),
+  keys: z.array(z.object({
+    key_masked: z.string().nullable(),
+    requests: z.coerce.number().int().nonnegative(),
+    official_nano: decimalIntegerSchema,
+    charged_nano: decimalIntegerSchema,
+  })),
 });
 
 export type EngineUsage = z.infer<typeof engineUsageSchema>;

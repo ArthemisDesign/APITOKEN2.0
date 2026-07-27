@@ -332,6 +332,12 @@ enum ReadCmd {
         i64,
         oneshot::Sender<anyhow::Result<Vec<registry::UsageModelAgg>>>,
     ),
+    UsageReport(
+        String,
+        i64,
+        i64,
+        oneshot::Sender<anyhow::Result<registry::UsageReport>>,
+    ),
     SpendByAccount(
         i64,
         i64,
@@ -566,6 +572,9 @@ impl AsyncBilling {
                             }
                             ReadCmd::UsageByModel(id, since, r) => {
                                 let _ = r.send(registry::usage_by_model(&conn, &id, since));
+                            }
+                            ReadCmd::UsageReport(id, since, until, r) => {
+                                let _ = r.send(registry::usage_report(&conn, &id, since, until));
                             }
                             ReadCmd::SpendByAccount(since, lim, r) => {
                                 let _ = r.send(registry::spend_by_account(&conn, since, lim));
@@ -865,6 +874,9 @@ impl AsyncBilling {
                             ReadCmd::UsageByModel(id, since, r) => {
                                 answer!(r, pg.usage_by_model(&id, since))
                             }
+                            ReadCmd::UsageReport(id, since, until, r) => {
+                                answer!(r, pg.usage_report(&id, since, until))
+                            }
                             ReadCmd::SpendByAccount(since, lim, r) => {
                                 answer!(r, pg.spend_by_account(since, lim))
                             }
@@ -1146,6 +1158,26 @@ impl AsyncBilling {
         let (r, rx) = oneshot::channel();
         self.reader()
             .send(ReadCmd::UsageByModel(account_id.into(), since_ts, r))
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+    /// Exact model/day/key aggregates over one fixed half-open interval.
+    pub async fn usage_report(
+        &self,
+        account_id: &str,
+        since_ts: i64,
+        until_ts: i64,
+    ) -> anyhow::Result<registry::UsageReport> {
+        let (r, rx) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::UsageReport(
+                account_id.into(),
+                since_ts,
+                until_ts,
+                r,
+            ))
             .await
             .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
         rx.await

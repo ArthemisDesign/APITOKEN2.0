@@ -190,6 +190,57 @@ describe("EngineClient", () => {
     expect(requestedUrl).toContain("after_id=9007199254740993123&limit=1000");
   });
 
+  it("preserves exact authoritative usage breakdowns", async () => {
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async () => Response.json({
+        account: "acct_test",
+        window: "30d",
+        since_ts: 1_700_000_000,
+        until_ts: 1_702_592_000,
+        requests: 2,
+        total_official_nano: 25_000_000,
+        total_charged_nano: 10_000_000,
+        buckets: {
+          input: { tokens: 10, official_nano: 5_000_000 },
+          output: { tokens: 10, official_nano: 10_000_000 },
+          cache_read: { tokens: 10, official_nano: 0 },
+          cache_write: { tokens: 0, official_nano: 0 },
+          web_search: { requests: 1, official_nano: 0 },
+          unattributed_legacy: { official_nano: 10_000_000 },
+        },
+        models: [{
+          model: "claude-opus-4-8", requests: 2, input_tokens: 10, output_tokens: 10,
+          cache_read_tokens: 10, cache_write_5m_tokens: 0, cache_write_1h_tokens: 0,
+          web_search_requests: 1, official_nano: 25_000_000, charged_nano: 10_000_000,
+        }],
+        daily: [{
+          day_ts: 1_701_993_600, requests: 2,
+          official_nano: 25_000_000, charged_nano: 10_000_000,
+        }],
+        keys: [{
+          key_masked: "sk-pool-test…test", requests: 2,
+          official_nano: 25_000_000, charged_nano: 10_000_000,
+        }],
+      }),
+    });
+
+    const usage = await client.getUsage("acct_test", "30d");
+    expect(usage.total_official_nano).toBe("25000000");
+    expect(usage.buckets.unattributed_legacy.official_nano).toBe("10000000");
+    expect(usage.daily[0]).toMatchObject({
+      day_ts: 1_701_993_600,
+      official_nano: "25000000",
+      charged_nano: "10000000",
+    });
+    expect(usage.keys[0]).toMatchObject({
+      key_masked: "sk-pool-test…test",
+      official_nano: "25000000",
+      charged_nano: "10000000",
+    });
+  });
+
   it("acknowledges an exact durable ledger cursor", async () => {
     let request: { url: string; body: string } | undefined;
     const client = new EngineClient({

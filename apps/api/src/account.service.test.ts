@@ -47,6 +47,22 @@ describe.runIf(Boolean(connectionString))("commercial account and engine integra
     const ledger = await service.getLedger(aliceId, 25) as Record<string, unknown>;
     expect(ledger).toMatchObject({ entries: [{ amountNano: "37000000000", reference: "payment:1" }] });
     expect(JSON.stringify(ledger)).not.toContain("acct_alice");
+
+    const usage = await service.getUsage(aliceId, "30d") as Record<string, unknown>;
+    expect(usage).toMatchObject({
+      sinceTs: 1_700_000_000,
+      untilTs: 1_702_592_000,
+      totalOfficialNano: "25000000",
+      totalChargedNano: "10000000",
+      buckets: { unattributedLegacy: { officialNano: "10000000" } },
+      daily: [{ dayTs: 1_701_993_600, officialNano: "25000000", chargedNano: "10000000" }],
+      keys: [{
+        keyMasked: "sk-pool-aaaa…aaaa",
+        officialNano: "25000000",
+        chargedNano: "10000000",
+      }],
+    });
+    expect(JSON.stringify(usage)).not.toContain("acct_alice");
   });
 
   it("returns a raw key once, stores no usable secret, and enforces ownership on revocation", async () => {
@@ -239,6 +255,38 @@ class FakeEngine {
         entries: [{
           id: 1, kind: "topup", amount_nano: 37_000_000_000, amount: "$37.000000000",
           key_masked: null, ref: "payment:1", balance_after_nano: 37_000_000_000, ts: 1_700_000_000,
+        }],
+      });
+    }
+    if (path.endsWith("/usage")) {
+      return Response.json({
+        account: "acct_alice",
+        window: "30d",
+        since_ts: 1_700_000_000,
+        until_ts: 1_702_592_000,
+        requests: 2,
+        total_official_nano: 25_000_000,
+        total_charged_nano: 10_000_000,
+        buckets: {
+          input: { tokens: 10, official_nano: 5_000_000 },
+          output: { tokens: 10, official_nano: 10_000_000 },
+          cache_read: { tokens: 10, official_nano: 0 },
+          cache_write: { tokens: 0, official_nano: 0 },
+          web_search: { requests: 1, official_nano: 0 },
+          unattributed_legacy: { official_nano: 10_000_000 },
+        },
+        models: [{
+          model: "claude-opus-4-8", requests: 2, input_tokens: 10, output_tokens: 10,
+          cache_read_tokens: 10, cache_write_5m_tokens: 0, cache_write_1h_tokens: 0,
+          web_search_requests: 1, official_nano: 25_000_000, charged_nano: 10_000_000,
+        }],
+        daily: [{
+          day_ts: 1_701_993_600, requests: 2,
+          official_nano: 25_000_000, charged_nano: 10_000_000,
+        }],
+        keys: [{
+          key_masked: "sk-pool-aaaa…aaaa", requests: 2,
+          official_nano: 25_000_000, charged_nano: 10_000_000,
         }],
       });
     }
