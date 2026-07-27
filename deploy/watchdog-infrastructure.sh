@@ -8,15 +8,20 @@ source "$LIB"
 
 STATE_ROOT=/var/lib/apitoken/watchdog
 CANDIDATE_ROOT=$STATE_ROOT/candidates
-APPLY_CADDY=0
+INSTALL_MODE=full
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || wd_die "infrastructure installation must run as root"
-[[ $# -ge 1 && $# -le 2 ]] || wd_die "usage: watchdog-infrastructure.sh <tested-full-sha> [--apply-caddy]"
+[[ $# -ge 1 && $# -le 2 ]] \
+  || wd_die "usage: watchdog-infrastructure.sh <tested-full-sha> [--controller-only|--caddy-only|--apply-caddy]"
 SHA=$1
 wd_validate_sha "$SHA"
 if [[ $# -eq 2 ]]; then
-  [[ $2 == --apply-caddy ]] || wd_die "unknown infrastructure option: $2"
-  APPLY_CADDY=1
+  case "$2" in
+    --controller-only) INSTALL_MODE=controller ;;
+    --caddy-only) INSTALL_MODE=caddy ;;
+    --apply-caddy) INSTALL_MODE=full-caddy ;;
+    *) wd_die "unknown infrastructure option: $2" ;;
+  esac
 fi
 
 CANDIDATE=$CANDIDATE_ROOT/$SHA
@@ -37,8 +42,15 @@ candidate_tree=$(git -c safe.directory="$CANDIDATE" -C "$CANDIDATE" rev-parse 'H
 [[ -x $CANDIDATE/deploy/install-watchdog.sh && ! -L $CANDIDATE/deploy/install-watchdog.sh ]] \
   || wd_die "candidate watchdog installer is missing"
 
-"$CANDIDATE/deploy/install-watchdog.sh"
-if (( APPLY_CADDY == 1 )); then
+case "$INSTALL_MODE" in
+  controller) "$CANDIDATE/deploy/install-watchdog.sh" --controller-only ;;
+  full|full-caddy) "$CANDIDATE/deploy/install-watchdog.sh" ;;
+esac
+if [[ $INSTALL_MODE == caddy || $INSTALL_MODE == full-caddy ]]; then
+  [[ -f $CANDIDATE/deploy/Caddyfile && ! -L $CANDIDATE/deploy/Caddyfile ]] \
+    || wd_die "candidate Caddy template is missing"
+  [[ -x $CANDIDATE/deploy/install-caddy.sh && ! -L $CANDIDATE/deploy/install-caddy.sh ]] \
+    || wd_die "candidate Caddy installer is missing"
   CADDY_TEMPLATE="$CANDIDATE/deploy/Caddyfile" "$CANDIDATE/deploy/install-caddy.sh" --check
   CADDY_TEMPLATE="$CANDIDATE/deploy/Caddyfile" "$CANDIDATE/deploy/install-caddy.sh"
 fi

@@ -152,6 +152,10 @@ require_permitted 'backup runner' /usr/local/lib/apitoken-watchdog/watchdog-back
 require_permitted 'migration runner' /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh "$sample_sha"
 require_permitted 'retention helper' /usr/local/lib/apitoken-watchdog/watchdog-retention.sh 10
 require_permitted 'infrastructure runner' /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh "$sample_sha"
+require_permitted 'controller-only infrastructure runner' \
+  /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh "$sample_sha" --controller-only
+require_permitted 'Caddy-only infrastructure runner' \
+  /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh "$sample_sha" --caddy-only
 require_permitted 'GitHub reporting bridge' /usr/local/lib/apitoken-watchdog/watchdog-github commit-status
 require_permitted 'GitHub candidate queue bridge' /usr/local/lib/apitoken-watchdog/watchdog-github validation-next 2
 require_permitted 'test database helper' /usr/local/lib/apitoken-watchdog/watchdog-test-db start 0

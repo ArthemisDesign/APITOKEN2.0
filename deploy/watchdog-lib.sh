@@ -464,7 +464,9 @@ wd_path_is_infrastructure() {
 # files fail safe into installation until they are explicitly proven local-only here.
 wd_path_requires_infrastructure_install() {
   case "$1" in
-    deploy/*.md|deploy/*.test.sh|deploy/agent-merge.sh|deploy/agent-merge.suite.sh|deploy/test-stage2-e2e.sh)
+    deploy/*.md|deploy/*.test.sh|deploy/agent-merge.sh|deploy/agent-merge.suite.sh|\
+    deploy/test-stage2-e2e.sh|deploy/sccache-cargo.sh|deploy/next-cache.sh|\
+    deploy/typescript-scope.mjs)
       return 1
       ;;
     deploy/*|systemd/*|observability/*|compose.yaml)
@@ -476,6 +478,57 @@ wd_path_requires_infrastructure_install() {
 
 wd_path_is_caddy() {
   [[ $1 == deploy/Caddyfile ]]
+}
+
+# These files are copied into fixed, root-owned controller locations but do not define services,
+# privileges, monitoring, secrets, or stateful infrastructure. Updating only this allowlist can
+# therefore use the small controller installer. Unknown deploy paths deliberately fall through to
+# the full installer.
+wd_path_is_controller_definition() {
+  case "$1" in
+    deploy/watchdog.sh|deploy/watchdog-lib.sh|deploy/watchdog-test-db.sh|\
+    deploy/watchdog-backup.sh|deploy/watchdog-migrate.sh|deploy/watchdog-infrastructure.sh|\
+    deploy/watchdog-retention.sh|deploy/watchdog-github.sh|deploy/watchdog-control.sh|\
+    deploy/deploy.sh|deploy/lib.sh|deploy/api-bluegreen.sh|deploy/engine-bluegreen.sh|\
+    deploy/rollback.sh|deploy/sales-deploy.sh|deploy/openkeys-deploy.sh)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# Return the least expensive safe root-install transaction for an exact commit range:
+#   none       no installed production definition changed
+#   controller only fixed controller files changed
+#   caddy      only the Caddy template changed
+#   full       stateful/systemd/monitoring/unknown, mixed controller+Caddy, or any deletion
+#
+# Deletions fail closed because a narrow copy-only transaction cannot remove a retired installed
+# file safely. Rename detection stays disabled so a move includes that deletion.
+wd_infrastructure_install_scope() {
+  local repo=$1 base=$2 target=$3 entries status path scope=none
+  [[ -n $base && $base != "$target" ]] || { printf 'none\n'; return 0; }
+  entries=$(git -C "$repo" diff --name-status --no-renames --diff-filter=ACDMRTUXB \
+    "$base..$target") || return 1
+  while IFS=$'\t' read -r status path; do
+    [[ -n $path ]] || continue
+    wd_path_requires_infrastructure_install "$path" || continue
+    if [[ $status == D* ]]; then
+      printf 'full\n'
+      return 0
+    fi
+    if wd_path_is_controller_definition "$path"; then
+      [[ $scope == none || $scope == controller ]] || { printf 'full\n'; return 0; }
+      scope=controller
+    elif wd_path_is_caddy "$path"; then
+      [[ $scope == none || $scope == caddy ]] || { printf 'full\n'; return 0; }
+      scope=caddy
+    else
+      printf 'full\n'
+      return 0
+    fi
+  done <<<"$entries"
+  printf '%s\n' "$scope"
 }
 
 wd_path_is_merge_workflow() {

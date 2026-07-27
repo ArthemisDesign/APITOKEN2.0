@@ -275,8 +275,6 @@ fi
 for runtime_definition in \
   deploy/watchdog.sh \
   deploy/watchdog-lib.sh \
-  deploy/next-cache.sh \
-  deploy/typescript-scope.mjs \
   deploy/install-watchdog.sh \
   deploy/Caddyfile \
   systemd/apitoken-deploy-watchdog.service \
@@ -293,7 +291,10 @@ for validation_only_path in \
   deploy/monitoring-config.test.sh \
   deploy/agent-merge.sh \
   deploy/agent-merge.suite.sh \
-  deploy/test-stage2-e2e.sh; do
+  deploy/test-stage2-e2e.sh \
+  deploy/sccache-cargo.sh \
+  deploy/next-cache.sh \
+  deploy/typescript-scope.mjs; do
   wd_path_is_infrastructure "$validation_only_path" \
     || wd_die "deployment tooling path escaped operational validation: $validation_only_path"
   if wd_path_requires_infrastructure_install "$validation_only_path"; then
@@ -304,6 +305,95 @@ wd_path_is_caddy deploy/Caddyfile
 if wd_path_is_caddy deploy/watchdog.sh; then
   wd_die "non-Caddy infrastructure change requested a Caddy reload"
 fi
+for controller_definition in \
+  deploy/watchdog.sh \
+  deploy/watchdog-lib.sh \
+  deploy/watchdog-infrastructure.sh \
+  deploy/deploy.sh \
+  deploy/lib.sh \
+  deploy/api-bluegreen.sh \
+  deploy/engine-bluegreen.sh \
+  deploy/rollback.sh \
+  deploy/sales-deploy.sh \
+  deploy/openkeys-deploy.sh; do
+  wd_path_is_controller_definition "$controller_definition" \
+    || wd_die "fixed controller definition escaped the narrow installer: $controller_definition"
+done
+for full_definition in \
+  deploy/install-watchdog.sh \
+  deploy/install-sudoers.sh \
+  deploy/affinity-redis.compose.yaml \
+  systemd/apitoken-deploy-watchdog.service \
+  observability/prometheus/prometheus.yml; do
+  if wd_path_is_controller_definition "$full_definition"; then
+    wd_die "stateful or privileged definition entered the narrow installer: $full_definition"
+  fi
+done
+
+# The root transaction is selected from the exact range. Narrow modes are allowlist-only; mixed
+# concerns, unknown files, and deletions fail closed to the complete installer.
+infrastructure_repo="$TEMP/infrastructure-repo"
+git init --quiet "$infrastructure_repo"
+git -C "$infrastructure_repo" config user.name test
+git -C "$infrastructure_repo" config user.email test@example.invalid
+mkdir -p "$infrastructure_repo/deploy" "$infrastructure_repo/systemd"
+printf 'controller\n' >"$infrastructure_repo/deploy/watchdog.sh"
+printf 'caddy\n' >"$infrastructure_repo/deploy/Caddyfile"
+printf 'cache\n' >"$infrastructure_repo/deploy/next-cache.sh"
+printf 'unit\n' >"$infrastructure_repo/systemd/example.service"
+git -C "$infrastructure_repo" add deploy/watchdog.sh deploy/Caddyfile \
+  deploy/next-cache.sh systemd/example.service
+git -C "$infrastructure_repo" commit --quiet -m base
+infrastructure_base=$(git -C "$infrastructure_repo" rev-parse HEAD)
+
+assert_infrastructure_scope() {
+  local expected=$1 base=$2 target=$3 actual
+  actual=$(wd_infrastructure_install_scope "$infrastructure_repo" "$base" "$target")
+  [[ $actual == "$expected" ]] \
+    || wd_die "infrastructure scope was $actual, expected $expected for $base..$target"
+}
+
+printf 'edit\n' >>"$infrastructure_repo/deploy/watchdog.sh"
+git -C "$infrastructure_repo" add deploy/watchdog.sh
+git -C "$infrastructure_repo" commit --quiet -m controller
+infrastructure_controller=$(git -C "$infrastructure_repo" rev-parse HEAD)
+assert_infrastructure_scope controller "$infrastructure_base" "$infrastructure_controller"
+
+printf 'edit\n' >>"$infrastructure_repo/deploy/next-cache.sh"
+git -C "$infrastructure_repo" add deploy/next-cache.sh
+git -C "$infrastructure_repo" commit --quiet -m validation-only
+infrastructure_validation=$(git -C "$infrastructure_repo" rev-parse HEAD)
+assert_infrastructure_scope none "$infrastructure_controller" "$infrastructure_validation"
+
+printf 'edit\n' >>"$infrastructure_repo/deploy/Caddyfile"
+git -C "$infrastructure_repo" add deploy/Caddyfile
+git -C "$infrastructure_repo" commit --quiet -m caddy
+infrastructure_caddy=$(git -C "$infrastructure_repo" rev-parse HEAD)
+assert_infrastructure_scope caddy "$infrastructure_validation" "$infrastructure_caddy"
+
+printf 'mixed\n' >>"$infrastructure_repo/deploy/watchdog.sh"
+printf 'mixed\n' >>"$infrastructure_repo/deploy/Caddyfile"
+git -C "$infrastructure_repo" add deploy/watchdog.sh deploy/Caddyfile
+git -C "$infrastructure_repo" commit --quiet -m mixed
+infrastructure_mixed=$(git -C "$infrastructure_repo" rev-parse HEAD)
+assert_infrastructure_scope full "$infrastructure_caddy" "$infrastructure_mixed"
+
+printf 'edit\n' >>"$infrastructure_repo/systemd/example.service"
+git -C "$infrastructure_repo" add systemd/example.service
+git -C "$infrastructure_repo" commit --quiet -m systemd
+infrastructure_systemd=$(git -C "$infrastructure_repo" rev-parse HEAD)
+assert_infrastructure_scope full "$infrastructure_mixed" "$infrastructure_systemd"
+
+git -C "$infrastructure_repo" rm --quiet deploy/watchdog.sh
+git -C "$infrastructure_repo" commit --quiet -m deletion
+infrastructure_deletion=$(git -C "$infrastructure_repo" rev-parse HEAD)
+assert_infrastructure_scope full "$infrastructure_systemd" "$infrastructure_deletion"
+
+printf 'unknown\n' >"$infrastructure_repo/deploy/future-runtime.sh"
+git -C "$infrastructure_repo" add deploy/future-runtime.sh
+git -C "$infrastructure_repo" commit --quiet -m unknown
+infrastructure_unknown=$(git -C "$infrastructure_repo" rev-parse HEAD)
+assert_infrastructure_scope full "$infrastructure_deletion" "$infrastructure_unknown"
 
 # Documentation-only ranges stay cheap, but any new unclassified area fails safe into the complete
 # validation set until its owner adds an explicit classifier.
@@ -623,7 +713,7 @@ gate_contract=(
   'wait "$rust_pid"'
   'wait "$static_pid"'
   'Static candidate lane failed'
-  'wd_path_requires_infrastructure_install'
+  'wd_infrastructure_install_scope'
   'select_candidate_validation_requirements "$CANDIDATE_SHA"'
   'typescript_tested=%s'
   'typescript_full=%s'
@@ -835,6 +925,10 @@ if grep -Eq 'usermod -a -G deploy apitoken-ci' "$ROOT/deploy/install-watchdog.sh
 fi
 grep -Fq 'gpasswd -d apitoken-ci deploy' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'the watchdog installer does not enforce apitoken-ci group isolation'
+grep -Fq -- '--controller-only' "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'the sudo policy cannot run the narrow controller transaction'
+grep -Fq -- '--caddy-only' "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'the sudo policy cannot run the narrow Caddy transaction'
 
 grep -Fq 'sales-dsn)' "$ROOT/deploy/watchdog-test-db.sh"
 grep -Fq 'require_retired_vhost panel.apitoken.sale' "$ROOT/deploy/watchdog.sh"
@@ -933,6 +1027,19 @@ grep -Fq 'IDLE_MAINTENANCE_SECONDS=60' "$ROOT/deploy/watchdog.sh" \
 grep -Fq 'wd_atomic_write "$STATE_ROOT/infrastructure.sha" "$SHA"' \
   "$ROOT/deploy/watchdog-infrastructure.sh" \
   || wd_die 'infrastructure transaction does not record its exact SHA'
+grep -Fq 'install_controller_definitions' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'watchdog installer has no narrow controller transaction'
+controller_exit_line=$(grep -nF "echo 'production watchdog controller definitions installed'" \
+  "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+full_unit_line=$(grep -nF 'for unit in \' "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+[[ -n $controller_exit_line && -n $full_unit_line && $controller_exit_line -lt $full_unit_line ]] \
+  || wd_die 'controller-only transaction is not fenced before full system installation'
+for narrow_option in --controller-only --caddy-only; do
+  grep -Fq -- "$narrow_option" "$ROOT/deploy/watchdog.sh" \
+    || wd_die "watchdog never selects narrow infrastructure option $narrow_option"
+  grep -Fq -- "$narrow_option" "$ROOT/deploy/watchdog-infrastructure.sh" \
+    || wd_die "root infrastructure bridge rejects narrow option $narrow_option"
+done
 grep -Fq 'CURRENT_PHASE=handoff' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'watchdog self-update has no controller handoff'
 grep -Fq 'New controller installed; continuing on next poll' "$ROOT/deploy/watchdog.sh" \

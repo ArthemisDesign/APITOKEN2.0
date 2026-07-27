@@ -1270,7 +1270,7 @@ mark_idle_maintenance_complete() {
 }
 
 main() {
-  local remote_ref rejected infra_changed=0 caddy_changed=0 engine_changed=0 backend_changed=0 sales_changed=0
+  local remote_ref rejected infra_scope=none infra_changed=0 caddy_changed=0 engine_changed=0 backend_changed=0 sales_changed=0
   local openkeys_changed=0 typescript_required=0 typescript_full=0 typescript_base=
   local rust_required=0 static_required=0
   local engine_artifacts_required=0
@@ -1326,9 +1326,13 @@ main() {
     exit 0
   fi
 
-  wd_range_has_class "$SOURCE_REPO" "$INFRASTRUCTURE_SHA" "$CANDIDATE_SHA" \
-    wd_path_requires_infrastructure_install \
-    && infra_changed=1
+  infra_scope=$(wd_infrastructure_install_scope \
+    "$SOURCE_REPO" "$INFRASTRUCTURE_SHA" "$CANDIDATE_SHA")
+  case "$infra_scope" in
+    none) ;;
+    controller|caddy|full) infra_changed=1 ;;
+    *) wd_die "invalid infrastructure install scope: $infra_scope" ;;
+  esac
   wd_range_has_class "$SOURCE_REPO" "$INFRASTRUCTURE_SHA" "$CANDIDATE_SHA" wd_path_is_caddy \
     && caddy_changed=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_engine \
@@ -1398,9 +1402,13 @@ main() {
   if (( infra_changed == 1 )); then
     CURRENT_PHASE=installing-infrastructure
     CURRENT_PHASE_BEFORE_FAILURE=installing-infrastructure
-    status "installing exact tested operational definitions"
-    github_status pending deploy/watchdog "Installing exact tested operational definitions"
-    if (( caddy_changed == 1 )); then
+    status "installing exact tested operational definitions ($infra_scope)"
+    github_status pending deploy/watchdog "Installing exact tested operational definitions ($infra_scope)"
+    if [[ $infra_scope == controller ]]; then
+      sudo -n "$INFRASTRUCTURE_RUNNER" "$CANDIDATE_SHA" --controller-only
+    elif [[ $infra_scope == caddy ]]; then
+      sudo -n "$INFRASTRUCTURE_RUNNER" "$CANDIDATE_SHA" --caddy-only
+    elif (( caddy_changed == 1 )); then
       sudo -n "$INFRASTRUCTURE_RUNNER" "$CANDIDATE_SHA" --apply-caddy
     else
       sudo -n "$INFRASTRUCTURE_RUNNER" "$CANDIDATE_SHA"

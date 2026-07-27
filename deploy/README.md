@@ -26,6 +26,11 @@ changed package closure (workspace consumers plus their prerequisites). Shared i
 force the full workspace; filtered markers also bind reuse to the exact diff base. The four Next.js
 apps restore host-local `.next/cache` archives before building and publish only complete,
 symlink-free archives afterward; cache damage is treated as a miss, never a deployment failure.
+Operational self-updates are content-aware: controller-only ranges copy the fixed root-owned
+controller bundle, and Caddy-only ranges validate/reload only Caddy. Mixed changes, deletions,
+systemd/monitoring/stateful definitions, and unknown deployment files fail closed to the complete
+installer. Every mode records the exact tested infrastructure SHA before handing off to the next
+five-second poll.
 
 Before a feature verdict becomes green, the host refetches `master` and requires its current tip to
 remain an ancestor of the exact candidate. The locked merge still waits for the parent’s overall

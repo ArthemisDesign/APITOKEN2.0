@@ -3,9 +3,63 @@ set -euo pipefail
 
 # One-time root installer for the host-local, free GitHub polling watchdog.
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'run as root' >&2; exit 1; }
+CONTROLLER_ONLY=0
+case "${1:-}" in
+  '') ;;
+  --controller-only) CONTROLLER_ONLY=1 ;;
+  *) echo "usage: $0 [--controller-only]" >&2; exit 2 ;;
+esac
+[[ $# -le 1 ]] || { echo "usage: $0 [--controller-only]" >&2; exit 2; }
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=deploy/watchdog-lib.sh
 source "$ROOT/deploy/watchdog-lib.sh"
+
+install_controller_definitions() {
+  install -d -o root -g root -m 0755 \
+    /usr/local/lib/apitoken-watchdog/controller /opt/apitoken-watchdog
+  install -o root -g root -m 0755 "$ROOT/deploy/watchdog.sh" \
+    /usr/local/lib/apitoken-watchdog/watchdog.sh
+  install -o root -g root -m 0644 "$ROOT/deploy/watchdog-lib.sh" \
+    /usr/local/lib/apitoken-watchdog/watchdog-lib.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/watchdog-test-db.sh" \
+    /usr/local/lib/apitoken-watchdog/watchdog-test-db
+  install -o root -g root -m 0755 "$ROOT/deploy/watchdog-backup.sh" \
+    /usr/local/lib/apitoken-watchdog/watchdog-backup.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/watchdog-migrate.sh" \
+    /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/watchdog-infrastructure.sh" \
+    /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/watchdog-retention.sh" \
+    /usr/local/lib/apitoken-watchdog/watchdog-retention.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/watchdog-github.sh" \
+    /usr/local/lib/apitoken-watchdog/watchdog-github
+  install -o root -g root -m 0755 "$ROOT/deploy/watchdog-control.sh" \
+    /usr/local/bin/apitoken-watchdog
+  install -o root -g root -m 0755 "$ROOT/deploy/deploy.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/deploy.sh
+  install -o root -g root -m 0644 "$ROOT/deploy/lib.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/lib.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/api-bluegreen.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/api-bluegreen.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/engine-bluegreen.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/engine-bluegreen.sh
+  # Required by the watchdog's post-admission recovery path.
+  install -o root -g root -m 0755 "$ROOT/deploy/rollback.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/rollback.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/sales-deploy.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/openkeys-deploy.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/openkeys-deploy.sh
+}
+
+# Most deployment-workflow changes only replace this small fixed bundle. Do that before probing or
+# restarting any unrelated host component.
+if (( CONTROLLER_ONLY == 1 )); then
+  install_controller_definitions
+  echo 'production watchdog controller definitions installed'
+  exit 0
+fi
+
 command -v systemctl >/dev/null || { echo 'systemd is required' >&2; exit 1; }
 command -v curl >/dev/null || { echo 'curl is required' >&2; exit 1; }
 command -v jq >/dev/null || { echo 'jq is required' >&2; exit 1; }
@@ -22,7 +76,6 @@ if id -Gn apitoken-ci | tr ' ' '\n' | grep -Fxq deploy; then
     || echo 'warning: could not remove apitoken-ci from the deploy group' >&2
 fi
 
-install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/controller
 install -d -o deploy -g deploy -m 0751 /var/lib/apitoken/watchdog /var/lib/apitoken/watchdog/candidates
 install -d -o deploy -g deploy -m 0750 /var/lib/apitoken/watchdog/ci-home
 install -d -o apitoken-ci -g apitoken-ci -m 0750 \
@@ -39,14 +92,7 @@ install -d -o deploy -g deploy -m 0750 \
 # Candidate tests need traverse-only access through these parents. State contents remain unlistable.
 chmod o+x /var/lib/apitoken /var/lib/apitoken/watchdog /var/lib/apitoken/watchdog/candidates
 chown apitoken-ci:apitoken-ci /var/lib/apitoken/watchdog/ci-home
-install -d -o root -g root -m 0755 /opt/apitoken-watchdog
-install -o root -g root -m 0755 "$ROOT/deploy/watchdog.sh" /usr/local/lib/apitoken-watchdog/watchdog.sh
-install -o root -g root -m 0644 "$ROOT/deploy/watchdog-lib.sh" /usr/local/lib/apitoken-watchdog/watchdog-lib.sh
-install -o root -g root -m 0755 "$ROOT/deploy/watchdog-test-db.sh" /usr/local/lib/apitoken-watchdog/watchdog-test-db
-install -o root -g root -m 0755 "$ROOT/deploy/watchdog-backup.sh" /usr/local/lib/apitoken-watchdog/watchdog-backup.sh
-install -o root -g root -m 0755 "$ROOT/deploy/watchdog-migrate.sh" /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
-install -o root -g root -m 0755 "$ROOT/deploy/watchdog-infrastructure.sh" /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh
-install -o root -g root -m 0755 "$ROOT/deploy/watchdog-retention.sh" /usr/local/lib/apitoken-watchdog/watchdog-retention.sh
+install_controller_definitions
 # The sudo policy and its validating installer are delivered together. They are applied below by a
 # dedicated root oneshot after daemon-reload: this installer inherits the watchdog's read-only
 # /root and /etc mount namespace even though its effective user is root, while a manager-spawned
@@ -55,18 +101,8 @@ install -o root -g root -m 0755 "$ROOT/deploy/install-sudoers.sh" /usr/local/lib
 install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/sudoers.d
 install -o root -g root -m 0644 "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   /usr/local/lib/apitoken-watchdog/sudoers.d/95-apitoken-deploy
-install -o root -g root -m 0755 "$ROOT/deploy/watchdog-github.sh" /usr/local/lib/apitoken-watchdog/watchdog-github
-install -o root -g root -m 0755 "$ROOT/deploy/watchdog-control.sh" /usr/local/bin/apitoken-watchdog
 install -o root -g root -m 0755 "$ROOT/deploy/collect-monitoring-metrics.sh" /usr/local/lib/apitoken-watchdog/collect-monitoring-metrics.sh
 install -o root -g root -m 0755 "$ROOT/deploy/apitoken-db-dump" /usr/local/lib/apitoken-watchdog/apitoken-db-dump
-install -o root -g root -m 0755 "$ROOT/deploy/deploy.sh" /usr/local/lib/apitoken-watchdog/controller/deploy.sh
-install -o root -g root -m 0644 "$ROOT/deploy/lib.sh" /usr/local/lib/apitoken-watchdog/controller/lib.sh
-install -o root -g root -m 0755 "$ROOT/deploy/api-bluegreen.sh" /usr/local/lib/apitoken-watchdog/controller/api-bluegreen.sh
-install -o root -g root -m 0755 "$ROOT/deploy/engine-bluegreen.sh" /usr/local/lib/apitoken-watchdog/controller/engine-bluegreen.sh
-# Required by the watchdog's post-admission recovery path.
-install -o root -g root -m 0755 "$ROOT/deploy/rollback.sh" /usr/local/lib/apitoken-watchdog/controller/rollback.sh
-install -o root -g root -m 0755 "$ROOT/deploy/sales-deploy.sh" /usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh
-install -o root -g root -m 0755 "$ROOT/deploy/openkeys-deploy.sh" /usr/local/lib/apitoken-watchdog/controller/openkeys-deploy.sh
 install -o root -g root -m 0644 "$ROOT/deploy/commerce-postgres.compose.yaml" \
   /usr/local/lib/apitoken-watchdog/controller/commerce-postgres.compose.yaml
 install -o root -g root -m 0644 "$ROOT/deploy/affinity-redis.compose.yaml" \
