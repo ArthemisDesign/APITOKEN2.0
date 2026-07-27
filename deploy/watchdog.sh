@@ -364,9 +364,27 @@ test_rust_lane() {
   fi
 }
 
+test_static_lane() {
+  local candidate=$1 sha=$2 run_regression_suites=$3 shell_file
+  wd_log "checking tracked whitespace and shell syntax"
+  if [[ -n ${PROCESSED_SHA:-} && $PROCESSED_SHA != "$sha" ]]; then
+    git -C "$SOURCE_REPO" diff --check "$PROCESSED_SHA..$sha"
+  fi
+  while IFS= read -r -d '' shell_file; do
+    bash -n "$shell_file"
+  done < <(find "$candidate/deploy" -type f -name '*.sh' -print0)
+  if (( run_regression_suites == 1 )); then
+    wd_log "running deployment and merge-workflow regression suites"
+    run_as_ci bash "$candidate/deploy/lib.test.sh"
+    run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"
+    run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"
+    run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"
+  fi
+}
+
 run_candidate_lane() {
   # ERR is inherited by asynchronous functions under `set -E`. The parent owns quarantine and
-  # database cleanup after it has joined both lanes; a child must only return its lane status.
+  # database cleanup after it has joined every lane; a child must only return its lane status.
   trap - ERR EXIT INT TERM
   "$@"
 }
@@ -374,7 +392,7 @@ run_candidate_lane() {
 prepare_and_test_candidate() {
   local sha=$1 typescript_required=$2 rust_required=$3 static_required=$4 engine_artifacts_required=$5
   local candidate marker dsn= engine_dsn= sales_dsn= openkeys_dsn= manifest digest tree
-  local typescript_pid= rust_pid= typescript_rc=0 rust_rc=0
+  local typescript_pid= rust_pid= static_pid= typescript_rc=0 rust_rc=0 static_rc=0
   local typescript_digest=none engine_hash=none authbot_hash=none
   candidate=$(candidate_for "$sha")
   marker=$(marker_for "$sha")
@@ -409,40 +427,36 @@ prepare_and_test_candidate() {
   if (( typescript_required == 1 )); then
     sales_dsn=$(sudo -n "$TEST_DB_HELPER" sales-dsn)
     openkeys_dsn=$(sudo -n "$TEST_DB_HELPER" openkeys-dsn)
+  fi
+  if (( rust_required == 1 )); then
+    engine_dsn=$(sudo -n "$TEST_DB_HELPER" engine-dsn)
+  fi
+
+  # Resolve every fallible prerequisite before starting children. Once launched, the parent reaches
+  # every wait and the database cleanup path even when any individual lane fails.
+  if (( typescript_required == 1 )); then
     run_candidate_lane test_typescript_lane "$candidate" "$dsn" "$sales_dsn" "$openkeys_dsn" &
     typescript_pid=$!
   fi
   if (( rust_required == 1 )); then
-    engine_dsn=$(sudo -n "$TEST_DB_HELPER" engine-dsn)
     run_candidate_lane test_rust_lane "$candidate" "$engine_dsn" "$engine_artifacts_required" &
     rust_pid=$!
   fi
+  run_candidate_lane test_static_lane "$candidate" "$sha" "$static_required" &
+  static_pid=$!
 
-  # The two language suites are independent once their disposable databases exist. Wait for both
-  # even when one fails so no candidate-owned process survives into cleanup or a later cycle.
+  # The language and static suites are independent once their prerequisites exist. Wait for every
+  # child even when one fails so no candidate-owned process survives into cleanup or a later cycle.
   if [[ -n $typescript_pid ]]; then wait "$typescript_pid" || typescript_rc=$?; fi
   if [[ -n $rust_pid ]]; then wait "$rust_pid" || rust_rc=$?; fi
+  wait "$static_pid" || static_rc=$?
   if (( TEST_DB_STARTED == 1 )); then
     sudo -n "$TEST_DB_HELPER" stop
     TEST_DB_STARTED=0
   fi
   (( typescript_rc == 0 )) || wd_die "TypeScript candidate lane failed (exit $typescript_rc)"
   (( rust_rc == 0 )) || wd_die "Rust candidate lane failed (exit $rust_rc)"
-
-  wd_log "checking tracked whitespace and shell syntax"
-  if [[ -n ${PROCESSED_SHA:-} && $PROCESSED_SHA != "$sha" ]]; then
-    git -C "$SOURCE_REPO" diff --check "$PROCESSED_SHA..$sha"
-  fi
-  while IFS= read -r -d '' shell_file; do
-    bash -n "$shell_file"
-  done < <(find "$candidate/deploy" -type f -name '*.sh' -print0)
-  if (( static_required == 1 )); then
-    wd_log "running deployment and merge-workflow regression suites"
-    run_as_ci bash "$candidate/deploy/lib.test.sh"
-    run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"
-    run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"
-    run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"
-  fi
+  (( static_rc == 0 )) || wd_die "Static candidate lane failed (exit $static_rc)"
 
   [[ -z $(run_as_ci git -C "$candidate" status --porcelain --untracked-files=no) ]] \
     || wd_die "tests modified tracked candidate files"

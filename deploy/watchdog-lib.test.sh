@@ -453,8 +453,8 @@ grep -Fq 'streak >= 3' "$ROOT/deploy/watchdog.sh" \
 grep -Fq 'for _ in $(seq 1 20); do' "$ROOT/deploy/watchdog.sh" \
   || wd_die "the admin-panel convergence window must outlast blue-green cutover and health checks"
 
-# The path-aware candidate gate must keep every lane and its selection/fallback contract. TypeScript
-# and Rust run concurrently when both are selected; unknown paths select all lanes.
+# The path-aware candidate gate must keep every lane and its selection/fallback contract. Language
+# and static validation run concurrently when selected; unknown paths select every expensive lane.
 gate_contract=(
   'pnpm --dir "$candidate" install --frozen-lockfile'
   'pnpm --dir "$candidate" build'
@@ -475,8 +475,11 @@ gate_contract=(
   'status --porcelain --untracked-files=no'
   'run_candidate_lane test_typescript_lane "$candidate" "$dsn" "$sales_dsn" "$openkeys_dsn" &'
   'run_candidate_lane test_rust_lane "$candidate" "$engine_dsn" "$engine_artifacts_required" &'
+  'run_candidate_lane test_static_lane "$candidate" "$sha" "$static_required" &'
   'wait "$typescript_pid"'
   'wait "$rust_pid"'
+  'wait "$static_pid"'
+  'Static candidate lane failed'
   'wd_range_has_unknown_validation_path "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA"'
   'typescript_tested=%s'
   'rust_tested=%s'
