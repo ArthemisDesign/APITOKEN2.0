@@ -1339,7 +1339,7 @@ mod tests {
 
     #[test]
     fn embedded_admin_panel_exposes_all_operational_workflows_without_secrets() {
-        assert!(ADMIN_PANEL_HTML.contains("data-admin-panel-version=\"9\""));
+        assert!(ADMIN_PANEL_HTML.contains("data-admin-panel-version=\"10\""));
         // The spend breakdown must separate the Claude fleet from the Codex pool: both settle into
         // the same money tables, so an unattributed total hides which upstream earned it.
         assert!(ADMIN_PANEL_HTML.contains("period.providers"));

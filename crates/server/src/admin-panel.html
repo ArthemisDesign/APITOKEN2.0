@@ -37,6 +37,9 @@ letter-spacing:.08em;color:var(--muted)}.value{font-size:27px;font-weight:800;ma
 th,td{padding:11px 13px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}th{font-size:10px;
 text-transform:uppercase;letter-spacing:.06em;color:var(--muted);background:var(--soft);font-weight:600}tr:last-child td{border:0}
 tbody tr:hover{background:var(--blue-bg)}th.left,td.left{text-align:left}.sub{font-size:10px;color:var(--muted);margin-top:2px}
+/* Ключи, выпущенные порталом OpenKeys: у них handle вида openkeys-<token>. */
+.okb{display:inline-block;margin-left:6px;padding:1px 6px;border:1px solid var(--line);border-radius:99px;
+  font-size:9px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);vertical-align:middle}
 .pill{display:inline-block;border:1px solid var(--line);border-radius:4px;padding:1px 6px;margin:1px;font-size:10px;color:var(--muted)}
 .pill.ok{color:var(--green);border-color:var(--green)}.pill.warn{color:var(--orange);border-color:var(--orange)}
 .pill.bad{color:var(--red);border-color:var(--red)}.btn{border:1px solid var(--blue);background:var(--blue-bg);color:var(--blue);
@@ -72,7 +75,7 @@ a.link{color:var(--blue);text-decoration:none}a.link:hover{text-decoration:under
 .toast.bad{border-color:var(--red)}.toast+.toast{bottom:70px}
 </style>
 </head>
-<body data-admin-panel-version="9">
+<body data-admin-panel-version="10">
 <div id="app"></div>
 <script>
 const app=document.getElementById('app');
@@ -206,6 +209,10 @@ async function adminAction(button,domains){const action=button.dataset.adminActi
 
 // Разбивка «кто тратит» по окнам 24ч/7д/30д: списано клиенту (с его множителем) vs real-API
 // эквивалент + эффективная скидка. Открывается кликом по «потрачено» в таблицах/карточке.
+// Аккаунты портала OpenKeys узнаются по handle: он задаётся при выпуске ключа
+// и другого способа отличить их на стороне движка нет.
+const isOpenkeys=handle=>/^openkeys-/i.test(String(handle||''));
+const okBadge=handle=>isOpenkeys(handle)?'<span class="okb" title="Выпущен через OpenKeys">OpenKeys</span>':'';
 async function spendStats(){let data,emailById={};
   try{const results=await Promise.all([api('/spend-stats'),api('/admin/users').catch(()=>({users:[]}))]);data=results[0];
     (results[1].users||[]).forEach(user=>{if(user.id)emailById[user.id]=user.email})}
@@ -219,10 +226,17 @@ async function spendStats(){let data,emailById={};
     const providerLabel=name=>name==='openai'?'OpenAI (Codex)':name==='anthropic'?'Claude (подписки)':name;
     const providerRows=(period.providers||[]).map(item=>'<tr><td class="left"><b>'+esc(providerLabel(item.provider))+'</b></td><td>'+item.requests+
       '</td><td><b>'+money(item.charge_usd)+'</b></td><td>'+money(item.real_usd)+'</td><td>'+discount(item.charge_usd,item.real_usd)+'</td></tr>').join('');
-    const rows=(period.accounts||[]).map(item=>'<tr><td class="left"><b>'+esc(displayName(item.handle))+'</b><div class="sub">'+esc(item.handle&&displayName(item.handle)!==item.handle?item.handle:item.account)+'</div></td><td>'+item.requests+
+    const rows=(period.accounts||[]).map(item=>'<tr><td class="left"><b>'+esc(displayName(item.handle))+'</b>'+okBadge(item.handle)+'<div class="sub">'+esc(item.handle&&displayName(item.handle)!==item.handle?item.handle:item.account)+'</div></td><td>'+item.requests+
       '</td><td><b>'+money(item.charge_usd)+'</b></td><td>'+money(item.real_usd)+'</td><td>'+discount(item.charge_usd,item.real_usd)+'</td><td>'+ago(item.last_ts*1000)+'</td></tr>').join('');
+    // Отдельная сводка по OpenKeys: у портала своя экономика, и смешивать её
+    // с обычными клиентами при разборе расхода бесполезно.
+    const ok=(period.accounts||[]).filter(item=>isOpenkeys(item.handle));
+    const okCharge=ok.reduce((sum,item)=>sum+(item.charge_usd||0),0);
+    const okReal=ok.reduce((sum,item)=>sum+(item.real_usd||0),0);
+    const okRequests=ok.reduce((sum,item)=>sum+(item.requests||0),0);
     return '<div class="cards">'+card('списано клиентам',money(period.charge_usd),period.requests+' запросов')+
-      card('real-API эквивалент',money(period.real_usd),'средняя скидка '+discount(period.charge_usd,period.real_usd))+'</div>'+
+      card('real-API эквивалент',money(period.real_usd),'средняя скидка '+discount(period.charge_usd,period.real_usd))+
+      card('OpenKeys',money(okReal),ok.length+' ключей · '+okRequests+' запросов · списано '+money(okCharge))+'</div>'+
       '<h3>По провайдерам</h3><div class="table"><div class="scroll"><table><thead><tr><th class="left">провайдер</th><th>запросы</th><th>списано</th><th>real-API</th><th>скидка</th></tr></thead><tbody>'+
       (providerRows||empty(5))+'</tbody></table></div></div>'+
       '<div class="table"><div class="scroll"><table><thead><tr><th class="left">account</th><th>запросы</th><th>списано</th><th>real-API</th><th>скидка</th><th>активность</th></tr></thead><tbody>'+
@@ -248,8 +262,8 @@ async function accounts(){const result=await Promise.all([api('/overview'),api('
   ];
   const domainCards=domains.map(item=>'<div class="domain"><b>'+(item[3]?'<a class="link" target="_blank" rel="noreferrer" href="'+item[3]+'">'+esc(item[0])+'</a>':esc(item[0]))+
     '</b>'+pill(item[1],item[0]==='crm.apitoken.sale'?(crm?'ok':'warn'):'ok')+'<div class="sub">'+esc(item[2])+'</div></div>').join('');
-  const engineRows=engine.map(account=>{const isCrm=String(account.handle||'').toLowerCase()==='crm-parsing',domain=isCrm?'crm.apitoken.sale':'api.apitoken.sale';return '<tr><td class="left"><b>'+esc(account.handle||'—')+
-    '</b><div class="sub">'+esc(account.account)+'</div></td><td class="left">'+esc(domain)+'</td><td>'+pill(account.status,account.status==='active'?'ok':'bad')+'</td><td><b>'+money(account.balance_usd)+
+  const engineRows=engine.map(account=>{const isCrm=String(account.handle||'').toLowerCase()==='crm-parsing',domain=isCrm?'crm.apitoken.sale':'api.apitoken.sale';return '<tr><td class="left"><b>'+esc(account.handle||'—')+'</b>'+okBadge(account.handle)+
+    '<div class="sub">'+esc(account.account)+'</div></td><td class="left">'+esc(domain)+'</td><td>'+pill(account.status,account.status==='active'?'ok':'bad')+'</td><td><b>'+money(account.balance_usd)+
     '</b></td><td>'+money(account.spent_usd)+'</td><td>×'+esc(account.mult)+'</td></tr>'}).join('');
   const partnerRows=partners.items.map(partner=>'<tr><td class="left"><b>'+esc(partner.telegramUsername?'@'+partner.telegramUsername:(partner.email||partner.displayName||'—'))+
     '</b><div class="sub">'+esc(partner.id)+' · '+esc(partner.referralCode)+'</div></td><td>'+pill(partner.status,partner.status==='active'?'ok':partner.status==='suspended'?'bad':'warn')+
@@ -390,7 +404,7 @@ async function system(){const result=await Promise.all([api('/overview'),api('/c
     '</b></td><td>'+(dead?pill(deadLabel(item.dead_reason),'bad'):suspect?pill('под наблюдением (auth)','warn'):pill(item.status,item.status==='active'?'ok':'warn'))+'</td><td>'+esc(String(item.added||'').slice(0,10)||'—')+'</td><td><span class="dot '+dayKind+'"></span>'+(days>0?days+' дн.':'—')+
     '</td><td><b>'+(Number(item.peak_cap5h_usd)>0?money(item.peak_cap5h_usd):'—')+'</b></td><td><b>'+(Number(item.peak_cap7d_usd)>0?money(item.peak_cap7d_usd):'—')+
     '</b></td><td class="left">'+esc(item.proxy_host||'—')+'</td><td>'+esc(String(item.proxy_expire||'').slice(0,10)||'—')+'</td></tr>'}).join('');
-  const accountRows=(overview.accounts||[]).map(account=>'<tr><td class="left muted">'+esc(account.account)+'</td><td class="left"><b>'+esc(account.handle||'—')+'</b></td><td>'+
+  const accountRows=(overview.accounts||[]).map(account=>'<tr><td class="left muted">'+esc(account.account)+'</td><td class="left"><b>'+esc(account.handle||'—')+'</b>'+okBadge(account.handle)+'</td><td>'+
     pill(account.status,account.status==='active'?'ok':'bad')+'</td><td><b>'+money(account.balance_usd)+'</b></td><td><b>'+money(account.spent_usd)+'</b></td><td>×'+esc(account.mult)+'</td></tr>').join('');
   const body=(deadCount?'<div class="banner bad"><span class="dot"></span><div><b>'+deadCount+' подписок с МЁРТВЫМ токеном</b><span class="muted">вне ротации — нужен свежий OAuth-токен (setup-token) на этот аккаунт'+(suspectCount?' · '+suspectCount+' под наблюдением':'')+'</span></div></div>':suspectCount?'<div class="banner warn"><span class="dot"></span><div><b>'+suspectCount+' подписок под наблюдением (auth падает)</b><span class="muted">движок корроборирует чистыми probe; при подтверждении — пометит DEAD</span></div></div>':'')+
     '<div class="banner '+verdict.kind+'"><span class="dot"></span><div><b>'+esc(verdict.title)+'</b><span class="muted">'+esc(verdict.detail)+'</span></div></div>'+
