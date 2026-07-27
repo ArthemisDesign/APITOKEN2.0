@@ -149,8 +149,8 @@ new_gate_worktree() {  # $1 = name, $2 = changed path
   printf '%s' "$tree"
 }
 
-assert_gate_selection() {  # $1=name $2=path $3=typescript $4=rust $5=deployment
-  local name=$1 path=$2 typescript=$3 rust=$4 deployment=$5
+assert_gate_selection() {  # $1=name $2=path $3=typescript $4=rust $5=deployment $6=typescript_full
+  local name=$1 path=$2 typescript=$3 rust=$4 deployment=$5 typescript_full=$6
   local tree lane lane_expected
   local lane_log=$TEMP/gate-$name.lanes output=$TEMP/gate-$name.log
   tree=$(new_gate_worktree "$name" "$path")
@@ -161,7 +161,7 @@ assert_gate_selection() {  # $1=name $2=path $3=typescript $4=rust $5=deployment
     STATIC_GATE_STUB="printf '%s\\n' static >>'$lane_log'" \
     run_merge "$tree" >"$output" \
     || wd_die "path-aware gate scenario $name failed: $(cat "$output")"
-  grep -Fq "local gate selection: typescript=$typescript rust=$rust deployment=$deployment static=1" \
+  grep -Fq "local gate selection: typescript=$typescript typescript_full=$typescript_full rust=$rust deployment=$deployment static=1" \
     "$output" || wd_die "path-aware gate scenario $name selected the wrong lanes: $(cat "$output")"
   for lane in typescript rust deployment static; do
     lane_expected=0
@@ -180,13 +180,13 @@ assert_gate_selection() {  # $1=name $2=path $3=typescript $4=rust $5=deployment
   done
 }
 
-assert_gate_selection docs docs/path-aware.md 0 0 0
-assert_gate_selection typescript apps/path-aware.ts 1 0 0
-assert_gate_selection rust crates/path-aware.rs 0 1 0
-assert_gate_selection infrastructure deploy/path-aware.test.sh 0 0 1
-assert_gate_selection workflow AGENTS.md 0 0 1
-assert_gate_selection unknown mystery/runtime.xyz 1 1 1
-assert_gate_selection gate-machinery deploy/sccache-cargo.sh 1 1 1
+assert_gate_selection docs docs/path-aware.md 0 0 0 0
+assert_gate_selection typescript apps/path-aware.ts 1 0 0 0
+assert_gate_selection rust crates/path-aware.rs 0 1 0 0
+assert_gate_selection infrastructure deploy/path-aware.test.sh 0 0 1 0
+assert_gate_selection workflow AGENTS.md 0 0 1 0
+assert_gate_selection unknown mystery/runtime.xyz 1 1 1 1
+assert_gate_selection gate-machinery deploy/sccache-cargo.sh 1 1 1 1
 
 # A feature SHA that fails the production host's trusted gate must never reach the merge lock or
 # master, even if its local gate passed.
@@ -426,7 +426,7 @@ for sccache_contract in \
     || wd_die "shared Rust cache lost required contract: $sccache_contract"
 done
 for parallel_gate_contract in \
-  'am_gate_typescript & typescript_pid=$!' \
+  'am_gate_typescript "$base" "$target" "$typescript_full" & typescript_pid=$!' \
   'am_gate_rust & rust_pid=$!' \
   'am_gate_deployment & deployment_pid=$!' \
   'am_gate_static "$base" "$target" & static_pid=$!' \
@@ -441,6 +441,8 @@ done
 for path_gate_contract in \
   'diff --name-only --no-renames --diff-filter=ACDMRTUXB' \
   'wd_range_has_unknown_validation_path' \
+  'typescript-scope.mjs' \
+  'typescript_full=1' \
   'local gate machinery changed; forcing every expensive lane' \
   'am_gate "$previous" "$candidate"'; do
   grep -Fq -- "$path_gate_contract" "$ROOT/deploy/agent-merge.sh" \

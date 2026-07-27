@@ -275,6 +275,7 @@ fi
 for runtime_definition in \
   deploy/watchdog.sh \
   deploy/watchdog-lib.sh \
+  deploy/typescript-scope.mjs \
   deploy/install-watchdog.sh \
   deploy/Caddyfile \
   systemd/apitoken-deploy-watchdog.service \
@@ -326,6 +327,46 @@ git -C "$validation_repo" commit --quiet -m unknown
 validation_unknown=$(git -C "$validation_repo" rev-parse HEAD)
 wd_range_has_unknown_validation_path "$validation_repo" "$validation_docs" "$validation_unknown" \
   || wd_die "an unclassified path did not fail safe into complete validation"
+
+# Package edits stay filterable, while shared inputs, selector changes, and deleted package paths
+# force a complete TypeScript workspace check.
+mkdir -p "$validation_repo/apps/example"
+printf 'base\n' >"$validation_repo/apps/example/index.ts"
+git -C "$validation_repo" add apps/example/index.ts
+git -C "$validation_repo" commit --quiet -m typescript-scope-base
+validation_typescript_base=$(git -C "$validation_repo" rev-parse HEAD)
+printf 'edit\n' >>"$validation_repo/apps/example/index.ts"
+git -C "$validation_repo" add apps/example/index.ts
+git -C "$validation_repo" commit --quiet -m typescript-scope-edit
+validation_typescript_edit=$(git -C "$validation_repo" rev-parse HEAD)
+if wd_range_requires_full_typescript_scope "$validation_repo" \
+  "$validation_typescript_base" "$validation_typescript_edit"; then
+  wd_die "an ordinary package edit unnecessarily forced full TypeScript validation"
+fi
+printf 'lock\n' >"$validation_repo/pnpm-lock.yaml"
+git -C "$validation_repo" add pnpm-lock.yaml
+git -C "$validation_repo" commit --quiet -m typescript-shared-input
+validation_typescript_shared=$(git -C "$validation_repo" rev-parse HEAD)
+wd_range_requires_full_typescript_scope "$validation_repo" \
+  "$validation_typescript_edit" "$validation_typescript_shared" \
+  || wd_die "a shared TypeScript input did not force full validation"
+mkdir -p "$validation_repo/deploy"
+printf 'selector\n' >"$validation_repo/deploy/typescript-scope.mjs"
+git -C "$validation_repo" add deploy/typescript-scope.mjs
+git -C "$validation_repo" commit --quiet -m typescript-selector
+validation_typescript_selector=$(git -C "$validation_repo" rev-parse HEAD)
+wd_range_changes_typescript_scope_gate "$validation_repo" \
+  "$validation_typescript_shared" "$validation_typescript_selector" \
+  || wd_die "a TypeScript selector change did not identify gate machinery"
+wd_range_requires_full_typescript_scope "$validation_repo" \
+  "$validation_typescript_shared" "$validation_typescript_selector" \
+  || wd_die "a TypeScript selector change did not force full validation"
+git -C "$validation_repo" rm --quiet apps/example/index.ts
+git -C "$validation_repo" commit --quiet -m typescript-deletion
+validation_typescript_deletion=$(git -C "$validation_repo" rev-parse HEAD)
+wd_range_requires_full_typescript_scope "$validation_repo" \
+  "$validation_typescript_selector" "$validation_typescript_deletion" \
+  || wd_die "a deleted TypeScript workspace path did not force full validation"
 
 # A deleted component file still requires that component's lane. A rename is deliberately exposed
 # as an old-path deletion plus a new-path addition, so moving code cannot escape its former owner.
@@ -399,6 +440,8 @@ tested_marker="$TEMP/tested-candidate.marker"
   printf 'sha=%s\n' "$tested_sha"
   printf 'tree=%s\n' "$tested_tree"
   printf 'typescript_tested=1\n'
+  printf 'typescript_full=1\n'
+  printf 'typescript_base=%s\n' "$tested_sha"
   printf 'rust_tested=1\n'
   printf 'engine_artifacts=1\n'
   printf 'typescript_artifact_digest=%s\n' "$(wd_typescript_artifact_digest "$tested_candidate")"
@@ -540,6 +583,9 @@ gate_contract=(
   'pnpm --dir "$candidate" install --frozen-lockfile'
   'pnpm --dir "$candidate" build'
   'pnpm --dir "$candidate" typecheck'
+  'typescript-scope.mjs'
+  '"${filters[@]}"'
+  '--fail-if-no-match typecheck'
   'DATABASE_URL="$dsn" node "$candidate/packages/db/dist/migrate.js"'
   'SALES_DATABASE_URL="$sales_dsn" node "$candidate/packages/sales-db/dist/migrate.js"'
   'TEST_DATABASE_URL="$dsn" TEST_SALES_DATABASE_URL="$sales_dsn"'
@@ -552,9 +598,10 @@ gate_contract=(
   'run_as_ci bash "$candidate/deploy/lib.test.sh"'
   'run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"'
   'run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"'
+  'run_as_ci bash "$candidate/deploy/typescript-scope.test.sh"'
   'run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"'
   'status --porcelain --untracked-files=no'
-  'run_candidate_lane test_typescript_lane "$candidate" "$dsn" "$sales_dsn" "$openkeys_dsn" &'
+  'run_candidate_lane test_typescript_lane "$candidate" "$dsn" "$sales_dsn" "$openkeys_dsn"'
   'run_candidate_lane test_rust_lane "$candidate" "$engine_dsn" "$engine_artifacts_required" &'
   'run_candidate_lane test_static_lane "$candidate" "$sha" "$static_required" &'
   'wait "$typescript_pid"'
@@ -564,6 +611,8 @@ gate_contract=(
   'wd_path_requires_infrastructure_install'
   'select_candidate_validation_requirements "$CANDIDATE_SHA"'
   'typescript_tested=%s'
+  'typescript_full=%s'
+  'typescript_base=%s'
   'rust_tested=%s'
   'static_tested=%s'
   'engine_artifacts=%s'
@@ -950,6 +999,7 @@ shadow_contract=(
   'wd_require_ancestor "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" shadow-processed'
   'select_candidate_validation_requirements "$CANDIDATE_SHA" "$committed_master"'
   'prepare_and_test_candidate "$CANDIDATE_SHA" "$VALIDATION_TYPESCRIPT_REQUIRED"'
+  '"$VALIDATION_TYPESCRIPT_FULL" "$VALIDATION_TYPESCRIPT_BASE_SHA"'
   'wd_require_ancestor "$SOURCE_REPO" "$current_master" "$CANDIDATE_SHA" shadow-current-master'
   'Trusted production-host candidate validation passed'
   'validation_output=$(sudo -n "$GITHUB_HELPER" validation-next 2)'

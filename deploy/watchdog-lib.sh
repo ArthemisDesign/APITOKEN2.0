@@ -525,6 +525,35 @@ wd_range_has_unknown_validation_path() {
   return 1
 }
 
+wd_range_changes_typescript_scope_gate() {
+  local repo=$1 base=$2 target=$3 path
+  while IFS= read -r path; do
+    [[ $path == deploy/typescript-scope.mjs ]] && return 0
+  done < <(wd_range_files "$repo" "$base" "$target")
+  return 1
+}
+
+# Shared compiler/package-manager inputs and deletions cannot be represented by a current-package
+# closure. Force the complete workspace for those ranges; additions and edits inside a current
+# package are resolved more narrowly by deploy/typescript-scope.mjs.
+wd_range_requires_full_typescript_scope() {
+  local repo=$1 base=$2 target=$3 path
+  while IFS= read -r path; do
+    case "$path" in
+      package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.node-version|tsconfig*.json|\
+      deploy/typescript-scope.mjs)
+        return 0
+        ;;
+    esac
+  done < <(wd_range_files "$repo" "$base" "$target")
+  while IFS= read -r path; do
+    case "$path" in
+      apps/*|packages/*) return 0 ;;
+    esac
+  done < <(git -C "$repo" diff --name-only --no-renames --diff-filter=D "$base..$target")
+  return 1
+}
+
 wd_require_ancestor() {
   local repo=$1 base=$2 target=$3 label=$4
   [[ -n $base ]] || wd_die "$label baseline is not initialized"

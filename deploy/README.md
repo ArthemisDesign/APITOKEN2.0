@@ -21,6 +21,9 @@ merge client onto the latest committed `master`, tested only across that feature
 under the same SHA-keyed marker used by normal delivery. Workers have separate disposable
 PostgreSQL and Cargo slots and run below production CPU/I/O priority. A per-SHA lock lets a later
 unchanged `master` deployment wait for and reuse an in-flight candidate instead of rebuilding it.
+For TypeScript, every deployable artifact is still built, while typecheck/tests run only for the
+changed package closure (workspace consumers plus their prerequisites). Shared inputs and deletions
+force the full workspace; filtered markers also bind reuse to the exact diff base.
 
 Before a feature verdict becomes green, the host refetches `master` and requires its current tip to
 remain an ancestor of the exact candidate. The locked merge still waits for the parent’s overall

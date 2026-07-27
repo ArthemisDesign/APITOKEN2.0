@@ -46,7 +46,10 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    runs the selected independent lanes concurrently. Shell syntax and exact-range whitespace checks
    always run. Documentation-only changes can therefore stay cheap; an unknown path, deletion or
    rename is handled conservatively, and a change to the merge selector, shared classifier, merge
-   regression suite, or Rust cache wrapper forces every lane. Rust compilation goes through a
+   regression suite, or Rust cache wrapper forces every lane. For an ordinary workspace edit, the
+   TypeScript lane builds, typechecks, and tests the changed package, every workspace consumer, and
+   their internal prerequisites. Shared pnpm/TypeScript inputs, workspace deletions, and selector
+   changes fall back to the complete workspace. Rust compilation goes through a
    checksum-pinned `sccache`; its binary, 10 GiB object cache, and Cargo 1.91+ intermediate build
    directory live in the clone's git common directory and are reused by all linked worktrees. Final
    Cargo targets remain local to each worktree. The wrapper falls back to uncached Cargo if its
@@ -85,8 +88,10 @@ changes select the Rust lane, deployment changes select the operational regressi
 unknown path fails safe into every lane. Selected language and operational lanes run concurrently.
 The host then:
 
-1. installs/builds/tests the selected TypeScript lane against disposable PostgreSQL and/or runs the
-   selected locked Rust workspace lane against its separate database, using one shared Cargo target;
+1. installs and builds every deployable TypeScript artifact, then typechecks/tests the
+   dependency-aware changed-package closure against disposable PostgreSQL (or the full workspace
+   for shared/deleted inputs), and/or runs the selected locked Rust workspace lane against its
+   separate database using one shared Cargo target;
 2. builds production engine binaries in that same tested Rust lane when an engine rollout is needed,
    records runtime-artifact digests, and freezes the candidate;
 3. runs shell/whitespace checks and the deployment suites selected for operational changes;

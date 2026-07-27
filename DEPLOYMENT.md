@@ -46,13 +46,17 @@ serialized, and work for the same SHA has a per-SHA lock so production waits for
 exact build instead of rebuilding it.
 
 The candidate selector tests only the feature delta from the committed parent. Before reporting
-green, the worker fetches `master` again and requires the current committed tip still to be an
-ancestor of the candidate. The locked merge still requires the parent’s `deploy/watchdog` verdict
-to be green; if `master` moves incompatibly, the client rebases and both exact-SHA gates run again.
-A failed candidate request is isolated from production: it reports a red request and `deploy/tests`
-for that feature SHA without writing the production quarantine marker or changing
-`deploy/watchdog`. Candidate work is CPU/I/O deprioritized; actual production remains one SHA at a
-time under its existing deployment lock.
+green, the worker builds the complete deployable TypeScript artifact set but limits typecheck and
+tests to the changed package, its workspace dependents, and their internal prerequisites. Shared
+pnpm/TypeScript inputs, deletions, unknown paths, and selector changes force the full workspace.
+The immutable marker records whether coverage was full and, for a filtered run, its exact base SHA;
+production reuses it only for compatible coverage. The worker then fetches `master` again and
+requires the current committed tip still to be an ancestor of the candidate. The locked merge still
+requires the parent’s `deploy/watchdog` verdict to be green; if `master` moves incompatibly, the
+client rebases and both exact-SHA gates run again. A failed candidate request is isolated from
+production: it reports a red request and `deploy/tests` for that feature SHA without writing the
+production quarantine marker or changing `deploy/watchdog`. Candidate work is CPU/I/O deprioritized;
+actual production remains one SHA at a time under its existing deployment lock.
 
 Both watchdogs poll every five seconds. The candidate queue uses one state-bearing GitHub query per
 poll rather than one request per historical deployment. A production failure quarantines that SHA

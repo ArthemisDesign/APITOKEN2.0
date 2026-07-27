@@ -63,15 +63,35 @@ am_mtime() {
 am_now() { date +%s; }
 
 am_gate_typescript() (
+  local base=$1 target=$2 force_full=$3 scope_output= mode= package
+  local filters=()
   cd "$ROOT"
   if [[ -n ${AGENT_MERGE_TYPESCRIPT_GATE_CMD:-} ]]; then
     eval "$AGENT_MERGE_TYPESCRIPT_GATE_CMD"
     return
   fi
   pnpm install --frozen-lockfile
-  pnpm build
-  pnpm typecheck
-  pnpm test
+  if (( force_full == 0 )) \
+    && scope_output=$(node "$ROOT/deploy/typescript-scope.mjs" "$ROOT" "$base" "$target"); then
+    mode=${scope_output%%$'\n'*}
+    if [[ $mode == filtered ]]; then
+      while IFS= read -r package; do
+        [[ $package == filtered || -z $package ]] && continue
+        filters+=("--filter=$package")
+      done <<<"$scope_output"
+    fi
+  fi
+  if (( ${#filters[@]} == 0 )); then
+    am_log 'TypeScript scope is shared, empty, or unavailable; running the full workspace'
+    pnpm build
+    pnpm typecheck
+    pnpm test
+  else
+    am_log "TypeScript scope selected ${#filters[@]} workspace package(s)"
+    pnpm "${filters[@]}" -r --if-present --fail-if-no-match build
+    pnpm "${filters[@]}" -r --if-present --fail-if-no-match typecheck
+    pnpm "${filters[@]}" -r --if-present --fail-if-no-match test
+  fi
 )
 
 am_gate_rust() (
@@ -90,6 +110,7 @@ am_gate_deployment() (
     return
   fi
   bash "$ROOT/deploy/lib.test.sh"
+  bash "$ROOT/deploy/typescript-scope.test.sh"
   # The merge path tests itself on every merge, strictly. It is deliberately not enforced in the
   # production gate: the watchdog installed on the host still calls deploy/agent-merge.test.sh, now a
   # report-only shim, so a host-environment difference cannot quarantine a SHA and trap its own fix.
@@ -116,7 +137,8 @@ am_range_changes_local_gate() {
   local base=$1 target=$2 path
   while IFS= read -r path; do
     case "$path" in
-      deploy/agent-merge.sh|deploy/agent-merge.suite.sh|deploy/watchdog-lib.sh|deploy/sccache-cargo.sh)
+      deploy/agent-merge.sh|deploy/agent-merge.suite.sh|deploy/watchdog-lib.sh|\
+      deploy/sccache-cargo.sh|deploy/typescript-scope.mjs|deploy/typescript-scope.test.sh)
         return 0
         ;;
     esac
@@ -144,9 +166,10 @@ am_gate() {
     "$base..$target" >/dev/null \
     || am_die "local gate could not inspect $base..$target"
 
-  local typescript_required=0 rust_required=0 deployment_required=0
+  local typescript_required=0 typescript_full=0 rust_required=0 deployment_required=0
   if am_range_changes_local_gate "$base" "$target"; then
     typescript_required=1
+    typescript_full=1
     rust_required=1
     deployment_required=1
     am_log 'local gate machinery changed; forcing every expensive lane'
@@ -163,9 +186,14 @@ am_gate() {
     fi
     if wd_range_has_unknown_validation_path "$ROOT" "$base" "$target"; then
       typescript_required=1
+      typescript_full=1
       rust_required=1
       deployment_required=1
       am_log 'unclassified path found; forcing every expensive lane'
+    fi
+    if (( typescript_required == 1 )) \
+      && wd_range_requires_full_typescript_scope "$ROOT" "$base" "$target"; then
+      typescript_full=1
     fi
   fi
 
@@ -173,9 +201,9 @@ am_gate() {
   # and reap every child even after a failure so no candidate-owned process leaks into the merge.
   local typescript_pid= rust_pid= deployment_pid= static_pid=
   local typescript_rc=0 rust_rc=0 deployment_rc=0 static_rc=0
-  am_log "local gate selection: typescript=$typescript_required rust=$rust_required deployment=$deployment_required static=1"
+  am_log "local gate selection: typescript=$typescript_required typescript_full=$typescript_full rust=$rust_required deployment=$deployment_required static=1"
   if (( typescript_required == 1 )); then
-    am_gate_typescript & typescript_pid=$!
+    am_gate_typescript "$base" "$target" "$typescript_full" & typescript_pid=$!
   fi
   if (( rust_required == 1 )); then
     am_gate_rust & rust_pid=$!

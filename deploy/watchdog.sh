@@ -61,6 +61,8 @@ ACTIVE_DEPLOYMENT_URL=
 SHADOW_DEPLOYMENT_ID=
 
 VALIDATION_TYPESCRIPT_REQUIRED=0
+VALIDATION_TYPESCRIPT_FULL=0
+VALIDATION_TYPESCRIPT_BASE_SHA=
 VALIDATION_RUST_REQUIRED=0
 VALIDATION_STATIC_REQUIRED=0
 VALIDATION_ENGINE_ARTIFACTS_REQUIRED=0
@@ -218,9 +220,10 @@ candidate_for() {
 }
 
 candidate_is_tested() {
-  local sha=$1 typescript_required=$2 rust_required=$3 static_required=$4 engine_artifacts_required=$5
+  local sha=$1 typescript_required=$2 typescript_full=$3 typescript_base=$4
+  local rust_required=$5 static_required=$6 engine_artifacts_required=$7
   local marker candidate marker_sha marker_tree candidate_sha candidate_tree marker_digest actual_digest
-  local marker_flag expected_hash actual_hash manifest
+  local marker_flag marker_typescript_full expected_hash actual_hash manifest
   marker=$(marker_for "$sha")
   candidate=$(candidate_for "$sha")
   [[ -d $candidate && ! -L $candidate ]] || return 1
@@ -244,6 +247,7 @@ candidate_is_tested() {
 
   for marker_flag in \
     "typescript_tested:$typescript_required" \
+    "typescript_full:$typescript_full" \
     "rust_tested:$rust_required" \
     "static_tested:$static_required" \
     "engine_artifacts:$engine_artifacts_required"; do
@@ -253,6 +257,11 @@ candidate_is_tested() {
   done
 
   if (( typescript_required == 1 )); then
+    marker_typescript_full=$(wd_marker_value "$marker" typescript_full 2>/dev/null) || return 1
+    if [[ $marker_typescript_full != 1 ]]; then
+      [[ $(wd_marker_value "$marker" typescript_base 2>/dev/null) == "$typescript_base" ]] \
+        || return 1
+    fi
     expected_hash=$(wd_marker_value "$marker" typescript_artifact_digest 2>/dev/null) || return 1
     actual_hash=$(wd_typescript_artifact_digest "$candidate") || return 1
     [[ $actual_hash == "$expected_hash" ]] || return 1
@@ -396,16 +405,44 @@ run_as_ci() {
 
 test_typescript_lane() {
   local candidate=$1 dsn=$2 sales_dsn=$3 openkeys_dsn=$4
+  local base=$5 target=$6 force_full=$7 scope_output= mode= package
+  local filters=()
   wd_log "running frozen TypeScript install, build, typecheck, migrations, and tests"
   run_as_ci pnpm --dir "$candidate" install --frozen-lockfile
+  # Every deployable entrypoint is built because the immutable candidate becomes the release
+  # artifact. Typechecking and tests can still be limited to the changed package closure.
   run_as_ci pnpm --dir "$candidate" build
-  run_as_ci pnpm --dir "$candidate" typecheck
+  if (( force_full == 0 )) \
+    && scope_output=$(run_as_ci node "$candidate/deploy/typescript-scope.mjs" \
+      "$candidate" "$base" "$target"); then
+    mode=${scope_output%%$'\n'*}
+    if [[ $mode == filtered ]]; then
+      while IFS= read -r package; do
+        [[ $package == filtered || -z $package ]] && continue
+        filters+=("--filter=$package")
+      done <<<"$scope_output"
+    fi
+  fi
+  if (( ${#filters[@]} == 0 )); then
+    wd_log "TypeScript scope is shared, empty, or unavailable; checking the full workspace"
+    run_as_ci pnpm --dir "$candidate" typecheck
+  else
+    wd_log "TypeScript scope selected ${#filters[@]} workspace package(s)"
+    run_as_ci pnpm --dir "$candidate" "${filters[@]}" \
+      -r --if-present --fail-if-no-match typecheck
+  fi
   run_as_ci env DATABASE_URL="$dsn" node "$candidate/packages/db/dist/migrate.js"
   run_as_ci env SALES_DATABASE_URL="$sales_dsn" node "$candidate/packages/sales-db/dist/migrate.js"
   run_as_ci env OPENKEYS_DATABASE_URL="$openkeys_dsn" node "$candidate/packages/openkeys-db/dist/migrate.js"
-  run_as_ci env TEST_DATABASE_URL="$dsn" TEST_SALES_DATABASE_URL="$sales_dsn" \
-    TEST_OPENKEYS_DATABASE_URL="$openkeys_dsn" pnpm --dir "$candidate" \
-    -r --workspace-concurrency=1 --if-present test
+  if (( ${#filters[@]} == 0 )); then
+    run_as_ci env TEST_DATABASE_URL="$dsn" TEST_SALES_DATABASE_URL="$sales_dsn" \
+      TEST_OPENKEYS_DATABASE_URL="$openkeys_dsn" pnpm --dir "$candidate" \
+      -r --workspace-concurrency=1 --if-present test
+  else
+    run_as_ci env TEST_DATABASE_URL="$dsn" TEST_SALES_DATABASE_URL="$sales_dsn" \
+      TEST_OPENKEYS_DATABASE_URL="$openkeys_dsn" pnpm --dir "$candidate" \
+      "${filters[@]}" -r --workspace-concurrency=1 --if-present --fail-if-no-match test
+  fi
 }
 
 test_rust_lane() {
@@ -440,6 +477,7 @@ test_static_lane() {
     run_as_ci bash "$candidate/deploy/lib.test.sh"
     run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"
     run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"
+    run_as_ci bash "$candidate/deploy/typescript-scope.test.sh"
     run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"
   fi
 }
@@ -452,7 +490,8 @@ run_candidate_lane() {
 }
 
 prepare_and_test_candidate_unlocked() {
-  local sha=$1 typescript_required=$2 rust_required=$3 static_required=$4 engine_artifacts_required=$5
+  local sha=$1 typescript_required=$2 typescript_full=$3 typescript_base=$4
+  local rust_required=$5 static_required=$6 engine_artifacts_required=$7
   local candidate marker dsn= engine_dsn= sales_dsn= openkeys_dsn= manifest digest tree
   local typescript_pid= rust_pid= static_pid= typescript_rc=0 rust_rc=0 static_rc=0
   local typescript_digest=none engine_hash=none authbot_hash=none
@@ -462,8 +501,8 @@ prepare_and_test_candidate_unlocked() {
   (( engine_artifacts_required == 0 || rust_required == 1 )) \
     || wd_die "engine artifacts cannot be prepared without the Rust validation lane"
 
-  if candidate_is_tested "$sha" "$typescript_required" "$rust_required" \
-    "$static_required" "$engine_artifacts_required"; then
+  if candidate_is_tested "$sha" "$typescript_required" "$typescript_full" "$typescript_base" \
+    "$rust_required" "$static_required" "$engine_artifacts_required"; then
     wd_log "reusing test-passed immutable candidate $sha"
     return 0
   fi
@@ -497,7 +536,8 @@ prepare_and_test_candidate_unlocked() {
   # Resolve every fallible prerequisite before starting children. Once launched, the parent reaches
   # every wait and the database cleanup path even when any individual lane fails.
   if (( typescript_required == 1 )); then
-    run_candidate_lane test_typescript_lane "$candidate" "$dsn" "$sales_dsn" "$openkeys_dsn" &
+    run_candidate_lane test_typescript_lane "$candidate" "$dsn" "$sales_dsn" "$openkeys_dsn" \
+      "$typescript_base" "$sha" "$typescript_full" &
     typescript_pid=$!
   fi
   if (( rust_required == 1 )); then
@@ -538,6 +578,8 @@ prepare_and_test_candidate_unlocked() {
     printf 'tree=%s\n' "$tree"
     printf 'migration_digest=%s\n' "$digest"
     printf 'typescript_tested=%s\n' "$typescript_required"
+    printf 'typescript_full=%s\n' "$typescript_full"
+    printf 'typescript_base=%s\n' "${typescript_base:-none}"
     printf 'rust_tested=%s\n' "$rust_required"
     printf 'static_tested=%s\n' "$static_required"
     printf 'engine_artifacts=%s\n' "$engine_artifacts_required"
@@ -570,6 +612,20 @@ prepare_and_test_candidate() {
   exec 9>&-
 }
 
+typescript_scope_choose_older_base() {
+  local candidate=$1
+  [[ -n $candidate ]] || return 0
+  if git -C "$SOURCE_REPO" merge-base --is-ancestor \
+    "$candidate" "$VALIDATION_TYPESCRIPT_BASE_SHA"; then
+    VALIDATION_TYPESCRIPT_BASE_SHA=$candidate
+  elif ! git -C "$SOURCE_REPO" merge-base --is-ancestor \
+    "$VALIDATION_TYPESCRIPT_BASE_SHA" "$candidate"; then
+    # All component baselines should be points on the same protected master history. If they are
+    # unexpectedly incomparable, a full workspace check is the only unambiguous safe scope.
+    VALIDATION_TYPESCRIPT_FULL=1
+  fi
+}
+
 select_candidate_validation_requirements() {
   local target=$1 committed_base=${2:-}
   local processed_base=${committed_base:-$PROCESSED_SHA}
@@ -580,12 +636,18 @@ select_candidate_validation_requirements() {
   local infrastructure_validation_changed=0 unknown_validation_path=0
 
   VALIDATION_TYPESCRIPT_REQUIRED=0
+  VALIDATION_TYPESCRIPT_FULL=0
+  VALIDATION_TYPESCRIPT_BASE_SHA=$processed_base
   VALIDATION_RUST_REQUIRED=0
   VALIDATION_STATIC_REQUIRED=0
   VALIDATION_ENGINE_ARTIFACTS_REQUIRED=0
 
   wd_range_has_class "$SOURCE_REPO" "$processed_base" "$target" wd_path_is_typescript \
     && VALIDATION_TYPESCRIPT_REQUIRED=1
+  if wd_range_changes_typescript_scope_gate "$SOURCE_REPO" "$processed_base" "$target"; then
+    VALIDATION_TYPESCRIPT_REQUIRED=1
+    VALIDATION_TYPESCRIPT_FULL=1
+  fi
   wd_range_has_class "$SOURCE_REPO" "$processed_base" "$target" wd_path_is_infrastructure \
     && infrastructure_validation_changed=1
   wd_range_has_class "$SOURCE_REPO" "$processed_base" "$target" wd_path_is_merge_workflow \
@@ -600,18 +662,30 @@ select_candidate_validation_requirements() {
     VALIDATION_RUST_REQUIRED=1
     VALIDATION_ENGINE_ARTIFACTS_REQUIRED=1
   fi
-  wd_range_has_class "$SOURCE_REPO" "$backend_base" "$target" wd_path_is_backend \
-    && VALIDATION_TYPESCRIPT_REQUIRED=1
-  wd_range_has_class "$SOURCE_REPO" "$sales_base" "$target" wd_path_is_sales \
-    && VALIDATION_TYPESCRIPT_REQUIRED=1
-  wd_range_has_class "$SOURCE_REPO" "$openkeys_base" "$target" wd_path_is_openkeys \
-    && VALIDATION_TYPESCRIPT_REQUIRED=1
+  if wd_range_has_class "$SOURCE_REPO" "$backend_base" "$target" wd_path_is_backend; then
+    VALIDATION_TYPESCRIPT_REQUIRED=1
+    typescript_scope_choose_older_base "$backend_base"
+  fi
+  if wd_range_has_class "$SOURCE_REPO" "$sales_base" "$target" wd_path_is_sales; then
+    VALIDATION_TYPESCRIPT_REQUIRED=1
+    typescript_scope_choose_older_base "$sales_base"
+  fi
+  if wd_range_has_class "$SOURCE_REPO" "$openkeys_base" "$target" wd_path_is_openkeys; then
+    VALIDATION_TYPESCRIPT_REQUIRED=1
+    typescript_scope_choose_older_base "$openkeys_base"
+  fi
 
   (( infrastructure_validation_changed == 0 )) || VALIDATION_STATIC_REQUIRED=1
   if (( unknown_validation_path == 1 )); then
     VALIDATION_TYPESCRIPT_REQUIRED=1
+    VALIDATION_TYPESCRIPT_FULL=1
     VALIDATION_RUST_REQUIRED=1
     VALIDATION_STATIC_REQUIRED=1
+  fi
+  if (( VALIDATION_TYPESCRIPT_REQUIRED == 1 )) \
+    && wd_range_requires_full_typescript_scope "$SOURCE_REPO" \
+      "$VALIDATION_TYPESCRIPT_BASE_SHA" "$target"; then
+    VALIDATION_TYPESCRIPT_FULL=1
   fi
 }
 
@@ -685,6 +759,7 @@ run_shadow_candidate_validation() (
   # locked merge cannot land this SHA unless that parent becomes green.
   select_candidate_validation_requirements "$CANDIDATE_SHA" "$committed_master"
   prepare_and_test_candidate "$CANDIDATE_SHA" "$VALIDATION_TYPESCRIPT_REQUIRED" \
+    "$VALIDATION_TYPESCRIPT_FULL" "$VALIDATION_TYPESCRIPT_BASE_SHA" \
     "$VALIDATION_RUST_REQUIRED" "$VALIDATION_STATIC_REQUIRED" \
     "$VALIDATION_ENGINE_ARTIFACTS_REQUIRED"
 
@@ -1190,7 +1265,8 @@ mark_idle_maintenance_complete() {
 
 main() {
   local remote_ref rejected infra_changed=0 caddy_changed=0 engine_changed=0 backend_changed=0 sales_changed=0
-  local openkeys_changed=0 typescript_required=0 rust_required=0 static_required=0
+  local openkeys_changed=0 typescript_required=0 typescript_full=0 typescript_base=
+  local rust_required=0 static_required=0
   local engine_artifacts_required=0
   local core_pid= sales_pid= openkeys_pid= core_rc=0 sales_rc=0 openkeys_rc=0
 
@@ -1269,6 +1345,8 @@ main() {
 
   select_candidate_validation_requirements "$CANDIDATE_SHA"
   typescript_required=$VALIDATION_TYPESCRIPT_REQUIRED
+  typescript_full=$VALIDATION_TYPESCRIPT_FULL
+  typescript_base=$VALIDATION_TYPESCRIPT_BASE_SHA
   rust_required=$VALIDATION_RUST_REQUIRED
   static_required=$VALIDATION_STATIC_REQUIRED
   engine_artifacts_required=$VALIDATION_ENGINE_ARTIFACTS_REQUIRED
@@ -1306,8 +1384,8 @@ main() {
   github_status pending deploy/watchdog "Production pipeline started"
   github_status pending deploy/tests "Path-aware isolated validation in progress"
 
-  prepare_and_test_candidate "$CANDIDATE_SHA" "$typescript_required" "$rust_required" \
-    "$static_required" "$engine_artifacts_required"
+  prepare_and_test_candidate "$CANDIDATE_SHA" "$typescript_required" "$typescript_full" \
+    "$typescript_base" "$rust_required" "$static_required" "$engine_artifacts_required"
   github_status success deploy/tests "Selected isolated validation lanes passed"
   rm -f -- "$REJECTED_FILE"
 
