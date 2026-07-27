@@ -455,6 +455,53 @@ wd_range_files() {
   git -C "$repo" diff --name-only --no-renames --diff-filter=ACDMRTUXB "$base..$target"
 }
 
+# Return the canonical set of cross-component production checks required after the selected
+# rollout. Component controllers already verify their own exact release before returning, so an
+# unrelated deployment must not pay for every engine/Caddy smoke again. Risky full infrastructure
+# changes retain the complete fence, while controller-only and documentation deliveries need no
+# serving-runtime check at all.
+wd_final_verification_plan() {
+  local infrastructure_scope=$1 engine_changed=$2 backend_changed=$3
+  local sales_changed=$4 openkeys_changed=$5
+  local checks=()
+  case "$infrastructure_scope" in
+    none|controller|caddy|full) ;;
+    *) return 2 ;;
+  esac
+  local flag
+  for flag in "$engine_changed" "$backend_changed" "$sales_changed" "$openkeys_changed"; do
+    [[ $flag == 0 || $flag == 1 ]] || return 2
+  done
+
+  if (( engine_changed == 1 )) || [[ $infrastructure_scope == full ]]; then
+    checks+=(runtime panel)
+  fi
+  if [[ $infrastructure_scope == caddy || $infrastructure_scope == full ]]; then
+    checks+=(routing)
+  fi
+  if (( engine_changed == 1 || backend_changed == 1 || sales_changed == 1 \
+        || openkeys_changed == 1 )) \
+      || [[ $infrastructure_scope == caddy || $infrastructure_scope == full ]]; then
+    checks+=(monitoring)
+  fi
+  if (( engine_changed == 1 )) \
+      || [[ $infrastructure_scope == caddy || $infrastructure_scope == full ]]; then
+    checks+=(codex)
+  fi
+
+  if (( ${#checks[@]} == 0 )); then
+    printf 'none\n'
+  else
+    local IFS=,
+    printf '%s\n' "${checks[*]}"
+  fi
+}
+
+wd_verification_plan_has() {
+  local verification_plan=$1 check=$2
+  [[ ",$verification_plan," == *",$check,"* ]]
+}
+
 wd_path_is_engine() {
   case "$1" in
     crates/*|vendor/*|Cargo.toml|Cargo.lock|config.env.example|server.env.example|schema/*|tests/*|tools/refresh-fingerprint.sh|tools/codex-app-server/*)

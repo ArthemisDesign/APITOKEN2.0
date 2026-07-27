@@ -42,6 +42,14 @@ is ready. Database groups stay serial internally, candidate tests suppress packa
 dependency rebuilds because the complete artifacts were already verified, and every selected lane
 is reaped before the candidate receives a verdict. Operational regression helpers run once per
 static gate rather than being nested again inside the watchdog library suite.
+No-change GitHub contexts are published concurrently and joined before rollout. After component
+controllers have gated their own exact releases, the watchdog derives a final verification plan
+from the surfaces that changed: engine work checks runtime/panel/monitoring/Codex, Caddy checks
+routing/monitoring/Codex, other application lanes check monitoring, and controller-only or
+documentation deliveries do not re-probe an unchanged serving runtime. Independent read-only
+smokes overlap and are all joined before the overall green status; possible engine reconciliation
+still completes first. A disabled Codex metric is recognized directly instead of spending the full
+retry window waiting for a filtered positive series.
 Operational self-updates are content-aware: controller-only ranges copy the fixed root-owned
 controller bundle, and Caddy-only ranges validate/reload only Caddy. Mixed changes, deletions,
 systemd/monitoring/stateful definitions, and unknown deployment files fail closed to the complete

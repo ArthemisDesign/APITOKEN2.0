@@ -98,6 +98,64 @@ github_deployment_success() {
   ACTIVE_DEPLOYMENT_URL=
 }
 
+run_github_status_lane() {
+  # ERR/EXIT belong to the parent watchdog. A reporting worker returns only its own result so the
+  # parent can join every request and publish one coherent overall failure.
+  trap - ERR EXIT INT TERM
+  github_status "$@"
+}
+
+publish_pipeline_start_statuses() {
+  local watchdog_pid tests_pid watchdog_rc=0 tests_rc=0
+  run_github_status_lane pending deploy/watchdog "Production pipeline started" &
+  watchdog_pid=$!
+  run_github_status_lane pending deploy/tests "Path-aware isolated validation in progress" &
+  tests_pid=$!
+  wait "$watchdog_pid" || watchdog_rc=$?
+  wait "$tests_pid" || tests_rc=$?
+  (( watchdog_rc == 0 && tests_rc == 0 )) \
+    || wd_die "could not publish pipeline start statuses (watchdog=$watchdog_rc tests=$tests_rc)"
+}
+
+publish_unchanged_component_statuses() {
+  local engine_changed=$1 backend_changed=$2 sales_changed=$3 openkeys_changed=$4
+  local migration_pid='' engine_pid='' backend_pid='' sales_pid='' openkeys_pid=''
+  local migration_rc=0 engine_rc=0 backend_rc=0 sales_rc=0 openkeys_rc=0 flag
+  for flag in "$engine_changed" "$backend_changed" "$sales_changed" "$openkeys_changed"; do
+    [[ $flag == 0 || $flag == 1 ]] || wd_die "invalid component reporting flag: $flag"
+  done
+
+  if (( backend_changed == 0 )); then
+    run_github_status_lane success deploy/migration "No commerce migration changes" &
+    migration_pid=$!
+  fi
+  if (( engine_changed == 0 )); then
+    run_github_status_lane success deploy/engine "No engine changes" &
+    engine_pid=$!
+  fi
+  if (( backend_changed == 0 )); then
+    run_github_status_lane success deploy/backend "No backend changes" &
+    backend_pid=$!
+  fi
+  if (( sales_changed == 0 )); then
+    run_github_status_lane success deploy/sales "No sales changes" &
+    sales_pid=$!
+  fi
+  if (( openkeys_changed == 0 )); then
+    run_github_status_lane success deploy/openkeys "No openkeys changes" &
+    openkeys_pid=$!
+  fi
+
+  if [[ -n $migration_pid ]]; then wait "$migration_pid" || migration_rc=$?; fi
+  if [[ -n $engine_pid ]]; then wait "$engine_pid" || engine_rc=$?; fi
+  if [[ -n $backend_pid ]]; then wait "$backend_pid" || backend_rc=$?; fi
+  if [[ -n $sales_pid ]]; then wait "$sales_pid" || sales_rc=$?; fi
+  if [[ -n $openkeys_pid ]]; then wait "$openkeys_pid" || openkeys_rc=$?; fi
+  (( migration_rc == 0 && engine_rc == 0 && backend_rc == 0 \
+      && sales_rc == 0 && openkeys_rc == 0 )) \
+    || wd_die "unchanged-component status publication failed (migration=$migration_rc engine=$engine_rc backend=$backend_rc sales=$sales_rc openkeys=$openkeys_rc)"
+}
+
 test_db() {
   sudo -n "$TEST_DB_HELPER" "$1" "$TEST_DB_SLOT"
 }
@@ -1275,7 +1333,7 @@ require_retired_vhost() {
 }
 
 final_verify_admin_panel() {
-  local panel matched=0 streak=0 response monitoring_ready=0 expected_version candidate_panel
+  local panel matched=0 streak=0 expected_version candidate_panel
   # Ожидаемую версию берём из самого кандидата, а не из константы здесь: версия панели
   # уже живёт в HTML и в тесте крейта, и третья её копия в watchdog означала, что любой
   # бамп версии валит выкат, который на деле корректен (так и случилось на b6b048c).
@@ -1308,11 +1366,21 @@ final_verify_admin_panel() {
     sleep 3
   done
   [[ $matched == 1 ]] || wd_die "deployed engine does not contain the current admin panel"
+}
+
+final_verify_admin_routing() {
   require_admin_auth_vhost admin.apitoken.sale
   require_admin_auth_vhost admin.partners.apitoken.sale
   require_admin_auth_vhost crm.apitoken.sale
   require_admin_auth_vhost content-studio.apitoken.sale
   require_admin_auth_vhost monitoring.apitoken.sale
+  require_retired_vhost panel.apitoken.sale
+  require_retired_vhost partners.panel.apitoken.sale
+  require_retired_vhost crm.panel.apitoken.sale
+}
+
+final_verify_monitoring() {
+  local response monitoring_ready=0
   curl --noproxy '*' --fail --silent --show-error --max-time 5 http://127.0.0.1:3600/api/health >/dev/null \
     || wd_die "Grafana is not healthy on its loopback listener"
   curl --noproxy '*' --fail --silent --show-error --max-time 5 http://127.0.0.1:9090/-/ready >/dev/null \
@@ -1331,9 +1399,6 @@ final_verify_admin_panel() {
     sleep 5
   done
   [[ $monitoring_ready == 1 ]] || wd_die "monitoring targets, synthetics, or business collector are not healthy"
-  require_retired_vhost panel.apitoken.sale
-  require_retired_vhost partners.panel.apitoken.sale
-  require_retired_vhost crm.panel.apitoken.sale
 }
 
 # Post-promotion smoke for the optional OpenAI-compatible surface.
@@ -1343,28 +1408,35 @@ final_verify_admin_panel() {
 # or while the public routes have silently fallen back to the Anthropic path. Neither needs an API
 # key to detect. The provider is optional, so everything here is skipped when it is switched off.
 final_verify_codex_surface() {
-  local response envelope enabled=0
+  local response envelope enabled=0 enabled_state='' attempt
 
-  for _ in 1 2 3 4 5 6; do
+  for attempt in 1 2 3 4 5 6; do
     response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
-      --data-urlencode 'query=claude_api_codex_enabled == 1' \
+      --data-urlencode 'query=claude_api_codex_enabled' \
       http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
-    if jq --exit-status '.status == "success" and (.data.result | length) > 0' \
-      >/dev/null 2>&1 <<<"$response"; then
-      enabled=1
-      break
-    fi
-    sleep 5
+    enabled_state=$(jq --exit-status --raw-output \
+      'select(.status == "success" and (.data.result | length) == 1)
+       | .data.result[0].value[1]
+       | select(. == "0" or . == "1")' <<<"$response" 2>/dev/null || true)
+    case "$enabled_state" in
+      0)
+        wd_log "Codex provider is disabled; skipping OpenAI-compatible surface verification"
+        return 0
+        ;;
+      1)
+        enabled=1
+        break
+        ;;
+    esac
+    (( attempt == 6 )) || sleep 5
   done
-  if (( enabled == 0 )); then
-    wd_log "Codex provider is disabled; skipping OpenAI-compatible surface verification"
-    return 0
-  fi
+  (( enabled == 1 )) \
+    || wd_die "could not determine whether the Codex provider is enabled"
 
   # A live child is not enough: every home may be quarantined or out of window headroom, which
   # serves customers nothing but retryable errors.
   local pool_ready=0
-  for _ in 1 2 3 4 5 6; do
+  for attempt in 1 2 3 4 5 6; do
     response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
       --data-urlencode 'query=claude_api_codex_process_live == 1 and claude_api_codex_homes_available >= 1' \
       http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
@@ -1373,7 +1445,7 @@ final_verify_codex_surface() {
       pool_ready=1
       break
     fi
-    sleep 5
+    (( attempt == 6 )) || sleep 5
   done
   (( pool_ready == 1 )) \
     || wd_die "Codex provider is enabled but no authenticated home can accept a request"
@@ -1396,6 +1468,53 @@ final_verify_codex_surface() {
     || wd_die "/v1/responses did not answer with the OpenAI-compatible error envelope"
 
   wd_log "Codex OpenAI-compatible surface verified: pool has capacity and serves its own envelope"
+}
+
+run_final_verification_lane() {
+  # Verification workers are read-only and independent. The parent joins every selected check and
+  # owns quarantine/overall status so one fast failure never abandons another in-flight probe.
+  trap - ERR EXIT INT TERM
+  "$@"
+}
+
+run_final_verification_plan() {
+  local verification_plan=$1 engine_sha=$2
+  local panel_pid='' routing_pid='' monitoring_pid='' codex_pid=''
+  local panel_rc=0 routing_rc=0 monitoring_rc=0 codex_rc=0
+
+  if [[ $verification_plan == none ]]; then
+    wd_log "no serving runtime changed; final component smokes are already satisfied"
+    return 0
+  fi
+
+  # Runtime reconciliation may perform a health-gated cutover when it finds drift. Complete that
+  # possible mutation before launching the read-only smokes against the resulting steady state.
+  if wd_verification_plan_has "$verification_plan" runtime; then
+    reconcile_engine_runtime "$engine_sha"
+  fi
+  if wd_verification_plan_has "$verification_plan" panel; then
+    run_final_verification_lane final_verify_admin_panel &
+    panel_pid=$!
+  fi
+  if wd_verification_plan_has "$verification_plan" routing; then
+    run_final_verification_lane final_verify_admin_routing &
+    routing_pid=$!
+  fi
+  if wd_verification_plan_has "$verification_plan" monitoring; then
+    run_final_verification_lane final_verify_monitoring &
+    monitoring_pid=$!
+  fi
+  if wd_verification_plan_has "$verification_plan" codex; then
+    run_final_verification_lane final_verify_codex_surface &
+    codex_pid=$!
+  fi
+
+  if [[ -n $panel_pid ]]; then wait "$panel_pid" || panel_rc=$?; fi
+  if [[ -n $routing_pid ]]; then wait "$routing_pid" || routing_rc=$?; fi
+  if [[ -n $monitoring_pid ]]; then wait "$monitoring_pid" || monitoring_rc=$?; fi
+  if [[ -n $codex_pid ]]; then wait "$codex_pid" || codex_rc=$?; fi
+  (( panel_rc == 0 && routing_rc == 0 && monitoring_rc == 0 && codex_rc == 0 )) \
+    || wd_die "final verification lanes failed (panel=$panel_rc routing=$routing_rc monitoring=$monitoring_rc codex=$codex_rc)"
 }
 
 # Post-admission recovery. Before admission the blue-green controllers already fail closed and
@@ -1579,11 +1698,12 @@ mark_idle_maintenance_complete() {
 
 main() {
   local resume_sha=${1:-}
-  local remote_ref rejected infra_scope=none infra_changed=0 caddy_changed=0 engine_changed=0 backend_changed=0 sales_changed=0
+  local remote_ref rejected infra_scope=none delivery_infra_scope=none
+  local infra_changed=0 caddy_changed=0 engine_changed=0 backend_changed=0 sales_changed=0
   local openkeys_changed=0 codex_changed=0 typescript_required=0 typescript_full=0 typescript_base=
   local rust_required=0 static_required=0
   local engine_artifacts_required=0 codex_artifacts_required=0
-  local validation_policy_sha256= validation_plan_sha256=
+  local validation_policy_sha256='' validation_plan_sha256='' final_verification_plan=''
   local core_pid= sales_pid= openkeys_pid= core_rc=0 sales_rc=0 openkeys_rc=0
 
   [[ $(id -un) == deploy ]] || wd_die "watchdog service must run as deploy"
@@ -1660,6 +1780,15 @@ main() {
     controller|caddy|full) infra_changed=1 ;;
     *) wd_die "invalid infrastructure install scope: $infra_scope" ;;
   esac
+  # A full installer deliberately hands off to a fresh systemd invocation after recording its
+  # infrastructure SHA. Preserve the delivery-wide scope from the last completed candidate so
+  # that next invocation still runs the final checks required by the infrastructure just changed.
+  delivery_infra_scope=$(wd_infrastructure_install_scope \
+    "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA")
+  case "$delivery_infra_scope" in
+    none|controller|caddy|full) ;;
+    *) wd_die "invalid delivery infrastructure scope: $delivery_infra_scope" ;;
+  esac
   wd_range_has_class "$SOURCE_REPO" "$INFRASTRUCTURE_SHA" "$CANDIDATE_SHA" wd_path_is_caddy \
     && caddy_changed=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_engine \
@@ -1703,9 +1832,9 @@ main() {
       prune_expired_releases "$ENGINE_RELEASE_ROOT" engine
       prune_expired_releases "$COMMERCE_RELEASE_ROOT" commerce
       prune_expired_dumps
-      reconcile_engine_runtime "$ENGINE_SHA"
-      final_verify_admin_panel
-      final_verify_codex_surface
+      final_verification_plan=$(wd_final_verification_plan full 0 0 0 0) \
+        || wd_die "could not derive the idle-maintenance verification plan"
+      run_final_verification_plan "$final_verification_plan" "$ENGINE_SHA"
       mark_idle_maintenance_complete
     fi
     CURRENT_PHASE=idle
@@ -1723,8 +1852,7 @@ main() {
   prune_expired_releases "$COMMERCE_RELEASE_ROOT" commerce
   prune_expired_dumps
 
-  github_status pending deploy/watchdog "Production pipeline started"
-  github_status pending deploy/tests "Path-aware isolated validation in progress"
+  publish_pipeline_start_statuses
 
   prepare_and_test_candidate "$CANDIDATE_SHA" "$typescript_required" "$typescript_full" \
     "$typescript_base" "$rust_required" "$static_required" "$engine_artifacts_required" \
@@ -1770,8 +1898,6 @@ main() {
 
   if (( backend_changed == 1 )); then
     apply_migrations_before_deploy "$CANDIDATE_SHA"
-  else
-    github_status success deploy/migration "No commerce migration changes"
   fi
 
   # The validated backup includes engine and sales databases. Complete it before any independent
@@ -1783,18 +1909,16 @@ main() {
     sudo -n "$BACKUP_RUNNER" "$CANDIDATE_SHA"
   fi
 
-  if (( engine_changed == 0 )); then github_status success deploy/engine "No engine changes"; fi
-  if (( backend_changed == 0 )); then github_status success deploy/backend "No backend changes"; fi
-  if (( sales_changed == 0 )); then
-    github_status success deploy/sales "No sales changes"
+  if (( sales_changed == 0 )) && [[ -z ${SALES_SHA:-} ]]; then
     # First run before sales.sha exists: adopt the current commit as the sales baseline.
-    if [[ -z ${SALES_SHA:-} ]]; then wd_atomic_write "$SALES_FILE" "$CANDIDATE_SHA"; fi
+    wd_atomic_write "$SALES_FILE" "$CANDIDATE_SHA"
   fi
-  if (( openkeys_changed == 0 )); then
-    github_status success deploy/openkeys "No openkeys changes"
+  if (( openkeys_changed == 0 )) && [[ -z ${OPENKEYS_SHA:-} ]]; then
     # First run before openkeys.sha exists: adopt the current commit as the baseline.
-    if [[ -z ${OPENKEYS_SHA:-} ]]; then wd_atomic_write "$OPENKEYS_FILE" "$CANDIDATE_SHA"; fi
+    wd_atomic_write "$OPENKEYS_FILE" "$CANDIDATE_SHA"
   fi
+  publish_unchanged_component_statuses \
+    "$engine_changed" "$backend_changed" "$sales_changed" "$openkeys_changed"
 
   CURRENT_PHASE=deploying-components
   CURRENT_PHASE_BEFORE_FAILURE=deploying-components
@@ -1825,10 +1949,11 @@ main() {
 
   CURRENT_PHASE=verifying
   CURRENT_PHASE_BEFORE_FAILURE=verifying
-  status "running final cross-component production verification"
-  reconcile_engine_runtime "$ENGINE_SHA"
-  final_verify_admin_panel
-  final_verify_codex_surface
+  final_verification_plan=$(wd_final_verification_plan "$delivery_infra_scope" "$engine_changed" \
+    "$backend_changed" "$sales_changed" "$openkeys_changed") \
+    || wd_die "could not derive the final production verification plan"
+  status "running selected final production verification ($final_verification_plan)"
+  run_final_verification_plan "$final_verification_plan" "$ENGINE_SHA"
 
   wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"
   rm -f -- "$PENDING_MIGRATION_FILE"

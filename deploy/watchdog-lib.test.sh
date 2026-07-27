@@ -25,6 +25,188 @@ if command -v flock >/dev/null 2>&1 && [[ -d /proc/$$/fd ]]; then
   exec 5>&-
 fi
 
+# Final production verification is derived from the surfaces that can actually have changed.
+# Component-specific controllers already gate their own release, while full infrastructure keeps
+# every cross-component smoke. The order is canonical so the controller can dispatch it safely.
+final_plan_cases=(
+  'none 0 0 0 0|none'
+  'controller 0 0 0 0|none'
+  'none 1 0 0 0|runtime,panel,monitoring,codex'
+  'none 0 1 0 0|monitoring'
+  'none 0 0 1 0|monitoring'
+  'none 0 0 0 1|monitoring'
+  'caddy 0 0 0 0|routing,monitoring,codex'
+  'full 0 0 0 0|runtime,panel,routing,monitoring,codex'
+  'full 1 1 1 1|runtime,panel,routing,monitoring,codex'
+)
+for final_plan_case in "${final_plan_cases[@]}"; do
+  final_plan_args=${final_plan_case%%|*}
+  final_plan_expected=${final_plan_case#*|}
+  # shellcheck disable=SC2086 # The table intentionally supplies five positional scalar fields.
+  final_plan_actual=$(wd_final_verification_plan $final_plan_args)
+  [[ $final_plan_actual == "$final_plan_expected" ]] \
+    || wd_die "final verification plan mismatch for $final_plan_args: $final_plan_actual"
+done
+if wd_final_verification_plan unknown 0 0 0 0 >/dev/null 2>&1 \
+    || wd_final_verification_plan none 2 0 0 0 >/dev/null 2>&1; then
+  wd_die "invalid final verification inputs did not fail closed"
+fi
+wd_verification_plan_has runtime,panel,monitoring,codex monitoring \
+  || wd_die "final verification plan membership lost an exact entry"
+if wd_verification_plan_has runtime,panel,monitoring,codex monitor; then
+  wd_die "final verification plan membership accepted a partial entry"
+fi
+
+# Exercise the actual watchdog dispatchers with barrier-backed fakes. A serialized implementation
+# deadlocks its first fake until the barrier deadline and fails, while the intended implementation
+# starts every worker, joins every result, and still returns a single parent-owned verdict.
+# shellcheck disable=SC2091
+eval "$(sed -n '/^run_github_status_lane()/,/^test_db()/p' "$ROOT/deploy/watchdog.sh" \
+  | sed '$d')"
+status_barrier_log="$TEMP/status-barrier.log"
+STATUS_BARRIER_EXPECTED=0
+STATUS_FAIL_CONTEXT=
+github_status() {
+  local context=$2 observed
+  printf '%s\n' "$context" >>"$status_barrier_log"
+  for _ in $(seq 1 200); do
+    observed=$(wc -l <"$status_barrier_log")
+    if (( observed >= STATUS_BARRIER_EXPECTED )); then
+      [[ $context != "$STATUS_FAIL_CONTEXT" ]]
+      return
+    fi
+    sleep 0.01
+  done
+  return 98
+}
+
+: >"$status_barrier_log"
+STATUS_BARRIER_EXPECTED=2
+publish_pipeline_start_statuses
+[[ $(sort -u "$status_barrier_log" | tr '\n' ',') == 'deploy/tests,deploy/watchdog,' ]] \
+  || wd_die "pipeline start statuses were not both published"
+
+: >"$status_barrier_log"
+STATUS_BARRIER_EXPECTED=5
+publish_unchanged_component_statuses 0 0 0 0
+[[ $(sort -u "$status_barrier_log" | tr '\n' ',') \
+    == 'deploy/backend,deploy/engine,deploy/migration,deploy/openkeys,deploy/sales,' ]] \
+  || wd_die "unchanged status publication lost a component context"
+
+: >"$status_barrier_log"
+STATUS_BARRIER_EXPECTED=2
+publish_unchanged_component_statuses 1 1 0 0
+[[ $(sort -u "$status_barrier_log" | tr '\n' ',') == 'deploy/openkeys,deploy/sales,' ]] \
+  || wd_die "changed components received a false no-change status"
+
+: >"$status_barrier_log"
+STATUS_BARRIER_EXPECTED=5
+STATUS_FAIL_CONTEXT=deploy/engine
+if ( publish_unchanged_component_statuses 0 0 0 0 ) >/dev/null 2>&1; then
+  wd_die "a failed status worker did not fail the parent publication batch"
+fi
+(( $(wc -l <"$status_barrier_log") == 5 )) \
+  || wd_die "a failed status worker abandoned sibling publication requests"
+STATUS_FAIL_CONTEXT=
+
+# shellcheck disable=SC2091
+eval "$(sed -n '/^run_final_verification_lane()/,/^# Post-admission recovery/p' \
+  "$ROOT/deploy/watchdog.sh" | sed '$d')"
+verification_barrier_log="$TEMP/verification-barrier.log"
+VERIFICATION_BARRIER_EXPECTED=0
+VERIFICATION_FAIL_CHECK=
+verification_probe() {
+  local check=$1 observed
+  printf '%s\n' "$check" >>"$verification_barrier_log"
+  for _ in $(seq 1 200); do
+    observed=$(grep -Evc '^runtime$' "$verification_barrier_log" || true)
+    if (( observed >= VERIFICATION_BARRIER_EXPECTED )); then
+      [[ $check != "$VERIFICATION_FAIL_CHECK" ]]
+      return
+    fi
+    sleep 0.01
+  done
+  return 98
+}
+reconcile_engine_runtime() { printf 'runtime\n' >>"$verification_barrier_log"; }
+final_verify_admin_panel() { verification_probe panel; }
+final_verify_admin_routing() { verification_probe routing; }
+final_verify_monitoring() { verification_probe monitoring; }
+final_verify_codex_surface() { verification_probe codex; }
+
+: >"$verification_barrier_log"
+VERIFICATION_BARRIER_EXPECTED=4
+run_final_verification_plan runtime,panel,routing,monitoring,codex deadbeef
+[[ $(sed -n '1p' "$verification_barrier_log") == runtime ]] \
+  || wd_die "read-only final probes started before runtime reconciliation"
+for final_probe in panel routing monitoring codex; do
+  grep -Fxq "$final_probe" "$verification_barrier_log" \
+    || wd_die "final verification dispatcher omitted $final_probe"
+done
+
+: >"$verification_barrier_log"
+VERIFICATION_BARRIER_EXPECTED=4
+VERIFICATION_FAIL_CHECK=routing
+if ( run_final_verification_plan runtime,panel,routing,monitoring,codex deadbeef ) \
+    >/dev/null 2>&1; then
+  wd_die "a failed final verifier did not fail the parent plan"
+fi
+[[ $(grep -Evc '^runtime$' "$verification_barrier_log") == 4 ]] \
+  || wd_die "a failed final verifier abandoned sibling checks"
+VERIFICATION_FAIL_CHECK=
+
+# The real Codex verifier must distinguish an explicit disabled gauge from a temporarily missing
+# series. Disabled returns after one query; enabled continues through capacity and envelope checks;
+# a missing metric exhausts the bounded retries and fails closed.
+(
+  # shellcheck disable=SC2091
+  eval "$(sed -n '/^final_verify_codex_surface()/,/^}/p' "$ROOT/deploy/watchdog.sh")"
+  codex_probe_log="$TEMP/codex-probe.log"
+  CODEX_PROBE_MODE=disabled
+  # Invoked indirectly by the extracted verifier.
+  # shellcheck disable=SC2329
+  curl() {
+    printf 'request\n' >>"$codex_probe_log"
+    case "$*" in
+      *'query=claude_api_codex_enabled'*)
+        case "$CODEX_PROBE_MODE" in
+          disabled) printf '%s\n' '{"status":"success","data":{"result":[{"value":[0,"0"]}]}}' ;;
+          enabled) printf '%s\n' '{"status":"success","data":{"result":[{"value":[0,"1"]}]}}' ;;
+          missing) printf '%s\n' '{"status":"success","data":{"result":[]}}' ;;
+        esac
+        ;;
+      *'claude_api_codex_process_live'*)
+        printf '%s\n' '{"status":"success","data":{"result":[{"value":[0,"1"]}]}}'
+        ;;
+      *'openai.api.apitoken.sale'*)
+        printf '%s\n' '{"error":{"type":"invalid_request_error","code":"invalid_api_key","param":null}}'
+        ;;
+      *) return 2 ;;
+    esac
+  }
+  sleep() { :; }
+
+  : >"$codex_probe_log"
+  CODEX_PROBE_MODE=disabled
+  final_verify_codex_surface >/dev/null
+  (( $(wc -l <"$codex_probe_log") == 1 )) \
+    || wd_die "disabled Codex verification did not return after the explicit zero gauge"
+
+  : >"$codex_probe_log"
+  CODEX_PROBE_MODE=enabled
+  final_verify_codex_surface >/dev/null
+  (( $(wc -l <"$codex_probe_log") == 3 )) \
+    || wd_die "enabled Codex verification skipped capacity or public-envelope checks"
+
+  : >"$codex_probe_log"
+  CODEX_PROBE_MODE=missing
+  if ( final_verify_codex_surface ) >/dev/null 2>&1; then
+    wd_die "missing Codex enablement metrics were treated as disabled"
+  fi
+  (( $(wc -l <"$codex_probe_log") == 6 )) \
+    || wd_die "missing Codex enablement metrics did not use the bounded retry window"
+)
+
 # Atomic state writes are shared by parallel rollout lanes. Bash keeps `$$` constant in asynchronous
 # subshells, so this test proves each writer uses a unique temporary path and leaves one valid value.
 parallel_state="$TEMP/parallel-state"
@@ -279,7 +461,8 @@ for invalid_topology in \
   "1 1 0 1 0 0 0 0 0 0" \
   "1 1 1 1 0 0 0 0 1 0" \
   "1 1 1 1 0 0 0 0 0 1"; do
-  # shellcheck disable=SC2086 -- each fixture intentionally expands to ten arguments.
+  # Each fixture intentionally expands to ten arguments.
+  # shellcheck disable=SC2086
   if wd_engine_topology_is_steady $invalid_topology; then
     wd_die "engine topology accepted an invalid steady state: $invalid_topology"
   fi
@@ -862,6 +1045,48 @@ grep -Fq 'streak >= 3' "$ROOT/deploy/watchdog.sh" \
   || wd_die "the admin-panel check must require consecutive current answers, not a single one"
 grep -Fq 'for _ in $(seq 1 20); do' "$ROOT/deploy/watchdog.sh" \
   || wd_die "the admin-panel convergence window must outlast blue-green cutover and health checks"
+for scoped_verifier in final_verify_admin_routing final_verify_monitoring \
+  final_verify_codex_surface; do
+  grep -Fq "$scoped_verifier" "$ROOT/deploy/watchdog.sh" \
+    || wd_die "final verification lost scoped check $scoped_verifier"
+done
+grep -Fq -- "--data-urlencode 'query=claude_api_codex_enabled'" "$ROOT/deploy/watchdog.sh" \
+  || wd_die "disabled Codex detection still waits on a filtered-out zero metric"
+
+# Independent final smokes and no-change GitHub contexts run concurrently, but every worker is
+# joined before the overall green verdict. Runtime reconciliation stays ahead of read-only probes
+# because it may perform a corrective cutover.
+final_verification_contract=(
+  'publish_pipeline_start_statuses'
+  'publish_unchanged_component_statuses'
+  'run_github_status_lane success deploy/migration'
+  'run_github_status_lane success deploy/engine'
+  'run_github_status_lane success deploy/backend'
+  'run_github_status_lane success deploy/sales'
+  'run_github_status_lane success deploy/openkeys'
+  'wd_final_verification_plan "$delivery_infra_scope" "$engine_changed"'
+  'run_final_verification_lane final_verify_admin_panel &'
+  'run_final_verification_lane final_verify_admin_routing &'
+  'run_final_verification_lane final_verify_monitoring &'
+  'run_final_verification_lane final_verify_codex_surface &'
+  'wait "$panel_pid"'
+  'wait "$routing_pid"'
+  'wait "$monitoring_pid"'
+  'wait "$codex_pid"'
+  'final verification lanes failed'
+)
+for final_stage in "${final_verification_contract[@]}"; do
+  grep -Fq -- "$final_stage" "$ROOT/deploy/watchdog.sh" \
+    || wd_die "scoped final verification lost required stage: $final_stage"
+done
+final_verification_body=$(sed -n '/^run_final_verification_plan()/,/^}/p' \
+  "$ROOT/deploy/watchdog.sh")
+runtime_line=$(grep -nF 'reconcile_engine_runtime "$engine_sha"' \
+  <<<"$final_verification_body" | cut -d: -f1)
+panel_lane_line=$(grep -nF 'run_final_verification_lane final_verify_admin_panel &' \
+  <<<"$final_verification_body" | cut -d: -f1)
+[[ -n $runtime_line && -n $panel_lane_line && $runtime_line -lt $panel_lane_line ]] \
+  || wd_die "runtime reconciliation can race the read-only final verification lanes"
 
 # The path-aware candidate gate must keep every lane and its selection/fallback contract. Language
 # and static validation run concurrently when selected; unknown paths select every expensive lane.
