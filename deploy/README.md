@@ -15,6 +15,12 @@ arbitrary HTTP 2xx on the expected port as proof that the selected unit started.
 
 Run them on the production host as the `deploy` operator from `/opt/apitoken/repo`, with narrowly scoped `sudo` access for application-unit and unit-file operations.
 
+While every production baseline is aligned, the watchdog can consume an exact-SHA
+`candidate-validation` deployment request. It validates that pushed descendant in an isolated
+candidate tree and freezes the result under the same SHA-keyed marker used by normal delivery.
+Feature-validation failures have a separate trap and never write the production rejection marker;
+any queued production commit is handled before another shadow request.
+
 ## Host mapping
 
 | Component | Immutable release | Active unit | Readiness probe |

@@ -525,7 +525,7 @@ gate_contract=(
   'wait "$static_pid"'
   'Static candidate lane failed'
   'wd_path_requires_infrastructure_install'
-  'wd_range_has_unknown_validation_path "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA"'
+  'select_candidate_validation_requirements "$CANDIDATE_SHA"'
   'typescript_tested=%s'
   'rust_tested=%s'
   'static_tested=%s'
@@ -878,6 +878,57 @@ grep -Fq 'promoting exact tested engine binaries' "$ROOT/deploy/deploy.sh" \
 [[ $(grep -Fc 'production-(database|engine|backend|sales|openkeys)' \
   "$ROOT/deploy/watchdog-github.sh") == 2 ]] \
   || wd_die 'GitHub deployment reporting does not allow the OpenKeys environment'
+
+# Trusted pre-merge validation is host-owned and SHA-keyed. It may run only after production is
+# completely aligned, reuses the exact candidate gate selector, and reports feature failures
+# without touching production quarantine or the overall deploy/watchdog verdict.
+grep -Fq 'validation-next)' "$ROOT/deploy/watchdog-github.sh" \
+  || wd_die 'GitHub bridge cannot read the trusted candidate validation queue'
+grep -Eq "GitHub candidate queue bridge'.*watchdog-github validation-next" \
+  "$ROOT/deploy/install-sudoers.sh" \
+  || wd_die 'sudo policy installer does not verify candidate queue access'
+grep -Fq 'deployments?environment=candidate-validation&per_page=100' \
+  "$ROOT/deploy/watchdog-github.sh" \
+  || wd_die 'candidate validation queue is not restricted to its dedicated environment'
+grep -Fq '^(candidate-validation|production-' "$ROOT/deploy/watchdog-github.sh" \
+  || wd_die 'GitHub bridge cannot report trusted candidate validation results'
+grep -Fq 'queued|pending|in_progress)' "$ROOT/deploy/watchdog-github.sh" \
+  || wd_die 'queued or interrupted candidate validations cannot be claimed'
+
+shadow_contract=(
+  'wd_retry 3 5 git -C "$SOURCE_REPO" fetch --no-tags "$REMOTE" "$CANDIDATE_SHA"'
+  'wd_require_ancestor "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" shadow-processed'
+  'select_candidate_validation_requirements "$CANDIDATE_SHA"'
+  'prepare_and_test_candidate "$CANDIDATE_SHA" "$VALIDATION_TYPESCRIPT_REQUIRED"'
+  'Trusted production-host candidate validation passed'
+  'run_shadow_candidate_validation "$validation_id" "$validation_sha" &'
+  'wait "$shadow_pid"'
+)
+for required_stage in "${shadow_contract[@]}"; do
+  grep -Fq -- "$required_stage" "$ROOT/deploy/watchdog.sh" \
+    || wd_die "trusted shadow validation lost required stage: $required_stage"
+done
+shadow_body=$(sed -n '/^shadow_validation_exit()/,/^final_verify_engine()/p' \
+  "$ROOT/deploy/watchdog.sh")
+if grep -Fq 'REJECTED_FILE' <<<"$shadow_body"; then
+  wd_die 'a failed feature validation can quarantine production'
+fi
+if grep -Fq 'commit-status "$CANDIDATE_SHA" failure deploy/watchdog' <<<"$shadow_body"; then
+  wd_die 'a failed feature validation can mark the healthy production SHA red'
+fi
+idle_guard_line=$(grep -nF 'if [[ $PROCESSED_SHA == "$CANDIDATE_SHA"' \
+  "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
+validation_queue_line=$(grep -nF 'validation-next' "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
+idle_maintenance_line=$(grep -nF 'if idle_maintenance_due; then' \
+  "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
+[[ -n $idle_guard_line && -n $validation_queue_line && -n $idle_maintenance_line \
+    && $idle_guard_line -lt $validation_queue_line \
+    && $validation_queue_line -lt $idle_maintenance_line ]] \
+  || wd_die 'trusted validation is not fenced behind complete production alignment'
+[[ $(grep -Fc 'select_candidate_validation_requirements "$CANDIDATE_SHA"' \
+  "$ROOT/deploy/watchdog.sh") == 2 ]] \
+  || wd_die 'production and shadow validation do not share one requirement selector'
+
 grep -Fq 'tokio-postgres-rustls' "$ROOT/crates/registry/Cargo.toml" \
   || wd_die 'engine PostgreSQL transport must use rustls alongside the BoringSSL forward transport'
 if grep -Eq '^[[:space:]]*(postgres-native-tls|native-tls)[[:space:]]*=' \

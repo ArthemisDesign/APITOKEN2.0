@@ -47,7 +47,7 @@ case "${1:-}" in
     [[ $# -ge 6 && $# -le 7 ]] || { echo 'usage: deployment-status ID STATE DESCRIPTION ENVIRONMENT ENVIRONMENT_URL [LOG_URL]' >&2; exit 2; }
     [[ $2 =~ ^[1-9][0-9]*$ ]] || { echo 'invalid deployment id' >&2; exit 2; }
     [[ $3 =~ ^(error|failure|inactive|in_progress|queued|pending|success)$ ]] || { echo 'invalid deployment state' >&2; exit 2; }
-    [[ $5 =~ ^production-(database|engine|backend|sales|openkeys)$ ]] || { echo 'invalid environment' >&2; exit 2; }
+    [[ $5 =~ ^(candidate-validation|production-(database|engine|backend|sales|openkeys))$ ]] || { echo 'invalid environment' >&2; exit 2; }
     body=$(jq -cn --arg state "$3" --arg description "$4" --arg environment "$5" \
       --arg environment_url "$6" --arg log_url "${7:-}" \
       '{state:$state,description:$description,environment:$environment,auto_inactive:true}
@@ -55,8 +55,37 @@ case "${1:-}" in
        + if $log_url == "" then {} else {log_url:$log_url} end')
     github_curl -o /dev/null -X POST "$api/deployments/$2/statuses" -d "$body"
     ;;
+  validation-next)
+    [[ $# -eq 1 ]] || { echo 'usage: validation-next' >&2; exit 2; }
+    deployments=$(github_curl "$api/deployments?environment=candidate-validation&per_page=100")
+    jq -e '
+      type == "array"
+      and all(.[];
+        (.id | type == "number")
+        and (.sha | type == "string")
+        and (.environment == "candidate-validation"))
+    ' >/dev/null <<<"$deployments" || { echo 'invalid deployments response' >&2; exit 1; }
+    entries=$(jq -r 'reverse[] | [.id, .sha] | @tsv' <<<"$deployments")
+    [[ -n $entries ]] || exit 0
+    while IFS=$'\t' read -r deployment_id deployment_sha; do
+      [[ $deployment_id =~ ^[1-9][0-9]*$ && $deployment_sha =~ $sha_re ]] \
+        || { echo 'invalid candidate validation deployment' >&2; exit 1; }
+      statuses=$(github_curl "$api/deployments/$deployment_id/statuses?per_page=1")
+      jq -e 'type == "array"' >/dev/null <<<"$statuses" \
+        || { echo 'invalid deployment statuses response' >&2; exit 1; }
+      state=$(jq -r 'if length == 0 then "queued" else (.[0].state // "") end' <<<"$statuses")
+      case "$state" in
+        queued|pending|in_progress)
+          printf '%s\t%s\n' "$deployment_id" "$deployment_sha"
+          exit 0
+          ;;
+        error|failure|inactive|success) ;;
+        *) echo 'invalid deployment status state' >&2; exit 1 ;;
+      esac
+    done <<<"$entries"
+    ;;
   *)
-    echo 'usage: watchdog-github.sh commit-status|deployment-create|deployment-status ...' >&2
+    echo 'usage: watchdog-github.sh commit-status|deployment-create|deployment-status|validation-next ...' >&2
     exit 2
     ;;
 esac

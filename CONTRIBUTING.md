@@ -120,6 +120,13 @@ The same free GitHub API integration creates deployment records for the affected
 `production-openkeys` environments. Those records make the production history and final environment
 URL visible next to Vercel's deployments; they do not run code on GitHub infrastructure.
 
+The idle host also accepts exact-SHA requests in the transient `candidate-validation` environment.
+It fetches only a SHA reachable from an already-pushed branch, requires every production baseline
+to be its ancestor, runs the same path-aware gate, and freezes the result in the root-owned
+candidate cache. Production work always takes priority. A red feature candidate updates only its
+own validation deployment and `deploy/tests`; it cannot quarantine or change the healthy production
+verdict.
+
 Changes to `deploy/`, `systemd/`, `observability/`, or `compose.yaml` are delivered automatically,
 like application code, but through a stricter path. Only after the exact immutable candidate passes
 its selected gate does a fixed root-owned bridge re-verify its SHA, tree, and clean worktree against

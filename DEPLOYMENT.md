@@ -36,6 +36,13 @@ Affected stages also appear as GitHub deployment records in the `production-data
 environments. This is reporting only: builds and deployments run on the existing production host,
 so no paid GitHub runner is used.
 
+When production is fully aligned and idle, the host may service one transient
+`candidate-validation` deployment for an exact SHA reachable from a pushed feature branch. The
+request uses the same path-aware validation selector and creates the same immutable, root-owned
+candidate that a later unchanged `master` SHA can reuse. A failed shadow request is isolated from
+production: it reports a red request and `deploy/tests` for that feature SHA without writing the
+production quarantine marker or changing `deploy/watchdog`.
+
 The watchdog polls `origin/master` every five seconds. A failure quarantines that SHA and stops
 the pipeline; neither later migrations nor application cutovers are attempted. This holds for every
 abnormal termination — a failing command, an interrupt, or a validation failure raised internally —

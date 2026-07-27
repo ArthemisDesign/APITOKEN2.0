@@ -54,6 +54,12 @@ TEST_DB_STARTED=0
 ACTIVE_DEPLOYMENT_ID=
 ACTIVE_DEPLOYMENT_ENV=
 ACTIVE_DEPLOYMENT_URL=
+SHADOW_DEPLOYMENT_ID=
+
+VALIDATION_TYPESCRIPT_REQUIRED=0
+VALIDATION_RUST_REQUIRED=0
+VALIDATION_STATIC_REQUIRED=0
+VALIDATION_ENGINE_ARTIFACTS_REQUIRED=0
 
 github_status() {
   sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" "$1" "$2" "$3"
@@ -521,6 +527,106 @@ prepare_and_test_candidate() {
   wd_log "candidate $sha passed every selected isolated validation lane"
 }
 
+select_candidate_validation_requirements() {
+  local target=$1 infrastructure_validation_changed=0 unknown_validation_path=0
+
+  VALIDATION_TYPESCRIPT_REQUIRED=0
+  VALIDATION_RUST_REQUIRED=0
+  VALIDATION_STATIC_REQUIRED=0
+  VALIDATION_ENGINE_ARTIFACTS_REQUIRED=0
+
+  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$target" wd_path_is_typescript \
+    && VALIDATION_TYPESCRIPT_REQUIRED=1
+  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$target" wd_path_is_infrastructure \
+    && infrastructure_validation_changed=1
+  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$target" wd_path_is_merge_workflow \
+    && VALIDATION_STATIC_REQUIRED=1
+  wd_range_has_unknown_validation_path "$SOURCE_REPO" "$PROCESSED_SHA" "$target" \
+    && unknown_validation_path=1
+
+  # A component baseline can lag processed after an interrupted rollout. Select validation from
+  # each runtime's own baseline as well as from processed, so a frozen candidate is always strong
+  # enough for the exact component work that may consume it.
+  if wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$target" wd_path_is_engine; then
+    VALIDATION_RUST_REQUIRED=1
+    VALIDATION_ENGINE_ARTIFACTS_REQUIRED=1
+  fi
+  wd_range_has_class "$SOURCE_REPO" "$BACKEND_SHA" "$target" wd_path_is_backend \
+    && VALIDATION_TYPESCRIPT_REQUIRED=1
+  wd_range_has_class "$SOURCE_REPO" "${SALES_SHA:-$PROCESSED_SHA}" "$target" wd_path_is_sales \
+    && VALIDATION_TYPESCRIPT_REQUIRED=1
+  wd_range_has_class "$SOURCE_REPO" "${OPENKEYS_SHA:-$PROCESSED_SHA}" "$target" wd_path_is_openkeys \
+    && VALIDATION_TYPESCRIPT_REQUIRED=1
+
+  (( infrastructure_validation_changed == 0 )) || VALIDATION_STATIC_REQUIRED=1
+  if (( unknown_validation_path == 1 )); then
+    VALIDATION_TYPESCRIPT_REQUIRED=1
+    VALIDATION_RUST_REQUIRED=1
+    VALIDATION_STATIC_REQUIRED=1
+  fi
+}
+
+shadow_validation_exit() {
+  local rc=$1
+  trap - ERR EXIT INT TERM
+  (( rc != 0 )) || return 0
+
+  if (( TEST_DB_STARTED == 1 )); then
+    sudo -n "$TEST_DB_HELPER" stop >/dev/null 2>&1 || true
+  fi
+  sudo -n "$GITHUB_HELPER" deployment-status "$SHADOW_DEPLOYMENT_ID" failure \
+    "Trusted candidate validation failed; production unchanged" candidate-validation "" \
+    >/dev/null 2>&1 || true
+  sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/tests \
+    "Trusted candidate validation failed; production unchanged" >/dev/null 2>&1 || true
+  wd_warn "trusted shadow validation failed for $CANDIDATE_SHA; production remains unchanged"
+  exit "$rc"
+}
+
+run_shadow_candidate_validation() (
+  # This is deliberately isolated from the production failure trap. A feature SHA can receive a
+  # red validation verdict, but it must never write rejected.sha or mark deploy/watchdog red for
+  # the already healthy production SHA.
+  trap - ERR EXIT INT TERM
+  set -euo pipefail
+  SHADOW_DEPLOYMENT_ID=$1
+  CANDIDATE_SHA=$2
+  TEST_DB_STARTED=0
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'shadow_validation_exit "$?"' EXIT
+
+  CURRENT_PHASE=shadow-validation
+  CURRENT_PHASE_BEFORE_FAILURE=shadow-validation
+  status "validating an exact pre-merge candidate while production is idle"
+  wd_retry 3 5 sudo -n "$GITHUB_HELPER" deployment-status "$SHADOW_DEPLOYMENT_ID" in_progress \
+    "Trusted production-host candidate validation started" candidate-validation ""
+  github_status pending deploy/tests "Trusted production-host candidate validation in progress"
+
+  # GitHub permits fetching a raw object ID when it is reachable from the already-pushed feature
+  # branch. The merge client therefore requests validation only for a remotely visible exact SHA.
+  wd_retry 3 5 git -C "$SOURCE_REPO" fetch --no-tags "$REMOTE" "$CANDIDATE_SHA"
+  git -C "$SOURCE_REPO" cat-file -e "$CANDIDATE_SHA^{commit}"
+  wd_require_ancestor "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" shadow-processed
+  wd_require_ancestor "$SOURCE_REPO" "$INFRASTRUCTURE_SHA" "$CANDIDATE_SHA" shadow-infrastructure
+  wd_require_ancestor "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" shadow-engine
+  wd_require_ancestor "$SOURCE_REPO" "$BACKEND_SHA" "$CANDIDATE_SHA" shadow-backend
+  [[ -z $SALES_SHA ]] \
+    || wd_require_ancestor "$SOURCE_REPO" "$SALES_SHA" "$CANDIDATE_SHA" shadow-sales
+  [[ -z $OPENKEYS_SHA ]] \
+    || wd_require_ancestor "$SOURCE_REPO" "$OPENKEYS_SHA" "$CANDIDATE_SHA" shadow-openkeys
+
+  select_candidate_validation_requirements "$CANDIDATE_SHA"
+  prepare_and_test_candidate "$CANDIDATE_SHA" "$VALIDATION_TYPESCRIPT_REQUIRED" \
+    "$VALIDATION_RUST_REQUIRED" "$VALIDATION_STATIC_REQUIRED" \
+    "$VALIDATION_ENGINE_ARTIFACTS_REQUIRED"
+
+  github_status success deploy/tests "Trusted production-host candidate validation passed"
+  wd_retry 3 5 sudo -n "$GITHUB_HELPER" deployment-status "$SHADOW_DEPLOYMENT_ID" success \
+    "Exact candidate passed trusted production-host validation" candidate-validation ""
+  wd_log "trusted shadow validation passed for $CANDIDATE_SHA"
+)
+
 final_verify_engine() {
   local sha=$1
   engine_runtime_aligned "$sha" \
@@ -931,8 +1037,10 @@ mark_idle_maintenance_complete() {
 main() {
   local remote_ref rejected infra_changed=0 caddy_changed=0 engine_changed=0 backend_changed=0 sales_changed=0
   local openkeys_changed=0 typescript_required=0 rust_required=0 static_required=0
-  local engine_artifacts_required=0 infrastructure_validation_changed=0 unknown_validation_path=0
+  local engine_artifacts_required=0
   local core_pid= sales_pid= openkeys_pid= core_rc=0 sales_rc=0 openkeys_rc=0
+  local validation_request= validation_id= validation_sha= validation_extra=
+  local shadow_pid= shadow_rc=0
 
   [[ $(id -un) == deploy ]] || wd_die "watchdog service must run as deploy"
   [[ -d $SOURCE_REPO/.git ]] || wd_die "source repository is missing: $SOURCE_REPO"
@@ -1012,29 +1120,40 @@ main() {
       && openkeys_changed=1
   fi
 
-  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" wd_path_is_typescript \
-    && typescript_required=1
-  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" wd_path_is_engine \
-    && rust_required=1
-  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" wd_path_is_infrastructure \
-    && infrastructure_validation_changed=1
-  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" wd_path_is_merge_workflow \
-    && static_required=1
-  wd_range_has_unknown_validation_path "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" \
-    && unknown_validation_path=1
-  (( backend_changed == 0 && sales_changed == 0 && openkeys_changed == 0 )) \
-    || typescript_required=1
-  (( infrastructure_validation_changed == 0 )) || static_required=1
-  if (( unknown_validation_path == 1 )); then
-    typescript_required=1
-    rust_required=1
-    static_required=1
-  fi
-  engine_artifacts_required=$engine_changed
+  select_candidate_validation_requirements "$CANDIDATE_SHA"
+  typescript_required=$VALIDATION_TYPESCRIPT_REQUIRED
+  rust_required=$VALIDATION_RUST_REQUIRED
+  static_required=$VALIDATION_STATIC_REQUIRED
+  engine_artifacts_required=$VALIDATION_ENGINE_ARTIFACTS_REQUIRED
 
   if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $infra_changed == 0 \
         && $engine_changed == 0 && $backend_changed == 0 \
         && $sales_changed == 0 && $openkeys_changed == 0 ]]; then
+    # Production always wins: only a completely aligned idle host accepts one queued shadow
+    # validation. A failed feature candidate is reported against its own Deployment and commit
+    # context, then this healthy production cycle still exits successfully.
+    if validation_request=$(sudo -n "$GITHUB_HELPER" validation-next); then
+      if [[ -n $validation_request ]]; then
+        IFS=$'\t' read -r validation_id validation_sha validation_extra <<<"$validation_request"
+        if [[ $validation_request != *$'\n'* && $validation_id =~ ^[1-9][0-9]*$ \
+              && $validation_sha =~ ^[0-9a-f]{40}$ && -z $validation_extra ]]; then
+          run_shadow_candidate_validation "$validation_id" "$validation_sha" &
+          shadow_pid=$!
+          wait "$shadow_pid" || shadow_rc=$?
+          if (( shadow_rc == 0 )); then
+            wd_log "completed queued trusted validation $validation_id for $validation_sha"
+          else
+            wd_warn "queued trusted validation $validation_id failed (exit $shadow_rc)"
+          fi
+          CURRENT_PHASE=idle
+          status "master already processed; production runtime aligned"
+          exit 0
+        fi
+        wd_warn "GitHub helper returned a malformed candidate validation request"
+      fi
+    else
+      wd_warn "candidate validation queue lookup failed; production remains idle"
+    fi
     if idle_maintenance_due; then
       CURRENT_PHASE=maintaining
       status "running periodic retention and production-alignment checks"

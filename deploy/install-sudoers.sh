@@ -153,6 +153,7 @@ require_permitted 'migration runner' /usr/local/lib/apitoken-watchdog/watchdog-m
 require_permitted 'retention helper' /usr/local/lib/apitoken-watchdog/watchdog-retention.sh 10
 require_permitted 'infrastructure runner' /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh "$sample_sha"
 require_permitted 'GitHub reporting bridge' /usr/local/lib/apitoken-watchdog/watchdog-github commit-status
+require_permitted 'GitHub candidate queue bridge' /usr/local/lib/apitoken-watchdog/watchdog-github validation-next
 require_permitted 'test database helper' /usr/local/lib/apitoken-watchdog/watchdog-test-db start
 require_permitted 'candidate ownership' /usr/bin/chown -R root:root -- "/var/lib/apitoken/watchdog/candidates/$sample_sha"
 require_permitted 'candidate removal' /usr/bin/rm -rf --one-file-system -- "/var/lib/apitoken/watchdog/candidates/$sample_sha"
