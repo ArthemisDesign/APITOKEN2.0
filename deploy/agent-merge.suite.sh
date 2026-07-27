@@ -141,11 +141,13 @@ GATE_STUB="printf gate >>$preflight_gate_log" STATUS_STUB='printf failure' \
   expect_failure 'stacking onto a red master' 'is RED' run_merge "$tree_a"
 [[ ! -s $preflight_gate_log ]] || wd_die 'the full gate ran before the existing deployment was checked'
 GATE_STUB="printf gate >>$preflight_gate_log" STATUS_STUB='printf pending' \
-  expect_failure 'stacking onto a deploying master' 'waiting for deploy/watchdog autonomously' \
+  expect_failure 'pushing before a deploying parent is green' 'could not verify a green' \
   run_merge "$tree_a"
-[[ ! -s $preflight_gate_log ]] || wd_die 'the full gate ran while the existing deployment was pending'
+[[ -s $preflight_gate_log ]] \
+  || wd_die 'a pending committed parent did not overlap its rollout with speculative gates'
 [[ $(git --git-dir="$ORIGIN" rev-parse master) == "$before" ]] \
-  || wd_die 'a refused merge still pushed to master'
+  || wd_die 'speculative gates pushed before their parent deployment was green'
+[[ ! -d $TEMP/lock ]] || wd_die 'a pending parent left the merge lock behind'
 
 # --- happy path: unchanged SHA reuses its exact gate, lock released -------------------------------
 gate_log=$TEMP/gate.log
@@ -199,7 +201,7 @@ pushed=$(git --git-dir="$ORIGIN" rev-parse master)
 # --- a target that moves under us is rebased onto, not force-pushed over ----------------------------
 tree_c=$(new_agent_worktree agent-c feat/agent-c)
 tree_d=$(new_agent_worktree agent-d feat/agent-d)
-# agent-d lands first, so agent-c is stale by the time it reaches the lock.
+# agent-d lands first, so agent-c rebases before either exact-SHA gate.
 run_merge "$tree_d" >/dev/null || wd_die 'agent-d could not land'
 landed_d=$(git --git-dir="$ORIGIN" rev-parse master)
 stale_gate_log=$TEMP/stale-gate.log
@@ -211,14 +213,16 @@ GATE_STUB="git rev-parse HEAD >>$stale_gate_log" \
 landed_c=$(git --git-dir="$ORIGIN" rev-parse master)
 git --git-dir="$ORIGIN" merge-base --is-ancestor "$landed_d" "$landed_c" \
   || wd_die 'a merge discarded a commit that had already landed on master'
-[[ $(wc -l <"$stale_gate_log" | tr -d ' ') == 2 ]] \
-  || wd_die 'a rebase that changed the candidate SHA did not force exactly one new gate'
-[[ $(wc -l <"$stale_validation_log" | tr -d ' ') == 2 ]] \
-  || wd_die 'a rebase that changed the candidate SHA did not request exactly one new host gate'
+[[ $(wc -l <"$stale_gate_log" | tr -d ' ') == 1 ]] \
+  || wd_die 'a knowingly stale candidate was wastefully gated before its preflight rebase'
+[[ $(wc -l <"$stale_validation_log" | tr -d ' ') == 1 ]] \
+  || wd_die 'a knowingly stale candidate requested host validation before its preflight rebase'
 tail -n 1 "$stale_gate_log" | grep -Fxq "$landed_c" \
   || wd_die 'the rebased SHA was not the last tree tested before push'
 tail -n 1 "$stale_validation_log" | grep -Fxq "$landed_c" \
   || wd_die 'the rebased SHA was not the last tree validated by the trusted host'
+grep -Fq 'rebasing the candidate onto committed master' "$TEMP/stale-target.log" \
+  || wd_die 'the pre-gate target rebase was not reported'
 
 # An out-of-band push between the gate and our push (a human bypassing the lock) must be absorbed by
 # the retry loop, never by a force push.
@@ -351,6 +355,7 @@ for trusted_gate_contract in \
   'transient_environment: true' \
   'production_environment: false' \
   'candidate-validation' \
+  'rebase "$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET"' \
   'am_publish_validation_sha "$candidate"' \
   'am_wait_for_validation "$validation_id" "$candidate"' \
   'candidate == "$GATED_SHA" && $candidate == "$VALIDATED_SHA"'; do
@@ -403,12 +408,13 @@ broken='{"state":"failure","statuses":[{"context":"deploy/watchdog","state":"fai
 tree_f=$(new_agent_worktree agent-f feat/agent-f)
 pushed=$(git --git-dir="$ORIGIN" rev-parse master)
 # The existing SHA first has only Vercel's partial combined success, then gets its watchdog verdict.
-# The merge must wait by itself before running the gate and continue without asking anybody.
+# Its descendant may be gated immediately, but the merge must still wait for the named verdict
+# before pushing and continue without asking anybody.
 set_responses "$partial" "$finished"
 STATUS_STUB='' run_merge "$tree_f" PATH="$TEMP/bin:$PATH" GITHUB_TOKEN='' >"$TEMP/credential.log" \
   || wd_die "the credential fallback path failed: $(cat "$TEMP/credential.log")"
-grep -Fq 'waiting for deploy/watchdog autonomously' "$TEMP/credential.log" \
-  || wd_die 'a partial combined success was treated as a finished deployment'
+grep -Fq 'still deploying; starting speculative exact-SHA gates' "$TEMP/credential.log" \
+  || wd_die 'a pending committed target did not start speculative validation'
 
 # --- the token comes from git's own credential store, and never leaks -------------------------------
 # A contributor who can push normally already has a credential for this remote, so the status checks

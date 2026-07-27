@@ -281,6 +281,44 @@ am_publish_validation_sha() {
     || am_die "feature branch did not publish the exact candidate required for host validation"
 }
 
+am_require_target_gateable() {
+  local sha=$1 waited=0 verdict
+  while (( waited < AGENT_MERGE_DEPLOY_WAIT_S )); do
+    verdict=$(am_status "$sha")
+    case "$verdict" in
+      success)
+        am_log "$AGENT_MERGE_REQUIRED_CONTEXT is GREEN for existing $AGENT_MERGE_TARGET $sha"
+        return
+        ;;
+      pending)
+        # The immutable target commit is already available even though its production rollout is
+        # not finished. It is safe to rebase and test a descendant speculatively; the locked check
+        # below still refuses to push until this exact target reports green.
+        am_log "$AGENT_MERGE_TARGET $sha is committed and still deploying; starting speculative exact-SHA gates"
+        return
+        ;;
+      failure|error)
+        if (( FIX_RED )); then
+          am_log "WARNING: $AGENT_MERGE_TARGET is RED at $sha; proceeding because --fix-red was given"
+          return
+        fi
+        am_die "$AGENT_MERGE_TARGET is RED at $sha: land the repair for that failure with
+  --fix-red, or wait. Never stack unrelated work on a red target, and never retry the red SHA."
+        ;;
+      unknown)
+        am_log "deployment-status lookup for $sha is temporarily unavailable; retrying autonomously (${waited}s)"
+        ;;
+      *)
+        am_log "unexpected deployment status '$verdict' for $sha; retrying autonomously (${waited}s)"
+        ;;
+    esac
+    sleep "$AGENT_MERGE_POLL_S"
+    waited=$(( waited + AGENT_MERGE_POLL_S ))
+  done
+  am_die "could not establish whether existing $AGENT_MERGE_TARGET $sha is safe to test against
+  within ${AGENT_MERGE_DEPLOY_WAIT_S}s. No gate or merge was attempted."
+}
+
 am_wait_for_target_ready() {
   local sha=$1 waited=0 verdict
   while (( waited < AGENT_MERGE_DEPLOY_WAIT_S )); do
@@ -334,13 +372,19 @@ BRANCH=$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)
 git -C "$ROOT" rev-parse --verify -q "$BRANCH@{upstream}" >/dev/null \
   || am_die "branch has no upstream: git push -u $AGENT_MERGE_REMOTE HEAD"
 
-# Check production before spending time on the local gate. The same verdict is checked again under
-# the merge lock because master can move while the gate runs.
+# Reject a red production baseline before spending time on the gates. A pending baseline is already
+# an immutable commit, so its descendant can be tested speculatively while that rollout finishes.
+# The same target must be green under the merge lock before anything is pushed.
 am_require_status_access
 git -C "$ROOT" fetch "$AGENT_MERGE_REMOTE"
 previous=$(git -C "$ROOT" rev-parse "$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET")
-am_log "checking $AGENT_MERGE_REQUIRED_CONTEXT for existing $AGENT_MERGE_TARGET $previous before the gate"
-am_wait_for_target_ready "$previous"
+am_log "checking whether existing $AGENT_MERGE_TARGET $previous is safe to test against"
+am_require_target_gateable "$previous"
+
+# Rebase before either expensive gate. This makes their exact SHA a descendant of the latest
+# committed target and avoids knowingly validating a SHA that the locked rebase would replace.
+am_log "rebasing the candidate onto committed $AGENT_MERGE_TARGET $previous before parallel gates"
+git -C "$ROOT" rebase "$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET"
 
 # Fail fast, before queueing behind anyone, on a tree that cannot pass anyway. The host receives
 # the exact already-pushed SHA first, so its path-aware gate runs concurrently with this local full

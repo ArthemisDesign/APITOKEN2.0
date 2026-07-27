@@ -44,18 +44,20 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
 
 5. Push the branch and land it with `./deploy/agent-merge.sh` (add `--allow-primary-tree` when you
    work in a plain clone rather than a worktree). That script is the only supported way to reach
-   `master`. Before the expensive gate, and again under the machine-wide merge lock, it reads the
-   existing SHA's `deploy/watchdog` context through the GitHub API. It automatically reuses the
-   credential already configured for `git push` (`git credential`, macOS Keychain), so neither
-   `gh` nor a separately exported `GITHUB_TOKEN` is required. Pending or temporarily unavailable
-   status is polled by the script itself every five seconds. Before queueing, it requests trusted
-   production-host validation for the exact pushed feature SHA, then overlaps that path-aware host
-   gate with the complete local gate. It takes the merge lock only after both pass. A rebase or push
-   race that changes the SHA republishes the feature branch and repeats both gates for that new SHA;
-   an unchanged SHA reuses both results. Once the same SHA reaches `master`, the host consumes its
-   root-owned frozen candidate instead of testing it again. The script holds the lock until
-   `deploy/watchdog` reports on the pushed SHA. Merging or pushing to `master` by hand races the
-   production deployment of whoever merged immediately before it.
+   `master`. Before the expensive gate it rejects a red target, rebases onto the latest committed
+   target SHA, and reads that SHA's `deploy/watchdog` context through the GitHub API. A pending
+   target may overlap its rollout with speculative gates, but the script never pushes until the
+   locked target check is green. It automatically reuses the credential already configured for
+   `git push` (`git credential`, macOS Keychain), so neither `gh` nor a separately exported
+   `GITHUB_TOKEN` is required. Temporarily unavailable status is polled by the script itself every
+   five seconds. Before queueing, it requests trusted production-host validation for the exact
+   rebased and pushed feature SHA, then overlaps that path-aware host gate with the complete local
+   gate. It takes the merge lock only after both pass. A later target move or push race that changes
+   the SHA republishes the feature branch and repeats both gates for that new SHA; an unchanged SHA
+   reuses both results. Once the same SHA reaches `master`, the host consumes its root-owned frozen
+   candidate instead of testing it again. The script holds the lock until `deploy/watchdog` reports
+   on the pushed SHA. Merging or pushing to `master` by hand races the production deployment of
+   whoever merged immediately before it.
 6. AI agents never ask a person to provide a GitHub token or prove that a deployment is green. If
    no reusable credential exists, repair the local Git credential helper and rerun; never merge
    blind. Work is complete only when the script reports the exact pushed SHA's `deploy/watchdog`

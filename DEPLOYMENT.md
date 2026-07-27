@@ -38,12 +38,14 @@ so no paid GitHub runner is used.
 
 When production is fully aligned and idle, the host may service one transient
 `candidate-validation` deployment for an exact SHA reachable from a pushed feature branch. The
-merge client creates that request before its local full gate, so local and host validation overlap.
-The request uses the same path-aware validation selector and creates the immutable, root-owned
-candidate that a later unchanged `master` SHA reuses. If a rebase changes the SHA, both exact-SHA
-gates run again. A failed shadow request is isolated from production: it reports a red request and
-`deploy/tests` for that feature SHA without writing the production quarantine marker or changing
-`deploy/watchdog`.
+merge client first rebases onto the latest committed `master`, then creates that request before its
+local full gate, so local and host validation overlap. A pending parent deployment may overlap the
+local gate, but cannot be merged into until its locked `deploy/watchdog` check is green. The request
+uses the same path-aware validation selector and creates the immutable, root-owned candidate that a
+later unchanged `master` SHA reuses. If `master` moves again and changes the candidate SHA, both
+exact-SHA gates run again. A failed shadow request is isolated from production: it reports a red
+request and `deploy/tests` for that feature SHA without writing the production quarantine marker or
+changing `deploy/watchdog`.
 
 The watchdog polls `origin/master` every five seconds. A failure quarantines that SHA and stops
 the pipeline; neither later migrations nor application cutovers are attempted. This holds for every

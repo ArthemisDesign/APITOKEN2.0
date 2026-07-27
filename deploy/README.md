@@ -17,11 +17,13 @@ Run them on the production host as the `deploy` operator from `/opt/apitoken/rep
 
 While every production baseline is aligned, the watchdog can consume an exact-SHA
 `candidate-validation` deployment request created by the merge client before its local gate. It
-validates that pushed descendant in an isolated candidate tree while the local full gate runs, then
-freezes the result under the same SHA-keyed marker used by normal delivery. An unchanged SHA on
-`master` reuses the marker; a rebase requests a new exact-SHA validation. Feature-validation
-failures have a separate trap and never write the production rejection marker; any queued
-production commit is handled before another shadow request.
+validates the exact descendant rebased onto the latest committed `master` in an isolated candidate
+tree while the local full gate runs, then freezes the result under the same SHA-keyed marker used by
+normal delivery. A pending parent can overlap the local gate, but the locked merge still waits for
+that parent's green verdict. An unchanged SHA on `master` reuses the marker; a later target move
+requests a new exact-SHA validation. Feature-validation failures have a separate trap and never
+write the production rejection marker; any queued production commit is handled before another
+shadow request.
 
 ## Host mapping
 
