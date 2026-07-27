@@ -124,34 +124,8 @@ impl CodexAdmission {
             return;
         };
         let now = pool::now();
-        let priced = price_usage(model, usage, now);
-        let computed_charge = metering::apply_multiplier(priced.real_nano, reservation.mult_bp);
-        let ceiling = reservation.hold.max(0) as i128 + metering::OVERDRAFT_NANO;
-        let charge = computed_charge.clamp(0, ceiling).min(i64::MAX as i128) as i64;
-        let usage_event = if priced.real_nano > 0 {
-            Some(registry::UsageEventInput {
-                model: model.id.clone(),
-                provider: registry::PROVIDER_OPENAI.to_string(),
-                input_tokens: priced.normal_input.min(i64::MAX as u64) as i64,
-                output_tokens: usage.output_tokens.min(i64::MAX as u64) as i64,
-                cache_read_tokens: priced.cached_input.min(i64::MAX as u64) as i64,
-                cache_write_5m_tokens: 0,
-                cache_write_1h_tokens: priced.cache_write_input.min(i64::MAX as u64) as i64,
-                web_search_requests: 0,
-                real_nano: priced.real_nano.min(i64::MAX as i128) as i64,
-                speed: "standard".to_string(),
-                inference_geo: String::new(),
-                input_nano: priced.input_nano.min(i64::MAX as i128) as i64,
-                output_nano: priced.output_nano.min(i64::MAX as i128) as i64,
-                cache_read_nano: priced.cached_nano.min(i64::MAX as i128) as i64,
-                cache_write_5m_nano: 0,
-                cache_write_1h_nano: priced.cache_write_nano.min(i64::MAX as i128) as i64,
-                web_search_nano: 0,
-                priced_ts: now,
-            })
-        } else {
-            None
-        };
+        let (charge, usage_event) =
+            settled_charge(model, usage, reservation.hold, reservation.mult_bp, now);
         reservation.billing.settle_detached(
             &reservation.request_id,
             &reservation.account_id,
@@ -170,6 +144,43 @@ impl CodexAdmission {
             );
         }
     }
+}
+
+/// Compute the exact customer debit and immutable provider-usage record before handing either to
+/// the asynchronous billing actor. Keeping this boundary pure makes the only Codex money mutation
+/// exhaustively testable without substituting a second pricing implementation in the test.
+fn settled_charge(
+    model: &CodexModel,
+    usage: &CodexUsage,
+    hold: i64,
+    mult_bp: i64,
+    now: i64,
+) -> (i64, Option<registry::UsageEventInput>) {
+    let priced = price_usage(model, usage, now);
+    let computed_charge = metering::apply_multiplier(priced.real_nano, mult_bp);
+    let ceiling = hold.max(0) as i128 + metering::OVERDRAFT_NANO;
+    let charge = computed_charge.clamp(0, ceiling).min(i64::MAX as i128) as i64;
+    let usage_event = (priced.real_nano > 0).then(|| registry::UsageEventInput {
+        model: model.id.clone(),
+        provider: registry::PROVIDER_OPENAI.to_string(),
+        input_tokens: priced.normal_input.min(i64::MAX as u64) as i64,
+        output_tokens: usage.output_tokens.min(i64::MAX as u64) as i64,
+        cache_read_tokens: priced.cached_input.min(i64::MAX as u64) as i64,
+        cache_write_5m_tokens: 0,
+        cache_write_1h_tokens: priced.cache_write_input.min(i64::MAX as u64) as i64,
+        web_search_requests: 0,
+        real_nano: priced.real_nano.min(i64::MAX as i128) as i64,
+        speed: "standard".to_string(),
+        inference_geo: String::new(),
+        input_nano: priced.input_nano.min(i64::MAX as i128) as i64,
+        output_nano: priced.output_nano.min(i64::MAX as i128) as i64,
+        cache_read_nano: priced.cached_nano.min(i64::MAX as i128) as i64,
+        cache_write_5m_nano: 0,
+        cache_write_1h_nano: priced.cache_write_nano.min(i64::MAX as i128) as i64,
+        web_search_nano: 0,
+        priced_ts: now,
+    });
+    (charge, usage_event)
 }
 
 pub(crate) async fn begin_admission(
@@ -312,7 +323,12 @@ fn price_usage(model: &CodexModel, usage: &CodexUsage, now: i64) -> PricedUsage 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::billing::AsyncBilling;
     use crate::codex::CodexPrices;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::Semaphore;
 
     fn model() -> CodexModel {
         CodexModel {
@@ -332,6 +348,77 @@ mod tests {
                 long_output_basis_points: 15_000,
             },
         }
+    }
+
+    fn settlement_model() -> CodexModel {
+        let mut model = model();
+        // Deliberately stay outside the effective-dated production catalog so every expected value
+        // below is pinned to this fixture rather than changing when a reviewed catalog epoch lands.
+        model.id = "gpt-settlement-test".to_string();
+        model.upstream = model.id.clone();
+        model
+    }
+
+    async fn reserved_admission(
+        mult_bp: i64,
+        topup: i64,
+        hold: i64,
+        request_id: &str,
+    ) -> (CodexAdmission, Arc<AsyncBilling>, PathBuf) {
+        const ACCOUNT: &str = "codex-settlement-account";
+        const KEY: &str = "sk-pool-codex-settlement";
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-codex-settlement-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let billing = Arc::new(
+            AsyncBilling::start(path.to_string_lossy().into_owned(), 1)
+                .expect("start settlement test billing"),
+        );
+        billing
+            .create_account(ACCOUNT, None, mult_bp)
+            .await
+            .unwrap();
+        billing
+            .topup(ACCOUNT, topup, Some("codex-settlement-seed"))
+            .await
+            .unwrap();
+        billing
+            .issue_key(KEY, ACCOUNT, None, None, None)
+            .await
+            .unwrap();
+        assert!(billing
+            .reserve_request(request_id, ACCOUNT, KEY, hold)
+            .await
+            .unwrap()
+            .is_some());
+
+        let permit = Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap();
+        let admission = CodexAdmission {
+            _request_permit: permit,
+            _key_guard: None,
+            reservation: Some(Reservation {
+                billing: Arc::clone(&billing),
+                account_id: ACCOUNT.to_string(),
+                key: KEY.to_string(),
+                mult_bp,
+                hold,
+                request_id: request_id.to_string(),
+                guard: HoldGuard::new(
+                    Some(Arc::clone(&billing)),
+                    ACCOUNT.to_string(),
+                    KEY.to_string(),
+                    hold,
+                    request_id.to_string(),
+                ),
+            }),
+        };
+        (admission, billing, path)
     }
 
     #[test]
@@ -418,5 +505,174 @@ mod tests {
             0,
         );
         assert_eq!(priced.input_nano, 10 * 7_000);
+    }
+
+    #[test]
+    fn settlement_applies_the_customer_multiplier_exactly_once_and_builds_openai_usage() {
+        let usage = CodexUsage {
+            input_tokens: 1_000,
+            cached_input_tokens: 400,
+            cache_write_input_tokens: 100,
+            output_tokens: 20,
+            ..CodexUsage::default()
+        };
+        let (charge, event) = settled_charge(&settlement_model(), &usage, 10_000_000, 5_000, 123);
+
+        // Official cost: 500*5000 + 400*500 + 100*6250 + 20*30000 = 3,925,000.
+        // The customer multiplier is 0.5 and must be applied once, not squared.
+        assert_eq!(charge, 1_962_500);
+        let event = event.expect("positive usage must produce an immutable usage event");
+        assert_eq!(event.model, "gpt-settlement-test");
+        assert_eq!(event.provider, registry::PROVIDER_OPENAI);
+        assert_eq!(event.input_tokens, 500);
+        assert_eq!(event.cache_read_tokens, 400);
+        assert_eq!(event.cache_write_1h_tokens, 100);
+        assert_eq!(event.output_tokens, 20);
+        assert_eq!(event.input_nano, 2_500_000);
+        assert_eq!(event.cache_read_nano, 200_000);
+        assert_eq!(event.cache_write_1h_nano, 625_000);
+        assert_eq!(event.output_nano, 600_000);
+        assert_eq!(
+            event.real_nano,
+            event.input_nano
+                + event.cache_read_nano
+                + event.cache_write_1h_nano
+                + event.output_nano
+        );
+        assert_eq!(event.priced_ts, 123);
+    }
+
+    #[test]
+    fn settlement_clamps_overrun_to_the_reserved_hold_plus_one_dollar() {
+        let usage = CodexUsage {
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+            ..CodexUsage::default()
+        };
+        let hold = 17;
+        let (charge, event) = settled_charge(&settlement_model(), &usage, hold, 10_000, 456);
+        assert_eq!(charge as i128, hold as i128 + metering::OVERDRAFT_NANO);
+        assert!(event.is_some());
+    }
+
+    #[test]
+    fn zero_usage_neither_charges_nor_writes_a_usage_event() {
+        let (charge, event) = settled_charge(
+            &settlement_model(),
+            &CodexUsage::default(),
+            1_000_000,
+            10_000,
+            789,
+        );
+        assert_eq!(charge, 0);
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn settlement_saturates_hostile_token_counts_instead_of_wrapping() {
+        let usage = CodexUsage {
+            input_tokens: u64::MAX,
+            cached_input_tokens: u64::MAX,
+            cache_write_input_tokens: u64::MAX,
+            output_tokens: u64::MAX,
+            ..CodexUsage::default()
+        };
+        let (charge, event) = settled_charge(&settlement_model(), &usage, i64::MAX, 10_000, 999);
+        assert_eq!(charge, i64::MAX);
+        let event = event.unwrap();
+        assert_eq!(event.input_tokens, 0);
+        assert_eq!(event.cache_read_tokens, i64::MAX);
+        assert_eq!(event.cache_write_1h_tokens, 0);
+        assert_eq!(event.output_tokens, i64::MAX);
+        assert_eq!(event.real_nano, i64::MAX);
+        assert_eq!(event.cache_read_nano, i64::MAX);
+        assert_eq!(event.output_nano, i64::MAX);
+    }
+
+    #[tokio::test]
+    async fn codex_admission_settle_debits_once_and_persists_provider_usage() {
+        const TOPUP: i64 = 20_000_000;
+        let (admission, billing, path) =
+            reserved_admission(5_000, TOPUP, 10_000_000, "codex-settle").await;
+        let usage = CodexUsage {
+            input_tokens: 1_000,
+            cached_input_tokens: 400,
+            cache_write_input_tokens: 100,
+            output_tokens: 20,
+            ..CodexUsage::default()
+        };
+
+        admission.settle(&settlement_model(), &usage);
+        billing.flush().await.unwrap();
+
+        let account = billing
+            .account("codex-settlement-account")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(account.balance_nano, TOPUP - 1_962_500);
+        assert_eq!(account.spent_nano, 1_962_500);
+        assert_eq!(account.reserved_nano, 0);
+
+        let ledger = billing
+            .ledger("codex-settlement-account", 10)
+            .await
+            .unwrap();
+        let charges = ledger
+            .iter()
+            .filter(|row| row.kind == "charge")
+            .collect::<Vec<_>>();
+        assert_eq!(charges.len(), 1);
+        assert_eq!(charges[0].amount_nano, 1_962_500);
+        assert_eq!(charges[0].model.as_deref(), Some("gpt-settlement-test"));
+
+        let usage_rows = billing
+            .usage_by_model("codex-settlement-account", 0)
+            .await
+            .unwrap();
+        assert_eq!(usage_rows.len(), 1);
+        assert_eq!(usage_rows[0].charge_nano, 1_962_500);
+        assert_eq!(usage_rows[0].real_nano, 3_925_000);
+        let providers = billing.spend_by_provider(0).await.unwrap();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].provider, registry::PROVIDER_OPENAI);
+        assert_eq!(providers[0].requests, 1);
+        assert_eq!(providers[0].charge_nano, 1_962_500);
+
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn dropping_codex_admission_without_settle_refunds_the_hold_once() {
+        const TOPUP: i64 = 20_000_000;
+        let (admission, billing, path) =
+            reserved_admission(10_000, TOPUP, 10_000_000, "codex-drop").await;
+
+        drop(admission);
+        billing.flush().await.unwrap();
+
+        let account = billing
+            .account("codex-settlement-account")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(account.balance_nano, TOPUP);
+        assert_eq!(account.spent_nano, 0);
+        assert_eq!(account.reserved_nano, 0);
+        assert!(billing
+            .ledger("codex-settlement-account", 10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|row| row.kind != "charge"));
+        assert!(billing
+            .usage_by_model("codex-settlement-account", 0)
+            .await
+            .unwrap()
+            .is_empty());
+
+        drop(billing);
+        let _ = std::fs::remove_file(path);
     }
 }
