@@ -99,7 +99,7 @@ am_gate_typescript() (
   else
     pnpm "${filters[@]}" -r --if-present --fail-if-no-match typecheck
   fi
-  bash "$ROOT/deploy/typescript-test-groups.sh" "$ROOT" "${test_packages[@]}"
+  bash "$ROOT/deploy/typescript-test-groups.sh" "$ROOT" ${test_packages[@]+"${test_packages[@]}"}
 )
 
 am_gate_rust() (

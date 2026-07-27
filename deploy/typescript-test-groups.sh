@@ -104,13 +104,15 @@ package_is_known() {
 package_is_requested() {
   local expected=$1 requested
   (( ${#REQUESTED_PACKAGES[@]} > 0 )) || return 0
-  for requested in "${REQUESTED_PACKAGES[@]}"; do
+  for requested in ${REQUESTED_PACKAGES[@]+"${REQUESTED_PACKAGES[@]}"}; do
     [[ $requested != "$expected" ]] || return 0
   done
   return 1
 }
 
-for requested in "${REQUESTED_PACKAGES[@]}"; do
+# Раскрытие через ${x[@]+…}: в bash 3.2 (macOS) обращение к пустому массиву под
+# set -u — ошибка «unbound variable», а пустой список пакетов здесь нормален.
+for requested in ${REQUESTED_PACKAGES[@]+"${REQUESTED_PACKAGES[@]}"}; do
   [[ $requested =~ ^@[a-z0-9][a-z0-9._~-]*/[a-z0-9][a-z0-9._~-]*$ ]] \
     || die "unsafe package selector: $requested"
   package_is_known "$requested" || die "unclassified workspace package selector: $requested"
