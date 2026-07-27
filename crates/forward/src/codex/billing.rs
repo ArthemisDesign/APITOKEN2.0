@@ -326,9 +326,12 @@ mod tests {
     use crate::billing::AsyncBilling;
     use crate::codex::CodexPrices;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::Semaphore;
+
+    static NEXT_SETTLEMENT_DB: AtomicU64 = AtomicU64::new(0);
 
     fn model() -> CodexModel {
         CodexModel {
@@ -372,8 +375,11 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        // macOS can return the same wall-clock tick to tests that start in parallel. The
+        // process-local sequence prevents two billing actors from opening the same SQLite fixture.
+        let sequence = NEXT_SETTLEMENT_DB.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "claude-api-codex-settlement-{}-{unique}.sqlite",
+            "claude-api-codex-settlement-{}-{unique}-{sequence}.sqlite",
             std::process::id(),
         ));
         let billing = Arc::new(
