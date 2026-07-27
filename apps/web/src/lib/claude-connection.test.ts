@@ -9,39 +9,19 @@ import {
 
 describe("Claude connection handoff", () => {
   it("builds a ready-to-paste Claude Code terminal setup", () => {
-    expect(buildClaudeCodeCommands("sk-pool-test-secret")).toBe(`# Current terminal
-export ANTHROPIC_BASE_URL="https://api.apitoken.sale"
-export ANTHROPIC_API_KEY="sk-pool-test-secret"
-
-# Future terminals
-APITOKEN_ENV_FILE="\${XDG_CONFIG_HOME:-$HOME/.config}/apitoken/claude.env"
-mkdir -p "\${APITOKEN_ENV_FILE%/*}"
-(
-  umask 077
-  printf '%s\\n' 'export ANTHROPIC_BASE_URL="https://api.apitoken.sale"' 'export ANTHROPIC_API_KEY="sk-pool-test-secret"' > "$APITOKEN_ENV_FILE"
-)
-chmod 600 "$APITOKEN_ENV_FILE"
-
-SHELL_PROFILE="\${ZDOTDIR:-$HOME}/.zshrc"
-[ "\${SHELL##*/}" = "bash" ] && SHELL_PROFILE="$HOME/.bashrc"
-touch "$SHELL_PROFILE"
-SOURCE_LINE="[ -f \\"$APITOKEN_ENV_FILE\\" ] && . \\"$APITOKEN_ENV_FILE\\""
-grep -qxF "$SOURCE_LINE" "$SHELL_PROFILE" || printf '\\n%s\\n' "$SOURCE_LINE" >> "$SHELL_PROFILE"
-
-# Start Claude Code
+    expect(buildClaudeCodeCommands("sk-pool-test-secret")).toBe(`echo 'export ANTHROPIC_BASE_URL="https://api.apitoken.sale"' >> ~/.zshrc
+echo 'export ANTHROPIC_API_KEY="sk-pool-test-secret"' >> ~/.zshrc
+source ~/.zshrc
 claude`);
     expect(buildClaudeCodeCommands()).toContain("YOUR_SK_POOL_API_KEY");
   });
 
-  it("persists Claude credentials for future zsh and bash terminals", () => {
+  it("keeps the persistent zsh setup short and readable", () => {
     const commands = buildClaudeCodeCommands("sk-pool-test-secret");
 
-    expect(commands).toContain('/apitoken/claude.env');
-    expect(commands).toContain("umask 077");
-    expect(commands).toContain('chmod 600 "$APITOKEN_ENV_FILE"');
-    expect(commands).toContain('.zshrc');
-    expect(commands).toContain('.bashrc');
-    expect(commands).toContain('grep -qxF "$SOURCE_LINE"');
+    expect(commands.split("\n")).toHaveLength(4);
+    expect(commands).toContain(">> ~/.zshrc");
+    expect(commands).toContain("source ~/.zshrc");
   });
 
   it("expands the dashboard docs route to a shareable public URL", () => {

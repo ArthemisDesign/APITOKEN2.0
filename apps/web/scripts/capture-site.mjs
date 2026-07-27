@@ -1265,7 +1265,7 @@ async function verifyApiKeysLayout(client) {
         returnByValue: true,
       });
       const setup = JSON.parse(setupResult.result.value);
-      if (!setup.commands.includes("/apitoken/claude.env") || !setup.commands.includes("umask 077") || !setup.commands.includes(".zshrc") || !setup.commands.includes(".bashrc") || !setup.commands.includes("sk-pool-audit-secret") || !setup.summary.includes("future terminals") || !setup.note.includes("private user environment file")) {
+      if (setup.commands.split("\n").length !== 4 || !setup.commands.includes(">> ~/.zshrc") || !setup.commands.includes("source ~/.zshrc") || !setup.commands.includes("sk-pool-audit-secret") || setup.commands.includes("/apitoken/claude.env") || !setup.summary.includes("~/.zshrc") || !setup.note.includes("~/.zshrc")) {
         throw new Error(`API keys persistent setup failed: ${JSON.stringify(setup)}`);
       }
     } else {

@@ -6,34 +6,11 @@ export const CLAUDE_API_VERSION = "2023-06-01";
 const PUBLIC_SITE_ORIGIN = "https://apitoken.sale";
 const API_KEY_PLACEHOLDER = "YOUR_SK_POOL_API_KEY";
 
-function shellSingleQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\"'\"'`)}'`;
-}
-
 export function buildClaudeCodeCommands(apiKey?: string | null): string {
   const key = apiKey?.trim() || API_KEY_PLACEHOLDER;
-  const baseUrlExport = `export ANTHROPIC_BASE_URL="${CLAUDE_API_BASE_URL}"`;
-  const apiKeyExport = `export ANTHROPIC_API_KEY="${key}"`;
-  return `# Current terminal
-${baseUrlExport}
-${apiKeyExport}
-
-# Future terminals
-APITOKEN_ENV_FILE="\${XDG_CONFIG_HOME:-$HOME/.config}/apitoken/claude.env"
-mkdir -p "\${APITOKEN_ENV_FILE%/*}"
-(
-  umask 077
-  printf '%s\\n' ${shellSingleQuote(baseUrlExport)} ${shellSingleQuote(apiKeyExport)} > "$APITOKEN_ENV_FILE"
-)
-chmod 600 "$APITOKEN_ENV_FILE"
-
-SHELL_PROFILE="\${ZDOTDIR:-$HOME}/.zshrc"
-[ "\${SHELL##*/}" = "bash" ] && SHELL_PROFILE="$HOME/.bashrc"
-touch "$SHELL_PROFILE"
-SOURCE_LINE="[ -f \\"$APITOKEN_ENV_FILE\\" ] && . \\"$APITOKEN_ENV_FILE\\""
-grep -qxF "$SOURCE_LINE" "$SHELL_PROFILE" || printf '\\n%s\\n' "$SOURCE_LINE" >> "$SHELL_PROFILE"
-
-# Start Claude Code
+  return `echo 'export ANTHROPIC_BASE_URL="${CLAUDE_API_BASE_URL}"' >> ~/.zshrc
+echo 'export ANTHROPIC_API_KEY="${key}"' >> ~/.zshrc
+source ~/.zshrc
 claude`;
 }
 
