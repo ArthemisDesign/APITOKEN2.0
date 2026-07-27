@@ -13,6 +13,7 @@ source "$CONFIG"
 [[ $GITHUB_REPOSITORY =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo 'invalid GITHUB_REPOSITORY' >&2; exit 1; }
 
 api=https://api.github.com/repos/$GITHUB_REPOSITORY
+graphql=https://api.github.com/graphql
 sha_re='^[0-9a-f]{40}$'
 
 # Read the authorization header from stdin so the token never appears in argv or service logs.
@@ -50,38 +51,66 @@ case "${1:-}" in
     [[ $5 =~ ^(candidate-validation|production-(database|engine|backend|sales|openkeys))$ ]] || { echo 'invalid environment' >&2; exit 2; }
     body=$(jq -cn --arg state "$3" --arg description "$4" --arg environment "$5" \
       --arg environment_url "$6" --arg log_url "${7:-}" \
-      '{state:$state,description:$description,environment:$environment,auto_inactive:true}
+      '{state:$state,description:$description,environment:$environment,
+        auto_inactive:($environment != "candidate-validation")}
        + if $environment_url == "" then {} else {environment_url:$environment_url} end
        + if $log_url == "" then {} else {log_url:$log_url} end')
     github_curl -o /dev/null -X POST "$api/deployments/$2/statuses" -d "$body"
     ;;
   validation-next)
-    [[ $# -eq 1 ]] || { echo 'usage: validation-next' >&2; exit 2; }
-    deployments=$(github_curl "$api/deployments?environment=candidate-validation&per_page=100")
+    [[ $# -ge 1 && $# -le 2 ]] || { echo 'usage: validation-next [1|2]' >&2; exit 2; }
+    limit=${2:-1}
+    [[ $limit =~ ^[1-2]$ ]] || { echo 'validation limit must be 1 or 2' >&2; exit 2; }
+    owner=${GITHUB_REPOSITORY%%/*}
+    repository=${GITHUB_REPOSITORY#*/}
+    body=$(jq -cn --arg owner "$owner" --arg repository "$repository" \
+      --arg environment candidate-validation \
+      '{
+        query:"query($owner:String!,$repository:String!,$environment:String!){repository(owner:$owner,name:$repository){deployments(last:100,environments:[$environment],orderBy:{field:CREATED_AT,direction:ASC}){nodes{databaseId commitOid state latestStatus{state}}}}}",
+        variables:{owner:$owner,repository:$repository,environment:$environment}
+      }')
+    deployments=$(github_curl -X POST "$graphql" -d "$body")
     jq -e '
-      type == "array"
-      and all(.[];
-        (.id | type == "number")
-        and (.sha | type == "string")
-        and (.environment == "candidate-validation"))
+      (.errors == null)
+      and (.data.repository.deployments.nodes | type == "array")
+      and all(.data.repository.deployments.nodes[];
+        (.databaseId | type == "number")
+        and (.commitOid | type == "string")
+        and ((.state == null) or
+          (.state == "ABANDONED") or (.state == "ACTIVE") or (.state == "DESTROYED") or
+          (.state == "ERROR") or (.state == "FAILURE") or (.state == "INACTIVE") or
+          (.state == "IN_PROGRESS") or (.state == "PENDING") or (.state == "QUEUED") or
+          (.state == "SUCCESS") or (.state == "WAITING"))
+        and ((.latestStatus == null) or
+          (.latestStatus.state == "ERROR") or (.latestStatus.state == "FAILURE") or
+          (.latestStatus.state == "INACTIVE") or (.latestStatus.state == "IN_PROGRESS") or
+          (.latestStatus.state == "PENDING") or (.latestStatus.state == "QUEUED") or
+          (.latestStatus.state == "SUCCESS") or (.latestStatus.state == "WAITING")))
     ' >/dev/null <<<"$deployments" || { echo 'invalid deployments response' >&2; exit 1; }
-    entries=$(jq -r 'reverse[] | [.id, .sha] | @tsv' <<<"$deployments")
+    entries=$(jq -r --argjson limit "$limit" '
+      .data.repository.deployments.nodes
+      | map({
+          id: .databaseId,
+          sha: .commitOid,
+          state: (.latestStatus.state // .state // "QUEUED")
+        })
+      | map(select(
+          (.state == "QUEUED") or (.state == "PENDING") or
+          (.state == "IN_PROGRESS") or (.state == "WAITING")))
+      | reduce .[] as $entry ([];
+          if (map(.sha) | index($entry.sha)) == null
+          then . + [$entry]
+          else .
+          end)
+      | .[:$limit][]
+      | [.id, .sha]
+      | @tsv
+    ' <<<"$deployments")
     [[ -n $entries ]] || exit 0
     while IFS=$'\t' read -r deployment_id deployment_sha; do
       [[ $deployment_id =~ ^[1-9][0-9]*$ && $deployment_sha =~ $sha_re ]] \
         || { echo 'invalid candidate validation deployment' >&2; exit 1; }
-      statuses=$(github_curl "$api/deployments/$deployment_id/statuses?per_page=1")
-      jq -e 'type == "array"' >/dev/null <<<"$statuses" \
-        || { echo 'invalid deployment statuses response' >&2; exit 1; }
-      state=$(jq -r 'if length == 0 then "queued" else (.[0].state // "") end' <<<"$statuses")
-      case "$state" in
-        queued|pending|in_progress)
-          printf '%s\t%s\n' "$deployment_id" "$deployment_sha"
-          exit 0
-          ;;
-        error|failure|inactive|success) ;;
-        *) echo 'invalid deployment status state' >&2; exit 1 ;;
-      esac
+      printf '%s\t%s\n' "$deployment_id" "$deployment_sha"
     done <<<"$entries"
     ;;
   *)

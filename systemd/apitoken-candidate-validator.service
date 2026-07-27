@@ -1,0 +1,30 @@
+[Unit]
+Description=API Token Sale parallel exact-SHA candidate validator
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+Group=deploy
+Environment=HOME=/home/deploy
+Environment=CARGO_HOME=/var/lib/apitoken/watchdog/deploy-build-cache/cargo
+Environment=XDG_CACHE_HOME=/var/lib/apitoken/watchdog/deploy-build-cache/xdg-cache
+Environment=XDG_CONFIG_HOME=/var/lib/apitoken/watchdog/deploy-build-cache/xdg-config
+Environment=XDG_DATA_HOME=/var/lib/apitoken/watchdog/deploy-build-cache/xdg-data
+Environment=PATH=/home/deploy/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/lib/apitoken-watchdog/watchdog.sh --candidate-validator
+TimeoutStartSec=45min
+
+# Candidate work is deliberately below the production watchdog. It may use otherwise idle CPU and
+# I/O, but a live rollout and its health gates retain scheduling priority.
+Nice=15
+CPUWeight=10
+IOWeight=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=full
+ReadWritePaths=/var/lib/apitoken/watchdog /opt/apitoken/repo /run/lock

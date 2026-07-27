@@ -213,8 +213,11 @@ grep -Eq 'wd_atomic_write "\$STATUS_FILE".*0644' "$ROOT/deploy/watchdog.sh" \
   || { printf 'the watchdog status file must be collector-readable (0644)\n' >&2; exit 1; }
 grep -Eq 'wd_atomic_write "\$REJECTED_FILE" "\$CANDIDATE_SHA" 0644' "$ROOT/deploy/watchdog.sh" \
   || { printf 'the quarantine marker must be collector-readable (0644)\n' >&2; exit 1; }
-grep -Fq 'for observable in status rejected.sha pending-migration.sha' "$ROOT/deploy/install-watchdog.sh" \
-  || { printf 'the installer does not relax pre-existing 0640 state files\n' >&2; exit 1; }
+for observable in status candidate-validation-1.status candidate-validation-2.status \
+  rejected.sha pending-migration.sha; do
+  grep -Fq "$observable" "$ROOT/deploy/install-watchdog.sh" \
+    || { printf 'the installer does not relax pre-existing %s state\n' "$observable" >&2; exit 1; }
+done
 
 grep -Fq 'apitoken_queue_dead{queue="commerce_email"}' "$ROOT/deploy/collect-monitoring-metrics.sh"
 grep -Fq "FROM email_outbox WHERE status = 'failed'" "$ROOT/deploy/collect-monitoring-metrics.sh"

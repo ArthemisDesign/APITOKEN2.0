@@ -32,12 +32,18 @@ case "${1:-}" in
         printf '%s=%s\n' "$entry" "$(<"$STATE_ROOT/$entry.sha")"
       fi
     done
+    for slot in 1 2; do
+      if [[ -r $STATE_ROOT/candidate-validation-$slot.status ]]; then
+        printf 'candidate_slot_%s=%s\n' "$slot" "$(<"$STATE_ROOT/candidate-validation-$slot.status")"
+      fi
+    done
     systemctl --no-pager --full status apitoken-deploy-watchdog.timer \
-      apitoken-deploy-watchdog.service || true
+      apitoken-deploy-watchdog.service apitoken-candidate-validator.timer \
+      apitoken-candidate-validator.service || true
     ;;
   run)
     [[ ${EUID:-$(id -u)} -eq 0 ]] || wd_die "run requires root"
-    systemctl start apitoken-deploy-watchdog.service
+    systemctl start apitoken-deploy-watchdog.service apitoken-candidate-validator.service
     ;;
   retry)
     [[ ${EUID:-$(id -u)} -eq 0 ]] || wd_die "retry requires root"
@@ -50,7 +56,8 @@ case "${1:-}" in
     systemctl start apitoken-deploy-watchdog.service
     ;;
   logs)
-    journalctl -u apitoken-deploy-watchdog.service -n 250 --no-pager
+    journalctl -u apitoken-deploy-watchdog.service \
+      -u apitoken-candidate-validator.service -n 250 --no-pager
     ;;
   -h|--help|'')
     usage

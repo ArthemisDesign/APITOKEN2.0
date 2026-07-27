@@ -265,6 +265,7 @@ done
 
 wd_path_is_infrastructure deploy/watchdog.sh
 wd_path_is_infrastructure systemd/apitoken-deploy-watchdog.service
+wd_path_is_infrastructure systemd/apitoken-candidate-validator.service
 wd_path_is_infrastructure compose.yaml
 wd_path_is_infrastructure observability/prometheus/prometheus.yml
 wd_path_is_infrastructure deploy/affinity-redis.compose.yaml
@@ -277,6 +278,7 @@ for runtime_definition in \
   deploy/install-watchdog.sh \
   deploy/Caddyfile \
   systemd/apitoken-deploy-watchdog.service \
+  systemd/apitoken-candidate-validator.service \
   observability/prometheus/prometheus.yml \
   compose.yaml; do
   wd_path_requires_infrastructure_install "$runtime_definition" \
@@ -453,14 +455,23 @@ grep -Fq 'COMMERCE_BALANCER_URL=${COMMERCE_BALANCER_URL:-http://127.0.0.1:8791}'
 grep -Fq 'configure_commerce_balancer' "$ROOT/deploy/sales-deploy.sh"
 grep -Fq 'COMMERCE_BALANCER_READY_URL=${COMMERCE_BALANCER_READY_URL:-http://127.0.0.1:8791/v1/ready}' "$ROOT/deploy/api-bluegreen.sh"
 [[ $(grep -Fc 'balancer_is_ready' "$ROOT/deploy/api-bluegreen.sh") -ge 6 ]]
-# The disposable test database publishes a fixed host port. It must sit below the kernel ephemeral
-# range, or an unrelated outbound connection can be assigned that exact source port and the container
-# fails to bind — which quarantines a healthy candidate for reasons that have nothing to do with it.
-test_db_port=$(sed -n 's/^PORT=${WATCHDOG_POSTGRES_PORT:-\([0-9]*\)}$/\1/p' "$ROOT/deploy/watchdog-test-db.sh")
-[[ -n $test_db_port ]] \
-  || wd_die "could not read the disposable test database port"
-(( test_db_port < 32768 )) \
-  || wd_die "test database port $test_db_port is inside the ephemeral range and will collide"
+# Each concurrent candidate owns a stable disposable-database slot. All three loopback ports must
+# stay below the kernel ephemeral range, or unrelated outbound traffic can intermittently take one.
+test_db_base_port=$(sed -n 's/^BASE_PORT=${WATCHDOG_POSTGRES_PORT:-\([0-9]*\)}$/\1/p' \
+  "$ROOT/deploy/watchdog-test-db.sh")
+[[ -n $test_db_base_port ]] \
+  || wd_die "could not read the disposable test database base port"
+for test_db_slot in 0 1 2; do
+  test_db_port=$((test_db_base_port + test_db_slot))
+  (( test_db_port < 32768 )) \
+    || wd_die "test database port $test_db_port is inside the ephemeral range and will collide"
+done
+grep -Fq 'SLOT=${2:-0}' "$ROOT/deploy/watchdog-test-db.sh" \
+  || wd_die 'test database helper does not default production to slot zero'
+grep -Fq 'NAME=apitoken-watchdog-postgres-$SLOT' "$ROOT/deploy/watchdog-test-db.sh" \
+  || wd_die 'parallel test database slots do not have distinct container names'
+grep -Fq -- '--label "apitoken.watchdog.slot=$SLOT"' "$ROOT/deploy/watchdog-test-db.sh" \
+  || wd_die 'test database ownership is not fenced by slot'
 
 # The authbot produces the subscriptions the engine serves from, so the production watchdog builds
 # it once beside the tested engine and the release controller only promotes those exact binaries.
@@ -509,7 +520,7 @@ gate_contract=(
   '-r --workspace-concurrency=1 --if-present test'
   'CLAUDE_API_TEST_DATABASE_URL="$engine_dsn"'
   'cargo test --locked --workspace --manifest-path "$candidate/Cargo.toml"'
-  'git -C "$SOURCE_REPO" diff --check "$PROCESSED_SHA..$sha"'
+  'git -C "$SOURCE_REPO" diff --check "$diff_base..$sha"'
   'find "$candidate/deploy" -type f -name '\''*.sh'\'' -print0'
   'bash -n "$shell_file"'
   'run_as_ci bash "$candidate/deploy/lib.test.sh"'
@@ -602,7 +613,7 @@ grep -Fq 'prune_expired_releases "$COMMERCE_RELEASE_ROOT" commerce' "$ROOT/deplo
   || wd_die 'commerce release retention is not wired into the watchdog cycle'
 grep -Fq 'prune_expired_dumps' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'pre-deploy dump retention is not wired into the watchdog cycle'
-grep -Fq 'wd_retry 3 5 git -C "$SOURCE_REPO" fetch' "$ROOT/deploy/watchdog.sh" \
+grep -Fq 'wd_retry 3 5 fetch_source_once' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the GitHub fetch is not retried before failing a cycle'
 grep -Fq 'rollback_engine' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'engine post-admission rollback is not wired into the watchdog'
@@ -808,11 +819,18 @@ grep -Fq 'CARGO_TARGET_DIR="$CI_CARGO_TARGET"' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'candidate Rust builds do not share one persistent target cache'
 grep -Fq '/var/lib/apitoken/watchdog/ci-home/cargo-target' \
   "$ROOT/deploy/install-watchdog.sh" || wd_die 'watchdog installer does not create the shared CI target'
+for shadow_slot in 1 2; do
+  grep -Fq "/var/lib/apitoken/watchdog/ci-home/cargo-target-shadow-$shadow_slot" \
+    "$ROOT/deploy/install-watchdog.sh" \
+    || wd_die "watchdog installer does not create candidate target slot $shadow_slot"
+done
 
 # Five-second update detection must not turn retention and deep production probes into five-second
 # busy work. Those checks remain on a separate minute maintenance cadence.
 grep -Fxq 'OnUnitInactiveSec=5s' "$ROOT/systemd/apitoken-deploy-watchdog.timer" \
   || wd_die 'production update polling is not five seconds'
+grep -Fxq 'OnUnitInactiveSec=5s' "$ROOT/systemd/apitoken-candidate-validator.timer" \
+  || wd_die 'candidate validation polling is not five seconds'
 grep -Fq 'AGENT_MERGE_POLL_S=${AGENT_MERGE_POLL_S:-5}' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'merge/deployment status polling is not five seconds'
 grep -Fq 'IDLE_MAINTENANCE_SECONDS=60' "$ROOT/deploy/watchdog.sh" \
@@ -879,30 +897,38 @@ grep -Fq 'promoting exact tested engine binaries' "$ROOT/deploy/deploy.sh" \
   "$ROOT/deploy/watchdog-github.sh") == 2 ]] \
   || wd_die 'GitHub deployment reporting does not allow the OpenKeys environment'
 
-# Trusted pre-merge validation is host-owned and SHA-keyed. It may run only after production is
-# completely aligned, reuses the exact candidate gate selector, and reports feature failures
-# without touching production quarantine or the overall deploy/watchdog verdict.
+# Trusted pre-merge validation is host-owned and SHA-keyed. A separate low-priority service can
+# validate two distinct descendants while production is active, but it shares only the exact-SHA
+# candidate cache and never the production quarantine or overall deploy/watchdog verdict.
 grep -Fq 'validation-next)' "$ROOT/deploy/watchdog-github.sh" \
   || wd_die 'GitHub bridge cannot read the trusted candidate validation queue'
-grep -Eq "GitHub candidate queue bridge'.*watchdog-github validation-next" \
+grep -Eq "GitHub candidate queue bridge'.*watchdog-github validation-next 2" \
   "$ROOT/deploy/install-sudoers.sh" \
   || wd_die 'sudo policy installer does not verify candidate queue access'
-grep -Fq 'deployments?environment=candidate-validation&per_page=100' \
+grep -Fq 'deployments(last:100,environments:[$environment]' \
   "$ROOT/deploy/watchdog-github.sh" \
   || wd_die 'candidate validation queue is not restricted to its dedicated environment'
+grep -Fq 'latestStatus{state}' "$ROOT/deploy/watchdog-github.sh" \
+  || wd_die 'five-second candidate polling does not fetch queue states in one API request'
 grep -Fq '^(candidate-validation|production-' "$ROOT/deploy/watchdog-github.sh" \
   || wd_die 'GitHub bridge cannot report trusted candidate validation results'
-grep -Fq 'queued|pending|in_progress)' "$ROOT/deploy/watchdog-github.sh" \
+grep -Fq '(.state == "IN_PROGRESS")' "$ROOT/deploy/watchdog-github.sh" \
   || wd_die 'queued or interrupted candidate validations cannot be claimed'
+grep -Fq 'auto_inactive:($environment != "candidate-validation")' \
+  "$ROOT/deploy/watchdog-github.sh" \
+  || wd_die 'parallel candidate verdicts can auto-inactivate one another'
 
 shadow_contract=(
-  'wd_retry 3 5 git -C "$SOURCE_REPO" fetch --no-tags "$REMOTE" "$CANDIDATE_SHA"'
+  'fetch_source "$CANDIDATE_SHA"'
+  'wd_require_ancestor "$SOURCE_REPO" "$committed_master" "$CANDIDATE_SHA" shadow-committed-master'
   'wd_require_ancestor "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" shadow-processed'
-  'select_candidate_validation_requirements "$CANDIDATE_SHA"'
+  'select_candidate_validation_requirements "$CANDIDATE_SHA" "$committed_master"'
   'prepare_and_test_candidate "$CANDIDATE_SHA" "$VALIDATION_TYPESCRIPT_REQUIRED"'
+  'wd_require_ancestor "$SOURCE_REPO" "$current_master" "$CANDIDATE_SHA" shadow-current-master'
   'Trusted production-host candidate validation passed'
-  'run_shadow_candidate_validation "$validation_id" "$validation_sha" &'
-  'wait "$shadow_pid"'
+  'validation_output=$(sudo -n "$GITHUB_HELPER" validation-next 2)'
+  'slot=$((index + 1))'
+  'wait "${validation_pids[$index]}"'
 )
 for required_stage in "${shadow_contract[@]}"; do
   grep -Fq -- "$required_stage" "$ROOT/deploy/watchdog.sh" \
@@ -916,15 +942,31 @@ fi
 if grep -Fq 'commit-status "$CANDIDATE_SHA" failure deploy/watchdog' <<<"$shadow_body"; then
   wd_die 'a failed feature validation can mark the healthy production SHA red'
 fi
-idle_guard_line=$(grep -nF 'if [[ $PROCESSED_SHA == "$CANDIDATE_SHA"' \
-  "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
-validation_queue_line=$(grep -nF 'validation-next' "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
-idle_maintenance_line=$(grep -nF 'if idle_maintenance_due; then' \
-  "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
-[[ -n $idle_guard_line && -n $validation_queue_line && -n $idle_maintenance_line \
-    && $idle_guard_line -lt $validation_queue_line \
-    && $validation_queue_line -lt $idle_maintenance_line ]] \
-  || wd_die 'trusted validation is not fenced behind complete production alignment'
+production_body=$(sed -n '/^main()/,/^case "${1:-}" in/p' "$ROOT/deploy/watchdog.sh")
+if grep -Fq 'validation-next' <<<"$production_body"; then
+  wd_die 'production watchdog still consumes candidate-validation work'
+fi
+grep -Fq 'ExecStart=/usr/local/lib/apitoken-watchdog/watchdog.sh --candidate-validator' \
+  "$ROOT/systemd/apitoken-candidate-validator.service" \
+  || wd_die 'candidate validation does not run in its own service'
+grep -Fq 'CPUWeight=10' "$ROOT/systemd/apitoken-candidate-validator.service" \
+  || wd_die 'candidate validation is not scheduled below production'
+for candidate_unit in apitoken-candidate-validator.service apitoken-candidate-validator.timer; do
+  grep -Fq "$candidate_unit" "$ROOT/deploy/install-watchdog.sh" \
+    || wd_die "candidate validator unit is not installed: $candidate_unit"
+done
+grep -Fq 'systemctl enable --now apitoken-candidate-validator.timer' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'candidate validation timer is not enabled'
+grep -Fq 'SOURCE_FETCH_LOCK=/run/lock/apitoken-source-fetch.lock' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'concurrent Git fetches are not serialized'
+grep -Fq 'exec 9>"$STATE_ROOT/$sha.candidate.lock"' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'production and candidate validation can mutate one SHA concurrently'
+grep -Fq 'CI_CARGO_TARGET="$CI_HOME/cargo-target-shadow-$TEST_DB_SLOT"' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'parallel Rust candidates share a writable build target'
+grep -Fq 'TEST_DB_SLOT=$3' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'parallel candidates do not select isolated database slots'
 [[ $(grep -Fc 'select_candidate_validation_requirements "$CANDIDATE_SHA"' \
   "$ROOT/deploy/watchdog.sh") == 2 ]] \
   || wd_die 'production and shadow validation do not share one requirement selector'

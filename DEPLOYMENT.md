@@ -36,19 +36,27 @@ Affected stages also appear as GitHub deployment records in the `production-data
 environments. This is reporting only: builds and deployments run on the existing production host,
 so no paid GitHub runner is used.
 
-When production is fully aligned and idle, the host may service one transient
-`candidate-validation` deployment for an exact SHA reachable from a pushed feature branch. The
-merge client first rebases onto the latest committed `master`, then creates that request before its
-local full gate, so local and host validation overlap. A pending parent deployment may overlap the
-local gate, but cannot be merged into until its locked `deploy/watchdog` check is green. The request
-uses the same path-aware validation selector and creates the immutable, root-owned candidate that a
-later unchanged `master` SHA reuses. If `master` moves again and changes the candidate SHA, both
-exact-SHA gates run again. A failed shadow request is isolated from production: it reports a red
-request and `deploy/tests` for that feature SHA without writing the production quarantine marker or
-changing `deploy/watchdog`.
+Alongside the serialized production watchdog, a low-priority candidate-validator service may run
+two transient `candidate-validation` deployments concurrently for exact SHAs reachable from pushed
+feature branches. The merge client first rebases onto the latest committed `master`, then creates
+that request before its local full gate, so local validation, trusted-host validation, and an active
+parent rollout may overlap. Each host worker has its own disposable PostgreSQL port, Cargo target,
+status file, and immutable candidate tree. Git fetches are briefly serialized, and work for the
+same SHA has a per-SHA lock so production waits for and reuses that exact build instead of rebuilding
+it.
 
-The watchdog polls `origin/master` every five seconds. A failure quarantines that SHA and stops
-the pipeline; neither later migrations nor application cutovers are attempted. This holds for every
+The candidate selector tests only the feature delta from the committed parent. Before reporting
+green, the worker fetches `master` again and requires the current committed tip still to be an
+ancestor of the candidate. The locked merge still requires the parent’s `deploy/watchdog` verdict
+to be green; if `master` moves incompatibly, the client rebases and both exact-SHA gates run again.
+A failed candidate request is isolated from production: it reports a red request and `deploy/tests`
+for that feature SHA without writing the production quarantine marker or changing
+`deploy/watchdog`. Candidate work is CPU/I/O deprioritized; actual production remains one SHA at a
+time under its existing deployment lock.
+
+Both watchdogs poll every five seconds. The candidate queue uses one state-bearing GitHub query per
+poll rather than one request per historical deployment. A production failure quarantines that SHA
+and stops the pipeline; neither later migrations nor application cutovers are attempted. This holds for every
 abnormal termination — a failing command, an interrupt, or a validation failure raised internally —
 so a stopped pipeline always leaves a quarantine marker and a red commit status rather than stopping
 silently. A failure before any commit is selected (an unreachable remote, a missing state file) is

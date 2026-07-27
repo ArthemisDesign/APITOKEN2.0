@@ -15,15 +15,18 @@ arbitrary HTTP 2xx on the expected port as proof that the selected unit started.
 
 Run them on the production host as the `deploy` operator from `/opt/apitoken/repo`, with narrowly scoped `sudo` access for application-unit and unit-file operations.
 
-While every production baseline is aligned, the watchdog can consume an exact-SHA
-`candidate-validation` deployment request created by the merge client before its local gate. It
-validates the exact descendant rebased onto the latest committed `master` in an isolated candidate
-tree while the local full gate runs, then freezes the result under the same SHA-keyed marker used by
-normal delivery. A pending parent can overlap the local gate, but the locked merge still waits for
-that parent's green verdict. An unchanged SHA on `master` reuses the marker; a later target move
-requests a new exact-SHA validation. Feature-validation failures have a separate trap and never
-write the production rejection marker; any queued production commit is handled before another
-shadow request.
+The dedicated candidate-validator can consume up to two exact-SHA `candidate-validation` requests
+while the serialized production watchdog is deploying a parent. Each request is rebased by the
+merge client onto the latest committed `master`, tested only across that feature delta, and frozen
+under the same SHA-keyed marker used by normal delivery. Workers have separate disposable
+PostgreSQL and Cargo slots and run below production CPU/I/O priority. A per-SHA lock lets a later
+unchanged `master` deployment wait for and reuse an in-flight candidate instead of rebuilding it.
+
+Before a feature verdict becomes green, the host refetches `master` and requires its current tip to
+remain an ancestor of the exact candidate. The locked merge still waits for the parent’s overall
+green verdict. An incompatible target move produces a new rebased SHA and a new pair of gates.
+Feature-validation failures have a separate trap and never write the production rejection marker.
+The production queue remains strictly one SHA at a time.
 
 ## Host mapping
 
@@ -54,6 +57,9 @@ The lock paths are fixed. They must be regular, root-owned files and are opened 
 sudo tee /etc/tmpfiles.d/apitoken-deploy.conf >/dev/null <<'EOF'
 f /run/lock/apitoken-deploy.lock 0660 root deploy -
 f /run/lock/apitoken-db-migrate.lock 0660 root deploy -
+f /run/lock/apitoken-watchdog.lock 0660 root deploy -
+f /run/lock/apitoken-candidate-validator.lock 0660 root deploy -
+f /run/lock/apitoken-source-fetch.lock 0660 root deploy -
 EOF
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/apitoken-deploy.conf
 ```

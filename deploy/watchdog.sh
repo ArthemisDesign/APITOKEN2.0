@@ -32,6 +32,8 @@ SALES_RUNNER=/usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh
 OPENKEYS_RUNNER=/usr/local/lib/apitoken-watchdog/controller/openkeys-deploy.sh
 GITHUB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-github
 WATCHDOG_LOCK=/run/lock/apitoken-watchdog.lock
+CANDIDATE_VALIDATOR_LOCK=/run/lock/apitoken-candidate-validator.lock
+SOURCE_FETCH_LOCK=/run/lock/apitoken-source-fetch.lock
 DEPLOY_LOCK=/run/lock/apitoken-deploy.lock
 ENGINE_RELEASE_ROOT=/srv/claude-api/releases
 COMMERCE_RELEASE_ROOT=/opt/apitoken/releases
@@ -51,6 +53,8 @@ IDLE_MAINTENANCE_SECONDS=60
 
 CURRENT_PHASE=starting
 TEST_DB_STARTED=0
+TEST_DB_SLOT=0
+VALIDATION_BASE_SHA=
 ACTIVE_DEPLOYMENT_ID=
 ACTIVE_DEPLOYMENT_ENV=
 ACTIVE_DEPLOYMENT_URL=
@@ -82,6 +86,22 @@ github_deployment_success() {
   ACTIVE_DEPLOYMENT_ID=
   ACTIVE_DEPLOYMENT_ENV=
   ACTIVE_DEPLOYMENT_URL=
+}
+
+test_db() {
+  sudo -n "$TEST_DB_HELPER" "$1" "$TEST_DB_SLOT"
+}
+
+fetch_source_once() (
+  exec 8<>"$SOURCE_FETCH_LOCK"
+  flock 8
+  git -C "$SOURCE_REPO" fetch --no-tags "$REMOTE" "$@"
+)
+
+fetch_source() {
+  # Release the source-repository lock between retries. A transient candidate fetch must not keep
+  # the production poll behind a five-second retry delay.
+  wd_retry 3 5 fetch_source_once "$@"
 }
 
 status() {
@@ -124,7 +144,7 @@ fail() {
   fi
 
   if (( TEST_DB_STARTED == 1 )); then
-    sudo -n "$TEST_DB_HELPER" stop >/dev/null 2>&1 || true
+    test_db stop >/dev/null 2>&1 || true
   fi
   # A failure before a candidate is even identified (fetch, lock, state validation) is an
   # infrastructure problem, not a verdict on any commit. Quarantining nothing here would be
@@ -200,7 +220,7 @@ candidate_for() {
 candidate_is_tested() {
   local sha=$1 typescript_required=$2 rust_required=$3 static_required=$4 engine_artifacts_required=$5
   local marker candidate marker_sha marker_tree candidate_sha candidate_tree marker_digest actual_digest
-  local marker_flag expected_hash actual_hash
+  local marker_flag expected_hash actual_hash manifest
   marker=$(marker_for "$sha")
   candidate=$(candidate_for "$sha")
   [[ -d $candidate && ! -L $candidate ]] || return 1
@@ -216,9 +236,10 @@ candidate_is_tested() {
   [[ -z $(git -c safe.directory="$candidate" -C "$candidate" \
     status --porcelain --untracked-files=no 2>/dev/null) ]] || return 1
   marker_digest=$(wd_marker_value "$marker" migration_digest 2>/dev/null) || return 1
-  wd_migration_manifest "$candidate" >"$STATE_ROOT/.candidate-manifest.$$"
-  actual_digest=$(wd_manifest_digest "$STATE_ROOT/.candidate-manifest.$$")
-  rm -f -- "$STATE_ROOT/.candidate-manifest.$$"
+  manifest="$STATE_ROOT/.candidate-manifest.${BASHPID:-$$}"
+  wd_migration_manifest "$candidate" >"$manifest"
+  actual_digest=$(wd_manifest_digest "$manifest")
+  rm -f -- "$manifest"
   [[ $marker_digest == "$actual_digest" ]] || return 1
 
   for marker_flag in \
@@ -271,6 +292,12 @@ prune_expired_candidates() {
       status "removing watchdog build candidates older than 24 hours"
       phase_set=1
     fi
+    exec 9>"$STATE_ROOT/$sha.candidate.lock"
+    if ! flock -n 9; then
+      wd_log "candidate $sha is being validated; retention skipped it"
+      exec 9>&-
+      continue
+    fi
     if sudo -n rm -rf --one-file-system -- "$candidate"; then
       marker=$(marker_for "$sha")
       sudo -n rm -f -- "$marker" \
@@ -280,6 +307,8 @@ prune_expired_candidates() {
       wd_warn "failed to remove expired candidate $sha"
       failed=$((failed + 1))
     fi
+    flock -u 9
+    exec 9>&-
   done < <(wd_candidate_dirs_older_than "$CANDIDATE_ROOT" "$STATE_ROOT" "$cutoff")
 
   if (( pruned > 0 || failed > 0 )); then
@@ -398,9 +427,10 @@ test_rust_lane() {
 
 test_static_lane() {
   local candidate=$1 sha=$2 run_regression_suites=$3 shell_file
+  local diff_base=${VALIDATION_BASE_SHA:-${PROCESSED_SHA:-}}
   wd_log "checking tracked whitespace and shell syntax"
-  if [[ -n ${PROCESSED_SHA:-} && $PROCESSED_SHA != "$sha" ]]; then
-    git -C "$SOURCE_REPO" diff --check "$PROCESSED_SHA..$sha"
+  if [[ -n $diff_base && $diff_base != "$sha" ]]; then
+    git -C "$SOURCE_REPO" diff --check "$diff_base..$sha"
   fi
   while IFS= read -r -d '' shell_file; do
     bash -n "$shell_file"
@@ -421,7 +451,7 @@ run_candidate_lane() {
   "$@"
 }
 
-prepare_and_test_candidate() {
+prepare_and_test_candidate_unlocked() {
   local sha=$1 typescript_required=$2 rust_required=$3 static_required=$4 engine_artifacts_required=$5
   local candidate marker dsn= engine_dsn= sales_dsn= openkeys_dsn= manifest digest tree
   local typescript_pid= rust_pid= static_pid= typescript_rc=0 rust_rc=0 static_rc=0
@@ -453,15 +483,15 @@ prepare_and_test_candidate() {
   sudo -n chown -R "$CI_USER:$CI_USER" -- "$candidate"
 
   if (( typescript_required == 1 || rust_required == 1 )); then
-    dsn=$(sudo -n "$TEST_DB_HELPER" start)
+    dsn=$(test_db start)
     TEST_DB_STARTED=1
   fi
   if (( typescript_required == 1 )); then
-    sales_dsn=$(sudo -n "$TEST_DB_HELPER" sales-dsn)
-    openkeys_dsn=$(sudo -n "$TEST_DB_HELPER" openkeys-dsn)
+    sales_dsn=$(test_db sales-dsn)
+    openkeys_dsn=$(test_db openkeys-dsn)
   fi
   if (( rust_required == 1 )); then
-    engine_dsn=$(sudo -n "$TEST_DB_HELPER" engine-dsn)
+    engine_dsn=$(test_db engine-dsn)
   fi
 
   # Resolve every fallible prerequisite before starting children. Once launched, the parent reaches
@@ -483,7 +513,7 @@ prepare_and_test_candidate() {
   if [[ -n $rust_pid ]]; then wait "$rust_pid" || rust_rc=$?; fi
   wait "$static_pid" || static_rc=$?
   if (( TEST_DB_STARTED == 1 )); then
-    sudo -n "$TEST_DB_HELPER" stop
+    test_db stop
     TEST_DB_STARTED=0
   fi
   (( typescript_rc == 0 )) || wd_die "TypeScript candidate lane failed (exit $typescript_rc)"
@@ -492,7 +522,7 @@ prepare_and_test_candidate() {
 
   [[ -z $(run_as_ci git -C "$candidate" status --porcelain --untracked-files=no) ]] \
     || wd_die "tests modified tracked candidate files"
-  manifest="$STATE_ROOT/.candidate-manifest.$$"
+  manifest="$STATE_ROOT/.candidate-manifest.${BASHPID:-$$}"
   wd_migration_manifest "$candidate" >"$manifest"
   digest=$(wd_manifest_digest "$manifest")
   tree=$(run_as_ci git -C "$candidate" rev-parse 'HEAD^{tree}')
@@ -515,9 +545,9 @@ prepare_and_test_candidate() {
     printf 'engine_binary_sha256=%s\n' "$engine_hash"
     printf 'authbot_binary_sha256=%s\n' "$authbot_hash"
     printf 'completed_at=%s\n' "$(date -u +%FT%TZ)"
-  } >"${marker}.tmp.$$"
-  chmod 0640 "${marker}.tmp.$$"
-  mv -f -- "${marker}.tmp.$$" "$marker"
+  } >"${marker}.tmp.${BASHPID:-$$}"
+  chmod 0640 "${marker}.tmp.${BASHPID:-$$}"
+  mv -f -- "${marker}.tmp.${BASHPID:-$$}" "$marker"
   rm -f -- "$manifest"
 
   # Every deployment consumes this exact build. Root ownership plus removed write bits keeps it
@@ -527,35 +557,54 @@ prepare_and_test_candidate() {
   wd_log "candidate $sha passed every selected isolated validation lane"
 }
 
+prepare_and_test_candidate() {
+  local sha=$1
+  wd_validate_sha "$sha"
+  # Candidate workspaces and markers are SHA-addressed and shared by production and speculative
+  # validators. Serialize only the same SHA: unrelated candidates can still validate in parallel,
+  # while production can wait for and reuse an already-running exact build.
+  exec 9>"$STATE_ROOT/$sha.candidate.lock"
+  flock 9
+  prepare_and_test_candidate_unlocked "$@"
+  flock -u 9
+  exec 9>&-
+}
+
 select_candidate_validation_requirements() {
-  local target=$1 infrastructure_validation_changed=0 unknown_validation_path=0
+  local target=$1 committed_base=${2:-}
+  local processed_base=${committed_base:-$PROCESSED_SHA}
+  local engine_base=${committed_base:-$ENGINE_SHA}
+  local backend_base=${committed_base:-$BACKEND_SHA}
+  local sales_base=${committed_base:-${SALES_SHA:-$PROCESSED_SHA}}
+  local openkeys_base=${committed_base:-${OPENKEYS_SHA:-$PROCESSED_SHA}}
+  local infrastructure_validation_changed=0 unknown_validation_path=0
 
   VALIDATION_TYPESCRIPT_REQUIRED=0
   VALIDATION_RUST_REQUIRED=0
   VALIDATION_STATIC_REQUIRED=0
   VALIDATION_ENGINE_ARTIFACTS_REQUIRED=0
 
-  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$target" wd_path_is_typescript \
+  wd_range_has_class "$SOURCE_REPO" "$processed_base" "$target" wd_path_is_typescript \
     && VALIDATION_TYPESCRIPT_REQUIRED=1
-  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$target" wd_path_is_infrastructure \
+  wd_range_has_class "$SOURCE_REPO" "$processed_base" "$target" wd_path_is_infrastructure \
     && infrastructure_validation_changed=1
-  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$target" wd_path_is_merge_workflow \
+  wd_range_has_class "$SOURCE_REPO" "$processed_base" "$target" wd_path_is_merge_workflow \
     && VALIDATION_STATIC_REQUIRED=1
-  wd_range_has_unknown_validation_path "$SOURCE_REPO" "$PROCESSED_SHA" "$target" \
+  wd_range_has_unknown_validation_path "$SOURCE_REPO" "$processed_base" "$target" \
     && unknown_validation_path=1
 
   # A component baseline can lag processed after an interrupted rollout. Select validation from
   # each runtime's own baseline as well as from processed, so a frozen candidate is always strong
   # enough for the exact component work that may consume it.
-  if wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$target" wd_path_is_engine; then
+  if wd_range_has_class "$SOURCE_REPO" "$engine_base" "$target" wd_path_is_engine; then
     VALIDATION_RUST_REQUIRED=1
     VALIDATION_ENGINE_ARTIFACTS_REQUIRED=1
   fi
-  wd_range_has_class "$SOURCE_REPO" "$BACKEND_SHA" "$target" wd_path_is_backend \
+  wd_range_has_class "$SOURCE_REPO" "$backend_base" "$target" wd_path_is_backend \
     && VALIDATION_TYPESCRIPT_REQUIRED=1
-  wd_range_has_class "$SOURCE_REPO" "${SALES_SHA:-$PROCESSED_SHA}" "$target" wd_path_is_sales \
+  wd_range_has_class "$SOURCE_REPO" "$sales_base" "$target" wd_path_is_sales \
     && VALIDATION_TYPESCRIPT_REQUIRED=1
-  wd_range_has_class "$SOURCE_REPO" "${OPENKEYS_SHA:-$PROCESSED_SHA}" "$target" wd_path_is_openkeys \
+  wd_range_has_class "$SOURCE_REPO" "$openkeys_base" "$target" wd_path_is_openkeys \
     && VALIDATION_TYPESCRIPT_REQUIRED=1
 
   (( infrastructure_validation_changed == 0 )) || VALIDATION_STATIC_REQUIRED=1
@@ -566,13 +615,22 @@ select_candidate_validation_requirements() {
   fi
 }
 
+load_production_baselines() {
+  PROCESSED_SHA=$(wd_read_sha "$PROCESSED_FILE")
+  INFRASTRUCTURE_SHA=$(wd_read_sha "$INFRASTRUCTURE_FILE" 2>/dev/null || printf '%s\n' "$PROCESSED_SHA")
+  ENGINE_SHA=$(wd_read_sha "$ENGINE_FILE")
+  BACKEND_SHA=$(wd_read_sha "$BACKEND_FILE")
+  SALES_SHA=$(wd_read_sha "$SALES_FILE" 2>/dev/null || printf '')
+  OPENKEYS_SHA=$(wd_read_sha "$OPENKEYS_FILE" 2>/dev/null || printf '')
+}
+
 shadow_validation_exit() {
   local rc=$1
   trap - ERR EXIT INT TERM
   (( rc != 0 )) || return 0
 
   if (( TEST_DB_STARTED == 1 )); then
-    sudo -n "$TEST_DB_HELPER" stop >/dev/null 2>&1 || true
+    test_db stop >/dev/null 2>&1 || true
   fi
   sudo -n "$GITHUB_HELPER" deployment-status "$SHADOW_DEPLOYMENT_ID" failure \
     "Trusted candidate validation failed; production unchanged" candidate-validation "" \
@@ -591,6 +649,11 @@ run_shadow_candidate_validation() (
   set -euo pipefail
   SHADOW_DEPLOYMENT_ID=$1
   CANDIDATE_SHA=$2
+  TEST_DB_SLOT=$3
+  local committed_master=$4 current_master
+  CI_CARGO_TARGET="$CI_HOME/cargo-target-shadow-$TEST_DB_SLOT"
+  STATUS_FILE="$STATE_ROOT/candidate-validation-$TEST_DB_SLOT.status"
+  VALIDATION_BASE_SHA=$committed_master
   TEST_DB_STARTED=0
   trap 'exit 130' INT
   trap 'exit 143' TERM
@@ -598,15 +661,16 @@ run_shadow_candidate_validation() (
 
   CURRENT_PHASE=shadow-validation
   CURRENT_PHASE_BEFORE_FAILURE=shadow-validation
-  status "validating an exact pre-merge candidate while production is idle"
+  status "validating an exact pre-merge candidate in isolated slot $TEST_DB_SLOT"
   wd_retry 3 5 sudo -n "$GITHUB_HELPER" deployment-status "$SHADOW_DEPLOYMENT_ID" in_progress \
     "Trusted production-host candidate validation started" candidate-validation ""
   github_status pending deploy/tests "Trusted production-host candidate validation in progress"
 
   # GitHub permits fetching a raw object ID when it is reachable from the already-pushed feature
   # branch. The merge client therefore requests validation only for a remotely visible exact SHA.
-  wd_retry 3 5 git -C "$SOURCE_REPO" fetch --no-tags "$REMOTE" "$CANDIDATE_SHA"
+  fetch_source "$CANDIDATE_SHA"
   git -C "$SOURCE_REPO" cat-file -e "$CANDIDATE_SHA^{commit}"
+  wd_require_ancestor "$SOURCE_REPO" "$committed_master" "$CANDIDATE_SHA" shadow-committed-master
   wd_require_ancestor "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" shadow-processed
   wd_require_ancestor "$SOURCE_REPO" "$INFRASTRUCTURE_SHA" "$CANDIDATE_SHA" shadow-infrastructure
   wd_require_ancestor "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" shadow-engine
@@ -616,16 +680,106 @@ run_shadow_candidate_validation() (
   [[ -z $OPENKEYS_SHA ]] \
     || wd_require_ancestor "$SOURCE_REPO" "$OPENKEYS_SHA" "$CANDIDATE_SHA" shadow-openkeys
 
-  select_candidate_validation_requirements "$CANDIDATE_SHA"
+  # The merge client rebases before requesting validation. Select only its delta from that exact
+  # committed master: the parent's own immutable candidate is already being deployed and the
+  # locked merge cannot land this SHA unless that parent becomes green.
+  select_candidate_validation_requirements "$CANDIDATE_SHA" "$committed_master"
   prepare_and_test_candidate "$CANDIDATE_SHA" "$VALIDATION_TYPESCRIPT_REQUIRED" \
     "$VALIDATION_RUST_REQUIRED" "$VALIDATION_STATIC_REQUIRED" \
     "$VALIDATION_ENGINE_ARTIFACTS_REQUIRED"
+
+  # A different agent may have landed while this gate ran. Accept an advanced master only when it
+  # is still an ancestor of this exact candidate; otherwise the request is stale and the merge
+  # client will rebase, produce a new SHA, and request both exact-SHA gates again.
+  fetch_source "+refs/heads/$BRANCH:refs/remotes/$REMOTE/$BRANCH"
+  current_master=$(git -C "$SOURCE_REPO" rev-parse "refs/remotes/$REMOTE/$BRANCH^{commit}")
+  wd_validate_sha "$current_master"
+  wd_require_ancestor "$SOURCE_REPO" "$current_master" "$CANDIDATE_SHA" shadow-current-master
 
   github_status success deploy/tests "Trusted production-host candidate validation passed"
   wd_retry 3 5 sudo -n "$GITHUB_HELPER" deployment-status "$SHADOW_DEPLOYMENT_ID" success \
     "Exact candidate passed trusted production-host validation" candidate-validation ""
   wd_log "trusted shadow validation passed for $CANDIDATE_SHA"
 )
+
+candidate_validator_main() {
+  # This service is a separate failure domain. Queue/API faults may fail this oneshot and feature
+  # candidates may receive red verdicts, but neither path can invoke the production quarantine trap.
+  trap - ERR EXIT INT TERM
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  local remote_ref master_sha validation_output validation_id validation_sha validation_extra
+  local index slot validation_rc
+  local validation_ids=() validation_shas=() validation_pids=()
+
+  [[ $(id -un) == deploy ]] || wd_die "candidate validator service must run as deploy"
+  [[ -d $SOURCE_REPO/.git ]] || wd_die "source repository is missing: $SOURCE_REPO"
+  [[ -d $STATE_ROOT && ! -L $STATE_ROOT ]] || wd_die "watchdog state is not installed"
+  [[ -d $CANDIDATE_ROOT && ! -L $CANDIDATE_ROOT ]] \
+    || wd_die "candidate root is not a regular directory: $CANDIDATE_ROOT"
+  require_fixed_file "$CANDIDATE_VALIDATOR_LOCK"
+  require_fixed_file "$SOURCE_FETCH_LOCK"
+  require_fixed_file "$TEST_DB_HELPER"
+  require_fixed_file "$GITHUB_HELPER"
+  require_fixed_directory "$CI_TOOLCHAIN"
+  [[ -f $DB_MANIFEST && ! -L $DB_MANIFEST ]] || wd_die "database migration baseline is missing"
+
+  exec 6<>"$CANDIDATE_VALIDATOR_LOCK"
+  if ! flock -n 6; then
+    wd_log "another candidate-validator cycle is still running"
+    return 0
+  fi
+
+  if ! validation_output=$(sudo -n "$GITHUB_HELPER" validation-next 2); then
+    wd_warn "candidate validation queue lookup failed; retrying on the next five-second poll"
+    return 0
+  fi
+  [[ -n $validation_output ]] || return 0
+
+  while IFS=$'\t' read -r validation_id validation_sha validation_extra; do
+    if [[ ! $validation_id =~ ^[1-9][0-9]*$ || ! $validation_sha =~ ^[0-9a-f]{40}$ \
+          || -n $validation_extra || ${#validation_ids[@]} -ge 2 ]]; then
+      wd_die "GitHub helper returned a malformed candidate validation batch"
+    fi
+    validation_ids[${#validation_ids[@]}]=$validation_id
+    validation_shas[${#validation_shas[@]}]=$validation_sha
+  done <<<"$validation_output"
+  (( ${#validation_ids[@]} > 0 )) || return 0
+
+  remote_ref="refs/remotes/$REMOTE/$BRANCH"
+  fetch_source "+refs/heads/$BRANCH:$remote_ref"
+  master_sha=$(git -C "$SOURCE_REPO" rev-parse "$remote_ref^{commit}")
+  wd_validate_sha "$master_sha"
+  load_production_baselines
+  wd_require_ancestor "$SOURCE_REPO" "$PROCESSED_SHA" "$master_sha" validator-processed
+  wd_require_ancestor "$SOURCE_REPO" "$INFRASTRUCTURE_SHA" "$master_sha" validator-infrastructure
+  wd_require_ancestor "$SOURCE_REPO" "$ENGINE_SHA" "$master_sha" validator-engine
+  wd_require_ancestor "$SOURCE_REPO" "$BACKEND_SHA" "$master_sha" validator-backend
+  [[ -z $SALES_SHA ]] \
+    || wd_require_ancestor "$SOURCE_REPO" "$SALES_SHA" "$master_sha" validator-sales
+  [[ -z $OPENKEYS_SHA ]] \
+    || wd_require_ancestor "$SOURCE_REPO" "$OPENKEYS_SHA" "$master_sha" validator-openkeys
+
+  for index in "${!validation_ids[@]}"; do
+    slot=$((index + 1))
+    run_shadow_candidate_validation "${validation_ids[$index]}" "${validation_shas[$index]}" \
+      "$slot" "$master_sha" &
+    validation_pids[$index]=$!
+  done
+
+  # Candidate verdicts are request outcomes, not service-health failures. Join every worker so its
+  # isolated database is cleaned up, report each result, and leave the timer healthy for new work.
+  for index in "${!validation_pids[@]}"; do
+    validation_rc=0
+    wait "${validation_pids[$index]}" || validation_rc=$?
+    if (( validation_rc == 0 )); then
+      wd_log "completed trusted validation ${validation_ids[$index]} for ${validation_shas[$index]}"
+    else
+      wd_warn "trusted validation ${validation_ids[$index]} failed (exit $validation_rc)"
+    fi
+  done
+}
 
 final_verify_engine() {
   local sha=$1
@@ -1039,8 +1193,6 @@ main() {
   local openkeys_changed=0 typescript_required=0 rust_required=0 static_required=0
   local engine_artifacts_required=0
   local core_pid= sales_pid= openkeys_pid= core_rc=0 sales_rc=0 openkeys_rc=0
-  local validation_request= validation_id= validation_sha= validation_extra=
-  local shadow_pid= shadow_rc=0
 
   [[ $(id -un) == deploy ]] || wd_die "watchdog service must run as deploy"
   [[ -d $SOURCE_REPO/.git ]] || wd_die "source repository is missing: $SOURCE_REPO"
@@ -1048,6 +1200,7 @@ main() {
   [[ -d $CANDIDATE_ROOT && ! -L $CANDIDATE_ROOT ]] \
     || wd_die "candidate root is not a regular directory: $CANDIDATE_ROOT"
   require_fixed_file "$WATCHDOG_LOCK"
+  require_fixed_file "$SOURCE_FETCH_LOCK"
   require_fixed_file "$DEPLOY_LOCK"
   require_fixed_directory "$CONTROLLER_ROOT"
   require_fixed_file "$TEST_DB_HELPER"
@@ -1071,18 +1224,12 @@ main() {
   status "fetching $REMOTE/$BRANCH"
   # GitHub reachability is not a property of the candidate. Absorb transient DNS/TLS/network
   # failures here so they never reach the failure path at all.
-  wd_retry 3 5 git -C "$SOURCE_REPO" fetch --no-tags "$REMOTE" \
-    "+refs/heads/$BRANCH:refs/remotes/$REMOTE/$BRANCH"
+  fetch_source "+refs/heads/$BRANCH:refs/remotes/$REMOTE/$BRANCH"
   remote_ref="refs/remotes/$REMOTE/$BRANCH"
   CANDIDATE_SHA=$(git -C "$SOURCE_REPO" rev-parse "$remote_ref^{commit}")
   wd_validate_sha "$CANDIDATE_SHA"
 
-  PROCESSED_SHA=$(wd_read_sha "$PROCESSED_FILE")
-  INFRASTRUCTURE_SHA=$(wd_read_sha "$INFRASTRUCTURE_FILE" 2>/dev/null || printf '%s\n' "$PROCESSED_SHA")
-  ENGINE_SHA=$(wd_read_sha "$ENGINE_FILE")
-  BACKEND_SHA=$(wd_read_sha "$BACKEND_FILE")
-  SALES_SHA=$(wd_read_sha "$SALES_FILE" 2>/dev/null || printf '')
-  OPENKEYS_SHA=$(wd_read_sha "$OPENKEYS_FILE" 2>/dev/null || printf '')
+  load_production_baselines
   wd_require_ancestor "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" processed
   wd_require_ancestor "$SOURCE_REPO" "$INFRASTRUCTURE_SHA" "$CANDIDATE_SHA" infrastructure
   wd_require_ancestor "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" engine
@@ -1129,31 +1276,6 @@ main() {
   if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $infra_changed == 0 \
         && $engine_changed == 0 && $backend_changed == 0 \
         && $sales_changed == 0 && $openkeys_changed == 0 ]]; then
-    # Production always wins: only a completely aligned idle host accepts one queued shadow
-    # validation. A failed feature candidate is reported against its own Deployment and commit
-    # context, then this healthy production cycle still exits successfully.
-    if validation_request=$(sudo -n "$GITHUB_HELPER" validation-next); then
-      if [[ -n $validation_request ]]; then
-        IFS=$'\t' read -r validation_id validation_sha validation_extra <<<"$validation_request"
-        if [[ $validation_request != *$'\n'* && $validation_id =~ ^[1-9][0-9]*$ \
-              && $validation_sha =~ ^[0-9a-f]{40}$ && -z $validation_extra ]]; then
-          run_shadow_candidate_validation "$validation_id" "$validation_sha" &
-          shadow_pid=$!
-          wait "$shadow_pid" || shadow_rc=$?
-          if (( shadow_rc == 0 )); then
-            wd_log "completed queued trusted validation $validation_id for $validation_sha"
-          else
-            wd_warn "queued trusted validation $validation_id failed (exit $shadow_rc)"
-          fi
-          CURRENT_PHASE=idle
-          status "master already processed; production runtime aligned"
-          exit 0
-        fi
-        wd_warn "GitHub helper returned a malformed candidate validation request"
-      fi
-    else
-      wd_warn "candidate validation queue lookup failed; production remains idle"
-    fi
     if idle_maintenance_due; then
       CURRENT_PHASE=maintaining
       status "running periodic retention and production-alignment checks"
@@ -1277,5 +1399,16 @@ main() {
   wd_log "watchdog completed $CANDIDATE_SHA (engine=$engine_changed backend=$backend_changed sales=$sales_changed openkeys=$openkeys_changed)"
 }
 
-main "$@"
+case "${1:-}" in
+  --candidate-validator)
+    [[ $# -eq 1 ]] || wd_die "usage: watchdog.sh --candidate-validator"
+    candidate_validator_main
+    ;;
+  '')
+    main
+    ;;
+  *)
+    wd_die "usage: watchdog.sh [--candidate-validator]"
+    ;;
+esac
 trap - ERR EXIT INT TERM

@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll GitHub for exact-SHA candidate validation requests
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5s
+AccuracySec=1s
+RandomizedDelaySec=0
+Unit=apitoken-candidate-validator.service
+
+[Install]
+WantedBy=timers.target
