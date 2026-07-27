@@ -164,10 +164,14 @@ dashboard-keys-light
 dashboard-keys-dark
 dashboard-keys-russian-light
 dashboard-keys-russian-dark
+dashboard-keys-setup-light
+dashboard-keys-setup-russian-dark
 dashboard-keys-mobile-light
 dashboard-keys-mobile-dark
 dashboard-keys-mobile-russian-light
 dashboard-keys-mobile-russian-dark
+dashboard-keys-setup-mobile-dark
+dashboard-keys-setup-mobile-russian-light
 ```
 
 ## What happens during a capture

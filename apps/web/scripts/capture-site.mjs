@@ -127,6 +127,8 @@ const dashboardCaptures = [
   ["dashboard-keys-dark", "/dashboard?view=keys", 1440, 1000, "dark"],
   ["dashboard-keys-russian-light", "/dashboard?view=keys", 1440, 1000, "light", "ru"],
   ["dashboard-keys-russian-dark", "/dashboard?view=keys", 1440, 1000, "dark", "ru"],
+  ["dashboard-keys-setup-light", "/dashboard?view=keys", 1440, 1100, "light", "en", "key-setup-open"],
+  ["dashboard-keys-setup-russian-dark", "/dashboard?view=keys", 1440, 1100, "dark", "ru", "key-setup-open"],
   ["dashboard-keys-create-light", "/dashboard?view=keys", 1440, 1000, "light", "en", "key-create-open"],
   ["dashboard-keys-edit-light", "/dashboard?view=keys", 1440, 1000, "light", "en", "key-edit-open"],
   ["dashboard-keys-revoke-dark", "/dashboard?view=keys", 1440, 1000, "dark", "en", "key-revoke-open"],
@@ -154,6 +156,8 @@ const dashboardCaptures = [
   ["dashboard-keys-mobile-dark", "/dashboard?view=keys", 390, 844, "dark"],
   ["dashboard-keys-mobile-russian-light", "/dashboard?view=keys", 390, 844, "light", "ru"],
   ["dashboard-keys-mobile-russian-dark", "/dashboard?view=keys", 390, 844, "dark", "ru"],
+  ["dashboard-keys-setup-mobile-dark", "/dashboard?view=keys", 390, 1000, "dark", "en", "key-setup-open"],
+  ["dashboard-keys-setup-mobile-russian-light", "/dashboard?view=keys", 390, 1000, "light", "ru", "key-setup-open"],
   ["dashboard-keys-create-mobile-dark", "/dashboard?view=keys", 390, 844, "dark", "en", "key-create-open"],
   ["dashboard-keys-edit-mobile-russian-dark", "/dashboard?view=keys", 390, 844, "dark", "ru", "key-edit-open"],
   ["dashboard-usage-mobile-light", "/dashboard?view=usage", 390, 844, "light"],
@@ -546,6 +550,10 @@ async function capturePage(client, [name, route, width, height, theme, language 
   if (state === "key-create-open") {
     await clickSelector(client, ".keys-create-button");
     await waitForCondition(client, `Boolean(document.querySelector('.key-modal[role="dialog"]'))`, `${name} create-key dialog`);
+  }
+  if (state === "key-setup-open") {
+    await clickSelector(client, ".agent-connect-summary");
+    await waitForCondition(client, `document.querySelector('.agent-connect-summary')?.getAttribute('aria-expanded') === 'true'`, `${name} persistent terminal setup`);
   }
   if (state === "key-revoke-open") {
     await client.send("Runtime.evaluate", { expression: `document.querySelector('.key-row')?.scrollIntoView({ block: 'center' })` });
@@ -1182,20 +1190,20 @@ async function verifyApiKeysLayout(client) {
     const state = JSON.parse(result.result.value);
     const expectedTheme = layoutCase.theme === "dark" ? "dark" : "light";
     const expectedTabRows = layoutCase.width > 620 ? 1 : 3;
-    if (state.language !== layoutCase.language || state.theme !== expectedTheme || state.overflow > 1 || !state.aligned || !state.separated || !state.distinctSurface || state.createButtonCount !== 1 || !state.createInManager || state.createInHero || !state.createNearList || !state.createFullWidthOnMobile || !state.controlsFit || state.tabRows !== expectedTabRows || !state.equalTabHeights || state.label !== layoutCase.label || state.counts.join(",") !== "4,2,4,1,5" || state.activeFilter !== "current" || state.healthCards !== 0 || state.policyStates.some((present) => !present)) {
+    if (state.language !== layoutCase.language || state.theme !== expectedTheme || state.overflow > 1 || !state.aligned || !state.separated || !state.distinctSurface || state.createButtonCount !== 1 || !state.createInManager || state.createInHero || !state.createNearList || !state.createFullWidthOnMobile || !state.controlsFit || state.tabRows !== expectedTabRows || !state.equalTabHeights || state.label !== layoutCase.label || state.counts.join(",") !== "4,4,2,1,5" || state.activeFilter !== "current" || state.healthCards !== 0 || state.policyStates.join(",") !== "true,true,false,false") {
       throw new Error(`API keys ${layoutCase.name} layout failed: ${JSON.stringify(state)}`);
     }
 
     await clickSelector(client, '[data-key-filter="working"]');
     await waitForCondition(
       client,
-      `document.querySelector('[data-key-filter="working"]')?.getAttribute('aria-pressed') === 'true' && document.querySelectorAll('.key-row').length === 2 && !document.querySelector('.key-row-expired,.key-row-limit')`,
+      `document.querySelector('[data-key-filter="working"]')?.getAttribute('aria-pressed') === 'true' && document.querySelectorAll('.key-row').length === 4 && !document.querySelector('.key-row-expired,.key-row-limit')`,
       `${layoutCase.name} working-key filter`,
     );
     await clickSelector(client, '[data-key-filter="attention"]');
     await waitForCondition(
       client,
-      `document.querySelector('[data-key-filter="attention"]')?.getAttribute('aria-pressed') === 'true' && document.querySelectorAll('.key-row').length === 4`,
+      `document.querySelector('[data-key-filter="attention"]')?.getAttribute('aria-pressed') === 'true' && document.querySelectorAll('.key-row').length === 2`,
       `${layoutCase.name} attention-key filter`,
     );
     await clickSelector(client, '[data-key-filter="disabled"]');
@@ -1247,6 +1255,18 @@ async function verifyApiKeysLayout(client) {
       const expectedExpiration = new Date("2099-01-01T23:59:59.999").toISOString();
       if (payload.spendLimitUsd !== "25.50" || payload.expiresAt !== expectedExpiration || payload.totpCode !== "123456") {
         throw new Error(`API keys create payload failed: ${JSON.stringify(payload)}`);
+      }
+      const setupResult = await client.send("Runtime.evaluate", {
+        expression: `JSON.stringify({
+          commands: [...document.querySelectorAll('.agent-terminal-line')].map((line) => line.textContent).join('\\n'),
+          summary: document.querySelector('.agent-connect-main small')?.textContent?.trim(),
+          note: document.querySelector('.agent-connect-note')?.textContent?.trim(),
+        })`,
+        returnByValue: true,
+      });
+      const setup = JSON.parse(setupResult.result.value);
+      if (!setup.commands.includes("/apitoken/claude.env") || !setup.commands.includes("umask 077") || !setup.commands.includes(".zshrc") || !setup.commands.includes(".bashrc") || !setup.commands.includes("sk-pool-audit-secret") || !setup.summary.includes("future terminals") || !setup.note.includes("private user environment file")) {
+        throw new Error(`API keys persistent setup failed: ${JSON.stringify(setup)}`);
       }
     } else {
       await clickSelector(client, ".key-modal-close");
