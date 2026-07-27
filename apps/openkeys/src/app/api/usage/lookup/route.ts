@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { resolveViewTokenByApiKey } from "@/lib/keys";
 import { USAGE_SESSION_COOKIE, USAGE_SESSION_MAX_AGE } from "@/lib/usage-session";
+import { guardRequest, readJsonLimited } from "@/lib/request-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,9 +11,11 @@ export const dynamic = "force-dynamic";
  * в куку кладём только ссылку на баланс, поэтому утечка куки не отдаёт секрет.
  */
 export async function POST(request: Request): Promise<NextResponse> {
+  const rejected = guardRequest(request, "usage-lookup", 30, 60_000);
+  if (rejected) return rejected;
   let body: { key?: unknown };
   try {
-    body = (await request.json()) as typeof body;
+    body = await readJsonLimited<typeof body>(request);
   } catch {
     return NextResponse.json({ error: "invalid_body" }, { status: 400 });
   }

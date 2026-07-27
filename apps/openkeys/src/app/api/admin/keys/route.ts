@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { listBatches, listKeys, markKeyDelivered, removeAllStock, removeKey } from "@/lib/keys";
 import { currentAdmin } from "@/lib/session";
+import { guardRequest, readJsonLimited } from "@/lib/request-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,12 +20,14 @@ export async function GET(): Promise<NextResponse> {
 
 /** Отметка «выдан» или снятие со склада. Чужие ключи недоступны. */
 export async function POST(request: Request): Promise<NextResponse> {
+  const rejected = guardRequest(request, "admin-keys", 60, 60_000);
+  if (rejected) return rejected;
   const admin = await currentAdmin();
   if (!admin) return unauthorized();
 
   let body: { id?: unknown; action?: unknown };
   try {
-    body = (await request.json()) as typeof body;
+    body = await readJsonLimited<typeof body>(request);
   } catch {
     return NextResponse.json({ error: "invalid_body" }, { status: 400 });
   }

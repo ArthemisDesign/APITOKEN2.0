@@ -3,7 +3,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { cookies } from "next/headers";
 import { loadConfig, type OpenkeysConfig } from "./config";
 
-export const SESSION_COOKIE = "openkeys_admin";
+export const SESSION_COOKIE = "__Host-openkeys_admin";
 
 function sign(config: OpenkeysConfig, payload: string): string {
   return createHmac("sha256", config.sessionSecret).update(payload).digest("base64url");

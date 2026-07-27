@@ -24,7 +24,8 @@ WEB_UNIT=apitoken-openkeys.service
 # The product root may intentionally redirect (currently to /docs). Probe a stable page that
 # returns 200 in both the previous release and the candidate, so a valid redirect is not mistaken
 # for an unhealthy process and rollback health remains testable.
-WEB_HEALTH=${OPENKEYS_WEB_HEALTH:-http://127.0.0.1:3410/docs}
+WEB_HEALTH=${OPENKEYS_WEB_HEALTH:-http://127.0.0.1:3410/api/ready}
+WEB_ROLLBACK_HEALTH=${OPENKEYS_WEB_ROLLBACK_HEALTH:-http://127.0.0.1:3410/docs}
 HEALTH_RETRIES=${OPENKEYS_HEALTH_RETRIES:-30}
 HEALTH_INTERVAL=${OPENKEYS_HEALTH_INTERVAL:-2}
 
@@ -47,9 +48,9 @@ health_ok() {
 }
 
 wait_healthy() {
-  local i
+  local url=${1:-$WEB_HEALTH} i
   for (( i = 0; i < HEALTH_RETRIES; i++ )); do
-    health_ok "$WEB_HEALTH" && return 0
+    health_ok "$url" && return 0
     sleep "$HEALTH_INTERVAL"
   done
   return 1
@@ -105,7 +106,7 @@ if [[ -n $previous_target && -d $previous_target ]]; then
   ln -sfn -- "$previous_target" "$tmp_link"
   mv -T -- "$tmp_link" "$current_link"
   systemctl restart "$WEB_UNIT"
-  if wait_healthy; then
+  if wait_healthy "$WEB_ROLLBACK_HEALTH"; then
     die "openkeys $SHA unhealthy; rolled back to $(basename -- "$previous_target")"
   fi
   die "openkeys $SHA unhealthy AND rollback target also unhealthy — manual intervention required"

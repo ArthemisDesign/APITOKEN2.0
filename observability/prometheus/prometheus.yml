@@ -128,7 +128,7 @@ scrape_configs:
     params:
       module: [http_2xx]
     static_configs:
-      - targets: ["http://127.0.0.1:3400/v1/health"]
+      - targets: ["http://127.0.0.1:3410/api/ready"]
         labels: { component: crm-api }
       - targets: ["http://127.0.0.1:3300/"]
         labels: { component: crm-web }

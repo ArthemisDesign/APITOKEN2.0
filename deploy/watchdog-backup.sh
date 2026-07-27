@@ -55,7 +55,7 @@ systemctl start "$BACKUP_SERVICE"
   || wd_die "pre-deployment backup service did not succeed"
 
 validate_and_preserve commerce
-for database in claude_engine sales apitoken_crm; do
+for database in claude_engine sales openkeys apitoken_crm; do
   database_exists=$(docker compose --env-file "$POSTGRES_ENV" -f "$COMPOSE_FILE" \
     exec -T commerce-postgres psql -U commerce -d postgres -Atqc \
     "SELECT 1 FROM pg_database WHERE datname='$database'")

@@ -3,6 +3,7 @@ import { loadConfig } from "@/lib/config";
 import { MAX_BATCH_QUANTITY, issueBatch, listBatches } from "@/lib/keys";
 import { formatUsd, usdStringToNano } from "@/lib/money";
 import { currentAdmin } from "@/lib/session";
+import { guardRequest, readJsonLimited } from "@/lib/request-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,12 +20,14 @@ export async function GET(): Promise<NextResponse> {
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
+  const rejected = guardRequest(request, "admin-batches", 30, 60_000);
+  if (rejected) return rejected;
   const admin = await currentAdmin();
   if (!admin) return unauthorized();
 
   let body: { faceValueUsd?: unknown; quantity?: unknown; multBp?: unknown; label?: unknown; note?: unknown };
   try {
-    body = (await request.json()) as typeof body;
+    body = await readJsonLimited<typeof body>(request);
   } catch {
     return NextResponse.json({ error: "invalid_body" }, { status: 400 });
   }
@@ -43,8 +46,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       faceValueNano,
       quantity,
       multBp,
-      label: typeof body.label === "string" && body.label.trim() !== "" ? body.label.trim() : null,
-      note: typeof body.note === "string" && body.note.trim() !== "" ? body.note.trim() : null,
+      label: typeof body.label === "string" && body.label.trim() !== "" && body.label.length <= 200 ? body.label.trim() : null,
+      note: typeof body.note === "string" && body.note.trim() !== "" && body.note.length <= 2000 ? body.note.trim() : null,
       createdBy: admin,
     });
 
