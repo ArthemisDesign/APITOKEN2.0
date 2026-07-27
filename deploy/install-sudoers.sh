@@ -146,6 +146,7 @@ require_permitted 'engine drain signal' /usr/bin/systemctl kill -s SIGUSR1 claud
 require_permitted 'commerce slot start' /usr/bin/systemctl start apitoken-api@3000.service
 require_permitted 'worker restart' /usr/bin/systemctl restart apitoken-worker.service
 require_permitted 'content studio restart' /usr/bin/systemctl restart apitoken-content-studio.service
+require_permitted 'content studio enable' /usr/bin/systemctl enable apitoken-content-studio.service
 require_permitted 'unit introspection' /usr/bin/systemctl show apitoken-api@3000.service
 require_permitted 'backup runner' /usr/local/lib/apitoken-watchdog/watchdog-backup.sh "$sample_sha"
 require_permitted 'migration runner' /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh "$sample_sha"

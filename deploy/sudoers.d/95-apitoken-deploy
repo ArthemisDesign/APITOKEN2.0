@@ -75,6 +75,7 @@ Cmnd_Alias APITOKEN_UNITS = \
     /usr/bin/systemctl stop claude-authbot.service, \
     /usr/bin/systemctl start apitoken-content-studio.service, \
     /usr/bin/systemctl stop apitoken-content-studio.service, \
+    /usr/bin/systemctl enable apitoken-content-studio.service, \
     /usr/bin/systemctl restart apitoken-content-studio.service, \
     /usr/bin/systemctl start apitoken-sales-api.service apitoken-sales-web.service, \
     /usr/bin/systemctl stop apitoken-sales-api.service apitoken-sales-web.service, \

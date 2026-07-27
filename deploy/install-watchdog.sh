@@ -42,13 +42,15 @@ install -o root -g root -m 0755 "$ROOT/deploy/watchdog-backup.sh" /usr/local/lib
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-migrate.sh" /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-infrastructure.sh" /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-retention.sh" /usr/local/lib/apitoken-watchdog/watchdog-retention.sh
-# The sudo policy and its validating installer are delivered like any other operational definition,
-# but applying them is a deliberate operator action (deploy/install-sudoers.sh) rather than an
-# automatic step: a bad policy cannot be repaired by the pipeline that the policy governs.
+# The sudo policy and its validating installer are delivered together, then applied while the
+# infrastructure runner is already root. The installer validates before replacement, verifies every
+# live privilege as `deploy`, and restores the old policy on any failure. Applying here is necessary:
+# a controller and its least-privilege contract must become active in the same infrastructure cycle.
 install -o root -g root -m 0755 "$ROOT/deploy/install-sudoers.sh" /usr/local/lib/apitoken-watchdog/install-sudoers.sh
 install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/sudoers.d
 install -o root -g root -m 0644 "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   /usr/local/lib/apitoken-watchdog/sudoers.d/95-apitoken-deploy
+"$ROOT/deploy/install-sudoers.sh"
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-github.sh" /usr/local/lib/apitoken-watchdog/watchdog-github
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-control.sh" /usr/local/bin/apitoken-watchdog
 install -o root -g root -m 0755 "$ROOT/deploy/collect-monitoring-metrics.sh" /usr/local/lib/apitoken-watchdog/collect-monitoring-metrics.sh

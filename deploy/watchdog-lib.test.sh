@@ -530,6 +530,10 @@ grep -Fq '/usr/local/lib/apitoken-watchdog/install-sudoers.sh' "$sudoers_policy"
   || wd_die 'the sudo policy is not self-repairable: the installer path is not permitted'
 grep -Fq 'APITOKEN_POLICY' "$sudoers_policy" \
   || wd_die 'the policy self-management alias is missing'
+grep -Fq '/usr/bin/systemctl enable apitoken-content-studio.service' "$sudoers_policy" \
+  || wd_die 'the sudo policy cannot enable the content studio during blue-green cutover'
+grep -Fq "require_permitted 'content studio enable'" "$ROOT/deploy/install-sudoers.sh" \
+  || wd_die 'the sudoers installer does not live-verify content studio enablement'
 # Operator tooling must survive the restriction.
 grep -Fq '/usr/local/bin/apitoken-watchdog status' "$sudoers_policy" \
   || wd_die 'the sudo policy breaks apitoken-watchdog status'
@@ -541,6 +545,8 @@ done < <(grep -oE '^Cmnd_Alias [A-Z_]+' "$sudoers_policy" | awk '{print $2}')
 # The installer and its policy are delivered together with the other operational definitions.
 grep -Fq 'install-sudoers.sh' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'the sudoers installer is not delivered to the host'
+grep -Fxq '"$ROOT/deploy/install-sudoers.sh"' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'tested infrastructure does not atomically apply its sudo policy'
 # install-watchdog.sh must never re-add apitoken-ci to the deploy group: that would silently undo
 # the isolation fix on the next infrastructure install, and the two installers would fight.
 if grep -Eq 'usermod -a -G deploy apitoken-ci' "$ROOT/deploy/install-watchdog.sh"; then
