@@ -28,7 +28,8 @@ install -d -o deploy -g deploy -m 0750 /var/lib/apitoken/watchdog/ci-home
 install -d -o apitoken-ci -g apitoken-ci -m 0750 \
   /var/lib/apitoken/watchdog/ci-home/cargo-target \
   /var/lib/apitoken/watchdog/ci-home/cargo-target-shadow-1 \
-  /var/lib/apitoken/watchdog/ci-home/cargo-target-shadow-2
+  /var/lib/apitoken/watchdog/ci-home/cargo-target-shadow-2 \
+  /var/lib/apitoken/watchdog/ci-home/next-cache
 install -d -o deploy -g deploy -m 0750 \
   /var/lib/apitoken/watchdog/deploy-build-cache \
   /var/lib/apitoken/watchdog/deploy-build-cache/cargo \

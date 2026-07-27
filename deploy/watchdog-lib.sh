@@ -525,10 +525,12 @@ wd_range_has_unknown_validation_path() {
   return 1
 }
 
-wd_range_changes_typescript_scope_gate() {
+wd_range_changes_typescript_gate() {
   local repo=$1 base=$2 target=$3 path
   while IFS= read -r path; do
-    [[ $path == deploy/typescript-scope.mjs ]] && return 0
+    case "$path" in
+      deploy/typescript-scope.mjs|deploy/next-cache.sh) return 0 ;;
+    esac
   done < <(wd_range_files "$repo" "$base" "$target")
   return 1
 }
@@ -541,7 +543,7 @@ wd_range_requires_full_typescript_scope() {
   while IFS= read -r path; do
     case "$path" in
       package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.node-version|tsconfig*.json|\
-      deploy/typescript-scope.mjs)
+      deploy/typescript-scope.mjs|deploy/next-cache.sh)
         return 0
         ;;
     esac

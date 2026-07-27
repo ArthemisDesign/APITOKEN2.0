@@ -275,6 +275,7 @@ fi
 for runtime_definition in \
   deploy/watchdog.sh \
   deploy/watchdog-lib.sh \
+  deploy/next-cache.sh \
   deploy/typescript-scope.mjs \
   deploy/install-watchdog.sh \
   deploy/Caddyfile \
@@ -355,17 +356,27 @@ printf 'selector\n' >"$validation_repo/deploy/typescript-scope.mjs"
 git -C "$validation_repo" add deploy/typescript-scope.mjs
 git -C "$validation_repo" commit --quiet -m typescript-selector
 validation_typescript_selector=$(git -C "$validation_repo" rev-parse HEAD)
-wd_range_changes_typescript_scope_gate "$validation_repo" \
+wd_range_changes_typescript_gate "$validation_repo" \
   "$validation_typescript_shared" "$validation_typescript_selector" \
   || wd_die "a TypeScript selector change did not identify gate machinery"
 wd_range_requires_full_typescript_scope "$validation_repo" \
   "$validation_typescript_shared" "$validation_typescript_selector" \
   || wd_die "a TypeScript selector change did not force full validation"
+printf 'cache\n' >"$validation_repo/deploy/next-cache.sh"
+git -C "$validation_repo" add deploy/next-cache.sh
+git -C "$validation_repo" commit --quiet -m next-cache-helper
+validation_next_cache=$(git -C "$validation_repo" rev-parse HEAD)
+wd_range_changes_typescript_gate "$validation_repo" \
+  "$validation_typescript_selector" "$validation_next_cache" \
+  || wd_die "a Next.js cache helper change did not identify gate machinery"
+wd_range_requires_full_typescript_scope "$validation_repo" \
+  "$validation_typescript_selector" "$validation_next_cache" \
+  || wd_die "a Next.js cache helper change did not force full validation"
 git -C "$validation_repo" rm --quiet apps/example/index.ts
 git -C "$validation_repo" commit --quiet -m typescript-deletion
 validation_typescript_deletion=$(git -C "$validation_repo" rev-parse HEAD)
 wd_range_requires_full_typescript_scope "$validation_repo" \
-  "$validation_typescript_selector" "$validation_typescript_deletion" \
+  "$validation_next_cache" "$validation_typescript_deletion" \
   || wd_die "a deleted TypeScript workspace path did not force full validation"
 
 # A deleted component file still requires that component's lane. A rename is deliberately exposed
@@ -581,7 +592,10 @@ grep -Fq 'for _ in $(seq 1 20); do' "$ROOT/deploy/watchdog.sh" \
 # and static validation run concurrently when selected; unknown paths select every expensive lane.
 gate_contract=(
   'pnpm --dir "$candidate" install --frozen-lockfile'
+  'NEXT_CACHE_ROOT="$CI_NEXT_CACHE_ROOT"'
+  'bash "$candidate/deploy/next-cache.sh" restore "$candidate"'
   'pnpm --dir "$candidate" build'
+  'bash "$candidate/deploy/next-cache.sh" save "$candidate"'
   'pnpm --dir "$candidate" typecheck'
   'typescript-scope.mjs'
   '"${filters[@]}"'
@@ -598,6 +612,7 @@ gate_contract=(
   'run_as_ci bash "$candidate/deploy/lib.test.sh"'
   'run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"'
   'run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"'
+  'run_as_ci bash "$candidate/deploy/next-cache.test.sh"'
   'run_as_ci bash "$candidate/deploy/typescript-scope.test.sh"'
   'run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"'
   'status --porcelain --untracked-files=no'
@@ -894,6 +909,8 @@ grep -Fq 'CARGO_TARGET_DIR="$CI_CARGO_TARGET"' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'candidate Rust builds do not share one persistent target cache'
 grep -Fq '/var/lib/apitoken/watchdog/ci-home/cargo-target' \
   "$ROOT/deploy/install-watchdog.sh" || wd_die 'watchdog installer does not create the shared CI target'
+grep -Fq '/var/lib/apitoken/watchdog/ci-home/next-cache' \
+  "$ROOT/deploy/install-watchdog.sh" || wd_die 'watchdog installer does not create the shared Next.js cache'
 for shadow_slot in 1 2; do
   grep -Fq "/var/lib/apitoken/watchdog/ci-home/cargo-target-shadow-$shadow_slot" \
     "$ROOT/deploy/install-watchdog.sh" \

@@ -49,6 +49,9 @@ The candidate selector tests only the feature delta from the committed parent. B
 green, the worker builds the complete deployable TypeScript artifact set but limits typecheck and
 tests to the changed package, its workspace dependents, and their internal prerequisites. Shared
 pnpm/TypeScript inputs, deletions, unknown paths, and selector changes force the full workspace.
+Each fresh candidate restores the four Next.js `.next/cache` trees from fixed host-local archives
+and atomically refreshes them after a successful build. Concurrent validators are last-writer-wins
+between complete archives; an absent, corrupt, or symlink-containing cache degrades to a clean build.
 The immutable marker records whether coverage was full and, for a filtered run, its exact base SHA;
 production reuses it only for compatible coverage. The worker then fetches `master` again and
 requires the current committed tip still to be an ancestor of the candidate. The locked merge still

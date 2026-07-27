@@ -23,7 +23,9 @@ PostgreSQL and Cargo slots and run below production CPU/I/O priority. A per-SHA 
 unchanged `master` deployment wait for and reuse an in-flight candidate instead of rebuilding it.
 For TypeScript, every deployable artifact is still built, while typecheck/tests run only for the
 changed package closure (workspace consumers plus their prerequisites). Shared inputs and deletions
-force the full workspace; filtered markers also bind reuse to the exact diff base.
+force the full workspace; filtered markers also bind reuse to the exact diff base. The four Next.js
+apps restore host-local `.next/cache` archives before building and publish only complete,
+symlink-free archives afterward; cache damage is treated as a miss, never a deployment failure.
 
 Before a feature verdict becomes green, the host refetches `master` and requires its current tip to
 remain an ancestor of the exact candidate. The locked merge still waits for the parent’s overall

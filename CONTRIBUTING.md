@@ -49,7 +49,10 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    regression suite, or Rust cache wrapper forces every lane. For an ordinary workspace edit, the
    TypeScript lane builds, typechecks, and tests the changed package, every workspace consumer, and
    their internal prerequisites. Shared pnpm/TypeScript inputs, workspace deletions, and selector
-   changes fall back to the complete workspace. Rust compilation goes through a
+   changes fall back to the complete workspace. Successful Next.js builds atomically refresh
+   validated `.next/cache` archives under the clone's git common directory, so fresh worktrees can
+   reuse compiler state; a missing, corrupt, or unsafe archive is simply a cache miss. Rust
+   compilation goes through a
    checksum-pinned `sccache`; its binary, 10 GiB object cache, and Cargo 1.91+ intermediate build
    directory live in the clone's git common directory and are reused by all linked worktrees. Final
    Cargo targets remain local to each worktree. The wrapper falls back to uncached Cargo if its

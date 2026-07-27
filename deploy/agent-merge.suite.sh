@@ -410,6 +410,8 @@ grep -Fq 'deploy/agent-merge.suite.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the merge-path suite'
 grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the activation-journal suite'
+grep -Fq 'deploy/next-cache.test.sh' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the merge gate does not run the persistent Next.js cache suite'
 grep -Fq 'deploy/sccache-cargo.sh" cargo test --locked --workspace' \
   "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run Rust tests through the shared compilation cache'
@@ -424,6 +426,14 @@ for sccache_contract in \
   'SCCACHE_VERSION=0.15.0'; do
   grep -Fq -- "$sccache_contract" "$ROOT/deploy/sccache-cargo.sh" \
     || wd_die "shared Rust cache lost required contract: $sccache_contract"
+done
+for next_cache_contract in \
+  'git-common-dir' \
+  'codex-tools/next-cache' \
+  'deploy/next-cache.sh" restore "$ROOT"' \
+  'deploy/next-cache.sh" save "$ROOT"'; do
+  grep -Fq -- "$next_cache_contract" "$ROOT/deploy/agent-merge.sh" \
+    || wd_die "merge path lost persistent Next.js cache contract: $next_cache_contract"
 done
 for parallel_gate_contract in \
   'am_gate_typescript "$base" "$target" "$typescript_full" & typescript_pid=$!' \
@@ -441,6 +451,7 @@ done
 for path_gate_contract in \
   'diff --name-only --no-renames --diff-filter=ACDMRTUXB' \
   'wd_range_has_unknown_validation_path' \
+  'next-cache.sh' \
   'typescript-scope.mjs' \
   'typescript_full=1' \
   'local gate machinery changed; forcing every expensive lane' \

@@ -21,6 +21,7 @@ PREDEPLOY_DUMP_RETENTION_KEEP=10
 CI_USER=apitoken-ci
 CI_HOME=$STATE_ROOT/ci-home
 CI_CARGO_TARGET=$CI_HOME/cargo-target
+CI_NEXT_CACHE_ROOT=$CI_HOME/next-cache
 CI_TOOLCHAIN=/opt/apitoken-watchdog/rust-toolchain
 CONTROLLER_ROOT=/usr/local/lib/apitoken-watchdog/controller
 TEST_DB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-test-db
@@ -411,7 +412,11 @@ test_typescript_lane() {
   run_as_ci pnpm --dir "$candidate" install --frozen-lockfile
   # Every deployable entrypoint is built because the immutable candidate becomes the release
   # artifact. Typechecking and tests can still be limited to the changed package closure.
+  run_as_ci env NEXT_CACHE_ROOT="$CI_NEXT_CACHE_ROOT" \
+    bash "$candidate/deploy/next-cache.sh" restore "$candidate"
   run_as_ci pnpm --dir "$candidate" build
+  run_as_ci env NEXT_CACHE_ROOT="$CI_NEXT_CACHE_ROOT" \
+    bash "$candidate/deploy/next-cache.sh" save "$candidate"
   if (( force_full == 0 )) \
     && scope_output=$(run_as_ci node "$candidate/deploy/typescript-scope.mjs" \
       "$candidate" "$base" "$target"); then
@@ -477,6 +482,7 @@ test_static_lane() {
     run_as_ci bash "$candidate/deploy/lib.test.sh"
     run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"
     run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"
+    run_as_ci bash "$candidate/deploy/next-cache.test.sh"
     run_as_ci bash "$candidate/deploy/typescript-scope.test.sh"
     run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"
   fi
@@ -644,7 +650,7 @@ select_candidate_validation_requirements() {
 
   wd_range_has_class "$SOURCE_REPO" "$processed_base" "$target" wd_path_is_typescript \
     && VALIDATION_TYPESCRIPT_REQUIRED=1
-  if wd_range_changes_typescript_scope_gate "$SOURCE_REPO" "$processed_base" "$target"; then
+  if wd_range_changes_typescript_gate "$SOURCE_REPO" "$processed_base" "$target"; then
     VALIDATION_TYPESCRIPT_REQUIRED=1
     VALIDATION_TYPESCRIPT_FULL=1
   fi

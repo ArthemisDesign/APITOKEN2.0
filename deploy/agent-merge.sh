@@ -64,6 +64,7 @@ am_now() { date +%s; }
 
 am_gate_typescript() (
   local base=$1 target=$2 force_full=$3 scope_output= mode= package
+  local common_dir next_cache_root
   local filters=()
   cd "$ROOT"
   if [[ -n ${AGENT_MERGE_TYPESCRIPT_GATE_CMD:-} ]]; then
@@ -71,6 +72,9 @@ am_gate_typescript() (
     return
   fi
   pnpm install --frozen-lockfile
+  common_dir=$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)
+  next_cache_root="$common_dir/codex-tools/next-cache"
+  NEXT_CACHE_ROOT="$next_cache_root" bash "$ROOT/deploy/next-cache.sh" restore "$ROOT"
   if (( force_full == 0 )) \
     && scope_output=$(node "$ROOT/deploy/typescript-scope.mjs" "$ROOT" "$base" "$target"); then
     mode=${scope_output%%$'\n'*}
@@ -84,11 +88,15 @@ am_gate_typescript() (
   if (( ${#filters[@]} == 0 )); then
     am_log 'TypeScript scope is shared, empty, or unavailable; running the full workspace'
     pnpm build
-    pnpm typecheck
-    pnpm test
   else
     am_log "TypeScript scope selected ${#filters[@]} workspace package(s)"
     pnpm "${filters[@]}" -r --if-present --fail-if-no-match build
+  fi
+  NEXT_CACHE_ROOT="$next_cache_root" bash "$ROOT/deploy/next-cache.sh" save "$ROOT"
+  if (( ${#filters[@]} == 0 )); then
+    pnpm typecheck
+    pnpm test
+  else
     pnpm "${filters[@]}" -r --if-present --fail-if-no-match typecheck
     pnpm "${filters[@]}" -r --if-present --fail-if-no-match test
   fi
@@ -110,6 +118,7 @@ am_gate_deployment() (
     return
   fi
   bash "$ROOT/deploy/lib.test.sh"
+  bash "$ROOT/deploy/next-cache.test.sh"
   bash "$ROOT/deploy/typescript-scope.test.sh"
   # The merge path tests itself on every merge, strictly. It is deliberately not enforced in the
   # production gate: the watchdog installed on the host still calls deploy/agent-merge.test.sh, now a
@@ -138,7 +147,8 @@ am_range_changes_local_gate() {
   while IFS= read -r path; do
     case "$path" in
       deploy/agent-merge.sh|deploy/agent-merge.suite.sh|deploy/watchdog-lib.sh|\
-      deploy/sccache-cargo.sh|deploy/typescript-scope.mjs|deploy/typescript-scope.test.sh)
+      deploy/sccache-cargo.sh|deploy/next-cache.sh|deploy/next-cache.test.sh|\
+      deploy/typescript-scope.mjs|deploy/typescript-scope.test.sh)
         return 0
         ;;
     esac
