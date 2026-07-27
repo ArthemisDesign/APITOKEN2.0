@@ -196,6 +196,9 @@ SHA. После push хост переиспользует тот же замо�
 pnpm virtual store и standalone Content Studio, поэтому release promotion reflink-копирует только
 его, а не весь candidate; no-change GitHub-статусы публикуются параллельно, а финальные production-smoke
 выбираются только для реально затронутых surfaces и независимые проверки выполняются одновременно.
+Root-установка operational-изменений тоже ограничена точным составным scope: controller, Caddy,
+systemd и monitoring не запускают несвязанный полный bootstrap; только systemd требует следующего
+пятисекундного poll для нового sandbox.
 Скрипт держит lock до
 зелёного `deploy/watchdog`. Мёржить в `master` вслепую или вручную запрещено: `master` — production
 trigger, и watchdog деплоит ровно один SHA за раз.

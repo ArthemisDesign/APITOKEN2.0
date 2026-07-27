@@ -1717,7 +1717,7 @@ mark_idle_maintenance_complete() {
 main() {
   local resume_sha=${1:-}
   local remote_ref rejected infra_scope=none delivery_infra_scope=none
-  local infra_changed=0 caddy_changed=0 engine_changed=0 backend_changed=0 sales_changed=0
+  local infra_changed=0 engine_changed=0 backend_changed=0 sales_changed=0
   local openkeys_changed=0 codex_changed=0 typescript_required=0 typescript_full=0 typescript_base=
   local rust_required=0 static_required=0
   local engine_artifacts_required=0 codex_artifacts_required=0
@@ -1793,22 +1793,16 @@ main() {
 
   infra_scope=$(wd_infrastructure_install_scope \
     "$SOURCE_REPO" "$INFRASTRUCTURE_SHA" "$CANDIDATE_SHA")
-  case "$infra_scope" in
-    none) ;;
-    controller|caddy|full) infra_changed=1 ;;
-    *) wd_die "invalid infrastructure install scope: $infra_scope" ;;
-  esac
-  # A full installer deliberately hands off to a fresh systemd invocation after recording its
-  # infrastructure SHA. Preserve the delivery-wide scope from the last completed candidate so
-  # that next invocation still runs the final checks required by the infrastructure just changed.
+  wd_infrastructure_scope_is_valid "$infra_scope" \
+    || wd_die "invalid infrastructure install scope: $infra_scope"
+  [[ $infra_scope == none ]] || infra_changed=1
+  # A systemd or full installer deliberately hands off to a fresh invocation after recording its
+  # infrastructure SHA. Preserve the delivery-wide scope from the last completed candidate so the
+  # next invocation still runs the final checks required by the infrastructure just changed.
   delivery_infra_scope=$(wd_infrastructure_install_scope \
     "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA")
-  case "$delivery_infra_scope" in
-    none|controller|caddy|full) ;;
-    *) wd_die "invalid delivery infrastructure scope: $delivery_infra_scope" ;;
-  esac
-  wd_range_has_class "$SOURCE_REPO" "$INFRASTRUCTURE_SHA" "$CANDIDATE_SHA" wd_path_is_caddy \
-    && caddy_changed=1
+  wd_infrastructure_scope_is_valid "$delivery_infra_scope" \
+    || wd_die "invalid delivery infrastructure scope: $delivery_infra_scope"
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_engine \
     && engine_changed=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_codex_tooling \
@@ -1883,34 +1877,29 @@ main() {
     CURRENT_PHASE_BEFORE_FAILURE=installing-infrastructure
     status "installing exact tested operational definitions ($infra_scope)"
     github_status pending deploy/watchdog "Installing exact tested operational definitions ($infra_scope)"
-    if [[ $infra_scope == controller ]]; then
-      sudo -n "$INFRASTRUCTURE_RUNNER" "$CANDIDATE_SHA" --controller-only
-    elif [[ $infra_scope == caddy ]]; then
-      sudo -n "$INFRASTRUCTURE_RUNNER" "$CANDIDATE_SHA" --caddy-only
-    elif (( caddy_changed == 1 )); then
-      sudo -n "$INFRASTRUCTURE_RUNNER" "$CANDIDATE_SHA" --apply-caddy
-    else
-      sudo -n "$INFRASTRUCTURE_RUNNER" "$CANDIDATE_SHA"
-    fi
+    # The fixed root bridge independently derives and verifies this exact scope before installing
+    # it, so the candidate controller cannot omit a changed concern.
+    sudo -n "$INFRASTRUCTURE_RUNNER" "$CANDIDATE_SHA"
     [[ $(wd_read_sha "$INFRASTRUCTURE_FILE") == "$CANDIDATE_SHA" ]] \
       || wd_die "infrastructure installer did not record the exact installed candidate"
-    if [[ $infra_scope == controller ]]; then
+    if [[ $infra_scope == full ]] \
+        || wd_infrastructure_scope_has "$infra_scope" systemd; then
+      # A systemd transaction may change this service's sandbox. The current process still has the
+      # old namespace, so only a manager-spawned next cycle may consume the new privileges.
+      CURRENT_PHASE=handoff
+      status "system definitions installed; next five-second poll starts the updated service"
+      github_status pending deploy/watchdog "System definitions installed; continuing on next poll"
+      wd_log "system infrastructure transaction installed; deferring to a fresh systemd invocation"
+      exit 0
+    elif wd_infrastructure_scope_has "$infra_scope" controller; then
       CURRENT_PHASE=handoff
       status "operational definitions installed; continuing immediately with the new controller"
       github_status pending deploy/watchdog "New controller installed; continuing immediately"
       wd_log "exact tested controller installed; transferring the held lock to the new controller"
       require_fixed_file "$CONTROLLER_ENTRYPOINT"
       exec "$CONTROLLER_ENTRYPOINT" --resume "$CANDIDATE_SHA"
-    elif [[ $infra_scope == caddy ]]; then
-      wd_log "exact tested Caddy configuration installed; continuing the same deployment cycle"
     else
-      # A full transaction may change this service's systemd sandbox. The current process still has
-      # the old namespace, so only a manager-spawned next cycle may consume the new privileges.
-      CURRENT_PHASE=handoff
-      status "system definitions installed; next five-second poll starts the updated service"
-      github_status pending deploy/watchdog "System definitions installed; continuing on next poll"
-      wd_log "full infrastructure transaction installed; deferring to a fresh systemd invocation"
-      exit 0
+      wd_log "exact tested $infra_scope definitions installed; continuing the same deployment cycle"
     fi
   fi
 

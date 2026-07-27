@@ -55,11 +55,13 @@ documentation deliveries do not re-probe an unchanged serving runtime. Independe
 smokes overlap and are all joined before the overall green status; possible engine reconciliation
 still completes first. A disabled Codex metric is recognized directly instead of spending the full
 retry window waiting for a filtered positive series.
-Operational self-updates are content-aware: controller-only ranges copy the fixed root-owned
-controller bundle, and Caddy-only ranges validate/reload only Caddy. Mixed changes, deletions,
-systemd/monitoring/stateful definitions, and unknown deployment files fail closed to the complete
-installer. Every mode records the exact tested infrastructure SHA before handing off to the next
-five-second poll.
+Operational self-updates are content-aware and composable. Controller definitions, Caddy,
+systemd, and monitoring each have a narrow root transaction; a mixed range runs only the selected
+transactions in canonical order. Caddy and monitoring continue in the same cycle, controller work
+hands the held lock directly to the installed controller, and only a systemd concern waits for the
+next five-second manager invocation. Deletions, privileged/stateful definitions, and unknown
+deployment files still fail closed to the complete installer. Every transaction records its exact
+tested infrastructure SHA only after every selected concern succeeds.
 
 Pinned Codex tooling has its own artifact flag inside the engine lane. The isolated candidate builds
 and tests the audited upstream pin once. During engine release selection,

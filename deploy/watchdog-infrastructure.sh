@@ -8,7 +8,7 @@ source "$LIB"
 
 STATE_ROOT=/var/lib/apitoken/watchdog
 CANDIDATE_ROOT=$STATE_ROOT/candidates
-INSTALL_MODE=full
+REQUESTED_MODE=auto
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || wd_die "infrastructure installation must run as root"
 [[ $# -ge 1 && $# -le 2 ]] \
@@ -17,9 +17,9 @@ SHA=$1
 wd_validate_sha "$SHA"
 if [[ $# -eq 2 ]]; then
   case "$2" in
-    --controller-only) INSTALL_MODE=controller ;;
-    --caddy-only) INSTALL_MODE=caddy ;;
-    --apply-caddy) INSTALL_MODE=full-caddy ;;
+    --controller-only) REQUESTED_MODE=controller ;;
+    --caddy-only) REQUESTED_MODE=caddy ;;
+    --apply-caddy) REQUESTED_MODE=apply-caddy ;;
     *) wd_die "unknown infrastructure option: $2" ;;
   esac
 fi
@@ -42,17 +42,59 @@ candidate_tree=$(git -c safe.directory="$CANDIDATE" -C "$CANDIDATE" rev-parse 'H
 [[ -x $CANDIDATE/deploy/install-watchdog.sh && ! -L $CANDIDATE/deploy/install-watchdog.sh ]] \
   || wd_die "candidate watchdog installer is missing"
 
-case "$INSTALL_MODE" in
-  controller) "$CANDIDATE/deploy/install-watchdog.sh" --controller-only ;;
-  full|full-caddy) "$CANDIDATE/deploy/install-watchdog.sh" ;;
+BASE=$(wd_read_sha "$STATE_ROOT/infrastructure.sha") \
+  || wd_die "installed infrastructure baseline is missing"
+git -c safe.directory="$CANDIDATE" -C "$CANDIDATE" merge-base --is-ancestor "$BASE" "$SHA" \
+  || wd_die "installed infrastructure baseline is not an ancestor of the candidate"
+INSTALL_SCOPE=$(wd_infrastructure_install_scope "$CANDIDATE" "$BASE" "$SHA") \
+  || wd_die "could not derive the exact infrastructure scope"
+wd_infrastructure_scope_is_valid "$INSTALL_SCOPE" \
+  || wd_die "invalid exact infrastructure scope: $INSTALL_SCOPE"
+[[ $INSTALL_SCOPE != none ]] || wd_die "candidate has no infrastructure definitions to install"
+CADDY_CHANGED=0
+wd_range_has_class "$CANDIDATE" "$BASE" "$SHA" wd_path_is_caddy && CADDY_CHANGED=1
+
+# Compatibility options from the previous controller remain accepted, but the fixed bridge derives
+# the transaction itself and refuses a request that would omit part of the tested range.
+case "$REQUESTED_MODE" in
+  auto) ;;
+  controller)
+    [[ $INSTALL_SCOPE == controller ]] \
+      || wd_die "controller-only request does not cover exact scope $INSTALL_SCOPE"
+    ;;
+  caddy)
+    [[ $INSTALL_SCOPE == caddy ]] \
+      || wd_die "caddy-only request does not cover exact scope $INSTALL_SCOPE"
+    ;;
+  apply-caddy)
+    (( CADDY_CHANGED == 1 )) \
+      || wd_die "apply-caddy request has no Caddy definition change"
+    ;;
 esac
-if [[ $INSTALL_MODE == caddy || $INSTALL_MODE == full-caddy ]]; then
+
+if [[ $INSTALL_SCOPE == full ]]; then
+  "$CANDIDATE/deploy/install-watchdog.sh"
+else
+  if wd_infrastructure_scope_has "$INSTALL_SCOPE" systemd; then
+    "$CANDIDATE/deploy/install-watchdog.sh" --systemd-only
+  fi
+  if wd_infrastructure_scope_has "$INSTALL_SCOPE" monitoring; then
+    "$CANDIDATE/deploy/install-watchdog.sh" --monitoring-only
+  fi
+fi
+if (( CADDY_CHANGED == 1 )); then
   [[ -f $CANDIDATE/deploy/Caddyfile && ! -L $CANDIDATE/deploy/Caddyfile ]] \
     || wd_die "candidate Caddy template is missing"
   [[ -x $CANDIDATE/deploy/install-caddy.sh && ! -L $CANDIDATE/deploy/install-caddy.sh ]] \
     || wd_die "candidate Caddy installer is missing"
   CADDY_TEMPLATE="$CANDIDATE/deploy/Caddyfile" "$CANDIDATE/deploy/install-caddy.sh" --check
   CADDY_TEMPLATE="$CANDIDATE/deploy/Caddyfile" "$CANDIDATE/deploy/install-caddy.sh"
+fi
+if [[ $INSTALL_SCOPE != full ]] \
+    && wd_infrastructure_scope_has "$INSTALL_SCOPE" controller; then
+  # Copy the controller last so a partial transaction never exposes a newer controller before its
+  # independent systemd, monitoring, and Caddy concerns have completed.
+  "$CANDIDATE/deploy/install-watchdog.sh" --controller-only
 fi
 
 # This is the controller handoff fence. Record it only after the installer and the optional Caddy

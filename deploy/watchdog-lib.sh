@@ -477,37 +477,79 @@ wd_range_files() {
   git -C "$repo" diff --name-only --no-renames --diff-filter=ACDMRTUXB "$base..$target"
 }
 
+# Infrastructure scopes are canonical, ordered sets. Keeping one representation lets the
+# unprivileged controller, fixed root bridge, final verifier, and regression tests agree on the
+# exact transaction without accepting duplicate, reordered, or unknown scope names.
+wd_infrastructure_scope_is_valid() {
+  local scope=$1 token rank previous=0
+  local tokens=()
+  case "$scope" in
+    none|full) return 0 ;;
+    '') return 1 ;;
+  esac
+  IFS=+ read -r -a tokens <<<"$scope"
+  for token in "${tokens[@]}"; do
+    case "$token" in
+      controller) rank=1 ;;
+      caddy) rank=2 ;;
+      systemd) rank=3 ;;
+      monitoring) rank=4 ;;
+      *) return 1 ;;
+    esac
+    (( rank > previous )) || return 1
+    previous=$rank
+  done
+}
+
+wd_infrastructure_scope_has() {
+  local scope=$1 component=$2
+  wd_infrastructure_scope_is_valid "$scope" || return 2
+  case "$component" in
+    controller|caddy|systemd|monitoring) ;;
+    *) return 2 ;;
+  esac
+  [[ $scope == full ]] && return 0
+  [[ "+$scope+" == *"+$component+"* ]]
+}
+
 # Return the canonical set of cross-component production checks required after the selected
 # rollout. Component controllers already verify their own exact release before returning, so an
-# unrelated deployment must not pay for every engine/Caddy smoke again. Risky full infrastructure
-# changes retain the complete fence, while controller-only and documentation deliveries need no
-# serving-runtime check at all.
+# unrelated deployment must not pay for every engine/Caddy smoke again. Systemd and risky full
+# infrastructure changes retain the complete fence; monitoring-only checks only monitoring, while
+# controller-only and documentation deliveries need no serving-runtime check at all.
 wd_final_verification_plan() {
   local infrastructure_scope=$1 engine_changed=$2 backend_changed=$3
   local sales_changed=$4 openkeys_changed=$5
   local checks=()
-  case "$infrastructure_scope" in
-    none|controller|caddy|full) ;;
-    *) return 2 ;;
-  esac
+  local broad_infrastructure=0 caddy_infrastructure=0 monitoring_infrastructure=0
+  wd_infrastructure_scope_is_valid "$infrastructure_scope" || return 2
   local flag
   for flag in "$engine_changed" "$backend_changed" "$sales_changed" "$openkeys_changed"; do
     [[ $flag == 0 || $flag == 1 ]] || return 2
   done
 
-  if (( engine_changed == 1 )) || [[ $infrastructure_scope == full ]]; then
+  if [[ $infrastructure_scope == full ]] \
+      || wd_infrastructure_scope_has "$infrastructure_scope" systemd; then
+    broad_infrastructure=1
+  fi
+  wd_infrastructure_scope_has "$infrastructure_scope" caddy \
+    && caddy_infrastructure=1
+  wd_infrastructure_scope_has "$infrastructure_scope" monitoring \
+    && monitoring_infrastructure=1
+
+  if (( engine_changed == 1 || broad_infrastructure == 1 )); then
     checks+=(runtime panel)
   fi
-  if [[ $infrastructure_scope == caddy || $infrastructure_scope == full ]]; then
+  if (( caddy_infrastructure == 1 || broad_infrastructure == 1 )); then
     checks+=(routing)
   fi
   if (( engine_changed == 1 || backend_changed == 1 || sales_changed == 1 \
-        || openkeys_changed == 1 )) \
-      || [[ $infrastructure_scope == caddy || $infrastructure_scope == full ]]; then
+        || openkeys_changed == 1 || caddy_infrastructure == 1 \
+        || monitoring_infrastructure == 1 || broad_infrastructure == 1 )); then
     checks+=(monitoring)
   fi
-  if (( engine_changed == 1 )) \
-      || [[ $infrastructure_scope == caddy || $infrastructure_scope == full ]]; then
+  if (( engine_changed == 1 || caddy_infrastructure == 1 \
+        || broad_infrastructure == 1 )); then
     checks+=(codex)
   fi
 
@@ -616,7 +658,7 @@ wd_path_requires_infrastructure_install() {
     deploy/*.md|deploy/*.test.sh|deploy/agent-merge.sh|deploy/agent-merge.suite.sh|\
     deploy/test-stage2-e2e.sh|deploy/sccache-cargo.sh|deploy/next-cache.sh|\
     deploy/typescript-scope.mjs|deploy/typescript-build-contexts.sh|\
-    deploy/typescript-test-groups.sh)
+    deploy/typescript-test-groups.sh|compose.yaml)
       return 1
       ;;
     deploy/*|systemd/*|observability/*|compose.yaml)
@@ -627,7 +669,42 @@ wd_path_requires_infrastructure_install() {
 }
 
 wd_path_is_caddy() {
-  [[ $1 == deploy/Caddyfile ]]
+  case "$1" in
+    deploy/Caddyfile|deploy/install-caddy.sh|deploy/render-caddy.awk)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+wd_path_is_systemd_definition() {
+  case "$1" in
+    systemd/apitoken-api@.service|\
+    systemd/apitoken-deploy-watchdog.service|systemd/apitoken-deploy-watchdog.timer|\
+    systemd/apitoken-candidate-validator.service|systemd/apitoken-candidate-validator.timer|\
+    systemd/apitoken-sudoers-install.service|\
+    systemd/apitoken-postgres.service|systemd/apitoken-affinity-redis.service|\
+    systemd/apitoken-worker.service|systemd/apitoken-content-studio.service|\
+    systemd/claude-api@.service|systemd/claude-api-backup.service|\
+    systemd/claude-api-backup.timer|systemd/claude-api-fingerprint.service|\
+    systemd/claude-api-fingerprint.timer|systemd/apitoken-sales-api.service|\
+    systemd/apitoken-sales-web.service|systemd/claude-authbot.service|\
+    systemd/apitoken-openkeys.service|systemd/apitoken-monitoring-collector.service|\
+    systemd/apitoken-monitoring-collector.timer|systemd/journald-apitoken.conf)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+wd_path_is_monitoring_definition() {
+  case "$1" in
+    observability/*|deploy/install-monitoring.sh|deploy/render-alertmanager.mjs|\
+    deploy/collect-monitoring-metrics.sh)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 # These files are copied into fixed, root-owned controller locations but do not define services,
@@ -651,16 +728,16 @@ wd_path_is_controller_definition() {
   esac
 }
 
-# Return the least expensive safe root-install transaction for an exact commit range:
-#   none       no installed production definition changed
-#   controller only fixed controller files changed
-#   caddy      only the Caddy template changed
-#   full       stateful/systemd/monitoring/unknown, mixed controller+Caddy, or any deletion
+# Return the least expensive safe root-install transaction for an exact commit range. Independent
+# narrow concerns compose in canonical order, for example `controller+caddy+monitoring`. Privileged
+# or stateful definitions, unknown deployment files, and any deletion still select `full`.
 #
 # Deletions fail closed because a narrow copy-only transaction cannot remove a retired installed
 # file safely. Rename detection stays disabled so a move includes that deletion.
 wd_infrastructure_install_scope() {
-  local repo=$1 base=$2 target=$3 entries status path scope=none
+  local repo=$1 base=$2 target=$3 entries status path
+  local controller=0 caddy=0 systemd=0 monitoring=0
+  local scopes=()
   [[ -n $base && $base != "$target" ]] || { printf 'none\n'; return 0; }
   entries=$(git -C "$repo" diff --name-status --no-renames --diff-filter=ACDMRTUXB \
     "$base..$target") || return 1
@@ -672,17 +749,28 @@ wd_infrastructure_install_scope() {
       return 0
     fi
     if wd_path_is_controller_definition "$path"; then
-      [[ $scope == none || $scope == controller ]] || { printf 'full\n'; return 0; }
-      scope=controller
+      controller=1
     elif wd_path_is_caddy "$path"; then
-      [[ $scope == none || $scope == caddy ]] || { printf 'full\n'; return 0; }
-      scope=caddy
+      caddy=1
+    elif wd_path_is_systemd_definition "$path"; then
+      systemd=1
+    elif wd_path_is_monitoring_definition "$path"; then
+      monitoring=1
     else
       printf 'full\n'
       return 0
     fi
   done <<<"$entries"
-  printf '%s\n' "$scope"
+  (( controller == 0 )) || scopes+=(controller)
+  (( caddy == 0 )) || scopes+=(caddy)
+  (( systemd == 0 )) || scopes+=(systemd)
+  (( monitoring == 0 )) || scopes+=(monitoring)
+  if (( ${#scopes[@]} == 0 )); then
+    printf 'none\n'
+  else
+    local IFS=+
+    printf '%s\n' "${scopes[*]}"
+  fi
 }
 
 wd_path_is_merge_workflow() {

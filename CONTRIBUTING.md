@@ -155,15 +155,18 @@ locked and reused by production. The host refetches `master` before a green verd
 branch is rebased and revalidated. A red feature candidate updates only its own validation
 deployment and `deploy/tests`; it cannot quarantine or change the healthy production verdict.
 
-Changes to `deploy/`, `systemd/`, `observability/`, or `compose.yaml` are delivered automatically,
-like application code, but through a stricter path. Only after the exact immutable candidate passes
-its selected gate does a fixed root-owned bridge re-verify its SHA, tree, and clean worktree against
-the test marker, then install that candidate's own controllers and systemd definitions. The running
-and candidate controllers contribute versioned validation plans; the host validates their union and
-binds the marker to that plan and the candidate policy digest. Controller-only updates transfer the
-held deployment lock directly into the newly installed root-owned controller, so they neither wait
-for another poll nor repeat a sufficient exact-SHA gate. Full systemd updates remain pending for the
-next five-second poll so a fresh process receives the new sandbox. A changed Caddy template is rendered against the live host
+Production definitions under `deploy/`, `systemd/`, and `observability/` are delivered
+automatically, like application code, but through a stricter path. Only after the exact immutable
+candidate passes its selected gate does a fixed root-owned bridge re-verify its SHA, tree, and clean
+worktree against the test marker, independently derive the exact scope, and install only the
+selected controller, Caddy, systemd, and/or monitoring definitions. Narrow concerns compose;
+deletions, privileged/stateful definitions, and unknown files still use the complete installer.
+The running and candidate controllers contribute versioned validation plans; the host validates
+their union and binds the marker to that plan and the candidate policy digest. Controller updates
+transfer the held deployment lock directly into the newly installed root-owned controller, so they
+neither wait for another poll nor repeat a sufficient exact-SHA gate. Caddy and monitoring continue
+in the same cycle; any systemd scope remains pending for the next five-second poll so a fresh
+process receives the new sandbox. The root `compose.yaml` is local-development-only. A changed Caddy template is rendered against the live host
 secrets, validated, and reloaded with an automatic rollback copy; the repository file with its
 placeholders is never copied over production. Changes under `.github/` do not touch the production
 host and therefore need no host-install stage.

@@ -3,13 +3,16 @@ set -euo pipefail
 
 # One-time root installer for the host-local, free GitHub polling watchdog.
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'run as root' >&2; exit 1; }
-CONTROLLER_ONLY=0
+INSTALL_MODE=full
 case "${1:-}" in
   '') ;;
-  --controller-only) CONTROLLER_ONLY=1 ;;
-  *) echo "usage: $0 [--controller-only]" >&2; exit 2 ;;
+  --controller-only) INSTALL_MODE=controller ;;
+  --systemd-only) INSTALL_MODE=systemd ;;
+  --monitoring-only) INSTALL_MODE=monitoring ;;
+  *) echo "usage: $0 [--controller-only|--systemd-only|--monitoring-only]" >&2; exit 2 ;;
 esac
-[[ $# -le 1 ]] || { echo "usage: $0 [--controller-only]" >&2; exit 2; }
+[[ $# -le 1 ]] \
+  || { echo "usage: $0 [--controller-only|--systemd-only|--monitoring-only]" >&2; exit 2; }
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=deploy/watchdog-lib.sh
 source "$ROOT/deploy/watchdog-lib.sh"
@@ -62,13 +65,64 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/controller/openkeys-deploy.sh
 }
 
-# Most deployment-workflow changes only replace this small fixed bundle. Do that before probing or
-# restarting any unrelated host component.
-if (( CONTROLLER_ONLY == 1 )); then
-  install_controller_definitions
-  echo 'production watchdog controller definitions installed'
-  exit 0
-fi
+install_systemd_definitions() {
+  command -v systemctl >/dev/null || { echo 'systemd is required' >&2; return 1; }
+  for unit in \
+    apitoken-api@.service \
+    apitoken-deploy-watchdog.service apitoken-deploy-watchdog.timer \
+    apitoken-candidate-validator.service apitoken-candidate-validator.timer \
+    apitoken-sudoers-install.service \
+    apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api@.service claude-api-backup.service claude-api-backup.timer \
+    claude-api-fingerprint.service claude-api-fingerprint.timer \
+    apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \
+    apitoken-openkeys.service \
+    apitoken-monitoring-collector.service apitoken-monitoring-collector.timer; do
+    install -o root -g root -m 0644 "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"
+  done
+
+  # Journald storage must be an explicit decision rather than a side effect of boot ordering. Under
+  # the default `Storage=auto` journald picks volatile-vs-persistent once at start by testing
+  # whether /var/log/journal exists.
+  local journald_dropin=/etc/systemd/journald.conf.d/10-apitoken.conf
+  if install -d -o root -g root -m 0755 /etc/systemd/journald.conf.d 2>/dev/null; then
+    install -d -o root -g systemd-journal -m 2755 /var/log/journal
+    if ! cmp -s "$ROOT/systemd/journald-apitoken.conf" "$journald_dropin"; then
+      install -o root -g root -m 0644 "$ROOT/systemd/journald-apitoken.conf" "$journald_dropin"
+      systemctl restart systemd-journald
+      journalctl --flush
+    fi
+  else
+    echo 'journald drop-in skipped: /etc/systemd is read-only in this namespace;' \
+      'the next infrastructure deployment will apply it' >&2
+  fi
+  systemctl daemon-reload
+}
+
+install_monitoring_definitions() {
+  install -o root -g root -m 0755 "$ROOT/deploy/collect-monitoring-metrics.sh" \
+    /usr/local/lib/apitoken-watchdog/collect-monitoring-metrics.sh
+  "$ROOT/deploy/install-monitoring.sh"
+}
+
+# Narrow transactions install only the exact concern selected by the fixed root bridge. They are
+# deliberately fenced before bootstrap provisioning and unrelated service restarts.
+case "$INSTALL_MODE" in
+  controller)
+    install_controller_definitions
+    echo 'production watchdog controller definitions installed'
+    exit 0
+    ;;
+  systemd)
+    install_systemd_definitions
+    echo 'production systemd definitions installed'
+    exit 0
+    ;;
+  monitoring)
+    install_monitoring_definitions
+    echo 'production monitoring definitions installed'
+    exit 0
+    ;;
+esac
 
 command -v systemctl >/dev/null || { echo 'systemd is required' >&2; exit 1; }
 command -v curl >/dev/null || { echo 'curl is required' >&2; exit 1; }
@@ -111,54 +165,12 @@ install -o root -g root -m 0755 "$ROOT/deploy/install-sudoers.sh" /usr/local/lib
 install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/sudoers.d
 install -o root -g root -m 0644 "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   /usr/local/lib/apitoken-watchdog/sudoers.d/95-apitoken-deploy
-install -o root -g root -m 0755 "$ROOT/deploy/collect-monitoring-metrics.sh" /usr/local/lib/apitoken-watchdog/collect-monitoring-metrics.sh
 install -o root -g root -m 0755 "$ROOT/deploy/apitoken-db-dump" /usr/local/lib/apitoken-watchdog/apitoken-db-dump
 install -o root -g root -m 0644 "$ROOT/deploy/commerce-postgres.compose.yaml" \
   /usr/local/lib/apitoken-watchdog/controller/commerce-postgres.compose.yaml
 install -o root -g root -m 0644 "$ROOT/deploy/affinity-redis.compose.yaml" \
   /usr/local/lib/apitoken-watchdog/controller/affinity-redis.compose.yaml
-for unit in \
-  apitoken-api@.service \
-  apitoken-deploy-watchdog.service apitoken-deploy-watchdog.timer \
-  apitoken-candidate-validator.service apitoken-candidate-validator.timer \
-  apitoken-sudoers-install.service \
-  apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api@.service claude-api-backup.service claude-api-backup.timer \
-  claude-api-fingerprint.service claude-api-fingerprint.timer \
-  apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \
-  apitoken-openkeys.service \
-  apitoken-monitoring-collector.service apitoken-monitoring-collector.timer; do
-  install -o root -g root -m 0644 "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"
-done
-
-# Journald storage must be an explicit decision rather than a side effect of boot ordering. Under
-# the default `Storage=auto` journald picks volatile-vs-persistent once at start by testing whether
-# /var/log/journal exists, and that directory only appears because Docker creates it for the Alloy
-# bind mount in observability/compose.yaml. The result was a journal in /run (tmpfs), pinned at its
-# RuntimeMaxUse cap and discarded on every reboot.
-journald_dropin=/etc/systemd/journald.conf.d/10-apitoken.conf
-# The controller runs under ProtectSystem=full, so /etc is read-only apart from the paths its unit
-# lists in ReadWritePaths. That unit now grants /etc/systemd, but a unit change only takes effect
-# for the NEXT invocation: this service is Type=oneshot, and the run that installs the new
-# definition is still executing inside the namespace it started with. So the first deployment after
-# that grant cannot yet create the drop-in directory, and failing here would abort the whole
-# infrastructure install for a log-configuration detail. Attempt it, and skip loudly if the
-# namespace is still the old one — the next infrastructure deployment applies it.
-if install -d -o root -g root -m 0755 /etc/systemd/journald.conf.d 2>/dev/null; then
-  # journald only writes to a persistent directory owned by the journal group; the Docker-created
-  # one is root:root 0755. Fix ownership before the restart, or journald silently stays volatile.
-  install -d -o root -g systemd-journal -m 2755 /var/log/journal
-  # This installer runs on every infrastructure commit, so restart only on an actual content change:
-  # an unconditional restart would interrupt logging on each unrelated deployment.
-  if ! cmp -s "$ROOT/systemd/journald-apitoken.conf" "$journald_dropin"; then
-    install -o root -g root -m 0644 "$ROOT/systemd/journald-apitoken.conf" "$journald_dropin"
-    systemctl restart systemd-journald
-    # Move whatever the runtime journal still holds onto the now-persistent store.
-    journalctl --flush
-  fi
-else
-  echo 'journald drop-in skipped: /etc/systemd is read-only in this namespace;' \
-    'the next infrastructure deployment will apply it' >&2
-fi
+install_systemd_definitions
 
 # Shared affinity is deliberately ephemeral, but its keyed identifiers and Redis password must be
 # stable across engine restarts. Provision them once without printing secret values. The engine
@@ -250,7 +262,7 @@ systemctl daemon-reload
 # This unit validates the candidate, saves a rollback copy, replaces the policy, verifies every
 # required and forbidden privilege as `deploy`, and restores the old policy on any failure.
 systemctl start apitoken-sudoers-install.service
-"$ROOT/deploy/install-monitoring.sh"
+install_monitoring_definitions
 systemctl enable apitoken-affinity-redis.service
 systemctl restart apitoken-affinity-redis.service
 systemctl enable --now apitoken-candidate-validator.timer
