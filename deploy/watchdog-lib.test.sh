@@ -545,8 +545,8 @@ done < <(grep -oE '^Cmnd_Alias [A-Z_]+' "$sudoers_policy" | awk '{print $2}')
 # The installer and its policy are delivered together with the other operational definitions.
 grep -Fq 'install-sudoers.sh' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'the sudoers installer is not delivered to the host'
-grep -Fxq '"$ROOT/deploy/install-sudoers.sh"' "$ROOT/deploy/install-watchdog.sh" \
-  || wd_die 'tested infrastructure does not atomically apply its sudo policy'
+grep -Fxq '/usr/local/lib/apitoken-watchdog/install-sudoers.sh' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'tested infrastructure does not atomically apply its executable sudo policy'
 # install-watchdog.sh must never re-add apitoken-ci to the deploy group: that would silently undo
 # the isolation fix on the next infrastructure install, and the two installers would fight.
 if grep -Eq 'usermod -a -G deploy apitoken-ci' "$ROOT/deploy/install-watchdog.sh"; then

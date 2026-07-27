@@ -50,7 +50,7 @@ install -o root -g root -m 0755 "$ROOT/deploy/install-sudoers.sh" /usr/local/lib
 install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/sudoers.d
 install -o root -g root -m 0644 "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   /usr/local/lib/apitoken-watchdog/sudoers.d/95-apitoken-deploy
-"$ROOT/deploy/install-sudoers.sh"
+/usr/local/lib/apitoken-watchdog/install-sudoers.sh
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-github.sh" /usr/local/lib/apitoken-watchdog/watchdog-github
 install -o root -g root -m 0755 "$ROOT/deploy/watchdog-control.sh" /usr/local/bin/apitoken-watchdog
 install -o root -g root -m 0755 "$ROOT/deploy/collect-monitoring-metrics.sh" /usr/local/lib/apitoken-watchdog/collect-monitoring-metrics.sh
