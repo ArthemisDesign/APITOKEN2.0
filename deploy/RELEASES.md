@@ -8,9 +8,15 @@ Production releases are addressed by the full lowercase 40-character Git commit 
 /opt/apitoken/
 ├── repo/                                      fetch-only deployment checkout
 └── releases/
-    ├── <sha>/                                 detached checkout + installed dependencies + build output
+    ├── <sha>/                                 compact tested production bundle
     │   ├── .release-sha
+    │   ├── .release-bundle-format
+    │   ├── node_modules/                      one shared production pnpm virtual store
     │   ├── apps/api/dist/main.js
+    │   ├── apps/worker/dist/main.js
+    │   ├── apps/content-studio/.next/
+    │   │   ├── BUILD_ID
+    │   │   └── standalone/apps/content-studio/server.js
     │   └── packages/db/dist/migrate.js        prebuilt migration entry point
     ├── current -> /opt/apitoken/releases/<active-sha>
     └── previous -> /opt/apitoken/releases/<prior-sha>
@@ -25,6 +31,11 @@ node "/opt/apitoken/releases/<sha>/packages/db/dist/migrate.js"
 ```
 
 The database package is built in staging. Deployment never calls the package's `db:migrate` script from a final release because that script runs a build first and would violate immutability.
+
+The trusted TypeScript lane assembles and hashes the complete commerce bundle before freezing the
+candidate. Promotion copies only `.deploy-artifacts/commerce-release`, using a same-filesystem
+reflink when supported. Content Studio runs its traced standalone server; a fixed launcher falls
+back to `next start` when an older full-tree release is selected for rollback.
 
 ## Rust engine
 
@@ -64,12 +75,14 @@ Release roots are canonicalized. Commerce releases must stay below `/opt/apitoke
 
 For a new release the controller:
 
-1. validates and copies the root-owned watchdog candidate when `--tested-candidate` is supplied, or
-   checks out the exact fetched commit into a temporary path for standalone/manual use;
-2. preserves the candidate's tested artifacts, or installs/builds inside the manual staging path;
+1. validates the root-owned watchdog candidate and its complete bundle digest when
+   `--tested-candidate` is supplied, or checks out the exact fetched commit into a temporary path
+   for standalone/manual use;
+2. reflink-copies the pre-frozen compact bundle, or installs/builds inside the manual staging path;
 3. validates the API entry point and prebuilt migration, or the engine binary;
 4. writes `.release-sha` while still staging;
-5. recursively removes write permission from the staged tree;
+5. removes write permission from the new marker and bundle root (the tested bundle contents were
+   already frozen), or recursively freezes a standalone/manual build;
 6. atomically renames staging to `<root>/<sha>`;
 7. validates the final directory again before migration, activation, or reuse.
 

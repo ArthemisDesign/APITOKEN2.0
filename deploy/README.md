@@ -7,7 +7,12 @@ internals and first-environment procedures.
 These scripts finalize immutable SHA-addressed releases, move release links atomically, and activate
 processes with exact-systemd-unit readiness gates. The automatic watchdog passes
 `--tested-candidate`: `deploy.sh` validates and promotes the frozen build instead of compiling it a
-second time. Manual/bootstrap use retains the standalone checkout-and-build fallback. Commerce and
+second time. The commerce lane first reduces that candidate to a content-addressed production-only
+bundle: one shared pnpm virtual store, compiled API/worker/database files, migrations, and the
+Content Studio standalone trace. Production reflink-copies only that roughly 105 MiB tree rather
+than walking the full roughly 636 MiB candidate, then writes only the release marker; the bundle
+was already frozen before its digest entered the trusted marker. Manual/bootstrap use retains the
+standalone checkout-and-build fallback. Commerce and
 PostgreSQL-backed engine deploys are two-phase: `deploy.sh` selects the release without touching
 their serving slots, then the matching blue-green controller owns admission, pre-drain, and
 shutdown. They never restart PostgreSQL, never write into a finalized release, and never treat an
@@ -209,7 +214,8 @@ A normal deploy:
 1. validates roots, lock files, unit names, timeout, and poll interval;
 2. preflights and captures both `current` and `previous` for every selected component, rejecting broken, non-symlink, out-of-root, or non-SHA targets before builds or migrations;
 3. promotes the watchdog-tested candidate, builds only in staging for standalone/manual use, or
-   strictly validates every required artifact in an existing SHA release;
+   strictly validates every required artifact in an existing SHA release; tested commerce
+   promotion copies only its pre-frozen compact bundle with same-filesystem reflinks;
 4. runs the locked, prebuilt commerce migration before moving the API release link;
 5. installs `ERR`, `EXIT`, `INT`, and `TERM` recovery traps before the first link mutation;
 6. when the target differs from `current`, records the old `current` as `previous` and atomically changes `current`;

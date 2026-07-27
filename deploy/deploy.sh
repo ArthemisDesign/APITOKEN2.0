@@ -197,7 +197,25 @@ validate_commerce_stage() {
   local directory=$1
   [[ -r "$directory/apps/api/dist/main.js" ]] || die "staged commerce API artifact is missing: $directory/apps/api/dist/main.js"
   [[ -r "$directory/apps/content-studio/.next/BUILD_ID" ]] || die "staged content studio artifact is missing: $directory/apps/content-studio/.next/BUILD_ID"
+  [[ -r "$directory/apps/content-studio/.next/standalone/apps/content-studio/server.js" ]] \
+    || die "staged standalone content studio server is missing"
+  [[ -d "$directory/apps/content-studio/.next/standalone/apps/content-studio/.next/static" ]] \
+    || die "staged standalone content studio static assets are missing"
   [[ -r "$directory/packages/db/dist/migrate.js" ]] || die "staged prebuilt migration artifact is missing: $directory/packages/db/dist/migrate.js"
+}
+
+populate_content_studio_standalone_assets() {
+  local release=$1
+  local app=$release/apps/content-studio
+  local standalone_app=$app/.next/standalone/apps/content-studio
+  [[ -r "$standalone_app/server.js" ]] \
+    || die "content studio standalone server was not built: $standalone_app/server.js"
+  run install -d -- "$standalone_app/.next/static"
+  run cp -a -- "$app/.next/static/." "$standalone_app/.next/static/"
+  if [[ -d "$app/public" && ! -L "$app/public" ]]; then
+    run install -d -- "$standalone_app/public"
+    run cp -a -- "$app/public/." "$standalone_app/public/"
+  fi
 }
 
 validate_engine_stage() {
@@ -265,6 +283,7 @@ checkout_stage() {
 }
 
 prepare_commerce_release() {
+  local tested_bundle
   if [[ -e "$COMMERCE_RELEASE" || -L "$COMMERCE_RELEASE" ]]; then
     [[ -d "$COMMERCE_RELEASE" && ! -L "$COMMERCE_RELEASE" ]] || die "commerce release path exists but is not an immutable directory: $COMMERCE_RELEASE"
     validate_commerce_release "$COMMERCE_RELEASE_ROOT" "$COMMERCE_RELEASE" "$SHA"
@@ -275,11 +294,12 @@ prepare_commerce_release() {
   COMMERCE_STAGE="$COMMERCE_RELEASE_ROOT/.${SHA}.tmp.$$"
   [[ ! -e "$COMMERCE_STAGE" && ! -L "$COMMERCE_STAGE" ]] || die "staging path already exists: $COMMERCE_STAGE"
   if [[ -n "$TESTED_CANDIDATE" ]]; then
-    log "promoting the exact tested commerce build into $COMMERCE_RELEASE"
-    run cp -a --reflink=auto --no-preserve=ownership -- "$TESTED_CANDIDATE" "$COMMERCE_STAGE"
-    # The frozen source modes are preserved by cp. The new copy is owned by deploy, so temporarily
-    # restore only owner write access for its release marker before freezing it again.
-    run chmod -R u+w -- "$COMMERCE_STAGE"
+    tested_bundle=$TESTED_CANDIDATE/.deploy-artifacts/commerce-release
+    log "reflink-promoting the exact tested compact commerce bundle into $COMMERCE_RELEASE"
+    run cp -a --reflink=auto --no-preserve=ownership -- "$tested_bundle" "$COMMERCE_STAGE"
+    # The bundle was frozen before its digest entered the trusted marker. The copy preserves those
+    # modes, so only its root needs temporary write access for the release marker.
+    run chmod u+w "$COMMERCE_STAGE"
   else
     log "creating commerce release $COMMERCE_RELEASE"
     checkout_stage "$COMMERCE_STAGE"
@@ -287,12 +307,17 @@ prepare_commerce_release() {
     run pnpm --dir "$COMMERCE_STAGE" build
     # db:migrate itself builds; deployment must instead prebuild this artifact before finalization.
     run pnpm --dir "$COMMERCE_STAGE" --filter @claude-api/db build
+    populate_content_studio_standalone_assets "$COMMERCE_STAGE"
   fi
   if [[ "$DRY_RUN" != "1" ]]; then
     validate_commerce_stage "$COMMERCE_STAGE"
   fi
   write_release_marker "$COMMERCE_STAGE"
-  freeze_release_tree "$COMMERCE_STAGE"
+  if [[ -n "$TESTED_CANDIDATE" ]]; then
+    run chmod a-w "$COMMERCE_STAGE" "$COMMERCE_STAGE/.release-sha"
+  else
+    freeze_release_tree "$COMMERCE_STAGE"
+  fi
   run mv -- "$COMMERCE_STAGE" "$COMMERCE_RELEASE"
   COMMERCE_STAGE=
   if [[ "$DRY_RUN" != "1" ]]; then

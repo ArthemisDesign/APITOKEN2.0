@@ -1302,7 +1302,7 @@ reconcile_engine_runtime() {
 }
 
 final_verify_backend() {
-  local sha=$1 current worker_pid worker_cwd studio_pid studio_cwd
+  local sha=$1 current worker_pid worker_cwd studio_pid studio_cwd expected_studio_cwd
   current=$(readlink -f -- "$COMMERCE_RELEASE_ROOT/current")
   [[ $current == "$COMMERCE_RELEASE_ROOT/$sha" ]] || wd_die "commerce current is not $sha after cutover"
   curl --noproxy '*' --fail --silent --show-error --max-time 5 http://127.0.0.1:3000/v1/ready >/dev/null \
@@ -1320,7 +1320,8 @@ final_verify_backend() {
   studio_pid=$(systemctl show apitoken-content-studio.service -p MainPID --value)
   [[ $studio_pid =~ ^[1-9][0-9]*$ ]] || wd_die "content studio has no MainPID"
   studio_cwd=$(readlink -f -- "/proc/$studio_pid/cwd")
-  [[ $studio_cwd == "$COMMERCE_RELEASE_ROOT/$sha/apps/content-studio" ]] \
+  expected_studio_cwd=$(wd_content_studio_runtime_directory "$COMMERCE_RELEASE_ROOT/$sha")
+  [[ $studio_cwd == "$expected_studio_cwd" ]] \
     || wd_die "content studio is not running immutable release $sha (cwd=$studio_cwd)"
   curl --noproxy '*' --fail --silent --show-error --max-time 5 http://127.0.0.1:3500/api/health >/dev/null \
     || wd_die "content studio health endpoint is not ready after cutover"

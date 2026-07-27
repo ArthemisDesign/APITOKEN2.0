@@ -273,18 +273,19 @@ require_worker_stopped() {
 }
 
 require_content_studio_active() {
-  local studio_pid studio_cwd deadline
+  local studio_pid studio_cwd expected_cwd deadline
   if [[ "$DRY_RUN" == "1" ]]; then
     log "dry-run: would require $CONTENT_STUDIO_SERVICE active on the immutable current release"
     return 0
   fi
+  expected_cwd=$(content_studio_runtime_directory "$CURRENT_RELEASE")
   deadline=$(( $(date +%s) + READINESS_TIMEOUT ))
   while (( $(date +%s) < deadline )); do
     if unit_is_active "$CONTENT_STUDIO_SERVICE"; then
       studio_pid=$(systemctl show "$CONTENT_STUDIO_SERVICE" -p MainPID --value)
       if [[ $studio_pid =~ ^[1-9][0-9]*$ ]]; then
         studio_cwd=$(readlink -f -- "/proc/$studio_pid/cwd" 2>/dev/null || true)
-        if [[ $studio_cwd == "$CURRENT_RELEASE/apps/content-studio" ]] \
+        if [[ $studio_cwd == "$expected_cwd" ]] \
           && http_returns_200 "$CONTENT_STUDIO_HEALTH_URL" 2; then
           log "$CONTENT_STUDIO_SERVICE is active and healthy from immutable release $CURRENT_RELEASE"
           return 0

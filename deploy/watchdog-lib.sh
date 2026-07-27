@@ -737,7 +737,8 @@ wd_range_changes_typescript_gate() {
   while IFS= read -r path; do
     case "$path" in
       deploy/typescript-scope.mjs|deploy/next-cache.sh|deploy/typescript-build-contexts.sh|\
-      deploy/typescript-test-groups.sh)
+      deploy/typescript-test-groups.sh|deploy/commerce-release-bundle.sh|\
+      deploy/release-tree-digest.mjs)
         return 0
         ;;
     esac
@@ -754,7 +755,8 @@ wd_range_requires_full_typescript_scope() {
     case "$path" in
       package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.node-version|tsconfig*.json|\
       deploy/typescript-scope.mjs|deploy/next-cache.sh|deploy/typescript-build-contexts.sh|\
-      deploy/typescript-test-groups.sh)
+      deploy/typescript-test-groups.sh|deploy/commerce-release-bundle.sh|\
+      deploy/release-tree-digest.mjs)
         return 0
         ;;
     esac

@@ -192,7 +192,9 @@ content-addressed ключу точных tracked inputs, platform/toolchain и 
 test lanes, а package `pretest` не пересобирает уже проверенные candidate-артефакты. Оба результата переиспользуются
 только если SHA не изменился; иначе feature-ветка обновляется и оба gate повторяются для нового
 SHA. После push хост переиспользует тот же замороженный кандидат без
-повторного теста; no-change GitHub-статусы публикуются параллельно, а финальные production-smoke
+повторного теста; commerce lane заранее собирает и хэширует минимальный production-bundle с одним
+pnpm virtual store и standalone Content Studio, поэтому release promotion reflink-копирует только
+его, а не весь candidate; no-change GitHub-статусы публикуются параллельно, а финальные production-smoke
 выбираются только для реально затронутых surfaces и независимые проверки выполняются одновременно.
 Скрипт держит lock до
 зелёного `deploy/watchdog`. Мёржить в `master` вслепую или вручную запрещено: `master` — production

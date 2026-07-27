@@ -734,11 +734,31 @@ wd_range_changes_typescript_gate "$validation_repo" \
 wd_range_requires_full_typescript_scope "$validation_repo" \
   "$validation_build_contexts" "$validation_test_groups" \
   || wd_die "a TypeScript test-group change did not force full validation"
+printf 'bundle\n' >"$validation_repo/deploy/commerce-release-bundle.sh"
+git -C "$validation_repo" add deploy/commerce-release-bundle.sh
+git -C "$validation_repo" commit --quiet -m commerce-release-bundle
+validation_release_bundle=$(git -C "$validation_repo" rev-parse HEAD)
+wd_range_changes_typescript_gate "$validation_repo" \
+  "$validation_test_groups" "$validation_release_bundle" \
+  || wd_die "a commerce release-bundle change did not identify gate machinery"
+wd_range_requires_full_typescript_scope "$validation_repo" \
+  "$validation_test_groups" "$validation_release_bundle" \
+  || wd_die "a commerce release-bundle change did not force full validation"
+printf 'digest\n' >"$validation_repo/deploy/release-tree-digest.mjs"
+git -C "$validation_repo" add deploy/release-tree-digest.mjs
+git -C "$validation_repo" commit --quiet -m release-tree-digest
+validation_release_digest=$(git -C "$validation_repo" rev-parse HEAD)
+wd_range_changes_typescript_gate "$validation_repo" \
+  "$validation_release_bundle" "$validation_release_digest" \
+  || wd_die "a release-tree digest change did not identify gate machinery"
+wd_range_requires_full_typescript_scope "$validation_repo" \
+  "$validation_release_bundle" "$validation_release_digest" \
+  || wd_die "a release-tree digest change did not force full validation"
 git -C "$validation_repo" rm --quiet apps/example/index.ts
 git -C "$validation_repo" commit --quiet -m typescript-deletion
 validation_typescript_deletion=$(git -C "$validation_repo" rev-parse HEAD)
 wd_range_requires_full_typescript_scope "$validation_repo" \
-  "$validation_test_groups" "$validation_typescript_deletion" \
+  "$validation_release_digest" "$validation_typescript_deletion" \
   || wd_die "a deleted TypeScript workspace path did not force full validation"
 
 # Runtime build contexts remain independently selectable, while a full/unknown TypeScript scope
@@ -1549,8 +1569,25 @@ grep -Fq 'DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}' 
 # Core releases promote the frozen candidate, while manual deployments retain their fallback build.
 grep -Fq -- '--tested-candidate "$(candidate_for "$sha")"' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'core deployments do not consume the tested candidate'
-grep -Fq 'promoting the exact tested commerce build' "$ROOT/deploy/deploy.sh" \
+grep -Fq 'reflink-promoting the exact tested compact commerce bundle' "$ROOT/deploy/deploy.sh" \
   || wd_die 'commerce is rebuilt after the candidate gate'
+grep -Fq 'TESTED_CANDIDATE/.deploy-artifacts/commerce-release' "$ROOT/deploy/deploy.sh" \
+  || wd_die 'commerce promotion copies the complete candidate instead of its compact bundle'
+grep -Fq -- '--reflink=auto' "$ROOT/deploy/deploy.sh" \
+  || wd_die 'compact commerce promotion lost same-filesystem reflink acceleration'
+! grep -Fq 'chmod -R u+w -- "$COMMERCE_STAGE"' "$ROOT/deploy/deploy.sh" \
+  || wd_die 'compact commerce promotion still traverses and rewrites every release mode'
+grep -Fq 'output: "standalone"' "$ROOT/apps/content-studio/next.config.ts" \
+  || wd_die 'Content Studio no longer emits its minimal standalone runtime'
+grep -Fxq 'ExecStart=/usr/local/lib/apitoken-watchdog/controller/content-studio-start.sh' \
+  "$ROOT/systemd/apitoken-content-studio.service" \
+  || wd_die 'Content Studio does not use the standalone-compatible fixed launcher'
+grep -Fq 'content_studio_runtime_directory "$CURRENT_RELEASE"' \
+  "$ROOT/deploy/api-bluegreen.sh" \
+  || wd_die 'blue-green readiness does not verify the selected Content Studio runtime directory'
+grep -Fq 'wd_content_studio_runtime_directory "$COMMERCE_RELEASE_ROOT/$sha"' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'final verification does not verify the selected Content Studio runtime directory'
 grep -Fq 'promoting exact tested engine binaries' "$ROOT/deploy/deploy.sh" \
   || wd_die 'engine is rebuilt after the candidate gate'
 [[ $(grep -Fc 'production-(database|engine|backend|sales|openkeys)' \

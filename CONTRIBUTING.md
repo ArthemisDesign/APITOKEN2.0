@@ -94,7 +94,8 @@ The host then:
 1. installs and builds every deployable TypeScript artifact, then typechecks/tests the
    dependency-aware changed-package closure against disposable PostgreSQL (or the full workspace
    for shared/deleted inputs), and/or runs the selected locked Rust workspace lane against its
-   separate database using one shared Cargo target;
+   separate database using one shared Cargo target; the commerce lane then assembles a hashed
+   production-only bundle with one shared dependency store and the Content Studio standalone trace;
 2. builds production engine binaries in that same tested Rust lane when an engine rollout is needed,
    records runtime-artifact digests, and freezes the candidate;
 3. runs shell/whitespace checks and the deployment suites selected for operational changes;
@@ -102,9 +103,10 @@ The host then:
    commerce migrations from that exact tested candidate under the migration lock;
 5. starts an affected engine candidate only in the inactive slot; its ordered engine migrations run
    transactionally under the engine advisory lock, and failed migration/readiness can never admit it;
-6. promotes the already-tested engine and commerce artifacts—without recompiling them—then deploys
-   affected bounded contexts concurrently where their release roots, databases, and units are
-   independent; engine and commerce remain ordered behind their shared deployment lock;
+6. promotes the already-tested engine and compact commerce artifacts—without recompiling them—then
+   deploys affected bounded contexts concurrently where their release roots, databases, and units
+   are independent; commerce promotion reflink-copies only its minimal bundle, while engine and
+   commerce remain ordered behind their shared deployment lock;
 7. records final status on the GitHub commit.
 
 If any test, backup, migration, deployment, readiness check, or final verification fails, the SHA

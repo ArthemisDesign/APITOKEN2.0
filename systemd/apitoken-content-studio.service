@@ -9,7 +9,9 @@ User=deploy
 Group=deploy
 WorkingDirectory=/opt/apitoken/releases/current/apps/content-studio
 Environment=NODE_ENV=production
-ExecStart=/opt/apitoken/releases/current/apps/content-studio/node_modules/.bin/next start -H 127.0.0.1 -p 3500
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=3500
+ExecStart=/usr/local/lib/apitoken-watchdog/controller/content-studio-start.sh
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
