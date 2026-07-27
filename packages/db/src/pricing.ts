@@ -308,6 +308,22 @@ export async function getPricingUsageCursor(
   }
 }
 
+/**
+ * Marks an empty engine-ledger page as a completed scan. The cursor is invalidated before network
+ * I/O by getPricingUsageCursor, so callers must invoke this only after the engine returns a genuine
+ * terminal empty page.
+ */
+export async function completePricingUsageSync(
+  database: Database,
+  target: PricingSyncTarget,
+): Promise<void> {
+  await database.pool.query(`
+    UPDATE pricing_usage_cursors
+    SET updated_at = now()
+    WHERE engine_account_id = $1 AND user_id = $2
+  `, [target.engineAccountId, target.userId]);
+}
+
 export async function applyPricingLedgerPage(
   database: Database,
   target: PricingSyncTarget,
@@ -404,7 +420,7 @@ export async function applyPricingLedgerPage(
     // Prepay: расход НЕ поднимает тир (тир — за пополнения). The cached counter is rebuilt
     // from immutable events in the exact current [window_start, window_end) interval so late
     // ingestion cannot move a charge across retention windows.
-    if (insertedCharge) await refreshCurrentTierWindowSpend(client, target.userId);
+    if (insertedCharge) await refreshTierWindowSpend(client, [target.userId], new Date());
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -443,7 +459,12 @@ export async function applyTopupTier(database: Database, input: {
  * Закрытие 30-дневных окон удержания: у кого окно истекло — если за окно потрачено ≥ hold(tier),
  * окно продлевается; иначе откат на −1 тир, накопление сбрасывается к порогу нового тира, окно новое.
  */
-export async function closeElapsedTierWindows(database: Database, now = new Date()): Promise<number> {
+export async function closeElapsedTierWindows(
+  database: Database,
+  now = new Date(),
+  eligibleUserIds?: readonly string[],
+): Promise<number> {
+  if (eligibleUserIds?.length === 0) return 0;
   const windowDeadline = new Date(now.getTime() - HOLD_WINDOW_MS);
   let closed = 0;
   for (;;) {
@@ -461,6 +482,7 @@ export async function closeElapsedTierWindows(database: Database, now = new Date
         WHERE cp.customer_type = 'b2c' AND cp.current_tier > 0
           AND ea.engine_account_id IS NOT NULL
           AND cp.tier_window_start IS NOT NULL AND cp.tier_window_start <= $1
+          AND ($2::uuid[] IS NULL OR cp.user_id = ANY($2::uuid[]))
           -- A page shorter than the engine limit marks a completed ledger scan. If the current
           -- scan failed, updated_at is not advanced and this window is deferred rather than closed
           -- from incomplete usage.
@@ -468,7 +490,7 @@ export async function closeElapsedTierWindows(database: Database, now = new Date
         ORDER BY cp.tier_window_start, cp.user_id
         FOR UPDATE OF cp, ea SKIP LOCKED
         LIMIT 1
-      `, [windowDeadline]);
+      `, [windowDeadline, eligibleUserIds ? [...eligibleUserIds] : null]);
       const row = result.rows[0];
       if (!row) {
         await client.query("COMMIT");
@@ -500,7 +522,7 @@ export async function closeElapsedTierWindows(database: Database, now = new Date
         `, [row.user_id, newCumulative.toString(), nextTier > 0 ? windowEnd : null]);
       }
       // Carry already-ingested post-cutoff charges into the exact next window instead of losing them.
-      await refreshCurrentTierWindowSpend(client, row.user_id);
+      await refreshTierWindowSpend(client, [row.user_id], now);
       // AUDIT-TODO(C19): persist an explicit engine cutoff watermark; cursor freshness is the
       // safest localized guard available until the Control API exposes a stable ledger watermark.
       await client.query("COMMIT");
@@ -709,7 +731,8 @@ async function reconcileTopupTier(
   const profile = profileResult.rows[0];
   if (!profile) return;
 
-  // AUDIT-TODO(C21): run pnpm db:generate + migrate for pricing_credit_accruals.
+  // The unique credit marker and the aggregate update stay in this transaction, so confirmed
+  // top-ups and later refund/dispute reversals are applied exactly once across worker retries.
   const appliedResult = await client.query<{ amount_nano: string }>(`
     WITH eligible AS (
       SELECT ec.id AS credit_id
@@ -763,12 +786,26 @@ async function reconcileTopupTier(
           tier_window_spent_nano = 0, updated_at = now()
       WHERE user_id = $1
     `, [profile.user_id, newTier]);
-    await refreshCurrentTierWindowSpend(client, profile.user_id);
+    await refreshTierWindowSpend(client, [profile.user_id], new Date());
   }
 }
 
-async function refreshCurrentTierWindowSpend(client: PoolClient, userId: string): Promise<void> {
-  await client.query(`
+/** Rebuilds the denormalized current-window spend from immutable, deduplicated charge events. */
+export async function refreshTierWindowUsage(
+  database: Database,
+  userIds: readonly string[],
+  asOf = new Date(),
+): Promise<void> {
+  if (userIds.length === 0) return;
+  await refreshTierWindowSpend(database.pool, userIds, asOf);
+}
+
+async function refreshTierWindowSpend(
+  queryable: Pick<PoolClient, "query">,
+  userIds: readonly string[],
+  asOf: Date,
+): Promise<void> {
+  await queryable.query(`
     UPDATE customer_profiles cp
     SET tier_window_spent_nano = CASE
           WHEN cp.tier_window_start IS NULL THEN 0
@@ -777,13 +814,18 @@ async function refreshCurrentTierWindowSpend(client: PoolClient, userId: string)
             FROM pricing_usage_events pue
             WHERE pue.user_id = cp.user_id AND pue.engine_account_id = ea.engine_account_id
               AND pue.occurred_at >= cp.tier_window_start
-              AND pue.occurred_at < cp.tier_window_start + interval '30 days'
+              AND pue.occurred_at < LEAST(
+                $2::timestamptz,
+                cp.tier_window_start + interval '30 days'
+              )
           ), 0)
         END,
         updated_at = now()
     FROM engine_accounts ea
-    WHERE cp.user_id = $1 AND cp.customer_type = 'b2c' AND ea.user_id = cp.user_id
-  `, [userId]);
+    WHERE cp.user_id = ANY($1::uuid[])
+      AND cp.customer_type = 'b2c'
+      AND ea.user_id = cp.user_id
+  `, [userIds, asOf]);
 }
 
 interface PricingViewRow {
