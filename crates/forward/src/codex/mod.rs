@@ -5,6 +5,7 @@
 
 mod api;
 mod billing;
+mod calibration;
 mod chat;
 mod config;
 mod discovery;
@@ -13,6 +14,7 @@ mod process;
 mod runner;
 
 pub use api::{model as openai_model, models as openai_models, responses as openai_responses};
+pub use calibration::WindowCalibration;
 pub use chat::completions as openai_chat_completions;
 pub use config::{CodexConfig, CodexHomeSpec, CodexModel, CodexPrices};
 pub use history::{HistoryError, StoredHistory};
@@ -59,6 +61,26 @@ pub struct CodexHomeStatus {
     pub cooling_until: i64,
     pub inflight: usize,
     pub rate_limits: Option<CodexRateLimits>,
+    /// Cumulative official-price spend this home has served through the gateway.
+    pub spend_usd_total: f64,
+    /// Capacity estimate per reported window slot (empty until the first snapshot arrives).
+    pub capacities: Vec<CodexWindowCapacityReport>,
+}
+
+/// Measured (or prior) sellable capacity of one subscription window slot, in official-price USD.
+#[derive(Clone, Debug)]
+pub struct CodexWindowCapacityReport {
+    /// `primary` or `secondary`, mirroring the provider's rate-limit payload.
+    pub slot: &'static str,
+    pub window_minutes: Option<i64>,
+    pub used_percent: i64,
+    /// EMA capacity estimate per full window; a prior until the first accepted sample.
+    pub cap_usd: f64,
+    /// `cap_usd` scaled by the unused share of the current window.
+    pub remaining_usd: f64,
+    /// True once at least one real sample was accepted; false means `cap_usd` is the prior.
+    pub calibrated: bool,
+    pub samples: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -90,6 +112,14 @@ pub(crate) struct CodexHome {
     cooling_until: AtomicI64,
     /// Last known verdict of `account/read`. Startup and the health probe both write it.
     auth_ok: AtomicBool,
+    /// Cumulative official-price cost of every turn this home served, feeding window-capacity
+    /// calibration. Monotonic for the process lifetime; a restart re-anchors calibration, which is
+    /// exactly the anchor mechanism's job.
+    spend_nano_total: AtomicI64,
+    /// Per-slot window calibration. `std` mutex: the critical section is a few float ops and never
+    /// awaits, so it may be taken on the request hot path.
+    calib_primary: std::sync::Mutex<WindowCalibration>,
+    calib_secondary: std::sync::Mutex<WindowCalibration>,
 }
 
 impl CodexHome {
@@ -105,6 +135,9 @@ impl CodexHome {
             max_turns,
             cooling_until: AtomicI64::new(0),
             auth_ok: AtomicBool::new(true),
+            spend_nano_total: AtomicI64::new(0),
+            calib_primary: std::sync::Mutex::new(WindowCalibration::new()),
+            calib_secondary: std::sync::Mutex::new(WindowCalibration::new()),
         }
     }
 
@@ -203,9 +236,79 @@ impl CodexHome {
     }
 
     async fn rate_limits(&self) -> Option<CodexRateLimits> {
-        match self.live_process().await {
+        self.observed_rate_limits().await
+    }
+
+    /// Read the cached snapshot and feed it to window-capacity calibration. Every read path
+    /// funnels through here; sub-threshold deltas accumulate inside the calibration, so the
+    /// observation cadence does not matter.
+    async fn observed_rate_limits(&self) -> Option<CodexRateLimits> {
+        let limits = match self.live_process().await {
             Some(process) => process.rate_limits().await,
             None => None,
+        };
+        if let Some(limits) = &limits {
+            self.note_rate_limits(limits);
+        }
+        limits
+    }
+
+    /// Credit one completed turn's exact official-price cost to this home's calibration spend.
+    /// Called for every served turn regardless of customer billing (admin turns consume the
+    /// subscription window exactly the same), and only on success: a failed turn's provider-side
+    /// consumption is intentionally attributed to the foreign-usage share, which keeps the
+    /// calibration guard conservative.
+    pub(crate) fn record_spend(&self, real_nano: i128) {
+        let nano = real_nano.clamp(0, i64::MAX as i128) as i64;
+        self.spend_nano_total.fetch_add(nano, Ordering::Relaxed);
+    }
+
+    fn spend_usd_total(&self) -> f64 {
+        self.spend_nano_total.load(Ordering::Relaxed) as f64 / 1e9
+    }
+
+    /// Configured weekly-capacity prior scaled to this window's duration (weekly = 10080 minutes
+    /// is the anchor; a 5h window starts from a proportionally smaller prior).
+    fn window_prior_usd(&self, window: &CodexRateLimitWindow) -> f64 {
+        let minutes = window.window_duration_mins.unwrap_or(10_080).max(1) as f64;
+        self.cfg.window_cap_usd_prior * minutes / 10_080.0
+    }
+
+    fn note_rate_limits(&self, limits: &CodexRateLimits) {
+        let spend = self.spend_usd_total();
+        if let Some(window) = &limits.primary {
+            let prior = self.window_prior_usd(window);
+            self.calib_primary
+                .lock()
+                .expect("primary window calibration lock")
+                .observe(window.used_percent, window.resets_at, spend, prior);
+        }
+        if let Some(window) = &limits.secondary {
+            let prior = self.window_prior_usd(window);
+            self.calib_secondary
+                .lock()
+                .expect("secondary window calibration lock")
+                .observe(window.used_percent, window.resets_at, spend, prior);
+        }
+    }
+
+    /// Capacity report for one window slot, read against a just-observed snapshot.
+    fn capacity_report(
+        &self,
+        slot: &'static str,
+        window: &CodexRateLimitWindow,
+        calib: &std::sync::Mutex<WindowCalibration>,
+    ) -> CodexWindowCapacityReport {
+        let prior = self.window_prior_usd(window);
+        let cal = calib.lock().expect("window calibration lock");
+        CodexWindowCapacityReport {
+            slot,
+            window_minutes: window.window_duration_mins,
+            used_percent: window.used_percent,
+            cap_usd: cal.cap_usd(prior),
+            remaining_usd: cal.remaining_usd(window.used_percent, prior),
+            calibrated: cal.calibrated(),
+            samples: cal.samples(),
         }
     }
 
@@ -228,20 +331,28 @@ impl CodexHome {
     }
 
     async fn status(&self, admit_below_percent: i64, now: i64) -> CodexHomeStatus {
-        let process = self.live_process().await;
-        let rate_limits = match &process {
-            Some(process) => process.rate_limits().await,
-            None => None,
-        };
+        let process_live = self.live_process().await.is_some();
+        let rate_limits = self.observed_rate_limits().await;
+        let mut capacities = Vec::new();
+        if let Some(limits) = &rate_limits {
+            if let Some(window) = &limits.primary {
+                capacities.push(self.capacity_report("primary", window, &self.calib_primary));
+            }
+            if let Some(window) = &limits.secondary {
+                capacities.push(self.capacity_report("secondary", window, &self.calib_secondary));
+            }
+        }
         let _ = admit_below_percent;
         let _ = now;
         CodexHomeStatus {
             id: self.spec.id.clone(),
-            process_live: process.is_some(),
+            process_live,
             auth_ok: self.auth_ok.load(Ordering::Relaxed),
             cooling_until: self.cooling_until(),
             inflight: self.inflight(),
             rate_limits,
+            spend_usd_total: self.spend_usd_total(),
+            capacities,
         }
     }
 

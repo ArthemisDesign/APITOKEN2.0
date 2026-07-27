@@ -260,6 +260,12 @@ fn reserve_cost(model: &CodexModel, estimated_input_tokens: u64, now: i64) -> i1
         .saturating_add((model.max_output_tokens as i128).saturating_mul(output_rate))
 }
 
+/// Exact official-price cost of one completed turn, used for per-home window-capacity
+/// calibration. Pure pricing only: customer money moves exclusively through `settled_charge`.
+pub(crate) fn price_real_nano(model: &CodexModel, usage: &CodexUsage, now: i64) -> i128 {
+    price_usage(model, usage, now).real_nano
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 struct PricedUsage {
     normal_input: u64,

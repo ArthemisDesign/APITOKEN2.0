@@ -517,7 +517,11 @@ async fn metrics(
              # TYPE claude_api_codex_home_authenticated gauge\n\
              # TYPE claude_api_codex_home_cooling_until_seconds gauge\n\
              # TYPE claude_api_codex_home_inflight_turns gauge\n\
-             # TYPE claude_api_codex_home_rate_limit_used_percent gauge"
+             # TYPE claude_api_codex_home_rate_limit_used_percent gauge\n\
+             # TYPE claude_api_codex_home_spend_usd_total gauge\n\
+             # TYPE claude_api_codex_home_window_capacity_usd gauge\n\
+             # TYPE claude_api_codex_home_window_capacity_calibrated gauge\n\
+             # TYPE claude_api_codex_home_window_remaining_usd gauge"
         );
         for home in &status.homes {
             let index = &home.id;
@@ -526,11 +530,13 @@ async fn metrics(
                 "claude_api_codex_home_process_live{{home=\"{index}\"}} {}\n\
                  claude_api_codex_home_authenticated{{home=\"{index}\"}} {}\n\
                  claude_api_codex_home_cooling_until_seconds{{home=\"{index}\"}} {}\n\
-                 claude_api_codex_home_inflight_turns{{home=\"{index}\"}} {}",
+                 claude_api_codex_home_inflight_turns{{home=\"{index}\"}} {}\n\
+                 claude_api_codex_home_spend_usd_total{{home=\"{index}\"}} {:.4}",
                 u8::from(home.process_live),
                 u8::from(home.auth_ok),
                 home.cooling_until,
                 home.inflight,
+                home.spend_usd_total,
             );
             if let Some(used) = home
                 .rate_limits
@@ -542,6 +548,50 @@ async fn metrics(
                     "claude_api_codex_home_rate_limit_used_percent{{home=\"{index}\"}} {used}"
                 );
             }
+            for capacity in &home.capacities {
+                let slot = capacity.slot;
+                let _ = writeln!(
+                    body,
+                    "claude_api_codex_home_window_capacity_usd{{home=\"{index}\",slot=\"{slot}\"}} {:.2}\n\
+                     claude_api_codex_home_window_capacity_calibrated{{home=\"{index}\",slot=\"{slot}\"}} {}\n\
+                     claude_api_codex_home_window_remaining_usd{{home=\"{index}\",slot=\"{slot}\"}} {:.2}",
+                    capacity.cap_usd,
+                    u8::from(capacity.calibrated),
+                    capacity.remaining_usd,
+                );
+            }
+        }
+        // Pool-level sellable capacity per window slot: sum over homes, flagged as measured only
+        // when every contributing home has accepted at least one real calibration sample.
+        let _ = writeln!(
+            body,
+            "# TYPE claude_api_codex_window_capacity_usd gauge\n\
+             # TYPE claude_api_codex_window_remaining_usd gauge\n\
+             # TYPE claude_api_codex_window_capacity_calibrated gauge"
+        );
+        for slot in ["primary", "secondary"] {
+            let capacities: Vec<_> = status
+                .homes
+                .iter()
+                .flat_map(|home| home.capacities.iter())
+                .filter(|capacity| capacity.slot == slot)
+                .collect();
+            if capacities.is_empty() {
+                continue;
+            }
+            let cap_sum: f64 = capacities.iter().map(|capacity| capacity.cap_usd).sum();
+            let remaining_sum: f64 = capacities
+                .iter()
+                .map(|capacity| capacity.remaining_usd)
+                .sum();
+            let all_calibrated = capacities.iter().all(|capacity| capacity.calibrated);
+            let _ = writeln!(
+                body,
+                "claude_api_codex_window_capacity_usd{{slot=\"{slot}\"}} {cap_sum:.2}\n\
+                 claude_api_codex_window_remaining_usd{{slot=\"{slot}\"}} {remaining_sum:.2}\n\
+                 claude_api_codex_window_capacity_calibrated{{slot=\"{slot}\"}} {}",
+                u8::from(all_calibrated),
+            );
         }
     }
     (

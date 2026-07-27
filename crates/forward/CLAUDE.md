@@ -153,6 +153,15 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    `docs/CODEX_APP_SERVER.md`.
 7. **Цены — только из `metering::codex`** (audited, effective-dated таблица, как Claude-тарифы).
    `forward` цену не объявляет; reserve и settle резолвят её по одному и тому же clock.
+8. **Калибровка ёмкости окна — как в Claude-пуле, на тех же гвардах.** Каждый успешный turn
+   (billed ИЛИ admin) кредитует home его exact official-price cost (`billing::price_real_nano`,
+   чистая математика, деньги не трогает); каждый rate-limit snapshot гоняется через
+   `calibration.rs`: интервал ≥2 целых used%-поинта калибрует `cap=Δspend/Δused` только если НАШ
+   расход объясняет ≥50% движения (собственное использование владельца аккаунта — не ёмкость пула)
+   и sample в [0.25x, 4x] прайора (`CodexConfig.window_cap_usd_prior`, env
+   `CLAUDE_API_CODEX_WINDOW_CAP_USD`, неделя=10080min — для остальных окон прайор масштабируется
+   по длительности). EMA 0.7/0.3 с jump-clamp 2x, rollover окна только пере-якорит. Состояние
+   in-memory; экспорт — `claude_api_codex_(home_)window_(capacity|remaining)_usd` метрики.
 8. **Санитайзер ошибок:** публичный конверт не должен раскрывать пул/child/binary/ChatGPT-профиль
    или upstream-текст. Гейтит `codex::api::tests::public_errors_never_leak_internal_architecture`
    (близнец `local_err_never_leaks_*`).

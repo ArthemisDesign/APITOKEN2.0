@@ -130,6 +130,11 @@ impl CodexGateway {
                 .await;
             let error = match result {
                 Ok(result) => {
+                    home.record_spend(super::billing::price_real_nano(
+                        &request.model,
+                        &result.usage,
+                        pool::now(),
+                    ));
                     home.mark_healthy();
                     return Ok(result);
                 }
@@ -939,6 +944,7 @@ done
             turn_timeout_ms: 2_000,
             max_concurrent_turns: 1,
             admit_below_used_percent: 95,
+            window_cap_usd_prior: 1_500.0,
             health_probe_interval_secs: 300,
             reserve_overhead_tokens: 0,
             history_ttl_secs: 600,
@@ -988,6 +994,7 @@ done
             turn_timeout_ms: 2_000,
             max_concurrent_turns: 1,
             admit_below_used_percent: 95,
+            window_cap_usd_prior: 1_500.0,
             health_probe_interval_secs: 300,
             reserve_overhead_tokens: 0,
             history_ttl_secs: 600,
@@ -1099,6 +1106,45 @@ done
         assert_eq!(turn_start["params"]["effort"], "medium");
         assert_eq!(turn_start["params"]["summary"], "auto");
         assert_eq!(turn_start["params"]["input"][0]["text"], "hello");
+    }
+
+    #[tokio::test]
+    async fn served_turn_credits_home_spend_and_reports_window_capacity() {
+        let (gateway, _workspace) = fake_gateway("text");
+        let result = gateway
+            .run_turn(turn_request(test_model()), None)
+            .await
+            .unwrap();
+        assert_eq!(result.usage.input_tokens, 101);
+
+        let status = gateway.operational_status().await;
+        let home = status.homes.first().expect("one fake home");
+        // 53*5000 + 41*500 + 7*6250 + 23*30000 = 1_019_250 nanoUSD at the pinned catalog rates.
+        let expected_usd = 1_019_250.0 / 1e9;
+        assert!(
+            (home.spend_usd_total - expected_usd).abs() < 1e-9,
+            "spend {} != {expected_usd}",
+            home.spend_usd_total
+        );
+
+        // Both provider windows yield a capacity report seeded from the duration-scaled prior;
+        // the first snapshot only anchors calibration, so nothing is measured yet.
+        let primary = home
+            .capacities
+            .iter()
+            .find(|capacity| capacity.slot == "primary")
+            .unwrap();
+        assert_eq!(primary.window_minutes, Some(300));
+        assert!(!primary.calibrated);
+        assert!((primary.cap_usd - 1_500.0 * 300.0 / 10_080.0).abs() < 1e-6);
+        let weekly = home
+            .capacities
+            .iter()
+            .find(|capacity| capacity.slot == "secondary")
+            .unwrap();
+        assert_eq!(weekly.window_minutes, Some(10_080));
+        assert!((weekly.cap_usd - 1_500.0).abs() < 1e-9);
+        assert!((weekly.remaining_usd - 1_500.0 * 0.9).abs() < 1e-6);
     }
 
     #[tokio::test]

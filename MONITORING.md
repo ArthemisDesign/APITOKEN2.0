@@ -233,6 +233,14 @@ tell a subscription-limit outage (windows genuinely exhausted — wait for the r
 from an authentication outage (`claude_api_codex_home_authenticated == 0` — re-run the device flow).
 Never bypass cooling: hammering a limited or rejected ChatGPT profile is a ban signal.
 
+Capacity planning reads `claude_api_codex_window_remaining_usd{slot}` (pool sellable capacity left
+in the current windows, in official-price USD) against `claude_api_codex_window_capacity_usd{slot}`;
+`claude_api_codex_window_capacity_calibrated` tells whether those figures are measured or still the
+configured prior (`CLAUDE_API_CODEX_WINDOW_CAP_USD`). Per-home splits carry the same
+`claude_api_codex_home_window_*` gauges plus `claude_api_codex_home_spend_usd_total`. Note that a
+home's subscription window is also consumed by usage outside the gateway (the account owner's own
+Codex), which calibration deliberately excludes from the estimate.
+
 ## CodexHomeUnauthenticated
 
 That home's device login expired or was revoked. Re-authenticate exactly as

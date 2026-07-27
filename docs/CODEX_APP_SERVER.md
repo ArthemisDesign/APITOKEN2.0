@@ -249,6 +249,7 @@ Optional controls:
 
 ```dotenv
 CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT=95
+CLAUDE_API_CODEX_WINDOW_CAP_USD=1500
 CLAUDE_API_CODEX_HEALTH_INTERVAL_SECS=300
 CLAUDE_API_CODEX_STARTUP_TIMEOUT_MS=20000
 CLAUDE_API_CODEX_RPC_TIMEOUT_MS=15000
@@ -293,7 +294,24 @@ endpoint is observational and must never become a hard availability dependency. 
 cooling or out of headroom the client receives one OpenAI-shaped `429` with the soonest recovery,
 never an individual account's error. Settled traffic is attributed with an explicit `provider`
 column (`anthropic` / `openai`) so the admin spend breakdown reports which upstream earned a request
-rather than inferring it from the model string. Streaming delivery is bounded: a client that stops consuming frames cannot block the shared
+rather than inferring it from the model string.
+
+### Window-capacity calibration
+
+Every successful turn (billed or admin) credits its exact official-price cost to the serving home,
+and each rate-limit snapshot feeds a per-window calibration: an interval of at least two integer
+`usedPercent` points calibrates `cap = Δspend / Δused` only when gateway spend explains at least
+half of the movement (the account owner's own Codex usage must not become pool capacity) and the
+sample is within `[0.25x, 4x]` of the configured prior (anti-poison). Accepted samples blend into
+an EMA clamped to a 2x jump per step; window rollover only re-anchors. The result — the
+subscription's sellable capacity in official-price USD per full window — is exported as
+`claude_api_codex_home_window_capacity_usd{home,slot}` with a `..._calibrated` flag distinguishing
+measured figures from the prior, `claude_api_codex_home_window_remaining_usd` for the unused share,
+and pool sums in `claude_api_codex_window_capacity_usd{slot}` /
+`claude_api_codex_window_remaining_usd{slot}`. The prior is `CLAUDE_API_CODEX_WINDOW_CAP_USD`
+(default $1500/week; a ChatGPT Pro account measured ≈$1700–1800/week in July 2026), scaled by
+window duration for non-weekly windows. Calibration state is in-memory: after a restart it
+re-anchors from the first new snapshot, so treat the first hours after a deploy as prior-backed. Streaming delivery is bounded: a client that stops consuming frames cannot block the shared
 app-server transport indefinitely. Its already-started turn is still drained to authoritative usage
 and settled, matching the existing Claude disconnect invariant.
 
