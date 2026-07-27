@@ -347,8 +347,84 @@ grep -Fq 'streak >= 3' "$ROOT/deploy/watchdog.sh" \
   || wd_die "the admin-panel check must require consecutive current answers, not a single one"
 grep -Fq 'for _ in $(seq 1 20); do' "$ROOT/deploy/watchdog.sh" \
   || wd_die "the admin-panel convergence window must outlast blue-green cutover and health checks"
-grep -Fq 'monitoring-config.test.sh' "$ROOT/deploy/watchdog.sh"
-grep -Fq 'TEST_SALES_DATABASE_URL=' "$ROOT/deploy/watchdog.sh"
+
+# The candidate installs its own next watchdog after this gate succeeds. Pin every stage that makes
+# the candidate trustworthy so a later watchdog cannot silently self-install after dropping a
+# language suite, its live-database fixture, or a repository-integrity check.
+gate_contract=(
+  'pnpm --dir "$candidate" install --frozen-lockfile'
+  'pnpm --dir "$candidate" build'
+  'pnpm --dir "$candidate" typecheck'
+  'DATABASE_URL="$dsn" node "$candidate/packages/db/dist/migrate.js"'
+  'SALES_DATABASE_URL="$sales_dsn" node "$candidate/packages/sales-db/dist/migrate.js"'
+  'TEST_DATABASE_URL="$dsn" TEST_SALES_DATABASE_URL="$sales_dsn"'
+  '-r --workspace-concurrency=1 --if-present test'
+  'CLAUDE_API_TEST_DATABASE_URL="$engine_dsn"'
+  'cargo test --locked --workspace --manifest-path "$candidate/Cargo.toml"'
+  'git -C "$SOURCE_REPO" diff --check "$PROCESSED_SHA..$sha"'
+  'find "$candidate/deploy" -type f -name '\''*.sh'\'' -print0'
+  'bash -n "$shell_file"'
+  'run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"'
+  'run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"'
+  'run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"'
+  'status --porcelain --untracked-files=no'
+)
+for required_stage in "${gate_contract[@]}"; do
+  grep -Fq -- "$required_stage" "$ROOT/deploy/watchdog.sh" \
+    || wd_die "candidate gate contract lost required stage: $required_stage"
+done
+
+# `pnpm -r --if-present test` deliberately tolerates packages with no suite. Keep that tolerance
+# explicit: deleting a test script from a covered package, or adding a new workspace package without
+# deciding whether it needs a suite, must fail this structural test.
+node - "$ROOT" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+
+const root = process.argv[2];
+const required = new Set([
+  "apps/api",
+  "apps/content-studio",
+  "apps/sales-api",
+  "apps/web",
+  "apps/worker",
+  "packages/db",
+  "packages/engine-client",
+  "packages/payments",
+  "packages/sales-db",
+]);
+const explicitlyTestless = new Set([
+  "apps/sales-web",
+  "packages/contracts",
+]);
+const discovered = [];
+for (const parent of ["apps", "packages"]) {
+  for (const entry of fs.readdirSync(path.join(root, parent), { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const relative = `${parent}/${entry.name}`;
+    const manifestPath = path.join(root, relative, "package.json");
+    if (!fs.existsSync(manifestPath)) continue;
+    discovered.push(relative);
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    const testScript = manifest.scripts?.test;
+    if (required.has(relative) && (typeof testScript !== "string" || testScript.trim() === "")) {
+      throw new Error(`${relative} lost its required test script`);
+    }
+    if (explicitlyTestless.has(relative) && typeof testScript === "string" && testScript.trim() !== "") {
+      throw new Error(`${relative} now has tests; move it into the required-test set`);
+    }
+    if (!required.has(relative) && !explicitlyTestless.has(relative)) {
+      throw new Error(`${relative} has no declared gate-test policy`);
+    }
+  }
+}
+for (const relative of [...required, ...explicitlyTestless]) {
+  if (!discovered.includes(relative)) {
+    throw new Error(`declared workspace package is missing: ${relative}`);
+  }
+}
+NODE
+
 grep -Fq 'CANDIDATE_RETENTION_SECONDS=$((24 * 60 * 60))' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'prune_expired_candidates' "$ROOT/deploy/watchdog.sh"
 
