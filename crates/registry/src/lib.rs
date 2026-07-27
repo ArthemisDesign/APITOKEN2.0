@@ -2643,7 +2643,8 @@ mod tests {
         assert_eq!(decoded.model, "claude-opus-5");
     }
 
-    /// settle пишет usage_event В ТОЙ ЖЕ операции (один коммит); при actual=0 usage НЕ пишется.    #[test]
+    /// settle пишет usage_event В ТОЙ ЖЕ операции (один коммит); при actual=0 usage НЕ пишется.
+    #[test]
     fn settle_writes_usage_event_in_same_tx() {
         let c = db();
         acct_with_key(&c, "a", "k", 10_000_000_000, 4000);
