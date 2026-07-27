@@ -645,7 +645,7 @@ add_shared() {
   SHARED_PACKAGES+=("$package")
 }
 
-for context in "${BUILD_CONTEXTS[@]}"; do
+for context in ${BUILD_CONTEXTS[@]+"${BUILD_CONTEXTS[@]}"}; do
   case "$context" in
     commerce)
       add_shared @claude-api/contracts
