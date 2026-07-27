@@ -974,7 +974,14 @@ require_retired_vhost() {
 }
 
 final_verify_admin_panel() {
-  local panel matched=0 streak=0 response monitoring_ready=0
+  local panel matched=0 streak=0 response monitoring_ready=0 expected_version candidate_panel
+  # Ожидаемую версию берём из самого кандидата, а не из константы здесь: версия панели
+  # уже живёт в HTML и в тесте крейта, и третья её копия в watchdog означала, что любой
+  # бамп версии валит выкат, который на деле корректен (так и случилось на b6b048c).
+  candidate_panel="$(candidate_for "$CANDIDATE_SHA")/crates/server/src/admin-panel.html"
+  [[ -f $candidate_panel ]] || wd_die "candidate admin panel is missing: $candidate_panel"
+  expected_version=$(sed -n 's/.*data-admin-panel-version="\([0-9]\{1,\}\)".*/\1/p' "$candidate_panel" | head -1)
+  [[ -n $expected_version ]] || wd_die "candidate admin panel has no version marker"
   # The stable listener round-robins both engine slots with a 2s active-health interval, so for
   # several seconds after a cutover the retiring slot can still answer 200 with the previous panel.
   # One matching answer is therefore not proof: require a short streak of them, over a window
@@ -988,7 +995,7 @@ final_verify_admin_panel() {
   for _ in $(seq 1 20); do
     panel=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 \
       http://127.0.0.1:8790/admin-panel 2>/dev/null || true)
-    if grep -Fq 'data-admin-panel-version="9"' <<<"$panel"; then
+    if grep -Fq "data-admin-panel-version=\"$expected_version\"" <<<"$panel"; then
       streak=$((streak + 1))
       if (( streak >= 3 )); then
         matched=1

@@ -947,7 +947,11 @@ grep -Fq 'require_retired_vhost panel.apitoken.sale' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'require_admin_auth_vhost content-studio.apitoken.sale' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'require_admin_auth_vhost monitoring.apitoken.sale' "$ROOT/deploy/watchdog.sh"
 grep -Fq "''|000|404|421" "$ROOT/deploy/watchdog.sh"
-grep -Fq 'data-admin-panel-version="9"' "$ROOT/crates/server/src/admin-panel.html"
+# Маркер версии обязателен — по нему выкат проверяет, что движок отдаёт панель из
+# кандидата. Номер не фиксируем: он поднимается при каждом изменении панели, а
+# watchdog читает ожидаемое значение из самого кандидата.
+grep -Eq 'data-admin-panel-version="[0-9]+"' "$ROOT/crates/server/src/admin-panel.html"
+grep -Fq 'expected_version=$(sed -n' "$ROOT/deploy/watchdog.sh"
 [[ ! -e "$ROOT/crates/server/src/panel.html" ]]
 
 render_live="$TEMP/live.Caddyfile"

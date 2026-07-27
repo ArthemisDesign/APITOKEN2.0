@@ -1339,7 +1339,20 @@ mod tests {
 
     #[test]
     fn embedded_admin_panel_exposes_all_operational_workflows_without_secrets() {
-        assert!(ADMIN_PANEL_HTML.contains("data-admin-panel-version=\"10\""));
+        // Маркер версии обязателен: по нему выкат сверяет, что запущенный движок отдаёт
+        // панель из кандидата. Номер не фиксируем — он растёт при каждом изменении панели,
+        // а третья копия константы уже однажды завалила корректный выкат.
+        let marker = "data-admin-panel-version=\"";
+        let start = ADMIN_PANEL_HTML
+            .find(marker)
+            .expect("admin panel must carry a version marker")
+            + marker.len();
+        let rest = &ADMIN_PANEL_HTML[start..];
+        let version = &rest[..rest.find('"').expect("version marker must be quoted")];
+        assert!(
+            !version.is_empty() && version.chars().all(|c| c.is_ascii_digit()),
+            "admin panel version must be numeric, got {version:?}"
+        );
         // The spend breakdown must separate the Claude fleet from the Codex pool: both settle into
         // the same money tables, so an unattributed total hides which upstream earned it.
         assert!(ADMIN_PANEL_HTML.contains("period.providers"));

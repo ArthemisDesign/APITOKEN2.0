@@ -214,10 +214,11 @@ wd_read_sha() {
 
 wd_atomic_write() {
   local path=$1 value=$2 mode=${3:-0640} temporary
-  # `$$` is unchanged in Bash asynchronous subshells. BASHPID is unique per rollout lane, so
-  # concurrent component status/baseline writes cannot clobber one another's temporary file.
-  temporary="${path}.tmp.${BASHPID:-$$}"
   [[ $path == /* ]] || wd_die "state path must be absolute: $path"
+  # Уникальность временного файла даёт mktemp, а не PID: `$$` одинаков во всех
+  # асинхронных подоболочках, а BASHPID появился только в bash 4 — на macOS (bash 3.2)
+  # параллельные лейны получали один и тот же путь и затирали друг друга.
+  temporary=$(mktemp "${path}.tmp.XXXXXX") || wd_die "cannot create temporary state file for $path"
   printf '%s\n' "$value" >"$temporary"
   chmod "$mode" "$temporary"
   mv -f -- "$temporary" "$path"
