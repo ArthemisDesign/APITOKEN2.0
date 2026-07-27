@@ -241,9 +241,48 @@ wd_sha256_stdin() {
   fi
 }
 
-# Hash the small, mandatory runtime entrypoints from every deployable TypeScript surface. The
-# candidate tree itself is frozen after validation; this digest is an additional identity check that
-# proves the release promoter is copying the build that passed the gate, not rebuilding it later.
+# Hash the mandatory runtime entrypoints for one independently deployable TypeScript context. The
+# candidate tree is frozen after validation; these digests prove each release promoter consumes the
+# exact component build that passed the gate, without requiring unrelated component artifacts.
+wd_typescript_component_artifact_digest() {
+  local tree=$1 component=$2 relative
+  local artifacts=()
+  case "$component" in
+    commerce)
+      artifacts=(
+        apps/api/dist/main.js
+        apps/worker/dist/main.js
+        apps/content-studio/.next/BUILD_ID
+        packages/db/dist/migrate.js
+      )
+      ;;
+    sales)
+      artifacts=(
+        apps/sales-api/dist/main.js
+        apps/sales-web/.next/BUILD_ID
+        packages/sales-db/dist/migrate.js
+      )
+      ;;
+    openkeys)
+      artifacts=(
+        apps/openkeys/.next/BUILD_ID
+        packages/openkeys-db/dist/migrate.js
+      )
+      ;;
+    web)
+      artifacts=(apps/web/.next/BUILD_ID)
+      ;;
+    *) wd_die "unknown TypeScript artifact component: $component" ;;
+  esac
+  for relative in "${artifacts[@]}"; do
+    [[ -f $tree/$relative && ! -L $tree/$relative ]] \
+      || wd_die "tested TypeScript artifact is missing or unsafe: $tree/$relative"
+    printf '%s  %s\n' "$(wd_sha256_file "$tree/$relative")" "$relative"
+  done | wd_sha256_stdin
+}
+
+# Legacy all-host-components digest. Keep its byte-for-byte definition while old tested markers and
+# an older release promoter may still exist during the staged controller upgrade.
 wd_typescript_artifact_digest() {
   local tree=$1 relative
   local artifacts=(
@@ -262,6 +301,28 @@ wd_typescript_artifact_digest() {
       || wd_die "tested TypeScript artifact is missing or unsafe: $tree/$relative"
     printf '%s  %s\n' "$(wd_sha256_file "$tree/$relative")" "$relative"
   done | wd_sha256_stdin
+}
+
+wd_typescript_component_list_contains() {
+  local components=$1 expected=$2 component IFS=,
+  [[ $expected == commerce || $expected == sales || $expected == openkeys || $expected == web ]] \
+    || wd_die "unknown TypeScript component: $expected"
+  for component in $components; do
+    [[ $component == "$expected" ]] && return 0
+  done
+  return 1
+}
+
+wd_typescript_component_list_is_canonical() {
+  case "$1" in
+    commerce|sales|openkeys|web|\
+    commerce,sales|commerce,openkeys|commerce,web|sales,openkeys|sales,web|openkeys,web|\
+    commerce,sales,openkeys|commerce,sales,web|commerce,openkeys,web|sales,openkeys,web|\
+    commerce,sales,openkeys,web)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 wd_migration_manifest() {
@@ -414,6 +475,15 @@ wd_path_is_typescript() {
   esac
 }
 
+wd_path_is_web() {
+  case "$1" in
+    apps/web/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig.base.json|.node-version)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 wd_path_is_backend() {
   case "$1" in
     # These database packages belong to independent bounded contexts. They still run in the
@@ -467,7 +537,8 @@ wd_path_requires_infrastructure_install() {
   case "$1" in
     deploy/*.md|deploy/*.test.sh|deploy/agent-merge.sh|deploy/agent-merge.suite.sh|\
     deploy/test-stage2-e2e.sh|deploy/sccache-cargo.sh|deploy/next-cache.sh|\
-    deploy/typescript-scope.mjs|deploy/typescript-test-groups.sh)
+    deploy/typescript-scope.mjs|deploy/typescript-build-contexts.sh|\
+    deploy/typescript-test-groups.sh)
       return 1
       ;;
     deploy/*|systemd/*|observability/*|compose.yaml)
@@ -584,7 +655,10 @@ wd_range_changes_typescript_gate() {
   local repo=$1 base=$2 target=$3 path
   while IFS= read -r path; do
     case "$path" in
-      deploy/typescript-scope.mjs|deploy/next-cache.sh|deploy/typescript-test-groups.sh) return 0 ;;
+      deploy/typescript-scope.mjs|deploy/next-cache.sh|deploy/typescript-build-contexts.sh|\
+      deploy/typescript-test-groups.sh)
+        return 0
+        ;;
     esac
   done < <(wd_range_files "$repo" "$base" "$target")
   return 1
@@ -598,7 +672,8 @@ wd_range_requires_full_typescript_scope() {
   while IFS= read -r path; do
     case "$path" in
       package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.node-version|tsconfig*.json|\
-      deploy/typescript-scope.mjs|deploy/next-cache.sh|deploy/typescript-test-groups.sh)
+      deploy/typescript-scope.mjs|deploy/next-cache.sh|deploy/typescript-build-contexts.sh|\
+      deploy/typescript-test-groups.sh)
         return 0
         ;;
     esac
@@ -609,6 +684,38 @@ wd_range_requires_full_typescript_scope() {
     esac
   done < <(git -C "$repo" diff --name-only --no-renames --diff-filter=D "$base..$target")
   return 1
+}
+
+# Print the canonical comma-separated runtime contexts whose complete artifacts are required for an
+# exact TypeScript validation range. A full/unknown scope fails closed to every context. Component
+# baselines may be older than the processed SHA, so derive this from the same exact validation range
+# rather than only from the newest commit's changed paths.
+wd_typescript_components_for_range() {
+  local repo=$1 base=$2 target=$3 force_full=$4
+  local components=()
+  [[ $force_full == 0 || $force_full == 1 ]] \
+    || wd_die "TypeScript full-scope flag must be 0 or 1"
+  if (( force_full == 1 )); then
+    printf 'commerce,sales,openkeys,web\n'
+    return 0
+  fi
+  wd_range_has_class "$repo" "$base" "$target" wd_path_is_backend \
+    && components+=(commerce)
+  wd_range_has_class "$repo" "$base" "$target" wd_path_is_sales \
+    && components+=(sales)
+  wd_range_has_class "$repo" "$base" "$target" wd_path_is_openkeys \
+    && components+=(openkeys)
+  wd_range_has_class "$repo" "$base" "$target" wd_path_is_web \
+    && components+=(web)
+  if (( ${#components[@]} == 0 )); then
+    # A TypeScript lane with no known owner can be a newly introduced workspace surface. Building
+    # everything is the only safe default until its bounded context is explicitly classified.
+    printf 'commerce,sales,openkeys,web\n'
+    return 0
+  fi
+  local joined IFS=,
+  joined="${components[*]}"
+  printf '%s\n' "$joined"
 }
 
 wd_require_ancestor() {

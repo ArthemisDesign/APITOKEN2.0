@@ -114,6 +114,7 @@ policy_sha256=$(
     deploy/watchdog-lib.sh \
     deploy/typescript-scope.mjs \
     deploy/next-cache.sh \
+    deploy/typescript-build-contexts.sh \
     deploy/typescript-test-groups.sh; do
     blob=$(git -c safe.directory="$REPO" -C "$REPO" rev-parse "$TARGET:$path" 2>/dev/null \
       || printf 'missing')

@@ -21,11 +21,14 @@ merge client onto the latest committed `master`, tested only across that feature
 under the same SHA-keyed marker used by normal delivery. Workers have separate disposable
 PostgreSQL and Cargo slots and run below production CPU/I/O priority. A per-SHA lock lets a later
 unchanged `master` deployment wait for and reuse an in-flight candidate instead of rebuilding it.
-For TypeScript, every deployable artifact is still built, while typecheck/tests run only for the
-changed package closure (workspace consumers plus their prerequisites). Shared inputs and deletions
-force the full workspace; filtered markers also bind reuse to the exact diff base. The four Next.js
-apps restore host-local `.next/cache` archives before building and publish only complete,
-symlink-free archives afterward; cache damage is treated as a miss, never a deployment failure.
+For TypeScript, each affected runtime context (commerce, sales, OpenKeys, or Vercel web) produces a
+complete artifact set, while unrelated contexts are omitted. Shared workspace libraries build once
+before the selected context builds overlap; per-context marker digests let each release promoter
+verify only the artifacts it consumes. Typecheck/tests still use the changed package closure
+(workspace consumers plus their prerequisites). Shared inputs, selector changes, deletions, and
+unknown scopes force every context. The four Next.js apps restore host-local `.next/cache` archives
+before building and publish only complete, symlink-free archives afterward; cache damage is treated
+as a miss, never a deployment failure.
 TypeScript tests run in four joined isolation groups: commerce, sales, OpenKeys, and database-free
 packages. Each database group stays serial internally, while the independent groups overlap and
 all selected groups are reaped before the candidate receives a verdict.

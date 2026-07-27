@@ -87,11 +87,58 @@ tested_typescript_artifact_digest() {
   done | sha256_stdin
 }
 
+tested_typescript_component_artifact_digest() {
+  local tree=$1 component=$2 relative
+  local artifacts=()
+  case "$component" in
+    commerce)
+      artifacts=(
+        apps/api/dist/main.js
+        apps/worker/dist/main.js
+        apps/content-studio/.next/BUILD_ID
+        packages/db/dist/migrate.js
+      )
+      ;;
+    sales)
+      artifacts=(
+        apps/sales-api/dist/main.js
+        apps/sales-web/.next/BUILD_ID
+        packages/sales-db/dist/migrate.js
+      )
+      ;;
+    openkeys)
+      artifacts=(
+        apps/openkeys/.next/BUILD_ID
+        packages/openkeys-db/dist/migrate.js
+      )
+      ;;
+    web)
+      artifacts=(apps/web/.next/BUILD_ID)
+      ;;
+    *) die "unknown tested TypeScript component: $component" ;;
+  esac
+  for relative in "${artifacts[@]}"; do
+    [[ -f "$tree/$relative" && ! -L "$tree/$relative" ]] \
+      || die "tested TypeScript artifact is missing or unsafe: $tree/$relative"
+    printf '%s  %s\n' "$(sha256_file "$tree/$relative")" "$relative"
+  done | sha256_stdin
+}
+
+tested_typescript_component_list_contains() {
+  local components=$1 expected=$2 component IFS=,
+  for component in $components; do
+    [[ $component == "$expected" ]] && return 0
+  done
+  return 1
+}
+
 # Validate the root-owned candidate and its gate marker before an unprivileged release builder copies
 # anything. Runtime artifacts are promoted from this tree; they are never compiled a second time.
 validate_tested_candidate() {
   local candidate=$1 marker=$2 expected_sha=$3 need_typescript=$4 need_engine=$5
+  local typescript_component=${6:-commerce}
   local marker_sha marker_tree candidate_sha candidate_tree expected_digest actual_digest artifact digest_key
+  local marker_components
 
   [[ -d "$candidate" && ! -L "$candidate" ]] || die "tested candidate is missing or unsafe: $candidate"
   [[ "$(stat_owner_uid "$candidate")" == 0 ]] || die "tested candidate must be root-owned: $candidate"
@@ -110,9 +157,22 @@ validate_tested_candidate() {
   if [[ "$need_typescript" == 1 ]]; then
     [[ "$(tested_marker_value "$marker" typescript_tested)" == 1 ]] \
       || die "candidate did not pass the TypeScript lane"
-    expected_digest=$(tested_marker_value "$marker" typescript_artifact_digest) \
-      || die "candidate marker has no TypeScript artifact digest"
-    actual_digest=$(tested_typescript_artifact_digest "$candidate")
+    marker_components=$(tested_marker_value "$marker" typescript_components 2>/dev/null \
+      || printf '')
+    if [[ -n $marker_components ]]; then
+      tested_typescript_component_list_contains "$marker_components" "$typescript_component" \
+        || die "candidate did not build the $typescript_component TypeScript component"
+      expected_digest=$(tested_marker_value "$marker" \
+        "typescript_artifact_digest_$typescript_component") \
+        || die "candidate marker has no $typescript_component TypeScript artifact digest"
+      actual_digest=$(tested_typescript_component_artifact_digest \
+        "$candidate" "$typescript_component")
+    else
+      # Compatibility with candidates validated by the previous all-components controller.
+      expected_digest=$(tested_marker_value "$marker" typescript_artifact_digest) \
+        || die "candidate marker has no TypeScript artifact digest"
+      actual_digest=$(tested_typescript_artifact_digest "$candidate")
+    fi
     [[ "$actual_digest" == "$expected_digest" ]] \
       || die "tested TypeScript artifacts changed before release promotion"
   fi

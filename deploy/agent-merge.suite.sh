@@ -412,6 +412,8 @@ grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the activation-journal suite'
 grep -Fq 'deploy/next-cache.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the persistent Next.js cache suite'
+grep -Fq 'deploy/typescript-build-contexts.test.sh' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the merge gate does not run the component-aware build suite'
 grep -Fq 'deploy/typescript-test-groups.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the parallel TypeScript-group suite'
 grep -Fq 'deploy/sccache-cargo.sh" cargo test --locked --workspace' \
@@ -455,6 +457,7 @@ for path_gate_contract in \
   'wd_range_has_unknown_validation_path' \
   'next-cache.sh' \
   'typescript-scope.mjs' \
+  'typescript-build-contexts.sh' \
   'typescript-test-groups.sh' \
   'typescript_full=1' \
   'local gate machinery changed; forcing every expensive lane' \

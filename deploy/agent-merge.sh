@@ -63,14 +63,16 @@ am_mtime() {
 am_now() { date +%s; }
 
 am_gate_typescript() (
-  local base=$1 target=$2 force_full=$3 scope_output= mode= package
-  local common_dir next_cache_root
-  local filters=() test_packages=()
+  local base=$1 target=$2 force_full=$3 scope_output='' mode=full package
+  local common_dir next_cache_root context_list
+  local filters=() test_packages=() build_contexts=()
   cd "$ROOT"
   if [[ -n ${AGENT_MERGE_TYPESCRIPT_GATE_CMD:-} ]]; then
     eval "$AGENT_MERGE_TYPESCRIPT_GATE_CMD"
     return
   fi
+  # shellcheck source=deploy/watchdog-lib.sh
+  source "$ROOT/deploy/watchdog-lib.sh"
   pnpm install --frozen-lockfile
   common_dir=$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)
   next_cache_root="$common_dir/codex-tools/next-cache"
@@ -86,15 +88,16 @@ am_gate_typescript() (
       done <<<"$scope_output"
     fi
   fi
-  if (( ${#filters[@]} == 0 )); then
-    am_log 'TypeScript scope is shared, empty, or unavailable; running the full workspace'
-    pnpm build
-  else
-    am_log "TypeScript scope selected ${#filters[@]} workspace package(s)"
-    pnpm "${filters[@]}" -r --if-present --fail-if-no-match build
+  context_list=$(wd_typescript_components_for_range "$ROOT" "$base" "$target" "$force_full")
+  if [[ $mode != filtered ]]; then
+    context_list=commerce,sales,openkeys,web
   fi
+  IFS=, read -r -a build_contexts <<<"$context_list"
+  am_log "building complete TypeScript context(s): $context_list"
+  bash "$ROOT/deploy/typescript-build-contexts.sh" "$ROOT" "${build_contexts[@]}"
   NEXT_CACHE_ROOT="$next_cache_root" bash "$ROOT/deploy/next-cache.sh" save "$ROOT"
   if (( ${#filters[@]} == 0 )); then
+    am_log 'TypeScript scope is shared, empty, or unavailable; checking the full workspace'
     pnpm typecheck
   else
     pnpm "${filters[@]}" -r --if-present --fail-if-no-match typecheck
@@ -120,6 +123,7 @@ am_gate_deployment() (
   bash "$ROOT/deploy/lib.test.sh"
   bash "$ROOT/deploy/next-cache.test.sh"
   bash "$ROOT/deploy/typescript-scope.test.sh"
+  bash "$ROOT/deploy/typescript-build-contexts.test.sh"
   bash "$ROOT/deploy/typescript-test-groups.test.sh"
   # The merge path tests itself on every merge, strictly. It is deliberately not enforced in the
   # production gate: the watchdog installed on the host still calls deploy/agent-merge.test.sh, now a
@@ -150,6 +154,7 @@ am_range_changes_local_gate() {
       deploy/agent-merge.sh|deploy/agent-merge.suite.sh|deploy/watchdog-lib.sh|\
       deploy/sccache-cargo.sh|deploy/next-cache.sh|deploy/next-cache.test.sh|\
       deploy/typescript-scope.mjs|deploy/typescript-scope.test.sh|\
+      deploy/typescript-build-contexts.sh|deploy/typescript-build-contexts.test.sh|\
       deploy/typescript-test-groups.sh|deploy/typescript-test-groups.test.sh)
         return 0
         ;;

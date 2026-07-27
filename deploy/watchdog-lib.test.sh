@@ -313,6 +313,7 @@ for validation_only_path in \
   deploy/sccache-cargo.sh \
   deploy/next-cache.sh \
   deploy/typescript-scope.mjs \
+  deploy/typescript-build-contexts.sh \
   deploy/typescript-test-groups.sh; do
   wd_path_is_infrastructure "$validation_only_path" \
     || wd_die "deployment tooling path escaped operational validation: $validation_only_path"
@@ -520,15 +521,25 @@ wd_range_changes_typescript_gate "$validation_repo" \
 wd_range_requires_full_typescript_scope "$validation_repo" \
   "$validation_typescript_selector" "$validation_next_cache" \
   || wd_die "a Next.js cache helper change did not force full validation"
+printf 'contexts\n' >"$validation_repo/deploy/typescript-build-contexts.sh"
+git -C "$validation_repo" add deploy/typescript-build-contexts.sh
+git -C "$validation_repo" commit --quiet -m typescript-build-contexts
+validation_build_contexts=$(git -C "$validation_repo" rev-parse HEAD)
+wd_range_changes_typescript_gate "$validation_repo" \
+  "$validation_next_cache" "$validation_build_contexts" \
+  || wd_die "a TypeScript context-build change did not identify gate machinery"
+wd_range_requires_full_typescript_scope "$validation_repo" \
+  "$validation_next_cache" "$validation_build_contexts" \
+  || wd_die "a TypeScript context-build change did not force full validation"
 printf 'groups\n' >"$validation_repo/deploy/typescript-test-groups.sh"
 git -C "$validation_repo" add deploy/typescript-test-groups.sh
 git -C "$validation_repo" commit --quiet -m typescript-test-groups
 validation_test_groups=$(git -C "$validation_repo" rev-parse HEAD)
 wd_range_changes_typescript_gate "$validation_repo" \
-  "$validation_next_cache" "$validation_test_groups" \
+  "$validation_build_contexts" "$validation_test_groups" \
   || wd_die "a TypeScript test-group change did not identify gate machinery"
 wd_range_requires_full_typescript_scope "$validation_repo" \
-  "$validation_next_cache" "$validation_test_groups" \
+  "$validation_build_contexts" "$validation_test_groups" \
   || wd_die "a TypeScript test-group change did not force full validation"
 git -C "$validation_repo" rm --quiet apps/example/index.ts
 git -C "$validation_repo" commit --quiet -m typescript-deletion
@@ -536,6 +547,28 @@ validation_typescript_deletion=$(git -C "$validation_repo" rev-parse HEAD)
 wd_range_requires_full_typescript_scope "$validation_repo" \
   "$validation_test_groups" "$validation_typescript_deletion" \
   || wd_die "a deleted TypeScript workspace path did not force full validation"
+
+# Runtime build contexts remain independently selectable, while a full/unknown TypeScript scope
+# always produces the canonical complete list.
+mkdir -p "$validation_repo/apps/web"
+printf 'web\n' >"$validation_repo/apps/web/page.ts"
+git -C "$validation_repo" add apps/web/page.ts
+git -C "$validation_repo" commit --quiet -m web-context
+validation_web_context=$(git -C "$validation_repo" rev-parse HEAD)
+[[ $(wd_typescript_components_for_range "$validation_repo" \
+  "$validation_typescript_deletion" "$validation_web_context" 0) == web ]] \
+  || wd_die "a web-only range selected unrelated runtime contexts"
+mkdir -p "$validation_repo/packages/contracts"
+printf 'contracts\n' >"$validation_repo/packages/contracts/index.ts"
+git -C "$validation_repo" add packages/contracts/index.ts
+git -C "$validation_repo" commit --quiet -m shared-context
+validation_shared_context=$(git -C "$validation_repo" rev-parse HEAD)
+[[ $(wd_typescript_components_for_range "$validation_repo" \
+  "$validation_web_context" "$validation_shared_context" 0) == commerce,sales,openkeys ]] \
+  || wd_die "the contracts package did not select every host consumer context"
+[[ $(wd_typescript_components_for_range "$validation_repo" \
+  "$validation_web_context" "$validation_shared_context" 1) == commerce,sales,openkeys,web ]] \
+  || wd_die "full TypeScript validation did not select every runtime context"
 
 # A deleted component file still requires that component's lane. A rename is deliberately exposed
 # as an old-path deletion plus a new-path addition, so moving code cannot escape its former owner.
@@ -572,6 +605,7 @@ artifact_paths=(
   apps/sales-api/dist/main.js
   apps/sales-web/.next/BUILD_ID
   apps/openkeys/.next/BUILD_ID
+  apps/web/.next/BUILD_ID
   packages/db/dist/migrate.js
   packages/sales-db/dist/migrate.js
   packages/openkeys-db/dist/migrate.js
@@ -585,6 +619,15 @@ deploy_artifact_digest=$(bash -c \
   'source "$1"; tested_typescript_artifact_digest "$2"' _ "$ROOT/deploy/lib.sh" "$artifact_tree")
 [[ $watchdog_artifact_digest == "$deploy_artifact_digest" ]] \
   || wd_die "watchdog and release promoter disagree on the TypeScript artifact identity"
+for artifact_component in commerce sales openkeys web; do
+  watchdog_component_digest=$(wd_typescript_component_artifact_digest \
+    "$artifact_tree" "$artifact_component")
+  deploy_component_digest=$(bash -c \
+    'source "$1"; tested_typescript_component_artifact_digest "$2" "$3"' \
+    _ "$ROOT/deploy/lib.sh" "$artifact_tree" "$artifact_component")
+  [[ $watchdog_component_digest == "$deploy_component_digest" ]] \
+    || wd_die "watchdog and release promoter disagree on the $artifact_component artifact identity"
+done
 printf 'tampered\n' >>"$artifact_tree/apps/api/dist/main.js"
 [[ $(wd_typescript_artifact_digest "$artifact_tree") != "$watchdog_artifact_digest" ]] \
   || wd_die "artifact identity did not detect a changed runtime entrypoint"
@@ -630,6 +673,49 @@ validate_candidate_fixture || wd_die "release promoter rejected an intact tested
 printf 'post-marker mutation\n' >>"$tested_candidate/apps/api/dist/main.js"
 if validate_candidate_fixture >/dev/null 2>&1; then
   wd_die "release promoter accepted a runtime artifact changed after the test marker"
+fi
+
+# A component marker must be sufficient on its own: commerce promotion neither requires nor hashes
+# artifacts from sales, OpenKeys, or the Vercel-only web app.
+component_candidate="$TEMP/component-candidate"
+mkdir -p "$component_candidate"
+for artifact_path in \
+  apps/api/dist/main.js \
+  apps/worker/dist/main.js \
+  apps/content-studio/.next/BUILD_ID \
+  packages/db/dist/migrate.js; do
+  mkdir -p "$component_candidate/$(dirname -- "$artifact_path")"
+  printf '%s\n' "$artifact_path" >"$component_candidate/$artifact_path"
+done
+git init --quiet "$component_candidate"
+git -C "$component_candidate" config user.name test
+git -C "$component_candidate" config user.email test@example.invalid
+git -C "$component_candidate" commit --quiet --allow-empty -m component-candidate
+component_sha=$(git -C "$component_candidate" rev-parse HEAD)
+component_tree=$(git -C "$component_candidate" rev-parse 'HEAD^{tree}')
+component_marker="$TEMP/component-candidate.marker"
+{
+  printf 'sha=%s\n' "$component_sha"
+  printf 'tree=%s\n' "$component_tree"
+  printf 'typescript_tested=1\n'
+  printf 'typescript_components=commerce\n'
+  printf 'typescript_artifact_digest_commerce=%s\n' \
+    "$(wd_typescript_component_artifact_digest "$component_candidate" commerce)"
+} >"$component_marker"
+bash -c '
+  source "$1"
+  stat_owner_uid(){ printf "0\n"; }
+  validate_tested_candidate "$2" "$3" "$4" 1 0 commerce
+' _ "$ROOT/deploy/lib.sh" "$component_candidate" "$component_marker" "$component_sha" \
+  || wd_die "release promoter rejected an intact component-scoped candidate"
+printf 'tampered\n' >>"$component_candidate/apps/worker/dist/main.js"
+if bash -c '
+  source "$1"
+  stat_owner_uid(){ printf "0\n"; }
+  validate_tested_candidate "$2" "$3" "$4" 1 0 commerce
+' _ "$ROOT/deploy/lib.sh" "$component_candidate" "$component_marker" "$component_sha" \
+  >/dev/null 2>&1; then
+  wd_die "release promoter accepted a changed component-scoped artifact"
 fi
 
 grep -Fq 'admin.apitoken.sale {' "$ROOT/deploy/Caddyfile"
@@ -752,7 +838,8 @@ gate_contract=(
   'pnpm --dir "$candidate" install --frozen-lockfile'
   'NEXT_CACHE_ROOT="$CI_NEXT_CACHE_ROOT"'
   'bash "$candidate/deploy/next-cache.sh" restore "$candidate"'
-  'pnpm --dir "$candidate" build'
+  'typescript-build-contexts.sh'
+  '"$candidate" "${build_contexts[@]}"'
   'bash "$candidate/deploy/next-cache.sh" save "$candidate"'
   'pnpm --dir "$candidate" typecheck'
   'typescript-scope.mjs'
@@ -772,6 +859,7 @@ gate_contract=(
   'run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"'
   'run_as_ci bash "$candidate/deploy/next-cache.test.sh"'
   'run_as_ci bash "$candidate/deploy/typescript-scope.test.sh"'
+  'run_as_ci bash "$candidate/deploy/typescript-build-contexts.test.sh"'
   'run_as_ci bash "$candidate/deploy/typescript-test-groups.test.sh"'
   'run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"'
   'status --porcelain --untracked-files=no'
@@ -793,11 +881,20 @@ gate_contract=(
   'validation_plan_format=%s'
   'validation_policy_sha256=%s'
   'validation_plan_sha256=%s'
+  'typescript_components=%s'
+  'typescript_artifact_digest_commerce=%s'
+  'typescript_artifact_digest_sales=%s'
+  'typescript_artifact_digest_openkeys=%s'
+  'typescript_artifact_digest_web=%s'
 )
 for required_stage in "${gate_contract[@]}"; do
   grep -Fq -- "$required_stage" "$ROOT/deploy/watchdog.sh" \
     || wd_die "candidate gate contract lost required stage: $required_stage"
 done
+
+# The previous installed controller reaches this suite before it can hand off to the candidate
+# controller, so exercise the newly candidate-owned build helper from here as well.
+bash "$ROOT/deploy/typescript-build-contexts.test.sh"
 
 # `pnpm -r --if-present test` deliberately tolerates packages with no suite. Keep that tolerance
 # explicit: deleting a test script from a covered package, or adding a new workspace package without

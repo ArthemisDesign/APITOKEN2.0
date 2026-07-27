@@ -228,12 +228,12 @@ candidate_for() {
 candidate_is_tested() {
   local sha=$1 typescript_required=$2 typescript_full=$3 typescript_base=$4
   local rust_required=$5 static_required=$6 engine_artifacts_required=$7
-  local validation_policy_sha256=$8
+  local validation_policy_sha256=$8 required_typescript_components=$9
   local marker candidate marker_sha marker_tree candidate_sha candidate_tree marker_digest actual_digest
   local marker_flag marker_typescript_full expected_hash actual_hash manifest
   local marker_plan_format marker_policy marker_plan marker_plan_actual
   local marker_typescript_required marker_typescript_base marker_rust_required
-  local marker_static_required marker_engine_artifacts
+  local marker_static_required marker_engine_artifacts marker_typescript_components component
   marker=$(marker_for "$sha")
   candidate=$(candidate_for "$sha")
   [[ -d $candidate && ! -L $candidate ]] || return 1
@@ -303,9 +303,27 @@ candidate_is_tested() {
       git -C "$SOURCE_REPO" merge-base --is-ancestor "$marker_typescript_base" "$typescript_base" \
         2>/dev/null || return 1
     fi
-    expected_hash=$(wd_marker_value "$marker" typescript_artifact_digest 2>/dev/null) || return 1
-    actual_hash=$(wd_typescript_artifact_digest "$candidate") || return 1
-    [[ $actual_hash == "$expected_hash" ]] || return 1
+    marker_typescript_components=$(wd_marker_value "$marker" typescript_components 2>/dev/null \
+      || printf '')
+    if [[ -z $marker_typescript_components ]]; then
+      # Staged upgrade compatibility: the previous controller always built every host component
+      # and recorded one aggregate digest.
+      expected_hash=$(wd_marker_value "$marker" typescript_artifact_digest 2>/dev/null) || return 1
+      actual_hash=$(wd_typescript_artifact_digest "$candidate") || return 1
+      [[ $actual_hash == "$expected_hash" ]] || return 1
+    else
+      wd_typescript_component_list_is_canonical "$marker_typescript_components" || return 1
+      for component in commerce sales openkeys web; do
+        wd_typescript_component_list_contains "$required_typescript_components" "$component" \
+          || continue
+        wd_typescript_component_list_contains "$marker_typescript_components" "$component" \
+          || return 1
+        expected_hash=$(wd_marker_value "$marker" \
+          "typescript_artifact_digest_$component" 2>/dev/null) || return 1
+        actual_hash=$(wd_typescript_component_artifact_digest "$candidate" "$component") || return 1
+        [[ $actual_hash == "$expected_hash" ]] || return 1
+      done
+    fi
   fi
   if (( engine_artifacts_required == 1 )); then
     expected_hash=$(wd_marker_value "$marker" engine_binary_sha256 2>/dev/null) || return 1
@@ -446,17 +464,13 @@ run_as_ci() {
 
 test_typescript_lane() {
   local candidate=$1 dsn=$2 sales_dsn=$3 openkeys_dsn=$4
-  local base=$5 target=$6 force_full=$7 scope_output= mode= package
-  local filters=() test_packages=()
+  local base=$5 target=$6 force_full=$7 lane_components=$8
+  local scope_output='' mode=full package
+  local filters=() test_packages=() build_contexts=()
   wd_log "running frozen TypeScript install, build, typecheck, migrations, and tests"
   run_as_ci pnpm --dir "$candidate" install --frozen-lockfile
-  # Every deployable entrypoint is built because the immutable candidate becomes the release
-  # artifact. Typechecking and tests can still be limited to the changed package closure.
   run_as_ci env NEXT_CACHE_ROOT="$CI_NEXT_CACHE_ROOT" \
     bash "$candidate/deploy/next-cache.sh" restore "$candidate"
-  run_as_ci pnpm --dir "$candidate" build
-  run_as_ci env NEXT_CACHE_ROOT="$CI_NEXT_CACHE_ROOT" \
-    bash "$candidate/deploy/next-cache.sh" save "$candidate"
   if (( force_full == 0 )) \
     && scope_output=$(run_as_ci node "$candidate/deploy/typescript-scope.mjs" \
       "$candidate" "$base" "$target"); then
@@ -469,6 +483,17 @@ test_typescript_lane() {
       done <<<"$scope_output"
     fi
   fi
+  if [[ $mode != filtered ]]; then
+    # A shared/full/failed package scope needs every clean runtime context. This keeps the fallback
+    # fail-closed and aligns full typecheck/tests with the artifacts they exercise.
+    lane_components=commerce,sales,openkeys,web
+  fi
+  IFS=, read -r -a build_contexts <<<"$lane_components"
+  wd_log "building complete TypeScript context(s): $lane_components"
+  run_as_ci bash "$candidate/deploy/typescript-build-contexts.sh" \
+    "$candidate" "${build_contexts[@]}"
+  run_as_ci env NEXT_CACHE_ROOT="$CI_NEXT_CACHE_ROOT" \
+    bash "$candidate/deploy/next-cache.sh" save "$candidate"
   if (( ${#filters[@]} == 0 )); then
     wd_log "TypeScript scope is shared, empty, or unavailable; checking the full workspace"
     run_as_ci pnpm --dir "$candidate" typecheck
@@ -477,9 +502,16 @@ test_typescript_lane() {
     run_as_ci pnpm --dir "$candidate" "${filters[@]}" \
       -r --if-present --fail-if-no-match typecheck
   fi
-  run_as_ci env DATABASE_URL="$dsn" node "$candidate/packages/db/dist/migrate.js"
-  run_as_ci env SALES_DATABASE_URL="$sales_dsn" node "$candidate/packages/sales-db/dist/migrate.js"
-  run_as_ci env OPENKEYS_DATABASE_URL="$openkeys_dsn" node "$candidate/packages/openkeys-db/dist/migrate.js"
+  if wd_typescript_component_list_contains "$lane_components" commerce; then
+    run_as_ci env DATABASE_URL="$dsn" node "$candidate/packages/db/dist/migrate.js"
+  fi
+  if wd_typescript_component_list_contains "$lane_components" sales; then
+    run_as_ci env SALES_DATABASE_URL="$sales_dsn" node "$candidate/packages/sales-db/dist/migrate.js"
+  fi
+  if wd_typescript_component_list_contains "$lane_components" openkeys; then
+    run_as_ci env OPENKEYS_DATABASE_URL="$openkeys_dsn" \
+      node "$candidate/packages/openkeys-db/dist/migrate.js"
+  fi
   run_as_ci env TEST_DATABASE_URL="$dsn" TEST_SALES_DATABASE_URL="$sales_dsn" \
     TEST_OPENKEYS_DATABASE_URL="$openkeys_dsn" \
     bash "$candidate/deploy/typescript-test-groups.sh" "$candidate" "${test_packages[@]}"
@@ -519,6 +551,7 @@ test_static_lane() {
     run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"
     run_as_ci bash "$candidate/deploy/next-cache.test.sh"
     run_as_ci bash "$candidate/deploy/typescript-scope.test.sh"
+    run_as_ci bash "$candidate/deploy/typescript-build-contexts.test.sh"
     run_as_ci bash "$candidate/deploy/typescript-test-groups.test.sh"
     run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"
   fi
@@ -537,16 +570,25 @@ prepare_and_test_candidate_unlocked() {
   local validation_policy_sha256=$8 validation_plan_sha256=$9
   local candidate marker dsn= engine_dsn= sales_dsn= openkeys_dsn= manifest digest tree
   local typescript_pid= rust_pid= static_pid= typescript_rc=0 rust_rc=0 static_rc=0
-  local typescript_digest=none engine_hash=none authbot_hash=none
+  local typescript_components=none typescript_digest=none component
+  local typescript_digest_commerce=none typescript_digest_sales=none
+  local typescript_digest_openkeys=none typescript_digest_web=none
+  local engine_hash=none authbot_hash=none
   candidate=$(candidate_for "$sha")
   marker=$(marker_for "$sha")
 
   (( engine_artifacts_required == 0 || rust_required == 1 )) \
     || wd_die "engine artifacts cannot be prepared without the Rust validation lane"
+  if (( typescript_required == 1 )); then
+    typescript_components=$(wd_typescript_components_for_range \
+      "$SOURCE_REPO" "$typescript_base" "$sha" "$typescript_full")
+    wd_typescript_component_list_is_canonical "$typescript_components" \
+      || wd_die "derived a malformed TypeScript component list: $typescript_components"
+  fi
 
   if candidate_is_tested "$sha" "$typescript_required" "$typescript_full" "$typescript_base" \
     "$rust_required" "$static_required" "$engine_artifacts_required" \
-    "$validation_policy_sha256"; then
+    "$validation_policy_sha256" "$typescript_components"; then
     wd_log "reusing test-passed immutable candidate $sha"
     return 0
   fi
@@ -581,7 +623,7 @@ prepare_and_test_candidate_unlocked() {
   # every wait and the database cleanup path even when any individual lane fails.
   if (( typescript_required == 1 )); then
     run_candidate_lane test_typescript_lane "$candidate" "$dsn" "$sales_dsn" "$openkeys_dsn" \
-      "$typescript_base" "$sha" "$typescript_full" &
+      "$typescript_base" "$sha" "$typescript_full" "$typescript_components" &
     typescript_pid=$!
   fi
   if (( rust_required == 1 )); then
@@ -611,7 +653,32 @@ prepare_and_test_candidate_unlocked() {
   digest=$(wd_manifest_digest "$manifest")
   tree=$(run_as_ci git -C "$candidate" rev-parse 'HEAD^{tree}')
   if (( typescript_required == 1 )); then
-    typescript_digest=$(wd_typescript_artifact_digest "$candidate")
+    for component in commerce sales openkeys web; do
+      wd_typescript_component_list_contains "$typescript_components" "$component" || continue
+      case "$component" in
+        commerce)
+          typescript_digest_commerce=$(wd_typescript_component_artifact_digest \
+            "$candidate" "$component")
+          ;;
+        sales)
+          typescript_digest_sales=$(wd_typescript_component_artifact_digest \
+            "$candidate" "$component")
+          ;;
+        openkeys)
+          typescript_digest_openkeys=$(wd_typescript_component_artifact_digest \
+            "$candidate" "$component")
+          ;;
+        web)
+          typescript_digest_web=$(wd_typescript_component_artifact_digest \
+            "$candidate" "$component")
+          ;;
+      esac
+    done
+    if wd_typescript_component_list_contains "$typescript_components" commerce \
+      && wd_typescript_component_list_contains "$typescript_components" sales \
+      && wd_typescript_component_list_contains "$typescript_components" openkeys; then
+      typescript_digest=$(wd_typescript_artifact_digest "$candidate")
+    fi
   fi
   if (( engine_artifacts_required == 1 )); then
     engine_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/engine/claude-api")
@@ -630,7 +697,12 @@ prepare_and_test_candidate_unlocked() {
     printf 'validation_plan_format=%s\n' "$VALIDATION_PLAN_FORMAT"
     printf 'validation_policy_sha256=%s\n' "$validation_policy_sha256"
     printf 'validation_plan_sha256=%s\n' "$validation_plan_sha256"
+    printf 'typescript_components=%s\n' "$typescript_components"
     printf 'typescript_artifact_digest=%s\n' "$typescript_digest"
+    printf 'typescript_artifact_digest_commerce=%s\n' "$typescript_digest_commerce"
+    printf 'typescript_artifact_digest_sales=%s\n' "$typescript_digest_sales"
+    printf 'typescript_artifact_digest_openkeys=%s\n' "$typescript_digest_openkeys"
+    printf 'typescript_artifact_digest_web=%s\n' "$typescript_digest_web"
     printf 'engine_binary_sha256=%s\n' "$engine_hash"
     printf 'authbot_binary_sha256=%s\n' "$authbot_hash"
     printf 'completed_at=%s\n' "$(date -u +%FT%TZ)"
