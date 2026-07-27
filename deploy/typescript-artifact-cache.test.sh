@@ -91,6 +91,9 @@ elif [[ $label == commerce ]]; then
   write_output apps/content-studio/.next/BUILD_ID content-build
   write_output apps/content-studio/.next/server/runtime.js content-runtime
   write_output apps/content-studio/.next/cache/compiler.bin content-compiler-cache
+  mkdir -p "$workspace/apps/content-studio/.next/standalone/node_modules/.pnpm/node_modules"
+  ln -s ../semver@6.3.1/node_modules/semver \
+    "$workspace/apps/content-studio/.next/standalone/node_modules/.pnpm/node_modules/semver"
 elif [[ $label == sales ]]; then
   write_output apps/sales-api/dist/main.js sales-api
   write_output apps/sales-web/.next/BUILD_ID sales-build
@@ -108,6 +111,13 @@ else
   write_output apps/web/.next/BUILD_ID "$(git -C "$workspace" rev-parse HEAD)"
   write_output apps/web/.next/server/runtime.js web-runtime
   write_output apps/web/.next/cache/compiler.bin web-compiler-cache
+  if [[ ${INJECT_DANGLING_ESCAPE_LINK:-0} == 1 ]]; then
+    mkdir -p "$workspace/node_modules"
+    ln -s /artifact-cache-test-outside/missing \
+      "$workspace/node_modules/cache-test-escape"
+    ln -s ../../../../node_modules/cache-test-escape \
+      "$workspace/apps/web/.next/server/escape"
+  fi
 fi
 STUB
 chmod +x "$TEMP/bin/pnpm"
@@ -146,6 +156,11 @@ PATH="$TEMP/bin:$PATH" ARTIFACT_CACHE_TEST_STATE="$STATE" FAIL_IF_BUILD_CALLED=1
   || fail 'complete artifact restore discarded the independent Next compiler cache'
 [[ -L $FIXTURE/apps/openkeys/.next/node_modules/test-package ]] \
   || fail 'safe workspace-relative output link was not restored'
+commerce_dangling=$FIXTURE/apps/content-studio/.next/standalone/node_modules/.pnpm/node_modules/semver
+[[ -L $commerce_dangling ]] \
+  || fail 'safe dangling standalone link was not restored'
+[[ $(readlink "$commerce_dangling") == ../semver@6.3.1/node_modules/semver ]] \
+  || fail 'safe dangling standalone link target changed during restore'
 
 printf '\n' >>"$FIXTURE/apps/web/package.json"
 git -C "$FIXTURE" add apps/web/package.json
@@ -177,6 +192,22 @@ PATH="$TEMP/bin:$PATH" ARTIFACT_CACHE_TEST_STATE="$STATE" ONLY_BUILD_LABEL=web \
   TYPESCRIPT_ARTIFACT_CACHE_ROOT="$CACHE" \
   bash "$RUNNER" "$FIXTURE" web >/dev/null
 [[ $(cat "$STATE/builds") == web ]] || fail 'a symlink-injected entry did not rebuild'
+
+web_entries_before=$(find "$CACHE/web" -mindepth 1 -maxdepth 1 -type d ! -name '.*' \
+  | wc -l | tr -d ' ')
+: >"$STATE/builds"
+PATH="$TEMP/bin:$PATH" ARTIFACT_CACHE_TEST_STATE="$STATE" ONLY_BUILD_LABEL=web \
+  INJECT_DANGLING_ESCAPE_LINK=1 NEXT_PUBLIC_DOCS_URL=https://escape.example.invalid \
+  TYPESCRIPT_ARTIFACT_CACHE_ROOT="$CACHE" \
+  bash "$RUNNER" "$FIXTURE" web >"$STATE/escape.log"
+[[ $(cat "$STATE/builds") == web ]] || fail 'unsafe dangling link did not run the normal build'
+web_entries_after=$(find "$CACHE/web" -mindepth 1 -maxdepth 1 -type d ! -name '.*' \
+  | wc -l | tr -d ' ')
+[[ $web_entries_after == "$web_entries_before" ]] \
+  || fail 'a dangling link through an external intermediary was cached'
+grep -q 'path escaped cache root.*continuing without cache save' "$STATE/escape.log" \
+  || fail 'unsafe dangling-link cache rejection was not reported'
+rm -- "$FIXTURE/apps/web/.next/server/escape" "$FIXTURE/node_modules/cache-test-escape"
 
 for version in one two three; do
   : >"$STATE/builds"

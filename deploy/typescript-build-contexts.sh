@@ -298,6 +298,42 @@ const mkdirChecked = (directory, mode = 0o755) => {
   }
 };
 
+const ensureLinkResolutionInsideWorkspace = (resolved) => {
+  let pending = resolved;
+  let followedLinks = 0;
+  while (true) {
+    ensureInside(workspace, pending);
+    const relative = path.relative(workspace, pending);
+    const components = relative === "" ? [] : relative.split(path.sep);
+    let current = workspace;
+    let followed = false;
+    for (let index = 0; index < components.length; index += 1) {
+      const candidate = path.join(current, components[index]);
+      let stat;
+      try {
+        stat = fs.lstatSync(candidate);
+      } catch (error) {
+        if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return;
+        throw error;
+      }
+      if (stat.isSymbolicLink()) {
+        followedLinks += 1;
+        if (followedLinks > 40) throw new Error(`symbolic-link cycle: ${resolved}`);
+        pending = path.resolve(
+          path.dirname(candidate),
+          fs.readlinkSync(candidate),
+          ...components.slice(index + 1),
+        );
+        ensureInside(workspace, pending);
+        followed = true;
+        break;
+      }
+      current = candidate;
+    }
+    if (!followed) return;
+  }
+};
+
 const validateWorkspaceLink = (relative, target) => {
   if (typeof target !== "string" || target.length === 0 || target.includes("\0")
       || path.isAbsolute(target)) {
@@ -310,8 +346,10 @@ const validateWorkspaceLink = (relative, target) => {
   ensureInside(workspace, destination);
   const resolved = path.resolve(path.dirname(destination), target);
   ensureInside(workspace, resolved);
-  const real = fs.realpathSync(resolved);
-  ensureInside(workspace, real);
+  // Next standalone traces may contain a relative link to an intentionally omitted optional
+  // package. Preserve that dangling link, but follow every existing path component so a dangling
+  // intermediary cannot disguise an escape from the workspace.
+  ensureLinkResolutionInsideWorkspace(resolved);
   return { path: relative, target };
 };
 
