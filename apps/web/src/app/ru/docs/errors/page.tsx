@@ -7,19 +7,18 @@ const EN = { title: errorsUi.en.title, description: errorsUi.en.description };
 const RU = { title: errorsUi.ru.title, description: errorsUi.ru.description };
 
 export const metadata: Metadata = {
-  ...coreMetadata("/docs/errors", EN, RU, "en"),
+  ...coreMetadata("/docs/errors", EN, RU, "ru"),
   keywords: [
-    "claude api error codes",
-    "anthropic api errors",
+    "коды ошибок claude api",
+    "ошибка claude api",
     "invalid x-api-key",
-    "rate_limit_error",
-    "overloaded_error",
-    "authentication_error",
     "claude api 429",
     "claude api 401",
+    "лимит claude исчерпан",
+    "claude api не работает",
   ],
 };
 
-export default function ErrorsPage() {
-  return <ErrorsReference locale="en" />;
+export default function RuErrorsPage() {
+  return <ErrorsReference locale="ru" />;
 }

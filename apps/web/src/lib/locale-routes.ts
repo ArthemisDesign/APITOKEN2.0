@@ -15,6 +15,7 @@ const russianExactRoutes = new Set([
   "/",
   "/dashboard",
   "/docs",
+  "/docs/errors",
   "/forgot-password",
   "/integrations",
   "/int-claude-code",

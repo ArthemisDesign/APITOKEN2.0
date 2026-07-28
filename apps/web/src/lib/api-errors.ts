@@ -505,6 +505,136 @@ export function findApiError(code: string): ApiErrorEntry | undefined {
   return API_ERRORS.find((entry) => entry.code === code);
 }
 
+// --- Localization -----------------------------------------------------------
+//
+// Only the explanatory prose is translated. `message`, `type` and `alsoSearchedAs`
+// are API responses and tool output, so they stay in English in every locale —
+// a translated error string would match nothing when someone pastes what their
+// terminal actually printed, which is the entire point of this page.
+
+export type ErrorLocale = "en" | "ru";
+
+export type LocalizedError = {
+  title: string;
+  causes: string[];
+  fixes: string[];
+  snippetLabel?: string;
+};
+
+export type ResolvedApiError = ApiErrorEntry & { localeTitle: string };
+
+export const errorsUi: Record<ErrorLocale, {
+  eyebrow: string;
+  title: string;
+  description: string;
+  envelopeIntro: string;
+  envelopeNote: string;
+  allCodes: string;
+  colStatus: string;
+  colType: string;
+  colMeaning: string;
+  colRetry: string;
+  retryYes: string;
+  retryNo: string;
+  why: string;
+  how: string;
+  variants: string;
+  shortLink: string;
+  originGateway: string;
+  originShared: string;
+  originSubscription: string;
+  stuckHeading: string;
+  stuckBody: string;
+  ctaDocs: string;
+  ctaSupport: string;
+  seeAlso: string;
+}> = {
+  en: {
+    eyebrow: "Reference",
+    title: "Claude API Error Codes",
+    description:
+      "Every Claude API error explained: 401 invalid x-api-key, 429 rate_limit_error, 529 Overloaded, 413 request_too_large, and the 400s newer models introduced. Exact response text, cause and fix for each.",
+    envelopeIntro:
+      "Every error is returned as JSON with the same envelope, so you can branch on error.type without parsing the message text:",
+    envelopeNote:
+      "Match on the HTTP status and error.type, never on the message string — messages are prose and can be reworded, while the type is a contract. In the official SDKs this means catching the typed exception classes rather than inspecting text. This page is written the other way round only because the message is what you have in front of you when something breaks.",
+    allCodes: "All codes",
+    colStatus: "Status",
+    colType: "error.type",
+    colMeaning: "Meaning",
+    colRetry: "Retry?",
+    retryYes: "Yes, back off",
+    retryNo: "No",
+    why: "Why it happens",
+    how: "How to fix it",
+    variants: "Other forms of the same failure",
+    shortLink: "Short link",
+    originGateway: "This response is specific to this gateway — the Anthropic API has no equivalent.",
+    originShared: "Identical on api.anthropic.com and on this gateway.",
+    originSubscription: "Comes from Anthropic's own apps and subscription plans, not from this gateway.",
+    stuckHeading: "Still stuck?",
+    stuckBody:
+      "If a request fails in a way this page does not cover, send us the endpoint, the masked key id, the HTTP status and the response body. Never send the full key.",
+    ctaDocs: "API docs",
+    ctaSupport: "Contact support",
+    seeAlso: "See also the rate limits guide and how to point an SDK at a custom base URL.",
+  },
+  ru: {
+    eyebrow: "Справочник",
+    title: "Коды ошибок Claude API",
+    description:
+      "Разбор всех ошибок Claude API: 401 invalid x-api-key, 429 rate_limit_error, 529 Overloaded, 413 request_too_large и новые 400 у свежих моделей. Точный текст ответа, причина и решение для каждой.",
+    envelopeIntro:
+      "Любая ошибка возвращается в JSON с одинаковым конвертом, поэтому ветвиться можно по error.type, не разбирая текст сообщения:",
+    envelopeNote:
+      "Сопоставляйте HTTP-статус и error.type, но никогда не текст сообщения: сообщение — это проза, его могут переформулировать, а тип — это контракт. В официальных SDK это означает ловить типизированные классы исключений, а не искать подстроки. Эта страница построена наоборот только потому, что в момент поломки перед глазами у вас именно сообщение.",
+    allCodes: "Все коды",
+    colStatus: "Статус",
+    colType: "error.type",
+    colMeaning: "Что означает",
+    colRetry: "Ретрай?",
+    retryYes: "Да, с задержкой",
+    retryNo: "Нет",
+    why: "Почему возникает",
+    how: "Что делать",
+    variants: "Другие формы той же ошибки",
+    shortLink: "Короткая ссылка",
+    originGateway: "Такой ответ есть только у этого шлюза — в Anthropic API аналога нет.",
+    originShared: "Идентично на api.anthropic.com и на этом шлюзе.",
+    originSubscription: "Приходит из приложений и подписок Anthropic, а не от этого шлюза.",
+    stuckHeading: "Не помогло?",
+    stuckBody:
+      "Если запрос падает так, как здесь не описано, пришлите нам эндпоинт, маскированный идентификатор ключа, HTTP-статус и тело ответа. Полный ключ присылать не нужно никогда.",
+    ctaDocs: "Документация API",
+    ctaSupport: "Написать в поддержку",
+    seeAlso: "Смотрите также гайд про лимиты и как направить SDK на свой base URL.",
+  },
+};
+
+/** Merge the shared catalog entry with the translation for `locale`. */
+export function resolveApiErrors(
+  locale: ErrorLocale,
+  translations: Record<string, LocalizedError>,
+): ResolvedApiError[] {
+  if (locale === "en") return API_ERRORS.map((entry) => ({ ...entry, localeTitle: entry.title }));
+
+  return API_ERRORS.map((entry) => {
+    const translated = translations[entry.code];
+    // Fall back to English rather than dropping the entry: a missing translation
+    // should degrade to a usable page, not to a hole in the reference.
+    if (!translated) return { ...entry, localeTitle: entry.title };
+    return {
+      ...entry,
+      localeTitle: translated.title,
+      causes: translated.causes,
+      fixes: translated.fixes,
+      snippet: entry.snippet
+        ? { ...entry.snippet, label: translated.snippetLabel ?? entry.snippet.label }
+        : undefined,
+    };
+  });
+}
+
 /** Entries whose verbatim string exists only on this gateway. */
 export function gatewayOnlyErrors(): ApiErrorEntry[] {
   return API_ERRORS.filter((entry) => entry.surface === "apitoken");
