@@ -13,11 +13,20 @@ export async function GET(): Promise<NextResponse> {
     loadConfig();
     assertSecretBoxReady();
     const { pool } = getDatabase();
-    const [database, engine] = await Promise.all([
+    const [database, schema, engine] = await Promise.all([
       pool.query("SELECT 1"),
+      pool.query(`
+        SELECT j.id, j.batch_id, j.item_index, j.status, j.updated_at,
+               k.removed_by, k.removal_reason, k.secret_version, k.secret_key_id
+        FROM openkeys_issuance_jobs j
+        LEFT JOIN openkeys_keys k ON false
+        LIMIT 0
+      `),
       getEngineClient().readiness(),
     ]);
-    if (database.rowCount !== 1 || !engine) throw new Error("dependency unavailable");
+    if (database.rowCount !== 1 || schema.rowCount !== 0 || !engine) {
+      throw new Error("dependency unavailable");
+    }
     return NextResponse.json({ status: "ready" }, {
       headers: { "cache-control": "no-store" },
     });
