@@ -59,6 +59,7 @@ impl PendingCodexAdmission {
                     account_id,
                     key,
                     mult_bp,
+                    available_nano,
                     ..
                 },
                 Some(billing),
@@ -67,6 +68,14 @@ impl PendingCodexAdmission {
                 let base = reserve_cost(model, estimated, pool::now());
                 let hold =
                     metering::apply_multiplier(base, *mult_bp).clamp(1, i64::MAX as i128) as i64;
+                // Cap the authorization hold to the account's known balance. The reserve above is a
+                // deliberately conservative full-output estimate ($/max_output_tokens); without this
+                // cap a customer whose balance easily covers the real turn but not that worst case
+                // would be rejected with a false 402. Settlement still charges exact usage clamped to
+                // hold + overdraft, so capping the hold only relaxes admission — it never lets a turn
+                // be undercharged below what the balance could pay, and begin_admission already
+                // guaranteed available_nano > 0.
+                let hold = hold.min((*available_nano).max(1));
                 let request_id = crate::upstream::fresh_request_id();
                 match billing
                     .reserve_request(&request_id, account_id, key, hold)
