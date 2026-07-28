@@ -1016,6 +1016,7 @@ fn stream_chat(
         let mut length_capped = false;
         let mut heartbeat = tokio::time::interval(super::api::SSE_HEARTBEAT_INTERVAL);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        heartbeat.tick().await;
 
         // Enforces the approximate output budget on text leaving for the client. Returns the
         // delta to emit (empty when the budget is exhausted or the stop filter cut the stream).
@@ -1051,9 +1052,17 @@ fn stream_chat(
                     break;
                 }
                 _ = heartbeat.tick() => {
-                    // SSE comment frame: prevents terminal/proxy read timeouts during long
-                    // reasoning stretches with no deltas.
-                    if !send_chat_bytes(&frame_tx, Bytes::from_static(b": keep-alive\n\n")).await
+                    if !send_chat_frame(
+                        &frame_tx,
+                        chat_chunk(
+                            &prepared,
+                            &completion_id,
+                            created,
+                            json!({}),
+                            Value::Null,
+                        ),
+                    )
+                    .await
                     {
                         downstream_closed = true;
                         break;

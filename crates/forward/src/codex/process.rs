@@ -308,7 +308,6 @@ impl CodexProcess {
             Ok(Err(_)) => Err(ProcessError::Closed),
             Err(_) => {
                 self.shared.pending.lock().await.remove(&id);
-                self.shutdown().await;
                 Err(ProcessError::Timeout(method))
             }
         }
@@ -440,7 +439,7 @@ impl CodexProcess {
             .request_with_timeout(
                 "account/rateLimits/read",
                 json!({}),
-                self.cfg.startup_timeout_ms,
+                self.cfg.request_timeout_ms,
             )
             .await?;
         let limits = response.get("rateLimits").ok_or_else(|| {

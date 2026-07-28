@@ -883,7 +883,9 @@ while IFS= read -r line; do
       printf '{"id":%s,"result":{"account":{"type":"chatgpt"},"requiresOpenaiAuth":true}}\n' "$id"
       ;;
     *'"method":"account/rateLimits/read"'*)
-      if [ "$mode" = "usage_limit" ]; then
+      if [ "$mode" = "rate_limit_timeout" ]; then
+        continue
+      elif [ "$mode" = "usage_limit" ]; then
         printf '{"id":%s,"result":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":4102444800},"secondary":null,"rateLimitReachedType":"rate_limit_reached","spendControlReached":false}}}\n' "$id"
       elif [ "$mode" = "near_limit" ]; then
         printf '{"id":%s,"result":{"rateLimits":{"primary":{"usedPercent":97,"windowDurationMins":300,"resetsAt":4102444800},"secondary":null,"rateLimitReachedType":null,"spendControlReached":false}}}\n' "$id"
@@ -902,7 +904,7 @@ while IFS= read -r line; do
         continue
       fi
       printf '{"id":%s,"result":{"turn":{"id":"turn-1"}}}\n' "$id"
-      if [ "$mode" = "text" ] || [ "$mode" = "near_limit" ] || [ "$mode" = "thread_start_timeout_once" ] || [ "$mode" = "turn_start_timeout_once" ]; then
+      if [ "$mode" = "text" ] || [ "$mode" = "near_limit" ] || [ "$mode" = "rate_limit_timeout" ] || [ "$mode" = "thread_start_timeout_once" ] || [ "$mode" = "turn_start_timeout_once" ]; then
         printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg-1","delta":"hello"}}'
         printf '%s\n' '{"method":"rawResponseItem/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"type":"message","id":"msg-1","role":"assistant","content":[{"type":"output_text","text":"hello"}]}}}'
         printf '%s\n' '{"method":"rawResponse/completed","params":{"threadId":"thread-1","turnId":"turn-1","usage":{"inputTokens":101,"cachedInputTokens":41,"cacheWriteInputTokens":7,"outputTokens":23,"reasoningOutputTokens":11,"totalTokens":124}}}'
@@ -1552,6 +1554,20 @@ done
         assert_eq!(result.usage.input_tokens, 101);
         assert!(served_turn(&logs[0]));
         assert!(served_turn(&logs[1]));
+    }
+
+    #[tokio::test]
+    async fn an_observational_rate_limit_timeout_keeps_the_authenticated_child_live() {
+        let (gateway, _workspace) =
+            fake_gateway_with_request_timeout("rate_limit_timeout", 200);
+
+        let result = gateway
+            .run_turn(turn_request(test_model()), None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.usage.input_tokens, 101);
+        assert!(gateway.operational_status().await.process_live);
     }
 
     #[tokio::test]

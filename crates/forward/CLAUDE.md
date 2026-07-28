@@ -164,8 +164,8 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    `max_tokens`/`max_completion_tokens` — приблизительный кап ~4 char/token с
    `finish_reason="length"`; settlement ВСЕГДА по authoritative upstream usage (клиентская обрезка
    не экономит провайдерские токены). **Полный wire-контракт:** chat стримит reasoning summaries
-   как `reasoning_content` дельты (+ join в non-stream message); оба стрима шлют SSE comment
-   keep-alive каждые 15с (`SSE_HEARTBEAT_INTERVAL`); Responses-стрим завершается
+   как `reasoning_content` дельты (+ join в non-stream message); оба стрима шлют data-bearing SSE
+   progress каждые 15с (`SSE_HEARTBEAT_INTERVAL`); Responses-стрим завершается
    `response.completed` ИЛИ `error`+`response.failed` с полным failed-объектом; non-stream ответы
    несут `x-ratelimit-*` из окна провайдера (процентная база 100). **Retrieval:** `store=true`
    ответы читаются/удаляются через `GET/DELETE /v1/responses/{id}` и `/input_items` из того же

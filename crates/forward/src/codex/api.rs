@@ -30,7 +30,7 @@ const MAX_CLIENT_METADATA_VALUE_BYTES: usize = 16 * 1024;
 const MAX_PROMPT_CACHE_KEY_BYTES: usize = 256;
 const MAX_CUSTOM_TOOL_GRAMMAR_BYTES: usize = 256 * 1024;
 pub(super) const STREAM_FRAME_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-/// Silence-bound interval for SSE comment keep-alives during long provider reasoning stretches.
+/// Silence-bound interval for data-bearing SSE progress during long provider reasoning stretches.
 pub(super) const SSE_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[derive(Debug)]
@@ -1983,7 +1983,7 @@ fn stream_responses(
             json!({
                 "type": "response.created",
                 "sequence_number": sequence,
-                "response": in_progress
+                "response": in_progress.clone()
             }),
         )
         .await
@@ -1997,14 +1997,7 @@ fn stream_responses(
             json!({
                 "type": "response.in_progress",
                 "sequence_number": sequence,
-                "response": response_object(
-                    &prepared.request,
-                    &response_id,
-                    created_at,
-                    "in_progress",
-                    Vec::new(),
-                    None,
-                )
+                "response": in_progress.clone()
             }),
         )
         .await
@@ -2024,6 +2017,7 @@ fn stream_responses(
         let mut downstream_closed = false;
         let mut heartbeat = tokio::time::interval(SSE_HEARTBEAT_INTERVAL);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        heartbeat.tick().await;
 
         'updates: loop {
             let update = tokio::select! {
@@ -2032,13 +2026,22 @@ fn stream_responses(
                     break;
                 }
                 _ = heartbeat.tick() => {
-                    // SSE comment frame: keeps terminals and proxies from timing out during
-                    // long reasoning stretches with no deltas, without touching event state.
-                    if !send_sse_bytes(&frame_tx, Bytes::from_static(b": keep-alive\n\n")).await
+                    // Codex times out decoded events, not raw bytes, so comments are insufficient.
+                    if !send_sse(
+                        &frame_tx,
+                        "response.in_progress",
+                        json!({
+                            "type": "response.in_progress",
+                            "sequence_number": sequence,
+                            "response": in_progress.clone()
+                        }),
+                    )
+                    .await
                     {
                         downstream_closed = true;
                         break;
                     }
+                    sequence += 1;
                     continue;
                 }
                 update = update_rx.recv() => update,

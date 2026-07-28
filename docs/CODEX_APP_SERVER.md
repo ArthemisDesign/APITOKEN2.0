@@ -43,8 +43,9 @@ errors.
 Streaming is spec-complete for agent terminals: Chat Completions streams reasoning summaries as
 `reasoning_content` deltas (and joins them into `message.reasoning_content` for non-streaming
 calls); Responses streams emit the full `response.*` lifecycle ending in `response.completed` or
-`response.failed`; both transports send SSE comment keep-alives every 15 s during long reasoning
-stretches. Legacy Chat Completions `functions`/`function_call` parameters are translated to the
+`response.failed`; both transports send data-bearing SSE progress every 15 s during long reasoning
+stretches, because EventSource clients discard comments before applying idle timers. Legacy Chat
+Completions `functions`/`function_call` parameters are translated to the
 modern `tools`/`tool_choice` surface. Non-streaming responses carry `x-ratelimit-limit/remaining/
 reset-tokens` headers derived from the provider window (percent basis). Stored responses are
 kept for the history TTL (default 24 h) bound to the owning tenant; `store=false` responses are
