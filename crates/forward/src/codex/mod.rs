@@ -230,6 +230,8 @@ impl CodexHome {
     }
 
     pub(crate) async fn invalidate(&self, process: &Arc<CodexProcess>) {
+        let _start = self.process_start.lock().await;
+        process.shutdown().await;
         let mut current = self.process.lock().await;
         if current
             .as_ref()

@@ -177,8 +177,9 @@ impl ProcessShared {
         for (_, sender) in self.pending.lock().await.drain() {
             let _ = sender.send(Err(error.clone()));
         }
-        for (_, sender) in self.turns.lock().await.drain() {
-            let _ = sender.send(AppServerEvent::Closed(error.clone())).await;
+        let turns = std::mem::take(&mut *self.turns.lock().await);
+        for (_, sender) in turns {
+            let _ = sender.try_send(AppServerEvent::Closed(error.clone()));
         }
         self.orphan_events.lock().await.clear();
     }
@@ -204,8 +205,7 @@ pub struct CodexProcess {
     writer: Mutex<ChildStdin>,
     shared: Arc<ProcessShared>,
     next_id: AtomicU64,
-    // `kill_on_drop(true)` makes dropping an invalidated generation terminate its child.
-    _child: Mutex<Child>,
+    child: Mutex<Child>,
 }
 
 impl CodexProcess {
@@ -246,7 +246,7 @@ impl CodexProcess {
             writer: Mutex::new(stdin),
             shared,
             next_id: AtomicU64::new(1),
-            _child: Mutex::new(child),
+            child: Mutex::new(child),
         };
         process.initialize().await?;
         process.require_subscription().await?;
@@ -261,6 +261,14 @@ impl CodexProcess {
 
     pub fn is_live(&self) -> bool {
         self.shared.live.load(Ordering::Acquire)
+    }
+
+    /// Poison one transport generation before a replacement can use the same `CODEX_HOME`.
+    pub(crate) async fn shutdown(&self) {
+        let mut child = self.child.lock().await;
+        let _ = child.start_kill();
+        self.shared.close(ProcessError::Closed).await;
+        let _ = child.wait().await;
     }
 
     pub async fn request(
@@ -300,6 +308,7 @@ impl CodexProcess {
             Ok(Err(_)) => Err(ProcessError::Closed),
             Err(_) => {
                 self.shared.pending.lock().await.remove(&id);
+                self.shutdown().await;
                 Err(ProcessError::Timeout(method))
             }
         }

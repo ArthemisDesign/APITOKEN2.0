@@ -222,6 +222,7 @@ impl CodexHome {
             result,
             Err(ProcessError::Closed
                 | ProcessError::Protocol(_)
+                | ProcessError::Timeout(_)
                 | ProcessError::AuthenticationRequired)
         ) {
             self.invalidate(&process).await;
@@ -254,9 +255,17 @@ impl CodexHome {
             let process = self.process().await?;
             match process.request("thread/start", params.clone()).await {
                 Ok(response) => return Ok((process, response)),
-                Err(error @ (ProcessError::Closed | ProcessError::Protocol(_))) if attempt == 0 => {
+                Err(
+                    error @ (ProcessError::Closed
+                    | ProcessError::Protocol(_)
+                    | ProcessError::Timeout(_)),
+                ) => {
                     self.invalidate(&process).await;
-                    last_error = error;
+                    if attempt == 0 {
+                        last_error = error;
+                    } else {
+                        return Err(error);
+                    }
                 }
                 Err(error) => return Err(error),
             }
@@ -568,12 +577,7 @@ impl CodexHome {
             }
             Ok(Err(error)) => Err(error),
             Err(_) => {
-                let _ = process
-                    .request(
-                        "turn/interrupt",
-                        json!({"threadId": thread_id, "turnId": turn_id}),
-                    )
-                    .await;
+                self.invalidate(&process).await;
                 interrupt_guard.disarm();
                 Err(ProcessError::Timeout("turn completion"))
             }
@@ -769,6 +773,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
+    use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_WORKSPACE: AtomicU64 = AtomicU64::new(1);
@@ -829,6 +834,13 @@ mod tests {
     }
 
     fn fake_gateway(mode: &str) -> (Arc<CodexGateway>, TestWorkspace) {
+        fake_gateway_with_request_timeout(mode, 2_000)
+    }
+
+    fn fake_gateway_with_request_timeout(
+        mode: &str,
+        request_timeout_ms: u64,
+    ) -> (Arc<CodexGateway>, TestWorkspace) {
         let suffix = NEXT_WORKSPACE.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
             "claude-api-codex-runner-test-{}-{suffix}",
@@ -850,6 +862,16 @@ if [ -f "$CODEX_HOME/mode" ]; then
   mode=$(cat "$CODEX_HOME/mode")
   log_file="$CODEX_HOME/requests.jsonl"
 fi
+generation=0
+if [ "$mode" = "thread_start_timeout_once" ] || [ "$mode" = "turn_start_timeout_once" ]; then
+  generation_file="$CODEX_HOME/generation"
+  if [ -f "$generation_file" ]; then
+    generation=$(cat "$generation_file")
+  fi
+  generation=$((generation + 1))
+  printf '%s\n' "$generation" > "$generation_file"
+  printf '%s\n' "$$" >> "$CODEX_HOME/generation-pids"
+fi
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$log_file"
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
@@ -870,11 +892,17 @@ while IFS= read -r line; do
       fi
       ;;
     *'"method":"thread/start"'*)
+      if [ "$mode" = "thread_start_timeout_once" ] && [ "$generation" -eq 1 ]; then
+        continue
+      fi
       printf '{"id":%s,"result":{"model":"gpt-5.6-sol","thread":{"id":"thread-1"}}}\n' "$id"
       ;;
     *'"method":"turn/start"'*)
+      if [ "$mode" = "turn_start_timeout_once" ] && [ "$generation" -eq 1 ]; then
+        continue
+      fi
       printf '{"id":%s,"result":{"turn":{"id":"turn-1"}}}\n' "$id"
-      if [ "$mode" = "text" ] || [ "$mode" = "near_limit" ]; then
+      if [ "$mode" = "text" ] || [ "$mode" = "near_limit" ] || [ "$mode" = "thread_start_timeout_once" ] || [ "$mode" = "turn_start_timeout_once" ]; then
         printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg-1","delta":"hello"}}'
         printf '%s\n' '{"method":"rawResponseItem/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"type":"message","id":"msg-1","role":"assistant","content":[{"type":"output_text","text":"hello"}]}}}'
         printf '%s\n' '{"method":"rawResponse/completed","params":{"threadId":"thread-1","turnId":"turn-1","usage":{"inputTokens":101,"cachedInputTokens":41,"cacheWriteInputTokens":7,"outputTokens":23,"reasoningOutputTokens":11,"totalTokens":124}}}'
@@ -940,7 +968,7 @@ done
             // Leave enough scheduler headroom for the digest + version preflight under CI load;
             // individual JSON-RPC and turn deadlines below remain short.
             startup_timeout_ms: 10_000,
-            request_timeout_ms: 2_000,
+            request_timeout_ms,
             turn_timeout_ms: 2_000,
             max_concurrent_turns: 1,
             admit_below_used_percent: 95,
@@ -1024,6 +1052,16 @@ done
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect()
+    }
+
+    fn process_exists(pid: u32) -> bool {
+        Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
     }
 
     async fn wait_for_method(path: &Path, method: &str) {
@@ -1514,6 +1552,69 @@ done
         assert_eq!(result.usage.input_tokens, 101);
         assert!(served_turn(&logs[0]));
         assert!(served_turn(&logs[1]));
+    }
+
+    #[tokio::test]
+    async fn a_thread_start_timeout_retries_on_a_fresh_single_home_child() {
+        let (gateway, workspace) =
+            fake_gateway_with_request_timeout("thread_start_timeout_once", 200);
+        let home = gateway.homes().await.into_iter().next().unwrap();
+        let stale_process = home.process().await.unwrap();
+
+        let result = gateway
+            .run_turn(turn_request(test_model()), None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.usage.input_tokens, 101);
+        assert!(!stale_process.is_live());
+        assert_eq!(
+            std::fs::read_to_string(workspace.root.join("generation"))
+                .unwrap()
+                .trim(),
+            "2"
+        );
+        assert_eq!(
+            logged_requests(&workspace.log)
+                .iter()
+                .filter(|request| request["method"] == "thread/start")
+                .count(),
+            2
+        );
+        let pids = std::fs::read_to_string(workspace.root.join("generation-pids"))
+            .unwrap()
+            .lines()
+            .map(|pid| pid.parse::<u32>().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(pids.len(), 2);
+        assert!(!process_exists(pids[0]));
+        assert!(process_exists(pids[1]));
+    }
+
+    #[tokio::test]
+    async fn a_turn_start_timeout_evicts_the_child_before_the_next_request() {
+        let (gateway, workspace) =
+            fake_gateway_with_request_timeout("turn_start_timeout_once", 200);
+
+        let error = gateway
+            .run_turn(turn_request(test_model()), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ProcessError::Timeout("turn/start")));
+        assert!(!gateway.operational_status().await.homes[0].process_live);
+
+        gateway.probe_health().await;
+        let result = gateway
+            .run_turn(turn_request(test_model()), None)
+            .await
+            .unwrap();
+        assert_eq!(result.usage.input_tokens, 101);
+        assert_eq!(
+            std::fs::read_to_string(workspace.root.join("generation"))
+                .unwrap()
+                .trim(),
+            "2"
+        );
     }
 
     #[tokio::test]
