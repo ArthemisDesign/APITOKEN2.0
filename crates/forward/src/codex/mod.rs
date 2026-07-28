@@ -29,7 +29,7 @@ pub(crate) use runner::{CodexTurnRequest, CodexTurnResult, CodexUsage, TurnUpdat
 use history::HistoryStore;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
+use tokio::sync::{Mutex, RwLock};
 
 /// A home whose device login no longer authenticates is quarantined rather than retried in a hot
 /// loop: repeatedly hammering a rejected profile is both useless and a ban signal. It matches the
@@ -111,8 +111,11 @@ pub(crate) struct CodexHome {
     cfg: Arc<CodexConfig>,
     process: Mutex<Option<Arc<CodexProcess>>>,
     process_start: Mutex<()>,
-    turns: Arc<Semaphore>,
-    max_turns: usize,
+    /// Turns in flight on this home right now. Concurrency is deliberately unbounded, exactly like
+    /// the Claude fleet: this counter is only a load signal for least-loaded selection and metrics,
+    /// never a cap. A `TurnSlot` guard increments it on admission and decrements on drop, so a
+    /// client disconnect never leaks a phantom busy slot.
+    inflight: Arc<AtomicUsize>,
     cooling_until: AtomicI64,
     /// Last known verdict of `account/read`. Startup and the health probe both write it.
     auth_ok: AtomicBool,
@@ -128,15 +131,13 @@ pub(crate) struct CodexHome {
 
 impl CodexHome {
     fn new(cfg: Arc<CodexConfig>, spec: CodexHomeSpec, order: usize) -> Self {
-        let max_turns = cfg.max_concurrent_turns.max(1);
         Self {
             spec,
             order: AtomicUsize::new(order),
             cfg,
             process: Mutex::new(None),
             process_start: Mutex::new(()),
-            turns: Arc::new(Semaphore::new(max_turns)),
-            max_turns,
+            inflight: Arc::new(AtomicUsize::new(0)),
             cooling_until: AtomicI64::new(0),
             auth_ok: AtomicBool::new(true),
             spend_nano_total: AtomicI64::new(0),
@@ -163,7 +164,7 @@ impl CodexHome {
     }
 
     fn inflight(&self) -> usize {
-        self.max_turns.saturating_sub(self.turns.available_permits())
+        self.inflight.load(Ordering::Relaxed)
     }
 
     fn cooling_until(&self) -> i64 {
@@ -194,8 +195,13 @@ impl CodexHome {
         self.cool_for(AUTH_QUARANTINE_SECS);
     }
 
-    fn try_acquire_turn(&self) -> Option<OwnedSemaphorePermit> {
-        self.turns.clone().try_acquire_owned().ok()
+    /// Take an in-flight turn slot on this home. Concurrency is unbounded, so this always succeeds;
+    /// the returned guard keeps the load counter accurate for selection and metrics until it drops.
+    fn acquire_turn(self: &Arc<Self>) -> TurnSlot {
+        self.inflight.fetch_add(1, Ordering::Relaxed);
+        TurnSlot {
+            inflight: self.inflight.clone(),
+        }
     }
 
     /// Return a live, subscription-authenticated process. Startup is serialized per home, but
@@ -375,11 +381,22 @@ impl CodexHome {
     }
 }
 
+/// RAII load-counter guard for one in-flight turn. Dropping it — on success, error, or client
+/// disconnect — releases the home's load slot. It is not a concurrency cap; the count only steers
+/// least-loaded selection and feeds the inflight metric.
+pub(crate) struct TurnSlot {
+    inflight: Arc<AtomicUsize>,
+}
+
+impl Drop for TurnSlot {
+    fn drop(&mut self) {
+        self.inflight.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// Outcome of choosing a home for one request.
 enum HomeSelection {
-    Ready(Arc<CodexHome>, OwnedSemaphorePermit),
-    /// Homes are usable but all of their turn slots are taken.
-    Busy,
+    Ready(Arc<CodexHome>, TurnSlot),
     /// Every home is cooling or out of window headroom; `ready_at` is the soonest recovery.
     Unavailable { ready_at: Option<i64> },
 }
@@ -515,12 +532,11 @@ impl CodexGateway {
             return HomeSelection::Unavailable { ready_at: soonest };
         }
         candidates.sort_by_key(|(used, inflight, home)| (*used, *inflight, home.order()));
-        for (_, _, home) in candidates {
-            if let Some(permit) = home.try_acquire_turn() {
-                return HomeSelection::Ready(home, permit);
-            }
-        }
-        HomeSelection::Busy
+        // Concurrency per home is unbounded, so the least-loaded usable home always accepts the
+        // turn; there is no "all slots busy" outcome to report.
+        let (_, _, home) = candidates.into_iter().next().expect("candidates is non-empty");
+        let slot = home.acquire_turn();
+        HomeSelection::Ready(home, slot)
     }
 
     /// A process from any usable home, for provider-level reads such as model discovery.
@@ -675,8 +691,7 @@ impl CodexHome {
         match error {
             ProcessError::BadRequest
             | ProcessError::ContextWindowExceeded
-            | ProcessError::Rpc { .. }
-            | ProcessError::Busy => {}
+            | ProcessError::Rpc { .. } => {}
             other => self.note_process_error(other),
         }
     }

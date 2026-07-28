@@ -19,7 +19,6 @@ const MAX_ORPHAN_EVENTS_PER_THREAD: usize = 64;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessError {
     Disabled,
-    Busy,
     InvalidConfig(String),
     VersionMismatch { expected: String, actual: String },
     DigestMismatch { expected: String, actual: String },
@@ -39,7 +38,6 @@ impl std::fmt::Display for ProcessError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Disabled => f.write_str("Codex provider is disabled"),
-            Self::Busy => f.write_str("Codex provider concurrency limit reached"),
             Self::InvalidConfig(message) => write!(f, "invalid Codex configuration: {message}"),
             Self::VersionMismatch { expected, actual } => {
                 write!(
@@ -79,7 +77,6 @@ impl ProcessError {
     pub(crate) fn diagnostic_class(&self) -> &'static str {
         match self {
             Self::Disabled => "disabled",
-            Self::Busy => "busy",
             Self::InvalidConfig(_) => "invalid_config",
             Self::VersionMismatch { .. } => "version_mismatch",
             Self::DigestMismatch { .. } => "digest_mismatch",

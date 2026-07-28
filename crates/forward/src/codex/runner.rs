@@ -5,13 +5,13 @@
 
 use super::{
     new_id, AppServerEvent, CodexGateway, CodexHome, CodexModel, CodexProcess, HomeSelection,
-    ProcessError,
+    ProcessError, TurnSlot,
 };
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::{mpsc, OwnedSemaphorePermit};
+use tokio::sync::mpsc;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CodexUsage {
@@ -113,11 +113,8 @@ impl CodexGateway {
         let mut transport_retries_left = 1usize;
         let mut last_error: Option<ProcessError> = None;
         loop {
-            let (home, permit) = match self.select_home(&tried).await {
-                HomeSelection::Ready(home, permit) => (home, permit),
-                HomeSelection::Busy => {
-                    return Err(last_error.unwrap_or(ProcessError::Busy));
-                }
+            let (home, slot) = match self.select_home(&tried).await {
+                HomeSelection::Ready(home, slot) => (home, slot),
                 HomeSelection::Unavailable { ready_at } => {
                     return Err(last_error.unwrap_or_else(|| ProcessError::UsageLimitExceeded {
                         retry_after: retry_after_from(ready_at),
@@ -126,7 +123,7 @@ impl CodexGateway {
             };
             tried.push(home.id().to_string());
             let result = home
-                .run_turn(request.clone(), updates.clone(), &emitted, permit)
+                .run_turn(request.clone(), updates.clone(), &emitted, slot)
                 .await;
             let error = match result {
                 Ok(result) => {
@@ -183,7 +180,7 @@ impl CodexHome {
         request: CodexTurnRequest,
         updates: Option<mpsc::Sender<TurnUpdate>>,
         emitted: &Arc<AtomicBool>,
-        _turn_permit: OwnedSemaphorePermit,
+        _turn_slot: TurnSlot,
     ) -> Result<CodexTurnResult, ProcessError> {
         let (process, thread_response) = self.start_thread(&request).await?;
         let thread_id = thread_response

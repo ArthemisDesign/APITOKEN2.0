@@ -161,7 +161,6 @@ impl From<AdmissionError> for ApiError {
 impl From<ProcessError> for ApiError {
     fn from(value: ProcessError) -> Self {
         match value {
-            ProcessError::Busy => Self::rate_limited_for_reason(Some(1), "codex_capacity_busy"),
             ProcessError::ContextWindowExceeded => Self {
                 status: StatusCode::BAD_REQUEST,
                 message: "This model's maximum context length was exceeded.".to_string(),
@@ -2966,7 +2965,6 @@ mod tests {
         }
         for process in [
             ProcessError::Disabled,
-            ProcessError::Busy,
             ProcessError::InvalidConfig("codex_home must be absolute".to_string()),
             ProcessError::VersionMismatch {
                 expected: "codex-cli 0.145.0".to_string(),
