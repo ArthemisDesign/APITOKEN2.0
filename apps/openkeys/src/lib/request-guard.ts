@@ -21,6 +21,14 @@ function sameOrigin(request: Request): boolean {
   }
 }
 
+function forbidden(): NextResponse {
+  return NextResponse.json({ error: "forbidden" }, { status: 403 });
+}
+
+export function guardOrigin(request: Request): NextResponse | null {
+  return sameOrigin(request) ? null : forbidden();
+}
+
 /** Single-instance protection; the edge proxy remains the outer volumetric limit. */
 export function guardRequest(
   request: Request,
@@ -29,7 +37,7 @@ export function guardRequest(
   windowMs: number,
 ): NextResponse | null {
   if (!sameOrigin(request)) {
-    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+    return forbidden();
   }
 
   const now = Date.now();
@@ -56,6 +64,30 @@ export function guardRequest(
     if (buckets.size > 10_000) buckets.delete(buckets.keys().next().value as string);
   }
   return null;
+}
+
+/** Failed-login limiter. A valid credential clears stale failures instead of locking its owner out. */
+export function guardLoginAttempt(request: Request, authenticated: boolean): NextResponse | null {
+  const now = Date.now();
+  const key = `admin-login:${clientAddress(request)}`;
+  if (authenticated) {
+    buckets.delete(key);
+    return null;
+  }
+
+  const current = buckets.get(key);
+  if (!current || current.resetAt <= now) {
+    buckets.set(key, { count: 1, resetAt: now + 15 * 60_000 });
+    return null;
+  }
+  current.count += 1;
+  if (current.count <= 10) return null;
+
+  const retryAfter = Math.max(1, Math.ceil((current.resetAt - now) / 1000));
+  return NextResponse.json(
+    { error: "rate_limited" },
+    { status: 429, headers: { "retry-after": String(retryAfter) } },
+  );
 }
 
 export async function readJsonLimited<T>(request: Request): Promise<T> {

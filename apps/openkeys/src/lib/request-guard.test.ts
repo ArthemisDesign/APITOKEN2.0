@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { guardRequest, readJsonLimited } from "./request-guard";
+import { guardLoginAttempt, guardOrigin, guardRequest, readJsonLimited } from "./request-guard";
 
 function request(body = "{}", origin = "https://openkeys.apitoken.sale"): Request {
   return new Request("https://openkeys.apitoken.sale/api/test", {
@@ -12,6 +12,17 @@ function request(body = "{}", origin = "https://openkeys.apitoken.sale"): Reques
 describe("request guard", () => {
   it("rejects cross-origin mutations", () => {
     expect(guardRequest(request("{}", "https://attacker.example"), "cross-origin", 10, 60_000)?.status).toBe(403);
+    expect(guardOrigin(request("{}", "https://attacker.example"))?.status).toBe(403);
+  });
+
+  it("counts only failed logins and lets valid credentials clear stale failures", () => {
+    const loginRequest = request();
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      expect(guardLoginAttempt(loginRequest, false)).toBeNull();
+    }
+    expect(guardLoginAttempt(loginRequest, false)?.status).toBe(429);
+    expect(guardLoginAttempt(loginRequest, true)).toBeNull();
+    expect(guardLoginAttempt(loginRequest, false)).toBeNull();
   });
 
   it("limits repeated requests from the effective proxy address", () => {

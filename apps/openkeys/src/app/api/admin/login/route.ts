@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { loadConfig } from "@/lib/config";
 import { SESSION_COOKIE, authenticate, issueSessionValue } from "@/lib/session";
-import { guardRequest, readJsonLimited } from "@/lib/request-guard";
+import { guardLoginAttempt, guardOrigin, readJsonLimited } from "@/lib/request-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request): Promise<NextResponse> {
-  const rejected = guardRequest(request, "admin-login", 10, 15 * 60_000);
+  const rejected = guardOrigin(request);
   if (rejected) return rejected;
   let body: { user?: unknown; password?: unknown };
   try {
@@ -22,6 +22,8 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const config = loadConfig();
   const authenticated = authenticate(user, password, config);
+  const rateLimited = guardLoginAttempt(request, authenticated !== null);
+  if (rateLimited) return rateLimited;
   if (!authenticated) {
     return NextResponse.json({ error: "invalid_credentials" }, { status: 401 });
   }
