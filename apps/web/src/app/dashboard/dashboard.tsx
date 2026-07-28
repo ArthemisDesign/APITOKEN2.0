@@ -17,6 +17,7 @@ import { DOCS_URL } from "@/lib/site-links";
 import { buildClaudeAgentHandoff, buildClaudeCodeCommands } from "@/lib/claude-connection";
 import { checkoutAmountBucket, trackFirstProductEvent, trackProductEvent } from "@/lib/product-analytics";
 import { buildUtcUsageSeries, usageWindowDays } from "@/lib/usage-series";
+import { modelLabel } from "@/lib/model-label";
 import { dashboardHref, parseDashboardSection, type DashboardSection } from "./dashboard-route";
 
 type Section = DashboardSection;
@@ -1505,13 +1506,6 @@ function fmtNanoUsd(nano: string): string {
   if (value > 0n && value < 10_000_000n) return "<$0.01";
   return formatNanoUsd(value, 2, 2);
 }
-function modelLabel(id: string): string {
-  const base = id.replace(/^claude-/i, "").replace(/-\d{8}$/, "");
-  const words: string[] = []; const nums: string[] = [];
-  for (const part of base.split("-")) { if (/^\d+$/.test(part)) nums.push(part); else if (part) words.push(part[0]!.toUpperCase() + part.slice(1)); }
-  return `Claude ${words.join(" ")}${nums.length ? ` ${nums.join(".")}` : ""}`.trim();
-}
-
 function TwoFactorCard({ user, onUpdated }: { user: AuthUser; onUpdated(user: AuthUser): void }) {
   const copy = useDashboardCopy();
   const [setup, setSetup] = useState<TotpSetup | null>(null);
