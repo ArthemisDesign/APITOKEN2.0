@@ -1,6 +1,9 @@
 -- Recovery migration: 0003 and 0004 were assigned timestamps older than 0002 in
 -- meta/_journal.json, so Drizzle legitimately skipped them on databases that had
 -- already applied 0002. Keep this append-only migration newer than every prior entry.
+DO $recovery$
+BEGIN
+IF to_regclass('public.openkeys_issuance_jobs') IS NULL THEN
 ALTER TABLE "openkeys_batches" ADD CONSTRAINT "openkeys_batches_face_value_positive" CHECK ("face_value_nano" > 0) NOT VALID;--> statement-breakpoint
 ALTER TABLE "openkeys_batches" ADD CONSTRAINT "openkeys_batches_mult_bp_range" CHECK ("mult_bp" BETWEEN 1 AND 10000) NOT VALID;--> statement-breakpoint
 ALTER TABLE "openkeys_batches" ADD CONSTRAINT "openkeys_batches_quantity_range" CHECK ("quantity" BETWEEN 1 AND 100) NOT VALID;--> statement-breakpoint
@@ -37,8 +40,17 @@ ALTER TABLE "openkeys_keys" VALIDATE CONSTRAINT "openkeys_keys_delivered_secret_
 ALTER TABLE "openkeys_keys" VALIDATE CONSTRAINT "openkeys_keys_disabled_timestamp";--> statement-breakpoint
 ALTER TABLE "openkeys_keys" VALIDATE CONSTRAINT "openkeys_keys_removed_state";--> statement-breakpoint
 CREATE UNIQUE INDEX "openkeys_keys_engine_account_id_key" ON "openkeys_keys" USING btree ("engine_account_id");--> statement-breakpoint
-CREATE TYPE "public"."openkeys_issuance_status" AS ENUM('pending', 'account_created', 'credited', 'key_issued', 'completed', 'compensated');--> statement-breakpoint
-CREATE TABLE "openkeys_issuance_jobs" (
+END IF;
+END
+$recovery$;--> statement-breakpoint
+DO $recovery$
+BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'openkeys_issuance_status') THEN
+  CREATE TYPE "public"."openkeys_issuance_status" AS ENUM('pending', 'account_created', 'credited', 'key_issued', 'completed', 'compensated');
+END IF;
+END
+$recovery$;--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS "openkeys_issuance_jobs" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"batch_id" uuid NOT NULL,
 	"item_index" integer NOT NULL,
@@ -50,6 +62,12 @@ CREATE TABLE "openkeys_issuance_jobs" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "openkeys_issuance_jobs_item_index" CHECK ("openkeys_issuance_jobs"."item_index" BETWEEN 0 AND 99)
 );--> statement-breakpoint
-ALTER TABLE "openkeys_issuance_jobs" ADD CONSTRAINT "openkeys_issuance_jobs_batch_id_openkeys_batches_id_fk" FOREIGN KEY ("batch_id") REFERENCES "public"."openkeys_batches"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "openkeys_issuance_jobs_batch_item_key" ON "openkeys_issuance_jobs" USING btree ("batch_id","item_index");--> statement-breakpoint
-CREATE INDEX "openkeys_issuance_jobs_status_updated_idx" ON "openkeys_issuance_jobs" USING btree ("status","updated_at");
+DO $recovery$
+BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'openkeys_issuance_jobs_batch_id_openkeys_batches_id_fk') THEN
+  ALTER TABLE "openkeys_issuance_jobs" ADD CONSTRAINT "openkeys_issuance_jobs_batch_id_openkeys_batches_id_fk" FOREIGN KEY ("batch_id") REFERENCES "public"."openkeys_batches"("id") ON DELETE cascade ON UPDATE no action;
+END IF;
+END
+$recovery$;--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "openkeys_issuance_jobs_batch_item_key" ON "openkeys_issuance_jobs" USING btree ("batch_id","item_index");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "openkeys_issuance_jobs_status_updated_idx" ON "openkeys_issuance_jobs" USING btree ("status","updated_at");
