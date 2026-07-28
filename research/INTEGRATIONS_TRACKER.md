@@ -40,7 +40,7 @@
 | `BerriAI/litellm` | open, safe to merge | [#34915](https://github.com/BerriAI/litellm/pull/34915) | pending merge | pending | 2026-07-28 |
 | `musistudio/claude-code-router` | PR open; review pending | [#1598](https://github.com/musistudio/claude-code-router/pull/1598) | pending merge | absent | 2026-07-28 |
 | `LibreChat-AI/librechat.ai` | PR open; review pending | [#713](https://github.com/LibreChat-AI/librechat.ai/pull/713) | pending merge | absent | 2026-07-28 |
-| `QuantumNous/new-api` | queued | — | — | — | — |
+| `QuantumNous/new-api` | PR open; automated review clean, human review pending | [docs #196](https://github.com/QuantumNous/new-api-docs-v1/pull/196) | pending merge | absent | 2026-07-28 |
 | `Aider-AI/aider` | queued | — | — | — | — |
 | `cline/cline` | queued | — | — | — | — |
 | `RooCodeInc/Roo-Code` | queued | — | — | — | — |
@@ -228,6 +228,86 @@
 - Следующая проверка: Greptile/maintainer review, Vercel authorization при необходимости, merge и
   публикация страницы.
 
+## QuantumNous/new-api
+
+### Разведка
+
+- Основной upstream: <https://github.com/QuantumNous/new-api>, 43,663 звезды на момент проверки;
+  default branch `main`, SHA разведки `afe16c64cd73853da1eda3bf236f15d69637b4bf`.
+- В основном репозитории уже есть нативный Anthropic channel (`ChannelTypeAnthropic = 14`). Его
+  adaptor добавляет `/v1/messages` к `ChannelBaseUrl`, передаёт ключ в `x-api-key` и выставляет
+  `anthropic-version: 2023-06-01`; отдельный provider type для apiToken.sale не нужен.
+- UI отдельно предупреждает не добавлять `/v1` к Base URL. Поэтому корректное значение для нашей
+  интеграции — ровно `https://api.apitoken.sale`, без `/v1` и завершающего слеша.
+- Старый <https://github.com/QuantumNous/new-api-docs> помечен архивным. Актуальная документация
+  находится в <https://github.com/QuantumNous/new-api-docs-v1>; default branch `main`, SHA
+  разведки `cb6ee07375e03ac7556b29ece10f165807497a48`.
+- В `new-api-docs-v1` отсутствуют repo-local `AGENTS.md`, `CLAUDE.md` и `CONTRIBUTING.md`.
+  Проверены README, workflow автоперевода, структура Fumadocs и package scripts.
+- Принятые аналоги: [DeepChat #143](https://github.com/QuantumNous/new-api-docs-v1/pull/143)
+  добавил полноценный трёхъязычный интеграционный гайд; внешняя документационная правка
+  [#163](https://github.com/QuantumNous/new-api-docs-v1/pull/163) была принята с тем же ожидаемым
+  Vercel `Authorization required`. Source-язык автоперевода — китайский; английский вариант можно
+  включать в исходный PR, японский upstream способен сгенерировать после мержа.
+- Поиск в issues, PR и upstream-коде `new-api`, `new-api-docs` и `new-api-docs-v1` не нашёл
+  существующего упоминания `apitoken.sale`.
+
+### Реализация
+
+- Форк документации: <https://github.com/apitokensale-admin/new-api-docs-v1>.
+- Ветка: <https://github.com/apitokensale-admin/new-api-docs-v1/tree/docs/apitoken-anthropic-channel>.
+- Опубликованный commit: `e9e0a51c9c50e1ab87b37ba9b620d57d713edb5b`.
+- В существующий admin channel guide добавлен короткий EN/ZH пример без нового типа канала.
+- Гайд фиксирует: `Anthropic` как wire protocol, Base URL без `/v1`, provider-issued ключ формата
+  `sk-pool-...`, выбор моделей, channel test и ссылки на список моделей/документацию.
+- Отдельно указано, что apiToken.sale — сторонний Anthropic-compatible endpoint, а ключ не выдан
+  Anthropic. Перед production читателю предложено независимо проверить авторизацию, условия и
+  data-handling policy провайдера в соответствии с compliance policy New API.
+- Затронуты только два upstream-пути:
+  - `content/docs/en/guide/feature-guide/admin/channel.mdx`;
+  - `content/docs/zh/guide/feature-guide/admin/channel.mdx`.
+- В PR body явно раскрыто, что изменение AI-assisted. Секретов в commit и PR нет.
+
+### Проверки
+
+- `bun install --frozen-lockfile`: passed.
+- Prettier check двух изменённых MDX: passed.
+- `bun run build`: passed; сгенерировано 2,065 static pages. Prebuild обновляет changelog из
+  GitHub Releases; эти несвязанные локальные артефакты после успешной проверки не включены в diff.
+- В `QuantumNous/new-api`: `go test ./relay/channel/claude` passed.
+- Живой прогон через текущий Claude adaptor New API подтвердил:
+  `https://api.apitoken.sale/v1/messages`, непустой `x-api-key`,
+  `anthropic-version: 2023-06-01`, HTTP 200 и модель `claude-sonnet-4-6`.
+- Отдельные live smoke проверки: basic Messages — HTTP 200; Anthropic SSE stream — HTTP 200 и
+  полный набор событий до `message_stop`; forced tool use — HTTP 200, `stop_reason=tool_use` и
+  вызов ожидаемого инструмента.
+- Ключ передавался только через неэхируемый stdin в process env и не сохранялся в исходниках,
+  branch diff, выводе или PR. Публичные homepage, model list и docs URL отвечают HTTP 200.
+
+### PR и backlink
+
+- PR открыт: <https://github.com/QuantumNous/new-api-docs-v1/pull/196>.
+- Статус: `OPEN`, `MERGEABLE`, draft=false; head SHA `e9e0a51`, base SHA `cb6ee07`.
+- CodeRabbit завершил review успешно и не оставил actionable comments; все 5 pre-merge checks
+  CodeRabbit зелёные. Его promotional/slop detector пометил PR как потенциально рекламный, поэтому
+  человеческий maintainer review остаётся важным риском принятия, но технической правки бот не
+  запросил.
+- Единственный красный check — Vercel `Authorization required to deploy`: внешнему автору нельзя
+  запускать preview в team QuantumNous. Это тот же permission-state, что в принятых аналогах, а не
+  падение сборки.
+- Greptile запрошен комментарием `@greptileai`:
+  <https://github.com/QuantumNous/new-api-docs-v1/pull/196#issuecomment-5105548789>.
+- CLA и human review на момент проверки не появились.
+- Ожидаемое упоминание после мержа: EN/ZH channel guide содержит бренд, API host, формат ключа,
+  ссылки на model list/docs и точную конфигурацию Anthropic channel.
+- Ожидаемые публичные страницы:
+  <https://docs.newapi.pro/en/docs/guide/feature-guide/admin/channel> и
+  <https://docs.newapi.pro/zh/docs/guide/feature-guide/admin/channel>.
+- Проверка 2026-07-28: обе текущие страницы доступны с browser User-Agent, но ещё не содержат
+  `apitoken.sale`; upstream code search = 0. Backlink status: `pending`.
+- Следующая проверка: Greptile/human review, решение maintainer по promotional warning, merge,
+  автоперевод JA и публикация EN/ZH страниц.
+
 ## Очередь и повторные проверки
 
 После завершения каждой цели добавлять датированную запись ниже, даже если состояние не изменилось.
@@ -245,3 +325,6 @@
 | 2026-07-28 | `LibreChat-AI/librechat.ai` | upstream rules, native Anthropic path, accepted analog | docs target confirmed; `provider: anthropic` routes custom base URL through native Messages API |
 | 2026-07-28 | `LibreChat-AI/librechat.ai` | implementation, full docs gate, live LibreChat run | branch ready; formatting, lint, typecheck, 294 tests and 2,879-page build passed; basic, streaming and tool use passed through LibreChat v0.8.7 |
 | 2026-07-28 | `LibreChat-AI/librechat.ai` | PR, reviews, checks, upstream/public backlink | PR [#713](https://github.com/LibreChat-AI/librechat.ai/pull/713) open and mergeable; Vercel requires maintainer authorization; review and backlink pending; Greptile requested |
+| 2026-07-28 | `QuantumNous/new-api` | code/docs repositories, channel adaptor, contribution analogs, duplicate search | native Anthropic channel confirmed; current target is `new-api-docs-v1`; no existing `apitoken.sale` reference |
+| 2026-07-28 | `QuantumNous/new-api` | EN/ZH guide, docs build, Go test, direct and adaptor live runs | branch ready; 2,065-page build passed; basic, SSE, tool use and actual New API adaptor request passed |
+| 2026-07-28 | `QuantumNous/new-api` | PR, automated review, checks, upstream/public backlink | docs PR [#196](https://github.com/QuantumNous/new-api-docs-v1/pull/196) open and mergeable; CodeRabbit clean with promotional warning; Vercel authorization and human review pending; Greptile requested |
