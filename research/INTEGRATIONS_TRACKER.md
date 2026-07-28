@@ -41,7 +41,7 @@
 | `musistudio/claude-code-router` | PR open; review pending | [#1598](https://github.com/musistudio/claude-code-router/pull/1598) | pending merge | absent | 2026-07-28 |
 | `LibreChat-AI/librechat.ai` | PR open; review pending | [#713](https://github.com/LibreChat-AI/librechat.ai/pull/713) | pending merge | absent | 2026-07-28 |
 | `QuantumNous/new-api` | PR open; automated review clean, human review pending | [docs #196](https://github.com/QuantumNous/new-api-docs-v1/pull/196) | pending merge | absent | 2026-07-28 |
-| `Aider-AI/aider` | queued | — | — | — | — |
+| `Aider-AI/aider` | PR open; CLA and review pending | [#5504](https://github.com/Aider-AI/aider/pull/5504) | pending merge | absent | 2026-07-28 |
 | `cline/cline` | queued | — | — | — | — |
 | `RooCodeInc/Roo-Code` | queued | — | — | — | — |
 | `continuedev/continue` | queued | — | — | — | — |
@@ -308,6 +308,82 @@
 - Следующая проверка: Greptile/human review, решение maintainer по promotional warning, merge,
   автоперевод JA и публикация EN/ZH страниц.
 
+## Aider-AI/aider
+
+### Разведка
+
+- Upstream: <https://github.com/Aider-AI/aider>, 47,755 звёзд на момент проверки; default branch
+  `main`, SHA разведки `5dc9490bb35f9729ef2c95d00a19ccd30c26339c`.
+- Последний upstream merge датирован 2026-05-22: внешний PR
+  [#5173](https://github.com/Aider-AI/aider/pull/5173) принят. Репозиторий замедлился после релиза
+  `v0.86.0`, но продолжает принимать точечные внешние изменения и не архивирован.
+- `CONTRIBUTING.md` разрешает небольшие PR без предварительного issue, требует Individual CLA и
+  описывает Jekyll-сборку документации. Repo-local `AGENTS.md` и `CLAUDE.md` отсутствуют.
+- Принятый аналог: [#3043](https://github.com/Aider-AI/aider/pull/3043) добавил инструкции API key
+  в существующую provider-страницу DeepSeek и был смержен maintainer без дополнительных правок.
+  Текущие LLM-доки группируют провайдеров в `aider/website/docs/llms/`.
+- Aider не реализует Anthropic transport самостоятельно: текущий `main` закрепляет LiteLLM
+  `1.82.3`. Его Anthropic path читает `ANTHROPIC_API_BASE` и `ANTHROPIC_API_KEY`, а модель с
+  префиксом `anthropic/` отправляется через Messages API.
+- Исходники LiteLLM `1.82.3` и живой прогон подтвердили корректное значение
+  `ANTHROPIC_API_BASE=https://api.apitoken.sale`: корневой URL без `/v1/messages`.
+
+### Реализация
+
+- Форк: <https://github.com/apitokensale-admin/aider>.
+- Ветка: <https://github.com/apitokensale-admin/aider/tree/docs/apitoken-anthropic-endpoint>.
+- Опубликованный commit: `cb15e1dd997fd40c5756208f819d09fc6839ca57`.
+- Изменён только `aider/website/docs/llms/anthropic.md`: добавлен нейтральный раздел про любые
+  Anthropic-compatible endpoints и apiToken.sale как проверенный пример.
+- Документированы Mac/Linux и Windows env, корневой Base URL, provider-issued key и явный запуск
+  `anthropic/claude-sonnet-4-6`.
+- Отдельный note сообщает, что apiToken.sale — сторонний сервис, не Anthropic, а его ключи не
+  Anthropic-issued; читателю предложено проверить условия и data-handling policy.
+- В diff одна публичная ссылка на homepage, нет цен, сравнительных обещаний, секретов или изменений
+  кода Aider. PR body раскрывает AI assistance.
+
+### Проверки
+
+- `git diff --check`: passed.
+- `codespell aider/website/docs/llms/anthropic.md`: passed.
+- Production Jekyll build на Ruby 3.3: passed; сгенерировано 132 HTML-файла.
+- Новый heading, callout, env-блоки и ссылка проверены в собранном HTML.
+- Полный `html-proofer` обработал 132 файла и обнаружил только 5 существующих проблем вне
+  изменённой страницы: два старых HTTP URL, пустой `a` на share page и два старых broken anchors
+  в blog post. Новая ссылка отвечает HTTP 200.
+
+Живой прогон выполнен на актуальном Aider `0.86.3.dev53+g5dc9490bb` с его закреплённым LiteLLM
+`1.82.3`, а не прямым SDK в обход клиентского стека:
+
+- Aider с `ANTHROPIC_API_BASE=https://api.apitoken.sale` и моделью
+  `anthropic/claude-sonnet-4-6` получил streaming response, применил ожидаемый search/replace и
+  изменил только запрошенную строку во временном файле;
+- basic completion через тот же установленный LiteLLM: passed;
+- SSE streaming через тот же LiteLLM: passed;
+- forced tool use вызвал `integration_check` с `{ "status": "ok" }`: passed.
+
+Ключ передавался через неэхируемый stdin только в process env. Временный git-репозиторий и
+неподходящий Python 3.9 venv перемещены в Trash; в ветке, логах и PR секрета нет.
+
+### PR и backlink
+
+- PR открыт: <https://github.com/Aider-AI/aider/pull/5504>.
+- Статус: `OPEN`, `MERGEABLE`, draft=false; base SHA `5dc9490b`, head SHA `cb15e1dd`.
+- Первый GitHub Actions run имеет ожидаемый `action_required`: maintainer должен разрешить workflow
+  нового внешнего автора. Это permission gate, а не падение pre-commit.
+- Individual CLA пока не подписан; CLA Assistant показывает `license/cla=PENDING`. Подписание —
+  юридическое действие владельца аккаунта по ссылке
+  <https://cla-assistant.io/Aider-AI/aider?pullRequest=5504>, агент его не принимает самостоятельно.
+- Greptile запрошен комментарием `@greptileai`:
+  <https://github.com/Aider-AI/aider/pull/5504#issuecomment-5106107037>; ответ пока не появился.
+- Human review и замечания отсутствуют.
+- Ожидаемая публичная ссылка после мержа:
+  <https://aider.chat/docs/llms/anthropic.html#anthropic-compatible-endpoints>.
+- Проверка 2026-07-28: upstream code search = 0; текущая публичная Anthropic-страница отвечает
+  HTTP 200, но `apitoken.sale` ещё не содержит. Backlink status: `pending`.
+- Следующая проверка: CLA, разрешение pre-commit workflow, Greptile/human review, merge и
+  публикация GitHub Pages.
+
 ## Очередь и повторные проверки
 
 После завершения каждой цели добавлять датированную запись ниже, даже если состояние не изменилось.
@@ -328,3 +404,6 @@
 | 2026-07-28 | `QuantumNous/new-api` | code/docs repositories, channel adaptor, contribution analogs, duplicate search | native Anthropic channel confirmed; current target is `new-api-docs-v1`; no existing `apitoken.sale` reference |
 | 2026-07-28 | `QuantumNous/new-api` | EN/ZH guide, docs build, Go test, direct and adaptor live runs | branch ready; 2,065-page build passed; basic, SSE, tool use and actual New API adaptor request passed |
 | 2026-07-28 | `QuantumNous/new-api` | PR, automated review, checks, upstream/public backlink | docs PR [#196](https://github.com/QuantumNous/new-api-docs-v1/pull/196) open and mergeable; CodeRabbit clean with promotional warning; Vercel authorization and human review pending; Greptile requested |
+| 2026-07-28 | `Aider-AI/aider` | activity, contribution rules, LiteLLM transport, accepted docs analog | repo still accepts focused PRs; `ANTHROPIC_API_BASE` on pinned LiteLLM 1.82.3 is the supported path |
+| 2026-07-28 | `Aider-AI/aider` | docs change, Jekyll build, rendered HTML, live Aider and LiteLLM smoke | one-file branch ready; codespell/build passed; Aider edit plus basic, SSE and tool use passed |
+| 2026-07-28 | `Aider-AI/aider` | PR, CLA, workflow, review and backlink | PR [#5504](https://github.com/Aider-AI/aider/pull/5504) open and mergeable; CLA and first-time workflow approval pending; Greptile requested; backlink absent |
