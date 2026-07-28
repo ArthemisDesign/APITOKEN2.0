@@ -68,6 +68,24 @@ grep -A20 -F 'node-exporter:' "$ROOT/observability/compose.yaml" | grep -Fq 'app
 grep -Fq 'metrics {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'per_host' "$ROOT/deploy/Caddyfile"
 
+# Anthropic and OpenAI have independent stable origins and scrape labels. Without the labels,
+# provider-local zero gauges can collide and make Codex or Claude alerts evaluate against both.
+for provider_target in \
+  '127.0.0.1:8790"]|provider: anthropic' \
+  '127.0.0.1:8792"]|provider: openai'; do
+  target=${provider_target%%|*}
+  label=${provider_target#*|}
+  grep -F "$target" -A 1 "$ROOT/observability/prometheus/prometheus.yml" \
+    | grep -Fq "$label" || { printf 'engine scrape %s lacks %s\n' "$target" "$label" >&2; exit 1; }
+done
+grep -Fq 'targets: ["https://openai.api.apitoken.sale/v1/responses"]' \
+  "$ROOT/observability/prometheus/prometheus.yml" \
+  || { printf 'OpenAI public synthetic is missing\n' >&2; exit 1; }
+grep -Fq 'module: [http_openai_surface]' "$ROOT/observability/prometheus/prometheus.yml" \
+  || { printf 'OpenAI synthetic does not verify its provider envelope\n' >&2; exit 1; }
+grep -Fq 'fail_if_body_not_matches_regexp:' "$ROOT/observability/blackbox/blackbox.yml" \
+  || { printf 'OpenAI synthetic accepts a generic health response\n' >&2; exit 1; }
+
 printf '%s\n' \
   'EMAIL_FROM=no-reply@apitoken.sale' \
   'SMTP_HOST=smtp.example.test' \
@@ -160,6 +178,12 @@ grep -Fq 'MONITORING.md#proxyupstreampairdown' "$ROOT/observability/prometheus/r
   || { printf 'alert ProxyUpstreamPairDown has no runbook anchor\n' >&2; exit 1; }
 grep -Fqi '## ProxyUpstreamPairDown' "$ROOT/MONITORING.md" \
   || { printf 'MONITORING.md has no runbook section for ProxyUpstreamPairDown\n' >&2; exit 1; }
+proxy_pair_rule=$(grep -F 'alert: ProxyUpstreamPairDown' -A 12 \
+  "$ROOT/observability/prometheus/rules/operations.yml")
+grep -Fq '3000|3001' <<<"$proxy_pair_rule" \
+  || { printf 'commerce pair health alert is missing\n' >&2; exit 1; }
+! grep -Fq '8787|8788' <<<"$proxy_pair_rule" \
+  || { printf 'transitional OpenAI health aliases corrupt the Anthropic Caddy gauge\n' >&2; exit 1; }
 
 # OpenKeys has a dedicated port and failure domain; do not attribute it to the legacy CRM service.
 grep -Fq 'targets: ["http://127.0.0.1:3410/api/ready"]' "$ROOT/observability/prometheus/prometheus.yml" \
@@ -184,6 +208,9 @@ for codex_metric in \
     || { printf 'engine does not export %s\n' "$codex_metric" >&2; exit 1; }
   grep -Fq "$codex_metric" "$ROOT/observability/prometheus/rules/application.yml" \
     || { printf 'no alert rule consumes %s\n' "$codex_metric" >&2; exit 1; }
+  grep -Fq "${codex_metric}{provider=\"openai\"}" \
+    "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'Codex alert is not scoped to OpenAI: %s\n' "$codex_metric" >&2; exit 1; }
 done
 for codex_alert in CodexProviderDown CodexNoAvailableHomes CodexHomeUnauthenticated \
   CodexHomeNearRateLimit; do
@@ -198,9 +225,21 @@ done
 # Alerting on a disabled provider would page for a surface nobody is serving.
 for gated_alert in CodexProviderDown CodexNoAvailableHomes; do
   grep -F "alert: $gated_alert" -A 2 "$ROOT/observability/prometheus/rules/application.yml" \
-    | grep -Fq 'claude_api_codex_enabled == 1' \
+    | grep -Fq 'claude_api_codex_enabled{provider="openai"} == 1' \
     || { printf '%s is not gated on the provider being enabled\n' "$gated_alert" >&2; exit 1; }
 done
+for anthropic_metric in claude_api_breaker_open claude_api_subs claude_api_cooling \
+  claude_api_upstream_429_total claude_api_upstream_auth_total claude_api_upstream_5xx_total \
+  claude_api_affinity_redis_errors_total; do
+  grep -Fq "${anthropic_metric}{provider=\"anthropic\"}" \
+    "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'Claude alert is not scoped to Anthropic: %s\n' "$anthropic_metric" >&2; exit 1; }
+done
+grep -Fq 'claude-api(@.+|-openai)' "$ROOT/observability/prometheus/rules/operations.yml" \
+  || { printf 'systemd alerts omit the OpenAI provider unit\n' >&2; exit 1; }
+[[ $(grep -Fc 'public-http|openai-http|protected-http|support-http|loopback-http' \
+  "$ROOT/observability/grafana/dashboards/production-overview.json") -eq 2 ]] \
+  || { printf 'Grafana synthetic panels omit the OpenAI probe\n' >&2; exit 1; }
 
 # A missing status file must read as stale, never as a fresh zero.
 grep -Fq 'WATCHDOG_STATUS_MISSING_AGE_SECONDS=86400' "$ROOT/deploy/collect-monitoring-metrics.sh" \

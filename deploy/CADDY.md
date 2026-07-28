@@ -65,20 +65,32 @@ A `503` returned by a normal proxied request is returned only to that caller and
 
 ## Engine blue-green and SSE
 
-`api.apitoken.sale`, `openai.api.apitoken.sale`, and the unified admin proxy use only the stable
-`127.0.0.1:8790` engine balancer. That balancer alone knows health-gated slots
-`127.0.0.1:8787` and `127.0.0.1:8788`. Caddy strips the internal API-plane marker from
-`api.apitoken.sale` and injects it only for `openai.api.apitoken.sale`; client authentication
-headers never select the provider. The deployment watchdog resolves the OpenAI hostname to loopback
-and probes it over HTTPS, so final verification covers this public vhost boundary end to end.
-Caddy probes `/ready`; `engine-bluegreen.sh` admits the new
-slot, sends `SIGUSR1` to make the old slot return 503 readiness, waits for depooling, then sends
-SIGTERM so established streams drain under the systemd deadline.
+`api.apitoken.sale` and the unified admin proxy use stable Anthropic origin `127.0.0.1:8790`, whose
+health-gated upstreams are `127.0.0.1:8787` and `127.0.0.1:8788`. The OpenAI hostname uses a separate
+stable origin, `127.0.0.1:8792`, over singleton runtime `127.0.0.1:8793`. During the first split only,
+8792 also recognizes the old combined slot with an internal marker that Caddy overwrites; the
+Anthropic public route strips the same header. Clients therefore cannot move a request between
+runtimes. A follow-up Caddy-only release removes that bridge after 8793 is green. The watchdog
+resolves the OpenAI hostname to loopback and probes it over HTTPS, covering the public vhost boundary
+end to end.
 
-The commerce API and worker use `http://127.0.0.1:8790`, a loopback-only Caddy listener over those
-same health-gated slots. They must never address either deployment slot directly. The engine
-blue-green controller requires this stable listener to remain ready before, during, and after an old
-slot is drained.
+Caddy normally probes `/ready`. The one-release 8792 bridge instead uses an OpenAI-shaped 4xx body
+probe so fixed Anthropic slots never enter that fallback. `engine-bluegreen.sh` admits the new Anthropic slot, sends `SIGUSR1` to make
+the old slot return 503 readiness, waits for depooling, then sends SIGTERM so established streams
+drain under the systemd deadline. Only after the old cgroup is fully stopped does the first split
+start OpenAI, preventing overlap with a legacy combined process. Later releases roll Anthropic first
+and then gracefully restart OpenAI from the same selected SHA.
+
+The singleton guarantees graceful established streams, not zero downtime for new OpenAI requests.
+After its listener closes, a long in-flight turn can delay home-lock release and the new process for
+the configured drain deadline; Anthropic remains available, while OpenAI target/synthetic alerts may
+fire truthfully. Bridge cleanup must change 8792 to direct 8793 `/ready` health, remove both legacy
+slot addresses and both API-plane header directives, and restore the unambiguous Anthropic Caddy-pair
+alert.
+
+The commerce API and worker use `http://127.0.0.1:8790`, a loopback-only Caddy listener over the
+Anthropic slots. They must never address either deployment slot or the OpenAI origin. The provider
+controller requires 8790 throughout the Anthropic handoff and verifies 8792 after OpenAI starts.
 
 The 2-second `lb_try_duration` and 100 ms `lb_try_interval` hold and retry a newly arriving request when the loopback dial fails during a brief engine restart/bind gap. Dial failures are retryable for every HTTP method because the connection was never established and the request was not transmitted. The configuration does not broaden Caddy's default rule for failures after a connection was established, so POST bodies are not unsafely replayed after a partial round trip.
 

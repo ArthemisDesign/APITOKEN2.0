@@ -140,10 +140,16 @@ require_denied() {
 
 sample_sha=0000000000000000000000000000000000000000
 require_permitted 'daemon-reload' /usr/bin/systemctl daemon-reload
-require_permitted 'engine slot start' /usr/bin/systemctl start claude-api@8787.service
-require_permitted 'engine slot stop' /usr/bin/systemctl stop claude-api@8788.service
+require_permitted 'Anthropic slot start' /usr/bin/systemctl start claude-api-anthropic@8787.service
+require_permitted 'Anthropic slot stop' /usr/bin/systemctl stop claude-api-anthropic@8788.service
+require_permitted 'combined bridge slot stop' /usr/bin/systemctl stop claude-api@8788.service
 require_permitted 'engine drain signal' \
-  /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api@8787.service
+  /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-anthropic@8787.service
+require_permitted 'OpenAI provider restart' /usr/bin/systemctl restart claude-api-openai.service
+require_permitted 'OpenAI provider stop' /usr/bin/systemctl stop claude-api-openai.service
+require_permitted 'OpenAI provider enable' /usr/bin/systemctl enable claude-api-openai.service
+require_permitted 'OpenAI provider drain signal' \
+  /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-openai.service
 require_permitted 'commerce slot start' /usr/bin/systemctl start apitoken-api@3000.service
 require_permitted 'worker restart' /usr/bin/systemctl restart apitoken-worker.service
 require_permitted 'content studio restart' /usr/bin/systemctl restart apitoken-content-studio.service
@@ -168,6 +174,9 @@ require_permitted 'candidate removal' /usr/bin/rm -rf --one-file-system -- "/var
 require_permitted 'engine release removal' /usr/bin/rm -rf --one-file-system -- "/srv/claude-api/releases/$sample_sha"
 require_permitted 'commerce release removal' /usr/bin/rm -rf --one-file-system -- "/opt/apitoken/releases/$sample_sha"
 require_permitted 'caddy validation' /usr/bin/caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile
+require_permitted 'OpenAI unit probe' /usr/bin/test -f /etc/systemd/system/claude-api-openai.service
+require_permitted 'Anthropic unit probe' \
+  /usr/bin/test -f /etc/systemd/system/claude-api-anthropic@.service
 # Operator tooling must keep working: `apitoken-watchdog status|run|retry|logs`.
 require_permitted 'operator status command' /usr/local/bin/apitoken-watchdog status
 require_permitted 'operator run command' /usr/local/bin/apitoken-watchdog run

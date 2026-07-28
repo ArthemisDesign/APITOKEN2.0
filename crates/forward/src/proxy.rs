@@ -220,6 +220,7 @@ fn skip_req_header(name: &str) -> bool {
         "host" | "content-length" | "connection" | "authorization" | "x-api-key"
         | "anthropic-beta" | "anthropic-version" | "user-agent" | "accept-encoding"
         | "x-claude-code-session-id" | "x-conversation-id" | "x-session-id"
+        | "x-apitoken-api-plane"
         | "transfer-encoding" | "upgrade" | "proxy-connection" | "proxy-authorization"
         | "keep-alive" | "te" | "trailer"
         // Клиентские forwarding/hop-заголовки НЕ пробрасываем апстриму: они раскрыли бы цепочку прокси

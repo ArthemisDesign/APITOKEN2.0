@@ -66,6 +66,12 @@ Cmnd_Alias APITOKEN_UNITS = \
     /usr/bin/systemctl disable claude-api@[0-9]*.service, \
     /usr/bin/systemctl restart claude-api@[0-9]*.service, \
     /usr/bin/systemctl kill * claude-api@[0-9]*.service, \
+    /usr/bin/systemctl start claude-api-anthropic@[0-9]*.service, \
+    /usr/bin/systemctl stop claude-api-anthropic@[0-9]*.service, \
+    /usr/bin/systemctl enable claude-api-anthropic@[0-9]*.service, \
+    /usr/bin/systemctl disable claude-api-anthropic@[0-9]*.service, \
+    /usr/bin/systemctl restart claude-api-anthropic@[0-9]*.service, \
+    /usr/bin/systemctl kill * claude-api-anthropic@[0-9]*.service, \
     /usr/bin/systemctl start apitoken-api@[0-9]*.service, \
     /usr/bin/systemctl stop apitoken-api@[0-9]*.service, \
     /usr/bin/systemctl enable apitoken-api@[0-9]*.service, \
@@ -92,6 +98,12 @@ Cmnd_Alias APITOKEN_UNITS = \
     /usr/bin/systemctl stop claude-api.service, \
     /usr/bin/systemctl enable claude-api.service, \
     /usr/bin/systemctl disable claude-api.service, \
+    /usr/bin/systemctl start claude-api-openai.service, \
+    /usr/bin/systemctl stop claude-api-openai.service, \
+    /usr/bin/systemctl restart claude-api-openai.service, \
+    /usr/bin/systemctl enable claude-api-openai.service, \
+    /usr/bin/systemctl disable claude-api-openai.service, \
+    /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-openai.service, \
     /usr/bin/systemctl start claude-api-backup.service, \
     /usr/bin/systemctl reset-failed claude-api-backup.service, \
     /usr/bin/systemctl daemon-reload
@@ -142,7 +154,9 @@ Cmnd_Alias APITOKEN_CADDY = \
 Cmnd_Alias APITOKEN_PROBE = \
     /usr/bin/test -f /etc/apitoken/api.env, \
     /usr/bin/test -s /srv/claude-api/data/engine-postgres.env, \
-    /usr/bin/test -f /etc/systemd/system/claude-api@.service
+    /usr/bin/test -f /etc/systemd/system/claude-api-anthropic@.service, \
+    /usr/bin/test -f /etc/systemd/system/claude-api@.service, \
+    /usr/bin/test -f /etc/systemd/system/claude-api-openai.service
 
 deploy ALL=(root) NOPASSWD: APITOKEN_HELPERS, APITOKEN_CANDIDATES, APITOKEN_RELEASES, \
     APITOKEN_UNITS, APITOKEN_INSPECT, APITOKEN_OPERATOR, APITOKEN_POLICY, APITOKEN_CADDY, \

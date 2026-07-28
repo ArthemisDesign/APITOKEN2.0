@@ -570,6 +570,15 @@ systemctl_show_value() {
   systemctl_raw show --property="$property" --value "$unit" 2>/dev/null
 }
 
+process_environment_has() {
+  local pid=$1 expected=$2 entry
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  while IFS= read -r -d '' entry; do
+    [[ "$entry" == "$expected" ]] && return 0
+  done <"/proc/$pid/environ" 2>/dev/null
+  return 1
+}
+
 wait_for_unit_active() {
   local unit=$1
   local timeout=$2
@@ -609,6 +618,7 @@ unit_release_binding_ok() {
   local unit=$2
   local root=$3
   local expected_release=$4
+  local expected_provider=${5:-}
   local current fragment exec_start working_directory main_pid runtime_path
 
   systemctl_raw is-active --quiet "$unit" >/dev/null 2>&1 || return 1
@@ -634,6 +644,9 @@ unit_release_binding_ok() {
       [[ "$exec_start" == *"$root/current/claude-api"* ]] || return 1
       runtime_path=$(realpath -- "/proc/$main_pid/exe" 2>/dev/null) || return 1
       [[ "$runtime_path" == "$expected_release/claude-api" ]] || return 1
+      if [[ -n "$expected_provider" ]]; then
+        process_environment_has "$main_pid" "CLAUDE_API_PROVIDER=$expected_provider" || return 1
+      fi
       ;;
     *) return 1 ;;
   esac
@@ -647,6 +660,7 @@ wait_for_release_service() {
   local expected_release=$5
   local url=$6
   local timeout=$7
+  local expected_provider=${8:-}
   local interval=${READINESS_INTERVAL_SECONDS:-2}
   local deadline now remaining curl_timeout sleep_for
 
@@ -666,10 +680,11 @@ wait_for_release_service() {
     remaining=$(( deadline - now ))
     (( remaining > 0 )) || break
 
-    if unit_release_binding_ok "$role" "$unit" "$root" "$expected_release"; then
+    if unit_release_binding_ok "$role" "$unit" "$root" "$expected_release" "$expected_provider"; then
       curl_timeout=$remaining
       (( curl_timeout > 5 )) && curl_timeout=5
-      if curl -fsS --max-time "$curl_timeout" "$url" >/dev/null; then
+      if curl --noproxy '*' -fsS --max-time "$curl_timeout" "$url" >/dev/null \
+          && unit_release_binding_ok "$role" "$unit" "$root" "$expected_release" "$expected_provider"; then
         log "$label is active on $unit, serving $(basename -- "$expected_release"), and ready at $url"
         return 0
       fi

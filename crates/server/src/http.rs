@@ -25,8 +25,8 @@ use std::sync::Arc;
 
 /// Unified self-contained administration UI. Data is routed by the admin Caddy vhost.
 const ADMIN_PANEL_HTML: &str = include_str!("admin-panel.html");
-/// Caddy removes this internal marker on the Claude hostname and sets it only for
-/// `openai.api.apitoken.sale`. Provider selection must never depend on client auth headers.
+/// One-release migration marker used only by the `Combined` bridge. Fixed provider routers never
+/// inspect it, and Caddy strips/overwrites client input while the bridge is present.
 const API_PLANE_HEADER: &str = "x-apitoken-api-plane";
 const OPENAI_API_PLANE: &[u8] = b"openai";
 

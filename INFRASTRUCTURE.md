@@ -9,8 +9,11 @@ live below `/srv/claude-api/data` on the host.
 
 ```text
 api.apitoken.sale --------------------------> engine balancer 127.0.0.1:8790
-                                                |-> Rust core slot 127.0.0.1:8787
-                                                `-> Rust core slot 127.0.0.1:8788
+                                                |-> Anthropic slot 127.0.0.1:8787
+                                                `-> Anthropic slot 127.0.0.1:8788
+
+openai.api.apitoken.sale -------------------> OpenAI origin 127.0.0.1:8792
+                                                `-> Codex singleton 127.0.0.1:8793
 
 future browser at apitoken.sale
         |
@@ -40,9 +43,14 @@ pricing state and durable jobs. The commercial services access the engine only t
 explicitly loopback-bound stable Control API at `127.0.0.1:8790`, never through a deployment slot.
 The legacy core host is not an upstream or fallback.
 
+The first provider-split release temporarily lets 8792 recognize the still-serving combined slot;
+`deploy/CADDY.md` defines that bounded bridge and its mandatory Caddy-only cleanup. It is not the
+steady-state topology shown above.
+
 The Rust engine ran on an interim host (`5.9.59.83`, shared with an unrelated project) until it was
-migrated onto this commercial host on 2026-07-14. The engine now runs here as `claude-api@8787` or
-`claude-api@8788` (plus `claude-authbot.service` and the `claude-api-backup.timer`) under the
+migrated onto this commercial host on 2026-07-14. Anthropic now runs here as `claude-api@8787` or
+`claude-api@8788`, while OpenAI-compatible Codex runs as `claude-api-openai.service` (plus
+`claude-authbot.service` and the `claude-api-backup.timer`) under the
 `deploy` user, with its
 authority in the isolated PostgreSQL `claude_engine` database; the drained SQLite snapshot remains
 at `/srv/claude-api/data/subscriptions.db`. Its secrets live at
@@ -121,7 +129,8 @@ systemd/apitoken-api@.service         release-symlink API unit; instance name is
 systemd/apitoken-worker.service
 systemd/apitoken-content-studio.service
 systemd/claude-api.service          one-time SQLite-to-PostgreSQL bridge
-systemd/claude-api@.service         PostgreSQL-fenced blue/green slots
+systemd/claude-api@.service         PostgreSQL-fenced Anthropic blue/green slots
+systemd/claude-api-openai.service   PostgreSQL-fenced OpenAI/Codex singleton
 systemd/claude-api-backup.service
 systemd/claude-api-backup.timer
 systemd/apitoken-deploy-watchdog.service
@@ -139,11 +148,12 @@ deploy/commerce-postgres.compose.yaml
 Normal operations:
 
 ```bash
-sudo systemctl status apitoken-postgres apitoken-worker 'apitoken-api@*' 'claude-api@*'
-sudo journalctl -u 'apitoken-api@*' -u apitoken-worker -u 'claude-api@*' --since today
+sudo systemctl status apitoken-postgres apitoken-worker 'apitoken-api@*' 'claude-api@*' claude-api-openai
+sudo journalctl -u 'apitoken-api@*' -u apitoken-worker -u 'claude-api@*' -u claude-api-openai --since today
 sudo systemctl status caddy
 sudo caddy validate --config /etc/caddy/Caddyfile
 curl -fsS http://127.0.0.1:8790/ready
+curl -fsS http://127.0.0.1:8792/ready
 ```
 
 The PostgreSQL container publishes only to `127.0.0.1:5433`. API and worker use the same database
@@ -154,13 +164,14 @@ never be returned to clients or placed in frontend configuration.
 
 - Stage 2 is complete: the engine authority is the role-isolated `claude_engine` PostgreSQL database;
   SQLite is a retained audit snapshot and must not be reactivated after production writes.
-- Engine 8787/8788 and API 3000/3001 are health-gated blue-green slots. Only one slot per component
-  remains enabled after a normal cutover.
+- Anthropic 8787/8788 and API 3000/3001 are health-gated blue-green slots. Only one slot per pair
+  remains enabled after a normal cutover; OpenAI is an independent singleton on 8793.
 - API and worker load `ENGINE_BASE_URL=http://127.0.0.1:8790`; Caddy binds that listener explicitly
   to loopback and routes only ready engine slots.
 - Sales and every commerce-facing Caddy route use `COMMERCE_BASE_URL=http://127.0.0.1:8791`;
-  public/admin routes never name API slots. Likewise, public/admin engine routes use `8790` and
-  never name engine slots. Only the two stable Caddy balancers own blue-green slot selection.
+  public/admin routes never name API slots. Anthropic public/admin routes use 8790 and OpenAI uses
+  8792; neither public hostname names a runtime port. Only 8790 and 8791 perform blue-green slot
+  selection; 8792 is the stable boundary over singleton 8793.
 - Public engine, commerce API, Caddy, worker, and the hourly dual-database backup timer are active.
 - The core public matcher exposes `/v1/*`, `/health`, and `/balance`; Control/admin routes remain
   private. Public liveness/readiness behavior is described in `deploy/CADDY.md`.

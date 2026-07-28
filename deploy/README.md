@@ -81,7 +81,8 @@ The production queue remains strictly one SHA at a time.
 | Component | Immutable release | Active unit | Readiness probe |
 |---|---|---|---|
 | Commerce API | `/opt/apitoken/releases/<sha>` | `apitoken-api@3000.service` / `apitoken-api@3001.service` | `http://127.0.0.1:<port>/v1/ready` |
-| Rust engine | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api@8787.service` / `claude-api@8788.service` | `http://127.0.0.1:<port>/ready` |
+| Anthropic provider | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api@8787.service` / `claude-api@8788.service` | `http://127.0.0.1:<port>/ready`, stable 8790 |
+| OpenAI-compatible provider | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api-openai.service` | `http://127.0.0.1:8793/ready`, stable 8792 |
 | Commerce worker | `/opt/apitoken/releases/<sha>` through `current` | `apitoken-worker.service` | process-active + exact cwd |
 | Content Studio | `/opt/apitoken/releases/<sha>` through `current` | `apitoken-content-studio.service` | `http://127.0.0.1:3500/api/health` + exact cwd |
 | PostgreSQL | `/var/lib/apitoken/postgres` | `apitoken-postgres.service` | forbidden to these scripts |
@@ -92,7 +93,9 @@ the Control API. Both commerce processes use the stable loopback origin `http://
 Caddy health-routes that origin to the active engine slot.
 
 After the Stage-2 database cutover, use `deploy.sh --engine-bluegreen` followed by
-`engine-bluegreen.sh`; legacy restart mode refuses to run while the PostgreSQL credential is active.
+`engine-bluegreen.sh`. That controller owns the provider cohort: it rolls the Anthropic pair and then
+the singleton OpenAI runtime from one selected SHA. Legacy restart mode refuses to run while the
+PostgreSQL credential is active.
 `api-bluegreen.sh` similarly owns commerce slots; `--with-worker` restarts the single worker and
 private Content Studio from the same immutable commerce release. Any service name containing
 `postgres` is rejected before work begins.

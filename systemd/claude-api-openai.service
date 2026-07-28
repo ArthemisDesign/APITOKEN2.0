@@ -1,6 +1,7 @@
-# PostgreSQL-fenced engine slot. Instance name is the loopback port (8787 or 8788).
+# PostgreSQL-fenced OpenAI-compatible provider. This unit is deliberately a singleton: two Codex
+# processes must never share an authenticated CODEX_HOME.
 [Unit]
-Description=claude-api PostgreSQL engine slot on port %i
+Description=claude-api OpenAI-compatible Codex provider
 After=network-online.target apitoken-affinity-redis.service
 Wants=network-online.target apitoken-affinity-redis.service
 
@@ -12,9 +13,8 @@ Environment=SUB_CFG_DIR=/srv/claude-api/data
 EnvironmentFile=-/srv/claude-api/data/config.env
 EnvironmentFile=-/srv/claude-api/data/server.env
 EnvironmentFile=/srv/claude-api/data/engine-postgres.env
-# `/usr/bin/env` is deliberately at ExecStart: EnvironmentFile values override `Environment=`
-# regardless of their textual order, while argv-level assignments always win for the slot.
-ExecStart=/usr/bin/env CLAUDE_API_PORT=%i CLAUDE_API_INSTANCE_ID=%H:engine:%i /srv/claude-api/releases/current/claude-api serve
+# Argv-level assignments cannot be overridden by a shared EnvironmentFile.
+ExecStart=/usr/bin/env CLAUDE_API_PROVIDER=openai CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8793 CLAUDE_API_INSTANCE_ID=%H:engine:openai /srv/claude-api/releases/current/claude-api serve
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM

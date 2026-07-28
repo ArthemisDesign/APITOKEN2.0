@@ -20,10 +20,10 @@ ExecStart=/srv/claude-api/releases/current/claude-api serve
 Restart=on-failure
 RestartSec=3
 # Graceful shutdown: сервер по SIGTERM дренирует in-flight стримы (см. serve()). Даём время дотечь
-# длинным генерациям и сделать финальный флаш состояния, иначе systemd убьёт SIGKILL на дефолтных 90с.
+# длинным генерациям и сделать финальный флаш состояния, иначе systemd убьёт SIGKILL.
 KillSignal=SIGTERM
 KillMode=mixed
-TimeoutStopSec=600
+TimeoutStopSec=660
 # Базовый hardening (сервис не пишет никуда, кроме своей data-папки):
 NoNewPrivileges=true
 ProtectSystem=strict

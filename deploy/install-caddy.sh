@@ -15,13 +15,14 @@ tmp=$(mktemp /etc/caddy/.Caddyfile.stage2.XXXXXX)
 legacy_payload=$(mktemp /etc/caddy/.admin-legacy.XXXXXX)
 legacy_response=$(mktemp /etc/caddy/.admin-import-response.XXXXXX)
 curl_config=$(mktemp /etc/caddy/.admin-import-curl.XXXXXX)
+openai_response=$(mktemp /etc/caddy/.openai-surface.XXXXXX)
 backup=
-cleanup() { rm -f -- "$tmp" "$legacy_payload" "$legacy_response" "$curl_config"; }
+cleanup() { rm -f -- "$tmp" "$legacy_payload" "$legacy_response" "$curl_config" "$openai_response"; }
 trap cleanup EXIT
 
 # Preserve production-only service keys without placing any secret in argv, stdout, the repository,
 # or a world-readable temporary file. Human admin credentials live in PostgreSQL after cutover.
-chmod 0600 "$tmp" "$legacy_payload" "$legacy_response" "$curl_config"
+chmod 0600 "$tmp" "$legacy_payload" "$legacy_response" "$curl_config" "$openai_response"
 awk -f "$SCRIPT_DIR/render-caddy.awk" "$LIVE" "$TEMPLATE" >"$tmp"
 
 ! grep -q '<[A-Z_]*PLACEHOLDER>' "$tmp"
@@ -77,5 +78,33 @@ if ! caddy reload --adapter caddyfile --config "$LIVE"; then
   caddy reload --adapter caddyfile --config "$LIVE" || true
   echo "Caddy reload failed; restored $backup" >&2
   exit 1
+fi
+# Syntax-valid routing can still point the public OpenAI hostname at the wrong provider. Exercise a
+# quota-free unauthenticated request through loopback TLS before committing the infrastructure SHA.
+if grep -q '^openai\.api\.apitoken\.sale {' "$LIVE"; then
+  openai_ready=0
+  for _ in 1 2 3 4 5 6 7 8; do
+    if curl --noproxy '*' --silent --show-error --max-time 8 \
+        --resolve openai.api.apitoken.sale:443:127.0.0.1 \
+        -H 'content-type: application/json' \
+        -d '{"model":"gpt-5.6","input":"ping","temperature":0.5}' \
+        -o "$openai_response" https://openai.api.apitoken.sale/v1/responses \
+        && node -e '
+          const value = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+          const error = value && value.error;
+          if (!error || error.type !== "invalid_request_error" ||
+              !["invalid_api_key", "model_not_found"].includes(error.code)) process.exit(1);
+        ' "$openai_response"; then
+      openai_ready=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ $openai_ready != 1 ]]; then
+    cp -a "$backup" "$LIVE"
+    caddy reload --adapter caddyfile --config "$LIVE" || true
+    echo "OpenAI hostname smoke failed; restored $backup" >&2
+    exit 1
+  fi
 fi
 echo "Caddy configuration installed; rollback copy: $backup"

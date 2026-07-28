@@ -23,7 +23,7 @@
       "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
       "id": 2,
       "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
-      "targets": [{ "expr": "avg(probe_success{job=~\"public-http|protected-http|support-http|loopback-http\"})", "refId": "A" }],
+      "targets": [{ "expr": "avg(probe_success{job=~\"public-http|openai-http|protected-http|support-http|loopback-http\"})", "refId": "A" }],
       "title": "Synthetic availability",
       "type": "stat"
     },
@@ -43,7 +43,7 @@
       "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
       "id": 4,
       "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
-      "targets": [{ "expr": "sum(node_systemd_unit_state{name=~\"(apitoken-.+|claude-api@.+)\\\\.service\",state=\"failed\"}) or vector(0)", "refId": "A" }],
+      "targets": [{ "expr": "sum(node_systemd_unit_state{name=~\"(apitoken-.+|claude-api(@.+|-openai))\\\\.service\",state=\"failed\"}) or vector(0)", "refId": "A" }],
       "title": "Failed services",
       "type": "stat"
     },
@@ -88,12 +88,13 @@
       "id": 8,
       "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "expr": "rate(claude_api_requests_total[5m])", "legendFormat": "requests", "refId": "A" },
-        { "expr": "rate(claude_api_upstream_429_total[5m])", "legendFormat": "upstream 429", "refId": "B" },
-        { "expr": "rate(claude_api_upstream_5xx_total[5m])", "legendFormat": "upstream 5xx", "refId": "C" },
-        { "expr": "rate(claude_api_upstream_auth_total[5m])", "legendFormat": "upstream auth", "refId": "D" }
+        { "expr": "rate(claude_api_requests_total{provider=\"anthropic\"}[5m])", "legendFormat": "Anthropic requests", "refId": "A" },
+        { "expr": "rate(claude_api_requests_total{provider=\"openai\"}[5m])", "legendFormat": "OpenAI requests", "refId": "E" },
+        { "expr": "rate(claude_api_upstream_429_total{provider=\"anthropic\"}[5m])", "legendFormat": "upstream 429", "refId": "B" },
+        { "expr": "rate(claude_api_upstream_5xx_total{provider=\"anthropic\"}[5m])", "legendFormat": "upstream 5xx", "refId": "C" },
+        { "expr": "rate(claude_api_upstream_auth_total{provider=\"anthropic\"}[5m])", "legendFormat": "upstream auth", "refId": "D" }
       ],
-      "title": "Claude engine traffic",
+      "title": "Provider traffic",
       "type": "timeseries"
     },
     {
@@ -102,7 +103,7 @@
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 4 },
       "id": 9,
       "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
-      "targets": [{ "expr": "probe_duration_seconds{job=~\"public-http|protected-http|support-http|loopback-http\"}", "legendFormat": "{{component}}", "refId": "A" }],
+      "targets": [{ "expr": "probe_duration_seconds{job=~\"public-http|openai-http|protected-http|support-http|loopback-http\"}", "legendFormat": "{{component}}", "refId": "A" }],
       "title": "End-to-end probe latency",
       "type": "timeseries"
     },

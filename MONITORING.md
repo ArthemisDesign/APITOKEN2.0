@@ -37,7 +37,7 @@ database state only. Grafana users are auto-provisioned as viewers.
   is recorded. Investigate directly with:
 
   ```bash
-  journalctl -u 'claude-api@*.service' --since today --grep='"event":"customer_http_error"'
+  journalctl -u 'claude-api@*.service' -u claude-api-openai.service --since today --grep='"event":"customer_http_error"'
   ```
 
 The Grafana and telemetry volumes are not business records. Dashboards and alert rules are
@@ -108,23 +108,23 @@ bypass and should be treated as a security incident.
 
 ## ProxyUpstreamPairDown
 
-Both slots of a blue-green pair are failing their Caddy health check, so the stable loopback origin
-(`127.0.0.1:8790` for the engine, `127.0.0.1:8791` for the commerce API) has nothing to route to.
+Both commerce API slots are failing their Caddy health check, so stable loopback origin
+`127.0.0.1:8791` has nothing to route to. During the one-release provider bridge, Anthropic's
+8787/8788 addresses also carry an intentionally opposite OpenAI health verdict; the unambiguous
+`MonitoringTargetDown{provider="anthropic"}` alert covers stable 8790 until bridge cleanup.
 
 Exactly one slot per pair is supposed to be running — the other is stopped and disabled by the
 blue-green controller — so this alert means the *serving* slot died, not that a spare is idle.
 
 ```bash
-systemctl is-active claude-api@8787.service claude-api@8788.service
 systemctl is-active apitoken-api@3000.service apitoken-api@3001.service
-curl -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8790/ready
 curl -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8791/v1/ready
 sudo apitoken-watchdog status
 ```
 
-The watchdog reconverges the engine pair on its next idle cycle through the readiness-gated
-controller. If it cannot, recover the slot manually with `deploy/engine-bluegreen.sh` (engine) or
-`deploy/api-bluegreen.sh` (commerce API). Caddy no longer logs individual failed health probes —
+The watchdog reconverges the provider cohort and commerce pair on its next idle cycle through the
+readiness-gated controllers. If it cannot, recover with `deploy/engine-bluegreen.sh` or
+`deploy/api-bluegreen.sh`. Caddy no longer logs individual failed health probes —
 that logger is excluded because a stopped slot is expected state — so use the unit journals and
 `caddy_reverse_proxy_upstreams_healthy` rather than looking for proxy log lines.
 
@@ -228,10 +228,14 @@ expect only a temporary reduction in cross-slot prompt-cache hits.
 ## CodexProviderDown
 
 Only the OpenAI-compatible surface is affected; Claude routing is independent. Check
+`systemctl status claude-api-openai.service` and its journal first, then check
 `claude_api_codex_home_process_live` per home to see whether every child failed or only one.
 Restarting a child is automatic and lazy, so a persistent zero means the binary attestation, the
 `CODEX_HOME` permissions, or the pinned version no longer matches `docs/CODEX_APP_SERVER.md`. Do not
-edit the pinned build on the host; correct it with a commit and let the watchdog rebuild the slot.
+edit the pinned build on the host; correct it with a commit and let the watchdog roll the provider
+cohort. If the journal reports that a home is already owned, do not delete the lock file: find and
+stop the competing process through its systemd unit. Advisory ownership is attached to the open file
+descriptor, not the directory entry.
 `CLAUDE_API_CODEX_ENABLED=0` is the provider-only kill switch if the surface must be withdrawn while
 the cause is investigated.
 
@@ -253,10 +257,12 @@ Codex), which calibration deliberately excludes from the estimate.
 
 ## CodexHomeUnauthenticated
 
-That home's device login expired or was revoked. Re-authenticate exactly as
-`docs/CODEX_APP_SERVER.md` describes, as the unprivileged engine user and against that home's own
-`CODEX_HOME`. Never copy, print or archive an auth store, and never point two homes at one store. The
-health probe clears the quarantine on its own once `account/read` passes again; no restart is needed.
+That home's device login expired or was revoked. New homes should be republished through the authbot's
+hidden staging flow. For an in-place manual reauthentication, stop only
+`claude-api-openai.service`, authenticate as the unprivileged engine user against that home's own
+`CODEX_HOME`, then start the same unit and require 8792 readiness. Claude remains online throughout.
+Never copy, print or archive an auth store, never delete `.claude-api-home.lock`, and never point two
+homes at one store.
 
 ## CodexHomeNearRateLimit
 

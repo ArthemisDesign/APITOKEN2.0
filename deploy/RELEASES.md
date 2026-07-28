@@ -49,16 +49,20 @@ back to `next start` when an older full-tree release is selected for rollback.
 ```
 
 After the one-time database cutover, `claude-api@8787.service` and `claude-api@8788.service` start
-`/srv/claude-api/releases/current/claude-api serve` with fixed port/instance identities. Exact-unit
-readiness verifies the target `MainPID` executable. A running old slot retains its already-resolved
-immutable binary after `current` moves; `engine-bluegreen.sh` admits the target before draining it.
-`claude-api.service` exists only as the bridge through the first SQLite-to-PostgreSQL cutover.
+`/srv/claude-api/releases/current/claude-api serve` in fixed `anthropic` mode with unique port and
+instance identities. `claude-api-openai.service` starts the same immutable binary in fixed `openai`
+mode on 8793 with its own PostgreSQL owner identity. Exact-unit readiness verifies both the target
+`MainPID` executable and its process environment. A running old Anthropic slot retains its
+already-resolved immutable binary after `current` moves; `engine-bluegreen.sh` admits that target,
+drains the old slot, then gracefully restarts the singleton OpenAI process from the same release.
+`claude-api.service` exists only as the bridge through the first cutover and is disabled afterward.
 
 The optional official Codex child has a parallel content-addressed artifact root under
 `/srv/claude-api/data/codex/bin`. It is not rebuilt while assembling an engine release. When pinned
 Codex tooling changed, the watchdog marker supplies the tested executable digest and the fixed
 promotion helper atomically selects its immutable path in `config.env` before a new engine slot is
-started.
+started. Each active home also holds `.claude-api-home.lock` for its full ownership lifetime, so a
+failed handoff cannot overlap two app-server processes on one auth store.
 
 ## Link validity
 

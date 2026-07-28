@@ -68,9 +68,12 @@
   OpenAI model-discovery на `openai.api.apitoken.sale` проходят через pinned official
   `codex app-server`; это совместимый текстовый subset, а не прозрачный OpenAI Platform forwarding.
   `api.apitoken.sale` остаётся исключительно Claude-плоскостью: auth-заголовки провайдера не
-  выбирают. Патч удаляет локальные Codex instructions/tools/context, оставляя только явный
+  выбирают. Anthropic работает в blue-green `claude-api@8787/8788`, OpenAI — в отдельном singleton
+  `claude-api-openai.service`; оба используют один fenced PostgreSQL authority, но не общий HTTP
+  процесс, router или lifecycle. Патч удаляет локальные Codex instructions/tools/context, оставляя только явный
   клиентский контекст. Transport не читает auth store, требует ChatGPT account type, attests binary
-  SHA/version и не меняет Claude path.
+  SHA/version и не меняет Claude path. Каждый реальный Codex home держит advisory lock на auth store,
+  поэтому два процесса не могут одновременно запустить app-server с одним `CODEX_HOME`.
 - **Identity-инжект** — цена работы на подписочном токене; вынесен в конфиг, тюнится без пересборки.
 - **Ротация до стрима** — статус ответа проверяется до отдачи тела, поэтому переключение подписок
   при 429/5xx не рвёт клиентский стрим.
@@ -100,8 +103,9 @@
 Граница совместимости, pinned build, prompt isolation, авторизация и rollback Codex-провайдера
 описаны отдельно в [`docs/CODEX_APP_SERVER.md`](docs/CODEX_APP_SERVER.md).
 
-Детали конфигурации — `config.env.example` / `server.env.example`. Деплой —
-`systemd/claude-api@.service` + `deploy/engine-bluegreen.sh` (legacy cutover unit remains one-time only).
+Детали конфигурации — `config.env.example` / `server.env.example`. Деплой — единый provider cohort:
+`systemd/claude-api@.service`, `systemd/claude-api-openai.service` и
+`deploy/engine-bluegreen.sh` (legacy cutover unit remains one-time only).
 
 ## Коммерческий контур (отдельно от движка)
 

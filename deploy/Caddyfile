@@ -51,22 +51,21 @@
 	}
 }
 
-# Every non-balancer route targets one stable loopback origin. Only the two loopback sites below
-# know deployment slot ports; applications and public/admin vhosts never select a slot themselves.
+# Every provider route targets its own stable loopback origin. Only those loopback sites know
+# runtime ports; applications and public/admin vhosts never select a deployment slot themselves.
 (engine_backend) {
 	reverse_proxy 127.0.0.1:8790 {
 		header_up Host 127.0.0.1:8790
+		# Keep a client-spoofed bridge marker away from the legacy combined process during cutover.
 		header_up -X-Apitoken-Api-Plane
 	}
 }
 
-# The OpenAI-compatible hostname shares the health-gated engine slots but carries an internal
-# provider marker. The ordinary engine backend above always strips a client-spoofed marker, so
-# authentication headers can never switch api.apitoken.sale away from Claude.
+# OpenAI has an independent process and stable origin. Provider selection is fixed at process
+# startup; no request header can move traffic between runtimes.
 (openai_engine_backend) {
-	reverse_proxy 127.0.0.1:8790 {
-		header_up Host 127.0.0.1:8790
-		header_up X-Apitoken-Api-Plane openai
+	reverse_proxy 127.0.0.1:8792 {
+		header_up Host 127.0.0.1:8792
 	}
 }
 
@@ -126,6 +125,33 @@ http://127.0.0.1:8790 {
 		health_interval 2s
 		health_timeout 2s
 		health_status 2xx
+	}
+}
+
+# Transitional stable OpenAI origin. During the first split, `first` keeps the dedicated runtime as
+# the preferred upstream but recognizes the old combined slot through a provider-shaped 400 probe.
+# The follow-up Caddy-only release removes both legacy slots and this internal marker after 8793 is
+# production-green. Fixed provider processes ignore the marker; clients can neither set nor retain it.
+http://127.0.0.1:8792 {
+	bind 127.0.0.1
+
+	reverse_proxy 127.0.0.1:8793 127.0.0.1:8787 127.0.0.1:8788 {
+		lb_policy first
+		lb_try_duration 2s
+		lb_try_interval 100ms
+
+		health_uri /v1/responses
+		health_method POST
+		health_headers {
+			Content-Type application/json
+			X-Apitoken-Api-Plane openai
+		}
+		health_interval 2s
+		health_timeout 2s
+		health_status 4xx
+		health_body invalid_request_error
+
+		header_up X-Apitoken-Api-Plane openai
 	}
 }
 

@@ -5,8 +5,9 @@ request reservations, settlement retry state, subscription capacity, pool state,
 leadership from the single-process SQLite model into the isolated PostgreSQL database
 `claude_engine`. The retained SQLite file is an import-era audit snapshot, not a live fallback.
 
-This enables two engine processes to overlap during a blue-green reload. It does **not** make the
-single production host highly available; host-loss tolerance remains Stage 3 work.
+This enables two Anthropic processes to overlap during a blue-green reload and a permanent OpenAI
+provider process to hold an independent owner epoch at the same time. It does **not** make the single
+production host highly available; host-loss tolerance remains Stage 3 work.
 
 ## Ownership boundary
 
@@ -74,14 +75,22 @@ safe ownership overlap. PostgreSQL mode relaxes it only after the real fault mat
 
 ## Readiness and blue-green routing
 
-Engine slots are `claude-api@8787.service` and `claude-api@8788.service`. `SIGUSR1` changes `/ready`
-to 503 immediately while leaving `/health`, the listener, and established SSE streams alive. After
-Caddy depools old, `SIGTERM` begins the bounded graceful drain.
+Anthropic slots are `claude-api@8787.service` and `claude-api@8788.service`, each pinned to provider
+mode `anthropic`. `SIGUSR1` changes `/ready` to 503 immediately while leaving `/health`, the listener,
+and established SSE streams alive. After Caddy depools old, `SIGTERM` begins the bounded graceful
+drain. The OpenAI-compatible provider is the singleton `claude-api-openai.service`, pinned to mode
+`openai` on 8793; Caddy exposes its stable loopback origin on 8792.
 
-Public engine traffic and the operator panel use the health-gated slots. Commerce uses
+Public Anthropic traffic and the operator panel use the health-gated slots. Commerce uses
 `127.0.0.1:8790`, an explicitly loopback-bound Caddy listener, so slot alternation cannot break
-API/worker Control calls. `engine-bluegreen.sh` requires that stable listener to stay ready before,
-during, and after drain.
+API/worker Control calls. OpenAI traffic never traverses that listener; it uses 8792. The provider
+controller requires 8790 before, during, and after Anthropic drain, then exact-release gates the
+OpenAI singleton and requires 8792 before committing the cohort.
+
+Every process uses a distinct `CLAUDE_API_INSTANCE_ID`. PostgreSQL remains authoritative for shared
+customer balances, request reservations, settlement and fencing across both providers. Codex auth
+stores add a narrower host-local invariant: before spawning a child, each `CodexHome` takes a
+nonblocking advisory lock on `.claude-api-home.lock` and holds it across child restarts.
 
 ## One-time cutover and rollback boundary
 

@@ -124,8 +124,10 @@ client.messages.create(model="claude-opus-4-8", max_tokens=256,
 ## Конфигурация
 
 Все переменные — в [`config.env.example`](config.env.example) (пул/порт/апстрим) и секреты в
-[`server.env.example`](server.env.example) (ключи API). Production PostgreSQL-слоты запускает
-[`systemd/claude-api@.service`](systemd/claude-api@.service); untemplated
+[`server.env.example`](server.env.example) (ключи API). Production Anthropic PostgreSQL-слоты
+запускает [`systemd/claude-api@.service`](systemd/claude-api@.service), а отдельный
+OpenAI-compatible процесс —
+[`systemd/claude-api-openai.service`](systemd/claude-api-openai.service); untemplated
 [`systemd/claude-api.service`](systemd/claude-api.service) оставлен только как one-time bridge.
 Watchdog автоматически создаёт Redis/affinity secrets и управляет локальным
 [`apitoken-affinity-redis.service`](systemd/apitoken-affinity-redis.service).

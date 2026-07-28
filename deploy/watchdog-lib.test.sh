@@ -219,7 +219,11 @@ VERIFICATION_FAIL_CHECK=
         fi
         ;;
       *'openai.api.apitoken.sale'*)
-        printf '%s\n' '{"error":{"type":"invalid_request_error","code":"invalid_api_key","param":null}}'
+        if [[ $CODEX_PROBE_MODE == disabled ]]; then
+          printf '%s\n' '{"error":{"type":"invalid_request_error","code":"model_not_found","param":null}}'
+        else
+          printf '%s\n' '{"error":{"type":"invalid_request_error","code":"invalid_api_key","param":null}}'
+        fi
         ;;
       *) return 2 ;;
     esac
@@ -229,15 +233,15 @@ VERIFICATION_FAIL_CHECK=
   : >"$codex_probe_log"
   CODEX_PROBE_MODE=disabled
   final_verify_codex_surface >/dev/null
-  (( $(wc -l <"$codex_probe_log") == 1 )) \
-    || wd_die "disabled Codex verification did not return after the explicit zero gauge"
+  (( $(wc -l <"$codex_probe_log") == 2 )) \
+    || wd_die "disabled Codex verification skipped its public provider-envelope check"
 
   : >"$codex_probe_log"
   CODEX_PROBE_MODE=enabled
   final_verify_codex_surface >/dev/null
   (( $(wc -l <"$codex_probe_log") == 3 )) \
     || wd_die "enabled Codex verification skipped runtime or public-envelope checks"
-  grep -Fq 'query=claude_api_codex_process_live == 1 and claude_api_codex_homes_authenticated >= 1' \
+  grep -Fq 'query=claude_api_codex_process_live{provider="openai"} == 1 and claude_api_codex_homes_authenticated{provider="openai"} >= 1' \
     "$codex_probe_log" || wd_die "Codex verification did not require a live authenticated home"
   if grep -Fq 'claude_api_codex_homes_available' "$codex_probe_log"; then
     wd_die "transient Codex capacity still controls the deployment verdict"
@@ -496,6 +500,11 @@ wd_path_is_backend packages/contracts/src/index.ts \
 wd_path_is_backend apps/content-studio/src/app/page.tsx || wd_die "content studio must trigger commerce deployment"
 wd_path_is_engine tools/codex-app-server/build-pinned.sh \
   || wd_die "pinned Codex tooling must trigger an engine deployment"
+for provider_unit in systemd/claude-api.service systemd/claude-api@.service \
+  systemd/claude-api-anthropic@.service systemd/claude-api-openai.service; do
+  wd_path_is_engine "$provider_unit" \
+    || wd_die "provider unit change does not force runtime adoption: $provider_unit"
+done
 wd_path_is_codex_tooling tools/codex-app-server/build-pinned.sh \
   || wd_die "pinned Codex tooling must request a tested Codex artifact"
 if wd_path_is_codex_tooling crates/forward/src/codex/api.rs; then
@@ -543,6 +552,11 @@ for runtime_definition in \
   deploy/install-monitoring.sh \
   systemd/apitoken-deploy-watchdog.service \
   systemd/apitoken-candidate-validator.service \
+  systemd/claude-api.service \
+  systemd/claude-api@.service \
+  systemd/claude-api-anthropic@.service \
+  systemd/claude-api-openai.service \
+  systemd/apitoken-tmpfiles.conf \
   observability/prometheus/prometheus.yml; do
   wd_path_requires_infrastructure_install "$runtime_definition" \
     || wd_die "runtime definition did not request infrastructure installation: $runtime_definition"
@@ -575,6 +589,8 @@ if wd_path_is_caddy deploy/watchdog.sh; then
   wd_die "non-Caddy infrastructure change requested a Caddy reload"
 fi
 wd_path_is_systemd_definition systemd/apitoken-deploy-watchdog.service
+wd_path_is_systemd_definition systemd/claude-api.service
+wd_path_is_systemd_definition systemd/claude-api-openai.service
 if wd_path_is_systemd_definition systemd/future-uninstalled.service; then
   wd_die "unknown systemd definition entered the narrow installer"
 fi
@@ -1065,10 +1081,21 @@ grep -Fq 'redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c0
 grep -Fq -- '--appendonly' "$ROOT/deploy/affinity-redis.compose.yaml"
 grep -Fq 'everysec' "$ROOT/deploy/affinity-redis.compose.yaml"
 grep -Fq 'Wants=network-online.target apitoken-affinity-redis.service' \
-  "$ROOT/systemd/claude-api@.service"
-! grep -Fq 'Requires=apitoken-affinity-redis.service' "$ROOT/systemd/claude-api@.service"
-grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api@.service"
+  "$ROOT/systemd/claude-api-anthropic@.service"
+! grep -Fq 'Requires=apitoken-affinity-redis.service' "$ROOT/systemd/claude-api-anthropic@.service"
+grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-anthropic@.service"
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api.service"
+grep -Fq 'CLAUDE_API_PROVIDER=anthropic CLAUDE_API_HOST=127.0.0.1' \
+  "$ROOT/systemd/claude-api-anthropic@.service"
+! grep -Fq 'CLAUDE_API_PROVIDER=' "$ROOT/systemd/claude-api@.service"
+! grep -Fq 'CLAUDE_API_PROVIDER=' "$ROOT/systemd/claude-api.service"
+grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-openai.service"
+grep -Fq 'CLAUDE_API_PROVIDER=openai CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8793' \
+  "$ROOT/systemd/claude-api-openai.service"
+grep -Fq 'CLAUDE_API_INSTANCE_ID=%H:engine:openai' "$ROOT/systemd/claude-api-openai.service"
+grep -Fq 'claude-api-openai.service' "$ROOT/deploy/install-watchdog.sh"
+grep -Fq '/usr/bin/systemctl restart claude-api-openai.service' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy"
 grep -Fq 'systemctl_command kill --kill-whom=main -s SIGUSR1 "$ACTIVE_UNIT"' \
   "$ROOT/deploy/engine-bluegreen.sh"
 grep -Fq 'provider-runtime-v1 >"$ENGINE_STAGE/.provider-runtime-v1"' "$ROOT/deploy/deploy.sh" \
@@ -1076,8 +1103,13 @@ grep -Fq 'provider-runtime-v1 >"$ENGINE_STAGE/.provider-runtime-v1"' "$ROOT/depl
 ! grep -Fq 'CLAUDE_API_CODEX_ENABLED=1 is required when CLAUDE_API_PROVIDER=openai' \
   "$ROOT/crates/server/src/config.rs" \
   || wd_die "disabled fixed OpenAI mode cannot serve a stable kill-switch envelope"
-grep -Fq '/usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api@8787.service' \
+grep -Fq '/usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-anthropic@8787.service' \
   "$ROOT/deploy/install-sudoers.sh"
+grep -Fxq 'd /run/apitoken 0755 root root -' "$ROOT/systemd/apitoken-tmpfiles.conf"
+grep -Fxq 'f /run/apitoken/codex-home.lock 0600 deploy deploy -' \
+  "$ROOT/systemd/apitoken-tmpfiles.conf"
+grep -Fq 'systemd-tmpfiles --create /etc/tmpfiles.d/apitoken.conf' \
+  "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'CLAUDE_API_AFFINITY_SECRET' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'apitoken-affinity-redis.service' "$ROOT/deploy/install-watchdog.sh"
 ! grep -Fq 'partners.panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
@@ -1088,9 +1120,18 @@ grep -Fq 'order request_header before forward_auth' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up Host 127.0.0.1:8791' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up X-Admin-Key "<ADMIN_AUTH_KEY_PLACEHOLDER>"' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up X-Admin-Domain {http.request.host}' "$ROOT/deploy/Caddyfile"
-[[ $(grep -Fc 'header_up -X-Apitoken-Api-Plane' "$ROOT/deploy/Caddyfile") == 1 ]]
-[[ $(grep -Fc 'header_up X-Apitoken-Api-Plane openai' "$ROOT/deploy/Caddyfile") == 1 ]]
+[[ $(grep -Fci 'header_up -X-Apitoken-Api-Plane' "$ROOT/deploy/Caddyfile") == 1 ]]
+[[ $(grep -Fci 'header_up X-Apitoken-Api-Plane openai' "$ROOT/deploy/Caddyfile") == 1 ]]
 [[ $(grep -Fc 'import openai_engine_backend' "$ROOT/deploy/Caddyfile") == 1 ]]
+grep -Fq 'reverse_proxy 127.0.0.1:8792' "$ROOT/deploy/Caddyfile"
+grep -Fq 'http://127.0.0.1:8792 {' "$ROOT/deploy/Caddyfile"
+grep -Fq 'reverse_proxy 127.0.0.1:8793 127.0.0.1:8787 127.0.0.1:8788 {' \
+  "$ROOT/deploy/Caddyfile"
+grep -Fq 'health_method POST' "$ROOT/deploy/Caddyfile"
+grep -Fq 'health_status 4xx' "$ROOT/deploy/Caddyfile"
+grep -Fq 'health_body invalid_request_error' "$ROOT/deploy/Caddyfile"
+grep -Fq 'OpenAI hostname smoke failed; restored' "$ROOT/deploy/install-caddy.sh" \
+  || wd_die "Caddy installation can commit a syntactically valid but misrouted OpenAI hostname"
 claude_api_vhost=$(sed -n '/^api\.apitoken\.sale {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
 openai_api_vhost=$(sed -n '/^openai\.api\.apitoken\.sale {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
 grep -Fq 'import engine_backend' <<<"$claude_api_vhost"
@@ -1194,8 +1235,39 @@ for scoped_verifier in final_verify_admin_routing final_verify_monitoring \
   grep -Fq "$scoped_verifier" "$ROOT/deploy/watchdog.sh" \
     || wd_die "final verification lost scoped check $scoped_verifier"
 done
-grep -Fq -- "--data-urlencode 'query=claude_api_codex_enabled'" "$ROOT/deploy/watchdog.sh" \
-  || wd_die "disabled Codex detection still waits on a filtered-out zero metric"
+grep -Fq -- "--data-urlencode 'query=claude_api_codex_enabled{provider=\"openai\"}'" \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die "disabled Codex detection is not scoped to the OpenAI provider process"
+
+# Provider rollout is one serial cohort. The old combined cgroup must be gone before the singleton
+# Codex owner can start, and every runtime gate must prove its startup-fixed provider mode.
+provider_controller="$ROOT/deploy/engine-bluegreen.sh"
+old_stop_line=$(grep -nF 'systemctl_command stop "$ACTIVE_UNIT"' "$provider_controller" | cut -d: -f1)
+openai_start_line=$(grep -nF 'systemctl_command restart "$OPENAI_UNIT"' "$provider_controller" | cut -d: -f1)
+[[ -n $old_stop_line && -n $openai_start_line && $old_stop_line -lt $openai_start_line ]] \
+  || wd_die "OpenAI can start before the old combined engine cgroup has stopped"
+grep -Fq 'unit_release_binding_ok engine "$unit" "$ENGINE_RELEASE_ROOT" "$CURRENT_RELEASE" anthropic' \
+  "$provider_controller" || wd_die "Anthropic slot gate does not prove provider mode"
+grep -Fq 'unit_release_binding_ok engine "$OPENAI_UNIT" "$ENGINE_RELEASE_ROOT" "$CURRENT_RELEASE" openai' \
+  "$provider_controller" || wd_die "OpenAI gate does not prove provider mode"
+grep -Fq 'for old_unit in "$LEGACY_UNIT" "$(legacy_slot_unit 8787)" "$(legacy_slot_unit 8788)"' \
+  "$provider_controller" || wd_die "active-but-unready engine cgroups can survive the OpenAI handoff"
+grep -Fq 'PROVIDER_CAPABILITY_MARKER=.provider-runtime-v1' "$provider_controller" \
+  || wd_die "provider controller can accept a release without fixed-provider rollback support"
+grep -Fq 'exit 2' "$provider_controller" \
+  || wd_die "post-admission provider failures are not distinguishable for rollback"
+grep -Fq 'if (( controller_rc != 0 )); then' "$ROOT/deploy/watchdog.sh" \
+  || wd_die "watchdog does not detect provider controller failure"
+controller_failure_body=$(sed -n '/if (( controller_rc != 0 )); then/,/^[[:space:]]*fi$/p' \
+  "$ROOT/deploy/watchdog.sh")
+grep -Fq 'rollback_engine || true' <<<"$controller_failure_body" \
+  || wd_die "watchdog does not restore the release after every provider controller failure"
+grep -Fq 'acquire_provider_lock(&cfg.ownership_lock_file)' \
+  "$ROOT/crates/forward/src/codex/mod.rs" || wd_die "Codex homes have no process-wide ownership fence"
+grep -Fq 'track_background_task' "$ROOT/crates/forward/src/codex/api.rs" \
+  || wd_die "detached Codex response streams bypass the shutdown barrier"
+grep -Fq 'track_background_task' "$ROOT/crates/forward/src/codex/chat.rs" \
+  || wd_die "detached Codex chat streams bypass the shutdown barrier"
 
 # Independent final smokes and no-change GitHub contexts run concurrently, but every worker is
 # joined before the overall green verdict. Runtime reconciliation stays ahead of read-only probes

@@ -252,7 +252,7 @@ restart_authbot_if_changed() {
     log "$unit is not installed on this host; skipping the authbot restart"
     return 0
   fi
-  local pid exe
+  local pid exe control_group cgroup_file child_pid candidate_pid waited=0
   pid=$(systemctl show "$unit" -p MainPID --value 2>/dev/null || true)
   if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
     exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)
@@ -260,6 +260,31 @@ restart_authbot_if_changed() {
       log "authbot already runs this exact binary; leaving $unit and any in-flight authorization alone"
       return 0
     fi
+  fi
+  # The previous authbot authenticated directly in the final directory. Interrupting that binary
+  # after auth.json appeared but before proxy.url was written could expose the account through the
+  # wrong egress. A device flow is a second PID in the unit cgroup and is bounded to 15 minutes;
+  # let it finish, then give the bot one polling interval to publish before replacing the binary.
+  control_group=$(systemctl show "$unit" -p ControlGroup --value 2>/dev/null || true)
+  cgroup_file="/sys/fs/cgroup$control_group/cgroup.procs"
+  if [[ $pid =~ ^[1-9][0-9]*$ && -n $control_group && -r $cgroup_file ]]; then
+    for _ in $(seq 1 186); do
+      child_pid=
+      while IFS= read -r candidate_pid; do
+        if [[ $candidate_pid =~ ^[1-9][0-9]*$ && $candidate_pid != "$pid" ]]; then
+          child_pid=$candidate_pid
+          break
+        fi
+      done <"$cgroup_file"
+      [[ -n $child_pid ]] || break
+      waited=1
+      sleep 5
+    done
+    if [[ -n $child_pid ]]; then
+      warn "$unit still owns an authorization child after 15.5 minutes; deferring its binary restart"
+      return 0
+    fi
+    if (( waited == 1 )); then sleep 2; fi
   fi
   log "restarting $unit onto the freshly released authbot"
   if ! privileged_command systemctl restart "$unit"; then

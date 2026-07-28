@@ -32,9 +32,11 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
   эти headers без override, чтобы аудит различал операторов и self-service password rotation.
   Internal auth API закрыт на публичном `backend.apitoken.sale` и доступен Caddy только через
   loopback.
-- Внешние vhost и приложения видят только стабильные origins `127.0.0.1:8790` (engine) и
-  `127.0.0.1:8791` (commerce). Только эти два Caddy-balancer знают slot-порты; обычный
+- Внешние vhost и приложения видят только стабильные origins `127.0.0.1:8790` (Anthropic/control),
+  `127.0.0.1:8791` (commerce) и `127.0.0.1:8792` (OpenAI). Только первые два Caddy-balancer знают
+  blue-green slot-порты; обычный
   application `503` не исключает живой slot, депулинг выполняется active `/ready` checks.
+  Однорелизный OpenAI bridge на 8792 описан в `deploy/CADDY.md` и не меняет admin routing.
 - Engine-данные (`/overview`, `/capacity`, `/subs`, `/metrics`) определены в
   `crates/server/src/http.rs`. `/overview` содержит полный список engine accounts без API-ключей.
 - Commerce-данные находятся в `apps/api` за `AdminGuard`; authoritative live balance по-прежнему

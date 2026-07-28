@@ -1215,6 +1215,10 @@ async fn serve() -> Result<()> {
     } else if shutdown_deadline.is_some() {
         eprintln!("graceful shutdown: дренаж стримов завершён");
     }
+    if let Some(codex) = &flush_app.codex {
+        eprintln!("graceful shutdown: останавливаю Codex children перед release home locks");
+        codex.shutdown().await;
+    }
     eprintln!("graceful shutdown: дренирую очередь биллинга + флаш пула");
     // Завершённые/оборванные стримы поставили settle в очередь DB-актора. Даже после deadline ждём
     // обязательный FIFO-барьер: ограничение дренажа не должно превращаться в потерянную выручку.

@@ -474,7 +474,9 @@ prune_expired_candidates() {
 # from, exactly like the readiness gates do, rather than trusting the symlinks alone.
 live_release_shas() {
   local unit pid resolved name
-  for unit in claude-api@8787.service claude-api@8788.service \
+  for unit in claude-api.service claude-api@8787.service claude-api@8788.service \
+    claude-api-anthropic@8787.service claude-api-anthropic@8788.service \
+    claude-api-openai.service \
     apitoken-api@3000.service apitoken-api@3001.service \
     apitoken-worker.service apitoken-content-studio.service; do
     systemctl is-active --quiet "$unit" || continue
@@ -1263,7 +1265,8 @@ engine_runtime_aligned() {
   local sha=$1 expected current legacy_active=0 legacy_enabled=0 stable_status
   local active_8787=0 ready_8787=0 current_8787=0 enabled_8787=0
   local active_8788=0 ready_8788=0 current_8788=0 enabled_8788=0
-  local port unit pid executable status
+  local openai_active=0 openai_ready=0 openai_current=0 openai_enabled=0 openai_stable_status
+  local port unit pid executable status combined_unit
 
   expected="$ENGINE_RELEASE_ROOT/$sha"
   current=$(readlink -f -- "$ENGINE_RELEASE_ROOT/current")
@@ -1273,7 +1276,7 @@ engine_runtime_aligned() {
   fi
 
   for port in 8787 8788; do
-    unit="claude-api@$port.service"
+    unit="claude-api-anthropic@$port.service"
     local active=0 ready=0 selected=0 enabled=0
     systemctl is-active --quiet "$unit" && active=1
     systemctl is-enabled --quiet "$unit" && enabled=1
@@ -1284,7 +1287,11 @@ engine_runtime_aligned() {
       pid=$(systemctl show "$unit" -p MainPID --value)
       if [[ $pid =~ ^[1-9][0-9]*$ ]]; then
         executable=$(readlink -f -- "/proc/$pid/exe" 2>/dev/null || true)
-        [[ $executable == "$expected/claude-api" ]] && selected=1
+        if [[ $executable == "$expected/claude-api" ]] \
+            && tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null \
+              | grep -Fxq 'CLAUDE_API_PROVIDER=anthropic'; then
+          selected=1
+        fi
       fi
     fi
     if [[ $port == 8787 ]]; then
@@ -1293,12 +1300,35 @@ engine_runtime_aligned() {
       active_8788=$active; ready_8788=$ready; current_8788=$selected; enabled_8788=$enabled
     fi
   done
-  systemctl is-active --quiet claude-api.service && legacy_active=1
-  systemctl is-enabled --quiet claude-api.service && legacy_enabled=1
+  for combined_unit in claude-api.service claude-api@8787.service claude-api@8788.service; do
+    systemctl is-active --quiet "$combined_unit" && legacy_active=1
+    systemctl is-enabled --quiet "$combined_unit" && legacy_enabled=1
+  done
+  unit=claude-api-openai.service
+  systemctl is-active --quiet "$unit" && openai_active=1
+  systemctl is-enabled --quiet "$unit" && openai_enabled=1
+  status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+    http://127.0.0.1:8793/ready 2>/dev/null || true)
+  [[ $status == 200 ]] && openai_ready=1
+  if (( openai_active == 1 )); then
+    pid=$(systemctl show "$unit" -p MainPID --value)
+    if [[ $pid =~ ^[1-9][0-9]*$ ]]; then
+      executable=$(readlink -f -- "/proc/$pid/exe" 2>/dev/null || true)
+      if [[ $executable == "$expected/claude-api" ]] \
+          && tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null \
+            | grep -Fxq 'CLAUDE_API_PROVIDER=openai'; then
+        openai_current=1
+      fi
+    fi
+  fi
   stable_status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
     http://127.0.0.1:8790/ready 2>/dev/null || true)
-  ENGINE_RUNTIME_DETAIL="8787=$active_8787:$ready_8787:$current_8787:$enabled_8787 8788=$active_8788:$ready_8788:$current_8788:$enabled_8788 legacy=$legacy_active:$legacy_enabled stable=${stable_status:-unreachable}"
+  openai_stable_status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+    http://127.0.0.1:8792/ready 2>/dev/null || true)
+  ENGINE_RUNTIME_DETAIL="anthropic[8787=$active_8787:$ready_8787:$current_8787:$enabled_8787 8788=$active_8788:$ready_8788:$current_8788:$enabled_8788 stable=${stable_status:-unreachable}] openai=$openai_active:$openai_ready:$openai_current:$openai_enabled:${openai_stable_status:-unreachable} legacy=$legacy_active:$legacy_enabled"
   [[ $stable_status == 200 ]] || return 1
+  [[ $openai_stable_status == 200 && $openai_active == 1 && $openai_ready == 1 \
+      && $openai_current == 1 && $openai_enabled == 1 ]] || return 1
   wd_engine_topology_is_steady \
     "$active_8787" "$ready_8787" "$current_8787" "$enabled_8787" \
     "$active_8788" "$ready_8788" "$current_8788" "$enabled_8788" \
@@ -1426,7 +1456,7 @@ final_verify_monitoring() {
   # and Caddy may still be completing first-certificate activation for the new protected hostname.
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
     response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
-      --data-urlencode 'query=min(up) == 1 and min(probe_success{job=~"public-http|protected-http|support-http|loopback-http"}) == 1 and min(time() - apitoken_monitoring_collector_last_success_unixtime) < 180' \
+      --data-urlencode 'query=min(up) == 1 and min(probe_success{job=~"public-http|openai-http|protected-http|support-http|loopback-http"}) == 1 and min(time() - apitoken_monitoring_collector_last_success_unixtime) < 180' \
       http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
     if jq --exit-status '.status == "success" and (.data.result | length) > 0' \
       >/dev/null 2>&1 <<<"$response"; then
@@ -1446,52 +1476,48 @@ final_verify_monitoring() {
 # Routable headroom is deliberately not a deployment invariant: subscription windows can exhaust
 # without a code change, and `CodexNoAvailableHomes` owns that operational alert.
 final_verify_codex_surface() {
-  local response envelope enabled=0 enabled_state='' attempt
+  local response envelope enabled=0 determined=0 enabled_state='' attempt
 
   for attempt in 1 2 3 4 5 6; do
     response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
-      --data-urlencode 'query=claude_api_codex_enabled' \
+      --data-urlencode 'query=claude_api_codex_enabled{provider="openai"}' \
       http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
     enabled_state=$(jq --exit-status --raw-output \
       'select(.status == "success" and (.data.result | length) == 1)
        | .data.result[0].value[1]
        | select(. == "0" or . == "1")' <<<"$response" 2>/dev/null || true)
     case "$enabled_state" in
-      0)
-        wd_log "Codex provider is disabled; skipping OpenAI-compatible surface verification"
-        return 0
-        ;;
-      1)
-        enabled=1
-        break
-        ;;
+      0) determined=1; break ;;
+      1) enabled=1; determined=1; break ;;
     esac
     (( attempt == 6 )) || sleep 5
   done
-  (( enabled == 1 )) \
+  (( determined == 1 )) \
     || wd_die "could not determine whether the Codex provider is enabled"
 
-  # Prove that at least one authenticated home still owns a live app-server. A home may be cooling or
-  # outside configured window headroom; that is provider capacity, not evidence of a bad release.
-  local provider_ready=0
-  for attempt in 1 2 3 4 5 6; do
-    response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
-      --data-urlencode 'query=claude_api_codex_process_live == 1 and claude_api_codex_homes_authenticated >= 1' \
-      http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
-    if jq --exit-status '.status == "success" and (.data.result | length) > 0' \
-      >/dev/null 2>&1 <<<"$response"; then
-      provider_ready=1
-      break
-    fi
-    (( attempt == 6 )) || sleep 5
-  done
-  (( provider_ready == 1 )) \
-    || wd_die "Codex provider is enabled but has no live authenticated app-server"
+  if (( enabled == 1 )); then
+    # A home may be cooling or outside configured headroom; that is capacity, not evidence of a bad
+    # release. Enabled mode must nevertheless retain one authenticated live app-server.
+    local provider_ready=0
+    for attempt in 1 2 3 4 5 6; do
+      response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
+        --data-urlencode 'query=claude_api_codex_process_live{provider="openai"} == 1 and claude_api_codex_homes_authenticated{provider="openai"} >= 1' \
+        http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
+      if jq --exit-status '.status == "success" and (.data.result | length) > 0' \
+        >/dev/null 2>&1 <<<"$response"; then
+        provider_ready=1
+        break
+      fi
+      (( attempt == 6 )) || sleep 5
+    done
+    (( provider_ready == 1 )) \
+      || wd_die "Codex provider is enabled but has no live authenticated app-server"
+  fi
 
   # Prove the public OpenAI hostname is actually served by the Codex adapter rather than falling
   # through to the Anthropic path: only the adapter answers with an OpenAI-shaped error envelope
   # carrying `code`/`param`. Resolve the public hostname to loopback so this validates Caddy's
-  # hostname boundary and marker injection without depending on external DNS or hairpin routing.
+  # hostname boundary and provider-specific origin without depending on external DNS or hairpin routing.
   # The request names a parameter the adapter rejects by contract, so it can never start a turn,
   # reach a ChatGPT subscription or spend quota. An unauthenticated engine answers
   # `invalid_api_key` before request validation for the same reason.
@@ -1500,12 +1526,18 @@ final_verify_codex_surface() {
     -H 'content-type: application/json' \
     -d '{"model":"gpt-5.6","input":"ping","temperature":0.5}' \
     https://openai.api.apitoken.sale/v1/responses 2>/dev/null || true)
-  jq --exit-status '.error.type == "invalid_request_error"
-      and (.error.code == "invalid_api_key" or .error.param != null)' \
-    >/dev/null 2>&1 <<<"$envelope" \
-    || wd_die "/v1/responses did not answer with the OpenAI-compatible error envelope"
+  if (( enabled == 1 )); then
+    jq --exit-status '.error.type == "invalid_request_error"
+        and (.error.code == "invalid_api_key" or .error.param != null)' \
+      >/dev/null 2>&1 <<<"$envelope" \
+      || wd_die "/v1/responses did not answer with the enabled OpenAI-compatible envelope"
+  else
+    jq --exit-status '.error.type == "invalid_request_error" and .error.code == "model_not_found"' \
+      >/dev/null 2>&1 <<<"$envelope" \
+      || wd_die "disabled /v1/responses did not answer with the OpenAI-compatible envelope"
+  fi
 
-  wd_log "Codex OpenAI-compatible surface verified: authenticated runtime serves its own envelope"
+  wd_log "Codex OpenAI-compatible surface verified (enabled=$enabled)"
 }
 
 run_final_verification_lane() {
@@ -1592,15 +1624,26 @@ attempt_rollback() {
 }
 
 rollback_engine() {
-  attempt_rollback engine --engine-bluegreen engine-bluegreen.sh "$ENGINE_RELEASE_ROOT/previous"
+  local previous_sha
+  previous_sha=$(basename -- "$(readlink -f -- "$ENGINE_RELEASE_ROOT/previous")")
+  attempt_rollback engine --engine-bluegreen engine-bluegreen.sh "$ENGINE_RELEASE_ROOT/previous" \
+    || return 1
+  wd_atomic_write "$ENGINE_FILE" "$previous_sha"
+  ENGINE_SHA=$previous_sha
 }
 
 rollback_backend() {
-  attempt_rollback backend --api-only api-bluegreen.sh "$COMMERCE_RELEASE_ROOT/previous"
+  local previous_sha
+  previous_sha=$(basename -- "$(readlink -f -- "$COMMERCE_RELEASE_ROOT/previous")")
+  attempt_rollback backend --api-only api-bluegreen.sh "$COMMERCE_RELEASE_ROOT/previous" \
+    || return 1
+  wd_atomic_write "$BACKEND_FILE" "$previous_sha"
+  BACKEND_SHA=$previous_sha
 }
 
 deploy_engine() {
   local sha=$1 codex_changed=$2
+  local controller_rc=0
   local deploy_args=(--engine-bluegreen --tested-candidate "$(candidate_for "$sha")")
   CURRENT_PHASE=deploying-engine
   CURRENT_PHASE_BEFORE_FAILURE=deploying-engine
@@ -1611,7 +1654,11 @@ deploy_engine() {
     deploy_args+=(--promote-codex)
   fi
   "$CONTROLLER_ROOT/deploy.sh" "${deploy_args[@]}" "$sha"
-  "$CONTROLLER_ROOT/engine-bluegreen.sh"
+  "$CONTROLLER_ROOT/engine-bluegreen.sh" || controller_rc=$?
+  if (( controller_rc != 0 )); then
+    rollback_engine || true
+    wd_die "engine provider controller failed (exit $controller_rc)"
+  fi
   # The controller has admitted the new slot and drained the old one by this point. A verification
   # failure now leaves an unverified release serving, so recover before failing closed.
   # `engine_runtime_aligned` is the non-fatal predicate; `final_verify_engine` would exit here.
@@ -1980,7 +2027,11 @@ main() {
     "$backend_changed" "$sales_changed" "$openkeys_changed") \
     || wd_die "could not derive the final production verification plan"
   status "running selected final production verification ($final_verification_plan)"
-  run_final_verification_plan "$final_verification_plan" "$ENGINE_SHA"
+  if ! ( run_final_verification_plan "$final_verification_plan" "$ENGINE_SHA" ); then
+    (( engine_changed == 0 )) || rollback_engine || true
+    (( backend_changed == 0 )) || rollback_backend || true
+    wd_die "selected final production verification failed after component admission"
+  fi
 
   wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"
   rm -f -- "$PENDING_MIGRATION_FILE"

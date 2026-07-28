@@ -1,6 +1,6 @@
-# PostgreSQL-fenced engine slot. Instance name is the loopback port (8787 or 8788).
+# PostgreSQL-fenced Anthropic slot. Instance name is the loopback port (8787 or 8788).
 [Unit]
-Description=claude-api PostgreSQL engine slot on port %i
+Description=claude-api Anthropic provider slot on port %i
 After=network-online.target apitoken-affinity-redis.service
 Wants=network-online.target apitoken-affinity-redis.service
 
@@ -14,7 +14,7 @@ EnvironmentFile=-/srv/claude-api/data/server.env
 EnvironmentFile=/srv/claude-api/data/engine-postgres.env
 # `/usr/bin/env` is deliberately at ExecStart: EnvironmentFile values override `Environment=`
 # regardless of their textual order, while argv-level assignments always win for the slot.
-ExecStart=/usr/bin/env CLAUDE_API_PORT=%i CLAUDE_API_INSTANCE_ID=%H:engine:%i /srv/claude-api/releases/current/claude-api serve
+ExecStart=/usr/bin/env CLAUDE_API_PROVIDER=anthropic CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i CLAUDE_API_INSTANCE_ID=%H:engine:anthropic:%i /srv/claude-api/releases/current/claude-api serve
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM

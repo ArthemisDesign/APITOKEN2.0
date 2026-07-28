@@ -22,7 +22,7 @@ groups:
   - name: claude-engine
     rules:
       - alert: EngineCircuitBreakerOpen
-        expr: claude_api_breaker_open == 1
+        expr: claude_api_breaker_open{provider="anthropic"} == 1
         for: 1m
         labels:
           severity: critical
@@ -33,7 +33,7 @@ groups:
           runbook: 'MONITORING.md#enginecircuitbreakeropen'
 
       - alert: EngineHasNoSubscriptions
-        expr: claude_api_subs < 1
+        expr: claude_api_subs{provider="anthropic"} < 1
         for: 2m
         labels:
           severity: critical
@@ -44,7 +44,7 @@ groups:
           runbook: 'MONITORING.md#enginehasnosubscriptions'
 
       - alert: EngineAllSubscriptionsCooling
-        expr: claude_api_subs > 0 and claude_api_cooling >= claude_api_subs
+        expr: claude_api_subs{provider="anthropic"} > 0 and claude_api_cooling{provider="anthropic"} >= claude_api_subs{provider="anthropic"}
         for: 2m
         labels:
           severity: critical
@@ -55,7 +55,7 @@ groups:
           runbook: 'MONITORING.md#engineallsubscriptionscooling'
 
       - alert: EngineUpstreamRateLimited
-        expr: increase(claude_api_upstream_429_total[10m]) > 10
+        expr: increase(claude_api_upstream_429_total{provider="anthropic"}[10m]) > 10
         for: 5m
         labels:
           severity: warning
@@ -66,7 +66,7 @@ groups:
           runbook: 'MONITORING.md#engineupstreamratelimited'
 
       - alert: EngineUpstreamAuthFailures
-        expr: increase(claude_api_upstream_auth_total[5m]) > 0
+        expr: increase(claude_api_upstream_auth_total{provider="anthropic"}[5m]) > 0
         labels:
           severity: critical
           component: claude-engine
@@ -76,7 +76,7 @@ groups:
           runbook: 'MONITORING.md#engineupstreamauthfailures'
 
       - alert: EngineUpstreamServerErrors
-        expr: increase(claude_api_upstream_5xx_total[10m]) > 10
+        expr: increase(claude_api_upstream_5xx_total{provider="anthropic"}[10m]) > 10
         for: 5m
         labels:
           severity: warning
@@ -87,7 +87,7 @@ groups:
           runbook: 'MONITORING.md#engineupstreamservererrors'
 
       - alert: EngineAffinityRedisErrors
-        expr: increase(claude_api_affinity_redis_errors_total[10m]) > 5
+        expr: increase(claude_api_affinity_redis_errors_total{provider="anthropic"}[10m]) > 5
         for: 5m
         labels:
           severity: warning
@@ -102,7 +102,7 @@ groups:
   - name: codex-provider
     rules:
       - alert: CodexProviderDown
-        expr: claude_api_codex_enabled == 1 and claude_api_codex_process_live == 0
+        expr: claude_api_codex_enabled{provider="openai"} == 1 and claude_api_codex_process_live{provider="openai"} == 0
         for: 5m
         labels:
           severity: critical
@@ -113,7 +113,7 @@ groups:
           runbook: 'MONITORING.md#codexproviderdown'
 
       - alert: CodexNoAvailableHomes
-        expr: claude_api_codex_enabled == 1 and claude_api_codex_homes_available < 1
+        expr: claude_api_codex_enabled{provider="openai"} == 1 and claude_api_codex_homes_available{provider="openai"} < 1
         for: 5m
         labels:
           severity: critical
@@ -124,7 +124,7 @@ groups:
           runbook: 'MONITORING.md#codexnoavailablehomes'
 
       - alert: CodexHomeUnauthenticated
-        expr: claude_api_codex_home_authenticated == 0
+        expr: claude_api_codex_home_authenticated{provider="openai"} == 0
         for: 15m
         labels:
           severity: warning
@@ -135,7 +135,7 @@ groups:
           runbook: 'MONITORING.md#codexhomeunauthenticated'
 
       - alert: CodexHomeNearRateLimit
-        expr: claude_api_codex_home_rate_limit_used_percent > 90
+        expr: claude_api_codex_home_rate_limit_used_percent{provider="openai"} > 90
         for: 10m
         labels:
           severity: warning
