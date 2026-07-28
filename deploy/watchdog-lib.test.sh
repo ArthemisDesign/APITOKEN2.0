@@ -192,7 +192,7 @@ fi
 VERIFICATION_FAIL_CHECK=
 
 # The real Codex verifier must distinguish an explicit disabled gauge from a temporarily missing
-# series. Disabled returns after one query; enabled continues through capacity and envelope checks;
+# series. Disabled returns after one query; enabled continues through runtime and envelope checks;
 # a missing metric exhausts the bounded retries and fails closed.
 (
   # shellcheck disable=SC2091
@@ -202,17 +202,21 @@ VERIFICATION_FAIL_CHECK=
   # Invoked indirectly by the extracted verifier.
   # shellcheck disable=SC2329
   curl() {
-    printf 'request\n' >>"$codex_probe_log"
+    printf '%s\n' "$*" >>"$codex_probe_log"
     case "$*" in
       *'query=claude_api_codex_enabled'*)
         case "$CODEX_PROBE_MODE" in
           disabled) printf '%s\n' '{"status":"success","data":{"result":[{"value":[0,"0"]}]}}' ;;
-          enabled) printf '%s\n' '{"status":"success","data":{"result":[{"value":[0,"1"]}]}}' ;;
+          enabled|unauthenticated) printf '%s\n' '{"status":"success","data":{"result":[{"value":[0,"1"]}]}}' ;;
           missing) printf '%s\n' '{"status":"success","data":{"result":[]}}' ;;
         esac
         ;;
       *'claude_api_codex_process_live'*)
-        printf '%s\n' '{"status":"success","data":{"result":[{"value":[0,"1"]}]}}'
+        if [[ $CODEX_PROBE_MODE == unauthenticated ]]; then
+          printf '%s\n' '{"status":"success","data":{"result":[]}}'
+        else
+          printf '%s\n' '{"status":"success","data":{"result":[{"value":[0,"1"]}]}}'
+        fi
         ;;
       *'openai.api.apitoken.sale'*)
         printf '%s\n' '{"error":{"type":"invalid_request_error","code":"invalid_api_key","param":null}}'
@@ -232,7 +236,20 @@ VERIFICATION_FAIL_CHECK=
   CODEX_PROBE_MODE=enabled
   final_verify_codex_surface >/dev/null
   (( $(wc -l <"$codex_probe_log") == 3 )) \
-    || wd_die "enabled Codex verification skipped capacity or public-envelope checks"
+    || wd_die "enabled Codex verification skipped runtime or public-envelope checks"
+  grep -Fq 'query=claude_api_codex_process_live == 1 and claude_api_codex_homes_authenticated >= 1' \
+    "$codex_probe_log" || wd_die "Codex verification did not require a live authenticated home"
+  if grep -Fq 'claude_api_codex_homes_available' "$codex_probe_log"; then
+    wd_die "transient Codex capacity still controls the deployment verdict"
+  fi
+
+  : >"$codex_probe_log"
+  CODEX_PROBE_MODE=unauthenticated
+  if ( final_verify_codex_surface ) >/dev/null 2>&1; then
+    wd_die "an enabled Codex provider without an authenticated runtime passed verification"
+  fi
+  (( $(wc -l <"$codex_probe_log") == 7 )) \
+    || wd_die "missing Codex runtime metrics did not use the bounded retry window"
 
   : >"$codex_probe_log"
   CODEX_PROBE_MODE=missing

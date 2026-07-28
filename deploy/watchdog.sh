@@ -1441,9 +1441,10 @@ final_verify_monitoring() {
 # Post-promotion smoke for the optional OpenAI-compatible surface.
 #
 # The Claude path is verified by /ready and the panel check, but a Codex regression is invisible to
-# both: the provider can be enabled, attested and started while its home pool has no usable account,
-# or while the public routes have silently fallen back to the Anthropic path. Neither needs an API
-# key to detect. The provider is optional, so everything here is skipped when it is switched off.
+# both: the provider can be enabled while its app-server is dead, every home is unauthenticated, or
+# the public routes have silently fallen back to the Anthropic path. None needs an API key to detect.
+# Routable headroom is deliberately not a deployment invariant: subscription windows can exhaust
+# without a code change, and `CodexNoAvailableHomes` owns that operational alert.
 final_verify_codex_surface() {
   local response envelope enabled=0 enabled_state='' attempt
 
@@ -1470,22 +1471,22 @@ final_verify_codex_surface() {
   (( enabled == 1 )) \
     || wd_die "could not determine whether the Codex provider is enabled"
 
-  # A live child is not enough: every home may be quarantined or out of window headroom, which
-  # serves customers nothing but retryable errors.
-  local pool_ready=0
+  # Prove that at least one authenticated home still owns a live app-server. A home may be cooling or
+  # outside configured window headroom; that is provider capacity, not evidence of a bad release.
+  local provider_ready=0
   for attempt in 1 2 3 4 5 6; do
     response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
-      --data-urlencode 'query=claude_api_codex_process_live == 1 and claude_api_codex_homes_available >= 1' \
+      --data-urlencode 'query=claude_api_codex_process_live == 1 and claude_api_codex_homes_authenticated >= 1' \
       http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
     if jq --exit-status '.status == "success" and (.data.result | length) > 0' \
       >/dev/null 2>&1 <<<"$response"; then
-      pool_ready=1
+      provider_ready=1
       break
     fi
     (( attempt == 6 )) || sleep 5
   done
-  (( pool_ready == 1 )) \
-    || wd_die "Codex provider is enabled but no authenticated home can accept a request"
+  (( provider_ready == 1 )) \
+    || wd_die "Codex provider is enabled but has no live authenticated app-server"
 
   # Prove the public OpenAI hostname is actually served by the Codex adapter rather than falling
   # through to the Anthropic path: only the adapter answers with an OpenAI-shaped error envelope
@@ -1504,7 +1505,7 @@ final_verify_codex_surface() {
     >/dev/null 2>&1 <<<"$envelope" \
     || wd_die "/v1/responses did not answer with the OpenAI-compatible error envelope"
 
-  wd_log "Codex OpenAI-compatible surface verified: pool has capacity and serves its own envelope"
+  wd_log "Codex OpenAI-compatible surface verified: authenticated runtime serves its own envelope"
 }
 
 run_final_verification_lane() {
