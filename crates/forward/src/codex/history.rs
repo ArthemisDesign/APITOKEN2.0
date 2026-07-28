@@ -120,7 +120,7 @@ impl HistoryStore {
             scope_key: blake3::derive_key(SCOPE_KEY_CONTEXT, &seed),
             ttl_secs: ttl_secs.clamp(60, 7 * 24 * 3600),
             local_cap: local_cap.clamp(16, 100_000),
-            timeout: Duration::from_millis(timeout_ms.clamp(1, 2_000)),
+            timeout: Duration::from_millis(timeout_ms.clamp(1, 5_000)),
             local: Mutex::new(HashMap::new()),
             client,
             connection: RwLock::new(None),

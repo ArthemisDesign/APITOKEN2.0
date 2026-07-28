@@ -346,9 +346,9 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
         history_secret,
         history_redis_timeout_ms: bounded_u64(
             "CLAUDE_API_CODEX_HISTORY_REDIS_TIMEOUT_MS",
-            100,
+            1_000,
             1,
-            2_000,
+            5_000,
         ),
         child_proxy_env,
         models,
