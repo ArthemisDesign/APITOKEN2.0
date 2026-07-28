@@ -29,7 +29,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   const session = issueSessionValue(authenticated, config);
-  const response = NextResponse.json({ ok: true });
+  const response = NextResponse.json({ ok: true, admin: authenticated });
   response.cookies.set(SESSION_COOKIE, session.value, {
     httpOnly: true,
     sameSite: "lax",

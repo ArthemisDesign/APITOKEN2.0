@@ -140,7 +140,7 @@ export default function AdminPage() {
         setAuthorized(false);
         return;
       }
-      if (!response.ok) throw new Error(`session check failed: ${response.status}`);
+      if (!response.ok) throw new Error(`admin data failed: ${response.status}`);
 
       const payload = (await response.json()) as { admin: string; keys: StockKey[]; batches: BatchRow[] };
       setAuthorized(true);
@@ -149,15 +149,30 @@ export default function AdminPage() {
       setBatches(payload.batches);
       setError(null);
     } catch {
-      setAuthorized(false);
-      setError("Не удалось проверить сессию. Обновите страницу и попробуйте снова.");
-    } finally {
-      setChecking(false);
+      setError("Не удалось загрузить ключи. Повторите попытку.");
     }
   }, []);
 
   useEffect(() => {
-    void refresh();
+    void (async () => {
+      try {
+        const response = await fetch("/api/admin/session", { cache: "no-store" });
+        if (response.status === 401) {
+          setAuthorized(false);
+          return;
+        }
+        if (!response.ok) throw new Error(`session check failed: ${response.status}`);
+        const payload = (await response.json()) as { admin: string };
+        setAuthorized(true);
+        setAdmin(payload.admin);
+        await refresh();
+      } catch {
+        setAuthorized(false);
+        setError("Не удалось проверить сессию. Обновите страницу и попробуйте снова.");
+      } finally {
+        setChecking(false);
+      }
+    })();
   }, [refresh]);
 
   async function login(event: React.FormEvent<HTMLFormElement>) {
@@ -175,6 +190,9 @@ export default function AdminPage() {
         setError("Неверный логин или пароль");
         return;
       }
+      const payload = (await response.json()) as { admin: string };
+      setAuthorized(true);
+      setAdmin(payload.admin);
       await refresh();
     } finally {
       setBusy(false);
