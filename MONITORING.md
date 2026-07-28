@@ -29,6 +29,16 @@ database state only. Grafana users are auto-provisioned as viewers.
   health-check logger is excluded in `deploy/Caddyfile`: blue-green keeps one slot of each pair
   stopped on purpose, so those probes failed once per second forever and drowned out real entries.
   `ProxyUpstreamPairDown` covers the condition those lines were nominally reporting.
+- Every terminal non-2xx `/v1/*` response to a recognized metered API key emits one JSON journal
+  event with `event=customer_http_error`. It includes the engine `account_id`, non-secret `key_id`,
+  status, static reason, fixed route template, server request ID, and the live account/key budget
+  snapshot. It never includes the raw API key, email, key label, prompt/body, query string, or a
+  client-controlled path ID. Internal retries are not events; only the status returned to the caller
+  is recorded. Investigate directly with:
+
+  ```bash
+  journalctl -u 'claude-api@*.service' --since today --grep='"event":"customer_http_error"'
+  ```
 
 The Grafana and telemetry volumes are not business records. Dashboards and alert rules are
 provisioned from Git, so telemetry can be rebuilt. The four PostgreSQL custom-format dumps remain

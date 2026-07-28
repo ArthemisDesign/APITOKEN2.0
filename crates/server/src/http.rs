@@ -7,7 +7,7 @@
 
 use crate::admin;
 use axum::extract::{ConnectInfo, FromRef, Path, Request, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
@@ -16,6 +16,7 @@ use forward::{
     authed, client_key, control_authed, forward, openai_chat_completions, openai_delete_response,
     openai_get_response, openai_input_tokens, openai_model, openai_models,
     openai_response_input_items, openai_responses, readonly_authed, AppState, Metrics,
+    TerminalErrorReason,
 };
 use serde_json::{json, Value};
 use std::net::SocketAddr;
@@ -199,6 +200,7 @@ async fn require_control_auth(
 
 pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
     let admin = admin_router(&app);
+    let state = HttpState { app, accepting };
     Router::new()
         .route("/health", get(health))
         .route("/live", get(health))
@@ -235,7 +237,153 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
         // forwarding exactly as before.
         .fallback(provider_fallback_dispatch)
         .method_not_allowed_fallback(method_not_allowed_dispatch)
-        .with_state(HttpState { app, accepting })
+        .with_state(state.clone())
+        .layer(middleware::from_fn_with_state(state, audit_customer_error))
+}
+
+/// One privacy-safe event for the terminal HTTP error actually returned to a metered customer.
+/// Internal retries are invisible here, and successful requests do not pay the extra key lookup.
+async fn audit_customer_error(
+    State(state): State<HttpState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let key = client_key(request.headers());
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let response = next.run(request).await;
+    if response.status().is_success() || !uri.path().starts_with("/v1/") {
+        return response;
+    }
+    let request_id = response
+        .headers()
+        .get("x-request-id")
+        .or_else(|| response.headers().get("request-id"))
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .unwrap_or_else(forward::fresh_request_id);
+    let retry_after_seconds = response
+        .headers()
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    let Some(key) = key else {
+        return response;
+    };
+    let Some(billing) = &state.app.billing else {
+        return response;
+    };
+    let Ok(Some(key_row)) = billing.get(&key).await else {
+        return response;
+    };
+    let Some(account_id) = key_row.account_id.as_deref() else {
+        return response;
+    };
+    let account = billing.account(account_id).await.ok().flatten();
+    let mut reason = response
+        .extensions()
+        .get::<TerminalErrorReason>()
+        .map(|reason| reason.0)
+        .unwrap_or_else(|| upstream_status_reason(response.status()));
+    if reason == "billing_limit" {
+        reason = billing_limit_reason(account.as_ref(), &key_row);
+    }
+    let event = customer_error_event(
+        response.status(),
+        reason,
+        account_id,
+        &key_row.key_id,
+        &method,
+        &uri,
+        &request_id,
+        retry_after_seconds,
+        account.as_ref(),
+        &key_row,
+    );
+    eprintln!("{event}");
+    response
+}
+
+fn upstream_status_reason(status: StatusCode) -> &'static str {
+    match status.as_u16() {
+        400..=499 => "upstream_client_error",
+        500..=599 => "upstream_server_error",
+        _ => "non_success_response",
+    }
+}
+
+fn billing_limit_reason(
+    account: Option<&registry::AccountRow>,
+    key: &registry::KeyRow,
+) -> &'static str {
+    match (account, key.spend_limit_nano) {
+        (Some(account), Some(limit)) => {
+            let remaining = limit
+                .saturating_sub(key.spent_nano)
+                .saturating_sub(key.reserved_nano)
+                .max(0);
+            if remaining < account.balance_nano {
+                "key_spend_limit"
+            } else if account.balance_nano < remaining {
+                "account_balance"
+            } else {
+                "account_and_key_limit"
+            }
+        }
+        (Some(_), None) => "account_balance",
+        (None, _) => "billing_limit",
+    }
+}
+
+fn customer_error_event(
+    status: StatusCode,
+    reason: &'static str,
+    account_id: &str,
+    key_id: &str,
+    method: &Method,
+    uri: &Uri,
+    request_id: &str,
+    retry_after_seconds: Option<u64>,
+    account: Option<&registry::AccountRow>,
+    key: &registry::KeyRow,
+) -> String {
+    json!({
+        "event": "customer_http_error",
+        "status": status.as_u16(),
+        "reason": reason,
+        "account_id": account_id,
+        "key_id": key_id,
+        "method": method.as_str(),
+        "path": audit_path(uri.path()),
+        "request_id": request_id,
+        "retry_after_seconds": retry_after_seconds,
+        "account_balance_nano": account.map(|row| row.balance_nano),
+        "account_reserved_nano": account.map(|row| row.reserved_nano),
+        "key_spent_nano": key.spent_nano,
+        "key_reserved_nano": key.reserved_nano,
+        "key_spend_limit_nano": key.spend_limit_nano,
+        "key_expires_ts": key.expires_ts,
+        "account_status": account.map(|row| row.status.as_str()),
+        "key_status": key.status,
+    })
+    .to_string()
+}
+
+fn audit_path(path: &str) -> &'static str {
+    match path {
+        "/v1/messages" => "/v1/messages",
+        "/v1/messages/count_tokens" => "/v1/messages/count_tokens",
+        "/v1/models" => "/v1/models",
+        "/v1/responses" => "/v1/responses",
+        "/v1/responses/input_tokens" => "/v1/responses/input_tokens",
+        "/v1/chat/completions" => "/v1/chat/completions",
+        _ if path.starts_with("/v1/responses/") && path.ends_with("/input_items") => {
+            "/v1/responses/{id}/input_items"
+        }
+        _ if path.starts_with("/v1/responses/") => "/v1/responses/{id}",
+        _ if path.starts_with("/v1/models/") => "/v1/models/{id}",
+        _ => "/v1/{unsupported}",
+    }
 }
 
 fn is_openai_plane(headers: &HeaderMap) -> bool {
@@ -1461,6 +1609,131 @@ mod tests {
         assert!(!serialized.contains("app-server"));
         assert!(!serialized.contains("ChatGPT"));
         assert!(!serialized.contains("Anthropic"));
+    }
+
+    #[test]
+    fn customer_error_event_is_structured_and_redacts_request_data() {
+        let uri: Uri = "/v1/responses/secret-response/input_items?api_key=raw-secret"
+            .parse()
+            .unwrap();
+        let event = customer_error_event(
+            StatusCode::PAYMENT_REQUIRED,
+            "billing_limit",
+            "acct_safe",
+            "key_safe",
+            &Method::POST,
+            &uri,
+            "request_safe",
+            Some(60),
+            Some(&registry::AccountRow {
+                id: "acct_safe".to_string(),
+                handle: None,
+                balance_nano: 999,
+                spent_nano: 1,
+                reserved_nano: 2,
+                mult_bp: 500,
+                status: "active".to_string(),
+            }),
+            &registry::KeyRow {
+                key: "raw-key-must-not-appear".to_string(),
+                key_id: "key_safe".to_string(),
+                account_id: Some("acct_safe".to_string()),
+                label: Some("private label must not appear".to_string()),
+                spent_nano: 3,
+                reserved_nano: 4,
+                spend_limit_nano: None,
+                expires_ts: None,
+                created_ts: 0,
+                last_used_ts: None,
+                status: "active".to_string(),
+            },
+        );
+        let value: Value = serde_json::from_str(&event).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "event": "customer_http_error",
+                "status": 402,
+                "reason": "billing_limit",
+                "account_id": "acct_safe",
+                "key_id": "key_safe",
+                "method": "POST",
+                "path": "/v1/responses/{id}/input_items",
+                "request_id": "request_safe",
+                "retry_after_seconds": 60,
+                "account_balance_nano": 999,
+                "account_reserved_nano": 2,
+                "key_spent_nano": 3,
+                "key_reserved_nano": 4,
+                "key_spend_limit_nano": null,
+                "key_expires_ts": null,
+                "account_status": "active",
+                "key_status": "active",
+            })
+        );
+        assert!(!event.contains("secret-response"));
+        assert!(!event.contains("raw-secret"));
+        assert!(!event.contains("api_key"));
+        assert!(!event.contains("raw-key-must-not-appear"));
+        assert!(!event.contains("private label must not appear"));
+    }
+
+    #[test]
+    fn audit_path_allows_only_fixed_route_templates() {
+        assert_eq!(audit_path("/v1/messages"), "/v1/messages");
+        assert_eq!(
+            audit_path("/v1/models/client-controlled"),
+            "/v1/models/{id}"
+        );
+        assert_eq!(
+            audit_path("/v1/client-secret/unsupported"),
+            "/v1/{unsupported}"
+        );
+    }
+
+    #[test]
+    fn billing_limit_reason_identifies_the_binding_budget() {
+        let account = registry::AccountRow {
+            id: "acct_safe".to_string(),
+            handle: None,
+            balance_nano: 1_000,
+            spent_nano: 0,
+            reserved_nano: 0,
+            mult_bp: 500,
+            status: "active".to_string(),
+        };
+        let mut key = registry::KeyRow {
+            key: "secret".to_string(),
+            key_id: "key_safe".to_string(),
+            account_id: Some(account.id.clone()),
+            label: None,
+            spent_nano: 300,
+            reserved_nano: 200,
+            spend_limit_nano: None,
+            expires_ts: None,
+            created_ts: 0,
+            last_used_ts: None,
+            status: "active".to_string(),
+        };
+        assert_eq!(
+            billing_limit_reason(Some(&account), &key),
+            "account_balance"
+        );
+        key.spend_limit_nano = Some(700);
+        assert_eq!(
+            billing_limit_reason(Some(&account), &key),
+            "key_spend_limit"
+        );
+        key.spend_limit_nano = Some(2_000);
+        assert_eq!(
+            billing_limit_reason(Some(&account), &key),
+            "account_balance"
+        );
+        key.spend_limit_nano = Some(1_500);
+        assert_eq!(
+            billing_limit_reason(Some(&account), &key),
+            "account_and_key_limit"
+        );
     }
 
     #[test]

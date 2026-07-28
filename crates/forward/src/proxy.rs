@@ -469,6 +469,12 @@ pub(crate) enum LocalErr {
     Internal,
 }
 
+/// Privacy-safe terminal classification carried in response extensions for the server audit
+/// middleware. Values must remain static reason codes: never put keys, prompts, upstream text,
+/// subscription identities, or other request-derived data here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TerminalErrorReason(pub &'static str);
+
 impl LocalErr {
     /// Публичный триплет `(status, error.type, message)`. ТОЛЬКО аутентичные Anthropic-тексты и типы;
     /// ни одного упоминания подписок/пула/upstream/authority/cooling.
@@ -513,17 +519,43 @@ impl LocalErr {
             ),
         }
     }
+
+    fn reason(self) -> &'static str {
+        match self {
+            LocalErr::Overloaded => "overloaded",
+            LocalErr::RateLimited => "rate_limited",
+            LocalErr::InvalidKey => "invalid_key",
+            LocalErr::LowBalance => "billing_limit",
+            LocalErr::NotFound => "unsupported_endpoint",
+            LocalErr::BodyTooLarge => "body_too_large",
+            LocalErr::BadRequest => "invalid_request_body",
+            LocalErr::BadBeta => "invalid_beta_header",
+            LocalErr::Internal => "internal_response_error",
+        }
+    }
 }
 
 /// ЕДИНЫЙ санитайзер синтетических ошибок: внутренняя причина → Anthropic-аутентичный публичный
 /// ответ. `retry_after` (сек) добавляет `Retry-After` для retryable-причин. Настоящая причина
 /// НЕ попадает в тело — она уже отражена в метриках/логах у места вызова.
 fn local_err(reason: LocalErr, retry_after: Option<i64>) -> Response {
+    local_err_for(reason, reason.reason(), retry_after)
+}
+
+fn local_err_for(
+    reason: LocalErr,
+    terminal_reason: &'static str,
+    retry_after: Option<i64>,
+) -> Response {
     let (code, kind, msg) = reason.parts();
-    match retry_after {
+    let mut response = match retry_after {
         Some(secs) => err_retry(code, kind, msg, secs),
         None => err_response(code, kind, msg),
-    }
+    };
+    response
+        .extensions_mut()
+        .insert(TerminalErrorReason(terminal_reason));
+    response
 }
 
 /// Точный баланс-лимит метерного ключа: сколько OUTPUT-токенов и какой hold клиент может позволить
@@ -736,7 +768,11 @@ pub async fn forward(
     if !app.authority_ready.load(AtomicOrdering::Acquire) {
         // Инстанс зафенсен/authority недоступен — НАША внутренняя причина. Клиенту — транзиентный
         // retryable overload (ретрай, вероятно, попадёт на здоровый инстанс), без слова «authority».
-        return local_err(LocalErr::Overloaded, Some(2));
+        return local_err_for(
+            LocalErr::Overloaded,
+            "billing_authority_unavailable",
+            Some(2),
+        );
     }
     // ГЛОБАЛЬНЫЙ анти-DoS потолок: занимаем слот ДО авторизации (иначе флуд неверными ключами насытил
     // бы пул DB-читателей мимо fair-share). Для streaming response permit передаётся body-guard и живёт
@@ -745,7 +781,7 @@ pub async fn forward(
         Ok(p) => p,
         Err(_) => {
             Metrics::inc(&app.metrics.breaker_rejects);
-            return local_err(LocalErr::Overloaded, Some(2));
+            return local_err_for(LocalErr::Overloaded, "global_concurrency_limit", Some(2));
         }
     });
     let (parts, body) = req.into_parts();
@@ -756,7 +792,13 @@ pub async fn forward(
             Metrics::inc(&app.metrics.auth_failures);
             return local_err(LocalErr::InvalidKey, None);
         }
-        Authz::Unavailable => return local_err(LocalErr::Overloaded, Some(2)),
+        Authz::Unavailable => {
+            return local_err_for(
+                LocalErr::Overloaded,
+                "billing_authority_unavailable",
+                Some(2),
+            )
+        }
         Authz::Admin { .. } | Authz::Metered { .. } => {}
     }
     // ALLOWLIST эндпоинтов: форвардим на пул ТОЛЬКО то, что доступно на квоте ПОДПИСКИ Claude Max
@@ -780,7 +822,7 @@ pub async fn forward(
             .try_acquire(account_id, app.cfg.max_inflight_per_key)
         {
             Metrics::inc(&app.metrics.key_throttled);
-            return local_err(LocalErr::RateLimited, Some(1));
+            return local_err_for(LocalErr::RateLimited, "account_concurrency_limit", Some(1));
         }
         Some(KeyGuard {
             limiter: app.key_limiter.clone(),
@@ -902,7 +944,11 @@ pub async fn forward(
     // лишних DB-записей (reserve+возврат) на каждый запрос thundering-herd. Резерва ещё нет — возвращать нечего.
     if let Some(retry) = app.breaker.open_for(pool::now()) {
         Metrics::inc(&app.metrics.breaker_rejects);
-        return local_err(LocalErr::Overloaded, Some(retry));
+        return local_err_for(
+            LocalErr::Overloaded,
+            "upstream_circuit_breaker",
+            Some(retry),
+        );
     }
 
     // БАЛАНС-ЛИМИТ метерного ключа (точный контроль: клиент не получит ни токена/цента сверх баланса).
@@ -976,7 +1022,11 @@ pub async fn forward(
                 Ok(None) => {}
                 Err(error) => {
                     eprintln!("billing reservation failed: {error:#}");
-                    return local_err(LocalErr::Overloaded, Some(2));
+                    return local_err_for(
+                        LocalErr::Overloaded,
+                        "billing_reservation_unavailable",
+                        Some(2),
+                    );
                 }
             }
             let fresh = match billing.account(account_id).await {
@@ -984,7 +1034,11 @@ pub async fn forward(
                 Ok(None) => 0,
                 Err(error) => {
                     eprintln!("billing balance refresh failed: {error:#}");
-                    return local_err(LocalErr::Overloaded, Some(2));
+                    return local_err_for(
+                        LocalErr::Overloaded,
+                        "billing_balance_refresh_unavailable",
+                        Some(2),
+                    );
                 }
             };
             match cap_to_balance(fresh, input_est, web_buf, &p, *mult_bp, client_mt) {
@@ -994,7 +1048,9 @@ pub async fn forward(
         }
         let (eff_mt, hold) = match reserved_pair {
             Some(x) => x,
-            None => return local_err(LocalErr::LowBalance, None),
+            None => {
+                return local_err_for(LocalErr::LowBalance, "billing_reservation_rejected", None)
+            }
         };
         // урезали под баланс → правим max_tokens в теле ПОСЛЕ финального eff_mt (мог уменьшиться на
         // ретрае): Anthropic остановит генерацию ровно тут.
@@ -1052,7 +1108,7 @@ pub async fn forward(
         let mut backend_fail_recorded = false;
         // Дефолт терминала, если ни одной подписки не выбрали и нет реального upstream-ответа (пул пуст).
         // Клиенту — обезличенный retryable overload, без слова «pool/subscriptions».
-        let mut last_local = local_err(LocalErr::Overloaded, None);
+        let mut last_local = local_err_for(LocalErr::Overloaded, "pool_unavailable", None);
         // Последний РЕАЛЬНЫЙ ответ Anthropic удерживаем до конца ротации. Если успеха не будет, именно он
         // уходит клиенту со своим body/request-id/retry headers; synthetic допустим только без response.
         let mut last_upstream: Option<(StatusCode, wreq::Response)> = None;
@@ -1184,7 +1240,11 @@ pub async fn forward(
                     Err(error) => {
                         app.pool.mark_done(&sub.email);
                         eprintln!("capacity authority failed: {error:#}");
-                        return local_err(LocalErr::Overloaded, Some(2));
+                        return local_err_for(
+                            LocalErr::Overloaded,
+                            "capacity_authority_unavailable",
+                            Some(2),
+                        );
                     }
                 }
             } else {
@@ -1208,7 +1268,8 @@ pub async fn forward(
                 Err(e) => {
                     app.pool.mark_cooling(&sub.email, 10); // битый прокси → cooling (слот закроет guard)
                     eprintln!("⚠ прокси {}: {e}", sub.email); // детали ТОЛЬКО в лог (не клиенту)
-                    last_local = local_err(LocalErr::Overloaded, None);
+                    last_local =
+                        local_err_for(LocalErr::Overloaded, "subscription_proxy_unavailable", None);
                     continue;
                 }
             };
@@ -1287,7 +1348,8 @@ pub async fn forward(
                     // Не кормим global breaker — один нестабильный прокси не доказывает outage провайдера.
                     app.pool.mark_cooling(&sub.email, 15);
                     eprintln!("⚠ upstream {}: {e}", sub.email); // детали (email/сеть) ТОЛЬКО в лог
-                    last_local = local_err(LocalErr::Overloaded, None);
+                    last_local =
+                        local_err_for(LocalErr::Overloaded, "upstream_connection_error", None);
                     backend_tries += 1;
                     if backend_tries >= app.cfg.max_tries.max(1) {
                         break;
@@ -1419,7 +1481,11 @@ pub async fn forward(
                         if let Some(g) = hold_guard.as_mut() {
                             g.disarm();
                         }
-                        return local_err(LocalErr::Overloaded, Some(2));
+                        return local_err_for(
+                            LocalErr::Overloaded,
+                            "billing_delivery_marker_unavailable",
+                            Some(2),
+                        );
                     }
                 }
                 let capacity = match (&guard.billing, &guard.capacity_lease_id) {
@@ -1499,7 +1565,11 @@ pub async fn forward(
         }
         Metrics::inc(&app.metrics.exhausted);
         let retry = app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs);
-        return local_err(LocalErr::RateLimited, Some(retry));
+        return local_err_for(
+            LocalErr::RateLimited,
+            "subscription_pool_exhausted",
+            Some(retry),
+        );
     } // 'smooth: loop
 }
 
@@ -1935,5 +2005,27 @@ mod tests {
                 .map(|m| !m.is_empty())
                 .unwrap_or(false));
         }
+    }
+
+    #[test]
+    fn local_err_carries_only_static_terminal_reason() {
+        for reason in ALL_LOCAL_ERRS {
+            let response = local_err(reason, None);
+            assert_eq!(
+                response
+                    .extensions()
+                    .get::<TerminalErrorReason>()
+                    .map(|value| value.0),
+                Some(reason.reason())
+            );
+        }
+        let response = local_err_for(LocalErr::LowBalance, "key_spend_limit", None);
+        assert_eq!(
+            response
+                .extensions()
+                .get::<TerminalErrorReason>()
+                .map(|value| value.0),
+            Some("key_spend_limit")
+        );
     }
 }

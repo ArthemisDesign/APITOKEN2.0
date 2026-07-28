@@ -35,7 +35,9 @@ pub use codex::{
 pub use config::{ProxyConfig, CLAUDE_CODE_IDENTITY};
 pub use keylimiter::KeyLimiter;
 pub use metrics::Metrics;
-pub use proxy::{authed, client_key, control_authed, forward, readonly_authed};
+pub use proxy::{
+    authed, client_key, control_authed, forward, readonly_authed, TerminalErrorReason,
+};
 pub use state::AppState;
 pub use upstream::{
     detect_plan, fresh_request_id, limits_from_headers, persona_ccbuild, persona_cch,

@@ -5,7 +5,7 @@ use super::{
     new_id, CodexGateway, CodexModel, CodexTurnRequest, CodexTurnResult, CodexUsage, HistoryError,
     ProcessError, StoredHistory, TurnUpdate,
 };
-use crate::proxy::{authorize, Authz};
+use crate::proxy::{authorize, Authz, TerminalErrorReason};
 use crate::state::AppState;
 use axum::body::{to_bytes, Body};
 use axum::extract::{ConnectInfo, Path, State};
@@ -41,6 +41,7 @@ pub(super) struct ApiError {
     param: Option<String>,
     code: Option<&'static str>,
     retry_after: Option<u64>,
+    reason: &'static str,
 }
 
 impl ApiError {
@@ -52,6 +53,7 @@ impl ApiError {
             param: param.into(),
             code: None,
             retry_after: None,
+            reason: "invalid_request",
         }
     }
 
@@ -63,10 +65,15 @@ impl ApiError {
             param: param.into(),
             code: Some("model_not_found"),
             retry_after: None,
+            reason: "resource_not_found",
         }
     }
 
     pub(super) fn unavailable() -> Self {
+        Self::unavailable_for("codex_provider_unavailable")
+    }
+
+    fn unavailable_for(reason: &'static str) -> Self {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
             message: "The requested model is temporarily unavailable. Please retry.".to_string(),
@@ -74,14 +81,21 @@ impl ApiError {
             param: None,
             code: Some("service_unavailable"),
             retry_after: Some(2),
+            reason,
         }
     }
 
+    #[cfg(test)]
     fn rate_limited() -> Self {
         Self::rate_limited_for(Some(1))
     }
 
+    #[cfg(test)]
     fn rate_limited_for(retry_after: Option<u64>) -> Self {
+        Self::rate_limited_for_reason(retry_after, "codex_rate_limit")
+    }
+
+    fn rate_limited_for_reason(retry_after: Option<u64>, reason: &'static str) -> Self {
         Self {
             status: StatusCode::TOO_MANY_REQUESTS,
             message: "Rate limit reached. Please retry shortly.".to_string(),
@@ -89,6 +103,7 @@ impl ApiError {
             param: None,
             code: Some("rate_limit_exceeded"),
             retry_after,
+            reason,
         }
     }
 
@@ -108,6 +123,9 @@ impl ApiError {
             }
         }
         response
+            .extensions_mut()
+            .insert(TerminalErrorReason(self.reason));
+        response
     }
 }
 
@@ -121,9 +139,12 @@ impl From<AdmissionError> for ApiError {
                 param: None,
                 code: Some("invalid_api_key"),
                 retry_after: None,
+                reason: "invalid_key",
             },
-            AdmissionError::Unavailable => Self::unavailable(),
-            AdmissionError::Busy => Self::rate_limited(),
+            AdmissionError::Unavailable => Self::unavailable_for("codex_admission_unavailable"),
+            AdmissionError::Busy => {
+                Self::rate_limited_for_reason(Some(1), "account_concurrency_limit")
+            }
             AdmissionError::LowBalance => Self {
                 status: StatusCode::PAYMENT_REQUIRED,
                 message: "Your account balance is insufficient for this request.".to_string(),
@@ -131,6 +152,7 @@ impl From<AdmissionError> for ApiError {
                 param: None,
                 code: Some("insufficient_quota"),
                 retry_after: None,
+                reason: "billing_limit",
             },
         }
     }
@@ -139,7 +161,7 @@ impl From<AdmissionError> for ApiError {
 impl From<ProcessError> for ApiError {
     fn from(value: ProcessError) -> Self {
         match value {
-            ProcessError::Busy => Self::rate_limited(),
+            ProcessError::Busy => Self::rate_limited_for_reason(Some(1), "codex_capacity_busy"),
             ProcessError::ContextWindowExceeded => Self {
                 status: StatusCode::BAD_REQUEST,
                 message: "This model's maximum context length was exceeded.".to_string(),
@@ -147,10 +169,12 @@ impl From<ProcessError> for ApiError {
                 param: Some("input".to_string()),
                 code: Some("context_length_exceeded"),
                 retry_after: None,
+                reason: "context_window_exceeded",
             },
-            ProcessError::UsageLimitExceeded { retry_after } => {
-                Self::rate_limited_for(retry_after.or(Some(60)))
-            }
+            ProcessError::UsageLimitExceeded { retry_after } => Self::rate_limited_for_reason(
+                retry_after.or(Some(60)),
+                "codex_upstream_usage_limit",
+            ),
             ProcessError::BadRequest => Self::invalid(
                 "The request could not be processed by the selected model.",
                 None::<String>,
