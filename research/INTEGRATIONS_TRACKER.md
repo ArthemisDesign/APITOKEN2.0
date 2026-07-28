@@ -26,7 +26,7 @@
 | Цель | Состояние | PR | Упоминание в upstream | Публичная ссылка | Последняя проверка |
 |---|---|---|---|---|---|
 | `BerriAI/litellm` | open, safe to merge | [#34915](https://github.com/BerriAI/litellm/pull/34915) | pending merge | pending | 2026-07-28 |
-| `musistudio/claude-code-router` | implementation/testing | pending | pending | pending | 2026-07-28 |
+| `musistudio/claude-code-router` | branch ready; PR auth blocked | pending | absent | absent | 2026-07-28 |
 | `LibreChat-AI/librechat.ai` | queued | — | — | — | — |
 | `QuantumNous/new-api` | queued | — | — | — | — |
 | `Aider-AI/aider` | queued | — | — | — | — |
@@ -48,9 +48,18 @@
 
 - Upstream: <https://github.com/musistudio/claude-code-router>, 36,247 звёзд на момент проверки.
 - Default branch: `main`.
-- Разведанный SHA: `d2867bd4a4e128d1291f24e00f1ff010d1206f92`.
+- Исходный SHA разведки: `d2867bd4a4e128d1291f24e00f1ff010d1206f92`.
+- Повторная проверка и тесты выполнены на актуальном upstream SHA
+  `3b99fa239b581a787034cc4e3caf35640e32b35b` (`v3.0.17`).
 - Форк создан: <https://github.com/apitokensale-admin/claude-code-router>.
-- Рабочая ветка: `feat/apitoken-provider`.
+- Опубликованная ветка: <https://github.com/apitokensale-admin/claude-code-router/tree/feat/apitoken-provider>.
+- Опубликованный commit: `b8179b2d05064d83b37c6ae4a5e2a8a598889d9c`.
+- Тот же patch чисто применён и повторно проверен поверх `v3.0.17`; локальный контрольный commit:
+  `e1de0d53cf66c3eb7fbaec612e815d28eeb16e78`.
+- Remote branch пока сохраняет исходного родителя `d2867bd`: обновление ref на историю `v3.0.17`
+  GitHub отклонил, потому что промежуточный upstream release меняет `.github/workflows/release.yml`,
+  а PAT не имеет scope `workflow`. Для PR это не создаёт conflict: patch применился на `3b99fa2`
+  автоматически и именно в таком виде прошёл повторные проверки.
 - `CONTRIBUTING.md` и repo-local `AGENTS.md` отсутствуют. Проверены GitHub workflows и npm scripts.
 - Актуальный механизм — встроенный `ProviderPreset`, а не старый отдельный transformer/config.
 - Принятые аналоги: `claudeapi` и `Fenno.ai`; оба регистрируются отдельным preset-модулем через
@@ -59,39 +68,72 @@
 
 ### Реализация
 
-Пока не опубликована. Подготовлены:
+Ветка опубликована. Добавлены:
 
 - новый preset `apiToken.sale` с `https://api.apitoken.sale`;
 - aliases для поиска в UI;
 - Anthropic Messages capability;
 - актуальные Claude model IDs;
 - шаблон ключей `sk-pool-…` и ссылка на сайт;
-- unit test, доказывающий регистрацию preset и совпадение URL без слеша, со слешем и с `/v1`.
+- unit test, доказывающий регистрацию preset и совпадение URL без слеша, со слешем и с `/v1`;
+- фирменная иконка в UI и документации;
+- EN/ZH one-click import с публичной ссылкой на `https://apitoken.sale`;
+- упоминание `apiToken.sale` в списках поддерживаемых провайдеров README/README_zh;
+- UI test, проверяющий выбор иконки для нормализованного endpoint.
 
-Планируемые upstream-пути:
+Затронутые upstream-пути:
 
+- `README.md`;
+- `README_zh.md`;
+- `docs/public/provider-icons/apitoken.svg`;
+- `docs/src/content/docs/en/configuration/provider-deeplink.md`;
+- `docs/src/content/docs/zh/configuration/provider-deeplink.md`;
+- `docs/src/styles/global.css`;
 - `packages/core/src/providers/presets/apitoken/index.ts`;
 - `packages/core/src/providers/presets/index.ts`;
-- `packages/core/test/unit/providers/provider-preset-utils.test.mjs`.
+- `packages/core/test/unit/providers/provider-preset-utils.test.mjs`;
+- `packages/ui/src/assets/provider-icons/apitoken.svg`;
+- `packages/ui/src/pages/home/shared/options.ts`;
+- `packages/ui/test/integration/providers.test.ts`.
 
 ### Проверки
 
-- `npm ci`: выполнен; upstream сообщает 7 известных dependency vulnerabilities.
-- Новый unit test проходит.
-- Полный `test:core` дошёл до 624 тестов: 615 passed, 5 skipped, 4 failed.
-- Все четыре сбоя находятся вне изменённых provider-файлов: один нестабильный bounded-heap тест
-  request log и три теста bundled `claude-design` plugin paths/permissions. Перед PR их нужно
-  перепроверить на чистом upstream SHA и указать как baseline, если воспроизводятся без патча.
-- `typecheck` и оставшиеся workspace-тесты ещё не зафиксированы: цепочка остановилась на core fail.
-- Живой basic/stream/tool-use прогон через CCR ещё предстоит.
+- `npm ci`: выполнен; root сообщает 7 известных dependency vulnerabilities, docs — 5.
+- `npm run typecheck`: passed.
+- `npm run test:ui`: 134 passed, 0 failed.
+- `npm run build:assets`: passed.
+- `npm run build` в `docs/`: 72 страницы собраны.
+- `npm run test:core` с patch: 655 tests, 646 passed, 5 skipped, 4 failed.
+- `npm run test:core` на чистом upstream `3b99fa2`: 654 tests, 645 passed, 5 skipped, 4 failed.
+- Четыре ошибки полностью совпадают на patch и baseline: bounded-heap regression request log и три
+  bundled `claude-design` path/permission теста. Интеграция добавляет один проходящий core test.
+
+Живой прогон выполнен через локально собранный CCR `v3.0.17`, а не прямым запросом в обход него:
+
+- basic Messages: HTTP 200, получен ожидаемый текст;
+- Anthropic SSE streaming: HTTP 200, полный поток и ожидаемый текст;
+- forced tool use: HTTP 200, вызван `integration_check` с `{ "status": "ok" }`.
+
+Ключ использовался только через временную env-переменную. Временный CCR home с SQLite и ответы
+удалены после прогона; в branch diff секретов нет.
 
 ### PR и backlink
 
-- PR: `pending`.
+- PR: `pending`, кодовый blocker отсутствует.
+- GraphQL `createPullRequest` и REST `POST /pulls` возвращают 403
+  `Resource not accessible by personal access token` для текущего fine-grained PAT.
+- Доступные локальные credentials проверены: classic PAT не найден. Для открытия PR нужен временный
+  classic PAT аккаунта `apitokensale-admin` со scope `public_repo`; после создания его отозвать.
+- Готовое сравнение для ручной проверки:
+  <https://github.com/musistudio/claude-code-router/compare/main...apitokensale-admin:claude-code-router:feat/apitoken-provider>.
 - Ожидаемое упоминание после мержа: preset-модуль содержит `apitoken.sale`, endpoint и website URL;
-  провайдер появляется в UI CCR.
-- Backlink status: `pending`.
-- Следующая проверка: после push, затем после PR review, merge и первого upstream release.
+  провайдер появляется в UI CCR, README и EN/ZH one-click docs.
+- Ожидаемые публичные страницы:
+  <https://ccrdesk.top/en/configuration/provider-deeplink/> и
+  <https://ccrdesk.top/configuration/provider-deeplink/>.
+- Проверка 2026-07-28: upstream `main` не содержит `apitoken.sale`; GitHub code search = 0;
+  обе публичные страницы ссылки не содержат. Backlink status: `pending`.
+- Следующая проверка: сразу после открытия PR, затем после review, merge и первого upstream release.
 
 ## Очередь и повторные проверки
 
@@ -102,3 +144,6 @@
 |---|---|---|---|
 | 2026-07-28 | `BerriAI/litellm` | PR status | open, safe to merge; upstream backlink pending |
 | 2026-07-28 | `musistudio/claude-code-router` | upstream/fork/rules/preset architecture | implementation in progress |
+| 2026-07-28 | `musistudio/claude-code-router` | branch, current upstream, tests, live CCR run | branch ready; all integration checks passed; four core failures confirmed as pristine baseline |
+| 2026-07-28 | `musistudio/claude-code-router` | GraphQL/REST PR creation, credentials | blocked only by fine-grained PAT; classic `public_repo` PAT required |
+| 2026-07-28 | `musistudio/claude-code-router` | upstream/code search/public docs | no existing `apitoken.sale` reference; backlink pending |
