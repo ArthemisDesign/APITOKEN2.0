@@ -4,6 +4,7 @@
 import { claudeModels, claudeModelBySlug, formatUsd, DISCOUNT_BASE, DISCOUNT_MAX, modelPath, type ClaudeModel } from "./models";
 import { B2C_PRICING_MILESTONES, formatWholeUsd } from "./pricing-tiers";
 import { integrationGuideSeo, SITE_ORIGIN, type IntegrationGuideSlug } from "./seo";
+import { API_ERRORS } from "./api-errors";
 
 const API_BASE_URL = "https://api.apitoken.sale";
 
@@ -358,6 +359,81 @@ API reference: ${SITE_ORIGIN}/md/docs
 }
 
 /** Index of every machine-readable Markdown document on the site. */
+/**
+ * Error reference as Markdown. Same catalog as /docs/errors, so the verbatim message
+ * strings stay identical across the HTML page, this file and the GitHub mirror —
+ * which is the whole point: an agent answering "what does this error mean" should
+ * find the exact string it was given.
+ */
+export function buildErrorsMarkdown(): string {
+  const sections = API_ERRORS.map((entry) => {
+    const head = entry.status === 0 ? entry.title : `${entry.status} ${entry.type} — ${entry.title}`;
+    const body =
+      entry.status === 0
+        ? entry.message
+        : `HTTP ${entry.status}\n{"type":"error","error":{"type":"${entry.type}","message":${JSON.stringify(entry.message)}}}`;
+    const variants = entry.alsoSearchedAs?.length
+      ? `\n**Other forms of the same failure**\n\n${entry.alsoSearchedAs.map((v) => `- \`${v}\``).join("\n")}\n`
+      : "";
+    const origin =
+      entry.surface === "apitoken"
+        ? "Specific to apiToken.sale — the Anthropic API has no equivalent response."
+        : entry.status === 0
+          ? "Comes from Anthropic's own apps and subscription plans, not from an API call."
+          : "Identical on api.anthropic.com and on apiToken.sale.";
+
+    return `## ${head}
+
+\`\`\`
+${body}
+\`\`\`
+
+**Why it happens**
+
+${entry.causes.map((c) => `- ${c}`).join("\n")}
+
+**How to fix it**
+
+${entry.fixes.map((f) => `- ${f}`).join("\n")}
+${entry.snippet ? `\n**${entry.snippet.label}**\n\n\`\`\`\n${entry.snippet.code}\n\`\`\`\n` : ""}${variants}
+Short link: ${SITE_ORIGIN}/e/${entry.code} · ${origin}`;
+  }).join("\n\n");
+
+  return (
+    frontmatter({
+      title: "Claude API error codes — cause and fix for each",
+      description:
+        "Every Claude API error with its exact response text: 401 invalid x-api-key, 429 rate_limit_error, 529 Overloaded, 413 request_too_large, and the 400s newer models introduced.",
+      url: `${SITE_ORIGIN}/docs/errors`,
+      language: "en",
+    }) +
+    `# Claude API error codes
+
+Every error is returned with the same envelope, so branch on \`error.type\` and the HTTP
+status rather than on the message text:
+
+\`\`\`
+{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}
+\`\`\`
+
+In the official SDKs that means catching the typed exception classes rather than string
+matching. The verbatim messages below are reproduced because they are what you have in
+front of you when something breaks.
+
+| Status | error.type | Meaning | Retry? |
+|---|---|---|---|
+${API_ERRORS.map((e) => `| ${e.status === 0 ? "—" : e.status} | \`${e.type}\` | ${e.title.replace(/^\d+\s+—\s+/, "")} | ${e.retryable ? "Yes, with backoff" : "No — fix the request"} |`).join("\n")}
+
+${sections}
+
+---
+
+apiToken.sale serves the standard Anthropic Messages API, so every non-gateway error here
+behaves exactly as it does against api.anthropic.com. Base URL: ${API_BASE_URL}
+`
+  );
+}
+
 export function buildMdIndexMarkdown(): string {
   return (
     frontmatter({
@@ -373,6 +449,7 @@ Every public section of apiToken.sale is available as clean Markdown. Private da
 ## Core references
 
 - API reference (connection, models, streaming, tools, errors): ${SITE_ORIGIN}/md/docs
+- Error reference (exact response text, cause and fix for every error): ${SITE_ORIGIN}/md/docs/errors
 - Model catalog (exact IDs, context, pricing): ${SITE_ORIGIN}/md/models
 - Per-model spec: append the model ID to ${SITE_ORIGIN}/md/models/<id> (${claudeModels.map((m) => m.id).join(", ")})
 - Pricing & discount tiers: ${SITE_ORIGIN}/md/plans

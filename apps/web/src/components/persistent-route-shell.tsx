@@ -13,6 +13,7 @@ const publicSitePaths = new Set([
   "/about",
   "/changelog",
   "/contacts",
+  "/docs/errors",
   "/integrations",
   "/models",
   "/plans",

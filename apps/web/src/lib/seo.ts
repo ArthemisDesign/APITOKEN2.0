@@ -138,6 +138,7 @@ export function markdownTwinPath(path: string): string | undefined {
   const exact: Record<string, string> = {
     "/": "/md",
     "/docs": "/md/docs",
+    "/docs/errors": "/md/docs/errors",
     "/models": "/md/models",
     "/plans": "/md/plans",
     "/integrations": "/md/int",

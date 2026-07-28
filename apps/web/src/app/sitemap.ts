@@ -23,6 +23,7 @@ export function buildSitemap(blogPosts: PublicBlogPostSummary[] = []): MetadataR
     { url: absoluteUrl("/blog"), changeFrequency: "daily" as const, priority: 0.8 },
     { url: absoluteUrl("/contacts"), changeFrequency: "monthly" as const, priority: 0.5 },
     { url: absoluteUrl("/changelog"), changeFrequency: "weekly" as const, priority: 0.5 },
+    { url: absoluteUrl("/docs/errors"), changeFrequency: "monthly" as const, priority: 0.7 },
     { url: absoluteUrl("/status"), changeFrequency: "weekly" as const, priority: 0.4 },
   ].map((page) => ({ ...page, lastModified: LAST_CONTENT_UPDATE }));
 

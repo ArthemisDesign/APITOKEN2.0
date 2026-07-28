@@ -112,6 +112,7 @@ export function buildLlms(locale: Locale): string {
     "",
     `- API reference (base URL, model IDs, streaming, tools, errors): ${SITE_ORIGIN}/md/docs`,
     `- Model catalog (exact IDs, context, pricing): ${SITE_ORIGIN}/md/models`,
+    `- Error reference (exact response text, cause and fix for every error): ${SITE_ORIGIN}/md/docs/errors`,
     `- Pricing & discount tiers: ${SITE_ORIGIN}/md/plans`,
     `- Markdown index of everything: ${SITE_ORIGIN}/md`,
     `- Any guide as Markdown: append its slug to the gateway, e.g. ${SITE_ORIGIN}${learnMarkdownPath("cheapest-claude-api", locale)}`,
