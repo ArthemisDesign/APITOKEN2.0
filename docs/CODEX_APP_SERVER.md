@@ -5,7 +5,7 @@
 The optional Codex provider runs the official OpenAI `codex app-server` as a supervised local
 JSON-RPC child. Its public base URL is `https://openai.api.apitoken.sale/v1`; the existing
 `https://api.apitoken.sale` hostname remains exclusively Anthropic-compatible. It exposes a
-deliberately strict, SDK-compatible text subset:
+lenient, SDK-compatible text+image subset:
 
 | Public route | Status |
 |---|---|
@@ -14,16 +14,24 @@ deliberately strict, SDK-compatible text subset:
 | `GET /v1/models` | supported; intersected with the live app-server catalog |
 | `GET /v1/models/{model}` | supported |
 
-Images, video, audio, embeddings, batches, files, assistants, fine-tuning, WebSocket/realtime,
+User messages may carry images: Chat Completions `image_url` parts and Responses `input_image`
+parts accept inline `data:image/…` URLs and remote `http(s)://` URLs, including in replayed
+history. Video, audio, embeddings, batches, files, assistants, fine-tuning, WebSocket/realtime,
 stored-response retrieval and administrative OpenAI Platform endpoints are not implemented.
 Unsupported descendants of the implemented surfaces, including `/v1/responses/compact`,
 `/v1/responses/input_tokens`, stored-response retrieval/cancel/input-items routes and nested Chat
 Completions paths, return an OpenAI-shaped `404`. Every other route on the OpenAI-compatible
 hostname is also rejected locally instead of being sent to Anthropic. Only a request sent to that
 hostname enters this provider; authentication headers never select a provider.
-Sampling/output controls that app-server cannot enforce are rejected as OpenAI-shaped `400` errors
-instead of being silently ignored. In particular, non-default `temperature`, `top_p`, token caps,
-`stop`, penalties, logprobs, `seed`, and multi-choice output are not accepted.
+Parameters that app-server cannot enforce are accepted and ignored instead of rejected, so stock
+SDKs and agent terminals never fail on defaults they send. This covers sampling/output controls
+(`temperature`, `top_p`, token caps, `stop`, penalties, logprobs, `seed`, multi-choice output),
+`store`, `service_tier`, `stream_options`, forced `tool_choice` values (degrade to `"auto"`),
+`parallel_tool_calls=false`, `strict=true` tools (degrade to non-strict), unknown `include`
+values, reasoning efforts the model does not advertise (degrade to the model default) and any
+unknown present or future fields. Requests that are structurally unusable — missing model/input,
+empty messages, malformed tool history, invalid image URLs — still return OpenAI-shaped `400`
+errors.
 
 This is not the OpenAI Platform API and must not be represented as an OpenAI-operated endpoint.
 ChatGPT subscriptions and OpenAI Platform API billing are separate products. Confirm that the

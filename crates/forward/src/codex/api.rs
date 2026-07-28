@@ -192,8 +192,8 @@ pub(super) struct ParsedResponsesRequest {
 
 #[derive(Clone, Debug)]
 pub(super) struct NormalizedInput {
-    canonical_items: Vec<Value>,
-    prior_items: Vec<Value>,
+    pub(super) canonical_items: Vec<Value>,
+    pub(super) prior_items: Vec<Value>,
     pub(super) turn_input: Vec<Value>,
 }
 
@@ -468,12 +468,13 @@ pub(super) async fn prepare_turn(
     history_after_input.extend(request.input.canonical_items.clone());
     full_history_prefix = history_after_input;
 
-    let estimate_value = json!({
+    let mut estimate_value = json!({
         "history": injected,
         "input": request.input.turn_input,
         "tools": request.dynamic_tools,
         "instructions": request.instructions
     });
+    sanitize_estimate_images(&mut estimate_value);
     let estimated_input_tokens = serde_json::to_vec(&estimate_value)
         .map(|bytes| bytes.len() as u64)
         .unwrap_or(u64::MAX / 2);
@@ -511,29 +512,9 @@ pub(super) fn parse_responses_request(
     let object = value
         .as_object()
         .ok_or_else(|| ApiError::invalid("Request body must be a JSON object.", None::<String>))?;
-    reject_unsupported_fields(
-        object,
-        &[
-            "model",
-            "input",
-            "instructions",
-            "previous_response_id",
-            "reasoning",
-            "text",
-            "tools",
-            "tool_choice",
-            "parallel_tool_calls",
-            "metadata",
-            "store",
-            "stream",
-            "include",
-            "stream_options",
-            "client_metadata",
-            "prompt_cache_key",
-            "safety_identifier",
-            "service_tier",
-        ],
-    )?;
+    // SDK compatibility: parameters the transport cannot honor (sampling controls, token caps,
+    // truncation, background mode, future fields, …) are accepted and ignored rather than
+    // rejected, so stock SDKs and agent terminals never fail on parameters they send by default.
     let model_id = required_string(object, "model")?;
     let public_model = gateway.config().model(model_id).cloned().ok_or_else(|| {
         ApiError::not_found(
@@ -584,7 +565,7 @@ pub(super) fn parse_responses_request(
     }
     validate_client_metadata(object.get("client_metadata"))?;
     validate_optional_identifier(object.get("safety_identifier"), "safety_identifier")?;
-    validate_service_tier(object.get("service_tier"))?;
+    // service_tier cannot be honored by the transport; any value is accepted and ignored.
     let (reasoning_effort, reasoning_summary) =
         parse_reasoning(object.get("reasoning"), &public_model)?;
     let (text, output_schema, verbosity) = parse_text(object.get("text"))?;
@@ -599,25 +580,24 @@ pub(super) fn parse_responses_request(
             Some("tools".to_string()),
         ));
     }
-    let tools_from_input = additional_tools.is_some();
     let (original_tools, mut dynamic_tools) = additional_tools.unwrap_or(top_level_tools);
-    match tool_choice.as_str() {
-        Some("auto") if !original_tools.is_empty() => {}
-        Some("auto" | "none") => dynamic_tools.clear(),
-        _ => {
-            return Err(ApiError::invalid(
-                "Only tool_choice=\"auto\" and tool_choice=\"none\" are supported.",
-                Some("tool_choice".to_string()),
-            ))
+    // tool_choice: only "none" changes behavior (tools are hidden). "required" and named-tool
+    // choices cannot be forced through the transport, so they degrade to "auto" instead of
+    // failing the request.
+    let tool_choice = match tool_choice.as_str() {
+        Some("none") => {
+            dynamic_tools.clear();
+            Value::String("none".to_string())
         }
-    }
+        _ if original_tools.is_empty() => {
+            dynamic_tools.clear();
+            Value::String("auto".to_string())
+        }
+        _ => Value::String("auto".to_string()),
+    };
+    // parallel_tool_calls=false cannot be enforced by the transport; accept and run with the
+    // default parallel behavior instead of rejecting the request.
     let parallel_tool_calls = optional_bool(object, "parallel_tool_calls")?.unwrap_or(true);
-    if !parallel_tool_calls && !dynamic_tools.is_empty() && !tools_from_input {
-        return Err(ApiError::invalid(
-            "parallel_tool_calls=false is not supported by this endpoint.",
-            Some("parallel_tool_calls".to_string()),
-        ));
-    }
     let metadata = match object.get("metadata") {
         None | Some(Value::Null) => json!({}),
         Some(Value::Object(metadata)) if metadata.len() <= 16 => Value::Object(metadata.clone()),
@@ -637,29 +617,16 @@ pub(super) fn parse_responses_request(
     let store = optional_bool(object, "store")?.unwrap_or(true);
     let stream = optional_bool(object, "stream")?.unwrap_or(false);
     let mut include_encrypted_reasoning = false;
-    if let Some(include) = object.get("include") {
+    if let Some(include) = object.get("include").filter(|value| !value.is_null()) {
         let values = include.as_array().ok_or_else(|| {
             ApiError::invalid("include must be an array.", Some("include".to_string()))
         })?;
-        for value in values {
-            if value.as_str() != Some("reasoning.encrypted_content") {
-                return Err(ApiError::invalid(
-                    "Only include=[\"reasoning.encrypted_content\"] is supported.",
-                    Some("include".to_string()),
-                ));
-            }
-            include_encrypted_reasoning = true;
-        }
+        // Unknown include values are ignored; only encrypted reasoning continuity is honored.
+        include_encrypted_reasoning = values
+            .iter()
+            .any(|value| value.as_str() == Some("reasoning.encrypted_content"));
     }
-    if object
-        .get("stream_options")
-        .is_some_and(|value| !value.is_null() && value != &json!({}))
-    {
-        return Err(ApiError::invalid(
-            "Non-empty stream_options are not supported.",
-            Some("stream_options".to_string()),
-        ));
-    }
+    // stream_options (e.g. include_obfuscation) cannot be honored; accepted and ignored.
     Ok(ParsedResponsesRequest {
         public_model,
         input,
@@ -785,17 +752,6 @@ fn validate_optional_identifier(value: Option<&Value>, field: &str) -> Result<()
     }
 }
 
-fn validate_service_tier(value: Option<&Value>) -> Result<(), ApiError> {
-    match value {
-        None | Some(Value::Null) => Ok(()),
-        Some(Value::String(value)) if matches!(value.as_str(), "auto" | "default") => Ok(()),
-        Some(_) => Err(ApiError::invalid(
-            "Only service_tier=null, \"auto\", or \"default\" is supported.",
-            Some("service_tier".to_string()),
-        )),
-    }
-}
-
 fn parse_reasoning(
     value: Option<&Value>,
     model: &CodexModel,
@@ -809,38 +765,14 @@ fn parse_reasoning(
             Some("reasoning".to_string()),
         )
     })?;
-    reject_unsupported_fields(object, &["effort", "summary", "context"])?;
-    if object
-        .get("context")
-        .is_some_and(|context| !context.is_null() && context.as_str() != Some("all_turns"))
-    {
-        return Err(ApiError::invalid(
-            "Only reasoning.context=\"all_turns\" is supported.",
-            Some("reasoning.context".to_string()),
-        ));
-    }
+    // Unknown reasoning fields (generate_summary, context, future additions) are ignored.
     let effort = optional_string(object, "effort")?;
-    if let Some(effort) = &effort {
-        if !model.supports_effort(effort) {
-            return Err(ApiError::invalid(
-                format!(
-                    "reasoning.effort={effort:?} is not supported by {}.",
-                    model.id
-                ),
-                Some("reasoning.effort".to_string()),
-            ));
-        }
-    }
+    // An effort the model does not advertise degrades to the model default instead of failing
+    // the request: SDKs pin effort names across providers and must not 400 on a mismatch.
+    let effort = effort.filter(|effort| model.supports_effort(effort));
     let summary = optional_string(object, "summary")?;
-    if summary
-        .as_deref()
-        .is_some_and(|summary| !matches!(summary, "auto" | "concise" | "detailed" | "none"))
-    {
-        return Err(ApiError::invalid(
-            "reasoning.summary must be auto, concise, detailed, or none.",
-            Some("reasoning.summary".to_string()),
-        ));
-    }
+    let summary = summary
+        .filter(|summary| matches!(summary.as_str(), "auto" | "concise" | "detailed" | "none"));
     Ok((effort, summary))
 }
 
@@ -851,7 +783,7 @@ fn parse_text(value: Option<&Value>) -> Result<(Value, Option<Value>, Option<Str
     let object = value
         .as_object()
         .ok_or_else(|| ApiError::invalid("text must be an object.", Some("text".to_string())))?;
-    reject_unsupported_fields(object, &["format", "verbosity"])?;
+    // Unknown text fields are ignored for forward compatibility.
     let verbosity = optional_string(object, "verbosity")?;
     if verbosity
         .as_deref()
@@ -1194,19 +1126,8 @@ fn parse_responses_tools(value: Option<&Value>) -> Result<(Vec<Value>, Vec<Value
                 Some(format!("tools.{index}.type")),
             ));
         }
-        reject_unsupported_fields(
-            object,
-            &["type", "name", "description", "parameters", "strict"],
-        )?;
-        if object
-            .get("strict")
-            .is_some_and(|strict| !strict.is_null() && strict.as_bool().is_none_or(|strict| strict))
-        {
-            return Err(ApiError::invalid(
-                "strict=true function tools are not supported by this endpoint.",
-                Some(format!("tools.{index}.strict")),
-            ));
-        }
+        // Extra tool fields (strict, additionalProperties flags, future additions) are ignored;
+        // strict=true silently degrades to non-strict rather than failing the request.
         let name = required_string(object, "name")?;
         validate_tool_name(name, &format!("tools.{index}.name"))?;
         if !names.insert(name.to_string()) {
@@ -1334,7 +1255,7 @@ fn normalize_response_item(item: &Value, index: usize) -> Result<Value, ApiError
         | "custom_tool_call"
         | "custom_tool_call_output" => Ok(item.clone()),
         _ => Err(ApiError::invalid(
-            format!("Input item type {kind:?} is not supported by this text-only endpoint."),
+            format!("Input item type {kind:?} is not supported by this endpoint."),
             Some(format!("input.{index}.type")),
         )),
     }
@@ -1381,23 +1302,52 @@ fn normalize_message_item(object: &Map<String, Value>, index: usize) -> Result<V
                     Some(format!("input.{index}.content.{content_index}")),
                 )
             })?;
-            let part_type = part_object.get("type").and_then(Value::as_str);
-            if !matches!(part_type, Some("input_text" | "output_text" | "text")) {
-                return Err(ApiError::invalid(
-                    "Only text content is supported.",
-                    Some(format!("input.{index}.content.{content_index}.type")),
-                ));
+            let part_param = format!("input.{index}.content.{content_index}");
+            match part_object.get("type").and_then(Value::as_str) {
+                Some("input_text" | "output_text" | "text") => {
+                    let text =
+                        part_object
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                ApiError::invalid(
+                                    "Text content requires text.",
+                                    Some(format!("{part_param}.text")),
+                                )
+                            })?;
+                    normalized.push(json!({"type": expected_type, "text": text}));
+                }
+                Some("input_image" | "image_url") if upstream_role != "assistant" => {
+                    normalized.push(canonical_image_part(
+                        part_object
+                            .get("image_url")
+                            .or_else(|| part_object.get("url"))
+                            .ok_or_else(|| {
+                                ApiError::invalid(
+                                    "Image content part requires image_url.",
+                                    Some(format!("{part_param}.image_url")),
+                                )
+                            })?,
+                        part_object.get("detail"),
+                        &part_param,
+                    )?);
+                }
+                // Assistant image history cannot exist on the public surface; drop it rather
+                // than failing a replayed conversation.
+                Some("input_image" | "image_url") => {}
+                Some(other) => {
+                    return Err(ApiError::invalid(
+                        format!("Content part type {other:?} is not supported."),
+                        Some(format!("{part_param}.type")),
+                    ));
+                }
+                None => {
+                    return Err(ApiError::invalid(
+                        "Message content parts require a type.",
+                        Some(part_param),
+                    ));
+                }
             }
-            let text = part_object
-                .get("text")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    ApiError::invalid(
-                        "Text content requires text.",
-                        Some(format!("input.{index}.content.{content_index}.text")),
-                    )
-                })?;
-            normalized.push(json!({"type": expected_type, "text": text}));
         }
         normalized
     };
@@ -1410,6 +1360,69 @@ fn normalize_message_item(object: &Map<String, Value>, index: usize) -> Result<V
         message["id"] = id.clone();
     }
     Ok(message)
+}
+
+/// Replaces inline `data:` image payloads with a fixed-size placeholder so the byte-length
+/// input estimate used for the billing reserve reflects a typical image token cost instead of
+/// the raw base64 size (which would over-reserve by orders of magnitude).
+fn sanitize_estimate_images(value: &mut Value) {
+    const IMAGE_ESTIMATE_PLACEHOLDER: &str = "data:image/estimate";
+    match value {
+        Value::String(text) if text.starts_with("data:") && text.len() > 1024 => {
+            *text = IMAGE_ESTIMATE_PLACEHOLDER.repeat(128);
+        }
+        Value::Array(items) => items.iter_mut().for_each(sanitize_estimate_images),
+        Value::Object(object) => object.values_mut().for_each(sanitize_estimate_images),
+        _ => {}
+    }
+}
+
+/// Builds a canonical Responses `input_image` content part from either Chat Completions
+/// (`{"url": …, "detail": …}` or a bare string) or Responses (`"https://…"` / `"data:…"`
+/// string) image references. Only transports the model can actually receive are accepted:
+/// inline `data:` URLs and remote `http(s)://` URLs. `detail` is passed through when it is one
+/// of the recognized values and dropped otherwise.
+pub(super) fn canonical_image_part(
+    reference: &Value,
+    detail: Option<&Value>,
+    param: &str,
+) -> Result<Value, ApiError> {
+    let (url, nested_detail) = match reference {
+        Value::String(url) => (url.clone(), None),
+        Value::Object(object) => {
+            let url = object.get("url").and_then(Value::as_str).ok_or_else(|| {
+                ApiError::invalid(
+                    "image_url requires a url string.",
+                    Some(format!("{param}.image_url.url")),
+                )
+            })?;
+            (url.to_string(), object.get("detail"))
+        }
+        _ => {
+            return Err(ApiError::invalid(
+                "image_url must be a string or an object with a url.",
+                Some(format!("{param}.image_url")),
+            ))
+        }
+    };
+    if !(url.starts_with("data:image/")
+        || url.starts_with("https://")
+        || url.starts_with("http://"))
+    {
+        return Err(ApiError::invalid(
+            "image_url must be a data:image/… URL or an http(s):// URL.",
+            Some(format!("{param}.image_url")),
+        ));
+    }
+    let detail = detail
+        .or(nested_detail)
+        .and_then(Value::as_str)
+        .filter(|detail| matches!(*detail, "auto" | "low" | "high" | "original"));
+    let mut part = json!({"type": "input_image", "image_url": url});
+    if let Some(detail) = detail {
+        part["detail"] = Value::String(detail.to_string());
+    }
+    Ok(part)
 }
 
 fn canonical_message(role: &str, text: &str) -> Value {
@@ -1427,8 +1440,22 @@ fn user_inputs_from_message(message: &Value) -> Result<Vec<Value>, ApiError> {
         .ok_or_else(|| ApiError::invalid("Invalid user message content.", Some("input".into())))?;
     Ok(content
         .iter()
-        .filter_map(|part| part.get("text").and_then(Value::as_str))
-        .map(|text| json!({"type": "text", "text": text}))
+        .filter_map(|part| match part.get("type").and_then(Value::as_str) {
+            Some("input_image") => {
+                let mut input = json!({
+                    "type": "image",
+                    "url": part.get("image_url").cloned().unwrap_or(Value::Null)
+                });
+                if let Some(detail) = part.get("detail").and_then(Value::as_str) {
+                    input["detail"] = Value::String(detail.to_string());
+                }
+                Some(input)
+            }
+            _ => part
+                .get("text")
+                .and_then(Value::as_str)
+                .map(|text| json!({"type": "text", "text": text})),
+        })
         .collect())
 }
 
@@ -2792,17 +2819,137 @@ mod tests {
     }
 
     #[test]
-    fn parser_rejects_fields_that_app_server_cannot_honor() {
-        let error = parse_responses_request(
+    fn parser_ignores_fields_that_app_server_cannot_honor() {
+        let parsed = parse_responses_request(
             &gateway(),
-            json!({"model": "gpt-5.6", "input": "hi", "temperature": 0.2}),
+            json!({
+                "model": "gpt-5.6",
+                "input": "hi",
+                "temperature": 0.2,
+                "top_p": 0.5,
+                "max_output_tokens": 512,
+                "truncation": "auto",
+                "user": "end-user",
+                "background": true,
+                "max_tool_calls": 3,
+                "top_logprobs": 2,
+                "service_tier": "flex",
+                "stream_options": {"include_obfuscation": true},
+                "some_future_field": {"anything": true}
+            }),
         )
-        .unwrap_err();
-        assert_eq!(error.status, StatusCode::BAD_REQUEST);
-        assert_eq!(error.param.as_deref(), Some("temperature"));
-        assert!(!error.message.contains("Codex"));
-        assert!(!error.message.contains("app-server"));
-        assert!(!error.message.contains("ChatGPT"));
+        .expect("parameters the transport cannot honor must be ignored, not rejected");
+        assert_eq!(parsed.input.turn_input.len(), 1);
+    }
+
+    #[test]
+    fn unenforceable_tool_controls_degrade_instead_of_failing() {
+        let parsed = parse_responses_request(
+            &gateway(),
+            json!({
+                "model": "gpt-5.6",
+                "input": "weather?",
+                "tools": [{
+                    "type": "function",
+                    "name": "get_weather",
+                    "parameters": {"type": "object"}
+                }],
+                "tool_choice": {"type": "function", "name": "get_weather"},
+                "parallel_tool_calls": false
+            }),
+        )
+        .expect("forced tool choice and parallel=false must degrade, not fail");
+        assert_eq!(parsed.dynamic_tools.len(), 1);
+        assert_eq!(parsed.tool_choice, json!("auto"));
+
+        let required = parse_responses_request(
+            &gateway(),
+            json!({
+                "model": "gpt-5.6",
+                "input": "weather?",
+                "tools": [{
+                    "type": "function",
+                    "name": "get_weather",
+                    "parameters": {"type": "object"}
+                }],
+                "tool_choice": "required"
+            }),
+        )
+        .expect("tool_choice=required must degrade to auto");
+        assert_eq!(required.tool_choice, json!("auto"));
+        assert_eq!(required.dynamic_tools.len(), 1);
+    }
+
+    #[test]
+    fn unsupported_reasoning_effort_degrades_to_model_default() {
+        let parsed = parse_responses_request(
+            &gateway(),
+            json!({
+                "model": "gpt-5.6",
+                "input": "hi",
+                "reasoning": {"effort": "minimal", "summary": "verbose", "context": "last_turn"}
+            }),
+        )
+        .expect("unsupported effort/summary must degrade, not fail");
+        assert_eq!(parsed.reasoning_effort, None);
+        assert_eq!(parsed.reasoning_summary, None);
+    }
+
+    #[test]
+    fn responses_input_image_parts_translate_to_turn_image_inputs() {
+        let parsed = parse_responses_request(
+            &gateway(),
+            json!({
+                "model": "gpt-5.6",
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "first"},
+                            {"type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgo=", "detail": "low"}
+                        ]
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_image", "image_url": "https://example.com/x.png"},
+                            {"type": "input_text", "text": "second"}
+                        ]
+                    }
+                ]
+            }),
+        )
+        .expect("input_image parts must translate");
+        // First user message is history and keeps canonical Responses image parts.
+        let history = &parsed.input.prior_items[0];
+        assert_eq!(history["content"][1]["type"], "input_image");
+        assert_eq!(history["content"][1]["detail"], "low");
+        // Final user message becomes app-server image turn inputs.
+        assert_eq!(parsed.input.turn_input[0]["type"], "image");
+        assert_eq!(
+            parsed.input.turn_input[0]["url"],
+            "https://example.com/x.png"
+        );
+        assert_eq!(
+            parsed.input.turn_input[1],
+            json!({"type": "text", "text": "second"})
+        );
+    }
+
+    #[test]
+    fn data_url_images_do_not_inflate_the_billing_estimate() {
+        let mut value = json!({
+            "input": [
+                {"type": "image", "url": format!("data:image/png;base64,{}", "A".repeat(1_000_000))},
+                {"type": "text", "text": "describe"}
+            ]
+        });
+        sanitize_estimate_images(&mut value);
+        let bytes = serde_json::to_vec(&value).unwrap().len();
+        assert!(
+            bytes < 16_000,
+            "estimate must not carry raw base64: {bytes}"
+        );
     }
 
     #[test]
@@ -2939,7 +3086,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_diagnostic_metadata_is_bounded_and_reasoning_context_is_exact() {
+    fn codex_diagnostic_metadata_is_bounded() {
         let metadata_error = parse_responses_request(
             &gateway(),
             json!({
@@ -2953,22 +3100,11 @@ mod tests {
             metadata_error.param.as_deref(),
             Some("client_metadata.turn_id")
         );
-
-        let reasoning_error = parse_responses_request(
-            &gateway(),
-            json!({
-                "model": "gpt-5.6",
-                "input": "hi",
-                "reasoning": {"context": "last_turn"}
-            }),
-        )
-        .unwrap_err();
-        assert_eq!(reasoning_error.param.as_deref(), Some("reasoning.context"));
     }
 
     #[test]
-    fn strict_function_tools_are_rejected_instead_of_silently_downgraded() {
-        let error = parse_responses_request(
+    fn strict_function_tools_are_silently_downgraded() {
+        let parsed = parse_responses_request(
             &gateway(),
             json!({
                 "model": "gpt-5.6",
@@ -2981,12 +3117,10 @@ mod tests {
                 }]
             }),
         )
-        .unwrap_err();
-        assert_eq!(error.status, StatusCode::BAD_REQUEST);
-        assert_eq!(error.param.as_deref(), Some("tools.0.strict"));
-        assert!(!error.message.contains("Codex"));
-        assert!(!error.message.contains("app-server"));
-        assert!(!error.message.contains("ChatGPT"));
+        .expect("strict=true must downgrade to a non-strict dynamic tool");
+        assert_eq!(parsed.dynamic_tools.len(), 1);
+        assert_eq!(parsed.dynamic_tools[0]["name"], "get_weather");
+        assert!(parsed.dynamic_tools[0].get("strict").is_none());
     }
 
     #[test]

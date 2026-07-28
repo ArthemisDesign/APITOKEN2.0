@@ -1,8 +1,9 @@
 //! OpenAI-compatible Chat Completions adapter over the same Responses/app-server core.
 //!
-//! The adapter is deliberately strict: parameters that the app-server cannot honor are rejected
-//! instead of being silently ignored. Both streaming and non-streaming calls use exact upstream
-//! token usage for settlement.
+//! The adapter is deliberately lenient: parameters that the app-server cannot honor are
+//! accepted and ignored instead of rejected, so stock SDKs and agent terminals never fail on
+//! defaults they send. Both streaming and non-streaming calls use exact upstream token usage
+//! for settlement.
 
 use super::api::{
     json_response, normalize_output_item, parse_responses_request, prepare_turn, ApiError,
@@ -120,43 +121,10 @@ fn parse_chat_request(gateway: &CodexGateway, value: Value) -> Result<ParsedChat
     let object = value
         .as_object()
         .ok_or_else(|| ApiError::invalid("Request body must be a JSON object.", None::<String>))?;
-    let supported = [
-        "model",
-        "messages",
-        "stream",
-        "stream_options",
-        "tools",
-        "tool_choice",
-        "parallel_tool_calls",
-        "response_format",
-        "reasoning_effort",
-        "verbosity",
-        "metadata",
-        "store",
-        "n",
-        "temperature",
-        "top_p",
-        "max_tokens",
-        "max_completion_tokens",
-        "stop",
-        "presence_penalty",
-        "frequency_penalty",
-        "logprobs",
-        "top_logprobs",
-        "seed",
-        "user",
-        "service_tier",
-    ];
-    if let Some(field) = object
-        .keys()
-        .find(|field| !supported.iter().any(|supported| field == supported))
-    {
-        return Err(ApiError::invalid(
-            format!("Parameter {field:?} is not supported by this endpoint."),
-            Some(field.clone()),
-        ));
-    }
-    validate_default_only_chat_parameters(object)?;
+    // SDK compatibility: any parameter the transport cannot honor (sampling controls, token
+    // caps, stop sequences, seeds, logprobs, multi-choice, store, service_tier, future fields)
+    // is accepted and ignored rather than rejected, so stock SDKs and agent terminals never
+    // fail on parameters they send by default.
 
     let messages = object
         .get("messages")
@@ -257,75 +225,6 @@ fn parse_chat_request(gateway: &CodexGateway, value: Value) -> Result<ParsedChat
     })
 }
 
-fn validate_default_only_chat_parameters(object: &Map<String, Value>) -> Result<(), ApiError> {
-    if object
-        .get("n")
-        .is_some_and(|value| !value.is_null() && value.as_u64() != Some(1))
-    {
-        return Err(unsupported_non_default("n"));
-    }
-    for field in [
-        "max_tokens",
-        "max_completion_tokens",
-        "stop",
-        "seed",
-        "user",
-    ] {
-        if object.get(field).is_some_and(|value| !value.is_null()) {
-            return Err(unsupported_non_default(field));
-        }
-    }
-    for field in ["temperature", "top_p"] {
-        if object
-            .get(field)
-            .is_some_and(|value| !value.is_null() && value.as_f64() != Some(1.0))
-        {
-            return Err(unsupported_non_default(field));
-        }
-    }
-    for field in ["presence_penalty", "frequency_penalty"] {
-        if object.get(field).is_some_and(|value| {
-            !value.is_null() && value.as_f64().is_none_or(|number| number != 0.0)
-        }) {
-            return Err(unsupported_non_default(field));
-        }
-    }
-    if object
-        .get("logprobs")
-        .is_some_and(|value| !value.is_null() && value.as_bool().is_none_or(|enabled| enabled))
-    {
-        return Err(unsupported_non_default("logprobs"));
-    }
-    if object
-        .get("top_logprobs")
-        .is_some_and(|value| !value.is_null() && value.as_u64().is_none_or(|count| count != 0))
-    {
-        return Err(unsupported_non_default("top_logprobs"));
-    }
-    if object
-        .get("store")
-        .is_some_and(|value| !value.is_null() && value.as_bool().is_none_or(|store| store))
-    {
-        return Err(ApiError::invalid(
-            "store=true is not supported because Chat Completions retrieval is not exposed.",
-            Some("store".to_string()),
-        ));
-    }
-    if object.get("service_tier").is_some_and(|value| {
-        !value.is_null() && !matches!(value.as_str(), Some("auto" | "default"))
-    }) {
-        return Err(unsupported_non_default("service_tier"));
-    }
-    Ok(())
-}
-
-fn unsupported_non_default(field: &str) -> ApiError {
-    ApiError::invalid(
-        format!("Non-default {field} is not supported by this endpoint and was not ignored."),
-        Some(field.to_string()),
-    )
-}
-
 fn parse_stream_options(value: Option<&Value>) -> Result<bool, ApiError> {
     let Some(value) = value.filter(|value| !value.is_null()) else {
         return Ok(false);
@@ -336,15 +235,7 @@ fn parse_stream_options(value: Option<&Value>) -> Result<bool, ApiError> {
             Some("stream_options".to_string()),
         )
     })?;
-    if let Some(field) = object
-        .keys()
-        .find(|field| field.as_str() != "include_usage")
-    {
-        return Err(ApiError::invalid(
-            format!("stream_options.{field} is not supported."),
-            Some(format!("stream_options.{field}")),
-        ));
-    }
+    // Unknown stream_options fields are ignored for SDK compatibility.
     match object.get("include_usage") {
         None | Some(Value::Null) => Ok(false),
         Some(Value::Bool(value)) => Ok(*value),
@@ -399,18 +290,15 @@ fn translate_messages(messages: &[Value]) -> Result<TranslatedChatMessages, ApiE
                 }
             }
             "user" => {
-                let text = chat_content_text(
+                let parts = chat_user_content_parts(
                     object.get("content"),
-                    false,
                     &format!("messages.{index}.content"),
-                )?
-                .ok_or_else(|| {
-                    ApiError::invalid(
-                        "User message content must not be null.",
-                        Some(format!("messages.{index}.content")),
-                    )
-                })?;
-                input.push(chat_message_item("user", &text));
+                )?;
+                input.push(json!({
+                    "type": "message",
+                    "role": "user",
+                    "content": parts
+                }));
             }
             "assistant" => {
                 if object.get("refusal").is_some_and(|value| !value.is_null())
@@ -601,6 +489,76 @@ fn chat_content_text(
         }
         _ => Err(ApiError::invalid(
             format!("{param} must be a string or text-part array."),
+            Some(param.to_string()),
+        )),
+    }
+}
+
+/// User messages may mix text and images. Parts are normalized to the canonical Responses
+/// content shape (`input_text` / `input_image`) so history injection and the turn input split
+/// handle them uniformly.
+fn chat_user_content_parts(value: Option<&Value>, param: &str) -> Result<Vec<Value>, ApiError> {
+    let value = value.ok_or_else(|| {
+        ApiError::invalid(format!("{param} is required."), Some(param.to_string()))
+    })?;
+    match value {
+        Value::Null => Err(ApiError::invalid(
+            "User message content must not be null.",
+            Some(param.to_string()),
+        )),
+        Value::String(text) => Ok(vec![json!({"type": "input_text", "text": text})]),
+        Value::Array(parts) => {
+            let mut normalized = Vec::with_capacity(parts.len());
+            for (index, part) in parts.iter().enumerate() {
+                let part = part.as_object().ok_or_else(|| {
+                    ApiError::invalid(
+                        "Content parts must be objects.",
+                        Some(format!("{param}.{index}")),
+                    )
+                })?;
+                let part_param = format!("{param}.{index}");
+                match part.get("type").and_then(Value::as_str) {
+                    Some("text" | "input_text") => {
+                        let text = part.get("text").and_then(Value::as_str).ok_or_else(|| {
+                            ApiError::invalid(
+                                "Text content part requires text.",
+                                Some(format!("{part_param}.text")),
+                            )
+                        })?;
+                        normalized.push(json!({"type": "input_text", "text": text}));
+                    }
+                    Some("image_url" | "input_image") => {
+                        normalized.push(super::api::canonical_image_part(
+                            part.get("image_url")
+                                .or_else(|| part.get("url"))
+                                .ok_or_else(|| {
+                                    ApiError::invalid(
+                                        "Image content part requires image_url.",
+                                        Some(format!("{part_param}.image_url")),
+                                    )
+                                })?,
+                            part.get("detail"),
+                            &part_param,
+                        )?);
+                    }
+                    Some(other) => {
+                        return Err(ApiError::invalid(
+                            format!("Content part type {other:?} is not supported."),
+                            Some(format!("{part_param}.type")),
+                        ));
+                    }
+                    None => {
+                        return Err(ApiError::invalid(
+                            "Content part requires a type.",
+                            Some(part_param),
+                        ));
+                    }
+                }
+            }
+            Ok(normalized)
+        }
+        _ => Err(ApiError::invalid(
+            format!("{param} must be a string or a content-part array."),
             Some(param.to_string()),
         )),
     }
@@ -1111,21 +1069,66 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_sampling_is_rejected_not_ignored() {
-        let error = parse_chat_request(
+    fn unsupported_sampling_is_accepted_and_ignored() {
+        let parsed = parse_chat_request(
             &gateway(),
             json!({
                 "model":"gpt-5.6",
                 "messages":[{"role":"user","content":"hello"}],
-                "temperature":0.2
+                "temperature":0.2,
+                "top_p":0.5,
+                "max_tokens":256,
+                "max_completion_tokens":256,
+                "stop":["\n"],
+                "presence_penalty":0.5,
+                "frequency_penalty":-0.5,
+                "logprobs":true,
+                "top_logprobs":3,
+                "seed":42,
+                "user":"end-user",
+                "n":2,
+                "store":true,
+                "service_tier":"flex",
+                "some_future_field":{"anything":true}
             }),
         )
-        .err()
-        .expect("must reject");
-        assert_eq!(error.status, StatusCode::BAD_REQUEST);
-        assert!(!error.message.contains("Codex"));
-        assert!(!error.message.contains("app-server"));
-        assert!(!error.message.contains("ChatGPT"));
+        .expect("parameters the transport cannot honor must be ignored, not rejected");
+        assert_eq!(parsed.responses.input.turn_input.len(), 1);
+    }
+
+    #[test]
+    fn chat_user_image_parts_translate_to_canonical_input_image() {
+        let parsed = parse_chat_request(
+            &gateway(),
+            json!({
+                "model":"gpt-5.6",
+                "messages":[
+                    {"role":"user","content":[
+                        {"type":"text","text":"what is in this image?"},
+                        {"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo=","detail":"high"}}
+                    ]},
+                    {"role":"assistant","content":"a cat"},
+                    {"role":"user","content":[
+                        {"type":"image_url","image_url":"https://example.com/dog.png"},
+                        {"type":"text","text":"and this one?"}
+                    ]}
+                ]
+            }),
+        )
+        .expect("image content must translate");
+        // First user message is history: canonical Responses input_image parts.
+        let history = &parsed.responses.input.prior_items[0];
+        assert_eq!(history["content"][1]["type"], "input_image");
+        assert_eq!(
+            history["content"][1]["image_url"],
+            "data:image/png;base64,iVBORw0KGgo="
+        );
+        assert_eq!(history["content"][1]["detail"], "high");
+        // Final user message becomes the turn input: app-server image inputs.
+        let turn_input = &parsed.responses.input.turn_input;
+        assert_eq!(turn_input[0]["type"], "image");
+        assert_eq!(turn_input[0]["url"], "https://example.com/dog.png");
+        assert_eq!(turn_input[1], json!({"type":"text","text":"and this one?"}));
     }
 
     #[test]

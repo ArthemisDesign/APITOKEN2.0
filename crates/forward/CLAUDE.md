@@ -145,7 +145,17 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    выполняет клиент: gateway возвращает raw input и никогда не исполняет его сам.
 4. Raw reasoning text не публиковать; только provider summary. `encrypted_content` — только по
    явному Responses `include`, но хранить tenant-bound для корректной continuity.
-5. Неподдерживаемые generation-параметры отклонять, не игнорировать. Ограниченные диагностические
+5. **SDK-совместимость через lenient parsing:** параметры, которые app-server не может исполнить
+   (sampling/token-caps/stop/seed/logprobs/n/store/service_tier/stream_options, forced
+   tool_choice → degrade в "auto", parallel_tool_calls=false, strict=true tools → non-strict,
+   неизвестные include, effort вне каталога модели → дефолт модели, любые неизвестные/будущие
+   поля) — принимать и игнорировать, НЕ отклонять: стоковые SDK и агентские терминалы шлют их по
+   умолчанию и не должны падать. 400 остаётся только для структурно непригодных запросов (нет
+   model/input, пустые messages, битая tool-history, невалидный image URL). User-сообщения могут
+   нести изображения: chat `image_url` и Responses `input_image` части (data:image/… или
+   http(s)://) транслируются в app-server image turn inputs и канонические input_image части
+   истории; base64 data-URL в estimate для reserve заменяется placeholder'ом
+   (`sanitize_estimate_images`), чтобы не завышать резерв. Ограниченные диагностические
    compatibility-поля текущего Codex (`client_metadata`, `safety_identifier`) разрешено валидировать
    и отбрасывать без логирования/форвардинга; `prompt_cache_key` валидируется и только отражается в
    публичном ответе. Usage для settlement брать из authoritative completed app-server turn.
