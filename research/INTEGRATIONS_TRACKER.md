@@ -26,7 +26,7 @@
 | Цель | Состояние | PR | Упоминание в upstream | Публичная ссылка | Последняя проверка |
 |---|---|---|---|---|---|
 | `BerriAI/litellm` | open, safe to merge | [#34915](https://github.com/BerriAI/litellm/pull/34915) | pending merge | pending | 2026-07-28 |
-| `musistudio/claude-code-router` | branch ready; PR auth blocked | pending | absent | absent | 2026-07-28 |
+| `musistudio/claude-code-router` | PR open; review pending | [#1598](https://github.com/musistudio/claude-code-router/pull/1598) | pending merge | absent | 2026-07-28 |
 | `LibreChat-AI/librechat.ai` | queued | — | — | — | — |
 | `QuantumNous/new-api` | queued | — | — | — | — |
 | `Aider-AI/aider` | queued | — | — | — | — |
@@ -119,13 +119,17 @@
 
 ### PR и backlink
 
-- PR: `pending`, кодовый blocker отсутствует.
-- GraphQL `createPullRequest` и REST `POST /pulls` возвращают 403
-  `Resource not accessible by personal access token` для текущего fine-grained PAT.
-- Доступные локальные credentials проверены: classic PAT не найден. Для открытия PR нужен временный
-  classic PAT аккаунта `apitokensale-admin` со scope `public_repo`; после создания его отозвать.
-- Готовое сравнение для ручной проверки:
-  <https://github.com/musistudio/claude-code-router/compare/main...apitokensale-admin:claude-code-router:feat/apitoken-provider>.
+- PR открыт: <https://github.com/musistudio/claude-code-router/pull/1598>.
+- Статус сразу после открытия: `OPEN`, `MERGEABLE`, `mergeStateStatus=CLEAN`, draft=false.
+- Base SHA: `3b99fa239b581a787034cc4e3caf35640e32b35b`; head SHA:
+  `b8179b2d05064d83b37c6ae4a5e2a8a598889d9c`.
+- В upstream настроены workflows только на push в `main` и release tag; pull-request checks не
+  объявлены, поэтому отсутствие CI checks у PR ожидаемо и не является зависшим запуском.
+- CLA-бот, запросы review и замечания на момент проверки не появились.
+- Greptile запрошен комментарием `@greptileai please review`:
+  <https://github.com/musistudio/claude-code-router/pull/1598#issuecomment-5104585428>.
+- Для создания PR использован временный classic PAT только через process env; он не сохранён в
+  keyring, файлах или git config. Предыдущие GraphQL/REST 403 fine-grained PAT закрыты.
 - Ожидаемое упоминание после мержа: preset-модуль содержит `apitoken.sale`, endpoint и website URL;
   провайдер появляется в UI CCR, README и EN/ZH one-click docs.
 - Ожидаемые публичные страницы:
@@ -133,7 +137,7 @@
   <https://ccrdesk.top/configuration/provider-deeplink/>.
 - Проверка 2026-07-28: upstream `main` не содержит `apitoken.sale`; GitHub code search = 0;
   обе публичные страницы ссылки не содержат. Backlink status: `pending`.
-- Следующая проверка: сразу после открытия PR, затем после review, merge и первого upstream release.
+- Следующая проверка: ответ Greptile/maintainer, merge и первый upstream release.
 
 ## Очередь и повторные проверки
 
@@ -147,3 +151,4 @@
 | 2026-07-28 | `musistudio/claude-code-router` | branch, current upstream, tests, live CCR run | branch ready; all integration checks passed; four core failures confirmed as pristine baseline |
 | 2026-07-28 | `musistudio/claude-code-router` | GraphQL/REST PR creation, credentials | blocked only by fine-grained PAT; classic `public_repo` PAT required |
 | 2026-07-28 | `musistudio/claude-code-router` | upstream/code search/public docs | no existing `apitoken.sale` reference; backlink pending |
+| 2026-07-28 | `musistudio/claude-code-router` | classic PAT, PR creation, initial status | PR [#1598](https://github.com/musistudio/claude-code-router/pull/1598) open and cleanly mergeable; review pending; Greptile requested |
