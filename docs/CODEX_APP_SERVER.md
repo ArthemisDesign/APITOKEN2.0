@@ -103,6 +103,44 @@ next request; the gateway never executes a customer's `exec` source.
 Chat Completions accepts the equivalent top-level `reasoning_effort` and `verbosity` controls and
 translates them to the same app-server turn settings.
 
+opencode works through the Chat Completions surface. Its provider models are not in the models.dev
+catalog, so opencode assigns a config-defined model text-only default capabilities and silently
+replaces attached images with an in-band "this model does not support image input" note — the
+gateway never receives the image. Declare the image modality explicitly per model in
+`opencode.json` (and restart opencode afterwards):
+
+```json
+{
+  "provider": {
+    "apitoken": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "apiToken.sale",
+      "options": {
+        "baseURL": "https://openai.api.apitoken.sale/v1",
+        "apiKey": "{env:APITOKEN_API_KEY}"
+      },
+      "models": {
+        "gpt-5.6-sol": {
+          "name": "GPT-5.6 Sol",
+          "attachment": true,
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "limit": { "context": 272000, "output": 32000 }
+        }
+      }
+    }
+  }
+}
+```
+
+Once `"image"` is in `modalities.input`, pasted and attached images are sent as standard
+Chat Completions `image_url` parts with inline `data:` URLs, which the gateway accepts (see the
+image rules above). The same declaration is what any other capability-gated terminal needs; the
+wire contract itself is plain Chat Completions/Responses image parts, so ungated clients (OpenAI
+SDKs, Codex CLI) need nothing extra.
+
 Diagnostic `client_metadata` and `safety_identifier` values are validated and discarded at the
 public boundary. They are never logged or forwarded to the pooled account. `prompt_cache_key` is
 validated and echoed for protocol compatibility, but the official app-server remains responsible
