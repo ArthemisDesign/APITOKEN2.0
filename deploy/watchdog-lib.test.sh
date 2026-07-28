@@ -1071,6 +1071,11 @@ grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api@.service"
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api.service"
 grep -Fq 'systemctl_command kill --kill-whom=main -s SIGUSR1 "$ACTIVE_UNIT"' \
   "$ROOT/deploy/engine-bluegreen.sh"
+grep -Fq 'provider-runtime-v1 >"$ENGINE_STAGE/.provider-runtime-v1"' "$ROOT/deploy/deploy.sh" \
+  || wd_die "engine releases do not record fixed-provider capability"
+! grep -Fq 'CLAUDE_API_CODEX_ENABLED=1 is required when CLAUDE_API_PROVIDER=openai' \
+  "$ROOT/crates/server/src/config.rs" \
+  || wd_die "disabled fixed OpenAI mode cannot serve a stable kill-switch envelope"
 grep -Fq '/usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api@8787.service' \
   "$ROOT/deploy/install-sudoers.sh"
 grep -Fq 'CLAUDE_API_AFFINITY_SECRET' "$ROOT/deploy/install-watchdog.sh"

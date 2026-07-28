@@ -222,6 +222,10 @@ validate_engine_stage() {
   local directory=$1
   [[ -x "$directory/claude-api" ]] || die "staged engine binary is missing: $directory/claude-api"
   [[ -x "$directory/authbot" ]] || die "staged authbot binary is missing: $directory/authbot"
+  [[ -f "$directory/.provider-runtime-v1" && ! -L "$directory/.provider-runtime-v1" ]] \
+    || die "staged engine provider capability marker is missing"
+  [[ $(<"$directory/.provider-runtime-v1") == provider-runtime-v1 ]] \
+    || die "staged engine provider capability marker is invalid"
 }
 
 # Restart the subscription bot only when the binary it is running differs from the one just shipped.
@@ -365,6 +369,11 @@ prepare_engine_release() {
     run env CARGO_TARGET_DIR="$ENGINE_STAGE/target" cargo build --locked --release -p authbot --manifest-path "$ENGINE_SOURCE_DIR/Cargo.toml"
     run install -m 0755 -- "$ENGINE_STAGE/target/release/authbot" "$ENGINE_STAGE/authbot"
     run rm -rf -- "$ENGINE_STAGE/target"
+  fi
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "dry-run: would write $ENGINE_STAGE/.provider-runtime-v1"
+  else
+    printf '%s\n' provider-runtime-v1 >"$ENGINE_STAGE/.provider-runtime-v1"
   fi
   if [[ "$DRY_RUN" != "1" ]]; then
     validate_engine_stage "$ENGINE_STAGE"

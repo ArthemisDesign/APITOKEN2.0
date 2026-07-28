@@ -461,9 +461,6 @@ impl Settings {
         } else {
             None
         };
-        if provider == ProviderMode::OpenAi && codex.is_none() {
-            panic!("CLAUDE_API_CODEX_ENABLED=1 is required when CLAUDE_API_PROVIDER=openai");
-        }
         Settings {
             provider,
             db_path,
