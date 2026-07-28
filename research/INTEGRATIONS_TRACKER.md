@@ -21,6 +21,18 @@
 публичная документация/релиз и GitHub code search по `apitoken.sale`. Если публикация зависит от
 релиза, записывать отдельно дату мержа и дату появления на публичном сайте.
 
+## Доступ к GitHub
+
+- Основная fine-grained сессия `gh` не изменена.
+- Classic PAT для внешних PR хранится только в macOS Keychain: service
+  `apitoken-sale/github-classic-pat`, account `apitokensale-admin`.
+- `~/.config/apitoken-sale/github.env` имеет права `600` и содержит только loader из Keychain;
+  самого токена нет ни в файле, ни в репозитории.
+- Проверка 2026-07-28: GitHub API HTTP 200, аккаунт `apitokensale-admin`; scope `repo` включает
+  требуемый `public_repo`. Токен избыточно привилегирован и истекает 2026-08-27 — при ротации
+  заменить на минимальный classic PAT.
+- Полные правила использования и ротации: `research/GEO_GITHUB.md`.
+
 ## Сводка
 
 | Цель | Состояние | PR | Упоминание в upstream | Публичная ссылка | Последняя проверка |
@@ -58,8 +70,8 @@
   `e1de0d53cf66c3eb7fbaec612e815d28eeb16e78`.
 - Remote branch пока сохраняет исходного родителя `d2867bd`: обновление ref на историю `v3.0.17`
   GitHub отклонил, потому что промежуточный upstream release меняет `.github/workflows/release.yml`,
-  а PAT не имеет scope `workflow`. Для PR это не создаёт conflict: patch применился на `3b99fa2`
-  автоматически и именно в таком виде прошёл повторные проверки.
+  а использованный тогда PAT не имел scope `workflow`. Для PR это не создаёт conflict: patch
+  применился на `3b99fa2` автоматически и именно в таком виде прошёл повторные проверки.
 - `CONTRIBUTING.md` и repo-local `AGENTS.md` отсутствуют. Проверены GitHub workflows и npm scripts.
 - Актуальный механизм — встроенный `ProviderPreset`, а не старый отдельный transformer/config.
 - Принятые аналоги: `claudeapi` и `Fenno.ai`; оба регистрируются отдельным preset-модулем через
@@ -128,8 +140,9 @@
 - CLA-бот, запросы review и замечания на момент проверки не появились.
 - Greptile запрошен комментарием `@greptileai please review`:
   <https://github.com/musistudio/claude-code-router/pull/1598#issuecomment-5104585428>.
-- Для создания PR использован временный classic PAT только через process env; он не сохранён в
-  keyring, файлах или git config. Предыдущие GraphQL/REST 403 fine-grained PAT закрыты.
+- Classic PAT для создания и сопровождения внешних PR сохранён в отдельной записи macOS Keychain;
+  process env загружается локальным loader и не меняет основную fine-grained сессию `gh`.
+  Предыдущие GraphQL/REST 403 fine-grained PAT закрыты.
 - Ожидаемое упоминание после мержа: preset-модуль содержит `apitoken.sale`, endpoint и website URL;
   провайдер появляется в UI CCR, README и EN/ZH one-click docs.
 - Ожидаемые публичные страницы:
@@ -152,3 +165,4 @@
 | 2026-07-28 | `musistudio/claude-code-router` | GraphQL/REST PR creation, credentials | blocked only by fine-grained PAT; classic `public_repo` PAT required |
 | 2026-07-28 | `musistudio/claude-code-router` | upstream/code search/public docs | no existing `apitoken.sale` reference; backlink pending |
 | 2026-07-28 | `musistudio/claude-code-router` | classic PAT, PR creation, initial status | PR [#1598](https://github.com/musistudio/claude-code-router/pull/1598) open and cleanly mergeable; review pending; Greptile requested |
+| 2026-07-28 | `musistudio/claude-code-router` | Keychain credential, PR/review/checks | classic PAT validated and persisted outside repo; PR remains open, cleanly mergeable, with no CI, review comments or actionable blockers; next target may start |
