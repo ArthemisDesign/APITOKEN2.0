@@ -43,7 +43,13 @@ export function withoutRussianPrefix(pathname: string): string {
 
 export function supportsRussianRoute(pathname: string): boolean {
   const path = withoutRussianPrefix(pathname);
-  return russianExactRoutes.has(path) || path.startsWith("/docs/learn/") || path === "/docs/learn";
+  return (
+    russianExactRoutes.has(path) ||
+    path.startsWith("/docs/learn/") ||
+    path === "/docs/learn" ||
+    path === "/errors" ||
+    path.startsWith("/errors/")
+  );
 }
 
 export function localeRoute(pathname: string, locale: CoreLocale): string | null {

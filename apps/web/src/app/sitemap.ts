@@ -3,6 +3,15 @@ import { articlesForLocale, articleUpdatedDate, learnHubPath, learnPath, LOCALES
 import { claudeModels, modelPath } from "@/lib/models";
 import { absoluteUrl, LAST_CONTENT_UPDATE, sitemapPages } from "@/lib/seo";
 import { blogPath, listBlogPosts, type PublicBlogPostSummary } from "@/lib/blog";
+import {
+  TOOL_ERROR_LOCALES,
+  TOOL_ERROR_TOOLS,
+  toolErrorPath,
+  toolErrors,
+  toolErrorsIndexPath,
+  toolHubPath,
+} from "@/lib/tool-errors";
+import { TOOL_ERRORS_LAUNCH } from "@/lib/tool-errors-page";
 
 const MODELS_LAUNCH = new Date("2026-07-17T00:00:00.000Z");
 
@@ -76,5 +85,29 @@ export function buildSitemap(blogPosts: PublicBlogPostSummary[] = []): MetadataR
     priority: 0.8,
   }));
 
-  return [...corePages, ...ruCorePages, ...infoPages, ...toolPages, ...modelPages, ...learnHubs, ...learnPages, ...blogPages];
+  // Tool-scoped error cluster: index + per-tool hubs + per-error pages, ×4 locales.
+  const toolErrorPages: MetadataRoute.Sitemap = TOOL_ERROR_LOCALES.flatMap((locale) => [
+    {
+      url: absoluteUrl(toolErrorsIndexPath(locale)),
+      lastModified: TOOL_ERRORS_LAUNCH,
+      changeFrequency: "weekly" as const,
+      priority: 0.7,
+    },
+    ...TOOL_ERROR_TOOLS.flatMap((tool) => [
+      {
+        url: absoluteUrl(toolHubPath(tool.slug, locale)),
+        lastModified: TOOL_ERRORS_LAUNCH,
+        changeFrequency: "weekly" as const,
+        priority: 0.7,
+      },
+      ...toolErrors(tool.slug).map((entry) => ({
+        url: absoluteUrl(toolErrorPath(tool.slug, entry.slug, locale)),
+        lastModified: TOOL_ERRORS_LAUNCH,
+        changeFrequency: "monthly" as const,
+        priority: 0.75,
+      })),
+    ]),
+  ]);
+
+  return [...corePages, ...ruCorePages, ...infoPages, ...toolPages, ...modelPages, ...learnHubs, ...learnPages, ...toolErrorPages, ...blogPages];
 }
