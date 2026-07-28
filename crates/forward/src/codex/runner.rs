@@ -1108,6 +1108,36 @@ done
         assert_eq!(turn_start["params"]["input"][0]["text"], "hello");
     }
 
+    /// Agent terminals (opencode, OpenAI SDKs, Codex clients) attach clipboard screenshots as
+    /// megabyte-scale `data:` URLs. The app-server `UserInput::Image { url, .. }` contract
+    /// requires the payload to reach `turn/start` byte-for-byte, so assert the full data URL,
+    /// the `detail` passthrough, and the part order survive the JSON-RPC framing.
+    #[tokio::test]
+    async fn turn_start_carries_image_inputs_verbatim() {
+        let (gateway, workspace) = fake_gateway("text");
+        let data_url = format!("data:image/png;base64,{}", "A".repeat(200_000));
+        let mut request = turn_request(test_model());
+        request.turn_input = vec![
+            json!({"type": "image", "url": data_url, "detail": "high"}),
+            json!({"type": "text", "text": "what is in this image?"}),
+        ];
+        gateway.run_turn(request, None).await.unwrap();
+
+        let requests = logged_requests(&workspace.log);
+        let turn_start = requests
+            .iter()
+            .find(|request| request["method"] == "turn/start")
+            .unwrap();
+        assert_eq!(
+            turn_start["params"]["input"][0],
+            json!({"type": "image", "url": data_url, "detail": "high"})
+        );
+        assert_eq!(
+            turn_start["params"]["input"][1],
+            json!({"type": "text", "text": "what is in this image?"})
+        );
+    }
+
     #[tokio::test]
     async fn served_turn_credits_home_spend_and_reports_window_capacity() {
         let (gateway, _workspace) = fake_gateway("text");
