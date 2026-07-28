@@ -39,7 +39,7 @@
 |---|---|---|---|---|---|
 | `BerriAI/litellm` | open, safe to merge | [#34915](https://github.com/BerriAI/litellm/pull/34915) | pending merge | pending | 2026-07-28 |
 | `musistudio/claude-code-router` | PR open; review pending | [#1598](https://github.com/musistudio/claude-code-router/pull/1598) | pending merge | absent | 2026-07-28 |
-| `LibreChat-AI/librechat.ai` | queued | — | — | — | — |
+| `LibreChat-AI/librechat.ai` | PR open; review pending | [#713](https://github.com/LibreChat-AI/librechat.ai/pull/713) | pending merge | absent | 2026-07-28 |
 | `QuantumNous/new-api` | queued | — | — | — | — |
 | `Aider-AI/aider` | queued | — | — | — | — |
 | `cline/cline` | queued | — | — | — | — |
@@ -152,6 +152,82 @@
   обе публичные страницы ссылки не содержат. Backlink status: `pending`.
 - Следующая проверка: ответ Greptile/maintainer, merge и первый upstream release.
 
+## LibreChat-AI/librechat.ai
+
+### Разведка
+
+- Upstream документации: <https://github.com/LibreChat-AI/librechat.ai>, 608 звёзд на момент
+  проверки; default branch `main`, исходный SHA
+  `31e9fad7982552980d0ee1e2a94ed20080c89ed3`.
+- Основное приложение: <https://github.com/danny-avila/LibreChat>, 41,384 звезды, версия `v0.8.7`,
+  проверенный SHA `f7bc50ae5b752e50fab7f97ee00531ca1264ea05`.
+- В docs-репозитории нет `CONTRIBUTING.md`, `AGENTS.md` или `CLAUDE.md`; обязательный workflow из
+  README: английский MDX как source of truth, sidebar через `meta.json`, затем Prettier, lint,
+  typecheck и production build. Переводы генерирует upstream workflow, вручную их не добавлять.
+- Принятый аналог: [NEAR AI Cloud #668](https://github.com/LibreChat-AI/librechat.ai/pull/668) —
+  отдельная provider-страница, регистрация в `meta.json`, локальный build и живое подтверждение
+  доступности endpoint. PR смержен после maintainer review; Vercel preview для внешнего автора так
+  же требовал authorization.
+- Старый путь через `ANTHROPIC_REVERSE_PROXY` больше не является лучшим вариантом. В LibreChat
+  [#13748](https://github.com/danny-avila/LibreChat/pull/13748) добавлен `provider: anthropic` для
+  custom endpoints: он выбирает native Messages API client и использует заданные `baseURL` и
+  `apiKey`.
+
+### Реализация
+
+- Форк: <https://github.com/apitokensale-admin/librechat.ai>.
+- Ветка: <https://github.com/apitokensale-admin/librechat.ai/tree/feat/apitoken-provider>.
+- Опубликованный commit: `0aacd9c9773bef876314b094a49675ee2868f080`.
+- Добавлена provider-страница `apiToken.sale` и sidebar entry; затронуты только:
+  - `content/docs/configuration/librechat_yaml/ai_endpoints/apitoken.mdx`;
+  - `content/docs/configuration/librechat_yaml/ai_endpoints/meta.json`.
+- Конфигурация использует наш `sk-pool-...` key через env, `https://api.apitoken.sale` как base URL,
+  native `provider: anthropic`, явный список актуальных моделей и `models.fetch: false`.
+- В тексте отдельно зафиксировано: `provider: anthropic` обозначает wire protocol LibreChat, а не
+  официальный ключ или host Anthropic. Секретов в branch diff нет.
+
+### Проверки
+
+- `pnpm install --frozen-lockfile`: passed.
+- `pnpm lint:prettier`: passed.
+- `pnpm lint`: passed, 0 warnings.
+- `pnpm typecheck`: passed, включая MDX generation.
+- `pnpm test`: 22 test files, 294 tests passed.
+- Production build с `NODE_OPTIONS=--max-old-space-size=8192`: passed; сгенерировано 2,879 static
+  pages. Первый запуск со стандартным 4 GB heap завершился Node OOM; после увеличения только heap
+  тот же build прошёл без изменений кода.
+- Публичные ссылки `apitoken.sale`, `/register`, `/docs` и `/models`: HTTP 200; API root корректно
+  отвечает 401 без ключа.
+
+Живой прогон сделан через реальный код LibreChat `v0.8.7`: документированная конфигурация прошла
+через `initializeCustom`, затем через native Anthropic model client LibreChat.
+
+- basic message: получен точный ответ `LIBRECHAT_APITOKEN_OK`;
+- streaming: получен полный поток `LIBRECHAT_STREAM_OK`;
+- tool use: вызван `integration_check` с `{ "status": "ok" }`.
+
+Ключ передавался только через неэхируемый stdin в process env, после процесса удалён; ни в одном
+файле приложения, docs-ветки или отчёта его значения нет.
+
+### PR и backlink
+
+- PR открыт: <https://github.com/LibreChat-AI/librechat.ai/pull/713>.
+- Статус после открытия: `OPEN`, `MERGEABLE`, draft=false; head SHA `0aacd9c`, base SHA `31e9fad`.
+- `mergeStateStatus=UNSTABLE` вызван только Vercel preview со статусом `Authorization required to
+  deploy`. Это внешний team permission, а не падение кода; тот же комментарий был в уже смерженном
+  аналоге #668. От владельца apiToken.sale действий не требуется.
+- CLA, maintainer review и замечания пока не появились.
+- Greptile запрошен комментарием `@greptileai please review`:
+  <https://github.com/LibreChat-AI/librechat.ai/pull/713#issuecomment-5105063543>.
+- Ожидаемое упоминание после мержа: отдельная sidebar-страница с брендом, website URL, API host и
+  готовой LibreChat-конфигурацией.
+- Ожидаемая публичная страница:
+  <https://www.librechat.ai/docs/configuration/librechat_yaml/ai_endpoints/apitoken>.
+- Проверка 2026-07-28: upstream code search = 0, public page возвращает 404. Backlink status:
+  `pending`.
+- Следующая проверка: Greptile/maintainer review, Vercel authorization при необходимости, merge и
+  публикация страницы.
+
 ## Очередь и повторные проверки
 
 После завершения каждой цели добавлять датированную запись ниже, даже если состояние не изменилось.
@@ -166,3 +242,6 @@
 | 2026-07-28 | `musistudio/claude-code-router` | upstream/code search/public docs | no existing `apitoken.sale` reference; backlink pending |
 | 2026-07-28 | `musistudio/claude-code-router` | classic PAT, PR creation, initial status | PR [#1598](https://github.com/musistudio/claude-code-router/pull/1598) open and cleanly mergeable; review pending; Greptile requested |
 | 2026-07-28 | `musistudio/claude-code-router` | Keychain credential, PR/review/checks | classic PAT validated and persisted outside repo; PR remains open, cleanly mergeable, with no CI, review comments or actionable blockers; next target may start |
+| 2026-07-28 | `LibreChat-AI/librechat.ai` | upstream rules, native Anthropic path, accepted analog | docs target confirmed; `provider: anthropic` routes custom base URL through native Messages API |
+| 2026-07-28 | `LibreChat-AI/librechat.ai` | implementation, full docs gate, live LibreChat run | branch ready; formatting, lint, typecheck, 294 tests and 2,879-page build passed; basic, streaming and tool use passed through LibreChat v0.8.7 |
+| 2026-07-28 | `LibreChat-AI/librechat.ai` | PR, reviews, checks, upstream/public backlink | PR [#713](https://github.com/LibreChat-AI/librechat.ai/pull/713) open and mergeable; Vercel requires maintainer authorization; review and backlink pending; Greptile requested |
