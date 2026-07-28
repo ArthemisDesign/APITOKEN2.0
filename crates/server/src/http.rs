@@ -200,45 +200,77 @@ async fn require_control_auth(
 
 pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
     let admin = admin_router(&app);
+    let provider = app.provider;
     let state = HttpState { app, accepting };
-    Router::new()
+    let common = Router::new()
         .route("/health", get(health))
         .route("/live", get(health))
         .route("/ready", get(ready))
-        .route("/pool", get(pool_status))
         .route("/balance", get(balance))
-        .route("/capacity", get(capacity))
-        .route("/overview", get(overview))
-        .route("/spend-stats", get(spend_stats))
-        .route("/subs", get(subs))
-        .route("/metrics", get(metrics))
-        .route("/admin-panel", get(admin_panel))
-        // Control-плоскость (`/admin/*`) — управление аккаунтами/ключами/балансом за control-ключом.
-        // Контракт для будущей КОММЕРЦИИ (отдельный сервис). Движок — авторитет живого баланса.
-        .merge(admin)
-        // OpenAI-compatible text surface backed by the official Codex app-server. Caddy marks
-        // requests from openai.api.apitoken.sale; every unmarked request preserves the exact
-        // legacy Claude fallback, regardless of its authentication headers.
-        .route("/v1/responses", post(responses_dispatch))
-        .route("/v1/responses/input_tokens", post(input_tokens_dispatch))
-        .route(
-            "/v1/responses/{response_id}",
-            get(get_response_dispatch).delete(delete_response_dispatch),
-        )
-        .route(
-            "/v1/responses/{response_id}/input_items",
-            get(response_input_items_dispatch),
-        )
-        .route("/v1/chat/completions", post(chat_completions_dispatch))
-        .route("/v1/models", get(models_dispatch))
-        .route("/v1/models/{model_id}", get(model_dispatch))
-        // Every other OpenAI-plane route (unsupported subroutes and route families) gets the
-        // OpenAI-shaped 404 from the fallback; the Claude plane falls through to byte-for-byte
-        // forwarding exactly as before.
-        .fallback(provider_fallback_dispatch)
-        .method_not_allowed_fallback(method_not_allowed_dispatch)
+        .route("/metrics", get(metrics));
+    let router = match provider {
+        forward::ProviderMode::Combined => common
+            .route("/pool", get(pool_status))
+            .route("/capacity", get(capacity))
+            .route("/overview", get(overview))
+            .route("/spend-stats", get(spend_stats))
+            .route("/subs", get(subs))
+            .route("/admin-panel", get(admin_panel))
+            .merge(admin)
+            // Migration bridge: existing Caddy marks the OpenAI hostname until provider-specific
+            // services are installed. Fixed provider modes below never inspect this header.
+            .route("/v1/responses", post(responses_dispatch))
+            .route("/v1/responses/input_tokens", post(input_tokens_dispatch))
+            .route(
+                "/v1/responses/{response_id}",
+                get(get_response_dispatch).delete(delete_response_dispatch),
+            )
+            .route(
+                "/v1/responses/{response_id}/input_items",
+                get(response_input_items_dispatch),
+            )
+            .route("/v1/chat/completions", post(chat_completions_dispatch))
+            .route("/v1/models", get(models_dispatch))
+            .route("/v1/models/{model_id}", get(model_dispatch))
+            .fallback(provider_fallback_dispatch)
+            .method_not_allowed_fallback(method_not_allowed_dispatch),
+        forward::ProviderMode::Anthropic => common
+            .route("/pool", get(pool_status))
+            .route("/capacity", get(capacity))
+            .route("/overview", get(overview))
+            .route("/spend-stats", get(spend_stats))
+            .route("/subs", get(subs))
+            .route("/admin-panel", get(admin_panel))
+            .merge(admin)
+            .fallback(forward),
+        forward::ProviderMode::OpenAi => common
+            .route("/v1/responses", post(openai_responses))
+            .route("/v1/responses/input_tokens", post(openai_input_tokens))
+            .route(
+                "/v1/responses/{response_id}",
+                get(openai_get_response).delete(openai_delete_response),
+            )
+            .route(
+                "/v1/responses/{response_id}/input_items",
+                get(openai_response_input_items),
+            )
+            .route("/v1/chat/completions", post(openai_chat_completions))
+            .route("/v1/models", get(openai_models))
+            .route("/v1/models/{model_id}", get(openai_model))
+            .fallback(fixed_openai_not_found)
+            .method_not_allowed_fallback(fixed_openai_not_found),
+    };
+    router
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, audit_customer_error))
+}
+
+async fn fixed_openai_not_found() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(unsupported_openai_endpoint_error()),
+    )
+        .into_response()
 }
 
 /// One privacy-safe event for the terminal HTTP error actually returned to a metered customer.
@@ -1437,6 +1469,7 @@ mod tests {
 
         let clients = Arc::new(forward::Clients::new(&cfg));
         AppState {
+            provider: forward::ProviderMode::Combined,
             cfg: Arc::new(cfg),
             authority: Arc::new(registry::authority::AuthorityConfig::new(
                 ":memory:".to_string(),
@@ -1460,6 +1493,12 @@ mod tests {
             concurrency: Arc::new(tokio::sync::Semaphore::new(16)),
             probe_poke: None,
         }
+    }
+
+    fn provider_test_app(provider: forward::ProviderMode) -> AppState {
+        let mut app = admin_auth_test_app();
+        app.provider = provider;
+        app
     }
 
     #[tokio::test]
@@ -1594,6 +1633,43 @@ mod tests {
 
         headers.insert(API_PLANE_HEADER, "openai".parse().unwrap());
         assert!(is_openai_plane(&headers));
+    }
+
+    #[tokio::test]
+    async fn fixed_provider_routers_ignore_the_legacy_plane_header() {
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+
+        let mut anthropic_request = Request::builder()
+            .uri("/pool")
+            .header("x-api-key", "admin-key")
+            .header(API_PLANE_HEADER, "openai")
+            .body(Body::empty())
+            .unwrap();
+        anthropic_request.extensions_mut().insert(peer);
+        let anthropic = router(
+            provider_test_app(forward::ProviderMode::Anthropic),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .oneshot(anthropic_request)
+        .await
+        .unwrap();
+        assert_eq!(anthropic.status(), StatusCode::OK);
+
+        let mut openai_request = Request::builder()
+            .uri("/pool")
+            .header("x-api-key", "admin-key")
+            .header(API_PLANE_HEADER, "anthropic")
+            .body(Body::empty())
+            .unwrap();
+        openai_request.extensions_mut().insert(peer);
+        let openai = router(
+            provider_test_app(forward::ProviderMode::OpenAi),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .oneshot(openai_request)
+        .await
+        .unwrap();
+        assert_eq!(openai.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]

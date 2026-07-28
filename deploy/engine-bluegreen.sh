@@ -206,7 +206,7 @@ TARGET_COMMITTED=1
 
 if [[ -n $ACTIVE_UNIT && $ACTIVE_UNIT != "$TARGET_UNIT" ]]; then
   log "pre-draining $ACTIVE_UNIT with SIGUSR1"
-  systemctl_command kill -s SIGUSR1 "$ACTIVE_UNIT"
+  systemctl_command kill --kill-whom=main -s SIGUSR1 "$ACTIVE_UNIT"
   OLD_SIGNALLED=1
   run sleep "$PRE_DRAIN_SECONDS"
   if [[ $DRY_RUN == 0 ]]; then draining_port "$ACTIVE_PORT" || die "old engine did not flip readiness to 503"; fi

@@ -1,10 +1,11 @@
 //! Композиционный конфиг: читает ВСЁ окружение и собирает настройки сервера +
 //! [`forward::ProxyConfig`]. Единственное место в проекте, где читается env.
 
-use forward::{CodexConfig, CodexModel, ProxyConfig, CLAUDE_CODE_IDENTITY};
+use forward::{CodexConfig, CodexModel, ProviderMode, ProxyConfig, CLAUDE_CODE_IDENTITY};
 use std::{collections::BTreeMap, env, net::IpAddr};
 
 pub struct Settings {
+    pub provider: ProviderMode,
     pub db_path: String,
     /// Engine-owned PostgreSQL DSN. When set, SQLite is migration/rollback input only.
     pub database_url: Option<String>,
@@ -50,6 +51,17 @@ fn ev_bool(k: &str, d: bool) -> bool {
 }
 fn ev_opt_in(k: &str) -> bool {
     ev(k).is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+}
+
+fn parse_provider_mode(value: Option<&str>) -> Result<ProviderMode, String> {
+    match value.unwrap_or("combined").trim().to_ascii_lowercase().as_str() {
+        "combined" => Ok(ProviderMode::Combined),
+        "anthropic" => Ok(ProviderMode::Anthropic),
+        "openai" => Ok(ProviderMode::OpenAi),
+        other => Err(format!(
+            "CLAUDE_API_PROVIDER={other:?}: expected combined, anthropic, or openai"
+        )),
+    }
 }
 
 fn bounded_u64(k: &str, default: u64, min: u64, max: u64) -> u64 {
@@ -381,6 +393,8 @@ fn clamp_frac(k: &str, v: &str, d: f64) -> f64 {
 
 impl Settings {
     pub fn from_env() -> Self {
+        let provider = parse_provider_mode(ev("CLAUDE_API_PROVIDER").as_deref())
+            .unwrap_or_else(|message| panic!("{message}"));
         let cfg_dir = ev("SUB_CFG_DIR").unwrap_or_else(|| {
             let home = env::var("HOME").unwrap_or_default();
             format!("{home}/.config/claude-api")
@@ -442,8 +456,16 @@ impl Settings {
         );
         let redis_url = ev("CLAUDE_API_REDIS_URL");
         let affinity_secret = ev("CLAUDE_API_AFFINITY_SECRET");
-        let codex = codex_config(redis_url.clone(), affinity_secret.clone());
+        let codex = if provider.serves_openai() {
+            codex_config(redis_url.clone(), affinity_secret.clone())
+        } else {
+            None
+        };
+        if provider == ProviderMode::OpenAi && codex.is_none() {
+            panic!("CLAUDE_API_CODEX_ENABLED=1 is required when CLAUDE_API_PROVIDER=openai");
+        }
         Settings {
+            provider,
             db_path,
             database_url,
             instance_id,
@@ -581,6 +603,21 @@ mod tests {
         assert_eq!(split_ua_list("a/1.0|b/2.0|c/3.0").len(), 3);
         assert!(split_ua_list("").is_empty());
         assert!(split_ua_list("  |  ").is_empty()); // пустые куски отфильтрованы
+    }
+
+    #[test]
+    fn provider_mode_is_explicit_and_bounded() {
+        assert_eq!(parse_provider_mode(None), Ok(ProviderMode::Combined));
+        assert_eq!(
+            parse_provider_mode(Some("anthropic")),
+            Ok(ProviderMode::Anthropic)
+        );
+        assert_eq!(
+            parse_provider_mode(Some(" OPENAI ")),
+            Ok(ProviderMode::OpenAi)
+        );
+        assert!(parse_provider_mode(Some("both")).is_err());
+        assert!(parse_provider_mode(Some("codex")).is_err());
     }
 
     #[test]

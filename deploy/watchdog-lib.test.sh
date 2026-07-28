@@ -1067,6 +1067,12 @@ grep -Fq 'everysec' "$ROOT/deploy/affinity-redis.compose.yaml"
 grep -Fq 'Wants=network-online.target apitoken-affinity-redis.service' \
   "$ROOT/systemd/claude-api@.service"
 ! grep -Fq 'Requires=apitoken-affinity-redis.service' "$ROOT/systemd/claude-api@.service"
+grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api@.service"
+grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api.service"
+grep -Fq 'systemctl_command kill --kill-whom=main -s SIGUSR1 "$ACTIVE_UNIT"' \
+  "$ROOT/deploy/engine-bluegreen.sh"
+grep -Fq '/usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api@8787.service' \
+  "$ROOT/deploy/install-sudoers.sh"
 grep -Fq 'CLAUDE_API_AFFINITY_SECRET' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'apitoken-affinity-redis.service' "$ROOT/deploy/install-watchdog.sh"
 ! grep -Fq 'partners.panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"

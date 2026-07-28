@@ -853,12 +853,18 @@ fn sub_cmd(op: SubOp) -> Result<()> {
 
 async fn serve() -> Result<()> {
     let s = Settings::from_env();
+    let serves_anthropic = s.provider.serves_anthropic();
     // Потолок параллельных запросов на подписку (env CLAUDE_API_MAX_INFLIGHT) — ставим ДО
     // создания пула, чтобы route/pick/capacity видели актуальное значение.
-    pool::set_max_inflight(s.max_inflight);
+    if serves_anthropic {
+        pool::set_max_inflight(s.max_inflight);
+    }
     let authority = authority_config(&s);
     if authority.is_postgres() && !s.billing {
         bail!("PostgreSQL authority requires CLAUDE_API_BILLING=1 because capacity leases share the durable actor");
+    }
+    if s.provider == forward::ProviderMode::OpenAi && !authority.is_postgres() {
+        bail!("CLAUDE_API_PROVIDER=openai requires the PostgreSQL engine authority");
     }
     // SQLite has anonymous aggregate reservations and therefore remains strictly single-process.
     // PostgreSQL has owner epochs plus request/capacity leases; its completed fault matrix permits
@@ -875,6 +881,7 @@ async fn serve() -> Result<()> {
     let startup_fleet = s.fleet.clone();
     let startup_billing = s.billing;
     let startup_is_postgres = authority.is_postgres();
+    let startup_load_anthropic = serves_anthropic;
     let (owner, subs, recovery, pool_rows, health_rows, sqlite_reconcile) =
         tokio::task::spawn_blocking(move || {
             let mut db = startup_authority.connect()?;
@@ -888,11 +895,23 @@ async fn serve() -> Result<()> {
                     bail!("engine PostgreSQL owner epoch was fenced during startup");
                 }
             }
-            let subs = db.load_active(startup_fleet.as_deref())?;
-            let pool_rows = db.load_pool_state()?;
+            let subs = if startup_load_anthropic {
+                db.load_active(startup_fleet.as_deref())?
+            } else {
+                Vec::new()
+            };
+            let pool_rows = if startup_load_anthropic {
+                db.load_pool_state()?
+            } else {
+                Vec::new()
+            };
             // Durable auth-health: чтобы мёртвые (забаненные) подписки сразу были вне ротации и помечены
             // на панели, а не «воскресали» здоровыми на каждый рестарт (старый эфемерный auth_dead-баг).
-            let health_rows = db.load_sub_health(startup_fleet.as_deref())?;
+            let health_rows = if startup_load_anthropic {
+                db.load_sub_health(startup_fleet.as_deref())?
+            } else {
+                Vec::new()
+            };
             let sqlite_reconcile = if startup_billing && !startup_is_postgres {
                 Some(
                     db.sqlite_connection()
@@ -961,22 +980,32 @@ async fn serve() -> Result<()> {
     let fleet_size = subs.len();
     let affinity = Arc::new(
         forward::AffinityStore::new(
-            s.redis_url.as_deref(),
-            s.affinity_secret.as_deref(),
+            if serves_anthropic {
+                s.redis_url.as_deref()
+            } else {
+                None
+            },
+            if serves_anthropic {
+                s.affinity_secret.as_deref()
+            } else {
+                None
+            },
             s.affinity_ttl_secs,
             s.affinity_local_ttl_secs,
             s.affinity_redis_timeout_ms,
         )
         .context("initialize cache affinity")?,
     );
-    eprintln!(
-        "cache affinity: local L1 + {} L2",
-        if affinity.redis_configured() {
-            "Redis"
-        } else {
-            "no shared"
-        }
-    );
+    if serves_anthropic {
+        eprintln!(
+            "cache affinity: local L1 + {} L2",
+            if affinity.redis_configured() {
+                "Redis"
+            } else {
+                "no shared"
+            }
+        );
+    }
     let codex = if let Some(config) = s.codex.clone() {
         let gateway =
             Arc::new(forward::CodexGateway::new(config).context("initialize Codex provider")?);
@@ -991,6 +1020,7 @@ async fn serve() -> Result<()> {
         None
     };
     let app = AppState {
+        provider: s.provider,
         cfg: Arc::new(s.proxy.clone()),
         authority: Arc::new(authority.clone()),
         data_db_path: Arc::new(s.db_path.clone()),
@@ -1018,7 +1048,11 @@ async fn serve() -> Result<()> {
         },
     };
     let restored = pool_rows.len();
-    let repaired_calibrations = app.pool.import_state(pool_rows);
+    let repaired_calibrations = if serves_anthropic {
+        app.pool.import_state(pool_rows)
+    } else {
+        0
+    };
     if restored > 0 {
         eprintln!("восстановлено состояние пула: {restored} подписок");
     }
@@ -1031,7 +1065,9 @@ async fn serve() -> Result<()> {
         .iter()
         .filter(|h| h.auth_state == "dead")
         .count();
-    app.pool.import_health(health_rows);
+    if serves_anthropic {
+        app.pool.import_health(health_rows);
+    }
     if dead_restored > 0 {
         eprintln!("восстановлено auth-health: {dead_restored} мёртвых подписок (вне ротации)");
     }
@@ -1050,51 +1086,49 @@ async fn serve() -> Result<()> {
         ));
     }
 
-    // Write-through персист: pool сигналит cooling → poke → persist_loop пишет (плюс safety-flush).
-    let persist_poke = std::sync::Arc::new(tokio::sync::Notify::new());
-    {
-        let pk = persist_poke.clone();
-        app.pool
-            .set_on_change(std::sync::Arc::new(move || pk.notify_one()));
-    }
-    let repair_persist_poke = persist_poke.clone();
-    tokio::spawn(poller::persist_loop(
-        app.clone(),
-        authority.clone(),
-        owner.clone(),
-        persist_poke,
-    ));
-    if repaired_calibrations > 0 {
-        // `Notify` retains one permit even if the task has not reached `notified()` yet. Persist the
-        // sanitized estimate immediately instead of waiting for the two-minute safety flush.
-        repair_persist_poke.notify_one();
-    }
-
-    tokio::spawn(poller::reload_loop(
-        app.clone(),
-        authority.clone(),
-        s.fleet.clone(),
-        poke.clone(),
-    ));
-    // Фоновая обрезка ledger под масштаб; bounded default до переноса настройки в Settings.
-    if s.billing {
-        tokio::spawn(poller::ledger_prune_loop(
-            authority.clone(),
-            LEDGER_RETENTION_DAYS,
-        ));
-    }
-    if s.proxy.poll {
-        tokio::spawn(poller::poll_loop(
+    if serves_anthropic {
+        // Write-through персист: pool сигналит cooling → poke → persist_loop пишет (плюс safety-flush).
+        let persist_poke = std::sync::Arc::new(tokio::sync::Notify::new());
+        {
+            let pk = persist_poke.clone();
+            app.pool
+                .set_on_change(std::sync::Arc::new(move || pk.notify_one()));
+        }
+        let repair_persist_poke = persist_poke.clone();
+        tokio::spawn(poller::persist_loop(
             app.clone(),
             authority.clone(),
             owner.clone(),
+            persist_poke,
+        ));
+        if repaired_calibrations > 0 {
+            // `Notify` retains one permit even if the task has not reached `notified()` yet.
+            repair_persist_poke.notify_one();
+        }
+
+        tokio::spawn(poller::reload_loop(
+            app.clone(),
+            authority.clone(),
+            s.fleet.clone(),
             poke.clone(),
         ));
-        eprintln!("поллер лимитов: событийный (liveness-only)");
-    }
-    // Коллектор истории метрик: снапшоты агрегата (спрос/предложение/headroom) в отдельную metrics.db.
-    // Фундамент под capacity-planning и предсказательную модель; bounded retention 90д.
-    {
+        // One provider process owns shared retention; the recovery loop itself remains leader-elected.
+        if s.billing {
+            tokio::spawn(poller::ledger_prune_loop(
+                authority.clone(),
+                LEDGER_RETENTION_DAYS,
+            ));
+        }
+        if s.proxy.poll {
+            tokio::spawn(poller::poll_loop(
+                app.clone(),
+                authority.clone(),
+                owner.clone(),
+                poke.clone(),
+            ));
+            eprintln!("поллер лимитов: событийный (liveness-only)");
+        }
+        // Коллектор истории метрик: снапшоты агрегата (спрос/предложение/headroom) в отдельную metrics.db.
         let mdir = std::path::Path::new(&s.db_path)
             .parent()
             .map(|d| d.to_string_lossy().into_owned())
@@ -1126,8 +1160,9 @@ async fn serve() -> Result<()> {
 
     let listener = tokio::net::TcpListener::bind(&s.bind).await?;
     eprintln!(
-        "claude-api слушает http://{}  (подписок: {n}, апстрим {}, реестр {})",
+        "claude-api слушает http://{}  (provider {}, подписок: {n}, апстрим {}, реестр {})",
         s.bind,
+        s.provider.as_str(),
         s.proxy.upstream,
         authority.label()
     );
@@ -1209,10 +1244,12 @@ async fn serve() -> Result<()> {
                 .context("billing writer failed after shutdown deadline")?;
         }
     }
-    if let Err(e) =
-        poller::persist_state_cas(&flush_app, &flush_authority, flush_owner.as_ref(), 8).await
-    {
-        eprintln!("⚠ финальный флаш не удался после CAS retry: {e}");
+    if serves_anthropic {
+        if let Err(e) =
+            poller::persist_state_cas(&flush_app, &flush_authority, flush_owner.as_ref(), 8).await
+        {
+            eprintln!("⚠ финальный флаш не удался после CAS retry: {e}");
+        }
     }
     drop(instance_lock);
     serve_result?;

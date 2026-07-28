@@ -12,8 +12,36 @@ use pool::Pool;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+/// Provider surface selected once at process startup. `Combined` is retained only as the rollout
+/// bridge for installations whose systemd unit predates provider-specific services.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProviderMode {
+    Combined,
+    Anthropic,
+    OpenAi,
+}
+
+impl ProviderMode {
+    pub fn serves_anthropic(self) -> bool {
+        matches!(self, Self::Combined | Self::Anthropic)
+    }
+
+    pub fn serves_openai(self) -> bool {
+        matches!(self, Self::Combined | Self::OpenAi)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Combined => "combined",
+            Self::Anthropic => "anthropic",
+            Self::OpenAi => "openai",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
+    pub provider: ProviderMode,
     pub cfg: Arc<ProxyConfig>,
     /// Authority selector for read-only admin overviews. Secrets are never rendered in logs/responses.
     pub authority: Arc<registry::authority::AuthorityConfig>,

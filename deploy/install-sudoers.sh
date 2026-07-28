@@ -142,7 +142,8 @@ sample_sha=0000000000000000000000000000000000000000
 require_permitted 'daemon-reload' /usr/bin/systemctl daemon-reload
 require_permitted 'engine slot start' /usr/bin/systemctl start claude-api@8787.service
 require_permitted 'engine slot stop' /usr/bin/systemctl stop claude-api@8788.service
-require_permitted 'engine drain signal' /usr/bin/systemctl kill -s SIGUSR1 claude-api@8787.service
+require_permitted 'engine drain signal' \
+  /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api@8787.service
 require_permitted 'commerce slot start' /usr/bin/systemctl start apitoken-api@3000.service
 require_permitted 'worker restart' /usr/bin/systemctl restart apitoken-worker.service
 require_permitted 'content studio restart' /usr/bin/systemctl restart apitoken-content-studio.service
