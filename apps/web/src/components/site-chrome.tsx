@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { localeHref, localeRoute } from "@/lib/locale-routes";
-import { DOCS_URL } from "@/lib/site-links";
+import { DOCS_URL, GITHUB_URL } from "@/lib/site-links";
 import { useI18n } from "./i18n-provider";
 import { T } from "./translated";
 
@@ -121,7 +121,7 @@ export function SiteFooter({ full = false }: { full?: boolean }) {
       <div className="foot-grid">
         <div className="foot-brand"><Brand /><T k="foot_about" as="p">Claude API access platform for developers.</T></div>
         <FooterColumn title="foot_product" links={[["/plans","fp1"],["/models","fp2"],["/#pricing","fp3"],[DOCS_URL,"fp4"]]} />
-        <FooterColumn title="foot_dev" links={[[DOCS_URL,"fd1"],[DOCS_URL,"fd2"],[DOCS_URL,"fd3"]]} />
+        <FooterColumn title="foot_dev" links={[[DOCS_URL,"fd1"],[DOCS_URL,"fd2"],[DOCS_URL,"fd3"],[GITHUB_URL,"fd4"]]} />
         <div className="foot-col"><T k="foot_int" as="h4">Integrations</T><Link href={l("/int-claude-code")}>Claude Code</Link><Link href={l("/int-cursor")}>Cursor</Link><Link href={l("/int-zed")}>Zed</Link><Link href={l("/integrations")}><T k="foot_int_all">All integrations</T></Link></div>
         <div className="foot-col"><T k="foot_support" as="h4">Support</T><Link href={l("/support")}><T k="foot_support">Customer support</T></Link><Link href={l("/docs/learn")}>Guides</Link><Link href="/about">About</Link><Link href="/contacts">Contacts</Link><Link href="/changelog">Changelog</Link><Link href="/status">Status</Link><a href="mailto:apitokensale@gmail.com">apitokensale@gmail.com</a></div>
         <div className="foot-col"><T k="foot_legal_h" as="h4">Legal</T><Link href={l("/terms")}><T k="legal_terms_h">User Agreement</T></Link><Link href={l("/privacy")}><T k="legal_privacy_h">Privacy Policy</T></Link><Link href={l("/plans")}><T k="nav_pricing">Prices &amp; tariffs</T></Link></div>
@@ -141,5 +141,8 @@ function FooterComplianceLinks() {
 
 function FooterColumn({ title, links }: { title: string; links: Array<[string, string]> }) {
   const { language } = useI18n();
-  return <div className="foot-col"><T k={title} as="h4">Section</T>{links.map(([href, key]) => <Link href={localizeHref(language, href)} key={key} target={href === DOCS_URL ? "_blank" : undefined} rel={href === DOCS_URL ? "noreferrer" : undefined}><T k={key}>{key}</T></Link>)}</div>;
+  return <div className="foot-col"><T k={title} as="h4">Section</T>{links.map(([href, key]) => {
+    const external = href === DOCS_URL || /^https?:\/\//i.test(href);
+    return <Link href={localizeHref(language, href)} key={key} target={external ? "_blank" : undefined} rel={external ? "noreferrer" : undefined}><T k={key}>{key}</T></Link>;
+  })}</div>;
 }
