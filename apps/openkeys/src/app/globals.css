@@ -2501,6 +2501,7 @@ body.app-body .bg-decor{display:none!important}
 .openkeys-group-head{display:flex;align-items:center;justify-content:space-between;gap:12px;
   margin:0 0 10px;padding-bottom:8px;border-bottom:1px solid var(--line)}
 .openkeys-group-head h3{margin:0;font-size:15px}
+.openkeys-group-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
 .openkeys-issued-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px}
 .openkeys-danger{color:var(--danger)}
 .openkeys-danger:hover{border-color:var(--danger);color:var(--danger)}

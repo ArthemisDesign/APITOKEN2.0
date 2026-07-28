@@ -416,13 +416,19 @@ export default function AdminPage() {
                     {/* В групповое копирование берём только ключи с секретом: строка
                         без ключа в сообщении покупателю хуже, чем её отсутствие. */}
                     {groupKeys.some((key) => key.secret) ? (
-                      <CopyButton
-                        value={groupKeys
-                          .filter((key) => key.secret)
-                          .map((key) => handoverText(key))
-                          .join("\n\n———\n\n")}
-                        label={`Скопировать ${groupKeys.filter((key) => key.secret).length} шт.`}
-                      />
+                      <div className="openkeys-group-actions">
+                        <CopyButton
+                          value={groupKeys
+                            .filter((key) => key.secret)
+                            .map((key) => handoverText(key))
+                            .join("\n\n———\n\n")}
+                          label={`Скопировать ${groupKeys.filter((key) => key.secret).length} шт.`}
+                        />
+                        <CopyButton
+                          value={groupKeys.flatMap((key) => (key.secret ? [key.secret] : [])).join("\n")}
+                          label="Только ключи"
+                        />
+                      </div>
                     ) : null}
                   </div>
                   {groupKeys.map((key) => (
