@@ -134,18 +134,26 @@ export default function AdminPage() {
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
-    const response = await fetch("/api/admin/keys", { cache: "no-store" });
-    if (response.status === 401) {
+    try {
+      const response = await fetch("/api/admin/keys", { cache: "no-store" });
+      if (response.status === 401) {
+        setAuthorized(false);
+        return;
+      }
+      if (!response.ok) throw new Error(`session check failed: ${response.status}`);
+
+      const payload = (await response.json()) as { admin: string; keys: StockKey[]; batches: BatchRow[] };
+      setAuthorized(true);
+      setAdmin(payload.admin);
+      setKeys(payload.keys);
+      setBatches(payload.batches);
+      setError(null);
+    } catch {
       setAuthorized(false);
+      setError("Не удалось проверить сессию. Обновите страницу и попробуйте снова.");
+    } finally {
       setChecking(false);
-      return;
     }
-    const payload = (await response.json()) as { admin: string; keys: StockKey[]; batches: BatchRow[] };
-    setAuthorized(true);
-    setAdmin(payload.admin);
-    setKeys(payload.keys);
-    setBatches(payload.batches);
-    setChecking(false);
   }, []);
 
   useEffect(() => {
