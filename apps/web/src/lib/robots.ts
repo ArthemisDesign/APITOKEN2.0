@@ -24,7 +24,10 @@ export const ROBOTS_WELCOME_AGENTS = [
   "DeepSeekBot", "Qwen-Bot", "YouBot",
 ];
 
-const CLEAN_PARAMS = "utm_source&utm_medium&utm_campaign&utm_term&utm_content&ref&fbclid&gclid&yclid";
+// `e` is the legacy error-reference short-link parameter. /e/<code> now redirects to a
+// fragment instead, but links shared before that change still carry it, and it never
+// changes the page — so it must not create a separate indexable URL.
+const CLEAN_PARAMS = "utm_source&utm_medium&utm_campaign&utm_term&utm_content&ref&fbclid&gclid&yclid&e";
 
 function group(agent: string, extra: string[] = []): string {
   return [

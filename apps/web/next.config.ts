@@ -23,10 +23,12 @@ const nextConfig: NextConfig = {
       ...legacyPages.map((page) => ({ source: `/${page}.html`, destination: `/${page}`, permanent: true })),
       ...dashboardSections.map((section) => ({ source: `/dashboard/${section}`, destination: "/dashboard", permanent: false })),
       ...Object.entries(shortLinks).map(([slug, destination]) => ({ source: `/go/${slug}`, destination, permanent: false })),
-      // /e/<code> → справочник ошибок. Код едет query-параметром, а не фрагментом:
-      // wildcard-редирект не умеет подставлять :code в якорь, а Метрика всё равно
-      // срезает хеш. Скролл к нужной секции и учёт делает ErrorAnchorBeacon.
-      { source: "/e/:code", destination: "/docs/errors?e=:code", permanent: false },
+      // /e/<code> → справочник ошибок. Код едет ФРАГМЕНТОМ, а не query-параметром:
+      // параметр породил бы второй сканируемый URL той же страницы (дубль), а фрагмент
+      // поисковики отдельным URL не считают и браузер сам скроллит к секции.
+      // Учёт по коду всё равно работает — ErrorAnchorBeacon читает location.hash
+      // (Метрика срезает хеш только из отчётного URL, но не из того, что видит JS).
+      { source: "/e/:code", destination: "/docs/errors#e-:code", permanent: false },
     ];
   },
   async headers() {

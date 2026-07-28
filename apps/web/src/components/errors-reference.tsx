@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { Suspense } from "react";
 import { JsonLd } from "@/components/json-ld";
 import { ErrorAnchorBeacon } from "@/components/error-anchor-beacon";
 import { apiErrorsRu } from "@/lib/api-errors-ru";
@@ -57,9 +56,7 @@ export function ErrorsReference({ locale }: { locale: ErrorLocale }) {
   return (
     <>
       <JsonLd data={structuredData} />
-      <Suspense fallback={null}>
-        <ErrorAnchorBeacon />
-      </Suspense>
+      <ErrorAnchorBeacon />
       <main className="learn-article">
         <div className="page-hero">
           <div className="wrap">
