@@ -696,6 +696,19 @@ pub(super) async fn prepare_turn(
         "tools": request.dynamic_tools,
         "instructions": request.instructions
     });
+    // The thread receives the real history; only the billing-reserve estimate below may see the
+    // fixed-size image placeholders. Taking `injected_items` from `estimate_value` after
+    // `sanitize_estimate_images` would ship `data:image/estimate…` URLs to the app-server, which
+    // cannot decode them and substitutes its own "image content omitted" placeholder.
+    // The thread receives the real history; only the billing-reserve estimate below may see the
+    // fixed-size image placeholders. Taking `injected_items` from `estimate_value` after
+    // `sanitize_estimate_images` would ship `data:image/estimate…` URLs to the app-server, which
+    // cannot decode them and substitutes its own "image content omitted" placeholder.
+    let injected_items = estimate_value
+        .get("history")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     sanitize_estimate_images(&mut estimate_value);
     let estimated_input_tokens = serde_json::to_vec(&estimate_value)
         .map(|bytes| bytes.len() as u64)
@@ -707,11 +720,7 @@ pub(super) async fn prepare_turn(
         // gateway-authored developer message.
         base_instructions: request.instructions.clone(),
         developer_instructions: None,
-        injected_items: estimate_value
-            .get("history")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
+        injected_items,
         turn_input: request.input.turn_input.clone(),
         dynamic_tools: request.dynamic_tools.clone(),
         reasoning_effort: request.reasoning_effort.clone(),
@@ -3276,6 +3285,41 @@ mod tests {
         assert!(
             bytes < 16_000,
             "estimate must not carry raw base64: {bytes}"
+        );
+    }
+
+    #[tokio::test]
+    async fn injected_history_keeps_data_url_images_verbatim() {
+        let data_url = format!("data:image/png;base64,{}", "A".repeat(200_000));
+        let parsed = parse_responses_request(
+            &gateway(),
+            json!({
+                "model": "gpt-5.6",
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "first"},
+                            {"type": "input_image", "image_url": data_url}
+                        ]
+                    },
+                    {"role": "user", "content": [{"type": "input_text", "text": "second"}]}
+                ]
+            }),
+        )
+        .expect("data-url history image must parse");
+        let prepared = prepare_turn(&gateway(), "tenant", parsed).await.unwrap();
+        // The app-server cannot decode the fixed-size estimate placeholder; injecting it would
+        // surface codex's "image content omitted" text instead of the screenshot.
+        let injected_image = prepared.turn.injected_items[0]["content"][1]["image_url"]
+            .as_str()
+            .expect("history image part must survive");
+        assert_eq!(injected_image, data_url);
+        // The billing reserve still sees the fixed-size placeholder, not the raw payload.
+        assert!(
+            prepared.estimated_input_tokens < 100_000,
+            "estimate must not carry raw base64: {}",
+            prepared.estimated_input_tokens
         );
     }
 

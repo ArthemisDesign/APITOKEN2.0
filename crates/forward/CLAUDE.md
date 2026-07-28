@@ -156,7 +156,9 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    URL, >4 stop-последовательностей). User-сообщения могут нести изображения: chat `image_url` и
    Responses `input_image` части (data:image/… или http(s)://) транслируются в app-server image
    turn inputs и канонические input_image части истории; base64 data-URL в estimate для reserve
-   заменяется placeholder'ом (`sanitize_estimate_images`), чтобы не завышать резерв. **Client-side
+   заменяется placeholder'ом (`sanitize_estimate_images`), чтобы не завышать резерв, но только в
+   estimate: `injected_items` истории обязан нести исходные data-URL дословно, иначе app-server не
+   декодирует placeholder и подставляет своё «image content omitted». **Client-side
    output-контролы (chat):** `stop` обрезает выдачу по последовательности (StopFilter держит
    хвост longest-1 байт для стреддлинга дельт; сама последовательность не эмитится), а
    `max_tokens`/`max_completion_tokens` — приблизительный кап ~4 char/token с
