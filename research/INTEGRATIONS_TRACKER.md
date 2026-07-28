@@ -41,8 +41,8 @@
 | `musistudio/claude-code-router` | PR open; review pending | [#1598](https://github.com/musistudio/claude-code-router/pull/1598) | pending merge | absent | 2026-07-28 |
 | `LibreChat-AI/librechat.ai` | PR open; review pending | [#713](https://github.com/LibreChat-AI/librechat.ai/pull/713) | pending merge | absent | 2026-07-28 |
 | `QuantumNous/new-api` | PR open; automated review clean, human review pending | [docs #196](https://github.com/QuantumNous/new-api-docs-v1/pull/196) | pending merge | absent | 2026-07-28 |
-| `Aider-AI/aider` | PR open; CLA and review pending | [#5504](https://github.com/Aider-AI/aider/pull/5504) | pending merge | absent | 2026-07-28 |
-| `cline/cline` | queued | — | — | — | — |
+| `Aider-AI/aider` | PR open; CLA signed, review pending | [#5504](https://github.com/Aider-AI/aider/pull/5504) | pending merge | absent | 2026-07-28 |
+| `cline/cline` | PR open; maintainer review pending | [#12648](https://github.com/cline/cline/pull/12648) | pending merge | absent | 2026-07-28 |
 | `RooCodeInc/Roo-Code` | queued | — | — | — | — |
 | `continuedev/continue` | queued | — | — | — | — |
 
@@ -371,9 +371,8 @@
 - Статус: `OPEN`, `MERGEABLE`, draft=false; base SHA `5dc9490b`, head SHA `cb15e1dd`.
 - Первый GitHub Actions run имеет ожидаемый `action_required`: maintainer должен разрешить workflow
   нового внешнего автора. Это permission gate, а не падение pre-commit.
-- Individual CLA пока не подписан; CLA Assistant показывает `license/cla=PENDING`. Подписание —
-  юридическое действие владельца аккаунта по ссылке
-  <https://cla-assistant.io/Aider-AI/aider?pullRequest=5504>, агент его не принимает самостоятельно.
+- Individual CLA подписан владельцем аккаунта. GitHub context `license/cla` обновился в `SUCCESS`
+  с описанием `Contributor License Agreement is signed.` 2026-07-28 15:41:41 UTC.
 - Greptile запрошен комментарием `@greptileai`:
   <https://github.com/Aider-AI/aider/pull/5504#issuecomment-5106107037>; ответ пока не появился.
 - Human review и замечания отсутствуют.
@@ -381,8 +380,80 @@
   <https://aider.chat/docs/llms/anthropic.html#anthropic-compatible-endpoints>.
 - Проверка 2026-07-28: upstream code search = 0; текущая публичная Anthropic-страница отвечает
   HTTP 200, но `apitoken.sale` ещё не содержит. Backlink status: `pending`.
-- Следующая проверка: CLA, разрешение pre-commit workflow, Greptile/human review, merge и
-  публикация GitHub Pages.
+- Следующая проверка: разрешение pre-commit workflow, Greptile/human review, merge и публикация
+  GitHub Pages.
+
+## cline/cline
+
+### Разведка
+
+- Upstream: <https://github.com/cline/cline>, 65,127 звёзд на момент проверки; default branch
+  `main`, исходный SHA разведки `dc175c73a8dd4c268123b9da675b9d0fe0506968`.
+- Root `AGENTS.md` закрепляет Bun `1.3.13` и Node `>=22`, запрещает npm/yarn/pnpm. Локальная
+  проверка выполнена на Bun `1.3.14` и Node `24.9.0`; lockfile не изменился.
+- `CONTRIBUTING.md` требует одобренный issue для features, но отдельно приветствует docs и
+  разрешает небольшие wording/docs-изменения напрямую. Принятые docs-only аналоги без feature
+  issue: [Poolside #12586](https://github.com/cline/cline/pull/12586) и
+  [Atomic Chat #11966](https://github.com/cline/cline/pull/11966).
+- В Cline уже существует штатный custom Anthropic Base URL:
+  `apps/vscode/webview-ui/src/components/settings/providers/AnthropicProvider.tsx` выводит поле
+  **Use custom base URL**, а `docs/provider-config/anthropic.mdx` документирует его.
+- Runtime не требует нового provider-кода: `normalizeSdkBaseUrl` в
+  `apps/vscode/src/sdk/cline-session-factory.ts` дописывает стандартный путь `/v1` к корневому
+  custom URL, затем `sdk/packages/llms/src/providers/vendors/anthropic.ts` передаёт результат как
+  `baseURL` штатному `@ai-sdk/anthropic`.
+- Поиск `apitoken.sale` в upstream-коде, issues и PR дал 0 результатов; дубликата интеграции нет.
+
+### Реализация
+
+- Форк: <https://github.com/apitokensale-admin/cline>.
+- Ветка: <https://github.com/apitokensale-admin/cline/tree/docs/apitoken-sale-anthropic>.
+- Опубликованный commit: `de0df87dd7dde87177290acf543cef845b52bebe`.
+- Изменён только `docs/provider-config/anthropic.mdx`: в существующий Anthropic API guide добавлен
+  короткий раздел про third-party Anthropic-compatible providers с API Token Sale как проверенным
+  примером.
+- Инструкция использует встроенный provider **Anthropic**, provider-issued key, корневой Base URL
+  `https://api.apitoken.sale` и модель `claude-sonnet-4-6`.
+- Добавлена одна публичная ссылка на <https://apitoken.sale/> и явный disclaimer: API Token Sale —
+  независимый provider без аффилиации с Anthropic или Cline; billing/privacy/availability задаются
+  сторонним сервисом. Код, цены и внутренняя механика сервиса не упоминаются.
+
+### Проверки
+
+- `bun install --frozen-lockfile` в SDK workspace: passed; установлено 4,697 пакетов без изменения
+  tracked lockfiles.
+- `bun run build:sdk`: passed для `@cline/shared`, `@cline/llms`, `@cline/agents`, `@cline/core`,
+  `@cline/sdk` и theme validation.
+- Живой basic/SSE прогон через реальный `@cline/llms` handler с `claude-sonnet-4-6`: passed;
+  получены успешный streaming response и usage chunk.
+- Живой forced tool-use прогон через тот же Cline handler: passed; получен ожидаемый
+  `tool_calls` chunk и usage.
+- `bunx mintlify@4.2.338 broken-links`: passed, broken links не найдены.
+- Homepage `https://apitoken.sale/`: HTTP 200; `git diff --check` и обязательный pre-commit
+  `gitleaks`: passed.
+- API key читался только из process env. Временный JSON содержал только имя env-переменной и был
+  удалён после теста; значения ключа нет в upstream diff, commit, PR или журнале.
+
+### PR и backlink
+
+- PR открыт: <https://github.com/cline/cline/pull/12648>.
+- Статус после открытия: `OPEN`, `MERGEABLE`, draft=false; head SHA `de0df87dd`, текущий base SHA
+  `e3ff875e`; `mergeable_state=blocked` означает незавершённый обязательный upstream gate, а не
+  conflict.
+- Socket Security checks зелёные. GitHub `Run Tests` и workflow `strip` корректно skipped для
+  этого docs-only diff; локальные релевантные SDK/live/docs проверки прошли.
+- Greptile запрошен комментарием `@greptileai please review`:
+  <https://github.com/cline/cline/pull/12648#issuecomment-5106517643>. Бот сообщил, что автор не в
+  allowlist; его check пока `in_progress`, actionable review не опубликован.
+- CLA-бот, human review и замечания на момент проверки отсутствуют.
+- Ожидаемое упоминание после мержа: существующая Anthropic provider page содержит бренд, homepage,
+  API host и точную настройку Cline без изменения runtime.
+- Ожидаемая публичная ссылка:
+  <https://docs.cline.bot/provider-config/anthropic#using-an-anthropic-compatible-provider>.
+- Проверка 2026-07-28: upstream code search = 0; текущая публичная страница отвечает HTTP 200, но
+  `apitoken.sale` ещё не содержит. Backlink status: `pending`.
+- Следующая проверка: maintainer review, возможное завершение stale Greptile check, merge и
+  публикация Mintlify-страницы.
 
 ## Очередь и повторные проверки
 
@@ -407,3 +478,7 @@
 | 2026-07-28 | `Aider-AI/aider` | activity, contribution rules, LiteLLM transport, accepted docs analog | repo still accepts focused PRs; `ANTHROPIC_API_BASE` on pinned LiteLLM 1.82.3 is the supported path |
 | 2026-07-28 | `Aider-AI/aider` | docs change, Jekyll build, rendered HTML, live Aider and LiteLLM smoke | one-file branch ready; codespell/build passed; Aider edit plus basic, SSE and tool use passed |
 | 2026-07-28 | `Aider-AI/aider` | PR, CLA, workflow, review and backlink | PR [#5504](https://github.com/Aider-AI/aider/pull/5504) open and mergeable; CLA and first-time workflow approval pending; Greptile requested; backlink absent |
+| 2026-07-28 | `Aider-AI/aider` | CLA status after owner acceptance | `license/cla=SUCCESS`; CLA is signed, only workflow approval and review remain |
+| 2026-07-28 | `cline/cline` | rules, native Anthropic path, accepted docs analogs, duplicate search | existing custom Base URL is sufficient; direct one-file docs change selected; no duplicate `apitoken.sale` mention |
+| 2026-07-28 | `cline/cline` | SDK build, live Cline streaming/usage/tool use, Mintlify links | all relevant checks passed; no Cline runtime change required |
+| 2026-07-28 | `cline/cline` | fork, commit, PR, checks and backlink | PR [#12648](https://github.com/cline/cline/pull/12648) open and mergeable; maintainer review and backlink pending; Greptile author allowlist prevents bot review |
