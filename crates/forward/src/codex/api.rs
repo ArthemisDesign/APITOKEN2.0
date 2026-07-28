@@ -269,6 +269,7 @@ pub async fn responses(
         Ok(prepared) => prepared,
         Err(error) => return error.into_response(),
     };
+    let routing = build_turn_routing(&app, &tenant_scope, &parts.headers, &prepared).await;
     let admission = match pending
         .reserve(
             &app,
@@ -295,10 +296,11 @@ pub async fn responses(
             tenant_scope,
             response_id,
             created_at,
+            routing,
         );
     }
 
-    let result = match gateway.run_turn(prepared.turn.clone(), None).await {
+    let result = match gateway.run_turn(prepared.turn.clone(), None, routing).await {
         Ok(result) => result,
         Err(error) => return ApiError::from(error).into_response(),
     };
@@ -675,6 +677,52 @@ fn model_object(model: &CodexModel) -> Value {
         "created": model.created,
         "owned_by": model.owned_by
     })
+}
+
+/// Build the cache-first routing context for one turn, mirroring the Claude fleet's affinity flow.
+///
+/// The lineage is derived from the same tenant scope the Claude path uses and from the exact
+/// conversation the model will see, projected onto the shared `AffinityStore`. `resolve` returns the
+/// home this conversation is already pinned to; when it is new, `warm_homes` surfaces homes that hold
+/// the shared system/tools cache root as a soft placement hint. It is a pure optimization: a `None`
+/// result (no messages, or the affinity store declining) just falls back to least-loaded selection.
+pub(super) async fn build_turn_routing(
+    app: &AppState,
+    tenant_scope: &str,
+    headers: &HeaderMap,
+    prepared: &PreparedTurn,
+) -> Option<super::TurnRouting> {
+    let store = app.affinity.clone();
+    let instructions = combined_instructions(&prepared.turn);
+    let input = store.infer_codex(
+        tenant_scope,
+        headers,
+        &prepared.request.public_model.id,
+        instructions.as_deref(),
+        &prepared.turn.dynamic_tools,
+        &prepared.full_history_prefix,
+    )?;
+    let resolution = store.resolve(&input).await;
+    let warm = if resolution.is_none() {
+        store.warm_homes(&input).await
+    } else {
+        Vec::new()
+    };
+    Some(super::TurnRouting::new(store, input, resolution, warm))
+}
+
+/// The exact instruction text the model sees, combining the base (system/Responses `instructions`)
+/// and developer instruction. Kept stable across a conversation so the cache-shape digest is stable.
+fn combined_instructions(turn: &super::CodexTurnRequest) -> Option<String> {
+    match (
+        turn.base_instructions.as_deref(),
+        turn.developer_instructions.as_deref(),
+    ) {
+        (None, None) => None,
+        (Some(base), None) => Some(base.to_string()),
+        (None, Some(developer)) => Some(developer.to_string()),
+        (Some(base), Some(developer)) => Some(format!("{base}\n\n{developer}")),
+    }
 }
 
 pub(super) async fn prepare_turn(
@@ -1963,6 +2011,7 @@ fn stream_responses(
     tenant_scope: String,
     response_id: String,
     created_at: i64,
+    routing: Option<super::TurnRouting>,
 ) -> Response {
     let (frame_tx, frame_rx) = mpsc::channel::<Bytes>(128);
     let request_id_header = response_id.clone();
@@ -2008,7 +2057,8 @@ fn stream_responses(
         let (update_tx, mut update_rx) = mpsc::channel(512);
         let run_gateway = gateway.clone();
         let turn = prepared.turn.clone();
-        let run = tokio::spawn(async move { run_gateway.run_turn(turn, Some(update_tx)).await });
+        let run =
+            tokio::spawn(async move { run_gateway.run_turn(turn, Some(update_tx), routing).await });
         let mut text_states = HashMap::<String, StreamTextState>::new();
         let mut reasoning_states = HashMap::<String, StreamReasoningState>::new();
         let mut next_output_index = 0usize;

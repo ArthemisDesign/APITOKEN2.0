@@ -309,8 +309,20 @@ CLAUDE_API_CODEX_MAX_CONCURRENT=4
 `CLAUDE_API_CODEX_HOME` remains the single-home spelling, so an existing environment keeps working
 unchanged. Listing one directory twice is a startup error: two children sharing one auth store would
 corrupt its token refresh and would double-count one subscription's capacity. `MAX_CONCURRENT` is
-per home. Provision each additional home exactly like the first — `0700`, owned by the engine user —
-and authenticate it separately with the device flow above.
+retained only for environment compatibility: per-home turn concurrency is intentionally unbounded,
+exactly like the Claude fleet, so a home accepts as many simultaneous turns as arrive. The only
+global admission ceiling is the provider-wide concurrency guard shared with the Claude path; the
+per-home in-flight count is just a load signal for selection. Provision each additional home exactly
+like the first — `0700`, owned by the engine user — and authenticate it separately with the device
+flow above.
+
+Home selection is cache-first, mirroring the Claude fleet's affinity layer: a conversation is pinned
+to the home that first served it (via the shared `AffinityStore`, keyed by the same tenant scope and
+projected onto the same canonical shape through `infer_codex`), so a follow-up request reuses that
+home's warm OpenAI prompt cache instead of being spread by load. A new conversation prefers a home
+already holding the shared system/tools cache root, then the least-loaded home. Affinity is a
+fail-open optimization — local L1 plus the optional shared Redis L2 — and is a no-op while the pool
+holds a single home.
 
 Optional controls:
 

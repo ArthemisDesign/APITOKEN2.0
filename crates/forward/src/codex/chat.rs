@@ -81,6 +81,8 @@ pub async fn completions(
     // Chat has two distinct instruction roles: system replaces the base prompt above, while
     // developer remains an explicit developer-history item in the patched app-server context.
     prepared.turn.developer_instructions = prepared.request.instructions.clone();
+    let routing =
+        super::api::build_turn_routing(&app, &tenant_scope, &parts.headers, &prepared).await;
     let admission = match pending
         .reserve(
             &app,
@@ -109,10 +111,11 @@ pub async fn completions(
             parsed.include_usage,
             parsed.stop,
             parsed.max_output_chars,
+            routing,
         );
     }
 
-    let result = match gateway.run_turn(prepared.turn.clone(), None).await {
+    let result = match gateway.run_turn(prepared.turn.clone(), None, routing).await {
         Ok(result) => result,
         Err(error) => return ApiError::from(error).into_response(),
     };
@@ -985,6 +988,7 @@ fn stream_chat(
     include_usage: bool,
     stop: Vec<String>,
     max_output_chars: Option<usize>,
+    routing: Option<super::TurnRouting>,
 ) -> Response {
     let (frame_tx, frame_rx) = mpsc::channel::<Bytes>(128);
     let request_id_header = completion_id.clone();
@@ -1007,7 +1011,8 @@ fn stream_chat(
         let (update_tx, mut update_rx) = mpsc::channel(512);
         let run_gateway = gateway.clone();
         let turn = prepared.turn.clone();
-        let run = tokio::spawn(async move { run_gateway.run_turn(turn, Some(update_tx)).await });
+        let run =
+            tokio::spawn(async move { run_gateway.run_turn(turn, Some(update_tx), routing).await });
         let mut tool_index = 0usize;
         let mut emitted_tools = HashSet::new();
         let mut downstream_closed = false;

@@ -5,7 +5,7 @@
 
 use super::{
     new_id, AppServerEvent, CodexGateway, CodexHome, CodexModel, CodexProcess, HomeSelection,
-    ProcessError, TurnSlot,
+    ProcessError, TurnRouting, TurnSlot,
 };
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -107,13 +107,19 @@ impl CodexGateway {
         &self,
         request: CodexTurnRequest,
         updates: Option<mpsc::Sender<TurnUpdate>>,
+        mut routing: Option<TurnRouting>,
     ) -> Result<CodexTurnResult, ProcessError> {
         let emitted = Arc::new(AtomicBool::new(false));
         let mut tried: Vec<String> = Vec::new();
         let mut transport_retries_left = 1usize;
         let mut last_error: Option<ProcessError> = None;
         loop {
-            let (home, slot) = match self.select_home(&tried).await {
+            let preferred = routing.as_ref().and_then(|routing| routing.preferred_home());
+            let warm = routing
+                .as_ref()
+                .map(|routing| routing.warm.as_slice())
+                .unwrap_or(&[]);
+            let (home, slot) = match self.select_home(&tried, preferred, warm).await {
                 HomeSelection::Ready(home, slot) => (home, slot),
                 HomeSelection::Unavailable { ready_at } => {
                     return Err(last_error.unwrap_or_else(|| ProcessError::UsageLimitExceeded {
@@ -133,6 +139,11 @@ impl CodexGateway {
                         pool::now(),
                     ));
                     home.mark_healthy();
+                    // Pin this conversation's cache lineage to the home that served it, so the next
+                    // request in the conversation reuses its warm prompt cache.
+                    if let Some(routing) = routing.as_mut() {
+                        routing.record_served(home.id()).await;
+                    }
                     return Ok(result);
                 }
                 Err(error) => error,
@@ -1081,7 +1092,7 @@ done
         let (gateway, workspace) = fake_gateway("text");
         let (updates_tx, mut updates_rx) = mpsc::channel(8);
         let result = gateway
-            .run_turn(turn_request(test_model()), Some(updates_tx))
+            .run_turn(turn_request(test_model()), Some(updates_tx), None)
             .await
             .unwrap();
 
@@ -1158,7 +1169,7 @@ done
             json!({"type": "image", "url": data_url, "detail": "high"}),
             json!({"type": "text", "text": "what is in this image?"}),
         ];
-        gateway.run_turn(request, None).await.unwrap();
+        gateway.run_turn(request, None, None).await.unwrap();
 
         let requests = logged_requests(&workspace.log);
         let turn_start = requests
@@ -1179,7 +1190,7 @@ done
     async fn served_turn_credits_home_spend_and_reports_window_capacity() {
         let (gateway, _workspace) = fake_gateway("text");
         let result = gateway
-            .run_turn(turn_request(test_model()), None)
+            .run_turn(turn_request(test_model()), None, None)
             .await
             .unwrap();
         assert_eq!(result.usage.input_tokens, 101);
@@ -1221,7 +1232,7 @@ done
         drop(updates_rx);
 
         let result = gateway
-            .run_turn(turn_request(test_model()), Some(updates_tx))
+            .run_turn(turn_request(test_model()), Some(updates_tx), None)
             .await
             .unwrap();
 
@@ -1235,7 +1246,7 @@ done
     async fn customer_function_call_is_returned_and_native_turn_is_interrupted() {
         let (gateway, workspace) = fake_gateway("tool");
         let result = gateway
-            .run_turn(turn_request(test_model()), None)
+            .run_turn(turn_request(test_model()), None, None)
             .await
             .unwrap();
 
@@ -1263,7 +1274,7 @@ done
     async fn parallel_customer_function_calls_are_returned_once_each() {
         let (gateway, workspace) = fake_gateway("parallel_tool");
         let result = gateway
-            .run_turn(turn_request(test_model()), None)
+            .run_turn(turn_request(test_model()), None, None)
             .await
             .unwrap();
 
@@ -1302,7 +1313,7 @@ done
                 "definition": "start: /[\\s\\S]+/"
             }
         })];
-        let result = gateway.run_turn(request, None).await.unwrap();
+        let result = gateway.run_turn(request, None, None).await.unwrap();
 
         assert_eq!(result.output.len(), 1);
         assert_eq!(result.output[0]["type"], "custom_tool_call");
@@ -1360,7 +1371,7 @@ done
         let (gateway, _workspace) = fake_gateway("reasoning");
         let (updates_tx, mut updates_rx) = mpsc::channel(8);
         let result = gateway
-            .run_turn(turn_request(test_model()), Some(updates_tx))
+            .run_turn(turn_request(test_model()), Some(updates_tx), None)
             .await
             .unwrap();
 
@@ -1398,7 +1409,7 @@ done
         let run_gateway = gateway.clone();
         let task = tokio::spawn(async move {
             run_gateway
-                .run_turn(turn_request(test_model()), Some(updates_tx))
+                .run_turn(turn_request(test_model()), Some(updates_tx), None)
                 .await
         });
         assert!(matches!(
@@ -1415,7 +1426,7 @@ done
     async fn structured_usage_limit_is_classified_without_exposing_upstream_text() {
         let (gateway, _workspace) = fake_gateway("usage_limit");
         let error = gateway
-            .run_turn(turn_request(test_model()), None)
+            .run_turn(turn_request(test_model()), None, None)
             .await
             .unwrap_err();
         assert!(matches!(
@@ -1457,7 +1468,7 @@ done
 
         // And it can actually serve: the new home starts its own attested child on demand.
         let result = gateway
-            .run_turn(turn_request(test_model()), None)
+            .run_turn(turn_request(test_model()), None, None)
             .await
             .unwrap();
         assert_eq!(result.usage.input_tokens, 101);
@@ -1490,7 +1501,7 @@ done
     async fn a_home_at_its_usage_limit_rotates_to_a_healthy_home() {
         let (gateway, _workspace, logs) = fake_pool_gateway(&["usage_limit", "text"]);
         let result = gateway
-            .run_turn(turn_request(test_model()), None)
+            .run_turn(turn_request(test_model()), None, None)
             .await
             .unwrap();
         assert_eq!(result.usage.input_tokens, 101);
@@ -1508,7 +1519,7 @@ done
     async fn every_home_limited_returns_one_retryable_wait_not_a_provider_error() {
         let (gateway, _workspace, _logs) = fake_pool_gateway(&["usage_limit", "usage_limit"]);
         let error = gateway
-            .run_turn(turn_request(test_model()), None)
+            .run_turn(turn_request(test_model()), None, None)
             .await
             .unwrap_err();
         // The client is told to retry after the soonest reset, never that an account was banned.
@@ -1529,7 +1540,7 @@ done
         // Preflight is what populates the snapshot the admission gate reads, exactly as in serve.
         gateway.preflight().await.unwrap();
         gateway
-            .run_turn(turn_request(test_model()), None)
+            .run_turn(turn_request(test_model()), None, None)
             .await
             .unwrap();
         assert!(
@@ -1545,7 +1556,7 @@ done
     async fn a_dead_child_is_retried_once_on_another_home() {
         let (gateway, _workspace, logs) = fake_pool_gateway(&["die", "text"]);
         let result = gateway
-            .run_turn(turn_request(test_model()), None)
+            .run_turn(turn_request(test_model()), None, None)
             .await
             .unwrap();
         assert_eq!(result.usage.input_tokens, 101);
@@ -1559,7 +1570,7 @@ done
             fake_gateway_with_request_timeout("rate_limit_timeout", 200);
 
         let result = gateway
-            .run_turn(turn_request(test_model()), None)
+            .run_turn(turn_request(test_model()), None, None)
             .await
             .unwrap();
 
@@ -1575,7 +1586,7 @@ done
         let stale_process = home.process().await.unwrap();
 
         let result = gateway
-            .run_turn(turn_request(test_model()), None)
+            .run_turn(turn_request(test_model()), None, None)
             .await
             .unwrap();
 
@@ -1610,7 +1621,7 @@ done
             fake_gateway_with_request_timeout("turn_start_timeout_once", 200);
 
         let error = gateway
-            .run_turn(turn_request(test_model()), None)
+            .run_turn(turn_request(test_model()), None, None)
             .await
             .unwrap_err();
         assert!(matches!(error, ProcessError::Timeout("turn/start")));
@@ -1618,7 +1629,7 @@ done
 
         gateway.probe_health().await;
         let result = gateway
-            .run_turn(turn_request(test_model()), None)
+            .run_turn(turn_request(test_model()), None, None)
             .await
             .unwrap();
         assert_eq!(result.usage.input_tokens, 101);
@@ -1634,7 +1645,7 @@ done
     async fn a_transport_fault_does_not_quarantine_the_subscription() {
         let (gateway, _workspace, _logs) = fake_pool_gateway(&["die", "text"]);
         gateway
-            .run_turn(turn_request(test_model()), None)
+            .run_turn(turn_request(test_model()), None, None)
             .await
             .unwrap();
         let status = gateway.operational_status().await;
@@ -1651,7 +1662,7 @@ done
     async fn a_failure_after_the_first_delta_is_never_retried_on_another_home() {
         let (gateway, _workspace, logs) = fake_pool_gateway(&["stream_then_die", "text"]);
         let (updates_tx, mut updates_rx) = mpsc::channel(8);
-        let run = gateway.run_turn(turn_request(test_model()), Some(updates_tx));
+        let run = gateway.run_turn(turn_request(test_model()), Some(updates_tx), None);
         let collect = async {
             let mut seen = Vec::new();
             while let Some(update) = updates_rx.recv().await {
@@ -1665,6 +1676,72 @@ done
         assert!(
             !served_turn(&logs[1]),
             "a second attempt would interleave with output the client already has"
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_infer_pins_a_conversation_to_one_home_and_isolates_tenants() {
+        // Store-level proof that the shared AffinityStore treats a Codex request exactly like a
+        // Claude one: the same tenant + conversation resolves to the same home, and another tenant
+        // with byte-identical text is a distinct lineage that never inherits the pin.
+        use crate::affinity::AffinityStore;
+        use axum::http::HeaderMap;
+        let store = AffinityStore::new(None, Some("secret"), 600, 300, 50).unwrap();
+        let items = vec![json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "hi"}]
+        })];
+        let input = store
+            .infer_codex("acct-a", &HeaderMap::new(), "gpt-5.6", Some("sys"), &[], &items)
+            .unwrap();
+        assert!(store.resolve(&input).await.is_none());
+        let resolution = store.claim(&input, "home-abc").await;
+        assert_eq!(resolution.home, "home-abc");
+        assert_eq!(store.resolve(&input).await.unwrap().home, "home-abc");
+
+        let other_tenant = store
+            .infer_codex("acct-b", &HeaderMap::new(), "gpt-5.6", Some("sys"), &[], &items)
+            .unwrap();
+        assert!(
+            store.resolve(&other_tenant).await.is_none(),
+            "a different tenant must not inherit the pinned home"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pinned_conversation_routes_to_its_home_over_the_least_loaded_one() {
+        // Cache-first routing: a conversation pinned to home #1 must be served there even though the
+        // least-loaded tie-break would otherwise pick home #0 (lower order). This is the whole point
+        // of the affinity layer — reuse the warm home's prompt cache instead of spreading by load.
+        use crate::affinity::AffinityStore;
+        use axum::http::HeaderMap;
+        let (gateway, _workspace, logs) = fake_pool_gateway(&["text", "text"]);
+        gateway.preflight().await.unwrap();
+        let status = gateway.operational_status().await;
+        let home1_id = status.homes[1].id.clone();
+
+        let store = Arc::new(AffinityStore::new(None, Some("secret"), 600, 300, 50).unwrap());
+        let items = vec![json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "hello"}]
+        })];
+        let input = store
+            .infer_codex("tenant", &HeaderMap::new(), "gpt-5.6", None, &[], &items)
+            .unwrap();
+        let resolution = store.claim(&input, &home1_id).await;
+        let routing = TurnRouting::new(store.clone(), input.clone(), Some(resolution), Vec::new());
+
+        gateway
+            .run_turn(turn_request(test_model()), None, Some(routing))
+            .await
+            .unwrap();
+
+        assert!(served_turn(&logs[1]), "the pinned home served the turn");
+        assert!(
+            !served_turn(&logs[0]),
+            "the least-loaded home was correctly overridden by the conversation pin"
         );
     }
 }

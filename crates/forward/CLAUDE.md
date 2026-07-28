@@ -129,14 +129,22 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
 
 **Инварианты Codex adapter (не применять к Claude byte-for-byte path):**
 0. **Пул homes = тот же дисциплинарный минимум, что и Claude-флот.** `CodexGateway` держит N
-   `CodexHome` (каждый — свой `CODEX_HOME`, свой attested child, свой семафор turn'ов, своё
-   cooling/auth-состояние). Выбор — наименее загруженный по (usedPercent, inflight); классификация
-   вины как в `proxy.rs`: usage-limit/auth → вина АККАУНТА (cooling до reset / 900s карантин, бюджет
-   ретраев НЕ тратят, крутимся по пулу), мёртвый child/timeout → вина ТРАНСПОРТА (короткий cooling,
-   ровно один ретрай), 400/context/rpc → вина КЛИЕНТА (не студим, не ретраим). **Ретрай только ДО
-   первого delta:** `emitted`-флаг в `send_update` — как только байт ушёл клиенту, вторая попытка
-   запрещена. Все homes за лимитом → один OpenAI-shaped 429 с ближайшим reset, а не ошибка
-   конкретного аккаунта. Homes адресуются ИНДЕКСОМ (в логах/метриках нет путей и identity).
+   `CodexHome` (каждый — свой `CODEX_HOME`, свой attested child, своё cooling/auth-состояние).
+   **Параллелизм на home НЕ ограничен** (как у Claude-флота): вместо семафора turn'ов — атомарный
+   счётчик in-flight (`TurnSlot` RAII, снимается на успехе/ошибке/дисконнекте), он лишь сигнал
+   загрузки для выбора, не потолок. `CLAUDE_API_CODEX_MAX_CONCURRENT` больше не режет (оставлен для
+   совместимости env); единственный глобальный потолок — общий с Claude `AppState::concurrency`.
+   **Выбор — cache-first (как `affinity.rs`):** сначала home, к которому закреплён этот разговор
+   (`AffinityStore::resolve` через `infer_codex` → тот же стор/Redis-namespace, что у Claude), затем
+   warm-home общего cache-root, затем наименее загруженный по (usedPercent, inflight). После успеха
+   `run_turn` пишет обслуживший home обратно (`claim`/`remember`/`rebind`/`mark_cache_warm`), чтобы
+   продолжение разговора попало на тот же тёплый кеш. Affinity — fail-open оптимизация (с пулом из 1
+   home — no-op). Классификация вины как в `proxy.rs`: usage-limit/auth → вина АККАУНТА (cooling до
+   reset / 900s карантин, бюджет ретраев НЕ тратят, крутимся по пулу), мёртвый child/timeout → вина
+   ТРАНСПОРТА (короткий cooling, ровно один ретрай), 400/context/rpc → вина КЛИЕНТА (не студим, не
+   ретраим). **Ретрай только ДО первого delta:** `emitted`-флаг в `send_update` — как только байт ушёл
+   клиенту, вторая попытка запрещена. Все homes за лимитом → один OpenAI-shaped 429 с ближайшим reset,
+   а не ошибка конкретного аккаунта. Homes адресуются ИНДЕКСОМ (в логах/метриках нет путей и identity).
 1. Только official `codex app-server` и ChatGPT-owned auth store; токены не читать и не replay-ить.
 2. Проверять exact binary SHA-256/version до запуска; child `env_clear`, только allowlisted proxy env.
 3. Model-visible initial context = explicit client system/developer + transcript + request-local

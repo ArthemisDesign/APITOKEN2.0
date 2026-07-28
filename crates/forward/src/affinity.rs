@@ -336,6 +336,36 @@ impl AffinityStore {
         })
     }
 
+    /// Infer a cache lineage for an OpenAI-compatible (Codex) request without any client opt-in.
+    ///
+    /// The provider speaks a different wire shape than Anthropic, but the cache-lineage question is
+    /// identical: which home already holds this tenant's warm prompt prefix? Rather than duplicate
+    /// the digest, transcript-chaining and cache-root machinery, this projects the Codex request
+    /// onto the same canonical `{model, system, tools, messages}` shape `infer` consumes, so both
+    /// providers share one implementation, one Redis namespace and one behaviour to reason about.
+    /// `items` is the exact ordered conversation the model will see (history prefix + this turn);
+    /// `instructions` is the combined base/developer instruction; `tools` are the dynamic tools.
+    pub fn infer_codex(
+        &self,
+        account_scope: &str,
+        headers: &HeaderMap,
+        model: &str,
+        instructions: Option<&str>,
+        tools: &[Value],
+        items: &[Value],
+    ) -> Option<AffinityInput> {
+        if items.is_empty() {
+            return None;
+        }
+        let body = serde_json::json!({
+            "model": model,
+            "system": instructions,
+            "tools": tools,
+            "messages": items,
+        });
+        self.infer(account_scope, headers, &body)
+    }
+
     pub async fn resolve(&self, input: &AffinityInput) -> Option<AffinityResolution> {
         if let Some(found) = self.local_resolve(input) {
             self.stats.local_hits.fetch_add(1, Ordering::Relaxed);

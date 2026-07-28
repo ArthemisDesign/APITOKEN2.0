@@ -26,10 +26,65 @@ pub(crate) use process::{AppServerEvent, CodexProcess, ProcessError};
 pub use process::{CodexRateLimitWindow, CodexRateLimits};
 pub(crate) use runner::{CodexTurnRequest, CodexTurnResult, CodexUsage, TurnUpdate};
 
+use crate::affinity::{AffinityInput, AffinityResolution, AffinityStore};
 use history::HistoryStore;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
+
+/// Cache-first routing context for one turn, mirroring the Claude fleet's affinity flow.
+///
+/// It carries the tenant-scoped cache lineage (`input`), the home this conversation is already
+/// pinned to (`resolution`, if any), and the homes known to hold this request's shared cache root
+/// (`warm`). After a turn succeeds the gateway records the served home back into the shared
+/// `AffinityStore`, so a follow-up request lands on the same home and reuses its warm prompt cache.
+/// Everything here is a fail-open optimization: losing it only lowers cache-hit rate, never money or
+/// capacity. Owned (not borrowed) so it can move into the detached streaming task.
+#[derive(Clone)]
+pub(crate) struct TurnRouting {
+    store: Arc<AffinityStore>,
+    input: AffinityInput,
+    resolution: Option<AffinityResolution>,
+    warm: Vec<String>,
+}
+
+impl TurnRouting {
+    pub(crate) fn new(
+        store: Arc<AffinityStore>,
+        input: AffinityInput,
+        resolution: Option<AffinityResolution>,
+        warm: Vec<String>,
+    ) -> Self {
+        Self {
+            store,
+            input,
+            resolution,
+            warm,
+        }
+    }
+
+    fn preferred_home(&self) -> Option<&str> {
+        self.resolution.as_ref().map(|resolution| resolution.home.as_str())
+    }
+
+    /// Persist the affinity binding to the home that actually served the turn. Called only on
+    /// success: a failed attempt must not pin a conversation to a home that could not serve it.
+    async fn record_served(&mut self, served_home: &str) {
+        match self.resolution.as_mut() {
+            Some(resolution) => {
+                if resolution.home != served_home {
+                    self.store.rebind(resolution, served_home).await;
+                }
+                self.store.remember(&self.input, resolution).await;
+            }
+            None => {
+                let resolution = self.store.claim(&self.input, served_home).await;
+                self.resolution = Some(resolution);
+            }
+        }
+        self.store.mark_cache_warm(&self.input, served_home);
+    }
+}
 
 /// A home whose device login no longer authenticates is quarantined rather than retried in a hot
 /// loop: repeatedly hammering a rejected profile is both useless and a ban signal. It matches the
@@ -498,12 +553,22 @@ impl CodexGateway {
         self.cfg.admit_below_used_percent
     }
 
-    /// Choose the least-loaded usable home and take one of its turn slots.
+    /// Choose a usable home and take one of its turn slots.
     ///
-    /// Preference order is lowest observed window utilisation, then fewest in-flight turns. That
-    /// spreads load away from a subscription approaching its limit before it hits one, instead of
-    /// discovering the wall mid-turn.
-    async fn select_home(&self, exclude: &[String]) -> HomeSelection {
+    /// Selection is cache-first, mirroring the Claude fleet: a conversation pinned to a `preferred`
+    /// home reuses that home's warm OpenAI prompt cache; failing that, a home already holding this
+    /// request's shared system/tools cache root (`warm`) is preferred; only then does it fall back to
+    /// the least-loaded home (lowest observed window utilisation, then fewest in-flight turns), which
+    /// spreads load away from a subscription approaching its limit before it hits the wall. With a
+    /// single-home pool every branch resolves to that one home, so affinity is a no-op until the pool
+    /// grows. `exclude` drops homes already tried this request, so a spill or retry never re-pins the
+    /// preferred home that just failed.
+    async fn select_home(
+        &self,
+        exclude: &[String],
+        preferred: Option<&str>,
+        warm: &[String],
+    ) -> HomeSelection {
         let now = pool::now();
         let admit_below = self.admit_below_percent();
         let pool_homes = self.homes().await;
@@ -532,9 +597,29 @@ impl CodexGateway {
             return HomeSelection::Unavailable { ready_at: soonest };
         }
         candidates.sort_by_key(|(used, inflight, home)| (*used, *inflight, home.order()));
-        // Concurrency per home is unbounded, so the least-loaded usable home always accepts the
-        // turn; there is no "all slots busy" outcome to report.
-        let (_, _, home) = candidates.into_iter().next().expect("candidates is non-empty");
+        // 1) The conversation's pinned home, if it is currently usable. 2) Otherwise the least-loaded
+        // home that already holds this request's shared cache root. 3) Otherwise the least-loaded home.
+        // Concurrency per home is unbounded, so the chosen home always accepts the turn.
+        let home = preferred
+            .and_then(|id| {
+                candidates
+                    .iter()
+                    .find(|(_, _, home)| home.id() == id)
+                    .map(|(_, _, home)| home.clone())
+            })
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .find(|(_, _, home)| warm.iter().any(|id| id == home.id()))
+                    .map(|(_, _, home)| home.clone())
+            })
+            .unwrap_or_else(|| {
+                candidates
+                    .into_iter()
+                    .next()
+                    .expect("candidates is non-empty")
+                    .2
+            });
         let slot = home.acquire_turn();
         HomeSelection::Ready(home, slot)
     }
