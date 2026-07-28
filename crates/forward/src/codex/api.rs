@@ -30,6 +30,8 @@ const MAX_CLIENT_METADATA_VALUE_BYTES: usize = 16 * 1024;
 const MAX_PROMPT_CACHE_KEY_BYTES: usize = 256;
 const MAX_CUSTOM_TOOL_GRAMMAR_BYTES: usize = 256 * 1024;
 pub(super) const STREAM_FRAME_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Silence-bound interval for SSE comment keep-alives during long provider reasoning stretches.
+pub(super) const SSE_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[derive(Debug)]
 pub(super) struct ApiError {
@@ -181,8 +183,8 @@ pub(super) struct ParsedResponsesRequest {
     verbosity: Option<String>,
     text: Value,
     original_tools: Vec<Value>,
-    dynamic_tools: Vec<Value>,
-    tool_choice: Value,
+    pub(super) dynamic_tools: Vec<Value>,
+    pub(super) tool_choice: Value,
     parallel_tool_calls: bool,
     metadata: Value,
     store: bool,
@@ -291,7 +293,9 @@ pub async fn responses(
     )
     .await;
     admission.settle(&prepared.request.public_model, &result.usage);
-    json_response(StatusCode::OK, response, &response_id)
+    let mut http_response = json_response(StatusCode::OK, response, &response_id);
+    insert_extra_headers(&mut http_response, ratelimit_headers(&gateway).await);
+    http_response
 }
 
 pub async fn models(
@@ -359,6 +363,224 @@ pub async fn model(
         .into_response();
     }
     json_response(StatusCode::OK, model_object(model), &new_id("req"))
+}
+
+/// Validates the public `resp_*` id shape before any store lookup, so malformed ids get the
+/// same 404 as unknown ones without touching storage.
+fn valid_response_id(response_id: &str) -> bool {
+    response_id.starts_with("resp_")
+        && response_id.len() <= 128
+        && response_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+fn response_not_found(response_id: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        axum::Json(json!({
+            "error": {
+                "message": format!("Response with id {response_id:?} not found."),
+                "type": "invalid_request_error",
+                "param": Value::Null,
+                "code": Value::Null
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn history_read_error(response_id: &str, error: HistoryError) -> Response {
+    match error {
+        HistoryError::NotFound | HistoryError::WrongTenant => response_not_found(response_id),
+        HistoryError::TooLarge | HistoryError::Corrupt | HistoryError::Unavailable => {
+            ApiError::unavailable().into_response()
+        }
+    }
+}
+
+pub async fn get_response(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(response_id): Path<String>,
+) -> Response {
+    let Some(gateway) = app.codex.as_ref().cloned() else {
+        return ApiError::not_found("The requested endpoint is not enabled.", None::<String>)
+            .into_response();
+    };
+    // Authentication only; retrieval never reserves or settles money.
+    let pending = match begin_admission(&app, &headers, &peer).await {
+        Ok(pending) => pending,
+        Err(error) => return ApiError::from(error).into_response(),
+    };
+    if !valid_response_id(&response_id) {
+        return response_not_found(&response_id);
+    }
+    match gateway
+        .history()
+        .get(pending.tenant_scope(), &response_id)
+        .await
+    {
+        Ok(stored) => match stored.response {
+            Some(response) => json_response(StatusCode::OK, response, &response_id),
+            // Entries written before retrieval support have no stored response document.
+            None => response_not_found(&response_id),
+        },
+        Err(error) => history_read_error(&response_id, error),
+    }
+}
+
+pub async fn delete_response(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(response_id): Path<String>,
+) -> Response {
+    let Some(gateway) = app.codex.as_ref().cloned() else {
+        return ApiError::not_found("The requested endpoint is not enabled.", None::<String>)
+            .into_response();
+    };
+    let pending = match begin_admission(&app, &headers, &peer).await {
+        Ok(pending) => pending,
+        Err(error) => return ApiError::from(error).into_response(),
+    };
+    if !valid_response_id(&response_id) {
+        return response_not_found(&response_id);
+    }
+    match gateway
+        .history()
+        .delete(pending.tenant_scope(), &response_id)
+        .await
+    {
+        Ok(()) => json_response(
+            StatusCode::OK,
+            json!({
+                "id": response_id,
+                "object": "response.deleted",
+                "deleted": true
+            }),
+            &response_id,
+        ),
+        Err(error) => history_read_error(&response_id, error),
+    }
+}
+
+pub async fn response_input_items(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(response_id): Path<String>,
+) -> Response {
+    let Some(gateway) = app.codex.as_ref().cloned() else {
+        return ApiError::not_found("The requested endpoint is not enabled.", None::<String>)
+            .into_response();
+    };
+    let pending = match begin_admission(&app, &headers, &peer).await {
+        Ok(pending) => pending,
+        Err(error) => return ApiError::from(error).into_response(),
+    };
+    if !valid_response_id(&response_id) {
+        return response_not_found(&response_id);
+    }
+    match gateway
+        .history()
+        .get(pending.tenant_scope(), &response_id)
+        .await
+    {
+        Ok(stored) => {
+            let input_count = stored.input_count.unwrap_or(stored.items.len());
+            let data: Vec<Value> = stored
+                .items
+                .iter()
+                .take(input_count)
+                .cloned()
+                .map(|mut item| {
+                    // Stored items are Responses-shaped already; strip encrypted reasoning state
+                    // unless it is meaningless outside the continuity protocol.
+                    if item.get("type").and_then(Value::as_str) == Some("reasoning") {
+                        item.as_object_mut()
+                            .map(|object| object.remove("encrypted_content"));
+                    }
+                    item
+                })
+                .collect();
+            let first_id = data
+                .first()
+                .and_then(|item| item.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("item_unknown");
+            let last_id = data
+                .last()
+                .and_then(|item| item.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("item_unknown");
+            json_response(
+                StatusCode::OK,
+                json!({
+                    "object": "list",
+                    "data": data,
+                    "first_id": first_id,
+                    "last_id": last_id,
+                    "has_more": false
+                }),
+                &response_id,
+            )
+        }
+        Err(error) => history_read_error(&response_id, error),
+    }
+}
+
+/// `POST /v1/responses/input_tokens`: estimates the input token count of a Responses-shaped
+/// body without running a turn or reserving balance. The estimate shares the byte-length model
+/// used for billing reserve (including the base64 image placeholder), converted at ~4 bytes per
+/// token, so it trends conservative exactly like the reserve does.
+pub async fn input_tokens(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: axum::extract::Request,
+) -> Response {
+    const BYTES_PER_TOKEN_ESTIMATE: u64 = 4;
+    let Some(gateway) = app.codex.as_ref().cloned() else {
+        return ApiError::not_found("The requested endpoint is not enabled.", None::<String>)
+            .into_response();
+    };
+    let (parts, body) = request.into_parts();
+    let pending = match begin_admission(&app, &parts.headers, &peer).await {
+        Ok(pending) => pending,
+        Err(error) => return ApiError::from(error).into_response(),
+    };
+    let raw = match to_bytes(body, OPENAI_BODY_LIMIT).await {
+        Ok(raw) => raw,
+        Err(_) => {
+            return ApiError::invalid("Request body exceeds the 8 MiB limit.", None::<String>)
+                .into_response()
+        }
+    };
+    let value: Value = match serde_json::from_slice(&raw) {
+        Ok(value) => value,
+        Err(_) => {
+            return ApiError::invalid("Invalid JSON in request body.", None::<String>)
+                .into_response()
+        }
+    };
+    let parsed = match parse_responses_request(&gateway, value) {
+        Ok(parsed) => parsed,
+        Err(error) => return error.into_response(),
+    };
+    let prepared = match prepare_turn(&gateway, pending.tenant_scope(), parsed).await {
+        Ok(prepared) => prepared,
+        Err(error) => return error.into_response(),
+    };
+    let input_tokens = prepared.estimated_input_tokens / BYTES_PER_TOKEN_ESTIMATE;
+    json_response(
+        StatusCode::OK,
+        json!({
+            "object": "response.input_tokens",
+            "input_tokens": input_tokens
+        }),
+        &new_id("req"),
+    )
 }
 
 async fn authorize_models(
@@ -1497,6 +1719,7 @@ fn response_object(
         "status": status,
         "background": false,
         "completed_at": if status == "completed" { Some(pool::now()) } else { None },
+        "conversation": Value::Null,
         "error": Value::Null,
         "incomplete_details": Value::Null,
         "instructions": request.instructions,
@@ -1678,8 +1901,10 @@ async fn persist_history(
     if !prepared.request.store {
         return;
     }
+    let input_count = prepared.full_history_prefix.len();
     let mut items = prepared.full_history_prefix.clone();
     items.extend(result.output.clone());
+    let response = build_completed_response(&prepared.request, result, response_id, created_at);
     if let Err(error) = gateway
         .history()
         .put(
@@ -1689,6 +1914,8 @@ async fn persist_history(
                 model: prepared.request.public_model.id.clone(),
                 items,
                 created_at,
+                input_count: Some(input_count),
+                response: Some(response),
             },
         )
         .await
@@ -1762,12 +1989,24 @@ fn stream_responses(
         let mut next_output_index = 0usize;
         let mut emitted_non_messages = HashSet::<String>::new();
         let mut downstream_closed = false;
+        let mut heartbeat = tokio::time::interval(SSE_HEARTBEAT_INTERVAL);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         'updates: loop {
             let update = tokio::select! {
                 _ = frame_tx.closed() => {
                     downstream_closed = true;
                     break;
+                }
+                _ = heartbeat.tick() => {
+                    // SSE comment frame: keeps terminals and proxies from timing out during
+                    // long reasoning stretches with no deltas, without touching event state.
+                    if !send_sse_bytes(&frame_tx, Bytes::from_static(b": keep-alive\n\n")).await
+                    {
+                        downstream_closed = true;
+                        break;
+                    }
+                    continue;
                 }
                 update = update_rx.recv() => update,
             };
@@ -2060,16 +2299,14 @@ fn stream_responses(
             Ok(Err(error)) => {
                 let api_error = ApiError::from(error);
                 if !downstream_closed {
-                    let _ = send_sse(
+                    emit_stream_failure(
                         &frame_tx,
-                        "error",
-                        json!({
-                            "type": "error",
-                            "sequence_number": sequence,
-                            "code": api_error.code,
-                            "message": api_error.message,
-                            "param": api_error.param
-                        }),
+                        &prepared,
+                        &response_id,
+                        created_at,
+                        sequence,
+                        api_error.code,
+                        &api_error.message,
                     )
                     .await;
                 }
@@ -2077,16 +2314,14 @@ fn stream_responses(
             }
             Err(_) => {
                 if !downstream_closed {
-                    let _ = send_sse(
+                    emit_stream_failure(
                         &frame_tx,
-                        "error",
-                        json!({
-                            "type": "error",
-                            "sequence_number": sequence,
-                            "code": "server_error",
-                            "message": "The model stream terminated unexpectedly.",
-                            "param": Value::Null
-                        }),
+                        &prepared,
+                        &response_id,
+                        created_at,
+                        sequence,
+                        Some("server_error"),
+                        "The model stream terminated unexpectedly.",
                     )
                     .await;
                 }
@@ -2552,10 +2787,63 @@ async fn send_sse(sender: &mpsc::Sender<Bytes>, event: &str, value: Value) -> bo
         r#"{"type":"error","code":"server_error","message":"serialization failed"}"#.to_string()
     });
     let frame = Bytes::from(format!("event: {event}\ndata: {data}\n\n"));
+    send_sse_bytes(sender, frame).await
+}
+
+async fn send_sse_bytes(sender: &mpsc::Sender<Bytes>, frame: Bytes) -> bool {
     matches!(
         tokio::time::timeout(STREAM_FRAME_SEND_TIMEOUT, sender.send(frame)).await,
         Ok(Ok(()))
     )
+}
+
+/// Terminal failure lifecycle for a streaming Responses call: the OpenAI-shaped `error` event
+/// plus a `response.failed` event carrying the full failed response object, which is what
+/// spec-compliant SDKs wait on to surface a terminal error.
+#[allow(clippy::too_many_arguments)]
+async fn emit_stream_failure(
+    sender: &mpsc::Sender<Bytes>,
+    prepared: &PreparedTurn,
+    response_id: &str,
+    created_at: i64,
+    sequence: u64,
+    code: Option<&str>,
+    message: &str,
+) {
+    let _ = send_sse(
+        sender,
+        "error",
+        json!({
+            "type": "error",
+            "sequence_number": sequence,
+            "code": code,
+            "message": message,
+            "param": Value::Null
+        }),
+    )
+    .await;
+    let mut failed = response_object(
+        &prepared.request,
+        response_id,
+        created_at,
+        "failed",
+        Vec::new(),
+        None,
+    );
+    failed["error"] = json!({
+        "code": code,
+        "message": message
+    });
+    let _ = send_sse(
+        sender,
+        "response.failed",
+        json!({
+            "type": "response.failed",
+            "sequence_number": sequence + 1,
+            "response": failed
+        }),
+    )
+    .await;
 }
 
 struct ReceiverStream {
@@ -2576,6 +2864,45 @@ pub(super) fn json_response(status: StatusCode, body: Value, request_id: &str) -
         response.headers_mut().insert("x-request-id", value);
     }
     response
+}
+
+/// The provider rate-limit window is a percent-used budget, not a request/token count, so the
+/// `x-ratelimit-*` headers expose it on a 100-unit basis: `remaining` is the headroom percent
+/// and `reset` is the wall-clock seconds until the constrained window rolls over. This mirrors
+/// how OpenAI reports its own windows and gives SDK retry logic something truthful to read.
+pub(super) async fn ratelimit_headers(gateway: &CodexGateway) -> Vec<(&'static str, String)> {
+    let Some(limits) = gateway.operational_status().await.rate_limits else {
+        return Vec::new();
+    };
+    let Some(window) = limits
+        .primary
+        .iter()
+        .chain(limits.secondary.iter())
+        .max_by_key(|window| window.used_percent)
+    else {
+        return Vec::new();
+    };
+    let remaining = 100i64.saturating_sub(window.used_percent);
+    let mut headers = vec![
+        ("x-ratelimit-limit-tokens", "100".to_string()),
+        ("x-ratelimit-remaining-tokens", remaining.to_string()),
+    ];
+    if let Some(resets_at) = window.resets_at {
+        let seconds = resets_at.saturating_sub(pool::now()).max(0);
+        headers.push(("x-ratelimit-reset-tokens", format!("{seconds}s")));
+    }
+    headers
+}
+
+pub(super) fn insert_extra_headers(response: &mut Response, headers: Vec<(&'static str, String)>) {
+    for (name, value) in headers {
+        if let (Ok(name), Ok(value)) = (
+            axum::http::HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(&value),
+        ) {
+            response.headers_mut().insert(name, value);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3121,6 +3448,43 @@ mod tests {
         assert_eq!(parsed.dynamic_tools.len(), 1);
         assert_eq!(parsed.dynamic_tools[0]["name"], "get_weather");
         assert!(parsed.dynamic_tools[0].get("strict").is_none());
+    }
+
+    #[test]
+    fn response_id_validation_matches_history_write_format() {
+        assert!(valid_response_id("resp_abc123_XYZ"));
+        assert!(!valid_response_id("chatcmpl_123"));
+        assert!(!valid_response_id("resp_a b"));
+        assert!(!valid_response_id(&format!("resp_{}", "a".repeat(200))));
+    }
+
+    #[tokio::test]
+    async fn stream_failure_emits_error_event_then_failed_response() {
+        let (sender, mut receiver) = mpsc::channel(8);
+        let gateway = gateway();
+        let parsed =
+            parse_responses_request(&gateway, json!({"model": "gpt-5.6", "input": "hi"})).unwrap();
+        let prepared = prepare_turn(&gateway, "tenant", parsed).await.unwrap();
+        emit_stream_failure(
+            &sender,
+            &prepared,
+            "resp_x",
+            42,
+            7,
+            Some("server_error"),
+            "boom",
+        )
+        .await;
+        drop(sender);
+        let frames = std::iter::from_fn(|| receiver.try_recv().ok())
+            .map(|frame| String::from_utf8(frame.to_vec()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(frames.len(), 2);
+        assert!(frames[0].starts_with("event: error\n"));
+        assert!(frames[0].contains("\"code\":\"server_error\""));
+        assert!(frames[1].starts_with("event: response.failed\n"));
+        assert!(frames[1].contains("\"status\":\"failed\""));
+        assert!(frames[1].contains("\"message\":\"boom\""));
     }
 
     #[test]

@@ -10,11 +10,12 @@ use axum::extract::{ConnectInfo, FromRef, Path, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
-use axum::routing::{any, get, post};
+use axum::routing::{get, post};
 use axum::Router;
 use forward::{
-    authed, client_key, control_authed, forward, openai_chat_completions, openai_model,
-    openai_models, openai_responses, readonly_authed, AppState, Metrics,
+    authed, client_key, control_authed, forward, openai_chat_completions, openai_delete_response,
+    openai_get_response, openai_input_tokens, openai_model, openai_models,
+    openai_response_input_items, openai_responses, readonly_authed, AppState, Metrics,
 };
 use serde_json::{json, Value};
 use std::net::SocketAddr;
@@ -217,18 +218,23 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
         // requests from openai.api.apitoken.sale; every unmarked request preserves the exact
         // legacy Claude fallback, regardless of its authentication headers.
         .route("/v1/responses", post(responses_dispatch))
+        .route("/v1/responses/input_tokens", post(input_tokens_dispatch))
         .route(
-            "/v1/responses/{*rest}",
-            any(unsupported_openai_subroute_dispatch),
+            "/v1/responses/{response_id}",
+            get(get_response_dispatch).delete(delete_response_dispatch),
+        )
+        .route(
+            "/v1/responses/{response_id}/input_items",
+            get(response_input_items_dispatch),
         )
         .route("/v1/chat/completions", post(chat_completions_dispatch))
-        .route(
-            "/v1/chat/completions/{*rest}",
-            any(unsupported_openai_subroute_dispatch),
-        )
         .route("/v1/models", get(models_dispatch))
         .route("/v1/models/{model_id}", get(model_dispatch))
+        // Every other OpenAI-plane route (unsupported subroutes and route families) gets the
+        // OpenAI-shaped 404 from the fallback; the Claude plane falls through to byte-for-byte
+        // forwarding exactly as before.
         .fallback(provider_fallback_dispatch)
+        .method_not_allowed_fallback(method_not_allowed_dispatch)
         .with_state(HttpState { app, accepting })
 }
 
@@ -289,7 +295,61 @@ async fn model_dispatch(
     .await
 }
 
-async fn unsupported_openai_subroute_dispatch(
+async fn get_response_dispatch(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(response_id): Path<String>,
+    request: axum::extract::Request,
+) -> Response {
+    if !is_openai_plane(request.headers()) {
+        return forward(State(app), ConnectInfo(peer), request).await;
+    }
+    openai_get_response(
+        State(app),
+        ConnectInfo(peer),
+        request.headers().clone(),
+        Path(response_id),
+    )
+    .await
+}
+
+async fn delete_response_dispatch(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(response_id): Path<String>,
+    request: axum::extract::Request,
+) -> Response {
+    if !is_openai_plane(request.headers()) {
+        return forward(State(app), ConnectInfo(peer), request).await;
+    }
+    openai_delete_response(
+        State(app),
+        ConnectInfo(peer),
+        request.headers().clone(),
+        Path(response_id),
+    )
+    .await
+}
+
+async fn response_input_items_dispatch(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(response_id): Path<String>,
+    request: axum::extract::Request,
+) -> Response {
+    if !is_openai_plane(request.headers()) {
+        return forward(State(app), ConnectInfo(peer), request).await;
+    }
+    openai_response_input_items(
+        State(app),
+        ConnectInfo(peer),
+        request.headers().clone(),
+        Path(response_id),
+    )
+    .await
+}
+
+async fn input_tokens_dispatch(
     State(app): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: axum::extract::Request,
@@ -297,11 +357,25 @@ async fn unsupported_openai_subroute_dispatch(
     if !is_openai_plane(request.headers()) {
         return forward(State(app), ConnectInfo(peer), request).await;
     }
-    (
-        StatusCode::NOT_FOUND,
-        Json(unsupported_openai_endpoint_error()),
-    )
-        .into_response()
+    openai_input_tokens(State(app), ConnectInfo(peer), request).await
+}
+
+/// A method mismatch on a known path is an unknown-endpoint situation for the caller, so the
+/// OpenAI plane answers with the same OpenAI-shaped 404 as unsupported routes instead of
+/// axum's bare 405. The Claude plane keeps its legacy 405 semantics.
+async fn method_not_allowed_dispatch(
+    State(app): State<AppState>,
+    request: axum::extract::Request,
+) -> Response {
+    if is_openai_plane(request.headers()) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(unsupported_openai_endpoint_error()),
+        )
+            .into_response();
+    }
+    let _ = app;
+    StatusCode::METHOD_NOT_ALLOWED.into_response()
 }
 
 async fn provider_fallback_dispatch(
@@ -446,7 +520,9 @@ async fn metrics(
                 .is_some_and(|status| status.process_live)
         )
     );
-    let limits = codex_status.as_ref().and_then(|status| status.rate_limits.clone());
+    let limits = codex_status
+        .as_ref()
+        .and_then(|status| status.rate_limits.clone());
     let _ = writeln!(
         body,
         "# TYPE claude_api_codex_rate_limit_snapshot_available gauge\n\

@@ -27,6 +27,14 @@ pub struct StoredHistory {
     /// Exact Responses API items, including encrypted reasoning state where the provider emitted it.
     pub items: Vec<Value>,
     pub created_at: i64,
+    /// How many leading `items` were the request input (the rest is this response's output).
+    /// Absent in entries written before retrieval support; they fall back to returning all items.
+    #[serde(default)]
+    pub input_count: Option<usize>,
+    /// The completed public response object, stored so `GET /v1/responses/{id}` can return the
+    /// exact document the client originally received. Absent in older entries.
+    #[serde(default)]
+    pub response: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +204,37 @@ impl HistoryStore {
         Ok(envelope.history)
     }
 
+    /// Removes a stored response for `store=true` deletion semantics. Tenant binding is enforced
+    /// by requiring a successful scoped read first; deleting another tenant's id is impossible
+    /// because the id cannot be read in the first place.
+    pub(crate) async fn delete(
+        &self,
+        tenant_scope: &str,
+        response_id: &str,
+    ) -> Result<(), HistoryError> {
+        self.get(tenant_scope, response_id).await?;
+        {
+            let mut local = self
+                .local
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            local.remove(response_id);
+        }
+        let Some(mut connection) = self.connection().await? else {
+            return Ok(());
+        };
+        let mut command = redis::cmd("DEL");
+        command.arg(Self::redis_key(response_id));
+        let query = command.query_async::<()>(&mut connection);
+        match tokio::time::timeout(self.timeout, query).await {
+            Ok(Ok(())) => Ok(()),
+            _ => {
+                self.reset_connection().await;
+                Err(HistoryError::Unavailable)
+            }
+        }
+    }
+
     fn local_put(&self, tenant_scope: &str, history: StoredHistory) {
         let now = pool::now();
         let mut local = self
@@ -332,6 +371,8 @@ mod tests {
                 "content": [{"type": "output_text", "text": "secret"}]
             })],
             created_at: 1,
+            input_count: Some(0),
+            response: None,
         }
     }
 
@@ -347,6 +388,43 @@ mod tests {
             store.get("account-b", "resp_1").await.unwrap_err(),
             HistoryError::WrongTenant
         );
+    }
+
+    #[tokio::test]
+    async fn delete_removes_history_and_stays_tenant_bound() {
+        let store = store();
+        store.put("account-a", history("resp_1")).await.unwrap();
+        assert_eq!(
+            store.delete("account-b", "resp_1").await.unwrap_err(),
+            HistoryError::WrongTenant
+        );
+        store.delete("account-a", "resp_1").await.unwrap();
+        assert_eq!(
+            store.get("account-a", "resp_1").await.unwrap_err(),
+            HistoryError::NotFound
+        );
+        assert_eq!(
+            store.delete("account-a", "resp_1").await.unwrap_err(),
+            HistoryError::NotFound
+        );
+    }
+
+    #[test]
+    fn older_entries_without_retrieval_fields_still_deserialize() {
+        let store = store();
+        let legacy = br#"{
+            "scope_tag": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            "history": {
+                "response_id": "resp_old",
+                "model": "gpt-5.6-sol",
+                "items": [],
+                "created_at": 1
+            }
+        }"#;
+        let envelope: RedisEnvelope = serde_json::from_slice(legacy).unwrap();
+        assert_eq!(envelope.history.input_count, None);
+        assert_eq!(envelope.history.response, None);
+        let _ = store;
     }
 
     #[test]

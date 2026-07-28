@@ -31,6 +31,11 @@ struct ParsedChat {
     responses: super::api::ParsedResponsesRequest,
     base_instructions: Option<String>,
     include_usage: bool,
+    stop: Vec<String>,
+    /// Approximate output character budget derived from max_tokens/max_completion_tokens at
+    /// ~4 chars per token. The transport cannot cap generation, so the cap is enforced on the
+    /// delivered text with finish_reason "length"; settlement always uses authoritative usage.
+    max_output_chars: Option<usize>,
 }
 
 type TranslatedChatMessages = (Vec<Value>, Option<String>, Option<String>);
@@ -102,6 +107,8 @@ pub async fn completions(
             completion_id,
             created,
             parsed.include_usage,
+            parsed.stop,
+            parsed.max_output_chars,
         );
     }
 
@@ -112,9 +119,21 @@ pub async fn completions(
     if let Err(error) = admission.mark_delivering().await {
         return ApiError::from(error).into_response();
     }
-    let response = completed_chat(&prepared, &result, &completion_id, created);
+    let response = completed_chat(
+        &prepared,
+        &result,
+        &completion_id,
+        created,
+        &parsed.stop,
+        parsed.max_output_chars,
+    );
     admission.settle(&prepared.request.public_model, &result.usage);
-    json_response(StatusCode::OK, response, &completion_id)
+    let mut http_response = json_response(StatusCode::OK, response, &completion_id);
+    super::api::insert_extra_headers(
+        &mut http_response,
+        super::api::ratelimit_headers(&gateway).await,
+    );
+    http_response
 }
 
 fn parse_chat_request(gateway: &CodexGateway, value: Value) -> Result<ParsedChat, ApiError> {
@@ -211,18 +230,103 @@ fn parse_chat_request(gateway: &CodexGateway, value: Value) -> Result<ParsedChat
     }
     if let Some(tools) = object.get("tools").filter(|value| !value.is_null()) {
         responses.insert("tools".to_string(), translate_chat_tools(tools)?);
+    } else if let Some(functions) = object.get("functions").filter(|value| !value.is_null()) {
+        // Legacy `functions` surface: identical schema minus the {"type":"function"} wrapper.
+        responses.insert("tools".to_string(), translate_legacy_functions(functions)?);
     }
     if let Some(choice) = object.get("tool_choice").filter(|value| !value.is_null()) {
         responses.insert("tool_choice".to_string(), choice.clone());
+    } else if let Some(choice) = object.get("function_call").filter(|value| !value.is_null()) {
+        // Legacy `function_call`: only "none" is enforceable; everything else degrades to auto.
+        let mapped = match choice.as_str() {
+            Some("none") => Value::String("none".to_string()),
+            _ => Value::String("auto".to_string()),
+        };
+        responses.insert("tool_choice".to_string(), mapped);
     }
 
+    let stop = parse_stop_sequences(object.get("stop"))?;
+    let max_output_chars = parse_max_output_chars(object)?;
     let include_usage = parse_stream_options(object.get("stream_options"))?;
     let responses = parse_responses_request(gateway, Value::Object(responses))?;
     Ok(ParsedChat {
         responses,
         base_instructions,
         include_usage,
+        stop,
+        max_output_chars,
     })
+}
+
+/// `stop` accepts a single string or an array of up to 4 non-empty strings, like the official
+/// endpoint. Sequences are honored on the delivered text (see StopFilter), not upstream.
+fn parse_stop_sequences(value: Option<&Value>) -> Result<Vec<String>, ApiError> {
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return Ok(Vec::new());
+    };
+    let raw: Vec<&str> = match value {
+        Value::String(single) => vec![single.as_str()],
+        Value::Array(items) => {
+            let mut collected = Vec::with_capacity(items.len());
+            for (index, item) in items.iter().enumerate() {
+                collected.push(item.as_str().ok_or_else(|| {
+                    ApiError::invalid(
+                        "stop sequences must be strings.",
+                        Some(format!("stop.{index}")),
+                    )
+                })?);
+            }
+            collected
+        }
+        _ => {
+            return Err(ApiError::invalid(
+                "stop must be a string or an array of strings.",
+                Some("stop".to_string()),
+            ))
+        }
+    };
+    if raw.len() > 4 {
+        return Err(ApiError::invalid(
+            "stop may contain at most 4 sequences.",
+            Some("stop".to_string()),
+        ));
+    }
+    Ok(raw
+        .into_iter()
+        .filter(|sequence| !sequence.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+fn parse_max_output_chars(object: &Map<String, Value>) -> Result<Option<usize>, ApiError> {
+    const CHARS_PER_TOKEN: u64 = 4;
+    let value = object
+        .get("max_completion_tokens")
+        .filter(|value| !value.is_null())
+        .or_else(|| object.get("max_tokens").filter(|value| !value.is_null()));
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let tokens = value.as_u64().ok_or_else(|| {
+        ApiError::invalid(
+            "max_completion_tokens must be a positive integer.",
+            Some("max_completion_tokens".to_string()),
+        )
+    })?;
+    Ok(Some(
+        usize::try_from(tokens.saturating_mul(CHARS_PER_TOKEN)).unwrap_or(usize::MAX),
+    ))
+}
+
+fn translate_legacy_functions(value: &Value) -> Result<Value, ApiError> {
+    let functions = value.as_array().ok_or_else(|| {
+        ApiError::invalid("functions must be an array.", Some("functions".to_string()))
+    })?;
+    let tools: Vec<Value> = functions
+        .iter()
+        .map(|function| json!({"type": "function", "function": function}))
+        .collect();
+    translate_chat_tools(&Value::Array(tools))
 }
 
 fn parse_stream_options(value: Option<&Value>) -> Result<bool, ApiError> {
@@ -258,12 +362,7 @@ fn translate_messages(messages: &[Value]) -> Result<TranslatedChatMessages, ApiE
                 Some(format!("messages.{index}")),
             )
         })?;
-        if object.get("name").is_some_and(|value| !value.is_null()) {
-            return Err(ApiError::invalid(
-                "Named chat participants are not supported.",
-                Some(format!("messages.{index}.name")),
-            ));
-        }
+        // The `name` participant hint has no transport equivalent; accepted and ignored.
         let role = object.get("role").and_then(Value::as_str).ok_or_else(|| {
             ApiError::invalid(
                 "Each message requires a valid role.",
@@ -301,14 +400,8 @@ fn translate_messages(messages: &[Value]) -> Result<TranslatedChatMessages, ApiE
                 }));
             }
             "assistant" => {
-                if object.get("refusal").is_some_and(|value| !value.is_null())
-                    || object.get("audio").is_some_and(|value| !value.is_null())
-                {
-                    return Err(ApiError::invalid(
-                        "Assistant refusal/audio history is not supported by this text endpoint.",
-                        Some(format!("messages.{index}")),
-                    ));
-                }
+                // refusal/audio fields carry no model-visible history text; accepted and
+                // ignored so replayed official conversations never fail.
                 let content = chat_content_text(
                     object.get("content"),
                     true,
@@ -667,17 +760,145 @@ fn translate_chat_tools(value: &Value) -> Result<Value, ApiError> {
     Ok(Value::Array(translated))
 }
 
+/// Applies client stop sequences and the approximate output budget to completed text. The
+/// stop sequence itself is removed, matching the official endpoint. Returns the truncated text
+/// and whether the budget (not a stop sequence) caused the cut.
+fn enforce_output_limits(
+    mut text: String,
+    stop: &[String],
+    max_chars: Option<usize>,
+) -> (String, bool) {
+    if let Some(cut) = stop
+        .iter()
+        .filter_map(|sequence| text.find(sequence.as_str()))
+        .min()
+    {
+        text.truncate(cut);
+    }
+    let mut capped = false;
+    if let Some(budget) = max_chars {
+        if text.len() > budget {
+            let mut boundary = budget;
+            while !text.is_char_boundary(boundary) {
+                boundary -= 1;
+            }
+            text.truncate(boundary);
+            capped = true;
+        }
+    }
+    (text, capped)
+}
+
+/// Incremental stop-sequence matcher for streaming text. Holds back at most
+/// `longest_stop - 1` bytes so a sequence straddling delta boundaries is still detected, and
+/// reports the cut position without emitting the sequence itself.
+struct StopFilter {
+    stops: Vec<String>,
+    hold_back: usize,
+    pending: String,
+    triggered: bool,
+}
+
+impl StopFilter {
+    fn new(stops: Vec<String>) -> Option<Self> {
+        if stops.is_empty() {
+            return None;
+        }
+        let hold_back = stops
+            .iter()
+            .map(|sequence| sequence.len())
+            .max()
+            .unwrap_or(0)
+            .saturating_sub(1);
+        Some(Self {
+            stops,
+            hold_back,
+            pending: String::new(),
+            triggered: false,
+        })
+    }
+
+    /// Feeds a delta; returns the text safe to emit now (empty when everything is held back or
+    /// the filter already triggered).
+    fn push(&mut self, delta: &str) -> String {
+        if self.triggered {
+            return String::new();
+        }
+        self.pending.push_str(delta);
+        if let Some(cut) = self
+            .stops
+            .iter()
+            .filter_map(|sequence| self.pending.find(sequence.as_str()))
+            .min()
+        {
+            let out = self.pending[..cut].to_string();
+            self.triggered = true;
+            return out;
+        }
+        if self.pending.len() > self.hold_back {
+            let mut boundary = self.pending.len() - self.hold_back;
+            while !self.pending.is_char_boundary(boundary) {
+                boundary -= 1;
+            }
+            let out = self.pending[..boundary].to_string();
+            self.pending.replace_range(..boundary, "");
+            return out;
+        }
+        String::new()
+    }
+
+    /// Drains the held-back tail at end of stream (no-op when a stop already triggered).
+    fn finish(&mut self) -> String {
+        if self.triggered {
+            String::new()
+        } else {
+            std::mem::take(&mut self.pending)
+        }
+    }
+}
+
+/// Joins provider reasoning summaries for clients that surface thinking via `reasoning_content`.
+fn reasoning_summary_text(result: &CodexTurnResult) -> Option<String> {
+    let mut text = String::new();
+    for item in result
+        .output
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"))
+    {
+        for part in item
+            .get("summary")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(part_text) = part.get("text").and_then(Value::as_str) {
+                if !text.is_empty() {
+                    text.push_str("\n\n");
+                }
+                text.push_str(part_text);
+            }
+        }
+    }
+    (!text.is_empty()).then_some(text)
+}
+
 fn completed_chat(
     prepared: &PreparedTurn,
     result: &CodexTurnResult,
     completion_id: &str,
     created: i64,
+    stop: &[String],
+    max_output_chars: Option<usize>,
 ) -> Value {
     let (content, tool_calls) = chat_output(result);
-    let finish_reason = if tool_calls.is_empty() {
-        "stop"
-    } else {
+    let reasoning_content = reasoning_summary_text(result);
+    let (content, capped) = enforce_output_limits(content, stop, max_output_chars);
+    let finish_reason = if !tool_calls.is_empty() {
         "tool_calls"
+    } else if capped {
+        "length"
+    } else {
+        "stop"
     };
     json!({
         "id": completion_id,
@@ -692,6 +913,7 @@ fn completed_chat(
                 "refusal": Value::Null,
                 "annotations": [],
                 "audio": Value::Null,
+                "reasoning_content": reasoning_content,
                 "tool_calls": if tool_calls.is_empty() { Value::Null } else { Value::Array(tool_calls) }
             },
             "logprobs": Value::Null,
@@ -753,6 +975,7 @@ fn chat_usage(usage: &CodexUsage) -> Value {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stream_chat(
     gateway: Arc<CodexGateway>,
     prepared: PreparedTurn,
@@ -760,6 +983,8 @@ fn stream_chat(
     completion_id: String,
     created: i64,
     include_usage: bool,
+    stop: Vec<String>,
+    max_output_chars: Option<usize>,
 ) -> Response {
     let (frame_tx, frame_rx) = mpsc::channel::<Bytes>(128);
     let request_id_header = completion_id.clone();
@@ -786,6 +1011,38 @@ fn stream_chat(
         let mut tool_index = 0usize;
         let mut emitted_tools = HashSet::new();
         let mut downstream_closed = false;
+        let mut stop_filter = StopFilter::new(stop);
+        let mut emitted_chars = 0usize;
+        let mut length_capped = false;
+        let mut heartbeat = tokio::time::interval(super::api::SSE_HEARTBEAT_INTERVAL);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        // Enforces the approximate output budget on text leaving for the client. Returns the
+        // delta to emit (empty when the budget is exhausted or the stop filter cut the stream).
+        let shape_text = |text: String,
+                          stop_filter: &mut Option<StopFilter>,
+                          emitted_chars: &mut usize,
+                          length_capped: &mut bool|
+         -> String {
+            let text = match stop_filter {
+                Some(filter) => filter.push(&text),
+                None => text,
+            };
+            if let Some(budget) = max_output_chars {
+                let remaining = budget.saturating_sub(*emitted_chars);
+                if text.len() > remaining {
+                    let mut boundary = remaining;
+                    while !text.is_char_boundary(boundary) {
+                        boundary -= 1;
+                    }
+                    *length_capped = true;
+                    *emitted_chars = budget;
+                    return text[..boundary].to_string();
+                }
+                *emitted_chars += text.len();
+            }
+            text
+        };
 
         loop {
             tokio::select! {
@@ -793,10 +1050,34 @@ fn stream_chat(
                     downstream_closed = true;
                     break;
                 }
+                _ = heartbeat.tick() => {
+                    // SSE comment frame: prevents terminal/proxy read timeouts during long
+                    // reasoning stretches with no deltas.
+                    if !send_chat_bytes(&frame_tx, Bytes::from_static(b": keep-alive\n\n")).await
+                    {
+                        downstream_closed = true;
+                        break;
+                    }
+                    continue;
+                }
                 update = update_rx.recv() => {
                     let Some(update) = update else { break };
                     let delta = match update {
-                        TurnUpdate::TextDelta { delta, .. } => json!({"content": delta}),
+                        TurnUpdate::TextDelta { delta, .. } => {
+                            let shaped = shape_text(
+                                delta,
+                                &mut stop_filter,
+                                &mut emitted_chars,
+                                &mut length_capped,
+                            );
+                            if shaped.is_empty() {
+                                continue;
+                            }
+                            json!({"content": shaped})
+                        }
+                        TurnUpdate::ReasoningSummaryDelta { delta, .. } => {
+                            json!({"reasoning_content": delta})
+                        }
                         TurnUpdate::RawItem(item)
                             if item.get("type").and_then(Value::as_str) == Some("function_call") =>
                         {
@@ -822,8 +1103,7 @@ fn stream_chat(
                             tool_index += 1;
                             delta
                         }
-                        TurnUpdate::ReasoningSummaryPartAdded { .. }
-                        | TurnUpdate::ReasoningSummaryDelta { .. } => continue,
+                        TurnUpdate::ReasoningSummaryPartAdded { .. } => continue,
                         TurnUpdate::RawItem(_) => continue,
                     };
                     if !send_chat_frame(
@@ -834,6 +1114,47 @@ fn stream_chat(
                     {
                         downstream_closed = true;
                         break;
+                    }
+                }
+            }
+        }
+
+        // Flush any held-back stop-filter tail unless the client already left. The tail no
+        // longer goes through the filter; only the output budget still applies.
+        if !downstream_closed {
+            if let Some(filter) = stop_filter.as_mut() {
+                let tail = filter.finish();
+                if !tail.is_empty() {
+                    let shaped = match max_output_chars {
+                        Some(budget) => {
+                            let remaining = budget.saturating_sub(emitted_chars);
+                            if tail.len() > remaining {
+                                let mut boundary = remaining;
+                                while boundary > 0 && !tail.is_char_boundary(boundary) {
+                                    boundary -= 1;
+                                }
+                                length_capped = true;
+                                tail[..boundary].to_string()
+                            } else {
+                                tail
+                            }
+                        }
+                        None => tail,
+                    };
+                    if !shaped.is_empty()
+                        && !send_chat_frame(
+                            &frame_tx,
+                            chat_chunk(
+                                &prepared,
+                                &completion_id,
+                                created,
+                                json!({"content": shaped}),
+                                Value::Null,
+                            ),
+                        )
+                        .await
+                    {
+                        downstream_closed = true;
                     }
                 }
             }
@@ -860,10 +1181,12 @@ fn stream_chat(
             }
         };
         let (_, authoritative_tools) = chat_output(&result);
-        let finish_reason = if authoritative_tools.is_empty() {
-            "stop"
-        } else {
+        let finish_reason = if !authoritative_tools.is_empty() {
             "tool_calls"
+        } else if length_capped {
+            "length"
+        } else {
+            "stop"
         };
         admission.settle(&prepared.request.public_model, &result.usage);
         if downstream_closed {
@@ -1180,6 +1503,169 @@ mod tests {
         .expect("invalid verbosity must not be ignored");
         assert_eq!(error.status, StatusCode::BAD_REQUEST);
         assert!(error.message.contains("text.verbosity"));
+    }
+
+    #[test]
+    fn stop_sequences_and_max_tokens_parse_and_shape_output() {
+        let parsed = parse_chat_request(
+            &gateway(),
+            json!({
+                "model":"gpt-5.6",
+                "messages":[{"role":"user","content":"hello"}],
+                "stop":["\n\n", "END"],
+                "max_completion_tokens":10
+            }),
+        )
+        .expect("stop and token caps must parse");
+        assert_eq!(parsed.stop, vec!["\n\n".to_string(), "END".to_string()]);
+        assert_eq!(parsed.max_output_chars, Some(40));
+
+        let single = parse_chat_request(
+            &gateway(),
+            json!({
+                "model":"gpt-5.6",
+                "messages":[{"role":"user","content":"hello"}],
+                "stop":"halt",
+                "max_tokens":5
+            }),
+        )
+        .expect("a lone stop string must parse");
+        assert_eq!(single.stop, vec!["halt".to_string()]);
+        assert_eq!(single.max_output_chars, Some(20));
+
+        let too_many = parse_chat_request(
+            &gateway(),
+            json!({
+                "model":"gpt-5.6",
+                "messages":[{"role":"user","content":"hello"}],
+                "stop":["a","b","c","d","e"]
+            }),
+        )
+        .err()
+        .expect("more than four stop sequences must be rejected like the official API");
+        assert_eq!(too_many.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn enforce_output_limits_cuts_at_stop_then_budget() {
+        let (text, capped) =
+            enforce_output_limits("hello END world".to_string(), &["END".to_string()], None);
+        assert_eq!(text, "hello ");
+        assert!(!capped);
+
+        let (text, capped) = enforce_output_limits("x".repeat(100), &[], Some(40));
+        assert_eq!(text.len(), 40);
+        assert!(capped);
+
+        // Stop wins before the budget and never reports a length cap.
+        let (text, capped) =
+            enforce_output_limits("abSTOPcdefgh".to_string(), &["STOP".to_string()], Some(4));
+        assert_eq!(text, "ab");
+        assert!(!capped);
+
+        // The char budget never splits a multi-byte character.
+        let (text, capped) = enforce_output_limits("ééééé".to_string(), &[], Some(5));
+        assert_eq!(text, "éé");
+        assert!(capped);
+    }
+
+    #[test]
+    fn stop_filter_catches_sequences_straddling_deltas() {
+        let mut filter = StopFilter::new(vec!["STOP".to_string()]).unwrap();
+        // " ST" is held back as a potential stop prefix; emitted text joins to "hello ".
+        assert_eq!(filter.push("hello ST"), "hello");
+        assert_eq!(filter.push("OP world"), " ");
+        assert!(filter.triggered);
+        assert_eq!(filter.push("more"), "");
+        assert_eq!(filter.finish(), "");
+
+        let mut filter = StopFilter::new(vec!["END".to_string()]).unwrap();
+        // hold_back = 2: every push flushes all but the last two bytes; joins to the full text.
+        assert_eq!(filter.push("abc"), "a");
+        assert_eq!(filter.push("def"), "bcd");
+        assert_eq!(filter.finish(), "ef");
+
+        assert!(StopFilter::new(Vec::new()).is_none());
+    }
+
+    #[test]
+    fn legacy_functions_translate_to_tools() {
+        let parsed = parse_chat_request(
+            &gateway(),
+            json!({
+                "model":"gpt-5.6",
+                "messages":[{"role":"user","content":"weather?"}],
+                "functions":[{
+                    "name":"get_weather",
+                    "description":"Get weather",
+                    "parameters":{"type":"object","properties":{"city":{"type":"string"}}}
+                }],
+                "function_call":"auto"
+            }),
+        )
+        .expect("legacy functions must translate");
+        assert_eq!(parsed.responses.dynamic_tools.len(), 1);
+        assert_eq!(parsed.responses.dynamic_tools[0]["name"], "get_weather");
+
+        let none = parse_chat_request(
+            &gateway(),
+            json!({
+                "model":"gpt-5.6",
+                "messages":[{"role":"user","content":"weather?"}],
+                "functions":[{"name":"get_weather"}],
+                "function_call":"none"
+            }),
+        )
+        .expect("function_call=none must map to tool_choice=none");
+        assert_eq!(none.responses.tool_choice, json!("none"));
+        assert!(none.responses.dynamic_tools.is_empty());
+    }
+
+    #[test]
+    fn named_participants_and_refusal_history_are_accepted() {
+        let parsed = parse_chat_request(
+            &gateway(),
+            json!({
+                "model":"gpt-5.6",
+                "messages":[
+                    {"role":"user","name":"alice","content":"hello"},
+                    {"role":"assistant","content":"hi","refusal":null,"audio":null},
+                    {"role":"user","content":"again"}
+                ]
+            }),
+        )
+        .expect("name/refusal/audio fields must be accepted and ignored");
+        assert_eq!(parsed.responses.input.turn_input.len(), 1);
+    }
+
+    #[test]
+    fn reasoning_summary_joins_for_reasoning_content() {
+        let result = CodexTurnResult {
+            output: vec![
+                json!({
+                    "type":"reasoning",
+                    "summary":[
+                        {"type":"summary_text","text":"first"},
+                        {"type":"summary_text","text":"second"}
+                    ]
+                }),
+                json!({
+                    "type":"message",
+                    "role":"assistant",
+                    "content":[{"type":"output_text","text":"answer"}]
+                }),
+            ],
+            usage: CodexUsage::default(),
+        };
+        assert_eq!(
+            reasoning_summary_text(&result).as_deref(),
+            Some("first\n\nsecond")
+        );
+        let empty = CodexTurnResult {
+            output: Vec::new(),
+            usage: CodexUsage::default(),
+        };
+        assert!(reasoning_summary_text(&empty).is_none());
     }
 
     #[test]

@@ -10,6 +10,10 @@ lenient, SDK-compatible text+image subset:
 | Public route | Status |
 |---|---|
 | `POST /v1/responses` | supported, streaming and non-streaming |
+| `GET /v1/responses/{id}` | supported for `store=true` responses within the history TTL |
+| `DELETE /v1/responses/{id}` | supported; deletes the stored response |
+| `GET /v1/responses/{id}/input_items` | supported; returns the stored request items |
+| `POST /v1/responses/input_tokens` | supported; estimates input tokens without running a turn |
 | `POST /v1/chat/completions` | supported adapter, streaming and non-streaming |
 | `GET /v1/models` | supported; intersected with the live app-server catalog |
 | `GET /v1/models/{model}` | supported |
@@ -17,21 +21,34 @@ lenient, SDK-compatible text+image subset:
 User messages may carry images: Chat Completions `image_url` parts and Responses `input_image`
 parts accept inline `data:image/…` URLs and remote `http(s)://` URLs, including in replayed
 history. Video, audio, embeddings, batches, files, assistants, fine-tuning, WebSocket/realtime,
-stored-response retrieval and administrative OpenAI Platform endpoints are not implemented.
-Unsupported descendants of the implemented surfaces, including `/v1/responses/compact`,
-`/v1/responses/input_tokens`, stored-response retrieval/cancel/input-items routes and nested Chat
-Completions paths, return an OpenAI-shaped `404`. Every other route on the OpenAI-compatible
-hostname is also rejected locally instead of being sent to Anthropic. Only a request sent to that
-hostname enters this provider; authentication headers never select a provider.
+`/v1/responses/compact` and administrative OpenAI Platform endpoints are not implemented and
+return an OpenAI-shaped `404`, as does every other route on the OpenAI-compatible hostname —
+nothing is ever forwarded to Anthropic from it. Only a request sent to that hostname enters this
+provider; authentication headers never select a provider.
 Parameters that app-server cannot enforce are accepted and ignored instead of rejected, so stock
 SDKs and agent terminals never fail on defaults they send. This covers sampling/output controls
-(`temperature`, `top_p`, token caps, `stop`, penalties, logprobs, `seed`, multi-choice output),
-`store`, `service_tier`, `stream_options`, forced `tool_choice` values (degrade to `"auto"`),
+(`temperature`, `top_p`, penalties, logprobs, `seed`, multi-choice output), `store`,
+`service_tier`, `stream_options`, forced `tool_choice` values (degrade to `"auto"`),
 `parallel_tool_calls=false`, `strict=true` tools (degrade to non-strict), unknown `include`
-values, reasoning efforts the model does not advertise (degrade to the model default) and any
-unknown present or future fields. Requests that are structurally unusable — missing model/input,
+values, reasoning efforts the model does not advertise (degrade to the model default), message
+`name` hints, assistant `refusal`/`audio` history fields and any unknown present or future
+fields. Two output controls are enforced on the delivered text rather than upstream: `stop`
+sequences (the stream is cut at the sequence, which is never emitted) and
+`max_tokens`/`max_completion_tokens` (approximate cap at ~4 characters per token; a truncated
+answer finishes with `finish_reason="length"`). Settlement always uses exact upstream usage
+regardless of client-side cuts. Requests that are structurally unusable — missing model/input,
 empty messages, malformed tool history, invalid image URLs — still return OpenAI-shaped `400`
 errors.
+
+Streaming is spec-complete for agent terminals: Chat Completions streams reasoning summaries as
+`reasoning_content` deltas (and joins them into `message.reasoning_content` for non-streaming
+calls); Responses streams emit the full `response.*` lifecycle ending in `response.completed` or
+`response.failed`; both transports send SSE comment keep-alives every 15 s during long reasoning
+stretches. Legacy Chat Completions `functions`/`function_call` parameters are translated to the
+modern `tools`/`tool_choice` surface. Non-streaming responses carry `x-ratelimit-limit/remaining/
+reset-tokens` headers derived from the provider window (percent basis). Stored responses are
+kept for the history TTL (default 24 h) bound to the owning tenant; `store=false` responses are
+never persisted and therefore not retrievable.
 
 This is not the OpenAI Platform API and must not be represented as an OpenAI-operated endpoint.
 ChatGPT subscriptions and OpenAI Platform API billing are separate products. Confirm that the
@@ -410,14 +427,17 @@ Before enabling production traffic:
     typed Responses streaming, Chat Completions and Chat streaming.
 12. Point an unmodified current Codex CLI profile at the gateway and verify both a text-only turn
     and a custom `exec` call/output round trip.
-13. Verify unsupported nested routes return OpenAI-shaped `404` responses and never reach Claude.
-14. Enable through the normal watchdog/blue-green promotion and wait for `/ready` plus smoke checks.
+ 13. Verify unsupported nested routes return OpenAI-shaped `404` responses and never reach Claude.
+ 14. Verify the stored-response lifecycle: a `store=true` turn is retrievable via
+     `GET /v1/responses/{id}` and `/input_items`, deletable via `DELETE`, and a `store=false`
+     turn 404s on all three. Verify `POST /v1/responses/input_tokens` returns an estimate.
+ 15. Enable through the normal watchdog/blue-green promotion and wait for `/ready` plus smoke checks.
 
 ## Deliberate first-release gaps
 
-The highest-value follow-ups are `/v1/responses/compact`, `/v1/responses/input_tokens`,
-stored-response lifecycle routes and the Responses WebSocket transport. They require explicit semantics and tests; the gateway does
-not pretend to support them today. A remotely mutable model/price catalog is intentionally avoided:
+The highest-value follow-ups are `/v1/responses/compact` and the Responses WebSocket transport.
+They require explicit semantics and tests; the gateway does not pretend to support them today. A
+remotely mutable model/price catalog is intentionally avoided:
 the live app-server catalog is intersected with an operator-reviewed, pinned billing catalog so an
 upstream metadata change cannot silently alter customer charging.
 

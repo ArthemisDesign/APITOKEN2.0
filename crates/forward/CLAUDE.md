@@ -146,16 +146,31 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
 4. Raw reasoning text не публиковать; только provider summary. `encrypted_content` — только по
    явному Responses `include`, но хранить tenant-bound для корректной continuity.
 5. **SDK-совместимость через lenient parsing:** параметры, которые app-server не может исполнить
-   (sampling/token-caps/stop/seed/logprobs/n/store/service_tier/stream_options, forced
+   (sampling/seed/logprobs/n/store/service_tier/stream_options, forced
    tool_choice → degrade в "auto", parallel_tool_calls=false, strict=true tools → non-strict,
-   неизвестные include, effort вне каталога модели → дефолт модели, любые неизвестные/будущие
-   поля) — принимать и игнорировать, НЕ отклонять: стоковые SDK и агентские терминалы шлют их по
-   умолчанию и не должны падать. 400 остаётся только для структурно непригодных запросов (нет
-   model/input, пустые messages, битая tool-history, невалидный image URL). User-сообщения могут
-   нести изображения: chat `image_url` и Responses `input_image` части (data:image/… или
-   http(s)://) транслируются в app-server image turn inputs и канонические input_image части
-   истории; base64 data-URL в estimate для reserve заменяется placeholder'ом
-   (`sanitize_estimate_images`), чтобы не завышать резерв. Ограниченные диагностические
+   неизвестные include, effort вне каталога модели → дефолт модели, message `name`, assistant
+   `refusal`/`audio`, legacy `functions`/`function_call` → маппятся в tools/tool_choice, любые
+   неизвестные/будущие поля) — принимать и игнорировать, НЕ отклонять: стоковые SDK и агентские
+   терминалы шлют их по умолчанию и не должны падать. 400 остаётся только для структурно
+   непригодных запросов (нет model/input, пустые messages, битая tool-history, невалидный image
+   URL, >4 stop-последовательностей). User-сообщения могут нести изображения: chat `image_url` и
+   Responses `input_image` части (data:image/… или http(s)://) транслируются в app-server image
+   turn inputs и канонические input_image части истории; base64 data-URL в estimate для reserve
+   заменяется placeholder'ом (`sanitize_estimate_images`), чтобы не завышать резерв. **Client-side
+   output-контролы (chat):** `stop` обрезает выдачу по последовательности (StopFilter держит
+   хвост longest-1 байт для стреддлинга дельт; сама последовательность не эмитится), а
+   `max_tokens`/`max_completion_tokens` — приблизительный кап ~4 char/token с
+   `finish_reason="length"`; settlement ВСЕГДА по authoritative upstream usage (клиентская обрезка
+   не экономит провайдерские токены). **Полный wire-контракт:** chat стримит reasoning summaries
+   как `reasoning_content` дельты (+ join в non-stream message); оба стрима шлют SSE comment
+   keep-alive каждые 15с (`SSE_HEARTBEAT_INTERVAL`); Responses-стрим завершается
+   `response.completed` ИЛИ `error`+`response.failed` с полным failed-объектом; non-stream ответы
+   несут `x-ratelimit-*` из окна провайдера (процентная база 100). **Retrieval:** `store=true`
+   ответы читаются/удаляются через `GET/DELETE /v1/responses/{id}` и `/input_items` из того же
+   tenant-bound history store (TTL, зашифрованный Redis); StoredHistory хранит полный response
+   object + input_count (serde default — старые записи читаются, response=None → 404);
+   `store=false` не персистится и не читается. `POST /v1/responses/input_tokens` отдаёт оценку
+   (estimate/4) без turn и reserve. Ограниченные диагностические
    compatibility-поля текущего Codex (`client_metadata`, `safety_identifier`) разрешено валидировать
    и отбрасывать без логирования/форвардинга; `prompt_cache_key` валидируется и только отражается в
    публичном ответе. Usage для settlement брать из authoritative completed app-server turn.

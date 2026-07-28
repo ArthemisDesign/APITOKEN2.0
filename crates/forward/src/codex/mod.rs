@@ -13,7 +13,11 @@ mod history;
 mod process;
 mod runner;
 
-pub use api::{model as openai_model, models as openai_models, responses as openai_responses};
+pub use api::{
+    delete_response as openai_delete_response, get_response as openai_get_response,
+    input_tokens as openai_input_tokens, model as openai_model, models as openai_models,
+    response_input_items as openai_response_input_items, responses as openai_responses,
+};
 pub use calibration::WindowCalibration;
 pub use chat::completions as openai_chat_completions;
 pub use config::{CodexConfig, CodexHomeSpec, CodexModel, CodexPrices};
