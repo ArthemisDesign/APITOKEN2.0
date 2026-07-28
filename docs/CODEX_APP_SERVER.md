@@ -92,6 +92,9 @@ custom tools are translated into request-local app-server dynamic tools. Custom 
 returned to Codex, which executes them on the customer's machine and submits their output in the
 next request; the gateway never executes a customer's `exec` source.
 
+Chat Completions accepts the equivalent top-level `reasoning_effort` and `verbosity` controls and
+translates them to the same app-server turn settings.
+
 Diagnostic `client_metadata` and `safety_identifier` values are validated and discarded at the
 public boundary. They are never logged or forwarded to the pooled account. `prompt_cache_key` is
 validated and echoed for protocol compatibility, but the official app-server remains responsible

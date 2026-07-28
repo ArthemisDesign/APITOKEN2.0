@@ -130,6 +130,7 @@ fn parse_chat_request(gateway: &CodexGateway, value: Value) -> Result<ParsedChat
         "parallel_tool_calls",
         "response_format",
         "reasoning_effort",
+        "verbosity",
         "metadata",
         "store",
         "n",
@@ -226,11 +227,19 @@ fn parse_chat_request(gateway: &CodexGateway, value: Value) -> Result<ParsedChat
     {
         responses.insert("reasoning".to_string(), json!({"effort": effort}));
     }
-    if let Some(format) = object
+    let response_format = object
         .get("response_format")
-        .filter(|value| !value.is_null())
-    {
-        responses.insert("text".to_string(), translate_response_format(format)?);
+        .filter(|value| !value.is_null());
+    let verbosity = object.get("verbosity").filter(|value| !value.is_null());
+    if response_format.is_some() || verbosity.is_some() {
+        let mut text = match response_format {
+            Some(format) => translate_response_format(format)?,
+            None => json!({}),
+        };
+        if let Some(verbosity) = verbosity {
+            text["verbosity"] = verbosity.clone();
+        }
+        responses.insert("text".to_string(), text);
     }
     if let Some(tools) = object.get("tools").filter(|value| !value.is_null()) {
         responses.insert("tools".to_string(), translate_chat_tools(tools)?);
@@ -1137,6 +1146,37 @@ mod tests {
         )
         .expect("official defaults must not be rejected");
         assert_eq!(parsed.responses.input.turn_input.len(), 1);
+    }
+
+    #[test]
+    fn chat_effort_and_verbosity_translate_to_responses_controls() {
+        let parsed = parse_chat_request(
+            &gateway(),
+            json!({
+                "model":"gpt-5.6",
+                "messages":[{"role":"user","content":"hello"}],
+                "reasoning_effort":"high",
+                "verbosity":"low"
+            }),
+        )
+        .expect("supported generation controls must translate");
+        assert_eq!(parsed.responses.input.turn_input.len(), 1);
+    }
+
+    #[test]
+    fn invalid_chat_verbosity_is_rejected() {
+        let error = parse_chat_request(
+            &gateway(),
+            json!({
+                "model":"gpt-5.6",
+                "messages":[{"role":"user","content":"hello"}],
+                "verbosity":"maximum"
+            }),
+        )
+        .err()
+        .expect("invalid verbosity must not be ignored");
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("text.verbosity"));
     }
 
     #[test]
