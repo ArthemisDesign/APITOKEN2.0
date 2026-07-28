@@ -36,6 +36,13 @@
       "when": 1785283800000,
       "tag": "0004_openkeys_reconciliation",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785456000000,
+      "tag": "0005_openkeys_recovery",
+      "breakpoints": true
     }
   ]
 }
