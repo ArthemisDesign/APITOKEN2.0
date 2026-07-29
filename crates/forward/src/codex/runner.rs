@@ -1229,6 +1229,14 @@ done
     }
 
     #[tokio::test]
+    async fn preflight_capacity_admits_a_healthy_pool() {
+        // A healthy pool must pass the streaming pre-check so the SSE stream opens normally; the
+        // negative (all-limited) path shares select_home with run_turn's usage-limit rotation.
+        let (gateway, _workspace) = fake_gateway("text");
+        assert!(gateway.preflight_capacity().await.is_ok());
+    }
+
+    #[tokio::test]
     async fn served_turn_credits_home_spend_and_reports_window_capacity() {
         let (gateway, _workspace) = fake_gateway("text");
         let result = gateway

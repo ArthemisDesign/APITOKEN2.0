@@ -294,6 +294,11 @@ pub async fn responses(
     let created_at = pool::now();
 
     if prepared.request.stream {
+        // Reject before opening the SSE stream if the whole pool is out of headroom, so the client
+        // sees a real 429 + Retry-After instead of a 200 that fails mid-stream.
+        if let Err(error) = gateway.preflight_capacity().await {
+            return ApiError::from(error).into_response();
+        }
         if let Err(error) = admission.mark_delivering().await {
             return ApiError::from(error).into_response();
         }

@@ -990,6 +990,23 @@ impl CodexGateway {
         HomeSelection::Unavailable { ready_at: soonest }
     }
 
+    /// Read-only capacity pre-check for the streaming path. Streaming establishes the SSE body
+    /// before the turn runs, so pool exhaustion discovered inside the turn can only surface as an
+    /// in-stream failure on an HTTP 200 — which status-code-driven SDK retry logic never treats as
+    /// retryable. Calling this before opening the stream lets the handler reject with a real
+    /// `429 + Retry-After` (soonest reset) exactly like a non-streaming request would. It runs the
+    /// same selection a real turn would and releases the acquired load slot immediately. A home can
+    /// still exhaust between this check and the turn; that rare race stays an in-stream failure.
+    pub(crate) async fn preflight_capacity(&self) -> Result<(), ProcessError> {
+        match self.select_home(&[], None, &[]).await {
+            HomeSelection::Ready(_home, _slot) => Ok(()),
+            HomeSelection::Unavailable { ready_at } => Err(ProcessError::UsageLimitExceeded {
+                retry_after: ready_at
+                    .map(|at| at.saturating_sub(pool::now()).clamp(1, 7 * 24 * 3600) as u64),
+            }),
+        }
+    }
+
     /// A process from any usable home, for provider-level reads such as model discovery.
     pub(crate) async fn any_process(&self) -> Result<Arc<CodexProcess>, ProcessError> {
         if self.shutting_down.load(Ordering::Acquire) {
