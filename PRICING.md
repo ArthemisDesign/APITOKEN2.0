@@ -22,21 +22,21 @@ without double-crediting. Invited B2B accounts do not receive this B2C offer.
 | Tier | Client discount | Cumulative top-ups | 30-day hold (`holdUsd`) | Rounded official API usage shown to client |
 |---|---:|---:|---:|---:|
 | Starter | 60% | $0 | $0 | $0 |
-| Builder | 65% | $100 | $50 | $286 |
-| Pro | 70% | $250 | $125 | $833 |
-| Studio | 75% | $500 | $250 | $2,000 |
-| Scale | 80% | $1,000 | $500 | $5,000 |
+| Builder | 62.5% | $100 | $50 | $267 |
+| Pro | 65% | $250 | $125 | $714 |
+| Studio | 67.5% | $500 | $250 | $1,538 |
+| Scale | 70% | $1,000 | $500 | $3,333 |
 
 The displayed official API usage milestone is calculated from the threshold and discount on the
 same row: `cumulative top-up threshold / (1 - discount)`, then rounded for presentation. Billing
-keeps exact integer nanoUSD values. For example, Scale charges 20% of official API prices, so the
-`$1,000 / 0.20` milestone is displayed as `$5,000` of official API usage.
+keeps exact integer nanoUSD values. For example, Scale charges 30% of official API prices, so the
+`$1,000 / 0.30` milestone is displayed as `$3,333` of official API usage.
 
 Money is stored as integer nanoUSD. Client contracts carry nanoUSD as decimal strings; browser code
 must sum, compare, and format them with integer/BigInt logic, never through JavaScript `number`.
 Requests are metered as official API spend first, then the engine applies the account multiplier to
 determine the local balance charge. The multiplier is the percentage the client pays: Starter is
-`4000` (40%), Builder `3500`, Pro `3000`, Studio `2500`, and Scale `2000`.
+`4000` (40%), Builder `3750`, Pro `3500`, Studio `3250`, and Scale `3000`.
 
 ### Effective official model pricing
 
@@ -77,6 +77,10 @@ The invite URL is returned only from the create call. The registration endpoint 
 - `PRICING_POLL_MS` controls ledger and pricing-job polling (default 60 seconds).
 - `PRICING_CLOSE_GRACE_MS` gates retention-window closure during the UTC month-close grace period (default 1 hour).
 - Existing users are backfilled as Starter and active engine accounts receive a durable sync job.
+- Editing the `B2C_PRICING_TIERS` ladder is picked up automatically: on pricing-worker start,
+  `reconcileTierLadderMultipliers` re-derives every b2c profile's multiplier from its current tier
+  (referral floors preserved) and pushes changes to the engine through the durable job path. B2B
+  pricing is never touched by this reconciliation.
 - Account responses expose a safe `pricing` view with tier, cumulative top-up progress, next
   threshold, rolling-window retention spend, and discount. B2B responses expose only manual pricing
   and the current discount.

@@ -1154,7 +1154,7 @@ function Credits({ account, ledger, ledgerAvailable }: { account: AccountView; l
   const reachedIdx = isB2c ? Math.max(currentIdx, projectedIdx) : -1;
   const reachedTier = reachedIdx >= 0 ? B2C_PRICING_MILESTONES[reachedIdx] : null;
   const discount = isB2c ? (reachedTier?.discountPercent ?? 0) : discountOf(account);
-  const topupPaymentBp = isB2c ? BigInt(100 - discount) * 100n : paymentBasisPoints(account);
+  const topupPaymentBp = isB2c ? bpFromDiscount(discount) : paymentBasisPoints(account);
   const hasTier = discount > 0;
   const apiValueNano = officialNanoFromCharged(amountNano, topupPaymentBp);
   const nextTier = isB2c && reachedIdx + 1 < B2C_PRICING_MILESTONES.length ? B2C_PRICING_MILESTONES[reachedIdx + 1] : null;
@@ -1165,7 +1165,7 @@ function Credits({ account, ledger, ledgerAvailable }: { account: AccountView; l
     if (!isB2c || pricing?.customerType !== "b2c") return officialNanoFromCharged(presetNano, paymentBasisPoints(account));
     const index = Math.max(currentIdx, tierIndexForCumulativeNano(BigInt(pricing.spentNano) + presetNano));
     const tier = B2C_PRICING_MILESTONES[Math.max(0, index)]!;
-    return officialNanoFromCharged(presetNano, BigInt(100 - tier.discountPercent) * 100n);
+    return officialNanoFromCharged(presetNano, bpFromDiscount(tier.discountPercent));
   };
   const topups = ledger.filter((entry) => entry.kind === "topup");
   const ledgerMayBePartial = ledger.length >= 100;
@@ -1220,7 +1220,7 @@ function Credits({ account, ledger, ledgerAvailable }: { account: AccountView; l
           <tbody role="rowgroup">{topups.length === 0 ? <tr role="row"><td role="cell" colSpan={5} className="empty-cell">{copy.noTopups}</td></tr> : topups.map((entry) => {
             const d = (entry as { discountPercent?: number }).discountPercent ?? discountOf(account);
             const paidNano = BigInt(entry.amountNano);
-            const officialValueNano = officialNanoFromCharged(paidNano, BigInt(100 - d) * 100n);
+            const officialValueNano = officialNanoFromCharged(paidNano, bpFromDiscount(d));
             return <tr role="row" key={entry.id}>
               <td role="cell" data-label={copy.date}>{formatLedgerTime(entry.timestamp, language)}</td>
               <td role="cell" className="tnum" data-label={copy.histPaid}>{formatNanoUsd(paidNano)}</td>
@@ -1802,7 +1802,11 @@ function formatFixedRatio(numerator: bigint, denominator: bigint, fractionDigits
   return `${whole.toLocaleString("en-US")}${fraction ? `.${fraction}` : ""}`;
 }
 function multFromDiscount(discountPercent: number): string {
-  return formatMultiplier(BigInt(100 - discountPercent) * 100n);
+  return formatMultiplier(bpFromDiscount(discountPercent));
+}
+// discountPercent может быть дробным (62.5) — BigInt(100 - d) на таком падает, поэтому через bp.
+function bpFromDiscount(discountPercent: number): bigint {
+  return BigInt(Math.round((100 - discountPercent) * 100));
 }
 function tierIndexForCumulativeNano(spentNano: bigint): number {
   let index = -1;

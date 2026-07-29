@@ -272,10 +272,10 @@ export type RenameApiKey = z.infer<typeof renameApiKeySchema>;
 // — порог накопленного `pricing_usage_events.amount_nano`, `holdNano` — расход за скользящие 30 дней.
 export const B2C_PRICING_TIERS = [
   { code: "starter", discountPercent: 60, multiplierBp: 4000, spendThresholdNano: 0n, holdNano: 0n, visibleOfficialUsageUsd: "0" },
-  { code: "builder", discountPercent: 65, multiplierBp: 3500, spendThresholdNano: 100_000_000_000n, holdNano: 50_000_000_000n, visibleOfficialUsageUsd: "286" },
-  { code: "pro", discountPercent: 70, multiplierBp: 3000, spendThresholdNano: 250_000_000_000n, holdNano: 125_000_000_000n, visibleOfficialUsageUsd: "833" },
-  { code: "studio", discountPercent: 75, multiplierBp: 2500, spendThresholdNano: 500_000_000_000n, holdNano: 250_000_000_000n, visibleOfficialUsageUsd: "2000" },
-  { code: "scale", discountPercent: 80, multiplierBp: 2000, spendThresholdNano: 1_000_000_000_000n, holdNano: 500_000_000_000n, visibleOfficialUsageUsd: "5000" },
+  { code: "builder", discountPercent: 62.5, multiplierBp: 3750, spendThresholdNano: 100_000_000_000n, holdNano: 50_000_000_000n, visibleOfficialUsageUsd: "267" },
+  { code: "pro", discountPercent: 65, multiplierBp: 3500, spendThresholdNano: 250_000_000_000n, holdNano: 125_000_000_000n, visibleOfficialUsageUsd: "714" },
+  { code: "studio", discountPercent: 67.5, multiplierBp: 3250, spendThresholdNano: 500_000_000_000n, holdNano: 250_000_000_000n, visibleOfficialUsageUsd: "1538" },
+  { code: "scale", discountPercent: 70, multiplierBp: 3000, spendThresholdNano: 1_000_000_000_000n, holdNano: 500_000_000_000n, visibleOfficialUsageUsd: "3333" },
 ] as const;
 
 export const B2C_SIGNUP_BONUS_OFFICIAL_USD = "10";

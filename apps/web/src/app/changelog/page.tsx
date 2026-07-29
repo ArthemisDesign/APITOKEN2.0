@@ -12,11 +12,12 @@ export const metadata: Metadata = {
 };
 
 const entries = [
+  { date: "2026-07", title: "Tier ladder rebalanced", body: "B2C tier discounts now progress from 60% to 70% off official spend (Starter 60%, Builder 62.5%, Pro 65%, Studio 67.5%, Scale 70%). Thresholds and 30-day holds are unchanged; Starter stays free at 60%." },
   { date: "2026-07", title: "Guides in Russian and Chinese", body: "The full Claude API guide library is now available in English, Russian and Simplified Chinese with per-language URLs." },
   { date: "2026-07", title: "Guide library expanded", body: "Added new guides covering gateways, rate limits, streaming, prompt caching, key security, and building AI agents on Claude." },
   { date: "2026-06", title: "Claude Opus 4.8 available", body: "Opus 4.8 is available on the same API key and prepaid balance as Opus 4.7, Sonnet 5, Sonnet 4.6 and Haiku 4.5." },
   { date: "2026-07", title: "Per-key lifetime guardrails", body: "Set an optional lifetime spending limit and expiration date when you create a key, then update or remove either guardrail from the dashboard." },
-  { date: "2026-05", title: "Progressive discount tiers", body: "B2C accounts start 60% below official spend and progress up to 80% off as cumulative top-ups grow." },
+  { date: "2026-05", title: "Progressive discount tiers", body: "B2C accounts start 60% below official spend and progress up to 70% off as cumulative top-ups grow." },
 ];
 
 export default function ChangelogPage() {

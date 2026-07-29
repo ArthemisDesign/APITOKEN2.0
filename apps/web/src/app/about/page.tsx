@@ -52,7 +52,7 @@ export default function AboutPage() {
         <div className="wrap learn-body">
           <div className="learn-section">
             <h2 className="docs-h3">What {SITE_NAME} is</h2>
-            <p className="docs-para">{SITE_NAME} (also written API Token Sale) is an independent gateway to the Claude API. Developers, agencies and startups point their existing Anthropic-compatible tools — Claude Code, Cursor, Cline, Continue, Zed and the official SDKs — at our endpoint and pay for the same Claude models at up to 80% below official spend.</p>
+            <p className="docs-para">{SITE_NAME} (also written API Token Sale) is an independent gateway to the Claude API. Developers, agencies and startups point their existing Anthropic-compatible tools — Claude Code, Cursor, Cline, Continue, Zed and the official SDKs — at our endpoint and pay for the same Claude models at up to 70% below official spend.</p>
             <p className="docs-para">We exist for the developers Anthropic does not serve conveniently: those without a supported billing country, those who want to pay by crypto, and those who simply want the same models cheaper and without a monthly plan.</p>
           </div>
 

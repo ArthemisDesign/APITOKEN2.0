@@ -172,7 +172,7 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
           title: "5. Prices, tariffs, and metering",
           paragraphs: [
             "The Service uses a prepaid usage model, not fixed token packs. You choose a whole USD amount to add to your platform balance. A request's official API spend is calculated from the upstream model's published input, output, cache, and other applicable usage rates. We then apply your active discount and charge the result to your platform balance.",
-            "Example: at a 60% discount you pay 40% of official API spend, so $100 of official API usage charges $40 from your platform balance. At an 80% discount you pay 20%, so $2,500 of official API usage charges $500. The request ledger is the billing record. Displayed estimates may be rounded, while billing uses the exact calculation.",
+            "Example: at a 60% discount you pay 40% of official API spend, so $100 of official API usage charges $40 from your platform balance. At a 70% discount you pay 30%, so $2,500 of official API usage charges $750. The request ledger is the billing record. Displayed estimates may be rounded, while billing uses the exact calculation.",
             "B2C discounts progress by calendar-month platform spend under the milestones published on the Pricing page. An achieved tier carries into the next month; missing its target reduces the tier by at most one level. B2B discounts are set under an individual invite-only agreement. Prices shown before payment and the active account discount control the transaction.",
           ],
         },
@@ -376,7 +376,7 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
           title: "5. Цены, тарифы и учёт использования",
           paragraphs: [
             "Сервис работает по предоплате за использование, без фиксированных пакетов токенов. Вы выбираете целую сумму в долларах США для пополнения баланса платформы. Официальная стоимость запроса рассчитывается по опубликованным поставщиком ценам на входные, выходные, кэшированные и иные применимые единицы использования. Затем применяется активная скидка, а результат списывается с баланса платформы.",
-            "Пример: при скидке 60% вы оплачиваете 40% официальной стоимости API, поэтому $100 официального использования списывают $40 с баланса платформы. При скидке 80% оплачивается 20%, поэтому $2 500 официального использования списывают $500. Журнал запросов является учётной записью биллинга. Публичные оценки могут округляться, но списание рассчитывается точно.",
+            "Пример: при скидке 60% вы оплачиваете 40% официальной стоимости API, поэтому $100 официального использования списывают $40 с баланса платформы. При скидке 70% оплачивается 30%, поэтому $2 500 официального использования списывают $750. Журнал запросов является учётной записью биллинга. Публичные оценки могут округляться, но списание рассчитывается точно.",
             "Скидка B2C растёт по итогам расходов на платформе за календарный месяц согласно этапам на странице «Цены». Достигнутый уровень переносится на следующий месяц; при невыполнении цели уровень снижается не более чем на одну ступень. Скидка B2B устанавливается индивидуальным соглашением для приглашённого клиента. Для операции действуют цены, показанные до оплаты, и активная скидка аккаунта.",
           ],
         },

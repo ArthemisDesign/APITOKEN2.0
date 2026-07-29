@@ -1,6 +1,6 @@
 // Claude model catalog for the /models programmatic SEO pages.
 // Prices are official Anthropic per-million-token rates; the discount range
-// shown to users derives from the live B2C pricing model (60% base, up to 80%
+// shown to users derives from the live B2C pricing model (60% base, up to 70%
 // with cumulative top-ups). Keep numbers in sync with Anthropic's price list.
 
 export type ClaudeModel = {
@@ -30,14 +30,14 @@ export type ClaudeModel = {
 };
 
 export const DISCOUNT_BASE = 0.6;
-export const DISCOUNT_MAX = 0.8;
+export const DISCOUNT_MAX = 0.7;
 
 /** Price after the base (60%) discount, formatted. */
 export function priceFrom(officialPerM: number): string {
   return formatUsd(officialPerM * (1 - DISCOUNT_BASE));
 }
 
-/** Price after the maximum (80%) discount, formatted. */
+/** Price after the maximum (70%) discount, formatted. */
 export function priceBest(officialPerM: number): string {
   return formatUsd(officialPerM * (1 - DISCOUNT_MAX));
 }
@@ -73,7 +73,7 @@ export const claudeModels: ClaudeModel[] = [
       "1M-token context window at standard pricing — no long-context premium.",
     ],
     faq: [
-      { q: "How much does the Claude Opus 4.8 API cost?", a: "Officially $5 per 1M input tokens and $25 per 1M output tokens. On apiToken.sale the same requests start 60% cheaper — from $2/$10 — and reach $1/$5 at the maximum 80% discount." },
+      { q: "How much does the Claude Opus 4.8 API cost?", a: "Officially $5 per 1M input tokens and $25 per 1M output tokens. On apiToken.sale the same requests start 60% cheaper — from $2/$10 — and reach $1.50/$7.50 at the maximum 70% discount." },
       { q: "What is the model ID for Claude Opus 4.8?", a: "claude-opus-4-8. Use it unchanged with the Anthropic SDK, Claude Code, Cursor or any compatible tool pointed at https://api.apitoken.sale." },
       { q: "Is Opus 4.8 worth the price over Sonnet?", a: "For hard agentic and reasoning work, usually yes. For routine coding, Sonnet 5 delivers near-Opus quality at 40% of the token price — many teams route by task." },
     ],
@@ -104,7 +104,7 @@ export const claudeModels: ClaudeModel[] = [
       "Supports adaptive thinking and the full effort range.",
     ],
     faq: [
-      { q: "How much does the Claude Opus 4.7 API cost?", a: "Officially $5 per 1M input tokens and $25 per 1M output tokens — the same as Opus 4.8. With the apiToken.sale discount that starts at $2/$10 and reaches $1/$5." },
+      { q: "How much does the Claude Opus 4.7 API cost?", a: "Officially $5 per 1M input tokens and $25 per 1M output tokens — the same as Opus 4.8. With the apiToken.sale discount that starts at $2/$10 and reaches $1.50/$7.50." },
       { q: "Should I use Opus 4.7 or 4.8?", a: "They cost the same, so new projects should default to claude-opus-4-8. Keep 4.7 when you have prompts or evals pinned to it." },
       { q: "Does my key work for both?", a: "Yes — one apiToken.sale key and balance covers every supported Claude model; you switch by changing the model ID." },
     ],
@@ -135,7 +135,7 @@ export const claudeModels: ClaudeModel[] = [
       "Adaptive thinking is on by default when the thinking parameter is omitted.",
     ],
     faq: [
-      { q: "How much does the Claude Sonnet 5 API cost?", a: "The standard official rate is $3 per 1M input tokens and $15 per 1M output tokens (Anthropic lists an introductory $2/$10 through August 2026). apiToken.sale applies your 60–80% discount on top of official spend." },
+      { q: "How much does the Claude Sonnet 5 API cost?", a: "The standard official rate is $3 per 1M input tokens and $15 per 1M output tokens (Anthropic lists an introductory $2/$10 through August 2026). apiToken.sale applies your 60–70% discount on top of official spend." },
       { q: "What is the model ID for Claude Sonnet 5?", a: "claude-sonnet-5 — use it as-is in the Anthropic SDK, Claude Code, Cursor, Cline or any compatible tool." },
       { q: "Is Sonnet 5 good enough for coding?", a: "For most coding it is the sweet spot: near-Opus quality on agentic and editing tasks at a much lower per-token price. Route only the hardest reasoning to Opus." },
     ],
@@ -166,7 +166,7 @@ export const claudeModels: ClaudeModel[] = [
       "Supports adaptive thinking; effort defaults to high.",
     ],
     faq: [
-      { q: "How much does the Claude Sonnet 4.6 API cost?", a: "Officially $3 per 1M input tokens and $15 per 1M output tokens. With the apiToken.sale discount that starts at $1.20/$6 and reaches $0.60/$3." },
+      { q: "How much does the Claude Sonnet 4.6 API cost?", a: "Officially $3 per 1M input tokens and $15 per 1M output tokens. With the apiToken.sale discount that starts at $1.20/$6 and reaches $0.90/$4.50." },
       { q: "Sonnet 4.6 or Sonnet 5?", a: "They share a list price, and Sonnet 5 is stronger on coding and agentic work — prefer it for new projects. Stay on 4.6 when your prompts and evals are pinned to it." },
       { q: "Can I switch models without a new key?", a: "Yes. One key and one prepaid balance cover every supported Claude model — switching is just a model-ID change." },
     ],
@@ -197,7 +197,7 @@ export const claudeModels: ClaudeModel[] = [
       "Pairs well with model routing: send bulk work to Haiku, hard reasoning to Opus.",
     ],
     faq: [
-      { q: "How much does the Claude Haiku 4.5 API cost?", a: "Officially $1 per 1M input tokens and $5 per 1M output tokens. With the apiToken.sale discount that starts at $0.40/$2 and reaches $0.20/$1 — the cheapest way to run Claude." },
+      { q: "How much does the Claude Haiku 4.5 API cost?", a: "Officially $1 per 1M input tokens and $5 per 1M output tokens. With the apiToken.sale discount that starts at $0.40/$2 and reaches $0.30/$1.50 — the cheapest way to run Claude." },
       { q: "What is Haiku 4.5 good for?", a: "High-volume, low-latency work: classification, extraction, summarization, routing and simple chat. For complex reasoning, step up to Sonnet 5 or Opus 4.8." },
       { q: "What is the model ID?", a: "claude-haiku-4-5. It works on the same apiToken.sale key and balance as every other supported Claude model." },
     ],

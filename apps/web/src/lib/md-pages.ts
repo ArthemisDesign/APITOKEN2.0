@@ -71,7 +71,7 @@ export function buildApiReferenceMarkdown(): string {
     }) +
     `# Claude API reference — apiToken.sale
 
-apiToken.sale is an independent gateway that serves the **standard Anthropic Messages API** and the full Claude line from prepaid balance at a 60–80% discount. Point any Anthropic-compatible client at the base URL below — request bodies, responses, streaming and error shapes are identical to Anthropic. Only the host and key change.
+apiToken.sale is an independent gateway that serves the **standard Anthropic Messages API** and the full Claude line from prepaid balance at a 60–70% discount. Point any Anthropic-compatible client at the base URL below — request bodies, responses, streaming and error shapes are identical to Anthropic. Only the host and key change.
 
 ## Connection
 
@@ -82,7 +82,7 @@ apiToken.sale is an independent gateway that serves the **standard Anthropic Mes
 
 ## Models
 
-Exact API model IDs (use the ID unchanged in the \`model\` field). Prices are official Anthropic $ per 1M tokens; you pay 60% less by default and up to 80% less at higher tiers.
+Exact API model IDs (use the ID unchanged in the \`model\` field). Prices are official Anthropic $ per 1M tokens; you pay 60% less by default and up to 70% less at higher tiers.
 
 | model ID | Tier | Context | Max output | Official in / out (per 1M) |
 |---|---|---|---|---|
@@ -223,7 +223,7 @@ export function buildPlansMarkdown(): string {
     frontmatter({
       title: "apiToken.sale — Claude API pricing tiers",
       description:
-        "apiToken.sale progressive discount tiers: 60% off by default, up to 80% off with cumulative top-ups. Prepaid per-token billing at official Anthropic rates.",
+        "apiToken.sale progressive discount tiers: 60% off by default, up to 70% off with cumulative top-ups. Prepaid per-token billing at official Anthropic rates.",
       url: `${SITE_ORIGIN}/plans`,
       language: "en",
     }) +

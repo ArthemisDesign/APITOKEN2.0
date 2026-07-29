@@ -99,7 +99,7 @@ export default async function ModelPage({ params }: { params: Promise<Params> })
                     <th>Rate</th>
                     <th>Official Anthropic</th>
                     <th>Here, from (−60%)</th>
-                    <th>Here, best (−80%)</th>
+                    <th>Here, best (−70%)</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -118,11 +118,11 @@ export default async function ModelPage({ params }: { params: Promise<Params> })
                 <dl>
                   <div><dt>Official Anthropic</dt><dd>{row.official}</dd></div>
                   <div><dt>Here, from (−60%)</dt><dd>{row.from}</dd></div>
-                  <div><dt>Here, best (−80%)</dt><dd>{row.best}</dd></div>
+                  <div><dt>Here, best (−70%)</dt><dd>{row.best}</dd></div>
                 </dl>
               </article>)}
             </div>
-            <p className="docs-para">Every request is metered at the official rate first, then your progressive B2C discount (60% at the start, up to 80% as cumulative top-ups grow) is subtracted before it touches your prepaid balance. Context window: {model.context}. Max output: {model.maxOutput}.</p>
+            <p className="docs-para">Every request is metered at the official rate first, then your progressive B2C discount (60% at the start, up to 70% as cumulative top-ups grow) is subtracted before it touches your prepaid balance. Context window: {model.context}. Max output: {model.maxOutput}.</p>
           </div>
 
           <div className="learn-section">
@@ -159,7 +159,7 @@ export default async function ModelPage({ params }: { params: Promise<Params> })
           )}
 
           <div className="learn-cta">
-            <p>Run {model.name} on the same Anthropic API at up to 80% off — instant key, prepaid balance, card or crypto.</p>
+            <p>Run {model.name} on the same Anthropic API at up to 70% off — instant key, prepaid balance, card or crypto.</p>
             <div className="hero-cta page-actions">
               <Link className="btn btn-primary" href="/register">Get API key</Link>
               <Link className="btn btn-ghost" href="/docs">Read documentation</Link>

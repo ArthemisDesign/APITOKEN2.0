@@ -18,7 +18,7 @@ const structuredData = {
       "@id": `${plansUrl}#prepaid-access`,
       name: "Claude API prepaid access",
       serviceType: "Anthropic-compatible API access",
-      description: "Prepaid Claude API balance billed per token at official Anthropic rates minus a progressive B2C discount of 60% up to 80%. Top up any whole USD amount; balance never expires.",
+      description: "Prepaid Claude API balance billed per token at official Anthropic rates minus a progressive B2C discount of 60% up to 70%. Top up any whole USD amount; balance never expires.",
       url: plansUrl,
       provider: { "@id": `${SITE_ORIGIN}/#organization` },
       areaServed: "Worldwide",

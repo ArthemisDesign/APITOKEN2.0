@@ -158,7 +158,7 @@ describe("completed Next.js migration", () => {
     const pricing = readFileSync(join(root, "components", "pricing-overview.tsx"), "utf8");
     const pricingTiers = readFileSync(join(root, "lib", "pricing-tiers.ts"), "utf8");
     const messages = readFileSync(join(root, "lib", "messages.json"), "utf8");
-    for (const value of ["starter", "builder", "pro", "studio", "scale", "60", "65", "70", "75", "80"]) {
+    for (const value of ["starter", "builder", "pro", "studio", "scale", "60", "62.5", "65", "67.5", "70"]) {
       expect(pricingTiers).toContain(value);
     }
     for (const threshold of ["100", "250", "500", "1000"]) {
@@ -168,10 +168,10 @@ describe("completed Next.js migration", () => {
     expect(pricing).toContain("Choose any whole USD amount");
     expect(pricing).toContain("Negotiated business pricing");
     expect(pricing).toContain("B2C_PRICING_MILESTONES.map");
-    expect(pricingTiers).toContain('{ code: "builder", label: "Builder", messageKey: "tier_builder", discountPercent: 65');
-    expect(pricingTiers).toContain('{ code: "pro", label: "Pro", messageKey: "tier_pro", discountPercent: 70');
-    expect(pricingTiers).toContain('{ code: "studio", label: "Studio", messageKey: "tier_studio", discountPercent: 75');
-    expect(pricingTiers).toContain('{ code: "scale", label: "Scale", messageKey: "tier_scale", discountPercent: 80');
+    expect(pricingTiers).toContain('{ code: "builder", label: "Builder", messageKey: "tier_builder", discountPercent: 62.5');
+    expect(pricingTiers).toContain('{ code: "pro", label: "Pro", messageKey: "tier_pro", discountPercent: 65');
+    expect(pricingTiers).toContain('{ code: "studio", label: "Studio", messageKey: "tier_studio", discountPercent: 67.5');
+    expect(pricingTiers).toContain('{ code: "scale", label: "Scale", messageKey: "tier_scale", discountPercent: 70');
     expect(pricing).not.toContain("BillingFormula");
     expect(messages).toContain("$10 of Claude usage at official API prices");
     expect(messages).toContain("$10 на Claude по официальным ценам API");

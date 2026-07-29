@@ -29,7 +29,7 @@ export const seoPages = {
   home: {
     path: "/",
     title: "Buy Claude API — Discounted Access & Tokens",
-    description: "Buy discounted Claude API access — one key and prepaid Claude API tokens for Opus, Sonnet and Haiku. The same official Anthropic API, up to 80% off, ready for Claude Code and Cursor.",
+    description: "Buy discounted Claude API access — one key and prepaid Claude API tokens for Opus, Sonnet and Haiku. The same official Anthropic API, up to 70% off, ready for Claude Code and Cursor.",
     priority: 1,
     changeFrequency: "weekly",
   },

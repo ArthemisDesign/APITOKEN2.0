@@ -4,10 +4,10 @@
 // (`visibleOfficialUsageUsd` = порог ÷ доля оплаты; `spendThresholdNano` = порог в нано для прогресса.)
 export const B2C_PRICING_MILESTONES = [
   { code: "starter", label: "Starter", messageKey: "tier_starter", discountPercent: 60, platformSpendUsd: "0", holdUsd: "0", spendThresholdNano: "0", visibleOfficialUsageUsd: "0" },
-  { code: "builder", label: "Builder", messageKey: "tier_builder", discountPercent: 65, platformSpendUsd: "100", holdUsd: "50", spendThresholdNano: "100000000000", visibleOfficialUsageUsd: "286" },
-  { code: "pro", label: "Pro", messageKey: "tier_pro", discountPercent: 70, platformSpendUsd: "250", holdUsd: "125", spendThresholdNano: "250000000000", visibleOfficialUsageUsd: "833" },
-  { code: "studio", label: "Studio", messageKey: "tier_studio", discountPercent: 75, platformSpendUsd: "500", holdUsd: "250", spendThresholdNano: "500000000000", visibleOfficialUsageUsd: "2000" },
-  { code: "scale", label: "Scale", messageKey: "tier_scale", discountPercent: 80, platformSpendUsd: "1000", holdUsd: "500", spendThresholdNano: "1000000000000", visibleOfficialUsageUsd: "5000" },
+  { code: "builder", label: "Builder", messageKey: "tier_builder", discountPercent: 62.5, platformSpendUsd: "100", holdUsd: "50", spendThresholdNano: "100000000000", visibleOfficialUsageUsd: "267" },
+  { code: "pro", label: "Pro", messageKey: "tier_pro", discountPercent: 65, platformSpendUsd: "250", holdUsd: "125", spendThresholdNano: "250000000000", visibleOfficialUsageUsd: "714" },
+  { code: "studio", label: "Studio", messageKey: "tier_studio", discountPercent: 67.5, platformSpendUsd: "500", holdUsd: "250", spendThresholdNano: "500000000000", visibleOfficialUsageUsd: "1538" },
+  { code: "scale", label: "Scale", messageKey: "tier_scale", discountPercent: 70, platformSpendUsd: "1000", holdUsd: "500", spendThresholdNano: "1000000000000", visibleOfficialUsageUsd: "3333" },
 ] as const;
 
 export type B2CPricingMilestone = typeof B2C_PRICING_MILESTONES[number];

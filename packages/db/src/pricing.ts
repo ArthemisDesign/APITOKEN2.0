@@ -651,6 +651,59 @@ function effectiveMultiplierBp(tierMultiplierBp: number, referralFloorBps: numbe
   return Math.min(tierMultiplierBp, 10_000 - referralFloorBps);
 }
 
+/**
+ * Приводит multiplier_bp существующих b2c-профилей к АКТУАЛЬНОЙ лестнице B2C_PRICING_TIERS
+ * (с учётом referral floor — персональные полы сейлза сохраняются). Обычные циклы пересчитывают
+ * множитель только при СМЕНЕ тира, поэтому после изменения констант лестницы пользователи на том же
+ * тире остались бы на старых bp навсегда. Идемпотентен; вызывается на старте pricing-воркера.
+ * B2B-профили и их договорные скидки не трогает.
+ */
+export async function reconcileTierLadderMultipliers(database: Database): Promise<number> {
+  const candidates = await database.pool.query<{
+    user_id: string; current_tier: number | null; referral_floor_bps: number;
+    multiplier_bp: number; engine_account_id: string;
+  }>(`
+    SELECT cp.user_id, cp.current_tier, cp.referral_floor_bps, cp.multiplier_bp, ea.engine_account_id
+    FROM customer_profiles cp
+    JOIN engine_accounts ea ON ea.user_id = cp.user_id
+    WHERE cp.customer_type = 'b2c' AND ea.engine_account_id IS NOT NULL
+  `);
+  let reconciled = 0;
+  for (const candidate of candidates.rows) {
+    const tier = candidate.current_tier ?? 0;
+    const expected = effectiveMultiplierBp(B2C_PRICING_TIERS[tier]!.multiplierBp, candidate.referral_floor_bps);
+    if (candidate.multiplier_bp === expected) continue;
+    const client = await database.pool.connect();
+    try {
+      await client.query("BEGIN");
+      // Re-read under lock: a parallel topup/window transition may have already moved this user.
+      const locked = await client.query<{ current_tier: number | null; multiplier_bp: number; referral_floor_bps: number }>(`
+        SELECT current_tier, multiplier_bp, referral_floor_bps FROM customer_profiles
+        WHERE user_id = $1 AND customer_type = 'b2c' FOR UPDATE
+      `, [candidate.user_id]);
+      const row = locked.rows[0];
+      if (row) {
+        const lockedTier = row.current_tier ?? 0;
+        const lockedExpected = effectiveMultiplierBp(B2C_PRICING_TIERS[lockedTier]!.multiplierBp, row.referral_floor_bps);
+        if (row.multiplier_bp !== lockedExpected) {
+          await applyTierChange(client, {
+            userId: candidate.user_id,
+            engineAccountId: candidate.engine_account_id,
+          }, lockedTier, "b2c_ladder_reconcile");
+          reconciled += 1;
+        }
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  return reconciled;
+}
+
 async function applyTierChange(
   client: PoolClient,
   target: PricingSyncTarget,

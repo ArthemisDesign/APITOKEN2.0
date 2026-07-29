@@ -5,10 +5,10 @@ describe("B2C pricing milestones", () => {
   it("keeps the client-facing thresholds and discounts in one ordered model", () => {
     expect(B2C_PRICING_MILESTONES.map(({ code, discountPercent, platformSpendUsd }) => ({ code, discountPercent, platformSpendUsd }))).toEqual([
       { code: "starter", discountPercent: 60, platformSpendUsd: "0" },
-      { code: "builder", discountPercent: 65, platformSpendUsd: "100" },
-      { code: "pro", discountPercent: 70, platformSpendUsd: "250" },
-      { code: "studio", discountPercent: 75, platformSpendUsd: "500" },
-      { code: "scale", discountPercent: 80, platformSpendUsd: "1000" },
+      { code: "builder", discountPercent: 62.5, platformSpendUsd: "100" },
+      { code: "pro", discountPercent: 65, platformSpendUsd: "250" },
+      { code: "studio", discountPercent: 67.5, platformSpendUsd: "500" },
+      { code: "scale", discountPercent: 70, platformSpendUsd: "1000" },
     ]);
     expect(formatWholeUsd("2500")).toBe("$2,500");
   });

@@ -40,7 +40,7 @@ export async function learnOgImage(slug: string, locale: Locale): Promise<ImageR
           <div style={{ fontSize: 24, color: "#9aa2b1", textTransform: "uppercase", letterSpacing: 2 }}>{label}</div>
           <div style={{ fontSize: title.length > 46 ? 60 : 72, fontWeight: 700, lineHeight: 1.1, maxWidth: 1000 }}>{title}</div>
         </div>
-        <div style={{ fontSize: 26, color: "#9aa2b1" }}>Claude API · up to 80% off · one key</div>
+        <div style={{ fontSize: 26, color: "#9aa2b1" }}>Claude API · up to 70% off · one key</div>
       </div>
     ),
     {

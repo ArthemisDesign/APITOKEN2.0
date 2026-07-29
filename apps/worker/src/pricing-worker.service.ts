@@ -8,6 +8,7 @@ import {
   confirmPricingJob,
   getPricingUsageCursor,
   listPricingSyncTargets,
+  reconcileTierLadderMultipliers,
   recoverStalePricingJobs,
   refreshTierWindowUsage,
   retryPricingJob,
@@ -37,6 +38,10 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
   async onModuleInit(): Promise<void> {
     const recovered = await recoverStalePricingJobs(this.database);
     if (recovered > 0) this.logger.warn(`recovered ${recovered} stale pricing jobs`);
+    // После изменения констант лестницы существующие профили сходятся к ней на первом старте;
+    // engine получает новые множители через обычные durable pricing jobs в flushPricingJobs.
+    const reconciled = await reconcileTierLadderMultipliers(this.database);
+    if (reconciled > 0) this.logger.warn(`reconciled ${reconciled} b2c profiles to current tier ladder`);
     this.loop = this.run();
   }
 
