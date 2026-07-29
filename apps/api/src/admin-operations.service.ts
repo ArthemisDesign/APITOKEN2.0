@@ -2,6 +2,7 @@ import { Inject, Injectable } from "@nestjs/common";
 import { B2C_SIGNUP_BONUS_BALANCE_NANO } from "@claude-api/contracts";
 import {
   canonicalizeEmail,
+  convertCustomerToBusiness,
   findAdminCreditByRef,
   markSignupProfileAdminRevoked,
   getAdminDashboard,
@@ -254,6 +255,22 @@ export class AdminOperationsService {
     }
     const result = await setAdminUserStatus(this.database, input);
     return { user_id: input.userId, status: input.status, sessions_revoked: result.sessionsRevoked };
+  }
+
+  async convertToBusiness(input: {
+    userId: string;
+    reason: string;
+    actorId: string;
+  }): Promise<Record<string, unknown>> {
+    const result = await convertCustomerToBusiness(this.database, input);
+    return {
+      user_id: input.userId,
+      customer_type: "b2b",
+      discount_percent: 100 - result.multiplierBp / 100,
+      multiplier_bp: result.multiplierBp,
+      converted: result.converted,
+      sync_status: result.jobId ? "pending" : "unchanged",
+    };
   }
 
   async revokeSessions(input: { userId: string; reason: string; actorId: string }): Promise<Record<string, unknown>> {

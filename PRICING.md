@@ -58,6 +58,9 @@ with an expiry and an integer discount percentage. Only the SHA-256 token hash i
 registration consumes it atomically and provisions the engine account with the configured price.
 Operators can later change that user's discount; the update is persisted locally and synchronized
 to the engine through the same durable job path.
+Existing B2C customers can be converted atomically to B2B manual pricing. The conversion preserves
+their exact effective multiplier (including a referral floor if one was active), clears the live
+B2C tier controls, enqueues an idempotent engine sync, and records the operator and reason.
 
 Administrative routes require `x-admin-key: <COMMERCIAL_ADMIN_KEY>`:
 
@@ -67,6 +70,9 @@ POST  /v1/admin/business-invites
 
 PATCH /v1/admin/business-users/{userId}/pricing
       {"discountPercent":87}
+
+POST  /v1/admin/users/{userId}/convert-to-business
+      {"reason":"customer requested business terms"}
 ```
 
 The invite URL is returned only from the create call. The registration endpoint accepts it as

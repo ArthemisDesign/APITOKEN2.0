@@ -55,6 +55,23 @@ describe("admin operations HTTP contract", () => {
     await expect(failure).rejects.toBeInstanceOf(HttpException);
     await expect(failure).rejects.toMatchObject({ status: 409 });
   });
+
+  it("forwards an audited B2B conversion request", async () => {
+    const operations = fakeOperations();
+    const controller = new AdminOperationsController(operations.service);
+    operations.convertToBusiness.mockResolvedValue({ customer_type: "b2b", converted: true });
+
+    await expect(controller.convertToBusiness(
+      userId,
+      { reason: "customer requested business terms" },
+      "admin-q",
+    )).resolves.toMatchObject({ customer_type: "b2b", converted: true });
+    expect(operations.convertToBusiness).toHaveBeenCalledWith({
+      userId,
+      reason: "customer requested business terms",
+      actorId: "admin-q",
+    });
+  });
 });
 
 describe("admin key guard", () => {
@@ -76,6 +93,7 @@ function fakeOperations() {
     audit: vi.fn(),
     businessInvites: vi.fn(),
     creditUser: vi.fn(),
+    convertToBusiness: vi.fn(),
     setUserStatus: vi.fn(),
     revokeSessions: vi.fn(),
     resetTotp: vi.fn(),

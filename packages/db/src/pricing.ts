@@ -9,6 +9,7 @@ import type { Database } from "./client.js";
 
 export class InvalidBusinessInvitationError extends Error {}
 export class BusinessCustomerNotFoundError extends Error {}
+export class CustomerProfileNotFoundError extends Error {}
 
 export interface PricingSyncTarget {
   userId: string;
@@ -174,6 +175,87 @@ export async function setBusinessPricing(database: Database, input: {
     `, [input.actorId, input.userId, JSON.stringify({ multiplierBp: input.multiplierBp })]);
     await client.query("COMMIT");
     return { engineAccountId: row.engine_account_id, jobId };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Converts an existing B2C customer to manual B2B pricing without changing the effective price.
+ * The stored multiplier already includes any referral floor, so it becomes the negotiated B2B
+ * multiplier verbatim. B2C progress remains historical data, while the live tier/window/floor
+ * controls are cleared so no later B2C reconciliation can change the negotiated rate.
+ */
+export async function convertCustomerToBusiness(database: Database, input: {
+  userId: string;
+  actorId: string;
+  reason: string;
+}): Promise<{ converted: boolean; multiplierBp: number; engineAccountId: string; jobId: string | null }> {
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query<{
+      customer_type: "b2c" | "b2b";
+      current_tier: number | null;
+      multiplier_bp: number;
+      referral_floor_bps: number;
+      engine_account_id: string | null;
+    }>(`
+      SELECT cp.customer_type, cp.current_tier, cp.multiplier_bp, cp.referral_floor_bps,
+             ea.engine_account_id
+      FROM customer_profiles cp
+      JOIN engine_accounts ea ON ea.user_id = cp.user_id
+      WHERE cp.user_id = $1
+      FOR UPDATE OF cp, ea
+    `, [input.userId]);
+    const row = result.rows[0];
+    if (!row) throw new CustomerProfileNotFoundError("customer profile or engine account not found");
+    if (!row.engine_account_id) throw new BusinessCustomerNotFoundError("customer engine account is not provisioned");
+    if (row.customer_type === "b2b") {
+      await client.query("ROLLBACK");
+      return {
+        converted: false,
+        multiplierBp: row.multiplier_bp,
+        engineAccountId: row.engine_account_id,
+        jobId: null,
+      };
+    }
+
+    await client.query(`
+      UPDATE customer_profiles
+      SET customer_type = 'b2b', current_tier = NULL,
+          tier_window_start = NULL, tier_window_spent_nano = 0,
+          referral_floor_bps = 0, updated_at = now()
+      WHERE user_id = $1
+    `, [input.userId]);
+    await client.query(`
+      UPDATE engine_accounts SET mult_bp = $2, updated_at = now() WHERE user_id = $1
+    `, [input.userId, row.multiplier_bp]);
+    const jobId = await enqueuePricingJob(client, {
+      userId: input.userId,
+      engineAccountId: row.engine_account_id,
+      multiplierBp: row.multiplier_bp,
+      reason: "b2b_conversion",
+    });
+    await client.query(`
+      INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+      VALUES ('admin', $1, 'pricing.b2b_converted', 'user', $2, $3::jsonb)
+    `, [input.actorId, input.userId, JSON.stringify({
+      reason: input.reason,
+      preservedMultiplierBp: row.multiplier_bp,
+      previousTier: row.current_tier,
+      previousReferralFloorBps: row.referral_floor_bps,
+    })]);
+    await client.query("COMMIT");
+    return {
+      converted: true,
+      multiplierBp: row.multiplier_bp,
+      engineAccountId: row.engine_account_id,
+      jobId,
+    };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;

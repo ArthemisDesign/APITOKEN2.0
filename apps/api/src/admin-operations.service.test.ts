@@ -155,6 +155,60 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
     ]);
   });
 
+  it("converts B2C to B2B while preserving the exact effective discount", async () => {
+    await database.pool.query(`
+      UPDATE customer_profiles
+      SET current_tier = 2, multiplier_bp = 2750, referral_floor_bps = 7250,
+          tier_window_start = now(), tier_window_spent_nano = 123
+      WHERE user_id = $1
+    `, [passwordUserId]);
+
+    const result = await service.convertToBusiness({
+      userId: passwordUserId,
+      reason: "customer requested business terms",
+      actorId: "admin-q",
+    });
+    expect(result).toMatchObject({
+      customer_type: "b2b",
+      discount_percent: 72.5,
+      multiplier_bp: 2750,
+      converted: true,
+      sync_status: "pending",
+    });
+
+    const profile = await database.pool.query(`
+      SELECT customer_type, current_tier, multiplier_bp, referral_floor_bps,
+             tier_window_start, tier_window_spent_nano::text
+      FROM customer_profiles WHERE user_id = $1
+    `, [passwordUserId]);
+    expect(profile.rows[0]).toEqual({
+      customer_type: "b2b",
+      current_tier: null,
+      multiplier_bp: 2750,
+      referral_floor_bps: 0,
+      tier_window_start: null,
+      tier_window_spent_nano: "0",
+    });
+    const audit = await database.pool.query(`
+      SELECT actor_id, metadata FROM audit_log WHERE action = 'pricing.b2b_converted'
+    `);
+    expect(audit.rows).toEqual([{
+      actor_id: "admin-q",
+      metadata: expect.objectContaining({
+        reason: "customer requested business terms",
+        preservedMultiplierBp: 2750,
+        previousTier: 2,
+        previousReferralFloorBps: 7250,
+      }),
+    }]);
+
+    await expect(service.convertToBusiness({
+      userId: passwordUserId,
+      reason: "safe retry",
+      actorId: "admin-q",
+    })).resolves.toMatchObject({ converted: false, multiplier_bp: 2750, sync_status: "unchanged" });
+  });
+
   it("resets TOTP and revokes active sessions with an audit event", async () => {
     const result = await service.resetTotp({
       userId: passwordUserId,

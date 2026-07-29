@@ -459,6 +459,7 @@ function renderUsers(dashboard){const totalBalance=usersCache.reduce((sum,user)=
     const tier=user.customer_type==='b2b'?'B2B':(['Starter','Builder','Pro','Studio','Scale'][user.tier]||'—');
     const auth=methods.map(method=>pill(method)).join('')||'—';
     const actions=(user.engine_account_id&&user.status==='active'?'<button class="btn" data-credit="'+esc(user.id)+'" data-email="'+esc(user.email)+'">+ баланс</button>':'')+
+      (user.engine_account_id&&user.customer_type==='b2c'?'<button class="btn" data-action="business" data-id="'+esc(user.id)+'" data-email="'+esc(user.email)+'">→ B2B</button>':'')+
       (user.engine_account_id?'<button class="btn warn" data-action="bonus" data-id="'+esc(user.id)+'" data-email="'+esc(user.email)+'">− бонус</button>':'')+
       '<button class="btn ghost" data-action="sessions" data-id="'+esc(user.id)+'" data-email="'+esc(user.email)+'">сессии</button>'+
       (user.totp_enabled?'<button class="btn warn" data-action="totp" data-id="'+esc(user.id)+'" data-email="'+esc(user.email)+'">сброс 2FA</button>':'')+
@@ -502,6 +503,7 @@ async function creditUser(button){
   catch(error){toast(error.message+' — idempotency key сохранён: повторите те же сумму и причину для безопасного retry.','bad');button.disabled=false}}
 async function userAction(button){const action=button.dataset.action,labels={disable:'Отключить пользователя и отозвать сессии',enable:'Включить пользователя',
   sessions:'Отозвать все активные сессии',totp:'Сбросить 2FA и отозвать сессии',
+  business:'Перевести в B2B, сохранив текущую скидку',
   bonus:'Отозвать welcome-бонус ($4). Идемпотентно: уже отозванный не спишется второй раз'};
   const values=await dialog({title:labels[action],message:button.dataset.email,confirmLabel:'Выполнить',
     danger:action==='disable'||action==='bonus'});
@@ -509,8 +511,10 @@ async function userAction(button){const action=button.dataset.action,labels={dis
   try{let result;if(action==='disable'||action==='enable')result=await send('/admin/users/'+button.dataset.id+'/status','PATCH',{status:action==='disable'?'disabled':'active',reason});
     if(action==='sessions')result=await send('/admin/users/'+button.dataset.id+'/sessions/revoke','POST',{reason});
     if(action==='totp')result=await send('/admin/users/'+button.dataset.id+'/totp/reset','POST',{reason});
+    if(action==='business')result=await send('/admin/users/'+button.dataset.id+'/convert-to-business','POST',{reason});
     if(action==='bonus')result=await send('/admin/users/'+button.dataset.id+'/bonus/revoke','POST',{reason});
     toast('Готово'+(result.sessions_revoked!=null?' · сессий отозвано: '+result.sessions_revoked:'')+
+      (result.customer_type==='b2b'?' · B2B, скидка '+result.discount_percent+'%':'')+
       (result.balance_usd!=null?' · новый баланс: $'+result.balance_usd+(result.idempotent_replay?' (уже был отозван ранее)':''):''));
     await refresh()}catch(error){toast(error.message,'bad');button.disabled=false}}
 

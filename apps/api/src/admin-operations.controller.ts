@@ -13,7 +13,11 @@ import {
   Query,
   UseGuards,
 } from "@nestjs/common";
-import { AdminUserNotFoundError } from "@claude-api/db";
+import {
+  AdminUserNotFoundError,
+  BusinessCustomerNotFoundError,
+  CustomerProfileNotFoundError,
+} from "@claude-api/db";
 import { z } from "zod";
 import { AdminGuard } from "./admin.guard.js";
 import { AdminOperationError, AdminOperationsService } from "./admin-operations.service.js";
@@ -114,6 +118,23 @@ export class AdminOperationsController {
     }));
   }
 
+  @Post("users/:id/convert-to-business")
+  @Header("Cache-Control", "no-store")
+  async convertToBusiness(
+    @Param("id") id: string,
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<Record<string, unknown>> {
+    assertUserId(id);
+    const parsed = securityActionSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    return this.mapErrors(() => this.operations.convertToBusiness({
+      userId: id,
+      reason: parsed.data.reason,
+      actorId: adminActor(actorHeader),
+    }));
+  }
+
   @Post("users/:id/sessions/revoke")
   @Header("Cache-Control", "no-store")
   async revokeSessions(
@@ -153,7 +174,11 @@ export class AdminOperationsController {
       return await action();
     } catch (error) {
       if (error instanceof AdminOperationError) throw new HttpException(error.message, error.status);
-      if (error instanceof AdminUserNotFoundError) throw new NotFoundException(error.message);
+      if (
+        error instanceof AdminUserNotFoundError
+        || error instanceof CustomerProfileNotFoundError
+        || error instanceof BusinessCustomerNotFoundError
+      ) throw new NotFoundException(error.message);
       throw error;
     }
   }
