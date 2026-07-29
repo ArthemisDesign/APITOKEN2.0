@@ -213,7 +213,9 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| "/srv/claude-api/data".into());
     let cfg = Arc::new(Config {
         admins_id, admins_name,
-        claude_bin: env_opt("CLAUDE_BIN").unwrap_or_else(|| format!("{home}/.local/bin/claude")),
+        claude_bin: env_opt("AUTH_BOT_CLAUDE_BIN")
+            .or_else(|| env_opt("CLAUDE_BIN"))
+            .unwrap_or_else(|| format!("{home}/.local/bin/claude")),
         claude_config_dir: env_opt("AUTH_BOT_CLAUDE_CONFIG_DIR")
             .unwrap_or_else(|| "/srv/claude-api/data/authbot".into()),
         sub_db: format!("{sub_dir}/subscriptions.db"),

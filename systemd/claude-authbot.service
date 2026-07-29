@@ -18,21 +18,22 @@ Type=simple
 User=deploy
 Group=deploy
 Environment=HOME=/srv/claude-api/data/authbot
-Environment=CLAUDE_BIN=/home/deploy/.local/bin/claude
+Environment=AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude
 EnvironmentFile=/srv/claude-api/data/authbot.env
 ExecStart=/srv/claude-api/releases/current/authbot
 WorkingDirectory=/srv/claude-api/data
 Restart=always
 RestartSec=5
+RuntimeDirectory=claude-authbot
+RuntimeDirectoryMode=0700
 
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
-# The official installer keeps the executable and its immutable version store below ~/.local.
-# Expose only those read-only paths; Claude account state belongs under /srv/claude-api/data.
-BindReadOnlyPaths=-/home/deploy/.local/bin/claude
-BindReadOnlyPaths=-/home/deploy/.local/share/claude
+# Resolve the official install before hiding /home, then expose only its executable at runtime.
+# A bind mounted below hidden /home remains unreachable even when the leaf itself is mounted.
+BindReadOnlyPaths=/home/deploy/.local/bin/claude:/run/claude-authbot/claude
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true

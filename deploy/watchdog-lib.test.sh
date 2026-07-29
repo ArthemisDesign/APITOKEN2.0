@@ -1243,10 +1243,14 @@ grep -Fq 'ExecStart=/srv/claude-api/releases/current/authbot' "$ROOT/systemd/cla
   || wd_die "the authbot unit must run the binary from the current release"
 grep -Fq 'ProtectHome=true' "$ROOT/systemd/claude-authbot.service" \
   || wd_die "the authbot must keep the service user's home hidden"
-grep -Fq 'BindReadOnlyPaths=-/home/deploy/.local/bin/claude' "$ROOT/systemd/claude-authbot.service" \
-  || wd_die "the protected authbot cannot execute the installed Claude CLI"
-grep -Fq 'BindReadOnlyPaths=-/home/deploy/.local/share/claude' "$ROOT/systemd/claude-authbot.service" \
-  || wd_die "the protected authbot cannot resolve the installed Claude version"
+grep -Fq 'Environment=AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude' "$ROOT/systemd/claude-authbot.service" \
+  || wd_die "the protected authbot still tries to execute Claude below hidden /home"
+grep -Fq 'env_opt("AUTH_BOT_CLAUDE_BIN")' "$ROOT/crates/authbot/src/main.rs" \
+  || wd_die "legacy authbot.env can override the sandbox-safe Claude CLI path"
+grep -Fq 'BindReadOnlyPaths=/home/deploy/.local/bin/claude:/run/claude-authbot/claude' "$ROOT/systemd/claude-authbot.service" \
+  || wd_die "the protected authbot cannot execute the installed Claude CLI from its runtime directory"
+grep -Fq 'RuntimeDirectory=claude-authbot' "$ROOT/systemd/claude-authbot.service" \
+  || wd_die "the authbot has no private mount destination for the Claude CLI"
 grep -Fq 'Environment=HOME=/srv/claude-api/data/authbot' "$ROOT/systemd/claude-authbot.service" \
   || wd_die "the protected authbot has no writable home for an already-running old binary"
 grep -Fq '/srv/claude-api/data/authbot' "$ROOT/crates/authbot/src/main.rs" \
