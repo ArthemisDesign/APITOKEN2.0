@@ -221,6 +221,13 @@ fn validate_gemini_upstream(v: &str, allow_insecure_loopback: bool) -> Result<St
 }
 
 fn gemini_config() -> Option<GeminiConfig> {
+    // Deploy contract: the whole-engine watchdog fails closed when the Gemini surface is enabled
+    // without a live authenticated subscription. Keep the surface opt-in (default off) so a routine
+    // engine deploy never depends on Gemini being live; flip it on deliberately once at least one
+    // seller has onboarded through the bot.
+    if !ev_bool("CLAUDE_API_GEMINI_ENABLED", false) {
+        return None;
+    }
     let requested = ev_or(
         "CLAUDE_API_GEMINI_MODELS",
         "gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-flash-lite,gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite",
