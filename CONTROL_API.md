@@ -98,6 +98,7 @@ curl https://<база>/v1/messages \
 ### Аккаунты
 ```
 POST /admin/account                     {"handle"?, "mult_bp"?}      → 200 {account, mult_bp, handle}
+POST /admin/accounts/query              {"account_ids":["acct_…"]}   → 200 {accounts:[...]} (max 500)
 GET  /admin/account/{id}                                             → 200 {balance_nano, spent_nano,
                                                                             reserved_nano, balance, mult_bp, status, handle} | 404
 POST /admin/account/{id}/credit         {"usd"?|"amount_nano"?, "ref"?} → 200 {balance_nano, balance} | 404

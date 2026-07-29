@@ -10,6 +10,7 @@ import {
   recordAdminCredit,
   setBusinessPricing,
   type AdminUserOverviewRow,
+  type AdminUserOverviewQuery,
   type Database,
 } from "@claude-api/db";
 import { EngineClient } from "@claude-api/engine-client";
@@ -25,25 +26,40 @@ export class AdminService {
   ) {}
 
   /** Обзор всех пользователей для панели: агрегаты commerce БД + live-деньги движка. */
-  async listUsers(): Promise<{ users: Array<Record<string, unknown>> }> {
-    const rows = await listAdminUserOverview(this.database);
+  async listUsers(query: AdminUserOverviewQuery = {}): Promise<{
+    users: Array<Record<string, unknown>>;
+    total: number;
+    limit: number;
+    offset: number;
+  }> {
+    const page = await listAdminUserOverview(this.database, query);
     // Live-баланс/расход — из движка (он авторитет денег); недоступность движка не валит список.
     const live = new Map<string, { balance: string; spent: string; reserved: string; status: string }>();
-    await Promise.all(rows.map(async (row) => {
-      if (!row.engineAccountId) return;
+    const accountIds = page.rows.flatMap((row) => row.engineAccountId ? [row.engineAccountId] : []);
+    if (accountIds.length > 0) {
       try {
-        const account = await this.engine.getAccount(row.engineAccountId);
-        live.set(row.engineAccountId, {
-          balance: account.balance_nano,
-          spent: account.spent_nano,
-          reserved: account.reserved_nano,
-          status: account.status,
-        });
+        const accounts = await this.engine.getAccounts(accountIds);
+        for (const account of accounts) {
+          live.set(account.account, {
+            balance: account.balance_nano,
+            spent: account.spent_nano,
+            reserved: account.reserved_nano,
+            status: account.status,
+          });
+        }
       } catch {
-        // движок недоступен/аккаунт не найден → поля останутся null
+        // движок недоступен → bounded commerce page remains available with null live fields.
       }
-    }));
-    return { users: rows.map((row) => serializeUser(row, row.engineAccountId ? live.get(row.engineAccountId) ?? null : null)) };
+    }
+    return {
+      users: page.rows.map((row) => serializeUser(
+        row,
+        row.engineAccountId ? live.get(row.engineAccountId) ?? null : null,
+      )),
+      total: page.total,
+      limit: page.limit,
+      offset: page.offset,
+    };
   }
 
   /**

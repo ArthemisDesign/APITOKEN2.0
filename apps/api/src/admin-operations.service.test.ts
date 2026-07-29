@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabase, type Database } from "@claude-api/db";
 import { EngineClient } from "@claude-api/engine-client";
+import { AdminService } from "./admin.service.js";
 import { AdminOperationsService } from "./admin-operations.service.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -10,6 +11,7 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
   let database: Database;
   let engine: FakeAdminEngine;
   let service: AdminOperationsService;
+  let adminService: AdminService;
   let passwordUserId: string;
   let oauthUserId: string;
 
@@ -73,6 +75,7 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
     `, [randomUUID(), paymentId]);
     engine = new FakeAdminEngine();
     service = new AdminOperationsService(database, engine.client);
+    adminService = new AdminService(database, engine.client, {} as never);
   });
 
   afterAll(async () => {
@@ -97,6 +100,23 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
     const topups = await service.topups(20) as { payments: Array<Record<string, unknown>> };
     expect(topups.payments).toHaveLength(1);
     expect(topups.payments[0]).toMatchObject({ email: "password@example.com", amount_usd: "25", credit_status: "confirmed" });
+  });
+
+  it("paginates users and resolves live balances with one bounded engine request", async () => {
+    const first = await adminService.listUsers({ limit: 1, offset: 0 });
+    expect(first.total).toBe(2);
+    expect(first.users).toHaveLength(1);
+    expect(engine.accountBatchRequests).toHaveLength(1);
+    expect(engine.accountBatchRequests[0]).toHaveLength(1);
+
+    const oauth = await adminService.listUsers({ limit: 10, auth: "google" });
+    expect(oauth.total).toBe(1);
+    expect(oauth.users).toMatchObject([{
+      email: "oauth@example.com",
+      balance_usd: "12.0000",
+      engine_live_status: "active",
+    }]);
+    expect(engine.accountBatchRequests).toHaveLength(2);
   });
 
   it("credits a user idempotently and records the operator reason once", async () => {
@@ -228,6 +248,7 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
 class FakeAdminEngine {
   readonly credits: Array<{ account: string; amountNano: string; ref: string }> = [];
   readonly statusChanges: Array<{ account: string; status: string }> = [];
+  readonly accountBatchRequests: string[][] = [];
   readonly client = new EngineClient({
     baseUrl: "http://engine.test",
     controlKey: "test-control",
@@ -235,6 +256,22 @@ class FakeAdminEngine {
       const url = new URL(String(input));
       const account = decodeURIComponent(url.pathname.split("/")[3] ?? "");
       const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, string>;
+      if (url.pathname === "/admin/accounts/query") {
+        const accountIds = (body.account_ids ?? []) as unknown as string[];
+        this.accountBatchRequests.push(accountIds);
+        return Response.json({
+          accounts: accountIds.map((id) => ({
+            account: id,
+            balance_nano: "12000000000",
+            spent_nano: "3000000000",
+            reserved_nano: "0",
+            balance: "$12.000000000",
+            mult_bp: 4000,
+            status: "active",
+            handle: null,
+          })),
+        });
+      }
       if (url.pathname.endsWith("/credit")) {
         this.credits.push({ account, amountNano: body.amount_nano!, ref: body.ref! });
         return Response.json({ account, balance_nano: "12000000000", balance: "$12.000000000" });

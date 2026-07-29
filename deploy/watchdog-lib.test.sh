@@ -1289,6 +1289,12 @@ grep -Fq 'https://gemini.api.apitoken.sale/v1beta/models/gemini-provider-probe:g
 grep -Fq '@commerce_admin path /admin/*' "$ROOT/deploy/Caddyfile"
 grep -Fq 'handle_path /partner-admin/*' "$ROOT/deploy/Caddyfile"
 grep -Fq 'copy_headers X-Admin-Actor X-Admin-Account-Id' "$ROOT/deploy/Caddyfile"
+grep -Fq 'encode zstd gzip' "$ROOT/deploy/Caddyfile"
+grep -Fq 'Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"' \
+  "$ROOT/deploy/Caddyfile"
+admin_script_hash=$(node -e 'const fs=require("fs"),crypto=require("crypto");const html=fs.readFileSync(process.argv[1],"utf8");const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];process.stdout.write(crypto.createHash("sha256").update(script).digest("base64"))' \
+  "$ROOT/crates/server/src/admin-panel.html")
+grep -Fq "script-src 'sha256-$admin_script_hash'" "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'header_up x-admin-actor' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'header_up x-admin-account-id' "$ROOT/deploy/Caddyfile"
 [[ $(grep -Fc 'reverse_proxy 127.0.0.1:3000 127.0.0.1:3001' "$ROOT/deploy/Caddyfile") == 1 ]]

@@ -132,9 +132,20 @@ footer{color:var(--faint);font-size:12px;padding:26px 2px 8px;line-height:1.6}
 .spend-tabs{display:flex;gap:6px;margin:0 0 14px}
 .spend-tabs .btn{background:var(--panel2);color:var(--muted);border-color:var(--line)}
 .spend-tabs .btn.on{background:var(--accent-soft);color:var(--accent-text);border-color:transparent}
-.toast{position:fixed;right:16px;bottom:16px;z-index:95;max-width:430px;padding:12px 15px;border-radius:10px;border:1px solid var(--accent);
+.toast{position:fixed;right:16px;bottom:16px;z-index:95;display:flex;align-items:flex-start;gap:10px;max-width:430px;padding:12px 15px;border-radius:10px;border:1px solid var(--accent);
 background:var(--panel);color:var(--text);box-shadow:0 12px 34px rgba(0,0,0,.28);word-break:break-word;font-size:13px}
-.toast.bad{border-color:var(--bad)}.toast+.toast{bottom:76px}
+.toast>span{flex:1}.toast.bad{border-color:var(--bad)}.toast+.toast{bottom:76px}
+.error-center{position:fixed;right:16px;top:16px;z-index:100;display:grid;gap:10px;width:min(440px,calc(100vw - 32px))}
+.error-note{display:grid;grid-template-columns:auto 1fr auto;gap:11px;align-items:start;padding:13px 14px;border:1px solid var(--bad);
+border-radius:12px;background:var(--panel);box-shadow:0 14px 38px rgba(0,0,0,.24)}
+.error-note b{display:block;color:var(--bad);font-size:13px}.error-note p{margin:2px 0 0;color:var(--muted);font-size:12px;word-break:break-word}
+.error-note .error-actions{display:flex;gap:6px}.icon-btn{border:0;background:transparent;color:var(--muted);cursor:pointer;padding:4px;border-radius:6px}
+.icon-btn:hover{background:var(--panel2);color:var(--text)}
+.loading-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.skeleton{height:104px;border:1px solid var(--line);border-radius:12px;
+background:linear-gradient(90deg,var(--panel) 25%,var(--panel2) 50%,var(--panel) 75%);background-size:200% 100%;animation:pulse 1.2s ease-in-out infinite}
+.pager{display:flex;align-items:center;justify-content:flex-end;gap:9px;margin-top:12px;color:var(--muted);font-size:12px}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@keyframes pulse{to{background-position:-200% 0}}@media(prefers-reduced-motion:reduce){.skeleton{animation:none}}
 /* ── Responsive ──────────────────────────────────────────── */
 .burger{display:none}
 @media(max-width:1100px){.cards{grid-template-columns:repeat(2,1fr)}.domain-grid{grid-template-columns:repeat(2,1fr)}}
@@ -148,11 +159,13 @@ main{padding:18px 14px 50px}.page-head h1{font-size:19px}.form{grid-template-col
 @media(max-width:620px){.cards,.form,.domain-grid{grid-template-columns:1fr}.card .value{font-size:23px}}
 </style>
 </head>
-<body data-admin-panel-version="11">
+<body data-admin-panel-version="12">
 <div id="app"></div>
+<div id="error-center" class="error-center" aria-live="polite"></div>
 <script>
 'use strict';
 const app=document.getElementById('app');
+const errorCenter=document.getElementById('error-center');
 // Единственный источник правды о страницах: сайдбар строится из этого списка.
 const NAV=[
   {group:'Обзор',items:[['dashboard','Сводка','▣']]},
@@ -163,23 +176,33 @@ const NAV=[
 ];
 const validTabs=NAV.flatMap(group=>group.items.map(item=>item[0]));
 const getTab=()=>validTabs.includes(location.hash.slice(1))?location.hash.slice(1):'dashboard';
-let tab=getTab(),timer=null,usersCache=[],adminDomainFilter='';
+let tab=getTab(),timer=null,recoveryTimer=null,refreshController=null,usersCache=[],adminDomainFilter='',lastRefreshAt=0;
+let userPage={offset:0,limit:50,q:'',status:'',auth:''},partnerOffset=0,businessOffset=0;
+const failures=new Map();
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 // Встроенные модалки вместо window.prompt/confirm: браузеры (или галка «блокировать диалоги»)
 // молча глушат нативные диалоги, и кнопки выглядят «мёртвыми». Промис → значения полей | null.
-function dialog(options){return new Promise(resolve=>{const overlay=document.createElement('div');overlay.className='overlay';
-  overlay.innerHTML='<div class="dialog"><h3>'+esc(options.title)+'</h3>'+(options.message?'<p class="dlg-sub">'+esc(options.message)+'</p>':'')+
+function dialog(options){return new Promise(resolve=>{const overlay=document.createElement('div'),previous=document.activeElement;overlay.className='overlay';
+  const titleId='dialog-title-'+crypto.randomUUID();
+  overlay.innerHTML='<div class="dialog" role="dialog" aria-modal="true" aria-labelledby="'+titleId+'"><h3 id="'+titleId+'">'+esc(options.title)+'</h3>'+(options.message?'<p class="dlg-sub">'+esc(options.message)+'</p>':'')+
     (options.fields||[]).map(field=>'<label class="dlg-label">'+esc(field.label)+'<input type="'+esc(field.type||'text')+'" name="'+esc(field.name)+'" value="'+esc(field.value||'')+'" autocomplete="off"></label>').join('')+
-    '<div class="dlg-actions"><button class="btn ghost" data-dlg="cancel">Отмена</button><button class="btn '+(options.danger?'bad':'')+'" data-dlg="ok">'+esc(options.confirmLabel||'Подтвердить')+'</button></div></div>';
-  const done=value=>{overlay.remove();resolve(value)};
+    '<div class="dlg-actions"><button type="button" class="btn ghost" data-dlg="cancel">Отмена</button><button type="button" class="btn '+(options.danger?'bad':'')+'" data-dlg="ok">'+esc(options.confirmLabel||'Подтвердить')+'</button></div></div>';
+  const done=value=>{overlay.remove();if(previous instanceof HTMLElement)previous.focus();resolve(value)};
   overlay.addEventListener('mousedown',event=>{if(event.target===overlay)done(null)});
   overlay.querySelector('[data-dlg=cancel]').onclick=()=>done(null);
   overlay.querySelector('[data-dlg=ok]').onclick=()=>{const values={};overlay.querySelectorAll('input').forEach(input=>values[input.name]=input.value);done(values)};
   overlay.addEventListener('keydown',event=>{if(event.key==='Escape')done(null);
-    if(event.key==='Enter'){event.preventDefault();overlay.querySelector('[data-dlg=ok]').click()}});
+    if(event.key==='Enter'){event.preventDefault();overlay.querySelector('[data-dlg=ok]').click()}
+    if(event.key==='Tab'){const focusable=[...overlay.querySelectorAll('button,input,select,a[href]')].filter(item=>!item.disabled);
+      if(!focusable.length)return;const first=focusable[0],last=focusable.at(-1);
+      if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus()}
+      else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus()}}});
   document.body.appendChild(overlay);const first=overlay.querySelector('input');(first||overlay.querySelector('[data-dlg=ok]')).focus()})}
 function toast(message,kind){const note=document.createElement('div');note.className='toast'+(kind==='bad'?' bad':'');
-  note.textContent=message;document.body.appendChild(note);setTimeout(()=>note.remove(),kind==='bad'?9000:5000)}
+  note.setAttribute('role',kind==='bad'?'alert':'status');const text=document.createElement('span');text.textContent=message;note.appendChild(text);
+  if(kind==='bad'){const close=document.createElement('button');close.type='button';close.className='icon-btn';close.setAttribute('aria-label','Закрыть сообщение');
+    close.textContent='×';close.onclick=()=>note.remove();note.appendChild(close)}
+  document.body.appendChild(note);setTimeout(()=>note.remove(),kind==='bad'?9000:5000)}
 addEventListener('error',event=>toast('JS: '+event.message,'bad'));
 const money=value=>'$'+Number(value||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const nanoMoney=value=>{try{let n=BigInt(String(value??'0')),neg=n<0n;if(neg)n=-n;const whole=n/1000000000n,cents=(n%1000000000n)/10000000n;
@@ -196,58 +219,91 @@ const ratio=value=>value==null?'∞':'×'+Number(value).toLocaleString('en-US',{
 // Русская плюрализация: plural(1,'подписка','подписки','подписок').
 const plural=(n,one,few,many)=>{const a=Math.abs(n)%100,b=a%10;return a>10&&a<20?many:b>1&&b<5?few:b===1?one:many};
 const count=(n,one,few,many)=>n+' '+plural(n,one,few,many);
+const pager=(offset,limit,total,scope)=>'<div class="pager"><span>'+(total?offset+1:0)+'–'+Math.min(offset+limit,total)+' из '+total+'</span>'+
+  '<button type="button" class="btn ghost" data-page="'+scope+'" data-offset="'+Math.max(0,offset-limit)+'" '+(offset<=0?'disabled':'')+'>Назад</button>'+
+  '<button type="button" class="btn ghost" data-page="'+scope+'" data-offset="'+(offset+limit)+'" '+(offset+limit>=total?'disabled':'')+'>Дальше</button></div>';
 const windowLabel=minutes=>{minutes=Number(minutes)||0;if(!minutes)return'окно';if(minutes<60)return minutes+' мин';if(minutes<1440)return Math.round(minutes/60)+' ч';return Math.round(minutes/1440)+' д'};
-function shell(title,subtitle,body,badge=''){app.innerHTML='<div id="shell"><aside><div class="brand">api<i>Token</i>.sale<small>admin</small></div><nav>'+
+function shell(title,subtitle,body,badge=''){app.innerHTML='<div id="shell"><aside><div class="brand">api<i>Token</i>.sale<small>admin</small></div><nav aria-label="Разделы админ-панели">'+
   NAV.map(group=>'<div class="nav-group">'+esc(group.group)+'</div>'+group.items.map(item=>
     '<a class="nav-item'+(tab===item[0]?' on':'')+'" href="#'+item[0]+'"><span class="ico">'+item[2]+'</span>'+esc(item[1])+'</a>').join('')).join('')+
-  '</nav><div class="side-foot"><span class="env">production</span><button class="theme" id="theme" title="Тема">◐</button></div></aside>'+
-  '<main><div class="page-head"><div><h1>'+esc(title)+'</h1>'+(subtitle?'<p class="sub">'+subtitle+'</p>':'')+'</div><div class="badge">'+badge+'</div></div>'+
-  body+'</main></div>';bindCommon()}
+  '</nav><div class="side-foot"><span class="env">production</span><button type="button" class="theme" id="manual-refresh" title="Обновить" aria-label="Обновить текущую страницу">↻</button>'+
+  '<button type="button" class="theme" id="theme" title="Сменить тему" aria-label="Сменить тему">◐</button></div></aside>'+
+  '<main id="main-content"><div class="page-head"><div><h1>'+esc(title)+'</h1>'+(subtitle?'<p class="sub">'+subtitle+'</p>':'')+'</div><div class="badge">'+badge+'</div></div>'+
+  body+'</main></div>';lastRefreshAt=Date.now();bindCommon()}
 function bindCommon(){document.querySelectorAll('[data-spend-stats]').forEach(element=>element.onclick=()=>spendStats());
+  const manual=document.getElementById('manual-refresh');if(manual)manual.onclick=()=>refresh({force:true});
   const theme=document.getElementById('theme');if(theme)theme.onclick=()=>{const next=document.documentElement.dataset.theme==='dark'?'light':'dark';
   document.documentElement.dataset.theme=next;localStorage.setItem('admin-theme',next)}}
-function errorPage(title,error){shell(title,'','<div class="banner bad"><span class="dot bad"></span><div><b>Не удалось загрузить данные</b><span class="muted">'+esc(error.message||error)+'</span></div></div>')}
-async function api(path,options={}){const response=await fetch(path,{...options,headers:{'content-type':'application/json',...(options.headers||{})}});
-  const payload=await response.json().catch(()=>({}));if(!response.ok){const message=Array.isArray(payload.message)?payload.message.join(', '):payload.message;
+function showLoading(){shell(NAV.flatMap(group=>group.items).find(item=>item[0]===tab)?.[1]||'Загрузка','данные загружаются, навигация уже доступна',
+  '<div class="loading-grid" role="status" aria-label="Загрузка данных">'+Array.from({length:8},()=>'<div class="skeleton"></div>').join('')+'</div>')}
+const sourceName=path=>({
+  '/admin/dashboard':'Коммерческая сводка','/overview':'Движок','/capacity':'Ёмкость флота','/subs':'Claude-подписки',
+  '/codex-subs':'GPT-подписки','/partner-admin/overview':'Партнёрская сводка','/partner-admin/partner-analytics':'Партнёрские аккаунты',
+  '/admin/users':'Пользователи','/admin/topups':'Пополнения','/admin/audit':'Аудит','/admin/business-invites':'B2B-инвайты',
+  '/admin/admin-accounts':'Администраторы','/admin/admin-accounts/domains':'Домены администраторов','/spend-stats':'Статистика расхода'
+})[path.split('?')[0]]||path.split('?')[0];
+function renderFailures(){errorCenter.innerHTML=[...failures.entries()].filter(([,failure])=>!failure.dismissed).map(([key,failure])=>
+  '<section class="error-note" role="alert"><span class="dot bad"></span><div><b>'+esc(sourceName(key))+' временно недоступен</b><p>'+esc(failure.message)+
+  '<br>Панель продолжает работать. Проверка восстановления выполняется автоматически.</p></div><div class="error-actions">'+
+  '<button type="button" class="icon-btn" data-retry="'+esc(key)+'" title="Повторить" aria-label="Повторить запрос">↻</button>'+
+  '<button type="button" class="icon-btn" data-dismiss="'+esc(key)+'" title="Закрыть" aria-label="Закрыть сообщение">×</button></div></section>').join('');
+  errorCenter.querySelectorAll('[data-dismiss]').forEach(button=>button.onclick=()=>{const failure=failures.get(button.dataset.dismiss);if(failure){failure.dismissed=true;renderFailures()}});
+  errorCenter.querySelectorAll('[data-retry]').forEach(button=>button.onclick=()=>probeFailure(button.dataset.retry))}
+function trackFailure(path,error){const key=path.split('?')[0],previous=failures.get(key);
+  failures.set(key,{path,message:error.message||String(error),dismissed:previous?.dismissed||false});renderFailures();scheduleRecoveryProbe()}
+function markHealthy(path){const key=path.split('?')[0];if(!failures.has(key))return;failures.delete(key);renderFailures();
+  if(failures.size===0){toast('Соединение восстановлено. Панель сейчас обновится.');setTimeout(()=>{if(failures.size===0)location.reload()},700)}}
+async function rawApi(path,options={}){const response=await fetch(path,{...options,headers:{'content-type':'application/json',...(options.headers||{})}});
+  const payload=await response.json().catch(()=>({}));if(!response.ok){const message=Array.isArray(payload.message)?payload.message.join(', '):(payload.message||payload.error);
   throw new Error(message||('HTTP '+response.status))}return payload}
+async function api(path,options={}){const method=String(options.method||'GET').toUpperCase(),tracked=method==='GET';
+  try{const payload=await rawApi(path,{...options,signal:options.signal||(tracked?refreshController?.signal:undefined)});if(tracked)markHealthy(path);return payload}
+  catch(error){if(error?.name==='AbortError')throw error;if(tracked)trackFailure(path,error);throw error}}
 async function send(path,method,body){return api(path,{method,body:JSON.stringify(body)})}
-async function refresh(){clearInterval(timer);tab=getTab();try{
+async function probeFailure(key){const failure=failures.get(key);if(!failure)return;try{await rawApi(failure.path);markHealthy(failure.path)}catch(error){failure.message=error.message||String(error);renderFailures()}}
+function scheduleRecoveryProbe(){if(recoveryTimer)return;recoveryTimer=setTimeout(async()=>{recoveryTimer=null;
+  if(document.hidden){scheduleRecoveryProbe();return}await Promise.all([...failures.keys()].map(probeFailure));if(failures.size)scheduleRecoveryProbe()},5000)}
+function scheduleRefresh(){clearTimeout(timer);timer=null;const delay=tab==='system'||tab==='subs'?10000:tab==='dashboard'?30000:0;
+  if(delay)timer=setTimeout(()=>{if(document.hidden){scheduleRefresh();return}refresh()},delay)}
+async function refresh(options={}){clearTimeout(timer);refreshController?.abort();refreshController=new AbortController();tab=getTab();try{
   if(tab==='dashboard')await dashboard();if(tab==='subs')await subscriptions();if(tab==='system')await system();if(tab==='users')await users();
   if(tab==='accounts')await accounts();if(tab==='business')await business();if(tab==='topups')await topups();if(tab==='admins')await admins();if(tab==='audit')await audit();
-}catch(error){errorPage(tab,error)}timer=setInterval(refresh,tab==='system'||tab==='subs'?3000:20000)}
-addEventListener('hashchange',refresh);
+}catch(error){if(error?.name!=='AbortError'&&!document.getElementById('shell'))showLoading()}finally{scheduleRefresh()}}
+addEventListener('hashchange',()=>{tab=getTab();showLoading();refresh()});
+addEventListener('visibilitychange',()=>{if(!document.hidden&&Date.now()-lastRefreshAt>30000)refresh()});
 const savedTheme=localStorage.getItem('admin-theme');
 document.documentElement.dataset.theme=savedTheme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
 
 /* ── Сводка ──────────────────────────────────────────────── */
-async function dashboard(){const data=await api('/admin/dashboard'),u=data.users,t=data.topups,p=data.platform;
-  const sources=await Promise.all([api('/overview').catch(()=>null),api('/partner-admin/overview').catch(()=>null)]),engine=sources[0],partners=sources[1];
+async function dashboard(){const [data,engine,partners]=await Promise.all([
+    api('/admin/dashboard').catch(()=>null),api('/overview').catch(()=>null),api('/partner-admin/overview').catch(()=>null)
+  ]),u=data?.users||{},t=data?.topups||{},p=data?.platform||{};
   const engineAccounts=engine?.accounts||[],crm=engineAccounts.find(account=>String(account.handle||'').toLowerCase()==='crm-parsing');
-  const degraded=p.engine_error||!engine||!partners||!crm,state=degraded?'warn':'ok';
+  const degraded=!data||p.engine_error||!engine||!partners||!crm,state=degraded?'warn':'ok';
   const body='<div class="banner '+state+'"><span class="dot'+(degraded?' warn':'')+'"></span><div><b>'+(degraded?'Есть контуры, требующие внимания':'Все административные контуры доступны')+
-    '</b><span class="muted">обновлено '+date(data.generated_at,true)+' · сессий '+p.active_sessions+' · engine errors '+p.engine_error+
+    '</b><span class="muted">обновлено '+date(data?.generated_at,true)+' · сессий '+(p.active_sessions??'—')+' · engine errors '+(p.engine_error??'—')+
     ' · CRM '+(crm?esc(crm.status):'account missing')+'</span></div></div>'+
     '<div class="sect"><h2>Аккаунты по контурам</h2><span class="sect-sub">commerce · engine · partners · CRM</span></div><div class="cards">'+
-    card('commerce accounts',u.total,u.active+' активны · '+u.disabled+' отключены')+
+    card('commerce accounts',u.total??'—',(u.active??'—')+' активны · '+(u.disabled??'—')+' отключены')+
     card('engine accounts',engine?engineAccounts.length:'—',engine?engineAccounts.filter(account=>account.status==='active').length+' active':'источник недоступен')+
     card('partner accounts',partners?partners.partners:'—',partners?partners.activePartners+' active · '+partners.referredUsers+' referrals':'источник недоступен')+
     card('CRM & Parsing',crm?esc(crm.status):'не найден',crm?esc(crm.handle)+' · '+money(crm.balance_usd):'нужен engine account crm-parsing')+'</div>'+
     '<div class="sect"><h2>Клиенты и регистрации</h2></div><div class="cards">'+
-    card('всего клиентов',u.total,u.active+' активны · '+u.disabled+' отключены')+
-    card('OAuth-регистрации',u.registered_oauth,'сейчас OAuth-only '+u.oauth_only+' · hybrid '+u.hybrid)+
-    card('обычная регистрация',u.registered_password,'сейчас password-only '+u.password_only)+
-    card('новые за 30 дней',u.registered_30d,'24ч '+u.registered_24h+' · active 7д '+u.active_7d)+'</div>'+
+    card('всего клиентов',u.total??'—',(u.active??'—')+' активны · '+(u.disabled??'—')+' отключены')+
+    card('OAuth-регистрации',u.registered_oauth??'—','сейчас OAuth-only '+(u.oauth_only??'—')+' · hybrid '+(u.hybrid??'—'))+
+    card('обычная регистрация',u.registered_password??'—','сейчас password-only '+(u.password_only??'—'))+
+    card('новые за 30 дней',u.registered_30d??'—','24ч '+(u.registered_24h??'—')+' · active 7д '+(u.active_7d??'—'))+'</div>'+
     '<div class="sect"><h2>Деньги и пополнения</h2></div><div class="cards">'+
-    card('успешные пополнения',t.paid_count,t.paid_users+' платящих клиентов')+
-    card('пополнено всего',money(t.paid_usd),'30д '+money(t.paid_30d_usd)+' · '+t.paid_30d_count+' шт.')+
-    card('ручные начисления',t.manual_count,money(t.manual_usd)+' · 30д '+t.manual_30d_count)+
-    card('ожидают оплаты',t.pending_checkouts,'ошибок 30д '+t.failed_30d+' · возвратов '+t.refunded_count)+'</div>'+
-    '<div class="sect"><h2>Платформа</h2></div><div class="cards">'+card('API-ключи',p.active_api_keys,'активны из '+p.total_api_keys)+
-    card('B2C / B2B',p.b2c_users+' / '+p.b2b_users,'клиенты по типу тарифа')+
-    card('engine active',p.engine_active,'pending '+p.engine_pending+' · disabled '+p.engine_disabled)+
-    card('защищены 2FA',u.totp,'email подтверждено '+u.verified)+'</div>'+
+    card('успешные пополнения',t.paid_count??'—',(t.paid_users??'—')+' платящих клиентов')+
+    card('пополнено всего',data?money(t.paid_usd):'—','30д '+(data?money(t.paid_30d_usd):'—')+' · '+(t.paid_30d_count??'—')+' шт.')+
+    card('ручные начисления',t.manual_count??'—',(data?money(t.manual_usd):'—')+' · 30д '+(t.manual_30d_count??'—'))+
+    card('ожидают оплаты',t.pending_checkouts??'—','ошибок 30д '+(t.failed_30d??'—')+' · возвратов '+(t.refunded_count??'—'))+'</div>'+
+    '<div class="sect"><h2>Платформа</h2></div><div class="cards">'+card('API-ключи',p.active_api_keys??'—','активны из '+(p.total_api_keys??'—'))+
+    card('B2C / B2B',(p.b2c_users??'—')+' / '+(p.b2b_users??'—'),'клиенты по типу тарифа')+
+    card('engine active',p.engine_active??'—','pending '+(p.engine_pending??'—')+' · disabled '+(p.engine_disabled??'—'))+
+    card('защищены 2FA',u.totp??'—','email подтверждено '+(u.verified??'—'))+'</div>'+
     '<footer>Подробный единый список engine, commerce, partner и CRM-аккаунтов — на странице <a class="link" href="#accounts">«Аккаунты»</a>. Флот подписок Claude и GPT — на странице <a class="link" href="#subs">«Подписки»</a>.</footer>';
-  shell('Сводка','все контуры одним взглядом',body,pill(u.active+' active','ok'))}
+  shell('Сводка','все контуры одним взглядом',body,pill((u.active??'—')+' active',data?'ok':'warn'))}
 
 /* ── Подписки: Claude (Anthropic) + GPT (OpenAI Codex) ───── */
 function capacityBar(util){const percent=Math.min(100,Math.max(0,Math.round((Number(util)||0)*100))),kind=percent>=95?'bad':percent>=70?'warn':'';
@@ -330,12 +386,12 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
     '<div class="sect"><h2>GPT</h2><span class="sect-sub">OpenAI Codex · app-server homes</span></div>'+
     '<div class="cards">'+gptCards+'</div>'+
     '<div class="tcard" style="margin-top:12px">'+gptTable+'</div>'+
-    '<footer>Обновление каждые 3с · «доступно» учитывает сбросы окон · «пик» — истинный максимум ёмкости на дистанции (не EMA) · «прайор» — окно ещё не откалибровано реальным расходом. Email подписок маскированы намеренно.</footer>';
+    '<footer>Обновление каждые 10с, пока вкладка видима · «доступно» учитывает сбросы окон · «пик» — истинный максимум ёмкости на дистанции (не EMA) · «прайор» — окно ещё не откалибровано реальным расходом. Email подписок маскированы намеренно.</footer>';
   shell('Подписки','Claude и GPT флоты: здоровье, окна, ёмкость',body,pill(count(list.length+(gptOff?0:homes.length),'подписка','подписки','подписок'),dead||gptDown?'warn':'ok'))}
 
 /* ── Администраторы ──────────────────────────────────────── */
 async function admins(){const suffix=adminDomainFilter?'?domain='+encodeURIComponent(adminDomainFilter):'',result=await Promise.all([
-  api('/admin/admin-accounts'+suffix),api('/admin/admin-accounts/domains')]),data=result[0],directory=result[1],accounts=data.accounts||[],domains=directory.domains||[];
+  api('/admin/admin-accounts'+suffix).catch(()=>null),api('/admin/admin-accounts/domains').catch(()=>null)]),data=result[0]||{},directory=result[1]||{},accounts=data.accounts||[],domains=directory.domains||[];
   const options='<option value="">все управляемые домены</option>'+domains.map(item=>'<option value="'+esc(item.domain)+'" '+(adminDomainFilter===item.domain?'selected':'')+'>'+esc(item.domain)+'</option>').join('');
   const checks=domains.map((item,index)=>'<label class="check"><input type="checkbox" name="domains" value="'+esc(item.domain)+'" '+(index===0?'checked':'')+'>'+esc(item.label)+'</label>').join('');
   const rows=accounts.map(account=>{const self=account.id===data.current_account_id,domainPills=(account.domains||[]).map(domain=>pill(domain,domain==='admin.apitoken.sale'?'info':'')).join(' ');
@@ -353,7 +409,7 @@ async function admins(){const suffix=adminDomainFilter?'?domain='+encodeURICompo
     '<div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">администратор</th><th class="left">домены</th><th>статус</th><th>пароль изменён</th><th>создан</th><th>действия</th></tr></thead><tbody>'+(rows||empty(6))+'</tbody></table></div></div>'+
     '<footer>Пароли хранятся только как Argon2id-хеши. Нельзя отключить или лишить main-admin доступа последнего активного администратора.</footer>';
   shell('Администраторы','identity и domain grants для управляемых доменов',body,pill(accounts.filter(account=>account.status==='active').length+' active','ok'));bindAdmins(domains)}
-function bindAdmins(domains){const select=document.getElementById('admin-domain');select.onchange=()=>{adminDomainFilter=select.value;admins().catch(error=>errorPage('администраторы',error))};
+function bindAdmins(domains){const select=document.getElementById('admin-domain');select.onchange=()=>{adminDomainFilter=select.value;refresh({force:true})};
   const form=document.getElementById('admin-create');form.onsubmit=async event=>{event.preventDefault();const data=new FormData(form),selected=data.getAll('domains');
     if(!selected.length)return toast('Выберите хотя бы один домен.','bad');
     const values=await dialog({title:'Создать администратора',message:String(data.get('username')||''),confirmLabel:'Создать'});
@@ -386,12 +442,11 @@ async function adminAction(button,domains){const action=button.dataset.adminActi
 // и другого способа отличить их на стороне движка нет.
 const isOpenkeys=handle=>/^openkeys-/i.test(String(handle||''));
 const okBadge=handle=>isOpenkeys(handle)?'<span class="okb" title="Выпущен через OpenKeys">OpenKeys</span>':'';
-async function spendStats(){let data,emailById={};
-  try{const results=await Promise.all([api('/spend-stats'),api('/admin/users').catch(()=>({users:[]}))]);data=results[0];
-    (results[1].users||[]).forEach(user=>{if(user.id)emailById[user.id]=user.email})}
+async function spendStats(){let data;
+  try{data=await api('/spend-stats')}
   catch(error){return toast('Статистика расхода не загрузилась: '+error.message,'bad')}
-  const displayName=handle=>{const match=/^user:(.+)$/.exec(handle||'');
-    return match&&emailById[match[1]]?emailById[match[1]]:(handle||'—')};
+  const previous=document.activeElement;
+  const displayName=handle=>handle||'—';
   const periods=[['d1','Сутки (24ч)'],['d7','7 дней'],['d30','30 дней']];
   const discount=(charge,real)=>real>0?Math.round((1-charge/real)*100)+'%':'—';
   const overlay=document.createElement('div');overlay.className='overlay';
@@ -414,21 +469,29 @@ async function spendStats(){let data,emailById={};
       (providerRows||empty(5))+'</tbody></table></div></div>'+
       '<div class="sect"><h2>По аккаунтам</h2></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">account</th><th>запросы</th><th>списано</th><th>real-API</th><th>скидка</th><th>активность</th></tr></thead><tbody>'+
       (rows||empty(6))+'</tbody></table></div></div>'};
-  overlay.innerHTML='<div class="dialog wide"><h3>Кто тратит</h3><p class="dlg-sub">«списано» — по множителю аккаунта · «real-API» — полный эквивалент провайдера · топ-50 за окно</p>'+
-    '<div class="spend-tabs">'+periods.map((item,index)=>'<button class="btn'+(index===0?' on':'')+'" data-period="'+item[0]+'">'+item[1]+'</button>').join('')+'</div>'+
-    '<div id="spend-body">'+render('d1')+'</div><div class="dlg-actions"><button class="btn ghost" data-dlg="cancel">Закрыть</button></div></div>';
-  overlay.addEventListener('mousedown',event=>{if(event.target===overlay)overlay.remove()});
-  overlay.querySelector('[data-dlg=cancel]').onclick=()=>overlay.remove();
-  overlay.addEventListener('keydown',event=>{if(event.key==='Escape')overlay.remove()});
+  overlay.innerHTML='<div class="dialog wide" role="dialog" aria-modal="true" aria-labelledby="spend-title"><h3 id="spend-title">Кто тратит</h3><p class="dlg-sub">«списано» — по множителю аккаунта · «real-API» — полный эквивалент провайдера · топ-50 за окно</p>'+
+    '<div class="spend-tabs">'+periods.map((item,index)=>'<button type="button" class="btn'+(index===0?' on':'')+'" data-period="'+item[0]+'">'+item[1]+'</button>').join('')+'</div>'+
+    '<div id="spend-body">'+render('d1')+'</div><div class="dlg-actions"><button type="button" class="btn ghost" data-dlg="cancel">Закрыть</button></div></div>';
+  const done=()=>{overlay.remove();if(previous instanceof HTMLElement)previous.focus()};
+  overlay.addEventListener('mousedown',event=>{if(event.target===overlay)done()});
+  overlay.querySelector('[data-dlg=cancel]').onclick=done;
+  overlay.addEventListener('keydown',event=>{if(event.key==='Escape')done();
+    if(event.key==='Tab'){const focusable=[...overlay.querySelectorAll('button,a[href]')].filter(item=>!item.disabled);
+      if(!focusable.length)return;const first=focusable[0],last=focusable.at(-1);
+      if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus()}
+      else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus()}}});
   overlay.querySelectorAll('[data-period]').forEach(button=>button.onclick=()=>{overlay.querySelectorAll('[data-period]').forEach(other=>other.classList.remove('on'));
     button.classList.add('on');overlay.querySelector('#spend-body').innerHTML=render(button.dataset.period)});
-  document.body.appendChild(overlay)}
-async function allPartners(){let offset=0,items=[],totals=null;do{const data=await api('/partner-admin/partner-analytics?sort=created_at&dir=desc&limit=500&offset='+offset),batch=data.items||[];
-  totals=data.totals;items=items.concat(batch);offset=items.length;if(!batch.length)break}while(totals&&items.length<totals.total);return{items,totals:totals||{total:items.length,active:0}}}
+  document.body.appendChild(overlay);overlay.querySelector('[data-dlg=cancel]').focus()}
 
 /* ── Аккаунты ────────────────────────────────────────────── */
-async function accounts(){const result=await Promise.all([api('/overview'),api('/admin/users'),allPartners()]),overview=result[0],commerce=result[1].users||[],partners=result[2];
-  const engine=overview.accounts||[],crm=engine.find(account=>String(account.handle||'').toLowerCase()==='crm-parsing');
+async function accounts(){const partnerLimit=50,[overview,dashboardData,partners]=await Promise.all([
+    api('/overview').catch(()=>null),api('/admin/dashboard').catch(()=>null),
+    api('/partner-admin/partner-analytics?sort=created_at&dir=desc&limit='+partnerLimit+'&offset='+partnerOffset).catch(()=>null)
+  ]),commerceTotal=dashboardData?.users?.total||0,partnerItems=partners?.items||[],partnerTotal=partners?.totals?.total||partnerItems.length;
+  if(partnerOffset>=partnerTotal&&partnerTotal>0){partnerOffset=Math.max(0,Math.floor((partnerTotal-1)/partnerLimit)*partnerLimit);return accounts()}
+  const safeOverview=overview||{accounts:[]};
+  const engine=safeOverview.accounts||[],crm=engine.find(account=>String(account.handle||'').toLowerCase()==='crm-parsing');
   const domains=[
     ['admin.apitoken.sale','central admin','commerce + engine + partner account control',''],
     ['admin.partners.apitoken.sale','partner admin','unchanged APIToken Partners operator console','https://admin.partners.apitoken.sale/admin'],
@@ -440,19 +503,26 @@ async function accounts(){const result=await Promise.all([api('/overview'),api('
   const engineRows=engine.map(account=>{const isCrm=String(account.handle||'').toLowerCase()==='crm-parsing',domain=isCrm?'crm.apitoken.sale':'api.apitoken.sale';return '<tr><td class="left"><b>'+esc(account.handle||'—')+'</b>'+okBadge(account.handle)+
     '<div class="sub mono">'+esc(account.account)+'</div></td><td class="left">'+esc(domain)+'</td><td>'+pill(account.status,account.status==='active'?'ok':'bad')+'</td><td><b>'+money(account.balance_usd)+
     '</b></td><td>'+money(account.spent_usd)+'</td><td>×'+esc(account.mult)+'</td></tr>'}).join('');
-  const partnerRows=partners.items.map(partner=>'<tr><td class="left"><b>'+esc(partner.telegramUsername?'@'+partner.telegramUsername:(partner.email||partner.displayName||'—'))+
+  const partnerRows=partnerItems.map(partner=>'<tr><td class="left"><b>'+esc(partner.telegramUsername?'@'+partner.telegramUsername:(partner.email||partner.displayName||'—'))+
     '</b><div class="sub mono">'+esc(partner.id)+' · '+esc(partner.referralCode)+'</div></td><td>'+pill(partner.status,partner.status==='active'?'ok':partner.status==='suspended'?'bad':'warn')+
     '</td><td>'+partner.referredUsers+'</td><td>'+nanoMoney(partner.depositsTotalNano)+'</td><td>'+nanoMoney(partner.earnedTotalNano)+'</td><td>'+ago(partner.lastSeenAt)+'</td></tr>').join('');
-  const body='<div class="banner '+(crm?'ok':'warn')+'"><span class="dot'+(crm?'':' warn')+'"></span><div><b>Единый реестр аккаунтов</b><span class="muted">commerce '+commerce.length+
-    ' · engine '+engine.length+' · partners '+partners.items.length+' · CRM '+(crm?'connected':'missing')+'</span></div></div><div class="sect"><h2>Внутренние домены</h2></div><div class="domain-grid">'+domainCards+
+  const body='<div class="banner '+(crm?'ok':'warn')+'"><span class="dot'+(crm?'':' warn')+'"></span><div><b>Единый реестр аккаунтов</b><span class="muted">commerce '+commerceTotal+
+    ' · engine '+engine.length+' · partners '+partnerTotal+' · CRM '+(crm?'connected':'missing')+'</span></div></div><div class="sect"><h2>Внутренние домены</h2></div><div class="domain-grid">'+domainCards+
     '</div><div class="sect"><h2>Engine и service accounts</h2><span class="sect-sub">'+engine.length+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">account</th><th class="left">домен</th><th>статус</th><th>баланс</th><th><span data-spend-stats title="Разбивка: сутки / 7 дней / 30 дней">потрачено</span></th><th>множитель</th></tr></thead><tbody>'+
-    (engineRows||empty(6))+'</tbody></table></div></div><div class="sect"><h2>Partner accounts</h2><span class="sect-sub">'+partners.items.length+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">партнёр</th><th>статус</th><th>рефералы</th><th>депозиты</th><th>заработано</th><th>был(а)</th></tr></thead><tbody>'+
-    (partnerRows||empty(6))+'</tbody></table></div></div><footer>Все '+commerce.length+' commerce-аккаунтов доступны с действиями на странице <a class="link" href="#users">«Пользователи»</a>; полный partner workflow остаётся на admin.partners.apitoken.sale.</footer>';
-  shell('Аккаунты','engine, commerce, partner и CRM в одном реестре',body,pill(count(commerce.length+engine.length+partners.items.length,'запись','записи','записей'),crm?'ok':'warn'))}
+    (engineRows||empty(6))+'</tbody></table></div></div><div class="sect"><h2>Partner accounts</h2><span class="sect-sub">'+partnerTotal+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">партнёр</th><th>статус</th><th>рефералы</th><th>депозиты</th><th>заработано</th><th>был(а)</th></tr></thead><tbody>'+
+    (partnerRows||empty(6))+'</tbody></table></div></div>'+pager(partnerOffset,partnerLimit,partnerTotal,'partners')+'<footer>Все '+commerceTotal+' commerce-аккаунтов доступны с действиями на странице <a class="link" href="#users">«Пользователи»</a>; полный partner workflow остаётся на admin.partners.apitoken.sale.</footer>';
+  shell('Аккаунты','engine, commerce, partner и CRM в одном реестре',body,pill(count(commerceTotal+engine.length+partnerTotal,'запись','записи','записей'),crm?'ok':'warn'));
+  document.querySelectorAll('[data-page=partners]').forEach(button=>button.onclick=()=>{partnerOffset=Number(button.dataset.offset)||0;refresh({force:true})})}
 
 /* ── Пользователи ────────────────────────────────────────── */
-async function users(){const result=await Promise.all([api('/admin/users'),api('/admin/dashboard')]);usersCache=result[0].users||[];renderUsers(result[1])}
-function renderUsers(dashboard){const totalBalance=usersCache.reduce((sum,user)=>sum+Number(user.balance_usd||0),0);
+async function users(){const params=new URLSearchParams({limit:String(userPage.limit),offset:String(userPage.offset)});
+  if(userPage.q)params.set('q',userPage.q);if(userPage.status)params.set('status',userPage.status);if(userPage.auth)params.set('auth',userPage.auth);
+  const [userData,dashboardData]=await Promise.all([
+    api('/admin/users?'+params).catch(()=>null),api('/admin/dashboard').catch(()=>null)
+  ]),page=userData||{users:[],total:0,limit:userPage.limit,offset:userPage.offset};
+  if(userPage.offset>=page.total&&page.total>0){userPage.offset=Math.max(0,Math.floor((page.total-1)/userPage.limit)*userPage.limit);return users()}
+  usersCache=page.users||[];renderUsers(dashboardData||{users:{}},page)}
+function renderUsers(dashboard,page){const totalBalance=usersCache.reduce((sum,user)=>sum+Number(user.balance_usd||0),0);
   const totalSpent=usersCache.reduce((sum,user)=>sum+Number(user.spent_usd||0),0);
   const rows=usersCache.map(user=>{const pay=user.payments||{},keys=user.api_keys||{},methods=user.auth_methods||[];
     const statusKind=user.status==='disabled'?'bad':user.engine_live_status==='disabled'?'warn':'ok';
@@ -471,20 +541,23 @@ function renderUsers(dashboard){const totalBalance=usersCache.reduce((sum,user)=
       '<td><b>'+(user.balance_usd==null?'—':money(user.balance_usd))+'</b></td><td>'+(user.spent_usd==null?'—':money(user.spent_usd))+
       '<div class="sub">30д '+money(user.spent_30d_usd)+'</div></td><td>'+(pay.paid_count?money(pay.paid_total_usd)+'<div class="sub">'+pay.paid_count+' шт.</div>':'—')+
       '</td><td>'+Number(keys.active||0)+'/'+Number(keys.total||0)+'</td><td>'+ago(user.last_seen_at)+'</td><td>'+date(user.created_at)+      '</td><td><div class="actions wrap">'+actions+'</div></td></tr>'}).join('');
-  const body='<div class="cards">'+card('клиенты',usersCache.length,dashboard.users.registered_oauth+' OAuth-рег. · '+dashboard.users.registered_password+' обычных')+
-    card('активны 7 дней',dashboard.users.active_7d,dashboard.users.disabled+' отключены')+card('на балансах',money(totalBalance),'live из движка')+
-    card('потрачено',money(totalSpent),'по клиентскому прайсу')+'</div><div class="sect"><h2>Все пользователи</h2></div>'+
-    '<div class="toolbar"><input id="search" type="search" placeholder="email, имя или UUID…"><select id="status"><option value="">все статусы</option>'+
-    '<option value="active">active</option><option value="disabled">disabled</option></select><select id="auth"><option value="">любая регистрация</option>'+
-    '<option value="password">password</option><option value="google">Google</option><option value="github">GitHub</option></select></div>'+
+  const stats=dashboard.users||{};
+  const body='<div class="cards">'+card('клиенты',page.total,(stats.registered_oauth??'—')+' OAuth-рег. · '+(stats.registered_password??'—')+' обычных')+
+    card('активны 7 дней',stats.active_7d??'—',(stats.disabled??'—')+' отключены')+card('баланс страницы',money(totalBalance),'только '+usersCache.length+' показанных записей')+
+    card('расход страницы',money(totalSpent),'только текущая страница')+'</div><div class="sect"><h2>Все пользователи</h2></div>'+
+    '<form id="user-filter" class="toolbar"><label class="sr-only" for="search">Поиск пользователей</label><input id="search" type="search" value="'+esc(userPage.q)+'" placeholder="email, имя или UUID…">'+
+    '<label class="sr-only" for="status">Статус</label><select id="status"><option value="">все статусы</option>'+
+    '<option value="active" '+(userPage.status==='active'?'selected':'')+'>active</option><option value="disabled" '+(userPage.status==='disabled'?'selected':'')+'>disabled</option></select>'+
+    '<label class="sr-only" for="auth">Способ регистрации</label><select id="auth"><option value="">любая регистрация</option>'+
+    '<option value="password" '+(userPage.auth==='password'?'selected':'')+'>password</option><option value="google" '+(userPage.auth==='google'?'selected':'')+'>Google</option>'+
+    '<option value="github" '+(userPage.auth==='github'?'selected':'')+'>GitHub</option></select><button class="btn" type="submit">Найти</button></form>'+
     '<div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">пользователь</th><th class="left">тариф</th><th>баланс</th>'+
     '<th><span data-spend-stats title="Разбивка: сутки / 7 дней / 30 дней">потрачено</span></th><th>пополнения</th><th>ключи</th><th>был(а)</th><th>регистрация</th><th>действия</th></tr></thead><tbody>'+
-    (rows||empty(9))+'</tbody></table></div></div><footer>Отключение синхронно блокирует engine-аккаунт и отзывает все сессии. Каждое действие аудируется.</footer>';
-  shell('Пользователи','поиск, балансы, ключи и действия по клиентам',body,pill(count(usersCache.length,'клиент','клиента','клиентов'),'ok'));bindUserPage()}
-function bindUserPage(){const search=document.getElementById('search'),status=document.getElementById('status'),auth=document.getElementById('auth');
-  const filter=()=>document.querySelectorAll('[data-user-row]').forEach(row=>{const query=search.value.trim().toLowerCase();
-    row.hidden=Boolean((query&&!row.dataset.search.includes(query))||(status.value&&row.dataset.status!==status.value)||(auth.value&&!row.dataset.auth.includes(auth.value)))});
-  search.oninput=filter;status.onchange=filter;auth.onchange=filter;
+    (rows||empty(9))+'</tbody></table></div></div>'+pager(userPage.offset,userPage.limit,page.total,'users')+'<footer>Отключение синхронно блокирует engine-аккаунт и отзывает все сессии. Каждое действие аудируется.</footer>';
+  shell('Пользователи','серверный поиск, балансы, ключи и действия по клиентам',body,pill(count(page.total,'клиент','клиента','клиентов'),'ok'));bindUserPage()}
+function bindUserPage(){const form=document.getElementById('user-filter'),search=document.getElementById('search'),status=document.getElementById('status'),auth=document.getElementById('auth');
+  form.onsubmit=event=>{event.preventDefault();userPage={...userPage,offset:0,q:search.value.trim(),status:status.value,auth:auth.value};refresh({force:true})};
+  document.querySelectorAll('[data-page=users]').forEach(button=>button.onclick=()=>{userPage.offset=Number(button.dataset.offset)||0;refresh({force:true})});
   document.querySelectorAll('[data-credit]').forEach(button=>button.onclick=()=>creditUser(button));
   document.querySelectorAll('[data-action]').forEach(button=>button.onclick=()=>userAction(button))}
 // Backend требует reason в каждом действии (audit_log) — панель шлёт стандартную причину,
@@ -519,7 +592,7 @@ async function userAction(button){const action=button.dataset.action,labels={dis
     await refresh()}catch(error){toast(error.message,'bad');button.disabled=false}}
 
 /* ── Пополнения ──────────────────────────────────────────── */
-async function topups(){const data=await api('/admin/topups?limit=200'),payments=data.payments||[],checkouts=data.checkouts||[];
+async function topups(){const data=await api('/admin/topups?limit=200').catch(()=>({payments:[],checkouts:[]})),payments=data.payments||[],checkouts=data.checkouts||[];
   const paymentRows=payments.map(item=>'<tr><td class="left"><b>'+esc(item.email)+'</b><div class="sub mono">'+esc(item.user_id)+'</div></td><td>'+pill(item.provider)+
     '</td><td><b>'+money(item.amount_usd)+'</b></td><td>'+pill(item.status,item.status==='paid'?'ok':'warn')+'</td><td>'+
     pill(item.credit_status||'—',item.credit_status==='confirmed'?'ok':'warn')+'</td><td>'+date(item.paid_at,true)+'</td><td class="left mono muted">'+esc(item.provider_payment_id)+'</td></tr>').join('');
@@ -534,8 +607,11 @@ async function topups(){const data=await api('/admin/topups?limit=200'),payments
   shell('Пополнения','платежи и checkout-воронка',body,pill(count(payments.length,'платёж','платежа','платежей'),'ok'))}
 
 /* ── B2B ─────────────────────────────────────────────────── */
-async function business(){const result=await Promise.all([api('/admin/business-invites?limit=100'),api('/admin/users')]),invites=result[0].invites||[];
-  const clients=(result[1].users||[]).filter(user=>user.customer_type==='b2b');
+async function business(){const clientLimit=50,[inviteData,userData]=await Promise.all([
+    api('/admin/business-invites?limit=100').catch(()=>null),
+    api('/admin/users?limit='+clientLimit+'&offset='+businessOffset+'&customer_type=b2b').catch(()=>null)
+  ]),invites=inviteData?.invites||[],clients=userData?.users||[],clientTotal=userData?.total||clients.length;
+  if(businessOffset>=clientTotal&&clientTotal>0){businessOffset=Math.max(0,Math.floor((clientTotal-1)/clientLimit)*clientLimit);return business()}
   const clientRows=clients.map(user=>'<tr><td class="left"><b>'+esc(user.email)+'</b><div class="sub mono">'+esc(user.id)+'</div></td><td><b>'+
     (100-user.multiplier_bp/100)+'%</b></td><td>'+money(user.balance_usd)+'</td><td>'+pill(user.engine_account_status||'—',user.engine_account_status==='active'?'ok':'warn')+
     '</td><td><button class="btn" data-pricing="'+esc(user.id)+'" data-email="'+esc(user.email)+'" data-discount="'+(100-user.multiplier_bp/100)+'">изменить скидку</button></td></tr>').join('');
@@ -545,13 +621,14 @@ async function business(){const result=await Promise.all([api('/admin/business-i
   const body='<div class="sect"><h2>Новый B2B-инвайт</h2></div><form id="invite" class="form-card form"><div class="field"><label>Email</label><input name="email" type="email" required placeholder="client@company.com"></div>'+
     '<div class="field"><label>Скидка, %</label><input name="discount" type="number" min="0" max="100" value="70" required></div>'+
     '<div class="field"><label>Срок, дней</label><input name="days" type="number" min="1" max="90" value="7" required></div><button class="btn" type="submit">создать инвайт</button></form>'+
-    '<div class="sect"><h2>B2B-клиенты</h2><span class="sect-sub">'+clients.length+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">клиент</th><th>скидка</th><th>баланс</th><th>engine</th><th></th></tr></thead><tbody>'+
+    '<div class="sect"><h2>B2B-клиенты</h2><span class="sect-sub">'+clientTotal+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">клиент</th><th>скидка</th><th>баланс</th><th>engine</th><th></th></tr></thead><tbody>'+
     (clientRows||empty(5))+'</tbody></table></div></div><div class="sect"><h2>Последние инвайты</h2><span class="sect-sub">'+invites.length+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">email</th>'+
     '<th>скидка</th><th>статус</th><th>истекает</th><th>использован</th></tr></thead><tbody>'+(inviteRows||empty(5))+'</tbody></table></div></div>';
-  shell('B2B','инвайты и индивидуальные скидки',body,pill(count(clients.length,'клиент','клиента','клиентов'),'ok'));bindBusiness()}
+  shell('B2B','инвайты и индивидуальные скидки',body+pager(businessOffset,clientLimit,clientTotal,'business'),pill(count(clientTotal,'клиент','клиента','клиентов'),'ok'));bindBusiness()}
 function bindBusiness(){const form=document.getElementById('invite');form.onsubmit=async event=>{event.preventDefault();const data=new FormData(form),button=form.querySelector('button');button.disabled=true;
   try{const result=await send('/admin/business-invites','POST',{email:data.get('email'),discountPercent:Number(data.get('discount')),expiresInDays:Number(data.get('days'))});
     await navigator.clipboard?.writeText(result.inviteUrl).catch(()=>{});toast('Инвайт создан и скопирован: '+result.inviteUrl);await refresh()}catch(error){toast(error.message,'bad');button.disabled=false}};
+  document.querySelectorAll('[data-page=business]').forEach(button=>button.onclick=()=>{businessOffset=Number(button.dataset.offset)||0;refresh({force:true})});
   document.querySelectorAll('[data-pricing]').forEach(button=>button.onclick=async()=>{
     const values=await dialog({title:'Скидка для '+button.dataset.email,confirmLabel:'Установить',
       fields:[{name:'value',label:'Скидка, % (целое 0–100)',value:button.dataset.discount}]});
@@ -567,7 +644,8 @@ function systemVerdict(overview){const gap=overview.recommend.gap,h5=overview.he
   if(gap>0||tight(h5)||tight(h7)||coverage>1||cooling>0){const why=gap>0?'рекомендуется +'+gap+' подписок':tight(h5)||tight(h7)?'запас ниже цели ×'+target:
     coverage>1?'балансы клиентов ×'+coverage+' к ёмкости':cooling+' подписок остывают';return{kind:'warn',title:'Под контролем, но нужно внимание',detail:why+' · headroom 5h '+ratio(h5)+' / 7d '+ratio(h7)}}
   return{kind:'ok',title:'Запаса ёмкости хватает',detail:'headroom 5h '+ratio(h5)+' / 7d '+ratio(h7)+' · подписок '+total+', цель ×'+target+' выдержана'}}
-async function system(){const result=await Promise.all([api('/overview'),api('/capacity').catch(()=>null)]),overview=result[0],capacity=result[1];
+async function system(){const result=await Promise.all([api('/overview').catch(()=>null),api('/capacity').catch(()=>null)]),overview=result[0],capacity=result[1];
+  if(!overview){shell('Система','ёмкость, спрос и рекомендации по флоту','<div class="banner warn"><span class="dot warn"></span><div><b>Свежая системная сводка недоступна</b><span class="muted">Остальные разделы работают. Панель автоматически проверяет восстановление источника.</span></div></div>',pill('degraded','warn'));return}
   const supply=overview.supply,health=supply.health,demand=overview.demand,recommend=overview.recommend,verdict=systemVerdict(overview),mult=overview.ref_mult;
   const horizonCards=[['7d','7 дней','7d'],['1d','1 день',null],['5h','5 часов (burst)','5h']].map(item=>{const available=supply.avail_usd[item[0]]||0,head=item[2]?overview.headroom[item[2]]:null;
     return card('доступно · '+item[1],money(available),'клиентам ×'+mult+' = '+money(available*mult)+(item[2]?' · запас '+ratio(head):''))}).join('');
@@ -582,15 +660,16 @@ async function system(){const result=await Promise.all([api('/overview'),api('/c
     '<div class="sect"><h2>Подписки</h2><span class="sect-sub">живой статус флота</span></div>'+
     '<div class="banner ok" style="margin-bottom:0"><span class="dot"></span><div><b>Детальный статус подписок — на отдельной странице</b><span class="muted"><a class="link" href="#subs">Открыть «Подписки»</a> — окна 5ч/7д, cooling, lifecycle и прокси по каждой подписке Claude и GPT.</span></div></div>'+
     '<div class="sect"><h2>Аккаунты движка · '+(overview.accounts||[]).length+'</h2></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">account</th><th class="left">handle</th><th>статус</th><th>баланс</th><th><span data-spend-stats title="Разбивка: сутки / 7 дней / 30 дней">потрачено</span></th><th>множитель</th></tr></thead><tbody>'+
-    (accountRows||empty(6))+'</tbody></table></div></div><footer>Обновление каждые 3с · «доступно» учитывает сбросы окон · «запас» = доступно ÷ текущее потребление · клиентам ×'+mult+'</footer>';
+    (accountRows||empty(6))+'</tbody></table></div></div><footer>Обновление каждые 10с, пока вкладка видима · «доступно» учитывает сбросы окон · «запас» = доступно ÷ текущее потребление · клиентам ×'+mult+'</footer>';
   shell('Система','ёмкость, спрос и рекомендации по флоту',body,pill(count(overview.subs,'подписка','подписки','подписок'),verdict.kind))}
 
 /* ── Аудит ───────────────────────────────────────────────── */
-async function audit(){const rows=(await api('/admin/audit?limit=200')).rows||[],bodyRows=rows.map(item=>'<tr><td>'+date(item.created_at,true)+'</td><td class="left">'+
+async function audit(){const rows=(await api('/admin/audit?limit=200').catch(()=>({rows:[]}))).rows||[],bodyRows=rows.map(item=>'<tr><td>'+date(item.created_at,true)+'</td><td class="left">'+
   pill(item.action,item.action.startsWith('admin.')?'warn':'')+'</td><td class="left">'+esc(item.actor_type)+'<div class="sub mono">'+esc(item.actor_id||'system')+'</div></td><td class="left">'+
   esc(item.target_type)+' · '+esc(item.target_id)+'</td><td class="left"><div class="json" title="'+esc(JSON.stringify(item.metadata||{}))+'">'+esc(JSON.stringify(item.metadata||{}))+'</div></td></tr>').join('');
   shell('Аудит','operator/user/provider события и причины действий','<div class="tcard"><div class="tscroll"><table><thead><tr><th>время</th><th class="left">действие</th><th class="left">актор</th>'+
   '<th class="left">цель</th><th class="left">метаданные</th></tr></thead><tbody>'+(bodyRows||empty(5))+'</tbody></table></div></div><footer>Последние 200 событий. Секреты и полные API-ключи не записываются.</footer>',pill(count(rows.length,'событие','события','событий'),'ok'))}
+showLoading();
 refresh();
 </script>
 </body>

@@ -9,6 +9,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from "@nestjs/common";
 import {
@@ -22,6 +23,14 @@ import { AdminCreditError, AdminService } from "./admin.service.js";
 
 const uuidSchema = z.string().uuid();
 const creditSchema = z.object({ amount_usd: z.string() });
+const userListSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+  q: z.string().trim().max(200).optional(),
+  status: z.enum(["active", "disabled"]).optional(),
+  auth: z.enum(["password", "google", "github"]).optional(),
+  customer_type: z.enum(["b2c", "b2b"]).optional(),
+});
 
 @Controller("admin")
 @UseGuards(AdminGuard)
@@ -30,8 +39,24 @@ export class AdminController {
 
   @Get("users")
   @Header("Cache-Control", "no-store")
-  async listUsers(): Promise<unknown> {
-    return this.admin.listUsers();
+  async listUsers(
+    @Query("limit") limit?: string,
+    @Query("offset") offset?: string,
+    @Query("q") q?: string,
+    @Query("status") status?: string,
+    @Query("auth") auth?: string,
+    @Query("customer_type") customerType?: string,
+  ): Promise<unknown> {
+    const parsed = userListSchema.safeParse({ limit, offset, q, status, auth, customer_type: customerType });
+    if (!parsed.success) throw new BadRequestException("invalid user list filters");
+    return this.admin.listUsers({
+      limit: parsed.data.limit,
+      offset: parsed.data.offset,
+      ...(parsed.data.q === undefined ? {} : { search: parsed.data.q }),
+      ...(parsed.data.status === undefined ? {} : { status: parsed.data.status }),
+      ...(parsed.data.auth === undefined ? {} : { auth: parsed.data.auth }),
+      ...(parsed.data.customer_type === undefined ? {} : { customerType: parsed.data.customer_type }),
+    });
   }
 
   @Post("users/:id/credit")

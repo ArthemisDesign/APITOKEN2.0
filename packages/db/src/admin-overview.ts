@@ -132,6 +132,22 @@ export interface AdminUserOverviewRow {
   spent30dNano: string;
 }
 
+export interface AdminUserOverviewQuery {
+  limit?: number;
+  offset?: number;
+  search?: string;
+  status?: "active" | "disabled";
+  auth?: "password" | "google" | "github";
+  customerType?: "b2c" | "b2b";
+}
+
+export interface AdminUserOverviewPage {
+  rows: AdminUserOverviewRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 interface RawRow {
   id: string;
   email: string;
@@ -224,8 +240,30 @@ export async function findAdminCreditByRef(database: Database, ref: string): Pro
   } : null;
 }
 
-export async function listAdminUserOverview(database: Database): Promise<AdminUserOverviewRow[]> {
-  const result = await database.pool.query<RawRow>(`
+export async function listAdminUserOverview(
+  database: Database,
+  query: AdminUserOverviewQuery = {},
+): Promise<AdminUserOverviewPage> {
+  const limit = Math.max(1, Math.min(100, query.limit ?? 50));
+  const offset = Math.max(0, query.offset ?? 0);
+  const search = query.search?.trim() ?? "";
+  const status = query.status ?? "";
+  const auth = query.auth ?? "";
+  const customerType = query.customerType ?? "";
+  const filters = `
+    ($1::text = '' OR u.email ILIKE '%' || $1 || '%'
+      OR u.display_name ILIKE '%' || $1 || '%' OR u.id::text ILIKE '%' || $1 || '%')
+    AND ($2::text = '' OR u.status::text = $2)
+    AND ($3::text = '' OR ($3 = 'password' AND u.password_hash IS NOT NULL)
+      OR ($3 <> 'password' AND EXISTS (
+        SELECT 1 FROM auth_identities auth_filter
+        WHERE auth_filter.user_id = u.id AND auth_filter.provider::text = $3
+      )))
+    AND ($4::text = '' OR cp.customer_type::text = $4)
+  `;
+  const params = [search, status, auth, customerType, limit, offset];
+  const [result, countResult] = await Promise.all([
+    database.pool.query<RawRow>(`
     SELECT
       u.id, u.email, u.display_name, u.email_verified, u.status, u.created_at,
       (u.password_hash IS NOT NULL) AS has_password,
@@ -271,9 +309,19 @@ export async function listAdminUserOverview(database: Database): Promise<AdminUs
       FROM pricing_usage_events
       WHERE user_id = u.id AND occurred_at > now() - interval '30 days'
     ) ue ON TRUE
+    WHERE ${filters}
     ORDER BY u.created_at DESC
-  `);
-  return result.rows.map((row) => ({
+    LIMIT $5 OFFSET $6
+  `, params),
+    database.pool.query<{ total: string }>(`
+      SELECT count(*)::text AS total
+      FROM users u
+      LEFT JOIN customer_profiles cp ON cp.user_id = u.id
+      WHERE ${filters}
+    `, params.slice(0, 4)),
+  ]);
+  return {
+    rows: result.rows.map((row) => ({
     id: row.id,
     email: row.email,
     displayName: row.display_name,
@@ -298,7 +346,11 @@ export async function listAdminUserOverview(database: Database): Promise<AdminUs
     apiKeysTotal: Number(row.api_keys_total),
     lastSeenAt: row.last_seen_at,
     spent30dNano: row.spent_30d_nano,
-  }));
+    })),
+    total: Number(countResult.rows[0]?.total ?? 0),
+    limit,
+    offset,
+  };
 }
 
 export async function getAdminDashboard(database: Database): Promise<AdminDashboard> {

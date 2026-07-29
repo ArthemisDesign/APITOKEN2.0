@@ -12,6 +12,7 @@ use axum::response::{IntoResponse, Json, Response};
 use forward::AppState;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 /// Биллинг обязателен для control-операций (аккаунты/деньги живут в нём). Нет → 503.
 /// (Err-вариант — axum `Response`, намеренно «большой»: это ранний ответ ошибки, не горячий путь.)
@@ -123,6 +124,59 @@ pub async fn get_account(State(app): State<AppState>, Path(id): Path<String>) ->
         )
             .into_response(),
         Err(error) => authority_unavailable("account lookup", error),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccountsQueryReq {
+    account_ids: Vec<String>,
+}
+
+/// POST /admin/accounts/query — bounded batch account snapshot for commerce/admin reads.
+pub async fn query_accounts(
+    State(app): State<AppState>,
+    Json(req): Json<AccountsQueryReq>,
+) -> Response {
+    if req.account_ids.is_empty()
+        || req.account_ids.len() > 500
+        || req
+            .account_ids
+            .iter()
+            .any(|id| !id.starts_with("acct_") || id.len() > 200)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "account_ids must contain 1 to 500 valid account IDs"})),
+        )
+            .into_response();
+    }
+    let requested: HashSet<String> = req.account_ids.into_iter().collect();
+    let b = match billing(&app) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    match b.accounts().await {
+        Ok(rows) => {
+            let accounts: Vec<_> = rows
+                .into_iter()
+                .filter(|account| requested.contains(&account.id))
+                .map(|account| {
+                    json!({
+                        "account": account.id,
+                        "balance_nano": account.balance_nano,
+                        "spent_nano": account.spent_nano,
+                        "reserved_nano": account.reserved_nano,
+                        "balance": metering::nano_to_usd_string(account.balance_nano as i128),
+                        "mult_bp": account.mult_bp,
+                        "status": account.status,
+                        "handle": account.handle,
+                    })
+                })
+                .collect();
+            Json(json!({"accounts": accounts})).into_response()
+        }
+        Err(error) => authority_unavailable("batch account lookup", error),
     }
 }
 

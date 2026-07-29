@@ -102,6 +102,13 @@ define_admin_routes!(
         admin::create_account
     ),
     (
+        post,
+        POST,
+        "/admin/accounts/query",
+        "/admin/accounts/query",
+        admin::query_accounts
+    ),
+    (
         get,
         GET,
         "/admin/account/{id}",
@@ -1646,7 +1653,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_admin_route_enforces_the_control_key_lattice() {
-        assert_eq!(ADMIN_ROUTE_CASES.len(), 13);
+        assert_eq!(ADMIN_ROUTE_CASES.len(), 14);
         let service = router(admin_auth_test_app(), Arc::new(AtomicBool::new(true)));
         let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
 
@@ -2038,5 +2045,21 @@ mod tests {
         assert!(ADMIN_PANEL_HTML.contains("Пароль (минимум 8)"));
         assert!(ADMIN_PANEL_HTML.contains("minlength=\"8\""));
         assert!(ADMIN_PANEL_HTML.contains("(values.first||'').length<8"));
+        for resilience_capability in [
+            "class=\"error-center\"",
+            "scheduleRecoveryProbe",
+            "location.reload()",
+            "refreshController?.abort()",
+            "visibilitychange",
+            "class=\"loading-grid\"",
+            "customer_type=b2b",
+            "data-page=users",
+        ] {
+            assert!(
+                ADMIN_PANEL_HTML.contains(resilience_capability),
+                "missing admin resilience capability {resilience_capability}"
+            );
+        }
+        assert!(!ADMIN_PANEL_HTML.contains("setInterval(refresh"));
     }
 }

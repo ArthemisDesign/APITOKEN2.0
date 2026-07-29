@@ -87,6 +87,38 @@ describe("EngineClient", () => {
     expect(account).toMatchObject({ balance_nano: "0", spent_nano: "12", reserved_nano: "0" });
   });
 
+  it("reads a bounded account page with one batch request", async () => {
+    let requestUrl = "";
+    let requestBody = "";
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async (input, init) => {
+        requestUrl = String(input);
+        requestBody = String(init?.body);
+        return Response.json({
+          accounts: [{
+            account: "acct_one",
+            balance_nano: 10,
+            spent_nano: 20,
+            reserved_nano: 0,
+            balance: "$0.000000010",
+            mult_bp: 2000,
+            status: "active",
+            handle: "user:one",
+          }],
+        });
+      },
+    });
+
+    await expect(client.getAccounts(["acct_one", "acct_one"])).resolves.toMatchObject([
+      { account: "acct_one", balance_nano: "10", spent_nano: "20" },
+    ]);
+    expect(requestUrl).toBe("http://engine.test/admin/accounts/query");
+    expect(JSON.parse(requestBody)).toEqual({ account_ids: ["acct_one"] });
+    await expect(client.getAccounts([])).resolves.toEqual([]);
+  });
+
   it("manages keys by a non-secret stable identifier", async () => {
     const requests: Array<{ url: string; body: string }> = [];
     const client = new EngineClient({

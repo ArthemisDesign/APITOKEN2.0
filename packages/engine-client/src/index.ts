@@ -1,6 +1,7 @@
 import JSONbigFactory from "json-bigint";
 import {
   engineAccountSchema,
+  engineAccountListSchema,
   engineApiKeyListSchema,
   engineCreditResultSchema,
   engineLedgerSchema,
@@ -103,6 +104,19 @@ export class EngineClient {
     const account = engineAccountSchema.parse(payload);
     this.assertAccount(account.account, accountId, response);
     return account;
+  }
+
+  async getAccounts(accountIds: string[]): Promise<EngineAccount[]> {
+    const uniqueIds = [...new Set(accountIds)];
+    if (uniqueIds.length === 0) return [];
+    if (uniqueIds.length > 500 || uniqueIds.some((id) => !id.startsWith("acct_") || id.length > 200)) {
+      throw new RangeError("accountIds must contain 1 to 500 valid engine account IDs");
+    }
+    const { payload } = await this.request("/admin/accounts/query", {
+      method: "POST",
+      body: JSON.stringify({ account_ids: uniqueIds }),
+    });
+    return engineAccountListSchema.parse(payload).accounts;
   }
 
   async creditAccount(accountId: string, amountNano: bigint, reference: string): Promise<EngineCreditResult> {

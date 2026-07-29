@@ -24,6 +24,10 @@ export const engineAccountSchema = z.object({
 
 export type EngineAccount = z.infer<typeof engineAccountSchema>;
 
+export const engineAccountListSchema = z.object({
+  accounts: z.array(engineAccountSchema),
+});
+
 export const engineCreditResultSchema = z.object({
   account: z.string().startsWith("acct_"),
   balance_nano: decimalIntegerSchema,
