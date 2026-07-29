@@ -57,6 +57,14 @@
   1:1 без model-rules. До Stage 3B у API нет runtime/HTTP writer и production activation. Будущий
   resolver обязан на каждом чтении повторно проверить exact dependency heads и fail closed при
   рассогласовании; отдельные catalog → switches → policy heads не являются общей транзакцией.
+- **Stage 3B0 snapshot read — тоже dormant:** `pricing_read_bundle(account_id)` за одну read-only
+  транзакцию возвращает live `accounts.mult_bp`, binding/active policy и текущие active
+  catalog/switch heads: SQLite через deferred snapshot, PostgreSQL через `REPEATABLE READ READ
+  ONLY`. Scalar входит в тот же snapshot, иначе legacy OpenKeys validation гоняется с multiplier
+  writer. Registry только материализует данные и различает `Unbound/Inactive/Active`; правило
+  выбирает чистый resolver в `forward`.
+  Runtime callers, billing actor command, telemetry, readiness и writes пока запрещены. Нельзя
+  заменять bundle последовательностью трёх `active_*` reads — это может смешать поколения.
 
 **Инварианты:**
 - Токен разрешается из колонки `token` (inline) ИЛИ файла `token_file`. `import_sqlite` refuses a

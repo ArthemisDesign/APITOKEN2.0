@@ -18,6 +18,7 @@ mod keylimiter;
 mod meter;
 mod metrics;
 pub mod nodetls;
+mod pricing;
 mod proxy;
 mod state;
 mod upstream;
@@ -40,6 +41,10 @@ pub use gemini::{
 };
 pub use keylimiter::KeyLimiter;
 pub use metrics::Metrics;
+pub use pricing::{
+    resolve_pricing, PricingResolution, PricingResolutionRejection, PricingResolutionRequest,
+    ResolvedPricingRule, RuntimePricingCapability,
+};
 pub use proxy::{
     authed, client_key, control_authed, forward, readonly_authed, TerminalErrorReason,
 };

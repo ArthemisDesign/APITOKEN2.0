@@ -2194,6 +2194,13 @@ impl PgStore {
 }
 
 impl PgStore {
+    pub fn pricing_read_bundle(
+        &mut self,
+        account_id: &str,
+    ) -> Result<crate::pricing::PricingReadBundle> {
+        crate::pricing::postgres::postgres_pricing_read_bundle(&mut self.client, account_id)
+    }
+
     pub fn pricing_catalog_by_generation(
         &mut self,
         product_id: &str,

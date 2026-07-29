@@ -461,6 +461,18 @@ impl Authority {
 }
 
 impl Authority {
+    pub fn pricing_read_bundle(
+        &mut self,
+        account_id: &str,
+    ) -> Result<crate::pricing::PricingReadBundle> {
+        match self {
+            Self::Sqlite(connection) => {
+                crate::pricing::sqlite_pricing_read_bundle(connection, account_id)
+            }
+            Self::Postgres(store) => store.pricing_read_bundle(account_id),
+        }
+    }
+
     pub fn pricing_catalog_by_generation(
         &mut self,
         product_id: &str,

@@ -1,4 +1,4 @@
-//! PostgreSQL persistence for the dormant Stage 3A pricing contract.
+//! PostgreSQL persistence and dormant Stage 3B0 snapshot read for the pricing contract.
 //!
 //! Every mutation is serialized by a namespaced transaction advisory lock. Row locks alone are
 //! insufficient because an absent head or binding has no row to lock. Immutable versions and their
@@ -15,11 +15,12 @@ use super::{
     AccountPolicySpec, ActiveAccountPolicy, ActiveExpectation, ActivePolicyTarget,
     FundingEnforcement, PolicyActiveExpectation, PolicyBindingState, PolicyEnforcement,
     PolicyOwnerType, PolicyRuleScope, PricingCatalogEntrySpec, PricingCatalogSpec, PricingMode,
-    PricingMutation, PricingRejection, ProviderSwitchEntrySpec, ProviderSwitchScope,
-    ProviderSwitchSpec, ReconciliationState, RuleOrigin, VersionTarget,
+    PricingMutation, PricingPolicySnapshot, PricingReadBundle, PricingRejection,
+    ProviderSwitchEntrySpec, ProviderSwitchScope, ProviderSwitchSpec, ReconciliationState,
+    RuleOrigin, VersionTarget,
 };
 use anyhow::{bail, Context, Result};
-use postgres::{Client, GenericClient, Transaction};
+use postgres::{Client, GenericClient, IsolationLevel, Transaction};
 use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -191,8 +192,8 @@ fn catalog_head_shared(
     )))
 }
 
-pub(crate) fn postgres_active_pricing_catalog(
-    client: &mut Client,
+fn active_pricing_catalog<C: GenericClient>(
+    client: &mut C,
     product_id: &str,
 ) -> Result<Option<PricingCatalogSpec>> {
     require_id("product id", product_id)?;
@@ -213,6 +214,14 @@ pub(crate) fn postgres_active_pricing_catalog(
     catalog_by_generation(client, product_id, generation, false)?
         .map(Some)
         .context("pricing catalog head references a missing version")
+}
+
+pub(crate) fn postgres_active_pricing_catalog(
+    client: &mut Client,
+    product_id: &str,
+) -> Result<Option<PricingCatalogSpec>> {
+    require_id("product id", product_id)?;
+    active_pricing_catalog(client, product_id)
 }
 
 fn switches_by_generation<C: GenericClient>(
@@ -318,8 +327,8 @@ fn switch_head_shared(transaction: &mut Transaction<'_>) -> Result<Option<Versio
     )))
 }
 
-pub(crate) fn postgres_active_provider_switches(
-    client: &mut Client,
+fn active_provider_switches<C: GenericClient>(
+    client: &mut C,
 ) -> Result<Option<ProviderSwitchSpec>> {
     let Some(row) = client.query_opt(
         "SELECT h.active_generation,v.content_digest
@@ -337,6 +346,12 @@ pub(crate) fn postgres_active_provider_switches(
     switches_by_generation(client, generation, false)?
         .map(Some)
         .context("provider switch head references a missing version")
+}
+
+pub(crate) fn postgres_active_provider_switches(
+    client: &mut Client,
+) -> Result<Option<ProviderSwitchSpec>> {
+    active_provider_switches(client)
 }
 
 fn policy_by_version<C: GenericClient>(
@@ -541,6 +556,79 @@ pub(crate) fn postgres_active_account_policy(
         policy,
         binding: stored_binding.binding,
     }))
+}
+
+/// Read the account scalar, policy binding and independently moving heads from one PostgreSQL
+/// snapshot.
+///
+/// `REPEATABLE READ` gives the multi-statement decoder one coherent historical view without
+/// locking activation writers. The transaction is explicitly read-only: this dormant Stage 3B0
+/// primitive cannot move a head, change a binding, or affect billing state.
+pub(crate) fn postgres_pricing_read_bundle(
+    client: &mut Client,
+    account_id: &str,
+) -> Result<PricingReadBundle> {
+    require_id("account id", account_id)?;
+    let mut transaction = client
+        .build_transaction()
+        .isolation_level(IsolationLevel::RepeatableRead)
+        .read_only(true)
+        .start()
+        .context("begin PostgreSQL pricing read snapshot")?;
+    let account_multiplier_bp = transaction
+        .query_opt("SELECT mult_bp FROM accounts WHERE id=$1", &[&account_id])?
+        .map(|row| row.get::<_, i64>(0))
+        .context("PostgreSQL pricing bundle account does not exist")?;
+
+    let Some(stored_binding) = policy_binding(&mut transaction, account_id)? else {
+        let bundle = PricingReadBundle {
+            account_id: account_id.to_owned(),
+            account_multiplier_bp,
+            policy: PricingPolicySnapshot::Unbound,
+            catalog: None,
+            switches: None,
+        };
+        transaction
+            .commit()
+            .context("commit PostgreSQL pricing read snapshot")?;
+        return Ok(bundle);
+    };
+
+    let product_id = stored_binding.product_id.clone();
+    let policy = match stored_binding.active_target.as_ref() {
+        None => PricingPolicySnapshot::Inactive {
+            product_id: product_id.clone(),
+            account_class: stored_binding.account_class,
+            binding: stored_binding.binding,
+        },
+        Some(target) => {
+            let policy = policy_by_version(&mut transaction, account_id, target.version, false)?
+                .context("account policy binding references a missing effective version")?;
+            if policy.content_digest != target.content_digest
+                || policy.product_id != product_id
+                || policy.account_class != stored_binding.account_class
+            {
+                bail!("account policy binding identity does not match its active policy");
+            }
+            PricingPolicySnapshot::Active(ActiveAccountPolicy {
+                policy,
+                binding: stored_binding.binding,
+            })
+        }
+    };
+    let catalog = active_pricing_catalog(&mut transaction, &product_id)?;
+    let switches = active_provider_switches(&mut transaction)?;
+    let bundle = PricingReadBundle {
+        account_id: account_id.to_owned(),
+        account_multiplier_bp,
+        policy,
+        catalog,
+        switches,
+    };
+    transaction
+        .commit()
+        .context("commit PostgreSQL pricing read snapshot")?;
+    Ok(bundle)
 }
 
 fn newest_catalog_target(
@@ -1880,6 +1968,18 @@ mod tests {
         let b2b_v3 = b2b_policy(3, 3, "b2b-policy-3");
         let openkeys_v1 = openkeys_policy("pricing-pg-contract-openkeys", 1);
 
+        assert_eq!(
+            postgres_pricing_read_bundle(&mut client, "pricing-pg-contract-openkeys-mismatch",)
+                .unwrap(),
+            PricingReadBundle {
+                account_id: "pricing-pg-contract-openkeys-mismatch".to_owned(),
+                account_multiplier_bp: 7_400,
+                policy: PricingPolicySnapshot::Unbound,
+                catalog: None,
+                switches: None,
+            }
+        );
+
         let mut malformed_policy = b2b_v1.clone();
         malformed_policy.effective_version = 0;
         assert!(matches!(
@@ -2166,6 +2266,20 @@ mod tests {
             postgres_active_account_policy(&mut client, &b2b_v1.account_id).unwrap(),
             None
         );
+        assert_eq!(
+            postgres_pricing_read_bundle(&mut client, &b2b_v1.account_id).unwrap(),
+            PricingReadBundle {
+                account_id: b2b_v1.account_id.clone(),
+                account_multiplier_bp: 8_000,
+                policy: PricingPolicySnapshot::Inactive {
+                    product_id: "main".to_owned(),
+                    account_class: AccountClass::B2b,
+                    binding: inactive.clone(),
+                },
+                catalog: None,
+                switches: None,
+            }
+        );
 
         let active_v1_binding = binding(
             PolicyEnforcement::Shadow,
@@ -2243,6 +2357,13 @@ mod tests {
             .unwrap(),
             PricingMutation::Unchanged
         );
+        let catalog_only = postgres_pricing_read_bundle(&mut client, &b2b_v1.account_id).unwrap();
+        assert_eq!(catalog_only.catalog, Some(normalize_catalog(&main_catalog)));
+        assert_eq!(catalog_only.switches, None);
+        assert!(matches!(
+            catalog_only.policy,
+            PricingPolicySnapshot::Inactive { .. }
+        ));
         assert!(is_missing(
             &postgres_activate_provider_switches(
                 &mut client,
@@ -2270,6 +2391,13 @@ mod tests {
             .unwrap(),
             PricingMutation::Applied
         );
+        let active_heads = postgres_pricing_read_bundle(&mut client, &b2b_v1.account_id).unwrap();
+        assert_eq!(active_heads.catalog, Some(normalize_catalog(&main_catalog)));
+        assert_eq!(active_heads.switches, Some(normalize_switches(&switch_v1)));
+        assert!(matches!(
+            active_heads.policy,
+            PricingPolicySnapshot::Inactive { .. }
+        ));
         assert_eq!(
             postgres_activate_provider_switches(
                 &mut client,
@@ -2306,6 +2434,19 @@ mod tests {
             )
             .unwrap(),
             PricingMutation::Applied
+        );
+        assert_eq!(
+            postgres_pricing_read_bundle(&mut client, &b2b_v1.account_id).unwrap(),
+            PricingReadBundle {
+                account_id: b2b_v1.account_id.clone(),
+                account_multiplier_bp: 8_000,
+                policy: PricingPolicySnapshot::Active(ActiveAccountPolicy {
+                    policy: normalize_policy(&b2b_v1),
+                    binding: active_v1_binding.clone(),
+                }),
+                catalog: Some(normalize_catalog(&main_catalog)),
+                switches: Some(normalize_switches(&switch_v1)),
+            }
         );
         assert_eq!(
             postgres_activate_account_policy(
@@ -2460,6 +2601,20 @@ mod tests {
             PricingMutation::Rejected(PricingRejection::CasMismatch { .. })
                 | PricingMutation::Rejected(PricingRejection::Stale { .. })
         )));
+        let torn = postgres_pricing_read_bundle(&mut client, &b2b_v1.account_id).unwrap();
+        let active_policy = match torn.policy {
+            PricingPolicySnapshot::Active(active) => active,
+            other => panic!("expected active PostgreSQL pricing policy, got {other:?}"),
+        };
+        assert_eq!(active_policy.policy.catalog_generation, 1);
+        assert_eq!(active_policy.policy.switch_generation, 1);
+        assert_eq!(torn.catalog, Some(normalize_catalog(&main_catalog)));
+        assert_ne!(
+            torn.switches
+                .expect("current PostgreSQL switch head")
+                .generation,
+            active_policy.policy.switch_generation
+        );
 
         client
             .batch_execute(

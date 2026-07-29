@@ -20,6 +20,15 @@
 Pricing sync uses the same actors: multiplier writes go through the writer and cursor ledger reads
 through a reader; HTTP code never opens the authority directly.
 
+**Multi-provider pricing Stage 3B0 (`pricing.rs`) — dormant:** pure fail-closed resolver consumes
+one transactionally materialized `registry::pricing::PricingReadBundle` (including the live legacy
+scalar) plus provider-fixed runtime and canonical model identities. Exact model rule replaces
+provider rule; schema/capability/head,
+catalog and master/segment switch mismatches return stable typed reasons. The module has no DB,
+HTTP, env, time, metrics or runtime caller. Do not wire it into `authorize`, provider admission,
+reserve/settle, `/ready` or snapshots without a separate production-shadow rollout: even a read-only
+call adds per-request DB/queue/latency risk, and the actual charge remains legacy scalar.
+
 **Биллинг (async, `billing.rs` + tee-метеринг `meter.rs`):** авторизация (`authorize`, async):
 env-админ проверяется ПЕРВЫМ в памяти; иначе клиентский ключ → `key_account` (JOIN ключ→аккаунт)
 → баланс АККАУНТА (≤0 → 402). Баланс/резерв/наценка — на аккаунте (общий на все ключи юзера).

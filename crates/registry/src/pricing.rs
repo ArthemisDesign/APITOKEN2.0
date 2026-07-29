@@ -1,8 +1,9 @@
 //! Typed, backend-neutral persistence contract for versioned multi-provider pricing.
 //!
-//! Stage 3A only stores immutable catalog, switch and account-policy versions and changes their
-//! explicit heads with compare-and-set. Nothing in this module participates in request admission,
-//! charging, key issuance, HTTP, or policy resolution.
+//! Stage 3A stores immutable catalog, switch and account-policy versions and changes their explicit
+//! heads with compare-and-set. Stage 3B0 adds one transactionally coherent, read-only bundle for a
+//! pure resolver in `forward`. Nothing here participates in live request admission, charging, key
+//! issuance, HTTP, policy resolution, or production shadow execution.
 
 pub(crate) mod postgres;
 mod sqlite;
@@ -13,7 +14,7 @@ pub use sqlite::{
     sqlite_active_account_policy, sqlite_active_pricing_catalog, sqlite_active_provider_switches,
     sqlite_prepare_account_policy, sqlite_prepare_pricing_catalog,
     sqlite_prepare_provider_switches, sqlite_pricing_catalog_by_generation,
-    sqlite_provider_switches_by_generation,
+    sqlite_pricing_read_bundle, sqlite_provider_switches_by_generation,
 };
 
 use anyhow::{bail, Result};
@@ -189,6 +190,37 @@ pub struct AccountPolicyActivationSpec {
 pub struct ActiveAccountPolicy {
     pub policy: AccountPolicySpec,
     pub binding: AccountPolicyBindingSpec,
+}
+
+/// Account policy state observed by one backend transaction.
+///
+/// This is deliberately a read-only Stage 3B building block. It does not resolve a rule or alter
+/// admission, billing, heads, bindings, or any other durable state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PricingPolicySnapshot {
+    Unbound,
+    Inactive {
+        product_id: String,
+        account_class: AccountClass,
+        binding: AccountPolicyBindingSpec,
+    },
+    Active(ActiveAccountPolicy),
+}
+
+/// Live account scalar, current policy, catalog and switch heads from one database snapshot.
+///
+/// `catalog` and `switches` intentionally describe the active heads, not the immutable versions
+/// pinned by an active policy. A future pure resolver can therefore compare the policy pins with
+/// these independently moving heads and fail closed on a partially activated generation. An
+/// unbound account has no product from which to select a catalog, so both head fields are `None`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PricingReadBundle {
+    pub account_id: String,
+    /// Live legacy scalar read in the same transaction as policy/catalog/switch state.
+    pub account_multiplier_bp: i64,
+    pub policy: PricingPolicySnapshot,
+    pub catalog: Option<PricingCatalogSpec>,
+    pub switches: Option<ProviderSwitchSpec>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

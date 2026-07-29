@@ -1,18 +1,24 @@
 # Контракт мультипровайдерных скидок и политик доступа
 
 Статус: продуктовые решения для первой версии согласованы. Expand-only schema foundation этапов
-1–2 (`engine 0006`–`0008`, `commerce 0022`–`0023`, `OpenKeys 0007`) уже доставлен. Текущая
-ревизия добавляет Stage 3A: dormant registry-only persistence/CAS без HTTP, runtime callers,
-production activation, backfill или изменения клиентского traffic. Resolver, Control API,
-синхронизация commerce, funding cutover и strict enforcement остаются последующими этапами.
+1–2 (`engine 0006`–`0008`, `commerce 0022`–`0023`, `OpenKeys 0007`) и Stage 3A dormant
+registry-only persistence/CAS уже доставлены. Текущая ревизия ограничена безопасным Stage 3B0:
+чистый resolver и единое транзакционное read-bundle API без runtime callers, production reads,
+активаций, backfill, денежных записей или изменения клиентского traffic. Production shadow,
+Control API, синхронизация commerce, funding cutover и strict enforcement остаются последующими
+этапами.
 
-Последнее продуктовое обсуждение: 2026-07-29.
+Последнее продуктовое обсуждение и фиксация безопасной границы: 2026-07-30.
 
 Карта реализации перед Stage 3A повторно сверена с `origin/master` на коммите
 `1d8600ce574b3a4ff010612132cdd84b910bf61e` от 2026-07-30. Репозиторий развивается непрерывно,
 поэтому перед каждым следующим этапом необходимо заново проверить конкретные имена файлов,
 writers, модели и миграции. Семантика продукта, зафиксированная в этом документе, при этом не
 должна меняться молча из-за изменений реализации.
+
+Stage 3B0 начат в отдельном worktree от подтверждённого зелёного Stage 3A/master
+`a9a8dd233fdd737f5e0f87adc31bddb4e4766817`. Его delivery SHA и результаты gate фиксируются в
+handoff после merge; migrations `0006`–`0008` в этом checkpoint не меняются.
 
 Этот документ описывает целевое поведение, которое заменит текущий единый множитель цены на аккаунт.
 Он не утверждает, что описанное поведение уже работает в production. До завершения перехода
@@ -1326,22 +1332,73 @@ Checkpoint считается безопасным для остановки т�
 - не считать старт Stage 3B разрешением на backfill, activation, key issuance или traffic cutover:
   эти действия остаются отдельными более поздними решениями rollout.
 
-### Этап 3B. Fail-closed resolver в shadow-режиме
+### Этап 3B0. Dormant resolver foundation — текущая безопасная граница
 
-Stage 3B начинается только после зелёного Stage 3A и доставляется отдельным checkpoint. На этом
-этапе runtime читает новый контракт, но ещё не получает production writer и не включает strict
-enforcement.
+По договорённости от 2026-07-30 работа останавливается после максимально полного checkpoint, который
+не меняет production behavior и не требует аварийного исправления при нехватке рабочего ресурса.
+Stage 3B0 включает только:
 
-- Добавить backend-neutral resolver и telemetry «какая policy была бы выбрана».
-- При каждом resolve повторно проверять exact catalog/switch targets и capability pins: отдельные
-  heads не образуют одну транзакцию, поэтому временно рассогласованное поколение обязано fail closed,
-  а не собираться из частей.
-- Зафиксировать choreography будущего переключения: catalog → switches → account policy; reverse
-  rollback разрешён только к полностью совместимому набору exact targets.
-- Добавить admission snapshot/ledger attribution в shadow без изменения фактического charge path.
-- Сохранить legacy scalar path источником фактической цены на этом этапе.
-- Provider runtime сообщает schema/capability readiness; старые blue-green slots продолжают читать
-  expand-схему.
+- чистый backend-neutral resolver без DB, HTTP, env, времени и глобального состояния;
+- typed resolved/rejected outcomes и низкокардинальные reason codes без account/key IDs;
+- один composite read API для SQLite/PostgreSQL, который читает live account scalar, binding,
+  active policy и текущие catalog/switch heads в одном snapshot (`REPEATABLE READ READ ONLY` для
+  PostgreSQL); scalar нужен для race-free проверки immutable legacy OpenKeys;
+- повторную проверку schema/capability pins, exact generations, catalog model, master/segment switch
+  и приоритета `exact model rule → provider rule → reject`;
+- unit/parity/fencing tests и документацию;
+- ноль production callers, reader-actor commands, telemetry increments, readiness gates, writes,
+  migrations, active data или traffic changes.
+
+Stage 3B0 не является production shadow. Его код может разрешить заранее собранный bundle в тесте,
+но live Anthropic/OpenAI/Gemini request path его не вызывает. Legacy scalar остаётся единственным
+фактическим источником цены.
+
+Checkpoint Stage 3B0 считается безопасным для остановки только если:
+
+1. SQLite и PostgreSQL возвращают одинаковый `unbound/inactive/active` bundle; PostgreSQL code path
+   явно открывает `REPEATABLE READ READ ONLY`, а real-PG contract matrix проходит на поддерживаемых
+   major versions.
+2. Resolver покрыт матрицей exact/provider precedence, alias→canonical identity, отсутствующих и
+   выключенных моделей, master/segment switches, schema/capability и torn head generations.
+3. Поиск call sites подтверждает отсутствие вызовов resolver/read-bundle из live runtime, async
+   billing actor, HTTP, readiness, reserve и settlement.
+4. Нет новых migrations и production writes; существующие `0006`–`0008` byte-identical базовому
+   Stage 3A.
+5. Старые scalar reserve/settle/ledger tests и полный repository gate проходят без изменения
+   результатов.
+6. Merge выполнен только через `deploy/agent-merge.sh`, а exact delivery SHA получил зелёный
+   `deploy/watchdog`.
+
+### Этап 3B1. Production shadow — только после отдельного разрешения и окна работ
+
+Первый потенциально аварийный шаг начинается при подключении policy read к live admission path.
+Даже fail-open shadow добавляет работу на каждый запрос и может вызвать DB/read-queue saturation,
+latency, cancellation amplification или error/log storm. Поэтому до отдельного решения запрещено:
+
+- вызывать resolver из `authorize`, Anthropic proxy, Codex или Gemini admission;
+- добавлять новый read к reserve/settle или менять денежную транзакцию;
+- менять `/ready`, admission error или доступность provider/model по результату resolver;
+- писать `pricing_admission_snapshots`, attribution в reservation/outbox/usage/ledger;
+- создавать active heads/bindings, Control API writers, backfill или sync jobs.
+
+Перед Stage 3B1 требуется устранить или явно принять три найденных архитектурных риска:
+
+1. Единственные global catalog/switch heads и множество account bindings создают несовместимое окно
+   при choreography `catalog → switches → policies`. Для strict zero-downtime нужен atomic release
+   head либо поддержка нескольких одновременно совместимых generations; простой reverse rollback
+   назад нарушает монотонность и не решает окно.
+2. Текущий `pricing_admission_snapshots` описывает один pricing snapshot на request и не может честно
+   одновременно представить фактический `legacy_scalar` charge и гипотетический policy outcome.
+   Durable shadow attribution требует отдельной expand-only схемы; actual snapshot должен оставаться
+   атомарным с reservation.
+3. Gemini уже имеет технические runtime routes/model surface, хотя по продуктовому договору до
+   запуска он не существует. Его скрытие/блокировка меняет production traffic и выполняется отдельным
+   контролируемым изменением, а не маскируется dormant resolver-ом.
+
+Когда Stage 3B1 будет разрешён, shadow следует выполнять через bounded неблокирующую очередь
+(`try_send` + drop counter), без account/key/model IDs в metric labels и без влияния на readiness.
+Полезные counters: outcome по provider/reason, resolved mode/scope, scalar-policy mismatch,
+authority read errors, dropped shadow work и runtime capability/schema generation.
 
 ### Этап 3C. Versioned Control API без strict enforcement
 

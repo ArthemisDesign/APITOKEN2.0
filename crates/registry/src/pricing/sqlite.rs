@@ -7,8 +7,9 @@ use super::{
     AccountPolicyRuleSpec, AccountPolicySpec, ActiveAccountPolicy, ActiveExpectation,
     ActivePolicyTarget, FundingEnforcement, PolicyActiveExpectation, PolicyBindingState,
     PolicyEnforcement, PolicyOwnerType, PolicyRuleScope, PricingCatalogEntrySpec,
-    PricingCatalogSpec, PricingMode, PricingMutation, PricingRejection, ProviderSwitchEntrySpec,
-    ProviderSwitchScope, ProviderSwitchSpec, ReconciliationState, RuleOrigin, VersionTarget,
+    PricingCatalogSpec, PricingMode, PricingMutation, PricingPolicySnapshot, PricingReadBundle,
+    PricingRejection, ProviderSwitchEntrySpec, ProviderSwitchScope, ProviderSwitchSpec,
+    ReconciliationState, RuleOrigin, VersionTarget,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -795,6 +796,89 @@ pub fn sqlite_active_account_policy(
         policy,
         binding: stored_binding.binding,
     }))
+}
+
+/// Read the account scalar, policy binding and independently moving heads from one SQLite
+/// snapshot.
+///
+/// The transaction is deferred because this path is strictly read-only. Its first query pins the
+/// SQLite snapshot, while Stage 3A activations continue to use `BEGIN IMMEDIATE`. Consequently a
+/// caller observes one historical state and never a mix assembled by separate autocommit reads.
+pub fn sqlite_pricing_read_bundle(
+    conn: &Connection,
+    account_id: &str,
+) -> Result<PricingReadBundle> {
+    require_id("account id", account_id)?;
+    let transaction = Transaction::new_unchecked(conn, TransactionBehavior::Deferred)
+        .context("begin SQLite pricing read snapshot")?;
+    let account_multiplier_bp = transaction
+        .query_row(
+            "SELECT mult_bp FROM accounts WHERE id=?1",
+            params![account_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .context("read SQLite pricing bundle account scalar")?
+        .ok_or_else(|| anyhow!("SQLite pricing bundle account does not exist"))?;
+
+    let Some(stored_binding) = stored_policy_binding(&transaction, account_id)? else {
+        let bundle = PricingReadBundle {
+            account_id: account_id.to_owned(),
+            account_multiplier_bp,
+            policy: PricingPolicySnapshot::Unbound,
+            catalog: None,
+            switches: None,
+        };
+        transaction
+            .commit()
+            .context("commit SQLite pricing read snapshot")?;
+        return Ok(bundle);
+    };
+
+    let product_id = stored_binding.product_id.clone();
+    let policy = match stored_binding.active_target.as_ref() {
+        None => PricingPolicySnapshot::Inactive {
+            product_id: product_id.clone(),
+            account_class: stored_binding.account_class,
+            binding: stored_binding.binding,
+        },
+        Some(target) => {
+            let policy =
+                sqlite_account_policy_by_version(&transaction, account_id, target.version)?
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "SQLite account policy binding references missing version {:?}/{}",
+                            account_id,
+                            target.version
+                        )
+                    })?;
+            if policy.content_digest != target.content_digest
+                || policy.product_id != product_id
+                || policy.account_class != stored_binding.account_class
+            {
+                return Err(anyhow!(
+                    "SQLite account policy binding identity does not match its active policy"
+                ));
+            }
+            PricingPolicySnapshot::Active(ActiveAccountPolicy {
+                policy,
+                binding: stored_binding.binding,
+            })
+        }
+    };
+    let catalog = sqlite_active_pricing_catalog(&transaction, &product_id)?;
+    let switches = sqlite_active_provider_switches(&transaction)?;
+    let bundle = PricingReadBundle {
+        account_id: account_id.to_owned(),
+        account_multiplier_bp,
+        policy,
+        catalog,
+        switches,
+    };
+    transaction
+        .commit()
+        .context("commit SQLite pricing read snapshot")?;
+    Ok(bundle)
 }
 
 pub fn sqlite_prepare_account_policy(
@@ -1942,6 +2026,127 @@ mod tests {
             sqlite_activate_account_policy(&conn, &activation, &PolicyActiveExpectation::Unbound,)
                 .unwrap(),
             PricingMutation::Unchanged
+        );
+    }
+
+    #[test]
+    fn pricing_read_bundle_preserves_policy_state_and_exposes_current_heads() {
+        let conn = crate::open(":memory:").unwrap();
+        assert!(sqlite_pricing_read_bundle(&conn, "missing-account").is_err());
+        account_create(&conn, "bundle-unbound", None, 8_000).unwrap();
+        account_create(&conn, "bundle-active", None, 8_000).unwrap();
+        prepare_active_b2b_dependencies(&conn);
+
+        assert_eq!(
+            sqlite_pricing_read_bundle(&conn, "bundle-unbound").unwrap(),
+            PricingReadBundle {
+                account_id: "bundle-unbound".to_owned(),
+                account_multiplier_bp: 8_000,
+                policy: PricingPolicySnapshot::Unbound,
+                catalog: None,
+                switches: None,
+            }
+        );
+
+        let policy = b2b_policy("bundle-active", 1, "bundle-policy-1");
+        assert_eq!(
+            sqlite_prepare_account_policy(&conn, &policy).unwrap(),
+            PricingMutation::Stored
+        );
+        let inactive = legacy_binding();
+        conn.execute(
+            "INSERT INTO account_policy_bindings(
+                 account_id,product_id,account_class,active_effective_version,
+                 policy_enforcement,funding_enforcement,reconciliation_state,updated_ts
+             ) VALUES(?1,'main','b2b',NULL,?2,?3,?4,1)",
+            params![
+                "bundle-active",
+                inactive.policy_enforcement.as_str(),
+                inactive.funding_enforcement.as_str(),
+                inactive.reconciliation_state.as_str(),
+            ],
+        )
+        .unwrap();
+
+        let catalog_v1 = normalize_catalog(&catalog("main", 1, "main-catalog-1"));
+        let switches_v1 = normalize_switches(&b2b_switches(1, 1, "b2b-switches-1"));
+        assert_eq!(
+            sqlite_pricing_read_bundle(&conn, "bundle-active").unwrap(),
+            PricingReadBundle {
+                account_id: "bundle-active".to_owned(),
+                account_multiplier_bp: 8_000,
+                policy: PricingPolicySnapshot::Inactive {
+                    product_id: "main".to_owned(),
+                    account_class: AccountClass::B2b,
+                    binding: inactive.clone(),
+                },
+                catalog: Some(catalog_v1.clone()),
+                switches: Some(switches_v1.clone()),
+            }
+        );
+
+        let active_binding = shadow_binding();
+        let activation = AccountPolicyActivationSpec {
+            account_id: policy.account_id.clone(),
+            effective_version: policy.effective_version,
+            content_digest: policy.content_digest.clone(),
+            binding: active_binding.clone(),
+        };
+        assert_eq!(
+            sqlite_activate_account_policy(
+                &conn,
+                &activation,
+                &PolicyActiveExpectation::Inactive(inactive),
+            )
+            .unwrap(),
+            PricingMutation::Applied
+        );
+        assert_eq!(
+            sqlite_pricing_read_bundle(&conn, "bundle-active").unwrap(),
+            PricingReadBundle {
+                account_id: "bundle-active".to_owned(),
+                account_multiplier_bp: 8_000,
+                policy: PricingPolicySnapshot::Active(ActiveAccountPolicy {
+                    policy: normalize_policy(&policy),
+                    binding: active_binding,
+                }),
+                catalog: Some(catalog_v1.clone()),
+                switches: Some(switches_v1),
+            }
+        );
+
+        let catalog_v2 = catalog("main", 2, "main-catalog-2");
+        assert_eq!(
+            sqlite_prepare_pricing_catalog(&conn, &catalog_v2).unwrap(),
+            PricingMutation::Stored
+        );
+        assert_eq!(
+            sqlite_activate_pricing_catalog(
+                &conn,
+                "main",
+                &catalog_v2.target(),
+                &ActiveExpectation::Exact(catalog_v1.target()),
+            )
+            .unwrap(),
+            PricingMutation::Applied
+        );
+        let torn = sqlite_pricing_read_bundle(&conn, "bundle-active").unwrap();
+        assert_eq!(torn.account_id, "bundle-active");
+        assert!(matches!(
+            torn.policy,
+            PricingPolicySnapshot::Active(ActiveAccountPolicy {
+                policy: AccountPolicySpec {
+                    catalog_generation: 1,
+                    switch_generation: 1,
+                    ..
+                },
+                ..
+            })
+        ));
+        assert_eq!(torn.catalog, Some(normalize_catalog(&catalog_v2)));
+        assert_eq!(
+            torn.switches,
+            Some(normalize_switches(&b2b_switches(1, 1, "b2b-switches-1",)))
         );
     }
 
