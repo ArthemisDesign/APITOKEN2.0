@@ -384,25 +384,27 @@ async fn callback(
     headers: HeaderMap,
     Query(query): Query<CallbackQuery>,
 ) -> Response {
-    let callback_state = query.state.as_deref().or_else(|| {
+    // Caddy always creates the three redacted transport headers before erasing the public query.
+    // Missing query fields therefore arrive as present-but-empty headers; normalize those to None
+    // so opening the code-entry form is not mistaken for an empty-code completion attempt.
+    let callback_state = first_nonempty(
+        query.state.as_deref(),
         headers
             .get("x-gemini-oauth-state")
-            .and_then(|value| value.to_str().ok())
-    });
-    let callback_error = query
-        .error
-        .as_deref()
-        .or_else(|| {
-            headers
-                .get("x-gemini-oauth-error")
-                .and_then(|value| value.to_str().ok())
-        })
-        .filter(|value| !value.is_empty());
-    let code = query.code.as_deref().or_else(|| {
+            .and_then(|value| value.to_str().ok()),
+    );
+    let callback_error = first_nonempty(
+        query.error.as_deref(),
+        headers
+            .get("x-gemini-oauth-error")
+            .and_then(|value| value.to_str().ok()),
+    );
+    let code = first_nonempty(
+        query.code.as_deref(),
         headers
             .get("x-gemini-oauth-code")
-            .and_then(|value| value.to_str().ok())
-    });
+            .and_then(|value| value.to_str().ok()),
+    );
     if code.is_none() && callback_error.is_none() {
         return match callback_state.filter(|value| valid_oauth_state(value)) {
             Some(callback_state) => code_form(callback_state),
@@ -410,6 +412,12 @@ async fn callback(
         };
     }
     finish_oauth(&state, callback_state, code, callback_error).await
+}
+
+fn first_nonempty<'a>(primary: Option<&'a str>, fallback: Option<&'a str>) -> Option<&'a str> {
+    primary
+        .filter(|value| !value.is_empty())
+        .or_else(|| fallback.filter(|value| !value.is_empty()))
 }
 
 async fn submit_code(
@@ -1477,6 +1485,15 @@ mod tests {
             .unwrap();
         assert!(csp.contains("form-action 'self'"));
         assert_eq!(response.headers()["referrer-policy"], "no-referrer");
+    }
+
+    #[test]
+    fn empty_caddy_transport_headers_do_not_hide_present_values_or_create_fake_values() {
+        assert_eq!(first_nonempty(None, Some("state")), Some("state"));
+        assert_eq!(first_nonempty(Some(""), Some("state")), Some("state"));
+        assert_eq!(first_nonempty(Some("query"), Some("header")), Some("query"));
+        assert_eq!(first_nonempty(None, Some("")), None);
+        assert_eq!(first_nonempty(Some(""), Some("")), None);
     }
 
     #[test]
