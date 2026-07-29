@@ -126,8 +126,8 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
       <div className="app-body">
       <div className="app-body-in">
         <div className="page-heading">
-          <span className="eyebrow">Баланс ключа</span>
-          <h1 className="p-h1">Расход по вашему ключу</h1>
+          <span className="eyebrow">{view.apiType === "openai" ? "GPT · баланс ключа" : "Баланс ключа"}</span>
+          <h1 className="p-h1">{view.apiType === "openai" ? "Расход по вашему GPT-ключу" : "Расход по вашему ключу"}</h1>
           <p className="p-sub">
             {view.apiType === "openai"
               ? "Все суммы показаны в долларах прайса GPT API: здесь видны остаток, запросы, токены и модели OpenAI-совместимого ключа."
