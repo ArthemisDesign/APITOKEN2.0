@@ -28,6 +28,27 @@ export function balanceToOfficialNano(balanceNano: bigint, multBp: number): bigi
   return (balanceNano * 10_000n) / BigInt(multBp);
 }
 
+/**
+ * Разделяет доступный баланс, незакрытые холды и фактический расход.
+ *
+ * Движок вычитает резерв из balance_nano на время запроса. Для клиентского
+ * профиля остаток по завершённым запросам поэтому равен balance + reserved,
+ * а не одному balance. Все операции остаются целочисленными в nanoUSD.
+ */
+export function officialBalanceBreakdown(
+  availableNano: bigint,
+  reservedNano: bigint,
+  spentNano: bigint,
+  multBp: number,
+): { available: bigint; reserved: bigint; remaining: bigint; spent: bigint } {
+  return {
+    available: balanceToOfficialNano(availableNano, multBp),
+    reserved: balanceToOfficialNano(reservedNano, multBp),
+    remaining: balanceToOfficialNano(availableNano + reservedNano, multBp),
+    spent: balanceToOfficialNano(spentNano, multBp),
+  };
+}
+
 /** Номинал в официальном эквиваленте → сколько зачислить на баланс движка. */
 export function officialNanoToBalance(officialNano: bigint, multBp: number): bigint {
   return (officialNano * BigInt(multBp)) / 10_000n;

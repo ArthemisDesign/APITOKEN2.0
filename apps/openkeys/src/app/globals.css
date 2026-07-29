@@ -1495,6 +1495,17 @@ body.app-body .bg-decor{display:none!important}
 .page-heading .eyebrow{margin-bottom:12px}
 .p-h1{font-family:var(--font-mono);font-weight:700;font-size:34px;margin:0 0 8px;line-height:1.15;letter-spacing:-.03em}
 .p-sub{font-family:var(--font-mono);font-size:13px;color:var(--txt-3);margin:0;line-height:1.65;max-width:78ch}
+.usage-live-row{display:flex;align-items:center;gap:9px;margin-top:14px;font:500 10.5px/1.4 var(--font-mono);color:var(--txt-4)}
+.usage-live-status{display:inline-flex;align-items:center;gap:7px;color:var(--txt-3);font-variant-numeric:tabular-nums}
+.usage-live-status i{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 12%,transparent)}
+.usage-live-status.syncing i{animation:usageLivePulse 1.1s ease-in-out infinite}
+.usage-live-status.offline{color:var(--warn)}
+.usage-live-status.offline i{background:var(--warn);box-shadow:0 0 0 3px color-mix(in srgb,var(--warn) 12%,transparent)}
+.usage-live-note::before{content:"·";margin-right:9px;color:var(--txt-4)}
+.usage-refresh-button{display:inline-grid;place-items:center;width:27px;height:27px;padding:0;border:1px solid var(--line);border-radius:8px;background:var(--bg-card);color:var(--txt-3);font:600 17px/1 var(--font-ui);cursor:pointer;transition:border-color .15s,color .15s,background-color .15s}
+.usage-refresh-button:hover:not(:disabled){border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent)}
+.usage-refresh-button:disabled{cursor:default;opacity:.55}
+@keyframes usageLivePulse{0%,100%{opacity:.45;transform:scale(.78)}50%{opacity:1;transform:scale(1)}}
 .card{background:var(--bg-card);border:1px solid var(--line);border-radius:10px;padding:26px;box-shadow:var(--shadow)}
 .card h2{margin:0 0 6px;font-size:19px}
 .card>p{color:var(--txt-2);font-size:13px;line-height:1.65}
@@ -1547,18 +1558,35 @@ body.app-body .bg-decor{display:none!important}
 .overview-card-label{font:650 10px/1.4 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--txt-4)}
 .overview-rate-chip{flex:none;padding:6px 10px;border:1px solid var(--accent-line);border-radius:99px;background:var(--accent-soft);
   font:650 10px/1.2 var(--font-mono);color:var(--accent);white-space:nowrap}
-.overview-balance-card{position:relative;container-type:inline-size;display:flex;min-height:260px;flex-direction:column;padding:30px 32px;overflow:hidden}
+.overview-balance-card{position:relative;container-type:inline-size;display:flex;min-height:330px;flex-direction:column;padding:30px 32px;overflow:hidden}
 .overview-balance-card::after{content:"";position:absolute;right:-84px;bottom:-126px;width:300px;height:300px;border-radius:50%;
   background:radial-gradient(circle,color-mix(in srgb,var(--accent) 9%,transparent),transparent 68%);pointer-events:none}
 .overview-balance-card>*{position:relative;z-index:1}
 .overview-balance-main{display:flex;flex:1;min-width:0;flex-direction:column}
-.overview-balance-number{display:block;margin-top:24px;font-size:clamp(48px,5vw,64px);font-weight:710;line-height:.92;letter-spacing:-.065em;color:var(--txt);
+.overview-balance-figure{display:flex;min-width:0;flex-direction:column;gap:12px;margin-top:24px}
+.overview-balance-figure>span{font:500 10px/1.45 var(--font-mono);letter-spacing:.025em;color:var(--txt-4)}
+.overview-balance-number{display:block;font-size:clamp(48px,5vw,64px);font-weight:710;line-height:.92;letter-spacing:-.065em;color:var(--txt);
   font-variant-numeric:tabular-nums lining-nums}
 .overview-balance-detail{display:flex;min-width:0;flex:1;flex-direction:column}
-.overview-balance-value{margin:16px 0 4px;font-size:15px;line-height:1.45;color:var(--txt-3)}
-.overview-balance-value b{color:var(--accent);font-size:18px;font-weight:700;letter-spacing:-.02em}
+.overview-balance-breakdown{display:grid;gap:8px;margin:16px 0 11px}
+.overview-balance-breakdown>div{display:flex;align-items:baseline;justify-content:space-between;gap:18px;font-size:12.5px;line-height:1.4}
+.overview-balance-breakdown span{display:inline-flex;align-items:center;gap:8px;color:var(--txt-3)}
+.overview-balance-breakdown span i{width:7px;height:7px;flex:none;border-radius:50%}
+.overview-balance-breakdown span i.spent{background:var(--accent)}
+.overview-balance-breakdown span i.reserved{background:#d97706}
+.overview-balance-breakdown span i.available{background:var(--ok)}
+.overview-balance-breakdown b{color:var(--txt);font-size:13.5px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.overview-balance-breakdown>div:nth-child(2) b{color:#d97706}
+.overview-balance-breakdown>div:nth-child(3) b{color:var(--ok)}
+.overview-usage-track{display:flex;width:100%;height:7px;margin-bottom:10px;overflow:hidden;border-radius:99px;background:color-mix(in srgb,var(--ok) 10%,var(--bg-soft))}
+.overview-usage-track i{display:block;height:100%;transition:width .45s ease}
+.overview-usage-track i.spent{background:var(--accent)}
+.overview-usage-track i.reserved{background:repeating-linear-gradient(135deg,#d97706 0 5px,color-mix(in srgb,#d97706 58%,var(--bg-card)) 5px 9px)}
+.overview-reserve-note{margin:0 0 8px;padding:9px 11px;border:1px solid color-mix(in srgb,var(--warn) 22%,var(--line));border-radius:9px;background:color-mix(in srgb,var(--warn) 6%,var(--bg-card));font-size:11.5px!important;line-height:1.5!important;color:var(--txt-3)!important}
 .overview-balance-rate{max-width:52ch;margin:0;font-size:12.5px;line-height:1.55;color:var(--txt-4)}
-.overview-card-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:auto;padding-top:20px}
+.overview-card-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:auto;padding-top:14px}
+@keyframes usageBalanceIn{from{opacity:.55;transform:translateY(3px)}to{opacity:1;transform:none}}
+.overview-balance-number{animation:usageBalanceIn .28s ease-out}
 
 .overview-access-card{container-type:inline-size;display:flex;min-height:260px;flex-direction:column;padding:30px 32px}
 .overview-access-card.success{border-color:color-mix(in srgb,var(--ok) 25%,var(--line))}
@@ -1632,10 +1660,10 @@ body.app-body .bg-decor{display:none!important}
 .overview-activity-empty{padding:34px 26px;font-size:13px;color:var(--txt-4)}
 
 @container (min-width:640px){
-  .overview-balance-main{display:grid;grid-template-columns:minmax(260px,.88fr) minmax(300px,1.12fr);align-items:end;gap:36px;margin-top:26px}
-  .overview-balance-number{align-self:center;margin-top:0}
+  .overview-balance-main{display:grid;grid-template-columns:minmax(260px,.88fr) minmax(300px,1.12fr);align-items:center;gap:36px;margin-top:26px}
+  .overview-balance-figure{align-self:center;margin-top:0}
   .overview-balance-detail{justify-self:end;width:min(100%,470px);padding-bottom:2px}
-  .overview-balance-value{margin-top:0}
+  .overview-balance-breakdown{margin-top:0}
   .overview-access-body{display:grid;grid-template-columns:auto minmax(220px,1fr) auto;align-items:center;gap:28px;margin-top:24px}
   .overview-access-value{margin-top:0}
   .overview-access-body>p{margin:0}
@@ -1670,6 +1698,7 @@ body.app-body .bg-decor{display:none!important}
 .ovstat .dlabel{font-family:var(--font-mono);font-size:12px;color:var(--txt-3)}
 .ovstat .num{font-family:var(--font-mono);font-weight:700;font-size:25px;color:var(--txt);line-height:1.15;letter-spacing:-.04em}
 .ovstat .num.accent{color:var(--accent)}
+.ovstat .num.pending{color:#d97706}
 .ovstat .dtrend{font-family:var(--font-mono);font-size:12px;color:var(--txt-4)}
 .ovstat .dtrend.link{color:var(--accent);cursor:pointer}
 .ovstat .dtrend.link:hover{text-decoration:underline}
@@ -1991,13 +2020,20 @@ body.app-body .bg-decor{display:none!important}
   .app-main-overview .app-body-in{padding:18px 16px 40px}
   .page-heading{margin-bottom:22px}
   .p-h1{font-size:28px}
+  .usage-live-row{flex-wrap:wrap;gap:8px;margin-top:12px}
+  .usage-live-note{order:3;width:100%}
+  .usage-live-note::before{display:none}
   .card{padding:20px}
   .overview-panel{gap:14px}
   .overview-alert{grid-template-columns:30px minmax(0,1fr);gap:10px;padding:13px}
   .overview-alert>.btn{grid-column:1/-1;width:100%;justify-content:center}
   .overview-primary-grid,.overview-metrics-grid{grid-template-columns:1fr;gap:14px}
   .overview-balance-card,.overview-access-card{min-height:0;padding:21px}
-  .overview-balance-number{margin-top:20px;font-size:44px}
+  .overview-balance-figure{gap:10px;margin-top:20px}
+  .overview-balance-number{margin-top:0;font-size:44px}
+  .overview-balance-breakdown{margin-top:18px}
+  .overview-balance-breakdown>div{gap:12px;font-size:11.5px}
+  .overview-balance-breakdown b{font-size:12.5px}
   .overview-balance-value{font-size:13.5px}
   .overview-balance-value b{font-size:15px}
   .overview-card-actions{display:grid;grid-template-columns:1fr 1fr;padding-top:20px}

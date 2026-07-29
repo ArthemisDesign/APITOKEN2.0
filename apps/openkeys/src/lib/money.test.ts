@@ -3,6 +3,7 @@ import {
   NANO_PER_USD,
   balanceToOfficialNano,
   formatUsd,
+  officialBalanceBreakdown,
   officialNanoToBalance,
   usdStringToNano,
 } from "./money";
@@ -54,5 +55,20 @@ describe("конвертация номинала и баланса", () => {
 
   it("без скидки номинал равен балансу", () => {
     expect(officialNanoToBalance(7n * NANO_PER_USD, 10_000)).toBe(7n * NANO_PER_USD);
+  });
+
+  it("не выдаёт временный резерв за окончательно потраченные деньги", () => {
+    const balance = officialBalanceBreakdown(
+      12_012_000_000n,
+      5_388_000_000n,
+      2_600_000_000n,
+      4_000,
+    );
+
+    expect(balance.available).toBe(30_030_000_000n);
+    expect(balance.reserved).toBe(13_470_000_000n);
+    expect(balance.remaining).toBe(43_500_000_000n);
+    expect(balance.spent).toBe(6_500_000_000n);
+    expect(balance.remaining + balance.spent).toBe(50n * NANO_PER_USD);
   });
 });

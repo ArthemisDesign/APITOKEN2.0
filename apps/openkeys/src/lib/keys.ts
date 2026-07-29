@@ -7,7 +7,7 @@ import { apiTypeOf, type ApiType } from "./api-product";
 import { loadConfig } from "./config";
 import { getDatabase } from "./db";
 import { getEngineClient } from "./engine";
-import { balanceToOfficialNano, formatUsd, officialNanoToBalance } from "./money";
+import { balanceToOfficialNano, formatUsd, officialBalanceBreakdown, officialNanoToBalance } from "./money";
 import { openSecret, sealSecret } from "./secret-box";
 
 export const MAX_BATCH_QUANTITY = 100;
@@ -252,8 +252,11 @@ export interface KeyUsageView {
   multBp: number;
   apiType: ApiType;
   balanceNano: string;
+  reservedNano: string;
   spentNano: string;
   /** Остаток и расход, пересчитанные в официальный прайс выбранного API. */
+  officialAvailableNano: string;
+  officialReservedNano: string;
   officialRemainingNano: string;
   officialSpentNano: string;
   /** Полная статистика движка за окно — та же, что рисует дашборд. */
@@ -301,7 +304,9 @@ async function loadUsageUncached(viewToken: string, window: string): Promise<Key
   const engine = getEngineClient();
   const account = await engine.getAccount(row.engineAccountId);
   const balanceNano = BigInt(account.balance_nano);
+  const reservedNano = BigInt(account.reserved_nano);
   const spentNano = BigInt(account.spent_nano);
+  const officialBalance = officialBalanceBreakdown(balanceNano, reservedNano, spentNano, row.multBp);
 
   // Аккаунт без единого запроса — нормальное состояние только что проданного ключа,
   // а не ошибка: показываем пустой расход вместо страницы с ошибкой.
@@ -321,9 +326,12 @@ async function loadUsageUncached(viewToken: string, window: string): Promise<Key
     multBp: row.multBp,
     apiType: apiTypeOf(result.apiType),
     balanceNano: balanceNano.toString(),
+    reservedNano: reservedNano.toString(),
     spentNano: spentNano.toString(),
-    officialRemainingNano: balanceToOfficialNano(balanceNano, row.multBp).toString(),
-    officialSpentNano: balanceToOfficialNano(spentNano, row.multBp).toString(),
+    officialAvailableNano: officialBalance.available.toString(),
+    officialReservedNano: officialBalance.reserved.toString(),
+    officialRemainingNano: officialBalance.remaining.toString(),
+    officialSpentNano: officialBalance.spent.toString(),
     usage,
   };
 }

@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useState, useTransition } from "react";
 import { AppShell } from "@/components/app-shell";
 import type { KeyUsageView } from "@/lib/keys";
 import { API_PRODUCTS } from "@/lib/api-product";
@@ -46,13 +47,52 @@ function CopyButton({ value, label = "Скопировать" }: { value: string
 export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; showSignOut?: boolean }) {
   const [hoverDay, setHoverDay] = useState<number | null>(null);
   const [mdistHover, setMdistHover] = useState<number | null>(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
+  const [isOnline, setIsOnline] = useState(true);
+  const [isRefreshing, startRefresh] = useTransition();
+  const router = useRouter();
+
+  const refreshUsage = useCallback(() => {
+    if (document.visibilityState !== "visible" || !navigator.onLine || isRefreshing) return;
+    startRefresh(() => router.refresh());
+  }, [isRefreshing, router]);
+
+  useEffect(() => {
+    setLastUpdatedAt(new Date());
+  }, [view]);
+
+  useEffect(() => {
+    const syncNetworkState = () => {
+      setIsOnline(navigator.onLine);
+      if (navigator.onLine) refreshUsage();
+    };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") refreshUsage();
+    };
+    const interval = window.setInterval(refreshUsage, 6_000);
+    setIsOnline(navigator.onLine);
+    window.addEventListener("online", syncNetworkState);
+    window.addEventListener("offline", syncNetworkState);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("online", syncNetworkState);
+      window.removeEventListener("offline", syncNetworkState);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [refreshUsage]);
 
   const product = API_PRODUCTS[view.apiType];
   const usage = view.usage;
   const faceValueNano = BigInt(view.faceValueNano);
+  const officialAvailable = BigInt(view.officialAvailableNano);
+  const officialReserved = BigInt(view.officialReservedNano);
   const officialRemaining = BigInt(view.officialRemainingNano);
   const officialSpent = BigInt(view.officialSpentNano);
-  const usedPercent = faceValueNano > 0n ? boundedPercent(faceValueNano - officialRemaining, faceValueNano) : 0;
+  const spentPercent = faceValueNano > 0n ? boundedPercent(officialSpent, faceValueNano) : 0;
+  const reservedPercent = faceValueNano > 0n
+    ? Math.min(boundedPercent(officialReserved, faceValueNano), 100 - spentPercent)
+    : 0;
 
   const models = usage?.models ?? [];
   const modelOfficialTotal = models.reduce((sum, model) => sum + BigInt(model.official_nano), 0n);
@@ -133,23 +173,69 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
               ? "Все суммы показаны в долларах прайса GPT API: здесь видны остаток, запросы, токены и модели OpenAI-совместимого ключа."
               : "Все суммы — в долларах официального прайса Anthropic: столько же вы заплатили бы за эти запросы на api.anthropic.com."}
           </p>
+          <div className="usage-live-row" aria-live="polite">
+            <span className={`usage-live-status${isRefreshing ? " syncing" : ""}${!isOnline ? " offline" : ""}`}>
+              <i aria-hidden="true" />
+              {!isOnline
+                ? "Нет сети — ждём подключения"
+                : isRefreshing
+                  ? "Синхронизация"
+                  : lastUpdatedAt
+                    ? `Обновлено ${lastUpdatedAt.toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
+                    : "Данные загружены"}
+            </span>
+            <span className="usage-live-note">автоматически каждые 6 секунд</span>
+            <button
+              type="button"
+              className="usage-refresh-button"
+              onClick={refreshUsage}
+              disabled={isRefreshing || !isOnline}
+              aria-label="Обновить расход сейчас"
+              title="Обновить сейчас"
+            >
+              ↻
+            </button>
+          </div>
         </div>
 
         <div className="overview-primary-grid">
           <article className="card overview-balance-card">
             <div className="overview-card-head">
-              <span className="overview-card-label">Остаток ключа</span>
+              <span className="overview-card-label">Баланс ключа</span>
               <span className="overview-rate-chip">номинал {formatNanoUsd(faceValueNano, 0, 0)}</span>
             </div>
             <div className="overview-balance-main">
-              <strong className="overview-balance-number">{formatNanoUsd(officialRemaining, 2, 2)}</strong>
+              <div className="overview-balance-figure">
+                <span>Остаток после завершённых запросов</span>
+                <strong key={view.officialRemainingNano} className="overview-balance-number">
+                  {formatNanoUsd(officialRemaining, 2, 2)}
+                </strong>
+              </div>
               <div className="overview-balance-detail">
-                <p className="overview-balance-value">
-                  Потрачено <b>{formatNanoUsd(officialSpent, 2, 2)}</b> из {formatNanoUsd(faceValueNano, 0, 0)}
-                </p>
-                <div className="key-usage-track" aria-hidden="true">
-                  <span style={{ width: `${Math.min(100, usedPercent)}%` }} />
+                <div className="overview-balance-breakdown">
+                  <div>
+                    <span><i className="spent" aria-hidden="true" />Фактически потрачено</span>
+                    <b>{formatNanoUsd(officialSpent, 2, 2)}</b>
+                  </div>
+                  <div>
+                    <span><i className="reserved" aria-hidden="true" />Временно в обработке</span>
+                    <b>{formatNanoUsd(officialReserved, 2, 2)}</b>
+                  </div>
+                  <div>
+                    <span><i className="available" aria-hidden="true" />Доступно новым запросам</span>
+                    <b>{formatNanoUsd(officialAvailable, 2, 2)}</b>
+                  </div>
                 </div>
+                <div className="overview-usage-track" aria-hidden="true">
+                  <i className="spent" style={{ width: `${spentPercent}%` }} />
+                  <i className="reserved" style={{ width: `${reservedPercent}%` }} />
+                </div>
+                {officialReserved > 0n && (
+                  <p className="overview-reserve-note">
+                    После ответа резерв заменится точной стоимостью, а не спишется целиком. Неиспользованная часть
+                    автоматически вернётся в доступный баланс.
+                  </p>
+                )}
                 <p className="overview-balance-rate">
                   Ключ {view.status === "active" ? "активен" : "отключён"} · выпущен{" "}
                   {view.createdAt.slice(0, 10)}
@@ -223,9 +309,11 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
             <span className="dtrend">за 30 дней</span>
           </div>
           <div className="ovstat">
-            <span className="dlabel">Номинал ключа</span>
-            <b className="num">{formatNanoUsd(faceValueNano, 0, 0)}</b>
-            <span className="dtrend">баланс {product.balanceLabel}</span>
+            <span className="dlabel">Сейчас в обработке</span>
+            <b className={`num${officialReserved > 0n ? " pending" : ""}`}>
+              {formatNanoUsd(officialReserved, 2, 2)}
+            </b>
+            <span className="dtrend">временный резерв активных запросов</span>
           </div>
         </div>
 
