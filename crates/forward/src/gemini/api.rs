@@ -23,6 +23,85 @@ use std::time::Duration;
 const GEMINI_BODY_LIMIT: usize = 32 * 1024 * 1024;
 const DOWNSTREAM_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Native Gemini accepts proto-JSON in either camelCase or snake_case. Code Assist and the public
+/// surface are canonicalized to camelCase so a snake_case client is not silently dropped. Only the
+/// documented top-level GenerateContentRequest fields are aliased; anything else is left untouched.
+const REQUEST_FIELD_ALIASES: &[(&str, &str)] = &[
+    ("system_instruction", "systemInstruction"),
+    ("safety_settings", "safetySettings"),
+    ("generation_config", "generationConfig"),
+    ("tool_config", "toolConfig"),
+    ("cached_content", "cachedContent"),
+];
+
+/// snake_case aliases for the recognized tool keys. Normalizing them keeps `validate_tools` and the
+/// upstream wrapper consistent, and preserves the fail-closed rejection of googleMaps/fileSearch.
+const TOOL_KEY_ALIASES: &[(&str, &str)] = &[
+    ("function_declarations", "functionDeclarations"),
+    ("code_execution", "codeExecution"),
+    ("google_search", "googleSearch"),
+    ("google_search_retrieval", "googleSearchRetrieval"),
+    ("url_context", "urlContext"),
+    ("computer_use", "computerUse"),
+    ("google_maps", "googleMaps"),
+    ("file_search", "fileSearch"),
+];
+
+/// Canonicalize a native request object in place: snake_case aliases become camelCase for the known
+/// top-level fields and recognized tool keys. When both spellings are present the camelCase value
+/// wins and the snake_case duplicate is discarded, matching Google's proto-JSON precedence.
+fn canonicalize_native_request(value: &mut Value) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    for (snake, camel) in REQUEST_FIELD_ALIASES {
+        if let Some(aliased) = object.remove(*snake) {
+            object.entry((*camel).to_string()).or_insert(aliased);
+        }
+    }
+    if let Some(tools) = object.get_mut("tools").and_then(Value::as_array_mut) {
+        for tool in tools {
+            let Some(tool) = tool.as_object_mut() else {
+                continue;
+            };
+            for (snake, camel) in TOOL_KEY_ALIASES {
+                if let Some(aliased) = tool.remove(*snake) {
+                    tool.entry((*camel).to_string()).or_insert(aliased);
+                }
+            }
+        }
+    }
+}
+
+/// A fresh native-shaped `responseId`: Google returns a short URL-safe base64 token on every
+/// generateContent response and SSE chunk. We synthesize our own instead of exposing the Code
+/// Assist wrapper `traceId`, which is a correlatable upstream identifier.
+fn fresh_response_id() -> String {
+    let mut bytes = [0u8; 9];
+    getrandom::fill(&mut bytes).expect("operating-system CSPRNG unavailable");
+    base64url(&bytes)
+}
+
+fn base64url(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as usize;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as usize;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as usize;
+        out.push(ALPHABET[b0 >> 2] as char);
+        out.push(ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[((b1 & 0x0f) << 2) | (b2 >> 6)] as char);
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[b2 & 0x3f] as char);
+        }
+    }
+    out
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Operation {
     Models,
@@ -45,6 +124,9 @@ struct ApiError {
     google_status: &'static str,
     retry_after: Option<u64>,
     reason: &'static str,
+    /// Public google.rpc.ErrorInfo.reason echoed in `error.details`. None omits the detail, which
+    /// matches Google for generic malformed-request errors.
+    error_info_reason: Option<&'static str>,
 }
 
 impl ApiError {
@@ -55,6 +137,7 @@ impl ApiError {
             google_status: "INVALID_ARGUMENT",
             retry_after: None,
             reason: "invalid_request",
+            error_info_reason: None,
         }
     }
 
@@ -65,6 +148,7 @@ impl ApiError {
             google_status: "NOT_FOUND",
             retry_after: None,
             reason: "resource_not_found",
+            error_info_reason: None,
         }
     }
 
@@ -75,6 +159,7 @@ impl ApiError {
             google_status: "UNAVAILABLE",
             retry_after: Some(2),
             reason,
+            error_info_reason: None,
         }
     }
 
@@ -85,50 +170,77 @@ impl ApiError {
             google_status: "RESOURCE_EXHAUSTED",
             retry_after: retry_after.or(Some(60)),
             reason: "gemini_capacity_exhausted",
+            error_info_reason: Some("RATE_LIMIT_EXCEEDED"),
         }
     }
 
     fn provider_rejected(status: StatusCode) -> Self {
-        let (message, google_status) = match status.as_u16() {
-            400 => (
-                "The model service rejected this request.",
-                "INVALID_ARGUMENT",
+        // Derive the HTTP status from the google.rpc status so the pair is one Google can actually
+        // return (e.g. FAILED_PRECONDITION is always 400, never 413). Unknown deterministic client
+        // rejections collapse to the native INVALID_ARGUMENT/400 pair.
+        let (http, message, google_status) = match status.as_u16() {
+            403 => (
+                StatusCode::FORBIDDEN,
+                "The caller does not have permission for this request.",
+                "PERMISSION_DENIED",
             ),
-            404 => ("The requested model resource was not found.", "NOT_FOUND"),
+            404 => (
+                StatusCode::NOT_FOUND,
+                "The requested model resource was not found.",
+                "NOT_FOUND",
+            ),
             409 => (
+                StatusCode::CONFLICT,
                 "The request could not be completed in its current state.",
                 "ABORTED",
             ),
             412 => (
+                StatusCode::BAD_REQUEST,
                 "A precondition for this request was not satisfied.",
                 "FAILED_PRECONDITION",
             ),
-            422 => (
-                "The model service could not process this request.",
-                "INVALID_ARGUMENT",
-            ),
             _ => (
+                StatusCode::BAD_REQUEST,
                 "The model service rejected this request.",
-                "FAILED_PRECONDITION",
+                "INVALID_ARGUMENT",
             ),
         };
         Self {
-            status,
+            status: http,
             message,
             google_status,
             retry_after: None,
             reason: "gemini_request_rejected",
+            error_info_reason: None,
         }
     }
 
     fn into_response(self) -> Response {
-        let body = json!({
-            "error": {
-                "code": self.status.as_u16(),
-                "message": self.message,
-                "status": self.google_status
-            }
-        });
+        // Build `error.details` the way generativelanguage does: an ErrorInfo (when we have a
+        // machine reason) plus a RetryInfo whenever a retry delay is known.
+        let mut details = Vec::new();
+        if let Some(reason) = self.error_info_reason {
+            details.push(json!({
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                "reason": reason,
+                "domain": "googleapis.com",
+                "metadata": {"service": "generativelanguage.googleapis.com"}
+            }));
+        }
+        if let Some(seconds) = self.retry_after {
+            details.push(json!({
+                "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                "retryDelay": format!("{}s", seconds.max(1))
+            }));
+        }
+        let mut error = serde_json::Map::new();
+        error.insert("code".to_string(), json!(self.status.as_u16()));
+        error.insert("message".to_string(), json!(self.message));
+        error.insert("status".to_string(), json!(self.google_status));
+        if !details.is_empty() {
+            error.insert("details".to_string(), json!(details));
+        }
+        let body = json!({ "error": Value::Object(error) });
         let mut response = (self.status, axum::Json(body)).into_response();
         if let Some(seconds) = self.retry_after {
             if let Ok(value) = HeaderValue::from_str(&seconds.max(1).to_string()) {
@@ -145,21 +257,27 @@ impl ApiError {
 impl From<AdmissionError> for ApiError {
     fn from(error: AdmissionError) -> Self {
         match error {
+            // Real generativelanguage rejects an invalid API key as 400 INVALID_ARGUMENT with an
+            // ErrorInfo reason of API_KEY_INVALID — not 401 UNAUTHENTICATED.
             AdmissionError::Unauthorized => Self {
-                status: StatusCode::UNAUTHORIZED,
+                status: StatusCode::BAD_REQUEST,
                 message: "API key not valid. Please pass a valid API key.",
-                google_status: "UNAUTHENTICATED",
+                google_status: "INVALID_ARGUMENT",
                 retry_after: None,
                 reason: "invalid_key",
+                error_info_reason: Some("API_KEY_INVALID"),
             },
             AdmissionError::Unavailable => Self::unavailable("gemini_admission_unavailable"),
             AdmissionError::Busy => Self::rate_limited(Some(1)),
+            // Reseller balance is a documented account state the customer must be able to detect and
+            // act on (top up), kept as the cross-provider 402 contract. The envelope stays native.
             AdmissionError::LowBalance => Self {
                 status: StatusCode::PAYMENT_REQUIRED,
                 message: "The account balance is insufficient for this request.",
                 google_status: "FAILED_PRECONDITION",
                 retry_after: None,
                 reason: "billing_limit",
+                error_info_reason: None,
             },
         }
     }
@@ -466,12 +584,40 @@ fn wrap_code_assist_request(
                 "request": request,
             })
         }
-        Operation::CountTokens => json!({
-            "request": {
-                "model": format!("models/{model}"),
-                "contents": native.get("contents").cloned().unwrap_or_else(|| json!([]))
+        Operation::CountTokens => {
+            let native = native
+                .as_object()
+                .ok_or_else(|| ApiError::invalid("The request body must be a JSON object."))?;
+            let contents = native.get("contents").cloned().unwrap_or_else(|| json!([]));
+            // Real countTokens only counts a system instruction / tool declarations when they are
+            // supplied inside `generateContentRequest`; a bare top-level `contents` undercounts.
+            // Mirror that: use the request form when the client sent anything beyond contents,
+            // otherwise keep the minimal contents form for maximum upstream compatibility.
+            let extra_fields = ["systemInstruction", "tools", "toolConfig", "generationConfig"];
+            if extra_fields.iter().any(|field| native.contains_key(*field)) {
+                let mut inner = serde_json::Map::new();
+                inner.insert("model".to_string(), json!(format!("models/{model}")));
+                inner.insert("contents".to_string(), contents);
+                for field in extra_fields {
+                    if let Some(value) = native.get(field) {
+                        inner.insert(field.to_string(), value.clone());
+                    }
+                }
+                json!({
+                    "request": {
+                        "model": format!("models/{model}"),
+                        "generateContentRequest": Value::Object(inner),
+                    }
+                })
+            } else {
+                json!({
+                    "request": {
+                        "model": format!("models/{model}"),
+                        "contents": contents,
+                    }
+                })
             }
-        }),
+        }
         Operation::Models | Operation::Model => return Err(ApiError::not_found()),
     };
     serde_json::to_vec(&wrapped)
@@ -519,7 +665,66 @@ fn unwrap_code_assist_response(operation: Operation, bytes: &[u8]) -> Result<Byt
             "modelVersion",
         ],
     )?;
+    // Real generateContent responses always carry a responseId. Synthesize a native-shaped one
+    // rather than exposing the correlatable Code Assist wrapper traceId.
+    if let Some(object) = native.as_object_mut() {
+        object.insert("responseId".to_string(), json!(fresh_response_id()));
+    }
     serde_json::to_vec(&native).map(Bytes::from).map_err(|_| ())
+}
+
+/// Canonical google.rpc.Code status strings. Used to echo an upstream stream error's status only
+/// when it is a known-safe enum value; anything else falls back to a generic INTERNAL.
+fn is_google_rpc_status(status: &str) -> bool {
+    matches!(
+        status,
+        "OK" | "CANCELLED"
+            | "UNKNOWN"
+            | "INVALID_ARGUMENT"
+            | "DEADLINE_EXCEEDED"
+            | "NOT_FOUND"
+            | "ALREADY_EXISTS"
+            | "PERMISSION_DENIED"
+            | "UNAUTHENTICATED"
+            | "RESOURCE_EXHAUSTED"
+            | "FAILED_PRECONDITION"
+            | "ABORTED"
+            | "OUT_OF_RANGE"
+            | "UNIMPLEMENTED"
+            | "INTERNAL"
+            | "UNAVAILABLE"
+            | "DATA_LOSS"
+    )
+}
+
+/// Build a sanitized native error frame from a Code Assist stream wrapper that carried an `error`.
+/// Only the numeric code and a known google.rpc status enum are echoed; the upstream message is
+/// replaced so no account/project/endpoint detail can leak mid-stream.
+fn native_stream_error_frame(wrapper: &Value) -> Option<Bytes> {
+    let error = wrapper.get("error").filter(|value| value.is_object())?;
+    let code = error
+        .get("code")
+        .and_then(Value::as_u64)
+        .filter(|code| (400..600).contains(code))
+        .unwrap_or(500);
+    let status = error
+        .get("status")
+        .and_then(Value::as_str)
+        .filter(|status| is_google_rpc_status(status))
+        .unwrap_or("INTERNAL");
+    let body = json!({
+        "error": {
+            "code": code,
+            "message": "The model service returned an error while streaming.",
+            "status": status,
+        }
+    });
+    let encoded = serde_json::to_vec(&body).ok()?;
+    let mut framed = Vec::with_capacity(encoded.len() + 8);
+    framed.extend_from_slice(b"data: ");
+    framed.extend_from_slice(&encoded);
+    framed.extend_from_slice(b"\n\n");
+    Some(Bytes::from(framed))
 }
 
 fn retain_public_fields(value: &mut Value, fields: &[&str]) -> Result<(), ()> {
@@ -531,6 +736,7 @@ fn retain_public_fields(value: &mut Value, fields: &[&str]) -> Result<(), ()> {
 struct SseTranslator {
     pending: Vec<u8>,
     usage: metering::GeminiUsage,
+    response_id: String,
 }
 
 impl SseTranslator {
@@ -538,6 +744,7 @@ impl SseTranslator {
         Self {
             pending: Vec::new(),
             usage: metering::GeminiUsage::default(),
+            response_id: fresh_response_id(),
         }
     }
 
@@ -576,7 +783,12 @@ impl SseTranslator {
             .as_object_mut()
             .and_then(|object| object.remove("response"))
         else {
-            // Private credit/accounting-only events are consumed but never exposed.
+            // A mid-stream upstream error must reach the client as a native error frame rather than
+            // a clean truncation that looks like success. Genuinely private credit/accounting-only
+            // events carry no `error` and have no public representation, so they stay consumed.
+            if let Some(frame) = native_stream_error_frame(&wrapper) {
+                return Ok(Some(frame));
+            }
             return Ok(None);
         };
         if !native.is_object() {
@@ -596,6 +808,10 @@ impl SseTranslator {
             return Ok(None);
         }
         metering::gemini::merge_stream_response_value(&mut self.usage, &native);
+        // Real Gemini SSE chunks carry a stable responseId for the whole response; mirror it.
+        if let Some(object) = native.as_object_mut() {
+            object.insert("responseId".to_string(), json!(self.response_id));
+        }
         let encoded = serde_json::to_vec(&native).map_err(|_| ())?;
         let mut framed = Vec::with_capacity(encoded.len() + 8);
         framed.extend_from_slice(b"data: ");
@@ -877,6 +1093,10 @@ async fn api_inner(
     if !value.is_object() {
         return Err(ApiError::invalid("The request body must be a JSON object."));
     }
+    // Accept proto-JSON snake_case (system_instruction, safety_settings, google_search, …) exactly
+    // like the real API: normalize to camelCase up front so validation, reservation, the upstream
+    // wrapper and settlement all see a single canonical shape instead of silently dropping fields.
+    canonicalize_native_request(&mut value);
     validate_tools(&value)?;
     let affinity_input = pending.affinity_scope().and_then(|scope| {
         app.affinity
@@ -1708,7 +1928,14 @@ mod tests {
         assert!(public.get("response").is_none());
         assert!(public.get("consumedCredits").is_none());
         assert!(public.get("remainingCredits").is_none());
-        assert!(public.get("responseId").is_none());
+        // A native-shaped responseId is synthesized locally; it must be present but must not be the
+        // correlatable upstream wrapper trace id.
+        let response_id = public
+            .get("responseId")
+            .and_then(Value::as_str)
+            .expect("native responseId is present");
+        assert!(!response_id.is_empty());
+        assert_ne!(response_id, "private-trace-id");
         assert!(!public.to_string().contains("private-trace-id"));
         assert!(public.get("internalIdentity").is_none());
         let seen = server.state.seen();
