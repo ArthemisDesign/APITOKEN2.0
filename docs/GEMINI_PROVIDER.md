@@ -261,7 +261,3 @@ Expected safety properties are covered by tests for envelope AAD/key rotation, d
 rejection, hot roster reload, query/header credential stripping, Code Assist wrapper/credit removal,
 bounded response parsing, quota/auth/transport rotation, concurrent 401 single-flight refresh,
 affinity, split SSE translation, no post-event retry, disconnect drain and shutdown settlement.
-
-Never deploy or enable the provider merely because local tests pass: OAuth verification, written
-service authorization, live tier detection, current model availability and quota behavior are
-external preconditions.

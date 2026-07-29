@@ -41,9 +41,8 @@
    созданный в его собственном проекте, — бот собирает его в хендоффе и seal-ит в state-bound PKCE
    payload и в credential. Это размазывает флот по множеству OAuth-клиентов, чтобы пул нельзя было
    отозвать одним действием. Операторский `AUTH_BOT_GEMINI_CLIENT_ID/SECRET` остаётся только как
-   fallback. Всегда hosted callback, `state` + PKCE. Не копировать client id/secret самого Gemini
-   CLI, cookies или `oauth_creds.json`; User-Agent всегда truthful. Продавец обязан добавить наш
-   redirect URI (`…/oauth/callback`) в свой OAuth-клиент.
+   fallback. Всегда hosted callback, `state` + PKCE. User-Agent всегда truthful. Продавец обязан
+   добавить наш redirect URI (`…/oauth/callback`) в свой OAuth-клиент.
 2. OAuth code/tokens никогда не идут через Telegram. Короткоживущий proxy в SQLite только как
    XChaCha20-Poly1305 envelope, привязанный AAD к одноразовому state; callback claim одноразовый.
 3. До публикации проверяются verified userinfo и `loadCodeAssist`; принимаются только известные
@@ -54,9 +53,6 @@
 5. Credential envelopes и `profiles.json` — `0600`, каталоги — `0700`, symlink/alternate path
    запрещены. Сначала envelope, затем atomic roster rename+fsync. Startup rewrap переводит старые
    envelopes на active kid, сохраняя online key rotation.
-6. Актуальные Gemini CLI terms прямо запрещают third-party direct Code Assist access. Provider нельзя
-   включать без письменного разрешения Google; полный boundary и runbook — `docs/GEMINI_PROVIDER.md`.
-
 **Секреты:** `AUTH_BOT_TOKEN`, ключ BSC-выплат, Claude/Gemini credentials и прокси — только в
 `authbot.env` или закрытых runtime-файлах (вне репо). Не коммитить, не печатать.
 
