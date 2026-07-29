@@ -118,7 +118,8 @@ pub async fn completions(
             parsed.stop,
             parsed.max_output_chars,
             routing,
-        );
+        )
+        .await;
     }
 
     let result = match gateway.run_turn(prepared.turn.clone(), None, routing).await {
@@ -1001,7 +1002,7 @@ fn chat_usage(usage: &CodexUsage) -> Value {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn stream_chat(
+async fn stream_chat(
     gateway: Arc<CodexGateway>,
     prepared: PreparedTurn,
     admission: super::billing::CodexAdmission,
@@ -1016,6 +1017,8 @@ fn stream_chat(
         Ok(permit) => permit,
         Err(error) => return ApiError::from(error).into_response(),
     };
+    // Snapshot the rate-limit window before the body starts (real API sends these on streams too).
+    let ratelimit = super::api::ratelimit_headers(&gateway).await;
     let (frame_tx, frame_rx) = mpsc::channel::<Bytes>(128);
     let request_id_header = completion_id.clone();
     tokio::spawn(async move {
@@ -1274,14 +1277,16 @@ fn stream_chat(
         let _ = send_chat_bytes(&frame_tx, Bytes::from_static(b"data: [DONE]\n\n")).await;
     });
 
-    Response::builder()
+    let mut response = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/event-stream")
         .header("cache-control", "no-cache")
         .header("connection", "keep-alive")
         .header("x-request-id", request_id_header)
         .body(Body::from_stream(ChatReceiverStream { receiver: frame_rx }))
-        .unwrap()
+        .unwrap();
+    super::api::insert_extra_headers(&mut response, ratelimit);
+    response
 }
 
 fn chat_chunk(

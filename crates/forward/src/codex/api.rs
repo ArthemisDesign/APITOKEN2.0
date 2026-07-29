@@ -310,7 +310,8 @@ pub async fn responses(
             response_id,
             created_at,
             routing,
-        );
+        )
+        .await;
     }
 
     let result = match gateway.run_turn(prepared.turn.clone(), None, routing).await {
@@ -378,7 +379,7 @@ pub async fn model(
 ) -> Response {
     let Some(gateway) = app.codex.as_ref().cloned() else {
         return ApiError::not_found(
-            format!("The model {model_id:?} does not exist or is unavailable."),
+            format!("The model '{model_id}' does not exist or is unavailable."),
             Some("model".to_string()),
         )
         .into_response();
@@ -388,7 +389,7 @@ pub async fn model(
     }
     let Some(model) = gateway.config().model(&model_id) else {
         return ApiError::not_found(
-            format!("The model {model_id:?} does not exist or you do not have access to it."),
+            format!("The model '{model_id}' does not exist or you do not have access to it."),
             Some("model".to_string()),
         )
         .into_response();
@@ -399,7 +400,7 @@ pub async fn model(
     };
     if !available.contains(&model.upstream) {
         return ApiError::not_found(
-            format!("The model {model_id:?} does not exist or you do not have access to it."),
+            format!("The model '{model_id}' does not exist or you do not have access to it."),
             Some("model".to_string()),
         )
         .into_response();
@@ -422,7 +423,7 @@ fn response_not_found(response_id: &str) -> Response {
         StatusCode::NOT_FOUND,
         axum::Json(json!({
             "error": {
-                "message": format!("Response with id {response_id:?} not found."),
+                "message": format!("Response with id '{response_id}' not found."),
                 "type": "invalid_request_error",
                 "param": Value::Null,
                 "code": Value::Null
@@ -841,7 +842,7 @@ pub(super) fn parse_responses_request(
     let model_id = required_string(object, "model")?;
     let public_model = gateway.config().model(model_id).cloned().ok_or_else(|| {
         ApiError::not_found(
-            format!("The model {model_id:?} does not exist or you do not have access to it."),
+            format!("The model '{model_id}' does not exist or you do not have access to it."),
             Some("model".to_string()),
         )
     })?;
@@ -2037,7 +2038,7 @@ async fn persist_history(
     }
 }
 
-fn stream_responses(
+async fn stream_responses(
     gateway: Arc<CodexGateway>,
     prepared: PreparedTurn,
     admission: super::billing::CodexAdmission,
@@ -2050,6 +2051,9 @@ fn stream_responses(
         Ok(permit) => permit,
         Err(error) => return ApiError::from(error).into_response(),
     };
+    // Snapshot the rate-limit window before the body starts. Streaming headers must precede the
+    // SSE frames, and the real API sends x-ratelimit-* on streaming responses too.
+    let ratelimit = ratelimit_headers(&gateway).await;
     let (frame_tx, frame_rx) = mpsc::channel::<Bytes>(128);
     let request_id_header = response_id.clone();
     tokio::spawn(async move {
@@ -2631,14 +2635,16 @@ fn stream_responses(
         .await;
     });
 
-    Response::builder()
+    let mut response = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/event-stream")
         .header("cache-control", "no-cache")
         .header("connection", "keep-alive")
         .header("x-request-id", request_id_header)
         .body(Body::from_stream(ReceiverStream { receiver: frame_rx }))
-        .unwrap()
+        .unwrap();
+    insert_extra_headers(&mut response, ratelimit);
+    response
 }
 
 #[derive(Debug)]
