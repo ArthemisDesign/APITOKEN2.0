@@ -224,13 +224,26 @@ async function captureLegacyState(client: Client): Promise<Record<string, string
   const snapshot: Record<string, string> = {};
   for (const table of LEGACY_STATE_TABLES) {
     const identifier = quoteIdentifier(table);
+    const expandedColumns = table === "business_invites"
+      ? [
+          "encrypted_token",
+          "revoked_at",
+          "revoked_by_actor",
+          "superseded_by_invite_id",
+          "idempotency_key",
+          "created_by_actor",
+        ]
+      : table === "email_outbox" ? ["business_invite_id"] : [];
     const result = await client.query<{ rows: string }>(`
       SELECT COALESCE(
-        jsonb_agg(to_jsonb(snapshot_row) ORDER BY to_jsonb(snapshot_row)::text),
+        jsonb_agg(
+          to_jsonb(snapshot_row) - $1::text[]
+          ORDER BY (to_jsonb(snapshot_row) - $1::text[])::text
+        ),
         '[]'::jsonb
       )::text AS rows
       FROM ${identifier} AS snapshot_row
-    `);
+    `, [expandedColumns]);
     snapshot[table] = result.rows[0]!.rows;
   }
   return snapshot;
@@ -745,12 +758,12 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         const before = await captureLegacyState(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(24);
+        expect(await migrationCount(client)).toBe(25);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(24);
+        expect(await migrationCount(client)).toBe(25);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
       });
