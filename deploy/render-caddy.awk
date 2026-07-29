@@ -38,6 +38,8 @@ NR == FNR {
 }
 { print }
 END {
-  if (admin_control_used != 1 || authkey_used != 1 || commadmin_used != 1 ||
+  # Control-ключ обслуживает ДВА admin-data upstream'а (Anthropic balancer и OpenAI origin
+  # для /codex-subs), поэтому его placeholder встречается несколько раз; остальные — ровно один.
+  if (admin_control_used < 1 || authkey_used != 1 || commadmin_used != 1 ||
       admin_commadmin_used != 1 || salesadmin_used != 1) exit 43
 }

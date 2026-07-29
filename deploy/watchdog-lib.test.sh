@@ -1722,7 +1722,7 @@ for rendered in "$rendered_once" "$rendered_twice"; do
   ! grep -Fq 'basic_auth' "$rendered"
   ! grep -Fq '$2y$' "$rendered"
   grep -Fq 'forward_auth 127.0.0.1:8791' "$rendered"
-  [[ $(grep -Fc 'header_up x-api-key "test-control-secret"' "$rendered") == 1 ]]
+  [[ $(grep -Fc 'header_up x-api-key "test-control-secret"' "$rendered") == 2 ]]
   [[ $(grep -Fc 'header_up x-admin-key "test-commerce-secret"' "$rendered") == 2 ]]
   [[ $(grep -Fc 'header_up X-Admin-Key "test-commerce-secret"' "$rendered") == 1 ]]
   [[ $(grep -Fc 'header_up x-sales-admin-key "test-sales-secret"' "$rendered") == 1 ]]

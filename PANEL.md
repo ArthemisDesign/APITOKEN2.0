@@ -12,8 +12,9 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
                           ▼
                        Caddy (admin.apitoken.sale)
                           ├─ /                         → engine GET /admin-panel
-                          ├─ /overview /capacity
-                          │  /metrics /subs           → engine balancer :8790 (+ control key)
+                           ├─ /overview /capacity
+                           │  /metrics /subs           → engine balancer :8790 (+ control key)
+                           ├─ /codex-subs              → OpenAI origin :8792 (+ control key)
                           ├─ /admin/*                 → commerce balancer :8791 /v1/admin/*
                           │                              (+ commerce admin key + actor)
                           └─ /partner-admin/*         → sales-api :3100 /v1/admin/*
@@ -39,6 +40,9 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
   Однорелизный OpenAI bridge на 8792 описан в `deploy/CADDY.md` и не меняет admin routing.
 - Engine-данные (`/overview`, `/capacity`, `/subs`, `/metrics`) определены в
   `crates/server/src/http.rs`. `/overview` содержит полный список engine accounts без API-ключей.
+  `/codex-subs` (per-home статус GPT/Codex-флота) отдаёт только OpenAI-runtime — на Anthropic-
+  процессе codex не настроен и endpoint вернул бы `enabled:false`, поэтому Caddy шлёт этот путь
+  в стабильный OpenAI origin, а не в engine balancer.
 - Commerce-данные находятся в `apps/api` за `AdminGuard`; authoritative live balance по-прежнему
   живёт только в engine.
 - Partner-данные читаются через sales admin API. Main admin получает только server-side proxy;
@@ -59,8 +63,11 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
   revoke всех сессий, сброс 2FA, enable/disable.
 - Деньги: подтверждённые платежи, состояние engine credit, незавершённые checkout.
 - B2B: одноразовые email-bound invite-ссылки и индивидуальная скидка.
-- Система: полный бывший panel view — verdict, 1d/5h/7d supply, headroom, coverage, fleet demand,
-  рекомендации, lifecycle/peaks/proxy, все engine accounts и live util/reset/cooling по подпискам.
+- Подписки: отдельная страница по обоим флотам. Claude — lifecycle (added/peaks/дни до замены),
+  live util/reset/cooling по окнам 5h/7d и прокси; GPT (OpenAI Codex) — per-home статус, окна
+  primary/secondary, лимиты и official-price spend. Gemini пока не выводится.
+- Система: verdict, 1d/5h/7d supply, headroom, coverage, fleet demand, рекомендации и все
+  engine accounts; детальный per-sub вид вынесен в «Подписки».
 - Аудит: operator/user/provider события и причины административных действий.
 
 Ручное начисление принимает целые USD, UUID idempotency key и обязательную причину. Положительное

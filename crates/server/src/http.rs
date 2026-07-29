@@ -215,6 +215,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .route("/overview", get(overview))
             .route("/spend-stats", get(spend_stats))
             .route("/subs", get(subs))
+            .route("/codex-subs", get(codex_subs))
             .route("/admin-panel", get(admin_panel))
             .merge(admin)
             // Migration bridge: existing Caddy marks the OpenAI hostname until provider-specific
@@ -240,10 +241,12 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .route("/overview", get(overview))
             .route("/spend-stats", get(spend_stats))
             .route("/subs", get(subs))
+            .route("/codex-subs", get(codex_subs))
             .route("/admin-panel", get(admin_panel))
             .merge(admin)
             .fallback(forward),
         forward::ProviderMode::OpenAi => common
+            .route("/codex-subs", get(codex_subs))
             .route("/v1/responses", post(openai_responses))
             .route("/v1/responses/input_tokens", post(openai_input_tokens))
             .route(
@@ -1311,6 +1314,96 @@ async fn subs(
     let v = json!({"now": now, "lifetime_days": SUB_LIFETIME_DAYS, "dead": dead, "subs": list});
     cache_put(&SUBS_CACHE, &v);
     Json(v).into_response()
+}
+
+/// GPT (OpenAI Codex) подписки: per-home операционный статус codex gateway для вкладки
+/// «Подписки» панели. Как и /subs — control-authed; деньги тут только official-price оценки
+/// ёмкости (float для UI), money-путь биллинга не трогаем. На Anthropic-процессе codex не
+/// настроен → enabled:false; панель читает GPT-данные через OpenAI-origin в Caddy.
+async fn codex_subs(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if !control_authed(&app, &headers, &peer) {
+        Metrics::inc(&app.metrics.auth_failures);
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "unauthorized"})),
+        )
+            .into_response();
+    }
+    let Some(codex) = &app.codex else {
+        return Json(json!({"now": pool::now(), "enabled": false, "homes": []})).into_response();
+    };
+    let status = codex.operational_status().await;
+    let round = |x: f64| (x * 100.0).round() / 100.0;
+    let window = |w: &forward::codex::CodexRateLimitWindow| {
+        json!({
+            "used_percent": w.used_percent,
+            "window_duration_mins": w.window_duration_mins,
+            "resets_at": w.resets_at,
+        })
+    };
+    let homes: Vec<_> = status
+        .homes
+        .iter()
+        .map(|h| {
+            json!({
+                "id": h.id,
+                "process_live": h.process_live,
+                "auth_ok": h.auth_ok,
+                "cooling_until": h.cooling_until,
+                "inflight": h.inflight,
+                "spend_usd_total": round(h.spend_usd_total),
+                "rate_limits": h.rate_limits.as_ref().map(|rl| json!({
+                    "reached": rl.reached,
+                    "observed_at": rl.observed_at,
+                    "primary": rl.primary.as_ref().map(window),
+                    "secondary": rl.secondary.as_ref().map(window),
+                })),
+                "windows": h.capacities.iter().map(|c| json!({
+                    "slot": c.slot,
+                    "window_minutes": c.window_minutes,
+                    "used_percent": c.used_percent,
+                    "cap_usd": round(c.cap_usd),
+                    "remaining_usd": round(c.remaining_usd),
+                    "calibrated": c.calibrated,
+                    "samples": c.samples,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    // Флотская сводка по слотам окон: суммарная ёмкость/остаток — панель показывает её карточками.
+    let mut totals = serde_json::Map::new();
+    for slot in ["primary", "secondary"] {
+        let (mut cap, mut rem, mut calibrated, mut any) = (0.0, 0.0, true, false);
+        for h in &status.homes {
+            for c in h.capacities.iter().filter(|c| c.slot == slot) {
+                cap += c.cap_usd;
+                rem += c.remaining_usd;
+                calibrated &= c.calibrated;
+                any = true;
+            }
+        }
+        if any {
+            totals.insert(
+                slot.into(),
+                json!({"cap_usd": round(cap), "remaining_usd": round(rem), "calibrated": calibrated}),
+            );
+        }
+    }
+    Json(json!({
+        "now": pool::now(),
+        "enabled": true,
+        "process_live": status.process_live,
+        "available": status.available,
+        "homes_total": status.homes.len(),
+        "soonest_ready": status.soonest_ready,
+        "window_totals": totals,
+        "homes": homes,
+    }))
+    .into_response()
 }
 
 async fn health() -> Json<serde_json::Value> {

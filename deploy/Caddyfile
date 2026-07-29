@@ -201,6 +201,15 @@ admin.apitoken.sale {
 			header_up x-api-key "<ADMIN_CONTROL_KEY_PLACEHOLDER>"
 		}
 	}
+	# GPT-подписки живут в отдельном OpenAI-runtime: его operational status отдаёт только
+	# стабильный OpenAI origin; на Anthropic-процессе /codex-subs вернул бы enabled:false.
+	@admin_openai_data path /codex-subs
+	handle @admin_openai_data {
+		reverse_proxy 127.0.0.1:8792 {
+			header_up Host 127.0.0.1:8792
+			header_up x-api-key "<ADMIN_CONTROL_KEY_PLACEHOLDER>"
+		}
+	}
 	@commerce_admin path /admin/*
 	handle @commerce_admin {
 		rewrite * /v1{uri}
