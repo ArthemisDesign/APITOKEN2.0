@@ -43,19 +43,27 @@ limits and available models can change and are not contractual capacity for this
 
 ## OAuth and publication flow
 
-1. The seller submits the account's dedicated proxy to Auth Bot.
+Each seller creates their **own** Google Cloud OAuth Web client (see below) and submits its client
+id + secret together with the account's dedicated proxy. Distributing the fleet across many seller
+OAuth clients means the pool cannot be revoked in a single move; the operator client remains only as
+a fallback.
+
+1. The seller submits their OAuth client id + secret and the account's dedicated proxy to Auth Bot
+   (three lines on the manual-proxy path, or client id + secret when Auth Bot issues the proxy).
 2. Auth Bot creates 256-bit `state`, a PKCE S256 verifier/challenge and a ten-minute SQLite session.
-3. The PKCE verifier and proxy are immediately moved into one XChaCha20-Poly1305 envelope bound to
-   `state`; neither plaintext value is retained in the Gemini OAuth row or SQLite WAL.
-4. Telegram receives only a Google authorization URL. Tokens are never pasted into chat. The
-   seller must open it in the account's browser profile through the same dedicated proxy; the
-   server cannot enforce the browser's egress.
+3. The PKCE verifier, proxy and the seller's client id/secret are immediately moved into one
+   XChaCha20-Poly1305 envelope bound to `state`; no plaintext value is retained in the Gemini OAuth
+   row or SQLite WAL.
+4. Telegram receives only a Google authorization URL (built with the seller's client id). Tokens are
+   never pasted into chat. The seller must open it in the account's browser profile through the same
+   dedicated proxy; the server cannot enforce the browser's egress.
 5. `https://gemini.api.apitoken.sale/oauth/callback` claims `state` exactly once and exchanges the
-   code server-to-server through the account proxy.
+   code server-to-server through the account proxy, using the seller's client id/secret.
 6. Auth Bot validates verified Google userinfo, calls `loadCodeAssist`, completes Google's default
    onboarding when required, and re-loads the actual tier/project.
 7. Unknown/free/duplicate Google subjects and reused proxy URLs fail closed. A valid paid profile is
-   sealed and published atomically; the runtime discovers it on the health loop without restart.
+   sealed (with the seller's client id/secret) and published atomically; the runtime discovers it on
+   the health loop without restart and refreshes tokens with that per-profile client.
 
 Required OAuth scopes:
 
@@ -65,7 +73,8 @@ https://www.googleapis.com/auth/userinfo.email
 https://www.googleapis.com/auth/userinfo.profile
 ```
 
-Create a Google OAuth **Web application** with this exact redirect URI:
+Each seller creates a Google Cloud OAuth **Web application** in their own project with this exact
+redirect URI (the operator configures the same for the fallback client):
 
 ```text
 https://gemini.api.apitoken.sale/oauth/callback
@@ -146,8 +155,8 @@ Auth Bot (`/srv/claude-api/data/authbot.env`):
 
 ```text
 AUTH_BOT_IPROYAL_KEY=<existing reseller key shared with Claude provisioning>
-AUTH_BOT_GEMINI_CLIENT_ID=<operator web OAuth client id>
-AUTH_BOT_GEMINI_CLIENT_SECRET=<operator web OAuth client secret>
+AUTH_BOT_GEMINI_CLIENT_ID=<fallback operator web OAuth client id; sellers normally send their own>
+AUTH_BOT_GEMINI_CLIENT_SECRET=<fallback operator web OAuth client secret>
 AUTH_BOT_GEMINI_CREDENTIAL_KEYS=current:<64-hex>[,old:<64-hex>]
 AUTH_BOT_GEMINI_CREDENTIAL_ACTIVE_KID=current
 AUTH_BOT_GEMINI_REDIRECT_URI=https://gemini.api.apitoken.sale/oauth/callback

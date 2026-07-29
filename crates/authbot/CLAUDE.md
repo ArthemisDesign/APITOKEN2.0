@@ -21,7 +21,7 @@
 | Результат | `sk-ant-oat01-…` | ничего, что нам можно читать | refresh/access token + Google subject/project/tier |
 | Чем становится покупка | строка в реестре | каталог `CODEX_HOME` | AEAD envelope + opaque запись в `profiles.json` |
 | Модуль | `setup_token.rs` | `codex_login.rs` | `gemini_oauth.rs` |
-| Шаги продавца | ссылка → `code#state` | ссылка + одноразовый код | прокси → hosted Google OAuth callback |
+| Шаги продавца | ссылка → `code#state` | ссылка + одноразовый код | свой OAuth client (id+secret) + прокси → hosted Google OAuth callback |
 | Как движок узнаёт | reload реестра | скан homes | atomic roster refresh на health-loop |
 
 **Инварианты Codex-ветки (критично):**
@@ -37,8 +37,13 @@
    `AUTH_BOT_CODEX_HOMES_DIR` — вся его часть контракта.
 
 **Инварианты Gemini-ветки (критично):**
-1. Использовать только операторский OAuth Web client, hosted callback, `state` + PKCE. Не копировать
-   Gemini CLI client id/secret, cookies или `oauth_creds.json`; User-Agent всегда truthful.
+1. Каждый продавец присылает СВОЙ Google Cloud OAuth **Web** client (client_id + client_secret),
+   созданный в его собственном проекте, — бот собирает его в хендоффе и seal-ит в state-bound PKCE
+   payload и в credential. Это размазывает флот по множеству OAuth-клиентов, чтобы пул нельзя было
+   отозвать одним действием. Операторский `AUTH_BOT_GEMINI_CLIENT_ID/SECRET` остаётся только как
+   fallback. Всегда hosted callback, `state` + PKCE. Не копировать client id/secret самого Gemini
+   CLI, cookies или `oauth_creds.json`; User-Agent всегда truthful. Продавец обязан добавить наш
+   redirect URI (`…/oauth/callback`) в свой OAuth-клиент.
 2. OAuth code/tokens никогда не идут через Telegram. Короткоживущий proxy в SQLite только как
    XChaCha20-Poly1305 envelope, привязанный AAD к одноразовому state; callback claim одноразовый.
 3. До публикации проверяются verified userinfo и `loadCodeAssist`; принимаются только известные
@@ -69,7 +74,8 @@
   `/srv/claude-api/data/gemini`); движковый `CLAUDE_API_GEMINI_PROFILES_FILE` должен указывать на
   `<этот каталог>/profiles.json`.
 - `AUTH_BOT_GEMINI_CLIENT_ID`, `AUTH_BOT_GEMINI_CLIENT_SECRET`,
-  `AUTH_BOT_GEMINI_REDIRECT_URI`, `AUTH_BOT_GEMINI_OAUTH_BIND` — операторский hosted OAuth.
+  `AUTH_BOT_GEMINI_REDIRECT_URI`, `AUTH_BOT_GEMINI_OAUTH_BIND` — hosted OAuth callback + fallback
+  operator client (продавцы обычно присылают свой client id/secret через бота).
 - `AUTH_BOT_GEMINI_CREDENTIAL_KEYS`, `AUTH_BOT_GEMINI_CREDENTIAL_ACTIVE_KID` — общий с runtime
   AEAD keyring и активный ключ публикации/rotation.
 - `AUTH_BOT_IPROYAL_KEY` — авто-выпуск прокси (пусто = ручной ввод).
