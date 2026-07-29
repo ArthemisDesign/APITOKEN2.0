@@ -84,8 +84,17 @@ CREATE TABLE IF NOT EXISTS pricing_catalog_heads (
 CREATE TABLE IF NOT EXISTS provider_switch_versions (
     generation INTEGER PRIMARY KEY CHECK (generation > 0),
     schema_version INTEGER NOT NULL CHECK (schema_version > 0),
+    capability_generation INTEGER NOT NULL CHECK (capability_generation > 0),
+    capability_digest TEXT NOT NULL CHECK (capability_digest <> ''),
     content_digest TEXT NOT NULL CHECK (content_digest <> ''),
-    created_ts INTEGER NOT NULL
+    created_ts INTEGER NOT NULL,
+    UNIQUE (
+        generation,
+        schema_version,
+        capability_generation,
+        capability_digest,
+        content_digest
+    )
 );
 CREATE TABLE IF NOT EXISTS provider_switch_entries (
     generation INTEGER NOT NULL REFERENCES provider_switch_versions(generation) ON DELETE CASCADE,
@@ -93,15 +102,31 @@ CREATE TABLE IF NOT EXISTS provider_switch_entries (
     scope_type TEXT NOT NULL CHECK (scope_type IN ('master', 'product', 'segment')),
     product_id TEXT NOT NULL DEFAULT '',
     segment TEXT NOT NULL DEFAULT '',
+    catalog_generation INTEGER,
     enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
     PRIMARY KEY (generation, provider_id, scope_type, product_id, segment),
+    FOREIGN KEY (product_id, catalog_generation)
+        REFERENCES pricing_catalog_versions(product_id, generation) ON DELETE RESTRICT,
     CHECK (
-        (scope_type = 'master' AND product_id = '' AND segment = '')
-        OR (scope_type = 'product' AND product_id <> '' AND segment = '')
+        (
+            scope_type = 'master'
+            AND product_id = ''
+            AND segment = ''
+            AND catalog_generation IS NULL
+        )
+        OR (
+            scope_type = 'product'
+            AND product_id <> ''
+            AND segment = ''
+            AND catalog_generation IS NOT NULL
+            AND catalog_generation > 0
+        )
         OR (
             scope_type = 'segment'
             AND product_id <> ''
             AND segment IN ('b2c', 'b2b')
+            AND catalog_generation IS NOT NULL
+            AND catalog_generation > 0
         )
     )
 );
@@ -123,6 +148,7 @@ CREATE TABLE IF NOT EXISTS account_policy_versions (
     product_id TEXT NOT NULL CHECK (product_id <> ''),
     schema_version INTEGER NOT NULL CHECK (schema_version > 0),
     catalog_generation INTEGER NOT NULL CHECK (catalog_generation > 0),
+    switch_generation INTEGER NOT NULL CHECK (switch_generation > 0),
     content_digest TEXT NOT NULL CHECK (content_digest <> ''),
     replacement_locked INTEGER NOT NULL CHECK (replacement_locked IN (0, 1)),
     created_ts INTEGER NOT NULL,
@@ -137,8 +163,21 @@ CREATE TABLE IF NOT EXISTS account_policy_versions (
         catalog_generation,
         content_digest
     ),
+    UNIQUE (
+        account_id,
+        effective_version,
+        policy_id,
+        policy_version,
+        product_id,
+        catalog_generation,
+        switch_generation,
+        schema_version,
+        content_digest
+    ),
     FOREIGN KEY (product_id, catalog_generation)
-        REFERENCES pricing_catalog_versions(product_id, generation) ON DELETE RESTRICT
+        REFERENCES pricing_catalog_versions(product_id, generation) ON DELETE RESTRICT,
+    FOREIGN KEY (switch_generation)
+        REFERENCES provider_switch_versions(generation) ON DELETE RESTRICT
 );
 CREATE INDEX IF NOT EXISTS account_policy_versions_policy
     ON account_policy_versions(policy_id, policy_version);
@@ -734,6 +773,32 @@ fn install_pricing_policy_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(PRICING_POLICY_SCHEMA_SQL)
         .context("install SQLite multi-discount foundation schema")?;
 
+    ensure_sqlite_column(
+        conn,
+        "provider_switch_versions",
+        "capability_generation",
+        "INTEGER",
+    )?;
+    ensure_sqlite_column(
+        conn,
+        "provider_switch_versions",
+        "capability_digest",
+        "TEXT",
+    )?;
+    ensure_sqlite_column(
+        conn,
+        "provider_switch_entries",
+        "catalog_generation",
+        "INTEGER",
+    )?;
+    ensure_sqlite_column(
+        conn,
+        "account_policy_versions",
+        "switch_generation",
+        "INTEGER",
+    )?;
+    install_sqlite_runtime_pin_guards(conn)?;
+
     ensure_sqlite_column(conn, "billing_settlement_outbox", "provider", "TEXT")?;
     ensure_sqlite_column(conn, "ledger", "provider", "TEXT")?;
     ensure_sqlite_column(conn, "ledger", "official_nano", "INTEGER")?;
@@ -752,6 +817,155 @@ fn install_pricing_policy_schema(conn: &Connection) -> Result<()> {
     )
     .context("install SQLite policy attribution indexes")?;
     install_sqlite_attribution_guards(conn)?;
+    Ok(())
+}
+
+fn install_sqlite_runtime_pin_guards(conn: &Connection) -> Result<()> {
+    let unpinned_rows: i64 = conn.query_row(
+        "SELECT
+             (SELECT COUNT(*) FROM provider_switch_versions
+               WHERE capability_generation IS NULL OR capability_digest IS NULL)
+           + (SELECT COUNT(*) FROM provider_switch_entries
+               WHERE (scope_type = 'master' AND catalog_generation IS NOT NULL)
+                  OR (scope_type IN ('product', 'segment') AND catalog_generation IS NULL))
+           + (SELECT COUNT(*) FROM account_policy_versions
+               WHERE switch_generation IS NULL)",
+        [],
+        |row| row.get(0),
+    )?;
+    if unpinned_rows != 0 {
+        anyhow::bail!(
+            "SQLite contains pre-writer pricing rows without durable runtime pins; manual audit required"
+        );
+    }
+
+    const SWITCH_VERSION_INVALID: &str = "
+        NEW.capability_generation IS NULL
+        OR NEW.capability_generation <= 0
+        OR NEW.capability_digest IS NULL
+        OR NEW.capability_digest = ''
+    ";
+    const SWITCH_ENTRY_INVALID: &str = "
+        NOT (
+            (
+                NEW.scope_type = 'master'
+                AND NEW.product_id = ''
+                AND NEW.segment = ''
+                AND NEW.catalog_generation IS NULL
+            )
+            OR (
+                NEW.scope_type = 'product'
+                AND NEW.product_id <> ''
+                AND NEW.segment = ''
+                AND NEW.catalog_generation IS NOT NULL
+                AND NEW.catalog_generation > 0
+                AND EXISTS (
+                    SELECT 1 FROM pricing_catalog_versions
+                    WHERE product_id = NEW.product_id
+                      AND generation = NEW.catalog_generation
+                )
+            )
+            OR (
+                NEW.scope_type = 'segment'
+                AND NEW.product_id <> ''
+                AND NEW.segment IN ('b2c', 'b2b')
+                AND NEW.catalog_generation IS NOT NULL
+                AND NEW.catalog_generation > 0
+                AND EXISTS (
+                    SELECT 1 FROM pricing_catalog_versions
+                    WHERE product_id = NEW.product_id
+                      AND generation = NEW.catalog_generation
+                )
+            )
+        )
+    ";
+    const POLICY_VERSION_INVALID: &str = "
+        NEW.switch_generation IS NULL
+        OR NEW.switch_generation <= 0
+        OR NOT EXISTS (
+            SELECT 1 FROM provider_switch_versions
+            WHERE generation = NEW.switch_generation
+        )
+    ";
+    for (table, condition, message) in [
+        (
+            "provider_switch_versions",
+            SWITCH_VERSION_INVALID,
+            "invalid provider switch capability pins",
+        ),
+        (
+            "provider_switch_entries",
+            SWITCH_ENTRY_INVALID,
+            "invalid provider switch catalog pin",
+        ),
+        (
+            "account_policy_versions",
+            POLICY_VERSION_INVALID,
+            "invalid account policy switch pin",
+        ),
+    ] {
+        for (suffix, event) in [("insert", "INSERT"), ("update", "UPDATE")] {
+            conn.execute_batch(&format!(
+                "CREATE TRIGGER IF NOT EXISTS {table}_runtime_pins_{suffix}
+                 BEFORE {event} ON {table}
+                 FOR EACH ROW
+                 WHEN {condition}
+                 BEGIN
+                     SELECT RAISE(ABORT, '{message}');
+                 END;"
+            ))
+            .with_context(|| format!("install SQLite runtime pin guard for {table} {event}"))?;
+        }
+    }
+    conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS pricing_catalog_versions_runtime_pins_delete
+         BEFORE DELETE ON pricing_catalog_versions
+         FOR EACH ROW
+         WHEN EXISTS (
+             SELECT 1 FROM provider_switch_entries
+             WHERE product_id = OLD.product_id
+               AND catalog_generation = OLD.generation
+         )
+         BEGIN
+             SELECT RAISE(ABORT, 'pricing catalog version is pinned by a provider switch');
+         END;
+         CREATE TRIGGER IF NOT EXISTS pricing_catalog_versions_runtime_pins_update
+         BEFORE UPDATE OF product_id, generation ON pricing_catalog_versions
+         FOR EACH ROW
+         WHEN (
+             NEW.product_id <> OLD.product_id
+             OR NEW.generation <> OLD.generation
+         ) AND EXISTS (
+             SELECT 1 FROM provider_switch_entries
+             WHERE product_id = OLD.product_id
+               AND catalog_generation = OLD.generation
+         )
+         BEGIN
+             SELECT RAISE(ABORT, 'pricing catalog version is pinned by a provider switch');
+         END;
+         CREATE TRIGGER IF NOT EXISTS provider_switch_versions_policy_refs_delete
+         BEFORE DELETE ON provider_switch_versions
+         FOR EACH ROW
+         WHEN EXISTS (
+             SELECT 1 FROM account_policy_versions
+             WHERE switch_generation = OLD.generation
+         )
+         BEGIN
+             SELECT RAISE(ABORT, 'provider switch version is pinned by an account policy');
+         END;
+         CREATE TRIGGER IF NOT EXISTS provider_switch_versions_policy_refs_update
+         BEFORE UPDATE OF generation ON provider_switch_versions
+         FOR EACH ROW
+         WHEN NEW.generation <> OLD.generation
+          AND EXISTS (
+              SELECT 1 FROM account_policy_versions
+              WHERE switch_generation = OLD.generation
+          )
+         BEGIN
+             SELECT RAISE(ABORT, 'provider switch version is pinned by an account policy');
+         END;",
+    )
+    .context("install SQLite runtime pin parent guards")?;
     Ok(())
 }
 
@@ -2943,6 +3157,10 @@ mod tests {
             ("ledger", "provider"),
             ("billing_settlement_outbox", "snapshot_digest"),
             ("usage_events", "funding_allocation_json"),
+            ("provider_switch_versions", "capability_generation"),
+            ("provider_switch_versions", "capability_digest"),
+            ("provider_switch_entries", "catalog_generation"),
+            ("account_policy_versions", "switch_generation"),
         ] {
             let present: bool = c
                 .query_row(
@@ -2956,6 +3174,177 @@ mod tests {
     }
 
     #[test]
+    fn pricing_policy_schema_upgrades_old_sqlite_runtime_pins_without_orphans() {
+        let c = db();
+        c.execute_batch(
+            "DROP TRIGGER IF EXISTS pricing_catalog_versions_runtime_pins_delete;
+             DROP TRIGGER IF EXISTS pricing_catalog_versions_runtime_pins_update;
+             DROP TABLE account_policy_bindings;
+             DROP TABLE account_policy_rules;
+             DROP TABLE account_policy_versions;
+             DROP TABLE provider_switch_head;
+             DROP TABLE provider_switch_entries;
+             DROP TABLE provider_switch_versions;
+
+             CREATE TABLE provider_switch_versions (
+                 generation INTEGER PRIMARY KEY CHECK (generation > 0),
+                 schema_version INTEGER NOT NULL CHECK (schema_version > 0),
+                 content_digest TEXT NOT NULL CHECK (content_digest <> ''),
+                 created_ts INTEGER NOT NULL
+             );
+             CREATE TABLE provider_switch_entries (
+                 generation INTEGER NOT NULL
+                     REFERENCES provider_switch_versions(generation) ON DELETE CASCADE,
+                 provider_id TEXT NOT NULL CHECK (provider_id <> ''),
+                 scope_type TEXT NOT NULL
+                     CHECK (scope_type IN ('master', 'product', 'segment')),
+                 product_id TEXT NOT NULL DEFAULT '',
+                 segment TEXT NOT NULL DEFAULT '',
+                 enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+                 PRIMARY KEY (generation, provider_id, scope_type, product_id, segment),
+                 CHECK (
+                     (scope_type = 'master' AND product_id = '' AND segment = '')
+                     OR (scope_type = 'product' AND product_id <> '' AND segment = '')
+                     OR (
+                         scope_type = 'segment'
+                         AND product_id <> ''
+                         AND segment IN ('b2c', 'b2b')
+                     )
+                 )
+             );
+             CREATE TABLE account_policy_versions (
+                 account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                 effective_version INTEGER NOT NULL CHECK (effective_version > 0),
+                 policy_id TEXT NOT NULL CHECK (policy_id <> ''),
+                 policy_version INTEGER NOT NULL CHECK (policy_version > 0),
+                 owner_type TEXT NOT NULL
+                     CHECK (owner_type IN ('global_b2c', 'b2b_client', 'openkeys', 'service')),
+                 owner_id TEXT NOT NULL CHECK (owner_id <> ''),
+                 product_id TEXT NOT NULL CHECK (product_id <> ''),
+                 schema_version INTEGER NOT NULL CHECK (schema_version > 0),
+                 catalog_generation INTEGER NOT NULL CHECK (catalog_generation > 0),
+                 content_digest TEXT NOT NULL CHECK (content_digest <> ''),
+                 replacement_locked INTEGER NOT NULL CHECK (replacement_locked IN (0, 1)),
+                 created_ts INTEGER NOT NULL,
+                 PRIMARY KEY (account_id, effective_version),
+                 UNIQUE (account_id, effective_version, product_id),
+                 UNIQUE (
+                     account_id, effective_version, policy_id, policy_version,
+                     product_id, catalog_generation, content_digest
+                 ),
+                 FOREIGN KEY (product_id, catalog_generation)
+                     REFERENCES pricing_catalog_versions(product_id, generation)
+                     ON DELETE RESTRICT
+             );",
+        )
+        .unwrap();
+
+        migrate_pricing_policy_schema(&c).unwrap();
+        account_create(&c, "upgraded-policy-account", None, 2000).unwrap();
+        c.execute_batch(
+            "INSERT INTO pricing_catalog_versions(
+                 product_id,generation,schema_version,capability_digest,content_digest,created_ts
+             ) VALUES
+                 ('switch-catalog',1,1,'capability','switch-catalog-digest',1),
+                 ('policy-catalog',1,1,'capability','policy-catalog-digest',1);
+             INSERT INTO provider_switch_versions(
+                 generation,schema_version,capability_generation,capability_digest,
+                 content_digest,created_ts
+             ) VALUES
+                 (1,1,1,'capability','catalog-switch-digest',1),
+                 (2,1,1,'capability','policy-switch-digest',1);
+             INSERT INTO provider_switch_entries(
+                 generation,provider_id,scope_type,product_id,segment,catalog_generation,enabled
+             ) VALUES(1,'anthropic','product','switch-catalog','',1,1);
+             INSERT INTO account_policy_versions(
+                 account_id,effective_version,policy_id,policy_version,owner_type,owner_id,
+                 product_id,schema_version,catalog_generation,switch_generation,content_digest,
+                 replacement_locked,created_ts
+             ) VALUES(
+                 'upgraded-policy-account',1,'b2c:global',1,'global_b2c','global',
+                 'policy-catalog',1,1,2,'policy-digest',0,1
+             );",
+        )
+        .unwrap();
+
+        assert!(c
+            .execute(
+                "DELETE FROM pricing_catalog_versions
+                 WHERE product_id='switch-catalog' AND generation=1",
+                [],
+            )
+            .is_err());
+        assert!(c
+            .execute(
+                "UPDATE pricing_catalog_versions SET generation=2
+                 WHERE product_id='switch-catalog' AND generation=1",
+                [],
+            )
+            .is_err());
+        assert!(c
+            .execute(
+                "DELETE FROM provider_switch_versions WHERE generation=2",
+                [],
+            )
+            .is_err());
+        assert_eq!(
+            c.query_row(
+                "SELECT COUNT(*) FROM provider_switch_versions WHERE generation=2",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT switch_generation FROM account_policy_versions
+                 WHERE account_id='upgraded-policy-account' AND effective_version=1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            2
+        );
+        assert!(c
+            .execute(
+                "UPDATE provider_switch_versions SET generation=3 WHERE generation=2",
+                [],
+            )
+            .is_err());
+        assert!(c
+            .execute(
+                "INSERT INTO provider_switch_versions(
+                     generation,schema_version,content_digest,created_ts
+                 ) VALUES(3,1,'missing-capability-pins',1)",
+                [],
+            )
+            .is_err());
+        assert!(c
+            .execute(
+                "INSERT INTO provider_switch_entries(
+                     generation,provider_id,scope_type,product_id,segment,
+                     catalog_generation,enabled
+                 ) VALUES(1,'openai','product','missing-catalog','',1,1)",
+                [],
+            )
+            .is_err());
+        assert!(c
+            .execute(
+                "INSERT INTO account_policy_versions(
+                     account_id,effective_version,policy_id,policy_version,owner_type,owner_id,
+                     product_id,schema_version,catalog_generation,content_digest,
+                     replacement_locked,created_ts
+                 ) VALUES(
+                     'upgraded-policy-account',2,'b2c:global',2,'global_b2c','global',
+                     'policy-catalog',1,1,'missing-switch-pin',0,1
+                 )",
+                [],
+            )
+            .is_err());
+    }
+
+    #[test]
     fn pricing_policy_schema_rejects_invalid_rules_switches_and_buckets() {
         let c = db();
         account_create(&c, "policy-account", None, 2000).unwrap();
@@ -2966,13 +3355,17 @@ mod tests {
              INSERT INTO pricing_catalog_entries(
                  product_id,generation,provider_id,canonical_model_id,enabled
              ) VALUES('main',1,'anthropic','claude-test',1);
+             INSERT INTO provider_switch_versions(
+                 generation,schema_version,capability_generation,capability_digest,
+                 content_digest,created_ts
+             ) VALUES(1,1,1,'capability-digest','switch-digest',1);
              INSERT INTO account_policy_versions(
                  account_id,effective_version,policy_id,policy_version,owner_type,owner_id,
-                 product_id,schema_version,catalog_generation,content_digest,replacement_locked,
-                 created_ts
+                 product_id,schema_version,catalog_generation,switch_generation,content_digest,
+                 replacement_locked,created_ts
              ) VALUES(
                  'policy-account',1,'b2c:global',1,'global_b2c','global','main',1,1,
-                 'policy-digest',0,1
+                 1,'policy-digest',0,1
              );
              INSERT INTO account_policy_rules(
                  account_id,effective_version,rule_id,rule_digest,scope_type,provider_id,
@@ -3024,13 +3417,6 @@ mod tests {
                 [],
             )
             .is_err());
-        c.execute(
-            "INSERT INTO provider_switch_versions(
-                 generation,schema_version,content_digest,created_ts
-             ) VALUES(1,1,'switch-digest',1)",
-            [],
-        )
-        .unwrap();
         assert!(c
             .execute(
                 "INSERT INTO account_policy_bindings(
@@ -3046,8 +3432,16 @@ mod tests {
         assert!(c
             .execute(
                 "INSERT INTO provider_switch_entries(
-                     generation,provider_id,scope_type,product_id,segment,enabled
-                 ) VALUES(1,'anthropic','segment','main','consumer',1)",
+                     generation,provider_id,scope_type,product_id,segment,catalog_generation,enabled
+                 ) VALUES(1,'anthropic','segment','main','consumer',1,1)",
+                [],
+            )
+            .is_err());
+        assert!(c
+            .execute(
+                "INSERT INTO provider_switch_entries(
+                     generation,provider_id,scope_type,product_id,segment,catalog_generation,enabled
+                 ) VALUES(1,'anthropic','master','','',1,1)",
                 [],
             )
             .is_err());

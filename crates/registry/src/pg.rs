@@ -19,6 +19,7 @@ const MIGRATION_0003: &str = include_str!("../migrations_pg/0003_subscription_au
 const MIGRATION_0004: &str = include_str!("../migrations_pg/0004_audit_hardening.sql");
 const MIGRATION_0005: &str = include_str!("../migrations_pg/0005_provider_attribution.sql");
 const MIGRATION_0006: &str = include_str!("../migrations_pg/0006_multi_discount_expand.sql");
+const MIGRATION_0007: &str = include_str!("../migrations_pg/0007_multi_discount_runtime_pins.sql");
 
 fn now() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -210,6 +211,8 @@ impl PgStore {
             .context("apply engine PostgreSQL migration 0005")?;
         tx.batch_execute(MIGRATION_0006)
             .context("apply engine PostgreSQL migration 0006")?;
+        tx.batch_execute(MIGRATION_0007)
+            .context("apply engine PostgreSQL migration 0007")?;
         tx.commit()?;
         Ok(())
     }
@@ -2199,9 +2202,26 @@ mod tests {
         };
         let mut pg = PgStore::connect(&url).unwrap();
         pg.migrate().unwrap();
-        assert_eq!(pg.schema_version().unwrap(), 6);
+        assert_eq!(pg.schema_version().unwrap(), 7);
         pg.migrate().unwrap();
-        assert_eq!(pg.schema_version().unwrap(), 6);
+        assert_eq!(pg.schema_version().unwrap(), 7);
+        let runtime_pin_constraints: i64 = pg
+            .client
+            .query_one(
+                "SELECT COUNT(*)::bigint FROM pg_constraint
+                 WHERE conname IN (
+                     'provider_switch_versions_capability_identity',
+                     'provider_switch_versions_ack_identity',
+                     'provider_switch_entries_catalog_fk',
+                     'provider_switch_entries_catalog_scope',
+                     'account_policy_versions_switch_fk',
+                     'account_policy_versions_ack_identity'
+                 )",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(runtime_pin_constraints, 6);
         pg.client.batch_execute(
             "TRUNCATE settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances, \
              usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE",
@@ -2333,13 +2353,17 @@ mod tests {
                 "INSERT INTO pricing_catalog_versions(
                      product_id,generation,schema_version,capability_digest,content_digest,created_ts
                  ) VALUES('schema-main',1,1,'capability','catalog',1);
+                 INSERT INTO provider_switch_versions(
+                     generation,schema_version,capability_generation,capability_digest,
+                     content_digest,created_ts
+                 ) VALUES(1,1,1,'capability','switch',1);
                  INSERT INTO account_policy_versions(
                      account_id,effective_version,policy_id,policy_version,owner_type,owner_id,
-                     product_id,schema_version,catalog_generation,content_digest,
-                     replacement_locked,created_ts
+                     product_id,schema_version,catalog_generation,switch_generation,
+                     content_digest,replacement_locked,created_ts
                  ) VALUES(
                      'schema-a',1,'schema-policy',1,'global_b2c','global','schema-main',
-                     1,1,'policy',false,1
+                     1,1,1,'policy',false,1
                  );",
             )
             .unwrap();
@@ -2362,9 +2386,9 @@ mod tests {
                 "INSERT INTO pricing_catalog_entries(
                      product_id,generation,provider_id,canonical_model_id,enabled
                  ) VALUES('schema-main',1,'anthropic','claude-test',true);
-                 INSERT INTO provider_switch_versions(
-                     generation,schema_version,content_digest,created_ts
-                 ) VALUES(1,1,'switch',1);
+                 INSERT INTO provider_switch_entries(
+                     generation,provider_id,scope_type,product_id,segment,catalog_generation,enabled
+                 ) VALUES(1,'anthropic','segment','schema-main','b2c',1,true);
                  INSERT INTO account_policy_rules(
                      account_id,effective_version,rule_id,rule_digest,scope_type,provider_id,
                      canonical_model_id,pricing_mode,rule_origin,discount_bps,
@@ -2400,12 +2424,12 @@ mod tests {
         pg.client.batch_execute(
             "TRUNCATE settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances, \
              usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE; \
-             DELETE FROM pricing_catalog_entries; \
-             DELETE FROM pricing_catalog_heads; \
-             DELETE FROM pricing_catalog_versions; \
              DELETE FROM provider_switch_entries; \
              DELETE FROM provider_switch_head; \
-             DELETE FROM provider_switch_versions;",
+             DELETE FROM provider_switch_versions; \
+             DELETE FROM pricing_catalog_entries; \
+             DELETE FROM pricing_catalog_heads; \
+             DELETE FROM pricing_catalog_versions;",
         ).unwrap();
 
         // Exercise the real one-time SQLite importer before the transactional fault matrix.
