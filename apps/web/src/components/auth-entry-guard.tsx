@@ -62,8 +62,15 @@ export function AuthEntryGuard({
   }
 
   return (
-    <div className="auth-session-check" role="status" aria-live="polite">
-      <p>{language === "ru" ? "Проверяем сессию…" : "Checking your session…"}</p>
+    <div className="auth-session-check auth-entry-skeleton" role="status" aria-live="polite">
+      <p className="sr-only">{language === "ru" ? "Проверяем сессию…" : "Checking your session…"}</p>
+      <span className="auth-skeleton-block auth-skeleton-title" aria-hidden="true" />
+      <span className="auth-skeleton-block auth-skeleton-subtitle" aria-hidden="true" />
+      <span className="auth-skeleton-block auth-skeleton-bonus" aria-hidden="true" />
+      <span className="auth-skeleton-block auth-skeleton-field" aria-hidden="true" />
+      <span className="auth-skeleton-block auth-skeleton-field" aria-hidden="true" />
+      <span className="auth-skeleton-block auth-skeleton-button" aria-hidden="true" />
+      <span className="auth-skeleton-block auth-skeleton-social" aria-hidden="true" />
     </div>
   );
 }

@@ -30,7 +30,37 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
   const [authenticated, setAuthenticated] = useState(false);
   const burgerRef = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => { api.me().then(() => setAuthenticated(true)).catch(() => setAuthenticated(false)); }, []);
+  useEffect(() => {
+    let cancelled = false;
+    let timer = 0;
+    let started = false;
+    const startIdentityCheck = () => {
+      if (started) return;
+      started = true;
+      window.removeEventListener("pointerdown", startIdentityCheck);
+      window.removeEventListener("keydown", startIdentityCheck);
+      window.removeEventListener("touchstart", startIdentityCheck);
+      api.me()
+        .then(() => { if (!cancelled) setAuthenticated(true); })
+        .catch(() => { if (!cancelled) setAuthenticated(false); });
+    };
+    const scheduleIdentityCheck = () => {
+      window.addEventListener("pointerdown", startIdentityCheck, { once: true, passive: true });
+      window.addEventListener("keydown", startIdentityCheck, { once: true });
+      window.addEventListener("touchstart", startIdentityCheck, { once: true, passive: true });
+      timer = window.setTimeout(startIdentityCheck, 5_000);
+    };
+    if (document.readyState === "complete") scheduleIdentityCheck();
+    else window.addEventListener("load", scheduleIdentityCheck, { once: true });
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      window.removeEventListener("load", scheduleIdentityCheck);
+      window.removeEventListener("pointerdown", startIdentityCheck);
+      window.removeEventListener("keydown", startIdentityCheck);
+      window.removeEventListener("touchstart", startIdentityCheck);
+    };
+  }, []);
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => setMenuOpen(false));
     return () => window.cancelAnimationFrame(frame);

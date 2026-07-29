@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
 import type { ReactNode } from "react";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 import "./globals.css";
 import "./anim.css";
 import { I18nProvider } from "@/components/i18n-provider";
@@ -9,6 +10,7 @@ import { SiteAnalytics } from "@/components/site-analytics";
 import { RefCapture } from "@/components/ref-capture";
 import { DEFAULT_OG_IMAGE, SITE_ICONS, SITE_NAME, SITE_ORIGIN, seoPages } from "@/lib/seo";
 import { YANDEX_METRIKA_ID, yandexMetrikaBootstrap } from "@/lib/yandex-metrika";
+import { fontVariables } from "./fonts";
 
 const webmasterVerification = {
   ...(process.env.GOOGLE_SITE_VERIFICATION ? { google: process.env.GOOGLE_SITE_VERIFICATION } : {}),
@@ -66,7 +68,7 @@ const themeScript = `(()=>{try{const t=localStorage.getItem('theme')||'dark';doc
 export default async function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   const documentLanguage = (await headers()).get("x-document-language") ?? "en";
   return (
-    <html lang={documentLanguage} suppressHydrationWarning>
+    <html className={fontVariables} lang={documentLanguage} suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
         <script id="yandex-metrika" dangerouslySetInnerHTML={{ __html: yandexMetrikaBootstrap }} />
@@ -78,6 +80,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
           <PersistentRouteShell>{children}</PersistentRouteShell>
         </I18nProvider>
         <SiteAnalytics />
+        <SpeedInsights />
         <RefCapture />
         <noscript>
           <div>

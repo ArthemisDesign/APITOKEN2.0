@@ -12,6 +12,10 @@ import {
 
 export const metadata: Metadata = createPageMetadata(seoPages.docs);
 
+// English docs are content-only and can be generated once. Localized variants
+// retain request-aware language handling in the shared root layout.
+export const dynamic = "force-static";
+
 const docsJsonLd = {
   "@context": "https://schema.org",
   "@graph": [

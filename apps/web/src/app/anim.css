@@ -1,13 +1,7 @@
 /* apiToken.sale — premium motion layer. Tasteful, GPU-friendly, respects reduced-motion. */
 
-/* ---------- hero entrance (runs on load) ---------- */
-.hero-grid > div:first-child > *{opacity:0;transform:translateY(22px);
-  transition:opacity .7s cubic-bezier(.16,.8,.28,1),transform .7s cubic-bezier(.16,.8,.28,1)}
-.hero.loaded .hero-grid > div:first-child > *{opacity:1;transform:none}
-.hero.loaded .hero-grid > div:first-child > .eyebrow{transition-delay:.05s}
-.hero.loaded .hero-grid > div:first-child > h1{transition-delay:.14s}
-.hero.loaded .hero-grid > div:first-child > .lead{transition-delay:.26s}
-.hero.loaded .hero-grid > div:first-child > .hero-cta{transition-delay:.36s}
+/* The above-the-fold hero is visible in the server-rendered HTML. Hiding it until
+   hydration made the heading itself the delayed LCP element on mobile. */
 
 /* ---------- animated aurora in hero background ---------- */
 .hero::before{content:"";position:absolute;inset:-20% -10% auto auto;width:60%;height:120%;
@@ -109,7 +103,7 @@ header.nav.scrolled{box-shadow:0 8px 30px -18px rgba(10,10,10,.35)}
 /* ---------- accessibility ---------- */
 @media (prefers-reduced-motion: reduce){
   *,*::before,*::after{animation:none !important;transition-duration:.001s !important}
-  .hero-grid > div:first-child > *,.term-stage,.term,[data-reveal],[data-reveal-stagger] > *,.reveal{opacity:1 !important;transform:none !important;filter:none !important}
+  .term-stage,.term,[data-reveal],[data-reveal-stagger] > *,.reveal{opacity:1 !important;transform:none !important;filter:none !important}
   .bg-decor .px{display:none}
   .wave-field{display:none}
 }

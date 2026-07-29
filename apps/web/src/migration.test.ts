@@ -5,6 +5,13 @@ import { describe, expect, it } from "vitest";
 const root = join(import.meta.dirname);
 const appRoot = join(root, "app");
 
+function dashboardSource(): string {
+  return [
+    readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8"),
+    readFileSync(join(appRoot, "dashboard", "dashboard-sections.tsx"), "utf8"),
+  ].join("\n");
+}
+
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory).flatMap((name) => {
     const path = join(directory, name);
@@ -97,12 +104,15 @@ describe("completed Next.js migration", () => {
     const analytics = readFileSync(join(root, "components", "site-analytics.tsx"), "utf8");
     const packageJson = readFileSync(join(root, "..", "package.json"), "utf8");
     expect(rootLayout).toContain("<SiteAnalytics />");
+    expect(rootLayout).toContain("<SpeedInsights />");
+    expect(rootLayout).toContain('from "@vercel/speed-insights/next"');
     expect(analytics).toContain('from "@vercel/analytics/next"');
     expect(analytics).toContain("beforeSend");
     expect(analytics).toContain('"utm_source"');
     expect(analytics).toContain('"utm_campaign"');
     expect(analytics).toContain("query.delete(parameter)");
     expect(packageJson).toContain('"@vercel/analytics"');
+    expect(packageJson).toContain('"@vercel/speed-insights"');
   });
 
   it("loads Yandex Metrika globally with SPA pageviews and replay privacy guards", () => {
@@ -110,7 +120,7 @@ describe("completed Next.js migration", () => {
     const analytics = readFileSync(join(root, "components", "site-analytics.tsx"), "utf8");
     const metrika = readFileSync(join(root, "lib", "yandex-metrika.ts"), "utf8");
     const authShell = readFileSync(join(root, "components", "auth-shell.tsx"), "utf8");
-    const dashboard = readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8");
+    const dashboard = dashboardSource();
     const docs = readFileSync(join(appRoot, "docs", "docs-portal.tsx"), "utf8");
 
     expect(rootLayout).toContain('id="yandex-metrika"');
@@ -132,7 +142,7 @@ describe("completed Next.js migration", () => {
   });
 
   it("keeps reloadable dashboard views in the localized canonical dashboard routes", () => {
-    const dashboard = readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8");
+    const dashboard = dashboardSource();
     const routes = readFileSync(join(appRoot, "dashboard", "dashboard-route.ts"), "utf8");
     for (const section of ["overview", "keys", "credits", "promos", "usage", "support", "profile"]) {
       expect(dashboard).toContain(`section === \"${section}\"`);
@@ -179,9 +189,12 @@ describe("completed Next.js migration", () => {
   });
 
   it("renders dashboard pricing as a complete milestone track", () => {
-    const dashboard = readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8");
+    const dashboard = dashboardSource();
     const dashboardCopy = readFileSync(join(root, "lib", "dashboard-copy.ts"), "utf8");
-    const styles = readFileSync(join(appRoot, "globals.css"), "utf8");
+    const styles = [
+      readFileSync(join(appRoot, "globals.css"), "utf8"),
+      readFileSync(join(appRoot, "dashboard", "dashboard.css"), "utf8"),
+    ].join("\n");
     expect(dashboardCopy).toContain('monthlyTierProgress: "Tier progress"');
     expect(dashboardCopy).toContain('spendMore: "Top up {amount} more"');
     expect(dashboard).toContain("B2C_PRICING_MILESTONES.map");
@@ -191,9 +204,12 @@ describe("completed Next.js migration", () => {
   });
 
   it("keeps the dashboard bilingual and authentication-aware", () => {
-    const dashboard = readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8");
+    const dashboard = dashboardSource();
     const dashboardCopy = readFileSync(join(root, "lib", "dashboard-copy.ts"), "utf8");
-    const styles = readFileSync(join(appRoot, "globals.css"), "utf8");
+    const styles = [
+      readFileSync(join(appRoot, "globals.css"), "utf8"),
+      readFileSync(join(appRoot, "dashboard", "dashboard.css"), "utf8"),
+    ].join("\n");
     expect(dashboard).toContain("dashboardCopy[language]");
     expect(dashboardCopy).toContain('navOverview: "Overview"');
     expect(dashboardCopy).toContain('navOverview: "Обзор"');

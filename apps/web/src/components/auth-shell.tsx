@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { localeHref, supportsRussianRoute } from "@/lib/locale-routes";
+import { BackendPreconnect } from "./backend-preconnect";
 import { useI18n } from "./i18n-provider";
 import { ThemeToggle } from "./site-chrome";
 
@@ -15,6 +16,7 @@ export function AuthShell({ children }: { children: ReactNode }) {
   const russianUnavailable = language === "ru" ? "Русская версия недоступна" : "Russian version unavailable";
   return (
     <>
+      <BackendPreconnect />
       <header className="nav">
         <a className="skip-link" href="#main-content">{language === "ru" ? "К содержимому" : "Skip to content"}</a>
         <div className="wrap nav-in">

@@ -31,8 +31,6 @@ export function MotionEffects() {
   const decorRef = useRef<HTMLDivElement>(null);
   const pathname = usePathname();
   useEffect(() => {
-    const hero = document.querySelector(".hero");
-    const frame = window.requestAnimationFrame(() => hero?.classList.add("loaded"));
     const nav = document.querySelector("header.nav");
     const onScroll = () => nav?.classList.toggle("scrolled", window.scrollY > 8);
     onScroll(); window.addEventListener("scroll", onScroll, { passive: true });
@@ -63,7 +61,7 @@ export function MotionEffects() {
     window.addEventListener("pointermove", onPointerMove, { passive: true });
 
     return () => {
-      window.cancelAnimationFrame(frame); window.cancelAnimationFrame(parallaxFrame);
+      window.cancelAnimationFrame(parallaxFrame);
       window.removeEventListener("scroll", onScroll); window.removeEventListener("pointermove", onPointerMove);
       observer?.disconnect();
     };

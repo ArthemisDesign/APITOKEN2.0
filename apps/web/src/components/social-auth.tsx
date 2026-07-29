@@ -28,9 +28,10 @@ export function SocialAuth({ inviteToken }: { inviteToken?: string }) {
       cancelled = true;
     };
   }, []);
-  if (!providers?.google.enabled && !providers?.github.enabled) return null;
+  if (!providers) return <div className="social-auth-slot" aria-hidden="true" />;
+  if (!providers.google.enabled && !providers.github.enabled) return null;
   return (
-    <>
+    <div className="social-auth-slot social-auth-ready">
       <div className="auth-or"><span>{t("auth_or")}</span></div>
       <div className="social">
         {providers.google.enabled && <a className="btn-social btn-social-google" href={oauthUrl("google", inviteToken, ref)} onClick={() => trackProductEvent("Login Submitted", { method: "google", invited: Boolean(inviteToken), referred: Boolean(ref) })}>
@@ -40,6 +41,6 @@ export function SocialAuth({ inviteToken }: { inviteToken?: string }) {
           <GitHubLogo />{t("social_github")}
         </a>}
       </div>
-    </>
+    </div>
   );
 }
