@@ -81,7 +81,7 @@ The production queue remains strictly one SHA at a time.
 | Component | Immutable release | Active unit | Readiness probe |
 |---|---|---|---|
 | Commerce API | `/opt/apitoken/releases/<sha>` | `apitoken-api@3000.service` / `apitoken-api@3001.service` | `http://127.0.0.1:<port>/v1/ready` |
-| Anthropic provider | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api@8787.service` / `claude-api@8788.service` | `http://127.0.0.1:<port>/ready`, stable 8790 |
+| Anthropic provider | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api-anthropic@8787.service` / `claude-api-anthropic@8788.service` | `http://127.0.0.1:<port>/ready`, stable 8790 |
 | OpenAI-compatible provider | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api-openai.service` | `http://127.0.0.1:8793/ready`, stable 8792 |
 | Commerce worker | `/opt/apitoken/releases/<sha>` through `current` | `apitoken-worker.service` | process-active + exact cwd |
 | Content Studio | `/opt/apitoken/releases/<sha>` through `current` | `apitoken-content-studio.service` | `http://127.0.0.1:3500/api/health` + exact cwd |

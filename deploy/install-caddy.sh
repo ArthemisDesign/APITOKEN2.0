@@ -5,19 +5,24 @@ set -euo pipefail
 
 TEMPLATE=${CADDY_TEMPLATE:-/opt/apitoken/repo/deploy/Caddyfile}
 LIVE=${CADDY_CONFIG:-/etc/caddy/Caddyfile}
+LIVE_DIR=${LIVE%/*}
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CHECK_ONLY=0
 [[ ${1:-} != --check ]] || CHECK_ONLY=1
 [[ $# -le 1 ]] || { echo "usage: $0 [--check]" >&2; exit 2; }
 [[ -f "$TEMPLATE" && -f "$LIVE" ]]
 
-tmp=$(mktemp /etc/caddy/.Caddyfile.stage2.XXXXXX)
+tmp=$(mktemp "$LIVE_DIR/.Caddyfile.stage2.XXXXXX")
 legacy_payload=$(mktemp /etc/caddy/.admin-legacy.XXXXXX)
 legacy_response=$(mktemp /etc/caddy/.admin-import-response.XXXXXX)
 curl_config=$(mktemp /etc/caddy/.admin-import-curl.XXXXXX)
 openai_response=$(mktemp /etc/caddy/.openai-surface.XXXXXX)
 backup=
-cleanup() { rm -f -- "$tmp" "$legacy_payload" "$legacy_response" "$curl_config" "$openai_response"; }
+rollback_tmp=
+cleanup() {
+  rm -f -- "$tmp" "$legacy_payload" "$legacy_response" "$curl_config" "$openai_response"
+  [[ -z $rollback_tmp ]] || rm -f -- "$rollback_tmp"
+}
 trap cleanup EXIT
 
 # Preserve production-only service keys without placing any secret in argv, stdout, the repository,
@@ -70,13 +75,38 @@ fi
 
 backup="$LIVE.pre-stage2.$(date -u +%Y%m%dT%H%M%SZ)"
 cp -a "$LIVE" "$backup"
-cp "$tmp" "$LIVE"
-chown --reference="$backup" "$LIVE"
-chmod --reference="$backup" "$LIVE"
+chown --reference="$backup" "$tmp"
+chmod --reference="$backup" "$tmp"
+mv -f -- "$tmp" "$LIVE"
+
+restore_live_config() {
+  rollback_tmp=$(mktemp "$LIVE_DIR/.Caddyfile.rollback.XXXXXX") || return 1
+  if ! cp -a -- "$backup" "$rollback_tmp"; then
+    echo "Caddy rollback copy failed; live candidate remains active" >&2
+    return 1
+  fi
+  if ! mv -f -- "$rollback_tmp" "$LIVE"; then
+    echo "Caddy rollback publication failed; live candidate remains active" >&2
+    return 1
+  fi
+  rollback_tmp=
+  if caddy reload --adapter caddyfile --config "$LIVE"; then
+    return 0
+  fi
+  echo "Caddy rollback reload failed; restarting from the restored configuration" >&2
+  if systemctl restart caddy; then
+    return 0
+  fi
+  echo "CRITICAL: Caddy rejected both rollback reload and restart" >&2
+  return 1
+}
+
 if ! caddy reload --adapter caddyfile --config "$LIVE"; then
-  cp -a "$backup" "$LIVE"
-  caddy reload --adapter caddyfile --config "$LIVE" || true
-  echo "Caddy reload failed; restored $backup" >&2
+  if ! restore_live_config; then
+    echo "Caddy candidate reload failed and rollback could not be activated" >&2
+    exit 1
+  fi
+  echo "Caddy reload failed; restored and activated $backup" >&2
   exit 1
 fi
 # Syntax-valid routing can still point the public OpenAI hostname at the wrong provider. Exercise a
@@ -101,9 +131,11 @@ if grep -q '^openai\.api\.apitoken\.sale {' "$LIVE"; then
     sleep 1
   done
   if [[ $openai_ready != 1 ]]; then
-    cp -a "$backup" "$LIVE"
-    caddy reload --adapter caddyfile --config "$LIVE" || true
-    echo "OpenAI hostname smoke failed; restored $backup" >&2
+    if ! restore_live_config; then
+      echo "OpenAI hostname smoke failed and Caddy rollback could not be activated" >&2
+      exit 1
+    fi
+    echo "OpenAI hostname smoke failed; restored and activated $backup" >&2
     exit 1
   fi
 fi

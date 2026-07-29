@@ -48,6 +48,9 @@ pub struct CodexHomeSpec {
 #[derive(Clone, Debug)]
 pub struct CodexConfig {
     pub enabled: bool,
+    /// Pre-provisioned ownership fence shared by every process that can serve these homes. Its
+    /// parent must not be writable by the service account, so replacing a home cannot bypass it.
+    pub ownership_lock_file: String,
     /// Absolute path to the pinned Codex binary.
     pub binary: String,
     /// Lowercase SHA-256 of the exact platform build. Version text alone is not an attestation.

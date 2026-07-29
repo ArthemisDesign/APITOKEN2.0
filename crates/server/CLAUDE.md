@@ -61,5 +61,7 @@
   IDs, prompt content, account IDs и subscription IDs в Redis/метрики не попадают.
 - **loopback-доверие — только явный opt-in** `CLAUDE_API_TRUST_LOOPBACK=1` + реальный loopback-bind
   (иначе за реверс-прокси аноним получил бы админ-доступ).
+- Shutdown OpenAI сначала ждёт detached Codex stream/history/settlement tasks, затем reaps children;
+  только после этого billing FIFO-flush может завершить процесс и отпустить общий home lock.
 
 **Проверка:** `cargo build -p claude-api`; `cargo run -p claude-api -- serve`.

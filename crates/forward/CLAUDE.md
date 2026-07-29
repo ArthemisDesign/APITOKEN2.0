@@ -145,6 +145,10 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    ретраим). **Ретрай только ДО первого delta:** `emitted`-флаг в `send_update` — как только байт ушёл
    клиенту, вторая попытка запрещена. Все homes за лимитом → один OpenAI-shaped 429 с ближайшим reset,
    а не ошибка конкретного аккаунта. Homes адресуются ИНДЕКСОМ (в логах/метриках нет путей и identity).
+   Весь пул ограждён ОДНИМ pre-provisioned lock под root-owned `/run/apitoken`: per-home locks
+   запрещены, иначе два процесса разделят homes или rename создаст второй inode. Замена home/proxy
+   сначала закрывает admission, ждёт все `TurnSlot`, reaps child и лишь затем публикует поколение.
+   Detached streaming tasks входят в shutdown-barrier до history+settlement; lock живёт до process exit.
 1. Только official `codex app-server` и ChatGPT-owned auth store; токены не читать и не replay-ить.
 2. Проверять exact binary SHA-256/version до запуска; child `env_clear`, только allowlisted proxy env.
 3. Model-visible initial context = explicit client system/developer + transcript + request-local

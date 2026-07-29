@@ -70,11 +70,11 @@ registry  ←  pool  ←  forward  ←  server(bin)
 | `crates/forward` | прозрачный форвардинг /v1/*, поллер лимитов | pool, registry, axum, reqwest | чтение env, CLI, управляющие роуты |
 | `crates/server` | КОМПОЗИЦИЯ: env-конфиг, CLI, роутер, фоновые циклы | forward, pool, registry | бизнес-логику форвардинга (она в forward) |
 
-**Пополнение пула — `tools/authbot` (ВНЕ слоёв API).** Отдельный компонент-ПРОИЗВОДИТЕЛЬ
-подписок: Telegram-бот (Python) покупает подписки и кладёт их в реестр. Он не участвует в
-слоях `registry←…←server`, а стоит ПЕРЕД реестром: пишет в него ТОЛЬКО через CLI
-(`claude-api sub add-file …`), не трогая внутренности крейтов. Владелец-ветка `comp/authbot`,
-локальные правила — `tools/authbot/CLAUDE.md`.
+**Пополнение пула — `crates/authbot` (ВНЕ слоёв API).** Отдельный Rust-компонент-ПРОИЗВОДИТЕЛЬ
+подписок: Telegram-бот покупает Claude/ChatGPT-доступ, пишет Claude-токены через
+`registry::authority`, а Codex-профили публикует отдельными `CODEX_HOME`. Он не участвует в слоях
+`registry←…←server` и не импортирует `pool`/`forward`/`server`. Владелец-ветка `comp/authbot`,
+локальные правила — `crates/authbot/CLAUDE.md`.
 
 **Инварианты (проверяй перед коммитом):**
 1. **Прозрачность.** Для клиента протокол = чистый Anthropic API (тело/ответ/стрим/ошибки).

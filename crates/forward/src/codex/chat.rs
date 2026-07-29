@@ -990,9 +990,16 @@ fn stream_chat(
     max_output_chars: Option<usize>,
     routing: Option<super::TurnRouting>,
 ) -> Response {
+    let task_permit = match gateway.track_background_task() {
+        Ok(permit) => permit,
+        Err(error) => return ApiError::from(error).into_response(),
+    };
     let (frame_tx, frame_rx) = mpsc::channel::<Bytes>(128);
     let request_id_header = completion_id.clone();
     tokio::spawn(async move {
+        let _task_permit = task_permit;
+        // Rebind after the permit so early returns drop billing admission before the shutdown permit.
+        let admission = admission;
         if !send_chat_frame(
             &frame_tx,
             chat_chunk(
@@ -1328,8 +1335,12 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn gateway() -> CodexGateway {
+        let ownership_lock =
+            std::env::temp_dir().join(format!("{}.lock", new_id("codex-chat-test")));
+        std::fs::write(&ownership_lock, []).unwrap();
         CodexGateway::new(CodexConfig {
             enabled: true,
+            ownership_lock_file: ownership_lock.to_str().unwrap().to_string(),
             binary: "/tmp/codex".to_string(),
             binary_sha256: "0".repeat(64),
             expected_version: "codex-cli test".to_string(),

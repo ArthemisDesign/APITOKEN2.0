@@ -978,34 +978,29 @@ async fn serve() -> Result<()> {
     let authority_ready = Arc::new(AtomicBool::new(true));
     spawn_pre_drain_signal(accepting.clone());
     let fleet_size = subs.len();
+    let affinity_secret = s
+        .affinity_secret
+        .as_ref()
+        .map(|secret| format!("{secret}:{}", s.provider.as_str()));
     let affinity = Arc::new(
         forward::AffinityStore::new(
-            if serves_anthropic {
-                s.redis_url.as_deref()
-            } else {
-                None
-            },
-            if serves_anthropic {
-                s.affinity_secret.as_deref()
-            } else {
-                None
-            },
+            s.redis_url.as_deref(),
+            affinity_secret.as_deref(),
             s.affinity_ttl_secs,
             s.affinity_local_ttl_secs,
             s.affinity_redis_timeout_ms,
         )
         .context("initialize cache affinity")?,
     );
-    if serves_anthropic {
-        eprintln!(
-            "cache affinity: local L1 + {} L2",
-            if affinity.redis_configured() {
-                "Redis"
-            } else {
-                "no shared"
-            }
-        );
-    }
+    eprintln!(
+        "cache affinity [{}]: local L1 + {} L2",
+        s.provider.as_str(),
+        if affinity.redis_configured() {
+            "Redis"
+        } else {
+            "no shared"
+        }
+    );
     let codex = if let Some(config) = s.codex.clone() {
         let gateway =
             Arc::new(forward::CodexGateway::new(config).context("initialize Codex provider")?);
@@ -1216,8 +1211,8 @@ async fn serve() -> Result<()> {
         eprintln!("graceful shutdown: дренаж стримов завершён");
     }
     if let Some(codex) = &flush_app.codex {
-        eprintln!("graceful shutdown: останавливаю Codex children перед release home locks");
-        codex.shutdown().await;
+        eprintln!("graceful shutdown: жду Codex settlement tasks и останавливаю children");
+        codex.shutdown_until(shutdown_deadline).await;
     }
     eprintln!("graceful shutdown: дренирую очередь биллинга + флаш пула");
     // Завершённые/оборванные стримы поставили settle в очередь DB-актора. Даже после deadline ждём

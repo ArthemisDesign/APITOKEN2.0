@@ -1085,17 +1085,23 @@ grep -Fq 'Wants=network-online.target apitoken-affinity-redis.service' \
 ! grep -Fq 'Requires=apitoken-affinity-redis.service' "$ROOT/systemd/claude-api-anthropic@.service"
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-anthropic@.service"
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api.service"
-grep -Fq 'CLAUDE_API_PROVIDER=anthropic CLAUDE_API_HOST=127.0.0.1' \
+grep -Fq 'CLAUDE_API_PROVIDER=anthropic CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1' \
   "$ROOT/systemd/claude-api-anthropic@.service"
 ! grep -Fq 'CLAUDE_API_PROVIDER=' "$ROOT/systemd/claude-api@.service"
 ! grep -Fq 'CLAUDE_API_PROVIDER=' "$ROOT/systemd/claude-api.service"
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-openai.service"
-grep -Fq 'CLAUDE_API_PROVIDER=openai CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8793' \
+grep -Fq 'CLAUDE_API_PROVIDER=openai CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8793' \
   "$ROOT/systemd/claude-api-openai.service"
 grep -Fq 'CLAUDE_API_INSTANCE_ID=%H:engine:openai' "$ROOT/systemd/claude-api-openai.service"
 grep -Fq 'claude-api-openai.service' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq '/usr/bin/systemctl restart claude-api-openai.service' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy"
+grep -Fq '/usr/bin/systemctl restart claude-api.service' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die "combined bridge recovery restart is denied by sudo policy"
+grep -Fq '/usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api.service' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die "combined bridge pre-drain is denied by sudo policy"
 grep -Fq 'systemctl_command kill --kill-whom=main -s SIGUSR1 "$ACTIVE_UNIT"' \
   "$ROOT/deploy/engine-bluegreen.sh"
 grep -Fq 'provider-runtime-v1 >"$ENGINE_STAGE/.provider-runtime-v1"' "$ROOT/deploy/deploy.sh" \
@@ -1108,6 +1114,12 @@ grep -Fq '/usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-anthrop
 grep -Fxq 'd /run/apitoken 0755 root root -' "$ROOT/systemd/apitoken-tmpfiles.conf"
 grep -Fxq 'f /run/apitoken/codex-home.lock 0600 deploy deploy -' \
   "$ROOT/systemd/apitoken-tmpfiles.conf"
+for codex_owner_unit in systemd/claude-api.service systemd/claude-api@.service \
+  systemd/claude-api-openai.service; do
+  grep -Fq 'ReadWritePaths=/srv/claude-api/data /run/apitoken/codex-home.lock' \
+    "$ROOT/$codex_owner_unit" \
+    || wd_die "Codex ownership lock is read-only inside $codex_owner_unit"
+done
 grep -Fq 'systemd-tmpfiles --create /etc/tmpfiles.d/apitoken.conf' \
   "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'CLAUDE_API_AFFINITY_SECRET' "$ROOT/deploy/install-watchdog.sh"
@@ -1132,6 +1144,15 @@ grep -Fq 'health_status 4xx' "$ROOT/deploy/Caddyfile"
 grep -Fq 'health_body invalid_request_error' "$ROOT/deploy/Caddyfile"
 grep -Fq 'OpenAI hostname smoke failed; restored' "$ROOT/deploy/install-caddy.sh" \
   || wd_die "Caddy installation can commit a syntactically valid but misrouted OpenAI hostname"
+grep -Fq 'systemctl restart caddy' "$ROOT/deploy/install-caddy.sh" \
+  || wd_die "Caddy rollback cannot recover from an admin reload failure"
+grep -Fq 'mv -f -- "$tmp" "$LIVE"' "$ROOT/deploy/install-caddy.sh" \
+  || wd_die "Caddy candidate publication is not an atomic same-directory rename"
+grep -Fq 'mv -f -- "$rollback_tmp" "$LIVE"' "$ROOT/deploy/install-caddy.sh" \
+  || wd_die "Caddy rollback publication is not an atomic same-directory rename"
+! grep -Fq 'caddy reload --adapter caddyfile --config "$LIVE" || true' \
+  "$ROOT/deploy/install-caddy.sh" \
+  || wd_die "Caddy rollback reload failures are silently ignored"
 claude_api_vhost=$(sed -n '/^api\.apitoken\.sale {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
 openai_api_vhost=$(sed -n '/^openai\.api\.apitoken\.sale {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
 grep -Fq 'import engine_backend' <<<"$claude_api_vhost"
@@ -1195,8 +1216,7 @@ grep -Fq 'claude-authbot.service' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die "the authbot unit is never installed"
 grep -Fq '/usr/bin/systemctl restart claude-authbot.service' "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   || wd_die "the deploy user cannot restart the authbot"
-# Restarting on every engine deploy would kill a device authorization the bot is walking a seller
-# through, so the restart must stay conditional on the binary actually changing.
+# A running old binary has no drain handshake, so deployment may compare it but must never kill it.
 grep -Fq 'cmp -s "$exe" "$current/authbot"' "$ROOT/deploy/deploy.sh" \
   || wd_die "the authbot restart must compare the running binary, not release paths"
 # Asking for a world-readable unit file under sudo earns a policy denial that is indistinguishable
@@ -1264,10 +1284,29 @@ grep -Fq 'rollback_engine || true' <<<"$controller_failure_body" \
   || wd_die "watchdog does not restore the release after every provider controller failure"
 grep -Fq 'acquire_provider_lock(&cfg.ownership_lock_file)' \
   "$ROOT/crates/forward/src/codex/mod.rs" || wd_die "Codex homes have no process-wide ownership fence"
+grep -Fq 'ownership_lock_file: "/run/apitoken/codex-home.lock"' \
+  "$ROOT/crates/server/src/config.rs" || wd_die "Codex ownership fence is not pinned outside the homes"
 grep -Fq 'track_background_task' "$ROOT/crates/forward/src/codex/api.rs" \
   || wd_die "detached Codex response streams bypass the shutdown barrier"
 grep -Fq 'track_background_task' "$ROOT/crates/forward/src/codex/chat.rs" \
   || wd_die "detached Codex chat streams bypass the shutdown barrier"
+grep -Fq '$unit runs a different binary; deferring adoption until the service is already inactive' \
+  "$ROOT/deploy/deploy.sh" \
+  || wd_die "deployment can interrupt an old authbot that has no intake-drain handshake"
+grep -Fq 'claude-api-openai.service claude-authbot.service' "$ROOT/deploy/watchdog.sh" \
+  || wd_die "release retention can unlink the executable backing a deferred authbot"
+grep -Fq 'shutdown_until(shutdown_deadline)' "$ROOT/crates/server/src/main.rs" \
+  || wd_die "Codex shutdown is not bounded by the server drain deadline"
+grep -Fq 'self.abort_active_turns();' "$ROOT/crates/forward/src/codex/mod.rs" \
+  || wd_die "Codex shutdown cannot cancel turns left at the drain deadline"
+grep -Fq 'self.detached.wait_idle().await;' "$ROOT/crates/forward/src/billing.rs" \
+  || wd_die "billing flush can overtake a backpressured detached settlement"
+grep -Fq 'track_detached_work()' "$ROOT/crates/forward/src/meter.rs" \
+  || wd_die "billing flush can overtake an Anthropic disconnect drain before settlement exists"
+grep -Fq 'process_group(0)' "$ROOT/crates/forward/src/codex/process.rs" \
+  || wd_die "Codex helpers are not isolated for process-tree retirement"
+[[ $(grep -Fc '.env_clear()' "$ROOT/crates/authbot/src/codex_login.rs") -eq 2 ]] \
+  || wd_die "Codex login children inherit unrelated authbot secrets"
 
 # Independent final smokes and no-change GitHub contexts run concurrently, but every worker is
 # joined before the overall green verdict. Runtime reconciliation stays ahead of read-only probes

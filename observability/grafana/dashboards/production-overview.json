@@ -43,7 +43,7 @@
       "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
       "id": 4,
       "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
-      "targets": [{ "expr": "sum(node_systemd_unit_state{name=~\"(apitoken-.+|claude-api(@.+|-openai))\\\\.service\",state=\"failed\"}) or vector(0)", "refId": "A" }],
+      "targets": [{ "expr": "sum(node_systemd_unit_state{name=~\"(apitoken-.+|claude-(api(@.+|-anthropic@.+|-openai)?|authbot))\\\\.service\",state=\"failed\"}) or vector(0)", "refId": "A" }],
       "title": "Failed services",
       "type": "stat"
     },

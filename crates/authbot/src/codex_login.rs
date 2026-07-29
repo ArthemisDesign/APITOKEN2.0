@@ -31,10 +31,28 @@ const DEVICE_FLOW_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 struct Session {
     child: Box<dyn portable_pty::Child + Send + Sync>,
     buf: Arc<Mutex<Vec<u8>>>,
+    /// Hidden staging directory. The engine scanner ignores dot-prefixed entries.
     home: PathBuf,
+    published_home: PathBuf,
     proxy: String,
     label: String,
     _master: Box<dyn portable_pty::MasterPty + Send>,
+}
+
+struct StagingDir(Option<PathBuf>);
+
+impl StagingDir {
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for StagingDir {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
 }
 
 fn sessions() -> &'static Mutex<HashMap<i64, Session>> {
@@ -139,9 +157,8 @@ pub fn has(chat: i64) -> bool {
 pub fn cancel(chat: i64) {
     if let Some(mut s) = sessions().lock().unwrap().remove(&chat) {
         let _ = s.child.kill();
-        if !s.home.join(AUTH_STORE).is_file() {
-            let _ = std::fs::remove_dir_all(&s.home);
-        }
+        let _ = s.child.wait();
+        let _ = std::fs::remove_dir_all(&s.home);
     }
 }
 
@@ -166,6 +183,28 @@ fn write_secret(path: &Path, value: &str) -> std::io::Result<()> {
     std::fs::write(path, value)
 }
 
+fn prepare_published_home(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            // The previous authbot authenticated directly in the published directory. A restart
+            // can strand a pre-auth directory there; its child died in the old service cgroup, so
+            // that one migration shape is safe to remove. Never remove a symlink or auth store.
+            if metadata.file_type().is_dir() && !path.join(AUTH_STORE).is_file() {
+                std::fs::remove_dir_all(path).map_err(|e| {
+                    anyhow!("не смог убрать незавершённый старый вход: {}", e.kind())
+                })
+            } else {
+                Err(anyhow!("каталог такого аккаунта уже существует"))
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(anyhow!(
+            "не смог проверить каталог аккаунта: {}",
+            error.kind()
+        )),
+    }
+}
+
 /// Начать device-флоу для нового аккаунта. Возвращает ссылку и код для продавца.
 pub fn start(
     chat: i64,
@@ -182,12 +221,13 @@ pub fn start(
     if !Path::new(codex_bin).is_file() {
         return Err(anyhow!("codex CLI недоступен на этом хосте"));
     }
-    let home = Path::new(homes_dir).join(&slug);
-    if home.join(AUTH_STORE).is_file() {
-        return Err(anyhow!("такой аккаунт уже в пуле"));
-    }
-    // Каталог мог остаться от прерванной попытки — начинаем с чистого листа.
+    let published_home = Path::new(homes_dir).join(&slug);
+    prepare_published_home(&published_home)?;
+    // Authenticate under a hidden sibling and publish with one rename only after account type and
+    // egress are final. Otherwise discovery can race auth.json appearing before proxy.url.
+    let home = Path::new(homes_dir).join(format!(".{slug}.pending-{chat}"));
     let _ = std::fs::remove_dir_all(&home);
+    let mut staging = StagingDir(Some(home.clone()));
     std::fs::create_dir_all(&home)
         .map_err(|e| anyhow!("не смог создать каталог аккаунта: {}", e.kind()))?;
     secure_dir(&home).map_err(|e| anyhow!("не смог закрыть права каталога: {}", e.kind()))?;
@@ -200,6 +240,7 @@ pub fn start(
         pixel_height: 0,
     })?;
     let mut cmd = CommandBuilder::new(codex_bin);
+    cmd.env_clear();
     cmd.arg("login");
     cmd.arg("--device-auth");
     // Ребёнок не наследует окружение бота: только то, что нужно этому логину.
@@ -217,9 +258,16 @@ pub fn start(
         }
     }
 
-    let child = pair.slave.spawn_command(cmd)?;
+    let mut child = pair.slave.spawn_command(cmd)?;
     drop(pair.slave);
-    let mut reader = pair.master.try_clone_reader()?;
+    let mut reader = match pair.master.try_clone_reader() {
+        Ok(reader) => reader,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error.into());
+        }
+    };
     let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
     let buf2 = buf.clone();
     std::thread::spawn(move || {
@@ -238,11 +286,13 @@ pub fn start(
             child,
             buf: buf.clone(),
             home: home.clone(),
+            published_home,
             proxy: proxy.trim().to_string(),
             label: label.to_string(),
             _master: pair.master,
         },
     );
+    staging.disarm();
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -261,13 +311,15 @@ pub fn start(
 /// Спросить у CLI, чем именно закончился логин. Единственное, что мы читаем из профиля, —
 /// эта строка статуса; сам auth store не открываем.
 fn is_chatgpt_login(codex_bin: &str, home: &Path) -> bool {
-    let out = std::process::Command::new(codex_bin)
+    let mut command = std::process::Command::new(codex_bin);
+    command
+        .env_clear()
         .arg("login")
         .arg("status")
         .env("CODEX_HOME", home)
         .env("HOME", home)
-        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-        .output();
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin");
+    let out = command.output();
     match out {
         Ok(out) => {
             let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
@@ -288,9 +340,16 @@ pub fn wait(chat: i64, codex_bin: &str) -> Outcome {
                 return Outcome::Failed("сессия потеряна".into());
             };
             match s.child.try_wait() {
-                Ok(Some(_)) => true,
-                Ok(None) => false,
-                Err(e) => return Outcome::Failed(format!("{}", e.kind())),
+                Ok(Some(_)) => Ok(true),
+                Ok(None) => Ok(false),
+                Err(e) => Err(e.kind()),
+            }
+        };
+        let finished = match finished {
+            Ok(finished) => finished,
+            Err(kind) => {
+                cancel(chat);
+                return Outcome::Failed(format!("{kind}"));
             }
         };
         if finished {
@@ -323,6 +382,14 @@ pub fn wait(chat: i64, codex_bin: &str) -> Outcome {
             return Outcome::Failed(format!("не смог сохранить прокси аккаунта: {}", e.kind()));
         }
     }
+    if std::fs::symlink_metadata(&s.published_home).is_ok() {
+        let _ = std::fs::remove_dir_all(&s.home);
+        return Outcome::Failed("каталог аккаунта появился во время авторизации".into());
+    }
+    if let Err(e) = std::fs::rename(&s.home, &s.published_home) {
+        let _ = std::fs::remove_dir_all(&s.home);
+        return Outcome::Failed(format!("не смог опубликовать аккаунт в пул: {}", e.kind()));
+    }
     Outcome::Authorized {
         label: s.label,
         has_proxy,
@@ -332,6 +399,19 @@ pub fn wait(chat: i64, codex_bin: &str) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_DIR: AtomicU64 = AtomicU64::new(1);
+
+    fn temp_dir() -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "authbot-codex-login-{}-{}",
+            std::process::id(),
+            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&path).unwrap();
+        path
+    }
 
     /// Реальный вывод пиннованного codex 0.145.0 (с раскраской).
     const SAMPLE: &str = "Welcome to Codex [v\u{1b}[90m0.145.0\u{1b}[0m]\n\n\
@@ -377,5 +457,37 @@ Follow these steps to sign in with ChatGPT using device code authorization:\n\n\
         assert_eq!(slug("Seller.One+tag@Example.COM"), "seller-one-tag-example-com");
         assert_eq!(slug("../../etc/passwd"), "etc-passwd");
         assert!(slug("!!!").is_empty());
+    }
+
+    #[test]
+    fn interrupted_legacy_home_is_removed_but_an_auth_store_is_preserved() {
+        let root = temp_dir();
+        let home = root.join("account");
+        std::fs::create_dir(&home).unwrap();
+        prepare_published_home(&home).unwrap();
+        assert!(!home.exists());
+
+        std::fs::create_dir(&home).unwrap();
+        std::fs::write(home.join(AUTH_STORE), "{}").unwrap();
+        assert!(prepare_published_home(&home).is_err());
+        assert!(home.join(AUTH_STORE).is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn staging_guard_removes_failures_and_preserves_published_state() {
+        let root = temp_dir();
+        let failed = root.join("failed");
+        std::fs::create_dir(&failed).unwrap();
+        drop(StagingDir(Some(failed.clone())));
+        assert!(!failed.exists());
+
+        let published = root.join("published");
+        std::fs::create_dir(&published).unwrap();
+        let mut guard = StagingDir(Some(published.clone()));
+        guard.disarm();
+        drop(guard);
+        assert!(published.is_dir());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

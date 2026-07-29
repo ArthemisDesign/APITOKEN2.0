@@ -28,9 +28,10 @@ pub(crate) use runner::{CodexTurnRequest, CodexTurnResult, CodexUsage, TurnUpdat
 
 use crate::affinity::{AffinityInput, AffinityResolution, AffinityStore};
 use history::HistoryStore;
+use std::fs::{File, OpenOptions, TryLockError};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore};
 
 /// Cache-first routing context for one turn, mirroring the Claude fleet's affinity flow.
 ///
@@ -64,7 +65,9 @@ impl TurnRouting {
     }
 
     fn preferred_home(&self) -> Option<&str> {
-        self.resolution.as_ref().map(|resolution| resolution.home.as_str())
+        self.resolution
+            .as_ref()
+            .map(|resolution| resolution.home.as_str())
     }
 
     /// Persist the affinity binding to the home that actually served the turn. Called only on
@@ -95,6 +98,67 @@ const AUTH_QUARANTINE_SECS: i64 = 900;
 const TRANSPORT_COOL_SECS: i64 = 10;
 /// Fallback wait advertised to a client when every home is limited but no window published a reset.
 const DEFAULT_LIMIT_RETRY_SECS: u64 = 60;
+/// Detached public stream tasks are bounded by the server-wide admission limit in practice. This
+/// larger private semaphore provides a quiescence barrier without imposing a lower runtime cap.
+const MAX_BACKGROUND_TASKS: u32 = 1_000_000;
+
+#[derive(Debug)]
+struct ProviderLock {
+    _file: File,
+}
+
+fn acquire_provider_lock(path: &str) -> Result<ProviderLock, ProcessError> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|_| ProcessError::HomeLockUnavailable)?;
+    match file.try_lock() {
+        Ok(()) => Ok(ProviderLock { _file: file }),
+        Err(TryLockError::WouldBlock) => Err(ProcessError::HomeInUse),
+        Err(TryLockError::Error(_)) => Err(ProcessError::HomeLockUnavailable),
+    }
+}
+
+#[derive(Clone, Debug)]
+struct HomeIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+impl HomeIdentity {
+    fn capture(path: &str) -> Option<Self> {
+        let metadata = std::fs::metadata(path).ok()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Some(Self {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = metadata;
+            Some(Self {})
+        }
+    }
+
+    fn is_current(&self, path: &str) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(path)
+                .is_ok_and(|metadata| metadata.dev() == self.device && metadata.ino() == self.inode)
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::metadata(path).is_ok()
+        }
+    }
+}
 
 pub(crate) fn new_id(prefix: &str) -> String {
     let mut random = [0u8; 16];
@@ -159,6 +223,7 @@ pub struct CodexOperationalStatus {
 /// One authenticated `CODEX_HOME` and the child that serves it.
 pub(crate) struct CodexHome {
     spec: CodexHomeSpec,
+    identity: Option<HomeIdentity>,
     /// Position in the discovered pool: explicit homes first, then scanned ones in name order.
     /// Only a tie-break for selection, so it may be renumbered freely as the pool changes; the
     /// stable identity used for labels is `spec.id`.
@@ -166,11 +231,13 @@ pub(crate) struct CodexHome {
     cfg: Arc<CodexConfig>,
     process: Mutex<Option<Arc<CodexProcess>>>,
     process_start: Mutex<()>,
+    retired: AtomicBool,
     /// Turns in flight on this home right now. Concurrency is deliberately unbounded, exactly like
     /// the Claude fleet: this counter is only a load signal for least-loaded selection and metrics,
     /// never a cap. A `TurnSlot` guard increments it on admission and decrements on drop, so a
     /// client disconnect never leaks a phantom busy slot.
     inflight: Arc<AtomicUsize>,
+    turns_idle: Arc<Notify>,
     cooling_until: AtomicI64,
     /// Last known verdict of `account/read`. Startup and the health probe both write it.
     auth_ok: AtomicBool,
@@ -187,12 +254,15 @@ pub(crate) struct CodexHome {
 impl CodexHome {
     fn new(cfg: Arc<CodexConfig>, spec: CodexHomeSpec, order: usize) -> Self {
         Self {
+            identity: HomeIdentity::capture(&spec.path),
             spec,
             order: AtomicUsize::new(order),
             cfg,
             process: Mutex::new(None),
             process_start: Mutex::new(()),
+            retired: AtomicBool::new(false),
             inflight: Arc::new(AtomicUsize::new(0)),
+            turns_idle: Arc::new(Notify::new()),
             cooling_until: AtomicI64::new(0),
             auth_ok: AtomicBool::new(true),
             spend_nano_total: AtomicI64::new(0),
@@ -252,33 +322,109 @@ impl CodexHome {
 
     /// Take an in-flight turn slot on this home. Concurrency is unbounded, so this always succeeds;
     /// the returned guard keeps the load counter accurate for selection and metrics until it drops.
-    fn acquire_turn(self: &Arc<Self>) -> TurnSlot {
-        self.inflight.fetch_add(1, Ordering::Relaxed);
-        TurnSlot {
+    fn acquire_turn(self: &Arc<Self>) -> Option<TurnSlot> {
+        if self.retired.load(Ordering::Acquire) {
+            return None;
+        }
+        self.inflight.fetch_add(1, Ordering::AcqRel);
+        if self.retired.load(Ordering::Acquire) {
+            release_turn(&self.inflight, &self.turns_idle);
+            return None;
+        }
+        Some(TurnSlot {
             inflight: self.inflight.clone(),
+            idle: self.turns_idle.clone(),
+        })
+    }
+
+    fn identity_is_current(&self) -> bool {
+        match &self.identity {
+            Some(identity) => identity.is_current(&self.spec.path),
+            None => std::fs::metadata(&self.spec.path).is_err(),
+        }
+    }
+
+    async fn wait_for_turns(&self) {
+        loop {
+            let notified = self.turns_idle.notified();
+            if self.inflight.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
         }
     }
 
     /// Return a live, subscription-authenticated process. Startup is serialized per home, but
     /// normal JSON-RPC requests and independent turns are multiplexed over the same child.
     pub(crate) async fn process(&self) -> Result<Arc<CodexProcess>, ProcessError> {
-        if let Some(process) = self.process.lock().await.as_ref().cloned() {
-            if process.is_live() {
-                return Ok(process);
+        if !self.identity_is_current() {
+            self.retired.store(true, Ordering::Release);
+        }
+        if !self.retired.load(Ordering::Acquire) {
+            if let Some(process) = self.process.lock().await.as_ref().cloned() {
+                if process.is_ready() {
+                    return Ok(process);
+                }
             }
         }
 
         let _start = self.process_start.lock().await;
-        if let Some(process) = self.process.lock().await.as_ref().cloned() {
-            if process.is_live() {
-                return Ok(process);
+        if !self.identity_is_current() {
+            self.retired.store(true, Ordering::Release);
+        }
+        let stale = {
+            let mut current = self.process.lock().await;
+            if !self.retired.load(Ordering::Acquire) {
+                if let Some(process) = current.as_ref().filter(|process| process.is_ready()) {
+                    return Ok(process.clone());
+                }
+            }
+            current.take()
+        };
+        if let Some(stale) = stale {
+            if let Err(error) = stale.shutdown().await {
+                self.retired.store(true, Ordering::Release);
+                *self.process.lock().await = Some(stale);
+                return Err(error);
             }
         }
+        if self.retired.load(Ordering::Acquire) {
+            return Err(ProcessError::Closed);
+        }
 
-        let process =
-            Arc::new(CodexProcess::spawn(self.cfg.clone(), &self.spec).await?);
-        *self.process.lock().await = Some(process.clone());
+        // Publish the child before its first initialization await. If this future is cancelled, the
+        // next caller finds the unready generation and reaps it instead of starting alongside it.
+        let mut current = self.process.lock().await;
+        let process = Arc::new(CodexProcess::launch(self.cfg.clone(), &self.spec).await?);
+        *current = Some(process.clone());
+        drop(current);
+        if let Err(error) = process.start().await {
+            if let Err(shutdown_error) = process.shutdown().await {
+                self.retired.store(true, Ordering::Release);
+                return Err(shutdown_error);
+            }
+            let mut current = self.process.lock().await;
+            if current
+                .as_ref()
+                .is_some_and(|candidate| Arc::ptr_eq(candidate, &process))
+            {
+                *current = None;
+            }
+            return Err(error);
+        }
         Ok(process)
+    }
+
+    async fn retire(&self) -> Result<(), ProcessError> {
+        self.retired.store(true, Ordering::Release);
+        // A turn can invalidate its process, so wait for all turn guards before taking process_start.
+        self.wait_for_turns().await;
+        let _start = self.process_start.lock().await;
+        let process = self.process.lock().await.take();
+        if let Some(process) = process {
+            process.shutdown().await?;
+        }
+        Ok(())
     }
 
     async fn live_process(&self) -> Option<Arc<CodexProcess>> {
@@ -286,13 +432,20 @@ impl CodexHome {
             .lock()
             .await
             .as_ref()
-            .filter(|process| process.is_live())
+            .filter(|process| process.is_ready())
             .cloned()
     }
 
     pub(crate) async fn invalidate(&self, process: &Arc<CodexProcess>) {
         let _start = self.process_start.lock().await;
-        process.shutdown().await;
+        if let Err(error) = process.shutdown().await {
+            self.retired.store(true, Ordering::Release);
+            eprintln!(
+                "Codex child invalidation failed [{}]",
+                error.diagnostic_class()
+            );
+            return;
+        }
         let mut current = self.process.lock().await;
         if current
             .as_ref()
@@ -436,16 +589,78 @@ impl CodexHome {
     }
 }
 
+#[cfg(test)]
+mod provider_lock_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_HOME: AtomicU64 = AtomicU64::new(1);
+
+    fn workspace(label: &str) -> std::path::PathBuf {
+        let suffix = NEXT_HOME.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "claude-api-codex-{label}-{}-{suffix}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn provider_lock_fences_concurrent_owner_and_releases_on_drop() {
+        let root = workspace("provider-lock");
+        let path = root.join("ownership.lock");
+        std::fs::write(&path, []).unwrap();
+        let path = path.to_str().unwrap();
+
+        let owner = acquire_provider_lock(path).unwrap();
+        assert!(matches!(
+            acquire_provider_lock(path),
+            Err(ProcessError::HomeInUse)
+        ));
+        drop(owner);
+        drop(acquire_provider_lock(path).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replacing_a_home_does_not_replace_the_provider_fence() {
+        let root = workspace("home-replace");
+        let home = root.join("homes/account");
+        std::fs::create_dir_all(&home).unwrap();
+        let lock = root.join("ownership.lock");
+        std::fs::write(&lock, []).unwrap();
+
+        let owner = acquire_provider_lock(lock.to_str().unwrap()).unwrap();
+        std::fs::remove_dir_all(&home).unwrap();
+        std::fs::create_dir(&home).unwrap();
+        assert!(matches!(
+            acquire_provider_lock(lock.to_str().unwrap()),
+            Err(ProcessError::HomeInUse)
+        ));
+
+        drop(owner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
 /// RAII load-counter guard for one in-flight turn. Dropping it — on success, error, or client
 /// disconnect — releases the home's load slot. It is not a concurrency cap; the count only steers
 /// least-loaded selection and feeds the inflight metric.
 pub(crate) struct TurnSlot {
     inflight: Arc<AtomicUsize>,
+    idle: Arc<Notify>,
+}
+
+fn release_turn(inflight: &AtomicUsize, idle: &Notify) {
+    if inflight.fetch_sub(1, Ordering::AcqRel) == 1 {
+        idle.notify_waiters();
+    }
 }
 
 impl Drop for TurnSlot {
     fn drop(&mut self) {
-        self.inflight.fetch_sub(1, Ordering::Relaxed);
+        release_turn(&self.inflight, &self.idle);
     }
 }
 
@@ -453,7 +668,9 @@ impl Drop for TurnSlot {
 enum HomeSelection {
     Ready(Arc<CodexHome>, TurnSlot),
     /// Every home is cooling or out of window headroom; `ready_at` is the soonest recovery.
-    Unavailable { ready_at: Option<i64> },
+    Unavailable {
+        ready_at: Option<i64>,
+    },
 }
 
 /// Owns and restarts the pinned app-server processes for every configured home. The composition
@@ -461,14 +678,24 @@ enum HomeSelection {
 /// are recovered lazily. Existing Claude routing is completely independent when Codex is disabled.
 pub struct CodexGateway {
     cfg: Arc<CodexConfig>,
+    shutting_down: AtomicBool,
+    abort_turns: AtomicBool,
+    abort_notify: Notify,
+    background_tasks: Arc<Semaphore>,
+    rediscover_lock: Mutex<()>,
     /// Rediscovered on every health tick, so an account the authbot finishes buying joins the pool
     /// without a restart. Readers take a snapshot; the lock is never held across a turn.
     homes: RwLock<Vec<Arc<CodexHome>>>,
     history: Arc<HistoryStore>,
+    /// Declared last so Rust drops every home/child before releasing the process-wide fence.
+    /// A per-home fence can split a multi-home pool between two provider generations, while this
+    /// fixed root-owned path cannot be replaced by a home rename or authbot publication.
+    _ownership_lock: ProviderLock,
 }
 
 impl CodexGateway {
     pub fn new(cfg: CodexConfig) -> anyhow::Result<Self> {
+        let ownership_lock = acquire_provider_lock(&cfg.ownership_lock_file)?;
         let history = HistoryStore::new(
             cfg.history_redis_url.as_deref(),
             cfg.history_secret.as_deref(),
@@ -493,8 +720,14 @@ impl CodexGateway {
             .collect();
         Ok(Self {
             cfg,
+            shutting_down: AtomicBool::new(false),
+            abort_turns: AtomicBool::new(false),
+            abort_notify: Notify::new(),
+            background_tasks: Arc::new(Semaphore::new(MAX_BACKGROUND_TASKS as usize)),
+            rediscover_lock: Mutex::new(()),
             homes: RwLock::new(homes),
             history: Arc::new(history),
+            _ownership_lock: ownership_lock,
         })
     }
 
@@ -505,40 +738,88 @@ impl CodexGateway {
 
     /// Reconcile the pool with what is on disk.
     ///
-    /// An existing home keeps its live child and its cooling/auth state — rediscovery must never
-    /// reset a quarantine or drop a warm process. A home whose directory disappeared leaves the
-    /// pool; its child is dropped and killed with it.
+    /// An unchanged home keeps its live child and cooling/auth state. Removed, replaced, or
+    /// reconfigured homes are retired explicitly after active turns finish.
     async fn rediscover(&self) {
-        let specs = discovery::discover(&self.cfg.homes, self.cfg.homes_dir.as_deref());
-        let mut homes = self.homes.write().await;
-        let mut next: Vec<Arc<CodexHome>> = Vec::with_capacity(specs.len());
-        for (order, spec) in specs.into_iter().enumerate() {
-            match homes.iter().find(|home| home.path() == spec.path) {
-                // Keep the live instance. A changed proxy only takes effect on the next child
-                // start, which is correct: restarting a healthy child to re-read egress would
-                // interrupt in-flight turns.
-                Some(existing) => {
-                    existing.order.store(order, Ordering::Relaxed);
-                    next.push(existing.clone());
-                }
-                None => {
-                    eprintln!("Codex home {} joined the pool", spec.id);
-                    next.push(Arc::new(CodexHome::new(self.cfg.clone(), spec, order)));
+        let _reconcile = self.rediscover_lock.lock().await;
+        loop {
+            if self.shutting_down.load(Ordering::Acquire) {
+                return;
+            }
+            let specs = discovery::discover(&self.cfg.homes, self.cfg.homes_dir.as_deref());
+            if specs.is_empty() {
+                // Never empty the pool from a scan: a transient unreadable directory would otherwise
+                // take the whole provider down while the previous homes were still serving.
+                eprintln!("Codex rediscovery found no homes; keeping the current pool");
+                return;
+            }
+            let mut homes = self.homes.write().await;
+            let mut next: Vec<Arc<CodexHome>> = Vec::with_capacity(specs.len());
+            let mut retiring: Vec<Arc<CodexHome>> = Vec::new();
+            let mut joining: Vec<(usize, CodexHomeSpec)> = Vec::new();
+            for (order, spec) in specs.into_iter().enumerate() {
+                match homes.iter().find(|home| {
+                    home.path() == spec.path
+                        && !home.retired.load(Ordering::Acquire)
+                        && home.identity_is_current()
+                        && home.spec.proxy == spec.proxy
+                }) {
+                    Some(existing) => {
+                        existing.order.store(order, Ordering::Relaxed);
+                        next.push(existing.clone());
+                    }
+                    None => {
+                        if let Some(replaced) = homes.iter().find(|home| home.path() == spec.path) {
+                            replaced.retired.store(true, Ordering::Release);
+                            retiring.push(replaced.clone());
+                            eprintln!("Codex home {} configuration changed", replaced.id());
+                        }
+                        joining.push((order, spec));
+                    }
                 }
             }
-        }
-        for gone in homes.iter() {
-            if !next.iter().any(|home| home.path() == gone.path()) {
-                eprintln!("Codex home {} left the pool", gone.id());
+            for gone in homes.iter() {
+                if !next.iter().any(|home| home.path() == gone.path())
+                    && !retiring
+                        .iter()
+                        .any(|candidate| Arc::ptr_eq(candidate, gone))
+                {
+                    gone.retired.store(true, Ordering::Release);
+                    retiring.push(gone.clone());
+                    eprintln!("Codex home {} left the pool", gone.id());
+                }
             }
-        }
-        if next.is_empty() {
-            // Never empty the pool from a scan: a transient unreadable directory would otherwise
-            // take the whole provider down while the previous homes were still serving.
-            eprintln!("Codex rediscovery found no homes; keeping the current pool");
+            // Remove retiring homes from selection before waiting on their active turns. Replacements
+            // are published only after the old child has exited, so one auth store never has two live
+            // generations in this process.
+            let had_retiring = !retiring.is_empty();
+            *homes = next.clone();
+            drop(homes);
+            for home in retiring {
+                if let Err(error) = home.retire().await {
+                    eprintln!(
+                        "Codex home retirement failed [{}]",
+                        error.diagnostic_class()
+                    );
+                    return;
+                }
+            }
+            if self.shutting_down.load(Ordering::Acquire) {
+                return;
+            }
+            if had_retiring {
+                // Retirement can last an entire active turn. Re-read auth and proxy metadata before
+                // publishing a replacement rather than serving a stale pre-retirement snapshot.
+                continue;
+            }
+            for (order, spec) in joining {
+                eprintln!("Codex home {} joined the pool", spec.id);
+                next.push(Arc::new(CodexHome::new(self.cfg.clone(), spec, order)));
+            }
+            next.sort_by_key(|home| home.order());
+            *self.homes.write().await = next;
             return;
         }
-        *homes = next;
     }
 
     pub fn config(&self) -> &CodexConfig {
@@ -547,6 +828,75 @@ impl CodexGateway {
 
     pub(crate) fn history(&self) -> &HistoryStore {
         &self.history
+    }
+
+    /// Reserve one detached stream task in the shutdown barrier. The second shutdown check closes
+    /// the race where shutdown starts after the first check but before the permit is acquired.
+    pub(crate) fn track_background_task(&self) -> Result<OwnedSemaphorePermit, ProcessError> {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(ProcessError::Closed);
+        }
+        let permit = self
+            .background_tasks
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| ProcessError::Closed)?;
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(ProcessError::Closed);
+        }
+        Ok(permit)
+    }
+
+    async fn turn_abort_requested(&self) {
+        loop {
+            let notified = self.abort_notify.notified();
+            if self.abort_turns.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    fn abort_active_turns(&self) {
+        self.abort_turns.store(true, Ordering::Release);
+        self.abort_notify.notify_waiters();
+    }
+
+    /// Wait for detached turns to persist and settle until the server drain deadline, then cancel
+    /// any remainder before stopping every child. The process-wide ownership lock remains held by
+    /// `self` until the server process exits.
+    pub async fn shutdown(&self) {
+        self.shutdown_until(None).await;
+    }
+
+    pub async fn shutdown_until(&self, deadline: Option<tokio::time::Instant>) {
+        self.shutting_down.store(true, Ordering::Release);
+        let barrier = self
+            .background_tasks
+            .clone()
+            .acquire_many_owned(MAX_BACKGROUND_TASKS);
+        let _background_barrier = match deadline {
+            Some(deadline) => match tokio::time::timeout_at(deadline, barrier).await {
+                Ok(permit) => permit.ok(),
+                Err(_) => {
+                    self.abort_active_turns();
+                    self.background_tasks
+                        .clone()
+                        .acquire_many_owned(MAX_BACKGROUND_TASKS)
+                        .await
+                        .ok()
+                }
+            },
+            None => barrier.await.ok(),
+        };
+        // Also cancel an untracked provider operation such as a health probe before retirement.
+        self.abort_active_turns();
+        let _reconcile = self.rediscover_lock.lock().await;
+        for home in self.homes().await {
+            if let Err(error) = home.retire().await {
+                eprintln!("Codex child shutdown failed [{}]", error.diagnostic_class());
+            }
+        }
     }
 
     fn admit_below_percent(&self) -> i64 {
@@ -569,17 +919,25 @@ impl CodexGateway {
         preferred: Option<&str>,
         warm: &[String],
     ) -> HomeSelection {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return HomeSelection::Unavailable { ready_at: None };
+        }
         let now = pool::now();
         let admit_below = self.admit_below_percent();
         let pool_homes = self.homes().await;
         let mut candidates = Vec::with_capacity(pool_homes.len());
         let mut soonest: Option<i64> = None;
         for home in &pool_homes {
+            if home.retired.load(Ordering::Acquire) {
+                continue;
+            }
             if exclude.iter().any(|id| id == home.id()) {
                 continue;
             }
             if home.is_cooling(now) {
-                soonest = Some(soonest.map_or(home.cooling_until(), |v: i64| v.min(home.cooling_until())));
+                soonest = Some(
+                    soonest.map_or(home.cooling_until(), |v: i64| v.min(home.cooling_until())),
+                );
                 continue;
             }
             let limits = home.rate_limits().await;
@@ -600,32 +958,37 @@ impl CodexGateway {
         // 1) The conversation's pinned home, if it is currently usable. 2) Otherwise the least-loaded
         // home that already holds this request's shared cache root. 3) Otherwise the least-loaded home.
         // Concurrency per home is unbounded, so the chosen home always accepts the turn.
-        let home = preferred
-            .and_then(|id| {
-                candidates
-                    .iter()
-                    .find(|(_, _, home)| home.id() == id)
-                    .map(|(_, _, home)| home.clone())
-            })
-            .or_else(|| {
-                candidates
-                    .iter()
-                    .find(|(_, _, home)| warm.iter().any(|id| id == home.id()))
-                    .map(|(_, _, home)| home.clone())
-            })
-            .unwrap_or_else(|| {
-                candidates
-                    .into_iter()
-                    .next()
-                    .expect("candidates is non-empty")
-                    .2
-            });
-        let slot = home.acquire_turn();
-        HomeSelection::Ready(home, slot)
+        let mut ordered: Vec<Arc<CodexHome>> = Vec::with_capacity(candidates.len());
+        if let Some(id) = preferred {
+            if let Some((_, _, home)) = candidates.iter().find(|(_, _, home)| home.id() == id) {
+                ordered.push(home.clone());
+            }
+        }
+        for (_, _, home) in &candidates {
+            if warm.iter().any(|id| id == home.id())
+                && !ordered.iter().any(|chosen| Arc::ptr_eq(chosen, home))
+            {
+                ordered.push(home.clone());
+            }
+        }
+        for (_, _, home) in candidates {
+            if !ordered.iter().any(|chosen| Arc::ptr_eq(chosen, &home)) {
+                ordered.push(home);
+            }
+        }
+        for home in ordered {
+            if let Some(slot) = home.acquire_turn() {
+                return HomeSelection::Ready(home, slot);
+            }
+        }
+        HomeSelection::Unavailable { ready_at: soonest }
     }
 
     /// A process from any usable home, for provider-level reads such as model discovery.
     pub(crate) async fn any_process(&self) -> Result<Arc<CodexProcess>, ProcessError> {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(ProcessError::Closed);
+        }
         let now = pool::now();
         let mut last_error = ProcessError::Closed;
         let pool_homes = self.homes().await;
@@ -686,9 +1049,15 @@ impl CodexGateway {
     /// otherwise stay silently dead until the pool needed it. Quarantined homes are probed too, so
     /// a re-authenticated profile returns to service without a restart.
     pub async fn probe_health(&self) {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return;
+        }
         // Pick up accounts finished since the last tick before probing, so a new home is health
         // checked on the same pass that admits it.
         self.rediscover().await;
+        if self.shutting_down.load(Ordering::Acquire) {
+            return;
+        }
         for home in &self.homes().await {
             let process = match home.process().await {
                 Ok(process) => process,
@@ -758,7 +1127,9 @@ impl CodexHome {
             }
             // A configuration or attestation fault is not transient and must not be retried in a
             // hot loop; the deployment gate is the place that fixes it.
-            ProcessError::InvalidConfig(_)
+            ProcessError::HomeInUse
+            | ProcessError::HomeLockUnavailable
+            | ProcessError::InvalidConfig(_)
             | ProcessError::DigestMismatch { .. }
             | ProcessError::VersionMismatch { .. }
             | ProcessError::Disabled => self.cool_for(AUTH_QUARANTINE_SECS),

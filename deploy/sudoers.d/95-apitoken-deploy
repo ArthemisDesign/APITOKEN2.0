@@ -98,6 +98,8 @@ Cmnd_Alias APITOKEN_UNITS = \
     /usr/bin/systemctl stop claude-api.service, \
     /usr/bin/systemctl enable claude-api.service, \
     /usr/bin/systemctl disable claude-api.service, \
+    /usr/bin/systemctl restart claude-api.service, \
+    /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api.service, \
     /usr/bin/systemctl start claude-api-openai.service, \
     /usr/bin/systemctl stop claude-api-openai.service, \
     /usr/bin/systemctl restart claude-api-openai.service, \

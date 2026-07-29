@@ -48,7 +48,7 @@ back to `next start` when an older full-tree release is selected for rollback.
 └── previous -> /srv/claude-api/releases/<prior-sha>
 ```
 
-After the one-time database cutover, `claude-api@8787.service` and `claude-api@8788.service` start
+After the one-time database cutover, `claude-api-anthropic@8787.service` and `claude-api-anthropic@8788.service` start
 `/srv/claude-api/releases/current/claude-api serve` in fixed `anthropic` mode with unique port and
 instance identities. `claude-api-openai.service` starts the same immutable binary in fixed `openai`
 mode on 8793 with its own PostgreSQL owner identity. Exact-unit readiness verifies both the target
@@ -61,8 +61,8 @@ The optional official Codex child has a parallel content-addressed artifact root
 `/srv/claude-api/data/codex/bin`. It is not rebuilt while assembling an engine release. When pinned
 Codex tooling changed, the watchdog marker supplies the tested executable digest and the fixed
 promotion helper atomically selects its immutable path in `config.env` before a new engine slot is
-started. Each active home also holds `.claude-api-home.lock` for its full ownership lifetime, so a
-failed handoff cannot overlap two app-server processes on one auth store.
+started. The provider process holds `/run/apitoken/codex-home.lock` for the complete pool lifetime,
+so a failed handoff cannot split homes between two app-server generations.
 
 ## Link validity
 

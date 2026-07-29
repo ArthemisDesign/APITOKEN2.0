@@ -125,7 +125,7 @@ client.messages.create(model="claude-opus-4-8", max_tokens=256,
 
 Все переменные — в [`config.env.example`](config.env.example) (пул/порт/апстрим) и секреты в
 [`server.env.example`](server.env.example) (ключи API). Production Anthropic PostgreSQL-слоты
-запускает [`systemd/claude-api@.service`](systemd/claude-api@.service), а отдельный
+запускает [`systemd/claude-api-anthropic@.service`](systemd/claude-api-anthropic@.service), а отдельный
 OpenAI-compatible процесс —
 [`systemd/claude-api-openai.service`](systemd/claude-api-openai.service); untemplated
 [`systemd/claude-api.service`](systemd/claude-api.service) оставлен только как one-time bridge.

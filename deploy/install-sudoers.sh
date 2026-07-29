@@ -143,6 +143,9 @@ require_permitted 'daemon-reload' /usr/bin/systemctl daemon-reload
 require_permitted 'Anthropic slot start' /usr/bin/systemctl start claude-api-anthropic@8787.service
 require_permitted 'Anthropic slot stop' /usr/bin/systemctl stop claude-api-anthropic@8788.service
 require_permitted 'combined bridge slot stop' /usr/bin/systemctl stop claude-api@8788.service
+require_permitted 'combined bridge restart' /usr/bin/systemctl restart claude-api.service
+require_permitted 'combined bridge drain signal' \
+  /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api.service
 require_permitted 'engine drain signal' \
   /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-anthropic@8787.service
 require_permitted 'OpenAI provider restart' /usr/bin/systemctl restart claude-api-openai.service

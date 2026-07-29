@@ -671,6 +671,16 @@ impl Drop for TeeMeter {
         // authoritative final usage can settle the request. The stream carries the capacity/global
         // guards, so those remain held until the drain completes.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let detached_work = self.ctx.as_ref().and_then(|ctx| {
+                ctx.bill
+                    .as_ref()
+                    .map(|bill| bill.billing.track_detached_work())
+                    .or_else(|| {
+                        ctx.capacity
+                            .as_ref()
+                            .map(|(billing, _)| billing.track_detached_work())
+                    })
+            });
             let inner = std::mem::replace(&mut self.inner, Box::pin(futures_util::stream::empty()));
             let ctx = self.ctx.take();
             let acc = std::mem::take(&mut self.acc);
@@ -703,6 +713,7 @@ impl Drop for TeeMeter {
                     }
                 }
                 meter.finalize();
+                drop(detached_work);
             });
         } else {
             // Only possible outside the HTTP runtime (for example during abnormal teardown).

@@ -476,7 +476,7 @@ live_release_shas() {
   local unit pid resolved name
   for unit in claude-api.service claude-api@8787.service claude-api@8788.service \
     claude-api-anthropic@8787.service claude-api-anthropic@8788.service \
-    claude-api-openai.service \
+    claude-api-openai.service claude-authbot.service \
     apitoken-api@3000.service apitoken-api@3001.service \
     apitoken-worker.service apitoken-content-studio.service; do
     systemctl is-active --quiet "$unit" || continue

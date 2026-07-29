@@ -288,6 +288,7 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
 
     Some(CodexConfig {
         enabled: true,
+        ownership_lock_file: "/run/apitoken/codex-home.lock".to_string(),
         binary: ev_or(
             "CLAUDE_API_CODEX_BIN",
             "/srv/claude-api/data/codex/bin/codex",
@@ -309,12 +310,7 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
             120_000,
         ),
         request_timeout_ms: bounded_u64("CLAUDE_API_CODEX_RPC_TIMEOUT_MS", 15_000, 500, 120_000),
-        turn_timeout_ms: bounded_u64(
-            "CLAUDE_API_CODEX_TURN_TIMEOUT_MS",
-            600_000,
-            5_000,
-            3_600_000,
-        ),
+        turn_timeout_ms: bounded_u64("CLAUDE_API_CODEX_TURN_TIMEOUT_MS", 600_000, 5_000, 600_000),
         max_concurrent_turns: bounded_usize("CLAUDE_API_CODEX_MAX_CONCURRENT", 4, 1, 64),
         admit_below_used_percent: bounded_i64("CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT", 95, 1, 100),
         window_cap_usd_prior: bounded_f64(
@@ -479,8 +475,8 @@ impl Settings {
             reserve5h: ev_frac("CLAUDE_API_RESERVE_5H", 0.10),
             reserve7d: ev_frac("CLAUDE_API_RESERVE_7D", 0.03),
             reserve_jitter: ev_frac("CLAUDE_API_RESERVE_JITTER", 0.02),
-            // Fail-closed clamps: readiness-delay ≤ 30с; drain-deadline в [5, 595]с — оставляем
-            // headroom под systemd TimeoutStopSec=600 и исключаем переполнение Instant + deadline.
+            // Fail-closed clamps: readiness-delay ≤ 30с; drain-deadline в [5, 595]с. На deadline
+            // Codex отменяет остаток turns; запас до TimeoutStopSec=660 остаётся на reap и billing flush.
             readiness_delay_secs: bounded_u64("CLAUDE_API_READINESS_DELAY_SECS", 3, 0, 30),
             drain_deadline_secs: bounded_u64("CLAUDE_API_DRAIN_DEADLINE_SECS", 540, 5, 595),
             // Потолок параллельных запросов на подписку. Дефолт 6 (человеческий конверт/анти-бан).

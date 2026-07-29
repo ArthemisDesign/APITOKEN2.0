@@ -70,7 +70,7 @@ health-gated upstreams are `127.0.0.1:8787` and `127.0.0.1:8788`. The OpenAI hos
 stable origin, `127.0.0.1:8792`, over singleton runtime `127.0.0.1:8793`. During the first split only,
 8792 also recognizes the old combined slot with an internal marker that Caddy overwrites; the
 Anthropic public route strips the same header. Clients therefore cannot move a request between
-runtimes. A follow-up Caddy-only release removes that bridge after 8793 is green. The watchdog
+runtimes. A follow-up routing/monitoring release removes that bridge after 8793 is green. The watchdog
 resolves the OpenAI hostname to loopback and probes it over HTTPS, covering the public vhost boundary
 end to end.
 
@@ -82,11 +82,13 @@ start OpenAI, preventing overlap with a legacy combined process. Later releases 
 and then gracefully restart OpenAI from the same selected SHA.
 
 The singleton guarantees graceful established streams, not zero downtime for new OpenAI requests.
-After its listener closes, a long in-flight turn can delay home-lock release and the new process for
-the configured drain deadline; Anthropic remains available, while OpenAI target/synthetic alerts may
-fire truthfully. Bridge cleanup must change 8792 to direct 8793 `/ready` health, remove both legacy
-slot addresses and both API-plane header directives, and restore the unambiguous Anthropic Caddy-pair
-alert.
+After its listener closes, detached settlement tasks may drain through the shared server deadline.
+At that deadline the gateway cancels any residual Codex turn, reaps its process group, queues the
+reservation outcome, and only then allows the process-wide home lock to be released. Anthropic
+remains available, while OpenAI target/synthetic alerts may fire truthfully. Bridge cleanup must
+change 8792 to direct 8793 `/ready` health, remove both legacy slot addresses and both API-plane
+header directives, restore the unambiguous Anthropic Caddy-pair alert, and update the static
+routing/monitoring contracts in the same release.
 
 The commerce API and worker use `http://127.0.0.1:8790`, a loopback-only Caddy listener over the
 Anthropic slots. They must never address either deployment slot or the OpenAI origin. The provider

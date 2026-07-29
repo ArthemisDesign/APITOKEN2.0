@@ -2013,9 +2013,16 @@ fn stream_responses(
     created_at: i64,
     routing: Option<super::TurnRouting>,
 ) -> Response {
+    let task_permit = match gateway.track_background_task() {
+        Ok(permit) => permit,
+        Err(error) => return ApiError::from(error).into_response(),
+    };
     let (frame_tx, frame_rx) = mpsc::channel::<Bytes>(128);
     let request_id_header = response_id.clone();
     tokio::spawn(async move {
+        let _task_permit = task_permit;
+        // Rebind after the permit so early returns drop billing admission before the shutdown permit.
+        let admission = admission;
         let mut sequence = 0u64;
         let in_progress = response_object(
             &prepared.request,
@@ -3140,8 +3147,12 @@ mod tests {
     }
 
     fn gateway() -> CodexGateway {
+        let ownership_lock =
+            std::env::temp_dir().join(format!("{}.lock", new_id("codex-api-test")));
+        std::fs::write(&ownership_lock, []).unwrap();
         CodexGateway::new(CodexConfig {
             enabled: true,
+            ownership_lock_file: ownership_lock.to_str().unwrap().to_string(),
             binary: "/tmp/codex".to_string(),
             binary_sha256: "0".repeat(64),
             expected_version: "codex-cli test".to_string(),

@@ -322,7 +322,15 @@ projected onto the same canonical shape through `infer_codex`), so a follow-up r
 home's warm OpenAI prompt cache instead of being spread by load. A new conversation prefers a home
 already holding the shared system/tools cache root, then the least-loaded home. Affinity is a
 fail-open optimization — local L1 plus the optional shared Redis L2 — and is a no-op while the pool
-holds a single home.
+holds a single home. Fixed provider processes derive separate affinity keys from the shared secret,
+so Anthropic and OpenAI session aliases cannot overwrite each other's Redis placement.
+
+The gateway takes one advisory lock for the complete pool at
+`/run/apitoken/codex-home.lock`. `systemd/apitoken-tmpfiles.conf` creates that file under a
+root-owned, non-writable parent before any provider starts. A per-home lock is insufficient because
+two concurrently starting processes could each win a different profile, and replacing a home could
+replace the lock inode. Home directory identity is checked separately; replacement or proxy changes
+retire the old child after its active turns finish, then publish the new generation.
 
 Optional controls:
 
@@ -336,7 +344,7 @@ CLAUDE_API_CODEX_TURN_TIMEOUT_MS=600000
 CLAUDE_API_CODEX_RESERVE_OVERHEAD_TOKENS=16384
 CLAUDE_API_CODEX_HISTORY_TTL_SECS=86400
 CLAUDE_API_CODEX_HISTORY_LOCAL_CAP=10000
-CLAUDE_API_CODEX_HISTORY_REDIS_TIMEOUT_MS=100
+CLAUDE_API_CODEX_HISTORY_REDIS_TIMEOUT_MS=1000
 ```
 
 When `CLAUDE_API_REDIS_URL` enables shared response history, Codex reuses
@@ -392,7 +400,13 @@ and pool sums in `claude_api_codex_window_capacity_usd{slot}` /
 window duration for non-weekly windows. Calibration state is in-memory: after a restart it
 re-anchors from the first new snapshot, so treat the first hours after a deploy as prior-backed. Streaming delivery is bounded: a client that stops consuming frames cannot block the shared
 app-server transport indefinitely. Its already-started turn is still drained to authoritative usage
-and settled, matching the existing Claude disconnect invariant.
+and settled, matching the existing Claude disconnect invariant. Detached Responses/Chat stream tasks
+hold a gateway shutdown permit through history persistence and settlement; shutdown waits for all of
+them until the server drain deadline. It then cancels any remainder and reaps the whole Codex process
+group before allowing the process-wide home lock to be released. Backpressured detached settlements
+are tracked until they enter the billing FIFO, so its final flush cannot overtake them. The normal
+turn-completion timeout remains capped at 600 seconds; the shutdown deadline is the stricter bound
+during a deploy.
 
 ## Buying accounts: the authbot device flow
 
@@ -401,14 +415,14 @@ it. A ChatGPT subscription has no token we may keep, so the unit that grows this
 directory. `crates/authbot` therefore drives `codex login --device-auth` itself:
 
 1. the seller is paid through the existing offer flow and supplies a proxy and the account address;
-2. the bot creates `<CLAUDE_API_CODEX_HOMES_DIR>/<slug>` mode 0700 and starts the device flow in a
-   PTY with that `CODEX_HOME`, sending the login through the seller's proxy so the purchase and the
-   later traffic do not look like two different users;
+2. the bot creates hidden sibling `.<slug>.pending-<chat>` mode 0700 and starts the device flow in a
+   PTY with that staging `CODEX_HOME`, sending the login through the seller's proxy so the purchase
+   and the later traffic do not look like two different users;
 3. the seller opens the printed link, enters the one-time code (valid 15 minutes) and approves;
 4. the pinned CLI polls OpenAI itself and exits — unlike the Claude flow there is no `code#state`
    to paste back;
 5. the bot confirms with `codex login status` that the profile is a ChatGPT login, writes the
-   optional `proxy.url` (0600), and stops touching the directory.
+   optional `proxy.url` (0600), then atomically renames staging to the public `<slug>` directory.
 
 The bot never reads, prints or forwards anything from the auth store. A flow that expires, is
 refused, or completes as an API-key login leaves no directory behind, so an unfinished purchase
@@ -416,8 +430,10 @@ cannot enter the pool. The engine admits the account on its next health tick —
 config edit, no root.
 
 The authbot is built beside the engine and promoted from the same immutable candidate. The release
-controller restarts `claude-authbot.service` only when its running executable differs, so an
-unrelated engine deploy does not interrupt an in-progress device authorization.
+controller never kills a running different authbot because old versions have no race-free intake
+drain handshake. The watchdog protects that live binary's immutable release; the new binary is
+adopted only when the service is already inactive or later restarts naturally. This avoids the
+cross-version `auth.json`/`proxy.url` publication race entirely.
 
 ## Verification and activation
 
@@ -440,11 +456,11 @@ Before enabling production traffic:
     typed Responses streaming, Chat Completions and Chat streaming.
 12. Point an unmodified current Codex CLI profile at the gateway and verify both a text-only turn
     and a custom `exec` call/output round trip.
- 13. Verify unsupported nested routes return OpenAI-shaped `404` responses and never reach Claude.
- 14. Verify the stored-response lifecycle: a `store=true` turn is retrievable via
-     `GET /v1/responses/{id}` and `/input_items`, deletable via `DELETE`, and a `store=false`
-     turn 404s on all three. Verify `POST /v1/responses/input_tokens` returns an estimate.
- 15. Enable through the normal watchdog/blue-green promotion and wait for `/ready` plus smoke checks.
+13. Verify unsupported nested routes return OpenAI-shaped `404` responses and never reach Claude.
+14. Verify the stored-response lifecycle: a `store=true` turn is retrievable via
+    `GET /v1/responses/{id}` and `/input_items`, deletable via `DELETE`, and a `store=false`
+    turn 404s on all three. Verify `POST /v1/responses/input_tokens` returns an estimate.
+15. Enable through the normal watchdog/blue-green promotion and wait for `/ready` plus smoke checks.
 
 ## Deliberate first-release gaps
 
@@ -460,9 +476,11 @@ The provider-only kill switch is:
 CLAUDE_API_CODEX_ENABLED=0
 ```
 
-Disabling it leaves the Claude path, database schema and balances unchanged. There is no database
-migration for this provider. Full engine rollback remains the normal pinned-SHA watchdog rollback;
-the pre-Codex production baseline is recorded in the deployment log before activation.
+Disabling it leaves the fixed OpenAI process healthy but returns an OpenAI-shaped
+`invalid_request_error` from its public surface; the Claude path, database schema and balances remain
+unchanged. There is no database migration for this provider. Full engine rollback remains the normal
+pinned-SHA watchdog rollback; the provider controller requires both current and previous immutable
+releases to carry the tested `.provider-runtime-v1` capability marker before destructive handoff.
 
 The production kill-switch drill on 2026-07-24 promoted off-phase engine SHA
 `ba6fa42f7b430d3798a89a4cc0847f8ed725d472` through the complete watchdog gate. Its process

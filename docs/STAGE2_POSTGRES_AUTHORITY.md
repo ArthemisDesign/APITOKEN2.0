@@ -75,7 +75,7 @@ safe ownership overlap. PostgreSQL mode relaxes it only after the real fault mat
 
 ## Readiness and blue-green routing
 
-Anthropic slots are `claude-api@8787.service` and `claude-api@8788.service`, each pinned to provider
+Anthropic slots are `claude-api-anthropic@8787.service` and `claude-api-anthropic@8788.service`, each pinned to provider
 mode `anthropic`. `SIGUSR1` changes `/ready` to 503 immediately while leaving `/health`, the listener,
 and established SSE streams alive. After Caddy depools old, `SIGTERM` begins the bounded graceful
 drain. The OpenAI-compatible provider is the singleton `claude-api-openai.service`, pinned to mode
@@ -88,9 +88,9 @@ controller requires 8790 before, during, and after Anthropic drain, then exact-r
 OpenAI singleton and requires 8792 before committing the cohort.
 
 Every process uses a distinct `CLAUDE_API_INSTANCE_ID`. PostgreSQL remains authoritative for shared
-customer balances, request reservations, settlement and fencing across both providers. Codex auth
-stores add a narrower host-local invariant: before spawning a child, each `CodexHome` takes a
-nonblocking advisory lock on `.claude-api-home.lock` and holds it across child restarts.
+customer balances, request reservations, settlement and fencing across both providers. Codex adds a
+host-local invariant: the OpenAI process takes `/run/apitoken/codex-home.lock` before discovering any
+home and holds that single process-wide fence across every child restart.
 
 ## One-time cutover and rollback boundary
 

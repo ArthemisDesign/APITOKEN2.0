@@ -37,7 +37,8 @@ database state only. Grafana users are auto-provisioned as viewers.
   is recorded. Investigate directly with:
 
   ```bash
-  journalctl -u 'claude-api@*.service' -u claude-api-openai.service --since today --grep='"event":"customer_http_error"'
+  journalctl -u 'claude-api-anthropic@*.service' -u claude-api-openai.service \
+    --since today --grep='"event":"customer_http_error"'
   ```
 
 The Grafana and telemetry volumes are not business records. Dashboards and alert rules are
@@ -261,8 +262,8 @@ That home's device login expired or was revoked. New homes should be republished
 hidden staging flow. For an in-place manual reauthentication, stop only
 `claude-api-openai.service`, authenticate as the unprivileged engine user against that home's own
 `CODEX_HOME`, then start the same unit and require 8792 readiness. Claude remains online throughout.
-Never copy, print or archive an auth store, never delete `.claude-api-home.lock`, and never point two
-homes at one store.
+Never copy, print or archive an auth store, never replace `/run/apitoken/codex-home.lock`, and never
+point two homes at one store.
 
 ## CodexHomeNearRateLimit
 

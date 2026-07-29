@@ -14,7 +14,7 @@ EnvironmentFile=-/srv/claude-api/data/config.env
 EnvironmentFile=-/srv/claude-api/data/server.env
 EnvironmentFile=/srv/claude-api/data/engine-postgres.env
 # Argv-level assignments cannot be overridden by a shared EnvironmentFile.
-ExecStart=/usr/bin/env CLAUDE_API_PROVIDER=openai CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8793 CLAUDE_API_INSTANCE_ID=%H:engine:openai /srv/claude-api/releases/current/claude-api serve
+ExecStart=/usr/bin/env CLAUDE_API_PROVIDER=openai CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8793 CLAUDE_API_INSTANCE_ID=%H:engine:openai /srv/claude-api/releases/current/claude-api serve
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM
@@ -24,7 +24,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/srv/claude-api/data
+ReadWritePaths=/srv/claude-api/data /run/apitoken/codex-home.lock
 MemoryMax=2G
 
 [Install]

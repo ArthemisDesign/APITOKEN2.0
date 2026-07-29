@@ -252,8 +252,8 @@ curl -sS -H 'content-type: application/json' \
   -d '{"model":"gpt-5.6","input":"ping","temperature":0.5}' \
   https://openai.api.apitoken.sale/v1/responses \
   | jq -e '.error.type == "invalid_request_error"'
-systemctl list-units 'claude-api@*.service'
-systemctl list-unit-files 'claude-api@*.service'
+systemctl list-units 'claude-api-anthropic@*.service' 'claude-api@*.service'
+systemctl list-unit-files 'claude-api-anthropic@*.service' 'claude-api@*.service'
 systemctl status claude-api-openai.service
 ```
 
@@ -347,10 +347,15 @@ changes, verify and install it before the matching blue-green cycle; `daemon-rel
 the already-running process:
 
 ```bash
-sudo systemd-analyze verify systemd/claude-api@.service systemd/claude-api-openai.service systemd/apitoken-api@.service
+sudo systemd-analyze verify systemd/claude-api.service systemd/claude-api@.service \
+  systemd/claude-api-anthropic@.service systemd/claude-api-openai.service systemd/apitoken-api@.service
+sudo install -o root -g root -m 0644 systemd/claude-api.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/claude-api@.service /etc/systemd/system/
+sudo install -o root -g root -m 0644 systemd/claude-api-anthropic@.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/claude-api-openai.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/apitoken-api@.service /etc/systemd/system/
+sudo install -o root -g root -m 0644 systemd/apitoken-tmpfiles.conf /etc/tmpfiles.d/apitoken.conf
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/apitoken.conf
 sudo systemctl daemon-reload
 ```
 
@@ -419,7 +424,8 @@ remain the authoritative recovery objects.
   before making another mutation.
 
 ```bash
-sudo journalctl -u 'claude-api@*' -u claude-api-openai -u 'apitoken-api@*' -u apitoken-worker --since today
+sudo journalctl -u 'claude-api-anthropic@*' -u claude-api-openai \
+  -u 'claude-api@*' -u 'apitoken-api@*' -u apitoken-worker --since today
 sudo caddy validate --config /etc/caddy/Caddyfile
 systemctl is-active caddy apitoken-worker claude-api-backup.timer
 ```

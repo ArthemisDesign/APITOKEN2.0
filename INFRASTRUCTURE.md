@@ -44,12 +44,12 @@ explicitly loopback-bound stable Control API at `127.0.0.1:8790`, never through 
 The legacy core host is not an upstream or fallback.
 
 The first provider-split release temporarily lets 8792 recognize the still-serving combined slot;
-`deploy/CADDY.md` defines that bounded bridge and its mandatory Caddy-only cleanup. It is not the
+`deploy/CADDY.md` defines that bounded bridge and its mandatory routing/monitoring cleanup. It is not the
 steady-state topology shown above.
 
 The Rust engine ran on an interim host (`5.9.59.83`, shared with an unrelated project) until it was
-migrated onto this commercial host on 2026-07-14. Anthropic now runs here as `claude-api@8787` or
-`claude-api@8788`, while OpenAI-compatible Codex runs as `claude-api-openai.service` (plus
+migrated onto this commercial host on 2026-07-14. Anthropic now runs here as `claude-api-anthropic@8787` or
+`claude-api-anthropic@8788`, while OpenAI-compatible Codex runs as `claude-api-openai.service` (plus
 `claude-authbot.service` and the `claude-api-backup.timer`) under the
 `deploy` user, with its
 authority in the isolated PostgreSQL `claude_engine` database; the drained SQLite snapshot remains
@@ -129,7 +129,8 @@ systemd/apitoken-api@.service         release-symlink API unit; instance name is
 systemd/apitoken-worker.service
 systemd/apitoken-content-studio.service
 systemd/claude-api.service          one-time SQLite-to-PostgreSQL bridge
-systemd/claude-api@.service         PostgreSQL-fenced Anthropic blue/green slots
+systemd/claude-api@.service         disabled-after-cutover combined bridge slots
+systemd/claude-api-anthropic@.service PostgreSQL-fenced Anthropic blue/green slots
 systemd/claude-api-openai.service   PostgreSQL-fenced OpenAI/Codex singleton
 systemd/claude-api-backup.service
 systemd/claude-api-backup.timer
@@ -148,8 +149,10 @@ deploy/commerce-postgres.compose.yaml
 Normal operations:
 
 ```bash
-sudo systemctl status apitoken-postgres apitoken-worker 'apitoken-api@*' 'claude-api@*' claude-api-openai
-sudo journalctl -u 'apitoken-api@*' -u apitoken-worker -u 'claude-api@*' -u claude-api-openai --since today
+sudo systemctl status apitoken-postgres apitoken-worker 'apitoken-api@*' \
+  'claude-api-anthropic@*' claude-api-openai
+sudo journalctl -u 'apitoken-api@*' -u apitoken-worker \
+  -u 'claude-api-anthropic@*' -u claude-api-openai --since today
 sudo systemctl status caddy
 sudo caddy validate --config /etc/caddy/Caddyfile
 curl -fsS http://127.0.0.1:8790/ready

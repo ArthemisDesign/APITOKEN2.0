@@ -53,12 +53,12 @@
 | выбор подписки, ротацию, cooling, состояние лимитов | `pool` | `comp/pool` |
 | форвардинг, инжект identity, поллер, стрим | `forward` | `comp/forward` |
 | env-конфиг, CLI, роутер, фоновые циклы, проводку | `server` | `comp/server` |
-| покупку подписок и пополнение пула (Telegram-бот) | `tools/authbot` | `comp/authbot` |
+| покупку подписок и пополнение пула (Telegram-бот) | `crates/authbot` | `comp/authbot` |
 
-**Пополнение пула (вне слоёв API).** `tools/authbot` — Python Telegram-бот: покупает подписки
-(офферы → оплата USDT BEP-20 → выпуск 1-летнего setup-token + прокси) и регистрирует их в
-реестр ЭТОГО проекта через CLI `claude-api sub add-file`. Стоит ПЕРЕД `registry` как производитель;
-внутренности крейтов не трогает. Работает исключительно на пул этого проекта (свой bot-токен/env).
+**Пополнение пула (вне слоёв API).** `crates/authbot` — Rust Telegram-бот: покупает Claude и
+ChatGPT-подписки, записывает Claude-токены через `registry::authority`, а завершённые Codex device
+flows атомарно публикует как отдельные `CODEX_HOME`. Стоит ПЕРЕД `registry` как производитель и не
+импортирует `pool`, `forward` или `server`.
 
 ## Ключевые решения
 
@@ -68,12 +68,13 @@
   OpenAI model-discovery на `openai.api.apitoken.sale` проходят через pinned official
   `codex app-server`; это совместимый текстовый subset, а не прозрачный OpenAI Platform forwarding.
   `api.apitoken.sale` остаётся исключительно Claude-плоскостью: auth-заголовки провайдера не
-  выбирают. Anthropic работает в blue-green `claude-api@8787/8788`, OpenAI — в отдельном singleton
+  выбирают. Anthropic работает в blue-green `claude-api-anthropic@8787/8788`, OpenAI — в отдельном singleton
   `claude-api-openai.service`; оба используют один fenced PostgreSQL authority, но не общий HTTP
   процесс, router или lifecycle. Патч удаляет локальные Codex instructions/tools/context, оставляя только явный
   клиентский контекст. Transport не читает auth store, требует ChatGPT account type, attests binary
-  SHA/version и не меняет Claude path. Каждый реальный Codex home держит advisory lock на auth store,
-  поэтому два процесса не могут одновременно запустить app-server с одним `CODEX_HOME`.
+  SHA/version и не меняет Claude path. Один pre-provisioned process-wide lock под root-owned
+  `/run/apitoken` ограждает весь набор homes: два процесса не могут разделить пул между собой, а
+  rename/замена отдельного `CODEX_HOME` не создаёт второй lock inode.
 - **Identity-инжект** — цена работы на подписочном токене; вынесен в конфиг, тюнится без пересборки.
 - **Ротация до стрима** — статус ответа проверяется до отдачи тела, поэтому переключение подписок
   при 429/5xx не рвёт клиентский стрим.
@@ -104,7 +105,7 @@
 описаны отдельно в [`docs/CODEX_APP_SERVER.md`](docs/CODEX_APP_SERVER.md).
 
 Детали конфигурации — `config.env.example` / `server.env.example`. Деплой — единый provider cohort:
-`systemd/claude-api@.service`, `systemd/claude-api-openai.service` и
+`systemd/claude-api-anthropic@.service`, `systemd/claude-api-openai.service` и
 `deploy/engine-bluegreen.sh` (legacy cutover unit remains one-time only).
 
 ## Коммерческий контур (отдельно от движка)

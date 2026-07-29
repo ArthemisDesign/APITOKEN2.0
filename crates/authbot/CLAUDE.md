@@ -44,8 +44,9 @@
   `CLAUDE_API_CODEX_HOMES_DIR`, иначе купленный аккаунт никто не подхватит.
 - `AUTH_BOT_IPROYAL_KEY` — авто-выпуск прокси (пусто = ручной ввод).
 
-**Деплой:** бот собирается и перезапускается ВРУЧНУЮ (`claude-authbot.service` запускает
-`/srv/claude-api/target/release/authbot`). Watchdog его тестирует как часть workspace, но не
-рестартит — после мёржа не забудь пересобрать бинарь на хосте.
+**Деплой:** watchdog собирает бот вместе с движком и кладёт протестированный бинарь в immutable
+engine release; `claude-authbot.service` запускает `/srv/claude-api/releases/current/authbot`.
+Деплой не убивает уже работающий другой бинарь, потому что старые версии не имеют intake-drain
+handshake: новый подхватится, когда сервис уже неактивен или позже перезапустится естественно.
 
 **Проверка:** `cargo test -p authbot`. Живой прогон Telegram/OAuth — только на сервере.

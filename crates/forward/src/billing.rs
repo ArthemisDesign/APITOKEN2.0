@@ -20,7 +20,7 @@ use registry::{AccountRow, BillingTotals, KeyAuth, KeyPolicyUpdate, KeyRow};
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Notify};
 
 /// Billing queues are deliberately bounded. The request path applies async backpressure instead of
 /// retaining an arbitrary number of commands while PostgreSQL/SQLite is unavailable.
@@ -41,6 +41,7 @@ const RESERVE_HANDOFF_FAILED: u8 = 6;
 // вернуть резерв другого параллельного запроса того же аккаунта.
 struct ReserveHandoffGuard<'a> {
     writer: &'a mpsc::Sender<WriteCmd>,
+    detached: Arc<DetachedDispatchTracker>,
     request_id: String,
     account_id: String,
     key: String,
@@ -92,6 +93,7 @@ impl Drop for ReserveHandoffGuard<'_> {
                     {
                         dispatch_detached(
                             self.writer,
+                            &self.detached,
                             WriteCmd::CancelReserve {
                                 request_id: self.request_id.clone(),
                                 account_id: self.account_id.clone(),
@@ -114,16 +116,59 @@ impl Drop for ReserveHandoffGuard<'_> {
     }
 }
 
+#[derive(Default)]
+struct DetachedDispatchTracker {
+    pending: AtomicUsize,
+    idle: Notify,
+}
+
+impl DetachedDispatchTracker {
+    fn begin(self: &Arc<Self>) -> DetachedDispatchGuard {
+        self.pending.fetch_add(1, Ordering::AcqRel);
+        DetachedDispatchGuard {
+            tracker: self.clone(),
+        }
+    }
+
+    async fn wait_idle(&self) {
+        loop {
+            let notified = self.idle.notified();
+            if self.pending.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+pub(crate) struct DetachedDispatchGuard {
+    tracker: Arc<DetachedDispatchTracker>,
+}
+
+impl Drop for DetachedDispatchGuard {
+    fn drop(&mut self) {
+        if self.tracker.pending.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.tracker.idle.notify_waiters();
+        }
+    }
+}
+
 /// Queue a command from synchronous RAII/finalization code without blocking a Tokio worker. A full
 /// bounded queue is drained by a tiny async waiter; the number of such waiters is itself bounded by
 /// the global active-stream/request admission limits.
-fn dispatch_detached(writer: &mpsc::Sender<WriteCmd>, cmd: WriteCmd) {
+fn dispatch_detached(
+    writer: &mpsc::Sender<WriteCmd>,
+    tracker: &Arc<DetachedDispatchTracker>,
+    cmd: WriteCmd,
+) {
+    let dispatch = tracker.begin();
     match writer.try_send(cmd) {
         Ok(()) => {}
         Err(mpsc::error::TrySendError::Full(cmd)) => {
             let writer = writer.clone();
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                 handle.spawn(async move {
+                    let _dispatch = dispatch;
                     if writer.send(cmd).await.is_err() {
                         eprintln!("billing writer stopped before a detached command was queued");
                     }
@@ -132,6 +177,7 @@ fn dispatch_detached(writer: &mpsc::Sender<WriteCmd>, cmd: WriteCmd) {
                 let _ = std::thread::Builder::new()
                     .name("billing-backpressure".into())
                     .spawn(move || {
+                        let _dispatch = dispatch;
                         if writer.blocking_send(cmd).is_err() {
                             eprintln!(
                                 "billing writer stopped before a detached command was queued"
@@ -352,11 +398,16 @@ enum ReadCmd {
 /// Async-фасад биллинга: writer-канал + пул reader-каналов. Клонируется (в `Arc`) во все хендлеры.
 pub struct AsyncBilling {
     writer: mpsc::Sender<WriteCmd>,
+    detached: Arc<DetachedDispatchTracker>,
     readers: Vec<mpsc::Sender<ReadCmd>>,
     rr: AtomicUsize, // round-robin по читателям
 }
 
 impl AsyncBilling {
+    pub(crate) fn track_detached_work(&self) -> DetachedDispatchGuard {
+        self.detached.begin()
+    }
+
     pub fn start_authority(
         config: registry::authority::AuthorityConfig,
         owner: Option<registry::pg::Owner>,
@@ -590,6 +641,7 @@ impl AsyncBilling {
         }
         Ok(AsyncBilling {
             writer: wtx,
+            detached: Arc::new(DetachedDispatchTracker::default()),
             readers: rtxs,
             rr: AtomicUsize::new(0),
         })
@@ -890,6 +942,7 @@ impl AsyncBilling {
         }
         Ok(AsyncBilling {
             writer: wtx,
+            detached: Arc::new(DetachedDispatchTracker::default()),
             readers: rtxs,
             rr: AtomicUsize::new(0),
         })
@@ -1003,6 +1056,7 @@ impl AsyncBilling {
         let handoff = Arc::new(AtomicU8::new(RESERVE_HANDOFF_PENDING));
         let guard = ReserveHandoffGuard {
             writer: &self.writer,
+            detached: self.detached.clone(),
             request_id: request_id.into(),
             account_id: account_id.into(),
             key: key.into(),
@@ -1071,6 +1125,7 @@ impl AsyncBilling {
     ) {
         dispatch_detached(
             &self.writer,
+            &self.detached,
             WriteCmd::Settle {
                 request_id: request_id.into(),
                 account_id: account_id.into(),
@@ -1144,6 +1199,7 @@ impl AsyncBilling {
     pub fn release_capacity(&self, lease_id: &str) {
         dispatch_detached(
             &self.writer,
+            &self.detached,
             WriteCmd::ReleaseCapacity {
                 lease_id: lease_id.into(),
             },
@@ -1379,10 +1435,11 @@ impl AsyncBilling {
             .await
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
-    /// Дренаж очереди writer'а (барьер): ждёт, пока ВСЕ ранее поставленные команды (в т.ч.
-    /// fire-and-forget `settle_detached`) применятся. Вызывать на graceful shutdown ПОСЛЕ дренажа
-    /// стримов — тогда их финальные списания не потеряются при выходе процесса.
+    /// Дренаж очереди writer'а (барьер): сначала ждёт, пока backpressure-waiters поставят все
+    /// detached-команды в очередь, затем ждёт их применения. Вызывать на graceful shutdown ПОСЛЕ
+    /// дренажа стримов — тогда их финальные списания не потеряются при выходе процесса.
     pub async fn flush(&self) -> anyhow::Result<()> {
+        self.detached.wait_idle().await;
         let (r, rx) = oneshot::channel();
         self.writer
             .send(WriteCmd::Flush(r))
@@ -1397,6 +1454,28 @@ impl AsyncBilling {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[tokio::test]
+    async fn detached_dispatch_tracker_waits_for_a_backpressured_enqueue() {
+        let tracker = Arc::new(DetachedDispatchTracker::default());
+        let (writer, mut receiver) = mpsc::channel(1);
+        let (first_reply, _first_result) = oneshot::channel();
+        assert!(writer.try_send(WriteCmd::Flush(first_reply)).is_ok());
+        let (second_reply, _second_result) = oneshot::channel();
+        dispatch_detached(&writer, &tracker, WriteCmd::Flush(second_reply));
+
+        let wait_tracker = tracker.clone();
+        let waiter = tokio::spawn(async move { wait_tracker.wait_idle().await });
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        assert!(matches!(receiver.recv().await, Some(WriteCmd::Flush(_))));
+        tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("backpressured detached command never entered the FIFO")
+            .unwrap();
+        assert!(matches!(receiver.recv().await, Some(WriteCmd::Flush(_))));
+    }
 
     #[tokio::test]
     async fn canceled_sqlite_reserve_handoff_releases_key_allowance() {

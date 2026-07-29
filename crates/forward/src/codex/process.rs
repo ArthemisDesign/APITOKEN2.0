@@ -19,6 +19,8 @@ const MAX_ORPHAN_EVENTS_PER_THREAD: usize = 64;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessError {
     Disabled,
+    HomeInUse,
+    HomeLockUnavailable,
     InvalidConfig(String),
     VersionMismatch { expected: String, actual: String },
     DigestMismatch { expected: String, actual: String },
@@ -38,6 +40,10 @@ impl std::fmt::Display for ProcessError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Disabled => f.write_str("Codex provider is disabled"),
+            Self::HomeInUse => {
+                f.write_str("Codex homes are already owned by another provider process")
+            }
+            Self::HomeLockUnavailable => f.write_str("Codex home ownership lock is unavailable"),
             Self::InvalidConfig(message) => write!(f, "invalid Codex configuration: {message}"),
             Self::VersionMismatch { expected, actual } => {
                 write!(
@@ -77,6 +83,8 @@ impl ProcessError {
     pub(crate) fn diagnostic_class(&self) -> &'static str {
         match self {
             Self::Disabled => "disabled",
+            Self::HomeInUse => "home_in_use",
+            Self::HomeLockUnavailable => "home_lock_unavailable",
             Self::InvalidConfig(_) => "invalid_config",
             Self::VersionMismatch { .. } => "version_mismatch",
             Self::DigestMismatch { .. } => "digest_mismatch",
@@ -201,19 +209,22 @@ pub struct CodexProcess {
     cfg: Arc<CodexConfig>,
     writer: Mutex<ChildStdin>,
     shared: Arc<ProcessShared>,
+    ready: AtomicBool,
     next_id: AtomicU64,
     child: Mutex<Child>,
 }
 
 impl CodexProcess {
-    /// Start one supervised child bound to exactly one authenticated `CODEX_HOME`. Every home in
-    /// the pool runs its own attested child; they share nothing but the pinned binary.
-    pub async fn spawn(cfg: Arc<CodexConfig>, spec: &CodexHomeSpec) -> Result<Self, ProcessError> {
+    /// Launch one supervised child without awaiting protocol initialization after the OS process
+    /// exists. The caller can therefore publish this generation before `start` reaches a
+    /// cancellation point.
+    pub async fn launch(cfg: Arc<CodexConfig>, spec: &CodexHomeSpec) -> Result<Self, ProcessError> {
         validate_config(&cfg, &spec.path)?;
         verify_binary_digest(&cfg).await?;
         verify_version(&cfg, &spec.path).await?;
 
         let mut command = child_command(&cfg, spec);
+        isolate_process_group(&mut command);
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -242,30 +253,49 @@ impl CodexProcess {
             cfg,
             writer: Mutex::new(stdin),
             shared,
+            ready: AtomicBool::new(false),
             next_id: AtomicU64::new(1),
             child: Mutex::new(child),
         };
-        process.initialize().await?;
-        process.require_subscription().await?;
-        if let Err(error) = process.refresh_rate_limits().await {
+        Ok(process)
+    }
+
+    /// Complete startup only after the owning home has published this generation.
+    pub async fn start(&self) -> Result<(), ProcessError> {
+        self.initialize().await?;
+        self.require_subscription().await?;
+        if let Err(error) = self.refresh_rate_limits().await {
             eprintln!(
                 "Codex rate-limit snapshot unavailable [{}]",
                 error.diagnostic_class()
             );
         }
-        Ok(process)
+        self.ready.store(true, Ordering::Release);
+        Ok(())
     }
 
     pub fn is_live(&self) -> bool {
         self.shared.live.load(Ordering::Acquire)
     }
 
+    pub(crate) fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Acquire) && self.is_live()
+    }
+
     /// Poison one transport generation before a replacement can use the same `CODEX_HOME`.
-    pub(crate) async fn shutdown(&self) {
+    pub(crate) async fn shutdown(&self) -> Result<(), ProcessError> {
+        self.ready.store(false, Ordering::Release);
         let mut child = self.child.lock().await;
+        let group_result = kill_process_group(child.id());
         let _ = child.start_kill();
         self.shared.close(ProcessError::Closed).await;
-        let _ = child.wait().await;
+        let wait_result = child
+            .wait()
+            .await
+            .map_err(|error| ProcessError::Spawn(format!("failed to reap Codex child: {error}")));
+        group_result?;
+        wait_result?;
+        Ok(())
     }
 
     pub async fn request(
@@ -561,24 +591,54 @@ async fn verify_binary_digest(cfg: &CodexConfig) -> Result<(), ProcessError> {
 }
 
 async fn verify_version(cfg: &CodexConfig, home: &str) -> Result<(), ProcessError> {
-    let output = tokio::time::timeout(
+    let mut command = Command::new(&cfg.binary);
+    command
+        .arg("--version")
+        .env_clear()
+        .env("CODEX_HOME", home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    isolate_process_group(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|error| ProcessError::Spawn(error.to_string()))?;
+    let mut process_group = ProcessGroupGuard::new(child.id());
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ProcessError::Spawn("version stdout pipe was unavailable".to_string()))?;
+    let status = match tokio::time::timeout(
         std::time::Duration::from_millis(cfg.startup_timeout_ms.max(1)),
-        Command::new(&cfg.binary)
-            .arg("--version")
-            .env_clear()
-            .env("CODEX_HOME", home)
-            .output(),
+        child.wait(),
     )
     .await
-    .map_err(|_| ProcessError::Timeout("version check"))?
-    .map_err(|error| ProcessError::Spawn(error.to_string()))?;
-    if !output.status.success() {
+    {
+        Ok(status) => status.map_err(|error| ProcessError::Spawn(error.to_string()))?,
+        Err(_) => {
+            let group_result = process_group.kill();
+            let _ = child.start_kill();
+            let wait_result = child.wait().await.map_err(|error| {
+                ProcessError::Spawn(format!("failed to reap timed-out version check: {error}"))
+            });
+            group_result?;
+            wait_result?;
+            return Err(ProcessError::Timeout("version check"));
+        }
+    };
+    process_group.kill()?;
+    if !status.success() {
         return Err(ProcessError::Spawn(format!(
             "version check exited with {}",
-            output.status
+            status
         )));
     }
-    let actual = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let mut output = Vec::new();
+    stdout
+        .read_to_end(&mut output)
+        .await
+        .map_err(|error| ProcessError::Spawn(error.to_string()))?;
+    let actual = String::from_utf8_lossy(&output).trim().to_string();
     if actual != cfg.expected_version {
         return Err(ProcessError::VersionMismatch {
             expected: cfg.expected_version.clone(),
@@ -586,6 +646,62 @@ async fn verify_version(cfg: &CodexConfig, home: &str) -> Result<(), ProcessErro
         });
     }
     Ok(())
+}
+
+struct ProcessGroupGuard {
+    pid: Option<u32>,
+}
+
+impl ProcessGroupGuard {
+    fn new(pid: Option<u32>) -> Self {
+        Self { pid }
+    }
+
+    fn kill(&mut self) -> Result<(), ProcessError> {
+        kill_process_group(self.pid)?;
+        self.pid = None;
+        Ok(())
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        let _ = kill_process_group(self.pid);
+    }
+}
+
+fn isolate_process_group(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.as_std_mut().process_group(0);
+    }
+}
+
+fn kill_process_group(pid: Option<u32>) -> Result<(), ProcessError> {
+    #[cfg(unix)]
+    {
+        let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) else {
+            return Ok(());
+        };
+        // Every Codex command starts a fresh process group whose id is its direct child's pid.
+        // Killing the group prevents helpers that inherited CODEX_HOME or stdio from outliving it.
+        if unsafe { libc::kill(-pid, libc::SIGKILL) } == 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(());
+        }
+        return Err(ProcessError::Spawn(format!(
+            "failed to kill Codex process group: {error}"
+        )));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        Ok(())
+    }
 }
 
 fn child_command(cfg: &CodexConfig, spec: &CodexHomeSpec) -> Command {

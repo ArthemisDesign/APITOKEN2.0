@@ -107,6 +107,21 @@ impl CodexGateway {
         &self,
         request: CodexTurnRequest,
         updates: Option<mpsc::Sender<TurnUpdate>>,
+        routing: Option<TurnRouting>,
+    ) -> Result<CodexTurnResult, ProcessError> {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(ProcessError::Closed);
+        }
+        tokio::select! {
+            result = self.run_active_turn(request, updates, routing) => result,
+            _ = self.turn_abort_requested() => Err(ProcessError::Closed),
+        }
+    }
+
+    async fn run_active_turn(
+        &self,
+        request: CodexTurnRequest,
+        updates: Option<mpsc::Sender<TurnUpdate>>,
         mut routing: Option<TurnRouting>,
     ) -> Result<CodexTurnResult, ProcessError> {
         let emitted = Arc::new(AtomicBool::new(false));
@@ -114,7 +129,9 @@ impl CodexGateway {
         let mut transport_retries_left = 1usize;
         let mut last_error: Option<ProcessError> = None;
         loop {
-            let preferred = routing.as_ref().and_then(|routing| routing.preferred_home());
+            let preferred = routing
+                .as_ref()
+                .and_then(|routing| routing.preferred_home());
             let warm = routing
                 .as_ref()
                 .map(|routing| routing.warm.as_slice())
@@ -122,9 +139,11 @@ impl CodexGateway {
             let (home, slot) = match self.select_home(&tried, preferred, warm).await {
                 HomeSelection::Ready(home, slot) => (home, slot),
                 HomeSelection::Unavailable { ready_at } => {
-                    return Err(last_error.unwrap_or_else(|| ProcessError::UsageLimitExceeded {
-                        retry_after: retry_after_from(ready_at),
-                    }));
+                    return Err(
+                        last_error.unwrap_or_else(|| ProcessError::UsageLimitExceeded {
+                            retry_after: retry_after_from(ready_at),
+                        }),
+                    );
                 }
             };
             tried.push(home.id().to_string());
@@ -859,6 +878,13 @@ mod tests {
         let binary = root.join("fake-codex");
         let script = r#"#!/bin/sh
 if [ "${1-}" = "--version" ]; then
+  if [ "__MODE__" = "version_timeout" ]; then
+    while :; do :; done
+  elif [ "__MODE__" = "version_cancel" ]; then
+    (trap '' TERM; while :; do sleep 1; done) &
+    printf '%s\n' "$!" > "$CODEX_HOME/version-helper-pid"
+    while :; do sleep 1; done
+  fi
   printf '%s\n' 'codex-cli test'
   exit 0
 fi
@@ -870,8 +896,12 @@ if [ -f "$CODEX_HOME/mode" ]; then
   mode=$(cat "$CODEX_HOME/mode")
   log_file="$CODEX_HOME/requests.jsonl"
 fi
+if [ "$mode" = "descendant" ]; then
+  (trap '' TERM; while :; do sleep 1; done) &
+  printf '%s\n' "$!" > "$CODEX_HOME/helper-pid"
+fi
 generation=0
-if [ "$mode" = "thread_start_timeout_once" ] || [ "$mode" = "turn_start_timeout_once" ]; then
+if [ "$mode" = "thread_start_timeout_once" ] || [ "$mode" = "turn_start_timeout_once" ] || [ "$mode" = "startup_cancel_once" ]; then
   generation_file="$CODEX_HOME/generation"
   if [ -f "$generation_file" ]; then
     generation=$(cat "$generation_file")
@@ -885,6 +915,9 @@ while IFS= read -r line; do
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in
     *'"method":"initialize"'*)
+      if [ "$mode" = "startup_cancel_once" ] && [ "$generation" -eq 1 ]; then
+        continue
+      fi
       printf '{"id":%s,"result":{}}\n' "$id"
       ;;
     *'"method":"account/read"'*)
@@ -966,8 +999,11 @@ done
         std::fs::write(&binary, script.as_bytes()).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         let digest = format!("{:x}", Sha256::digest(script.as_bytes()));
+        let ownership_lock = root.join("ownership.lock");
+        std::fs::write(&ownership_lock, []).unwrap();
         let config = CodexConfig {
             enabled: true,
+            ownership_lock_file: ownership_lock.to_str().unwrap().to_string(),
             binary: binary.to_str().unwrap().to_string(),
             binary_sha256: digest,
             expected_version: "codex-cli test".to_string(),
@@ -977,7 +1013,11 @@ done
             // The workspace test runner executes several fake child processes in parallel.
             // Leave enough scheduler headroom for the digest + version preflight under CI load;
             // individual JSON-RPC and turn deadlines below remain short.
-            startup_timeout_ms: 10_000,
+            startup_timeout_ms: if mode == "version_timeout" {
+                100
+            } else {
+                10_000
+            },
             request_timeout_ms,
             turn_timeout_ms: 2_000,
             max_concurrent_turns: 1,
@@ -1005,11 +1045,12 @@ done
     /// home actually served the turn.
     fn fake_pool_gateway(modes: &[&str]) -> (Arc<CodexGateway>, TestWorkspace, Vec<PathBuf>) {
         let (gateway, workspace) = fake_gateway("text");
-        let _ = gateway;
+        drop(gateway);
         let root = workspace.root.clone();
         let binary = root.join("fake-codex");
         let script = std::fs::read_to_string(&binary).unwrap();
         let digest = format!("{:x}", Sha256::digest(script.as_bytes()));
+        let ownership_lock = root.join("ownership.lock");
         let mut homes = Vec::with_capacity(modes.len());
         let mut logs = Vec::with_capacity(modes.len());
         for (index, mode) in modes.iter().enumerate() {
@@ -1021,6 +1062,7 @@ done
         }
         let config = CodexConfig {
             enabled: true,
+            ownership_lock_file: ownership_lock.to_str().unwrap().to_string(),
             binary: binary.to_str().unwrap().to_string(),
             binary_sha256: digest,
             expected_version: "codex-cli test".to_string(),
@@ -1423,6 +1465,170 @@ done
     }
 
     #[tokio::test]
+    async fn cancelled_startup_is_reaped_before_the_next_generation_starts() {
+        let (gateway, workspace) = fake_gateway("startup_cancel_once");
+        let home = gateway.homes().await.into_iter().next().unwrap();
+        let first_home = home.clone();
+        let first = tokio::spawn(async move { first_home.process().await });
+        let pids = workspace.root.join("generation-pids");
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if pids.is_file() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the first fake generation did not start");
+        let first_pid = std::fs::read_to_string(&pids)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .to_string();
+        first.abort();
+        assert!(matches!(first.await, Err(error) if error.is_cancelled()));
+
+        tokio::time::timeout(std::time::Duration::from_secs(3), home.process())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            !Command::new("/bin/kill")
+                .args(["-0", &first_pid])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success()),
+            "the cancelled generation was still alive when its replacement became ready"
+        );
+        gateway.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_reaps_codex_descendants_before_returning() {
+        let (gateway, workspace) = fake_gateway("descendant");
+        let home = gateway.homes().await.into_iter().next().unwrap();
+        home.process().await.unwrap();
+        let helper_path = workspace.root.join("helper-pid");
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !helper_path.is_file() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the fake Codex helper did not start");
+        let helper_pid = std::fs::read_to_string(helper_path)
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        assert!(process_exists(helper_pid));
+
+        gateway.shutdown().await;
+
+        assert!(!process_exists(helper_pid));
+    }
+
+    #[tokio::test]
+    async fn shutdown_deadline_cancels_a_residual_tracked_turn() {
+        let (gateway, _workspace) = fake_gateway("hang");
+        let permit = gateway.track_background_task().unwrap();
+        let (updates_tx, mut updates_rx) = mpsc::channel(8);
+        let run_gateway = gateway.clone();
+        let turn = tokio::spawn(async move {
+            let _permit = permit;
+            run_gateway
+                .run_turn(turn_request(test_model()), Some(updates_tx), None)
+                .await
+        });
+        assert!(matches!(
+            updates_rx.recv().await,
+            Some(TurnUpdate::TextDelta { delta, .. }) if delta == "ready"
+        ));
+
+        gateway
+            .shutdown_until(Some(
+                tokio::time::Instant::now() + std::time::Duration::from_millis(50),
+            ))
+            .await;
+
+        assert!(matches!(turn.await.unwrap(), Err(ProcessError::Closed)));
+    }
+
+    #[tokio::test]
+    async fn timed_out_version_probe_is_killed_and_reaped() {
+        let (gateway, workspace) = fake_gateway("version_timeout");
+        let home = gateway.homes().await.into_iter().next().unwrap();
+        assert!(matches!(
+            home.process().await,
+            Err(ProcessError::Timeout("version check"))
+        ));
+        let processes = Command::new("ps")
+            .args(["-axo", "command="])
+            .output()
+            .unwrap();
+        let processes = String::from_utf8_lossy(&processes.stdout);
+        assert!(
+            !processes.contains(workspace.root.join("fake-codex").to_str().unwrap()),
+            "timed-out codex --version process was not reaped"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_version_probe_kills_its_process_group() {
+        let (gateway, workspace) = fake_gateway("version_cancel");
+        let home = gateway.homes().await.into_iter().next().unwrap();
+        let process_home = home.clone();
+        let startup = tokio::spawn(async move { process_home.process().await });
+        let helper_path = workspace.root.join("version-helper-pid");
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !helper_path.is_file() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the version helper did not start");
+        let helper_pid = std::fs::read_to_string(helper_path)
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        assert!(process_exists(helper_pid));
+
+        startup.abort();
+        assert!(matches!(startup.await, Err(error) if error.is_cancelled()));
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while process_exists(helper_pid) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the cancelled version helper remained alive");
+        gateway.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_tracked_stream_tasks_and_blocks_new_ones() {
+        let (gateway, _workspace) = fake_gateway("text");
+        let permit = gateway.track_background_task().unwrap();
+        let shutdown_gateway = gateway.clone();
+        let shutdown = tokio::spawn(async move { shutdown_gateway.shutdown().await });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(!shutdown.is_finished());
+        drop(permit);
+        tokio::time::timeout(std::time::Duration::from_secs(1), shutdown)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            gateway.track_background_task(),
+            Err(ProcessError::Closed)
+        ));
+    }
+
+    #[tokio::test]
     async fn structured_usage_limit_is_classified_without_exposing_upstream_text() {
         let (gateway, _workspace) = fake_gateway("usage_limit");
         let error = gateway
@@ -1464,7 +1670,11 @@ done
         std::fs::write(bought.join("auth.json"), b"{}").unwrap();
         gateway.rediscover().await;
         let status = gateway.operational_status().await;
-        assert_eq!(status.homes.len(), 2, "the finished account joined the pool");
+        assert_eq!(
+            status.homes.len(),
+            2,
+            "the finished account joined the pool"
+        );
 
         // And it can actually serve: the new home starts its own attested child on demand.
         let result = gateway
@@ -1486,15 +1696,106 @@ done
         std::fs::write(bought.join("auth.json"), b"{}").unwrap();
         gateway.rediscover().await;
         assert_eq!(gateway.operational_status().await.homes.len(), 2);
+        let bought_home = gateway
+            .homes()
+            .await
+            .into_iter()
+            .find(|home| home.path() == bought.to_str().unwrap())
+            .unwrap();
+        bought_home.process().await.unwrap();
 
         std::fs::remove_dir_all(&bought).unwrap();
         gateway.rediscover().await;
         assert_eq!(gateway.operational_status().await.homes.len(), 1);
+        assert!(bought_home.live_process().await.is_none());
 
         // The explicit home has no directory to scan away, so the pool keeps serving from it.
         std::fs::remove_dir_all(&pool_dir).unwrap();
         gateway.rediscover().await;
         assert_eq!(gateway.operational_status().await.homes.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn replacing_a_home_directory_retires_the_old_child_before_publication() {
+        let (gateway, workspace, _logs) = fake_pool_gateway(&["text"]);
+        let pool_dir = workspace.root.join("pool");
+        std::fs::create_dir_all(&pool_dir).unwrap();
+        let bought = pool_dir.join("acct-replaced");
+        std::fs::create_dir(&bought).unwrap();
+        std::fs::write(bought.join("mode"), b"text").unwrap();
+        std::fs::write(bought.join("auth.json"), b"{}").unwrap();
+        gateway.rediscover().await;
+        let old = gateway
+            .homes()
+            .await
+            .into_iter()
+            .find(|home| home.path() == bought.to_str().unwrap())
+            .unwrap();
+        old.process().await.unwrap();
+
+        std::fs::remove_dir_all(&bought).unwrap();
+        std::fs::create_dir(&bought).unwrap();
+        std::fs::write(bought.join("mode"), b"text").unwrap();
+        std::fs::write(bought.join("auth.json"), b"{}").unwrap();
+        gateway.rediscover().await;
+        assert!(old.live_process().await.is_none());
+        let replacement = gateway
+            .homes()
+            .await
+            .into_iter()
+            .find(|home| home.path() == bought.to_str().unwrap())
+            .unwrap();
+        assert!(!Arc::ptr_eq(&old, &replacement));
+        replacement.process().await.unwrap();
+        gateway.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn rediscovery_rescans_proxy_metadata_after_a_blocked_retirement() {
+        let (gateway, workspace, _logs) = fake_pool_gateway(&["text"]);
+        let pool_dir = workspace.root.join("pool");
+        std::fs::create_dir_all(&pool_dir).unwrap();
+        let bought = pool_dir.join("acct-proxy-change");
+        std::fs::create_dir(&bought).unwrap();
+        std::fs::write(bought.join("mode"), b"text").unwrap();
+        std::fs::write(bought.join("auth.json"), b"{}").unwrap();
+        let proxy_file = bought.join("proxy.url");
+        std::fs::write(&proxy_file, b"http://first.example:8080").unwrap();
+        std::fs::set_permissions(&proxy_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        gateway.rediscover().await;
+        let old = gateway
+            .homes()
+            .await
+            .into_iter()
+            .find(|home| home.path() == bought.to_str().unwrap())
+            .unwrap();
+        let slot = old.acquire_turn().unwrap();
+
+        std::fs::write(&proxy_file, b"http://second.example:8080").unwrap();
+        let reconcile_gateway = gateway.clone();
+        let reconcile = tokio::spawn(async move { reconcile_gateway.rediscover().await });
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while !old.retired.load(Ordering::Acquire) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the old home did not begin retirement");
+        std::fs::write(&proxy_file, b"http://third.example:8080").unwrap();
+        drop(slot);
+        reconcile.await.unwrap();
+
+        let replacement = gateway
+            .homes()
+            .await
+            .into_iter()
+            .find(|home| home.path() == bought.to_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            replacement.spec.proxy.as_deref(),
+            Some("http://third.example:8080")
+        );
+        gateway.shutdown().await;
     }
 
     #[tokio::test]
@@ -1566,8 +1867,7 @@ done
 
     #[tokio::test]
     async fn an_observational_rate_limit_timeout_keeps_the_authenticated_child_live() {
-        let (gateway, _workspace) =
-            fake_gateway_with_request_timeout("rate_limit_timeout", 200);
+        let (gateway, _workspace) = fake_gateway_with_request_timeout("rate_limit_timeout", 200);
 
         let result = gateway
             .run_turn(turn_request(test_model()), None, None)
@@ -1693,7 +1993,14 @@ done
             "content": [{"type": "input_text", "text": "hi"}]
         })];
         let input = store
-            .infer_codex("acct-a", &HeaderMap::new(), "gpt-5.6", Some("sys"), &[], &items)
+            .infer_codex(
+                "acct-a",
+                &HeaderMap::new(),
+                "gpt-5.6",
+                Some("sys"),
+                &[],
+                &items,
+            )
             .unwrap();
         assert!(store.resolve(&input).await.is_none());
         let resolution = store.claim(&input, "home-abc").await;
@@ -1701,7 +2008,14 @@ done
         assert_eq!(store.resolve(&input).await.unwrap().home, "home-abc");
 
         let other_tenant = store
-            .infer_codex("acct-b", &HeaderMap::new(), "gpt-5.6", Some("sys"), &[], &items)
+            .infer_codex(
+                "acct-b",
+                &HeaderMap::new(),
+                "gpt-5.6",
+                Some("sys"),
+                &[],
+                &items,
+            )
             .unwrap();
         assert!(
             store.resolve(&other_tenant).await.is_none(),

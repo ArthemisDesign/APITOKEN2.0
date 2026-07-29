@@ -29,7 +29,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/srv/claude-api/data
+ReadWritePaths=/srv/claude-api/data /run/apitoken/codex-home.lock
 # Крыша по памяти (bindings/live ограничены, но страхуемся от рантайм-аномалий):
 MemoryMax=2G
 

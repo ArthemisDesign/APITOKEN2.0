@@ -13,7 +13,7 @@
 | `comp/pool` | `crates/pool` | Пул и ротация (выбор, cooling, состояние лимитов). | `master` |
 | `comp/forward` | `crates/forward` | Форвардинг /v1/*, инжект identity, поллер, стрим. | `master` |
 | `comp/server` | `crates/server` | Композиция: env-конфиг, CLI, роутер, фоновые циклы. | `master` |
-| `comp/authbot` | `tools/authbot` | Пополнение пула: Telegram-бот покупки подписок → реестр (через CLI). | `master` |
+| `comp/authbot` | `crates/authbot` | Пополнение пула: Telegram-бот покупки Claude/ChatGPT-подписок. | `master` |
 
 На каждой `comp/*`-ветке лежит **`BRANCH.md`** — что она делает, границы, как собрать/проверить.
 Checkout ветки → сразу видно её назначение.
