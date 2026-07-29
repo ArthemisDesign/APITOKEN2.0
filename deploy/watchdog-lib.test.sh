@@ -1441,7 +1441,7 @@ grep -Fq 'for old_unit in "$LEGACY_UNIT" "$(legacy_slot_unit 8787)" "$(legacy_sl
   "$provider_controller" || wd_die "active-but-unready engine cgroups can survive the OpenAI handoff"
 grep -Fq 'systemctl_command stop "$OPENAI_UNIT"' "$provider_controller" \
   || wd_die "OpenAI is not stopped before its legacy Codex home moves"
-grep -Fq '"$CODEX_HOME_MIGRATION_HELPER" --apply' "$provider_controller" \
+grep -Fq 'privileged_command "$CODEX_HOME_MIGRATION_HELPER" --apply' "$provider_controller" \
   || wd_die "provider controller does not apply the guarded legacy Codex home migration"
 grep -Fq 'codex-homes-migrate.sh' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die "Codex home migration helper is not installed with its controller"
@@ -1454,6 +1454,12 @@ grep -Fq 'CLAUDE_API_CODEX_HOMES_DIR=/srv/claude-api/data/codex-homes' \
 grep -Fq 'AUTH_BOT_CODEX_HOMES_DIR=/srv/claude-api/data/codex-homes' \
   "$ROOT/systemd/claude-authbot.service" \
   || wd_die "authbot and OpenAI provider do not share the Codex homes directory"
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/codex-homes-migrate.sh --apply' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die "deploy user cannot invoke the fixed Codex home migration helper"
+grep -Fq "require_permitted 'legacy Codex home migration'" \
+  "$ROOT/deploy/install-sudoers.sh" \
+  || wd_die "sudo policy installer does not verify Codex home migration access"
 grep -Fq 'PROVIDER_CAPABILITY_MARKER=.provider-runtime-v1' "$provider_controller" \
   || wd_die "provider controller can accept a release without fixed-provider rollback support"
 grep -Fq 'exit 2' "$provider_controller" \

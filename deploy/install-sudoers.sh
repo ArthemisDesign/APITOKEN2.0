@@ -153,6 +153,8 @@ require_permitted 'OpenAI provider stop' /usr/bin/systemctl stop claude-api-open
 require_permitted 'OpenAI provider enable' /usr/bin/systemctl enable claude-api-openai.service
 require_permitted 'OpenAI provider drain signal' \
   /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-openai.service
+require_permitted 'legacy Codex home migration' \
+  /usr/local/lib/apitoken-watchdog/controller/codex-homes-migrate.sh --apply
 require_permitted 'Gemini provider restart' /usr/bin/systemctl restart claude-api-gemini.service
 require_permitted 'Gemini provider stop' /usr/bin/systemctl stop claude-api-gemini.service
 require_permitted 'Gemini provider enable' /usr/bin/systemctl enable claude-api-gemini.service

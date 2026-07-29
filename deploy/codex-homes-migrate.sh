@@ -56,8 +56,8 @@ codex_migration_validate_home() {
 }
 
 codex_migrate_legacy_home() {
-  local legacy_home=$1 homes_dir=$2 target_name=$3 action=$4
-  local expected_uid expected_gid target legacy_identity homes_identity
+  local legacy_home=$1 homes_dir=$2 target_name=$3 action=$4 expected_uid=$5 expected_gid=$6
+  local target legacy_identity homes_identity
   local legacy_uid legacy_gid legacy_mode legacy_device homes_uid homes_gid homes_mode homes_device
 
   [[ $action == check || $action == apply ]] \
@@ -70,8 +70,8 @@ codex_migrate_legacy_home() {
     || { codex_migration_fail "homes directory cannot be the filesystem root"; return 1; }
   homes_dir=${homes_dir%/}
   target="$homes_dir/$target_name"
-  expected_uid=$(id -u)
-  expected_gid=$(id -g)
+  [[ $expected_uid =~ ^[0-9]+$ && $expected_gid =~ ^[0-9]+$ ]] \
+    || { codex_migration_fail "expected owner identity is invalid"; return 1; }
 
   [[ -d $homes_dir && ! -L $homes_dir ]] \
     || { codex_migration_fail "homes directory is missing or unsafe: $homes_dir"; return 1; }
@@ -112,13 +112,19 @@ codex_migrate_legacy_home() {
 }
 
 codex_homes_migrate_main() {
+  local action expected_uid expected_gid
   [[ $# -eq 1 ]] \
     || { codex_migration_fail "usage: codex-homes-migrate.sh --check|--apply"; return 1; }
   [[ $1 == --check || $1 == --apply ]] \
     || { codex_migration_fail "usage: codex-homes-migrate.sh --check|--apply"; return 1; }
-  local action=${1#--}
+  action=${1#--}
+  expected_uid=$(id -u deploy) \
+    || { codex_migration_fail "production deploy user is missing"; return 1; }
+  expected_gid=$(id -g deploy) \
+    || { codex_migration_fail "production deploy group is missing"; return 1; }
   codex_migrate_legacy_home \
-    "$CODEX_LEGACY_HOME" "$CODEX_HOMES_DIR" "$CODEX_LEGACY_TARGET_NAME" "$action"
+    "$CODEX_LEGACY_HOME" "$CODEX_HOMES_DIR" "$CODEX_LEGACY_TARGET_NAME" "$action" \
+    "$expected_uid" "$expected_gid"
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then

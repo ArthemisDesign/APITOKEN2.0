@@ -7,6 +7,8 @@ source "$ROOT/deploy/codex-homes-migrate.sh"
 
 TEMP=$(mktemp -d "${TMPDIR:-/tmp}/apitoken-codex-homes-migrate-test.XXXXXXXX")
 trap 'rm -rf -- "$TEMP"' EXIT
+EXPECTED_UID=$(id -u)
+EXPECTED_GID=$(id -g)
 
 # Production uses GNU mv -T so a concurrently created target can never turn the rename into a
 # nested move. macOS contributors have BSD mv; emulate only that already-preflighted test rename.
@@ -35,16 +37,19 @@ make_fixture() {
 safe_root="$TEMP/safe"
 make_fixture "$safe_root"
 codex_migrate_legacy_home \
-  "$safe_root/codex/home" "$safe_root/codex-homes" mikala1158qqq-gmail-com check
+  "$safe_root/codex/home" "$safe_root/codex-homes" mikala1158qqq-gmail-com check \
+  "$EXPECTED_UID" "$EXPECTED_GID"
 [[ -d $safe_root/codex/home && ! -e $safe_root/codex-homes/mikala1158qqq-gmail-com ]] \
   || fail "check mode changed the filesystem"
 codex_migrate_legacy_home \
-  "$safe_root/codex/home" "$safe_root/codex-homes" mikala1158qqq-gmail-com apply
+  "$safe_root/codex/home" "$safe_root/codex-homes" mikala1158qqq-gmail-com apply \
+  "$EXPECTED_UID" "$EXPECTED_GID"
 [[ ! -e $safe_root/codex/home \
   && -f $safe_root/codex-homes/mikala1158qqq-gmail-com/auth.json ]] \
   || fail "apply mode did not move the authenticated home"
 codex_migrate_legacy_home \
-  "$safe_root/codex/home" "$safe_root/codex-homes" mikala1158qqq-gmail-com apply
+  "$safe_root/codex/home" "$safe_root/codex-homes" mikala1158qqq-gmail-com apply \
+  "$EXPECTED_UID" "$EXPECTED_GID"
 
 ambiguous_root="$TEMP/ambiguous"
 make_fixture "$ambiguous_root"
@@ -54,7 +59,7 @@ chmod 0700 "$ambiguous_root/codex-homes/mikala1158qqq-gmail-com"
 chmod 0600 "$ambiguous_root/codex-homes/mikala1158qqq-gmail-com/auth.json"
 if codex_migrate_legacy_home \
     "$ambiguous_root/codex/home" "$ambiguous_root/codex-homes" \
-    mikala1158qqq-gmail-com apply >/dev/null 2>&1; then
+    mikala1158qqq-gmail-com apply "$EXPECTED_UID" "$EXPECTED_GID" >/dev/null 2>&1; then
   fail "migration accepted simultaneous legacy and destination homes"
 fi
 [[ -d $ambiguous_root/codex/home \
@@ -66,7 +71,7 @@ make_fixture "$unsafe_root"
 chmod 0644 "$unsafe_root/codex/home/auth.json"
 if codex_migrate_legacy_home \
     "$unsafe_root/codex/home" "$unsafe_root/codex-homes" \
-    mikala1158qqq-gmail-com apply >/dev/null 2>&1; then
+    mikala1158qqq-gmail-com apply "$EXPECTED_UID" "$EXPECTED_GID" >/dev/null 2>&1; then
   fail "migration accepted an exposed auth store"
 fi
 [[ -d $unsafe_root/codex/home && ! -e $unsafe_root/codex-homes/mikala1158qqq-gmail-com ]] \
@@ -80,7 +85,7 @@ chmod 0600 "$symlink_root/elsewhere-auth.json"
 ln -s "$symlink_root/elsewhere-auth.json" "$symlink_root/codex/home/auth.json"
 if codex_migrate_legacy_home \
     "$symlink_root/codex/home" "$symlink_root/codex-homes" \
-    mikala1158qqq-gmail-com apply >/dev/null 2>&1; then
+    mikala1158qqq-gmail-com apply "$EXPECTED_UID" "$EXPECTED_GID" >/dev/null 2>&1; then
   fail "migration accepted a symlinked auth store"
 fi
 [[ -d $symlink_root/codex/home && ! -e $symlink_root/codex-homes/mikala1158qqq-gmail-com ]] \

@@ -31,7 +31,7 @@ PROVIDER_CAPABILITY_MARKER=.provider-runtime-v1
 GEMINI_CAPABILITY_MARKER=.gemini-provider-v1
 OPENAI_READY_URL=${OPENAI_READY_URL:-http://127.0.0.1:8793/ready}
 OPENAI_STABLE_READY_URL=${OPENAI_STABLE_READY_URL:-http://127.0.0.1:8792/ready}
-CODEX_HOME_MIGRATION_HELPER=$SCRIPT_DIR/codex-homes-migrate.sh
+CODEX_HOME_MIGRATION_HELPER=/usr/local/lib/apitoken-watchdog/controller/codex-homes-migrate.sh
 CODEX_LEGACY_HOME=/srv/claude-api/data/codex/home
 CODEX_MIGRATED_HOME=/srv/claude-api/data/codex-homes/mikala1158qqq-gmail-com
 GEMINI_READY_URL=${GEMINI_READY_URL:-http://127.0.0.1:8795/ready}
@@ -404,7 +404,7 @@ if ! openai_serves_current || ! codex_legacy_home_migrated; then
   if [[ $DRY_RUN == 0 ]] && ! unit_stopped "$OPENAI_UNIT"; then
     post_admission_die "$OPENAI_UNIT cgroup remains active; refusing to move its Codex home"
   fi
-  run "$CODEX_HOME_MIGRATION_HELPER" --apply \
+  privileged_command "$CODEX_HOME_MIGRATION_HELPER" --apply \
     || post_admission_die "could not migrate the legacy Codex home"
   systemctl_command restart "$OPENAI_UNIT" \
     || post_admission_die "could not restart $OPENAI_UNIT"

@@ -27,6 +27,7 @@ Cmnd_Alias APITOKEN_HELPERS = \
     /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh [0-9a-f]* --controller-only, \
     /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh [0-9a-f]* --caddy-only, \
     /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh [0-9a-f]* --apply-caddy, \
+    /usr/local/lib/apitoken-watchdog/controller/codex-homes-migrate.sh --apply, \
     /usr/local/lib/apitoken-watchdog/watchdog-github *, \
     /usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh [0-9a-f]*, \
     /usr/local/lib/apitoken-watchdog/controller/openkeys-deploy.sh [0-9a-f]*
