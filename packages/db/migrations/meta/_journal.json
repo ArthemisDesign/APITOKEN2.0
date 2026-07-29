@@ -169,6 +169,13 @@
       "when": 1785352836567,
       "tag": "0023_multi_discount_invariants",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1785355351235,
+      "tag": "0024_wild_talon",
+      "breakpoints": true
     }
   ]
 }

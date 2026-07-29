@@ -96,16 +96,29 @@ export const customerProfiles = pgTable("customer_profiles", {
 
 export const businessInvites = pgTable("business_invites", {
   id: uuid("id").primaryKey(),
-  email: text("email").notNull(),
+  email: text("email"),
   tokenHash: text("token_hash").notNull(),
+  encryptedToken: text("encrypted_token"),
   multiplierBp: integer("multiplier_bp").notNull(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   consumedAt: timestamp("consumed_at", { withTimezone: true }),
   consumedByUserId: uuid("consumed_by_user_id").references(() => users.id, { onDelete: "restrict" }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  revokedByActor: text("revoked_by_actor"),
+  supersededByInviteId: uuid("superseded_by_invite_id"),
+  idempotencyKey: uuid("idempotency_key"),
+  createdByActor: text("created_by_actor"),
   createdAt,
 }, (table) => [
   uniqueIndex("business_invites_token_hash_uidx").on(table.tokenHash),
+  uniqueIndex("business_invites_idempotency_key_uidx").on(table.idempotencyKey)
+    .where(sql`${table.idempotencyKey} IS NOT NULL`),
   index("business_invites_email_idx").on(table.email, table.createdAt),
+  foreignKey({
+    columns: [table.supersededByInviteId],
+    foreignColumns: [table.id],
+    name: "business_invites_superseded_by_invite_id_fk",
+  }).onDelete("restrict"),
   check("business_invites_multiplier_check", sql`${table.multiplierBp} BETWEEN 0 AND 10000`),
 ]);
 
@@ -280,7 +293,8 @@ export const oauthTransactions = pgTable("oauth_transactions", {
 
 export const emailOutbox = pgTable("email_outbox", {
   id: uuid("id").primaryKey(),
-  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  userId: uuid("user_id").references(() => users.id, { onDelete: "restrict" }),
+  businessInviteId: uuid("business_invite_id").references(() => businessInvites.id, { onDelete: "restrict" }),
   recipient: text("recipient").notNull(),
   template: text("template").notNull(),
   payload: jsonb("payload").notNull().default({}),
@@ -294,7 +308,13 @@ export const emailOutbox = pgTable("email_outbox", {
   sentAt: timestamp("sent_at", { withTimezone: true }),
   createdAt,
   updatedAt,
-}, (table) => [index("email_outbox_claim_idx").on(table.status, table.nextAttemptAt)]);
+}, (table) => [
+  index("email_outbox_claim_idx").on(table.status, table.nextAttemptAt),
+  index("email_outbox_business_invite_idx").on(table.businessInviteId, table.createdAt),
+  check("email_outbox_owner_check", sql`
+    num_nonnulls(${table.userId}, ${table.businessInviteId}) = 1
+  `),
+]);
 
 export const engineAccounts = pgTable("engine_accounts", {
   id: uuid("id").primaryKey(),
