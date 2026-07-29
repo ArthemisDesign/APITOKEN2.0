@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, createElement } from "react";
+import { act, createElement, type ComponentType, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -28,6 +28,12 @@ vi.mock("@/lib/api", () => ({
 }));
 
 import { AuthEntryGuard } from "./auth-entry-guard";
+
+const TestableAuthEntryGuard = AuthEntryGuard as ComponentType<{
+  children?: ReactNode;
+  dashboardHref: string;
+  language: "en" | "ru";
+}>;
 
 describe("AuthEntryGuard", () => {
   let container: HTMLDivElement;
@@ -85,12 +91,12 @@ describe("AuthEntryGuard", () => {
 async function renderGuard(root: Root): Promise<void> {
   await act(async () => {
     root.render(createElement(
-      AuthEntryGuard,
+      TestableAuthEntryGuard,
       {
         dashboardHref: "/dashboard",
         language: "en",
-        children: createElement("div", null, "login form"),
       },
+      createElement("div", null, "login form"),
     ));
   });
 }

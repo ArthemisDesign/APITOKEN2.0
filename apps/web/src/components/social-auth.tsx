@@ -17,10 +17,16 @@ export function SocialAuth({ inviteToken }: { inviteToken?: string }) {
   // Hydrate browser-only referral attribution after mount. Сначала фиксируем ?ref= из ТЕКУЩЕГО URL
   // (last-click wins), затем читаем — чтобы прямой заход на /register?ref=CODE + клик по OAuth не
   // зависел от порядка mount-эффектов и не улетел со старым застрявшим кодом.
-  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => {
     captureReferralCode(new URLSearchParams(window.location.search).get("ref"));
-    setRef(storedReferralCode());
+    const storedRef = storedReferralCode();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setRef(storedRef);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
   if (!providers?.google.enabled && !providers?.github.enabled) return null;
   return (
