@@ -1,435 +1,1580 @@
-# Multi-provider and model pricing policy handoff
+# Контракт мультипровайдерных скидок и политик доступа
 
-Status: product requirements agreed; implementation has not started.
+Статус: продуктовые решения для первой версии согласованы; реализация по этому контракту ещё не
+начата.
 
-Last product discussion: 2026-07-29. Repository facts were inspected against the then-current
-`origin/master`; this is an active trunk, so revalidate implementation references before editing.
+Последнее продуктовое обсуждение: 2026-07-29.
 
-This document records the intended replacement for the current scalar account-pricing model. It is
-not a description of behavior already deployed. Until the feature is implemented, `PRICING.md` and
-`CONTROL_API.md` describe the live contracts.
+Фактическое состояние репозитория сверено с `origin/master` на коммите `9c939bd`. Репозиторий
+развивается непрерывно, поэтому перед реализацией необходимо повторно проверить конкретные имена
+файлов, модели и миграции. Семантика продукта, зафиксированная в этом документе, при этом не должна
+меняться молча из-за изменений реализации.
 
-## Product objective
+Этот документ описывает целевое поведение, которое заменит текущий единый множитель цены на аккаунт.
+Он не утверждает, что описанное поведение уже работает в production. До завершения перехода
+фактические live-контракты описаны в `PRICING.md`, `CONTROL_API.md`,
+`COMMERCIAL_BACKEND.md` и документации конкретных приложений.
 
-Support pricing rules at both provider and exact-model scope for:
+## 1. Главный результат
 
-- one global B2C policy;
-- a separate, private policy for every B2B client;
-- Anthropic and OpenAI today, without hard-coding the design to only those two providers;
-- explicit model admission, so a model without administrative approval and an applicable price rule
-  is rejected rather than receiving an accidental fallback price.
+Один `sk-pool-…` ключ и один аккаунт могут работать через несколько фиксированных API-плоскостей,
+но доступ и цена должны определяться явной версионированной политикой:
 
-The first release supports the existing B2C discount track and static percentage discounts. Literal
-fixed token tariffs are deliberately deferred, but the domain and engine boundary must leave a clean
-model-only extension point for them.
+- провайдер берётся из API-плоскости, принявшей запрос, а не угадывается по строке модели;
+- коммерчески доступна только модель, которая поддержана движком, включена для конкретного продукта
+  и разрешена политикой аккаунта;
+- правило точной модели имеет приоритет над правилом провайдера;
+- скидки не складываются;
+- B2C, каждый B2B-клиент, OpenKeys и служебные аккаунты имеют разные типы владельцев политики;
+- весь официальный тариф рассчитывается до применения скидки;
+- резерв и финальное списание используют один неизменяемый снимок цены и политики;
+- история хранит провайдера, модель, правило, режим, версию и источник денег, чтобы её нельзя было
+  переосмыслить задним числом;
+- новый провайдер или новая модель никогда не появляются у клиентов автоматически.
 
-## Terms
+Краткая формула допуска:
 
-| Term | Meaning |
+```text
+фиксированная API-плоскость
+  -> поддерживаемый движком провайдер и модель
+  -> глобальный рубильник провайдера
+  -> разрешение продукта и сегмента
+  -> включённая модель в каталоге продукта
+  -> точное правило модели или правило провайдера
+  -> подходящий для режима денежный остаток
+  -> резерв
+```
+
+## 2. Границы первой версии
+
+В первую версию входят:
+
+- Anthropic и OpenAI в основном продукте;
+- глобальная B2C-политика;
+- отдельная политика каждого B2B-клиента;
+- отдельный продуктовый контракт OpenKeys;
+- явные статические политики служебных аккаунтов;
+- режим текущего прогрессивного B2C-тарифа (`track`);
+- статическая скидка от полной официальной стоимости;
+- правила на уровне провайдера и точной канонической модели;
+- отдельные рубильники провайдера для B2C и B2B плюс общий аварийный рубильник;
+- ограниченный `$4` welcome-бонус, который разрешено тратить только в режиме `track`;
+- полная историческая атрибуция и безопасная миграция существующих аккаунтов.
+
+В первую версию не входят:
+
+- буквальные фиксированные цены на отдельные токеновые корзины;
+- правила на уровне отдельного ключа внутри обычного B2C/B2B-аккаунта;
+- deny-правило модели под разрешающим правилом провайдера;
+- автоматическое включение новых моделей или провайдеров;
+- коммерческий запуск Gemini;
+- изменение существующей лестницы B2C-тиров, порогов пополнения или окна удержания.
+
+## 3. Зафиксированные продуктовые решения
+
+| Область | Принятое решение |
 |---|---|
-| Provider | A billing namespace such as `anthropic` or `openai`. |
-| Canonical model | The one pricing identity to which public aliases resolve. |
-| Provider rule | Default rule for every enabled model in one provider. |
-| Model rule | Exact canonical-model override within a provider. |
-| Track | The current progressive B2C tier plus any applicable referral floor. |
-| Static discount | An administrator-set 0-95% discount from the complete official provider cost. |
-| Fixed tariff | A future literal per-token/per-feature customer tariff for one exact model. |
-| Enabled model | A model known to official metering and explicitly approved for commercial use. |
+| Основной B2C | Anthropic и OpenAI изначально имеют provider-rule `track`; возможны точные model-overrides. |
+| Существующие B2B | Текущий единый процент переносится только в provider-rule Anthropic. OpenAI автоматически не выдаётся. |
+| Новые B2B | У каждого клиента одна независимая политика на аккаунт, общая для всех его ключей. |
+| B2B-приглашение | Полная политика задаётся при создании приглашения, редактируется до погашения и атомарно копируется клиенту при погашении. |
+| Рубильники | У провайдера есть общий аварийный рубильник и отдельные рубильники основного продукта для B2C и B2B. Отключение не удаляет правила. |
+| Welcome-бонус | Ровно `$4.000000000`; тратится только запросами, разрешёнными через `track`, и раньше платных денег. |
+| OpenKeys, старые ключи | Полностью сохранить текущий баланс, множитель, доступ и экономику каждого существующего ключа. |
+| OpenKeys, новые ключи | Только 1:1 по официальной цене: `$1` официальной стоимости списывает `$1` баланса. Другой вариант выпуска невозможен. |
+| OpenKeys, доступ | Все модели Anthropic и OpenAI, представленные в продукте на момент перехода; новые модели и провайдеры включаются отдельно. |
+| Служебные аккаунты | Явный владелец/класс политики, только статические правила, без `track`; назначения предварительно согласуются по инвентаризации. |
+| Gemini | До отдельного запуска коммерчески не существует: не работает для клиентских ключей и нигде не показывается в продуктовых поверхностях. |
+| Будущие fixed-тарифы | Отложены; в будущем допустимы только для точной модели, не для всего провайдера. |
 
-`discountPercent` means the percentage the customer does not pay. For example, a 60% discount means
-the customer pays 40% of official cost. All persisted money and rate calculations remain integer
-nanoUSD/basis-point operations; browser and JavaScript `number` values are never money authority.
+Блокирующих продуктовых вопросов для первой версии больше нет. До строгого переключения требуется
+операционная инвентаризация служебных аккаунтов и утверждение их конкретных правил; это не изменение
+продуктового контракта, а обязательный входной артефакт миграции.
 
-## Settled rule matrix
+## 4. Термины
 
-| Policy owner and scope | Initial release modes | Future mode |
+| Термин | Значение |
+|---|---|
+| API-плоскость | Фиксированный HTTP endpoint/process конкретного провайдера. |
+| Provider ID | Стабильный машинный идентификатор провайдера, например `anthropic` или `openai`. |
+| Запрошенная модель | Строка, которую прислал клиент. Может быть алиасом. |
+| Каноническая модель | Единственная идентичность доступа и цены, к которой приводятся алиасы. |
+| Отданная модель | Модель, указанная провайдером в фактическом ответе, если протокол её возвращает. |
+| Capability catalog | Поддерживаемые движком модели, алиасы, варианты метеринга и официальные тарифы. |
+| Product catalog | Явно включённые для конкретного продукта канонические модели. |
+| Provider-rule | Правило по умолчанию для всех включённых моделей одного провайдера. |
+| Model-rule | Правило для одной точной канонической модели; перекрывает provider-rule. |
+| `track` | Текущий прогрессивный B2C-тариф: тир плюс применимый referral floor. |
+| Static discount | Администраторская скидка 0–95% от полной официальной стоимости. |
+| Fixed tariff | Будущий буквальный набор цен для одной точной модели. |
+| Policy owner | Коммерческий владелец правил: global B2C, конкретный B2B, OpenKeys или service. |
+| Policy version | Монотонная версия одной политики. |
+| Catalog generation | Монотонная версия включённого продуктового каталога. |
+| Admission snapshot | Неизменяемый набор фактов цены, правила и допуска, зафиксированный до резерва. |
+| Paid funds | Реально оплаченный остаток, пригодный для любого разрешённого режима. |
+| Track bonus | Welcome-бонус, пригодный только для `track`. |
+
+`discount_percent` означает долю официальной цены, которую клиент не платит. Скидка 60% означает,
+что клиент платит 40%. В хранилище скидка нормализуется в basis points:
+
+```text
+discount_bps = discount_percent * 100
+payable_multiplier_bp = 10000 - discount_bps
+```
+
+В первой версии администраторская статическая скидка задаётся целым процентом от 0% до 95%
+включительно. Поэтому допустимы `discount_bps` от `0` до `9500` с шагом `100`, а итоговый
+множитель оплаты — от `10000` до `500`. Внутренние B2C-тиры могут сохранять уже существующие
+дробные проценты через точный `multiplier_bp`, например `3750`.
+
+Ограничение 0–95% относится к новым редактируемым политикам. Оно не даёт права округлить или
+изменить legacy OpenKeys key: если существующий ключ имеет иной точный `mult_bp` в исторически
+допустимом диапазоне `1..10000`, его immutable legacy policy хранит именно этот payable multiplier
+и не проходит через форму создания новой статической скидки.
+
+Все деньги, тарифы и результаты арифметики остаются integer-значениями: `bigint`, nanoUSD и
+десятичные строки на HTTP/JavaScript-границах. `float` и JavaScript `number` не могут быть
+денежным источником истины.
+
+## 5. Продукты, сегменты и владельцы политик
+
+### 5.1. Основной продукт, B2C
+
+- Один глобальный набор B2C-правил задаёт режим для provider/model scope.
+- Эффективный `track`-множитель индивидуален для аккаунта, потому что зависит от тира и referral
+  floor.
+- Commerce материализует в движок полную эффективную политику аккаунта; движок не должен сам
+  вычислять B2C-тиры.
+- Все ключи одного B2C-аккаунта используют одну эффективную политику.
+
+### 5.2. Основной продукт, B2B
+
+- Каждый B2B-клиент владеет одной независимой политикой.
+- Политика применяется ко всем ключам его engine-аккаунта.
+- Между B2B-клиентами нет общей изменяемой политики и нет глобального B2B fallback.
+- Совпадающие проценты двух клиентов не превращают их политики в один разделяемый объект.
+- В первой версии B2B использует только статические скидки.
+
+### 5.3. OpenKeys
+
+- OpenKeys — самостоятельный продукт рядом с основным продуктом.
+- Он не наследует B2C-тиры, referral floor, `track`, welcome-бонус или B2B-политику.
+- Новые ключи получают продуктовую политику 1:1 по всем явно включённым моделям Anthropic и
+  OpenAI.
+- Существующие ключи получают явную legacy-политику, эквивалентную их текущему множителю и
+  доступу.
+- Внутренний `api_type` старой партии не является авторизацией провайдера: один текущий ключ
+  технически используется на обеих API-плоскостях.
+
+### 5.4. Служебные и прямые engine-аккаунты
+
+- Каждый такой аккаунт должен быть отнесён к явному service owner/class.
+- Для него задаются только статические provider/model rules.
+- `track`, B2C-тиры, welcome-бонус и referral-механика недоступны.
+- Если двум ключам нужны разные правила, они должны находиться в разных engine-аккаунтах: первая
+  версия не вводит per-key pricing.
+- До миграции составляется и утверждается таблица:
+
+  ```text
+  engine account
+    -> владелец/назначение
+    -> разрешённые провайдеры
+    -> provider/model rules
+    -> статическая скидка
+    -> ответственный
+  ```
+
+- Legacy scalar fallback допустим только как временная страховка rollout. После строгого cutover он
+  не считается постоянной политикой.
+
+## 6. Gemini: код существует, продукта пока нет
+
+В актуальном репозитории уже есть внутренние Gemini capability, metering, отдельный runtime,
+systemd unit, мониторинг и hostname `gemini.api.apitoken.sale`. Это инфраструктурная готовность,
+а не продуктовое разрешение.
+
+До отдельного решения о запуске Gemini обязаны выполняться все условия:
+
+- клиентский `sk-pool` не получает рабочий доступ к Gemini;
+- основной B2C-каталог не содержит Gemini-моделей;
+- B2B configurator и B2B-приглашения не позволяют выбрать Gemini;
+- OpenKeys не содержит Gemini в продуктовом каталоге;
+- service-политики не получают Gemini автоматически;
+- не создаются provider/model rules для Gemini;
+- Gemini не показывается в клиентском кабинете, калькуляторах, публичном списке моделей,
+  OpenKeys, маркетинговых страницах и продуктовой документации;
+- публичная отключённая поверхность, если инфраструктурный hostname сохраняется, отвечает
+  fail-closed и не обслуживает клиентский запрос;
+- внутренние health checks, метрики и operator runbooks могут называть Gemini, потому что это не
+  продуктовая реклама и необходимо для безопасной эксплуатации кода.
+
+Машинный provider ID уже может называться `google`, а runtime/бренд — Gemini. Новый контракт не
+должен зашивать допустимые provider IDs в TypeScript enum из двух значений: провайдер валидируется
+через capability/product catalog. Но отсутствие hard-code не означает автоматический доступ.
+
+Будущий запуск Gemini — отдельное продуктовое событие. Для него одновременно потребуются:
+
+1. подтверждённые официальные тарифы и полный metering всех поддержанных корзин;
+2. явные модели в product catalog;
+3. отдельное решение по B2C-правилам;
+4. явное назначение B2B/service rules;
+5. отдельное решение о включении в OpenKeys;
+6. включение нужных рубильников;
+7. клиентские UI, документация и тесты;
+8. подтверждённое поколение каталога и политик на всех serving-процессах.
+
+До выполнения этого списка Gemini с точки зрения продукта не существует.
+
+## 7. Каталоги и явное включение моделей
+
+### 7.1. Три независимых уровня
+
+Поддержка и доступ — разные факты:
+
+1. **Capability:** движок знает протокол, канонический ID, алиасы и полный официальный тариф.
+2. **Product enablement:** модель явно включена для конкретного продукта.
+3. **Account policy:** для аккаунта разрешается provider-rule или точный model-rule.
+
+Запрос проходит только при выполнении всех трёх условий. Обнаруженная в upstream новая модель
+остаётся недоступной, пока capability и product enablement не прошли отдельный review.
+
+### 7.2. Разные продуктовые каталоги
+
+Минимально нужны независимые enabled-наборы:
+
+- основной продукт;
+- OpenKeys;
+- служебные классы, если их список моделей отличается.
+
+B2C и B2B основного продукта используют общий набор коммерчески представленных моделей, но имеют
+разные provider segment switches и разные policy owners.
+
+OpenKeys в момент перехода включает все модели Anthropic и OpenAI, уже представленные клиентам.
+Новая модель в уже разрешённом провайдере не включается в OpenKeys автоматически: сначала она
+добавляется в OpenKeys product catalog. Это сохраняет обещание «все текущие модели доступны» и
+одновременно выполняет требование «все последующие модели/провайдеры включаются отдельно».
+
+### 7.3. Базовый снимок представленных моделей
+
+На проверенном `origin/master` продуктовые страницы показывают следующий набор. Перед фактическим
+backfill реализация должна взять актуальный на тот момент проверенный список, а не слепо считать
+эту таблицу вечной.
+
+| Provider | Канонические продуктовые модели |
+|---|---|
+| Anthropic | `claude-opus-4-8`, `claude-opus-4-7`, `claude-sonnet-5`, `claude-sonnet-4-6`, `claude-haiku-4-5` |
+| OpenAI | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4` |
+
+`gpt-5.6` — публичный алиас `gpt-5.6-sol`, а не отдельная модель. У них одна каноническая
+идентичность, один upstream, один официальный тариф и одно policy rule. Нельзя создать отдельное
+правило для алиаса или получить через него более дешёвый маршрут.
+
+### 7.4. Правила изменения каталога
+
+- Добавление модели возможно только после проверки полного metering.
+- Включение модели создаёт новую монотонную catalog generation.
+- Удаление из продукта выполняется как `enabled=false`, а не физическим удалением исторической
+  идентичности.
+- Сохранённые policy rules при временном отключении модели не уничтожаются.
+- Повторное включение возвращает сохранённые правила после доставки нового поколения.
+- Provider-rule распространяется только на модели, включённые для данного продукта.
+- Политика только из exact model rules не получает новую sibling-модель.
+- Ни один UI не должен строить список доступных моделей по префиксу строки.
+
+## 8. Рубильники провайдеров
+
+Для каждого провайдера нужны как минимум три независимых состояния:
+
+| Состояние | Область | Назначение |
 |---|---|---|
-| Global B2C provider | `track`, static `discount` | None; provider-wide fixed tariffs are forbidden. |
-| Global B2C model | `track`, static `discount` | Exact-model `fixed` tariff. |
-| Individual B2B provider | Static `discount` | None; provider-wide fixed tariffs are forbidden. |
-| Individual B2B model | Static `discount` | Exact-model `fixed` tariff. |
+| Master switch | Все продукты и сегменты | Аварийно прекратить новые admissions провайдера. |
+| B2C switch | B2C основного продукта | Разрешить/остановить провайдера только для B2C. |
+| B2B switch | B2B основного продукта | Разрешить/остановить провайдера только для B2B. |
 
-Discounts are integers from 0% through 95%, inclusive. A rule never stacks with another rule.
+Для OpenKeys и service дополнительно действует их собственный product/provider enablement. Общий
+master switch имеет наивысший приоритет и выключает провайдера для всех.
 
-## Rule resolution and access
+Семантика:
 
-For an authenticated account and requested model:
+- выключение не удаляет provider/model rules;
+- повторное включение восстанавливает те же сохранённые правила;
+- переключение получает собственную версию/поколение и доставляется в движок durably;
+- новый запрос видит только целиком старое или целиком новое состояние;
+- уже допущенный запрос завершается по своему admission snapshot;
+- аварийное выключение не должно оставлять зависший резерв или менять цену уже идущего запроса;
+- B2C switch никак не меняет B2B, и наоборот;
+- отсутствие провайдера в продукте и выключенный segment switch не раскрывают клиенту внутреннюю
+  классификацию аккаунта.
 
-1. Take the provider from the fixed API/provider plane that accepted the request, then resolve its
-   canonical model. Never infer provider from model text or optional client headers.
-2. Reject the request if the model is unsupported or is not administratively enabled.
-3. Select the account's B2C policy or that exact B2B client's policy.
-4. Use an exact model rule when one exists.
-5. Otherwise use the provider rule when one exists.
-6. Otherwise reject the request.
+Рекомендуемое публичное поведение:
 
-In compact form:
+- неизвестная, не включённая, не разрешённая политикой модель или отключённый продуктовый сегмент —
+  provider-native `model_not_found`/эквивалент;
+- общий аварийный master switch — provider-native retryable unavailable (`503` или нативный
+  эквивалент), потому что это временная авария, а не изменение каталога;
+- Gemini до запуска — fail-closed как отсутствующий продукт, а не как доступный временно сломанный
+  провайдер.
+
+## 9. Модель политики и разрешение правил
+
+### 9.1. Допустимые rule-типы
+
+| Владелец и scope | Первая версия | Будущее |
+|---|---|---|
+| Global B2C provider | `track`, static `discount` | Fixed запрещён. |
+| Global B2C model | `track`, static `discount` | Exact-model `fixed`. |
+| Individual B2B provider | Static `discount` | Fixed запрещён. |
+| Individual B2B model | Static `discount` | Exact-model `fixed`. |
+| OpenKeys current provider | Только static `discount=0%` | Изменение требует отдельного продуктового решения. |
+| OpenKeys legacy provider/model | Статическая legacy-экономика аккаунта | Не редактируется как новый продукт. |
+| Service provider | Static `discount` | Fixed запрещён. |
+| Service model | Static `discount` | Exact-model `fixed` после отдельного решения. |
+
+### 9.2. Алгоритм разрешения
+
+Для аутентифицированного аккаунта и запрошенной модели:
+
+1. Провайдер берётся из фиксированной API-плоскости.
+2. Запрошенный ID приводится к канонической модели.
+3. Проверяются capability, master switch, product/segment switch и product catalog.
+4. Выбирается полностью материализованная effective account policy.
+5. Если есть exact model-rule, используется оно.
+6. Иначе, если есть provider-rule, используется оно.
+7. Иначе запрос отклоняется.
 
 ```text
 exact model rule -> provider rule -> reject
 ```
 
-An exact model rule replaces the provider rule; the two are never combined. A client may have exact
-model rules without a provider rule. In that case only those exact models work and sibling models are
-rejected.
+Exact model-rule полностью заменяет provider-rule. Они не складываются. Поэтому модель может быть
+выведена из provider-wide `track` в статическую скидку или, наоборот, возвращена в `track` точным
+override.
 
-A provider rule grants access to every enabled model under that provider. There is intentionally no
-per-client model-block rule beneath a provider rule. If a B2B client must not receive all provider
-models, configure only exact model rules and omit the provider rule.
+Клиент может иметь exact rules без provider-rule. Тогда доступны только эти модели.
 
-Globally disabling a model makes it unavailable to every account, including accounts with an exact
-model rule. Model enablement is an admission gate evaluated before account rule resolution.
+Provider-rule разрешает все включённые в product catalog модели провайдера. Под ним намеренно нет
+per-client deny rule. Чтобы ограничить B2B-клиента несколькими моделями, администратор не создаёт
+provider-rule и перечисляет только exact rules.
 
-When an administrator enables a new model, every B2C/B2B policy with a rule for that provider gains
-access immediately. Policies containing only exact model rules do not gain the new model.
+### 9.3. Валидация
 
-If an administrator deletes a provider rule while exact model rules remain, the exact models continue
-to work and all other models in that provider become unavailable.
+- Все provider/model IDs должны существовать в соответствующей catalog generation.
+- Model-rule всегда содержит provider ID и канонический model ID.
+- Алиас нельзя сохранить как отдельный scope.
+- На один scope в одной policy version приходится ровно одно правило.
+- B2B policy и непросроченное B2B invitation не могут быть пустыми.
+- OpenKeys current policy не принимает скидку, отличную от 0%.
+- OpenKeys legacy policy принимает только точный backfilled payable multiplier существующего
+  ключа, не редактируется и не ограничивается новым 95%-порогом.
+- B2B/service rule не принимает `track`.
+- Provider-wide `fixed` не принимается ни в одной версии схемы.
+- В первой версии exact `fixed` также не принимается, хотя тип зарезервирован для будущего schema
+  version.
+- Невалидная полная политика отвергается целиком; частичная запись запрещена.
 
-Failures caused by an unknown, disabled, or unpriced model should use the provider's normal
-model-not-found response shape. They must not be reported as low balance or an internal billing error.
+## 10. Версии, поколения и подтверждение применения
 
-## Model catalog and aliases
+Commerce остаётся authority продуктовых политик. Engine остаётся authority денег, резерва,
+settlement и фактического допуска.
 
-Model support and pricing permission are separate gates:
+Минимальные идентификаторы:
 
-1. The engine must know the official tariff and metering behavior for the model.
-2. An administrator must enable the canonical model in the commercial catalog.
-3. The applicable B2C/B2B policy must resolve to a provider or model rule.
+- `catalog_generation` — монотонная версия product catalog;
+- `policy_id` — стабильная идентичность владельца;
+- `policy_version` — монотонная версия этой политики;
+- `effective_policy_version` или неизменяемый content digest — версия материализации для аккаунта;
+- `schema_version` — версия формы Control API;
+- `switch_generation` — версия рубильников, если они не входят в catalog generation.
 
-A newly discovered upstream model remains unavailable until the first two gates are complete. A
-provider rule must not silently authorize a model that has not been explicitly enabled.
+Правила доставки:
 
-The runtime-supported catalog and the commercially enabled catalog have different authorities:
+- обновление политики — одна атомарная full replacement, а не серия запросов по моделям;
+- более старая версия не может перезаписать новую;
+- повтор той же версии с тем же digest идемпотентен;
+- та же версия с другим digest — конфликт и операторский alert;
+- engine ACK выдаётся только после durable commit;
+- admin показывает `pending`, пока нужное поколение не подтверждено;
+- ошибка доставки показывает `failed/retrying`, но не выдаёт желаемое состояние за действующее;
+- новый аккаунт получает политику и ACK до выпуска первого usable key;
+- все serving-процессы, способные принять ключ этого аккаунта, обязаны понимать schema version и
+  видеть согласованную catalog generation;
+- readiness процесса не проходит, если он не способен корректно применить активный контракт.
 
-- engine code/config owns provider capability, canonical aliases, and audited official metering;
-- commerce PostgreSQL owns the administrator-controlled enabled state;
-- the engine boundary needs a versioned, durable way to receive the enabled catalog alongside or
-  before account policies, so both provider API planes enforce the same generation.
+Глобальное B2C-правило материализуется с текущим индивидуальным track multiplier каждого аккаунта.
+Изменение тира или referral floor порождает новую effective account policy version тем же durable
+путём, что и ручная правка.
 
-Enabling a model commercially is valid only after the running provider plane supports and meters it.
-The implementation must define atomic propagation and readiness semantics; an admin write must not
-advertise success while one serving process still rejects or misprices that generation.
-
-Public aliases resolve before pricing. `gpt-5.6` is retained as a convenience alias for
-`gpt-5.6-sol`; both names have one canonical pricing identity and one configurable rule. The alias
-must never appear as an independently priced model or create a cheaper route to the same upstream
-model.
-
-## B2C behavior
-
-### Initial state
-
-All enabled B2C providers and models start on the existing B2C track. This includes Anthropic and
-OpenAI. The current tier ladder, advancement thresholds, and rolling retention requirements remain
-owned by `PRICING.md` and `B2C_PRICING_TIERS`; do not duplicate their numeric values into the new
-policy implementation.
-
-The B2C rules are global, but the effective track price is still account-specific. A `track` rule
-selects each account's current tier/referral multiplier; it does not contain one global percentage.
-Tier or referral-floor changes must produce a new effective account-policy generation and follow the
-same durable synchronization path as an administrative pricing edit.
-
-### Track eligibility
-
-| Effective B2C rule | Uses tier/referral price | Counts toward 30-day tier retention | Referral commission eligible |
-|---|---:|---:|---:|
-| `track` | Yes | Yes | Yes |
-| Static `discount` | No | No | No |
-| Future model `fixed` | No | No | No |
-
-A model-specific static discount can therefore remove one model from an otherwise provider-wide
-track. Conversely, an exact `track` rule can put one model on the track even when its provider uses a
-static discount.
-
-The referral floor affects only requests whose resolved rule is `track`. Static-discount and future
-fixed-tariff charges must not generate referral commission.
-
-Every charge, including a non-track charge, must still be persisted in chronological financial
-history and participate in free-first funding allocation, balance/spend reporting, refunds, and
-audit. Track and commission eligibility are separate immutable flags; exclusion from those programs
-must never mean dropping the charge or zeroing its real-funded amount.
-
-Confirmed paid top-ups continue to advance the B2C tier regardless of which provider or pricing mode
-later consumes the balance. For example, top-ups spent only on static-discount OpenAI traffic can
-still unlock a better Anthropic track tier. Only track-eligible usage retains that tier during the
-rolling 30-day window.
-
-The current top-up advancement model is not being redesigned by this project.
-
-## B2B behavior
-
-Every B2B client owns a separate pricing policy. B2B clients never share a provider rule, model rule,
-or mutable policy object, even when the configured percentages happen to be equal. There is no global
-B2B fallback policy.
-
-A B2B policy can contain:
-
-- one discount for all enabled Anthropic models;
-- one discount for all enabled OpenAI models;
-- exact model discounts that override a provider discount;
-- exact model discounts without any provider rule.
-
-Creation of a B2B invitation requires at least one provider or exact-model rule. The invitation must
-carry that prospective client's complete independent policy, and redemption must copy it atomically
-to the new B2B client. Later edits affect only that client.
-
-Every existing B2B client must also retain at least one rule. Reject an administrative edit that
-would leave its policy empty.
-
-Existing B2B clients currently have one scalar discount. At migration, copy that discount only to an
-Anthropic provider rule. Do not create an OpenAI provider rule for them. Existing B2B clients receive
-OpenAI access only after an administrator adds an OpenAI provider or exact-model rule.
-
-Changing a rule has no billing-period delay, but the durable engine acknowledgement is the effect
-point. The admin surface must show `pending` until the engine accepts the new generation. After that,
-new requests use it immediately. A request already admitted under the previous rule finishes and
-settles under that snapped rule; pricing must not change halfway through a request. Initial account
-provisioning must install and acknowledge its complete policy before issuing a usable key.
-
-## Official price modifiers
-
-Percentage discounts apply to the complete effective official provider cost, not only base input and
-output rates. The engine must first calculate official cost with all applicable model and feature
-rules, then apply the selected customer discount.
-
-This includes, where supported:
-
-- input and output tokens;
-- prompt-cache reads and writes;
-- web-search request charges;
-- effective-dated official tariff changes;
-- Anthropic Fast Mode;
-- OpenAI long-context pricing;
-- Anthropic US inference geography.
-
-For a static 60% discount, a premium official request still charges 40% of that premium official
-cost. Provider/model discounts do not suppress provider feature premiums.
-
-## `inference_geo: "us"`
-
-Anthropic's first-party Messages API supports US-only inference for Claude 4.6 and later models. A
-request can specify:
+Концептуальный payload, не фиксирующий окончательные имена endpoint:
 
 ```json
 {
-  "inference_geo": "us"
+  "schema_version": 1,
+  "policy_id": "b2b:customer-uuid",
+  "owner": {
+    "type": "b2b_client",
+    "id": "customer-uuid"
+  },
+  "product": "main",
+  "policy_version": "42",
+  "catalog_generation": "17",
+  "rules": [
+    {
+      "scope": {
+        "provider": "anthropic"
+      },
+      "mode": "discount",
+      "discount_bps": 6000
+    },
+    {
+      "scope": {
+        "provider": "openai",
+        "canonical_model": "gpt-5.6-terra"
+      },
+      "mode": "discount",
+      "discount_bps": 5000
+    }
+  ]
 }
 ```
 
-`global` is the default. `us` requests that inference remain within the United States and applies an
-official 1.1x multiplier to input, output, cache-read, and cache-write token prices. The separate web
-search fee is not multiplied. Unsupported earlier models reject the option upstream.
+Версии и денежные integer на JSON-границе передаются десятичными строками там, где JavaScript
+`number` не гарантирует точность.
 
-The current source already implements this modifier:
+## 11. B2C
 
-- `crates/forward/src/proxy.rs` detects a requested US geography and reserves against 1.1x token
-  rates;
-- `crates/forward/src/meter.rs` reads the authoritative response usage geography for SSE and JSON,
-  applies 1.1x to token cost buckets, leaves web search unchanged, and records the geography;
-- the account multiplier is applied after the premium official cost is calculated.
+### 11.1. Начальное состояние
 
-The remediation entered history in commit `dcd6459`. It is an ancestor of the baseline used for this
-handoff. The normal source path is mathematically correct, but no focused automated regression test
-currently proves request/reservation/response mismatch cases. A live production SHA was not
-independently verified during the product discussion. Add direct tests as part of implementation;
-do not create a separate customer policy mode for inference geography.
+После backfill:
 
-## Deferred literal fixed tariffs
+- Anthropic provider-rule = `track`;
+- OpenAI provider-rule = `track`;
+- Gemini rules отсутствуют;
+- точные model-rules не создаются без реальной необходимости;
+- текущий тир и referral floor каждого аккаунта сохраняются.
 
-Literal fixed tariffs are not part of the initial release. Do not expose an incomplete fixed-tariff
-form or allow a partially specified tariff to fall back to changing official rates.
+Числа лестницы, пороги и rolling window остаются в `PRICING.md` и
+`B2C_PRICING_TIERS`. Новый слой политики выбирает режим, но не дублирует и не переизобретает
+лестницу.
 
-The design must nevertheless allow a later exact-model rule that computes customer charge from a
-complete literal tariff while retaining official provider cost separately for margin, capacity, and
-audit reporting.
+### 11.2. Режимы и программы
 
-Settled future constraints:
+| Effective B2C rule | Тир/referral floor | 30-day retention | Referral commission |
+|---|---:|---:|---:|
+| `track` | Да | Да | Да, только с real-funded части |
+| Static `discount` | Нет | Нет | Нет |
+| Future exact `fixed` | Нет | Нет | Нет |
 
-- fixed tariffs are exact-model only;
-- a provider can never have a literal fixed tariff because its models have different costs;
-- fixed-tariff usage is outside B2C tier retention, referral discounts, and referral commission;
-- Fast Mode and long-context variants use the fixed schedule defined for the qualifying model;
-- fixed tariff changes apply to new requests while in-flight requests retain their snapped version.
+Статическая скидка полностью обходит tier/referral price. Referral floor не может улучшить или
+изменить статическое правило.
 
-Provider-specific fixed fields are deliberately not finalized. A later product decision must define
-complete prices for every billable token/cache/tool bucket and every supported premium variant.
+Подтверждённые платные пополнения продолжают продвигать B2C-тир независимо от того, в каком режиме
+позже потрачены деньги. Например, пополнение, использованное только на static OpenAI, всё равно
+может открыть следующий тир. Но удерживает тир в rolling window только usage с `track`.
 
-## Current implementation gap
+Track-usage, оплаченный welcome-бонусом, может участвовать в retention по тем же правилам, что и
+другой track-usage, но не создаёт referral commission, потому что его `real_funded_nano = 0`.
 
-Today customer pricing is scalar end to end:
+### 11.3. Статическое правило внутри track-провайдера
+
+Exact static rule может вывести одну модель из provider-wide `track`. Для неё:
+
+- используется только заданный static discount;
+- welcome-бонус недоступен;
+- usage не удерживает тир;
+- usage не комиссионируется;
+- платная часть по-прежнему попадает в финансовую историю, spend и refund.
+
+Точное `track` rule может, наоборот, вернуть одну модель в прогрессивный тариф, когда provider-rule
+статический.
+
+## 12. Welcome-бонус `$4`, доступный только в `track`
+
+### 12.1. Продуктовая семантика
+
+- Размер — ровно `4_000_000_000` nanoUSD (`$4.000000000`).
+- Это баланс платформы, а не обещание фиксированного количества «официального API value».
+- Он разрешён только запросам, у которых effective rule = `track`.
+- Внутри `track` бонус расходуется раньше paid funds.
+- Static/future-fixed запрос не может резервировать или списывать этот бонус.
+- Если у аккаунта есть только bonus и нет подходящего `track` rule, бонус остаётся сохранённым, но
+  недоступным до появления `track`.
+- B2B, OpenKeys и service не получают этот бонус.
+- Текущая eligibility регистрации не меняется этим проектом: bonus-eligible остаются прошедшие
+  существующие OAuth/anti-abuse условия; password registration и B2B invitation его не получают.
+
+Публичную формулировку «$10 использования по официальной цене» нужно убрать. Она была производной
+от starter multiplier 40% и становится неоднозначной при разных режимах. Корректное обещание:
+«$4 welcome-баланса для прогрессивного тарифа» с понятным пояснением ограничения.
+
+### 12.2. Необходимая денежная модель
+
+Текущий единый engine balance и постфактум `free_balance_nano` в commerce недостаточны: статический
+запрос уже успеет зарезервировать общий баланс до того, как worker узнает происхождение денег.
+Ограничение должно применяться в engine admission.
+
+Минимально нужны отдельные доступные и зарезервированные корзины:
+
+```text
+paid
+  eligibility: любой разрешённый pricing mode
+
+welcome_track_bonus
+  eligibility: только track
+```
+
+Допустима более общая модель funding buckets, но начальная семантика должна быть ровно такой.
+Промо и admin credits не становятся автоматически track-only: их eligibility задаётся явно или
+сохраняется как отдельная legacy-категория.
+
+### 12.3. Резерв и списание
+
+Для `track`:
+
+1. резервируется доступный welcome bonus;
+2. недостающая часть резервируется из paid;
+3. settlement списывает фактическую сумму в том же порядке;
+4. неиспользованный резерв возвращается в исходные корзины.
+
+Для static/future-fixed:
+
+1. welcome bonus полностью исключается из available balance;
+2. резерв возможен только из paid/явно совместимых корзин;
+3. если paid недостаточно, запрос получает low-balance даже при положительном общем бонусном
+   остатке.
+
+Пример:
+
+```text
+welcome_track_bonus = $4
+paid = $1
+static request needs $2
+
+eligible balance = $1
+result = low balance
+welcome_track_bonus remains $4
+```
+
+Refund, отмена резерва и компенсация должны возвращать деньги в те же funding buckets, из которых
+они были взяты. Нельзя превратить restricted bonus в paid через refund или retry.
+
+Ledger должен хранить точную allocation:
+
+```text
+charged_nano
+bonus_funded_nano
+paid_funded_nano
+funding bucket identities/versions
+```
+
+Commerce больше не должен реконструировать real-funded часть одним изменяемым счётчиком после
+факта; он потребляет авторитетную allocation движка.
+
+### 12.4. Миграция существующего остатка
+
+Миграция не должна уничтожать или увеличивать баланс:
+
+- из ledger references повторно рассчитывается остаток явных `signup-bonus:*` начислений;
+- воспроизводится хронологический free-first расход;
+- доказанный остаток signup bonus переносится в `welcome_track_bonus`;
+- paid remainder переносится в `paid`;
+- неоднозначный остаток бесплатных средств не превращается в paid: он переносится в отдельный
+  restricted legacy bucket до ручной/детерминированной классификации;
+- сумма всех новых buckets обязана совпасть с live engine balance до nanoUSD;
+- аккаунт с несходящейся сверкой не переводится автоматически в strict mode и попадает в
+  migration exception report.
+
+## 13. B2B
+
+### 13.1. Политика клиента
+
+Одна B2B policy может содержать:
+
+- скидку на все включённые Anthropic-модели;
+- скидку на все включённые OpenAI-модели;
+- exact model discounts, перекрывающие provider discount;
+- только exact model discounts без provider-rule.
+
+В первой версии `track` для B2B запрещён. Policy должна содержать хотя бы одно правило. Admin edit,
+который оставляет её пустой, отклоняется.
+
+### 13.2. Приглашение
+
+При создании invitation администратор обязан сначала настроить полную будущую policy. Одного
+скалярного `multiplier_bp` больше недостаточно.
+
+До погашения:
+
+- invitation можно редактировать через policy configurator;
+- каждая правка создаёт новую version;
+- policy остаётся независимой от других invitations и клиентов;
+- должна оставаться хотя бы одна rule;
+- UI показывает сохранённую и фактически подготовленную версию.
+
+При погашении:
+
+1. invitation блокируется в commerce transaction;
+2. проверяются email, срок, `consumed_at` и актуальная version;
+3. целая текущая policy snapshot копируется новому B2B owner;
+4. создаётся durable provisioning saga;
+5. policy устанавливается и подтверждается engine;
+6. только после ACK выпускается usable key;
+7. invitation отмечается погашенным/архивным идемпотентно.
+
+Параллельная admin-правка и redemption не могут дать смесь версий: победит либо целая предыдущая,
+либо целая новая snapshot согласно блокировке/version check.
+
+После погашения:
+
+- invitation — неизменяемый архив того, что было выдано;
+- дальнейшие изменения выполняются только в policy клиента;
+- изменение invitation не должно менять существующего клиента;
+- audit связывает invitation version с начальной client policy version.
+
+Распределённая операция между commerce PostgreSQL и engine не притворяется одной SQL-транзакцией.
+Атомарность policy copy обеспечивается в commerce; внешний provisioning возобновляется durable
+saga, при этом usable key не существует до engine ACK.
+
+### 13.3. Существующие B2B
+
+Для каждого существующего B2B:
+
+- текущая скалярная скидка превращается только в Anthropic provider-rule;
+- процент и экономический результат сохраняются;
+- OpenAI rule не создаётся;
+- Gemini rule не создаётся;
+- OpenAI становится доступен только после явной admin-правки;
+- все текущие ключи клиента начинают использовать эту одну account policy.
+
+Непогашенные legacy invitations со скалярной скидкой преобразуются в независимую Anthropic-only
+policy и остаются редактируемыми. Уже погашенные invitations сохраняются как архив; authority
+находится у policy существующего клиента.
+
+## 14. OpenKeys
+
+### 14.1. Текущие ключи
+
+Все выпущенные до cutover ключи сохраняются без экономического изменения:
+
+- текущий live balance;
+- reserved/spent;
+- текущий `mult_bp`;
+- текущий номинал и данные партии;
+- текущая активность/disabled state;
+- текущий доступ через Anthropic и OpenAI, поскольку один engine key работает на обеих
+  фиксированных плоскостях;
+- текущая история и view token.
+
+Для каждого такого engine account создаётся явная immutable legacy-политика. Её provider rules
+воспроизводят текущий multiplier для Anthropic и OpenAI на текущем включённом наборе моделей.
+Legacy migration не докредитовывает баланс и не пересчитывает прошлые списания.
+
+`api_type` legacy-партии может остаться исторической/мерчандайзинговой меткой, но не ограничивает
+доступ и не выбирает pricing rule.
+
+### 14.2. Новые ключи
+
+После cutover любой новый OpenKeys key:
+
+- создаётся с `multiplier_bp = 10000`;
+- получает static `discount = 0%`;
+- получает engine balance, точно равный продаваемому номиналу;
+- на `$1` полной официальной стоимости теряет ровно `$1` баланса;
+- доступен на всех явно включённых текущих моделях Anthropic и OpenAI;
+- не имеет `track`, tier, referral floor, welcome bonus или commission eligibility.
+
+Другой вариант выпуска должен быть невозможен на всех слоях:
+
+- admin UI не показывает поле множителя/скидки;
+- публичный/internal API не принимает произвольный `multBp`;
+- функция выпуска жёстко задаёт и валидирует `10000`;
+- database constraint разделяет `legacy` и `official_1_to_1`;
+- для `official_1_to_1` допускается только `mult_bp = 10000`;
+- engine policy validator допускает только OpenKeys current rule `discount_bps = 0`;
+- изменение env вроде старого default multiplier не меняет новые ключи;
+- обходной прямой вызов не может создать новый OpenKeys account с иной экономикой.
+
+Рекомендуемый schema-маркер:
+
+```text
+pricing_contract = legacy | official_1_to_1
+```
+
+Существующие строки backfill как `legacy`, новые по умолчанию и без возможности выбора —
+`official_1_to_1`.
+
+### 14.3. Модели и будущие расширения
+
+Внутри OpenKeys не требуется модельная дифференциация цены: все включённые модели списываются 1:1
+по своему полному официальному тарифу.
+
+При этом product catalog остаётся явным:
+
+- текущие представленные Anthropic/OpenAI модели включаются при миграции;
+- новый model ID не наследуется автоматически;
+- новый provider не наследуется автоматически;
+- Gemini не включается;
+- включение будущей модели требует catalog generation и тестов official metering;
+- включение будущего провайдера требует отдельного product decision и provider switch.
+
+## 15. Расчёт официальной и клиентской стоимости
+
+Percentage discount применяется один раз к полной эффективной официальной стоимости:
+
+```text
+official_nano = полный официальный тариф запроса
+charged_nano = apply_multiplier(official_nano, payable_multiplier_bp)
+```
+
+Сначала считаются все официальные компоненты, затем применяется клиентское правило. В official cost
+входят, где применимо:
+
+- input tokens;
+- output/reasoning tokens;
+- cache reads;
+- cache writes разных TTL;
+- web search/tool request fees;
+- effective-dated официальные тарифы;
+- Anthropic Fast Mode;
+- OpenAI long-context pricing;
+- Anthropic `inference_geo: "us"`;
+- для будущего Gemini — audio input, cached input, long-context buckets и search/grounding.
+
+Статическая скидка 60% на premium-запрос означает 40% от полной premium official cost. Скидка не
+отключает и не обходит provider feature premium.
+
+В истории всегда отдельно сохраняются:
+
+- `official_nano` — полная стоимость провайдера;
+- `charged_nano` — списание клиента;
+- разница/margin, выводимая из двух immutable сумм;
+- компоненты official cost, достаточные для аудита.
+
+### 15.1. Anthropic US inference
+
+`inference_geo: "us"` для поддерживаемых моделей применяет официальный множитель 1.1x к input,
+output, cache-read и cache-write. Web search fee не умножается. Это модификатор официальной цены,
+а не отдельный customer pricing mode. `global` остаётся значением по умолчанию; неподдерживающие
+опцию более ранние модели отклоняют её на provider boundary.
+
+Текущий код уже обрабатывает его в `crates/forward/src/proxy.rs` и
+`crates/forward/src/meter.rs`: reserve учитывает request-side geography, а settlement читает
+авторитетную response usage geography и оставляет web search без 1.1x. Исправление вошло в историю
+коммитом `dcd6459`, который является предком проверенного baseline. Новая реализация всё равно
+обязана добавить прямые regression tests для:
+
+- request/response geography agreement;
+- отсутствующей geography в ответе;
+- несовпадения request/response;
+- SSE и non-SSE;
+- web search без 1.1x;
+- одинакового tariff snapshot между reserve и settle.
+
+## 16. Admission snapshot, резерв и settlement
+
+### 16.1. Что фиксируется до резерва
+
+Для каждого metered request engine обязан durably зафиксировать как минимум:
+
+- provider из API-плоскости;
+- product и account class;
+- requested model;
+- canonical model;
+- alias mapping version;
+- выбранный scope: provider или exact model;
+- rule ID/type;
+- pricing mode;
+- effective discount/payable multiplier;
+- policy ID и version;
+- effective policy digest/version;
+- catalog generation;
+- switch generation;
+- официальный tariff epoch или неизменяемый pricing schedule ID;
+- admission timestamp;
+- применимые request-side premium modifiers;
+- `track_eligible`;
+- `retention_eligible`;
+- предварительную `commission_eligible` семантику;
+- funding bucket allocation резерва.
+
+Reservation row не может содержать только `hold_nano`. Без snapshot crash recovery и поздний
+settlement способны применить уже другую политику или тариф.
+
+### 16.2. Один снимок на весь запрос
+
+- Reserve рассчитывается по admission snapshot.
+- Settlement использует тот же policy/rule и тот же tariff epoch.
+- Правка policy во время SSE не меняет цену запроса.
+- Смена B2C-тира во время запроса не меняет его цену.
+- Выключение провайдера прекращает новые admissions, но не переоценивает уже принятый запрос.
+- Effective-dated tariff change во время запроса не смешивает старую reserve price с новой settle
+  price.
+- Retry одного request ID обязан либо вернуть тот же snapshot, либо fail closed при несовпадающих
+  параметрах.
+
+### 16.3. Отданная модель
+
+Provider-reported served model сохраняется для аудита. Если это алиас/датированный ID той же
+канонической pricing identity, settlement использует допущенную canonical policy и pinned tariff
+schedule.
+
+Если upstream неожиданно сообщает другую каноническую модель:
+
+- policy нельзя молча переключить задним числом;
+- запрос помечается billing invariant mismatch;
+- settlement следует заранее определённому консервативному пути, который не допускает
+  недосписания и не превышает документированные overdraft/hold пределы;
+- событие создаёт alert и сохраняет обе идентичности;
+- такой случай покрывается тестом.
+
+## 17. Финансовая история и атрибуция
+
+Каждая новая charge-запись должна позволять ответить без репрайсинга:
+
+- какой provider принял запрос;
+- какая модель была запрошена;
+- какая canonical model тарифицировалась;
+- какая served model вернулась;
+- какой official tariff epoch использован;
+- какие official cost buckets получились;
+- какая policy/rule/version сработала;
+- был ли scope provider или model;
+- был ли режим `track`, `discount` или future `fixed`;
+- какой discount/multiplier применён;
+- какая catalog/switch generation действовала;
+- какая часть списана из bonus и какая из paid;
+- участвует ли событие в retention;
+- может ли real-funded часть участвовать в referral commission.
+
+Эти поля immutable. Поздняя правка policy не переопределяет старую историю.
+
+Все charges, включая static и OpenKeys:
+
+- входят в хронологическую финансовую историю;
+- изменяют live balance/spent;
+- участвуют в refunds/adjustments;
+- доступны в usage audit;
+- сохраняют official и charged totals.
+
+«Не участвует в tier/commission» не означает «не записывать charge» или «обнулить paid-funded
+часть».
+
+### 17.1. История до cutover
+
+Commerce исторически не сохранял provider/model/policy для каждой charge ledger row. Поэтому:
+
+- provider и model старых строк не угадываются по текущим правилам или строковым префиксам;
+- pre-cutover B2C usage можно пометить `legacy_track_eligible=true`, потому что оно было создано
+  старым единым B2C track;
+- существующие tier-window aggregates сохраняются;
+- для неизвестных полей используется честное `unknown/legacy`;
+- B2B/OpenKeys/service история не переписывается выдуманной политикой;
+- новые отчёты умеют показывать unattributed legacy;
+- миграция не пересчитывает старые деньги сегодняшними тарифами.
+
+## 18. Referral и sales bounded context
+
+Комиссия возможна только при одновременном выполнении:
+
+```text
+resolved mode = track
+AND paid_funded_nano > 0
+AND остальные действующие referral-условия выполнены
+```
+
+Следствия:
+
+- B2C static usage не комиссионируется;
+- future fixed usage не комиссионируется;
+- OpenKeys не комиссионируется;
+- service usage не комиссионируется;
+- B2B usage не комиссионируется;
+- welcome-funded часть track charge не комиссионируется;
+- paid-funded часть смешанного track charge может комиссионироваться;
+- referral floor влияет только на `track`.
+
+Commerce internal sales feed должен передавать immutable mode/eligibility и точный
+`paid_funded_nano`, а не заставлять sales заново угадывать их по текущему профилю. Sales DB
+сохраняет необходимые поля для идемпотентной выплаты.
+
+## 19. Концептуальная модель данных
+
+Точные имена таблиц остаются реализационным решением, но следующие сущности и инварианты
+обязательны.
+
+### 19.1. Commerce PostgreSQL
+
+```text
+provider_capability_projection
+  provider_id
+  capability/schema version
+  supported canonical models/aliases
+
+product_catalogs
+  product_id
+  generation
+  status
+
+product_catalog_entries
+  product_id
+  provider_id
+  canonical_model_id
+  enabled
+  generation
+
+provider_switches
+  provider_id
+  scope: master | main_b2c | main_b2b | product
+  enabled
+  generation
+
+pricing_policies
+  policy_id
+  owner_type
+  owner_id
+  product_id
+  version
+  content_digest
+  status
+
+pricing_rules
+  policy_id/version
+  scope_type
+  provider_id
+  canonical_model_id nullable
+  mode
+  discount_bps nullable
+
+account_policy_bindings
+  commerce/engine account
+  policy owner
+  effective version/digest
+  desired/applied generation
+
+business_invite_policy_snapshots
+  invitation
+  independent versioned policy
+  redeemed snapshot version
+
+engine_policy_jobs
+  account
+  target versions/generations/digest
+  status/lease/retry/ack
+
+pricing_usage_events
+  provider/model/policy/rule attribution
+  official/charged amounts
+  funding allocation
+  eligibility flags
+```
+
+Существующие scalar columns остаются на expand/dual-write этапе, но перестают быть authority после
+строгого cutover.
+
+### 19.2. Engine PostgreSQL и SQLite parity
+
+```text
+enabled_product_catalog
+  product/provider/model
+  generation
+
+account_policies
+  account
+  full immutable version/digest
+
+account_policy_rules
+  normalized rules or validated immutable payload
+
+provider_switch_state
+  versions and scopes
+
+funding_buckets
+  account/source/eligibility
+  available/reserved
+
+reservations
+  request identity
+  policy/catalog/tariff snapshot
+  funding allocation
+
+settlement_outbox / usage_events / ledger
+  immutable provider/model/policy/rule/funding attribution
+```
+
+SQLite/import compatibility не может остаться на старом scalar контракте, если она участвует в
+локальном импорте, тестах или восстановлении. Новые поля и validation должны иметь эквивалентную
+семантику.
+
+### 19.3. OpenKeys PostgreSQL
+
+Минимальные изменения:
+
+- `pricing_contract` (`legacy` или `official_1_to_1`);
+- backfill существующих batch/key rows в `legacy`;
+- default новых rows = `official_1_to_1`;
+- conditional DB constraint: current contract требует `mult_bp=10000`;
+- сохранение legacy `mult_bp` без изменения;
+- явное product catalog/policy binding engine account;
+- отсутствие `api_type` как access-control authority.
+
+Все миграции только expand и отдельными migration-first коммитами.
+
+## 20. Control API и границы bounded contexts
+
+Commerce не открывает engine PostgreSQL/SQLite. Все изменения проходят через authenticated HTTP
+Control API.
+
+Целевой Control API должен уметь:
+
+- получить capability catalog/schema support runtime;
+- установить полную product catalog generation;
+- прочитать активную и подготовленную generation;
+- установить full account policy через monotonic compare-and-set;
+- прочитать policy version/digest;
+- получить durable ACK;
+- управлять/version provider switches;
+- создать account без выдачи usable key до policy ACK;
+- возвращать ledger rows с полной attribution;
+- сохранять обратную совместимость на expand-этапе.
+
+Нельзя синхронизировать одну политику отдельным network call на каждую модель. Частично
+применённая policy недопустима.
+
+Engine не должен иметь бизнес-ветку «если B2C, вычисли tier». Он получает уже материализованную
+effective account policy и применяет единый resolver.
+
+Provider ID не принимается из клиентского header/body как доказательство плоскости. Anthropic,
+OpenAI и будущие адаптеры передают resolver-у compile/runtime-fixed identity.
+
+## 21. Административные интерфейсы
+
+### 21.1. Global B2C configurator
+
+Для каждого продуктового провайдера:
+
+- master state показывается отдельно и требует явного аварийного действия;
+- отдельный B2C switch;
+- provider default rule;
+- expandable список включённых моделей;
+- exact model overrides;
+- понятный режим: «прогрессивный тариф» вместо внутреннего слова `track`;
+- effective discount preview;
+- saved version, desired generation, engine-applied generation;
+- `pending/retrying/active`;
+- предупреждение, что provider-rule автоматически охватит будущую модель только после её явного
+  включения в product catalog.
+
+### 21.2. B2B configurator
+
+- создание invitation начинается с policy editor;
+- минимум одна rule;
+- provider rows и model overrides;
+- отсутствие deny checkbox под provider-rule;
+- редактирование только непросроченного непогашенного invitation;
+- после redemption переход к policy клиента;
+- preview всех доступных/недоступных моделей;
+- audit actor/reason/version;
+- ключ не показывается как usable до ACK.
+
+### 21.3. Provider switches
+
+- B2C и B2B switches находятся рядом, но не объединяются;
+- master switch визуально отделён как глобальное аварийное действие;
+- UI сообщает, что rules сохранятся;
+- выключение требует подтверждения и audit reason;
+- Gemini не появляется в продуктовом configurator до запуска.
+
+### 21.4. OpenKeys admin
+
+- поле `multBp`/скидки для нового выпуска удаляется;
+- показывается неизменяемое «1:1 по официальной цене»;
+- номинал = фактический выдаваемый balance;
+- ключ маркируется `official_1_to_1`;
+- legacy keys явно маркируются legacy, но не изменяются;
+- текущий список поддержанных Anthropic/OpenAI моделей берётся из OpenKeys product catalog;
+- `apiType` не создаёт разные права доступа.
+
+### 21.5. Service accounts
+
+- отдельный inventory/configurator или импорт утверждённой матрицы;
+- владелец, назначение и ответственный обязательны;
+- только static provider/model rules;
+- отчёт «без назначенной policy» должен быть пуст до strict cutover.
+
+## 22. Клиентские интерфейсы и публичные тексты
+
+Основной dashboard должен:
+
+- показывать доступ по провайдерам и моделям;
+- показывать effective mode и скидку;
+- объяснять model override;
+- не вычислять провайдера по префиксу модели;
+- показывать недоступные представленные модели как недоступные, если это полезно для клиента;
+- полностью скрывать Gemini до запуска;
+- отдельно показывать paid balance и `$4` track-only bonus;
+- объяснять, что bonus работает только на прогрессивном тарифе;
+- не показывать один универсальный «official API value» для баланса, если разные rules дают разный
+  эквивалент;
+- показывать official cost и фактическое списание в истории.
+
+Pricing pages, calculator, onboarding, emails и SEO-тексты должны:
+
+- заменить обещание `$10 official usage` на точное обещание `$4 track-only balance`;
+- не обещать одну скидку для всех моделей, если есть overrides;
+- не рекламировать Gemini;
+- для OpenKeys явно говорить «1:1 по официальному тарифу модели»;
+- получать доступные модели из versioned catalog или генерируемого проверенного источника, а не из
+  дублирующего hard-code.
+
+## 23. Текущее состояние и конкретные разрывы
+
+На проверенном baseline customer pricing скалярный:
 
 ```text
 commerce customer_profiles.multiplier_bp
   -> engine_pricing_jobs
   -> worker POST /admin/account/{id}/pricing
   -> engine accounts.mult_bp
-  -> every model on that account
+  -> все модели и provider runtimes аккаунта
 ```
 
-Important current facts:
+Зафиксированные разрывы:
 
-- commerce classifies B2C/B2B; the Rust engine currently sees only an account multiplier;
-- B2C tiers and B2B invite/manual pricing live in commerce PostgreSQL;
-- `business_invites`, `customer_profiles`, `engine_accounts`, and `engine_pricing_jobs` each carry a
-  single multiplier;
-- the durable pricing worker synchronizes one scalar multiplier;
-- both Anthropic and OpenAI billing apply that same account multiplier after model-specific official
-  metering;
-- engine ledger rows expose an optional model, but commerce currently discards it when creating
-  `pricing_usage_events`;
-- the charge-ledger contract has no provider or immutable pricing-policy attribution;
-- the customer dashboard and admin panel present one account discount and convert balance into one
-  universal "official API value", which is invalid once rates differ by provider/model.
+- commerce знает B2C/B2B, engine видит только account multiplier;
+- `business_invites`, `customer_profiles`, `engine_accounts` и `engine_pricing_jobs` несут один
+  multiplier;
+- worker доставляет только scalar `mult_bp`;
+- Anthropic, OpenAI и уже существующий Gemini runtime используют один account multiplier;
+- engine reservations не сохраняют policy/catalog/rule/funding snapshot;
+- tariff time может выбираться заново на settlement;
+- `settlement_outbox` и `usage_events` уже имеют provider, но основной ledger сохраняет только
+  optional model;
+- TypeScript ledger contract не несёт provider/policy attribution;
+- commerce при создании `pricing_usage_events` теряет даже доступную model attribution;
+- API-проекция не сохраняет всю provider-разбивку;
+- frontend местами выводит provider из model prefix;
+- `packages/contracts` жёстко ограничивает usage provider enum значениями Anthropic/OpenAI и уже
+  отстаёт от engine capability;
+- Anthropic metering содержит консервативный unknown-model fallback, но это не заменяет явный
+  commercial admission catalog;
+- `gpt-5.6` и `gpt-5.6-sol` существуют рядом в runtime catalog, хотя должны быть одной policy
+  identity;
+- welcome bonus зачисляется в общий engine balance, а commerce определяет free-funded часть только
+  после charge, поэтому track-only ограничение сейчас невозможно;
+- OpenKeys admin/API/DB позволяют задавать `mult_bp` от 1 до 10000;
+- OpenKeys `api_type` является в основном меткой партии, тогда как engine key универсален;
+- customer/admin UI показывают одну account discount и один official-value пересчёт;
+- Gemini infrastructure уже присутствует, поэтому отсутствие product rules должно принудительно
+  проверяться fail-closed, а не предполагаться из отсутствия UI.
 
-The existing B2C referral "fixed partner rate" is actually a floor over the progressive tier:
-`min(tier multiplier, referral multiplier)`. It must not be reused as the future literal fixed-tariff
-concept.
-
-## Conceptual target model
-
-The exact schema is an implementation decision, but the domain needs these concepts:
+Текущий referral «fixed partner rate» на самом деле является floor:
 
 ```text
-ModelCatalogEntry
-  provider
-  canonical model
-  aliases
-  enabled state
-  official-metering identity
-
-PricingPolicy
-  owner: global B2C or one B2B client
-  version
-
-EffectiveAccountPolicy
-  enabled catalog generation
-  account's current track multiplier
-  materialized global-B2C or private-B2B rules
-
-PricingRule
-  scope: provider or canonical model
-  mode: track or discount (fixed reserved for a later model-only extension)
-  discount basis points when applicable
+min(tier multiplier, referral multiplier)
 ```
 
-Commerce remains the policy authority. The engine should not need a B2C/B2B branch; commerce sends a
-complete account policy and the engine enforces that account's resolved rules.
+Его нельзя переиспользовать как будущий literal fixed tariff.
 
-Policy updates should be atomic full-policy replacements with a monotonic version. Avoid one network
-operation per model, which could expose a temporarily mixed generation.
+## 24. Затронутые части проекта
 
-At request admission the engine must resolve and snapshot at least:
-
-- provider;
-- requested model and canonical pricing model;
-- selected provider/model rule;
-- pricing mode and effective discount;
-- policy version;
-- enabled-catalog generation;
-- official tariff epoch or admission pricing timestamp;
-- B2C track/referral eligibility.
-
-Reservation and settlement must use the same snapshot. Immutable usage/ledger attribution should
-record enough of it that later policy edits cannot reinterpret historical charges or retention and
-commission eligibility.
-
-## Expected component impact
-
-| Area | Expected responsibility |
+| Область | Необходимая работа |
 |---|---|
-| `crates/metering` | Stable canonical model/alias identities beside official cost schedules. |
-| `crates/registry` | Versioned account policy persistence, atomic replacement/read, immutable settlement attribution, PostgreSQL migration, and required SQLite/import parity. |
-| `crates/forward` | Resolve policy before reserve; carry one snapshot through Anthropic and OpenAI settlement; emit provider-shaped public errors for missing rules. |
-| `crates/server` | Versioned Control API and validation for enabled catalogs and full account pricing policies. |
-| `packages/contracts` | Provider/model catalog, policy, ledger attribution, invite, admin, and account-view schemas. |
-| `packages/engine-client` | Atomic policy update/read methods and expanded ledger parsing. |
-| `packages/db` | B2C provider/model policy authority, independent B2B/invite policies, versioned durable jobs, attribution and eligibility persistence. |
-| `apps/worker` | Consume attributed ledger events and synchronize complete policy versions. |
-| `apps/api` | B2B invite/redemption/edit APIs, B2C policy administration, provisioning, and customer projections. |
-| `crates/server/src/admin-panel.html` | Provider defaults, expandable model overrides, B2B policy editing, effective-price/access preview. |
-| `apps/web` | Provider/model pricing display; remove scalar-only value claims. |
-| Sales bounded context | Exclude non-track events from referral commission and present correct eligibility. |
+| `crates/metering` | Явные канонические model/alias identities, стабильные tariff epochs, полный official cost и тесты modifiers. |
+| `crates/registry` | Engine policy/catalog/switch persistence, funding buckets, snapshot reservations, immutable attribution, PG migrations и SQLite/import parity. |
+| `crates/forward` | Resolver до reserve, fixed provider identity, policy-native admission errors, один snapshot через Anthropic/OpenAI settlement; Gemini fail-closed без правил. |
+| `crates/server` | Versioned Control API, CAS/ACK/readiness, validation, expanded ledger/usage responses. |
+| `crates/server/src/admin-panel.html` | Catalog, switches, B2C/B2B/service editors, model overrides, effective preview и sync status. |
+| `packages/contracts` | Generic catalog-backed provider IDs, policy/rule unions, versioned payloads, funding/ledger attribution, invite/admin/account views. |
+| `packages/engine-client` | Catalog/policy/switch install/read/ack, expanded ledger parsing, удаление scalar-only assumptions. |
+| `packages/db` | Product catalogs, policy owners/rules/versions, invite snapshots, effective bindings/jobs, eligibility/funding attribution, expand migrations. |
+| `apps/worker` | Monotonic policy jobs, stale-version fencing, catalog sync, attributed ledger ingestion, retention logic. |
+| `apps/api` | Admin APIs, invite lifecycle, provisioning saga до key activation, account/usage projections, sales feed. |
+| `apps/web` | Provider/model matrix, effective pricing, раздельные balances, исправленные welcome-тексты, отсутствие Gemini. |
+| `apps/openkeys` | Только 1:1 новый выпуск, отсутствие multiplier input, universal provider access, legacy/current presentation. |
+| `packages/openkeys-db` | `pricing_contract`, conditional constraints, legacy backfill и policy binding. |
+| `apps/sales-api`, `packages/sales-db`, `apps/sales-web` | Принимать immutable track/paid-funded eligibility и не комиссионировать static/OpenKeys/service. |
+| `deploy`, `systemd`, readiness | Совместимость schema generations, fencing старых runtime, provider readiness; не добавлять pricing logic в Caddy. |
+| `observability` | Метрики поколений, sync lag, rejection reasons, funding buckets, margin и alerts. |
+| Документация | `PRICING.md`, `CONTROL_API.md`, `COMMERCIAL_BACKEND.md`, `PANEL.md`, OpenKeys docs, публичные onboarding/pricing тексты. |
 
-No pricing change is expected in `crates/pool`, payment-provider integrations, or Caddy routing.
+Не ожидается pricing logic в:
 
-Direct engine/service accounts, including accounts not represented by commerce B2C/B2B profiles,
-are a compatibility surface. Strict account-policy rejection must not disable them accidentally.
-Before cutover, choose and migrate an explicit service-account policy owner or retain a deliberate
-legacy scalar policy for that account class. OpenKeys is also a separate product/account lifecycle and
-must be assessed rather than assumed to inherit commerce B2C rules.
+- `crates/pool`;
+- payment provider adapters;
+- Caddy routing;
+- Auth Bot provider acquisition.
 
-## Compatibility and rollout constraints
+Эти области могут потребовать только readiness/observability wiring. Наличие Gemini routing не
+даёт ему коммерческого доступа.
 
-Persisted accounts, pending jobs, blue-green engine slots, and immutable financial history require a
-compatibility rollout rather than an atomic code switch.
+## 25. План совместимого rollout
 
-1. Deliver additive commerce and engine schema expansions first, following the repository's
-   migration-first rules.
-2. Deploy engine policy support with legacy scalar behavior preserved while no policy is present.
-3. Add versioned Control API and commerce synchronization support.
-4. Backfill global B2C Anthropic and OpenAI provider rules to `track`, without redundant exact-model
-   rows; each B2C account keeps its own current track multiplier.
-5. Backfill each existing B2B scalar discount to that client's Anthropic provider rule only.
-6. Convert every unconsumed B2B invitation's scalar discount to an independent Anthropic-only
-   policy, or deliberately invalidate it before dependent code ships.
-7. Migrate direct service/OpenKeys account behavior explicitly.
-8. Translate or drain pending scalar pricing jobs so they cannot overwrite a newer policy.
-9. Synchronize and verify the enabled catalog and complete account policies before enabling strict
-   missing-rule rejection.
-10. Enable admin/customer surfaces and then make the versioned policy path authoritative.
-11. Remove scalar-only contracts only in a later contract release.
+### Этап 0. Инвентаризация и заморозка входных данных
 
-Historical commerce events cannot be reconstructed reliably by provider/model because commerce did
-not persist those fields. All pre-cutover B2C charge events were produced under the legacy track and
-can be marked legacy track-eligible, but their provider/model must remain unknown. Preserve existing
-tier-window aggregates and do not guess provider/model classifications from current rules.
+1. Снять список всех engine accounts и связать их с B2C, B2B, OpenKeys или service.
+2. Найти orphan/direct accounts.
+3. Утвердить service policy matrix.
+4. Снять список активных/непогашенных B2B invitations.
+5. Снять список OpenKeys keys с live balance, `mult_bp`, status и текущим доступом.
+6. Сверить product-visible Anthropic/OpenAI models с metering capability.
+7. Убедиться, что Gemini не представлен продуктом и отключён для client traffic.
+8. Подготовить reconciliation report и критерии exception.
 
-## Required behavioral tests
+### Этап 1. Expand-only engine schema
 
-At minimum, implementation must prove:
+Отдельным первым коммитом:
 
-- exact model rule overrides provider rule without stacking;
-- provider rule grants every enabled model and a newly enabled model immediately inherits it;
-- exact-only policy grants only those models;
-- missing/disabled model and missing price rule are rejected with provider-shaped errors;
-- discount boundaries accept 0% and 95% and reject values outside that range;
-- B2C `track` events count toward retention and referral commission;
-- B2C static-discount events count toward neither;
-- non-track charges still affect financial history, free-first funding, refunds, and spend totals;
-- static-discount usage does not receive a referral floor;
-- paid top-ups used on static-discount traffic still advance the B2C tier;
-- every B2B client is isolated from every other B2B policy;
-- invitation and existing-client edits reject an empty B2B policy;
-- a provider rule cannot be combined with a per-client model block;
-- B2B invitation redemption atomically copies its complete independent policy;
-- existing B2B scalar discount backfills to Anthropic only;
-- unconsumed legacy invitations are converted or invalidated safely;
-- `gpt-5.6` and `gpt-5.6-sol` resolve to one policy and one price;
-- official effective dates, cache buckets, web search, Fast Mode, long context, and US geography are
-  included before percentage discount;
-- policy change during an in-flight request does not change that request's settlement;
-- retrying or superseding a durable policy job cannot install an older policy generation;
-- engine PostgreSQL/SQLite compatibility and commerce integration migrations preserve existing
-  accounts and financial history.
+- policy/catalog/switch tables или columns;
+- reservation snapshot fields;
+- ledger/outbox/usage attribution;
+- funding buckets/allocation;
+- индексы и constraints;
+- migrator registration;
+- SQLite/import parity.
 
-## Remaining product decisions
+Старый runtime продолжает работать после expand. Миграция проходит production gate до зависимого
+кода.
 
-The following points were not settled and should be confirmed before implementation details are
-documented as a final contract:
+### Этап 2. Expand-only commerce и OpenKeys schema
 
-1. Whether a provider has its own enabled/disabled lifecycle and, if it does, whether disabling it
-   preserves saved rules for later re-enable or deletes them.
-   Recommended: preserve rules but reject traffic while disabled.
-2. How the current `$10 of official usage` B2C signup promise works after one balance can buy different
-   official value by provider/model. Options include making bonus funds track-only or changing the
-   public promise to a fixed platform-balance amount.
-3. The policy owner and migration behavior for direct engine/service and OpenKeys accounts.
-4. The exact future literal fixed-tariff fields and premium schedules. This is intentionally deferred
-   and does not block the initial release.
-5. The final admin/customer presentation for effective provider/model prices and inaccessible models.
+Отдельными migration-first коммитами соответствующих БД:
 
-## Primary references
+- product catalogs;
+- policy/rule/version tables;
+- invite snapshots;
+- account bindings/jobs;
+- usage attribution/eligibility;
+- OpenKeys `pricing_contract` и conditional constraints.
+
+Существующие columns не удаляются и старый application code остаётся совместим.
+
+### Этап 3. Policy-capable engine без strict enforcement
+
+- Добавить resolver, Control API, snapshots и ledger attribution.
+- Сохранить legacy scalar path только для аккаунта без установленной policy.
+- Добавить telemetry «какая policy была бы выбрана».
+- Provider runtime сообщает schema/capability readiness.
+- Старые blue-green slots читают расширенную схему.
+
+### Этап 4. Authority и durable synchronization в commerce
+
+- Добавить полные atomic policy jobs.
+- Ввести monotonic CAS/digest/ACK.
+- Новые provisioning flows всегда создают policy до key.
+- Scalar job либо переводится в policy job, либо дренируется.
+- Старый scalar job не может перезаписать более новую policy version.
+
+### Этап 5. Backfill каталогов и политик
+
+- Main product catalog: актуальные Anthropic/OpenAI models.
+- Gemini: ни одной product entry/rule.
+- Global B2C: Anthropic `track`, OpenAI `track`.
+- Existing B2B: текущая скидка только в Anthropic provider-rule.
+- Unconsumed invitations: отдельная Anthropic-only snapshot.
+- Existing OpenKeys: immutable legacy policy с текущей экономикой.
+- OpenKeys current catalog: все текущие представленные Anthropic/OpenAI models.
+- Service accounts: только по утверждённой матрице.
+
+### Этап 6. Funding bucket migration
+
+- Reconcile live engine balance с commerce/ledger.
+- Выделить welcome track bonus.
+- Сохранить paid funds.
+- Не превратить ambiguous free funds в paid.
+- Проверить равенство суммы buckets live balance для каждого аккаунта.
+- Exception accounts остаются вне strict mode до исправления.
+
+### Этап 7. OpenKeys 1:1 cutover
+
+- Сначала DB constraint и compatible code.
+- Удалить multiplier из UI/API.
+- Hard-code current issuance `10000`.
+- Проверить, что legacy rows по-прежнему читаются.
+- Проверить, что новый account получает policy ACK до выдачи секрета.
+- Запретить любой обходной non-1:1 выпуск.
+
+### Этап 8. Полная синхронизация и shadow validation
+
+- Доставить catalog/policies/switches во все runtimes.
+- Сравнивать scalar charge и policy-resolved charge в shadow там, где они обязаны совпадать.
+- Проверить нулевой backlog/stale generation.
+- Проверить все account classifications.
+- Проверить, что Gemini admissions равны нулю.
+- Провести финансовую выборочную сверку до nanoUSD.
+
+### Этап 9. Strict enforcement
+
+- Включить missing-policy/missing-rule rejection.
+- Account без явной policy больше не использует scalar fallback.
+- Key activation требует policy ACK.
+- Segment/master switches становятся authority.
+- Bonus eligibility применяется до reserve.
+
+Как только появились различающиеся provider/model rules, rollback на scalar-only binary становится
+небезопасным. Readiness/deploy fencing должны разрешать откат только на policy-capable build.
+
+### Этап 10. UI и публичный запуск
+
+- Включить admin configurators.
+- Включить customer provider/model view.
+- Показать paid/bonus balances отдельно.
+- Обновить welcome и OpenKeys тексты.
+- Проверить отсутствие Gemini.
+- Запустить аудит usage/sales reports.
+
+### Этап 11. Поздний contract cleanup
+
+Только после подтверждения, что все deployed версии и jobs используют новый контракт:
+
+- прекратить dual-write scalar;
+- убрать scalar Control API;
+- убрать scalar-only поля из payload;
+- позже выполнить contract migrations по обычным expand/contract правилам;
+- никогда не редактировать уже применённые migrations.
+
+## 26. Поведение при ошибках и восстановлении
+
+- Неизвестная policy schema version — fail closed.
+- Нет policy ACK при provisioning — ключ не активируется.
+- Нет catalog generation — запрос не допускается.
+- Stale policy update — отклоняется без изменения текущей версии.
+- Одинаковая version с другим digest — conflict и alert.
+- Worker crash — lease истекает, job повторяется идемпотентно.
+- Engine crash после reserve — durable reservation сохраняет snapshot и funding allocation.
+- Settlement retry — не меняет rule/tariff/funding.
+- Частично недоступный provider runtime — master/health semantics не переписывают policy.
+- Отключение модели/rule — влияет только на новые admissions.
+- Refund — возвращает исходный funding source.
+- Невозможная сверка денег — аккаунт не переводится автоматически; создаётся exception.
+- Исторический unknown provider/model — остаётся unknown, не угадывается.
+- Несовпадение served canonical model — invariant alert и консервативный settlement.
+
+## 27. Наблюдаемость и аудит
+
+Нужны метрики/alerts как минимум по:
+
+- active catalog generation на каждом runtime;
+- desired/applied policy version;
+- policy sync lag и oldest pending age;
+- stale/conflicting update count;
+- admissions/rejections по provider, product, segment и reason;
+- missing-policy/missing-rule/missing-model;
+- master/B2C/B2B switch state;
+- Gemini client admission count, который до запуска обязан быть нулём;
+- official_nano, charged_nano и margin по provider/model/mode;
+- track/static/OpenKeys/service usage;
+- bonus/paid available, reserved и charged;
+- settlement snapshot mismatch;
+- funding reconciliation exceptions;
+- referral eligible/paid-funded totals;
+- legacy unattributed history.
+
+Не следует добавлять user/account IDs как неограниченные metric labels. Детальный account audit
+остаётся в structured logs/БД с контролем доступа.
+
+Каждая admin-операция catalog/policy/switch хранит:
+
+- actor;
+- timestamp;
+- reason/comment;
+- предыдущую и новую version/digest;
+- затронутый owner/scope;
+- engine ACK time/result.
+
+Секреты ключей и Control API credentials в аудит не попадают.
+
+## 28. Обязательные тесты
+
+### 28.1. Catalog и provider gates
+
+- Unsupported model отклоняется.
+- Supported, но product-disabled model отклоняется.
+- Enabled model без policy rule отклоняется.
+- Provider-rule разрешает каждую enabled model.
+- Новая модель не появляется до явной catalog generation.
+- Exact-only policy не получает sibling models.
+- Model disable сохраняет rules и останавливает новые admissions.
+- Re-enable возвращает сохранённые rules.
+- B2C switch не влияет на B2B.
+- B2B switch не влияет на B2C.
+- Master switch останавливает все продукты этого provider.
+- In-flight request после switch change рассчитывается по старому snapshot.
+- Gemini отсутствует в main/OpenKeys catalogs и client API.
+- Gemini request с client key fail closed.
+
+### 28.2. Resolver
+
+- Exact model-rule перекрывает provider-rule.
+- Rules не складываются.
+- Provider-rule плюс exact override даёт ожидаемый mode/discount.
+- Exact rules без provider-rule разрешают только перечисленные модели.
+- Пустая B2B policy отклоняется.
+- Provider-wide fixed отклоняется.
+- B2B/service `track` отклоняется.
+- Static discount принимает 0% и 95%.
+- Static discount отклоняет <0%, >95% и недопустимый шаг.
+- Алиас нельзя сохранить отдельным rule.
+- `gpt-5.6` и `gpt-5.6-sol` дают одну policy identity и одну цену.
+- Provider берётся из fixed plane, а не из model/header.
+
+### 28.3. B2C
+
+- Initial Anthropic/OpenAI provider rules = `track`.
+- Track использует текущий tier/referral floor.
+- Static rule не использует tier/referral floor.
+- Track usage входит в retention.
+- Static usage не входит в retention.
+- Paid topup продвигает tier независимо от будущего usage mode.
+- Static usage не создаёт referral commission.
+- Exact static override выводит только одну модель из track.
+- Exact track override возвращает только одну модель в track.
+
+### 28.4. Welcome bonus и funding
+
+- Eligible OAuth B2C получает ровно `4_000_000_000` nanoUSD.
+- Password/B2B/OpenKeys/service bonus не получают.
+- Track reserve тратит bonus до paid.
+- Mixed track charge сохраняет точные bonus/paid amounts.
+- Static request не видит bonus.
+- Positive total balance с одним bonus не пропускает static request.
+- Low paid plus high bonus не даёт static overdraft.
+- Cancel возвращает каждую часть в исходный bucket.
+- Refund не превращает bonus в paid.
+- Settlement retry не списывает bucket дважды.
+- Bonus остаётся сохранённым при отсутствии track rule.
+- Referral commission считается только с paid части track charge.
+- Миграция buckets сохраняет сумму live balance.
+- Неоднозначные free funds не становятся paid.
+
+### 28.5. B2B invitation/client
+
+- Создание invitation требует хотя бы одну rule.
+- Unconsumed invitation редактируется versioned full replacement.
+- Consumed invitation не редактирует client policy.
+- Redemption копирует ровно одну полную snapshot.
+- Race edit/redeem не создаёт смешанную policy.
+- Provisioning failure не выдаёт usable key.
+- Retry redemption/provisioning идемпотентен.
+- Два клиента с одинаковой скидкой остаются изолированы.
+- Правка одного B2B не меняет другого.
+- Все ключи B2B account получают одну client policy.
+- Existing B2B scalar discount backfill идёт только в Anthropic rule.
+- Existing B2B не получает OpenAI/Gemini автоматически.
+
+### 28.6. OpenKeys
+
+- Каждый существующий key сохраняет balance, multiplier, status и историю.
+- Existing key получает эквивалентную legacy policy.
+- Legacy migration не выполняет topup/debit.
+- Новый key всегда `mult_bp=10000`.
+- Новый nominal равен engine balance.
+- `$1` official cost списывает `$1`.
+- UI/API attempt передать другой multiplier отклоняется или игнорируется fail closed.
+- Service-layer direct call с другим multiplier отклоняется.
+- DB не принимает current row с multiplier != 10000.
+- Engine не принимает current OpenKeys policy с discount != 0.
+- Новый key работает на всех текущих product-enabled Anthropic/OpenAI models.
+- Новая будущая model не появляется без OpenKeys catalog enablement.
+- Новый provider не появляется автоматически.
+- `api_type` не меняет доступ.
+- OpenKeys usage не участвует в tier/referral/commission.
+
+### 28.7. Official metering и snapshots
+
+- Input/output/cache buckets считаются до discount.
+- Web search считается до discount.
+- Effective-dated tariff фиксируется на admission.
+- Anthropic Fast Mode включён в official cost.
+- OpenAI long context включён в official cost.
+- Anthropic US inference умножает нужные token buckets и не умножает web search.
+- Policy change во время SSE не меняет settlement.
+- Tier change во время запроса не меняет settlement.
+- Tariff epoch change во время запроса не меняет settlement.
+- Served alias сохраняет canonical policy identity.
+- Served canonical mismatch вызывает invariant path.
+- Retry request ID не получает новый snapshot.
+
+### 28.8. Версии, миграции и blue-green
+
+- Stale job не перезаписывает новую policy.
+- Same version/same digest идемпотентна.
+- Same version/different digest конфликтует.
+- ACK появляется только после durable commit.
+- Serving readiness падает на неподдерживаемой schema/generation.
+- Старый slot совместим с expand schema до strict cutover.
+- Scalar job дренирован/переведён и не откатывает policy.
+- PG и SQLite/import parity подтверждены.
+- Existing financial history не меняется.
+- Legacy provider/model остаются unknown.
+- После появления различающихся rules принудительно соблюдается policy-capable rollback floor.
+
+### 28.9. API/UI/sales
+
+- Contract provider ID валидируется catalog-backed, не hard-coded парой.
+- API не теряет provider/model/daily provider.
+- Dashboard не угадывает provider по model prefix.
+- Dashboard показывает paid и bonus отдельно.
+- Dashboard не показывает универсальный official-value при разных rules.
+- Gemini отсутствует во всех product responses и UI.
+- B2B admin показывает pending до ACK.
+- OpenKeys admin не содержит multiplier field.
+- Sales feed принимает только track attribution и paid-funded amount.
+- Static/OpenKeys/service events не создают commission.
+
+Для денежных изменений обязательны полные тесты `crates/metering`, registry money paths и
+commerce integration tests с PostgreSQL, а не только unit snapshots.
+
+## 29. Критерии готовности первой версии
+
+Функция считается готовой, когда одновременно верно:
+
+1. Каждый active engine account классифицирован как B2C, B2B, OpenKeys или service.
+2. Ни один strict account не зависит от legacy scalar fallback.
+3. Anthropic/OpenAI main catalogs подтверждены.
+4. Gemini отсутствует в продуктовых каталогах, правилах и UI.
+5. Global B2C rules и все B2B policies доставлены и ACKed.
+6. Existing B2B имеет только мигрированный Anthropic rule до явной правки.
+7. Invitations несут versioned full policy.
+8. Existing OpenKeys экономически не изменились.
+9. Новый OpenKeys невозможно выпустить не 1:1.
+10. Service policy matrix утверждена и применена.
+11. Welcome bonus физически отделён и проверяется до reserve.
+12. Reservation хранит полный admission snapshot.
+13. Ledger/usage хранит provider/model/policy/funding attribution.
+14. Retention и referral используют immutable eligibility.
+15. Все serving runtimes поддерживают активные generations.
+16. Admin показывает desired/applied состояние.
+17. Клиентские тексты и balances не вводят в заблуждение.
+18. Migration reconciliation не имеет необъяснённых денежных расхождений.
+19. Полный repository gate зелёный.
+20. Rollout/rollback runbook учитывает policy-capable rollback floor.
+
+## 30. Отложенные решения, не блокирующие первую версию
+
+### 30.1. Literal fixed tariff
+
+Будущий fixed tariff:
+
+- только exact-model;
+- никогда provider-wide;
+- вне tier/referral/commission;
+- хранит official cost отдельно от customer charge;
+- описывает все billable buckets и premium variants целиком;
+- versioned и pinned на admission.
+
+Поля конкретных Anthropic/OpenAI/Gemini fixed schedules будут согласованы отдельным продуктовым
+решением. До этого fixed form/API не показываются.
+
+### 30.2. Коммерческий запуск Gemini
+
+Отдельный launch checklist описан выше. Наличие runtime code не ускоряет и не заменяет продуктового
+решения.
+
+### 30.3. Конкретные назначения service accounts
+
+Архитектурное правило уже принято: explicit owner, static-only, no track. До migration backfill
+нужно отдельно утвердить фактическую account-to-policy matrix.
+
+## 31. Основные ссылки реализации
 
 - `PRICING.md`
 - `CONTROL_API.md`
@@ -440,12 +1585,26 @@ documented as a final contract:
 - `packages/contracts/src/index.ts`
 - `packages/engine-client/src/index.ts`
 - `apps/worker/src/pricing-worker.service.ts`
+- `apps/api/src/engine-provisioning.ts`
+- `apps/api/src/admin-accounts.service.ts`
+- `apps/web/src/lib/models.ts`
+- `apps/openkeys/src/lib/keys.ts`
+- `apps/openkeys/src/lib/api-product.ts`
+- `packages/openkeys-db/src/schema.ts`
 - `crates/metering/src/lib.rs`
 - `crates/metering/src/codex.rs`
+- `crates/metering/src/gemini.rs`
 - `crates/forward/src/proxy.rs`
 - `crates/forward/src/meter.rs`
 - `crates/forward/src/codex/billing.rs`
+- `crates/forward/src/gemini/billing.rs`
 - `crates/registry/src/lib.rs`
 - `crates/registry/src/pg.rs`
+- `crates/registry/migrations_pg`
 - `crates/server/src/admin.rs`
 - `crates/server/src/http.rs`
+- `crates/server/src/admin-panel.html`
+- `deploy/Caddyfile`
+- `systemd/claude-api-anthropic@.service`
+- `systemd/claude-api-openai.service`
+- `systemd/claude-api-gemini.service`
