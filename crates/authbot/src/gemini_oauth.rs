@@ -35,7 +35,7 @@ const AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v2/userinfo";
 const CODE_ASSIST_URL: &str = "https://cloudcode-pa.googleapis.com";
-const OAUTH_SESSION_SECS: i64 = 600;
+const OAUTH_SESSION_SECS: i64 = 1200;
 const MAX_ONBOARD_POLLS: usize = 24;
 
 const SCOPES: &str = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile";
@@ -614,6 +614,9 @@ struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: i64,
+    #[serde(default)]
+    #[zeroize(skip)]
+    scope: Option<String>,
 }
 
 #[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
@@ -738,6 +741,11 @@ async fn complete(
         return Err(Failure::Authorization);
     }
     let refresh_token = token.refresh_token.take().ok_or(Failure::Authorization)?;
+    eprintln!(
+        "[gemini-oauth] chat={} Google granted scopes: {}",
+        session.chat_id,
+        token.scope.as_deref().unwrap_or("<none>")
+    );
     let user_info_response = client
         .get(USERINFO_URL)
         .bearer_auth(&token.access_token)
@@ -954,7 +962,17 @@ async fn post_json<T: for<'de> Deserialize<'de>>(
         .await
         .map_err(|_| Failure::Temporary)?;
     if !response.status().is_success() {
-        return Err(match response.status().as_u16() {
+        let status = response.status().as_u16();
+        // Google's error body is diagnostic (e.g. "Cloud AI Companion API has not been used in
+        // project ... or it is disabled", or a PERMISSION_DENIED reason) and carries no secret: the
+        // bearer token is only ever sent, never echoed. Log a bounded snippet so a failed seller
+        // onboarding explains itself in journalctl -u claude-authbot.service.
+        let endpoint = url.rsplit('/').next().unwrap_or(url);
+        let detail = response.text().await.unwrap_or_default();
+        let detail: String = detail.split_whitespace().collect::<Vec<_>>().join(" ");
+        let detail: String = detail.chars().take(400).collect();
+        eprintln!("[gemini-oauth] Code Assist {endpoint} returned HTTP {status}: {detail}");
+        return Err(match status {
             401 | 403 => Failure::Authorization,
             _ => Failure::Temporary,
         });
