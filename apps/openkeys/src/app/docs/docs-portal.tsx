@@ -179,6 +179,7 @@ const copy = {
     editors: "Cursor, Cline, Continue, and Zed",
     editorsText: "Select Anthropic as the provider and enter these four values. Field names vary slightly by tool.",
     openaiText: "Use the same sk-pool key and prepaid balance on the dedicated OpenAI-compatible text endpoint. Authenticate with Authorization: Bearer and discover the currently available models with GET /v1/models.",
+    openaiFullGuide: "Open the full GPT / OpenAI guide",
     openaiNotice: "This is an independent OpenAI-compatible service, not the OpenAI Platform and not an OpenAI-operated endpoint. It supports model discovery, Responses, and Chat Completions for text, including SSE streaming. Images, audio, files, realtime, assistants, batches, fine-tuning, and other OpenAI Platform services are not available.",
     openaiRequest: "Responses API",
     openaiRequestText: "Send a standard Responses request to the dedicated host. gpt-5.6-sol is currently available; use GET /v1/models instead of assuming a model ID.",
@@ -302,6 +303,7 @@ const copy = {
     editors: "Cursor, Cline, Continue и Zed",
     editorsText: "Выберите Anthropic как провайдера и укажите эти четыре значения. Названия полей могут немного отличаться.",
     openaiText: "Используйте тот же ключ sk-pool и единый предоплаченный баланс на отдельном OpenAI-совместимом текстовом API. Передавайте ключ в Authorization: Bearer, а актуальные модели получайте через GET /v1/models.",
+    openaiFullGuide: "Открыть полную инструкцию GPT / OpenAI",
     openaiNotice: "Это независимый OpenAI-совместимый сервис, а не OpenAI Platform и не endpoint под управлением OpenAI. Поддерживаются список моделей, Responses и Chat Completions для текста, включая SSE-потоки. Изображения, аудио, файлы, realtime, assistants, batches, fine-tuning и другие сервисы OpenAI Platform недоступны.",
     openaiRequest: "Responses API",
     openaiRequestText: "Отправьте стандартный запрос Responses на отдельный хост. Модель gpt-5.6-sol доступна сейчас; получайте список через GET /v1/models, а не полагайтесь на неизменность ID.",
@@ -444,6 +446,7 @@ export function DocsPortal() {
           <div className="docs-notice" style={{ marginBottom: 14 }}>{t.openaiNotice}</div>
           <div className="docs-two-col" style={{ marginBottom: 18 }}><CodeBlock title={t.openaiRequest} description={t.openaiRequestText} code={withKey(OPENAI_CURL)} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.openaiPython} description={t.openaiPythonText} code={withKey(OPENAI_PYTHON)} copyLabel={t.copy} copiedLabel={t.copied} /></div>
           <div className="docs-two-col"><CodeBlock title={t.codex} description={t.codexText} code={CODEX_PROFILE} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.codexRun} description={t.codexRunText} code={withKey(CODEX_RUN)} copyLabel={t.copy} copiedLabel={t.copied} /></div>
+          <div className="hero-cta" style={{ marginTop: 18 }}><Link className="btn btn-primary" href="/docs/openai">{t.openaiFullGuide}</Link></div>
         </section>
 
         <section className="docs-section" id="sdks">

@@ -98,6 +98,13 @@ export function boundedPercent(numerator: bigint, denominator: bigint): number {
 }
 
 export function modelLabel(id: string): string {
+  const gpt = id.match(/^gpt-(.+)$/i);
+  if (gpt) {
+    const parts = gpt[1]!.split("-");
+    const version = parts.shift() ?? "";
+    const suffix = parts.map((part) => part ? part[0]!.toUpperCase() + part.slice(1) : "").join(" ");
+    return `GPT-${version}${suffix ? ` ${suffix}` : ""}`;
+  }
   const base = id.replace(/^claude-/i, "").replace(/-\d{8}$/, "");
   const words: string[] = [];
   const nums: string[] = [];

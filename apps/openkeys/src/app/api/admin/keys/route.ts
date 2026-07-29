@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { listBatches, listKeys, markKeyDelivered, removeAllStock, removeKey } from "@/lib/keys";
 import { currentAdmin } from "@/lib/session";
 import { guardRequest, readJsonLimited } from "@/lib/request-guard";
+import { parseApiType } from "@/lib/api-product";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,7 +26,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   const admin = await currentAdmin();
   if (!admin) return unauthorized();
 
-  let body: { id?: unknown; action?: unknown };
+  let body: { id?: unknown; action?: unknown; apiType?: unknown };
   try {
     body = await readJsonLimited<typeof body>(request);
   } catch {
@@ -37,7 +38,11 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   try {
     if (action === "remove_all") {
-      return NextResponse.json({ ok: true, removed: await removeAllStock(admin) });
+      const apiType = body.apiType === undefined ? undefined : parseApiType(body.apiType);
+      if (body.apiType !== undefined && !apiType) {
+        return NextResponse.json({ error: "invalid_body" }, { status: 400 });
+      }
+      return NextResponse.json({ ok: true, removed: await removeAllStock(admin, apiType ?? undefined) });
     }
     if (!id || (action !== "deliver" && action !== "remove")) {
       return NextResponse.json({ error: "invalid_body" }, { status: 400 });

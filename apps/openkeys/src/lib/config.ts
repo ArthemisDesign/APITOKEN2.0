@@ -45,6 +45,7 @@ export interface OpenkeysConfig {
   engineBaseUrl: string;
   engineControlKey: string;
   enginePublicBaseUrl: string;
+  engineOpenAiPublicBaseUrl: string;
   adminAccounts: AdminAccount[];
   sessionSecret: string;
   sessionTtlSeconds: number;
@@ -86,8 +87,8 @@ function parseAdminAccounts(): AdminAccount[] {
 }
 
 export function loadConfig(): OpenkeysConfig {
-  // 10000 = ключ несёт баланс Claude API один к одному: $50 номинала — это
-  // ровно $50 работы по официальному прайсу. Никаких скидочных тиров здесь нет.
+  // 10000 = ключ несёт баланс выбранного API один к одному: $50 номинала — это
+  // ровно $50 работы по его прайсу. Никаких скидочных тиров здесь нет.
   const defaultMultBp = optionalInt("OPENKEYS_DEFAULT_MULT_BP", 10_000);
   if (defaultMultBp < 1 || defaultMultBp > 10_000) {
     throw new Error("OPENKEYS_DEFAULT_MULT_BP must be between 1 and 10000");
@@ -106,6 +107,7 @@ export function loadConfig(): OpenkeysConfig {
     engineBaseUrl: baseUrl("ENGINE_BASE_URL", "http://127.0.0.1:8790", true),
     engineControlKey: required("ENGINE_CONTROL_KEY"),
     enginePublicBaseUrl: baseUrl("ENGINE_PUBLIC_BASE_URL", "https://api.apitoken.sale"),
+    engineOpenAiPublicBaseUrl: baseUrl("ENGINE_OPENAI_PUBLIC_BASE_URL", "https://openai.api.apitoken.sale"),
     adminAccounts: parseAdminAccounts(),
     sessionSecret,
     sessionTtlSeconds,

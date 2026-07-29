@@ -2,7 +2,8 @@ import "server-only";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { EngineUsage } from "@claude-api/contracts";
 import { openkeysBatches, openkeysIssuanceJobs, openkeysKeys } from "@claude-api/openkeys-db";
-import { and, desc, eq, inArray, isNull, lt } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, or } from "drizzle-orm";
+import { apiTypeOf, type ApiType } from "./api-product";
 import { loadConfig } from "./config";
 import { getDatabase } from "./db";
 import { getEngineClient } from "./engine";
@@ -17,6 +18,7 @@ export interface IssueBatchInput {
   multBp: number;
   label: string | null;
   note: string | null;
+  apiType: ApiType;
   createdBy: string;
 }
 
@@ -137,6 +139,7 @@ export async function issueBatch(input: IssueBatchInput): Promise<{ batchId: str
       multBp: input.multBp,
       quantity: input.quantity,
       note: input.note,
+      apiType: input.apiType,
       createdBy: input.createdBy,
     })
     .returning({ id: openkeysBatches.id });
@@ -154,7 +157,9 @@ export async function issueBatch(input: IssueBatchInput): Promise<{ batchId: str
     if (!job) throw new Error("Не удалось создать журнал выпуска");
     try {
       const account = await engine.createAccount({
-        handle: `openkeys-${viewToken.slice(0, 16)}`,
+        handle: input.apiType === "anthropic"
+          ? `openkeys-${viewToken.slice(0, 16)}`
+          : `openkeys-openai-${viewToken.slice(0, 16)}`,
         multBp: input.multBp,
       });
       accountId = account.account;
@@ -166,7 +171,11 @@ export async function issueBatch(input: IssueBatchInput): Promise<{ batchId: str
       await engine.creditAccount(account.account, balanceNano, `openkeys:${batch.id}:${index}`);
       await db.update(openkeysIssuanceJobs).set({ status: "credited", updatedAt: new Date() })
         .where(eq(openkeysIssuanceJobs.id, job.id));
-      const key = await engine.issueKey(account.account, { label: `openkeys ${viewToken.slice(0, 8)}` });
+      const key = await engine.issueKey(account.account, {
+        label: input.apiType === "anthropic"
+          ? `openkeys ${viewToken.slice(0, 8)}`
+          : `openkeys openai ${viewToken.slice(0, 8)}`,
+      });
       await db.update(openkeysIssuanceJobs).set({
         status: "key_issued", engineKeyId: key.key_id, updatedAt: new Date(),
       }).where(eq(openkeysIssuanceJobs.id, job.id));
@@ -241,9 +250,10 @@ export interface KeyUsageView {
   createdAt: string;
   faceValueNano: string;
   multBp: number;
+  apiType: ApiType;
   balanceNano: string;
   spentNano: string;
-  /** Остаток и расход, пересчитанные в официальный прайс Anthropic. */
+  /** Остаток и расход, пересчитанные в официальный прайс выбранного API. */
   officialRemainingNano: string;
   officialSpentNano: string;
   /** Полная статистика движка за окно — та же, что рисует дашборд. */
@@ -279,7 +289,13 @@ export async function loadUsageByViewToken(
 
 async function loadUsageUncached(viewToken: string, window: string): Promise<KeyUsageView | null> {
   const { db } = getDatabase();
-  const [row] = await db.select().from(openkeysKeys).where(eq(openkeysKeys.viewToken, viewToken)).limit(1);
+  const [result] = await db
+    .select({ key: openkeysKeys, apiType: openkeysBatches.apiType })
+    .from(openkeysKeys)
+    .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
+    .where(eq(openkeysKeys.viewToken, viewToken))
+    .limit(1);
+  const row = result?.key;
   if (!row) return null;
 
   const engine = getEngineClient();
@@ -303,6 +319,7 @@ async function loadUsageUncached(viewToken: string, window: string): Promise<Key
     createdAt: row.createdAt.toISOString(),
     faceValueNano: row.faceValueNano.toString(),
     multBp: row.multBp,
+    apiType: apiTypeOf(result.apiType),
     balanceNano: balanceNano.toString(),
     spentNano: spentNano.toString(),
     officialRemainingNano: balanceToOfficialNano(balanceNano, row.multBp).toString(),
@@ -319,20 +336,31 @@ export async function resolveViewTokenByApiKey(apiKey: string): Promise<string |
   if (!/^sk-pool-[A-Za-z0-9_-]{16,128}$/.test(apiKey)) return null;
 
   const config = loadConfig();
-  const response = await fetch(`${config.enginePublicBaseUrl}/balance`, {
-    headers: { "x-api-key": apiKey },
-    cache: "no-store",
-  });
-  if (!response.ok) return null;
-
-  const payload = (await response.json()) as { account?: unknown };
-  if (typeof payload.account !== "string") return null;
+  let accountId: string | null = null;
+  const checks: Array<{ baseUrl: string; headers: Record<string, string> }> = [
+    { baseUrl: config.enginePublicBaseUrl, headers: { "x-api-key": apiKey } },
+    { baseUrl: config.engineOpenAiPublicBaseUrl, headers: { authorization: `Bearer ${apiKey}` } },
+  ];
+  for (const check of checks) {
+    try {
+      const response = await fetch(`${check.baseUrl}/balance`, { headers: check.headers, cache: "no-store" });
+      if (!response.ok) continue;
+      const payload = (await response.json()) as { account?: unknown };
+      if (typeof payload.account === "string") {
+        accountId = payload.account;
+        break;
+      }
+    } catch {
+      // The provider planes are independent; one unavailable host must not block the other.
+    }
+  }
+  if (!accountId) return null;
 
   const { db } = getDatabase();
   const [row] = await db
     .select({ viewToken: openkeysKeys.viewToken })
     .from(openkeysKeys)
-    .where(eq(openkeysKeys.engineAccountId, payload.account))
+    .where(eq(openkeysKeys.engineAccountId, accountId))
     .limit(1);
 
   return row?.viewToken ?? null;
@@ -352,6 +380,7 @@ export interface StockKey {
   faceValue: string;
   /** Номинал строкой нанодолларов — по нему группируем склад. */
   faceValueNano: string;
+  apiType: ApiType;
   label: string | null;
   createdAt: string;
   deliveredAt: string | null;
@@ -385,6 +414,7 @@ export async function listKeys(createdBy: string, limit = 500): Promise<StockKey
       secretVersion: openkeysKeys.secretVersion,
       secretKeyId: openkeysKeys.secretKeyId,
       label: openkeysBatches.label,
+      apiType: openkeysBatches.apiType,
     })
     .from(openkeysKeys)
     .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
@@ -411,6 +441,7 @@ export async function listKeys(createdBy: string, limit = 500): Promise<StockKey
       viewUrl: `${config.publicBaseUrl}/profile/${row.viewToken}`,
       faceValue: formatUsd(row.faceValueNano, 0),
       faceValueNano: row.faceValueNano.toString(),
+      apiType: apiTypeOf(row.apiType),
       label: row.label,
       createdAt: row.createdAt.toISOString(),
       deliveredAt: row.deliveredAt?.toISOString() ?? null,
@@ -483,7 +514,7 @@ export async function removeKey(id: string, createdBy: string): Promise<boolean>
  * Удаление всего склада разом. Ключи отключаются по одному: частичный успех
  * лучше, чем отказ целиком, поэтому счётчик показывает, сколько реально ушло.
  */
-export async function removeAllStock(createdBy: string): Promise<number> {
+export async function removeAllStock(createdBy: string, apiType?: ApiType): Promise<number> {
   const { db } = getDatabase();
   const rows = await db
     .select({ id: openkeysKeys.id, engineKeyId: openkeysKeys.engineKeyId })
@@ -493,6 +524,11 @@ export async function removeAllStock(createdBy: string): Promise<number> {
       eq(openkeysBatches.createdBy, createdBy),
       isNull(openkeysKeys.deliveredAt),
       isNull(openkeysKeys.removedAt),
+      apiType === "anthropic"
+        ? or(isNull(openkeysBatches.apiType), eq(openkeysBatches.apiType, "anthropic"))
+        : apiType === "openai"
+          ? eq(openkeysBatches.apiType, "openai")
+          : undefined,
     ));
 
   const engine = getEngineClient();
@@ -527,6 +563,7 @@ export interface MonitorRow {
   keyMasked: string;
   label: string | null;
   faceValue: string;
+  apiType: ApiType;
   viewUrl: string;
   createdAt: string;
   deliveredAt: string | null;
@@ -559,6 +596,7 @@ export async function loadKeyMonitor(createdBy: string, limit = 300): Promise<Mo
       createdAt: openkeysKeys.createdAt,
       deliveredAt: openkeysKeys.deliveredAt,
       label: openkeysBatches.label,
+      apiType: openkeysBatches.apiType,
     })
     .from(openkeysKeys)
     .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
@@ -599,6 +637,7 @@ export async function loadKeyMonitor(createdBy: string, limit = 300): Promise<Mo
           keyMasked: row.keyMasked,
           label: row.label,
           faceValue: formatUsd(row.faceValueNano, 0),
+          apiType: apiTypeOf(row.apiType),
           viewUrl: `${config.publicBaseUrl}/profile/${row.viewToken}`,
           createdAt: row.createdAt.toISOString(),
           deliveredAt: row.deliveredAt?.toISOString() ?? null,
@@ -640,6 +679,7 @@ export interface BatchSummary {
   label: string | null;
   faceValue: string;
   quantity: number;
+  apiType: ApiType;
   createdAt: string;
 }
 
@@ -658,6 +698,7 @@ export async function listBatches(createdBy: string, limit = 200): Promise<Batch
     label: row.label,
     faceValue: formatUsd(row.faceValueNano, 0),
     quantity: row.quantity,
+    apiType: apiTypeOf(row.apiType),
     createdAt: row.createdAt.toISOString(),
   }));
 }

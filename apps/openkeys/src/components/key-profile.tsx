@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import type { KeyUsageView } from "@/lib/keys";
+import { API_PRODUCTS } from "@/lib/api-product";
 import {
   MODEL_COLORS,
   bigintMax,
@@ -24,8 +25,6 @@ import {
 import { buildUtcUsageSeries } from "@/lib/usage-series";
 
 const LOCALE = "ru-RU";
-const BASE_URL = "https://api.apitoken.sale";
-
 function CopyButton({ value, label = "Скопировать" }: { value: string; label?: string }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -48,6 +47,7 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
   const [hoverDay, setHoverDay] = useState<number | null>(null);
   const [mdistHover, setMdistHover] = useState<number | null>(null);
 
+  const product = API_PRODUCTS[view.apiType];
   const usage = view.usage;
   const faceValueNano = BigInt(view.faceValueNano);
   const officialRemaining = BigInt(view.officialRemainingNano);
@@ -129,8 +129,9 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
           <span className="eyebrow">Баланс ключа</span>
           <h1 className="p-h1">Расход по вашему ключу</h1>
           <p className="p-sub">
-            Все суммы — в долларах официального прайса Anthropic: столько же вы заплатили бы за эти запросы на
-            api.anthropic.com.
+            {view.apiType === "openai"
+              ? "Все суммы показаны в долларах прайса GPT API: здесь видны остаток, запросы, токены и модели OpenAI-совместимого ключа."
+              : "Все суммы — в долларах официального прайса Anthropic: столько же вы заплатили бы за эти запросы на api.anthropic.com."}
           </p>
         </div>
 
@@ -154,7 +155,7 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
                   {view.createdAt.slice(0, 10)}
                 </p>
                 <div className="overview-card-actions">
-                  <Link className="btn btn-primary btn-sm" href="/docs">
+                  <Link className="btn btn-primary btn-sm" href={product.docsPath}>
                     Как подключить
                   </Link>
                   {showSignOut ? (
@@ -170,14 +171,20 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
                       Выйти
                     </button>
                   ) : (
-                    <a
-                      className="btn btn-ghost btn-sm"
-                      href="https://apitoken.sale/docs"
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Полная документация
-                    </a>
+                    view.apiType === "openai" ? (
+                      <Link className="btn btn-ghost btn-sm" href="/docs">
+                        Инструкция Claude
+                      </Link>
+                    ) : (
+                      <a
+                        className="btn btn-ghost btn-sm"
+                        href="https://apitoken.sale/docs"
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Полная документация
+                      </a>
+                    )
                   )}
                 </div>
               </div>
@@ -190,8 +197,8 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
               <span className="chip">base url</span>
             </div>
             <div className="secret-key-field">
-              <code>{BASE_URL}</code>
-              <CopyButton value={BASE_URL} />
+              <code>{product.baseUrl}</code>
+              <CopyButton value={product.baseUrl} />
             </div>
             <p className="overview-balance-rate" style={{ marginTop: 10 }}>
               Ваш ключ: <code className="key-mask">{view.keyMasked}</code>
@@ -203,7 +210,7 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
           <div className="ovstat">
             <span className="dlabel">Официальная стоимость</span>
             <b className="num accent">{formatNanoUsd(summaryOfficialNano)}</b>
-            <span className="dtrend">эквивалент прайса Anthropic</span>
+            <span className="dtrend">эквивалент прайса {product.priceLabel}</span>
           </div>
           <div className="ovstat">
             <span className="dlabel">Списано с ключа</span>
@@ -218,7 +225,7 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
           <div className="ovstat">
             <span className="dlabel">Номинал ключа</span>
             <b className="num">{formatNanoUsd(faceValueNano, 0, 0)}</b>
-            <span className="dtrend">баланс Claude API</span>
+            <span className="dtrend">баланс {product.balanceLabel}</span>
           </div>
         </div>
 

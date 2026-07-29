@@ -7,6 +7,7 @@ const config: OpenkeysConfig = {
   engineBaseUrl: "http://127.0.0.1:8790",
   engineControlKey: "control-key",
   enginePublicBaseUrl: "https://api.apitoken.sale",
+  engineOpenAiPublicBaseUrl: "https://openai.api.apitoken.sale",
   adminAccounts: [
     { user: "first", password: "first-password" },
     { user: "second", password: "second-password" },

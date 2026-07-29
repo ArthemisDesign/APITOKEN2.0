@@ -4,6 +4,7 @@ import { BatchIssuanceError, MAX_BATCH_QUANTITY, issueBatch, listBatches } from 
 import { formatUsd, usdStringToNano } from "@/lib/money";
 import { currentAdmin } from "@/lib/session";
 import { guardRequest, readJsonLimited } from "@/lib/request-guard";
+import { parseApiType } from "@/lib/api-product";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,7 +26,14 @@ export async function POST(request: Request): Promise<NextResponse> {
   const admin = await currentAdmin();
   if (!admin) return unauthorized();
 
-  let body: { faceValueUsd?: unknown; quantity?: unknown; multBp?: unknown; label?: unknown; note?: unknown };
+  let body: {
+    faceValueUsd?: unknown;
+    quantity?: unknown;
+    multBp?: unknown;
+    label?: unknown;
+    note?: unknown;
+    apiType?: unknown;
+  };
   try {
     body = await readJsonLimited<typeof body>(request);
   } catch {
@@ -35,8 +43,10 @@ export async function POST(request: Request): Promise<NextResponse> {
   const config = loadConfig();
   const quantity = Number(body.quantity ?? 1);
   const multBp = body.multBp === undefined || body.multBp === "" ? config.defaultMultBp : Number(body.multBp);
+  const apiType = body.apiType === undefined ? "anthropic" : parseApiType(body.apiType);
 
   try {
+    if (!apiType) throw new Error("Тип API должен быть anthropic или openai");
     const faceValueNano = usdStringToNano(String(body.faceValueUsd ?? "").trim());
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_BATCH_QUANTITY) {
       throw new Error(`Количество ключей должно быть от 1 до ${MAX_BATCH_QUANTITY}`);
@@ -48,6 +58,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       multBp,
       label: typeof body.label === "string" && body.label.trim() !== "" && body.label.length <= 200 ? body.label.trim() : null,
       note: typeof body.note === "string" && body.note.trim() !== "" && body.note.length <= 2000 ? body.note.trim() : null,
+      apiType,
       createdBy: admin,
     });
 
@@ -55,6 +66,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       batchId: result.batchId,
       faceValue: formatUsd(faceValueNano, 0),
       multBp,
+      apiType,
       keys: result.keys,
     });
   } catch (error) {

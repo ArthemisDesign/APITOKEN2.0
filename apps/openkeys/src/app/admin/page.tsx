@@ -1,11 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/app-shell";
+import { API_PRODUCTS, type ApiType } from "@/lib/api-product";
 
-const BASE_URL = "https://api.apitoken.sale";
-const DOCS_URL = "https://openkeys.apitoken.sale/docs";
+const PUBLIC_ORIGIN = "https://openkeys.apitoken.sale";
 
 type StockStatus = "stock" | "delivered";
 
@@ -18,6 +17,7 @@ interface StockKey {
   viewUrl: string;
   faceValue: string;
   faceValueNano: string;
+  apiType: ApiType;
   label: string | null;
   createdAt: string;
   deliveredAt: string | null;
@@ -28,6 +28,7 @@ interface BatchRow {
   label: string | null;
   faceValue: string;
   quantity: number;
+  apiType: ApiType;
   createdAt: string;
 }
 
@@ -38,14 +39,18 @@ const STATUS_LABEL: Record<StockStatus, string> = {
 
 /** Готовое сообщение покупателю: баланс, адрес, ключ, профиль и инструкция. */
 function handoverText(key: StockKey): string {
+  const product = API_PRODUCTS[key.apiType];
+  const credentials = key.apiType === "openai"
+    ? [`OPENAI_BASE_URL=${product.baseUrl}`, `OPENAI_API_KEY=${key.secret ?? ""}`]
+    : [`ANTHROPIC_BASE_URL=${product.baseUrl}`, `ANTHROPIC_API_KEY=${key.secret ?? ""}`];
+
   return [
-    `Баланс ключа: ${key.faceValue} по прайсу Anthropic`,
+    `Баланс ключа: ${key.faceValue} по прайсу ${product.priceLabel}`,
     "",
-    `ANTHROPIC_BASE_URL=${BASE_URL}`,
-    `ANTHROPIC_API_KEY=${key.secret ?? ""}`,
+    ...credentials,
     "",
     `Остаток и расход: ${key.viewUrl}`,
-    `Как подключить: ${DOCS_URL}`,
+    `Как подключить: ${PUBLIC_ORIGIN}${product.docsPath}`,
   ].join("\n");
 }
 
@@ -76,10 +81,13 @@ function KeyCard({
   busy: boolean;
   onUpdate(id: string, action: "deliver" | "remove"): void;
 }) {
+  const product = API_PRODUCTS[keyRow.apiType];
+  const docsUrl = `${PUBLIC_ORIGIN}${product.docsPath}`;
   return (
     <article className="card openkeys-issued">
       <div className="openkeys-issued-head">
         <span className="pill">{keyRow.faceValue}</span>
+        <span className="chip">{product.shortLabel}</span>
         {keyRow.label ? <span className="chip">{keyRow.label}</span> : null}
         <span className="field-hint">{keyRow.createdAt.slice(0, 10)}</span>
       </div>
@@ -88,16 +96,16 @@ function KeyCard({
         {keyRow.secret ? <CopyButton value={keyRow.secret} label="Ключ" /> : null}
       </div>
       <div className="secret-key-field">
-        <code>{BASE_URL}</code>
-        <CopyButton value={BASE_URL} label="Base URL" />
+        <code>{product.baseUrl}</code>
+        <CopyButton value={product.baseUrl} label="Base URL" />
       </div>
       <div className="secret-key-field">
         <code>{keyRow.viewUrl}</code>
         <CopyButton value={keyRow.viewUrl} label="Профиль" />
       </div>
       <div className="secret-key-field">
-        <code>{DOCS_URL}</code>
-        <CopyButton value={DOCS_URL} label="Документация" />
+        <code>{docsUrl}</code>
+        <CopyButton value={docsUrl} label="Документация" />
       </div>
       <div className="openkeys-issued-foot">
         <CopyButton value={handoverText(keyRow)} label="Сообщение покупателю" primary />
@@ -130,6 +138,7 @@ export default function AdminPage() {
   const [batches, setBatches] = useState<BatchRow[]>([]);
   const [openBatch, setOpenBatch] = useState<string | null>(null);
   const [showIssueForm, setShowIssueForm] = useState(false);
+  const [apiType, setApiType] = useState<ApiType>("anthropic");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -212,6 +221,7 @@ export default function AdminPage() {
           faceValueUsd: form.get("faceValueUsd"),
           quantity: Number(form.get("quantity")),
           label: form.get("label"),
+          apiType: form.get("apiType"),
         }),
       });
       const payload = (await response.json()) as { error?: string };
@@ -259,7 +269,7 @@ export default function AdminPage() {
       const response = await fetch("/api/admin/keys", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "remove_all" }),
+        body: JSON.stringify({ action: "remove_all", apiType }),
       });
       if (!response.ok) {
         setError("Не удалось очистить склад");
@@ -319,8 +329,11 @@ export default function AdminPage() {
     );
   }
 
-  const stock = keys.filter((key) => key.status === "stock");
-  const history = keys.filter((key) => key.status !== "stock");
+  const product = API_PRODUCTS[apiType];
+  const visibleKeys = keys.filter((key) => key.apiType === apiType);
+  const visibleBatches = batches.filter((batch) => batch.apiType === apiType);
+  const stock = visibleKeys.filter((key) => key.status === "stock");
+  const history = visibleKeys.filter((key) => key.status !== "stock");
 
   // Склад группируем по номиналу: продавать удобнее пачками одного достоинства.
   const groups = new Map<string, StockKey[]>();
@@ -354,13 +367,37 @@ export default function AdminPage() {
           {admin ? <p className="field-hint">Показаны только ключи, выпущенные под учёткой {admin}.</p> : null}
           {error ? <div className="banner banner-error">{error}</div> : null}
 
+          <div className="lang openkeys-product-tabs" role="group" aria-label="Тип выпуска">
+            <button
+              type="button"
+              className={apiType === "anthropic" ? "active" : ""}
+              aria-pressed={apiType === "anthropic"}
+              onClick={() => { setApiType("anthropic"); setOpenBatch(null); }}
+            >
+              Claude
+            </button>
+            <button
+              type="button"
+              className={apiType === "openai" ? "active" : ""}
+              aria-pressed={apiType === "openai"}
+              onClick={() => { setApiType("openai"); setOpenBatch(null); }}
+            >
+              GPT / OpenAI
+            </button>
+          </div>
+
           {showIssueForm ? (
             <form className="card" onSubmit={issue}>
+              <input type="hidden" name="apiType" value={apiType} />
+              <div className="overview-card-head" style={{ marginBottom: 12 }}>
+                <span className="overview-card-label">Новая партия · {product.label}</span>
+                <span className="chip">{product.shortLabel}</span>
+              </div>
               <div className="openkeys-form-grid">
                 <div className="field">
                   <label htmlFor="faceValueUsd">Номинал ключа, $</label>
                   <input id="faceValueUsd" name="faceValueUsd" defaultValue="50" inputMode="numeric" />
-                  <span className="field-hint">баланс Claude API</span>
+                  <span className="field-hint">баланс {product.balanceLabel}</span>
                 </div>
                 <div className="field">
                   <label htmlFor="quantity">Количество</label>
@@ -382,7 +419,7 @@ export default function AdminPage() {
           <section className="dsec">
             <div className="dsec-head analytics-heading">
               <div>
-                <h2>Склад · {stock.length}</h2>
+                <h2>Склад {product.shortLabel} · {stock.length}</h2>
                 <p>Ключи, готовые к продаже. «Выдан» прячет ключ в историю, «Удалить» стирает его из системы.</p>
               </div>
               {stock.length > 0 ? (
@@ -442,7 +479,7 @@ export default function AdminPage() {
           <section className="dsec">
             <div className="dsec-head analytics-heading">
               <div>
-                <h2>Партии</h2>
+                <h2>Партии {product.shortLabel}</h2>
                 <p>Откройте партию, чтобы увидеть выпущенные в ней ключи.</p>
               </div>
             </div>
@@ -459,14 +496,14 @@ export default function AdminPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {batches.length === 0 ? (
+                  {visibleBatches.length === 0 ? (
                     <tr>
                       <td colSpan={6} className="empty-cell">
                         Пока ничего не выпускали
                       </td>
                     </tr>
                   ) : (
-                    batches.map((batch) => {
+                    visibleBatches.map((batch) => {
                       const inStock = keys.filter(
                         (key) => key.batchId === batch.id && key.status === "stock",
                       ).length;
@@ -536,7 +573,7 @@ export default function AdminPage() {
           <section className="dsec">
             <div className="dsec-head analytics-heading">
               <div>
-                <h2>История</h2>
+                <h2>История {product.shortLabel}</h2>
                 <p>Выданные ключи. Секрет здесь уже недоступен — остаётся маска и профиль.</p>
               </div>
             </div>

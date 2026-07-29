@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/app-shell";
+import { API_PRODUCTS, type ApiType } from "@/lib/api-product";
 
 interface MonitorRow {
   id: string;
@@ -10,6 +11,7 @@ interface MonitorRow {
   keyMasked: string;
   label: string | null;
   faceValue: string;
+  apiType: ApiType;
   viewUrl: string;
   createdAt: string;
   deliveredAt: string | null;
@@ -24,6 +26,7 @@ export default function MonitorPage() {
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<MonitorRow[]>([]);
   const [onlyDelivered, setOnlyDelivered] = useState(false);
+  const [apiFilter, setApiFilter] = useState<"all" | ApiType>("all");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -84,7 +87,8 @@ export default function MonitorPage() {
     );
   }
 
-  const visible = onlyDelivered ? rows.filter((row) => row.status === "delivered") : rows;
+  const productRows = apiFilter === "all" ? rows : rows.filter((row) => row.apiType === apiFilter);
+  const visible = onlyDelivered ? productRows.filter((row) => row.status === "delivered") : productRows;
   const totalSpentNano = visible.reduce((sum, row) => sum + BigInt(row.spentNano ?? "0"), 0n);
   const totalSpent = `$${(Number(totalSpentNano / 1_000_000n) / 1000).toFixed(2)}`;
   const active = visible.filter((row) => row.enabled !== false).length;
@@ -105,6 +109,18 @@ export default function MonitorPage() {
         <div className="app-body-in">
           {error ? <div className="banner banner-error">{error}</div> : null}
 
+          <div className="lang openkeys-product-tabs" role="group" aria-label="Фильтр по API">
+            <button type="button" className={apiFilter === "all" ? "active" : ""} onClick={() => setApiFilter("all")}>
+              Все API
+            </button>
+            <button type="button" className={apiFilter === "anthropic" ? "active" : ""} onClick={() => setApiFilter("anthropic")}>
+              Claude
+            </button>
+            <button type="button" className={apiFilter === "openai" ? "active" : ""} onClick={() => setApiFilter("openai")}>
+              GPT / OpenAI
+            </button>
+          </div>
+
           <div className="ov-stats bill4">
             <div className="ovstat">
               <span className="dlabel">Ключей</span>
@@ -119,7 +135,9 @@ export default function MonitorPage() {
             <div className="ovstat">
               <span className="dlabel">Потрачено всего</span>
               <b className="num accent">{totalSpent}</b>
-              <span className="dtrend">по прайсу Anthropic</span>
+              <span className="dtrend">
+                {apiFilter === "all" ? "по прайсу выбранных моделей" : `по прайсу ${API_PRODUCTS[apiFilter].priceLabel}`}
+              </span>
             </div>
             <div className="ovstat">
               <span className="dlabel">Фильтр</span>
@@ -151,6 +169,7 @@ export default function MonitorPage() {
                   <thead>
                     <tr>
                       <th>Ключ</th>
+                      <th>API</th>
                       <th>Метка</th>
                       <th>Состояние</th>
                       <th className="tnum">Номинал</th>
@@ -166,6 +185,7 @@ export default function MonitorPage() {
                         <td>
                           <code className="key-mask">{row.keyMasked}</code>
                         </td>
+                        <td><span className="chip">{API_PRODUCTS[row.apiType].shortLabel}</span></td>
                         <td>{row.label ?? "—"}</td>
                         <td>
                           <span className={`pill ${row.enabled === false ? "pill-muted" : "pill-good"}`}>
