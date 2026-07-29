@@ -10,6 +10,33 @@ import {
   resolveMigrationConfig,
 } from "./migrate.js";
 
+const MULTI_DISCOUNT_TABLES = [
+  "account_policy_bindings",
+  "account_policy_reconciliations",
+  "account_policy_rules",
+  "account_policy_versions",
+  "business_invite_policy_bindings",
+  "engine_catalog_jobs",
+  "engine_policy_jobs",
+  "engine_switch_jobs",
+  "pricing_policies",
+  "pricing_policy_heads",
+  "pricing_policy_rules",
+  "pricing_policy_versions",
+  "pricing_usage_attributions",
+  "pricing_usage_funding_allocations",
+  "product_catalog_entries",
+  "product_catalog_heads",
+  "product_catalog_versions",
+  "provider_capability_aliases",
+  "provider_capability_entries",
+  "provider_capability_head",
+  "provider_capability_versions",
+  "provider_switch_entries",
+  "provider_switch_head",
+  "provider_switch_versions",
+] as const;
+
 describe("migration configuration", () => {
   it("keeps the advisory lock key stable", () => {
     expect(MIGRATION_LOCK_KEY).toBe("719471115124720130");
@@ -63,5 +90,136 @@ describe("migration configuration", () => {
       expect(sql).toContain('"current_tier" BETWEEN 0 AND 5');
       expect(sql).not.toContain('"current_tier" BETWEEN 0 AND 4');
     }
+  });
+
+  it("keeps the multi-discount migration schema-only, additive, and detached from historical DDL", () => {
+    const migrationName = "0022_multi_discount_expand.sql";
+    const migrationSql = readFileSync(join(MIGRATIONS_FOLDER, migrationName), "utf8");
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as {
+      entries: Array<{
+        idx: number;
+        version: string;
+        when: number;
+        tag: string;
+        breakpoints: boolean;
+      }>;
+    };
+    const previousEntry = journal.entries.at(-2);
+    const currentEntry = journal.entries.at(-1);
+
+    expect(currentEntry).toMatchObject({
+      idx: 22,
+      version: "7",
+      tag: "0022_multi_discount_expand",
+      breakpoints: true,
+    });
+    expect(currentEntry!.when).toBeGreaterThan(previousEntry!.when);
+
+    expect(migrationSql).not.toMatch(
+      /^(?:ALTER TYPE|CREATE TYPE|CREATE FUNCTION|CREATE TRIGGER|DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im,
+    );
+    for (const historicalObject of [
+      "email_outbox_status",
+      "signup_profiles",
+      "device_sightings",
+      "admin_account_domains",
+      "customer_profiles",
+    ]) {
+      expect(migrationSql).not.toContain(historicalObject);
+    }
+
+    const createdTables = [...migrationSql.matchAll(/^CREATE TABLE "([^"]+)"/gm)]
+      .map((match) => match[1])
+      .sort();
+    expect(createdTables).toEqual([...MULTI_DISCOUNT_TABLES].sort());
+
+    const alteredTables = [...migrationSql.matchAll(/^ALTER TABLE "([^"]+)"/gm)]
+      .map((match) => match[1]);
+    expect(alteredTables.every((table) =>
+      MULTI_DISCOUNT_TABLES.includes(table as typeof MULTI_DISCOUNT_TABLES[number])
+    )).toBe(true);
+    expect(alteredTables.length).toBeGreaterThan(0);
+
+    const indexedTables = [
+      ...migrationSql.matchAll(/^CREATE (?:UNIQUE )?INDEX "[^"]+" ON "([^"]+)"/gm),
+    ].map((match) => match[1]);
+    expect(indexedTables.every((table) =>
+      MULTI_DISCOUNT_TABLES.includes(table as typeof MULTI_DISCOUNT_TABLES[number])
+    )).toBe(true);
+    expect(indexedTables.length).toBeGreaterThan(0);
+
+    const unsupportedStatements = migrationSql
+      .split("--> statement-breakpoint")
+      .map((statement) => statement.trim())
+      .filter(Boolean)
+      .filter((statement) =>
+        !/^CREATE TABLE "[^"]+"/s.test(statement)
+        && !/^ALTER TABLE "[^"]+" ADD CONSTRAINT /s.test(statement)
+        && !/^CREATE (?:UNIQUE )?INDEX "[^"]+" ON "[^"]+"/s.test(statement)
+      );
+    expect(unsupportedStatements).toEqual([]);
+
+    const databaseObjectNames = [
+      ...migrationSql.matchAll(/^CREATE TABLE "([^"]+)"/gm),
+      ...migrationSql.matchAll(/CONSTRAINT "([^"]+)"/g),
+      ...migrationSql.matchAll(/^CREATE (?:UNIQUE )?INDEX "([^"]+)"/gm),
+    ].map((match) => match[1]).filter((name): name is string => name !== undefined);
+    expect(databaseObjectNames.filter((name) => Buffer.byteLength(name, "utf8") > 63)).toEqual([]);
+  });
+
+  it("captures manual 0018-0021 changes and the complete multi-discount schema snapshot", () => {
+    const snapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0022_snapshot.json"), "utf8"),
+    ) as {
+      prevId: string;
+      tables: Record<string, {
+        name: string;
+        schema: string;
+        columns: Record<string, unknown>;
+        foreignKeys: Record<string, unknown>;
+        checkConstraints: Record<string, { value: string }>;
+      }>;
+      enums: Record<string, { values: string[] }>;
+    };
+    const previousSnapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0017_snapshot.json"), "utf8"),
+    ) as { id: string; tables: Record<string, unknown> };
+
+    expect(snapshot.prevId).toBe(previousSnapshot.id);
+    expect(snapshot.enums["public.email_outbox_status"]?.values).toContain("canceled");
+    expect(snapshot.tables).toHaveProperty("public.signup_profiles");
+    expect(snapshot.tables).toHaveProperty("public.device_sightings");
+    expect(
+      snapshot.tables["public.customer_profiles"]
+        ?.checkConstraints["customer_profiles_referral_floor_check"]?.value,
+    ).toContain("BETWEEN 0 AND 9500");
+    expect(
+      snapshot.tables["public.admin_account_domains"]
+        ?.checkConstraints["admin_account_domains_domain_check"]?.value,
+    ).toContain("monitoring.apitoken.sale");
+
+    const addedTables = Object.keys(snapshot.tables)
+      .filter((table) => !(table in previousSnapshot.tables))
+      .sort();
+    expect(addedTables).toEqual([
+      "public.device_sightings",
+      ...MULTI_DISCOUNT_TABLES.map((table) => `public.${table}`),
+      "public.signup_profiles",
+    ].sort());
+
+    for (const table of MULTI_DISCOUNT_TABLES) {
+      const snapshotTable = snapshot.tables[`public.${table}`];
+      expect(snapshotTable).toMatchObject({ name: table, schema: "" });
+      expect(Object.keys(snapshotTable?.columns ?? {}).length).toBeGreaterThan(0);
+    }
+
+    expect(
+      snapshot.tables["public.account_policy_bindings"]?.foreignKeys,
+    ).toHaveProperty("account_policy_bindings_desired_fk");
+    expect(
+      snapshot.tables["public.account_policy_bindings"]?.foreignKeys,
+    ).toHaveProperty("account_policy_bindings_applied_fk");
   });
 });
