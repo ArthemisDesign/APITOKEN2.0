@@ -20,6 +20,7 @@ const MIGRATION_0004: &str = include_str!("../migrations_pg/0004_audit_hardening
 const MIGRATION_0005: &str = include_str!("../migrations_pg/0005_provider_attribution.sql");
 const MIGRATION_0006: &str = include_str!("../migrations_pg/0006_multi_discount_expand.sql");
 const MIGRATION_0007: &str = include_str!("../migrations_pg/0007_multi_discount_runtime_pins.sql");
+const MIGRATION_0008: &str = include_str!("../migrations_pg/0008_catalog_policy_lineage.sql");
 
 fn now() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -213,6 +214,8 @@ impl PgStore {
             .context("apply engine PostgreSQL migration 0006")?;
         tx.batch_execute(MIGRATION_0007)
             .context("apply engine PostgreSQL migration 0007")?;
+        tx.batch_execute(MIGRATION_0008)
+            .context("apply engine PostgreSQL migration 0008")?;
         tx.commit()?;
         Ok(())
     }
@@ -2202,9 +2205,9 @@ mod tests {
         };
         let mut pg = PgStore::connect(&url).unwrap();
         pg.migrate().unwrap();
-        assert_eq!(pg.schema_version().unwrap(), 7);
+        assert_eq!(pg.schema_version().unwrap(), 8);
         pg.migrate().unwrap();
-        assert_eq!(pg.schema_version().unwrap(), 7);
+        assert_eq!(pg.schema_version().unwrap(), 8);
         let runtime_pin_constraints: i64 = pg
             .client
             .query_one(
@@ -2215,13 +2218,19 @@ mod tests {
                      'provider_switch_entries_catalog_fk',
                      'provider_switch_entries_catalog_scope',
                      'account_policy_versions_switch_fk',
-                     'account_policy_versions_ack_identity'
+                     'account_policy_versions_ack_identity',
+                     'pricing_catalog_versions_capability_generation',
+                     'pricing_catalog_versions_ack_identity',
+                     'account_policy_versions_source_identity',
+                     'account_policy_versions_class_identity',
+                     'account_policy_versions_lineage_identity',
+                     'account_policy_bindings_active_class_fk'
                  )",
                 &[],
             )
             .unwrap()
             .get(0);
-        assert_eq!(runtime_pin_constraints, 6);
+        assert_eq!(runtime_pin_constraints, 12);
         pg.client.batch_execute(
             "TRUNCATE settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances, \
              usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE",
@@ -2351,20 +2360,47 @@ mod tests {
         pg.client
             .batch_execute(
                 "INSERT INTO pricing_catalog_versions(
-                     product_id,generation,schema_version,capability_digest,content_digest,created_ts
-                 ) VALUES('schema-main',1,1,'capability','catalog',1);
+                     product_id,generation,schema_version,capability_generation,capability_digest,
+                     content_digest,created_ts
+                 ) VALUES('schema-main',1,1,1,'capability','catalog',1);
                  INSERT INTO provider_switch_versions(
                      generation,schema_version,capability_generation,capability_digest,
                      content_digest,created_ts
                  ) VALUES(1,1,1,'capability','switch',1);
                  INSERT INTO account_policy_versions(
-                     account_id,effective_version,policy_id,policy_version,owner_type,owner_id,
-                     product_id,schema_version,catalog_generation,switch_generation,
+                     account_id,effective_version,policy_id,policy_version,source_policy_digest,
+                     owner_type,owner_id,account_class,product_id,schema_version,
+                     catalog_generation,switch_generation,
                      content_digest,replacement_locked,created_ts
                  ) VALUES(
-                     'schema-a',1,'schema-policy',1,'global_b2c','global','schema-main',
-                     1,1,1,'policy',false,1
+                     'schema-a',1,'schema-policy',1,'source-policy','global_b2c','global','b2c',
+                     'schema-main',1,1,1,'policy',false,1
                  );",
+            )
+            .unwrap();
+        assert!(pg
+            .client
+            .execute(
+                "INSERT INTO account_policy_bindings(
+                     account_id,product_id,account_class,active_effective_version,
+                     policy_enforcement,funding_enforcement,reconciliation_state,updated_ts
+                 ) VALUES(
+                     'schema-a','schema-main','b2b',1,
+                     'shadow','legacy_single','pending',1
+                 )",
+                &[],
+            )
+            .is_err());
+        pg.client
+            .execute(
+                "INSERT INTO account_policy_bindings(
+                     account_id,product_id,account_class,active_effective_version,
+                     policy_enforcement,funding_enforcement,reconciliation_state,updated_ts
+                 ) VALUES(
+                     'schema-a','schema-main','b2c',1,
+                     'shadow','legacy_single','pending',1
+                 )",
+                &[],
             )
             .unwrap();
         assert!(pg
