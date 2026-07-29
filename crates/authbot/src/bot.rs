@@ -442,62 +442,97 @@ pub async fn on_message(
                     start_codex_handoff(bot, store, cfg, chat, text, &rec.hproxy).await;
                 }
             }
-            "gm_proxy" => match parse_gemini_client(text) {
-                Some((client_id, client_secret, Some(proxy_line))) => {
-                    let purl = proxy_url(&proxy_line);
-                    if purl.is_empty() {
-                        let _ = bot.send(chat, "Третья строка не похожа на прокси. Пришли <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code> третьей строкой.").await;
+            // Step-by-step Gemini onboarding: CLIENT_ID → CLIENT_SECRET → proxy, one field per
+            // message. A pasted multi-line client (id/secret[/proxy]) is still accepted as a shortcut.
+            "gm_gid" => {
+                if let Some((client_id, client_secret, proxy_opt)) = parse_gemini_client(text) {
+                    if let Ok(mut drafts) = cfg.gemini_client_drafts.lock() {
+                        drafts.remove(&chat);
+                    }
+                    match proxy_opt {
+                        Some(proxy_line) => {
+                            let purl = proxy_url(&proxy_line);
+                            if purl.is_empty() {
+                                let _ = bot.send(chat, GEMINI_STEP_PROXY_RETRY).await;
+                            } else {
+                                start_gemini_handoff(
+                                    bot, store, cfg, chat, Some(&purl), 0, &client_id, &client_secret,
+                                )
+                                .await;
+                            }
+                        }
+                        None => {
+                            gemini_finalize_or_ask_proxy(
+                                bot, store, cfg, chat, &rec, &client_id, &client_secret,
+                            )
+                            .await
+                        }
+                    }
+                } else {
+                    let id = text.trim();
+                    if id.ends_with(".apps.googleusercontent.com")
+                        && id.len() >= 8
+                        && !id.contains(char::is_whitespace)
+                    {
+                        if let Ok(mut drafts) = cfg.gemini_client_drafts.lock() {
+                            drafts.insert(chat, (id.to_string(), String::new()));
+                        }
+                        let _ = store.set_want(chat, "gm_gsecret");
+                        let _ = bot.send(chat, GEMINI_STEP_SECRET).await;
                     } else {
-                        start_gemini_handoff(
-                            bot, store, cfg, chat, Some(&purl), 0, &client_id, &client_secret,
-                        )
-                        .await;
+                        let _ = bot.send(chat, GEMINI_STEP_ID_RETRY).await;
                     }
                 }
-                Some((client_id, client_secret, None)) => {
-                    let stored = store
-                        .get_user(chat)
+            }
+            "gm_gsecret" => {
+                let secret = text.trim();
+                if secret.len() < 6 || secret.contains(char::is_whitespace) {
+                    let _ = bot.send(chat, GEMINI_STEP_SECRET_RETRY).await;
+                } else {
+                    let client_id = cfg.gemini_client_drafts.lock().ok().and_then(|mut drafts| {
+                        drafts.get_mut(&chat).map(|entry| {
+                            entry.1 = secret.to_string();
+                            entry.0.clone()
+                        })
+                    });
+                    match client_id {
+                        Some(client_id) => {
+                            gemini_finalize_or_ask_proxy(
+                                bot, store, cfg, chat, &rec, &client_id, secret,
+                            )
+                            .await
+                        }
+                        None => {
+                            let _ = store.set_want(chat, "gm_gid");
+                            let _ = bot.send(chat, GEMINI_RESTART).await;
+                        }
+                    }
+                }
+            }
+            "gm_gproxy" => {
+                let purl = proxy_url(text.trim());
+                if purl.is_empty() {
+                    let _ = bot.send(chat, GEMINI_STEP_PROXY_RETRY).await;
+                } else {
+                    let draft = cfg
+                        .gemini_client_drafts
+                        .lock()
                         .ok()
-                        .flatten()
-                        .map(|user| user.hproxy)
-                        .unwrap_or_default();
-                    if stored.is_empty() {
-                        let _ = bot
-                            .send(
-                                chat,
-                                "Не хватает прокси. Добавь третьей строкой <code>ip:port:user:pass</code>.",
+                        .and_then(|drafts| drafts.get(&chat).cloned());
+                    match draft {
+                        Some((client_id, client_secret)) if !client_secret.is_empty() => {
+                            start_gemini_handoff(
+                                bot, store, cfg, chat, Some(&purl), 0, &client_id, &client_secret,
                             )
                             .await;
-                    } else {
-                        start_gemini_handoff(
-                            bot, store, cfg, chat, None, 0, &client_id, &client_secret,
-                        )
-                        .await;
+                        }
+                        _ => {
+                            let _ = store.set_want(chat, "gm_gid");
+                            let _ = bot.send(chat, GEMINI_RESTART).await;
+                        }
                     }
                 }
-                None => {
-                    let _ = bot.send(chat, GEMINI_CLIENT_PROMPT).await;
-                }
-            },
-            // A proxy already issued for this seller (e.g. IPRoyal); only the OAuth client is needed.
-            "gm_auth" => match parse_gemini_client(text) {
-                Some((client_id, client_secret, _)) => {
-                    start_gemini_handoff(
-                        bot,
-                        store,
-                        cfg,
-                        chat,
-                        None,
-                        rec.hproxy_order,
-                        &client_id,
-                        &client_secret,
-                    )
-                    .await
-                }
-                None => {
-                    let _ = bot.send(chat, GEMINI_CLIENT_PROMPT).await;
-                }
-            },
+            }
             "gm_wait" => {
                 let _ = bot
                     .send(
@@ -757,8 +792,13 @@ async fn start_gemini_handoff(
     client_id: &str,
     client_secret: &str,
 ) {
+    // The wizard draft has served its purpose; drop the in-memory (id, secret) now that both are
+    // captured as parameters and about to be sealed. Nothing else keeps the plaintext secret.
+    if let Ok(mut drafts) = cfg.gemini_client_drafts.lock() {
+        drafts.remove(&chat);
+    }
     let Some(oauth) = cfg.gemini_oauth.as_ref() else {
-        let _ = store.set_want(chat, "gm_proxy");
+        let _ = store.set_want(chat, "gm_gid");
         let _ = bot
             .send(
                 chat,
@@ -779,7 +819,7 @@ async fn start_gemini_handoff(
         .or_else(|| store.get_user(chat).ok().flatten().map(|user| user.hproxy))
         .unwrap_or_default();
     if proxy.is_empty() {
-        let _ = store.set_want(chat, "gm_proxy");
+        let _ = store.set_want(chat, "gm_gid");
         let _ = bot
             .send(
                 chat,
@@ -812,7 +852,7 @@ async fn start_gemini_handoff(
                 .await;
         }
         Err(error) => {
-            let _ = store.set_want(chat, "gm_proxy");
+            let _ = store.set_want(chat, "gm_gid");
             let _ = bot.send(chat, error.public_message()).await;
         }
     }
@@ -835,7 +875,58 @@ fn parse_gemini_client(text: &str) -> Option<(String, String, Option<String>)> {
     Some((client_id, client_secret, proxy))
 }
 
-const GEMINI_CLIENT_PROMPT: &str = "Пришли данные своего Google OAuth-клиента (создаётся в Google Cloud Console → APIs &amp; Services → Credentials → OAuth client ID → <b>Web application</b>; в Authorized redirect URIs добавь <code>https://gemini.api.apitoken.sale/oauth/callback</code>). Тремя строками:\n<code>CLIENT_ID.apps.googleusercontent.com\nCLIENT_SECRET\nip:port:user:pass</code>\n(третья строка — прокси; если прокси выдаём мы, пришли только первые две).";
+// ── Step-by-step Gemini onboarding prompts (one field per message) ─────────────────────────────
+const GEMINI_STEP_ID: &str = "🔐 <b>Подключение Gemini — шаг 1 из 3: CLIENT&nbsp;ID</b>\n\n\
+Заведи собственный OAuth-клиент Google (делается один раз, 2 минуты):\n\
+1. Открой <b>Google Cloud Console → APIs &amp; Services → Credentials</b>\n\
+2. <b>Create credentials → OAuth client ID → Application type: Web application</b>\n\
+3. В поле <b>Authorized redirect URIs</b> добавь ровно:\n<code>https://gemini.api.apitoken.sale/oauth/callback</code>\n\
+4. Нажми <b>Create</b>\n\n\
+Пришли мне <b>Client ID</b> одним сообщением — он выглядит так:\n<code>1234567890-abcd.apps.googleusercontent.com</code>";
+
+const GEMINI_STEP_ID_RETRY: &str = "🤔 Это не похоже на <b>Client ID</b>. Он всегда заканчивается на <code>.apps.googleusercontent.com</code>.\n\
+Скопируй его из Google Cloud Console и пришли одним сообщением.";
+
+const GEMINI_STEP_SECRET: &str = "✅ Client ID принят.\n\n\
+🔑 <b>Шаг 2 из 3: CLIENT&nbsp;SECRET</b>\n\n\
+В том же окне Google (рядом с Client ID) есть <b>Client secret</b>. Пришли его одним сообщением.\n\
+Он выглядит примерно так: <code>GOCSPX-xxxxxxxxxxxxxxxx</code>\n\n\
+🔒 Секрет нигде не сохраняется в открытом виде — он сразу шифруется.";
+
+const GEMINI_STEP_SECRET_RETRY: &str = "🤔 Похоже, это не <b>Client secret</b> (обычно начинается с <code>GOCSPX-</code> и без пробелов).\n\
+Пришли строку secret из Google Cloud Console одним сообщением.";
+
+const GEMINI_STEP_PROXY: &str = "✅ Client secret принят.\n\n\
+🌐 <b>Шаг 3 из 3: прокси</b>\n\n\
+Пришли прокси, через который работает этот Google-аккаунт, одним сообщением в одном из форматов:\n\
+<code>ip:port:user:pass</code>\n<code>http://user:pass@ip:port</code>\n\n\
+Он нужен, чтобы OAuth и последующие запросы шли с одного адреса.";
+
+const GEMINI_STEP_PROXY_RETRY: &str = "🤔 Не разобрал прокси. Пришли его как <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code> одним сообщением.";
+
+const GEMINI_RESTART: &str = "⏱️ Сессия ввода сбросилась. Начнём заново с шага 1 — пришли <b>Client ID</b> (<code>…apps.googleusercontent.com</code>).";
+
+/// If the seller already has an issued proxy, finish immediately; otherwise stash the (id, secret)
+/// draft in RAM and ask for the proxy. Never persists the client secret to disk.
+async fn gemini_finalize_or_ask_proxy(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    chat: i64,
+    rec: &crate::db::UserRow,
+    client_id: &str,
+    client_secret: &str,
+) {
+    if !rec.hproxy.is_empty() || rec.hproxy_order != 0 {
+        start_gemini_handoff(bot, store, cfg, chat, None, rec.hproxy_order, client_id, client_secret).await;
+    } else {
+        if let Ok(mut drafts) = cfg.gemini_client_drafts.lock() {
+            drafts.insert(chat, (client_id.to_string(), client_secret.to_string()));
+        }
+        let _ = store.set_want(chat, "gm_gproxy");
+        let _ = bot.send(chat, GEMINI_STEP_PROXY).await;
+    }
+}
 
 /// Какой сценарий передачи доступа нужен по этому офферу.
 ///
@@ -851,7 +942,7 @@ fn handoff_steps(store: &Store, oid: i64) -> (&'static str, &'static str) {
     match kind {
         HandoffKind::Claude => ("ho_proxy", "ho_email"),
         HandoffKind::Codex => ("cx_proxy", "cx_email"),
-        HandoffKind::Gemini => ("gm_proxy", "gm_auth"),
+        HandoffKind::Gemini => ("gm_gid", "gm_gid"),
     }
 }
 
@@ -974,7 +1065,7 @@ async fn deliver_issued_proxy(
             // Store the handover proxy for every kind; the Gemini flow now defers begin() until the
             // seller sends their OAuth client, so the proxy (and its IPRoyal order) must persist.
             let _ = store.set_hproxy(seller_chat, &issued_proxy);
-            if next_step == "gm_auth" {
+            if next_step == "gm_gid" {
                 let _ = store.set_hproxy_order(seller_chat, px.order_id);
             }
             let _ = store.set_want(seller_chat, next_step);
@@ -982,8 +1073,8 @@ async fn deliver_issued_proxy(
                 "cx_email" => {
                     "Зайди в аккаунт ChatGPT через этот прокси (HTTP) и пришли <b>email</b> аккаунта."
                 }
-                "gm_auth" => {
-                    "Прокси закреплён за твоим Gemini-профилем. Теперь пришли данные своего Google OAuth-клиента двумя строками:\n<code>CLIENT_ID.apps.googleusercontent.com\nCLIENT_SECRET</code>\n(в клиенте должен быть добавлен redirect URI <code>https://gemini.api.apitoken.sale/oauth/callback</code>)."
+                "gm_gid" => {
+                    "Прокси закреплён за твоим Gemini-профилем ✅\nТеперь пришли <b>Client ID</b> своего Google OAuth-клиента одним сообщением (<code>…apps.googleusercontent.com</code>) — следующим шагом запрошу Client secret. В клиенте должен быть добавлен redirect URI <code>https://gemini.api.apitoken.sale/oauth/callback</code>."
                 }
                 _ => {
                     "Зайди в аккаунт Claude через этот прокси (HTTP) и пришли <b>email</b> аккаунта."
@@ -1009,8 +1100,8 @@ async fn deliver_issued_proxy(
         Err(e) => {
             let (proxy_step, _) = handoff_steps(store, oid);
             let _ = store.set_want(seller_chat, proxy_step);
-            let prompt = if proxy_step == "gm_proxy" {
-                GEMINI_CLIENT_PROMPT.to_string()
+            let prompt = if proxy_step == "gm_gid" {
+                GEMINI_STEP_ID.to_string()
             } else {
                 "⚠️ Авто-выпуск прокси временно не удался. <b>Передача доступа, шаг 1/3.</b>\n\
                  Пришли <b>прокси</b> аккаунта: <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.".to_string()
@@ -1204,10 +1295,10 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                         let (proxy_step, _) = handoff_steps(store, oid);
                         let _ = store.set_want(seller_chat, proxy_step);
                         let _ = bot.send(chat, "Продавцу отправлена инструкция по передаче доступа (ручной прокси).").await;
-                        let seller_prompt = if proxy_step == "gm_proxy" {
+                        let seller_prompt = if proxy_step == "gm_gid" {
                             format!(
-                                "💸 <b>Оплата отправлена!</b> tx: <code>{}</code>\n\n<b>Передача доступа, шаг 1/2.</b>\n{}",
-                                esc(&hash), GEMINI_CLIENT_PROMPT
+                                "💸 <b>Оплата отправлена!</b> tx: <code>{}</code>\n\n{}",
+                                esc(&hash), GEMINI_STEP_ID
                             )
                         } else {
                             format!(
@@ -1417,7 +1508,7 @@ mod tests {
         let gemini = store.create_offer("Google AI Ultra", "$300", 1, 2).unwrap();
         assert_eq!(handoff_steps(&store, claude), ("ho_proxy", "ho_email"));
         assert_eq!(handoff_steps(&store, chatgpt), ("cx_proxy", "cx_email"));
-        assert_eq!(handoff_steps(&store, gemini), ("gm_proxy", "gm_auth"));
+        assert_eq!(handoff_steps(&store, gemini), ("gm_gid", "gm_gid"));
         assert_eq!(handoff_steps(&store, 9_999), ("ho_proxy", "ho_email"));
     }
 
@@ -1427,7 +1518,7 @@ mod tests {
     fn the_three_handovers_never_share_a_step_name() {
         let claude = ["ho_proxy", "ho_email", "ho_code"];
         let codex = ["cx_proxy", "cx_email"];
-        let gemini = ["gm_proxy", "gm_auth", "gm_wait"];
+        let gemini = ["gm_gid", "gm_gsecret", "gm_gproxy", "gm_wait"];
         for step in claude {
             assert!(!codex.contains(&step) && !gemini.contains(&step));
         }

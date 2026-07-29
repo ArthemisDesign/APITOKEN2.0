@@ -35,6 +35,10 @@ pub struct Config {
     pub codex_homes_dir: String,   // каталог, который сканирует движок: подкаталог = аккаунт в пуле
     pub gemini_dir: String, // каталог encrypted credentials + roster отдельного Gemini provider
     pub gemini_oauth: Option<gemini_oauth::Config>,
+    // Transient per-chat wizard draft for the step-by-step Gemini onboarding: (client_id,
+    // client_secret). RAM only — the client secret is never written to the bot DB or logs; the
+    // entry is removed as soon as the OAuth session is sealed (or the flow ends).
+    pub gemini_client_drafts: Arc<std::sync::Mutex<std::collections::HashMap<i64, (String, String)>>>,
 }
 
 fn env_opt(k: &str) -> Option<String> {
@@ -459,6 +463,7 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| "/srv/claude-api/data/codex-homes".into()),
         gemini_dir,
         gemini_oauth,
+        gemini_client_drafts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     });
     let store = Arc::new(Store::open(&state_db())?);
     let recovered = store.recover_interrupted_handoffs()?;
