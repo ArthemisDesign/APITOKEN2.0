@@ -6,6 +6,57 @@ export interface RenderedAuthEmail {
   html: string;
 }
 
+export function renderBusinessInviteEmail(
+  token: string,
+  appBaseUrl: string,
+  discountPercent: number,
+  expiresAt: string,
+): RenderedAuthEmail {
+  const url = new URL("/register", appBaseUrl);
+  url.searchParams.set("invite", token);
+  const actionUrl = url.toString();
+  const subject = `Your apiToken.sale B2B invitation — ${discountPercent}% discount`;
+  const introduction = `You have been invited to create a business account with a negotiated ${discountPercent}% discount.`;
+  const expiry = new Date(expiresAt).toUTCString();
+  const escapedUrl = escapeHtml(actionUrl);
+  return {
+    subject,
+    text: [
+      "Your B2B invitation",
+      "",
+      introduction,
+      `This invitation expires ${expiry}.`,
+      "",
+      "Accept invitation:",
+      actionUrl,
+      "",
+      "This secure link can be used once. If you were not expecting it, you can safely ignore this email.",
+      "",
+      "apiToken.sale",
+      "https://apitoken.sale",
+    ].join("\n"),
+    html: `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(subject)}</title></head>
+<body style="margin:0;padding:32px 16px;background:#f5f5f4;color:#63625c;font-family:'JetBrains Mono','SFMono-Regular',Consolas,monospace;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td align="center">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:600px;background:#fff;border:1px solid #dededb;border-radius:10px;">
+      <tr><td style="padding:22px 32px;border-bottom:1px solid #dededb;color:#0a0a0a;font-size:20px;font-weight:700;">apiToken.sale</td></tr>
+      <tr><td style="padding:36px 32px;">
+        <p style="margin:0 0 12px;color:#3767f0;font-size:13px;font-weight:600;text-transform:uppercase;">Business invitation</p>
+        <h1 style="margin:0 0 16px;color:#0a0a0a;font-size:28px;">Your negotiated rate is ready</h1>
+        <p style="margin:0 0 12px;font-size:15px;line-height:24px;">${escapeHtml(introduction)}</p>
+        <p style="margin:0 0 28px;font-size:13px;line-height:21px;">Valid until ${escapeHtml(expiry)}.</p>
+        <a href="${escapedUrl}" style="display:inline-block;padding:12px 22px;border-radius:4px;background:#3767f0;color:#fff;text-decoration:none;font-weight:600;">Accept invitation</a>
+        <p style="margin:26px 0 8px;font-size:12px;">Or copy this link:</p>
+        <p style="margin:0;word-break:break-all;font-size:12px;"><a href="${escapedUrl}" style="color:#3767f0;">${escapedUrl}</a></p>
+        <p style="margin:28px 0 0;padding:16px;background:#f5f5f4;border:1px solid #dededb;border-radius:4px;font-size:12px;line-height:19px;">This link can be used once. If you were not expecting this invitation, ignore this email.</p>
+      </td></tr>
+    </table>
+  </td></tr></table>
+</body></html>`,
+  };
+}
+
 interface TemplateCopy {
   subject: string;
   preheader: string;

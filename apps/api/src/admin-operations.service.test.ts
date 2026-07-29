@@ -175,7 +175,7 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
     ]);
   });
 
-  it("converts B2C to B2B while preserving the exact effective discount", async () => {
+  it("converts B2C to B2B with the negotiated discount in one transaction", async () => {
     await database.pool.query(`
       UPDATE customer_profiles
       SET current_tier = 2, multiplier_bp = 2750, referral_floor_bps = 7250,
@@ -187,11 +187,12 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
       userId: passwordUserId,
       reason: "customer requested business terms",
       actorId: "admin-q",
+      discountPercent: 80,
     });
     expect(result).toMatchObject({
       customer_type: "b2b",
-      discount_percent: 72.5,
-      multiplier_bp: 2750,
+      discount_percent: 80,
+      multiplier_bp: 2000,
       converted: true,
       sync_status: "pending",
     });
@@ -204,7 +205,7 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
     expect(profile.rows[0]).toEqual({
       customer_type: "b2b",
       current_tier: null,
-      multiplier_bp: 2750,
+      multiplier_bp: 2000,
       referral_floor_bps: 0,
       tier_window_start: null,
       tier_window_spent_nano: "0",
@@ -216,7 +217,8 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
       actor_id: "admin-q",
       metadata: expect.objectContaining({
         reason: "customer requested business terms",
-        preservedMultiplierBp: 2750,
+        previousMultiplierBp: 2750,
+        negotiatedMultiplierBp: 2000,
         previousTier: 2,
         previousReferralFloorBps: 7250,
       }),
@@ -226,7 +228,8 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
       userId: passwordUserId,
       reason: "safe retry",
       actorId: "admin-q",
-    })).resolves.toMatchObject({ converted: false, multiplier_bp: 2750, sync_status: "unchanged" });
+      discountPercent: 70,
+    })).resolves.toMatchObject({ converted: false, multiplier_bp: 2000, sync_status: "unchanged" });
   });
 
   it("resets TOTP and revokes active sessions with an audit event", async () => {

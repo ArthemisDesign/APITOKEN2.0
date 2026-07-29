@@ -194,6 +194,17 @@ function defaultError(status: number): string {
 
 export const api = {
   providers: () => request<ProviderStatus>("/auth/providers"),
+  businessInvitePreview: (token: string) =>
+    request<{
+      valid: boolean;
+      emailBound?: boolean;
+      maskedEmail?: string | null;
+      email?: string | null;
+      discountPercent?: number;
+      expiresAt?: string;
+    }>("/auth/business-invite/preview", {
+      method: "POST", body: JSON.stringify({ token }),
+    }),
   me: () => request<{ user: AuthUser }>("/auth/me"),
   updateProfile: (displayName: string) => request<{ user: AuthUser }>("/auth/me", {
     method: "PATCH", body: JSON.stringify({ displayName }),

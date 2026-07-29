@@ -12,7 +12,7 @@ import {
   type Database,
 } from "@claude-api/db";
 import type { Environment } from "./config.js";
-import { renderAuthEmail } from "./email-template.js";
+import { renderAuthEmail, renderBusinessInviteEmail } from "./email-template.js";
 import { smtpSecurityOptions } from "./smtp.js";
 import { DATABASE, WORKER_ID } from "./tokens.js";
 
@@ -104,7 +104,15 @@ export class EmailWorkerService implements OnModuleInit, OnApplicationShutdown {
     if (!this.transport) throw new Error("SMTP transport is unavailable");
     const key = decodeAuthEncryptionKey(this.config.get("AUTH_TOKEN_ENCRYPTION_KEY", { infer: true }));
     const token = decryptAuthToken(job.encryptedToken, key);
-    const content = renderAuthEmail(job.template, token, this.config.get("PUBLIC_APP_BASE_URL", { infer: true }));
+    const appBaseUrl = this.config.get("PUBLIC_APP_BASE_URL", { infer: true });
+    const content = job.template === "business_invite"
+      ? renderBusinessInviteEmail(
+        token,
+        appBaseUrl,
+        readNumber(job.payload, "discountPercent"),
+        readString(job.payload, "expiresAt"),
+      )
+      : renderAuthEmail(job.template, token, appBaseUrl);
     const result = await this.transport.sendMail({
       from: this.config.get("EMAIL_FROM", { infer: true }),
       to: job.recipient,
@@ -122,4 +130,16 @@ export class EmailWorkerService implements OnModuleInit, OnApplicationShutdown {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : "email delivery failed";
+}
+
+function readString(payload: Record<string, unknown>, key: string): string {
+  const value = payload[key];
+  if (typeof value !== "string") throw new Error(`email payload has no ${key}`);
+  return value;
+}
+
+function readNumber(payload: Record<string, unknown>, key: string): number {
+  const value = payload[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`email payload has no ${key}`);
+  return value;
 }

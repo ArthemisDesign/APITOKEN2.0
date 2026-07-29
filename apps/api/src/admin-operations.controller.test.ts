@@ -63,12 +63,13 @@ describe("admin operations HTTP contract", () => {
 
     await expect(controller.convertToBusiness(
       userId,
-      { reason: "customer requested business terms" },
+      { reason: "customer requested business terms", discountPercent: 80 },
       "admin-q",
     )).resolves.toMatchObject({ customer_type: "b2b", converted: true });
     expect(operations.convertToBusiness).toHaveBeenCalledWith({
       userId,
       reason: "customer requested business terms",
+      discountPercent: 80,
       actorId: "admin-q",
     });
   });

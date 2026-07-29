@@ -35,6 +35,10 @@ const statusSchema = z.object({
   reason: reasonSchema,
 }).strict();
 const securityActionSchema = z.object({ reason: reasonSchema }).strict();
+const convertBusinessSchema = z.object({
+  reason: reasonSchema,
+  discountPercent: z.number().int().min(0).max(95),
+}).strict();
 
 @Controller("admin")
 @UseGuards(AdminGuard)
@@ -126,11 +130,12 @@ export class AdminOperationsController {
     @Headers("x-admin-actor") actorHeader?: string,
   ): Promise<Record<string, unknown>> {
     assertUserId(id);
-    const parsed = securityActionSchema.safeParse(body);
+    const parsed = convertBusinessSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     return this.mapErrors(() => this.operations.convertToBusiness({
       userId: id,
       reason: parsed.data.reason,
+      discountPercent: parsed.data.discountPercent,
       actorId: adminActor(actorHeader),
     }));
   }

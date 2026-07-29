@@ -79,6 +79,14 @@ export class AuthController {
     }
   }
 
+  @Post("business-invite/preview")
+  @HttpCode(200)
+  async businessInvitePreview(@Body() body: unknown): Promise<unknown> {
+    const parsed = z.object({ token: authTokenSchema }).strict().safeParse(body);
+    if (!parsed.success) return { valid: false };
+    return this.auth.businessInvitePreview(parsed.data.token);
+  }
+
   @Post("login")
   @HttpCode(200)
   async login(@Body() body: unknown, @Req() request: RequestLike, @Res({ passthrough: true }) reply: ReplyLike): Promise<unknown> {

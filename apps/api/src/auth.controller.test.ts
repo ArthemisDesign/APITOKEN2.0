@@ -106,3 +106,23 @@ describe("authentication provider status", () => {
     });
   });
 });
+
+describe("business invitation preview", () => {
+  it("uses a POST body and returns a generic invalid result for malformed tokens", async () => {
+    const businessInvitePreview = vi.fn().mockResolvedValue({
+      valid: true,
+      discountPercent: 75,
+      expiresAt: "2026-08-01T12:00:00.000Z",
+    });
+    const controller = new AuthController(
+      { businessInvitePreview } as unknown as AuthService,
+      new ConfigService<Environment, true>({} as Environment),
+    );
+
+    await expect(controller.businessInvitePreview({ token: "a".repeat(43) }))
+      .resolves.toMatchObject({ valid: true, discountPercent: 75 });
+    await expect(controller.businessInvitePreview({ token: "short" }))
+      .resolves.toEqual({ valid: false });
+    expect(businessInvitePreview).toHaveBeenCalledTimes(1);
+  });
+});

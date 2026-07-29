@@ -74,8 +74,9 @@ DELETE /v1/api-keys/{id}           disable an owned key by commercial UUID
 ```
 
 `GET /v1/account` also returns the authenticated customer's safe pricing view. Commercial operator
-routes use a separate `COMMERCIAL_ADMIN_KEY`; they create email-bound B2B invitations and change
-B2B pricing. That key is never a client session or an engine Control API credential.
+routes use a separate `COMMERCIAL_ADMIN_KEY`; they create email-bound or copy-only B2B
+invitations, revoke/rotate them, and change B2B pricing. That key is never a client session or an
+engine Control API credential.
 
 Engine provisioning is recoverable: the stable handle `user:<commercial UUID>` makes account
 creation idempotent. API-key revocation uses the engine's non-secret `key_id`; PostgreSQL stores the

@@ -24,6 +24,7 @@ import {
   clearAuthRateLimit,
   findPasswordUser,
   getAuthUser,
+  getBusinessInvitePreview,
   decodeAuthEncryptionKey,
   encryptAuthToken,
   queueAuthEmailForAddress,
@@ -80,6 +81,19 @@ export class AuthService {
     private readonly config: ConfigService<Environment, true>,
     private readonly oauthProviders: OAuthProviderRegistry = new OAuthProviderRegistry([]),
   ) {}
+
+  async businessInvitePreview(token: string): Promise<Record<string, unknown>> {
+    const invite = await getBusinessInvitePreview(this.database, tokenHash(token));
+    if (!invite) return { valid: false };
+    return {
+      valid: true,
+      emailBound: invite.email !== null,
+      maskedEmail: invite.email ? maskEmail(invite.email) : null,
+      email: invite.email,
+      discountPercent: 100 - invite.multiplierBp / 100,
+      expiresAt: invite.expiresAt.toISOString(),
+    };
+  }
 
   async register(input: {
     email: string;
@@ -547,6 +561,12 @@ function passwordHashOptions(): Parameters<typeof hash>[1] {
 
 function tokenHash(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+function maskEmail(email: string): string {
+  const [local = "", domain = ""] = email.split("@");
+  const visible = local.slice(0, Math.min(2, local.length));
+  return `${visible}${"*".repeat(Math.max(1, Math.min(6, local.length - visible.length)))}@${domain}`;
 }
 
 // Device-cookie: 32 байта base64url (43 символа). Иной формат → сигнала нет (null).

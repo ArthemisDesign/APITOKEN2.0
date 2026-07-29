@@ -93,9 +93,16 @@ export async function createEmailUser(
       `, [randomUUID(), userId, monthStart]);
     } else {
       await client.query(`
-        UPDATE business_invites SET consumed_at = now(), consumed_by_user_id = $2
+        UPDATE business_invites
+        SET consumed_at = now(), consumed_by_user_id = $2, encrypted_token = NULL
         WHERE id = $1 AND consumed_at IS NULL
       `, [invite.id, userId]);
+      await client.query(`
+        UPDATE email_outbox
+        SET status = 'canceled', locked_at = NULL, locked_by = NULL,
+            last_error = 'business invitation consumed', updated_at = now()
+        WHERE business_invite_id = $1 AND status IN ('pending', 'processing')
+      `, [invite.id]);
     }
     if (verification) {
       await insertAuthEmail(client, {

@@ -3,11 +3,19 @@ import { Inject, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { multiplierForDiscount } from "@claude-api/contracts";
 import {
+  BusinessInvitationConflictError,
+  BusinessInvitationNotFoundError,
   createBusinessInvite,
+  decodeAuthEncryptionKey,
+  decryptAuthToken,
+  encryptAuthToken,
   evaluateRefundEligibility,
+  getBusinessInviteToken,
   getEngineAccountMapping,
   listAdminUserOverview,
   recordAdminCredit,
+  revokeBusinessInvite,
+  rotateBusinessInvite,
   setBusinessPricing,
   type AdminUserOverviewRow,
   type AdminUserOverviewQuery,
@@ -96,26 +104,86 @@ export class AdminService {
   }
 
   async createBusinessInvite(input: {
-    email: string;
+    email?: string;
     discountPercent: number;
     expiresInDays: number;
+    reason: string;
+    idempotencyKey: string;
+    actorId: string;
   }): Promise<Record<string, unknown>> {
     const token = randomBytes(32).toString("base64url");
     const expiresAt = new Date(Date.now() + input.expiresInDays * 86_400_000);
-    const inviteId = await createBusinessInvite(this.database, {
-      email: input.email,
+    const key = decodeAuthEncryptionKey(this.config.get("AUTH_TOKEN_ENCRYPTION_KEY", { infer: true }));
+    const invite = await createBusinessInvite(this.database, {
+      ...(input.email ? { email: input.email } : {}),
       tokenHash: hashToken(token),
+      encryptedToken: encryptAuthToken(token, key),
       multiplierBp: multiplierForDiscount(input.discountPercent),
       expiresAt,
+      idempotencyKey: input.idempotencyKey,
+      actorId: input.actorId,
+      reason: input.reason,
     });
-    const inviteUrl = new URL("/register", this.config.get("PUBLIC_APP_BASE_URL", { infer: true }));
-    inviteUrl.searchParams.set("invite", token);
+    const storedToken = invite.idempotentReplay
+      ? decryptAuthToken(invite.encryptedToken, key)
+      : token;
+    return {
+      id: invite.id,
+      email: invite.email,
+      discountPercent: 100 - invite.multiplierBp / 100,
+      expiresAt: invite.expiresAt.toISOString(),
+      inviteUrl: this.inviteUrl(storedToken),
+      deliveryStatus: invite.deliveryStatus,
+      idempotentReplay: invite.idempotentReplay,
+    };
+  }
+
+  async getBusinessInviteLink(inviteId: string): Promise<Record<string, unknown>> {
+    const invite = await getBusinessInviteToken(this.database, inviteId);
+    const key = decodeAuthEncryptionKey(this.config.get("AUTH_TOKEN_ENCRYPTION_KEY", { infer: true }));
     return {
       id: inviteId,
-      email: input.email,
-      discountPercent: input.discountPercent,
-      expiresAt: expiresAt.toISOString(),
-      inviteUrl: inviteUrl.toString(),
+      email: invite.email,
+      expiresAt: invite.expiresAt.toISOString(),
+      inviteUrl: this.inviteUrl(decryptAuthToken(invite.encryptedToken, key)),
+    };
+  }
+
+  async revokeBusinessInvite(inviteId: string, actorId: string, reason: string): Promise<Record<string, unknown>> {
+    await revokeBusinessInvite(this.database, { inviteId, actorId, reason });
+    return { id: inviteId, status: "revoked" };
+  }
+
+  async resendBusinessInvite(
+    inviteId: string,
+    actorId: string,
+    reason: string,
+    expiresInDays: number,
+    idempotencyKey: string,
+  ): Promise<Record<string, unknown>> {
+    const token = randomBytes(32).toString("base64url");
+    const expiresAt = new Date(Date.now() + expiresInDays * 86_400_000);
+    const key = decodeAuthEncryptionKey(this.config.get("AUTH_TOKEN_ENCRYPTION_KEY", { infer: true }));
+    const invite = await rotateBusinessInvite(this.database, {
+      inviteId,
+      tokenHash: hashToken(token),
+      encryptedToken: encryptAuthToken(token, key),
+      expiresAt,
+      idempotencyKey,
+      actorId,
+      reason,
+    });
+    return {
+      id: invite.id,
+      email: invite.email,
+      discountPercent: 100 - invite.multiplierBp / 100,
+      expiresAt: invite.expiresAt.toISOString(),
+      inviteUrl: this.inviteUrl(invite.idempotentReplay
+        ? decryptAuthToken(invite.encryptedToken, key)
+        : token),
+      deliveryStatus: invite.deliveryStatus,
+      supersedesInviteId: inviteId,
+      idempotentReplay: invite.idempotentReplay,
     };
   }
 
@@ -138,13 +206,25 @@ export class AdminService {
     };
   }
 
-  async setBusinessPricing(userId: string, discountPercent: number): Promise<Record<string, unknown>> {
-    await setBusinessPricing(this.database, {
+  async setBusinessPricing(
+    userId: string,
+    discountPercent: number,
+    actorId: string,
+    reason: string,
+  ): Promise<Record<string, unknown>> {
+    const result = await setBusinessPricing(this.database, {
       userId,
       multiplierBp: multiplierForDiscount(discountPercent),
-      actorId: "commercial-admin",
+      actorId,
+      reason,
     });
-    return { userId, discountPercent, syncStatus: "pending" };
+    return { userId, discountPercent, syncStatus: "pending", pricingJobId: result.jobId };
+  }
+
+  private inviteUrl(token: string): string {
+    const inviteUrl = new URL("/register", this.config.get("PUBLIC_APP_BASE_URL", { infer: true }));
+    inviteUrl.searchParams.set("invite", token);
+    return inviteUrl.toString();
   }
 }
 
@@ -181,6 +261,10 @@ function serializeUser(
     tier_window_spent_usd: nanoToUsd(row.tierWindowSpentNano),
     engine_account_id: row.engineAccountId,
     engine_account_status: row.engineAccountStatus,
+    pricing_sync_status: row.pricingSyncStatus,
+    pricing_sync_attempts: row.pricingSyncAttempts,
+    pricing_sync_error: row.pricingSyncError,
+    pricing_sync_confirmed_at: row.pricingSyncConfirmedAt?.toISOString() ?? null,
     balance_usd: engine ? nanoToUsd(engine.balance) : null,
     spent_usd: engine ? nanoToUsd(engine.spent) : null,
     reserved_usd: engine ? nanoToUsd(engine.reserved) : null,

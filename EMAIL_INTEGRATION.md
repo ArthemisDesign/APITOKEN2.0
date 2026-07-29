@@ -6,6 +6,11 @@ transaction. The raw token is AES-256-GCM encrypted with `AUTH_TOKEN_ENCRYPTION_
 stored in `auth_tokens` or written to logs. `apps/worker` claims jobs with `FOR UPDATE SKIP LOCKED`,
 decrypts the token only in memory, renders text/HTML, sends through SMTP, and retries failures.
 
+Email-bound B2B invitations use the same encrypted-token outbox. The invitation row owns the job
+before a user exists; its email includes the negotiated discount, expiry, and `/register?invite=`
+link. Revoking or rotating an invitation cancels any unsent old job. An invitation created without
+an email does not enqueue mail and is returned to the admin panel as a copy-only link.
+
 ## Client routes
 
 ```text
@@ -14,6 +19,7 @@ POST /v1/auth/email/verify      {token} -> session cookie
 POST /v1/auth/email/resend      {email} -> always accepted when well-formed
 POST /v1/auth/password/forgot   {email} -> always accepted when well-formed
 POST /v1/auth/password/reset    {token,password}
+POST /v1/auth/business-invite/preview {token} -> validity, discount, expiry, masked recipient
 ```
 
 Password registration does not create a Rust engine account until verification succeeds. Resetting

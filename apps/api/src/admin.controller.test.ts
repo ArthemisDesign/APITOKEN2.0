@@ -25,4 +25,26 @@ describe("admin user list HTTP contract", () => {
     await expect(controller.listUsers("500", "0")).rejects.toBeInstanceOf(BadRequestException);
     await expect(controller.listUsers("50", "0", "", "unknown")).rejects.toBeInstanceOf(BadRequestException);
   });
+
+  it("accepts copy-only invitations and forwards the verified operator identity", async () => {
+    const createBusinessInvite = vi.fn().mockResolvedValue({
+      id: "invite-id",
+      email: null,
+      deliveryStatus: "copy_only",
+    });
+    const controller = new AdminController({ createBusinessInvite } as unknown as AdminService);
+    const body = {
+      discountPercent: 75,
+      expiresInDays: 7,
+      reason: "negotiated business terms",
+      idempotencyKey: "2d20f96d-0f2b-4cff-9fa0-7c4b7fe1a6c5",
+    };
+
+    await expect(controller.createBusinessInvite(body, "owner@example.com"))
+      .resolves.toMatchObject({ deliveryStatus: "copy_only" });
+    expect(createBusinessInvite).toHaveBeenCalledWith({
+      ...body,
+      actorId: "owner@example.com",
+    });
+  });
 });

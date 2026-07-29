@@ -159,7 +159,7 @@ main{padding:18px 14px 50px}.page-head h1{font-size:19px}.form{grid-template-col
 @media(max-width:620px){.cards,.form,.domain-grid{grid-template-columns:1fr}.card .value{font-size:23px}}
 </style>
 </head>
-<body data-admin-panel-version="12">
+<body data-admin-panel-version="13">
 <div id="app"></div>
 <div id="error-center" class="error-center" aria-live="polite"></div>
 <script>
@@ -260,6 +260,9 @@ async function api(path,options={}){const method=String(options.method||'GET').t
   try{const payload=await rawApi(path,{...options,signal:options.signal||(tracked?refreshController?.signal:undefined)});if(tracked)markHealthy(path);return payload}
   catch(error){if(error?.name==='AbortError')throw error;if(tracked)trackFailure(path,error);throw error}}
 async function send(path,method,body){return api(path,{method,body:JSON.stringify(body)})}
+async function copyText(value){if(navigator.clipboard?.writeText)return navigator.clipboard.writeText(value);
+  const input=document.createElement('textarea');input.value=value;input.style.position='fixed';input.style.opacity='0';document.body.appendChild(input);input.select();
+  const copied=document.execCommand('copy');input.remove();if(!copied)throw new Error('Не удалось скопировать ссылку')}
 async function probeFailure(key){const failure=failures.get(key);if(!failure)return;try{await rawApi(failure.path);markHealthy(failure.path)}catch(error){failure.message=error.message||String(error);renderFailures()}}
 function scheduleRecoveryProbe(){if(recoveryTimer)return;recoveryTimer=setTimeout(async()=>{recoveryTimer=null;
   if(document.hidden){scheduleRecoveryProbe();return}await Promise.all([...failures.keys()].map(probeFailure));if(failures.size)scheduleRecoveryProbe()},5000)}
@@ -529,7 +532,7 @@ function renderUsers(dashboard,page){const totalBalance=usersCache.reduce((sum,u
     const tier=user.customer_type==='b2b'?'B2B':(['Starter','Builder','Pro','Studio','Scale'][user.tier]||'—');
     const auth=methods.map(method=>pill(method)).join('')||'—';
     const actions=(user.engine_account_id&&user.status==='active'?'<button class="btn" data-credit="'+esc(user.id)+'" data-email="'+esc(user.email)+'">+ баланс</button>':'')+
-      (user.engine_account_id&&user.customer_type==='b2c'?'<button class="btn" data-action="business" data-id="'+esc(user.id)+'" data-email="'+esc(user.email)+'">→ B2B</button>':'')+
+      (user.engine_account_id&&user.customer_type==='b2c'?'<button class="btn" data-action="business" data-id="'+esc(user.id)+'" data-email="'+esc(user.email)+'" data-discount="'+(100-user.multiplier_bp/100)+'">→ B2B</button>':'')+
       (user.engine_account_id?'<button class="btn warn" data-action="bonus" data-id="'+esc(user.id)+'" data-email="'+esc(user.email)+'">− бонус</button>':'')+
       '<button class="btn ghost" data-action="sessions" data-id="'+esc(user.id)+'" data-email="'+esc(user.email)+'">сессии</button>'+
       (user.totp_enabled?'<button class="btn warn" data-action="totp" data-id="'+esc(user.id)+'" data-email="'+esc(user.email)+'">сброс 2FA</button>':'')+
@@ -576,15 +579,18 @@ async function creditUser(button){
   catch(error){toast(error.message+' — idempotency key сохранён: повторите те же сумму и причину для безопасного retry.','bad');button.disabled=false}}
 async function userAction(button){const action=button.dataset.action,labels={disable:'Отключить пользователя и отозвать сессии',enable:'Включить пользователя',
   sessions:'Отозвать все активные сессии',totp:'Сбросить 2FA и отозвать сессии',
-  business:'Перевести в B2B, сохранив текущую скидку',
+  business:'Перевести в B2B и установить договорную скидку',
   bonus:'Отозвать welcome-бонус ($4). Идемпотентно: уже отозванный не спишется второй раз'};
   const values=await dialog({title:labels[action],message:button.dataset.email,confirmLabel:'Выполнить',
+    fields:action==='business'?[{name:'discount',label:'Договорная скидка, % (целое 0–95)',value:button.dataset.discount}]:[],
     danger:action==='disable'||action==='bonus'});
   if(!values)return;const reason=PANEL_REASON;button.disabled=true;
+  const discount=action==='business'?Number(values.discount):null;
+  if(action==='business'&&(!Number.isInteger(discount)||discount<0||discount>95)){button.disabled=false;return toast('Нужно целое число от 0 до 95.','bad')}
   try{let result;if(action==='disable'||action==='enable')result=await send('/admin/users/'+button.dataset.id+'/status','PATCH',{status:action==='disable'?'disabled':'active',reason});
     if(action==='sessions')result=await send('/admin/users/'+button.dataset.id+'/sessions/revoke','POST',{reason});
     if(action==='totp')result=await send('/admin/users/'+button.dataset.id+'/totp/reset','POST',{reason});
-    if(action==='business')result=await send('/admin/users/'+button.dataset.id+'/convert-to-business','POST',{reason});
+    if(action==='business')result=await send('/admin/users/'+button.dataset.id+'/convert-to-business','POST',{reason,discountPercent:discount});
     if(action==='bonus')result=await send('/admin/users/'+button.dataset.id+'/bonus/revoke','POST',{reason});
     toast('Готово'+(result.sessions_revoked!=null?' · сессий отозвано: '+result.sessions_revoked:'')+
       (result.customer_type==='b2b'?' · B2B, скидка '+result.discount_percent+'%':'')+
@@ -614,26 +620,44 @@ async function business(){const clientLimit=50,[inviteData,userData]=await Promi
   if(businessOffset>=clientTotal&&clientTotal>0){businessOffset=Math.max(0,Math.floor((clientTotal-1)/clientLimit)*clientLimit);return business()}
   const clientRows=clients.map(user=>'<tr><td class="left"><b>'+esc(user.email)+'</b><div class="sub mono">'+esc(user.id)+'</div></td><td><b>'+
     (100-user.multiplier_bp/100)+'%</b></td><td>'+money(user.balance_usd)+'</td><td>'+pill(user.engine_account_status||'—',user.engine_account_status==='active'?'ok':'warn')+
-    '</td><td><button class="btn" data-pricing="'+esc(user.id)+'" data-email="'+esc(user.email)+'" data-discount="'+(100-user.multiplier_bp/100)+'">изменить скидку</button></td></tr>').join('');
-  const inviteRows=invites.map(invite=>{const state=invite.consumed_at?pill('использован','ok'):new Date(invite.expires_at)<new Date()?pill('истёк','bad'):pill('активен','warn');
-    return '<tr><td class="left"><b>'+esc(invite.email)+'</b><div class="sub mono">'+esc(invite.id)+'</div></td><td>'+invite.discount_percent+'%</td><td>'+state+
-    '</td><td>'+date(invite.expires_at,true)+'</td><td>'+date(invite.consumed_at,true)+'</td></tr>'}).join('');
-  const body='<div class="sect"><h2>Новый B2B-инвайт</h2></div><form id="invite" class="form-card form"><div class="field"><label>Email</label><input name="email" type="email" required placeholder="client@company.com"></div>'+
-    '<div class="field"><label>Скидка, %</label><input name="discount" type="number" min="0" max="100" value="70" required></div>'+
-    '<div class="field"><label>Срок, дней</label><input name="days" type="number" min="1" max="90" value="7" required></div><button class="btn" type="submit">создать инвайт</button></form>'+
-    '<div class="sect"><h2>B2B-клиенты</h2><span class="sect-sub">'+clientTotal+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">клиент</th><th>скидка</th><th>баланс</th><th>engine</th><th></th></tr></thead><tbody>'+
-    (clientRows||empty(5))+'</tbody></table></div></div><div class="sect"><h2>Последние инвайты</h2><span class="sect-sub">'+invites.length+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">email</th>'+
-    '<th>скидка</th><th>статус</th><th>истекает</th><th>использован</th></tr></thead><tbody>'+(inviteRows||empty(5))+'</tbody></table></div></div>';
+    '</td><td>'+pill(user.pricing_sync_status||'—',user.pricing_sync_status==='confirmed'?'ok':user.pricing_sync_status==='failed'?'bad':'warn')+
+    (user.pricing_sync_error?'<div class="sub">'+esc(user.pricing_sync_error)+'</div>':'')+'</td><td><button class="btn" data-pricing="'+esc(user.id)+'" data-email="'+esc(user.email)+'" data-discount="'+(100-user.multiplier_bp/100)+'">изменить скидку</button></td></tr>').join('');
+  const inviteRows=invites.map(invite=>{const active=!invite.consumed_at&&!invite.revoked_at&&new Date(invite.expires_at)>new Date();
+    const state=invite.consumed_at?pill('использован','ok'):invite.revoked_at?pill('отозван','bad'):new Date(invite.expires_at)<new Date()?pill('истёк','bad'):pill('активен','warn');
+    const delivery=invite.email?pill(invite.delivery_status,invite.delivery_status==='sent'?'ok':invite.delivery_status==='failed'?'bad':'warn'):pill('copy only','info');
+    const actions=active?'<div class="actions wrap"><button class="btn" data-invite-copy="'+esc(invite.id)+'">копировать</button>'+
+      (invite.email?'<button class="btn" data-invite-resend="'+esc(invite.id)+'">отправить заново</button>':'')+
+      '<button class="btn bad" data-invite-revoke="'+esc(invite.id)+'">отозвать</button></div>':'';
+    return '<tr><td class="left"><b>'+esc(invite.email||'Без привязки к email')+'</b><div class="sub mono">'+esc(invite.id)+'</div></td><td>'+invite.discount_percent+'%</td><td>'+state+
+    '</td><td>'+delivery+(invite.delivery_error?'<div class="sub">'+esc(invite.delivery_error)+'</div>':'')+'</td><td>'+date(invite.expires_at,true)+'</td><td>'+actions+'</td></tr>'}).join('');
+  const body='<div class="sect"><h2>Новый B2B-инвайт</h2></div><form id="invite" class="form-card form"><div class="field"><label>Email (необязательно)</label><input name="email" type="email" placeholder="client@company.com"><div class="sub">Есть email — письмо уйдёт автоматически. Нет email — ссылка скопируется.</div></div>'+
+    '<div class="field"><label>Скидка, %</label><input name="discount" type="number" min="0" max="95" value="70" required></div>'+
+    '<div class="field"><label>Срок, дней</label><input name="days" type="number" min="1" max="30" value="7" required></div><button class="btn" type="submit">создать инвайт</button></form>'+
+    '<div class="sect"><h2>B2B-клиенты</h2><span class="sect-sub">'+clientTotal+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">клиент</th><th>скидка</th><th>баланс</th><th>engine</th><th>синхронизация цены</th><th></th></tr></thead><tbody>'+
+    (clientRows||empty(6))+'</tbody></table></div></div><div class="sect"><h2>Последние инвайты</h2><span class="sect-sub">'+invites.length+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">получатель</th>'+
+    '<th>скидка</th><th>статус</th><th>доставка</th><th>истекает</th><th>действия</th></tr></thead><tbody>'+(inviteRows||empty(6))+'</tbody></table></div></div>';
   shell('B2B','инвайты и индивидуальные скидки',body+pager(businessOffset,clientLimit,clientTotal,'business'),pill(count(clientTotal,'клиент','клиента','клиентов'),'ok'));bindBusiness()}
 function bindBusiness(){const form=document.getElementById('invite');form.onsubmit=async event=>{event.preventDefault();const data=new FormData(form),button=form.querySelector('button');button.disabled=true;
-  try{const result=await send('/admin/business-invites','POST',{email:data.get('email'),discountPercent:Number(data.get('discount')),expiresInDays:Number(data.get('days'))});
-    await navigator.clipboard?.writeText(result.inviteUrl).catch(()=>{});toast('Инвайт создан и скопирован: '+result.inviteUrl);await refresh()}catch(error){toast(error.message,'bad');button.disabled=false}};
+  const email=String(data.get('email')||'').trim(),discountPercent=Number(data.get('discount')),expiresInDays=Number(data.get('days')),reason=PANEL_REASON;
+  const signature=[email,discountPercent,expiresInDays,reason].join('\n'),keyName='business-invite-pending';let idempotencyKey=crypto.randomUUID();
+  try{const pending=JSON.parse(sessionStorage.getItem(keyName)||'null');if(pending?.signature===signature)idempotencyKey=pending.idempotencyKey}catch{}
+  sessionStorage.setItem(keyName,JSON.stringify({signature,idempotencyKey}));
+  const payload={discountPercent,expiresInDays,reason,idempotencyKey};if(email)payload.email=email;
+  try{const result=await send('/admin/business-invites','POST',payload);sessionStorage.removeItem(keyName);
+    if(email)toast('Инвайт создан: письмо поставлено в очередь для '+email);
+    else{await copyText(result.inviteUrl);toast('Инвайт создан, ссылка скопирована.')}
+    await refresh()}catch(error){toast(error.message+' — безопасный ключ повтора сохранён.','bad');button.disabled=false}};
   document.querySelectorAll('[data-page=business]').forEach(button=>button.onclick=()=>{businessOffset=Number(button.dataset.offset)||0;refresh({force:true})});
+  document.querySelectorAll('[data-invite-copy]').forEach(button=>button.onclick=async()=>{button.disabled=true;try{const result=await api('/admin/business-invites/'+button.dataset.inviteCopy+'/link');await copyText(result.inviteUrl);toast('Ссылка скопирована.')}catch(error){toast(error.message,'bad')}finally{button.disabled=false}});
+  document.querySelectorAll('[data-invite-revoke]').forEach(button=>button.onclick=async()=>{const values=await dialog({title:'Отозвать B2B-инвайт',confirmLabel:'Отозвать',danger:true});if(!values)return;button.disabled=true;try{await send('/admin/business-invites/'+button.dataset.inviteRevoke+'/revoke','POST',{reason:PANEL_REASON});toast('Инвайт отозван.');await refresh()}catch(error){toast(error.message,'bad');button.disabled=false}});
+  document.querySelectorAll('[data-invite-resend]').forEach(button=>button.onclick=async()=>{const values=await dialog({title:'Заменить ссылку и отправить новое письмо',confirmLabel:'Отправить',fields:[{name:'days',label:'Новый срок, дней (1–30)',value:'7'}]});if(!values)return;const days=Number(values.days);if(!Number.isInteger(days)||days<1||days>30)return toast('Срок: целое число от 1 до 30.','bad');button.disabled=true;
+    const pendingKey='business-invite-resend:'+button.dataset.inviteResend,signature=String(days);let idempotencyKey=crypto.randomUUID();try{const pending=JSON.parse(sessionStorage.getItem(pendingKey)||'null');if(pending?.signature===signature)idempotencyKey=pending.idempotencyKey}catch{}sessionStorage.setItem(pendingKey,JSON.stringify({signature,idempotencyKey}));
+    try{await send('/admin/business-invites/'+button.dataset.inviteResend+'/resend','POST',{reason:PANEL_REASON,expiresInDays:days,idempotencyKey});sessionStorage.removeItem(pendingKey);toast('Старая ссылка отозвана, новое письмо поставлено в очередь.');await refresh()}catch(error){toast(error.message+' — безопасный ключ повтора сохранён.','bad');button.disabled=false}});
   document.querySelectorAll('[data-pricing]').forEach(button=>button.onclick=async()=>{
     const values=await dialog({title:'Скидка для '+button.dataset.email,confirmLabel:'Установить',
-      fields:[{name:'value',label:'Скидка, % (целое 0–100)',value:button.dataset.discount}]});
-    if(!values)return;const discount=Number(values.value);if(!Number.isInteger(discount)||discount<0||discount>100)return toast('Нужно целое число от 0 до 100.','bad');
-    button.disabled=true;try{await send('/admin/business-users/'+button.dataset.pricing+'/pricing','PATCH',{discountPercent:discount});
+      fields:[{name:'value',label:'Скидка, % (целое 0–95)',value:button.dataset.discount}]});
+    if(!values)return;const discount=Number(values.value);if(!Number.isInteger(discount)||discount<0||discount>95)return toast('Нужно целое число от 0 до 95.','bad');
+    button.disabled=true;try{await send('/admin/business-users/'+button.dataset.pricing+'/pricing','PATCH',{discountPercent:discount,reason:PANEL_REASON});
     toast('Изменение поставлено в очередь синхронизации.');await refresh()}catch(error){toast(error.message,'bad');button.disabled=false}})}
 
 /* ── Система: ёмкость флота, спрос, рекомендации ─────────── */

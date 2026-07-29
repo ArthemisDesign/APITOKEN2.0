@@ -240,7 +240,7 @@ admin.apitoken.sale {
 	# script-src hash covers the single inline script in admin-panel.html. Update it whenever that
 	# script changes; styles remain inline because live utilization bars use bounded width values.
 	header {
-		Content-Security-Policy "default-src 'none'; script-src 'sha256-HgMqqglCPe1D1N52VDXYBlylhAZIKKrk9W0JolR+134='; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'; object-src 'none'"
+		Content-Security-Policy "default-src 'none'; script-src 'sha256-io6/HGGOuF1oRfDEtnL628GSOwRIkGbB+NWqSyz/3xA='; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'; object-src 'none'"
 		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
 		X-Robots-Tag "noindex, nofollow, noarchive"
 	}

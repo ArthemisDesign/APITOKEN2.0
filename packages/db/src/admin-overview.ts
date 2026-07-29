@@ -87,11 +87,18 @@ export interface AdminAuditRow {
 
 export interface AdminBusinessInviteRow {
   id: string;
-  email: string;
+  email: string | null;
   multiplierBp: number;
   expiresAt: Date;
   consumedAt: Date | null;
   consumedByUserId: string | null;
+  revokedAt: Date | null;
+  supersededByInviteId: string | null;
+  createdByActor: string | null;
+  deliveryStatus: string;
+  deliveryAttempts: number | null;
+  deliveryError: string | null;
+  deliverySentAt: Date | null;
   createdAt: Date;
 }
 
@@ -122,6 +129,10 @@ export interface AdminUserOverviewRow {
   tierWindowSpentNano: string;
   engineAccountId: string | null;
   engineAccountStatus: string | null;
+  pricingSyncStatus: string | null;
+  pricingSyncAttempts: number | null;
+  pricingSyncError: string | null;
+  pricingSyncConfirmedAt: Date | null;
   paidPaymentsCount: number;
   paidTotalNano: string;
   lastPaidAt: Date | null;
@@ -165,6 +176,10 @@ interface RawRow {
   tier_window_spent_nano: string | null;
   engine_account_id: string | null;
   engine_account_status: string | null;
+  pricing_sync_status: string | null;
+  pricing_sync_attempts: number | null;
+  pricing_sync_error: string | null;
+  pricing_sync_confirmed_at: Date | null;
   paid_payments_count: string;
   paid_total_nano: string;
   last_paid_at: Date | null;
@@ -273,6 +288,8 @@ export async function listAdminUserOverview(
       cp.cumulative_topup_nano::text AS cumulative_topup_nano,
       cp.tier_window_spent_nano::text AS tier_window_spent_nano,
       ea.engine_account_id, ea.status AS engine_account_status,
+      pj.status::text AS pricing_sync_status, pj.attempts AS pricing_sync_attempts,
+      pj.last_error AS pricing_sync_error, pj.confirmed_at AS pricing_sync_confirmed_at,
       COALESCE(p.paid_count, 0)::text AS paid_payments_count,
       COALESCE(p.paid_total, 0)::text AS paid_total_nano,
       p.last_paid_at,
@@ -284,6 +301,7 @@ export async function listAdminUserOverview(
     FROM users u
     LEFT JOIN customer_profiles cp ON cp.user_id = u.id
     LEFT JOIN engine_accounts ea ON ea.user_id = u.id
+    LEFT JOIN engine_pricing_jobs pj ON pj.user_id = u.id
     LEFT JOIN LATERAL (
       SELECT array_agg(provider ORDER BY provider) AS providers
       FROM auth_identities WHERE user_id = u.id
@@ -338,6 +356,10 @@ export async function listAdminUserOverview(
     tierWindowSpentNano: row.tier_window_spent_nano ?? "0",
     engineAccountId: row.engine_account_id,
     engineAccountStatus: row.engine_account_status,
+    pricingSyncStatus: row.pricing_sync_status,
+    pricingSyncAttempts: row.pricing_sync_attempts,
+    pricingSyncError: row.pricing_sync_error,
+    pricingSyncConfirmedAt: row.pricing_sync_confirmed_at,
     paidPaymentsCount: Number(row.paid_payments_count),
     paidTotalNano: row.paid_total_nano,
     lastPaidAt: row.last_paid_at,
@@ -521,17 +543,33 @@ export async function listAdminAudit(database: Database, limit: number): Promise
 
 export async function listAdminBusinessInvites(database: Database, limit: number): Promise<AdminBusinessInviteRow[]> {
   const result = await database.pool.query<{
-    id: string; email: string; multiplier_bp: number; expires_at: Date; consumed_at: Date | null;
-    consumed_by_user_id: string | null; created_at: Date;
+    id: string; email: string | null; multiplier_bp: number; expires_at: Date; consumed_at: Date | null;
+    consumed_by_user_id: string | null; revoked_at: Date | null; superseded_by_invite_id: string | null;
+    created_by_actor: string | null; delivery_status: string | null; delivery_attempts: number | null;
+    delivery_error: string | null; delivery_sent_at: Date | null; created_at: Date;
   }>(`
-    SELECT id, email, multiplier_bp, expires_at, consumed_at, consumed_by_user_id, created_at
-    FROM business_invites
-    ORDER BY created_at DESC
+    SELECT bi.id, bi.email, bi.multiplier_bp, bi.expires_at, bi.consumed_at,
+           bi.consumed_by_user_id, bi.revoked_at, bi.superseded_by_invite_id,
+           bi.created_by_actor, eo.status::text AS delivery_status,
+           eo.attempts AS delivery_attempts, eo.last_error AS delivery_error,
+           eo.sent_at AS delivery_sent_at, bi.created_at
+    FROM business_invites bi
+    LEFT JOIN LATERAL (
+      SELECT status, attempts, last_error, sent_at
+      FROM email_outbox
+      WHERE business_invite_id = bi.id
+      ORDER BY created_at DESC LIMIT 1
+    ) eo ON TRUE
+    ORDER BY bi.created_at DESC
     LIMIT $1
   `, [limit]);
   return result.rows.map((row) => ({
     id: row.id, email: row.email, multiplierBp: row.multiplier_bp, expiresAt: row.expires_at,
-    consumedAt: row.consumed_at, consumedByUserId: row.consumed_by_user_id, createdAt: row.created_at,
+    consumedAt: row.consumed_at, consumedByUserId: row.consumed_by_user_id,
+    revokedAt: row.revoked_at, supersededByInviteId: row.superseded_by_invite_id,
+    createdByActor: row.created_by_actor, deliveryStatus: row.delivery_status ?? "copy_only",
+    deliveryAttempts: row.delivery_attempts, deliveryError: row.delivery_error,
+    deliverySentAt: row.delivery_sent_at, createdAt: row.created_at,
   }));
 }
 

@@ -3,12 +3,14 @@ import type { PoolClient } from "pg";
 import type { Database } from "./client.js";
 
 export type AuthEmailPurpose = "verify_email" | "reset_password";
+export type EmailTemplate = AuthEmailPurpose | "business_invite";
 
 export interface ClaimedEmail {
   id: string;
   recipient: string;
-  template: AuthEmailPurpose;
+  template: EmailTemplate;
   encryptedToken: string;
+  payload: Record<string, unknown>;
   attempts: number;
 }
 
@@ -153,7 +155,7 @@ export async function claimNextEmail(database: Database, workerId: string): Prom
         AND (NOT (payload ? 'encryptedToken') OR jsonb_typeof(payload->'encryptedToken') <> 'string')
     `);
     const result = await client.query<{
-      id: string; recipient: string; template: AuthEmailPurpose; payload: unknown; attempts: number;
+      id: string; recipient: string; template: EmailTemplate; payload: unknown; attempts: number;
     }>(`
       SELECT id, recipient, template, payload, attempts FROM email_outbox
       WHERE status = 'pending' AND next_attempt_at <= now()
@@ -164,13 +166,14 @@ export async function claimNextEmail(database: Database, workerId: string): Prom
       await client.query("COMMIT");
       return null;
     }
-    const encryptedToken = readEncryptedToken(row.payload);
+    const payload = readPayload(row.payload);
+    const encryptedToken = readEncryptedToken(payload);
     await client.query(`
       UPDATE email_outbox SET status = 'processing', attempts = attempts + 1,
         locked_at = now(), locked_by = $2, updated_at = now() WHERE id = $1
     `, [row.id, workerId]);
     await client.query("COMMIT");
-    return { ...row, encryptedToken, attempts: row.attempts + 1 };
+    return { ...row, payload, encryptedToken, attempts: row.attempts + 1 };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
@@ -206,10 +209,16 @@ export async function recoverStaleEmails(database: Database): Promise<number> {
   return result.rowCount ?? 0;
 }
 
-function readEncryptedToken(payload: unknown): string {
-  if (typeof payload !== "object" || payload === null || !("encryptedToken" in payload) ||
-      typeof (payload as { encryptedToken: unknown }).encryptedToken !== "string") {
+function readPayload(payload: unknown): Record<string, unknown> {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    throw new Error("email outbox payload must be an object");
+  }
+  return payload as Record<string, unknown>;
+}
+
+function readEncryptedToken(payload: Record<string, unknown>): string {
+  if (typeof payload.encryptedToken !== "string") {
     throw new Error("email outbox payload has no encrypted token");
   }
-  return (payload as { encryptedToken: string }).encryptedToken;
+  return payload.encryptedToken;
 }

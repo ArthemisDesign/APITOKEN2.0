@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { renderAuthEmail } from "./email-template.js";
+import { renderAuthEmail, renderBusinessInviteEmail } from "./email-template.js";
 
 const token = "a".repeat(43);
 
@@ -35,4 +35,17 @@ test("escapes generated link markup", () => {
 
   assert.doesNotMatch(message.html, /unsafe"&token/);
   assert.match(message.html, /unsafe%22%26token/);
+});
+
+test("renders a B2B invitation with the negotiated discount and expiry", () => {
+  const message = renderBusinessInviteEmail(
+    "invite-token",
+    "https://apitoken.sale",
+    75,
+    "2026-08-01T12:00:00.000Z",
+  );
+  assert.match(message.subject, /75% discount/);
+  assert.match(message.text, /75% discount/);
+  assert.match(message.text, /Sat, 01 Aug 2026 12:00:00 GMT/);
+  assert.match(message.html, /invite=invite-token/);
 });

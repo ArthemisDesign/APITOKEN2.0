@@ -8,6 +8,8 @@ import type { PoolClient } from "pg";
 import type { Database } from "./client.js";
 
 export class InvalidBusinessInvitationError extends Error {}
+export class BusinessInvitationNotFoundError extends Error {}
+export class BusinessInvitationConflictError extends Error {}
 export class BusinessCustomerNotFoundError extends Error {}
 export class CustomerProfileNotFoundError extends Error {}
 
@@ -53,18 +55,110 @@ export function tierForTopups(cumulativeNano: bigint): number {
 const HOLD_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const PRICING_LEDGER_PAGE_SIZE = 1000;
 
-export async function createBusinessInvite(database: Database, input: {
-  email: string;
-  tokenHash: string;
+export interface BusinessInviteRecord {
+  id: string;
+  email: string | null;
+  encryptedToken: string;
   multiplierBp: number;
   expiresAt: Date;
-}): Promise<string> {
-  const id = randomUUID();
-  await database.pool.query(`
-    INSERT INTO business_invites (id, email, token_hash, multiplier_bp, expires_at)
-    VALUES ($1, $2, $3, $4, $5)
-  `, [id, input.email.toLowerCase(), input.tokenHash, input.multiplierBp, input.expiresAt]);
-  return id;
+  idempotentReplay: boolean;
+  deliveryStatus: string;
+}
+
+export async function createBusinessInvite(database: Database, input: {
+  email?: string;
+  tokenHash: string;
+  encryptedToken: string;
+  multiplierBp: number;
+  expiresAt: Date;
+  idempotencyKey: string;
+  actorId: string;
+  reason: string;
+}): Promise<BusinessInviteRecord> {
+  const client = await database.pool.connect();
+  const email = input.email?.toLowerCase() ?? null;
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [input.idempotencyKey]);
+    const existing = await client.query<{
+      id: string; email: string | null; encrypted_token: string | null;
+      multiplier_bp: number; expires_at: Date; delivery_status: string | null;
+    }>(`
+      SELECT bi.id, bi.email, bi.encrypted_token, bi.multiplier_bp, bi.expires_at,
+             eo.status AS delivery_status
+      FROM business_invites bi
+      LEFT JOIN LATERAL (
+        SELECT status::text AS status FROM email_outbox
+        WHERE business_invite_id = bi.id ORDER BY created_at DESC LIMIT 1
+      ) eo ON TRUE
+      WHERE bi.idempotency_key = $1
+      FOR UPDATE OF bi
+    `, [input.idempotencyKey]);
+    const prior = existing.rows[0];
+    if (prior) {
+      if (prior.email !== email || prior.multiplier_bp !== input.multiplierBp) {
+        throw new BusinessInvitationConflictError("idempotency key was already used for another invitation");
+      }
+      if (!prior.encrypted_token) {
+        throw new BusinessInvitationConflictError("the invitation token is no longer available");
+      }
+      await client.query("COMMIT");
+      return {
+        id: prior.id,
+        email: prior.email,
+        encryptedToken: prior.encrypted_token,
+        multiplierBp: prior.multiplier_bp,
+        expiresAt: prior.expires_at,
+        idempotentReplay: true,
+        deliveryStatus: prior.delivery_status ?? "copy_only",
+      };
+    }
+
+    const id = randomUUID();
+    await client.query(`
+      INSERT INTO business_invites (
+        id, email, token_hash, encrypted_token, multiplier_bp, expires_at,
+        idempotency_key, created_by_actor
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `, [
+      id, email, input.tokenHash, input.encryptedToken, input.multiplierBp,
+      input.expiresAt, input.idempotencyKey, input.actorId,
+    ]);
+    if (email) {
+      await queueBusinessInviteEmail(client, {
+        inviteId: id,
+        recipient: email,
+        encryptedToken: input.encryptedToken,
+        multiplierBp: input.multiplierBp,
+        expiresAt: input.expiresAt,
+      });
+    }
+    await client.query(`
+      INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+      VALUES ('admin', $1, 'business_invite.created', 'business_invite', $2, $3::jsonb)
+    `, [input.actorId, id, JSON.stringify({
+      email,
+      multiplierBp: input.multiplierBp,
+      expiresAt: input.expiresAt.toISOString(),
+      delivery: email ? "email" : "copy_only",
+      reason: input.reason,
+    })]);
+    await client.query("COMMIT");
+    return {
+      id,
+      email,
+      encryptedToken: input.encryptedToken,
+      multiplierBp: input.multiplierBp,
+      expiresAt: input.expiresAt,
+      idempotentReplay: false,
+      deliveryStatus: email ? "pending" : "copy_only",
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function lockBusinessInvite(
@@ -74,13 +168,211 @@ export async function lockBusinessInvite(
   const result = await client.query<{ id: string; multiplier_bp: number }>(`
     SELECT id, multiplier_bp
     FROM business_invites
-    WHERE token_hash = $1 AND lower(email) = lower($2)
-      AND consumed_at IS NULL AND expires_at > now()
+    WHERE token_hash = $1 AND (email IS NULL OR lower(email) = lower($2))
+      AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > now()
     FOR UPDATE
   `, [input.tokenHash, input.email]);
   const invite = result.rows[0];
   if (!invite) throw new InvalidBusinessInvitationError("invalid, expired, or email-mismatched business invitation");
   return { id: invite.id, multiplierBp: invite.multiplier_bp };
+}
+
+export async function getBusinessInvitePreview(
+  database: Database,
+  tokenHash: string,
+): Promise<{ email: string | null; multiplierBp: number; expiresAt: Date } | null> {
+  const result = await database.pool.query<{
+    email: string | null; multiplier_bp: number; expires_at: Date;
+  }>(`
+    SELECT email, multiplier_bp, expires_at
+    FROM business_invites
+    WHERE token_hash = $1 AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > now()
+  `, [tokenHash]);
+  const row = result.rows[0];
+  return row ? { email: row.email, multiplierBp: row.multiplier_bp, expiresAt: row.expires_at } : null;
+}
+
+export async function getBusinessInviteToken(
+  database: Database,
+  inviteId: string,
+): Promise<{ encryptedToken: string; email: string | null; expiresAt: Date }> {
+  const result = await database.pool.query<{
+    encrypted_token: string | null; email: string | null; expires_at: Date;
+  }>(`
+    SELECT encrypted_token, email, expires_at
+    FROM business_invites
+    WHERE id = $1 AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > now()
+  `, [inviteId]);
+  const row = result.rows[0];
+  if (!row?.encrypted_token) throw new BusinessInvitationNotFoundError("active invitation not found");
+  return { encryptedToken: row.encrypted_token, email: row.email, expiresAt: row.expires_at };
+}
+
+export async function revokeBusinessInvite(database: Database, input: {
+  inviteId: string;
+  actorId: string;
+  reason: string;
+}): Promise<void> {
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(`
+      UPDATE business_invites
+      SET revoked_at = now(), revoked_by_actor = $2, encrypted_token = NULL
+      WHERE id = $1 AND consumed_at IS NULL AND revoked_at IS NULL
+      RETURNING id
+    `, [input.inviteId, input.actorId]);
+    if (!result.rows[0]) throw new BusinessInvitationNotFoundError("active invitation not found");
+    await client.query(`
+      UPDATE email_outbox
+      SET status = 'canceled', locked_at = NULL, locked_by = NULL,
+          last_error = 'business invitation revoked', updated_at = now()
+      WHERE business_invite_id = $1 AND status IN ('pending', 'processing')
+    `, [input.inviteId]);
+    await client.query(`
+      INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+      VALUES ('admin', $1, 'business_invite.revoked', 'business_invite', $2, $3::jsonb)
+    `, [input.actorId, input.inviteId, JSON.stringify({ reason: input.reason })]);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function rotateBusinessInvite(database: Database, input: {
+  inviteId: string;
+  tokenHash: string;
+  encryptedToken: string;
+  expiresAt: Date;
+  idempotencyKey: string;
+  actorId: string;
+  reason: string;
+}): Promise<BusinessInviteRecord> {
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [input.idempotencyKey]);
+    const replayResult = await client.query<{
+      id: string; email: string | null; encrypted_token: string | null;
+      multiplier_bp: number; expires_at: Date; delivery_status: string | null;
+    }>(`
+      SELECT replacement.id, replacement.email, replacement.encrypted_token,
+             replacement.multiplier_bp, replacement.expires_at,
+             eo.status::text AS delivery_status
+      FROM business_invites original
+      JOIN business_invites replacement ON replacement.id = original.superseded_by_invite_id
+      LEFT JOIN LATERAL (
+        SELECT status FROM email_outbox
+        WHERE business_invite_id = replacement.id ORDER BY created_at DESC LIMIT 1
+      ) eo ON TRUE
+      WHERE original.id = $1 AND replacement.idempotency_key = $2
+      FOR UPDATE OF replacement
+    `, [input.inviteId, input.idempotencyKey]);
+    const replay = replayResult.rows[0];
+    if (replay) {
+      if (!replay.encrypted_token) {
+        throw new BusinessInvitationConflictError("the replacement invitation token is no longer available");
+      }
+      await client.query("COMMIT");
+      return {
+        id: replay.id,
+        email: replay.email,
+        encryptedToken: replay.encrypted_token,
+        multiplierBp: replay.multiplier_bp,
+        expiresAt: replay.expires_at,
+        idempotentReplay: true,
+        deliveryStatus: replay.delivery_status ?? "pending",
+      };
+    }
+    const keyInUse = await client.query(
+      "SELECT 1 FROM business_invites WHERE idempotency_key = $1",
+      [input.idempotencyKey],
+    );
+    if (keyInUse.rows[0]) {
+      throw new BusinessInvitationConflictError("idempotency key was already used for another invitation");
+    }
+    const oldResult = await client.query<{
+      email: string | null; multiplier_bp: number;
+    }>(`
+      SELECT email, multiplier_bp FROM business_invites
+      WHERE id = $1 AND consumed_at IS NULL AND revoked_at IS NULL
+      FOR UPDATE
+    `, [input.inviteId]);
+    const old = oldResult.rows[0];
+    if (!old) throw new BusinessInvitationNotFoundError("active invitation not found");
+    if (!old.email) throw new BusinessInvitationConflictError("copy-only invitations cannot be emailed; copy the existing link");
+    const id = randomUUID();
+    await client.query(`
+      INSERT INTO business_invites (
+        id, email, token_hash, encrypted_token, multiplier_bp, expires_at,
+        idempotency_key, created_by_actor
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `, [
+      id, old.email, input.tokenHash, input.encryptedToken, old.multiplier_bp,
+      input.expiresAt, input.idempotencyKey, input.actorId,
+    ]);
+    await client.query(`
+      UPDATE business_invites
+      SET revoked_at = now(), revoked_by_actor = $2, encrypted_token = NULL,
+          superseded_by_invite_id = $3
+      WHERE id = $1
+    `, [input.inviteId, input.actorId, id]);
+    await client.query(`
+      UPDATE email_outbox
+      SET status = 'canceled', locked_at = NULL, locked_by = NULL,
+          last_error = 'superseded by a new business invitation', updated_at = now()
+      WHERE business_invite_id = $1 AND status IN ('pending', 'processing')
+    `, [input.inviteId]);
+    await queueBusinessInviteEmail(client, {
+      inviteId: id,
+      recipient: old.email,
+      encryptedToken: input.encryptedToken,
+      multiplierBp: old.multiplier_bp,
+      expiresAt: input.expiresAt,
+    });
+    await client.query(`
+      INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+      VALUES ('admin', $1, 'business_invite.resent', 'business_invite', $2, $3::jsonb)
+    `, [input.actorId, id, JSON.stringify({
+      supersedesInviteId: input.inviteId,
+      reason: input.reason,
+    })]);
+    await client.query("COMMIT");
+    return {
+      id,
+      email: old.email,
+      encryptedToken: input.encryptedToken,
+      multiplierBp: old.multiplier_bp,
+      expiresAt: input.expiresAt,
+      idempotentReplay: false,
+      deliveryStatus: "pending",
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function queueBusinessInviteEmail(client: PoolClient, input: {
+  inviteId: string;
+  recipient: string;
+  encryptedToken: string;
+  multiplierBp: number;
+  expiresAt: Date;
+}): Promise<void> {
+  await client.query(`
+    INSERT INTO email_outbox (id, business_invite_id, recipient, template, payload)
+    VALUES ($1, $2, $3, 'business_invite', $4::jsonb)
+  `, [randomUUID(), input.inviteId, input.recipient, JSON.stringify({
+    encryptedToken: input.encryptedToken,
+    discountPercent: 100 - input.multiplierBp / 100,
+    expiresAt: input.expiresAt.toISOString(),
+  })]);
 }
 
 export async function getPricingView(database: Database, userId: string): Promise<Record<string, unknown> | null> {
@@ -143,6 +435,7 @@ export async function setBusinessPricing(database: Database, input: {
   userId: string;
   multiplierBp: number;
   actorId: string;
+  reason: string;
 }): Promise<{ engineAccountId: string; jobId: string }> {
   const client = await database.pool.connect();
   try {
@@ -172,7 +465,11 @@ export async function setBusinessPricing(database: Database, input: {
     await client.query(`
       INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
       VALUES ('admin', $1, 'pricing.b2b_changed', 'user', $2, $3::jsonb)
-    `, [input.actorId, input.userId, JSON.stringify({ multiplierBp: input.multiplierBp })]);
+    `, [input.actorId, input.userId, JSON.stringify({
+      multiplierBp: input.multiplierBp,
+      reason: input.reason,
+      jobId,
+    })]);
     await client.query("COMMIT");
     return { engineAccountId: row.engine_account_id, jobId };
   } catch (error) {
@@ -184,15 +481,15 @@ export async function setBusinessPricing(database: Database, input: {
 }
 
 /**
- * Converts an existing B2C customer to manual B2B pricing without changing the effective price.
- * The stored multiplier already includes any referral floor, so it becomes the negotiated B2B
- * multiplier verbatim. B2C progress remains historical data, while the live tier/window/floor
- * controls are cleared so no later B2C reconciliation can change the negotiated rate.
+ * Converts an existing B2C customer to a supplied negotiated B2B multiplier atomically. B2C
+ * progress remains historical data, while the live tier/window/floor controls are cleared so no
+ * later B2C reconciliation can change the negotiated rate.
  */
 export async function convertCustomerToBusiness(database: Database, input: {
   userId: string;
   actorId: string;
   reason: string;
+  multiplierBp: number;
 }): Promise<{ converted: boolean; multiplierBp: number; engineAccountId: string; jobId: string | null }> {
   const client = await database.pool.connect();
   try {
@@ -228,16 +525,16 @@ export async function convertCustomerToBusiness(database: Database, input: {
       UPDATE customer_profiles
       SET customer_type = 'b2b', current_tier = NULL,
           tier_window_start = NULL, tier_window_spent_nano = 0,
-          referral_floor_bps = 0, updated_at = now()
+          referral_floor_bps = 0, multiplier_bp = $2, updated_at = now()
       WHERE user_id = $1
-    `, [input.userId]);
+    `, [input.userId, input.multiplierBp]);
     await client.query(`
       UPDATE engine_accounts SET mult_bp = $2, updated_at = now() WHERE user_id = $1
-    `, [input.userId, row.multiplier_bp]);
+    `, [input.userId, input.multiplierBp]);
     const jobId = await enqueuePricingJob(client, {
       userId: input.userId,
       engineAccountId: row.engine_account_id,
-      multiplierBp: row.multiplier_bp,
+      multiplierBp: input.multiplierBp,
       reason: "b2b_conversion",
     });
     await client.query(`
@@ -245,14 +542,15 @@ export async function convertCustomerToBusiness(database: Database, input: {
       VALUES ('admin', $1, 'pricing.b2b_converted', 'user', $2, $3::jsonb)
     `, [input.actorId, input.userId, JSON.stringify({
       reason: input.reason,
-      preservedMultiplierBp: row.multiplier_bp,
+      previousMultiplierBp: row.multiplier_bp,
+      negotiatedMultiplierBp: input.multiplierBp,
       previousTier: row.current_tier,
       previousReferralFloorBps: row.referral_floor_bps,
     })]);
     await client.query("COMMIT");
     return {
       converted: true,
-      multiplierBp: row.multiplier_bp,
+      multiplierBp: input.multiplierBp,
       engineAccountId: row.engine_account_id,
       jobId,
     };

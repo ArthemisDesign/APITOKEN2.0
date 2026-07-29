@@ -297,11 +297,16 @@ export const B2C_SIGNUP_BONUS_BALANCE_NANO =
 
 export const businessDiscountSchema = z.number().int().min(0).max(95);
 export const createBusinessInviteSchema = z.object({
-  email: authEmailSchema,
+  email: authEmailSchema.optional(),
   discountPercent: businessDiscountSchema,
   expiresInDays: z.number().int().min(1).max(30).default(7),
+  reason: z.string().trim().min(3).max(300),
+  idempotencyKey: z.string().uuid(),
 }).strict();
-export const setBusinessPricingSchema = z.object({ discountPercent: businessDiscountSchema }).strict();
+export const setBusinessPricingSchema = z.object({
+  discountPercent: businessDiscountSchema,
+  reason: z.string().trim().min(3).max(300),
+}).strict();
 
 export function multiplierForDiscount(discountPercent: number): number {
   return 10_000 - discountPercent * 100;

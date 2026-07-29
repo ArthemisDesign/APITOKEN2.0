@@ -185,9 +185,16 @@ export async function completeExternalSignIn(
     `, [userId, customerType, invite ? null : 0, engineMultiplierBp, monthStart]);
     if (invite) {
       await client.query(`
-        UPDATE business_invites SET consumed_at = now(), consumed_by_user_id = $2
+        UPDATE business_invites
+        SET consumed_at = now(), consumed_by_user_id = $2, encrypted_token = NULL
         WHERE id = $1 AND consumed_at IS NULL
       `, [invite.id, userId]);
+      await client.query(`
+        UPDATE email_outbox
+        SET status = 'canceled', locked_at = NULL, locked_by = NULL,
+            last_error = 'business invitation consumed', updated_at = now()
+        WHERE business_invite_id = $1 AND status IN ('pending', 'processing')
+      `, [invite.id]);
     } else {
       await client.query(`
         INSERT INTO pricing_months (id, user_id, month_start, opening_tier, highest_tier)

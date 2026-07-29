@@ -1,5 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { B2C_SIGNUP_BONUS_BALANCE_NANO } from "@claude-api/contracts";
+import { B2C_SIGNUP_BONUS_BALANCE_NANO, multiplierForDiscount } from "@claude-api/contracts";
 import {
   canonicalizeEmail,
   convertCustomerToBusiness,
@@ -131,6 +131,13 @@ export class AdminOperationsService {
       expires_at: row.expiresAt.toISOString(),
       consumed_at: row.consumedAt?.toISOString() ?? null,
       consumed_by_user_id: row.consumedByUserId,
+      revoked_at: row.revokedAt?.toISOString() ?? null,
+      superseded_by_invite_id: row.supersededByInviteId,
+      created_by_actor: row.createdByActor,
+      delivery_status: row.deliveryStatus,
+      delivery_attempts: row.deliveryAttempts,
+      delivery_error: row.deliveryError,
+      delivery_sent_at: row.deliverySentAt?.toISOString() ?? null,
       created_at: row.createdAt.toISOString(),
     })) };
   }
@@ -261,8 +268,12 @@ export class AdminOperationsService {
     userId: string;
     reason: string;
     actorId: string;
+    discountPercent: number;
   }): Promise<Record<string, unknown>> {
-    const result = await convertCustomerToBusiness(this.database, input);
+    const result = await convertCustomerToBusiness(this.database, {
+      ...input,
+      multiplierBp: multiplierForDiscount(input.discountPercent),
+    });
     return {
       user_id: input.userId,
       customer_type: "b2b",
