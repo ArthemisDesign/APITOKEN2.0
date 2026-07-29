@@ -50,6 +50,13 @@
       "when": 1785542400000,
       "tag": "0006_openkeys_api_type",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1785628800000,
+      "tag": "0007_openkeys_pricing_contract_expand",
+      "breakpoints": true
     }
   ]
 }

@@ -2,12 +2,14 @@ import { sql } from "drizzle-orm";
 import {
   bigint,
   check,
+  foreignKey,
   index,
   integer,
   pgEnum,
   pgTable,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
@@ -16,6 +18,8 @@ const createdAt = timestamp("created_at", { withTimezone: true }).notNull().defa
 
 export const OPENKEYS_API_TYPES = ["anthropic", "openai"] as const;
 export type OpenkeysApiType = (typeof OPENKEYS_API_TYPES)[number];
+export const OPENKEYS_PRICING_CONTRACTS = ["legacy", "official_1_to_1"] as const;
+export type OpenkeysPricingContract = (typeof OPENKEYS_PRICING_CONTRACTS)[number];
 
 export const openkeysKeyStatus = pgEnum("openkeys_key_status", ["active", "disabled"]);
 export const openkeysIssuanceStatus = pgEnum("openkeys_issuance_status", [
@@ -39,6 +43,11 @@ export const openkeysBatches = pgTable(
     label: text("label"),
     faceValueNano: bigint("face_value_nano", { mode: "bigint" }).notNull(),
     multBp: integer("mult_bp").notNull(),
+    /**
+     * Expand-stage default remains legacy so the currently deployed writer and
+     * a rollback release can continue issuing unchanged until the 1:1 cutover.
+     */
+    pricingContract: text("pricing_contract").notNull().default("legacy"),
     quantity: integer("quantity").notNull(),
     note: text("note"),
     /** NULL у старых партий означает anthropic; новые записи всегда задают тип явно. */
@@ -47,8 +56,18 @@ export const openkeysBatches = pgTable(
     createdAt,
   },
   (table) => [
+    unique("openkeys_batches_id_pricing_contract_unique")
+      .on(table.id, table.pricingContract),
     check("openkeys_batches_face_value_positive", sql`${table.faceValueNano} > 0`),
     check("openkeys_batches_mult_bp_range", sql`${table.multBp} BETWEEN 1 AND 10000`),
+    check(
+      "openkeys_batches_pricing_contract",
+      sql`${table.pricingContract} IN ('legacy', 'official_1_to_1')`,
+    ),
+    check(
+      "openkeys_batches_official_1_to_1",
+      sql`${table.pricingContract} <> 'official_1_to_1' OR ${table.multBp} = 10000`,
+    ),
     check("openkeys_batches_quantity_range", sql`${table.quantity} BETWEEN 1 AND 100`),
     check("openkeys_batches_label_length", sql`${table.label} IS NULL OR char_length(${table.label}) <= 200`),
     check("openkeys_batches_note_length", sql`${table.note} IS NULL OR char_length(${table.note}) <= 2000`),
@@ -81,6 +100,8 @@ export const openkeysKeys = pgTable(
     keySha256: text("key_sha256"),
     faceValueNano: bigint("face_value_nano", { mode: "bigint" }).notNull(),
     multBp: integer("mult_bp").notNull(),
+    /** Mirrors the batch contract on every independently billed engine account. */
+    pricingContract: text("pricing_contract").notNull().default("legacy"),
     status: openkeysKeyStatus("status").notNull().default("active"),
     /**
      * Секрет в AES-256-GCM, чтобы ключ можно было выдать покупателю позже, а не
@@ -106,8 +127,21 @@ export const openkeysKeys = pgTable(
     uniqueIndex("openkeys_keys_engine_account_id_key").on(table.engineAccountId),
     uniqueIndex("openkeys_keys_key_sha256_key").on(table.keySha256),
     index("openkeys_keys_batch_id_idx").on(table.batchId),
+    foreignKey({
+      columns: [table.batchId, table.pricingContract],
+      foreignColumns: [openkeysBatches.id, openkeysBatches.pricingContract],
+      name: "openkeys_keys_batch_contract_fk",
+    }).onDelete("restrict"),
     check("openkeys_keys_face_value_positive", sql`${table.faceValueNano} > 0`),
     check("openkeys_keys_mult_bp_range", sql`${table.multBp} BETWEEN 1 AND 10000`),
+    check(
+      "openkeys_keys_pricing_contract",
+      sql`${table.pricingContract} IN ('legacy', 'official_1_to_1')`,
+    ),
+    check(
+      "openkeys_keys_official_1_to_1",
+      sql`${table.pricingContract} <> 'official_1_to_1' OR ${table.multBp} = 10000`,
+    ),
     check("openkeys_keys_view_token_shape", sql`${table.viewToken} ~ '^[A-Za-z0-9_-]{22}$'`),
     check(
       "openkeys_keys_secret_pair",
