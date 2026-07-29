@@ -1239,8 +1239,8 @@ grep -Fq '"$ENGINE_STAGE/authbot"' "$ROOT/deploy/deploy.sh" \
   || wd_die "the authbot binary is not installed into the engine release"
 grep -Fq 'staged authbot binary is missing' "$ROOT/deploy/deploy.sh" \
   || wd_die "a release without an authbot binary must fail closed"
-grep -Fq 'ExecStart=/srv/claude-api/releases/current/authbot' "$ROOT/systemd/claude-authbot.service" \
-  || wd_die "the authbot unit must run the binary from the current release"
+grep -Fq 'ExecStart=/usr/bin/env CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude /srv/claude-api/releases/current/authbot' "$ROOT/systemd/claude-authbot.service" \
+  || wd_die "the authbot unit must override legacy CLI paths and run the current release"
 grep -Fq 'ProtectHome=true' "$ROOT/systemd/claude-authbot.service" \
   || wd_die "the authbot must keep the service user's home hidden"
 grep -Fq 'Environment=AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude' "$ROOT/systemd/claude-authbot.service" \
