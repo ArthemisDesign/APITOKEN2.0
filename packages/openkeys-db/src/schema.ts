@@ -14,6 +14,9 @@ import {
 
 const createdAt = timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
 
+export const OPENKEYS_API_TYPES = ["anthropic", "openai"] as const;
+export type OpenkeysApiType = (typeof OPENKEYS_API_TYPES)[number];
+
 export const openkeysKeyStatus = pgEnum("openkeys_key_status", ["active", "disabled"]);
 export const openkeysIssuanceStatus = pgEnum("openkeys_issuance_status", [
   "pending",
@@ -27,7 +30,7 @@ export const openkeysIssuanceStatus = pgEnum("openkeys_issuance_status", [
 /**
  * Партия ключей, выпущенная админом под продажу (FunPay и т.п.).
  * face_value_nano — номинал ОДНОГО ключа в эквиваленте официального прайса
- * Anthropic; фактический баланс движка = face_value_nano * mult_bp / 10000.
+ * выбранного API; фактический баланс движка = face_value_nano * mult_bp / 10000.
  */
 export const openkeysBatches = pgTable(
   "openkeys_batches",
@@ -38,6 +41,8 @@ export const openkeysBatches = pgTable(
     multBp: integer("mult_bp").notNull(),
     quantity: integer("quantity").notNull(),
     note: text("note"),
+    /** NULL у старых партий означает anthropic; новые записи всегда задают тип явно. */
+    apiType: text("api_type"),
     createdBy: text("created_by").notNull(),
     createdAt,
   },
@@ -47,6 +52,7 @@ export const openkeysBatches = pgTable(
     check("openkeys_batches_quantity_range", sql`${table.quantity} BETWEEN 1 AND 100`),
     check("openkeys_batches_label_length", sql`${table.label} IS NULL OR char_length(${table.label}) <= 200`),
     check("openkeys_batches_note_length", sql`${table.note} IS NULL OR char_length(${table.note}) <= 2000`),
+    check("openkeys_batches_api_type", sql`${table.apiType} IS NULL OR ${table.apiType} IN ('anthropic', 'openai')`),
     check("openkeys_batches_created_by_length", sql`char_length(${table.createdBy}) BETWEEN 1 AND 128`),
   ],
 );
