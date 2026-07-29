@@ -1,14 +1,18 @@
 # Контракт мультипровайдерных скидок и политик доступа
 
-Статус: продуктовые решения для первой версии согласованы; реализация по этому контракту ещё не
-начата.
+Статус: продуктовые решения для первой версии согласованы. Expand-only schema foundation этапов
+1–2 (`engine 0006`–`0008`, `commerce 0022`–`0023`, `OpenKeys 0007`) уже доставлен. Текущая
+ревизия добавляет Stage 3A: dormant registry-only persistence/CAS без HTTP, runtime callers,
+production activation, backfill или изменения клиентского traffic. Resolver, Control API,
+синхронизация commerce, funding cutover и strict enforcement остаются последующими этапами.
 
 Последнее продуктовое обсуждение: 2026-07-29.
 
-Фактическое состояние репозитория сверено с `origin/master` на коммите `9c939bd`. Репозиторий
-развивается непрерывно, поэтому перед реализацией необходимо повторно проверить конкретные имена
-файлов, модели и миграции. Семантика продукта, зафиксированная в этом документе, при этом не должна
-меняться молча из-за изменений реализации.
+Карта реализации перед Stage 3A повторно сверена с `origin/master` на коммите
+`1d8600ce574b3a4ff010612132cdd84b910bf61e` от 2026-07-30. Репозиторий развивается непрерывно,
+поэтому перед каждым следующим этапом необходимо заново проверить конкретные имена файлов,
+writers, модели и миграции. Семантика продукта, зафиксированная в этом документе, при этом не
+должна меняться молча из-за изменений реализации.
 
 Этот документ описывает целевое поведение, которое заменит текущий единый множитель цены на аккаунт.
 Он не утверждает, что описанное поведение уже работает в production. До завершения перехода
@@ -1247,13 +1251,108 @@ min(tier multiplier, referral multiplier)
 
 Существующие columns не удаляются и старый application code остаётся совместим.
 
-### Этап 3. Policy-capable engine без strict enforcement
+### Этап 3A. Registry-only CAS — безопасная точка остановки
 
-- Добавить resolver, Control API, snapshots и ledger attribution.
-- Сохранить legacy scalar path только для аккаунта без установленной policy.
-- Добавить telemetry «какая policy была бы выбрана».
-- Provider runtime сообщает schema/capability readiness.
-- Старые blue-green slots читают расширенную схему.
+Этап 3A ограничен `crates/registry` и завершает только неактивную persistence-основу:
+
+- единый typed Authority API на уровне Rust crate для catalog/switch/account-policy
+  validation, immutable read/install и monotonic CAS outcomes;
+- полная SQLite и PostgreSQL parity одного контракта, включая lineage pins из migrations
+  `0006`–`0008`, атомарность parent/children writes и конкурентные retry;
+- детерминированные результаты `applied`, `unchanged`, `stale`, `conflict` и `locked`;
+- тесты не только happy path, но и same-version digest semantics, stale writers, immutable legacy
+  OpenKeys, transaction rollback и конкурирующие writers.
+
+`Authority API` здесь означает внутренний API `crates/registry`, а не HTTP endpoint. На этой точке
+новый код не имеет production caller и не меняет действующее состояние продукта.
+
+В Stage 3A **не входят**:
+
+- HTTP/Control API routes или изменения внешних contracts;
+- resolver, admission/settlement logic, request snapshots и runtime wiring;
+- backfill, seed или любые production data writes в новые таблицы;
+- dual-write со scalar path или commerce jobs;
+- вызовы policy activation, фактическое переключение production active bindings/heads или strict
+  enforcement; dormant CAS-методы только проверяются на изолированных test databases;
+- изменения provisioning/key issuance;
+- feature flags, routing или любое изменение поведения клиентского traffic.
+
+#### Критерии безопасного checkpoint Stage 3A
+
+Checkpoint считается безопасным для остановки только если одновременно выполнено всё ниже:
+
+1. SQLite и PostgreSQL реализуют одинаковые Authority API, validation и CAS outcomes.
+2. Полная lineage identity сохраняется и читается без потерь: schema/capability generation и
+   digest, catalog/switch generation, source policy digest, immutable account class и content/rule
+   digests.
+3. Same version + same digest идемпотентна; same version + другой digest конфликтует; stale writer
+   не двигает состояние; immutable legacy OpenKeys нельзя заменить.
+4. Каждая full snapshot write атомарна: ошибка parent/child/CAS не оставляет частичных строк.
+5. Конкурентные SQLite и PostgreSQL tests доказывают один победивший результат без lost update;
+   PostgreSQL-проверки проходят на поддерживаемых production major versions.
+6. Нет новых server routes, resolver imports, фоновых jobs и production call sites нового write
+   API; поиск по репозиторию подтверждает, что API остаётся dormant.
+7. Нет backfill/seed/data migration и нет изменений существующих account, key, balance, binding,
+   head, reservation, ledger или traffic semantics.
+8. Старый scalar runtime и key issuance проходят прежние tests без изменения результатов; rollback
+   на предыдущий binary безопасен, потому что Stage 3A не создаёт active policy state.
+9. Полный repository gate зелёный, а diff ограничен registry-only реализацией, её tests и
+   документацией; migrations `0006`–`0008` не переписаны.
+10. Известные ограничения и весь невыполненный scope Stage 3B явно перечислены в handoff; наличие
+    registry API не описывается как готовый policy-capable runtime.
+
+#### Handoff/restart checklist после Stage 3A
+
+Перед остановкой:
+
+- записать точный commit SHA, schema baseline `0006`–`0008`, изменённые файлы и результаты полного
+  gate;
+- приложить матрицу SQLite/PostgreSQL tests и CAS/lineage cases;
+- отдельно подтвердить отсутствие HTTP routes, runtime callers, production data writes, active
+  bindings/heads, dual-write и traffic changes;
+- перечислить незавершённые элементы Stage 3B, открытые риски и принятые API invariants;
+- оставить worktree/branch в воспроизводимом состоянии без незакоммиченных изменений.
+
+Перед возобновлением:
+
+- начать Stage 3B в отдельном актуальном worktree/branch от текущего `master`, перечитать этот
+  документ и фактические migrations/schema;
+- проверить, что после checkpoint не появились другие writers или данные в policy/catalog/switch
+  tables; любое отличие сначала отдельно проаудировать;
+- повторно прогнать Stage 3A parity/gate и сверить Authority API с актуальными commerce contracts;
+- начинать Stage 3B только после зелёного Stage 3A с отдельным узким scope, branch и gate;
+- заранее назначить владельца, окно работ, мониторинг и достаточный ресурс на немедленную
+  диагностику, исправление и повторный gate при аварии;
+- не считать старт Stage 3B разрешением на backfill, activation, key issuance или traffic cutover:
+  эти действия остаются отдельными более поздними решениями rollout.
+
+### Этап 3B. Fail-closed resolver в shadow-режиме
+
+Stage 3B начинается только после зелёного Stage 3A и доставляется отдельным checkpoint. На этом
+этапе runtime читает новый контракт, но ещё не получает production writer и не включает strict
+enforcement.
+
+- Добавить backend-neutral resolver и telemetry «какая policy была бы выбрана».
+- При каждом resolve повторно проверять exact catalog/switch targets и capability pins: отдельные
+  heads не образуют одну транзакцию, поэтому временно рассогласованное поколение обязано fail closed,
+  а не собираться из частей.
+- Зафиксировать choreography будущего переключения: catalog → switches → account policy; reverse
+  rollback разрешён только к полностью совместимому набору exact targets.
+- Добавить admission snapshot/ledger attribution в shadow без изменения фактического charge path.
+- Сохранить legacy scalar path источником фактической цены на этом этапе.
+- Provider runtime сообщает schema/capability readiness; старые blue-green slots продолжают читать
+  expand-схему.
+
+### Этап 3C. Versioned Control API без strict enforcement
+
+- Добавить аутентифицированные prepare/read/activate endpoints для catalog, switches и account
+  policy поверх Stage 3A Authority API.
+- HTTP payload и ACK несут полную immutable identity: schema/capability generations и digests,
+  target version/digest, policy lineage и binding state.
+- CAS mismatch, stale, conflict, locked и missing dependency остаются различимыми ответами; retry
+  потерянного ACK возвращает тот же committed target.
+- Control API не выполняет backfill, не выдаёт ключи, не включает strict и не обходит порядок
+  catalog → switches → policy.
 
 ### Этап 4. Authority и durable synchronization в commerce
 

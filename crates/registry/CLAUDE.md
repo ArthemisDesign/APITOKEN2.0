@@ -48,6 +48,15 @@
 - Provider attribution — стабильная registry-константа: Anthropic/Codex сохраняют существующие
   значения, native Gemini usage пишет `PROVIDER_GOOGLE = "google"`. Нельзя подменять provider доменом,
   profile/project ID или клиентским значением; Google project IDs в registry не хранятся.
+- **Multi-provider pricing Stage 3A** (`pricing`) — dormant persistence contract: immutable
+  catalog/switch/account-policy versions сначала `prepare`, затем отдельные heads/binding двигаются
+  только явным monotonic CAS `activate`. SQLite и PostgreSQL обязаны возвращать одинаковые typed
+  outcomes и атомарно сохранять parent со всеми children. Registry-owned timestamps не входят в
+  identity; policy хранит полные catalog/switch/capability/source pins. `Strict` здесь fail-closed,
+  legacy OpenKeys replacement-locked и сверяется с live `accounts.mult_bp`, current OpenKeys только
+  1:1 без model-rules. До Stage 3B у API нет runtime/HTTP writer и production activation. Будущий
+  resolver обязан на каждом чтении повторно проверить exact dependency heads и fail closed при
+  рассогласовании; отдельные catalog → switches → policy heads не являются общей транзакцией.
 
 **Инварианты:**
 - Токен разрешается из колонки `token` (inline) ИЛИ файла `token_file`. `import_sqlite` refuses a
@@ -57,5 +66,6 @@
   детект сетевой, живёт в `forward::detect_plan`, вызывается из `server`. `get_creds` отдаёт
   (token, proxy) для этого детекта.
 
-**Проверка:** `cargo test -p registry`; real PostgreSQL fault matrix uses
-`CLAUDE_API_TEST_DATABASE_URL=... cargo test -p registry pg::tests::stage2_fault_matrix`.
+**Проверка:** `cargo test -p registry`; real PostgreSQL matrices use
+`CLAUDE_API_TEST_DATABASE_URL=... cargo test -p registry pg::tests::stage2_fault_matrix` and
+`CLAUDE_API_TEST_DATABASE_URL=... cargo test -p registry pricing::postgres::tests::postgres_pricing_contract_matrix`.

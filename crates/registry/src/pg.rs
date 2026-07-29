@@ -22,6 +22,9 @@ const MIGRATION_0006: &str = include_str!("../migrations_pg/0006_multi_discount_
 const MIGRATION_0007: &str = include_str!("../migrations_pg/0007_multi_discount_runtime_pins.sql");
 const MIGRATION_0008: &str = include_str!("../migrations_pg/0008_catalog_policy_lineage.sql");
 
+#[cfg(test)]
+pub(crate) const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_441;
+
 fn now() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -2190,6 +2193,121 @@ impl PgStore {
     }
 }
 
+impl PgStore {
+    pub fn pricing_catalog_by_generation(
+        &mut self,
+        product_id: &str,
+        generation: i64,
+    ) -> Result<Option<crate::pricing::PricingCatalogSpec>> {
+        crate::pricing::postgres::postgres_pricing_catalog_by_generation(
+            &mut self.client,
+            product_id,
+            generation,
+        )
+    }
+
+    pub fn active_pricing_catalog(
+        &mut self,
+        product_id: &str,
+    ) -> Result<Option<crate::pricing::PricingCatalogSpec>> {
+        crate::pricing::postgres::postgres_active_pricing_catalog(&mut self.client, product_id)
+    }
+
+    pub fn prepare_pricing_catalog(
+        &mut self,
+        spec: &crate::pricing::PricingCatalogSpec,
+    ) -> Result<crate::pricing::PricingMutation> {
+        crate::pricing::postgres::postgres_prepare_pricing_catalog(&mut self.client, spec)
+    }
+
+    pub fn activate_pricing_catalog(
+        &mut self,
+        product_id: &str,
+        target: &crate::pricing::VersionTarget,
+        expectation: &crate::pricing::ActiveExpectation,
+    ) -> Result<crate::pricing::PricingMutation> {
+        crate::pricing::postgres::postgres_activate_pricing_catalog(
+            &mut self.client,
+            product_id,
+            target,
+            expectation,
+        )
+    }
+
+    pub fn provider_switches_by_generation(
+        &mut self,
+        generation: i64,
+    ) -> Result<Option<crate::pricing::ProviderSwitchSpec>> {
+        crate::pricing::postgres::postgres_provider_switches_by_generation(
+            &mut self.client,
+            generation,
+        )
+    }
+
+    pub fn active_provider_switches(
+        &mut self,
+    ) -> Result<Option<crate::pricing::ProviderSwitchSpec>> {
+        crate::pricing::postgres::postgres_active_provider_switches(&mut self.client)
+    }
+
+    pub fn prepare_provider_switches(
+        &mut self,
+        spec: &crate::pricing::ProviderSwitchSpec,
+    ) -> Result<crate::pricing::PricingMutation> {
+        crate::pricing::postgres::postgres_prepare_provider_switches(&mut self.client, spec)
+    }
+
+    pub fn activate_provider_switches(
+        &mut self,
+        target: &crate::pricing::VersionTarget,
+        expectation: &crate::pricing::ActiveExpectation,
+    ) -> Result<crate::pricing::PricingMutation> {
+        crate::pricing::postgres::postgres_activate_provider_switches(
+            &mut self.client,
+            target,
+            expectation,
+        )
+    }
+
+    pub fn account_policy_by_version(
+        &mut self,
+        account_id: &str,
+        effective_version: i64,
+    ) -> Result<Option<crate::pricing::AccountPolicySpec>> {
+        crate::pricing::postgres::postgres_account_policy_by_version(
+            &mut self.client,
+            account_id,
+            effective_version,
+        )
+    }
+
+    pub fn active_account_policy(
+        &mut self,
+        account_id: &str,
+    ) -> Result<Option<crate::pricing::ActiveAccountPolicy>> {
+        crate::pricing::postgres::postgres_active_account_policy(&mut self.client, account_id)
+    }
+
+    pub fn prepare_account_policy(
+        &mut self,
+        spec: &crate::pricing::AccountPolicySpec,
+    ) -> Result<crate::pricing::PricingMutation> {
+        crate::pricing::postgres::postgres_prepare_account_policy(&mut self.client, spec)
+    }
+
+    pub fn activate_account_policy(
+        &mut self,
+        activation: &crate::pricing::AccountPolicyActivationSpec,
+        expectation: &crate::pricing::PolicyActiveExpectation,
+    ) -> Result<crate::pricing::PricingMutation> {
+        crate::pricing::postgres::postgres_activate_account_policy(
+            &mut self.client,
+            activation,
+            expectation,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2204,6 +2322,18 @@ mod tests {
             return;
         };
         let mut pg = PgStore::connect(&url).unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+            .unwrap();
+        pg.client
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+            .unwrap();
         pg.migrate().unwrap();
         assert_eq!(pg.schema_version().unwrap(), 8);
         pg.migrate().unwrap();
@@ -2231,10 +2361,15 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(runtime_pin_constraints, 12);
-        pg.client.batch_execute(
-            "TRUNCATE settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances, \
+        pg.client
+            .batch_execute(
+                "TRUNCATE account_policy_bindings,account_policy_rules,account_policy_versions, \
+             provider_switch_head,provider_switch_entries,provider_switch_versions, \
+             pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions, \
+             settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances, \
              usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE",
-        ).unwrap();
+            )
+            .unwrap();
 
         let trigger_count: i64 = pg
             .client
@@ -3251,5 +3386,11 @@ mod tests {
         pg.client.batch_execute("ROLLBACK").unwrap();
         let restored: i64 = pg.client.query_one(DIVERGENCE_SQL, &[]).unwrap().get(0);
         assert_eq!(restored, 0);
+        pg.client
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
     }
 }

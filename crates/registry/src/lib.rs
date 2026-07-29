@@ -9,6 +9,7 @@
 
 pub mod authority;
 pub mod pg;
+pub mod pricing;
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;

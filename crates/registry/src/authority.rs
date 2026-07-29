@@ -459,3 +459,159 @@ impl Authority {
         }
     }
 }
+
+impl Authority {
+    pub fn pricing_catalog_by_generation(
+        &mut self,
+        product_id: &str,
+        generation: i64,
+    ) -> Result<Option<crate::pricing::PricingCatalogSpec>> {
+        match self {
+            Self::Sqlite(connection) => crate::pricing::sqlite_pricing_catalog_by_generation(
+                connection, product_id, generation,
+            ),
+            Self::Postgres(store) => store.pricing_catalog_by_generation(product_id, generation),
+        }
+    }
+
+    pub fn active_pricing_catalog(
+        &mut self,
+        product_id: &str,
+    ) -> Result<Option<crate::pricing::PricingCatalogSpec>> {
+        match self {
+            Self::Sqlite(connection) => {
+                crate::pricing::sqlite_active_pricing_catalog(connection, product_id)
+            }
+            Self::Postgres(store) => store.active_pricing_catalog(product_id),
+        }
+    }
+
+    pub fn prepare_pricing_catalog(
+        &mut self,
+        spec: &crate::pricing::PricingCatalogSpec,
+    ) -> Result<crate::pricing::PricingMutation> {
+        match self {
+            Self::Sqlite(connection) => {
+                crate::pricing::sqlite_prepare_pricing_catalog(connection, spec)
+            }
+            Self::Postgres(store) => store.prepare_pricing_catalog(spec),
+        }
+    }
+
+    pub fn activate_pricing_catalog(
+        &mut self,
+        product_id: &str,
+        target: &crate::pricing::VersionTarget,
+        expectation: &crate::pricing::ActiveExpectation,
+    ) -> Result<crate::pricing::PricingMutation> {
+        match self {
+            Self::Sqlite(connection) => crate::pricing::sqlite_activate_pricing_catalog(
+                connection,
+                product_id,
+                target,
+                expectation,
+            ),
+            Self::Postgres(store) => {
+                store.activate_pricing_catalog(product_id, target, expectation)
+            }
+        }
+    }
+
+    pub fn provider_switches_by_generation(
+        &mut self,
+        generation: i64,
+    ) -> Result<Option<crate::pricing::ProviderSwitchSpec>> {
+        match self {
+            Self::Sqlite(connection) => {
+                crate::pricing::sqlite_provider_switches_by_generation(connection, generation)
+            }
+            Self::Postgres(store) => store.provider_switches_by_generation(generation),
+        }
+    }
+
+    pub fn active_provider_switches(
+        &mut self,
+    ) -> Result<Option<crate::pricing::ProviderSwitchSpec>> {
+        match self {
+            Self::Sqlite(connection) => crate::pricing::sqlite_active_provider_switches(connection),
+            Self::Postgres(store) => store.active_provider_switches(),
+        }
+    }
+
+    pub fn prepare_provider_switches(
+        &mut self,
+        spec: &crate::pricing::ProviderSwitchSpec,
+    ) -> Result<crate::pricing::PricingMutation> {
+        match self {
+            Self::Sqlite(connection) => {
+                crate::pricing::sqlite_prepare_provider_switches(connection, spec)
+            }
+            Self::Postgres(store) => store.prepare_provider_switches(spec),
+        }
+    }
+
+    pub fn activate_provider_switches(
+        &mut self,
+        target: &crate::pricing::VersionTarget,
+        expectation: &crate::pricing::ActiveExpectation,
+    ) -> Result<crate::pricing::PricingMutation> {
+        match self {
+            Self::Sqlite(connection) => {
+                crate::pricing::sqlite_activate_provider_switches(connection, target, expectation)
+            }
+            Self::Postgres(store) => store.activate_provider_switches(target, expectation),
+        }
+    }
+
+    pub fn account_policy_by_version(
+        &mut self,
+        account_id: &str,
+        effective_version: i64,
+    ) -> Result<Option<crate::pricing::AccountPolicySpec>> {
+        match self {
+            Self::Sqlite(connection) => crate::pricing::sqlite_account_policy_by_version(
+                connection,
+                account_id,
+                effective_version,
+            ),
+            Self::Postgres(store) => store.account_policy_by_version(account_id, effective_version),
+        }
+    }
+
+    pub fn active_account_policy(
+        &mut self,
+        account_id: &str,
+    ) -> Result<Option<crate::pricing::ActiveAccountPolicy>> {
+        match self {
+            Self::Sqlite(connection) => {
+                crate::pricing::sqlite_active_account_policy(connection, account_id)
+            }
+            Self::Postgres(store) => store.active_account_policy(account_id),
+        }
+    }
+
+    pub fn prepare_account_policy(
+        &mut self,
+        spec: &crate::pricing::AccountPolicySpec,
+    ) -> Result<crate::pricing::PricingMutation> {
+        match self {
+            Self::Sqlite(connection) => {
+                crate::pricing::sqlite_prepare_account_policy(connection, spec)
+            }
+            Self::Postgres(store) => store.prepare_account_policy(spec),
+        }
+    }
+
+    pub fn activate_account_policy(
+        &mut self,
+        activation: &crate::pricing::AccountPolicyActivationSpec,
+        expectation: &crate::pricing::PolicyActiveExpectation,
+    ) -> Result<crate::pricing::PricingMutation> {
+        match self {
+            Self::Sqlite(connection) => {
+                crate::pricing::sqlite_activate_account_policy(connection, activation, expectation)
+            }
+            Self::Postgres(store) => store.activate_account_policy(activation, expectation),
+        }
+    }
+}
