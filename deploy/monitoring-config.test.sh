@@ -87,7 +87,7 @@ grep -Fq 'fail_if_body_not_matches_regexp:' "$ROOT/observability/blackbox/blackb
   || { printf 'OpenAI synthetic accepts a generic health response\n' >&2; exit 1; }
 grep -Fq "body: '{}'" "$ROOT/observability/blackbox/blackbox.yml" \
   || { printf 'OpenAI synthetic can execute a real provider turn\n' >&2; exit 1; }
-grep -Fq '"(code"' "$ROOT/observability/blackbox/blackbox.yml" \
+grep -Fq '"code"' "$ROOT/observability/blackbox/blackbox.yml" \
   || { printf 'OpenAI synthetic accepts a generic error envelope\n' >&2; exit 1; }
 
 printf '%s\n' \

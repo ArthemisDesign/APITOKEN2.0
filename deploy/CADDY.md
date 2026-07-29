@@ -68,14 +68,12 @@ A `503` returned by a normal proxied request is returned only to that caller and
 `api.apitoken.sale` and the unified admin proxy use stable Anthropic origin `127.0.0.1:8790`, whose
 health-gated upstreams are `127.0.0.1:8787` and `127.0.0.1:8788`. The OpenAI hostname uses a separate
 stable origin, `127.0.0.1:8792`, over singleton runtime `127.0.0.1:8793`. During the first split only,
-8792 also recognizes the old combined slot with an internal marker that Caddy overwrites; the
-Anthropic public route strips the same header. Clients therefore cannot move a request between
-runtimes. A follow-up routing/monitoring release removes that bridge after 8793 is green. The watchdog
-resolves the OpenAI hostname to loopback and probes it over HTTPS, covering the public vhost boundary
-end to end.
+8792 also recognized the old combined slots. That bridge has been removed after the dedicated
+runtime was verified in production: 8792 now targets only 8793 and no API-plane routing header exists.
+The watchdog resolves the OpenAI hostname to loopback and probes it over HTTPS, covering the public
+vhost boundary end to end.
 
-Caddy normally probes `/ready`. The one-release 8792 bridge instead uses an OpenAI-shaped 4xx body
-probe so fixed Anthropic slots never enter that fallback. `engine-bluegreen.sh` admits the new Anthropic slot, sends `SIGUSR1` to make
+Caddy probes `/ready` on both fixed-provider origins. `engine-bluegreen.sh` admits the new Anthropic slot, sends `SIGUSR1` to make
 the old slot return 503 readiness, waits for depooling, then sends SIGTERM so established streams
 drain under the systemd deadline. Only after the old cgroup is fully stopped does the first split
 start OpenAI, preventing overlap with a legacy combined process. Later releases roll Anthropic first
@@ -85,10 +83,7 @@ The singleton guarantees graceful established streams, not zero downtime for new
 After its listener closes, detached settlement tasks may drain through the shared server deadline.
 At that deadline the gateway cancels any residual Codex turn, reaps its process group, queues the
 reservation outcome, and only then allows the process-wide home lock to be released. Anthropic
-remains available, while OpenAI target/synthetic alerts may fire truthfully. Bridge cleanup must
-change 8792 to direct 8793 `/ready` health, remove both legacy slot addresses and both API-plane
-header directives, restore the unambiguous Anthropic Caddy-pair alert, and update the static
-routing/monitoring contracts in the same release.
+remains available, while OpenAI target/synthetic alerts may fire truthfully.
 
 The commerce API and worker use `http://127.0.0.1:8790`, a loopback-only Caddy listener over the
 Anthropic slots. They must never address either deployment slot or the OpenAI origin. The provider

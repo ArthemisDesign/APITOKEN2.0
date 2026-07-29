@@ -56,8 +56,6 @@
 (engine_backend) {
 	reverse_proxy 127.0.0.1:8790 {
 		header_up Host 127.0.0.1:8790
-		# Keep a client-spoofed bridge marker away from the legacy combined process during cutover.
-		header_up -X-Apitoken-Api-Plane
 	}
 }
 
@@ -128,30 +126,18 @@ http://127.0.0.1:8790 {
 	}
 }
 
-# Transitional stable OpenAI origin. During the first split, `first` keeps the dedicated runtime as
-# the preferred upstream but recognizes the old combined slot through a provider-shaped 400 probe.
-# The follow-up Caddy-only release removes both legacy slots and this internal marker after 8793 is
-# production-green. Fixed provider processes ignore the marker; clients can neither set nor retain it.
+# Stable OpenAI origin over the dedicated fixed-provider singleton.
 http://127.0.0.1:8792 {
 	bind 127.0.0.1
 
-	reverse_proxy 127.0.0.1:8793 127.0.0.1:8787 127.0.0.1:8788 {
-		lb_policy first
+	reverse_proxy 127.0.0.1:8793 {
 		lb_try_duration 2s
 		lb_try_interval 100ms
 
-		health_uri /v1/responses
-		health_method POST
-		health_headers {
-			Content-Type application/json
-			X-Apitoken-Api-Plane openai
-		}
+		health_uri /ready
 		health_interval 2s
 		health_timeout 2s
-		health_status 4xx
-		health_body invalid_request_error
-
-		header_up X-Apitoken-Api-Plane openai
+		health_status 2xx
 	}
 }
 

@@ -124,7 +124,6 @@ if grep -q '^openai\.api\.apitoken\.sale {' "$LIVE"; then
           const error = value && value.error;
           const status = Number(process.argv[2]);
           if (!error || error.type !== "invalid_request_error" || !(
-            (status === 400 && error.param === "model") ||
             (status === 401 && error.code === "invalid_api_key") ||
             (status === 404 && error.code === "model_not_found")
           )) process.exit(1);

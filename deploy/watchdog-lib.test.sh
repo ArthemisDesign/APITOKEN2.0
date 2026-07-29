@@ -1157,16 +1157,15 @@ grep -Fq 'order request_header before forward_auth' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up Host 127.0.0.1:8791' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up X-Admin-Key "<ADMIN_AUTH_KEY_PLACEHOLDER>"' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up X-Admin-Domain {http.request.host}' "$ROOT/deploy/Caddyfile"
-[[ $(grep -Fci 'header_up -X-Apitoken-Api-Plane' "$ROOT/deploy/Caddyfile") == 1 ]]
-[[ $(grep -Fci 'header_up X-Apitoken-Api-Plane openai' "$ROOT/deploy/Caddyfile") == 1 ]]
+! grep -Fqi 'X-Apitoken-Api-Plane' "$ROOT/deploy/Caddyfile"
 [[ $(grep -Fc 'import openai_engine_backend' "$ROOT/deploy/Caddyfile") == 1 ]]
 grep -Fq 'reverse_proxy 127.0.0.1:8792' "$ROOT/deploy/Caddyfile"
 grep -Fq 'http://127.0.0.1:8792 {' "$ROOT/deploy/Caddyfile"
-grep -Fq 'reverse_proxy 127.0.0.1:8793 127.0.0.1:8787 127.0.0.1:8788 {' \
-  "$ROOT/deploy/Caddyfile"
-grep -Fq 'health_method POST' "$ROOT/deploy/Caddyfile"
-grep -Fq 'health_status 4xx' "$ROOT/deploy/Caddyfile"
-grep -Fq 'health_body invalid_request_error' "$ROOT/deploy/Caddyfile"
+grep -Fq 'reverse_proxy 127.0.0.1:8793 {' "$ROOT/deploy/Caddyfile"
+[[ $(grep -Fc 'health_uri /ready' "$ROOT/deploy/Caddyfile") -ge 2 ]]
+! grep -Fq 'health_method POST' "$ROOT/deploy/Caddyfile"
+! grep -Fq 'health_status 4xx' "$ROOT/deploy/Caddyfile"
+! grep -Fq 'health_body invalid_request_error' "$ROOT/deploy/Caddyfile"
 grep -Fq 'OpenAI hostname smoke failed; restored' "$ROOT/deploy/install-caddy.sh" \
   || wd_die "Caddy installation can commit a syntactically valid but misrouted OpenAI hostname"
 grep -Fq -- "-d '{}'" "$ROOT/deploy/install-caddy.sh" \
