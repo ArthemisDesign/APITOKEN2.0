@@ -120,8 +120,12 @@ fn acquire_provider_lock(path: &str) -> Result<ProviderLock, ProcessError> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct HomeIdentity {
+    /// Keep the original directory inode alive so remove/recreate cannot recycle its `(dev, ino)`
+    /// pair and make a replacement account look unchanged.
+    #[cfg(unix)]
+    _directory: File,
     #[cfg(unix)]
     device: u64,
     #[cfg(unix)]
@@ -130,18 +134,20 @@ struct HomeIdentity {
 
 impl HomeIdentity {
     fn capture(path: &str) -> Option<Self> {
-        let metadata = std::fs::metadata(path).ok()?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
+            let directory = File::open(path).ok()?;
+            let metadata = directory.metadata().ok()?;
             Some(Self {
+                _directory: directory,
                 device: metadata.dev(),
                 inode: metadata.ino(),
             })
         }
         #[cfg(not(unix))]
         {
-            let _ = metadata;
+            std::fs::metadata(path).ok()?;
             Some(Self {})
         }
     }

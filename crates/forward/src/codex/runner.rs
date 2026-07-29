@@ -1737,6 +1737,7 @@ done
         std::fs::create_dir(&bought).unwrap();
         std::fs::write(bought.join("mode"), b"text").unwrap();
         std::fs::write(bought.join("auth.json"), b"{}").unwrap();
+        assert!(!old.identity_is_current());
         gateway.rediscover().await;
         assert!(old.live_process().await.is_none());
         let replacement = gateway
