@@ -10,11 +10,17 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "brotli"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 anyhow = "1"
+axum = "0.8"
+base64 = "0.22"
+sha2 = "0.10"
+zeroize = { version = "1", features = ["derive"] }
+gemini-credential = { path = "../gemini-credential" }
+getrandom = "0.3"
 portable-pty = "0.8"                 # Фаза 3: гоним `claude setup-token` в PTY
 registry = { path = "../registry" }  # мост: запись подписки в пул напрямую
 # Выплаты — через проверенный bsc_pay (subprocess); на чистый alloy переведём отдельно.

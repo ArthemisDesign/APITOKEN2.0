@@ -1195,6 +1195,13 @@ grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'CLAUDE_API_PROVIDER=gemini CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8795' \
   "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'CLAUDE_API_INSTANCE_ID=%H:engine:gemini' "$ROOT/systemd/claude-api-gemini.service"
+grep -Fq 'CLAUDE_API_GEMINI_PROFILES_FILE=/srv/claude-api/data/gemini/profiles.json' \
+  "$ROOT/systemd/claude-api-gemini.service"
+grep -Fq 'CLAUDE_API_GEMINI_UPSTREAM=https://cloudcode-pa.googleapis.com' \
+  "$ROOT/systemd/claude-api-gemini.service"
+grep -Fxq 'ReadOnlyPaths=/srv/claude-api/data/gemini' \
+  "$ROOT/systemd/claude-api-gemini.service"
+grep -Fq '/srv/claude-api/data/gemini/credentials' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'claude-api-openai.service' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'claude-api-gemini.service' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq '/usr/bin/systemctl restart claude-api-openai.service' \
@@ -1266,11 +1273,14 @@ grep -Fq 'mv -f -- "$rollback_tmp" "$LIVE"' "$ROOT/deploy/install-caddy.sh" \
   || wd_die "Caddy rollback reload failures are silently ignored"
 claude_api_vhost=$(sed -n '/^api\.apitoken\.sale {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
 openai_api_vhost=$(sed -n '/^openai\.api\.apitoken\.sale {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
-gemini_api_vhost=$(sed -n '/^gemini\.api\.apitoken\.sale {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
 grep -Fq 'import engine_backend' <<<"$claude_api_vhost"
 ! grep -Fq 'openai_engine_backend' <<<"$claude_api_vhost"
 grep -Fq 'import openai_engine_backend' <<<"$openai_api_vhost"
-grep -Fq 'import gemini_engine_backend' <<<"$gemini_api_vhost"
+grep -Fq 'import gemini_engine_backend' "$ROOT/deploy/Caddyfile"
+grep -Fq '@oauth_callback path /oauth/callback' "$ROOT/deploy/Caddyfile"
+grep -Fq 'log_skip @oauth_callback' "$ROOT/deploy/Caddyfile"
+grep -Fq 'handle @oauth_callback {' "$ROOT/deploy/Caddyfile"
+grep -Fq 'reverse_proxy 127.0.0.1:8796' "$ROOT/deploy/Caddyfile"
 grep -Fq -- '--resolve openai.api.apitoken.sale:443:127.0.0.1' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'https://openai.api.apitoken.sale/v1/responses' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'https://gemini.api.apitoken.sale/v1beta/models/gemini-provider-probe:generateContent' \

@@ -5,23 +5,24 @@
 его движку.
 
 **Границы (жёстко):**
-- Зависит от `registry` (только `authority` — запись подписки) + `tokio`, `portable_pty`, `rusqlite`.
+- Зависит от `registry` (только `authority` — запись подписки) + `tokio`, `portable_pty`, `rusqlite`,
+  `reqwest`/`serde` (проверка и публикация Gemini credential).
   НЕ импортирует `pool`/`forward`/`server` и не лезет в их внутренности.
 - Пополняет ИСКЛЮЧИТЕЛЬНО пул этого проекта: свой bot-токен, свой `AUTH_BOT_FLEET`.
 - Своё состояние (юзеры/офферы) — в отдельной SQLite бота, НЕ в реестре движка.
 - Реестр подписок — ТОЛЬКО engine PostgreSQL из root-owned `engine-postgres.env`. SQLite допустим
   только для собственного workflow-state бота; fallback реестра запрещён, без DSN бот не стартует.
 
-**Два принципиально разных сценария передачи доступа** (`is_codex_product` выбирает ветку по
-продукту оффера — это единственное место, где они расходятся):
+**Три принципиально разных сценария передачи доступа** (`handoff_kind` выбирает ветку по продукту
+оффера — это единственное место, где они расходятся):
 
-| | Claude | ChatGPT (Codex) |
-|---|---|---|
-| Что выдаёт CLI | СТРОКУ-токен `sk-ant-oat01-…` | ничего, что нам можно хранить |
-| Чем становится покупка | строка в реестре движка | КАТАЛОГ `CODEX_HOME` на хосте |
-| Модуль | `setup_token.rs` | `codex_login.rs` |
-| Шаги продавца | ссылка → `code#state` обратно в бот | ссылка + одноразовый код, обратно ничего |
-| Как движок узнаёт | `reload_loop` перечитывает реестр | скан `CLAUDE_API_CODEX_HOMES_DIR` |
+| | Claude | ChatGPT (Codex) | Gemini Code Assist OAuth |
+|---|---|---|---|
+| Результат | `sk-ant-oat01-…` | ничего, что нам можно читать | refresh/access token + Google subject/project/tier |
+| Чем становится покупка | строка в реестре | каталог `CODEX_HOME` | AEAD envelope + opaque запись в `profiles.json` |
+| Модуль | `setup_token.rs` | `codex_login.rs` | `gemini_oauth.rs` |
+| Шаги продавца | ссылка → `code#state` | ссылка + одноразовый код | прокси → hosted Google OAuth callback |
+| Как движок узнаёт | reload реестра | скан homes | atomic roster refresh на health-loop |
 
 **Инварианты Codex-ветки (критично):**
 1. **Auth store не читаем, не логируем, не пересылаем.** Единственное, что бот берёт из профиля, —
@@ -35,8 +36,24 @@
 5. Бот НЕ правит `config.env`, не рестартит движок и не ходит под root: каталог в
    `AUTH_BOT_CODEX_HOMES_DIR` — вся его часть контракта.
 
-**Секреты:** `AUTH_BOT_TOKEN`, ключ BSC-выплат, выпущенные токены подписок и прокси — только в
-`authbot.env` (root-only, вне репо). Не коммитить, не печатать.
+**Инварианты Gemini-ветки (критично):**
+1. Использовать только операторский OAuth Web client, hosted callback, `state` + PKCE. Не копировать
+   Gemini CLI client id/secret, cookies или `oauth_creds.json`; User-Agent всегда truthful.
+2. OAuth code/tokens никогда не идут через Telegram. Короткоживущий proxy в SQLite только как
+   XChaCha20-Poly1305 envelope, привязанный AAD к одноразовому state; callback claim одноразовый.
+3. До публикации проверяются verified userinfo и `loadCodeAssist`; принимаются только известные
+   Google AI Pro/Ultra, Code Assist Standard/Enterprise и Workspace AI Ultra. Free, Plus,
+   несовместимые Workspace и unknown future paid tiers fail-closed.
+4. Google subject — quota identity: дубликаты запрещены даже при другом project/file. Email,
+   subject, project, tier, OAuth secret/token и authenticated proxy живут только внутри AEAD.
+5. Credential envelopes и `profiles.json` — `0600`, каталоги — `0700`, symlink/alternate path
+   запрещены. Сначала envelope, затем atomic roster rename+fsync. Startup rewrap переводит старые
+   envelopes на active kid, сохраняя online key rotation.
+6. Актуальные Gemini CLI terms прямо запрещают third-party direct Code Assist access. Provider нельзя
+   включать без письменного разрешения Google; полный boundary и runbook — `docs/GEMINI_PROVIDER.md`.
+
+**Секреты:** `AUTH_BOT_TOKEN`, ключ BSC-выплат, Claude/Gemini credentials и прокси — только в
+`authbot.env` или закрытых runtime-файлах (вне репо). Не коммитить, не печатать.
 
 **Env:**
 - `AUTH_BOT_TOKEN`, `AUTH_BOT_ADMIN`, `AUTH_BOT_FLEET`, `CLAUDE_API_DATABASE_URL` — база.
@@ -48,6 +65,13 @@
 - `AUTH_BOT_CODEX_BIN` — пиннованный codex CLI (деф `/srv/claude-api/data/codex/bin/codex`).
 - `AUTH_BOT_CODEX_HOMES_DIR` — каталог покупок; ДОЛЖЕН совпадать с движковым
   `CLAUDE_API_CODEX_HOMES_DIR`, иначе купленный аккаунт никто не подхватит.
+- `AUTH_BOT_GEMINI_DIR` — корень `credentials/` + `profiles.json` (деф
+  `/srv/claude-api/data/gemini`); движковый `CLAUDE_API_GEMINI_PROFILES_FILE` должен указывать на
+  `<этот каталог>/profiles.json`.
+- `AUTH_BOT_GEMINI_CLIENT_ID`, `AUTH_BOT_GEMINI_CLIENT_SECRET`,
+  `AUTH_BOT_GEMINI_REDIRECT_URI`, `AUTH_BOT_GEMINI_OAUTH_BIND` — операторский hosted OAuth.
+- `AUTH_BOT_GEMINI_CREDENTIAL_KEYS`, `AUTH_BOT_GEMINI_CREDENTIAL_ACTIVE_KID` — общий с runtime
+  AEAD keyring и активный ключ публикации/rotation.
 - `AUTH_BOT_IPROYAL_KEY` — авто-выпуск прокси (пусто = ручной ввод).
 
 **Деплой:** watchdog собирает бот вместе с движком и кладёт протестированный бинарь в immutable
@@ -55,4 +79,4 @@ engine release; `claude-authbot.service` запускает `/srv/claude-api/rel
 Изменённый бинарь перезапускается после promotion. На startup потерянный in-memory Claude child
 восстанавливается из persisted `ho_code` в `ho_email`; продавец присылает email и получает свежий flow.
 
-**Проверка:** `cargo test -p authbot`. Живой прогон Telegram/OAuth — только на сервере.
+**Проверка:** `cargo test -p authbot`. Живой прогон Telegram/OAuth/Google API — только на сервере.

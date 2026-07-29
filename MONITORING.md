@@ -277,39 +277,37 @@ headroom.
 
 Only `gemini.api.apitoken.sale` is affected; do not restart healthy Claude or OpenAI processes.
 Check `claude-api-gemini.service`, direct readiness on 8795, stable readiness on 8794, and the unit
-journal. Verify that `CLAUDE_API_GEMINI_ENABLED=1`, the profiles document is readable, every API-key
-path is absolute/non-symlink/mode 0600, and at least one distinct project still has Gemini Developer
-API billing and access enabled. Never print a key while testing it. Provision repairs according to
+journal. Verify that `CLAUDE_API_GEMINI_ENABLED=1`, both credential keyrings match, the roster is
+readable, every envelope has the exact `credentials/<profile-id>.json` non-symlink 0600 path, and at
+least one profile passes `loadCodeAssist` health. Never decrypt or print an envelope while testing. Repair according to
 `docs/GEMINI_PROVIDER.md` and use the health-gated engine controller to restart the service.
 
 If the surface must be withdrawn during investigation, set `CLAUDE_API_GEMINI_ENABLED=0` and use the
-normal provider rollout. The fixed service remains observable with a native 404 but loads no project.
+normal provider rollout. The fixed service remains observable with a native 404 but loads no profile.
 A manual stop is only an immediate temporary action because watchdog reconciliation restores the
 configured topology. Neither action should change an established provider.
 
 ## GeminiNoAvailableProfiles
 
-Every paid project is cooling. Inspect `claude_api_gemini_profile_cooling_until_seconds` and
+Every paid subscription profile is cooling. Inspect `claude_api_gemini_profile_cooling_until_seconds` and
 `claude_api_gemini_soonest_ready_seconds`, then correlate upstream `429`, auth, and 5xx counters.
 Respect `Retry-After`/`google.rpc.RetryInfo`; bypassing cooling amplifies the outage. If capacity is
-genuinely exhausted, wait for the project quota window or add a billing-enabled key from a new Google
-project. Another key from an existing project is not new capacity and is rejected at startup.
+genuinely exhausted, wait for Google's subscription quota window or authorize another distinct paid
+Google subject. The same subject under another project/file is rejected at startup.
 
 ## GeminiProfileUnauthenticated
 
-The labeled profile returned `401` or `403`. Check that project/API-key status and billing without
-putting the secret in argv, logs, or a URL. Replace only its root/operator-provisioned 0600 key file,
-then roll `claude-api-gemini.service` through the normal provider controller. Do not copy Gemini CLI
-OAuth or a consumer subscription credential into the profile; this gateway supports paid Developer
-API keys only.
+The labeled profile returned repeated `401` after one single-flight refresh, or `403`. Check the
+Google account entitlement and OAuth app status without putting tokens, subject, email, project or
+proxy in argv/logs/URLs. Re-authorize through Auth Bot; never hand-edit an envelope. Keep the old
+profile quarantined until the roster is safely repaired.
 
 ## GeminiUpstreamRateLimited
 
-Use the per-profile cooling gauges and Google project quota console to identify the constrained quota
-domain. Confirm the profiles file contains distinct normalized project IDs, then wait for the
-advertised reset or add a separate paid project. Do not shorten cooling or multiply API keys inside
-one project. A sustained increase without exhausted profiles can indicate one under-provisioned
-project receiving disproportionate load; compare profile in-flight gauges before changing capacity.
+Use the per-profile cooling gauges to identify the constrained opaque profile, then wait for the
+advertised reset or add a distinct authorized paid subject. Do not shorten cooling or duplicate one
+account. A sustained increase without exhausted profiles can indicate disproportionate affinity or
+load; compare profile in-flight gauges before changing capacity.
 
 ## DurableQueueBacklog
 

@@ -1,7 +1,7 @@
-# PostgreSQL-fenced native Gemini provider. Profiles are paid API credentials from distinct Google
-# projects; the runtime rotates them independently from the Claude and OpenAI provider services.
+# PostgreSQL-fenced native Gemini surface backed by encrypted paid Code Assist OAuth profiles. The
+# runtime rotates subscriptions independently from the Claude and OpenAI provider services.
 [Unit]
-Description=claude-api native Gemini project-pool provider
+Description=claude-api isolated Gemini OAuth subscription-pool provider
 After=network-online.target
 Wants=network-online.target
 
@@ -14,21 +14,33 @@ EnvironmentFile=-/srv/claude-api/data/config.env
 EnvironmentFile=-/srv/claude-api/data/server.env
 EnvironmentFile=/srv/claude-api/data/engine-postgres.env
 # Argv-level assignments cannot be overridden by a shared EnvironmentFile.
-ExecStart=/usr/bin/env CLAUDE_API_PROVIDER=gemini CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8795 CLAUDE_API_INSTANCE_ID=%H:engine:gemini /srv/claude-api/releases/current/claude-api serve
+ExecStart=/usr/bin/env CLAUDE_API_PROVIDER=gemini CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8795 CLAUDE_API_INSTANCE_ID=%H:engine:gemini CLAUDE_API_GEMINI_PROFILES_FILE=/srv/claude-api/data/gemini/profiles.json CLAUDE_API_GEMINI_UPSTREAM=https://cloudcode-pa.googleapis.com CLAUDE_API_GEMINI_ALLOW_INSECURE_LOOPBACK_UPSTREAM=0 /srv/claude-api/releases/current/claude-api serve
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM
 KillMode=mixed
 TimeoutStopSec=660
+UMask=0077
+LimitCORE=0
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
 ReadWritePaths=/srv/claude-api/data
-# Profiles and API-key files are provisioned by the operator, never mutated by the gateway.
-# Disabled mode must still start before any profile directory is provisioned; `-` makes absence
-# optional while preserving a read-only bind whenever the paid-project directory exists.
-ReadOnlyPaths=-/srv/claude-api/data/gemini
+# Profiles and encrypted OAuth envelopes are atomically provisioned by authbot; the gateway only
+# decrypts them in memory, refreshes access tokens single-flight and never exposes account identity.
+# Auth Bot or provisioning creates this layout before runtime start. Absence fails the unit closed;
+# otherwise an optional bind skipped at startup could become writable when the directory appears.
+ReadOnlyPaths=/srv/claude-api/data/gemini
 MemoryMax=2G
 
 [Install]

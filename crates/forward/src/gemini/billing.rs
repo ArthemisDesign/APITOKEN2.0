@@ -39,6 +39,10 @@ pub(crate) struct PendingGeminiAdmission {
 }
 
 impl PendingGeminiAdmission {
+    pub(crate) fn affinity_scope(&self) -> Option<&str> {
+        self.authz.affinity_scope()
+    }
+
     pub(crate) fn without_reserve(self) -> GeminiAdmission {
         GeminiAdmission {
             _request_permit: self.request_permit,

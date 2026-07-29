@@ -202,9 +202,9 @@ fn validate_gemini_upstream(v: &str, allow_insecure_loopback: bool) -> Result<St
     if scheme.eq_ignore_ascii_case("https")
         && authority
             .as_str()
-            .eq_ignore_ascii_case("generativelanguage.googleapis.com")
+            .eq_ignore_ascii_case("cloudcode-pa.googleapis.com")
     {
-        return Ok("https://generativelanguage.googleapis.com".to_string());
+        return Ok("https://cloudcode-pa.googleapis.com".to_string());
     }
     let host = authority.host();
     let literal = host
@@ -217,7 +217,7 @@ fn validate_gemini_upstream(v: &str, allow_insecure_loopback: bool) -> Result<St
     if allow_insecure_loopback && scheme.eq_ignore_ascii_case("http") && loopback {
         return Ok(v.trim_end_matches('/').to_string());
     }
-    Err("CLAUDE_API_GEMINI_UPSTREAM: only https://generativelanguage.googleapis.com is allowed; literal HTTP loopback requires CLAUDE_API_GEMINI_ALLOW_INSECURE_LOOPBACK_UPSTREAM=1".to_string())
+    Err("CLAUDE_API_GEMINI_UPSTREAM: only https://cloudcode-pa.googleapis.com is allowed; literal HTTP loopback requires CLAUDE_API_GEMINI_ALLOW_INSECURE_LOOPBACK_UPSTREAM=1".to_string())
 }
 
 fn gemini_config() -> Option<GeminiConfig> {
@@ -265,15 +265,22 @@ fn gemini_config() -> Option<GeminiConfig> {
     let upstream = validate_gemini_upstream(
         &ev_or(
             "CLAUDE_API_GEMINI_UPSTREAM",
-            "https://generativelanguage.googleapis.com",
+            "https://cloudcode-pa.googleapis.com",
         ),
         ev_opt_in("CLAUDE_API_GEMINI_ALLOW_INSECURE_LOOPBACK_UPSTREAM"),
     )
     .unwrap_or_else(|message| panic!("{message}"));
+    let credential_keys = gemini_credential::CredentialKeyring::parse(
+        &ev("CLAUDE_API_GEMINI_CREDENTIAL_KEYS").unwrap_or_else(|| {
+            panic!("CLAUDE_API_GEMINI_CREDENTIAL_KEYS is required for the encrypted OAuth roster")
+        }),
+    )
+    .unwrap_or_else(|_| panic!("CLAUDE_API_GEMINI_CREDENTIAL_KEYS is invalid"));
     Some(GeminiConfig {
         enabled: true,
         upstream,
         profiles_file,
+        credential_keys,
         models,
         connect_timeout_secs: bounded_u64("CLAUDE_API_GEMINI_CONNECT_TIMEOUT_SECS", 30, 1, 120),
         read_timeout_secs: bounded_u64("CLAUDE_API_GEMINI_READ_TIMEOUT_SECS", 120, 15, 600),
@@ -813,8 +820,8 @@ mod tests {
         assert!(validate_upstream("http://localhost:18080", true).is_err());
 
         assert_eq!(
-            validate_gemini_upstream("https://generativelanguage.googleapis.com/", false),
-            Ok("https://generativelanguage.googleapis.com".to_string()),
+            validate_gemini_upstream("https://cloudcode-pa.googleapis.com/", false),
+            Ok("https://cloudcode-pa.googleapis.com".to_string()),
         );
         assert_eq!(
             validate_gemini_upstream("http://127.0.0.1:18081", true),

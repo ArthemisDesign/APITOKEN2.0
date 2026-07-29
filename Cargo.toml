@@ -4,6 +4,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/gemini-credential",
     "crates/registry",
     "crates/pool",
     "crates/forward",

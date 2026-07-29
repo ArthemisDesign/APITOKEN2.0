@@ -71,8 +71,9 @@ registry  ←  pool  ←  forward  ←  server(bin)
 | `crates/server` | КОМПОЗИЦИЯ: env-конфиг, CLI, роутер, фоновые циклы | forward, pool, registry | бизнес-логику форвардинга (она в forward) |
 
 **Пополнение пула — `crates/authbot` (ВНЕ слоёв API).** Отдельный Rust-компонент-ПРОИЗВОДИТЕЛЬ
-подписок: Telegram-бот покупает Claude/ChatGPT-доступ, пишет Claude-токены через
-`registry::authority`, а Codex-профили публикует отдельными `CODEX_HOME`. Он не участвует в слоях
+доступа: Telegram-бот покупает Claude/ChatGPT/Gemini, пишет Claude-токены через
+`registry::authority`, Codex-профили публикует отдельными `CODEX_HOME`, а проверенные Gemini
+Code Assist OAuth subscriptions — AEAD-конвертами в атомарном roster. Он не участвует в слоях
 `registry←…←server` и не импортирует `pool`/`forward`/`server`. Владелец-ветка `comp/authbot`,
 локальные правила — `crates/authbot/CLAUDE.md`.
 

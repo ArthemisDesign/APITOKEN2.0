@@ -245,7 +245,7 @@ with `SIGUSR1`, and fully stops its cgroup. It then gracefully restarts
 `claude-api-openai.service` and, for releases carrying `.gemini-provider-v1`,
 `claude-api-gemini.service`, proving the same selected binary in each startup-fixed provider mode.
 On the first split, this order guarantees the old combined process releases every Codex home before
-OpenAI starts; Gemini remains a separate project-pool failure domain throughout.
+OpenAI starts; Gemini remains a separate subscription-pool failure domain throughout.
 
 ```bash
 curl -fsS http://127.0.0.1:8790/ready
@@ -373,6 +373,8 @@ sudo install -o root -g root -m 0644 systemd/claude-api@.service /etc/systemd/sy
 sudo install -o root -g root -m 0644 systemd/claude-api-anthropic@.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/claude-api-openai.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/claude-api-gemini.service /etc/systemd/system/
+sudo install -d -o deploy -g deploy -m 0700 \
+  /srv/claude-api/data/gemini /srv/claude-api/data/gemini/credentials
 sudo install -o root -g root -m 0644 systemd/apitoken-api@.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/apitoken-tmpfiles.conf /etc/tmpfiles.d/apitoken.conf
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/apitoken.conf
@@ -495,7 +497,7 @@ git status --short
 git rev-parse HEAD
 ```
 
-At idle, expect one live Anthropic owner, one live OpenAI owner, and one live Gemini paid-project
+At idle, expect one live Anthropic owner, one live OpenAI owner, and one live Gemini subscription
 provider, with no pending settlement work, leaked active capacity leases/inflight count, reserved
 money, or duplicate charge request IDs. See the Stage 2 document
 for data-level verification and the caveat that nonzero counts can be legitimate during traffic.

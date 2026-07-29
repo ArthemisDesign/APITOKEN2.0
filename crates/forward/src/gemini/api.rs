@@ -1,11 +1,12 @@
-//! Native Gemini Developer API surface with pre-byte rotation and authoritative stream settlement.
+//! Native Gemini-compatible surface backed by encrypted paid-subscription OAuth profiles.
 
 use super::billing::{begin_admission, AdmissionError, GeminiAdmission};
 use super::config::GeminiModel;
-use super::pool::{GeminiGateway, GeminiLease, GeminiProfile};
+use super::pool::{GeminiGateway, GeminiLease, GeminiProfile, TokenError};
 use crate::metrics::Metrics;
 use crate::proxy::TerminalErrorReason;
 use crate::state::AppState;
+use crate::{AffinityInput, AffinityResolution};
 use axum::body::{to_bytes, Body};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
@@ -84,6 +85,39 @@ impl ApiError {
             google_status: "RESOURCE_EXHAUSTED",
             retry_after: retry_after.or(Some(60)),
             reason: "gemini_capacity_exhausted",
+        }
+    }
+
+    fn provider_rejected(status: StatusCode) -> Self {
+        let (message, google_status) = match status.as_u16() {
+            400 => (
+                "The model service rejected this request.",
+                "INVALID_ARGUMENT",
+            ),
+            404 => ("The requested model resource was not found.", "NOT_FOUND"),
+            409 => (
+                "The request could not be completed in its current state.",
+                "ABORTED",
+            ),
+            412 => (
+                "A precondition for this request was not satisfied.",
+                "FAILED_PRECONDITION",
+            ),
+            422 => (
+                "The model service could not process this request.",
+                "INVALID_ARGUMENT",
+            ),
+            _ => (
+                "The model service rejected this request.",
+                "FAILED_PRECONDITION",
+            ),
+        };
+        Self {
+            status,
+            message,
+            google_status,
+            retry_after: None,
+            reason: "gemini_request_rejected",
         }
     }
 
@@ -190,28 +224,38 @@ fn model_value(model: &GeminiModel) -> Value {
 }
 
 fn query_for_upstream(query: Option<&str>, streaming: bool) -> Result<String, ApiError> {
-    let mut parts = Vec::new();
+    let mut saw_alt = false;
     for part in query
         .unwrap_or_default()
         .split('&')
         .filter(|part| !part.is_empty())
     {
-        let raw_name = part.split('=').next().unwrap_or_default();
+        let (raw_name, raw_value) = part.split_once('=').unwrap_or((part, ""));
         let name = percent_decode_query_name(raw_name)?;
         if name.eq_ignore_ascii_case("key") || name.eq_ignore_ascii_case("api_key") {
             return Err(ApiError::invalid(
                 "Query-string API keys are not accepted. Use the x-goog-api-key header.",
             ));
         }
-        if streaming && name.eq_ignore_ascii_case("alt") {
-            continue;
+        if !name.eq_ignore_ascii_case("alt") {
+            return Err(ApiError::invalid(
+                "This query parameter is not supported by the Gemini gateway.",
+            ));
         }
-        parts.push(part.to_string());
+        if saw_alt || !streaming {
+            return Err(ApiError::invalid(
+                "This query parameter is not supported for the requested operation.",
+            ));
+        }
+        let value = percent_decode_query_name(raw_value)?;
+        if !value.eq_ignore_ascii_case("sse") {
+            return Err(ApiError::invalid(
+                "Streaming Gemini requests only support alt=sse.",
+            ));
+        }
+        saw_alt = true;
     }
-    if streaming {
-        parts.push("alt=sse".to_string());
-    }
-    Ok(parts.join("&"))
+    Ok(if streaming { "alt=sse" } else { "" }.to_string())
 }
 
 fn percent_decode_query_name(raw: &str) -> Result<String, ApiError> {
@@ -259,57 +303,7 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-fn request_header_allowed(name: &str) -> bool {
-    !matches!(
-        name,
-        "host"
-            | "content-length"
-            | "connection"
-            | "transfer-encoding"
-            | "upgrade"
-            | "proxy-authorization"
-            | "proxy-connection"
-            | "authorization"
-            | "x-api-key"
-            | "x-goog-api-key"
-            | "x-goog-user-project"
-            | "x-apitoken-api-plane"
-            | "x-forwarded-for"
-            | "x-forwarded-host"
-            | "x-forwarded-proto"
-            | "forwarded"
-            | "x-real-ip"
-            | "via"
-            | "cf-connecting-ip"
-            | "true-client-ip"
-            | "accept-encoding"
-    )
-}
-
-fn response_header_allowed(name: &str) -> bool {
-    !matches!(
-        name,
-        "content-length"
-            | "content-encoding"
-            | "connection"
-            | "transfer-encoding"
-            | "upgrade"
-            | "proxy-authenticate"
-            | "proxy-authorization"
-            | "x-goog-api-key"
-            | "x-goog-user-project"
-    ) && !name.starts_with("x-ratelimit")
-}
-
-fn copy_response_headers(from: &wreq::header::HeaderMap, to: &mut HeaderMap) {
-    for (name, value) in from {
-        if response_header_allowed(name.as_str()) {
-            to.append(name.clone(), value.clone());
-        }
-    }
-}
-
-fn retry_after(headers: &wreq::header::HeaderMap, body: &[u8], default_secs: i64) -> i64 {
+fn retry_after(headers: &reqwest::header::HeaderMap, body: &[u8], default_secs: i64) -> i64 {
     if let Some(seconds) = headers
         .get("retry-after")
         .and_then(|value| value.to_str().ok())
@@ -378,6 +372,13 @@ fn cap_generation_output(body: &mut Value, max_output_tokens: u64) -> Result<(),
 }
 
 fn validate_tools(body: &Value) -> Result<(), ApiError> {
+    if body.get("cachedContent").is_some() {
+        // A native cached-content resource is scoped to one Google project. It cannot safely
+        // survive subscription rotation and may encode a caller-selected upstream identity.
+        return Err(ApiError::invalid(
+            "Explicit cachedContent resources are not supported by this gateway.",
+        ));
+    }
     let Some(tools) = body.get("tools").and_then(Value::as_array) else {
         return Ok(());
     };
@@ -416,25 +417,123 @@ fn validate_tools(body: &Value) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn upstream_response(
+fn translated_response(
     status: StatusCode,
-    headers: &wreq::header::HeaderMap,
+    _headers: &reqwest::header::HeaderMap,
     body: Bytes,
 ) -> Response {
     let mut response = Response::builder()
         .status(status)
         .body(Body::from(body))
         .unwrap();
-    copy_response_headers(headers, response.headers_mut());
+    response.headers_mut().insert(
+        "content-type",
+        HeaderValue::from_static("application/json; charset=utf-8"),
+    );
     response
 }
 
-struct UsageTracker {
+fn wrap_code_assist_request(
+    operation: Operation,
+    model: &str,
+    project: &str,
+    native: &Value,
+) -> Result<Bytes, ApiError> {
+    let wrapped = match operation {
+        Operation::Generate | Operation::StreamGenerate => {
+            let native = native
+                .as_object()
+                .ok_or_else(|| ApiError::invalid("The request body must be a JSON object."))?;
+            // Reconstruct the documented native request. Code Assist-only session, project and
+            // identity fields supplied by a caller must never cross the public/private boundary.
+            let mut request = serde_json::Map::new();
+            for field in [
+                "contents",
+                "systemInstruction",
+                "tools",
+                "toolConfig",
+                "safetySettings",
+                "generationConfig",
+            ] {
+                if let Some(value) = native.get(field) {
+                    request.insert(field.to_string(), value.clone());
+                }
+            }
+            json!({
+                "model": model,
+                "project": project,
+                "user_prompt_id": crate::fresh_request_id(),
+                "request": request,
+            })
+        }
+        Operation::CountTokens => json!({
+            "request": {
+                "model": format!("models/{model}"),
+                "contents": native.get("contents").cloned().unwrap_or_else(|| json!([]))
+            }
+        }),
+        Operation::Models | Operation::Model => return Err(ApiError::not_found()),
+    };
+    serde_json::to_vec(&wrapped)
+        .map(Bytes::from)
+        .map_err(|_| ApiError::invalid("The request body is not valid JSON."))
+}
+
+fn unwrap_code_assist_response(operation: Operation, bytes: &[u8]) -> Result<Bytes, ()> {
+    let mut value: Value = serde_json::from_slice(bytes).map_err(|_| ())?;
+    if operation == Operation::CountTokens {
+        if !value.is_object() || !value.get("totalTokens").is_some_and(Value::is_number) {
+            return Err(());
+        }
+        retain_public_fields(
+            &mut value,
+            &[
+                "totalTokens",
+                "cachedContentTokenCount",
+                "promptTokensDetails",
+                "cacheTokensDetails",
+            ],
+        )?;
+        return serde_json::to_vec(&value).map(Bytes::from).map_err(|_| ());
+    }
+    if !value.is_object() {
+        return Err(());
+    }
+    let mut native = match value
+        .as_object_mut()
+        .and_then(|object| object.remove("response"))
+    {
+        Some(native) if native.is_object() => native,
+        Some(_) | None => return Err(()),
+    };
+    // The Code Assist wrapper can gain account, project, credit or trace fields without notice.
+    // Reconstruct the documented native response instead of trusting the private envelope. In
+    // particular, wrapper traceId is deliberately not exposed as responseId: it is a correlatable
+    // upstream identifier, not a value supplied by the native Gemini surface.
+    retain_public_fields(
+        &mut native,
+        &[
+            "candidates",
+            "promptFeedback",
+            "usageMetadata",
+            "modelVersion",
+        ],
+    )?;
+    serde_json::to_vec(&native).map(Bytes::from).map_err(|_| ())
+}
+
+fn retain_public_fields(value: &mut Value, fields: &[&str]) -> Result<(), ()> {
+    let object = value.as_object_mut().ok_or(())?;
+    object.retain(|name, _| fields.contains(&name.as_str()));
+    Ok(())
+}
+
+struct SseTranslator {
     pending: Vec<u8>,
     usage: metering::GeminiUsage,
 }
 
-impl UsageTracker {
+impl SseTranslator {
     fn new() -> Self {
         Self {
             pending: Vec::new(),
@@ -442,57 +541,136 @@ impl UsageTracker {
         }
     }
 
-    fn push(&mut self, bytes: &[u8]) {
+    fn push(&mut self, bytes: &[u8]) -> Result<Vec<Bytes>, ()> {
         self.pending.extend_from_slice(bytes);
-        while let Some(newline) = self.pending.iter().position(|byte| *byte == b'\n') {
-            let mut line = self.pending.drain(..=newline).collect::<Vec<_>>();
-            while matches!(line.last(), Some(b'\n' | b'\r')) {
-                line.pop();
-            }
-            self.parse_line(&line);
-        }
-        // A single Gemini SSE JSON line is bounded by one response chunk in practice. Refuse an
-        // unbounded malformed line while still forwarding it byte-for-byte to the client.
         if self.pending.len() > GEMINI_BODY_LIMIT {
-            self.pending.clear();
+            return Err(());
         }
+        let mut output = Vec::new();
+        while let Some((index, delimiter)) = event_boundary(&self.pending) {
+            let event = self.pending.drain(..index).collect::<Vec<_>>();
+            self.pending.drain(..delimiter);
+            if let Some(chunk) = self.translate_event(&event)? {
+                output.push(chunk);
+            }
+        }
+        Ok(output)
     }
 
-    fn parse_line(&mut self, line: &[u8]) {
-        let Ok(line) = std::str::from_utf8(line) else {
-            return;
+    fn translate_event(&mut self, event: &[u8]) -> Result<Option<Bytes>, ()> {
+        let event = std::str::from_utf8(event).map_err(|_| ())?;
+        let data = event
+            .lines()
+            .filter_map(|line| line.trim_end_matches('\r').strip_prefix("data:"))
+            .map(str::trim_start)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if data.is_empty() {
+            return Ok(None);
+        }
+        let mut wrapper: Value = serde_json::from_str(&data).map_err(|_| ())?;
+        if !wrapper.is_object() {
+            return Err(());
+        }
+        let Some(mut native) = wrapper
+            .as_object_mut()
+            .and_then(|object| object.remove("response"))
+        else {
+            // Private credit/accounting-only events are consumed but never exposed.
+            return Ok(None);
         };
-        let Some(data) = line.strip_prefix("data:") else {
-            return;
-        };
-        let Ok(value) = serde_json::from_str::<Value>(data.trim()) else {
-            return;
-        };
-        metering::gemini::merge_stream_response_value(&mut self.usage, &value);
+        if !native.is_object() {
+            return Err(());
+        }
+        retain_public_fields(
+            &mut native,
+            &[
+                "candidates",
+                "promptFeedback",
+                "usageMetadata",
+                "modelVersion",
+            ],
+        )?;
+        if native.as_object().is_none_or(serde_json::Map::is_empty) {
+            // Unknown/private response-only events have no public representation.
+            return Ok(None);
+        }
+        metering::gemini::merge_stream_response_value(&mut self.usage, &native);
+        let encoded = serde_json::to_vec(&native).map_err(|_| ())?;
+        let mut framed = Vec::with_capacity(encoded.len() + 8);
+        framed.extend_from_slice(b"data: ");
+        framed.extend_from_slice(&encoded);
+        framed.extend_from_slice(b"\n\n");
+        Ok(Some(Bytes::from(framed)))
     }
 
-    fn finish(mut self) -> metering::GeminiUsage {
+    fn finish_pending(&mut self) -> Result<Vec<Bytes>, ()> {
         if !self.pending.is_empty() {
-            let line = std::mem::take(&mut self.pending);
-            self.parse_line(&line);
+            let event = std::mem::take(&mut self.pending);
+            return Ok(self.translate_event(&event)?.into_iter().collect());
         }
-        self.usage
+        Ok(Vec::new())
     }
+}
+
+fn event_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
+    let lf = bytes
+        .windows(2)
+        .position(|window| window == b"\n\n")
+        .map(|i| (i, 2));
+    let crlf = bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|i| (i, 4));
+    match (lf, crlf) {
+        (Some(left), Some(right)) => Some(if left.0 <= right.0 { left } else { right }),
+        (Some(found), None) | (None, Some(found)) => Some(found),
+        (None, None) => None,
+    }
+}
+
+#[derive(Debug)]
+enum SendError {
+    Token(TokenError),
+    Transport,
 }
 
 async fn send_upstream(
     profile: &GeminiProfile,
     url: &str,
-    headers: &HeaderMap,
+    _headers: &HeaderMap,
     body: Bytes,
-) -> wreq::Result<wreq::Response> {
-    let mut request = profile.request(wreq::Method::POST, url);
-    for (name, value) in headers {
-        if request_header_allowed(name.as_str()) {
-            request = request.header(name, value);
-        }
+    rejected_token: Option<&str>,
+) -> Result<(reqwest::Response, gemini_credential::SecretString), SendError> {
+    let access_token = match rejected_token {
+        Some(rejected) => profile.access_token_after_rejection(rejected).await,
+        None => profile.access_token(false).await,
     }
-    request.body(body).send().await
+    .map_err(SendError::Token)?;
+    // No customer header is required by Code Assist. Constructing the complete upstream header
+    // set locally prevents cookies, trace ids, origins or future identity headers from crossing the
+    // provider boundary when a denylist inevitably becomes stale.
+    let response = profile
+        .request(reqwest::Method::POST, url, &access_token)
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .map_err(|_| SendError::Transport)?;
+    Ok((response, access_token))
+}
+
+async fn read_upstream_body(response: reqwest::Response) -> Result<Bytes, ()> {
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| ())?;
+        if body.len().saturating_add(chunk.len()) > GEMINI_BODY_LIMIT {
+            return Err(());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(Bytes::from(body))
 }
 
 async fn stream_response(
@@ -503,9 +681,10 @@ async fn stream_response(
     admission: GeminiAdmission,
     model: GeminiModel,
     status: StatusCode,
-    headers: wreq::header::HeaderMap,
-    first: Bytes,
-    mut upstream: impl futures_util::Stream<Item = wreq::Result<Bytes>> + Send + Unpin + 'static,
+    headers: reqwest::header::HeaderMap,
+    mut translator: SseTranslator,
+    initial: Vec<Bytes>,
+    mut upstream: impl futures_util::Stream<Item = reqwest::Result<Bytes>> + Send + Unpin + 'static,
 ) -> Result<Response, ApiError> {
     admission.mark_delivering().await?;
     let background = gateway
@@ -515,18 +694,23 @@ async fn stream_response(
     tokio::spawn(async move {
         let _background = background;
         let _lease = lease;
-        let mut tracker = UsageTracker::new();
         let mut deliver = true;
         let mut clean_eof = true;
         let mut aborted = false;
 
-        tracker.push(&first);
-        tokio::select! {
-            _ = gateway.stream_abort_requested() => aborted = true,
-            result = tokio::time::timeout(DOWNSTREAM_SEND_TIMEOUT, sender.send(first)) => {
-                match result {
-                    Ok(Ok(())) => {}
-                    Ok(Err(_)) | Err(_) => deliver = false,
+        for chunk in initial {
+            if deliver {
+                tokio::select! {
+                    _ = gateway.stream_abort_requested() => {
+                        aborted = true;
+                        break;
+                    }
+                    result = tokio::time::timeout(DOWNSTREAM_SEND_TIMEOUT, sender.send(chunk)) => {
+                        match result {
+                            Ok(Ok(())) => {}
+                            Ok(Err(_)) | Err(_) => deliver = false,
+                        }
+                    }
                 }
             }
         }
@@ -543,13 +727,24 @@ async fn stream_response(
             };
             match chunk {
                 Ok(chunk) => {
-                    tracker.push(&chunk);
-                    if deliver {
-                        match tokio::time::timeout(DOWNSTREAM_SEND_TIMEOUT, sender.send(chunk))
+                    let translated = match translator.push(&chunk) {
+                        Ok(translated) => translated,
+                        Err(()) => {
+                            clean_eof = false;
+                            break;
+                        }
+                    };
+                    for translated in translated {
+                        if deliver {
+                            match tokio::time::timeout(
+                                DOWNSTREAM_SEND_TIMEOUT,
+                                sender.send(translated),
+                            )
                             .await
-                        {
-                            Ok(Ok(())) => {}
-                            Ok(Err(_)) | Err(_) => deliver = false,
+                            {
+                                Ok(Ok(())) => {}
+                                Ok(Err(_)) | Err(_) => deliver = false,
+                            }
                         }
                     }
                 }
@@ -562,9 +757,25 @@ async fn stream_response(
             }
         }
         if clean_eof && !aborted {
-            profile.mark_healthy();
+            match translator.finish_pending() {
+                Ok(chunks) => {
+                    for chunk in chunks {
+                        if deliver {
+                            let _ =
+                                tokio::time::timeout(DOWNSTREAM_SEND_TIMEOUT, sender.send(chunk))
+                                    .await;
+                        }
+                    }
+                }
+                Err(()) => clean_eof = false,
+            }
         }
-        admission.settle(&model, &tracker.finish());
+        if clean_eof && !aborted {
+            profile.mark_healthy();
+        } else if !aborted {
+            profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
+        }
+        admission.settle(&model, &translator.usage);
     });
     let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
         receiver
@@ -576,8 +787,38 @@ async fn stream_response(
         .status(status)
         .body(Body::from_stream(stream))
         .unwrap();
-    copy_response_headers(&headers, response.headers_mut());
+    let _ = headers;
+    response.headers_mut().insert(
+        "content-type",
+        HeaderValue::from_static("text/event-stream; charset=utf-8"),
+    );
     Ok(response)
+}
+
+async fn record_affinity_success(
+    store: &Arc<crate::AffinityStore>,
+    input: Option<&AffinityInput>,
+    resolution: &mut Option<AffinityResolution>,
+    profile_id: &str,
+) {
+    let Some(input) = input else {
+        return;
+    };
+    let served_home = store.home_id(profile_id);
+    match resolution {
+        Some(resolution) => {
+            if resolution.home != served_home {
+                store.rebind(resolution, &served_home).await;
+            }
+            store.remember(input, resolution).await;
+        }
+        None => {
+            let claimed = store.claim(input, &served_home).await;
+            store.remember(input, &claimed).await;
+            *resolution = Some(claimed);
+        }
+    }
+    store.mark_cache_warm(input, &served_home);
 }
 
 pub async fn api(
@@ -628,7 +869,7 @@ async fn api_inner(
     }
 
     let (parts, body) = request.into_parts();
-    let mut body = to_bytes(body, GEMINI_BODY_LIMIT)
+    let body = to_bytes(body, GEMINI_BODY_LIMIT)
         .await
         .map_err(|_| ApiError::invalid("The request body is invalid or too large."))?;
     let mut value: Value = serde_json::from_slice(&body)
@@ -637,6 +878,14 @@ async fn api_inner(
         return Err(ApiError::invalid("The request body must be a JSON object."));
     }
     validate_tools(&value)?;
+    let affinity_input = pending.affinity_scope().and_then(|scope| {
+        app.affinity
+            .infer_gemini(scope, &parts.headers, model_id, &value)
+    });
+    let mut affinity_resolution = match affinity_input.as_ref() {
+        Some(input) => app.affinity.resolve(input).await,
+        None => None,
+    };
     let admission = if matches!(
         route.operation,
         Operation::Generate | Operation::StreamGenerate
@@ -649,10 +898,6 @@ async fn api_inner(
         // Always write the validated ceiling: this also clamps a hostile value above the model
         // limit (and normalizes zero) even when the account can afford the complete request.
         cap_generation_output(&mut value, effective_output)?;
-        body = Bytes::from(
-            serde_json::to_vec(&value)
-                .map_err(|_| ApiError::invalid("The request body is not valid JSON."))?,
-        );
         admission
     } else {
         pending.without_reserve()
@@ -664,11 +909,7 @@ async fn api_inner(
         Operation::CountTokens => "countTokens",
         Operation::Models | Operation::Model => unreachable!(),
     };
-    let mut url = format!(
-        "{}/v1beta/models/{}:{suffix}",
-        gateway.config().upstream,
-        model.id
-    );
+    let mut url = format!("{}/v1internal:{suffix}", gateway.config().upstream);
     if !query.is_empty() {
         url.push('?');
         url.push_str(&query);
@@ -679,7 +920,10 @@ async fn api_inner(
     let mut saw_quota = false;
     let mut saw_auth = false;
     loop {
-        let Some(lease) = gateway.select(&excluded) else {
+        let preferred_id = affinity_resolution
+            .as_ref()
+            .and_then(|resolution| gateway.profile_id_for_home(&app.affinity, &resolution.home));
+        let Some(lease) = gateway.select(&excluded, preferred_id.as_deref()) else {
             Metrics::inc(&app.metrics.exhausted);
             let retry = gateway
                 .soonest_ready(&HashSet::new())
@@ -693,9 +937,26 @@ async fn api_inner(
             };
         };
         let profile = lease.profile().clone();
-        let response = match send_upstream(&profile, &url, &parts.headers, body.clone()).await {
+        let project = profile.project_id().await;
+        let upstream_body = wrap_code_assist_request(route.operation, &model.id, &project, &value)?;
+        let (mut response, rejected_token) = match send_upstream(
+            &profile,
+            &url,
+            &parts.headers,
+            upstream_body.clone(),
+            None,
+        )
+        .await
+        {
             Ok(response) => response,
-            Err(_) => {
+            Err(SendError::Token(TokenError::Invalid)) => {
+                Metrics::inc(&app.metrics.upstream_auth);
+                saw_auth = true;
+                excluded.insert(profile.id().to_string());
+                profile.mark_auth_failed(pool::now() + gateway.config().auth_quarantine_secs);
+                continue;
+            }
+            Err(SendError::Token(TokenError::Temporary) | SendError::Transport) => {
                 Metrics::inc(&app.metrics.upstream_5xx);
                 excluded.insert(profile.id().to_string());
                 profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
@@ -706,32 +967,100 @@ async fn api_inner(
                 continue;
             }
         };
-        let status = StatusCode::from_u16(response.status().as_u16())
+        let mut status = StatusCode::from_u16(response.status().as_u16())
             .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        let response_headers = response.headers().clone();
 
-        if status.is_success() && route.operation == Operation::StreamGenerate {
-            let mut stream = response.bytes_stream();
-            let first = match stream.next().await {
-                Some(Ok(chunk)) => chunk,
-                Some(Err(_)) => {
+        // A bearer can be revoked before its local expiry. Refresh once on the same profile. The
+        // rejected-token compare in the profile mutex ensures a concurrent 401 burst performs one
+        // refresh rather than one refresh per request.
+        if status == StatusCode::UNAUTHORIZED {
+            Metrics::inc(&app.metrics.upstream_auth);
+            match send_upstream(
+                &profile,
+                &url,
+                &parts.headers,
+                upstream_body,
+                Some(&rejected_token),
+            )
+            .await
+            {
+                Ok((retried, _)) => {
+                    response = retried;
+                    status = StatusCode::from_u16(response.status().as_u16())
+                        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+                Err(SendError::Token(TokenError::Invalid)) => {
+                    saw_auth = true;
+                    excluded.insert(profile.id().to_string());
+                    profile.mark_auth_failed(pool::now() + gateway.config().auth_quarantine_secs);
+                    continue;
+                }
+                Err(SendError::Token(TokenError::Temporary) | SendError::Transport) => {
                     Metrics::inc(&app.metrics.upstream_5xx);
                     excluded.insert(profile.id().to_string());
                     profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
                     transport_failures += 1;
                     if transport_failures > gateway.config().max_transport_retries {
-                        return Err(ApiError::unavailable("gemini_stream_start_failed"));
+                        return Err(ApiError::unavailable("gemini_token_refresh_unavailable"));
                     }
                     continue;
                 }
-                None => {
-                    profile.mark_healthy();
-                    admission.mark_delivering().await?;
-                    admission.settle(&model, &metering::GeminiUsage::default());
-                    return Ok(upstream_response(status, &response_headers, Bytes::new()));
+            }
+        }
+        let response_headers = response.headers().clone();
+
+        if status.is_success() && route.operation == Operation::StreamGenerate {
+            let mut stream = response.bytes_stream();
+            let mut translator = SseTranslator::new();
+            let mut initial = Vec::new();
+            let mut startup_failed = false;
+            loop {
+                match stream.next().await {
+                    Some(Ok(chunk)) => match translator.push(&chunk) {
+                        Ok(translated) if translated.is_empty() => {}
+                        Ok(translated) => {
+                            initial = translated;
+                            break;
+                        }
+                        Err(()) => {
+                            startup_failed = true;
+                            break;
+                        }
+                    },
+                    Some(Err(_)) => {
+                        startup_failed = true;
+                        break;
+                    }
+                    None => match translator.finish_pending() {
+                        Ok(translated) if !translated.is_empty() => {
+                            initial = translated;
+                            break;
+                        }
+                        Ok(_) | Err(()) => {
+                            startup_failed = true;
+                            break;
+                        }
+                    },
                 }
-            };
+            }
+            if startup_failed {
+                Metrics::inc(&app.metrics.upstream_5xx);
+                excluded.insert(profile.id().to_string());
+                profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
+                transport_failures += 1;
+                if transport_failures > gateway.config().max_transport_retries {
+                    return Err(ApiError::unavailable("gemini_stream_start_failed"));
+                }
+                continue;
+            }
             profile.mark_healthy();
+            record_affinity_success(
+                &app.affinity,
+                affinity_input.as_ref(),
+                &mut affinity_resolution,
+                profile.id(),
+            )
+            .await;
             return stream_response(
                 gateway,
                 app.metrics.clone(),
@@ -741,13 +1070,14 @@ async fn api_inner(
                 model,
                 status,
                 response_headers,
-                first,
+                translator,
+                initial,
                 stream,
             )
             .await;
         }
 
-        let response_body = match response.bytes().await {
+        let response_body = match read_upstream_body(response).await {
             Ok(bytes) => bytes,
             Err(_) => {
                 Metrics::inc(&app.metrics.upstream_5xx);
@@ -791,21 +1121,52 @@ async fn api_inner(
                 continue;
             }
             _ if status.is_success() => {
+                let native_body = match unwrap_code_assist_response(route.operation, &response_body)
+                {
+                    Ok(body) => body,
+                    Err(()) => {
+                        Metrics::inc(&app.metrics.upstream_5xx);
+                        excluded.insert(profile.id().to_string());
+                        profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
+                        transport_failures += 1;
+                        if transport_failures > gateway.config().max_transport_retries {
+                            return Err(ApiError::unavailable("gemini_malformed_response"));
+                        }
+                        continue;
+                    }
+                };
                 profile.mark_healthy();
+                record_affinity_success(
+                    &app.affinity,
+                    affinity_input.as_ref(),
+                    &mut affinity_resolution,
+                    profile.id(),
+                )
+                .await;
                 admission.mark_delivering().await?;
                 let usage = if route.operation == Operation::Generate {
-                    metering::gemini::usage_from_response_json(&response_body)
+                    metering::gemini::usage_from_response_json(&native_body)
                 } else {
                     metering::GeminiUsage::default()
                 };
                 admission.settle(&model, &usage);
-                return Ok(upstream_response(status, &response_headers, response_body));
+                return Ok(translated_response(status, &response_headers, native_body));
+            }
+            _ if status.is_client_error() => {
+                // The private Code Assist error envelope can contain account, project, plan or
+                // internal endpoint details. Preserve only the public status class.
+                profile.mark_healthy();
+                return Err(ApiError::provider_rejected(status));
             }
             _ => {
-                // Validation/model/safety errors belong to the request. They are native Google
-                // errors and can be returned verbatim; never cool a healthy project for them.
-                profile.mark_healthy();
-                return Ok(upstream_response(status, &response_headers, response_body));
+                Metrics::inc(&app.metrics.upstream_5xx);
+                excluded.insert(profile.id().to_string());
+                profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
+                transport_failures += 1;
+                if transport_failures > gateway.config().max_transport_retries {
+                    return Err(ApiError::unavailable("gemini_backend_protocol_error"));
+                }
+                continue;
             }
         }
     }
@@ -818,6 +1179,7 @@ mod tests {
     use axum::http::Uri;
     use axum::routing::any;
     use futures_util::stream;
+    use gemini_credential::{encode_envelope, CredentialKeyring, GeminiCredential};
     use pool::{Pool, Reserve};
     use std::collections::{HashMap, VecDeque};
     use std::fs;
@@ -859,6 +1221,19 @@ mod tests {
 
     impl MockReply {
         fn json(status: StatusCode, body: Value) -> Self {
+            let body = if status.is_success()
+                && body.get("response").is_none()
+                && body.get("totalTokens").is_none()
+            {
+                json!({
+                    "response": body,
+                    "traceId": "private-trace-id",
+                    "consumedCredits": [{"creditType": "G1", "creditAmount": "9"}],
+                    "remainingCredits": [{"creditType": "G1", "creditAmount": "91"}]
+                })
+            } else {
+                body
+            };
             Self::Json {
                 status,
                 body,
@@ -884,6 +1259,9 @@ mod tests {
         credential: String,
         uri: String,
         body: Bytes,
+        user_agent: String,
+        client_metadata: String,
+        has_private_client_headers: bool,
     }
 
     #[derive(Default)]
@@ -929,14 +1307,35 @@ mod tests {
         body: Bytes,
     ) -> Response {
         let credential = headers
-            .get("x-goog-api-key")
+            .get("authorization")
             .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
             .unwrap_or_default()
             .to_string();
         state.seen.lock().unwrap().push(SeenRequest {
             credential: credential.clone(),
             uri: uri.to_string(),
             body,
+            user_agent: headers
+                .get("user-agent")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string(),
+            client_metadata: headers
+                .get("client-metadata")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string(),
+            has_private_client_headers: [
+                "x-goog-user-project",
+                "x-goog-api-client",
+                "x-goog-request-params",
+                "x-forwarded-for",
+                "forwarded",
+                "x-real-ip",
+            ]
+            .iter()
+            .any(|name| headers.contains_key(*name)),
         });
         let reply = state
             .replies
@@ -1039,6 +1438,15 @@ mod tests {
         proxies: &[Option<&str>],
         max_transport_retries: usize,
     ) -> GatewayFixture {
+        gateway_fixture_with_token_uri(upstream, proxies, max_transport_retries, None)
+    }
+
+    fn gateway_fixture_with_token_uri(
+        upstream: &str,
+        proxies: &[Option<&str>],
+        max_transport_retries: usize,
+        token_uri: Option<&str>,
+    ) -> GatewayFixture {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -1049,21 +1457,41 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir_all(&directory).unwrap();
+        let credential_directory = directory.join("credentials");
+        fs::create_dir_all(&credential_directory).unwrap();
         let keys = [PROFILE_A_KEY, PROFILE_B_KEY];
+        let ring = CredentialKeyring::parse(&format!("test:{}", "42".repeat(32))).unwrap();
         let mut profiles = Vec::new();
         for (index, proxy) in proxies.iter().enumerate() {
-            let key_file = directory.join(format!("profile-{index}.key"));
-            fs::write(&key_file, keys[index]).unwrap();
-            fs::set_permissions(&key_file, fs::Permissions::from_mode(0o600)).unwrap();
-            let mut profile = json!({
-                "id": format!("profile_{}", (b'a' + index as u8) as char),
-                "project_id": format!("paid-project-{:02}", index + 1),
-                "api_key_file": key_file,
-            });
-            if let Some(proxy) = proxy {
-                profile["proxy"] = Value::String((*proxy).to_string());
-            }
-            profiles.push(profile);
+            let profile_id = format!("profile_{}", (b'a' + index as u8) as char);
+            let credential_file = credential_directory.join(format!("{profile_id}.json"));
+            let credential = GeminiCredential {
+                version: 1,
+                access_token: keys[index].to_string(),
+                refresh_token: format!("refresh-token-value-{index}"),
+                expires_at: pool::now() + 3_600,
+                oauth_client_id: "test-client.apps.googleusercontent.com".to_string(),
+                oauth_client_secret: "test-client-secret".to_string(),
+                token_uri: token_uri
+                    .unwrap_or("https://oauth2.googleapis.com/token")
+                    .to_string(),
+                subject: format!("google-subject-{index}"),
+                email: format!("owner-{index}@example.invalid"),
+                project_id: format!("paid-project-{:02}", index + 1),
+                tier_id: "paid-tier".to_string(),
+                tier_name: "Google AI Pro".to_string(),
+                plan: "google_ai_pro".to_string(),
+                proxy: proxy.unwrap_or_default().to_string(),
+                proxy_order_id: 0,
+                issued_at: pool::now(),
+            };
+            let envelope = ring.seal("test", &profile_id, &credential).unwrap();
+            fs::write(&credential_file, encode_envelope(&envelope).unwrap()).unwrap();
+            fs::set_permissions(&credential_file, fs::Permissions::from_mode(0o600)).unwrap();
+            profiles.push(json!({
+                "id": profile_id,
+                "credential_file": credential_file,
+            }));
         }
         let profiles_file = directory.join("profiles.json");
         fs::write(
@@ -1096,6 +1524,7 @@ mod tests {
             enabled: true,
             upstream: upstream.to_string(),
             profiles_file: profiles_file.to_string_lossy().into_owned(),
+            credential_keys: ring,
             models: vec![model],
             connect_timeout_secs: 1,
             read_timeout_secs: 5,
@@ -1258,7 +1687,11 @@ mod tests {
                 PROFILE_B_KEY,
                 vec![MockReply::json(
                     StatusCode::OK,
-                    json!({"candidates": [], "usageMetadata": {"promptTokenCount": 3}}),
+                    json!({
+                        "candidates": [],
+                        "usageMetadata": {"promptTokenCount": 3},
+                        "internalIdentity": "paid-project-02 owner@example.invalid"
+                    }),
                 )],
             ),
         ]))
@@ -1271,7 +1704,13 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
-        let _ = response_json(response).await;
+        let public = response_json(response).await;
+        assert!(public.get("response").is_none());
+        assert!(public.get("consumedCredits").is_none());
+        assert!(public.get("remainingCredits").is_none());
+        assert!(public.get("responseId").is_none());
+        assert!(!public.to_string().contains("private-trace-id"));
+        assert!(public.get("internalIdentity").is_none());
         let seen = server.state.seen();
         assert_eq!(
             seen.iter()
@@ -1282,6 +1721,214 @@ mod tests {
         assert!(seen
             .iter()
             .all(|request| request.credential != CUSTOMER_KEY));
+    }
+
+    #[tokio::test]
+    async fn concurrent_401s_refresh_once_and_retry_with_the_new_bearer() {
+        let refreshed = "gemini-profile-a-refreshed-access-token";
+        let unauthorized = MockReply::json(
+            StatusCode::UNAUTHORIZED,
+            json!({"error": {"message": "private rejected token"}}),
+        );
+        let success = MockReply::json(
+            StatusCode::OK,
+            json!({"candidates": [], "usageMetadata": {}}),
+        );
+        let token_reply = MockReply::Json {
+            status: StatusCode::OK,
+            body: json!({"access_token": refreshed, "expires_in": 3600}),
+            retry_after: None,
+        };
+        let server = start_mock(MockState::with_replies([
+            (PROFILE_A_KEY, vec![unauthorized.clone(), unauthorized]),
+            (refreshed, vec![success.clone(), success]),
+            ("", vec![token_reply]),
+        ]))
+        .await;
+        let token_uri = format!("{}/token", server.upstream);
+        let fixture =
+            gateway_fixture_with_token_uri(&server.upstream, &[None], 1, Some(&token_uri));
+        let app = app_state(fixture.gateway.clone(), None);
+        let body = json!({"contents": [{"role": "user", "parts": [{"text": "hello"}]}]});
+        let (first, second) = tokio::join!(
+            invoke(app.clone(), body.clone(), false),
+            invoke(app, body, false)
+        );
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(second.status(), StatusCode::OK);
+        let seen = server.state.seen();
+        assert_eq!(
+            seen.iter()
+                .filter(|request| request.uri == "/token")
+                .count(),
+            1
+        );
+        assert_eq!(
+            seen.iter()
+                .filter(|request| request.uri == "/v1internal:generateContent")
+                .filter(|request| request.credential == refreshed)
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn client_identity_headers_are_stripped_and_runtime_identity_is_truthful() {
+        let server = start_mock(MockState::with_replies([(
+            PROFILE_A_KEY,
+            vec![MockReply::json(
+                StatusCode::OK,
+                json!({"candidates": [], "usageMetadata": {}}),
+            )],
+        )]))
+        .await;
+        let fixture = gateway_fixture(&server.upstream, &[None], 1);
+        let request = axum::extract::Request::builder()
+            .method(Method::POST)
+            .uri("/v1beta/models/gemini-integration-model:generateContent")
+            .header("content-type", "application/json")
+            .header("x-goog-api-key", CUSTOMER_KEY)
+            .header("authorization", "Bearer customer-secret")
+            .header("user-agent", "GeminiCLI/forged")
+            .header("client-metadata", "customer-identity")
+            .header("x-goog-user-project", "customer-project")
+            .header("x-goog-api-client", "forged-client")
+            .header("x-forwarded-for", "203.0.113.9")
+            .body(Body::from(
+                br#"{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}"#.as_slice(),
+            ))
+            .unwrap();
+        let response = api_inner(
+            app_state(fixture.gateway.clone(), None),
+            "198.51.100.10:12345".parse().unwrap(),
+            request,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let seen = server.state.seen();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].credential, PROFILE_A_KEY);
+        assert_eq!(seen[0].user_agent, "apitoken-gemini-provider/1");
+        assert!(seen[0].client_metadata.contains("IDE_UNSPECIFIED"));
+        assert!(!seen[0].client_metadata.contains("customer"));
+        assert!(!seen[0].has_private_client_headers);
+    }
+
+    #[tokio::test]
+    async fn affinity_keeps_a_growing_conversation_on_the_same_subscription() {
+        let success = MockReply::json(
+            StatusCode::OK,
+            json!({"candidates": [], "usageMetadata": {}}),
+        );
+        let server = start_mock(MockState::with_replies([
+            (PROFILE_A_KEY, vec![success.clone(), success.clone()]),
+            (PROFILE_B_KEY, vec![success]),
+        ]))
+        .await;
+        let fixture = gateway_fixture(&server.upstream, &[None, None], 1);
+        let app = app_state(fixture.gateway.clone(), None);
+        let first = json!({
+            "contents": [{"role": "user", "parts": [{"text": "turn one"}]}]
+        });
+        let second = json!({
+            "contents": [
+                {"role": "user", "parts": [{"text": "turn one"}]},
+                {"role": "model", "parts": [{"text": "answer"}]},
+                {"role": "user", "parts": [{"text": "turn two"}]}
+            ]
+        });
+        assert_eq!(
+            invoke(app.clone(), first, false).await.status(),
+            StatusCode::OK
+        );
+        assert_eq!(invoke(app, second, false).await.status(), StatusCode::OK);
+        let credentials = server
+            .state
+            .seen()
+            .into_iter()
+            .map(|request| request.credential)
+            .collect::<Vec<_>>();
+        assert_eq!(credentials, [PROFILE_A_KEY, PROFILE_A_KEY]);
+    }
+
+    #[tokio::test]
+    async fn count_tokens_uses_the_private_shape_and_returns_only_native_json() {
+        let server = start_mock(MockState::with_replies([(
+            PROFILE_A_KEY,
+            vec![MockReply::json(
+                StatusCode::OK,
+                json!({
+                    "totalTokens": 17,
+                    "privateProject": "paid-project-01",
+                    "traceId": "private-count-trace"
+                }),
+            )],
+        )]))
+        .await;
+        let fixture = gateway_fixture(&server.upstream, &[None], 1);
+        let request = axum::extract::Request::builder()
+            .method(Method::POST)
+            .uri("/v1beta/models/gemini-integration-model:countTokens")
+            .header("content-type", "application/json")
+            .header("x-goog-api-key", CUSTOMER_KEY)
+            .body(Body::from(
+                br#"{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}"#.as_slice(),
+            ))
+            .unwrap();
+        let response = api_inner(
+            app_state(fixture.gateway.clone(), None),
+            "198.51.100.10:12345".parse().unwrap(),
+            request,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await, json!({"totalTokens": 17}));
+        let seen = server.state.seen();
+        assert_eq!(seen[0].uri, "/v1internal:countTokens");
+        let private: Value = serde_json::from_slice(&seen[0].body).unwrap();
+        assert_eq!(
+            private["request"]["model"],
+            "models/gemini-integration-model"
+        );
+        assert!(private.get("project").is_none());
+        assert!(private.get("user_prompt_id").is_none());
+    }
+
+    #[tokio::test]
+    async fn malformed_private_success_is_never_exposed_and_rotates() {
+        let server = start_mock(MockState::with_replies([
+            (
+                PROFILE_A_KEY,
+                vec![MockReply::Json {
+                    status: StatusCode::OK,
+                    body: json!(["cloudcode-pa", "owner@example.invalid", "secret-token"]),
+                    retry_after: None,
+                }],
+            ),
+            (
+                PROFILE_B_KEY,
+                vec![MockReply::json(
+                    StatusCode::OK,
+                    json!({"candidates": [], "usageMetadata": {}}),
+                )],
+            ),
+        ]))
+        .await;
+        let fixture = gateway_fixture(&server.upstream, &[None, None], 1);
+        let response = invoke(
+            app_state(fixture.gateway.clone(), None),
+            json!({"contents": []}),
+            false,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let public = response_json(response).await.to_string();
+        for forbidden in ["cloudcode-pa", "owner@example.invalid", "secret-token"] {
+            assert!(!public.contains(forbidden));
+        }
+        assert_eq!(server.state.seen().len(), 2);
     }
 
     #[tokio::test]
@@ -1303,7 +1950,12 @@ mod tests {
         let seen = server.state.seen();
         assert_eq!(seen.len(), 1);
         let upstream_body: Value = serde_json::from_slice(&seen[0].body).unwrap();
-        assert_eq!(upstream_body["generationConfig"]["maxOutputTokens"], 7);
+        assert_eq!(
+            upstream_body["request"]["generationConfig"]["maxOutputTokens"],
+            7
+        );
+        assert_eq!(upstream_body["project"], "paid-project-01");
+        assert!(upstream_body.get("user_prompt_id").is_some());
         billing.flush().await.unwrap();
         drop(app);
         drop(billing);
@@ -1317,7 +1969,12 @@ mod tests {
                 PROFILE_A_KEY,
                 vec![MockReply::json(
                     StatusCode::BAD_REQUEST,
-                    json!({"error": {"status": "INVALID_ARGUMENT", "message": "bad input"}}),
+                    json!({
+                        "error": {
+                            "status": "INVALID_ARGUMENT",
+                            "message": "cloudcode-pa Code Assist paid-project-01 owner@example.invalid refresh-token"
+                        }
+                    }),
                 )],
             ),
             (
@@ -1334,6 +1991,16 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let public = response_json(response).await.to_string();
+        for secret in [
+            "cloudcode-pa",
+            "Code Assist",
+            "paid-project-01",
+            "owner@example.invalid",
+            "refresh-token",
+        ] {
+            assert!(!public.contains(secret), "leaked {secret}: {public}");
+        }
         assert_eq!(server.state.seen().len(), 1);
         assert_eq!(server.state.seen()[0].credential, PROFILE_A_KEY);
     }
@@ -1344,7 +2011,7 @@ mod tests {
             (
                 PROFILE_A_KEY,
                 vec![MockReply::json(
-                    StatusCode::UNAUTHORIZED,
+                    StatusCode::FORBIDDEN,
                     json!({"error": {"status": "UNAUTHENTICATED"}}),
                 )],
             ),
@@ -1384,7 +2051,7 @@ mod tests {
     #[tokio::test]
     async fn exhausted_auth_and_transport_faults_return_one_native_503() {
         let auth = MockReply::json(
-            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
             json!({"error": {"status": "UNAUTHENTICATED"}}),
         );
         let auth_server = start_mock(MockState::with_replies([
@@ -1525,13 +2192,15 @@ mod tests {
     #[tokio::test]
     async fn sse_is_forwarded_across_upstream_chunk_boundaries_without_retry_after_first_byte() {
         let first = Bytes::from_static(
-            b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"one\"}]}}]}\n\n",
+            b"data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"one\"}]}}]},\"traceId\":\"stream-trace\",\"remainingCredits\":[{\"creditAmount\":\"91\"}]}\n\n",
         );
         let final_usage = Bytes::from_static(
-            b"data: {\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":4}}\n\n",
+            b"data: {\"response\":{\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":4}},\"consumedCredits\":[{\"creditAmount\":\"9\"}]}\n\n",
         );
+        let split = first.len() / 2;
         let (reply, drained) = MockReply::stream(vec![
-            MockChunk::Data(first.clone()),
+            MockChunk::Data(first.slice(..split)),
+            MockChunk::Data(first.slice(split..)),
             MockChunk::Data(final_usage.clone()),
         ]);
         let server = start_mock(MockState::with_replies([(PROFILE_A_KEY, vec![reply])])).await;
@@ -1546,12 +2215,22 @@ mod tests {
         let bytes = to_bytes(response.into_body(), GEMINI_BODY_LIMIT)
             .await
             .unwrap();
-        assert_eq!(bytes, [first.as_ref(), final_usage.as_ref()].concat());
+        let text = std::str::from_utf8(&bytes).unwrap();
+        assert!(!text.contains("stream-trace"));
+        assert!(text.contains("promptTokenCount"));
+        assert!(!text.contains("remainingCredits"));
+        assert!(!text.contains("consumedCredits"));
+        assert!(!text.contains("\"response\""));
         assert!(drained.load(Ordering::Acquire));
-        assert!(server.state.seen()[0].uri.ends_with("?alt=sse"));
+        assert_eq!(
+            server.state.seen()[0].uri,
+            "/v1internal:streamGenerateContent?alt=sse"
+        );
 
         let (broken, _) = MockReply::stream(vec![
-            MockChunk::Data(Bytes::from_static(b"data: {\"first\":true}\n\n")),
+            MockChunk::Data(Bytes::from_static(
+                b"data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"first\"}]}}]}}\n\n",
+            )),
             MockChunk::Error,
         ]);
         let broken_server = start_mock(MockState::with_replies([
@@ -1573,16 +2252,17 @@ mod tests {
         let body = to_bytes(response.into_body(), GEMINI_BODY_LIMIT)
             .await
             .unwrap();
-        assert_eq!(body, Bytes::from_static(b"data: {\"first\":true}\n\n"));
+        assert!(std::str::from_utf8(&body).unwrap().contains("first"));
         assert_eq!(broken_server.state.seen().len(), 1);
         assert_eq!(broken_server.state.seen()[0].credential, PROFILE_A_KEY);
     }
 
     #[tokio::test]
     async fn downstream_disconnect_still_drains_final_usage_and_settles_google_ledger() {
-        let first = Bytes::from_static(b"data: {\"candidates\":[{\"content\":{}}]}\n\n");
+        let first =
+            Bytes::from_static(b"data: {\"response\":{\"candidates\":[{\"content\":{}}]}}\n\n");
         let final_usage = Bytes::from_static(
-            b"data: {\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":5}}\n\n",
+            b"data: {\"response\":{\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":5}}}\n\n",
         );
         let (reply, drained) =
             MockReply::stream(vec![MockChunk::Data(first), MockChunk::Data(final_usage)]);
@@ -1618,7 +2298,7 @@ mod tests {
     async fn shutdown_deadline_aborts_stalled_stream_then_settles_last_known_usage_before_returning(
     ) {
         let first = Bytes::from_static(
-            b"data: {\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":2}}\n\n",
+            b"data: {\"response\":{\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":2}}}\n\n",
         );
         let server = start_mock(MockState::with_replies([(
             PROFILE_A_KEY,
@@ -1675,10 +2355,13 @@ mod tests {
         assert!(query_for_upstream(Some("%6bey=secret"), false).is_err());
         assert!(query_for_upstream(Some("API%5fKEY=secret"), false).is_err());
         assert!(query_for_upstream(Some("%zz=broken"), false).is_err());
+        assert!(query_for_upstream(Some("alt=json"), true).is_err());
+        assert!(query_for_upstream(Some("foo=bar"), true).is_err());
         assert_eq!(
-            query_for_upstream(Some("alt=json&foo=bar"), true).unwrap(),
-            "foo=bar&alt=sse"
+            query_for_upstream(Some("alt=sse"), true).unwrap(),
+            "alt=sse"
         );
+        assert_eq!(query_for_upstream(None, true).unwrap(), "alt=sse");
     }
 
     #[test]
@@ -1687,6 +2370,7 @@ mod tests {
             json!({"tools": [{"googleMaps": {}}]}),
             json!({"tools": [{"fileSearch": {"fileSearchStoreNames": ["stores/a"]}}]}),
             json!({"tools": [{"futurePaidTool": {}}]}),
+            json!({"cachedContent": "cachedContents/customer-selected-resource"}),
         ] {
             assert!(validate_tools(&body).is_err());
         }
@@ -1702,20 +2386,26 @@ mod tests {
 
     #[test]
     fn retry_info_and_headers_are_parsed_without_exposing_body() {
-        let headers = wreq::header::HeaderMap::new();
+        let headers = reqwest::header::HeaderMap::new();
         let body = br#"{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"2.25s"}]}}"#;
         assert_eq!(retry_after(&headers, body, 60), 3);
     }
 
     #[test]
     fn incremental_sse_tracker_keeps_last_usage_across_chunk_boundaries() {
-        let mut tracker = UsageTracker::new();
-        tracker.push(b"data: {\"usageMetadata\":{\"promptToken");
-        tracker.push(b"Count\":10}}\n\ndata: {\"candidates\":[{\"groundingMetadata\":{");
-        tracker.push(b"\"webSearchQueries\":[\"one\",\"two\"]}}]}\n\ndata: {\"usageMetadata\":{\"promptTokenCount\":20,");
-        tracker.push(b"\"candidatesTokenCount\":5}}\n\n");
+        let mut tracker = SseTranslator::new();
+        tracker
+            .push(b"data: {\"response\":{\"usageMetadata\":{\"promptToken")
+            .unwrap();
+        tracker
+            .push(b"Count\":10}}}\n\ndata: {\"response\":{\"candidates\":[{\"groundingMetadata\":{")
+            .unwrap();
+        tracker
+            .push(b"\"webSearchQueries\":[\"one\",\"two\"]}}]}}\n\ndata: {\"response\":{\"usageMetadata\":{\"promptTokenCount\":20,")
+            .unwrap();
+        tracker.push(b"\"candidatesTokenCount\":5}}}\n\n").unwrap();
         assert_eq!(
-            tracker.finish(),
+            tracker.usage,
             metering::GeminiUsage {
                 input_tokens: 20,
                 output_tokens: 5,

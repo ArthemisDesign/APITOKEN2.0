@@ -13,6 +13,7 @@ registry = { path = "../registry" }
 pool = { path = "../pool" }
 forward = { path = "../forward" }
 metering = { path = "../metering" }
+gemini-credential = { path = "../gemini-credential" }
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }

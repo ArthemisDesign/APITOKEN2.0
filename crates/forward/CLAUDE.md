@@ -2,7 +2,7 @@
 
 **Роль:** прозрачный форвардинг Claude `/v1/*` на api.anthropic.com (Шаг B) + поллер лимитов;
 отдельно — optional strict OpenAI-compatible text adapter через pinned official
-`codex app-server` и native Gemini paid-project gateway. Три provider path не смешивать.
+`codex app-server` и native Gemini surface поверх encrypted Code Assist OAuth pool. Три provider path не смешивать.
 
 **Владелец-ветка:** `comp/forward`.
 
@@ -37,7 +37,7 @@ outbox, а writer retry-ит до commit. RAII cancel закрывает име�
 `detect_plan` (тариф из /api/oauth/profile), `forward` (axum-хендлер), `authed`;
 `codex/` содержит typed app-server transport, Responses/Chat adapters, tenant-bound history,
 Codex admission/settlement и reconstruction SSE events; `gemini/` — native route allowlist,
-paid-project pool, transport и settlement. Env для обоих по-прежнему читает только `server::config`.
+encrypted OAuth pool, Code Assist translation и settlement. Env для обоих читает только `server::config`.
 
 **Cache-first роутинг без client opt-in (`affinity.rs`):** tenant = metered `account_id` (все ключи
 аккаунта разделяют кэш) или отдельный admin scope. `AffinityStore::infer` считается ДО identity-инжекта.
@@ -206,18 +206,21 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    (близнец `local_err_never_leaks_*`).
 
 **Инварианты native Gemini gateway:**
-1. Только paid Gemini Developer API keys из независимых Google projects. Gemini CLI/consumer OAuth,
-   browser cookies и auth store запрещены. Ключ читается из absolute regular non-symlink 0600-файла;
-   project ID нормализуется и нужен лишь для duplicate quota-domain rejection, не для логов/метрик.
+1. Только AEAD envelopes проверенных paid Code Assist OAuth identities. Roster содержит opaque id и
+   строго `<roster>/credentials/<id>.json`; symlink/другой path/duplicate Google subject запрещены.
+   Tokens/email/project/tier/proxy дешифруются только в память и не попадают в log/metric/response.
 2. `GeminiGateway` обслуживается только startup-fixed `ProviderMode::Gemini`. Native allowlist:
    models get/list, generateContent, streamGenerateContent, countTokens. Клиентский `x-goog-api-key`
    (как и x-api-key/Bearer) авторизует наш ключ, но никогда не уходит Google; query `key`/`api_key`,
    включая percent encoding, запрещён.
-3. Профиль владеет отдельным HTTP client/proxy/inflight/cooling/auth. 429 → project cooling по
-   Retry-After/RetryInfo и ротация без transport-бюджета; 401/403 → auth quarantine; network/
+3. Профиль владеет отдельным HTTP client/proxy/inflight/cooling/auth и single-flight token refresh.
+   Первый 401 → один refresh+retry того же profile; повторный 401/403 → auth quarantine. 429 →
+   profile cooling по Retry-After/RetryInfo и ротация без transport-бюджета; network/
    408/409/425/5xx → короткий cooling и ограниченный transport retry; остальные 4xx не вращаются.
    Если были quota failures — итог 429; только auth/transport failures — 503; уже cooling pool — 429.
-4. Retry разрешён только до первого upstream stream chunk. После возврата Response disconnect клиента
+4. Code Assist request wrapper строится сервером; caller не может inject project/session identity.
+   Response/SSE отдаёт только `.response` (+ responseId), никогда wrapper/credits/private headers.
+   Retry разрешён только до первого переведённого native SSE event. После возврата Response disconnect клиента
    отключает downstream delivery, но task продолжает drain до финального usageMetadata. Shutdown
    deadline обязан abort-ить upstream read, settle-ить последний snapshot и только потом отпустить
    background semaphore permit для последующего billing flush.

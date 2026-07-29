@@ -25,6 +25,9 @@
 			request>headers>X-Goog-Api-Key replace REDACTED
 			request>headers>X-Sales-Admin-Key replace REDACTED
 			request>headers>X-Crm-Ingest-Key replace REDACTED
+			request>headers>X-Gemini-Oauth-Code replace REDACTED
+			request>headers>X-Gemini-Oauth-Error replace REDACTED
+			request>headers>X-Gemini-Oauth-State replace REDACTED
 		}
 
 		# Blue-green keeps exactly one slot of each pair stopped and disabled, but both slots stay
@@ -119,6 +122,29 @@ openai.api.apitoken.sale {
 }
 
 gemini.api.apitoken.sale {
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+	}
+	# OAuth callback belongs to authbot, not the provider runtime. It must be matched before the
+	# public API allowlist. Move one-use values to redacted internal headers and erase the query
+	# before proxying so a callback transport error cannot write the authorization code into logs.
+	@oauth_callback path /oauth/callback
+	# Defense in depth: the rewritten URI is already query-free, but callback requests are omitted
+	# from access logs entirely so a future logging/handler-order change cannot retain code/state.
+	log_skip @oauth_callback
+	handle @oauth_callback {
+		route {
+			request_header X-Gemini-OAuth-Code {http.request.uri.query.code}
+			request_header X-Gemini-OAuth-State {http.request.uri.query.state}
+			request_header X-Gemini-OAuth-Error {http.request.uri.query.error}
+			rewrite * /oauth/callback?
+			reverse_proxy 127.0.0.1:8796 {
+				header_up Host 127.0.0.1:8796
+			}
+		}
+	}
 	@public_core path /v1beta/* /health /balance
 	handle @public_core {
 		import gemini_engine_backend

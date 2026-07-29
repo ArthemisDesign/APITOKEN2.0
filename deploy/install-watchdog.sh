@@ -199,6 +199,8 @@ install_systemd_definitions
 # keeps working from local memory if this service is unavailable.
 server_env=/srv/claude-api/data/server.env
 install -d -o deploy -g deploy -m 0750 /srv/claude-api/data
+install -d -o deploy -g deploy -m 0700 \
+  /srv/claude-api/data/gemini /srv/claude-api/data/gemini/credentials
 [[ ! -L $server_env ]] || { echo "$server_env must not be a symlink" >&2; exit 1; }
 if [[ ! -e $server_env ]]; then
   install -o deploy -g deploy -m 0600 /dev/null "$server_env"

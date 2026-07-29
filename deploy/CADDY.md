@@ -76,7 +76,8 @@ vhost boundary end to end.
 Gemini is a second independent singleton: `gemini.api.apitoken.sale` targets stable loopback origin
 `127.0.0.1:8794`, which proxies only runtime `127.0.0.1:8795`. It never participates in the 8792
 bridge and never accepts the request-level API-plane marker. Its public matcher allows `/v1beta/*`,
-`/health`, and `/balance`; the vhost redacts `X-Goog-Api-Key` in access logs. The watchdog probes the
+`/health`, and `/balance`; an earlier exact `/oauth/callback` handler routes only to Auth Bot on
+`127.0.0.1:8796`, so OAuth codes never enter the engine. The vhost redacts `X-Goog-Api-Key` in access logs. The watchdog probes the
 public hostname for a native unauthenticated Gemini envelope before committing the provider cohort.
 
 Caddy probes `/ready` on both fixed-provider origins. `engine-bluegreen.sh` admits the new Anthropic

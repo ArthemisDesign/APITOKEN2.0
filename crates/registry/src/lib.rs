@@ -1225,7 +1225,7 @@ fn ledger_add(
 pub const PROVIDER_ANTHROPIC: &str = "anthropic";
 /// The OpenAI-compatible Codex home pool.
 pub const PROVIDER_OPENAI: &str = "openai";
-/// The paid native Gemini Developer API project pool.
+/// The isolated native Gemini-compatible subscription pool.
 pub const PROVIDER_GOOGLE: &str = "google";
 
 fn default_provider() -> String {

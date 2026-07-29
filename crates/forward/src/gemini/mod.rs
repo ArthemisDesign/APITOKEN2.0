@@ -1,4 +1,4 @@
-//! Paid native Gemini Developer API provider.
+//! Native Gemini-compatible surface backed by encrypted paid Code Assist OAuth profiles.
 
 mod api;
 mod billing;

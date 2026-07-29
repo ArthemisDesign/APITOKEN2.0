@@ -7,6 +7,7 @@ use std::time::Duration;
 #[derive(Clone)]
 pub struct Bot {
     token: String,
+    api_root: String,
     http: reqwest::Client,
 }
 
@@ -51,15 +52,23 @@ pub type Keyboard = Vec<Vec<(String, String)>>;
 
 impl Bot {
     pub fn new(token: &str) -> Self {
+        Self::with_api_root(token, "https://api.telegram.org")
+    }
+
+    fn with_api_root(token: &str, api_root: &str) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(90))
             .build()
             .expect("reqwest client");
-        Bot { token: token.to_string(), http }
+        Bot {
+            token: token.to_string(),
+            api_root: api_root.trim_end_matches('/').to_string(),
+            http,
+        }
     }
 
     fn url(&self, method: &str) -> String {
-        format!("https://api.telegram.org/bot{}/{}", self.token, method)
+        format!("{}/bot{}/{}", self.api_root, self.token, method)
     }
 
     /// Убрать bot-токен из строк ошибок (иначе он утекает в journalctl через URL).
@@ -68,19 +77,35 @@ impl Bot {
     }
 
     async fn call(&self, method: &str, body: serde_json::Value) -> Result<serde_json::Value> {
-        let resp = self.http.post(self.url(method)).json(&body).send().await
+        let resp = self
+            .http
+            .post(self.url(method))
+            .json(&body)
+            .send()
+            .await
             .map_err(|e| anyhow!("{}", self.redact(&e.to_string())))?;
-        let v: serde_json::Value = resp.json().await
+        let v: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| anyhow!("{}", self.redact(&e.to_string())))?;
         if v.get("ok").and_then(|b| b.as_bool()) != Some(true) {
-            return Err(anyhow!("{}: {}", method, v.get("description").and_then(|d| d.as_str()).unwrap_or("error")));
+            return Err(anyhow!(
+                "{}: {}",
+                method,
+                v.get("description")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("error")
+            ));
         }
         Ok(v.get("result").cloned().unwrap_or(serde_json::Value::Null))
     }
 
     pub async fn get_me(&self) -> Result<String> {
         let r = self.call("getMe", serde_json::json!({})).await?;
-        Ok(r.get("username").and_then(|u| u.as_str()).unwrap_or("?").to_string())
+        Ok(r.get("username")
+            .and_then(|u| u.as_str())
+            .unwrap_or("?")
+            .to_string())
     }
 
     pub async fn get_updates(&self, offset: Option<i64>, timeout: u64) -> Result<Vec<Update>> {
@@ -93,9 +118,14 @@ impl Bot {
     }
 
     fn markup(kb: &Keyboard) -> serde_json::Value {
-        let rows: Vec<Vec<serde_json::Value>> = kb.iter().map(|row| {
-            row.iter().map(|(t, d)| serde_json::json!({"text": t, "callback_data": d})).collect()
-        }).collect();
+        let rows: Vec<Vec<serde_json::Value>> = kb
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|(t, d)| serde_json::json!({"text": t, "callback_data": d}))
+                    .collect()
+            })
+            .collect();
         serde_json::json!({ "inline_keyboard": rows })
     }
 
@@ -111,6 +141,32 @@ impl Bot {
         if let Some(k) = kb {
             body["reply_markup"] = Self::markup(k);
         }
+        self.call("sendMessage", body).await?;
+        Ok(())
+    }
+
+    /// Send one HTTPS authorization button. URL buttons are kept separate from callback-data
+    /// keyboards so an OAuth URL can never be reflected back through `on_callback` or logs.
+    pub async fn send_url_button(
+        &self,
+        chat: i64,
+        text: &str,
+        label: &str,
+        url: &str,
+    ) -> Result<()> {
+        let parsed = reqwest::Url::parse(url)?;
+        if parsed.scheme() != "https" {
+            return Err(anyhow!("authorization button requires HTTPS"));
+        }
+        let body = serde_json::json!({
+            "chat_id": chat,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true,
+            "reply_markup": {
+                "inline_keyboard": [[{"text": label, "url": parsed.as_str()}]]
+            }
+        });
         self.call("sendMessage", body).await?;
         Ok(())
     }

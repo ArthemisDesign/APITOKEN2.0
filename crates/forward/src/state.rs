@@ -62,7 +62,7 @@ pub struct AppState {
     /// Optional OpenAI-compatible text provider backed by an official Codex app-server child.
     /// It owns no OAuth material; the child reads the dedicated authenticated `CODEX_HOME`.
     pub codex: Option<Arc<CodexGateway>>,
-    /// Optional native Gemini Developer API provider backed by paid Google projects.
+    /// Optional native Gemini surface backed by encrypted paid Code Assist OAuth profiles.
     pub gemini: Option<Arc<GeminiGateway>>,
     /// Биллинг клиентов (async DB-актор — синхронный SQLite не блокирует воркеры).
     /// `None` → биллинг выключен (только env-ключи/localhost).

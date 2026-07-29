@@ -7,13 +7,9 @@ pub use metering::GeminiPrices;
 pub struct GeminiProfileSpec {
     /// Stable non-identifying label used in metrics. It must not contain an email or project id.
     pub id: String,
-    /// Google applies Developer API quotas per project, not per API key. The gateway uses this only
-    /// to reject duplicate quota domains and never exports it to logs or metrics.
-    pub project_id: String,
-    /// Absolute path to a root/operator-provisioned file containing exactly one paid API key.
-    pub api_key_file: String,
-    #[serde(default)]
-    pub proxy: Option<String>,
+    /// Absolute path to a versioned AEAD envelope. Google identity, OAuth tokens, client secret,
+    /// plan/project and authenticated proxy are all encrypted inside it.
+    pub credential_file: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
@@ -36,6 +32,7 @@ pub struct GeminiConfig {
     pub enabled: bool,
     pub upstream: String,
     pub profiles_file: String,
+    pub credential_keys: gemini_credential::CredentialKeyring,
     pub models: Vec<GeminiModel>,
     pub connect_timeout_secs: u64,
     pub read_timeout_secs: u64,

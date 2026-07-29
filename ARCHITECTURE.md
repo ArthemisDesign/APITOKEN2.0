@@ -55,10 +55,11 @@
 | env-конфиг, CLI, роутер, фоновые циклы, проводку | `server` | `comp/server` |
 | покупку подписок и пополнение пула (Telegram-бот) | `crates/authbot` | `comp/authbot` |
 
-**Пополнение пула (вне слоёв API).** `crates/authbot` — Rust Telegram-бот: покупает Claude и
-ChatGPT-подписки, записывает Claude-токены через `registry::authority`, а завершённые Codex device
-flows атомарно публикует как отдельные `CODEX_HOME`. Стоит ПЕРЕД `registry` как производитель и не
-импортирует `pool`, `forward` или `server`.
+**Пополнение пула (вне слоёв API).** `crates/authbot` — Rust Telegram-бот: покупает Claude,
+ChatGPT и Gemini-доступ, записывает Claude-токены через `registry::authority`, завершённые Codex
+device flows атомарно публикует как отдельные `CODEX_HOME`, а проверенные платные Gemini Code Assist
+OAuth subscriptions — как AEAD-encrypted profiles. Стоит ПЕРЕД `registry` как производитель и не импортирует
+`pool`, `forward` или `server`.
 
 ## Ключевые решения
 
@@ -71,8 +72,9 @@ flows атомарно публикует как отдельные `CODEX_HOME`
   выбирают. Anthropic работает в blue-green `claude-api-anthropic@8787/8788`, OpenAI — в отдельном
   singleton `claude-api-openai.service`, а native Gemini — в `claude-api-gemini.service` через
   `gemini.api.apitoken.sale`. Все используют один fenced PostgreSQL billing authority, но не общий
-  HTTP process, router, credential pool или health state. Gemini profiles — paid Developer API keys
-  из разных Google projects; Gemini CLI OAuth не входит в архитектуру. Codex-патч удаляет локальные
+  HTTP process, router, credential pool или health state. Gemini profiles — отдельные encrypted
+  Google OAuth identities с managed Code Assist project, собственным proxy/refresh/cooling; private
+  wrapper и identity никогда не выходят на публичную границу. Codex-патч удаляет локальные
   instructions/tools/context, оставляя только явный
   клиентский контекст. Transport не читает auth store, требует ChatGPT account type, attests binary
   SHA/version и не меняет Claude path. Один pre-provisioned process-wide lock под root-owned

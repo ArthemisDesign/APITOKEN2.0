@@ -155,10 +155,17 @@ pub async fn codex_health_loop(gateway: Arc<forward::CodexGateway>) {
 /// Periodically validates every paid Gemini project so an expired/disabled key is quarantined
 /// before customer traffic needs that profile, and a repaired credential rejoins automatically.
 pub async fn gemini_health_loop(gateway: Arc<forward::GeminiGateway>) {
-    let interval = Duration::from_secs(gateway.config().health_probe_interval_secs.max(30));
+    const PROFILE_DISCOVERY_SECS: u64 = 15;
+    let health_interval = Duration::from_secs(gateway.config().health_probe_interval_secs.max(30));
+    let mut last_health = tokio::time::Instant::now();
     loop {
-        tokio::time::sleep(interval).await;
-        gateway.probe_health().await;
+        tokio::time::sleep(Duration::from_secs(PROFILE_DISCOVERY_SECS)).await;
+        if last_health.elapsed() >= health_interval {
+            gateway.probe_health().await;
+            last_health = tokio::time::Instant::now();
+        } else {
+            gateway.refresh_profiles().await;
+        }
     }
 }
 

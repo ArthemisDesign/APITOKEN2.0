@@ -1,8 +1,9 @@
 # Бот пополнения пула: покупает подписки у продавцов и передаёт их движку.
 #
 # Claude-подписка становится строкой-токеном в реестре, ChatGPT-подписка — каталогом CODEX_HOME,
-# который движок сканирует. Поэтому боту нужен доступ на запись в каталог покупок и к пиннованному
-# codex CLI, но НЕ нужен root и не нужны права на конфиг движка.
+# а Gemini consumer/Code Assist OAuth — AEAD-конвертом и атомарной записью в отдельный roster.
+# Поэтому боту нужен доступ на запись в каталоги покупок и к пиннованному codex CLI, но НЕ нужен
+# root и не нужны права на config.env или управление сервисами.
 #
 # Бинарь берётся из той же неизменяемой релизной директории, что и движок. Изменённый authbot
 # перезапускается после promotion; persisted handoff state восстанавливает прерванный OAuth на email.
@@ -27,18 +28,29 @@ Restart=always
 RestartSec=5
 RuntimeDirectory=claude-authbot
 RuntimeDirectoryMode=0700
+UMask=0077
+LimitCORE=0
 
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
+ProtectSystem=strict
 ProtectHome=true
 # Resolve the official install before hiding /home, then expose only its executable at runtime.
 # A bind mounted below hidden /home remains unreachable even when the leaf itself is mounted.
 BindReadOnlyPaths=/home/deploy/.local/bin/claude:/run/claude-authbot/claude
+PrivateDevices=true
+ProtectClock=true
+ProtectHostname=true
 ProtectKernelTunables=true
 ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
 RestrictSUIDSGID=true
-# Пишет состояние бота, каталоги купленных аккаунтов и токены подписок.
+# Пишет состояние бота, Codex homes, Claude tokens и закрытый Gemini OAuth credential roster.
 ReadWritePaths=/srv/claude-api/data
 
 [Install]

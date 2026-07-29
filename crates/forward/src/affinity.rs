@@ -366,6 +366,35 @@ impl AffinityStore {
         self.infer(account_scope, headers, &body)
     }
 
+    /// Project a native Gemini request onto the provider-independent cache lineage. Only keyed
+    /// digests leave this process; raw contents, headers and tenant identity are never persisted.
+    pub fn infer_gemini(
+        &self,
+        account_scope: &str,
+        headers: &HeaderMap,
+        model: &str,
+        body: &Value,
+    ) -> Option<AffinityInput> {
+        let contents = body.get("contents")?.as_array()?;
+        if contents.is_empty() {
+            return None;
+        }
+        let projected = serde_json::json!({
+            "model": model,
+            "system": body.get("systemInstruction"),
+            "tools": body.get("tools"),
+            "thinking": body.pointer("/generationConfig/thinkingConfig"),
+            "context_management": {
+                "toolConfig": body.get("toolConfig"),
+                "safetySettings": body.get("safetySettings"),
+                "responseMimeType": body.pointer("/generationConfig/responseMimeType"),
+                "responseSchema": body.pointer("/generationConfig/responseSchema")
+            },
+            "messages": contents,
+        });
+        self.infer(account_scope, headers, &projected)
+    }
+
     pub async fn resolve(&self, input: &AffinityInput) -> Option<AffinityResolution> {
         if let Some(found) = self.local_resolve(input) {
             self.stats.local_hits.fetch_add(1, Ordering::Relaxed);

@@ -129,7 +129,7 @@ for watchdog_metric in \
   grep -Fq "$watchdog_metric" "$ROOT/observability/prometheus/rules/application.yml" \
     || { printf 'no alert rule consumes %s\n' "$watchdog_metric" >&2; exit 1; }
 done
-# The native paid-project pool is independent from both established providers.
+# The native encrypted OAuth pool is independent from both established providers.
 for gemini_metric in \
   'claude_api_gemini_profiles_available' \
   'claude_api_gemini_profiles_authenticated' \

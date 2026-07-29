@@ -1624,7 +1624,7 @@ final_verify_gemini_surface() {
       >/dev/null 2>&1 <<<"$envelope" \
       || wd_die "disabled public Gemini hostname did not answer with the native provider envelope"
   fi
-  wd_log "native Gemini project-pool surface verified (enabled=$enabled)"
+  wd_log "native Gemini subscription-pool surface verified (enabled=$enabled)"
 }
 
 run_final_verification_lane() {

@@ -1,6 +1,7 @@
-//! Native Gemini Developer API price catalog and authoritative usage parsing.
+//! Native Gemini-compatible price catalog and authoritative usage parsing.
 //!
-//! Rates are paid-tier Standard prices from <https://ai.google.dev/gemini-api/docs/pricing>.
+//! Internal customer valuation uses reviewed Developer API rates from
+//! <https://ai.google.dev/gemini-api/docs/pricing>; it is not a claim about subscription cost.
 //! They are pinned and effective-dated for the same reason as the Codex catalog: a remote alias or
 //! pricing-page edit must never silently change customer money. Values are nanodollars per token
 //! (`$/M tokens * 1000`) and all arithmetic remains integer-only.

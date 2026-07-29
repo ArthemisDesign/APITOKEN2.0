@@ -1028,7 +1028,7 @@ async fn serve() -> Result<()> {
             .preflight()
             .await
             .context("validate Gemini provider")?;
-        eprintln!("Gemini paid-project provider preflight passed");
+        eprintln!("Gemini OAuth subscription provider preflight passed");
         tokio::spawn(poller::gemini_health_loop(gateway.clone()));
         Some(gateway)
     } else {
