@@ -68,6 +68,7 @@ install_controller_definitions() {
 install_systemd_definitions() {
   command -v systemctl >/dev/null || { echo 'systemd is required' >&2; return 1; }
   command -v systemd-tmpfiles >/dev/null || { echo 'systemd-tmpfiles is required' >&2; return 1; }
+  local restart_authbot=0
   # The watchdog's `ProtectSystem=full` namespace keeps /etc/tmpfiles.d read-only even after sudo.
   # Stage the exact candidate input under the fixed root-owned controller path; a manager-spawned
   # root oneshot below publishes it from a fresh namespace, just like the sudoers installer.
@@ -85,9 +86,20 @@ install_systemd_definitions() {
     apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \
     apitoken-openkeys.service \
     apitoken-monitoring-collector.service apitoken-monitoring-collector.timer; do
+    if [[ "$unit" == claude-authbot.service \
+      && -f "/etc/systemd/system/$unit" \
+      && ! -L "/etc/systemd/system/$unit" ]] \
+      && ! cmp -s "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"; then
+      restart_authbot=1
+    fi
     install -o root -g root -m 0644 "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"
   done
   systemctl daemon-reload
+  if (( restart_authbot )); then
+    # Unit contract changes must take effect; ordinary binary-only engine deploys still preserve
+    # in-flight device authorization in deploy.sh.
+    systemctl try-restart claude-authbot.service
+  fi
   systemctl start apitoken-tmpfiles-install.service
 
   # Journald storage must be an explicit decision rather than a side effect of boot ordering. Under

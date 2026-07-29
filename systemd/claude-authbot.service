@@ -17,6 +17,8 @@ Wants=network-online.target
 Type=simple
 User=deploy
 Group=deploy
+Environment=HOME=/srv/claude-api/data/authbot
+Environment=CLAUDE_BIN=/home/deploy/.local/bin/claude
 EnvironmentFile=/srv/claude-api/data/authbot.env
 ExecStart=/srv/claude-api/releases/current/authbot
 WorkingDirectory=/srv/claude-api/data
@@ -27,6 +29,10 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
+# The official installer keeps the executable and its immutable version store below ~/.local.
+# Expose only those read-only paths; Claude account state belongs under /srv/claude-api/data.
+BindReadOnlyPaths=-/home/deploy/.local/bin/claude
+BindReadOnlyPaths=-/home/deploy/.local/share/claude
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true

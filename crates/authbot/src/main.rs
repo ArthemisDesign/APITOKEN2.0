@@ -24,6 +24,7 @@ pub struct Config {
     pub admins_id: HashSet<i64>,
     pub admins_name: HashSet<String>,
     pub claude_bin: String, // путь к claude CLI (для setup-token)
+    pub claude_config_dir: String, // writable root for per-account Claude state
     pub sub_db: String,     // subscriptions.db (SQLite) — fallback, если Postgres-URL не задан
     pub database_url: String,   // CLAUDE_API_DATABASE_URL движка: реестр движка (Postgres) напрямую
     pub fleet: String,      // флот, в который писать купленные подписки
@@ -213,6 +214,8 @@ async fn main() -> Result<()> {
     let cfg = Arc::new(Config {
         admins_id, admins_name,
         claude_bin: env_opt("CLAUDE_BIN").unwrap_or_else(|| format!("{home}/.local/bin/claude")),
+        claude_config_dir: env_opt("AUTH_BOT_CLAUDE_CONFIG_DIR")
+            .unwrap_or_else(|| "/srv/claude-api/data/authbot".into()),
         sub_db: format!("{sub_dir}/subscriptions.db"),
         database_url: env_opt("CLAUDE_API_DATABASE_URL")
             .or_else(|| env_opt("AUTH_BOT_DATABASE_URL"))

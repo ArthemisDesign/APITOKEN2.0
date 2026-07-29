@@ -38,7 +38,10 @@
 
 **Env:**
 - `AUTH_BOT_TOKEN`, `AUTH_BOT_ADMIN`, `AUTH_BOT_FLEET`, `CLAUDE_API_DATABASE_URL` — база.
-- `CLAUDE_BIN` — claude CLI для Claude-ветки.
+- `CLAUDE_BIN` — claude CLI для Claude-ветки. Production unit открывает read-only официальный
+  install из `/home/deploy/.local`, не открывая остальной home.
+- `AUTH_BOT_CLAUDE_CONFIG_DIR` — writable-корень изолированных Claude-сессий (деф
+  `/srv/claude-api/data/authbot`); токены и состояние не должны лежать в home.
 - `AUTH_BOT_CODEX_BIN` — пиннованный codex CLI (деф `/srv/claude-api/data/codex/bin/codex`).
 - `AUTH_BOT_CODEX_HOMES_DIR` — каталог покупок; ДОЛЖЕН совпадать с движковым
   `CLAUDE_API_CODEX_HOMES_DIR`, иначе купленный аккаунт никто не подхватит.

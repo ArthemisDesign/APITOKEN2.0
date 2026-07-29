@@ -1241,6 +1241,18 @@ grep -Fq 'staged authbot binary is missing' "$ROOT/deploy/deploy.sh" \
   || wd_die "a release without an authbot binary must fail closed"
 grep -Fq 'ExecStart=/srv/claude-api/releases/current/authbot' "$ROOT/systemd/claude-authbot.service" \
   || wd_die "the authbot unit must run the binary from the current release"
+grep -Fq 'ProtectHome=true' "$ROOT/systemd/claude-authbot.service" \
+  || wd_die "the authbot must keep the service user's home hidden"
+grep -Fq 'BindReadOnlyPaths=-/home/deploy/.local/bin/claude' "$ROOT/systemd/claude-authbot.service" \
+  || wd_die "the protected authbot cannot execute the installed Claude CLI"
+grep -Fq 'BindReadOnlyPaths=-/home/deploy/.local/share/claude' "$ROOT/systemd/claude-authbot.service" \
+  || wd_die "the protected authbot cannot resolve the installed Claude version"
+grep -Fq 'Environment=HOME=/srv/claude-api/data/authbot' "$ROOT/systemd/claude-authbot.service" \
+  || wd_die "the protected authbot has no writable home for an already-running old binary"
+grep -Fq '/srv/claude-api/data/authbot' "$ROOT/crates/authbot/src/main.rs" \
+  || wd_die "the authbot stores Claude account state below the writable production data root"
+grep -Fq 'systemctl try-restart claude-authbot.service' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die "an updated authbot sandbox is not adopted by the running service"
 grep -Fq 'claude-authbot.service' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die "the authbot unit is never installed"
 grep -Fq '/usr/bin/systemctl restart claude-authbot.service' "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \

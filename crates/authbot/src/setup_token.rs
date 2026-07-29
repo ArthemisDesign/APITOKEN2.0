@@ -8,6 +8,7 @@ use anyhow::{anyhow, Result};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -53,6 +54,23 @@ fn slug(email: &str) -> String {
         else if !prev_dash { out.push('-'); prev_dash = true; }
     }
     out.trim_matches('-').to_string()
+}
+
+fn account_config_dir(root: &Path, email: &str) -> PathBuf {
+    root.join(format!(".claude-bot-{}", slug(email)))
+}
+
+fn prepare_config_dir(root: &str, email: &str) -> Result<PathBuf> {
+    let path = account_config_dir(Path::new(root), email);
+    std::fs::create_dir_all(&path)
+        .map_err(|e| anyhow!("не смог создать каталог Claude-сессии: {}", e.kind()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| anyhow!("не смог закрыть права каталога Claude-сессии: {}", e.kind()))?;
+    }
+    Ok(path)
 }
 
 fn buf_string(buf: &Arc<Mutex<Vec<u8>>>) -> String {
@@ -120,17 +138,16 @@ pub fn has(chat: i64) -> bool {
 }
 
 /// Старт: запустить setup-token, вернуть OAuth-URL для входа продавца.
-pub fn start(chat: i64, email: &str, proxy: &str, claude_bin: &str) -> Result<String> {
+pub fn start(chat: i64, email: &str, proxy: &str, claude_bin: &str, config_root: &str) -> Result<String> {
     kill(chat);
     let pty = native_pty_system();
     let pair = pty.openpty(PtySize { rows: 50, cols: 1000, pixel_width: 0, pixel_height: 0 })?;
 
     let mut cmd = CommandBuilder::new(claude_bin);
     cmd.arg("setup-token");
-    let home = std::env::var("HOME").unwrap_or_default();
-    let cfg_dir = format!("{home}/.claude-bot-{}", slug(email));
-    let _ = std::fs::create_dir_all(&cfg_dir);
+    let cfg_dir = prepare_config_dir(config_root, email)?;
     cmd.env("CLAUDE_CONFIG_DIR", &cfg_dir);
+    cmd.env("HOME", &cfg_dir);
     cmd.env("BROWSER", format!("{}/open", shim_dir()));
     cmd.env("PATH", format!("{}:{}", shim_dir(), std::env::var("PATH").unwrap_or_default()));
     cmd.env("COLUMNS", "1000");
@@ -179,6 +196,18 @@ pub fn start(chat: i64, email: &str, proxy: &str, claude_bin: &str) -> Result<St
             return Err(anyhow!("не нашёл OAuth-URL (claude setup-token не ответил вовремя)"));
         }
         std::thread::sleep(Duration::from_millis(400));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_state_is_scoped_below_the_writable_root() {
+        let root = Path::new("/srv/claude-api/data/authbot");
+        assert_eq!(account_config_dir(root, "Seller+Test@example.com"),
+                   root.join(".claude-bot-seller-test-example-com"));
     }
 }
 

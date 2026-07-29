@@ -380,9 +380,10 @@ fn proxy_url(raw: &str) -> String {
 }
 
 async fn do_start_token(bot: &Bot, cfg: &Arc<Config>, chat: i64, email: &str, proxy: &str) -> bool {
-    let (cb, em, px) = (cfg.claude_bin.clone(), email.trim().to_string(), proxy.to_string());
+    let (cb, config_dir, em, px) = (cfg.claude_bin.clone(), cfg.claude_config_dir.clone(),
+                                    email.trim().to_string(), proxy.to_string());
     let _ = bot.send(chat, "⏳ Запускаю выпуск токена…").await;
-    match tokio::task::spawn_blocking(move || setup_token::start(chat, &em, &px, &cb)).await {
+    match tokio::task::spawn_blocking(move || setup_token::start(chat, &em, &px, &cb, &config_dir)).await {
         Ok(Ok(url)) => { let _ = bot.send(chat, &format!(
             "🔗 <b>Шаг 3/3.</b> Открой ссылку, залогинься нужным аккаунтом, затем пришли \
              <b>адрес callback целиком</b> (или строку <code>code#state</code>):\n\n{}", esc(&url))).await; true }
