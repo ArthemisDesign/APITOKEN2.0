@@ -403,6 +403,7 @@ for allowed in \
   'git push -u origin HEAD' \
   'git worktree add ~/wt/task -b feat/task origin/master' \
   './deploy/agent-merge.sh' \
+  './deploy/prune-merged.sh' \
   'cargo test --locked --workspace' \
   'grep -rn "git merge" BRANCHES.md' \
   'echo "run git checkout to switch branches"'; do
