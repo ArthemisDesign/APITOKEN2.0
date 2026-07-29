@@ -18,6 +18,7 @@ const MIGRATION_0002: &str = include_str!("../migrations_pg/0002_api_key_policie
 const MIGRATION_0003: &str = include_str!("../migrations_pg/0003_subscription_auth_health.sql");
 const MIGRATION_0004: &str = include_str!("../migrations_pg/0004_audit_hardening.sql");
 const MIGRATION_0005: &str = include_str!("../migrations_pg/0005_provider_attribution.sql");
+const MIGRATION_0006: &str = include_str!("../migrations_pg/0006_multi_discount_expand.sql");
 
 fn now() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -207,6 +208,8 @@ impl PgStore {
             .context("apply engine PostgreSQL migration 0004")?;
         tx.batch_execute(MIGRATION_0005)
             .context("apply engine PostgreSQL migration 0005")?;
+        tx.batch_execute(MIGRATION_0006)
+            .context("apply engine PostgreSQL migration 0006")?;
         tx.commit()?;
         Ok(())
     }
@@ -1680,6 +1683,60 @@ impl PgStore {
     /// cannot be safely attributed, so a non-zero `reserved_nano` aborts the migration.
     pub fn import_sqlite(&mut self, sqlite_path: &str) -> Result<ImportReport> {
         let sqlite = crate::open(sqlite_path)?;
+        let policy_state_rows: i64 = sqlite.query_row(
+            "SELECT
+                 (SELECT COUNT(*) FROM pricing_catalog_versions)
+               + (SELECT COUNT(*) FROM provider_switch_versions)
+               + (SELECT COUNT(*) FROM account_policy_versions)
+               + (SELECT COUNT(*) FROM account_policy_bindings)
+               + (SELECT COUNT(*) FROM funding_buckets)
+               + (SELECT COUNT(*) FROM pricing_admission_snapshots)
+               + (SELECT COUNT(*) FROM reservation_funding_allocations)
+               + (SELECT COUNT(*) FROM ledger_funding_allocations)",
+            [],
+            |row| row.get(0),
+        )?;
+        if policy_state_rows != 0 {
+            bail!(
+                "SQLite contains policy/funding state unsupported by the legacy importer; \
+                 use the policy-aware migration path"
+            );
+        }
+        let attribution_predicate = crate::SQLITE_ATTRIBUTION_COLUMNS
+            .iter()
+            .map(|(name, _)| format!("\"{name}\" IS NOT NULL"))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        for table in ["billing_settlement_outbox", "usage_events", "ledger"] {
+            let predicate = if table == "ledger" {
+                format!("({attribution_predicate}) OR official_nano IS NOT NULL")
+            } else {
+                attribution_predicate.clone()
+            };
+            let rows: i64 = sqlite.query_row(
+                &format!("SELECT COUNT(*) FROM \"{table}\" WHERE {predicate}"),
+                [],
+                |row| row.get(0),
+            )?;
+            if rows != 0 {
+                bail!(
+                    "SQLite contains policy attribution unsupported by the legacy importer; \
+                     use the policy-aware migration path"
+                );
+            }
+        }
+        let unresolved_request_lifecycle: i64 = sqlite.query_row(
+            "SELECT
+                 (SELECT COUNT(*) FROM billing_reservations
+                    WHERE state NOT IN ('settled','canceled'))
+               + (SELECT COUNT(*) FROM billing_settlement_outbox
+                    WHERE state <> 'done')",
+            [],
+            |row| row.get(0),
+        )?;
+        if unresolved_request_lifecycle != 0 {
+            bail!("SQLite contains unresolved request lifecycle rows; drain before migration");
+        }
         let source_totals = crate::billing_totals(&sqlite)?;
         if source_totals.reserved_nano != 0 {
             bail!(
@@ -1690,6 +1747,27 @@ impl PgStore {
 
         let mut tx = self.client.transaction()?;
         tx.query_one("SELECT pg_advisory_xact_lock(836214912671::bigint)", &[])?;
+        let target_policy_state_rows: i64 = tx
+            .query_one(
+                "SELECT (
+                     (SELECT COUNT(*) FROM pricing_catalog_versions)
+                   + (SELECT COUNT(*) FROM provider_switch_versions)
+                   + (SELECT COUNT(*) FROM account_policy_versions)
+                   + (SELECT COUNT(*) FROM account_policy_bindings)
+                   + (SELECT COUNT(*) FROM funding_buckets)
+                   + (SELECT COUNT(*) FROM pricing_admission_snapshots)
+                   + (SELECT COUNT(*) FROM reservation_funding_allocations)
+                   + (SELECT COUNT(*) FROM ledger_funding_allocations)
+                 )::bigint",
+                &[],
+            )?
+            .get(0);
+        if target_policy_state_rows != 0 {
+            bail!(
+                "PostgreSQL already contains policy/funding authority; \
+                 refusing the legacy SQLite import"
+            );
+        }
         let active_runtime: i64 = tx.query_one(
             "SELECT (SELECT COUNT(*) FROM reservations WHERE state NOT IN ('settled','canceled')) + \
              (SELECT COUNT(*) FROM capacity_leases WHERE state='active')",
@@ -1861,7 +1939,8 @@ impl PgStore {
         }
         {
             let mut stmt = sqlite.prepare(
-                "SELECT id,account_id,key,kind,amount_nano,ref,balance_after_nano,COALESCE(ts,0),model \
+                "SELECT id,account_id,key,kind,request_id,amount_nano,ref,balance_after_nano, \
+                 COALESCE(ts,0),model,provider \
                  FROM ledger ORDER BY id",
             )?;
             let rows = stmt.query_map([], |r| {
@@ -1870,19 +1949,47 @@ impl PgStore {
                     r.get::<_, String>(1)?,
                     r.get::<_, Option<String>>(2)?,
                     r.get::<_, String>(3)?,
-                    r.get::<_, i64>(4)?,
-                    r.get::<_, Option<String>>(5)?,
-                    r.get::<_, Option<i64>>(6)?,
-                    r.get::<_, i64>(7)?,
-                    r.get::<_, Option<String>>(8)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, i64>(5)?,
+                    r.get::<_, Option<String>>(6)?,
+                    r.get::<_, Option<i64>>(7)?,
+                    r.get::<_, i64>(8)?,
+                    r.get::<_, Option<String>>(9)?,
+                    r.get::<_, Option<String>>(10)?,
                 ))
             })?;
             for row in rows {
-                let (id, account_id, key, kind, amount, reference, balance, ts, model) = row?;
+                let (
+                    id,
+                    account_id,
+                    key,
+                    kind,
+                    request_id,
+                    amount,
+                    reference,
+                    balance,
+                    ts,
+                    model,
+                    provider,
+                ) = row?;
                 tx.execute(
-                    "INSERT INTO ledger(id,account_id,key,kind,amount_nano,ref,balance_after_nano,ts,model) \
-                     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-                    &[&id,&account_id,&key,&kind,&amount,&reference,&balance,&ts,&model],
+                    "INSERT INTO ledger(
+                         id,account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,
+                         ts,model,provider
+                     ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+                    &[
+                        &id,
+                        &account_id,
+                        &key,
+                        &kind,
+                        &request_id,
+                        &amount,
+                        &reference,
+                        &balance,
+                        &ts,
+                        &model,
+                        &provider,
+                    ],
                 )?;
                 report.ledger_rows += 1;
             }
@@ -1894,17 +2001,20 @@ impl PgStore {
         }
         {
             let mut stmt = sqlite.prepare(
-                "SELECT id,account_id,key,model,input_tokens,output_tokens,cache_read_tokens, \
-                 cache_write_5m_tokens,cache_write_1h_tokens,web_search_requests,real_nano,charge_nano,ref,ts \
+                "SELECT id,request_id,account_id,key,model,input_tokens,output_tokens, \
+                 cache_read_tokens,cache_write_5m_tokens,cache_write_1h_tokens,web_search_requests, \
+                 real_nano,charge_nano,ref,ts,speed,inference_geo,input_nano,output_nano, \
+                 cache_read_nano,cache_write_5m_nano,cache_write_1h_nano,web_search_nano, \
+                 priced_ts,COALESCE(NULLIF(provider,''),'anthropic') \
                  FROM usage_events ORDER BY id",
             )?;
             let rows = stmt.query_map([], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, String>(2)?,
                     r.get::<_, Option<String>>(3)?,
-                    r.get::<_, i64>(4)?,
+                    r.get::<_, Option<String>>(4)?,
                     r.get::<_, i64>(5)?,
                     r.get::<_, i64>(6)?,
                     r.get::<_, i64>(7)?,
@@ -1912,13 +2022,25 @@ impl PgStore {
                     r.get::<_, i64>(9)?,
                     r.get::<_, i64>(10)?,
                     r.get::<_, i64>(11)?,
-                    r.get::<_, Option<String>>(12)?,
-                    r.get::<_, i64>(13)?,
+                    r.get::<_, i64>(12)?,
+                    r.get::<_, Option<String>>(13)?,
+                    r.get::<_, i64>(14)?,
+                    r.get::<_, String>(15)?,
+                    r.get::<_, String>(16)?,
+                    r.get::<_, i64>(17)?,
+                    r.get::<_, i64>(18)?,
+                    r.get::<_, i64>(19)?,
+                    r.get::<_, i64>(20)?,
+                    r.get::<_, i64>(21)?,
+                    r.get::<_, i64>(22)?,
+                    r.get::<_, i64>(23)?,
+                    r.get::<_, String>(24)?,
                 ))
             })?;
             for row in rows {
                 let (
                     id,
+                    request_id,
                     account_id,
                     key,
                     model,
@@ -1932,12 +2054,55 @@ impl PgStore {
                     charge,
                     reference,
                     ts,
+                    speed,
+                    inference_geo,
+                    input_nano,
+                    output_nano,
+                    cache_read_nano,
+                    cache_write_5m_nano,
+                    cache_write_1h_nano,
+                    web_search_nano,
+                    priced_ts,
+                    provider,
                 ) = row?;
                 tx.execute(
-                    "INSERT INTO usage_events(id,account_id,key,model,input_tokens,output_tokens,cache_read_tokens, \
-                     cache_write_5m_tokens,cache_write_1h_tokens,web_search_requests,real_nano,charge_nano,ref,ts) \
-                     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
-                    &[&id,&account_id,&key,&model,&input,&output,&cache_read,&cache5,&cache1,&web,&real,&charge,&reference,&ts],
+                    "INSERT INTO usage_events(
+                         id,request_id,account_id,key,model,input_tokens,output_tokens,
+                         cache_read_tokens,cache_write_5m_tokens,cache_write_1h_tokens,
+                         web_search_requests,real_nano,charge_nano,ref,ts,speed,inference_geo,
+                         input_nano,output_nano,cache_read_nano,cache_write_5m_nano,
+                         cache_write_1h_nano,web_search_nano,priced_ts,provider
+                     ) VALUES(
+                         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+                         $18,$19,$20,$21,$22,$23,$24,$25
+                     )",
+                    &[
+                        &id,
+                        &request_id,
+                        &account_id,
+                        &key,
+                        &model,
+                        &input,
+                        &output,
+                        &cache_read,
+                        &cache5,
+                        &cache1,
+                        &web,
+                        &real,
+                        &charge,
+                        &reference,
+                        &ts,
+                        &speed,
+                        &inference_geo,
+                        &input_nano,
+                        &output_nano,
+                        &cache_read_nano,
+                        &cache_write_5m_nano,
+                        &cache_write_1h_nano,
+                        &web_search_nano,
+                        &priced_ts,
+                        &provider,
+                    ],
                 )?;
                 report.usage_rows += 1;
             }
@@ -2034,9 +2199,213 @@ mod tests {
         };
         let mut pg = PgStore::connect(&url).unwrap();
         pg.migrate().unwrap();
+        assert_eq!(pg.schema_version().unwrap(), 6);
+        pg.migrate().unwrap();
+        assert_eq!(pg.schema_version().unwrap(), 6);
         pg.client.batch_execute(
             "TRUNCATE settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances, \
              usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE",
+        ).unwrap();
+
+        let trigger_count: i64 = pg
+            .client
+            .query_one(
+                "SELECT COUNT(*)::bigint FROM pg_trigger \
+                 WHERE tgname IN ('pricing_snapshot_reservation_account', \
+                                  'pricing_snapshot_immutable_update', \
+                                  'ledger_funding_allocation_account') \
+                   AND NOT tgisinternal",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(trigger_count, 3);
+        let seeded_policy_rows: i64 = pg
+            .client
+            .query_one(
+                "SELECT (SELECT COUNT(*) FROM pricing_catalog_versions) \
+                      + (SELECT COUNT(*) FROM provider_switch_versions) \
+                      + (SELECT COUNT(*) FROM account_policy_versions) \
+                      + (SELECT COUNT(*) FROM funding_buckets) \
+                      + (SELECT COUNT(*) FROM pricing_admission_snapshots)",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(seeded_policy_rows, 0);
+
+        pg.client
+            .batch_execute(
+                "INSERT INTO accounts(id,mult_bp,status,created_ts,created) \
+                   VALUES('schema-a',2000,'active',1,''),('schema-b',3000,'active',1,''); \
+                 INSERT INTO reservations(
+                     request_id,account_id,key,hold_nano,balance_after_reserve_nano,
+                     owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts
+                 ) VALUES(
+                     'schema-request','schema-a','schema-key',100,0,
+                     'schema-engine',1,100,'reserved',1,1
+                 );",
+            )
+            .unwrap();
+        assert!(pg
+            .client
+            .execute(
+                "INSERT INTO pricing_admission_snapshots(
+                     request_id,account_id,snapshot_kind,schema_version,provider_id,
+                     requested_model_id,canonical_model_id,alias_generation,pricing_mode,
+                     rule_origin,payable_multiplier_bp,tariff_schedule_id,tariff_priced_ts,
+                     admission_ts,official_hold_nano,charged_hold_nano,premium_modifiers,
+                     snapshot_digest
+                 ) VALUES(
+                     'schema-request','schema-b','legacy_scalar',1,'anthropic',
+                     'claude-test','claude-test',1,'legacy_scalar','legacy',2000,
+                     'legacy-tariff',1,1,100,20,'{}'::jsonb,'snapshot'
+                 )",
+                &[],
+            )
+            .is_err());
+        pg.client
+            .execute(
+                "INSERT INTO pricing_admission_snapshots(
+                     request_id,account_id,snapshot_kind,schema_version,provider_id,
+                     requested_model_id,canonical_model_id,alias_generation,pricing_mode,
+                     rule_origin,payable_multiplier_bp,tariff_schedule_id,tariff_priced_ts,
+                     admission_ts,official_hold_nano,charged_hold_nano,premium_modifiers,
+                     snapshot_digest
+                 ) VALUES(
+                     'schema-request','schema-a','legacy_scalar',1,'anthropic',
+                     'claude-test','claude-test',1,'legacy_scalar','legacy',2000,
+                     'legacy-tariff',1,1,100,20,'{}'::jsonb,'snapshot'
+                 )",
+                &[],
+            )
+            .unwrap();
+        assert!(pg
+            .client
+            .execute(
+                "UPDATE pricing_admission_snapshots
+                 SET charged_hold_nano=21 WHERE request_id='schema-request'",
+                &[],
+            )
+            .is_err());
+        pg.client
+            .batch_execute(
+                "INSERT INTO funding_buckets(
+                     bucket_id,account_id,source_type,source_ref,eligibility,balance_nano,
+                     reserved_nano,spent_nano,version,status,created_ts,updated_ts
+                 ) VALUES
+                     ('schema-paid-a','schema-a','paid','primary','any',1000,0,0,1,'active',1,1),
+                     ('schema-paid-b','schema-b','paid','primary','any',1000,0,0,1,'active',1,1);
+                 INSERT INTO ledger(
+                     account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts
+                 ) VALUES('schema-b','schema-key','charge','schema-ledger-request',10,'schema-charge',990,1);",
+            )
+            .unwrap();
+        let ledger_id: i64 = pg
+            .client
+            .query_one(
+                "SELECT id FROM ledger WHERE request_id='schema-ledger-request'",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert!(pg
+            .client
+            .execute(
+                "INSERT INTO ledger_funding_allocations(
+                     ledger_id,account_id,bucket_id,bucket_source_type,bucket_version,
+                     direction,amount_nano
+                 ) VALUES($1,'schema-a','schema-paid-a','paid',1,'debit',10)",
+                &[&ledger_id],
+            )
+            .is_err());
+        pg.client
+            .execute(
+                "INSERT INTO ledger_funding_allocations(
+                     ledger_id,account_id,bucket_id,bucket_source_type,bucket_version,
+                     direction,amount_nano
+                 ) VALUES($1,'schema-b','schema-paid-b','paid',1,'debit',10)",
+                &[&ledger_id],
+            )
+            .unwrap();
+        pg.client
+            .batch_execute(
+                "INSERT INTO pricing_catalog_versions(
+                     product_id,generation,schema_version,capability_digest,content_digest,created_ts
+                 ) VALUES('schema-main',1,1,'capability','catalog',1);
+                 INSERT INTO account_policy_versions(
+                     account_id,effective_version,policy_id,policy_version,owner_type,owner_id,
+                     product_id,schema_version,catalog_generation,content_digest,
+                     replacement_locked,created_ts
+                 ) VALUES(
+                     'schema-a',1,'schema-policy',1,'global_b2c','global','schema-main',
+                     1,1,'policy',false,1
+                 );",
+            )
+            .unwrap();
+        assert!(pg
+            .client
+            .execute(
+                "INSERT INTO account_policy_rules(
+                     account_id,effective_version,rule_id,rule_digest,scope_type,provider_id,
+                     canonical_model_id,pricing_mode,rule_origin,discount_bps,
+                     payable_multiplier_bp,track_eligible,retention_eligible,commission_eligible
+                 ) VALUES(
+                     'schema-a',1,'missing-discount','rule','model','anthropic','claude-test',
+                     'discount','managed',NULL,5000,false,false,false
+                 )",
+                &[],
+            )
+            .is_err());
+        pg.client
+            .batch_execute(
+                "INSERT INTO pricing_catalog_entries(
+                     product_id,generation,provider_id,canonical_model_id,enabled
+                 ) VALUES('schema-main',1,'anthropic','claude-test',true);
+                 INSERT INTO provider_switch_versions(
+                     generation,schema_version,content_digest,created_ts
+                 ) VALUES(1,1,'switch',1);
+                 INSERT INTO account_policy_rules(
+                     account_id,effective_version,rule_id,rule_digest,scope_type,provider_id,
+                     canonical_model_id,pricing_mode,rule_origin,discount_bps,
+                     payable_multiplier_bp,track_eligible,retention_eligible,commission_eligible
+                 ) VALUES(
+                     'schema-a',1,'managed-rule','managed-rule-digest','provider','anthropic',NULL,
+                     'discount','managed',6000,4000,false,false,false
+                 );
+                 INSERT INTO reservations(
+                     request_id,account_id,key,hold_nano,balance_after_reserve_nano,
+                     owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts
+                 ) VALUES(
+                     'schema-policy-request','schema-a','schema-key',100,0,
+                     'schema-engine',1,100,'reserved',1,1
+                 );
+                 INSERT INTO pricing_admission_snapshots(
+                     request_id,account_id,snapshot_kind,schema_version,provider_id,product_id,
+                     account_class,requested_model_id,canonical_model_id,alias_generation,
+                     rule_id,rule_digest,rule_scope,pricing_mode,rule_origin,discount_bps,
+                     payable_multiplier_bp,policy_id,policy_version,effective_policy_version,
+                     policy_digest,catalog_generation,switch_generation,tariff_schedule_id,
+                     tariff_priced_ts,admission_ts,official_hold_nano,charged_hold_nano,
+                     track_eligible,retention_eligible,commission_eligible,premium_modifiers,
+                     snapshot_digest
+                 ) VALUES(
+                     'schema-policy-request','schema-a','policy_v1',1,'anthropic','schema-main',
+                     'b2c','claude-test','claude-test',1,'managed-rule','managed-rule-digest',
+                     'provider','discount','managed',6000,4000,'schema-policy',1,1,'policy',1,1,
+                     'tariff',1,1,100,40,false,false,false,'{}'::jsonb,'policy-snapshot'
+                 );",
+            )
+            .unwrap();
+        pg.client.batch_execute(
+            "TRUNCATE settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances, \
+             usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE; \
+             DELETE FROM pricing_catalog_entries; \
+             DELETE FROM pricing_catalog_heads; \
+             DELETE FROM pricing_catalog_versions; \
+             DELETE FROM provider_switch_entries; \
+             DELETE FROM provider_switch_head; \
+             DELETE FROM provider_switch_versions;",
         ).unwrap();
 
         // Exercise the real one-time SQLite importer before the transactional fault matrix.
@@ -2060,7 +2429,26 @@ mod tests {
                 1_000,
                 200,
                 Some("import-charge"),
-                None,
+                Some(&UsageEventInput {
+                    model: "gpt-import-test".into(),
+                    provider: crate::PROVIDER_OPENAI.into(),
+                    input_tokens: 11,
+                    output_tokens: 12,
+                    cache_read_tokens: 13,
+                    cache_write_5m_tokens: 14,
+                    cache_write_1h_tokens: 15,
+                    web_search_requests: 16,
+                    real_nano: 180,
+                    speed: "fast".into(),
+                    inference_geo: "us-east".into(),
+                    input_nano: 21,
+                    output_nano: 22,
+                    cache_read_nano: 23,
+                    cache_write_5m_nano: 24,
+                    cache_write_1h_nano: 25,
+                    web_search_nano: 65,
+                    priced_ts: 123_456,
+                }),
             )
             .unwrap();
             crate::save_pool_state(
@@ -2087,8 +2475,149 @@ mod tests {
             ),
             (4_800, 200, 0)
         );
+        let imported_usage = pg
+            .client
+            .query_one(
+                "SELECT request_id,account_id,key,model,provider,
+                        input_tokens,output_tokens,cache_read_tokens,
+                        cache_write_5m_tokens,cache_write_1h_tokens,web_search_requests,
+                        real_nano,charge_nano,ref,speed,inference_geo,
+                        input_nano,output_nano,cache_read_nano,cache_write_5m_nano,
+                        cache_write_1h_nano,web_search_nano,priced_ts
+                 FROM usage_events",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(imported_usage.get::<_, Option<String>>(0), None);
+        assert_eq!(imported_usage.get::<_, String>(1), "import-acct");
+        assert_eq!(
+            imported_usage.get::<_, Option<String>>(2).as_deref(),
+            Some("import-key")
+        );
+        assert_eq!(
+            (
+                imported_usage.get::<_, Option<String>>(3).as_deref(),
+                imported_usage.get::<_, String>(4).as_str()
+            ),
+            (Some("gpt-import-test"), crate::PROVIDER_OPENAI)
+        );
+        assert_eq!(
+            (
+                imported_usage.get::<_, i64>(5),
+                imported_usage.get::<_, i64>(6),
+                imported_usage.get::<_, i64>(7),
+                imported_usage.get::<_, i64>(8),
+                imported_usage.get::<_, i64>(9),
+                imported_usage.get::<_, i64>(10)
+            ),
+            (11, 12, 13, 14, 15, 16)
+        );
+        assert_eq!(
+            (
+                imported_usage.get::<_, i64>(11),
+                imported_usage.get::<_, i64>(12),
+                imported_usage.get::<_, Option<String>>(13).as_deref(),
+                imported_usage.get::<_, String>(14).as_str(),
+                imported_usage.get::<_, String>(15).as_str()
+            ),
+            (180, 200, Some("import-charge"), "fast", "us-east")
+        );
+        assert_eq!(
+            (
+                imported_usage.get::<_, i64>(16),
+                imported_usage.get::<_, i64>(17),
+                imported_usage.get::<_, i64>(18),
+                imported_usage.get::<_, i64>(19),
+                imported_usage.get::<_, i64>(20),
+                imported_usage.get::<_, i64>(21),
+                imported_usage.get::<_, i64>(22)
+            ),
+            (21, 22, 23, 24, 25, 65, 123_456)
+        );
+        pg.client
+            .execute(
+                "INSERT INTO funding_buckets(
+                     bucket_id,account_id,source_type,source_ref,eligibility,balance_nano,
+                     reserved_nano,spent_nano,version,status,created_ts,updated_ts
+                 ) VALUES(
+                     'target-policy-bucket','import-acct','paid','primary','any',
+                     4800,0,200,1,'active',1,1
+                 )",
+                &[],
+            )
+            .unwrap();
+        assert!(
+            pg.import_sqlite(&sqlite_path_s).is_err(),
+            "materialized PostgreSQL policy/funding authority must block the legacy importer"
+        );
+        pg.client
+            .execute(
+                "DELETE FROM funding_buckets WHERE bucket_id='target-policy-bucket'",
+                &[],
+            )
+            .unwrap();
         {
             let sqlite = crate::open(&sqlite_path_s).unwrap();
+            sqlite
+                .execute(
+                    "INSERT INTO funding_buckets(
+                         bucket_id,account_id,source_type,source_ref,eligibility,balance_nano,
+                         reserved_nano,spent_nano,version,status,created_ts,updated_ts
+                     ) VALUES(
+                         'import-policy-bucket','import-acct','paid','primary','any',
+                         4800,0,200,1,'active',1,1
+                     )",
+                    [],
+                )
+                .unwrap();
+        }
+        assert!(
+            pg.import_sqlite(&sqlite_path_s).is_err(),
+            "policy/funding state must require the policy-aware migration path"
+        );
+        let preserved_account = pg
+            .client
+            .query_one(
+                "SELECT balance_nano,spent_nano,reserved_nano FROM accounts WHERE id='import-acct'",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                preserved_account.get::<_, i64>(0),
+                preserved_account.get::<_, i64>(1),
+                preserved_account.get::<_, i64>(2)
+            ),
+            (4_800, 200, 0),
+            "a failed policy-aware preflight must not delete PostgreSQL authority"
+        );
+        {
+            let sqlite = crate::open(&sqlite_path_s).unwrap();
+            sqlite
+                .execute(
+                    "DELETE FROM funding_buckets WHERE bucket_id='import-policy-bucket'",
+                    [],
+                )
+                .unwrap();
+            sqlite
+                .execute(
+                    "UPDATE ledger SET official_nano=180 WHERE ref='import-charge'",
+                    [],
+                )
+                .unwrap();
+        }
+        assert!(
+            pg.import_sqlite(&sqlite_path_s).is_err(),
+            "new official-cost attribution must require the policy-aware migration path"
+        );
+        {
+            let sqlite = crate::open(&sqlite_path_s).unwrap();
+            sqlite
+                .execute(
+                    "UPDATE ledger SET official_nano=NULL WHERE ref='import-charge'",
+                    [],
+                )
+                .unwrap();
             crate::account_reserve(&sqlite, "import-acct", 100).unwrap();
         }
         assert!(

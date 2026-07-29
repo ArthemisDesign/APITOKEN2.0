@@ -50,6 +50,472 @@ const COLS: &[(&str, &str)] = &[
     ("auth_token_fp", "TEXT"),
 ];
 
+const PRICING_POLICY_SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS pricing_catalog_versions (
+    product_id TEXT NOT NULL CHECK (product_id <> ''),
+    generation INTEGER NOT NULL CHECK (generation > 0),
+    schema_version INTEGER NOT NULL CHECK (schema_version > 0),
+    capability_digest TEXT NOT NULL CHECK (capability_digest <> ''),
+    content_digest TEXT NOT NULL CHECK (content_digest <> ''),
+    created_ts INTEGER NOT NULL,
+    PRIMARY KEY (product_id, generation)
+);
+CREATE TABLE IF NOT EXISTS pricing_catalog_entries (
+    product_id TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    provider_id TEXT NOT NULL CHECK (provider_id <> ''),
+    canonical_model_id TEXT NOT NULL CHECK (canonical_model_id <> ''),
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    PRIMARY KEY (product_id, generation, provider_id, canonical_model_id),
+    FOREIGN KEY (product_id, generation)
+        REFERENCES pricing_catalog_versions(product_id, generation) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS pricing_catalog_entries_enabled
+    ON pricing_catalog_entries(product_id, generation, provider_id)
+    WHERE enabled = 1;
+CREATE TABLE IF NOT EXISTS pricing_catalog_heads (
+    product_id TEXT PRIMARY KEY CHECK (product_id <> ''),
+    active_generation INTEGER NOT NULL CHECK (active_generation > 0),
+    updated_ts INTEGER NOT NULL,
+    FOREIGN KEY (product_id, active_generation)
+        REFERENCES pricing_catalog_versions(product_id, generation) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS provider_switch_versions (
+    generation INTEGER PRIMARY KEY CHECK (generation > 0),
+    schema_version INTEGER NOT NULL CHECK (schema_version > 0),
+    content_digest TEXT NOT NULL CHECK (content_digest <> ''),
+    created_ts INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS provider_switch_entries (
+    generation INTEGER NOT NULL REFERENCES provider_switch_versions(generation) ON DELETE CASCADE,
+    provider_id TEXT NOT NULL CHECK (provider_id <> ''),
+    scope_type TEXT NOT NULL CHECK (scope_type IN ('master', 'product', 'segment')),
+    product_id TEXT NOT NULL DEFAULT '',
+    segment TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    PRIMARY KEY (generation, provider_id, scope_type, product_id, segment),
+    CHECK (
+        (scope_type = 'master' AND product_id = '' AND segment = '')
+        OR (scope_type = 'product' AND product_id <> '' AND segment = '')
+        OR (
+            scope_type = 'segment'
+            AND product_id <> ''
+            AND segment IN ('b2c', 'b2b')
+        )
+    )
+);
+CREATE TABLE IF NOT EXISTS provider_switch_head (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    active_generation INTEGER NOT NULL
+        REFERENCES provider_switch_versions(generation) ON DELETE RESTRICT,
+    updated_ts INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS account_policy_versions (
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    effective_version INTEGER NOT NULL CHECK (effective_version > 0),
+    policy_id TEXT NOT NULL CHECK (policy_id <> ''),
+    policy_version INTEGER NOT NULL CHECK (policy_version > 0),
+    owner_type TEXT NOT NULL
+        CHECK (owner_type IN ('global_b2c', 'b2b_client', 'openkeys', 'service')),
+    owner_id TEXT NOT NULL CHECK (owner_id <> ''),
+    product_id TEXT NOT NULL CHECK (product_id <> ''),
+    schema_version INTEGER NOT NULL CHECK (schema_version > 0),
+    catalog_generation INTEGER NOT NULL CHECK (catalog_generation > 0),
+    content_digest TEXT NOT NULL CHECK (content_digest <> ''),
+    replacement_locked INTEGER NOT NULL CHECK (replacement_locked IN (0, 1)),
+    created_ts INTEGER NOT NULL,
+    PRIMARY KEY (account_id, effective_version),
+    UNIQUE (account_id, effective_version, product_id),
+    UNIQUE (
+        account_id,
+        effective_version,
+        policy_id,
+        policy_version,
+        product_id,
+        catalog_generation,
+        content_digest
+    ),
+    FOREIGN KEY (product_id, catalog_generation)
+        REFERENCES pricing_catalog_versions(product_id, generation) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS account_policy_versions_policy
+    ON account_policy_versions(policy_id, policy_version);
+CREATE TABLE IF NOT EXISTS account_policy_rules (
+    account_id TEXT NOT NULL,
+    effective_version INTEGER NOT NULL,
+    rule_id TEXT NOT NULL CHECK (rule_id <> ''),
+    rule_digest TEXT NOT NULL CHECK (rule_digest <> ''),
+    scope_type TEXT NOT NULL CHECK (scope_type IN ('provider', 'model')),
+    provider_id TEXT NOT NULL CHECK (provider_id <> ''),
+    canonical_model_id TEXT,
+    pricing_mode TEXT NOT NULL CHECK (pricing_mode IN ('track', 'discount')),
+    rule_origin TEXT NOT NULL CHECK (rule_origin IN ('managed', 'legacy')),
+    discount_bps INTEGER,
+    payable_multiplier_bp INTEGER NOT NULL CHECK (payable_multiplier_bp BETWEEN 0 AND 10000),
+    track_eligible INTEGER NOT NULL CHECK (track_eligible IN (0, 1)),
+    retention_eligible INTEGER NOT NULL CHECK (retention_eligible IN (0, 1)),
+    commission_eligible INTEGER NOT NULL CHECK (commission_eligible IN (0, 1)),
+    PRIMARY KEY (account_id, effective_version, rule_id),
+    UNIQUE (account_id, effective_version, rule_id, rule_digest),
+    FOREIGN KEY (account_id, effective_version)
+        REFERENCES account_policy_versions(account_id, effective_version) ON DELETE CASCADE,
+    CHECK (
+        (scope_type = 'provider' AND canonical_model_id IS NULL)
+        OR (
+            scope_type = 'model'
+            AND canonical_model_id IS NOT NULL
+            AND canonical_model_id <> ''
+        )
+    ),
+    CHECK (
+        (
+            pricing_mode = 'track'
+            AND rule_origin = 'managed'
+            AND discount_bps IS NULL
+        )
+        OR (
+            pricing_mode = 'discount'
+            AND rule_origin = 'managed'
+            AND discount_bps IS NOT NULL
+            AND discount_bps BETWEEN 0 AND 9500
+            AND discount_bps % 100 = 0
+            AND payable_multiplier_bp = 10000 - discount_bps
+        )
+        OR (
+            pricing_mode = 'discount'
+            AND rule_origin = 'legacy'
+            AND discount_bps IS NULL
+            AND payable_multiplier_bp BETWEEN 1 AND 10000
+        )
+    ),
+    CHECK (
+        (
+            pricing_mode = 'track'
+            AND track_eligible = 1
+            AND retention_eligible = 1
+        )
+        OR (
+            pricing_mode = 'discount'
+            AND track_eligible = 0
+            AND retention_eligible = 0
+            AND commission_eligible = 0
+        )
+    ),
+    CHECK (commission_eligible = 0 OR pricing_mode = 'track')
+);
+CREATE UNIQUE INDEX IF NOT EXISTS account_policy_rules_provider_scope
+    ON account_policy_rules(account_id, effective_version, provider_id)
+    WHERE scope_type = 'provider';
+CREATE UNIQUE INDEX IF NOT EXISTS account_policy_rules_model_scope
+    ON account_policy_rules(account_id, effective_version, provider_id, canonical_model_id)
+    WHERE scope_type = 'model';
+CREATE TABLE IF NOT EXISTS account_policy_bindings (
+    account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+    product_id TEXT NOT NULL CHECK (product_id <> ''),
+    account_class TEXT NOT NULL CHECK (account_class IN ('b2c', 'b2b', 'openkeys', 'service')),
+    active_effective_version INTEGER,
+    policy_enforcement TEXT NOT NULL
+        CHECK (policy_enforcement IN ('legacy_scalar', 'shadow', 'strict')),
+    funding_enforcement TEXT NOT NULL
+        CHECK (funding_enforcement IN ('legacy_single', 'shadow', 'strict')),
+    reconciliation_state TEXT NOT NULL
+        CHECK (reconciliation_state IN ('pending', 'verified', 'exception')),
+    updated_ts INTEGER NOT NULL,
+    FOREIGN KEY (account_id, active_effective_version, product_id)
+        REFERENCES account_policy_versions(account_id, effective_version, product_id)
+        ON DELETE RESTRICT,
+    CHECK (policy_enforcement <> 'strict' OR active_effective_version IS NOT NULL),
+    CHECK (funding_enforcement <> 'strict' OR reconciliation_state = 'verified')
+);
+CREATE INDEX IF NOT EXISTS account_policy_bindings_enforcement
+    ON account_policy_bindings(policy_enforcement, funding_enforcement, reconciliation_state);
+
+CREATE TABLE IF NOT EXISTS funding_buckets (
+    bucket_id TEXT PRIMARY KEY CHECK (bucket_id <> ''),
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    source_type TEXT NOT NULL CHECK (source_type <> ''),
+    source_ref TEXT NOT NULL DEFAULT '',
+    eligibility TEXT NOT NULL CHECK (eligibility IN ('any', 'track', 'none')),
+    balance_nano INTEGER NOT NULL,
+    reserved_nano INTEGER NOT NULL CHECK (reserved_nano >= 0),
+    spent_nano INTEGER NOT NULL CHECK (spent_nano >= 0),
+    version INTEGER NOT NULL CHECK (version > 0),
+    status TEXT NOT NULL CHECK (status IN ('active', 'exhausted', 'retired')),
+    created_ts INTEGER NOT NULL,
+    updated_ts INTEGER NOT NULL,
+    UNIQUE (account_id, source_type, source_ref),
+    UNIQUE (bucket_id, account_id),
+    UNIQUE (bucket_id, account_id, source_type),
+    CHECK (source_type = 'paid' OR balance_nano >= 0),
+    CHECK (source_type <> 'paid' OR eligibility = 'any'),
+    CHECK (source_type <> 'welcome_track_bonus' OR eligibility = 'track'),
+    CHECK (source_type <> 'legacy_restricted' OR eligibility = 'none')
+);
+CREATE INDEX IF NOT EXISTS funding_buckets_account_status
+    ON funding_buckets(account_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS funding_buckets_one_welcome
+    ON funding_buckets(account_id)
+    WHERE source_type = 'welcome_track_bonus';
+
+CREATE TABLE IF NOT EXISTS pricing_admission_snapshots (
+    request_id TEXT PRIMARY KEY REFERENCES billing_reservations(request_id) ON DELETE CASCADE,
+    account_id TEXT NOT NULL,
+    snapshot_kind TEXT NOT NULL CHECK (snapshot_kind IN ('policy_v1', 'legacy_scalar')),
+    schema_version INTEGER NOT NULL CHECK (schema_version > 0),
+    provider_id TEXT NOT NULL CHECK (provider_id <> ''),
+    product_id TEXT,
+    account_class TEXT CHECK (account_class IN ('b2c', 'b2b', 'openkeys', 'service')),
+    requested_model_id TEXT NOT NULL CHECK (requested_model_id <> ''),
+    canonical_model_id TEXT NOT NULL CHECK (canonical_model_id <> ''),
+    alias_generation INTEGER NOT NULL CHECK (alias_generation > 0),
+    rule_id TEXT,
+    rule_digest TEXT,
+    rule_scope TEXT CHECK (rule_scope IN ('provider', 'model')),
+    pricing_mode TEXT NOT NULL CHECK (pricing_mode IN ('track', 'discount', 'legacy_scalar')),
+    rule_origin TEXT NOT NULL CHECK (rule_origin IN ('managed', 'legacy')),
+    discount_bps INTEGER,
+    payable_multiplier_bp INTEGER NOT NULL CHECK (payable_multiplier_bp BETWEEN 0 AND 10000),
+    policy_id TEXT,
+    policy_version INTEGER CHECK (policy_version > 0),
+    effective_policy_version INTEGER CHECK (effective_policy_version > 0),
+    policy_digest TEXT,
+    catalog_generation INTEGER CHECK (catalog_generation > 0),
+    switch_generation INTEGER CHECK (switch_generation > 0),
+    tariff_schedule_id TEXT NOT NULL CHECK (tariff_schedule_id <> ''),
+    tariff_priced_ts INTEGER NOT NULL CHECK (tariff_priced_ts > 0),
+    admission_ts INTEGER NOT NULL CHECK (admission_ts > 0),
+    official_hold_nano INTEGER NOT NULL CHECK (official_hold_nano >= 0),
+    charged_hold_nano INTEGER NOT NULL CHECK (charged_hold_nano >= 0),
+    track_eligible INTEGER CHECK (track_eligible IN (0, 1)),
+    retention_eligible INTEGER CHECK (retention_eligible IN (0, 1)),
+    commission_eligible INTEGER CHECK (commission_eligible IN (0, 1)),
+    premium_modifiers TEXT NOT NULL
+        CHECK (json_valid(premium_modifiers) AND json_type(premium_modifiers) = 'object'),
+    snapshot_digest TEXT NOT NULL CHECK (snapshot_digest <> ''),
+    UNIQUE (request_id, account_id),
+    FOREIGN KEY (
+        account_id,
+        effective_policy_version,
+        policy_id,
+        policy_version,
+        product_id,
+        catalog_generation,
+        policy_digest
+    )
+        REFERENCES account_policy_versions(
+            account_id,
+            effective_version,
+            policy_id,
+            policy_version,
+            product_id,
+            catalog_generation,
+            content_digest
+        ) ON DELETE RESTRICT,
+    FOREIGN KEY (account_id, effective_policy_version, rule_id, rule_digest)
+        REFERENCES account_policy_rules(
+            account_id,
+            effective_version,
+            rule_id,
+            rule_digest
+        ) ON DELETE RESTRICT,
+    FOREIGN KEY (product_id, catalog_generation, provider_id, canonical_model_id)
+        REFERENCES pricing_catalog_entries(
+            product_id,
+            generation,
+            provider_id,
+            canonical_model_id
+        ) ON DELETE RESTRICT,
+    FOREIGN KEY (switch_generation)
+        REFERENCES provider_switch_versions(generation) ON DELETE RESTRICT,
+    CHECK (
+        (
+            snapshot_kind = 'policy_v1'
+            AND product_id IS NOT NULL
+            AND product_id <> ''
+            AND account_class IS NOT NULL
+            AND rule_id IS NOT NULL
+            AND rule_id <> ''
+            AND rule_digest IS NOT NULL
+            AND rule_digest <> ''
+            AND rule_scope IS NOT NULL
+            AND policy_id IS NOT NULL
+            AND policy_id <> ''
+            AND policy_version IS NOT NULL
+            AND effective_policy_version IS NOT NULL
+            AND policy_digest IS NOT NULL
+            AND policy_digest <> ''
+            AND catalog_generation IS NOT NULL
+            AND switch_generation IS NOT NULL
+            AND track_eligible IS NOT NULL
+            AND retention_eligible IS NOT NULL
+            AND commission_eligible IS NOT NULL
+            AND (
+                (
+                    pricing_mode = 'track'
+                    AND rule_origin = 'managed'
+                    AND discount_bps IS NULL
+                    AND track_eligible = 1
+                    AND retention_eligible = 1
+                )
+                OR (
+                    pricing_mode = 'discount'
+                    AND rule_origin = 'managed'
+                    AND discount_bps IS NOT NULL
+                    AND discount_bps BETWEEN 0 AND 9500
+                    AND discount_bps % 100 = 0
+                    AND payable_multiplier_bp = 10000 - discount_bps
+                    AND track_eligible = 0
+                    AND retention_eligible = 0
+                    AND commission_eligible = 0
+                )
+                OR (
+                    pricing_mode = 'discount'
+                    AND rule_origin = 'legacy'
+                    AND discount_bps IS NULL
+                    AND payable_multiplier_bp BETWEEN 1 AND 10000
+                    AND track_eligible = 0
+                    AND retention_eligible = 0
+                    AND commission_eligible = 0
+                )
+            )
+        )
+        OR (
+            snapshot_kind = 'legacy_scalar'
+            AND product_id IS NULL
+            AND account_class IS NULL
+            AND rule_id IS NULL
+            AND rule_digest IS NULL
+            AND rule_scope IS NULL
+            AND pricing_mode = 'legacy_scalar'
+            AND rule_origin = 'legacy'
+            AND discount_bps IS NULL
+            AND policy_id IS NULL
+            AND policy_version IS NULL
+            AND effective_policy_version IS NULL
+            AND policy_digest IS NULL
+            AND catalog_generation IS NULL
+            AND switch_generation IS NULL
+            AND track_eligible IS NULL
+            AND retention_eligible IS NULL
+            AND commission_eligible IS NULL
+        )
+    ),
+    CHECK (commission_eligible IS NOT 1 OR pricing_mode = 'track')
+);
+CREATE INDEX IF NOT EXISTS pricing_admission_snapshots_account
+    ON pricing_admission_snapshots(account_id, admission_ts);
+CREATE TRIGGER IF NOT EXISTS pricing_snapshot_reservation_account
+BEFORE INSERT ON pricing_admission_snapshots
+FOR EACH ROW
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM billing_reservations
+    WHERE request_id = NEW.request_id
+      AND account_id = NEW.account_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'pricing snapshot account does not match reservation');
+END;
+CREATE TRIGGER IF NOT EXISTS pricing_snapshot_immutable_update
+BEFORE UPDATE ON pricing_admission_snapshots
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'pricing admission snapshots are immutable');
+END;
+CREATE TABLE IF NOT EXISTS reservation_funding_allocations (
+    request_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    bucket_id TEXT NOT NULL,
+    bucket_version INTEGER NOT NULL CHECK (bucket_version > 0),
+    reserved_nano INTEGER NOT NULL CHECK (reserved_nano >= 0),
+    charged_nano INTEGER CHECK (charged_nano IS NULL OR charged_nano >= 0),
+    released_nano INTEGER CHECK (released_nano IS NULL OR released_nano >= 0),
+    PRIMARY KEY (request_id, bucket_id),
+    FOREIGN KEY (request_id, account_id)
+        REFERENCES pricing_admission_snapshots(request_id, account_id) ON DELETE CASCADE,
+    FOREIGN KEY (bucket_id, account_id)
+        REFERENCES funding_buckets(bucket_id, account_id) ON DELETE RESTRICT,
+    CHECK (released_nano IS NULL OR released_nano <= reserved_nano)
+);
+CREATE INDEX IF NOT EXISTS reservation_funding_allocations_bucket
+    ON reservation_funding_allocations(bucket_id, request_id);
+CREATE TABLE IF NOT EXISTS ledger_funding_allocations (
+    ledger_id INTEGER NOT NULL REFERENCES ledger(id) ON DELETE CASCADE,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    bucket_id TEXT NOT NULL,
+    bucket_source_type TEXT NOT NULL CHECK (bucket_source_type <> ''),
+    bucket_version INTEGER NOT NULL CHECK (bucket_version > 0),
+    direction TEXT NOT NULL CHECK (direction IN ('debit', 'credit')),
+    amount_nano INTEGER NOT NULL CHECK (amount_nano >= 0),
+    PRIMARY KEY (ledger_id, bucket_id),
+    FOREIGN KEY (bucket_id, account_id, bucket_source_type)
+        REFERENCES funding_buckets(bucket_id, account_id, source_type) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS ledger_funding_allocations_bucket
+    ON ledger_funding_allocations(bucket_id, ledger_id);
+CREATE TRIGGER IF NOT EXISTS ledger_funding_allocation_account
+BEFORE INSERT ON ledger_funding_allocations
+FOR EACH ROW
+WHEN NOT EXISTS (
+    SELECT 1 FROM ledger
+    WHERE id = NEW.ledger_id
+      AND account_id = NEW.account_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'funding allocation account does not match ledger');
+END;
+CREATE TRIGGER IF NOT EXISTS ledger_funding_allocation_account_update
+BEFORE UPDATE ON ledger_funding_allocations
+FOR EACH ROW
+WHEN NOT EXISTS (
+    SELECT 1 FROM ledger
+    WHERE id = NEW.ledger_id
+      AND account_id = NEW.account_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'funding allocation account does not match ledger');
+END;
+"#;
+
+const SQLITE_ATTRIBUTION_COLUMNS: &[(&str, &str)] = &[
+    ("attribution_schema_version", "INTEGER"),
+    ("snapshot_kind", "TEXT"),
+    ("product_id", "TEXT"),
+    ("account_class", "TEXT"),
+    ("requested_model_id", "TEXT"),
+    ("canonical_model_id", "TEXT"),
+    ("served_model_id", "TEXT"),
+    ("served_canonical_model_id", "TEXT"),
+    ("billing_invariant_code", "TEXT"),
+    ("alias_generation", "INTEGER"),
+    ("rule_id", "TEXT"),
+    ("rule_digest", "TEXT"),
+    ("rule_scope", "TEXT"),
+    ("pricing_mode", "TEXT"),
+    ("rule_origin", "TEXT"),
+    ("discount_bps", "INTEGER"),
+    ("payable_multiplier_bp", "INTEGER"),
+    ("policy_id", "TEXT"),
+    ("policy_version", "INTEGER"),
+    ("effective_policy_version", "INTEGER"),
+    ("policy_digest", "TEXT"),
+    ("catalog_generation", "INTEGER"),
+    ("switch_generation", "INTEGER"),
+    ("tariff_schedule_id", "TEXT"),
+    ("tariff_priced_ts", "INTEGER"),
+    ("official_cost_json", "TEXT"),
+    ("paid_funded_nano", "INTEGER"),
+    ("bonus_funded_nano", "INTEGER"),
+    ("other_funded_nano", "INTEGER"),
+    ("funding_allocation_json", "TEXT"),
+    ("track_eligible", "INTEGER"),
+    ("retention_eligible", "INTEGER"),
+    ("commission_eligible", "INTEGER"),
+    ("snapshot_digest", "TEXT"),
+];
+
 pub fn open(path: &str) -> Result<Connection> {
     if let Some(dir) = std::path::Path::new(path).parent() {
         if !dir.as_os_str().is_empty() {
@@ -61,7 +527,7 @@ pub fn open(path: &str) -> Result<Connection> {
     // synchronous=FULL makes an acknowledged commit durable across OS crashes and power loss.
     // Performance-sensitive nonfinancial state should move to a separate database if needed.
     c.execute_batch(
-        "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; \
+        "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; \
                      PRAGMA busy_timeout=5000; PRAGMA wal_autocheckpoint=1000;",
     )?;
     c.execute(
@@ -232,7 +698,132 @@ pub fn open(path: &str) -> Result<Connection> {
          CREATE INDEX IF NOT EXISTS billing_outbox_pending \
            ON billing_settlement_outbox(state,next_attempt_ts,created_ts);"
     )?;
+    migrate_pricing_policy_schema(&c)?;
     Ok(c)
+}
+
+fn ensure_sqlite_column(
+    conn: &Connection,
+    table: &str,
+    name: &str,
+    column_type: &str,
+) -> Result<()> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2)",
+        rusqlite::params![table, name],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        conn.execute_batch(&format!(
+            "ALTER TABLE \"{table}\" ADD COLUMN \"{name}\" {column_type}"
+        ))
+        .with_context(|| format!("add SQLite policy column {table}.{name}"))?;
+    }
+    Ok(())
+}
+
+fn migrate_pricing_policy_schema(conn: &Connection) -> Result<()> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .context("begin SQLite multi-discount schema transaction")?;
+    install_pricing_policy_schema(&tx)?;
+    tx.commit()
+        .context("commit SQLite multi-discount schema transaction")
+}
+
+fn install_pricing_policy_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch(PRICING_POLICY_SCHEMA_SQL)
+        .context("install SQLite multi-discount foundation schema")?;
+
+    ensure_sqlite_column(conn, "billing_settlement_outbox", "provider", "TEXT")?;
+    ensure_sqlite_column(conn, "ledger", "provider", "TEXT")?;
+    ensure_sqlite_column(conn, "ledger", "official_nano", "INTEGER")?;
+    ensure_sqlite_column(conn, "ledger", "request_id", "TEXT")?;
+    ensure_sqlite_column(conn, "usage_events", "request_id", "TEXT")?;
+    for table in ["billing_settlement_outbox", "usage_events", "ledger"] {
+        for (name, column_type) in SQLITE_ATTRIBUTION_COLUMNS {
+            ensure_sqlite_column(conn, table, name, column_type)?;
+        }
+    }
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ledger_request_once \
+           ON ledger(kind,request_id) WHERE request_id IS NOT NULL; \
+         CREATE UNIQUE INDEX IF NOT EXISTS usage_events_request_once \
+           ON usage_events(request_id) WHERE request_id IS NOT NULL;",
+    )
+    .context("install SQLite policy attribution indexes")?;
+    install_sqlite_attribution_guards(conn)?;
+    Ok(())
+}
+
+fn install_sqlite_attribution_guards(conn: &Connection) -> Result<()> {
+    const COMMON_INVALID: &str = "
+        (NEW.attribution_schema_version IS NOT NULL AND NEW.attribution_schema_version <= 0)
+        OR (NEW.snapshot_kind IS NOT NULL
+            AND NEW.snapshot_kind NOT IN ('policy_v1', 'legacy_scalar'))
+        OR (NEW.alias_generation IS NOT NULL AND NEW.alias_generation <= 0)
+        OR (NEW.served_canonical_model_id = '')
+        OR (NEW.billing_invariant_code = '')
+        OR (NEW.pricing_mode IS NOT NULL
+            AND NEW.pricing_mode NOT IN ('track', 'discount', 'legacy_scalar'))
+        OR (NEW.rule_origin IS NOT NULL AND NEW.rule_origin NOT IN ('managed', 'legacy'))
+        OR (NEW.discount_bps IS NOT NULL
+            AND (NEW.discount_bps < 0 OR NEW.discount_bps > 9500
+                 OR NEW.discount_bps % 100 <> 0))
+        OR (NEW.payable_multiplier_bp IS NOT NULL
+            AND (NEW.payable_multiplier_bp < 0 OR NEW.payable_multiplier_bp > 10000))
+        OR (NEW.track_eligible IS NOT NULL AND NEW.track_eligible NOT IN (0, 1))
+        OR (NEW.retention_eligible IS NOT NULL AND NEW.retention_eligible NOT IN (0, 1))
+        OR (NEW.commission_eligible IS NOT NULL AND NEW.commission_eligible NOT IN (0, 1))
+        OR (NEW.official_cost_json IS NOT NULL AND NOT json_valid(NEW.official_cost_json))
+        OR (NEW.funding_allocation_json IS NOT NULL
+            AND NOT json_valid(NEW.funding_allocation_json))
+        OR ((NEW.paid_funded_nano IS NULL)
+            + (NEW.bonus_funded_nano IS NULL)
+            + (NEW.other_funded_nano IS NULL)) NOT IN (0, 3)
+    ";
+    for (table, charged_column, charge_row_guard, table_invalid) in [
+        ("billing_settlement_outbox", "actual_nano", "1", "0"),
+        (
+            "usage_events",
+            "charge_nano",
+            "1",
+            "NEW.tariff_priced_ts IS NOT NULL AND NEW.tariff_priced_ts <> NEW.priced_ts",
+        ),
+        (
+            "ledger",
+            "amount_nano",
+            "NEW.kind = 'charge'",
+            "NEW.official_nano IS NOT NULL AND NEW.official_nano < 0",
+        ),
+    ] {
+        let funding_invalid = format!(
+            "(
+                NEW.paid_funded_nano IS NOT NULL
+                AND (
+                    NOT ({charge_row_guard})
+                    OR NEW.paid_funded_nano < 0
+                    OR NEW.bonus_funded_nano < 0
+                    OR NEW.other_funded_nano < 0
+                    OR NEW.paid_funded_nano
+                       + NEW.bonus_funded_nano
+                       + NEW.other_funded_nano <> NEW.{charged_column}
+                )
+            )"
+        );
+        for (suffix, event) in [("insert", "INSERT"), ("update", "UPDATE")] {
+            conn.execute_batch(&format!(
+                "CREATE TRIGGER IF NOT EXISTS {table}_policy_attribution_{suffix}
+                 BEFORE {event} ON \"{table}\"
+                 FOR EACH ROW
+                 WHEN ({COMMON_INVALID}) OR ({table_invalid}) OR ({funding_invalid})
+                 BEGIN
+                     SELECT RAISE(ABORT, 'invalid policy attribution');
+                 END;"
+            ))
+            .with_context(|| format!("install SQLite attribution guard for {table} {event}"))?;
+        }
+    }
+    Ok(())
 }
 
 fn now() -> i64 {
@@ -2302,6 +2893,293 @@ mod tests {
 
     fn db() -> Connection {
         open(":memory:").unwrap()
+    }
+
+    #[test]
+    fn pricing_policy_schema_is_idempotent_and_preserves_legacy_money() {
+        let c = db();
+        account_create(&c, "legacy", None, 3750).unwrap();
+        account_topup(&c, "legacy", 4_000_000_000, Some("legacy-seed")).unwrap();
+        account_reserve(&c, "legacy", 125_000_000).unwrap();
+        let before: (i64, i64, i64, i64) = c
+            .query_row(
+                "SELECT balance_nano,spent_nano,reserved_nano,mult_bp \
+                 FROM accounts WHERE id='legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+
+        migrate_pricing_policy_schema(&c).unwrap();
+        migrate_pricing_policy_schema(&c).unwrap();
+
+        let after: (i64, i64, i64, i64) = c
+            .query_row(
+                "SELECT balance_nano,spent_nano,reserved_nano,mult_bp \
+                 FROM accounts WHERE id='legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(after, before);
+        for table in [
+            "pricing_catalog_versions",
+            "provider_switch_versions",
+            "account_policy_versions",
+            "account_policy_bindings",
+            "funding_buckets",
+            "pricing_admission_snapshots",
+        ] {
+            let count: i64 = c
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "{table} must stay empty during schema expansion");
+        }
+        for (table, column) in [
+            ("ledger", "request_id"),
+            ("usage_events", "request_id"),
+            ("ledger", "provider"),
+            ("billing_settlement_outbox", "snapshot_digest"),
+            ("usage_events", "funding_allocation_json"),
+        ] {
+            let present: bool = c
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2)",
+                    rusqlite::params![table, column],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(present, "missing SQLite parity column {table}.{column}");
+        }
+    }
+
+    #[test]
+    fn pricing_policy_schema_rejects_invalid_rules_switches_and_buckets() {
+        let c = db();
+        account_create(&c, "policy-account", None, 2000).unwrap();
+        c.execute_batch(
+            "INSERT INTO pricing_catalog_versions(
+                 product_id,generation,schema_version,capability_digest,content_digest,created_ts
+             ) VALUES('main',1,1,'capability-digest','catalog-digest',1);
+             INSERT INTO pricing_catalog_entries(
+                 product_id,generation,provider_id,canonical_model_id,enabled
+             ) VALUES('main',1,'anthropic','claude-test',1);
+             INSERT INTO account_policy_versions(
+                 account_id,effective_version,policy_id,policy_version,owner_type,owner_id,
+                 product_id,schema_version,catalog_generation,content_digest,replacement_locked,
+                 created_ts
+             ) VALUES(
+                 'policy-account',1,'b2c:global',1,'global_b2c','global','main',1,1,
+                 'policy-digest',0,1
+             );
+             INSERT INTO account_policy_rules(
+                 account_id,effective_version,rule_id,rule_digest,scope_type,provider_id,
+                 canonical_model_id,pricing_mode,rule_origin,discount_bps,payable_multiplier_bp,
+                 track_eligible,retention_eligible,commission_eligible
+             ) VALUES(
+                 'policy-account',1,'anthropic-provider','rule-digest','provider','anthropic',NULL,
+                 'discount','managed',6000,4000,0,0,0
+             );",
+        )
+        .unwrap();
+
+        assert!(c
+            .execute(
+                "INSERT INTO account_policy_rules(
+                     account_id,effective_version,rule_id,rule_digest,scope_type,provider_id,
+                     canonical_model_id,pricing_mode,rule_origin,discount_bps,payable_multiplier_bp,
+                     track_eligible,retention_eligible,commission_eligible
+                 ) VALUES(
+                     'policy-account',1,'duplicate','duplicate-digest','provider','anthropic',NULL,
+                     'discount','managed',5000,5000,0,0,0
+                 )",
+                [],
+            )
+            .is_err());
+        assert!(c
+            .execute(
+                "INSERT INTO account_policy_rules(
+                     account_id,effective_version,rule_id,rule_digest,scope_type,provider_id,
+                     canonical_model_id,pricing_mode,rule_origin,discount_bps,payable_multiplier_bp,
+                     track_eligible,retention_eligible,commission_eligible
+                 ) VALUES(
+                     'policy-account',1,'bad-step','bad-step-digest','model','anthropic','claude-test',
+                     'discount','managed',5050,4950,0,0,0
+                 )",
+                [],
+            )
+            .is_err());
+        assert!(c
+            .execute(
+                "INSERT INTO account_policy_rules(
+                     account_id,effective_version,rule_id,rule_digest,scope_type,provider_id,
+                     canonical_model_id,pricing_mode,rule_origin,discount_bps,payable_multiplier_bp,
+                     track_eligible,retention_eligible,commission_eligible
+                 ) VALUES(
+                     'policy-account',1,'missing-discount','missing-discount-digest','model',
+                     'anthropic','claude-test','discount','managed',NULL,5000,0,0,0
+                 )",
+                [],
+            )
+            .is_err());
+        c.execute(
+            "INSERT INTO provider_switch_versions(
+                 generation,schema_version,content_digest,created_ts
+             ) VALUES(1,1,'switch-digest',1)",
+            [],
+        )
+        .unwrap();
+        assert!(c
+            .execute(
+                "INSERT INTO account_policy_bindings(
+                     account_id,product_id,account_class,active_effective_version,
+                     policy_enforcement,funding_enforcement,reconciliation_state,updated_ts
+                 ) VALUES(
+                     'policy-account','openkeys','b2c',1,
+                     'shadow','legacy_single','pending',1
+                 )",
+                [],
+            )
+            .is_err());
+        assert!(c
+            .execute(
+                "INSERT INTO provider_switch_entries(
+                     generation,provider_id,scope_type,product_id,segment,enabled
+                 ) VALUES(1,'anthropic','segment','main','consumer',1)",
+                [],
+            )
+            .is_err());
+        assert!(c
+            .execute(
+                "INSERT INTO funding_buckets(
+                     bucket_id,account_id,source_type,source_ref,eligibility,balance_nano,
+                     reserved_nano,spent_nano,version,status,created_ts,updated_ts
+                 ) VALUES(
+                     'welcome','policy-account','welcome_track_bonus','signup','any',
+                     4000000000,0,0,1,'active',1,1
+                 )",
+                [],
+            )
+            .is_err());
+        assert!(c
+            .execute(
+                "INSERT INTO usage_events(
+                     account_id,real_nano,charge_nano,ts,official_cost_json
+                 ) VALUES('policy-account',10,5,1,'not-json')",
+                [],
+            )
+            .is_err());
+        assert!(c
+            .execute(
+                "INSERT INTO usage_events(
+                     account_id,real_nano,charge_nano,ts,paid_funded_nano
+                 ) VALUES('policy-account',10,5,1,5)",
+                [],
+            )
+            .is_err());
+        assert!(c
+            .execute(
+                "INSERT INTO ledger(
+                     account_id,kind,amount_nano,ts,official_nano
+                 ) VALUES('policy-account','charge',5,1,-1)",
+                [],
+            )
+            .is_err());
+        assert!(c
+            .execute(
+                "INSERT INTO usage_events(
+                     account_id,real_nano,charge_nano,ts,priced_ts,tariff_priced_ts
+                 ) VALUES('policy-account',10,5,1,10,11)",
+                [],
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn pricing_snapshots_and_funding_allocations_are_account_scoped() {
+        let c = db();
+        let foreign_keys: bool = c
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        assert!(foreign_keys);
+        account_create(&c, "account-a", None, 2000).unwrap();
+        account_create(&c, "account-b", None, 3000).unwrap();
+        c.execute(
+            "INSERT INTO billing_reservations(
+                 request_id,account_id,key,hold_nano,state,balance_after_reserve_nano,
+                 lease_until,created_ts,updated_ts
+             ) VALUES('request-a','account-a','key-a',100,'reserved',0,100,1,1)",
+            [],
+        )
+        .unwrap();
+
+        let legacy_snapshot_sql = "INSERT INTO pricing_admission_snapshots(
+                 request_id,account_id,snapshot_kind,schema_version,provider_id,
+                 requested_model_id,canonical_model_id,alias_generation,pricing_mode,rule_origin,
+                 payable_multiplier_bp,tariff_schedule_id,tariff_priced_ts,admission_ts,
+                 official_hold_nano,charged_hold_nano,premium_modifiers,snapshot_digest
+             ) VALUES(?1,?2,'legacy_scalar',1,'anthropic','claude-test','claude-test',1,
+                 'legacy_scalar','legacy',2000,'legacy-tariff',1,1,100,20,'{}','snapshot')";
+        assert!(c
+            .execute(
+                legacy_snapshot_sql,
+                rusqlite::params!["request-a", "account-b"],
+            )
+            .is_err());
+        c.execute(
+            legacy_snapshot_sql,
+            rusqlite::params!["request-a", "account-a"],
+        )
+        .unwrap();
+        assert!(c
+            .execute(
+                "UPDATE pricing_admission_snapshots
+                 SET charged_hold_nano=21 WHERE request_id='request-a'",
+                [],
+            )
+            .is_err());
+
+        c.execute_batch(
+            "INSERT INTO funding_buckets(
+                 bucket_id,account_id,source_type,source_ref,eligibility,balance_nano,
+                 reserved_nano,spent_nano,version,status,created_ts,updated_ts
+             ) VALUES
+                 ('paid-a','account-a','paid','primary','any',1000,0,0,1,'active',1,1),
+                 ('paid-b','account-b','paid','primary','any',1000,0,0,1,'active',1,1);
+             INSERT INTO ledger(
+                 account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts
+             ) VALUES('account-b','key-b','charge','ledger-request',10,'charge-ref',990,1);",
+        )
+        .unwrap();
+        let ledger_id = c.last_insert_rowid();
+        assert!(c
+            .execute(
+                "INSERT INTO ledger_funding_allocations(
+                     ledger_id,account_id,bucket_id,bucket_source_type,bucket_version,
+                     direction,amount_nano
+                 ) VALUES(?1,'account-a','paid-a','paid',1,'debit',10)",
+                rusqlite::params![ledger_id],
+            )
+            .is_err());
+        assert!(c
+            .execute(
+                "INSERT INTO ledger_funding_allocations(
+                     ledger_id,account_id,bucket_id,bucket_source_type,bucket_version,
+                     direction,amount_nano
+                 ) VALUES(?1,'account-b','paid-a','paid',1,'debit',10)",
+                rusqlite::params![ledger_id],
+            )
+            .is_err());
+        c.execute(
+            "INSERT INTO ledger_funding_allocations(
+                 ledger_id,account_id,bucket_id,bucket_source_type,bucket_version,
+                 direction,amount_nano
+             ) VALUES(?1,'account-b','paid-b','paid',1,'debit',10)",
+            rusqlite::params![ledger_id],
+        )
+        .unwrap();
     }
 
     /// Персист состояния пула: save→load переносит cooling/калибровку (upsert по email).
