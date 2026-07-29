@@ -877,10 +877,13 @@ fn parse_gemini_client(text: &str) -> Option<(String, String, Option<String>)> {
 
 // ── Step-by-step Gemini onboarding prompts (one field per message) ─────────────────────────────
 const GEMINI_STEP_ID: &str = "🔐 <b>Подключение Gemini — шаг 1 из 3: CLIENT&nbsp;ID</b>\n\n\
-Заведи собственный OAuth-клиент Google (делается один раз, 2 минуты):\n\
-1. Открой <b>Google Cloud Console → APIs &amp; Services → Credentials</b>\n\
-2. <b>Create credentials → OAuth client ID → Application type: Web application</b>\n\
-3. В поле <b>Authorized redirect URIs</b> добавь ровно:\n<code>https://gemini.api.apitoken.sale/oauth/callback</code>\n\
+Заведи собственный OAuth-клиент Google (один раз, ~3 минуты):\n\n\
+1. <b>Google Cloud Console → APIs &amp; Services → OAuth consent screen</b>:\n\
+ • <b>User type: External</b> → Create\n\
+ • В разделе <b>Test users</b> добавь свой Google-аккаунт (тот, где подписка).\n\
+ ⚠️ Без этого Google выдаст «Доступ заблокирован · <code>403 access_denied</code>».\n\
+2. <b>APIs &amp; Services → Credentials → Create credentials → OAuth client ID → Application type: Web application</b>\n\
+3. В <b>Authorized redirect URIs</b> добавь ровно:\n<code>https://gemini.api.apitoken.sale/oauth/callback</code>\n\
 4. Нажми <b>Create</b>\n\n\
 Пришли мне <b>Client ID</b> одним сообщением — он выглядит так:\n<code>1234567890-abcd.apps.googleusercontent.com</code>";
 
