@@ -327,18 +327,85 @@ fn parse_route(method: &Method, path: &str) -> Result<ParsedRoute, ApiError> {
     })
 }
 
+fn model_version(id: &str) -> String {
+    // Google exposes the family version (e.g. "2.5") in the model resource. Extract the first
+    // "<major>.<minor>" numeric token from the id; fall back to the id when none is present.
+    for token in id.split('-') {
+        let mut parts = token.split('.');
+        if let (Some(major), Some(minor), None) = (parts.next(), parts.next(), parts.next()) {
+            if !major.is_empty()
+                && major.bytes().all(|byte| byte.is_ascii_digit())
+                && !minor.is_empty()
+                && minor.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                return token.to_string();
+            }
+        }
+    }
+    id.to_string()
+}
+
 fn model_value(model: &GeminiModel) -> Value {
+    // Mirror the native ListModels/GetModel resource shape, including the sampling defaults Google
+    // publishes for the Gemini families, so the catalogue is not a thin, obviously-synthetic subset.
     json!({
         "name": format!("models/{}", model.id),
-        "version": model.id,
+        "version": model_version(&model.id),
         "displayName": model.display_name,
-        "description": model.display_name,
+        "description": format!("Google {} model served through the Gemini API.", model.display_name),
         "inputTokenLimit": model.input_token_limit,
         "outputTokenLimit": model.output_token_limit,
         "supportedGenerationMethods": [
             "generateContent", "streamGenerateContent", "countTokens"
-        ]
+        ],
+        "temperature": 1.0,
+        "topP": 0.95,
+        "topK": 64,
+        "maxTemperature": 2.0
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ListPage {
+    start: usize,
+    size: usize,
+}
+
+fn parse_list_models_query(query: Option<&str>) -> Result<ListPage, ApiError> {
+    // Native ListModels supports pageSize (default 50, max 1000) and an opaque pageToken, and
+    // ignores unknown query parameters. We encode the token as the start index of our small
+    // catalogue, which stays opaque to the client.
+    let mut size = 50usize;
+    let mut start = 0usize;
+    for part in query
+        .unwrap_or_default()
+        .split('&')
+        .filter(|part| !part.is_empty())
+    {
+        let (raw_name, raw_value) = part.split_once('=').unwrap_or((part, ""));
+        let name = percent_decode_query_name(raw_name)?;
+        let value = percent_decode_query_name(raw_value)?;
+        match name.as_str() {
+            "pageSize" => {
+                size = value
+                    .parse::<usize>()
+                    .map_err(|_| ApiError::invalid("The pageSize must be an integer."))?
+                    .clamp(1, 1000);
+            }
+            "pageToken" => {
+                start = value
+                    .parse::<usize>()
+                    .map_err(|_| ApiError::invalid("The page token is invalid."))?;
+            }
+            "key" | "api_key" => {
+                return Err(ApiError::invalid(
+                    "Query-string API keys are not accepted. Use the x-goog-api-key header.",
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(ListPage { start, size })
 }
 
 fn query_for_upstream(query: Option<&str>, streaming: bool) -> Result<String, ApiError> {
@@ -1042,10 +1109,73 @@ pub async fn api(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: axum::extract::Request,
 ) -> Response {
-    match api_inner(app, peer, request).await {
+    // A browser SDK (@google/genai) issues a CORS preflight before the cross-origin call; the real
+    // endpoint answers it without auth. Handle it before routing, which otherwise 404s on OPTIONS.
+    if request.method() == Method::OPTIONS {
+        return cors_preflight_response();
+    }
+    let mut response = match api_inner(app, peer, request).await {
         Ok(response) => response,
         Err(error) => error.into_response(),
+    };
+    apply_native_response_headers(&mut response);
+    response
+}
+
+fn cors_preflight_response() -> Response {
+    let mut response = Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(Body::empty())
+        .unwrap();
+    let headers = response.headers_mut();
+    headers.insert("access-control-allow-origin", HeaderValue::from_static("*"));
+    headers.insert(
+        "access-control-allow-methods",
+        HeaderValue::from_static("GET, POST, OPTIONS"),
+    );
+    headers.insert(
+        "access-control-allow-headers",
+        HeaderValue::from_static(
+            "Authorization, Content-Type, X-Goog-Api-Key, X-Goog-Api-Client, X-Goog-User-Project",
+        ),
+    );
+    headers.insert("access-control-max-age", HeaderValue::from_static("3600"));
+    headers.insert(
+        "vary",
+        HeaderValue::from_static("Origin, X-Origin, Referer"),
+    );
+    response
+}
+
+/// Decorate every Gemini response with the headers the real generativelanguage endpoint returns:
+/// canonical content-type casing, the standard security headers, and permissive CORS so browser
+/// SDKs can read the body. Applied uniformly to success, streaming and error responses.
+fn apply_native_response_headers(response: &mut Response) {
+    let headers = response.headers_mut();
+    if let Some(current) = headers.get("content-type").and_then(|value| value.to_str().ok()) {
+        let normalized = if current.starts_with("application/json") {
+            Some(HeaderValue::from_static("application/json; charset=UTF-8"))
+        } else if current.starts_with("text/event-stream") {
+            Some(HeaderValue::from_static("text/event-stream"))
+        } else {
+            None
+        };
+        if let Some(normalized) = normalized {
+            headers.insert("content-type", normalized);
+        }
     }
+    headers.insert(
+        "vary",
+        HeaderValue::from_static("Origin, X-Origin, Referer"),
+    );
+    headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    headers.insert("x-frame-options", HeaderValue::from_static("SAMEORIGIN"));
+    headers.insert("x-xss-protection", HeaderValue::from_static("0"));
+    headers.insert("access-control-allow-origin", HeaderValue::from_static("*"));
+    headers.insert(
+        "access-control-expose-headers",
+        HeaderValue::from_static("content-encoding, content-length, date, server, vary"),
+    );
 }
 
 async fn api_inner(
@@ -1057,21 +1187,21 @@ async fn api_inner(
         return Err(ApiError::not_found());
     };
     let route = parse_route(request.method(), request.uri().path())?;
-    let query = query_for_upstream(
-        request.uri().query(),
-        route.operation == Operation::StreamGenerate,
-    )?;
     let pending = begin_admission(&app, request.headers(), &peer).await?;
 
     if route.operation == Operation::Models {
-        let models = gateway
-            .config()
-            .models
-            .iter()
-            .map(model_value)
-            .collect::<Vec<_>>();
+        let page = parse_list_models_query(request.uri().query())?;
+        let all = &gateway.config().models;
+        let start = page.start.min(all.len());
+        let end = start.saturating_add(page.size).min(all.len());
+        let models = all[start..end].iter().map(model_value).collect::<Vec<_>>();
+        let mut body = serde_json::Map::new();
+        body.insert("models".to_string(), json!(models));
+        if end < all.len() {
+            body.insert("nextPageToken".to_string(), json!(end.to_string()));
+        }
         let _admission = pending.without_reserve();
-        return Ok((StatusCode::OK, axum::Json(json!({"models": models}))).into_response());
+        return Ok((StatusCode::OK, axum::Json(Value::Object(body))).into_response());
     }
     let model_id = route.model.as_deref().ok_or_else(ApiError::not_found)?;
     let model = gateway
@@ -1080,9 +1210,17 @@ async fn api_inner(
         .cloned()
         .ok_or_else(ApiError::not_found)?;
     if route.operation == Operation::Model {
+        // A native GetModel ignores query parameters entirely.
         let _admission = pending.without_reserve();
         return Ok((StatusCode::OK, axum::Json(model_value(&model))).into_response());
     }
+
+    // Only the upstream-bound operations carry an alt=sse query; validate it here rather than for
+    // the model-metadata routes, which do not reach Code Assist.
+    let query = query_for_upstream(
+        request.uri().query(),
+        route.operation == Operation::StreamGenerate,
+    )?;
 
     let (parts, body) = request.into_parts();
     let body = to_bytes(body, GEMINI_BODY_LIMIT)
@@ -1854,6 +1992,156 @@ mod tests {
                 .unwrap(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn canonicalize_promotes_snake_case_and_normalizes_tools() {
+        let mut value = json!({
+            "contents": [],
+            "system_instruction": {"parts": [{"text": "be terse"}]},
+            "safety_settings": [],
+            "generation_config": {"maxOutputTokens": 10},
+            "tools": [{"google_search": {}}]
+        });
+        canonicalize_native_request(&mut value);
+        assert!(value.get("systemInstruction").is_some());
+        assert!(value.get("system_instruction").is_none());
+        assert!(value.get("safetySettings").is_some());
+        assert!(value.get("generationConfig").is_some());
+        let tool = &value["tools"][0];
+        assert!(tool.get("googleSearch").is_some());
+        assert!(tool.get("google_search").is_none());
+        // The normalized tool must pass validation just like its camelCase form.
+        assert!(validate_tools(&value).is_ok());
+    }
+
+    #[test]
+    fn camel_case_wins_over_snake_case_duplicate() {
+        let mut value = json!({
+            "systemInstruction": {"parts": [{"text": "camel"}]},
+            "system_instruction": {"parts": [{"text": "snake"}]}
+        });
+        canonicalize_native_request(&mut value);
+        assert_eq!(value["systemInstruction"]["parts"][0]["text"], "camel");
+        assert!(value.get("system_instruction").is_none());
+    }
+
+    #[test]
+    fn model_value_is_native_shaped() {
+        let model = GeminiModel {
+            id: "gemini-2.5-flash".to_string(),
+            display_name: "Gemini 2.5 Flash".to_string(),
+            input_token_limit: 1_048_576,
+            output_token_limit: 65_536,
+            prices: metering::GeminiPrices {
+                input: 1,
+                audio_input: 1,
+                cached_input: 1,
+                cached_audio_input: 1,
+                output: 1,
+                long_context_threshold: u64::MAX,
+                long_input: 1,
+                long_audio_input: 1,
+                long_cached_input: 1,
+                long_cached_audio_input: 1,
+                long_output: 1,
+                search: metering::GeminiSearchBilling::PerGroundedPrompt { nano: 1 },
+            },
+        };
+        let value = model_value(&model);
+        assert_eq!(value["name"], "models/gemini-2.5-flash");
+        assert_eq!(value["version"], "2.5");
+        assert_ne!(value["description"], value["displayName"]);
+        assert!(value["temperature"].is_number());
+        assert!(value["topP"].is_number());
+        assert!(value["topK"].is_number());
+        assert!(value["maxTemperature"].is_number());
+    }
+
+    #[test]
+    fn parse_list_models_query_supports_pagination() {
+        let page = parse_list_models_query(Some("pageSize=2&pageToken=3&irrelevant=x")).unwrap();
+        assert_eq!(page.size, 2);
+        assert_eq!(page.start, 3);
+        // Default when absent, and clamped upper bound.
+        assert_eq!(parse_list_models_query(None).unwrap().size, 50);
+        assert_eq!(
+            parse_list_models_query(Some("pageSize=999999")).unwrap().size,
+            1000
+        );
+        // Query-string API keys stay rejected.
+        assert!(parse_list_models_query(Some("key=leak")).is_err());
+    }
+
+    #[test]
+    fn native_stream_error_frame_is_sanitized() {
+        let wrapper = json!({
+            "error": {
+                "code": 429,
+                "status": "RESOURCE_EXHAUSTED",
+                "message": "project paid-project-99 for owner@example.invalid exceeded quota"
+            }
+        });
+        let frame = native_stream_error_frame(&wrapper).expect("error frame");
+        let text = String::from_utf8(frame.to_vec()).unwrap();
+        assert!(text.starts_with("data: "));
+        assert!(text.contains("\"status\":\"RESOURCE_EXHAUSTED\""));
+        assert!(text.contains("\"code\":429"));
+        // Upstream private detail must never survive into the public frame.
+        assert!(!text.contains("paid-project-99"));
+        assert!(!text.contains("owner@example.invalid"));
+        // A credit/accounting-only frame with no error has no public representation.
+        assert!(native_stream_error_frame(&json!({"consumedCredits": 3})).is_none());
+    }
+
+    #[tokio::test]
+    async fn invalid_key_maps_to_native_400_api_key_invalid() {
+        let response = ApiError::from(AdmissionError::Unauthorized).into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["error"]["code"], 400);
+        assert_eq!(body["error"]["status"], "INVALID_ARGUMENT");
+        let details = body["error"]["details"].as_array().expect("details");
+        assert!(details.iter().any(|detail| {
+            detail["@type"]
+                .as_str()
+                .is_some_and(|kind| kind.ends_with("google.rpc.ErrorInfo"))
+                && detail["reason"] == "API_KEY_INVALID"
+        }));
+    }
+
+    #[tokio::test]
+    async fn rate_limited_error_carries_retry_info_detail() {
+        let response = ApiError::rate_limited(Some(7)).into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok()),
+            Some("7")
+        );
+        let body = response_json(response).await;
+        assert_eq!(body["error"]["status"], "RESOURCE_EXHAUSTED");
+        let details = body["error"]["details"].as_array().expect("details");
+        assert!(details.iter().any(|detail| {
+            detail["@type"]
+                .as_str()
+                .is_some_and(|kind| kind.ends_with("google.rpc.RetryInfo"))
+                && detail["retryDelay"] == "7s"
+        }));
+    }
+
+    #[test]
+    fn provider_rejected_never_emits_an_impossible_status_pair() {
+        // A 413 upstream rejection must collapse to the native INVALID_ARGUMENT/400 pair, never
+        // 413/FAILED_PRECONDITION.
+        let error = ApiError::provider_rejected(StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert_eq!(error.google_status, "INVALID_ARGUMENT");
+        let forbidden = ApiError::provider_rejected(StatusCode::FORBIDDEN);
+        assert_eq!(forbidden.status, StatusCode::FORBIDDEN);
+        assert_eq!(forbidden.google_status, "PERMISSION_DENIED");
     }
 
     async fn billed_app_with_balance(
