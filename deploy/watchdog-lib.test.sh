@@ -1253,6 +1253,12 @@ grep -Fq 'RuntimeDirectory=claude-authbot' "$ROOT/systemd/claude-authbot.service
   || wd_die "the authbot has no private mount destination for the Claude CLI"
 grep -Fq 'Environment=HOME=/srv/claude-api/data/authbot' "$ROOT/systemd/claude-authbot.service" \
   || wd_die "the protected authbot has no writable home for an already-running old binary"
+grep -Fq 'EnvironmentFile=/srv/claude-api/data/engine-postgres.env' "$ROOT/systemd/claude-authbot.service" \
+  || wd_die "the authbot can silently fall back from the engine PostgreSQL authority"
+grep -Fq 'AuthorityConfig::Postgres' "$ROOT/crates/authbot/src/main.rs" \
+  || wd_die "the authbot registry is not pinned to PostgreSQL"
+! grep -Fq 'subscriptions.db' "$ROOT/crates/authbot/src/main.rs" \
+  || wd_die "the authbot still has a SQLite subscription-registry fallback"
 grep -Fq '/srv/claude-api/data/authbot' "$ROOT/crates/authbot/src/main.rs" \
   || wd_die "the authbot stores Claude account state below the writable production data root"
 grep -Fq 'systemctl try-restart claude-authbot.service' "$ROOT/deploy/install-watchdog.sh" \
@@ -1261,9 +1267,11 @@ grep -Fq 'claude-authbot.service' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die "the authbot unit is never installed"
 grep -Fq '/usr/bin/systemctl restart claude-authbot.service' "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   || wd_die "the deploy user cannot restart the authbot"
-# A running old binary has no drain handshake, so deployment may compare it but must never kill it.
+# Unchanged authbot binaries preserve live handoffs; changed ones restart and recover persisted state.
 grep -Fq 'cmp -s "$exe" "$current/authbot"' "$ROOT/deploy/deploy.sh" \
   || wd_die "the authbot restart must compare the running binary, not release paths"
+! grep -Fq 'deferring adoption until the service is already inactive' "$ROOT/deploy/deploy.sh" \
+  || wd_die "changed authbot code can remain undeployed forever"
 # Asking for a world-readable unit file under sudo earns a policy denial that is indistinguishable
 # from the unit being absent — which is exactly how the first attempt silently skipped the restart.
 ! grep -Fq 'privileged_command test -f "/etc/systemd/system/$unit"' "$ROOT/deploy/deploy.sh" \
@@ -1335,9 +1343,11 @@ grep -Fq 'track_background_task' "$ROOT/crates/forward/src/codex/api.rs" \
   || wd_die "detached Codex response streams bypass the shutdown barrier"
 grep -Fq 'track_background_task' "$ROOT/crates/forward/src/codex/chat.rs" \
   || wd_die "detached Codex chat streams bypass the shutdown barrier"
-grep -Fq '$unit runs a different binary; deferring adoption until the service is already inactive' \
+grep -Fq '$unit runs a different binary; restarting onto the tested release' \
   "$ROOT/deploy/deploy.sh" \
-  || wd_die "deployment can interrupt an old authbot that has no intake-drain handshake"
+  || wd_die "deployment can leave changed authbot code unadopted"
+grep -Fq 'recover_interrupted_handoffs' "$ROOT/crates/authbot/src/main.rs" \
+  || wd_die "an authbot code restart can strand sellers in a dead in-memory OAuth session"
 grep -Fq 'claude-api-openai.service claude-authbot.service' "$ROOT/deploy/watchdog.sh" \
   || wd_die "release retention can unlink the executable backing a deferred authbot"
 grep -Fq 'shutdown_until(shutdown_deadline)' "$ROOT/crates/server/src/main.rs" \

@@ -230,12 +230,10 @@ validate_engine_stage() {
 
 # Restart the subscription bot only when the binary it is running differs from the one just shipped.
 #
-# A restart drops any device authorization the bot is walking a seller through — those sessions are
-# live child processes, not database rows — so restarting on every unrelated engine deploy would
-# break purchases in progress for no reason. Comparing against the RUNNING process rather than the
-# previous release is what makes this both correct and self-healing: a release path changes on every
-# deploy even when the bot is byte-identical, and conversely a bot left behind by an earlier failure
-# must be picked up even though the last two releases agree.
+# Comparing against the RUNNING process rather than the previous release avoids restarts on unrelated
+# engine deploys while guaranteeing that changed authbot code is actually adopted. Its persisted
+# state machine resets an interrupted Claude `ho_code` session to `ho_email` on startup; Codex already
+# remains at `cx_email`, so a seller can safely start a fresh child after a code deployment.
 #
 # A bot that fails to restart does not justify rolling back an engine release: it produces
 # subscriptions, it does not serve requests. Report it loudly and let the deployment stand.
@@ -260,10 +258,7 @@ restart_authbot_if_changed() {
       log "authbot already runs this exact binary; leaving $unit and any in-flight authorization alone"
       return 0
     fi
-    # The old binary has no intake-drain handshake. PID sampling cannot prove that its parent is not
-    # between device completion and proxy publication, so an automatic restart is never safe.
-    warn "$unit runs a different binary; deferring adoption until the service is already inactive"
-    return 0
+    log "$unit runs a different binary; restarting onto the tested release"
   fi
   log "restarting $unit onto the freshly released authbot"
   if ! privileged_command systemctl restart "$unit"; then

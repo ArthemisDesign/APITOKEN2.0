@@ -4,14 +4,12 @@
 # который движок сканирует. Поэтому боту нужен доступ на запись в каталог покупок и к пиннованному
 # codex CLI, но НЕ нужен root и не нужны права на конфиг движка.
 #
-# Бинарь берётся из той же неизменяемой релизной директории, что и движок: раньше он собирался
-# вручную в scratch-каталог, и запущенный бот мог оказаться на месяцы старше протестированного
-# коммита. deploy.sh не убивает уже работающий другой бинарь без intake-drain handshake; новый
-# подхватится, только когда сервис уже неактивен или позже перезапустится естественно.
+# Бинарь берётся из той же неизменяемой релизной директории, что и движок. Изменённый authbot
+# перезапускается после promotion; persisted handoff state восстанавливает прерванный OAuth на email.
 [Unit]
 Description=claude-api authbot (subscription purchasing → this project's pool)
-After=network-online.target
-Wants=network-online.target
+After=network-online.target apitoken-postgres.service
+Wants=network-online.target apitoken-postgres.service
 
 [Service]
 Type=simple
@@ -20,6 +18,7 @@ Group=deploy
 Environment=HOME=/srv/claude-api/data/authbot
 Environment=AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude
 EnvironmentFile=/srv/claude-api/data/authbot.env
+EnvironmentFile=/srv/claude-api/data/engine-postgres.env
 # Command assignments override legacy CLAUDE_BIN from EnvironmentFile even for the old binary that
 # may still be current when an infrastructure transaction restarts this unit before promotion.
 ExecStart=/usr/bin/env CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude /srv/claude-api/releases/current/authbot

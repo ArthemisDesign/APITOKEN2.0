@@ -13,7 +13,7 @@ mod iproyal;
 mod setup_token;
 mod tg;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use db::Store;
 use std::collections::HashSet;
 use std::env;
@@ -25,8 +25,7 @@ pub struct Config {
     pub admins_name: HashSet<String>,
     pub claude_bin: String, // путь к claude CLI (для setup-token)
     pub claude_config_dir: String, // writable root for per-account Claude state
-    pub sub_db: String,     // subscriptions.db (SQLite) — fallback, если Postgres-URL не задан
-    pub database_url: String,   // CLAUDE_API_DATABASE_URL движка: реестр движка (Postgres) напрямую
+    pub database_url: String,   // required PostgreSQL authority shared with the engine
     pub fleet: String,      // флот, в который писать купленные подписки
     pub bsc_python: String, // venv-python с web3 (для bsc_pay CLI)
     pub bsc_script: String, // путь к bsc_pay.py
@@ -125,15 +124,12 @@ async fn proxy_lifecycle_loop(bot: Bot, cfg: Arc<Config>) {
 
 const SUB_LIFETIME_DAYS: i64 = 30; // срок жизни подписки = added_ts + 30д (совпадает с движком)
 
-/// Authority реестра движка: Postgres (если задан CLAUDE_API_DATABASE_URL), иначе SQLite-fallback.
+/// Authbot is a producer for the live engine authority. SQLite is only its private workflow state.
 pub fn authority_cfg(cfg: &Config) -> registry::authority::AuthorityConfig {
-    registry::authority::AuthorityConfig::new(
-        cfg.sub_db.clone(),
-        (!cfg.database_url.is_empty()).then(|| cfg.database_url.clone()),
-    )
+    registry::authority::AuthorityConfig::Postgres { url: cfg.database_url.clone() }
 }
 
-/// Записать proxy_expire/checked в реестр через authority (Postgres/SQLite — единый путь).
+/// Записать proxy_expire/checked в PostgreSQL authority движка.
 async fn write_proxy_expire(auth: registry::authority::AuthorityConfig,
                             email: String, expire: String, now: i64, ok: bool) {
     let _ = tokio::task::spawn_blocking(move || {
@@ -208,9 +204,9 @@ async fn main() -> Result<()> {
     let token = env_opt("AUTH_BOT_TOKEN").ok_or_else(|| anyhow!("AUTH_BOT_TOKEN не задан"))?;
     let (admins_id, admins_name) = parse_admins(&env_opt("AUTH_BOT_ADMIN").unwrap_or_default());
     let home = env::var("HOME").unwrap_or_default();
-    let sub_dir = env_opt("AUTH_BOT_SUB_CFG_DIR")
-        .or_else(|| env_opt("SUB_CFG_DIR"))
-        .unwrap_or_else(|| "/srv/claude-api/data".into());
+    let database_url = env_opt("CLAUDE_API_DATABASE_URL")
+        .or_else(|| env_opt("AUTH_BOT_DATABASE_URL"))
+        .ok_or_else(|| anyhow!("CLAUDE_API_DATABASE_URL обязателен; SQLite registry отключён"))?;
     let cfg = Arc::new(Config {
         admins_id, admins_name,
         claude_bin: env_opt("AUTH_BOT_CLAUDE_BIN")
@@ -218,10 +214,7 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| format!("{home}/.local/bin/claude")),
         claude_config_dir: env_opt("AUTH_BOT_CLAUDE_CONFIG_DIR")
             .unwrap_or_else(|| "/srv/claude-api/data/authbot".into()),
-        sub_db: format!("{sub_dir}/subscriptions.db"),
-        database_url: env_opt("CLAUDE_API_DATABASE_URL")
-            .or_else(|| env_opt("AUTH_BOT_DATABASE_URL"))
-            .unwrap_or_default(),
+        database_url,
         fleet: env_opt("AUTH_BOT_FLEET").unwrap_or_else(|| "prod".into()),
         bsc_python: env_opt("AUTH_BOT_BSC_PYTHON")
             .unwrap_or_else(|| "/srv/claude-api/tools/authbot/venv/bin/python".into()),
@@ -234,6 +227,14 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| "/srv/claude-api/data/codex-homes".into()),
     });
     let store = Arc::new(Store::open(&state_db())?);
+    let recovered = store.recover_interrupted_handoffs()?;
+    {
+        let mut authority = authority_cfg(&cfg)
+            .connect()
+            .context("authbot не подключился к PostgreSQL authority движка")?;
+        authority.subs_admin()
+            .context("authbot не прочитал PostgreSQL registry движка")?;
+    }
     let bot = Bot::new(&token);
     let _ = bot.delete_webhook().await;
 
@@ -241,6 +242,9 @@ async fn main() -> Result<()> {
     let (users, offers) = store.counts();
     let admin_state = if cfg.admins_id.is_empty() && cfg.admins_name.is_empty() { "EMPTY" } else { "set" };
     eprintln!("authbot (Rust) запущен: @{uname} admin={admin_state} users={users} offers={offers} db={}", state_db());
+    if recovered > 0 {
+        eprintln!("authbot: восстановлено прерванных Claude handoff: {recovered}");
+    }
     if admin_state == "EMPTY" {
         eprintln!("⚠️ AUTH_BOT_ADMIN пуст — админ не задан");
     }

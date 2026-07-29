@@ -117,6 +117,15 @@ impl Store {
         Ok(())
     }
 
+    /// A Claude OAuth child cannot survive a bot restart. Keep the proxy, but ask for email again
+    /// so the seller receives a fresh authorization session instead of getting stuck at ho_code.
+    pub fn recover_interrupted_handoffs(&self) -> Result<usize> {
+        Ok(self.c.lock().unwrap().execute(
+            "UPDATE users SET want='ho_email' WHERE want='ho_code'",
+            [],
+        )?)
+    }
+
     /// chat_id одобренных продавцов (для рассылки офферов).
     pub fn approved_sellers(&self) -> Result<Vec<i64>> {
         let c = self.c.lock().unwrap();
@@ -233,6 +242,7 @@ mod tests {
             let s = Store::open(&p).unwrap();
             s.register_user(111, 111, "seller").unwrap();
             s.set_status(111, "approved").unwrap();
+            s.set_want(111, "ho_code").unwrap();
             s.set_admin_state(999, "seller", "Claude Max20x", 0).unwrap();   // «в процессе» создания оффера
             s.set_admin_state(999, "price", "Claude Max20x", 111).unwrap();  // продавец выбран
             let oid = s.create_offer("Claude Max20x", "$20", 999, 111).unwrap();
@@ -240,7 +250,9 @@ mod tests {
         }
         // «рестарт» бота = новое открытие той же БД
         let s = Store::open(&p).unwrap();
+        assert_eq!(s.recover_interrupted_handoffs().unwrap(), 1);
         assert_eq!(s.get_user(111).unwrap().unwrap().status, "approved");
+        assert_eq!(s.get_user(111).unwrap().unwrap().want, "ho_email");
         assert_eq!(s.approved_sellers().unwrap(), vec![111]);
         // машина создания оффера НЕ потеряна (это и был баг Python-версии)
         let (step, product, seller) = s.get_admin_state(999).unwrap().unwrap();

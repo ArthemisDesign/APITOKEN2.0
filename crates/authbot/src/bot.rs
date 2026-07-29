@@ -359,8 +359,7 @@ fn looks_like_email(s: &str) -> bool {
 }
 
 fn register_sub(cfg: &Config, email: &str, token: &str, proxy: &str) -> anyhow::Result<()> {
-    // Пишем ПРЯМО в authority движка (Postgres, если задан CLAUDE_API_DATABASE_URL): движок
-    // подхватит подписку своим reload_loop за ~30с. SQLite-путь остаётся fallback'ом.
+    // Пишем прямо в PostgreSQL authority движка; reload_loop подхватит подписку за ~30с.
     let mut auth = crate::authority_cfg(cfg).connect()?;
     auth.add(email, token, proxy, &cfg.fleet)?;
     Ok(())
@@ -406,8 +405,14 @@ async fn do_feed_token(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, chat: i
                     "✅ <b>Доступ получен</b>: аккаунт <code>{}</code> добавлен в пул (прокси: {}).",
                     esc(&email), if proxy.is_empty() { "нет" } else { "есть" }), None).await;
             }
-            Err(e) => { let _ = bot.send(chat, &format!(
-                "⚠️ Токен выпущен, но запись в пул не удалась: {}", esc(&e.to_string()))).await; }
+            Err(e) => {
+                let _ = store.set_want(chat, "ho_email");
+                let _ = bot.send(chat,
+                    "⚠️ Токен выпущен, но сохранить его не удалось. Пришли <b>email</b> заново — повторим вход.").await;
+                notify_admins(bot, cfg, &format!(
+                    "⚠️ PostgreSQL registration failed for <code>{}</code>: {}",
+                    esc(&email), esc(&e.to_string())), None).await;
+            }
         },
         Ok(Ok(Outcome::BadCode)) => { let _ = store.set_want(chat, "ho_email"); let _ = bot.send(chat,
             "❌ Код отклонён (неверный/истёк). Пришли <b>email</b> аккаунта заново — дам свежую ссылку.").await; }
