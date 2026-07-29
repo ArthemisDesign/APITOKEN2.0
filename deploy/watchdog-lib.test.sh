@@ -287,8 +287,10 @@ VERIFICATION_FAIL_CHECK=
     || wd_die "missing Codex enablement metrics did not use the bounded retry window"
 )
 
-# Gemini has the same explicit optional-provider contract: disabled is a stable native 404, enabled
-# requires an authenticated paid project and a native 401, and missing Prometheus series fail closed.
+# Gemini has the same explicit optional-provider contract, with one seller-onboarding relaxation:
+# disabled is a stable native 404; enabled requires a native 401 and only records the authenticated
+# project count (zero authenticated projects is a valid pre-onboarding state, not a deploy failure);
+# missing Prometheus series still fail closed.
 (
   # shellcheck disable=SC2091
   eval "$(sed -n '/^final_verify_gemini_surface()/,/^}/p' "$ROOT/deploy/watchdog.sh")"
@@ -339,11 +341,10 @@ VERIFICATION_FAIL_CHECK=
 
   : >"$gemini_probe_log"
   GEMINI_PROBE_MODE=unauthenticated
-  if ( final_verify_gemini_surface ) >/dev/null 2>&1; then
-    wd_die "an enabled Gemini provider without an authenticated project passed verification"
-  fi
-  (( $(wc -l <"$gemini_probe_log") == 7 )) \
-    || wd_die "missing Gemini project metrics did not use the bounded retry window"
+  final_verify_gemini_surface >/dev/null \
+    || wd_die "an enabled Gemini provider with zero authenticated projects must pass as pre-onboarding"
+  (( $(wc -l <"$gemini_probe_log") == 3 )) \
+    || wd_die "pre-onboarding Gemini verification skipped project count or public-envelope check"
 
   : >"$gemini_probe_log"
   GEMINI_PROBE_MODE=missing

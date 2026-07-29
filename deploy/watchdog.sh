@@ -1595,19 +1595,18 @@ final_verify_gemini_surface() {
   (( determined == 1 )) || wd_die "could not determine whether the Gemini provider is enabled"
 
   if (( enabled == 1 )); then
-    local provider_ready=0
-    for attempt in 1 2 3 4 5 6; do
-      response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
-        --data-urlencode 'query=claude_api_gemini_profiles_authenticated{provider="gemini"} >= 1' \
-        http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
-      if jq --exit-status '.status == "success" and (.data.result | length) > 0' \
-        >/dev/null 2>&1 <<<"$response"; then
-        provider_ready=1
-        break
-      fi
-      (( attempt == 6 )) || sleep 5
-    done
-    (( provider_ready == 1 )) || wd_die "Gemini provider is enabled but has no authenticated paid project"
+    # Seller-onboarding rollout: an enabled Gemini surface with zero authenticated paid projects is
+    # a valid pre-onboarding state — it answers a native 401 until the first seller completes OAuth,
+    # so the deploy must not fail closed on an empty roster. Record the count for observability; the
+    # runtime GeminiNoAvailableProfiles alert covers a surface that stays empty after onboarding.
+    local authenticated
+    response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
+      --data-urlencode 'query=claude_api_gemini_profiles_authenticated{provider="gemini"}' \
+      http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
+    authenticated=$(jq --raw-output \
+      'select(.status == "success" and (.data.result | length) == 1) | .data.result[0].value[1]' \
+      <<<"$response" 2>/dev/null || true)
+    wd_log "Gemini enabled with ${authenticated:-0} authenticated paid project(s) (0 = pre-onboarding)"
   fi
 
   envelope=$(curl --noproxy '*' --silent --show-error --max-time 5 \
