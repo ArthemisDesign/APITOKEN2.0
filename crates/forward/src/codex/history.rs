@@ -118,7 +118,9 @@ impl HistoryStore {
         Ok(Self {
             encryption_key: blake3::derive_key(HISTORY_KEY_CONTEXT, &seed),
             scope_key: blake3::derive_key(SCOPE_KEY_CONTEXT, &seed),
-            ttl_secs: ttl_secs.clamp(60, 7 * 24 * 3600),
+            // Allow up to the real API's 30-day response retention so an operator can match it;
+            // the local cap still bounds in-memory growth independently of the TTL.
+            ttl_secs: ttl_secs.clamp(60, 30 * 24 * 3600),
             local_cap: local_cap.clamp(16, 100_000),
             timeout: Duration::from_millis(timeout_ms.clamp(1, 5_000)),
             local: Mutex::new(HashMap::new()),

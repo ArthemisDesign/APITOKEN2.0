@@ -742,6 +742,18 @@ fn combined_instructions(turn: &super::CodexTurnRequest) -> Option<String> {
     }
 }
 
+/// Drop reasoning items from a replayed history. Reasoning (and its `encrypted_content`) is
+/// model-bound internal state; when a `previous_response_id` chain switches models, replaying it is
+/// meaningless and can be rejected by the app-server. The remaining message and tool-call items are
+/// portable, and a reasoning-free history is structurally identical to any first-turn conversation
+/// the app-server already accepts.
+fn strip_reasoning_items(items: Vec<Value>) -> Vec<Value> {
+    items
+        .into_iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) != Some("reasoning"))
+        .collect()
+}
+
 pub(super) async fn prepare_turn(
     gateway: &CodexGateway,
     tenant_scope: &str,
@@ -751,12 +763,16 @@ pub(super) async fn prepare_turn(
         match gateway.history().get(tenant_scope, previous).await {
             Ok(history) => {
                 if history.model != request.public_model.id {
-                    return Err(ApiError::invalid(
-                        "previous_response_id was created with a different model.",
-                        Some("previous_response_id".to_string()),
-                    ));
+                    // The real Responses API permits switching models mid-chain. Reasoning items
+                    // (and their encrypted_content) are model-bound internal state, so replaying
+                    // them into a different model is meaningless and can be rejected upstream; drop
+                    // them and keep the portable message / tool-call items. This can only improve
+                    // on the prior hard 400: same-model chains are untouched, and a cross-model
+                    // chain now behaves like the real API instead of always failing.
+                    strip_reasoning_items(history.items)
+                } else {
+                    history.items
                 }
-                history.items
             }
             Err(HistoryError::NotFound | HistoryError::WrongTenant) => {
                 return Err(ApiError::invalid(
@@ -3045,6 +3061,26 @@ mod tests {
     use super::*;
     use crate::codex::{CodexConfig, CodexPrices};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn strip_reasoning_items_keeps_portable_items_only() {
+        let items = vec![
+            json!({"type": "message", "role": "user", "content": []}),
+            json!({"type": "reasoning", "encrypted_content": "secret", "summary": []}),
+            json!({"type": "function_call", "name": "f", "arguments": "{}"}),
+            json!({"type": "function_call_output", "output": "ok"}),
+        ];
+        let kept = strip_reasoning_items(items);
+        let types: Vec<_> = kept
+            .iter()
+            .map(|item| item["type"].as_str().unwrap())
+            .collect();
+        // Reasoning (model-bound) is dropped on a cross-model replay; messages and tool items stay.
+        assert_eq!(
+            types,
+            vec!["message", "function_call", "function_call_output"]
+        );
+    }
 
     /// Every public error the OpenAI-compatible surface can produce.
     fn all_public_errors() -> Vec<ApiError> {
