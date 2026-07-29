@@ -51,6 +51,7 @@ impl PendingCodexAdmission {
         app: &AppState,
         model: &CodexModel,
         estimated_input_tokens: u64,
+        requested_output_tokens: Option<u64>,
         reserve_overhead_tokens: u64,
     ) -> Result<CodexAdmission, AdmissionError> {
         let reservation = match (&self.authz, &app.billing) {
@@ -65,7 +66,7 @@ impl PendingCodexAdmission {
                 Some(billing),
             ) => {
                 let estimated = estimated_input_tokens.saturating_add(reserve_overhead_tokens);
-                let base = reserve_cost(model, estimated, pool::now());
+                let base = reserve_cost(model, estimated, requested_output_tokens, pool::now());
                 let hold =
                     metering::apply_multiplier(base, *mult_bp).clamp(1, i64::MAX as i128) as i64;
                 // Cap the authorization hold to the account's known balance. The reserve above is a
@@ -128,13 +129,24 @@ impl CodexAdmission {
         }
     }
 
-    pub(crate) fn settle(mut self, model: &CodexModel, usage: &CodexUsage) {
+    pub(crate) fn settle(
+        mut self,
+        model: &CodexModel,
+        usage: &CodexUsage,
+        requested_output_tokens: Option<u64>,
+    ) {
         let Some(mut reservation) = self.reservation.take() else {
             return;
         };
         let now = pool::now();
-        let (charge, usage_event) =
-            settled_charge(model, usage, reservation.hold, reservation.mult_bp, now);
+        let (charge, usage_event) = settled_charge(
+            model,
+            usage,
+            reservation.hold,
+            reservation.mult_bp,
+            requested_output_tokens,
+            now,
+        );
         reservation.billing.settle_detached(
             &reservation.request_id,
             &reservation.account_id,
@@ -163,10 +175,36 @@ fn settled_charge(
     usage: &CodexUsage,
     hold: i64,
     mult_bp: i64,
+    requested_output_tokens: Option<u64>,
     now: i64,
 ) -> (i64, Option<registry::UsageEventInput>) {
     let priced = price_usage(model, usage, now);
-    let computed_charge = metering::apply_multiplier(priced.real_nano, mult_bp);
+    // Honest billing: the transport cannot hard-stop generation, so the model may emit more output
+    // than the client's requested cap. The provider truly consumed those tokens (the immutable
+    // usage_event and window calibration below record the real figures), but the customer is never
+    // charged past the ceiling it asked for — the overage is absorbed by the pool, matching the
+    // real API where hitting `max_tokens` stops generation and bills only up to the cap.
+    let charge_basis_nano = match requested_output_tokens {
+        Some(cap) if usage.output_tokens > cap => {
+            let prices = effective_prices(model, now);
+            let output_multiplier = if usage.input_tokens > prices.long_context_threshold {
+                prices.long_output_basis_points
+            } else {
+                10_000
+            };
+            let capped_output_nano = metering::apply_multiplier(
+                (cap as i128).saturating_mul(prices.output),
+                output_multiplier,
+            );
+            priced
+                .input_nano
+                .saturating_add(priced.cached_nano)
+                .saturating_add(priced.cache_write_nano)
+                .saturating_add(capped_output_nano)
+        }
+        _ => priced.real_nano,
+    };
+    let computed_charge = metering::apply_multiplier(charge_basis_nano, mult_bp);
     let ceiling = hold.max(0) as i128 + metering::OVERDRAFT_NANO;
     let charge = computed_charge.clamp(0, ceiling).min(i64::MAX as i128) as i64;
     let usage_event = (priced.real_nano > 0).then(|| registry::UsageEventInput {
@@ -250,7 +288,12 @@ fn effective_prices(model: &CodexModel, now: i64) -> metering::CodexPrices {
     metering::codex_prices_at(&model.id, now).unwrap_or(model.prices)
 }
 
-fn reserve_cost(model: &CodexModel, estimated_input_tokens: u64, now: i64) -> i128 {
+fn reserve_cost(
+    model: &CodexModel,
+    estimated_input_tokens: u64,
+    requested_output_tokens: Option<u64>,
+    now: i64,
+) -> i128 {
     let prices = effective_prices(model, now);
     let long = estimated_input_tokens > prices.long_context_threshold;
     let input_rate = prices.input.max(prices.cache_write_input);
@@ -264,9 +307,16 @@ fn reserve_cost(model: &CodexModel, estimated_input_tokens: u64, now: i64) -> i1
     } else {
         prices.output
     };
+    // Reserve the output leg against the client's requested cap when it supplied one, not the
+    // model's full max_output_tokens. Settlement bills output capped to the same figure, so the
+    // hold stays a correct ceiling while a small `max_tokens` no longer holds the worst-case
+    // ~$4 that false-402'd low-balance clients running several turns at once.
+    let output_tokens = requested_output_tokens
+        .unwrap_or(model.max_output_tokens)
+        .min(model.max_output_tokens);
     (estimated_input_tokens as i128)
         .saturating_mul(input_rate)
-        .saturating_add((model.max_output_tokens as i128).saturating_mul(output_rate))
+        .saturating_add((output_tokens as i128).saturating_mul(output_rate))
 }
 
 /// Exact official-price cost of one completed turn, used for per-home window-capacity
@@ -490,9 +540,43 @@ mod tests {
 
     #[test]
     fn reserve_covers_full_output_and_cache_write_rate() {
-        let hold = reserve_cost(&model(), 1_000, 0);
+        let hold = reserve_cost(&model(), 1_000, None, 0);
         // Cache-write now equals the input rate, so the reserve input leg is 5_000/token.
         assert_eq!(hold, 1_000 * 5_000 + 128_000 * 30_000);
+    }
+
+    #[test]
+    fn reserve_output_leg_follows_the_requested_cap() {
+        let full = reserve_cost(&model(), 1_000, None, 0);
+        // A small requested cap holds only that many output tokens, not the model's 128k max.
+        let capped = reserve_cost(&model(), 1_000, Some(500), 0);
+        assert_eq!(capped, 1_000 * 5_000 + 500 * 30_000);
+        assert!(capped < full);
+        // A cap above the model maximum is clamped to the model maximum.
+        assert_eq!(reserve_cost(&model(), 1_000, Some(10_000_000), 0), full);
+    }
+
+    #[test]
+    fn settlement_caps_billed_output_but_records_actual_usage() {
+        // The model generated 1_000 output tokens; the client asked for at most 100.
+        let usage = CodexUsage {
+            input_tokens: 100,
+            output_tokens: 1_000,
+            ..CodexUsage::default()
+        };
+        // Uncapped: bill every generated token (fixture rates: input 5_000, output 30_000).
+        let (uncapped, _) = settled_charge(&settlement_model(), &usage, i64::MAX, 10_000, None, 0);
+        assert_eq!(uncapped, 100 * 5_000 + 1_000 * 30_000);
+        // Honest billing: charge only up to the requested 100 output tokens.
+        let (capped, event) =
+            settled_charge(&settlement_model(), &usage, i64::MAX, 10_000, Some(100), 0);
+        assert_eq!(capped, 100 * 5_000 + 100 * 30_000);
+        assert!(capped < uncapped);
+        // The immutable provider-usage record still reflects the real consumption, so window
+        // calibration and accounting stay truthful even though the customer paid less.
+        let event = event.expect("positive usage must produce a usage event");
+        assert_eq!(event.output_tokens, 1_000);
+        assert_eq!(event.real_nano, 100 * 5_000 + 1_000 * 30_000);
     }
 
     #[test]
@@ -539,7 +623,8 @@ mod tests {
             output_tokens: 20,
             ..CodexUsage::default()
         };
-        let (charge, event) = settled_charge(&settlement_model(), &usage, 10_000_000, 5_000, 123);
+        let (charge, event) =
+            settled_charge(&settlement_model(), &usage, 10_000_000, 5_000, None, 123);
 
         // Official cost: 500*5000 + 400*500 + 100*6250 + 20*30000 = 3,925,000.
         // The customer multiplier is 0.5 and must be applied once, not squared.
@@ -573,7 +658,7 @@ mod tests {
             ..CodexUsage::default()
         };
         let hold = 17;
-        let (charge, event) = settled_charge(&settlement_model(), &usage, hold, 10_000, 456);
+        let (charge, event) = settled_charge(&settlement_model(), &usage, hold, 10_000, None, 456);
         assert_eq!(charge as i128, hold as i128 + metering::OVERDRAFT_NANO);
         assert!(event.is_some());
     }
@@ -585,6 +670,7 @@ mod tests {
             &CodexUsage::default(),
             1_000_000,
             10_000,
+            None,
             789,
         );
         assert_eq!(charge, 0);
@@ -600,7 +686,8 @@ mod tests {
             output_tokens: u64::MAX,
             ..CodexUsage::default()
         };
-        let (charge, event) = settled_charge(&settlement_model(), &usage, i64::MAX, 10_000, 999);
+        let (charge, event) =
+            settled_charge(&settlement_model(), &usage, i64::MAX, 10_000, None, 999);
         assert_eq!(charge, i64::MAX);
         let event = event.unwrap();
         assert_eq!(event.input_tokens, 0);
@@ -625,7 +712,7 @@ mod tests {
             ..CodexUsage::default()
         };
 
-        admission.settle(&settlement_model(), &usage);
+        admission.settle(&settlement_model(), &usage, None);
         billing.flush().await.unwrap();
 
         let account = billing

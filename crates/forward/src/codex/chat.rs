@@ -88,6 +88,7 @@ pub async fn completions(
             &app,
             &prepared.request.public_model,
             prepared.estimated_input_tokens,
+            prepared.request.max_output_tokens,
             gateway.config().reserve_overhead_tokens,
         )
         .await
@@ -130,7 +131,11 @@ pub async fn completions(
         &parsed.stop,
         parsed.max_output_chars,
     );
-    admission.settle(&prepared.request.public_model, &result.usage);
+    admission.settle(
+        &prepared.request.public_model,
+        &result.usage,
+        prepared.request.max_output_tokens,
+    );
     let mut http_response = json_response(StatusCode::OK, response, &completion_id);
     super::api::insert_extra_headers(
         &mut http_response,
@@ -249,7 +254,13 @@ fn parse_chat_request(gateway: &CodexGateway, value: Value) -> Result<ParsedChat
     }
 
     let stop = parse_stop_sequences(object.get("stop"))?;
-    let max_output_chars = parse_max_output_chars(object)?;
+    let max_output_tokens = parse_max_output_tokens(object)?;
+    let max_output_chars = output_chars_for(max_output_tokens);
+    // Route the token cap through the shared Responses parser so admission-reserve and honest
+    // output billing see it exactly like a native Responses `max_output_tokens`.
+    if let Some(tokens) = max_output_tokens.filter(|tokens| *tokens > 0) {
+        responses.insert("max_output_tokens".to_string(), Value::from(tokens));
+    }
     let include_usage = parse_stream_options(object.get("stream_options"))?;
     let responses = parse_responses_request(gateway, Value::Object(responses))?;
     Ok(ParsedChat {
@@ -301,8 +312,10 @@ fn parse_stop_sequences(value: Option<&Value>) -> Result<Vec<String>, ApiError> 
         .collect())
 }
 
-fn parse_max_output_chars(object: &Map<String, Value>) -> Result<Option<usize>, ApiError> {
-    const CHARS_PER_TOKEN: u64 = 4;
+/// The requested output-token cap from `max_completion_tokens`/`max_tokens`, in tokens. It bounds
+/// both the admission reserve and the billed output (via the shared Responses field), and — scaled
+/// to ~4 chars/token — the delivered-text budget.
+fn parse_max_output_tokens(object: &Map<String, Value>) -> Result<Option<u64>, ApiError> {
     let value = object
         .get("max_completion_tokens")
         .filter(|value| !value.is_null())
@@ -316,9 +329,13 @@ fn parse_max_output_chars(object: &Map<String, Value>) -> Result<Option<usize>, 
             Some("max_completion_tokens".to_string()),
         )
     })?;
-    Ok(Some(
-        usize::try_from(tokens.saturating_mul(CHARS_PER_TOKEN)).unwrap_or(usize::MAX),
-    ))
+    Ok(Some(tokens))
+}
+
+fn output_chars_for(tokens: Option<u64>) -> Option<usize> {
+    const CHARS_PER_TOKEN: u64 = 4;
+    tokens
+        .map(|tokens| usize::try_from(tokens.saturating_mul(CHARS_PER_TOKEN)).unwrap_or(usize::MAX))
 }
 
 fn translate_legacy_functions(value: &Value) -> Result<Value, ApiError> {
@@ -1209,7 +1226,11 @@ fn stream_chat(
         } else {
             "stop"
         };
-        admission.settle(&prepared.request.public_model, &result.usage);
+        admission.settle(
+            &prepared.request.public_model,
+            &result.usage,
+            prepared.request.max_output_tokens,
+        );
         if downstream_closed {
             return;
         }

@@ -29,6 +29,9 @@ const MAX_CLIENT_METADATA_KEYS: usize = 32;
 const MAX_CLIENT_METADATA_VALUE_BYTES: usize = 16 * 1024;
 const MAX_PROMPT_CACHE_KEY_BYTES: usize = 256;
 const MAX_CUSTOM_TOOL_GRAMMAR_BYTES: usize = 256 * 1024;
+/// Serialized-body bytes per input token. Used both by the public `input_tokens` estimate and by
+/// the admission reserve so the two never disagree.
+const BYTES_PER_TOKEN_ESTIMATE: u64 = 4;
 pub(super) const STREAM_FRAME_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Silence-bound interval for data-bearing SSE progress during long provider reasoning stretches.
 pub(super) const SSE_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
@@ -212,6 +215,10 @@ pub(super) struct ParsedResponsesRequest {
     metadata: Value,
     store: bool,
     include_encrypted_reasoning: bool,
+    /// Requested output-token cap (`max_output_tokens` on Responses, `max_tokens`/
+    /// `max_completion_tokens` on Chat). Bounds the admission reserve and caps the billed output
+    /// so a client is never charged past the ceiling it asked for. `None` means uncapped.
+    pub(super) max_output_tokens: Option<u64>,
     pub(super) stream: bool,
 }
 
@@ -275,6 +282,7 @@ pub async fn responses(
             &app,
             &prepared.request.public_model,
             prepared.estimated_input_tokens,
+            prepared.request.max_output_tokens,
             gateway.config().reserve_overhead_tokens,
         )
         .await
@@ -317,7 +325,11 @@ pub async fn responses(
         created_at,
     )
     .await;
-    admission.settle(&prepared.request.public_model, &result.usage);
+    admission.settle(
+        &prepared.request.public_model,
+        &result.usage,
+        prepared.request.max_output_tokens,
+    );
     let mut http_response = json_response(StatusCode::OK, response, &response_id);
     insert_extra_headers(&mut http_response, ratelimit_headers(&gateway).await);
     http_response
@@ -557,15 +569,14 @@ pub async fn response_input_items(
 }
 
 /// `POST /v1/responses/input_tokens`: estimates the input token count of a Responses-shaped
-/// body without running a turn or reserving balance. The estimate shares the byte-length model
-/// used for billing reserve (including the base64 image placeholder), converted at ~4 bytes per
-/// token, so it trends conservative exactly like the reserve does.
+/// body without running a turn or reserving balance. The estimate is the serialized byte length
+/// (including the base64 image placeholder) at ~4 bytes per token — the same figure the billing
+/// reserve uses, so the two never disagree.
 pub async fn input_tokens(
     State(app): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: axum::extract::Request,
 ) -> Response {
-    const BYTES_PER_TOKEN_ESTIMATE: u64 = 4;
     let Some(gateway) = app.codex.as_ref().cloned() else {
         return ApiError::not_found("The requested endpoint is not enabled.", None::<String>)
             .into_response();
@@ -597,7 +608,7 @@ pub async fn input_tokens(
         Ok(prepared) => prepared,
         Err(error) => return error.into_response(),
     };
-    let input_tokens = prepared.estimated_input_tokens / BYTES_PER_TOKEN_ESTIMATE;
+    let input_tokens = prepared.estimated_input_tokens;
     json_response(
         StatusCode::OK,
         json!({
@@ -781,8 +792,13 @@ pub(super) async fn prepare_turn(
         .cloned()
         .unwrap_or_default();
     sanitize_estimate_images(&mut estimate_value);
+    // Realistic input-token estimate: the serialized byte length at ~4 bytes/token, the same
+    // conversion the public `input_tokens` endpoint reports. Reserving raw byte length treated
+    // ~4 bytes as one token each, inflating the hold ~4x and false-402'ing low-balance clients on
+    // requests they could afford. Settlement always uses exact upstream usage, so this only relaxes
+    // admission; the output leg of the reserve (below) is the conservative part of the hold.
     let estimated_input_tokens = serde_json::to_vec(&estimate_value)
-        .map(|bytes| bytes.len() as u64)
+        .map(|bytes| (bytes.len() as u64) / BYTES_PER_TOKEN_ESTIMATE)
         .unwrap_or(u64::MAX / 2);
     let turn = CodexTurnRequest {
         model: request.public_model.clone(),
@@ -900,6 +916,15 @@ pub(super) fn parse_responses_request(
     // parallel_tool_calls=false cannot be enforced by the transport; accept and run with the
     // default parallel behavior instead of rejecting the request.
     let parallel_tool_calls = optional_bool(object, "parallel_tool_calls")?.unwrap_or(true);
+    // Requested output cap. The transport cannot hard-stop generation, but the cap still bounds
+    // the reserve and the billed output (honest billing: never charge past the requested ceiling).
+    // A non-positive or malformed value is treated as absent rather than rejected, matching the
+    // lenient stance for controls the transport cannot enforce.
+    let max_output_tokens = object
+        .get("max_output_tokens")
+        .filter(|value| !value.is_null())
+        .and_then(Value::as_u64)
+        .filter(|tokens| *tokens > 0);
     let metadata = match object.get("metadata") {
         None | Some(Value::Null) => json!({}),
         Some(Value::Object(metadata)) if metadata.len() <= 16 => Value::Object(metadata.clone()),
@@ -947,6 +972,7 @@ pub(super) fn parse_responses_request(
         metadata,
         store,
         include_encrypted_reasoning,
+        max_output_tokens,
         stream,
     })
 }
@@ -2432,7 +2458,11 @@ fn stream_responses(
             created_at,
         )
         .await;
-        admission.settle(&prepared.request.public_model, &result.usage);
+        admission.settle(
+            &prepared.request.public_model,
+            &result.usage,
+            prepared.request.max_output_tokens,
+        );
         if downstream_closed || frame_tx.is_closed() {
             return;
         }

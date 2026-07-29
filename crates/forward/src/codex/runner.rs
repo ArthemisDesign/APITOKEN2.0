@@ -1239,8 +1239,9 @@ done
 
         let status = gateway.operational_status().await;
         let home = status.homes.first().expect("one fake home");
-        // 53*5000 + 41*500 + 7*6250 + 23*30000 = 1_019_250 nanoUSD at the pinned catalog rates.
-        let expected_usd = 1_019_250.0 / 1e9;
+        // 53*5000 + 41*500 + 7*5000 + 23*30000 = 1_010_500 nanoUSD at the pinned catalog rates
+        // (cache-write priced at the input rate, no OpenAI-absent surcharge).
+        let expected_usd = 1_010_500.0 / 1e9;
         assert!(
             (home.spend_usd_total - expected_usd).abs() < 1e-9,
             "spend {} != {expected_usd}",
