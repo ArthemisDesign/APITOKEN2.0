@@ -23,6 +23,7 @@ pub struct UserRow {
     pub address: String, // BEP-20
     pub want: String, // ожидаемый ввод (reg_address | ho_* | cx_* | gm_proxy | gm_auth | gm_wait)
     pub hproxy: String, // прокси аккаунта при передаче доступа (handover)
+    pub hproxy_order: i64, // IPRoyal order id за handover-прокси (0 = ручной/внешний)
 }
 
 #[derive(Clone, Debug)]
@@ -106,6 +107,12 @@ impl Store {
                                                                                       // Legacy Developer-API builds added `hproject`. It is intentionally ignored: OAuth
                                                                                       // identity/project data now exists only inside the encrypted credential envelope.
         let _ = c.execute("ALTER TABLE users ADD COLUMN hproject TEXT DEFAULT ''", []);
+        // IPRoyal order behind a bot-issued handover proxy, kept until the seller supplies their
+        // OAuth client so a deferred begin() still links the proxy to its order for auto-renewal.
+        let _ = c.execute(
+            "ALTER TABLE users ADD COLUMN hproxy_order INTEGER DEFAULT 0",
+            [],
+        );
         let _ = c.execute(
             "ALTER TABLE gemini_oauth_sessions ADD COLUMN sealed_payload TEXT NOT NULL DEFAULT ''",
             [],
@@ -140,11 +147,12 @@ impl Store {
     pub fn get_user(&self, chat: i64) -> Result<Option<UserRow>> {
         let c = self.c.lock().unwrap();
         let r = c.query_row(
-            "SELECT chat_id,uid,username,status,role,address,want,hproxy FROM users WHERE chat_id=?1",
+            "SELECT chat_id,uid,username,status,role,address,want,hproxy,hproxy_order FROM users WHERE chat_id=?1",
             rusqlite::params![chat],
             |r| Ok(UserRow {
                 chat_id: r.get(0)?, uid: r.get(1)?, username: r.get(2)?, status: r.get(3)?,
                 role: r.get(4)?, address: r.get(5)?, want: r.get(6)?, hproxy: r.get(7)?,
+                hproxy_order: r.get(8)?,
     }),
         ).optional()?;
         Ok(r)
@@ -182,6 +190,13 @@ impl Store {
         self.c.lock().unwrap().execute(
             "UPDATE users SET hproxy=?1 WHERE chat_id=?2",
             rusqlite::params![hproxy, chat],
+        )?;
+        Ok(())
+    }
+    pub fn set_hproxy_order(&self, chat: i64, order_id: i64) -> Result<()> {
+        self.c.lock().unwrap().execute(
+            "UPDATE users SET hproxy_order=?1 WHERE chat_id=?2",
+            rusqlite::params![order_id, chat],
         )?;
         Ok(())
     }
@@ -275,7 +290,7 @@ impl Store {
 
     pub fn by_status(&self, status: &str) -> Result<Vec<UserRow>> {
         let c = self.c.lock().unwrap();
-        let mut s = c.prepare("SELECT chat_id,uid,username,status,role,address,want,hproxy FROM users WHERE status=?1")?;
+        let mut s = c.prepare("SELECT chat_id,uid,username,status,role,address,want,hproxy,hproxy_order FROM users WHERE status=?1")?;
         let rows = s.query_map(rusqlite::params![status], |r| {
             Ok(UserRow {
                 chat_id: r.get(0)?,
@@ -286,6 +301,7 @@ impl Store {
                 address: r.get(5)?,
                 want: r.get(6)?,
                 hproxy: r.get(7)?,
+                hproxy_order: r.get(8)?,
             })
         })?;
         Ok(rows.filter_map(|x| x.ok()).collect())

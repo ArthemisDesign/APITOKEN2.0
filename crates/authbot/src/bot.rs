@@ -442,17 +442,62 @@ pub async fn on_message(
                     start_codex_handoff(bot, store, cfg, chat, text, &rec.hproxy).await;
                 }
             }
-            "gm_proxy" => {
-                let purl = proxy_url(text);
-                if purl.is_empty() {
-                    let _ = bot.send(chat, "Не похоже на прокси. Пришли <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.").await;
-                } else {
-                    start_gemini_handoff(bot, store, cfg, chat, Some(&purl), 0).await;
+            "gm_proxy" => match parse_gemini_client(text) {
+                Some((client_id, client_secret, Some(proxy_line))) => {
+                    let purl = proxy_url(&proxy_line);
+                    if purl.is_empty() {
+                        let _ = bot.send(chat, "Третья строка не похожа на прокси. Пришли <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code> третьей строкой.").await;
+                    } else {
+                        start_gemini_handoff(
+                            bot, store, cfg, chat, Some(&purl), 0, &client_id, &client_secret,
+                        )
+                        .await;
+                    }
                 }
-            }
-            // Compatibility with an already-issued proxy from a previous bot build. New Gemini
-            // flows move it into a state-bound encrypted OAuth row immediately.
-            "gm_auth" => start_gemini_handoff(bot, store, cfg, chat, None, 0).await,
+                Some((client_id, client_secret, None)) => {
+                    let stored = store
+                        .get_user(chat)
+                        .ok()
+                        .flatten()
+                        .map(|user| user.hproxy)
+                        .unwrap_or_default();
+                    if stored.is_empty() {
+                        let _ = bot
+                            .send(
+                                chat,
+                                "Не хватает прокси. Добавь третьей строкой <code>ip:port:user:pass</code>.",
+                            )
+                            .await;
+                    } else {
+                        start_gemini_handoff(
+                            bot, store, cfg, chat, None, 0, &client_id, &client_secret,
+                        )
+                        .await;
+                    }
+                }
+                None => {
+                    let _ = bot.send(chat, GEMINI_CLIENT_PROMPT).await;
+                }
+            },
+            // A proxy already issued for this seller (e.g. IPRoyal); only the OAuth client is needed.
+            "gm_auth" => match parse_gemini_client(text) {
+                Some((client_id, client_secret, _)) => {
+                    start_gemini_handoff(
+                        bot,
+                        store,
+                        cfg,
+                        chat,
+                        None,
+                        rec.hproxy_order,
+                        &client_id,
+                        &client_secret,
+                    )
+                    .await
+                }
+                None => {
+                    let _ = bot.send(chat, GEMINI_CLIENT_PROMPT).await;
+                }
+            },
             "gm_wait" => {
                 let _ = bot
                     .send(
@@ -709,6 +754,8 @@ async fn start_gemini_handoff(
     chat: i64,
     proxy: Option<&str>,
     proxy_order_id: i64,
+    client_id: &str,
+    client_secret: &str,
 ) {
     let Some(oauth) = cfg.gemini_oauth.as_ref() else {
         let _ = store.set_want(chat, "gm_proxy");
@@ -741,15 +788,24 @@ async fn start_gemini_handoff(
             .await;
         return;
     }
-    match gemini_oauth::begin(store, oauth, chat, &proxy, proxy_order_id) {
+    match gemini_oauth::begin(
+        store,
+        oauth,
+        chat,
+        &proxy,
+        proxy_order_id,
+        Some(client_id.to_string()),
+        Some(client_secret.to_string()),
+    ) {
         Ok(url) => {
             // Delete the legacy/plain handoff slot as soon as the state-bound AEAD row exists.
             let _ = store.set_hproxy(chat, "");
+            let _ = store.set_hproxy_order(chat, 0);
             let _ = store.set_want(chat, "gm_wait");
             let _ = bot
                 .send_url_button(
                     chat,
-                    "Прокси закреплён ✅\n\n<b>Шаг 2/2.</b> Открой ссылку в браузерном профиле этого Google-аккаунта, настроенном на тот же прокси. Подтверди доступ и дождись страницы успеха. Тип подписки и managed project бот определит у Google автоматически.",
+                    "Данные приняты ✅\n\n<b>Шаг 2/2.</b> Открой ссылку в браузерном профиле этого Google-аккаунта, настроенном на тот же прокси. Подтверди доступ и дождись страницы успеха. Тип подписки и managed project бот определит у Google автоматически.",
                     "Авторизовать Gemini",
                     &url,
                 )
@@ -761,6 +817,25 @@ async fn start_gemini_handoff(
         }
     }
 }
+
+/// Parse the seller's Gemini message. The seller creates their own Google Cloud OAuth *Web* client
+/// and sends its id and secret; the id is the first non-empty line (…apps.googleusercontent.com),
+/// the secret the second. A third line, when present, is the proxy (manual-proxy flow).
+fn parse_gemini_client(text: &str) -> Option<(String, String, Option<String>)> {
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let client_id = lines.next()?.to_string();
+    let client_secret = lines.next()?.to_string();
+    let proxy = lines.next().map(str::to_string);
+    if !client_id.ends_with(".apps.googleusercontent.com")
+        || client_id.len() < 8
+        || client_secret.len() < 6
+    {
+        return None;
+    }
+    Some((client_id, client_secret, proxy))
+}
+
+const GEMINI_CLIENT_PROMPT: &str = "Пришли данные своего Google OAuth-клиента (создаётся в Google Cloud Console → APIs &amp; Services → Credentials → OAuth client ID → <b>Web application</b>; в Authorized redirect URIs добавь <code>https://gemini.api.apitoken.sale/oauth/callback</code>). Тремя строками:\n<code>CLIENT_ID.apps.googleusercontent.com\nCLIENT_SECRET\nip:port:user:pass</code>\n(третья строка — прокси; если прокси выдаём мы, пришли только первые две).";
 
 /// Какой сценарий передачи доступа нужен по этому офферу.
 ///
@@ -896,8 +971,11 @@ async fn deliver_issued_proxy(
             let _ = store.mark_offer_proxy_issued(oid);
             let (_, next_step) = handoff_steps(store, oid);
             let issued_proxy = px.url();
-            if next_step != "gm_auth" {
-                let _ = store.set_hproxy(seller_chat, &issued_proxy);
+            // Store the handover proxy for every kind; the Gemini flow now defers begin() until the
+            // seller sends their OAuth client, so the proxy (and its IPRoyal order) must persist.
+            let _ = store.set_hproxy(seller_chat, &issued_proxy);
+            if next_step == "gm_auth" {
+                let _ = store.set_hproxy_order(seller_chat, px.order_id);
             }
             let _ = store.set_want(seller_chat, next_step);
             let next_prompt = match next_step {
@@ -905,7 +983,7 @@ async fn deliver_issued_proxy(
                     "Зайди в аккаунт ChatGPT через этот прокси (HTTP) и пришли <b>email</b> аккаунта."
                 }
                 "gm_auth" => {
-                    "Дальше бот выдаст защищённую ссылку Google OAuth; этот IPRoyal allocation сохранится за Gemini-профилем и будет продлеваться без смены egress."
+                    "Прокси закреплён за твоим Gemini-профилем. Теперь пришли данные своего Google OAuth-клиента двумя строками:\n<code>CLIENT_ID.apps.googleusercontent.com\nCLIENT_SECRET</code>\n(в клиенте должен быть добавлен redirect URI <code>https://gemini.api.apitoken.sale/oauth/callback</code>)."
                 }
                 _ => {
                     "Зайди в аккаунт Claude через этот прокси (HTTP) и пришли <b>email</b> аккаунта."
@@ -924,17 +1002,6 @@ async fn deliver_issued_proxy(
                     ),
                 )
                 .await;
-            if next_step == "gm_auth" {
-                start_gemini_handoff(
-                    bot,
-                    store,
-                    cfg,
-                    seller_chat,
-                    Some(&issued_proxy),
-                    px.order_id,
-                )
-                .await;
-            }
             let _ = bot.send(admin_chat, &format!(
                 "✅ Прокси по офферу #{oid} выпущен (UK · {}, заказ IPRoyal #{}) и отправлен продавцу.",
                 esc(&px.city), px.order_id)).await;
@@ -942,9 +1009,13 @@ async fn deliver_issued_proxy(
         Err(e) => {
             let (proxy_step, _) = handoff_steps(store, oid);
             let _ = store.set_want(seller_chat, proxy_step);
-            let _ = bot.send(seller_chat,
+            let prompt = if proxy_step == "gm_proxy" {
+                GEMINI_CLIENT_PROMPT.to_string()
+            } else {
                 "⚠️ Авто-выпуск прокси временно не удался. <b>Передача доступа, шаг 1/3.</b>\n\
-                 Пришли <b>прокси</b> аккаунта: <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.").await;
+                 Пришли <b>прокси</b> аккаунта: <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.".to_string()
+            };
+            let _ = bot.send(seller_chat, &prompt).await;
             notify_admins(bot, cfg, &format!(
                 "⚠️ Авто-выпуск прокси для оффера #{oid} не удался: {}\nПродавцу предложен ручной ввод.",
                 esc(&e.to_string())), None).await;
@@ -1133,9 +1204,19 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                         let (proxy_step, _) = handoff_steps(store, oid);
                         let _ = store.set_want(seller_chat, proxy_step);
                         let _ = bot.send(chat, "Продавцу отправлена инструкция по передаче доступа (ручной прокси).").await;
-                        let _ = bot.send(seller_chat, &format!(
-                            "💸 <b>Оплата отправлена!</b> tx: <code>{}</code>\n\n<b>Передача доступа, шаг 1/3.</b>\n\
-                             Пришли <b>прокси</b> аккаунта одним сообщением: <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.", esc(&hash))).await;
+                        let seller_prompt = if proxy_step == "gm_proxy" {
+                            format!(
+                                "💸 <b>Оплата отправлена!</b> tx: <code>{}</code>\n\n<b>Передача доступа, шаг 1/2.</b>\n{}",
+                                esc(&hash), GEMINI_CLIENT_PROMPT
+                            )
+                        } else {
+                            format!(
+                                "💸 <b>Оплата отправлена!</b> tx: <code>{}</code>\n\n<b>Передача доступа, шаг 1/3.</b>\n\
+                             Пришли <b>прокси</b> аккаунта одним сообщением: <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.",
+                                esc(&hash)
+                            )
+                        };
+                        let _ = bot.send(seller_chat, &seller_prompt).await;
                     }
                 }
                 Err(e) => {
@@ -1302,8 +1383,32 @@ mod tests {
         }
     }
 
-    /// Шаги передачи доступа выбираются по офферу. Неизвестный оффер обязан деградировать в
-    /// Claude-ветку, а не отправлять продавца в device-флоу под чужой продукт.
+    /// The seller's Gemini message carries their OAuth client id and secret, and optionally a proxy;
+    /// a non-Google client id or a missing/short secret is rejected before any OAuth session starts.
+    #[test]
+    fn parse_gemini_client_reads_id_secret_and_optional_proxy() {
+        // Three lines: id, secret, proxy (manual-proxy flow).
+        let (id, secret, proxy) = parse_gemini_client(
+            "123456-abc.apps.googleusercontent.com\nGOCSPX-supersecretvalue\n1.2.3.4:8080:user:pass",
+        )
+        .unwrap();
+        assert_eq!(id, "123456-abc.apps.googleusercontent.com");
+        assert_eq!(secret, "GOCSPX-supersecretvalue");
+        assert_eq!(proxy.as_deref(), Some("1.2.3.4:8080:user:pass"));
+
+        // Two lines: id, secret (bot-issued proxy flow); blank lines tolerated.
+        let (_, _, proxy) =
+            parse_gemini_client("  123.apps.googleusercontent.com \n\nGOCSPX-value\n").unwrap();
+        assert!(proxy.is_none());
+
+        // A client id that is not a Google OAuth client id is rejected.
+        assert!(parse_gemini_client("not-a-client\nsecret").is_none());
+        // Missing secret is rejected.
+        assert!(parse_gemini_client("123.apps.googleusercontent.com").is_none());
+        // Too-short secret is rejected.
+        assert!(parse_gemini_client("123.apps.googleusercontent.com\nshort").is_none());
+    }
+
     #[test]
     fn handoff_steps_follow_the_offer_product() {
         let store = store();

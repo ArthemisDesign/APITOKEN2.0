@@ -46,6 +46,11 @@ struct PendingOAuthSecret {
     verifier: String,
     proxy: String,
     proxy_order_id: i64,
+    // The seller's own Google OAuth client, sealed so the authorize URL's client and the callback's
+    // token exchange stay consistent across the begin→callback boundary. Falls back to the operator
+    // client when the seller did not supply one.
+    client_id: String,
+    client_secret: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -237,6 +242,7 @@ pub enum StartError {
     Proxy,
     State,
     Url,
+    Client,
 }
 
 impl StartError {
@@ -247,6 +253,7 @@ impl StartError {
                 "Не удалось создать защищённую OAuth-сессию. Попробуй ещё раз."
             }
             Self::Url => "Gemini OAuth временно неверно настроен. Администратор уже уведомлён.",
+            Self::Client => "OAuth client id/secret не прошли проверку. Пришли значения из своего Google Cloud OAuth-клиента (client id — длинная строка, secret — из раздела Credentials).",
         }
     }
 }
@@ -258,9 +265,22 @@ pub fn begin(
     chat_id: i64,
     proxy: &str,
     proxy_order_id: i64,
+    client_id: Option<String>,
+    client_secret: Option<String>,
 ) -> Result<String, StartError> {
     if proxy_order_id < 0 {
         return Err(StartError::Proxy);
+    }
+    // The seller's own OAuth client distributes the fleet across many Google clients so the whole
+    // pool cannot be revoked at once. When absent, fall back to the operator client.
+    let client_id = client_id.unwrap_or_else(|| config.client_id.clone());
+    let client_secret = client_secret.unwrap_or_else(|| config.client_secret.clone());
+    if !(8..=1_024).contains(&client_id.len())
+        || !(1..=4_096).contains(&client_secret.len())
+        || client_id.bytes().any(|byte| byte.is_ascii_control())
+        || client_secret.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err(StartError::Client);
     }
     let proxy = normalize_proxy_url(proxy)?;
     let mut state_bytes = [0u8; 32];
@@ -274,6 +294,8 @@ pub fn begin(
         verifier,
         proxy,
         proxy_order_id,
+        client_id: client_id.clone(),
+        client_secret,
     };
     let payload = Zeroizing::new(serde_json::to_string(&pending).map_err(|_| StartError::State)?);
     let sealed_payload = config
@@ -289,7 +311,7 @@ pub fn begin(
     let mut url = reqwest::Url::parse(AUTHORIZE_URL).map_err(|_| StartError::Url)?;
     url.query_pairs_mut()
         .append_pair("response_type", "code")
-        .append_pair("client_id", &config.client_id)
+        .append_pair("client_id", &client_id)
         .append_pair("redirect_uri", &config.redirect_uri)
         .append_pair("scope", SCOPES)
         .append_pair("access_type", "offline")
@@ -422,6 +444,8 @@ async fn callback(
         pending.verifier.as_str(),
         pending.proxy.as_str(),
         pending.proxy_order_id,
+        pending.client_id.as_str(),
+        pending.client_secret.as_str(),
     )
     .await
     {
@@ -633,6 +657,8 @@ async fn complete(
     verifier: &str,
     proxy: &str,
     proxy_order_id: i64,
+    client_id: &str,
+    client_secret: &str,
 ) -> Result<PublishedProfile, Failure> {
     if session.expires_ts < now() {
         return Err(Failure::Authorization);
@@ -642,8 +668,8 @@ async fn complete(
         .post(TOKEN_URL)
         .form(&[
             ("grant_type", "authorization_code"),
-            ("client_id", config.client_id.as_str()),
-            ("client_secret", config.client_secret.as_str()),
+            ("client_id", client_id),
+            ("client_secret", client_secret),
             ("code", code),
             ("code_verifier", verifier),
             ("redirect_uri", config.redirect_uri.as_str()),
@@ -694,8 +720,8 @@ async fn complete(
         access_token: std::mem::take(&mut token.access_token),
         refresh_token,
         expires_at: now().saturating_add(token.expires_in).saturating_sub(60),
-        oauth_client_id: config.client_id.clone(),
-        oauth_client_secret: config.client_secret.clone(),
+        oauth_client_id: client_id.to_string(),
+        oauth_client_secret: client_secret.to_string(),
         token_uri: TOKEN_URL.to_string(),
         subject: std::mem::take(&mut user.id),
         email: std::mem::take(&mut user.email),
@@ -1143,10 +1169,24 @@ mod tests {
         )
         .unwrap();
         let proxy = "http://user:pass@127.0.0.1:8080";
-        let authorization = begin(&store, &config, 42, proxy, 777).unwrap();
+        let authorization = begin(
+            &store,
+            &config,
+            42,
+            proxy,
+            777,
+            Some("seller-1234.apps.googleusercontent.com".into()),
+            Some("seller-secret-value".into()),
+        )
+        .unwrap();
         assert!(!authorization.contains("user:pass"));
         assert!(!authorization.contains("client-secret-value"));
+        assert!(!authorization.contains("seller-secret-value"));
         let url = reqwest::Url::parse(&authorization).unwrap();
+        // The authorize URL must carry the seller's client id, not the operator fallback.
+        assert!(url.query_pairs().any(|(name, value)| {
+            name == "client_id" && value == "seller-1234.apps.googleusercontent.com"
+        }));
         let state = url
             .query_pairs()
             .find_map(|(name, value)| (name == "state").then(|| value.into_owned()))
@@ -1156,6 +1196,7 @@ mod tests {
             .any(|(name, value)| { name == "code_challenge_method" && value == "S256" }));
         let session = store.claim_gemini_oauth(&state).unwrap().unwrap();
         assert!(!session.sealed_payload.contains("user:pass"));
+        assert!(!session.sealed_payload.contains("seller-secret-value"));
         let envelope: SealedCredential = serde_json::from_str(&session.sealed_payload).unwrap();
         let decrypted = config
             .keyring
@@ -1164,6 +1205,8 @@ mod tests {
         let pending: PendingOAuthSecret = serde_json::from_str(decrypted.as_str()).unwrap();
         assert_eq!(pending.proxy, format!("{proxy}/"));
         assert_eq!(pending.proxy_order_id, 777);
+        assert_eq!(pending.client_id, "seller-1234.apps.googleusercontent.com");
+        assert_eq!(pending.client_secret, "seller-secret-value");
         assert!(valid_oauth_value(&pending.verifier, 256));
         assert!(!session.sealed_payload.contains(&pending.verifier));
         for path in [
