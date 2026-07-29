@@ -81,9 +81,8 @@ fn gemini_oauth_config(gemini_dir: &str) -> Result<Option<gemini_oauth::Config>>
     if client_id.is_none() && client_secret.is_none() && keys.is_none() && active.is_none() {
         return Ok(None);
     }
-    let client_id = client_id.ok_or_else(|| anyhow!("AUTH_BOT_GEMINI_CLIENT_ID не задан"))?;
-    let client_secret =
-        client_secret.ok_or_else(|| anyhow!("AUTH_BOT_GEMINI_CLIENT_SECRET не задан"))?;
+    // Intake is gated on the AEAD keyring (required to seal credentials). The operator OAuth client
+    // is now an optional fallback — sellers submit their own — so it defaults to empty when unset.
     let keyring = gemini_credential::CredentialKeyring::parse(
         &keys.ok_or_else(|| anyhow!("AUTH_BOT_GEMINI_CREDENTIAL_KEYS не задан"))?,
     )?;
@@ -95,8 +94,8 @@ fn gemini_oauth_config(gemini_dir: &str) -> Result<Option<gemini_oauth::Config>>
     let redirect = env_opt("AUTH_BOT_GEMINI_REDIRECT_URI")
         .unwrap_or_else(|| "https://gemini.api.apitoken.sale/oauth/callback".into());
     let config = gemini_oauth::Config::new(
-        client_id,
-        client_secret,
+        client_id.unwrap_or_default(),
+        client_secret.unwrap_or_default(),
         redirect,
         bind,
         gemini_dir.to_string(),

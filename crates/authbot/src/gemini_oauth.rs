@@ -95,8 +95,12 @@ impl Config {
         keyring: CredentialKeyring,
         active_key_id: String,
     ) -> anyhow::Result<Self> {
-        bounded(&client_id, 8, 1_024, "Gemini OAuth client id")?;
-        bounded(&client_secret, 1, 4_096, "Gemini OAuth client secret")?;
+        // The operator OAuth client is an optional fallback now that sellers submit their own; empty
+        // means "no fallback" and a seller must supply a client. When present, it is bounds-checked.
+        if !client_id.is_empty() || !client_secret.is_empty() {
+            bounded(&client_id, 8, 1_024, "Gemini OAuth client id")?;
+            bounded(&client_secret, 1, 4_096, "Gemini OAuth client secret")?;
+        }
         if !keyring.contains(&active_key_id) {
             bail!("AUTH_BOT_GEMINI_CREDENTIAL_ACTIVE_KID is absent from the keyring");
         }
@@ -1150,6 +1154,46 @@ mod tests {
         ));
         let ring = CredentialKeyring::parse(&format!("current:{}", "55".repeat(32))).unwrap();
         (root, ring)
+    }
+
+    #[test]
+    fn operator_client_is_optional_and_seller_client_is_required_without_it() {
+        let (root, ring) = fixture();
+        let store = Store::open(
+            root.join("state")
+                .join("authbot.db")
+                .to_str()
+                .unwrap(),
+        )
+        .unwrap();
+        // Config initializes with no operator client (empty = no fallback).
+        let config = Config::new(
+            String::new(),
+            String::new(),
+            "https://gemini.example/oauth/callback".into(),
+            "127.0.0.1:8796".parse().unwrap(),
+            root.join("gemini").to_string_lossy().into_owned(),
+            ring,
+            "current".into(),
+        )
+        .unwrap();
+        let proxy = "http://user:pass@127.0.0.1:8080";
+        // A seller-supplied client works.
+        assert!(begin(
+            &store,
+            &config,
+            1,
+            proxy,
+            0,
+            Some("seller-1.apps.googleusercontent.com".into()),
+            Some("seller-secret".into()),
+        )
+        .is_ok());
+        // No seller client and no operator fallback → rejected before any session is created.
+        assert!(matches!(
+            begin(&store, &config, 2, proxy, 0, None, None),
+            Err(StartError::Client)
+        ));
     }
 
     #[test]
