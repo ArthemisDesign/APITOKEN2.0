@@ -319,7 +319,7 @@ VERIFICATION_FAIL_CHECK=
         if [[ $GEMINI_PROBE_MODE == disabled ]]; then
           printf '%s\n' '{"error":{"code":404,"status":"NOT_FOUND"}}'
         else
-          printf '%s\n' '{"error":{"code":401,"status":"UNAUTHENTICATED"}}'
+          printf '%s\n' '{"error":{"code":400,"status":"INVALID_ARGUMENT","details":[{"reason":"API_KEY_INVALID"}]}}'
         fi
         ;;
       *) return 2 ;;

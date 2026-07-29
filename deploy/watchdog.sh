@@ -1615,7 +1615,8 @@ final_verify_gemini_surface() {
     'https://gemini.api.apitoken.sale/v1beta/models/gemini-provider-probe:generateContent' \
     2>/dev/null || true)
   if (( enabled == 1 )); then
-    jq --exit-status '.error.status == "UNAUTHENTICATED" and .error.code == 401' \
+    jq --exit-status '.error.status == "INVALID_ARGUMENT" and .error.code == 400
+      and (.error.details // [] | any(.reason? == "API_KEY_INVALID"))' \
       >/dev/null 2>&1 <<<"$envelope" \
       || wd_die "enabled public Gemini hostname did not answer with the native provider envelope"
   else

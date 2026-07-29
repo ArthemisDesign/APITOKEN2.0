@@ -312,6 +312,10 @@ pub fn begin(
     store
         .start_gemini_oauth(chat_id, &state, &sealed_payload, now() + OAUTH_SESSION_SECS)
         .map_err(|_| StartError::State)?;
+    eprintln!(
+        "[gemini-oauth] chat={} proxy_order={} started OAuth session (awaiting Google consent callback)",
+        chat_id, proxy_order_id
+    );
     let mut url = reqwest::Url::parse(AUTHORIZE_URL).map_err(|_| StartError::Url)?;
     url.query_pairs_mut()
         .append_pair("response_type", "code")
@@ -548,7 +552,12 @@ async fn fail_callback(state: &CallbackState, session: &GeminiOAuthSession, fail
             let _ = state.bot.send(*admin, failure.operator_message()).await;
         }
     }
-    eprintln!("Gemini OAuth callback failed: {}", failure.code());
+    eprintln!(
+        "[gemini-oauth] chat={} callback failed: {}{}",
+        session.chat_id,
+        failure.code(),
+        if failure.operator_action_required() { " (operator notified)" } else { "" }
+    );
 }
 
 fn valid_oauth_value(value: &str, max: usize) -> bool {
@@ -664,10 +673,28 @@ async fn complete(
     client_id: &str,
     client_secret: &str,
 ) -> Result<PublishedProfile, Failure> {
+    eprintln!(
+        "[gemini-oauth] chat={} proxy_order={} finalizing: exchanging Google authorization code",
+        session.chat_id, proxy_order_id
+    );
     if session.expires_ts < now() {
+        eprintln!(
+            "[gemini-oauth] chat={} aborted: OAuth session expired before the callback arrived",
+            session.chat_id
+        );
         return Err(Failure::Authorization);
     }
-    let client = http_client(proxy)?;
+    let client = match http_client(proxy) {
+        Ok(client) => client,
+        Err(failure) => {
+            eprintln!(
+                "[gemini-oauth] chat={} proxy HTTP client build failed: {}",
+                session.chat_id,
+                failure.code()
+            );
+            return Err(failure);
+        }
+    };
     let response = client
         .post(TOKEN_URL)
         .form(&[
@@ -680,8 +707,20 @@ async fn complete(
         ])
         .send()
         .await
-        .map_err(|_| Failure::Temporary)?;
+        .map_err(|error| {
+            eprintln!(
+                "[gemini-oauth] chat={} token exchange transport error (proxy/network): {}",
+                session.chat_id,
+                error.is_timeout()
+            );
+            Failure::Temporary
+        })?;
     if !response.status().is_success() {
+        eprintln!(
+            "[gemini-oauth] chat={} Google rejected the token exchange: HTTP {}",
+            session.chat_id,
+            response.status().as_u16()
+        );
         return Err(if response.status().is_server_error() {
             Failure::Temporary
         } else {
@@ -706,6 +745,11 @@ async fn complete(
         .await
         .map_err(|_| Failure::Temporary)?;
     if !user_info_response.status().is_success() {
+        eprintln!(
+            "[gemini-oauth] chat={} Google userinfo call failed: HTTP {}",
+            session.chat_id,
+            user_info_response.status().as_u16()
+        );
         return Err(Failure::Authorization);
     }
     let mut user: UserInfo = user_info_response
@@ -713,12 +757,36 @@ async fn complete(
         .await
         .map_err(|_| Failure::Temporary)?;
     if !user.verified_email || !valid_identity(&user.id, 512) || !valid_identity(&user.email, 512) {
+        eprintln!(
+            "[gemini-oauth] chat={} rejected: Google account is unverified or malformed",
+            session.chat_id
+        );
         return Err(Failure::Authorization);
     }
-    let resolved = resolve_account(&client, &token.access_token).await?;
+    let resolved = match resolve_account(&client, &token.access_token).await {
+        Ok(resolved) => resolved,
+        Err(failure) => {
+            eprintln!(
+                "[gemini-oauth] chat={} Code Assist tier/project resolution failed: {}",
+                session.chat_id,
+                failure.code()
+            );
+            return Err(failure);
+        }
+    };
     if !supported_paid_plan(&resolved.plan) {
+        eprintln!(
+            "[gemini-oauth] chat={} rejected: unsupported Google plan {}",
+            session.chat_id,
+            plan_label(&resolved.plan)
+        );
         return Err(Failure::UnsupportedPlan);
     }
+    eprintln!(
+        "[gemini-oauth] chat={} Google account verified, plan={}, sealing credential",
+        session.chat_id,
+        plan_label(&resolved.plan)
+    );
     let credential = GeminiCredential {
         version: 1,
         access_token: std::mem::take(&mut token.access_token),
@@ -741,9 +809,23 @@ async fn complete(
     let root = config.root.clone();
     let ring = config.keyring.clone();
     let active = config.active_key_id.clone();
-    tokio::task::spawn_blocking(move || publish(&root, &ring, &active, credential))
+    let published = tokio::task::spawn_blocking(move || publish(&root, &ring, &active, credential))
         .await
-        .map_err(|_| Failure::Storage)?
+        .map_err(|_| Failure::Storage)?;
+    match &published {
+        Ok(profile) => eprintln!(
+            "[gemini-oauth] chat={} sealed and published profile {} (plan {}) into the Gemini roster",
+            session.chat_id,
+            profile.id,
+            plan_label(&profile.plan)
+        ),
+        Err(failure) => eprintln!(
+            "[gemini-oauth] chat={} sealing/publishing the profile failed: {}",
+            session.chat_id,
+            failure.code()
+        ),
+    }
+    published
 }
 
 fn http_client(proxy: &str) -> Result<reqwest::Client, Failure> {

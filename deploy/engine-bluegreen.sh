@@ -147,9 +147,11 @@ gemini_provider_envelope() {
     -H 'content-type: application/json' -d '{}' \
     'http://127.0.0.1:8794/v1beta/models/gemini-provider-probe:generateContent' 2>/dev/null || true)
   # Fixed Gemini mode stays up when its provider-only kill switch is disabled, mirroring the OpenAI
-  # singleton. Enabled mode authenticates first (401); disabled mode proves the same native router
-  # with its closed 404. The watchdog's Prometheus-aware final verifier distinguishes the two.
-  { [[ $status == 401 ]] && grep -Fq 'UNAUTHENTICATED' "$body_file"; } \
+  # singleton. Enabled mode rejects the unauthenticated probe at the client-key stage, faithfully
+  # mirroring Google with a 400 API_KEY_INVALID (checked before any project/profile, so it holds for
+  # an empty pre-onboarding roster too); disabled mode proves the same native router with its closed
+  # 404. The watchdog's Prometheus-aware final verifier distinguishes the two.
+  { [[ $status == 400 ]] && grep -Fq 'API_KEY_INVALID' "$body_file"; } \
     || { [[ $status == 404 ]] && grep -Fq 'NOT_FOUND' "$body_file"; }
   local result=$?
   rm -f -- "$body_file"
