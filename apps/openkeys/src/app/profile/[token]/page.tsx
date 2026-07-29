@@ -4,7 +4,7 @@ import { loadUsageByViewToken } from "@/lib/keys";
 import { validViewToken } from "@/lib/usage-session";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Профиль ключа — apiToken" };
+export const metadata = { title: "Key usage — apiToken" };
 
 /** Персональная ссылка, которую покупатель получает вместе с ключом. */
 export default async function KeyProfilePage({ params }: { params: Promise<{ token: string }> }) {

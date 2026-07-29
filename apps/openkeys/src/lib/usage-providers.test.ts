@@ -19,6 +19,8 @@ describe("разбивка USAGE по API", () => {
     expect(usageProviderOf("gpt-5.6-sol")).toBe("openai");
     expect(usageProviderOf("GPT-5.6-sol")).toBe("openai");
     expect(usageProviderOf("claude-opus-4-8")).toBe("claude");
+    expect(usageProviderOf("claude-opus-4-8", "openai")).toBe("openai");
+    expect(usageProviderOf("gpt-5.6-sol", "anthropic")).toBe("claude");
   });
 
   it("суммирует запросы, токены и bigint-деньги отдельно", () => {

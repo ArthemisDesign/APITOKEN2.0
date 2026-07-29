@@ -1688,6 +1688,7 @@ pub fn usage_event_add(
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UsageModelAgg {
     pub model: String,
+    pub provider: String,
     pub requests: i64,
     pub input_tokens: i64,
     pub output_tokens: i64,
@@ -1714,6 +1715,17 @@ pub struct UsageDailyAgg {
     pub charge_nano: i64,
 }
 
+/// Точный дневной срез по фактически обслужившему API-плану. Имя модели намеренно
+/// не участвует: один и тот же model ID может маршрутизироваться разными провайдерами.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UsageDailyProviderAgg {
+    pub day_ts: i64,
+    pub provider: String,
+    pub requests: i64,
+    pub real_nano: i64,
+    pub charge_nano: i64,
+}
+
 /// Точный per-key срез usage-окна. Полный ключ остаётся внутри engine-процесса и маскируется
 /// HTTP-слоем до ответа control API.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1728,6 +1740,7 @@ pub struct UsageKeyAgg {
 pub struct UsageReport {
     pub models: Vec<UsageModelAgg>,
     pub daily: Vec<UsageDailyAgg>,
+    pub daily_providers: Vec<UsageDailyProviderAgg>,
     pub keys: Vec<UsageKeyAgg>,
 }
 
@@ -1738,7 +1751,7 @@ fn usage_by_model_between(
     until_ts: i64,
 ) -> Result<Vec<UsageModelAgg>> {
     let mut stmt = conn.prepare(
-        "SELECT COALESCE(model,''), COUNT(*), \
+        "SELECT COALESCE(model,''), COALESCE(NULLIF(provider,''),'anthropic'), COUNT(*), \
          COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), \
          COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_write_5m_tokens),0), \
          COALESCE(SUM(cache_write_1h_tokens),0), COALESCE(SUM(web_search_requests),0), \
@@ -1747,26 +1760,27 @@ fn usage_by_model_between(
          COALESCE(SUM(cache_read_nano),0), COALESCE(SUM(cache_write_5m_nano),0), \
          COALESCE(SUM(cache_write_1h_nano),0), COALESCE(SUM(web_search_nano),0) \
          FROM usage_events WHERE account_id=?1 AND ts>=?2 AND ts<?3 \
-         GROUP BY model ORDER BY SUM(real_nano) DESC, model",
+         GROUP BY model, COALESCE(NULLIF(provider,''),'anthropic') ORDER BY SUM(real_nano) DESC, model, COALESCE(NULLIF(provider,''),'anthropic')",
     )?;
     let rows = stmt.query_map(rusqlite::params![account_id, since_ts, until_ts], |r| {
         Ok(UsageModelAgg {
             model: r.get(0)?,
-            requests: r.get(1)?,
-            input_tokens: r.get(2)?,
-            output_tokens: r.get(3)?,
-            cache_read_tokens: r.get(4)?,
-            cache_write_5m_tokens: r.get(5)?,
-            cache_write_1h_tokens: r.get(6)?,
-            web_search_requests: r.get(7)?,
-            real_nano: r.get(8)?,
-            charge_nano: r.get(9)?,
-            input_nano: r.get(10)?,
-            output_nano: r.get(11)?,
-            cache_read_nano: r.get(12)?,
-            cache_write_5m_nano: r.get(13)?,
-            cache_write_1h_nano: r.get(14)?,
-            web_search_nano: r.get(15)?,
+            provider: r.get(1)?,
+            requests: r.get(2)?,
+            input_tokens: r.get(3)?,
+            output_tokens: r.get(4)?,
+            cache_read_tokens: r.get(5)?,
+            cache_write_5m_tokens: r.get(6)?,
+            cache_write_1h_tokens: r.get(7)?,
+            web_search_requests: r.get(8)?,
+            real_nano: r.get(9)?,
+            charge_nano: r.get(10)?,
+            input_nano: r.get(11)?,
+            output_nano: r.get(12)?,
+            cache_read_nano: r.get(13)?,
+            cache_write_5m_nano: r.get(14)?,
+            cache_write_1h_nano: r.get(15)?,
+            web_search_nano: r.get(16)?,
         })
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -1812,6 +1826,26 @@ pub fn usage_report(
             .collect::<std::result::Result<Vec<_>, _>>()?;
         rows
     };
+    let daily_providers = {
+        let mut stmt = transaction.prepare(
+            "SELECT (ts / 86400) * 86400 AS day_ts, COALESCE(NULLIF(provider,''),'anthropic'), COUNT(*), \
+             COALESCE(SUM(real_nano),0), COALESCE(SUM(charge_nano),0) \
+             FROM usage_events WHERE account_id=?1 AND ts>=?2 AND ts<?3 \
+             GROUP BY day_ts, COALESCE(NULLIF(provider,''),'anthropic') ORDER BY day_ts, COALESCE(NULLIF(provider,''),'anthropic')",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![account_id, since_ts, until_ts], |r| {
+                Ok(UsageDailyProviderAgg {
+                    day_ts: r.get(0)?,
+                    provider: r.get(1)?,
+                    requests: r.get(2)?,
+                    real_nano: r.get(3)?,
+                    charge_nano: r.get(4)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows
+    };
     let keys = {
         let mut stmt = transaction.prepare(
             "SELECT key, COUNT(*), COALESCE(SUM(real_nano),0), COALESCE(SUM(charge_nano),0) \
@@ -1834,6 +1868,7 @@ pub fn usage_report(
     Ok(UsageReport {
         models,
         daily,
+        daily_providers,
         keys,
     })
 }
@@ -2692,6 +2727,7 @@ mod tests {
         };
         let second = UsageEventInput {
             model: "claude-opus-4-8".into(),
+            provider: PROVIDER_OPENAI.into(),
             output_tokens: 10,
             real_nano: 30_000_000,
             output_nano: 30_000_000,
@@ -2727,6 +2763,25 @@ mod tests {
                 },
                 UsageDailyAgg {
                     day_ts: day_two,
+                    requests: 1,
+                    real_nano: 5_000_000,
+                    charge_nano: 2_000_000,
+                },
+            ]
+        );
+        assert_eq!(
+            report.daily_providers,
+            vec![
+                UsageDailyProviderAgg {
+                    day_ts: day_one,
+                    provider: PROVIDER_OPENAI.into(),
+                    requests: 1,
+                    real_nano: 30_000_000,
+                    charge_nano: 12_000_000,
+                },
+                UsageDailyProviderAgg {
+                    day_ts: day_two,
+                    provider: PROVIDER_ANTHROPIC.into(),
                     requests: 1,
                     real_nano: 5_000_000,
                     charge_nano: 2_000_000,

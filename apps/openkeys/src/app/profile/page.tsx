@@ -5,7 +5,7 @@ import { loadUsageByViewToken } from "@/lib/keys";
 import { usageSessionToken, USAGE_SESSION_COOKIE } from "@/lib/usage-session";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Профиль ключа — apiToken" };
+export const metadata = { title: "Key usage — apiToken" };
 
 /**
  * Тот же профиль, но вход по самому ключу: проверенный ключ кладёт в HttpOnly-куку

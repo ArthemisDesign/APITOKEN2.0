@@ -226,7 +226,7 @@ function cleanApiKey(value: string): string {
 }
 
 export function OpenAiDocsPortal() {
-  const { language, setLanguage } = useLanguage();
+  const { language } = useLanguage();
   const t = copy[language];
   const [keyInput, setKeyInput] = useState("");
   const [activeKey, setActiveKey] = useState("");
@@ -241,16 +241,7 @@ export function OpenAiDocsPortal() {
     : value;
 
   return (
-    <AppShell
-      section="openaiDocs"
-      title={t.titleBar}
-      actions={
-        <div className="lang" role="group" aria-label={language === "ru" ? "Язык" : "Language"}>
-          <button type="button" className={language === "en" ? "active" : ""} aria-pressed={language === "en"} onClick={() => setLanguage("en")}>EN</button>
-          <button type="button" className={language === "ru" ? "active" : ""} aria-pressed={language === "ru"} onClick={() => setLanguage("ru")}>RU</button>
-        </div>
-      }
-    >
+    <AppShell section="openaiDocs" title={t.titleBar}>
       <div className="docs-site">
         <div className="docs-layout">
           <aside className="docs-sidebar">

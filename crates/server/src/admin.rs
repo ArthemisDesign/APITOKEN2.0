@@ -804,6 +804,7 @@ pub async fn list_usage(
     let registry::UsageReport {
         models: aggs,
         daily,
+        daily_providers,
         keys,
     } = report;
 
@@ -814,6 +815,7 @@ pub async fn list_usage(
         .map(|m| {
             json!({
                 "model": m.model,
+                "provider": m.provider,
                 "requests": m.requests,
                 "input_tokens": m.input_tokens,
                 "output_tokens": m.output_tokens,
@@ -831,6 +833,18 @@ pub async fn list_usage(
         .map(|day| {
             json!({
                 "day_ts": day.day_ts,
+                "requests": day.requests,
+                "official_nano": day.real_nano.to_string(),
+                "charged_nano": day.charge_nano.to_string(),
+            })
+        })
+        .collect();
+    let daily_providers: Vec<_> = daily_providers
+        .into_iter()
+        .map(|day| {
+            json!({
+                "day_ts": day.day_ts,
+                "provider": day.provider,
                 "requests": day.requests,
                 "official_nano": day.real_nano.to_string(),
                 "charged_nano": day.charge_nano.to_string(),
@@ -867,6 +881,7 @@ pub async fn list_usage(
         },
         "models": models,
         "daily": daily,
+        "daily_providers": daily_providers,
         "keys": keys,
     }))
     .into_response()

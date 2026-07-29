@@ -2,6 +2,7 @@ export type UsageProvider = "claude" | "openai";
 
 export interface UsageModelRow {
   model: string;
+  provider?: "anthropic" | "openai";
   requests: number;
   input_tokens: number;
   output_tokens: number;
@@ -21,7 +22,8 @@ export interface UsageProviderSummary {
   chargedNano: bigint;
 }
 
-export function usageProviderOf(model: string): UsageProvider {
+export function usageProviderOf(model: string, provider?: "anthropic" | "openai"): UsageProvider {
+  if (provider) return provider === "openai" ? "openai" : "claude";
   return model.toLowerCase().startsWith("gpt-") ? "openai" : "claude";
 }
 
@@ -47,7 +49,7 @@ export function aggregateUsageProviders(models: UsageModelRow[]): UsageProviderS
   };
 
   for (const model of models) {
-    const summary = summaries[usageProviderOf(model.model)];
+    const summary = summaries[usageProviderOf(model.model, model.provider)];
     summary.requests += model.requests;
     summary.tokens += model.input_tokens
       + model.output_tokens

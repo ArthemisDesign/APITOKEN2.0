@@ -211,13 +211,20 @@ describe("EngineClient", () => {
           unattributed_legacy: { official_nano: 10_000_000 },
         },
         models: [{
-          model: "claude-opus-4-8", requests: 2, input_tokens: 10, output_tokens: 10,
+          model: "claude-opus-4-8", provider: "anthropic", requests: 2, input_tokens: 10, output_tokens: 10,
           cache_read_tokens: 10, cache_write_5m_tokens: 0, cache_write_1h_tokens: 0,
           web_search_requests: 1, official_nano: 25_000_000, charged_nano: 10_000_000,
         }],
         daily: [{
           day_ts: 1_701_993_600, requests: 2,
           official_nano: 25_000_000, charged_nano: 10_000_000,
+        }],
+        daily_providers: [{
+          day_ts: 1_701_993_600, provider: "openai", requests: 1,
+          official_nano: 15_000_000, charged_nano: 6_000_000,
+        }, {
+          day_ts: 1_701_993_600, provider: "anthropic", requests: 1,
+          official_nano: 10_000_000, charged_nano: 4_000_000,
         }],
         keys: [{
           key_masked: "sk-pool-test…test", requests: 2,
@@ -234,6 +241,10 @@ describe("EngineClient", () => {
       official_nano: "25000000",
       charged_nano: "10000000",
     });
+    expect(usage.daily_providers).toEqual([
+      expect.objectContaining({ provider: "openai", official_nano: "15000000" }),
+      expect.objectContaining({ provider: "anthropic", official_nano: "10000000" }),
+    ]);
     expect(usage.keys[0]).toMatchObject({
       key_masked: "sk-pool-test…test",
       official_nano: "25000000",

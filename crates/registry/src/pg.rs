@@ -6,7 +6,7 @@
 use crate::{
     mask_proxy, AccountRow, BillingTotals, KeyAuth, KeyPolicyUpdate, KeyRow, LedgerRow,
     PoolStateRow, SpendAccountAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow,
-    UsageDailyAgg, UsageEventInput, UsageKeyAgg, UsageModelAgg, UsageReport,
+    UsageDailyAgg, UsageDailyProviderAgg, UsageEventInput, UsageKeyAgg, UsageModelAgg, UsageReport,
 };
 use anyhow::{bail, Context, Result};
 use postgres::config::{Host, SslMode};
@@ -1400,7 +1400,7 @@ impl PgStore {
         until_ts: i64,
     ) -> Result<Vec<UsageModelAgg>> {
         Ok(self.client.query(
-            "SELECT COALESCE(model,''),COUNT(*)::bigint,COALESCE(SUM(input_tokens),0)::bigint, \
+            "SELECT COALESCE(model,''),COALESCE(NULLIF(provider,''),'anthropic'),COUNT(*)::bigint,COALESCE(SUM(input_tokens),0)::bigint, \
              COALESCE(SUM(output_tokens),0)::bigint,COALESCE(SUM(cache_read_tokens),0)::bigint, \
              COALESCE(SUM(cache_write_5m_tokens),0)::bigint,COALESCE(SUM(cache_write_1h_tokens),0)::bigint, \
              COALESCE(SUM(web_search_requests),0)::bigint,COALESCE(SUM(real_nano),0)::bigint, \
@@ -1409,14 +1409,14 @@ impl PgStore {
              COALESCE(SUM(cache_write_5m_nano),0)::bigint,COALESCE(SUM(cache_write_1h_nano),0)::bigint, \
              COALESCE(SUM(web_search_nano),0)::bigint FROM usage_events \
              WHERE account_id=$1 AND ts >= $2 AND ts < $3 \
-             GROUP BY model ORDER BY SUM(real_nano) DESC, model",
+             GROUP BY model,COALESCE(NULLIF(provider,''),'anthropic') ORDER BY SUM(real_nano) DESC,model,COALESCE(NULLIF(provider,''),'anthropic')",
             &[&account_id,&since_ts,&until_ts],
         )?.into_iter().map(|r| UsageModelAgg {
-            model:r.get(0),requests:r.get(1),input_tokens:r.get(2),output_tokens:r.get(3),
-            cache_read_tokens:r.get(4),cache_write_5m_tokens:r.get(5),cache_write_1h_tokens:r.get(6),
-            web_search_requests:r.get(7),real_nano:r.get(8),charge_nano:r.get(9),
-            input_nano:r.get(10),output_nano:r.get(11),cache_read_nano:r.get(12),
-            cache_write_5m_nano:r.get(13),cache_write_1h_nano:r.get(14),web_search_nano:r.get(15),
+            model:r.get(0),provider:r.get(1),requests:r.get(2),input_tokens:r.get(3),output_tokens:r.get(4),
+            cache_read_tokens:r.get(5),cache_write_5m_tokens:r.get(6),cache_write_1h_tokens:r.get(7),
+            web_search_requests:r.get(8),real_nano:r.get(9),charge_nano:r.get(10),
+            input_nano:r.get(11),output_nano:r.get(12),cache_read_nano:r.get(13),
+            cache_write_5m_nano:r.get(14),cache_write_1h_nano:r.get(15),web_search_nano:r.get(16),
         }).collect())
     }
     pub fn usage_report(
@@ -1435,7 +1435,7 @@ impl PgStore {
             .read_only(true)
             .start()?;
         let models = transaction.query(
-            "SELECT COALESCE(model,''),COUNT(*)::bigint,COALESCE(SUM(input_tokens),0)::bigint, \
+            "SELECT COALESCE(model,''),COALESCE(NULLIF(provider,''),'anthropic'),COUNT(*)::bigint,COALESCE(SUM(input_tokens),0)::bigint, \
              COALESCE(SUM(output_tokens),0)::bigint,COALESCE(SUM(cache_read_tokens),0)::bigint, \
              COALESCE(SUM(cache_write_5m_tokens),0)::bigint,COALESCE(SUM(cache_write_1h_tokens),0)::bigint, \
              COALESCE(SUM(web_search_requests),0)::bigint,COALESCE(SUM(real_nano),0)::bigint, \
@@ -1444,14 +1444,14 @@ impl PgStore {
              COALESCE(SUM(cache_write_5m_nano),0)::bigint,COALESCE(SUM(cache_write_1h_nano),0)::bigint, \
              COALESCE(SUM(web_search_nano),0)::bigint FROM usage_events \
              WHERE account_id=$1 AND ts >= $2 AND ts < $3 \
-             GROUP BY model ORDER BY SUM(real_nano) DESC, model",
+             GROUP BY model,COALESCE(NULLIF(provider,''),'anthropic') ORDER BY SUM(real_nano) DESC,model,COALESCE(NULLIF(provider,''),'anthropic')",
             &[&account_id, &since_ts, &until_ts],
         )?.into_iter().map(|r| UsageModelAgg {
-            model:r.get(0),requests:r.get(1),input_tokens:r.get(2),output_tokens:r.get(3),
-            cache_read_tokens:r.get(4),cache_write_5m_tokens:r.get(5),cache_write_1h_tokens:r.get(6),
-            web_search_requests:r.get(7),real_nano:r.get(8),charge_nano:r.get(9),
-            input_nano:r.get(10),output_nano:r.get(11),cache_read_nano:r.get(12),
-            cache_write_5m_nano:r.get(13),cache_write_1h_nano:r.get(14),web_search_nano:r.get(15),
+            model:r.get(0),provider:r.get(1),requests:r.get(2),input_tokens:r.get(3),output_tokens:r.get(4),
+            cache_read_tokens:r.get(5),cache_write_5m_tokens:r.get(6),cache_write_1h_tokens:r.get(7),
+            web_search_requests:r.get(8),real_nano:r.get(9),charge_nano:r.get(10),
+            input_nano:r.get(11),output_nano:r.get(12),cache_read_nano:r.get(13),
+            cache_write_5m_nano:r.get(14),cache_write_1h_nano:r.get(15),web_search_nano:r.get(16),
         }).collect();
         let daily = transaction
             .query(
@@ -1467,6 +1467,23 @@ impl PgStore {
                 requests: r.get(1),
                 real_nano: r.get(2),
                 charge_nano: r.get(3),
+            })
+            .collect();
+        let daily_providers = transaction
+            .query(
+                "SELECT (ts / 86400) * 86400 AS day_ts, COALESCE(NULLIF(provider,''),'anthropic'), COUNT(*)::bigint, \
+             COALESCE(SUM(real_nano),0)::bigint, COALESCE(SUM(charge_nano),0)::bigint \
+             FROM usage_events WHERE account_id=$1 AND ts >= $2 AND ts < $3 \
+             GROUP BY day_ts, COALESCE(NULLIF(provider,''),'anthropic') ORDER BY day_ts, COALESCE(NULLIF(provider,''),'anthropic')",
+                &[&account_id, &since_ts, &until_ts],
+            )?
+            .into_iter()
+            .map(|r| UsageDailyProviderAgg {
+                day_ts: r.get(0),
+                provider: r.get(1),
+                requests: r.get(2),
+                real_nano: r.get(3),
+                charge_nano: r.get(4),
             })
             .collect();
         let keys = transaction
@@ -1489,6 +1506,7 @@ impl PgStore {
         Ok(UsageReport {
             models,
             daily,
+            daily_providers,
             keys,
         })
     }

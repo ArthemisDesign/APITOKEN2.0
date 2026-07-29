@@ -25,7 +25,24 @@ export ANTHROPIC_API_KEY="sk-pool-•••"
 
 # Start Claude Code normally
 claude`;
-const CACHE_SNIPPET = `curl https://api.apitoken.sale/v1/messages \\
+const CACHE_SNIPPETS = {
+  en: `curl https://api.apitoken.sale/v1/messages \\
+  -H "x-api-key: sk-pool-•••" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -H "content-type: application/json" \\
+  -d '{
+    "model": "claude-opus-4-8",
+    "max_tokens": 1024,
+    "system": [
+      {
+        "type": "text",
+        "text": "<long stable instruction or document>",
+        "cache_control": { "type": "ephemeral" }
+      }
+    ],
+    "messages": [{ "role": "user", "content": "Question about the document" }]
+  }'`,
+  ru: `curl https://api.apitoken.sale/v1/messages \\
   -H "x-api-key: sk-pool-•••" \\
   -H "anthropic-version: 2023-06-01" \\
   -H "content-type: application/json" \\
@@ -40,7 +57,8 @@ const CACHE_SNIPPET = `curl https://api.apitoken.sale/v1/messages \\
       }
     ],
     "messages": [{ "role": "user", "content": "Вопрос по документу" }]
-  }'`;
+  }'`,
+} as const;
 const CURSOR = `Provider: Anthropic
 Base URL: https://api.apitoken.sale
 API key: sk-pool-•••
@@ -340,7 +358,7 @@ const copy = {
 } as const;
 
 export function DocsPortal() {
-  const { language, setLanguage } = useLanguage();
+  const { language } = useLanguage();
   const t = copy[language];
   const [activeKey, setActiveKey] = useState("");
   const [keyInput, setKeyInput] = useState("");
@@ -368,7 +386,6 @@ export function DocsPortal() {
   return <AppShell
     section="claudeDocs"
     title={t.documentation}
-    actions={<div className="lang" role="group" aria-label={language === "ru" ? "Язык" : "Language"}><button type="button" aria-pressed={language === "en"} className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}>EN</button><button type="button" aria-pressed={language === "ru"} className={language === "ru" ? "active" : ""} onClick={() => setLanguage("ru")}>RU</button></div>}
   >
     <div className="docs-site">
     <div className="docs-layout">
@@ -429,7 +446,7 @@ export function DocsPortal() {
           <h3 className="docs-h3">{t.cacheWhyHead}</h3><p className="docs-para">{t.cacheWhyText}</p>
           <div className="docs-notice">{t.cacheNotice}</div>
           <h3 className="docs-h3">{t.cacheHowHead}</h3><p className="docs-para">{t.cacheHowText}</p>
-          <CodeBlock title={t.cacheSnippetLabel} description={t.cacheSnippetText} code={withKey(CACHE_SNIPPET)} copyLabel={t.copy} copiedLabel={t.copied} />
+          <CodeBlock title={t.cacheSnippetLabel} description={t.cacheSnippetText} code={withKey(CACHE_SNIPPETS[language])} copyLabel={t.copy} copiedLabel={t.copied} />
           <h3 className="docs-h3">{t.cacheRulesHead}</h3>
           <div className="docs-checklist"><ul>{t.cacheRules.map((item) => <li key={item}>{item}</li>)}</ul></div>
           <h3 className="docs-h3">{t.cacheCheckHead}</h3><p className="docs-para">{t.cacheCheckText}</p>

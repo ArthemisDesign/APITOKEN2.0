@@ -2,14 +2,14 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { BrandMark, ThemeToggle } from "@/components/chrome";
+import { BrandMark, LanguageToggle, ThemeToggle, useLanguage } from "@/components/chrome";
 
 export type ShellSection = "profile" | "docs" | "claudeDocs" | "openaiDocs" | "stock" | "monitor";
 
 interface NavItem {
   section: ShellSection;
   href: string;
-  label: string;
+  label: { en: string; ru: string };
   icon: string;
 }
 
@@ -18,13 +18,13 @@ interface NavItem {
  * а админу незачем уходить из неё в клиентские страницы посреди работы.
  */
 const CLIENT_NAV: NavItem[] = [
-  { section: "profile", href: "/profile", label: "Расход ключа", icon: "◧" },
-  { section: "docs", href: "/docs", label: "Как подключить", icon: "◎" },
-  { section: "claudeDocs", href: "/docs/claude", label: "Claude API", icon: "❑" },
-  { section: "openaiDocs", href: "/docs/openai", label: "GPT / OpenAI", icon: "◇" },
+  { section: "profile", href: "/profile", label: { en: "Key usage", ru: "Расход ключа" }, icon: "◧" },
+  { section: "docs", href: "/docs", label: { en: "Connect", ru: "Как подключить" }, icon: "◎" },
+  { section: "claudeDocs", href: "/docs/claude", label: { en: "Claude API", ru: "Claude API" }, icon: "❑" },
+  { section: "openaiDocs", href: "/docs/openai", label: { en: "GPT / OpenAI", ru: "GPT / OpenAI" }, icon: "◇" },
 ];
 
-const ADMIN_NAV: NavItem[] = [
+const ADMIN_NAV: Array<Omit<NavItem, "label"> & { label: string }> = [
   { section: "stock", href: "/admin", label: "Склад ключей", icon: "◧" },
   { section: "monitor", href: "/admin/monitor", label: "Наблюдение", icon: "◔" },
 ];
@@ -42,8 +42,11 @@ export function AppShell({
   children: React.ReactNode;
 }) {
   const [sideOpen, setSideOpen] = useState(false);
+  const { language } = useLanguage();
   const isAdmin = section === "stock" || section === "monitor";
-  const nav = isAdmin ? ADMIN_NAV : CLIENT_NAV;
+  const nav: Array<{ section: ShellSection; href: string; label: string; icon: string }> = isAdmin
+    ? ADMIN_NAV
+    : CLIENT_NAV.map((item) => ({ ...item, label: item.label[language] }));
 
   return (
     <div className="app">
@@ -72,12 +75,12 @@ export function AppShell({
             <ThemeToggle />
           </div>
           {isAdmin ? null : (
-            <nav className="side-legal" aria-label="Ссылки">
+            <nav className="side-legal" aria-label={language === "en" ? "External links" : "Внешние ссылки"}>
               <a href="https://apitoken.sale" target="_blank" rel="noreferrer">
                 apiToken.sale
               </a>
               <a href="https://apitoken.sale/docs/learn" target="_blank" rel="noreferrer">
-                Гайды по Claude API
+                {language === "en" ? "Claude API guides" : "Гайды по Claude API"}
               </a>
             </nav>
           )}
@@ -86,18 +89,23 @@ export function AppShell({
       <button
         className={`side-scrim ${sideOpen ? "show" : ""}`}
         onClick={() => setSideOpen(false)}
-        aria-label="Закрыть меню"
+        aria-label={language === "en" ? "Close menu" : "Закрыть меню"}
       />
       <main className="app-main" id="main-content">
         <header className="app-top">
           <div className="app-top-in">
-            <button className="app-burger" onClick={() => setSideOpen(true)} aria-label="Меню">
+            <button className="app-burger" onClick={() => setSideOpen(true)} aria-label={language === "en" ? "Menu" : "Меню"}>
               ☰
             </button>
             <div className="app-top-h">
               <div className="app-title">{title}</div>
             </div>
-            {actions ? <div className="app-top-actions">{actions}</div> : null}
+            {actions || !isAdmin ? (
+              <div className="app-top-actions">
+                {actions}
+                {!isAdmin ? <LanguageToggle /> : null}
+              </div>
+            ) : null}
           </div>
         </header>
         {children}

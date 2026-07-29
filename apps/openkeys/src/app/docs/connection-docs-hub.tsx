@@ -11,10 +11,17 @@ const copy = {
     eyebrow: "УНИВЕРСАЛЬНЫЙ SK-POOL КЛЮЧ",
     title: "Один ключ — два API",
     lead: "Выберите формат клиента. Один и тот же ключ работает с Claude и GPT, расходует общий баланс и отображается на одной странице USAGE.",
+    heroKey: "ОДИН УНИВЕРСАЛЬНЫЙ КЛЮЧ",
+    heroBalance: "общий баланс",
+    heroUsage: "живой USAGE",
+    choose: "Выберите протокол клиента",
+    chooseText: "Ключ менять не нужно — отличаются только Base URL, заголовок авторизации и формат запроса.",
     claudeTitle: "Claude / Anthropic API",
     openaiTitle: "GPT / OpenAI-совместимый API",
     claudeText: "Claude Code, Anthropic SDK, Cursor и прямые запросы Messages API.",
     openaiText: "Codex CLI, OpenAI SDK, Responses API и Chat Completions.",
+    claudeFits: ["Claude Code", "Anthropic SDK", "Messages API"],
+    openaiFits: ["Codex CLI", "OpenAI SDK", "Responses API"],
     openGuide: "Открыть инструкцию",
     baseUrl: "Base URL",
     auth: "Авторизация",
@@ -33,10 +40,17 @@ const copy = {
     eyebrow: "UNIVERSAL SK-POOL KEY",
     title: "One key, two APIs",
     lead: "Choose your client's API format. The same key works with Claude and GPT, spends one shared balance, and appears on one USAGE page.",
+    heroKey: "ONE UNIVERSAL KEY",
+    heroBalance: "shared balance",
+    heroUsage: "live USAGE",
+    choose: "Choose your client protocol",
+    chooseText: "The key stays the same — only the Base URL, authentication header, and request format change.",
     claudeTitle: "Claude / Anthropic API",
     openaiTitle: "GPT / OpenAI-compatible API",
     claudeText: "Claude Code, Anthropic SDKs, Cursor, and direct Messages API requests.",
     openaiText: "Codex CLI, OpenAI SDKs, Responses API, and Chat Completions.",
+    claudeFits: ["Claude Code", "Anthropic SDK", "Messages API"],
+    openaiFits: ["Codex CLI", "OpenAI SDK", "Responses API"],
     openGuide: "Open guide",
     baseUrl: "Base URL",
     auth: "Authentication",
@@ -53,53 +67,69 @@ const copy = {
 } as const;
 
 export function ConnectionDocsHub() {
-  const { language, setLanguage } = useLanguage();
+  const { language } = useLanguage();
   const t = copy[language];
   const cards = [
-    { connection: UNIVERSAL_CONNECTIONS.claude, title: t.claudeTitle, text: t.claudeText, accent: "Claude" },
-    { connection: UNIVERSAL_CONNECTIONS.openai, title: t.openaiTitle, text: t.openaiText, accent: "GPT" },
+    { connection: UNIVERSAL_CONNECTIONS.claude, title: t.claudeTitle, text: t.claudeText, fits: t.claudeFits, accent: "Claude", number: "01", kind: "claude" },
+    { connection: UNIVERSAL_CONNECTIONS.openai, title: t.openaiTitle, text: t.openaiText, fits: t.openaiFits, accent: "GPT", number: "02", kind: "openai" },
   ];
 
   return (
-    <AppShell
-      section="docs"
-      title={t.titleBar}
-      actions={
-        <div className="lang" role="group" aria-label={language === "ru" ? "Язык" : "Language"}>
-          <button type="button" className={language === "en" ? "active" : ""} aria-pressed={language === "en"} onClick={() => setLanguage("en")}>EN</button>
-          <button type="button" className={language === "ru" ? "active" : ""} aria-pressed={language === "ru"} onClick={() => setLanguage("ru")}>RU</button>
-        </div>
-      }
-    >
+    <AppShell section="docs" title={t.titleBar}>
       <div className="app-body">
         <div className="app-body-in docs-hub">
-          <div className="page-heading docs-hub-heading">
-            <span className="eyebrow">{t.eyebrow}</span>
-            <h1 className="p-h1">{t.title}</h1>
-            <p className="p-sub">{t.lead}</p>
+          <section className="docs-hub-hero">
+            <div className="docs-hub-hero-copy">
+              <span className="eyebrow">{t.eyebrow}</span>
+              <h1>{t.title}</h1>
+              <p>{t.lead}</p>
+              <div className="docs-hub-hero-actions">
+                <Link className="btn btn-primary" href="/profile">{t.usage}</Link>
+                <span><i />{t.heroBalance}</span><span><i />{t.heroUsage}</span>
+              </div>
+            </div>
+            <div className="docs-hub-router" aria-label={t.title}>
+              <div className="docs-hub-key-node">
+                <span>{t.heroKey}</span>
+                <code>sk-pool-••••••••</code>
+              </div>
+              <div className="docs-hub-route-lines" aria-hidden="true"><i /><i /></div>
+              <div className="docs-hub-route-targets">
+                <div className="claude"><b>Claude</b><code>Messages API</code></div>
+                <div className="openai"><b>GPT</b><code>Responses API</code></div>
+              </div>
+              <div className="docs-hub-shared-balance"><span>{t.sharedTitle}</span><b>$</b></div>
+            </div>
+          </section>
+
+          <div className="docs-hub-section-head">
+            <div><span>01 / 02</span><h2>{t.choose}</h2></div>
+            <p>{t.chooseText}</p>
           </div>
 
           <div className="docs-hub-grid">
-            {cards.map(({ connection, title, text, accent }) => (
-              <article className="card docs-hub-card" key={connection.docsPath}>
+            {cards.map(({ connection, title, text, fits, accent, number, kind }) => (
+              <article className={`card docs-hub-card docs-hub-card-${kind}`} key={connection.docsPath}>
                 <div className="docs-hub-card-head">
-                  <span className="docs-hub-monogram">{accent.slice(0, 1)}</span>
-                  <div><span className="chip">{accent}</span><h2>{title}</h2></div>
+                  <div className="docs-hub-card-id"><span>{number}</span><b>{accent}</b></div>
+                  <span className="docs-hub-arrow" aria-hidden="true">↗</span>
                 </div>
+                <h2>{title}</h2>
                 <p>{text}</p>
-                <dl>
-                  <div><dt>{t.baseUrl}</dt><dd><code>{connection.baseUrl}</code></dd></div>
-                  <div><dt>{t.auth}</dt><dd><code>{connection.authHeader}</code></dd></div>
-                </dl>
-                <Link className="btn btn-primary" href={connection.docsPath}>{t.openGuide}</Link>
+                <div className="docs-hub-fit-list">{fits.map((fit) => <span key={fit}>{fit}</span>)}</div>
+                <div className="docs-hub-connection">
+                  <div><span>{t.baseUrl}</span><code>{connection.baseUrl}</code></div>
+                  <div><span>{t.auth}</span><code>{connection.authHeader}</code></div>
+                </div>
+                <Link className="docs-hub-card-link" href={connection.docsPath}><span>{t.openGuide}</span><b aria-hidden="true">→</b></Link>
               </article>
             ))}
           </div>
 
-          <section className="card docs-hub-shared">
-            <div><span className="eyebrow">USAGE</span><h2>{t.sharedTitle}</h2><p>{t.note}</p></div>
-            <ul>{t.shared.map((item) => <li key={item}>{item}</li>)}</ul>
-            <Link className="btn btn-ghost" href="/profile">{t.usage}</Link>
+          <section className="docs-hub-shared">
+            <div className="docs-hub-shared-copy"><span className="eyebrow">USAGE</span><h2>{t.sharedTitle}</h2><p>{t.note}</p></div>
+            <div className="docs-hub-shared-items">{t.shared.map((item, index) => <div key={item}><b>0{index + 1}</b><span>{item}</span></div>)}</div>
+            <Link className="btn btn-primary" href="/profile">{t.usage}<span aria-hidden="true">→</span></Link>
           </section>
         </div>
       </div>
