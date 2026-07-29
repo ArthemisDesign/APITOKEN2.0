@@ -460,11 +460,12 @@ mod tests {
         assert_eq!(priced.cache_write_input, 100);
         assert_eq!(priced.input_nano, 500 * 5_000);
         assert_eq!(priced.cached_nano, 400 * 500);
-        assert_eq!(priced.cache_write_nano, 100 * 6_250);
+        // Cache-write is priced at the fresh input rate — OpenAI charges no write surcharge.
+        assert_eq!(priced.cache_write_nano, 100 * 5_000);
         assert_eq!(priced.output_nano, 20 * 30_000);
         assert_eq!(
             priced.real_nano,
-            500 * 5_000 + 400 * 500 + 100 * 6_250 + 20 * 30_000
+            500 * 5_000 + 400 * 500 + 100 * 5_000 + 20 * 30_000
         );
     }
 
@@ -483,14 +484,15 @@ mod tests {
         );
         assert_eq!(priced.input_nano, 150_000 * 5_000 * 2);
         assert_eq!(priced.cached_nano, 100_000 * 500 * 2);
-        assert_eq!(priced.cache_write_nano, 50_000 * 6_250 * 2);
+        assert_eq!(priced.cache_write_nano, 50_000 * 5_000 * 2);
         assert_eq!(priced.output_nano, 10 * 30_000 * 3 / 2);
     }
 
     #[test]
     fn reserve_covers_full_output_and_cache_write_rate() {
         let hold = reserve_cost(&model(), 1_000, 0);
-        assert_eq!(hold, 1_000 * 6_250 + 128_000 * 30_000);
+        // Cache-write now equals the input rate, so the reserve input leg is 5_000/token.
+        assert_eq!(hold, 1_000 * 5_000 + 128_000 * 30_000);
     }
 
     #[test]
