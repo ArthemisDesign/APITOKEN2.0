@@ -310,6 +310,15 @@ pub fn start(
 
 /// Спросить у CLI, чем именно закончился логин. Единственное, что мы читаем из профиля, —
 /// эта строка статуса; сам auth store не открываем.
+fn status_reports_chatgpt(success: bool, stdout: &[u8], stderr: &[u8]) -> bool {
+    success
+        && [stdout, stderr].iter().any(|stream| {
+            String::from_utf8_lossy(stream)
+                .to_lowercase()
+                .contains("logged in using chatgpt")
+        })
+}
+
 fn is_chatgpt_login(codex_bin: &str, home: &Path) -> bool {
     let mut command = std::process::Command::new(codex_bin);
     command
@@ -321,10 +330,9 @@ fn is_chatgpt_login(codex_bin: &str, home: &Path) -> bool {
         .env("PATH", "/usr/local/bin:/usr/bin:/bin");
     let out = command.output();
     match out {
-        Ok(out) => {
-            let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
-            text.contains("chatgpt")
-        }
+        // Pinned Codex writes login status to stderr; older releases used stdout. Accept either
+        // stream, but only when the command itself succeeded.
+        Ok(out) => status_reports_chatgpt(out.status.success(), &out.stdout, &out.stderr),
         Err(_) => false,
     }
 }
@@ -457,6 +465,38 @@ Follow these steps to sign in with ChatGPT using device code authorization:\n\n\
         assert_eq!(slug("Seller.One+tag@Example.COM"), "seller-one-tag-example-com");
         assert_eq!(slug("../../etc/passwd"), "etc-passwd");
         assert!(slug("!!!").is_empty());
+    }
+
+    #[test]
+    fn accepts_chatgpt_status_from_pinned_codex_stderr() {
+        assert!(status_reports_chatgpt(
+            true,
+            b"",
+            b"Logged in using ChatGPT\n"
+        ));
+    }
+
+    #[test]
+    fn accepts_legacy_chatgpt_status_from_stdout() {
+        assert!(status_reports_chatgpt(
+            true,
+            b"Logged in using ChatGPT\n",
+            b""
+        ));
+    }
+
+    #[test]
+    fn rejects_api_key_and_failed_status_checks() {
+        assert!(!status_reports_chatgpt(
+            true,
+            b"",
+            b"Logged in using an API key - sk-proj-***\n"
+        ));
+        assert!(!status_reports_chatgpt(
+            false,
+            b"",
+            b"Logged in using ChatGPT\n"
+        ));
     }
 
     #[test]
