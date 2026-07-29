@@ -190,8 +190,14 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    публичном ответе. `service_tier=fast|priority` для Fast-capable модели нормализуется в
    app-server `priority`; `thread/start` обязан подтвердить тот же tier, иначе запрос fail closed,
    потому что молчаливый downgrade нарушит биллинг. Для standard/default всегда передавать явный
-   null, чтобы локальный config home не апгрейдил трафик. Остальные tier-значения leniently
-   деградируют в default. Usage для settlement брать из authoritative completed app-server turn.
+   app-server sentinel `"default"` (не JSON null), чтобы локальный config home не апгрейдил трафик;
+   ответ `thread/start` обязан подтвердить `"default"`. Остальные tier-значения leniently
+   деградируют в default. Codex CLI 0.146 присылает client-executed `tool_search` в developer
+   `additional_tools`: до обновления pinned app-server этот public wire-item транслировать во
+   внутреннюю dynamic function и обратно; `tool_search_call`/`tool_search_output` истории хранить
+   в публичной форме, а в app-server replay преобразовывать в function call/output. Function tool
+   `defer_loading` принимать и передавать как dynamic `deferLoading`. Usage для settlement брать из
+   authoritative completed app-server turn.
 6. Не заявлять OpenAI ownership: public `owned_by` остаётся `apitoken`; полный scope и runbook —
    `docs/CODEX_APP_SERVER.md`.
 7. **Цены — только из `metering::codex`** (audited, effective-dated таблица, как Claude-тарифы).

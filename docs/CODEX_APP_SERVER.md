@@ -46,8 +46,9 @@ Requests may send `service_tier: "priority"` (the OpenAI-compatible wire value) 
 the gateway normalizes either value to `priority`, sends it to app-server's `thread/start`, verifies
 that the thread accepted it, and reports `service_tier: "priority"` in the response. Standard,
 `auto`, `flex`, unknown and malformed values retain lenient compatibility and run at the default
-tier. The gateway sends an explicit null for default-tier requests, so a profile-local Codex Fast
-setting cannot silently upgrade customer traffic.
+tier. The gateway sends the app-server's explicit `"default"` sentinel for default-tier requests
+and verifies the acknowledgement, so a profile-local Codex Fast setting cannot silently upgrade
+customer traffic.
 
 Streaming is spec-complete for agent terminals: Chat Completions streams reasoning summaries as
 `reasoning_content` deltas (and joins them into `message.reasoning_content` for non-streaming
@@ -127,7 +128,11 @@ The gateway accepts the current CLI's Responses compatibility fields: bounded
 developer `additional_tools` input item. Function tools, function namespaces and Lark-grammar
 custom tools are translated into request-local app-server dynamic tools. Custom tool calls are
 returned to Codex, which executes them on the customer's machine and submits their output in the
-next request; the gateway never executes a customer's `exec` source.
+next request; the gateway never executes a customer's `exec` source. Codex CLI 0.146's
+client-executed `tool_search` wire type is bridged through an equivalent private dynamic function
+for the pinned app-server, then translated back to `tool_search_call`; the following
+`tool_search_output` is replayed through the same boundary without changing the stored public
+history. Deferred function tools preserve `defer_loading`.
 
 Chat Completions accepts the equivalent top-level `reasoning_effort` and `verbosity` controls and
 translates them to the same app-server turn settings.

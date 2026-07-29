@@ -29,6 +29,10 @@ const MAX_CLIENT_METADATA_KEYS: usize = 32;
 const MAX_CLIENT_METADATA_VALUE_BYTES: usize = 16 * 1024;
 const MAX_PROMPT_CACHE_KEY_BYTES: usize = 256;
 const MAX_CUSTOM_TOOL_GRAMMAR_BYTES: usize = 256 * 1024;
+/// Codex 0.146 exposes client-side deferred tool discovery as a Responses-native `tool_search`
+/// tool. The pinned 0.145 app-server does not know that wire type, so the gateway presents an
+/// equivalent private dynamic function to the model and translates calls/results at the boundary.
+const TOOL_SEARCH_DYNAMIC_NAME: &str = "__codex_client_tool_search";
 /// Serialized-body bytes per input token. Used both by the public `input_tokens` estimate and by
 /// the admission reserve so the two never disagree.
 const BYTES_PER_TOKEN_ESTIMATE: u64 = 4;
@@ -794,6 +798,10 @@ pub(super) async fn prepare_turn(
     };
     let mut injected = full_history_prefix.clone();
     injected.extend(request.input.prior_items.clone());
+    let injected = injected
+        .into_iter()
+        .map(tool_search_item_for_app_server)
+        .collect::<Vec<_>>();
     let mut history_after_input = full_history_prefix.clone();
     history_after_input.extend(request.input.canonical_items.clone());
     full_history_prefix = history_after_input;
@@ -1337,9 +1345,20 @@ fn parse_additional_tools(
                     "tools": parsed_children
                 }));
             }
+            Some("tool_search") => {
+                let parsed = parse_additional_tool_search(object, &tool_param)?;
+                if !names.insert(TOOL_SEARCH_DYNAMIC_NAME.to_string()) {
+                    return Err(ApiError::invalid(
+                        "Additional tool names must be unique.",
+                        Some(format!("{tool_param}.type")),
+                    ));
+                }
+                callable_count += 1;
+                dynamic.push(parsed);
+            }
             _ => {
                 return Err(ApiError::invalid(
-                    "Additional tool type must be function, custom, or namespace.",
+                    "Additional tool type must be function, custom, namespace, or tool_search.",
                     Some(format!("{tool_param}.type")),
                 ))
             }
@@ -1357,7 +1376,14 @@ fn parse_additional_tools(
 fn parse_additional_function(object: &Map<String, Value>, param: &str) -> Result<Value, ApiError> {
     reject_unsupported_fields(
         object,
-        &["type", "name", "description", "parameters", "strict"],
+        &[
+            "type",
+            "name",
+            "description",
+            "parameters",
+            "strict",
+            "defer_loading",
+        ],
     )?;
     if object
         .get("strict")
@@ -1381,9 +1407,50 @@ fn parse_additional_function(object: &Map<String, Value>, param: &str) -> Result
             Some(format!("{param}.parameters")),
         ));
     }
+    let defer_loading = match object.get("defer_loading") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => {
+            return Err(ApiError::invalid(
+                "defer_loading must be a boolean.",
+                Some(format!("{param}.defer_loading")),
+            ))
+        }
+    };
     Ok(json!({
         "type": "function",
         "name": name,
+        "description": description,
+        "inputSchema": parameters,
+        "deferLoading": defer_loading
+    }))
+}
+
+fn parse_additional_tool_search(
+    object: &Map<String, Value>,
+    param: &str,
+) -> Result<Value, ApiError> {
+    reject_unsupported_fields(object, &["type", "execution", "description", "parameters"])?;
+    if object.get("execution").and_then(Value::as_str) != Some("client") {
+        return Err(ApiError::invalid(
+            "tool_search.execution must be \"client\".",
+            Some(format!("{param}.execution")),
+        ));
+    }
+    let description = optional_tool_description(object, &format!("{param}.description"))?;
+    let parameters = object
+        .get("parameters")
+        .cloned()
+        .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
+    if !parameters.is_object() {
+        return Err(ApiError::invalid(
+            "tool_search parameters must be a JSON Schema object.",
+            Some(format!("{param}.parameters")),
+        ));
+    }
+    Ok(json!({
+        "type": "function",
+        "name": TOOL_SEARCH_DYNAMIC_NAME,
         "description": description,
         "inputSchema": parameters,
         "deferLoading": false
@@ -1624,10 +1691,135 @@ fn normalize_response_item(item: &Value, index: usize) -> Result<Value, ApiError
         | "function_call_output"
         | "custom_tool_call"
         | "custom_tool_call_output" => Ok(item.clone()),
+        "tool_search_call" => normalize_tool_search_call(object, index),
+        "tool_search_output" => normalize_tool_search_output(object, index),
         _ => Err(ApiError::invalid(
             format!("Input item type {kind:?} is not supported by this endpoint."),
             Some(format!("input.{index}.type")),
         )),
+    }
+}
+
+fn normalize_tool_search_call(
+    object: &Map<String, Value>,
+    index: usize,
+) -> Result<Value, ApiError> {
+    let call_id = object
+        .get("call_id")
+        .and_then(Value::as_str)
+        .filter(|call_id| !call_id.is_empty())
+        .ok_or_else(|| {
+            ApiError::invalid(
+                "tool_search_call.call_id must be a non-empty string.",
+                Some(format!("input.{index}.call_id")),
+            )
+        })?;
+    if object.get("execution").and_then(Value::as_str) != Some("client") {
+        return Err(ApiError::invalid(
+            "tool_search_call.execution must be \"client\".",
+            Some(format!("input.{index}.execution")),
+        ));
+    }
+    let arguments = object.get("arguments").cloned().ok_or_else(|| {
+        ApiError::invalid(
+            "tool_search_call.arguments is required.",
+            Some(format!("input.{index}.arguments")),
+        )
+    })?;
+    let mut normalized = json!({
+        "type": "tool_search_call",
+        "status": object.get("status").and_then(Value::as_str).unwrap_or("completed"),
+        "call_id": call_id,
+        "execution": "client",
+        "arguments": arguments
+    });
+    if let Some(id) = object.get("id").and_then(Value::as_str) {
+        normalized["id"] = Value::String(id.to_string());
+    }
+    Ok(normalized)
+}
+
+fn normalize_tool_search_output(
+    object: &Map<String, Value>,
+    index: usize,
+) -> Result<Value, ApiError> {
+    let call_id = object
+        .get("call_id")
+        .and_then(Value::as_str)
+        .filter(|call_id| !call_id.is_empty())
+        .ok_or_else(|| {
+            ApiError::invalid(
+                "tool_search_output.call_id must be a non-empty string.",
+                Some(format!("input.{index}.call_id")),
+            )
+        })?;
+    if object.get("execution").and_then(Value::as_str) != Some("client") {
+        return Err(ApiError::invalid(
+            "tool_search_output.execution must be \"client\".",
+            Some(format!("input.{index}.execution")),
+        ));
+    }
+    let tools = object
+        .get("tools")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ApiError::invalid(
+                "tool_search_output.tools must be an array.",
+                Some(format!("input.{index}.tools")),
+            )
+        })?
+        .clone();
+    let mut normalized = json!({
+        "type": "tool_search_output",
+        "status": object.get("status").and_then(Value::as_str).unwrap_or("completed"),
+        "call_id": call_id,
+        "execution": "client",
+        "tools": tools
+    });
+    if let Some(id) = object.get("id").and_then(Value::as_str) {
+        normalized["id"] = Value::String(id.to_string());
+    }
+    Ok(normalized)
+}
+
+fn tool_search_item_for_app_server(item: Value) -> Value {
+    match item.get("type").and_then(Value::as_str) {
+        Some("tool_search_call") => {
+            let arguments = item
+                .get("arguments")
+                .and_then(|arguments| serde_json::to_string(arguments).ok())
+                .unwrap_or_else(|| "{}".to_string());
+            let mut translated = json!({
+                "type": "function_call",
+                "name": TOOL_SEARCH_DYNAMIC_NAME,
+                "call_id": item.get("call_id").cloned().unwrap_or(Value::Null),
+                "arguments": arguments
+            });
+            if let Some(id) = item.get("id").cloned() {
+                translated["id"] = id;
+            }
+            translated
+        }
+        Some("tool_search_output") => {
+            let output = serde_json::to_string(&json!({
+                "status": item.get("status").and_then(Value::as_str).unwrap_or("completed"),
+                "execution": "client",
+                "tools": item.get("tools").cloned().unwrap_or_else(|| json!([]))
+            }))
+            .unwrap_or_else(|_| {
+                r#"{"status":"completed","execution":"client","tools":[]}"#.to_string()
+            });
+            let mut translated = json!({
+                "type": "function_call_output",
+                "call_id": item.get("call_id").cloned().unwrap_or(Value::Null),
+                "output": output
+            });
+            if let Some(id) = item.get("id").cloned() {
+                translated["id"] = id;
+            }
+            translated
+        }
+        _ => item,
     }
 }
 
@@ -1977,6 +2169,20 @@ fn normalize_output_item_with_options(
                         .and_then(|value| serde_json::to_string(value).ok())
                 })
                 .unwrap_or_else(|| "{}".to_string());
+            if item.get("name").and_then(Value::as_str) == Some(TOOL_SEARCH_DYNAMIC_NAME) {
+                let arguments =
+                    serde_json::from_str::<Value>(&arguments).unwrap_or_else(|_| json!({}));
+                return Some(json!({
+                    "id": item.get("id").and_then(Value::as_str)
+                        .map(str::to_string).unwrap_or_else(|| new_id("tsc")),
+                    "type": "tool_search_call",
+                    "status": "completed",
+                    "call_id": item.get("call_id").and_then(Value::as_str)
+                        .map(str::to_string).unwrap_or_else(|| new_id("call")),
+                    "execution": "client",
+                    "arguments": arguments
+                }));
+            }
             let mut output = json!({
                 "id": item.get("id").and_then(Value::as_str)
                     .map(str::to_string).unwrap_or_else(|| new_id("fc")),
@@ -3602,7 +3808,8 @@ mod tests {
                                     "properties": {"id": {"type": "string"}},
                                     "required": ["id"]
                                 },
-                                "strict": false
+                                "strict": false,
+                                "defer_loading": true
                             },
                             {
                                 "type": "namespace",
@@ -3618,6 +3825,19 @@ mod tests {
                                     },
                                     "strict": false
                                 }]
+                            },
+                            {
+                                "type": "tool_search",
+                                "execution": "client",
+                                "description": "Search available tools",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "query": {"type": "string"},
+                                        "limit": {"type": "integer"}
+                                    },
+                                    "required": ["query"]
+                                }
                             }
                         ]
                     },
@@ -3652,8 +3872,8 @@ mod tests {
         assert_eq!(parsed.reasoning_effort.as_deref(), Some("low"));
         assert!(!parsed.parallel_tool_calls);
         assert!(parsed.stream);
-        assert_eq!(parsed.original_tools.len(), 3);
-        assert_eq!(parsed.dynamic_tools.len(), 3);
+        assert_eq!(parsed.original_tools.len(), 4);
+        assert_eq!(parsed.dynamic_tools.len(), 4);
         assert_eq!(parsed.dynamic_tools[0]["type"], "custom");
         assert_eq!(parsed.dynamic_tools[0]["name"], "exec");
         assert_eq!(
@@ -3664,9 +3884,16 @@ mod tests {
             parsed.dynamic_tools[1]["inputSchema"]["required"],
             json!(["id"])
         );
+        assert_eq!(parsed.dynamic_tools[1]["deferLoading"], true);
         assert_eq!(parsed.dynamic_tools[2]["type"], "namespace");
         assert_eq!(parsed.dynamic_tools[2]["name"], "collaboration");
         assert_eq!(parsed.dynamic_tools[2]["tools"][0]["name"], "list_agents");
+        assert_eq!(parsed.dynamic_tools[3]["type"], "function");
+        assert_eq!(parsed.dynamic_tools[3]["name"], TOOL_SEARCH_DYNAMIC_NAME);
+        assert_eq!(
+            parsed.dynamic_tools[3]["inputSchema"]["required"],
+            json!(["query"])
+        );
         assert_eq!(parsed.input.canonical_items.len(), 2);
         assert_eq!(parsed.input.prior_items.len(), 1);
         assert_eq!(
@@ -3871,6 +4098,92 @@ mod tests {
         .unwrap();
         assert_eq!(output["arguments"], r#"{"query":"safe"}"#);
         assert!(output.get("internal_provider_metadata").is_none());
+    }
+
+    #[test]
+    fn internal_tool_search_function_normalizes_to_codex_0146_wire_item() {
+        let output = normalize_output_item(&json!({
+            "type": "function_call",
+            "id": "fc_search",
+            "call_id": "call_search",
+            "name": TOOL_SEARCH_DYNAMIC_NAME,
+            "arguments": "{\"query\":\"calendar create\",\"limit\":2}"
+        }))
+        .unwrap();
+        assert_eq!(output["type"], "tool_search_call");
+        assert_eq!(output["execution"], "client");
+        assert_eq!(output["call_id"], "call_search");
+        assert_eq!(output["arguments"]["query"], "calendar create");
+        assert_eq!(output["arguments"]["limit"], 2);
+        assert!(output.get("name").is_none());
+    }
+
+    #[tokio::test]
+    async fn codex_tool_search_history_roundtrips_through_pinned_app_server() {
+        let parsed = parse_responses_request(
+            &gateway(),
+            json!({
+                "model": "gpt-5.6",
+                "input": [
+                    {
+                        "type": "tool_search_call",
+                        "id": "tsc_1",
+                        "call_id": "call_search",
+                        "status": "completed",
+                        "execution": "client",
+                        "arguments": {"query": "calendar create", "limit": 2}
+                    },
+                    {
+                        "type": "tool_search_output",
+                        "call_id": "call_search",
+                        "status": "completed",
+                        "execution": "client",
+                        "tools": [{
+                            "type": "function",
+                            "name": "create_event",
+                            "description": "Create a calendar event",
+                            "parameters": {"type": "object"}
+                        }]
+                    },
+                    {
+                        "role": "user",
+                        "content": "Continue."
+                    }
+                ]
+            }),
+        )
+        .unwrap();
+        assert_eq!(parsed.input.canonical_items[0]["type"], "tool_search_call");
+        assert_eq!(
+            parsed.input.canonical_items[1]["type"],
+            "tool_search_output"
+        );
+
+        let prepared = prepare_turn(&gateway(), "tenant", parsed).await.unwrap();
+        assert_eq!(prepared.turn.injected_items[0]["type"], "function_call");
+        assert_eq!(
+            prepared.turn.injected_items[0]["name"],
+            TOOL_SEARCH_DYNAMIC_NAME
+        );
+        assert_eq!(
+            prepared.turn.injected_items[0]["arguments"],
+            r#"{"limit":2,"query":"calendar create"}"#
+        );
+        assert_eq!(
+            prepared.turn.injected_items[1]["type"],
+            "function_call_output"
+        );
+        assert_eq!(prepared.turn.injected_items[1]["call_id"], "call_search");
+        let output: Value =
+            serde_json::from_str(prepared.turn.injected_items[1]["output"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(output["execution"], "client");
+        assert_eq!(output["tools"][0]["name"], "create_event");
+        assert_eq!(prepared.full_history_prefix[0]["type"], "tool_search_call");
+        assert_eq!(
+            prepared.full_history_prefix[1]["type"],
+            "tool_search_output"
+        );
     }
 
     #[test]

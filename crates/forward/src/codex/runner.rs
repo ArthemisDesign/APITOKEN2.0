@@ -237,7 +237,8 @@ impl CodexHome {
             .get("serviceTier")
             .and_then(Value::as_str)
             .map(str::to_string);
-        if served_service_tier != request.service_tier {
+        let requested_service_tier = request.service_tier.as_deref().unwrap_or("default");
+        if served_service_tier.as_deref() != Some(requested_service_tier) {
             // Fast must never degrade silently: reserve and settlement use the requested tier's
             // published subscription-credit multiplier. A pinned app-server/catalog mismatch is
             // safer as a rejected request than standard-speed output charged as Fast (or the
@@ -287,9 +288,10 @@ impl CodexHome {
             "cwd": self.config().work_dir,
             "approvalPolicy": "never",
             "sandbox": "read-only",
-            // Explicit null resets any profile-local Fast default. Per-request service tier is
-            // entirely owned by the public API body and cannot leak in from a purchased CODEX_HOME.
-            "serviceTier": request.service_tier,
+            // The app-server's explicit standard-tier sentinel is "default". Per-request service
+            // tier is entirely owned by the public API body and cannot leak in from a purchased
+            // CODEX_HOME.
+            "serviceTier": request.service_tier.as_deref().unwrap_or("default"),
             "baseInstructions": request.base_instructions.as_deref().unwrap_or(""),
             "developerInstructions": request.developer_instructions,
             "ephemeral": true,
@@ -982,6 +984,9 @@ while IFS= read -r line; do
         *'"serviceTier":"priority"'*)
           printf '{"id":%s,"result":{"model":"gpt-5.6-sol","serviceTier":"priority","thread":{"id":"thread-1"}}}\n' "$id"
           ;;
+        *'"serviceTier":"default"'*)
+          printf '{"id":%s,"result":{"model":"gpt-5.6-sol","serviceTier":"default","thread":{"id":"thread-1"}}}\n' "$id"
+          ;;
         *)
           printf '{"id":%s,"result":{"model":"gpt-5.6-sol","serviceTier":null,"thread":{"id":"thread-1"}}}\n' "$id"
           ;;
@@ -1240,7 +1245,7 @@ done
             thread_start["params"]["dynamicTools"][0]["name"],
             "get_weather"
         );
-        assert_eq!(thread_start["params"]["serviceTier"], Value::Null);
+        assert_eq!(thread_start["params"]["serviceTier"], "default");
         let turn_start = requests
             .iter()
             .find(|request| request["method"] == "turn/start")
