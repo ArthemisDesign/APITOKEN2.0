@@ -421,6 +421,8 @@ grep -Fq 'deploy/agent-merge.suite.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the merge-path suite'
 grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the activation-journal suite'
+grep -Fq 'deploy/codex-homes-migrate.test.sh' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the merge gate does not run the Codex home migration suite'
 grep -Fq 'deploy/sccache-cargo.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not test serialized sccache startup'
 grep -Fq 'deploy/next-cache.test.sh' "$ROOT/deploy/agent-merge.sh" \
@@ -486,6 +488,8 @@ grep -Fq 'agent-merge.suite.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the merge-path suite'
 grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the activation-journal suite'
+grep -Fq 'deploy/codex-homes-migrate.test.sh' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the production gate does not run the Codex home migration suite'
 # Требуем сам запуск с набором пакетов, а не дословную цитату аргументов: точное
 # написание уже однажды сломалось от правки переносимости (пустой массив под set -u
 # в bash 3.2), хотя гарантия — «гейт гоняет параллельные TypeScript-тесты» — не менялась.

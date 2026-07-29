@@ -123,6 +123,7 @@ am_gate_deployment() (
     return
   fi
   bash "$ROOT/deploy/lib.test.sh"
+  bash "$ROOT/deploy/codex-homes-migrate.test.sh"
   bash "$ROOT/deploy/sccache-cargo.test.sh"
   bash "$ROOT/deploy/next-cache.test.sh"
   bash "$ROOT/deploy/typescript-scope.test.sh"

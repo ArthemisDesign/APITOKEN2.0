@@ -710,6 +710,7 @@ for controller_definition in \
   deploy/content-studio-start.sh \
   deploy/api-bluegreen.sh \
   deploy/engine-bluegreen.sh \
+  deploy/codex-homes-migrate.sh \
   deploy/rollback.sh \
   deploy/sales-deploy.sh \
   deploy/openkeys-deploy.sh; do
@@ -1342,8 +1343,9 @@ grep -Fq '"$ENGINE_STAGE/authbot"' "$ROOT/deploy/deploy.sh" \
   || wd_die "the authbot binary is not installed into the engine release"
 grep -Fq 'staged authbot binary is missing' "$ROOT/deploy/deploy.sh" \
   || wd_die "a release without an authbot binary must fail closed"
-grep -Fq 'ExecStart=/usr/bin/env CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude /srv/claude-api/releases/current/authbot' "$ROOT/systemd/claude-authbot.service" \
-  || wd_die "the authbot unit must override legacy CLI paths and run the current release"
+grep -Fq 'ExecStart=/usr/bin/env CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CODEX_HOMES_DIR=/srv/claude-api/data/codex-homes /srv/claude-api/releases/current/authbot' \
+  "$ROOT/systemd/claude-authbot.service" \
+  || wd_die "the authbot unit must override legacy CLI/home paths and run the current release"
 grep -Fq 'ProtectHome=true' "$ROOT/systemd/claude-authbot.service" \
   || wd_die "the authbot must keep the service user's home hidden"
 grep -Fq 'Environment=AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude' "$ROOT/systemd/claude-authbot.service" \
@@ -1421,9 +1423,14 @@ grep -Fq -- "--data-urlencode 'query=claude_api_codex_enabled{provider=\"openai\
 # Codex owner can start, and every runtime gate must prove its startup-fixed provider mode.
 provider_controller="$ROOT/deploy/engine-bluegreen.sh"
 old_stop_line=$(grep -nF 'systemctl_command stop "$ACTIVE_UNIT"' "$provider_controller" | cut -d: -f1)
+openai_stop_line=$(grep -nF 'systemctl_command stop "$OPENAI_UNIT"' "$provider_controller" | cut -d: -f1)
+codex_move_line=$(grep -nF '"$CODEX_HOME_MIGRATION_HELPER" --apply' "$provider_controller" | cut -d: -f1)
 openai_start_line=$(grep -nF 'systemctl_command restart "$OPENAI_UNIT"' "$provider_controller" | cut -d: -f1)
 [[ -n $old_stop_line && -n $openai_start_line && $old_stop_line -lt $openai_start_line ]] \
   || wd_die "OpenAI can start before the old combined engine cgroup has stopped"
+[[ -n $openai_stop_line && -n $codex_move_line \
+    && $openai_stop_line -lt $codex_move_line && $codex_move_line -lt $openai_start_line ]] \
+  || wd_die "legacy Codex home migration is not fenced by a full OpenAI stop"
 grep -Fq 'unit_release_binding_ok engine "$unit" "$ENGINE_RELEASE_ROOT" "$CURRENT_RELEASE" anthropic' \
   "$provider_controller" || wd_die "Anthropic slot gate does not prove provider mode"
 grep -Fq 'unit_release_binding_ok engine "$OPENAI_UNIT" "$ENGINE_RELEASE_ROOT" "$CURRENT_RELEASE" openai' \
@@ -1432,6 +1439,21 @@ grep -Fq 'unit_release_binding_ok engine "$GEMINI_UNIT" "$ENGINE_RELEASE_ROOT" "
   "$provider_controller" || wd_die "Gemini gate does not prove provider mode"
 grep -Fq 'for old_unit in "$LEGACY_UNIT" "$(legacy_slot_unit 8787)" "$(legacy_slot_unit 8788)"' \
   "$provider_controller" || wd_die "active-but-unready engine cgroups can survive the OpenAI handoff"
+grep -Fq 'systemctl_command stop "$OPENAI_UNIT"' "$provider_controller" \
+  || wd_die "OpenAI is not stopped before its legacy Codex home moves"
+grep -Fq '"$CODEX_HOME_MIGRATION_HELPER" --apply' "$provider_controller" \
+  || wd_die "provider controller does not apply the guarded legacy Codex home migration"
+grep -Fq 'codex-homes-migrate.sh' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die "Codex home migration helper is not installed with its controller"
+grep -Fq 'CLAUDE_API_CODEX_HOMES=/srv/claude-api/data/codex-homes/mikala1158qqq-gmail-com' \
+  "$ROOT/systemd/claude-api-openai.service" \
+  || wd_die "OpenAI unit does not pin the migrated legacy Codex home"
+grep -Fq 'CLAUDE_API_CODEX_HOMES_DIR=/srv/claude-api/data/codex-homes' \
+  "$ROOT/systemd/claude-api-openai.service" \
+  || wd_die "OpenAI unit does not scan the authbot Codex homes directory"
+grep -Fq 'AUTH_BOT_CODEX_HOMES_DIR=/srv/claude-api/data/codex-homes' \
+  "$ROOT/systemd/claude-authbot.service" \
+  || wd_die "authbot and OpenAI provider do not share the Codex homes directory"
 grep -Fq 'PROVIDER_CAPABILITY_MARKER=.provider-runtime-v1' "$provider_controller" \
   || wd_die "provider controller can accept a release without fixed-provider rollback support"
 grep -Fq 'exit 2' "$provider_controller" \

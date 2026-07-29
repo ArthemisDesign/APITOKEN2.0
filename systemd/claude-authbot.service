@@ -20,9 +20,9 @@ Environment=HOME=/srv/claude-api/data/authbot
 Environment=AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude
 EnvironmentFile=/srv/claude-api/data/authbot.env
 EnvironmentFile=/srv/claude-api/data/engine-postgres.env
-# Command assignments override legacy CLAUDE_BIN from EnvironmentFile even for the old binary that
-# may still be current when an infrastructure transaction restarts this unit before promotion.
-ExecStart=/usr/bin/env CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude /srv/claude-api/releases/current/authbot
+# Command assignments override legacy values from EnvironmentFile even for the old binary that may
+# still be current when an infrastructure transaction restarts this unit before promotion.
+ExecStart=/usr/bin/env CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CODEX_HOMES_DIR=/srv/claude-api/data/codex-homes /srv/claude-api/releases/current/authbot
 WorkingDirectory=/srv/claude-api/data
 Restart=always
 RestartSec=5

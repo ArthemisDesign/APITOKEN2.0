@@ -56,6 +56,8 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/controller/api-bluegreen.sh
   install -o root -g root -m 0755 "$ROOT/deploy/engine-bluegreen.sh" \
     /usr/local/lib/apitoken-watchdog/controller/engine-bluegreen.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/codex-homes-migrate.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/codex-homes-migrate.sh
   # Required by the watchdog's post-admission recovery path.
   install -o root -g root -m 0755 "$ROOT/deploy/rollback.sh" \
     /usr/local/lib/apitoken-watchdog/controller/rollback.sh

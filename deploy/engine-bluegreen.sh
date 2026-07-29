@@ -31,6 +31,9 @@ PROVIDER_CAPABILITY_MARKER=.provider-runtime-v1
 GEMINI_CAPABILITY_MARKER=.gemini-provider-v1
 OPENAI_READY_URL=${OPENAI_READY_URL:-http://127.0.0.1:8793/ready}
 OPENAI_STABLE_READY_URL=${OPENAI_STABLE_READY_URL:-http://127.0.0.1:8792/ready}
+CODEX_HOME_MIGRATION_HELPER=$SCRIPT_DIR/codex-homes-migrate.sh
+CODEX_LEGACY_HOME=/srv/claude-api/data/codex/home
+CODEX_MIGRATED_HOME=/srv/claude-api/data/codex-homes/mikala1158qqq-gmail-com
 GEMINI_READY_URL=${GEMINI_READY_URL:-http://127.0.0.1:8795/ready}
 GEMINI_STABLE_READY_URL=${GEMINI_STABLE_READY_URL:-http://127.0.0.1:8794/ready}
 CURRENT_RELEASE=
@@ -125,6 +128,10 @@ openai_draining() {
   status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
     "$OPENAI_READY_URL" 2>/dev/null) || return 1
   [[ $status == 503 ]]
+}
+codex_legacy_home_migrated() {
+  [[ ! -e $CODEX_LEGACY_HOME && ! -L $CODEX_LEGACY_HOME \
+    && -d $CODEX_MIGRATED_HOME && ! -L $CODEX_MIGRATED_HOME ]]
 }
 gemini_serves_current() {
   unit_release_binding_ok engine "$GEMINI_UNIT" "$ENGINE_RELEASE_ROOT" "$CURRENT_RELEASE" gemini \
@@ -247,6 +254,10 @@ privileged_command test -f /etc/systemd/system/claude-api-anthropic@.service \
 privileged_command test -f /etc/systemd/system/claude-api@.service \
   || die "combined bridge slot template is not installed"
 privileged_command test -f "/etc/systemd/system/$OPENAI_UNIT" || die "OpenAI provider unit is not installed"
+[[ -x $CODEX_HOME_MIGRATION_HELPER && ! -L $CODEX_HOME_MIGRATION_HELPER ]] \
+  || die "Codex home migration helper is missing or unsafe"
+"$CODEX_HOME_MIGRATION_HELPER" --check \
+  || die "legacy Codex home is not safe to migrate"
 privileged_command caddy validate --adapter caddyfile --config "$CADDY_CONFIG" >/dev/null
 privileged_command grep -q '127.0.0.1:8788' "$CADDY_CONFIG" \
   || die "Caddy is not configured with the 8788 engine slot"
@@ -377,7 +388,7 @@ done
 
 # The first provider split reaches this point with the old combined process fully gone. Future
 # releases keep the old singleton serving while Anthropic rolls, then drain it sequentially here.
-if ! openai_serves_current; then
+if ! openai_serves_current || ! codex_legacy_home_migrated; then
   OPENAI_RESTART_ATTEMPTED=1
   if unit_active "$OPENAI_UNIT"; then
     log "pre-draining $OPENAI_UNIT with SIGUSR1"
@@ -388,6 +399,13 @@ if ! openai_serves_current; then
       openai_draining || post_admission_die "$OPENAI_UNIT did not flip readiness to 503"
     fi
   fi
+  systemctl_command stop "$OPENAI_UNIT" \
+    || post_admission_die "could not stop $OPENAI_UNIT for Codex home migration"
+  if [[ $DRY_RUN == 0 ]] && ! unit_stopped "$OPENAI_UNIT"; then
+    post_admission_die "$OPENAI_UNIT cgroup remains active; refusing to move its Codex home"
+  fi
+  run "$CODEX_HOME_MIGRATION_HELPER" --apply \
+    || post_admission_die "could not migrate the legacy Codex home"
   systemctl_command restart "$OPENAI_UNIT" \
     || post_admission_die "could not restart $OPENAI_UNIT"
   wait_for_release_service "OpenAI provider" engine "$OPENAI_UNIT" "$ENGINE_RELEASE_ROOT" \
