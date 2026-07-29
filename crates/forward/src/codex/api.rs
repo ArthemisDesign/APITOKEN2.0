@@ -1863,9 +1863,11 @@ fn response_object(
 fn public_usage(usage: &CodexUsage) -> Value {
     json!({
         "input_tokens": usage.input_tokens,
+        // Match the official Responses usage schema exactly: input_tokens_details carries only
+        // cached_tokens. (Cache writes are priced at the input rate, so there is nothing extra to
+        // surface, and OpenAI has no cache-write field.)
         "input_tokens_details": {
-            "cached_tokens": usage.cached_input_tokens,
-            "cache_write_tokens": usage.cache_write_input_tokens
+            "cached_tokens": usage.cached_input_tokens
         },
         "output_tokens": usage.output_tokens,
         "output_tokens_details": {
@@ -3663,7 +3665,10 @@ mod tests {
             total_tokens: 120,
         });
         assert_eq!(usage["input_tokens_details"]["cached_tokens"], 40);
-        assert_eq!(usage["input_tokens_details"]["cache_write_tokens"], 10);
+        // The official schema has no cache-write field; it must not appear.
+        assert!(usage["input_tokens_details"]
+            .get("cache_write_tokens")
+            .is_none());
         assert_eq!(usage["output_tokens_details"]["reasoning_tokens"], 12);
     }
 
