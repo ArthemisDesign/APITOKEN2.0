@@ -2,15 +2,17 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { claudeModels, openaiModels } from "@/lib/models";
 import { B2C_PRICING_MILESTONES } from "@/lib/pricing-tiers";
 
 /**
- * Free Claude API cost calculator — framed around whole real tasks, not single requests.
- * Official Anthropic list rates (per 1M tokens) live here verbatim; cache rates follow
- * Anthropic's standard multipliers (read = 0.1x input, 5m write = 1.25x input).
+ * Free Claude/GPT API cost calculator — framed around whole real tasks, not single requests.
+ * Official list and cache rates come from the shared model catalog.
  * Each task carries a realistic TOTAL token budget for finishing the whole job end to end.
  * The apiToken.sale price is simply official x (1 - discount). Fully client-side.
  */
+
+type Provider = "anthropic" | "openai";
 
 type Model = {
   name: string;
@@ -18,19 +20,54 @@ type Model = {
   context: string;
   input: number; // $ / 1M input tokens
   output: number; // $ / 1M output tokens
+  cacheRead: number; // $ / 1M cached input tokens
+  cacheWrite: number; // $ / 1M cache-write tokens
   note?: string;
 };
 
-const MODELS: Model[] = [
-  { name: "Claude Opus 4.8", id: "claude-opus-4-8", context: "1M", input: 5, output: 25 },
-  { name: "Claude Opus 4.7", id: "claude-opus-4-7", context: "1M", input: 5, output: 25 },
-  { name: "Claude Sonnet 5", id: "claude-sonnet-5", context: "1M", input: 2, output: 10, note: "intro rate" },
-  { name: "Claude Sonnet 4.6", id: "claude-sonnet-4-6", context: "1M", input: 3, output: 15 },
-  { name: "Claude Haiku 4.5", id: "claude-haiku-4-5", context: "200K", input: 1, output: 5 },
-];
+const CLAUDE_MODELS: Model[] = claudeModels.map((model) => {
+  const hasIntroRate = model.id === "claude-sonnet-5";
+  return {
+    name: model.name,
+    id: model.id,
+    context: model.context,
+    input: hasIntroRate ? 2 : model.inputPerM,
+    output: hasIntroRate ? 10 : model.outputPerM,
+    cacheRead: hasIntroRate ? 0.2 : model.cacheReadPerM,
+    cacheWrite: hasIntroRate ? 2.5 : model.cacheWrite5mPerM,
+    note: hasIntroRate ? "intro rate" : undefined,
+  };
+});
 
-const CACHE_READ_MULT = 0.1; // Anthropic: cache read = 0.1x input
-const CACHE_WRITE_MULT = 1.25; // Anthropic: 5-minute cache write = 1.25x input
+const GPT_MODELS: Model[] = openaiModels.map((model) => ({
+  name: model.name,
+  id: model.id,
+  context: model.context,
+  input: model.inputPerM,
+  output: model.outputPerM,
+  cacheRead: model.cachedInputPerM,
+  cacheWrite: model.cacheWritePerM,
+}));
+
+const PROVIDERS: Record<Provider, {
+  label: string;
+  models: Model[];
+  officialName: string;
+  apiDescription: string;
+}> = {
+  anthropic: {
+    label: "Claude",
+    models: CLAUDE_MODELS,
+    officialName: "Anthropic",
+    apiDescription: "Anthropic Messages API",
+  },
+  openai: {
+    label: "GPT",
+    models: GPT_MODELS,
+    officialName: "OpenAI",
+    apiDescription: "OpenAI-compatible API",
+  },
+};
 
 // Real tasks our audience actually runs — each is a WHOLE job, with a realistic total
 // token budget across every call it takes. Numbers are estimates, labelled as such.
@@ -50,7 +87,7 @@ const TASKS: Task[] = [
     key: "month-coding",
     label: "A month of coding",
     phrase: "for a month of coding",
-    desc: "Full-time development with Claude Code — all day, every day, ~22 workdays.",
+    desc: "Full-time development with an AI coding agent — all day, every day, ~22 workdays.",
     input: 3_000_000, output: 2_500_000, cacheR: 80_000_000, cacheW: 3_000_000,
   },
   {
@@ -85,7 +122,7 @@ const TASKS: Task[] = [
     key: "calorie-app",
     label: "AI for a calorie app",
     phrase: "to run a calorie app for a month",
-    desc: "A month of an App Store calorie tracker calling Claude to analyze real users' meals.",
+    desc: "A month of an App Store calorie tracker calling an AI model to analyze real users' meals.",
     input: 20_000_000, output: 6_000_000, cacheR: 5_000_000, cacheW: 500_000,
   },
   {
@@ -140,21 +177,24 @@ function taskCost(m: Model, inTok: number, outTok: number, cacheR: number, cache
   return (
     (inTok / 1e6) * m.input +
     (outTok / 1e6) * m.output +
-    (cacheR / 1e6) * m.input * CACHE_READ_MULT +
-    (cacheW / 1e6) * m.input * CACHE_WRITE_MULT
+    (cacheR / 1e6) * m.cacheRead +
+    (cacheW / 1e6) * m.cacheWrite
   );
 }
 
 export function CostCalculator() {
+  const [provider, setProvider] = useState<Provider>("anthropic");
   const [taskIdx, setTaskIdx] = useState(DEFAULT_TASK);
   const [inTok, setInTok] = useState(TASKS[DEFAULT_TASK].input);
   const [outTok, setOutTok] = useState(TASKS[DEFAULT_TASK].output);
   const [cacheR, setCacheR] = useState(TASKS[DEFAULT_TASK].cacheR);
   const [cacheW, setCacheW] = useState(TASKS[DEFAULT_TASK].cacheW);
   const [tier, setTier] = useState(0);
-  const [selected, setSelected] = useState("claude-opus-4-8");
+  const [selected, setSelected] = useState(CLAUDE_MODELS[0].id);
   const [advanced, setAdvanced] = useState(false);
 
+  const providerInfo = PROVIDERS[provider];
+  const models = providerInfo.models;
   const task = TASKS[taskIdx];
   const discount = TIERS[tier].discount;
   const mult = 1 - discount / 100;
@@ -168,13 +208,18 @@ export function CostCalculator() {
     setCacheW(t.cacheW);
   }
 
+  function pickProvider(nextProvider: Provider) {
+    setProvider(nextProvider);
+    setSelected(PROVIDERS[nextProvider].models[0].id);
+  }
+
   const rows = useMemo(() => {
-    return MODELS.map((m) => {
+    return models.map((m) => {
       const official = taskCost(m, inTok, outTok, cacheR, cacheW);
       const yours = official * mult;
       return { m, official, yours, save: official - yours };
     });
-  }, [inTok, outTok, cacheR, cacheW, mult]);
+  }, [models, inTok, outTok, cacheR, cacheW, mult]);
 
   const cheapestId = useMemo(() => rows.reduce((a, b) => (b.yours < a.yours ? b : a)).m.id, [rows]);
 
@@ -186,6 +231,25 @@ export function CostCalculator() {
       <div className="calc-grid">
         {/* ---------- Inputs ---------- */}
         <div className="calc-panel">
+          <div className="calc-field">
+            <label>
+              Model provider <span>compare either model family with the same task</span>
+            </label>
+            <div className="calc-providers" role="group" aria-label="Model provider">
+              {(Object.keys(PROVIDERS) as Provider[]).map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  className={`calc-provider ${provider === key ? "on" : ""}`}
+                  aria-pressed={provider === key}
+                  onClick={() => pickProvider(key)}
+                >
+                  {PROVIDERS[key].label} models
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="calc-field">
             <label>
               What do you want to do? <span>pick a whole task, not one request</span>
@@ -214,19 +278,19 @@ export function CostCalculator() {
               </div>
               <div className="calc-field">
                 <label htmlFor="calc-out">
-                  Output tokens <span>everything Claude writes</span>
+                  Output tokens <span>everything the model writes</span>
                 </label>
                 <input id="calc-out" inputMode="numeric" value={fmt(outTok)} onChange={(e) => setOutTok(parseNum(e.target.value))} />
               </div>
               <div className="calc-field">
                 <label htmlFor="calc-cr">
-                  Cache read tokens <span>0.1× input rate</span>
+                  Cache read tokens <span>discounted cached input</span>
                 </label>
                 <input id="calc-cr" inputMode="numeric" value={fmt(cacheR)} onChange={(e) => setCacheR(parseNum(e.target.value))} />
               </div>
               <div className="calc-field" style={{ marginBottom: 0 }}>
                 <label htmlFor="calc-cw">
-                  Cache write tokens <span>1.25× input rate</span>
+                  Cache write tokens <span>provider-specific write rate</span>
                 </label>
                 <input id="calc-cw" inputMode="numeric" value={fmt(cacheW)} onChange={(e) => setCacheW(parseNum(e.target.value))} />
               </div>
@@ -263,9 +327,9 @@ export function CostCalculator() {
           <div className="calc-result-head">
             <span className="tag">You pay {task.phrase}</span>
             <div className="calc-model-chips">
-              {MODELS.map((m) => (
+              {models.map((m) => (
                 <button key={m.id} type="button" className={`calc-mchip ${selected === m.id ? "on" : ""}`} onClick={() => setSelected(m.id)}>
-                  {m.name.replace("Claude ", "")}
+                  {m.name.replace(provider === "anthropic" ? "Claude " : "GPT-", "")}
                 </button>
               ))}
             </div>
@@ -279,7 +343,7 @@ export function CostCalculator() {
             </div>
           </div>
           <p className="calc-sub">
-            {task.phrase} on {hero.m.name} · official Anthropic price minus your {discount}% discount
+            {task.phrase} on {hero.m.name} · official {providerInfo.officialName} price minus your {discount}% discount
           </p>
 
           <div className="calc-save">
@@ -291,15 +355,15 @@ export function CostCalculator() {
           <Link className="btn btn-primary calc-cta" href="/register">
             Start free — $10 at official prices
           </Link>
-          <p className="calc-note">Same Anthropic Messages API, same models, same responses. You just pay less per call.</p>
+          <p className="calc-note">Same {providerInfo.apiDescription}, models and responses. You just pay less per call.</p>
         </div>
       </div>
 
       {/* ---------- Full comparison ---------- */}
       <div className="calc-table-head">
-        <h2>Every Claude model for this task</h2>
+        <h2>Every {providerInfo.label} model for this task</h2>
         <p>
-          Official Anthropic price vs your apiToken.sale price at −{discount}%, {task.phrase}.
+          Official {providerInfo.officialName} price vs your apiToken.sale price at −{discount}%, {task.phrase}.
         </p>
       </div>
       <div className="table-scroll">
@@ -336,9 +400,10 @@ export function CostCalculator() {
       </div>
       <p className="tier-footnote">
         Each task uses a realistic total number of tokens to finish the whole job — expand &ldquo;Adjust the tokens
-        yourself&rdquo; to tune it. Claude Sonnet 5 shows its introductory official rate ($2 / $10 per 1M) in effect through
-        2026-08-31; it returns to $3 / $15 on 2026-09-01. Cache read is billed at 0.1× the input rate and 5-minute cache writes
-        at 1.25×, per Anthropic&rsquo;s standard pricing. Estimates only — your real bill depends on exact token usage.
+        yourself&rdquo; to tune it. {provider === "anthropic"
+          ? "Claude Sonnet 5 shows its introductory $2 / $10 rate through 2026-08-31; cache reads use 0.1× input and 5-minute cache writes use 1.25× input."
+          : "GPT rows use standard rates from the pinned catalog. GPT-5.6 cache writes use 1.25× input; GPT-5.5/5.4 use 1×. A single request over 272K input tokens has a long-context premium not inferred from these whole-task totals."}{" "}
+        Estimates only — your real bill depends on exact token usage.
       </p>
     </div>
   );

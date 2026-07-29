@@ -5,7 +5,7 @@ import { JsonLd } from "@/components/json-ld";
 
 const TITLE = "Claude API Cost Calculator — Free Price Estimator for Every Model";
 const DESC =
-  "Free Claude API cost calculator. Enter input, output and cache tokens to estimate the price of every Claude model (Opus 4.8, Sonnet 5, Haiku 4.5) at official Anthropic rates — and see your discounted price side by side.";
+  "Free Claude API cost calculator with a GPT model switch. Estimate every Claude or GPT model at official provider rates and compare your discounted price side by side.";
 const URL = "https://apitoken.sale/tools/claude-api-cost-calculator";
 
 export const metadata: Metadata = {
@@ -28,8 +28,8 @@ const FAQ = [
     a: "Anthropic bills per token. As of 2026, list rates per 1M tokens are: Claude Opus 4.8 and 4.7 — $5 input / $25 output; Claude Sonnet 5 — $2 / $10 (introductory, through 2026-08-31); Claude Sonnet 4.6 — $3 / $15; Claude Haiku 4.5 — $1 / $5. Enter your token counts above to get an exact estimate for each model.",
   },
   {
-    q: "How is Claude API pricing calculated?",
-    a: "Cost = (input tokens ÷ 1,000,000 × input rate) + (output tokens ÷ 1,000,000 × output rate). Prompt caching adds a cache-read charge at 0.1× the input rate and a 5-minute cache-write charge at 1.25× the input rate. The calculator does all of this for you across every model.",
+    q: "How is API pricing calculated?",
+    a: "Cost = (input tokens ÷ 1,000,000 × input rate) + (output tokens ÷ 1,000,000 × output rate), plus provider-specific cache charges. Use the switch to apply the correct Anthropic or OpenAI rates across every supported model.",
   },
   {
     q: "How can I make the Claude API cheaper?",
@@ -37,11 +37,11 @@ const FAQ = [
   },
   {
     q: "What is a token?",
-    a: "A token is roughly ¾ of a word in English — about 4 characters. 1,000 tokens is ~750 words. Both the text you send (input) and the text Claude generates (output) are counted, and output tokens are billed at a higher rate than input.",
+    a: "A token is roughly ¾ of a word in English — about 4 characters. 1,000 tokens is ~750 words. Both the text you send (input) and the text the model generates (output) are counted, and output tokens are billed at a higher rate than input.",
   },
   {
     q: "Are these prices exact?",
-    a: "The rates are Anthropic's official published list prices, and the discounted column is your real apiToken.sale price. Your actual bill still depends on the exact number of tokens each request uses, so treat the totals as close estimates.",
+    a: "The rates come from the pinned official Anthropic and OpenAI price catalogs, and the discounted column is your real apiToken.sale price. Your actual bill still depends on the exact token buckets and context size of each request, so treat whole-task totals as close estimates.",
   },
 ];
 
@@ -87,8 +87,8 @@ export default function CostCalculatorPage() {
           <span className="eyebrow">Free tool</span>
           <h1>Claude API Cost Calculator</h1>
           <p>
-            Pick a real task — write an article, build a game, a month of coding — and see what it costs to finish on any Claude
-            model at official Anthropic rates, next to your price at up to 70% off. No sign-up, no card.
+            Pick a real task — write an article, build a game, a month of coding — then switch between Claude and GPT models
+            to compare official provider rates with your price at up to 70% off. No sign-up, no card.
           </p>
         </div>
       </div>
@@ -104,7 +104,7 @@ export default function CostCalculatorPage() {
           <div className="sec-head">
             <span className="eyebrow">How it works</span>
             <h2>Price a whole task, not a token</h2>
-            <p>The calculator uses Anthropic&rsquo;s official published list rates. Nothing is sent anywhere — it all runs in your browser.</p>
+            <p>The calculator uses the pinned official Anthropic and OpenAI rate catalogs. Nothing is sent anywhere — it all runs in your browser.</p>
           </div>
           <div className="steps" data-reveal-stagger>
             <div className="step">
@@ -120,7 +120,7 @@ export default function CostCalculatorPage() {
             <div className="step">
               <div className="n">03</div>
               <h3>Compare the price</h3>
-              <p>See the official cost to finish that task next to your apiToken.sale cost for all five Claude models, cheapest highlighted.</p>
+              <p>Switch between Claude and GPT to see the official cost next to your apiToken.sale cost, with the cheapest model highlighted.</p>
             </div>
           </div>
         </div>
