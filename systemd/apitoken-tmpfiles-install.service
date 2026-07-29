@@ -1,0 +1,14 @@
+[Unit]
+Description=Apply the API Token runtime directory definition
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0022
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/etc/tmpfiles.d
+NoNewPrivileges=true
+ExecStart=/usr/local/lib/apitoken-watchdog/install-tmpfiles.sh

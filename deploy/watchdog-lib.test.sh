@@ -572,8 +572,10 @@ for runtime_definition in \
   deploy/Caddyfile \
   deploy/install-caddy.sh \
   deploy/install-monitoring.sh \
+  deploy/install-tmpfiles.sh \
   systemd/apitoken-deploy-watchdog.service \
   systemd/apitoken-candidate-validator.service \
+  systemd/apitoken-tmpfiles-install.service \
   systemd/claude-api.service \
   systemd/claude-api@.service \
   systemd/claude-api-anthropic@.service \
@@ -611,6 +613,8 @@ if wd_path_is_caddy deploy/watchdog.sh; then
   wd_die "non-Caddy infrastructure change requested a Caddy reload"
 fi
 wd_path_is_systemd_definition systemd/apitoken-deploy-watchdog.service
+wd_path_is_systemd_definition systemd/apitoken-tmpfiles-install.service
+wd_path_is_systemd_definition deploy/install-tmpfiles.sh
 wd_path_is_systemd_definition systemd/claude-api.service
 wd_path_is_systemd_definition systemd/claude-api-openai.service
 if wd_path_is_systemd_definition systemd/future-uninstalled.service; then
@@ -1142,8 +1146,7 @@ for codex_owner_unit in systemd/claude-api.service systemd/claude-api@.service \
     "$ROOT/$codex_owner_unit" \
     || wd_die "Codex ownership lock is read-only inside $codex_owner_unit"
 done
-grep -Fq 'systemd-tmpfiles --create /etc/tmpfiles.d/apitoken.conf' \
-  "$ROOT/deploy/install-watchdog.sh"
+grep -Fq 'systemd-tmpfiles --create "$TARGET"' "$ROOT/deploy/install-tmpfiles.sh"
 grep -Fq 'CLAUDE_API_AFFINITY_SECRET' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'apitoken-affinity-redis.service' "$ROOT/deploy/install-watchdog.sh"
 ! grep -Fq 'partners.panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
@@ -1623,6 +1626,25 @@ grep -Fq 'apitoken-sudoers-install.service' "$ROOT/deploy/install-watchdog.sh" \
 grep -Fxq 'ExecStart=/usr/local/lib/apitoken-watchdog/install-sudoers.sh' \
   "$ROOT/systemd/apitoken-sudoers-install.service" \
   || wd_die 'the isolated sudoers installer unit does not run the fixed root-owned installer'
+grep -Fxq 'ExecStart=/usr/local/lib/apitoken-watchdog/install-tmpfiles.sh' \
+  "$ROOT/systemd/apitoken-tmpfiles-install.service" \
+  || wd_die 'the isolated tmpfiles installer unit does not run the fixed root-owned installer'
+grep -Fxq 'ReadWritePaths=/etc/tmpfiles.d' \
+  "$ROOT/systemd/apitoken-tmpfiles-install.service" \
+  || wd_die 'the isolated tmpfiles installer cannot publish its fixed definition'
+grep -Fq '/usr/local/lib/apitoken-watchdog/apitoken-tmpfiles.conf' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'the tested tmpfiles definition is not staged outside the watchdog namespace'
+if grep -Fq '/etc/tmpfiles.d/apitoken.conf' "$ROOT/deploy/install-watchdog.sh"; then
+  wd_die 'the watchdog installer still writes tmpfiles inside its read-only namespace'
+fi
+tmpfiles_reload_line=$(grep -nF 'systemctl daemon-reload' "$ROOT/deploy/install-watchdog.sh" \
+  | cut -d: -f1 | head -n 1)
+tmpfiles_start_line=$(grep -nF 'systemctl start apitoken-tmpfiles-install.service' \
+  "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+[[ -n $tmpfiles_reload_line && -n $tmpfiles_start_line \
+    && $tmpfiles_start_line -gt $tmpfiles_reload_line ]] \
+  || wd_die 'the isolated tmpfiles installer is not started after daemon-reload'
 if grep -Fxq '/usr/local/lib/apitoken-watchdog/install-sudoers.sh' \
   "$ROOT/deploy/install-watchdog.sh"; then
   wd_die 'the sudoers installer runs inside the watchdog read-only mount namespace'

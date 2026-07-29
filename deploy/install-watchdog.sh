@@ -68,11 +68,18 @@ install_controller_definitions() {
 install_systemd_definitions() {
   command -v systemctl >/dev/null || { echo 'systemd is required' >&2; return 1; }
   command -v systemd-tmpfiles >/dev/null || { echo 'systemd-tmpfiles is required' >&2; return 1; }
+  # The watchdog's `ProtectSystem=full` namespace keeps /etc/tmpfiles.d read-only even after sudo.
+  # Stage the exact candidate input under the fixed root-owned controller path; a manager-spawned
+  # root oneshot below publishes it from a fresh namespace, just like the sudoers installer.
+  install -o root -g root -m 0755 "$ROOT/deploy/install-tmpfiles.sh" \
+    /usr/local/lib/apitoken-watchdog/install-tmpfiles.sh
+  install -o root -g root -m 0644 "$ROOT/systemd/apitoken-tmpfiles.conf" \
+    /usr/local/lib/apitoken-watchdog/apitoken-tmpfiles.conf
   for unit in \
     apitoken-api@.service \
     apitoken-deploy-watchdog.service apitoken-deploy-watchdog.timer \
     apitoken-candidate-validator.service apitoken-candidate-validator.timer \
-    apitoken-sudoers-install.service \
+    apitoken-sudoers-install.service apitoken-tmpfiles-install.service \
     apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-backup.service claude-api-backup.timer \
     claude-api-fingerprint.service claude-api-fingerprint.timer \
     apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \
@@ -80,9 +87,8 @@ install_systemd_definitions() {
     apitoken-monitoring-collector.service apitoken-monitoring-collector.timer; do
     install -o root -g root -m 0644 "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"
   done
-  install -o root -g root -m 0644 "$ROOT/systemd/apitoken-tmpfiles.conf" \
-    /etc/tmpfiles.d/apitoken.conf
-  systemd-tmpfiles --create /etc/tmpfiles.d/apitoken.conf
+  systemctl daemon-reload
+  systemctl start apitoken-tmpfiles-install.service
 
   # Journald storage must be an explicit decision rather than a side effect of boot ordering. Under
   # the default `Storage=auto` journald picks volatile-vs-persistent once at start by testing
