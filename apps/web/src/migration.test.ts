@@ -173,8 +173,8 @@ describe("completed Next.js migration", () => {
     expect(pricingTiers).toContain('{ code: "studio", label: "Studio", messageKey: "tier_studio", discountPercent: 67.5');
     expect(pricingTiers).toContain('{ code: "scale", label: "Scale", messageKey: "tier_scale", discountPercent: 70');
     expect(pricing).not.toContain("BillingFormula");
-    expect(messages).toContain("$10 of Claude usage at official API prices");
-    expect(messages).toContain("$10 на Claude по официальным ценам API");
+    expect(messages).toContain("$10 of API usage at official prices");
+    expect(messages).toContain("$10 на использование API по официальным ценам");
     expect(messages).not.toContain("$2.50");
   });
 
@@ -230,14 +230,14 @@ describe("completed Next.js migration", () => {
     expect(dynamicRoute).not.toContain("DocsPage");
   });
 
-  it("advertises only the supported Anthropic API format", () => {
+  it("advertises both supported API surfaces", () => {
     const messages = readFileSync(join(root, "lib", "messages.json"), "utf8");
     const home = readFileSync(join(appRoot, "page.tsx"), "utf8");
     const styles = readFileSync(join(appRoot, "globals.css"), "utf8");
-    expect(messages).not.toMatch(/openai/i);
-    expect(messages).toContain('"f2_h": "Anthropic-native API"');
-    expect(messages).toContain('"f2_h": "Нативный Anthropic API"');
-    expect(home).toContain('<Stat value="1" label="stat2" />');
+    expect(messages).toContain("openai.api.apitoken.sale/v1");
+    expect(messages).toContain('"f2_h": "Two native API surfaces"');
+    expect(messages).toContain('"f2_h": "Два нативных формата API"');
+    expect(home).toContain('<Stat value="2" label="stat2" />');
     expect(home).not.toContain('className="announce"');
     expect(styles).not.toContain(".announce-");
   });
@@ -248,6 +248,11 @@ describe("completed Next.js migration", () => {
     expect(marketing).toContain('["Claude Opus 4.7","claude-opus-4-7","1M","$5","$25"');
     expect(marketing).toContain('["Claude Sonnet 4.6","claude-sonnet-4-6","1M","$3","$15"');
     expect(marketing).toContain('["Claude Haiku 4.5","claude-haiku-4-5","200K","$1","$5"');
+    expect(marketing).toContain('["GPT-5.6 Sol","gpt-5.6-sol","272K","$5","$30"');
+    expect(marketing).toContain('["GPT-5.6 Terra","gpt-5.6-terra","272K","$2.50","$15"');
+    expect(marketing).toContain('["GPT-5.6 Luna","gpt-5.6-luna","272K","$1","$6"');
+    expect(marketing).toContain('["GPT-5.5","gpt-5.5","272K","$5","$30"');
+    expect(marketing).toContain('["GPT-5.4","gpt-5.4","272K","$2.50","$15"');
   });
 
   it("keeps the header, terminal, workflow hover, and wave loop regression-safe", () => {

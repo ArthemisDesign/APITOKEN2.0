@@ -22,8 +22,10 @@ const staticPageSeo = {
   "models": seoPages.models,
   "integrations": seoPages.integrations,
   "int-claude-code": integrationGuideSeo["claude-code"],
+  "int-codex": integrationGuideSeo.codex,
   "int-cursor": integrationGuideSeo.cursor,
   "int-cline": integrationGuideSeo.cline,
+  "int-opencode": integrationGuideSeo.opencode,
   "int-continue": integrationGuideSeo.continue,
   "int-zed": integrationGuideSeo.zed,
   "int-sdk": integrationGuideSeo.sdk,
@@ -56,7 +58,7 @@ export default async function StaticPage({ params }: { params: Promise<{ slug: s
   const { slug } = await params;
 
   if (slug === "models") {
-    return <><JsonLd data={breadcrumbJsonLd([{ name: "Home", path: "/" }, { name: "Claude models", path: "/models" }])} /><ModelsPage /></>;
+    return <><JsonLd data={breadcrumbJsonLd([{ name: "Home", path: "/" }, { name: "Models", path: "/models" }])} /><ModelsPage /></>;
   }
 
   if (slug === "integrations") {

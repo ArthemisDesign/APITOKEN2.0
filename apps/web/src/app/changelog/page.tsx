@@ -4,14 +4,15 @@ import { JsonLd } from "@/components/json-ld";
 import { absoluteUrl, breadcrumbNode, createPageMetadata, LAST_CONTENT_UPDATE, SITE_ORIGIN } from "@/lib/seo";
 
 const TITLE = "Changelog";
-const DESCRIPTION = "Recent updates to apiToken.sale — new Claude models, guides, localization, and platform improvements.";
+const DESCRIPTION = "Recent updates to apiToken.sale — new Claude and GPT models, guides, localization, and platform improvements.";
 
 export const metadata: Metadata = {
   ...createPageMetadata({ path: "/changelog", title: TITLE, description: DESCRIPTION }),
-  keywords: ["apitoken changelog", "claude api updates", "apitoken.sale news", "claude api platform changes"],
+  keywords: ["apitoken changelog", "api updates", "apitoken.sale news", "claude api platform changes", "gpt api updates"],
 };
 
 const entries = [
+  { date: "2026-07", title: "GPT-5.6 on the same key — apiToken.sale is now multi-provider", body: "The OpenAI-compatible API at openai.api.apitoken.sale/v1 serves the GPT-5.6 line (sol, terra, luna), gpt-5.5 and gpt-5.4 through Responses and Chat Completions with SSE streaming. One sk-pool key, one prepaid balance and the same 60–70% discount cover both Claude and GPT." },
   { date: "2026-07", title: "Tier ladder rebalanced", body: "B2C tier discounts now progress from 60% to 70% off official spend (Starter 60%, Builder 62.5%, Pro 65%, Studio 67.5%, Scale 70%). Thresholds and 30-day holds are unchanged; Starter stays free at 60%." },
   { date: "2026-07", title: "Guides in Russian and Chinese", body: "The full Claude API guide library is now available in English, Russian and Simplified Chinese with per-language URLs." },
   { date: "2026-07", title: "Guide library expanded", body: "Added new guides covering gateways, rate limits, streaming, prompt caching, key security, and building AI agents on Claude." },

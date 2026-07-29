@@ -22,24 +22,24 @@ const heroIcons = {
   novpn: <><circle cx="12" cy="12" r="10" /><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" /><path d="M2 12h20" /></>,
 };
 const heroPoints = [
-  { k: "hero_p1", en: "Integration with Claude Code, Cursor, OpenClaw & more", ic: "connect" },
+  { k: "hero_p1", en: "Integration with Claude Code, Codex, Cursor, opencode & more", ic: "connect" },
   { k: "hero_p2", en: "Add it to any product or workflow", ic: "product" },
-  { k: "hero_p3", en: "No Anthropic account", ic: "noaccount" },
+  { k: "hero_p3", en: "No Anthropic or OpenAI account", ic: "noaccount" },
   { k: "hero_p4", en: "No VPN", ic: "novpn" },
 ] as const;
 // Единый developer-flow: три шага, каждый несёт реально важное (баланс/модели → drop-in эндпоинт → продакшн-биллинг).
 const flow = [
   { num: "01", h: "step1_h", p: "step1_p", raw: [] as string[], chips: ["chip_models", "chip_tiers", "chip_balance"] },
-  { num: "02", h: "step2_h", p: "step2_p", raw: ["Claude Code", "Cursor", "Cline", "Continue", "OpenClaw", "SDK"], chips: [] as string[] },
+  { num: "02", h: "step2_h", p: "step2_p", raw: ["Claude Code", "Codex", "Cursor", "Cline", "opencode", "SDK"], chips: [] as string[] },
   { num: "03", h: "step3_h", p: "step3_p", raw: [] as string[], chips: ["chip_stream", "chip_limits", "chip_usage"] },
 ] as const;
 
 const faqItems = [
-  { question: "q1", answer: "a1", q: "How much does the Claude API cost?", a: "Enter any positive whole USD top-up amount. Each request is converted to official API spend, then your active discount is applied: B2C progresses from 60% to 70% off, while B2B pricing is negotiated." },
-  { question: "q2", answer: "a2", q: "Is there a free option?", a: "Yes — new B2C accounts created with Google or GitHub get $10 of Claude usage at official API prices. Email and password accounts are not eligible." },
-  { question: "q3", answer: "a3", q: "Which models are available?", a: "The current supported Claude line includes Opus, Sonnet, and Haiku models on the same balance and API key." },
-  { question: "q4", answer: "a4", q: "Which Claude model is best for coding?", a: "For agentic coding and long sessions, Opus and Sonnet tiers give the best results; Haiku is ideal for fast, economical calls." },
-  { question: "q5", answer: "a5", q: "What base URL should I use?", a: "Use https://api.apitoken.sale with any Anthropic-compatible tool. Send requests through /v1/messages with the same key and balance." },
+  { question: "q1", answer: "a1", q: "How much does API access cost?", a: "Enter any positive whole USD top-up amount. Each request is converted to official API spend, then your active discount is applied: B2C progresses from 60% to 70% off, while B2B pricing is negotiated." },
+  { question: "q2", answer: "a2", q: "Is there a free option?", a: "Yes — new B2C accounts created with Google or GitHub get $10 of API usage at official prices, valid on Claude and GPT models. Email and password accounts are not eligible." },
+  { question: "q3", answer: "a3", q: "Which models are available?", a: "The Claude line — Opus 4.8, Opus 4.7, Sonnet 5, Sonnet 4.6 and Haiku 4.5 — plus the GPT line — GPT-5.6 Sol, Terra and Luna, GPT-5.5 and GPT-5.4. One balance and one API key cover every model." },
+  { question: "q4", answer: "a4", q: "Which model is best for coding?", a: "For agentic coding and long sessions, Claude Opus and Sonnet and GPT-5.6 Sol give the best results; Claude Haiku and GPT-5.6 Luna are ideal for fast, cheap calls." },
+  { question: "q5", answer: "a5", q: "What base URL should I use?", a: "For Claude and Anthropic-compatible tools use https://api.apitoken.sale (POST /v1/messages, x-api-key). For GPT and OpenAI-compatible tools use https://openai.api.apitoken.sale/v1 (Responses and Chat Completions, Authorization: Bearer). Both draw on the same key and balance." },
   { question: "q6", answer: "a6", q: "What happens if I receive a 429?", a: "Honor Retry-After and reduce concurrency. Dashboard key guardrails are a lifetime spending limit and an optional expiration date; they do not configure request throughput." },
 ] as const;
 
@@ -73,7 +73,7 @@ const homeJsonLd = {
       "@id": `${SITE_ORIGIN}/#website`,
       url: SITE_ORIGIN,
       name: SITE_NAME,
-      alternateName: "apiToken.sale Claude API",
+      alternateName: "apiToken.sale Claude & GPT API",
       description: seoPages.home.description,
       inLanguage: "en",
       publisher: { "@id": `${SITE_ORIGIN}/#organization` },
@@ -81,10 +81,10 @@ const homeJsonLd = {
     {
       "@type": "Service",
       "@id": `${SITE_ORIGIN}/#service`,
-      name: "Claude API access for developers",
+      name: "Claude and GPT API access for developers",
       description: seoPages.home.description,
       url: SITE_ORIGIN,
-      serviceType: "Anthropic-compatible API access",
+      serviceType: "Anthropic-compatible and OpenAI-compatible API access",
       areaServed: "Worldwide",
       audience: { "@type": "Audience", audienceType: "Software developers" },
       provider: { "@id": `${SITE_ORIGIN}/#organization` },
@@ -104,7 +104,7 @@ const homeJsonLd = {
 
 export default function HomePage() {
   return <><JsonLd data={homeJsonLd} /><main>
-      <div className="hero"><div className="wrap hero-grid"><div><T k="hero_eyebrow" as="span" className="eyebrow">Claude API · One gateway</T><h1 className="hero-h1"><T k="hero_h1a" as="span" className="hero-h1-main">Buy Claude API access</T><T k="hero_h1b" as="span" className="hero-sub">Same as official, but cheaper</T></h1><ul className="hero-points">{heroPoints.map((point) => <li key={point.k}><span className="hp-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">{heroIcons[point.ic]}</svg></span><T k={point.k}>{point.en}</T></li>)}</ul><div className="hero-cta"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link><Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link></div></div><HeroDiscount /></div><div className="wrap home-stats"><div className="stats reveal"><Stat value="8+" label="stat1" /><Stat value="1" label="stat2" /><Stat value="60–70%" label="stat3" /><Stat value="2" label="stat4" /><div className="stat"><T k="stat5v" as="b">minutes</T><T k="stat5">Setup time</T></div></div></div></div>
+      <div className="hero"><div className="wrap hero-grid"><div><T k="hero_eyebrow" as="span" className="eyebrow">Claude API · One gateway</T><h1 className="hero-h1"><T k="hero_h1a" as="span" className="hero-h1-main">Buy Claude API access</T><T k="hero_h1b" as="span" className="hero-sub">Same as official, but cheaper</T></h1><ul className="hero-points">{heroPoints.map((point) => <li key={point.k}><span className="hp-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">{heroIcons[point.ic]}</svg></span><T k={point.k}>{point.en}</T></li>)}</ul><div className="hero-cta"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link><Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link></div></div><HeroDiscount /></div><div className="wrap home-stats"><div className="stats reveal"><Stat value="10+" label="stat1" /><Stat value="2" label="stat2" /><Stat value="60–70%" label="stat3" /><Stat value="2" label="stat4" /><div className="stat"><T k="stat5v" as="b">minutes</T><T k="stat5">Setup time</T></div></div></div></div>
       <section id="products"><div className="wrap"><SectionHead eyebrow="prod_eyebrow" title="prod_h2" lead="prod_lead" />
         <div className="home-calc" data-reveal><CostCalculator /><p className="home-calc-more"><Link href="/tools/claude-api-cost-calculator"><T k="home_calc_more">Full calculator — prompt caching, every model &amp; pricing FAQ →</T></Link></p></div>
       </div></section>

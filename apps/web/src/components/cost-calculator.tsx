@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { B2C_PRICING_MILESTONES } from "@/lib/pricing-tiers";
 
 /**
  * Free Claude API cost calculator — framed around whole real tasks, not single requests.
@@ -112,14 +113,13 @@ const TASKS: Task[] = [
 
 const DEFAULT_TASK = 0; // "A month of coding"
 
-// Discount tiers — Starter is free, larger discounts unlock as your cumulative top-ups grow.
-const TIERS = [
-  { label: "Starter", discount: 60, free: true, topup: 0 },
-  { label: "Builder", discount: 65, topup: 100 },
-  { label: "Pro", discount: 70, topup: 250 },
-  { label: "Studio", discount: 75, topup: 500 },
-  { label: "Scale", discount: 80, topup: 1000 },
-];
+// Discount tiers mirror the live B2C ladder — never a local copy that can drift.
+const TIERS = B2C_PRICING_MILESTONES.map((milestone) => ({
+  label: milestone.label,
+  discount: milestone.discountPercent,
+  free: milestone.platformSpendUsd === "0",
+  topup: Number(milestone.platformSpendUsd),
+}));
 
 function usd(v: number): string {
   if (!isFinite(v) || v <= 0) return "$0.00";

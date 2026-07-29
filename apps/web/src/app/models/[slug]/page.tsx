@@ -4,17 +4,29 @@ import { notFound } from "next/navigation";
 import { JsonLd } from "@/components/json-ld";
 import { absoluteUrl, breadcrumbNode, createPageMetadata, SITE_ORIGIN } from "@/lib/seo";
 import { learnPath, resolveArticle } from "@/lib/learn";
-import { claudeModelBySlug, claudeModels, formatUsd, modelPath, MODELS_HUB_PATH, priceBest, priceFrom } from "@/lib/models";
+import {
+  ANTHROPIC_BASE_URL,
+  OPENAI_BASE_URL,
+  catalogModelBySlug,
+  claudeModels,
+  formatUsd,
+  modelPath,
+  MODELS_HUB_PATH,
+  openaiModels,
+  priceBest,
+  priceFrom,
+  type CatalogModel,
+} from "@/lib/models";
 
 type Params = { slug: string };
 
 export function generateStaticParams(): Params[] {
-  return claudeModels.map((model) => ({ slug: model.slug }));
+  return [...claudeModels, ...openaiModels].map((model) => ({ slug: model.slug }));
 }
 
 export async function generateMetadata({ params }: { params: Promise<Params> }): Promise<Metadata> {
   const { slug } = await params;
-  const model = claudeModelBySlug[slug];
+  const model = catalogModelBySlug[slug];
   if (!model) return {};
   return {
     ...createPageMetadata({ path: modelPath(slug), title: model.title, description: model.description }),
@@ -22,22 +34,51 @@ export async function generateMetadata({ params }: { params: Promise<Params> }):
   };
 }
 
+function priceRowsFor(model: CatalogModel) {
+  if (model.provider === "anthropic") {
+    return [
+      { rate: "Input", official: formatUsd(model.inputPerM), from: priceFrom(model.inputPerM), best: priceBest(model.inputPerM) },
+      { rate: "Output", official: formatUsd(model.outputPerM), from: priceFrom(model.outputPerM), best: priceBest(model.outputPerM) },
+      { rate: "Cache read", official: formatUsd(model.cacheReadPerM), from: priceFrom(model.cacheReadPerM), best: priceBest(model.cacheReadPerM) },
+      { rate: "Cache write (5m)", official: formatUsd(model.cacheWrite5mPerM), from: priceFrom(model.cacheWrite5mPerM), best: priceBest(model.cacheWrite5mPerM) },
+    ];
+  }
+  return [
+    { rate: "Input", official: formatUsd(model.inputPerM), from: priceFrom(model.inputPerM), best: priceBest(model.inputPerM) },
+    { rate: "Cached input", official: formatUsd(model.cachedInputPerM), from: priceFrom(model.cachedInputPerM), best: priceBest(model.cachedInputPerM) },
+    { rate: "Cache write", official: formatUsd(model.cacheWritePerM), from: priceFrom(model.cacheWritePerM), best: priceBest(model.cacheWritePerM) },
+    { rate: "Output", official: formatUsd(model.outputPerM), from: priceFrom(model.outputPerM), best: priceBest(model.outputPerM) },
+  ];
+}
+
+const providerCopy = {
+  anthropic: {
+    officialCol: "Official Anthropic",
+    othersHeading: "Other Claude models",
+    howTo: (id: string) => <>Create a free account, generate one key, and point any Anthropic-compatible tool at {ANTHROPIC_BASE_URL} with model ID <code>{id}</code>. New accounts include $10 of API usage at official prices — enough to test the model before topping up.</>,
+    cta: (name: string) => `Run ${name} on the same Anthropic API at up to 70% off — instant key, prepaid balance, card or crypto.`,
+  },
+  openai: {
+    officialCol: "Official OpenAI",
+    othersHeading: "Other GPT models",
+    howTo: (id: string) => <>Create a free account, generate one key, and point any OpenAI-compatible tool at {OPENAI_BASE_URL} with model ID <code>{id}</code> — Responses and Chat Completions both work, authenticated with <code>Authorization: Bearer</code>. New accounts include $10 of API usage at official prices — enough to test the model before topping up.</>,
+    cta: (name: string) => `Run ${name} on the OpenAI-compatible API at up to 70% off — instant key, prepaid balance, card or crypto.`,
+  },
+} as const;
+
 export default async function ModelPage({ params }: { params: Promise<Params> }) {
   const { slug } = await params;
-  const model = claudeModelBySlug[slug];
+  const model = catalogModelBySlug[slug];
   if (!model) notFound();
 
+  const copy = providerCopy[model.provider];
   const url = absoluteUrl(modelPath(slug));
   const related = model.related
     .map((relatedSlug) => resolveArticle(relatedSlug, "en"))
     .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
-  const others = claudeModels.filter((entry) => entry.slug !== slug);
-  const priceRows = [
-    { rate: "Input", official: formatUsd(model.inputPerM), from: priceFrom(model.inputPerM), best: priceBest(model.inputPerM) },
-    { rate: "Output", official: formatUsd(model.outputPerM), from: priceFrom(model.outputPerM), best: priceBest(model.outputPerM) },
-    { rate: "Cache read", official: formatUsd(model.cacheReadPerM), from: priceFrom(model.cacheReadPerM), best: priceBest(model.cacheReadPerM) },
-    { rate: "Cache write (5m)", official: formatUsd(model.cacheWrite5mPerM), from: priceFrom(model.cacheWrite5mPerM), best: priceBest(model.cacheWrite5mPerM) },
-  ];
+  const siblings = model.provider === "anthropic" ? claudeModels : openaiModels;
+  const others = siblings.filter((entry) => entry.slug !== slug);
+  const priceRows = priceRowsFor(model);
 
   const structuredData = {
     "@context": "https://schema.org",
@@ -97,7 +138,7 @@ export default async function ModelPage({ params }: { params: Promise<Params> })
                 <thead>
                   <tr>
                     <th>Rate</th>
-                    <th>Official Anthropic</th>
+                    <th>{copy.officialCol}</th>
                     <th>Here, from (−60%)</th>
                     <th>Here, best (−70%)</th>
                   </tr>
@@ -116,13 +157,13 @@ export default async function ModelPage({ params }: { params: Promise<Params> })
               {priceRows.map((row) => <article className="model-pricing-card" key={row.rate}>
                 <h3>{row.rate}</h3>
                 <dl>
-                  <div><dt>Official Anthropic</dt><dd>{row.official}</dd></div>
+                  <div><dt>{copy.officialCol}</dt><dd>{row.official}</dd></div>
                   <div><dt>Here, from (−60%)</dt><dd>{row.from}</dd></div>
                   <div><dt>Here, best (−70%)</dt><dd>{row.best}</dd></div>
                 </dl>
               </article>)}
             </div>
-            <p className="docs-para">Every request is metered at the official rate first, then your progressive B2C discount (60% at the start, up to 70% as cumulative top-ups grow) is subtracted before it touches your prepaid balance. Context window: {model.context}. Max output: {model.maxOutput}.</p>
+            <p className="docs-para">Every request is metered at the official rate first, then your progressive B2C discount (60% at the start, up to 70% as cumulative top-ups grow) is subtracted before it touches your prepaid balance. Context window: {model.context}. Max output: {model.maxOutput}.{model.provider === "openai" ? ` Reasoning efforts: ${model.efforts.join(", ")}.` : ""}</p>
           </div>
 
           <div className="learn-section">
@@ -141,7 +182,7 @@ export default async function ModelPage({ params }: { params: Promise<Params> })
 
           <div className="learn-section">
             <h2 className="docs-h3">How to use {model.name}</h2>
-            <p className="docs-para">Create a free account, generate one key, and point any Anthropic-compatible tool at https://api.apitoken.sale with model ID <code>{model.id}</code>. New accounts include $10 of Claude usage at official API prices — enough to test the model before topping up.</p>
+            <p className="docs-para">{copy.howTo(model.id)}</p>
           </div>
 
           {model.faq.length > 0 && (
@@ -159,7 +200,7 @@ export default async function ModelPage({ params }: { params: Promise<Params> })
           )}
 
           <div className="learn-cta">
-            <p>Run {model.name} on the same Anthropic API at up to 70% off — instant key, prepaid balance, card or crypto.</p>
+            <p>{copy.cta(model.name)}</p>
             <div className="hero-cta page-actions">
               <Link className="btn btn-primary" href="/register">Get API key</Link>
               <Link className="btn btn-ghost" href="/docs">Read documentation</Link>
@@ -167,7 +208,7 @@ export default async function ModelPage({ params }: { params: Promise<Params> })
           </div>
 
           <div className="learn-section">
-            <h2 className="docs-h3">Other Claude models</h2>
+            <h2 className="docs-h3">{copy.othersHeading}</h2>
             <div className="learn-related">
               {others.map((entry) => (
                 <Link className="learn-related-card" href={modelPath(entry.slug)} key={entry.slug}>

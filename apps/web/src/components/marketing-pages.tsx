@@ -25,7 +25,7 @@ export function PlansContent() {
   return <><PageHero eyebrow="pr_eyebrow" title="plans_h" subtitle="plans_sub" /><section className="borderless"><div className="wrap plans-content"><CommercialDisclosure /><PricingOverview /></div></section></>;
 }
 
-const modelRows = [
+const claudeModelRows = [
   ["Claude Opus 4.8","claude-opus-4-8","1M","$5","$25","m_opus48"],
   ["Claude Opus 4.7","claude-opus-4-7","1M","$5","$25","m_opus47"],
   ["Claude Sonnet 5","claude-sonnet-5","1M","$2*","$10*","m_son46"],
@@ -33,19 +33,37 @@ const modelRows = [
   ["Claude Haiku 4.5","claude-haiku-4-5","200K","$1","$5","m_haiku"],
 ] as const;
 
-const modelPageCopy: Record<Language, { sonnet5Footnote: string }> = {
-  en: { sonnet5Footnote: "* Claude Sonnet 5 introductory official pricing is $2 / $10 per 1M through 2026-08-31 and returns to $3 / $15 on 2026-09-01. The engine already charges the current effective rate." },
-  ru: { sonnet5Footnote: "* Для Claude Sonnet 5 официальная вводная цена $2 / $10 за 1 млн действует до 2026-08-31 включительно; с 2026-09-01 возвращается ставка $3 / $15. Движок уже применяет актуальную ставку." },
+const gptModelRows = [
+  ["GPT-5.6 Sol","gpt-5.6-sol","272K","$5","$30","m_gpt56sol"],
+  ["GPT-5.6 Terra","gpt-5.6-terra","272K","$2.50","$15","m_gpt56terra"],
+  ["GPT-5.6 Luna","gpt-5.6-luna","272K","$1","$6","m_gpt56luna"],
+  ["GPT-5.5","gpt-5.5","272K","$5","$30","m_gpt55"],
+  ["GPT-5.4","gpt-5.4","272K","$2.50","$15","m_gpt54"],
+] as const;
+
+const modelPageCopy: Record<Language, { sonnet5Footnote: string; gptFootnote: string }> = {
+  en: {
+    sonnet5Footnote: "* Claude Sonnet 5 introductory official pricing is $2 / $10 per 1M through 2026-08-31 and returns to $3 / $15 on 2026-09-01. The engine already charges the current effective rate.",
+    gptFootnote: "GPT rows are official OpenAI standard rates. gpt-5.6 is a convenience alias of gpt-5.6-sol. Requests above 272K input tokens bill at OpenAI long-context rates (2× input, 1.5× output on the whole request).",
+  },
+  ru: {
+    sonnet5Footnote: "* Для Claude Sonnet 5 официальная вводная цена $2 / $10 за 1 млн действует до 2026-08-31 включительно; с 2026-09-01 возвращается ставка $3 / $15. Движок уже применяет актуальную ставку.",
+    gptFootnote: "Строки GPT — официальные стандартные ставки OpenAI. gpt-5.6 — удобный псевдоним gpt-5.6-sol. Запросы свыше 272K входных токенов тарифицируются по ставкам OpenAI для длинного контекста (×2 вход, ×1,5 выход за весь запрос).",
+  },
 };
+
+function ModelTable({ rows, footnote }: { rows: readonly (readonly [string, string, string, string, string, string])[]; footnote?: string }) {
+  return <><div className="table-scroll"><table className="mtable"><thead><tr><T k="th_model" as="th">Model</T><T k="th_ctx" as="th">Context</T><T k="th_in" as="th">Input / 1M</T><T k="th_out" as="th">Output / 1M</T><T k="th_best" as="th">Best for</T></tr></thead><tbody>{rows.map(([name,id,ctx,input,output,best], index) => <tr key={id}><td><Link className="mname" href={`/models/${id.replaceAll(".", "-")}`}>{name}</Link>{index === 0 && <T k="latest_badge" as="span" className="model-badge">Latest</T>}<br /><code>{id}</code></td><td><span className={`context-badge ${ctx === "1M" ? "context-full" : ""}`}>{ctx}</span></td><td className="mprice">{input}</td><td className="mprice">{output}</td><T k={best} as="td">Use case</T></tr>)}</tbody></table></div>{footnote && <p className="tier-footnote">{footnote}</p>}</>;
+}
 
 export function ModelsPage() {
   const { language } = useI18n();
-  return <MarketingFrame><PageHero eyebrow="nav_models" title="models_h" subtitle="models_sub" /><section className="borderless"><div className="wrap"><div className="model-rate-note"><div><T k="model_rate_tag" as="span" className="tag">Official list rates</T><T k="model_rate_h" as="h3">Official rates behind every spend calculation</T></div><T k="model_rate_p" as="p">These Anthropic list rates calculate official API spend. B2C accounts start 60% below that spend and can progress to 70% off; B2B rates are negotiated.</T></div><div className="table-scroll"><table className="mtable"><thead><tr><T k="th_model" as="th">Model</T><T k="th_ctx" as="th">Context</T><T k="th_in" as="th">Input / 1M</T><T k="th_out" as="th">Output / 1M</T><T k="th_best" as="th">Best for</T></tr></thead><tbody>{modelRows.map(([name,id,ctx,input,output,best], index) => <tr key={id}><td><Link className="mname" href={`/models/${id}`}>{name}</Link>{index === 0 && <T k="latest_badge" as="span" className="model-badge">Latest</T>}<br /><code>{id}</code></td><td><span className={`context-badge ${ctx === "1M" ? "context-full" : ""}`}>{ctx}</span></td><td className="mprice">{input}</td><td className="mprice">{output}</td><T k={best} as="td">Use case</T></tr>)}</tbody></table></div><p className="tier-footnote">{modelPageCopy[language].sonnet5Footnote}</p><PageActions /></div></section></MarketingFrame>;
+  return <MarketingFrame><PageHero eyebrow="nav_models" title="models_h" subtitle="models_sub" /><section className="borderless"><div className="wrap"><div className="model-rate-note"><div><T k="model_rate_tag" as="span" className="tag">Official list rates</T><T k="model_rate_h" as="h3">Official rates behind every spend calculation</T></div><T k="model_rate_p" as="p">These official Anthropic and OpenAI list rates calculate official API spend. B2C accounts start 60% below that spend and can progress to 70% off; B2B rates are negotiated.</T></div><T k="m_provider_claude" as="h3" className="docs-h3">Claude · Anthropic Messages API</T><ModelTable rows={claudeModelRows} footnote={modelPageCopy[language].sonnet5Footnote} /><T k="m_provider_gpt" as="h3" className="docs-h3">GPT · OpenAI-compatible API</T><ModelTable rows={gptModelRows} footnote={modelPageCopy[language].gptFootnote} /><PageActions /></div></section></MarketingFrame>;
 }
 
 const integrations = [
-  ["claude-code","Claude Code","int_cc_tag"], ["cursor","Cursor","int_cur_tag"], ["cline","Cline","int_cli_tag"],
-  ["continue","Continue","int_con_tag"], ["zed","Zed","int_zed_tag"], ["sdk","SDK (Python / TS)","int_sdk_tag"],
+  ["claude-code","Claude Code","int_cc_tag"], ["codex","Codex CLI","int_codex_tag"], ["cursor","Cursor","int_cur_tag"], ["cline","Cline","int_cli_tag"],
+  ["opencode","opencode","int_oc_tag"], ["continue","Continue","int_con_tag"], ["zed","Zed","int_zed_tag"], ["sdk","SDK (Python / TS)","int_sdk_tag"],
 ] as const;
 
 export function IntegrationsPage() {
@@ -56,8 +74,10 @@ export function IntegrationsPage() {
 
 const guideCode: Record<string, ReactNode> = {
   "claude-code": <><span className="c"># set once in your shell profile</span>{`\n`}<span className="k">export</span> ANTHROPIC_BASE_URL=https://api.apitoken.sale{`\n`}<span className="k">export</span> ANTHROPIC_API_KEY=sk-pool-•••{`\n\n`}<span className="c"># then just run</span>{`\n`}<span className="k">claude</span></>,
+  codex: <><span className="c"># ~/.codex/apitoken.config.toml</span>{`\n`}model = <span className="g">&quot;gpt-5.6-sol&quot;</span>{`\n`}model_provider = <span className="g">&quot;apitoken&quot;</span>{`\n\n`}[model_providers.apitoken]{`\n`}name = <span className="g">&quot;apiToken.sale&quot;</span>{`\n`}base_url = <span className="g">&quot;https://openai.api.apitoken.sale/v1&quot;</span>{`\n`}wire_api = <span className="g">&quot;responses&quot;</span>{`\n`}env_key = <span className="g">&quot;APITOKEN_API_KEY&quot;</span>{`\n\n`}<span className="c"># keep the key in your shell, then pick the profile</span>{`\n`}<span className="k">export</span> APITOKEN_API_KEY=sk-pool-•••{`\n`}<span className="k">codex</span> --profile apitoken</>,
   cursor: <><span className="c"># Cursor → Settings → Models → Anthropic API</span>{`\n`}Base URL : https://api.apitoken.sale{`\n`}API key  : sk-pool-•••{`\n`}Model    : claude-opus-4-8</>,
   cline: <><span className="c"># Cline → Settings</span>{`\n`}API Provider : Anthropic{`\n`}Base URL     : https://api.apitoken.sale{`\n`}API Key      : sk-pool-•••{`\n`}Model        : claude-opus-4-8</>,
+  opencode: <><span className="c">{"// opencode.json — provider block"}</span>{`\n`}{`{\n  "provider": {\n    "apitoken": {\n      "npm": "@ai-sdk/openai-compatible",\n      "name": "apiToken.sale",\n      "options": {\n        "baseURL": "https://openai.api.apitoken.sale/v1",\n        "apiKey": "{env:APITOKEN_API_KEY}"\n      },\n      "models": {\n        "gpt-5.6-sol": { "name": "GPT-5.6 Sol" }\n      }\n    }\n  }\n}`}</>,
   continue: <><span className="c">{"// ~/.continue/config.json"}</span>{`\n`}{`{\n  "models": [{\n    "title": "Claude via apiToken.sale",\n    "provider": "anthropic",\n    "apiBase": "https://api.apitoken.sale",\n    "apiKey": "sk-pool-•••",\n    "model": "claude-opus-4-8"\n  }]\n}`}</>,
   zed: <><span className="c">{"// Zed settings.json"}</span>{`\n`}{`{\n  "assistant": {\n    "default_model": {\n      "provider": "anthropic",\n      "model": "claude-opus-4-8"\n    }\n  },\n  "language_models": {\n    "anthropic": { "api_url": "https://api.apitoken.sale" }\n  }\n}`}</>,
   sdk: <><span className="c"># Python</span>{`\n`}<span className="k">from</span> anthropic <span className="k">import</span> Anthropic{`\n`}client = Anthropic({`\n`}    base_url=<span className="g">&quot;https://api.apitoken.sale&quot;</span>,{`\n`}    api_key=<span className="g">&quot;sk-pool-•••&quot;</span>,{`\n`}){`\n`}msg = client.messages.create({`\n`}    model=<span className="g">&quot;claude-opus-4-8&quot;</span>,{`\n`}    max_tokens=1024,{`\n`}    messages=[{`{"role":"user","content":"Hello"}`}],{`\n`})</>,

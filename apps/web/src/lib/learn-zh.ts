@@ -682,7 +682,8 @@ export const learnZh: Record<string, LocalizedContent> = {
     ],
     faq: [
       { q: "计费是预付还是后付？", a: "预付。你预先充入一份余额，请求从中扣减；没有月度账单。" },
-      { q: "我能看到 token 级用量吗？", a: "可以。控制台会把每次请求按输入、输出、缓存读/写和思考 token 分解显示。" },
+      { q: "一份余额真的能同时覆盖 Claude 和 GPT 吗？", a: "能。Claude 用量按 Anthropic 官方费率计量，GPT 用量按 OpenAI 官方费率计量，然后应用同一个折扣，两者都从这份预付余额中扣减。" },
+      { q: "我能看到 token 级用量吗？", a: "可以。控制台会按模型、提供商和 token 桶分解显示用量。" },
     ],
   },
   "claude-api-activation-time": {
@@ -917,28 +918,28 @@ export const learnZh: Record<string, LocalizedContent> = {
   "why-choose-apitoken": {
     title: "为什么选择 apiToken.sale",
     h1: "为什么选择 apiToken.sale",
-    description: "开发者选择 apiToken.sale 使用 Claude 的理由：同一套 Anthropic API 最高便宜 70%，无需 Anthropic 账户即时开通，支持银行卡或加密货币支付。",
-    keywords: ["为什么选 apitoken.sale", "最佳 claude api 服务商", "claude api 折扣服务商", "便宜的 claude api 网关", "claude api 无需 anthropic 账号"],
-    dek: "apiToken.sale 只为一件事而生：同一套 Claude API，更便宜、更好上手。以下是它在实践中的意义。",
+    description: "开发者选择 apiToken.sale 使用 Claude 和 GPT 的理由：官方 Anthropic 与 OpenAI 兼容 API 最高便宜 70%，无需提供商账户即时开通，支持银行卡或加密货币支付。",
+    keywords: ["为什么选 apitoken.sale", "最佳 claude api 服务商", "claude api 折扣服务商", "openai 兼容 api", "claude api 无需 anthropic 账号"],
+    dek: "apiToken.sale 只为一件事而生：同一套 Claude 和 GPT API，更便宜、更好上手。一个密钥、一份余额、两个官方 API 表面——以下是它在实践中的意义。",
     sections: [
       { h2: "一句话版本", blocks: [
         { type: "list", items: [
-          "一模一样的 Anthropic Messages API 和所有当前的 Claude 模型。",
-          "在永不过期的预付余额上，官方消费最高立省 70%。",
-          "即时、自助开通——无需 Anthropic 账户、无需排队、不限计费国家。",
+          "一模一样的 Anthropic Messages API 和所有当前的 Claude 模型，外加带 GPT-5 系列的 OpenAI 兼容 API（Responses 与 Chat Completions）。",
+          "在永不过期的预付余额上，官方消费最高立省 70%——同一条折扣轨道覆盖两家提供商。",
+          "即时、自助开通——无需 Anthropic 或 OpenAI 账户、无需排队、不限计费国家。",
           "支持银行卡或加密货币付款。",
           "每把密钥可选终身累计消费上限和到期日期，并在控制台查看 token 级用量明细。",
         ] },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
-      { h2: "同一余额上的折扣 Claude API token", blocks: [
-        { type: "p", text: "把它当作打折出售的 Claude API token：你一次性充值余额，享受官方 token 费率最高 70% 的折扣，并在所有模型和工具上使用。余额永不过期，也没有订阅。" },
+      { h2: "同一余额上的折扣 API token", blocks: [
+        { type: "p", text: "把它当作打折出售的 Claude 和 GPT API token：你一次性充值余额，享受官方 token 费率最高 70% 的折扣，并在两家提供商的所有模型和工具上使用。余额永不过期，也没有订阅。" },
       ] },
     ],
     faq: [
-      { q: "apiToken.sale 有什么不同？", a: "它是同一套 Claude API，最高便宜 70%，即时开通、无需 Anthropic 账户，支持银行卡或加密货币付款。" },
-      { q: "API 有任何改动吗？", a: "没有——协议、模型和响应都是标准的 Anthropic。只有价格和开通方式不同。" },
-      { q: "apiToken.sale 是什么？", a: "一个独立的 Claude API 网关，以折扣价预付出售官方 Anthropic API 的访问权——同样的模型，最高便宜 70%，无需 Anthropic 账户。" },
+      { q: "apiToken.sale 有什么不同？", a: "它是同一套 Claude 和 GPT API，最高便宜 70%，即时开通、无需提供商账户，支持银行卡或加密货币付款。" },
+      { q: "API 有任何改动吗？", a: "没有——协议、模型和响应都是标准的 Anthropic 与 OpenAI 兼容版本。只有价格和开通方式不同。" },
+      { q: "apiToken.sale 是什么？", a: "一个独立的多提供商 API 网关，以折扣价预付出售官方 Anthropic API 和 OpenAI 兼容 API 的访问权——同样的模型，最高便宜 70%，无需提供商账户。" },
     ],
   },
   "claude-api-gateway": {
@@ -1102,6 +1103,96 @@ export const learnZh: Record<string, LocalizedContent> = {
     faq: [
       { q: "如何把 Claude Code 指向 apitoken.sale？", a: "将 ANTHROPIC_BASE_URL 和 ANTHROPIC_API_KEY 设为你的 apitoken.sale 端点和密钥，然后运行 claude。" },
       { q: "Claude Code 的所有功能都能保留吗？", a: "能——只有计费方式改变，从订阅制变为折扣预付用量。" },
+    ],
+  },
+  "openai-api-quickstart": {
+    title: "OpenAI 兼容 API 快速上手——一个密钥调用 GPT-5.6",
+    h1: "OpenAI 兼容 API 快速上手：Responses 与 Chat Completions",
+    description: "通过 apiToken.sale 的 OpenAI 兼容 API 运行 GPT-5.6 模型——Responses 与 Chat Completions 支持 SSE 流式输出，一个 sk-pool 密钥与 Claude 共用余额，享 60–70% 折扣。",
+    keywords: ["openai 兼容 api", "gpt-5.6 api", "responses api", "chat completions 自定义 base url", "openai sdk base_url", "gpt api 密钥", "gpt-5.6 价格"],
+    dek: "你的 sk-pool 密钥不只是 Claude 专用。同一个密钥和预付余额还通过 OpenAI 兼容端点提供 GPT-5 系列——标准的 Responses 与 Chat Completions 调用、官方 OpenAI SDK、SSE 流式输出，以及同样的 60–70% 折扣。",
+    sections: [
+      { h2: "三步完成第一次 GPT 调用", blocks: [
+        { type: "steps", items: [
+          "创建免费账户并生成一个 API 密钥（形如 sk-pool-…）——该密钥同时已覆盖 Claude 模型。",
+          "将客户端指向 https://openai.api.apitoken.sale/v1，使用 Authorization: Bearer 认证——不要用 x-api-key，那是 Anthropic 表面的请求头。",
+          "用 GET /v1/models 确认已启用的模型，然后发送 Responses 请求。",
+        ] },
+        { type: "code", code: `curl https://openai.api.apitoken.sale/v1/responses \\\n  -H "Authorization: Bearer $APITOKEN_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "model": "gpt-5.6-sol",\n    "input": "Reply with exactly: connected"\n  }'` },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $10 的官方价格 API 用量——适用于 Claude 和 GPT 模型；邮箱密码账户不参与。" },
+      ] },
+      { h2: "使用官方 OpenAI SDK", blocks: [
+        { type: "p", text: "官方 SDK 无需改动——只需更换 base_url 和密钥。生产环境请把密钥放在服务端环境变量中。" },
+        { type: "code", code: `import os\nfrom openai import OpenAI\n\nclient = OpenAI(\n    api_key=os.environ["APITOKEN_API_KEY"],\n    base_url="https://openai.api.apitoken.sale/v1",\n)\n\nresponse = client.responses.create(\n    model="gpt-5.6-sol",\n    input="Reply with exactly: connected",\n)\nprint(response.output_text)` },
+        { type: "p", text: "如果客户端需要，Chat Completions 也在同一主机上提供——模型 ID 和密钥不变。" },
+        { type: "code", code: `completion = client.chat.completions.create(\n    model="gpt-5.6-sol",\n    messages=[{"role": "user", "content": "Hello"}],\n)\nprint(completion.choices[0].message.content)` },
+      ] },
+      { h2: "可用的 GPT 模型", blocks: [
+        { type: "p", text: "模型集在引擎中固定定价；GET /v1/models 始终是实时答案。目前涵盖三个 GPT-5.6 档位和两个上一代模型：" },
+        { type: "table", headers: ["模型 ID", "档位", "官方输入 / 输出（$ / 1M）", "缓存输入"], rows: [
+          ["gpt-5.6-sol（别名：gpt-5.6）", "旗舰", "$5 / $30", "$0.50"],
+          ["gpt-5.6-terra", "均衡", "$2.50 / $15", "$0.25"],
+          ["gpt-5.6-luna", "快速", "$1 / $6", "$0.10"],
+          ["gpt-5.5", "上一代旗舰", "$5 / $30", "$0.50"],
+          ["gpt-5.4", "上一代均衡", "$2.50 / $15", "$0.25"],
+        ] },
+        { type: "list", items: [
+          "推理强度可按请求调整——所有模型支持 none 到 xhigh，GPT-5.6 系列还支持 max。",
+          "所有模型支持文本与图片输入，并在 Responses 和 Chat Completions 上提供 SSE 流式输出。",
+          "超过 272K 输入 token 的请求按 OpenAI 长上下文费率计费：整个请求输入 2 倍、输出 1.5 倍。",
+          "你的 B2C 折扣与 Claude 用量完全一致——一个余额、一个档位，按官方费用 60–70% 折扣。",
+        ] },
+        { type: "link", text: "完整的模型规格与折后价格", href: "/models" },
+      ] },
+      { h2: "端点的覆盖范围", blocks: [
+        { type: "p", text: "这是独立的 OpenAI 兼容服务，并非 OpenAI Platform。它仅提供文本生成：模型列表、Responses 与 Chat Completions（含流式输出与图片输入）。音频、文件、realtime、assistants、batches 与 fine-tuning 均不可用。" },
+        { type: "note", text: "错误以 OpenAI 信封返回——{\"error\":{\"message\",\"type\",\"param\",\"code\"}}。401 表示密钥或认证头错误（应使用 Bearer 而非 x-api-key）；402 表示共享预付余额需要充值；404 表示模型 ID 未启用——请查询 GET /v1/models。" },
+      ] },
+    ],
+    faq: [
+      { q: "同一个密钥真的能同时用于 Claude 和 GPT 吗？", a: "能。一个 sk-pool 密钥和一个预付余额覆盖两个表面：api.apitoken.sale 上的 Anthropic Messages API 用于 Claude 模型，openai.api.apitoken.sale/v1 上的 OpenAI 兼容 API 用于 GPT 模型。折扣也共用。" },
+      { q: "OpenAI 兼容端点使用哪个认证头？", a: "Authorization: Bearer sk-pool-…。x-api-key 仅用于 Anthropic 表面——把它发给 OpenAI 端点会返回 401。" },
+      { q: "选 Responses 还是 Chat Completions？", a: "两者都支持 SSE 流式输出。新代码和官方 SDK 用 Responses；需要经典形状的客户端和框架用 Chat Completions。" },
+      { q: "GPT 用量如何计费？", a: "按官方 OpenAI 费率逐 token 计费——包括缓存输入和长上下文定价——然后在计入预付余额前减去你当前的 60–70% B2C 折扣，与 Claude 用量完全一致。" },
+    ],
+  },
+  "codex-cli-setup": {
+    title: "用 apiToken.sale 配置 Codex CLI——GPT-5.6 配置档",
+    h1: "在 apiToken.sale 上运行 Codex CLI",
+    description: "用指向 apiToken.sale OpenAI 兼容端点的命名 model_providers 配置档配置 Codex CLI——GPT-5.6 模型按预付余额最高 70% 折扣计费，无需 ChatGPT 账户。",
+    keywords: ["codex cli 配置", "codex config.toml", "codex 自定义模型提供商", "codex api 密钥", "codex cli gpt-5.6", "codex responses api", "codex cli 无需 chatgpt"],
+    dek: "只要给 Codex CLI 一个自定义模型提供商，它就能完全以 API 密钥认证运行。一个 TOML 配置档把它指向 apiToken.sale，预付余额覆盖每次会话——无需登录 ChatGPT，比官方费用最多便宜 70%。",
+    sections: [
+      { h2: "创建配置档", blocks: [
+        { type: "p", text: "将以下内容保存为 ~/.codex/apitoken.config.toml。命名配置档不会改动你的默认 Codex 配置和可能的 ChatGPT 登录——每次运行显式选择启用。" },
+        { type: "code", code: `# ~/.codex/apitoken.config.toml\nmodel = "gpt-5.6-sol"\nmodel_provider = "apitoken"\n\n[model_providers.apitoken]\nname = "apiToken.sale"\nbase_url = "https://openai.api.apitoken.sale/v1"\nwire_api = "responses"\nenv_key = "APITOKEN_API_KEY"` },
+        { type: "p", text: "env_key 指定 Codex 读取密钥的环境变量名——密钥留在 shell 中，绝不写入 TOML 文件。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $10 的官方价格 API 用量——适用于 Claude 和 GPT 模型；邮箱密码账户不参与。" },
+      ] },
+      { h2: "运行与验证", blocks: [
+        { type: "code", code: `export APITOKEN_API_KEY=sk-pool-•••\ncodex --profile apitoken` },
+        { type: "list", items: [
+          "始终显式传入 --profile apitoken，明确哪个提供商——以及哪个环境变量——在生效。",
+          "按项目修改 model 行切换模型：最重的任务用 gpt-5.6-sol，日常使用 gpt-5.6-terra，快速便宜的步骤用 gpt-5.6-luna。",
+          "用同一个 Bearer 密钥 GET https://openai.api.apitoken.sale/v1/models 可列出当前启用的模型集。",
+        ] },
+        { type: "note", text: "wire_api = \"responses\" 是本网关的正确值——它同时提供 Responses 和 Chat Completions，而 Codex 通过 Responses 流式输出。只有当特定客户端要求经典形状时才设为 \"chat\"。" },
+      ] },
+      { h2: "可能遇到的错误", blocks: [
+        { type: "list", items: [
+          "Missing APITOKEN_API_KEY——env_key 指定的变量没有导出到运行 codex 的 shell。请在同一个 shell（或 shell 配置文件）中导出。",
+          "stream error: unexpected status 401——密钥错误、已吊销，或 base_url 丢了 /v1 后缀。在 Codex 之外用 curl 复现以定位问题所在。",
+          "stream error: unexpected status 404——模型 ID 未启用；请查询 GET /v1/models 而不是凭空猜测。",
+          "402——共享预付余额需要充值；等待无法解决。",
+        ] },
+        { type: "link", text: "完整的 Codex 错误手册——config.toml、auth.json、流式错误", href: "/errors/codex" },
+      ] },
+    ],
+    faq: [
+      { q: "需要 ChatGPT 账户或订阅吗？", a: "不需要。配置好自定义 model_providers 配置档并把提供商的 API 密钥放入环境后，Codex 完全以 API 密钥认证运行——auth.json 里的 ChatGPT 登录与此无关。" },
+      { q: "这会改变我的默认 Codex 配置吗？", a: "不会。配置档在独立文件中，只有传入 --profile apitoken 时才生效。默认配置和登录保持不变。" },
+      { q: "折扣与 Claude 相同吗？", a: "相同。GPT-5.6 用量按官方 OpenAI token 费率计量，你当前的 B2C 折扣——60% 到 70%——作用于同一个预付余额。" },
+      { q: "wire_api 选 Responses 还是 Chat Completions？", a: "用 wire_api = \"responses\"——网关两者都提供，而 Codex 围绕 Responses 流构建。Chat Completions 形状是为需要的客户端准备的。" },
     ],
   },
   "vscode-ai-agents-one-prompt": {

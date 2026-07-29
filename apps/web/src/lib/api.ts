@@ -40,7 +40,7 @@ export interface LedgerEntry {
   amountUsd: string;
   keyMasked: string | null;
   reference: string | null;
-  // Claude-модель за списанием, когда движок помечает ею запрос (иначе выводим из reference).
+  // Модель за списанием (claude-* или gpt-*), когда движок помечает ею запрос (иначе выводим из reference).
   model?: string | null;
   balanceAfterNano: string | null;
   timestamp: string;
@@ -90,7 +90,8 @@ export interface AccountView {
 
 // Полная разбивка расхода по токенам и моделям (движок считает всё это на каждом запросе).
 // Токены — number (безопасно < 2^53); деньги — nano-строки (bigint-safe). officialNano — по
-// официальным ценам Anthropic (×1.0), chargedNano — списано с баланса после скидки.
+// официальным ставкам провайдера модели (Anthropic для claude-*, OpenAI для gpt-*),
+// chargedNano — списано с баланса после скидки. Провайдер строки выводится из префикса ID модели.
 export interface UsageBucket {
   tokens: number;
   officialNano: string;

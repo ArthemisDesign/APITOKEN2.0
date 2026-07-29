@@ -8,7 +8,7 @@
 // (SDK issue trackers, tool forums) or from the published API reference — never
 // paraphrased, because a paraphrase matches nothing.
 
-export type ErrorSurface = "anthropic" | "apitoken";
+export type ErrorSurface = "anthropic" | "apitoken" | "openai";
 
 export type ApiErrorEntry = {
   /** Stable slug. Used as the anchor and in /e/<code> — never rename one. */
@@ -16,6 +16,8 @@ export type ApiErrorEntry = {
   status: number;
   /** The `error.type` field in the response body. */
   type: string;
+  /** The `error.code` field — present on the OpenAI-compatible surface only. */
+  envelopeCode?: string;
   /** Verbatim `error.message`. Where the text embeds numbers, a real example is kept. */
   message: string;
   title: string;
@@ -24,6 +26,8 @@ export type ApiErrorEntry = {
   /**
    * "anthropic" — the string is identical on api.anthropic.com and here, so the entry
    * serves every Claude API user. "apitoken" — the string exists only on this gateway.
+   * "openai" — the string comes from the OpenAI-compatible surface at
+   * openai.api.apitoken.sale, whose envelope is {"error":{message,type,param,code}}.
    */
   surface: ErrorSurface;
   causes: string[];
@@ -497,6 +501,131 @@ output_config={"effort": "high"}`,
     ],
     alsoSearchedAs: ["anthropic api_error internal server error"],
   },
+  // ——— OpenAI-compatible surface (openai.api.apitoken.sale) ———
+  // Envelope: {"error":{"message","type","param","code"}}. Verbatim strings verified
+  // against the gateway (crates/forward/src/codex/api.rs) — do not paraphrase.
+  {
+    code: "openai-invalid-api-key",
+    status: 401,
+    type: "invalid_request_error",
+    envelopeCode: "invalid_api_key",
+    message: "Incorrect API key provided.",
+    title: "401 — Incorrect API key provided",
+    retryable: false,
+    surface: "openai",
+    causes: [
+      "The key was sent in the x-api-key header. The OpenAI-compatible endpoint authenticates with Authorization: Bearer — x-api-key is only for the Anthropic surface.",
+      "The Authorization header is missing the Bearer prefix, or the environment variable it was built from is empty in the shell that runs the process.",
+      "The key was revoked, or expired if it was issued with an expiry date.",
+      "The key is valid but the base URL points at the Anthropic surface (api.apitoken.sale) instead of openai.api.apitoken.sale/v1.",
+    ],
+    fixes: [
+      "Send the same sk-pool key as Authorization: Bearer sk-pool-… to https://openai.api.apitoken.sale/v1.",
+      "With the official OpenAI SDK, set api_key (or OPENAI_API_KEY) and base_url — the SDK adds the Bearer header for you.",
+      "Confirm the key is active in your dashboard and that the host is the OpenAI-compatible one.",
+    ],
+    snippet: {
+      label: "Reproduce outside your tool",
+      code: `curl https://openai.api.apitoken.sale/v1/models \\
+  -H "Authorization: Bearer $APITOKEN_API_KEY"`,
+    },
+    alsoSearchedAs: [
+      `{"error":{"message":"Incorrect API key provided.","type":"invalid_request_error","param":null,"code":"invalid_api_key"}}`,
+      "openai.AuthenticationError",
+      "codex stream error: unexpected status 401",
+    ],
+  },
+  {
+    code: "openai-insufficient-quota",
+    status: 402,
+    type: "insufficient_quota",
+    envelopeCode: "insufficient_quota",
+    message: "Your account balance is insufficient for this request.",
+    title: "402 — account balance is insufficient",
+    retryable: false,
+    surface: "openai",
+    causes: [
+      "The prepaid balance shared by both API surfaces is too low to cover the request's reservation.",
+      "A large max output or a long conversation raises the reservation above the remaining balance even when previous calls succeeded.",
+    ],
+    fixes: [
+      "Top up any whole-dollar amount and retry after the payment is credited. Backoff alone never resolves a 402.",
+      "Lower max output tokens or trim the conversation so the reservation fits the current balance.",
+    ],
+    alsoSearchedAs: [
+      "openai insufficient_quota",
+      "codex 402 insufficient balance",
+    ],
+  },
+  {
+    code: "openai-model-not-found",
+    status: 404,
+    type: "invalid_request_error",
+    envelopeCode: "model_not_found",
+    message: `The model "gpt-9.9" does not exist or you do not have access to it.`,
+    title: "404 — model does not exist",
+    retryable: false,
+    surface: "openai",
+    causes: [
+      "The model ID is misspelled or belongs to the other surface: Claude IDs (claude-*) only exist on the Anthropic endpoint, GPT IDs (gpt-*) only on the OpenAI-compatible endpoint.",
+      "The model is not in the currently enabled catalog — the served set changes as models are admitted.",
+    ],
+    fixes: [
+      "List the models your key can actually use: GET https://openai.api.apitoken.sale/v1/models with Authorization: Bearer.",
+      "Check the ID character for character — gpt-5.6-sol, not gpt5.6 or gpt-5.6.sol. gpt-5.6 is a valid alias of gpt-5.6-sol.",
+    ],
+    snippet: {
+      label: "Discover the enabled models",
+      code: `curl https://openai.api.apitoken.sale/v1/models \\
+  -H "Authorization: Bearer $APITOKEN_API_KEY"`,
+    },
+    alsoSearchedAs: [
+      "openai model_not_found",
+      "codex stream error: unexpected status 404",
+      "The model does not exist or you do not have access to it",
+    ],
+  },
+  {
+    code: "openai-rate-limit",
+    status: 429,
+    type: "rate_limit_error",
+    envelopeCode: "rate_limit_exceeded",
+    message: "Rate limit reached. Please retry shortly.",
+    title: "429 — rate limit reached",
+    retryable: true,
+    surface: "openai",
+    causes: [
+      "The account's concurrency or rate ceiling was exceeded — a parallel burst with no cap is the usual cause.",
+      "Retries piling on top of the requests that caused the first 429 enlarge the burst instead of draining it.",
+    ],
+    fixes: [
+      "Honor the Retry-After header — the response carries one.",
+      "Retry with capped exponential backoff and jitter, and cap concurrency at the call site.",
+    ],
+    alsoSearchedAs: [
+      "openai rate_limit_error",
+      "codex stream error: unexpected status 429",
+    ],
+  },
+  {
+    code: "openai-service-unavailable",
+    status: 503,
+    type: "server_error",
+    envelopeCode: "service_unavailable",
+    message: "The requested model is temporarily unavailable. Please retry.",
+    title: "503 — model temporarily unavailable",
+    retryable: true,
+    surface: "openai",
+    causes: [
+      "Upstream capacity for the requested model is temporarily saturated. 503 describes the service, not your request.",
+      "It clusters during incidents: the same request typically succeeds minutes later with no change.",
+    ],
+    fixes: [
+      "Retry with exponential backoff and jitter — the response carries a Retry-After hint.",
+      "For latency-sensitive paths, fall back to another enabled model tier, which is generally less contended.",
+    ],
+    alsoSearchedAs: ["openai service_unavailable server_error"],
+  },
 ];
 
 export const ERROR_CODES: string[] = API_ERRORS.map((entry) => entry.code);
@@ -543,6 +672,9 @@ export const errorsUi: Record<ErrorLocale, {
   originGateway: string;
   originShared: string;
   originSubscription: string;
+  originOpenAi: string;
+  openAiHeading: string;
+  openAiIntro: string;
   stuckHeading: string;
   stuckBody: string;
   ctaDocs: string;
@@ -551,14 +683,14 @@ export const errorsUi: Record<ErrorLocale, {
 }> = {
   en: {
     eyebrow: "Reference",
-    title: "Claude API Error Codes",
+    title: "API Error Codes — Claude & OpenAI-compatible",
     description:
-      "Every Claude API error explained: 401 invalid x-api-key, 429 rate_limit_error, 529 Overloaded, 413 request_too_large, and the 400s newer models introduced. Exact response text, cause and fix for each.",
+      "Every API error explained: 401 invalid x-api-key, 429 rate_limit_error, 529 Overloaded and 413 request_too_large on the Anthropic surface, plus 401 invalid_api_key, 402 insufficient_quota and 404 model_not_found on the OpenAI-compatible surface. Exact response text, cause and fix for each.",
     envelopeIntro:
-      "Every error is returned as JSON with the same envelope, so you can branch on error.type without parsing the message text:",
+      "Every error on the Anthropic surface is returned as JSON with the same envelope, so you can branch on error.type without parsing the message text:",
     envelopeNote:
       "Match on the HTTP status and error.type, never on the message string — messages are prose and can be reworded, while the type is a contract. In the official SDKs this means catching the typed exception classes rather than inspecting text. This page is written the other way round only because the message is what you have in front of you when something breaks.",
-    allCodes: "All codes",
+    allCodes: "Anthropic surface — all codes",
     colStatus: "Status",
     colType: "error.type",
     colMeaning: "Meaning",
@@ -572,6 +704,10 @@ export const errorsUi: Record<ErrorLocale, {
     originGateway: "This response is specific to this gateway — the Anthropic API has no equivalent.",
     originShared: "Identical on api.anthropic.com and on this gateway.",
     originSubscription: "Comes from Anthropic's own apps and subscription plans, not from this gateway.",
+    originOpenAi: "Returned by the OpenAI-compatible endpoint at openai.api.apitoken.sale.",
+    openAiHeading: "OpenAI-compatible surface — all codes",
+    openAiIntro:
+      "The OpenAI-compatible endpoint returns the OpenAI error envelope instead — branch on error.code and the HTTP status. These are the exact responses of openai.api.apitoken.sale:",
     stuckHeading: "Still stuck?",
     stuckBody:
       "If a request fails in a way this page does not cover, send us the endpoint, the masked key id, the HTTP status and the response body. Never send the full key.",
@@ -581,14 +717,14 @@ export const errorsUi: Record<ErrorLocale, {
   },
   ru: {
     eyebrow: "Справочник",
-    title: "Коды ошибок Claude API",
+    title: "Коды ошибок API — Claude и OpenAI-совместимый",
     description:
-      "Разбор всех ошибок Claude API: 401 invalid x-api-key, 429 rate_limit_error, 529 Overloaded, 413 request_too_large и новые 400 у свежих моделей. Точный текст ответа, причина и решение для каждой.",
+      "Разбор всех ошибок API: 401 invalid x-api-key, 429 rate_limit_error, 529 Overloaded и 413 request_too_large на Anthropic-поверхности, плюс 401 invalid_api_key, 402 insufficient_quota и 404 model_not_found на OpenAI-совместимой. Точный текст ответа, причина и решение для каждой.",
     envelopeIntro:
-      "Любая ошибка возвращается в JSON с одинаковым конвертом, поэтому ветвиться можно по error.type, не разбирая текст сообщения:",
+      "Любая ошибка на Anthropic-поверхности возвращается в JSON с одинаковым конвертом, поэтому ветвиться можно по error.type, не разбирая текст сообщения:",
     envelopeNote:
       "Сопоставляйте HTTP-статус и error.type, но никогда не текст сообщения: сообщение — это проза, его могут переформулировать, а тип — это контракт. В официальных SDK это означает ловить типизированные классы исключений, а не искать подстроки. Эта страница построена наоборот только потому, что в момент поломки перед глазами у вас именно сообщение.",
-    allCodes: "Все коды",
+    allCodes: "Anthropic-поверхность — все коды",
     colStatus: "Статус",
     colType: "error.type",
     colMeaning: "Что означает",
@@ -602,6 +738,10 @@ export const errorsUi: Record<ErrorLocale, {
     originGateway: "Такой ответ есть только у этого шлюза — в Anthropic API аналога нет.",
     originShared: "Идентично на api.anthropic.com и на этом шлюзе.",
     originSubscription: "Приходит из приложений и подписок Anthropic, а не от этого шлюза.",
+    originOpenAi: "Возвращается OpenAI-совместимым эндпоинтом openai.api.apitoken.sale.",
+    openAiHeading: "OpenAI-совместимая поверхность — все коды",
+    openAiIntro:
+      "OpenAI-совместимый эндпоинт возвращает конверт ошибок OpenAI — ветвитесь по error.code и HTTP-статусу. Это точные ответы openai.api.apitoken.sale:",
     stuckHeading: "Не помогло?",
     stuckBody:
       "Если запрос падает так, как здесь не описано, пришлите нам эндпоинт, маскированный идентификатор ключа, HTTP-статус и тело ответа. Полный ключ присылать не нужно никогда.",

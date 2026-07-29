@@ -685,7 +685,8 @@ export const learnKo: Record<string, LocalizedContent> = {
     ],
     faq: [
       { q: "과금은 선불인가요, 후불인가요?", a: "선불입니다. 잔액을 미리 충전하면 요청이 그것을 차감하며, 월별 청구서가 없습니다." },
-      { q: "토큰 단위 사용량을 볼 수 있나요?", a: "네. 대시보드는 모든 요청을 입력, 출력, 캐시 읽기/쓰기, 사고 토큰으로 세분화합니다." },
+      { q: "하나의 잔액으로 정말 Claude와 GPT를 모두 쓸 수 있나요?", a: "네. Claude 사용량은 Anthropic 공식 요금으로, GPT 사용량은 OpenAI 공식 요금으로 측정된 뒤 같은 할인이 적용되며, 둘 다 하나의 선불 잔액에서 차감됩니다." },
+      { q: "토큰 단위 사용량을 볼 수 있나요?", a: "네. 대시보드는 사용량을 모델, 프로바이더, 토큰 버킷별로 세분화합니다." },
     ],
   },
   "claude-api-activation-time": {
@@ -920,28 +921,28 @@ export const learnKo: Record<string, LocalizedContent> = {
   "why-choose-apitoken": {
     title: "왜 apiToken.sale을 선택하는가",
     h1: "왜 apiToken.sale을 선택하는가",
-    description: "개발자들이 Claude에 apiToken.sale을 고르는 이유: 동일한 Anthropic API를 최대 70% 저렴하게, Anthropic 계정 없이 즉시 접근, 카드 또는 암호화폐 결제.",
-    keywords: ["왜 apitoken.sale", "최고의 claude api 제공자", "claude api 할인 제공자", "저렴한 claude api 게이트웨이", "anthropic 계정 없이 claude api"],
-    dek: "apiToken.sale은 한 가지를 위해 만들어졌습니다. 동일한 Claude API를 더 싸고 더 쉽게 시작하는 것. 그것이 실제로 무엇을 뜻하는지 살펴봅니다.",
+    description: "개발자들이 Claude와 GPT에 apiToken.sale을 고르는 이유: 공식 Anthropic 및 OpenAI 호환 API를 최대 70% 저렴하게, 프로바이더 계정 없이 즉시 접근, 카드 또는 암호화폐 결제.",
+    keywords: ["왜 apitoken.sale", "최고의 claude api 제공자", "claude api 할인 제공자", "openai 호환 api", "anthropic 계정 없이 claude api"],
+    dek: "apiToken.sale은 한 가지를 위해 만들어졌습니다. 동일한 Claude와 GPT API를 더 싸고 더 쉽게 시작하는 것. 하나의 키, 하나의 잔액, 두 개의 공식 API 서피스 — 그것이 실제로 무엇을 뜻하는지 살펴봅니다.",
     sections: [
       { h2: "요약", blocks: [
         { type: "list", items: [
-          "정확히 동일한 Anthropic Messages API와 모든 현행 Claude 모델.",
-          "만료되지 않는 선불 잔액에 공식 소비 대비 최대 70% 할인.",
-          "즉시, 셀프 서비스 접근 — Anthropic 계정, 대기열, 청구 국가 없음.",
+          "정확히 동일한 Anthropic Messages API와 모든 현행 Claude 모델, 그리고 GPT-5 라인업을 갖춘 OpenAI 호환 API(Responses 및 Chat Completions).",
+          "만료되지 않는 선불 잔액에 공식 소비 대비 최대 70% 할인 — 하나의 할인 트랙이 두 프로바이더를 모두 커버합니다.",
+          "즉시, 셀프 서비스 접근 — Anthropic이나 OpenAI 계정, 대기열, 청구 국가 없음.",
           "은행 카드 또는 암호화폐로 결제.",
           "키마다 선택 가능한 평생 누적 지출 한도와 만료일, 그리고 대시보드의 토큰 단위 사용량.",
         ] },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
-      { h2: "하나의 잔액으로 쓰는 할인된 Claude API 토큰", blocks: [
-        { type: "p", text: "Claude API 토큰 할인 판매라고 생각하면 됩니다. 잔액을 한 번 선불로 충전하면 공식 토큰 요율에서 최대 70% 할인을 받고, 모든 모델과 도구에서 사용할 수 있습니다. 잔액은 만료되지 않고 구독도 없습니다." },
+      { h2: "하나의 잔액으로 쓰는 할인된 API 토큰", blocks: [
+        { type: "p", text: "Claude와 GPT API 토큰 할인 판매라고 생각하면 됩니다. 잔액을 한 번 선불로 충전하면 공식 토큰 요율에서 최대 70% 할인을 받고, 두 프로바이더의 모든 모델과 도구에서 사용할 수 있습니다. 잔액은 만료되지 않고 구독도 없습니다." },
       ] },
     ],
     faq: [
-      { q: "apiToken.sale은 무엇이 다른가요?", a: "동일한 Claude API를 최대 70% 저렴하게, 즉시 접근으로 Anthropic 계정 없이, 카드나 암호화폐로 결제할 수 있는 것입니다." },
-      { q: "API에 대해 바뀐 것이 있나요?", a: "아니요 — 프로토콜, 모델, 응답은 표준 Anthropic입니다. 가격과 온보딩만 다릅니다." },
-      { q: "apiToken.sale은 무엇인가요?", a: "공식 Anthropic API에 대한 할인된 선불 접근을 판매하는 독립 Claude API 게이트웨이입니다. 같은 모델을 최대 70% 저렴하게, Anthropic 계정 없이 이용할 수 있습니다." },
+      { q: "apiToken.sale은 무엇이 다른가요?", a: "동일한 Claude와 GPT API를 최대 70% 저렴하게, 프로바이더 계정 없이 즉시 접근으로, 카드나 암호화폐로 결제할 수 있는 것입니다." },
+      { q: "API에 대해 바뀐 것이 있나요?", a: "아니요 — 프로토콜, 모델, 응답은 표준 Anthropic 및 OpenAI 호환 버전입니다. 가격과 온보딩만 다릅니다." },
+      { q: "apiToken.sale은 무엇인가요?", a: "공식 Anthropic API와 OpenAI 호환 API에 대한 할인된 선불 접근을 판매하는 독립 멀티 프로바이더 API 게이트웨이입니다. 같은 모델을 최대 70% 저렴하게, 프로바이더 계정 없이 이용할 수 있습니다." },
     ],
   },
   "claude-api-gateway": {
@@ -1105,6 +1106,96 @@ export const learnKo: Record<string, LocalizedContent> = {
     faq: [
       { q: "Claude Code를 apitoken.sale로 어떻게 지정하나요?", a: "ANTHROPIC_BASE_URL과 ANTHROPIC_API_KEY를 apitoken.sale 엔드포인트와 키로 설정한 뒤 claude를 실행하세요." },
       { q: "Claude Code의 모든 기능을 유지하나요?", a: "네. 구독에서 할인된 선불 사용량으로 과금만 바뀔 뿐입니다." },
+    ],
+  },
+  "openai-api-quickstart": {
+    title: "OpenAI 호환 API 빠른 시작 — 하나의 키로 GPT-5.6",
+    h1: "OpenAI 호환 API 빠른 시작: Responses와 Chat Completions",
+    description: "apiToken.sale의 OpenAI 호환 API로 GPT-5.6 모델을 실행하세요 — SSE 스트리밍을 지원하는 Responses와 Chat Completions, Claude와 공유하는 하나의 sk-pool 키와 잔액, 60~70% 할인.",
+    keywords: ["openai 호환 api", "gpt-5.6 api", "responses api", "chat completions 커스텀 base url", "openai sdk base_url", "gpt api 키", "gpt-5.6 가격"],
+    dek: "sk-pool 키는 Claude 전용이 아닙니다. 같은 키와 선불 잔액으로 OpenAI 호환 엔드포인트를 통해 GPT-5 라인업을 사용할 수 있습니다 — 표준 Responses 및 Chat Completions 호출, 공식 OpenAI SDK, SSE 스트리밍, 동일한 60~70% 할인.",
+    sections: [
+      { h2: "첫 GPT 호출까지 세 단계", blocks: [
+        { type: "steps", items: [
+          "무료 계정을 만들고 API 키 하나를 발급받으세요(sk-pool-… 형태) — 이 키는 이미 Claude 모델도 커버합니다.",
+          "클라이언트를 https://openai.api.apitoken.sale/v1 로 지정하고 Authorization: Bearer로 인증하세요 — x-api-key가 아닙니다. 그 헤더는 Anthropic 서피스 전용입니다.",
+          "GET /v1/models로 활성화된 모델을 확인한 뒤 Responses 요청을 보내세요.",
+        ] },
+        { type: "code", code: `curl https://openai.api.apitoken.sale/v1/responses \\\n  -H "Authorization: Bearer $APITOKEN_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "model": "gpt-5.6-sol",\n    "input": "Reply with exactly: connected"\n  }'` },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 가격 기준 $10 상당의 API 사용량으로 시작합니다 — Claude와 GPT 모델 모두에 유효하며, 이메일/비밀번호 계정은 제외됩니다." },
+      ] },
+      { h2: "공식 OpenAI SDK 사용", blocks: [
+        { type: "p", text: "공식 SDK는 그대로 동작합니다 — base_url과 키만 바뀝니다. 프로덕션에서는 키를 서버 측 환경 변수에 보관하세요." },
+        { type: "code", code: `import os\nfrom openai import OpenAI\n\nclient = OpenAI(\n    api_key=os.environ["APITOKEN_API_KEY"],\n    base_url="https://openai.api.apitoken.sale/v1",\n)\n\nresponse = client.responses.create(\n    model="gpt-5.6-sol",\n    input="Reply with exactly: connected",\n)\nprint(response.output_text)` },
+        { type: "p", text: "클라이언트가 필요로 한다면 같은 호스트에서 Chat Completions도 제공됩니다 — 모델 ID와 키는 동일합니다." },
+        { type: "code", code: `completion = client.chat.completions.create(\n    model="gpt-5.6-sol",\n    messages=[{"role": "user", "content": "Hello"}],\n)\nprint(completion.choices[0].message.content)` },
+      ] },
+      { h2: "사용 가능한 GPT 모델", blocks: [
+        { type: "p", text: "제공되는 모델 세트는 엔진에 고정되어 가격이 매겨집니다. GET /v1/models가 항상 최신 답변입니다. 현재 세 가지 GPT-5.6 티어와 두 가지 이전 세대 모델을 제공합니다:" },
+        { type: "table", headers: ["모델 ID", "티어", "공식 입력 / 출력($ / 1M)", "캐시 입력"], rows: [
+          ["gpt-5.6-sol(별칭: gpt-5.6)", "플래그십", "$5 / $30", "$0.50"],
+          ["gpt-5.6-terra", "밸런스", "$2.50 / $15", "$0.25"],
+          ["gpt-5.6-luna", "고속", "$1 / $6", "$0.10"],
+          ["gpt-5.5", "이전 세대 플래그십", "$5 / $30", "$0.50"],
+          ["gpt-5.4", "이전 세대 밸런스", "$2.50 / $15", "$0.25"],
+        ] },
+        { type: "list", items: [
+          "추론 강도는 요청마다 조절할 수 있습니다 — 모든 모델에서 none부터 xhigh까지, GPT-5.6 라인업은 max까지 지원합니다.",
+          "모든 모델이 텍스트와 이미지 입력을 받고 Responses와 Chat Completions 모두에서 SSE로 스트리밍합니다.",
+          "272K 입력 토큰을 초과하는 요청은 OpenAI 장문 컨텍스트 요금으로 청구됩니다: 전체 요청에 입력 2배, 출력 1.5배.",
+          "B2C 할인은 Claude 사용량과 정확히 동일하게 적용됩니다 — 하나의 잔액, 하나의 티어, 공식 사용량 대비 60~70% 할인.",
+        ] },
+        { type: "link", text: "모델별 전체 사양과 할인 가격", href: "/models" },
+      ] },
+      { h2: "엔드포인트가 커버하는 범위", blocks: [
+        { type: "p", text: "이것은 OpenAI Platform이 아닌 독립적인 OpenAI 호환 서비스입니다. 의도적으로 텍스트 생성만 제공합니다: 모델 목록, Responses, Chat Completions(스트리밍 및 이미지 입력 포함). 오디오, 파일, realtime, assistants, batches, fine-tuning은 제공되지 않습니다." },
+        { type: "note", text: "오류는 OpenAI 봉투로 반환됩니다 — {\"error\":{\"message\",\"type\",\"param\",\"code\"}}. 401은 키 또는 인증 헤더 오류(Bearer 사용, x-api-key 아님), 402는 공유 선불 잔액 충전 필요, 404는 모델 ID 미활성화를 의미합니다 — GET /v1/models를 확인하세요." },
+      ] },
+    ],
+    faq: [
+      { q: "정말 같은 키로 Claude와 GPT를 모두 쓸 수 있나요?", a: "네. 하나의 sk-pool 키와 하나의 선불 잔액이 두 서피스를 모두 커버합니다: Claude 모델용 api.apitoken.sale의 Anthropic Messages API와 GPT 모델용 openai.api.apitoken.sale/v1의 OpenAI 호환 API. 할인도 공유됩니다." },
+      { q: "OpenAI 호환 엔드포인트는 어떤 인증 헤더를 쓰나요?", a: "Authorization: Bearer sk-pool-… 입니다. x-api-key 헤더는 Anthropic 서피스 전용입니다 — OpenAI 엔드포인트에내면 401이 반환됩니다." },
+      { q: "Responses와 Chat Completions 중 무엇을 쓰나요?", a: "둘 다 SSE 스트리밍으로 제공됩니다. 새 코드와 공식 SDK에는 Responses를, 클래식 형태를 기대하는 클라이언트와 프레임워크에는 Chat Completions를 사용하세요." },
+      { q: "GPT 사용량은 어떻게 과금되나요?", a: "캐시 입력과 장문 컨텍스트 가격을 포함한 공식 OpenAI 요금으로 토큰당 과금된 후, 현재 60~70% B2C 할인이 차감되어 선불 잔액에서 청구됩니다 — Claude 사용량과 정확히 같습니다." },
+    ],
+  },
+  "codex-cli-setup": {
+    title: "apiToken.sale로 Codex CLI 설정하기 — GPT-5.6 프로필",
+    h1: "apiToken.sale에서 Codex CLI 실행하기",
+    description: "apiToken.sale OpenAI 호환 엔드포인트를 가리키는 이름 있는 model_providers 프로필로 Codex CLI를 설정하세요 — ChatGPT 계정 없이 선불 잔액으로 최대 70% 할인된 GPT-5.6 모델.",
+    keywords: ["codex cli 설정", "codex config.toml", "codex 커스텀 모델 프로바이더", "codex api 키", "codex cli gpt-5.6", "codex responses api", "codex cli chatgpt 없이"],
+    dek: "커스텀 모델 프로바이더를 지정하면 Codex CLI는 완전히 API 키 인증으로 실행됩니다. 하나의 TOML 프로필이 apiToken.sale을 가리키고, 선불 잔액이 모든 세션을 커버합니다 — ChatGPT 로그인 없이 공식 사용량 대비 최대 70% 저렴합니다.",
+    sections: [
+      { h2: "프로필 만들기", blocks: [
+        { type: "p", text: "다음을 ~/.codex/apitoken.config.toml로 저장하세요. 이름 있는 프로필은 기본 Codex 설정과 기존 ChatGPT 로그인을 건드리지 않습니다 — 실행할 때 명시적으로 선택합니다." },
+        { type: "code", code: `# ~/.codex/apitoken.config.toml\nmodel = "gpt-5.6-sol"\nmodel_provider = "apitoken"\n\n[model_providers.apitoken]\nname = "apiToken.sale"\nbase_url = "https://openai.api.apitoken.sale/v1"\nwire_api = "responses"\nenv_key = "APITOKEN_API_KEY"` },
+        { type: "p", text: "env_key는 Codex가 키를 읽는 환경 변수의 이름을 지정합니다 — 시크릿은 셸에만 있고 TOML 파일에는 절대 들어가지 않습니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 가격 기준 $10 상당의 API 사용량으로 시작합니다 — Claude와 GPT 모델 모두에 유효하며, 이메일/비밀번호 계정은 제외됩니다." },
+      ] },
+      { h2: "실행과 확인", blocks: [
+        { type: "code", code: `export APITOKEN_API_KEY=sk-pool-•••\ncodex --profile apitoken` },
+        { type: "list", items: [
+          "항상 --profile apitoken을 명시적으로 전달해 어떤 프로바이더와 어떤 환경 변수가 활성인지 모호하지 않게 하세요.",
+          "model 줄을 바꿔 프로젝트별로 모델을 전환하세요: 가장 어려운 작업은 gpt-5.6-sol, 일상적인 작업은 gpt-5.6-terra, 빠르고 저렴한 단계는 gpt-5.6-luna.",
+          "같은 Bearer 키로 GET https://openai.api.apitoken.sale/v1/models를 호출하면 현재 활성화된 모델 세트를 볼 수 있습니다.",
+        ] },
+        { type: "note", text: "wire_api = \"responses\"가 이 게이트웨이에 맞는 값입니다 — Responses와 Chat Completions를 모두 제공하며 Codex는 Responses로 스트리밍합니다. 특정 클라이언트가 클래식 형태를 요구할 때만 \"chat\"으로 설정하세요." },
+      ] },
+      { h2: "만날 수 있는 오류", blocks: [
+        { type: "list", items: [
+          "Missing APITOKEN_API_KEY — env_key가 가리키는 변수가 codex를 실행하는 셸에 export되어 있지 않습니다. 같은 셸(또는 셸 프로필)에서 export하세요.",
+          "stream error: unexpected status 401 — 키가 잘못되었거나 폐기되었거나, base_url에서 /v1 접미사가 빠졌습니다. Codex 밖에서 curl로 재현해 어느 쪽이 깨졌는지 확인하세요.",
+          "stream error: unexpected status 404 — 모델 ID가 활성화되어 있지 않습니다. 추측하지 말고 GET /v1/models를 확인하세요.",
+          "402 — 공유 선불 잔액을 충전해야 합니다. 기다린다고 해결되지 않습니다.",
+        ] },
+        { type: "link", text: "Codex 오류 전체 플레이북 — config.toml, auth.json, 스트림 오류", href: "/errors/codex" },
+      ] },
+    ],
+    faq: [
+      { q: "ChatGPT 계정이나 구독이 필요한가요?", a: "아니요. 커스텀 model_providers 프로필과 환경에 있는 프로바이더 API 키만 있으면 Codex는 완전히 API 키 인증으로 실행됩니다 — auth.json의 ChatGPT 로그인은 무관합니다." },
+      { q: "기본 Codex 설정이 바뀌나요?", a: "아니요. 프로필은 자체 파일에 있으며 --profile apitoken을 전달할 때만 활성화됩니다. 기본 설정과 로그인은 그대로 유지됩니다." },
+      { q: "할인이 Claude와 동일한가요?", a: "네. GPT-5.6 사용량은 공식 OpenAI 토큰 요금으로 측정되고 현재 B2C 할인(60~70%)이 같은 선불 잔액에 적용됩니다." },
+      { q: "wire_api는 Responses와 Chat Completions 중 무엇으로 하나요?", a: "wire_api = \"responses\"를 사용하세요 — 게이트웨이는 둘 다 제공하며 Codex는 Responses 스트림을 중심으로 만들어졌습니다. Chat Completions 형태는 필요한 클라이언트를 위한 것입니다." },
     ],
   },
   "vscode-ai-agents-one-prompt": {

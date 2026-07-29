@@ -143,7 +143,7 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
         {
           title: "2. What the Service provides",
           paragraphs: [
-            "apiToken.sale provides prepaid access to supported third-party Claude models through a unified Anthropic-compatible API gateway, together with account, key, balance, usage-ledger, and support functions. We are an independent platform and are not affiliated with or endorsed by Anthropic, PBC.",
+            "apiToken.sale provides prepaid access to supported third-party Claude and GPT models through unified Anthropic-compatible and OpenAI-compatible API gateways, together with account, key, balance, usage-ledger, and support functions. We are an independent platform and are not affiliated with or endorsed by Anthropic, PBC or OpenAI.",
             "Model availability, limits, context windows, features, and upstream prices may change when upstream providers change their services. The current public model and pricing information is published on the Service.",
           ],
         },
@@ -347,7 +347,7 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
         {
           title: "2. Что предоставляет Сервис",
           paragraphs: [
-            "apiToken.sale предоставляет предоплаченный доступ к поддерживаемым сторонним моделям Claude через единый Anthropic-совместимый API-шлюз, а также функции аккаунта, ключей, баланса, журнала использования и поддержки. Мы являемся независимой платформой и не аффилированы с Anthropic, PBC и не одобрены этой компанией.",
+            "apiToken.sale предоставляет предоплаченный доступ к поддерживаемым сторонним моделям Claude и GPT через единые Anthropic-совместимый и OpenAI-совместимый API-шлюзы, а также функции аккаунта, ключей, баланса, журнала использования и поддержки. Мы являемся независимой платформой и не аффилированы с Anthropic, PBC или OpenAI и не одобрены этими компаниями.",
             "Доступность моделей, лимиты, контекстные окна, функции и официальные цены могут меняться вслед за поставщиками. Актуальные модели и цены публикуются в Сервисе.",
           ],
         },

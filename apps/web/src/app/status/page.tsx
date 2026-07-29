@@ -5,11 +5,11 @@ import { absoluteUrl, breadcrumbNode, createPageMetadata, SITE_ORIGIN } from "@/
 import { loadServiceStatus, type ServiceLevel } from "@/lib/service-status";
 
 const TITLE = "Service Status";
-const DESCRIPTION = "Live health of the apiToken.sale Claude API gateway and dashboard, plus current monitoring coverage for payments. Report an issue via Telegram support.";
+const DESCRIPTION = "Live health of the apiToken.sale Claude and GPT API gateways and dashboard, plus current monitoring coverage for payments. Report an issue via Telegram support.";
 
 export const metadata: Metadata = {
   ...createPageMetadata({ path: "/status", title: TITLE, description: DESCRIPTION }),
-  keywords: ["apitoken status", "claude api status", "apitoken.sale uptime", "claude api gateway status"],
+  keywords: ["apitoken status", "api status", "apitoken.sale uptime", "claude api status", "gpt api status"],
 };
 
 export const revalidate = 30;
@@ -81,7 +81,7 @@ export default async function StatusPage() {
                 </div>
               ))}
             </div>
-            <p className="docs-para" style={{ marginTop: 18 }}>The live check covers the commercial database and Claude gateway engine. It does not currently measure third-party checkout providers, the payment worker, historical uptime, or incident history; those components are labelled accordingly.</p>
+            <p className="docs-para" style={{ marginTop: 18 }}>The live check covers the commercial database and the gateway engine that serves both the Anthropic and OpenAI-compatible APIs. It does not currently measure third-party checkout providers, the payment worker, historical uptime, or incident history; those components are labelled accordingly.</p>
           </div>
           <div className="learn-section">
             <h2 className="docs-h3">Report an issue</h2>

@@ -16,9 +16,9 @@ const structuredData = {
     {
       "@type": "Service",
       "@id": `${plansUrl}#prepaid-access`,
-      name: "Claude API prepaid access",
-      serviceType: "Anthropic-compatible API access",
-      description: "Prepaid Claude API balance billed per token at official Anthropic rates minus a progressive B2C discount of 60% up to 70%. Top up any whole USD amount; balance never expires.",
+      name: "Claude & GPT API prepaid access",
+      serviceType: "Anthropic-compatible and OpenAI-compatible API access",
+      description: "Prepaid API balance billed per token at official Anthropic and OpenAI rates minus a progressive B2C discount of 60% up to 70%. Top up any whole USD amount; balance never expires.",
       url: plansUrl,
       provider: { "@id": `${SITE_ORIGIN}/#organization` },
       areaServed: "Worldwide",
@@ -27,7 +27,7 @@ const structuredData = {
         name: "B2C discount tiers",
         itemListElement: B2C_PRICING_MILESTONES.map((tier) => ({
           "@type": "Offer",
-          name: `${tier.label} — ${tier.discountPercent}% off official Claude API spend`,
+          name: `${tier.label} — ${tier.discountPercent}% off official API spend`,
           description: Number(tier.platformSpendUsd) === 0
             ? "Starter discount applied to every new account with no minimum."
             : `Unlocked after $${Number(tier.platformSpendUsd).toLocaleString("en-US")} in cumulative top-ups.`,

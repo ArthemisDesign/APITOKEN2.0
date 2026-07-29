@@ -4,11 +4,11 @@ import { JsonLd } from "@/components/json-ld";
 import { absoluteUrl, breadcrumbNode, createPageMetadata, SITE_NAME, SITE_ORIGIN } from "@/lib/seo";
 
 const TITLE = "Contact apiToken.sale";
-const DESCRIPTION = "Get in touch with apiToken.sale for Claude API access, billing, refunds, or integration help — support in English and Russian via Telegram and email.";
+const DESCRIPTION = "Get in touch with apiToken.sale for Claude and GPT API access, billing, refunds, or integration help — support in English and Russian via Telegram and email.";
 
 export const metadata: Metadata = {
   ...createPageMetadata({ path: "/contacts", title: TITLE, description: DESCRIPTION }),
-  keywords: ["apitoken contact", "claude api support contact", "apitoken.sale telegram", "claude api help"],
+  keywords: ["apitoken contact", "api support contact", "apitoken.sale telegram", "claude api help", "gpt api help"],
 };
 
 export default function ContactsPage() {
@@ -60,7 +60,7 @@ export default function ContactsPage() {
           </div>
           <div className="learn-section">
             <h2 className="docs-h3">About {SITE_NAME}</h2>
-            <p className="docs-para">{SITE_NAME} is an independent Claude API gateway. It serves the standard Anthropic Messages API and every supported Claude model from prepaid balance at a discount, with no Anthropic account required.</p>
+            <p className="docs-para">{SITE_NAME} is an independent multi-provider API gateway. It serves the standard Anthropic Messages API and an OpenAI-compatible API with every supported Claude and GPT model from one prepaid balance at a discount, with no Anthropic or OpenAI account required.</p>
             <div className="hero-cta page-actions">
               <Link className="btn btn-primary" href="/register">Get API key</Link>
               <Link className="btn btn-ghost" href="/about">About us</Link>

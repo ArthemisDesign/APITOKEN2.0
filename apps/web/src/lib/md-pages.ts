@@ -1,18 +1,42 @@
 // Machine-readable Markdown for the core sections, generated from the same data as the HTML pages.
 // Served by static route handlers under /md so crawlers and AI agents can consume every public
 // section as clean text. Add a model or tier to the data and its Markdown updates on the next build.
-import { claudeModels, claudeModelBySlug, formatUsd, DISCOUNT_BASE, DISCOUNT_MAX, modelPath, type ClaudeModel } from "./models";
+import {
+  ANTHROPIC_BASE_URL,
+  OPENAI_BASE_URL,
+  catalogModelBySlug,
+  claudeModels,
+  formatUsd,
+  DISCOUNT_BASE,
+  DISCOUNT_MAX,
+  modelPath,
+  openaiModels,
+  type CatalogModel,
+} from "./models";
 import { B2C_PRICING_MILESTONES, formatWholeUsd } from "./pricing-tiers";
 import { integrationGuideSeo, SITE_ORIGIN, type IntegrationGuideSlug } from "./seo";
 import { API_ERRORS } from "./api-errors";
 
-const API_BASE_URL = "https://api.apitoken.sale";
+const API_BASE_URL = ANTHROPIC_BASE_URL;
 
 // Per-tool setup facts an agent needs; titles/descriptions come from integrationGuideSeo.
 const INTEGRATION_CONFIG: Record<IntegrationGuideSlug, string> = {
   "claude-code": `export ANTHROPIC_BASE_URL=${API_BASE_URL}
 export ANTHROPIC_API_KEY=sk-pool-…
 # then run: claude`,
+  codex: `# ~/.codex/apitoken.config.toml
+model = "gpt-5.6-sol"
+model_provider = "apitoken"
+
+[model_providers.apitoken]
+name = "apiToken.sale"
+base_url = "${OPENAI_BASE_URL}"
+wire_api = "responses"
+env_key = "APITOKEN_API_KEY"
+
+# keep the key in your shell, then pick the profile:
+export APITOKEN_API_KEY=sk-pool-…
+codex --profile apitoken`,
   cursor: `Cursor Settings → Models → enable "Override Anthropic Base URL"
 Base URL: ${API_BASE_URL}
 API key:  sk-pool-…   ·   Model: any Claude model (e.g. claude-opus-4-8)`,
@@ -21,6 +45,22 @@ API Provider: Anthropic
 Base URL:     ${API_BASE_URL}
 API Key:      sk-pool-…
 Model:        claude-opus-4-8`,
+  opencode: `// opencode.json — provider block
+{
+  "provider": {
+    "apitoken": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "apiToken.sale",
+      "options": {
+        "baseURL": "${OPENAI_BASE_URL}",
+        "apiKey": "{env:APITOKEN_API_KEY}"
+      },
+      "models": {
+        "gpt-5.6-sol": { "name": "GPT-5.6 Sol" }
+      }
+    }
+  }
+}`,
   continue: `// ~/.continue/config.json
 {
   "models": [{
@@ -46,6 +86,18 @@ msg = client.messages.create(
 )`,
 };
 
+// Which API surface a guide targets, so the steps name the right base URL and model family.
+const INTEGRATION_SURFACE: Record<IntegrationGuideSlug, "anthropic" | "openai"> = {
+  "claude-code": "anthropic",
+  codex: "openai",
+  cursor: "anthropic",
+  cline: "anthropic",
+  opencode: "openai",
+  continue: "anthropic",
+  zed: "anthropic",
+  sdk: "anthropic",
+};
+
 function frontmatter(fields: Record<string, string>): string {
   const lines = Object.entries(fields).map(([key, value]) => `${key}: ${JSON.stringify(value)}`);
   return ["---", ...lines, "---", ""].join("\n");
@@ -57,40 +109,55 @@ function pct(discount: number): string {
 
 /** Canonical API reference: everything an agent needs to make a first call, from live model data. */
 export function buildApiReferenceMarkdown(): string {
-  const modelRows = claudeModels
+  const claudeRows = claudeModels
+    .map((m) => `| \`${m.id}\` | ${m.tier} | ${m.context} | ${m.maxOutput} | $${m.inputPerM} / $${m.outputPerM} |`)
+    .join("\n");
+  const gptRows = openaiModels
     .map((m) => `| \`${m.id}\` | ${m.tier} | ${m.context} | ${m.maxOutput} | $${m.inputPerM} / $${m.outputPerM} |`)
     .join("\n");
 
   return (
     frontmatter({
-      title: "apiToken.sale — Claude API reference",
+      title: "apiToken.sale — API reference (Claude & GPT)",
       description:
-        "Connect any Anthropic-compatible client to the Claude API through apiToken.sale: base URL, exact model IDs, headers, streaming, tool use, prompt caching and error codes.",
+        "Connect any Anthropic-compatible or OpenAI-compatible client to apiToken.sale: base URLs, exact model IDs, headers, streaming, tool use, prompt caching and error codes for both API surfaces.",
       url: `${SITE_ORIGIN}/docs`,
       language: "en",
     }) +
-    `# Claude API reference — apiToken.sale
+    `# API reference — apiToken.sale
 
-apiToken.sale is an independent gateway that serves the **standard Anthropic Messages API** and the full Claude line from prepaid balance at a 60–70% discount. Point any Anthropic-compatible client at the base URL below — request bodies, responses, streaming and error shapes are identical to Anthropic. Only the host and key change.
+apiToken.sale is an independent multi-provider gateway. It serves the **standard Anthropic Messages API** with the full Claude line and an **OpenAI-compatible API** (Responses and Chat Completions) with the GPT-5 line — from one prepaid balance and one \`sk-pool-…\` key at a 60–70% discount. Request bodies, responses, streaming and error shapes match the official APIs; only the host and key change.
 
-## Connection
+## Surface 1 — Anthropic Messages API (Claude models)
 
 - **Base URL:** \`${API_BASE_URL}\`
 - **Endpoint:** \`POST /v1/messages\`
 - **Headers:** \`x-api-key: sk-pool-…\` and \`anthropic-version: 2023-06-01\`
-- **Auth:** the \`sk-pool-…\` key is an API key sent in \`x-api-key\` (not a bearer token in Authorization).
+- **Auth:** on this surface the \`sk-pool-…\` key is sent in \`x-api-key\` (not as a bearer token).
 
-## Models
-
-Exact API model IDs (use the ID unchanged in the \`model\` field). Prices are official Anthropic $ per 1M tokens; you pay 60% less by default and up to 70% less at higher tiers.
+Exact Claude model IDs (use the ID unchanged in the \`model\` field). Prices are official Anthropic $ per 1M tokens; you pay 60% less by default and up to 70% less at higher tiers.
 
 | model ID | Tier | Context | Max output | Official in / out (per 1M) |
 |---|---|---|---|---|
-${modelRows}
+${claudeRows}
 
-Per-model detail pages: ${claudeModels.map((m) => `${SITE_ORIGIN}${modelPath(m.slug)}`).join(", ")}.
+## Surface 2 — OpenAI-compatible API (GPT models)
 
-## First request (curl)
+- **Base URL:** \`${OPENAI_BASE_URL}\`
+- **Endpoints:** \`POST /v1/responses\` and \`POST /v1/chat/completions\` (SSE streaming on both)
+- **Models:** \`GET /v1/models\` lists the currently enabled set
+- **Auth:** the same \`sk-pool-…\` key sent as \`Authorization: Bearer sk-pool-…\` (x-api-key is not accepted on this surface).
+- **Modalities:** text and image input, text output. Audio, files, realtime, assistants, batches and fine-tuning are not available — this is an independent OpenAI-compatible service, not the OpenAI Platform.
+
+Exact GPT model IDs. Prices are official OpenAI $ per 1M tokens with the same 60–70% discount; cached input bills at 10% of input. Requests above 272K input tokens bill at OpenAI long-context rates (2× input, 1.5× output on the whole request). \`gpt-5.6\` is an alias of \`gpt-5.6-sol\`.
+
+| model ID | Tier | Context | Max output | Official in / out (per 1M) |
+|---|---|---|---|---|
+${gptRows}
+
+Per-model detail pages: ${[...claudeModels, ...openaiModels].map((m) => `${SITE_ORIGIN}${modelPath(m.slug)}`).join(", ")}.
+
+## First request (curl, Claude)
 
 \`\`\`bash
 curl ${API_BASE_URL}/v1/messages \\
@@ -104,9 +171,21 @@ curl ${API_BASE_URL}/v1/messages \\
   }'
 \`\`\`
 
+## First request (curl, GPT)
+
+\`\`\`bash
+curl ${OPENAI_BASE_URL}/responses \\
+  -H "Authorization: Bearer $APITOKEN_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "gpt-5.6-sol",
+    "input": "Reply with exactly: connected"
+  }'
+\`\`\`
+
 ## Official SDKs
 
-Set the base URL and reuse the official Anthropic SDKs unchanged.
+Set the base URL and reuse the official SDKs unchanged.
 
 \`\`\`python
 from anthropic import Anthropic
@@ -129,11 +208,18 @@ const msg = await client.messages.create({
 });
 \`\`\`
 
+\`\`\`python
+from openai import OpenAI
+client = OpenAI(api_key="sk-pool-…", base_url="${OPENAI_BASE_URL}")
+response = client.responses.create(model="gpt-5.6-sol", input="Reply with exactly: connected")
+print(response.output_text)
+\`\`\`
+
 ## Coding tools
 
-Claude Code, Cursor, Cline, Continue, Zed, Aider, Roo Code, LangChain and LiteLLM all work by pointing the Anthropic base URL at \`${API_BASE_URL}\`. For Claude Code: \`export ANTHROPIC_BASE_URL=${API_BASE_URL}\` and \`export ANTHROPIC_API_KEY=sk-pool-…\`.
+Claude Code, Cursor, Cline, Continue, Zed, Aider, Roo Code, LangChain and LiteLLM all work by pointing the Anthropic base URL at \`${API_BASE_URL}\`. For Claude Code: \`export ANTHROPIC_BASE_URL=${API_BASE_URL}\` and \`export ANTHROPIC_API_KEY=sk-pool-…\`. Codex CLI and opencode run on the OpenAI-compatible surface — see the integration guides: ${SITE_ORIGIN}/md/int.
 
-## Capability parity
+## Capability parity (Anthropic surface)
 
 Everything the Anthropic Messages API supports passes through unchanged:
 
@@ -143,7 +229,7 @@ Everything the Anthropic Messages API supports passes through unchanged:
 - **Vision:** image content blocks are supported.
 - **System prompts, stop sequences, temperature, top_p, max_tokens:** identical semantics.
 
-## Error codes
+## Error codes (Anthropic surface)
 
 | Status | Meaning | What to do |
 |---|---|---|
@@ -152,13 +238,25 @@ Everything the Anthropic Messages API supports passes through unchanged:
 | 429 | Rate limit or temporary upstream capacity | Honor \`Retry-After\`; retry with capped exponential backoff and jitter. |
 | 5xx | Temporary gateway or upstream failure | Retry with bounded backoff; keep the request ID and avoid duplicate attempts. |
 
+## Error codes (OpenAI-compatible surface)
+
+Envelope: \`{"error":{"message","type","param","code"}}\`.
+
+| Status | code | Meaning | What to do |
+|---|---|---|---|
+| 401 | invalid_api_key | Key missing or wrong auth header | Send \`Authorization: Bearer sk-pool-…\` — not x-api-key. |
+| 402 | insufficient_quota | Prepaid balance too low | Top up any whole-dollar amount; retry after crediting. |
+| 404 | model_not_found | Unknown or disabled model ID | List enabled IDs with \`GET /v1/models\`; check for typos. |
+| 429 | rate_limit_error | Rate or concurrency limit | Honor \`Retry-After\`; back off with jitter, cap concurrency. |
+| 503 | server_error | Model temporarily unavailable | Retry with bounded backoff; fall back to another tier if urgent. |
+
 ## Pricing
 
-Prepaid, per-token at official Anthropic rates minus your tier discount (${pct(DISCOUNT_BASE)} base, up to ${pct(DISCOUNT_MAX)}). No fixed packages or subscriptions; balance never expires. Full tier table: ${SITE_ORIGIN}/md/plans.
+Prepaid, per-token at official provider rates minus your tier discount (${pct(DISCOUNT_BASE)} base, up to ${pct(DISCOUNT_MAX)}), shared by both surfaces. No fixed packages or subscriptions; balance never expires. Full tier table: ${SITE_ORIGIN}/md/plans.
 
 ## Get started
 
-- Create a key: ${SITE_ORIGIN}/register (Google or GitHub sign-up gets $10 of Claude usage at official prices)
+- Create a key: ${SITE_ORIGIN}/register (Google or GitHub sign-up gets $10 of API usage at official prices)
 - All guides (Markdown): ${SITE_ORIGIN}/docs/learn
 - Machine-readable index: ${SITE_ORIGIN}/md
 - Support: Telegram and apitokensale@gmail.com (English, Russian)
@@ -168,40 +266,51 @@ Prepaid, per-token at official Anthropic rates minus your tier discount (${pct(D
 
 /** Model catalog with exact IDs, context, limits and discounted price ranges. */
 export function buildModelsMarkdown(): string {
-  const sections = claudeModels
-    .map((m) => {
-      const inFrom = formatUsd(m.inputPerM * (1 - DISCOUNT_BASE));
-      const inBest = formatUsd(m.inputPerM * (1 - DISCOUNT_MAX));
-      const outFrom = formatUsd(m.outputPerM * (1 - DISCOUNT_BASE));
-      const outBest = formatUsd(m.outputPerM * (1 - DISCOUNT_MAX));
-      return [
-        `## ${m.name}`,
-        "",
-        `- **Model ID:** \`${m.id}\``,
-        `- **Tier:** ${m.tier}`,
-        `- **Context window:** ${m.context}`,
-        `- **Max output:** ${m.maxOutput}`,
-        `- **Official price (per 1M):** $${m.inputPerM} input / $${m.outputPerM} output`,
-        `- **Your price (per 1M):** input ${inFrom} → ${inBest}, output ${outFrom} → ${outBest} (${pct(DISCOUNT_BASE)}–${pct(DISCOUNT_MAX)} off)`,
-        `- **Best for:** ${m.bestFor.join(" ")}`,
-        `- **Detail page:** ${SITE_ORIGIN}${modelPath(m.slug)}`,
-      ].join("\n");
-    })
-    .join("\n\n");
+  const sectionFor = (m: CatalogModel): string => {
+    const inFrom = formatUsd(m.inputPerM * (1 - DISCOUNT_BASE));
+    const inBest = formatUsd(m.inputPerM * (1 - DISCOUNT_MAX));
+    const outFrom = formatUsd(m.outputPerM * (1 - DISCOUNT_BASE));
+    const outBest = formatUsd(m.outputPerM * (1 - DISCOUNT_MAX));
+    const surface = m.provider === "anthropic"
+      ? `- **Surface:** Anthropic Messages API at \`${API_BASE_URL}\``
+      : `- **Surface:** OpenAI-compatible API at \`${OPENAI_BASE_URL}\` (Authorization: Bearer)`;
+    const cached = m.provider === "openai"
+      ? `\n- **Cached input (per 1M):** $${m.cachedInputPerM} · **Cache write:** $${m.cacheWritePerM}`
+      : "";
+    return [
+      `## ${m.name}`,
+      "",
+      `- **Model ID:** \`${m.id}\``,
+      `- **Tier:** ${m.tier}`,
+      `- **Context window:** ${m.context}`,
+      `- **Max output:** ${m.maxOutput}`,
+      `- **Official price (per 1M):** $${m.inputPerM} input / $${m.outputPerM} output${cached}`,
+      `- **Your price (per 1M):** input ${inFrom} → ${inBest}, output ${outFrom} → ${outBest} (${pct(DISCOUNT_BASE)}–${pct(DISCOUNT_MAX)} off)`,
+      surface,
+      `- **Best for:** ${m.bestFor.join(" ")}`,
+      `- **Detail page:** ${SITE_ORIGIN}${modelPath(m.slug)}`,
+    ].join("\n");
+  };
 
   return (
     frontmatter({
-      title: "apiToken.sale — Claude model catalog",
+      title: "apiToken.sale — model catalog (Claude & GPT)",
       description:
-        "Every Claude model available through apiToken.sale with exact API IDs, context windows, max output and discounted per-token pricing.",
+        "Every Claude and GPT model available through apiToken.sale with exact API IDs, context windows, max output and discounted per-token pricing.",
       url: `${SITE_ORIGIN}/models`,
       language: "en",
     }) +
-    `# Claude model catalog
+    `# Model catalog
 
-All models run on one \`sk-pool-…\` key and one prepaid balance via \`${API_BASE_URL}\`. Use the model ID unchanged in the \`model\` field.
+All models run on one \`sk-pool-…\` key and one prepaid balance — Claude models via \`${API_BASE_URL}\`, GPT models via \`${OPENAI_BASE_URL}\`. Use the model ID unchanged in the \`model\` field.
 
-${sections}
+# Claude models (Anthropic Messages API)
+
+${claudeModels.map(sectionFor).join("\n\n")}
+
+# GPT models (OpenAI-compatible API)
+
+${openaiModels.map(sectionFor).join("\n\n")}
 
 ---
 API reference: ${SITE_ORIGIN}/md/docs · Pricing tiers: ${SITE_ORIGIN}/md/plans
@@ -221,15 +330,15 @@ export function buildPlansMarkdown(): string {
 
   return (
     frontmatter({
-      title: "apiToken.sale — Claude API pricing tiers",
+      title: "apiToken.sale — API pricing tiers (Claude & GPT)",
       description:
-        "apiToken.sale progressive discount tiers: 60% off by default, up to 70% off with cumulative top-ups. Prepaid per-token billing at official Anthropic rates.",
+        "apiToken.sale progressive discount tiers: 60% off by default, up to 70% off with cumulative top-ups. Prepaid per-token billing at official Anthropic and OpenAI rates.",
       url: `${SITE_ORIGIN}/plans`,
       language: "en",
     }) +
     `# Pricing & discount tiers
 
-Top up any whole-dollar amount. Each request is billed at the official Anthropic token price, then your active tier discount is applied and deducted from balance. No fixed packages, no subscriptions, balance never expires.
+Top up any whole-dollar amount. Each request is billed at the official provider token price, then your active tier discount is applied and deducted from balance. One balance and one discount track cover Claude and GPT models alike. No fixed packages, no subscriptions, balance never expires.
 
 | Tier | Discount (value multiplier) | Top up to reach | Keep the tier | Approx. official usage |
 |---|---|---|---|---|
@@ -246,11 +355,28 @@ API reference: ${SITE_ORIGIN}/md/docs · Models: ${SITE_ORIGIN}/md/models
 }
 
 /** One model's full spec (exact ID, context, limits, pricing, best-for, notes, FAQ). */
-export function buildModelMarkdown(model: ClaudeModel): string {
+export function buildModelMarkdown(model: CatalogModel): string {
   const inFrom = formatUsd(model.inputPerM * (1 - DISCOUNT_BASE));
   const inBest = formatUsd(model.inputPerM * (1 - DISCOUNT_MAX));
   const outFrom = formatUsd(model.outputPerM * (1 - DISCOUNT_BASE));
   const outBest = formatUsd(model.outputPerM * (1 - DISCOUNT_MAX));
+  const surfaceLine = model.provider === "anthropic"
+    ? `- **Base URL:** \`${API_BASE_URL}\` · **Endpoint:** \`POST /v1/messages\``
+    : `- **Base URL:** \`${OPENAI_BASE_URL}\` · **Endpoints:** \`POST /v1/responses\`, \`POST /v1/chat/completions\` (Authorization: Bearer)`;
+  const callSnippet = model.provider === "anthropic"
+    ? `\`\`\`bash
+curl ${API_BASE_URL}/v1/messages \\
+  -H "x-api-key: $APITOKEN_API_KEY" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -H "content-type: application/json" \\
+  -d '{"model": "${model.id}", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}]}'
+\`\`\``
+    : `\`\`\`bash
+curl ${OPENAI_BASE_URL}/responses \\
+  -H "Authorization: Bearer $APITOKEN_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model": "${model.id}", "input": "Reply with exactly: connected"}'
+\`\`\``;
   return (
     frontmatter({
       title: `${model.name} — API access`,
@@ -268,7 +394,7 @@ ${model.dek}
 - **Max output:** ${model.maxOutput}
 - **Official price (per 1M):** $${model.inputPerM} input / $${model.outputPerM} output
 - **Your price (per 1M):** input ${inFrom} → ${inBest}, output ${outFrom} → ${outBest} (${pct(DISCOUNT_BASE)}–${pct(DISCOUNT_MAX)} off)
-- **Base URL:** \`${API_BASE_URL}\` · **Endpoint:** \`POST /v1/messages\`
+${surfaceLine}
 
 ## Best for
 
@@ -277,13 +403,7 @@ ${model.bestFor.map((b) => `- ${b}`).join("\n")}
 ${model.notes.length ? `## Notes\n\n${model.notes.map((n) => `- ${n}`).join("\n")}\n` : ""}
 ## Call it
 
-\`\`\`bash
-curl ${API_BASE_URL}/v1/messages \\
-  -H "x-api-key: $APITOKEN_API_KEY" \\
-  -H "anthropic-version: 2023-06-01" \\
-  -H "content-type: application/json" \\
-  -d '{"model": "${model.id}", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}]}'
-\`\`\`
+${callSnippet}
 
 ${model.faq.length ? `## FAQ\n\n${model.faq.map((f) => `**${f.q}**\n\n${f.a}`).join("\n\n")}\n` : ""}
 ---
@@ -293,7 +413,7 @@ API reference: ${SITE_ORIGIN}/md/docs · All models: ${SITE_ORIGIN}/md/models
 }
 
 export function buildModelMarkdownBySlug(slug: string): string | null {
-  const model = claudeModelBySlug[slug];
+  const model = catalogModelBySlug[slug];
   return model ? buildModelMarkdown(model) : null;
 }
 
@@ -305,6 +425,18 @@ export function buildIntegrationMarkdown(slug: string): string | null {
   const key = slug as IntegrationGuideSlug;
   const seo = integrationGuideSeo[key];
   const name = seo.title.replace(/^Connect /, "").replace(/ to (apiToken\.sale|the Claude API)$/, "");
+  const surface = INTEGRATION_SURFACE[key];
+  const steps = surface === "anthropic"
+    ? [
+        `1. Create a key at ${SITE_ORIGIN}/register — it looks like \`sk-pool-…\` and works across every Claude and GPT model.`,
+        `2. Point ${name} at the gateway: set the Anthropic base URL to \`${API_BASE_URL}\` and paste your key.`,
+        `3. Pick a Claude model (e.g. \`claude-opus-4-8\`) and start — billing is per token at your discount.`,
+      ]
+    : [
+        `1. Create a key at ${SITE_ORIGIN}/register — it looks like \`sk-pool-…\` and works across every Claude and GPT model.`,
+        `2. Point ${name} at the OpenAI-compatible surface: base URL \`${OPENAI_BASE_URL}\`, key sent as \`Authorization: Bearer\`.`,
+        `3. Pick a GPT model (e.g. \`gpt-5.6-sol\`) and start — billing is per token at your discount, \`GET /v1/models\` lists the enabled set.`,
+      ];
   return (
     frontmatter({
       title: seo.title,
@@ -318,9 +450,7 @@ ${seo.description}
 
 ## Steps
 
-1. Create a key at ${SITE_ORIGIN}/register — it looks like \`sk-pool-…\` and works across every Claude model.
-2. Point ${name} at the gateway: set the Anthropic base URL to \`${API_BASE_URL}\` and paste your key.
-3. Pick a Claude model (e.g. \`claude-opus-4-8\`) and start — billing is per token at your discount.
+${steps.join("\n")}
 
 ## Configuration
 
@@ -341,14 +471,14 @@ export function buildIntegrationsIndexMarkdown(): string {
     .join("\n");
   return (
     frontmatter({
-      title: "apiToken.sale — Claude API integrations",
-      description: "Connect coding tools and SDKs to the Claude API through apiToken.sale by pointing the Anthropic base URL at api.apitoken.sale.",
+      title: "apiToken.sale — API integrations",
+      description: "Connect coding tools and SDKs to apiToken.sale via the Anthropic-compatible or OpenAI-compatible endpoint — one key and balance for Claude and GPT models.",
       url: `${SITE_ORIGIN}/integrations`,
       language: "en",
     }) +
-    `# Claude API integrations
+    `# API integrations
 
-Every tool connects the same way: point its Anthropic base URL at \`${API_BASE_URL}\` and use your \`sk-pool-…\` key.
+Anthropic-compatible tools connect by pointing their Anthropic base URL at \`${API_BASE_URL}\`; OpenAI-compatible tools use \`${OPENAI_BASE_URL}\` with \`Authorization: Bearer\`. Both draw on the same \`sk-pool-…\` key and prepaid balance.
 
 ${rows}
 
@@ -366,21 +496,25 @@ API reference: ${SITE_ORIGIN}/md/docs
  * find the exact string it was given.
  */
 export function buildErrorsMarkdown(): string {
-  const sections = API_ERRORS.map((entry) => {
+  const sectionFor = (entry: (typeof API_ERRORS)[number]) => {
     const head = entry.status === 0 ? entry.title : `${entry.status} ${entry.type} — ${entry.title}`;
     const body =
       entry.status === 0
         ? entry.message
-        : `HTTP ${entry.status}\n{"type":"error","error":{"type":"${entry.type}","message":${JSON.stringify(entry.message)}}}`;
+        : entry.surface === "openai"
+          ? `HTTP ${entry.status}\n{"error":{"message":${JSON.stringify(entry.message)},"type":"${entry.type}","param":null,"code":"${entry.envelopeCode ?? entry.type}"}}`
+          : `HTTP ${entry.status}\n{"type":"error","error":{"type":"${entry.type}","message":${JSON.stringify(entry.message)}}}`;
     const variants = entry.alsoSearchedAs?.length
       ? `\n**Other forms of the same failure**\n\n${entry.alsoSearchedAs.map((v) => `- \`${v}\``).join("\n")}\n`
       : "";
     const origin =
-      entry.surface === "apitoken"
-        ? "Specific to apiToken.sale — the Anthropic API has no equivalent response."
-        : entry.status === 0
-          ? "Comes from Anthropic's own apps and subscription plans, not from an API call."
-          : "Identical on api.anthropic.com and on apiToken.sale.";
+      entry.surface === "openai"
+        ? "Returned by the OpenAI-compatible endpoint at openai.api.apitoken.sale."
+        : entry.surface === "apitoken"
+          ? "Specific to apiToken.sale — the Anthropic API has no equivalent response."
+          : entry.status === 0
+            ? "Comes from Anthropic's own apps and subscription plans, not from an API call."
+            : "Identical on api.anthropic.com and on apiToken.sale.";
 
     return `## ${head}
 
@@ -397,17 +531,22 @@ ${entry.causes.map((c) => `- ${c}`).join("\n")}
 ${entry.fixes.map((f) => `- ${f}`).join("\n")}
 ${entry.snippet ? `\n**${entry.snippet.label}**\n\n\`\`\`\n${entry.snippet.code}\n\`\`\`\n` : ""}${variants}
 Short link: ${SITE_ORIGIN}/e/${entry.code} · ${origin}`;
-  }).join("\n\n");
+  };
+
+  const anthropicEntries = API_ERRORS.filter((entry) => entry.surface !== "openai");
+  const openAiEntries = API_ERRORS.filter((entry) => entry.surface === "openai");
 
   return (
     frontmatter({
-      title: "Claude API error codes — cause and fix for each",
+      title: "API error codes (Claude & OpenAI-compatible) — cause and fix for each",
       description:
-        "Every Claude API error with its exact response text: 401 invalid x-api-key, 429 rate_limit_error, 529 Overloaded, 413 request_too_large, and the 400s newer models introduced.",
+        "Every API error with its exact response text: 401 invalid x-api-key, 429 rate_limit_error, 529 Overloaded, 413 request_too_large on the Anthropic surface, and 401 invalid_api_key, 402 insufficient_quota, 404 model_not_found on the OpenAI-compatible surface.",
       url: `${SITE_ORIGIN}/docs/errors`,
       language: "en",
     }) +
-    `# Claude API error codes
+    `# API error codes
+
+## Anthropic surface (api.apitoken.sale)
 
 Every error is returned with the same envelope, so branch on \`error.type\` and the HTTP
 status rather than on the message text:
@@ -422,14 +561,29 @@ front of you when something breaks.
 
 | Status | error.type | Meaning | Retry? |
 |---|---|---|---|
-${API_ERRORS.map((e) => `| ${e.status === 0 ? "—" : e.status} | \`${e.type}\` | ${e.title.replace(/^\d+\s+—\s+/, "")} | ${e.retryable ? "Yes, with backoff" : "No — fix the request"} |`).join("\n")}
+${anthropicEntries.map((e) => `| ${e.status === 0 ? "—" : e.status} | \`${e.type}\` | ${e.title.replace(/^\d+\s+—\s+/, "")} | ${e.retryable ? "Yes, with backoff" : "No — fix the request"} |`).join("\n")}
 
-${sections}
+${anthropicEntries.map(sectionFor).join("\n\n")}
+
+## OpenAI-compatible surface (openai.api.apitoken.sale)
+
+This surface returns the OpenAI error envelope — branch on \`error.code\` and the HTTP status:
+
+\`\`\`
+{"error":{"message":"Incorrect API key provided.","type":"invalid_request_error","param":null,"code":"invalid_api_key"}}
+\`\`\`
+
+| Status | error.type | error.code | Meaning | Retry? |
+|---|---|---|---|---|
+${openAiEntries.map((e) => `| ${e.status} | \`${e.type}\` | \`${e.envelopeCode ?? e.type}\` | ${e.title.replace(/^\d+\s+—\s+/, "")} | ${e.retryable ? "Yes, with backoff" : "No — fix the request"} |`).join("\n")}
+
+${openAiEntries.map(sectionFor).join("\n\n")}
 
 ---
 
-apiToken.sale serves the standard Anthropic Messages API, so every non-gateway error here
-behaves exactly as it does against api.anthropic.com. Base URL: ${API_BASE_URL}
+apiToken.sale serves the standard Anthropic Messages API and an OpenAI-compatible API, so
+non-gateway errors here behave exactly as they do against the official endpoints.
+Anthropic base URL: ${API_BASE_URL} · OpenAI-compatible base URL: ${OPENAI_BASE_URL}
 `
   );
 }
@@ -451,7 +605,7 @@ Every public section of apiToken.sale is available as clean Markdown. Private da
 - API reference (connection, models, streaming, tools, errors): ${SITE_ORIGIN}/md/docs
 - Error reference (exact response text, cause and fix for every error): ${SITE_ORIGIN}/md/docs/errors
 - Model catalog (exact IDs, context, pricing): ${SITE_ORIGIN}/md/models
-- Per-model spec: append the model ID to ${SITE_ORIGIN}/md/models/<id> (${claudeModels.map((m) => m.id).join(", ")})
+- Per-model spec: append the model slug to ${SITE_ORIGIN}/md/models/<slug> (${[...claudeModels, ...openaiModels].map((m) => m.slug).join(", ")})
 - Pricing & discount tiers: ${SITE_ORIGIN}/md/plans
 - Integrations (all tools): ${SITE_ORIGIN}/md/int
 - Per-tool setup: append the slug to ${SITE_ORIGIN}/md/int/<slug> (${integrationSlugs.join(", ")})

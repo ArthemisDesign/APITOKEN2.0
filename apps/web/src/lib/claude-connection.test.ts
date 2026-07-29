@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildAgentHandoff,
   buildClaudeCodeCommands,
-  buildClaudeAgentHandoff,
+  buildCodexCommands,
   CLAUDE_API_BASE_URL,
   CLAUDE_MESSAGES_URL,
+  OPENAI_API_BASE_URL,
+  OPENAI_RESPONSES_URL,
   publicDocsUrl,
 } from "./claude-connection";
 
@@ -28,9 +31,33 @@ claude`);
     expect(publicDocsUrl("/docs")).toBe("https://apitoken.sale/docs");
     expect(publicDocsUrl("https://docs.example.com/claude")).toBe("https://docs.example.com/claude");
   });
+});
 
-  it("includes every value an AI agent needs and the newly issued key", () => {
-    const handoff = buildClaudeAgentHandoff({
+describe("Codex connection setup", () => {
+  it("writes a named model_providers profile and runs it explicitly", () => {
+    const commands = buildCodexCommands("sk-pool-test-secret");
+
+    expect(commands).toContain("~/.codex/apitoken.config.toml");
+    expect(commands).toContain(`base_url = "${OPENAI_API_BASE_URL}"`);
+    expect(commands).toContain('wire_api = "responses"');
+    expect(commands).toContain('env_key = "APITOKEN_API_KEY"');
+    expect(commands).toContain('model = "gpt-5.6-sol"');
+    expect(commands).toContain('export APITOKEN_API_KEY="sk-pool-test-secret"');
+    expect(commands).toContain("codex --profile apitoken");
+  });
+
+  it("keeps the key out of the TOML profile and uses a placeholder without a live key", () => {
+    const commands = buildCodexCommands();
+
+    expect(commands).toContain("YOUR_SK_POOL_API_KEY");
+    // The profile references the environment variable by name only — the secret never enters TOML.
+    expect(commands).not.toContain("APITOKEN_API_KEY = ");
+  });
+});
+
+describe("agent handoff brief", () => {
+  it("includes every value an AI agent needs for both API surfaces and the newly issued key", () => {
+    const handoff = buildAgentHandoff({
       apiKey: "sk-pool-test-secret",
       docsUrl: "/docs",
       language: "en",
@@ -38,6 +65,9 @@ claude`);
 
     expect(handoff).toContain(CLAUDE_API_BASE_URL);
     expect(handoff).toContain(CLAUDE_MESSAGES_URL);
+    expect(handoff).toContain(OPENAI_API_BASE_URL);
+    expect(handoff).toContain(OPENAI_RESPONSES_URL);
+    expect(handoff).toContain("Authorization: Bearer sk-pool-test-secret");
     expect(handoff).toContain("sk-pool-test-secret");
     expect(handoff).toContain("ANTHROPIC_API_KEY");
     expect(handoff).toContain("x-api-key");
@@ -46,8 +76,9 @@ claude`);
   });
 
   it("uses a clear placeholder when the one-time key is unavailable", () => {
-    const handoff = buildClaudeAgentHandoff({ apiKey: null, docsUrl: "/docs", language: "ru" });
+    const handoff = buildAgentHandoff({ apiKey: null, docsUrl: "/docs", language: "ru" });
     expect(handoff).toContain("YOUR_SK_POOL_API_KEY");
     expect(handoff).toContain("Подключи этот проект");
+    expect(handoff).toContain(OPENAI_API_BASE_URL);
   });
 });

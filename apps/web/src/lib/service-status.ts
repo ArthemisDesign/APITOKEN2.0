@@ -51,7 +51,7 @@ export function deriveServiceStatus(health: CoreHealth | null, checkedAt = new D
       health: null,
       overall: "unknown",
       components: [
-        component("API gateway (api.apitoken.sale)", "Live core health could not be verified", "unknown"),
+        component("API gateways (Claude & GPT)", "Live core health could not be verified", "unknown"),
         component("Dashboard & key management", "Live core health could not be verified", "unknown"),
         component("Payments (card & crypto)", "Checkout providers and the payment worker are not covered by the public core check", "unknown"),
         component("Guides & documentation", "This status page is responding", "operational"),
@@ -66,8 +66,8 @@ export function deriveServiceStatus(health: CoreHealth | null, checkedAt = new D
     overall: coreOperational ? "operational" : "degraded",
     components: [
       component(
-        "API gateway (api.apitoken.sale)",
-        "Anthropic-compatible /v1/messages endpoint",
+        "API gateways (Claude & GPT)",
+        "Anthropic-compatible /v1/messages and OpenAI-compatible /v1 endpoints",
         health.engine === "up" ? "operational" : "unavailable",
       ),
       component(

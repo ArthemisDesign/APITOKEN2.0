@@ -3,8 +3,8 @@ import { DocsPortal } from "@/app/docs/docs-portal";
 import { JsonLd } from "@/components/json-ld";
 import { absoluteUrl, breadcrumbNode, createPageMetadata, LAST_CONTENT_UPDATE, SITE_ORIGIN } from "@/lib/seo";
 
-const title = "Документация Claude API";
-const description = "Подключите Anthropic-совместимый клиент к Claude API через apiToken.sale.";
+const title = "Документация API — Claude и GPT";
+const description = "Подключите Anthropic-совместимый или OpenAI-совместимый клиент к API Claude и GPT через apiToken.sale.";
 
 export const metadata: Metadata = createPageMetadata({ path: "/ru/docs", title, description });
 

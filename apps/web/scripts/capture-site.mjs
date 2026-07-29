@@ -49,11 +49,15 @@ const siteCaptures = [
   ["pricing-cards-mobile-russian-dark", "/plans", 390, 844, "dark", "ru"],
   ["models-desktop", "/models", 1440, 1000, "light"],
   ["models-dark", "/models", 1440, 1000, "dark"],
+  ["models-mobile-light", "/models", 390, 844, "light"],
   ["docs-desktop", "/docs", 1440, 1000, "light"],
   ["docs-dark", "/docs", 1440, 1000, "dark"],
+  ["docs-russian-light", "/docs", 1440, 1000, "light", "ru"],
   ["docs-mobile", "/docs", 390, 844, "light"],
   ["docs-mobile-dark", "/docs", 390, 844, "dark"],
   ["docs-mobile-russian", "/docs", 390, 844, "light", "ru"],
+  ["docs-errors-desktop", "/docs/errors", 1440, 1000, "light"],
+  ["docs-errors-mobile-dark", "/docs/errors", 390, 844, "dark"],
   ["integrations-desktop", "/integrations", 1440, 1000, "light"],
   ["integration-guide-desktop", "/int-claude-code", 1440, 1000, "light"],
   ["login-desktop", "/login", 1440, 1000, "light"],
@@ -84,8 +88,12 @@ const siteCaptures = [
   ["calculator-mobile-language-disabled", "/tools/claude-api-cost-calculator", 390, 844, "light"],
   ["model-detail-desktop", "/models/claude-opus-4-8", 1440, 1000, "light"],
   ["model-detail-mobile-dark", "/models/claude-opus-4-8", 390, 844, "dark"],
+  ["model-detail-gpt-desktop", "/models/gpt-5-6-sol", 1440, 1000, "light"],
+  ["model-detail-gpt-mobile-dark", "/models/gpt-5-6-sol", 390, 844, "dark"],
   ["integrations-mobile-dark", "/integrations", 390, 844, "dark"],
   ["integration-guide-mobile-dark", "/int-claude-code", 390, 844, "dark"],
+  ["integration-guide-codex-desktop", "/int-codex", 1440, 1000, "light"],
+  ["integration-guide-codex-mobile-dark", "/int-codex", 390, 844, "dark"],
   ["login-mobile-dark", "/login", 390, 844, "dark"],
   ["login-mobile-russian", "/login", 390, 844, "light", "ru"],
   ["forgot-password-desktop", "/forgot-password", 1440, 1000, "light"],
@@ -103,6 +111,8 @@ const siteCaptures = [
   ["learn-index-chinese-mobile", "/zh/docs/learn", 390, 844, "light", "zh-CN"],
   ["learn-article-desktop", "/docs/learn/how-to-buy-claude-api-key", 1440, 1000, "light"],
   ["learn-article-mobile-dark", "/docs/learn/how-to-buy-claude-api-key", 390, 844, "dark"],
+  ["learn-article-openai-desktop", "/docs/learn/openai-api-quickstart", 1440, 1000, "light"],
+  ["learn-article-codex-mobile-dark", "/docs/learn/codex-cli-setup", 390, 844, "dark"],
   ["learn-article-russian-mobile", "/ru/docs/learn/how-to-buy-claude-api-key", 390, 844, "light", "ru"],
   ["learn-article-korean-mobile", "/ko/docs/learn/how-to-buy-claude-api-key", 390, 844, "light", "ko"],
   ["learn-article-chinese-mobile", "/zh/docs/learn/how-to-buy-claude-api-key", 390, 844, "light", "zh-CN"],
@@ -129,6 +139,8 @@ const dashboardCaptures = [
   ["dashboard-keys-russian-dark", "/dashboard?view=keys", 1440, 1000, "dark", "ru"],
   ["dashboard-keys-setup-light", "/dashboard?view=keys", 1440, 1100, "light", "en", "key-setup-open"],
   ["dashboard-keys-setup-russian-dark", "/dashboard?view=keys", 1440, 1100, "dark", "ru", "key-setup-open"],
+  ["dashboard-keys-setup-codex-light", "/dashboard?view=keys", 1440, 1100, "light", "en", "key-setup-codex-open"],
+  ["dashboard-keys-setup-codex-russian-dark", "/dashboard?view=keys", 1440, 1100, "dark", "ru", "key-setup-codex-open"],
   ["dashboard-keys-create-light", "/dashboard?view=keys", 1440, 1000, "light", "en", "key-create-open"],
   ["dashboard-keys-edit-light", "/dashboard?view=keys", 1440, 1000, "light", "en", "key-edit-open"],
   ["dashboard-keys-revoke-dark", "/dashboard?view=keys", 1440, 1000, "dark", "en", "key-revoke-open"],
@@ -227,7 +239,7 @@ const dashboardFixtureScript = `(() => {
       retentionSpendNano: "0",
       nextTier: {
         tier: "builder",
-        discountPercent: 65,
+        discountPercent: 62.5,
         spendThresholdNano: "100000000000",
         remainingNano: "100000000000",
         visibleOfficialUsageUsd: "600.43",
@@ -298,9 +310,9 @@ const dashboardFixtureScript = `(() => {
   const nowS = Math.floor(Date.now() / 1000), DAY = 86400;
   // реальный формат движка: amountUsd со знаком "$" и 6 знаками (раньше ломал график через Number())
   const chg = [
-    [0, "1246000000", "claude-opus-4-8"], [0, "742000000", "claude-sonnet-5"], [0, "180000000", "claude-haiku-4-5-20251001"],
+    [0, "1246000000", "claude-opus-4-8"], [0, "742000000", "claude-sonnet-5"], [0, "180000000", "claude-haiku-4-5-20251001"], [0, "1390000000", "gpt-5.6-sol"],
     [1, "918000000", "claude-opus-4-8"], [1, "410000000", "claude-sonnet-5"],
-    [2, "655000000", "claude-sonnet-5"], [2, "300000000", "claude-opus-4-8"],
+    [2, "655000000", "claude-sonnet-5"], [2, "300000000", "claude-opus-4-8"], [2, "88000000", "gpt-5.6-luna"],
     [3, "1330000000", "claude-opus-4-8"], [3, "520000000", "claude-sonnet-5"], [3, "90000000", "claude-haiku-4-5-20251001"],
     [4, "540000000", "claude-sonnet-5"],
     [6, "805000000", "claude-opus-4-8"], [6, "260000000", "claude-haiku-4-5-20251001"],
@@ -310,29 +322,31 @@ const dashboardFixtureScript = `(() => {
   entries.push({ id: "t0", kind: "topup", amountNano: "12000000000", amountUsd: "$12.000000", discountPercent: 60, keyMasked: null, reference: "cryptomus_9f2c1a", balanceAfterNano: null, timestamp: String(nowS - 3 * DAY) });
   const todayUtc = Math.floor(nowS / DAY) * DAY;
   const usage = {
-    window: "30d", sinceTs: nowS - 30 * DAY, untilTs: nowS, requests: 59, totalOfficialNano: "22984893050", totalChargedNano: "9193957220",
+    window: "30d", sinceTs: nowS - 30 * DAY, untilTs: nowS, requests: 71, totalOfficialNano: "26679893050", totalChargedNano: "10671957220",
     buckets: {
-      input: { tokens: 3781269, officialNano: "15124021000" },
-      output: { tokens: 15168, officialNano: "228560000" },
-      cacheRead: { tokens: 4866858, officialNano: "1840525800" },
-      cacheWrite: { tokens: 741129, officialNano: "3041786250" },
+      input: { tokens: 4301269, officialNano: "16574021000" },
+      output: { tokens: 95168, officialNano: "2148560000" },
+      cacheRead: { tokens: 5016858, officialNano: "1915525800" },
+      cacheWrite: { tokens: 781129, officialNano: "3291786250" },
       webSearch: { requests: 0, officialNano: "0" },
       unattributedLegacy: { officialNano: "2750000000" },
     },
     models: [
       { model: "claude-opus-4-8", requests: 27, inputTokens: 1890211, outputTokens: 5100, cacheReadTokens: 2256400, cacheWrite5mTokens: 282050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "15219567500", chargedNano: "6087827000" },
       { model: "claude-sonnet-5", requests: 27, inputTokens: 1890954, outputTokens: 5072, cacheReadTokens: 2256400, cacheWrite5mTokens: 282050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "7483549500", chargedNano: "2993419800" },
+      { model: "gpt-5.6-sol", requests: 8, inputTokens: 420000, outputTokens: 60000, cacheReadTokens: 150000, cacheWrite5mTokens: 0, cacheWrite1hTokens: 40000, webSearchRequests: 0, officialNano: "3475000000", chargedNano: "1390000000" },
       { model: "claude-haiku-4-5-20251001", requests: 5, inputTokens: 104, outputTokens: 4996, cacheReadTokens: 354058, cacheWrite5mTokens: 177029, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "281776050", chargedNano: "112710420" },
+      { model: "gpt-5.6-luna", requests: 4, inputTokens: 100000, outputTokens: 20000, cacheReadTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "220000000", chargedNano: "88000000" },
     ],
     daily: [
       { dayTs: todayUtc - 3 * DAY, requests: 20, officialNano: "8000000000", chargedNano: "3200000000" },
       { dayTs: todayUtc - 2 * DAY, requests: 16, officialNano: "6000000000", chargedNano: "2400000000" },
       { dayTs: todayUtc - DAY, requests: 13, officialNano: "5000000000", chargedNano: "2000000000" },
-      { dayTs: todayUtc, requests: 10, officialNano: "3984893050", chargedNano: "1593957220" },
+      { dayTs: todayUtc, requests: 22, officialNano: "7679893050", chargedNano: "3071957220" },
     ],
     keys: [
       { keyMasked: "sk-pool-a5b5••••••••eeb", requests: 45, officialNano: "18000000000", chargedNano: "7200000000" },
-      { keyMasked: "sk-pool-f367••••••••94ea", requests: 14, officialNano: "4984893050", chargedNano: "1993957220" },
+      { keyMasked: "sk-pool-f367••••••••94ea", requests: 26, officialNano: "8679893050", chargedNano: "3471957220" },
     ],
   };
   window.fetch = (input, init = {}) => {
@@ -554,6 +568,12 @@ async function capturePage(client, [name, route, width, height, theme, language 
   if (state === "key-setup-open") {
     await clickSelector(client, ".agent-connect-summary");
     await waitForCondition(client, `document.querySelector('.agent-connect-summary')?.getAttribute('aria-expanded') === 'true'`, `${name} persistent terminal setup`);
+  }
+  if (state === "key-setup-codex-open") {
+    await clickSelector(client, ".agent-connect-summary");
+    await waitForCondition(client, `document.querySelector('.agent-connect-summary')?.getAttribute('aria-expanded') === 'true'`, `${name} persistent terminal setup`);
+    await clickSelector(client, ".agent-connect-tabs button:nth-of-type(2)");
+    await waitForCondition(client, `document.querySelector('.agent-terminal pre')?.textContent?.includes('model_provider')`, `${name} codex terminal setup`);
   }
   if (state === "key-revoke-open") {
     await client.send("Runtime.evaluate", { expression: `document.querySelector('.key-row')?.scrollIntoView({ block: 'center' })` });
@@ -850,8 +870,8 @@ async function verifyHeroOfferLayout(client) {
       returnByValue: true,
     });
     const state = JSON.parse(result.result.value);
-    const expectedValues = [["$10", "$25"], ["$100", "$286"], ["$1,000", "$5,000"]];
-    const expectedDiscounts = ["−60%", "−65%", "−80%"];
+    const expectedValues = [["$10", "$25"], ["$100", "$267"], ["$1,000", "$3,333"]];
+    const expectedDiscounts = ["−60%", "−62.5%", "−70%"];
     if (state.language !== layoutCase.language || state.theme !== layoutCase.theme || state.overflow > 1 || state.label !== layoutCase.label || !state.cardFits || !state.compactCard || !state.metaAligned || !state.hierarchy || !state.verticalRhythm || !state.rowsEqual || !state.columnCentersAligned || !state.rowTextFits || JSON.stringify(state.values) !== JSON.stringify(expectedValues) || JSON.stringify(state.discounts) !== JSON.stringify(expectedDiscounts)) {
       throw new Error(`Hero offer ${layoutCase.name} layout failed: ${JSON.stringify(state)}`);
     }

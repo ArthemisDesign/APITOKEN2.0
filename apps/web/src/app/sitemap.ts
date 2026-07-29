@@ -1,6 +1,6 @@
 import type { MetadataRoute } from "next";
 import { articlesForLocale, articleUpdatedDate, learnHubPath, learnPath, LOCALES } from "@/lib/learn";
-import { claudeModels, modelPath } from "@/lib/models";
+import { claudeModels, modelPath, openaiModels } from "@/lib/models";
 import { absoluteUrl, LAST_CONTENT_UPDATE, sitemapPages } from "@/lib/seo";
 import { blogPath, listBlogPosts, type PublicBlogPostSummary } from "@/lib/blog";
 import {
@@ -70,7 +70,7 @@ export function buildSitemap(blogPosts: PublicBlogPostSummary[] = []): MetadataR
 
   // The /models hub itself ships via sitemapPages; only the per-model pages are added here.
   const modelPages: MetadataRoute.Sitemap = [
-    ...claudeModels.map((model) => ({
+    ...[...claudeModels, ...openaiModels].map((model) => ({
       url: absoluteUrl(modelPath(model.slug)),
       lastModified: MODELS_LAUNCH,
       changeFrequency: "monthly" as const,

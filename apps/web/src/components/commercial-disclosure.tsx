@@ -9,7 +9,7 @@ const copy: Record<Language, {
   exampleLabel: string; example: string; policy: string;
 }> = {
   en: {
-    eyebrow: "Clear billing", title: "What you buy and how you are charged", lead: "apiToken.sale sells prepaid access to supported Claude models through one Anthropic-compatible API endpoint. There are no token packs or recurring subscription fees.",
+    eyebrow: "Clear billing", title: "What you buy and how you are charged", lead: "apiToken.sale sells prepaid access to supported Claude and GPT models through Anthropic-compatible and OpenAI-compatible API endpoints. There are no token packs or recurring subscription fees.",
     cards: [
       { label: "Product", title: "Prepaid API access", text: "Top up any whole USD amount. Your funded balance is available across every supported model and is consumed only by API usage." },
       { label: "Metering", title: "Official spend × paid share", text: "Each request is priced from the upstream model's official API rates. Your active B2C or B2B discount is then applied to calculate the platform balance charge." },
@@ -19,7 +19,7 @@ const copy: Record<Language, {
     policy: "Payments, promotional credit, and refunds are described in the User Agreement.",
   },
   ru: {
-    eyebrow: "Прозрачный биллинг", title: "Что вы покупаете и как рассчитывается списание", lead: "apiToken.sale продаёт предоплаченный доступ к поддерживаемым моделям Claude через единый Anthropic-совместимый API endpoint. Фиксированных пакетов токенов и регулярной подписки нет.",
+    eyebrow: "Прозрачный биллинг", title: "Что вы покупаете и как рассчитывается списание", lead: "apiToken.sale продаёт предоплаченный доступ к поддерживаемым моделям Claude и GPT через Anthropic-совместимый и OpenAI-совместимый API endpoint. Фиксированных пакетов токенов и регулярной подписки нет.",
     cards: [
       { label: "Продукт", title: "Предоплаченный API-доступ", text: "Пополните баланс на любую целую сумму в долларах США. Средства доступны для всех поддерживаемых моделей и расходуются только при использовании API." },
       { label: "Расчёт", title: "Официальная стоимость × доля оплаты", text: "Каждый запрос рассчитывается по официальным ценам API выбранной модели. Затем применяется активная скидка B2C или B2B и определяется списание с баланса платформы." },

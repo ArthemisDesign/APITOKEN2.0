@@ -14,10 +14,10 @@ import { ThemeToggle } from "@/components/site-chrome";
 import { SupportContent } from "@/components/compliance-pages";
 import { dashboardCopy, type DashboardCopy } from "@/lib/dashboard-copy";
 import { DOCS_URL } from "@/lib/site-links";
-import { buildClaudeAgentHandoff, buildClaudeCodeCommands } from "@/lib/claude-connection";
+import { buildAgentHandoff, buildClaudeCodeCommands, buildCodexCommands } from "@/lib/claude-connection";
 import { checkoutAmountBucket, trackFirstProductEvent, trackProductEvent } from "@/lib/product-analytics";
 import { buildUtcUsageSeries, usageWindowDays } from "@/lib/usage-series";
-import { modelLabel } from "@/lib/model-label";
+import { modelLabel, modelProvider } from "@/lib/model-label";
 import { dashboardHref, parseDashboardSection, type DashboardSection } from "./dashboard-route";
 
 type Section = DashboardSection;
@@ -1039,8 +1039,9 @@ function QuickConnectDock({ issuedKey, defaultExpanded, onDismissKey }: { issued
   const copy = useDashboardCopy();
   const { language } = useI18n();
   const [expanded, setExpanded] = useState(Boolean(issuedKey) || defaultExpanded);
-  const handoff = buildClaudeAgentHandoff({ apiKey: issuedKey, docsUrl: DOCS_URL, language });
-  const terminalCommands = buildClaudeCodeCommands(issuedKey);
+  const [surface, setSurface] = useState<"claude" | "codex">("claude");
+  const handoff = buildAgentHandoff({ apiKey: issuedKey, docsUrl: DOCS_URL, language });
+  const terminalCommands = surface === "claude" ? buildClaudeCodeCommands(issuedKey) : buildCodexCommands(issuedKey);
 
   return <aside className={`agent-connect-dock${expanded ? " is-open" : ""}${issuedKey ? " has-live-key" : ""}`} aria-labelledby="agent-connect-title">
     <button className="agent-connect-summary" type="button" aria-expanded={expanded} aria-controls="agent-connect-body" onClick={() => setExpanded((current) => !current)}>
@@ -1051,7 +1052,11 @@ function QuickConnectDock({ issuedKey, defaultExpanded, onDismissKey }: { issued
     </button>
     {expanded && <div className="agent-connect-body" id="agent-connect-body">
       {issuedKey && <div className="agent-key-reveal secret-card"><div className="agent-key-reveal-head"><div><strong>{copy.copyNewKeyNow}</strong><span>{copy.rawSecretWarning}</span></div><span className="chip">{copy.shownOnce}</span></div><div className="secret-key-field"><code>{issuedKey}</code><CopyButton value={issuedKey} className="secret-copy" /></div></div>}
-      <div className="agent-connect-path" aria-label={copy.agentDockEyebrow}><span><b>1</b>{copy.agentDockStepOne}</span><i>→</i><span><b>2</b>{copy.agentDockStepTwo}</span><i>→</i><span><b>3</b>{copy.agentDockStepThree}</span></div>
+      <div className="agent-connect-path" aria-label={copy.agentDockEyebrow}><span><b>1</b>{copy.agentDockStepOne}</span><i>→</i><span><b>2</b>{copy.agentDockStepTwo}</span><i>→</i><span><b>3</b>{surface === "claude" ? copy.agentDockStepThree : copy.agentDockStepThreeCodex}</span></div>
+      <div className="agent-connect-tabs" role="group" aria-label={copy.agentDockTerminal}>
+        <button type="button" className={surface === "claude" ? "active" : ""} aria-pressed={surface === "claude"} onClick={() => setSurface("claude")}>{copy.agentDockTabClaude}</button>
+        <button type="button" className={surface === "codex" ? "active" : ""} aria-pressed={surface === "codex"} onClick={() => setSurface("codex")}>{copy.agentDockTabCodex}</button>
+      </div>
       <div className="agent-terminal" aria-label={copy.agentDockTerminal}>
         <div className="agent-terminal-head"><span><i /><i /><i />{copy.agentDockTerminal}</span><CopyButton value={terminalCommands} className="agent-connect-copy" label={issuedKey ? copy.agentDockCopyTerminal : copy.agentDockCopyTemplate} copiedLabel={copy.agentDockTerminalCopied} /></div>
         <pre><TerminalCommands commands={terminalCommands} /></pre>
@@ -1253,6 +1258,11 @@ function Usage({ account, keys, ledger, usage, ledgerAvailable }: { account: Acc
   const assignColor = (id: string) => { if (!modelColor.has(id)) modelColor.set(id, MODEL_COLORS[modelColor.size % MODEL_COLORS.length]!); };
   for (const model of models) assignColor(model.model);
 
+  // Provider badges appear only when the window actually mixes providers — a single-provider
+  // table would render the same tag on every row, which is noise.
+  const providersPresent = new Set(models.map((model) => modelProvider(model.model)));
+  const showProviderBadge = providersPresent.size > 1;
+
   const series = buildUtcUsageSeries(usage.sinceTs, usage.untilTs, usage.daily).map((point) => ({
     day: point.dayTs * 1_000,
     requests: point.requests,
@@ -1373,7 +1383,7 @@ function Usage({ account, keys, ledger, usage, ledgerAvailable }: { account: Acc
         <p className="table-scroll-hint" id="models-table-scroll-hint">{copy.tableScrollHint}</p>
         <div className="table-scroll" role="region" tabIndex={0} aria-label={`${copy.tokensAndModels}. ${copy.tableScrollHint}`}><table className="mtable"><thead><tr><th>{copy.model}</th><th className="tnum">{copy.billedEvents}</th><th className="tnum">{copy.inputShort}</th><th className="tnum">{copy.outputShort}</th><th className="tnum">{copy.cacheRdShort}</th><th className="tnum">{copy.cacheWrShort}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
           <tbody>{models.map((model, index) => <tr key={model.model}>
-            <td><span className="tkmdl"><span className="tkmdl-dot" style={{ background: MODEL_COLORS[index % MODEL_COLORS.length] }} />{modelLabel(model.model)}</span></td>
+            <td><span className="tkmdl"><span className="tkmdl-dot" style={{ background: MODEL_COLORS[index % MODEL_COLORS.length] }} />{modelLabel(model.model)}{showProviderBadge && <span className="provider-tag">{modelProvider(model.model) === "openai" ? copy.providerOpenAi : modelProvider(model.model) === "anthropic" ? copy.providerAnthropic : "—"}</span>}</span></td>
             <td className="tnum">{model.requests.toLocaleString(locale)}</td>
             <td className="tnum">{fmtTokens(model.inputTokens)}</td>
             <td className="tnum">{fmtTokens(model.outputTokens)}</td>

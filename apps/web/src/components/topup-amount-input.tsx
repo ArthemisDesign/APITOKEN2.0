@@ -33,8 +33,8 @@ export function TopUpAmountInput({ className, initialAmount, showReceive }: { cl
   const sub = amt <= 0
     ? (language === "ru" ? "Введите сумму" : "Enter an amount")
     : tier
-      ? (language === "ru" ? `официального Claude API · тариф ${tier.label}` : `of official Claude API · ${tier.label} tier`)
-      : (language === "ru" ? "официального Claude API · пополни от $100 для скидки" : "of official Claude API · top up from $100 for a discount");
+      ? (language === "ru" ? `официального использования API · тариф ${tier.label}` : `of official API usage · ${tier.label} tier`)
+      : (language === "ru" ? "официального использования API · пополни от $100 для скидки" : "of official API usage · top up from $100 for a discount");
   return <div className="topup-live">
     {field}
     <div className="topup-live-out">

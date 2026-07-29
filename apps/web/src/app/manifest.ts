@@ -3,9 +3,9 @@ import { SITE_NAME } from "@/lib/seo";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: `${SITE_NAME} — Claude API Access`,
+    name: `${SITE_NAME} — Claude & GPT API Access`,
     short_name: SITE_NAME,
-    description: "One API key and prepaid balance for supported Claude models.",
+    description: "One API key and prepaid balance for supported Claude and GPT models.",
     start_url: "/",
     display: "standalone",
     background_color: "#0a0a0a",

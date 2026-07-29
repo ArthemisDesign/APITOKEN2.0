@@ -11,27 +11,27 @@ type Localized = { title: string; description: string };
 
 export const coreRu: Record<string, Localized> = {
   home: {
-    title: "Купить Claude API со скидкой — токены Claude",
-    description: "Купите доступ к Claude API со скидкой — один ключ и предоплаченные токены Claude API для Opus, Sonnet и Haiku. Тот же официальный API Anthropic, до 70% дешевле, готово для Claude Code и Cursor.",
+    title: "Купить доступ к Claude и GPT API со скидкой — один ключ",
+    description: "Доступ к API Claude и GPT со скидкой — один ключ и предоплаченный баланс для Claude Opus, Sonnet, Haiku и линейки GPT-5. Официальные API Anthropic и OpenAI-совместимый, до 70% дешевле, готово для Claude Code, Codex и Cursor.",
   },
   models: {
-    title: "Модели Claude, контекст и цены API",
-    description: "Сравните поддерживаемые модели Claude Opus, Sonnet и Haiku, размеры контекста, ID моделей, официальные ставки и рекомендации по применению.",
+    title: "Модели Claude и GPT, контекст и цены API",
+    description: "Сравните поддерживаемые модели Claude Opus, Sonnet, Haiku и GPT-5, размеры контекста, точные ID моделей, официальные ставки и рекомендации по применению.",
   },
   integrations: {
-    title: "Интеграции Claude API для инструментов кодинга",
-    description: "Гайды по настройке Claude Code, Cursor, Cline, Continue, Zed, Python и TypeScript через один Anthropic-совместимый эндпоинт.",
+    title: "Интеграции Claude и GPT API для инструментов кодинга",
+    description: "Гайды по настройке Claude Code, Codex CLI, Cursor, Cline, opencode, Continue, Zed, Python и TypeScript через Anthropic-совместимый и OpenAI-совместимый эндпоинты.",
   },
   plans: {
-    title: "Цены Claude API, скидки и предоплата",
-    description: "Гибкие пополнения в USD, прогрессивные B2C-скидки, требования тира за 30 дней, оценка стоимости Claude API и договорные B2B-цены.",
+    title: "Цены API, скидки и предоплата — Claude и GPT",
+    description: "Гибкие пополнения в USD, прогрессивные B2C-скидки, требования тира за 30 дней, оценка официальной ценности API и договорные B2B-цены для моделей Claude и GPT.",
   },
   privacy: {
     title: "Политика конфиденциальности",
     description: "Как apiToken.sale собирает, использует, хранит и защищает данные на сайте, в панели, платежах, поддержке и API-шлюзе.",
   },
   support: {
-    title: "Поддержка Claude API",
+    title: "Поддержка API",
     description: "Свяжитесь с поддержкой apiToken.sale по доступу к аккаунту, ключам, использованию, платежам, возвратам и интеграции — через Telegram или email.",
   },
   terms: {
@@ -45,6 +45,10 @@ export const coreIntRu: Record<string, Localized> = {
     title: "Подключить Claude Code к apiToken.sale",
     description: "Настройте Claude Code с apiToken.sale через ANTHROPIC_BASE_URL и ANTHROPIC_API_KEY и используйте модели Claude на одном предоплаченном балансе.",
   },
+  codex: {
+    title: "Подключить Codex CLI к apiToken.sale",
+    description: "Запустите Codex CLI на моделях GPT-5.6 через apiToken.sale: именованный профиль model_providers, OpenAI-совместимый base URL и ваш ключ sk-pool.",
+  },
   cursor: {
     title: "Подключить Cursor к Claude API",
     description: "Укажите провайдеру Anthropic в Cursor base URL apiToken.sale, ключ и модель Claude — за три шага.",
@@ -52,6 +56,10 @@ export const coreIntRu: Record<string, Localized> = {
   cline: {
     title: "Подключить Cline к Claude API",
     description: "Настройте Cline в VS Code с Anthropic-совместимым эндпоинтом apiToken.sale, одним ключом и выбранной моделью Claude.",
+  },
+  opencode: {
+    title: "Подключить opencode к apiToken.sale",
+    description: "Подключите opencode к OpenAI-совместимому эндпоинту apiToken.sale одним блоком провайдера и запускайте модели GPT-5.6 на предоплаченном балансе.",
   },
   continue: {
     title: "Подключить Continue к Claude API",
@@ -102,7 +110,7 @@ export function coreMetadata(enPath: string, en: Localized, ru: Localized, local
       siteName: SITE_NAME,
       title: socialTitle,
       description: cur.description,
-      images: [{ url: DEFAULT_OG_IMAGE, width: 1200, height: 630, alt: `${SITE_NAME} — Claude API` }],
+      images: [{ url: DEFAULT_OG_IMAGE, width: 1200, height: 630, alt: `${SITE_NAME} — Claude & GPT API` }],
     },
     twitter: {
       card: "summary_large_image",

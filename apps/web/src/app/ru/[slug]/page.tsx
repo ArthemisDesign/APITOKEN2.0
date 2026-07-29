@@ -41,7 +41,7 @@ export default async function RuStaticPage({ params }: { params: Promise<{ slug:
   const { slug } = await params;
 
   if (slug === "models") {
-    return <><JsonLd data={breadcrumbJsonLd([{ name: "Главная", path: "/ru" }, { name: "Модели Claude", path: "/ru/models" }])} /><ModelsPage /></>;
+    return <><JsonLd data={breadcrumbJsonLd([{ name: "Главная", path: "/ru" }, { name: "Модели", path: "/ru/models" }])} /><ModelsPage /></>;
   }
   if (slug === "integrations") {
     return <><JsonLd data={breadcrumbJsonLd([{ name: "Главная", path: "/ru" }, { name: "Интеграции", path: "/ru/integrations" }])} /><IntegrationsPage /></>;
