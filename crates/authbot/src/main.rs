@@ -35,10 +35,6 @@ pub struct Config {
     pub codex_homes_dir: String,   // каталог, который сканирует движок: подкаталог = аккаунт в пуле
     pub gemini_dir: String, // каталог encrypted credentials + roster отдельного Gemini provider
     pub gemini_oauth: Option<gemini_oauth::Config>,
-    // Transient per-chat wizard draft for the step-by-step Gemini onboarding: (client_id,
-    // client_secret). RAM only — the client secret is never written to the bot DB or logs; the
-    // entry is removed as soon as the OAuth session is sealed (or the flow ends).
-    pub gemini_client_drafts: Arc<std::sync::Mutex<std::collections::HashMap<i64, (String, String)>>>,
 }
 
 fn env_opt(k: &str) -> Option<String> {
@@ -78,15 +74,13 @@ fn state_db() -> String {
 }
 
 fn gemini_oauth_config(gemini_dir: &str) -> Result<Option<gemini_oauth::Config>> {
-    let client_id = env_opt("AUTH_BOT_GEMINI_CLIENT_ID");
-    let client_secret = env_opt("AUTH_BOT_GEMINI_CLIENT_SECRET");
     let keys = env_opt("AUTH_BOT_GEMINI_CREDENTIAL_KEYS");
     let active = env_opt("AUTH_BOT_GEMINI_CREDENTIAL_ACTIVE_KID");
-    if client_id.is_none() && client_secret.is_none() && keys.is_none() && active.is_none() {
+    if keys.is_none() && active.is_none() {
         return Ok(None);
     }
-    // Intake is gated on the AEAD keyring (required to seal credentials). The operator OAuth client
-    // is now an optional fallback — sellers submit their own — so it defaults to empty when unset.
+    // Intake is gated only on the AEAD keyring. Authorization uses the public installed-app OAuth
+    // identity embedded by the official Gemini CLI, so no operator/seller client is configured.
     let keyring = gemini_credential::CredentialKeyring::parse(
         &keys.ok_or_else(|| anyhow!("AUTH_BOT_GEMINI_CREDENTIAL_KEYS не задан"))?,
     )?;
@@ -97,15 +91,8 @@ fn gemini_oauth_config(gemini_dir: &str) -> Result<Option<gemini_oauth::Config>>
         .map_err(|_| anyhow!("AUTH_BOT_GEMINI_OAUTH_BIND должен быть ip:port"))?;
     let redirect = env_opt("AUTH_BOT_GEMINI_REDIRECT_URI")
         .unwrap_or_else(|| "https://gemini.api.apitoken.sale/oauth/callback".into());
-    let config = gemini_oauth::Config::new(
-        client_id.unwrap_or_default(),
-        client_secret.unwrap_or_default(),
-        redirect,
-        bind,
-        gemini_dir.to_string(),
-        keyring,
-        active,
-    )?;
+    let config =
+        gemini_oauth::Config::new(redirect, bind, gemini_dir.to_string(), keyring, active)?;
     config
         .rewrap_existing()
         .map_err(|_| anyhow!("Gemini credential key rotation failed closed"))?;
@@ -463,7 +450,6 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| "/srv/claude-api/data/codex-homes".into()),
         gemini_dir,
         gemini_oauth,
-        gemini_client_drafts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     });
     let store = Arc::new(Store::open(&state_db())?);
     let recovered = store.recover_interrupted_handoffs()?;

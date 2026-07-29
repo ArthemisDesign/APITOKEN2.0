@@ -18,11 +18,11 @@ pub struct UserRow {
     pub chat_id: i64,
     pub uid: i64,
     pub username: String,
-    pub status: String,  // new | pending | approved | rejected | pending_admin
-    pub role: String,    // "" | admin
-    pub address: String, // BEP-20
-    pub want: String, // ожидаемый ввод (reg_address | ho_* | cx_* | gm_gid | gm_gsecret | gm_gproxy | gm_wait)
-    pub hproxy: String, // прокси аккаунта при передаче доступа (handover)
+    pub status: String,    // new | pending | approved | rejected | pending_admin
+    pub role: String,      // "" | admin
+    pub address: String,   // BEP-20
+    pub want: String,      // ожидаемый ввод (reg_address | ho_* | cx_* | gm_gproxy | gm_wait)
+    pub hproxy: String,    // прокси аккаунта при передаче доступа (handover)
     pub hproxy_order: i64, // IPRoyal order id за handover-прокси (0 = ручной/внешний)
 }
 
@@ -107,8 +107,8 @@ impl Store {
                                                                                       // Legacy Developer-API builds added `hproject`. It is intentionally ignored: OAuth
                                                                                       // identity/project data now exists only inside the encrypted credential envelope.
         let _ = c.execute("ALTER TABLE users ADD COLUMN hproject TEXT DEFAULT ''", []);
-        // IPRoyal order behind a bot-issued handover proxy, kept until the seller supplies their
-        // OAuth client so a deferred begin() still links the proxy to its order for auto-renewal.
+        // IPRoyal order behind a bot-issued handover proxy, kept until official Gemini CLI OAuth
+        // seals the proxy/order pair into its one-use PKCE session.
         let _ = c.execute(
             "ALTER TABLE users ADD COLUMN hproxy_order INTEGER DEFAULT 0",
             [],
@@ -270,6 +270,23 @@ impl Store {
         Ok(())
     }
 
+    /// Cancel every outstanding OAuth capability for this chat before allowing a fresh flow. The
+    /// non-secret IPRoyal order id stays attached so retrying the issued proxy preserves renewal.
+    pub fn cancel_gemini_oauth(&self, chat_id: i64) -> Result<()> {
+        let mut connection = self.c.lock().unwrap();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "DELETE FROM gemini_oauth_sessions WHERE chat_id=?1",
+            rusqlite::params![chat_id],
+        )?;
+        transaction.execute(
+            "UPDATE users SET want='gm_gproxy', hproxy='' WHERE chat_id=?1",
+            rusqlite::params![chat_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// A Claude OAuth child cannot survive a bot restart. Keep the proxy, but ask for email again
     /// so the seller receives a fresh authorization session instead of getting stuck at ho_code.
     pub fn recover_interrupted_handoffs(&self) -> Result<usize> {
@@ -280,12 +297,12 @@ impl Store {
             .execute("UPDATE users SET want='ho_email' WHERE want='ho_code'", [])?)
     }
 
-    /// The step-by-step Gemini wizard replaced the legacy `gm_proxy`/`gm_auth` states, but an
-    /// older callback failure path still wrote `gm_proxy`. Repair rows left by that mixed-version
-    /// window so sellers can restart at their OAuth client id after an authbot deployment.
+    /// Normalize every removed Gemini custom-client wizard state to the single official-CLI proxy
+    /// step. A retained bot-issued proxy lets the next seller message start OAuth immediately;
+    /// otherwise the bot asks for a fresh manual proxy.
     pub fn recover_legacy_gemini_handoffs(&self) -> Result<usize> {
         Ok(self.c.lock().unwrap().execute(
-            "UPDATE users SET want='gm_gid' WHERE want IN ('gm_proxy','gm_auth')",
+            "UPDATE users SET want='gm_gproxy' WHERE want IN ('gm_proxy','gm_auth','gm_gid','gm_gsecret')",
             [],
         )?)
     }
@@ -490,8 +507,14 @@ mod tests {
         assert_eq!(s.recover_legacy_gemini_handoffs().unwrap(), 2);
         assert_eq!(s.get_user(111).unwrap().unwrap().status, "approved");
         assert_eq!(s.get_user(111).unwrap().unwrap().want, "ho_email");
-        assert_eq!(s.get_user(222).unwrap().unwrap().want, "gm_gid");
-        assert_eq!(s.get_user(333).unwrap().unwrap().want, "gm_gid");
+        assert_eq!(s.get_user(222).unwrap().unwrap().want, "gm_gproxy");
+        assert_eq!(s.get_user(333).unwrap().unwrap().want, "gm_gproxy");
+        s.set_hproxy_order(222, 42).unwrap();
+        s.start_gemini_oauth(222, "pending-state", "sealed", now() + 60)
+            .unwrap();
+        s.cancel_gemini_oauth(222).unwrap();
+        assert!(s.claim_gemini_oauth("pending-state").unwrap().is_none());
+        assert_eq!(s.get_user(222).unwrap().unwrap().hproxy_order, 42);
         assert_eq!(s.approved_sellers().unwrap(), vec![111]);
         // машина создания оффера НЕ потеряна (это и был баг Python-версии)
         let (step, product, seller) = s.get_admin_state(999).unwrap().unwrap();

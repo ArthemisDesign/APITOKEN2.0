@@ -3,7 +3,7 @@
 Gemini is a third, isolated provider surface:
 
 ```text
-Google OAuth callback                public native API
+official CLI code-entry form         public native API
 gemini.api.apitoken.sale/oauth/...   gemini.api.apitoken.sale/v1beta/...
                  │                                  │
                  ▼                                  ▼
@@ -43,27 +43,34 @@ limits and available models can change and are not contractual capacity for this
 
 ## OAuth and publication flow
 
-Each seller creates their **own** Google Cloud OAuth Web client (see below) and submits its client
-id + secret together with the account's dedicated proxy. Distributing the fleet across many seller
-OAuth clients means the pool cannot be revoked in a single move; the operator client remains only as
-a fallback.
+Auth Bot mirrors the official Gemini CLI manual OAuth flow. It uses the public installed-application
+OAuth identity embedded in Gemini CLI and Google's fixed Code Assist redirect, so the Code Assist
+request is attributed to the registered Gemini CLI consumer project rather than an unrelated seller
+or operator Cloud project. Sellers do not create OAuth clients and do not enable private APIs.
+The source of truth is Gemini CLI's
+[`packages/core/src/code_assist/oauth2.ts`](https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/code_assist/oauth2.ts).
 
-1. The seller submits their OAuth client id + secret and the account's dedicated proxy to Auth Bot
-   (three lines on the manual-proxy path, or client id + secret when Auth Bot issues the proxy).
-2. Auth Bot creates 256-bit `state`, a PKCE S256 verifier/challenge and a ten-minute SQLite session.
-3. The PKCE verifier, proxy and the seller's client id/secret are immediately moved into one
-   XChaCha20-Poly1305 envelope bound to `state`; no plaintext value is retained in the Gemini OAuth
-   row or SQLite WAL.
-4. Telegram receives only a Google authorization URL (built with the seller's client id). Tokens are
-   never pasted into chat. The seller must open it in the account's browser profile through the same
-   dedicated proxy; the server cannot enforce the browser's egress.
-5. `https://gemini.api.apitoken.sale/oauth/callback` claims `state` exactly once and exchanges the
-   code server-to-server through the account proxy, using the seller's client id/secret.
-6. Auth Bot validates verified Google userinfo, calls `loadCodeAssist`, completes Google's default
+1. The seller submits only the account's dedicated proxy. When Auth Bot issues the proxy, OAuth
+   starts immediately after issuance.
+2. Auth Bot creates 256-bit `state`, a PKCE S256 verifier/challenge and a twenty-minute SQLite
+   session.
+3. The PKCE verifier, proxy, official installed-app client material and fixed exchange redirect are
+   immediately moved into one XChaCha20-Poly1305 envelope bound to `state`; no plaintext value is
+   retained in the Gemini OAuth row or SQLite WAL.
+4. Telegram receives two non-secret links: Google's authorization URL and the Auth Bot code-entry
+   form. The seller opens Google in the account's browser profile through the same dedicated proxy;
+   the server cannot enforce the browser's egress.
+5. Google redirects to `https://codeassist.google.com/authcode` and displays the one-use code. The
+   seller pastes it into the no-store Auth Bot form at
+   `https://gemini.api.apitoken.sale/oauth/callback?state=…`. The form POST keeps the code out of
+   Telegram, URL query strings, browser history, referrers and ordinary access logs.
+6. Auth Bot claims `state` exactly once and exchanges the code server-to-server through the account
+   proxy with the same PKCE verifier, official client identity and Google redirect used at start.
+7. Auth Bot validates verified Google userinfo, calls `loadCodeAssist`, completes Google's default
    onboarding when required, and re-loads the actual tier/project.
-7. Unknown/free/duplicate Google subjects and reused proxy URLs fail closed. A valid paid profile is
-   sealed (with the seller's client id/secret) and published atomically; the runtime discovers it on
-   the health loop without restart and refreshes tokens with that per-profile client.
+8. Unknown/free/duplicate Google subjects and reused proxy URLs fail closed. A valid paid profile is
+   sealed and published atomically; the runtime discovers it on the health loop without restart and
+   refreshes tokens with the official per-profile OAuth material.
 
 Required OAuth scopes:
 
@@ -73,15 +80,10 @@ https://www.googleapis.com/auth/userinfo.email
 https://www.googleapis.com/auth/userinfo.profile
 ```
 
-Each seller creates a Google Cloud OAuth **Web application** in their own project with this exact
-redirect URI (the operator configures the same for the fallback client):
-
-```text
-https://gemini.api.apitoken.sale/oauth/callback
-```
-
-Configure and verify the OAuth consent screen as required by Google. Do not put client credentials
-in the repository, command line or systemd unit.
+The installed-app client id/secret is public upstream Gemini CLI application metadata, not an
+operator secret. Account access tokens, refresh tokens, PKCE verifiers, identity, proxy credentials
+and encrypted-roster keys remain secret and must never enter the repository, command line, systemd
+unit, Telegram or logs.
 
 ## Encrypted roster contract
 
@@ -155,8 +157,6 @@ Auth Bot (`/srv/claude-api/data/authbot.env`):
 
 ```text
 AUTH_BOT_IPROYAL_KEY=<existing reseller key shared with Claude provisioning>
-AUTH_BOT_GEMINI_CLIENT_ID=<fallback operator web OAuth client id; sellers normally send their own>
-AUTH_BOT_GEMINI_CLIENT_SECRET=<fallback operator web OAuth client secret>
 AUTH_BOT_GEMINI_CREDENTIAL_KEYS=current:<64-hex>[,old:<64-hex>]
 AUTH_BOT_GEMINI_CREDENTIAL_ACTIVE_KID=current
 AUTH_BOT_GEMINI_REDIRECT_URI=https://gemini.api.apitoken.sale/oauth/callback
@@ -164,8 +164,10 @@ AUTH_BOT_GEMINI_OAUTH_BIND=127.0.0.1:8796
 AUTH_BOT_GEMINI_DIR=/srv/claude-api/data/gemini
 ```
 
-Keep `authbot.env`, `server.env` and any generated key material root-owned and mode `0600`; never
-place them in a release directory, shell history, Telegram message or systemd command line.
+`AUTH_BOT_GEMINI_REDIRECT_URI` retains its legacy name but now identifies the public Auth Bot code
+form; it is not the redirect sent to Google. Keep `authbot.env`, `server.env` and generated key
+material root-owned and mode `0600`; never place them in a release directory, shell history,
+Telegram message or systemd command line.
 
 Gemini runtime (`config.env` or `server.env`):
 

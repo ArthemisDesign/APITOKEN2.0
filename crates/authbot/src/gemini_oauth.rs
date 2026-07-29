@@ -1,14 +1,15 @@
 //! Google OAuth producer for paid Gemini Code Assist subscriptions.
 //!
-//! The browser callback is state+PKCE protected. Only the resulting encrypted credential envelope
-//! is published; account email, Google subject, refresh token, OAuth client secret and authenticated
-//! proxy never enter the roster, bot database, Telegram messages, filenames or logs.
+//! Browser authorization and the HTTPS code-entry form are state+PKCE protected. Only the resulting
+//! encrypted credential envelope is published; account email, Google subject, refresh token,
+//! authenticated proxy and PKCE material never enter the roster, Telegram messages, filenames or
+//! logs. The installed-app client metadata is public upstream Gemini CLI application identity.
 
 use crate::db::{GeminiOAuthSession, Store};
 use crate::tg::Bot;
 use crate::Config as BotConfig;
 use anyhow::{bail, Context};
-use axum::extract::{Query, State};
+use axum::extract::{Form, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
@@ -35,6 +36,14 @@ const AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v2/userinfo";
 const CODE_ASSIST_URL: &str = "https://cloudcode-pa.googleapis.com";
+// Public installed-application OAuth identity embedded by the official Gemini CLI. Google
+// explicitly documents installed-app client secrets as non-confidential; keeping the exact pair
+// lets the authorization code consume Code Assist through Gemini CLI's registered consumer project
+// instead of an unrelated seller/operator Cloud project.
+const OFFICIAL_CLI_CLIENT_ID: &str =
+    "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
+const OFFICIAL_CLI_CLIENT_SECRET: &str = "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";
+const OFFICIAL_CLI_REDIRECT_URI: &str = "https://codeassist.google.com/authcode";
 const OAUTH_SESSION_SECS: i64 = 1200;
 const MAX_ONBOARD_POLLS: usize = 24;
 
@@ -46,11 +55,13 @@ struct PendingOAuthSecret {
     verifier: String,
     proxy: String,
     proxy_order_id: i64,
-    // The seller's own Google OAuth client, sealed so the authorize URL's client and the callback's
-    // token exchange stay consistent across the begin→callback boundary. Falls back to the operator
-    // client when the seller did not supply one.
+    // Keep client material and the redirect in the state-bound envelope so an in-flight session
+    // always exchanges its code with the same OAuth identity and redirect that initiated it. The
+    // default preserves callbacks created by the former hosted Web-client flow during deployment.
     client_id: String,
     client_secret: String,
+    #[serde(default)]
+    redirect_uri: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,8 +73,9 @@ pub struct IproyalLease {
 
 #[derive(Clone)]
 pub struct Config {
-    pub client_id: String,
-    client_secret: String,
+    // Public HTTPS form where the seller submits the one-use code displayed by Google's official
+    // Code Assist redirect page. Despite the legacy env name, this is not sent to Google as the
+    // OAuth redirect URI for new sessions.
     pub redirect_uri: String,
     pub bind: SocketAddr,
     root: PathBuf,
@@ -87,20 +99,12 @@ impl std::fmt::Debug for Config {
 
 impl Config {
     pub fn new(
-        client_id: String,
-        client_secret: String,
         redirect_uri: String,
         bind: SocketAddr,
         root: String,
         keyring: CredentialKeyring,
         active_key_id: String,
     ) -> anyhow::Result<Self> {
-        // The operator OAuth client is an optional fallback now that sellers submit their own; empty
-        // means "no fallback" and a seller must supply a client. When present, it is bounds-checked.
-        if !client_id.is_empty() || !client_secret.is_empty() {
-            bounded(&client_id, 8, 1_024, "Gemini OAuth client id")?;
-            bounded(&client_secret, 1, 4_096, "Gemini OAuth client secret")?;
-        }
         if !keyring.contains(&active_key_id) {
             bail!("AUTH_BOT_GEMINI_CREDENTIAL_ACTIVE_KID is absent from the keyring");
         }
@@ -131,8 +135,6 @@ impl Config {
             bail!("AUTH_BOT_GEMINI_DIR must be absolute");
         }
         Ok(Self {
-            client_id,
-            client_secret,
             redirect_uri: redirect.to_string(),
             bind,
             root,
@@ -233,20 +235,12 @@ impl Config {
     }
 }
 
-fn bounded(value: &str, min: usize, max: usize, description: &str) -> anyhow::Result<()> {
-    if !(min..=max).contains(&value.len()) || value.chars().any(char::is_control) {
-        bail!("invalid {description}");
-    }
-    Ok(())
-}
-
 #[derive(Debug)]
 pub enum StartError {
     Random,
     Proxy,
     State,
     Url,
-    Client,
 }
 
 impl StartError {
@@ -257,34 +251,27 @@ impl StartError {
                 "Не удалось создать защищённую OAuth-сессию. Попробуй ещё раз."
             }
             Self::Url => "Gemini OAuth временно неверно настроен. Администратор уже уведомлён.",
-            Self::Client => "OAuth client id/secret не прошли проверку. Пришли значения из своего Google Cloud OAuth-клиента (client id — длинная строка, secret — из раздела Credentials).",
         }
     }
 }
 
-/// Create a restart-safe, one-use PKCE transaction. The returned link contains no token.
+pub struct AuthorizationLinks {
+    pub authorize_url: String,
+    pub submit_url: String,
+}
+
+/// Create a restart-safe, one-use PKCE transaction using the public installed-app identity from the
+/// official Gemini CLI. The seller authorizes at Google, then submits the displayed one-use code
+/// through our HTTPS form; neither link contains a token or OAuth client secret.
 pub fn begin(
     store: &Store,
     config: &Config,
     chat_id: i64,
     proxy: &str,
     proxy_order_id: i64,
-    client_id: Option<String>,
-    client_secret: Option<String>,
-) -> Result<String, StartError> {
+) -> Result<AuthorizationLinks, StartError> {
     if proxy_order_id < 0 {
         return Err(StartError::Proxy);
-    }
-    // The seller's own OAuth client distributes the fleet across many Google clients so the whole
-    // pool cannot be revoked at once. When absent, fall back to the operator client.
-    let client_id = client_id.unwrap_or_else(|| config.client_id.clone());
-    let client_secret = client_secret.unwrap_or_else(|| config.client_secret.clone());
-    if !(8..=1_024).contains(&client_id.len())
-        || !(1..=4_096).contains(&client_secret.len())
-        || client_id.bytes().any(|byte| byte.is_ascii_control())
-        || client_secret.bytes().any(|byte| byte.is_ascii_control())
-    {
-        return Err(StartError::Client);
     }
     let proxy = normalize_proxy_url(proxy)?;
     let mut state_bytes = [0u8; 32];
@@ -298,8 +285,9 @@ pub fn begin(
         verifier,
         proxy,
         proxy_order_id,
-        client_id: client_id.clone(),
-        client_secret,
+        client_id: OFFICIAL_CLI_CLIENT_ID.to_string(),
+        client_secret: OFFICIAL_CLI_CLIENT_SECRET.to_string(),
+        redirect_uri: OFFICIAL_CLI_REDIRECT_URI.to_string(),
     };
     let payload = Zeroizing::new(serde_json::to_string(&pending).map_err(|_| StartError::State)?);
     let sealed_payload = config
@@ -319,16 +307,20 @@ pub fn begin(
     let mut url = reqwest::Url::parse(AUTHORIZE_URL).map_err(|_| StartError::Url)?;
     url.query_pairs_mut()
         .append_pair("response_type", "code")
-        .append_pair("client_id", &client_id)
-        .append_pair("redirect_uri", &config.redirect_uri)
+        .append_pair("client_id", OFFICIAL_CLI_CLIENT_ID)
+        .append_pair("redirect_uri", OFFICIAL_CLI_REDIRECT_URI)
         .append_pair("scope", SCOPES)
         .append_pair("access_type", "offline")
         .append_pair("prompt", "consent")
-        .append_pair("include_granted_scopes", "true")
         .append_pair("state", &state)
         .append_pair("code_challenge_method", "S256")
         .append_pair("code_challenge", &challenge);
-    Ok(url.into())
+    let mut submit_url = reqwest::Url::parse(&config.redirect_uri).map_err(|_| StartError::Url)?;
+    submit_url.query_pairs_mut().append_pair("state", &state);
+    Ok(AuthorizationLinks {
+        authorize_url: url.into(),
+        submit_url: submit_url.into(),
+    })
 }
 
 fn normalize_proxy_url(proxy: &str) -> Result<String, StartError> {
@@ -362,6 +354,12 @@ struct CallbackQuery {
     error: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct CodeSubmission {
+    code: String,
+    state: String,
+}
+
 pub async fn serve(bot: Bot, store: Arc<Store>, config: Arc<BotConfig>) -> anyhow::Result<()> {
     let oauth = config
         .gemini_oauth
@@ -371,7 +369,10 @@ pub async fn serve(bot: Bot, store: Arc<Store>, config: Arc<BotConfig>) -> anyho
         .await
         .context("bind Gemini OAuth callback")?;
     let app = Router::new()
-        .route("/oauth/callback", get(callback))
+        // New official-CLI sessions use GET to render a no-store form and POST to submit the
+        // one-use code. GET with code/error remains for short-lived compatibility with hosted
+        // callbacks that were already in flight when this version deployed.
+        .route("/oauth/callback", get(callback).post(submit_code))
         .with_state(CallbackState { bot, store, config });
     axum::serve(listener, app)
         .await
@@ -383,24 +384,11 @@ async fn callback(
     headers: HeaderMap,
     Query(query): Query<CallbackQuery>,
 ) -> Response {
-    let Some(oauth) = state.config.gemini_oauth.as_ref() else {
-        return callback_html(StatusCode::SERVICE_UNAVAILABLE, false);
-    };
-    let Ok(_callback_permit) = oauth.callback_limit.clone().try_acquire_owned() else {
-        return callback_html(StatusCode::SERVICE_UNAVAILABLE, false);
-    };
     let callback_state = query.state.as_deref().or_else(|| {
         headers
             .get("x-gemini-oauth-state")
             .and_then(|value| value.to_str().ok())
     });
-    let Some(callback_state) = callback_state.filter(|value| valid_oauth_value(value, 128)) else {
-        return callback_html(StatusCode::BAD_REQUEST, false);
-    };
-    let session = match state.store.claim_gemini_oauth(callback_state) {
-        Ok(Some(session)) => session,
-        Ok(None) | Err(_) => return callback_html(StatusCode::BAD_REQUEST, false),
-    };
     let callback_error = query
         .error
         .as_deref()
@@ -410,30 +398,71 @@ async fn callback(
                 .and_then(|value| value.to_str().ok())
         })
         .filter(|value| !value.is_empty());
-    if callback_error.is_some() {
-        fail_callback(&state, &session, Failure::Authorization).await;
-        return callback_html(StatusCode::BAD_REQUEST, false);
-    }
     let code = query.code.as_deref().or_else(|| {
         headers
             .get("x-gemini-oauth-code")
             .and_then(|value| value.to_str().ok())
     });
+    if code.is_none() && callback_error.is_none() {
+        return match callback_state.filter(|value| valid_oauth_state(value)) {
+            Some(callback_state) => code_form(callback_state),
+            None => callback_html(StatusCode::BAD_REQUEST, false),
+        };
+    }
+    finish_oauth(&state, callback_state, code, callback_error).await
+}
+
+async fn submit_code(
+    State(state): State<CallbackState>,
+    Form(submission): Form<CodeSubmission>,
+) -> Response {
+    finish_oauth(
+        &state,
+        Some(submission.state.as_str()),
+        Some(submission.code.trim()),
+        None,
+    )
+    .await
+}
+
+async fn finish_oauth(
+    state: &CallbackState,
+    callback_state: Option<&str>,
+    code: Option<&str>,
+    callback_error: Option<&str>,
+) -> Response {
+    let Some(oauth) = state.config.gemini_oauth.as_ref() else {
+        return callback_html(StatusCode::SERVICE_UNAVAILABLE, false);
+    };
+    let Ok(_callback_permit) = oauth.callback_limit.clone().try_acquire_owned() else {
+        return callback_html(StatusCode::SERVICE_UNAVAILABLE, false);
+    };
+    let Some(callback_state) = callback_state.filter(|value| valid_oauth_state(value)) else {
+        return callback_html(StatusCode::BAD_REQUEST, false);
+    };
+    let session = match state.store.claim_gemini_oauth(callback_state) {
+        Ok(Some(session)) => session,
+        Ok(None) | Err(_) => return callback_html(StatusCode::BAD_REQUEST, false),
+    };
+    if callback_error.is_some() {
+        fail_callback(state, &session, Failure::Authorization).await;
+        return callback_html(StatusCode::BAD_REQUEST, false);
+    }
     let Some(code) = code.filter(|value| valid_oauth_value(value, 4_096)) else {
-        fail_callback(&state, &session, Failure::Authorization).await;
+        fail_callback(state, &session, Failure::Authorization).await;
         return callback_html(StatusCode::BAD_REQUEST, false);
     };
     let payload_envelope: SealedCredential = match serde_json::from_str(&session.sealed_payload) {
         Ok(envelope) => envelope,
         Err(_) => {
-            fail_callback(&state, &session, Failure::Storage).await;
+            fail_callback(state, &session, Failure::Storage).await;
             return callback_html(StatusCode::BAD_GATEWAY, false);
         }
     };
     let decrypted_payload = match oauth.keyring.open_secret(&session.state, &payload_envelope) {
         Ok(payload) => payload,
         Err(_) => {
-            fail_callback(&state, &session, Failure::Storage).await;
+            fail_callback(state, &session, Failure::Storage).await;
             return callback_html(StatusCode::BAD_GATEWAY, false);
         }
     };
@@ -441,10 +470,15 @@ async fn callback(
         match serde_json::from_str::<PendingOAuthSecret>(decrypted_payload.as_str()) {
             Ok(pending) if valid_oauth_value(&pending.verifier, 256) => pending,
             _ => {
-                fail_callback(&state, &session, Failure::Storage).await;
+                fail_callback(state, &session, Failure::Storage).await;
                 return callback_html(StatusCode::BAD_GATEWAY, false);
             }
         };
+    let exchange_redirect = if pending.redirect_uri.is_empty() {
+        oauth.redirect_uri.as_str()
+    } else {
+        pending.redirect_uri.as_str()
+    };
     match complete(
         oauth,
         &session,
@@ -454,6 +488,7 @@ async fn callback(
         pending.proxy_order_id,
         pending.client_id.as_str(),
         pending.client_secret.as_str(),
+        exchange_redirect,
     )
     .await
     {
@@ -461,6 +496,7 @@ async fn callback(
             let _ = state.store.finish_gemini_oauth(&session.state);
             let _ = state.store.set_want(session.chat_id, "");
             let _ = state.store.set_hproxy(session.chat_id, "");
+            let _ = state.store.set_hproxy_order(session.chat_id, 0);
             let _ = state
                 .bot
                 .send(
@@ -489,7 +525,7 @@ async fn callback(
             callback_html(StatusCode::OK, true)
         }
         Err(failure) => {
-            fail_callback(&state, &session, failure).await;
+            fail_callback(state, &session, failure).await;
             callback_html(StatusCode::BAD_GATEWAY, false)
         }
     }
@@ -501,6 +537,20 @@ fn callback_html(status: StatusCode, success: bool) -> Response {
     } else {
         "<!doctype html><meta charset=utf-8><title>Gemini authorization failed</title><h1>Авторизация не завершена</h1><p>Вернитесь в Telegram и начните подключение заново.</p>"
     };
+    secure_html(status, body.to_string(), false)
+}
+
+fn code_form(state: &str) -> Response {
+    // `valid_oauth_state` limits this interpolation to URL-safe ASCII, so the hidden value cannot
+    // break out of its quoted attribute. The authorization code is submitted only in the POST body
+    // and therefore stays out of Telegram, browser history, referrers and ordinary access logs.
+    let body = format!(
+        "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Завершить Gemini OAuth</title><h1>Завершить подключение Gemini</h1><p>Скопируйте одноразовый код со страницы Google Code Assist и вставьте его ниже.</p><form method=post action=\"/oauth/callback\"><input type=hidden name=state value=\"{state}\"><p><label>Код авторизации<br><input name=code required autofocus autocomplete=off maxlength=4096 size=56></label></p><button type=submit>Подключить подписку</button></form><p>Код отправляется напрямую Auth Bot и не попадает в Telegram.</p>"
+    );
+    secure_html(StatusCode::OK, body, true)
+}
+
+fn secure_html(status: StatusCode, body: String, allow_form: bool) -> Response {
     let mut response = (status, Html(body)).into_response();
     let headers = response.headers_mut();
     headers.insert(
@@ -509,7 +559,11 @@ fn callback_html(status: StatusCode, success: bool) -> Response {
     );
     headers.insert(
         "content-security-policy",
-        axum::http::HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
+        axum::http::HeaderValue::from_static(if allow_form {
+            "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+        } else {
+            "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+        }),
     );
     headers.insert(
         "cross-origin-opener-policy",
@@ -542,9 +596,9 @@ fn callback_html(status: StatusCode, success: bool) -> Response {
 
 async fn fail_callback(state: &CallbackState, session: &GeminiOAuthSession, failure: Failure) {
     let _ = state.store.fail_gemini_oauth(&session.state);
-    // `begin()` sealed and then cleared the wizard draft, so every failed one-use callback must
-    // restart at client id. `gm_proxy` belonged to the removed legacy wizard and strands messages.
-    let _ = state.store.set_want(session.chat_id, "gm_gid");
+    // The one-use code and its encrypted PKCE transaction cannot be retried. Restart from the
+    // account proxy; Auth Bot will create a fresh official Gemini CLI authorization session.
+    let _ = state.store.set_want(session.chat_id, "gm_gproxy");
     let _ = state
         .bot
         .send(session.chat_id, failure.public_message())
@@ -558,12 +612,23 @@ async fn fail_callback(state: &CallbackState, session: &GeminiOAuthSession, fail
         "[gemini-oauth] chat={} callback failed: {}{}",
         session.chat_id,
         failure.code(),
-        if failure.operator_action_required() { " (operator notified)" } else { "" }
+        if failure.operator_action_required() {
+            " (operator notified)"
+        } else {
+            ""
+        }
     );
 }
 
 fn valid_oauth_value(value: &str, max: usize) -> bool {
     !value.is_empty() && value.len() <= max && value.bytes().all(|byte| byte.is_ascii_graphic())
+}
+
+fn valid_oauth_state(value: &str) -> bool {
+    value.len() == 43
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -594,10 +659,10 @@ impl Failure {
 
     fn public_message(self) -> &'static str {
         match self {
-            Self::Authorization => "❌ Google отклонил или завершил OAuth-сессию. Начни подключение заново: пришли Client ID своего OAuth-клиента.",
-            Self::CodeAssistApiDisabled => "❌ В Google Cloud-проекте OAuth-клиента не включён Cloud Code Private API (cloudcode-pa.googleapis.com). Включи его в Google Cloud Console, подожди несколько минут и начни подключение заново с Client ID.",
-            Self::Proxy => "❌ Не удалось использовать закреплённый прокси. Проверь его и начни подключение заново с Client ID.",
-            Self::Temporary => "⚠️ Google временно не завершил проверку. Подожди немного и начни подключение заново с Client ID.",
+            Self::Authorization => "❌ Google отклонил или завершил OAuth-сессию. Пришли прокси ещё раз — бот создаст новую официальную ссылку Gemini CLI.",
+            Self::CodeAssistApiDisabled => "❌ Google не открыл Code Assist для официального OAuth-сеанса Gemini CLI. Включать API в своём Cloud-проекте не нужно. Пришли прокси ещё раз; если ошибка повторится, администратор проверит ответ Google.",
+            Self::Proxy => "❌ Не удалось использовать закреплённый прокси. Проверь его и пришли ещё раз.",
+            Self::Temporary => "⚠️ Google временно не завершил проверку. Подожди немного и пришли прокси ещё раз для новой OAuth-сессии.",
             Self::UnsupportedPlan => "❌ Аккаунт авторизован, но совместимая подписка не обнаружена. Поддерживаются Google AI Pro/Ultra, Code Assist Standard/Enterprise и Workspace AI Ultra; Google AI Plus и другие Workspace AI планы не дают этот Code Assist tier.",
             Self::Duplicate => "❌ Эта Google-подписка уже присутствует в пуле.",
             Self::DuplicateProxy => "❌ Этот прокси уже закреплён за другим Gemini-профилем. Для подписки нужен отдельный прокси.",
@@ -606,11 +671,14 @@ impl Failure {
     }
 
     fn operator_action_required(self) -> bool {
-        matches!(self, Self::Storage)
+        matches!(self, Self::CodeAssistApiDisabled | Self::Storage)
     }
 
     fn operator_message(self) -> &'static str {
-        "⚠️ Gemini OAuth publication failed closed. Проверь права AUTH_BOT_GEMINI_DIR, profiles.json и совпадение credential keyring; секреты не логировались."
+        match self {
+            Self::CodeAssistApiDisabled => "⚠️ Официальный Gemini CLI OAuth завершился, но cloudcode-pa отклонил consumer project. Проверь bounded diagnostic в journalctl; пользовательский Cloud API включать не нужно.",
+            _ => "⚠️ Gemini OAuth publication failed closed. Проверь права AUTH_BOT_GEMINI_DIR, profiles.json и совпадение credential keyring; секреты не логировались.",
+        }
     }
 }
 
@@ -680,6 +748,7 @@ async fn complete(
     proxy_order_id: i64,
     client_id: &str,
     client_secret: &str,
+    redirect_uri: &str,
 ) -> Result<PublishedProfile, Failure> {
     eprintln!(
         "[gemini-oauth] chat={} proxy_order={} finalizing: exchanging Google authorization code",
@@ -711,7 +780,7 @@ async fn complete(
             ("client_secret", client_secret),
             ("code", code),
             ("code_verifier", verifier),
-            ("redirect_uri", config.redirect_uri.as_str()),
+            ("redirect_uri", redirect_uri),
         ])
         .send()
         .await
@@ -1273,19 +1342,10 @@ mod tests {
     }
 
     #[test]
-    fn operator_client_is_optional_and_seller_client_is_required_without_it() {
+    fn official_cli_oauth_needs_no_operator_or_seller_client() {
         let (root, ring) = fixture();
-        let store = Store::open(
-            root.join("state")
-                .join("authbot.db")
-                .to_str()
-                .unwrap(),
-        )
-        .unwrap();
-        // Config initializes with no operator client (empty = no fallback).
+        let store = Store::open(root.join("state").join("authbot.db").to_str().unwrap()).unwrap();
         let config = Config::new(
-            String::new(),
-            String::new(),
             "https://gemini.example/oauth/callback".into(),
             "127.0.0.1:8796".parse().unwrap(),
             root.join("gemini").to_string_lossy().into_owned(),
@@ -1294,22 +1354,17 @@ mod tests {
         )
         .unwrap();
         let proxy = "http://user:pass@127.0.0.1:8080";
-        // A seller-supplied client works.
-        assert!(begin(
-            &store,
-            &config,
-            1,
-            proxy,
-            0,
-            Some("seller-1.apps.googleusercontent.com".into()),
-            Some("seller-secret".into()),
-        )
-        .is_ok());
-        // No seller client and no operator fallback → rejected before any session is created.
-        assert!(matches!(
-            begin(&store, &config, 2, proxy, 0, None, None),
-            Err(StartError::Client)
-        ));
+        let links = begin(&store, &config, 1, proxy, 0).unwrap();
+        let authorize = reqwest::Url::parse(&links.authorize_url).unwrap();
+        assert!(authorize
+            .query_pairs()
+            .any(|(name, value)| name == "client_id" && value == OFFICIAL_CLI_CLIENT_ID));
+        assert!(authorize
+            .query_pairs()
+            .any(|(name, value)| { name == "redirect_uri" && value == OFFICIAL_CLI_REDIRECT_URI }));
+        assert!(links
+            .submit_url
+            .starts_with("https://gemini.example/oauth/callback?state="));
     }
 
     #[test]
@@ -1319,8 +1374,6 @@ mod tests {
         let database = state_dir.join("authbot.db");
         let store = Store::open(database.to_str().unwrap()).unwrap();
         let config = Config::new(
-            "client.apps.googleusercontent.com".into(),
-            "client-secret-value".into(),
             "https://gemini.example/oauth/callback".into(),
             "127.0.0.1:8796".parse().unwrap(),
             root.join("gemini").to_string_lossy().into_owned(),
@@ -1329,24 +1382,14 @@ mod tests {
         )
         .unwrap();
         let proxy = "http://user:pass@127.0.0.1:8080";
-        let authorization = begin(
-            &store,
-            &config,
-            42,
-            proxy,
-            777,
-            Some("seller-1234.apps.googleusercontent.com".into()),
-            Some("seller-secret-value".into()),
-        )
-        .unwrap();
-        assert!(!authorization.contains("user:pass"));
-        assert!(!authorization.contains("client-secret-value"));
-        assert!(!authorization.contains("seller-secret-value"));
-        let url = reqwest::Url::parse(&authorization).unwrap();
-        // The authorize URL must carry the seller's client id, not the operator fallback.
-        assert!(url.query_pairs().any(|(name, value)| {
-            name == "client_id" && value == "seller-1234.apps.googleusercontent.com"
-        }));
+        let links = begin(&store, &config, 42, proxy, 777).unwrap();
+        assert!(!links.authorize_url.contains("user:pass"));
+        assert!(!links.authorize_url.contains(OFFICIAL_CLI_CLIENT_SECRET));
+        assert!(!links.submit_url.contains("user:pass"));
+        let url = reqwest::Url::parse(&links.authorize_url).unwrap();
+        assert!(url
+            .query_pairs()
+            .any(|(name, value)| { name == "client_id" && value == OFFICIAL_CLI_CLIENT_ID }));
         let state = url
             .query_pairs()
             .find_map(|(name, value)| (name == "state").then(|| value.into_owned()))
@@ -1356,7 +1399,7 @@ mod tests {
             .any(|(name, value)| { name == "code_challenge_method" && value == "S256" }));
         let session = store.claim_gemini_oauth(&state).unwrap().unwrap();
         assert!(!session.sealed_payload.contains("user:pass"));
-        assert!(!session.sealed_payload.contains("seller-secret-value"));
+        assert!(!session.sealed_payload.contains(OFFICIAL_CLI_CLIENT_SECRET));
         let envelope: SealedCredential = serde_json::from_str(&session.sealed_payload).unwrap();
         let decrypted = config
             .keyring
@@ -1365,8 +1408,9 @@ mod tests {
         let pending: PendingOAuthSecret = serde_json::from_str(decrypted.as_str()).unwrap();
         assert_eq!(pending.proxy, format!("{proxy}/"));
         assert_eq!(pending.proxy_order_id, 777);
-        assert_eq!(pending.client_id, "seller-1234.apps.googleusercontent.com");
-        assert_eq!(pending.client_secret, "seller-secret-value");
+        assert_eq!(pending.client_id, OFFICIAL_CLI_CLIENT_ID);
+        assert_eq!(pending.client_secret, OFFICIAL_CLI_CLIENT_SECRET);
+        assert_eq!(pending.redirect_uri, OFFICIAL_CLI_REDIRECT_URI);
         assert!(valid_oauth_value(&pending.verifier, 256));
         assert!(!session.sealed_payload.contains(&pending.verifier));
         for path in [
@@ -1387,6 +1431,19 @@ mod tests {
     }
 
     #[test]
+    fn pending_payload_without_redirect_keeps_inflight_hosted_callback_compatible() {
+        let pending: PendingOAuthSecret = serde_json::from_value(json!({
+            "verifier": "legacy-verifier",
+            "proxy": "http://proxy.example:8080/",
+            "proxy_order_id": 0,
+            "client_id": "legacy.apps.googleusercontent.com",
+            "client_secret": "legacy-secret"
+        }))
+        .unwrap();
+        assert!(pending.redirect_uri.is_empty());
+    }
+
+    #[test]
     fn callback_page_is_non_cacheable_and_cannot_load_or_refer() {
         let response = callback_html(StatusCode::OK, true);
         assert_eq!(response.headers()["cache-control"], "no-store, max-age=0");
@@ -1404,6 +1461,22 @@ mod tests {
             .to_str()
             .unwrap()
             .contains("default-src 'none'"));
+    }
+
+    #[test]
+    fn code_form_accepts_only_generated_state_and_posts_without_query_secrets() {
+        let state = "A".repeat(43);
+        assert!(valid_oauth_state(&state));
+        assert!(!valid_oauth_state("too-short"));
+        assert!(!valid_oauth_state(&format!("{}\"", "A".repeat(42))));
+        let response = code_form(&state);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "no-store, max-age=0");
+        let csp = response.headers()["content-security-policy"]
+            .to_str()
+            .unwrap();
+        assert!(csp.contains("form-action 'self'"));
+        assert_eq!(response.headers()["referrer-policy"], "no-referrer");
     }
 
     #[test]
@@ -1460,7 +1533,7 @@ mod tests {
         );
         assert!(Failure::CodeAssistApiDisabled
             .public_message()
-            .contains("cloudcode-pa.googleapis.com"));
+            .contains("официального OAuth-сеанса Gemini CLI"));
         assert_eq!(
             classify_google_http_failure(403, "permission denied"),
             Failure::Authorization
@@ -1512,8 +1585,6 @@ mod tests {
         .unwrap();
         let profile = publish(&root, &ring, "old", credential("rotate-subject")).unwrap();
         let config = Config::new(
-            "client.apps.googleusercontent.com".into(),
-            "client-secret".into(),
             "https://gemini.example/oauth/callback".into(),
             "127.0.0.1:8796".parse().unwrap(),
             root.to_string_lossy().into_owned(),
@@ -1534,8 +1605,6 @@ mod tests {
     fn startup_prepares_a_private_empty_layout_for_the_runtime_mount() {
         let (root, ring) = fixture();
         let config = Config::new(
-            "client.apps.googleusercontent.com".into(),
-            "client-secret".into(),
             "https://gemini.example/oauth/callback".into(),
             "127.0.0.1:8796".parse().unwrap(),
             root.to_string_lossy().into_owned(),
@@ -1558,8 +1627,6 @@ mod tests {
         let (root, ring) = fixture();
         let published = publish(&root, &ring, "current", credential("private-subject")).unwrap();
         let config = Config::new(
-            "client.apps.googleusercontent.com".into(),
-            "client-secret".into(),
             "https://gemini.example/oauth/callback".into(),
             "127.0.0.1:8796".parse().unwrap(),
             root.to_string_lossy().into_owned(),

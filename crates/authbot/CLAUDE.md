@@ -21,7 +21,7 @@
 | Результат | `sk-ant-oat01-…` | ничего, что нам можно читать | refresh/access token + Google subject/project/tier |
 | Чем становится покупка | строка в реестре | каталог `CODEX_HOME` | AEAD envelope + opaque запись в `profiles.json` |
 | Модуль | `setup_token.rs` | `codex_login.rs` | `gemini_oauth.rs` |
-| Шаги продавца | ссылка → `code#state` | ссылка + одноразовый код | свой OAuth client (id+secret) + прокси → hosted Google OAuth callback |
+| Шаги продавца | ссылка → `code#state` | ссылка + одноразовый код | прокси → официальный Gemini CLI OAuth → одноразовый код в HTTPS-форму |
 | Как движок узнаёт | reload реестра | скан homes | atomic roster refresh на health-loop |
 
 **Инварианты Codex-ветки (критично):**
@@ -37,14 +37,15 @@
    `AUTH_BOT_CODEX_HOMES_DIR` — вся его часть контракта.
 
 **Инварианты Gemini-ветки (критично):**
-1. Каждый продавец присылает СВОЙ Google Cloud OAuth **Web** client (client_id + client_secret),
-   созданный в его собственном проекте, — бот собирает его в хендоффе и seal-ит в state-bound PKCE
-   payload и в credential. Это размазывает флот по множеству OAuth-клиентов, чтобы пул нельзя было
-   отозвать одним действием. Операторский `AUTH_BOT_GEMINI_CLIENT_ID/SECRET` остаётся только как
-   fallback. Всегда hosted callback, `state` + PKCE. User-Agent всегда truthful. Продавец обязан
-   добавить наш redirect URI (`…/oauth/callback`) в свой OAuth-клиент.
-2. OAuth code/tokens никогда не идут через Telegram. Короткоживущий proxy в SQLite только как
-   XChaCha20-Poly1305 envelope, привязанный AAD к одноразовому state; callback claim одноразовый.
+1. OAuth использует публичный installed-application client id/secret из официального Gemini CLI и
+   его фиксированный redirect `https://codeassist.google.com/authcode`. Продавец не создаёт Cloud
+   OAuth-клиент и не включает private API в своём проекте. Всегда `state` + PKCE S256; User-Agent
+   Auth Bot остаётся truthful, а client id/secret и redirect, использованные при старте, seal-ятся
+   вместе с транзакцией, чтобы token exchange не мог сменить identity.
+2. OAuth code/tokens никогда не идут через Telegram. Google показывает одноразовый code на своей
+   Code Assist странице; продавец POST-ит его через no-store HTTPS-форму Auth Bot. Короткоживущий
+   proxy в SQLite только как XChaCha20-Poly1305 envelope, привязанный AAD к одноразовому state;
+   form/callback claim одноразовый.
 3. До публикации проверяются verified userinfo и `loadCodeAssist`; принимаются только известные
    Google AI Pro/Ultra, Code Assist Standard/Enterprise и Workspace AI Ultra. Free, Plus,
    несовместимые Workspace и unknown future paid tiers fail-closed.
@@ -69,9 +70,9 @@
 - `AUTH_BOT_GEMINI_DIR` — корень `credentials/` + `profiles.json` (деф
   `/srv/claude-api/data/gemini`); движковый `CLAUDE_API_GEMINI_PROFILES_FILE` должен указывать на
   `<этот каталог>/profiles.json`.
-- `AUTH_BOT_GEMINI_CLIENT_ID`, `AUTH_BOT_GEMINI_CLIENT_SECRET`,
-  `AUTH_BOT_GEMINI_REDIRECT_URI`, `AUTH_BOT_GEMINI_OAUTH_BIND` — hosted OAuth callback + fallback
-  operator client (продавцы обычно присылают свой client id/secret через бота).
+- `AUTH_BOT_GEMINI_REDIRECT_URI`, `AUTH_BOT_GEMINI_OAUTH_BIND` — публичная HTTPS-форма приёма
+  одноразового кода (`…/oauth/callback`) + её loopback bind. Legacy-название redirect сохранено для
+  совместимости env; Google получает фиксированный redirect официального Gemini CLI.
 - `AUTH_BOT_GEMINI_CREDENTIAL_KEYS`, `AUTH_BOT_GEMINI_CREDENTIAL_ACTIVE_KID` — общий с runtime
   AEAD keyring и активный ключ публикации/rotation.
 - `AUTH_BOT_IPROYAL_KEY` — авто-выпуск прокси (пусто = ручной ввод).
