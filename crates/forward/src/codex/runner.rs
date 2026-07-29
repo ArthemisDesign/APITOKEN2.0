@@ -245,13 +245,20 @@ impl CodexHome {
             .await;
         process.unregister_turn(&thread_id).await;
         registration_guard.disarm();
-        if matches!(
-            result,
-            Err(ProcessError::Closed
+        // Recycle the shared child on a genuine transport fault, but NOT on a turn-completion
+        // timeout: that case is handled in the event-loop arm below (interrupt only this turn, and
+        // recycle only if the interrupt itself fails), so recycling here too would defeat it and
+        // collaterally kill every sibling turn multiplexed over the same child.
+        let recycle = match &result {
+            Err(
+                ProcessError::Closed
                 | ProcessError::Protocol(_)
-                | ProcessError::Timeout(_)
-                | ProcessError::AuthenticationRequired)
-        ) {
+                | ProcessError::AuthenticationRequired,
+            ) => true,
+            Err(ProcessError::Timeout(stage)) => *stage != "turn completion",
+            _ => false,
+        };
+        if recycle {
             self.invalidate(&process).await;
         }
         result
@@ -604,8 +611,22 @@ impl CodexHome {
             }
             Ok(Err(error)) => Err(error),
             Err(_) => {
-                self.invalidate(&process).await;
+                // Turn wall-clock exceeded. Interrupt only THIS turn instead of recycling the whole
+                // child, so one slow or stuck turn does not collaterally fail every other turn
+                // multiplexed over the same shared app-server child. The interrupt RPC carries its
+                // own request timeout, so if it fails the child is genuinely wedged (not merely
+                // slow) and we fall back to recycling it — which fans the failure to siblings, but
+                // only when the child truly is dead.
                 interrupt_guard.disarm();
+                let interrupted = process
+                    .request(
+                        "turn/interrupt",
+                        json!({"threadId": thread_id.clone(), "turnId": turn_id.clone()}),
+                    )
+                    .await;
+                if interrupted.is_err() {
+                    self.invalidate(&process).await;
+                }
                 Err(ProcessError::Timeout("turn completion"))
             }
         }
@@ -1019,7 +1040,11 @@ done
                 10_000
             },
             request_timeout_ms,
-            turn_timeout_ms: 2_000,
+            turn_timeout_ms: if mode == "turn_completion_timeout" {
+                200
+            } else {
+                2_000
+            },
             max_concurrent_turns: 1,
             admit_below_used_percent: 95,
             window_cap_usd_prior: 1_500.0,
@@ -1886,6 +1911,32 @@ done
 
         assert_eq!(result.usage.input_tokens, 101);
         assert!(gateway.operational_status().await.process_live);
+    }
+
+    #[tokio::test]
+    async fn a_turn_completion_timeout_interrupts_only_that_turn_and_keeps_the_child_live() {
+        // The child accepts the turn but never sends turn/completed, so the event loop hits the
+        // turn deadline. A single stuck turn must not recycle the shared child (which would fail
+        // every sibling turn); it is interrupted while the child stays live for other turns.
+        // turn_timeout is forced to 200ms for this mode so the deadline fires fast; the request
+        // timeout stays generous so the follow-up interrupt RPC has room to be acked.
+        let (gateway, workspace) =
+            fake_gateway_with_request_timeout("turn_completion_timeout", 2_000);
+        let home = gateway.homes().await.into_iter().next().unwrap();
+        let process = home.process().await.unwrap();
+
+        let error = gateway
+            .run_turn(turn_request(test_model()), None, None)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ProcessError::Timeout("turn completion")));
+        assert!(
+            process.is_live(),
+            "the shared child must survive one turn timeout"
+        );
+        assert!(gateway.operational_status().await.process_live);
+        wait_for_method(&workspace.log, "turn/interrupt").await;
     }
 
     #[tokio::test]
