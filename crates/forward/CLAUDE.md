@@ -158,7 +158,7 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
 4. Raw reasoning text не публиковать; только provider summary. `encrypted_content` — только по
    явному Responses `include`, но хранить tenant-bound для корректной continuity.
 5. **SDK-совместимость через lenient parsing:** параметры, которые app-server не может исполнить
-   (sampling/seed/logprobs/n/store/service_tier/stream_options, forced
+   (sampling/seed/logprobs/n/store/stream_options, forced
    tool_choice → degrade в "auto", parallel_tool_calls=false, strict=true tools → non-strict,
    неизвестные include, effort вне каталога модели → дефолт модели, message `name`, assistant
    `refusal`/`audio`, legacy `functions`/`function_call` → маппятся в tools/tool_choice, любые
@@ -187,11 +187,18 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    (estimate/4) без turn и reserve. Ограниченные диагностические
    compatibility-поля текущего Codex (`client_metadata`, `safety_identifier`) разрешено валидировать
    и отбрасывать без логирования/форвардинга; `prompt_cache_key` валидируется и только отражается в
-   публичном ответе. Usage для settlement брать из authoritative completed app-server turn.
+   публичном ответе. `service_tier=fast|priority` для Fast-capable модели нормализуется в
+   app-server `priority`; `thread/start` обязан подтвердить тот же tier, иначе запрос fail closed,
+   потому что молчаливый downgrade нарушит биллинг. Для standard/default всегда передавать явный
+   null, чтобы локальный config home не апгрейдил трафик. Остальные tier-значения leniently
+   деградируют в default. Usage для settlement брать из authoritative completed app-server turn.
 6. Не заявлять OpenAI ownership: public `owned_by` остаётся `apitoken`; полный scope и runbook —
    `docs/CODEX_APP_SERVER.md`.
 7. **Цены — только из `metering::codex`** (audited, effective-dated таблица, как Claude-тарифы).
-   `forward` цену не объявляет; reserve и settle резолвят её по одному и тому же clock.
+   `forward` цену не объявляет; reserve и settle резолвят её по одному и тому же clock. Fast
+   множитель ChatGPT credits (GPT-5.6/5.5 = 2.5x, GPT-5.4 = 2x) применяется одинаково к reserve,
+   settle, provider ledger и capacity spend; неизвестная Fast-модель резервируется консервативно
+   по 2.5x.
 8. **Калибровка ёмкости окна — как в Claude-пуле, на тех же гвардах.** Каждый успешный turn
    (billed ИЛИ admin) кредитует home его exact official-price cost (`billing::price_real_nano`,
    чистая математика, деньги не трогает); каждый rate-limit snapshot гоняется через

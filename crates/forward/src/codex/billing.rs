@@ -53,6 +53,7 @@ impl PendingCodexAdmission {
         estimated_input_tokens: u64,
         requested_output_tokens: Option<u64>,
         reserve_overhead_tokens: u64,
+        fast: bool,
     ) -> Result<CodexAdmission, AdmissionError> {
         let reservation = match (&self.authz, &app.billing) {
             (
@@ -66,7 +67,8 @@ impl PendingCodexAdmission {
                 Some(billing),
             ) => {
                 let estimated = estimated_input_tokens.saturating_add(reserve_overhead_tokens);
-                let base = reserve_cost(model, estimated, requested_output_tokens, pool::now());
+                let base =
+                    reserve_cost(model, estimated, requested_output_tokens, pool::now(), fast);
                 let hold =
                     metering::apply_multiplier(base, *mult_bp).clamp(1, i64::MAX as i128) as i64;
                 // Cap the authorization hold to the account's known balance. The reserve above is a
@@ -134,6 +136,7 @@ impl CodexAdmission {
         model: &CodexModel,
         usage: &CodexUsage,
         requested_output_tokens: Option<u64>,
+        fast: bool,
     ) {
         let Some(mut reservation) = self.reservation.take() else {
             return;
@@ -146,6 +149,7 @@ impl CodexAdmission {
             reservation.mult_bp,
             requested_output_tokens,
             now,
+            fast,
         );
         reservation.billing.settle_detached(
             &reservation.request_id,
@@ -177,8 +181,9 @@ fn settled_charge(
     mult_bp: i64,
     requested_output_tokens: Option<u64>,
     now: i64,
+    fast: bool,
 ) -> (i64, Option<registry::UsageEventInput>) {
-    let priced = price_usage(model, usage, now);
+    let priced = price_usage(model, usage, now, fast);
     // Honest billing: the transport cannot hard-stop generation, so the model may emit more output
     // than the client's requested cap. The provider truly consumed those tokens (the immutable
     // usage_event and window calibration below record the real figures), but the customer is never
@@ -186,21 +191,9 @@ fn settled_charge(
     // real API where hitting `max_tokens` stops generation and bills only up to the cap.
     let charge_basis_nano = match requested_output_tokens {
         Some(cap) if usage.output_tokens > cap => {
-            let prices = effective_prices(model, now);
-            let output_multiplier = if usage.input_tokens > prices.long_context_threshold {
-                prices.long_output_basis_points
-            } else {
-                10_000
-            };
-            let capped_output_nano = metering::apply_multiplier(
-                (cap as i128).saturating_mul(prices.output),
-                output_multiplier,
-            );
-            priced
-                .input_nano
-                .saturating_add(priced.cached_nano)
-                .saturating_add(priced.cache_write_nano)
-                .saturating_add(capped_output_nano)
+            let mut capped_usage = usage.clone();
+            capped_usage.output_tokens = cap;
+            price_usage(model, &capped_usage, now, fast).real_nano
         }
         _ => priced.real_nano,
     };
@@ -217,7 +210,7 @@ fn settled_charge(
         cache_write_1h_tokens: priced.cache_write_input.min(i64::MAX as u64) as i64,
         web_search_requests: 0,
         real_nano: priced.real_nano.min(i64::MAX as i128) as i64,
-        speed: "standard".to_string(),
+        speed: if fast { "fast" } else { "standard" }.to_string(),
         inference_geo: String::new(),
         input_nano: priced.input_nano.min(i64::MAX as i128) as i64,
         output_nano: priced.output_nano.min(i64::MAX as i128) as i64,
@@ -293,6 +286,7 @@ fn reserve_cost(
     estimated_input_tokens: u64,
     requested_output_tokens: Option<u64>,
     now: i64,
+    fast: bool,
 ) -> i128 {
     let prices = effective_prices(model, now);
     let long = estimated_input_tokens > prices.long_context_threshold;
@@ -314,15 +308,21 @@ fn reserve_cost(
     let output_tokens = requested_output_tokens
         .unwrap_or(model.max_output_tokens)
         .min(model.max_output_tokens);
-    (estimated_input_tokens as i128)
+    let standard = (estimated_input_tokens as i128)
         .saturating_mul(input_rate)
-        .saturating_add((output_tokens as i128).saturating_mul(output_rate))
+        .saturating_add((output_tokens as i128).saturating_mul(output_rate));
+    apply_fast_multiplier(model, standard, fast)
 }
 
 /// Exact official-price cost of one completed turn, used for per-home window-capacity
 /// calibration. Pure pricing only: customer money moves exclusively through `settled_charge`.
-pub(crate) fn price_real_nano(model: &CodexModel, usage: &CodexUsage, now: i64) -> i128 {
-    price_usage(model, usage, now).real_nano
+pub(crate) fn price_real_nano(
+    model: &CodexModel,
+    usage: &CodexUsage,
+    now: i64,
+    fast: bool,
+) -> i128 {
+    price_usage(model, usage, now, fast).real_nano
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -337,7 +337,7 @@ struct PricedUsage {
     real_nano: i128,
 }
 
-fn price_usage(model: &CodexModel, usage: &CodexUsage, now: i64) -> PricedUsage {
+fn price_usage(model: &CodexModel, usage: &CodexUsage, now: i64, fast: bool) -> PricedUsage {
     let prices = effective_prices(model, now);
     let cached_input = usage.cached_input_tokens.min(usage.input_tokens);
     let remaining = usage.input_tokens.saturating_sub(cached_input);
@@ -358,18 +358,22 @@ fn price_usage(model: &CodexModel, usage: &CodexUsage, now: i64) -> PricedUsage 
         (normal_input as i128).saturating_mul(prices.input),
         input_multiplier,
     );
+    let input_nano = apply_fast_multiplier(model, input_nano, fast);
     let cached_nano = metering::apply_multiplier(
         (cached_input as i128).saturating_mul(prices.cached_input),
         input_multiplier,
     );
+    let cached_nano = apply_fast_multiplier(model, cached_nano, fast);
     let cache_write_nano = metering::apply_multiplier(
         (cache_write_input as i128).saturating_mul(prices.cache_write_input),
         input_multiplier,
     );
+    let cache_write_nano = apply_fast_multiplier(model, cache_write_nano, fast);
     let output_nano = metering::apply_multiplier(
         (usage.output_tokens as i128).saturating_mul(prices.output),
         output_multiplier,
     );
+    let output_nano = apply_fast_multiplier(model, output_nano, fast);
     PricedUsage {
         normal_input,
         cached_input,
@@ -383,6 +387,20 @@ fn price_usage(model: &CodexModel, usage: &CodexUsage, now: i64) -> PricedUsage 
             .saturating_add(cache_write_nano)
             .saturating_add(output_nano),
     }
+}
+
+fn apply_fast_multiplier(model: &CodexModel, amount: i128, fast: bool) -> i128 {
+    if !fast {
+        return amount;
+    }
+    // Prefer the effective audited catalog, while retaining the config-resolved copy for an
+    // already-admitted model removed by a later catalog revision. The final fallback is
+    // conservative: a future fast-capable model must not be under-reserved if plumbing reaches
+    // this layer before its audited multiplier does.
+    let basis_points = metering::codex_fast_multiplier_basis_points(&model.id)
+        .or(model.fast_multiplier_basis_points)
+        .unwrap_or(25_000);
+    metering::apply_multiplier(amount, basis_points)
 }
 
 #[cfg(test)]
@@ -406,6 +424,7 @@ mod tests {
             owned_by: "test".to_string(),
             max_output_tokens: 128_000,
             reasoning_efforts: vec!["medium".to_string()],
+            fast_multiplier_basis_points: Some(25_000),
             prices: CodexPrices {
                 input: 5_000,
                 cached_input: 500,
@@ -504,6 +523,7 @@ mod tests {
                 ..CodexUsage::default()
             },
             0,
+            false,
         );
         assert_eq!(priced.normal_input, 500);
         assert_eq!(priced.cached_input, 400);
@@ -531,6 +551,7 @@ mod tests {
                 ..CodexUsage::default()
             },
             0,
+            false,
         );
         assert_eq!(priced.input_nano, 150_000 * 5_000 * 2);
         assert_eq!(priced.cached_nano, 100_000 * 500 * 2);
@@ -540,20 +561,45 @@ mod tests {
 
     #[test]
     fn reserve_covers_full_output_and_cache_write_rate() {
-        let hold = reserve_cost(&model(), 1_000, None, 0);
+        let hold = reserve_cost(&model(), 1_000, None, 0, false);
         // Cache-write now equals the input rate, so the reserve input leg is 5_000/token.
         assert_eq!(hold, 1_000 * 5_000 + 128_000 * 30_000);
     }
 
     #[test]
     fn reserve_output_leg_follows_the_requested_cap() {
-        let full = reserve_cost(&model(), 1_000, None, 0);
+        let full = reserve_cost(&model(), 1_000, None, 0, false);
         // A small requested cap holds only that many output tokens, not the model's 128k max.
-        let capped = reserve_cost(&model(), 1_000, Some(500), 0);
+        let capped = reserve_cost(&model(), 1_000, Some(500), 0, false);
         assert_eq!(capped, 1_000 * 5_000 + 500 * 30_000);
         assert!(capped < full);
         // A cap above the model maximum is clamped to the model maximum.
-        assert_eq!(reserve_cost(&model(), 1_000, Some(10_000_000), 0), full);
+        assert_eq!(
+            reserve_cost(&model(), 1_000, Some(10_000_000), 0, false),
+            full
+        );
+    }
+
+    #[test]
+    fn fast_mode_multiplies_reserve_settlement_ledger_and_capacity_spend() {
+        let usage = CodexUsage {
+            input_tokens: 100,
+            output_tokens: 10,
+            ..CodexUsage::default()
+        };
+        let standard = 100 * 5_000 + 10 * 30_000;
+        let fast = standard * 5 / 2;
+
+        assert_eq!(reserve_cost(&model(), 100, Some(10), 0, true), fast as i128);
+        assert_eq!(price_real_nano(&model(), &usage, 0, true), fast as i128);
+
+        let (charge, event) = settled_charge(&model(), &usage, i64::MAX, 10_000, None, 0, true);
+        assert_eq!(charge, fast);
+        let event = event.expect("fast usage must produce a usage event");
+        assert_eq!(event.speed, "fast");
+        assert_eq!(event.input_nano, 100 * 5_000 * 5 / 2);
+        assert_eq!(event.output_nano, 10 * 30_000 * 5 / 2);
+        assert_eq!(event.real_nano, fast);
     }
 
     #[test]
@@ -565,11 +611,26 @@ mod tests {
             ..CodexUsage::default()
         };
         // Uncapped: bill every generated token (fixture rates: input 5_000, output 30_000).
-        let (uncapped, _) = settled_charge(&settlement_model(), &usage, i64::MAX, 10_000, None, 0);
+        let (uncapped, _) = settled_charge(
+            &settlement_model(),
+            &usage,
+            i64::MAX,
+            10_000,
+            None,
+            0,
+            false,
+        );
         assert_eq!(uncapped, 100 * 5_000 + 1_000 * 30_000);
         // Honest billing: charge only up to the requested 100 output tokens.
-        let (capped, event) =
-            settled_charge(&settlement_model(), &usage, i64::MAX, 10_000, Some(100), 0);
+        let (capped, event) = settled_charge(
+            &settlement_model(),
+            &usage,
+            i64::MAX,
+            10_000,
+            Some(100),
+            0,
+            false,
+        );
         assert_eq!(capped, 100 * 5_000 + 100 * 30_000);
         assert!(capped < uncapped);
         // The immutable provider-usage record still reflects the real consumption, so window
@@ -591,7 +652,7 @@ mod tests {
             output_tokens: 20,
             ..CodexUsage::default()
         };
-        let priced = price_usage(&drifted, &usage, 0);
+        let priced = price_usage(&drifted, &usage, 0, false);
         assert_eq!(priced.input_nano, 1_000 * 5_000);
         assert_eq!(priced.output_nano, 20 * 30_000);
     }
@@ -610,6 +671,7 @@ mod tests {
                 ..CodexUsage::default()
             },
             0,
+            false,
         );
         assert_eq!(priced.input_nano, 10 * 7_000);
     }
@@ -623,8 +685,15 @@ mod tests {
             output_tokens: 20,
             ..CodexUsage::default()
         };
-        let (charge, event) =
-            settled_charge(&settlement_model(), &usage, 10_000_000, 5_000, None, 123);
+        let (charge, event) = settled_charge(
+            &settlement_model(),
+            &usage,
+            10_000_000,
+            5_000,
+            None,
+            123,
+            false,
+        );
 
         // Official cost: 500*5000 + 400*500 + 100*6250 + 20*30000 = 3,925,000.
         // The customer multiplier is 0.5 and must be applied once, not squared.
@@ -658,7 +727,8 @@ mod tests {
             ..CodexUsage::default()
         };
         let hold = 17;
-        let (charge, event) = settled_charge(&settlement_model(), &usage, hold, 10_000, None, 456);
+        let (charge, event) =
+            settled_charge(&settlement_model(), &usage, hold, 10_000, None, 456, false);
         assert_eq!(charge as i128, hold as i128 + metering::OVERDRAFT_NANO);
         assert!(event.is_some());
     }
@@ -672,6 +742,7 @@ mod tests {
             10_000,
             None,
             789,
+            false,
         );
         assert_eq!(charge, 0);
         assert!(event.is_none());
@@ -686,8 +757,15 @@ mod tests {
             output_tokens: u64::MAX,
             ..CodexUsage::default()
         };
-        let (charge, event) =
-            settled_charge(&settlement_model(), &usage, i64::MAX, 10_000, None, 999);
+        let (charge, event) = settled_charge(
+            &settlement_model(),
+            &usage,
+            i64::MAX,
+            10_000,
+            None,
+            999,
+            false,
+        );
         assert_eq!(charge, i64::MAX);
         let event = event.unwrap();
         assert_eq!(event.input_tokens, 0);
@@ -712,7 +790,7 @@ mod tests {
             ..CodexUsage::default()
         };
 
-        admission.settle(&settlement_model(), &usage, None);
+        admission.settle(&settlement_model(), &usage, None, false);
         billing.flush().await.unwrap();
 
         let account = billing

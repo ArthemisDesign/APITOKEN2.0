@@ -33,6 +33,12 @@ pub struct CodexModelSpec {
     pub upstream: &'static str,
     pub max_output_tokens: u64,
     pub reasoning_efforts: &'static [&'static str],
+    /// ChatGPT-subscription credit multiplier for Codex Fast mode.
+    ///
+    /// `None` means the model must not accept the Fast/priority service tier. The multiplier is
+    /// kept beside the audited price schedule because it changes both customer settlement and the
+    /// subscription-window spend used for capacity calibration.
+    pub fast_multiplier_basis_points: Option<i64>,
     pub prices: CodexPrices,
 }
 
@@ -52,12 +58,15 @@ struct CatalogEntry {
     upstream: &'static str,
     max_output_tokens: u64,
     reasoning_efforts: &'static [&'static str],
+    fast_multiplier_basis_points: Option<i64>,
     /// Ordered oldest-first.
     schedule: &'static [CodexPriceEpoch],
 }
 
 const EFFORTS_WITH_MAX: &[&str] = &["none", "low", "medium", "high", "xhigh", "max"];
 const EFFORTS_STANDARD: &[&str] = &["none", "low", "medium", "high", "xhigh"];
+const FAST_25X: Option<i64> = Some(25_000);
+const FAST_20X: Option<i64> = Some(20_000);
 
 /// OpenAI's long-context boundary and multipliers are uniform across the pinned catalog.
 const fn prices(
@@ -110,6 +119,7 @@ const CATALOG: &[CatalogEntry] = &[
         upstream: "gpt-5.6-sol",
         max_output_tokens: 128_000,
         reasoning_efforts: EFFORTS_WITH_MAX,
+        fast_multiplier_basis_points: FAST_25X,
         schedule: GPT_56_SOL_SCHEDULE,
     },
     CatalogEntry {
@@ -117,6 +127,7 @@ const CATALOG: &[CatalogEntry] = &[
         upstream: "gpt-5.6-sol",
         max_output_tokens: 128_000,
         reasoning_efforts: EFFORTS_WITH_MAX,
+        fast_multiplier_basis_points: FAST_25X,
         schedule: GPT_56_SOL_SCHEDULE,
     },
     CatalogEntry {
@@ -124,6 +135,7 @@ const CATALOG: &[CatalogEntry] = &[
         upstream: "gpt-5.6-terra",
         max_output_tokens: 128_000,
         reasoning_efforts: EFFORTS_WITH_MAX,
+        fast_multiplier_basis_points: FAST_25X,
         schedule: GPT_56_TERRA_SCHEDULE,
     },
     CatalogEntry {
@@ -131,6 +143,7 @@ const CATALOG: &[CatalogEntry] = &[
         upstream: "gpt-5.6-luna",
         max_output_tokens: 128_000,
         reasoning_efforts: EFFORTS_WITH_MAX,
+        fast_multiplier_basis_points: FAST_25X,
         schedule: GPT_56_LUNA_SCHEDULE,
     },
     CatalogEntry {
@@ -138,6 +151,7 @@ const CATALOG: &[CatalogEntry] = &[
         upstream: "gpt-5.5",
         max_output_tokens: 128_000,
         reasoning_efforts: EFFORTS_STANDARD,
+        fast_multiplier_basis_points: FAST_25X,
         schedule: GPT_55_SCHEDULE,
     },
     CatalogEntry {
@@ -145,6 +159,7 @@ const CATALOG: &[CatalogEntry] = &[
         upstream: "gpt-5.4",
         max_output_tokens: 128_000,
         reasoning_efforts: EFFORTS_STANDARD,
+        fast_multiplier_basis_points: FAST_20X,
         schedule: GPT_54_SCHEDULE,
     },
 ];
@@ -158,6 +173,7 @@ pub fn codex_catalog_at(now_unix: i64) -> Vec<CodexModelSpec> {
             upstream: entry.upstream,
             max_output_tokens: entry.max_output_tokens,
             reasoning_efforts: entry.reasoning_efforts,
+            fast_multiplier_basis_points: entry.fast_multiplier_basis_points,
             prices: prices_at(entry.schedule, now_unix),
         })
         .collect()
@@ -170,6 +186,18 @@ pub fn codex_prices_at(model_id: &str, now_unix: i64) -> Option<CodexPrices> {
         .iter()
         .find(|entry| entry.id == model_id)
         .map(|entry| prices_at(entry.schedule, now_unix))
+}
+
+/// ChatGPT-subscription credit multiplier for Fast mode on one advertised model.
+///
+/// The provider currently consumes 2.5x credits for GPT-5.6/5.5 Fast turns and 2x for GPT-5.4.
+/// Returning `None` is also the capability gate: an unknown or unsupported model cannot silently
+/// opt into priority service and bypass the corresponding reserve.
+pub fn codex_fast_multiplier_basis_points(model_id: &str) -> Option<i64> {
+    CATALOG
+        .iter()
+        .find(|entry| entry.id == model_id)
+        .and_then(|entry| entry.fast_multiplier_basis_points)
 }
 
 /// Resolve a schedule at a point in time: the newest entry that has already taken effect, or the
@@ -218,8 +246,31 @@ mod tests {
             .unwrap();
         assert_eq!(alias.upstream, concrete.upstream);
         assert_eq!(alias.prices, concrete.prices);
+        assert_eq!(
+            alias.fast_multiplier_basis_points,
+            concrete.fast_multiplier_basis_points
+        );
         assert_eq!(alias.prices.input, 5_000);
         assert_eq!(alias.prices.output, 30_000);
+    }
+
+    #[test]
+    fn fast_mode_is_enabled_with_the_published_subscription_multipliers() {
+        for model in [
+            "gpt-5.6",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+        ] {
+            assert_eq!(
+                codex_fast_multiplier_basis_points(model),
+                Some(25_000),
+                "{model}"
+            );
+        }
+        assert_eq!(codex_fast_multiplier_basis_points("gpt-5.4"), Some(20_000));
+        assert_eq!(codex_fast_multiplier_basis_points("gpt-4o"), None);
     }
 
     #[test]

@@ -14,7 +14,10 @@ use serde_json::Value;
 
 pub mod codex;
 pub mod gemini;
-pub use codex::{codex_catalog_at, codex_prices_at, CodexModelSpec, CodexPriceEpoch, CodexPrices};
+pub use codex::{
+    codex_catalog_at, codex_fast_multiplier_basis_points, codex_prices_at, CodexModelSpec,
+    CodexPriceEpoch, CodexPrices,
+};
 pub use gemini::{
     gemini_catalog_at, gemini_prices_at, GeminiModelSpec, GeminiPriceEpoch, GeminiPrices,
     GeminiSearchBilling, GeminiUsage,

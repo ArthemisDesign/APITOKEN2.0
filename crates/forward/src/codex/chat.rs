@@ -90,6 +90,7 @@ pub async fn completions(
             prepared.estimated_input_tokens,
             prepared.request.max_output_tokens,
             gateway.config().reserve_overhead_tokens,
+            prepared.request.service_tier.is_some(),
         )
         .await
     {
@@ -141,6 +142,7 @@ pub async fn completions(
         &prepared.request.public_model,
         &result.usage,
         prepared.request.max_output_tokens,
+        prepared.request.service_tier.is_some(),
     );
     let mut http_response = json_response(StatusCode::OK, response, &completion_id);
     super::api::insert_extra_headers(
@@ -155,9 +157,9 @@ fn parse_chat_request(gateway: &CodexGateway, value: Value) -> Result<ParsedChat
         .as_object()
         .ok_or_else(|| ApiError::invalid("Request body must be a JSON object.", None::<String>))?;
     // SDK compatibility: any parameter the transport cannot honor (sampling controls, token
-    // caps, stop sequences, seeds, logprobs, multi-choice, store, service_tier, future fields)
-    // is accepted and ignored rather than rejected, so stock SDKs and agent terminals never
-    // fail on parameters they send by default.
+    // caps, stop sequences, seeds, logprobs, multi-choice, store, future fields) is accepted and
+    // ignored rather than rejected, so stock SDKs and agent terminals never fail on parameters
+    // they send by default. service_tier is forwarded separately below when it requests Fast.
 
     let messages = object
         .get("messages")
@@ -217,6 +219,9 @@ fn parse_chat_request(gateway: &CodexGateway, value: Value) -> Result<ParsedChat
     }
     if let Some(metadata) = object.get("metadata") {
         responses.insert("metadata".to_string(), metadata.clone());
+    }
+    if let Some(service_tier) = object.get("service_tier") {
+        responses.insert("service_tier".to_string(), service_tier.clone());
     }
     // Chat retrieval endpoints are not implemented, so claiming to store a completion would be
     // misleading. `store=false` is validated below and omitted here.
@@ -946,7 +951,7 @@ fn completed_chat(
             "finish_reason": finish_reason
         }],
         "usage": chat_usage(&result.usage),
-        "service_tier": "default",
+        "service_tier": prepared.request.service_tier.as_deref().unwrap_or("default"),
         "system_fingerprint": Value::Null
     })
 }
@@ -1238,6 +1243,7 @@ async fn stream_chat(
             &prepared.request.public_model,
             &result.usage,
             prepared.request.max_output_tokens,
+            prepared.request.service_tier.is_some(),
         );
         if downstream_closed {
             return;
@@ -1266,7 +1272,7 @@ async fn stream_chat(
                     "model": prepared.request.public_model.id,
                     "choices": [],
                     "usage": chat_usage(&result.usage),
-                    "service_tier": "default",
+                    "service_tier": prepared.request.service_tier.as_deref().unwrap_or("default"),
                     "system_fingerprint": Value::Null
                 }),
             )
@@ -1308,7 +1314,7 @@ fn chat_chunk(
             "finish_reason": finish_reason
         }],
         "usage": Value::Null,
-        "service_tier": "default",
+        "service_tier": prepared.request.service_tier.as_deref().unwrap_or("default"),
         "system_fingerprint": Value::Null
     })
 }
@@ -1399,6 +1405,7 @@ mod tests {
                 owned_by: "test".to_string(),
                 max_output_tokens: 128_000,
                 reasoning_efforts: vec!["none".to_string(), "high".to_string()],
+                fast_multiplier_basis_points: Some(25_000),
                 prices: CodexPrices {
                     input: 5_000,
                     cached_input: 500,
@@ -1473,6 +1480,21 @@ mod tests {
         )
         .expect("parameters the transport cannot honor must be ignored, not rejected");
         assert_eq!(parsed.responses.input.turn_input.len(), 1);
+        assert!(parsed.responses.service_tier.is_none());
+    }
+
+    #[test]
+    fn chat_fast_service_tier_is_forwarded_to_the_responses_adapter() {
+        let parsed = parse_chat_request(
+            &gateway(),
+            json!({
+                "model":"gpt-5.6",
+                "messages":[{"role":"user","content":"hello"}],
+                "service_tier":"fast"
+            }),
+        )
+        .unwrap();
+        assert_eq!(parsed.responses.service_tier.as_deref(), Some("priority"));
     }
 
     #[test]

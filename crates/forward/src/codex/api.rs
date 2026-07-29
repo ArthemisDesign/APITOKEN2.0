@@ -203,6 +203,8 @@ pub(super) struct ParsedResponsesRequest {
     pub(super) instructions: Option<String>,
     previous_response_id: Option<String>,
     prompt_cache_key: Option<String>,
+    /// Normalized app-server/OpenAI request value. `Some("priority")` is Codex Fast mode.
+    pub(super) service_tier: Option<String>,
     reasoning_effort: Option<String>,
     reasoning_summary: Option<String>,
     output_schema: Option<Value>,
@@ -284,6 +286,7 @@ pub async fn responses(
             prepared.estimated_input_tokens,
             prepared.request.max_output_tokens,
             gateway.config().reserve_overhead_tokens,
+            prepared.request.service_tier.is_some(),
         )
         .await
     {
@@ -335,6 +338,7 @@ pub async fn responses(
         &prepared.request.public_model,
         &result.usage,
         prepared.request.max_output_tokens,
+        prepared.request.service_tier.is_some(),
     );
     let mut http_response = json_response(StatusCode::OK, response, &response_id);
     insert_extra_headers(&mut http_response, ratelimit_headers(&gateway).await);
@@ -832,6 +836,7 @@ pub(super) async fn prepare_turn(
         injected_items,
         turn_input: request.input.turn_input.clone(),
         dynamic_tools: request.dynamic_tools.clone(),
+        service_tier: request.service_tier.clone(),
         reasoning_effort: request.reasoning_effort.clone(),
         reasoning_summary: request.reasoning_summary.clone(),
         output_schema: request.output_schema.clone(),
@@ -905,7 +910,7 @@ pub(super) fn parse_responses_request(
     }
     validate_client_metadata(object.get("client_metadata"))?;
     validate_optional_identifier(object.get("safety_identifier"), "safety_identifier")?;
-    // service_tier cannot be honored by the transport; any value is accepted and ignored.
+    let service_tier = parse_service_tier(object.get("service_tier"), &public_model);
     let (reasoning_effort, reasoning_summary) =
         parse_reasoning(object.get("reasoning"), &public_model)?;
     let (text, output_schema, verbosity) = parse_text(object.get("text"))?;
@@ -982,6 +987,7 @@ pub(super) fn parse_responses_request(
         instructions,
         previous_response_id,
         prompt_cache_key,
+        service_tier,
         reasoning_effort,
         reasoning_summary,
         output_schema,
@@ -1043,6 +1049,20 @@ fn optional_bool(object: &Map<String, Value>, field: &str) -> Result<Option<bool
             format!("{field} must be a boolean."),
             Some(field.to_string()),
         )),
+    }
+}
+
+/// Normalize the public Responses/Chat spelling onto the value used by the pinned app-server.
+///
+/// Codex exposes the feature to users as `fast`, while the current app-server and OpenAI Responses
+/// wire use `priority`. Unknown tiers remain leniently accepted as standard service, preserving the
+/// adapter's compatibility policy for SDK fields the ChatGPT-subscription transport cannot honor.
+fn parse_service_tier(value: Option<&Value>, model: &CodexModel) -> Option<String> {
+    let requested = value.and_then(Value::as_str)?;
+    if model.supports_fast() && matches!(requested, "fast" | "priority") {
+        Some("priority".to_string())
+    } else {
+        None
     }
 }
 
@@ -1864,7 +1884,7 @@ fn response_object(
             "summary": request.reasoning_summary
         },
         "safety_identifier": Value::Null,
-        "service_tier": "default",
+        "service_tier": request.service_tier.as_deref().unwrap_or("default"),
         "store": request.store,
         "temperature": Value::Null,
         "text": request.text,
@@ -2489,6 +2509,7 @@ async fn stream_responses(
             &prepared.request.public_model,
             &result.usage,
             prepared.request.max_output_tokens,
+            prepared.request.service_tier.is_some(),
         );
         if downstream_closed || frame_tx.is_closed() {
             return;
@@ -3213,6 +3234,7 @@ mod tests {
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
+            fast_multiplier_basis_points: Some(25_000),
             prices: CodexPrices {
                 input: 5_000,
                 cached_input: 500,
@@ -3341,6 +3363,38 @@ mod tests {
         )
         .expect("parameters the transport cannot honor must be ignored, not rejected");
         assert_eq!(parsed.input.turn_input.len(), 1);
+        assert!(parsed.service_tier.is_none());
+    }
+
+    #[test]
+    fn parser_normalizes_codex_fast_and_openai_priority_service_tiers() {
+        for requested in ["fast", "priority"] {
+            let parsed = parse_responses_request(
+                &gateway(),
+                json!({
+                    "model": "gpt-5.6",
+                    "input": "hi",
+                    "service_tier": requested
+                }),
+            )
+            .unwrap();
+            assert_eq!(parsed.service_tier.as_deref(), Some("priority"));
+            let response =
+                response_object(&parsed, "resp_fast", 0, "in_progress", Vec::new(), None);
+            assert_eq!(response["service_tier"], "priority");
+        }
+        for requested in ["default", "auto", "flex", "future-tier"] {
+            let parsed = parse_responses_request(
+                &gateway(),
+                json!({
+                    "model": "gpt-5.6",
+                    "input": "hi",
+                    "service_tier": requested
+                }),
+            )
+            .unwrap();
+            assert_eq!(parsed.service_tier, None, "{requested}");
+        }
     }
 
     #[test]

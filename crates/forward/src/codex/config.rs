@@ -20,6 +20,8 @@ pub struct CodexModel {
     pub owned_by: String,
     pub max_output_tokens: u64,
     pub reasoning_efforts: Vec<String>,
+    /// ChatGPT-subscription credit multiplier for Fast mode. `None` disables the tier.
+    pub fast_multiplier_basis_points: Option<i64>,
     pub prices: CodexPrices,
 }
 
@@ -28,6 +30,10 @@ impl CodexModel {
         self.reasoning_efforts
             .iter()
             .any(|candidate| candidate == effort)
+    }
+
+    pub fn supports_fast(&self) -> bool {
+        self.fast_multiplier_basis_points.is_some()
     }
 }
 

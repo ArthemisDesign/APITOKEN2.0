@@ -65,6 +65,8 @@ pub(crate) struct CodexTurnRequest {
     pub turn_input: Vec<Value>,
     /// Canonical experimental dynamic-tool specs.
     pub dynamic_tools: Vec<Value>,
+    /// App-server/OpenAI request value (`priority` for Codex Fast mode, otherwise absent).
+    pub service_tier: Option<String>,
     pub reasoning_effort: Option<String>,
     pub reasoning_summary: Option<String>,
     pub output_schema: Option<Value>,
@@ -156,6 +158,7 @@ impl CodexGateway {
                         &request.model,
                         &result.usage,
                         pool::now(),
+                        request.service_tier.is_some(),
                     ));
                     home.mark_healthy();
                     // Pin this conversation's cache lineage to the home that served it, so the next
@@ -230,6 +233,17 @@ impl CodexHome {
                 "app-server served unexpected model {served_model:?}"
             )));
         }
+        let served_service_tier = thread_response
+            .get("serviceTier")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if served_service_tier != request.service_tier {
+            // Fast must never degrade silently: reserve and settlement use the requested tier's
+            // published subscription-credit multiplier. A pinned app-server/catalog mismatch is
+            // safer as a rejected request than standard-speed output charged as Fast (or the
+            // inverse).
+            return Err(ProcessError::BadRequest);
+        }
         let mut events = process.register_turn(&thread_id).await?;
         let mut registration_guard = TurnRegistrationGuard::new(process.clone(), thread_id.clone());
 
@@ -273,6 +287,9 @@ impl CodexHome {
             "cwd": self.config().work_dir,
             "approvalPolicy": "never",
             "sandbox": "read-only",
+            // Explicit null resets any profile-local Fast default. Per-request service tier is
+            // entirely owned by the public API body and cannot leak in from a purchased CODEX_HOME.
+            "serviceTier": request.service_tier,
             "baseInstructions": request.base_instructions.as_deref().unwrap_or(""),
             "developerInstructions": request.developer_instructions,
             "ephemeral": true,
@@ -848,6 +865,7 @@ mod tests {
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
+            fast_multiplier_basis_points: Some(25_000),
             prices: CodexPrices {
                 input: 5_000,
                 cached_input: 500,
@@ -874,6 +892,7 @@ mod tests {
                 "inputSchema": {"type": "object"},
                 "deferLoading": false
             })],
+            service_tier: None,
             reasoning_effort: Some("medium".to_string()),
             reasoning_summary: Some("auto".to_string()),
             output_schema: None,
@@ -959,7 +978,14 @@ while IFS= read -r line; do
       if [ "$mode" = "thread_start_timeout_once" ] && [ "$generation" -eq 1 ]; then
         continue
       fi
-      printf '{"id":%s,"result":{"model":"gpt-5.6-sol","thread":{"id":"thread-1"}}}\n' "$id"
+      case "$line" in
+        *'"serviceTier":"priority"'*)
+          printf '{"id":%s,"result":{"model":"gpt-5.6-sol","serviceTier":"priority","thread":{"id":"thread-1"}}}\n' "$id"
+          ;;
+        *)
+          printf '{"id":%s,"result":{"model":"gpt-5.6-sol","serviceTier":null,"thread":{"id":"thread-1"}}}\n' "$id"
+          ;;
+      esac
       ;;
     *'"method":"turn/start"'*)
       if [ "$mode" = "turn_start_timeout_once" ] && [ "$generation" -eq 1 ]; then
@@ -1214,6 +1240,7 @@ done
             thread_start["params"]["dynamicTools"][0]["name"],
             "get_weather"
         );
+        assert_eq!(thread_start["params"]["serviceTier"], Value::Null);
         let turn_start = requests
             .iter()
             .find(|request| request["method"] == "turn/start")
@@ -1221,6 +1248,22 @@ done
         assert_eq!(turn_start["params"]["effort"], "medium");
         assert_eq!(turn_start["params"]["summary"], "auto");
         assert_eq!(turn_start["params"]["input"][0]["text"], "hello");
+    }
+
+    #[tokio::test]
+    async fn fast_service_tier_reaches_thread_start_as_priority() {
+        let (gateway, workspace) = fake_gateway("text");
+        let mut request = turn_request(test_model());
+        request.service_tier = Some("priority".to_string());
+
+        gateway.run_turn(request, None, None).await.unwrap();
+
+        let requests = logged_requests(&workspace.log);
+        let thread_start = requests
+            .iter()
+            .find(|request| request["method"] == "thread/start")
+            .unwrap();
+        assert_eq!(thread_start["params"]["serviceTier"], "priority");
     }
 
     /// Agent terminals (opencode, OpenAI SDKs, Codex clients) attach clipboard screenshots as

@@ -28,7 +28,7 @@ provider; authentication headers never select a provider.
 Parameters that app-server cannot enforce are accepted and ignored instead of rejected, so stock
 SDKs and agent terminals never fail on defaults they send. This covers sampling/output controls
 (`temperature`, `top_p`, penalties, logprobs, `seed`, multi-choice output), `store`,
-`service_tier`, `stream_options`, forced `tool_choice` values (degrade to `"auto"`),
+`stream_options`, forced `tool_choice` values (degrade to `"auto"`),
 `parallel_tool_calls=false`, `strict=true` tools (degrade to non-strict), unknown `include`
 values, reasoning efforts the model does not advertise (degrade to the model default), message
 `name` hints, assistant `refusal`/`audio` history fields and any unknown present or future
@@ -39,6 +39,15 @@ answer finishes with `finish_reason="length"`). Settlement always uses exact ups
 regardless of client-side cuts. Requests that are structurally unusable — missing model/input,
 empty messages, malformed tool history, invalid image URLs — still return OpenAI-shaped `400`
 errors.
+
+Fast is a service tier on the existing GPT model IDs, not a separate `-fast` model family.
+Requests may send `service_tier: "priority"` (the OpenAI-compatible wire value) or
+`service_tier: "fast"` (the Codex configuration spelling). For a catalog model that supports Fast,
+the gateway normalizes either value to `priority`, sends it to app-server's `thread/start`, verifies
+that the thread accepted it, and reports `service_tier: "priority"` in the response. Standard,
+`auto`, `flex`, unknown and malformed values retain lenient compatibility and run at the default
+tier. The gateway sends an explicit null for default-tier requests, so a profile-local Codex Fast
+setting cannot silently upgrade customer traffic.
 
 Streaming is spec-complete for agent terminals: Chat Completions streams reasoning summaries as
 `reasoning_content` deltas (and joins them into `message.reasoning_content` for non-streaming
@@ -68,6 +77,7 @@ curl https://openai.api.apitoken.sale/v1/responses \
   -H 'Content-Type: application/json' \
   -d '{
     "model": "gpt-5.6-sol",
+    "service_tier": "priority",
     "input": "Reply with exactly: connected"
   }'
 ```
@@ -86,6 +96,7 @@ client = OpenAI(
 )
 print(client.responses.create(
     model="gpt-5.6-sol",
+    service_tier="priority",
     input="Reply with exactly: connected",
 ).output_text)
 ```
@@ -366,10 +377,16 @@ OpenAI ownership.
 ## Usage, rate limits and billing
 
 The app-server's authoritative completed-turn usage is used for both response objects and durable
-settlement. Cached input and long-context price multipliers are applied from the pinned per-model
-catalog. The release catalog is copied from the official
+settlement. Cached input, long-context and requested Fast subscription-credit multipliers are
+applied from the pinned per-model catalog. Fast uses the published ChatGPT multipliers: 2.5x for
+GPT-5.6 (including Sol/Terra/Luna) and GPT-5.5, and 2x for GPT-5.4. The same multiplier is applied
+to admission reserve, final customer settlement, provider usage ledger and per-home capacity spend,
+so a Fast turn cannot be under-reserved or make sellable subscription capacity look larger than it
+is. The release catalog is copied from the official
 [OpenAI standard token-pricing table](https://developers.openai.com/api/docs/pricing) and must be
-reviewed again whenever the Codex/model pin changes; it is never updated remotely at runtime.
+reviewed together with the official
+[Codex Fast documentation](https://learn.chatgpt.com/docs/agent-configuration/speed#fast-mode)
+whenever the Codex/model pin changes; it is never updated remotely at runtime.
 Admission makes a conservative input estimate and reserves provider-hidden overhead; settlement
 refunds the difference using exact upstream usage.
 

@@ -13,12 +13,16 @@
   input, candidate+thinking output, tool prompt, long-context и Search. Gemini 2.5 Search считается
   per grounded prompt, Gemini 3 — per query. Новую модель/ценовую эпоху добавлять только с официальной
   ссылкой и exact-rate тестом; отдельно тарифицируемый tool нельзя пропустить бесплатно.
+- Codex catalog и ChatGPT Fast credit multiplier тоже живут только здесь. Fast — tier существующей
+  модели, не отдельный model id: GPT-5.6/5.5 = 2.5x, GPT-5.4 = 2x. Изменять только по опубликованной
+  OpenAI таблице с exact-multiplier тестом.
 
 **Инварианты (проверять тестами):**
 - 1M токенов любой корзины = точная официальная ставка (тест `prices_exact_per_million`).
 - Стрим: input/cache из `message_start`, output из ПОСЛЕДНЕГО `message_delta` (кумулятивный).
 - Gemini SSE также использует последний полный кумулятивный `usageMetadata`; split/malformed frames
   не паникуют и не затирают последний валидный snapshot.
+- Алиас и конкретные варианты одной Codex-модели обязаны возвращать одинаковый Fast-множитель.
 - Битый ввод → `Usage::default()` (нули), НИКОГДА не паникует.
 - i128 — переполнения исключены даже на млрд токенов.
 
