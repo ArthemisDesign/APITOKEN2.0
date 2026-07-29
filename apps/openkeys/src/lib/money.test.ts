@@ -4,6 +4,7 @@ import {
   balanceToOfficialNano,
   formatUsd,
   officialBalanceBreakdown,
+  officialRemainingNano,
   officialNanoToBalance,
   usdStringToNano,
 } from "./money";
@@ -70,5 +71,9 @@ describe("конвертация номинала и баланса", () => {
     expect(balance.remaining).toBe(43_500_000_000n);
     expect(balance.spent).toBe(6_500_000_000n);
     expect(balance.remaining + balance.spent).toBe(50n * NANO_PER_USD);
+  });
+
+  it("в monitor показывает остаток вместе с временным резервом", () => {
+    expect(officialRemainingNano(12_012_000_000n, 5_388_000_000n, 4_000)).toBe(43_500_000_000n);
   });
 });

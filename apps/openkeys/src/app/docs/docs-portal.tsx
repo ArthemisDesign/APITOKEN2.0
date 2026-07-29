@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/app-shell";
@@ -8,7 +7,6 @@ import { useLanguage } from "@/components/chrome";
 
 const BASE_URL = "https://api.apitoken.sale";
 const MESSAGES_URL = `${BASE_URL}/v1/messages`;
-const OPENAI_BASE_URL = "https://openai.api.apitoken.sale/v1";
 const CURL = `curl https://api.apitoken.sale/v1/messages \
   -H "x-api-key: $APITOKEN_API_KEY" \
   -H "anthropic-version: 2023-06-01" \
@@ -47,7 +45,8 @@ const CURSOR = `Provider: Anthropic
 Base URL: https://api.apitoken.sale
 API key: sk-pool-•••
 Model ID: claude-opus-4-8`;
-const PYTHON = `from anthropic import Anthropic
+const PYTHON = `# pip install anthropic
+from anthropic import Anthropic
 
 # Reads ANTHROPIC_API_KEY from the environment
 client = Anthropic(base_url="https://api.apitoken.sale")
@@ -61,7 +60,8 @@ message = client.messages.create(
 for block in message.content:
     if block.type == "text":
         print(block.text)`;
-const TYPESCRIPT = `import Anthropic from "@anthropic-ai/sdk";
+const TYPESCRIPT = `// npm install @anthropic-ai/sdk
+import Anthropic from "@anthropic-ai/sdk";
 
 // Reads ANTHROPIC_API_KEY from the environment
 const client = new Anthropic({
@@ -77,39 +77,6 @@ const message = await client.messages.create({
 for (const block of message.content) {
   if (block.type === "text") console.log(block.text);
 }`;
-const OPENAI_CURL = `curl https://openai.api.apitoken.sale/v1/responses \
-  -H "Authorization: Bearer $APITOKEN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-5.6-sol",
-    "input": "Reply with exactly: connected"
-  }'`;
-const OPENAI_PYTHON = `import os
-from openai import OpenAI
-
-client = OpenAI(
-    api_key=os.environ["APITOKEN_API_KEY"],
-    base_url="https://openai.api.apitoken.sale/v1",
-)
-
-response = client.responses.create(
-    model="gpt-5.6-sol",
-    input="Reply with exactly: connected",
-)
-print(response.output_text)`;
-const CODEX_PROFILE = `# ~/.codex/apitoken.config.toml
-model = "gpt-5.6-sol"
-model_provider = "apitoken"
-
-[model_providers.apitoken]
-name = "apiToken.sale"
-base_url = "https://openai.api.apitoken.sale/v1"
-wire_api = "responses"
-env_key = "APITOKEN_API_KEY"`;
-const CODEX_RUN = `# Keep the key in your shell, not in the TOML file
-export APITOKEN_API_KEY="sk-pool-•••"
-codex --profile apitoken`;
-
 function cleanApiKey(value: string) {
   const key = value.trim();
   return /^sk-pool-[A-Za-z0-9._-]{4,}$/.test(key) ? key : "";
@@ -151,8 +118,9 @@ const copy = {
     cacheCheckText: "Every response reports cache_creation_input_tokens and cache_read_input_tokens in its usage block. If the read counter stays at zero across identical requests, something in the prefix is changing. Your key page also shows cache reads and writes as separate buckets.",
     eyebrow: "ANTHROPIC MESSAGES API · CONNECTION GUIDE",
     title: "Connect to the Claude API in three steps",
-    lead: "Your key carries a prepaid balance on the real Anthropic Claude API. Create an sk-pool key, point any compatible client at https://api.apitoken.sale, and send a standard Messages API request.",
-    openKeys: "Open API keys",
+    lead: "Your universal sk-pool key gives Claude access through the Anthropic-compatible Messages API. Point the client at https://api.apitoken.sale and send a standard Messages request.",
+    openKeys: "Open key usage",
+    allConnections: "All connection options",
     gettingStarted: "Getting started path",
     stepKey: "Create an sk-pool key",
     stepBase: "Set the base URL",
@@ -166,7 +134,7 @@ const copy = {
     apiKeyClear: "Remove",
     apiKeyActive: "Examples use the key ending",
     oneEndpoint: "Connection details",
-    oneEndpointText: "Only the host and API key change. Message payloads, responses, SSE streams, and error bodies match the Anthropic Messages API byte for byte.",
+    oneEndpointText: "Only the host and API key change. Standard Messages request shapes, response objects, errors, and SSE streaming remain Anthropic-compatible.",
     keyNotice: "A full API key is shown only once when issued. Save it in an environment variable or secret manager. If it is lost or exposed, revoke it and create a replacement; the original value cannot be recovered.",
     quickstartText: "Export the connection settings, then run the minimal cURL request. A successful response confirms the key, balance, endpoint, and model are ready.",
     requestTitle: "Send your first request",
@@ -195,12 +163,14 @@ const copy = {
     typescript: "TypeScript SDK",
     typescriptText: "The Node.js client reads the same environment key; baseURL changes only the API host.",
     authText: "For direct HTTP, send the sk-pool key in x-api-key and include anthropic-version: 2023-06-01. Official Anthropic SDKs add the version header automatically.",
-    authNotice: "An sk-pool key is an API key, not a bearer token. Send it in x-api-key, not in the Authorization header.",
+    authNotice: "For Claude clients, x-api-key is the canonical header. The Authorization header is not needed in these examples.",
     errorTitle: "Common response codes",
     errorText: "Error bodies use Anthropic's JSON envelope. Treat 401 and 402 as account-state failures; retry only transient 429 and 5xx responses.",
     status: "Status",
     meaning: "Meaning",
     action: "What to do",
+    e400: "The request body or parameters are invalid",
+    a400: "Check the JSON shape, model ID, required max_tokens, and supported parameters. Do not retry unchanged input.",
     e401: "API key is missing, invalid, or revoked",
     a401: "Send an active sk-pool key in x-api-key. If it was revoked, create a replacement; do not retry the same key.",
     e402: "Available prepaid balance is too low",
@@ -275,8 +245,9 @@ const copy = {
     cacheCheckText: "В каждом ответе в блоке usage приходят cache_creation_input_tokens и cache_read_input_tokens. Если счётчик чтения остаётся нулевым на одинаковых запросах — что-то в префиксе меняется. На странице вашего ключа чтение и запись кэша тоже показаны отдельными корзинами.",
     eyebrow: "ANTHROPIC MESSAGES API · РУКОВОДСТВО ПО ПОДКЛЮЧЕНИЮ",
     title: "Подключитесь к Claude API за три шага",
-    lead: "Ваш ключ несёт предоплаченный баланс на настоящем Anthropic Claude API. Создайте ключ sk-pool-…, укажите для совместимого клиента адрес https://api.apitoken.sale и отправьте стандартный запрос Messages API.",
-    openKeys: "Открыть API-ключи",
+    lead: "Универсальный ключ sk-pool даёт доступ к Claude через совместимый Anthropic Messages API. Укажите клиенту адрес https://api.apitoken.sale и отправьте стандартный Messages-запрос.",
+    openKeys: "Открыть расход ключа",
+    allConnections: "Все способы подключения",
     gettingStarted: "Порядок подключения",
     stepKey: "Создайте ключ sk-pool",
     stepBase: "Укажите базовый URL",
@@ -290,7 +261,7 @@ const copy = {
     apiKeyClear: "Удалить",
     apiKeyActive: "В примерах используется ключ с окончанием",
     oneEndpoint: "Параметры подключения",
-    oneEndpointText: "Меняются только адрес сервера и API-ключ. Тела запросов и ответов, SSE-потоки и ошибки совпадают с Anthropic Messages API байт в байт.",
+    oneEndpointText: "Меняются только адрес сервера и API-ключ. Стандартные тела Messages-запросов, объекты ответов, ошибки и SSE-потоки остаются Anthropic-совместимыми.",
     keyNotice: "Полный API-ключ показывается только один раз при выпуске. Сохраните его в переменной окружения или менеджере секретов. Если ключ потерян или раскрыт, отзовите его и создайте новый: восстановить исходное значение нельзя.",
     quickstartText: "Сначала задайте параметры подключения, затем выполните минимальный cURL-запрос. Успешный ответ подтверждает, что ключ, баланс, адрес и модель готовы к работе.",
     requestTitle: "Отправьте первый запрос",
@@ -319,12 +290,14 @@ const copy = {
     typescript: "TypeScript SDK",
     typescriptText: "Клиент Node.js читает ту же переменную с ключом; baseURL меняет только адрес API.",
     authText: "В прямых HTTP-запросах передавайте ключ sk-pool в x-api-key и добавляйте anthropic-version: 2023-06-01. Официальные SDK Anthropic добавляют заголовок версии автоматически.",
-    authNotice: "Ключ sk-pool — это API-ключ, а не bearer-токен. Передавайте его в x-api-key, а не в заголовке Authorization.",
+    authNotice: "Для клиентов Claude канонический заголовок — x-api-key. Заголовок Authorization в этих примерах не нужен.",
     errorTitle: "Основные коды ответа",
     errorText: "Тело ошибки использует JSON-формат Anthropic. Коды 401 и 402 требуют исправить состояние аккаунта; автоматически повторяйте только временные ошибки 429 и 5xx.",
     status: "Статус",
     meaning: "Значение",
     action: "Что делать",
+    e400: "Неверное тело запроса или параметры",
+    a400: "Проверьте JSON, ID модели, обязательный max_tokens и поддерживаемые параметры. Не повторяйте неизменённый запрос.",
     e401: "API-ключ отсутствует, неверен или отозван",
     a401: "Передайте активный ключ sk-pool в x-api-key. Если ключ отозван, создайте новый; повторять запрос с тем же ключом не нужно.",
     e402: "Доступного предоплаченного баланса недостаточно",
@@ -393,15 +366,15 @@ export function DocsPortal() {
     : code;
 
   return <AppShell
-    section="docs"
+    section="claudeDocs"
     title={t.documentation}
     actions={<div className="lang" role="group" aria-label={language === "ru" ? "Язык" : "Language"}><button type="button" aria-pressed={language === "en"} className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}>EN</button><button type="button" aria-pressed={language === "ru"} className={language === "ru" ? "active" : ""} onClick={() => setLanguage("ru")}>RU</button></div>}
   >
     <div className="docs-site">
     <div className="docs-layout">
-      <aside className="docs-sidebar"><span>{t.onThisPage}</span><nav><a href="#overview">{t.overview}</a><a href="#quickstart">{t.quickstart}</a><a href="#authentication">{t.authentication}</a><a href="#tools">{t.tools}</a><a href="#openai">{t.openai}</a><a href="#sdks">{t.sdks}</a><a href="#errors">{t.errors}</a><a href="#cache">{t.cache}</a></nav></aside>
+      <aside className="docs-sidebar"><span>{t.onThisPage}</span><nav><a href="#overview">{t.overview}</a><a href="#quickstart">{t.quickstart}</a><a href="#authentication">{t.authentication}</a><a href="#tools">{t.tools}</a><a href="#sdks">{t.sdks}</a><a href="#errors">{t.errors}</a><a href="#cache">{t.cache}</a></nav></aside>
       <main className="docs-main" id="main-content" tabIndex={-1}>
-        <section className="docs-hero" id="overview"><span className="eyebrow">{t.eyebrow}</span><h1>{t.title}</h1><p>{t.lead}</p><div className="hero-cta"><Link className="btn btn-primary" href={"/profile"}>{t.openKeys}</Link><Link className="btn btn-ghost" href={"https://apitoken.sale/docs/learn"}>Claude API guides</Link></div></section>
+        <section className="docs-hero" id="overview"><span className="eyebrow">{t.eyebrow}</span><h1>{t.title}</h1><p>{t.lead}</p><div className="hero-cta"><Link className="btn btn-primary" href="/profile">{t.openKeys}</Link><Link className="btn btn-ghost" href="/docs">{t.allConnections}</Link></div></section>
 
         <section className="docs-section">
           <div className="docs-section-heading"><span>01</span><div><h2>{t.oneEndpoint}</h2><p>{t.oneEndpointText}</p></div></div>
@@ -440,28 +413,19 @@ export function DocsPortal() {
           <div className="docs-two-col"><CodeBlock title={t.claudeCode} description={t.claudeCodeText} code={withKey(CLAUDE_CODE)} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.editors} description={t.editorsText} code={withKey(CURSOR)} copyLabel={t.copy} copiedLabel={t.copied} /></div>
         </section>
 
-        <section className="docs-section" id="openai">
-          <div className="docs-section-heading"><span>05</span><div><h2>{t.openai}</h2><p>{t.openaiText}</p></div></div>
-          <div className="docs-essential-grid" style={{ marginBottom: 14 }}><Endpoint label={t.baseUrl} value={OPENAI_BASE_URL} copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label={t.authHeader} value={withKey("Authorization: Bearer sk-pool-•••")} copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label="Models" value={`${OPENAI_BASE_URL}/models`} copyLabel={t.copy} copiedLabel={t.copied} /></div>
-          <div className="docs-notice" style={{ marginBottom: 14 }}>{t.openaiNotice}</div>
-          <div className="docs-two-col" style={{ marginBottom: 18 }}><CodeBlock title={t.openaiRequest} description={t.openaiRequestText} code={withKey(OPENAI_CURL)} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.openaiPython} description={t.openaiPythonText} code={withKey(OPENAI_PYTHON)} copyLabel={t.copy} copiedLabel={t.copied} /></div>
-          <div className="docs-two-col"><CodeBlock title={t.codex} description={t.codexText} code={CODEX_PROFILE} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.codexRun} description={t.codexRunText} code={withKey(CODEX_RUN)} copyLabel={t.copy} copiedLabel={t.copied} /></div>
-          <div className="hero-cta" style={{ marginTop: 18 }}><Link className="btn btn-primary" href="/docs/openai">{t.openaiFullGuide}</Link></div>
-        </section>
-
         <section className="docs-section" id="sdks">
-          <div className="docs-section-heading"><span>06</span><div><h2>{t.sdks}</h2><p>{t.sdksText}</p></div></div>
+          <div className="docs-section-heading"><span>05</span><div><h2>{t.sdks}</h2><p>{t.sdksText}</p></div></div>
           <div className="docs-two-col"><CodeBlock title={t.python} description={t.pythonText} code={PYTHON} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.typescript} description={t.typescriptText} code={TYPESCRIPT} copyLabel={t.copy} copiedLabel={t.copied} /></div>
         </section>
 
         <section className="docs-section" id="errors">
-          <div className="docs-section-heading"><span>07</span><div><h2>{t.errorTitle}</h2><p>{t.errorText}</p></div></div>
-          <div className="table-scroll"><table className="mtable docs-errors"><thead><tr><th>{t.status}</th><th>{t.meaning}</th><th>{t.action}</th></tr></thead><tbody><ErrorRow code="401" meaning={t.e401} action={t.a401} labels={t} /><ErrorRow code="402" meaning={t.e402} action={t.a402} labels={t} /><ErrorRow code="429" meaning={t.e429} action={t.a429} labels={t} /><ErrorRow code="5xx" meaning={t.e5xx} action={t.a5xx} labels={t} /></tbody></table></div>
+          <div className="docs-section-heading"><span>06</span><div><h2>{t.errorTitle}</h2><p>{t.errorText}</p></div></div>
+          <div className="table-scroll"><table className="mtable docs-errors"><thead><tr><th>{t.status}</th><th>{t.meaning}</th><th>{t.action}</th></tr></thead><tbody><ErrorRow code="400" meaning={t.e400} action={t.a400} labels={t} /><ErrorRow code="401" meaning={t.e401} action={t.a401} labels={t} /><ErrorRow code="402" meaning={t.e402} action={t.a402} labels={t} /><ErrorRow code="429" meaning={t.e429} action={t.a429} labels={t} /><ErrorRow code="5xx" meaning={t.e5xx} action={t.a5xx} labels={t} /></tbody></table></div>
           <div className="docs-checklist"><h3>{t.production}</h3><ul>{t.checklist.map((item) => <li key={item}>{item}</li>)}</ul></div>
         </section>
 
         <section className="docs-section" id="cache">
-          <div className="docs-section-heading"><span>08</span><div><h2>{t.cacheTitle}</h2><p>{t.cacheLead}</p></div></div>
+          <div className="docs-section-heading"><span>07</span><div><h2>{t.cacheTitle}</h2><p>{t.cacheLead}</p></div></div>
           <h3 className="docs-h3">{t.cacheWhyHead}</h3><p className="docs-para">{t.cacheWhyText}</p>
           <div className="docs-notice">{t.cacheNotice}</div>
           <h3 className="docs-h3">{t.cacheHowHead}</h3><p className="docs-para">{t.cacheHowText}</p>
@@ -476,10 +440,6 @@ export function DocsPortal() {
     </div>
     </div>
   </AppShell>;
-}
-
-function BrandMark() {
-  return <><Image className="brand-mark bm-light" src="/assets/logo-mark-light.png" width={24} height={24} alt="" /><Image className="brand-mark bm-dark" src="/assets/logo-mark-dark.png" width={24} height={24} alt="" /></>;
 }
 
 function Endpoint({ label, value, copyLabel, copiedLabel }: { label: string; value: string; copyLabel: string; copiedLabel: string }) {

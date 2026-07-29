@@ -18,6 +18,6 @@ describe("OpenKeys API products", () => {
   it("uses a dedicated OpenAI-compatible host and guide", () => {
     expect(API_PRODUCTS.openai.baseUrl).toBe("https://openai.api.apitoken.sale/v1");
     expect(API_PRODUCTS.openai.docsPath).toBe("/docs/openai");
-    expect(API_PRODUCTS.anthropic.docsPath).toBe("/docs");
+    expect(API_PRODUCTS.anthropic.docsPath).toBe("/docs/claude");
   });
 });

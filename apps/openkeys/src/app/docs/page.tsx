@@ -1,8 +1,7 @@
-import { DocsPortal } from "./docs-portal";
+import { ConnectionDocsHub } from "./connection-docs-hub";
 
-export const metadata = { title: "Документация — apiToken" };
+export const metadata = { title: "Как подключить Claude и GPT — apiToken" };
 
-/** Тот же портал документации, что и в дашборде: один источник правды по подключению. */
 export default function DocsPage() {
-  return <DocsPortal />;
+  return <ConnectionDocsHub />;
 }

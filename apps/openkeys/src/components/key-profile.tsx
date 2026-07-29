@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, useTransition } from "react";
 import { AppShell } from "@/components/app-shell";
 import type { KeyUsageView } from "@/lib/keys";
-import { API_PRODUCTS } from "@/lib/api-product";
 import {
   MODEL_COLORS,
   bigintMax,
@@ -24,6 +23,8 @@ import {
   usageWindowDays,
 } from "@/lib/format";
 import { buildUtcUsageSeries } from "@/lib/usage-series";
+import { aggregateUsageProviders, usageProviderOf } from "@/lib/usage-providers";
+import { UNIVERSAL_CONNECTIONS } from "@/lib/universal-key";
 
 const LOCALE = "ru-RU";
 function CopyButton({ value, label = "Скопировать" }: { value: string; label?: string }) {
@@ -82,7 +83,6 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
     };
   }, [refreshUsage]);
 
-  const product = API_PRODUCTS[view.apiType];
   const usage = view.usage;
   const faceValueNano = BigInt(view.faceValueNano);
   const officialAvailable = BigInt(view.officialAvailableNano);
@@ -95,6 +95,7 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
     : 0;
 
   const models = usage?.models ?? [];
+  const providerSummaries = aggregateUsageProviders(models);
   const modelOfficialTotal = models.reduce((sum, model) => sum + BigInt(model.official_nano), 0n);
   const modelColor = new Map<string, string>();
   for (const model of models) {
@@ -166,12 +167,11 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
       <div className="app-body">
       <div className="app-body-in">
         <div className="page-heading">
-          <span className="eyebrow">{view.apiType === "openai" ? "GPT · баланс ключа" : "Баланс ключа"}</span>
-          <h1 className="p-h1">{view.apiType === "openai" ? "Расход по вашему GPT-ключу" : "Расход по вашему ключу"}</h1>
+          <span className="eyebrow">Claude + GPT · общий баланс</span>
+          <h1 className="p-h1">Универсальный API-ключ</h1>
           <p className="p-sub">
-            {view.apiType === "openai"
-              ? "Все суммы показаны в долларах прайса GPT API: здесь видны остаток, запросы, токены и модели OpenAI-совместимого ключа."
-              : "Все суммы — в долларах официального прайса Anthropic: столько же вы заплатили бы за эти запросы на api.anthropic.com."}
+            Один ключ и один баланс работают на Claude API и GPT/OpenAI-совместимом API. Расход ниже
+            объединён, а стоимость каждого запроса рассчитана по официальному прайсу использованной модели.
           </p>
           <div className="usage-live-row" aria-live="polite">
             <span className={`usage-live-status${isRefreshing ? " syncing" : ""}${!isOnline ? " offline" : ""}`}>
@@ -241,8 +241,11 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
                   {view.createdAt.slice(0, 10)}
                 </p>
                 <div className="overview-card-actions">
-                  <Link className="btn btn-primary btn-sm" href={product.docsPath}>
-                    Как подключить
+                  <Link className="btn btn-primary btn-sm" href={UNIVERSAL_CONNECTIONS.claude.docsPath}>
+                    Подключить Claude
+                  </Link>
+                  <Link className="btn btn-ghost btn-sm" href={UNIVERSAL_CONNECTIONS.openai.docsPath}>
+                    Подключить GPT
                   </Link>
                   {showSignOut ? (
                     <button
@@ -256,22 +259,7 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
                     >
                       Выйти
                     </button>
-                  ) : (
-                    view.apiType === "openai" ? (
-                      <Link className="btn btn-ghost btn-sm" href="/docs">
-                        Инструкция Claude
-                      </Link>
-                    ) : (
-                      <a
-                        className="btn btn-ghost btn-sm"
-                        href="https://apitoken.sale/docs"
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Полная документация
-                      </a>
-                    )
-                  )}
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -279,12 +267,24 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
 
           <article className="card overview-access-card">
             <div className="overview-card-head">
-              <span className="overview-card-label">Подключение</span>
-              <span className="chip">base url</span>
+              <span className="overview-card-label">Два подключения</span>
+              <span className="chip">один ключ</span>
             </div>
-            <div className="secret-key-field">
-              <code>{product.baseUrl}</code>
-              <CopyButton value={product.baseUrl} />
+            <div className="usage-connections">
+              <div>
+                <span>Claude · ANTHROPIC_BASE_URL</span>
+                <div className="secret-key-field">
+                  <code>{UNIVERSAL_CONNECTIONS.claude.baseUrl}</code>
+                  <CopyButton value={UNIVERSAL_CONNECTIONS.claude.baseUrl} />
+                </div>
+              </div>
+              <div>
+                <span>GPT · OPENAI_BASE_URL</span>
+                <div className="secret-key-field">
+                  <code>{UNIVERSAL_CONNECTIONS.openai.baseUrl}</code>
+                  <CopyButton value={UNIVERSAL_CONNECTIONS.openai.baseUrl} />
+                </div>
+              </div>
             </div>
             <p className="overview-balance-rate" style={{ marginTop: 10 }}>
               Ваш ключ: <code className="key-mask">{view.keyMasked}</code>
@@ -296,7 +296,7 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
           <div className="ovstat">
             <span className="dlabel">Официальная стоимость</span>
             <b className="num accent">{formatNanoUsd(summaryOfficialNano)}</b>
-            <span className="dtrend">эквивалент прайса {product.priceLabel}</span>
+            <span className="dtrend">по официальным прайсам использованных моделей</span>
           </div>
           <div className="ovstat">
             <span className="dlabel">Списано с ключа</span>
@@ -316,6 +316,31 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
             <span className="dtrend">временный резерв активных запросов</span>
           </div>
         </div>
+
+        <section className="dsec usage-provider-section">
+          <div className="dsec-head analytics-heading">
+            <div>
+              <h2>Расход по API</h2>
+              <p>Один баланс, отдельно показано использование Claude и GPT/OpenAI за последние 30 дней.</p>
+            </div>
+          </div>
+          <div className="usage-provider-grid">
+            {providerSummaries.map((provider) => (
+              <article className="card usage-provider-card" key={provider.provider}>
+                <div className="overview-card-head">
+                  <span className="overview-card-label">{provider.label}</span>
+                  <span className="chip">{provider.provider === "openai" ? "GPT" : "Claude"}</span>
+                </div>
+                <strong>{formatNanoUsd(provider.officialNano, 2, 2)}</strong>
+                <div className="usage-provider-meta">
+                  <span>{provider.requests.toLocaleString(LOCALE)} запросов</span>
+                  <span>{fmtTokens(provider.tokens)} токенов</span>
+                  <span>списано {formatNanoUsd(provider.chargedNano, 2, 2)}</span>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
 
         <div className="usage-graph">
           <div className="uchart">
@@ -528,6 +553,7 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
                   <thead>
                     <tr>
                       <th>Модель</th>
+                      <th>API</th>
                       <th className="tnum">Запросов</th>
                       <th className="tnum">Вход</th>
                       <th className="tnum">Выход</th>
@@ -549,6 +575,7 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
                             {modelLabel(model.model)}
                           </span>
                         </td>
+                        <td><span className="chip">{usageProviderOf(model.model) === "openai" ? "GPT" : "Claude"}</span></td>
                         <td className="tnum">{model.requests.toLocaleString(LOCALE)}</td>
                         <td className="tnum">{fmtTokens(model.input_tokens)}</td>
                         <td className="tnum">{fmtTokens(model.output_tokens)}</td>

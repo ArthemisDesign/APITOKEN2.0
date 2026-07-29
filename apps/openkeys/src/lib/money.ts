@@ -28,6 +28,15 @@ export function balanceToOfficialNano(balanceNano: bigint, multBp: number): bigi
   return (balanceNano * 10_000n) / BigInt(multBp);
 }
 
+/** Остаток по завершённым запросам: временный hold ещё принадлежит ключу. */
+export function officialRemainingNano(
+  availableNano: bigint,
+  reservedNano: bigint,
+  multBp: number,
+): bigint {
+  return balanceToOfficialNano(availableNano + reservedNano, multBp);
+}
+
 /**
  * Разделяет доступный баланс, незакрытые холды и фактический расход.
  *
@@ -44,7 +53,7 @@ export function officialBalanceBreakdown(
   return {
     available: balanceToOfficialNano(availableNano, multBp),
     reserved: balanceToOfficialNano(reservedNano, multBp),
-    remaining: balanceToOfficialNano(availableNano + reservedNano, multBp),
+    remaining: officialRemainingNano(availableNano, reservedNano, multBp),
     spent: balanceToOfficialNano(spentNano, multBp),
   };
 }

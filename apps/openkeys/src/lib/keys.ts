@@ -7,7 +7,13 @@ import { apiTypeOf, type ApiType } from "./api-product";
 import { loadConfig } from "./config";
 import { getDatabase } from "./db";
 import { getEngineClient } from "./engine";
-import { balanceToOfficialNano, formatUsd, officialBalanceBreakdown, officialNanoToBalance } from "./money";
+import {
+  balanceToOfficialNano,
+  formatUsd,
+  officialBalanceBreakdown,
+  officialNanoToBalance,
+  officialRemainingNano,
+} from "./money";
 import { openSecret, sealSecret } from "./secret-box";
 
 export const MAX_BATCH_QUANTITY = 100;
@@ -571,7 +577,6 @@ export interface MonitorRow {
   keyMasked: string;
   label: string | null;
   faceValue: string;
-  apiType: ApiType;
   viewUrl: string;
   createdAt: string;
   deliveredAt: string | null;
@@ -604,7 +609,6 @@ export async function loadKeyMonitor(createdBy: string, limit = 300): Promise<Mo
       createdAt: openkeysKeys.createdAt,
       deliveredAt: openkeysKeys.deliveredAt,
       label: openkeysBatches.label,
-      apiType: openkeysBatches.apiType,
     })
     .from(openkeysKeys)
     .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
@@ -629,7 +633,11 @@ export async function loadKeyMonitor(createdBy: string, limit = 300): Promise<Mo
             engine.getAccount(row.engineAccountId),
             engine.listKeys(row.engineAccountId),
           ]);
-          remaining = formatUsd(balanceToOfficialNano(BigInt(account.balance_nano), row.multBp));
+          remaining = formatUsd(officialRemainingNano(
+            BigInt(account.balance_nano),
+            BigInt(account.reserved_nano),
+            row.multBp,
+          ));
           const spentOfficial = balanceToOfficialNano(BigInt(account.spent_nano), row.multBp);
           spent = formatUsd(spentOfficial);
           spentNano = spentOfficial.toString();
@@ -645,7 +653,6 @@ export async function loadKeyMonitor(createdBy: string, limit = 300): Promise<Mo
           keyMasked: row.keyMasked,
           label: row.label,
           faceValue: formatUsd(row.faceValueNano, 0),
-          apiType: apiTypeOf(row.apiType),
           viewUrl: `${config.publicBaseUrl}/profile/${row.viewToken}`,
           createdAt: row.createdAt.toISOString(),
           deliveredAt: row.deliveredAt?.toISOString() ?? null,

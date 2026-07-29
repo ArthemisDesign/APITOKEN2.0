@@ -18,7 +18,7 @@ export const API_PRODUCTS: Record<ApiType, ApiProduct> = {
     shortLabel: "Claude",
     label: "Claude / Anthropic API",
     baseUrl: "https://api.apitoken.sale",
-    docsPath: "/docs",
+    docsPath: "/docs/claude",
     priceLabel: "Anthropic",
     balanceLabel: "Claude API",
   },

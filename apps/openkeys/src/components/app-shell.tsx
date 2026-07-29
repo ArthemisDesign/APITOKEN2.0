@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { BrandMark, ThemeToggle } from "@/components/chrome";
 
-export type ShellSection = "profile" | "docs" | "openaiDocs" | "stock" | "monitor";
+export type ShellSection = "profile" | "docs" | "claudeDocs" | "openaiDocs" | "stock" | "monitor";
 
 interface NavItem {
   section: ShellSection;
@@ -19,7 +19,8 @@ interface NavItem {
  */
 const CLIENT_NAV: NavItem[] = [
   { section: "profile", href: "/profile", label: "Расход ключа", icon: "◧" },
-  { section: "docs", href: "/docs", label: "Claude API", icon: "❑" },
+  { section: "docs", href: "/docs", label: "Как подключить", icon: "◎" },
+  { section: "claudeDocs", href: "/docs/claude", label: "Claude API", icon: "❑" },
   { section: "openaiDocs", href: "/docs/openai", label: "GPT / OpenAI", icon: "◇" },
 ];
 

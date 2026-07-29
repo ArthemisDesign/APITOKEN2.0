@@ -31,7 +31,8 @@ const CHAT = `curl https://openai.api.apitoken.sale/v1/chat/completions \\
     "messages": [{ "role": "user", "content": "Hello" }]
   }'`;
 
-const PYTHON = `import os
+const PYTHON = `# pip install openai
+import os
 from openai import OpenAI
 
 client = OpenAI(
@@ -45,7 +46,8 @@ response = client.responses.create(
 )
 print(response.output_text)`;
 
-const TYPESCRIPT = `import OpenAI from "openai";
+const TYPESCRIPT = `// npm install openai
+import OpenAI from "openai";
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -85,9 +87,10 @@ const copy = {
     usage: "Расход ключа",
     eyebrow: "OPENAI-СОВМЕСТИМЫЙ API · ИНСТРУКЦИЯ",
     title: "Подключите GPT API за три шага",
-    lead: "Ваш ключ sk-pool несёт предоплаченный баланс для GPT-моделей. Укажите отдельный OpenAI-совместимый Base URL, передавайте ключ как Bearer-токен и отправляйте стандартные запросы Responses API или Chat Completions.",
+    lead: "Тот же универсальный ключ sk-pool, который работает с Claude, открывает GPT-модели через отдельный OpenAI-совместимый Base URL. Баланс и USAGE остаются общими.",
     profile: "Открыть расход ключа",
     claude: "Инструкция Claude",
+    allConnections: "Все способы подключения",
     connection: "Параметры подключения",
     connectionText: "Меняются только Base URL и ключ. Используйте OpenAI-совместимый формат запроса и получайте актуальный список моделей через GET /v1/models.",
     keyLabel: "Ваш API-ключ",
@@ -104,8 +107,8 @@ const copy = {
     envText: "Официальные OpenAI SDK читают OPENAI_API_KEY. OPENAI_BASE_URL поддерживается многими совместимыми клиентами.",
     firstTitle: "Первый запрос",
     firstText: "Пример использует gpt-5.6-sol. Перед production-вызовом проверьте доступные модели: их набор может меняться.",
-    authText: "В HTTP-запросах передавайте sk-pool как Bearer-токен. Заголовки x-api-key и anthropic-version относятся к Claude API и здесь не нужны.",
-    authNotice: "Правильно: Authorization: Bearer sk-pool-… · Неправильно: x-api-key: sk-pool-…",
+    authText: "В прямых HTTP-запросах используйте канонический OpenAI-совместимый заголовок Authorization: Bearer. Заголовок anthropic-version здесь не нужен.",
+    authNotice: "Рекомендуется: Authorization: Bearer sk-pool-… · Шлюз также принимает x-api-key для совместимости, но OpenAI SDK и примеры используют Bearer.",
     endpointText: "Поддерживается текстовая OpenAI-совместимая поверхность: модели, Responses и Chat Completions, включая SSE streaming.",
     modelsTitle: "Получить модели",
     modelsText: "Не предполагайте, что доступен любой ID OpenAI. GET /v1/models возвращает текущий набор этого шлюза.",
@@ -125,17 +128,18 @@ const copy = {
     meaning: "Значение",
     action: "Что делать",
     rows: [
+      ["400", "Неверное тело запроса или неподдерживаемый параметр", "Проверьте JSON, метод API и ID модели; не повторяйте неизменённый запрос."],
       ["401", "Ключ отсутствует, неверен или отключён", "Проверьте Bearer-заголовок; отозванный ключ замените."],
       ["402", "Недостаточно предоплаченного баланса", "Пополните или замените ключ; ожидание не исправит 402."],
       ["404", "Endpoint или модель недоступны", "Проверьте путь и получите модели через GET /v1/models."],
       ["429", "Временный лимит мощности", "Учитывайте Retry-After и используйте ограниченный backoff с jitter."],
       ["5xx", "Временная ошибка шлюза", "Повторите запрос с ограниченным экспоненциальным backoff."],
     ],
-    usageText: "Профиль расхода для GPT-ключа устроен так же, как для Claude: показывает остаток, списания по дням, запросы, токены и разбивку по GPT-моделям.",
+    usageText: "Одна страница USAGE объединяет Claude и GPT: показывает общий остаток, временный резерв, списания по дням и отдельную разбивку по API и моделям.",
     usageButton: "Перейти в USAGE",
     usageRules: [
       "Откройте персональную ссылку, которую получили вместе с ключом, или войдите на странице расхода по самому sk-pool.",
-      "Base URL в профиле автоматически соответствует типу выданного ключа.",
+      "В профиле одновременно показаны оба Base URL и отдельные ссылки на инструкции.",
       "Не публикуйте персональную ссылку: она открывает статистику конкретного ключа без повторного ввода секрета.",
     ],
     copy: "Копировать",
@@ -155,9 +159,10 @@ const copy = {
     usage: "Key usage",
     eyebrow: "OPENAI-COMPATIBLE API · CONNECTION GUIDE",
     title: "Connect to the GPT API in three steps",
-    lead: "Your sk-pool key carries prepaid GPT-model balance. Set the dedicated OpenAI-compatible Base URL, send the key as a Bearer token, and use standard Responses API or Chat Completions requests.",
+    lead: "The same universal sk-pool key used with Claude opens GPT models through a dedicated OpenAI-compatible Base URL. Balance and USAGE stay shared.",
     profile: "Open key usage",
     claude: "Claude guide",
+    allConnections: "All connection options",
     connection: "Connection details",
     connectionText: "Only the Base URL and key change. Use OpenAI-compatible request shapes and discover the current models through GET /v1/models.",
     keyLabel: "Your API key",
@@ -174,8 +179,8 @@ const copy = {
     envText: "Official OpenAI SDKs read OPENAI_API_KEY. Many compatible clients also honor OPENAI_BASE_URL.",
     firstTitle: "First request",
     firstText: "The example uses gpt-5.6-sol. Discover available models before production requests because the set can change.",
-    authText: "Send sk-pool as a Bearer token in direct HTTP requests. x-api-key and anthropic-version belong to the Claude API and are not used here.",
-    authNotice: "Correct: Authorization: Bearer sk-pool-… · Wrong: x-api-key: sk-pool-…",
+    authText: "Use the canonical OpenAI-compatible Authorization: Bearer header in direct HTTP requests. anthropic-version is not needed here.",
+    authNotice: "Recommended: Authorization: Bearer sk-pool-… · The gateway also accepts x-api-key for compatibility, while OpenAI SDKs and these examples use Bearer.",
     endpointText: "The supported OpenAI-compatible text surface includes models, Responses, and Chat Completions with SSE streaming.",
     modelsTitle: "Discover models",
     modelsText: "Do not assume every OpenAI model ID is available. GET /v1/models returns the gateway's current set.",
@@ -195,17 +200,18 @@ const copy = {
     meaning: "Meaning",
     action: "What to do",
     rows: [
+      ["400", "Invalid request body or unsupported parameter", "Check the JSON shape, API method, and model ID; do not retry unchanged input."],
       ["401", "Key is missing, invalid, or disabled", "Check the Bearer header and replace a revoked key."],
       ["402", "Prepaid balance is too low", "Top up or replace the key; waiting cannot resolve 402."],
       ["404", "Endpoint or model is unavailable", "Check the path and discover models with GET /v1/models."],
       ["429", "Temporary capacity limit", "Honor Retry-After and use capped backoff with jitter."],
       ["5xx", "Temporary gateway failure", "Retry with bounded exponential backoff."],
     ],
-    usageText: "The GPT key profile works like Claude USAGE: it shows remaining balance, daily charges, requests, tokens, and a breakdown by GPT model.",
+    usageText: "One USAGE page combines Claude and GPT: shared remaining balance, temporary holds, daily charges, and separate API and model breakdowns.",
     usageButton: "Open USAGE",
     usageRules: [
       "Open the personal link delivered with the key, or sign in on the usage page with the sk-pool key itself.",
-      "The profile automatically displays the Base URL for the issued key type.",
+      "The profile displays both Base URLs and separate links to both connection guides.",
       "Do not publish the personal link: it opens that key's statistics without asking for the secret again.",
     ],
     copy: "Copy",
@@ -259,7 +265,7 @@ export function OpenAiDocsPortal() {
           <main className="docs-main" id="main-content" tabIndex={-1}>
             <section className="docs-hero" id="overview">
               <span className="eyebrow">{t.eyebrow}</span><h1>{t.title}</h1><p>{t.lead}</p>
-              <div className="hero-cta"><Link className="btn btn-primary" href="/profile">{t.profile}</Link><Link className="btn btn-ghost" href="/docs">{t.claude}</Link></div>
+              <div className="hero-cta"><Link className="btn btn-primary" href="/profile">{t.profile}</Link><Link className="btn btn-ghost" href="/docs">{t.allConnections}</Link><Link className="btn btn-ghost" href="/docs/claude">{t.claude}</Link></div>
             </section>
 
             <section className="docs-section">
