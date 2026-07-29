@@ -106,8 +106,8 @@ describe("migration configuration", () => {
         breakpoints: boolean;
       }>;
     };
-    const previousEntry = journal.entries.at(-2);
-    const currentEntry = journal.entries.at(-1);
+    const previousEntry = journal.entries.find((entry) => entry.idx === 21);
+    const currentEntry = journal.entries.find((entry) => entry.idx === 22);
 
     expect(currentEntry).toMatchObject({
       idx: 22,
@@ -221,5 +221,100 @@ describe("migration configuration", () => {
     expect(
       snapshot.tables["public.account_policy_bindings"]?.foreignKeys,
     ).toHaveProperty("account_policy_bindings_applied_fk");
+  });
+
+  it("keeps the pre-writer invariant fixup narrow and schema-only", () => {
+    const migrationName = "0023_multi_discount_invariants.sql";
+    const migrationSql = readFileSync(join(MIGRATIONS_FOLDER, migrationName), "utf8");
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as {
+      entries: Array<{
+        idx: number;
+        version: string;
+        when: number;
+        tag: string;
+        breakpoints: boolean;
+      }>;
+    };
+    const previousEntry = journal.entries.find((entry) => entry.idx === 22);
+    const currentEntry = journal.entries.find((entry) => entry.idx === 23);
+
+    expect(currentEntry).toMatchObject({
+      idx: 23,
+      version: "7",
+      tag: "0023_multi_discount_invariants",
+      breakpoints: true,
+    });
+    expect(currentEntry!.when).toBeGreaterThan(previousEntry!.when);
+
+    expect(migrationSql).toContain("multi_discount_invariants_empty_preflight");
+    expect(migrationSql).toContain("SHARE ROW EXCLUSIVE MODE NOWAIT");
+    for (const table of MULTI_DISCOUNT_TABLES) {
+      expect(migrationSql).toContain(`'${table}'`);
+    }
+
+    expect(migrationSql).not.toMatch(
+      /^(?:CREATE FUNCTION|CREATE TRIGGER|CREATE CONSTRAINT TRIGGER|INSERT|UPDATE|DELETE|TRUNCATE|DROP TABLE|DROP COLUMN)\b/im,
+    );
+
+    const alteredTables = [...migrationSql.matchAll(/^ALTER TABLE "([^"]+)"/gm)]
+      .map((match) => match[1]);
+    expect(new Set(alteredTables)).toEqual(new Set([
+      "account_policy_bindings",
+      "pricing_usage_attributions",
+      "pricing_usage_funding_allocations",
+      "provider_switch_entries",
+      "provider_switch_versions",
+    ]));
+
+    const unsupportedStatements = migrationSql
+      .split("--> statement-breakpoint")
+      .map((statement) => statement.trim())
+      .filter(Boolean)
+      .filter((statement) =>
+        !/^(?:--[^\n]*\n)*DO \$block\$/s.test(statement)
+        && !/^ALTER TABLE "[^"]+" (?:ADD|DROP|ALTER) /s.test(statement)
+      );
+    expect(unsupportedStatements).toEqual([]);
+
+    const databaseObjectNames = [
+      ...migrationSql.matchAll(/CONSTRAINT "([^"]+)"/g),
+    ].map((match) => match[1]).filter((name): name is string => name !== undefined);
+    expect(databaseObjectNames.filter((name) => Buffer.byteLength(name, "utf8") > 63)).toEqual([]);
+
+    const snapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0023_snapshot.json"), "utf8"),
+    ) as {
+      prevId: string;
+      tables: Record<string, {
+        columns: Record<string, unknown>;
+        foreignKeys: Record<string, unknown>;
+        checkConstraints: Record<string, { value: string }>;
+      }>;
+    };
+    const previousSnapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0022_snapshot.json"), "utf8"),
+    ) as { id: string };
+
+    expect(snapshot.prevId).toBe(previousSnapshot.id);
+    expect(snapshot.tables["public.provider_switch_versions"]?.columns)
+      .toHaveProperty("capability_generation");
+    expect(snapshot.tables["public.provider_switch_versions"]?.columns)
+      .toHaveProperty("capability_digest");
+    expect(snapshot.tables["public.provider_switch_entries"]?.columns)
+      .toHaveProperty("catalog_generation");
+    expect(snapshot.tables["public.pricing_usage_attributions"]?.columns)
+      .toHaveProperty("binding_id");
+    expect(snapshot.tables["public.pricing_usage_attributions"]?.columns)
+      .toHaveProperty("effective_policy_digest");
+    expect(snapshot.tables["public.pricing_usage_attributions"]?.foreignKeys)
+      .toHaveProperty("pricing_usage_attributions_effective_fk");
+    expect(snapshot.tables["public.pricing_usage_attributions"]?.checkConstraints)
+      .toHaveProperty("pricing_usage_attributions_policy_funding_check");
+    expect(
+      snapshot.tables["public.pricing_usage_funding_allocations"]
+        ?.columns["engine_bucket_id"],
+    ).toMatchObject({ notNull: true });
   });
 });

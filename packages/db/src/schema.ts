@@ -491,6 +491,8 @@ export const productCatalogHeads = pgTable("product_catalog_heads", {
 export const providerSwitchVersions = pgTable("provider_switch_versions", {
   generation: bigint("generation", { mode: "bigint" }).primaryKey(),
   schemaVersion: bigint("schema_version", { mode: "bigint" }).notNull(),
+  capabilityGeneration: bigint("capability_generation", { mode: "bigint" }).notNull(),
+  capabilityDigest: text("capability_digest").notNull(),
   contentDigest: text("content_digest").notNull(),
   actorType: text("actor_type").notNull(),
   actorId: text("actor_id"),
@@ -501,9 +503,19 @@ export const providerSwitchVersions = pgTable("provider_switch_versions", {
     .on(table.generation, table.contentDigest),
   unique("provider_switch_versions_job_target_unique")
     .on(table.generation, table.schemaVersion, table.contentDigest),
+  foreignKey({
+    columns: [table.capabilityGeneration, table.capabilityDigest],
+    foreignColumns: [
+      providerCapabilityVersions.generation,
+      providerCapabilityVersions.contentDigest,
+    ],
+    name: "provider_switch_versions_capability_fk",
+  }).onDelete("restrict"),
   check("provider_switch_versions_identity_check", sql`
     ${table.generation} > 0
     AND ${table.schemaVersion} > 0
+    AND ${table.capabilityGeneration} > 0
+    AND ${table.capabilityDigest} <> ''
     AND ${table.contentDigest} <> ''
     AND ${table.actorType} <> ''
     AND ${table.reason} <> ''
@@ -516,6 +528,7 @@ export const providerSwitchEntries = pgTable("provider_switch_entries", {
   scopeType: text("scope_type").notNull(),
   productId: text("product_id").notNull().default(""),
   segment: text("segment").notNull().default(""),
+  catalogGeneration: bigint("catalog_generation", { mode: "bigint" }),
   enabled: boolean("enabled").notNull(),
 }, (table) => [
   primaryKey({
@@ -527,14 +540,32 @@ export const providerSwitchEntries = pgTable("provider_switch_entries", {
     foreignColumns: [providerSwitchVersions.generation],
     name: "provider_switch_entries_version_fk",
   }).onDelete("cascade"),
+  foreignKey({
+    columns: [table.productId, table.catalogGeneration],
+    foreignColumns: [productCatalogVersions.productId, productCatalogVersions.generation],
+    name: "provider_switch_entries_catalog_fk",
+  }).onDelete("restrict"),
   check("provider_switch_entries_identity_check", sql`${table.providerId} <> ''`),
   check("provider_switch_entries_scope_check", sql`
-    (${table.scopeType} = 'master' AND ${table.productId} = '' AND ${table.segment} = '')
-    OR (${table.scopeType} = 'product' AND ${table.productId} <> '' AND ${table.segment} = '')
+    (
+      ${table.scopeType} = 'master'
+      AND ${table.productId} = ''
+      AND ${table.segment} = ''
+      AND ${table.catalogGeneration} IS NULL
+    )
+    OR (
+      ${table.scopeType} = 'product'
+      AND ${table.productId} <> ''
+      AND ${table.segment} = ''
+      AND ${table.catalogGeneration} IS NOT NULL
+      AND ${table.catalogGeneration} > 0
+    )
     OR (
       ${table.scopeType} = 'segment'
-      AND ${table.productId} <> ''
+      AND ${table.productId} = 'main'
       AND ${table.segment} IN ('b2c', 'b2b')
+      AND ${table.catalogGeneration} IS NOT NULL
+      AND ${table.catalogGeneration} > 0
     )
   `),
 ]);
@@ -1072,7 +1103,6 @@ export const accountPolicyBindings = pgTable("account_policy_bindings", {
       ${table.policyEnforcement} <> 'strict'
       OR (
         ${table.appliedEffectiveVersion} IS NOT NULL
-        AND ${table.syncState} = 'confirmed'
         AND ${table.reconciliationState} = 'verified'
       )
     )
@@ -1485,6 +1515,7 @@ export const pricingUsageAttributions = pgTable("pricing_usage_attributions", {
   providerId: text("provider_id"),
   productId: text("product_id"),
   accountClass: text("account_class"),
+  bindingId: uuid("binding_id"),
   requestedModelId: text("requested_model_id"),
   canonicalModelId: text("canonical_model_id"),
   servedModelId: text("served_model_id"),
@@ -1501,6 +1532,7 @@ export const pricingUsageAttributions = pgTable("pricing_usage_attributions", {
   policyId: text("policy_id"),
   policyVersion: bigint("policy_version", { mode: "bigint" }),
   effectivePolicyVersion: bigint("effective_policy_version", { mode: "bigint" }),
+  effectivePolicyDigest: text("effective_policy_digest"),
   policyDigest: text("policy_digest"),
   catalogGeneration: bigint("catalog_generation", { mode: "bigint" }),
   switchGeneration: bigint("switch_generation", { mode: "bigint" }),
@@ -1532,6 +1564,19 @@ export const pricingUsageAttributions = pgTable("pricing_usage_attributions", {
     columns: [table.pricingUsageEventId],
     foreignColumns: [pricingUsageEvents.id],
     name: "pricing_usage_attributions_event_fk",
+  }).onDelete("restrict"),
+  foreignKey({
+    columns: [
+      table.bindingId,
+      table.effectivePolicyVersion,
+      table.effectivePolicyDigest,
+    ],
+    foreignColumns: [
+      accountPolicyVersions.bindingId,
+      accountPolicyVersions.effectiveVersion,
+      accountPolicyVersions.contentDigest,
+    ],
+    name: "pricing_usage_attributions_effective_fk",
   }).onDelete("restrict"),
   check("pricing_usage_attributions_base_check", sql`
     ${table.attributionSchemaVersion} > 0
@@ -1688,12 +1733,35 @@ export const pricingUsageAttributions = pgTable("pricing_usage_attributions", {
       AND ${table.retentionEligible}
     )
   `),
+  check("pricing_usage_attributions_effective_check", sql`
+    (
+      ${table.snapshotKind} = 'policy_v1'
+      AND ${table.bindingId} IS NOT NULL
+      AND ${table.effectivePolicyVersion} IS NOT NULL
+      AND ${table.effectivePolicyDigest} IS NOT NULL
+      AND ${table.effectivePolicyDigest} <> ''
+    )
+    OR (
+      ${table.snapshotKind} IN ('legacy_scalar', 'legacy_b2c_track')
+      AND ${table.bindingId} IS NULL
+      AND ${table.effectivePolicyDigest} IS NULL
+    )
+  `),
+  check("pricing_usage_attributions_policy_funding_check", sql`
+    ${table.snapshotKind} <> 'policy_v1'
+    OR (
+      ${table.paidFundedNano} IS NOT NULL
+      AND ${table.bonusFundedNano} IS NOT NULL
+      AND ${table.otherFundedNano} IS NOT NULL
+      AND ${table.fundingAllocationJson} IS NOT NULL
+    )
+  `),
 ]);
 
 export const pricingUsageFundingAllocations = pgTable("pricing_usage_funding_allocations", {
   pricingUsageEventId: uuid("pricing_usage_event_id").notNull(),
   ordinal: integer("ordinal").notNull(),
-  engineBucketId: text("engine_bucket_id"),
+  engineBucketId: text("engine_bucket_id").notNull(),
   bucketVersion: bigint("bucket_version", { mode: "bigint" }).notNull(),
   sourceType: text("source_type").notNull(),
   sourceRef: text("source_ref").notNull().default(""),
@@ -1715,7 +1783,7 @@ export const pricingUsageFundingAllocations = pgTable("pricing_usage_funding_all
     AND ${table.bucketVersion} > 0
     AND ${table.sourceType} <> ''
     AND ${table.amountNano} > 0
-    AND (${table.engineBucketId} IS NULL OR ${table.engineBucketId} <> '')
+    AND ${table.engineBucketId} <> ''
   `),
 ]);
 

@@ -73,6 +73,7 @@ interface Journal {
 
 interface TemporaryDatabase {
   client: Client;
+  connectionString: string;
   close: () => Promise<void>;
 }
 
@@ -80,6 +81,7 @@ interface PgFailure {
   code?: string;
   constraint?: string;
   message?: string;
+  cause?: PgFailure;
 }
 
 interface ValidGraph {
@@ -138,6 +140,7 @@ async function createTemporaryDatabase(label: string): Promise<TemporaryDatabase
   let closed = false;
   return {
     client: target,
+    connectionString: targetUrl.toString(),
     close: async () => {
       if (closed) return;
       closed = true;
@@ -186,20 +189,18 @@ async function applyMigrations(client: Client, migrationsFolder: string): Promis
   await migrate(drizzle(client), { migrationsFolder });
 }
 
-async function createMigrationsThrough0021(): Promise<string> {
-  const folder = await mkdtemp(join(tmpdir(), "commerce-migrations-0021-"));
+async function createMigrationsThrough(lastIndex: number): Promise<string> {
+  const folder = await mkdtemp(join(tmpdir(), `commerce-migrations-${lastIndex}-`));
   const metadataFolder = join(folder, "meta");
   await mkdir(metadataFolder);
 
   const journal = JSON.parse(
     await readFile(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
   ) as Journal;
-  const legacyEntries = journal.entries.filter(
-    (entry) => entry.idx <= LEGACY_MIGRATION_LAST_INDEX,
-  );
-  expect(legacyEntries.at(-1)?.idx).toBe(LEGACY_MIGRATION_LAST_INDEX);
+  const selectedEntries = journal.entries.filter((entry) => entry.idx <= lastIndex);
+  expect(selectedEntries.at(-1)?.idx).toBe(lastIndex);
 
-  await Promise.all(legacyEntries.map((entry) =>
+  await Promise.all(selectedEntries.map((entry) =>
     copyFile(
       join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
       join(folder, `${entry.tag}.sql`),
@@ -207,7 +208,7 @@ async function createMigrationsThrough0021(): Promise<string> {
   ));
   await writeFile(
     join(metadataFolder, "_journal.json"),
-    `${JSON.stringify({ ...journal, entries: legacyEntries }, null, 2)}\n`,
+    `${JSON.stringify({ ...journal, entries: selectedEntries }, null, 2)}\n`,
   );
   return folder;
 }
@@ -475,19 +476,24 @@ async function insertValidGraph(client: Client): Promise<ValidGraph> {
 
     await client.query(`
       INSERT INTO provider_switch_versions (
-        generation, schema_version, content_digest, actor_type, actor_id, reason
-      ) VALUES (1, 1, 'switch-v1', 'system', 'migration-test', 'initial test switches')
+        generation, schema_version, capability_generation, capability_digest,
+        content_digest, actor_type, actor_id, reason
+      ) VALUES (
+        1, 1, 1, 'capability-v1', 'switch-v1',
+        'system', 'migration-test', 'initial test switches'
+      )
     `);
     await client.query(`
       INSERT INTO provider_switch_entries (
-        generation, provider_id, scope_type, product_id, segment, enabled
+        generation, provider_id, scope_type, product_id, segment,
+        catalog_generation, enabled
       ) VALUES
-        (1, 'anthropic', 'master', '', '', true),
-        (1, 'openai', 'master', '', '', true),
-        (1, 'anthropic', 'segment', 'main', 'b2c', true),
-        (1, 'anthropic', 'segment', 'main', 'b2b', true),
-        (1, 'openai', 'segment', 'main', 'b2c', true),
-        (1, 'openai', 'segment', 'main', 'b2b', true)
+        (1, 'anthropic', 'master', '', '', NULL, true),
+        (1, 'openai', 'master', '', '', NULL, true),
+        (1, 'anthropic', 'segment', 'main', 'b2c', 1, true),
+        (1, 'anthropic', 'segment', 'main', 'b2b', 1, true),
+        (1, 'openai', 'segment', 'main', 'b2c', 1, true),
+        (1, 'openai', 'segment', 'main', 'b2b', 1, true)
     `);
     await client.query(`
       INSERT INTO provider_switch_head (singleton, active_generation)
@@ -658,29 +664,47 @@ async function insertValidGraph(client: Client): Promise<ValidGraph> {
       INSERT INTO pricing_usage_attributions (
         pricing_usage_event_id, attribution_schema_version, snapshot_kind,
         engine_request_id, provider_id, product_id, account_class,
-        requested_model_id, canonical_model_id, served_model_id,
+        binding_id, requested_model_id, canonical_model_id, served_model_id,
         served_canonical_model_id, billing_invariant_code, alias_generation,
         rule_id, rule_digest, rule_scope, pricing_mode, rule_origin, discount_bps,
         payable_multiplier_bp, policy_id, policy_version, effective_policy_version,
-        policy_digest, catalog_generation, switch_generation, tariff_schedule_id,
+        effective_policy_digest, policy_digest, catalog_generation,
+        switch_generation, tariff_schedule_id,
         tariff_priced_at, official_nano, charged_nano, official_cost_json,
         paid_funded_nano, bonus_funded_nano, other_funded_nano,
         funding_allocation_json, track_eligible, retention_eligible,
         commission_eligible, snapshot_digest
       ) VALUES (
-        $1, 1, 'policy_v1', $3, 'anthropic', 'main', 'b2c',
+        $1, 1, 'policy_v1', $3, 'anthropic', 'main', 'b2c', $5,
         'claude-sonnet-latest', 'claude-sonnet', NULL, NULL, NULL, 1,
         'b2c-anthropic', 'effective-b2c-anthropic', 'provider',
-        'track', 'managed', NULL, 4000, $4, 1, 1, 'policy-b2c-v1',
+        'track', 'managed', NULL, 4000, $4, 1, 1, 'account-b2c-v1', 'policy-b2c-v1',
         1, 1, 'official-2026-07', now(), 250, 100, '{"input":150,"output":100}'::jsonb,
         60, 40, 0,
-        '[{"source_type":"paid","amount_nano":"60"},{"source_type":"welcome_track_bonus","amount_nano":"40"}]'::jsonb,
+        '[
+          {
+            "ordinal": 0,
+            "engine_bucket_id": "paid-bucket",
+            "bucket_version": "1",
+            "source_type": "paid",
+            "source_ref": "payment:test",
+            "amount_nano": "60"
+          },
+          {
+            "ordinal": 1,
+            "engine_bucket_id": "welcome-bucket",
+            "bucket_version": "1",
+            "source_type": "welcome_track_bonus",
+            "source_ref": "welcome:test",
+            "amount_nano": "40"
+          }
+        ]'::jsonb,
         true, true, true, 'snapshot-policy-v1'
       ), (
-        $2, 1, 'legacy_scalar', NULL, NULL, NULL, NULL,
+        $2, 1, 'legacy_scalar', NULL, NULL, NULL, NULL, NULL,
         NULL, NULL, NULL, NULL, NULL, NULL,
         NULL, NULL, NULL, 'legacy_scalar', 'legacy', NULL, 3750,
-        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 75, NULL,
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 75, NULL,
         NULL, NULL, NULL, NULL, false, false, false, 'snapshot-legacy-3750'
       )
     `, [
@@ -688,6 +712,7 @@ async function insertValidGraph(client: Client): Promise<ValidGraph> {
       legacyUsageEventId,
       `request-${randomUUID()}`,
       graph.b2cPolicyId,
+      graph.b2cBindingId,
     ]);
     await client.query(`
       INSERT INTO pricing_usage_funding_allocations (
@@ -709,7 +734,9 @@ async function insertValidGraph(client: Client): Promise<ValidGraph> {
 
 describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
   it("upgrades an exact 0021 database without changing legacy rows and remains idempotent", async () => {
-    const legacyMigrationsFolder = await createMigrationsThrough0021();
+    const legacyMigrationsFolder = await createMigrationsThrough(
+      LEGACY_MIGRATION_LAST_INDEX,
+    );
     try {
       await withTemporaryDatabase("upgrade", async (client) => {
         await applyMigrations(client, legacyMigrationsFolder);
@@ -718,17 +745,67 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         const before = await captureLegacyState(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(23);
+        expect(await migrationCount(client)).toBe(24);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(23);
+        expect(await migrationCount(client)).toBe(24);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
       });
     } finally {
       await rm(legacyMigrationsFolder, { recursive: true, force: true });
+    }
+  }, TEST_TIMEOUT_MS);
+
+  it("refuses an out-of-order 0022-to-0023 upgrade after a new-table writer starts", async () => {
+    const migrationsThrough0022 = await createMigrationsThrough(22);
+    const database = await createTemporaryDatabase("preflight");
+    const peer = new Client({ connectionString: database.connectionString });
+    try {
+      await peer.connect();
+      await applyMigrations(database.client, migrationsThrough0022);
+      expect(await migrationCount(database.client)).toBe(23);
+
+      await peer.query("BEGIN");
+      await peer.query(`
+          INSERT INTO provider_switch_versions (
+            generation, schema_version, content_digest, actor_type, reason
+          ) VALUES (1, 1, 'premature-switch', 'test', 'preflight coverage')
+      `);
+
+      let lockFailure: PgFailure | undefined;
+      try {
+        await applyMigrations(database.client, MIGRATIONS_FOLDER);
+      } catch (error) {
+        lockFailure = error as PgFailure;
+      }
+      expect(lockFailure?.cause ?? lockFailure).toMatchObject({ code: "55P03" });
+      expect(await migrationCount(database.client)).toBe(23);
+
+      await peer.query("COMMIT");
+
+      let populatedFailure: PgFailure | undefined;
+      try {
+        await applyMigrations(database.client, MIGRATIONS_FOLDER);
+      } catch (error) {
+        populatedFailure = error as PgFailure;
+      }
+      expect(populatedFailure?.cause ?? populatedFailure).toMatchObject({
+        code: "23514",
+        constraint: "multi_discount_invariants_empty_preflight",
+      });
+      expect(await migrationCount(database.client)).toBe(23);
+      const preserved = await database.client.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM provider_switch_versions",
+      );
+      expect(preserved.rows).toEqual([{ count: 1 }]);
+    } finally {
+      await peer.query("ROLLBACK").catch(() => undefined);
+      await peer.end().catch(() => undefined);
+      await database.close();
+      await rm(migrationsThrough0022, { recursive: true, force: true });
     }
   }, TEST_TIMEOUT_MS);
 
@@ -773,6 +850,158 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         normalized_allocations: 2,
       }]);
 
+      await client.query(`
+        INSERT INTO pricing_policy_versions (
+          policy_id, version, schema_version, product_id, catalog_generation,
+          content_digest, actor_type, reason
+        ) VALUES (
+          $1, 2, 1, 'main', 1, 'policy-b2c-v2',
+          'admin', 'pending strict-policy coverage'
+        )
+      `, [graph.b2cPolicyId]);
+      await client.query(`
+        INSERT INTO pricing_policy_rules (
+          policy_id, policy_version, product_id, catalog_generation, rule_id,
+          rule_digest, scope_type, provider_id, canonical_model_id, pricing_mode,
+          rule_origin, discount_bps, payable_multiplier_bp, track_eligible,
+          retention_eligible, commission_eligible
+        )
+        SELECT
+          policy_id, 2, product_id, catalog_generation, rule_id,
+          rule_digest || '-v2', scope_type, provider_id, canonical_model_id,
+          pricing_mode, rule_origin, discount_bps, payable_multiplier_bp,
+          track_eligible, retention_eligible, commission_eligible
+        FROM pricing_policy_rules
+        WHERE policy_id = $1 AND policy_version = 1
+      `, [graph.b2cPolicyId]);
+      await client.query(`
+        INSERT INTO account_policy_versions (
+          binding_id, effective_version, policy_id, policy_version, policy_digest,
+          product_id, account_class, schema_version, catalog_generation,
+          switch_generation, content_digest
+        ) VALUES (
+          $1, 2, $2, 2, 'policy-b2c-v2', 'main', 'b2c', 1, 1, 1,
+          'account-b2c-v2'
+        )
+      `, [graph.b2cBindingId, graph.b2cPolicyId]);
+      await client.query(`
+        INSERT INTO account_policy_rules (
+          binding_id, effective_version, product_id, catalog_generation, rule_id,
+          rule_digest, scope_type, provider_id, canonical_model_id, pricing_mode,
+          rule_origin, discount_bps, payable_multiplier_bp, track_eligible,
+          retention_eligible, commission_eligible
+        )
+        SELECT
+          binding_id, 2, product_id, catalog_generation, rule_id,
+          rule_digest || '-v2', scope_type, provider_id, canonical_model_id,
+          pricing_mode, rule_origin, discount_bps, payable_multiplier_bp,
+          track_eligible, retention_eligible, commission_eligible
+        FROM account_policy_rules
+        WHERE binding_id = $1 AND effective_version = 1
+      `, [graph.b2cBindingId]);
+      await client.query(`
+        UPDATE account_policy_bindings
+        SET desired_effective_version = 2,
+            desired_digest = 'account-b2c-v2',
+            policy_enforcement = 'strict',
+            reconciliation_state = 'verified',
+            sync_state = 'pending',
+            updated_at = now()
+        WHERE id = $1
+      `, [graph.b2cBindingId]);
+      const pendingStrict = await client.query<{
+        desired_effective_version: string;
+        applied_effective_version: string;
+        sync_state: string;
+      }>(`
+        SELECT
+          desired_effective_version::text,
+          applied_effective_version::text,
+          sync_state
+        FROM account_policy_bindings
+        WHERE id = $1
+      `, [graph.b2cBindingId]);
+      expect(pendingStrict.rows).toEqual([{
+        desired_effective_version: "2",
+        applied_effective_version: "1",
+        sync_state: "pending",
+      }]);
+
+      await expectDatabaseFailure(client, async () => {
+        await client.query(`
+          UPDATE account_policy_bindings
+          SET sync_state = 'confirmed', updated_at = now()
+          WHERE id = $1
+        `, [graph.b2cBindingId]);
+      }, {
+        code: "23514",
+        constraint: "account_policy_bindings_enforcement_check",
+      });
+
+      await expectDatabaseFailure(client, async () => {
+        await client.query(`
+          INSERT INTO provider_switch_versions (
+            generation, schema_version, capability_generation, capability_digest,
+            content_digest, actor_type, reason
+          ) VALUES (
+            2, 1, 1, 'forged-capability-digest',
+            'switch-v2', 'admin', 'foreign-key coverage'
+          )
+        `);
+      }, {
+        code: "23503",
+        constraint: "provider_switch_versions_capability_fk",
+      });
+
+      await expectDatabaseFailure(client, async () => {
+        await client.query(`
+          INSERT INTO provider_switch_entries (
+            generation, provider_id, scope_type, product_id, segment,
+            catalog_generation, enabled
+          ) VALUES (1, 'anthropic', 'product', 'main', '', 999, true)
+        `);
+      }, {
+        code: "23503",
+        constraint: "provider_switch_entries_catalog_fk",
+      });
+
+      await expectDatabaseFailure(client, async () => {
+        await client.query(`
+          UPDATE pricing_usage_attributions
+          SET effective_policy_digest = 'forged-effective-digest'
+          WHERE snapshot_kind = 'policy_v1'
+        `);
+      }, {
+        code: "23503",
+        constraint: "pricing_usage_attributions_effective_fk",
+      });
+
+      await expectDatabaseFailure(client, async () => {
+        await client.query(`
+          UPDATE pricing_usage_attributions
+          SET paid_funded_nano = NULL,
+              bonus_funded_nano = NULL,
+              other_funded_nano = NULL,
+              funding_allocation_json = NULL
+          WHERE snapshot_kind = 'policy_v1'
+        `);
+      }, {
+        code: "23514",
+        constraint: "pricing_usage_attributions_policy_funding_check",
+      });
+
+      await expectDatabaseFailure(client, async () => {
+        await client.query(`
+          UPDATE pricing_usage_funding_allocations
+          SET engine_bucket_id = NULL
+          WHERE pricing_usage_event_id IN (
+            SELECT pricing_usage_event_id
+            FROM pricing_usage_attributions
+            WHERE snapshot_kind = 'policy_v1'
+          )
+        `);
+      }, { code: "23502" });
+
       await expectDatabaseFailure(client, async () => {
         await client.query(`
           INSERT INTO engine_catalog_jobs (
@@ -808,7 +1037,7 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
           INSERT INTO pricing_policy_versions (
             policy_id, version, schema_version, product_id, catalog_generation,
             content_digest, actor_type, reason
-          ) VALUES ($1, 2, 1, 'main', 1, 'policy-b2c-v2-null', 'admin', 'fault test')
+          ) VALUES ($1, 3, 1, 'main', 1, 'policy-b2c-v3-null', 'admin', 'fault test')
         `, [graph.b2cPolicyId]);
         await client.query(`
           INSERT INTO pricing_policy_rules (
@@ -817,7 +1046,7 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
             rule_origin, discount_bps, payable_multiplier_bp, track_eligible,
             retention_eligible, commission_eligible
           ) VALUES (
-            $1, 2, 'main', 1, 'null-discount', 'null-discount-v2',
+            $1, 3, 'main', 1, 'null-discount', 'null-discount-v3',
             'provider', 'anthropic', NULL, 'discount', 'managed', NULL, 8000,
             false, false, false
           )
@@ -833,7 +1062,7 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
             policy_id, version, schema_version, product_id, catalog_generation,
             content_digest, actor_type, reason
           ) VALUES (
-            $1, 2, 1, 'main', 1, 'policy-b2c-v2-fractional', 'admin', 'fault test'
+            $1, 4, 1, 'main', 1, 'policy-b2c-v4-fractional', 'admin', 'fault test'
           )
         `, [graph.b2cPolicyId]);
         await client.query(`
@@ -843,7 +1072,7 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
             rule_origin, discount_bps, payable_multiplier_bp, track_eligible,
             retention_eligible, commission_eligible
           ) VALUES (
-            $1, 2, 'main', 1, 'fractional-discount', 'fractional-discount-v2',
+            $1, 4, 'main', 1, 'fractional-discount', 'fractional-discount-v4',
             'provider', 'anthropic', NULL, 'discount', 'managed', 9450, 550,
             false, false, false
           )
