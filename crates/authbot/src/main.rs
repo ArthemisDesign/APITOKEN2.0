@@ -467,6 +467,7 @@ async fn main() -> Result<()> {
     });
     let store = Arc::new(Store::open(&state_db())?);
     let recovered = store.recover_interrupted_handoffs()?;
+    let recovered_gemini = store.recover_legacy_gemini_handoffs()?;
     preflight_authority(authority_cfg(&cfg)).await?;
     let bot = Bot::new(&token);
     let _ = bot.delete_webhook().await;
@@ -484,6 +485,9 @@ async fn main() -> Result<()> {
     );
     if recovered > 0 {
         eprintln!("authbot: восстановлено прерванных Claude handoff: {recovered}");
+    }
+    if recovered_gemini > 0 {
+        eprintln!("authbot: восстановлено устаревших Gemini handoff: {recovered_gemini}");
     }
     if admin_state == "EMPTY" {
         eprintln!("⚠️ AUTH_BOT_ADMIN пуст — админ не задан");

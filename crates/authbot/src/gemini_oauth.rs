@@ -542,7 +542,9 @@ fn callback_html(status: StatusCode, success: bool) -> Response {
 
 async fn fail_callback(state: &CallbackState, session: &GeminiOAuthSession, failure: Failure) {
     let _ = state.store.fail_gemini_oauth(&session.state);
-    let _ = state.store.set_want(session.chat_id, "gm_proxy");
+    // `begin()` sealed and then cleared the wizard draft, so every failed one-use callback must
+    // restart at client id. `gm_proxy` belonged to the removed legacy wizard and strands messages.
+    let _ = state.store.set_want(session.chat_id, "gm_gid");
     let _ = state
         .bot
         .send(session.chat_id, failure.public_message())
@@ -567,6 +569,7 @@ fn valid_oauth_value(value: &str, max: usize) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Failure {
     Authorization,
+    CodeAssistApiDisabled,
     Proxy,
     Temporary,
     UnsupportedPlan,
@@ -579,6 +582,7 @@ impl Failure {
     fn code(self) -> &'static str {
         match self {
             Self::Authorization => "authorization",
+            Self::CodeAssistApiDisabled => "code_assist_api_disabled",
             Self::Proxy => "proxy",
             Self::Temporary => "temporary_upstream",
             Self::UnsupportedPlan => "unsupported_plan",
@@ -590,9 +594,10 @@ impl Failure {
 
     fn public_message(self) -> &'static str {
         match self {
-            Self::Authorization => "❌ Google отклонил или завершил OAuth-сессию. Пришли прокси ещё раз, чтобы получить новую ссылку.",
-            Self::Proxy => "❌ Не удалось использовать закреплённый прокси. Проверь его и пришли заново.",
-            Self::Temporary => "⚠️ Google временно не завершил проверку. Пришли прокси ещё раз и повтори OAuth.",
+            Self::Authorization => "❌ Google отклонил или завершил OAuth-сессию. Начни подключение заново: пришли Client ID своего OAuth-клиента.",
+            Self::CodeAssistApiDisabled => "❌ В Google Cloud-проекте OAuth-клиента не включён Cloud Code Private API (cloudcode-pa.googleapis.com). Включи его в Google Cloud Console, подожди несколько минут и начни подключение заново с Client ID.",
+            Self::Proxy => "❌ Не удалось использовать закреплённый прокси. Проверь его и начни подключение заново с Client ID.",
+            Self::Temporary => "⚠️ Google временно не завершил проверку. Подожди немного и начни подключение заново с Client ID.",
             Self::UnsupportedPlan => "❌ Аккаунт авторизован, но совместимая подписка не обнаружена. Поддерживаются Google AI Pro/Ultra, Code Assist Standard/Enterprise и Workspace AI Ultra; Google AI Plus и другие Workspace AI планы не дают этот Code Assist tier.",
             Self::Duplicate => "❌ Эта Google-подписка уже присутствует в пуле.",
             Self::DuplicateProxy => "❌ Этот прокси уже закреплён за другим Gemini-профилем. Для подписки нужен отдельный прокси.",
@@ -972,12 +977,23 @@ async fn post_json<T: for<'de> Deserialize<'de>>(
         let detail: String = detail.split_whitespace().collect::<Vec<_>>().join(" ");
         let detail: String = detail.chars().take(400).collect();
         eprintln!("[gemini-oauth] Code Assist {endpoint} returned HTTP {status}: {detail}");
-        return Err(match status {
-            401 | 403 => Failure::Authorization,
-            _ => Failure::Temporary,
-        });
+        return Err(classify_google_http_failure(status, &detail));
     }
     response.json().await.map_err(|_| Failure::Temporary)
+}
+
+fn classify_google_http_failure(status: u16, detail: &str) -> Failure {
+    let detail = detail.to_ascii_lowercase();
+    if status == 403
+        && detail.contains("cloudcode-pa.googleapis.com")
+        && (detail.contains("disabled") || detail.contains("has not been used"))
+    {
+        Failure::CodeAssistApiDisabled
+    } else if matches!(status, 401 | 403) {
+        Failure::Authorization
+    } else {
+        Failure::Temporary
+    }
 }
 
 fn client_metadata(project: Option<&str>) -> Value {
@@ -1433,6 +1449,26 @@ mod tests {
         );
         assert!(!supported_paid_plan("google_ai_plus_unsupported"));
         assert!(!supported_paid_plan("unknown_paid_unsupported"));
+    }
+
+    #[test]
+    fn disabled_cloud_code_api_is_actionable_instead_of_generic_auth_failure() {
+        let detail = "Cloud Code Private API has not been used in project 123 before or it is disabled. Enable cloudcode-pa.googleapis.com then retry.";
+        assert_eq!(
+            classify_google_http_failure(403, detail),
+            Failure::CodeAssistApiDisabled
+        );
+        assert!(Failure::CodeAssistApiDisabled
+            .public_message()
+            .contains("cloudcode-pa.googleapis.com"));
+        assert_eq!(
+            classify_google_http_failure(403, "permission denied"),
+            Failure::Authorization
+        );
+        assert_eq!(
+            classify_google_http_failure(500, detail),
+            Failure::Temporary
+        );
     }
 
     #[test]

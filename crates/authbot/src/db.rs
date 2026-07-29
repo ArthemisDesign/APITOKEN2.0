@@ -21,7 +21,7 @@ pub struct UserRow {
     pub status: String,  // new | pending | approved | rejected | pending_admin
     pub role: String,    // "" | admin
     pub address: String, // BEP-20
-    pub want: String, // ожидаемый ввод (reg_address | ho_* | cx_* | gm_proxy | gm_auth | gm_wait)
+    pub want: String, // ожидаемый ввод (reg_address | ho_* | cx_* | gm_gid | gm_gsecret | gm_gproxy | gm_wait)
     pub hproxy: String, // прокси аккаунта при передаче доступа (handover)
     pub hproxy_order: i64, // IPRoyal order id за handover-прокси (0 = ручной/внешний)
 }
@@ -280,6 +280,16 @@ impl Store {
             .execute("UPDATE users SET want='ho_email' WHERE want='ho_code'", [])?)
     }
 
+    /// The step-by-step Gemini wizard replaced the legacy `gm_proxy`/`gm_auth` states, but an
+    /// older callback failure path still wrote `gm_proxy`. Repair rows left by that mixed-version
+    /// window so sellers can restart at their OAuth client id after an authbot deployment.
+    pub fn recover_legacy_gemini_handoffs(&self) -> Result<usize> {
+        Ok(self.c.lock().unwrap().execute(
+            "UPDATE users SET want='gm_gid' WHERE want IN ('gm_proxy','gm_auth')",
+            [],
+        )?)
+    }
+
     /// chat_id одобренных продавцов (для рассылки офферов).
     pub fn approved_sellers(&self) -> Result<Vec<i64>> {
         let c = self.c.lock().unwrap();
@@ -463,6 +473,10 @@ mod tests {
             s.register_user(111, 111, "seller").unwrap();
             s.set_status(111, "approved").unwrap();
             s.set_want(111, "ho_code").unwrap();
+            s.register_user(222, 222, "gemini-seller").unwrap();
+            s.set_want(222, "gm_proxy").unwrap();
+            s.register_user(333, 333, "legacy-gemini-seller").unwrap();
+            s.set_want(333, "gm_auth").unwrap();
             s.set_admin_state(999, "seller", "Claude Max20x", 0)
                 .unwrap(); // «в процессе» создания оффера
             s.set_admin_state(999, "price", "Claude Max20x", 111)
@@ -473,8 +487,11 @@ mod tests {
         // «рестарт» бота = новое открытие той же БД
         let s = Store::open(&p).unwrap();
         assert_eq!(s.recover_interrupted_handoffs().unwrap(), 1);
+        assert_eq!(s.recover_legacy_gemini_handoffs().unwrap(), 2);
         assert_eq!(s.get_user(111).unwrap().unwrap().status, "approved");
         assert_eq!(s.get_user(111).unwrap().unwrap().want, "ho_email");
+        assert_eq!(s.get_user(222).unwrap().unwrap().want, "gm_gid");
+        assert_eq!(s.get_user(333).unwrap().unwrap().want, "gm_gid");
         assert_eq!(s.approved_sellers().unwrap(), vec![111]);
         // машина создания оффера НЕ потеряна (это и был баг Python-версии)
         let (step, product, seller) = s.get_admin_state(999).unwrap().unwrap();
