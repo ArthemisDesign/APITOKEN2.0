@@ -117,6 +117,15 @@ struct ParsedRoute {
     model: Option<String>,
 }
 
+/// How a streaming response is framed back to the client. Upstream Code Assist only speaks SSE, so
+/// this only governs the downstream shape: `alt=sse` yields Server-Sent Events, and the native
+/// default (no alt / alt=json) yields a streamed JSON array, exactly like generativelanguage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StreamFraming {
+    Sse,
+    JsonArray,
+}
+
 #[derive(Debug)]
 struct ApiError {
     status: StatusCode,
@@ -408,8 +417,13 @@ fn parse_list_models_query(query: Option<&str>) -> Result<ListPage, ApiError> {
     Ok(ListPage { start, size })
 }
 
-fn query_for_upstream(query: Option<&str>, streaming: bool) -> Result<String, ApiError> {
+fn parse_stream_query(
+    query: Option<&str>,
+    streaming: bool,
+) -> Result<(String, StreamFraming), ApiError> {
     let mut saw_alt = false;
+    // A streaming call with no alt yields the native JSON array; a non-streaming call never frames.
+    let mut framing = StreamFraming::JsonArray;
     for part in query
         .unwrap_or_default()
         .split('&')
@@ -433,14 +447,20 @@ fn query_for_upstream(query: Option<&str>, streaming: bool) -> Result<String, Ap
             ));
         }
         let value = percent_decode_query_name(raw_value)?;
-        if !value.eq_ignore_ascii_case("sse") {
+        framing = if value.eq_ignore_ascii_case("sse") {
+            StreamFraming::Sse
+        } else if value.eq_ignore_ascii_case("json") {
+            StreamFraming::JsonArray
+        } else {
             return Err(ApiError::invalid(
-                "Streaming Gemini requests only support alt=sse.",
+                "Streaming Gemini requests only support alt=sse or alt=json.",
             ));
-        }
+        };
         saw_alt = true;
     }
-    Ok(if streaming { "alt=sse" } else { "" }.to_string())
+    // Upstream Code Assist streams only via SSE regardless of how we frame the client response.
+    let upstream = if streaming { "alt=sse" } else { "" };
+    Ok((upstream.to_string(), framing))
 }
 
 fn percent_decode_query_name(raw: &str) -> Result<String, ApiError> {
@@ -764,10 +784,11 @@ fn is_google_rpc_status(status: &str) -> bool {
     )
 }
 
-/// Build a sanitized native error frame from a Code Assist stream wrapper that carried an `error`.
+/// Build a sanitized native error value from a Code Assist stream wrapper that carried an `error`.
 /// Only the numeric code and a known google.rpc status enum are echoed; the upstream message is
-/// replaced so no account/project/endpoint detail can leak mid-stream.
-fn native_stream_error_frame(wrapper: &Value) -> Option<Bytes> {
+/// replaced so no account/project/endpoint detail can leak mid-stream. Framing is applied by the
+/// caller so the element matches the client's SSE or JSON-array wire shape.
+fn native_stream_error_value(wrapper: &Value) -> Option<Value> {
     let error = wrapper.get("error").filter(|value| value.is_object())?;
     let code = error
         .get("code")
@@ -779,19 +800,13 @@ fn native_stream_error_frame(wrapper: &Value) -> Option<Bytes> {
         .and_then(Value::as_str)
         .filter(|status| is_google_rpc_status(status))
         .unwrap_or("INTERNAL");
-    let body = json!({
+    Some(json!({
         "error": {
             "code": code,
             "message": "The model service returned an error while streaming.",
             "status": status,
         }
-    });
-    let encoded = serde_json::to_vec(&body).ok()?;
-    let mut framed = Vec::with_capacity(encoded.len() + 8);
-    framed.extend_from_slice(b"data: ");
-    framed.extend_from_slice(&encoded);
-    framed.extend_from_slice(b"\n\n");
-    Some(Bytes::from(framed))
+    }))
 }
 
 fn retain_public_fields(value: &mut Value, fields: &[&str]) -> Result<(), ()> {
@@ -804,14 +819,47 @@ struct SseTranslator {
     pending: Vec<u8>,
     usage: metering::GeminiUsage,
     response_id: String,
+    framing: StreamFraming,
+    started: bool,
 }
 
 impl SseTranslator {
-    fn new() -> Self {
+    fn new(framing: StreamFraming) -> Self {
         Self {
             pending: Vec::new(),
             usage: metering::GeminiUsage::default(),
             response_id: fresh_response_id(),
+            framing,
+            started: false,
+        }
+    }
+
+    /// Frame one translated native value into the client's chosen wire shape.
+    fn frame(&mut self, value: &Value) -> Result<Bytes, ()> {
+        let encoded = serde_json::to_vec(value).map_err(|_| ())?;
+        let mut framed = Vec::with_capacity(encoded.len() + 8);
+        match self.framing {
+            StreamFraming::Sse => {
+                framed.extend_from_slice(b"data: ");
+                framed.extend_from_slice(&encoded);
+                framed.extend_from_slice(b"\n\n");
+            }
+            StreamFraming::JsonArray => {
+                framed.extend_from_slice(if self.started { b"," } else { b"[" });
+                self.started = true;
+                framed.extend_from_slice(&encoded);
+            }
+        }
+        Ok(Bytes::from(framed))
+    }
+
+    /// Closing bytes for the whole stream. SSE needs none; a JSON array must be terminated (or
+    /// emitted as an empty array when no element was ever produced).
+    fn finish_stream(&mut self) -> Option<Bytes> {
+        match self.framing {
+            StreamFraming::Sse => None,
+            StreamFraming::JsonArray if self.started => Some(Bytes::from_static(b"]")),
+            StreamFraming::JsonArray => Some(Bytes::from_static(b"[]")),
         }
     }
 
@@ -850,11 +898,11 @@ impl SseTranslator {
             .as_object_mut()
             .and_then(|object| object.remove("response"))
         else {
-            // A mid-stream upstream error must reach the client as a native error frame rather than
-            // a clean truncation that looks like success. Genuinely private credit/accounting-only
+            // A mid-stream upstream error must reach the client as a native error element rather
+            // than a clean truncation that looks like success. Genuinely private credit/accounting
             // events carry no `error` and have no public representation, so they stay consumed.
-            if let Some(frame) = native_stream_error_frame(&wrapper) {
-                return Ok(Some(frame));
+            if let Some(error) = native_stream_error_value(&wrapper) {
+                return Ok(Some(self.frame(&error)?));
             }
             return Ok(None);
         };
@@ -879,12 +927,7 @@ impl SseTranslator {
         if let Some(object) = native.as_object_mut() {
             object.insert("responseId".to_string(), json!(self.response_id));
         }
-        let encoded = serde_json::to_vec(&native).map_err(|_| ())?;
-        let mut framed = Vec::with_capacity(encoded.len() + 8);
-        framed.extend_from_slice(b"data: ");
-        framed.extend_from_slice(&encoded);
-        framed.extend_from_slice(b"\n\n");
-        Ok(Some(Bytes::from(framed)))
+        Ok(Some(self.frame(&native)?))
     }
 
     fn finish_pending(&mut self) -> Result<Vec<Bytes>, ()> {
@@ -970,6 +1013,7 @@ async fn stream_response(
     mut upstream: impl futures_util::Stream<Item = reqwest::Result<Bytes>> + Send + Unpin + 'static,
 ) -> Result<Response, ApiError> {
     admission.mark_delivering().await?;
+    let framing = translator.framing;
     let background = gateway
         .track_background_task()
         .map_err(|_| ApiError::unavailable("gemini_shutdown"))?;
@@ -1053,6 +1097,15 @@ async fn stream_response(
                 Err(()) => clean_eof = false,
             }
         }
+        // A JSON-array stream must be closed with `]` (or emitted as `[]` when empty); SSE needs no
+        // terminator. Only close on a clean end — a truncated array mirrors a truncated SSE stream.
+        if clean_eof && !aborted {
+            if let Some(close) = translator.finish_stream() {
+                if deliver {
+                    let _ = tokio::time::timeout(DOWNSTREAM_SEND_TIMEOUT, sender.send(close)).await;
+                }
+            }
+        }
         if clean_eof && !aborted {
             profile.mark_healthy();
         } else if !aborted {
@@ -1071,10 +1124,14 @@ async fn stream_response(
         .body(Body::from_stream(stream))
         .unwrap();
     let _ = headers;
-    response.headers_mut().insert(
-        "content-type",
-        HeaderValue::from_static("text/event-stream; charset=utf-8"),
-    );
+    // SSE keeps its exact media type; the native JSON-array default is served as application/json.
+    let content_type = match framing {
+        StreamFraming::Sse => HeaderValue::from_static("text/event-stream; charset=utf-8"),
+        StreamFraming::JsonArray => HeaderValue::from_static("application/json"),
+    };
+    response
+        .headers_mut()
+        .insert("content-type", content_type);
     Ok(response)
 }
 
@@ -1215,9 +1272,10 @@ async fn api_inner(
         return Ok((StatusCode::OK, axum::Json(model_value(&model))).into_response());
     }
 
-    // Only the upstream-bound operations carry an alt=sse query; validate it here rather than for
-    // the model-metadata routes, which do not reach Code Assist.
-    let query = query_for_upstream(
+    // Only the upstream-bound operations carry an alt query; validate it here rather than for the
+    // model-metadata routes, which do not reach Code Assist. `framing` decides the downstream wire
+    // shape (SSE vs the native JSON array) and is only meaningful for a streaming operation.
+    let (query, framing) = parse_stream_query(
         request.uri().query(),
         route.operation == Operation::StreamGenerate,
     )?;
@@ -1369,7 +1427,7 @@ async fn api_inner(
 
         if status.is_success() && route.operation == Operation::StreamGenerate {
             let mut stream = response.bytes_stream();
-            let mut translator = SseTranslator::new();
+            let mut translator = SseTranslator::new(framing);
             let mut initial = Vec::new();
             let mut startup_failed = false;
             loop {
@@ -1967,14 +2025,30 @@ mod tests {
     }
 
     async fn invoke(app: AppState, body: Value, streaming: bool) -> Response {
-        let method = if streaming {
-            "streamGenerateContent"
+        // Existing streaming tests assert the SSE downstream shape, so request alt=sse explicitly;
+        // the JSON-array default (no alt) has its own dedicated coverage.
+        let uri = if streaming {
+            "/v1beta/models/gemini-integration-model:streamGenerateContent?alt=sse".to_string()
         } else {
-            "generateContent"
+            "/v1beta/models/gemini-integration-model:generateContent".to_string()
         };
         let request = axum::extract::Request::builder()
             .method(Method::POST)
-            .uri(format!("/v1beta/models/gemini-integration-model:{method}"))
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("x-goog-api-key", CUSTOMER_KEY)
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        match api_inner(app, "198.51.100.10:12345".parse().unwrap(), request).await {
+            Ok(response) => response,
+            Err(error) => error.into_response(),
+        }
+    }
+
+    async fn invoke_uri(app: AppState, uri: &str, body: Value) -> Response {
+        let request = axum::extract::Request::builder()
+            .method(Method::POST)
+            .uri(uri)
             .header("content-type", "application/json")
             .header("x-goog-api-key", CUSTOMER_KEY)
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
@@ -2074,7 +2148,7 @@ mod tests {
     }
 
     #[test]
-    fn native_stream_error_frame_is_sanitized() {
+    fn native_stream_error_value_is_sanitized() {
         let wrapper = json!({
             "error": {
                 "code": 429,
@@ -2082,16 +2156,77 @@ mod tests {
                 "message": "project paid-project-99 for owner@example.invalid exceeded quota"
             }
         });
-        let frame = native_stream_error_frame(&wrapper).expect("error frame");
-        let text = String::from_utf8(frame.to_vec()).unwrap();
-        assert!(text.starts_with("data: "));
-        assert!(text.contains("\"status\":\"RESOURCE_EXHAUSTED\""));
-        assert!(text.contains("\"code\":429"));
-        // Upstream private detail must never survive into the public frame.
+        let value = native_stream_error_value(&wrapper).expect("error value");
+        assert_eq!(value["error"]["status"], "RESOURCE_EXHAUSTED");
+        assert_eq!(value["error"]["code"], 429);
+        // Upstream private detail must never survive into the public element.
+        let text = value.to_string();
         assert!(!text.contains("paid-project-99"));
         assert!(!text.contains("owner@example.invalid"));
         // A credit/accounting-only frame with no error has no public representation.
-        assert!(native_stream_error_frame(&json!({"consumedCredits": 3})).is_none());
+        assert!(native_stream_error_value(&json!({"consumedCredits": 3})).is_none());
+    }
+
+    #[test]
+    fn json_array_framing_wraps_elements_and_closes() {
+        let mut translator = SseTranslator::new(StreamFraming::JsonArray);
+        let first = translator.frame(&json!({"a": 1})).unwrap();
+        let second = translator.frame(&json!({"b": 2})).unwrap();
+        let close = translator.finish_stream().unwrap();
+        let whole = [first.as_ref(), second.as_ref(), close.as_ref()].concat();
+        let parsed: Value = serde_json::from_slice(&whole).unwrap();
+        assert_eq!(parsed, json!([{"a": 1}, {"b": 2}]));
+        // An empty JSON-array stream still closes as a valid empty array.
+        let mut empty = SseTranslator::new(StreamFraming::JsonArray);
+        assert_eq!(empty.finish_stream().unwrap().as_ref(), b"[]");
+        // SSE framing has no terminator and keeps the data: envelope.
+        let mut sse = SseTranslator::new(StreamFraming::Sse);
+        let frame = sse.frame(&json!({"a": 1})).unwrap();
+        assert!(frame.starts_with(b"data: "));
+        assert!(sse.finish_stream().is_none());
+    }
+
+    #[tokio::test]
+    async fn streaming_without_alt_returns_a_native_json_array() {
+        let first = Bytes::from_static(
+            b"data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"one\"}]}}]},\"traceId\":\"t\"}\n\n",
+        );
+        let usage = Bytes::from_static(
+            b"data: {\"response\":{\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":4}}}\n\n",
+        );
+        let (reply, _drained) =
+            MockReply::stream(vec![MockChunk::Data(first), MockChunk::Data(usage)]);
+        let server = start_mock(MockState::with_replies([(PROFILE_A_KEY, vec![reply])])).await;
+        let fixture = gateway_fixture(&server.upstream, &[None], 1);
+        let response = invoke_uri(
+            app_state(fixture.gateway.clone(), None),
+            "/v1beta/models/gemini-integration-model:streamGenerateContent",
+            json!({"contents": []}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        // The native default streams a JSON array, not Server-Sent Events.
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
+        let bytes = to_bytes(response.into_body(), GEMINI_BODY_LIMIT)
+            .await
+            .unwrap();
+        let parsed: Value = serde_json::from_slice(&bytes).expect("valid JSON array body");
+        let array = parsed.as_array().expect("top-level array");
+        assert_eq!(array.len(), 2);
+        assert!(array[0]["candidates"].is_array());
+        assert_eq!(array[1]["usageMetadata"]["promptTokenCount"], 10);
+        // Private wrapper fields never surface, and each element carries the same responseId.
+        assert!(!parsed.to_string().contains("traceId"));
+        assert_eq!(array[0]["responseId"], array[1]["responseId"]);
+        assert!(array[0]["responseId"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()));
     }
 
     #[tokio::test]
@@ -2865,18 +3000,29 @@ mod tests {
     }
 
     #[test]
-    fn query_credentials_are_rejected_and_streaming_forces_sse() {
-        assert!(query_for_upstream(Some("key=secret"), false).is_err());
-        assert!(query_for_upstream(Some("%6bey=secret"), false).is_err());
-        assert!(query_for_upstream(Some("API%5fKEY=secret"), false).is_err());
-        assert!(query_for_upstream(Some("%zz=broken"), false).is_err());
-        assert!(query_for_upstream(Some("alt=json"), true).is_err());
-        assert!(query_for_upstream(Some("foo=bar"), true).is_err());
-        assert_eq!(
-            query_for_upstream(Some("alt=sse"), true).unwrap(),
-            "alt=sse"
-        );
-        assert_eq!(query_for_upstream(None, true).unwrap(), "alt=sse");
+    fn query_credentials_are_rejected_and_streaming_framing_is_native() {
+        assert!(parse_stream_query(Some("key=secret"), false).is_err());
+        assert!(parse_stream_query(Some("%6bey=secret"), false).is_err());
+        assert!(parse_stream_query(Some("API%5fKEY=secret"), false).is_err());
+        assert!(parse_stream_query(Some("%zz=broken"), false).is_err());
+        assert!(parse_stream_query(Some("foo=bar"), true).is_err());
+        // An unknown alt value is rejected; sse and json are the two native framings.
+        assert!(parse_stream_query(Some("alt=media"), true).is_err());
+        // alt on a non-streaming operation is rejected.
+        assert!(parse_stream_query(Some("alt=sse"), false).is_err());
+        // Upstream is always alt=sse for streaming; the downstream framing follows the client.
+        let (upstream, framing) = parse_stream_query(Some("alt=sse"), true).unwrap();
+        assert_eq!(upstream, "alt=sse");
+        assert_eq!(framing, StreamFraming::Sse);
+        let (upstream, framing) = parse_stream_query(Some("alt=json"), true).unwrap();
+        assert_eq!(upstream, "alt=sse");
+        assert_eq!(framing, StreamFraming::JsonArray);
+        // No alt on a streaming call yields the native JSON array, not SSE.
+        let (upstream, framing) = parse_stream_query(None, true).unwrap();
+        assert_eq!(upstream, "alt=sse");
+        assert_eq!(framing, StreamFraming::JsonArray);
+        // Non-streaming carries no upstream query.
+        assert_eq!(parse_stream_query(None, false).unwrap().0, "");
     }
 
     #[test]
@@ -2908,7 +3054,7 @@ mod tests {
 
     #[test]
     fn incremental_sse_tracker_keeps_last_usage_across_chunk_boundaries() {
-        let mut tracker = SseTranslator::new();
+        let mut tracker = SseTranslator::new(StreamFraming::Sse);
         tracker
             .push(b"data: {\"response\":{\"usageMetadata\":{\"promptToken")
             .unwrap();

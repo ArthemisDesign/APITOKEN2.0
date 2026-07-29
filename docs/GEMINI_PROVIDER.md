@@ -177,11 +177,12 @@ boundaries cannot drift through `config.env`.
 The public surface remains native Gemini-shaped:
 
 ```text
-GET  /v1beta/models
-GET  /v1beta/models/{model}
-POST /v1beta/models/{model}:generateContent
-POST /v1beta/models/{model}:streamGenerateContent?alt=sse
-POST /v1beta/models/{model}:countTokens
+GET     /v1beta/models                                    (pageSize / pageToken honoured)
+GET     /v1beta/models/{model}
+POST    /v1beta/models/{model}:generateContent
+POST    /v1beta/models/{model}:streamGenerateContent      (alt=sse → SSE; default / alt=json → JSON array)
+POST    /v1beta/models/{model}:countTokens
+OPTIONS *                                                 (CORS preflight, unauthenticated)
 ```
 
 Query credentials are forbidden. The customer's `x-goog-api-key`, `x-api-key` or Bearer token
@@ -191,15 +192,26 @@ requests use the truthful identity `apitoken-gemini-provider/1`. Auth Bot eligib
 token refresh, health probes and generation share the same rustls transport family; no component
 impersonates Gemini CLI or silently falls back from the profile proxy to host egress.
 
+The public surface is shaped to be indistinguishable from `generativelanguage.googleapis.com` on the
+client side: proto-JSON snake_case aliases are accepted (and canonicalized) alongside camelCase; a
+native-shaped `responseId` is synthesized on every response and stream chunk (never the correlatable
+Code Assist trace id); `streamGenerateContent` frames as SSE only when the client asks for `alt=sse`
+and otherwise streams the native JSON array; errors carry a native `error.details[]`
+(`google.rpc.ErrorInfo`/`RetryInfo`) with Google-consistent HTTP↔status pairs; the model resource
+carries the native version and sampling defaults; and every response carries Google's security and
+CORS headers so a browser SDK can call the gateway. Balance exhaustion remains the documented 402.
+
 For every request the runtime:
 
 - resolves opaque tenant-bound prompt affinity and prefers the same subscription;
 - decrypts the selected project/proxy only in memory;
 - obtains an access token with a per-profile single-flight mutex and 120-second expiry skew;
 - wraps the native body for `v1internal:{generateContent,streamGenerateContent,countTokens}`;
-- reconstructs an allowlisted native response and discards Code Assist wrapper fields, credits,
-  private trace ids, unknown top-level fields and headers;
-- caps response bodies and pending SSE frames at 32 MiB;
+- reconstructs an allowlisted native response, adds a synthesized `responseId`, and discards Code
+  Assist wrapper fields, credits, private trace ids, unknown top-level fields and headers;
+- surfaces a mid-stream upstream error as a sanitized native error element rather than a clean
+  truncation;
+- caps response bodies and pending stream frames at 32 MiB;
 - reserves customer balance before upstream delivery and settles from native `usageMetadata`.
 
 The model allowlist is local and price-catalog pinned. A configured id still needs a live smoke test
