@@ -199,10 +199,13 @@ VERIFICATION_FAIL_CHECK=
   eval "$(sed -n '/^final_verify_codex_surface()/,/^}/p' "$ROOT/deploy/watchdog.sh")"
   codex_probe_log="$TEMP/codex-probe.log"
   CODEX_PROBE_MODE=disabled
+  CODEX_PROBE_BODY=
+  CODEX_PROBE_STATUS=
   # Invoked indirectly by the extracted verifier.
   # shellcheck disable=SC2329
   curl() {
-    printf '%s\n' "$*" >>"$codex_probe_log"
+    local response_body response_status
+    printf '%s\n' "${*//$'\n'/\\n}" >>"$codex_probe_log"
     case "$*" in
       *'query=claude_api_codex_enabled'*)
         case "$CODEX_PROBE_MODE" in
@@ -220,10 +223,17 @@ VERIFICATION_FAIL_CHECK=
         ;;
       *'openai.api.apitoken.sale'*)
         if [[ $CODEX_PROBE_MODE == disabled ]]; then
-          printf '%s\n' '{"error":{"type":"invalid_request_error","code":"model_not_found","param":null}}'
+          response_body=$CODEX_PROBE_BODY
+          response_status=${CODEX_PROBE_STATUS:-404}
+          [[ -n $response_body ]] \
+            || response_body='{"error":{"type":"invalid_request_error","code":"model_not_found","param":null}}'
         else
-          printf '%s\n' '{"error":{"type":"invalid_request_error","code":"invalid_api_key","param":null}}'
+          response_body=$CODEX_PROBE_BODY
+          response_status=${CODEX_PROBE_STATUS:-401}
+          [[ -n $response_body ]] \
+            || response_body='{"error":{"type":"invalid_request_error","code":"invalid_api_key","param":null}}'
         fi
+        printf '%s\n%s\n' "$response_body" "$response_status"
         ;;
       *) return 2 ;;
     esac
@@ -246,6 +256,18 @@ VERIFICATION_FAIL_CHECK=
   if grep -Fq 'claude_api_codex_homes_available' "$codex_probe_log"; then
     wd_die "transient Codex capacity still controls the deployment verdict"
   fi
+
+  CODEX_PROBE_STATUS=200
+  if ( final_verify_codex_surface ) >/dev/null 2>&1; then
+    wd_die "a 200 OpenAI error envelope passed verification"
+  fi
+  CODEX_PROBE_STATUS=401
+  CODEX_PROBE_BODY='{"error":{"type":"invalid_request_error","code":null,"param":null}}'
+  if ( final_verify_codex_surface ) >/dev/null 2>&1; then
+    wd_die "a generic 401 error envelope passed OpenAI verification"
+  fi
+  CODEX_PROBE_BODY=
+  CODEX_PROBE_STATUS=
 
   : >"$codex_probe_log"
   CODEX_PROBE_MODE=unauthenticated
@@ -1144,6 +1166,10 @@ grep -Fq 'health_status 4xx' "$ROOT/deploy/Caddyfile"
 grep -Fq 'health_body invalid_request_error' "$ROOT/deploy/Caddyfile"
 grep -Fq 'OpenAI hostname smoke failed; restored' "$ROOT/deploy/install-caddy.sh" \
   || wd_die "Caddy installation can commit a syntactically valid but misrouted OpenAI hostname"
+grep -Fq -- "-d '{}'" "$ROOT/deploy/install-caddy.sh" \
+  || wd_die "Caddy smoke can execute a real OpenAI provider turn"
+grep -Fq -- "-d '{}'" "$ROOT/deploy/watchdog.sh" \
+  || wd_die "final OpenAI verification can execute a real provider turn"
 grep -Fq 'systemctl restart caddy' "$ROOT/deploy/install-caddy.sh" \
   || wd_die "Caddy rollback cannot recover from an admin reload failure"
 grep -Fq 'mv -f -- "$tmp" "$LIVE"' "$ROOT/deploy/install-caddy.sh" \

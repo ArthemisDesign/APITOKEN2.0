@@ -114,17 +114,21 @@ fi
 if grep -q '^openai\.api\.apitoken\.sale {' "$LIVE"; then
   openai_ready=0
   for _ in 1 2 3 4 5 6 7 8; do
-    if curl --noproxy '*' --silent --show-error --max-time 8 \
+    if openai_status=$(curl --noproxy '*' --silent --show-error --max-time 8 \
         --resolve openai.api.apitoken.sale:443:127.0.0.1 \
         -H 'content-type: application/json' \
-        -d '{"model":"gpt-5.6","input":"ping","temperature":0.5}' \
-        -o "$openai_response" https://openai.api.apitoken.sale/v1/responses \
+        -d '{}' \
+        -o "$openai_response" -w '%{http_code}' https://openai.api.apitoken.sale/v1/responses) \
         && node -e '
           const value = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
           const error = value && value.error;
-          if (!error || error.type !== "invalid_request_error" ||
-              !["invalid_api_key", "model_not_found"].includes(error.code)) process.exit(1);
-        ' "$openai_response"; then
+          const status = Number(process.argv[2]);
+          if (!error || error.type !== "invalid_request_error" || !(
+            (status === 400 && error.param === "model") ||
+            (status === 401 && error.code === "invalid_api_key") ||
+            (status === 404 && error.code === "model_not_found")
+          )) process.exit(1);
+        ' "$openai_response" "$openai_status"; then
       openai_ready=1
       break
     fi

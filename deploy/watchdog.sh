@@ -1518,21 +1518,25 @@ final_verify_codex_surface() {
   # through to the Anthropic path: only the adapter answers with an OpenAI-shaped error envelope
   # carrying `code`/`param`. Resolve the public hostname to loopback so this validates Caddy's
   # hostname boundary and provider-specific origin without depending on external DNS or hairpin routing.
-  # The request names a parameter the adapter rejects by contract, so it can never start a turn,
-  # reach a ChatGPT subscription or spend quota. An unauthenticated engine answers
-  # `invalid_api_key` before request validation for the same reason.
+  # The request omits the required model, so even a legacy loopback-trusted bridge rejects it before
+  # reservation/provider execution. A fixed unauthenticated engine answers `invalid_api_key` first.
   envelope=$(curl --noproxy '*' --silent --show-error --max-time 5 \
     --resolve openai.api.apitoken.sale:443:127.0.0.1 \
     -H 'content-type: application/json' \
-    -d '{"model":"gpt-5.6","input":"ping","temperature":0.5}' \
-    https://openai.api.apitoken.sale/v1/responses 2>/dev/null || true)
+    -d '{}' \
+    -w $'\n%{http_code}' https://openai.api.apitoken.sale/v1/responses 2>/dev/null || true)
+  envelope_status=${envelope##*$'\n'}
+  envelope=${envelope%$'\n'*}
   if (( enabled == 1 )); then
     jq --exit-status '.error.type == "invalid_request_error"
-        and (.error.code == "invalid_api_key" or .error.param != null)' \
+        and $status == "401" and .error.code == "invalid_api_key"' \
+      --arg status "$envelope_status" \
       >/dev/null 2>&1 <<<"$envelope" \
       || wd_die "/v1/responses did not answer with the enabled OpenAI-compatible envelope"
   else
-    jq --exit-status '.error.type == "invalid_request_error" and .error.code == "model_not_found"' \
+    jq --exit-status '.error.type == "invalid_request_error"
+        and $status == "404" and .error.code == "model_not_found"' \
+      --arg status "$envelope_status" \
       >/dev/null 2>&1 <<<"$envelope" \
       || wd_die "disabled /v1/responses did not answer with the OpenAI-compatible envelope"
   fi

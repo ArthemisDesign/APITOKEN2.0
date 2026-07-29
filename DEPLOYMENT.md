@@ -248,10 +248,15 @@ this order guarantees the old combined process releases every Codex home before 
 curl -fsS http://127.0.0.1:8790/ready
 curl -fsS http://127.0.0.1:8792/ready
 curl -fsS https://api.apitoken.sale/health
-curl -sS -H 'content-type: application/json' \
-  -d '{"model":"gpt-5.6","input":"ping","temperature":0.5}' \
-  https://openai.api.apitoken.sale/v1/responses \
-  | jq -e '.error.type == "invalid_request_error"'
+openai_probe=$(mktemp)
+openai_status=$(curl -sS -o "$openai_probe" -w '%{http_code}' \
+  -H 'content-type: application/json' \
+  -d '{}' \
+  https://openai.api.apitoken.sale/v1/responses)
+jq -e --arg status "$openai_status" '.error.type == "invalid_request_error" and
+  (($status == "401" and .error.code == "invalid_api_key") or
+   ($status == "404" and .error.code == "model_not_found"))' "$openai_probe"
+rm -f "$openai_probe"
 systemctl list-units 'claude-api-anthropic@*.service' 'claude-api@*.service'
 systemctl list-unit-files 'claude-api-anthropic@*.service' 'claude-api@*.service'
 systemctl status claude-api-openai.service
@@ -454,10 +459,15 @@ sudo deploy/configure-engine-control-url.sh --check
 curl -fsS http://127.0.0.1:8790/ready
 curl -fsS http://127.0.0.1:8792/ready
 curl -fsS https://api.apitoken.sale/health
-curl -sS -H 'content-type: application/json' \
-  -d '{"model":"gpt-5.6","input":"ping","temperature":0.5}' \
-  https://openai.api.apitoken.sale/v1/responses \
-  | jq -e '.error.type == "invalid_request_error"'
+openai_probe=$(mktemp)
+openai_status=$(curl -sS -o "$openai_probe" -w '%{http_code}' \
+  -H 'content-type: application/json' \
+  -d '{}' \
+  https://openai.api.apitoken.sale/v1/responses)
+jq -e --arg status "$openai_status" '.error.type == "invalid_request_error" and
+  (($status == "401" and .error.code == "invalid_api_key") or
+   ($status == "404" and .error.code == "model_not_found"))' "$openai_probe"
+rm -f "$openai_probe"
 curl -fsS https://backend.apitoken.sale/v1/ready
 systemctl is-active caddy apitoken-worker claude-api-openai claude-api-backup.timer
 git status --short
