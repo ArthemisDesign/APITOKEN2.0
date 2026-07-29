@@ -71,8 +71,9 @@ an infrastructure fault rather than a verdict on a commit: it is logged and retr
 cycle without quarantining anything. Commerce migration
 failure always blocks the backend. Engine migration or readiness failure leaves the serving engine
 slot untouched. Expensive retention and production-alignment checks remain on a separate one-minute
-idle cadence, where the watchdog requires exactly one Anthropic slot plus the OpenAI singleton to be
-active, ready, selected on the recorded release, enabled, and running their fixed provider modes. If an out-of-band service command
+idle cadence, where the watchdog requires exactly one Anthropic slot plus the OpenAI and supported
+Gemini singletons to be active, ready, selected on the recorded release, enabled, and running their
+fixed provider modes. If an out-of-band service command
 reactivates the inactive slot, the watchdog reconverges through the same readiness-gated controller;
 it never stops the availability anchor before another current slot is verified. Normal releases
 require no SSH command.
@@ -241,12 +242,15 @@ Phase 1 builds and finalizes `/srv/claude-api/releases/<sha>`, then atomically s
 touching either provider. Phase 2 starts the inactive 8787/8788 Anthropic slot, proves its exact
 `MainPID`, binary and startup-fixed mode, admits it through Caddy, flips the old slot to 503 readiness
 with `SIGUSR1`, and fully stops its cgroup. It then gracefully restarts
-`claude-api-openai.service`, proving the same selected binary in fixed OpenAI mode. On the first split,
-this order guarantees the old combined process releases every Codex home before OpenAI starts.
+`claude-api-openai.service` and, for releases carrying `.gemini-provider-v1`,
+`claude-api-gemini.service`, proving the same selected binary in each startup-fixed provider mode.
+On the first split, this order guarantees the old combined process releases every Codex home before
+OpenAI starts; Gemini remains a separate project-pool failure domain throughout.
 
 ```bash
 curl -fsS http://127.0.0.1:8790/ready
 curl -fsS http://127.0.0.1:8792/ready
+curl -fsS http://127.0.0.1:8794/ready
 curl -fsS https://api.apitoken.sale/health
 openai_probe=$(mktemp)
 openai_status=$(curl -sS -o "$openai_probe" -w '%{http_code}' \
@@ -257,13 +261,21 @@ jq -e --arg status "$openai_status" '.error.type == "invalid_request_error" and
   (($status == "401" and .error.code == "invalid_api_key") or
    ($status == "404" and .error.code == "model_not_found"))' "$openai_probe"
 rm -f "$openai_probe"
+curl -sS --resolve gemini.api.apitoken.sale:443:127.0.0.1 \
+  -H 'content-type: application/json' -d '{}' \
+  https://gemini.api.apitoken.sale/v1beta/models/gemini-provider-probe:generateContent \
+  | jq -e '(.error.status == "UNAUTHENTICATED" and .error.code == 401)
+      or (.error.status == "NOT_FOUND" and .error.code == 404)'
 systemctl list-units 'claude-api-anthropic@*.service' 'claude-api@*.service'
 systemctl list-unit-files 'claude-api-anthropic@*.service' 'claude-api@*.service'
 systemctl status claude-api-openai.service
+systemctl status claude-api-gemini.service
 ```
 
 The Anthropic slot alternates. Consumers must never hard-code 8787 or 8788; commerce always uses
-`http://127.0.0.1:8790`. OpenAI clients use only the public hostname; 8792 and 8793 remain loopback.
+`http://127.0.0.1:8790`. OpenAI clients use only their public hostname; 8792/8793 remain loopback.
+Gemini clients use only `gemini.api.apitoken.sale`; its stable 8794 and runtime 8795 are loopback.
+Provision paid project profiles first as documented in `docs/GEMINI_PROVIDER.md`.
 
 ## Manual recovery: deploy the commerce API
 
@@ -341,11 +353,12 @@ sudo deploy/install-caddy.sh
 systemctl is-active caddy
 sudo ss -ltnH 'sport = :8790'
 sudo ss -ltnH 'sport = :8792'
+sudo ss -ltnH 'sport = :8794'
 ```
 
 The installer extracts the existing host-only bcrypt/control-key lines without printing them,
 validates the rendered candidate, saves a timestamped rollback copy, and performs a Caddy reload
-rather than stop/start. Ports 8790 and 8792 must be bound to `127.0.0.1`, never `*`.
+rather than stop/start. Ports 8790, 8792, and 8794 must be bound to `127.0.0.1`, never `*`.
 
 Normal release selection also does not reinstall systemd templates. When a reviewed template itself
 changes, verify and install it before the matching blue-green cycle; `daemon-reload` does not replace
@@ -353,11 +366,13 @@ the already-running process:
 
 ```bash
 sudo systemd-analyze verify systemd/claude-api.service systemd/claude-api@.service \
-  systemd/claude-api-anthropic@.service systemd/claude-api-openai.service systemd/apitoken-api@.service
+  systemd/claude-api-anthropic@.service systemd/claude-api-openai.service \
+  systemd/claude-api-gemini.service systemd/apitoken-api@.service
 sudo install -o root -g root -m 0644 systemd/claude-api.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/claude-api@.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/claude-api-anthropic@.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/claude-api-openai.service /etc/systemd/system/
+sudo install -o root -g root -m 0644 systemd/claude-api-gemini.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/apitoken-api@.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/apitoken-tmpfiles.conf /etc/tmpfiles.d/apitoken.conf
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/apitoken.conf
@@ -429,7 +444,7 @@ remain the authoritative recovery objects.
   before making another mutation.
 
 ```bash
-sudo journalctl -u 'claude-api-anthropic@*' -u claude-api-openai \
+sudo journalctl -u 'claude-api-anthropic@*' -u claude-api-openai -u claude-api-gemini \
   -u 'claude-api@*' -u 'apitoken-api@*' -u apitoken-worker --since today
 sudo caddy validate --config /etc/caddy/Caddyfile
 systemctl is-active caddy apitoken-worker claude-api-backup.timer
@@ -458,6 +473,7 @@ PostgreSQL `pg_restore --list`. Replication is not a backup; future HA still nee
 sudo deploy/configure-engine-control-url.sh --check
 curl -fsS http://127.0.0.1:8790/ready
 curl -fsS http://127.0.0.1:8792/ready
+curl -fsS http://127.0.0.1:8794/ready
 curl -fsS https://api.apitoken.sale/health
 openai_probe=$(mktemp)
 openai_status=$(curl -sS -o "$openai_probe" -w '%{http_code}' \
@@ -468,12 +484,18 @@ jq -e --arg status "$openai_status" '.error.type == "invalid_request_error" and
   (($status == "401" and .error.code == "invalid_api_key") or
    ($status == "404" and .error.code == "model_not_found"))' "$openai_probe"
 rm -f "$openai_probe"
+curl -sS --resolve gemini.api.apitoken.sale:443:127.0.0.1 \
+  -H 'content-type: application/json' -d '{}' \
+  https://gemini.api.apitoken.sale/v1beta/models/gemini-provider-probe:generateContent \
+  | jq -e '(.error.status == "UNAUTHENTICATED" and .error.code == 401)
+      or (.error.status == "NOT_FOUND" and .error.code == 404)'
 curl -fsS https://backend.apitoken.sale/v1/ready
-systemctl is-active caddy apitoken-worker claude-api-openai claude-api-backup.timer
+systemctl is-active caddy apitoken-worker claude-api-openai claude-api-gemini claude-api-backup.timer
 git status --short
 git rev-parse HEAD
 ```
 
-At idle, expect one live Anthropic owner and one live OpenAI owner, no pending settlement work, no leaked active capacity leases
-or inflight count, zero reserved money, and no duplicate charge request IDs. See the Stage 2 document
+At idle, expect one live Anthropic owner, one live OpenAI owner, and one live Gemini paid-project
+provider, with no pending settlement work, leaked active capacity leases/inflight count, reserved
+money, or duplicate charge request IDs. See the Stage 2 document
 for data-level verification and the caveat that nonzero counts can be legitimate during traffic.

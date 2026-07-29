@@ -3,8 +3,9 @@
 Пул обычных подписок Claude (Max/Pro) отдаётся по сети как **API, неотличимый от
 `api.anthropic.com`**. Наводишь любой Anthropic-клиент (SDK, `curl`, стороннее приложение) на
 этот сервер — а под капотом запрос идёт **на квоте подписки из пула**, с ротацией по лимитам.
-Никакого платного Anthropic API. Один бинарь, engine-owned PostgreSQL authority и необязательный
-Redis для общей эфемерной cache-affinity.
+Никакого платного Anthropic API. Тот же бинарь запускается отдельными provider-процессами для
+OpenAI/Codex и native paid Gemini API. У них общий engine-owned PostgreSQL authority, но независимые
+домены, роутеры, credential pools и failure domains.
 
 ```
    Клиент (Anthropic SDK / curl)                POST /v1/messages  (наш api-key)
@@ -127,7 +128,9 @@ client.messages.create(model="claude-opus-4-8", max_tokens=256,
 [`server.env.example`](server.env.example) (ключи API). Production Anthropic PostgreSQL-слоты
 запускает [`systemd/claude-api-anthropic@.service`](systemd/claude-api-anthropic@.service), а отдельный
 OpenAI-compatible процесс —
-[`systemd/claude-api-openai.service`](systemd/claude-api-openai.service); untemplated
+[`systemd/claude-api-openai.service`](systemd/claude-api-openai.service). Native Gemini project pool
+работает через [`systemd/claude-api-gemini.service`](systemd/claude-api-gemini.service) и отдельный
+домен `https://gemini.api.apitoken.sale`; untemplated
 [`systemd/claude-api.service`](systemd/claude-api.service) оставлен только как one-time bridge.
 Watchdog автоматически создаёт Redis/affinity secrets и управляет локальным
 [`apitoken-affinity-redis.service`](systemd/apitoken-affinity-redis.service).
@@ -136,6 +139,11 @@ Watchdog автоматически создаёт Redis/affinity secrets и у�
 доступен только через `https://openai.api.apitoken.sale/v1` и описан в
 [`docs/CODEX_APP_SERVER.md`](docs/CODEX_APP_SERVER.md). Он выключен по умолчанию и не изменяет
 существующий Claude-маршрут на `https://api.apitoken.sale`.
+
+Gemini использует только billing-enabled Google Developer API projects — по одному независимому
+project/API key на профиль — и отдаёт native `/v1beta` API. Gemini CLI OAuth не проксируется.
+Provisioning, ротация, metering и runbook описаны в
+[`docs/GEMINI_PROVIDER.md`](docs/GEMINI_PROVIDER.md).
 
 ## Безопасность
 

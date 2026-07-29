@@ -51,10 +51,13 @@ back to `next start` when an older full-tree release is selected for rollback.
 After the one-time database cutover, `claude-api-anthropic@8787.service` and `claude-api-anthropic@8788.service` start
 `/srv/claude-api/releases/current/claude-api serve` in fixed `anthropic` mode with unique port and
 instance identities. `claude-api-openai.service` starts the same immutable binary in fixed `openai`
-mode on 8793 with its own PostgreSQL owner identity. Exact-unit readiness verifies both the target
+mode on 8793, and `claude-api-gemini.service` starts it in fixed `gemini` mode on 8795; each has its
+own PostgreSQL owner identity. Exact-unit readiness verifies both the target
 `MainPID` executable and its process environment. A running old Anthropic slot retains its
 already-resolved immutable binary after `current` moves; `engine-bluegreen.sh` admits that target,
-drains the old slot, then gracefully restarts the singleton OpenAI process from the same release.
+drains the old slot, then gracefully restarts the singleton OpenAI and Gemini processes from the same
+release. Gemini activation additionally requires `.gemini-provider-v1`; rollback to a pre-Gemini
+release stops and disables only that runtime.
 `claude-api.service` exists only as the bridge through the first cutover and is disabled afterward.
 
 The optional official Codex child has a parallel content-addressed artifact root under

@@ -73,7 +73,14 @@ runtime was verified in production: 8792 now targets only 8793 and no API-plane 
 The watchdog resolves the OpenAI hostname to loopback and probes it over HTTPS, covering the public
 vhost boundary end to end.
 
-Caddy probes `/ready` on both fixed-provider origins. `engine-bluegreen.sh` admits the new Anthropic slot, sends `SIGUSR1` to make
+Gemini is a second independent singleton: `gemini.api.apitoken.sale` targets stable loopback origin
+`127.0.0.1:8794`, which proxies only runtime `127.0.0.1:8795`. It never participates in the 8792
+bridge and never accepts the request-level API-plane marker. Its public matcher allows `/v1beta/*`,
+`/health`, and `/balance`; the vhost redacts `X-Goog-Api-Key` in access logs. The watchdog probes the
+public hostname for a native unauthenticated Gemini envelope before committing the provider cohort.
+
+Caddy probes `/ready` on both fixed-provider origins. `engine-bluegreen.sh` admits the new Anthropic
+slot, sends `SIGUSR1` to make
 the old slot return 503 readiness, waits for depooling, then sends SIGTERM so established streams
 drain under the systemd deadline. Only after the old cgroup is fully stopped does the first split
 start OpenAI, preventing overlap with a legacy combined process. Later releases roll Anthropic first
@@ -86,8 +93,8 @@ reservation outcome, and only then allows the process-wide home lock to be relea
 remains available, while OpenAI target/synthetic alerts may fire truthfully.
 
 The commerce API and worker use `http://127.0.0.1:8790`, a loopback-only Caddy listener over the
-Anthropic slots. They must never address either deployment slot or the OpenAI origin. The provider
-controller requires 8790 throughout the Anthropic handoff and verifies 8792 after OpenAI starts.
+Anthropic slots. They must never address a deployment slot, the OpenAI origin, or the Gemini origin.
+The provider controller requires 8790 throughout the handoff and verifies 8792 and 8794 separately.
 
 The 2-second `lb_try_duration` and 100 ms `lb_try_interval` hold and retry a newly arriving request when the loopback dial fails during a brief engine restart/bind gap. Dial failures are retryable for every HTTP method because the connection was never established and the request was not transmitted. The configuration does not broaden Caddy's default rule for failures after a connection was established, so POST bodies are not unsafely replayed after a partial round trip.
 
@@ -98,8 +105,8 @@ The retry window applies only while Caddy is selecting and connecting to an upst
 - an orderly blue-green drain leaves an established SSE on the old process until completion;
 - an ungraceful process death still disconnects that stream and requires client/application retry.
 
-Both public engine matchers remain restricted to `/v1/*`, `/health`, and `/balance`; all other
-paths on `api.apitoken.sale` and `openai.api.apitoken.sale` return `404`.
+The Claude/OpenAI matchers remain restricted to `/v1/*`, `/health`, and `/balance`; Gemini is
+restricted to `/v1beta/*`, `/health`, and `/balance`. Every other path returns `404`.
 
 ## References
 

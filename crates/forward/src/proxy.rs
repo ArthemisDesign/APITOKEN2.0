@@ -218,6 +218,7 @@ fn skip_req_header(name: &str) -> bool {
         name,
         "x-app" | "anthropic-dangerous-direct-browser-access" | "accept" |
         "host" | "content-length" | "connection" | "authorization" | "x-api-key"
+        | "x-goog-api-key"
         | "anthropic-beta" | "anthropic-version" | "user-agent" | "accept-encoding"
         | "x-claude-code-session-id" | "x-conversation-id" | "x-session-id"
         | "x-apitoken-api-plane"
@@ -250,10 +251,16 @@ fn skip_resp_header(name: &str) -> bool {
         || name == "anthropic-account-id"
 }
 
-/// Клиентский ключ из запроса (x-api-key либо Bearer). Публично — используется и в `server`
+/// Клиентский ключ из запроса (x-api-key, Gemini x-goog-api-key либо Bearer). Публично — используется и в `server`
 /// для эндпоинта `/balance`.
 pub fn client_key(headers: &HeaderMap) -> Option<String> {
     if let Some(v) = headers.get("x-api-key").and_then(|v| v.to_str().ok()) {
+        let key = v.trim();
+        if !key.is_empty() {
+            return Some(key.to_string());
+        }
+    }
+    if let Some(v) = headers.get("x-goog-api-key").and_then(|v| v.to_str().ok()) {
         let key = v.trim();
         if !key.is_empty() {
             return Some(key.to_string());

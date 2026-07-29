@@ -13,6 +13,7 @@ mod billing;
 mod breaker;
 pub mod codex;
 mod config;
+pub mod gemini;
 mod keylimiter;
 mod meter;
 mod metrics;
@@ -33,6 +34,10 @@ pub use codex::{
     CodexRateLimits,
 };
 pub use config::{ProxyConfig, CLAUDE_CODE_IDENTITY};
+pub use gemini::{
+    gemini_api, GeminiConfig, GeminiGateway, GeminiModel, GeminiOperationalStatus, GeminiPrices,
+    GeminiProfileSpec, GeminiProfileStatus, GeminiProfilesFile,
+};
 pub use keylimiter::KeyLimiter;
 pub use metrics::Metrics;
 pub use proxy::{

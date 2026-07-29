@@ -22,6 +22,7 @@
 		format filter {
 			request>headers>X-Admin-Key replace REDACTED
 			request>headers>X-Api-Key replace REDACTED
+			request>headers>X-Goog-Api-Key replace REDACTED
 			request>headers>X-Sales-Admin-Key replace REDACTED
 			request>headers>X-Crm-Ingest-Key replace REDACTED
 		}
@@ -67,6 +68,14 @@
 	}
 }
 
+# Gemini has its own fixed provider process and stable loopback origin. There is no request-level
+# plane selector: only the dedicated public hostname can reach this runtime.
+(gemini_engine_backend) {
+	reverse_proxy 127.0.0.1:8794 {
+		header_up Host 127.0.0.1:8794
+	}
+}
+
 (commerce_backend) {
 	reverse_proxy 127.0.0.1:8791 {
 		header_up Host 127.0.0.1:8791
@@ -109,6 +118,14 @@ openai.api.apitoken.sale {
 	respond 404
 }
 
+gemini.api.apitoken.sale {
+	@public_core path /v1beta/* /health /balance
+	handle @public_core {
+		import gemini_engine_backend
+	}
+	respond 404
+}
+
 # Stable, loopback-only Control API origin for the commerce API and worker.
 # Consumers never address an engine deployment slot directly.
 http://127.0.0.1:8790 {
@@ -134,6 +151,19 @@ http://127.0.0.1:8792 {
 		lb_try_duration 2s
 		lb_try_interval 100ms
 
+		health_uri /ready
+		health_interval 2s
+		health_timeout 2s
+		health_status 2xx
+	}
+}
+
+# Stable native Gemini origin. The runtime is an independent singleton because its project pool,
+# cooling and health lifecycle are a separate failure domain from Claude and OpenAI.
+http://127.0.0.1:8794 {
+	bind 127.0.0.1
+
+	reverse_proxy 127.0.0.1:8795 {
 		health_uri /ready
 		health_interval 2s
 		health_timeout 2s

@@ -863,8 +863,15 @@ async fn serve() -> Result<()> {
     if authority.is_postgres() && !s.billing {
         bail!("PostgreSQL authority requires CLAUDE_API_BILLING=1 because capacity leases share the durable actor");
     }
-    if s.provider == forward::ProviderMode::OpenAi && !authority.is_postgres() {
-        bail!("CLAUDE_API_PROVIDER=openai requires the PostgreSQL engine authority");
+    if matches!(
+        s.provider,
+        forward::ProviderMode::OpenAi | forward::ProviderMode::Gemini
+    ) && !authority.is_postgres()
+    {
+        bail!(
+            "CLAUDE_API_PROVIDER={} requires the PostgreSQL engine authority",
+            s.provider.as_str()
+        );
     }
     // SQLite has anonymous aggregate reservations and therefore remains strictly single-process.
     // PostgreSQL has owner epochs plus request/capacity leases; its completed fault matrix permits
@@ -1014,6 +1021,19 @@ async fn serve() -> Result<()> {
     } else {
         None
     };
+    let gemini = if let Some(config) = s.gemini.clone() {
+        let gateway =
+            Arc::new(forward::GeminiGateway::new(config).context("initialize Gemini provider")?);
+        gateway
+            .preflight()
+            .await
+            .context("validate Gemini provider")?;
+        eprintln!("Gemini paid-project provider preflight passed");
+        tokio::spawn(poller::gemini_health_loop(gateway.clone()));
+        Some(gateway)
+    } else {
+        None
+    };
     let app = AppState {
         provider: s.provider,
         cfg: Arc::new(s.proxy.clone()),
@@ -1028,6 +1048,7 @@ async fn serve() -> Result<()> {
         affinity,
         clients: Arc::new(Clients::new(&s.proxy)),
         codex,
+        gemini,
         billing,
         authority_ready: authority_ready.clone(),
         breaker: Arc::new(forward::Breaker::new(fleet_size)),
@@ -1213,6 +1234,11 @@ async fn serve() -> Result<()> {
     if let Some(codex) = &flush_app.codex {
         eprintln!("graceful shutdown: жду Codex settlement tasks и останавливаю children");
         codex.shutdown_until(shutdown_deadline).await;
+    }
+    if let Some(gemini) = &flush_app.gemini {
+        // Detached Gemini streams continue draining to the authoritative final usageMetadata after
+        // a client disconnect. Hold the billing FIFO open until those settlements are queued.
+        gemini.shutdown_until(shutdown_deadline).await;
     }
     eprintln!("graceful shutdown: дренирую очередь биллинга + флаш пула");
     // Завершённые/оборванные стримы поставили settle в очередь DB-актора. Даже после deadline ждём

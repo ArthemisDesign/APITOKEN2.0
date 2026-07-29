@@ -15,7 +15,7 @@
 **Что внутри:**
 - `config.rs` — `Settings` (db_path/bind/fleet/Redis affinity + `ProxyConfig`) из env.
 - `http.rs` — роутер: `/health`, `/pool`, `/balance`, `/capacity` (управляющие) + startup-fixed
-  Claude/OpenAI router. Production provider выбирает systemd unit, не request; Caddy marker остаётся
+  Claude/OpenAI/Gemini router. Production provider выбирает systemd unit, не request; Caddy marker остаётся
   только в одноразовом `Combined` migration bridge и никогда не принимается от клиента. + `/admin-panel`
   (единый `admin-panel.html` для admin.apitoken.sale; архитектура — корневой `PANEL.md`) +
   `/admin/*` (control-плоскость,
@@ -63,5 +63,9 @@
   (иначе за реверс-прокси аноним получил бы админ-доступ).
 - Shutdown OpenAI сначала ждёт detached Codex stream/history/settlement tasks, затем reaps children;
   только после этого billing FIFO-flush может завершить процесс и отпустить общий home lock.
+- Shutdown Gemini сначала закрывает admission и ждёт detached SSE drain; на deadline abort-сигнал
+  прерывает upstream read, task settle-ит последний usage snapshot и пересекает semaphore barrier.
+  Billing FIFO-flush разрешён только после этого. Gemini health/preflight/network живут в `forward`,
+  а env/upstream pin и startup-fixed service composition — только здесь.
 
 **Проверка:** `cargo build -p claude-api`; `cargo run -p claude-api -- serve`.

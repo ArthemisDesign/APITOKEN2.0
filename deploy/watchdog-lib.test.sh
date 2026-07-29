@@ -47,17 +47,17 @@ fi
 final_plan_cases=(
   'none 0 0 0 0|none'
   'controller 0 0 0 0|none'
-  'none 1 0 0 0|runtime,panel,monitoring,codex'
+  'none 1 0 0 0|runtime,panel,monitoring,codex,gemini'
   'none 0 1 0 0|monitoring'
   'none 0 0 1 0|monitoring'
   'none 0 0 0 1|monitoring'
-  'caddy 0 0 0 0|routing,monitoring,codex'
+  'caddy 0 0 0 0|routing,monitoring,codex,gemini'
   'monitoring 0 0 0 0|monitoring'
-  'controller+caddy+monitoring 0 0 0 0|routing,monitoring,codex'
-  'systemd 0 0 0 0|runtime,panel,routing,monitoring,codex'
-  'controller+systemd 0 0 0 0|runtime,panel,routing,monitoring,codex'
-  'full 0 0 0 0|runtime,panel,routing,monitoring,codex'
-  'full 1 1 1 1|runtime,panel,routing,monitoring,codex'
+  'controller+caddy+monitoring 0 0 0 0|routing,monitoring,codex,gemini'
+  'systemd 0 0 0 0|runtime,panel,routing,monitoring,codex,gemini'
+  'controller+systemd 0 0 0 0|runtime,panel,routing,monitoring,codex,gemini'
+  'full 0 0 0 0|runtime,panel,routing,monitoring,codex,gemini'
+  'full 1 1 1 1|runtime,panel,routing,monitoring,codex,gemini'
 )
 for final_plan_case in "${final_plan_cases[@]}"; do
   final_plan_args=${final_plan_case%%|*}
@@ -87,9 +87,9 @@ wd_infrastructure_scope_has controller+caddy+monitoring monitoring \
 if wd_infrastructure_scope_has controller+caddy monitor; then
   wd_die "composite infrastructure scope accepted a partial member"
 fi
-wd_verification_plan_has runtime,panel,monitoring,codex monitoring \
+wd_verification_plan_has runtime,panel,monitoring,codex,gemini monitoring \
   || wd_die "final verification plan membership lost an exact entry"
-if wd_verification_plan_has runtime,panel,monitoring,codex monitor; then
+if wd_verification_plan_has runtime,panel,monitoring,codex,gemini monitor; then
   wd_die "final verification plan membership accepted a partial entry"
 fi
 
@@ -169,25 +169,26 @@ final_verify_admin_panel() { verification_probe panel; }
 final_verify_admin_routing() { verification_probe routing; }
 final_verify_monitoring() { verification_probe monitoring; }
 final_verify_codex_surface() { verification_probe codex; }
+final_verify_gemini_surface() { verification_probe gemini; }
 
 : >"$verification_barrier_log"
-VERIFICATION_BARRIER_EXPECTED=4
-run_final_verification_plan runtime,panel,routing,monitoring,codex deadbeef
+VERIFICATION_BARRIER_EXPECTED=5
+run_final_verification_plan runtime,panel,routing,monitoring,codex,gemini deadbeef
 [[ $(sed -n '1p' "$verification_barrier_log") == runtime ]] \
   || wd_die "read-only final probes started before runtime reconciliation"
-for final_probe in panel routing monitoring codex; do
+for final_probe in panel routing monitoring codex gemini; do
   grep -Fxq "$final_probe" "$verification_barrier_log" \
     || wd_die "final verification dispatcher omitted $final_probe"
 done
 
 : >"$verification_barrier_log"
-VERIFICATION_BARRIER_EXPECTED=4
+VERIFICATION_BARRIER_EXPECTED=5
 VERIFICATION_FAIL_CHECK=routing
-if ( run_final_verification_plan runtime,panel,routing,monitoring,codex deadbeef ) \
+if ( run_final_verification_plan runtime,panel,routing,monitoring,codex,gemini deadbeef ) \
     >/dev/null 2>&1; then
   wd_die "a failed final verifier did not fail the parent plan"
 fi
-[[ $(grep -Evc '^runtime$' "$verification_barrier_log") == 4 ]] \
+[[ $(grep -Evc '^runtime$' "$verification_barrier_log") == 5 ]] \
   || wd_die "a failed final verifier abandoned sibling checks"
 VERIFICATION_FAIL_CHECK=
 
@@ -284,6 +285,73 @@ VERIFICATION_FAIL_CHECK=
   fi
   (( $(wc -l <"$codex_probe_log") == 6 )) \
     || wd_die "missing Codex enablement metrics did not use the bounded retry window"
+)
+
+# Gemini has the same explicit optional-provider contract: disabled is a stable native 404, enabled
+# requires an authenticated paid project and a native 401, and missing Prometheus series fail closed.
+(
+  # shellcheck disable=SC2091
+  eval "$(sed -n '/^final_verify_gemini_surface()/,/^}/p' "$ROOT/deploy/watchdog.sh")"
+  gemini_probe_log="$TEMP/gemini-probe.log"
+  GEMINI_PROBE_MODE=disabled
+  # Invoked indirectly by the extracted verifier.
+  # shellcheck disable=SC2329
+  curl() {
+    printf '%s\n' "$*" >>"$gemini_probe_log"
+    case "$*" in
+      *'query=claude_api_gemini_enabled'*)
+        case "$GEMINI_PROBE_MODE" in
+          disabled) printf '%s\n' '{"status":"success","data":{"result":[{"value":[0,"0"]}]}}' ;;
+          enabled|unauthenticated) printf '%s\n' '{"status":"success","data":{"result":[{"value":[0,"1"]}]}}' ;;
+          missing) printf '%s\n' '{"status":"success","data":{"result":[]}}' ;;
+        esac
+        ;;
+      *'claude_api_gemini_profiles_authenticated'*)
+        if [[ $GEMINI_PROBE_MODE == unauthenticated ]]; then
+          printf '%s\n' '{"status":"success","data":{"result":[]}}'
+        else
+          printf '%s\n' '{"status":"success","data":{"result":[{"value":[0,"1"]}]}}'
+        fi
+        ;;
+      *'gemini.api.apitoken.sale'*)
+        if [[ $GEMINI_PROBE_MODE == disabled ]]; then
+          printf '%s\n' '{"error":{"code":404,"status":"NOT_FOUND"}}'
+        else
+          printf '%s\n' '{"error":{"code":401,"status":"UNAUTHENTICATED"}}'
+        fi
+        ;;
+      *) return 2 ;;
+    esac
+  }
+  sleep() { :; }
+
+  : >"$gemini_probe_log"
+  GEMINI_PROBE_MODE=disabled
+  final_verify_gemini_surface >/dev/null
+  (( $(wc -l <"$gemini_probe_log") == 2 )) \
+    || wd_die "disabled Gemini verification skipped its public native-envelope check"
+
+  : >"$gemini_probe_log"
+  GEMINI_PROBE_MODE=enabled
+  final_verify_gemini_surface >/dev/null
+  (( $(wc -l <"$gemini_probe_log") == 3 )) \
+    || wd_die "enabled Gemini verification skipped project or public-envelope checks"
+
+  : >"$gemini_probe_log"
+  GEMINI_PROBE_MODE=unauthenticated
+  if ( final_verify_gemini_surface ) >/dev/null 2>&1; then
+    wd_die "an enabled Gemini provider without an authenticated project passed verification"
+  fi
+  (( $(wc -l <"$gemini_probe_log") == 7 )) \
+    || wd_die "missing Gemini project metrics did not use the bounded retry window"
+
+  : >"$gemini_probe_log"
+  GEMINI_PROBE_MODE=missing
+  if ( final_verify_gemini_surface ) >/dev/null 2>&1; then
+    wd_die "missing Gemini enablement metrics were treated as disabled"
+  fi
+  (( $(wc -l <"$gemini_probe_log") == 6 )) \
+    || wd_die "missing Gemini enablement metrics did not use the bounded retry window"
 )
 
 # Atomic state writes are shared by parallel rollout lanes. Bash keeps `$$` constant in asynchronous
@@ -523,7 +591,8 @@ wd_path_is_backend apps/content-studio/src/app/page.tsx || wd_die "content studi
 wd_path_is_engine tools/codex-app-server/build-pinned.sh \
   || wd_die "pinned Codex tooling must trigger an engine deployment"
 for provider_unit in systemd/claude-api.service systemd/claude-api@.service \
-  systemd/claude-api-anthropic@.service systemd/claude-api-openai.service; do
+  systemd/claude-api-anthropic@.service systemd/claude-api-openai.service \
+  systemd/claude-api-gemini.service; do
   wd_path_is_engine "$provider_unit" \
     || wd_die "provider unit change does not force runtime adoption: $provider_unit"
 done
@@ -580,6 +649,7 @@ for runtime_definition in \
   systemd/claude-api@.service \
   systemd/claude-api-anthropic@.service \
   systemd/claude-api-openai.service \
+  systemd/claude-api-gemini.service \
   systemd/apitoken-tmpfiles.conf \
   observability/prometheus/prometheus.yml; do
   wd_path_requires_infrastructure_install "$runtime_definition" \
@@ -617,6 +687,7 @@ wd_path_is_systemd_definition systemd/apitoken-tmpfiles-install.service
 wd_path_is_systemd_definition deploy/install-tmpfiles.sh
 wd_path_is_systemd_definition systemd/claude-api.service
 wd_path_is_systemd_definition systemd/claude-api-openai.service
+wd_path_is_systemd_definition systemd/claude-api-gemini.service
 if wd_path_is_systemd_definition systemd/future-uninstalled.service; then
   wd_die "unknown systemd definition entered the narrow installer"
 fi
@@ -1093,6 +1164,7 @@ fi
 grep -Fq 'admin.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'api.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'openai.api.apitoken.sale {' "$ROOT/deploy/Caddyfile"
+grep -Fq 'gemini.api.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'admin.partners.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'crm.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'content-studio.apitoken.sale {' "$ROOT/deploy/Caddyfile"
@@ -1119,8 +1191,15 @@ grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-openai.service"
 grep -Fq 'CLAUDE_API_PROVIDER=openai CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8793' \
   "$ROOT/systemd/claude-api-openai.service"
 grep -Fq 'CLAUDE_API_INSTANCE_ID=%H:engine:openai' "$ROOT/systemd/claude-api-openai.service"
+grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-gemini.service"
+grep -Fq 'CLAUDE_API_PROVIDER=gemini CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8795' \
+  "$ROOT/systemd/claude-api-gemini.service"
+grep -Fq 'CLAUDE_API_INSTANCE_ID=%H:engine:gemini' "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'claude-api-openai.service' "$ROOT/deploy/install-watchdog.sh"
+grep -Fq 'claude-api-gemini.service' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq '/usr/bin/systemctl restart claude-api-openai.service' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy"
+grep -Fq '/usr/bin/systemctl restart claude-api-gemini.service' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy"
 grep -Fq '/usr/bin/systemctl restart claude-api.service' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
@@ -1159,10 +1238,14 @@ grep -Fq 'header_up X-Admin-Key "<ADMIN_AUTH_KEY_PLACEHOLDER>"' "$ROOT/deploy/Ca
 grep -Fq 'header_up X-Admin-Domain {http.request.host}' "$ROOT/deploy/Caddyfile"
 ! grep -Fqi 'X-Apitoken-Api-Plane' "$ROOT/deploy/Caddyfile"
 [[ $(grep -Fc 'import openai_engine_backend' "$ROOT/deploy/Caddyfile") == 1 ]]
+[[ $(grep -Fc 'import gemini_engine_backend' "$ROOT/deploy/Caddyfile") == 1 ]]
 grep -Fq 'reverse_proxy 127.0.0.1:8792' "$ROOT/deploy/Caddyfile"
 grep -Fq 'http://127.0.0.1:8792 {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'reverse_proxy 127.0.0.1:8793 {' "$ROOT/deploy/Caddyfile"
-[[ $(grep -Fc 'health_uri /ready' "$ROOT/deploy/Caddyfile") -ge 2 ]]
+grep -Fq 'reverse_proxy 127.0.0.1:8794' "$ROOT/deploy/Caddyfile"
+grep -Fq 'http://127.0.0.1:8794 {' "$ROOT/deploy/Caddyfile"
+grep -Fq 'reverse_proxy 127.0.0.1:8795 {' "$ROOT/deploy/Caddyfile"
+[[ $(grep -Fc 'health_uri /ready' "$ROOT/deploy/Caddyfile") -ge 3 ]]
 ! grep -Fq 'health_method POST' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'health_status 4xx' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'health_body invalid_request_error' "$ROOT/deploy/Caddyfile"
@@ -1183,11 +1266,15 @@ grep -Fq 'mv -f -- "$rollback_tmp" "$LIVE"' "$ROOT/deploy/install-caddy.sh" \
   || wd_die "Caddy rollback reload failures are silently ignored"
 claude_api_vhost=$(sed -n '/^api\.apitoken\.sale {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
 openai_api_vhost=$(sed -n '/^openai\.api\.apitoken\.sale {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
+gemini_api_vhost=$(sed -n '/^gemini\.api\.apitoken\.sale {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
 grep -Fq 'import engine_backend' <<<"$claude_api_vhost"
 ! grep -Fq 'openai_engine_backend' <<<"$claude_api_vhost"
 grep -Fq 'import openai_engine_backend' <<<"$openai_api_vhost"
+grep -Fq 'import gemini_engine_backend' <<<"$gemini_api_vhost"
 grep -Fq -- '--resolve openai.api.apitoken.sale:443:127.0.0.1' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'https://openai.api.apitoken.sale/v1/responses' "$ROOT/deploy/watchdog.sh"
+grep -Fq 'https://gemini.api.apitoken.sale/v1beta/models/gemini-provider-probe:generateContent' \
+  "$ROOT/deploy/watchdog.sh"
 ! grep -Fq -- "-H 'X-Apitoken-Api-Plane: openai'" "$ROOT/deploy/watchdog.sh"
 grep -Fq '@commerce_admin path /admin/*' "$ROOT/deploy/Caddyfile"
 grep -Fq 'handle_path /partner-admin/*' "$ROOT/deploy/Caddyfile"
@@ -1305,7 +1392,7 @@ grep -Fq 'streak >= 3' "$ROOT/deploy/watchdog.sh" \
 grep -Fq 'for _ in $(seq 1 20); do' "$ROOT/deploy/watchdog.sh" \
   || wd_die "the admin-panel convergence window must outlast blue-green cutover and health checks"
 for scoped_verifier in final_verify_admin_routing final_verify_monitoring \
-  final_verify_codex_surface; do
+  final_verify_codex_surface final_verify_gemini_surface; do
   grep -Fq "$scoped_verifier" "$ROOT/deploy/watchdog.sh" \
     || wd_die "final verification lost scoped check $scoped_verifier"
 done
@@ -1324,6 +1411,8 @@ grep -Fq 'unit_release_binding_ok engine "$unit" "$ENGINE_RELEASE_ROOT" "$CURREN
   "$provider_controller" || wd_die "Anthropic slot gate does not prove provider mode"
 grep -Fq 'unit_release_binding_ok engine "$OPENAI_UNIT" "$ENGINE_RELEASE_ROOT" "$CURRENT_RELEASE" openai' \
   "$provider_controller" || wd_die "OpenAI gate does not prove provider mode"
+grep -Fq 'unit_release_binding_ok engine "$GEMINI_UNIT" "$ENGINE_RELEASE_ROOT" "$CURRENT_RELEASE" gemini' \
+  "$provider_controller" || wd_die "Gemini gate does not prove provider mode"
 grep -Fq 'for old_unit in "$LEGACY_UNIT" "$(legacy_slot_unit 8787)" "$(legacy_slot_unit 8788)"' \
   "$provider_controller" || wd_die "active-but-unready engine cgroups can survive the OpenAI handoff"
 grep -Fq 'PROVIDER_CAPABILITY_MARKER=.provider-runtime-v1' "$provider_controller" \
@@ -1349,12 +1438,15 @@ grep -Fq '$unit runs a different binary; restarting onto the tested release' \
   || wd_die "deployment can leave changed authbot code unadopted"
 grep -Fq 'recover_interrupted_handoffs' "$ROOT/crates/authbot/src/main.rs" \
   || wd_die "an authbot code restart can strand sellers in a dead in-memory OAuth session"
-grep -Fq 'claude-api-openai.service claude-authbot.service' "$ROOT/deploy/watchdog.sh" \
+grep -Fq 'claude-api-openai.service claude-api-gemini.service claude-authbot.service' \
+  "$ROOT/deploy/watchdog.sh" \
   || wd_die "release retention can unlink the executable backing a deferred authbot"
 grep -Fq 'shutdown_until(shutdown_deadline)' "$ROOT/crates/server/src/main.rs" \
   || wd_die "Codex shutdown is not bounded by the server drain deadline"
 grep -Fq 'self.abort_active_turns();' "$ROOT/crates/forward/src/codex/mod.rs" \
   || wd_die "Codex shutdown cannot cancel turns left at the drain deadline"
+grep -Fq 'self.abort_active_streams();' "$ROOT/crates/forward/src/gemini/pool.rs" \
+  || wd_die "Gemini shutdown cannot settle and cancel streams left at the drain deadline"
 grep -Fq 'self.detached.wait_idle().await;' "$ROOT/crates/forward/src/billing.rs" \
   || wd_die "billing flush can overtake a backpressured detached settlement"
 grep -Fq 'track_detached_work()' "$ROOT/crates/forward/src/meter.rs" \
@@ -1380,10 +1472,12 @@ final_verification_contract=(
   'run_final_verification_lane final_verify_admin_routing &'
   'run_final_verification_lane final_verify_monitoring &'
   'run_final_verification_lane final_verify_codex_surface &'
+  'run_final_verification_lane final_verify_gemini_surface &'
   'wait "$panel_pid"'
   'wait "$routing_pid"'
   'wait "$monitoring_pid"'
   'wait "$codex_pid"'
+  'wait "$gemini_pid"'
   'final verification lanes failed'
 )
 for final_stage in "${final_verification_contract[@]}"; do

@@ -42,6 +42,8 @@ scrape_configs:
         labels: { provider: anthropic }
       - targets: ["127.0.0.1:8792"]
         labels: { provider: openai }
+      - targets: ["127.0.0.1:8794"]
+        labels: { provider: gemini }
 
   - job_name: alertmanager
     static_configs:
@@ -95,6 +97,21 @@ scrape_configs:
     static_configs:
       - targets: ["https://openai.api.apitoken.sale/v1/responses"]
         labels: { component: codex-provider, provider: openai }
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+
+  - job_name: gemini-http
+    metrics_path: /probe
+    params:
+      module: [http_gemini_surface]
+    static_configs:
+      - targets: ["https://gemini.api.apitoken.sale/v1beta/models/gemini-provider-probe:generateContent"]
+        labels: { component: gemini-provider, provider: gemini }
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target

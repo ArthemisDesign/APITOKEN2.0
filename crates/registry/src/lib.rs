@@ -1225,6 +1225,8 @@ fn ledger_add(
 pub const PROVIDER_ANTHROPIC: &str = "anthropic";
 /// The OpenAI-compatible Codex home pool.
 pub const PROVIDER_OPENAI: &str = "openai";
+/// The paid native Gemini Developer API project pool.
+pub const PROVIDER_GOOGLE: &str = "google";
 
 fn default_provider() -> String {
     PROVIDER_ANTHROPIC.to_string()
@@ -2866,7 +2868,8 @@ mod tests {
             ..Default::default()
         };
         usage_event_add(&c, "a", Some("k"), &legacy, 1_000_000, Some("req1")).unwrap();
-        c.execute("UPDATE usage_events SET provider=''", []).unwrap();
+        c.execute("UPDATE usage_events SET provider=''", [])
+            .unwrap();
         let rows = spend_by_provider(&c, 0).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].provider, PROVIDER_ANTHROPIC);

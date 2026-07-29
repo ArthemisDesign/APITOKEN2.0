@@ -68,11 +68,12 @@ grep -A20 -F 'node-exporter:' "$ROOT/observability/compose.yaml" | grep -Fq 'app
 grep -Fq 'metrics {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'per_host' "$ROOT/deploy/Caddyfile"
 
-# Anthropic and OpenAI have independent stable origins and scrape labels. Without the labels,
+# Anthropic, OpenAI and Gemini have independent stable origins and scrape labels. Without labels,
 # provider-local zero gauges can collide and make Codex or Claude alerts evaluate against both.
 for provider_target in \
   '127.0.0.1:8790"]|provider: anthropic' \
-  '127.0.0.1:8792"]|provider: openai'; do
+  '127.0.0.1:8792"]|provider: openai' \
+  '127.0.0.1:8794"]|provider: gemini'; do
   target=${provider_target%%|*}
   label=${provider_target#*|}
   grep -F "$target" -A 1 "$ROOT/observability/prometheus/prometheus.yml" \
@@ -83,6 +84,13 @@ grep -Fq 'targets: ["https://openai.api.apitoken.sale/v1/responses"]' \
   || { printf 'OpenAI public synthetic is missing\n' >&2; exit 1; }
 grep -Fq 'module: [http_openai_surface]' "$ROOT/observability/prometheus/prometheus.yml" \
   || { printf 'OpenAI synthetic does not verify its provider envelope\n' >&2; exit 1; }
+grep -Fq 'targets: ["https://gemini.api.apitoken.sale/v1beta/models/gemini-provider-probe:generateContent"]' \
+  "$ROOT/observability/prometheus/prometheus.yml" \
+  || { printf 'Gemini public synthetic is missing\n' >&2; exit 1; }
+grep -Fq 'module: [http_gemini_surface]' "$ROOT/observability/prometheus/prometheus.yml" \
+  || { printf 'Gemini synthetic does not verify its provider envelope\n' >&2; exit 1; }
+grep -Fq 'valid_status_codes: [401, 404]' "$ROOT/observability/blackbox/blackbox.yml" \
+  || { printf 'Gemini synthetic does not accept both enabled and kill-switch envelopes\n' >&2; exit 1; }
 grep -Fq 'fail_if_body_not_matches_regexp:' "$ROOT/observability/blackbox/blackbox.yml" \
   || { printf 'OpenAI synthetic accepts a generic health response\n' >&2; exit 1; }
 grep -Fq "body: '{}'" "$ROOT/observability/blackbox/blackbox.yml" \
@@ -120,6 +128,29 @@ for watchdog_metric in \
     || { printf 'collector does not export %s\n' "$watchdog_metric" >&2; exit 1; }
   grep -Fq "$watchdog_metric" "$ROOT/observability/prometheus/rules/application.yml" \
     || { printf 'no alert rule consumes %s\n' "$watchdog_metric" >&2; exit 1; }
+done
+# The native paid-project pool is independent from both established providers.
+for gemini_metric in \
+  'claude_api_gemini_profiles_available' \
+  'claude_api_gemini_profiles_authenticated' \
+  'claude_api_gemini_profile_authenticated'; do
+  grep -Fq "$gemini_metric" "$ROOT/crates/server/src/http.rs" \
+    || { printf 'engine does not export %s\n' "$gemini_metric" >&2; exit 1; }
+  grep -Fq "$gemini_metric" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'no alert rule consumes %s\n' "$gemini_metric" >&2; exit 1; }
+  grep -Fq "${gemini_metric}{provider=\"gemini\"}" \
+    "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'Gemini alert is not scoped to Gemini: %s\n' "$gemini_metric" >&2; exit 1; }
+done
+for gemini_alert in GeminiProviderDown GeminiNoAvailableProfiles GeminiProfileUnauthenticated \
+  GeminiUpstreamRateLimited; do
+  grep -Fq "alert: $gemini_alert" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'missing Gemini alert %s\n' "$gemini_alert" >&2; exit 1; }
+  anchor=$(printf '%s' "$gemini_alert" | tr '[:upper:]' '[:lower:]')
+  grep -Fq "MONITORING.md#$anchor" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'alert %s has no runbook anchor\n' "$gemini_alert" >&2; exit 1; }
+  grep -Fqi "## $gemini_alert" "$ROOT/MONITORING.md" \
+    || { printf 'MONITORING.md has no runbook section for %s\n' "$gemini_alert" >&2; exit 1; }
 done
 for watchdog_alert in DeployQuarantined DeployPipelineStale DeployStuckInPhase DeployMigrationUncommitted; do
   grep -Fq "alert: $watchdog_alert" "$ROOT/observability/prometheus/rules/application.yml" \
@@ -239,15 +270,15 @@ for anthropic_metric in claude_api_breaker_open claude_api_subs claude_api_cooli
     "$ROOT/observability/prometheus/rules/application.yml" \
     || { printf 'Claude alert is not scoped to Anthropic: %s\n' "$anthropic_metric" >&2; exit 1; }
 done
-grep -Fq 'claude-(api(@.+|-anthropic@.+|-openai)?|authbot)' \
+grep -Fq 'claude-(api(@.+|-anthropic@.+|-openai|-gemini)?|authbot)' \
   "$ROOT/observability/prometheus/rules/operations.yml" \
   || { printf 'systemd alerts omit a provider runtime unit\n' >&2; exit 1; }
-grep -Fq 'claude-(api(@.+|-anthropic@.+|-openai)?|authbot)' \
+grep -Fq 'claude-(api(@.+|-anthropic@.+|-openai|-gemini)?|authbot)' \
   "$ROOT/observability/grafana/dashboards/production-overview.json" \
   || { printf 'Grafana systemd panel omits a provider runtime unit\n' >&2; exit 1; }
-[[ $(grep -Fc 'public-http|openai-http|protected-http|support-http|loopback-http' \
+[[ $(grep -Fc 'public-http|openai-http|gemini-http|protected-http|support-http|loopback-http' \
   "$ROOT/observability/grafana/dashboards/production-overview.json") -eq 2 ]] \
-  || { printf 'Grafana synthetic panels omit the OpenAI probe\n' >&2; exit 1; }
+  || { printf 'Grafana synthetic panels omit an independent provider probe\n' >&2; exit 1; }
 
 # A missing status file must read as stale, never as a fresh zero.
 grep -Fq 'WATCHDOG_STATUS_MISSING_AGE_SECONDS=86400' "$ROOT/deploy/collect-monitoring-metrics.sh" \

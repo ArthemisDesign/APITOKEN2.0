@@ -226,6 +226,10 @@ validate_engine_stage() {
     || die "staged engine provider capability marker is missing"
   [[ $(<"$directory/.provider-runtime-v1") == provider-runtime-v1 ]] \
     || die "staged engine provider capability marker is invalid"
+  [[ -f "$directory/.gemini-provider-v1" && ! -L "$directory/.gemini-provider-v1" ]] \
+    || die "staged engine Gemini capability marker is missing"
+  [[ $(<"$directory/.gemini-provider-v1") == gemini-provider-v1 ]] \
+    || die "staged engine Gemini capability marker is invalid"
 }
 
 # Restart the subscription bot only when the binary it is running differs from the one just shipped.
@@ -378,8 +382,10 @@ prepare_engine_release() {
   fi
   if [[ "$DRY_RUN" == "1" ]]; then
     log "dry-run: would write $ENGINE_STAGE/.provider-runtime-v1"
+    log "dry-run: would write $ENGINE_STAGE/.gemini-provider-v1"
   else
     printf '%s\n' provider-runtime-v1 >"$ENGINE_STAGE/.provider-runtime-v1"
+    printf '%s\n' gemini-provider-v1 >"$ENGINE_STAGE/.gemini-provider-v1"
   fi
   if [[ "$DRY_RUN" != "1" ]]; then
     validate_engine_stage "$ENGINE_STAGE"

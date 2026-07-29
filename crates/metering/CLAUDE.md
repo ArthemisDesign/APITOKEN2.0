@@ -9,10 +9,16 @@
   `cost_nanodollars`, `total_tokens`, и тесты.
 - Считаем в ЦЕЛЫХ нанодолларах (1 USD = 1e9 нано; $/Mtoken × 1000 = нано/токен — целое).
   Никаких f64 в подсчёте денег.
+- Gemini catalog тоже живёт только здесь: paid-tier effective-dated ставки, uncached/audio/cached
+  input, candidate+thinking output, tool prompt, long-context и Search. Gemini 2.5 Search считается
+  per grounded prompt, Gemini 3 — per query. Новую модель/ценовую эпоху добавлять только с официальной
+  ссылкой и exact-rate тестом; отдельно тарифицируемый tool нельзя пропустить бесплатно.
 
 **Инварианты (проверять тестами):**
 - 1M токенов любой корзины = точная официальная ставка (тест `prices_exact_per_million`).
 - Стрим: input/cache из `message_start`, output из ПОСЛЕДНЕГО `message_delta` (кумулятивный).
+- Gemini SSE также использует последний полный кумулятивный `usageMetadata`; split/malformed frames
+  не паникуют и не затирают последний валидный snapshot.
 - Битый ввод → `Usage::default()` (нули), НИКОГДА не паникует.
 - i128 — переполнения исключены даже на млрд токенов.
 

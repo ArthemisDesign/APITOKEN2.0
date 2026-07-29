@@ -476,7 +476,7 @@ live_release_shas() {
   local unit pid resolved name
   for unit in claude-api.service claude-api@8787.service claude-api@8788.service \
     claude-api-anthropic@8787.service claude-api-anthropic@8788.service \
-    claude-api-openai.service claude-authbot.service \
+    claude-api-openai.service claude-api-gemini.service claude-authbot.service \
     apitoken-api@3000.service apitoken-api@3001.service \
     apitoken-worker.service apitoken-content-studio.service; do
     systemctl is-active --quiet "$unit" || continue
@@ -1266,6 +1266,7 @@ engine_runtime_aligned() {
   local active_8787=0 ready_8787=0 current_8787=0 enabled_8787=0
   local active_8788=0 ready_8788=0 current_8788=0 enabled_8788=0
   local openai_active=0 openai_ready=0 openai_current=0 openai_enabled=0 openai_stable_status
+  local gemini_supported=0 gemini_active=0 gemini_ready=0 gemini_current=0 gemini_enabled=0 gemini_stable_status
   local port unit pid executable status combined_unit
 
   expected="$ENGINE_RELEASE_ROOT/$sha"
@@ -1325,10 +1326,37 @@ engine_runtime_aligned() {
     http://127.0.0.1:8790/ready 2>/dev/null || true)
   openai_stable_status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
     http://127.0.0.1:8792/ready 2>/dev/null || true)
-  ENGINE_RUNTIME_DETAIL="anthropic[8787=$active_8787:$ready_8787:$current_8787:$enabled_8787 8788=$active_8788:$ready_8788:$current_8788:$enabled_8788 stable=${stable_status:-unreachable}] openai=$openai_active:$openai_ready:$openai_current:$openai_enabled:${openai_stable_status:-unreachable} legacy=$legacy_active:$legacy_enabled"
+  [[ -f "$expected/.gemini-provider-v1" \
+      && $(<"$expected/.gemini-provider-v1") == gemini-provider-v1 ]] && gemini_supported=1
+  unit=claude-api-gemini.service
+  systemctl is-active --quiet "$unit" && gemini_active=1
+  systemctl is-enabled --quiet "$unit" && gemini_enabled=1
+  status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+    http://127.0.0.1:8795/ready 2>/dev/null || true)
+  [[ $status == 200 ]] && gemini_ready=1
+  if (( gemini_active == 1 )); then
+    pid=$(systemctl show "$unit" -p MainPID --value)
+    if [[ $pid =~ ^[1-9][0-9]*$ ]]; then
+      executable=$(readlink -f -- "/proc/$pid/exe" 2>/dev/null || true)
+      if [[ $executable == "$expected/claude-api" ]] \
+          && tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null \
+            | grep -Fxq 'CLAUDE_API_PROVIDER=gemini'; then
+        gemini_current=1
+      fi
+    fi
+  fi
+  gemini_stable_status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+    http://127.0.0.1:8794/ready 2>/dev/null || true)
+  ENGINE_RUNTIME_DETAIL="anthropic[8787=$active_8787:$ready_8787:$current_8787:$enabled_8787 8788=$active_8788:$ready_8788:$current_8788:$enabled_8788 stable=${stable_status:-unreachable}] openai=$openai_active:$openai_ready:$openai_current:$openai_enabled:${openai_stable_status:-unreachable} gemini=$gemini_supported:$gemini_active:$gemini_ready:$gemini_current:$gemini_enabled:${gemini_stable_status:-unreachable} legacy=$legacy_active:$legacy_enabled"
   [[ $stable_status == 200 ]] || return 1
   [[ $openai_stable_status == 200 && $openai_active == 1 && $openai_ready == 1 \
       && $openai_current == 1 && $openai_enabled == 1 ]] || return 1
+  if (( gemini_supported == 1 )); then
+    [[ $gemini_stable_status == 200 && $gemini_active == 1 && $gemini_ready == 1 \
+        && $gemini_current == 1 && $gemini_enabled == 1 ]] || return 1
+  else
+    (( gemini_active == 0 && gemini_enabled == 0 )) || return 1
+  fi
   wd_engine_topology_is_steady \
     "$active_8787" "$ready_8787" "$current_8787" "$enabled_8787" \
     "$active_8788" "$ready_8788" "$current_8788" "$enabled_8788" \
@@ -1456,7 +1484,7 @@ final_verify_monitoring() {
   # and Caddy may still be completing first-certificate activation for the new protected hostname.
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
     response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
-      --data-urlencode 'query=min(up) == 1 and min(probe_success{job=~"public-http|openai-http|protected-http|support-http|loopback-http"}) == 1 and min(time() - apitoken_monitoring_collector_last_success_unixtime) < 180' \
+      --data-urlencode 'query=min(up) == 1 and min(probe_success{job=~"public-http|openai-http|gemini-http|protected-http|support-http|loopback-http"}) == 1 and min(time() - apitoken_monitoring_collector_last_success_unixtime) < 180' \
       http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
     if jq --exit-status '.status == "success" and (.data.result | length) > 0' \
       >/dev/null 2>&1 <<<"$response"; then
@@ -1544,6 +1572,61 @@ final_verify_codex_surface() {
   wd_log "Codex OpenAI-compatible surface verified (enabled=$enabled)"
 }
 
+# Post-promotion smoke for the separate native Gemini service. It proves three independent facts:
+# Prometheus scrapes the Gemini process and the public hostname reaches the native router. Enabled
+# mode additionally requires one authenticated paid project; disabled mode is the provider-only
+# kill switch and must keep a stable native 404 envelope instead of crashing the service.
+final_verify_gemini_surface() {
+  local response envelope enabled=0 determined=0 enabled_state='' attempt
+  for attempt in 1 2 3 4 5 6; do
+    response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
+      --data-urlencode 'query=claude_api_gemini_enabled{provider="gemini"}' \
+      http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
+    enabled_state=$(jq --exit-status --raw-output \
+      'select(.status == "success" and (.data.result | length) == 1)
+       | .data.result[0].value[1]
+       | select(. == "0" or . == "1")' <<<"$response" 2>/dev/null || true)
+    case "$enabled_state" in
+      0) determined=1; break ;;
+      1) enabled=1; determined=1; break ;;
+    esac
+    (( attempt == 6 )) || sleep 5
+  done
+  (( determined == 1 )) || wd_die "could not determine whether the Gemini provider is enabled"
+
+  if (( enabled == 1 )); then
+    local provider_ready=0
+    for attempt in 1 2 3 4 5 6; do
+      response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
+        --data-urlencode 'query=claude_api_gemini_profiles_authenticated{provider="gemini"} >= 1' \
+        http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
+      if jq --exit-status '.status == "success" and (.data.result | length) > 0' \
+        >/dev/null 2>&1 <<<"$response"; then
+        provider_ready=1
+        break
+      fi
+      (( attempt == 6 )) || sleep 5
+    done
+    (( provider_ready == 1 )) || wd_die "Gemini provider is enabled but has no authenticated paid project"
+  fi
+
+  envelope=$(curl --noproxy '*' --silent --show-error --max-time 5 \
+    --resolve gemini.api.apitoken.sale:443:127.0.0.1 \
+    -H 'content-type: application/json' -d '{}' \
+    'https://gemini.api.apitoken.sale/v1beta/models/gemini-provider-probe:generateContent' \
+    2>/dev/null || true)
+  if (( enabled == 1 )); then
+    jq --exit-status '.error.status == "UNAUTHENTICATED" and .error.code == 401' \
+      >/dev/null 2>&1 <<<"$envelope" \
+      || wd_die "enabled public Gemini hostname did not answer with the native provider envelope"
+  else
+    jq --exit-status '.error.status == "NOT_FOUND" and .error.code == 404' \
+      >/dev/null 2>&1 <<<"$envelope" \
+      || wd_die "disabled public Gemini hostname did not answer with the native provider envelope"
+  fi
+  wd_log "native Gemini project-pool surface verified (enabled=$enabled)"
+}
+
 run_final_verification_lane() {
   # Verification workers are read-only and independent. The parent joins every selected check and
   # owns quarantine/overall status so one fast failure never abandons another in-flight probe.
@@ -1553,8 +1636,8 @@ run_final_verification_lane() {
 
 run_final_verification_plan() {
   local verification_plan=$1 engine_sha=$2
-  local panel_pid='' routing_pid='' monitoring_pid='' codex_pid=''
-  local panel_rc=0 routing_rc=0 monitoring_rc=0 codex_rc=0
+  local panel_pid='' routing_pid='' monitoring_pid='' codex_pid='' gemini_pid=''
+  local panel_rc=0 routing_rc=0 monitoring_rc=0 codex_rc=0 gemini_rc=0
 
   if [[ $verification_plan == none ]]; then
     wd_log "no serving runtime changed; final component smokes are already satisfied"
@@ -1582,13 +1665,18 @@ run_final_verification_plan() {
     run_final_verification_lane final_verify_codex_surface &
     codex_pid=$!
   fi
+  if wd_verification_plan_has "$verification_plan" gemini; then
+    run_final_verification_lane final_verify_gemini_surface &
+    gemini_pid=$!
+  fi
 
   if [[ -n $panel_pid ]]; then wait "$panel_pid" || panel_rc=$?; fi
   if [[ -n $routing_pid ]]; then wait "$routing_pid" || routing_rc=$?; fi
   if [[ -n $monitoring_pid ]]; then wait "$monitoring_pid" || monitoring_rc=$?; fi
   if [[ -n $codex_pid ]]; then wait "$codex_pid" || codex_rc=$?; fi
-  (( panel_rc == 0 && routing_rc == 0 && monitoring_rc == 0 && codex_rc == 0 )) \
-    || wd_die "final verification lanes failed (panel=$panel_rc routing=$routing_rc monitoring=$monitoring_rc codex=$codex_rc)"
+  if [[ -n $gemini_pid ]]; then wait "$gemini_pid" || gemini_rc=$?; fi
+  (( panel_rc == 0 && routing_rc == 0 && monitoring_rc == 0 && codex_rc == 0 && gemini_rc == 0 )) \
+    || wd_die "final verification lanes failed (panel=$panel_rc routing=$routing_rc monitoring=$monitoring_rc codex=$codex_rc gemini=$gemini_rc)"
 }
 
 # Post-admission recovery. Before admission the blue-green controllers already fail closed and

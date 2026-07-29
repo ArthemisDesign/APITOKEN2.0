@@ -153,6 +153,11 @@ require_permitted 'OpenAI provider stop' /usr/bin/systemctl stop claude-api-open
 require_permitted 'OpenAI provider enable' /usr/bin/systemctl enable claude-api-openai.service
 require_permitted 'OpenAI provider drain signal' \
   /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-openai.service
+require_permitted 'Gemini provider restart' /usr/bin/systemctl restart claude-api-gemini.service
+require_permitted 'Gemini provider stop' /usr/bin/systemctl stop claude-api-gemini.service
+require_permitted 'Gemini provider enable' /usr/bin/systemctl enable claude-api-gemini.service
+require_permitted 'Gemini provider drain signal' \
+  /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-gemini.service
 require_permitted 'commerce slot start' /usr/bin/systemctl start apitoken-api@3000.service
 require_permitted 'worker restart' /usr/bin/systemctl restart apitoken-worker.service
 require_permitted 'content studio restart' /usr/bin/systemctl restart apitoken-content-studio.service
@@ -178,6 +183,7 @@ require_permitted 'engine release removal' /usr/bin/rm -rf --one-file-system -- 
 require_permitted 'commerce release removal' /usr/bin/rm -rf --one-file-system -- "/opt/apitoken/releases/$sample_sha"
 require_permitted 'caddy validation' /usr/bin/caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile
 require_permitted 'OpenAI unit probe' /usr/bin/test -f /etc/systemd/system/claude-api-openai.service
+require_permitted 'Gemini unit probe' /usr/bin/test -f /etc/systemd/system/claude-api-gemini.service
 require_permitted 'Anthropic unit probe' \
   /usr/bin/test -f /etc/systemd/system/claude-api-anthropic@.service
 # Operator tooling must keep working: `apitoken-watchdog status|run|retry|logs`.

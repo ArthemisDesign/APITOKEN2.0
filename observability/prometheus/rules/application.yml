@@ -145,6 +145,52 @@ groups:
           description: 'The home stops being admitted at the configured headroom; remaining pool capacity should be checked before it is reached.'
           runbook: 'MONITORING.md#codexhomenearratelimit'
 
+  - name: gemini-provider
+    rules:
+      - alert: GeminiProviderDown
+        expr: claude_api_gemini_enabled{provider="gemini"} == 1 and claude_api_gemini_profiles_authenticated{provider="gemini"} < 1
+        for: 5m
+        labels:
+          severity: critical
+          component: gemini-provider
+        annotations:
+          summary: 'Gemini provider has no authenticated paid project'
+          description: 'Every configured Gemini credential failed health validation; the native API surface cannot serve generations.'
+          runbook: 'MONITORING.md#geminiproviderdown'
+
+      - alert: GeminiNoAvailableProfiles
+        expr: claude_api_gemini_enabled{provider="gemini"} == 1 and claude_api_gemini_profiles_available{provider="gemini"} < 1
+        for: 5m
+        labels:
+          severity: critical
+          component: gemini-provider
+        annotations:
+          summary: 'Every Gemini project is cooling or exhausted'
+          description: 'The Gemini pool has no project that can accept a request; clients receive a native retryable 429.'
+          runbook: 'MONITORING.md#gemininoavailableprofiles'
+
+      - alert: GeminiProfileUnauthenticated
+        expr: claude_api_gemini_profile_authenticated{provider="gemini"} == 0
+        for: 15m
+        labels:
+          severity: warning
+          component: gemini-provider
+        annotations:
+          summary: 'Gemini profile {{ $labels.profile }} is unauthenticated'
+          description: 'The paid API credential no longer validates. Replace its key file and restart or wait for the health probe after repair.'
+          runbook: 'MONITORING.md#geminiprofileunauthenticated'
+
+      - alert: GeminiUpstreamRateLimited
+        expr: increase(claude_api_upstream_429_total{provider="gemini"}[10m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: gemini-provider
+        annotations:
+          summary: 'Gemini project rate limiting is elevated'
+          description: 'More than ten project-scoped RESOURCE_EXHAUSTED responses were observed in ten minutes.'
+          runbook: 'MONITORING.md#geminiupstreamratelimited'
+
   - name: durable-business-state
     rules:
       - alert: DurableQueueBacklog

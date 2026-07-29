@@ -5,6 +5,7 @@ use crate::billing::AsyncBilling;
 use crate::breaker::Breaker;
 use crate::codex::CodexGateway;
 use crate::config::ProxyConfig;
+use crate::gemini::GeminiGateway;
 use crate::keylimiter::KeyLimiter;
 use crate::metrics::Metrics;
 use crate::upstream::Clients;
@@ -19,6 +20,7 @@ pub enum ProviderMode {
     Combined,
     Anthropic,
     OpenAi,
+    Gemini,
 }
 
 impl ProviderMode {
@@ -30,11 +32,16 @@ impl ProviderMode {
         matches!(self, Self::Combined | Self::OpenAi)
     }
 
+    pub fn serves_gemini(self) -> bool {
+        matches!(self, Self::Gemini)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Combined => "combined",
             Self::Anthropic => "anthropic",
             Self::OpenAi => "openai",
+            Self::Gemini => "gemini",
         }
     }
 }
@@ -55,6 +62,8 @@ pub struct AppState {
     /// Optional OpenAI-compatible text provider backed by an official Codex app-server child.
     /// It owns no OAuth material; the child reads the dedicated authenticated `CODEX_HOME`.
     pub codex: Option<Arc<CodexGateway>>,
+    /// Optional native Gemini Developer API provider backed by paid Google projects.
+    pub gemini: Option<Arc<GeminiGateway>>,
     /// Биллинг клиентов (async DB-актор — синхронный SQLite не блокирует воркеры).
     /// `None` → биллинг выключен (только env-ключи/localhost).
     pub billing: Option<Arc<AsyncBilling>>,

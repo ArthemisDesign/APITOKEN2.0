@@ -152,7 +152,18 @@ pub async fn codex_health_loop(gateway: Arc<forward::CodexGateway>) {
     }
 }
 
-pub async fn metrics_loop(app: AppState, metrics_db: String, retention_days: i64) {    const SNAP_SECS: u64 = 60;
+/// Periodically validates every paid Gemini project so an expired/disabled key is quarantined
+/// before customer traffic needs that profile, and a repaired credential rejoins automatically.
+pub async fn gemini_health_loop(gateway: Arc<forward::GeminiGateway>) {
+    let interval = Duration::from_secs(gateway.config().health_probe_interval_secs.max(30));
+    loop {
+        tokio::time::sleep(interval).await;
+        gateway.probe_health().await;
+    }
+}
+
+pub async fn metrics_loop(app: AppState, metrics_db: String, retention_days: i64) {
+    const SNAP_SECS: u64 = 60;
     let mut ticks: u64 = 0;
     loop {
         let snap = match crate::http::overview_value(&app).await {

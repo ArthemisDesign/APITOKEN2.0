@@ -13,8 +13,8 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use forward::{
-    authed, client_key, control_authed, forward, openai_chat_completions, openai_delete_response,
-    openai_get_response, openai_input_tokens, openai_model, openai_models,
+    authed, client_key, control_authed, forward, gemini_api, openai_chat_completions,
+    openai_delete_response, openai_get_response, openai_input_tokens, openai_model, openai_models,
     openai_response_input_items, openai_responses, readonly_authed, AppState, Metrics,
     TerminalErrorReason,
 };
@@ -262,6 +262,9 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .route("/v1/models/{model_id}", get(openai_model))
             .fallback(fixed_openai_not_found)
             .method_not_allowed_fallback(fixed_openai_not_found),
+        forward::ProviderMode::Gemini => common
+            .fallback(gemini_api)
+            .method_not_allowed_fallback(gemini_api),
     };
     router
         .with_state(state.clone())
@@ -852,6 +855,52 @@ async fn metrics(
                 u8::from(all_calibrated),
             );
         }
+    }
+    let _ = writeln!(
+        body,
+        "# TYPE claude_api_gemini_enabled gauge\nclaude_api_gemini_enabled {}",
+        u8::from(app.gemini.is_some())
+    );
+    if let Some(gemini) = &app.gemini {
+        let status = gemini.operational_status().await;
+        let _ = writeln!(
+            body,
+            "# TYPE claude_api_gemini_profiles gauge\nclaude_api_gemini_profiles {}\n\
+             # TYPE claude_api_gemini_profiles_available gauge\nclaude_api_gemini_profiles_available {}\n\
+             # TYPE claude_api_gemini_profiles_authenticated gauge\nclaude_api_gemini_profiles_authenticated {}\n\
+             # TYPE claude_api_gemini_profile_authenticated gauge\n\
+             # TYPE claude_api_gemini_profile_cooling_until_seconds gauge\n\
+             # TYPE claude_api_gemini_profile_inflight_requests gauge",
+            status.profiles.len(),
+            status.available,
+            status.authenticated,
+        );
+        if let Some(ready_at) = status.soonest_ready {
+            let _ = writeln!(
+                body,
+                "# TYPE claude_api_gemini_soonest_ready_seconds gauge\n\
+                 claude_api_gemini_soonest_ready_seconds {ready_at}"
+            );
+        }
+        for profile in status.profiles {
+            let id = profile.id;
+            let _ = writeln!(
+                body,
+                "claude_api_gemini_profile_authenticated{{profile=\"{id}\"}} {}\n\
+                 claude_api_gemini_profile_cooling_until_seconds{{profile=\"{id}\"}} {}\n\
+                 claude_api_gemini_profile_inflight_requests{{profile=\"{id}\"}} {}",
+                u8::from(profile.authenticated),
+                profile.cooling_until,
+                profile.inflight,
+            );
+        }
+    } else {
+        let _ = writeln!(
+            body,
+            "# TYPE claude_api_gemini_profiles gauge\nclaude_api_gemini_profiles 0\n\
+             # TYPE claude_api_gemini_profiles_available gauge\nclaude_api_gemini_profiles_available 0\n\
+             # TYPE claude_api_gemini_profiles_authenticated gauge\nclaude_api_gemini_profiles_authenticated 0"
+        );
     }
     (
         [(
@@ -1550,7 +1599,7 @@ async fn pool_status(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
+    use axum::body::{to_bytes, Body};
     use tower::ServiceExt;
 
     fn admin_auth_test_app() -> AppState {
@@ -1578,6 +1627,7 @@ mod tests {
             affinity: Arc::new(forward::AffinityStore::new(None, None, 3_600, 300, 35).unwrap()),
             clients,
             codex: None,
+            gemini: None,
             billing: None,
             authority_ready: Arc::new(AtomicBool::new(true)),
             breaker: Arc::new(forward::Breaker::new(0)),
@@ -1763,6 +1813,27 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(openai.status(), StatusCode::NOT_FOUND);
+
+        let mut gemini_request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1beta/models/gemini-2.5-flash:generateContent")
+            .header("x-api-key", "admin-key")
+            .header(API_PLANE_HEADER, "openai")
+            .body(Body::from(r#"{"contents":[]}"#))
+            .unwrap();
+        gemini_request.extensions_mut().insert(peer);
+        let gemini = router(
+            provider_test_app(forward::ProviderMode::Gemini),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .oneshot(gemini_request)
+        .await
+        .unwrap();
+        assert_eq!(gemini.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(gemini.into_body(), 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], 404);
+        assert_eq!(body["error"]["status"], "NOT_FOUND");
     }
 
     #[test]

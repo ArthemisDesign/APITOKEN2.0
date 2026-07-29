@@ -45,6 +45,9 @@
   не знает типов `pool`) + `save_pool_state`/`load_pool_state`. Хранит durable-состояние (cooling/
   калибровка/spent/util/reset) для переживания рестарта. Логику решает `pool` (export/import), registry
   лишь пишет/читает готовые строки. No Redis/Redlock participates in correctness.
+- Provider attribution — стабильная registry-константа: Anthropic/Codex сохраняют существующие
+  значения, native Gemini usage пишет `PROVIDER_GOOGLE = "google"`. Нельзя подменять provider доменом,
+  profile/project ID или клиентским значением; Google project IDs в registry не хранятся.
 
 **Инварианты:**
 - Токен разрешается из колонки `token` (inline) ИЛИ файла `token_file`. `import_sqlite` refuses a

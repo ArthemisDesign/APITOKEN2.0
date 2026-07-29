@@ -1,7 +1,10 @@
 //! Композиционный конфиг: читает ВСЁ окружение и собирает настройки сервера +
 //! [`forward::ProxyConfig`]. Единственное место в проекте, где читается env.
 
-use forward::{CodexConfig, CodexModel, ProviderMode, ProxyConfig, CLAUDE_CODE_IDENTITY};
+use forward::{
+    CodexConfig, CodexModel, GeminiConfig, GeminiModel, ProviderMode, ProxyConfig,
+    CLAUDE_CODE_IDENTITY,
+};
 use std::{collections::BTreeMap, env, net::IpAddr};
 
 pub struct Settings {
@@ -31,6 +34,8 @@ pub struct Settings {
     /// Optional second provider. Disabled by default; enabling it requires a pinned binary and a
     /// dedicated ChatGPT-authenticated CODEX_HOME.
     pub codex: Option<CodexConfig>,
+    /// Native Gemini provider. It is instantiated only by the startup-fixed Gemini service.
+    pub gemini: Option<GeminiConfig>,
     pub proxy: ProxyConfig,
 }
 
@@ -54,12 +59,18 @@ fn ev_opt_in(k: &str) -> bool {
 }
 
 fn parse_provider_mode(value: Option<&str>) -> Result<ProviderMode, String> {
-    match value.unwrap_or("combined").trim().to_ascii_lowercase().as_str() {
+    match value
+        .unwrap_or("combined")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "combined" => Ok(ProviderMode::Combined),
         "anthropic" => Ok(ProviderMode::Anthropic),
         "openai" => Ok(ProviderMode::OpenAi),
+        "gemini" => Ok(ProviderMode::Gemini),
         other => Err(format!(
-            "CLAUDE_API_PROVIDER={other:?}: expected combined, anthropic, or openai"
+            "CLAUDE_API_PROVIDER={other:?}: expected combined, anthropic, openai, or gemini"
         )),
     }
 }
@@ -168,6 +179,133 @@ fn ev_upstream() -> String {
     .unwrap_or_else(|msg| panic!("{msg}"))
 }
 
+fn validate_gemini_upstream(v: &str, allow_insecure_loopback: bool) -> Result<String, String> {
+    let uri = v
+        .parse::<axum::http::Uri>()
+        .map_err(|_| "CLAUDE_API_GEMINI_UPSTREAM: expected an absolute URL".to_string())?;
+    let scheme = uri
+        .scheme_str()
+        .ok_or_else(|| "CLAUDE_API_GEMINI_UPSTREAM: URL must contain a scheme".to_string())?;
+    let authority = uri
+        .authority()
+        .ok_or_else(|| "CLAUDE_API_GEMINI_UPSTREAM: URL must contain a host".to_string())?;
+    if authority.as_str().contains('@')
+        || v.contains('#')
+        || uri.query().is_some()
+        || !matches!(uri.path(), "" | "/")
+    {
+        return Err(
+            "CLAUDE_API_GEMINI_UPSTREAM: userinfo, path, query and fragment are forbidden"
+                .to_string(),
+        );
+    }
+    if scheme.eq_ignore_ascii_case("https")
+        && authority
+            .as_str()
+            .eq_ignore_ascii_case("generativelanguage.googleapis.com")
+    {
+        return Ok("https://generativelanguage.googleapis.com".to_string());
+    }
+    let host = authority.host();
+    let literal = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    let loopback = literal
+        .parse::<IpAddr>()
+        .is_ok_and(|address| address.is_loopback());
+    if allow_insecure_loopback && scheme.eq_ignore_ascii_case("http") && loopback {
+        return Ok(v.trim_end_matches('/').to_string());
+    }
+    Err("CLAUDE_API_GEMINI_UPSTREAM: only https://generativelanguage.googleapis.com is allowed; literal HTTP loopback requires CLAUDE_API_GEMINI_ALLOW_INSECURE_LOOPBACK_UPSTREAM=1".to_string())
+}
+
+fn gemini_config() -> Option<GeminiConfig> {
+    if !ev_bool("CLAUDE_API_GEMINI_ENABLED", false) {
+        return None;
+    }
+    let requested = ev_or(
+        "CLAUDE_API_GEMINI_MODELS",
+        "gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-flash-lite,gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite",
+    )
+    .split(',')
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(str::to_string)
+    .collect::<Vec<_>>();
+    let catalog = metering::gemini_catalog_at(pool::now());
+    let mut models = Vec::with_capacity(requested.len());
+    for requested in requested {
+        let Some(spec) = catalog.iter().find(|spec| spec.id == requested) else {
+            panic!(
+                "CLAUDE_API_GEMINI_MODELS contains unsupported model {requested:?}; use a model from the pinned Gemini price catalog"
+            );
+        };
+        if models.iter().any(|model: &GeminiModel| model.id == spec.id) {
+            continue;
+        }
+        models.push(GeminiModel {
+            id: spec.id.to_string(),
+            display_name: spec.display_name.to_string(),
+            input_token_limit: spec.input_token_limit,
+            output_token_limit: spec.output_token_limit,
+            prices: spec.prices,
+        });
+    }
+    if models.is_empty() {
+        panic!("CLAUDE_API_GEMINI_MODELS must contain at least one model");
+    }
+    let profiles_file = ev_or(
+        "CLAUDE_API_GEMINI_PROFILES_FILE",
+        "/srv/claude-api/data/gemini/profiles.json",
+    );
+    if !std::path::Path::new(&profiles_file).is_absolute() {
+        panic!("CLAUDE_API_GEMINI_PROFILES_FILE must be an absolute path");
+    }
+    let upstream = validate_gemini_upstream(
+        &ev_or(
+            "CLAUDE_API_GEMINI_UPSTREAM",
+            "https://generativelanguage.googleapis.com",
+        ),
+        ev_opt_in("CLAUDE_API_GEMINI_ALLOW_INSECURE_LOOPBACK_UPSTREAM"),
+    )
+    .unwrap_or_else(|message| panic!("{message}"));
+    Some(GeminiConfig {
+        enabled: true,
+        upstream,
+        profiles_file,
+        models,
+        connect_timeout_secs: bounded_u64("CLAUDE_API_GEMINI_CONNECT_TIMEOUT_SECS", 30, 1, 120),
+        read_timeout_secs: bounded_u64("CLAUDE_API_GEMINI_READ_TIMEOUT_SECS", 120, 15, 600),
+        max_transport_retries: bounded_usize("CLAUDE_API_GEMINI_MAX_TRANSPORT_RETRIES", 1, 0, 5),
+        auth_quarantine_secs: bounded_i64(
+            "CLAUDE_API_GEMINI_AUTH_QUARANTINE_SECS",
+            900,
+            60,
+            86_400,
+        ),
+        transport_cool_secs: bounded_i64("CLAUDE_API_GEMINI_TRANSPORT_COOL_SECS", 5, 1, 300),
+        default_rate_limit_cool_secs: bounded_i64(
+            "CLAUDE_API_GEMINI_RATE_LIMIT_COOL_SECS",
+            60,
+            1,
+            86_400,
+        ),
+        health_probe_interval_secs: bounded_u64(
+            "CLAUDE_API_GEMINI_HEALTH_INTERVAL_SECS",
+            300,
+            30,
+            3_600,
+        ),
+        reserve_overhead_tokens: bounded_u64(
+            "CLAUDE_API_GEMINI_RESERVE_OVERHEAD_TOKENS",
+            8_192,
+            0,
+            262_144,
+        ),
+    })
+}
+
 /// Advertised OpenAI-compatible models, resolved from the audited catalog in `metering`.
 ///
 /// The composition layer only chooses which pinned ids are enabled; it never declares a rate. A
@@ -205,7 +343,11 @@ fn codex_homes() -> Vec<String> {
         .or_else(|| ev("CLAUDE_API_CODEX_HOME"))
         .unwrap_or_else(|| "/srv/claude-api/data/codex/home".to_string());
     let mut homes: Vec<String> = Vec::new();
-    for home in configured.split(',').map(str::trim).filter(|v| !v.is_empty()) {
+    for home in configured
+        .split(',')
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
         if homes.iter().any(|existing| existing == home) {
             panic!("CLAUDE_API_CODEX_HOMES lists {home:?} more than once; every home needs its own authentication store");
         }
@@ -312,7 +454,12 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
         request_timeout_ms: bounded_u64("CLAUDE_API_CODEX_RPC_TIMEOUT_MS", 15_000, 500, 120_000),
         turn_timeout_ms: bounded_u64("CLAUDE_API_CODEX_TURN_TIMEOUT_MS", 600_000, 5_000, 600_000),
         max_concurrent_turns: bounded_usize("CLAUDE_API_CODEX_MAX_CONCURRENT", 4, 1, 64),
-        admit_below_used_percent: bounded_i64("CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT", 95, 1, 100),
+        admit_below_used_percent: bounded_i64(
+            "CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT",
+            95,
+            1,
+            100,
+        ),
         window_cap_usd_prior: bounded_f64(
             "CLAUDE_API_CODEX_WINDOW_CAP_USD",
             1_500.0,
@@ -457,6 +604,11 @@ impl Settings {
         } else {
             None
         };
+        let gemini = if provider.serves_gemini() {
+            gemini_config()
+        } else {
+            None
+        };
         Settings {
             provider,
             db_path,
@@ -503,6 +655,7 @@ impl Settings {
                 500,
             ),
             codex,
+            gemini,
             proxy: ProxyConfig {
                 api_keys,
                 control_keys,
@@ -609,6 +762,10 @@ mod tests {
             parse_provider_mode(Some(" OPENAI ")),
             Ok(ProviderMode::OpenAi)
         );
+        assert_eq!(
+            parse_provider_mode(Some(" GEMINI ")),
+            Ok(ProviderMode::Gemini)
+        );
         assert!(parse_provider_mode(Some("both")).is_err());
         assert!(parse_provider_mode(Some("codex")).is_err());
     }
@@ -654,5 +811,16 @@ mod tests {
         assert!(validate_upstream("https://api.anthropic.com/v1", false).is_err());
         assert!(validate_upstream("https://user@api.anthropic.com", false).is_err());
         assert!(validate_upstream("http://localhost:18080", true).is_err());
+
+        assert_eq!(
+            validate_gemini_upstream("https://generativelanguage.googleapis.com/", false),
+            Ok("https://generativelanguage.googleapis.com".to_string()),
+        );
+        assert_eq!(
+            validate_gemini_upstream("http://127.0.0.1:18081", true),
+            Ok("http://127.0.0.1:18081".to_string()),
+        );
+        assert!(validate_gemini_upstream("http://127.0.0.1:18081", false).is_err());
+        assert!(validate_gemini_upstream("https://example.com", true).is_err());
     }
 }

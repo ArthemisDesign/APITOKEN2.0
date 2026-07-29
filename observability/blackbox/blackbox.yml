@@ -16,7 +16,8 @@ modules:
       method: GET
       preferred_ip_protocol: ip4
       follow_redirects: false
-      valid_status_codes: [401]
+      # Enabled Gemini authenticates first; its provider-only kill switch preserves a native 404.
+      valid_status_codes: [401, 404]
 
   http_support:
     prober: http
@@ -43,3 +44,19 @@ modules:
       fail_if_body_not_matches_regexp:
         - '"type"[[:space:]]*:[[:space:]]*"invalid_request_error"'
         - '"code"[[:space:]]*:[[:space:]]*"(invalid_api_key|model_not_found)"'
+
+  http_gemini_surface:
+    prober: http
+    timeout: 8s
+    http:
+      method: POST
+      preferred_ip_protocol: ip4
+      follow_redirects: false
+      # Enabled fixed-provider mode authenticates before model lookup; the provider-only kill
+      # switch deliberately keeps the same native router up with a closed NOT_FOUND envelope.
+      valid_status_codes: [401, 404]
+      headers:
+        Content-Type: application/json
+      body: '{}'
+      fail_if_body_not_matches_regexp:
+        - '"code"[[:space:]]*:[[:space:]]*(401[^}]*"status"[[:space:]]*:[[:space:]]*"UNAUTHENTICATED"|404[^}]*"status"[[:space:]]*:[[:space:]]*"NOT_FOUND")'

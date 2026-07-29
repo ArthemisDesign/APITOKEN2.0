@@ -13,8 +13,8 @@ database state only. Grafana users are auto-provisioned as viewers.
 
 - Host: CPU, memory, disk, inodes, clock, processes, systemd units, timers, and restart loops.
 - Ingress: Caddy per-host request metrics plus TLS and HTTP synthetic probes.
-- Engine: request totals, upstream 429/auth/5xx failures, breaker state, in-flight work, subscription
-  pool size, cooling subscriptions, settlement backlog, and expired leases.
+- Engine: request totals, upstream 429/auth/5xx failures, breaker state, in-flight work, Claude/Codex/
+  Gemini pool health, settlement backlog, and expired leases.
 - Commerce: database health plus credit, adjustment, pricing, email, webhook, and checkout state.
 - Sales: API/web health, email queue, referral reconciliation buffer, and payout-batch failures.
 - CRM, Content Studio, public web, support, and mail: process/systemd health, HTTP probes, and logs.
@@ -38,6 +38,7 @@ database state only. Grafana users are auto-provisioned as viewers.
 
   ```bash
   journalctl -u 'claude-api-anthropic@*.service' -u claude-api-openai.service \
+    -u claude-api-gemini.service \
     --since today --grep='"event":"customer_http_error"'
   ```
 
@@ -271,6 +272,44 @@ The home stops being admitted at `CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT` (95
 is expected behaviour rather than a fault. Confirm the remaining homes can absorb the load before the
 window is reached; if they cannot, the pool needs another authenticated home rather than a lower
 headroom.
+
+## GeminiProviderDown
+
+Only `gemini.api.apitoken.sale` is affected; do not restart healthy Claude or OpenAI processes.
+Check `claude-api-gemini.service`, direct readiness on 8795, stable readiness on 8794, and the unit
+journal. Verify that `CLAUDE_API_GEMINI_ENABLED=1`, the profiles document is readable, every API-key
+path is absolute/non-symlink/mode 0600, and at least one distinct project still has Gemini Developer
+API billing and access enabled. Never print a key while testing it. Provision repairs according to
+`docs/GEMINI_PROVIDER.md` and use the health-gated engine controller to restart the service.
+
+If the surface must be withdrawn during investigation, set `CLAUDE_API_GEMINI_ENABLED=0` and use the
+normal provider rollout. The fixed service remains observable with a native 404 but loads no project.
+A manual stop is only an immediate temporary action because watchdog reconciliation restores the
+configured topology. Neither action should change an established provider.
+
+## GeminiNoAvailableProfiles
+
+Every paid project is cooling. Inspect `claude_api_gemini_profile_cooling_until_seconds` and
+`claude_api_gemini_soonest_ready_seconds`, then correlate upstream `429`, auth, and 5xx counters.
+Respect `Retry-After`/`google.rpc.RetryInfo`; bypassing cooling amplifies the outage. If capacity is
+genuinely exhausted, wait for the project quota window or add a billing-enabled key from a new Google
+project. Another key from an existing project is not new capacity and is rejected at startup.
+
+## GeminiProfileUnauthenticated
+
+The labeled profile returned `401` or `403`. Check that project/API-key status and billing without
+putting the secret in argv, logs, or a URL. Replace only its root/operator-provisioned 0600 key file,
+then roll `claude-api-gemini.service` through the normal provider controller. Do not copy Gemini CLI
+OAuth or a consumer subscription credential into the profile; this gateway supports paid Developer
+API keys only.
+
+## GeminiUpstreamRateLimited
+
+Use the per-profile cooling gauges and Google project quota console to identify the constrained quota
+domain. Confirm the profiles file contains distinct normalized project IDs, then wait for the
+advertised reset or add a separate paid project. Do not shorten cooling or multiply API keys inside
+one project. A sustained increase without exhausted profiles can indicate one under-provisioned
+project receiving disproportionate load; compare profile in-flight gauges before changing capacity.
 
 ## DurableQueueBacklog
 

@@ -5,8 +5,8 @@ request reservations, settlement retry state, subscription capacity, pool state,
 leadership from the single-process SQLite model into the isolated PostgreSQL database
 `claude_engine`. The retained SQLite file is an import-era audit snapshot, not a live fallback.
 
-This enables two Anthropic processes to overlap during a blue-green reload and a permanent OpenAI
-provider process to hold an independent owner epoch at the same time. It does **not** make the single
+This enables two Anthropic processes to overlap during a blue-green reload while permanent OpenAI
+and Gemini provider processes each hold an independent owner epoch. It does **not** make the single
 production host highly available; host-loss tolerance remains Stage 3 work.
 
 ## Ownership boundary
@@ -79,16 +79,17 @@ Anthropic slots are `claude-api-anthropic@8787.service` and `claude-api-anthropi
 mode `anthropic`. `SIGUSR1` changes `/ready` to 503 immediately while leaving `/health`, the listener,
 and established SSE streams alive. After Caddy depools old, `SIGTERM` begins the bounded graceful
 drain. The OpenAI-compatible provider is the singleton `claude-api-openai.service`, pinned to mode
-`openai` on 8793; Caddy exposes its stable loopback origin on 8792.
+`openai` on 8793; Caddy exposes its stable loopback origin on 8792. Native Gemini is the separate
+singleton `claude-api-gemini.service`, pinned to mode `gemini` on 8795 with stable origin 8794.
 
 Public Anthropic traffic and the operator panel use the health-gated slots. Commerce uses
 `127.0.0.1:8790`, an explicitly loopback-bound Caddy listener, so slot alternation cannot break
-API/worker Control calls. OpenAI traffic never traverses that listener; it uses 8792. The provider
-controller requires 8790 before, during, and after Anthropic drain, then exact-release gates the
-OpenAI singleton and requires 8792 before committing the cohort.
+API/worker Control calls. OpenAI and Gemini traffic never traverse that listener; they use 8792 and
+8794 respectively. The provider controller requires 8790 before, during, and after Anthropic drain,
+then exact-release gates both singletons and their stable origins before committing the cohort.
 
 Every process uses a distinct `CLAUDE_API_INSTANCE_ID`. PostgreSQL remains authoritative for shared
-customer balances, request reservations, settlement and fencing across both providers. Codex adds a
+customer balances, request reservations, settlement and fencing across all provider processes. Codex adds a
 host-local invariant: the OpenAI process takes `/run/apitoken/codex-home.lock` before discovering any
 home and holds that single process-wide fence across every child restart.
 

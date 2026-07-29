@@ -1,0 +1,35 @@
+# PostgreSQL-fenced native Gemini provider. Profiles are paid API credentials from distinct Google
+# projects; the runtime rotates them independently from the Claude and OpenAI provider services.
+[Unit]
+Description=claude-api native Gemini project-pool provider
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+Environment=SUB_CFG_DIR=/srv/claude-api/data
+EnvironmentFile=-/srv/claude-api/data/config.env
+EnvironmentFile=-/srv/claude-api/data/server.env
+EnvironmentFile=/srv/claude-api/data/engine-postgres.env
+# Argv-level assignments cannot be overridden by a shared EnvironmentFile.
+ExecStart=/usr/bin/env CLAUDE_API_PROVIDER=gemini CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8795 CLAUDE_API_INSTANCE_ID=%H:engine:gemini /srv/claude-api/releases/current/claude-api serve
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=660
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/srv/claude-api/data
+# Profiles and API-key files are provisioned by the operator, never mutated by the gateway.
+# Disabled mode must still start before any profile directory is provisioned; `-` makes absence
+# optional while preserving a read-only bind whenever the paid-project directory exists.
+ReadOnlyPaths=-/srv/claude-api/data/gemini
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

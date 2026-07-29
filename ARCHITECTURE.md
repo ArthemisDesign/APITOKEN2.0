@@ -30,8 +30,8 @@
 └───────────────┬────────────────────────────────────────────┘
                 ▼
 ┌────────────────────────────────────────────────────────────┐
-│ forward  — Claude forwarding + optional Codex adapter       │
-│   AffinityStore · Clients · poll_sub · codex app-server     │
+│ forward  — Claude + Codex adapter + native Gemini gateway   │
+│   AffinityStore · Clients · codex app-server · Gemini pool  │
 └───────────────┬────────────────────────────────────────────┘
                 ▼
 ┌────────────────────────────────────────────────────────────┐
@@ -68,9 +68,12 @@ flows атомарно публикует как отдельные `CODEX_HOME`
   OpenAI model-discovery на `openai.api.apitoken.sale` проходят через pinned official
   `codex app-server`; это совместимый текстовый subset, а не прозрачный OpenAI Platform forwarding.
   `api.apitoken.sale` остаётся исключительно Claude-плоскостью: auth-заголовки провайдера не
-  выбирают. Anthropic работает в blue-green `claude-api-anthropic@8787/8788`, OpenAI — в отдельном singleton
-  `claude-api-openai.service`; оба используют один fenced PostgreSQL authority, но не общий HTTP
-  процесс, router или lifecycle. Патч удаляет локальные Codex instructions/tools/context, оставляя только явный
+  выбирают. Anthropic работает в blue-green `claude-api-anthropic@8787/8788`, OpenAI — в отдельном
+  singleton `claude-api-openai.service`, а native Gemini — в `claude-api-gemini.service` через
+  `gemini.api.apitoken.sale`. Все используют один fenced PostgreSQL billing authority, но не общий
+  HTTP process, router, credential pool или health state. Gemini profiles — paid Developer API keys
+  из разных Google projects; Gemini CLI OAuth не входит в архитектуру. Codex-патч удаляет локальные
+  instructions/tools/context, оставляя только явный
   клиентский контекст. Transport не читает auth store, требует ChatGPT account type, attests binary
   SHA/version и не меняет Claude path. Один pre-provisioned process-wide lock под root-owned
   `/run/apitoken` ограждает весь набор homes: два процесса не могут разделить пул между собой, а
@@ -105,7 +108,8 @@ flows атомарно публикует как отдельные `CODEX_HOME`
 описаны отдельно в [`docs/CODEX_APP_SERVER.md`](docs/CODEX_APP_SERVER.md).
 
 Детали конфигурации — `config.env.example` / `server.env.example`. Деплой — единый provider cohort:
-`systemd/claude-api-anthropic@.service`, `systemd/claude-api-openai.service` и
+`systemd/claude-api-anthropic@.service`, `systemd/claude-api-openai.service`,
+`systemd/claude-api-gemini.service` и
 `deploy/engine-bluegreen.sh` (legacy cutover unit remains one-time only).
 
 ## Коммерческий контур (отдельно от движка)
