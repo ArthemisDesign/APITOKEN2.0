@@ -277,15 +277,14 @@ headroom.
 
 Only `gemini.api.apitoken.sale` is affected; do not restart healthy Claude or OpenAI processes.
 Check `claude-api-gemini.service`, direct readiness on 8795, stable readiness on 8794, and the unit
-journal. Verify that `CLAUDE_API_GEMINI_ENABLED=1`, both credential keyrings match, the roster is
+journal. Verify that both credential keyrings match, the roster is
 readable, every envelope has the exact `credentials/<profile-id>.json` non-symlink 0600 path, and at
 least one profile passes `loadCodeAssist` health. Never decrypt or print an envelope while testing. Repair according to
 `docs/GEMINI_PROVIDER.md` and use the health-gated engine controller to restart the service.
 
-If the surface must be withdrawn during investigation, set `CLAUDE_API_GEMINI_ENABLED=0` and use the
-normal provider rollout. The fixed service remains observable with a native 404 but loads no profile.
-A manual stop is only an immediate temporary action because watchdog reconciliation restores the
-configured topology. Neither action should change an established provider.
+If the surface must be withdrawn during investigation, stop `claude-api-gemini.service` through the
+normal provider rollout. A manual stop is only an immediate temporary action because watchdog
+reconciliation restores the configured topology. Neither action should change an established provider.
 
 ## GeminiNoAvailableProfiles
 

@@ -20,25 +20,6 @@ The Gemini runtime, router, OAuth credentials, proxy clients, health/cooling sta
 are independent from Claude and OpenAI. The three providers share only the fenced billing authority
 and opaque affinity infrastructure.
 
-## Important terms boundary
-
-This integration uses the private Code Assist transport behind Gemini CLI. Google's current Gemini
-CLI terms explicitly say that directly accessing this service from third-party software or services
-is a policy violation and may result in account suspension or termination:
-
-- [Gemini CLI terms and privacy](https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/tos-privacy.md)
-- [Gemini CLI quota and pricing](https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/quota-and-pricing.md)
-
-Keep `CLAUDE_API_GEMINI_ENABLED=0` unless the operator has written Google authorization covering
-this exact service. An operator-owned OAuth client, truthful User-Agent and secure token storage do
-not waive that restriction. For a generally supported public integration, use Gemini Developer API
-or Vertex AI credentials instead.
-
-Never copy Gemini CLI's OAuth client id/secret, browser cookies or `oauth_creds.json`. This project
-uses an operator-owned Google OAuth web client and does not impersonate Gemini CLI. Google will
-still observe the OAuth client, account identity, proxy exit IP and request traffic; the system only
-prevents those details from leaking into local logs, metrics, roster files and public responses.
-
 ## Accepted subscriptions
 
 Authbot asks Google for the actual tier and accepts only known Code Assist-compatible paid plans:
@@ -180,7 +161,6 @@ place them in a release directory, shell history, Telegram message or systemd co
 Gemini runtime (`config.env` or `server.env`):
 
 ```text
-CLAUDE_API_GEMINI_ENABLED=1
 CLAUDE_API_GEMINI_PROFILES_FILE=/srv/claude-api/data/gemini/profiles.json
 CLAUDE_API_GEMINI_CREDENTIAL_KEYS=current:<64-hex>[,old:<64-hex>]
 CLAUDE_API_GEMINI_MODELS=gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-flash-lite,gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite
