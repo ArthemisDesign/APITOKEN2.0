@@ -89,7 +89,7 @@ grep -Fq 'targets: ["https://gemini.api.apitoken.sale/v1beta/models/gemini-provi
   || { printf 'Gemini public synthetic is missing\n' >&2; exit 1; }
 grep -Fq 'module: [http_gemini_surface]' "$ROOT/observability/prometheus/prometheus.yml" \
   || { printf 'Gemini synthetic does not verify its provider envelope\n' >&2; exit 1; }
-grep -Fq 'valid_status_codes: [401, 404]' "$ROOT/observability/blackbox/blackbox.yml" \
+grep -Fq 'valid_status_codes: [400, 401, 404]' "$ROOT/observability/blackbox/blackbox.yml" \
   || { printf 'Gemini synthetic does not accept both enabled and kill-switch envelopes\n' >&2; exit 1; }
 grep -Fq 'fail_if_body_not_matches_regexp:' "$ROOT/observability/blackbox/blackbox.yml" \
   || { printf 'OpenAI synthetic accepts a generic health response\n' >&2; exit 1; }

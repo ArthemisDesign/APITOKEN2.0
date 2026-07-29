@@ -52,11 +52,13 @@ modules:
       method: POST
       preferred_ip_protocol: ip4
       follow_redirects: false
-      # Enabled fixed-provider mode authenticates before model lookup; the provider-only kill
-      # switch deliberately keeps the same native router up with a closed NOT_FOUND envelope.
-      valid_status_codes: [401, 404]
+      # Enabled fixed-provider mode rejects the unauthenticated probe at the client-key stage,
+      # faithfully mirroring Google with a 400 API_KEY_INVALID (returned before any project lookup,
+      # so an empty pre-onboarding roster answers identically); the provider-only kill switch
+      # deliberately keeps the same native router up with a closed NOT_FOUND envelope.
+      valid_status_codes: [400, 401, 404]
       headers:
         Content-Type: application/json
       body: '{}'
       fail_if_body_not_matches_regexp:
-        - '"code"[[:space:]]*:[[:space:]]*(401[^}]*"status"[[:space:]]*:[[:space:]]*"UNAUTHENTICATED"|404[^}]*"status"[[:space:]]*:[[:space:]]*"NOT_FOUND")'
+        - '("code"[[:space:]]*:[[:space:]]*(401[^}]*"status"[[:space:]]*:[[:space:]]*"UNAUTHENTICATED"|404[^}]*"status"[[:space:]]*:[[:space:]]*"NOT_FOUND"))|("reason"[[:space:]]*:[[:space:]]*"API_KEY_INVALID")'
