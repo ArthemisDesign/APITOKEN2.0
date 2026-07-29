@@ -221,11 +221,12 @@ fn validate_gemini_upstream(v: &str, allow_insecure_loopback: bool) -> Result<St
 }
 
 fn gemini_config() -> Option<GeminiConfig> {
-    // Kept OFF by default: enabling it made claude-api-gemini.service fail to come up during the
-    // deploy (phase=deploying-components), which quarantined the whole-engine release. Diagnose the
-    // service startup on the server before turning this on again. Set CLAUDE_API_GEMINI_ENABLED=1
-    // only once the gemini unit is confirmed to start and reach readiness.
-    if !ev_bool("CLAUDE_API_GEMINI_ENABLED", false) {
+    // Gemini is on by default. The deploy gates now assert the real enabled-surface envelope
+    // (400 API_KEY_INVALID), which holds for an empty pre-onboarding roster, so enabling the
+    // provider no longer couples a routine engine deploy to having live subscriptions.
+    // CLAUDE_API_GEMINI_ENABLED stays only as an emergency kill-switch (set it to 0 to withdraw
+    // the surface without a release).
+    if !ev_bool("CLAUDE_API_GEMINI_ENABLED", true) {
         return None;
     }
     let requested = ev_or(
