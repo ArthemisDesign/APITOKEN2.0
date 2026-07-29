@@ -361,6 +361,13 @@ pub async fn models(
     if let Err(error) = authorize_models(&app, &headers, &peer).await {
         return error.into_response();
     }
+    // Codex 0.146 refreshes the same URL with its backend-native `ModelsResponse` schema, while
+    // OpenAI SDKs require the public list envelope below. An empty native overlay is intentional:
+    // Codex merges it with the model metadata bundled in that exact CLI build, avoiding schema
+    // drift while the configured model id still comes from the customer profile.
+    if requests_codex_models_envelope(&headers) {
+        return json_response(StatusCode::OK, json!({"models": []}), &new_id("req"));
+    }
     let available = match available_upstream_models(&gateway).await {
         Ok(available) => available,
         Err(error) => return ApiError::from(error).into_response(),
@@ -377,6 +384,15 @@ pub async fn models(
         json!({"object": "list", "data": data}),
         &new_id("req"),
     )
+}
+
+fn requests_codex_models_envelope(headers: &HeaderMap) -> bool {
+    ["originator", "user-agent"].iter().any(|name| {
+        headers
+            .get(*name)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.to_ascii_lowercase().starts_with("codex"))
+    })
 }
 
 pub async fn model(
@@ -3427,6 +3443,29 @@ mod tests {
         // A limit with no published reset must still carry a usable wait, never none.
         let unknown = ApiError::from(ProcessError::UsageLimitExceeded { retry_after: None });
         assert!(unknown.retry_after.is_some_and(|seconds| seconds > 0));
+    }
+
+    #[test]
+    fn codex_catalog_clients_get_their_native_models_envelope() {
+        for (header, value) in [
+            ("originator", "codex_exec"),
+            ("originator", "codex_cli_rs"),
+            ("user-agent", "codex_cli_rs/0.146.0"),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header, HeaderValue::from_static(value));
+            assert!(
+                requests_codex_models_envelope(&headers),
+                "{header}: {value}"
+            );
+        }
+
+        let mut openai_headers = HeaderMap::new();
+        openai_headers.insert("user-agent", HeaderValue::from_static("OpenAI/Python 2.0"));
+        assert!(!requests_codex_models_envelope(&openai_headers));
+        let mut near_match = HeaderMap::new();
+        near_match.insert("originator", HeaderValue::from_static("my-codex-proxy"));
+        assert!(!requests_codex_models_envelope(&near_match));
     }
 
     fn model() -> CodexModel {

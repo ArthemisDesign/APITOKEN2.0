@@ -196,8 +196,10 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    `additional_tools`: до обновления pinned app-server этот public wire-item транслировать во
    внутреннюю dynamic function и обратно; `tool_search_call`/`tool_search_output` истории хранить
    в публичной форме, а в app-server replay преобразовывать в function call/output. Function tool
-   `defer_loading` принимать и передавать как dynamic `deferLoading`. Usage для settlement брать из
-   authoritative completed app-server turn.
+   `defer_loading` принимать и передавать как dynamic `deferLoading`. Codex `GET /v1/models`
+   (originator/UA начинается с `codex`) требует native `{"models":[]}` overlay, который CLI
+   объединяет со своим version-matched bundled catalog; остальным клиентам сохранять стандартный
+   OpenAI list envelope. Usage для settlement брать из authoritative completed app-server turn.
 6. Не заявлять OpenAI ownership: public `owned_by` остаётся `apitoken`; полный scope и runbook —
    `docs/CODEX_APP_SERVER.md`.
 7. **Цены — только из `metering::codex`** (audited, effective-dated таблица, как Claude-тарифы).

@@ -132,7 +132,9 @@ next request; the gateway never executes a customer's `exec` source. Codex CLI 0
 client-executed `tool_search` wire type is bridged through an equivalent private dynamic function
 for the pinned app-server, then translated back to `tool_search_call`; the following
 `tool_search_output` is replayed through the same boundary without changing the stored public
-history. Deferred function tools preserve `defer_loading`.
+history. Deferred function tools preserve `defer_loading`. Codex catalog-refresh requests receive
+the CLI-native empty `models` overlay and keep using that CLI version's bundled metadata; ordinary
+OpenAI clients continue to receive the standard `object: "list"` catalog.
 
 Chat Completions accepts the equivalent top-level `reasoning_effort` and `verbosity` controls and
 translates them to the same app-server turn settings.
