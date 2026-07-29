@@ -129,6 +129,16 @@ pub fn authority_cfg(cfg: &Config) -> registry::authority::AuthorityConfig {
     registry::authority::AuthorityConfig::Postgres { url: cfg.database_url.clone() }
 }
 
+async fn preflight_authority(authority: registry::authority::AuthorityConfig) -> Result<()> {
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let mut authority = authority.connect()
+            .context("authbot не подключился к PostgreSQL authority движка")?;
+        authority.subs_admin()
+            .context("authbot не прочитал PostgreSQL registry движка")?;
+        Ok(())
+    }).await.context("authbot PostgreSQL preflight task failed")?
+}
+
 /// Записать proxy_expire/checked в PostgreSQL authority движка.
 async fn write_proxy_expire(auth: registry::authority::AuthorityConfig,
                             email: String, expire: String, now: i64, ok: bool) {
@@ -228,13 +238,7 @@ async fn main() -> Result<()> {
     });
     let store = Arc::new(Store::open(&state_db())?);
     let recovered = store.recover_interrupted_handoffs()?;
-    {
-        let mut authority = authority_cfg(&cfg)
-            .connect()
-            .context("authbot не подключился к PostgreSQL authority движка")?;
-        authority.subs_admin()
-            .context("authbot не прочитал PostgreSQL registry движка")?;
-    }
+    preflight_authority(authority_cfg(&cfg)).await?;
     let bot = Bot::new(&token);
     let _ = bot.delete_webhook().await;
 
@@ -270,5 +274,18 @@ async fn main() -> Result<()> {
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn postgres_preflight_does_not_nest_a_runtime() {
+        let authority = registry::authority::AuthorityConfig::Postgres {
+            url: "postgresql://nobody:nothing@127.0.0.1:1/missing?connect_timeout=1".into(),
+        };
+        assert!(preflight_authority(authority).await.is_err());
     }
 }

@@ -358,11 +358,15 @@ fn looks_like_email(s: &str) -> bool {
     !user.is_empty() && dom.contains('.') && !dom.starts_with('.') && !dom.ends_with('.')
 }
 
-fn register_sub(cfg: &Config, email: &str, token: &str, proxy: &str) -> anyhow::Result<()> {
+async fn register_sub(cfg: &Config, email: &str, token: &str, proxy: &str) -> anyhow::Result<()> {
     // Пишем прямо в PostgreSQL authority движка; reload_loop подхватит подписку за ~30с.
-    let mut auth = crate::authority_cfg(cfg).connect()?;
-    auth.add(email, token, proxy, &cfg.fleet)?;
-    Ok(())
+    let (authority, email, token, proxy, fleet) = (
+        crate::authority_cfg(cfg), email.to_string(), token.to_string(),
+        proxy.to_string(), cfg.fleet.clone());
+    tokio::task::spawn_blocking(move || {
+        let mut auth = authority.connect()?;
+        auth.add(&email, &token, &proxy, &fleet)
+    }).await.map_err(|e| anyhow::anyhow!("PostgreSQL registration worker failed: {e}"))?
 }
 
 /// host:port:user:pass | host:port | http(s)://… → http-URL (для реестра/прокси).
@@ -395,7 +399,7 @@ async fn do_feed_token(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, chat: i
     let cs = codestate.trim().to_string();
     let _ = bot.send(chat, "⏳ Проверяю код и выпускаю токен…").await;
     match tokio::task::spawn_blocking(move || setup_token::feed(chat, &cs)).await {
-        Ok(Ok(Outcome::Token(tok, email, proxy))) => match register_sub(cfg, &email, &tok, &proxy) {
+        Ok(Ok(Outcome::Token(tok, email, proxy))) => match register_sub(cfg, &email, &tok, &proxy).await {
             Ok(_) => {
                 let _ = store.set_want(chat, "");
                 let _ = store.set_hproxy(chat, "");

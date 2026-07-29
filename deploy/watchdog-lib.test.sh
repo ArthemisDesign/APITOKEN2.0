@@ -1270,6 +1270,8 @@ grep -Fq '/usr/bin/systemctl restart claude-authbot.service' "$ROOT/deploy/sudoe
 # Unchanged authbot binaries preserve live handoffs; changed ones restart and recover persisted state.
 grep -Fq 'cmp -s "$exe" "$current/authbot"' "$ROOT/deploy/deploy.sh" \
   || wd_die "the authbot restart must compare the running binary, not release paths"
+grep -Fq '$unit failed exact-release verification after restart' "$ROOT/deploy/deploy.sh" \
+  || wd_die "a crashed authbot can still produce a green deployment"
 ! grep -Fq 'deferring adoption until the service is already inactive' "$ROOT/deploy/deploy.sh" \
   || wd_die "changed authbot code can remain undeployed forever"
 # Asking for a world-readable unit file under sudo earns a policy denial that is indistinguishable
