@@ -170,6 +170,16 @@ codex_as_start_or_roll "$rotating_id" || fail 'old-but-serving peer did not perm
 [[ $(tr '\n' ' ' <"$roll_log") == 'begin drained restart healthy returned ' ]] \
   || fail 'rolling update did not drain, restart, verify, and return the home in order'
 
+for reconciler_state in static disabled indirect; do
+  codex_as_unit_file_state_reconciler_owned "$reconciler_state" \
+    || fail "safe reconciler-owned UnitFileState was rejected: $reconciler_state"
+done
+for boot_state in enabled enabled-runtime linked linked-runtime alias generated masked ''; do
+  if codex_as_unit_file_state_reconciler_owned "$boot_state"; then
+    fail "unsafe or unknown UnitFileState was accepted: ${boot_state:-empty}"
+  fi
+done
+
 # One expired/disconnected account is excluded instead of failing an otherwise redundant cohort.
 # The same fixture must still fail closed when fewer than two authenticated homes remain.
 (
@@ -259,6 +269,7 @@ codex_as_start_or_roll "$rotating_id" || fail 'old-but-serving peer did not perm
   codex_as_signal_gateways() { return 0; }
   codex_as_wait_proxy_restore() { return 0; }
   codex_as_wait_ready_cohort() { printf '2\n'; }
+  codex_as_unit_reconciler_owned() { return 0; }
 
   codex_as_prepare_transition || fail 'legacy-to-shared ownership preparation failed'
   [[ -f "$systemd_state/active.$legacy_unit" \
@@ -339,6 +350,7 @@ codex_as_start_or_roll "$rotating_id" || fail 'old-but-serving peer did not perm
   codex_as_wait_proxy_drain() { printf 'proxy-drained\n' >>"$transition_log"; }
   codex_as_wait_proxy_restore() { return 0; }
   codex_as_wait_ready_cohort() { printf '2\n'; }
+  codex_as_unit_reconciler_owned() { return 0; }
   codex_as_home_proxy_count() { printf '0\n'; }
   codex_as_home_has_process() {
     local home=$1

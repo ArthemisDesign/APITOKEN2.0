@@ -305,6 +305,23 @@ codex_as_unit_active() {
   "$CODEX_AS_SYSTEMCTL" is-active --quiet "$(codex_as_unit "$1")" >/dev/null 2>&1
 }
 
+codex_as_unit_file_state_reconciler_owned() {
+  case "$1" in
+    disabled|indirect|static) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Template instances are normally `static`: systemd can start them explicitly, but they have no
+# install target and cannot resurrect at boot on their own. `systemctl is-enabled` exits zero for
+# static units, so its status cannot distinguish that safe state from an actually enabled instance.
+codex_as_unit_reconciler_owned() {
+  local id=$1 state
+  state=$("$CODEX_AS_SYSTEMCTL" show -p UnitFileState --value "$(codex_as_unit "$id")" 2>/dev/null) \
+    || return 1
+  codex_as_unit_file_state_reconciler_owned "$state"
+}
+
 codex_as_home_draining() {
   local home=$1 marker=$1/$CODEX_AS_DRAIN_FILE owner expected_uid expected_gid
   [[ -e $marker || -L $marker ]] || return 1
@@ -1114,8 +1131,8 @@ codex_as_verify_legacy() {
       && { codex_as_fail "home $id remains drained"; return 1; }
     ! codex_as_unit_active "$id" \
       || { codex_as_fail "app-server $id remains active beside the legacy owner"; return 1; }
-    ! "$CODEX_AS_SYSTEMCTL" is-enabled --quiet "$(codex_as_unit "$id")" >/dev/null 2>&1 \
-      || { codex_as_fail "app-server $id remains enabled beside the legacy owner"; return 1; }
+    codex_as_unit_reconciler_owned "$id" \
+      || { codex_as_fail "app-server $id remains boot-enabled beside the legacy owner"; return 1; }
   done < <(codex_as_home_records)
   (( count >= 1 )) || { codex_as_fail 'no authenticated Codex homes are available'; return 1; }
   while IFS= read -r unit; do
@@ -1144,7 +1161,7 @@ codex_as_verify() {
     id_list+="$id "
     ! codex_as_home_draining "$CODEX_AS_HOMES_DIR/$name" \
       || { codex_as_fail "home $id remains drained"; return 1; }
-    ! "$CODEX_AS_SYSTEMCTL" is-enabled --quiet "$(codex_as_unit "$id")" >/dev/null 2>&1 \
+    codex_as_unit_reconciler_owned "$id" \
       || { codex_as_fail "app-server $id must be reconciler-owned rather than boot-enabled"; return 1; }
     codex_as_unit_healthy "$id" \
       || { codex_as_fail "app-server $id is not converged and ready"; return 1; }
