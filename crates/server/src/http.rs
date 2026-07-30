@@ -19,6 +19,7 @@ use forward::{
     resolve_client_keys, AppState, Metrics, TerminalErrorReason,
 };
 use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -795,9 +796,15 @@ async fn metrics(
              # TYPE claude_api_codex_home_inflight_turns gauge\n\
              # TYPE claude_api_codex_home_rate_limit_used_percent gauge\n\
              # TYPE claude_api_codex_home_spend_usd_total gauge\n\
+             # TYPE claude_api_codex_home_calibration_persistence_ok gauge\n\
              # TYPE claude_api_codex_home_window_capacity_usd gauge\n\
-             # TYPE claude_api_codex_home_window_capacity_calibrated gauge\n\
-             # TYPE claude_api_codex_home_window_remaining_usd gauge"
+             # TYPE claude_api_codex_home_window_remaining_usd gauge\n\
+             # TYPE claude_api_codex_home_window_capacity_low_usd gauge\n\
+             # TYPE claude_api_codex_home_window_capacity_high_usd gauge\n\
+             # TYPE claude_api_codex_home_window_confidence_ratio gauge\n\
+             # TYPE claude_api_codex_home_window_data_age_seconds gauge\n\
+             # TYPE claude_api_codex_home_window_estimate_available gauge\n\
+             # TYPE claude_api_codex_home_window_samples gauge"
         );
         for home in &status.homes {
             let index = &home.id;
@@ -807,12 +814,14 @@ async fn metrics(
                  claude_api_codex_home_authenticated{{home=\"{index}\"}} {}\n\
                  claude_api_codex_home_cooling_until_seconds{{home=\"{index}\"}} {}\n\
                  claude_api_codex_home_inflight_turns{{home=\"{index}\"}} {}\n\
-                 claude_api_codex_home_spend_usd_total{{home=\"{index}\"}} {:.4}",
+                 claude_api_codex_home_spend_usd_total{{home=\"{index}\"}} {:.4}\n\
+                 claude_api_codex_home_calibration_persistence_ok{{home=\"{index}\"}} {}",
                 u8::from(home.process_live),
                 u8::from(home.auth_ok),
                 home.cooling_until,
                 home.inflight,
                 home.spend_usd_total,
+                u8::from(home.calibration_persistence_ok),
             );
             if let Some(used) = home
                 .rate_limits
@@ -824,50 +833,30 @@ async fn metrics(
                     "claude_api_codex_home_rate_limit_used_percent{{home=\"{index}\"}} {used}"
                 );
             }
-            for capacity in &home.capacities {
-                let slot = capacity.slot;
-                let _ = writeln!(
-                    body,
-                    "claude_api_codex_home_window_capacity_usd{{home=\"{index}\",slot=\"{slot}\"}} {:.2}\n\
-                     claude_api_codex_home_window_capacity_calibrated{{home=\"{index}\",slot=\"{slot}\"}} {}\n\
-                     claude_api_codex_home_window_remaining_usd{{home=\"{index}\",slot=\"{slot}\"}} {:.2}",
-                    capacity.cap_usd,
-                    u8::from(capacity.calibrated),
-                    capacity.remaining_usd,
-                );
-            }
+            write_codex_home_capacity_metrics(&mut body, home);
         }
-        // Pool-level sellable capacity per window slot: sum over homes, flagged as measured only
-        // when every contributing home has accepted at least one real calibration sample.
+        // Pool totals are grouped by actual provider duration, not primary/secondary slot names.
         let _ = writeln!(
             body,
             "# TYPE claude_api_codex_window_capacity_usd gauge\n\
              # TYPE claude_api_codex_window_remaining_usd gauge\n\
-             # TYPE claude_api_codex_window_capacity_calibrated gauge"
+             # TYPE claude_api_codex_window_measured_homes gauge\n\
+             # TYPE claude_api_codex_window_observed_homes gauge"
         );
-        for slot in ["primary", "secondary"] {
-            let capacities: Vec<_> = status
-                .homes
-                .iter()
-                .flat_map(|home| home.capacities.iter())
-                .filter(|capacity| capacity.slot == slot)
-                .collect();
-            if capacities.is_empty() {
-                continue;
-            }
-            let cap_sum: f64 = capacities.iter().map(|capacity| capacity.cap_usd).sum();
-            let remaining_sum: f64 = capacities
-                .iter()
-                .map(|capacity| capacity.remaining_usd)
-                .sum();
-            let all_calibrated = capacities.iter().all(|capacity| capacity.calibrated);
+        for (duration, (cap_sum, remaining_sum, measured, observed)) in codex_window_totals(status)
+        {
             let _ = writeln!(
                 body,
-                "claude_api_codex_window_capacity_usd{{slot=\"{slot}\"}} {cap_sum:.2}\n\
-                 claude_api_codex_window_remaining_usd{{slot=\"{slot}\"}} {remaining_sum:.2}\n\
-                 claude_api_codex_window_capacity_calibrated{{slot=\"{slot}\"}} {}",
-                u8::from(all_calibrated),
+                "claude_api_codex_window_measured_homes{{window_minutes=\"{duration}\"}} {measured}\n\
+                 claude_api_codex_window_observed_homes{{window_minutes=\"{duration}\"}} {observed}"
             );
+            if measured > 0 {
+                let _ = writeln!(
+                    body,
+                    "claude_api_codex_window_capacity_usd{{window_minutes=\"{duration}\"}} {cap_sum:.4}\n\
+                     claude_api_codex_window_remaining_usd{{window_minutes=\"{duration}\"}} {remaining_sum:.4}"
+                );
+            }
         }
     }
     let _ = writeln!(
@@ -946,6 +935,82 @@ async fn metrics(
         body,
     )
         .into_response()
+}
+
+fn write_codex_home_capacity_metrics(body: &mut String, home: &forward::codex::CodexHomeStatus) {
+    use std::fmt::Write as _;
+
+    let index = &home.id;
+    for capacity in &home.capacities {
+        let slot = capacity.slot;
+        let duration = capacity
+            .window_minutes
+            .map_or_else(|| "unknown".to_owned(), |value| value.to_string());
+        let _ = writeln!(
+            body,
+            "claude_api_codex_home_window_estimate_available{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\",source=\"{}\"}} {}\n\
+             claude_api_codex_home_window_confidence_ratio{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\"}} {:.4}\n\
+             claude_api_codex_home_window_samples{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\"}} {}",
+            capacity.source,
+            u8::from(capacity.cap_usd.is_some()),
+            capacity.confidence,
+            capacity.samples,
+        );
+        if let Some(age) = capacity.data_age_seconds {
+            let _ = writeln!(
+                body,
+                "claude_api_codex_home_window_data_age_seconds{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\"}} {age}"
+            );
+        }
+        if let (Some(cap_usd), Some(remaining_usd)) = (capacity.cap_usd, capacity.remaining_usd) {
+            let _ = writeln!(
+                body,
+                "claude_api_codex_home_window_capacity_usd{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\",source=\"{}\"}} {cap_usd:.4}\n\
+                 claude_api_codex_home_window_remaining_usd{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\",source=\"{}\"}} {remaining_usd:.4}",
+                capacity.source,
+                capacity.source,
+            );
+        }
+        if let Some(low_usd) = capacity.low_usd {
+            let _ = writeln!(
+                body,
+                "claude_api_codex_home_window_capacity_low_usd{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\"}} {low_usd:.4}"
+            );
+        }
+        if let Some(high_usd) = capacity.high_usd {
+            let _ = writeln!(
+                body,
+                "claude_api_codex_home_window_capacity_high_usd{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\"}} {high_usd:.4}"
+            );
+        }
+    }
+}
+
+/// Sum each real duration once per home. Slot names are presentation metadata, and duplicate slots
+/// must never make one subscription look like two copies of the same dollar capacity.
+fn codex_window_totals(
+    status: &forward::codex::CodexOperationalStatus,
+) -> BTreeMap<i64, (f64, f64, usize, usize)> {
+    let mut totals: BTreeMap<i64, (f64, f64, usize, usize)> = BTreeMap::new();
+    for home in &status.homes {
+        let mut seen = BTreeSet::new();
+        for capacity in &home.capacities {
+            let Some(duration) = capacity.window_minutes else {
+                continue;
+            };
+            if !seen.insert(duration) {
+                continue;
+            }
+            let total = totals.entry(duration).or_default();
+            total.3 += 1;
+            if let (Some(cap), Some(remaining)) = (capacity.cap_usd, capacity.remaining_usd) {
+                total.0 += cap;
+                total.1 += remaining;
+                total.2 += 1;
+            }
+        }
+    }
+    totals
 }
 
 /// Unified admin.apitoken.sale UI. Human and data authorization is enforced by Caddy.
@@ -1422,7 +1487,12 @@ async fn codex_subs(
         return Json(json!({"now": pool::now(), "enabled": false, "homes": []})).into_response();
     };
     let status = codex.operational_status().await;
+    Json(codex_subs_value(&status, pool::now())).into_response()
+}
+
+fn codex_subs_value(status: &forward::codex::CodexOperationalStatus, now: i64) -> Value {
     let round = |x: f64| (x * 100.0).round() / 100.0;
+    let round_opt = |x: Option<f64>| x.map(|value| round(value));
     let window = |w: &forward::codex::CodexRateLimitWindow| {
         json!({
             "used_percent": w.used_percent,
@@ -1441,6 +1511,7 @@ async fn codex_subs(
                 "cooling_until": h.cooling_until,
                 "inflight": h.inflight,
                 "spend_usd_total": round(h.spend_usd_total),
+                "calibration_persistence_ok": h.calibration_persistence_ok,
                 "rate_limits": h.rate_limits.as_ref().map(|rl| json!({
                     "reached": rl.reached,
                     "observed_at": rl.observed_at,
@@ -1450,36 +1521,37 @@ async fn codex_subs(
                 "windows": h.capacities.iter().map(|c| json!({
                     "slot": c.slot,
                     "window_minutes": c.window_minutes,
+                    "resets_at": c.resets_at,
+                    "observed_at": c.observed_at,
+                    "data_age_seconds": c.data_age_seconds,
                     "used_percent": c.used_percent,
-                    "cap_usd": round(c.cap_usd),
-                    "remaining_usd": round(c.remaining_usd),
-                    "calibrated": c.calibrated,
+                    "cap_usd": round_opt(c.cap_usd),
+                    "remaining_usd": round_opt(c.remaining_usd),
+                    "low_usd": round_opt(c.low_usd),
+                    "high_usd": round_opt(c.high_usd),
+                    "source": c.source,
+                    "confidence": c.confidence,
                     "samples": c.samples,
                 })).collect::<Vec<_>>(),
             })
         })
         .collect();
-    // Флотская сводка по слотам окон: суммарная ёмкость/остаток — панель показывает её карточками.
-    let mut totals = serde_json::Map::new();
-    for slot in ["primary", "secondary"] {
-        let (mut cap, mut rem, mut calibrated, mut any) = (0.0, 0.0, true, false);
-        for h in &status.homes {
-            for c in h.capacities.iter().filter(|c| c.slot == slot) {
-                cap += c.cap_usd;
-                rem += c.remaining_usd;
-                calibrated &= c.calibrated;
-                any = true;
-            }
-        }
-        if any {
-            totals.insert(
-                slot.into(),
-                json!({"cap_usd": round(cap), "remaining_usd": round(rem), "calibrated": calibrated}),
-            );
-        }
-    }
-    Json(json!({
-        "now": pool::now(),
+    // Fleet totals use the real duration identity. Unknown estimates remain null per-home and do
+    // not silently contribute zero or a configured prior to the measured aggregate.
+    let totals: Vec<_> = codex_window_totals(status)
+        .into_iter()
+        .map(|(duration, (cap, remaining, measured, observed))| {
+            json!({
+                "window_minutes": duration,
+                "cap_usd": (measured > 0).then(|| round(cap)),
+                "remaining_usd": (measured > 0).then(|| round(remaining)),
+                "measured_homes": measured,
+                "observed_homes": observed,
+            })
+        })
+        .collect();
+    json!({
+        "now": now,
         "enabled": true,
         "process_live": status.process_live,
         "available": status.available,
@@ -1487,8 +1559,7 @@ async fn codex_subs(
         "soonest_ready": status.soonest_ready,
         "window_totals": totals,
         "homes": homes,
-    }))
-    .into_response()
+    })
 }
 
 /// Gemini paid-subscription fleet status for the unified panel. This route exists only on the
@@ -1772,6 +1843,79 @@ mod tests {
     use super::*;
     use axum::body::{to_bytes, Body};
     use tower::ServiceExt;
+
+    fn unknown_codex_status() -> forward::codex::CodexOperationalStatus {
+        forward::codex::CodexOperationalStatus {
+            process_live: true,
+            rate_limits: None,
+            homes: vec![forward::codex::CodexHomeStatus {
+                id: "home-1".to_string(),
+                process_live: true,
+                auth_ok: true,
+                cooling_until: 0,
+                inflight: 0,
+                rate_limits: None,
+                spend_usd_total: 12.5,
+                calibration_persistence_ok: true,
+                capacities: vec![forward::codex::CodexWindowCapacityReport {
+                    slot: "primary",
+                    window_minutes: Some(300),
+                    resets_at: Some(2_000_000_000),
+                    observed_at: 100,
+                    data_age_seconds: Some(5),
+                    used_percent: 40,
+                    cap_usd: None,
+                    remaining_usd: None,
+                    low_usd: None,
+                    high_usd: None,
+                    source: "unknown",
+                    confidence: 0.0,
+                    samples: 0,
+                }],
+            }],
+            available: 1,
+            soonest_ready: None,
+        }
+    }
+
+    #[test]
+    fn codex_subscription_contract_keeps_unmeasured_capacity_null() {
+        let mut status = unknown_codex_status();
+        let mut duplicate_slot = status.homes[0].capacities[0].clone();
+        duplicate_slot.slot = "secondary";
+        status.homes[0].capacities.push(duplicate_slot);
+        let value = codex_subs_value(&status, 105);
+        let window = &value["homes"][0]["windows"][0];
+        assert_eq!(window["window_minutes"], 300);
+        assert_eq!(window["source"], "unknown");
+        assert!(window["cap_usd"].is_null());
+        assert!(window["remaining_usd"].is_null());
+
+        let total = &value["window_totals"][0];
+        assert_eq!(total["window_minutes"], 300);
+        assert_eq!(
+            total["observed_homes"], 1,
+            "one home must not be counted twice"
+        );
+        assert_eq!(total["measured_homes"], 0);
+        assert!(total["cap_usd"].is_null());
+        assert!(total["remaining_usd"].is_null());
+    }
+
+    #[test]
+    fn prometheus_omits_unmeasured_codex_dollar_series() {
+        let home = &unknown_codex_status().homes[0];
+        let mut body = String::new();
+        write_codex_home_capacity_metrics(&mut body, home);
+        assert!(body.contains(
+            "claude_api_codex_home_window_estimate_available{home=\"home-1\",slot=\"primary\",window_minutes=\"300\",source=\"unknown\"} 0"
+        ));
+        assert!(body.contains(
+            "claude_api_codex_home_window_data_age_seconds{home=\"home-1\",slot=\"primary\",window_minutes=\"300\"} 5"
+        ));
+        assert!(!body.contains("claude_api_codex_home_window_capacity_usd{"));
+        assert!(!body.contains("claude_api_codex_home_window_remaining_usd{"));
+    }
 
     fn admin_auth_test_app() -> AppState {
         let mut cfg = crate::config::Settings::from_env().proxy;

@@ -1027,8 +1027,13 @@ async fn serve() -> Result<()> {
         }
     );
     let codex = if let Some(config) = s.codex.clone() {
-        let gateway =
-            Arc::new(forward::CodexGateway::new(config).context("initialize Codex provider")?);
+        let calibration_store = billing
+            .clone()
+            .context("Codex provider requires the durable billing authority for calibration")?;
+        let gateway = Arc::new(
+            forward::CodexGateway::new_with_calibration(config, Some(calibration_store))
+                .context("initialize Codex provider")?,
+        );
         gateway
             .preflight()
             .await

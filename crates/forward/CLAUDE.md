@@ -179,14 +179,14 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    Лишний умерший home карантинится и не блокирует одинаковую оставшуюся когорту.
    **Параллелизм на home НЕ ограничен** (как у Claude-флота): вместо семафора turn'ов — атомарный
    счётчик in-flight (`TurnSlot` RAII, снимается на успехе/ошибке/дисконнекте), он лишь сигнал
-   загрузки для выбора, не потолок. Устаревший `CLAUDE_API_CODEX_MAX_CONCURRENT` не читается;
-   общий Claude `AppState::concurrency` и коммерческий per-key limiter к Codex не применяются.
+   загрузки для выбора, не потолок. Общий Claude `AppState::concurrency` и коммерческий per-key
+   limiter к Codex не применяются.
    **Выбор — cache-first (как `affinity.rs`):** сначала home, к которому закреплён этот разговор
    (`AffinityStore::resolve` через `infer_codex` → тот же стор/Redis-namespace, что у Claude).
-   Новый общий cache-root без ожиданий прогревается на двух конкурентных homes; затем тёплый home
-   выбирается, пока его свободная calibrated/prior USD-ёмкость не хуже 70% лучшей во флоте, иначе
-   запрос сразу идёт на глобально лучший. Это soft placement, а не readiness/quorum: один рабочий
-   home всегда обслуживает трафик, фонового repair-сервиса и временных окон нет. OpenAI root warmth
+   Новый общий cache-root без ожиданий прогревается на двух homes; затем выбирается наименее
+   загруженная тёплая копия. После preferred affinity кандидаты упорядочиваются только по in-flight
+   и вращающемуся discovery order: измеренная USD-ёмкость — отчёт, не admission/routing policy.
+   Один рабочий home всегда обслуживает трафик, фонового repair-сервиса и временных окон нет. OpenAI root warmth
    живёт 30 минут (provider default), Claude cache_control сохраняет собственные 5m/1h TTL. Равные
    по capacity и in-flight кандидаты обязаны чередоваться через атомарный cursor: discovery order
    нельзя превращать в постоянный приоритет или burst-herd на первый home. После успеха
@@ -264,16 +264,19 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    множитель ChatGPT credits (GPT-5.6/5.5 = 2.5x, GPT-5.4 = 2x) применяется одинаково к reserve,
    settle, provider ledger и capacity spend; неизвестная Fast-модель резервируется консервативно
    по 2.5x.
-8. **Калибровка ёмкости окна — как в Claude-пуле, на тех же гвардах.** Каждый успешный turn
-   (billed ИЛИ admin) кредитует home его exact official-price cost (`billing::price_real_nano`,
-   чистая математика, деньги не трогает); каждый rate-limit snapshot гоняется через
-   `calibration.rs`: интервал ≥2 целых used%-поинта калибрует `cap=Δspend/Δused` только если НАШ
-   расход объясняет ≥50% движения (собственное использование владельца аккаунта — не ёмкость пула)
-   и sample в [0.25x, 4x] прайора (`CodexConfig.window_cap_usd_prior`, env
-   `CLAUDE_API_CODEX_WINDOW_CAP_USD`, неделя=10080min — для остальных окон прайор масштабируется
-   по длительности). EMA 0.7/0.3 с jump-clamp 2x, rollover окна только пере-якорит. Состояние
-   in-memory; экспорт — `claude_api_codex_(home_)window_(capacity|remaining)_usd` метрики.
-8. **Санитайзер ошибок:** публичный конверт не должен раскрывать пул/child/binary/ChatGPT-профиль
+8. **Калибровка ёмкости окна — только по фактическим данным.** Каждый успешный turn (billed ИЛИ
+   admin) durable-кредитует home exact official-price cost в integer nanoUSD; snapshot принимается
+   только с реальными `windowDurationMins` + `resetsAt` и хранится отдельно по `(home,duration)`.
+   Первый snapshot — только anchor, поэтому capacity/remaining остаются `null`/без Prometheus
+   sample до первого положительного `ΔusedPercent`. Затем every positive interval входит в integer
+   weighted least squares `cap=100*Σ(Δused*Δspend)/Σ(Δused²)` без minimum delta, prior, EMA,
+   plausibility/foreign-share reject или jump clamp. Квантование выражается low/high/confidence, а
+   не отбрасыванием evidence. Reset сохраняет только реально измеренный previous-window estimate и
+   очищает current sufficient statistics. Cumulative spend, CAS-versioned state и raw observations
+   живут в engine authority и переживают restart/blue-green. `usedPercent=100` без явного provider
+   reached-флага не блокирует home; admission прекращается только по фактическому provider reached,
+   429, auth/subscription failure или cooling.
+9. **Санитайзер ошибок:** публичный конверт не должен раскрывать пул/child/binary/ChatGPT-профиль
    или upstream-текст. Гейтит `codex::api::tests::public_errors_never_leak_internal_architecture`
    (близнец `local_err_never_leaks_*`).
 

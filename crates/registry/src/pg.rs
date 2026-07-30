@@ -4,9 +4,10 @@
 //! idempotency boundary; owner epochs fence stale instances. PostgreSQL is the recovery floor.
 
 use crate::{
-    mask_proxy, AccountRow, BillingTotals, KeyAuth, KeyPolicyUpdate, KeyRow, LedgerRow,
-    PoolStateRow, SpendAccountAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow,
-    UsageDailyAgg, UsageDailyProviderAgg, UsageEventInput, UsageKeyAgg, UsageModelAgg, UsageReport,
+    mask_proxy, AccountRow, BillingTotals, CodexCalibrationRow, CodexWindowObservation, KeyAuth,
+    KeyPolicyUpdate, KeyRow, LedgerRow, PoolStateRow, SpendAccountAgg, SpendProviderAgg, Sub,
+    SubAdmin, SubHealth, SubRow, UsageDailyAgg, UsageDailyProviderAgg, UsageEventInput,
+    UsageKeyAgg, UsageModelAgg, UsageReport,
 };
 use anyhow::{bail, Context, Result};
 use postgres::config::{Host, SslMode};
@@ -1935,6 +1936,151 @@ impl PgStore {
             reserved_nano: row.get(2),
             active_accounts: row.get(3),
         })
+    }
+
+    // -- Durable OpenAI/Codex capacity evidence ----------------------------------------------
+
+    pub fn credit_codex_home_spend(
+        &mut self,
+        home_id: &str,
+        delta_nano: i64,
+        updated_ts: i64,
+    ) -> Result<i64> {
+        if home_id.is_empty() || delta_nano < 0 || updated_ts <= 0 {
+            bail!("invalid Codex home spend credit");
+        }
+        Ok(self
+            .client
+            .query_one(
+                "INSERT INTO codex_home_spend(home_id,spent_nano,updated_ts) VALUES($1,$2,$3) \
+                 ON CONFLICT(home_id) DO UPDATE SET \
+                   spent_nano=codex_home_spend.spent_nano+EXCLUDED.spent_nano, \
+                   updated_ts=EXCLUDED.updated_ts RETURNING spent_nano",
+                &[&home_id, &delta_nano, &updated_ts],
+            )?
+            .get(0))
+    }
+
+    pub fn codex_home_spend(&mut self, home_id: &str) -> Result<i64> {
+        Ok(self
+            .client
+            .query_opt(
+                "SELECT spent_nano FROM codex_home_spend WHERE home_id=$1",
+                &[&home_id],
+            )?
+            .map(|row| row.get(0))
+            .unwrap_or(0))
+    }
+
+    pub fn load_codex_calibration(
+        &mut self,
+        home_id: &str,
+        window_duration_mins: i64,
+    ) -> Result<Option<CodexCalibrationRow>> {
+        Ok(self
+            .client
+            .query_opt(
+                "SELECT home_id,window_duration_mins,resets_at,anchor_used_percent,\
+                   anchor_spend_nano,used_percent,observed_at,sum_used_sq,sum_used_spend_nano,\
+                   observed_points,samples,current_capacity_nano,current_low_nano,current_high_nano,\
+                   current_confidence_bp,last_capacity_nano,last_low_nano,last_high_nano,\
+                   last_confidence_bp,last_measured_at,estimator_version,version,updated_ts \
+                 FROM codex_window_calibrations WHERE home_id=$1 AND window_duration_mins=$2",
+                &[&home_id, &window_duration_mins],
+            )?
+            .map(|row| CodexCalibrationRow {
+                home_id: row.get(0),
+                window_duration_mins: row.get(1),
+                resets_at: row.get(2),
+                anchor_used_percent: row.get(3),
+                anchor_spend_nano: row.get(4),
+                used_percent: row.get(5),
+                observed_at: row.get(6),
+                sum_used_sq: row.get(7),
+                sum_used_spend_nano: row.get(8),
+                observed_points: row.get(9),
+                samples: row.get(10),
+                current_capacity_nano: row.get(11),
+                current_low_nano: row.get(12),
+                current_high_nano: row.get(13),
+                current_confidence_bp: row.get(14),
+                last_capacity_nano: row.get(15),
+                last_low_nano: row.get(16),
+                last_high_nano: row.get(17),
+                last_confidence_bp: row.get(18),
+                last_measured_at: row.get(19),
+                estimator_version: row.get(20),
+                version: row.get(21),
+                updated_ts: row.get(22),
+            }))
+    }
+
+    /// Save calibration evidence with optimistic concurrency. A conflict returns `None` and rolls
+    /// back the raw observation together with the stale derived row.
+    pub fn save_codex_calibration(
+        &mut self,
+        state: &CodexCalibrationRow,
+        observation: &CodexWindowObservation,
+    ) -> Result<Option<i64>> {
+        let mut tx = self.client.transaction()?;
+        let version = if state.version == 0 {
+            tx.query_opt(
+                "INSERT INTO codex_window_calibrations( \
+                   home_id,window_duration_mins,resets_at,anchor_used_percent,anchor_spend_nano,\
+                   used_percent,observed_at,sum_used_sq,sum_used_spend_nano,observed_points,samples,\
+                   current_capacity_nano,current_low_nano,current_high_nano,current_confidence_bp,\
+                   last_capacity_nano,last_low_nano,last_high_nano,last_confidence_bp,last_measured_at,\
+                   estimator_version,updated_ts,version \
+                 ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,\
+                          $19,$20,$21,$22,1) \
+                 ON CONFLICT(home_id,window_duration_mins) DO NOTHING RETURNING version",
+                &[&state.home_id,&state.window_duration_mins,&state.resets_at,
+                  &state.anchor_used_percent,&state.anchor_spend_nano,&state.used_percent,
+                  &state.observed_at,&state.sum_used_sq,&state.sum_used_spend_nano,
+                  &state.observed_points,&state.samples,&state.current_capacity_nano,
+                  &state.current_low_nano,&state.current_high_nano,&state.current_confidence_bp,
+                  &state.last_capacity_nano,&state.last_low_nano,&state.last_high_nano,
+                  &state.last_confidence_bp,&state.last_measured_at,&state.estimator_version,
+                  &state.updated_ts],
+            )?
+        } else {
+            tx.query_opt(
+                "UPDATE codex_window_calibrations SET \
+                   resets_at=$3,anchor_used_percent=$4,anchor_spend_nano=$5,used_percent=$6,\
+                   observed_at=$7,sum_used_sq=$8,sum_used_spend_nano=$9,observed_points=$10,\
+                   samples=$11,current_capacity_nano=$12,current_low_nano=$13,current_high_nano=$14,\
+                   current_confidence_bp=$15,last_capacity_nano=$16,last_low_nano=$17,\
+                   last_high_nano=$18,last_confidence_bp=$19,last_measured_at=$20,\
+                   estimator_version=$21,updated_ts=$22,version=version+1 \
+                 WHERE home_id=$1 AND window_duration_mins=$2 AND version=$23 RETURNING version",
+                &[&state.home_id,&state.window_duration_mins,&state.resets_at,
+                  &state.anchor_used_percent,&state.anchor_spend_nano,&state.used_percent,
+                  &state.observed_at,&state.sum_used_sq,&state.sum_used_spend_nano,
+                  &state.observed_points,&state.samples,&state.current_capacity_nano,
+                  &state.current_low_nano,&state.current_high_nano,&state.current_confidence_bp,
+                  &state.last_capacity_nano,&state.last_low_nano,&state.last_high_nano,
+                  &state.last_confidence_bp,&state.last_measured_at,&state.estimator_version,
+                  &state.updated_ts,&state.version],
+            )?
+        };
+        let Some(version) = version.map(|row| row.get::<_, i64>(0)) else {
+            return Ok(None);
+        };
+        tx.execute(
+            "INSERT INTO codex_window_observations( \
+               home_id,window_duration_mins,resets_at,observed_at,used_percent,gateway_spend_nano \
+             ) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING",
+            &[
+                &observation.home_id,
+                &observation.window_duration_mins,
+                &observation.resets_at,
+                &observation.observed_at,
+                &observation.used_percent,
+                &observation.gateway_spend_nano,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(Some(version))
     }
 
     // -- Fenced pool-state persistence --------------------------------------------------------
@@ -3937,8 +4083,75 @@ mod tests {
                 "TRUNCATE account_policy_bindings,account_policy_rules,account_policy_versions, \
              provider_switch_head,provider_switch_entries,provider_switch_versions, \
              pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions, \
+             codex_window_observations,codex_window_calibrations,codex_home_spend, \
              settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances, \
              usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+
+        assert_eq!(
+            pg.credit_codex_home_spend("stage2-codex-home", 40_000_000_000, 100)
+                .unwrap(),
+            40_000_000_000
+        );
+        assert_eq!(
+            pg.credit_codex_home_spend("stage2-codex-home", 60_000_000_000, 101)
+                .unwrap(),
+            100_000_000_000
+        );
+        let state = CodexCalibrationRow {
+            home_id: "stage2-codex-home".into(),
+            window_duration_mins: 300,
+            resets_at: 2_000_000_000,
+            anchor_used_percent: 10,
+            anchor_spend_nano: 100_000_000_000,
+            used_percent: 10,
+            observed_at: 101,
+            sum_used_sq: 0,
+            sum_used_spend_nano: 0,
+            observed_points: 0,
+            samples: 0,
+            current_capacity_nano: None,
+            current_low_nano: None,
+            current_high_nano: None,
+            current_confidence_bp: 0,
+            last_capacity_nano: None,
+            last_low_nano: None,
+            last_high_nano: None,
+            last_confidence_bp: 0,
+            last_measured_at: None,
+            estimator_version: 1,
+            version: 0,
+            updated_ts: 101,
+        };
+        let observation = CodexWindowObservation {
+            home_id: state.home_id.clone(),
+            window_duration_mins: state.window_duration_mins,
+            resets_at: state.resets_at,
+            observed_at: state.observed_at,
+            used_percent: state.used_percent,
+            gateway_spend_nano: state.anchor_spend_nano,
+        };
+        assert_eq!(
+            pg.save_codex_calibration(&state, &observation).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            pg.save_codex_calibration(&state, &observation).unwrap(),
+            None
+        );
+        assert_eq!(
+            pg.load_codex_calibration("stage2-codex-home", 300)
+                .unwrap()
+                .unwrap()
+                .version,
+            1
+        );
+        pg.client
+            .batch_execute(
+                "DELETE FROM codex_window_observations WHERE home_id='stage2-codex-home'; \
+                 DELETE FROM codex_window_calibrations WHERE home_id='stage2-codex-home'; \
+                 DELETE FROM codex_home_spend WHERE home_id='stage2-codex-home';",
             )
             .unwrap();
 

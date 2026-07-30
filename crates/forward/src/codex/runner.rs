@@ -169,7 +169,8 @@ impl CodexGateway {
                         &result.usage,
                         pool::now(),
                         request.service_tier.is_some(),
-                    ));
+                    ))
+                    .await;
                     home.mark_healthy();
                     // Pin this conversation's cache lineage to the home that served it, so the next
                     // request in the conversation reuses its warm prompt cache.
@@ -1111,8 +1112,6 @@ done
                 "concurrent_threads" => 10_000,
                 _ => 2_000,
             },
-            admit_below_used_percent: 95,
-            window_cap_usd_prior: 1_500.0,
             health_probe_interval_secs: 300,
             reserve_overhead_tokens: 0,
             history_ttl_secs: 600,
@@ -1166,8 +1165,6 @@ done
             startup_timeout_ms: 10_000,
             request_timeout_ms: 2_000,
             turn_timeout_ms: 2_000,
-            admit_below_used_percent: 95,
-            window_cap_usd_prior: 1_500.0,
             health_probe_interval_secs: 300,
             reserve_overhead_tokens: 0,
             history_ttl_secs: 600,
@@ -1362,7 +1359,7 @@ done
     }
 
     #[tokio::test]
-    async fn served_turn_credits_home_spend_and_reports_window_capacity() {
+    async fn served_turn_credits_real_spend_but_first_window_snapshot_stays_unknown() {
         let (gateway, _workspace) = fake_gateway("text");
         let result = gateway
             .run_turn(turn_request(test_model()), None, None)
@@ -1380,24 +1377,27 @@ done
             home.spend_usd_total
         );
 
-        // Both provider windows yield a capacity report seeded from the duration-scaled prior;
-        // the first snapshot only anchors calibration, so nothing is measured yet.
+        // Both real durations are reported independently. One snapshot is only an anchor, so the
+        // API must return unknown rather than inventing the former $1500 weekly prior.
         let primary = home
             .capacities
             .iter()
             .find(|capacity| capacity.slot == "primary")
             .unwrap();
         assert_eq!(primary.window_minutes, Some(300));
-        assert!(!primary.calibrated);
-        assert!((primary.cap_usd - 1_500.0 * 300.0 / 10_080.0).abs() < 1e-6);
+        assert_eq!(primary.source, "unknown");
+        assert_eq!(primary.cap_usd, None);
+        assert_eq!(primary.remaining_usd, None);
         let weekly = home
             .capacities
             .iter()
             .find(|capacity| capacity.slot == "secondary")
             .unwrap();
         assert_eq!(weekly.window_minutes, Some(10_080));
-        assert!((weekly.cap_usd - 1_500.0).abs() < 1e-9);
-        assert!((weekly.remaining_usd - 1_500.0 * 0.9).abs() < 1e-6);
+        assert_eq!(weekly.source, "unknown");
+        assert_eq!(weekly.cap_usd, None);
+        assert_eq!(weekly.remaining_usd, None);
+        assert!(!home.calibration_persistence_ok);
     }
 
     #[tokio::test]
@@ -2036,21 +2036,17 @@ done
     }
 
     #[tokio::test]
-    async fn window_headroom_keeps_a_nearly_exhausted_home_out_of_rotation() {
+    async fn high_observed_percent_without_reached_flag_remains_routable() {
         let (gateway, _workspace, logs) = fake_pool_gateway(&["near_limit", "text"]);
-        // Preflight is what populates the snapshot the admission gate reads, exactly as in serve.
+        // Preflight populates the 97% observational snapshot without a provider reached flag.
         gateway.preflight().await.unwrap();
         gateway
             .run_turn(turn_request(test_model()), None, None)
             .await
             .unwrap();
-        assert!(
-            !served_turn(&logs[0]),
-            "a home at 97% must not be admitted below the 95% headroom"
-        );
-        assert!(served_turn(&logs[1]));
+        assert!(served_turn(&logs[0]), "97% is not an admission restriction");
         let status = gateway.operational_status().await;
-        assert_eq!(status.available, 1);
+        assert_eq!(status.available, 2);
     }
 
     #[tokio::test]

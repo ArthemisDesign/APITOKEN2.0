@@ -1,302 +1,364 @@
-//! Window-capacity calibration for one Codex subscription window.
+//! Evidence-only calibration of one provider-reported Codex subscription window.
 //!
-//! The provider reports window utilisation as coarse integer `usedPercent` snapshots, while the
-//! gateway knows the exact official-price cost of every turn it served. Correlating the two yields
-//! the subscription's real sellable capacity in USD per full window — the same idea as the Claude
-//! pool's `calib_window`, adapted to integer points instead of fractional utilisation headers.
+//! The provider gives integer utilisation and an explicit duration/reset; the gateway gives exact
+//! official API-price spend in integer nanodollars. One snapshot is only an anchor and therefore
+//! cannot reveal an absolute capacity. Every later positive movement contributes to a weighted
+//! least-squares estimate through the origin:
 //!
-//! Two guards mirror the Claude incident lessons:
+//! `capacity_nano = 100 * Σ(Δused_percent * Δgateway_spend_nano) / Σ(Δused_percent²)`.
 //!
-//! - **foreign-usage rejection** — an interval calibrates only when gateway spend explains at least
-//!   half of the observed window movement, otherwise the account owner's own Codex usage would be
-//!   mistaken for pool capacity;
-//! - **plausibility** — a sample outside `[0.25x, 4x]` of the configured prior is rejected, so a
-//!   poisoned or misread snapshot can never inflate the estimate.
-//!
-//! Anchors move on every measured interval, accepted or not, so foreign consumption shifts the
-//! baseline instead of accumulating into the next sample. Sub-threshold deltas accumulate and are
-//! never lost.
+//! There is deliberately no configured prior, EMA, jump clamp, minimum delta, or foreign-usage
+//! rejection. Coarse provider quantisation is represented as confidence and bounds rather than by
+//! discarding real observations or restricting traffic.
 
-/// Integer provider points the window must advance before an interval may calibrate. One point is
-/// within the provider's own update quantisation, so single-point intervals are only accumulated.
-const MIN_DELTA_POINTS: i64 = 2;
-/// Gateway spend must explain at least this share of the observed movement (`ours >= share *
-/// Δused * cap_baseline`); the rest is attributed to usage outside the gateway.
-const MIN_OURS_SHARE: f64 = 0.5;
-/// Plausibility bounds of one sample relative to the configured prior capacity.
-const MIN_PRIOR_FACTOR: f64 = 0.25;
-const MAX_PRIOR_FACTOR: f64 = 4.0;
-/// EMA weight of the running estimate against one accepted sample.
-const ALPHA_OLD: f64 = 0.7;
-/// One accepted sample may move the estimate by at most this factor in either direction.
-const MAX_JUMP: f64 = 2.0;
+use registry::{CodexCalibrationRow, CodexWindowObservation};
 
-/// Calibration state for one window slot (`primary` or `secondary`) of one home.
-#[derive(Clone, Debug)]
+pub const ESTIMATOR_VERSION: i64 = 1;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CapacitySource {
+    MeasuredCurrentWindow,
+    MeasuredPreviousWindow,
+}
+
+impl CapacitySource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MeasuredCurrentWindow => "measured_current_window",
+            Self::MeasuredPreviousWindow => "measured_previous_window",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CapacityEstimate {
+    pub capacity_nano: i64,
+    pub low_nano: Option<i64>,
+    pub high_nano: Option<i64>,
+    pub confidence_bp: i64,
+    pub measured_at: i64,
+    pub source: CapacitySource,
+}
+
+/// Pure estimator state. Persistence and CAS retries live in the billing actor.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowCalibration {
-    /// EMA of the window's official-price capacity in USD. `None` until the first snapshot fixes
-    /// the window identity, because the duration-scaled prior is only known then.
-    cap_usd: Option<f64>,
-    /// Accepted samples; `> 0` distinguishes a measured estimate from a prior.
-    samples: u32,
-    anchor_used: Option<i64>,
-    anchor_spend_usd: f64,
-    /// Provider reset timestamp identifying the window; a change means the window rolled over.
-    anchor_resets_at: Option<i64>,
+    row: CodexCalibrationRow,
 }
 
 impl WindowCalibration {
-    pub fn new() -> Self {
+    pub fn anchor(
+        home_id: &str,
+        window_duration_mins: i64,
+        resets_at: i64,
+        used_percent: i64,
+        spend_nano: i64,
+        observed_at: i64,
+    ) -> Self {
         Self {
-            cap_usd: None,
-            samples: 0,
-            anchor_used: None,
-            anchor_spend_usd: 0.0,
-            anchor_resets_at: None,
+            row: CodexCalibrationRow {
+                home_id: home_id.to_owned(),
+                window_duration_mins,
+                resets_at,
+                anchor_used_percent: used_percent.clamp(0, 100),
+                anchor_spend_nano: spend_nano.max(0),
+                used_percent: used_percent.clamp(0, 100),
+                observed_at,
+                sum_used_sq: 0,
+                sum_used_spend_nano: 0,
+                observed_points: 0,
+                samples: 0,
+                current_capacity_nano: None,
+                current_low_nano: None,
+                current_high_nano: None,
+                current_confidence_bp: 0,
+                last_capacity_nano: None,
+                last_low_nano: None,
+                last_high_nano: None,
+                last_confidence_bp: 0,
+                last_measured_at: None,
+                estimator_version: ESTIMATOR_VERSION,
+                version: 0,
+                updated_ts: observed_at,
+            },
         }
     }
 
-    /// Current capacity estimate in USD per full window. Falls back to `prior_usd` before the
-    /// first observation (or if the estimate was never measured).
-    pub fn cap_usd(&self, prior_usd: f64) -> f64 {
-        self.cap_usd.unwrap_or(prior_usd)
+    pub fn from_row(row: CodexCalibrationRow) -> Self {
+        Self { row }
     }
 
-    /// Whether at least one real sample was accepted; otherwise the figure is a prior.
-    pub fn calibrated(&self) -> bool {
-        self.samples > 0
+    pub fn into_row(self) -> CodexCalibrationRow {
+        self.row
     }
 
-    pub fn samples(&self) -> u32 {
-        self.samples
+    pub fn row(&self) -> &CodexCalibrationRow {
+        &self.row
     }
 
-    /// Estimated remaining sellable capacity of the current window in USD.
-    pub fn remaining_usd(&self, used_percent: i64, prior_usd: f64) -> f64 {
-        let left = (100 - used_percent.clamp(0, 100)) as f64 / 100.0;
-        self.cap_usd(prior_usd) * left
+    pub fn estimate(&self) -> Option<CapacityEstimate> {
+        if let Some(capacity_nano) = self.row.current_capacity_nano {
+            return Some(CapacityEstimate {
+                capacity_nano,
+                low_nano: self.row.current_low_nano,
+                high_nano: self.row.current_high_nano,
+                confidence_bp: self.row.current_confidence_bp,
+                measured_at: self.row.observed_at,
+                source: CapacitySource::MeasuredCurrentWindow,
+            });
+        }
+        self.row
+            .last_capacity_nano
+            .map(|capacity_nano| CapacityEstimate {
+                capacity_nano,
+                low_nano: self.row.last_low_nano,
+                high_nano: self.row.last_high_nano,
+                confidence_bp: self.row.last_confidence_bp,
+                measured_at: self.row.last_measured_at.unwrap_or(self.row.observed_at),
+                source: CapacitySource::MeasuredPreviousWindow,
+            })
     }
 
-    /// Feed one snapshot point. `spend_usd_total` is the home's cumulative official-price spend
-    /// served by the gateway (monotonic). `prior_usd` is the duration-scaled configured prior.
+    pub fn remaining_nano(&self, used_percent: i64) -> Option<i64> {
+        self.estimate().map(|estimate| {
+            let unused = 100i128 - i128::from(used_percent.clamp(0, 100));
+            ((i128::from(estimate.capacity_nano) * unused) / 100).clamp(0, i128::from(i64::MAX))
+                as i64
+        })
+    }
+
+    /// Apply a provider snapshot paired with the durable cumulative spend at the same home.
     pub fn observe(
         &mut self,
+        resets_at: i64,
         used_percent: i64,
-        resets_at: Option<i64>,
-        spend_usd_total: f64,
-        prior_usd: f64,
+        spend_nano: i64,
+        observed_at: i64,
     ) {
         let used = used_percent.clamp(0, 100);
-        if !spend_usd_total.is_finite() || !prior_usd.is_finite() || prior_usd <= 0.0 {
+        let spend = spend_nano.max(0);
+        if observed_at <= self.row.observed_at {
             return;
         }
-        if self.cap_usd.is_none() {
-            self.cap_usd = Some(prior_usd);
-        }
-        // A new window (including the first observation) only sets the baseline: measuring from a
-        // window's unknown midpoint would mistake pre-gateway consumption for our own.
-        if self.anchor_resets_at != resets_at || self.anchor_used.is_none() {
-            self.reanchor(used, spend_usd_total, resets_at);
+        let incompatible = self.row.estimator_version != ESTIMATOR_VERSION
+            || self.row.resets_at != resets_at
+            || used < self.row.anchor_used_percent
+            || spend < self.row.anchor_spend_nano;
+        if incompatible {
+            self.roll_window(resets_at, used, spend, observed_at);
             return;
         }
-        let anchor_used = self.anchor_used.unwrap_or(used);
-        // The counter moved backwards inside the same window (provider accounting restart, plan
-        // change): re-baseline without calibrating, exactly like a window rollover.
-        if used < anchor_used {
-            self.reanchor(used, spend_usd_total, resets_at);
+
+        self.row.observed_at = observed_at;
+        self.row.updated_ts = observed_at;
+        self.row.used_percent = used;
+
+        let delta_used = used - self.row.anchor_used_percent;
+        if delta_used == 0 {
             return;
         }
-        let delta_used = used - anchor_used;
-        if delta_used < MIN_DELTA_POINTS {
-            return; // accumulate; nothing is lost because anchors stand still
-        }
-        let delta_spend = spend_usd_total - self.anchor_spend_usd;
-        let cap = self.cap_usd.unwrap_or(prior_usd);
-        let expected_total = delta_used as f64 / 100.0 * cap;
-        let sample = delta_spend / (delta_used as f64 / 100.0);
-        let ours_explains = delta_spend >= MIN_OURS_SHARE * expected_total;
-        let plausible = sample.is_finite()
-            && sample >= MIN_PRIOR_FACTOR * prior_usd
-            && sample <= MAX_PRIOR_FACTOR * prior_usd;
-        if ours_explains && plausible {
-            let clamped = sample.clamp(cap / MAX_JUMP, cap * MAX_JUMP);
-            self.cap_usd = Some(ALPHA_OLD * cap + (1.0 - ALPHA_OLD) * clamped);
-            self.samples = self.samples.saturating_add(1);
-        }
-        // Re-anchor after every measured interval, accepted or not: foreign consumption moves the
-        // baseline so it cannot leak into the next sample as phantom gateway capacity.
-        self.reanchor(used, spend_usd_total, resets_at);
+        let delta_spend = spend - self.row.anchor_spend_nano;
+        let x = i128::from(delta_used);
+        let y = i128::from(delta_spend);
+        self.row.sum_used_sq = saturating_i64(i128::from(self.row.sum_used_sq) + x * x);
+        self.row.sum_used_spend_nano =
+            saturating_i64(i128::from(self.row.sum_used_spend_nano) + x * y);
+        self.row.observed_points = self.row.observed_points.saturating_add(delta_used);
+        self.row.samples = self.row.samples.saturating_add(1);
+        self.row.anchor_used_percent = used;
+        self.row.anchor_spend_nano = spend;
+        self.recompute();
     }
 
-    fn reanchor(&mut self, used: i64, spend_usd_total: f64, resets_at: Option<i64>) {
-        self.anchor_used = Some(used);
-        self.anchor_spend_usd = spend_usd_total;
-        self.anchor_resets_at = resets_at;
+    fn roll_window(&mut self, resets_at: i64, used: i64, spend: i64, observed_at: i64) {
+        if let Some(capacity) = self.row.current_capacity_nano {
+            self.row.last_capacity_nano = Some(capacity);
+            self.row.last_low_nano = self.row.current_low_nano;
+            self.row.last_high_nano = self.row.current_high_nano;
+            self.row.last_confidence_bp = self.row.current_confidence_bp;
+            self.row.last_measured_at = Some(self.row.observed_at);
+        }
+        self.row.resets_at = resets_at;
+        self.row.anchor_used_percent = used;
+        self.row.anchor_spend_nano = spend;
+        self.row.used_percent = used;
+        self.row.observed_at = observed_at;
+        self.row.sum_used_sq = 0;
+        self.row.sum_used_spend_nano = 0;
+        self.row.observed_points = 0;
+        self.row.samples = 0;
+        self.row.current_capacity_nano = None;
+        self.row.current_low_nano = None;
+        self.row.current_high_nano = None;
+        self.row.current_confidence_bp = 0;
+        self.row.estimator_version = ESTIMATOR_VERSION;
+        self.row.updated_ts = observed_at;
     }
+
+    fn recompute(&mut self) {
+        let denominator = i128::from(self.row.sum_used_sq);
+        if denominator <= 0 {
+            return;
+        }
+        let numerator = 100i128 * i128::from(self.row.sum_used_spend_nano);
+        let capacity = round_nonnegative(numerator, denominator);
+        self.row.current_capacity_nano = Some(capacity);
+
+        // Each reported integer delta may carry roughly one percentage point of endpoint
+        // quantisation. Bounds widen accordingly; the one-point/one-sample upper bound is
+        // intentionally unknown instead of pretending to precision we do not have.
+        let points = i128::from(self.row.observed_points.max(0));
+        let samples = i128::from(self.row.samples.max(0));
+        self.row.current_low_nano = Some(saturating_i64(
+            i128::from(capacity) * points / (points + samples).max(1),
+        ));
+        self.row.current_high_nano = (points > samples)
+            .then(|| saturating_i64(i128::from(capacity) * points / (points - samples).max(1)));
+        self.row.current_confidence_bp =
+            saturating_i64(10_000i128 * points / (points + 2 * samples).max(1)).clamp(0, 10_000);
+    }
+}
+
+pub(crate) fn apply_observation(
+    existing: Option<CodexCalibrationRow>,
+    observation: &CodexWindowObservation,
+) -> CodexCalibrationRow {
+    let mut calibration = existing.map_or_else(
+        || {
+            WindowCalibration::anchor(
+                &observation.home_id,
+                observation.window_duration_mins,
+                observation.resets_at,
+                observation.used_percent,
+                observation.gateway_spend_nano,
+                observation.observed_at,
+            )
+        },
+        WindowCalibration::from_row,
+    );
+    if calibration.row().version > 0 {
+        calibration.observe(
+            observation.resets_at,
+            observation.used_percent,
+            observation.gateway_spend_nano,
+            observation.observed_at,
+        );
+    }
+    calibration.into_row()
+}
+
+fn round_nonnegative(numerator: i128, denominator: i128) -> i64 {
+    if numerator <= 0 || denominator <= 0 {
+        return 0;
+    }
+    saturating_i64((numerator + denominator / 2) / denominator)
+}
+
+fn saturating_i64(value: i128) -> i64 {
+    value.clamp(0, i128::from(i64::MAX)) as i64
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const PRIOR: f64 = 1500.0;
-    const WINDOW: Option<i64> = Some(1_800_000_000);
+    const HOME: &str = "home-1";
+    const DURATION: i64 = 300;
+    const RESET: i64 = 2_000_000_000;
 
-    /// A sequence of (used%, cumulative gateway spend) observations into one calibration.
-    fn observe_all(cal: &mut WindowCalibration, points: &[(i64, f64)]) {
-        for (used, spend) in points {
-            cal.observe(*used, WINDOW, *spend, PRIOR);
+    fn observation(used: i64, spend_nano: i64, observed_at: i64) -> CodexWindowObservation {
+        CodexWindowObservation {
+            home_id: HOME.into(),
+            window_duration_mins: DURATION,
+            resets_at: RESET,
+            observed_at,
+            used_percent: used,
+            gateway_spend_nano: spend_nano,
         }
     }
 
-    #[test]
-    fn first_observation_only_anchors() {
-        let mut cal = WindowCalibration::new();
-        cal.observe(40, WINDOW, 100.0, PRIOR);
-        assert!(!cal.calibrated());
-        assert_eq!(cal.cap_usd(PRIOR), PRIOR);
-        // A sub-threshold move right after the anchor accumulates but must not calibrate yet.
-        cal.observe(41, WINDOW, 150.0, PRIOR);
-        assert!(!cal.calibrated());
-        assert_eq!(cal.cap_usd(PRIOR), PRIOR);
+    fn next(
+        row: Option<CodexCalibrationRow>,
+        used: i64,
+        spend_nano: i64,
+        observed_at: i64,
+    ) -> CodexCalibrationRow {
+        let mut row = apply_observation(row, &observation(used, spend_nano, observed_at));
+        // Persistence owns version increments; emulate one successful CAS for pure tests.
+        row.version = row.version.saturating_add(1);
+        row
     }
 
     #[test]
-    fn clean_isolated_sample_calibrates_with_visible_ema_blend() {
-        let mut cal = WindowCalibration::new();
-        // Anchor at 10%, then 4 points fully explained by $80 of gateway spend: sample = $2000,
-        // deliberately different from the $1500 prior so the 0.7/0.3 blend is observable.
-        observe_all(&mut cal, &[(10, 0.0), (14, 80.0)]);
-        assert!(cal.calibrated());
-        let expected = 0.7 * PRIOR + 0.3 * 2000.0;
-        assert!(
-            (cal.cap_usd(PRIOR) - expected).abs() < 1e-9,
-            "cap {} != blended {expected}",
-            cal.cap_usd(PRIOR)
-        );
+    fn first_snapshot_is_unknown_instead_of_a_dollar_prior() {
+        let row = next(None, 40, 100_000_000_000, 100);
+        let calibration = WindowCalibration::from_row(row);
+        assert_eq!(calibration.estimate(), None);
+        assert_eq!(calibration.remaining_nano(40), None);
     }
 
     #[test]
-    fn sub_threshold_deltas_accumulate_without_loss() {
-        let mut cal = WindowCalibration::new();
-        // Each single-point step is below MIN_DELTA_POINTS; together they form one valid interval.
-        observe_all(&mut cal, &[(10, 0.0), (11, 20.0), (12, 40.0), (13, 60.0)]);
-        assert!(cal.calibrated(), "accumulated interval must calibrate");
-        let expected = 0.7 * PRIOR + 0.3 * 2000.0;
-        assert!((cal.cap_usd(PRIOR) - expected).abs() < 1e-9);
+    fn one_percentage_point_is_real_measurement() {
+        let row = next(None, 40, 100_000_000_000, 100);
+        let row = next(Some(row), 41, 120_000_000_000, 101);
+        let estimate = WindowCalibration::from_row(row).estimate().unwrap();
+        assert_eq!(estimate.capacity_nano, 2_000_000_000_000);
+        assert_eq!(estimate.source, CapacitySource::MeasuredCurrentWindow);
+        assert!(estimate.high_nano.is_none());
     }
 
     #[test]
-    fn foreign_usage_moves_the_anchor_without_calibrating() {
-        let mut cal = WindowCalibration::new();
-        // The account owner burns 10 points outside the gateway while gateway spend is ~0: ours
-        // explains ~0 of the movement, so the interval is rejected and the baseline moves.
-        observe_all(&mut cal, &[(10, 0.0), (20, 1.0)]);
-        assert!(!cal.calibrated());
-        assert_eq!(cal.cap_usd(PRIOR), PRIOR);
-        // The following clean interval measures only gateway traffic from the shifted anchor.
-        observe_all(&mut cal, &[(24, 81.0)]);
-        assert!(cal.calibrated());
-        let expected = 0.7 * PRIOR + 0.3 * 2000.0;
-        assert!((cal.cap_usd(PRIOR) - expected).abs() < 1e-9);
+    fn weighted_regression_uses_every_positive_interval_exactly() {
+        let row = next(None, 10, 0, 100);
+        let row = next(Some(row), 12, 40_000_000_000, 101); // x=2, y=$40
+        let row = next(Some(row), 16, 140_000_000_000, 102); // x=4, y=$100
+                                                             // 100 * (2*40 + 4*100) / (2² + 4²) = $2400.
+        let estimate = WindowCalibration::from_row(row).estimate().unwrap();
+        assert_eq!(estimate.capacity_nano, 2_400_000_000_000);
     }
 
     #[test]
-    fn implausibly_high_sample_is_rejected() {
-        let mut cal = WindowCalibration::new();
-        // $40_000 against 4 points = $1_000_000/window: beyond 4x prior, so it is quarantined
-        // even though gateway spend "explains" it.
-        observe_all(&mut cal, &[(10, 0.0), (14, 40_000.0)]);
-        assert!(!cal.calibrated());
-        assert_eq!(cal.cap_usd(PRIOR), PRIOR);
+    fn reset_keeps_only_a_measured_previous_window() {
+        let row = next(None, 10, 0, 100);
+        let row = next(Some(row), 12, 40_000_000_000, 101);
+        let mut observation = observation(3, 50_000_000_000, 102);
+        observation.resets_at += 300;
+        let row = apply_observation(Some(row), &observation);
+        let estimate = WindowCalibration::from_row(row.clone()).estimate().unwrap();
+        assert_eq!(estimate.source, CapacitySource::MeasuredPreviousWindow);
+        assert_eq!(estimate.measured_at, 101);
+        assert!(row.current_capacity_nano.is_none());
+        assert_eq!(row.samples, 0);
+        assert_eq!(row.updated_ts, 102);
     }
 
     #[test]
-    fn implausibly_low_sample_is_rejected() {
-        let mut cal = WindowCalibration::new();
-        // $4 against 4 points = $100/window: below 0.25x prior.
-        // ours_explains passes (4 >= 0.5 * 0.04 * 1500 = 30 is false, so this sample is rejected by
-        // BOTH guards; isolate plausibility by giving enough spend to satisfy ours_explains but a
-        // tiny per-point price... that is impossible by construction, so assert the combined
-        // rejection and verify the estimate is untouched).
-        observe_all(&mut cal, &[(10, 0.0), (14, 4.0)]);
-        assert!(!cal.calibrated());
-        assert_eq!(cal.cap_usd(PRIOR), PRIOR);
+    fn reset_without_measurement_stays_unknown() {
+        let row = next(None, 10, 0, 100);
+        let mut observation = observation(3, 0, 101);
+        observation.resets_at += 300;
+        let row = apply_observation(Some(row), &observation);
+        assert_eq!(WindowCalibration::from_row(row).estimate(), None);
     }
 
     #[test]
-    fn one_sample_cannot_jump_the_estimate_more_than_the_clamp() {
-        let mut cal = WindowCalibration::new();
-        // Sample $5900 (within 4x prior) against the $1500 prior: the blend would land at $2820,
-        // but the 2x jump clamp caps the sample at $3000 first.
-        observe_all(&mut cal, &[(10, 0.0), (14, 236.0)]);
-        assert!(cal.calibrated());
-        let expected = 0.7 * PRIOR + 0.3 * (PRIOR * MAX_JUMP);
-        assert!((cal.cap_usd(PRIOR) - expected).abs() < 1e-9);
+    fn remaining_is_exact_integer_unused_share() {
+        let row = next(None, 10, 0, 100);
+        let row = next(Some(row), 12, 40_000_000_000, 101);
+        let calibration = WindowCalibration::from_row(row);
+        assert_eq!(calibration.remaining_nano(50), Some(1_000_000_000_000));
+        assert_eq!(calibration.remaining_nano(100), Some(0));
     }
 
     #[test]
-    fn window_rollover_reanchors_and_keeps_the_estimate() {
-        let mut cal = WindowCalibration::new();
-        observe_all(&mut cal, &[(10, 0.0), (14, 80.0)]);
-        let measured = cal.cap_usd(PRIOR);
-        assert!(cal.calibrated());
-        // New reset identity: the fresh window only re-baselines, the measured estimate survives.
-        cal.observe(3, Some(1_900_000_000), 200.0, PRIOR);
-        assert_eq!(cal.samples(), 1);
-        assert_eq!(cal.cap_usd(PRIOR), measured);
-        cal.observe(6, Some(1_900_000_000), 260.0, PRIOR);
-        assert_eq!(cal.samples(), 2, "clean interval in the new window calibrates");
-    }
-
-    #[test]
-    fn backwards_counter_reanchors_without_calibrating() {
-        let mut cal = WindowCalibration::new();
-        observe_all(&mut cal, &[(40, 0.0), (25, 5.0)]);
-        assert!(!cal.calibrated());
-        // And the next forward interval measures from the re-based 25%.
-        observe_all(&mut cal, &[(29, 85.0)]);
-        assert!(cal.calibrated());
-    }
-
-    #[test]
-    fn repeated_samples_converge_to_the_true_capacity() {
-        let mut cal = WindowCalibration::new();
-        let true_cap = 1800.0;
-        let mut used = 0i64;
-        let mut spend = 0.0f64;
-        cal.observe(used, WINDOW, spend, PRIOR);
-        for _ in 0..10 {
-            used += 3;
-            spend += 0.03 * true_cap;
-            cal.observe(used, WINDOW, spend, PRIOR);
-        }
-        let cap = cal.cap_usd(PRIOR);
-        assert!(
-            (cap - true_cap).abs() / true_cap < 0.05,
-            "cap {cap} should converge near {true_cap}"
-        );
-    }
-
-    #[test]
-    fn remaining_capacity_scales_with_used_percent() {
-        let mut cal = WindowCalibration::new();
-        observe_all(&mut cal, &[(0, 0.0), (4, 80.0)]);
-        let cap = cal.cap_usd(PRIOR);
-        assert!((cal.remaining_usd(50, PRIOR) - cap * 0.5).abs() < 1e-9);
-        assert_eq!(cal.remaining_usd(100, PRIOR), 0.0);
-        assert_eq!(cal.remaining_usd(140, PRIOR), 0.0, "clamped, never negative");
-    }
-
-    #[test]
-    fn non_finite_or_nonpositive_prior_never_poisons_state() {
-        let mut cal = WindowCalibration::new();
-        cal.observe(10, WINDOW, 0.0, f64::NAN);
-        cal.observe(14, WINDOW, 80.0, f64::INFINITY);
-        cal.observe(18, WINDOW, 160.0, 0.0);
-        assert!(!cal.calibrated());
-        cal.observe(18, WINDOW, 160.0, PRIOR);
-        cal.observe(22, WINDOW, 240.0, PRIOR);
-        assert!(cal.calibrated(), "valid samples still calibrate after junk");
+    fn independent_durations_do_not_share_state() {
+        let five_hour = next(None, 10, 0, 100);
+        let five_hour = next(Some(five_hour), 12, 40_000_000_000, 101);
+        let mut weekly_observation = observation(70, 500_000_000_000, 102);
+        weekly_observation.window_duration_mins = 10_080;
+        let weekly = apply_observation(None, &weekly_observation);
+        assert!(five_hour.current_capacity_nano.is_some());
+        assert!(weekly.current_capacity_nano.is_none());
+        assert_ne!(five_hour.window_duration_mins, weekly.window_duration_mins);
     }
 }

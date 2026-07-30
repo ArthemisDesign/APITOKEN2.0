@@ -1428,11 +1428,7 @@ fn parse_rate_limits(value: &Value) -> Option<CodexRateLimits> {
         || object
             .get("spendControlReached")
             .and_then(Value::as_bool)
-            .unwrap_or(false)
-        || primary
-            .iter()
-            .chain(secondary.iter())
-            .any(|window| window.used_percent >= 100);
+            .unwrap_or(false);
     Some(CodexRateLimits {
         primary,
         secondary,
@@ -1501,8 +1497,6 @@ mod tests {
             startup_timeout_ms: 1_000,
             request_timeout_ms: 1_000,
             turn_timeout_ms: 1_000,
-            admit_below_used_percent: 95,
-            window_cap_usd_prior: 1_500.0,
             health_probe_interval_secs: 300,
             reserve_overhead_tokens: 0,
             history_ttl_secs: 60,
@@ -1900,6 +1894,23 @@ mod tests {
         assert!(limits.reached);
         assert_eq!(limits.primary.unwrap().used_percent, 100);
         assert!(shared.orphan_events.lock().await.is_empty());
+    }
+
+    #[test]
+    fn one_hundred_percent_without_provider_reached_flag_is_observational() {
+        let limits = parse_rate_limits(&json!({
+            "primary": {
+                "usedPercent": 100,
+                "windowDurationMins": 300,
+                "resetsAt": 4_102_444_800_i64
+            },
+            "secondary": null,
+            "rateLimitReachedType": null,
+            "spendControlReached": false
+        }))
+        .unwrap();
+        assert_eq!(limits.primary.unwrap().used_percent, 100);
+        assert!(!limits.reached);
     }
 
     #[tokio::test]

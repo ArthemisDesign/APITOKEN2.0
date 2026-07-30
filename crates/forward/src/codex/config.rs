@@ -107,14 +107,6 @@ pub struct CodexConfig {
     pub startup_timeout_ms: u64,
     pub request_timeout_ms: u64,
     pub turn_timeout_ms: u64,
-    /// Stop admitting a home once a reported window reaches this utilisation, keeping headroom so
-    /// the wall is met by a clean 429 with a real reset rather than mid-turn.
-    pub admit_below_used_percent: i64,
-    /// Prior for one subscription's WEEKLY window capacity in official-price USD, used until
-    /// calibration measures the real figure (and as its plausibility anchor). Set it to the plan's
-    /// expectation — a ChatGPT Pro account measured ≈$1.7–1.8k/week; samples outside [0.25x, 4x]
-    /// of this value are rejected, so a Plus pool should configure a correspondingly lower prior.
-    pub window_cap_usd_prior: f64,
     /// How often the background loop re-checks each home's authentication and window snapshot.
     pub health_probe_interval_secs: u64,
     /// Conservative preflight allowance for provider-hidden/runtime tokens that are not present in

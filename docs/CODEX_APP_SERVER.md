@@ -348,10 +348,10 @@ unchanged. Listing one directory twice is a startup error: two children sharing 
 corrupt its token refresh and would double-count one subscription's capacity. There is no local
 Codex concurrency setting: app-server serializes requests within one thread, but independent
 ephemeral API threads run concurrently over the same authenticated process; the per-home in-flight
-count is only a load signal for selection. The legacy `CLAUDE_API_CODEX_MAX_CONCURRENT` variable is
-not read. Codex does not use the Claude provider's global admission semaphore or the commercial
-per-key in-flight limiter. Upstream subscription exhaustion, authentication, billing authorization
-and bounded transport deadlines remain real provider/safety boundaries. Provision each additional
+count is only a load signal for selection. Codex does not use the Claude provider's global admission
+semaphore or the commercial per-key in-flight limiter. Upstream subscription exhaustion,
+authentication, billing authorization and bounded transport deadlines remain real provider/safety
+boundaries. Provision each additional
 home exactly like the first — `0700`, owned by the engine user — and authenticate it separately with
 the device flow above.
 
@@ -359,18 +359,19 @@ Home selection is cache-first, mirroring the Claude fleet's affinity layer: a co
 to the home that first served it (via the shared `AffinityStore`, keyed by the same tenant scope and
 projected onto the same canonical shape through `infer_codex`), so a follow-up request reuses that
 home's warm OpenAI prompt cache instead of being spread by load. A shared system/tools cache root
-immediately seeds two competitive homes when the pool has them; after that, a warm home is preferred
-only while its remaining calibrated-or-prior USD capacity is at least 70% of the fleet leader.
-Otherwise placement uses the global capacity leader immediately. This is neither a timer nor a
-readiness quorum: one working home serves normally, and no background repair process is involved.
+immediately seeds two homes when the pool has them; after that, the least-loaded warm copy is
+preferred. A pinned conversation remains the first choice, then candidates are ordered by in-flight
+turns and a rotating discovery-order tie-break. Measured capacity is reporting evidence only: it
+does not gate admission or routing. This is neither a timer nor a readiness quorum: one working home
+serves normally, and no background repair process is involved.
 OpenAI root warmth uses
 the provider's 30-minute default retention while Anthropic retains its own 5m/1h cache-control TTLs.
 Affinity is a fail-open optimization — local L1 plus the optional shared Redis L2 — and is a no-op
 while the pool holds a single home. Fixed provider processes derive separate affinity keys from the
 shared secret, so Anthropic and OpenAI session aliases cannot overwrite each other's Redis placement.
-Candidates tied on remaining capacity and in-flight turns use an atomic rotating discovery-order
-cursor. This spreads both sequential traffic and simultaneous selectors instead of herding every
-equal snapshot onto the first configured subscription.
+Candidates tied on in-flight turns use an atomic rotating discovery-order cursor. This spreads both
+sequential traffic and simultaneous selectors instead of herding every equal snapshot onto the
+first configured subscription.
 The selected lineage also supplies the upstream `prompt_cache_key`, so cache placement and
 subscription placement cannot diverge. On spill after an account limit/auth failure, the same key
 is retained while the affinity binding is atomically rebound to the home that completed the turn.
@@ -385,8 +386,6 @@ retire the old child after its active turns finish, then publish the new generat
 Optional controls:
 
 ```dotenv
-CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT=100
-CLAUDE_API_CODEX_WINDOW_CAP_USD=1500
 CLAUDE_API_CODEX_HEALTH_INTERVAL_SECS=10
 CLAUDE_API_CODEX_STARTUP_TIMEOUT_MS=20000
 CLAUDE_API_CODEX_RPC_TIMEOUT_MS=15000
@@ -434,31 +433,46 @@ Admission makes a conservative input estimate and reserves provider-hidden overh
 refunds the difference using exact upstream usage.
 
 App-server rate-limit notifications are cached and exported as process/rate-limit metrics, per home
-and in aggregate. A home stops being admitted once a reported window reaches
-`CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT` (100% by default), so the wall is met by a clean `429`
-carrying the real reset instead of mid-turn; a missing snapshot is treated as available because that
-endpoint is observational and must never become a hard availability dependency. When every home is
-cooling or out of headroom the client receives one OpenAI-shaped `429` with the soonest recovery,
-never an individual account's error. Settled traffic is attributed with an explicit `provider`
+and in aggregate. `usedPercent`, including the integer value 100, is observational and never a
+gateway-created admission wall. A home leaves rotation only after the provider explicitly reports
+`rateLimitReachedType`/`spendControlReached`, returns an actual usage-limit/429, rejects auth or
+subscription, or is cooling for a real transport/account failure. Missing duration/reset data is
+reported as unknown and never guessed as a weekly window. When every home is genuinely unavailable,
+the client receives one OpenAI-shaped `429` with the soonest known recovery, never an individual
+account's error. Settled traffic is attributed with an explicit `provider`
 column (`anthropic` / `openai`) so the admin spend breakdown reports which upstream earned a request
 rather than inferring it from the model string.
 
 ### Window-capacity calibration
 
-Every successful turn (billed or admin) credits its exact official-price cost to the serving home,
-and each rate-limit snapshot feeds a per-window calibration: an interval of at least two integer
-`usedPercent` points calibrates `cap = Δspend / Δused` only when gateway spend explains at least
-half of the movement (the account owner's own Codex usage must not become pool capacity) and the
-sample is within `[0.25x, 4x]` of the configured prior (anti-poison). Accepted samples blend into
-an EMA clamped to a 2x jump per step; window rollover only re-anchors. The result — the
-subscription's sellable capacity in official-price USD per full window — is exported as
-`claude_api_codex_home_window_capacity_usd{home,slot}` with a `..._calibrated` flag distinguishing
-measured figures from the prior, `claude_api_codex_home_window_remaining_usd` for the unused share,
-and pool sums in `claude_api_codex_window_capacity_usd{slot}` /
-`claude_api_codex_window_remaining_usd{slot}`. The prior is `CLAUDE_API_CODEX_WINDOW_CAP_USD`
-(default $1500/week; a ChatGPT Pro account measured ≈$1700–1800/week in July 2026), scaled by
-window duration for non-weekly windows. Calibration state is in-memory: after a restart it
-re-anchors from the first new snapshot, so treat the first hours after a deploy as prior-backed. Streaming delivery is bounded: a client that stops consuming frames cannot block the shared
+Every successful turn (billed or admin) atomically credits its exact official-price cost in integer
+nanoUSD to the serving home. Calibration identity is `(home_id, windowDurationMins, resetsAt)`; the
+provider's primary/secondary names are presentation only. The first snapshot sets an anchor and
+returns `cap_usd: null`, because no honest absolute dollar capacity can be inferred from one
+percentage reading. Every later positive interval contributes to integer weighted least squares:
+
+```text
+capacityNano = 100 * Σ(ΔusedPercent * ΔgatewaySpendNano) / Σ(ΔusedPercent²)
+remainingNano = capacityNano * (100 - usedPercent) / 100
+```
+
+There is no `$1500` fallback, configured prior, minimum percentage movement, EMA, plausibility
+range, foreign-share rejection or jump clamp. One percentage point is valid evidence immediately.
+Provider integer quantisation is exposed through `low_usd`, `high_usd`, `confidence` and `samples`,
+not hidden by rejecting observations. On reset or a backwards counter, the current measured result
+becomes `measured_previous_window`, current sufficient statistics are cleared and the new snapshot
+is only an anchor. A previous estimate is carried only if it was actually measured.
+
+The engine authority durably stores cumulative home spend, CAS-versioned duration state and
+deduplicated raw observations. This survives process restart and overlapping blue-green writers;
+production startup refuses Codex without that authority. `/codex-subs` reports `source` as
+`unknown`, `measured_current_window` or `measured_previous_window`, and groups fleet totals by real
+`window_minutes`. Prometheus omits dollar gauges while unknown and exposes
+`claude_api_codex_home_window_estimate_available`, confidence/bounds/samples/data age and
+`claude_api_codex_home_calibration_persistence_ok`; measured pool totals use the actual
+`window_minutes` label rather than a fixed 5h/7d slot.
+
+Streaming delivery is bounded: a client that stops consuming frames cannot block the shared
 app-server transport indefinitely. Its already-started turn is still drained to authoritative usage
 and settled, matching the existing Claude disconnect invariant. Detached Responses/Chat stream tasks
 hold a gateway shutdown permit through history persistence and settlement; shutdown waits for all of

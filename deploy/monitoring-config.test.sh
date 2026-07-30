@@ -238,6 +238,7 @@ for codex_metric in \
   'claude_api_codex_process_live' \
   'claude_api_codex_homes_available' \
   'claude_api_codex_home_authenticated' \
+  'claude_api_codex_home_calibration_persistence_ok' \
   'claude_api_codex_home_rate_limit_used_percent'; do
   grep -Fq "$codex_metric" "$ROOT/crates/server/src/http.rs" \
     || { printf 'engine does not export %s\n' "$codex_metric" >&2; exit 1; }
@@ -248,7 +249,7 @@ for codex_metric in \
     || { printf 'Codex alert is not scoped to OpenAI: %s\n' "$codex_metric" >&2; exit 1; }
 done
 for codex_alert in CodexProviderDown CodexNoAvailableHomes CodexHomeUnauthenticated \
-  CodexHomeNearRateLimit; do
+  CodexHomeNearRateLimit CodexCalibrationPersistenceFailed; do
   grep -Fq "alert: $codex_alert" "$ROOT/observability/prometheus/rules/application.yml" \
     || { printf 'missing Codex alert %s\n' "$codex_alert" >&2; exit 1; }
   anchor=$(printf '%s' "$codex_alert" | tr '[:upper:]' '[:lower:]')

@@ -159,7 +159,7 @@ main{padding:18px 14px 50px}.page-head h1{font-size:19px}.form{grid-template-col
 @media(max-width:620px){.cards,.form,.domain-grid{grid-template-columns:1fr}.card .value{font-size:23px}}
 </style>
 </head>
-<body data-admin-panel-version="16">
+<body data-admin-panel-version="17">
 <div id="app"></div>
 <div id="error-center" class="error-center" aria-live="polite"></div>
 <script>
@@ -365,13 +365,16 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
     card('утилизация 7д средняя',avgUtil7d,'по routable подпискам')+
     card('dead / suspect',dead+' / '+suspect,dead?'нужна замена токена':suspect?'корроборация probe идёт':'флот чист');
   // GPT: per-home operational status из OpenAI-runtime.
-  const totals=codex?.window_totals||{};
-  const gptRemain=(totals.primary?.remaining_usd||0)+(totals.secondary?.remaining_usd||0);
+  const totals=Array.isArray(codex?.window_totals)?codex.window_totals:[];
+  const measuredTotals=totals.filter(item=>item.cap_usd!==null&&item.cap_usd!==undefined);
+  const gptRemain=measuredTotals.reduce((sum,item)=>sum+Number(item.remaining_usd||0),0);
+  const gptCap=measuredTotals.reduce((sum,item)=>sum+Number(item.cap_usd||0),0);
+  const gptUnknown=totals.reduce((sum,item)=>sum+Math.max(0,Number(item.observed_homes||0)-Number(item.measured_homes||0)),0);
   const gptInflight=homes.reduce((sum,h)=>sum+(h.inflight||0),0);
   const gptSpend=homes.reduce((sum,h)=>sum+(Number(h.spend_usd_total)||0),0);
   const gptCards=gptOff?card('GPT подписки','выкл.','OpenAI runtime без codex-конфигурации'):
     card('GPT подписки',gptDown?'—':homes.length,gptDown?'источник недоступен':(codex.available+' доступно · '+homes.filter(h=>h.process_live).length+' live'))+
-    card('GPT · остаток окон',gptDown||gptOff?'—':money(gptRemain),gptDown||gptOff?'':'из '+money((totals.primary?.cap_usd||0)+(totals.secondary?.cap_usd||0))+' ёмкости')+
+    card('GPT · остаток окон',gptDown||gptOff?'—':measuredTotals.length?money(gptRemain):'ждём Δused',gptDown||gptOff?'':measuredTotals.length?'из '+money(gptCap)+' измеренной ёмкости'+(gptUnknown?' · '+gptUnknown+' без оценки':''):'первый снимок — только якорь, без прайора')+
     card('GPT · в работе',gptDown?'—':gptInflight,'inflight turns сейчас')+
     card('GPT · потрачено',gptDown?'—':money(gptSpend),'official-price, накопительно');
   const homeStatus=h=>{const nowSec=Date.now()/1000|0;
@@ -379,20 +382,21 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
     if(!h.auth_ok)return pill('ошибка auth','bad');
     if(h.cooling_until>nowSec)return pill('cooling '+duration(h.cooling_until-nowSec),'warn');
     if(h.rate_limits?.reached)return pill('лимит достигнут','warn');
+    if(h.calibration_persistence_ok===false)return pill('active · calibration storage','warn');
     return pill('active','ok')};
   const gptRows=homes.map(h=>{const windows=h.windows||[];
     const bySlot=slot=>windows.find(w=>w.slot===slot);
-    const winCell=w=>w?'<div>'+percentBar(w.used_percent)+'</div><div class="sub">'+windowLabel(w.window_minutes)+(w.calibrated?'':' · прайор')+'</div>':'—';
+    const winCell=w=>w?'<div>'+percentBar(w.used_percent)+'</div><div class="sub">'+windowLabel(w.window_minutes)+(w.source==='unknown'?' · ждём Δused':w.source==='measured_previous_window'?' · оценка прошлого окна':' · факт, confidence '+Math.round(Number(w.confidence||0)*100)+'%')+'</div>':'—';
     const rl=h.rate_limits||{};
     const resetCell=w=>w&&w.resets_at?duration(w.resets_at-Date.now()/1000):'—';
     return '<tr><td class="left"><b class="mono">'+esc(h.id)+'</b></td><td>'+homeStatus(h)+'</td><td>'+h.inflight+'</td>'+
       '<td>'+winCell(bySlot('primary'))+(bySlot('primary')?'<div class="sub">сброс '+resetCell(rl.primary)+'</div>':'')+'</td>'+
       '<td>'+winCell(bySlot('secondary'))+(bySlot('secondary')?'<div class="sub">сброс '+resetCell(rl.secondary)+'</div>':'')+'</td>'+
-      '<td><b>'+money((bySlot('primary')?.remaining_usd||0))+'</b><div class="sub">7д '+money((bySlot('secondary')?.remaining_usd||0))+'</div></td>'+
+      '<td><b>'+(bySlot('primary')?.remaining_usd==null?'—':money(bySlot('primary').remaining_usd))+'</b><div class="sub">'+windowLabel(bySlot('secondary')?.window_minutes)+' '+(bySlot('secondary')?.remaining_usd==null?'—':money(bySlot('secondary').remaining_usd))+'</div></td>'+
       '<td><b>'+money(h.spend_usd_total)+'</b><div class="sub">official-price</div></td></tr>'}).join('');
   const gptTable=gptDown?'<div class="empty" style="padding:26px">OpenAI-runtime недоступен — /codex-subs не отвечает</div>':
     gptOff?'<div class="empty" style="padding:26px">Codex-контур выключен на этом runtime</div>':
-    '<div class="tscroll"><table><thead><tr><th class="left">home</th><th>статус</th><th>в работе</th><th>окно 5 ч</th><th>окно 7 д</th><th>остаток</th><th>потрачено</th></tr></thead><tbody>'+(gptRows||empty(7))+'</tbody></table></div>';
+    '<div class="tscroll"><table><thead><tr><th class="left">home</th><th>статус</th><th>в работе</th><th>primary (факт. окно)</th><th>secondary (факт. окно)</th><th>остаток API $</th><th>потрачено</th></tr></thead><tbody>'+(gptRows||empty(7))+'</tbody></table></div>';
   // Gemini: официальный per-model quota catalogue и exact transport attestation.
   const geminiModels=gemini?.models||[],geminiNow=Number(gemini?.now||Date.now()/1000),geminiAffinity=gemini?.affinity||{};
   const geminiCards=geminiOff?card('Gemini подписки','выкл.','Gemini runtime без профилей'):
@@ -440,7 +444,7 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
     '<div class="sect"><h2>Gemini</h2><span class="sect-sub">Antigravity OAuth · Cloud Code transport, quota catalogue и legacy-миграция</span></div>'+
     '<div class="cards">'+geminiCards+'</div>'+
     '<div class="tcard" style="margin-top:12px">'+geminiTable+'</div>'+geminiDetails+
-    '<footer>Обновление каждые 10с, пока вкладка видима · «доступно» учитывает cooling и официальные reset times · «пик» — истинный максимум ёмкости на дистанции (не EMA) · «прайор» — окно ещё не откалибровано реальным расходом. Email и Google identity намеренно не выводятся.</footer>';
+    '<footer>Обновление каждые 10с, пока вкладка видима · GPT: null/«ждём Δused» означает, что есть только первый реальный якорь — прайор не подставляется · «пик» и прайор относятся только к отдельному Claude-контуру. Email и Google identity намеренно не выводятся.</footer>';
   const fleetTotal=list.length+(gptOff?0:homes.length)+(geminiOff?0:geminiProfiles.length),fleetWarn=dead||gptDown||geminiDown||geminiEmpty||geminiUnavailable||geminiAuthBad||geminiMissing;
   shell('Подписки','Claude, GPT и Gemini: здоровье, окна, quota и transport',body,pill(count(fleetTotal,'подписка','подписки','подписок'),fleetWarn?'warn':'ok'))}
 

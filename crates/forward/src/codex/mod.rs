@@ -21,6 +21,7 @@ pub use api::{
     input_tokens as openai_input_tokens, model as openai_model, models as openai_models,
     response_input_items as openai_response_input_items, responses as openai_responses,
 };
+pub(crate) use calibration::apply_observation;
 pub use calibration::WindowCalibration;
 pub use chat::completions as openai_chat_completions;
 pub use config::{CodexConfig, CodexHomeSpec, CodexModel, CodexPrices, CodexTransport};
@@ -30,8 +31,9 @@ pub use process::{CodexRateLimitWindow, CodexRateLimits};
 pub(crate) use runner::{CodexTurnRequest, CodexTurnResult, CodexUsage, TurnUpdate};
 
 use crate::affinity::{AffinityInput, AffinityResolution, AffinityStore};
+use crate::billing::AsyncBilling;
 use history::HistoryStore;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -125,57 +127,12 @@ const DEFAULT_LIMIT_RETRY_SECS: u64 = 60;
 /// Match the Claude fleet's cache-root fanout: one shared prompt prefix is deliberately warmed on
 /// two competitive homes so independent sessions do not collapse onto the first subscription.
 const CACHE_ROOT_MIN_WARM_HOMES: usize = 2;
-/// Reuse cache warmth only while the candidate retains at least this share of the fleet's best
-/// remaining provider capacity. This is a comparison, never a time window or an availability gate.
-const CACHE_ROOT_MIN_CAPACITY_RATIO: f64 = 0.70;
 /// Detached public stream tasks are bounded by the server-wide admission limit in practice. This
 /// larger private semaphore provides a quiescence barrier without imposing a lower runtime cap.
 const MAX_BACKGROUND_TASKS: u32 = 1_000_000;
 /// Once the server's advertised drain deadline has expired, cleanup itself must also be bounded.
 /// systemd cannot start the replacement singleton while the old main PID remains in `deactivating`.
 const FORCED_SHUTDOWN_CLEANUP_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
-
-#[derive(Clone, Copy, Debug)]
-struct CacheRootCandidate {
-    warm: bool,
-    free_capacity: f64,
-}
-
-/// Candidates arrive best-first. Seed a second competitive cache copy, then prefer a warm copy
-/// while it remains close enough to the global capacity leader. The returned index is an immediate
-/// placement decision; no sampling count, timer, background repair or minimum live-home quorum is
-/// involved.
-fn cache_root_primary_index(candidates: &[CacheRootCandidate]) -> usize {
-    debug_assert!(!candidates.is_empty());
-    let global_free = candidates[0].free_capacity.max(0.0);
-    let competitive = |candidate: &CacheRootCandidate| {
-        candidate.free_capacity.max(0.0) >= global_free * CACHE_ROOT_MIN_CAPACITY_RATIO
-    };
-    let warm_count = candidates.iter().filter(|candidate| candidate.warm).count();
-
-    if warm_count < CACHE_ROOT_MIN_WARM_HOMES {
-        if let Some((index, candidate)) = candidates
-            .iter()
-            .enumerate()
-            .find(|(_, candidate)| !candidate.warm)
-        {
-            if competitive(candidate) {
-                return index;
-            }
-        }
-    }
-
-    if let Some((index, candidate)) = candidates
-        .iter()
-        .enumerate()
-        .find(|(_, candidate)| candidate.warm)
-    {
-        if competitive(candidate) {
-            return index;
-        }
-    }
-    0
-}
 
 #[derive(Debug)]
 struct ProviderLock {
@@ -267,24 +224,31 @@ pub struct CodexHomeStatus {
     pub rate_limits: Option<CodexRateLimits>,
     /// Cumulative official-price spend this home has served through the gateway.
     pub spend_usd_total: f64,
+    /// False after a persistence failure (or in an explicitly in-memory test gateway).
+    pub calibration_persistence_ok: bool,
     /// Capacity estimate per reported window slot (empty until the first snapshot arrives).
     pub capacities: Vec<CodexWindowCapacityReport>,
 }
 
-/// Measured (or prior) sellable capacity of one subscription window slot, in official-price USD.
+/// Evidence-backed capacity of one provider-reported subscription window.
 #[derive(Clone, Debug)]
 pub struct CodexWindowCapacityReport {
     /// `primary` or `secondary`, mirroring the provider's rate-limit payload.
     pub slot: &'static str,
     pub window_minutes: Option<i64>,
+    pub resets_at: Option<i64>,
+    pub observed_at: i64,
+    pub data_age_seconds: Option<i64>,
     pub used_percent: i64,
-    /// EMA capacity estimate per full window; a prior until the first accepted sample.
-    pub cap_usd: f64,
-    /// `cap_usd` scaled by the unused share of the current window.
-    pub remaining_usd: f64,
-    /// True once at least one real sample was accepted; false means `cap_usd` is the prior.
-    pub calibrated: bool,
-    pub samples: u32,
+    /// `None` until a real positive utilisation movement is paired with gateway spend.
+    pub cap_usd: Option<f64>,
+    pub remaining_usd: Option<f64>,
+    pub low_usd: Option<f64>,
+    pub high_usd: Option<f64>,
+    /// `measured_current_window`, `measured_previous_window`, or `unknown`.
+    pub source: &'static str,
+    pub confidence: f64,
+    pub samples: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -294,8 +258,8 @@ pub struct CodexOperationalStatus {
     /// Snapshot of the most constrained home, for the provider-level rate-limit metrics.
     pub rate_limits: Option<CodexRateLimits>,
     pub homes: Vec<CodexHomeStatus>,
-    /// Homes that could accept a request right now (live-or-startable, not cooling, within
-    /// headroom).
+    /// Homes that could accept a request right now (live-or-startable, not cooling and without an
+    /// explicit provider reached verdict).
     pub available: usize,
     /// Unix time when the first unavailable home is expected back, if any is cooling.
     pub soonest_ready: Option<i64>,
@@ -321,18 +285,25 @@ pub(crate) struct CodexHome {
     cooling_until: AtomicI64,
     /// Last known verdict of `account/read`. Startup and the health probe both write it.
     auth_ok: AtomicBool,
-    /// Cumulative official-price cost of every turn this home served, feeding window-capacity
-    /// calibration. Monotonic for the process lifetime; a restart re-anchors calibration, which is
-    /// exactly the anchor mechanism's job.
+    /// Last durable cumulative official-price spend returned by the authority (or local total in
+    /// an explicitly in-memory test gateway).
     spend_nano_total: AtomicI64,
-    /// Per-slot window calibration. `std` mutex: the critical section is a few float ops and never
-    /// awaits, so it may be taken on the request hot path.
-    calib_primary: std::sync::Mutex<WindowCalibration>,
-    calib_secondary: std::sync::Mutex<WindowCalibration>,
+    /// Credits that failed persistence are retried with the next successful turn.
+    pending_spend_nano: AtomicI64,
+    calibration_persistence_ok: AtomicBool,
+    billing: Option<Arc<AsyncBilling>>,
+    /// Provider slots are presentation only. Estimator identity is the actual duration; a primary
+    /// and secondary window can change duration without inheriting each other's evidence.
+    calibrations: std::sync::Mutex<BTreeMap<i64, WindowCalibration>>,
 }
 
 impl CodexHome {
-    fn new(cfg: Arc<CodexConfig>, spec: CodexHomeSpec, order: usize) -> Self {
+    fn new(
+        cfg: Arc<CodexConfig>,
+        spec: CodexHomeSpec,
+        order: usize,
+        billing: Option<Arc<AsyncBilling>>,
+    ) -> Self {
         Self {
             identity: HomeIdentity::capture(&spec.path),
             spec,
@@ -346,8 +317,10 @@ impl CodexHome {
             cooling_until: AtomicI64::new(0),
             auth_ok: AtomicBool::new(true),
             spend_nano_total: AtomicI64::new(0),
-            calib_primary: std::sync::Mutex::new(WindowCalibration::new()),
-            calib_secondary: std::sync::Mutex::new(WindowCalibration::new()),
+            pending_spend_nano: AtomicI64::new(0),
+            calibration_persistence_ok: AtomicBool::new(billing.is_some()),
+            billing,
+            calibrations: std::sync::Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -575,134 +548,191 @@ impl CodexHome {
         self.observed_rate_limits().await
     }
 
-    /// Read the cached snapshot and feed it to window-capacity calibration. Every read path
-    /// funnels through here; sub-threshold deltas accumulate inside the calibration, so the
-    /// observation cadence does not matter.
+    /// Read the cached snapshot and feed it to duration-keyed window calibration.
     async fn observed_rate_limits(&self) -> Option<CodexRateLimits> {
         let limits = match self.live_process().await {
             Some(process) => process.rate_limits().await,
             None => None,
         };
         if let Some(limits) = &limits {
-            self.note_rate_limits(limits);
+            self.note_rate_limits(limits).await;
         }
         limits
     }
 
     /// Credit one completed turn's exact official-price cost to this home's calibration spend.
     /// Called for every served turn regardless of customer billing (admin turns consume the
-    /// subscription window exactly the same), and only on success: a failed turn's provider-side
-    /// consumption is intentionally attributed to the foreign-usage share, which keeps the
-    /// calibration guard conservative.
-    pub(crate) fn record_spend(&self, real_nano: i128) {
+    /// subscription window exactly the same). Failed persistence is retained as a pending delta
+    /// and retried on the next successful turn.
+    pub(crate) async fn record_spend(&self, real_nano: i128) {
         let nano = real_nano.clamp(0, i64::MAX as i128) as i64;
-        self.spend_nano_total.fetch_add(nano, Ordering::Relaxed);
+        if nano == 0 {
+            return;
+        }
+        let Some(billing) = &self.billing else {
+            self.spend_nano_total.fetch_add(nano, Ordering::Relaxed);
+            self.calibration_persistence_ok
+                .store(false, Ordering::Relaxed);
+            return;
+        };
+        self.pending_spend_nano.fetch_add(nano, Ordering::AcqRel);
+        let pending = self.pending_spend_nano.swap(0, Ordering::AcqRel);
+        match billing
+            .credit_codex_spend(self.id(), pending, pool::now())
+            .await
+        {
+            Ok(total) => {
+                self.spend_nano_total.fetch_max(total, Ordering::Relaxed);
+                self.calibration_persistence_ok.store(
+                    self.pending_spend_nano.load(Ordering::Acquire) == 0,
+                    Ordering::Relaxed,
+                );
+            }
+            Err(error) => {
+                self.pending_spend_nano.fetch_add(pending, Ordering::AcqRel);
+                self.calibration_persistence_ok
+                    .store(false, Ordering::Relaxed);
+                eprintln!(
+                    "Codex calibration spend persistence failed [{}]",
+                    error.root_cause()
+                );
+            }
+        }
     }
 
     fn spend_usd_total(&self) -> f64 {
         self.spend_nano_total.load(Ordering::Relaxed) as f64 / 1e9
     }
 
-    /// Configured weekly-capacity prior scaled to this window's duration (weekly = 10080 minutes
-    /// is the anchor; a 5h window starts from a proportionally smaller prior).
-    fn window_prior_usd(&self, window: &CodexRateLimitWindow) -> f64 {
-        let minutes = window.window_duration_mins.unwrap_or(10_080).max(1) as f64;
-        self.cfg.window_cap_usd_prior * minutes / 10_080.0
+    async fn note_rate_limits(&self, limits: &CodexRateLimits) {
+        let mut all_persisted = self.billing.is_some();
+        for window in limits.primary.iter().chain(limits.secondary.iter()) {
+            let (Some(duration), Some(resets_at)) = (window.window_duration_mins, window.resets_at)
+            else {
+                continue;
+            };
+            if duration <= 0 || resets_at <= 0 {
+                continue;
+            }
+            let persisted = match &self.billing {
+                Some(billing) => {
+                    billing
+                        .observe_codex_window(
+                            self.id(),
+                            duration,
+                            resets_at,
+                            window.used_percent,
+                            limits.observed_at,
+                        )
+                        .await
+                }
+                None => Err(anyhow::anyhow!("in-memory calibration")),
+            };
+            match persisted {
+                Ok((spend_nano, row)) => {
+                    self.spend_nano_total
+                        .fetch_max(spend_nano, Ordering::Relaxed);
+                    self.calibrations
+                        .lock()
+                        .expect("Codex calibration map lock")
+                        .insert(duration, WindowCalibration::from_row(row));
+                }
+                Err(error) => {
+                    all_persisted = false;
+                    let spend_nano = self.spend_nano_total.load(Ordering::Relaxed);
+                    let observation = registry::CodexWindowObservation {
+                        home_id: self.id().to_owned(),
+                        window_duration_mins: duration,
+                        resets_at,
+                        observed_at: limits.observed_at,
+                        used_percent: window.used_percent,
+                        gateway_spend_nano: spend_nano,
+                    };
+                    let mut calibrations = self
+                        .calibrations
+                        .lock()
+                        .expect("Codex calibration map lock");
+                    let existing = calibrations.remove(&duration).map(|cal| cal.into_row());
+                    let mut row = calibration::apply_observation(existing, &observation);
+                    if row.version == 0 {
+                        row.version = 1;
+                    }
+                    calibrations.insert(duration, WindowCalibration::from_row(row));
+                    if self.billing.is_some() {
+                        eprintln!(
+                            "Codex window calibration persistence failed [{}]",
+                            error.root_cause()
+                        );
+                    }
+                }
+            }
+        }
+        self.calibration_persistence_ok.store(
+            all_persisted && self.pending_spend_nano.load(Ordering::Acquire) == 0,
+            Ordering::Relaxed,
+        );
     }
 
-    fn note_rate_limits(&self, limits: &CodexRateLimits) {
-        let spend = self.spend_usd_total();
-        if let Some(window) = &limits.primary {
-            let prior = self.window_prior_usd(window);
-            self.calib_primary
-                .lock()
-                .expect("primary window calibration lock")
-                .observe(window.used_percent, window.resets_at, spend, prior);
-        }
-        if let Some(window) = &limits.secondary {
-            let prior = self.window_prior_usd(window);
-            self.calib_secondary
-                .lock()
-                .expect("secondary window calibration lock")
-                .observe(window.used_percent, window.resets_at, spend, prior);
-        }
-    }
-
-    /// Capacity report for one window slot, read against a just-observed snapshot.
+    /// Capacity report for one provider slot. Slot names are presentation only; evidence lookup is
+    /// exclusively by the provider-reported duration.
     fn capacity_report(
         &self,
         slot: &'static str,
         window: &CodexRateLimitWindow,
-        calib: &std::sync::Mutex<WindowCalibration>,
+        snapshot_observed_at: i64,
     ) -> CodexWindowCapacityReport {
-        let prior = self.window_prior_usd(window);
-        let cal = calib.lock().expect("window calibration lock");
+        let calibrations = self
+            .calibrations
+            .lock()
+            .expect("Codex calibration map lock");
+        let calibration = window
+            .window_duration_mins
+            .and_then(|duration| calibrations.get(&duration));
+        let estimate = calibration.and_then(WindowCalibration::estimate);
+        let nano_to_usd = |nano: i64| nano as f64 / 1e9;
+        // A carried estimate belongs to the previous measured window. Keep its real evidence age
+        // instead of making it look fresh merely because the provider emitted a new snapshot.
+        let observed_at = estimate
+            .map(|value| value.measured_at)
+            .unwrap_or(snapshot_observed_at);
         CodexWindowCapacityReport {
             slot,
             window_minutes: window.window_duration_mins,
+            resets_at: window.resets_at,
+            observed_at,
+            data_age_seconds: (observed_at > 0)
+                .then(|| pool::now().saturating_sub(observed_at).max(0)),
             used_percent: window.used_percent,
-            cap_usd: cal.cap_usd(prior),
-            remaining_usd: cal.remaining_usd(window.used_percent, prior),
-            calibrated: cal.calibrated(),
-            samples: cal.samples(),
+            cap_usd: estimate.map(|value| nano_to_usd(value.capacity_nano)),
+            remaining_usd: calibration
+                .and_then(|cal| cal.remaining_nano(window.used_percent))
+                .map(nano_to_usd),
+            low_usd: estimate.and_then(|value| value.low_nano).map(nano_to_usd),
+            high_usd: estimate.and_then(|value| value.high_nano).map(nano_to_usd),
+            source: estimate.map_or("unknown", |value| value.source.as_str()),
+            confidence: estimate.map_or(0.0, |value| value.confidence_bp as f64 / 10_000.0),
+            samples: calibration.map_or(0, |cal| cal.row().samples),
         }
     }
 
-    /// Remaining official-price capacity on the most constrained reported window. This is the
-    /// Codex equivalent of Claude pool's `placement_free`: calibrated capacity when available,
-    /// otherwise the duration-scaled prior. Missing observational data stays fail-open and uses the
-    /// configured weekly prior, matching the existing unknown-utilisation placement behavior.
-    fn placement_free_usd(&self, limits: Option<&CodexRateLimits>) -> f64 {
-        let Some(limits) = limits else {
-            return self.cfg.window_cap_usd_prior.max(0.0);
-        };
-        let primary = limits.primary.as_ref().map(|window| {
-            self.capacity_report("primary", window, &self.calib_primary)
-                .remaining_usd
-        });
-        let secondary = limits.secondary.as_ref().map(|window| {
-            self.capacity_report("secondary", window, &self.calib_secondary)
-                .remaining_usd
-        });
-        match (primary, secondary) {
-            (Some(primary), Some(secondary)) => primary.min(secondary).max(0.0),
-            (Some(remaining), None) | (None, Some(remaining)) => remaining.max(0.0),
-            (None, None) => self.cfg.window_cap_usd_prior.max(0.0),
-        }
+    /// Only an explicit provider reached flag blocks selection. Integer `usedPercent=100` is an
+    /// observation, not a gateway policy wall.
+    fn within_provider_limit(limits: Option<&CodexRateLimits>) -> bool {
+        !limits.is_some_and(|limits| limits.reached)
     }
 
-    /// Whether the cached snapshot says this home is inside the configured window headroom.
-    ///
-    /// A missing snapshot is treated as available on purpose: the rate-limit endpoint is
-    /// observational and must never become a hard availability dependency. Discovering the wall
-    /// mid-turn is still handled by cooling on `usageLimitExceeded`.
-    fn within_headroom(limits: Option<&CodexRateLimits>, admit_below_percent: i64) -> bool {
-        let Some(limits) = limits else {
-            return true;
-        };
-        if limits.reached {
-            return false;
-        }
-        match limits.max_used_percent() {
-            Some(used) => used < admit_below_percent,
-            None => true,
-        }
-    }
-
-    async fn status(&self, admit_below_percent: i64, now: i64) -> CodexHomeStatus {
+    async fn status(&self) -> CodexHomeStatus {
         let process_live = self.live_process().await.is_some();
         let rate_limits = self.observed_rate_limits().await;
         let mut capacities = Vec::new();
         if let Some(limits) = &rate_limits {
             if let Some(window) = &limits.primary {
-                capacities.push(self.capacity_report("primary", window, &self.calib_primary));
+                capacities.push(self.capacity_report("primary", window, limits.observed_at));
             }
             if let Some(window) = &limits.secondary {
-                capacities.push(self.capacity_report("secondary", window, &self.calib_secondary));
+                capacities.push(self.capacity_report("secondary", window, limits.observed_at));
             }
         }
-        let _ = admit_below_percent;
-        let _ = now;
         CodexHomeStatus {
             id: self.spec.id.clone(),
             process_live,
@@ -711,16 +741,17 @@ impl CodexHome {
             inflight: self.inflight(),
             rate_limits,
             spend_usd_total: self.spend_usd_total(),
+            calibration_persistence_ok: self.calibration_persistence_ok.load(Ordering::Relaxed),
             capacities,
         }
     }
 
     /// When this home is expected to be usable again.
-    async fn ready_at(&self, admit_below_percent: i64) -> i64 {
+    async fn ready_at(&self) -> i64 {
         let cooling = self.cooling_until();
         let limited_until = match self.rate_limits().await {
-            Some(limits) if !Self::within_headroom(Some(&limits), admit_below_percent) => limits
-                .soonest_reset_at_or_above(admit_below_percent)
+            Some(limits) if !Self::within_provider_limit(Some(&limits)) => limits
+                .soonest_reset_at_or_above(100)
                 .unwrap_or_else(|| pool::now().saturating_add(DEFAULT_LIMIT_RETRY_SECS as i64)),
             _ => 0,
         };
@@ -736,56 +767,22 @@ mod provider_lock_tests {
     static NEXT_HOME: AtomicU64 = AtomicU64::new(1);
 
     #[test]
-    fn cache_root_seeds_a_second_competitive_home() {
-        let candidates = [
-            CacheRootCandidate {
-                warm: true,
-                free_capacity: 90.0,
-            },
-            CacheRootCandidate {
-                warm: false,
-                free_capacity: 80.0,
-            },
-        ];
-        assert_eq!(cache_root_primary_index(&candidates), 1);
-    }
-
-    #[test]
-    fn cache_root_prefers_a_warm_home_when_capacity_is_close() {
-        let candidates = [
-            CacheRootCandidate {
-                warm: false,
-                free_capacity: 90.0,
-            },
-            CacheRootCandidate {
-                warm: true,
-                free_capacity: 80.0,
-            },
-            CacheRootCandidate {
-                warm: true,
-                free_capacity: 75.0,
-            },
-        ];
-        assert_eq!(cache_root_primary_index(&candidates), 1);
-    }
-
-    #[test]
-    fn cache_root_yields_to_materially_better_cold_capacity() {
-        let candidates = [
-            CacheRootCandidate {
-                warm: false,
-                free_capacity: 90.0,
-            },
-            CacheRootCandidate {
-                warm: true,
-                free_capacity: 60.0,
-            },
-            CacheRootCandidate {
-                warm: true,
-                free_capacity: 50.0,
-            },
-        ];
-        assert_eq!(cache_root_primary_index(&candidates), 0);
+    fn admission_uses_only_explicit_provider_limit() {
+        let observed_hundred = CodexRateLimits {
+            primary: Some(CodexRateLimitWindow {
+                used_percent: 100,
+                window_duration_mins: Some(300),
+                resets_at: Some(4_102_444_800),
+            }),
+            secondary: None,
+            reached: false,
+            observed_at: 100,
+        };
+        assert!(CodexHome::within_provider_limit(Some(&observed_hundred)));
+        assert!(!CodexHome::within_provider_limit(Some(&CodexRateLimits {
+            reached: true,
+            ..observed_hundred
+        })));
     }
 
     fn workspace(label: &str) -> std::path::PathBuf {
@@ -858,7 +855,7 @@ impl Drop for TurnSlot {
 /// Outcome of choosing a home for one request.
 enum HomeSelection {
     Ready(Arc<CodexHome>, TurnSlot),
-    /// Every home is cooling or out of window headroom; `ready_at` is the soonest recovery.
+    /// Every home is cooling or explicitly provider-limited; `ready_at` is the soonest recovery.
     Unavailable {
         ready_at: Option<i64>,
     },
@@ -869,6 +866,7 @@ enum HomeSelection {
 /// are recovered lazily. Existing Claude routing is completely independent when Codex is disabled.
 pub struct CodexGateway {
     cfg: Arc<CodexConfig>,
+    calibration_store: Option<Arc<AsyncBilling>>,
     shutting_down: AtomicBool,
     abort_turns: AtomicBool,
     /// Rotates equal-load cold/warm candidates. Without an atomic cursor, sequential requests and
@@ -896,6 +894,13 @@ pub struct CodexGateway {
 
 impl CodexGateway {
     pub fn new(cfg: CodexConfig) -> anyhow::Result<Self> {
+        Self::new_with_calibration(cfg, None)
+    }
+
+    pub fn new_with_calibration(
+        cfg: CodexConfig,
+        calibration_store: Option<Arc<AsyncBilling>>,
+    ) -> anyhow::Result<Self> {
         let ownership_lock = cfg
             .transport
             .owns_home()
@@ -925,10 +930,18 @@ impl CodexGateway {
         let homes = specs
             .into_iter()
             .enumerate()
-            .map(|(order, spec)| Arc::new(CodexHome::new(cfg.clone(), spec, order)))
+            .map(|(order, spec)| {
+                Arc::new(CodexHome::new(
+                    cfg.clone(),
+                    spec,
+                    order,
+                    calibration_store.clone(),
+                ))
+            })
             .collect();
         Ok(Self {
             cfg,
+            calibration_store,
             shutting_down: AtomicBool::new(false),
             abort_turns: AtomicBool::new(false),
             selection_cursor: AtomicU64::new(0),
@@ -1030,7 +1043,12 @@ impl CodexGateway {
             }
             for (order, spec) in joining {
                 eprintln!("Codex home {} joined the pool", spec.id);
-                next.push(Arc::new(CodexHome::new(self.cfg.clone(), spec, order)));
+                next.push(Arc::new(CodexHome::new(
+                    self.cfg.clone(),
+                    spec,
+                    order,
+                    self.calibration_store.clone(),
+                )));
             }
             next.sort_by_key(|home| home.order());
             *self.homes.write().await = next;
@@ -1169,19 +1187,11 @@ impl CodexGateway {
         }
     }
 
-    fn admit_below_percent(&self) -> i64 {
-        self.cfg.admit_below_used_percent
-    }
-
     /// Choose a usable home and take one of its turn slots.
     ///
-    /// Selection is cache-first, mirroring the Claude fleet: a conversation pinned to a `preferred`
-    /// home reuses that home's warm OpenAI prompt cache. A new shared cache root is seeded onto two
-    /// competitive homes, then reuses a warm home only while it retains at least 70% of the fleet's
-    /// best remaining capacity. Otherwise the request immediately uses the global capacity leader.
-    /// With a single-home pool every branch resolves to that one home, so affinity is a no-op until
-    /// the pool grows. `exclude` drops homes already tried this request, so a spill or retry never
-    /// re-pins the preferred home that just failed.
+    /// A conversation-pinned home is first. Other homes are ordered only by current in-flight load
+    /// and a rotating tie-break; calibration is reporting evidence and never an admission/routing
+    /// restriction. New shared roots still seed two homes, but no capacity ratio can veto warmth.
     async fn select_home(
         &self,
         exclude: &[String],
@@ -1194,7 +1204,6 @@ impl CodexGateway {
             return HomeSelection::Unavailable { ready_at: None };
         }
         let now = pool::now();
-        let admit_below = self.admit_below_percent();
         let pool_homes = self.homes().await;
         let mut candidates = Vec::with_capacity(pool_homes.len());
         let mut soonest: Option<i64> = None;
@@ -1217,13 +1226,12 @@ impl CodexGateway {
                 continue;
             }
             let limits = home.rate_limits().await;
-            if !CodexHome::within_headroom(limits.as_ref(), admit_below) {
-                let ready_at = home.ready_at(admit_below).await;
+            if !CodexHome::within_provider_limit(limits.as_ref()) {
+                let ready_at = home.ready_at().await;
                 soonest = Some(soonest.map_or(ready_at, |v: i64| v.min(ready_at)));
                 continue;
             }
-            let free_capacity = home.placement_free_usd(limits.as_ref());
-            candidates.push((free_capacity, home.inflight(), home.clone()));
+            candidates.push((home.inflight(), home.clone()));
         }
         if candidates.is_empty() {
             return HomeSelection::Unavailable { ready_at: soonest };
@@ -1238,39 +1246,41 @@ impl CodexGateway {
             self.selection_cursor.load(Ordering::Relaxed)
         } as usize
             % width;
-        candidates.sort_by(
-            |(free_a, inflight_a, home_a), (free_b, inflight_b, home_b)| {
-                let rotated_a = (home_a.order() + width - cursor) % width;
-                let rotated_b = (home_b.order() + width - cursor) % width;
-                free_b
-                    .total_cmp(free_a)
-                    .then_with(|| inflight_a.cmp(inflight_b))
-                    .then_with(|| rotated_a.cmp(&rotated_b))
-            },
-        );
-        // A resolved conversation is a hard first choice. A new shared root uses the exact same
-        // two-replica/capacity-ratio policy as Claude; this only selects an ordering and never waits
-        // for replicas or makes them an availability requirement.
+        candidates.sort_by(|(inflight_a, home_a), (inflight_b, home_b)| {
+            let rotated_a = (home_a.order() + width - cursor) % width;
+            let rotated_b = (home_b.order() + width - cursor) % width;
+            inflight_a
+                .cmp(inflight_b)
+                .then_with(|| rotated_a.cmp(&rotated_b))
+        });
+        // A resolved conversation is a hard first choice. For a new shared root, seed a cold home
+        // until two copies exist, then prefer the least-loaded warm home.
         let mut ordered: Vec<Arc<CodexHome>> = Vec::with_capacity(candidates.len());
         if let Some(id) = preferred {
-            if let Some((_, _, home)) = candidates.iter().find(|(_, _, home)| home.id() == id) {
+            if let Some((_, home)) = candidates.iter().find(|(_, home)| home.id() == id) {
                 ordered.push(home.clone());
             }
         } else if place_cache_root {
-            let placement = candidates
+            let warm_count = candidates
                 .iter()
-                .map(|(free_capacity, _, home)| CacheRootCandidate {
-                    warm: warm.iter().any(|id| id == home.id()),
-                    free_capacity: *free_capacity,
-                })
-                .collect::<Vec<_>>();
-            let primary = cache_root_primary_index(&placement);
-            ordered.push(candidates[primary].2.clone());
+                .filter(|(_, home)| warm.iter().any(|id| id == home.id()))
+                .count();
+            let primary = if warm_count < CACHE_ROOT_MIN_WARM_HOMES {
+                candidates
+                    .iter()
+                    .position(|(_, home)| !warm.iter().any(|id| id == home.id()))
+            } else {
+                candidates
+                    .iter()
+                    .position(|(_, home)| warm.iter().any(|id| id == home.id()))
+            }
+            .unwrap_or(0);
+            ordered.push(candidates[primary].1.clone());
         }
         // If the primary choice is currently sampling, another warm copy is the next best spill;
         // remaining candidates stay in global capacity order.
         if place_cache_root {
-            for (_, _, home) in &candidates {
+            for (_, home) in &candidates {
                 if warm.iter().any(|id| id == home.id())
                     && !ordered.iter().any(|chosen| Arc::ptr_eq(chosen, home))
                 {
@@ -1278,7 +1288,7 @@ impl CodexGateway {
                 }
             }
         }
-        for (_, _, home) in candidates {
+        for (_, home) in candidates {
             if !ordered.iter().any(|chosen| Arc::ptr_eq(chosen, &home)) {
                 ordered.push(home);
             }
@@ -1418,21 +1428,20 @@ impl CodexGateway {
     /// triggers an authentication or network request.
     pub async fn operational_status(&self) -> CodexOperationalStatus {
         let now = pool::now();
-        let admit_below = self.admit_below_percent();
         let pool_homes = self.homes().await;
         let mut homes = Vec::with_capacity(pool_homes.len());
         let mut available = 0usize;
         let mut soonest: Option<i64> = None;
         for home in &pool_homes {
-            let status = home.status(admit_below, now).await;
+            let status = home.status().await;
             let usable = status.process_live
                 && status.auth_ok
                 && !home.is_cooling(now)
-                && CodexHome::within_headroom(status.rate_limits.as_ref(), admit_below);
+                && CodexHome::within_provider_limit(status.rate_limits.as_ref());
             if usable {
                 available += 1;
             } else {
-                let ready_at = home.ready_at(admit_below).await;
+                let ready_at = home.ready_at().await;
                 if ready_at > now {
                     soonest = Some(soonest.map_or(ready_at, |v: i64| v.min(ready_at)));
                 }

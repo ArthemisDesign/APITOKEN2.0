@@ -298,7 +298,7 @@ pub async fn responses(
     let created_at = pool::now();
 
     if prepared.request.stream {
-        // Reject before opening the SSE stream if the whole pool is out of headroom, so the client
+        // Reject before opening the SSE stream if the whole pool is genuinely unavailable, so the client
         // sees a real 429 + Retry-After instead of a 200 that fails mid-stream.
         if let Err(error) = gateway.preflight_capacity().await {
             return ApiError::from(error).into_response();
@@ -3531,8 +3531,6 @@ mod tests {
             startup_timeout_ms: 1_000,
             request_timeout_ms: 1_000,
             turn_timeout_ms: 1_000,
-            admit_below_used_percent: 95,
-            window_cap_usd_prior: 1_500.0,
             health_probe_interval_secs: 300,
             reserve_overhead_tokens: 0,
             history_ttl_secs: 600,

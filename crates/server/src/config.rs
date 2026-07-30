@@ -170,13 +170,6 @@ fn bounded_i64(k: &str, default: i64, min: i64, max: i64) -> i64 {
     }
 }
 
-fn bounded_f64(k: &str, default: f64, min: f64, max: f64) -> f64 {
-    match ev(k).and_then(|value| value.parse::<f64>().ok()) {
-        Some(value) if value.is_finite() => value.clamp(min, max),
-        _ => default.clamp(min, max),
-    }
-}
-
 fn finite_nonnegative(k: &str, default: f64, max: f64) -> f64 {
     match ev(k).and_then(|value| value.parse::<f64>().ok()) {
         Some(value) if value.is_finite() => value.clamp(0.0, max),
@@ -569,18 +562,6 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
         ),
         request_timeout_ms: bounded_u64("CLAUDE_API_CODEX_RPC_TIMEOUT_MS", 15_000, 500, 120_000),
         turn_timeout_ms: bounded_u64("CLAUDE_API_CODEX_TURN_TIMEOUT_MS", 600_000, 5_000, 600_000),
-        admit_below_used_percent: bounded_i64(
-            "CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT",
-            100,
-            1,
-            100,
-        ),
-        window_cap_usd_prior: bounded_f64(
-            "CLAUDE_API_CODEX_WINDOW_CAP_USD",
-            1_500.0,
-            10.0,
-            1_000_000.0,
-        ),
         health_probe_interval_secs: bounded_u64(
             "CLAUDE_API_CODEX_HEALTH_INTERVAL_SECS",
             10,

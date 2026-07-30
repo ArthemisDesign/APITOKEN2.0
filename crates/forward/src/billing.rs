@@ -17,7 +17,10 @@
 //! закрывает осиротевшую операцию после истечения lease. Ничего не застревает только в памяти.
 
 use registry::pricing::{LegacyScalarAdmissionSnapshot, LegacyScalarReserveOutcome};
-use registry::{AccountRow, BillingTotals, KeyAuth, KeyPolicyUpdate, KeyRow};
+use registry::{
+    AccountRow, BillingTotals, CodexCalibrationRow, CodexWindowObservation, KeyAuth,
+    KeyPolicyUpdate, KeyRow,
+};
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -442,6 +445,20 @@ fn run_pg_snapshot_reserve_with_retry(
 }
 
 enum WriteCmd {
+    CodexCreditSpend {
+        home_id: String,
+        delta_nano: i64,
+        updated_ts: i64,
+        reply: oneshot::Sender<anyhow::Result<i64>>,
+    },
+    CodexObserveWindow {
+        home_id: String,
+        window_duration_mins: i64,
+        resets_at: i64,
+        used_percent: i64,
+        observed_at: i64,
+        reply: oneshot::Sender<anyhow::Result<(i64, CodexCalibrationRow)>>,
+    },
     Reserve {
         request_id: String,
         account_id: String,
@@ -615,6 +632,57 @@ impl AsyncBilling {
         self.detached.begin()
     }
 
+    /// Persist exact official-price spend for one Codex home and return its durable cumulative
+    /// total. This is provider-capacity evidence, independent of whether the customer turn was
+    /// billable (admin turns consume the same subscription window).
+    pub async fn credit_codex_spend(
+        &self,
+        home_id: &str,
+        delta_nano: i64,
+        updated_ts: i64,
+    ) -> anyhow::Result<i64> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::CodexCreditSpend {
+                home_id: home_id.into(),
+                delta_nano,
+                updated_ts,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    /// Pair a provider snapshot with durable cumulative spend and CAS-persist the pure estimator.
+    /// Duration/reset are required so an unknown window is never guessed as a weekly window.
+    pub async fn observe_codex_window(
+        &self,
+        home_id: &str,
+        window_duration_mins: i64,
+        resets_at: i64,
+        used_percent: i64,
+        observed_at: i64,
+    ) -> anyhow::Result<(i64, CodexCalibrationRow)> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::CodexObserveWindow {
+                home_id: home_id.into(),
+                window_duration_mins,
+                resets_at,
+                used_percent,
+                observed_at,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
     pub fn start_authority(
         config: registry::authority::AuthorityConfig,
         owner: Option<registry::pg::Owner>,
@@ -717,6 +785,46 @@ impl AsyncBilling {
                 };
                 while let Some(cmd) = wrx.blocking_recv() {
                     match cmd {
+                    WriteCmd::CodexCreditSpend { home_id, delta_nano, updated_ts, reply } => {
+                        let _ = reply.send(registry::credit_codex_home_spend(
+                            &conn, &home_id, delta_nano, updated_ts,
+                        ));
+                    }
+                    WriteCmd::CodexObserveWindow {
+                        home_id, window_duration_mins, resets_at, used_percent, observed_at, reply,
+                    } => {
+                        let result = (|| {
+                            let spend_nano = registry::codex_home_spend(&conn, &home_id)?;
+                            let observation = CodexWindowObservation {
+                                home_id: home_id.clone(),
+                                window_duration_mins,
+                                resets_at,
+                                observed_at,
+                                used_percent,
+                                gateway_spend_nano: spend_nano,
+                            };
+                            loop {
+                                let existing = registry::load_codex_calibration(
+                                    &conn, &home_id, window_duration_mins,
+                                )?;
+                                if let Some(existing) = existing
+                                    .as_ref()
+                                    .filter(|row| observed_at <= row.observed_at)
+                                {
+                                    return Ok((spend_nano, existing.clone()));
+                                }
+                                let mut state =
+                                    crate::codex::apply_observation(existing, &observation);
+                                if let Some(version) = registry::save_codex_calibration(
+                                    &conn, &state, &observation,
+                                )? {
+                                    state.version = version;
+                                    return Ok((spend_nano, state));
+                                }
+                            }
+                        })();
+                        let _ = reply.send(result);
+                    }
                     WriteCmd::Reserve { request_id, account_id, key, hold, handoff, reply } => {
                         let result = registry::sqlite_reserve_request(
                             &conn, &request_id, &account_id, &key, hold, RESERVATION_LEASE_SECS,
@@ -886,6 +994,62 @@ impl AsyncBilling {
             std::thread::Builder::new().name("billing-pg-writer".into()).spawn(move || {
                 while let Some(cmd) = wrx.blocking_recv() {
                     match cmd {
+                        WriteCmd::CodexCreditSpend {
+                            home_id, delta_nano, updated_ts, reply,
+                        } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "Codex spend credit",
+                                |pg| pg.credit_codex_home_spend(
+                                    &home_id, delta_nano, updated_ts,
+                                ),
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::CodexObserveWindow {
+                            home_id, window_duration_mins, resets_at, used_percent, observed_at,
+                            reply,
+                        } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "Codex window observation",
+                                |pg| {
+                                    let spend_nano = pg.codex_home_spend(&home_id)?;
+                                    let observation = CodexWindowObservation {
+                                        home_id: home_id.clone(),
+                                        window_duration_mins,
+                                        resets_at,
+                                        observed_at,
+                                        used_percent,
+                                        gateway_spend_nano: spend_nano,
+                                    };
+                                    loop {
+                                        let existing = pg.load_codex_calibration(
+                                            &home_id, window_duration_mins,
+                                        )?;
+                                        if let Some(existing) = existing
+                                            .as_ref()
+                                            .filter(|row| observed_at <= row.observed_at)
+                                        {
+                                            return Ok((spend_nano, existing.clone()));
+                                        }
+                                        let mut state =
+                                            crate::codex::apply_observation(existing, &observation);
+                                        if let Some(version) =
+                                            pg.save_codex_calibration(&state, &observation)?
+                                        {
+                                            state.version = version;
+                                            return Ok((spend_nano, state));
+                                        }
+                                    }
+                                },
+                            );
+                            let _ = reply.send(result);
+                        }
                         WriteCmd::Reserve { request_id, account_id, key, hold, handoff, reply } => {
                             let result = run_pg_with_retry(
                                 &mut pg,
@@ -1851,6 +2015,61 @@ mod tests {
             .expect("backpressured detached command never entered the FIFO")
             .unwrap();
         assert!(matches!(receiver.recv().await, Some(WriteCmd::Flush(_))));
+    }
+
+    #[tokio::test]
+    async fn codex_calibration_survives_billing_actor_restart() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-codex-calibration-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+
+        let first = AsyncBilling::start(path_string.clone(), 1).unwrap();
+        assert_eq!(
+            first
+                .credit_codex_spend("home-a", 100_000_000_000, 100)
+                .await
+                .unwrap(),
+            100_000_000_000
+        );
+        let (_, anchor) = first
+            .observe_codex_window("home-a", 300, 2_000_000_000, 10, 100)
+            .await
+            .unwrap();
+        assert!(anchor.current_capacity_nano.is_none());
+        first
+            .credit_codex_spend("home-a", 40_000_000_000, 101)
+            .await
+            .unwrap();
+        let (_, measured) = first
+            .observe_codex_window("home-a", 300, 2_000_000_000, 12, 101)
+            .await
+            .unwrap();
+        assert_eq!(measured.current_capacity_nano, Some(2_000_000_000_000));
+        let (_, duplicate) = first
+            .observe_codex_window("home-a", 300, 2_000_000_000, 12, 101)
+            .await
+            .unwrap();
+        assert_eq!(duplicate.version, measured.version);
+        first.flush().await.unwrap();
+        drop(first);
+
+        let restarted = AsyncBilling::start(path_string, 1).unwrap();
+        let (spend, restored) = restarted
+            .observe_codex_window("home-a", 300, 2_000_000_000, 12, 102)
+            .await
+            .unwrap();
+        assert_eq!(spend, 140_000_000_000);
+        assert_eq!(restored.current_capacity_nano, Some(2_000_000_000_000));
+        assert!(restored.version > measured.version);
+        restarted.flush().await.unwrap();
+        drop(restarted);
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]

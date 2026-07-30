@@ -247,19 +247,20 @@ the cause is investigated.
 
 ## CodexNoAvailableHomes
 
-Every home is cooling or outside its window headroom, so clients are being told to retry. Read
+Every home is cooling or explicitly provider-limited, so clients are being told to retry. Read
 `claude_api_codex_home_cooling_until_seconds` and `claude_api_codex_home_rate_limit_used_percent` to
 tell a subscription-limit outage (windows genuinely exhausted — wait for the reset or add a home)
 from an authentication outage (`claude_api_codex_home_authenticated == 0` — re-run the device flow).
 Never bypass cooling: hammering a limited or rejected ChatGPT profile is a ban signal.
 
-Capacity planning reads `claude_api_codex_window_remaining_usd{slot}` (pool sellable capacity left
-in the current windows, in official-price USD) against `claude_api_codex_window_capacity_usd{slot}`;
-`claude_api_codex_window_capacity_calibrated` tells whether those figures are measured or still the
-configured prior (`CLAUDE_API_CODEX_WINDOW_CAP_USD`). Per-home splits carry the same
-`claude_api_codex_home_window_*` gauges plus `claude_api_codex_home_spend_usd_total`. Note that a
-home's subscription window is also consumed by usage outside the gateway (the account owner's own
-Codex), which calibration deliberately excludes from the estimate.
+Capacity planning reads `claude_api_codex_window_remaining_usd{window_minutes}` against
+`claude_api_codex_window_capacity_usd{window_minutes}`. They exist only after real utilisation
+movement has produced an estimate; `claude_api_codex_window_measured_homes` versus
+`..._observed_homes` shows how many homes are still unknown. Per-home
+`claude_api_codex_home_window_estimate_available`, `..._confidence_ratio`, low/high bounds, data
+age and samples explain estimate quality and source. There is no configured capacity prior. Because
+the provider percentage can include usage outside this gateway, investigate divergence between raw
+observations and gateway spend rather than assuming high confidence from sample count alone.
 
 ## CodexHomeUnauthenticated
 
@@ -272,10 +273,18 @@ point two homes at one store.
 
 ## CodexHomeNearRateLimit
 
-The home stops being admitted at `CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT` (95% by default), which
-is expected behaviour rather than a fault. Confirm the remaining homes can absorb the load before the
-window is reached; if they cannot, the pool needs another authenticated home rather than a lower
-headroom.
+This is an early capacity-planning warning, not an admission threshold. The gateway continues using
+the home even at reported `usedPercent=100` until OpenAI explicitly reports a reached condition or
+returns an actual usage-limit response. Confirm other homes can absorb load after the real provider
+wall; add an authenticated home if measured remaining API-dollar capacity is insufficient.
+
+## CodexCalibrationPersistenceFailed
+
+The home could not write cumulative spend or a duration/reset observation to the engine authority.
+Traffic intentionally remains fail-open, and failed spend credits stay pending for retry, but do not
+trust the estimate to survive a restart while this gauge is zero. Check PostgreSQL availability,
+schema version 10, writer logs and owner health. Do not seed a manual capacity value: restore the
+authority and let the next real observations reconcile durable spend and calibration state.
 
 ## GeminiProviderDown
 

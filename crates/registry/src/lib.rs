@@ -11,8 +11,8 @@ pub mod authority;
 pub mod pg;
 pub mod pricing;
 
-use anyhow::{Context, Result};
-use rusqlite::Connection;
+use anyhow::{bail, Context, Result};
+use rusqlite::{Connection, OptionalExtension};
 use std::fs;
 
 /// Рантайм-запись подписки с УЖЕ разрешённым токеном (inline или из файла).
@@ -3751,6 +3751,215 @@ pub struct PoolStateRow {
     pub version: i64,
 }
 
+/// Primitive durable state for one provider-reported OpenAI/Codex window duration.
+///
+/// Estimation semantics intentionally live in `forward`; registry only persists integer evidence
+/// and applies compare-and-swap updates. A reset timestamp identifies the current concrete window,
+/// while the primary key keeps independent duration classes from contaminating each other.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodexCalibrationRow {
+    pub home_id: String,
+    pub window_duration_mins: i64,
+    pub resets_at: i64,
+    pub anchor_used_percent: i64,
+    pub anchor_spend_nano: i64,
+    pub used_percent: i64,
+    pub observed_at: i64,
+    pub sum_used_sq: i64,
+    pub sum_used_spend_nano: i64,
+    pub observed_points: i64,
+    pub samples: i64,
+    pub current_capacity_nano: Option<i64>,
+    pub current_low_nano: Option<i64>,
+    pub current_high_nano: Option<i64>,
+    pub current_confidence_bp: i64,
+    pub last_capacity_nano: Option<i64>,
+    pub last_low_nano: Option<i64>,
+    pub last_high_nano: Option<i64>,
+    pub last_confidence_bp: i64,
+    pub last_measured_at: Option<i64>,
+    pub estimator_version: i64,
+    pub version: i64,
+    pub updated_ts: i64,
+}
+
+/// One raw, deduplicated pairing of provider utilisation and cumulative gateway spend.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodexWindowObservation {
+    pub home_id: String,
+    pub window_duration_mins: i64,
+    pub resets_at: i64,
+    pub observed_at: i64,
+    pub used_percent: i64,
+    pub gateway_spend_nano: i64,
+}
+
+/// Atomically credit exact official-price spend and return the durable cumulative total.
+pub fn credit_codex_home_spend(
+    conn: &Connection,
+    home_id: &str,
+    delta_nano: i64,
+    updated_ts: i64,
+) -> Result<i64> {
+    if home_id.is_empty() || delta_nano < 0 || updated_ts <= 0 {
+        bail!("invalid Codex home spend credit");
+    }
+    conn.query_row(
+        "INSERT INTO codex_home_spend(home_id,spent_nano,updated_ts) VALUES(?1,?2,?3) \
+         ON CONFLICT(home_id) DO UPDATE SET \
+           spent_nano=codex_home_spend.spent_nano+excluded.spent_nano, \
+           updated_ts=excluded.updated_ts \
+         RETURNING spent_nano",
+        rusqlite::params![home_id, delta_nano, updated_ts],
+        |row| row.get(0),
+    )
+    .context("credit SQLite Codex home spend")
+}
+
+pub fn codex_home_spend(conn: &Connection, home_id: &str) -> Result<i64> {
+    Ok(conn
+        .query_row(
+            "SELECT spent_nano FROM codex_home_spend WHERE home_id=?1",
+            rusqlite::params![home_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(0))
+}
+
+fn sqlite_codex_calibration_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CodexCalibrationRow> {
+    Ok(CodexCalibrationRow {
+        home_id: row.get(0)?,
+        window_duration_mins: row.get(1)?,
+        resets_at: row.get(2)?,
+        anchor_used_percent: row.get(3)?,
+        anchor_spend_nano: row.get(4)?,
+        used_percent: row.get(5)?,
+        observed_at: row.get(6)?,
+        sum_used_sq: row.get(7)?,
+        sum_used_spend_nano: row.get(8)?,
+        observed_points: row.get(9)?,
+        samples: row.get(10)?,
+        current_capacity_nano: row.get(11)?,
+        current_low_nano: row.get(12)?,
+        current_high_nano: row.get(13)?,
+        current_confidence_bp: row.get(14)?,
+        last_capacity_nano: row.get(15)?,
+        last_low_nano: row.get(16)?,
+        last_high_nano: row.get(17)?,
+        last_confidence_bp: row.get(18)?,
+        last_measured_at: row.get(19)?,
+        estimator_version: row.get(20)?,
+        version: row.get(21)?,
+        updated_ts: row.get(22)?,
+    })
+}
+
+const CODEX_CALIBRATION_COLUMNS: &str = "home_id,window_duration_mins,resets_at,\
+    anchor_used_percent,anchor_spend_nano,used_percent,observed_at,sum_used_sq,\
+    sum_used_spend_nano,observed_points,samples,current_capacity_nano,current_low_nano,\
+    current_high_nano,current_confidence_bp,last_capacity_nano,last_low_nano,last_high_nano,\
+    last_confidence_bp,last_measured_at,estimator_version,version,updated_ts";
+
+pub fn load_codex_calibration(
+    conn: &Connection,
+    home_id: &str,
+    window_duration_mins: i64,
+) -> Result<Option<CodexCalibrationRow>> {
+    conn.query_row(
+        &format!(
+            "SELECT {CODEX_CALIBRATION_COLUMNS} FROM codex_window_calibrations \
+             WHERE home_id=?1 AND window_duration_mins=?2"
+        ),
+        rusqlite::params![home_id, window_duration_mins],
+        sqlite_codex_calibration_row,
+    )
+    .optional()
+    .context("load SQLite Codex calibration")
+}
+
+/// Persist one estimator result and its raw observation in the same transaction.
+///
+/// `None` is an ordinary CAS conflict. Callers reload evidence and recompute; no observation from
+/// the losing derivation commits on its own.
+pub fn save_codex_calibration(
+    conn: &Connection,
+    state: &CodexCalibrationRow,
+    observation: &CodexWindowObservation,
+) -> Result<Option<i64>> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .context("begin SQLite Codex calibration CAS")?;
+    let values = rusqlite::params![
+        state.home_id,
+        state.window_duration_mins,
+        state.resets_at,
+        state.anchor_used_percent,
+        state.anchor_spend_nano,
+        state.used_percent,
+        state.observed_at,
+        state.sum_used_sq,
+        state.sum_used_spend_nano,
+        state.observed_points,
+        state.samples,
+        state.current_capacity_nano,
+        state.current_low_nano,
+        state.current_high_nano,
+        state.current_confidence_bp,
+        state.last_capacity_nano,
+        state.last_low_nano,
+        state.last_high_nano,
+        state.last_confidence_bp,
+        state.last_measured_at,
+        state.estimator_version,
+        state.updated_ts,
+        state.version,
+    ];
+    let changed = if state.version == 0 {
+        tx.execute(
+            "INSERT INTO codex_window_calibrations( \
+               home_id,window_duration_mins,resets_at,anchor_used_percent,anchor_spend_nano,\
+               used_percent,observed_at,sum_used_sq,sum_used_spend_nano,observed_points,samples,\
+               current_capacity_nano,current_low_nano,current_high_nano,current_confidence_bp,\
+               last_capacity_nano,last_low_nano,last_high_nano,last_confidence_bp,last_measured_at,\
+               estimator_version,updated_ts,version \
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,\
+                      ?19,?20,?21,?22,?23+1) \
+             ON CONFLICT(home_id,window_duration_mins) DO NOTHING",
+            values,
+        )?
+    } else {
+        tx.execute(
+            "UPDATE codex_window_calibrations SET \
+               resets_at=?3,anchor_used_percent=?4,anchor_spend_nano=?5,used_percent=?6,\
+               observed_at=?7,sum_used_sq=?8,sum_used_spend_nano=?9,observed_points=?10,\
+               samples=?11,current_capacity_nano=?12,current_low_nano=?13,current_high_nano=?14,\
+               current_confidence_bp=?15,last_capacity_nano=?16,last_low_nano=?17,\
+               last_high_nano=?18,last_confidence_bp=?19,last_measured_at=?20,\
+               estimator_version=?21,updated_ts=?22,version=version+1 \
+             WHERE home_id=?1 AND window_duration_mins=?2 AND version=?23",
+            values,
+        )?
+    };
+    if changed == 0 {
+        return Ok(None);
+    }
+    tx.execute(
+        "INSERT INTO codex_window_observations( \
+           home_id,window_duration_mins,resets_at,observed_at,used_percent,gateway_spend_nano \
+         ) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT DO NOTHING",
+        rusqlite::params![
+            observation.home_id,
+            observation.window_duration_mins,
+            observation.resets_at,
+            observation.observed_at,
+            observation.used_percent,
+            observation.gateway_spend_nano,
+        ],
+    )?;
+    tx.commit()?;
+    Ok(Some(state.version.saturating_add(1)))
+}
+
 /// Сохранить снимок состояния пула (upsert по email). Одной транзакцией — атомарно и быстро.
 pub fn save_pool_state(conn: &Connection, rows: &[PoolStateRow]) -> Result<()> {
     let ts = now();
@@ -4913,6 +5122,85 @@ mod tests {
         assert!(!columns.iter().any(|name| name.contains("prior")));
         assert!(columns.contains(&"window_duration_mins".to_owned()));
         assert!(columns.contains(&"resets_at".to_owned()));
+    }
+
+    #[test]
+    fn codex_spend_and_calibration_are_durable_and_cas_versioned() {
+        let c = db();
+        assert_eq!(codex_home_spend(&c, "home-a").unwrap(), 0);
+        assert_eq!(
+            credit_codex_home_spend(&c, "home-a", 40_000_000_000, 100).unwrap(),
+            40_000_000_000
+        );
+        assert_eq!(
+            credit_codex_home_spend(&c, "home-a", 60_000_000_000, 101).unwrap(),
+            100_000_000_000
+        );
+
+        let mut state = CodexCalibrationRow {
+            home_id: "home-a".into(),
+            window_duration_mins: 300,
+            resets_at: 2_000_000_000,
+            anchor_used_percent: 10,
+            anchor_spend_nano: 100_000_000_000,
+            used_percent: 10,
+            observed_at: 101,
+            sum_used_sq: 0,
+            sum_used_spend_nano: 0,
+            observed_points: 0,
+            samples: 0,
+            current_capacity_nano: None,
+            current_low_nano: None,
+            current_high_nano: None,
+            current_confidence_bp: 0,
+            last_capacity_nano: None,
+            last_low_nano: None,
+            last_high_nano: None,
+            last_confidence_bp: 0,
+            last_measured_at: None,
+            estimator_version: 1,
+            version: 0,
+            updated_ts: 101,
+        };
+        let observation = CodexWindowObservation {
+            home_id: "home-a".into(),
+            window_duration_mins: 300,
+            resets_at: 2_000_000_000,
+            observed_at: 101,
+            used_percent: 10,
+            gateway_spend_nano: 100_000_000_000,
+        };
+        assert_eq!(
+            save_codex_calibration(&c, &state, &observation).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            save_codex_calibration(&c, &state, &observation).unwrap(),
+            None,
+            "a second absent-row derivation must lose CAS"
+        );
+
+        state = load_codex_calibration(&c, "home-a", 300).unwrap().unwrap();
+        assert_eq!(state.version, 1);
+        state.used_percent = 11;
+        state.observed_at = 102;
+        state.updated_ts = 102;
+        let mut second = observation.clone();
+        second.used_percent = 11;
+        second.observed_at = 102;
+        assert_eq!(
+            save_codex_calibration(&c, &state, &second).unwrap(),
+            Some(2)
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT COUNT(*) FROM codex_window_observations WHERE home_id='home-a'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            2
+        );
     }
 
     // хелпер: аккаунт с балансом + ключ под ним (ref=None — админ-сид, не платёж, без дедупа)

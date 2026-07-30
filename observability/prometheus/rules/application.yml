@@ -142,8 +142,19 @@ groups:
           component: codex-provider
         annotations:
           summary: 'Codex home {{ $labels.home }} is close to its subscription window limit'
-          description: 'The home stops being admitted at the configured headroom; remaining pool capacity should be checked before it is reached.'
+          description: 'This is a capacity-planning warning only. Traffic continues until the provider explicitly reports that its real limit was reached.'
           runbook: 'MONITORING.md#codexhomenearratelimit'
+
+      - alert: CodexCalibrationPersistenceFailed
+        expr: claude_api_codex_home_calibration_persistence_ok{provider="openai"} == 0
+        for: 5m
+        labels:
+          severity: warning
+          component: codex-provider
+        annotations:
+          summary: 'Codex home {{ $labels.home }} cannot persist calibration evidence'
+          description: 'Traffic remains available, but cumulative spend or window evidence is pending and the capacity estimate may not survive restart.'
+          runbook: 'MONITORING.md#codexcalibrationpersistencefailed'
 
   - name: gemini-provider
     rules:
