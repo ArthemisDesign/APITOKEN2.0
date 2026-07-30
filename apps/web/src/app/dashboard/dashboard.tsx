@@ -20,7 +20,7 @@ import { FLAT_DISCOUNT_PERCENT } from "@/lib/pricing-tiers";
 import { DashboardLoading } from "./dashboard-loading";
 
 const ApiKeys = dynamic(() => import("./dashboard-sections").then((module) => module.ApiKeys));
-const ModelsCatalog = dynamic(() => import("./dashboard-models").then((module) => module.ModelsCatalog));
+const ProvidersCatalog = dynamic(() => import("./dashboard-providers").then((module) => module.ProvidersCatalog));
 const Credits = dynamic(() => import("./dashboard-sections").then((module) => module.Credits));
 const Usage = dynamic(() => import("./dashboard-sections").then((module) => module.Usage));
 const SupportPanel = dynamic(() => import("./dashboard-sections").then((module) => module.SupportPanel));
@@ -57,7 +57,7 @@ function NavIcon({ id }: { id: NavIconId }) {
 const navigation: Array<{ section?: Section; label: keyof DashboardCopy; icon: NavIconId; href?: string; group?: keyof DashboardCopy }> = [
   { group: "navStart", section: "overview", label: "navOverview", icon: "grid" },
   { group: "navDevelopers", section: "keys", label: "navKeys", icon: "key" },
-  { section: "models", label: "navModels", icon: "stack" },
+  { section: "providers", label: "navProviders", icon: "stack" },
   { href: DOCS_URL, label: "navDocs", icon: "external" },
   { group: "navBilling", section: "credits", label: "navTopUp", icon: "wallet" },
   { group: "navGrowth", section: "promos", label: "navPromos", icon: "percent" },
@@ -292,7 +292,7 @@ export function Dashboard() {
         />}
         {section === "keys" && dataPending.keys && !dataErrors.keys && <KeysSkeleton />}
         {section === "keys" && !dataPending.keys && !dataErrors.keys && <ApiKeys keys={keys} onChanged={() => retryOptional("keys", false)} user={user} />}
-        {section === "models" && <ModelsCatalog />}
+        {section === "providers" && <ProvidersCatalog />}
         {section === "credits" && <Credits account={account} ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
         {section === "usage" && !usage && dataPending.usage && <UsageSkeleton />}
         {section === "usage" && usage && <Usage account={account} keys={keys} ledger={ledger} usage={usage} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
@@ -452,10 +452,10 @@ function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usag
       </article>
 
       <article className="card overview-metric-card overview-models-card">
-        <div className="overview-card-head"><span className="overview-card-label">{copy.navModels}</span><span className="overview-metric-mark" aria-hidden="true">◈</span></div>
-        <strong>Claude + GPT</strong>
-        <p>{copy.modelsOverviewText}</p>
-        <button className="link plain-button overview-card-link" onClick={() => open("models")}>{copy.browseModels} →</button>
+        <div className="overview-card-head"><span className="overview-card-label">{copy.navProviders}</span><span className="overview-metric-mark" aria-hidden="true">◈</span></div>
+        <strong>Anthropic + OpenAI</strong>
+        <p>{copy.providersOverviewText}</p>
+        <button className="link plain-button overview-card-link" onClick={() => open("providers")}>{copy.browseProviders} →</button>
       </article>
     </div>
 

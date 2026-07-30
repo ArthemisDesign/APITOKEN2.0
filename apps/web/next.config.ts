@@ -7,7 +7,7 @@ const legacyPages = [
 ];
 
 const dashboardSections = [
-  "overview", "keys", "models", "credits", "promos", "usage", "profile", "security",
+  "overview", "keys", "models", "providers", "credits", "promos", "usage", "profile", "security",
 ];
 
 // Короткие ссылки для шеринга: /go/<slug> → главная с UTM. 302 (не permanent), чтобы можно было
