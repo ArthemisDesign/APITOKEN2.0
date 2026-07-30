@@ -1623,21 +1623,28 @@ fn readiness_snapshot(
     }
 }
 
+fn codex_provider_ready(
+    transport: forward::CodexTransport,
+    live_authenticated_homes: usize,
+) -> bool {
+    live_authenticated_homes >= transport.minimum_ready_homes()
+}
+
 async fn ready(State(state): State<HttpState>) -> Response {
-    // Only the dedicated OpenAI slots use provider liveness for load-balancer admission. Their
-    // preflight has already authenticated at least one daemon, and this cached snapshot prevents a
-    // dead proxy generation from remaining Caddy-ready. `codex=None` deliberately stays ready so
-    // the provider kill switch can serve its stable OpenAI-shaped disabled envelope.
+    // Only the dedicated OpenAI slots use provider liveness for load-balancer admission. A shared
+    // blue-green generation needs two independently authenticated homes; admitting a one-home
+    // generation would make the deployment itself a single-point outage. `codex=None` deliberately
+    // stays ready so the provider kill switch can serve its stable OpenAI-shaped disabled envelope.
     let provider_ready = if state.app.provider == forward::ProviderMode::OpenAi {
         match &state.app.codex {
             Some(codex) => {
                 let status = codex.operational_status().await;
-                Some(
-                    status
-                        .homes
-                        .iter()
-                        .any(|home| home.process_live && home.auth_ok),
-                )
+                let ready = status
+                    .homes
+                    .iter()
+                    .filter(|home| home.process_live && home.auth_ok)
+                    .count();
+                Some(codex_provider_ready(codex.config().transport, ready))
             }
             None => None,
         }
@@ -1924,6 +1931,19 @@ mod tests {
                 json!({"ready": false, "reason": "provider_unavailable"}),
             )
         );
+    }
+
+    #[test]
+    fn shared_openai_readiness_never_admits_a_single_home() {
+        assert!(codex_provider_ready(forward::CodexTransport::OwnedChild, 1));
+        assert!(!codex_provider_ready(
+            forward::CodexTransport::SharedDaemonProxy,
+            1
+        ));
+        assert!(codex_provider_ready(
+            forward::CodexTransport::SharedDaemonProxy,
+            2
+        ));
     }
 
     #[test]

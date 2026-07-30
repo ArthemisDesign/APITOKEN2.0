@@ -91,14 +91,17 @@ Caddy probes `/ready` on both fixed-provider origins. `engine-bluegreen.sh` admi
 slot, sends `SIGUSR1` to make
 the old slot return 503 readiness, waits for depooling, then sends SIGTERM so established streams
 drain under the systemd deadline. Only after the old cgroup is fully stopped does the first split
-start OpenAI, preventing overlap with a legacy combined process. Later releases roll Anthropic first
-and then gracefully restart OpenAI from the same selected SHA.
+start OpenAI, preventing overlap with a legacy combined process. Shared OpenAI releases keep one
+official Unix-socket app-server per authenticated home below both HTTP generations. The candidate
+must authenticate at least two homes through every live generation for a full stability window;
+only then is the old HTTP slot pre-drained and stopped. Candidate admission is purely observational.
+When an actual daemon topology change separately requires rediscovery, its signal is sent strictly
+to the Rust `MainPID`—never its proxy children—and a steady-state timer pass performs no signalling.
 
-The singleton guarantees graceful established streams, not zero downtime for new OpenAI requests.
-After its listener closes, detached settlement tasks may drain through the shared server deadline.
-At that deadline the gateway cancels any residual Codex turn, reaps its process group, queues the
-reservation outcome, and only then allows the process-wide home lock to be released. Anthropic
-remains available, while OpenAI target/synthetic alerts may fire truthfully.
+Established OpenAI streams remain on the old HTTP slot during pre-drain and may finish through the
+shared server deadline. The persistent app-server daemon is not restarted by the HTTP cutover, so
+the replacement generation reuses the same authenticated Codex state without taking ownership of
+the home or interrupting unrelated sessions.
 
 The commerce API and worker use `http://127.0.0.1:8790`, a loopback-only Caddy listener over the
 Anthropic slots. They must never address a deployment slot, the OpenAI origin, or the Gemini origin.

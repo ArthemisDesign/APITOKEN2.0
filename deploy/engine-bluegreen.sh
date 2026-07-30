@@ -53,6 +53,7 @@ OPENAI_ACTIVE_UNIT=
 OPENAI_TARGET_PORT=
 OPENAI_TARGET_UNIT=
 OPENAI_TARGET_STARTED=0
+OPENAI_TARGET_PREEXISTING=0
 OPENAI_OLD_SIGNALLED=0
 OPENAI_OLD_STOPPED=0
 OPENAI_TRANSITION_STARTED=0
@@ -335,8 +336,13 @@ recover() {
       fi
       if [[ $old_recovered == 1 ]]; then
         if [[ $OPENAI_TARGET_STARTED == 1 ]]; then
-          warn "recovery stopping the unverified OpenAI target $OPENAI_TARGET_UNIT"
-          systemctl_raw stop "$OPENAI_TARGET_UNIT" || failed=1
+          if [[ $OPENAI_TARGET_PREEXISTING == 1 ]]; then
+            warn "recovery retains the pre-existing current OpenAI target $OPENAI_TARGET_UNIT"
+          else
+            warn "recovery stopping the unverified OpenAI target $OPENAI_TARGET_UNIT"
+            systemctl_raw stop "$OPENAI_TARGET_UNIT" || failed=1
+            systemctl_raw disable "$OPENAI_TARGET_UNIT" || failed=1
+          fi
         fi
         if [[ $OPENAI_TRANSITION_STARTED == 1 ]]; then
           privileged_command "$CODEX_APP_SERVERS_HELPER" abort-transition || failed=1
@@ -621,24 +627,49 @@ else
     privileged_command "$CODEX_APP_SERVERS_HELPER" reconcile \
       || post_admission_die "Codex app-server cohort did not reconcile"
     OPENAI_READY_8793=0; OPENAI_READY_8797=0
+    OPENAI_CURRENT_8793=0; OPENAI_CURRENT_8797=0
     openai_unit_for_ready_port 8793 >/dev/null && OPENAI_READY_8793=1
     openai_unit_for_ready_port 8797 >/dev/null && OPENAI_READY_8797=1
-    case "$OPENAI_READY_8793:$OPENAI_READY_8797" in
-      1:0) OPENAI_ACTIVE_PORT=8793; OPENAI_ACTIVE_UNIT=$(openai_unit_for_ready_port 8793); OPENAI_TARGET_PORT=8797 ;;
-      0:1) OPENAI_ACTIVE_PORT=8797; OPENAI_ACTIVE_UNIT=$(openai_unit_for_ready_port 8797); OPENAI_TARGET_PORT=8793 ;;
-      0:0) OPENAI_TARGET_PORT=8793 ;;
-      1:1)
-        if openai_slot_serves_current 8797; then
-          OPENAI_TARGET_PORT=8797; OPENAI_ACTIVE_PORT=8793; OPENAI_ACTIVE_UNIT=$(openai_unit_for_ready_port 8793)
-        else
-          OPENAI_TARGET_PORT=8793; OPENAI_ACTIVE_PORT=8797; OPENAI_ACTIVE_UNIT=$(openai_unit_for_ready_port 8797)
+    openai_slot_serves_current 8793 && OPENAI_CURRENT_8793=1
+    openai_slot_serves_current 8797 && OPENAI_CURRENT_8797=1
+    case "$OPENAI_CURRENT_8793:$OPENAI_CURRENT_8797" in
+      1:0)
+        OPENAI_TARGET_PORT=8793
+        if (( OPENAI_READY_8797 == 1 )); then
+          OPENAI_ACTIVE_PORT=8797; OPENAI_ACTIVE_UNIT=$(openai_unit_for_ready_port 8797)
         fi
+        log 'OpenAI current release already serves on 8793; preserving it without another cutover'
+        ;;
+      0:1)
+        OPENAI_TARGET_PORT=8797
+        if (( OPENAI_READY_8793 == 1 )); then
+          OPENAI_ACTIVE_PORT=8793; OPENAI_ACTIVE_UNIT=$(openai_unit_for_ready_port 8793)
+        fi
+        log 'OpenAI current release already serves on 8797; preserving it without another cutover'
+        ;;
+      1:1)
+        if systemctl_raw is-enabled --quiet "$(openai_slot_unit 8797)"; then
+          OPENAI_TARGET_PORT=8797; OPENAI_ACTIVE_PORT=8793
+          OPENAI_ACTIVE_UNIT=$(openai_unit_for_ready_port 8793)
+        else
+          OPENAI_TARGET_PORT=8793; OPENAI_ACTIVE_PORT=8797
+          OPENAI_ACTIVE_UNIT=$(openai_unit_for_ready_port 8797)
+        fi
+        ;;
+      0:0)
+        case "$OPENAI_READY_8793:$OPENAI_READY_8797" in
+          1:0) OPENAI_ACTIVE_PORT=8793; OPENAI_ACTIVE_UNIT=$(openai_unit_for_ready_port 8793); OPENAI_TARGET_PORT=8797 ;;
+          0:1) OPENAI_ACTIVE_PORT=8797; OPENAI_ACTIVE_UNIT=$(openai_unit_for_ready_port 8797); OPENAI_TARGET_PORT=8793 ;;
+          0:0) OPENAI_TARGET_PORT=8793 ;;
+          1:1) OPENAI_TARGET_PORT=8797; OPENAI_ACTIVE_PORT=8793; OPENAI_ACTIVE_UNIT=$(openai_unit_for_ready_port 8793) ;;
+        esac
         ;;
     esac
   fi
   OPENAI_TARGET_UNIT=$(openai_slot_unit "$OPENAI_TARGET_PORT")
 fi
 log "OpenAI cutover decision: ${OPENAI_ACTIVE_UNIT:-no ready old unit} -> $OPENAI_TARGET_UNIT"
+if openai_target_serves_current; then OPENAI_TARGET_PREEXISTING=1; fi
 OPENAI_TARGET_STARTED=1
 if ! openai_target_serves_current; then
   systemctl_command stop "$OPENAI_TARGET_UNIT"
@@ -654,6 +685,28 @@ if [[ $DRY_RUN == 0 ]]; then
     || post_admission_die "OpenAI target lost readiness during Caddy inclusion"
   stable_openai_ready \
     || post_admission_die "stable OpenAI origin lost readiness while admitting the target"
+fi
+if [[ $OPENAI_LEGACY_TARGET == 0 ]]; then
+  # The old origin remains fully ready while the candidate proves that at least two authenticated
+  # daemon clients remain attached throughout an observational stability window. This gate sends no
+  # signals and performs no repair: candidate startup either established the invariant or cutover
+  # fails while the old generation remains untouched.
+  privileged_command "$CODEX_APP_SERVERS_HELPER" admit-cutover \
+    || post_admission_die "OpenAI target failed redundant cohort admission"
+  if [[ $DRY_RUN == 0 ]]; then
+    openai_target_serves_current \
+      || post_admission_die "OpenAI target lost readiness during redundant cohort admission"
+    stable_openai_ready \
+      || post_admission_die "stable OpenAI origin lost readiness during redundant cohort admission"
+  fi
+fi
+# Make the admitted candidate boot-durable before touching the old availability anchor. A failure
+# here is still a pre-drain failure and recovery can discard the candidate without any topology gap.
+systemctl_command enable "$OPENAI_TARGET_UNIT" \
+  || post_admission_die "could not enable OpenAI target $OPENAI_TARGET_UNIT"
+if [[ $DRY_RUN == 0 ]]; then
+  systemctl_raw is-enabled --quiet "$OPENAI_TARGET_UNIT" \
+    || post_admission_die "OpenAI target is not enabled before old-slot drain"
 fi
 
 if [[ -n $OPENAI_ACTIVE_UNIT && $OPENAI_ACTIVE_UNIT != "$OPENAI_TARGET_UNIT" ]]; then
@@ -705,11 +758,15 @@ else
   systemctl_command start "$CODEX_APP_SERVERS_TIMER" \
     || post_admission_die 'could not start Codex app-server reconciliation'
 fi
-# The verified target and daemon cohort are now the availability anchor. A later boot-policy or
-# cleanup failure must not "recover" by stopping them or resurrecting the singleton home owner.
+if [[ $DRY_RUN == 0 ]]; then
+  openai_target_serves_current \
+    || post_admission_die "OpenAI target failed post-ownership verification"
+  stable_openai_ready \
+    || post_admission_die "stable OpenAI origin failed post-ownership verification"
+fi
+# The target is now release-attested, redundantly authenticated, boot-durable and the sole owner.
+# A later cleanup failure must not recover by stopping this proven availability anchor.
 OPENAI_COMMITTED=1
-systemctl_command enable "$OPENAI_TARGET_UNIT" \
-  || post_admission_die "could not enable OpenAI target $OPENAI_TARGET_UNIT"
 if [[ $OPENAI_LEGACY_TARGET == 1 ]]; then
   for OPENAI_OTHER_UNIT in "$(openai_slot_unit 8793)" "$(openai_slot_unit 8797)"; do
     systemctl_command stop "$OPENAI_OTHER_UNIT" \

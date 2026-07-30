@@ -211,13 +211,20 @@ launcher:
 - redacts child stderr and never logs account identity, credentials, prompts or response bodies.
 
 When the provider is enabled, server startup must complete that binary attestation, app-server
-initialization and `account/read` subscription check for at least one home before the slot can
-become ready; it also attempts an initial rate-limit snapshot without making that observability
-endpoint a hard availability dependency. A failed Codex activation therefore cannot be promoted by
-the watchdog while the previous Claude-capable slot is still healthy. Requiring *every* home to pass
-would reintroduce the single point of failure the pool exists to remove — one expired device login
-would block every future deployment — so a home that fails preflight starts quarantined and is
-reported by `CodexHomeUnauthenticated` instead. Later child failures are restarted on demand.
+initialization and `account/read` subscription check before the slot can become ready. Compatibility
+owned-child mode retains its one-home floor; production shared-daemon slots require at least two
+independently authenticated homes in both startup preflight and `/ready`. They also attempt an
+initial rate-limit snapshot without making that observability endpoint a hard availability
+dependency. A failed Codex activation therefore cannot be promoted while the previous slot is still
+healthy. Requiring *every* home to pass would reintroduce a different single point of failure — one
+expired device login would block every future deployment — so a failing extra home starts
+quarantined and is reported by `CodexHomeUnauthenticated` instead.
+
+OpenAI blue-green admission is observational: the candidate must retain that redundant cohort
+through every live HTTP generation for the full stability window before the old slot is drained.
+The gate sends no transport signal and performs no repair. A separate desired-topology change may
+ask Rust gateways to rediscover sockets, but the signal is restricted to each unit's `MainPID`;
+signalling the whole cgroup would also kill the authenticated proxy children.
 
 A background health loop re-reads `account/read` and the rate-limit snapshot for every home on
 `CLAUDE_API_CODEX_HEALTH_INTERVAL_SECS`. A device login expires with no traffic on it, so without

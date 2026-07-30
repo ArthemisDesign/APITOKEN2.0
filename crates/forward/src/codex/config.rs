@@ -26,6 +26,18 @@ impl CodexTransport {
     pub fn owns_home(self) -> bool {
         matches!(self, Self::OwnedChild)
     }
+
+    /// Number of independently authenticated homes required before an HTTP generation may enter
+    /// load-balancer rotation. A legacy owner cannot overlap another owner and therefore preserves
+    /// its one-home compatibility floor. Shared-daemon slots are specifically built for redundant
+    /// blue-green admission: accepting one home would turn that home into the exact single point of
+    /// failure the split topology is meant to remove.
+    pub const fn minimum_ready_homes(self) -> usize {
+        match self {
+            Self::OwnedChild => 1,
+            Self::SharedDaemonProxy => 2,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,5 +138,16 @@ pub struct CodexConfig {
 impl CodexConfig {
     pub fn model(&self, public_id: &str) -> Option<&CodexModel> {
         self.models.iter().find(|model| model.id == public_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CodexTransport;
+
+    #[test]
+    fn shared_transport_requires_redundant_http_admission() {
+        assert_eq!(CodexTransport::OwnedChild.minimum_ready_homes(), 1);
+        assert_eq!(CodexTransport::SharedDaemonProxy.minimum_ready_homes(), 2);
     }
 }

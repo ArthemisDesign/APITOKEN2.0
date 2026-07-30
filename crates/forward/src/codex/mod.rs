@@ -1170,11 +1170,12 @@ impl CodexGateway {
     /// Verify the pinned executable, start app-server, complete protocol initialization and prove
     /// that each dedicated profile is authenticated with a ChatGPT subscription.
     ///
-    /// At least one home must pass. Requiring *every* home would reintroduce the single point of
-    /// failure this pool exists to remove: one expired device login would block every future
-    /// deployment. A home that fails here starts quarantined and is reported by the health metrics
-    /// and `CodexHomeUnauthenticated` alert instead. Returning only a diagnostic class keeps account
-    /// metadata, paths and child messages out of composition logs.
+    /// Legacy owned-child mode keeps its one-home compatibility floor. Shared-daemon HTTP slots
+    /// require two independently authenticated homes, but not *every* discovered home: one expired
+    /// device login must not block a redundant deployment. A home that fails here starts
+    /// quarantined and is reported by the health metrics and `CodexHomeUnauthenticated` alert
+    /// instead. Returning only a diagnostic class keeps account metadata, paths and child messages
+    /// out of composition logs.
     pub async fn preflight(&self) -> anyhow::Result<()> {
         let mut healthy = 0usize;
         let mut last_class = "closed";
@@ -1192,8 +1193,12 @@ impl CodexGateway {
                 }
             }
         }
-        if healthy == 0 {
-            anyhow::bail!("Codex app-server preflight failed [{last_class}]");
+        let required = self.cfg.transport.minimum_ready_homes();
+        if healthy < required {
+            anyhow::bail!(
+                "Codex app-server preflight admitted {healthy}/{} homes, but {required} are required [{last_class}]",
+                pool_homes.len()
+            );
         }
         if healthy < pool_homes.len() {
             eprintln!(

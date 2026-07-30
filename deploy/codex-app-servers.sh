@@ -17,12 +17,17 @@ CODEX_AS_UNIT_TEMPLATE=${CODEX_AS_UNIT_TEMPLATE:-claude-api-codex-app-server@}
 CODEX_AS_LEGACY_UNIT=${CODEX_AS_LEGACY_UNIT:-claude-api-openai.service}
 CODEX_AS_SYSTEMCTL=${CODEX_AS_SYSTEMCTL:-/usr/bin/systemctl}
 CODEX_AS_PROC_ROOT=${CODEX_AS_PROC_ROOT:-/proc}
-CODEX_AS_READY_TIMEOUT=${CODEX_AS_READY_TIMEOUT:-60}
+CODEX_AS_READY_TIMEOUT=${CODEX_AS_READY_TIMEOUT:-180}
 # Legacy migration can wait one full 300s discovery interval plus one 600s admitted turn. Normal
 # SIGUSR2-coordinated daemon rolls complete much sooner but share this conservative ceiling.
 CODEX_AS_RETIRE_TIMEOUT=${CODEX_AS_RETIRE_TIMEOUT:-960}
 CODEX_AS_SERVICE_USER=${CODEX_AS_SERVICE_USER:-deploy}
 CODEX_AS_MIN_READY=${CODEX_AS_MIN_READY:-2}
+# A cutover gate is deliberately much stricter than routine reconciliation. Both HTTP generations
+# stay in Caddy while the candidate proves that its authenticated clients survive real health probes
+# for a full minute; the production protocol failures that motivated this guard appeared after the
+# old two-second check had already passed.
+CODEX_AS_CUTOVER_STABILITY_SECONDS=${CODEX_AS_CUTOVER_STABILITY_SECONDS:-60}
 CODEX_AS_LOCK_TIMEOUT=${CODEX_AS_LOCK_TIMEOUT:-1200}
 CODEX_AS_LEGACY_EXPLICIT_HOME_NAME=${CODEX_AS_LEGACY_EXPLICIT_HOME_NAME:-mikala1158qqq-gmail-com}
 CODEX_AS_PROXY_FILE=proxy.url
@@ -36,6 +41,7 @@ CODEX_AS_GATEWAY_UNITS=${CODEX_AS_GATEWAY_UNITS:-claude-api-openai@8793.service 
 CODEX_AS_ROLLBACK_GATEWAY_UNIT=${CODEX_AS_ROLLBACK_GATEWAY_UNIT:-claude-api-openai@8797.service}
 CODEX_AS_TRANSITION_TO_DAEMON=to-daemon
 CODEX_AS_TRANSITION_TO_LEGACY=to-legacy
+CODEX_AS_RECONCILE_CHANGED=0
 
 codex_as_log() { printf '[codex-app-servers] %s\n' "$*"; }
 codex_as_warn() { printf '[codex-app-servers] WARNING: %s\n' "$*" >&2; }
@@ -404,7 +410,10 @@ codex_as_signal_gateways() {
   for unit in $CODEX_AS_GATEWAY_UNITS; do
     [[ $unit =~ ^claude-api-openai@[0-9]+\.service$ ]] || return 1
     "$CODEX_AS_SYSTEMCTL" is-active --quiet "$unit" >/dev/null 2>&1 || continue
-    if ! "$CODEX_AS_SYSTEMCTL" kill --signal=SIGUSR2 "$unit"; then
+    # `systemctl kill` defaults to the whole cgroup. The gateway's disposable `codex app-server
+    # proxy` children do not handle SIGUSR2; signalling the cgroup therefore tears down every
+    # authenticated websocket at once. Only the Rust main process owns the reconcile handler.
+    if ! "$CODEX_AS_SYSTEMCTL" kill --kill-whom=main --signal=SIGUSR2 "$unit"; then
       "$CODEX_AS_SYSTEMCTL" is-active --quiet "$unit" >/dev/null 2>&1 || continue
       return 1
     fi
@@ -598,13 +607,16 @@ codex_as_authenticated_home_count() {
 # while still requiring each counted home to be attached to every live HTTP generation. Two ready
 # homes are the default because one can then be drained while its peer continues serving.
 codex_as_wait_ready_cohort() {
+  local required_consecutive=${1:-2}
   local ready consecutive=0 deadline=$(( $(date +%s) + CODEX_AS_READY_TIMEOUT ))
   [[ $CODEX_AS_MIN_READY =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ $required_consecutive =~ ^[1-9][0-9]*$ ]] || return 1
+  (( required_consecutive < CODEX_AS_READY_TIMEOUT )) || return 1
   while (( $(date +%s) < deadline )); do
     ready=$(codex_as_authenticated_home_count) || return 1
     if (( ready >= CODEX_AS_MIN_READY )); then
       consecutive=$((consecutive + 1))
-      (( consecutive >= 2 )) && { printf '%s\n' "$ready"; return 0; }
+      (( consecutive >= required_consecutive )) && { printf '%s\n' "$ready"; return 0; }
     else
       consecutive=0
     fi
@@ -613,12 +625,44 @@ codex_as_wait_ready_cohort() {
   return 1
 }
 
+codex_as_admit_cutover() {
+  local gateways ready mode ids transition_count
+  codex_as_is_root \
+    || { codex_as_fail 'cutover admission must run as root'; return 1; }
+  [[ $CODEX_AS_CUTOVER_STABILITY_SECONDS =~ ^[1-9][0-9]*$ ]] \
+    || { codex_as_fail 'cutover stability window is malformed'; return 1; }
+  codex_as_load_desired || return 1
+  gateways=$(codex_as_gateway_active_count) || return 1
+  (( gateways >= 1 )) \
+    || { codex_as_fail 'no shared OpenAI gateway is active for cutover admission'; return 1; }
+  if "$CODEX_AS_SYSTEMCTL" is-active --quiet "$CODEX_AS_LEGACY_UNIT" >/dev/null 2>&1; then
+    [[ -f $CODEX_AS_TRANSITION_FILE && ! -L $CODEX_AS_TRANSITION_FILE ]] \
+      || { codex_as_fail 'legacy overlap has no persisted ownership transition'; return 1; }
+    mode=$(codex_as_transition_value mode) || return 1
+    [[ $mode == "$CODEX_AS_TRANSITION_TO_DAEMON" ]] \
+      || { codex_as_fail 'legacy overlap has the wrong ownership transition'; return 1; }
+    ids=$(codex_as_transition_home_ids) || return 1
+    transition_count=$(grep -c . <<<"$ids" || true)
+    (( transition_count >= CODEX_AS_MIN_READY )) \
+      || { codex_as_fail 'legacy overlap has no redundant daemon cohort'; return 1; }
+  fi
+  # Admission is deliberately observational. Candidate startup already discovers the persistent
+  # daemon sockets; a deployment gate must not send signals, restart transports, or issue account
+  # RPCs against sessions that are already working.
+  ready=$(codex_as_wait_ready_cohort "$CODEX_AS_CUTOVER_STABILITY_SECONDS") \
+    || { codex_as_fail "$CODEX_AS_MIN_READY authenticated app-servers did not remain attached for ${CODEX_AS_CUTOVER_STABILITY_SECONDS}s"; return 1; }
+  codex_as_log "$ready app-server(s) survived the ${CODEX_AS_CUTOVER_STABILITY_SECONDS}s cutover admission window across $gateways gateway(s)"
+}
+
 codex_as_start_or_roll() {
   local id=$1 unit home others
   unit=$(codex_as_unit "$id")
   home=$(codex_as_find_home "$id") || return 1
   if codex_as_unit_healthy "$id"; then
-    if codex_as_home_draining "$home"; then codex_as_end_drain "$home" || return 1; fi
+    if codex_as_home_draining "$home"; then
+      CODEX_AS_RECONCILE_CHANGED=1
+      codex_as_end_drain "$home" || return 1
+    fi
     return 0
   fi
   if codex_as_unit_active "$id"; then
@@ -637,10 +681,12 @@ codex_as_start_or_roll() {
       codex_as_fail "could not restart app-server $id"
       return 1
     fi
+    CODEX_AS_RECONCILE_CHANGED=1
   else
     codex_as_log "starting app-server $id"
     "$CODEX_AS_SYSTEMCTL" start "$unit" \
       || { codex_as_fail "could not start app-server $id"; return 1; }
+    CODEX_AS_RECONCILE_CHANGED=1
   fi
   if ! codex_as_wait_healthy "$id"; then
     codex_as_fail "app-server $id did not become ready"
@@ -656,13 +702,28 @@ codex_as_transition_value() {
   codex_as_state_value "$CODEX_AS_TRANSITION_FILE" "$1"
 }
 
+codex_as_transition_home_ids() {
+  local raw id seen=' '
+  local -a ids
+  raw=$(codex_as_transition_value home_ids) || return 1
+  read -r -a ids <<<"$raw"
+  (( ${#ids[@]} >= 1 )) || return 1
+  for id in "${ids[@]}"; do
+    [[ $id =~ ^[0-9a-f]{16}$ && $seen != *" $id "* ]] || return 1
+    seen+="$id "
+    printf '%s\n' "$id"
+  done
+}
+
 codex_as_reconcile_transition() {
-  local mode id gateways
+  local mode id ids gateways
   mode=$(codex_as_transition_value mode) || return 1
-  id=$(codex_as_transition_value home_id) || return 1
   case "$mode" in
     "$CODEX_AS_TRANSITION_TO_DAEMON")
-      codex_as_start_or_roll "$id" || return 1
+      ids=$(codex_as_transition_home_ids) || return 1
+      while IFS= read -r id; do
+        codex_as_start_or_roll "$id" || return 1
+      done <<<"$ids"
       ;;
     "$CODEX_AS_TRANSITION_TO_LEGACY")
       gateways=$(codex_as_gateway_active_count) || return 1
@@ -689,10 +750,11 @@ codex_as_stop_all_units() {
 }
 
 codex_as_reconcile() {
-  local id name unit id_list=' ' desired_count=0 mode gateways ready
+  local id name unit id_list=' ' desired_count=0 mode gateways ready records
   codex_as_is_root \
     || { codex_as_fail 'reconcile must run as root'; return 1; }
   codex_as_load_desired || return 1
+  CODEX_AS_RECONCILE_CHANGED=0
   if "$CODEX_AS_SYSTEMCTL" is-active --quiet "$CODEX_AS_LEGACY_UNIT" >/dev/null 2>&1; then
     if [[ -f $CODEX_AS_TRANSITION_FILE && ! -L $CODEX_AS_TRANSITION_FILE ]]; then
       codex_as_reconcile_transition
@@ -710,13 +772,18 @@ codex_as_reconcile() {
     [[ $mode == "$CODEX_AS_TRANSITION_TO_DAEMON" ]] \
       || { codex_as_fail 'OpenAI ownership transition mode is invalid'; return 1; }
   fi
+  [[ $CODEX_AS_MIN_READY =~ ^[1-9][0-9]*$ ]] || return 1
+  records=$(codex_as_home_records) || return 1
+  desired_count=$(grep -c . <<<"$records" || true)
+  # Validate the complete desired snapshot before starting, rolling, or retiring anything. A
+  # transiently incomplete auth directory must never make reconciliation dismantle the serving
+  # cohort and only discover afterwards that redundancy has been lost.
+  (( desired_count >= CODEX_AS_MIN_READY )) \
+    || { codex_as_fail "only $desired_count authenticated Codex home(s) discovered; refusing to mutate the serving cohort"; return 1; }
   while IFS=$'\t' read -r id name; do
-    desired_count=$((desired_count + 1))
     id_list+="$id "
     codex_as_start_or_roll "$id" || return 1
-  done < <(codex_as_home_records)
-  (( desired_count >= 1 )) \
-    || { codex_as_fail 'no authenticated Codex homes are available'; return 1; }
+  done <<<"$records"
 
   while IFS= read -r unit; do
     [[ $unit =~ ^${CODEX_AS_UNIT_TEMPLATE}([0-9a-f]{16})\.service$ ]] || continue
@@ -726,18 +793,24 @@ codex_as_reconcile() {
     "$CODEX_AS_SYSTEMCTL" stop "$unit" || return 1
     "$CODEX_AS_SYSTEMCTL" disable "$unit" || return 1
     rm -f -- "$CODEX_AS_RUNTIME_DIR/$id.state" "$(codex_as_socket "$id")"
+    CODEX_AS_RECONCILE_CHANGED=1
   done < <("$CODEX_AS_SYSTEMCTL" list-units --all --plain --no-legend \
     "${CODEX_AS_UNIT_TEMPLATE}*.service" 2>/dev/null | awk '{print $1}')
 
-  # Newly authenticated or newly started daemons must become usable in the same reconciliation,
-  # not after the gateway's five-minute discovery tick. SIGUSR2 rediscovery is observational. A
-  # bad account is left out of routing, but a minimum cohort must authenticate through every active
-  # HTTP generation before convergence is reported.
-  codex_as_signal_gateways || return 1
+  # Only a real daemon/topology change asks gateways to rediscover. A steady-state timer pass is
+  # observational and must never perturb working proxy children or issue account RPCs merely to
+  # "repair" something. Newly started homes still join in the same reconciliation.
   gateways=$(codex_as_gateway_active_count) || return 1
   if (( gateways >= 1 )); then
-    ready=$(codex_as_wait_ready_cohort) \
-      || { codex_as_fail "fewer than $CODEX_AS_MIN_READY app-server(s) authenticated through every gateway"; return 1; }
+    if (( CODEX_AS_RECONCILE_CHANGED == 1 )); then
+      codex_as_signal_gateways || return 1
+      ready=$(codex_as_wait_ready_cohort) \
+        || { codex_as_fail "fewer than $CODEX_AS_MIN_READY app-server(s) authenticated through every gateway"; return 1; }
+    else
+      ready=$(codex_as_authenticated_home_count) || return 1
+      (( ready >= CODEX_AS_MIN_READY )) \
+        || { codex_as_fail "steady daemon cohort has fewer than $CODEX_AS_MIN_READY authenticated app-server(s)"; return 1; }
+    fi
     codex_as_log "$ready of $desired_count app-server(s) are authenticated through every gateway"
   fi
 
@@ -858,14 +931,17 @@ codex_as_transition_artifacts_absent() {
   done < <(codex_as_home_records)
 }
 
-codex_as_select_transition_seed() {
-  local records=$1 id name seed=''
+codex_as_select_transition_seeds() {
+  local records=$1 required=$2 id name selected='' count=0
+  [[ $required =~ ^[1-9][0-9]*$ ]] || return 1
   while IFS=$'\t' read -r id name; do
     [[ $name == "$CODEX_AS_LEGACY_EXPLICIT_HOME_NAME" ]] && continue
-    seed="$id"$'\t'"$name"
+    selected+="$id"$'\t'"$name"$'\n'
+    count=$((count + 1))
+    (( count < required )) || break
   done <<<"$records"
-  [[ -n $seed ]] || return 1
-  printf '%s\n' "$seed"
+  (( count == required )) || return 1
+  printf '%s' "$selected"
 }
 
 codex_as_select_legacy_seed() {
@@ -880,8 +956,8 @@ codex_as_select_legacy_seed() {
 }
 
 codex_as_prepare_transition() {
-  local owner expected_uid expected_gid records count id name home had_proxy deadline temporary
-  local seed
+  local owner expected_uid expected_gid records count id name home deadline temporary
+  local legacy_seed legacy_id legacy_name legacy_home seeds home_ids='' ignored_had_proxy
   codex_as_is_root \
     || { codex_as_fail 'transition preparation must run as root'; return 1; }
   [[ ! -e $CODEX_AS_TRANSITION_FILE && ! -L $CODEX_AS_TRANSITION_FILE ]] \
@@ -889,43 +965,63 @@ codex_as_prepare_transition() {
   "$CODEX_AS_SYSTEMCTL" is-active --quiet "$CODEX_AS_LEGACY_UNIT" >/dev/null 2>&1 \
     || { codex_as_fail 'legacy OpenAI owner is not active'; return 1; }
   codex_as_load_desired || return 1
+  [[ $CODEX_AS_MIN_READY =~ ^[1-9][0-9]*$ ]] \
+    || { codex_as_fail 'minimum ready app-server count is malformed'; return 1; }
   records=$(codex_as_home_records) || return 1
   count=$(grep -c . <<<"$records" || true)
-  (( count >= 2 )) \
-    || { codex_as_fail 'at least two authenticated homes are required for zero-downtime migration'; return 1; }
-  seed=$(codex_as_select_transition_seed "$records") \
-    || { codex_as_fail 'no discovered-only home is available for zero-downtime migration'; return 1; }
-  IFS=$'\t' read -r id name <<<"$seed"
-  home=$CODEX_AS_HOMES_DIR/$name
+  (( count >= CODEX_AS_MIN_READY + 1 )) \
+    || { codex_as_fail "$CODEX_AS_MIN_READY transition homes plus the legacy anchor are required for zero-downtime migration"; return 1; }
+  legacy_seed=$(codex_as_select_legacy_seed "$records") \
+    || { codex_as_fail 'the explicitly configured legacy anchor is unavailable'; return 1; }
+  IFS=$'\t' read -r legacy_id legacy_name <<<"$legacy_seed"
+  legacy_home=$CODEX_AS_HOMES_DIR/$legacy_name
+  codex_as_home_has_process "$legacy_home" \
+    || { codex_as_fail 'the legacy anchor does not own its explicit home'; return 1; }
+  seeds=$(codex_as_select_transition_seeds "$records" "$CODEX_AS_MIN_READY") \
+    || { codex_as_fail "fewer than $CODEX_AS_MIN_READY discovered-only homes can form the transition cohort"; return 1; }
   owner=$(codex_as_expected_owner) || return 1
   read -r expected_uid expected_gid <<<"$owner"
   codex_as_secure_control_dir || return 1
-  had_proxy=$(codex_as_install_transition_marker "$home" "$expected_uid" "$expected_gid") \
-    || { codex_as_fail 'could not fence the transition home from the legacy owner'; return 1; }
+  codex_as_transition_artifacts_absent \
+    || { codex_as_fail 'stale OpenAI transition artifacts require repair'; return 1; }
+  while IFS=$'\t' read -r id name; do
+    home=$CODEX_AS_HOMES_DIR/$name
+    if ! ignored_had_proxy=$(codex_as_install_transition_marker \
+        "$home" "$expected_uid" "$expected_gid"); then
+      codex_as_restore_all_transition_markers || true
+      codex_as_fail 'could not fence the redundant transition cohort from the legacy owner'
+      return 1
+    fi
+    home_ids+="${home_ids:+ }$id"
+  done <<<"$seeds"
   temporary=$CODEX_AS_TRANSITION_FILE.tmp.$$
-  if ! printf 'mode=%s\nhome_id=%s\nhad_proxy=%s\n' \
-      "$CODEX_AS_TRANSITION_TO_DAEMON" "$id" "$had_proxy" >"$temporary" \
+  if ! printf 'mode=%s\nhome_ids=%s\n' \
+      "$CODEX_AS_TRANSITION_TO_DAEMON" "$home_ids" >"$temporary" \
       || ! chmod 0600 "$temporary" \
       || ! mv -- "$temporary" "$CODEX_AS_TRANSITION_FILE"; then
     rm -f -- "$temporary"
-    codex_as_restore_transition_marker "$home" "$had_proxy" || true
+    codex_as_restore_all_transition_markers || true
     codex_as_fail 'could not persist the OpenAI ownership transition'
     return 1
   fi
 
-  codex_as_log "waiting for legacy gateway to drain home $id"
   deadline=$(( $(date +%s) + CODEX_AS_RETIRE_TIMEOUT ))
-  while codex_as_home_has_process "$home"; do
-    if (( $(date +%s) >= deadline )); then
-      rm -f -- "$CODEX_AS_TRANSITION_FILE"
-      codex_as_restore_transition_marker "$home" "$had_proxy" || true
-      codex_as_fail 'legacy gateway did not retire the transition home in time'
-      return 1
-    fi
-    sleep 1
-  done
-  codex_as_start_or_roll "$id" || { codex_as_abort_transition; return 1; }
-  codex_as_log "transition app-server $id is ready"
+  while IFS=$'\t' read -r id name; do
+    home=$CODEX_AS_HOMES_DIR/$name
+    codex_as_log "waiting for legacy gateway to drain transition home $id"
+    while codex_as_home_has_process "$home"; do
+      if (( $(date +%s) >= deadline )); then
+        codex_as_abort_transition || true
+        codex_as_fail 'legacy gateway did not retire the redundant transition cohort in time'
+        return 1
+      fi
+      sleep 1
+    done
+  done <<<"$seeds"
+  while IFS= read -r id; do
+    codex_as_start_or_roll "$id" || { codex_as_abort_transition; return 1; }
+    codex_as_log "transition app-server $id is ready"
+  done < <(printf '%s\n' "$home_ids" | tr ' ' '\n')
 }
 
 codex_as_abort_transition() {
@@ -1189,6 +1285,7 @@ codex_as_main() {
   case "$command" in
     serve) [[ $# == 2 ]] || { codex_as_fail 'usage: codex-app-servers.sh serve <opaque-id>'; return 1; }; codex_as_serve "$2" ;;
     reconcile) [[ $# == 1 ]] || { codex_as_fail 'usage: codex-app-servers.sh reconcile'; return 1; }; codex_as_reconcile ;;
+    admit-cutover) [[ $# == 1 ]] || { codex_as_fail 'usage: codex-app-servers.sh admit-cutover'; return 1; }; codex_as_admit_cutover ;;
     prepare-transition) [[ $# == 1 ]] || { codex_as_fail 'usage: codex-app-servers.sh prepare-transition'; return 1; }; codex_as_prepare_transition ;;
     commit-transition) [[ $# == 1 ]] || { codex_as_fail 'usage: codex-app-servers.sh commit-transition'; return 1; }; codex_as_commit_transition ;;
     abort-transition) [[ $# == 1 ]] || { codex_as_fail 'usage: codex-app-servers.sh abort-transition'; return 1; }; codex_as_abort_transition ;;
@@ -1197,7 +1294,7 @@ codex_as_main() {
     abort-legacy-transition) [[ $# == 1 ]] || { codex_as_fail 'usage: codex-app-servers.sh abort-legacy-transition'; return 1; }; codex_as_abort_legacy_transition ;;
     verify) [[ $# == 1 ]] || { codex_as_fail 'usage: codex-app-servers.sh verify'; return 1; }; codex_as_verify ;;
     verify-legacy) [[ $# == 1 ]] || { codex_as_fail 'usage: codex-app-servers.sh verify-legacy'; return 1; }; codex_as_verify_legacy ;;
-    *) codex_as_fail 'usage: codex-app-servers.sh serve <opaque-id>|reconcile|prepare-transition|commit-transition|abort-transition|prepare-legacy-transition|commit-legacy-transition|abort-legacy-transition|verify|verify-legacy' ;;
+    *) codex_as_fail 'usage: codex-app-servers.sh serve <opaque-id>|reconcile|admit-cutover|prepare-transition|commit-transition|abort-transition|prepare-legacy-transition|commit-legacy-transition|abort-legacy-transition|verify|verify-legacy' ;;
   esac
 }
 

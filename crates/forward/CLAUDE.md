@@ -148,6 +148,9 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
 **Инварианты Codex adapter (не применять к Claude byte-for-byte path):**
 0. **Пул homes = тот же дисциплинарный минимум, что и Claude-флот.** `CodexGateway` держит N
    `CodexHome` (каждый — свой `CODEX_HOME`, свой attested child, своё cooling/auth-состояние).
+   Legacy `owned-child` сохраняет минимум в один authenticated home; production
+   `shared-daemon` допускается в startup preflight и `/ready` только с минимум двумя независимо
+   authenticated homes. Лишний умерший home карантинится и не блокирует оставшуюся когорту.
    **Параллелизм на home НЕ ограничен** (как у Claude-флота): вместо семафора turn'ов — атомарный
    счётчик in-flight (`TurnSlot` RAII, снимается на успехе/ошибке/дисконнекте), он лишь сигнал
    загрузки для выбора, не потолок. `CLAUDE_API_CODEX_MAX_CONCURRENT` больше не режет (оставлен для

@@ -172,6 +172,8 @@ require_permitted 'legacy Codex home migration' \
   /usr/local/lib/apitoken-watchdog/controller/codex-homes-migrate.sh --apply
 require_permitted 'Codex app-server reconciliation' \
   /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh reconcile
+require_permitted 'Codex cutover admission' \
+  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh admit-cutover
 require_permitted 'Codex ownership transition preparation' \
   /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh prepare-transition
 require_permitted 'Codex ownership transition commit' \

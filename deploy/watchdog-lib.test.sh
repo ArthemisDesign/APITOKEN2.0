@@ -1470,6 +1470,10 @@ grep -Fq -- "--data-urlencode 'query=claude_api_codex_enabled{provider=\"openai\
 provider_controller="$ROOT/deploy/engine-bluegreen.sh"
 old_stop_line=$(grep -nF 'systemctl_command stop "$ACTIVE_UNIT"' "$provider_controller" | head -1 | cut -d: -f1)
 openai_start_line=$(grep -nF 'systemctl_command start "$OPENAI_TARGET_UNIT"' "$provider_controller" | head -1 | cut -d: -f1)
+openai_admit_line=$(grep -nF '"$CODEX_APP_SERVERS_HELPER" admit-cutover' \
+  "$provider_controller" | head -1 | cut -d: -f1)
+openai_enable_line=$(grep -nF 'systemctl_command enable "$OPENAI_TARGET_UNIT"' \
+  "$provider_controller" | head -1 | cut -d: -f1)
 openai_drain_line=$(grep -nF 'systemctl_command kill --kill-whom=main -s SIGUSR1 "$OPENAI_ACTIVE_UNIT"' \
   "$provider_controller" | head -1 | cut -d: -f1)
 openai_commit_line=$(grep -nF '"$CODEX_APP_SERVERS_HELPER" commit-transition' \
@@ -1479,12 +1483,22 @@ openai_commit_line=$(grep -nF '"$CODEX_APP_SERVERS_HELPER" commit-transition' \
 [[ -n $openai_start_line && -n $openai_drain_line && -n $openai_commit_line \
     && $openai_start_line -lt $openai_drain_line && $openai_drain_line -lt $openai_commit_line ]] \
   || wd_die 'OpenAI does not admit the target before draining and committing the old generation'
+[[ -n $openai_admit_line && -n $openai_enable_line \
+    && $openai_start_line -lt $openai_admit_line && $openai_admit_line -lt $openai_enable_line \
+    && $openai_enable_line -lt $openai_drain_line ]] \
+  || wd_die 'OpenAI can drain the old slot before redundant admission and boot durability'
 grep -Fq 'unit_release_binding_ok engine "$unit" "$ENGINE_RELEASE_ROOT" "$CURRENT_RELEASE" anthropic' \
   "$provider_controller" || wd_die "Anthropic slot gate does not prove provider mode"
 grep -Fq 'unit_release_binding_ok engine "$OPENAI_LEGACY_UNIT" "$ENGINE_RELEASE_ROOT"' \
   "$provider_controller" || wd_die 'legacy OpenAI rollback gate does not prove the exact release'
 grep -Fq 'process_environment_has "$pid" '\''CLAUDE_API_CODEX_TRANSPORT=shared-daemon'\''' \
   "$provider_controller" || wd_die 'shared OpenAI gate does not prove its transport mode'
+grep -Fq 'preserving it without another cutover' "$provider_controller" \
+  || wd_die 'same-release OpenAI drift can trigger a needless second slot cutover'
+grep -Fq 'OPENAI_TARGET_PREEXISTING=1' "$provider_controller" \
+  || wd_die 'same-release recovery can stop the only pre-existing current OpenAI slot'
+grep -Fq 'recovery retains the pre-existing current OpenAI target' "$provider_controller" \
+  || wd_die 'pre-drain recovery can destroy a previously admitted OpenAI target'
 grep -Fq 'unit_release_binding_ok engine "$GEMINI_UNIT" "$ENGINE_RELEASE_ROOT" "$CURRENT_RELEASE" gemini' \
   "$provider_controller" || wd_die "Gemini gate does not prove provider mode"
 grep -Fq 'for old_unit in "$LEGACY_UNIT" "$(legacy_slot_unit 8787)" "$(legacy_slot_unit 8788)"' \
@@ -1493,6 +1507,9 @@ grep -Fq 'privileged_command "$CODEX_HOME_MIGRATION_HELPER" --apply' "$provider_
   || wd_die "provider controller does not apply the guarded legacy Codex home migration"
 grep -Fq '"$CODEX_APP_SERVERS_HELPER" prepare-transition' "$provider_controller" \
   || wd_die 'singleton-to-daemon ownership handoff is absent'
+grep -Fq 'kill --kill-whom=main --signal=SIGUSR2 "$unit"' \
+  "$ROOT/deploy/codex-app-servers.sh" \
+  || wd_die 'Codex reconciliation can signal and kill the gateway proxy children'
 grep -Fq '"$CODEX_APP_SERVERS_HELPER" prepare-legacy-transition' "$provider_controller" \
   || wd_die 'the first shared release cannot roll back without duplicate home owners'
 grep -Fq '"$CODEX_APP_SERVERS_HELPER" commit-legacy-transition' "$provider_controller" \
@@ -1516,6 +1533,9 @@ grep -Fq 'reverse_proxy 127.0.0.1:8793 127.0.0.1:8797' "$ROOT/deploy/Caddyfile" 
 grep -Fq 'codex-app-servers.sh prepare-legacy-transition' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   || wd_die 'deploy user cannot invoke the compatibility ownership handoff'
+grep -Fq 'codex-app-servers.sh admit-cutover' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'deploy user cannot invoke redundant OpenAI cutover admission'
 grep -Fq '/usr/bin/systemctl disable claude-api-codex-app-servers.timer' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   || wd_die 'deploy user cannot disarm daemon reconciliation in legacy mode'
