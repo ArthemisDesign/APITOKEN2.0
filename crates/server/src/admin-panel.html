@@ -497,8 +497,18 @@ async function adminAction(button,domains){const action=button.dataset.adminActi
 // и другого способа отличить их на стороне движка нет.
 const isOpenkeys=handle=>/^openkeys-/i.test(String(handle||''));
 const okBadge=handle=>isOpenkeys(handle)?'<span class="okb" title="Выпущен через OpenKeys">OpenKeys</span>':'';
-async function spendStats(){let data;
-  try{data=await api('/spend-stats')}
+// Контекст ключа (метка, номинал, продавец, профиль) по engine-аккаунту. Карта грузится
+// лениво один раз за сессию вкладки; если портал недоступен — строки остаются без подписи.
+let okDirPromise=null;
+const okDirectory=()=>okDirPromise??=api('/openkeys-admin/lookup')
+  .then(data=>new Map((data.rows||[]).map(row=>[row.engineAccountId,row])))
+  .catch(()=>{okDirPromise=null;return new Map()});
+const okTypeLabel=type=>type==='openai'?'OpenAI':'Claude';
+const okInfo=(dir,accountId)=>{const meta=dir&&dir.get(accountId);if(!meta)return '';
+  return '<div class="sub">'+esc(meta.batchLabel||'Без метки')+' · '+nanoMoney(meta.faceValueNano)+' · '+esc(meta.createdBy)+' · '+okTypeLabel(meta.apiType)+
+    ' · <a class="link" href="'+esc(meta.viewUrl)+'" target="_blank" rel="noreferrer">профиль ↗</a></div>'};
+async function spendStats(){let data,okDir;
+  try{[data,okDir]=await Promise.all([api('/spend-stats'),okDirectory()])}
   catch(error){return toast('Статистика расхода не загрузилась: '+error.message,'bad')}
   const previous=document.activeElement;
   const displayName=handle=>handle||'—';
@@ -509,7 +519,7 @@ async function spendStats(){let data;
     const providerLabel=name=>name==='openai'?'OpenAI (Codex)':name==='anthropic'?'Claude (подписки)':name;
     const providerRows=(period.providers||[]).map(item=>'<tr><td class="left"><b>'+esc(providerLabel(item.provider))+'</b></td><td>'+item.requests+
       '</td><td><b>'+money(item.charge_usd)+'</b></td><td>'+money(item.real_usd)+'</td><td>'+discount(item.charge_usd,item.real_usd)+'</td></tr>').join('');
-    const rows=(period.accounts||[]).map(item=>'<tr><td class="left"><b>'+esc(displayName(item.handle))+'</b>'+okBadge(item.handle)+'<div class="sub mono">'+esc(item.handle&&displayName(item.handle)!==item.handle?item.handle:item.account)+'</div></td><td>'+item.requests+
+    const rows=(period.accounts||[]).map(item=>'<tr><td class="left"><b>'+esc(displayName(item.handle))+'</b>'+okBadge(item.handle)+'<div class="sub mono">'+esc(item.handle&&displayName(item.handle)!==item.handle?item.handle:item.account)+'</div>'+okInfo(okDir,item.account)+'</td><td>'+item.requests+
       '</td><td><b>'+money(item.charge_usd)+'</b></td><td>'+money(item.real_usd)+'</td><td>'+discount(item.charge_usd,item.real_usd)+'</td><td>'+ago(item.last_ts*1000)+'</td></tr>').join('');
     // Отдельная сводка по OpenKeys: у портала своя экономика, и смешивать её
     // с обычными клиентами при разборе расхода бесполезно.
@@ -540,9 +550,10 @@ async function spendStats(){let data;
   document.body.appendChild(overlay);overlay.querySelector('[data-dlg=cancel]').focus()}
 
 /* ── Аккаунты ────────────────────────────────────────────── */
-async function accounts(){const partnerLimit=50,[overview,dashboardData,partners]=await Promise.all([
+async function accounts(){const partnerLimit=50,[overview,dashboardData,partners,okDir]=await Promise.all([
     api('/overview').catch(()=>null),api('/admin/dashboard').catch(()=>null),
-    api('/partner-admin/partner-analytics?sort=created_at&dir=desc&limit='+partnerLimit+'&offset='+partnerOffset).catch(()=>null)
+    api('/partner-admin/partner-analytics?sort=created_at&dir=desc&limit='+partnerLimit+'&offset='+partnerOffset).catch(()=>null),
+    okDirectory()
   ]),commerceTotal=dashboardData?.users?.total||0,partnerItems=partners?.items||[],partnerTotal=partners?.totals?.total||partnerItems.length;
   if(partnerOffset>=partnerTotal&&partnerTotal>0){partnerOffset=Math.max(0,Math.floor((partnerTotal-1)/partnerLimit)*partnerLimit);return accounts()}
   const safeOverview=overview||{accounts:[]};
@@ -556,7 +567,7 @@ async function accounts(){const partnerLimit=50,[overview,dashboardData,partners
   const domainCards=domains.map(item=>'<div class="domain"><b>'+(item[3]?'<a class="link" target="_blank" rel="noreferrer" href="'+item[3]+'">'+esc(item[0])+'</a>':esc(item[0]))+
     '</b>'+pill(item[1],item[0]==='crm.apitoken.sale'?(crm?'ok':'warn'):'info')+'<div class="sub">'+esc(item[2])+'</div></div>').join('');
   const engineRows=engine.map(account=>{const isCrm=String(account.handle||'').toLowerCase()==='crm-parsing',domain=isCrm?'crm.apitoken.sale':'api.apitoken.sale';return '<tr><td class="left"><b>'+esc(account.handle||'—')+'</b>'+okBadge(account.handle)+
-    '<div class="sub mono">'+esc(account.account)+'</div></td><td class="left">'+esc(domain)+'</td><td>'+pill(account.status,account.status==='active'?'ok':'bad')+'</td><td><b>'+money(account.balance_usd)+
+    '<div class="sub mono">'+esc(account.account)+'</div>'+okInfo(okDir,account.account)+'</td><td class="left">'+esc(domain)+'</td><td>'+pill(account.status,account.status==='active'?'ok':'bad')+'</td><td><b>'+money(account.balance_usd)+
     '</b></td><td>'+money(account.spent_usd)+'</td><td>×'+esc(account.mult)+'</td></tr>'}).join('');
   const partnerRows=partnerItems.map(partner=>'<tr><td class="left"><b>'+esc(partner.telegramUsername?'@'+partner.telegramUsername:(partner.email||partner.displayName||'—'))+
     '</b><div class="sub mono">'+esc(partner.id)+' · '+esc(partner.referralCode)+'</div></td><td>'+pill(partner.status,partner.status==='active'?'ok':partner.status==='suspended'?'bad':'warn')+
@@ -582,13 +593,13 @@ async function openkeys(){const params=new URLSearchParams({limit:String(openkey
       '<div>'+percentBar(Math.min(100,item.usagePercent))+'</div><div class="sub">'+item.usagePercent+'% · '+esc(usageLabel[item.usageState]||item.usageState)+'</div>';
     const state=pill(item.enabled?'активен':'отключён',item.enabled?'ok':'bad')+'<div class="sub">'+(item.status==='delivered'?'выдан':'на складе')+'</div>';
     const action='<button class="btn '+(item.enabled?'bad':'')+'" data-openkey="'+esc(item.id)+'" data-enabled="'+(item.enabled?'1':'0')+'" data-label="'+esc(item.batchLabel||item.keyMasked)+'">'+(item.enabled?'отключить':'включить')+'</button>';
-    return '<tr><td class="left"><b class="mono">'+esc(item.keyMasked)+'</b><div class="sub mono">'+esc(item.id)+'</div></td><td class="left"><b>'+esc(item.batchLabel||'Без метки')+'</b><div class="sub mono">'+esc(item.batchId)+' · '+esc(item.createdBy)+'</div></td><td>'+state+'</td><td>'+usage+'</td><td><b>'+(item.spentNano==null?'—':nanoMoney(item.spentNano))+'</b></td><td>'+(item.remainingNano==null?'—':nanoMoney(item.remainingNano))+'</td><td>'+nanoMoney(item.faceValueNano)+'</td><td>'+date(item.deliveredAt||item.createdAt,true)+'</td><td><a class="link" href="'+esc(item.viewUrl)+'" target="_blank" rel="noreferrer">профиль ↗</a></td><td>'+action+'</td></tr>'}).join('');
+    return '<tr><td class="left"><b class="mono">'+esc(item.keyMasked)+'</b><div class="sub mono">'+esc(item.engineAccountId||item.id)+(item.apiType?' · '+okTypeLabel(item.apiType):'')+'</div></td><td class="left"><b>'+esc(item.batchLabel||'Без метки')+'</b><div class="sub mono">'+esc(item.batchId)+' · '+esc(item.createdBy)+'</div></td><td>'+state+'</td><td>'+usage+'</td><td><b>'+(item.spentNano==null?'—':nanoMoney(item.spentNano))+'</b></td><td>'+(item.remainingNano==null?'—':nanoMoney(item.remainingNano))+'</td><td>'+nanoMoney(item.faceValueNano)+'</td><td>'+date(item.deliveredAt||item.createdAt,true)+'</td><td><a class="link" href="'+esc(item.viewUrl)+'" target="_blank" rel="noreferrer">профиль ↗</a></td><td>'+action+'</td></tr>'}).join('');
   const statusOptions='<option value="">любой статус</option><option value="active" '+(openkeysPage.status==='active'?'selected':'')+'>активные</option><option value="disabled" '+(openkeysPage.status==='disabled'?'selected':'')+'>отключённые</option>';
   const usageOptions='<option value="">любое использование</option><option value="unused" '+(openkeysPage.usage==='unused'?'selected':'')+'>не использовались</option><option value="used" '+(openkeysPage.usage==='used'?'selected':'')+'>используются</option><option value="exhausted" '+(openkeysPage.usage==='exhausted'?'selected':'')+'>исчерпаны</option><option value="unavailable" '+(openkeysPage.usage==='unavailable'?'selected':'')+'>нет live-данных</option>';
   const warning=data.truncated?'<div class="banner warn"><span class="dot warn"></span><div><b>Каталог достиг защитного лимита</b><span class="muted">Фильтр применяется к 10 000 последним ключам. Уточните партию или поиск.</span></div></div>':'';
   const body=warning+'<div class="cards">'+card('ключи',data.total,'после текущих фильтров')+card('активны / отключены',(summary.active||0)+' / '+(summary.disabled||0),'управление обратимо')+
     card('используются',(summary.used||0),'не трогали '+(summary.unused||0)+' · исчерпаны '+(summary.exhausted||0))+card('потрачено',nanoMoney(summary.spentNano),'остаток '+nanoMoney(summary.remainingNano))+'</div>'+
-    '<div class="sect"><h2>Каталог ключей</h2><span class="sect-sub">метка и партия всегда видны</span></div><form id="openkeys-filter" class="toolbar"><label class="sr-only" for="ok-search">Поиск OpenKeys</label><input id="ok-search" type="search" value="'+esc(openkeysPage.q)+'" placeholder="метка, маска ключа, продавец или ID партии…">'+
+    '<div class="sect"><h2>Каталог ключей</h2><span class="sect-sub">метка и партия всегда видны</span></div><form id="openkeys-filter" class="toolbar"><label class="sr-only" for="ok-search">Поиск OpenKeys</label><input id="ok-search" type="search" value="'+esc(openkeysPage.q)+'" placeholder="метка, маска ключа, acct_…, продавец или ID партии…">'+
     '<label class="sr-only" for="ok-batch">Партия</label><select id="ok-batch">'+batchOptions+'</select><label class="sr-only" for="ok-usage">Использование</label><select id="ok-usage">'+usageOptions+'</select><label class="sr-only" for="ok-status">Статус</label><select id="ok-status">'+statusOptions+'</select><button class="btn" type="submit">Применить</button></form>'+
     '<div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">ключ</th><th class="left">метка · партия</th><th>состояние</th><th>использование</th><th>потрачено</th><th>остаток</th><th>номинал</th><th>событие</th><th>профиль</th><th>действие</th></tr></thead><tbody>'+(rows||empty(10))+'</tbody></table></div></div>'+pager(openkeysPage.offset,openkeysPage.limit,data.total,'openkeys')+
     '<footer>Live-балансы читаются bounded batch-запросами, поэтому раздел не создаёт по два запроса на каждый ключ. Полные секреты здесь никогда не передаются. Выпуск и выдача партий остаются в <a class="link" href="https://openkeys.apitoken.sale/admin" target="_blank" rel="noreferrer">OpenKeys admin ↗</a>.</footer>';
@@ -751,12 +762,12 @@ function systemVerdict(overview){const gap=overview.recommend.gap,h5=overview.he
   if(gap>0||tight(h5)||tight(h7)||coverage>1||cooling>0){const why=gap>0?'рекомендуется +'+gap+' подписок':tight(h5)||tight(h7)?'запас ниже цели ×'+target:
     coverage>1?'балансы клиентов ×'+coverage+' к ёмкости':cooling+' подписок остывают';return{kind:'warn',title:'Под контролем, но нужно внимание',detail:why+' · headroom 5h '+ratio(h5)+' / 7d '+ratio(h7)}}
   return{kind:'ok',title:'Запаса ёмкости хватает',detail:'headroom 5h '+ratio(h5)+' / 7d '+ratio(h7)+' · подписок '+total+', цель ×'+target+' выдержана'}}
-async function system(){const result=await Promise.all([api('/overview').catch(()=>null),api('/capacity').catch(()=>null)]),overview=result[0],capacity=result[1];
+async function system(){const result=await Promise.all([api('/overview').catch(()=>null),api('/capacity').catch(()=>null),okDirectory()]),overview=result[0],capacity=result[1],okDir=result[2];
   if(!overview){shell('Система','ёмкость, спрос и рекомендации по флоту','<div class="banner warn"><span class="dot warn"></span><div><b>Свежая системная сводка недоступна</b><span class="muted">Остальные разделы работают. Панель автоматически проверяет восстановление источника.</span></div></div>',pill('degraded','warn'));return}
   const supply=overview.supply,health=supply.health,demand=overview.demand,recommend=overview.recommend,verdict=systemVerdict(overview),mult=overview.ref_mult;
   const horizonCards=[['7d','7 дней','7d'],['1d','1 день',null],['5h','5 часов (burst)','5h']].map(item=>{const available=supply.avail_usd[item[0]]||0,head=item[2]?overview.headroom[item[2]]:null;
     return card('доступно · '+item[1],money(available),'клиентам ×'+mult+' = '+money(available*mult)+(item[2]?' · запас '+ratio(head):''))}).join('');
-  const accountRows=(overview.accounts||[]).map(account=>'<tr><td class="left mono muted">'+esc(account.account)+'</td><td class="left"><b>'+esc(account.handle||'—')+'</b>'+okBadge(account.handle)+'</td><td>'+
+  const accountRows=(overview.accounts||[]).map(account=>'<tr><td class="left mono muted">'+esc(account.account)+'</td><td class="left"><b>'+esc(account.handle||'—')+'</b>'+okBadge(account.handle)+okInfo(okDir,account.account)+'</td><td>'+
     pill(account.status,account.status==='active'?'ok':'bad')+'</td><td><b>'+money(account.balance_usd)+'</b></td><td><b>'+money(account.spent_usd)+'</b></td><td>×'+esc(account.mult)+'</td></tr>').join('');
   const body='<div class="banner '+verdict.kind+'"><span class="dot'+(verdict.kind==='ok'?'':' '+verdict.kind)+'"></span><div><b>'+esc(verdict.title)+'</b><span class="muted">'+esc(verdict.detail)+'</span></div></div>'+
     '<div class="sect"><h2>Предложение — real-API USD</h2></div><div class="cards">'+horizonCards+card('балансы клиентов',money(demand.balance_usd),'резерв '+money(demand.reserved_usd)+' · coverage 7d ×'+overview.coverage['7d'])+

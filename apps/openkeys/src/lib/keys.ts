@@ -833,6 +833,8 @@ export interface AdminKeyDirectoryRow {
   batchLabel: string | null;
   createdBy: string;
   keyMasked: string;
+  engineAccountId: string;
+  apiType: ApiType;
   status: StockStatus;
   enabled: boolean;
   usageState: AdminUsageState;
@@ -888,6 +890,7 @@ export async function loadAdminKeyDirectory(query: AdminKeyDirectoryQuery): Prom
     search
       ? or(
           ilike(openkeysKeys.keyMasked, `%${search}%`),
+          ilike(openkeysKeys.engineAccountId, `%${search}%`),
           ilike(openkeysBatches.label, `%${search}%`),
           ilike(openkeysBatches.createdBy, `%${search}%`),
           sql`${openkeysBatches.id}::text ILIKE ${`%${search}%`}`,
@@ -905,6 +908,7 @@ export async function loadAdminKeyDirectory(query: AdminKeyDirectoryQuery): Prom
         keyMasked: openkeysKeys.keyMasked,
         viewToken: openkeysKeys.viewToken,
         engineAccountId: openkeysKeys.engineAccountId,
+        apiType: openkeysBatches.apiType,
         faceValueNano: openkeysKeys.faceValueNano,
         multBp: openkeysKeys.multBp,
         enabled: openkeysKeys.status,
@@ -947,6 +951,8 @@ export async function loadAdminKeyDirectory(query: AdminKeyDirectoryQuery): Prom
       batchLabel: row.batchLabel,
       createdBy: row.createdBy,
       keyMasked: row.keyMasked,
+      engineAccountId: row.engineAccountId,
+      apiType: apiTypeOf(row.apiType),
       status: stockStatusOf(row),
       // The control here is key-scoped. Account status is a separate engine concern and must not
       // turn the key button into an "enable account" action that can never fulfil its label.
@@ -997,4 +1003,56 @@ export async function loadAdminKeyDirectory(query: AdminKeyDirectoryQuery): Prom
       createdAt: batch.createdAt.toISOString(),
     })),
   };
+}
+
+export interface AdminKeyLookupRow {
+  engineAccountId: string;
+  keyMasked: string;
+  batchId: string;
+  batchLabel: string | null;
+  createdBy: string;
+  apiType: ApiType;
+  faceValueNano: string;
+  enabled: boolean;
+  viewUrl: string;
+}
+
+/**
+ * Лёгкая карта engine-аккаунт → контекст ключа. Один SQL без live-балансов:
+ * ей подписываются openkeys-строки в «Кто тратит» и реестрах аккаунтов, где
+ * тяжёлый каталог с bounded batch-запросами был бы лишним.
+ */
+export async function loadAdminKeyLookup(): Promise<{ rows: AdminKeyLookupRow[]; truncated: boolean }> {
+  const config = loadConfig();
+  const { db } = getDatabase();
+  const raw = await db
+    .select({
+      engineAccountId: openkeysKeys.engineAccountId,
+      keyMasked: openkeysKeys.keyMasked,
+      viewToken: openkeysKeys.viewToken,
+      batchId: openkeysKeys.batchId,
+      batchLabel: openkeysBatches.label,
+      createdBy: openkeysBatches.createdBy,
+      apiType: openkeysBatches.apiType,
+      faceValueNano: openkeysKeys.faceValueNano,
+      status: openkeysKeys.status,
+    })
+    .from(openkeysKeys)
+    .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
+    .where(isNull(openkeysKeys.removedAt))
+    .orderBy(desc(openkeysKeys.createdAt))
+    .limit(ADMIN_DIRECTORY_SCAN_LIMIT + 1);
+  const truncated = raw.length > ADMIN_DIRECTORY_SCAN_LIMIT;
+  const rows = (truncated ? raw.slice(0, ADMIN_DIRECTORY_SCAN_LIMIT) : raw).map((row) => ({
+    engineAccountId: row.engineAccountId,
+    keyMasked: row.keyMasked,
+    batchId: row.batchId,
+    batchLabel: row.batchLabel,
+    createdBy: row.createdBy,
+    apiType: apiTypeOf(row.apiType),
+    faceValueNano: row.faceValueNano.toString(),
+    enabled: row.status !== "disabled",
+    viewUrl: `${config.publicBaseUrl}/profile/${row.viewToken}`,
+  }));
+  return { rows, truncated };
 }
