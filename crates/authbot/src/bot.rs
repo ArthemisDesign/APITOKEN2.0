@@ -65,18 +65,6 @@ fn product_kb() -> Keyboard {
         vec![("ChatGPT Pro".into(), "noffer:gptpro".into())],
         vec![("Google AI Pro".into(), "noffer:gemini_pro".into())],
         vec![("Google AI Ultra".into(), "noffer:gemini_ultra".into())],
-        vec![(
-            "Code Assist Standard".into(),
-            "noffer:gemini_standard".into(),
-        )],
-        vec![(
-            "Code Assist Enterprise".into(),
-            "noffer:gemini_enterprise".into(),
-        )],
-        vec![(
-            "Workspace AI Ultra".into(),
-            "noffer:gemini_workspace_ultra".into(),
-        )],
     ]
 }
 
@@ -140,9 +128,6 @@ fn admin_home_kb() -> Vec<Vec<&'static str>> {
     vec![
         vec!["📦 Claude Pro", "📦 Claude 5x", "📦 Claude 20x"],
         vec!["📦 Google AI Pro", "📦 Google AI Ultra"],
-        vec!["📦 Code Assist Standard"],
-        vec!["📦 Code Assist Enterprise"],
-        vec!["📦 Workspace AI Ultra"],
         vec!["🛠 Панель"],
     ]
 }
@@ -1330,20 +1315,39 @@ mod tests {
     }
 
     #[test]
-    fn persistent_admin_keyboard_lists_every_supported_gemini_line() {
-        let buttons = admin_home_kb().into_iter().flatten().collect::<Vec<_>>();
-        let expected = [
+    fn product_menus_show_only_the_two_operator_selected_gemini_plans() {
+        let persistent_buttons = admin_home_kb().into_iter().flatten().collect::<Vec<_>>();
+        let offer_buttons = product_kb()
+            .into_iter()
+            .flatten()
+            .map(|(label, _)| label)
+            .collect::<Vec<_>>();
+        let visible = [
             ("📦 Google AI Pro", "Google AI Pro"),
             ("📦 Google AI Ultra", "Google AI Ultra"),
+        ];
+        for (button, product) in visible {
+            assert!(
+                persistent_buttons.contains(&button),
+                "missing persistent button {button}"
+            );
+            assert!(offer_buttons.iter().any(|label| label == product));
+            assert_eq!(admin_quick_tier(button), Some(product));
+            assert_eq!(handoff_kind(product), HandoffKind::Gemini);
+        }
+
+        let hidden = [
             ("📦 Code Assist Standard", "Code Assist Standard"),
             ("📦 Code Assist Enterprise", "Code Assist Enterprise"),
             ("📦 Workspace AI Ultra", "Workspace AI Ultra"),
         ];
-        for (button, product) in expected {
+        for (button, product) in hidden {
             assert!(
-                buttons.contains(&button),
-                "missing persistent button {button}"
+                !persistent_buttons.contains(&button),
+                "retired persistent button {button} is still visible"
             );
+            assert!(!offer_buttons.iter().any(|label| label == product));
+            // Old reply keyboards and callbacks remain routable during rollout.
             assert_eq!(admin_quick_tier(button), Some(product));
             assert_eq!(handoff_kind(product), HandoffKind::Gemini);
         }
