@@ -365,17 +365,11 @@ pub async fn models(
     if requests_codex_models_envelope(&headers) {
         return json_response(StatusCode::OK, json!({"models": []}), &new_id("req"));
     }
-    let available = match available_upstream_models(&gateway).await {
-        Ok(available) => available,
-        Err(error) => return ApiError::from(error).into_response(),
-    };
-    let data = gateway
-        .config()
-        .models
-        .iter()
-        .filter(|model| available.contains(&model.upstream))
-        .map(model_object)
-        .collect::<Vec<_>>();
+    // Standard SDK discovery must not block on a live app-server catalog refresh. The health loop
+    // updates the last-good intersection in the background; before its first success, the local
+    // reviewed/configured catalog keeps the endpoint useful during startup or an upstream outage.
+    let available = gateway.cached_model_catalog().await;
+    let data = public_model_objects(&gateway, available.as_ref());
     json_response(
         StatusCode::OK,
         json!({"object": "list", "data": data}),
@@ -390,6 +384,16 @@ fn requests_codex_models_envelope(headers: &HeaderMap) -> bool {
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value.to_ascii_lowercase().starts_with("codex"))
     })
+}
+
+fn public_model_objects(gateway: &CodexGateway, available: Option<&HashSet<String>>) -> Vec<Value> {
+    gateway
+        .config()
+        .models
+        .iter()
+        .filter(|model| available.map_or(true, |catalog| catalog.contains(&model.upstream)))
+        .map(model_object)
+        .collect()
 }
 
 pub async fn model(
@@ -658,7 +662,7 @@ async fn authorize_models(
     }
 }
 
-async fn available_upstream_models(
+pub(super) async fn available_upstream_models(
     gateway: &CodexGateway,
 ) -> Result<HashSet<String>, ProcessError> {
     let process = gateway.any_process().await?;
@@ -3464,6 +3468,26 @@ mod tests {
         let mut near_match = HeaderMap::new();
         near_match.insert("originator", HeaderValue::from_static("my-codex-proxy"));
         assert!(!requests_codex_models_envelope(&near_match));
+    }
+
+    #[test]
+    fn standard_model_list_falls_back_to_the_configured_catalog() {
+        let gateway = gateway();
+        let data = public_model_objects(&gateway, None);
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0]["id"], "gpt-5.6");
+    }
+
+    #[test]
+    fn standard_model_list_uses_the_last_good_upstream_intersection() {
+        let gateway = gateway();
+        let available = HashSet::from(["different-upstream-model".to_string()]);
+        assert!(public_model_objects(&gateway, Some(&available)).is_empty());
+
+        let available = HashSet::from(["gpt-5.6-sol".to_string()]);
+        let data = public_model_objects(&gateway, Some(&available));
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0]["id"], "gpt-5.6");
     }
 
     fn model() -> CodexModel {

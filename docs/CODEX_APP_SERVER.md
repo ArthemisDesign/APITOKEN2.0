@@ -15,7 +15,7 @@ lenient, SDK-compatible text+image subset:
 | `GET /v1/responses/{id}/input_items` | supported; returns the stored request items |
 | `POST /v1/responses/input_tokens` | supported; estimates input tokens without running a turn |
 | `POST /v1/chat/completions` | supported adapter, streaming and non-streaming |
-| `GET /v1/models` | supported; intersected with the live app-server catalog |
+| `GET /v1/models` | supported; serves the last-good live intersection, with a configured-catalog fallback |
 | `GET /v1/models/{model}` | supported |
 
 User messages may carry images: Chat Completions `image_url` parts and Responses `input_image`
@@ -83,9 +83,10 @@ curl https://openai.api.apitoken.sale/v1/responses \
   }'
 ```
 
-Clients must discover the current model intersection from `GET /v1/models`; they must not assume
-that every OpenAI model name is available. An official OpenAI SDK needs only its key and base URL
-changed:
+Clients must discover the cached current model intersection from `GET /v1/models`; they must not
+assume that every OpenAI model name is available. The endpoint never waits for a live app-server
+RPC: the health loop refreshes the intersection in the background and retains the last successful
+snapshot on failure. An official OpenAI SDK needs only its key and base URL changed:
 
 ```python
 import os
@@ -499,7 +500,8 @@ Before enabling production traffic:
 1. Verify the pinned build and patch tests.
 2. Complete `codex login --device-auth`.
 3. Verify `account/read` reports only account type `chatgpt`.
-4. Verify the live model intersection through `/v1/models`.
+4. Verify the cached model intersection through `/v1/models` and confirm a background refresh can
+   replace it after a successful app-server `model/list` call.
 5. Run non-streaming and streaming Responses calls.
 6. Run non-streaming and streaming Chat Completions calls.
 7. Run function-call round trips and structured-output validation.
@@ -524,8 +526,10 @@ Before enabling production traffic:
 The highest-value follow-ups are `/v1/responses/compact` and the Responses WebSocket transport.
 They require explicit semantics and tests; the gateway does not pretend to support them today. A
 remotely mutable model/price catalog is intentionally avoided:
-the live app-server catalog is intersected with an operator-reviewed, pinned billing catalog so an
-upstream metadata change cannot silently alter customer charging.
+the periodically refreshed live app-server catalog is intersected with an operator-reviewed, pinned
+billing catalog so an upstream metadata change cannot silently alter customer charging. A failed
+refresh leaves the last-good intersection in place, and the configured catalog is the startup
+fallback.
 
 The provider-only kill switch is:
 
@@ -578,7 +582,8 @@ gateway are:
 - reconstruction from completed response items when delta events are incomplete;
 - function-callback fallback, duplicate suppression and parallel function-call preservation;
 - reasoning-summary lifecycle plus opt-in encrypted reasoning continuity;
-- paginated live-model discovery intersected with a locally reviewed catalog.
+- paginated background live-model discovery intersected with a locally reviewed catalog and served
+  through a last-good cache.
 
 The repository's direct private-backend/OAuth replay, hard-coded client headers, user-agent
 impersonation and TLS-fingerprint shaping are deliberately not copied. This gateway keeps

@@ -175,6 +175,8 @@ pub async fn ledger_prune_loop(
 /// re-authenticated home rejoin the rotation without an engine restart.
 pub async fn codex_health_loop(gateway: Arc<forward::CodexGateway>) {
     let interval = Duration::from_secs(gateway.config().health_probe_interval_secs.max(30));
+    // Seed the last-good model snapshot without making startup or customer discovery wait on it.
+    gateway.refresh_model_catalog().await;
     loop {
         tokio::time::sleep(interval).await;
         gateway.probe_health().await;

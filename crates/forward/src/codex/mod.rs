@@ -31,6 +31,7 @@ pub(crate) use runner::{CodexTurnRequest, CodexTurnResult, CodexUsage, TurnUpdat
 
 use crate::affinity::{AffinityInput, AffinityResolution, AffinityStore};
 use history::HistoryStore;
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -879,6 +880,13 @@ pub struct CodexGateway {
     /// Rediscovered on every health tick, so an account the authbot finishes buying joins the pool
     /// without a restart. Readers take a snapshot; the lock is never held across a turn.
     homes: RwLock<Vec<Arc<CodexHome>>>,
+    /// Last successful live `model/list` snapshot. The public OpenAI model-list route reads this
+    /// cache and never waits on an app-server RPC; before the first successful refresh it falls back
+    /// to the locally configured billing catalog.
+    model_catalog: RwLock<Option<HashSet<String>>>,
+    /// SIGUSR2 reconciliation and the periodic health loop may overlap. Keep live catalog refresh
+    /// single-flight so a transient child stall cannot multiply background RPCs.
+    model_catalog_refresh: Mutex<()>,
     history: Arc<HistoryStore>,
     /// Declared last so Rust drops every home/child before releasing the process-wide fence.
     /// A per-home fence can split a multi-home pool between two provider generations, while this
@@ -928,6 +936,8 @@ impl CodexGateway {
             background_tasks: Arc::new(Semaphore::new(MAX_BACKGROUND_TASKS as usize)),
             rediscover_lock: Mutex::new(()),
             homes: RwLock::new(homes),
+            model_catalog: RwLock::new(None),
+            model_catalog_refresh: Mutex::new(()),
             history: Arc::new(history),
             _ownership_lock: ownership_lock,
         })
@@ -1030,6 +1040,34 @@ impl CodexGateway {
 
     pub fn config(&self) -> &CodexConfig {
         &self.cfg
+    }
+
+    pub(crate) async fn cached_model_catalog(&self) -> Option<HashSet<String>> {
+        self.model_catalog.read().await.clone()
+    }
+
+    /// Refresh the best-effort live model snapshot outside the request path. A failed refresh keeps
+    /// the last successful snapshot; an empty successful snapshot is retained intentionally because
+    /// the app-server may explicitly report that no models are currently available.
+    pub async fn refresh_model_catalog(&self) {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return;
+        }
+        let _refresh = self.model_catalog_refresh.lock().await;
+        if self.shutting_down.load(Ordering::Acquire) {
+            return;
+        }
+        match api::available_upstream_models(self).await {
+            Ok(available) => {
+                *self.model_catalog.write().await = Some(available);
+            }
+            Err(error) => {
+                eprintln!(
+                    "Codex model catalog refresh failed [{}]",
+                    error.diagnostic_class()
+                );
+            }
+        }
     }
 
     pub(crate) fn history(&self) -> &HistoryStore {
@@ -1370,6 +1408,10 @@ impl CodexGateway {
                 }
             }
         }
+        // Model discovery is intentionally best-effort and outside customer request handling. A
+        // stale last-good snapshot (or the configured catalog before the first success) is safer
+        // than turning an app-server catalog hiccup into a public 503 on every SDK startup.
+        self.refresh_model_catalog().await;
     }
 
     /// Read only cached operational state. Metrics collection never starts a provider process or
