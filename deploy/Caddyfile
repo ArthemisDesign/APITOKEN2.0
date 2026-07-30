@@ -3,6 +3,15 @@
 	# default order is the reverse, which would erase the copied identity after authentication.
 	order request_header before forward_auth
 
+	# RSA, not Caddy's default ECDSA. The native (Bun-based) Claude Code Windows build fails TLS
+	# verification against Let's Encrypt ECDSA chains with UNKNOWN_CERTIFICATE_VERIFICATION_ERROR,
+	# and no client-side workaround helps — not even NODE_EXTRA_CA_CERTS
+	# (anthropics/claude-code#31777, #43967). Claude Code pointed at api.apitoken.sale is our
+	# primary client, so every vhost must present the universally accepted RSA chain
+	# (Let's Encrypt R intermediates → ISRG Root X1). Do not remove until those issues are fixed
+	# and the fixed version is old enough that no customer runs an affected build.
+	key_type rsa2048
+
 	# The admin endpoint is loopback-only; Prometheus scrapes per-vhost request/latency metrics.
 	metrics {
 		per_host
