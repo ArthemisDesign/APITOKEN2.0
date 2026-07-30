@@ -19,6 +19,7 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -757,20 +758,18 @@ fn wrap_code_assist_request(
                 "generationConfig",
             ];
             if extra_fields.iter().any(|field| native.contains_key(*field)) {
-                let mut inner = serde_json::Map::new();
-                inner.insert("model".to_string(), json!(format!("models/{model}")));
-                inner.insert("contents".to_string(), contents);
+                // Code Assist's countTokens `request` IS a GenerateContentRequest; it has no
+                // `generateContentRequest` sub-field (upstream rejects that with
+                // fieldViolations{field:"request"}). Inline model/contents/system/tools directly.
+                let mut request = serde_json::Map::new();
+                request.insert("model".to_string(), json!(format!("models/{model}")));
+                request.insert("contents".to_string(), contents);
                 for field in extra_fields {
                     if let Some(value) = native.get(field) {
-                        inner.insert(field.to_string(), value.clone());
+                        request.insert(field.to_string(), value.clone());
                     }
                 }
-                json!({
-                    "request": {
-                        "model": format!("models/{model}"),
-                        "generateContentRequest": Value::Object(inner),
-                    }
-                })
+                json!({ "request": Value::Object(request) })
             } else {
                 json!({
                     "request": {
@@ -1158,6 +1157,59 @@ fn debug_log_upstream_rejection(
         "GEMINI-DIAG upstream rejection op={op} http={} code={code} status={status} msg={scrubbed} body={raw}",
         http_status.as_u16()
     );
+}
+
+/// Fires at most ONCE per process (bounded cost, no env flip needed). On the already-failed
+/// streaming path, replay the identical Antigravity body against the streaming method with three
+/// query variants and log each upstream status + scrubbed body, so the exact accepted streaming
+/// contract is observable. Removed together with the streaming fix.
+static STREAM_PROBE_DONE: AtomicBool = AtomicBool::new(false);
+
+async fn debug_probe_stream_variants(
+    profile: &GeminiProfile,
+    base_upstream: &str,
+    body: Bytes,
+    user_agent: &str,
+    project: &str,
+    profile_id: &str,
+) {
+    for variant in ["", "?alt=sse", "?alt=json"] {
+        let url = format!("{base_upstream}/v1internal:streamGenerateContent{variant}");
+        match send_upstream(
+            profile,
+            &url,
+            &HeaderMap::new(),
+            body.clone(),
+            None,
+            user_agent,
+        )
+        .await
+        {
+            Ok((response, _)) => {
+                let status = response.status();
+                let bytes = read_upstream_body(response).await.unwrap_or_default();
+                let mut snippet = String::from_utf8_lossy(&bytes).into_owned();
+                if !project.is_empty() {
+                    snippet = snippet.replace(project, "<project>");
+                }
+                if !profile_id.is_empty() {
+                    snippet = snippet.replace(profile_id, "<profile>");
+                }
+                let snippet: String = snippet
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .chars()
+                    .take(300)
+                    .collect();
+                eprintln!(
+                    "GEMINI-DIAG stream-probe variant='{variant}' http={} body={snippet}",
+                    status.as_u16()
+                );
+            }
+            Err(_) => eprintln!("GEMINI-DIAG stream-probe variant='{variant}' send_error"),
+        }
+    }
 }
 
 async fn stream_response(
@@ -1890,6 +1942,32 @@ async fn api_inner(
                     &project,
                     profile.id(),
                 );
+                if suffix == "streamGenerateContent"
+                    && STREAM_PROBE_DONE
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                {
+                    if let Ok(probe_body) = wrap_code_assist_request(
+                        route.operation,
+                        oauth_kind,
+                        &model.id,
+                        &project,
+                        &value,
+                        &user_prompt_id,
+                        upstream_session_id.as_deref(),
+                        upstream_request_id.as_deref(),
+                    ) {
+                        debug_probe_stream_variants(
+                            &profile,
+                            gateway.config().upstream_for(oauth_kind),
+                            probe_body,
+                            &upstream_user_agent,
+                            &project,
+                            profile.id(),
+                        )
+                        .await;
+                    }
+                }
                 // The private Code Assist error envelope can contain account, project, plan or
                 // internal endpoint details. Preserve only the public status class.
                 profile.mark_healthy_for(&model.id);
