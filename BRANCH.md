@@ -28,11 +28,13 @@ Git Branch = `web/v2`) + DNS-запись у Namecheap, которую пока�
 - Превью обязано оставаться noindex: `layout.tsx` и `robots.txt` уже отдают запрет при
   `VERCEL_ENV !== "production"`. Не ломать — staging-копия в выдаче убьёт SEO основного домена.
 - ИЗВЕСТНОЕ ОГРАНИЧЕНИЕ: commerce-бэкенд пускает ровно один browser-origin
-  (`PUBLIC_APP_BASE_URL` = https://apitoken.sale) — CORS + origin.guard на мутациях.
-  Живой логин/дашборд с домена v2 работать НЕ будет, пока бэкенд не разрешит второй
-  staging-origin (отдельное однократное изменение apps/api через обычный merge в master).
-  До этого дашборд проверяем как всегда: фикстуры `scripts/capture-site.mjs` или локальный
-  бэкенд (`NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:3000/v1`).
+  (`PUBLIC_APP_BASE_URL` = https://apitoken.sale) — CORS + origin.guard на мутациях, поэтому
+  живой логин с превью невозможен by design. РЕШЕНИЕ на этой ветке: превью-сборки
+  (`VERCEL_ENV=preview`) работают в режиме «уже внутри» — `src/lib/preview-fixtures.ts`
+  подменяет api-слой стейтфул-фикстурами (ключи создаются/переименовываются, промо и чекаут
+  зачисляют баланс), `/` редиректит в `/dashboard`. В прод-сборке флаг
+  `NEXT_PUBLIC_PREVIEW_FIXTURES` пуст — слой статически мёртв (см. `next.config.ts`).
+  Локально: `NEXT_PUBLIC_PREVIEW_FIXTURES=1 npm run dev`.
 
 ## Проверка
 
