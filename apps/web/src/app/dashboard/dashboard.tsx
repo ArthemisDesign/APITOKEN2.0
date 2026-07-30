@@ -292,7 +292,7 @@ export function Dashboard() {
         />}
         {section === "keys" && dataPending.keys && !dataErrors.keys && <KeysSkeleton />}
         {section === "keys" && !dataPending.keys && !dataErrors.keys && <ApiKeys keys={keys} onChanged={() => retryOptional("keys", false)} user={user} />}
-        {section === "providers" && <ProvidersCatalog />}
+        {section === "providers" && <ProvidersCatalog onCreateKey={() => open("keys")} />}
         {section === "credits" && <Credits account={account} ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
         {section === "usage" && !usage && dataPending.usage && <UsageSkeleton />}
         {section === "usage" && usage && <Usage account={account} keys={keys} ledger={ledger} usage={usage} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
