@@ -2210,6 +2210,7 @@ mod tests {
             control_keys: Vec::new(),
             panel_keys: Vec::new(),
             default_mult_bp: 10_000,
+            pricing_bridge: crate::PricingBridgeConfig::disabled(),
             trust_loopback: false,
             upstream: "http://127.0.0.1:1".to_string(),
             max_tries: 2,

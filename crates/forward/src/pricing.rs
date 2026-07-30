@@ -14,8 +14,13 @@ use registry::pricing::{
 };
 use std::collections::BTreeMap;
 
+mod bridge;
 mod shadow;
 
+pub use bridge::{
+    PricingBridgeConfig, PricingBridgeConfigError, PricingBridgeDecision,
+    PricingBridgeFallbackReason,
+};
 pub use shadow::{
     build_pricing_shadow_evaluation, PricingShadowEvaluationSource, PricingShadowReadFailure,
     PricingShadowWorkItem,

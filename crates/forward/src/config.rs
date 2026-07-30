@@ -23,6 +23,9 @@ pub struct ProxyConfig {
     /// Наценка по умолчанию (basis points) для аккаунтов, созданных через `/admin/account` без явного
     /// mult_bp. Коммерция обычно задаёт свою; это fallback (= CLAUDE_API_MULT_BP).
     pub default_mult_bp: i64,
+    /// Dormant legacy-snapshot bridge rollout config. No request path consumes it until the
+    /// separately reviewed live-caller checkpoint.
+    pub pricing_bridge: crate::pricing::PricingBridgeConfig,
     /// Доверять ли loopback-пиру как админу при ПУСТЫХ `api_keys`. true ТОЛЬКО когда сервер
     /// слушает loopback-интерфейс. При bind на 0.0.0.0/публичный IP — false: за реверс-прокси
     /// (nginx) peer виден как 127.0.0.1, и доверие loopback открыло бы аноним-админ + бесплатный

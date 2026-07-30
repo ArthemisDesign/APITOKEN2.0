@@ -65,8 +65,12 @@ typed snapshot как единственный источник request/account/
 для exact replay либо штатного lease recovery, без terminal reservation/outbox. PostgreSQL
 повторяет transient operation только до commit decision; неоднозначная commit-ошибка возвращается
 как ошибка и разрешается последующим exact replay. Существующий live `Reserve` и его прежняя
-RAII-компенсация не изменены. Runtime caller, sampler/config, метрики и traffic activation пока
-отсутствуют, поэтому новый command сам по себе не участвует в production admission.
+RAII-компенсация не изменены. Рядом существует только dormant bridge preflight: validated config
+(`disabled/0` или `sampled/1..=10000 bp`), SHA-256 v1 sampler по trusted fixed provider и внутреннему
+canonical lowercase UUIDv4 request ID, stable typed decisions/reasons. Sampler не читает clock/DB,
+не пишет метрики и пока недостижим из runtime. Provider quote/snapshot builders, live caller и
+traffic activation отсутствуют, поэтому ни config, ни новый command не участвуют в production
+admission.
 
 **Что внутри:** `ProxyConfig`, `AppState`, `Clients` (кэш http-клиентов по прокси),
 `limits_from_headers`/`Limits` (unified-ratelimit из ответа), `poll_sub` (активный опрос idle),

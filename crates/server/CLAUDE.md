@@ -49,6 +49,11 @@
 
 **Инварианты:**
 - Новую env-переменную заводи ТОЛЬКО тут и прокидывай дальше через конфиг-структуры.
+- Dormant snapshot bridge preflight читает только здесь
+  `CLAUDE_API_PRICING_BRIDGE_ENABLED`/`CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP`. Default строго
+  `false/0`; bool принимает только `0|1|false|true`, sample — integer `0..=10000`, несогласованные
+  пары отклоняются. Пока отдельный runtime caller не доставлен, любое enabled-значение обязано
+  завершать startup ошибкой, а не создавать ложное ощущение активного rollout.
 - Redis здесь только конфигурируется; `AffinityStore` живёт в `forward`, а pool остаётся без сети.
 - Управляющие эндпоинты (`/health`, `/pool`, `/capacity`, `/gemini-subs`, `/admin/*`) — здесь;
   остальное → форвардинг. `/gemini-subs` существует только в fixed Gemini runtime, гейтится

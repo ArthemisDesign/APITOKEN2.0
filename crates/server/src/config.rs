@@ -2,8 +2,8 @@
 //! [`forward::ProxyConfig`]. Единственное место в проекте, где читается env.
 
 use forward::{
-    CodexConfig, CodexModel, CodexTransport, GeminiConfig, GeminiModel, ProviderMode, ProxyConfig,
-    CLAUDE_CODE_IDENTITY,
+    CodexConfig, CodexModel, CodexTransport, GeminiConfig, GeminiModel, PricingBridgeConfig,
+    ProviderMode, ProxyConfig, CLAUDE_CODE_IDENTITY,
 };
 use std::{collections::BTreeMap, env, net::IpAddr};
 
@@ -97,6 +97,44 @@ fn parse_provider_mode(value: Option<&str>) -> Result<ProviderMode, String> {
             "CLAUDE_API_PROVIDER={other:?}: expected combined, anthropic, openai, or gemini"
         )),
     }
+}
+
+fn parse_strict_bool(k: &str, value: Option<&str>, default: bool) -> Result<bool, String> {
+    match value {
+        None => Ok(default),
+        Some("0") => Ok(false),
+        Some("1") => Ok(true),
+        Some(value) if value.eq_ignore_ascii_case("false") => Ok(false),
+        Some(value) if value.eq_ignore_ascii_case("true") => Ok(true),
+        Some(value) => Err(format!(
+            "{k}={value:?}: expected exactly 0, 1, false, or true"
+        )),
+    }
+}
+
+fn parse_pricing_bridge_config(
+    enabled: Option<&str>,
+    sample_bp: Option<&str>,
+) -> Result<PricingBridgeConfig, String> {
+    let enabled = parse_strict_bool("CLAUDE_API_PRICING_BRIDGE_ENABLED", enabled, false)?;
+    let sample_bp = sample_bp.unwrap_or("0").parse::<i64>().map_err(|_| {
+        "CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP: expected an integer in 0..=10000".to_string()
+    })?;
+    let config = PricingBridgeConfig::from_parts(enabled, sample_bp).map_err(|error| {
+        format!(
+            "invalid pricing bridge config ({}): disabled requires sample 0; enabled requires \
+             sample 1..=10000",
+            error.code()
+        )
+    })?;
+    if config.enabled() {
+        return Err(
+            "CLAUDE_API_PRICING_BRIDGE_ENABLED=true is unavailable in this dormant binary; \
+             the runtime caller has not been delivered"
+                .to_string(),
+        );
+    }
+    Ok(config)
 }
 
 fn parse_codex_transport(value: Option<&str>) -> Result<CodexTransport, String> {
@@ -670,6 +708,11 @@ impl Settings {
             2000,
             ev_opt_in("CLAUDE_API_ALLOW_ZERO_MULT_BP"),
         );
+        let pricing_bridge = parse_pricing_bridge_config(
+            ev("CLAUDE_API_PRICING_BRIDGE_ENABLED").as_deref(),
+            ev("CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP").as_deref(),
+        )
+        .unwrap_or_else(|message| panic!("{message}"));
         let redis_url = ev("CLAUDE_API_REDIS_URL");
         let affinity_secret = ev("CLAUDE_API_AFFINITY_SECRET");
         let codex = if provider.serves_openai() {
@@ -740,6 +783,7 @@ impl Settings {
                 control_keys,
                 panel_keys,
                 default_mult_bp: mult_bp,
+                pricing_bridge,
                 trust_loopback,
                 // OAuth-токены можно отправлять только на канонический Anthropic origin. Локальный HTTP
                 // mock разрешается исключительно явным opt-in и только на literal loopback IP.
@@ -847,6 +891,33 @@ mod tests {
         );
         assert!(parse_provider_mode(Some("both")).is_err());
         assert!(parse_provider_mode(Some("codex")).is_err());
+    }
+
+    #[test]
+    fn pricing_bridge_config_is_strict_default_off_and_cannot_activate_dormant_code() {
+        let disabled = parse_pricing_bridge_config(None, None).unwrap();
+        assert!(!disabled.enabled());
+        assert_eq!(disabled.sample_bp(), 0);
+        assert!(!parse_pricing_bridge_config(Some("false"), Some("0"))
+            .unwrap()
+            .enabled());
+        assert!(!parse_pricing_bridge_config(Some("0"), Some("0"))
+            .unwrap()
+            .enabled());
+
+        for invalid in ["yes", "off", "garbage", "2", "", " true ", "0 "] {
+            assert!(parse_pricing_bridge_config(Some(invalid), Some("0")).is_err());
+        }
+        for invalid in ["-1", "10001", "garbage", "1.5"] {
+            assert!(parse_pricing_bridge_config(Some("false"), Some(invalid)).is_err());
+        }
+        assert!(parse_pricing_bridge_config(Some("false"), Some("1")).is_err());
+        assert!(parse_pricing_bridge_config(Some("true"), Some("0")).is_err());
+        for (enabled, sample) in [("true", "1"), ("1", "10000")] {
+            assert!(parse_pricing_bridge_config(Some(enabled), Some(sample))
+                .unwrap_err()
+                .contains("unavailable in this dormant binary"));
+        }
     }
 
     #[test]

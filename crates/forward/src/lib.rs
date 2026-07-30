@@ -45,10 +45,11 @@ pub use gemini::{
 pub use keylimiter::KeyLimiter;
 pub use metrics::Metrics;
 pub use pricing::{
-    build_pricing_shadow_evaluation, resolve_pricing, PricingDependencyKind, PricingResolution,
-    PricingResolutionLineage, PricingResolutionRejection, PricingResolutionRequest,
-    PricingShadowEvaluationSource, PricingShadowReadFailure, PricingShadowWorkItem,
-    ResolvedPricingDependency, ResolvedPricingLineage, ResolvedPricingRule,
+    build_pricing_shadow_evaluation, resolve_pricing, PricingBridgeConfig,
+    PricingBridgeConfigError, PricingBridgeDecision, PricingBridgeFallbackReason,
+    PricingDependencyKind, PricingResolution, PricingResolutionLineage, PricingResolutionRejection,
+    PricingResolutionRequest, PricingShadowEvaluationSource, PricingShadowReadFailure,
+    PricingShadowWorkItem, ResolvedPricingDependency, ResolvedPricingLineage, ResolvedPricingRule,
     RuntimePricingCapability, RuntimePricingManifest,
 };
 pub use proxy::{

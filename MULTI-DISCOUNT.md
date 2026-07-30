@@ -7,10 +7,11 @@ schema уже доставлены. Stage 3B1b — пассивный dual-linea
 manifest без runtime caller — также доставлен. Stage 3B1c разложен на безопасные application-
 checkpoint: pure tariff/model identities и dormant actual snapshot/reserve уже доставлены, а
 typed shadow evaluation persistence и полное runtime manifest evidence также доставлены. Pure
-typed work-item/builder в `forward`, без caller/config/traffic, уже доставлен. Настоящий
-checkpoint закрывает prerequisite retention/idempotency: live replay actual legacy snapshot имеет
-явное 24-часовое окно, а terminal request machinery хранится независимо 30 дней. Bridge, caller,
-config, sampler, queue и traffic этим checkpoint по-прежнему не включаются.
+typed shadow work-item/evaluation builder в `forward`, без caller/config/traffic, уже доставлен.
+Настоящий
+безопасный preflight-checkpoint добавляет строгий default-off bridge config и versioned
+детерминированный sampler. Любая попытка включить config в этом dormant binary отклоняется при
+старте: provider builders, runtime caller, метрики, queue и traffic activation ещё отсутствуют.
 2026-07-30
 владелец продукта явно снял прежнюю остановку после 3B1b и полностью авторизовал дальнейшую
 реализацию этого документа до завершения этапов 3B1c–11. Авторизация не отменяет поэтапную доставку,
@@ -37,9 +38,11 @@ snapshot/reserve доставлен commit `3cb325574db2e3a4c83339f7c30e3d117e8d
 shadow-persistence checkpoint доставлен commit
 `ab364cece50d2beb7c3824ed5613ae1137aa74a0`. Pure-builder checkpoint доставлен commit
 `209054795efcab35cad40385e343f67424cdff55`; он сохраняет ту же границу: registry API и builder
-существуют только как неподключённые библиотечные возможности. Настоящий retention/idempotency
-checkpoint не добавляет миграций и live caller: он только делает
-ограничение replay и независимое хранение request lifecycle доказуемыми до подключения bridge.
+существуют только как неподключённые библиотечные возможности. Retention/idempotency checkpoint
+доставлен commit `99b3b849e1ec2bc4b3800414083b71d72d2e12fc`; guarded atomic snapshot reserve
+foundation — commit `c55a86d1271667ae4d1669aab1c0e08df8a91643`. Текущий preflight также не
+добавляет миграций и live caller: он только делает конфигурацию и выборку заранее проверяемыми, не
+затрагивая деньги или production traffic.
 
 Этот документ описывает целевое поведение, которое заменит текущий единый множитель цены на аккаунт.
 Он не утверждает, что описанное поведение уже работает в production. До завершения перехода
@@ -1650,10 +1653,14 @@ PostgreSQL автоматически повторяет transient attempt то�
 actor turn. SQLite и real PostgreSQL tests доказывают полный rollback закрытого gate, а actor tests —
 отсутствие durable строк при pre-commit cancel и ровно один active reserve без outbox при lost reply.
 
-Production bridge всё ещё не подключён: sampler, provider-owned builder/canonicalizer call из
-admission, config/feature flag, telemetry и live caller отсутствуют. Поэтому старые reserve paths
-сохраняют прежнее поведение, а dormant actor command без последующего отдельного caller не создаёт
-production snapshots и не меняет трафик.
+Production bridge всё ещё не подключён. Доставленный preflight содержит только SHA-256 v1 sampler,
+входами которого служат trusted fixed provider и внутренний canonical lowercase UUIDv4 request ID,
+и typed config с допустимыми состояниями `disabled/0` либо `enabled/1..=10000 bp`. Server читает
+`CLAUDE_API_PRICING_BRIDGE_ENABLED` и `CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP` строго, default —
+`false/0`; пока runtime caller не доставлен, любое enabled-значение намеренно останавливает startup.
+Provider-owned quote/snapshot builders, canonicalizer call из admission, telemetry и live caller
+отсутствуют. Поэтому старые reserve paths сохраняют прежнее поведение, а dormant actor command и
+sampler без последующего отдельного caller не создают production snapshots и не меняют трафик.
 
 Это единственный новый critical-path write в Stage 3B1c. Его failure атомарно откатывает reserve;
 после входа в eligible bridge DB/constraint failure не делает fallback-второй reserve с тем же
