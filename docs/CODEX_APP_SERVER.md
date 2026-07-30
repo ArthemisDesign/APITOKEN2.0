@@ -270,8 +270,8 @@ reasoning state is returned only when a Responses request explicitly asks for
 The source pin and all expected digests live in
 [`tools/codex-app-server/UPSTREAM.pin`](../tools/codex-app-server/UPSTREAM.pin). The builder:
 
-1. fetches only tag `rust-v0.146.0`;
-2. verifies commit `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`;
+1. fetches only tag `rust-v0.145.0`;
+2. verifies commit `25af12f7e61572b0bc18ddb1008be543b91519b0`;
 3. verifies the upstream lockfile and local patch digests;
 4. applies the patch with `git apply --check`;
 5. runs the patch-specific core and app-server library tests, including custom-tool preservation
@@ -332,7 +332,7 @@ The provider is fail-closed and off by default:
 CLAUDE_API_CODEX_ENABLED=1
 CLAUDE_API_CODEX_BIN=/srv/claude-api/data/codex/bin/codex-<source-commit>-<sha256>
 CLAUDE_API_CODEX_BIN_SHA256=<sha256 emitted by build-pinned.sh>
-CLAUDE_API_CODEX_VERSION=codex-cli 0.146.0
+CLAUDE_API_CODEX_VERSION=codex-cli 0.145.0
 CLAUDE_API_CODEX_HOMES=/srv/claude-api/data/codex/home,/srv/claude-api/data/codex/home2
 CLAUDE_API_CODEX_WORK_DIR=/srv/claude-api/data/codex/work
 CLAUDE_API_CODEX_MODELS=gpt-5.6,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5,gpt-5.4

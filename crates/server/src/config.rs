@@ -549,7 +549,7 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
         binary_sha256: ev("CLAUDE_API_CODEX_BIN_SHA256").unwrap_or_else(|| {
             panic!("CLAUDE_API_CODEX_BIN_SHA256 is required when CLAUDE_API_CODEX_ENABLED=true")
         }),
-        expected_version: ev_or("CLAUDE_API_CODEX_VERSION", "codex-cli 0.146.0"),
+        expected_version: ev_or("CLAUDE_API_CODEX_VERSION", "codex-cli 0.145.0"),
         homes: codex_homes(),
         homes_dir: codex_homes_dir(),
         work_dir: ev_or(
