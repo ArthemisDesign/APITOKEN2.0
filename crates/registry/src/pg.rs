@@ -2371,6 +2371,26 @@ impl PgStore {
 }
 
 impl PgStore {
+    pub fn pricing_shadow_admission_evaluation(
+        &mut self,
+        request_id: &str,
+    ) -> Result<Option<crate::pricing::PricingShadowAdmissionEvaluation>> {
+        crate::pricing::postgres::postgres_pricing_shadow_admission_evaluation(
+            &mut self.client,
+            request_id,
+        )
+    }
+
+    pub fn insert_pricing_shadow_admission_evaluation(
+        &mut self,
+        input: &crate::pricing::PricingShadowAdmissionEvaluationInput,
+    ) -> Result<crate::pricing::PricingShadowEvaluationWrite> {
+        crate::pricing::postgres::postgres_insert_pricing_shadow_admission_evaluation(
+            &mut self.client,
+            input,
+        )
+    }
+
     pub fn pricing_read_bundle(
         &mut self,
         account_id: &str,
@@ -3048,6 +3068,421 @@ mod tests {
             (fence_counts.get::<_, i64>(0), fence_counts.get::<_, i64>(1),),
             (0, 0)
         );
+        pg.client
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+    }
+
+    fn shadow_pg_catalog(generation: i64, digest: &str) -> crate::pricing::PricingCatalogSpec {
+        crate::pricing::PricingCatalogSpec {
+            product_id: "main".into(),
+            generation,
+            schema_version: crate::pricing::PRICING_SCHEMA_VERSION,
+            capability_generation: 17,
+            capability_digest: "capability-17".into(),
+            content_digest: digest.into(),
+            entries: vec![crate::pricing::PricingCatalogEntrySpec {
+                provider_id: "anthropic".into(),
+                canonical_model_id: "claude-sonnet-5".into(),
+                enabled: true,
+            }],
+        }
+    }
+
+    fn shadow_pg_switches(
+        generation: i64,
+        catalog_generation: i64,
+        digest: &str,
+    ) -> crate::pricing::ProviderSwitchSpec {
+        crate::pricing::ProviderSwitchSpec {
+            generation,
+            schema_version: crate::pricing::PRICING_SCHEMA_VERSION,
+            capability_generation: 17,
+            capability_digest: "capability-17".into(),
+            content_digest: digest.into(),
+            entries: vec![
+                crate::pricing::ProviderSwitchEntrySpec {
+                    provider_id: "anthropic".into(),
+                    scope: crate::pricing::ProviderSwitchScope::Master,
+                    catalog_generation: None,
+                    enabled: true,
+                },
+                crate::pricing::ProviderSwitchEntrySpec {
+                    provider_id: "anthropic".into(),
+                    scope: crate::pricing::ProviderSwitchScope::Segment {
+                        product_id: "main".into(),
+                        segment: crate::pricing::PolicySegment::B2b,
+                    },
+                    catalog_generation: Some(catalog_generation),
+                    enabled: true,
+                },
+            ],
+        }
+    }
+
+    fn shadow_pg_rule() -> crate::pricing::AccountPolicyRuleSpec {
+        crate::pricing::AccountPolicyRuleSpec {
+            rule_id: "anthropic-discount".into(),
+            rule_digest: "anthropic-discount-digest".into(),
+            scope: crate::pricing::PolicyRuleScope::Provider {
+                provider_id: "anthropic".into(),
+            },
+            pricing_mode: crate::pricing::PricingMode::Discount,
+            rule_origin: crate::pricing::RuleOrigin::Managed,
+            discount_bps: Some(1_000),
+            payable_multiplier_bp: 9_000,
+            track_eligible: false,
+            retention_eligible: false,
+            commission_eligible: false,
+        }
+    }
+
+    fn shadow_pg_policy() -> crate::pricing::AccountPolicySpec {
+        crate::pricing::AccountPolicySpec {
+            account_id: "shadow-pg-account".into(),
+            effective_version: 1,
+            policy_id: "b2b:shadow-pg-account".into(),
+            policy_version: 1,
+            source_policy_digest: "source-1".into(),
+            owner_type: crate::pricing::PolicyOwnerType::B2bClient,
+            owner_id: "shadow-pg-account".into(),
+            account_class: crate::pricing::AccountClass::B2b,
+            product_id: "main".into(),
+            schema_version: crate::pricing::PRICING_SCHEMA_VERSION,
+            catalog_generation: 1,
+            switch_generation: 1,
+            content_digest: "shadow-policy-1".into(),
+            replacement_locked: false,
+            rules: vec![shadow_pg_rule()],
+        }
+    }
+
+    fn shadow_pg_dependency(version: i64, digest: &str) -> crate::pricing::PricingShadowDependency {
+        crate::pricing::PricingShadowDependency {
+            target: crate::pricing::VersionTarget::new(version, digest),
+            pricing_schema_version: crate::pricing::PRICING_SCHEMA_VERSION,
+            capability_generation: 17,
+            capability_digest: "capability-17".into(),
+        }
+    }
+
+    fn shadow_pg_manifest() -> crate::pricing::PricingRuntimeManifestEvidence {
+        crate::pricing::PricingRuntimeManifestEvidence::new(
+            1,
+            vec![crate::pricing::PricingRuntimeCapabilityEvidence::new(
+                crate::pricing::PRICING_SCHEMA_VERSION,
+                17,
+                "capability-17",
+            )
+            .unwrap()],
+        )
+        .unwrap()
+    }
+
+    fn shadow_pg_resolved(
+        actual: &crate::pricing::ShadowActualSnapshotRef,
+    ) -> crate::pricing::PricingShadowEvaluationOutcome {
+        crate::pricing::PricingShadowEvaluationOutcome::Resolved(Box::new(
+            crate::pricing::PricingShadowResolved::new(
+                actual,
+                crate::pricing::PricingShadowResolvedInput {
+                    observed_multiplier_bp: 2_000,
+                    product_id: "main".into(),
+                    account_class: crate::pricing::AccountClass::B2b,
+                    policy: crate::pricing::PricingShadowPolicyIdentity {
+                        target: crate::pricing::VersionTarget::new(1, "shadow-policy-1"),
+                        policy_id: "b2b:shadow-pg-account".into(),
+                        policy_version: 1,
+                        source_policy_digest: "source-1".into(),
+                        schema_version: crate::pricing::PRICING_SCHEMA_VERSION,
+                    },
+                    policy_lineage: crate::pricing::PricingShadowLineage {
+                        catalog: shadow_pg_dependency(1, "shadow-catalog-1"),
+                        switches: shadow_pg_dependency(1, "shadow-switches-1"),
+                    },
+                    admission_lineage: crate::pricing::PricingShadowLineage {
+                        catalog: shadow_pg_dependency(2, "shadow-catalog-2"),
+                        switches: shadow_pg_dependency(2, "shadow-switches-2"),
+                    },
+                    rule: shadow_pg_rule(),
+                },
+            )
+            .unwrap(),
+        ))
+    }
+
+    fn shadow_pg_input(
+        snapshot: &crate::pricing::LegacyScalarAdmissionSnapshot,
+        outcome: crate::pricing::PricingShadowEvaluationOutcome,
+        enqueued_ts: i64,
+        evaluated_ts: i64,
+        diagnostic: serde_json::Value,
+    ) -> crate::pricing::PricingShadowAdmissionEvaluationInput {
+        crate::pricing::PricingShadowAdmissionEvaluationInput::new(
+            crate::pricing::ShadowActualSnapshotRef::from_snapshot(snapshot).unwrap(),
+            crate::pricing::PRICING_SCHEMA_VERSION,
+            shadow_pg_manifest(),
+            enqueued_ts,
+            evaluated_ts,
+            outcome,
+            crate::pricing::ShadowDiagnosticContext::new(diagnostic).unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+    /// pg::tests::postgres_typed_shadow_evaluation_contract`
+    #[test]
+    fn postgres_typed_shadow_evaluation_contract() {
+        use crate::pricing::{
+            LegacyScalarReserveOutcome, PricingMutation, PricingShadowEvaluationConflict,
+            PricingShadowEvaluationOutcome, PricingShadowEvaluationWrite as Write,
+            PricingShadowReadErrorCode, PricingShadowRejectionCode, ShadowActualSnapshotRef,
+        };
+        use serde_json::json;
+
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!(
+                "skipping PostgreSQL typed shadow contract: \
+                 CLAUDE_API_TEST_DATABASE_URL is unset"
+            );
+            return;
+        };
+        let mut pg = PgStore::connect(&url).unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+            .unwrap();
+        pg.client
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+            .unwrap();
+        pg.migrate().unwrap();
+        pg.client
+            .batch_execute(
+                "TRUNCATE account_policy_bindings,account_policy_rules,account_policy_versions,
+                 provider_switch_head,provider_switch_entries,provider_switch_versions,
+                 pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions,
+                 settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances,
+                 usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+
+        let owner = pg.claim_instance("shadow-pg-engine", 600).unwrap();
+        pg.account_create("shadow-pg-account", None, 2_000).unwrap();
+        pg.account_topup("shadow-pg-account", 2_000_000_000, None)
+            .unwrap();
+        pg.key_issue("shadow-pg-key", "shadow-pg-account", None)
+            .unwrap();
+        for catalog in [
+            shadow_pg_catalog(1, "shadow-catalog-1"),
+            shadow_pg_catalog(2, "shadow-catalog-2"),
+        ] {
+            assert_eq!(
+                pg.prepare_pricing_catalog(&catalog).unwrap(),
+                PricingMutation::Stored
+            );
+        }
+        for switches in [
+            shadow_pg_switches(1, 1, "shadow-switches-1"),
+            shadow_pg_switches(2, 2, "shadow-switches-2"),
+        ] {
+            assert_eq!(
+                pg.prepare_provider_switches(&switches).unwrap(),
+                PricingMutation::Stored
+            );
+        }
+        assert_eq!(
+            pg.prepare_account_policy(&shadow_pg_policy()).unwrap(),
+            PricingMutation::Stored
+        );
+
+        let snapshot = legacy_snapshot(
+            "shadow-pg-request",
+            "shadow-pg-account",
+            500_000_000,
+            100_000_000,
+        );
+        assert!(matches!(
+            pg.reserve_request_with_legacy_snapshot(&owner, "shadow-pg-key", 60, &snapshot,)
+                .unwrap(),
+            LegacyScalarReserveOutcome::Inserted(_)
+        ));
+        let actual = ShadowActualSnapshotRef::from_snapshot(&snapshot).unwrap();
+        let input = shadow_pg_input(
+            &snapshot,
+            shadow_pg_resolved(&actual),
+            1_788_220_802,
+            1_788_220_803,
+            json!({"writer": "concurrent"}),
+        );
+        let money_before: (i64, i64, i64, String) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT a.balance_nano,a.reserved_nano,r.hold_nano,r.state
+                       FROM accounts a JOIN reservations r ON r.account_id=a.id
+                      WHERE r.request_id='shadow-pg-request'",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2), row.get(3))
+        };
+
+        let barrier = Arc::new(Barrier::new(2));
+        let writers = [input.clone(), input.clone()].map(|input| {
+            let url = url.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let mut writer = PgStore::connect(&url).unwrap();
+                barrier.wait();
+                writer
+                    .insert_pricing_shadow_admission_evaluation(&input)
+                    .unwrap()
+            })
+        });
+        let outcomes = writers.map(|writer| writer.join().unwrap());
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, Write::Inserted(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, Write::Unchanged(_)))
+                .count(),
+            1
+        );
+        let stored = pg
+            .pricing_shadow_admission_evaluation("shadow-pg-request")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored.evaluation_digest(),
+            input.to_evaluation().unwrap().evaluation_digest()
+        );
+
+        let replay = shadow_pg_input(
+            &snapshot,
+            shadow_pg_resolved(&actual),
+            1_788_220_810,
+            1_788_220_820,
+            json!({"writer": "lost-ack-replay"}),
+        );
+        let Write::Unchanged(first) = pg
+            .insert_pricing_shadow_admission_evaluation(&replay)
+            .unwrap()
+        else {
+            panic!("PostgreSQL exact shadow replay was not unchanged");
+        };
+        assert_eq!(first.enqueued_ts(), 1_788_220_802);
+        assert_eq!(
+            first.diagnostic_context().value(),
+            &json!({"writer": "concurrent"})
+        );
+
+        let conflict = shadow_pg_input(
+            &snapshot,
+            PricingShadowEvaluationOutcome::Rejected {
+                reason: PricingShadowRejectionCode::MissingRule,
+                observed_multiplier_bp: 2_000,
+            },
+            1_788_220_802,
+            1_788_220_803,
+            json!({}),
+        );
+        assert_eq!(
+            pg.insert_pricing_shadow_admission_evaluation(&conflict)
+                .unwrap(),
+            Write::Conflict(PricingShadowEvaluationConflict::ExistingSemanticResult)
+        );
+        assert_eq!(
+            pg.client
+                .query_one(
+                    "SELECT COUNT(*)::bigint FROM pricing_shadow_admission_evaluations
+                      WHERE request_id='shadow-pg-request'",
+                    &[],
+                )
+                .unwrap()
+                .get::<_, i64>(0),
+            1
+        );
+
+        let money_after_shadow: (i64, i64, i64, String) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT a.balance_nano,a.reserved_nano,r.hold_nano,r.state
+                       FROM accounts a JOIN reservations r ON r.account_id=a.id
+                      WHERE r.request_id='shadow-pg-request'",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2), row.get(3))
+        };
+        assert_eq!(money_after_shadow, money_before);
+
+        for (request_id, outcome) in [
+            (
+                "shadow-pg-rejected",
+                PricingShadowEvaluationOutcome::Rejected {
+                    reason: PricingShadowRejectionCode::NoPolicyBinding,
+                    observed_multiplier_bp: 2_000,
+                },
+            ),
+            (
+                "shadow-pg-read-error",
+                PricingShadowEvaluationOutcome::ReadError {
+                    reason: PricingShadowReadErrorCode::PricingReadFailed,
+                },
+            ),
+        ] {
+            let snapshot =
+                legacy_snapshot(request_id, "shadow-pg-account", 500_000_000, 100_000_000);
+            assert!(matches!(
+                pg.reserve_request_with_legacy_snapshot(&owner, "shadow-pg-key", 60, &snapshot,)
+                    .unwrap(),
+                LegacyScalarReserveOutcome::Inserted(_)
+            ));
+            let diagnostic = if request_id == "shadow-pg-read-error" {
+                let empty = serde_json::to_string(&json!({"payload": ""})).unwrap();
+                let boundary = json!({"payload": "x".repeat(4_096 - empty.len())});
+                assert_eq!(serde_json::to_string(&boundary).unwrap().len(), 4_096);
+                boundary
+            } else {
+                json!({})
+            };
+            let input = shadow_pg_input(
+                &snapshot,
+                outcome.clone(),
+                1_788_220_802,
+                1_788_220_803,
+                diagnostic,
+            );
+            assert!(matches!(
+                pg.insert_pricing_shadow_admission_evaluation(&input)
+                    .unwrap(),
+                Write::Inserted(_)
+            ));
+            assert_eq!(
+                pg.pricing_shadow_admission_evaluation(request_id)
+                    .unwrap()
+                    .unwrap()
+                    .outcome(),
+                &outcome
+            );
+        }
+
         pg.client
             .query_one(
                 "SELECT pg_advisory_unlock($1)",

@@ -18,9 +18,10 @@ use super::{
     LegacyScalarAdmissionSnapshotInput, LegacyScalarSnapshotLookup, PolicyActiveExpectation,
     PolicyBindingState, PolicyEnforcement, PolicyOwnerType, PolicyRuleScope,
     PricingCatalogEntrySpec, PricingCatalogSpec, PricingMode, PricingMutation,
-    PricingPolicySnapshot, PricingReadBundle, PricingRejection, ProviderSwitchEntrySpec,
-    ProviderSwitchScope, ProviderSwitchSpec, ReconciliationState, RuleOrigin, SnapshotProvider,
-    VersionTarget,
+    PricingPolicySnapshot, PricingReadBundle, PricingRejection, PricingShadowAdmissionEvaluation,
+    PricingShadowAdmissionEvaluationInput, PricingShadowEvaluationWrite, PricingShadowStorageRow,
+    ProviderSwitchEntrySpec, ProviderSwitchScope, ProviderSwitchSpec, ReconciliationState,
+    RuleOrigin, ShadowActualSnapshotRef, SnapshotProvider, VersionTarget,
 };
 use anyhow::{bail, Context, Result};
 use postgres::{Client, GenericClient, IsolationLevel, Transaction};
@@ -83,23 +84,47 @@ fn policy_lock_key(account_id: &str) -> String {
     format!("multi-discount:policy:{account_id}")
 }
 
+fn shadow_evaluation_advisory_lock(
+    transaction: &mut Transaction<'_>,
+    request_id: &str,
+) -> Result<()> {
+    let key = format!("multi-discount:shadow-evaluation:{request_id}");
+    transaction
+        .query_one(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            &[&key],
+        )
+        // Request IDs must not enter a future shadow error storm through error context.
+        .context("lock PostgreSQL shadow evaluation mutation")?;
+    Ok(())
+}
+
 const SWITCH_LOCK_KEY: &str = "multi-discount:switches";
 
-pub(crate) fn postgres_legacy_scalar_snapshot_lookup<C: GenericClient>(
+fn postgres_legacy_scalar_snapshot_lookup_inner<C: GenericClient>(
     client: &mut C,
     request_id: &str,
+    key_share: bool,
 ) -> Result<LegacyScalarSnapshotLookup> {
     validate_legacy_snapshot_request_id(request_id)?;
+    let sql = if key_share {
+        "SELECT snapshot_kind,schema_version,account_id,provider_id,requested_model_id,
+                canonical_model_id,alias_generation,pricing_mode,rule_origin,
+                tariff_schedule_id,tariff_priced_ts,admission_ts,payable_multiplier_bp,
+                official_hold_nano,charged_hold_nano,premium_modifiers::text,snapshot_digest
+           FROM pricing_admission_snapshots
+          WHERE request_id=$1
+          FOR KEY SHARE"
+    } else {
+        "SELECT snapshot_kind,schema_version,account_id,provider_id,requested_model_id,
+                canonical_model_id,alias_generation,pricing_mode,rule_origin,
+                tariff_schedule_id,tariff_priced_ts,admission_ts,payable_multiplier_bp,
+                official_hold_nano,charged_hold_nano,premium_modifiers::text,snapshot_digest
+           FROM pricing_admission_snapshots
+          WHERE request_id=$1"
+    };
     let Some(row) = client
-        .query_opt(
-            "SELECT snapshot_kind,schema_version,account_id,provider_id,requested_model_id,
-                    canonical_model_id,alias_generation,pricing_mode,rule_origin,
-                    tariff_schedule_id,tariff_priced_ts,admission_ts,payable_multiplier_bp,
-                    official_hold_nano,charged_hold_nano,premium_modifiers::text,snapshot_digest
-               FROM pricing_admission_snapshots
-              WHERE request_id=$1",
-            &[&request_id],
-        )
+        .query_opt(sql, &[&request_id])
         .context("read PostgreSQL pricing admission snapshot")?
     else {
         return Ok(LegacyScalarSnapshotLookup::Missing);
@@ -136,6 +161,13 @@ pub(crate) fn postgres_legacy_scalar_snapshot_lookup<C: GenericClient>(
         row.get(16),
     )?;
     Ok(LegacyScalarSnapshotLookup::Legacy(Box::new(snapshot)))
+}
+
+pub(crate) fn postgres_legacy_scalar_snapshot_lookup<C: GenericClient>(
+    client: &mut C,
+    request_id: &str,
+) -> Result<LegacyScalarSnapshotLookup> {
+    postgres_legacy_scalar_snapshot_lookup_inner(client, request_id, false)
 }
 
 pub(crate) fn postgres_insert_legacy_scalar_admission_snapshot<C: GenericClient>(
@@ -180,6 +212,304 @@ pub(crate) fn postgres_insert_legacy_scalar_admission_snapshot<C: GenericClient>
         bail!("PostgreSQL legacy scalar admission snapshot insert changed no row");
     }
     Ok(())
+}
+
+fn postgres_shadow_storage_row<C: GenericClient>(
+    client: &mut C,
+    request_id: &str,
+    key_share: bool,
+) -> Result<Option<PricingShadowStorageRow>> {
+    validate_legacy_snapshot_request_id(request_id)?;
+    let sql = if key_share {
+        "SELECT e.*, e.diagnostic_context::text AS diagnostic_context_text
+           FROM pricing_shadow_admission_evaluations AS e
+          WHERE e.request_id=$1
+          FOR KEY SHARE OF e"
+    } else {
+        "SELECT e.*, e.diagnostic_context::text AS diagnostic_context_text
+           FROM pricing_shadow_admission_evaluations AS e
+          WHERE e.request_id=$1"
+    };
+    let Some(row) = client
+        .query_opt(sql, &[&request_id])
+        .context("read PostgreSQL pricing shadow admission evaluation")?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(PricingShadowStorageRow {
+        request_id: row.get("request_id"),
+        account_id: row.get("account_id"),
+        actual_snapshot_kind: row.get("actual_snapshot_kind"),
+        actual_snapshot_digest: row.get("actual_snapshot_digest"),
+        provider_id: row.get("provider_id"),
+        requested_model_id: row.get("requested_model_id"),
+        canonical_model_id: row.get("canonical_model_id"),
+        alias_generation: row.get("alias_generation"),
+        evaluator_schema_version: row.get("evaluator_schema_version"),
+        runtime_manifest_generation: row.get("runtime_manifest_generation"),
+        runtime_manifest_digest: row.get("runtime_manifest_digest"),
+        enqueued_ts: row.get("enqueued_ts"),
+        evaluated_ts: row.get("evaluated_ts"),
+        outcome: row.get("outcome"),
+        reason_code: row.get("reason_code"),
+        authorized_multiplier_bp: row.get("authorized_multiplier_bp"),
+        observed_multiplier_bp: row.get("observed_multiplier_bp"),
+        official_hold_nano: row.get("official_hold_nano"),
+        legacy_hold_nano: row.get("legacy_hold_nano"),
+        product_id: row.get("product_id"),
+        account_class: row.get("account_class"),
+        effective_policy_version: row.get("effective_policy_version"),
+        policy_id: row.get("policy_id"),
+        policy_version: row.get("policy_version"),
+        source_policy_digest: row.get("source_policy_digest"),
+        policy_digest: row.get("policy_digest"),
+        policy_schema_version: row.get("policy_schema_version"),
+        policy_catalog_generation: row.get("policy_catalog_generation"),
+        policy_catalog_schema_version: row.get("policy_catalog_schema_version"),
+        policy_catalog_capability_generation: row.get("policy_catalog_capability_generation"),
+        policy_catalog_capability_digest: row.get("policy_catalog_capability_digest"),
+        policy_catalog_digest: row.get("policy_catalog_digest"),
+        policy_switch_generation: row.get("policy_switch_generation"),
+        policy_switch_schema_version: row.get("policy_switch_schema_version"),
+        policy_switch_capability_generation: row.get("policy_switch_capability_generation"),
+        policy_switch_capability_digest: row.get("policy_switch_capability_digest"),
+        policy_switch_digest: row.get("policy_switch_digest"),
+        admission_catalog_generation: row.get("admission_catalog_generation"),
+        admission_catalog_schema_version: row.get("admission_catalog_schema_version"),
+        admission_catalog_capability_generation: row.get("admission_catalog_capability_generation"),
+        admission_catalog_capability_digest: row.get("admission_catalog_capability_digest"),
+        admission_catalog_digest: row.get("admission_catalog_digest"),
+        admission_switch_generation: row.get("admission_switch_generation"),
+        admission_switch_schema_version: row.get("admission_switch_schema_version"),
+        admission_switch_capability_generation: row.get("admission_switch_capability_generation"),
+        admission_switch_capability_digest: row.get("admission_switch_capability_digest"),
+        admission_switch_digest: row.get("admission_switch_digest"),
+        rule_id: row.get("rule_id"),
+        rule_digest: row.get("rule_digest"),
+        rule_scope: row.get("rule_scope"),
+        pricing_mode: row.get("pricing_mode"),
+        rule_origin: row.get("rule_origin"),
+        discount_bps: row.get("discount_bps"),
+        payable_multiplier_bp: row.get("payable_multiplier_bp"),
+        track_eligible: row.get("track_eligible"),
+        retention_eligible: row.get("retention_eligible"),
+        commission_eligible: row.get("commission_eligible"),
+        policy_hold_nano: row.get("policy_hold_nano"),
+        comparison_result: row.get("comparison_result"),
+        diagnostic_context: row.get("diagnostic_context_text"),
+        evaluation_digest: row.get("evaluation_digest"),
+    }))
+}
+
+fn postgres_shadow_evaluation_in_transaction<C: GenericClient>(
+    client: &mut C,
+    request_id: &str,
+    key_share: bool,
+) -> Result<Option<PricingShadowAdmissionEvaluation>> {
+    // Maintenance deletes the actual parent before cascading to the shadow child. Follow the same
+    // parent -> child lock order so a replay cannot deadlock with retention cleanup.
+    let locked_actual = if key_share {
+        Some(postgres_legacy_scalar_snapshot_lookup_inner(
+            client, request_id, true,
+        )?)
+    } else {
+        None
+    };
+    let Some(row) = postgres_shadow_storage_row(client, request_id, key_share)? else {
+        return Ok(None);
+    };
+    let actual_lookup = match locked_actual {
+        Some(actual) => actual,
+        None => postgres_legacy_scalar_snapshot_lookup_inner(client, request_id, false)?,
+    };
+    let actual = match actual_lookup {
+        LegacyScalarSnapshotLookup::Legacy(snapshot) => *snapshot,
+        LegacyScalarSnapshotLookup::Missing => {
+            bail!("stored shadow evaluation is missing its actual snapshot")
+        }
+        LegacyScalarSnapshotLookup::NonLegacy => {
+            bail!("stored shadow evaluation references a non-legacy actual snapshot")
+        }
+    };
+    Ok(Some(PricingShadowAdmissionEvaluation::from_storage(
+        &actual, row,
+    )?))
+}
+
+pub(crate) fn postgres_pricing_shadow_admission_evaluation(
+    client: &mut Client,
+    request_id: &str,
+) -> Result<Option<PricingShadowAdmissionEvaluation>> {
+    let mut transaction = client
+        .build_transaction()
+        .isolation_level(IsolationLevel::RepeatableRead)
+        .read_only(true)
+        .start()
+        .context("begin PostgreSQL shadow evaluation read transaction")?;
+    let evaluation =
+        postgres_shadow_evaluation_in_transaction(&mut transaction, request_id, false)?;
+    transaction
+        .commit()
+        .context("commit PostgreSQL shadow evaluation read transaction")?;
+    Ok(evaluation)
+}
+
+pub(crate) fn postgres_insert_pricing_shadow_admission_evaluation(
+    client: &mut Client,
+    input: &PricingShadowAdmissionEvaluationInput,
+) -> Result<PricingShadowEvaluationWrite> {
+    let candidate = input.to_evaluation()?;
+    let row = candidate.storage_row()?;
+    let mut transaction = client
+        .transaction()
+        .context("begin PostgreSQL pricing shadow evaluation transaction")?;
+    shadow_evaluation_advisory_lock(&mut transaction, candidate.actual().request_id())?;
+
+    if let Some(existing) = postgres_shadow_evaluation_in_transaction(
+        &mut transaction,
+        candidate.actual().request_id(),
+        true,
+    )? {
+        let outcome = candidate.classify_existing(existing)?;
+        transaction
+            .commit()
+            .context("commit PostgreSQL shadow evaluation replay transaction")?;
+        return Ok(outcome);
+    }
+
+    let actual = match postgres_legacy_scalar_snapshot_lookup_inner(
+        &mut transaction,
+        candidate.actual().request_id(),
+        true,
+    )? {
+        LegacyScalarSnapshotLookup::Legacy(snapshot) => *snapshot,
+        LegacyScalarSnapshotLookup::Missing => {
+            bail!("shadow evaluation actual snapshot does not exist")
+        }
+        LegacyScalarSnapshotLookup::NonLegacy => {
+            bail!("shadow evaluation actual snapshot is not legacy scalar")
+        }
+    };
+    if ShadowActualSnapshotRef::from_snapshot(&actual)? != *candidate.actual() {
+        bail!("shadow evaluation input does not match the stored actual snapshot");
+    }
+
+    let inserted = transaction
+        .execute(
+            "INSERT INTO pricing_shadow_admission_evaluations(
+                 request_id,account_id,actual_snapshot_kind,actual_snapshot_digest,provider_id,
+                 requested_model_id,canonical_model_id,alias_generation,evaluator_schema_version,
+                 runtime_manifest_generation,runtime_manifest_digest,enqueued_ts,evaluated_ts,
+                 outcome,reason_code,authorized_multiplier_bp,observed_multiplier_bp,
+                 official_hold_nano,legacy_hold_nano,product_id,account_class,
+                 effective_policy_version,policy_id,policy_version,source_policy_digest,
+                 policy_digest,policy_schema_version,policy_catalog_generation,
+                 policy_catalog_schema_version,policy_catalog_capability_generation,
+                 policy_catalog_capability_digest,policy_catalog_digest,policy_switch_generation,
+                 policy_switch_schema_version,policy_switch_capability_generation,
+                 policy_switch_capability_digest,policy_switch_digest,admission_catalog_generation,
+                 admission_catalog_schema_version,admission_catalog_capability_generation,
+                 admission_catalog_capability_digest,admission_catalog_digest,
+                 admission_switch_generation,admission_switch_schema_version,
+                 admission_switch_capability_generation,admission_switch_capability_digest,
+                 admission_switch_digest,rule_id,rule_digest,rule_scope,pricing_mode,rule_origin,
+                 discount_bps,payable_multiplier_bp,track_eligible,retention_eligible,
+                 commission_eligible,policy_hold_nano,comparison_result,diagnostic_context,
+                 evaluation_digest
+             ) VALUES(
+                 $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+                 $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,
+                 $39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,
+                 $57,$58,$59,$60::text::jsonb,$61
+             )
+             ON CONFLICT (request_id) DO NOTHING",
+            &[
+                &row.request_id,
+                &row.account_id,
+                &row.actual_snapshot_kind,
+                &row.actual_snapshot_digest,
+                &row.provider_id,
+                &row.requested_model_id,
+                &row.canonical_model_id,
+                &row.alias_generation,
+                &row.evaluator_schema_version,
+                &row.runtime_manifest_generation,
+                &row.runtime_manifest_digest,
+                &row.enqueued_ts,
+                &row.evaluated_ts,
+                &row.outcome,
+                &row.reason_code,
+                &row.authorized_multiplier_bp,
+                &row.observed_multiplier_bp,
+                &row.official_hold_nano,
+                &row.legacy_hold_nano,
+                &row.product_id,
+                &row.account_class,
+                &row.effective_policy_version,
+                &row.policy_id,
+                &row.policy_version,
+                &row.source_policy_digest,
+                &row.policy_digest,
+                &row.policy_schema_version,
+                &row.policy_catalog_generation,
+                &row.policy_catalog_schema_version,
+                &row.policy_catalog_capability_generation,
+                &row.policy_catalog_capability_digest,
+                &row.policy_catalog_digest,
+                &row.policy_switch_generation,
+                &row.policy_switch_schema_version,
+                &row.policy_switch_capability_generation,
+                &row.policy_switch_capability_digest,
+                &row.policy_switch_digest,
+                &row.admission_catalog_generation,
+                &row.admission_catalog_schema_version,
+                &row.admission_catalog_capability_generation,
+                &row.admission_catalog_capability_digest,
+                &row.admission_catalog_digest,
+                &row.admission_switch_generation,
+                &row.admission_switch_schema_version,
+                &row.admission_switch_capability_generation,
+                &row.admission_switch_capability_digest,
+                &row.admission_switch_digest,
+                &row.rule_id,
+                &row.rule_digest,
+                &row.rule_scope,
+                &row.pricing_mode,
+                &row.rule_origin,
+                &row.discount_bps,
+                &row.payable_multiplier_bp,
+                &row.track_eligible,
+                &row.retention_eligible,
+                &row.commission_eligible,
+                &row.policy_hold_nano,
+                &row.comparison_result,
+                &row.diagnostic_context,
+                &row.evaluation_digest,
+            ],
+        )
+        .context("insert PostgreSQL pricing shadow admission evaluation")?;
+
+    if inserted == 1 {
+        transaction
+            .commit()
+            .context("commit PostgreSQL pricing shadow admission evaluation")?;
+        return Ok(PricingShadowEvaluationWrite::Inserted(Box::new(candidate)));
+    }
+    if inserted != 0 {
+        bail!("PostgreSQL shadow evaluation insert changed an unexpected row count");
+    }
+
+    let existing = postgres_shadow_evaluation_in_transaction(
+        &mut transaction,
+        candidate.actual().request_id(),
+        true,
+    )?
+    .context("shadow evaluation conflict row disappeared before classification")?;
+    let outcome = candidate.classify_existing(existing)?;
+    transaction
+        .commit()
+        .context("commit PostgreSQL shadow evaluation conflict transaction")?;
+    Ok(outcome)
 }
 
 fn catalog_by_generation<C: GenericClient>(

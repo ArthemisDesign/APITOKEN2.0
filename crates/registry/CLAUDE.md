@@ -73,12 +73,15 @@
   отдельную immutable `pricing_shadow_admission_evaluations`. Она не подменяет actual
   `pricing_admission_snapshots`: shadow-строка ссылается на уже зафиксированный actual snapshot и
   хранит обе lineage-пары (`policy_*` и `admission_*`), runtime manifest, scalar comparison и typed
-  outcome. Dependency capability pins exact-связаны с immutable catalog/switch versions; runtime
-  manifest обозначает поддерживаемый набор, поэтому будущий insert API обязан проверить membership
-  всех pins до записи. Миграция не устанавливает writer/caller, heads, policies или данные. Будущий
-  insert API обязан быть exact-idempotent по `request_id + evaluation_digest`; отличный digest —
-  conflict, а не update. Live shadow запрещён до отдельного bounded worker и атомарного actual
-  snapshot + reserve.
+  outcome. Dependency capability pins exact-связаны с immutable catalog/switch versions. Dormant
+  typed SQLite/PostgreSQL insert/read API уже вычисляет canonical manifest digest из полного
+  отсортированного member-set, проверяет membership всех четырёх pins до записи и при чтении заново
+  вычисляет `evaluation_digest`. Exact replay с другими timestamps/diagnostics возвращает первую
+  строку; отличный semantic digest — typed conflict, а не update. Manifest members служат
+  insert-time evidence и в строке не дублируются; standalone read подтверждает manifest identity,
+  но без исходного manifest не перечисляет members заново. Миграция не устанавливает runtime
+  caller, queue/worker, heads, policies или данные. Live shadow запрещён до отдельного bounded
+  worker и атомарного actual snapshot + reserve.
 - **Stage 3B1c.1/3B1c.2 actual legacy snapshot foundation — dormant:** typed
   `LegacyScalarAdmissionSnapshot` фиксирует exact request/account, fixed-plane provider
   (`anthropic|openai`), requested/canonical model, alias/tariff identities, timestamps, scalar,
@@ -92,7 +95,7 @@
   второй money mutation; mismatch, terminal state, non-legacy snapshot или старая reservation без
   snapshot дают typed conflict. PostgreSQL сохраняет owner fence и request advisory lock. Старые
   reserve API не изменены и snapshot не создают. Миграции не добавлялись: используется actual schema
-  `0006`. Runtime caller, sampler, actor command, config, policy read, shadow evaluation и traffic
+  `0006`. Runtime caller, sampler, actor command, config, policy read, shadow producer и traffic
   activation отсутствуют; до отдельного bridge-checkpoint этот API production-строк не пишет.
   Новый PostgreSQL writer после потенциального ожидания request-lock повторно проверяет owner через
   `FOR UPDATE`, удерживает epoch-row до commit и использует свежий reservation timestamp; real-PG
@@ -102,6 +105,18 @@
   snapshot, поэтому до live bridge нужен tombstone или явно bounded idempotency contract. SQLite и
   PostgreSQL сохраняют унаследованные разные balance gates (full-cover против overdraft floor);
   parity этого checkpoint относится к atomic snapshot/replay/conflict, а не к `NotReserved`.
+- **Stage 3B1c.1 shadow evaluation persistence — dormant:** `ShadowActualSnapshotRef` строится
+  только из validated actual snapshot; fixed-plane identity, scalar и holds нельзя независимо
+  подменить caller-ом. Registry вычисляет policy hold checked integer half-up, сам выводит
+  `equal|different` и отклоняет balance-capped actual hold, для которого первый shadow rollout ещё
+  не определяет comparison semantics. Resolved outcome хранит exact immutable policy/rule и обе
+  lineage-пары; rejected требует observed scalar, read-error его не допускает. Diagnostic JSON
+  неавторитетен, исключён из digest и ограничен одинаковым для SQLite/JSONB контрактом по compact
+  bytes, NUL, depth и items. PostgreSQL сериализует request через отдельный advisory namespace и
+  держит parent actual `FOR KEY SHARE` до immutable insert; SQLite использует `BEGIN IMMEDIATE`.
+  API не читает current heads и не re-resolve-ит historical evidence. Pure forward work-item/builder
+  и сверка resolver manifest identity с canonical evidence остаются следующим отдельным dormant
+  checkpoint; runtime caller по-прежнему отсутствует.
 
 **Инварианты:**
 - Токен разрешается из колонки `token` (inline) ИЛИ файла `token_file`. `import_sqlite` refuses a

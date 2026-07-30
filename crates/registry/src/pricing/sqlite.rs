@@ -10,9 +10,10 @@ use super::{
     LegacyScalarAdmissionSnapshotInput, LegacyScalarSnapshotLookup, PolicyActiveExpectation,
     PolicyBindingState, PolicyEnforcement, PolicyOwnerType, PolicyRuleScope,
     PricingCatalogEntrySpec, PricingCatalogSpec, PricingMode, PricingMutation,
-    PricingPolicySnapshot, PricingReadBundle, PricingRejection, ProviderSwitchEntrySpec,
-    ProviderSwitchScope, ProviderSwitchSpec, ReconciliationState, RuleOrigin, SnapshotProvider,
-    VersionTarget,
+    PricingPolicySnapshot, PricingReadBundle, PricingRejection, PricingShadowAdmissionEvaluation,
+    PricingShadowAdmissionEvaluationInput, PricingShadowEvaluationWrite, PricingShadowStorageRow,
+    ProviderSwitchEntrySpec, ProviderSwitchScope, ProviderSwitchSpec, ReconciliationState,
+    RuleOrigin, ShadowActualSnapshotRef, SnapshotProvider, VersionTarget,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -180,6 +181,275 @@ pub(crate) fn sqlite_insert_legacy_scalar_admission_snapshot(
         bail!("SQLite legacy scalar admission snapshot insert changed no row");
     }
     Ok(())
+}
+
+fn sqlite_shadow_storage_row(
+    conn: &Connection,
+    request_id: &str,
+) -> Result<Option<PricingShadowStorageRow>> {
+    validate_legacy_snapshot_request_id(request_id)?;
+    conn.query_row(
+        "SELECT * FROM pricing_shadow_admission_evaluations WHERE request_id=?1",
+        params![request_id],
+        |row| {
+            Ok(PricingShadowStorageRow {
+                request_id: row.get("request_id")?,
+                account_id: row.get("account_id")?,
+                actual_snapshot_kind: row.get("actual_snapshot_kind")?,
+                actual_snapshot_digest: row.get("actual_snapshot_digest")?,
+                provider_id: row.get("provider_id")?,
+                requested_model_id: row.get("requested_model_id")?,
+                canonical_model_id: row.get("canonical_model_id")?,
+                alias_generation: row.get("alias_generation")?,
+                evaluator_schema_version: row.get("evaluator_schema_version")?,
+                runtime_manifest_generation: row.get("runtime_manifest_generation")?,
+                runtime_manifest_digest: row.get("runtime_manifest_digest")?,
+                enqueued_ts: row.get("enqueued_ts")?,
+                evaluated_ts: row.get("evaluated_ts")?,
+                outcome: row.get("outcome")?,
+                reason_code: row.get("reason_code")?,
+                authorized_multiplier_bp: row.get("authorized_multiplier_bp")?,
+                observed_multiplier_bp: row.get("observed_multiplier_bp")?,
+                official_hold_nano: row.get("official_hold_nano")?,
+                legacy_hold_nano: row.get("legacy_hold_nano")?,
+                product_id: row.get("product_id")?,
+                account_class: row.get("account_class")?,
+                effective_policy_version: row.get("effective_policy_version")?,
+                policy_id: row.get("policy_id")?,
+                policy_version: row.get("policy_version")?,
+                source_policy_digest: row.get("source_policy_digest")?,
+                policy_digest: row.get("policy_digest")?,
+                policy_schema_version: row.get("policy_schema_version")?,
+                policy_catalog_generation: row.get("policy_catalog_generation")?,
+                policy_catalog_schema_version: row.get("policy_catalog_schema_version")?,
+                policy_catalog_capability_generation: row
+                    .get("policy_catalog_capability_generation")?,
+                policy_catalog_capability_digest: row.get("policy_catalog_capability_digest")?,
+                policy_catalog_digest: row.get("policy_catalog_digest")?,
+                policy_switch_generation: row.get("policy_switch_generation")?,
+                policy_switch_schema_version: row.get("policy_switch_schema_version")?,
+                policy_switch_capability_generation: row
+                    .get("policy_switch_capability_generation")?,
+                policy_switch_capability_digest: row.get("policy_switch_capability_digest")?,
+                policy_switch_digest: row.get("policy_switch_digest")?,
+                admission_catalog_generation: row.get("admission_catalog_generation")?,
+                admission_catalog_schema_version: row.get("admission_catalog_schema_version")?,
+                admission_catalog_capability_generation: row
+                    .get("admission_catalog_capability_generation")?,
+                admission_catalog_capability_digest: row
+                    .get("admission_catalog_capability_digest")?,
+                admission_catalog_digest: row.get("admission_catalog_digest")?,
+                admission_switch_generation: row.get("admission_switch_generation")?,
+                admission_switch_schema_version: row.get("admission_switch_schema_version")?,
+                admission_switch_capability_generation: row
+                    .get("admission_switch_capability_generation")?,
+                admission_switch_capability_digest: row
+                    .get("admission_switch_capability_digest")?,
+                admission_switch_digest: row.get("admission_switch_digest")?,
+                rule_id: row.get("rule_id")?,
+                rule_digest: row.get("rule_digest")?,
+                rule_scope: row.get("rule_scope")?,
+                pricing_mode: row.get("pricing_mode")?,
+                rule_origin: row.get("rule_origin")?,
+                discount_bps: row.get("discount_bps")?,
+                payable_multiplier_bp: row.get("payable_multiplier_bp")?,
+                track_eligible: row.get("track_eligible")?,
+                retention_eligible: row.get("retention_eligible")?,
+                commission_eligible: row.get("commission_eligible")?,
+                policy_hold_nano: row.get("policy_hold_nano")?,
+                comparison_result: row.get("comparison_result")?,
+                diagnostic_context: row.get("diagnostic_context")?,
+                evaluation_digest: row.get("evaluation_digest")?,
+            })
+        },
+    )
+    .optional()
+    .context("read SQLite pricing shadow admission evaluation")
+}
+
+fn sqlite_shadow_evaluation_in_transaction(
+    conn: &Connection,
+    request_id: &str,
+) -> Result<Option<PricingShadowAdmissionEvaluation>> {
+    let Some(row) = sqlite_shadow_storage_row(conn, request_id)? else {
+        return Ok(None);
+    };
+    let actual = match sqlite_legacy_scalar_snapshot_lookup(conn, request_id)? {
+        LegacyScalarSnapshotLookup::Legacy(snapshot) => *snapshot,
+        LegacyScalarSnapshotLookup::Missing => {
+            bail!("stored shadow evaluation is missing its actual snapshot")
+        }
+        LegacyScalarSnapshotLookup::NonLegacy => {
+            bail!("stored shadow evaluation references a non-legacy actual snapshot")
+        }
+    };
+    Ok(Some(PricingShadowAdmissionEvaluation::from_storage(
+        &actual, row,
+    )?))
+}
+
+pub fn sqlite_pricing_shadow_admission_evaluation(
+    conn: &Connection,
+    request_id: &str,
+) -> Result<Option<PricingShadowAdmissionEvaluation>> {
+    let transaction = Transaction::new_unchecked(conn, TransactionBehavior::Deferred)
+        .context("begin SQLite shadow evaluation read transaction")?;
+    let evaluation = sqlite_shadow_evaluation_in_transaction(&transaction, request_id)?;
+    transaction
+        .commit()
+        .context("commit SQLite shadow evaluation read transaction")?;
+    Ok(evaluation)
+}
+
+pub fn sqlite_insert_pricing_shadow_admission_evaluation(
+    conn: &Connection,
+    input: &PricingShadowAdmissionEvaluationInput,
+) -> Result<PricingShadowEvaluationWrite> {
+    let candidate = input.to_evaluation()?;
+    let row = candidate.storage_row()?;
+    let transaction = immediate(conn)?;
+
+    if let Some(existing) =
+        sqlite_shadow_evaluation_in_transaction(&transaction, candidate.actual().request_id())?
+    {
+        let outcome = candidate.classify_existing(existing)?;
+        transaction
+            .commit()
+            .context("commit SQLite shadow evaluation replay transaction")?;
+        return Ok(outcome);
+    }
+
+    let actual = match sqlite_legacy_scalar_snapshot_lookup(
+        &transaction,
+        candidate.actual().request_id(),
+    )? {
+        LegacyScalarSnapshotLookup::Legacy(snapshot) => *snapshot,
+        LegacyScalarSnapshotLookup::Missing => {
+            bail!("shadow evaluation actual snapshot does not exist")
+        }
+        LegacyScalarSnapshotLookup::NonLegacy => {
+            bail!("shadow evaluation actual snapshot is not legacy scalar")
+        }
+    };
+    if ShadowActualSnapshotRef::from_snapshot(&actual)? != *candidate.actual() {
+        bail!("shadow evaluation input does not match the stored actual snapshot");
+    }
+
+    let inserted = transaction
+        .execute(
+            "INSERT INTO pricing_shadow_admission_evaluations(
+                 request_id,account_id,actual_snapshot_kind,actual_snapshot_digest,provider_id,
+                 requested_model_id,canonical_model_id,alias_generation,evaluator_schema_version,
+                 runtime_manifest_generation,runtime_manifest_digest,enqueued_ts,evaluated_ts,
+                 outcome,reason_code,authorized_multiplier_bp,observed_multiplier_bp,
+                 official_hold_nano,legacy_hold_nano,product_id,account_class,
+                 effective_policy_version,policy_id,policy_version,source_policy_digest,
+                 policy_digest,policy_schema_version,policy_catalog_generation,
+                 policy_catalog_schema_version,policy_catalog_capability_generation,
+                 policy_catalog_capability_digest,policy_catalog_digest,policy_switch_generation,
+                 policy_switch_schema_version,policy_switch_capability_generation,
+                 policy_switch_capability_digest,policy_switch_digest,admission_catalog_generation,
+                 admission_catalog_schema_version,admission_catalog_capability_generation,
+                 admission_catalog_capability_digest,admission_catalog_digest,
+                 admission_switch_generation,admission_switch_schema_version,
+                 admission_switch_capability_generation,admission_switch_capability_digest,
+                 admission_switch_digest,rule_id,rule_digest,rule_scope,pricing_mode,rule_origin,
+                 discount_bps,payable_multiplier_bp,track_eligible,retention_eligible,
+                 commission_eligible,policy_hold_nano,comparison_result,diagnostic_context,
+                 evaluation_digest
+             ) VALUES(
+                 :request_id,:account_id,:actual_snapshot_kind,:actual_snapshot_digest,:provider_id,
+                 :requested_model_id,:canonical_model_id,:alias_generation,:evaluator_schema_version,
+                 :runtime_manifest_generation,:runtime_manifest_digest,:enqueued_ts,:evaluated_ts,
+                 :outcome,:reason_code,:authorized_multiplier_bp,:observed_multiplier_bp,
+                 :official_hold_nano,:legacy_hold_nano,:product_id,:account_class,
+                 :effective_policy_version,:policy_id,:policy_version,:source_policy_digest,
+                 :policy_digest,:policy_schema_version,:policy_catalog_generation,
+                 :policy_catalog_schema_version,:policy_catalog_capability_generation,
+                 :policy_catalog_capability_digest,:policy_catalog_digest,:policy_switch_generation,
+                 :policy_switch_schema_version,:policy_switch_capability_generation,
+                 :policy_switch_capability_digest,:policy_switch_digest,:admission_catalog_generation,
+                 :admission_catalog_schema_version,:admission_catalog_capability_generation,
+                 :admission_catalog_capability_digest,:admission_catalog_digest,
+                 :admission_switch_generation,:admission_switch_schema_version,
+                 :admission_switch_capability_generation,:admission_switch_capability_digest,
+                 :admission_switch_digest,:rule_id,:rule_digest,:rule_scope,:pricing_mode,:rule_origin,
+                 :discount_bps,:payable_multiplier_bp,:track_eligible,:retention_eligible,
+                 :commission_eligible,:policy_hold_nano,:comparison_result,:diagnostic_context,
+                 :evaluation_digest
+             )",
+            rusqlite::named_params! {
+                ":request_id": &row.request_id,
+                ":account_id": &row.account_id,
+                ":actual_snapshot_kind": &row.actual_snapshot_kind,
+                ":actual_snapshot_digest": &row.actual_snapshot_digest,
+                ":provider_id": &row.provider_id,
+                ":requested_model_id": &row.requested_model_id,
+                ":canonical_model_id": &row.canonical_model_id,
+                ":alias_generation": row.alias_generation,
+                ":evaluator_schema_version": row.evaluator_schema_version,
+                ":runtime_manifest_generation": row.runtime_manifest_generation,
+                ":runtime_manifest_digest": &row.runtime_manifest_digest,
+                ":enqueued_ts": row.enqueued_ts,
+                ":evaluated_ts": row.evaluated_ts,
+                ":outcome": &row.outcome,
+                ":reason_code": &row.reason_code,
+                ":authorized_multiplier_bp": row.authorized_multiplier_bp,
+                ":observed_multiplier_bp": row.observed_multiplier_bp,
+                ":official_hold_nano": row.official_hold_nano,
+                ":legacy_hold_nano": row.legacy_hold_nano,
+                ":product_id": &row.product_id,
+                ":account_class": &row.account_class,
+                ":effective_policy_version": row.effective_policy_version,
+                ":policy_id": &row.policy_id,
+                ":policy_version": row.policy_version,
+                ":source_policy_digest": &row.source_policy_digest,
+                ":policy_digest": &row.policy_digest,
+                ":policy_schema_version": row.policy_schema_version,
+                ":policy_catalog_generation": row.policy_catalog_generation,
+                ":policy_catalog_schema_version": row.policy_catalog_schema_version,
+                ":policy_catalog_capability_generation": row.policy_catalog_capability_generation,
+                ":policy_catalog_capability_digest": &row.policy_catalog_capability_digest,
+                ":policy_catalog_digest": &row.policy_catalog_digest,
+                ":policy_switch_generation": row.policy_switch_generation,
+                ":policy_switch_schema_version": row.policy_switch_schema_version,
+                ":policy_switch_capability_generation": row.policy_switch_capability_generation,
+                ":policy_switch_capability_digest": &row.policy_switch_capability_digest,
+                ":policy_switch_digest": &row.policy_switch_digest,
+                ":admission_catalog_generation": row.admission_catalog_generation,
+                ":admission_catalog_schema_version": row.admission_catalog_schema_version,
+                ":admission_catalog_capability_generation": row.admission_catalog_capability_generation,
+                ":admission_catalog_capability_digest": &row.admission_catalog_capability_digest,
+                ":admission_catalog_digest": &row.admission_catalog_digest,
+                ":admission_switch_generation": row.admission_switch_generation,
+                ":admission_switch_schema_version": row.admission_switch_schema_version,
+                ":admission_switch_capability_generation": row.admission_switch_capability_generation,
+                ":admission_switch_capability_digest": &row.admission_switch_capability_digest,
+                ":admission_switch_digest": &row.admission_switch_digest,
+                ":rule_id": &row.rule_id,
+                ":rule_digest": &row.rule_digest,
+                ":rule_scope": &row.rule_scope,
+                ":pricing_mode": &row.pricing_mode,
+                ":rule_origin": &row.rule_origin,
+                ":discount_bps": row.discount_bps,
+                ":payable_multiplier_bp": row.payable_multiplier_bp,
+                ":track_eligible": row.track_eligible,
+                ":retention_eligible": row.retention_eligible,
+                ":commission_eligible": row.commission_eligible,
+                ":policy_hold_nano": row.policy_hold_nano,
+                ":comparison_result": &row.comparison_result,
+                ":diagnostic_context": &row.diagnostic_context,
+                ":evaluation_digest": &row.evaluation_digest,
+            },
+        )
+        .context("insert SQLite pricing shadow admission evaluation")?;
+    if inserted != 1 {
+        bail!("SQLite pricing shadow admission evaluation insert changed no row");
+    }
+    transaction
+        .commit()
+        .context("commit SQLite pricing shadow admission evaluation")?;
+    Ok(PricingShadowEvaluationWrite::Inserted(Box::new(candidate)))
 }
 
 pub fn sqlite_pricing_catalog_by_generation(
@@ -1659,7 +1929,18 @@ fn stored_policy_binding(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{account_create, account_set_mult_bp};
+    use crate::pricing::{
+        PricingRuntimeCapabilityEvidence, PricingRuntimeManifestEvidence, PricingShadowDependency,
+        PricingShadowEvaluationConflict, PricingShadowEvaluationOutcome, PricingShadowLineage,
+        PricingShadowPolicyIdentity, PricingShadowReadErrorCode, PricingShadowRejectionCode,
+        PricingShadowResolved, PricingShadowResolvedInput, ShadowDiagnosticContext,
+        PRICING_SCHEMA_VERSION,
+    };
+    use crate::{
+        account_create, account_set_mult_bp, account_topup, key_issue,
+        sqlite_reserve_request_with_legacy_snapshot,
+    };
+    use serde_json::json;
     use std::path::PathBuf;
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -1855,6 +2136,362 @@ mod tests {
             .unwrap(),
             PricingMutation::Applied
         );
+    }
+
+    fn shadow_snapshot(request_id: &str) -> LegacyScalarAdmissionSnapshot {
+        LegacyScalarAdmissionSnapshot::new(LegacyScalarAdmissionSnapshotInput {
+            request_id: request_id.into(),
+            account_id: "shadow-typed-account".into(),
+            provider: SnapshotProvider::Anthropic,
+            requested_model_id: "claude-test".into(),
+            canonical_model_id: "claude-test".into(),
+            alias_generation: 1,
+            tariff_schedule_id: "anthropic/standard/claude-test/v1".into(),
+            tariff_priced_ts: 1_788_220_700,
+            admission_ts: 1_788_220_800,
+            payable_multiplier_bp: 2_000,
+            official_hold_nano: 500_000_000,
+            charged_hold_nano: 100_000_000,
+            premium_modifiers: LegacyPremiumModifiers::AnthropicV1 {
+                speed: super::super::SnapshotAnthropicSpeed::Standard,
+                inference_geo: super::super::SnapshotAnthropicInferenceGeo::Global,
+                inference_geo_basis_points: 10_000,
+            },
+        })
+        .unwrap()
+    }
+
+    fn shadow_dependency(version: i64, digest: &str) -> PricingShadowDependency {
+        PricingShadowDependency {
+            target: VersionTarget::new(version, digest),
+            pricing_schema_version: PRICING_SCHEMA_VERSION,
+            capability_generation: CAPABILITY_GENERATION,
+            capability_digest: CAPABILITY_DIGEST.into(),
+        }
+    }
+
+    fn shadow_manifest() -> PricingRuntimeManifestEvidence {
+        PricingRuntimeManifestEvidence::new(
+            1,
+            vec![PricingRuntimeCapabilityEvidence::new(
+                PRICING_SCHEMA_VERSION,
+                CAPABILITY_GENERATION,
+                CAPABILITY_DIGEST,
+            )
+            .unwrap()],
+        )
+        .unwrap()
+    }
+
+    fn shadow_resolved(actual: &ShadowActualSnapshotRef) -> PricingShadowEvaluationOutcome {
+        PricingShadowEvaluationOutcome::Resolved(Box::new(
+            PricingShadowResolved::new(
+                actual,
+                PricingShadowResolvedInput {
+                    observed_multiplier_bp: 2_000,
+                    product_id: "main".into(),
+                    account_class: AccountClass::B2b,
+                    policy: PricingShadowPolicyIdentity {
+                        target: VersionTarget::new(1, "shadow-policy-1"),
+                        policy_id: "b2b:shadow-typed-account".into(),
+                        policy_version: 1,
+                        source_policy_digest: "source-1".into(),
+                        schema_version: PRICING_SCHEMA_VERSION,
+                    },
+                    policy_lineage: PricingShadowLineage {
+                        catalog: shadow_dependency(1, "main-catalog-1"),
+                        switches: shadow_dependency(1, "main-switches-1"),
+                    },
+                    admission_lineage: PricingShadowLineage {
+                        catalog: shadow_dependency(2, "main-catalog-2"),
+                        switches: shadow_dependency(2, "main-switches-2"),
+                    },
+                    rule: discount_rule(
+                        "anthropic-discount",
+                        "anthropic",
+                        RuleOrigin::Managed,
+                        9_000,
+                    ),
+                },
+            )
+            .unwrap(),
+        ))
+    }
+
+    #[test]
+    fn typed_shadow_evaluation_roundtrips_replays_and_conflicts_in_sqlite() {
+        use super::super::PricingShadowEvaluationWrite as Write;
+
+        let conn = crate::open(":memory:").unwrap();
+        account_create(&conn, "shadow-typed-account", None, 2_000).unwrap();
+        account_topup(
+            &conn,
+            "shadow-typed-account",
+            2_000_000_000,
+            Some("shadow-typed-topup"),
+        )
+        .unwrap();
+        key_issue(&conn, "shadow-typed-key", "shadow-typed-account", None).unwrap();
+
+        for spec in [
+            catalog("main", 1, "main-catalog-1"),
+            catalog("main", 2, "main-catalog-2"),
+        ] {
+            assert_eq!(
+                sqlite_prepare_pricing_catalog(&conn, &spec).unwrap(),
+                PricingMutation::Stored
+            );
+        }
+        for spec in [
+            b2b_switches(1, 1, "main-switches-1"),
+            b2b_switches(2, 2, "main-switches-2"),
+        ] {
+            assert_eq!(
+                sqlite_prepare_provider_switches(&conn, &spec).unwrap(),
+                PricingMutation::Stored
+            );
+        }
+        assert_eq!(
+            sqlite_prepare_account_policy(
+                &conn,
+                &b2b_policy("shadow-typed-account", 1, "shadow-policy-1"),
+            )
+            .unwrap(),
+            PricingMutation::Stored
+        );
+
+        let snapshot = shadow_snapshot("shadow-typed-request");
+        assert!(matches!(
+            sqlite_reserve_request_with_legacy_snapshot(&conn, "shadow-typed-key", 60, &snapshot,)
+                .unwrap(),
+            super::super::LegacyScalarReserveOutcome::Inserted(_)
+        ));
+        let actual = ShadowActualSnapshotRef::from_snapshot(&snapshot).unwrap();
+        let resolved = shadow_resolved(&actual);
+        let first_input = PricingShadowAdmissionEvaluationInput::new(
+            actual.clone(),
+            PRICING_SCHEMA_VERSION,
+            shadow_manifest(),
+            1_788_220_801,
+            1_788_220_802,
+            resolved.clone(),
+            ShadowDiagnosticContext::new(json!({"attempt": 1})).unwrap(),
+        )
+        .unwrap();
+        let Write::Inserted(first) =
+            sqlite_insert_pricing_shadow_admission_evaluation(&conn, &first_input).unwrap()
+        else {
+            panic!("first typed SQLite shadow evaluation was not inserted");
+        };
+        assert_eq!(
+            first,
+            Box::new(
+                sqlite_pricing_shadow_admission_evaluation(&conn, "shadow-typed-request")
+                    .unwrap()
+                    .unwrap()
+            )
+        );
+
+        let replay_input = PricingShadowAdmissionEvaluationInput::new(
+            actual.clone(),
+            PRICING_SCHEMA_VERSION,
+            shadow_manifest(),
+            1_788_220_810,
+            1_788_220_820,
+            resolved,
+            ShadowDiagnosticContext::new(json!({"attempt": 2, "lost_ack": true})).unwrap(),
+        )
+        .unwrap();
+        let Write::Unchanged(replayed) =
+            sqlite_insert_pricing_shadow_admission_evaluation(&conn, &replay_input).unwrap()
+        else {
+            panic!("exact SQLite shadow replay was not unchanged");
+        };
+        assert_eq!(replayed.enqueued_ts(), 1_788_220_801);
+        assert_eq!(
+            replayed.diagnostic_context().value(),
+            &json!({"attempt": 1})
+        );
+
+        let conflict_input = PricingShadowAdmissionEvaluationInput::new(
+            actual,
+            PRICING_SCHEMA_VERSION,
+            shadow_manifest(),
+            1_788_220_801,
+            1_788_220_802,
+            PricingShadowEvaluationOutcome::Rejected {
+                reason: PricingShadowRejectionCode::MissingRule,
+                observed_multiplier_bp: 2_000,
+            },
+            ShadowDiagnosticContext::empty(),
+        )
+        .unwrap();
+        assert_eq!(
+            sqlite_insert_pricing_shadow_admission_evaluation(&conn, &conflict_input).unwrap(),
+            Write::Conflict(PricingShadowEvaluationConflict::ExistingSemanticResult)
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM pricing_shadow_admission_evaluations",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+
+        for (request_id, outcome) in [
+            (
+                "shadow-rejected-request",
+                PricingShadowEvaluationOutcome::Rejected {
+                    reason: PricingShadowRejectionCode::NoPolicyBinding,
+                    observed_multiplier_bp: 2_000,
+                },
+            ),
+            (
+                "shadow-read-error-request",
+                PricingShadowEvaluationOutcome::ReadError {
+                    reason: PricingShadowReadErrorCode::PricingReadFailed,
+                },
+            ),
+        ] {
+            let snapshot = shadow_snapshot(request_id);
+            assert!(matches!(
+                sqlite_reserve_request_with_legacy_snapshot(
+                    &conn,
+                    "shadow-typed-key",
+                    60,
+                    &snapshot,
+                )
+                .unwrap(),
+                super::super::LegacyScalarReserveOutcome::Inserted(_)
+            ));
+            let input = PricingShadowAdmissionEvaluationInput::new(
+                ShadowActualSnapshotRef::from_snapshot(&snapshot).unwrap(),
+                PRICING_SCHEMA_VERSION,
+                shadow_manifest(),
+                1_788_220_801,
+                1_788_220_802,
+                outcome.clone(),
+                ShadowDiagnosticContext::empty(),
+            )
+            .unwrap();
+            assert!(matches!(
+                sqlite_insert_pricing_shadow_admission_evaluation(&conn, &input).unwrap(),
+                Write::Inserted(_)
+            ));
+            assert_eq!(
+                sqlite_pricing_shadow_admission_evaluation(&conn, request_id)
+                    .unwrap()
+                    .unwrap()
+                    .outcome(),
+                &outcome
+            );
+        }
+
+        conn.execute_batch(
+            "DROP TRIGGER pricing_shadow_admission_evaluations_immutable_update;
+             UPDATE pricing_shadow_admission_evaluations
+                SET evaluation_digest='sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+              WHERE request_id='shadow-read-error-request';",
+        )
+        .unwrap();
+        assert!(
+            sqlite_pricing_shadow_admission_evaluation(&conn, "shadow-read-error-request").is_err()
+        );
+    }
+
+    #[test]
+    fn concurrent_sqlite_shadow_replay_has_one_immutable_winner() {
+        use super::super::PricingShadowEvaluationWrite as Write;
+
+        let path = unique_test_db();
+        let path_string = path.to_string_lossy().into_owned();
+        let setup = crate::open(&path_string).unwrap();
+        account_create(&setup, "shadow-typed-account", None, 2_000).unwrap();
+        account_topup(
+            &setup,
+            "shadow-typed-account",
+            1_000_000_000,
+            Some("shadow-concurrent-topup"),
+        )
+        .unwrap();
+        key_issue(
+            &setup,
+            "shadow-concurrent-key",
+            "shadow-typed-account",
+            None,
+        )
+        .unwrap();
+        let snapshot = shadow_snapshot("shadow-concurrent-request");
+        assert!(matches!(
+            sqlite_reserve_request_with_legacy_snapshot(
+                &setup,
+                "shadow-concurrent-key",
+                60,
+                &snapshot,
+            )
+            .unwrap(),
+            super::super::LegacyScalarReserveOutcome::Inserted(_)
+        ));
+        let input = PricingShadowAdmissionEvaluationInput::new(
+            ShadowActualSnapshotRef::from_snapshot(&snapshot).unwrap(),
+            PRICING_SCHEMA_VERSION,
+            shadow_manifest(),
+            1_788_220_801,
+            1_788_220_802,
+            PricingShadowEvaluationOutcome::Rejected {
+                reason: PricingShadowRejectionCode::NoPolicyBinding,
+                observed_multiplier_bp: 2_000,
+            },
+            ShadowDiagnosticContext::empty(),
+        )
+        .unwrap();
+
+        let barrier = Arc::new(Barrier::new(2));
+        let writers = [input.clone(), input].map(|input| {
+            let path_string = path_string.clone();
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                let conn = crate::open(&path_string).unwrap();
+                barrier.wait();
+                sqlite_insert_pricing_shadow_admission_evaluation(&conn, &input).unwrap()
+            })
+        });
+        let outcomes = writers.map(|writer| writer.join().unwrap());
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, Write::Inserted(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, Write::Unchanged(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            setup
+                .query_row(
+                    "SELECT COUNT(*) FROM pricing_shadow_admission_evaluations",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+
+        drop(setup);
+        for candidate in [
+            path_string.clone(),
+            format!("{path_string}-wal"),
+            format!("{path_string}-shm"),
+        ] {
+            let _ = std::fs::remove_file(candidate);
+        }
     }
 
     #[test]

@@ -7,9 +7,20 @@
 //! admission, charging, key issuance, HTTP, policy resolution, or production shadow execution.
 
 pub(crate) mod postgres;
+mod shadow;
 mod snapshots;
 mod sqlite;
 
+pub(crate) use shadow::PricingShadowStorageRow;
+pub use shadow::{
+    PricingRuntimeCapabilityEvidence, PricingRuntimeManifestEvidence,
+    PricingShadowAdmissionEvaluation, PricingShadowAdmissionEvaluationInput,
+    PricingShadowComparison, PricingShadowDependency, PricingShadowEvaluationConflict,
+    PricingShadowEvaluationOutcome, PricingShadowEvaluationWrite, PricingShadowLineage,
+    PricingShadowPolicyIdentity, PricingShadowReadErrorCode, PricingShadowRejectionCode,
+    PricingShadowResolved, PricingShadowResolvedInput, ShadowActualSnapshotRef,
+    ShadowDiagnosticContext, ShadowEvaluationDigestV1,
+};
 pub(crate) use snapshots::{validate_legacy_snapshot_request_id, LegacyScalarSnapshotLookup};
 pub use snapshots::{
     CanonicalDigestV1, LegacyPremiumModifiers, LegacyScalarAdmissionSnapshot,
@@ -26,9 +37,10 @@ pub use sqlite::{
     sqlite_account_policy_by_version, sqlite_activate_account_policy,
     sqlite_activate_pricing_catalog, sqlite_activate_provider_switches,
     sqlite_active_account_policy, sqlite_active_pricing_catalog, sqlite_active_provider_switches,
-    sqlite_legacy_scalar_admission_snapshot, sqlite_prepare_account_policy,
-    sqlite_prepare_pricing_catalog, sqlite_prepare_provider_switches,
-    sqlite_pricing_catalog_by_generation, sqlite_pricing_read_bundle,
+    sqlite_insert_pricing_shadow_admission_evaluation, sqlite_legacy_scalar_admission_snapshot,
+    sqlite_prepare_account_policy, sqlite_prepare_pricing_catalog,
+    sqlite_prepare_provider_switches, sqlite_pricing_catalog_by_generation,
+    sqlite_pricing_read_bundle, sqlite_pricing_shadow_admission_evaluation,
     sqlite_provider_switches_by_generation,
 };
 
