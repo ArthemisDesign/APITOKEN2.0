@@ -245,7 +245,10 @@ fn gemini_config() -> Option<GeminiConfig> {
     }
     let requested = ev_or(
         "CLAUDE_API_GEMINI_MODELS",
-        "gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-flash-lite,gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite",
+        // Live Code Assist calibration on Google AI Pro rejects 3.6/3.5 even though both exist in
+        // the Developer API price catalog. Keep only models confirmed on the subscription surface;
+        // quota-bucket calibration below further narrows availability per profile at runtime.
+        "gemini-3.1-flash-lite,gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite",
     )
     .split(',')
     .map(str::trim)
@@ -328,6 +331,22 @@ fn gemini_config() -> Option<GeminiConfig> {
             8_192,
             0,
             262_144,
+        ),
+        cli_version: ev_or(
+            "CLAUDE_API_GEMINI_CLI_VERSION",
+            gemini_credential::GEMINI_CLI_VERSION,
+        ),
+        node_binary: ev_or(
+            "CLAUDE_API_GEMINI_NODE_BINARY",
+            gemini_credential::GEMINI_NODE_BINARY,
+        ),
+        node_version: ev_or(
+            "CLAUDE_API_GEMINI_NODE_VERSION",
+            gemini_credential::GEMINI_NODE_VERSION,
+        ),
+        node_sha256: ev_or(
+            "CLAUDE_API_GEMINI_NODE_SHA256",
+            gemini_credential::GEMINI_NODE_SHA256,
         ),
     })
 }

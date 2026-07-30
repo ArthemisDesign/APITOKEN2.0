@@ -1197,6 +1197,13 @@ grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'CLAUDE_API_PROVIDER=gemini CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8795' \
   "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'CLAUDE_API_INSTANCE_ID=%H:engine:gemini' "$ROOT/systemd/claude-api-gemini.service"
+grep -Fq 'CLAUDE_API_GEMINI_MODELS=gemini-3.1-flash-lite,gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite' \
+  "$ROOT/systemd/claude-api-gemini.service"
+grep -Fq 'CLAUDE_API_GEMINI_CLI_VERSION=0.53.0' "$ROOT/systemd/claude-api-gemini.service"
+grep -Fq 'CLAUDE_API_GEMINI_NODE_BINARY=/usr/bin/node' "$ROOT/systemd/claude-api-gemini.service"
+grep -Fq 'CLAUDE_API_GEMINI_NODE_VERSION=v24.18.0' "$ROOT/systemd/claude-api-gemini.service"
+grep -Fq 'CLAUDE_API_GEMINI_NODE_SHA256=41a74efb34cbde5c7632cdac0cf8bd1a14d0b8d73dc1e82755014d9a9ce70f5c' \
+  "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'CLAUDE_API_GEMINI_PROFILES_FILE=/srv/claude-api/data/gemini/profiles.json' \
   "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'CLAUDE_API_GEMINI_UPSTREAM=https://cloudcode-pa.googleapis.com' \
@@ -1252,6 +1259,7 @@ grep -Fq 'reverse_proxy 127.0.0.1:8792' "$ROOT/deploy/Caddyfile"
 grep -Fq 'http://127.0.0.1:8792 {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'reverse_proxy 127.0.0.1:8793 {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'reverse_proxy 127.0.0.1:8794' "$ROOT/deploy/Caddyfile"
+grep -Fq '@admin_gemini_data path /gemini-subs' "$ROOT/deploy/Caddyfile"
 grep -Fq 'http://127.0.0.1:8794 {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'reverse_proxy 127.0.0.1:8795 {' "$ROOT/deploy/Caddyfile"
 [[ $(grep -Fc 'health_uri /ready' "$ROOT/deploy/Caddyfile") -ge 3 ]]
@@ -1865,7 +1873,7 @@ for rendered in "$rendered_once" "$rendered_twice"; do
   ! grep -Fq 'basic_auth' "$rendered"
   ! grep -Fq '$2y$' "$rendered"
   grep -Fq 'forward_auth 127.0.0.1:8791' "$rendered"
-  [[ $(grep -Fc 'header_up x-api-key "test-control-secret"' "$rendered") == 2 ]]
+  [[ $(grep -Fc 'header_up x-api-key "test-control-secret"' "$rendered") == 3 ]]
   [[ $(grep -Fc 'header_up X-OpenKeys-Control-Key "test-control-secret"' "$rendered") == 1 ]]
   [[ $(grep -Fc 'header_up x-admin-key "test-commerce-secret"' "$rendered") == 2 ]]
   [[ $(grep -Fc 'header_up X-Admin-Key "test-commerce-secret"' "$rendered") == 1 ]]

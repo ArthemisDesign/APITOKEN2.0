@@ -159,7 +159,7 @@ main{padding:18px 14px 50px}.page-head h1{font-size:19px}.form{grid-template-col
 @media(max-width:620px){.cards,.form,.domain-grid{grid-template-columns:1fr}.card .value{font-size:23px}}
 </style>
 </head>
-<body data-admin-panel-version="14">
+<body data-admin-panel-version="16">
 <div id="app"></div>
 <div id="error-center" class="error-center" aria-live="polite"></div>
 <script>
@@ -239,7 +239,7 @@ function showLoading(){shell(NAV.flatMap(group=>group.items).find(item=>item[0]=
   '<div class="loading-grid" role="status" aria-label="Загрузка данных">'+Array.from({length:8},()=>'<div class="skeleton"></div>').join('')+'</div>')}
 const sourceName=path=>({
   '/admin/dashboard':'Коммерческая сводка','/overview':'Движок','/capacity':'Ёмкость флота','/subs':'Claude-подписки',
-  '/codex-subs':'GPT-подписки','/partner-admin/overview':'Партнёрская сводка','/partner-admin/partner-analytics':'Партнёрские аккаунты',
+  '/codex-subs':'GPT-подписки','/gemini-subs':'Gemini-подписки','/partner-admin/overview':'Партнёрская сводка','/partner-admin/partner-analytics':'Партнёрские аккаунты',
   '/admin/users':'Пользователи','/admin/topups':'Пополнения','/admin/audit':'Аудит','/admin/business-invites':'B2B-инвайты',
   '/openkeys-admin/keys':'Ключи OpenKeys',
   '/admin/admin-accounts':'Администраторы','/admin/admin-accounts/domains':'Домены администраторов','/spend-stats':'Статистика расхода'
@@ -307,34 +307,44 @@ async function dashboard(){const [data,engine,partners]=await Promise.all([
     card('B2C / B2B',(p.b2c_users??'—')+' / '+(p.b2b_users??'—'),'клиенты по типу тарифа')+
     card('engine active',p.engine_active??'—','pending '+(p.engine_pending??'—')+' · disabled '+(p.engine_disabled??'—'))+
     card('защищены 2FA',u.totp??'—','email подтверждено '+(u.verified??'—'))+'</div>'+
-    '<footer>Подробный единый список engine, commerce, partner и CRM-аккаунтов — на странице <a class="link" href="#accounts">«Аккаунты»</a>. Флот подписок Claude и GPT — на странице <a class="link" href="#subs">«Подписки»</a>.</footer>';
+    '<footer>Подробный единый список engine, commerce, partner и CRM-аккаунтов — на странице <a class="link" href="#accounts">«Аккаунты»</a>. Флоты подписок Claude, GPT и Gemini — на странице <a class="link" href="#subs">«Подписки»</a>.</footer>';
   shell('Сводка','все контуры одним взглядом',body,pill((u.active??'—')+' active',data?'ok':'warn'))}
 
-/* ── Подписки: Claude (Anthropic) + GPT (OpenAI Codex) ───── */
+/* ── Подписки: Claude + GPT + Gemini ─────────────────────── */
 function capacityBar(util){const percent=Math.min(100,Math.max(0,Math.round((Number(util)||0)*100))),kind=percent>=95?'bad':percent>=70?'warn':'';
   return'<span class="bar"><i class="'+kind+'" style="width:'+percent+'%"></i></span><span class="bar-label">'+percent+'%</span>'}
 function percentBar(percent){percent=Math.min(100,Math.max(0,Math.round(Number(percent)||0)));
   const kind=percent>=95?'bad':percent>=70?'warn':'';
   return'<span class="bar"><i class="'+kind+'" style="width:'+percent+'%"></i></span><span class="bar-label">'+percent+'%</span>'}
+function remainingBar(fraction){const percent=Math.min(100,Math.max(0,Math.round((Number(fraction)||0)*100)));
+  const kind=percent<=5?'bad':percent<=30?'warn':'';
+  return'<span class="bar"><i class="'+kind+'" style="width:'+percent+'%"></i></span><span class="bar-label">'+percent+'%</span>'}
 const deadLabel=r=>r==='permission_error'?'токен мёртв · бан':r==='authentication_error'?'токен мёртв · нужен re-auth':'токен мёртв';
-async function subscriptions(){const result=await Promise.all([api('/subs').catch(()=>null),api('/capacity').catch(()=>null),api('/codex-subs').catch(()=>null)]);
-  const subs=result[0]||{subs:[],lifetime_days:'—'},capacity=result[1],codex=result[2],subsDown=!result[0];
+async function subscriptions(){const result=await Promise.all([api('/subs').catch(()=>null),api('/capacity').catch(()=>null),api('/codex-subs').catch(()=>null),api('/gemini-subs').catch(()=>null)]);
+  const subs=result[0]||{subs:[],lifetime_days:'—'},capacity=result[1],codex=result[2],gemini=result[3],subsDown=!result[0];
   const list=subs.subs||[],liveByEmail={};
   (capacity?.per_sub||[]).forEach(item=>{liveByEmail[item.email]=item});
   const dead=list.filter(item=>item.auth_state==='dead').length,suspect=list.filter(item=>item.auth_state==='suspect').length,
     cooling=(capacity?.per_sub||[]).filter(item=>item.cooling).length;
   const gptDown=codex===null,gptOff=codex&&codex.enabled===false,homes=codex?.homes||[];
   const gptAuthBad=homes.filter(h=>!h.auth_ok).length,gptProcDown=homes.filter(h=>!h.process_live).length;
-  // Баннер: сначала мёртвые Claude-токены, затем GPT-контур, затем наблюдение.
+  const geminiDown=gemini===null,geminiOff=gemini&&gemini.enabled===false,geminiProfiles=gemini?.profiles||[];
+  const geminiEmpty=!geminiDown&&!geminiOff&&!geminiProfiles.length,geminiUnavailable=!geminiDown&&!geminiOff&&geminiProfiles.length>0&&Number(gemini.available||0)===0;
+  const geminiAuthBad=geminiProfiles.filter(profile=>!profile.authenticated).length,geminiMissing=Number(gemini?.usage_metadata_missing||0);
+  // Баннер: auth/fleet faults имеют приоритет над состоянием наблюдения.
   let banner='';
   if(dead)banner='<div class="banner bad"><span class="dot bad"></span><div><b>'+count(dead,'Claude-подписка с мёртвым токеном','Claude-подписки с мёртвым токеном','Claude-подписок с мёртвым токеном')+
     '</b><span class="muted">вне ротации — нужен свежий OAuth-токен (setup-token) на этот аккаунт'+(suspect?' · '+suspect+' под наблюдением':'')+'</span></div></div>';
-  else if(subsDown)banner='<div class="banner warn"><span class="dot warn"></span><div><b>Claude lifecycle-источник недоступен</b><span class="muted">/subs не отвечает — live-окна появятся при восстановлении, GPT-блок ниже работает независимо</span></div></div>';
+  else if(subsDown)banner='<div class="banner warn"><span class="dot warn"></span><div><b>Claude lifecycle-источник недоступен</b><span class="muted">/subs не отвечает — GPT и Gemini ниже работают независимо</span></div></div>';
   else if(gptDown)banner='<div class="banner warn"><span class="dot warn"></span><div><b>GPT-контур (OpenAI Codex) не отвечает</b><span class="muted">данные по GPT-подпискам недоступны — проверьте openai-runtime</span></div></div>';
+  else if(geminiDown)banner='<div class="banner warn"><span class="dot warn"></span><div><b>Gemini-контур не отвечает</b><span class="muted">/gemini-subs недоступен — проверьте Gemini runtime и stable origin :8794</span></div></div>';
+  else if(geminiEmpty)banner='<div class="banner warn"><span class="dot warn"></span><div><b>В Gemini-пуле нет профилей</b><span class="muted">runtime работает, но Auth Bot ещё не опубликовал ни одной paid Code Assist подписки</span></div></div>';
   else if(gptAuthBad||gptProcDown)banner='<div class="banner warn"><span class="dot warn"></span><div><b>'+(gptAuthBad?count(gptAuthBad,'GPT-подписка','GPT-подписки','GPT-подписок')+' с ошибкой auth':'')+(gptAuthBad&&gptProcDown?' · ':'')+(gptProcDown?count(gptProcDown,'процесс','процесса','процессов')+' остановлен':'')+
     '</b><span class="muted">OpenAI Codex: часть homes вне ротации</span></div></div>';
+  else if(geminiAuthBad||geminiUnavailable||geminiMissing)banner='<div class="banner warn"><span class="dot warn"></span><div><b>'+(geminiAuthBad?count(geminiAuthBad,'Gemini-профиль','Gemini-профиля','Gemini-профилей')+' с ошибкой auth':'')+(geminiAuthBad&&(geminiUnavailable||geminiMissing)?' · ':'')+(geminiUnavailable?'нет доступных профилей':geminiMissing?'нет usage metadata: '+geminiMissing:'')+
+    '</b><span class="muted">Gemini: auth-профили исключаются из ротации; поток без финального usage списывает только консервативный hold</span></div></div>';
   else if(suspect)banner='<div class="banner warn"><span class="dot warn"></span><div><b>'+count(suspect,'подписка под наблюдением','подписки под наблюдением','подписок под наблюдением')+' (auth падает)</b><span class="muted">движок корроборирует чистыми probe; при подтверждении — пометит DEAD</span></div></div>';
-  else banner='<div class="banner ok"><span class="dot"></span><div><b>Оба флота подписок в ротации</b><span class="muted">Claude '+(list.length)+' · GPT '+(gptOff?'контур выключен':homes.length)+' · обновлено '+date(Date.now(),true)+'</span></div></div>';
+  else banner='<div class="banner ok"><span class="dot"></span><div><b>Все три флота подписок в ротации</b><span class="muted">Claude '+(list.length)+' · GPT '+(gptOff?'выкл.':homes.length)+' · Gemini '+(geminiOff?'выкл.':geminiProfiles.length)+' · обновлено '+date(Date.now(),true)+'</span></div></div>';
   // Claude: lifecycle (/subs) + live ёмкость (/capacity) по маскированному email.
   const claudeRows=list.map(item=>{const live=liveByEmail[item.email]||{};
     const isDead=item.auth_state==='dead',isSuspect=item.auth_state==='suspect';
@@ -383,6 +393,42 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
   const gptTable=gptDown?'<div class="empty" style="padding:26px">OpenAI-runtime недоступен — /codex-subs не отвечает</div>':
     gptOff?'<div class="empty" style="padding:26px">Codex-контур выключен на этом runtime</div>':
     '<div class="tscroll"><table><thead><tr><th class="left">home</th><th>статус</th><th>в работе</th><th>окно 5 ч</th><th>окно 7 д</th><th>остаток</th><th>потрачено</th></tr></thead><tbody>'+(gptRows||empty(7))+'</tbody></table></div>';
+  // Gemini: официальный per-model quota catalogue и exact transport attestation.
+  const geminiModels=gemini?.models||[],geminiNow=Number(gemini?.now||Date.now()/1000),geminiAffinity=gemini?.affinity||{};
+  const geminiCards=geminiOff?card('Gemini подписки','выкл.','Gemini runtime без профилей'):
+    card('Gemini профили',geminiDown?'—':geminiProfiles.length,geminiDown?'источник недоступен':gemini.authenticated+' authenticated')+
+    card('Gemini · доступно',geminiDown||geminiOff?'—':gemini.available,'профилей готовы хотя бы к одной модели')+
+    card('Gemini · модели',geminiDown||geminiOff?'—':geminiModels.length,geminiModels.map(model=>model.id+': '+model.available).join(' · '))+
+    card('Gemini · в работе',geminiDown?'—':gemini.inflight,'inflight requests сейчас')+
+    card('Gemini · missing usage',geminiDown?'—':geminiMissing,geminiMissing?'списан conservative hold':'authoritative settlement чист');
+  const geminiRows=geminiProfiles.flatMap(profile=>(geminiModels.length?geminiModels:[{id:'—',available:0}]).map(model=>{
+    const modelCooling=(profile.model_cooling||[]).find(item=>item.model_id===model.id)?.cooling_until||0;
+    const quotas=(profile.quotas||[]).filter(item=>item.model_id===model.id);
+    const coolingUntil=Math.max(Number(profile.cooling_until||0),Number(modelCooling||0));
+    const status=!profile.authenticated?pill('ошибка auth','bad'):coolingUntil>geminiNow?pill('cooling '+duration(coolingUntil-geminiNow),'warn'):pill('active','ok');
+    const quotaCell=quotas.length?quotas.map(quota=>{const fraction=quota.remaining_fraction,amount=quota.remaining_amount;
+      return'<div>'+(amount!==null&&amount!==undefined?'<b>'+esc(amount)+'</b>':'<b>официальный fraction</b>')+
+        (fraction!==null&&fraction!==undefined?'<div>'+remainingBar(fraction)+'</div>':'')+'</div>'}).join(''):'—';
+    const reset=quotas.some(quota=>quota.reset_time)?quotas.filter(quota=>quota.reset_time).map(quota=>
+      '<div><b>'+duration((Date.parse(quota.reset_time)-Date.now())/1000)+'</b><div class="sub">'+date(quota.reset_time,true)+'</div></div>').join(''):'—';
+    const quotaTypes=quotas.length?quotas.map(quota=>esc(quota.token_type||'—')).join('<br>'):'—';
+    const readyHint=model.available+'/'+geminiProfiles.length+' профилей'+(model.soonest_ready?'<div class="sub">следующий '+duration(model.soonest_ready-geminiNow)+'</div>':'');
+    const probe=profile.last_probe_at?duration(geminiNow-profile.last_probe_at)+' назад':'—';
+    const quotaAge=profile.quota_updated_at?duration(geminiNow-profile.quota_updated_at)+' назад':'—';
+    return '<tr><td class="left"><b class="mono">'+esc(profile.id)+'</b></td><td>'+status+'</td><td class="left"><b>'+esc(model.id)+'</b></td><td>'+readyHint+'</td><td>'+quotaCell+
+      '</td><td>'+reset+'</td><td>'+quotaTypes+
+      '</td><td>'+probe+'<div class="sub">quota '+quotaAge+'</div></td></tr>'})).join('');
+  const geminiTable=geminiDown?'<div class="empty" style="padding:26px">Gemini runtime недоступен — /gemini-subs не отвечает</div>':
+    geminiOff?'<div class="empty" style="padding:26px">Gemini-контур выключен на этом runtime</div>':
+    '<div class="tscroll"><table><thead><tr><th class="left">профиль</th><th>статус</th><th class="left">модель</th><th>доступность</th><th>квота</th><th>сброс</th><th>тип</th><th>probe / quota</th></tr></thead><tbody>'+(geminiRows||empty(8))+'</tbody></table></div>';
+  const transport=gemini?.transport||{};
+  const geminiDetails=geminiDown||geminiOff?'':'<details><summary>Gemini transport fingerprint и cache/affinity</summary><div class="tcard"><div class="tscroll"><table><tbody>'+
+    '<tr><th class="left">Gemini CLI</th><td class="left mono">'+esc(transport.cli_version||'—')+'</td><th class="left">Node</th><td class="left mono">'+esc(transport.node_version||'—')+' · '+esc(transport.http_version||'—')+'</td></tr>'+
+    '<tr><th class="left">transport profile</th><td class="left mono">'+esc(transport.profile||'—')+'</td><th class="left">Node SHA-256</th><td class="left mono">'+esc(transport.node_sha256||'—')+'</td></tr>'+
+    '<tr><th class="left">expected JA3</th><td class="left mono">'+esc(transport.expected_ja3||'—')+'</td><th class="left">expected JA4</th><td class="left mono">'+esc(transport.expected_ja4||'—')+'</td></tr>'+
+    '<tr><th class="left">userinfo fetch</th><td class="left mono">'+esc(transport.userinfo_profile||'—')+' · '+esc(transport.userinfo_http_version||'—')+'</td><th class="left">Undici JA3 / JA4</th><td class="left mono">'+esc(transport.userinfo_expected_ja3||'—')+' / '+esc(transport.userinfo_expected_ja4||'—')+'</td></tr>'+
+    '<tr><th class="left">affinity hits</th><td class="left mono">local '+esc(geminiAffinity.local_hits||0)+' · redis '+esc(geminiAffinity.redis_hits||0)+' · roots '+esc(geminiAffinity.cache_root_hits||0)+'</td><th class="left">affinity health</th><td class="left mono">miss '+esc(geminiAffinity.misses||0)+' · redis errors '+esc(geminiAffinity.redis_errors||0)+' · rebinds '+esc(geminiAffinity.rebinds||0)+'</td></tr>'+
+    '</tbody></table></div></div></details>';
   const body=banner+
     '<div class="sect"><h2>Claude</h2><span class="sect-sub">Anthropic · OAuth-флот · замена через '+subs.lifetime_days+'д от добавления</span></div>'+
     '<div class="cards">'+claudeCards+'</div>'+
@@ -391,8 +437,12 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
     '<div class="sect"><h2>GPT</h2><span class="sect-sub">OpenAI Codex · app-server homes</span></div>'+
     '<div class="cards">'+gptCards+'</div>'+
     '<div class="tcard" style="margin-top:12px">'+gptTable+'</div>'+
-    '<footer>Обновление каждые 10с, пока вкладка видима · «доступно» учитывает сбросы окон · «пик» — истинный максимум ёмкости на дистанции (не EMA) · «прайор» — окно ещё не откалибровано реальным расходом. Email подписок маскированы намеренно.</footer>';
-  shell('Подписки','Claude и GPT флоты: здоровье, окна, ёмкость',body,pill(count(list.length+(gptOff?0:homes.length),'подписка','подписки','подписок'),dead||gptDown?'warn':'ok'))}
+    '<div class="sect"><h2>Gemini</h2><span class="sect-sub">Google Code Assist OAuth · официальный Gemini CLI transport и quota catalogue</span></div>'+
+    '<div class="cards">'+geminiCards+'</div>'+
+    '<div class="tcard" style="margin-top:12px">'+geminiTable+'</div>'+geminiDetails+
+    '<footer>Обновление каждые 10с, пока вкладка видима · «доступно» учитывает cooling и официальные reset times · «пик» — истинный максимум ёмкости на дистанции (не EMA) · «прайор» — окно ещё не откалибровано реальным расходом. Email и Google identity намеренно не выводятся.</footer>';
+  const fleetTotal=list.length+(gptOff?0:homes.length)+(geminiOff?0:geminiProfiles.length),fleetWarn=dead||gptDown||geminiDown||geminiEmpty||geminiUnavailable||geminiAuthBad||geminiMissing;
+  shell('Подписки','Claude, GPT и Gemini: здоровье, окна, quota и transport',body,pill(count(fleetTotal,'подписка','подписки','подписок'),fleetWarn?'warn':'ok'))}
 
 /* ── Администраторы ──────────────────────────────────────── */
 async function admins(){const suffix=adminDomainFilter?'?domain='+encodeURIComponent(adminDomainFilter):'',result=await Promise.all([
@@ -715,7 +765,7 @@ async function system(){const result=await Promise.all([api('/overview').catch((
     card('всего потрачено',money(demand.spent_usd),'потенциальный спрос '+money(demand.potential_realapi_usd)+' real-API',true)+
     card('рекомендация',recommend.gap>0?'+'+recommend.gap:'ok','нужно '+recommend.subs_needed+' подписок · есть '+overview.subs)+'</div>'+
     '<div class="sect"><h2>Подписки</h2><span class="sect-sub">живой статус флота</span></div>'+
-    '<div class="banner ok" style="margin-bottom:0"><span class="dot"></span><div><b>Детальный статус подписок — на отдельной странице</b><span class="muted"><a class="link" href="#subs">Открыть «Подписки»</a> — окна 5ч/7д, cooling, lifecycle и прокси по каждой подписке Claude и GPT.</span></div></div>'+
+    '<div class="banner ok" style="margin-bottom:0"><span class="dot"></span><div><b>Детальный статус подписок — на отдельной странице</b><span class="muted"><a class="link" href="#subs">Открыть «Подписки»</a> — окна, cooling, quota, lifecycle и transport по Claude, GPT и Gemini.</span></div></div>'+
     '<div class="sect"><h2>Аккаунты движка · '+(overview.accounts||[]).length+'</h2></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">account</th><th class="left">handle</th><th>статус</th><th>баланс</th><th><span data-spend-stats title="Разбивка: сутки / 7 дней / 30 дней">потрачено</span></th><th>множитель</th></tr></thead><tbody>'+
     (accountRows||empty(6))+'</tbody></table></div></div><footer>Обновление каждые 10с, пока вкладка видима · «доступно» учитывает сбросы окон · «запас» = доступно ÷ текущее потребление · клиентам ×'+mult+'</footer>';
   shell('Система','ёмкость, спрос и рекомендации по флоту',body,pill(count(overview.subs,'подписка','подписки','подписок'),verdict.kind))}

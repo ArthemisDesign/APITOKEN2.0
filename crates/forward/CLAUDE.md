@@ -247,28 +247,50 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
 **Инварианты native Gemini gateway:**
 1. Только AEAD envelopes проверенных paid Code Assist OAuth identities. Roster содержит opaque id и
    строго `<roster>/credentials/<id>.json`; symlink/другой path/duplicate Google subject запрещены.
+   Runtime повторно проверяет official OAuth client/token endpoint, exact plan↔tier-label mapping,
+   paid-plan allowlist и canonical proxy uniqueness (включая equivalent percent encoding).
    Tokens/email/project/tier/proxy дешифруются только в память и не попадают в log/metric/response.
 2. `GeminiGateway` обслуживается только startup-fixed `ProviderMode::Gemini`. Native allowlist:
    models get/list, generateContent, streamGenerateContent, countTokens. Клиентский `x-goog-api-key`
    (как и x-api-key/Bearer) авторизует наш ключ, но никогда не уходит Google; query `key`/`api_key`,
    включая percent encoding, запрещён.
-3. Профиль владеет отдельным HTTP client/proxy/inflight/cooling/auth и single-flight token refresh.
+3. Production HTTPS принадлежит persistent per-profile Node helper: exact pinned
+   `/usr/bin/node` v24.18.0 Linux/x64 + SHA-256, native OpenSSL, HTTP/1.1 и authenticated CONNECT.
+   Generation/quota/probe/token refresh используют gaxios wire Gemini CLI 0.53.0 +
+   google-auth-library 10.9.0; OAuth userinfo использует отдельный official global-fetch/Undici
+   профиль того же SHA-pinned Node. Никакой approximate BoringSSL impersonation или ambient proxy/env.
+   Helper получает proxy secret только первым IPC frame, multiplexes bounded NDJSON, reaps process
+   group и может restart-нуться только до upstream headers. Outbound frames, inbound NDJSON/base64
+   staging, OAuth response collections и short-lived header/form strings zeroized. Loopback mocks
+   остаются на `wreq`.
+4. Профиль владеет отдельным transport/proxy/inflight/cooling/auth и single-flight token refresh.
    Первый 401 → один refresh+retry того же profile; повторный 401/403 → auth quarantine. 429 →
-   profile cooling по Retry-After/RetryInfo и ротация без transport-бюджета; network/
+   model-specific profile cooling по Retry-After/RetryInfo/quota reset и ротация без
+   transport-бюджета; health probe не стирает generation cooling. `retrieveUserQuota` публикует
+   sanitized model catalogue: explicit zero блокирует модель до самого позднего reset среди всех
+   exhausted dimensions, stale/missing bucket fail-open.
+   Network/
    408/409/425/5xx → короткий cooling и ограниченный transport retry; остальные 4xx не вращаются.
    Если были quota failures — итог 429; только auth/transport failures — 503; уже cooling pool — 429.
-4. Code Assist request wrapper строится сервером; caller не может inject project/session identity.
+5. Code Assist request wrapper строится сервером; caller не может inject project/session identity.
+   `request.session_id` — UUID из keyed tenant-scoped affinity lineage: стабилен для растущего чата,
+   изолирован между tenant/explicit session и не содержит raw id; `user_prompt_id` повторяет
+   официальный `<session UUID>########<human-turn ordinal>` (tool-result-only contents не считаются).
    Response/SSE отдаёт только `.response` (+ responseId), никогда wrapper/credits/private headers.
-   Retry разрешён только до первого переведённого native SSE event. После возврата Response disconnect клиента
-   отключает downstream delivery, но task продолжает drain до финального usageMetadata. Shutdown
-   deadline обязан abort-ить upstream read, settle-ить последний snapshot и только потом отпустить
-   background semaphore permit для последующего billing flush.
-5. Reserve/mark-delivering/settle durable; до upstream `maxOutputTokens` урезается под полный
+   Retry разрешён только до первого переведённого native SSE event. Stream startup bounded по
+   time/bytes/chunks, а после первого public event ограничено число подряд идущих private/accounting
+   events. После возврата Response disconnect клиента отключает downstream delivery, но task
+   продолжает drain до финального usageMetadata. Shutdown deadline обязан abort-ить upstream read,
+   settle-ить последний snapshot и только потом отпустить background semaphore permit для
+   последующего billing flush.
+6. Reserve/mark-delivering/settle durable; до upstream `maxOutputTokens` урезается под полный
    консервативный hold доступного баланса. Цена только из `metering::gemini`, ledger provider только
    `registry::PROVIDER_GOOGLE`. Search metered отдельно. Google Maps/File Search и неизвестные future
    server tools fail-closed до появления authoritative ledger dimensions; нельзя proxy-ить paid SKU
-   бесплатно. Public synthetic errors только native Google-shaped и без profile/project/key/upstream.
-6. Полный контракт/provisioning/runbook — `docs/GEMINI_PROVIDER.md`. Проверка включает mock upstream:
+   бесплатно. Metered non-stream без authoritative usage не доставляется и refund-ится; stream после
+   первого байта без final usage списывает conservative hold без fake usage event. Public synthetic
+   errors только native Google-shaped и без profile/project/key/upstream.
+7. Полный контракт/provisioning/runbook — `docs/GEMINI_PROVIDER.md`. Проверка включает mock upstream:
    rotation fault matrix, credential stripping, RetryInfo, chunk-split SSE, no post-byte retry,
    disconnect drain+settlement и shutdown deadline barrier.
 

@@ -6,10 +6,11 @@
 //! logs. The installed-app client metadata is public upstream Gemini CLI application identity.
 
 use crate::db::{GeminiOAuthSession, Store};
+use crate::gemini_transport::{Client as GeminiHttpClient, Method as GeminiHttpMethod};
 use crate::tg::Bot;
 use crate::Config as BotConfig;
 use anyhow::{bail, Context};
-use axum::extract::{Form, Query, State};
+use axum::extract::{DefaultBodyLimit, Form, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
@@ -33,16 +34,15 @@ use std::time::Duration;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 const AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
-const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+const TOKEN_URL: &str = gemini_credential::GEMINI_OFFICIAL_TOKEN_URI;
 const USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v2/userinfo";
 const CODE_ASSIST_URL: &str = "https://cloudcode-pa.googleapis.com";
 // Public installed-application OAuth identity embedded by the official Gemini CLI. Google
 // explicitly documents installed-app client secrets as non-confidential; keeping the exact pair
 // lets the authorization code consume Code Assist through Gemini CLI's registered consumer project
 // instead of an unrelated seller/operator Cloud project.
-const OFFICIAL_CLI_CLIENT_ID: &str =
-    "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
-const OFFICIAL_CLI_CLIENT_SECRET: &str = "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";
+const OFFICIAL_CLI_CLIENT_ID: &str = gemini_credential::GEMINI_OFFICIAL_OAUTH_CLIENT_ID;
+const OFFICIAL_CLI_CLIENT_SECRET: &str = gemini_credential::GEMINI_OFFICIAL_OAUTH_CLIENT_SECRET;
 const OFFICIAL_CLI_REDIRECT_URI: &str = "https://codeassist.google.com/authcode";
 const OAUTH_SESSION_SECS: i64 = 1200;
 const MAX_ONBOARD_POLLS: usize = 24;
@@ -324,20 +324,10 @@ pub fn begin(
 }
 
 fn normalize_proxy_url(proxy: &str) -> Result<String, StartError> {
-    if proxy.len() < 8 || proxy.len() > 4_096 || proxy.chars().any(char::is_control) {
-        return Err(StartError::Proxy);
-    }
-    let url = reqwest::Url::parse(proxy).map_err(|_| StartError::Proxy)?;
-    if !matches!(url.scheme(), "http" | "https")
-        || url.host_str().is_none()
-        || !matches!(url.path(), "" | "/")
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(StartError::Proxy);
-    }
-    reqwest::Proxy::all(url.as_str()).map_err(|_| StartError::Proxy)?;
-    Ok(url.to_string())
+    let normalized =
+        gemini_credential::normalize_proxy_url(proxy).map_err(|_| StartError::Proxy)?;
+    reqwest::Proxy::all(&normalized).map_err(|_| StartError::Proxy)?;
+    Ok(normalized)
 }
 
 #[derive(Clone)]
@@ -373,6 +363,7 @@ pub async fn serve(bot: Bot, store: Arc<Store>, config: Arc<BotConfig>) -> anyho
         // one-use code. GET with code/error remains for short-lived compatibility with hosted
         // callbacks that were already in flight when this version deployed.
         .route("/oauth/callback", get(callback).post(submit_code))
+        .layer(DefaultBodyLimit::max(16 * 1024))
         .with_state(CallbackState { bot, store, config });
     axum::serve(listener, app)
         .await
@@ -643,7 +634,6 @@ fn valid_oauth_state(value: &str) -> bool {
 enum Failure {
     Authorization,
     CodeAssistApiDisabled,
-    Proxy,
     Temporary,
     UnsupportedPlan,
     Duplicate,
@@ -656,7 +646,6 @@ impl Failure {
         match self {
             Self::Authorization => "authorization",
             Self::CodeAssistApiDisabled => "code_assist_api_disabled",
-            Self::Proxy => "proxy",
             Self::Temporary => "temporary_upstream",
             Self::UnsupportedPlan => "unsupported_plan",
             Self::Duplicate => "duplicate_account",
@@ -668,8 +657,7 @@ impl Failure {
     fn public_message(self) -> &'static str {
         match self {
             Self::Authorization => "❌ Google не подтвердил вход или ссылка истекла. Пришли прокси ещё раз — бот начнёт авторизацию заново.",
-            Self::CodeAssistApiDisabled => "❌ Google не разрешил подключить этот аккаунт. Пришли прокси ещё раз; если ошибка повторится, администратор проверит причину.",
-            Self::Proxy => "❌ Не удалось использовать закреплённый прокси. Проверь его и пришли ещё раз.",
+            Self::CodeAssistApiDisabled => "❌ Google не разрешил подключить этот аккаунт через официальный Gemini CLI OAuth. Включать API в своём Cloud-проекте не нужно. Пришли прокси ещё раз; если ошибка повторится, администратор проверит причину.",
             Self::Temporary => "⚠️ Google временно не завершил проверку. Подожди немного и пришли прокси ещё раз, чтобы начать авторизацию заново.",
             Self::UnsupportedPlan => "❌ На этом Google-аккаунте не найдена активная подписка из оффера. Проверь, что нужный тариф активирован именно на этом аккаунте, затем начни подключение заново.",
             Self::Duplicate => "❌ Эта Google-подписка уже присутствует в пуле.",
@@ -769,50 +757,61 @@ async fn complete(
         );
         return Err(Failure::Authorization);
     }
-    let client = match http_client(proxy) {
+    let mut client = match GeminiHttpClient::connect(proxy).await {
         Ok(client) => client,
         Err(failure) => {
+            let _ = failure;
             eprintln!(
-                "[gemini-oauth] chat={} proxy HTTP client build failed: {}",
+                "[gemini-oauth] chat={} attested OAuth transport startup failed",
                 session.chat_id,
-                failure.code()
             );
-            return Err(failure);
+            return Err(Failure::Temporary);
         }
     };
+    let form = token_exchange_form(client_id, verifier, code, redirect_uri, client_secret)?;
+    let google_auth_user_agent = format!(
+        "google-api-nodejs-client/{}",
+        gemini_credential::GEMINI_GOOGLE_AUTH_LIBRARY_VERSION
+    );
+    let google_api_client = format!(
+        "gl-node/{}",
+        gemini_credential::GEMINI_NODE_VERSION.trim_start_matches('v')
+    );
     let response = client
-        .post(TOKEN_URL)
-        .form(&[
-            ("grant_type", "authorization_code"),
-            ("client_id", client_id),
-            ("client_secret", client_secret),
-            ("code", code),
-            ("code_verifier", verifier),
-            ("redirect_uri", redirect_uri),
-        ])
-        .send()
+        .request(
+            GeminiHttpMethod::Post,
+            TOKEN_URL,
+            &[
+                (
+                    "content-type",
+                    "application/x-www-form-urlencoded;charset=UTF-8",
+                ),
+                ("user-agent", &google_auth_user_agent),
+                ("x-goog-api-client", &google_api_client),
+            ],
+            form.as_bytes(),
+        )
         .await
-        .map_err(|error| {
+        .map_err(|_| {
             eprintln!(
-                "[gemini-oauth] chat={} token exchange transport error (proxy/network): {}",
+                "[gemini-oauth] chat={} token exchange transport failed",
                 session.chat_id,
-                error.is_timeout()
             );
             Failure::Temporary
         })?;
-    if !response.status().is_success() {
+    if !(200..300).contains(&response.status) {
         eprintln!(
             "[gemini-oauth] chat={} Google rejected the token exchange: HTTP {}",
-            session.chat_id,
-            response.status().as_u16()
+            session.chat_id, response.status
         );
-        return Err(if response.status().is_server_error() {
+        return Err(if response.status >= 500 {
             Failure::Temporary
         } else {
             Failure::Authorization
         });
     }
-    let mut token: TokenResponse = response.json().await.map_err(|_| Failure::Temporary)?;
+    let mut token: TokenResponse =
+        serde_json::from_slice(&response.body).map_err(|_| Failure::Temporary)?;
     if !valid_oauth_value(&token.access_token, 16_384)
         || token
             .refresh_token
@@ -828,24 +827,21 @@ async fn complete(
         session.chat_id,
         token.scope.as_deref().unwrap_or("<none>")
     );
+    let authorization = Zeroizing::new(format!("Bearer {}", token.access_token));
+    let headers = official_userinfo_headers(authorization.as_str());
     let user_info_response = client
-        .get(USERINFO_URL)
-        .bearer_auth(&token.access_token)
-        .send()
+        .fetch_userinfo(USERINFO_URL, &headers)
         .await
         .map_err(|_| Failure::Temporary)?;
-    if !user_info_response.status().is_success() {
+    if !(200..300).contains(&user_info_response.status) {
         eprintln!(
             "[gemini-oauth] chat={} Google userinfo call failed: HTTP {}",
-            session.chat_id,
-            user_info_response.status().as_u16()
+            session.chat_id, user_info_response.status
         );
         return Err(Failure::Authorization);
     }
-    let mut user: UserInfo = user_info_response
-        .json()
-        .await
-        .map_err(|_| Failure::Temporary)?;
+    let mut user: UserInfo =
+        serde_json::from_slice(&user_info_response.body).map_err(|_| Failure::Temporary)?;
     if !user.verified_email || !valid_identity(&user.id, 512) || !valid_identity(&user.email, 512) {
         eprintln!(
             "[gemini-oauth] chat={} rejected: Google account is unverified or malformed",
@@ -853,7 +849,7 @@ async fn complete(
         );
         return Err(Failure::Authorization);
     }
-    let resolved = match resolve_account(&client, &token.access_token).await {
+    let resolved = match resolve_account(&mut client, &token.access_token).await {
         Ok(resolved) => resolved,
         Err(failure) => {
             eprintln!(
@@ -918,29 +914,12 @@ async fn complete(
     published
 }
 
-fn http_client(proxy: &str) -> Result<reqwest::Client, Failure> {
-    let mut builder = reqwest::Client::builder()
-        // Ignore ambient proxy variables: OAuth exchange, userinfo and Code Assist eligibility
-        // must use exactly the encrypted per-account proxy or fail, never silently change egress.
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(90))
-        .pool_idle_timeout(Duration::from_secs(90))
-        .tcp_keepalive(Duration::from_secs(60))
-        .user_agent(gemini_credential::GEMINI_PROVIDER_USER_AGENT);
-    if !proxy.trim().is_empty() {
-        builder = builder.proxy(reqwest::Proxy::all(proxy).map_err(|_| Failure::Proxy)?);
-    }
-    builder.build().map_err(|_| Failure::Proxy)
-}
-
 fn valid_identity(value: &str, max: usize) -> bool {
     !value.is_empty() && value.len() <= max && !value.chars().any(char::is_control)
 }
 
 async fn resolve_account(
-    client: &reqwest::Client,
+    client: &mut GeminiHttpClient,
     access_token: &str,
 ) -> Result<ResolvedAccount, Failure> {
     let mut loaded = load_code_assist(client, access_token).await?;
@@ -951,7 +930,6 @@ async fn resolve_account(
             .allowed_tiers
             .iter()
             .find(|tier| tier.is_default)
-            .or_else(|| loaded.allowed_tiers.first())
             .cloned()
             .ok_or(Failure::UnsupportedPlan)?;
         let tier_id = tier.id.as_deref().ok_or(Failure::UnsupportedPlan)?;
@@ -974,17 +952,27 @@ async fn resolve_account(
             for _ in 0..MAX_ONBOARD_POLLS {
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 let url = format!("{CODE_ASSIST_URL}/v1internal/{name}");
+                let authorization = Zeroizing::new(format!("Bearer {access_token}"));
+                let user_agent = gemini_cli_user_agent();
+                let google_api_client = google_api_client();
                 let response = client
-                    .get(url)
-                    .bearer_auth(access_token)
-                    .send()
+                    .request(
+                        GeminiHttpMethod::Get,
+                        &url,
+                        &code_assist_headers(
+                            authorization.as_str(),
+                            &user_agent,
+                            &google_api_client,
+                        ),
+                        &[],
+                    )
                     .await
                     .map_err(|_| Failure::Temporary)?;
-                if !response.status().is_success() {
+                if !(200..300).contains(&response.status) {
                     return Err(Failure::Temporary);
                 }
                 let operation: OperationResponse =
-                    response.json().await.map_err(|_| Failure::Temporary)?;
+                    serde_json::from_slice(&response.body).map_err(|_| Failure::Temporary)?;
                 if operation.done {
                     done = true;
                     break;
@@ -1014,49 +1002,112 @@ async fn resolve_account(
 }
 
 async fn load_code_assist(
-    client: &reqwest::Client,
+    client: &mut GeminiHttpClient,
     access_token: &str,
 ) -> Result<LoadCodeAssistResponse, Failure> {
     post_json(
         client,
         access_token,
         &format!("{CODE_ASSIST_URL}/v1internal:loadCodeAssist"),
-        &json!({
-            "metadata": client_metadata(None),
-            "mode": "FULL_ELIGIBILITY_CHECK"
-        }),
+        &load_code_assist_request_body(),
     )
     .await
 }
 
+fn load_code_assist_request_body() -> Value {
+    // Exact setupUser request for the official manual OAuth flow before a managed project exists.
+    // Undefined JS properties are absent on the wire; do not invent a custom eligibility mode.
+    json!({"metadata": client_metadata(None)})
+}
+
 async fn post_json<T: for<'de> Deserialize<'de>>(
-    client: &reqwest::Client,
+    client: &mut GeminiHttpClient,
     access_token: &str,
     url: &str,
     body: &Value,
 ) -> Result<T, Failure> {
+    let authorization = Zeroizing::new(format!("Bearer {access_token}"));
+    let user_agent = gemini_cli_user_agent();
+    let google_api_client = google_api_client();
+    let encoded = Zeroizing::new(serde_json::to_vec(body).map_err(|_| Failure::Temporary)?);
     let response = client
-        .post(url)
-        .bearer_auth(access_token)
-        .header("client-metadata", client_metadata_header())
-        .json(body)
-        .send()
+        .request(
+            GeminiHttpMethod::Post,
+            url,
+            &code_assist_headers(authorization.as_str(), &user_agent, &google_api_client),
+            &encoded,
+        )
         .await
         .map_err(|_| Failure::Temporary)?;
-    if !response.status().is_success() {
-        let status = response.status().as_u16();
-        // Google's error body is diagnostic (e.g. "Cloud AI Companion API has not been used in
-        // project ... or it is disabled", or a PERMISSION_DENIED reason) and carries no secret: the
-        // bearer token is only ever sent, never echoed. Log a bounded snippet so a failed seller
-        // onboarding explains itself in journalctl -u claude-authbot.service.
+    if !(200..300).contains(&response.status) {
+        let status = response.status;
+        // Private Google diagnostics can contain consumer project/account context. Use them only
+        // for bounded failure classification and never copy them into journalctl or public output.
         let endpoint = url.rsplit('/').next().unwrap_or(url);
-        let detail = response.text().await.unwrap_or_default();
-        let detail: String = detail.split_whitespace().collect::<Vec<_>>().join(" ");
-        let detail: String = detail.chars().take(400).collect();
-        eprintln!("[gemini-oauth] Code Assist {endpoint} returned HTTP {status}: {detail}");
+        let detail = String::from_utf8_lossy(&response.body);
+        let detail: String = detail.chars().take(4_096).collect();
+        eprintln!("[gemini-oauth] Code Assist {endpoint} returned HTTP {status}");
         return Err(classify_google_http_failure(status, &detail));
     }
-    response.json().await.map_err(|_| Failure::Temporary)
+    serde_json::from_slice(&response.body).map_err(|_| Failure::Temporary)
+}
+
+fn gemini_cli_user_agent() -> String {
+    format!(
+        "GeminiCLI/{}/{} (linux; x64; cli) google-api-nodejs-client/{}",
+        gemini_credential::GEMINI_CLI_VERSION,
+        gemini_credential::GEMINI_CLI_DEFAULT_MODEL,
+        gemini_credential::GEMINI_GOOGLE_AUTH_LIBRARY_VERSION,
+    )
+}
+
+fn token_exchange_form(
+    client_id: &str,
+    verifier: &str,
+    code: &str,
+    redirect_uri: &str,
+    client_secret: &str,
+) -> Result<Zeroizing<String>, Failure> {
+    // google-auth-library 10.9.0 OAuth2Client.getTokenAsync inserts these fields in this order.
+    // serde_urlencoded preserves the sequence, including the library's form escaping.
+    serde_urlencoded::to_string([
+        ("client_id", client_id),
+        ("code_verifier", verifier),
+        ("code", code),
+        ("grant_type", "authorization_code"),
+        ("redirect_uri", redirect_uri),
+        ("client_secret", client_secret),
+    ])
+    .map(Zeroizing::new)
+    .map_err(|_| Failure::Authorization)
+}
+
+fn official_userinfo_headers(authorization: &str) -> [(&'static str, &str); 1] {
+    // fetchAndCacheUserInfo supplies only Authorization; global fetch adds its own Undici defaults.
+    [("Authorization", authorization)]
+}
+
+fn code_assist_headers<'a>(
+    authorization: &'a str,
+    user_agent: &'a str,
+    google_api_client: &'a str,
+) -> [(&'static str, &'a str); 5] {
+    // CodeAssistServer sets Content-Type even for operation GETs and asks gaxios for JSON, which
+    // adds Accept. OAuth2Client then contributes authorization and its two runtime identity fields.
+    [
+        ("accept", "application/json"),
+        ("authorization", authorization),
+        ("content-type", "application/json"),
+        ("user-agent", user_agent),
+        ("x-goog-api-client", google_api_client),
+    ]
+}
+
+fn google_api_client() -> String {
+    format!(
+        "gl-node/{}",
+        gemini_credential::GEMINI_NODE_VERSION.trim_start_matches('v')
+    )
 }
 
 fn classify_google_http_failure(status: u16, detail: &str) -> Failure {
@@ -1085,10 +1136,6 @@ fn client_metadata(project: Option<&str>) -> Value {
     value
 }
 
-fn client_metadata_header() -> &'static str {
-    r#"{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}"#
-}
-
 fn valid_operation_name(name: &str) -> bool {
     name.starts_with("operations/")
         && name.len() <= 512
@@ -1107,23 +1154,30 @@ fn project_from_value(value: Option<&Value>) -> Option<String> {
 }
 
 fn classify_plan(tier_id: &str, tier_name: &str, explicitly_paid: bool) -> String {
-    let value = format!("{tier_id} {tier_name}").to_ascii_lowercase();
-    if value.contains("workspace") && value.contains("ultra") {
+    let _ = tier_id;
+    let name = tier_name
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    if matches!(
+        name.as_str(),
+        "workspace ai ultra" | "google workspace ai ultra"
+    ) {
         "workspace_ai_ultra".into()
-    } else if value.contains("workspace") && (value.contains("standard") || value.contains("plus"))
-    {
-        "workspace_ai_unsupported".into()
-    } else if value.contains("expanded") {
-        "ai_expanded_unsupported".into()
-    } else if value.contains("enterprise") {
+    } else if name == "code assist enterprise" {
         "code_assist_enterprise".into()
-    } else if value.contains("standard") {
+    } else if name == "code assist standard" {
         "code_assist_standard".into()
-    } else if value.contains("ultra") {
+    } else if name == "google ai ultra" {
         "google_ai_ultra".into()
-    } else if value.contains("pro") {
+    } else if name == "google ai pro" {
         "google_ai_pro".into()
-    } else if value.contains("plus") || value.contains("premium") {
+    } else if name.contains("workspace") && (name.contains("standard") || name.contains("plus")) {
+        "workspace_ai_unsupported".into()
+    } else if name.contains("expanded") {
+        "ai_expanded_unsupported".into()
+    } else if name.contains("plus") || name.contains("premium") {
         "google_ai_plus_unsupported".into()
     } else if explicitly_paid {
         // A newly introduced paid tier is not proof that the private Code Assist transport and
@@ -1135,14 +1189,7 @@ fn classify_plan(tier_id: &str, tier_name: &str, explicitly_paid: bool) -> Strin
 }
 
 fn supported_paid_plan(plan: &str) -> bool {
-    matches!(
-        plan,
-        "google_ai_pro"
-            | "google_ai_ultra"
-            | "code_assist_standard"
-            | "code_assist_enterprise"
-            | "workspace_ai_ultra"
-    )
+    gemini_credential::is_supported_paid_plan(plan)
 }
 
 fn plan_label(plan: &str) -> &'static str {
@@ -1322,8 +1369,8 @@ mod tests {
             access_token: "access-token-value".into(),
             refresh_token: "refresh-token-value".into(),
             expires_at: 1_000,
-            oauth_client_id: "client.apps.googleusercontent.com".into(),
-            oauth_client_secret: "client-secret".into(),
+            oauth_client_id: OFFICIAL_CLI_CLIENT_ID.into(),
+            oauth_client_secret: OFFICIAL_CLI_CLIENT_SECRET.into(),
             token_uri: TOKEN_URL.into(),
             subject: subject.into(),
             email: "owner@example.com".into(),
@@ -1373,6 +1420,63 @@ mod tests {
         assert!(links
             .submit_url
             .starts_with("https://gemini.example/oauth/callback?state="));
+    }
+
+    #[test]
+    fn onboarding_wire_identity_matches_the_pinned_official_cli() {
+        assert_eq!(
+            gemini_cli_user_agent(),
+            "GeminiCLI/0.53.0/gemini-2.5-pro (linux; x64; cli) google-api-nodejs-client/10.9.0"
+        );
+        assert_eq!(google_api_client(), "gl-node/24.18.0");
+        assert_eq!(
+            load_code_assist_request_body(),
+            json!({
+                "metadata": {
+                    "ideType": "IDE_UNSPECIFIED",
+                    "platform": "PLATFORM_UNSPECIFIED",
+                    "pluginType": "GEMINI"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn oauth_token_form_order_matches_google_auth_library_10_9_0() {
+        let form = token_exchange_form(
+            "client id",
+            "verifier/value",
+            "code+value",
+            "https://codeassist.google.com/authcode",
+            "client-secret",
+        )
+        .unwrap();
+        assert_eq!(
+            form.as_str(),
+            "client_id=client+id&code_verifier=verifier%2Fvalue&code=code%2Bvalue&grant_type=authorization_code&redirect_uri=https%3A%2F%2Fcodeassist.google.com%2Fauthcode&client_secret=client-secret"
+        );
+    }
+
+    #[test]
+    fn userinfo_supplies_only_the_official_fetch_authorization_header() {
+        assert_eq!(
+            official_userinfo_headers("Bearer redacted"),
+            [("Authorization", "Bearer redacted")]
+        );
+    }
+
+    #[test]
+    fn code_assist_post_and_operation_get_share_the_official_json_headers() {
+        assert_eq!(
+            code_assist_headers("Bearer redacted", "GeminiCLI/test", "gl-node/test"),
+            [
+                ("accept", "application/json"),
+                ("authorization", "Bearer redacted"),
+                ("content-type", "application/json"),
+                ("user-agent", "GeminiCLI/test"),
+                ("x-goog-api-client", "gl-node/test"),
+            ]
+        );
     }
 
     #[test]
@@ -1537,6 +1641,10 @@ mod tests {
             classify_plan("future-paid", "Future Paid", true),
             "unknown_paid_unsupported"
         );
+        assert_eq!(
+            classify_plan("future-pro", "Future Pro Trial", true),
+            "unknown_paid_unsupported"
+        );
         assert!(!supported_paid_plan("google_ai_plus_unsupported"));
         assert!(!supported_paid_plan("unknown_paid_unsupported"));
     }
@@ -1554,7 +1662,6 @@ mod tests {
         for failure in [
             Failure::Authorization,
             Failure::CodeAssistApiDisabled,
-            Failure::Proxy,
             Failure::Temporary,
             Failure::UnsupportedPlan,
             Failure::Duplicate,

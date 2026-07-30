@@ -61,6 +61,23 @@ impl AffinityInput {
         &self.aliases[0]
     }
 
+    pub(crate) fn primary_lineage(&self) -> &str {
+        &self.primary().digest
+    }
+
+    /// Scope an opaque keyed lineage to its tenant before deriving provider-owned session
+    /// continuity. Affinity storage already namespaces aliases by `account_tag`; the provider wire
+    /// identity must preserve the same boundary so two tenants reusing an explicit session id can
+    /// never receive the same upstream session UUID.
+    pub(crate) fn provider_lineage(&self, lineage: &str) -> String {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"provider-lineage-v1");
+        hasher.update(self.account_tag.as_bytes());
+        hasher.update(&[0]);
+        hasher.update(lineage.as_bytes());
+        hex_digest(hasher.finalize().as_bytes())
+    }
+
     /// A strong client/harness session ID is an isolation boundary. Once present, transcript or
     /// cache similarity may guide placement but can never make it inherit another session.
     fn resolution_aliases(&self) -> &[Alias] {

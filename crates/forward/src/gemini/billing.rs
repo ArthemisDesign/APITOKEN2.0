@@ -122,6 +122,10 @@ impl PendingGeminiAdmission {
 }
 
 impl GeminiAdmission {
+    pub(crate) fn requires_usage(&self) -> bool {
+        self.reservation.is_some()
+    }
+
     pub(crate) async fn mark_delivering(&self) -> Result<(), AdmissionError> {
         let Some(reservation) = &self.reservation else {
             return Ok(());
@@ -136,13 +140,13 @@ impl GeminiAdmission {
         }
     }
 
-    pub(crate) fn settle(mut self, model: &GeminiModel, usage: &metering::GeminiUsage) {
+    pub(crate) fn settle(mut self, model: &GeminiModel, usage: Option<&metering::GeminiUsage>) {
         let Some(mut reservation) = self.reservation.take() else {
             return;
         };
         let now = pool::now();
         let (charge, event) =
-            settled_charge(model, usage, reservation.hold, reservation.mult_bp, now);
+            settled_charge_or_hold(model, usage, reservation.hold, reservation.mult_bp, now);
         reservation.billing.settle_detached(
             &reservation.request_id,
             &reservation.account_id,
@@ -160,6 +164,22 @@ impl GeminiAdmission {
                 model.id
             );
         }
+    }
+}
+
+fn settled_charge_or_hold(
+    model: &GeminiModel,
+    usage: Option<&metering::GeminiUsage>,
+    hold: i64,
+    mult_bp: i64,
+    now: i64,
+) -> (i64, Option<registry::UsageEventInput>) {
+    match usage.filter(|usage| !usage.is_zero()) {
+        Some(usage) => settled_charge(model, usage, hold, mult_bp, now),
+        // Once streaming bytes were delivered, missing usage must never turn a paid provider call
+        // into a zero settlement. The conservative preflight hold is already bounded by balance;
+        // no synthetic token event is invented because it would corrupt authoritative analytics.
+        None => (hold.max(0), None),
     }
 }
 
@@ -461,5 +481,17 @@ mod tests {
         };
         let (charge, _) = settled_charge(&model(), &usage, 17, 10_000, 0);
         assert_eq!(charge as i128, 17 + metering::OVERDRAFT_NANO);
+    }
+
+    #[test]
+    fn missing_authoritative_usage_fails_closed_to_the_reserved_hold() {
+        let (charge, event) = settled_charge_or_hold(&model(), None, 123_456, 10_000, 0);
+        assert_eq!(charge, 123_456);
+        assert!(event.is_none());
+
+        let zero = metering::GeminiUsage::default();
+        let (charge, event) = settled_charge_or_hold(&model(), Some(&zero), 654_321, 10_000, 0);
+        assert_eq!(charge, 654_321);
+        assert!(event.is_none());
     }
 }

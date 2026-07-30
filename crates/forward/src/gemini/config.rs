@@ -2,6 +2,19 @@
 
 pub use metering::GeminiPrices;
 
+/// Attested production transport observed from the exact Linux Node runtime used by the official
+/// Gemini CLI stack. JA3 changes across Node/OpenSSL platform builds, so all four values are kept
+/// together and exposed read-only in the admin surface.
+pub const GEMINI_NODE_TRANSPORT_PROFILE: &str = "node-v24.18.0-linux-x64";
+pub const GEMINI_NODE_EXPECTED_JA3: &str = "944d1e1858cd278718f8a46b65d3212f";
+pub const GEMINI_NODE_EXPECTED_JA4: &str = "t13d5211_b262b3658495_8e6e362c5eac";
+/// Gemini CLI's global-fetch userinfo request has an independently attested Undici ClientHello.
+pub const GEMINI_NODE_FETCH_TRANSPORT_PROFILE: &str = "node-v24.18.0-linux-x64-undici-fetch";
+pub const GEMINI_NODE_FETCH_EXPECTED_JA3: &str = "d67b094811e5145139d7cea5f014309f";
+pub const GEMINI_NODE_FETCH_EXPECTED_JA4: &str = "t13d5212h1_b262b3658495_8e6e362c5eac";
+pub const GEMINI_GOOGLE_AUTH_LIBRARY_VERSION: &str =
+    gemini_credential::GEMINI_GOOGLE_AUTH_LIBRARY_VERSION;
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GeminiProfileSpec {
@@ -42,10 +55,45 @@ pub struct GeminiConfig {
     pub default_rate_limit_cool_secs: i64,
     pub health_probe_interval_secs: u64,
     pub reserve_overhead_tokens: u64,
+    /// Public Gemini CLI release used to shape the Code Assist User-Agent. The transport remains
+    /// owned by this gateway; only the documented CLI application header is mirrored.
+    pub cli_version: String,
+    /// Exact official Node/OpenSSL runtime used by Gemini CLI's gaxios/node-fetch path. Production
+    /// startup verifies the binary SHA and every helper handshake verifies version/platform/arch.
+    pub node_binary: String,
+    pub node_version: String,
+    pub node_sha256: String,
 }
 
 impl GeminiConfig {
     pub fn model(&self, id: &str) -> Option<&GeminiModel> {
         self.models.iter().find(|model| model.id == id)
+    }
+
+    pub fn user_agent(&self, model: &str) -> String {
+        // OAuth2Client's request interceptor appends this library token on the actual wire. Merely
+        // copying contentGenerator.ts's pre-interceptor string is observably incomplete.
+        format!(
+            "GeminiCLI/{}/{model} (linux; x64; cli) google-api-nodejs-client/{}",
+            self.cli_version, GEMINI_GOOGLE_AUTH_LIBRARY_VERSION
+        )
+    }
+
+    pub fn google_api_client(&self) -> String {
+        format!("gl-node/{}", self.node_version.trim_start_matches('v'))
+    }
+
+    pub fn google_auth_user_agent(&self) -> String {
+        format!(
+            "google-api-nodejs-client/{}",
+            GEMINI_GOOGLE_AUTH_LIBRARY_VERSION
+        )
+    }
+
+    pub fn background_user_agent(&self) -> String {
+        // setupUser/loadCodeAssist and quota refresh inherit the CLI's resolved current model. The
+        // stable release default is 2.5 Pro; using allowlist order here would make a config reorder
+        // observable on otherwise model-free background calls.
+        self.user_agent(gemini_credential::GEMINI_CLI_DEFAULT_MODEL)
     }
 }

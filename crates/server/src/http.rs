@@ -270,6 +270,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .fallback(fixed_openai_not_found)
             .method_not_allowed_fallback(fixed_openai_not_found),
         forward::ProviderMode::Gemini => common
+            .route("/gemini-subs", get(gemini_subs))
             .fallback(gemini_api)
             .method_not_allowed_fallback(gemini_api),
     };
@@ -696,6 +697,12 @@ async fn metrics(
     use std::fmt::Write as _;
     let _ = writeln!(
         body,
+        "# TYPE claude_api_gemini_usage_metadata_missing_total counter\n\
+         claude_api_gemini_usage_metadata_missing_total {}",
+        g(&m.gemini_usage_missing)
+    );
+    let _ = writeln!(
+        body,
         "# TYPE claude_api_codex_enabled gauge\nclaude_api_codex_enabled {}",
         u8::from(app.codex.is_some())
     );
@@ -875,9 +882,13 @@ async fn metrics(
             "# TYPE claude_api_gemini_profiles gauge\nclaude_api_gemini_profiles {}\n\
              # TYPE claude_api_gemini_profiles_available gauge\nclaude_api_gemini_profiles_available {}\n\
              # TYPE claude_api_gemini_profiles_authenticated gauge\nclaude_api_gemini_profiles_authenticated {}\n\
+             # TYPE claude_api_gemini_model_profiles_available gauge\n\
              # TYPE claude_api_gemini_profile_authenticated gauge\n\
              # TYPE claude_api_gemini_profile_cooling_until_seconds gauge\n\
-             # TYPE claude_api_gemini_profile_inflight_requests gauge",
+             # TYPE claude_api_gemini_profile_inflight_requests gauge\n\
+             # TYPE claude_api_gemini_profile_last_probe_seconds gauge\n\
+             # TYPE claude_api_gemini_profile_quota_updated_seconds gauge\n\
+             # TYPE claude_api_gemini_profile_model_cooling_until_seconds gauge",
             status.profiles.len(),
             status.available,
             status.authenticated,
@@ -889,17 +900,35 @@ async fn metrics(
                  claude_api_gemini_soonest_ready_seconds {ready_at}"
             );
         }
-        for profile in status.profiles {
-            let id = profile.id;
+        for model in &status.models {
+            let _ = writeln!(
+                body,
+                "claude_api_gemini_model_profiles_available{{model=\"{}\"}} {}",
+                model.id, model.available,
+            );
+        }
+        for profile in &status.profiles {
+            let id = &profile.id;
             let _ = writeln!(
                 body,
                 "claude_api_gemini_profile_authenticated{{profile=\"{id}\"}} {}\n\
                  claude_api_gemini_profile_cooling_until_seconds{{profile=\"{id}\"}} {}\n\
-                 claude_api_gemini_profile_inflight_requests{{profile=\"{id}\"}} {}",
+                 claude_api_gemini_profile_inflight_requests{{profile=\"{id}\"}} {}\n\
+                 claude_api_gemini_profile_last_probe_seconds{{profile=\"{id}\"}} {}\n\
+                 claude_api_gemini_profile_quota_updated_seconds{{profile=\"{id}\"}} {}",
                 u8::from(profile.authenticated),
                 profile.cooling_until,
                 profile.inflight,
+                profile.last_probe_at,
+                profile.quota_updated_at,
             );
+            for cooling in &profile.model_cooling {
+                let _ = writeln!(
+                    body,
+                    "claude_api_gemini_profile_model_cooling_until_seconds{{profile=\"{id}\",model=\"{}\"}} {}",
+                    cooling.model_id, cooling.cooling_until,
+                );
+            }
         }
     } else {
         let _ = writeln!(
@@ -1462,6 +1491,106 @@ async fn codex_subs(
     .into_response()
 }
 
+/// Gemini paid-subscription fleet status for the unified panel. This route exists only on the
+/// fixed Gemini runtime and contains opaque profile ids plus sanitized quota/transport metadata;
+/// Google subject, email, project, OAuth and proxy values never enter the response.
+async fn gemini_subs(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if !readonly_authed(&app, &headers, &peer) {
+        Metrics::inc(&app.metrics.auth_failures);
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "unauthorized"})),
+        )
+            .into_response();
+    }
+    let Some(gemini) = &app.gemini else {
+        return Json(json!({"now": pool::now(), "enabled": false, "profiles": []})).into_response();
+    };
+    let now = pool::now();
+    let status = gemini.operational_status().await;
+    let affinity = app.affinity.stats();
+    let profiles = status
+        .profiles
+        .iter()
+        .map(|profile| {
+            json!({
+                "id": profile.id,
+                "authenticated": profile.authenticated,
+                "cooling_until": profile.cooling_until,
+                "inflight": profile.inflight,
+                "last_probe_at": profile.last_probe_at,
+                "quota_updated_at": profile.quota_updated_at,
+                "model_cooling": profile.model_cooling.iter().map(|cooling| json!({
+                    "model_id": cooling.model_id,
+                    "cooling_until": cooling.cooling_until,
+                })).collect::<Vec<_>>(),
+                "quotas": profile.quotas.iter().map(|quota| json!({
+                    "model_id": quota.model_id,
+                    "remaining_amount": quota.remaining_amount,
+                    "remaining_fraction": quota.remaining_fraction,
+                    "reset_time": quota.reset_time,
+                    "token_type": quota.token_type,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let models = status
+        .models
+        .iter()
+        .map(|model| {
+            json!({
+                "id": model.id,
+                "available": model.available,
+                "soonest_ready": model.soonest_ready,
+            })
+        })
+        .collect::<Vec<_>>();
+    Json(json!({
+        "now": now,
+        "enabled": true,
+        "profiles_total": status.profiles.len(),
+        "authenticated": status.authenticated,
+        "available": status.available,
+        "inflight": status.profiles.iter().map(|profile| profile.inflight).sum::<usize>(),
+        "soonest_ready": status.soonest_ready,
+        "models": models,
+        "profiles": profiles,
+        "transport": {
+            "cli_version": gemini.config().cli_version,
+            "profile": forward::GEMINI_NODE_TRANSPORT_PROFILE,
+            "node_version": gemini.config().node_version,
+            "node_sha256": gemini.config().node_sha256,
+            "http_version": "HTTP/1.1",
+            "expected_ja3": forward::GEMINI_NODE_EXPECTED_JA3,
+            "expected_ja4": forward::GEMINI_NODE_EXPECTED_JA4,
+            "userinfo_profile": forward::GEMINI_NODE_FETCH_TRANSPORT_PROFILE,
+            "userinfo_http_version": "HTTP/1.1",
+            "userinfo_expected_ja3": forward::GEMINI_NODE_FETCH_EXPECTED_JA3,
+            "userinfo_expected_ja4": forward::GEMINI_NODE_FETCH_EXPECTED_JA4,
+        },
+        "affinity": {
+            "local_hits": affinity.local_hits,
+            "redis_hits": affinity.redis_hits,
+            "misses": affinity.misses,
+            "redis_errors": affinity.redis_errors,
+            "native_hits": affinity.native_hits,
+            "transcript_hits": affinity.transcript_hits,
+            "cache_root_hits": affinity.cache_root_hits,
+            "cache_root_writes": affinity.cache_root_writes,
+            "cache_root_warm_placements": affinity.cache_root_warm_placements,
+            "cache_root_cold_placements": affinity.cache_root_cold_placements,
+            "claims": affinity.claims,
+            "rebinds": affinity.rebinds,
+        },
+        "usage_metadata_missing": Metrics::get(&app.metrics.gemini_usage_missing),
+    }))
+    .into_response()
+}
+
 async fn health() -> Json<serde_json::Value> {
     // Минимум без авторизации: голый liveness-пинг. Размер пула / upstream / статус биллинга —
     // раскрытие backend (у api.anthropic.com нет /health, N подписок = фингерпринт) → только на
@@ -1843,6 +1972,52 @@ mod tests {
         assert_eq!(body["error"]["status"], "NOT_FOUND");
     }
 
+    #[tokio::test]
+    async fn gemini_fleet_status_is_readonly_key_protected_and_runtime_scoped() {
+        let service = router(
+            provider_test_app(forward::ProviderMode::Gemini),
+            Arc::new(AtomicBool::new(true)),
+        );
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+        for (credential, expected) in [
+            (None, StatusCode::UNAUTHORIZED),
+            (Some("panel-key"), StatusCode::OK),
+            (Some("control-key"), StatusCode::OK),
+            (Some("admin-key"), StatusCode::OK),
+        ] {
+            let mut request = Request::builder()
+                .uri("/gemini-subs")
+                .body(Body::empty())
+                .unwrap();
+            request.extensions_mut().insert(peer);
+            if let Some(key) = credential {
+                request
+                    .headers_mut()
+                    .insert("x-api-key", key.parse().unwrap());
+            }
+            let response = service.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), expected, "credential {credential:?}");
+            if expected == StatusCode::OK {
+                let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["enabled"], false);
+                assert_eq!(body["profiles"], json!([]));
+                let wire = body.to_string();
+                for forbidden in [
+                    "subject",
+                    "email",
+                    "project_id",
+                    "refresh_token",
+                    "access_token",
+                    "client_secret",
+                    "proxy",
+                ] {
+                    assert!(!wire.contains(forbidden), "leaked field {forbidden}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn unsupported_openai_subroutes_use_generic_openai_error_shape() {
         let error = unsupported_openai_endpoint_error();
@@ -2017,6 +2192,8 @@ mod tests {
             "/overview",
             "/capacity",
             "/subs",
+            "/codex-subs",
+            "/gemini-subs",
         ] {
             assert!(
                 ADMIN_PANEL_HTML.contains(route),
@@ -2040,6 +2217,11 @@ mod tests {
         assert!(!ADMIN_PANEL_HTML.contains("COMMERCIAL_ADMIN_KEY"));
         assert!(!ADMIN_PANEL_HTML.contains("CONTROL_KEY"));
         assert!(!ADMIN_PANEL_HTML.contains("SALES_ADMIN_KEY"));
+        assert!(ADMIN_PANEL_HTML.contains("expected_ja3"));
+        assert!(ADMIN_PANEL_HTML.contains("expected_ja4"));
+        assert!(ADMIN_PANEL_HTML.contains("userinfo_expected_ja3"));
+        assert!(ADMIN_PANEL_HTML.contains("userinfo_expected_ja4"));
+        assert!(ADMIN_PANEL_HTML.contains("usage_metadata_missing"));
         assert!(ADMIN_PANEL_HTML.contains("sessionStorage.setItem(pendingKey"));
         assert!(ADMIN_PANEL_HTML.contains("idempotency_key:idempotencyKey"));
         assert!(ADMIN_PANEL_HTML.contains("Пароль (минимум 8)"));

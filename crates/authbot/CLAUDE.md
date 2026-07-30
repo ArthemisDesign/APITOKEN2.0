@@ -6,7 +6,8 @@
 
 **Границы (жёстко):**
 - Зависит от `registry` (только `authority` — запись подписки) + `tokio`, `portable_pty`, `rusqlite`,
-  `reqwest`/`serde` (проверка и публикация Gemini credential).
+  `reqwest` (URL validation/прочие bot API) и `serde`; Gemini Google HTTPS выполняет общий exact
+  Node helper, а не reqwest/rustls.
   НЕ импортирует `pool`/`forward`/`server` и не лезет в их внутренности.
 - Пополняет ИСКЛЮЧИТЕЛЬНО пул этого проекта: свой bot-токен, свой `AUTH_BOT_FLEET`.
 - Своё состояние (юзеры/офферы) — в отдельной SQLite бота, НЕ в реестре движка.
@@ -48,21 +49,28 @@ Gemini ждёт отдельного подтверждения «Аккаунт
 **Инварианты Gemini-ветки (критично):**
 1. OAuth использует публичный installed-application client id/secret из официального Gemini CLI и
    его фиксированный redirect `https://codeassist.google.com/authcode`. Продавец не создаёт Cloud
-   OAuth-клиент и не включает private API в своём проекте. Всегда `state` + PKCE S256; User-Agent
-   Auth Bot остаётся truthful, а client id/secret и redirect, использованные при старте, seal-ятся
+   OAuth-клиент и не включает private API в своём проекте. Всегда `state` + PKCE S256; а
+   client id/secret и redirect, использованные при старте, seal-ятся
    вместе с транзакцией, чтобы token exchange не мог сменить identity.
-2. OAuth code/tokens никогда не идут через Telegram. Google показывает одноразовый code на своей
+2. Token exchange, userinfo, `loadCodeAssist`, onboarding и operation poll идут через тот же source
+   `node_transport.cjs`, что runtime: SHA-pinned `/usr/bin/node` v24.18.0 Linux/x64, per-account
+   authenticated CONNECT и `env_clear`. Token/Code Assist повторяют gaxios/google-auth-library
+   10.9.0; userinfo отдельно повторяет официальный global fetch через attested Node-internal Undici
+   dispatcher (его headers, pooling и ClientHello нельзя подменять gaxios-профилем). Proxy/bearer/form
+   существуют в zeroizing IPC buffers; Rust TLS и ambient proxy не участвуют. `loadCodeAssist`/
+   onboard bodies повторяют Gemini CLI 0.53.0 без custom `client-metadata` header или выдуманного mode.
+3. OAuth code/tokens никогда не идут через Telegram. Google показывает одноразовый code на своей
    Code Assist странице; продавец POST-ит его через no-store HTTPS-форму Auth Bot. Короткоживущий
    proxy в SQLite только как XChaCha20-Poly1305 envelope, привязанный AAD к одноразовому state;
    form/callback claim одноразовый.
-3. До публикации проверяются verified userinfo и `loadCodeAssist`; принимаются только известные
+4. До публикации проверяются verified userinfo и `loadCodeAssist`; принимаются только известные
    Google AI Pro/Ultra, Code Assist Standard/Enterprise и Workspace AI Ultra. Free, Plus,
    несовместимые Workspace и unknown future paid tiers fail-closed. Меню создания оффера показывает
    только Google AI Pro/Ultra; организационные tier продолжают распознаваться для совместимости
    старых callback и фактической проверки плана после OAuth.
 4. Google subject — quota identity: дубликаты запрещены даже при другом project/file. Email,
    subject, project, tier, OAuth secret/token и authenticated proxy живут только внутри AEAD.
-5. Credential envelopes и `profiles.json` — `0600`, каталоги — `0700`, symlink/alternate path
+6. Credential envelopes и `profiles.json` — `0600`, каталоги — `0700`, symlink/alternate path
    запрещены. Сначала envelope, затем atomic roster rename+fsync. Startup rewrap переводит старые
    envelopes на active kid, сохраняя online key rotation.
 **Секреты:** `AUTH_BOT_TOKEN`, ключ BSC-выплат, Claude/Gemini credentials и прокси — только в

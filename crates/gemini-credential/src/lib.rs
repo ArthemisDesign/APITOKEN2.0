@@ -19,10 +19,23 @@ const CREDENTIAL_VERSION: u8 = 1;
 const AAD_PREFIX: &[u8] = b"apitoken/gemini-oauth-credential/v1\0";
 const SECRET_AAD_PREFIX: &[u8] = b"apitoken/gemini-oauth-pending-secret/v1\0";
 
-/// Stable, truthful identity shared by Auth Bot and the Gemini runtime. Keeping this value in the
-/// common crate prevents OAuth/refresh/generation transports from drifting into different client
-/// profiles without impersonating an official Google client.
-pub const GEMINI_PROVIDER_USER_AGENT: &str = "apitoken-gemini-provider/1";
+/// One reviewed official Gemini CLI wire profile shared by the OAuth producer and runtime. Node's
+/// distribution build affects OpenSSL ClientHello, so version text and executable digest are an
+/// inseparable attestation tuple rather than independently configurable hints.
+pub const GEMINI_CLI_VERSION: &str = "0.53.0";
+pub const GEMINI_CLI_DEFAULT_MODEL: &str = "gemini-2.5-pro";
+pub const GEMINI_GOOGLE_AUTH_LIBRARY_VERSION: &str = "10.9.0";
+pub const GEMINI_NODE_BINARY: &str = "/usr/bin/node";
+pub const GEMINI_NODE_VERSION: &str = "v24.18.0";
+pub const GEMINI_NODE_SHA256: &str =
+    "41a74efb34cbde5c7632cdac0cf8bd1a14d0b8d73dc1e82755014d9a9ce70f5c";
+/// Public installed-application identity embedded in the reviewed Gemini CLI release. Installed
+/// app secrets are application metadata rather than a confidential server credential, but pinning
+/// the pair prevents a sealed profile from silently switching Google consumer identity at refresh.
+pub const GEMINI_OFFICIAL_OAUTH_CLIENT_ID: &str =
+    "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
+pub const GEMINI_OFFICIAL_OAUTH_CLIENT_SECRET: &str = "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";
+pub const GEMINI_OFFICIAL_TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
 
 /// Heap string that overwrites its buffer on drop. Use for short-lived token/proxy clones outside
 /// the long-lived credential envelope.
@@ -74,10 +87,15 @@ impl GeminiCredential {
         bounded_secret(&self.refresh_token, 8, 16_384, "refresh token")?;
         bounded_text(&self.oauth_client_id, 8, 1_024, "OAuth client id")?;
         bounded_secret(&self.oauth_client_secret, 1, 4_096, "OAuth client secret")?;
+        if self.oauth_client_id != GEMINI_OFFICIAL_OAUTH_CLIENT_ID
+            || self.oauth_client_secret != GEMINI_OFFICIAL_OAUTH_CLIENT_SECRET
+        {
+            bail!("Gemini OAuth application identity is not the pinned official CLI client");
+        }
         let test_loopback = cfg!(feature = "test-loopback-token-uri")
             && (self.token_uri.starts_with("http://127.0.0.1:")
                 || self.token_uri.starts_with("http://[::1]:"));
-        if self.token_uri != "https://oauth2.googleapis.com/token" && !test_loopback {
+        if self.token_uri != GEMINI_OFFICIAL_TOKEN_URI && !test_loopback {
             bail!("Gemini token endpoint is not pinned");
         }
         bounded_text(&self.subject, 1, 512, "Google subject")?;
@@ -86,13 +104,115 @@ impl GeminiCredential {
         bounded_text(&self.tier_id, 0, 256, "Gemini tier id")?;
         bounded_text(&self.tier_name, 0, 512, "Gemini tier name")?;
         bounded_text(&self.plan, 1, 128, "Gemini plan")?;
+        if self.tier_id.is_empty() && self.tier_name.is_empty() {
+            bail!("Gemini credential has no attested Code Assist tier");
+        }
+        if !is_supported_paid_plan(&self.plan) {
+            bail!("Gemini credential plan is not an approved paid Code Assist tier");
+        }
+        if !plan_matches_tier(&self.plan, &self.tier_name) {
+            bail!("Gemini credential plan does not match its attested Code Assist tier");
+        }
         if !self.proxy.is_empty() {
-            bounded_secret(&self.proxy, 8, 4_096, "proxy URL")?;
+            normalize_proxy_url(&self.proxy)?;
         }
         if self.proxy_order_id < 0 {
             bail!("invalid Gemini proxy order id");
         }
         Ok(())
+    }
+}
+
+/// Validate and canonicalize an HTTP(S) proxy origin exactly once for producer publication,
+/// runtime duplicate detection and helper admission. Percent-encoded credentials are decoded and
+/// encoded again so equivalent spellings cannot represent two rotation identities.
+pub fn normalize_proxy_url(proxy: &str) -> anyhow::Result<String> {
+    bounded_secret(proxy, 8, 4_096, "proxy URL")?;
+    let mut parsed = url::Url::parse(proxy).context("parse Gemini proxy URL")?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !matches!(parsed.path(), "" | "/")
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        bail!("Gemini proxy must be an HTTP(S) origin");
+    }
+    let username = decode_proxy_component(parsed.username())?;
+    let password = parsed.password().map(decode_proxy_component).transpose()?;
+    parsed
+        .set_username(&username)
+        .map_err(|_| anyhow!("invalid Gemini proxy username"))?;
+    parsed
+        .set_password(password.as_deref())
+        .map_err(|_| anyhow!("invalid Gemini proxy password"))?;
+    Ok(parsed.to_string())
+}
+
+fn decode_proxy_component(value: &str) -> anyhow::Result<String> {
+    let source = value.as_bytes();
+    let mut decoded = Vec::with_capacity(source.len());
+    let mut index = 0usize;
+    while index < source.len() {
+        if source[index] == b'%' {
+            let high = source
+                .get(index + 1)
+                .and_then(|value| proxy_hex(*value))
+                .ok_or_else(|| anyhow!("invalid percent encoding in Gemini proxy credentials"))?;
+            let low = source
+                .get(index + 2)
+                .and_then(|value| proxy_hex(*value))
+                .ok_or_else(|| anyhow!("invalid percent encoding in Gemini proxy credentials"))?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(source[index]);
+            index += 1;
+        }
+    }
+    let decoded = String::from_utf8(decoded)
+        .map_err(|_| anyhow!("Gemini proxy credentials are not valid UTF-8"))?;
+    if decoded.chars().any(char::is_control) {
+        bail!("Gemini proxy credentials contain control characters");
+    }
+    Ok(decoded)
+}
+
+fn proxy_hex(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+pub fn is_supported_paid_plan(plan: &str) -> bool {
+    matches!(
+        plan,
+        "google_ai_pro"
+            | "google_ai_ultra"
+            | "code_assist_standard"
+            | "code_assist_enterprise"
+            | "workspace_ai_ultra"
+    )
+}
+
+pub fn plan_matches_tier(plan: &str, tier_name: &str) -> bool {
+    let tier_name = tier_name
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    match plan {
+        "google_ai_pro" => tier_name == "google ai pro",
+        "google_ai_ultra" => tier_name == "google ai ultra",
+        "code_assist_standard" => tier_name == "code assist standard",
+        "code_assist_enterprise" => tier_name == "code assist enterprise",
+        "workspace_ai_ultra" => matches!(
+            tier_name.as_str(),
+            "workspace ai ultra" | "google workspace ai ultra"
+        ),
+        _ => false,
     }
 }
 
@@ -398,9 +518,9 @@ mod tests {
             access_token: "access-token-value".into(),
             refresh_token: "refresh-token-value".into(),
             expires_at: 123,
-            oauth_client_id: "client.apps.googleusercontent.com".into(),
-            oauth_client_secret: "client-secret".into(),
-            token_uri: "https://oauth2.googleapis.com/token".into(),
+            oauth_client_id: GEMINI_OFFICIAL_OAUTH_CLIENT_ID.into(),
+            oauth_client_secret: GEMINI_OFFICIAL_OAUTH_CLIENT_SECRET.into(),
+            token_uri: GEMINI_OFFICIAL_TOKEN_URI.into(),
             subject: "google-subject".into(),
             email: "owner@example.com".into(),
             project_id: "managed-project".into(),
@@ -424,6 +544,39 @@ mod tests {
         let opened = ring.open("profile_01", &decoded).unwrap();
         assert_eq!(opened.email, "owner@example.com");
         assert!(ring.open("profile_02", &decoded).is_err());
+    }
+
+    #[test]
+    fn credential_validation_rejects_unreviewed_plan_and_oauth_identity() {
+        let mut candidate = credential();
+        candidate.plan = "future_paid_tier".into();
+        assert!(candidate.validate().is_err());
+
+        let mut candidate = credential();
+        candidate.oauth_client_id = "another-client.apps.googleusercontent.com".into();
+        assert!(candidate.validate().is_err());
+
+        let mut candidate = credential();
+        candidate.tier_name = "Future Pro Trial".into();
+        assert!(candidate.validate().is_err());
+    }
+
+    #[test]
+    fn proxy_normalization_collapses_equivalent_credentials_and_default_ports() {
+        let plain = normalize_proxy_url("http://user:pass@proxy.example/").unwrap();
+        assert_eq!(
+            plain,
+            normalize_proxy_url("HTTP://u%73er:pa%73s@PROXY.EXAMPLE:80").unwrap()
+        );
+        for invalid in [
+            "socks5://proxy.example:1080/",
+            "http://proxy.example/path",
+            "http://user%GG:pass@proxy.example/",
+            "http://user:%ff@proxy.example/",
+            "http://user:%00@proxy.example/",
+        ] {
+            assert!(normalize_proxy_url(invalid).is_err(), "accepted {invalid}");
+        }
     }
 
     #[test]

@@ -12,6 +12,9 @@ pub struct Metrics {
     pub exhausted: AtomicU64,    // исчерпание пула (все за лимитом) → 429+Retry-After
     pub key_throttled: AtomicU64, // отбито fair-share (кит превысил потолок одновременных)
     pub auth_failures: AtomicU64, // неудачных авторизаций (спайк = брутфорс/скан управляющих ключей)
+    /// Successful Gemini generations that ended without authoritative usage. Metered non-stream
+    /// delivery is withheld; a stream already delivered settles its conservative hold.
+    pub gemini_usage_missing: AtomicU64,
 }
 
 impl Metrics {

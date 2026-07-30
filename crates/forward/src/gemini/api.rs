@@ -3,6 +3,7 @@
 use super::billing::{begin_admission, AdmissionError, GeminiAdmission};
 use super::config::GeminiModel;
 use super::pool::{GeminiGateway, GeminiLease, GeminiProfile, TokenError};
+use super::transport::{TransportError, TransportResponse};
 use crate::metrics::Metrics;
 use crate::proxy::TerminalErrorReason;
 use crate::state::AppState;
@@ -22,6 +23,9 @@ use std::time::Duration;
 
 const GEMINI_BODY_LIMIT: usize = 32 * 1024 * 1024;
 const DOWNSTREAM_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+const STREAM_START_TIMEOUT: Duration = Duration::from_secs(30);
+const STREAM_START_MAX_BYTES: usize = 1024 * 1024;
+const STREAM_START_MAX_CHUNKS: usize = 1024;
 
 /// Native Gemini accepts proto-JSON in either camelCase or snake_case. Code Assist and the public
 /// surface are canonicalized to camelCase so a snake_case client is not silently dropped. Only the
@@ -83,8 +87,7 @@ fn fresh_response_id() -> String {
 }
 
 fn base64url(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0] as usize;
@@ -100,6 +103,48 @@ fn base64url(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+/// Gemini CLI keeps one UUID-shaped session id for a conversation. Derive the same stable shape
+/// from the affinity layer's keyed digest: growing histories keep their resolved lineage, while
+/// different tenants or explicit sessions cannot collide through caller-controlled plaintext.
+fn session_id_from_lineage(lineage: &str) -> String {
+    let mut bytes = *blake3::hash(lineage.as_bytes()).as_bytes();
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+    )
+}
+
+/// Interactive Gemini CLI identifies one top-level human turn as
+/// `<session UUID>########<prompt count>`. Tool-result-only user contents stay inside the current
+/// turn, so count only user contents that carry at least one non-function-response part. Native API
+/// clients do not expose Gemini CLI's in-memory counter; transcript-derived ordinal is the closest
+/// stable equivalent and preserves the exact official wire shape without accepting a caller id.
+fn official_user_prompt_id(session_id: &str, native: &Value) -> String {
+    let ordinal = native
+        .get("contents")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|content| content.get("role").and_then(Value::as_str) != Some("model"))
+        .filter(|content| {
+            content
+                .get("parts")
+                .and_then(Value::as_array)
+                .is_some_and(|parts| {
+                    parts.iter().any(|part| {
+                        part.as_object()
+                            .is_none_or(|part| !part.contains_key("functionResponse"))
+                    })
+                })
+        })
+        .count()
+        .max(1);
+    format!("{session_id}########{ordinal}")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -508,7 +553,7 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-fn retry_after(headers: &reqwest::header::HeaderMap, body: &[u8], default_secs: i64) -> i64 {
+fn retry_after(headers: &HeaderMap, body: &[u8], default_secs: i64) -> i64 {
     if let Some(seconds) = headers
         .get("retry-after")
         .and_then(|value| value.to_str().ok())
@@ -517,26 +562,33 @@ fn retry_after(headers: &reqwest::header::HeaderMap, body: &[u8], default_secs: 
         return seconds.clamp(1, 86_400);
     }
     if let Ok(value) = serde_json::from_slice::<Value>(body) {
-        if let Some(delay) = value
-            .pointer("/error/details")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .find(|detail| {
-                detail
-                    .get("@type")
-                    .and_then(Value::as_str)
-                    .is_some_and(|kind| kind.ends_with("google.rpc.RetryInfo"))
-            })
-            .and_then(|detail| detail.get("retryDelay"))
-            .and_then(Value::as_str)
-            .and_then(|delay| delay.strip_suffix('s'))
-            .and_then(|seconds| seconds.parse::<f64>().ok())
-        {
-            return (delay.ceil() as i64).clamp(1, 86_400);
+        if let Some(delay) = retry_info_delay(&value) {
+            return delay;
         }
     }
     default_secs.clamp(1, 86_400)
+}
+
+fn retry_info_delay(value: &Value) -> Option<i64> {
+    let delay = value
+        .pointer("/error/details")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|detail| {
+            detail
+                .get("@type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind.ends_with("google.rpc.RetryInfo"))
+        })?
+        .get("retryDelay")?
+        .as_str()?
+        .strip_suffix('s')?
+        .parse::<f64>()
+        .ok()?;
+    delay
+        .is_finite()
+        .then(|| (delay.ceil() as i64).clamp(1, 86_400))
 }
 
 fn generation_controls(body: &Value, model: &GeminiModel, overhead: u64) -> (u64, u64, bool) {
@@ -622,11 +674,7 @@ fn validate_tools(body: &Value) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn translated_response(
-    status: StatusCode,
-    _headers: &reqwest::header::HeaderMap,
-    body: Bytes,
-) -> Response {
+fn translated_response(status: StatusCode, _headers: &HeaderMap, body: Bytes) -> Response {
     let mut response = Response::builder()
         .status(status)
         .body(Body::from(body))
@@ -643,6 +691,8 @@ fn wrap_code_assist_request(
     model: &str,
     project: &str,
     native: &Value,
+    user_prompt_id: &str,
+    session_id: Option<&str>,
 ) -> Result<Bytes, ApiError> {
     let wrapped = match operation {
         Operation::Generate | Operation::StreamGenerate => {
@@ -664,10 +714,13 @@ fn wrap_code_assist_request(
                     request.insert(field.to_string(), value.clone());
                 }
             }
+            if let Some(session_id) = session_id {
+                request.insert("session_id".to_string(), json!(session_id));
+            }
             json!({
                 "model": model,
                 "project": project,
-                "user_prompt_id": crate::fresh_request_id(),
+                "user_prompt_id": user_prompt_id,
                 "request": request,
             })
         }
@@ -680,7 +733,12 @@ fn wrap_code_assist_request(
             // supplied inside `generateContentRequest`; a bare top-level `contents` undercounts.
             // Mirror that: use the request form when the client sent anything beyond contents,
             // otherwise keep the minimal contents form for maximum upstream compatibility.
-            let extra_fields = ["systemInstruction", "tools", "toolConfig", "generationConfig"];
+            let extra_fields = [
+                "systemInstruction",
+                "tools",
+                "toolConfig",
+                "generationConfig",
+            ];
             if extra_fields.iter().any(|field| native.contains_key(*field)) {
                 let mut inner = serde_json::Map::new();
                 inner.insert("model".to_string(), json!(format!("models/{model}")));
@@ -818,6 +876,8 @@ fn retain_public_fields(value: &mut Value, fields: &[&str]) -> Result<(), ()> {
 struct SseTranslator {
     pending: Vec<u8>,
     usage: metering::GeminiUsage,
+    provider_error: Option<u16>,
+    provider_retry_after: Option<i64>,
     response_id: String,
     framing: StreamFraming,
     started: bool,
@@ -828,6 +888,8 @@ impl SseTranslator {
         Self {
             pending: Vec::new(),
             usage: metering::GeminiUsage::default(),
+            provider_error: None,
+            provider_retry_after: None,
             response_id: fresh_response_id(),
             framing,
             started: false,
@@ -902,6 +964,11 @@ impl SseTranslator {
             // than a clean truncation that looks like success. Genuinely private credit/accounting
             // events carry no `error` and have no public representation, so they stay consumed.
             if let Some(error) = native_stream_error_value(&wrapper) {
+                self.provider_retry_after = retry_info_delay(&wrapper);
+                self.provider_error = error
+                    .pointer("/error/code")
+                    .and_then(Value::as_u64)
+                    .and_then(|code| u16::try_from(code).ok());
                 return Ok(Some(self.frame(&error)?));
             }
             return Ok(None);
@@ -955,6 +1022,19 @@ fn event_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
     }
 }
 
+fn account_stream_start_chunk(
+    observed_bytes: &mut usize,
+    observed_chunks: &mut usize,
+    chunk_bytes: usize,
+) -> Result<(), ()> {
+    *observed_bytes = observed_bytes.saturating_add(chunk_bytes);
+    *observed_chunks = observed_chunks.saturating_add(1);
+    if *observed_bytes > STREAM_START_MAX_BYTES || *observed_chunks > STREAM_START_MAX_CHUNKS {
+        return Err(());
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 enum SendError {
     Token(TokenError),
@@ -967,7 +1047,8 @@ async fn send_upstream(
     _headers: &HeaderMap,
     body: Bytes,
     rejected_token: Option<&str>,
-) -> Result<(reqwest::Response, gemini_credential::SecretString), SendError> {
+    user_agent: &str,
+) -> Result<(TransportResponse, gemini_credential::SecretString), SendError> {
     let access_token = match rejected_token {
         Some(rejected) => profile.access_token_after_rejection(rejected).await,
         None => profile.access_token(false).await,
@@ -977,16 +1058,20 @@ async fn send_upstream(
     // set locally prevents cookies, trace ids, origins or future identity headers from crossing the
     // provider boundary when a denylist inevitably becomes stale.
     let response = profile
-        .request(reqwest::Method::POST, url, &access_token)
-        .header("content-type", "application/json")
-        .body(body)
-        .send()
+        .request(
+            url,
+            &access_token,
+            user_agent,
+            (!url.contains(":streamGenerateContent")).then_some("application/json"),
+            "application/json",
+            body,
+        )
         .await
         .map_err(|_| SendError::Transport)?;
     Ok((response, access_token))
 }
 
-async fn read_upstream_body(response: reqwest::Response) -> Result<Bytes, ()> {
+async fn read_upstream_body(response: TransportResponse) -> Result<Bytes, ()> {
     let mut stream = response.bytes_stream();
     let mut body = Vec::new();
     while let Some(chunk) = stream.next().await {
@@ -1007,16 +1092,22 @@ async fn stream_response(
     admission: GeminiAdmission,
     model: GeminiModel,
     status: StatusCode,
-    headers: reqwest::header::HeaderMap,
+    headers: HeaderMap,
     mut translator: SseTranslator,
     initial: Vec<Bytes>,
-    mut upstream: impl futures_util::Stream<Item = reqwest::Result<Bytes>> + Send + Unpin + 'static,
+    mut upstream: impl futures_util::Stream<Item = Result<Bytes, TransportError>>
+        + Send
+        + Unpin
+        + 'static,
 ) -> Result<Response, ApiError> {
-    admission.mark_delivering().await?;
     let framing = translator.framing;
+    // Register with the shutdown barrier before the durable delivery transition. Otherwise a
+    // shutdown can observe zero background tasks, flush billing, and race a late mark/refund from
+    // this narrow await window. No downstream byte is exposed until both steps have succeeded.
     let background = gateway
         .track_background_task()
         .map_err(|_| ApiError::unavailable("gemini_shutdown"))?;
+    admission.mark_delivering().await?;
     let (sender, receiver) = tokio::sync::mpsc::channel::<Bytes>(8);
     tokio::spawn(async move {
         let _background = background;
@@ -1024,6 +1115,8 @@ async fn stream_response(
         let mut deliver = true;
         let mut clean_eof = true;
         let mut aborted = false;
+        let mut private_bytes = 0usize;
+        let mut private_chunks = 0usize;
 
         for chunk in initial {
             if deliver {
@@ -1054,6 +1147,7 @@ async fn stream_response(
             };
             match chunk {
                 Ok(chunk) => {
+                    let chunk_len = chunk.len();
                     let translated = match translator.push(&chunk) {
                         Ok(translated) => translated,
                         Err(()) => {
@@ -1061,6 +1155,21 @@ async fn stream_response(
                             break;
                         }
                     };
+                    if translated.is_empty() {
+                        if account_stream_start_chunk(
+                            &mut private_bytes,
+                            &mut private_chunks,
+                            chunk_len,
+                        )
+                        .is_err()
+                        {
+                            clean_eof = false;
+                            break;
+                        }
+                    } else {
+                        private_bytes = 0;
+                        private_chunks = 0;
+                    }
                     for translated in translated {
                         if deliver {
                             match tokio::time::timeout(
@@ -1106,12 +1215,36 @@ async fn stream_response(
                 }
             }
         }
-        if clean_eof && !aborted {
-            profile.mark_healthy();
-        } else if !aborted {
-            profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
+        if !aborted {
+            match translator.provider_error {
+                Some(401 | 403) => {
+                    Metrics::inc(&metrics.upstream_auth);
+                    profile.mark_auth_failed(pool::now() + gateway.config().auth_quarantine_secs);
+                }
+                Some(429) => {
+                    Metrics::inc(&metrics.upstream_429);
+                    profile.cool_model_until(
+                        &model.id,
+                        pool::now()
+                            + translator
+                                .provider_retry_after
+                                .unwrap_or(gateway.config().default_rate_limit_cool_secs),
+                    );
+                }
+                Some(408 | 409 | 425 | 500..=599) => {
+                    Metrics::inc(&metrics.upstream_5xx);
+                    profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
+                }
+                Some(_) if clean_eof => profile.mark_healthy_for(&model.id),
+                None if clean_eof => profile.mark_healthy_for(&model.id),
+                _ => profile.cool_until(pool::now() + gateway.config().transport_cool_secs),
+            }
         }
-        admission.settle(&model, &translator.usage);
+        let usage = (!translator.usage.is_zero()).then_some(&translator.usage);
+        if usage.is_none() && admission.requires_usage() {
+            Metrics::inc(&metrics.gemini_usage_missing);
+        }
+        admission.settle(&model, usage);
     });
     let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
         receiver
@@ -1129,9 +1262,7 @@ async fn stream_response(
         StreamFraming::Sse => HeaderValue::from_static("text/event-stream; charset=utf-8"),
         StreamFraming::JsonArray => HeaderValue::from_static("application/json"),
     };
-    response
-        .headers_mut()
-        .insert("content-type", content_type);
+    response.headers_mut().insert("content-type", content_type);
     Ok(response)
 }
 
@@ -1209,7 +1340,10 @@ fn cors_preflight_response() -> Response {
 /// SDKs can read the body. Applied uniformly to success, streaming and error responses.
 fn apply_native_response_headers(response: &mut Response) {
     let headers = response.headers_mut();
-    if let Some(current) = headers.get("content-type").and_then(|value| value.to_str().ok()) {
+    if let Some(current) = headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+    {
         let normalized = if current.starts_with("application/json") {
             Some(HeaderValue::from_static("application/json; charset=UTF-8"))
         } else if current.starts_with("text/event-stream") {
@@ -1225,7 +1359,10 @@ fn apply_native_response_headers(response: &mut Response) {
         "vary",
         HeaderValue::from_static("Origin, X-Origin, Referer"),
     );
-    headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
     headers.insert("x-frame-options", HeaderValue::from_static("SAMEORIGIN"));
     headers.insert("x-xss-protection", HeaderValue::from_static("0"));
     headers.insert("access-control-allow-origin", HeaderValue::from_static("*"));
@@ -1266,6 +1403,7 @@ async fn api_inner(
         .model(model_id)
         .cloned()
         .ok_or_else(ApiError::not_found)?;
+    let upstream_user_agent = gateway.config().user_agent(&model.id);
     if route.operation == Operation::Model {
         // A native GetModel ignores query parameters entirely.
         let _admission = pending.without_reserve();
@@ -1302,6 +1440,25 @@ async fn api_inner(
         Some(input) => app.affinity.resolve(input).await,
         None => None,
     };
+    let generation = matches!(
+        route.operation,
+        Operation::Generate | Operation::StreamGenerate
+    );
+    let upstream_session_id = generation.then(|| {
+        affinity_input
+            .as_ref()
+            .map_or_else(crate::fresh_request_id, |input| {
+                let lineage = affinity_resolution
+                    .as_ref()
+                    .map(|resolution| resolution.session_id.as_str())
+                    .unwrap_or_else(|| input.primary_lineage());
+                session_id_from_lineage(&input.provider_lineage(lineage))
+            })
+    });
+    let user_prompt_id = upstream_session_id
+        .as_deref()
+        .map(|session_id| official_user_prompt_id(session_id, &value))
+        .unwrap_or_default();
     let admission = if matches!(
         route.operation,
         Operation::Generate | Operation::StreamGenerate
@@ -1339,12 +1496,14 @@ async fn api_inner(
         let preferred_id = affinity_resolution
             .as_ref()
             .and_then(|resolution| gateway.profile_id_for_home(&app.affinity, &resolution.home));
-        let Some(lease) = gateway.select(&excluded, preferred_id.as_deref()) else {
+        let Some(lease) = gateway.select(&model.id, &excluded, preferred_id.as_deref()) else {
             Metrics::inc(&app.metrics.exhausted);
             let retry = gateway
-                .soonest_ready(&HashSet::new())
+                .soonest_ready(&model.id, &HashSet::new())
                 .map(|until| until.saturating_sub(pool::now()).max(1) as u64);
-            return if saw_quota {
+            return if !gateway.has_authenticated_profiles() {
+                Err(ApiError::unavailable("gemini_profiles_unauthenticated"))
+            } else if saw_quota {
                 Err(ApiError::rate_limited(retry))
             } else if saw_auth || transport_failures > 0 {
                 Err(ApiError::unavailable("gemini_profiles_unavailable"))
@@ -1354,13 +1513,21 @@ async fn api_inner(
         };
         let profile = lease.profile().clone();
         let project = profile.project_id().await;
-        let upstream_body = wrap_code_assist_request(route.operation, &model.id, &project, &value)?;
+        let upstream_body = wrap_code_assist_request(
+            route.operation,
+            &model.id,
+            &project,
+            &value,
+            &user_prompt_id,
+            upstream_session_id.as_deref(),
+        )?;
         let (mut response, rejected_token) = match send_upstream(
             &profile,
             &url,
             &parts.headers,
             upstream_body.clone(),
             None,
+            &upstream_user_agent,
         )
         .await
         {
@@ -1383,8 +1550,7 @@ async fn api_inner(
                 continue;
             }
         };
-        let mut status = StatusCode::from_u16(response.status().as_u16())
-            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let mut status = response.status();
 
         // A bearer can be revoked before its local expiry. Refresh once on the same profile. The
         // rejected-token compare in the profile mutex ensures a concurrent 401 burst performs one
@@ -1397,13 +1563,13 @@ async fn api_inner(
                 &parts.headers,
                 upstream_body,
                 Some(&rejected_token),
+                &upstream_user_agent,
             )
             .await
             {
                 Ok((retried, _)) => {
                     response = retried;
-                    status = StatusCode::from_u16(response.status().as_u16())
-                        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                    status = response.status();
                 }
                 Err(SendError::Token(TokenError::Invalid)) => {
                     saw_auth = true;
@@ -1428,38 +1594,91 @@ async fn api_inner(
         if status.is_success() && route.operation == Operation::StreamGenerate {
             let mut stream = response.bytes_stream();
             let mut translator = SseTranslator::new(framing);
-            let mut initial = Vec::new();
-            let mut startup_failed = false;
-            loop {
-                match stream.next().await {
-                    Some(Ok(chunk)) => match translator.push(&chunk) {
-                        Ok(translated) if translated.is_empty() => {}
-                        Ok(translated) => {
-                            initial = translated;
-                            break;
+            // Do not return 200 until at least one public native event exists, because retries are
+            // forbidden after delivery. Bound this private prelude independently from per-event
+            // framing: an upstream that emits endless credit/accounting events (or empty chunks)
+            // must not hold a lease, customer reserve and global admission forever.
+            let startup = tokio::time::timeout(STREAM_START_TIMEOUT, async {
+                let mut observed_bytes = 0usize;
+                let mut observed_chunks = 0usize;
+                loop {
+                    match stream.next().await {
+                        Some(Ok(chunk)) => {
+                            account_stream_start_chunk(
+                                &mut observed_bytes,
+                                &mut observed_chunks,
+                                chunk.len(),
+                            )?;
+                            match translator.push(&chunk) {
+                                Ok(translated) if translated.is_empty() => {}
+                                Ok(translated) => return Ok(translated),
+                                Err(()) => return Err(()),
+                            }
                         }
-                        Err(()) => {
-                            startup_failed = true;
-                            break;
+                        Some(Err(_)) => return Err(()),
+                        None => {
+                            return match translator.finish_pending() {
+                                Ok(translated) if !translated.is_empty() => Ok(translated),
+                                Ok(_) | Err(()) => Err(()),
+                            };
                         }
-                    },
-                    Some(Err(_)) => {
-                        startup_failed = true;
-                        break;
                     }
-                    None => match translator.finish_pending() {
-                        Ok(translated) if !translated.is_empty() => {
-                            initial = translated;
-                            break;
+                }
+            })
+            .await;
+            let initial = match startup {
+                Ok(Ok(initial)) => initial,
+                Ok(Err(())) | Err(_) => {
+                    Metrics::inc(&app.metrics.upstream_5xx);
+                    excluded.insert(profile.id().to_string());
+                    profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
+                    transport_failures += 1;
+                    if transport_failures > gateway.config().max_transport_retries {
+                        return Err(ApiError::unavailable("gemini_stream_start_failed"));
+                    }
+                    continue;
+                }
+            };
+            if let Some(code) = translator.provider_error {
+                match code {
+                    401 | 403 => {
+                        Metrics::inc(&app.metrics.upstream_auth);
+                        saw_auth = true;
+                        excluded.insert(profile.id().to_string());
+                        profile
+                            .mark_auth_failed(pool::now() + gateway.config().auth_quarantine_secs);
+                        continue;
+                    }
+                    429 => {
+                        Metrics::inc(&app.metrics.upstream_429);
+                        saw_quota = true;
+                        excluded.insert(profile.id().to_string());
+                        profile.cool_model_until(
+                            &model.id,
+                            pool::now()
+                                + translator
+                                    .provider_retry_after
+                                    .unwrap_or(gateway.config().default_rate_limit_cool_secs),
+                        );
+                        continue;
+                    }
+                    408 | 409 | 425 | 500..=599 => {
+                        Metrics::inc(&app.metrics.upstream_5xx);
+                        excluded.insert(profile.id().to_string());
+                        profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
+                        transport_failures += 1;
+                        if transport_failures > gateway.config().max_transport_retries {
+                            return Err(ApiError::unavailable("gemini_stream_start_failed"));
                         }
-                        Ok(_) | Err(()) => {
-                            startup_failed = true;
-                            break;
-                        }
-                    },
+                        continue;
+                    }
+                    _ => {}
                 }
             }
-            if startup_failed {
+            if initial.is_empty() {
+                // The startup future only returns a non-empty vector. Keep this defensive branch
+                // local so a later translator refactor cannot accidentally relax the no-byte retry
+                // boundary without being classified as a transport failure.
                 Metrics::inc(&app.metrics.upstream_5xx);
                 excluded.insert(profile.id().to_string());
                 profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
@@ -1469,7 +1688,7 @@ async fn api_inner(
                 }
                 continue;
             }
-            profile.mark_healthy();
+            profile.mark_healthy_for(&model.id);
             record_affinity_success(
                 &app.affinity,
                 affinity_input.as_ref(),
@@ -1523,7 +1742,7 @@ async fn api_inner(
                     &response_body,
                     gateway.config().default_rate_limit_cool_secs,
                 );
-                profile.cool_until(pool::now() + delay);
+                profile.cool_model_until(&model.id, pool::now() + delay);
                 continue;
             }
             408 | 409 | 425 | 500..=599 => {
@@ -1551,7 +1770,7 @@ async fn api_inner(
                         continue;
                     }
                 };
-                profile.mark_healthy();
+                profile.mark_healthy_for(&model.id);
                 record_affinity_success(
                     &app.affinity,
                     affinity_input.as_ref(),
@@ -1559,19 +1778,30 @@ async fn api_inner(
                     profile.id(),
                 )
                 .await;
-                admission.mark_delivering().await?;
                 let usage = if route.operation == Operation::Generate {
-                    metering::gemini::usage_from_response_json(&native_body)
+                    serde_json::from_slice::<Value>(&native_body)
+                        .ok()
+                        .and_then(|value| metering::gemini::usage_from_response_value(&value))
+                        .filter(|usage| !usage.is_zero())
                 } else {
-                    metering::GeminiUsage::default()
+                    None
                 };
-                admission.settle(&model, &usage);
+                if route.operation == Operation::Generate
+                    && admission.requires_usage()
+                    && usage.is_none()
+                {
+                    Metrics::inc(&app.metrics.gemini_usage_missing);
+                    profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
+                    return Err(ApiError::unavailable("gemini_usage_metadata_missing"));
+                }
+                admission.mark_delivering().await?;
+                admission.settle(&model, usage.as_ref());
                 return Ok(translated_response(status, &response_headers, native_body));
             }
             _ if status.is_client_error() => {
                 // The private Code Assist error envelope can contain account, project, plan or
                 // internal endpoint details. Preserve only the public status class.
-                profile.mark_healthy();
+                profile.mark_healthy_for(&model.id);
                 return Err(ApiError::provider_rejected(status));
             }
             _ => {
@@ -1676,6 +1906,7 @@ mod tests {
         uri: String,
         body: Bytes,
         user_agent: String,
+        google_api_client: String,
         client_metadata: String,
         has_private_client_headers: bool,
     }
@@ -1737,6 +1968,11 @@ mod tests {
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or_default()
                 .to_string(),
+            google_api_client: headers
+                .get("x-goog-api-client")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string(),
             client_metadata: headers
                 .get("client-metadata")
                 .and_then(|value| value.to_str().ok())
@@ -1744,7 +1980,6 @@ mod tests {
                 .to_string(),
             has_private_client_headers: [
                 "x-goog-user-project",
-                "x-goog-api-client",
                 "x-goog-request-params",
                 "x-forwarded-for",
                 "forwarded",
@@ -1873,8 +2108,10 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir_all(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
         let credential_directory = directory.join("credentials");
         fs::create_dir_all(&credential_directory).unwrap();
+        fs::set_permissions(&credential_directory, fs::Permissions::from_mode(0o700)).unwrap();
         let keys = [PROFILE_A_KEY, PROFILE_B_KEY];
         let ring = CredentialKeyring::parse(&format!("test:{}", "42".repeat(32))).unwrap();
         let mut profiles = Vec::new();
@@ -1886,8 +2123,9 @@ mod tests {
                 access_token: keys[index].to_string(),
                 refresh_token: format!("refresh-token-value-{index}"),
                 expires_at: pool::now() + 3_600,
-                oauth_client_id: "test-client.apps.googleusercontent.com".to_string(),
-                oauth_client_secret: "test-client-secret".to_string(),
+                oauth_client_id: gemini_credential::GEMINI_OFFICIAL_OAUTH_CLIENT_ID.to_string(),
+                oauth_client_secret: gemini_credential::GEMINI_OFFICIAL_OAUTH_CLIENT_SECRET
+                    .to_string(),
                 token_uri: token_uri
                     .unwrap_or("https://oauth2.googleapis.com/token")
                     .to_string(),
@@ -1950,6 +2188,10 @@ mod tests {
             default_rate_limit_cool_secs: 60,
             health_probe_interval_secs: 60,
             reserve_overhead_tokens: 10,
+            cli_version: "0.53.0".to_string(),
+            node_binary: "/usr/bin/node".to_string(),
+            node_version: "v24.18.0".to_string(),
+            node_sha256: "0".repeat(64),
         })
         .unwrap();
         GatewayFixture {
@@ -2025,6 +2267,16 @@ mod tests {
     }
 
     async fn invoke(app: AppState, body: Value, streaming: bool) -> Response {
+        invoke_with_identity(app, body, streaming, CUSTOMER_KEY, None).await
+    }
+
+    async fn invoke_with_identity(
+        app: AppState,
+        body: Value,
+        streaming: bool,
+        key: &str,
+        session_id: Option<&str>,
+    ) -> Response {
         // Existing streaming tests assert the SSE downstream shape, so request alt=sse explicitly;
         // the JSON-array default (no alt) has its own dedicated coverage.
         let uri = if streaming {
@@ -2032,11 +2284,15 @@ mod tests {
         } else {
             "/v1beta/models/gemini-integration-model:generateContent".to_string()
         };
-        let request = axum::extract::Request::builder()
+        let mut builder = axum::extract::Request::builder()
             .method(Method::POST)
             .uri(uri)
             .header("content-type", "application/json")
-            .header("x-goog-api-key", CUSTOMER_KEY)
+            .header("x-goog-api-key", key);
+        if let Some(session_id) = session_id {
+            builder = builder.header("x-session-id", session_id);
+        }
+        let request = builder
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
         match api_inner(app, "198.51.100.10:12345".parse().unwrap(), request).await {
@@ -2140,7 +2396,9 @@ mod tests {
         // Default when absent, and clamped upper bound.
         assert_eq!(parse_list_models_query(None).unwrap().size, 50);
         assert_eq!(
-            parse_list_models_query(Some("pageSize=999999")).unwrap().size,
+            parse_list_models_query(Some("pageSize=999999"))
+                .unwrap()
+                .size,
             1000
         );
         // Query-string API keys stay rejected.
@@ -2184,6 +2442,21 @@ mod tests {
         let frame = sse.frame(&json!({"a": 1})).unwrap();
         assert!(frame.starts_with(b"data: "));
         assert!(sse.finish_stream().is_none());
+    }
+
+    #[test]
+    fn private_stream_prelude_has_independent_byte_and_chunk_bounds() {
+        let mut bytes = 0usize;
+        let mut chunks = 0usize;
+        account_stream_start_chunk(&mut bytes, &mut chunks, STREAM_START_MAX_BYTES).unwrap();
+        assert!(account_stream_start_chunk(&mut bytes, &mut chunks, 1).is_err());
+
+        let mut bytes = 0usize;
+        let mut chunks = 0usize;
+        for _ in 0..STREAM_START_MAX_CHUNKS {
+            account_stream_start_chunk(&mut bytes, &mut chunks, 0).unwrap();
+        }
+        assert!(account_stream_start_chunk(&mut bytes, &mut chunks, 0).is_err());
     }
 
     #[tokio::test]
@@ -2428,7 +2701,13 @@ mod tests {
             PROFILE_A_KEY,
             vec![MockReply::json(
                 StatusCode::OK,
-                json!({"candidates": [], "usageMetadata": {}}),
+                json!({
+                    "candidates": [],
+                    "usageMetadata": {
+                        "promptTokenCount": 25,
+                        "candidatesTokenCount": 7
+                    }
+                }),
             )],
         )]))
         .await;
@@ -2459,9 +2738,12 @@ mod tests {
         let seen = server.state.seen();
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].credential, PROFILE_A_KEY);
-        assert_eq!(seen[0].user_agent, "apitoken-gemini-provider/1");
-        assert!(seen[0].client_metadata.contains("IDE_UNSPECIFIED"));
-        assert!(!seen[0].client_metadata.contains("customer"));
+        assert_eq!(
+            seen[0].user_agent,
+            "GeminiCLI/0.53.0/gemini-integration-model (linux; x64; cli) google-api-nodejs-client/10.9.0"
+        );
+        assert!(seen[0].client_metadata.is_empty());
+        assert_eq!(seen[0].google_api_client, "gl-node/24.18.0");
         assert!(!seen[0].has_private_client_headers);
     }
 
@@ -2493,13 +2775,96 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(invoke(app, second, false).await.status(), StatusCode::OK);
-        let credentials = server
-            .state
-            .seen()
-            .into_iter()
-            .map(|request| request.credential)
+        let seen = server.state.seen();
+        let credentials = seen
+            .iter()
+            .map(|request| request.credential.as_str())
             .collect::<Vec<_>>();
         assert_eq!(credentials, [PROFILE_A_KEY, PROFILE_A_KEY]);
+        let wire_bodies = seen
+            .iter()
+            .map(|request| serde_json::from_slice::<Value>(&request.body).unwrap())
+            .collect::<Vec<_>>();
+        let sessions = wire_bodies
+            .iter()
+            .map(|body| body["request"]["session_id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        let prompts = wire_bodies
+            .iter()
+            .map(|body| body["user_prompt_id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(sessions[0], sessions[1]);
+        assert_eq!(sessions[0].len(), 36);
+        assert_eq!(prompts[0], format!("{}########1", sessions[0]));
+        assert_eq!(prompts[1], format!("{}########2", sessions[1]));
+        assert!(!sessions[0].contains("turn one"));
+    }
+
+    #[tokio::test]
+    async fn upstream_session_is_stable_but_isolated_by_explicit_session_and_tenant() {
+        const OTHER_ACCOUNT: &str = "gemini-integration-account-other";
+        const OTHER_KEY: &str = "sk-gemini-customer-other";
+        let success = MockReply::json(
+            StatusCode::OK,
+            json!({
+                "candidates": [],
+                "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 1}
+            }),
+        );
+        let server = start_mock(MockState::with_replies([(
+            PROFILE_A_KEY,
+            vec![success.clone(), success.clone(), success.clone(), success],
+        )]))
+        .await;
+        let fixture = gateway_fixture(&server.upstream, &[None], 1);
+        let (app, billing, db_path) = billed_app(fixture.gateway.clone()).await;
+        billing
+            .create_account(OTHER_ACCOUNT, None, 10_000)
+            .await
+            .unwrap();
+        billing
+            .topup(OTHER_ACCOUNT, 1_000_000_000, Some("seed-other"))
+            .await
+            .unwrap();
+        billing
+            .issue_key(OTHER_KEY, OTHER_ACCOUNT, None, None, None)
+            .await
+            .unwrap();
+        let body = json!({
+            "contents": [{"role": "user", "parts": [{"text": "raw prompt secret"}]}]
+        });
+        for (key, session) in [
+            (CUSTOMER_KEY, "raw-client-session-a"),
+            (CUSTOMER_KEY, "raw-client-session-a"),
+            (CUSTOMER_KEY, "raw-client-session-b"),
+            (OTHER_KEY, "raw-client-session-a"),
+        ] {
+            let response =
+                invoke_with_identity(app.clone(), body.clone(), false, key, Some(session)).await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let seen = server.state.seen();
+        let sessions = seen
+            .iter()
+            .map(|request| {
+                let value: Value = serde_json::from_slice(&request.body).unwrap();
+                value["request"]["session_id"].as_str().unwrap().to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sessions[0], sessions[1]);
+        assert_ne!(sessions[0], sessions[2]);
+        assert_ne!(sessions[0], sessions[3]);
+        assert!(sessions.iter().all(|session| session.len() == 36));
+        for request in &seen {
+            let wire = String::from_utf8_lossy(&request.body);
+            assert!(!wire.contains("raw-client-session"));
+            assert!(!wire.contains(CUSTOMER_KEY));
+            assert!(!wire.contains(OTHER_KEY));
+        }
+        billing.flush().await.unwrap();
+        drop(app);
+        drop(billing);
+        let _ = fs::remove_file(db_path);
     }
 
     #[tokio::test]
@@ -2587,7 +2952,13 @@ mod tests {
             PROFILE_A_KEY,
             vec![MockReply::json(
                 StatusCode::OK,
-                json!({"candidates": [], "usageMetadata": {}}),
+                json!({
+                    "candidates": [],
+                    "usageMetadata": {
+                        "promptTokenCount": 25,
+                        "candidatesTokenCount": 7
+                    }
+                }),
             )],
         )]))
         .await;
@@ -2836,7 +3207,46 @@ mod tests {
         assert!(status
             .profiles
             .iter()
-            .all(|profile| profile.cooling_until >= now + 2));
+            .all(|profile| profile.model_cooling.iter().any(|cooling| {
+                cooling.model_id == "gemini-integration-model" && cooling.cooling_until >= now + 2
+            })));
+    }
+
+    #[tokio::test]
+    async fn quota_error_before_first_stream_byte_rotates_without_false_health() {
+        let (quota, _quota_drained) = MockReply::stream(vec![MockChunk::Data(
+            Bytes::from_static(
+                b"data: {\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"message\":\"private\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.RetryInfo\",\"retryDelay\":\"2.25s\"}]}}\n\n",
+            ),
+        )]);
+        let (healthy, _healthy_drained) = MockReply::stream(vec![MockChunk::Data(
+            Bytes::from_static(
+                b"data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]}}],\"usageMetadata\":{\"promptTokenCount\":2,\"candidatesTokenCount\":1}}}\n\n",
+            ),
+        )]);
+        let server = start_mock(MockState::with_replies([
+            (PROFILE_A_KEY, vec![quota]),
+            (PROFILE_B_KEY, vec![healthy]),
+        ]))
+        .await;
+        let fixture = gateway_fixture(&server.upstream, &[None, None], 1);
+        let response = invoke(
+            app_state(fixture.gateway.clone(), None),
+            json!({"contents": []}),
+            true,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), GEMINI_BODY_LIMIT)
+            .await
+            .unwrap();
+        assert!(std::str::from_utf8(&body).unwrap().contains("ok"));
+        assert_eq!(server.state.seen().len(), 2);
+        let now = pool::now();
+        let status = fixture.gateway.operational_status().await;
+        assert!(status.profiles[0].model_cooling.iter().any(|cooling| {
+            cooling.model_id == "gemini-integration-model" && cooling.cooling_until >= now + 2
+        }));
     }
 
     #[tokio::test]
@@ -2945,6 +3355,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn metered_non_stream_success_without_usage_is_withheld_and_refunded() {
+        let server = start_mock(MockState::with_replies([(
+            PROFILE_A_KEY,
+            vec![MockReply::json(
+                StatusCode::OK,
+                json!({"candidates": [{"content": {"parts": [{"text": "private success"}]}}]}),
+            )],
+        )]))
+        .await;
+        let fixture = gateway_fixture(&server.upstream, &[None], 1);
+        let (app, billing, db_path) = billed_app(fixture.gateway.clone()).await;
+        let response = invoke(app.clone(), json!({"contents": []}), false).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let public = response_json(response).await;
+        assert_eq!(public["error"]["status"], "UNAVAILABLE");
+        assert!(!public.to_string().contains("private success"));
+
+        billing.flush().await.unwrap();
+        let account = billing.account(ACCOUNT_ID).await.unwrap().unwrap();
+        assert_eq!(account.reserved_nano, 0);
+        assert_eq!(account.spent_nano, 0);
+        assert!(billing
+            .usage_by_model(ACCOUNT_ID, 0)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(Metrics::get(&app.metrics.gemini_usage_missing), 1);
+        drop(app);
+        drop(billing);
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn metered_stream_without_final_usage_charges_hold_without_fake_usage() {
+        let (reply, drained) = MockReply::stream(vec![MockChunk::Data(Bytes::from_static(
+            b"data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"delivered\"}]}}]}}\n\n",
+        ))]);
+        let server = start_mock(MockState::with_replies([(PROFILE_A_KEY, vec![reply])])).await;
+        let fixture = gateway_fixture(&server.upstream, &[None], 1);
+        let (app, billing, db_path) = billed_app(fixture.gateway.clone()).await;
+        let response = invoke(app.clone(), json!({"contents": []}), true).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), GEMINI_BODY_LIMIT)
+            .await
+            .unwrap();
+        assert!(std::str::from_utf8(&body).unwrap().contains("delivered"));
+
+        fixture.gateway.shutdown_until(None).await;
+        billing.flush().await.unwrap();
+        assert!(drained.load(Ordering::Acquire));
+        let account = billing.account(ACCOUNT_ID).await.unwrap().unwrap();
+        assert_eq!(account.reserved_nano, 0);
+        assert!(
+            account.spent_nano > 0,
+            "the conservative hold must be charged"
+        );
+        assert!(billing
+            .usage_by_model(ACCOUNT_ID, 0)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(Metrics::get(&app.metrics.gemini_usage_missing), 1);
+        drop(app);
+        drop(billing);
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn shutdown_deadline_aborts_stalled_stream_then_settles_last_known_usage_before_returning(
     ) {
         let first = Bytes::from_static(
@@ -3047,7 +3525,7 @@ mod tests {
 
     #[test]
     fn retry_info_and_headers_are_parsed_without_exposing_body() {
-        let headers = reqwest::header::HeaderMap::new();
+        let headers = HeaderMap::new();
         let body = br#"{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"2.25s"}]}}"#;
         assert_eq!(retry_after(&headers, body, 60), 3);
     }

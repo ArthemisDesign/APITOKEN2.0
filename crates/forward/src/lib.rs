@@ -36,8 +36,11 @@ pub use codex::{
 };
 pub use config::{ProxyConfig, CLAUDE_CODE_IDENTITY};
 pub use gemini::{
-    gemini_api, GeminiConfig, GeminiGateway, GeminiModel, GeminiOperationalStatus, GeminiPrices,
-    GeminiProfileSpec, GeminiProfileStatus, GeminiProfilesFile,
+    gemini_api, GeminiConfig, GeminiGateway, GeminiModel, GeminiModelStatus,
+    GeminiOperationalStatus, GeminiPrices, GeminiProfileSpec, GeminiProfileStatus,
+    GeminiProfilesFile, GEMINI_NODE_EXPECTED_JA3, GEMINI_NODE_EXPECTED_JA4,
+    GEMINI_NODE_FETCH_EXPECTED_JA3, GEMINI_NODE_FETCH_EXPECTED_JA4,
+    GEMINI_NODE_FETCH_TRANSPORT_PROFILE, GEMINI_NODE_TRANSPORT_PROFILE,
 };
 pub use keylimiter::KeyLimiter;
 pub use metrics::Metrics;
