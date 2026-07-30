@@ -27,6 +27,7 @@ pub use process::{CodexRateLimitWindow, CodexRateLimits};
 pub(crate) use runner::{CodexTurnRequest, CodexTurnResult, CodexUsage, TurnUpdate};
 
 use crate::affinity::{AffinityInput, AffinityResolution, AffinityStore};
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use history::HistoryStore;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
@@ -246,10 +247,12 @@ pub(crate) struct CodexHome {
     process: Mutex<Option<Arc<CodexProcess>>>,
     process_start: Mutex<()>,
     retired: AtomicBool,
-    /// Turns in flight on this home right now. Concurrency is deliberately unbounded, exactly like
-    /// the Claude fleet: this counter is only a load signal for least-loaded selection and metrics,
-    /// never a cap. A `TurnSlot` guard increments it on admission and decrements on drop, so a
-    /// client disconnect never leaks a phantom busy slot.
+    /// The pinned app-server processes one model turn at a time. Additional customers wait on this
+    /// gate rather than receiving a local 429 or sending a second `thread/start` that the child
+    /// cannot acknowledge while sampling. Every home has its own gate, so the pool still runs one
+    /// turn per purchased subscription in parallel.
+    turn_gate: Arc<Semaphore>,
+    /// Active (not queued) turns, used for least-loaded placement and operator metrics.
     inflight: Arc<AtomicUsize>,
     turns_idle: Arc<Notify>,
     cooling_until: AtomicI64,
@@ -275,6 +278,7 @@ impl CodexHome {
             process: Mutex::new(None),
             process_start: Mutex::new(()),
             retired: AtomicBool::new(false),
+            turn_gate: Arc::new(Semaphore::new(1)),
             inflight: Arc::new(AtomicUsize::new(0)),
             turns_idle: Arc::new(Notify::new()),
             cooling_until: AtomicI64::new(0),
@@ -334,9 +338,7 @@ impl CodexHome {
         self.cool_for(AUTH_QUARANTINE_SECS);
     }
 
-    /// Take an in-flight turn slot on this home. Concurrency is unbounded, so this always succeeds;
-    /// the returned guard keeps the load counter accurate for selection and metrics until it drops.
-    fn acquire_turn(self: &Arc<Self>) -> Option<TurnSlot> {
+    fn turn_slot(self: &Arc<Self>, permit: OwnedSemaphorePermit) -> Option<TurnSlot> {
         if self.retired.load(Ordering::Acquire) {
             return None;
         }
@@ -346,9 +348,20 @@ impl CodexHome {
             return None;
         }
         Some(TurnSlot {
+            _permit: permit,
             inflight: self.inflight.clone(),
             idle: self.turns_idle.clone(),
         })
+    }
+
+    fn try_acquire_turn(self: &Arc<Self>) -> Option<TurnSlot> {
+        let permit = self.turn_gate.clone().try_acquire_owned().ok()?;
+        self.turn_slot(permit)
+    }
+
+    async fn acquire_turn(self: &Arc<Self>) -> Option<TurnSlot> {
+        let permit = self.turn_gate.clone().acquire_owned().await.ok()?;
+        self.turn_slot(permit)
     }
 
     fn identity_is_current(&self) -> bool {
@@ -669,10 +682,10 @@ mod provider_lock_tests {
     }
 }
 
-/// RAII load-counter guard for one in-flight turn. Dropping it — on success, error, or client
-/// disconnect — releases the home's load slot. It is not a concurrency cap; the count only steers
-/// least-loaded selection and feeds the inflight metric.
+/// RAII guard for the one active turn on a pinned app-server. Dropping it — on success, error,
+/// cancellation or client disconnect — releases the queued next customer and updates metrics.
 pub(crate) struct TurnSlot {
+    _permit: OwnedSemaphorePermit,
     inflight: Arc<AtomicUsize>,
     idle: Arc<Notify>,
 }
@@ -1000,7 +1013,6 @@ impl CodexGateway {
         });
         // 1) The conversation's pinned home, if it is currently usable. 2) Otherwise the least-loaded
         // home that already holds this request's shared cache root. 3) Otherwise the least-loaded home.
-        // Concurrency per home is unbounded, so the chosen home always accepts the turn.
         let mut ordered: Vec<Arc<CodexHome>> = Vec::with_capacity(candidates.len());
         if let Some(id) = preferred {
             if let Some((_, _, home)) = candidates.iter().find(|(_, _, home)| home.id() == id) {
@@ -1019,8 +1031,23 @@ impl CodexGateway {
                 ordered.push(home);
             }
         }
+        // Take any immediately idle subscription first. If the entire pool is sampling, wait for
+        // the first home to become idle instead of rejecting a customer or timing out a second RPC
+        // inside a serial app-server. All waiters are cancellation-safe owned semaphore futures.
+        for home in &ordered {
+            if let Some(slot) = home.try_acquire_turn() {
+                return HomeSelection::Ready(home.clone(), slot);
+            }
+        }
+        let mut waiters = FuturesUnordered::new();
         for home in ordered {
-            if let Some(slot) = home.acquire_turn() {
+            waiters.push(async move {
+                let slot = home.acquire_turn().await;
+                (home, slot)
+            });
+        }
+        while let Some((home, slot)) = waiters.next().await {
+            if let Some(slot) = slot {
                 return HomeSelection::Ready(home, slot);
             }
         }
@@ -1119,6 +1146,11 @@ impl CodexGateway {
             return;
         }
         for home in &self.homes().await {
+            // The pinned app-server is serial while sampling. Probing a busy child cannot answer
+            // before the turn finishes and only manufactures an observational RPC timeout.
+            if home.inflight() > 0 {
+                continue;
+            }
             let process = match home.process().await {
                 Ok(process) => process,
                 Err(error) => {

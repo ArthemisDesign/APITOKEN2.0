@@ -1005,7 +1005,13 @@ while IFS= read -r line; do
         continue
       fi
       printf '{"id":%s,"result":{"turn":{"id":"turn-1"}}}\n' "$id"
-      if [ "$mode" = "text" ] || [ "$mode" = "near_limit" ] || [ "$mode" = "rate_limit_timeout" ] || [ "$mode" = "thread_start_timeout_once" ] || [ "$mode" = "turn_start_timeout_once" ] || [ "$mode" = "thread_start_timeout_then_recover" ] || [ "$mode" = "turn_start_timeout_then_recover" ]; then
+      if [ "$mode" = "serialized" ]; then
+        # A real pinned app-server does not acknowledge another thread/start while its model turn
+        # is sampling. Keep this longer than the fixture RPC deadline: without the per-home queue,
+        # a concurrent request deterministically times out here.
+        sleep 1
+      fi
+      if [ "$mode" = "text" ] || [ "$mode" = "near_limit" ] || [ "$mode" = "rate_limit_timeout" ] || [ "$mode" = "thread_start_timeout_once" ] || [ "$mode" = "turn_start_timeout_once" ] || [ "$mode" = "thread_start_timeout_then_recover" ] || [ "$mode" = "turn_start_timeout_then_recover" ] || [ "$mode" = "serialized" ]; then
         printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg-1","delta":"hello"}}'
         printf '%s\n' '{"method":"rawResponseItem/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"type":"message","id":"msg-1","role":"assistant","content":[{"type":"output_text","text":"hello"}]}}}'
         printf '%s\n' '{"method":"rawResponse/completed","params":{"threadId":"thread-1","turnId":"turn-1","usage":{"inputTokens":101,"cachedInputTokens":41,"cacheWriteInputTokens":7,"outputTokens":23,"reasoningOutputTokens":11,"totalTokens":124}}}'
@@ -1859,7 +1865,7 @@ done
             .into_iter()
             .find(|home| home.path() == bought.to_str().unwrap())
             .unwrap();
-        let slot = old.acquire_turn().unwrap();
+        let slot = old.acquire_turn().await.unwrap();
 
         std::fs::write(&proxy_file, b"http://second.example:8080").unwrap();
         let reconcile_gateway = gateway.clone();
@@ -1964,6 +1970,26 @@ done
             })
             .collect::<Vec<_>>();
         assert_eq!(turn_counts, vec![2, 2]);
+    }
+
+    #[tokio::test]
+    async fn a_serial_home_queues_concurrent_customers_without_rpc_timeouts() {
+        let (gateway, workspace) = fake_gateway_with_request_timeout("serialized", 200);
+
+        let first = gateway.run_turn(turn_request(test_model()), None, None);
+        let second = gateway.run_turn(turn_request(test_model()), None, None);
+        let (first, second) = tokio::join!(first, second);
+
+        assert_eq!(first.unwrap().usage.input_tokens, 101);
+        assert_eq!(second.unwrap().usage.input_tokens, 101);
+        assert_eq!(
+            logged_requests(&workspace.log)
+                .iter()
+                .filter(|request| request["method"] == "thread/start")
+                .count(),
+            2
+        );
+        assert!(gateway.operational_status().await.process_live);
     }
 
     #[tokio::test]

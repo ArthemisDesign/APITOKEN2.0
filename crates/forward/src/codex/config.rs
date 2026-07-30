@@ -75,10 +75,8 @@ pub struct CodexConfig {
     pub startup_timeout_ms: u64,
     pub request_timeout_ms: u64,
     pub turn_timeout_ms: u64,
-    /// Retained for configuration compatibility only. Per-home turn concurrency is intentionally
-    /// unbounded — like the Claude fleet, a home accepts as many simultaneous turns as arrive — so
-    /// this value is no longer enforced as a cap. The provider-wide `AppState::concurrency` guard
-    /// (shared with the Claude path) remains the only global admission ceiling.
+    /// Retained for configuration compatibility only. The pinned app-server is serial, so each home
+    /// queues turns without rejecting them; this legacy value is not an admission ceiling.
     pub max_concurrent_turns: usize,
     /// Stop admitting a home once a reported window reaches this utilisation, keeping headroom so
     /// the wall is met by a clean 429 with a real reset rather than mid-turn.

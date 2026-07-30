@@ -331,13 +331,14 @@ CLAUDE_API_CODEX_MAX_CONCURRENT=4
 `CLAUDE_API_CODEX_HOME` remains the single-home spelling, so an existing environment keeps working
 unchanged. Listing one directory twice is a startup error: two children sharing one auth store would
 corrupt its token refresh and would double-count one subscription's capacity. `MAX_CONCURRENT` is
-retained only for environment compatibility: per-home turn concurrency is intentionally unbounded,
-exactly like the Claude fleet, so a home accepts as many simultaneous turns as arrive. Codex does
-not use the Claude provider's global admission semaphore or the commercial per-key in-flight
-limiter; the per-home in-flight count is only a load signal for selection. Upstream subscription
-exhaustion, authentication, billing authorization and bounded transport deadlines remain real
-provider/safety boundaries. Provision each additional home exactly like the first — `0700`, owned
-by the engine user — and authenticate it separately with the device flow above.
+retained only for environment compatibility. A pinned app-server accepts one model turn at a time;
+when every purchased home is sampling, additional turns wait for the first idle home instead of
+receiving a local concurrency `429` or timing out an incompatible parallel `thread/start`. Codex
+does not use the Claude provider's global admission semaphore or the commercial per-key in-flight
+limiter. Upstream subscription exhaustion, authentication, billing authorization and bounded
+transport deadlines remain real provider/safety boundaries. Provision each additional home exactly
+like the first — `0700`, owned by the engine user — and authenticate it separately with the device
+flow above.
 
 Home selection is cache-first, mirroring the Claude fleet's affinity layer: a conversation is pinned
 to the home that first served it (via the shared `AffinityStore`, keyed by the same tenant scope and
@@ -441,8 +442,9 @@ re-anchors from the first new snapshot, so treat the first hours after a deploy 
 app-server transport indefinitely. Its already-started turn is still drained to authoritative usage
 and settled, matching the existing Claude disconnect invariant. Detached Responses/Chat stream tasks
 hold a gateway shutdown permit through history persistence and settlement; shutdown waits for all of
-them until the server drain deadline. It then cancels any remainder and reaps the whole Codex process
-group before allowing the process-wide home lock to be released. Backpressured detached settlements
+them for at most 30 seconds on an OpenAI-serving process, regardless of a larger generic configured
+drain deadline. It then cancels any remainder and reaps the whole Codex process group before allowing
+the process-wide home lock to be released. Backpressured detached settlements
 are tracked until they enter the billing FIFO, so its final flush cannot overtake them. The normal
 turn-completion timeout remains capped at 600 seconds; the shutdown deadline is the stricter bound
 during a deploy.

@@ -23,7 +23,7 @@ pub struct Settings {
     pub reserve7d: f64,      // запас 7d-окна (доля; деф 0.03)
     pub reserve_jitter: f64, // ± разброс порога между подписками (антифингерпринт; деф 0.02)
     pub readiness_delay_secs: u64, // задержка после снятия readiness перед дренажем (деф 3с)
-    pub drain_deadline_secs: u64, // предел graceful-дренажа до принудительного обрыва (деф 540с)
+    pub drain_deadline_secs: u64, // предел graceful-дренажа до принудительного обрыва
     pub max_inflight: i64, // потолок параллельных запросов на подписку (деф 6; выше = больше параллели, риск бана)
     /// Optional shared L2 for ephemeral cache affinity. PostgreSQL remains authoritative.
     pub redis_url: Option<String>,
@@ -47,6 +47,20 @@ fn ev(k: &str) -> Option<String> {
 }
 fn ev_or(k: &str, d: &str) -> String {
     ev(k).unwrap_or_else(|| d.to_string())
+}
+
+const OPENAI_DRAIN_DEADLINE_SECS: u64 = 30;
+
+/// Codex turns can legally run for ten minutes, so a generic 540-second graceful drain makes a
+/// singleton OpenAI unit look dead for almost its complete systemd stop timeout. Bound only the
+/// OpenAI surface: after this window its gateway cancels residual turns, releases billing holds and
+/// reaps both app-server process groups before the ownership lock changes hands.
+fn provider_drain_deadline(provider: ProviderMode, configured: u64) -> u64 {
+    if provider.serves_openai() {
+        configured.min(OPENAI_DRAIN_DEADLINE_SECS)
+    } else {
+        configured
+    }
 }
 fn ev_bool(k: &str, d: bool) -> bool {
     match ev(k) {
@@ -640,10 +654,14 @@ impl Settings {
             reserve5h: ev_frac("CLAUDE_API_RESERVE_5H", 0.10),
             reserve7d: ev_frac("CLAUDE_API_RESERVE_7D", 0.03),
             reserve_jitter: ev_frac("CLAUDE_API_RESERVE_JITTER", 0.02),
-            // Fail-closed clamps: readiness-delay ≤ 30с; drain-deadline в [5, 595]с. На deadline
-            // Codex отменяет остаток turns; запас до TimeoutStopSec=660 остаётся на reap и billing flush.
+            // Fail-closed clamps: readiness-delay ≤ 30с; общий drain-deadline в [5, 595]с.
+            // Singleton OpenAI дополнительно ограничен 30с: затем Codex отменяет остаток turns;
+            // запас до TimeoutStopSec=660 остаётся на reap и обязательный billing flush.
             readiness_delay_secs: bounded_u64("CLAUDE_API_READINESS_DELAY_SECS", 3, 0, 30),
-            drain_deadline_secs: bounded_u64("CLAUDE_API_DRAIN_DEADLINE_SECS", 540, 5, 595),
+            drain_deadline_secs: provider_drain_deadline(
+                provider,
+                bounded_u64("CLAUDE_API_DRAIN_DEADLINE_SECS", 540, 5, 595),
+            ),
             // Потолок параллельных запросов на подписку. Дефолт 6 (человеческий конверт/анти-бан).
             // Высокое значение снимает потолок concurrency — больше параллели ценой риска бан-сигнала.
             max_inflight: bounded_i64("CLAUDE_API_MAX_INFLIGHT", 6, 1, 1_024),
@@ -781,6 +799,15 @@ mod tests {
         );
         assert!(parse_provider_mode(Some("both")).is_err());
         assert!(parse_provider_mode(Some("codex")).is_err());
+    }
+
+    #[test]
+    fn openai_shutdown_cannot_wait_for_a_ten_minute_turn() {
+        assert_eq!(provider_drain_deadline(ProviderMode::OpenAi, 540), 30);
+        assert_eq!(provider_drain_deadline(ProviderMode::Combined, 595), 30);
+        assert_eq!(provider_drain_deadline(ProviderMode::OpenAi, 12), 12);
+        assert_eq!(provider_drain_deadline(ProviderMode::Anthropic, 540), 540);
+        assert_eq!(provider_drain_deadline(ProviderMode::Gemini, 540), 540);
     }
 
     #[test]
