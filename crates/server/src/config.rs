@@ -583,8 +583,8 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
         ),
         health_probe_interval_secs: bounded_u64(
             "CLAUDE_API_CODEX_HEALTH_INTERVAL_SECS",
-            300,
-            30,
+            10,
+            10,
             3_600,
         ),
         reserve_overhead_tokens: bounded_u64(

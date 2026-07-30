@@ -26,6 +26,11 @@ const LEDGER_PRUNE_INTERVAL: u64 = 60;
 const BILLING_RECOVERY_INTERVAL: u64 = 5;
 const BILLING_RECOVERY_LEADER_TTL: i64 = 15;
 const BILLING_RECOVERY_BATCH: usize = 10_000;
+const CODEX_HEALTH_MIN_INTERVAL_SECS: u64 = 10;
+
+fn codex_health_interval_secs(configured: u64) -> u64 {
+    configured.max(CODEX_HEALTH_MIN_INTERVAL_SECS)
+}
 
 pub async fn billing_recovery_loop(
     authority: registry::authority::AuthorityConfig,
@@ -174,7 +179,9 @@ pub async fn ledger_prune_loop(
 /// the rate-limit snapshot that the admission gate and the `/metrics` gauges read, and it lets a
 /// re-authenticated home rejoin the rotation without an engine restart.
 pub async fn codex_health_loop(gateway: Arc<forward::CodexGateway>) {
-    let interval = Duration::from_secs(gateway.config().health_probe_interval_secs.max(30));
+    let interval = Duration::from_secs(codex_health_interval_secs(
+        gateway.config().health_probe_interval_secs,
+    ));
     // Seed the last-good model snapshot without making startup or customer discovery wait on it.
     gateway.refresh_model_catalog().await;
     loop {
@@ -680,6 +687,13 @@ pub async fn owner_heartbeat_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_health_interval_has_a_ten_second_floor() {
+        assert_eq!(codex_health_interval_secs(0), 10);
+        assert_eq!(codex_health_interval_secs(10), 10);
+        assert_eq!(codex_health_interval_secs(30), 30);
+    }
 
     #[test]
     fn cooling_sub_is_not_due_for_probe() {

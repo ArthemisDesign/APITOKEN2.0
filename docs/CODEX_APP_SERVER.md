@@ -233,9 +233,12 @@ the authenticated proxy children. Individual daemon rolls remain sequential and 
 running turns, while their total duration cannot fail or roll back an otherwise healthy deployment.
 
 A background health loop re-reads `account/read` and the rate-limit snapshot for every home on
-`CLAUDE_API_CODEX_HEALTH_INTERVAL_SECS`. A device login expires with no traffic on it, so without
-that sweep a dead home would stay silently unusable until a customer request selected it. The same
-loop lets a re-authenticated home rejoin the rotation without an engine restart.
+`CLAUDE_API_CODEX_HEALTH_INTERVAL_SECS`. It also rescans `CLAUDE_API_CODEX_HOMES_DIR`, so a newly
+completed auth store joins the operational pool without an engine restart. A device login expires
+with no traffic on it, so without that sweep a dead home would stay silently unusable until a
+customer request selected it. The same loop lets a re-authenticated home rejoin the rotation
+without an engine restart. The admin subscriptions page refreshes `/codex-subs` every 10 seconds
+while visible; the default backend interval is aligned to that cadence.
 
 Each API request uses an ephemeral app-server thread. Public continuity is reconstructed from the
 client's exact input or a tenant-bound encrypted `previous_response_id` history record. A response
@@ -384,7 +387,7 @@ Optional controls:
 ```dotenv
 CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT=100
 CLAUDE_API_CODEX_WINDOW_CAP_USD=1500
-CLAUDE_API_CODEX_HEALTH_INTERVAL_SECS=300
+CLAUDE_API_CODEX_HEALTH_INTERVAL_SECS=10
 CLAUDE_API_CODEX_STARTUP_TIMEOUT_MS=20000
 CLAUDE_API_CODEX_RPC_TIMEOUT_MS=15000
 CLAUDE_API_CODEX_TURN_TIMEOUT_MS=600000
