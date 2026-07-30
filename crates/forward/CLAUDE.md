@@ -23,7 +23,8 @@ Credential в `x-api-key`, `x-goog-api-key` и `Authorization: Bearer` имею�
 приоритета заголовка: достаточно любого валидного. Это критично для Claude Code,
 который может одновременно прислать stale `ANTHROPIC_API_KEY` и актуальный `ANTHROPIC_AUTH_TOKEN`.
 
-**Multi-provider pricing Stage 3B1b (`pricing.rs`) — dormant:** pure fail-closed resolver consumes
+**Multi-provider pricing Stage 3B1b/3B1c.1 (`pricing.rs`, `pricing/shadow.rs`) — dormant:** pure
+fail-closed resolver consumes
 one transactionally materialized `registry::pricing::PricingReadBundle` (including the live legacy
 scalar, exact policy dependencies and current admission heads), provider-fixed identities and a
 runtime-owned manifest of exact `(schema, capability generation, digest)` tuples. Policy and
@@ -32,8 +33,14 @@ mixed `C2/S1/P1` rollout must keep the old common model available while the poli
 blocks a new C2-only model. The S1 catalog pin is accepted beside C2 only while it matches the
 policy's C1 catalog; malformed `C2/S1/P2` fails closed. Exact model rule replaces provider rule.
 Resolved output preserves both lineage pairs plus manifest identity;
-malformed/missing/schema/capability/model/switch failures use stable typed reasons. The module has
-no DB, HTTP, env, time, metrics, manifest instance or runtime caller. Do not wire it into
+malformed/missing/schema/capability/model/switch failures use stable typed reasons. A separate pure
+work-item pins only the validated actual snapshot reference, full registry-canonical manifest
+evidence and explicit enqueue timestamp. Its builder derives request/manifest identity internally,
+resolves exactly one coherent bundle, verifies manifest/provider/model identity and converts all
+resolved/rejected/read-error variants into a validated immutable registry input. It rejects early
+timestamps and balance-capped actuals before any future enqueue; a bundle for another outer account
+is an integrity error, not a durable rejection carrying that account's scalar. The modules have no
+DB, HTTP, env, clock, metrics, queue, manifest singleton or runtime caller. Do not wire them into
 `authorize`, provider admission, reserve/settle, `/ready` or snapshots without a separate
 production-shadow rollout: even a read-only call adds per-request DB/queue/latency risk, and the
 actual charge remains legacy scalar.

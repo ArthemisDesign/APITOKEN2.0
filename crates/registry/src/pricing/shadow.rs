@@ -104,7 +104,11 @@ impl ShadowActualSnapshotRef {
         &self.actual_snapshot_digest
     }
 
-    fn validate_shadow_eligibility(&self, enqueued_ts: i64) -> Result<()> {
+    /// Validate the immutable actual reference before a future producer may enqueue shadow work.
+    ///
+    /// This is the single registry-owned gate for timestamp ordering and the first-rollout rule
+    /// that excludes balance-capped legacy holds. It performs no reads or writes.
+    pub fn validate_shadow_eligibility(&self, enqueued_ts: i64) -> Result<()> {
         if enqueued_ts < self.admission_ts {
             bail!("shadow work cannot be enqueued before actual admission");
         }
@@ -666,6 +670,10 @@ impl PricingShadowAdmissionEvaluationInput {
 
     pub fn runtime_manifest(&self) -> &PricingRuntimeManifestEvidence {
         &self.runtime_manifest
+    }
+
+    pub fn outcome(&self) -> &PricingShadowEvaluationOutcome {
+        &self.outcome
     }
 
     fn validate(&self) -> Result<()> {

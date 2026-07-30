@@ -9,10 +9,17 @@ use registry::pricing::{
     validate_account_policy, validate_account_policy_binding, validate_account_policy_shape,
     validate_pricing_catalog, validate_provider_switches, AccountClass, AccountPolicyBindingSpec,
     AccountPolicyRuleSpec, PolicyRuleScope, PricingCatalogSpec, PricingPolicySnapshot,
-    PricingReadBundle, ProviderSwitchScope, ProviderSwitchSpec, VersionTarget,
-    PRICING_SCHEMA_VERSION,
+    PricingReadBundle, PricingRuntimeManifestEvidence, ProviderSwitchScope, ProviderSwitchSpec,
+    VersionTarget, PRICING_SCHEMA_VERSION,
 };
 use std::collections::BTreeMap;
+
+mod shadow;
+
+pub use shadow::{
+    build_pricing_shadow_evaluation, PricingShadowEvaluationSource, PricingShadowReadFailure,
+    PricingShadowWorkItem,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RuntimePricingCapability {
@@ -30,6 +37,28 @@ pub struct RuntimePricingManifest {
     pub manifest_generation: i64,
     pub manifest_digest: String,
     pub capabilities: Vec<RuntimePricingCapability>,
+}
+
+impl RuntimePricingManifest {
+    /// Derive the resolver view from registry-owned canonical manifest evidence.
+    ///
+    /// A production-facing builder must use this path instead of accepting a second caller-owned
+    /// manifest identity. The evidence has already canonicalized, sorted and bounded its members.
+    pub fn from_evidence(evidence: &PricingRuntimeManifestEvidence) -> Self {
+        Self {
+            manifest_generation: evidence.manifest_generation(),
+            manifest_digest: evidence.manifest_digest().to_owned(),
+            capabilities: evidence
+                .capabilities()
+                .iter()
+                .map(|capability| RuntimePricingCapability {
+                    pricing_schema_version: capability.pricing_schema_version(),
+                    capability_generation: capability.capability_generation(),
+                    capability_digest: capability.capability_digest().to_owned(),
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

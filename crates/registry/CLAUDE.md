@@ -115,8 +115,10 @@
   bytes, NUL, depth и items. PostgreSQL сериализует request через отдельный advisory namespace и
   держит parent actual `FOR KEY SHARE` до immutable insert; SQLite использует `BEGIN IMMEDIATE`.
   API не читает current heads и не re-resolve-ит historical evidence. Pure forward work-item/builder
-  и сверка resolver manifest identity с canonical evidence остаются следующим отдельным dormant
-  checkpoint; runtime caller по-прежнему отсутствует.
+  теперь использует registry-owned eligibility gate до будущего enqueue, выводит resolver manifest
+  только из canonical evidence и сверяет identity до формирования input. Read-only outcome getter
+  не выполняет persistence и нужен только pure builder/tests. Runtime caller, DB reader, queue,
+  worker и config по-прежнему отсутствуют.
 
 **Инварианты:**
 - Токен разрешается из колонки `token` (inline) ИЛИ файла `token_file`. `import_sqlite` refuses a

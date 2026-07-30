@@ -6,8 +6,9 @@ registry-only persistence/CAS, Stage 3B0 dormant resolver/read bundle и Stage 3
 schema уже доставлены. Stage 3B1b — пассивный dual-lineage read/resolver и runtime capability
 manifest без runtime caller — также доставлен. Stage 3B1c разложен на безопасные application-
 checkpoint: pure tariff/model identities и dormant actual snapshot/reserve уже доставлены, а
-текущий registry-checkpoint добавляет только typed shadow evaluation persistence и полное runtime
-manifest evidence без caller/config/traffic. 2026-07-30
+typed shadow evaluation persistence и полное runtime manifest evidence также доставлены. Текущий
+checkpoint добавляет только pure typed work-item/builder в `forward`, без caller/config/traffic.
+2026-07-30
 владелец продукта явно снял прежнюю остановку после 3B1b и полностью авторизовал дальнейшую
 реализацию этого документа до завершения этапов 3B1c–11. Авторизация не отменяет поэтапную доставку,
 migration-first, maintenance windows, наблюдение, rollback gates и отдельное подтверждение
@@ -30,8 +31,9 @@ Stage 3B1b реализован commit `8b2c4c89b461f01239bc6767fe5fd3534103865b
 Pure tariff/model identity Stage 3B1c.1 доставлен commit
 `69749e22010be07c1fee5b298d53bf58c8fbbe65`; live callers он не добавляет. Dormant actual
 snapshot/reserve доставлен commit `3cb325574db2e3a4c83339f7c30e3d117e8d2a2a`. Текущий
-shadow-persistence checkpoint сохраняет ту же границу: оба registry API существуют только как
-неподключённые библиотечные возможности.
+shadow-persistence checkpoint доставлен commit
+`ab364cece50d2beb7c3824ed5613ae1137aa74a0`. Текущий pure-builder checkpoint сохраняет ту же
+границу: registry API и builder существуют только как неподключённые библиотечные возможности.
 
 Этот документ описывает целевое поведение, которое заменит текущий единый множитель цены на аккаунт.
 Он не утверждает, что описанное поведение уже работает в production. До завершения перехода
@@ -1543,19 +1545,34 @@ evidence; pure shadow evaluation builder в `forward` без DB/config/AppState/
 владеет versioned SHA-256 digest, строит его из
 authoritative typed полей и перепроверяет при чтении; provider modifiers типизированы, а JSON
 является только storage-проекцией. SQLite и PostgreSQL имеют отдельные atomic
-`reserve + actual snapshot` API с exact replay/conflict, rollback и parity tests. Текущий отдельный
-checkpoint добавляет registry-owned canonical manifest digest из полного отсортированного набора
-capabilities, insert-time membership всех четырёх dependency pins, typed resolved/rejected/read-
-error outcomes, checked integer policy hold и immutable SQLite/PostgreSQL shadow insert/read с
-lost-ACK replay/conflict и digest verification. Work item и pure forward builder остаются следующим
-отдельным checkpoint. Ни один из этих API пока не вызывается runtime-кодом.
+`reserve + actual snapshot` API с exact replay/conflict, rollback и parity tests. Доставленный
+shadow-persistence checkpoint добавил registry-owned canonical manifest digest из полного
+отсортированного набора capabilities, insert-time membership всех четырёх dependency pins, typed
+resolved/rejected/read-error outcomes, checked integer policy hold и immutable SQLite/PostgreSQL
+shadow insert/read с lost-ACK replay/conflict и digest verification.
+
+Текущий pure `forward` checkpoint добавляет `PricingShadowWorkItem`, который строится только из
+validated actual snapshot, полного canonical manifest evidence и явного `enqueued_ts`. Он до
+будущего enqueue отклоняет timestamp-before-admission и balance-capped actual, сам выводит resolver
+request из exact actual reference и resolver manifest из registry-owned canonical evidence. Builder
+вызывает resolver ровно один раз на одном переданном coherent `PricingReadBundle`, явно сверяет
+manifest/provider/requested/canonical identities, переносит обе lineage-пары и исчерпывающе
+маппит все 41 typed rejection. Read failure/timeout/cancel остаются отдельными typed read-error;
+outer bundle другого аккаунта отклоняется без durable outcome, потому что его scalar нельзя честно
+приписать actual account. При совпадающем outer account policy-account mismatch остаётся typed
+`AccountMismatch`. Invalid actual и неразличимый внутренний conversion error нельзя замаскировать
+под policy reject.
+Результат — только validated `PricingShadowAdmissionEvaluationInput`; DB read/write, clock, queue,
+actor, config, AppState, metrics и runtime caller отсутствуют. Ни один из этих API пока не вызывается
+runtime-кодом.
 
 Текущая shadow projection намеренно сохраняет только canonical manifest generation/digest, а не
 весь список members: digest криптографически связывает точный список, membership проверяется до
 insert, но standalone read без исходного trusted manifest не может повторно перечислить members.
-Schema `0009` также не хранит mutable binding и enabled switch/catalog entries. Поэтому будущий
-pure builder обязан получить resolved evidence из одного coherent `PricingReadBundle`, проверить
-binding/gates до записи и не пытаться заново разрешать historical row по более новым heads.
+Schema `0009` также не хранит mutable binding и enabled switch/catalog entries. Доставленный pure
+builder получает resolved evidence только из одного coherent `PricingReadBundle`, поэтому resolver
+проверяет binding/gates до формирования write input и historical row не re-resolve-ится по более
+новым heads.
 
 Первый shadow rollout не принимает balance-capped actual hold: если `charged_hold_nano` не равен
 checked half-up применению legacy multiplier к `official_hold_nano`, typed input отклоняется до
