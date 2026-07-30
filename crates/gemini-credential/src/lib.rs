@@ -110,7 +110,7 @@ impl GeminiCredential {
         if !is_supported_paid_plan(&self.plan) {
             bail!("Gemini credential plan is not an approved paid Code Assist tier");
         }
-        if !plan_matches_tier(&self.plan, &self.tier_name) {
+        if !plan_matches_tier(&self.plan, &self.tier_id, &self.tier_name) {
             bail!("Gemini credential plan does not match its attested Code Assist tier");
         }
         if !self.proxy.is_empty() {
@@ -197,23 +197,34 @@ pub fn is_supported_paid_plan(plan: &str) -> bool {
     )
 }
 
-pub fn plan_matches_tier(plan: &str, tier_name: &str) -> bool {
+/// Map only reviewed Code Assist tier identities to the internal billing plan. Google One tiers
+/// use the longer names returned by `paidTier`; the short labels are retained for credentials
+/// issued by older compatible API responses. Exact comparisons keep future "Pro"-like trials from
+/// being promoted merely because their display name contains a familiar word.
+pub fn supported_plan_for_tier(tier_id: &str, tier_name: &str) -> Option<&'static str> {
     let tier_name = tier_name
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .to_ascii_lowercase();
-    match plan {
-        "google_ai_pro" => tier_name == "google ai pro",
-        "google_ai_ultra" => tier_name == "google ai ultra",
-        "code_assist_standard" => tier_name == "code assist standard",
-        "code_assist_enterprise" => tier_name == "code assist enterprise",
-        "workspace_ai_ultra" => matches!(
-            tier_name.as_str(),
-            "workspace ai ultra" | "google workspace ai ultra"
-        ),
-        _ => false,
+    match (tier_id, tier_name.as_str()) {
+        ("g1-pro-tier", "gemini code assist in google one ai pro") | (_, "google ai pro") => {
+            Some("google_ai_pro")
+        }
+        ("g1-ultra-tier", "gemini code assist in google one ai ultra") | (_, "google ai ultra") => {
+            Some("google_ai_ultra")
+        }
+        ("standard-tier", "standard") | (_, "code assist standard") => Some("code_assist_standard"),
+        ("enterprise-tier", "enterprise") | (_, "code assist enterprise") => {
+            Some("code_assist_enterprise")
+        }
+        (_, "workspace ai ultra" | "google workspace ai ultra") => Some("workspace_ai_ultra"),
+        _ => None,
     }
+}
+
+pub fn plan_matches_tier(plan: &str, tier_id: &str, tier_name: &str) -> bool {
+    supported_plan_for_tier(tier_id, tier_name) == Some(plan)
 }
 
 fn bounded_text(value: &str, min: usize, max: usize, description: &str) -> anyhow::Result<()> {
@@ -524,8 +535,8 @@ mod tests {
             subject: "google-subject".into(),
             email: "owner@example.com".into(),
             project_id: "managed-project".into(),
-            tier_id: "paid-tier".into(),
-            tier_name: "Google AI Pro".into(),
+            tier_id: "g1-pro-tier".into(),
+            tier_name: "Gemini Code Assist in Google One AI Pro".into(),
             plan: "google_ai_pro".into(),
             proxy: "http://user:pass@127.0.0.1:8080".into(),
             proxy_order_id: 42,
@@ -548,6 +559,15 @@ mod tests {
 
     #[test]
     fn credential_validation_rejects_unreviewed_plan_and_oauth_identity() {
+        assert_eq!(
+            supported_plan_for_tier("g1-pro-tier", "Gemini Code Assist in Google One AI Pro"),
+            Some("google_ai_pro")
+        );
+        assert_eq!(
+            supported_plan_for_tier("future-pro-tier", "Gemini Code Assist in Google One AI Pro"),
+            None
+        );
+
         let mut candidate = credential();
         candidate.plan = "future_paid_tier".into();
         assert!(candidate.validate().is_err());
@@ -558,6 +578,10 @@ mod tests {
 
         let mut candidate = credential();
         candidate.tier_name = "Future Pro Trial".into();
+        assert!(candidate.validate().is_err());
+
+        let mut candidate = credential();
+        candidate.tier_id = "future-pro-tier".into();
         assert!(candidate.validate().is_err());
     }
 

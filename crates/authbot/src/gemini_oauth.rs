@@ -1154,26 +1154,15 @@ fn project_from_value(value: Option<&Value>) -> Option<String> {
 }
 
 fn classify_plan(tier_id: &str, tier_name: &str, explicitly_paid: bool) -> String {
-    let _ = tier_id;
+    if let Some(plan) = gemini_credential::supported_plan_for_tier(tier_id, tier_name) {
+        return plan.into();
+    }
     let name = tier_name
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .to_ascii_lowercase();
-    if matches!(
-        name.as_str(),
-        "workspace ai ultra" | "google workspace ai ultra"
-    ) {
-        "workspace_ai_ultra".into()
-    } else if name == "code assist enterprise" {
-        "code_assist_enterprise".into()
-    } else if name == "code assist standard" {
-        "code_assist_standard".into()
-    } else if name == "google ai ultra" {
-        "google_ai_ultra".into()
-    } else if name == "google ai pro" {
-        "google_ai_pro".into()
-    } else if name.contains("workspace") && (name.contains("standard") || name.contains("plus")) {
+    if name.contains("workspace") && (name.contains("standard") || name.contains("plus")) {
         "workspace_ai_unsupported".into()
     } else if name.contains("expanded") {
         "ai_expanded_unsupported".into()
@@ -1620,6 +1609,14 @@ mod tests {
 
     #[test]
     fn plan_detection_distinguishes_supported_subscriptions() {
+        assert_eq!(
+            classify_plan(
+                "g1-pro-tier",
+                "Gemini Code Assist in Google One AI Pro",
+                true
+            ),
+            "google_ai_pro"
+        );
         assert_eq!(classify_plan("", "Google AI Pro", true), "google_ai_pro");
         assert_eq!(
             classify_plan("", "Google AI Ultra", true),
@@ -1643,6 +1640,14 @@ mod tests {
         );
         assert_eq!(
             classify_plan("future-pro", "Future Pro Trial", true),
+            "unknown_paid_unsupported"
+        );
+        assert_eq!(
+            classify_plan(
+                "future-pro-tier",
+                "Gemini Code Assist in Google One AI Pro",
+                true
+            ),
             "unknown_paid_unsupported"
         );
         assert!(!supported_paid_plan("google_ai_plus_unsupported"));

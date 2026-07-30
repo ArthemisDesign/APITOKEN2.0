@@ -96,7 +96,7 @@ fn gemini_oauth_config(gemini_dir: &str) -> Result<Option<gemini_oauth::Config>>
         gemini_oauth::Config::new(redirect, bind, gemini_dir.to_string(), keyring, active)?;
     config
         .rewrap_existing()
-        .map_err(|_| anyhow!("Gemini credential key rotation failed closed"))?;
+        .context("Gemini credential key rotation failed closed")?;
     Ok(Some(config))
 }
 
