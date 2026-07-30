@@ -1121,7 +1121,10 @@ done
         let binary = root.join("fake-codex");
         let script = std::fs::read_to_string(&binary).unwrap();
         let digest = format!("{:x}", Sha256::digest(script.as_bytes()));
-        let ownership_lock = root.join("ownership.lock");
+        // `fake_gateway` can still have detached cleanup holding its fence after the last Arc is
+        // dropped. The pool fixture is a distinct provider instance, so do not race that cleanup.
+        let ownership_lock = root.join("pool-ownership.lock");
+        std::fs::write(&ownership_lock, []).unwrap();
         let mut homes = Vec::with_capacity(modes.len());
         let mut logs = Vec::with_capacity(modes.len());
         for (index, mode) in modes.iter().enumerate() {
