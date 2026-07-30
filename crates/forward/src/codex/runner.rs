@@ -55,6 +55,9 @@ impl CodexUsage {
 #[derive(Clone, Debug)]
 pub(crate) struct CodexTurnRequest {
     pub model: CodexModel,
+    /// Opaque tenant-scoped key forwarded to the patched app-server. This replaces the random
+    /// ephemeral thread id that stock Codex otherwise uses for every upstream Responses request.
+    pub prompt_cache_key: Option<String>,
     /// Replaces Codex's built-in base prompt. `None` means an intentionally empty base.
     pub base_instructions: Option<String>,
     /// Request-owned developer instructions. No Codex CLI instructions are inherited.
@@ -122,10 +125,13 @@ impl CodexGateway {
 
     async fn run_active_turn(
         &self,
-        request: CodexTurnRequest,
+        mut request: CodexTurnRequest,
         updates: Option<mpsc::Sender<TurnUpdate>>,
         mut routing: Option<TurnRouting>,
     ) -> Result<CodexTurnResult, ProcessError> {
+        if request.prompt_cache_key.is_none() {
+            request.prompt_cache_key = routing.as_ref().map(TurnRouting::prompt_cache_key);
+        }
         let emitted = Arc::new(AtomicBool::new(false));
         let mut tried: Vec<String> = Vec::new();
         let mut transport_retries_left = 1usize;
@@ -138,7 +144,7 @@ impl CodexGateway {
                 .as_ref()
                 .map(|routing| routing.warm.as_slice())
                 .unwrap_or(&[]);
-            let (home, slot) = match self.select_home(&tried, preferred, warm).await {
+            let (home, slot) = match self.select_home(&tried, preferred, warm, true).await {
                 HomeSelection::Ready(home, slot) => (home, slot),
                 HomeSelection::Unavailable { ready_at } => {
                     return Err(
@@ -302,6 +308,9 @@ impl CodexHome {
         });
         if let Some(verbosity) = &request.verbosity {
             params["config"] = json!({"model_verbosity": verbosity});
+        }
+        if let Some(prompt_cache_key) = &request.prompt_cache_key {
+            params["promptCacheKey"] = Value::String(prompt_cache_key.clone());
         }
         let mut last_error = ProcessError::Closed;
         for attempt in 0..2 {
@@ -640,7 +649,7 @@ impl CodexHome {
                 let interrupted = process
                     .request(
                         "turn/interrupt",
-                        json!({"threadId": thread_id.clone(), "turnId": turn_id.clone()}),
+                        json!({"threadId": thread_id, "turnId": turn_id.clone()}),
                     )
                     .await;
                 if interrupted.is_err() {
@@ -883,6 +892,7 @@ mod tests {
     fn turn_request(model: CodexModel) -> CodexTurnRequest {
         CodexTurnRequest {
             model,
+            prompt_cache_key: None,
             base_instructions: None,
             developer_instructions: Some("Only the caller's developer instruction.".to_string()),
             injected_items: Vec::new(),
@@ -1320,9 +1330,8 @@ done
 
         let status = gateway.operational_status().await;
         let home = status.homes.first().expect("one fake home");
-        // 53*5000 + 41*500 + 7*5000 + 23*30000 = 1_010_500 nanoUSD at the pinned catalog rates
-        // (cache-write priced at the input rate, no OpenAI-absent surcharge).
-        let expected_usd = 1_010_500.0 / 1e9;
+        // 53*5000 + 41*500 + 7*6250 + 23*30000 = 1_019_250 nanoUSD at the pinned catalog rates.
+        let expected_usd = 1_019_250.0 / 1e9;
         assert!(
             (home.spend_usd_total - expected_usd).abs() < 1e-9,
             "spend {} != {expected_usd}",
@@ -1937,6 +1946,53 @@ done
     }
 
     #[tokio::test]
+    async fn equal_load_independent_turns_fan_out_across_homes() {
+        let (gateway, _workspace, logs) = fake_pool_gateway(&["text", "text"]);
+
+        for _ in 0..4 {
+            gateway
+                .run_turn(turn_request(test_model()), None, None)
+                .await
+                .unwrap();
+        }
+
+        let turn_counts = logs
+            .iter()
+            .map(|log| {
+                logged_requests(log)
+                    .iter()
+                    .filter(|request| request["method"] == "turn/start")
+                    .count()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(turn_counts, vec![2, 2]);
+    }
+
+    #[tokio::test]
+    async fn streaming_preflight_does_not_consume_the_rotation_slot() {
+        let (gateway, _workspace, logs) = fake_pool_gateway(&["text", "text"]);
+
+        for _ in 0..4 {
+            gateway.preflight_capacity().await.unwrap();
+            gateway
+                .run_turn(turn_request(test_model()), None, None)
+                .await
+                .unwrap();
+        }
+
+        let turn_counts = logs
+            .iter()
+            .map(|log| {
+                logged_requests(log)
+                    .iter()
+                    .filter(|request| request["method"] == "turn/start")
+                    .count()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(turn_counts, vec![2, 2]);
+    }
+
+    #[tokio::test]
     async fn a_dead_child_is_retried_once_on_another_home() {
         let (gateway, _workspace, logs) = fake_pool_gateway(&["die", "text"]);
         let result = gateway
@@ -2109,6 +2165,7 @@ done
                 Some("sys"),
                 &[],
                 &items,
+                None,
             )
             .unwrap();
         assert!(store.resolve(&input).await.is_none());
@@ -2124,6 +2181,7 @@ done
                 Some("sys"),
                 &[],
                 &items,
+                None,
             )
             .unwrap();
         assert!(
@@ -2151,10 +2209,19 @@ done
             "content": [{"type": "input_text", "text": "hello"}]
         })];
         let input = store
-            .infer_codex("tenant", &HeaderMap::new(), "gpt-5.6", None, &[], &items)
+            .infer_codex(
+                "tenant",
+                &HeaderMap::new(),
+                "gpt-5.6",
+                None,
+                &[],
+                &items,
+                None,
+            )
             .unwrap();
         let resolution = store.claim(&input, &home1_id).await;
         let routing = TurnRouting::new(store.clone(), input.clone(), Some(resolution), Vec::new());
+        let expected_prompt_cache_key = routing.prompt_cache_key();
 
         gateway
             .run_turn(turn_request(test_model()), None, Some(routing))
@@ -2166,5 +2233,16 @@ done
             !served_turn(&logs[0]),
             "the least-loaded home was correctly overridden by the conversation pin"
         );
+        let requests = logged_requests(&logs[1]);
+        let thread_start = requests
+            .iter()
+            .find(|request| request["method"] == "thread/start")
+            .unwrap();
+        assert_eq!(
+            thread_start["params"]["promptCacheKey"],
+            expected_prompt_cache_key
+        );
+        assert_eq!(expected_prompt_cache_key.len(), 129);
+        assert!(!expected_prompt_cache_key.contains("tenant"));
     }
 }

@@ -145,7 +145,9 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    совместимости env); единственный глобальный потолок — общий с Claude `AppState::concurrency`.
    **Выбор — cache-first (как `affinity.rs`):** сначала home, к которому закреплён этот разговор
    (`AffinityStore::resolve` через `infer_codex` → тот же стор/Redis-namespace, что у Claude), затем
-   warm-home общего cache-root, затем наименее загруженный по (usedPercent, inflight). После успеха
+   warm-home общего cache-root, затем наименее загруженный по (usedPercent, inflight). Равные по
+   обоим сигналам кандидаты обязаны чередоваться через атомарный cursor: discovery order нельзя
+   превращать в постоянный приоритет или burst-herd на первый home. После успеха
    `run_turn` пишет обслуживший home обратно (`claim`/`remember`/`rebind`/`mark_cache_warm`), чтобы
    продолжение разговора попало на тот же тёплый кеш. Affinity — fail-open оптимизация (с пулом из 1
    home — no-op). Классификация вины как в `proxy.rs`: usage-limit/auth → вина АККАУНТА (cooling до
@@ -195,8 +197,12 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    `store=false` не персистится и не читается. `POST /v1/responses/input_tokens` отдаёт оценку
    (estimate/4) без turn и reserve. Ограниченные диагностические
    compatibility-поля текущего Codex (`client_metadata`, `safety_identifier`) разрешено валидировать
-   и отбрасывать без логирования/форвардинга; `prompt_cache_key` валидируется и только отражается в
-   публичном ответе. `service_tier=fast|priority` для Fast-capable модели нормализуется в
+   и отбрасывать без логирования/форвардинга; `prompt_cache_key` валидируется, отражается в публичном
+   ответе и входит как strong alias в affinity. В pooled app-server передавать только стабильный
+   tenant-scoped keyed digest (или такой же digest автоматически выведенной cache-lineage), никогда
+   raw customer key и никогда эфемерный thread UUID. Responses `input_tokens_details` и Chat
+   `prompt_tokens_details` обязаны отражать authoritative `cache_write_tokens` вместе с
+   `cached_tokens`. `service_tier=fast|priority` для Fast-capable модели нормализуется в
    app-server `priority`; `thread/start` обязан подтвердить тот же tier, иначе запрос fail closed,
    потому что молчаливый downgrade нарушит биллинг. Для standard/default всегда передавать явный
    app-server sentinel `"default"` (не JSON null), чтобы локальный config home не апгрейдил трафик;

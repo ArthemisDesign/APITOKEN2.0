@@ -86,21 +86,21 @@ const fn prices(
     }
 }
 
-// OpenAI's standard pricing has no cache-*write* surcharge: cached reads are discounted, but
-// writing the cache is free. So `cache_write_input` is pinned equal to the fresh `input` rate for
-// every model — a client is never charged more than the real API for the same traffic. (The prior
-// 5.6-family premium diverged from OpenAI; 5.5/5.4 already priced writes at the input rate.)
+// GPT-5.6 explicit/implicit cache writes are billed at 1.25x fresh input. Older advertised
+// GPT-5.5/5.4 models retain their published input-rate write price. Keep this as a separate bucket:
+// a write is neither a normal input token nor a discounted cache read.
+// Source: https://developers.openai.com/api/docs/guides/latest-model#using-gpt-56
 const GPT_56_SOL_SCHEDULE: &[CodexPriceEpoch] = &[CodexPriceEpoch {
     effective_from: 0,
-    prices: prices(5_000, 500, 5_000, 30_000),
+    prices: prices(5_000, 500, 6_250, 30_000),
 }];
 const GPT_56_TERRA_SCHEDULE: &[CodexPriceEpoch] = &[CodexPriceEpoch {
     effective_from: 0,
-    prices: prices(2_500, 250, 2_500, 15_000),
+    prices: prices(2_500, 250, 3_125, 15_000),
 }];
 const GPT_56_LUNA_SCHEDULE: &[CodexPriceEpoch] = &[CodexPriceEpoch {
     effective_from: 0,
-    prices: prices(1_000, 100, 1_000, 6_000),
+    prices: prices(1_000, 100, 1_250, 6_000),
 }];
 const GPT_55_SCHEDULE: &[CodexPriceEpoch] = &[CodexPriceEpoch {
     effective_from: 0,
@@ -220,7 +220,7 @@ fn prices_at(schedule: &[CodexPriceEpoch], now_unix: i64) -> CodexPrices {
 mod tests {
     use super::*;
 
-    const LAUNCH: CodexPrices = prices(5_000, 500, 5_000, 30_000);
+    const LAUNCH: CodexPrices = prices(5_000, 500, 6_250, 30_000);
     const LATER: CodexPrices = prices(9_000, 900, 11_250, 54_000);
 
     #[test]
@@ -326,15 +326,22 @@ mod tests {
     }
 
     #[test]
-    fn cache_write_is_never_charged_above_fresh_input() {
-        // OpenAI applies no cache-write surcharge; every advertised model must price a write at
-        // (or below) the fresh input rate so a customer never pays more than the real API.
+    fn cache_write_rates_match_the_model_family_contract() {
         for model in codex_catalog_at(0) {
-            assert!(
-                model.prices.cache_write_input <= model.prices.input,
-                "{} charges a cache-write premium",
-                model.id
-            );
+            if model.id.starts_with("gpt-5.6") {
+                assert_eq!(
+                    model.prices.cache_write_input,
+                    model.prices.input * 5 / 4,
+                    "{} must charge the published 1.25x GPT-5.6 cache-write rate",
+                    model.id
+                );
+            } else {
+                assert_eq!(
+                    model.prices.cache_write_input, model.prices.input,
+                    "{} must retain its input-rate cache-write price",
+                    model.id
+                );
+            }
         }
     }
 }

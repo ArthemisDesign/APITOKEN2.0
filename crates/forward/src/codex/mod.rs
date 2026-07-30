@@ -29,7 +29,7 @@ pub(crate) use runner::{CodexTurnRequest, CodexTurnResult, CodexUsage, TurnUpdat
 use crate::affinity::{AffinityInput, AffinityResolution, AffinityStore};
 use history::HistoryStore;
 use std::fs::{File, OpenOptions, TryLockError};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore};
 
@@ -68,6 +68,14 @@ impl TurnRouting {
         self.resolution
             .as_ref()
             .map(|resolution| resolution.home.as_str())
+    }
+
+    fn prompt_cache_key(&self) -> String {
+        self.input.prompt_cache_key(
+            self.resolution
+                .as_ref()
+                .map(|resolution| resolution.session_id.as_str()),
+        )
     }
 
     /// Persist the affinity binding to the home that actually served the turn. Called only on
@@ -686,6 +694,9 @@ pub struct CodexGateway {
     cfg: Arc<CodexConfig>,
     shutting_down: AtomicBool,
     abort_turns: AtomicBool,
+    /// Rotates equal-load cold/warm candidates. Without an atomic cursor, sequential requests and
+    /// concurrent bursts with identical snapshots all collapse onto the lowest discovery order.
+    selection_cursor: AtomicU64,
     abort_notify: Notify,
     background_tasks: Arc<Semaphore>,
     rediscover_lock: Mutex<()>,
@@ -728,6 +739,7 @@ impl CodexGateway {
             cfg,
             shutting_down: AtomicBool::new(false),
             abort_turns: AtomicBool::new(false),
+            selection_cursor: AtomicU64::new(0),
             abort_notify: Notify::new(),
             background_tasks: Arc::new(Semaphore::new(MAX_BACKGROUND_TASKS as usize)),
             rediscover_lock: Mutex::new(()),
@@ -924,6 +936,7 @@ impl CodexGateway {
         exclude: &[String],
         preferred: Option<&str>,
         warm: &[String],
+        advance_cursor: bool,
     ) -> HomeSelection {
         if self.shutting_down.load(Ordering::Acquire) {
             return HomeSelection::Unavailable { ready_at: None };
@@ -960,7 +973,20 @@ impl CodexGateway {
         if candidates.is_empty() {
             return HomeSelection::Unavailable { ready_at: soonest };
         }
-        candidates.sort_by_key(|(used, inflight, home)| (*used, *inflight, home.order()));
+        let width = pool_homes.len().max(1);
+        // Streaming capacity preflight must inspect the same next choice without consuming it.
+        // Otherwise every `preflight -> turn` pair advances twice; with two equal homes all real
+        // turns would land on the same half of the rotation.
+        let cursor = if advance_cursor {
+            self.selection_cursor.fetch_add(1, Ordering::Relaxed)
+        } else {
+            self.selection_cursor.load(Ordering::Relaxed)
+        } as usize
+            % width;
+        candidates.sort_by_key(|(used, inflight, home)| {
+            let rotated_order = (home.order() + width - cursor) % width;
+            (*used, *inflight, rotated_order)
+        });
         // 1) The conversation's pinned home, if it is currently usable. 2) Otherwise the least-loaded
         // home that already holds this request's shared cache root. 3) Otherwise the least-loaded home.
         // Concurrency per home is unbounded, so the chosen home always accepts the turn.
@@ -998,7 +1024,7 @@ impl CodexGateway {
     /// same selection a real turn would and releases the acquired load slot immediately. A home can
     /// still exhaust between this check and the turn; that rare race stays an in-stream failure.
     pub(crate) async fn preflight_capacity(&self) -> Result<(), ProcessError> {
-        match self.select_home(&[], None, &[]).await {
+        match self.select_home(&[], None, &[], false).await {
             HomeSelection::Ready(_home, _slot) => Ok(()),
             HomeSelection::Unavailable { ready_at } => Err(ProcessError::UsageLimitExceeded {
                 retry_after: ready_at

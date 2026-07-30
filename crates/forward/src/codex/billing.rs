@@ -530,12 +530,11 @@ mod tests {
         assert_eq!(priced.cache_write_input, 100);
         assert_eq!(priced.input_nano, 500 * 5_000);
         assert_eq!(priced.cached_nano, 400 * 500);
-        // Cache-write is priced at the fresh input rate — OpenAI charges no write surcharge.
-        assert_eq!(priced.cache_write_nano, 100 * 5_000);
+        assert_eq!(priced.cache_write_nano, 100 * 6_250);
         assert_eq!(priced.output_nano, 20 * 30_000);
         assert_eq!(
             priced.real_nano,
-            500 * 5_000 + 400 * 500 + 100 * 5_000 + 20 * 30_000
+            500 * 5_000 + 400 * 500 + 100 * 6_250 + 20 * 30_000
         );
     }
 
@@ -555,15 +554,14 @@ mod tests {
         );
         assert_eq!(priced.input_nano, 150_000 * 5_000 * 2);
         assert_eq!(priced.cached_nano, 100_000 * 500 * 2);
-        assert_eq!(priced.cache_write_nano, 50_000 * 5_000 * 2);
+        assert_eq!(priced.cache_write_nano, 50_000 * 6_250 * 2);
         assert_eq!(priced.output_nano, 10 * 30_000 * 3 / 2);
     }
 
     #[test]
     fn reserve_covers_full_output_and_cache_write_rate() {
         let hold = reserve_cost(&model(), 1_000, None, 0, false);
-        // Cache-write now equals the input rate, so the reserve input leg is 5_000/token.
-        assert_eq!(hold, 1_000 * 5_000 + 128_000 * 30_000);
+        assert_eq!(hold, 1_000 * 6_250 + 128_000 * 30_000);
     }
 
     #[test]
@@ -571,7 +569,7 @@ mod tests {
         let full = reserve_cost(&model(), 1_000, None, 0, false);
         // A small requested cap holds only that many output tokens, not the model's 128k max.
         let capped = reserve_cost(&model(), 1_000, Some(500), 0, false);
-        assert_eq!(capped, 1_000 * 5_000 + 500 * 30_000);
+        assert_eq!(capped, 1_000 * 6_250 + 500 * 30_000);
         assert!(capped < full);
         // A cap above the model maximum is clamped to the model maximum.
         assert_eq!(
@@ -587,19 +585,27 @@ mod tests {
             output_tokens: 10,
             ..CodexUsage::default()
         };
-        let standard = 100 * 5_000 + 10 * 30_000;
-        let fast = standard * 5 / 2;
+        // Admission reserves every estimated input token at the most expensive possible input
+        // bucket (a GPT-5.6 cache write); exact settlement below uses the actual fresh-input bucket.
+        let fast_reserve = (100 * 6_250 + 10 * 30_000) * 5 / 2;
+        let fast_usage = (100 * 5_000 + 10 * 30_000) * 5 / 2;
 
-        assert_eq!(reserve_cost(&model(), 100, Some(10), 0, true), fast as i128);
-        assert_eq!(price_real_nano(&model(), &usage, 0, true), fast as i128);
+        assert_eq!(
+            reserve_cost(&model(), 100, Some(10), 0, true),
+            fast_reserve as i128
+        );
+        assert_eq!(
+            price_real_nano(&model(), &usage, 0, true),
+            fast_usage as i128
+        );
 
         let (charge, event) = settled_charge(&model(), &usage, i64::MAX, 10_000, None, 0, true);
-        assert_eq!(charge, fast);
+        assert_eq!(charge, fast_usage);
         let event = event.expect("fast usage must produce a usage event");
         assert_eq!(event.speed, "fast");
         assert_eq!(event.input_nano, 100 * 5_000 * 5 / 2);
         assert_eq!(event.output_nano, 10 * 30_000 * 5 / 2);
-        assert_eq!(event.real_nano, fast);
+        assert_eq!(event.real_nano, fast_usage);
     }
 
     #[test]

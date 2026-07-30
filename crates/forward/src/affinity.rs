@@ -79,6 +79,25 @@ impl AffinityInput {
     fn has_cache_root(&self) -> bool {
         self.cache_root.is_some()
     }
+
+    /// Stable, tenant-scoped and content-opaque key for the upstream prompt-cache router.
+    ///
+    /// A native client key is authoritative. Otherwise a large shared system/tools root is the
+    /// best cache key; without one, an already-resolved conversation keeps the lineage selected
+    /// on its first request. The account tag prevents two gateway tenants from sharing an
+    /// upstream cache namespace even when they choose identical public keys and prompt prefixes.
+    pub(crate) fn prompt_cache_key(&self, resolved_session_id: Option<&str>) -> String {
+        let lineage = if self.primary().kind == AliasKind::Native {
+            self.primary().digest.as_str()
+        } else if let Some(root) = &self.cache_root {
+            root.digest.as_str()
+        } else if let Some(session_id) = resolved_session_id {
+            session_id
+        } else {
+            self.primary().digest.as_str()
+        };
+        format!("{}:{lineage}", self.account_tag)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -353,6 +372,7 @@ impl AffinityStore {
         instructions: Option<&str>,
         tools: &[Value],
         items: &[Value],
+        prompt_cache_key: Option<&str>,
     ) -> Option<AffinityInput> {
         if items.is_empty() {
             return None;
@@ -362,6 +382,10 @@ impl AffinityStore {
             "system": instructions,
             "tools": tools,
             "messages": items,
+            // `infer` treats a native session id as a strong lineage boundary. Projecting the
+            // public OpenAI key here gives it the same semantics while all stored/upstream values
+            // remain keyed digests rather than customer identifiers.
+            "session_id": prompt_cache_key,
         });
         self.infer(account_scope, headers, &body)
     }
@@ -1224,6 +1248,54 @@ mod tests {
         let b1 = store.infer("acct-1", &headers, &b).unwrap();
         assert_ne!(a1.account_tag, a2.account_tag);
         assert_ne!(a1.primary().digest, b1.primary().digest);
+    }
+
+    #[test]
+    fn codex_prompt_cache_key_is_stable_opaque_and_tenant_scoped() {
+        let store = store();
+        let headers = HeaderMap::new();
+        let first_items = vec![json!({"role":"user","content":"first"})];
+        let second_items = vec![json!({"role":"user","content":"unrelated"})];
+        let first = store
+            .infer_codex(
+                "acct-1",
+                &headers,
+                "gpt-5.6",
+                None,
+                &[],
+                &first_items,
+                Some("customer-cache-key"),
+            )
+            .unwrap();
+        let second = store
+            .infer_codex(
+                "acct-1",
+                &headers,
+                "gpt-5.6",
+                None,
+                &[],
+                &second_items,
+                Some("customer-cache-key"),
+            )
+            .unwrap();
+        let other_tenant = store
+            .infer_codex(
+                "acct-2",
+                &headers,
+                "gpt-5.6",
+                None,
+                &[],
+                &first_items,
+                Some("customer-cache-key"),
+            )
+            .unwrap();
+
+        let first_key = first.prompt_cache_key(None);
+        assert_eq!(first_key, second.prompt_cache_key(None));
+        assert_ne!(first_key, other_tenant.prompt_cache_key(None));
+        assert_eq!(first_key.len(), 129);
+        assert!(!first_key.contains("acct-1"));
+        assert!(!first_key.contains("customer-cache-key"));
     }
 
     #[tokio::test]

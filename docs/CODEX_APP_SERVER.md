@@ -136,8 +136,8 @@ history. Deferred function tools preserve `defer_loading`. Codex catalog-refresh
 the CLI-native empty `models` overlay and keep using that CLI version's bundled metadata; ordinary
 OpenAI clients continue to receive the standard `object: "list"` catalog.
 
-Chat Completions accepts the equivalent top-level `reasoning_effort` and `verbosity` controls and
-translates them to the same app-server turn settings.
+Chat Completions accepts the equivalent top-level `reasoning_effort`, `verbosity`, and
+`prompt_cache_key` controls and translates them to the same app-server turn settings.
 
 opencode works through the Chat Completions surface. Its provider models are not in the models.dev
 catalog, so opencode assigns a config-defined model text-only default capabilities and silently
@@ -179,8 +179,12 @@ SDKs, Codex CLI) need nothing extra.
 
 Diagnostic `client_metadata` and `safety_identifier` values are validated and discarded at the
 public boundary. They are never logged or forwarded to the pooled account. `prompt_cache_key` is
-validated and echoed for protocol compatibility, but the official app-server remains responsible
-for upstream cache behavior.
+validated and echoed, then projected into the affinity lineage. The value sent through the patched
+official app-server is a stable keyed digest scoped to the metered tenant, never the customer's raw
+identifier. When the client omits it, the gateway derives the same opaque key from the shared
+system/tools cache root or the resolved conversation lineage. This is necessary because every
+public HTTP request uses an ephemeral Codex thread; stock app-server would otherwise route every
+request under a new thread UUID and defeat cross-request OpenAI prompt-cache hits.
 
 ## Architecture and trust boundary
 
@@ -342,6 +346,12 @@ already holding the shared system/tools cache root, then the least-loaded home. 
 fail-open optimization — local L1 plus the optional shared Redis L2 — and is a no-op while the pool
 holds a single home. Fixed provider processes derive separate affinity keys from the shared secret,
 so Anthropic and OpenAI session aliases cannot overwrite each other's Redis placement.
+Candidates tied on window utilisation and in-flight turns use an atomic rotating discovery-order
+cursor. This spreads both sequential traffic and simultaneous selectors instead of herding every
+equal snapshot onto the first configured subscription.
+The selected lineage also supplies the upstream `prompt_cache_key`, so cache placement and
+subscription placement cannot diverge. On spill after an account limit/auth failure, the same key
+is retained while the affinity binding is atomically rebound to the home that completed the turn.
 
 The gateway takes one advisory lock for the complete pool at
 `/run/apitoken/codex-home.lock`. `systemd/apitoken-tmpfiles.conf` creates that file under a
@@ -384,7 +394,11 @@ OpenAI ownership.
 ## Usage, rate limits and billing
 
 The app-server's authoritative completed-turn usage is used for both response objects and durable
-settlement. Cached input, long-context and requested Fast subscription-credit multipliers are
+settlement. Responses exposes both `cached_tokens` and `cache_write_tokens` in
+`input_tokens_details`; Chat exposes the same pair in `prompt_tokens_details`, matching the current
+OpenAI SDK schemas. GPT-5.6 cache writes use the published 1.25x fresh-input rate; older advertised
+models retain their catalog rates. Cached input, cache writes, long-context and requested Fast
+subscription-credit multipliers are
 applied from the pinned per-model catalog. Fast uses the published ChatGPT multipliers: 2.5x for
 GPT-5.6 (including Sol/Terra/Luna) and GPT-5.5, and 2x for GPT-5.4. The same multiplier is applied
 to admission reserve, final customer settlement, provider usage ledger and per-home capacity spend,

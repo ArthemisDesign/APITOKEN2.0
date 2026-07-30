@@ -223,6 +223,9 @@ fn parse_chat_request(gateway: &CodexGateway, value: Value) -> Result<ParsedChat
     if let Some(service_tier) = object.get("service_tier") {
         responses.insert("service_tier".to_string(), service_tier.clone());
     }
+    if let Some(prompt_cache_key) = object.get("prompt_cache_key") {
+        responses.insert("prompt_cache_key".to_string(), prompt_cache_key.clone());
+    }
     // Chat retrieval endpoints are not implemented, so claiming to store a completion would be
     // misleading. `store=false` is validated below and omitted here.
     responses.insert("store".to_string(), Value::Bool(false));
@@ -994,6 +997,7 @@ fn chat_usage(usage: &CodexUsage) -> Value {
         "completion_tokens": usage.output_tokens,
         "total_tokens": usage.total_tokens,
         "prompt_tokens_details": {
+            "cache_write_tokens": usage.cache_write_input_tokens,
             "cached_tokens": usage.cached_input_tokens,
             "audio_tokens": 0
         },
@@ -1744,6 +1748,21 @@ mod tests {
             usage: CodexUsage::default(),
         };
         assert!(reasoning_summary_text(&empty).is_none());
+    }
+
+    #[test]
+    fn chat_usage_preserves_cache_write_and_read_details() {
+        let usage = chat_usage(&CodexUsage {
+            input_tokens: 100,
+            cached_input_tokens: 40,
+            cache_write_input_tokens: 10,
+            output_tokens: 20,
+            reasoning_output_tokens: 5,
+            total_tokens: 120,
+        });
+        assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 40);
+        assert_eq!(usage["prompt_tokens_details"]["cache_write_tokens"], 10);
+        assert_eq!(usage["completion_tokens_details"]["reasoning_tokens"], 5);
     }
 
     #[test]

@@ -742,6 +742,7 @@ pub(super) async fn build_turn_routing(
         instructions.as_deref(),
         &prepared.turn.dynamic_tools,
         &prepared.full_history_prefix,
+        prepared.request.prompt_cache_key.as_deref(),
     )?;
     let resolution = store.resolve(&input).await;
     let warm = if resolution.is_none() {
@@ -852,6 +853,9 @@ pub(super) async fn prepare_turn(
         .unwrap_or(u64::MAX / 2);
     let turn = CodexTurnRequest {
         model: request.public_model.clone(),
+        // Filled from tenant-scoped affinity immediately before home selection. Keeping this
+        // internal avoids forwarding a customer-chosen identifier into a shared subscription.
+        prompt_cache_key: None,
         // Responses `instructions` is the request-owned base instruction field in the official
         // protocol. Passing it here replaces Codex's model-family prompt instead of adding a
         // gateway-authored developer message.
@@ -2079,7 +2083,7 @@ fn response_object(
         "error": Value::Null,
         "incomplete_details": Value::Null,
         "instructions": request.instructions,
-        "max_output_tokens": Value::Null,
+        "max_output_tokens": request.max_output_tokens,
         "max_tool_calls": Value::Null,
         "metadata": request.metadata,
         "model": request.public_model.id,
@@ -2108,10 +2112,8 @@ fn response_object(
 fn public_usage(usage: &CodexUsage) -> Value {
     json!({
         "input_tokens": usage.input_tokens,
-        // Match the official Responses usage schema exactly: input_tokens_details carries only
-        // cached_tokens. (Cache writes are priced at the input rate, so there is nothing extra to
-        // surface, and OpenAI has no cache-write field.)
         "input_tokens_details": {
+            "cache_write_tokens": usage.cache_write_input_tokens,
             "cached_tokens": usage.cached_input_tokens
         },
         "output_tokens": usage.output_tokens,
@@ -3609,6 +3611,10 @@ mod tests {
         .expect("parameters the transport cannot honor must be ignored, not rejected");
         assert_eq!(parsed.input.turn_input.len(), 1);
         assert!(parsed.service_tier.is_none());
+        assert_eq!(parsed.max_output_tokens, Some(512));
+        let response =
+            response_object(&parsed, "resp_with_cap", 0, "in_progress", Vec::new(), None);
+        assert_eq!(response["max_output_tokens"], 512);
     }
 
     #[test]
@@ -4027,10 +4033,7 @@ mod tests {
             total_tokens: 120,
         });
         assert_eq!(usage["input_tokens_details"]["cached_tokens"], 40);
-        // The official schema has no cache-write field; it must not appear.
-        assert!(usage["input_tokens_details"]
-            .get("cache_write_tokens")
-            .is_none());
+        assert_eq!(usage["input_tokens_details"]["cache_write_tokens"], 10);
         assert_eq!(usage["output_tokens_details"]["reasoning_tokens"], 12);
     }
 
