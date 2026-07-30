@@ -28,7 +28,9 @@
   не паникуют и не затирают последний валидный snapshot.
 - Алиас и конкретные варианты одной Codex-модели обязаны возвращать одинаковый Fast-множитель.
 - `gpt-5.6` и `gpt-5.6-sol` обязаны иметь одну canonical/tariff identity; новая price epoch меняет
-  schedule ID, но не alias generation. Long-context и Fast/geo modifiers фиксируются отдельно.
+  schedule ID, но не alias generation. Codex capability также фиксирует audited max-output limit,
+  чтобы dormant snapshot builder мог отвергнуть drift runtime-конфига без второй reserve-формулы.
+  Long-context и Fast/geo modifiers фиксируются отдельно.
 - Битый ввод → `Usage::default()` (нули), НИКОГДА не паникует.
 - i128 — переполнения исключены даже на млрд токенов.
 

@@ -68,9 +68,12 @@ typed snapshot как единственный источник request/account/
 RAII-компенсация не изменены. Рядом существует только dormant bridge preflight: validated config
 (`disabled/0` или `sampled/1..=10000 bp`), SHA-256 v1 sampler по trusted fixed provider и внутреннему
 canonical lowercase UUIDv4 request ID, stable typed decisions/reasons. Sampler не читает clock/DB,
-не пишет метрики и пока недостижим из runtime. Provider quote/snapshot builders, live caller и
-traffic activation отсутствуют, поэтому ни config, ни новый command не участвуют в production
-admission.
+не пишет метрики и пока недостижим из runtime. Dormant provider-owned builders рядом с текущими
+legacy quote implementations сами выводят canonical/tariff/modifier identity через `metering` и
+строят validated snapshot из одного frozen timestamp. Anthropic builder вызывает неизменённый
+`cap_to_balance`, OpenAI pricing builder — неизменённый `reserve_cost`; provider/canonical/tariff и
+hold caller не задаёт. Оба модуля не имеют DB/config/metrics/caller. Live admission и traffic
+activation отсутствуют, поэтому config, builders и новый actor command не участвуют в production.
 
 **Что внутри:** `ProxyConfig`, `AppState`, `Clients` (кэш http-клиентов по прокси),
 `limits_from_headers`/`Limits` (unified-ratelimit из ответа), `poll_sub` (активный опрос idle),

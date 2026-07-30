@@ -13,6 +13,9 @@ use sha2::{Digest, Sha256};
 
 const SAMPLER_DOMAIN_V1: &[u8] = b"claude-api/pricing/legacy-scalar-bridge-sampler/v1\0";
 const SAMPLER_BUCKETS: u16 = 10_000;
+// Keep aligned with registry's backend-neutral snapshot identity bound. This pre-money check only
+// classifies the expected oversized fallback; the authoritative constructor still revalidates it.
+const SNAPSHOT_ID_MAX_BYTES: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PricingBridgeMode {
@@ -111,6 +114,14 @@ pub enum PricingBridgeDecision {
     Fallback(PricingBridgeFallbackReason),
 }
 
+/// Expected pre-money eligibility outcome. A fallback preserves the byte-identical legacy reserve
+/// path; hard invariant errors stay outside this enum and must not be disguised as eligibility.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PricingBridgePrepare<T> {
+    Eligible(T),
+    Fallback(PricingBridgeFallbackReason),
+}
+
 /// Stable, low-cardinality reasons shared by the future bridge decision and provider builders.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PricingBridgeFallbackReason {
@@ -161,9 +172,13 @@ impl EnginePricingRequestId {
         Some(Self(value.to_owned()))
     }
 
-    fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+pub(crate) fn snapshot_identity_is_oversized(value: &str) -> bool {
+    value.len() > SNAPSHOT_ID_MAX_BYTES
 }
 
 fn sampler_bucket_v1(provider: SnapshotProvider, request_id: &EnginePricingRequestId) -> u16 {

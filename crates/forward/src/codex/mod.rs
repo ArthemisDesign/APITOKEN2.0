@@ -12,6 +12,7 @@ mod chat;
 mod config;
 mod discovery;
 mod history;
+mod openai_snapshot;
 mod process;
 mod runner;
 

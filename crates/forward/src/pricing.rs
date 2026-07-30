@@ -21,6 +21,9 @@ pub use bridge::{
     PricingBridgeConfig, PricingBridgeConfigError, PricingBridgeDecision,
     PricingBridgeFallbackReason,
 };
+pub(crate) use bridge::{
+    snapshot_identity_is_oversized, EnginePricingRequestId, PricingBridgePrepare,
+};
 pub use shadow::{
     build_pricing_shadow_evaluation, PricingShadowEvaluationSource, PricingShadowReadFailure,
     PricingShadowWorkItem,

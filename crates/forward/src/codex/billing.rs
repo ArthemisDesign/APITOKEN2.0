@@ -254,7 +254,7 @@ fn effective_prices(model: &CodexModel, now: i64) -> metering::CodexPrices {
     metering::codex_prices_at(&model.id, now).unwrap_or(model.prices)
 }
 
-fn reserve_cost(
+pub(super) fn reserve_cost(
     model: &CodexModel,
     estimated_input_tokens: u64,
     requested_output_tokens: Option<u64>,

@@ -8,10 +8,11 @@ manifest без runtime caller — также доставлен. Stage 3B1c р�
 checkpoint: pure tariff/model identities и dormant actual snapshot/reserve уже доставлены, а
 typed shadow evaluation persistence и полное runtime manifest evidence также доставлены. Pure
 typed shadow work-item/evaluation builder в `forward`, без caller/config/traffic, уже доставлен.
-Настоящий
-безопасный preflight-checkpoint добавляет строгий default-off bridge config и versioned
-детерминированный sampler. Любая попытка включить config в этом dormant binary отклоняется при
-старте: provider builders, runtime caller, метрики, queue и traffic activation ещё отсутствуют.
+Строгий default-off bridge config и versioned deterministic sampler также доставлены. Настоящий
+безопасный provider-builder checkpoint добавляет только pure Anthropic/OpenAI quote+snapshot
+builders поверх существующих legacy reserve formulas. Любая попытка включить config в этом dormant
+binary по-прежнему отклоняется при старте: runtime caller, метрики, queue и traffic activation
+отсутствуют.
 2026-07-30
 владелец продукта явно снял прежнюю остановку после 3B1b и полностью авторизовал дальнейшую
 реализацию этого документа до завершения этапов 3B1c–11. Авторизация не отменяет поэтапную доставку,
@@ -40,9 +41,11 @@ shadow-persistence checkpoint доставлен commit
 `209054795efcab35cad40385e343f67424cdff55`; он сохраняет ту же границу: registry API и builder
 существуют только как неподключённые библиотечные возможности. Retention/idempotency checkpoint
 доставлен commit `99b3b849e1ec2bc4b3800414083b71d72d2e12fc`; guarded atomic snapshot reserve
-foundation — commit `c55a86d1271667ae4d1669aab1c0e08df8a91643`. Текущий preflight также не
+foundation — commit `c55a86d1271667ae4d1669aab1c0e08df8a91643`. Этот preflight также не
 добавляет миграций и live caller: он только делает конфигурацию и выборку заранее проверяемыми, не
-затрагивая деньги или production traffic.
+затрагивая деньги или production traffic. Dormant config/sampler preflight доставлен commit
+`778d303377f4f5b55f4c680b89e79ed19dff7d69`. Следующий provider-builder checkpoint сохраняет ту же
+границу и не меняет существующий admission.
 
 Этот документ описывает целевое поведение, которое заменит текущий единый множитель цены на аккаунт.
 Он не утверждает, что описанное поведение уже работает в production. До завершения перехода
@@ -1658,9 +1661,15 @@ Production bridge всё ещё не подключён. Доставленны�
 и typed config с допустимыми состояниями `disabled/0` либо `enabled/1..=10000 bp`. Server читает
 `CLAUDE_API_PRICING_BRIDGE_ENABLED` и `CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP` строго, default —
 `false/0`; пока runtime caller не доставлен, любое enabled-значение намеренно останавливает startup.
-Provider-owned quote/snapshot builders, canonicalizer call из admission, telemetry и live caller
-отсутствуют. Поэтому старые reserve paths сохраняют прежнее поведение, а dormant actor command и
-sampler без последующего отдельного caller не создают production snapshots и не меняют трафик.
+Dormant provider-owned builders теперь существуют отдельно для обеих fixed product planes. Они
+сами получают canonical/tariff/modifier identity из `metering`, фиксируют один quote timestamp и
+строят validated snapshot, не принимая provider/canonical/tariff/amount identity от caller.
+Anthropic builder вызывает неизменённый `cap_to_balance`; OpenAI pricing builder — неизменённый
+`reserve_cost`, поэтому второй денежной формулы нет. Их parity tests покрывают все audited модели,
+premium modifiers, тарифные/long-context границы, scalar, balance cap, overflow и typed fallback.
+Canonicalizer call из admission, telemetry и live caller всё ещё отсутствуют. Поэтому старые reserve
+paths сохраняют прежнее поведение, а dormant actor command, sampler и builders без отдельного caller
+не создают production snapshots и не меняют трафик.
 
 Это единственный новый critical-path write в Stage 3B1c. Его failure атомарно откатывает reserve;
 после входа в eligible bridge DB/constraint failure не делает fallback-второй reserve с тем же

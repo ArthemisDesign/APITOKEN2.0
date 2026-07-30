@@ -9,6 +9,8 @@
 //!   4) при 429/5xx/протухшем токене — cooling и ротация на следующую подписку;
 //!   5) ответ (включая SSE-стрим) отдаём клиенту байт-в-байт.
 
+mod anthropic_snapshot;
+
 use crate::meter::{BillCtx, MeterCtx, TeeMeter};
 use crate::metrics::Metrics;
 use crate::state::AppState;

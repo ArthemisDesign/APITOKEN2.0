@@ -94,6 +94,7 @@ pub struct CodexTariffModifiers {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CodexAdmissionTariffIdentity {
     pub canonical_model_id: &'static str,
+    pub max_output_tokens: u64,
     pub alias_generation: i64,
     pub tariff_schedule_id: TariffScheduleId,
     pub schedule_effective_from: i64,
@@ -289,6 +290,7 @@ pub fn codex_tariff_capability_at(
 
     Ok(CodexAdmissionTariffIdentity {
         canonical_model_id: entry.upstream,
+        max_output_tokens: entry.max_output_tokens,
         alias_generation: CODEX_ALIAS_GENERATION,
         tariff_schedule_id: epoch.tariff_schedule_id,
         schedule_effective_from: epoch.epoch.effective_from,
@@ -446,6 +448,7 @@ mod tests {
 
         assert_eq!(alias, canonical);
         assert_eq!(alias.canonical_model_id, "gpt-5.6-sol");
+        assert_eq!(alias.max_output_tokens, 128_000);
         assert_eq!(alias.alias_generation, CODEX_ALIAS_GENERATION);
         assert_eq!(
             alias.tariff_schedule_id.as_str(),
@@ -575,6 +578,7 @@ mod tests {
                     )
                     .unwrap();
                     assert_eq!(identity.canonical_model_id, canonical, "{requested}");
+                    assert_eq!(identity.max_output_tokens, 128_000, "{requested}");
                     assert_eq!(identity.alias_generation, 1, "{requested}");
                     assert_eq!(identity.tariff_schedule_id.as_str(), schedule_id);
                     assert_eq!(identity.schedule_effective_from, 0);
