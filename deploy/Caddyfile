@@ -123,6 +123,14 @@ api.apitoken.sale {
 }
 
 openai.api.apitoken.sale {
+	# Compress only complete JSON documents. Responses SSE must stay identity-encoded so the
+	# compressor cannot buffer small lifecycle frames and increase time-to-first-token.
+	encode zstd gzip {
+		minimum_length 512
+		match {
+			header Content-Type application/json*
+		}
+	}
 	@public_core path /v1/* /health /balance
 	handle @public_core {
 		import openai_engine_backend

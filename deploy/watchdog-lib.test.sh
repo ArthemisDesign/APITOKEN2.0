@@ -1330,11 +1330,21 @@ grep -Fq 'mv -f -- "$rollback_tmp" "$LIVE"' "$ROOT/deploy/install-caddy.sh" \
 ! grep -Fq 'caddy reload --adapter caddyfile --config "$LIVE" || true' \
   "$ROOT/deploy/install-caddy.sh" \
   || wd_die "Caddy rollback reload failures are silently ignored"
-claude_api_vhost=$(sed -n '/^api\.apitoken\.sale {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
-openai_api_vhost=$(sed -n '/^openai\.api\.apitoken\.sale {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
+claude_api_vhost=$(sed -n '/^api\.apitoken\.sale {$/,/^openai\.api\.apitoken\.sale {$/p' \
+  "$ROOT/deploy/Caddyfile")
+openai_api_vhost=$(sed -n '/^openai\.api\.apitoken\.sale {$/,/^gemini\.api\.apitoken\.sale {$/p' \
+  "$ROOT/deploy/Caddyfile")
 grep -Fq 'import engine_backend' <<<"$claude_api_vhost"
 ! grep -Fq 'openai_engine_backend' <<<"$claude_api_vhost"
 grep -Fq 'import openai_engine_backend' <<<"$openai_api_vhost"
+[[ $(grep -Fc 'encode zstd gzip {' <<<"$openai_api_vhost") == 1 ]] \
+  || wd_die 'OpenAI public TLS boundary must have exactly one compression policy'
+grep -Fq 'minimum_length 512' <<<"$openai_api_vhost" \
+  || wd_die 'OpenAI compression can spend CPU on tiny response bodies'
+grep -Fq 'header Content-Type application/json*' <<<"$openai_api_vhost" \
+  || wd_die 'OpenAI compression is not restricted to complete JSON documents'
+! grep -Fq 'text/event-stream' <<<"$openai_api_vhost" \
+  || wd_die 'OpenAI compression matcher can buffer SSE lifecycle frames'
 grep -Fq 'import gemini_engine_backend' "$ROOT/deploy/Caddyfile"
 grep -Fq '@oauth_callback path /oauth/callback' "$ROOT/deploy/Caddyfile"
 grep -Fq 'log_skip @oauth_callback' "$ROOT/deploy/Caddyfile"

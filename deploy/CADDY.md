@@ -109,6 +109,13 @@ the home or interrupting unrelated sessions. Daemon pin convergence is serialize
 an app-server that is finishing a real turn cannot hold the gateway deployment lock or make a
 healthy HTTP candidate roll back.
 
+The public OpenAI vhost negotiates `zstd` or `gzip` only for complete `application/json` responses
+of at least 512 bytes. Compression happens at the public TLS boundary, after the loopback OpenAI
+origin, so it reduces customer traffic without adding encoded bytes to the internal Caddy hop.
+`text/event-stream` is deliberately excluded: every Responses and Chat Completions SSE frame keeps
+identity encoding and Caddy's immediate event flush, preserving time-to-first-token. Clients that
+do not advertise a supported `Accept-Encoding` continue to receive the byte-identical JSON body.
+
 The commerce API and worker use `http://127.0.0.1:8790`, a loopback-only Caddy listener over the
 Anthropic slots. They must never address a deployment slot, the OpenAI origin, or the Gemini origin.
 The provider controller requires 8790 throughout the handoff and verifies 8792 and 8794 separately.
