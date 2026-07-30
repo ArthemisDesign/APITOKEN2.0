@@ -2,7 +2,7 @@
 
 use super::{CodexModel, CodexUsage};
 use crate::metrics::Metrics;
-use crate::proxy::{authorize, Authz, HoldGuard, KeyGuard};
+use crate::proxy::{authorize, Authz, HoldGuard};
 use crate::state::AppState;
 use axum::http::HeaderMap;
 use std::net::SocketAddr;
@@ -12,7 +12,6 @@ use std::sync::atomic::Ordering;
 pub(crate) enum AdmissionError {
     Unauthorized,
     Unavailable,
-    Busy,
     LowBalance,
 }
 
@@ -26,18 +25,15 @@ struct Reservation {
     guard: HoldGuard,
 }
 
-/// Owns every admission guard until a non-streaming response is returned or a streaming upstream
-/// task fully finishes. Client disconnect therefore never leaks money or concurrency slots.
+/// Owns the exact billing reservation until a non-streaming response is returned or a streaming
+/// upstream task fully finishes. Codex capacity is governed by its upstream subscription pool;
+/// local global/per-key concurrency ceilings are intentionally not applied to this provider.
 pub(crate) struct CodexAdmission {
-    _request_permit: tokio::sync::OwnedSemaphorePermit,
-    _key_guard: Option<KeyGuard>,
     reservation: Option<Reservation>,
 }
 
 pub(crate) struct PendingCodexAdmission {
     tenant_scope: String,
-    request_permit: tokio::sync::OwnedSemaphorePermit,
-    key_guard: Option<KeyGuard>,
     authz: Authz,
 }
 
@@ -108,11 +104,7 @@ impl PendingCodexAdmission {
             }
             _ => None,
         };
-        Ok(CodexAdmission {
-            _request_permit: self.request_permit,
-            _key_guard: self.key_guard,
-            reservation,
-        })
+        Ok(CodexAdmission { reservation })
     }
 }
 
@@ -231,10 +223,6 @@ pub(crate) async fn begin_admission(
     if !app.authority_ready.load(Ordering::Acquire) {
         return Err(AdmissionError::Unavailable);
     }
-    let request_permit = app.concurrency.clone().try_acquire_owned().map_err(|_| {
-        Metrics::inc(&app.metrics.breaker_rejects);
-        AdmissionError::Busy
-    })?;
     let authz = authorize(app, headers, peer).await;
     let tenant_scope = match &authz {
         Authz::Admin { affinity_scope } => affinity_scope.clone(),
@@ -252,23 +240,8 @@ pub(crate) async fn begin_admission(
     };
     Metrics::inc(&app.metrics.requests);
 
-    let key_guard = if let Authz::Metered { account_id, .. } = &authz {
-        if !app
-            .key_limiter
-            .try_acquire(account_id, app.cfg.max_inflight_per_key)
-        {
-            Metrics::inc(&app.metrics.key_throttled);
-            return Err(AdmissionError::Busy);
-        }
-        Some(KeyGuard::new(app.key_limiter.clone(), account_id.clone()))
-    } else {
-        None
-    };
-
     Ok(PendingCodexAdmission {
         tenant_scope,
-        request_permit,
-        key_guard,
         authz,
     })
 }
@@ -412,7 +385,6 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::sync::Semaphore;
 
     static NEXT_SETTLEMENT_DB: AtomicU64 = AtomicU64::new(0);
 
@@ -488,10 +460,7 @@ mod tests {
             .unwrap()
             .is_some());
 
-        let permit = Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap();
         let admission = CodexAdmission {
-            _request_permit: permit,
-            _key_guard: None,
             reservation: Some(Reservation {
                 billing: Arc::clone(&billing),
                 account_id: ACCOUNT.to_string(),

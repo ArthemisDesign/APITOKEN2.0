@@ -469,7 +469,7 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
         max_concurrent_turns: bounded_usize("CLAUDE_API_CODEX_MAX_CONCURRENT", 4, 1, 64),
         admit_below_used_percent: bounded_i64(
             "CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT",
-            95,
+            100,
             1,
             100,
         ),

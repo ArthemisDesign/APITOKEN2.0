@@ -452,6 +452,24 @@ impl CodexHome {
 
     pub(crate) async fn invalidate(&self, process: &Arc<CodexProcess>) {
         let _start = self.process_start.lock().await;
+        // Claim this generation before awaiting shutdown. Concurrent failed turns can all observe
+        // the same dead child; only one may kill/reap it. Clearing the published pointer first also
+        // prevents a new selector from attaching work to a generation already being retired.
+        let claimed = {
+            let mut current = self.process.lock().await;
+            if current
+                .as_ref()
+                .is_some_and(|candidate| Arc::ptr_eq(candidate, process))
+            {
+                *current = None;
+                true
+            } else {
+                false
+            }
+        };
+        if !claimed {
+            return;
+        }
         if let Err(error) = process.shutdown().await {
             self.retired.store(true, Ordering::Release);
             eprintln!(
@@ -459,13 +477,6 @@ impl CodexHome {
                 error.diagnostic_class()
             );
             return;
-        }
-        let mut current = self.process.lock().await;
-        if current
-            .as_ref()
-            .is_some_and(|candidate| Arc::ptr_eq(candidate, process))
-        {
-            *current = None;
         }
     }
 
@@ -1117,6 +1128,11 @@ impl CodexGateway {
             };
             match process.probe().await {
                 Ok(()) => home.mark_healthy(),
+                Err(ProcessError::Timeout(stage)) => {
+                    // Observational timeout: keep both the authenticated child and its admission
+                    // state intact. A later successful request/probe clears the uncertainty.
+                    eprintln!("Codex health probe timed out during {stage}");
+                }
                 Err(error) => {
                     home.note_process_error(&error);
                     home.invalidate(&process).await;
@@ -1136,7 +1152,9 @@ impl CodexGateway {
         let mut soonest: Option<i64> = None;
         for home in &pool_homes {
             let status = home.status(admit_below, now).await;
-            let usable = !home.is_cooling(now)
+            let usable = status.process_live
+                && status.auth_ok
+                && !home.is_cooling(now)
                 && CodexHome::within_headroom(status.rate_limits.as_ref(), admit_below);
             if usable {
                 available += 1;
@@ -1196,7 +1214,11 @@ impl CodexHome {
         match error {
             ProcessError::BadRequest
             | ProcessError::ContextWindowExceeded
-            | ProcessError::Rpc { .. } => {}
+            | ProcessError::Rpc { .. }
+            // RPC deadlines are isolated to the request and do not prove either an account or
+            // transport fault. Cooling the home here would turn one slow client request into a
+            // provider-wide admission outage even though its shared process remains live.
+            | ProcessError::Timeout(_) => {}
             other => self.note_process_error(other),
         }
     }

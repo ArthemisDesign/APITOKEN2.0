@@ -149,9 +149,6 @@ impl From<AdmissionError> for ApiError {
                 reason: "invalid_key",
             },
             AdmissionError::Unavailable => Self::unavailable_for("codex_admission_unavailable"),
-            AdmissionError::Busy => {
-                Self::rate_limited_for_reason(Some(1), "account_concurrency_limit")
-            }
             AdmissionError::LowBalance => Self {
                 status: StatusCode::PAYMENT_REQUIRED,
                 message: "Your account balance is insufficient for this request.".to_string(),
@@ -3339,7 +3336,6 @@ mod tests {
         for admission in [
             AdmissionError::Unauthorized,
             AdmissionError::Unavailable,
-            AdmissionError::Busy,
             AdmissionError::LowBalance,
         ] {
             errors.push(ApiError::from(admission));

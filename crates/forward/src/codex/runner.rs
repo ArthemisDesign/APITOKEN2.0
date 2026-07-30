@@ -258,7 +258,7 @@ impl CodexHome {
             .run_registered_turn(
                 process.clone(),
                 &thread_id,
-                &mut events.receiver,
+                &mut events,
                 request,
                 updates,
                 emitted,
@@ -266,17 +266,15 @@ impl CodexHome {
             .await;
         process.unregister_turn(&thread_id).await;
         registration_guard.disarm();
-        // Recycle the shared child on a genuine transport fault, but NOT on a turn-completion
-        // timeout: that case is handled in the event-loop arm below (interrupt only this turn, and
-        // recycle only if the interrupt itself fails), so recycling here too would defeat it and
-        // collaterally kill every sibling turn multiplexed over the same child.
+        // Recycle only a generation whose transport actually closed. A request-scoped protocol
+        // response or deadline must not collaterally kill sibling turns on the shared child.
         let recycle = match &result {
-            Err(
-                ProcessError::Closed
-                | ProcessError::Protocol(_)
-                | ProcessError::AuthenticationRequired,
-            ) => true,
-            Err(ProcessError::Timeout(stage)) => *stage != "turn completion",
+            Err(ProcessError::Closed | ProcessError::AuthenticationRequired) => true,
+            Err(ProcessError::Protocol(_)) => !process.is_live(),
+            // An RPC deadline belongs to the request that missed it. It says nothing about the
+            // shared transport: recycling here would kill every sibling turn multiplexed over the
+            // same authenticated app-server (the production failure this isolation prevents).
+            Err(ProcessError::Timeout(_)) => false,
             _ => false,
         };
         if recycle {
@@ -312,27 +310,30 @@ impl CodexHome {
         if let Some(prompt_cache_key) = &request.prompt_cache_key {
             params["promptCacheKey"] = Value::String(prompt_cache_key.clone());
         }
-        let mut last_error = ProcessError::Closed;
         for attempt in 0..2 {
             let process = self.process().await?;
             match process.request("thread/start", params.clone()).await {
                 Ok(response) => return Ok((process, response)),
-                Err(
-                    error @ (ProcessError::Closed
-                    | ProcessError::Protocol(_)
-                    | ProcessError::Timeout(_)),
-                ) => {
+                Err(error @ ProcessError::Closed) => {
                     self.invalidate(&process).await;
-                    if attempt == 0 {
-                        last_error = error;
-                    } else {
+                    if attempt != 0 {
                         return Err(error);
                     }
                 }
+                Err(error @ ProcessError::Protocol(_)) if !process.is_live() => {
+                    self.invalidate(&process).await;
+                    if attempt != 0 {
+                        return Err(error);
+                    }
+                }
+                // A late JSON-RPC response is discarded by the transport, but the app-server and
+                // unrelated turns remain valid. Pool-level retry may try another home; a one-home
+                // pool simply returns this request error without destroying its only capacity.
+                Err(error @ ProcessError::Timeout(_)) => return Err(error),
                 Err(error) => return Err(error),
             }
         }
-        Err(last_error)
+        unreachable!("thread/start retry loop always returns on its second attempt")
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -340,7 +341,7 @@ impl CodexHome {
         &self,
         process: Arc<CodexProcess>,
         thread_id: &str,
-        receiver: &mut mpsc::Receiver<AppServerEvent>,
+        events: &mut super::process::TurnEvents,
         request: CodexTurnRequest,
         updates: Option<mpsc::Sender<TurnUpdate>>,
         emitted: &Arc<AtomicBool>,
@@ -395,9 +396,8 @@ impl CodexHome {
             let mut saw_raw_response_completed = false;
             let mut terminal_tool_call = false;
             let mut interrupt_sent = false;
-            let mut completed = false;
-
-            while let Some(event) = receiver.recv().await {
+            loop {
+                let event = events.recv().await?;
                 match event {
                     AppServerEvent::Notification { method, params } => {
                         if params
@@ -553,7 +553,6 @@ impl CodexHome {
                                         .unwrap_or("model turn did not complete");
                                     return Err(ProcessError::Protocol(message.to_string()));
                                 }
-                                completed = true;
                                 break;
                             }
                             "error" => {
@@ -623,11 +622,7 @@ impl CodexHome {
                             interrupt_sent = true;
                         }
                     }
-                    AppServerEvent::Closed(error) => return Err(error),
                 }
-            }
-            if !completed {
-                return Err(ProcessError::Closed);
             }
             Ok(CodexTurnResult { output, usage })
         };
@@ -639,12 +634,9 @@ impl CodexHome {
             }
             Ok(Err(error)) => Err(error),
             Err(_) => {
-                // Turn wall-clock exceeded. Interrupt only THIS turn instead of recycling the whole
-                // child, so one slow or stuck turn does not collaterally fail every other turn
-                // multiplexed over the same shared app-server child. The interrupt RPC carries its
-                // own request timeout, so if it fails the child is genuinely wedged (not merely
-                // slow) and we fall back to recycling it — which fans the failure to siblings, but
-                // only when the child truly is dead.
+                // Turn wall-clock exceeded. Interrupt only THIS turn. Even a timed-out interrupt is
+                // still request-local and cannot justify killing sibling turns; actual EOF/write
+                // failure closes `ProcessShared`, which is the concrete signal to reap the child.
                 interrupt_guard.disarm();
                 let interrupted = process
                     .request(
@@ -652,7 +644,7 @@ impl CodexHome {
                         json!({"threadId": thread_id, "turnId": turn_id.clone()}),
                     )
                     .await;
-                if interrupted.is_err() {
+                if interrupted.is_err() && !process.is_live() {
                     self.invalidate(&process).await;
                 }
                 Err(ProcessError::Timeout("turn completion"))
@@ -989,6 +981,9 @@ while IFS= read -r line; do
     *'"method":"thread/start"'*)
       if [ "$mode" = "thread_start_timeout_once" ] && [ "$generation" -eq 1 ]; then
         continue
+      elif [ "$mode" = "thread_start_timeout_then_recover" ] && [ ! -f "$CODEX_HOME/thread-start-timed-out" ]; then
+        : > "$CODEX_HOME/thread-start-timed-out"
+        continue
       fi
       case "$line" in
         *'"serviceTier":"priority"'*)
@@ -1005,9 +1000,12 @@ while IFS= read -r line; do
     *'"method":"turn/start"'*)
       if [ "$mode" = "turn_start_timeout_once" ] && [ "$generation" -eq 1 ]; then
         continue
+      elif [ "$mode" = "turn_start_timeout_then_recover" ] && [ ! -f "$CODEX_HOME/turn-start-timed-out" ]; then
+        : > "$CODEX_HOME/turn-start-timed-out"
+        continue
       fi
       printf '{"id":%s,"result":{"turn":{"id":"turn-1"}}}\n' "$id"
-      if [ "$mode" = "text" ] || [ "$mode" = "near_limit" ] || [ "$mode" = "rate_limit_timeout" ] || [ "$mode" = "thread_start_timeout_once" ] || [ "$mode" = "turn_start_timeout_once" ]; then
+      if [ "$mode" = "text" ] || [ "$mode" = "near_limit" ] || [ "$mode" = "rate_limit_timeout" ] || [ "$mode" = "thread_start_timeout_once" ] || [ "$mode" = "turn_start_timeout_once" ] || [ "$mode" = "thread_start_timeout_then_recover" ] || [ "$mode" = "turn_start_timeout_then_recover" ]; then
         printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg-1","delta":"hello"}}'
         printf '%s\n' '{"method":"rawResponseItem/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"type":"message","id":"msg-1","role":"assistant","content":[{"type":"output_text","text":"hello"}]}}}'
         printf '%s\n' '{"method":"rawResponse/completed","params":{"threadId":"thread-1","turnId":"turn-1","usage":{"inputTokens":101,"cachedInputTokens":41,"cacheWriteInputTokens":7,"outputTokens":23,"reasoningOutputTokens":11,"totalTokens":124}}}'
@@ -2005,6 +2003,21 @@ done
     }
 
     #[tokio::test]
+    async fn a_stopped_child_is_not_reported_as_available_capacity() {
+        let (gateway, _workspace) = fake_gateway("die");
+
+        assert!(gateway
+            .run_turn(turn_request(test_model()), None, None)
+            .await
+            .is_err());
+
+        let status = gateway.operational_status().await;
+        assert!(!status.process_live);
+        assert_eq!(status.available, 0);
+        assert!(!status.homes[0].process_live);
+    }
+
+    #[tokio::test]
     async fn an_observational_rate_limit_timeout_keeps_the_authenticated_child_live() {
         let (gateway, _workspace) = fake_gateway_with_request_timeout("rate_limit_timeout", 200);
 
@@ -2044,25 +2057,27 @@ done
     }
 
     #[tokio::test]
-    async fn a_thread_start_timeout_retries_on_a_fresh_single_home_child() {
+    async fn a_thread_start_timeout_does_not_destroy_the_shared_child() {
         let (gateway, workspace) =
-            fake_gateway_with_request_timeout("thread_start_timeout_once", 200);
+            fake_gateway_with_request_timeout("thread_start_timeout_then_recover", 200);
         let home = gateway.homes().await.into_iter().next().unwrap();
-        let stale_process = home.process().await.unwrap();
+        let process = home.process().await.unwrap();
+
+        let error = gateway
+            .run_turn(turn_request(test_model()), None, None)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ProcessError::Timeout("thread/start")));
+        assert!(process.is_live());
+        assert!(gateway.operational_status().await.process_live);
 
         let result = gateway
             .run_turn(turn_request(test_model()), None, None)
             .await
             .unwrap();
-
         assert_eq!(result.usage.input_tokens, 101);
-        assert!(!stale_process.is_live());
-        assert_eq!(
-            std::fs::read_to_string(workspace.root.join("generation"))
-                .unwrap()
-                .trim(),
-            "2"
-        );
+        assert!(Arc::ptr_eq(&process, &home.process().await.unwrap()));
         assert_eq!(
             logged_requests(&workspace.log)
                 .iter()
@@ -2070,39 +2085,35 @@ done
                 .count(),
             2
         );
-        let pids = std::fs::read_to_string(workspace.root.join("generation-pids"))
-            .unwrap()
-            .lines()
-            .map(|pid| pid.parse::<u32>().unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(pids.len(), 2);
-        assert!(!process_exists(pids[0]));
-        assert!(process_exists(pids[1]));
     }
 
     #[tokio::test]
-    async fn a_turn_start_timeout_evicts_the_child_before_the_next_request() {
+    async fn a_turn_start_timeout_does_not_destroy_the_shared_child() {
         let (gateway, workspace) =
-            fake_gateway_with_request_timeout("turn_start_timeout_once", 200);
+            fake_gateway_with_request_timeout("turn_start_timeout_then_recover", 200);
+        let home = gateway.homes().await.into_iter().next().unwrap();
+        let process = home.process().await.unwrap();
 
         let error = gateway
             .run_turn(turn_request(test_model()), None, None)
             .await
             .unwrap_err();
         assert!(matches!(error, ProcessError::Timeout("turn/start")));
-        assert!(!gateway.operational_status().await.homes[0].process_live);
+        assert!(process.is_live());
+        assert!(gateway.operational_status().await.homes[0].process_live);
 
-        gateway.probe_health().await;
         let result = gateway
             .run_turn(turn_request(test_model()), None, None)
             .await
             .unwrap();
         assert_eq!(result.usage.input_tokens, 101);
+        assert!(Arc::ptr_eq(&process, &home.process().await.unwrap()));
         assert_eq!(
-            std::fs::read_to_string(workspace.root.join("generation"))
-                .unwrap()
-                .trim(),
-            "2"
+            logged_requests(&workspace.log)
+                .iter()
+                .filter(|request| request["method"] == "turn/start")
+                .count(),
+            2
         );
     }
 

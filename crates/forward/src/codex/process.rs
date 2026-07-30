@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, watch, Mutex};
 
 const MAX_JSONRPC_LINE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ORPHAN_EVENTS_PER_THREAD: usize = 64;
@@ -151,11 +151,37 @@ pub enum AppServerEvent {
         method: String,
         params: Value,
     },
-    Closed(ProcessError),
 }
 
 pub(crate) struct TurnEvents {
-    pub(crate) receiver: mpsc::Receiver<AppServerEvent>,
+    receiver: mpsc::Receiver<AppServerEvent>,
+    closed: watch::Receiver<Option<ProcessError>>,
+}
+
+impl TurnEvents {
+    /// Receive the next turn event while observing transport closure out of band.
+    ///
+    /// The per-turn event queue is deliberately bounded. Transport closure must not compete for a
+    /// slot in that queue: a noisy or abandoned turn could otherwise delay shutdown behind hundreds
+    /// of stale events and keep its in-flight guard pinned after the app-server has already died.
+    pub(crate) async fn recv(&mut self) -> Result<AppServerEvent, ProcessError> {
+        loop {
+            if let Some(error) = self.closed.borrow().clone() {
+                return Err(error);
+            }
+            tokio::select! {
+                biased;
+                changed = self.closed.changed() => {
+                    if changed.is_err() {
+                        return Err(ProcessError::Closed);
+                    }
+                }
+                event = self.receiver.recv() => {
+                    return event.ok_or(ProcessError::Closed);
+                }
+            }
+        }
+    }
 }
 
 struct ProcessShared {
@@ -164,16 +190,19 @@ struct ProcessShared {
     turns: Mutex<HashMap<String, mpsc::Sender<AppServerEvent>>>,
     orphan_events: Mutex<HashMap<String, VecDeque<AppServerEvent>>>,
     rate_limits: Mutex<Option<CodexRateLimits>>,
+    closed: watch::Sender<Option<ProcessError>>,
 }
 
 impl ProcessShared {
     fn new() -> Self {
+        let (closed, _receiver) = watch::channel(None);
         Self {
             live: AtomicBool::new(true),
             pending: Mutex::new(HashMap::new()),
             turns: Mutex::new(HashMap::new()),
             orphan_events: Mutex::new(HashMap::new()),
             rate_limits: Mutex::new(None),
+            closed,
         }
     }
 
@@ -181,13 +210,11 @@ impl ProcessShared {
         if !self.live.swap(false, Ordering::AcqRel) {
             return;
         }
+        self.closed.send_replace(Some(error.clone()));
         for (_, sender) in self.pending.lock().await.drain() {
             let _ = sender.send(Err(error.clone()));
         }
-        let turns = std::mem::take(&mut *self.turns.lock().await);
-        for (_, sender) in turns {
-            let _ = sender.try_send(AppServerEvent::Closed(error.clone()));
-        }
+        self.turns.lock().await.clear();
         self.orphan_events.lock().await.clear();
     }
 
@@ -396,7 +423,12 @@ impl CodexProcess {
                 }
             }
         }
-        Ok(TurnEvents { receiver })
+        let closed = self.shared.closed.subscribe();
+        if !self.is_live() {
+            self.shared.turns.lock().await.remove(thread_id);
+            return Err(ProcessError::Closed);
+        }
+        Ok(TurnEvents { receiver, closed })
     }
 
     pub async fn unregister_turn(&self, thread_id: &str) {
@@ -1141,5 +1173,30 @@ mod tests {
         assert!(limits.reached);
         assert_eq!(limits.primary.unwrap().used_percent, 100);
         assert!(shared.orphan_events.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn transport_closure_bypasses_a_full_turn_event_queue() {
+        let shared = ProcessShared::new();
+        let (sender, receiver) = mpsc::channel(1);
+        sender
+            .try_send(AppServerEvent::Notification {
+                method: "test/noisy".to_string(),
+                params: json!({}),
+            })
+            .unwrap();
+        shared
+            .turns
+            .lock()
+            .await
+            .insert("thread-1".to_string(), sender);
+        let mut events = TurnEvents {
+            receiver,
+            closed: shared.closed.subscribe(),
+        };
+
+        shared.close(ProcessError::Closed).await;
+
+        assert!(matches!(events.recv().await, Err(ProcessError::Closed)));
     }
 }

@@ -332,11 +332,12 @@ CLAUDE_API_CODEX_MAX_CONCURRENT=4
 unchanged. Listing one directory twice is a startup error: two children sharing one auth store would
 corrupt its token refresh and would double-count one subscription's capacity. `MAX_CONCURRENT` is
 retained only for environment compatibility: per-home turn concurrency is intentionally unbounded,
-exactly like the Claude fleet, so a home accepts as many simultaneous turns as arrive. The only
-global admission ceiling is the provider-wide concurrency guard shared with the Claude path; the
-per-home in-flight count is just a load signal for selection. Provision each additional home exactly
-like the first — `0700`, owned by the engine user — and authenticate it separately with the device
-flow above.
+exactly like the Claude fleet, so a home accepts as many simultaneous turns as arrive. Codex does
+not use the Claude provider's global admission semaphore or the commercial per-key in-flight
+limiter; the per-home in-flight count is only a load signal for selection. Upstream subscription
+exhaustion, authentication, billing authorization and bounded transport deadlines remain real
+provider/safety boundaries. Provision each additional home exactly like the first — `0700`, owned
+by the engine user — and authenticate it separately with the device flow above.
 
 Home selection is cache-first, mirroring the Claude fleet's affinity layer: a conversation is pinned
 to the home that first served it (via the shared `AffinityStore`, keyed by the same tenant scope and
@@ -363,7 +364,7 @@ retire the old child after its active turns finish, then publish the new generat
 Optional controls:
 
 ```dotenv
-CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT=95
+CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT=100
 CLAUDE_API_CODEX_WINDOW_CAP_USD=1500
 CLAUDE_API_CODEX_HEALTH_INTERVAL_SECS=300
 CLAUDE_API_CODEX_STARTUP_TIMEOUT_MS=20000
@@ -413,7 +414,7 @@ refunds the difference using exact upstream usage.
 
 App-server rate-limit notifications are cached and exported as process/rate-limit metrics, per home
 and in aggregate. A home stops being admitted once a reported window reaches
-`CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT` (95% by default), so the wall is met by a clean `429`
+`CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT` (100% by default), so the wall is met by a clean `429`
 carrying the real reset instead of mid-turn; a missing snapshot is treated as available because that
 endpoint is observational and must never become a hard availability dependency. When every home is
 cooling or out of headroom the client receives one OpenAI-shaped `429` with the soonest recovery,
