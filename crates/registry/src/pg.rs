@@ -280,6 +280,25 @@ impl PgStore {
         Ok(())
     }
 
+    /// Recheck the fence after any blocking lock acquisition and hold the owner row until commit.
+    /// A concurrent `claim_instance` can then either win before this query (and fence us) or wait
+    /// until this transaction has finished, but it cannot replace the epoch between the check and
+    /// the money writes.
+    fn assert_owner_locked(tx: &mut Transaction<'_>, owner: &Owner, ts: i64) -> Result<()> {
+        let valid = tx
+            .query_opt(
+                "SELECT 1 FROM engine_instances
+                  WHERE instance_id=$1 AND owner_epoch=$2 AND lease_until >= $3
+                  FOR UPDATE",
+                &[&owner.instance_id, &owner.epoch, &ts],
+            )?
+            .is_some();
+        if !valid {
+            bail!("engine owner lease is stale or fenced");
+        }
+        Ok(())
+    }
+
     /// Atomically reserve money for one generated request ID. An exact retry is idempotent.
     pub fn reserve_request(
         &mut self,
@@ -356,6 +375,159 @@ impl PgStore {
         )?;
         tx.commit()?;
         Ok(Some(balance))
+    }
+
+    /// Atomically reserve the charged legacy hold and persist its immutable pricing identity.
+    ///
+    /// This method has no production caller in Stage 3B1c.1. The established `reserve_request`
+    /// method remains unchanged for all live traffic; an existing reservation without a snapshot
+    /// is never backfilled because that would invent atomic attribution after the money commit.
+    pub fn reserve_request_with_legacy_snapshot(
+        &mut self,
+        owner: &Owner,
+        key: &str,
+        lease_secs: i64,
+        snapshot: &crate::pricing::LegacyScalarAdmissionSnapshot,
+    ) -> Result<crate::pricing::LegacyScalarReserveOutcome> {
+        use crate::pricing::{
+            LegacyScalarReserveConflict as Conflict, LegacyScalarReserveOutcome as Outcome,
+            LegacyScalarReserveReceipt as Receipt, LegacyScalarSnapshotLookup as Lookup,
+        };
+
+        snapshot.validate()?;
+        if key.trim().is_empty() || lease_secs <= 0 {
+            bail!("invalid PostgreSQL legacy snapshot reservation parameters");
+        }
+        let request_id = snapshot.request_id.as_str();
+        let account_id = snapshot.account_id.as_str();
+        let hold = snapshot.charged_hold_nano;
+        let preflight_ts = now();
+        let mut tx = self.client.transaction()?;
+        Self::assert_owner(&mut tx, owner, preflight_ts)?;
+        tx.query_one(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            &[&request_id],
+        )?;
+        let fence_ts = now();
+        Self::assert_owner_locked(&mut tx, owner, fence_ts)?;
+        if let Some(row) = tx.query_opt(
+            "SELECT account_id,key,hold_nano,balance_after_reserve_nano,owner_instance,
+                    owner_epoch,state
+               FROM reservations
+              WHERE request_id=$1
+              FOR UPDATE",
+            &[&request_id],
+        )? {
+            let stored_account: String = row.get(0);
+            let stored_key: String = row.get(1);
+            let stored_hold: i64 = row.get(2);
+            let balance: i64 = row.get(3);
+            let stored_owner: String = row.get(4);
+            let stored_epoch: i64 = row.get(5);
+            let state: String = row.get(6);
+            let outcome = if stored_account != account_id
+                || stored_key != key
+                || stored_hold != hold
+                || stored_owner != owner.instance_id
+                || stored_epoch != owner.epoch
+            {
+                Outcome::Conflict(Conflict::ReservationIdentity)
+            } else if state != "reserved" && state != "delivering" {
+                Outcome::Conflict(Conflict::TerminalReservation)
+            } else {
+                match crate::pricing::postgres::postgres_legacy_scalar_snapshot_lookup(
+                    &mut tx, request_id,
+                )? {
+                    Lookup::Missing => {
+                        Outcome::Conflict(Conflict::ExistingReservationWithoutSnapshot)
+                    }
+                    Lookup::NonLegacy => Outcome::Conflict(Conflict::ExistingNonLegacySnapshot),
+                    Lookup::Legacy(stored) if stored.as_ref() == snapshot => {
+                        Outcome::Unchanged(Receipt {
+                            balance_after_reserve_nano: balance,
+                            snapshot: *stored,
+                        })
+                    }
+                    Lookup::Legacy(_) => Outcome::Conflict(Conflict::SnapshotPayload),
+                }
+            };
+            tx.commit()?;
+            return Ok(outcome);
+        }
+
+        const OVERDRAFT_NANO: i64 = 1_000_000_000;
+        let Some(row) = tx.query_opt(
+            "UPDATE accounts SET balance_nano=balance_nano-$1,reserved_nano=reserved_nano+$1
+              WHERE id=$2 AND status='active' AND balance_nano+$3 >= $1
+              RETURNING balance_nano",
+            &[&hold, &account_id, &OVERDRAFT_NANO],
+        )?
+        else {
+            tx.rollback()?;
+            return Ok(Outcome::NotReserved);
+        };
+        let balance: i64 = row.get(0);
+        let key_updated = tx.execute(
+            "UPDATE api_keys SET reserved_nano=reserved_nano+$1
+              WHERE key=$2 AND account_id=$3 AND status='active'
+                AND (expires_ts IS NULL OR expires_ts>floor(EXTRACT(EPOCH FROM clock_timestamp()))::bigint)
+                AND (spend_limit_nano IS NULL OR spent_nano+reserved_nano+$1<=spend_limit_nano)",
+            &[&hold, &key, &account_id],
+        )?;
+        if key_updated != 1 {
+            tx.rollback()?;
+            return Ok(Outcome::NotReserved);
+        }
+        let reservation_ts = now();
+        Self::assert_owner_locked(&mut tx, owner, reservation_ts)?;
+        tx.execute(
+            "INSERT INTO reservations(request_id,account_id,key,hold_nano,balance_after_reserve_nano,
+                 owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'reserved',$9,$9)",
+            &[
+                &request_id,
+                &account_id,
+                &key,
+                &hold,
+                &balance,
+                &owner.instance_id,
+                &owner.epoch,
+                &(reservation_ts.saturating_add(lease_secs)),
+                &reservation_ts,
+            ],
+        )?;
+        if let Err(error) =
+            crate::pricing::postgres::postgres_insert_legacy_scalar_admission_snapshot(
+                &mut tx, snapshot,
+            )
+        {
+            let _ = tx.rollback();
+            return Err(error);
+        }
+        Self::assert_owner_locked(&mut tx, owner, now())?;
+        tx.commit()?;
+        Ok(Outcome::Inserted(Receipt {
+            balance_after_reserve_nano: balance,
+            snapshot: snapshot.clone(),
+        }))
+    }
+
+    pub fn legacy_scalar_admission_snapshot(
+        &mut self,
+        request_id: &str,
+    ) -> Result<Option<crate::pricing::LegacyScalarAdmissionSnapshot>> {
+        use crate::pricing::LegacyScalarSnapshotLookup as Lookup;
+
+        match crate::pricing::postgres::postgres_legacy_scalar_snapshot_lookup(
+            &mut self.client,
+            request_id,
+        )? {
+            Lookup::Missing => Ok(None),
+            Lookup::Legacy(snapshot) => Ok(Some(*snapshot)),
+            Lookup::NonLegacy => {
+                bail!("pricing admission snapshot is not a legacy scalar snapshot")
+            }
+        }
     }
 
     /// Mark that a successful upstream response is about to be delivered. Recovery charges the hold
@@ -2325,12 +2497,81 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
 
-    /// Run with an isolated database, for example:
-    /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry pg::tests::stage2_fault_matrix`
+    fn legacy_snapshot(
+        request_id: &str,
+        account_id: &str,
+        official_hold_nano: i64,
+        charged_hold_nano: i64,
+    ) -> crate::pricing::LegacyScalarAdmissionSnapshot {
+        crate::pricing::LegacyScalarAdmissionSnapshot::new(
+            crate::pricing::LegacyScalarAdmissionSnapshotInput {
+                request_id: request_id.into(),
+                account_id: account_id.into(),
+                provider: crate::pricing::SnapshotProvider::Anthropic,
+                requested_model_id: "claude-sonnet-5".into(),
+                canonical_model_id: "claude-sonnet-5".into(),
+                alias_generation: 1,
+                tariff_schedule_id: "anthropic/standard/sonnet-current/v1".into(),
+                tariff_priced_ts: 1_788_220_800,
+                admission_ts: 1_788_220_801,
+                payable_multiplier_bp: 2_000,
+                official_hold_nano,
+                charged_hold_nano,
+                premium_modifiers: crate::pricing::LegacyPremiumModifiers::AnthropicV1 {
+                    speed: crate::pricing::SnapshotAnthropicSpeed::Standard,
+                    inference_geo: crate::pricing::SnapshotAnthropicInferenceGeo::Global,
+                    inference_geo_basis_points: 10_000,
+                },
+            },
+        )
+        .unwrap()
+    }
+
+    fn openai_legacy_snapshot(
+        request_id: &str,
+        account_id: &str,
+        official_hold_nano: i64,
+        charged_hold_nano: i64,
+    ) -> crate::pricing::LegacyScalarAdmissionSnapshot {
+        crate::pricing::LegacyScalarAdmissionSnapshot::new(
+            crate::pricing::LegacyScalarAdmissionSnapshotInput {
+                request_id: request_id.into(),
+                account_id: account_id.into(),
+                provider: crate::pricing::SnapshotProvider::OpenAi,
+                requested_model_id: "gpt-5.6".into(),
+                canonical_model_id: "gpt-5.6-sol".into(),
+                alias_generation: 1,
+                tariff_schedule_id: "openai/gpt-5.6-sol/epoch-0/v1".into(),
+                tariff_priced_ts: 1_788_220_800,
+                admission_ts: 1_788_220_801,
+                payable_multiplier_bp: 2_000,
+                official_hold_nano,
+                charged_hold_nano,
+                premium_modifiers: crate::pricing::LegacyPremiumModifiers::OpenAiV1 {
+                    service_tier: crate::pricing::SnapshotOpenAiServiceTier::Fast,
+                    service_tier_multiplier_basis_points: 25_000,
+                    context_tier: crate::pricing::SnapshotOpenAiContextTier::Long,
+                    input_multiplier_basis_points: 20_000,
+                    output_multiplier_basis_points: 15_000,
+                },
+            },
+        )
+        .unwrap()
+    }
+
+    /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+    /// pg::tests::postgres_legacy_snapshot_contract_matrix`
     #[test]
-    fn stage2_fault_matrix() {
+    fn postgres_legacy_snapshot_contract_matrix() {
+        use crate::pricing::{
+            LegacyScalarReserveConflict as Conflict, LegacyScalarReserveOutcome as O,
+        };
+
         let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
-            eprintln!("skipping PostgreSQL fault matrix: CLAUDE_API_TEST_DATABASE_URL is unset");
+            eprintln!(
+                "skipping PostgreSQL legacy snapshot contract: \
+                 CLAUDE_API_TEST_DATABASE_URL is unset"
+            );
             return;
         };
         let mut pg = PgStore::connect(&url).unwrap();
@@ -2343,6 +2584,501 @@ mod tests {
                 &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
             )
             .unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+            .unwrap();
+        pg.migrate().unwrap();
+        pg.client
+            .batch_execute(
+                "TRUNCATE account_policy_bindings,account_policy_rules,account_policy_versions,
+                 provider_switch_head,provider_switch_entries,provider_switch_versions,
+                 pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions,
+                 settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances,
+                 usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+
+        let owner = pg.claim_instance("snapshot-engine", 600).unwrap();
+        pg.account_create("snapshot-account", None, 2_000).unwrap();
+        pg.account_topup("snapshot-account", 1_000, None).unwrap();
+        pg.key_issue("snapshot-key", "snapshot-account", None)
+            .unwrap();
+        let snapshot = legacy_snapshot("snapshot-request", "snapshot-account", 500, 100);
+
+        let inserted = pg
+            .reserve_request_with_legacy_snapshot(&owner, "snapshot-key", 60, &snapshot)
+            .unwrap();
+        let O::Inserted(inserted) = inserted else {
+            panic!("first PostgreSQL snapshot reservation was not inserted");
+        };
+        assert_eq!(inserted.balance_after_reserve_nano, 900);
+        assert_eq!(inserted.snapshot, snapshot);
+        assert_eq!(
+            pg.legacy_scalar_admission_snapshot("snapshot-request")
+                .unwrap()
+                .unwrap(),
+            snapshot
+        );
+        let reserved_lease: i64 = pg
+            .client
+            .query_one(
+                "SELECT lease_until FROM reservations WHERE request_id='snapshot-request'",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert!(matches!(
+            pg.reserve_request_with_legacy_snapshot(&owner, "snapshot-key", 9_999, &snapshot)
+                .unwrap(),
+            O::Unchanged(_)
+        ));
+        assert_eq!(
+            pg.client
+                .query_one(
+                    "SELECT lease_until FROM reservations WHERE request_id='snapshot-request'",
+                    &[],
+                )
+                .unwrap()
+                .get::<_, i64>(0),
+            reserved_lease
+        );
+        assert!(pg.mark_delivering(&owner, "snapshot-request", 60).unwrap());
+        let delivering_lease: i64 = pg
+            .client
+            .query_one(
+                "SELECT lease_until FROM reservations WHERE request_id='snapshot-request'",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert!(matches!(
+            pg.reserve_request_with_legacy_snapshot(&owner, "snapshot-key", 9_999, &snapshot)
+                .unwrap(),
+            O::Unchanged(_)
+        ));
+        assert_eq!(
+            pg.client
+                .query_one(
+                    "SELECT lease_until FROM reservations WHERE request_id='snapshot-request'",
+                    &[],
+                )
+                .unwrap()
+                .get::<_, i64>(0),
+            delivering_lease
+        );
+
+        let different = legacy_snapshot("snapshot-request", "snapshot-account", 501, 100);
+        assert_eq!(
+            pg.reserve_request_with_legacy_snapshot(&owner, "snapshot-key", 60, &different)
+                .unwrap(),
+            O::Conflict(Conflict::SnapshotPayload)
+        );
+        assert_eq!(
+            pg.reserve_request_with_legacy_snapshot(&owner, "different-key", 60, &snapshot)
+                .unwrap(),
+            O::Conflict(Conflict::ReservationIdentity)
+        );
+
+        assert_eq!(
+            pg.reserve_request(
+                &owner,
+                "legacy-only",
+                "snapshot-account",
+                "snapshot-key",
+                50,
+                60
+            )
+            .unwrap(),
+            Some(850)
+        );
+        let legacy_only = legacy_snapshot("legacy-only", "snapshot-account", 250, 50);
+        assert_eq!(
+            pg.reserve_request_with_legacy_snapshot(&owner, "snapshot-key", 60, &legacy_only)
+                .unwrap(),
+            O::Conflict(Conflict::ExistingReservationWithoutSnapshot)
+        );
+        assert!(pg
+            .legacy_scalar_admission_snapshot("legacy-only")
+            .unwrap()
+            .is_none());
+
+        pg.client
+            .batch_execute(
+                "DROP TRIGGER IF EXISTS reject_test_legacy_snapshot
+                     ON pricing_admission_snapshots;
+                 DROP FUNCTION IF EXISTS reject_test_legacy_snapshot();
+                 CREATE FUNCTION reject_test_legacy_snapshot()
+                 RETURNS trigger LANGUAGE plpgsql AS $$
+                 BEGIN
+                     IF NEW.request_id = 'rollback-request' THEN
+                         RAISE EXCEPTION 'injected snapshot failure';
+                     END IF;
+                     RETURN NEW;
+                 END;
+                 $$;
+                 CREATE TRIGGER reject_test_legacy_snapshot
+                 BEFORE INSERT ON pricing_admission_snapshots
+                 FOR EACH ROW EXECUTE FUNCTION reject_test_legacy_snapshot();",
+            )
+            .unwrap();
+        let before: (i64, i64, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT a.balance_nano,a.reserved_nano,k.reserved_nano
+                       FROM accounts a JOIN api_keys k ON k.account_id=a.id
+                      WHERE a.id='snapshot-account' AND k.key='snapshot-key'",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2))
+        };
+        let rollback = legacy_snapshot("rollback-request", "snapshot-account", 500, 100);
+        assert!(pg
+            .reserve_request_with_legacy_snapshot(&owner, "snapshot-key", 60, &rollback)
+            .is_err());
+        let after: (i64, i64, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT a.balance_nano,a.reserved_nano,k.reserved_nano
+                       FROM accounts a JOIN api_keys k ON k.account_id=a.id
+                      WHERE a.id='snapshot-account' AND k.key='snapshot-key'",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2))
+        };
+        assert_eq!(after, before);
+        let rollback_counts = pg
+            .client
+            .query_one(
+                "SELECT
+                     (SELECT COUNT(*) FROM reservations WHERE request_id='rollback-request'),
+                     (SELECT COUNT(*) FROM pricing_admission_snapshots
+                       WHERE request_id='rollback-request')",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                rollback_counts.get::<_, i64>(0),
+                rollback_counts.get::<_, i64>(1),
+            ),
+            (0, 0)
+        );
+        pg.client
+            .batch_execute(
+                "DROP TRIGGER reject_test_legacy_snapshot ON pricing_admission_snapshots;
+                 DROP FUNCTION reject_test_legacy_snapshot();",
+            )
+            .unwrap();
+
+        pg.account_create("disabled-account", None, 2_000).unwrap();
+        pg.account_topup("disabled-account", 1_000, None).unwrap();
+        pg.key_issue("disabled-key", "disabled-account", None)
+            .unwrap();
+        pg.key_set_status("disabled-key", "disabled").unwrap();
+        let disabled = legacy_snapshot("disabled-request", "disabled-account", 500, 100);
+        assert_eq!(
+            pg.reserve_request_with_legacy_snapshot(&owner, "disabled-key", 60, &disabled)
+                .unwrap(),
+            O::NotReserved
+        );
+        let disabled_counts = pg
+            .client
+            .query_one(
+                "SELECT
+                     (SELECT COUNT(*) FROM reservations WHERE request_id='disabled-request'),
+                     (SELECT COUNT(*) FROM pricing_admission_snapshots
+                       WHERE request_id='disabled-request')",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                disabled_counts.get::<_, i64>(0),
+                disabled_counts.get::<_, i64>(1),
+            ),
+            (0, 0)
+        );
+
+        pg.account_create("openai-snapshot-account", None, 2_000)
+            .unwrap();
+        pg.account_topup("openai-snapshot-account", 1_000, None)
+            .unwrap();
+        pg.key_issue("openai-snapshot-key", "openai-snapshot-account", None)
+            .unwrap();
+        let openai_snapshot = openai_legacy_snapshot(
+            "openai-snapshot-request",
+            "openai-snapshot-account",
+            500,
+            100,
+        );
+        assert!(matches!(
+            pg.reserve_request_with_legacy_snapshot(
+                &owner,
+                "openai-snapshot-key",
+                60,
+                &openai_snapshot
+            )
+            .unwrap(),
+            O::Inserted(_)
+        ));
+        assert_eq!(
+            pg.legacy_scalar_admission_snapshot("openai-snapshot-request")
+                .unwrap()
+                .unwrap(),
+            openai_snapshot
+        );
+        assert!(pg
+            .legacy_scalar_admission_snapshot("invalid\0request")
+            .is_err());
+
+        let concurrent_snapshot =
+            legacy_snapshot("concurrent-snapshot-request", "snapshot-account", 125, 25);
+        let concurrent_money_before: (i64, i64, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT a.balance_nano,a.reserved_nano,k.reserved_nano
+                       FROM accounts a JOIN api_keys k ON k.account_id=a.id
+                      WHERE a.id='snapshot-account' AND k.key='snapshot-key'",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2))
+        };
+        let barrier = Arc::new(Barrier::new(3));
+        let spawn_reserve = |barrier: Arc<Barrier>| {
+            let worker_url = url.clone();
+            let worker_owner = owner.clone();
+            let worker_snapshot = concurrent_snapshot.clone();
+            std::thread::spawn(move || {
+                let mut worker = PgStore::connect(&worker_url).unwrap();
+                worker
+                    .client
+                    .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+                    .unwrap();
+                barrier.wait();
+                worker
+                    .reserve_request_with_legacy_snapshot(
+                        &worker_owner,
+                        "snapshot-key",
+                        60,
+                        &worker_snapshot,
+                    )
+                    .unwrap()
+            })
+        };
+        let first = spawn_reserve(barrier.clone());
+        let second = spawn_reserve(barrier.clone());
+        barrier.wait();
+        let outcomes = [first.join().unwrap(), second.join().unwrap()];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, O::Inserted(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, O::Unchanged(_)))
+                .count(),
+            1
+        );
+        let concurrent_money_after: (i64, i64, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT a.balance_nano,a.reserved_nano,k.reserved_nano
+                       FROM accounts a JOIN api_keys k ON k.account_id=a.id
+                      WHERE a.id='snapshot-account' AND k.key='snapshot-key'",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2))
+        };
+        assert_eq!(
+            concurrent_money_after,
+            (
+                concurrent_money_before.0 - 25,
+                concurrent_money_before.1 + 25,
+                concurrent_money_before.2 + 25,
+            )
+        );
+
+        pg.cancel_request("snapshot-request").unwrap();
+        assert_eq!(
+            pg.reserve_request_with_legacy_snapshot(&owner, "snapshot-key", 60, &snapshot)
+                .unwrap(),
+            O::Conflict(Conflict::TerminalReservation)
+        );
+        assert_eq!(
+            pg.legacy_scalar_admission_snapshot("snapshot-request")
+                .unwrap()
+                .unwrap(),
+            snapshot
+        );
+
+        let counts = pg
+            .client
+            .query_one(
+                "SELECT
+                     (SELECT COUNT(*) FROM reservations WHERE request_id='snapshot-request'),
+                     (SELECT COUNT(*) FROM pricing_admission_snapshots
+                       WHERE request_id='snapshot-request')",
+                &[],
+            )
+            .unwrap();
+        assert_eq!((counts.get::<_, i64>(0), counts.get::<_, i64>(1)), (1, 1));
+
+        // Deterministically fence an old writer while it is waiting for this request's advisory
+        // lock. The locked recheck after the wait must reject it without touching customer money.
+        let fence_snapshot = legacy_snapshot("fence-race-request", "snapshot-account", 500, 100);
+        let money_before_fence: (i64, i64, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT a.balance_nano,a.reserved_nano,k.reserved_nano
+                       FROM accounts a JOIN api_keys k ON k.account_id=a.id
+                      WHERE a.id='snapshot-account' AND k.key='snapshot-key'",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2))
+        };
+        let mut blocker = PgStore::connect(&url).unwrap();
+        blocker
+            .client
+            .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+            .unwrap();
+        blocker
+            .client
+            .query_one(
+                "SELECT pg_advisory_lock(hashtextextended($1, 0))",
+                &[&fence_snapshot.request_id.as_str()],
+            )
+            .unwrap();
+
+        let worker_url = url.clone();
+        let worker_owner = owner.clone();
+        let worker_snapshot = fence_snapshot.clone();
+        let worker = std::thread::spawn(
+            move || -> anyhow::Result<crate::pricing::LegacyScalarReserveOutcome> {
+                let mut worker = PgStore::connect(&worker_url)?;
+                worker
+                    .client
+                    .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")?;
+                worker.reserve_request_with_legacy_snapshot(
+                    &worker_owner,
+                    "snapshot-key",
+                    60,
+                    &worker_snapshot,
+                )
+            },
+        );
+
+        let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let waiting: i64 = pg
+                .client
+                .query_one(
+                    "SELECT COUNT(*)::bigint FROM pg_locks
+                      WHERE locktype='advisory' AND NOT granted",
+                    &[],
+                )
+                .unwrap()
+                .get(0);
+            if waiting > 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < wait_deadline,
+                "snapshot writer did not reach the advisory-lock wait"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        let replacement_owner = pg.claim_instance("snapshot-engine", 600).unwrap();
+        assert!(replacement_owner.epoch > owner.epoch);
+        let unlocked: bool = blocker
+            .client
+            .query_one(
+                "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+                &[&fence_snapshot.request_id.as_str()],
+            )
+            .unwrap()
+            .get(0);
+        assert!(unlocked);
+        let fenced_error = worker
+            .join()
+            .expect("snapshot fence worker panicked")
+            .unwrap_err();
+        assert!(fenced_error
+            .to_string()
+            .contains("engine owner lease is stale or fenced"));
+
+        let money_after_fence: (i64, i64, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT a.balance_nano,a.reserved_nano,k.reserved_nano
+                       FROM accounts a JOIN api_keys k ON k.account_id=a.id
+                      WHERE a.id='snapshot-account' AND k.key='snapshot-key'",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2))
+        };
+        assert_eq!(money_after_fence, money_before_fence);
+        let fence_counts = pg
+            .client
+            .query_one(
+                "SELECT
+                     (SELECT COUNT(*) FROM reservations WHERE request_id='fence-race-request'),
+                     (SELECT COUNT(*) FROM pricing_admission_snapshots
+                       WHERE request_id='fence-race-request')",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            (fence_counts.get::<_, i64>(0), fence_counts.get::<_, i64>(1),),
+            (0, 0)
+        );
+        pg.client
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+    }
+
+    /// Run with an isolated database, for example:
+    /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry pg::tests::stage2_fault_matrix`
+    #[test]
+    fn stage2_fault_matrix() {
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!("skipping PostgreSQL fault matrix: CLAUDE_API_TEST_DATABASE_URL is unset");
+            return;
+        };
+        // Keep the destructive-test lock on a dedicated session: this matrix intentionally drops
+        // and recreates its working PgStore while exercising crash recovery.
+        let mut lock_holder = PgStore::connect(&url).unwrap();
+        lock_holder
+            .client
+            .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+            .unwrap();
+        lock_holder
+            .client
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        let mut pg = PgStore::connect(&url).unwrap();
         pg.client
             .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
             .unwrap();
@@ -3775,7 +4511,8 @@ mod tests {
         pg.client.batch_execute("ROLLBACK").unwrap();
         let restored: i64 = pg.client.query_one(DIVERGENCE_SQL, &[]).unwrap().get(0);
         assert_eq!(restored, 0);
-        pg.client
+        lock_holder
+            .client
             .query_one(
                 "SELECT pg_advisory_unlock($1)",
                 &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],

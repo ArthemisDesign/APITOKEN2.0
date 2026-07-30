@@ -9,15 +9,18 @@ use super::{
     expectation_matches, invalid, missing, normalize_catalog, normalize_policy, normalize_switches,
     policy_expectation_matches, require_id, validate_account_policy,
     validate_account_policy_activation, validate_account_policy_binding,
-    validate_account_policy_shape, validate_active_expectation, validate_policy_active_expectation,
+    validate_account_policy_shape, validate_active_expectation,
+    validate_legacy_snapshot_request_id, validate_policy_active_expectation,
     validate_pricing_catalog, validate_provider_switches, validate_version_target, AccountClass,
     AccountPolicyActivationSpec, AccountPolicyBindingSpec, AccountPolicyRuleSpec,
     AccountPolicySpec, ActiveAccountPolicy, ActiveExpectation, ActivePolicyTarget,
-    FundingEnforcement, PolicyActiveExpectation, PolicyBindingState, PolicyEnforcement,
-    PolicyOwnerType, PolicyRuleScope, PricingCatalogEntrySpec, PricingCatalogSpec, PricingMode,
-    PricingMutation, PricingPolicySnapshot, PricingReadBundle, PricingRejection,
-    ProviderSwitchEntrySpec, ProviderSwitchScope, ProviderSwitchSpec, ReconciliationState,
-    RuleOrigin, VersionTarget,
+    FundingEnforcement, LegacyPremiumModifiers, LegacyScalarAdmissionSnapshot,
+    LegacyScalarAdmissionSnapshotInput, LegacyScalarSnapshotLookup, PolicyActiveExpectation,
+    PolicyBindingState, PolicyEnforcement, PolicyOwnerType, PolicyRuleScope,
+    PricingCatalogEntrySpec, PricingCatalogSpec, PricingMode, PricingMutation,
+    PricingPolicySnapshot, PricingReadBundle, PricingRejection, ProviderSwitchEntrySpec,
+    ProviderSwitchScope, ProviderSwitchSpec, ReconciliationState, RuleOrigin, SnapshotProvider,
+    VersionTarget,
 };
 use anyhow::{bail, Context, Result};
 use postgres::{Client, GenericClient, IsolationLevel, Transaction};
@@ -81,6 +84,103 @@ fn policy_lock_key(account_id: &str) -> String {
 }
 
 const SWITCH_LOCK_KEY: &str = "multi-discount:switches";
+
+pub(crate) fn postgres_legacy_scalar_snapshot_lookup<C: GenericClient>(
+    client: &mut C,
+    request_id: &str,
+) -> Result<LegacyScalarSnapshotLookup> {
+    validate_legacy_snapshot_request_id(request_id)?;
+    let Some(row) = client
+        .query_opt(
+            "SELECT snapshot_kind,schema_version,account_id,provider_id,requested_model_id,
+                    canonical_model_id,alias_generation,pricing_mode,rule_origin,
+                    tariff_schedule_id,tariff_priced_ts,admission_ts,payable_multiplier_bp,
+                    official_hold_nano,charged_hold_nano,premium_modifiers::text,snapshot_digest
+               FROM pricing_admission_snapshots
+              WHERE request_id=$1",
+            &[&request_id],
+        )
+        .context("read PostgreSQL pricing admission snapshot")?
+    else {
+        return Ok(LegacyScalarSnapshotLookup::Missing);
+    };
+
+    let snapshot_kind: String = row.get(0);
+    if snapshot_kind != "legacy_scalar" {
+        return Ok(LegacyScalarSnapshotLookup::NonLegacy);
+    }
+    let pricing_mode: String = row.get(7);
+    let rule_origin: String = row.get(8);
+    if pricing_mode != "legacy_scalar" || rule_origin != "legacy" {
+        bail!("stored legacy scalar snapshot has an invalid fixed shape");
+    }
+    let provider_id: String = row.get(3);
+    let premium_modifiers_json: String = row.get(15);
+    let snapshot = LegacyScalarAdmissionSnapshot::from_stored(
+        row.get(1),
+        LegacyScalarAdmissionSnapshotInput {
+            request_id: request_id.to_owned(),
+            account_id: row.get(2),
+            provider: SnapshotProvider::from_db(&provider_id)?,
+            requested_model_id: row.get(4),
+            canonical_model_id: row.get(5),
+            alias_generation: row.get(6),
+            tariff_schedule_id: row.get(9),
+            tariff_priced_ts: row.get(10),
+            admission_ts: row.get(11),
+            payable_multiplier_bp: row.get(12),
+            official_hold_nano: row.get(13),
+            charged_hold_nano: row.get(14),
+            premium_modifiers: LegacyPremiumModifiers::from_json(&premium_modifiers_json)?,
+        },
+        row.get(16),
+    )?;
+    Ok(LegacyScalarSnapshotLookup::Legacy(Box::new(snapshot)))
+}
+
+pub(crate) fn postgres_insert_legacy_scalar_admission_snapshot<C: GenericClient>(
+    client: &mut C,
+    snapshot: &LegacyScalarAdmissionSnapshot,
+) -> Result<()> {
+    snapshot.validate()?;
+    let provider_id = snapshot.provider.as_str();
+    let premium_modifiers = snapshot.premium_modifiers_json()?;
+    let snapshot_digest = snapshot.snapshot_digest().as_str();
+    let inserted = client
+        .execute(
+            "INSERT INTO pricing_admission_snapshots(
+                 request_id,account_id,snapshot_kind,schema_version,provider_id,
+                 requested_model_id,canonical_model_id,alias_generation,pricing_mode,rule_origin,
+                 payable_multiplier_bp,tariff_schedule_id,tariff_priced_ts,admission_ts,
+                 official_hold_nano,charged_hold_nano,premium_modifiers,snapshot_digest
+             ) VALUES(
+                 $1,$2,'legacy_scalar',$3,$4,$5,$6,$7,'legacy_scalar','legacy',
+                 $8,$9,$10,$11,$12,$13,$14::text::jsonb,$15
+             )",
+            &[
+                &snapshot.request_id,
+                &snapshot.account_id,
+                &snapshot.schema_version,
+                &provider_id,
+                &snapshot.requested_model_id,
+                &snapshot.canonical_model_id,
+                &snapshot.alias_generation,
+                &snapshot.payable_multiplier_bp,
+                &snapshot.tariff_schedule_id,
+                &snapshot.tariff_priced_ts,
+                &snapshot.admission_ts,
+                &snapshot.official_hold_nano,
+                &snapshot.charged_hold_nano,
+                &premium_modifiers,
+                &snapshot_digest,
+            ],
+        )
+        .context("insert PostgreSQL legacy scalar admission snapshot")?;
+    if inserted != 1 {
+        bail!("PostgreSQL legacy scalar admission snapshot insert changed no row");
+    }
+    Ok(())
+}
 
 fn catalog_by_generation<C: GenericClient>(
     client: &mut C,

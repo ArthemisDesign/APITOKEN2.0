@@ -2674,6 +2674,98 @@ pub fn sqlite_reserve_request(
     Ok(Some(balance))
 }
 
+/// Atomically reserve the charged legacy hold and persist its immutable pricing identity.
+///
+/// This is a dormant Stage 3B bridge primitive. The existing `sqlite_reserve_request` path remains
+/// unchanged and never requires or creates a snapshot. An existing reservation without a snapshot
+/// is deliberately a conflict: filling attribution in after the money commit would fabricate an
+/// atomic history that did not occur.
+pub fn sqlite_reserve_request_with_legacy_snapshot(
+    conn: &Connection,
+    key: &str,
+    lease_secs: i64,
+    snapshot: &pricing::LegacyScalarAdmissionSnapshot,
+) -> Result<pricing::LegacyScalarReserveOutcome> {
+    use pricing::{
+        LegacyScalarReserveConflict as Conflict, LegacyScalarReserveOutcome as Outcome,
+        LegacyScalarReserveReceipt as Receipt, LegacyScalarSnapshotLookup as Lookup,
+    };
+
+    snapshot.validate()?;
+    if key.trim().is_empty() || lease_secs <= 0 {
+        anyhow::bail!("invalid SQLite legacy snapshot reservation parameters");
+    }
+
+    let request_id = snapshot.request_id.as_str();
+    let account_id = snapshot.account_id.as_str();
+    let hold_nano = snapshot.charged_hold_nano;
+    let tx = conn.unchecked_transaction()?;
+    let existing = tx.query_row(
+        "SELECT account_id,key,hold_nano,state,balance_after_reserve_nano \
+         FROM billing_reservations WHERE request_id=?1",
+        rusqlite::params![request_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        },
+    );
+    match existing {
+        Ok((stored_account, stored_key, stored_hold, state, balance)) => {
+            let outcome =
+                if stored_account != account_id || stored_key != key || stored_hold != hold_nano {
+                    Outcome::Conflict(Conflict::ReservationIdentity)
+                } else if state != "reserved" && state != "delivering" {
+                    Outcome::Conflict(Conflict::TerminalReservation)
+                } else {
+                    match pricing::sqlite_legacy_scalar_snapshot_lookup(&tx, request_id)? {
+                        Lookup::Missing => {
+                            Outcome::Conflict(Conflict::ExistingReservationWithoutSnapshot)
+                        }
+                        Lookup::NonLegacy => Outcome::Conflict(Conflict::ExistingNonLegacySnapshot),
+                        Lookup::Legacy(stored) if stored.as_ref() == snapshot => {
+                            Outcome::Unchanged(Receipt {
+                                balance_after_reserve_nano: balance,
+                                snapshot: *stored,
+                            })
+                        }
+                        Lookup::Legacy(_) => Outcome::Conflict(Conflict::SnapshotPayload),
+                    }
+                };
+            tx.commit()?;
+            return Ok(outcome);
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let Some(balance) = account_reserve_for_key(&tx, account_id, key, hold_nano)? else {
+        tx.rollback()?;
+        return Ok(Outcome::NotReserved);
+    };
+    let timestamp = now();
+    tx.execute(
+        "INSERT INTO billing_reservations( \
+           request_id,account_id,key,hold_nano,state,balance_after_reserve_nano,lease_until,created_ts,updated_ts) \
+         VALUES(?1,?2,?3,?4,'reserved',?5,?6,?7,?7)",
+        rusqlite::params![request_id, account_id, key, hold_nano, balance,
+            timestamp.saturating_add(lease_secs), timestamp],
+    )?;
+    if let Err(error) = pricing::sqlite_insert_legacy_scalar_admission_snapshot(&tx, snapshot) {
+        let _ = tx.rollback();
+        return Err(error);
+    }
+    tx.commit()?;
+    Ok(Outcome::Inserted(Receipt {
+        balance_after_reserve_nano: balance,
+        snapshot: snapshot.clone(),
+    }))
+}
+
 /// Mark a reservation as provider-accepted before handing its response body to the client.
 pub fn sqlite_mark_delivering(
     conn: &Connection,
@@ -4688,6 +4780,64 @@ mod tests {
         key_issue(c, key, acct, None).unwrap();
     }
 
+    fn legacy_snapshot(
+        request_id: &str,
+        account_id: &str,
+        official_hold_nano: i64,
+        charged_hold_nano: i64,
+    ) -> pricing::LegacyScalarAdmissionSnapshot {
+        pricing::LegacyScalarAdmissionSnapshot::new(pricing::LegacyScalarAdmissionSnapshotInput {
+            request_id: request_id.into(),
+            account_id: account_id.into(),
+            provider: pricing::SnapshotProvider::Anthropic,
+            requested_model_id: "claude-sonnet-5".into(),
+            canonical_model_id: "claude-sonnet-5".into(),
+            alias_generation: 1,
+            tariff_schedule_id: "anthropic/standard/sonnet-current/v1".into(),
+            tariff_priced_ts: 1_788_220_800,
+            admission_ts: 1_788_220_801,
+            payable_multiplier_bp: 2_000,
+            official_hold_nano,
+            charged_hold_nano,
+            premium_modifiers: pricing::LegacyPremiumModifiers::AnthropicV1 {
+                speed: pricing::SnapshotAnthropicSpeed::Standard,
+                inference_geo: pricing::SnapshotAnthropicInferenceGeo::Global,
+                inference_geo_basis_points: 10_000,
+            },
+        })
+        .unwrap()
+    }
+
+    fn openai_legacy_snapshot(
+        request_id: &str,
+        account_id: &str,
+        official_hold_nano: i64,
+        charged_hold_nano: i64,
+    ) -> pricing::LegacyScalarAdmissionSnapshot {
+        pricing::LegacyScalarAdmissionSnapshot::new(pricing::LegacyScalarAdmissionSnapshotInput {
+            request_id: request_id.into(),
+            account_id: account_id.into(),
+            provider: pricing::SnapshotProvider::OpenAi,
+            requested_model_id: "gpt-5.6".into(),
+            canonical_model_id: "gpt-5.6-sol".into(),
+            alias_generation: 1,
+            tariff_schedule_id: "openai/gpt-5.6-sol/epoch-0/v1".into(),
+            tariff_priced_ts: 1_788_220_800,
+            admission_ts: 1_788_220_801,
+            payable_multiplier_bp: 2_000,
+            official_hold_nano,
+            charged_hold_nano,
+            premium_modifiers: pricing::LegacyPremiumModifiers::OpenAiV1 {
+                service_tier: pricing::SnapshotOpenAiServiceTier::Fast,
+                service_tier_multiplier_basis_points: 25_000,
+                context_tier: pricing::SnapshotOpenAiContextTier::Long,
+                input_multiplier_basis_points: 20_000,
+                output_multiplier_basis_points: 15_000,
+            },
+        })
+        .unwrap()
+    }
+
     #[test]
     fn authoritative_database_uses_full_synchronous_durability() {
         let c = db();
@@ -4868,6 +5018,278 @@ mod tests {
             .unwrap(),
             1,
         );
+        assert!(pricing::sqlite_legacy_scalar_admission_snapshot(&c, "req")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn sqlite_legacy_snapshot_reserve_is_atomic_and_exactly_idempotent() {
+        use pricing::{LegacyScalarReserveConflict as Conflict, LegacyScalarReserveOutcome as O};
+
+        let c = db();
+        acct_with_key(&c, "snapshot-account", "snapshot-key", 1_000, 2_000);
+        let snapshot = legacy_snapshot("snapshot-request", "snapshot-account", 500, 100);
+
+        let inserted =
+            sqlite_reserve_request_with_legacy_snapshot(&c, "snapshot-key", 60, &snapshot).unwrap();
+        let O::Inserted(inserted) = inserted else {
+            panic!("first exact snapshot reservation was not inserted");
+        };
+        assert_eq!(inserted.balance_after_reserve_nano, 900);
+        assert_eq!(inserted.snapshot, snapshot);
+        assert_eq!(
+            pricing::sqlite_legacy_scalar_admission_snapshot(&c, "snapshot-request")
+                .unwrap()
+                .unwrap(),
+            snapshot
+        );
+        let original_lease: i64 = c
+            .query_row(
+                "SELECT lease_until FROM billing_reservations WHERE request_id='snapshot-request'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let replay =
+            sqlite_reserve_request_with_legacy_snapshot(&c, "snapshot-key", 9_999, &snapshot)
+                .unwrap();
+        let O::Unchanged(replay) = replay else {
+            panic!("exact snapshot replay was not idempotent");
+        };
+        assert_eq!(replay.balance_after_reserve_nano, 900);
+        assert_eq!(replay.snapshot, snapshot);
+        assert_eq!(
+            c.query_row(
+                "SELECT lease_until FROM billing_reservations WHERE request_id='snapshot-request'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            original_lease
+        );
+        assert!(sqlite_mark_delivering(&c, "snapshot-request", 60).unwrap());
+        let delivering_lease: i64 = c
+            .query_row(
+                "SELECT lease_until FROM billing_reservations WHERE request_id='snapshot-request'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(matches!(
+            sqlite_reserve_request_with_legacy_snapshot(&c, "snapshot-key", 60, &snapshot).unwrap(),
+            O::Unchanged(_)
+        ));
+        assert_eq!(
+            c.query_row(
+                "SELECT COUNT(*),MIN(hold_nano),MAX(hold_nano) FROM billing_reservations
+                 WHERE request_id='snapshot-request'",
+                [],
+                |row| Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?
+                )),
+            )
+            .unwrap(),
+            (1, 100, 100)
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT COUNT(*) FROM pricing_admission_snapshots
+                 WHERE request_id='snapshot-request'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT lease_until FROM billing_reservations WHERE request_id='snapshot-request'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            delivering_lease
+        );
+        let account = account_get(&c, "snapshot-account").unwrap().unwrap();
+        let key = key_get(&c, "snapshot-key").unwrap().unwrap();
+        assert_eq!((account.balance_nano, account.reserved_nano), (900, 100));
+        assert_eq!(key.reserved_nano, 100);
+
+        let different = legacy_snapshot("snapshot-request", "snapshot-account", 501, 100);
+        assert_eq!(
+            sqlite_reserve_request_with_legacy_snapshot(&c, "snapshot-key", 60, &different)
+                .unwrap(),
+            O::Conflict(Conflict::SnapshotPayload)
+        );
+        assert_eq!(
+            sqlite_reserve_request_with_legacy_snapshot(&c, "different-key", 60, &snapshot)
+                .unwrap(),
+            O::Conflict(Conflict::ReservationIdentity)
+        );
+
+        assert_eq!(
+            sqlite_reserve_request(
+                &c,
+                "legacy-only",
+                "snapshot-account",
+                "snapshot-key",
+                50,
+                60
+            )
+            .unwrap(),
+            Some(850)
+        );
+        let legacy_only = legacy_snapshot("legacy-only", "snapshot-account", 250, 50);
+        assert_eq!(
+            sqlite_reserve_request_with_legacy_snapshot(&c, "snapshot-key", 60, &legacy_only)
+                .unwrap(),
+            O::Conflict(Conflict::ExistingReservationWithoutSnapshot)
+        );
+        assert!(
+            pricing::sqlite_legacy_scalar_admission_snapshot(&c, "legacy-only")
+                .unwrap()
+                .is_none()
+        );
+
+        sqlite_settle_request(
+            &c,
+            "snapshot-request",
+            "snapshot-account",
+            "snapshot-key",
+            100,
+            10,
+            Some("snapshot-settle"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            sqlite_reserve_request_with_legacy_snapshot(&c, "snapshot-key", 60, &snapshot).unwrap(),
+            O::Conflict(Conflict::TerminalReservation)
+        );
+    }
+
+    #[test]
+    fn sqlite_legacy_snapshot_failure_never_leaves_money_or_orphans() {
+        use pricing::LegacyScalarReserveOutcome as O;
+
+        let rejected = db();
+        acct_with_key(&rejected, "poor-account", "poor-key", 50, 2_000);
+        let too_large = legacy_snapshot("poor-request", "poor-account", 500, 100);
+        assert_eq!(
+            sqlite_reserve_request_with_legacy_snapshot(&rejected, "poor-key", 60, &too_large)
+                .unwrap(),
+            O::NotReserved
+        );
+        assert_eq!(
+            rejected
+                .query_row(
+                    "SELECT balance_nano,reserved_nano FROM accounts WHERE id='poor-account'",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .unwrap(),
+            (50, 0)
+        );
+        assert_eq!(
+            rejected
+                .query_row(
+                    "SELECT
+                         (SELECT COUNT(*) FROM billing_reservations WHERE request_id='poor-request'),
+                         (SELECT COUNT(*) FROM pricing_admission_snapshots WHERE request_id='poor-request')",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .unwrap(),
+            (0, 0)
+        );
+
+        let failing = db();
+        acct_with_key(&failing, "rollback-account", "rollback-key", 1_000, 2_000);
+        failing
+            .execute_batch(
+                "CREATE TRIGGER reject_test_legacy_snapshot
+                 BEFORE INSERT ON pricing_admission_snapshots
+                 BEGIN
+                     SELECT RAISE(ABORT, 'injected snapshot failure');
+                 END;",
+            )
+            .unwrap();
+        let snapshot = legacy_snapshot("rollback-request", "rollback-account", 500, 100);
+        assert!(sqlite_reserve_request_with_legacy_snapshot(
+            &failing,
+            "rollback-key",
+            60,
+            &snapshot
+        )
+        .is_err());
+        assert_eq!(
+            failing
+                .query_row(
+                    "SELECT balance_nano,reserved_nano FROM accounts WHERE id='rollback-account'",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .unwrap(),
+            (1_000, 0)
+        );
+        assert_eq!(
+            failing
+                .query_row(
+                    "SELECT reserved_nano FROM api_keys WHERE key='rollback-key'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            failing
+                .query_row(
+                    "SELECT
+                         (SELECT COUNT(*) FROM billing_reservations WHERE request_id='rollback-request'),
+                         (SELECT COUNT(*) FROM pricing_admission_snapshots WHERE request_id='rollback-request')",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .unwrap(),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn sqlite_openai_legacy_snapshot_roundtrips_typed_modifiers() {
+        use pricing::LegacyScalarReserveOutcome as O;
+
+        let c = db();
+        acct_with_key(
+            &c,
+            "openai-snapshot-account",
+            "openai-snapshot-key",
+            1_000,
+            2_000,
+        );
+        let snapshot = openai_legacy_snapshot(
+            "openai-snapshot-request",
+            "openai-snapshot-account",
+            500,
+            100,
+        );
+        assert!(matches!(
+            sqlite_reserve_request_with_legacy_snapshot(&c, "openai-snapshot-key", 60, &snapshot)
+                .unwrap(),
+            O::Inserted(_)
+        ));
+        assert_eq!(
+            pricing::sqlite_legacy_scalar_admission_snapshot(&c, "openai-snapshot-request")
+                .unwrap()
+                .unwrap(),
+            snapshot
+        );
+        assert!(pricing::sqlite_legacy_scalar_admission_snapshot(&c, "invalid\0request").is_err());
     }
 
     #[test]

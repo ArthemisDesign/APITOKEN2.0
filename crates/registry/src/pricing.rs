@@ -7,15 +7,29 @@
 //! admission, charging, key issuance, HTTP, policy resolution, or production shadow execution.
 
 pub(crate) mod postgres;
+mod snapshots;
 mod sqlite;
+
+pub(crate) use snapshots::{validate_legacy_snapshot_request_id, LegacyScalarSnapshotLookup};
+pub use snapshots::{
+    CanonicalDigestV1, LegacyPremiumModifiers, LegacyScalarAdmissionSnapshot,
+    LegacyScalarAdmissionSnapshotInput, LegacyScalarReserveConflict, LegacyScalarReserveOutcome,
+    LegacyScalarReserveReceipt, SnapshotAnthropicInferenceGeo, SnapshotAnthropicSpeed,
+    SnapshotOpenAiContextTier, SnapshotOpenAiServiceTier, SnapshotProvider,
+    LEGACY_SCALAR_SNAPSHOT_SCHEMA_VERSION,
+};
+pub(crate) use sqlite::{
+    sqlite_insert_legacy_scalar_admission_snapshot, sqlite_legacy_scalar_snapshot_lookup,
+};
 
 pub use sqlite::{
     sqlite_account_policy_by_version, sqlite_activate_account_policy,
     sqlite_activate_pricing_catalog, sqlite_activate_provider_switches,
     sqlite_active_account_policy, sqlite_active_pricing_catalog, sqlite_active_provider_switches,
-    sqlite_prepare_account_policy, sqlite_prepare_pricing_catalog,
-    sqlite_prepare_provider_switches, sqlite_pricing_catalog_by_generation,
-    sqlite_pricing_read_bundle, sqlite_provider_switches_by_generation,
+    sqlite_legacy_scalar_admission_snapshot, sqlite_prepare_account_policy,
+    sqlite_prepare_pricing_catalog, sqlite_prepare_provider_switches,
+    sqlite_pricing_catalog_by_generation, sqlite_pricing_read_bundle,
+    sqlite_provider_switches_by_generation,
 };
 
 use anyhow::{bail, Result};

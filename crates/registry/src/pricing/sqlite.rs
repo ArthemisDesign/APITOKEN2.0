@@ -2,14 +2,17 @@ use super::{
     expectation_matches, invalid, missing, normalize_catalog, normalize_policy, normalize_switches,
     policy_expectation_matches, require_id, required_catalog_generations, validate_account_policy,
     validate_account_policy_binding, validate_account_policy_shape, validate_active_expectation,
-    validate_policy_active_expectation, validate_pricing_catalog, validate_provider_switches,
-    validate_version_target, AccountClass, AccountPolicyActivationSpec, AccountPolicyBindingSpec,
-    AccountPolicyRuleSpec, AccountPolicySpec, ActiveAccountPolicy, ActiveExpectation,
-    ActivePolicyTarget, FundingEnforcement, PolicyActiveExpectation, PolicyBindingState,
-    PolicyEnforcement, PolicyOwnerType, PolicyRuleScope, PricingCatalogEntrySpec,
-    PricingCatalogSpec, PricingMode, PricingMutation, PricingPolicySnapshot, PricingReadBundle,
-    PricingRejection, ProviderSwitchEntrySpec, ProviderSwitchScope, ProviderSwitchSpec,
-    ReconciliationState, RuleOrigin, VersionTarget,
+    validate_legacy_snapshot_request_id, validate_policy_active_expectation,
+    validate_pricing_catalog, validate_provider_switches, validate_version_target, AccountClass,
+    AccountPolicyActivationSpec, AccountPolicyBindingSpec, AccountPolicyRuleSpec,
+    AccountPolicySpec, ActiveAccountPolicy, ActiveExpectation, ActivePolicyTarget,
+    FundingEnforcement, LegacyPremiumModifiers, LegacyScalarAdmissionSnapshot,
+    LegacyScalarAdmissionSnapshotInput, LegacyScalarSnapshotLookup, PolicyActiveExpectation,
+    PolicyBindingState, PolicyEnforcement, PolicyOwnerType, PolicyRuleScope,
+    PricingCatalogEntrySpec, PricingCatalogSpec, PricingMode, PricingMutation,
+    PricingPolicySnapshot, PricingReadBundle, PricingRejection, ProviderSwitchEntrySpec,
+    ProviderSwitchScope, ProviderSwitchSpec, ReconciliationState, RuleOrigin, SnapshotProvider,
+    VersionTarget,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -33,6 +36,150 @@ fn finish(transaction: Transaction<'_>, mutation: PricingMutation) -> Result<Pri
         .commit()
         .context("commit SQLite pricing transaction")?;
     Ok(mutation)
+}
+
+struct StoredLegacySnapshotRow {
+    snapshot_kind: String,
+    schema_version: i64,
+    account_id: String,
+    provider_id: String,
+    requested_model_id: String,
+    canonical_model_id: String,
+    alias_generation: i64,
+    pricing_mode: String,
+    rule_origin: String,
+    tariff_schedule_id: String,
+    tariff_priced_ts: i64,
+    admission_ts: i64,
+    payable_multiplier_bp: i64,
+    official_hold_nano: i64,
+    charged_hold_nano: i64,
+    premium_modifiers_json: String,
+    snapshot_digest: String,
+}
+
+pub(crate) fn sqlite_legacy_scalar_snapshot_lookup(
+    conn: &Connection,
+    request_id: &str,
+) -> Result<LegacyScalarSnapshotLookup> {
+    validate_legacy_snapshot_request_id(request_id)?;
+    let stored = conn
+        .query_row(
+            "SELECT snapshot_kind,schema_version,account_id,provider_id,requested_model_id,
+                    canonical_model_id,alias_generation,pricing_mode,rule_origin,
+                    tariff_schedule_id,tariff_priced_ts,admission_ts,payable_multiplier_bp,
+                    official_hold_nano,charged_hold_nano,premium_modifiers,snapshot_digest
+               FROM pricing_admission_snapshots
+              WHERE request_id=?1",
+            params![request_id],
+            |row| {
+                Ok(StoredLegacySnapshotRow {
+                    snapshot_kind: row.get(0)?,
+                    schema_version: row.get(1)?,
+                    account_id: row.get(2)?,
+                    provider_id: row.get(3)?,
+                    requested_model_id: row.get(4)?,
+                    canonical_model_id: row.get(5)?,
+                    alias_generation: row.get(6)?,
+                    pricing_mode: row.get(7)?,
+                    rule_origin: row.get(8)?,
+                    tariff_schedule_id: row.get(9)?,
+                    tariff_priced_ts: row.get(10)?,
+                    admission_ts: row.get(11)?,
+                    payable_multiplier_bp: row.get(12)?,
+                    official_hold_nano: row.get(13)?,
+                    charged_hold_nano: row.get(14)?,
+                    premium_modifiers_json: row.get(15)?,
+                    snapshot_digest: row.get(16)?,
+                })
+            },
+        )
+        .optional()
+        .context("read SQLite pricing admission snapshot")?;
+    let Some(stored) = stored else {
+        return Ok(LegacyScalarSnapshotLookup::Missing);
+    };
+    if stored.snapshot_kind != "legacy_scalar" {
+        return Ok(LegacyScalarSnapshotLookup::NonLegacy);
+    }
+    if stored.pricing_mode != "legacy_scalar" || stored.rule_origin != "legacy" {
+        bail!("stored legacy scalar snapshot has an invalid fixed shape");
+    }
+    let snapshot = LegacyScalarAdmissionSnapshot::from_stored(
+        stored.schema_version,
+        LegacyScalarAdmissionSnapshotInput {
+            request_id: request_id.to_owned(),
+            account_id: stored.account_id,
+            provider: SnapshotProvider::from_db(&stored.provider_id)?,
+            requested_model_id: stored.requested_model_id,
+            canonical_model_id: stored.canonical_model_id,
+            alias_generation: stored.alias_generation,
+            tariff_schedule_id: stored.tariff_schedule_id,
+            tariff_priced_ts: stored.tariff_priced_ts,
+            admission_ts: stored.admission_ts,
+            payable_multiplier_bp: stored.payable_multiplier_bp,
+            official_hold_nano: stored.official_hold_nano,
+            charged_hold_nano: stored.charged_hold_nano,
+            premium_modifiers: LegacyPremiumModifiers::from_json(&stored.premium_modifiers_json)?,
+        },
+        stored.snapshot_digest,
+    )?;
+    Ok(LegacyScalarSnapshotLookup::Legacy(Box::new(snapshot)))
+}
+
+pub fn sqlite_legacy_scalar_admission_snapshot(
+    conn: &Connection,
+    request_id: &str,
+) -> Result<Option<LegacyScalarAdmissionSnapshot>> {
+    match sqlite_legacy_scalar_snapshot_lookup(conn, request_id)? {
+        LegacyScalarSnapshotLookup::Missing => Ok(None),
+        LegacyScalarSnapshotLookup::Legacy(snapshot) => Ok(Some(*snapshot)),
+        LegacyScalarSnapshotLookup::NonLegacy => {
+            bail!("pricing admission snapshot is not a legacy scalar snapshot")
+        }
+    }
+}
+
+pub(crate) fn sqlite_insert_legacy_scalar_admission_snapshot(
+    conn: &Connection,
+    snapshot: &LegacyScalarAdmissionSnapshot,
+) -> Result<()> {
+    snapshot.validate()?;
+    let premium_modifiers = snapshot.premium_modifiers_json()?;
+    let inserted = conn
+        .execute(
+            "INSERT INTO pricing_admission_snapshots(
+                 request_id,account_id,snapshot_kind,schema_version,provider_id,
+                 requested_model_id,canonical_model_id,alias_generation,pricing_mode,rule_origin,
+                 payable_multiplier_bp,tariff_schedule_id,tariff_priced_ts,admission_ts,
+                 official_hold_nano,charged_hold_nano,premium_modifiers,snapshot_digest
+             ) VALUES(
+                 ?1,?2,'legacy_scalar',?3,?4,?5,?6,?7,'legacy_scalar','legacy',
+                 ?8,?9,?10,?11,?12,?13,?14,?15
+             )",
+            params![
+                &snapshot.request_id,
+                &snapshot.account_id,
+                snapshot.schema_version,
+                snapshot.provider.as_str(),
+                &snapshot.requested_model_id,
+                &snapshot.canonical_model_id,
+                snapshot.alias_generation,
+                snapshot.payable_multiplier_bp,
+                &snapshot.tariff_schedule_id,
+                snapshot.tariff_priced_ts,
+                snapshot.admission_ts,
+                snapshot.official_hold_nano,
+                snapshot.charged_hold_nano,
+                premium_modifiers,
+                snapshot.snapshot_digest().as_str(),
+            ],
+        )
+        .context("insert SQLite legacy scalar admission snapshot")?;
+    if inserted != 1 {
+        bail!("SQLite legacy scalar admission snapshot insert changed no row");
+    }
+    Ok(())
 }
 
 pub fn sqlite_pricing_catalog_by_generation(

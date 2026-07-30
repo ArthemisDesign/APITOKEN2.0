@@ -4,11 +4,13 @@
 1–2 (`engine 0006`–`0008`, `commerce 0022`–`0023`, `OpenKeys 0007`), Stage 3A dormant
 registry-only persistence/CAS, Stage 3B0 dormant resolver/read bundle и Stage 3B1a dormant shadow
 schema уже доставлены. Stage 3B1b — пассивный dual-lineage read/resolver и runtime capability
-manifest без runtime caller — также доставлен. 2026-07-30 владелец продукта явно снял прежнюю
-остановку после 3B1b и полностью авторизовал дальнейшую реализацию этого документа до завершения
-этапов 3B1c–11. Авторизация не отменяет поэтапную доставку, migration-first, maintenance windows,
-наблюдение, rollback gates и отдельное подтверждение фактической policy-assignment matrix перед
-изменением production-данных.
+manifest без runtime caller — также доставлен. Stage 3B1c разложен на безопасные application-
+checkpoint: pure tariff/model identities уже доставлены, а текущий registry-checkpoint добавляет
+только dormant typed actual snapshot и атомарный reserve API без caller/config/traffic. 2026-07-30
+владелец продукта явно снял прежнюю остановку после 3B1b и полностью авторизовал дальнейшую
+реализацию этого документа до завершения этапов 3B1c–11. Авторизация не отменяет поэтапную доставку,
+migration-first, maintenance windows, наблюдение, rollback gates и отдельное подтверждение
+фактической policy-assignment matrix перед изменением production-данных.
 
 Последнее продуктовое обсуждение и полная авторизация продолжения: 2026-07-30.
 
@@ -24,6 +26,10 @@ commit `a0402a67f53b0e16db43750c50ab42e36870a10a`: engine deployment и общи
 Stage 3B1b реализован commit `8b2c4c89b461f01239bc6767fe5fd3534103865b`; его неизменённое
 содержимое вошло в production через descendant `62afbd1eaa76f360e103ccf0f6822ea337959b58`, для которого
 `deploy/tests`, `deploy/engine` и `deploy/watchdog` зелёные.
+Pure tariff/model identity Stage 3B1c.1 доставлен commit
+`69749e22010be07c1fee5b298d53bf58c8fbbe65`; live callers он не добавляет. Этот registry-
+checkpoint сохраняет тот же dormant boundary: actual snapshot API существует только как
+неподключённая библиотечная возможность.
 
 Этот документ описывает целевое поведение, которое заменит текущий единый множитель цены на аккаунт.
 Он не утверждает, что описанное поведение уже работает в production. До завершения перехода
@@ -1525,10 +1531,36 @@ runtime manifest instance/config, capability/catalog/policy seed, activation, sh
 - unit/SQLite/real-PostgreSQL tests exact replay, conflict, FK/integrity,
   resolved/rejected/read-error outcomes, canonicalization и dual-lineage attribution.
 
-Этот dormant scope доставляется минимум тремя независимыми application-коммитами: pure tariff/model
-identity в `metering`; registry snapshot/evaluation persistence и atomic API при сохранении старых
-reserve wrappers; pure shadow evaluation builder в `forward` без DB/config/AppState/callers. Новая
-migration для них не нужна: actual schema уже доставлена в `0006`, shadow schema — в `0009`.
+Этот dormant scope доставляется минимум четырьмя независимыми application-коммитами: pure
+tariff/model identity в `metering`; typed actual snapshot и atomic registry reserve API при
+сохранении старых reserve wrappers; отдельно shadow evaluation persistence с полным manifest
+evidence; pure shadow evaluation builder в `forward` без DB/config/AppState/callers. Новая migration
+для них не нужна: actual schema уже доставлена в `0006`, shadow schema — в `0009`.
+
+Текущее состояние: первый identity-коммит доставлен, второй registry-checkpoint реализует только
+actual `legacy_scalar` snapshot. Registry владеет versioned SHA-256 digest, строит его из
+authoritative typed полей и перепроверяет при чтении; provider modifiers типизированы, а JSON
+является только storage-проекцией. SQLite и PostgreSQL имеют отдельные atomic
+`reserve + actual snapshot` API с exact replay/conflict, rollback и parity tests. Shadow evaluation
+insert/read, manifest evidence, work item и forward builder остаются следующими отдельными
+checkpoint. Ни один из этих API пока не вызывается runtime-кодом.
+
+Ограничения этой безопасной точки, которые обязаны быть закрыты до live bridge:
+
+- raw snapshot constructor доказывает canonical bytes и provider/modifier shape, но сам не может
+  доказать provenance пары model/tariff; production builder обязан принимать identity только из
+  доставленного provider-owned canonicalizer `metering`, а не из HTTP/client strings;
+- `admission_ts` и `tariff_priced_ts` имеют общий порядок и входят в digest, но freshness первого
+  admission ещё не связана с trusted runtime clock; bridge обязан фиксировать их на первой попытке
+  до money mutation и на replay использовать сохранённые значения;
+- terminal reservation сейчас удаляется maintenance через 30 дней вместе со snapshot по CASCADE,
+  после чего request ID технически можно использовать снова. До live activation нужен отдельный
+  выбор: durable tombstone либо явно ограниченный и наблюдаемый idempotency window; текущий dormant
+  API нельзя описывать как бесконечную дедупликацию;
+- новый API намеренно сохраняет legacy backend money gates: SQLite требует полного покрытия hold,
+  PostgreSQL сохраняет принятый overdraft floor. Поэтому parity означает одинаковые atomic
+  snapshot/replay/conflict invariants, но пока не одинаковый `NotReserved` outcome. Изменение этой
+  денежной семантики требует отдельного checkpoint и не смешивается с dormant persistence.
 
 Same request + тот же canonical payload возвращает уже сохранённую строку после lost ACK. Любое
 изменение authoritative typed поля даёт typed conflict, а не update. Этот checkpoint не имеет live
@@ -1555,6 +1587,11 @@ producer, не создаёт active heads/policies и не пишет productio
 Snapshot этого этапа доказывает только reserve-time legacy identity. Stage 3B1c не переводит
 settlement на pinned tariff schedule и не выдаёт этот snapshot за уже реализованное end-to-end
 tariff pinning: текущий settlement сохраняется без изменения до отдельного денежного checkpoint.
+
+Доставленный dormant foundation заканчивается до production bridge: sampler, canonicalizer call из
+admission, billing actor command, config/feature flag, telemetry и live caller ещё отсутствуют.
+Поэтому старые reserve paths остаются byte-for-byte по поведению прежними, а новые atomic API без
+последующего отдельного подключения не создают production snapshots и не меняют трафик.
 
 Это единственный новый critical-path write в Stage 3B1c. Его failure атомарно откатывает reserve;
 после входа в eligible bridge DB/constraint failure не делает fallback-второй reserve с тем же

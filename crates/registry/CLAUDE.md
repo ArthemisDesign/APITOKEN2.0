@@ -5,7 +5,8 @@
 **Владелец-ветка:** `comp/registry`.
 
 **Границы (жёстко):**
-- Зависит только от sync PostgreSQL client, `rusqlite` (import/fallback), `anyhow`.
+- Зависит только от sync PostgreSQL client, `rusqlite` (import/fallback), `anyhow` и чистых
+  `serde`/`serde_json`/`sha2` для typed persistence и canonical immutable identities.
 - НИКАКОЙ сети, HTTP, чтения env, логики выбора подписок. Только персист + CRUD + `load_active`.
 - **Биллинг: АККАУНТЫ клиентов (`accounts`) + ключи-доступы (`api_keys`) + журнал (`ledger`)** — здесь,
   но ТОЛЬКО хранение/атомарные движения в целых нанодолларах. Модель: **баланс на АККАУНТЕ** (профиль
@@ -78,6 +79,29 @@
   insert API обязан быть exact-idempotent по `request_id + evaluation_digest`; отличный digest —
   conflict, а не update. Live shadow запрещён до отдельного bounded worker и атомарного actual
   snapshot + reserve.
+- **Stage 3B1c.1/3B1c.2 actual legacy snapshot foundation — dormant:** typed
+  `LegacyScalarAdmissionSnapshot` фиксирует exact request/account, fixed-plane provider
+  (`anthropic|openai`), requested/canonical model, alias/tariff identities, timestamps, scalar,
+  official/charged hold и provider-typed premium modifiers. Registry сам строит и при каждом чтении
+  перепроверяет `sha256:v1:<hex>` по versioned binary TLV с отдельным domain separator; JSON premium
+  modifiers — только строгая storage-проекция, не digest source. Новые
+  `sqlite_reserve_request_with_legacy_snapshot` и
+  `PgStore::reserve_request_with_legacy_snapshot` используют `snapshot.charged_hold_nano` как
+  единственный hold source и атомарно сохраняют деньги, reservation и snapshot. Exact retry активной
+  `reserved|delivering` reservation возвращает сохранённый typed snapshot без продления lease и без
+  второй money mutation; mismatch, terminal state, non-legacy snapshot или старая reservation без
+  snapshot дают typed conflict. PostgreSQL сохраняет owner fence и request advisory lock. Старые
+  reserve API не изменены и snapshot не создают. Миграции не добавлялись: используется actual schema
+  `0006`. Runtime caller, sampler, actor command, config, policy read, shadow evaluation и traffic
+  activation отсутствуют; до отдельного bridge-checkpoint этот API production-строк не пишет.
+  Новый PostgreSQL writer после потенциального ожидания request-lock повторно проверяет owner через
+  `FOR UPDATE`, удерживает epoch-row до commit и использует свежий reservation timestamp; real-PG
+  race test доказывает rollback старого epoch без money/orphan writes. Snapshot constructor
+  гарантирует storage shape, но не model/tariff provenance: live caller обязан строить input только
+  из `metering` canonicalizer. Текущий 30-дневный prune terminal reservation каскадно удаляет actual
+  snapshot, поэтому до live bridge нужен tombstone или явно bounded idempotency contract. SQLite и
+  PostgreSQL сохраняют унаследованные разные balance gates (full-cover против overdraft floor);
+  parity этого checkpoint относится к atomic snapshot/replay/conflict, а не к `NotReserved`.
 
 **Инварианты:**
 - Токен разрешается из колонки `token` (inline) ИЛИ файла `token_file`. `import_sqlite` refuses a
