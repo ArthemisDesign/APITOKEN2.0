@@ -93,6 +93,30 @@ if wd_verification_plan_has runtime,panel,monitoring,codex,gemini monitor; then
   wd_die "final verification plan membership accepted a partial entry"
 fi
 
+# A transient GitHub 5xx while publishing the pipeline start is infrastructure noise, not a
+# candidate verdict. Exercise the real github_status wrapper with a fake bridge that fails twice;
+# replacing sleep keeps the retry contract deterministic and fast.
+# shellcheck disable=SC2091
+eval "$(sed -n '/^github_status()/,/^github_deployment_start()/p' "$ROOT/deploy/watchdog.sh" \
+  | sed '$d')"
+status_retry_log="$TEMP/status-retry.log"
+(
+  sleep() { :; }
+  sudo() {
+    printf '%s\n' "$*" >>"$status_retry_log"
+    (( $(wc -l <"$status_retry_log") >= 3 ))
+  }
+  GITHUB_HELPER=/fixed/watchdog-github
+  CANDIDATE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  github_status pending deploy/watchdog "Production pipeline started"
+)
+(( $(wc -l <"$status_retry_log") == 3 )) \
+  || wd_die "commit-status publication did not retry a transient bridge failure"
+grep -Fq -- \
+  '-n /fixed/watchdog-github commit-status aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa pending deploy/watchdog Production pipeline started' \
+  "$status_retry_log" \
+  || wd_die "commit-status retry changed the requested SHA, state, context, or description"
+
 # Exercise the actual watchdog dispatchers with barrier-backed fakes. A serialized implementation
 # deadlocks its first fake until the barrier deadline and fails, while the intended implementation
 # starts every worker, joins every result, and still returns a single parent-owned verdict.

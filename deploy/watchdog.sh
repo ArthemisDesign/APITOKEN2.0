@@ -80,7 +80,10 @@ VALIDATION_POLICY_SHA256=
 VALIDATION_PLAN_SHA256=
 
 github_status() {
-  sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" "$1" "$2" "$3"
+  # Repeating a status for the same SHA/context is safe: GitHub keeps the newest value. Absorb a
+  # short API or network blip here so reporting availability cannot quarantine an otherwise
+  # untested production candidate before any deployment work starts.
+  wd_retry 3 2 sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" "$1" "$2" "$3"
 }
 
 github_deployment_start() {
