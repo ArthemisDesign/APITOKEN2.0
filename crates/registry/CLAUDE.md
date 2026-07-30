@@ -93,10 +93,14 @@
   единственный hold source и атомарно сохраняют деньги, reservation и snapshot. Exact retry активной
   `reserved|delivering` reservation возвращает сохранённый typed snapshot без продления lease и без
   второй money mutation; mismatch, terminal state, non-legacy snapshot или старая reservation без
-  snapshot дают typed conflict. PostgreSQL сохраняет owner fence и request advisory lock. Старые
-  reserve API не изменены и snapshot не создают. Миграции не добавлялись: используется actual schema
-  `0006`. Runtime caller, sampler, actor command, config, policy read, shadow producer и traffic
-  activation отсутствуют; до отдельного bridge-checkpoint этот API production-строк не пишет.
+  snapshot дают typed conflict. PostgreSQL сохраняет owner fence и request advisory lock.
+  Guarded-варианты обоих API вызывают caller-owned commit gate только для insert/exact replay после
+  всех fallible writes и финального owner fence, непосредственно перед commit; закрытый gate
+  полностью откатывает попытку как `AbortedBeforeCommit`. `NotReserved`, conflict и более ранняя
+  ошибка gate не вызывают. Старые reserve API не изменены и snapshot не создают. Миграции не
+  добавлялись: используется actual schema `0006`. Runtime caller, sampler, config, policy read,
+  shadow producer и traffic activation отсутствуют; dormant actor primitive сам по себе
+  production-строк не пишет.
   Новый PostgreSQL writer после потенциального ожидания request-lock повторно проверяет owner через
   `FOR UPDATE`, удерживает epoch-row до commit и использует свежий reservation timestamp; real-PG
   race test доказывает rollback старого epoch без money/orphan writes. Snapshot constructor

@@ -16,6 +16,7 @@
 //! рантайма). Гарантия денег: durable reservation/outbox переживает краш, а периодический recovery
 //! закрывает осиротевшую операцию после истечения lease. Ничего не застревает только в памяти.
 
+use registry::pricing::{LegacyScalarAdmissionSnapshot, LegacyScalarReserveOutcome};
 use registry::{AccountRow, BillingTotals, KeyAuth, KeyPolicyUpdate, KeyRow};
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -35,6 +36,17 @@ const RESERVE_HANDOFF_CANCELED: u8 = 3;
 const RESERVE_HANDOFF_REFUNDING: u8 = 4;
 const RESERVE_HANDOFF_REFUNDED: u8 = 5;
 const RESERVE_HANDOFF_FAILED: u8 = 6;
+
+// Snapshot reserve is intentionally a separate protocol from the live legacy reserve above. Once
+// its commit decision wins the race with caller cancellation, the durable reservation must remain
+// active for exact replay or lease recovery; compensating a lost reply would destroy idempotency.
+const SNAPSHOT_RESERVE_HANDOFF_PENDING: u8 = 0;
+const SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED: u8 = 1;
+const SNAPSHOT_RESERVE_HANDOFF_COMMITTED: u8 = 2;
+const SNAPSHOT_RESERVE_HANDOFF_CLAIMED: u8 = 3;
+const SNAPSHOT_RESERVE_HANDOFF_CANCELED: u8 = 4;
+const SNAPSHOT_RESERVE_HANDOFF_FAILED: u8 = 5;
+const SNAPSHOT_RESERVE_HANDOFF_COMMIT_UNKNOWN: u8 = 6;
 
 // Закрывает окно отмены, пока `reserve().await` ещё не передал владение резервом вызывающему коду.
 // Компенсация адресует durable request_id, поэтому повторный cancel/settle идемпотентен и не может
@@ -112,6 +124,132 @@ impl Drop for ReserveHandoffGuard<'_> {
                 | RESERVE_HANDOFF_FAILED => return,
                 _ => return,
             }
+        }
+    }
+}
+
+struct SnapshotReserveHandoffGuard {
+    handoff: Arc<AtomicU8>,
+}
+
+impl SnapshotReserveHandoffGuard {
+    fn claim(&self) -> bool {
+        self.handoff
+            .compare_exchange(
+                SNAPSHOT_RESERVE_HANDOFF_COMMITTED,
+                SNAPSHOT_RESERVE_HANDOFF_CLAIMED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+}
+
+impl Drop for SnapshotReserveHandoffGuard {
+    fn drop(&mut self) {
+        // Cancellation has exactly one safe linearization point: before the writer authorizes the
+        // database commit. COMMIT_DECIDED and later states deliberately remain untouched.
+        let _ = self.handoff.compare_exchange(
+            SNAPSHOT_RESERVE_HANDOFF_PENDING,
+            SNAPSHOT_RESERVE_HANDOFF_CANCELED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+}
+
+fn authorize_snapshot_reserve_commit(handoff: &AtomicU8) -> bool {
+    loop {
+        match handoff.load(Ordering::Acquire) {
+            SNAPSHOT_RESERVE_HANDOFF_PENDING => {
+                if handoff
+                    .compare_exchange(
+                        SNAPSHOT_RESERVE_HANDOFF_PENDING,
+                        SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    return true;
+                }
+            }
+            // The callback is idempotent inside one already-authorized database attempt. A commit
+            // error moves the handoff to COMMIT_UNKNOWN before any later exact replay is allowed.
+            SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED => return true,
+            SNAPSHOT_RESERVE_HANDOFF_CANCELED => return false,
+            state => {
+                eprintln!("billing snapshot reserve commit gate entered unexpected state {state}");
+                return false;
+            }
+        }
+    }
+}
+
+fn mark_snapshot_reserve_failed(handoff: &AtomicU8) {
+    loop {
+        match handoff.load(Ordering::Acquire) {
+            SNAPSHOT_RESERVE_HANDOFF_PENDING => {
+                if handoff
+                    .compare_exchange(
+                        SNAPSHOT_RESERVE_HANDOFF_PENDING,
+                        SNAPSHOT_RESERVE_HANDOFF_FAILED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    return;
+                }
+            }
+            // The physical commit result is ambiguous. Preserve it as a non-cancelable state so a
+            // later exact replay or lease recovery can resolve the durable truth.
+            SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED => {
+                let _ = handoff.compare_exchange(
+                    SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED,
+                    SNAPSHOT_RESERVE_HANDOFF_COMMIT_UNKNOWN,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+                return;
+            }
+            _ => return,
+        }
+    }
+}
+
+fn finish_snapshot_reserve(
+    handoff: &AtomicU8,
+    reply: oneshot::Sender<anyhow::Result<LegacyScalarReserveOutcome>>,
+    result: anyhow::Result<LegacyScalarReserveOutcome>,
+) {
+    match result {
+        Ok(outcome @ LegacyScalarReserveOutcome::Inserted(_))
+        | Ok(outcome @ LegacyScalarReserveOutcome::Unchanged(_)) => {
+            if let Err(state) = handoff.compare_exchange(
+                SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED,
+                SNAPSHOT_RESERVE_HANDOFF_COMMITTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                let _ = reply.send(Err(anyhow::anyhow!(
+                    "snapshot reservation committed with unexpected handoff state {state}"
+                )));
+                return;
+            }
+            // A dropped receiver intentionally leaves COMMITTED untouched. Exact replay or the
+            // durable reservation lease resolves ownership; no synthetic zero-cost settlement.
+            let _ = reply.send(Ok(outcome));
+        }
+        Ok(outcome) => {
+            if !matches!(&outcome, LegacyScalarReserveOutcome::AbortedBeforeCommit) {
+                mark_snapshot_reserve_failed(handoff);
+            }
+            let _ = reply.send(Ok(outcome));
+        }
+        Err(error) => {
+            mark_snapshot_reserve_failed(handoff);
+            let _ = reply.send(Err(error));
         }
     }
 }
@@ -240,6 +378,69 @@ fn run_pg_with_retry<T>(
     }
 }
 
+fn run_pg_snapshot_reserve_with_retry(
+    pg: &mut registry::pg::PgStore,
+    url: &str,
+    owner: &registry::pg::Owner,
+    key: &str,
+    snapshot: &LegacyScalarAdmissionSnapshot,
+    handoff: &AtomicU8,
+    lease_secs: i64,
+) -> anyhow::Result<LegacyScalarReserveOutcome> {
+    let deadline = Instant::now() + PG_OPERATION_RETRY_DEADLINE;
+    loop {
+        match pg.reserve_request_with_legacy_snapshot_guarded(
+            owner,
+            key,
+            lease_secs,
+            snapshot,
+            || authorize_snapshot_reserve_commit(handoff),
+        ) {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                let class = registry::pg::classify_failure(&error);
+                // Once the commit gate wins, a commit error is physically ambiguous. Leave the
+                // active-or-absent result for a later exact replay; never blindly issue another
+                // money operation from this actor turn.
+                if handoff.load(Ordering::Acquire) != SNAPSHOT_RESERVE_HANDOFF_PENDING
+                    || class != registry::pg::FailureClass::Transient
+                    || Instant::now() >= deadline
+                {
+                    return Err(error);
+                }
+                eprintln!(
+                    "billing PostgreSQL legacy snapshot reserve transient failure: {error:#}"
+                );
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
+        match registry::pg::PgStore::connect(url) {
+            Ok(mut next) => match next.heartbeat_instance(owner, 30) {
+                Ok(true) => *pg = next,
+                Ok(false) => {
+                    return Err(anyhow::anyhow!(
+                        "engine owner was fenced during legacy snapshot reserve"
+                    ))
+                }
+                Err(error) => {
+                    if Instant::now() >= deadline {
+                        return Err(error
+                            .context("heartbeat failed while retrying legacy snapshot reserve"));
+                    }
+                }
+            },
+            Err(error) => {
+                if Instant::now() >= deadline {
+                    return Err(
+                        error.context("reconnect deadline exceeded for legacy snapshot reserve")
+                    );
+                }
+            }
+        }
+    }
+}
+
 enum WriteCmd {
     Reserve {
         request_id: String,
@@ -248,6 +449,12 @@ enum WriteCmd {
         hold: i64,
         handoff: Arc<AtomicU8>,
         reply: oneshot::Sender<anyhow::Result<Option<i64>>>,
+    },
+    ReserveWithLegacySnapshot {
+        key: String,
+        snapshot: LegacyScalarAdmissionSnapshot,
+        handoff: Arc<AtomicU8>,
+        reply: oneshot::Sender<anyhow::Result<LegacyScalarReserveOutcome>>,
     },
     CancelReserve {
         request_id: String,
@@ -516,6 +723,22 @@ impl AsyncBilling {
                         );
                         finish_reserve(request_id, account_id, key, hold, handoff, reply, result);
                     }
+                    WriteCmd::ReserveWithLegacySnapshot { key, snapshot, handoff, reply } => {
+                        if handoff.load(Ordering::Acquire) == SNAPSHOT_RESERVE_HANDOFF_CANCELED {
+                            let _ = reply.send(Ok(
+                                LegacyScalarReserveOutcome::AbortedBeforeCommit,
+                            ));
+                            continue;
+                        }
+                        let result = registry::sqlite_reserve_request_with_legacy_snapshot_guarded(
+                            &conn,
+                            &key,
+                            RESERVATION_LEASE_SECS,
+                            &snapshot,
+                            || authorize_snapshot_reserve_commit(&handoff),
+                        );
+                        finish_snapshot_reserve(&handoff, reply, result);
+                    }
                     WriteCmd::CancelReserve { request_id, account_id, key, hold, handoff } => {
                         refund_canceled_reserve(&request_id, &account_id, &key, hold, &handoff);
                     }
@@ -718,6 +941,31 @@ impl AsyncBilling {
                                 }
                                 Err(state) => eprintln!("billing PostgreSQL reserve handoff unexpected state {state}"),
                             }
+                        }
+                        WriteCmd::ReserveWithLegacySnapshot { key, snapshot, handoff, reply } => {
+                            if handoff.load(Ordering::Acquire)
+                                == SNAPSHOT_RESERVE_HANDOFF_CANCELED
+                            {
+                                let _ = reply.send(Ok(
+                                    LegacyScalarReserveOutcome::AbortedBeforeCommit,
+                                ));
+                                continue;
+                            }
+                            let result = run_pg_snapshot_reserve_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                &key,
+                                &snapshot,
+                                &handoff,
+                                RESERVATION_LEASE_SECS,
+                            );
+                            if let Err(error) = &result {
+                                eprintln!(
+                                    "billing PostgreSQL legacy snapshot reserve failed: {error:#}"
+                                );
+                            }
+                            finish_snapshot_reserve(&handoff, reply, result);
                         }
                         WriteCmd::CancelReserve { request_id, handoff, .. } => {
                             if handoff.compare_exchange(
@@ -1082,6 +1330,42 @@ impl AsyncBilling {
             Some(_) => Err(anyhow::anyhow!("reservation handoff was canceled")),
             None => Ok(None),
         }
+    }
+    /// Atomically persists a legacy scalar reservation together with its immutable pricing
+    /// snapshot. This is a dormant bridge primitive: existing request paths keep using
+    /// `reserve_request` until a separately guarded caller is introduced.
+    pub async fn reserve_request_with_legacy_snapshot(
+        &self,
+        key: &str,
+        snapshot: LegacyScalarAdmissionSnapshot,
+    ) -> anyhow::Result<LegacyScalarReserveOutcome> {
+        let (reply, result) = oneshot::channel();
+        let handoff = Arc::new(AtomicU8::new(SNAPSHOT_RESERVE_HANDOFF_PENDING));
+        let guard = SnapshotReserveHandoffGuard {
+            handoff: Arc::clone(&handoff),
+        };
+        self.writer
+            .send(WriteCmd::ReserveWithLegacySnapshot {
+                key: key.into(),
+                snapshot,
+                handoff,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        let outcome = result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))??;
+        if matches!(
+            &outcome,
+            LegacyScalarReserveOutcome::Inserted(_) | LegacyScalarReserveOutcome::Unchanged(_)
+        ) && !guard.claim()
+        {
+            return Err(anyhow::anyhow!(
+                "snapshot reservation handoff was not claimable"
+            ));
+        }
+        Ok(outcome)
     }
     pub async fn settle_request(
         &self,
@@ -1455,6 +1739,98 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn legacy_snapshot(
+        request_id: &str,
+        account_id: &str,
+        official_hold_nano: i64,
+        charged_hold_nano: i64,
+    ) -> LegacyScalarAdmissionSnapshot {
+        let admission_ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        LegacyScalarAdmissionSnapshot::new(registry::pricing::LegacyScalarAdmissionSnapshotInput {
+            request_id: request_id.into(),
+            account_id: account_id.into(),
+            provider: registry::pricing::SnapshotProvider::Anthropic,
+            requested_model_id: "claude-sonnet-5".into(),
+            canonical_model_id: "claude-sonnet-5".into(),
+            alias_generation: 1,
+            tariff_schedule_id: "anthropic/standard/sonnet-current/v1".into(),
+            tariff_priced_ts: admission_ts,
+            admission_ts,
+            payable_multiplier_bp: 2_000,
+            official_hold_nano,
+            charged_hold_nano,
+            premium_modifiers: registry::pricing::LegacyPremiumModifiers::AnthropicV1 {
+                speed: registry::pricing::SnapshotAnthropicSpeed::Standard,
+                inference_geo: registry::pricing::SnapshotAnthropicInferenceGeo::Global,
+                inference_geo_basis_points: 10_000,
+            },
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn snapshot_reserve_handoff_only_cancels_before_commit_decision() {
+        for (initial, expected) in [
+            (
+                SNAPSHOT_RESERVE_HANDOFF_PENDING,
+                SNAPSHOT_RESERVE_HANDOFF_CANCELED,
+            ),
+            (
+                SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED,
+                SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED,
+            ),
+            (
+                SNAPSHOT_RESERVE_HANDOFF_COMMITTED,
+                SNAPSHOT_RESERVE_HANDOFF_COMMITTED,
+            ),
+            (
+                SNAPSHOT_RESERVE_HANDOFF_CLAIMED,
+                SNAPSHOT_RESERVE_HANDOFF_CLAIMED,
+            ),
+            (
+                SNAPSHOT_RESERVE_HANDOFF_FAILED,
+                SNAPSHOT_RESERVE_HANDOFF_FAILED,
+            ),
+            (
+                SNAPSHOT_RESERVE_HANDOFF_COMMIT_UNKNOWN,
+                SNAPSHOT_RESERVE_HANDOFF_COMMIT_UNKNOWN,
+            ),
+        ] {
+            let handoff = Arc::new(AtomicU8::new(initial));
+            drop(SnapshotReserveHandoffGuard {
+                handoff: Arc::clone(&handoff),
+            });
+            assert_eq!(handoff.load(Ordering::Acquire), expected);
+        }
+
+        let pending = AtomicU8::new(SNAPSHOT_RESERVE_HANDOFF_PENDING);
+        assert!(authorize_snapshot_reserve_commit(&pending));
+        assert_eq!(
+            pending.load(Ordering::Acquire),
+            SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED
+        );
+        assert!(authorize_snapshot_reserve_commit(&pending));
+
+        let canceled = AtomicU8::new(SNAPSHOT_RESERVE_HANDOFF_CANCELED);
+        assert!(!authorize_snapshot_reserve_commit(&canceled));
+
+        let failed_before_commit = AtomicU8::new(SNAPSHOT_RESERVE_HANDOFF_PENDING);
+        mark_snapshot_reserve_failed(&failed_before_commit);
+        assert_eq!(
+            failed_before_commit.load(Ordering::Acquire),
+            SNAPSHOT_RESERVE_HANDOFF_FAILED
+        );
+        let ambiguous_commit = AtomicU8::new(SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED);
+        mark_snapshot_reserve_failed(&ambiguous_commit);
+        assert_eq!(
+            ambiguous_commit.load(Ordering::Acquire),
+            SNAPSHOT_RESERVE_HANDOFF_COMMIT_UNKNOWN
+        );
+    }
+
     #[tokio::test]
     async fn detached_dispatch_tracker_waits_for_a_backpressured_enqueue() {
         let tracker = Arc::new(DetachedDispatchTracker::default());
@@ -1524,5 +1900,323 @@ mod tests {
 
         drop(billing);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn canceled_sqlite_snapshot_reserve_never_reaches_durable_state() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-snapshot-handoff-cancel-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+        let billing = AsyncBilling::start(path_string.clone(), 1).unwrap();
+        billing.create_account("acct", None, 2_000).await.unwrap();
+        assert_eq!(
+            billing.topup("acct", 1_000, Some("seed")).await.unwrap(),
+            Some(1_000)
+        );
+        billing
+            .issue_key("limited", "acct", None, Some(700), None)
+            .await
+            .unwrap();
+
+        let snapshot = legacy_snapshot("snapshot-canceled", "acct", 500, 100);
+        let handoff = Arc::new(AtomicU8::new(SNAPSHOT_RESERVE_HANDOFF_CANCELED));
+        let (reply, response) = oneshot::channel();
+        billing
+            .writer
+            .send(WriteCmd::ReserveWithLegacySnapshot {
+                key: "limited".into(),
+                snapshot,
+                handoff: Arc::clone(&handoff),
+                reply,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            response.await.unwrap().unwrap(),
+            LegacyScalarReserveOutcome::AbortedBeforeCommit
+        );
+        billing.flush().await.unwrap();
+
+        let account = billing.account("acct").await.unwrap().unwrap();
+        let key = billing.get("limited").await.unwrap().unwrap();
+        assert_eq!((account.balance_nano, account.reserved_nano), (1_000, 0));
+        assert_eq!(key.reserved_nano, 0);
+        assert_eq!(
+            handoff.load(Ordering::Acquire),
+            SNAPSHOT_RESERVE_HANDOFF_CANCELED
+        );
+
+        let conn = registry::open(&path_string).unwrap();
+        assert!(registry::pricing::sqlite_legacy_scalar_admission_snapshot(
+            &conn,
+            "snapshot-canceled"
+        )
+        .unwrap()
+        .is_none());
+        let durable_rows: (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM billing_reservations \
+                          WHERE request_id='snapshot-canceled'), \
+                        (SELECT COUNT(*) FROM billing_settlement_outbox \
+                          WHERE request_id='snapshot-canceled')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(durable_rows, (0, 0));
+
+        drop(conn);
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn lost_sqlite_snapshot_reserve_reply_stays_active_and_replays_exactly() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-snapshot-handoff-lost-reply-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+        let billing = AsyncBilling::start(path_string.clone(), 1).unwrap();
+        billing.create_account("acct", None, 2_000).await.unwrap();
+        assert_eq!(
+            billing.topup("acct", 1_000, Some("seed")).await.unwrap(),
+            Some(1_000)
+        );
+        billing
+            .issue_key("limited", "acct", None, Some(700), None)
+            .await
+            .unwrap();
+
+        let snapshot = legacy_snapshot("snapshot-lost-reply", "acct", 500, 100);
+        let handoff = Arc::new(AtomicU8::new(SNAPSHOT_RESERVE_HANDOFF_PENDING));
+        let (reply, response) = oneshot::channel();
+        drop(response);
+        billing
+            .writer
+            .send(WriteCmd::ReserveWithLegacySnapshot {
+                key: "limited".into(),
+                snapshot: snapshot.clone(),
+                handoff: Arc::clone(&handoff),
+                reply,
+            })
+            .await
+            .unwrap();
+        billing.flush().await.unwrap();
+
+        assert_eq!(
+            handoff.load(Ordering::Acquire),
+            SNAPSHOT_RESERVE_HANDOFF_COMMITTED
+        );
+        let account = billing.account("acct").await.unwrap().unwrap();
+        let key = billing.get("limited").await.unwrap().unwrap();
+        assert_eq!((account.balance_nano, account.reserved_nano), (900, 100));
+        assert_eq!(key.reserved_nano, 100);
+
+        let conn = registry::open(&path_string).unwrap();
+        assert_eq!(
+            registry::pricing::sqlite_legacy_scalar_admission_snapshot(
+                &conn,
+                "snapshot-lost-reply"
+            )
+            .unwrap(),
+            Some(snapshot.clone())
+        );
+        let durable_state: (String, i64) = conn
+            .query_row(
+                "SELECT state, \
+                        (SELECT COUNT(*) FROM billing_settlement_outbox \
+                          WHERE request_id='snapshot-lost-reply') \
+                   FROM billing_reservations \
+                  WHERE request_id='snapshot-lost-reply'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(durable_state, ("reserved".into(), 0));
+        drop(conn);
+
+        assert!(matches!(
+            billing
+                .reserve_request_with_legacy_snapshot("limited", snapshot)
+                .await
+                .unwrap(),
+            LegacyScalarReserveOutcome::Unchanged(_)
+        ));
+        let account = billing.account("acct").await.unwrap().unwrap();
+        let key = billing.get("limited").await.unwrap().unwrap();
+        assert_eq!((account.balance_nano, account.reserved_nano), (900, 100));
+        assert_eq!(key.reserved_nano, 100);
+
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn postgres_snapshot_handoff_cancels_precommit_and_replays_lost_reply() {
+        const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_441;
+
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!(
+                "skipping PostgreSQL snapshot actor contract: \
+                 CLAUDE_API_TEST_DATABASE_URL is unset"
+            );
+            return;
+        };
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let account_id = format!("snapshot-actor-account-{}-{unique}", std::process::id());
+        let key = format!("snapshot-actor-key-{}-{unique}", std::process::id());
+        let canceled_request = format!("snapshot-actor-canceled-{}-{unique}", std::process::id());
+        let lost_request = format!("snapshot-actor-lost-{}-{unique}", std::process::id());
+        let instance_id = format!("snapshot-actor-owner-{}-{unique}", std::process::id());
+
+        // Share the registry real-PG suite's process-wide destructive lock so package tests cannot
+        // truncate this test's authority while its actor threads are running.
+        let mut admin = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        admin
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        let mut pg = registry::pg::PgStore::connect(&url).unwrap();
+        pg.migrate().unwrap();
+        let owner = pg.claim_instance(&instance_id, 60).unwrap();
+        drop(pg);
+
+        let billing = AsyncBilling::start_authority(
+            registry::authority::AuthorityConfig::Postgres { url: url.clone() },
+            Some(owner),
+            1,
+            0,
+        )
+        .unwrap();
+        let canceled_snapshot = legacy_snapshot(&canceled_request, &account_id, 500, 100);
+        let lost_snapshot = legacy_snapshot(&lost_request, &account_id, 500, 100);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            billing
+                .create_account(&account_id, None, 2_000)
+                .await
+                .unwrap();
+            assert_eq!(
+                billing
+                    .topup(&account_id, 1_000, Some("snapshot-actor-seed"))
+                    .await
+                    .unwrap(),
+                Some(1_000)
+            );
+            billing
+                .issue_key(&key, &account_id, None, Some(700), None)
+                .await
+                .unwrap();
+
+            let canceled_handoff = Arc::new(AtomicU8::new(SNAPSHOT_RESERVE_HANDOFF_CANCELED));
+            let (canceled_reply, canceled_response) = oneshot::channel();
+            billing
+                .writer
+                .send(WriteCmd::ReserveWithLegacySnapshot {
+                    key: key.clone(),
+                    snapshot: canceled_snapshot.clone(),
+                    handoff: Arc::clone(&canceled_handoff),
+                    reply: canceled_reply,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                canceled_response.await.unwrap().unwrap(),
+                LegacyScalarReserveOutcome::AbortedBeforeCommit
+            );
+
+            let lost_handoff = Arc::new(AtomicU8::new(SNAPSHOT_RESERVE_HANDOFF_PENDING));
+            let (lost_reply, lost_response) = oneshot::channel();
+            drop(lost_response);
+            billing
+                .writer
+                .send(WriteCmd::ReserveWithLegacySnapshot {
+                    key: key.clone(),
+                    snapshot: lost_snapshot.clone(),
+                    handoff: Arc::clone(&lost_handoff),
+                    reply: lost_reply,
+                })
+                .await
+                .unwrap();
+            billing.flush().await.unwrap();
+
+            assert_eq!(
+                lost_handoff.load(Ordering::Acquire),
+                SNAPSHOT_RESERVE_HANDOFF_COMMITTED
+            );
+            let account = billing.account(&account_id).await.unwrap().unwrap();
+            let key_row = billing.get(&key).await.unwrap().unwrap();
+            assert_eq!((account.balance_nano, account.reserved_nano), (900, 100));
+            assert_eq!(key_row.reserved_nano, 100);
+            assert!(matches!(
+                billing
+                    .reserve_request_with_legacy_snapshot(&key, lost_snapshot.clone())
+                    .await
+                    .unwrap(),
+                LegacyScalarReserveOutcome::Unchanged(_)
+            ));
+        });
+
+        let durable = admin
+            .query_one(
+                "SELECT r.state, \
+                        (SELECT COUNT(*)::bigint FROM pricing_admission_snapshots s \
+                          WHERE s.request_id=$1), \
+                        (SELECT COUNT(*)::bigint FROM settlement_outbox o \
+                          WHERE o.request_id=$1), \
+                        (SELECT COUNT(*)::bigint FROM reservations c \
+                          WHERE c.request_id=$2) \
+                   FROM reservations r WHERE r.request_id=$1",
+                &[&lost_request, &canceled_request],
+            )
+            .unwrap();
+        assert_eq!(durable.get::<_, String>(0), "reserved");
+        assert_eq!(durable.get::<_, i64>(1), 1);
+        assert_eq!(durable.get::<_, i64>(2), 0);
+        assert_eq!(durable.get::<_, i64>(3), 0);
+        assert_eq!(
+            registry::pg::PgStore::connect(&url)
+                .unwrap()
+                .legacy_scalar_admission_snapshot(&lost_request)
+                .unwrap(),
+            Some(lost_snapshot)
+        );
+
+        drop(runtime);
+        drop(billing);
+        admin
+            .execute("DELETE FROM accounts WHERE id=$1", &[&account_id])
+            .unwrap();
+        admin
+            .execute(
+                "DELETE FROM engine_instances WHERE instance_id=$1",
+                &[&instance_id],
+            )
+            .unwrap();
+        admin
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
     }
 }

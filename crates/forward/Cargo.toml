@@ -38,3 +38,4 @@ zeroize = "1"
 
 [dev-dependencies]
 gemini-credential = { path = "../gemini-credential", features = ["test-loopback-token-uri"] }
+postgres = "0.19"

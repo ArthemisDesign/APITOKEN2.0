@@ -519,6 +519,9 @@ pub struct LegacyScalarReserveReceipt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LegacyScalarReserveOutcome {
     NotReserved,
+    /// A caller-owned commit gate rejected this attempt. The transaction was rolled back and no
+    /// reservation or snapshot from this attempt became durable.
+    AbortedBeforeCommit,
     Inserted(LegacyScalarReserveReceipt),
     Unchanged(LegacyScalarReserveReceipt),
     Conflict(LegacyScalarReserveConflict),

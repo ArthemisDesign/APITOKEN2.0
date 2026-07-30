@@ -57,6 +57,17 @@ outbox, а writer retry-ит до commit. RAII cancel закрывает име�
 Для policy-ключей cap берёт минимум из баланса аккаунта и оставшегося lifetime-лимита. Такие ключи
 обходят auth TTL cache; срок и лимит повторно проверяются в атомарной транзакции reserve.
 
+**Stage 3B1c.2 snapshot reserve handoff — dormant:** отдельный
+`ReserveWithLegacySnapshot`/`reserve_request_with_legacy_snapshot` передаёт writer'у готовый owned
+typed snapshot как единственный источник request/account/hold и вызывает guarded registry commit.
+Его guard может отменить только `PENDING → CANCELED` до commit gate. После
+`COMMIT_DECIDED` компенсационный `CancelReserve` запрещён: lost reply оставляет active reservation
+для exact replay либо штатного lease recovery, без terminal reservation/outbox. PostgreSQL
+повторяет transient operation только до commit decision; неоднозначная commit-ошибка возвращается
+как ошибка и разрешается последующим exact replay. Существующий live `Reserve` и его прежняя
+RAII-компенсация не изменены. Runtime caller, sampler/config, метрики и traffic activation пока
+отсутствуют, поэтому новый command сам по себе не участвует в production admission.
+
 **Что внутри:** `ProxyConfig`, `AppState`, `Clients` (кэш http-клиентов по прокси),
 `limits_from_headers`/`Limits` (unified-ratelimit из ответа), `poll_sub` (активный опрос idle),
 `detect_plan` (тариф из /api/oauth/profile), `forward` (axum-хендлер), `authed`;

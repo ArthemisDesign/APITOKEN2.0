@@ -2686,6 +2686,20 @@ pub fn sqlite_reserve_request_with_legacy_snapshot(
     lease_secs: i64,
     snapshot: &pricing::LegacyScalarAdmissionSnapshot,
 ) -> Result<pricing::LegacyScalarReserveOutcome> {
+    sqlite_reserve_request_with_legacy_snapshot_guarded(conn, key, lease_secs, snapshot, || true)
+}
+
+/// Guarded variant for an async handoff: `commit_gate` runs after all fallible writes and
+/// immediately before commit. Returning false rolls the transaction back without durable money,
+/// reservation, or snapshot writes. The gate is called only for `Inserted` or exact `Unchanged`
+/// success, never for `NotReserved`, conflicts, or earlier failures.
+pub fn sqlite_reserve_request_with_legacy_snapshot_guarded(
+    conn: &Connection,
+    key: &str,
+    lease_secs: i64,
+    snapshot: &pricing::LegacyScalarAdmissionSnapshot,
+    mut commit_gate: impl FnMut() -> bool,
+) -> Result<pricing::LegacyScalarReserveOutcome> {
     use pricing::{
         LegacyScalarReserveConflict as Conflict, LegacyScalarReserveOutcome as Outcome,
         LegacyScalarReserveReceipt as Receipt, LegacyScalarSnapshotLookup as Lookup,
@@ -2760,6 +2774,10 @@ pub fn sqlite_reserve_request_with_legacy_snapshot(
                 Lookup::Legacy(_) => Outcome::Conflict(Conflict::SnapshotPayload),
             }
         };
+        if matches!(&outcome, Outcome::Unchanged(_)) && !commit_gate() {
+            tx.rollback()?;
+            return Ok(Outcome::AbortedBeforeCommit);
+        }
         tx.commit()?;
         return Ok(outcome);
     }
@@ -2779,6 +2797,10 @@ pub fn sqlite_reserve_request_with_legacy_snapshot(
     if let Err(error) = pricing::sqlite_insert_legacy_scalar_admission_snapshot(&tx, snapshot) {
         let _ = tx.rollback();
         return Err(error);
+    }
+    if !commit_gate() {
+        tx.rollback()?;
+        return Ok(Outcome::AbortedBeforeCommit);
     }
     tx.commit()?;
     Ok(Outcome::Inserted(Receipt {
@@ -5232,6 +5254,90 @@ mod tests {
         assert_eq!(
             sqlite_reserve_request_with_legacy_snapshot(&c, "snapshot-key", 60, &snapshot).unwrap(),
             O::Conflict(Conflict::TerminalReservation)
+        );
+    }
+
+    #[test]
+    fn sqlite_guarded_legacy_snapshot_aborts_before_commit_without_compensation() {
+        use pricing::LegacyScalarReserveOutcome as O;
+
+        let c = db();
+        acct_with_key(&c, "guarded-account", "guarded-key", 1_000, 2_000);
+        let snapshot = legacy_snapshot("guarded-request", "guarded-account", 500, 100);
+        let mut insert_gate_calls = 0;
+        assert_eq!(
+            sqlite_reserve_request_with_legacy_snapshot_guarded(
+                &c,
+                "guarded-key",
+                60,
+                &snapshot,
+                || {
+                    insert_gate_calls += 1;
+                    false
+                },
+            )
+            .unwrap(),
+            O::AbortedBeforeCommit
+        );
+        assert_eq!(insert_gate_calls, 1);
+        assert_eq!(
+            c.query_row(
+                "SELECT a.balance_nano,a.reserved_nano,k.reserved_nano, \
+                        (SELECT COUNT(*) FROM billing_reservations), \
+                        (SELECT COUNT(*) FROM pricing_admission_snapshots) \
+                   FROM accounts a JOIN api_keys k ON k.account_id=a.id \
+                  WHERE a.id='guarded-account' AND k.key='guarded-key'",
+                [],
+                |row| Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                )),
+            )
+            .unwrap(),
+            (1_000, 0, 0, 0, 0)
+        );
+
+        assert!(matches!(
+            sqlite_reserve_request_with_legacy_snapshot(&c, "guarded-key", 60, &snapshot).unwrap(),
+            O::Inserted(_)
+        ));
+        let mut replay_gate_calls = 0;
+        assert_eq!(
+            sqlite_reserve_request_with_legacy_snapshot_guarded(
+                &c,
+                "guarded-key",
+                60,
+                &snapshot,
+                || {
+                    replay_gate_calls += 1;
+                    false
+                },
+            )
+            .unwrap(),
+            O::AbortedBeforeCommit
+        );
+        assert_eq!(replay_gate_calls, 1);
+        assert_eq!(
+            c.query_row(
+                "SELECT a.balance_nano,a.reserved_nano,k.reserved_nano, \
+                        (SELECT COUNT(*) FROM billing_reservations), \
+                        (SELECT COUNT(*) FROM pricing_admission_snapshots) \
+                   FROM accounts a JOIN api_keys k ON k.account_id=a.id \
+                  WHERE a.id='guarded-account' AND k.key='guarded-key'",
+                [],
+                |row| Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                )),
+            )
+            .unwrap(),
+            (900, 100, 100, 1, 1)
         );
     }
 

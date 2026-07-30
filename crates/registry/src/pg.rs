@@ -391,6 +391,20 @@ impl PgStore {
         lease_secs: i64,
         snapshot: &crate::pricing::LegacyScalarAdmissionSnapshot,
     ) -> Result<crate::pricing::LegacyScalarReserveOutcome> {
+        self.reserve_request_with_legacy_snapshot_guarded(owner, key, lease_secs, snapshot, || true)
+    }
+
+    /// Guarded async-handoff primitive. The caller-owned gate is evaluated only for a successful
+    /// insert or exact replay, after every fallible write/fence check and immediately before
+    /// commit. A rejected gate rolls back this attempt without compensating a committed reserve.
+    pub fn reserve_request_with_legacy_snapshot_guarded(
+        &mut self,
+        owner: &Owner,
+        key: &str,
+        lease_secs: i64,
+        snapshot: &crate::pricing::LegacyScalarAdmissionSnapshot,
+        mut commit_gate: impl FnMut() -> bool,
+    ) -> Result<crate::pricing::LegacyScalarReserveOutcome> {
         use crate::pricing::{
             LegacyScalarReserveConflict as Conflict, LegacyScalarReserveOutcome as Outcome,
             LegacyScalarReserveReceipt as Receipt, LegacyScalarSnapshotLookup as Lookup,
@@ -474,6 +488,13 @@ impl PgStore {
                     Lookup::Legacy(_) => Outcome::Conflict(Conflict::SnapshotPayload),
                 }
             };
+            if matches!(&outcome, Outcome::Unchanged(_)) {
+                Self::assert_owner_locked(&mut tx, owner, now())?;
+                if !commit_gate() {
+                    tx.rollback()?;
+                    return Ok(Outcome::AbortedBeforeCommit);
+                }
+            }
             tx.commit()?;
             return Ok(outcome);
         }
@@ -532,6 +553,10 @@ impl PgStore {
             return Err(error);
         }
         Self::assert_owner_locked(&mut tx, owner, now())?;
+        if !commit_gate() {
+            tx.rollback()?;
+            return Ok(Outcome::AbortedBeforeCommit);
+        }
         tx.commit()?;
         Ok(Outcome::Inserted(Receipt {
             balance_after_reserve_nano: balance,
@@ -2762,6 +2787,54 @@ mod tests {
             (0, 0)
         );
 
+        let aborted_snapshot =
+            legacy_snapshot("aborted-before-commit", "snapshot-account", 500, 100);
+        let mut insert_gate_calls = 0;
+        assert_eq!(
+            pg.reserve_request_with_legacy_snapshot_guarded(
+                &owner,
+                "snapshot-key",
+                60,
+                &aborted_snapshot,
+                || {
+                    insert_gate_calls += 1;
+                    false
+                },
+            )
+            .unwrap(),
+            O::AbortedBeforeCommit
+        );
+        assert_eq!(insert_gate_calls, 1);
+        let aborted_counts = pg
+            .client
+            .query_one(
+                "SELECT a.balance_nano,a.reserved_nano,k.reserved_nano, \
+                        (SELECT COUNT(*)::bigint FROM reservations \
+                          WHERE request_id='aborted-before-commit'), \
+                        (SELECT COUNT(*)::bigint FROM pricing_admission_snapshots \
+                          WHERE request_id='aborted-before-commit') \
+                   FROM accounts a JOIN api_keys k ON k.account_id=a.id \
+                  WHERE a.id='snapshot-account' AND k.key='snapshot-key'",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                aborted_counts.get::<_, i64>(0),
+                aborted_counts.get::<_, i64>(1),
+                aborted_counts.get::<_, i64>(2),
+                aborted_counts.get::<_, i64>(3),
+                aborted_counts.get::<_, i64>(4),
+            ),
+            (
+                money_before_window_checks.0,
+                money_before_window_checks.1,
+                money_before_window_checks.2,
+                0,
+                0,
+            )
+        );
+
         let snapshot = legacy_snapshot("snapshot-request", "snapshot-account", 500, 100);
 
         let inserted = pg
@@ -2777,6 +2850,45 @@ mod tests {
                 .unwrap()
                 .unwrap(),
             snapshot
+        );
+        let mut replay_gate_calls = 0;
+        assert_eq!(
+            pg.reserve_request_with_legacy_snapshot_guarded(
+                &owner,
+                "snapshot-key",
+                60,
+                &snapshot,
+                || {
+                    replay_gate_calls += 1;
+                    false
+                },
+            )
+            .unwrap(),
+            O::AbortedBeforeCommit
+        );
+        assert_eq!(replay_gate_calls, 1);
+        let replay_abort_counts = pg
+            .client
+            .query_one(
+                "SELECT a.balance_nano,a.reserved_nano,k.reserved_nano, \
+                        (SELECT COUNT(*)::bigint FROM reservations \
+                          WHERE request_id='snapshot-request'), \
+                        (SELECT COUNT(*)::bigint FROM pricing_admission_snapshots \
+                          WHERE request_id='snapshot-request') \
+                   FROM accounts a JOIN api_keys k ON k.account_id=a.id \
+                  WHERE a.id='snapshot-account' AND k.key='snapshot-key'",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                replay_abort_counts.get::<_, i64>(0),
+                replay_abort_counts.get::<_, i64>(1),
+                replay_abort_counts.get::<_, i64>(2),
+                replay_abort_counts.get::<_, i64>(3),
+                replay_abort_counts.get::<_, i64>(4),
+            ),
+            (900, 100, 100, 1, 1)
         );
         let reserved_lease: i64 = pg
             .client

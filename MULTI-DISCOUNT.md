@@ -1640,10 +1640,20 @@ Snapshot этого этапа доказывает только reserve-time le
 settlement на pinned tariff schedule и не выдаёт этот snapshot за уже реализованное end-to-end
 tariff pinning: текущий settlement сохраняется без изменения до отдельного денежного checkpoint.
 
-Доставленный dormant foundation заканчивается до production bridge: sampler, canonicalizer call из
-admission, billing actor command, config/feature flag, telemetry и live caller ещё отсутствуют.
-Поэтому старые reserve paths остаются byte-for-byte по поведению прежними, а новые atomic API без
-последующего отдельного подключения не создают production snapshots и не меняют трафик.
+Доставленный dormant foundation теперь включает guarded registry commit gate и отдельный billing
+actor command/public method. Snapshot передаётся в actor как готовое immutable значение и остаётся
+единственным источником request/account/hold. Старый live `Reserve` не изменён. Новый guard отменяет
+только состояние до commit decision; после решения о commit он не запускает cancel/settlement, а
+потерянный reply оставляет active reservation для exact replay или штатного lease recovery.
+PostgreSQL автоматически повторяет transient attempt только пока commit gate ещё не пройден;
+неоднозначная commit-ошибка после gate не компенсируется и не повторяет money operation в том же
+actor turn. SQLite и real PostgreSQL tests доказывают полный rollback закрытого gate, а actor tests —
+отсутствие durable строк при pre-commit cancel и ровно один active reserve без outbox при lost reply.
+
+Production bridge всё ещё не подключён: sampler, provider-owned builder/canonicalizer call из
+admission, config/feature flag, telemetry и live caller отсутствуют. Поэтому старые reserve paths
+сохраняют прежнее поведение, а dormant actor command без последующего отдельного caller не создаёт
+production snapshots и не меняет трафик.
 
 Это единственный новый critical-path write в Stage 3B1c. Его failure атомарно откатывает reserve;
 после входа в eligible bridge DB/constraint failure не делает fallback-второй reserve с тем же

@@ -946,6 +946,7 @@ dependencies = [
  "libc",
  "metering",
  "pool",
+ "postgres",
  "redis",
  "registry",
  "serde",
