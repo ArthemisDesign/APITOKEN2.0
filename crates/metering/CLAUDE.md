@@ -16,6 +16,10 @@
 - Codex catalog и ChatGPT Fast credit multiplier тоже живут только здесь. Fast — tier существующей
   модели, не отдельный model id: GPT-5.6/5.5 = 2.5x, GPT-5.4 = 2x. Изменять только по опубликованной
   OpenAI таблице с exact-multiplier тестом.
+- Versioned model/tariff identity — только capability, не product access. Exact canonical map,
+  alias generation, immutable schedule ID/epoch и typed reserve modifiers живут здесь; доступ всё
+  равно требует отдельного product catalog и account policy. Unknown/historical ID не превращается
+  в выдуманную canonical identity, а legacy conservative pricing остаётся отдельным контрактом.
 
 **Инварианты (проверять тестами):**
 - 1M токенов любой корзины = точная официальная ставка (тест `prices_exact_per_million`).
@@ -23,6 +27,8 @@
 - Gemini SSE также использует последний полный кумулятивный `usageMetadata`; split/malformed frames
   не паникуют и не затирают последний валидный snapshot.
 - Алиас и конкретные варианты одной Codex-модели обязаны возвращать одинаковый Fast-множитель.
+- `gpt-5.6` и `gpt-5.6-sol` обязаны иметь одну canonical/tariff identity; новая price epoch меняет
+  schedule ID, но не alias generation. Long-context и Fast/geo modifiers фиксируются отдельно.
 - Битый ввод → `Usage::default()` (нули), НИКОГДА не паникует.
 - i128 — переполнения исключены даже на млрд токенов.
 

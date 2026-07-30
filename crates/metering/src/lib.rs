@@ -15,8 +15,9 @@ use serde_json::Value;
 pub mod codex;
 pub mod gemini;
 pub use codex::{
-    codex_catalog_at, codex_fast_multiplier_basis_points, codex_prices_at, CodexModelSpec,
-    CodexPriceEpoch, CodexPrices,
+    codex_catalog_at, codex_fast_multiplier_basis_points, codex_prices_at,
+    codex_tariff_capability_at, CodexAdmissionTariffIdentity, CodexContextTier, CodexModelSpec,
+    CodexPriceEpoch, CodexPrices, CodexServiceTier, CodexTariffModifiers, CODEX_ALIAS_GENERATION,
 };
 pub use gemini::{
     gemini_catalog_at, gemini_prices_at, GeminiModelSpec, GeminiPriceEpoch, GeminiPrices,
@@ -25,6 +26,27 @@ pub use gemini::{
 
 pub const NANO_PER_USD: i128 = 1_000_000_000;
 pub const WEB_SEARCH_NANO: i128 = 10_000_000; // $0.01 за web_search-запрос
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TariffIdentityError {
+    InvalidPricedTimestamp,
+    UnsupportedModelIdentity,
+    UnsupportedModifier,
+}
+
+/// Opaque, versioned identifier for one immutable effective tariff epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TariffScheduleId(&'static str);
+
+impl TariffScheduleId {
+    pub(crate) const fn from_static(value: &'static str) -> Self {
+        Self(value)
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
 
 /// Токены запроса по корзинам (u64 — точные счётчики, ничего не теряем).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -124,6 +146,106 @@ const SONNET5_INTRO_PRICES: Prices = Prices {
 };
 // 2026-09-01T00:00:00Z — Sonnet 5 intro pricing ends 2026-08-31
 const SONNET5_STD_START: i64 = 1788220800;
+
+/// Version of the exact audited Anthropic alias table used for durable snapshots.
+pub const ANTHROPIC_ALIAS_GENERATION: i64 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnthropicSpeed {
+    Standard,
+    Fast,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnthropicInferenceGeo {
+    Global,
+    Us,
+}
+
+/// Request-side modifiers applied to the effective reserve tariff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnthropicAdmissionModifiers {
+    pub speed: AnthropicSpeed,
+    pub inference_geo: AnthropicInferenceGeo,
+}
+
+impl AnthropicAdmissionModifiers {
+    pub const fn inference_geo_basis_points(self) -> i64 {
+        match self.inference_geo {
+            AnthropicInferenceGeo::Global => 10_000,
+            AnthropicInferenceGeo::Us => 11_000,
+        }
+    }
+}
+
+/// Exact, versioned Anthropic tariff identity suitable for a durable admission snapshot.
+///
+/// This exact capability table is intentionally narrower than the legacy heuristic price matcher.
+/// A historical, future or malformed id returns a typed fallback so shadow code cannot pretend it
+/// has an audited canonical identity. Product access remains a separate catalog/policy decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnthropicAdmissionTariffIdentity {
+    pub canonical_model_id: &'static str,
+    pub alias_generation: i64,
+    pub tariff_schedule_id: TariffScheduleId,
+    pub schedule_effective_from: i64,
+    pub effective_reserve_prices: Prices,
+    pub modifiers: AnthropicAdmissionModifiers,
+}
+
+/// Resolve one audited model capability to its canonical id, effective tariff epoch and typed
+/// reserve-time modifiers. This function is pure and has no production caller in Stage 3B1c.1;
+/// it does not grant product access.
+pub fn anthropic_tariff_capability_at(
+    requested_model_id: &str,
+    priced_ts: i64,
+    modifiers: AnthropicAdmissionModifiers,
+) -> Result<AnthropicAdmissionTariffIdentity, TariffIdentityError> {
+    if priced_ts <= 0 {
+        return Err(TariffIdentityError::InvalidPricedTimestamp);
+    }
+
+    let canonical_model_id = [
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-sonnet-5",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+    ]
+    .into_iter()
+    .find(|canonical| requested_model_id == *canonical)
+    .ok_or(TariffIdentityError::UnsupportedModelIdentity)?;
+
+    let fast = modifiers.speed == AnthropicSpeed::Fast;
+    let (tariff_schedule_id, schedule_effective_from) = match (canonical_model_id, fast) {
+        ("claude-opus-4-8", true) => ("anthropic/fast/opus-current/v1", 0),
+        (_, true) => ("anthropic/fast/opus-4-7-conservative/v1", 0),
+        ("claude-opus-4-8" | "claude-opus-4-7", false) => ("anthropic/standard/opus-current/v1", 0),
+        ("claude-sonnet-5", false) if priced_ts < SONNET5_STD_START => {
+            ("anthropic/standard/sonnet-5-intro/v1", 0)
+        }
+        ("claude-sonnet-5", false) => ("anthropic/standard/sonnet-current/v1", SONNET5_STD_START),
+        ("claude-sonnet-4-6", false) => ("anthropic/standard/sonnet-current/v1", 0),
+        ("claude-haiku-4-5", false) => ("anthropic/standard/haiku-4-5/v1", 0),
+        _ => return Err(TariffIdentityError::UnsupportedModelIdentity),
+    };
+
+    let base_prices = model_prices_reserve_for_speed_at(canonical_model_id, priced_ts, fast);
+    let effective_reserve_prices = if modifiers.inference_geo == AnthropicInferenceGeo::Us {
+        premium_prices_ceil(base_prices, modifiers.inference_geo_basis_points())
+    } else {
+        base_prices
+    };
+
+    Ok(AnthropicAdmissionTariffIdentity {
+        canonical_model_id,
+        alias_generation: ANTHROPIC_ALIAS_GENERATION,
+        tariff_schedule_id: TariffScheduleId::from_static(tariff_schedule_id),
+        schedule_effective_from,
+        effective_reserve_prices,
+        modifiers,
+    })
+}
 
 /// Цены модели для СПИСАНИЯ ($/Mtoken → нано/токен). Совпадают с официальными ставками Anthropic.
 /// Нераспознанная строка → консервативный MAX. (Для РЕЗЕРВА см. `model_prices_reserve`.)
@@ -712,6 +834,231 @@ mod tests {
             model_prices_at("claude-sonnet-4-6", SONNET5_STD_START - 1),
             standard
         );
+    }
+
+    #[test]
+    fn anthropic_tariff_capability_has_golden_identity_for_each_audited_model() {
+        for (model, standard_schedule, standard_effective_from, fast_schedule) in [
+            (
+                "claude-opus-4-8",
+                "anthropic/standard/opus-current/v1",
+                0,
+                "anthropic/fast/opus-current/v1",
+            ),
+            (
+                "claude-opus-4-7",
+                "anthropic/standard/opus-current/v1",
+                0,
+                "anthropic/fast/opus-4-7-conservative/v1",
+            ),
+            (
+                "claude-sonnet-5",
+                "anthropic/standard/sonnet-current/v1",
+                SONNET5_STD_START,
+                "anthropic/fast/opus-4-7-conservative/v1",
+            ),
+            (
+                "claude-sonnet-4-6",
+                "anthropic/standard/sonnet-current/v1",
+                0,
+                "anthropic/fast/opus-4-7-conservative/v1",
+            ),
+            (
+                "claude-haiku-4-5",
+                "anthropic/standard/haiku-4-5/v1",
+                0,
+                "anthropic/fast/opus-4-7-conservative/v1",
+            ),
+        ] {
+            let standard = anthropic_tariff_capability_at(
+                model,
+                SONNET5_STD_START,
+                AnthropicAdmissionModifiers {
+                    speed: AnthropicSpeed::Standard,
+                    inference_geo: AnthropicInferenceGeo::Global,
+                },
+            )
+            .unwrap();
+            assert_eq!(standard.canonical_model_id, model);
+            assert_eq!(standard.alias_generation, 1);
+            assert_eq!(standard.tariff_schedule_id.as_str(), standard_schedule);
+            assert_eq!(standard.schedule_effective_from, standard_effective_from);
+
+            let fast = anthropic_tariff_capability_at(
+                model,
+                SONNET5_STD_START,
+                AnthropicAdmissionModifiers {
+                    speed: AnthropicSpeed::Fast,
+                    inference_geo: AnthropicInferenceGeo::Global,
+                },
+            )
+            .unwrap();
+            assert_eq!(fast.canonical_model_id, model);
+            assert_eq!(fast.alias_generation, 1);
+            assert_eq!(fast.tariff_schedule_id.as_str(), fast_schedule);
+            assert_eq!(fast.schedule_effective_from, 0);
+        }
+    }
+
+    #[test]
+    fn anthropic_tariff_identity_pins_epoch_speed_and_geography() {
+        let global_standard = AnthropicAdmissionModifiers {
+            speed: AnthropicSpeed::Standard,
+            inference_geo: AnthropicInferenceGeo::Global,
+        };
+        let intro = anthropic_tariff_capability_at(
+            "claude-sonnet-5",
+            SONNET5_STD_START - 1,
+            global_standard,
+        )
+        .unwrap();
+        let standard =
+            anthropic_tariff_capability_at("claude-sonnet-5", SONNET5_STD_START, global_standard)
+                .unwrap();
+        assert_eq!(
+            intro.tariff_schedule_id.as_str(),
+            "anthropic/standard/sonnet-5-intro/v1"
+        );
+        assert_eq!(intro.schedule_effective_from, 0);
+        assert_eq!(
+            standard.tariff_schedule_id.as_str(),
+            "anthropic/standard/sonnet-current/v1"
+        );
+        assert_eq!(standard.schedule_effective_from, SONNET5_STD_START);
+        assert_ne!(
+            intro.effective_reserve_prices,
+            standard.effective_reserve_prices
+        );
+
+        let fast = anthropic_tariff_capability_at(
+            "claude-opus-4-8",
+            SONNET5_STD_START,
+            AnthropicAdmissionModifiers {
+                speed: AnthropicSpeed::Fast,
+                inference_geo: AnthropicInferenceGeo::Global,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fast.tariff_schedule_id.as_str(),
+            "anthropic/fast/opus-current/v1"
+        );
+        assert_eq!(fast.modifiers.speed, AnthropicSpeed::Fast);
+        assert_eq!(
+            fast.effective_reserve_prices,
+            model_prices_reserve_for_speed_at("claude-opus-4-8", SONNET5_STD_START, true)
+        );
+
+        let us = anthropic_tariff_capability_at(
+            "claude-opus-4-8",
+            SONNET5_STD_START,
+            AnthropicAdmissionModifiers {
+                speed: AnthropicSpeed::Fast,
+                inference_geo: AnthropicInferenceGeo::Us,
+            },
+        )
+        .unwrap();
+        assert_eq!(us.modifiers.inference_geo, AnthropicInferenceGeo::Us);
+        assert_eq!(us.modifiers.inference_geo_basis_points(), 11_000);
+        assert_eq!(
+            us.effective_reserve_prices,
+            premium_prices_ceil(fast.effective_reserve_prices, 11_000)
+        );
+
+        let web_only = Usage {
+            web_search_requests: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            cost_nanodollars(&web_only, &fast.effective_reserve_prices),
+            cost_nanodollars(&web_only, &us.effective_reserve_prices)
+        );
+    }
+
+    #[test]
+    fn anthropic_tariff_identity_does_not_promote_legacy_fallbacks() {
+        for model in [
+            "",
+            "CLAUDE-OPUS-4-8",
+            "claude-opus-4-8-latest",
+            "claude-opus-4-8-20260701",
+            "claude-opus-4-8-preview",
+            "claude-opus-4-8-2026070x",
+            "claude-opus-5",
+            "claude-3-5-sonnet-20241022",
+            "anything-sonnet-anything",
+        ] {
+            assert_eq!(
+                anthropic_tariff_capability_at(
+                    model,
+                    SONNET5_STD_START,
+                    AnthropicAdmissionModifiers {
+                        speed: AnthropicSpeed::Standard,
+                        inference_geo: AnthropicInferenceGeo::Global,
+                    },
+                ),
+                Err(TariffIdentityError::UnsupportedModelIdentity),
+                "{model}",
+            );
+        }
+
+        for priced_ts in [i64::MIN, -1, 0] {
+            assert_eq!(
+                anthropic_tariff_capability_at(
+                    "claude-sonnet-5",
+                    priced_ts,
+                    AnthropicAdmissionModifiers {
+                        speed: AnthropicSpeed::Standard,
+                        inference_geo: AnthropicInferenceGeo::Global,
+                    },
+                ),
+                Err(TariffIdentityError::InvalidPricedTimestamp)
+            );
+        }
+        // The dormant API does not alter the legacy conservative pricing behavior.
+        assert_eq!(model_prices("что-то-непонятное"), MAX_PRICES);
+        assert_eq!(
+            model_prices("claude-3-5-sonnet-20241022"),
+            SONNET_STANDARD_PRICES
+        );
+    }
+
+    #[test]
+    fn anthropic_tariff_identity_matches_live_reserve_chain_for_every_modifier() {
+        for model in [
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-sonnet-5",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5",
+        ] {
+            for fast in [false, true] {
+                for us_inference in [false, true] {
+                    let modifiers = AnthropicAdmissionModifiers {
+                        speed: if fast {
+                            AnthropicSpeed::Fast
+                        } else {
+                            AnthropicSpeed::Standard
+                        },
+                        inference_geo: if us_inference {
+                            AnthropicInferenceGeo::Us
+                        } else {
+                            AnthropicInferenceGeo::Global
+                        },
+                    };
+                    let identity =
+                        anthropic_tariff_capability_at(model, SONNET5_STD_START, modifiers)
+                            .unwrap();
+                    let base = model_prices_reserve_for_speed_at(model, SONNET5_STD_START, fast);
+                    let expected = if us_inference {
+                        premium_prices_ceil(base, 11_000)
+                    } else {
+                        base
+                    };
+                    assert_eq!(identity.effective_reserve_prices, expected, "{model}");
+                }
+            }
+        }
     }
 
     #[test]
