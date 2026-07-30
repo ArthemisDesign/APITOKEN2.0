@@ -1,5 +1,5 @@
 diff --git a/codex-rs/app-server-protocol/src/protocol/v2/thread.rs b/codex-rs/app-server-protocol/src/protocol/v2/thread.rs
-index acebeb5..fc9c5c4 100644
+index acebeb5..c2383aa 100644
 --- a/codex-rs/app-server-protocol/src/protocol/v2/thread.rs
 +++ b/codex-rs/app-server-protocol/src/protocol/v2/thread.rs
 @@ -18,6 +18,8 @@ use codex_protocol::config_types::CollaborationMode;
@@ -11,6 +11,16 @@ index acebeb5..fc9c5c4 100644
  pub use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
  pub use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
  pub use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
+@@ -94,6 +96,9 @@ pub struct ThreadStartParams {
+     pub config: Option<HashMap<String, JsonValue>>,
+     #[ts(optional = nullable)]
+     pub service_name: Option<String>,
++    /// Override the Responses API prompt-cache routing key for this thread.
++    #[ts(optional = nullable)]
++    pub prompt_cache_key: Option<String>,
+     #[ts(optional = nullable)]
+     pub base_instructions: Option<String>,
+     #[ts(optional = nullable)]
 diff --git a/codex-rs/app-server/src/request_processors.rs b/codex-rs/app-server/src/request_processors.rs
 index a6d1794..e0140ff 100644
 --- a/codex-rs/app-server/src/request_processors.rs
@@ -24,7 +34,7 @@ index a6d1794..e0140ff 100644
  use codex_app_server_protocol::DynamicToolNamespaceTool;
  use codex_app_server_protocol::DynamicToolSpec;
 diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
-index 7f1a30a..48cd734 100644
+index 7f1a30a..7d6d227 100644
 --- a/codex-rs/app-server/src/request_processors/thread_processor.rs
 +++ b/codex-rs/app-server/src/request_processors/thread_processor.rs
 @@ -233,6 +233,8 @@ fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
@@ -39,8 +49,7 @@ index 7f1a30a..48cd734 100644
 @@ -319,6 +321,52 @@ fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
          Ok(())
      }
--
-+
+
 +    fn validate_custom_tool<'a>(
 +        tool: &'a DynamicToolCustomSpec,
 +        seen: &mut HashSet<&'a str>,
@@ -100,7 +109,59 @@ index 7f1a30a..48cd734 100644
              DynamicToolSpec::Namespace(namespace) => {
                  let name = namespace.name.trim();
                  if name.is_empty() {
-@@ -1222,6 +1273,7 @@ impl ThreadRequestProcessor {
+@@ -376,6 +427,17 @@ fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
+     Ok(())
+ }
+
++fn validate_prompt_cache_key(key: &str) -> Result<(), String> {
++    const MAX_PROMPT_CACHE_KEY_BYTES: usize = 256;
++    if key.is_empty() || key.len() > MAX_PROMPT_CACHE_KEY_BYTES || key.chars().any(char::is_control)
++    {
++        return Err(format!(
++            "prompt cache key must be 1-{MAX_PROMPT_CACHE_KEY_BYTES} bytes without control characters"
++        ));
++    }
++    Ok(())
++}
++
+ #[derive(Clone)]
+ pub(crate) struct ThreadRequestProcessor {
+     pub(super) auth_manager: Arc<AuthManager>,
+@@ -960,6 +1022,7 @@ impl ThreadRequestProcessor {
+             permissions,
+             config,
+             service_name,
++            prompt_cache_key,
+             base_instructions,
+             developer_instructions,
+             dynamic_tools,
+@@ -988,6 +1051,9 @@ impl ThreadRequestProcessor {
+                 "`permissions` cannot be combined with `sandbox`",
+             ));
+         }
++        if let Some(key) = prompt_cache_key.as_deref() {
++            validate_prompt_cache_key(key).map_err(invalid_request)?;
++        }
+         let runtime_workspace_roots = runtime_workspace_roots.map(resolve_runtime_workspace_roots);
+         let environments =
+             resolve_turn_environment_selections(self.thread_manager.as_ref(), environments)?;
+@@ -1039,6 +1105,7 @@ impl ThreadRequestProcessor {
+                 thread_source.map(Into::into),
+                 environments,
+                 service_name,
++                prompt_cache_key,
+                 allow_provider_model_fallback,
+                 experimental_raw_events,
+                 request_trace,
+@@ -1116,6 +1183,7 @@ impl ThreadRequestProcessor {
+         thread_source: Option<codex_protocol::protocol::ThreadSource>,
+         environment_selections: Option<Vec<TurnEnvironmentSelection>>,
+         service_name: Option<String>,
++        prompt_cache_key: Option<String>,
+         allow_provider_model_fallback: bool,
+         experimental_raw_events: bool,
+         request_trace: Option<W3cTraceContext>,
+@@ -1222,12 +1290,16 @@ impl ThreadRequestProcessor {
              .map(|tool| match tool {
                  DynamicToolSpec::Function(_) => 1,
                  DynamicToolSpec::Namespace(namespace) => namespace.tools.len(),
@@ -108,15 +169,106 @@ index 7f1a30a..48cd734 100644
              })
              .sum();
          let mut thread_extension_init = ExtensionDataInit::new();
+         if !selected_capability_roots.is_empty() {
+             thread_extension_init.insert(selected_capability_roots);
+         }
++        if let Some(prompt_cache_key) = prompt_cache_key {
++            thread_extension_init.insert(codex_core::PromptCacheKeyOverride(prompt_cache_key));
++        }
+         let create_thread_started_at = std::time::Instant::now();
+         let NewThread {
+             thread_id,
+@@ -1236,25 +1308,32 @@ impl ThreadRequestProcessor {
+             ..
+         } = listener_task_context
+             .thread_manager
+-            .start_thread_with_options(StartThreadOptions {
+-                config,
+-                allow_provider_model_fallback,
+-                initial_history: match session_start_source
+-                    .unwrap_or(codex_app_server_protocol::ThreadStartSource::Startup)
+-                {
+-                    codex_app_server_protocol::ThreadStartSource::Startup => InitialHistory::New,
+-                    codex_app_server_protocol::ThreadStartSource::Clear => InitialHistory::Cleared,
++            .start_thread_with_options_and_client_info(
++                StartThreadOptions {
++                    config,
++                    allow_provider_model_fallback,
++                    initial_history: match session_start_source
++                        .unwrap_or(codex_app_server_protocol::ThreadStartSource::Startup)
++                    {
++                        codex_app_server_protocol::ThreadStartSource::Startup => {
++                            InitialHistory::New
++                        }
++                        codex_app_server_protocol::ThreadStartSource::Clear => {
++                            InitialHistory::Cleared
++                        }
++                    },
++                    history_mode,
++                    session_source: None,
++                    thread_source,
++                    dynamic_tools,
++                    metrics_service_name: service_name,
++                    parent_trace: request_trace,
++                    environments,
++                    thread_extension_init,
++                    supports_openai_form_elicitation,
+                 },
+-                history_mode,
+-                session_source: None,
+-                thread_source,
+-                dynamic_tools,
+-                metrics_service_name: service_name,
+-                parent_trace: request_trace,
+-                environments,
+-                thread_extension_init,
+-                supports_openai_form_elicitation,
+-            })
++                app_server_client_name.clone(),
++            )
+             .instrument(tracing::info_span!(
+                 "app_server.thread_start.create_thread",
+                 otel.name = "app_server.thread_start.create_thread",
+@@ -3184,12 +3263,13 @@ impl ThreadRequestProcessor {
+
+         match self
+             .thread_manager
+-            .resume_thread_with_history(
++            .resume_thread_with_history_and_client_info(
+                 config,
+                 thread_history,
+                 self.auth_manager.clone(),
+                 self.request_trace_context(&request_id).await,
+                 supports_openai_form_elicitation,
++                app_server_client_name.clone(),
+             )
+             .await
+         {
+@@ -4100,7 +4180,7 @@ impl ThreadRequestProcessor {
+             ..
+         } = self
+             .thread_manager
+-            .fork_thread_from_history(
++            .fork_thread_from_history_and_client_info(
+                 ForkSnapshot::Interrupted,
+                 config,
+                 InitialHistory::Resumed(ResumedHistory {
+@@ -4111,6 +4191,7 @@ impl ThreadRequestProcessor {
+                 thread_source.map(Into::into),
+                 self.request_trace_context(&request_id).await,
+                 supports_openai_form_elicitation,
++                app_server_client_name.clone(),
+             )
+             .await
+             .map_err(|err| match err {
 diff --git a/codex-rs/app-server/src/request_processors/thread_processor_tests.rs b/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
-index 38a94ab..faf9a1e 100644
+index 38a94ab..1f0ab5b 100644
 --- a/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
 +++ b/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
-@@ -215,6 +215,41 @@ mod thread_processor_behavior_tests {
+@@ -215,6 +215,49 @@ mod thread_processor_behavior_tests {
          validate_dynamic_tools(&tools).expect("valid schema");
      }
--
-+
+
 +    #[test]
 +    fn apitoken_openai_compat_validate_dynamic_tools_accepts_lark_custom_tool() {
 +        let tools = vec![DynamicToolSpec::Custom(
@@ -152,28 +304,91 @@ index 38a94ab..faf9a1e 100644
 +        assert!(error.contains("lark"), "unexpected error: {error}");
 +    }
 +
++    #[test]
++    fn apitoken_openai_compat_validates_prompt_cache_key() {
++        validate_prompt_cache_key("opaque-tenant-scoped-key").expect("valid cache key");
++        assert!(validate_prompt_cache_key("").is_err());
++        assert!(validate_prompt_cache_key(&"x".repeat(257)).is_err());
++        assert!(validate_prompt_cache_key("line\nbreak").is_err());
++    }
++
      #[test]
      fn validate_dynamic_tools_accepts_same_name_in_different_namespaces() {
          let tools = vec![
+diff --git a/codex-rs/app-server/tests/suite/v2/skills_list.rs b/codex-rs/app-server/tests/suite/v2/skills_list.rs
+index c17a54b..477618d 100644
+--- a/codex-rs/app-server/tests/suite/v2/skills_list.rs
++++ b/codex-rs/app-server/tests/suite/v2/skills_list.rs
+@@ -929,6 +929,7 @@ async fn skills_changed_notification_is_emitted_after_skill_change() -> Result<(
+             permissions: None,
+             config: None,
+             service_name: None,
++            prompt_cache_key: None,
+             base_instructions: None,
+             developer_instructions: None,
+             personality: None,
+diff --git a/codex-rs/core/src/codex_delegate.rs b/codex-rs/core/src/codex_delegate.rs
+index eba2bc6..2ae7865 100644
+--- a/codex-rs/core/src/codex_delegate.rs
++++ b/codex-rs/core/src/codex_delegate.rs
+@@ -116,6 +116,7 @@ pub(crate) async fn run_codex_thread_interactive(
+         originator: parent_ctx.originator.clone(),
+         agent_control: parent_session.services.agent_control.clone(),
+         dynamic_tools: Vec::new(),
++        app_server_client_name: None,
+         metrics_service_name: None,
+         user_shell_override: None,
+         inherited_environments: Some(parent_ctx.environments.clone()),
 diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
-index a3f29eb..c5b2a97 100644
+index a3f29eb..95c8fb7 100644
 --- a/codex-rs/core/src/lib.rs
 +++ b/codex-rs/core/src/lib.rs
-@@ -5,6 +5,8 @@
+@@ -5,6 +5,13 @@
  // the TUI or the tracing stack).
  #![deny(clippy::print_stdout, clippy::print_stderr)]
--
-+
+
 +pub(crate) const APITOKEN_OPENAI_COMPAT_CLIENT: &str = "apitoken_openai_compat";
++
++/// Host-supplied override for the upstream Responses prompt-cache router. App-server attaches it
++/// before a thread is created; stock Codex surfaces omit it and keep the session-id default.
++#[derive(Clone, Debug)]
++pub struct PromptCacheKeyOverride(pub String);
 +
  mod apply_patch;
  mod apps;
  mod audio_preparation;
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index 2f6dcf5..9572875 100644
+index 2f6dcf5..b1fbf2e 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
-@@ -3210,6 +3210,21 @@ impl Session {
+@@ -426,6 +426,9 @@ pub(crate) struct SessionSpawnArgs {
+     pub(crate) originator: String,
+     pub(crate) agent_control: AgentControl,
+     pub(crate) dynamic_tools: Vec<DynamicToolSpec>,
++    /// Client identity is seeded before startup prewarm so client-specific tool
++    /// planning applies to the prewarm turn as well as regular turns.
++    pub(crate) app_server_client_name: Option<String>,
+     pub(crate) metrics_service_name: Option<String>,
+     pub(crate) inherited_exec_policy: Option<Arc<ExecPolicyManager>>,
+     pub(crate) inherited_environments: Option<TurnEnvironmentSnapshot>,
+@@ -518,6 +521,7 @@ impl Session {
+             originator,
+             agent_control,
+             dynamic_tools,
++            app_server_client_name,
+             metrics_service_name,
+             user_shell_override,
+             inherited_exec_policy,
+@@ -675,7 +679,7 @@ impl Session {
+             thread_name: None,
+             original_config_do_not_use: Arc::clone(&config),
+             metrics_service_name,
+-            app_server_client_name: None,
++            app_server_client_name,
+             app_server_client_version: None,
+             session_source,
+             history_mode,
+@@ -3210,6 +3214,21 @@ impl Session {
          world_state: &WorldState,
          mcp: &McpRuntimeSnapshot,
      ) -> Vec<ResponseItem> {
@@ -195,6 +410,37 @@ index 2f6dcf5..9572875 100644
          let mut developer_sections = Vec::<String>::with_capacity(8);
          let mut contextual_user_sections = Vec::<String>::with_capacity(2);
          let mut separate_developer_sections = Vec::<String>::new();
+diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
+index 89cb0c8..f532da4 100644
+--- a/codex-rs/core/src/session/session.rs
++++ b/codex-rs/core/src/session/session.rs
+@@ -583,6 +583,9 @@ impl Session {
+                     roots
+                 }
+             };
++        let prompt_cache_key_override = thread_extension_init
++            .get::<crate::PromptCacheKeyOverride>()
++            .map(|override_value| override_value.0.clone());
+         thread_extension_init.insert(codex_extension_api::ThreadOriginator(
+             session_configuration.originator.clone(),
+         ));
+@@ -1132,10 +1135,12 @@ impl Session {
+                     config.http_client_factory(),
+                 )
+                 .with_prompt_cache_key_override(
+-                    crate::guardian::prompt_cache_key_override_for_review_session(
+-                        &session_configuration.session_source,
+-                        session_configuration.parent_thread_id,
+-                    ),
++                    prompt_cache_key_override.or_else(|| {
++                        crate::guardian::prompt_cache_key_override_for_review_session(
++                            &session_configuration.session_source,
++                            session_configuration.parent_thread_id,
++                        )
++                    }),
+                 ),
+                 code_mode_service: crate::tools::code_mode::CodeModeService::new(
+                     Arc::clone(&code_mode_session_provider),
 diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
 index aab5206..8b857b7 100644
 --- a/codex-rs/core/src/session/tests.rs
@@ -202,8 +448,7 @@ index aab5206..8b857b7 100644
 @@ -8346,6 +8346,28 @@ async fn build_initial_context_includes_prompt_fragments_from_extensions() {
      );
  }
--
-+
+
 +#[tokio::test]
 +async fn apitoken_openai_compat_initial_context_is_only_explicit_developer_instructions() {
 +    let (mut session, mut turn_context) = make_session_and_context().await;
@@ -229,6 +474,309 @@ index aab5206..8b857b7 100644
  #[tokio::test]
  async fn build_initial_context_includes_turn_context_fragments_from_extensions() {
      let (mut session, mut turn_context) = make_session_and_context().await;
+diff --git a/codex-rs/core/src/session/tests/guardian_tests.rs b/codex-rs/core/src/session/tests/guardian_tests.rs
+index d2cee60..9e28b30 100644
+--- a/codex-rs/core/src/session/tests/guardian_tests.rs
++++ b/codex-rs/core/src/session/tests/guardian_tests.rs
+@@ -748,6 +748,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
+         originator: "test_originator".to_string(),
+         agent_control: AgentControl::default(),
+         dynamic_tools: Vec::new(),
++        app_server_client_name: None,
+         metrics_service_name: None,
+         inherited_environments: None,
+         inherited_exec_policy: Some(Arc::new(parent_exec_policy)),
+diff --git a/codex-rs/core/src/thread_manager.rs b/codex-rs/core/src/thread_manager.rs
+index 7059939..4bb10be 100644
+--- a/codex-rs/core/src/thread_manager.rs
++++ b/codex-rs/core/src/thread_manager.rs
+@@ -698,14 +698,30 @@ impl ThreadManager {
+         &self,
+         options: StartThreadOptions,
+     ) -> CodexResult<NewThread> {
+-        self.start_thread_with_options_and_fork_source(options, /*forked_from_thread_id*/ None)
++        self.start_thread_with_options_and_client_info(options, None)
+             .await
+     }
+
++    /// Starts a thread with app-server client identity available before session
++    /// startup prewarm constructs its first tool registry.
++    pub async fn start_thread_with_options_and_client_info(
++        &self,
++        options: StartThreadOptions,
++        app_server_client_name: Option<String>,
++    ) -> CodexResult<NewThread> {
++        self.start_thread_with_options_and_fork_source(
++            options,
++            /*forked_from_thread_id*/ None,
++            app_server_client_name,
++        )
++        .await
++    }
++
+     async fn start_thread_with_options_and_fork_source(
+         &self,
+         options: StartThreadOptions,
+         forked_from_thread_id: Option<ThreadId>,
++        app_server_client_name: Option<String>,
+     ) -> CodexResult<NewThread> {
+         let agent_control = self.agent_control_for_config(&options.config);
+         let (resumed_session_source, resumed_thread_source) = options
+@@ -734,6 +750,7 @@ impl ThreadManager {
+             options.thread_extension_init,
+             options.supports_openai_form_elicitation,
+             /*user_shell_override*/ None,
++            app_server_client_name,
+         ))
+         .await
+     }
+@@ -771,8 +788,12 @@ impl ThreadManager {
+                 inherited_multi_agent_version,
+             ),
+         );
+-        self.start_thread_with_options_and_fork_source(options, Some(forked_from_thread_id))
+-            .await
++        self.start_thread_with_options_and_fork_source(
++            options,
++            Some(forked_from_thread_id),
++            /*app_server_client_name*/ None,
++        )
++        .await
+     }
+
+     pub async fn resume_thread_from_rollout(
+@@ -802,6 +823,28 @@ impl ThreadManager {
+         auth_manager: Arc<AuthManager>,
+         parent_trace: Option<W3cTraceContext>,
+         supports_openai_form_elicitation: bool,
++    ) -> CodexResult<NewThread> {
++        self.resume_thread_with_history_and_client_info(
++            config,
++            initial_history,
++            auth_manager,
++            parent_trace,
++            supports_openai_form_elicitation,
++            None,
++        )
++        .await
++    }
++
++    /// Resumes a thread with app-server client identity available before session
++    /// startup prewarm constructs its first tool registry.
++    pub async fn resume_thread_with_history_and_client_info(
++        &self,
++        config: Config,
++        initial_history: InitialHistory,
++        auth_manager: Arc<AuthManager>,
++        parent_trace: Option<W3cTraceContext>,
++        supports_openai_form_elicitation: bool,
++        app_server_client_name: Option<String>,
+     ) -> CodexResult<NewThread> {
+         let agent_control = self.agent_control_for_config(&config);
+         let environments = default_thread_environment_selections(
+@@ -840,6 +883,7 @@ impl ThreadManager {
+             /*thread_extension_init*/ ExtensionDataInit::default(),
+             supports_openai_form_elicitation,
+             /*user_shell_override*/ None,
++            app_server_client_name,
+         ))
+         .await
+     }
+@@ -871,6 +915,7 @@ impl ThreadManager {
+             /*thread_extension_init*/ ExtensionDataInit::default(),
+             supports_openai_form_elicitation,
+             /*user_shell_override*/ Some(user_shell_override),
++            /*app_server_client_name*/ None,
+         ))
+         .await
+     }
+@@ -913,6 +958,7 @@ impl ThreadManager {
+             /*thread_extension_init*/ ExtensionDataInit::default(),
+             supports_openai_form_elicitation,
+             /*user_shell_override*/ Some(user_shell_override),
++            /*app_server_client_name*/ None,
+         ))
+         .await
+     }
+@@ -1031,6 +1077,33 @@ impl ThreadManager {
+         parent_trace: Option<W3cTraceContext>,
+         supports_openai_form_elicitation: bool,
+     ) -> CodexResult<NewThread>
++    where
++        S: Into<ForkSnapshot>,
++    {
++        self.fork_thread_from_history_and_client_info(
++            snapshot,
++            config,
++            history,
++            thread_source,
++            parent_trace,
++            supports_openai_form_elicitation,
++            None,
++        )
++        .await
++    }
++
++    /// Forks a thread with app-server client identity available before session
++    /// startup prewarm constructs its first tool registry.
++    pub async fn fork_thread_from_history_and_client_info<S>(
++        &self,
++        snapshot: S,
++        config: Config,
++        history: InitialHistory,
++        thread_source: Option<ThreadSource>,
++        parent_trace: Option<W3cTraceContext>,
++        supports_openai_form_elicitation: bool,
++        app_server_client_name: Option<String>,
++    ) -> CodexResult<NewThread>
+     where
+         S: Into<ForkSnapshot>,
+     {
+@@ -1041,6 +1114,7 @@ impl ThreadManager {
+             thread_source,
+             parent_trace,
+             supports_openai_form_elicitation,
++            app_server_client_name,
+         )
+         .await
+     }
+@@ -1053,6 +1127,7 @@ impl ThreadManager {
+         thread_source: Option<ThreadSource>,
+         parent_trace: Option<W3cTraceContext>,
+         supports_openai_form_elicitation: bool,
++        app_server_client_name: Option<String>,
+     ) -> CodexResult<NewThread> {
+         // `forked_from_id()` describes this history's existing lineage. When
+         // forking a resumed thread, the child copies the resumed thread itself.
+@@ -1095,6 +1170,7 @@ impl ThreadManager {
+             /*thread_extension_init*/ ExtensionDataInit::default(),
+             supports_openai_form_elicitation,
+             /*user_shell_override*/ None,
++            app_server_client_name,
+         ))
+         .await
+     }
+@@ -1443,6 +1519,7 @@ impl ThreadManagerState {
+             /*thread_extension_init*/ ExtensionDataInit::default(),
+             /*supports_openai_form_elicitation*/ false,
+             /*user_shell_override*/ None,
++            /*app_server_client_name*/ None,
+         ))
+         .await
+     }
+@@ -1486,6 +1563,7 @@ impl ThreadManagerState {
+             /*thread_extension_init*/ ExtensionDataInit::default(),
+             /*supports_openai_form_elicitation*/ false,
+             /*user_shell_override*/ None,
++            /*app_server_client_name*/ None,
+         ))
+         .await
+     }
+@@ -1533,6 +1611,7 @@ impl ThreadManagerState {
+             thread_extension_init,
+             /*supports_openai_form_elicitation*/ false,
+             /*user_shell_override*/ None,
++            /*app_server_client_name*/ None,
+         ))
+         .await
+     }
+@@ -1555,6 +1634,7 @@ impl ThreadManagerState {
+         thread_extension_init: ExtensionDataInit,
+         supports_openai_form_elicitation: bool,
+         user_shell_override: Option<crate::shell::Shell>,
++        app_server_client_name: Option<String>,
+     ) -> CodexResult<NewThread> {
+         Box::pin(self.spawn_thread_with_source(
+             config,
+@@ -1576,6 +1656,7 @@ impl ThreadManagerState {
+             thread_extension_init,
+             supports_openai_form_elicitation,
+             user_shell_override,
++            app_server_client_name,
+         ))
+         .await
+     }
+@@ -1602,6 +1683,7 @@ impl ThreadManagerState {
+         thread_extension_init: ExtensionDataInit,
+         supports_openai_form_elicitation: bool,
+         user_shell_override: Option<crate::shell::Shell>,
++        app_server_client_name: Option<String>,
+     ) -> CodexResult<NewThread> {
+         let is_resumed_thread = matches!(&initial_history, InitialHistory::Resumed(_));
+         if let InitialHistory::Resumed(resumed) = &initial_history {
+@@ -1671,6 +1753,7 @@ impl ThreadManagerState {
+             originator,
+             agent_control,
+             dynamic_tools,
++            app_server_client_name,
+             metrics_service_name,
+             inherited_environments,
+             inherited_exec_policy,
+diff --git a/codex-rs/core/src/thread_manager_tests.rs b/codex-rs/core/src/thread_manager_tests.rs
+index 2c3bfd8..3c8ecb5 100644
+--- a/codex-rs/core/src/thread_manager_tests.rs
++++ b/codex-rs/core/src/thread_manager_tests.rs
+@@ -521,6 +521,60 @@ async fn start_thread_keeps_internal_threads_hidden_from_normal_lookups() {
+     assert!(manager.list_thread_ids().await.is_empty());
+ }
+
++#[tokio::test]
++async fn start_thread_with_client_info_seeds_startup_prewarm_context() {
++    let temp_dir = tempdir().expect("tempdir");
++    let mut config = test_config().await;
++    config.codex_home = temp_dir.path().join("codex-home").abs();
++    config.cwd = config.codex_home.abs();
++    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
++
++    let manager = ThreadManager::with_models_provider_and_home_for_tests(
++        CodexAuth::from_api_key("dummy"),
++        config.model_provider.clone(),
++        config.codex_home.to_path_buf(),
++        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
++    );
++    let client_name = Some(crate::APITOKEN_OPENAI_COMPAT_CLIENT.to_string());
++    let thread = manager
++        .start_thread_with_options_and_client_info(
++            StartThreadOptions {
++                config,
++                allow_provider_model_fallback: false,
++                initial_history: InitialHistory::New,
++                history_mode: None,
++                session_source: None,
++                thread_source: None,
++                dynamic_tools: Vec::new(),
++                metrics_service_name: None,
++                parent_trace: None,
++                environments: Vec::new(),
++                thread_extension_init: Default::default(),
++                supports_openai_form_elicitation: false,
++            },
++            client_name.clone(),
++        )
++        .await
++        .expect("API-compatible thread should start");
++
++    let startup_turn = thread
++        .thread
++        .session
++        .new_startup_prewarm_turn_with_sub_id("prewarm-test".to_string())
++        .await;
++    assert_eq!(
++        startup_turn.app_server_client_name.as_deref(),
++        client_name.as_deref()
++    );
++
++    let report = manager
++        .shutdown_all_threads_bounded(Duration::from_secs(10))
++        .await;
++    assert_eq!(report.completed, vec![thread.thread_id]);
++    assert!(report.submit_failed.is_empty());
++    assert!(report.timed_out.is_empty());
++}
++
+ #[tokio::test]
+ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() {
+     struct InitialDataRecorder {
 diff --git a/codex-rs/core/src/tools/handlers/dynamic.rs b/codex-rs/core/src/tools/handlers/dynamic.rs
 index 4b8fa03..5c09443 100644
 --- a/codex-rs/core/src/tools/handlers/dynamic.rs
@@ -262,8 +810,7 @@ index 4b8fa03..5c09443 100644
 +    Function,
 +    Custom,
  }
--
-+
+
  impl DynamicToolHandler {
 @@ -78,8 +88,40 @@ impl DynamicToolHandler {
              } else {
@@ -304,14 +851,12 @@ index 4b8fa03..5c09443 100644
 +        }
 +    }
  }
--
-+
+
  impl ToolExecutor<ToolInvocation> for DynamicToolHandler {
 @@ -123,16 +165,7 @@ impl DynamicToolHandler {
              ..
          } = invocation;
--
-+
+
 -        let arguments = match payload {
 -            ToolPayload::Function { arguments } => arguments,
 -            _ => {
@@ -329,8 +874,7 @@ index 4b8fa03..5c09443 100644
 @@ -162,7 +195,56 @@ impl DynamicToolHandler {
      }
  }
--
-+
+
 -impl CoreToolRuntime for DynamicToolHandler {}
 +impl CoreToolRuntime for DynamicToolHandler {
 +    fn matches_kind(&self, payload: &ToolPayload) -> bool {
@@ -382,8 +926,7 @@ index 4b8fa03..5c09443 100644
 +        }));
 +    }
 +}
--
-+
+
  #[expect(
      clippy::await_holding_invalid_type,
 diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
@@ -435,8 +978,7 @@ index 6d51754..68d58af 100644
 @@ -412,6 +412,49 @@ fn dynamic_tool(namespace: Option<&str>, name: &str, defer_loading: bool) -> Dyn
      }
  }
--
-+
+
 +#[tokio::test]
 +async fn apitoken_openai_compat_exposes_only_customer_dynamic_tools() {
 +    let plan = probe_with(
@@ -493,14 +1035,12 @@ index bbe92b8..0d0fcc6 100644
      Namespace(DynamicToolNamespaceSpec),
 +    Custom(DynamicToolCustomSpec),
  }
--
-+
+
  #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
 @@ -35,6 +36,24 @@ pub struct DynamicToolNamespaceSpec {
      pub tools: Vec<DynamicToolNamespaceTool>,
  }
--
-+
+
 +#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
 +#[serde(rename_all = "camelCase")]
 +#[ts(export_to = "v2/")]
@@ -522,165 +1062,3 @@ index bbe92b8..0d0fcc6 100644
  #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
  #[serde(tag = "type", rename_all = "camelCase")]
  #[ts(tag = "type", export_to = "v2/")]
-diff --git a/codex-rs/app-server-protocol/src/protocol/v2/thread.rs b/codex-rs/app-server-protocol/src/protocol/v2/thread.rs
-index fc9c5c4..c2383aa 100644
---- a/codex-rs/app-server-protocol/src/protocol/v2/thread.rs
-+++ b/codex-rs/app-server-protocol/src/protocol/v2/thread.rs
-@@ -96,6 +96,9 @@ pub struct ThreadStartParams {
-     pub config: Option<HashMap<String, JsonValue>>,
-     #[ts(optional = nullable)]
-     pub service_name: Option<String>,
-+    /// Override the Responses API prompt-cache routing key for this thread.
-+    #[ts(optional = nullable)]
-+    pub prompt_cache_key: Option<String>,
-     #[ts(optional = nullable)]
-     pub base_instructions: Option<String>,
-     #[ts(optional = nullable)]
-diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
-index 48cd734..723acf7 100644
---- a/codex-rs/app-server/src/request_processors/thread_processor.rs
-+++ b/codex-rs/app-server/src/request_processors/thread_processor.rs
-@@ -427,6 +427,17 @@ fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
-     Ok(())
- }
--
-+
-+fn validate_prompt_cache_key(key: &str) -> Result<(), String> {
-+    const MAX_PROMPT_CACHE_KEY_BYTES: usize = 256;
-+    if key.is_empty() || key.len() > MAX_PROMPT_CACHE_KEY_BYTES || key.chars().any(char::is_control)
-+    {
-+        return Err(format!(
-+            "prompt cache key must be 1-{MAX_PROMPT_CACHE_KEY_BYTES} bytes without control characters"
-+        ));
-+    }
-+    Ok(())
-+}
-+
- #[derive(Clone)]
- pub(crate) struct ThreadRequestProcessor {
-     pub(super) auth_manager: Arc<AuthManager>,
-@@ -1022,6 +1033,7 @@ impl ThreadRequestProcessor {
-             permissions,
-             config,
-             service_name,
-+            prompt_cache_key,
-             base_instructions,
-             developer_instructions,
-             dynamic_tools,
-@@ -1051,6 +1063,9 @@ impl ThreadRequestProcessor {
-                 "`permissions` cannot be combined with `sandbox`",
-             ));
-         }
-+        if let Some(key) = prompt_cache_key.as_deref() {
-+            validate_prompt_cache_key(key).map_err(invalid_request)?;
-+        }
-         let runtime_workspace_roots = runtime_workspace_roots.map(resolve_runtime_workspace_roots);
-         let environments =
-             resolve_turn_environment_selections(self.thread_manager.as_ref(), environments)?;
-@@ -1105,6 +1120,7 @@ impl ThreadRequestProcessor {
-                 thread_source.map(Into::into),
-                 environments,
-                 service_name,
-+                prompt_cache_key,
-                 allow_provider_model_fallback,
-                 experimental_raw_events,
-                 request_trace,
-@@ -1183,6 +1199,7 @@ impl ThreadRequestProcessor {
-         thread_source: Option<codex_protocol::protocol::ThreadSource>,
-         environment_selections: Option<Vec<TurnEnvironmentSelection>>,
-         service_name: Option<String>,
-+        prompt_cache_key: Option<String>,
-         allow_provider_model_fallback: bool,
-         experimental_raw_events: bool,
-         request_trace: Option<W3cTraceContext>,
-@@ -1298,6 +1315,9 @@ impl ThreadRequestProcessor {
-         if !selected_capability_roots.is_empty() {
-             thread_extension_init.insert(selected_capability_roots);
-         }
-+        if let Some(prompt_cache_key) = prompt_cache_key {
-+            thread_extension_init.insert(codex_core::PromptCacheKeyOverride(prompt_cache_key));
-+        }
-         let create_thread_started_at = std::time::Instant::now();
-         let NewThread {
-             thread_id,
-diff --git a/codex-rs/app-server/src/request_processors/thread_processor_tests.rs b/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
-index faf9a1e..1f0ab5b 100644
---- a/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
-+++ b/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
-@@ -250,6 +250,14 @@ mod thread_processor_behavior_tests {
-         assert!(error.contains("lark"), "unexpected error: {error}");
-     }
--
-+
-+    #[test]
-+    fn apitoken_openai_compat_validates_prompt_cache_key() {
-+        validate_prompt_cache_key("opaque-tenant-scoped-key").expect("valid cache key");
-+        assert!(validate_prompt_cache_key("").is_err());
-+        assert!(validate_prompt_cache_key(&"x".repeat(257)).is_err());
-+        assert!(validate_prompt_cache_key("line\nbreak").is_err());
-+    }
-+
-     #[test]
-     fn validate_dynamic_tools_accepts_same_name_in_different_namespaces() {
-         let tools = vec![
-diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
-index c5b2a97..95c8fb7 100644
---- a/codex-rs/core/src/lib.rs
-+++ b/codex-rs/core/src/lib.rs
-@@ -7,6 +7,11 @@
--
-+
- pub(crate) const APITOKEN_OPENAI_COMPAT_CLIENT: &str = "apitoken_openai_compat";
--
-+
-+/// Host-supplied override for the upstream Responses prompt-cache router. App-server attaches it
-+/// before a thread is created; stock Codex surfaces omit it and keep the session-id default.
-+#[derive(Clone, Debug)]
-+pub struct PromptCacheKeyOverride(pub String);
-+
- mod apply_patch;
- mod apps;
- mod audio_preparation;
-diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
-index 89cb0c8..f532da4 100644
---- a/codex-rs/core/src/session/session.rs
-+++ b/codex-rs/core/src/session/session.rs
-@@ -583,6 +583,9 @@ impl Session {
-                     roots
-                 }
-             };
-+        let prompt_cache_key_override = thread_extension_init
-+            .get::<crate::PromptCacheKeyOverride>()
-+            .map(|override_value| override_value.0.clone());
-         thread_extension_init.insert(codex_extension_api::ThreadOriginator(
-             session_configuration.originator.clone(),
-         ));
-@@ -1132,10 +1135,12 @@ impl Session {
-                     config.http_client_factory(),
-                 )
-                 .with_prompt_cache_key_override(
--                    crate::guardian::prompt_cache_key_override_for_review_session(
--                        &session_configuration.session_source,
--                        session_configuration.parent_thread_id,
--                    ),
-+                    prompt_cache_key_override.or_else(|| {
-+                        crate::guardian::prompt_cache_key_override_for_review_session(
-+                            &session_configuration.session_source,
-+                            session_configuration.parent_thread_id,
-+                        )
-+                    }),
-                 ),
-                 code_mode_service: crate::tools::code_mode::CodeModeService::new(
-                     Arc::clone(&code_mode_session_provider),
-diff --git a/codex-rs/app-server/tests/suite/v2/skills_list.rs b/codex-rs/app-server/tests/suite/v2/skills_list.rs
-index 65b7da4..c0d08c2 100644
---- a/codex-rs/app-server/tests/suite/v2/skills_list.rs
-+++ b/codex-rs/app-server/tests/suite/v2/skills_list.rs
-@@ -928,6 +928,7 @@ async fn skills_list_refreshes_before_thread_start() -> Result<()> {
-             permissions: None,
-             config: None,
-             service_name: None,
-+            prompt_cache_key: None,
-             base_instructions: None,
-             developer_instructions: None,
-             personality: None,
