@@ -3507,7 +3507,6 @@ mod tests {
             startup_timeout_ms: 1_000,
             request_timeout_ms: 1_000,
             turn_timeout_ms: 1_000,
-            max_concurrent_turns: 1,
             admit_below_used_percent: 95,
             window_cap_usd_prior: 1_500.0,
             health_probe_interval_secs: 300,

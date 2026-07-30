@@ -569,7 +569,6 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
         ),
         request_timeout_ms: bounded_u64("CLAUDE_API_CODEX_RPC_TIMEOUT_MS", 15_000, 500, 120_000),
         turn_timeout_ms: bounded_u64("CLAUDE_API_CODEX_TURN_TIMEOUT_MS", 600_000, 5_000, 600_000),
-        max_concurrent_turns: bounded_usize("CLAUDE_API_CODEX_MAX_CONCURRENT", 4, 1, 64),
         admit_below_used_percent: bounded_i64(
             "CLAUDE_API_CODEX_ADMIT_BELOW_USED_PERCENT",
             100,

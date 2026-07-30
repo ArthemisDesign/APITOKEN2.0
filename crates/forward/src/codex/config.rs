@@ -107,9 +107,6 @@ pub struct CodexConfig {
     pub startup_timeout_ms: u64,
     pub request_timeout_ms: u64,
     pub turn_timeout_ms: u64,
-    /// Retained for configuration compatibility only. The pinned app-server is serial, so each home
-    /// queues turns without rejecting them; this legacy value is not an admission ceiling.
-    pub max_concurrent_turns: usize,
     /// Stop admitting a home once a reported window reaches this utilisation, keeping headroom so
     /// the wall is met by a clean 429 with a real reset rather than mid-turn.
     pub admit_below_used_percent: i64,

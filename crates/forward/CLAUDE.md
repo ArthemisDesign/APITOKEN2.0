@@ -179,8 +179,8 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    Лишний умерший home карантинится и не блокирует одинаковую оставшуюся когорту.
    **Параллелизм на home НЕ ограничен** (как у Claude-флота): вместо семафора turn'ов — атомарный
    счётчик in-flight (`TurnSlot` RAII, снимается на успехе/ошибке/дисконнекте), он лишь сигнал
-   загрузки для выбора, не потолок. `CLAUDE_API_CODEX_MAX_CONCURRENT` больше не режет (оставлен для
-   совместимости env); единственный глобальный потолок — общий с Claude `AppState::concurrency`.
+   загрузки для выбора, не потолок. Устаревший `CLAUDE_API_CODEX_MAX_CONCURRENT` не читается;
+   общий Claude `AppState::concurrency` и коммерческий per-key limiter к Codex не применяются.
    **Выбор — cache-first (как `affinity.rs`):** сначала home, к которому закреплён этот разговор
    (`AffinityStore::resolve` через `infer_codex` → тот же стор/Redis-namespace, что у Claude).
    Новый общий cache-root без ожиданий прогревается на двух конкурентных homes; затем тёплый home

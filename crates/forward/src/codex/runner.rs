@@ -949,6 +949,7 @@ if [ "$mode" = "descendant" ]; then
   printf '%s\n' "$!" > "$CODEX_HOME/helper-pid"
 fi
 generation=0
+concurrent_turns=0
 if [ "$mode" = "thread_start_timeout_once" ] || [ "$mode" = "turn_start_timeout_once" ] || [ "$mode" = "startup_cancel_once" ] || [ "$mode" = "invalidate_cancel" ]; then
   generation_file="$CODEX_HOME/generation"
   if [ -f "$generation_file" ]; then
@@ -988,6 +989,9 @@ while IFS= read -r line; do
       elif [ "$mode" = "thread_start_timeout_then_recover" ] && [ ! -f "$CODEX_HOME/thread-start-timed-out" ]; then
         : > "$CODEX_HOME/thread-start-timed-out"
         continue
+      elif [ "$mode" = "concurrent_threads" ]; then
+        printf '{"id":%s,"result":{"model":"gpt-5.6-sol","serviceTier":"default","thread":{"id":"thread-%s"}}}\n' "$id" "$id"
+        continue
       fi
       case "$line" in
         *'"serviceTier":"priority"'*)
@@ -1008,14 +1012,26 @@ while IFS= read -r line; do
         : > "$CODEX_HOME/turn-start-timed-out"
         continue
       fi
-      printf '{"id":%s,"result":{"turn":{"id":"turn-1"}}}\n' "$id"
-      if [ "$mode" = "serialized" ]; then
-        # A real pinned app-server does not acknowledge another thread/start while its model turn
-        # is sampling. Keep this longer than the fixture RPC deadline: without the per-home queue,
-        # a concurrent request deterministically times out here.
-        sleep 1
+      if [ "$mode" = "concurrent_threads" ]; then
+        concurrent_turns=$((concurrent_turns + 1))
+        concurrent_turn="$concurrent_turns"
+        thread_id=$(printf '%s\n' "$line" | sed -n 's/.*"threadId":"\([^"]*\)".*/\1/p')
+        turn_id="turn-$concurrent_turn"
+        printf '{"id":%s,"result":{"turn":{"id":"%s"}}}\n' "$id" "$turn_id"
+        : > "$CODEX_HOME/turn-started-$concurrent_turn"
+        (
+          while [ ! -f "$CODEX_HOME/release-turn-$concurrent_turn" ]; do
+            sleep 0.01
+          done
+          printf '{"method":"item/agentMessage/delta","params":{"threadId":"%s","turnId":"%s","itemId":"msg-%s","delta":"hello-%s"}}\n' "$thread_id" "$turn_id" "$concurrent_turn" "$concurrent_turn"
+          printf '{"method":"rawResponseItem/completed","params":{"threadId":"%s","turnId":"%s","item":{"type":"message","id":"msg-%s","role":"assistant","content":[{"type":"output_text","text":"hello-%s"}]}}}\n' "$thread_id" "$turn_id" "$concurrent_turn" "$concurrent_turn"
+          printf '{"method":"rawResponse/completed","params":{"threadId":"%s","turnId":"%s","usage":{"inputTokens":101,"cachedInputTokens":41,"cacheWriteInputTokens":7,"outputTokens":23,"reasoningOutputTokens":11,"totalTokens":124}}}\n' "$thread_id" "$turn_id"
+          printf '{"method":"turn/completed","params":{"threadId":"%s","turnId":"%s","turn":{"status":"completed"}}}\n' "$thread_id" "$turn_id"
+        ) &
+        continue
       fi
-      if [ "$mode" = "text" ] || [ "$mode" = "near_limit" ] || [ "$mode" = "rate_limit_timeout" ] || [ "$mode" = "thread_start_timeout_once" ] || [ "$mode" = "turn_start_timeout_once" ] || [ "$mode" = "thread_start_timeout_then_recover" ] || [ "$mode" = "turn_start_timeout_then_recover" ] || [ "$mode" = "serialized" ]; then
+      printf '{"id":%s,"result":{"turn":{"id":"turn-1"}}}\n' "$id"
+      if [ "$mode" = "text" ] || [ "$mode" = "near_limit" ] || [ "$mode" = "rate_limit_timeout" ] || [ "$mode" = "thread_start_timeout_once" ] || [ "$mode" = "turn_start_timeout_once" ] || [ "$mode" = "thread_start_timeout_then_recover" ] || [ "$mode" = "turn_start_timeout_then_recover" ]; then
         printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg-1","delta":"hello"}}'
         printf '%s\n' '{"method":"rawResponseItem/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"type":"message","id":"msg-1","role":"assistant","content":[{"type":"output_text","text":"hello"}]}}}'
         printf '%s\n' '{"method":"rawResponse/completed","params":{"threadId":"thread-1","turnId":"turn-1","usage":{"inputTokens":101,"cachedInputTokens":41,"cacheWriteInputTokens":7,"outputTokens":23,"reasoningOutputTokens":11,"totalTokens":124}}}'
@@ -1090,12 +1106,11 @@ done
                 10_000
             },
             request_timeout_ms,
-            turn_timeout_ms: if mode == "turn_completion_timeout" {
-                200
-            } else {
-                2_000
+            turn_timeout_ms: match mode {
+                "turn_completion_timeout" => 200,
+                "concurrent_threads" => 10_000,
+                _ => 2_000,
             },
-            max_concurrent_turns: 1,
             admit_below_used_percent: 95,
             window_cap_usd_prior: 1_500.0,
             health_probe_interval_secs: 300,
@@ -1151,7 +1166,6 @@ done
             startup_timeout_ms: 10_000,
             request_timeout_ms: 2_000,
             turn_timeout_ms: 2_000,
-            max_concurrent_turns: 1,
             admit_below_used_percent: 95,
             window_cap_usd_prior: 1_500.0,
             health_probe_interval_secs: 300,
@@ -1206,6 +1220,21 @@ done
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         panic!("fake app-server did not receive {method}");
+    }
+
+    async fn wait_for_path(path: &Path) {
+        for _ in 0..300 {
+            if path.exists() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let requests = std::fs::read_to_string(path.parent().unwrap().join("requests.jsonl"))
+            .unwrap_or_default();
+        panic!(
+            "fake app-server did not create {}; requests:\n{requests}",
+            path.display()
+        );
     }
 
     #[tokio::test]
@@ -1940,7 +1969,7 @@ done
             .into_iter()
             .find(|home| home.path() == bought.to_str().unwrap())
             .unwrap();
-        let slot = old.acquire_turn().await.unwrap();
+        let slot = old.acquire_turn().unwrap();
 
         std::fs::write(&proxy_file, b"http://second.example:8080").unwrap();
         let reconcile_gateway = gateway.clone();
@@ -2048,15 +2077,39 @@ done
     }
 
     #[tokio::test]
-    async fn a_serial_home_queues_concurrent_customers_without_rpc_timeouts() {
-        let (gateway, workspace) = fake_gateway_with_request_timeout("serialized", 200);
+    async fn one_home_multiplexes_independent_threads_concurrently() {
+        let (gateway, workspace) = fake_gateway_with_request_timeout("concurrent_threads", 200);
+        gateway.preflight().await.unwrap();
 
-        let first = gateway.run_turn(turn_request(test_model()), None, None);
-        let second = gateway.run_turn(turn_request(test_model()), None, None);
-        let (first, second) = tokio::join!(first, second);
+        let first_gateway = gateway.clone();
+        let first = tokio::spawn(async move {
+            first_gateway
+                .run_turn(turn_request(test_model()), None, None)
+                .await
+        });
+        wait_for_path(&workspace.root.join("turn-started-1")).await;
 
-        assert_eq!(first.unwrap().usage.input_tokens, 101);
-        assert_eq!(second.unwrap().usage.input_tokens, 101);
+        let second_gateway = gateway.clone();
+        let second = tokio::spawn(async move {
+            second_gateway
+                .run_turn(turn_request(test_model()), None, None)
+                .await
+        });
+        wait_for_path(&workspace.root.join("turn-started-2")).await;
+
+        let status = gateway.operational_status().await;
+        assert_eq!(status.homes.len(), 1);
+        assert_eq!(status.homes[0].inflight, 2);
+
+        std::fs::write(workspace.root.join("release-turn-1"), []).unwrap();
+        let first = first.await.unwrap().unwrap();
+        assert_eq!(first.output[0]["content"][0]["text"], "hello-1");
+
+        std::fs::write(workspace.root.join("release-turn-2"), []).unwrap();
+        let second = second.await.unwrap().unwrap();
+        assert_eq!(second.output[0]["content"][0]["text"], "hello-2");
+        assert_eq!(first.usage.input_tokens, 101);
+        assert_eq!(second.usage.input_tokens, 101);
         assert_eq!(
             logged_requests(&workspace.log)
                 .iter()

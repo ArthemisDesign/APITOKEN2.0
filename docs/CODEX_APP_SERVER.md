@@ -336,21 +336,20 @@ CLAUDE_API_CODEX_VERSION=codex-cli 0.145.0
 CLAUDE_API_CODEX_HOMES=/srv/claude-api/data/codex/home,/srv/claude-api/data/codex/home2
 CLAUDE_API_CODEX_WORK_DIR=/srv/claude-api/data/codex/work
 CLAUDE_API_CODEX_MODELS=gpt-5.6,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5,gpt-5.4
-CLAUDE_API_CODEX_MAX_CONCURRENT=4
 ```
 
 `CLAUDE_API_CODEX_HOMES` is the pool form and lists each authenticated profile in rotation order;
 `CLAUDE_API_CODEX_HOME` remains the single-home spelling, so an existing environment keeps working
 unchanged. Listing one directory twice is a startup error: two children sharing one auth store would
-corrupt its token refresh and would double-count one subscription's capacity. `MAX_CONCURRENT` is
-retained only for environment compatibility. A pinned app-server accepts one model turn at a time;
-when every purchased home is sampling, additional turns wait for the first idle home instead of
-receiving a local concurrency `429` or timing out an incompatible parallel `thread/start`. Codex
-does not use the Claude provider's global admission semaphore or the commercial per-key in-flight
-limiter. Upstream subscription exhaustion, authentication, billing authorization and bounded
-transport deadlines remain real provider/safety boundaries. Provision each additional home exactly
-like the first — `0700`, owned by the engine user — and authenticate it separately with the device
-flow above.
+corrupt its token refresh and would double-count one subscription's capacity. There is no local
+Codex concurrency setting: app-server serializes requests within one thread, but independent
+ephemeral API threads run concurrently over the same authenticated process; the per-home in-flight
+count is only a load signal for selection. The legacy `CLAUDE_API_CODEX_MAX_CONCURRENT` variable is
+not read. Codex does not use the Claude provider's global admission semaphore or the commercial
+per-key in-flight limiter. Upstream subscription exhaustion, authentication, billing authorization
+and bounded transport deadlines remain real provider/safety boundaries. Provision each additional
+home exactly like the first — `0700`, owned by the engine user — and authenticate it separately with
+the device flow above.
 
 Home selection is cache-first, mirroring the Claude fleet's affinity layer: a conversation is pinned
 to the home that first served it (via the shared `AffinityStore`, keyed by the same tenant scope and
