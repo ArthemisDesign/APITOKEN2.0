@@ -155,9 +155,13 @@ require_permitted 'OpenAI provider drain signal' \
   /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-openai.service
 require_permitted 'OpenAI target start' /usr/bin/systemctl start claude-api-openai@8797.service
 require_permitted 'OpenAI old-slot stop' /usr/bin/systemctl stop claude-api-openai@8793.service
+require_permitted 'OpenAI old-slot async stop' \
+  /usr/bin/systemctl --no-block stop claude-api-openai@8793.service
 require_permitted 'OpenAI target enable' /usr/bin/systemctl enable claude-api-openai@8797.service
 require_permitted 'OpenAI reverse target start' /usr/bin/systemctl start claude-api-openai@8793.service
 require_permitted 'OpenAI reverse old-slot stop' /usr/bin/systemctl stop claude-api-openai@8797.service
+require_permitted 'OpenAI reverse old-slot async stop' \
+  /usr/bin/systemctl --no-block stop claude-api-openai@8797.service
 require_permitted 'OpenAI slot drain signal' \
   /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-openai@8793.service
 require_permitted 'Codex reconciler timer start' \

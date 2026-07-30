@@ -16,6 +16,7 @@ CODEX_PROMOTE_STATE_ROOT=/var/lib/apitoken/watchdog
 CODEX_PROMOTE_CANDIDATE_ROOT=$CODEX_PROMOTE_STATE_ROOT/candidates
 CODEX_PROMOTE_BIN_ROOT=/srv/claude-api/data/codex/bin
 CODEX_PROMOTE_CONFIG_ENV=/srv/claude-api/data/config.env
+CODEX_PROMOTE_ATTESTATION=$CODEX_PROMOTE_BIN_ROOT/.promoted
 CODEX_PROMOTE_EXPECTED_CANDIDATE_UID=0
 
 codex_stat_identity() {
@@ -68,7 +69,7 @@ codex_replace_config() (
 promote_codex_candidate() {
   local sha=$1 candidate marker marker_sha marker_tree candidate_sha candidate_tree
   local artifact expected_hash actual_hash source_commit version versioned temporary_link
-  local bin_owner
+  local bin_owner tooling_tree attestation_format temporary_attestation
 
   wd_validate_sha "$sha"
   candidate="$CODEX_PROMOTE_CANDIDATE_ROOT/$sha"
@@ -105,6 +106,11 @@ promote_codex_candidate() {
     || wd_die "tested Codex artifact is missing or unsafe"
   actual_hash=$(wd_sha256_file "$artifact")
   [[ $actual_hash == "$expected_hash" ]] || wd_die "tested Codex artifact digest changed"
+  tooling_tree=$(git -c safe.directory="$candidate" -C "$candidate" \
+    rev-parse 'HEAD:tools/codex-app-server')
+  [[ $tooling_tree =~ ^[0-9a-f]{40}$ ]] || wd_die "candidate Codex tooling tree is malformed"
+  attestation_format=$(<"$candidate/tools/codex-app-server/PROMOTION_ATTESTATION_FORMAT")
+  [[ $attestation_format == 1 ]] || wd_die "candidate Codex attestation format is unsupported"
 
   if [[ -e $CODEX_PROMOTE_BIN_ROOT || -L $CODEX_PROMOTE_BIN_ROOT ]]; then
     [[ -d $CODEX_PROMOTE_BIN_ROOT && ! -L $CODEX_PROMOTE_BIN_ROOT ]] \
@@ -138,6 +144,26 @@ promote_codex_candidate() {
   fi
   ln -s -- "$(basename -- "$versioned")" "$temporary_link"
   mv -f -- "$temporary_link" "$CODEX_PROMOTE_BIN_ROOT/codex"
+
+  # This public, root-owned state is the desired/runtime fence used by the watchdog. Git history is
+  # not runtime state: a failed candidate may already have promoted a different binary while the
+  # last-green component SHA correctly remains unchanged. Write the attestation last so any crash
+  # before the complete config+symlink promotion is observed as drift and retried fail-closed.
+  temporary_attestation="${CODEX_PROMOTE_ATTESTATION}.tmp.$$"
+  [[ ! -e $temporary_attestation && ! -L $temporary_attestation ]] \
+    || wd_die "unsafe temporary Codex attestation path"
+  trap 'rm -f -- "${temporary_attestation:-}"' EXIT
+  {
+    printf 'format=%s\n' "$attestation_format"
+    printf 'candidate_sha=%s\n' "$sha"
+    printf 'tooling_tree=%s\n' "$tooling_tree"
+    printf 'source_commit=%s\n' "$source_commit"
+    printf 'binary_sha256=%s\n' "$expected_hash"
+    printf 'version=%s\n' "$version"
+  } >"$temporary_attestation"
+  chmod 0444 "$temporary_attestation"
+  mv -f -- "$temporary_attestation" "$CODEX_PROMOTE_ATTESTATION"
+  trap - EXIT
 
   wd_log "promoted tested Codex $version ($expected_hash) from candidate $sha"
 }

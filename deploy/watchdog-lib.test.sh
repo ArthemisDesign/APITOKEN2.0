@@ -1252,6 +1252,9 @@ grep -Fq 'claude-api-openai.service' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'claude-api-gemini.service' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq '/usr/bin/systemctl restart claude-api-openai.service' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy"
+grep -Fq '/usr/bin/systemctl --no-block stop claude-api-openai@[0-9]*.service' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die "OpenAI blue-green cannot retire its old HTTP slot outside the deploy path"
 grep -Fq '/usr/bin/systemctl restart claude-api-gemini.service' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy"
 grep -Fq '/usr/bin/systemctl restart claude-api.service' \
@@ -1485,24 +1488,28 @@ provider_controller="$ROOT/deploy/engine-bluegreen.sh"
 old_stop_line=$(grep -nF 'systemctl_command stop "$ACTIVE_UNIT"' "$provider_controller" | head -1 | cut -d: -f1)
 openai_start_line=$(grep -nF 'systemctl_command start "$OPENAI_TARGET_UNIT"' "$provider_controller" | head -1 | cut -d: -f1)
 openai_admit_line=$(grep -nF '"$CODEX_APP_SERVERS_HELPER" admit-cutover' \
-  "$provider_controller" | head -1 | cut -d: -f1)
+  "$provider_controller" | sed -n '2p' | cut -d: -f1)
 openai_enable_line=$(grep -nF 'systemctl_command enable "$OPENAI_TARGET_UNIT"' \
   "$provider_controller" | head -1 | cut -d: -f1)
 openai_drain_line=$(grep -nF 'systemctl_command kill --kill-whom=main -s SIGUSR1 "$OPENAI_ACTIVE_UNIT"' \
+  "$provider_controller" | head -1 | cut -d: -f1)
+openai_async_stop_line=$(grep -nF 'systemctl_command --no-block stop "$OPENAI_ACTIVE_UNIT"' \
   "$provider_controller" | head -1 | cut -d: -f1)
 openai_commit_line=$(grep -nF '"$CODEX_APP_SERVERS_HELPER" commit-transition' \
   "$provider_controller" | tail -1 | cut -d: -f1)
 [[ -n $old_stop_line && -n $openai_start_line && $old_stop_line -lt $openai_start_line ]] \
   || wd_die 'OpenAI can start before the old combined engine cgroup has stopped'
-[[ -n $openai_start_line && -n $openai_drain_line && -n $openai_commit_line \
-    && $openai_start_line -lt $openai_drain_line && $openai_drain_line -lt $openai_commit_line ]] \
+[[ -n $openai_start_line && -n $openai_drain_line && -n $openai_async_stop_line \
+    && -n $openai_commit_line && $openai_start_line -lt $openai_drain_line \
+    && $openai_drain_line -lt $openai_async_stop_line \
+    && $openai_async_stop_line -lt $openai_commit_line ]] \
   || wd_die 'OpenAI does not admit the target before draining and committing the old generation'
 [[ -n $openai_admit_line && -n $openai_enable_line \
     && $openai_start_line -lt $openai_admit_line && $openai_admit_line -lt $openai_enable_line \
     && $openai_enable_line -lt $openai_drain_line ]] \
   || wd_die 'OpenAI can drain the old slot before redundant admission and boot durability'
-[[ $(grep -Fc '"$CODEX_APP_SERVERS_HELPER" admit-cutover' "$provider_controller") == 2 ]] \
-  || wd_die 'OpenAI cutover does not re-observe serving capacity after ownership commit'
+[[ $(grep -Fc '"$CODEX_APP_SERVERS_HELPER" admit-cutover' "$provider_controller") == 3 ]] \
+  || wd_die 'OpenAI cutover/recovery does not re-observe serving capacity without daemon convergence'
 ! grep -Fq '"$CODEX_APP_SERVERS_HELPER" reconcile' "$provider_controller" \
   || wd_die 'HTTP blue-green still starts or waits for a stateful Codex daemon roll'
 ! grep -Fq '"$CODEX_APP_SERVERS_HELPER" verify \' "$provider_controller" \
@@ -1519,6 +1526,12 @@ grep -Fq 'OPENAI_TARGET_PREEXISTING=1' "$provider_controller" \
   || wd_die 'same-release recovery can stop the only pre-existing current OpenAI slot'
 grep -Fq 'recovery retains the pre-existing current OpenAI target' "$provider_controller" \
   || wd_die 'pre-drain recovery can destroy a previously admitted OpenAI target'
+grep -Fq 'wait_openai_retirement_ack "$OPENAI_ACTIVE_UNIT" "$OPENAI_ACTIVE_PORT"' \
+  "$provider_controller" \
+  || wd_die 'OpenAI async retirement is not acknowledged before ownership commit'
+grep -Fq 'openai_slot_retired "$OPENAI_OTHER_UNIT" "$OPENAI_OTHER_PORT"' \
+  "$provider_controller" \
+  || wd_die 'OpenAI final verification rejects a safely draining old HTTP generation'
 grep -Fq 'unit_release_binding_ok engine "$GEMINI_UNIT" "$ENGINE_RELEASE_ROOT" "$CURRENT_RELEASE" gemini' \
   "$provider_controller" || wd_die "Gemini gate does not prove provider mode"
 grep -Fq 'for old_unit in "$LEGACY_UNIT" "$(legacy_slot_unit 8787)" "$(legacy_slot_unit 8788)"' \
@@ -2180,7 +2193,8 @@ shadow_contract=(
   'fetch_source "$CANDIDATE_SHA"'
   'wd_require_ancestor "$SOURCE_REPO" "$committed_master" "$CANDIDATE_SHA" shadow-committed-master'
   'wd_require_ancestor "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" shadow-processed'
-  'select_candidate_validation_requirements "$CANDIDATE_SHA" "$committed_master"'
+  'VALIDATION_BASE_SHA=$PROCESSED_SHA'
+  'select_candidate_validation_requirements "$CANDIDATE_SHA"'
   'prepare_and_test_candidate "$CANDIDATE_SHA" "$VALIDATION_TYPESCRIPT_REQUIRED"'
   '"$VALIDATION_TYPESCRIPT_FULL" "$VALIDATION_TYPESCRIPT_BASE_SHA"'
   'wd_require_ancestor "$SOURCE_REPO" "$current_master" "$CANDIDATE_SHA" shadow-current-master'
@@ -2256,6 +2270,13 @@ grep -Fq 'TEST_DB_SLOT=$3' "$ROOT/deploy/watchdog.sh" \
 [[ $(grep -Fc 'select_candidate_validation_requirements "$CANDIDATE_SHA"' \
   "$ROOT/deploy/watchdog.sh") == 2 ]] \
   || wd_die 'production and shadow validation do not share one requirement selector'
+grep -Fq 'codex_runtime_matches_candidate "$CANDIDATE_SHA"' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'watchdog still treats Git baselines as proof of the promoted Codex runtime'
+grep -Fq 'CODEX_RUNTIME_ATTESTATION=$CODEX_RUNTIME_BIN_ROOT/.promoted' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'watchdog has no root-owned Codex runtime attestation fence'
+grep -Fq 'sudo -n "$CODEX_APP_SERVERS_HELPER" reconcile' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'a promoted Codex pin can be reported green before daemon convergence'
 
 grep -Fq 'tokio-postgres-rustls' "$ROOT/crates/registry/Cargo.toml" \
   || wd_die 'engine PostgreSQL transport must use rustls alongside the BoringSSL forward transport'

@@ -42,6 +42,9 @@ SOURCE_FETCH_LOCK=/run/lock/apitoken-source-fetch.lock
 DEPLOY_LOCK=/run/lock/apitoken-deploy.lock
 ENGINE_RELEASE_ROOT=/srv/claude-api/releases
 COMMERCE_RELEASE_ROOT=/opt/apitoken/releases
+CODEX_RUNTIME_BIN_ROOT=/srv/claude-api/data/codex/bin
+CODEX_RUNTIME_LINK=$CODEX_RUNTIME_BIN_ROOT/codex
+CODEX_RUNTIME_ATTESTATION=$CODEX_RUNTIME_BIN_ROOT/.promoted
 
 PROCESSED_FILE=$STATE_ROOT/processed.sha
 INFRASTRUCTURE_FILE=$STATE_ROOT/infrastructure.sha
@@ -286,6 +289,59 @@ marker_for() {
 
 candidate_for() {
   printf '%s/%s\n' "$CANDIDATE_ROOT" "$1"
+}
+
+CODEX_RUNTIME_DETAIL=
+
+# Prove that the binary selected on the host was promoted from the exact Codex tooling tree in the
+# candidate. Component SHAs cannot provide this proof: a failed deployment may promote a binary and
+# then leave the last-green engine baseline untouched, while a rollback can restore the same Git
+# content as that baseline. The root-owned attestation is written only after config+symlink commit.
+codex_runtime_matches_candidate() {
+  local target=$1 desired_tree pin desired_source desired_version
+  local format tooling_tree source_commit binary_sha256 version resolved expected
+  CODEX_RUNTIME_DETAIL=unknown
+  wd_validate_sha "$target" || return 1
+  desired_tree=$(git -C "$SOURCE_REPO" rev-parse "$target:tools/codex-app-server" 2>/dev/null) \
+    || { CODEX_RUNTIME_DETAIL='candidate tooling tree is unavailable'; return 1; }
+  [[ $desired_tree =~ ^[0-9a-f]{40}$ ]] \
+    || { CODEX_RUNTIME_DETAIL='candidate tooling tree is malformed'; return 1; }
+  pin=$(git -C "$SOURCE_REPO" show "$target:tools/codex-app-server/UPSTREAM.pin" 2>/dev/null) \
+    || { CODEX_RUNTIME_DETAIL='candidate pin is unavailable'; return 1; }
+  desired_source=$(sed -n \
+    "s/^CODEX_GIT_COMMIT='\\([0-9a-f]\\{40\\}\\)'$/\\1/p" <<<"$pin")
+  desired_version=$(sed -n \
+    "s/^CODEX_EXPECTED_VERSION='\\(codex-cli [0-9][0-9]*\\.[0-9][0-9]*\\.[0-9][0-9]*\\)'$/\\1/p" \
+    <<<"$pin")
+  [[ $desired_source =~ ^[0-9a-f]{40}$ \
+      && $desired_version =~ ^codex-cli\ [0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || { CODEX_RUNTIME_DETAIL='candidate pin identity is malformed'; return 1; }
+  [[ -f $CODEX_RUNTIME_ATTESTATION && ! -L $CODEX_RUNTIME_ATTESTATION \
+      && $(stat -c '%u' -- "$CODEX_RUNTIME_ATTESTATION" 2>/dev/null) == 0 ]] \
+    || { CODEX_RUNTIME_DETAIL='root-owned promotion attestation is absent'; return 1; }
+  format=$(wd_marker_value "$CODEX_RUNTIME_ATTESTATION" format 2>/dev/null) || return 1
+  tooling_tree=$(wd_marker_value "$CODEX_RUNTIME_ATTESTATION" tooling_tree 2>/dev/null) \
+    || return 1
+  source_commit=$(wd_marker_value "$CODEX_RUNTIME_ATTESTATION" source_commit 2>/dev/null) \
+    || return 1
+  binary_sha256=$(wd_marker_value "$CODEX_RUNTIME_ATTESTATION" binary_sha256 2>/dev/null) \
+    || return 1
+  version=$(wd_marker_value "$CODEX_RUNTIME_ATTESTATION" version 2>/dev/null) || return 1
+  [[ $format == 1 && $tooling_tree == "$desired_tree" \
+      && $source_commit == "$desired_source" && $version == "$desired_version" \
+      && $binary_sha256 =~ ^[0-9a-f]{64}$ ]] \
+    || { CODEX_RUNTIME_DETAIL='promotion attestation does not match candidate'; return 1; }
+  [[ -L $CODEX_RUNTIME_LINK ]] \
+    || { CODEX_RUNTIME_DETAIL='stable Codex link is absent or unsafe'; return 1; }
+  resolved=$(readlink -f -- "$CODEX_RUNTIME_LINK" 2>/dev/null) \
+    || { CODEX_RUNTIME_DETAIL='stable Codex link is broken'; return 1; }
+  expected="$CODEX_RUNTIME_BIN_ROOT/codex-$source_commit-$binary_sha256"
+  [[ $resolved == "$expected" && -f $resolved && ! -L $resolved && -x $resolved ]] \
+    || { CODEX_RUNTIME_DETAIL='stable Codex link does not select the attested binary'; return 1; }
+  [[ $(wd_sha256_file "$resolved" 2>/dev/null) == "$binary_sha256" ]] \
+    || { CODEX_RUNTIME_DETAIL='attested Codex binary digest changed'; return 1; }
+  CODEX_RUNTIME_DETAIL="aligned:$desired_version:$desired_tree"
+  return 0
 }
 
 candidate_is_tested() {
@@ -1065,8 +1121,14 @@ select_candidate_validation_requirements() {
   # Keep the public plan envelope at format 1 during this staged controller upgrade. Older
   # production controllers can validate the feature candidate, while the newly installed
   # controller adds this artifact requirement before any production promotion.
-  if wd_range_has_class "$SOURCE_REPO" "$engine_base" "$target" wd_path_is_codex_tooling; then
+  if wd_range_has_class "$SOURCE_REPO" "$engine_base" "$target" wd_path_is_codex_tooling \
+      || ! codex_runtime_matches_candidate "$target"; then
     VALIDATION_CODEX_ARTIFACTS_REQUIRED=1
+    # A Codex promotion must start a fresh HTTP slot so its proxy children load the same immutable
+    # binary as the daemon cohort. Reuse/build the tested engine artifacts for that health-gated
+    # cutover even when Git itself contains no engine delta (pure runtime-drift repair).
+    VALIDATION_RUST_REQUIRED=1
+    VALIDATION_ENGINE_ARTIFACTS_REQUIRED=1
   fi
   (( VALIDATION_ENGINE_ARTIFACTS_REQUIRED == 0 )) || VALIDATION_RUST_REQUIRED=1
   (( VALIDATION_TYPESCRIPT_FULL == 0 )) || VALIDATION_TYPESCRIPT_REQUIRED=1
@@ -1120,7 +1182,7 @@ run_shadow_candidate_validation() (
   CI_CARGO_TARGET="$CI_HOME/cargo-target-shadow-$TEST_DB_SLOT"
   STATUS_FILE="$STATE_ROOT/candidate-validation-$TEST_DB_SLOT.status"
   SHADOW_LOG_FILE="$STATE_ROOT/candidate-validation-$TEST_DB_SLOT.log"
-  VALIDATION_BASE_SHA=$committed_master
+  VALIDATION_BASE_SHA=$PROCESSED_SHA
   TEST_DB_STARTED=0
   exec 8>&1 9>&2
   rm -f -- "$SHADOW_LOG_FILE"
@@ -1155,10 +1217,12 @@ run_shadow_candidate_validation() (
   [[ -z $OPENKEYS_SHA ]] \
     || wd_require_ancestor "$SOURCE_REPO" "$OPENKEYS_SHA" "$CANDIDATE_SHA" shadow-openkeys
 
-  # The merge client rebases before requesting validation. Select only its delta from that exact
-  # committed master: the parent's own immutable candidate is already being deployed and the
-  # locked merge cannot land this SHA unless that parent becomes green.
-  select_candidate_validation_requirements "$CANDIDATE_SHA" "$committed_master"
+  # Validate from the real production component baselines. The committed parent can be red when
+  # agent-merge is repairing it; treating that undeployed parent as a production baseline both
+  # misses runtime drift and makes production discard/rebuild this exact green candidate after
+  # merge. A later successful parent only narrows these requirements, and candidate_is_tested
+  # deliberately accepts that already-tested superset.
+  select_candidate_validation_requirements "$CANDIDATE_SHA"
   prepare_and_test_candidate "$CANDIDATE_SHA" "$VALIDATION_TYPESCRIPT_REQUIRED" \
     "$VALIDATION_TYPESCRIPT_FULL" "$VALIDATION_TYPESCRIPT_BASE_SHA" \
     "$VALIDATION_RUST_REQUIRED" "$VALIDATION_STATIC_REQUIRED" \
@@ -1266,7 +1330,8 @@ final_verify_engine() {
 }
 
 engine_runtime_aligned() {
-  local sha=$1 expected current legacy_active=0 legacy_enabled=0 stable_status
+  local sha=$1 codex_alignment=${2:-converged}
+  local expected current legacy_active=0 legacy_enabled=0 stable_status
   local active_8787=0 ready_8787=0 current_8787=0 enabled_8787=0
   local active_8788=0 ready_8788=0 current_8788=0 enabled_8788=0
   local openai_active_8793=0 openai_ready_8793=0 openai_current_8793=0 openai_enabled_8793=0
@@ -1276,6 +1341,8 @@ engine_runtime_aligned() {
   local codex_timer_active=0 codex_timer_enabled=0
   local gemini_supported=0 gemini_active=0 gemini_ready=0 gemini_current=0 gemini_enabled=0 gemini_stable_status
   local port unit pid executable status combined_unit environment
+
+  [[ $codex_alignment == serving || $codex_alignment == converged ]] || return 2
 
   expected="$ENGINE_RELEASE_ROOT/$sha"
   current=$(readlink -f -- "$ENGINE_RELEASE_ROOT/current")
@@ -1413,7 +1480,11 @@ engine_runtime_aligned() {
         && openai_active_8793 == 0 && openai_ready_8793 == 0 \
         && openai_current_8793 == 0 && openai_enabled_8793 == 0 )) || return 1
     fi
-    sudo -n "$CODEX_APP_SERVERS_HELPER" verify >/dev/null 2>&1 || return 1
+    if [[ $codex_alignment == serving ]]; then
+      sudo -n "$CODEX_APP_SERVERS_HELPER" admit-cutover >/dev/null 2>&1 || return 1
+    else
+      sudo -n "$CODEX_APP_SERVERS_HELPER" verify >/dev/null 2>&1 || return 1
+    fi
   fi
   if (( gemini_supported == 1 )); then
     [[ $gemini_stable_status == 200 && $gemini_active == 1 && $gemini_ready == 1 \
@@ -1815,12 +1886,27 @@ deploy_engine() {
     rollback_engine || true
     wd_die "engine provider controller failed (exit $controller_rc)"
   fi
-  # The controller has admitted the new slot and drained the old one by this point. A verification
-  # failure now leaves an unverified release serving, so recover before failing closed.
-  # `engine_runtime_aligned` is the non-fatal predicate; `final_verify_engine` would exit here.
-  if ! engine_runtime_aligned "$sha"; then
+  # HTTP admission must never queue behind a stateful daemon roll. First prove that the committed
+  # target is the sole ready/enabled gateway and can use the currently serving authenticated
+  # cohort, then converge a changed pin after traffic already has a healthy availability anchor.
+  if ! engine_runtime_aligned "$sha" serving; then
     rollback_engine || true
-    wd_die "engine runtime is not in a single-slot steady state after cutover: $ENGINE_RUNTIME_DETAIL"
+    wd_die "engine runtime has no admitted single-slot serving state after cutover: $ENGINE_RUNTIME_DETAIL"
+  fi
+  if (( codex_changed == 1 )); then
+    CURRENT_PHASE=deploying-codex
+    CURRENT_PHASE_BEFORE_FAILURE=deploying-codex
+    status "rolling the promoted Codex pin sequentially behind the admitted OpenAI gateway"
+    sudo -n "$CODEX_APP_SERVERS_HELPER" reconcile \
+      || wd_die "promoted Codex daemon cohort did not reconcile"
+    sudo -n "$CODEX_APP_SERVERS_HELPER" verify \
+      || wd_die "promoted Codex daemon cohort did not converge"
+    codex_runtime_matches_candidate "$sha" \
+      || wd_die "promoted Codex runtime attestation is not aligned: $CODEX_RUNTIME_DETAIL"
+  fi
+  if ! engine_runtime_aligned "$sha" converged; then
+    rollback_engine || true
+    wd_die "engine runtime is not converged after cutover: $ENGINE_RUNTIME_DETAIL"
   fi
   wd_atomic_write "$ENGINE_FILE" "$sha"
   github_deployment_success engine
@@ -2030,6 +2116,13 @@ main() {
     && engine_changed=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_codex_tooling \
     && codex_changed=1
+  if ! codex_runtime_matches_candidate "$CANDIDATE_SHA"; then
+    wd_log "Codex runtime drift requires promotion for $CANDIDATE_SHA: $CODEX_RUNTIME_DETAIL"
+    codex_changed=1
+    # The gateway proxy binary is loaded at process start. A runtime-only Codex repair therefore
+    # uses the normal health-gated engine cutover even when no tracked engine source changed.
+    engine_changed=1
+  fi
   wd_range_has_class "$SOURCE_REPO" "$BACKEND_SHA" "$CANDIDATE_SHA" wd_path_is_backend \
     && backend_changed=1
   # Sales has its own release baseline; fall back to processed on first run (before sales.sha exists).
@@ -2059,7 +2152,7 @@ main() {
 
   if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $infra_changed == 0 \
         && $engine_changed == 0 && $backend_changed == 0 \
-        && $sales_changed == 0 && $openkeys_changed == 0 ]]; then
+        && $sales_changed == 0 && $openkeys_changed == 0 && $codex_changed == 0 ]]; then
     if idle_maintenance_due; then
       CURRENT_PHASE=maintaining
       status "running periodic retention and production-alignment checks"

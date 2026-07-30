@@ -143,6 +143,28 @@ openai_draining_port() {
     "$(openai_slot_url "$port")" 2>/dev/null) || return 1
   [[ $status == 503 ]]
 }
+openai_slot_retired() {
+  local unit=$1 port=$2 state
+  systemctl_raw is-enabled --quiet "$unit" >/dev/null 2>&1 && return 1
+  openai_ready_port "$port" && return 1
+  state=$(systemctl_show_value "$unit" ActiveState) || return 1
+  case "$state" in
+    deactivating) return 0 ;;
+    inactive|failed) unit_stopped "$unit" ;;
+    *) return 1 ;;
+  esac
+}
+wait_openai_retirement_ack() {
+  local unit=$1 port=$2 attempt
+  if [[ $DRY_RUN == 1 ]]; then return 0; fi
+  # `systemctl --no-block stop` returns after queuing the job. Wait only for systemd to acknowledge
+  # the state transition, never for the potentially ten-minute settlement drain itself.
+  for attempt in $(seq 1 20); do
+    openai_slot_retired "$unit" "$port" && return 0
+    sleep 0.1
+  done
+  return 1
+}
 openai_slot_serves_current() {
   local port=$1 unit
   unit=$(openai_slot_unit "$port")
@@ -314,7 +336,7 @@ recover() {
       fi
       systemctl_raw enable "$CODEX_APP_SERVERS_TIMER" || failed=1
       systemctl_raw start "$CODEX_APP_SERVERS_TIMER" || failed=1
-      privileged_command "$CODEX_APP_SERVERS_HELPER" verify || failed=1
+      privileged_command "$CODEX_APP_SERVERS_HELPER" admit-cutover || failed=1
     else
       if [[ $OPENAI_TARGET_STARTED == 1 && -n $OPENAI_ACTIVE_UNIT \
           && $OPENAI_ACTIVE_UNIT != "$OPENAI_TARGET_UNIT" \
@@ -730,12 +752,23 @@ if [[ -n $OPENAI_ACTIVE_UNIT && $OPENAI_ACTIVE_UNIT != "$OPENAI_TARGET_UNIT" ]];
     stable_openai_ready \
       || post_admission_die "stable OpenAI origin lost readiness during old-slot pre-drain"
   fi
-  systemctl_command stop "$OPENAI_ACTIVE_UNIT" \
-    || post_admission_die "could not stop old OpenAI unit $OPENAI_ACTIVE_UNIT"
   systemctl_command disable "$OPENAI_ACTIVE_UNIT" \
     || post_admission_die "could not disable old OpenAI unit $OPENAI_ACTIVE_UNIT"
-  if [[ $DRY_RUN == 0 ]] && ! unit_stopped "$OPENAI_ACTIVE_UNIT"; then
-    post_admission_die "old OpenAI cgroup remains active after cutover"
+  if [[ $OPENAI_LEGACY_TARGET == 1 ]]; then
+    # Ownership is moving back into the singleton, so no shared gateway may retain a connection.
+    systemctl_command stop "$OPENAI_ACTIVE_UNIT" \
+      || post_admission_die "could not stop old OpenAI unit $OPENAI_ACTIVE_UNIT"
+    if [[ $DRY_RUN == 0 ]] && ! unit_stopped "$OPENAI_ACTIVE_UNIT"; then
+      post_admission_die "old OpenAI cgroup remains active before legacy ownership commit"
+    fi
+  else
+    # Both generations use the same persistent daemon cohort. Once readiness is 503 and the new
+    # gateway is admitted, the old HTTP process may finish detached usage/settlement in the
+    # background. Waiting for systemd here put its 620-second drain directly on the deploy path.
+    systemctl_command --no-block stop "$OPENAI_ACTIVE_UNIT" \
+      || post_admission_die "could not queue retirement of old OpenAI unit $OPENAI_ACTIVE_UNIT"
+    wait_openai_retirement_ack "$OPENAI_ACTIVE_UNIT" "$OPENAI_ACTIVE_PORT" \
+      || post_admission_die "old OpenAI unit did not acknowledge background retirement"
   fi
   OPENAI_OLD_STOPPED=1
 fi
@@ -868,10 +901,8 @@ if [[ $DRY_RUN == 0 ]]; then
       post_admission_die 'Codex daemon reconciliation remains armed in legacy mode'
     fi
   else
-    ! unit_stopped "$OPENAI_OTHER_UNIT" \
-      && post_admission_die "inactive OpenAI slot is not fully stopped: $OPENAI_OTHER_UNIT"
-    openai_ready_port "$OPENAI_OTHER_PORT" \
-      && post_admission_die "inactive OpenAI slot remains ready: $OPENAI_OTHER_UNIT"
+    openai_slot_retired "$OPENAI_OTHER_UNIT" "$OPENAI_OTHER_PORT" \
+      || post_admission_die "inactive OpenAI slot is neither stopped nor retiring: $OPENAI_OTHER_UNIT"
     if systemctl_raw is-enabled --quiet "$OPENAI_OTHER_UNIT"; then
       post_admission_die "inactive OpenAI slot remains enabled: $OPENAI_OTHER_UNIT"
     fi
