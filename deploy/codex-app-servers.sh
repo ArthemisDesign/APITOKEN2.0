@@ -656,6 +656,47 @@ codex_as_wait_proxy_restore() {
   return 1
 }
 
+codex_as_unit_stopped() {
+  local unit=$1 state
+  state=$("$CODEX_AS_SYSTEMCTL" show -p ActiveState --value "$unit" 2>/dev/null) || return 1
+  [[ $state == inactive || $state == failed ]]
+}
+
+codex_as_wait_unit_stopped() {
+  local unit=$1 attempt
+  for attempt in $(seq 1 20); do
+    codex_as_unit_stopped "$unit" && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+# The gateway drain marker and zero-proxy barrier above are the graceful shutdown contract for an
+# official app-server: no admitted or newly selectable turn can still reach this daemon. Codex may
+# nevertheless keep internal tasks alive and ignore SIGTERM until systemd's 660-second ceiling.
+# Waiting for that process-local cleanup adds no safety after the external ownership barrier and
+# serializes the whole fleet rollout. Queue a normal stop, terminate only the already-drained
+# cgroup, prove systemd released it, then start the exact desired binary.
+codex_as_replace_drained_unit() {
+  local id=$1 home=$2 unit proxies
+  unit=$(codex_as_unit "$id")
+  codex_as_home_draining "$home" \
+    || { codex_as_fail "refusing to replace undrained app-server $id"; return 1; }
+  proxies=$(codex_as_home_proxy_count "$home") || return 1
+  (( proxies == 0 )) \
+    || { codex_as_fail "refusing to replace app-server $id with live gateway proxies"; return 1; }
+  "$CODEX_AS_SYSTEMCTL" --no-block stop "$unit" \
+    || { codex_as_fail "could not queue stop for drained app-server $id"; return 1; }
+  if ! "$CODEX_AS_SYSTEMCTL" kill --kill-whom=all --signal=SIGKILL "$unit"; then
+    codex_as_unit_stopped "$unit" \
+      || { codex_as_fail "could not terminate drained app-server $id"; return 1; }
+  fi
+  codex_as_wait_unit_stopped "$unit" \
+    || { codex_as_fail "drained app-server $id did not release its cgroup"; return 1; }
+  "$CODEX_AS_SYSTEMCTL" start "$unit" \
+    || { codex_as_fail "could not start app-server $id"; return 1; }
+}
+
 codex_as_authenticated_home_count() {
   local gateways id name home clients count=0
   gateways=$(codex_as_gateway_active_count) || return 1
@@ -773,11 +814,8 @@ codex_as_start_or_roll() {
       codex_as_fail "gateway proxies did not drain app-server $id"
       return 1
     fi
-    codex_as_log "rolling app-server $id while $others peer(s) remain serving"
-    if ! "$CODEX_AS_SYSTEMCTL" restart "$unit"; then
-      codex_as_fail "could not restart app-server $id"
-      return 1
-    fi
+    codex_as_log "rolling drained app-server $id while $others peer(s) remain serving"
+    codex_as_replace_drained_unit "$id" "$home" || return 1
     CODEX_AS_RECONCILE_CHANGED=1
   else
     codex_as_log "starting app-server $id"

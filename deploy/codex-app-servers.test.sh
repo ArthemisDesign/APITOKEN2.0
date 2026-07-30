@@ -168,17 +168,58 @@ codex_as_find_home() { printf '%s\n' "$proxy_home"; }
 codex_as_other_serving_count() { printf '1\n'; }
 codex_as_begin_drain() { drain_active=1; printf 'begin\n' >>"$roll_log"; }
 codex_as_wait_proxy_drain() { printf 'drained\n' >>"$roll_log"; }
+codex_as_replace_drained_unit() {
+  (( drain_active == 1 )) || return 1
+  printf 'replaced\n' >>"$roll_log"
+}
 codex_as_wait_healthy() { printf 'healthy\n' >>"$roll_log"; }
 codex_as_home_draining() { (( drain_active == 1 )); }
 codex_as_end_drain() { drain_active=0; printf 'returned\n' >>"$roll_log"; }
-fake_systemctl=$TEMP/systemctl
-printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$1" >>"$CODEX_AS_TEST_ROLL_LOG"' >"$fake_systemctl"
-chmod 0700 "$fake_systemctl"
-CODEX_AS_SYSTEMCTL=$fake_systemctl
-export CODEX_AS_TEST_ROLL_LOG=$roll_log
 codex_as_start_or_roll "$rotating_id" || fail 'old-but-serving peer did not permit a rolling update'
-[[ $(tr '\n' ' ' <"$roll_log") == 'begin drained restart healthy returned ' ]] \
-  || fail 'rolling update did not drain, restart, verify, and return the home in order'
+[[ $(tr '\n' ' ' <"$roll_log") == 'begin drained replaced healthy returned ' ]] \
+  || fail 'rolling update did not drain, replace, verify, and return the home in order'
+
+# Once the proxy barrier is zero, replacement must not inherit the official daemon's long SIGTERM
+# timeout. It still fails closed before any kill unless the home is fenced and has no proxy owner.
+(
+  # shellcheck source=deploy/codex-app-servers.sh
+  source "$ROOT/deploy/codex-app-servers.sh"
+  replace_log=$TEMP/replace.log
+  replace_state=$TEMP/replace-state
+  printf 'active\n' >"$replace_state"
+  replace_systemctl=$TEMP/replace-systemctl
+  cat >"$replace_systemctl" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"$CODEX_AS_TEST_REPLACE_LOG"
+case "$1" in
+  --no-block) exit 0 ;;
+  kill) printf 'inactive\n' >"$CODEX_AS_TEST_REPLACE_STATE" ;;
+  show) cat "$CODEX_AS_TEST_REPLACE_STATE" ;;
+  start) exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod 0700 "$replace_systemctl"
+  CODEX_AS_SYSTEMCTL=$replace_systemctl
+  export CODEX_AS_TEST_REPLACE_LOG=$replace_log
+  export CODEX_AS_TEST_REPLACE_STATE=$replace_state
+  codex_as_home_draining() { return 0; }
+  codex_as_home_proxy_count() { printf '0\n'; }
+  codex_as_replace_drained_unit "$rotating_id" "$proxy_home" \
+    || fail 'zero-proxy drained daemon was not replaced'
+  [[ $(tr '\n' ' ' <"$replace_log") == \
+      "--no-block stop $(codex_as_unit "$rotating_id") kill --kill-whom=all --signal=SIGKILL $(codex_as_unit "$rotating_id") show -p ActiveState --value $(codex_as_unit "$rotating_id") start $(codex_as_unit "$rotating_id") " ]] \
+    || fail 'drained daemon replacement can wait for the long graceful systemd restart path'
+  codex_as_home_draining() { return 1; }
+  if codex_as_replace_drained_unit "$rotating_id" "$proxy_home" >/dev/null 2>&1; then
+    fail 'undrained daemon replacement reached the forced stop path'
+  fi
+  codex_as_home_draining() { return 0; }
+  codex_as_home_proxy_count() { printf '1\n'; }
+  if codex_as_replace_drained_unit "$rotating_id" "$proxy_home" >/dev/null 2>&1; then
+    fail 'daemon replacement accepted a live gateway proxy'
+  fi
+)
 
 for reconciler_state in static disabled indirect; do
   codex_as_unit_file_state_reconciler_owned "$reconciler_state" \
