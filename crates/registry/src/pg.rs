@@ -105,6 +105,8 @@ pub struct MaintenanceReport {
     pub usage_events: usize,
     pub outbox: usize,
     pub reservations: usize,
+    pub pricing_snapshots_cascaded: usize,
+    pub pricing_shadow_evaluations_cascaded: usize,
     pub capacity_leases: usize,
     pub engine_instances: usize,
 }
@@ -398,10 +400,27 @@ impl PgStore {
         if key.trim().is_empty() || lease_secs <= 0 {
             bail!("invalid PostgreSQL legacy snapshot reservation parameters");
         }
+        let window_conflict = |trusted_now_ts| -> Result<Option<Conflict>> {
+            match snapshot.validate_idempotency_window_at(trusted_now_ts) {
+                Ok(()) => Ok(None),
+                Err(crate::pricing::LegacyScalarIdempotencyWindowError::Expired) => {
+                    Ok(Some(Conflict::ExpiredIdempotencyWindow))
+                }
+                Err(crate::pricing::LegacyScalarIdempotencyWindowError::AdmissionFromFuture) => {
+                    Ok(Some(Conflict::AdmissionTimestampInFuture))
+                }
+                Err(
+                    crate::pricing::LegacyScalarIdempotencyWindowError::InvalidTrustedTimestamp,
+                ) => bail!("trusted PostgreSQL reservation clock is invalid"),
+            }
+        };
+        let preflight_ts = now();
+        if let Some(conflict) = window_conflict(preflight_ts)? {
+            return Ok(Outcome::Conflict(conflict));
+        }
         let request_id = snapshot.request_id.as_str();
         let account_id = snapshot.account_id.as_str();
         let hold = snapshot.charged_hold_nano;
-        let preflight_ts = now();
         let mut tx = self.client.transaction()?;
         Self::assert_owner(&mut tx, owner, preflight_ts)?;
         tx.query_one(
@@ -410,6 +429,10 @@ impl PgStore {
         )?;
         let fence_ts = now();
         Self::assert_owner_locked(&mut tx, owner, fence_ts)?;
+        if let Some(conflict) = window_conflict(fence_ts)? {
+            tx.rollback()?;
+            return Ok(Outcome::Conflict(conflict));
+        }
         if let Some(row) = tx.query_opt(
             "SELECT account_id,key,hold_nano,balance_after_reserve_nano,owner_instance,
                     owner_epoch,state
@@ -455,6 +478,12 @@ impl PgStore {
             return Ok(outcome);
         }
 
+        let reservation_ts = now();
+        Self::assert_owner_locked(&mut tx, owner, reservation_ts)?;
+        if let Some(conflict) = window_conflict(reservation_ts)? {
+            tx.rollback()?;
+            return Ok(Outcome::Conflict(conflict));
+        }
         const OVERDRAFT_NANO: i64 = 1_000_000_000;
         let Some(row) = tx.query_opt(
             "UPDATE accounts SET balance_nano=balance_nano-$1,reserved_nano=reserved_nano+$1
@@ -478,8 +507,6 @@ impl PgStore {
             tx.rollback()?;
             return Ok(Outcome::NotReserved);
         }
-        let reservation_ts = now();
-        Self::assert_owner_locked(&mut tx, owner, reservation_ts)?;
         tx.execute(
             "INSERT INTO reservations(request_id,account_id,key,hold_nano,balance_after_reserve_nano,
                  owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts)
@@ -1751,23 +1778,44 @@ impl PgStore {
     /// Bounded lifecycle cleanup. Financial outcomes remain in ledger; transient request/lease
     /// machinery is removed only after it is terminal and older than the retention cutoff.
     pub fn maintenance_prune(&mut self, older_than_ts: i64) -> Result<MaintenanceReport> {
+        crate::pricing::validate_request_lifecycle_prune_cutoff(older_than_ts, now())?;
         let mut tx = self.client.transaction()?;
         let outbox = tx.execute(
             "DELETE FROM settlement_outbox WHERE request_id IN ( \
                SELECT request_id FROM settlement_outbox \
-               WHERE state='done' AND committed_ts < $1 ORDER BY committed_ts LIMIT 5000 \
+               WHERE state='done' AND committed_ts < $1 \
+               ORDER BY committed_ts,request_id LIMIT 5000 \
              )",
             &[&older_than_ts],
         )? as usize;
-        let reservations = tx.execute(
-            "DELETE FROM reservations WHERE request_id IN ( \
+        let lifecycle_counts = tx.query_one(
+            "WITH doomed AS MATERIALIZED ( \
                SELECT r.request_id FROM reservations r \
                WHERE r.state IN ('settled','canceled') AND r.settled_ts < $1 \
                  AND NOT EXISTS (SELECT 1 FROM settlement_outbox o WHERE o.request_id=r.request_id) \
-               ORDER BY r.settled_ts LIMIT 5000 \
-             )",
+               ORDER BY r.settled_ts,r.request_id LIMIT 5000 FOR UPDATE \
+             ), child_counts AS MATERIALIZED ( \
+               SELECT \
+                 (SELECT COUNT(*)::bigint FROM pricing_admission_snapshots s \
+                   WHERE EXISTS (SELECT 1 FROM doomed d WHERE d.request_id=s.request_id)) \
+                   AS pricing_snapshots, \
+                 (SELECT COUNT(*)::bigint FROM pricing_shadow_admission_evaluations e \
+                   WHERE EXISTS (SELECT 1 FROM doomed d WHERE d.request_id=e.request_id)) \
+                   AS shadow_evaluations \
+             ), deleted AS ( \
+               DELETE FROM reservations r USING doomed d \
+                WHERE r.request_id=d.request_id \
+                RETURNING r.request_id \
+             ) \
+             SELECT \
+               (SELECT COUNT(*)::bigint FROM deleted), \
+               child_counts.pricing_snapshots, child_counts.shadow_evaluations \
+              FROM child_counts",
             &[&older_than_ts],
-        )? as usize;
+        )?;
+        let reservations = lifecycle_counts.get::<_, i64>(0) as usize;
+        let pricing_snapshots_cascaded = lifecycle_counts.get::<_, i64>(1) as usize;
+        let pricing_shadow_evaluations_cascaded = lifecycle_counts.get::<_, i64>(2) as usize;
         let capacity_leases = tx.execute(
             "DELETE FROM capacity_leases WHERE lease_id IN ( \
                SELECT lease_id FROM capacity_leases \
@@ -1788,6 +1836,8 @@ impl PgStore {
         Ok(MaintenanceReport {
             outbox,
             reservations,
+            pricing_snapshots_cascaded,
+            pricing_shadow_evaluations_cascaded,
             capacity_leases,
             engine_instances,
             ..MaintenanceReport::default()
@@ -2523,6 +2573,22 @@ mod tests {
         official_hold_nano: i64,
         charged_hold_nano: i64,
     ) -> crate::pricing::LegacyScalarAdmissionSnapshot {
+        legacy_snapshot_at(
+            request_id,
+            account_id,
+            official_hold_nano,
+            charged_hold_nano,
+            now(),
+        )
+    }
+
+    fn legacy_snapshot_at(
+        request_id: &str,
+        account_id: &str,
+        official_hold_nano: i64,
+        charged_hold_nano: i64,
+        admission_ts: i64,
+    ) -> crate::pricing::LegacyScalarAdmissionSnapshot {
         crate::pricing::LegacyScalarAdmissionSnapshot::new(
             crate::pricing::LegacyScalarAdmissionSnapshotInput {
                 request_id: request_id.into(),
@@ -2532,8 +2598,8 @@ mod tests {
                 canonical_model_id: "claude-sonnet-5".into(),
                 alias_generation: 1,
                 tariff_schedule_id: "anthropic/standard/sonnet-current/v1".into(),
-                tariff_priced_ts: 1_788_220_800,
-                admission_ts: 1_788_220_801,
+                tariff_priced_ts: admission_ts,
+                admission_ts,
                 payable_multiplier_bp: 2_000,
                 official_hold_nano,
                 charged_hold_nano,
@@ -2553,6 +2619,7 @@ mod tests {
         official_hold_nano: i64,
         charged_hold_nano: i64,
     ) -> crate::pricing::LegacyScalarAdmissionSnapshot {
+        let admission_ts = now();
         crate::pricing::LegacyScalarAdmissionSnapshot::new(
             crate::pricing::LegacyScalarAdmissionSnapshotInput {
                 request_id: request_id.into(),
@@ -2562,8 +2629,8 @@ mod tests {
                 canonical_model_id: "gpt-5.6-sol".into(),
                 alias_generation: 1,
                 tariff_schedule_id: "openai/gpt-5.6-sol/epoch-0/v1".into(),
-                tariff_priced_ts: 1_788_220_800,
-                admission_ts: 1_788_220_801,
+                tariff_priced_ts: admission_ts,
+                admission_ts,
                 payable_multiplier_bp: 2_000,
                 official_hold_nano,
                 charged_hold_nano,
@@ -2623,6 +2690,78 @@ mod tests {
         pg.account_topup("snapshot-account", 1_000, None).unwrap();
         pg.key_issue("snapshot-key", "snapshot-account", None)
             .unwrap();
+
+        let current = now();
+        let money_before_window_checks: (i64, i64, i64, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT a.balance_nano,a.reserved_nano,k.reserved_nano, \
+                            (SELECT COUNT(*)::bigint FROM ledger) \
+                       FROM accounts a JOIN api_keys k ON k.account_id=a.id \
+                      WHERE a.id='snapshot-account' AND k.key='snapshot-key'",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2), row.get(3))
+        };
+        let expired = legacy_snapshot_at(
+            "expired-window-request",
+            "snapshot-account",
+            500,
+            100,
+            current - 2 * crate::pricing::LEGACY_SCALAR_REPLAY_MAX_AGE_SECS,
+        );
+        assert_eq!(
+            pg.reserve_request_with_legacy_snapshot(&owner, "snapshot-key", 60, &expired)
+                .unwrap(),
+            O::Conflict(Conflict::ExpiredIdempotencyWindow)
+        );
+        let future = legacy_snapshot_at(
+            "future-window-request",
+            "snapshot-account",
+            500,
+            100,
+            current + 2 * crate::pricing::LEGACY_SCALAR_REPLAY_MAX_AGE_SECS,
+        );
+        assert_eq!(
+            pg.reserve_request_with_legacy_snapshot(&owner, "snapshot-key", 60, &future)
+                .unwrap(),
+            O::Conflict(Conflict::AdmissionTimestampInFuture)
+        );
+        let money_after_window_checks: (i64, i64, i64, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT a.balance_nano,a.reserved_nano,k.reserved_nano, \
+                            (SELECT COUNT(*)::bigint FROM ledger) \
+                       FROM accounts a JOIN api_keys k ON k.account_id=a.id \
+                      WHERE a.id='snapshot-account' AND k.key='snapshot-key'",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2), row.get(3))
+        };
+        assert_eq!(money_after_window_checks, money_before_window_checks);
+        let rejected_window_rows = pg
+            .client
+            .query_one(
+                "SELECT \
+                    (SELECT COUNT(*)::bigint FROM reservations \
+                      WHERE request_id IN ('expired-window-request','future-window-request')), \
+                    (SELECT COUNT(*)::bigint FROM pricing_admission_snapshots \
+                      WHERE request_id IN ('expired-window-request','future-window-request'))",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                rejected_window_rows.get::<_, i64>(0),
+                rejected_window_rows.get::<_, i64>(1),
+            ),
+            (0, 0)
+        );
+
         let snapshot = legacy_snapshot("snapshot-request", "snapshot-account", 500, 100);
 
         let inserted = pg
@@ -3316,11 +3455,13 @@ mod tests {
             LegacyScalarReserveOutcome::Inserted(_)
         ));
         let actual = ShadowActualSnapshotRef::from_snapshot(&snapshot).unwrap();
+        let first_enqueued_ts = snapshot.admission_ts() + 1;
+        let first_evaluated_ts = first_enqueued_ts + 1;
         let input = shadow_pg_input(
             &snapshot,
             shadow_pg_resolved(&actual),
-            1_788_220_802,
-            1_788_220_803,
+            first_enqueued_ts,
+            first_evaluated_ts,
             json!({"writer": "concurrent"}),
         );
         let money_before: (i64, i64, i64, String) = {
@@ -3375,8 +3516,8 @@ mod tests {
         let replay = shadow_pg_input(
             &snapshot,
             shadow_pg_resolved(&actual),
-            1_788_220_810,
-            1_788_220_820,
+            first_enqueued_ts + 8,
+            first_evaluated_ts + 17,
             json!({"writer": "lost-ack-replay"}),
         );
         let Write::Unchanged(first) = pg
@@ -3385,7 +3526,7 @@ mod tests {
         else {
             panic!("PostgreSQL exact shadow replay was not unchanged");
         };
-        assert_eq!(first.enqueued_ts(), 1_788_220_802);
+        assert_eq!(first.enqueued_ts(), first_enqueued_ts);
         assert_eq!(
             first.diagnostic_context().value(),
             &json!({"writer": "concurrent"})
@@ -3397,8 +3538,8 @@ mod tests {
                 reason: PricingShadowRejectionCode::MissingRule,
                 observed_multiplier_bp: 2_000,
             },
-            1_788_220_802,
-            1_788_220_803,
+            first_enqueued_ts,
+            first_evaluated_ts,
             json!({}),
         );
         assert_eq!(
@@ -3465,8 +3606,8 @@ mod tests {
             let input = shadow_pg_input(
                 &snapshot,
                 outcome.clone(),
-                1_788_220_802,
-                1_788_220_803,
+                snapshot.admission_ts() + 1,
+                snapshot.admission_ts() + 2,
                 diagnostic,
             );
             assert!(matches!(
@@ -3482,6 +3623,77 @@ mod tests {
                 &outcome
             );
         }
+
+        pg.settle_request(
+            "shadow-pg-read-error",
+            10,
+            Some("shadow-retention-settle"),
+            None,
+        )
+        .unwrap();
+        assert!(pg.maintenance_prune(now()).is_err());
+        let rows_after_unsafe_prune = pg
+            .client
+            .query_one(
+                "SELECT \
+                    (SELECT COUNT(*)::bigint FROM reservations \
+                      WHERE request_id='shadow-pg-read-error'), \
+                    (SELECT COUNT(*)::bigint FROM pricing_admission_snapshots \
+                      WHERE request_id='shadow-pg-read-error'), \
+                    (SELECT COUNT(*)::bigint FROM pricing_shadow_admission_evaluations \
+                      WHERE request_id='shadow-pg-read-error')",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                rows_after_unsafe_prune.get::<_, i64>(0),
+                rows_after_unsafe_prune.get::<_, i64>(1),
+                rows_after_unsafe_prune.get::<_, i64>(2),
+            ),
+            (1, 1, 1)
+        );
+        pg.client
+            .batch_execute(
+                "UPDATE reservations SET settled_ts=100 \
+                   WHERE request_id='shadow-pg-read-error'; \
+                 UPDATE settlement_outbox SET committed_ts=100,state='done' \
+                   WHERE request_id='shadow-pg-read-error';",
+            )
+            .unwrap();
+        let ledger_before_retention: i64 = pg
+            .client
+            .query_one("SELECT COUNT(*)::bigint FROM ledger", &[])
+            .unwrap()
+            .get(0);
+        let retention = pg.maintenance_prune(200).unwrap();
+        assert_eq!(retention.outbox, 1);
+        assert_eq!(retention.reservations, 1);
+        assert_eq!(retention.pricing_snapshots_cascaded, 1);
+        assert_eq!(retention.pricing_shadow_evaluations_cascaded, 1);
+        let retained_counts = pg
+            .client
+            .query_one(
+                "SELECT \
+                    (SELECT COUNT(*)::bigint FROM reservations \
+                      WHERE request_id='shadow-pg-read-error'), \
+                    (SELECT COUNT(*)::bigint FROM pricing_admission_snapshots \
+                      WHERE request_id='shadow-pg-read-error'), \
+                    (SELECT COUNT(*)::bigint FROM pricing_shadow_admission_evaluations \
+                      WHERE request_id='shadow-pg-read-error'), \
+                    (SELECT COUNT(*)::bigint FROM ledger)",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                retained_counts.get::<_, i64>(0),
+                retained_counts.get::<_, i64>(1),
+                retained_counts.get::<_, i64>(2),
+                retained_counts.get::<_, i64>(3),
+            ),
+            (0, 0, 0, ledger_before_retention)
+        );
 
         pg.client
             .query_one(

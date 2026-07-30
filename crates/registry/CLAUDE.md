@@ -101,9 +101,15 @@
   `FOR UPDATE`, удерживает epoch-row до commit и использует свежий reservation timestamp; real-PG
   race test доказывает rollback старого epoch без money/orphan writes. Snapshot constructor
   гарантирует storage shape, но не model/tariff provenance: live caller обязан строить input только
-  из `metering` canonicalizer. Текущий 30-дневный prune terminal reservation каскадно удаляет actual
-  snapshot, поэтому до live bridge нужен tombstone или явно bounded idempotency contract. SQLite и
-  PostgreSQL сохраняют унаследованные разные balance gates (full-cover против overdraft floor);
+  из `metering` canonicalizer. Для live atomic API принят bounded idempotency contract: immutable
+  `admission_ts` допускает replay только при возрасте `<24h`; future/expired timestamp возвращает
+  typed conflict до money mutation, включая повторную проверку после потенциального DB lock wait.
+  Terminal reservation и actual/shadow children хранятся отдельно от ledger/usage 30 дней, а
+  registry отвергает любой более свежий prune cutoff до открытия транзакции; maintenance сообщает
+  точные cascade counts. Это не permanent tombstone и не infinite dedupe:
+  bridge обязан использовать только внутренний CSPRNG UUIDv4, сохранять первый timestamp и иметь
+  queue `max_age <24h`. SQLite и PostgreSQL сохраняют унаследованные разные balance gates
+  (full-cover против overdraft floor);
   parity этого checkpoint относится к atomic snapshot/replay/conflict, а не к `NotReserved`.
 - **Stage 3B1c.1 shadow evaluation persistence — dormant:** `ShadowActualSnapshotRef` строится
   только из validated actual snapshot; fixed-plane identity, scalar и holds нельзя независимо

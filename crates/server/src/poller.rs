@@ -77,19 +77,24 @@ pub async fn billing_recovery_loop(
     }
 }
 
-/// Фоновая обрезка ledger под масштаб: удаляем bulk-строки списаний старше `retention_days`
-/// (topup/adjust не трогаем). Синхронный SQLite → на blocking-пул. При 1000 юзеров бережёт БД от
-/// раздувания журналом per-request-списаний, не теряя ни текущих сумм, ни истории пополнений.
+/// Фоновая обрезка bulk history и terminal request machinery.
+///
+/// Request lifecycle retention is deliberately independent from ledger/usage retention: it is the
+/// backing store for the bounded pricing-snapshot idempotency contract and must not shrink merely
+/// because an operator changes analytics retention later.
 pub async fn ledger_prune_loop(
     authority: registry::authority::AuthorityConfig,
-    retention_days: i64,
+    ledger_retention_days: i64,
+    request_lifecycle_retention_days: i64,
 ) {
-    if retention_days <= 0 {
+    if ledger_retention_days <= 0 && request_lifecycle_retention_days <= 0 {
         return;
-    } // 0/отриц. → обрезка выключена
+    }
     loop {
         tokio::time::sleep(Duration::from_secs(LEDGER_PRUNE_INTERVAL)).await;
-        let cutoff = pool::now() - retention_days * 86400;
+        let now = pool::now();
+        let ledger_cutoff = now - ledger_retention_days.max(0) * 86400;
+        let lifecycle_cutoff = now - request_lifecycle_retention_days.max(0) * 86400;
         let db = authority.clone();
         let res = tokio::task::spawn_blocking(move || {
             db.connect().and_then(|mut c| {
@@ -97,13 +102,28 @@ pub async fn ledger_prune_loop(
                 let mut usg = 0usize;
                 let mut lifecycle = registry::pg::MaintenanceReport::default();
                 for _ in 0..20 {
-                    let ledger_batch = c.ledger_prune(cutoff)?;
-                    let usage_batch = c.usage_prune(cutoff)?;
-                    let life = c.maintenance_prune(cutoff)?;
+                    let ledger_batch = if ledger_retention_days > 0 {
+                        c.ledger_prune(ledger_cutoff)?
+                    } else {
+                        0
+                    };
+                    let usage_batch = if ledger_retention_days > 0 {
+                        c.usage_prune(ledger_cutoff)?
+                    } else {
+                        0
+                    };
+                    let life = if request_lifecycle_retention_days > 0 {
+                        c.maintenance_prune(lifecycle_cutoff)?
+                    } else {
+                        registry::pg::MaintenanceReport::default()
+                    };
                     led += ledger_batch;
                     usg += usage_batch;
                     lifecycle.outbox += life.outbox;
                     lifecycle.reservations += life.reservations;
+                    lifecycle.pricing_snapshots_cascaded += life.pricing_snapshots_cascaded;
+                    lifecycle.pricing_shadow_evaluations_cascaded +=
+                        life.pricing_shadow_evaluations_cascaded;
                     lifecycle.capacity_leases += life.capacity_leases;
                     lifecycle.engine_instances += life.engine_instances;
                     let full = ledger_batch >= 5_000
@@ -122,10 +142,19 @@ pub async fn ledger_prune_loop(
         .await;
         match res {
             Ok(Ok((led, usg, life))) if led > 0 || usg > 0 || life.outbox > 0
-                || life.reservations > 0 || life.capacity_leases > 0 || life.engine_instances > 0 =>
+                || life.reservations > 0
+                || life.pricing_snapshots_cascaded > 0
+                || life.pricing_shadow_evaluations_cascaded > 0
+                || life.capacity_leases > 0
+                || life.engine_instances > 0 =>
                 eprintln!(
-                    "retention: ledger={led}, usage={usg}, outbox={}, reservations={}, capacity={}, instances={} (>{retention_days}d)",
-                    life.outbox, life.reservations, life.capacity_leases, life.engine_instances,
+                    "retention: ledger={led}, usage={usg}, outbox={}, reservations={}, pricing_snapshots={}, shadow_evaluations={}, capacity={}, instances={} (history>{ledger_retention_days}d, request_lifecycle>{request_lifecycle_retention_days}d)",
+                    life.outbox,
+                    life.reservations,
+                    life.pricing_snapshots_cascaded,
+                    life.pricing_shadow_evaluations_cascaded,
+                    life.capacity_leases,
+                    life.engine_instances,
                 ),
             Ok(Err(e)) => eprintln!("⚠ ledger-обрезка не удалась: {e}"),
             Err(e) => eprintln!("⚠ ledger-обрезка: задача упала: {e}"),

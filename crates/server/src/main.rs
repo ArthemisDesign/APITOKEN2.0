@@ -31,7 +31,14 @@ use std::time::Duration;
 // comfortably below systemd MemoryMax=2G, leaving room for request JSON, TLS and runtime overhead.
 const MAX_CONCURRENT: usize = 24;
 const LEDGER_RETENTION_DAYS: i64 = 30;
+/// Terminal reservations and their actual/shadow children outlive the maximum supported replay
+/// age by a wide margin. Keep this independent from analytics retention.
+const REQUEST_LIFECYCLE_RETENTION_DAYS: i64 = 30;
 const METRICS_RETENTION_DAYS: i64 = 90;
+const _: () = assert!(
+    REQUEST_LIFECYCLE_RETENTION_DAYS * 86_400
+        >= registry::pricing::PRICING_REQUEST_LIFECYCLE_MIN_RETENTION_SECS
+);
 
 /// Acquire and hold an OS advisory lock for the full server lifetime. A PID file cannot prove
 /// exclusivity across rolling deploys, default-without-`serve` invocation, or PID namespaces.
@@ -1134,6 +1141,7 @@ async fn serve() -> Result<()> {
             tokio::spawn(poller::ledger_prune_loop(
                 authority.clone(),
                 LEDGER_RETENTION_DAYS,
+                REQUEST_LIFECYCLE_RETENTION_DAYS,
             ));
         }
         if s.proxy.poll {

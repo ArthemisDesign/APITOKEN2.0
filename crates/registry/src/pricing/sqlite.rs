@@ -2139,6 +2139,7 @@ mod tests {
     }
 
     fn shadow_snapshot(request_id: &str) -> LegacyScalarAdmissionSnapshot {
+        let admission_ts = crate::now();
         LegacyScalarAdmissionSnapshot::new(LegacyScalarAdmissionSnapshotInput {
             request_id: request_id.into(),
             account_id: "shadow-typed-account".into(),
@@ -2147,8 +2148,8 @@ mod tests {
             canonical_model_id: "claude-test".into(),
             alias_generation: 1,
             tariff_schedule_id: "anthropic/standard/claude-test/v1".into(),
-            tariff_priced_ts: 1_788_220_700,
-            admission_ts: 1_788_220_800,
+            tariff_priced_ts: admission_ts,
+            admission_ts,
             payable_multiplier_bp: 2_000,
             official_hold_nano: 500_000_000,
             charged_hold_nano: 100_000_000,
@@ -2268,12 +2269,14 @@ mod tests {
         ));
         let actual = ShadowActualSnapshotRef::from_snapshot(&snapshot).unwrap();
         let resolved = shadow_resolved(&actual);
+        let first_enqueued_ts = snapshot.admission_ts() + 1;
+        let first_evaluated_ts = first_enqueued_ts + 1;
         let first_input = PricingShadowAdmissionEvaluationInput::new(
             actual.clone(),
             PRICING_SCHEMA_VERSION,
             shadow_manifest(),
-            1_788_220_801,
-            1_788_220_802,
+            first_enqueued_ts,
+            first_evaluated_ts,
             resolved.clone(),
             ShadowDiagnosticContext::new(json!({"attempt": 1})).unwrap(),
         )
@@ -2296,8 +2299,8 @@ mod tests {
             actual.clone(),
             PRICING_SCHEMA_VERSION,
             shadow_manifest(),
-            1_788_220_810,
-            1_788_220_820,
+            first_enqueued_ts + 9,
+            first_evaluated_ts + 18,
             resolved,
             ShadowDiagnosticContext::new(json!({"attempt": 2, "lost_ack": true})).unwrap(),
         )
@@ -2307,7 +2310,7 @@ mod tests {
         else {
             panic!("exact SQLite shadow replay was not unchanged");
         };
-        assert_eq!(replayed.enqueued_ts(), 1_788_220_801);
+        assert_eq!(replayed.enqueued_ts(), first_enqueued_ts);
         assert_eq!(
             replayed.diagnostic_context().value(),
             &json!({"attempt": 1})
@@ -2317,8 +2320,8 @@ mod tests {
             actual,
             PRICING_SCHEMA_VERSION,
             shadow_manifest(),
-            1_788_220_801,
-            1_788_220_802,
+            first_enqueued_ts,
+            first_evaluated_ts,
             PricingShadowEvaluationOutcome::Rejected {
                 reason: PricingShadowRejectionCode::MissingRule,
                 observed_multiplier_bp: 2_000,
@@ -2370,8 +2373,8 @@ mod tests {
                 ShadowActualSnapshotRef::from_snapshot(&snapshot).unwrap(),
                 PRICING_SCHEMA_VERSION,
                 shadow_manifest(),
-                1_788_220_801,
-                1_788_220_802,
+                snapshot.admission_ts() + 1,
+                snapshot.admission_ts() + 2,
                 outcome.clone(),
                 ShadowDiagnosticContext::empty(),
             )
@@ -2438,8 +2441,8 @@ mod tests {
             ShadowActualSnapshotRef::from_snapshot(&snapshot).unwrap(),
             PRICING_SCHEMA_VERSION,
             shadow_manifest(),
-            1_788_220_801,
-            1_788_220_802,
+            snapshot.admission_ts() + 1,
+            snapshot.admission_ts() + 2,
             PricingShadowEvaluationOutcome::Rejected {
                 reason: PricingShadowRejectionCode::NoPolicyBinding,
                 observed_multiplier_bp: 2_000,

@@ -6,8 +6,11 @@ registry-only persistence/CAS, Stage 3B0 dormant resolver/read bundle и Stage 3
 schema уже доставлены. Stage 3B1b — пассивный dual-lineage read/resolver и runtime capability
 manifest без runtime caller — также доставлен. Stage 3B1c разложен на безопасные application-
 checkpoint: pure tariff/model identities и dormant actual snapshot/reserve уже доставлены, а
-typed shadow evaluation persistence и полное runtime manifest evidence также доставлены. Текущий
-checkpoint добавляет только pure typed work-item/builder в `forward`, без caller/config/traffic.
+typed shadow evaluation persistence и полное runtime manifest evidence также доставлены. Pure
+typed work-item/builder в `forward`, без caller/config/traffic, уже доставлен. Настоящий
+checkpoint закрывает prerequisite retention/idempotency: live replay actual legacy snapshot имеет
+явное 24-часовое окно, а terminal request machinery хранится независимо 30 дней. Bridge, caller,
+config, sampler, queue и traffic этим checkpoint по-прежнему не включаются.
 2026-07-30
 владелец продукта явно снял прежнюю остановку после 3B1b и полностью авторизовал дальнейшую
 реализацию этого документа до завершения этапов 3B1c–11. Авторизация не отменяет поэтапную доставку,
@@ -32,8 +35,11 @@ Pure tariff/model identity Stage 3B1c.1 доставлен commit
 `69749e22010be07c1fee5b298d53bf58c8fbbe65`; live callers он не добавляет. Dormant actual
 snapshot/reserve доставлен commit `3cb325574db2e3a4c83339f7c30e3d117e8d2a2a`. Текущий
 shadow-persistence checkpoint доставлен commit
-`ab364cece50d2beb7c3824ed5613ae1137aa74a0`. Текущий pure-builder checkpoint сохраняет ту же
-границу: registry API и builder существуют только как неподключённые библиотечные возможности.
+`ab364cece50d2beb7c3824ed5613ae1137aa74a0`. Pure-builder checkpoint доставлен commit
+`209054795efcab35cad40385e343f67424cdff55`; он сохраняет ту же границу: registry API и builder
+существуют только как неподключённые библиотечные возможности. Настоящий retention/idempotency
+checkpoint не добавляет миграций и live caller: он только делает
+ограничение replay и независимое хранение request lifecycle доказуемыми до подключения bridge.
 
 Этот документ описывает целевое поведение, которое заменит текущий единый множитель цены на аккаунт.
 Он не утверждает, что описанное поведение уже работает в production. До завершения перехода
@@ -1551,7 +1557,7 @@ shadow-persistence checkpoint добавил registry-owned canonical manifest d
 resolved/rejected/read-error outcomes, checked integer policy hold и immutable SQLite/PostgreSQL
 shadow insert/read с lost-ACK replay/conflict и digest verification.
 
-Текущий pure `forward` checkpoint добавляет `PricingShadowWorkItem`, который строится только из
+Доставленный pure `forward` checkpoint добавляет `PricingShadowWorkItem`, который строится только из
 validated actual snapshot, полного canonical manifest evidence и явного `enqueued_ts`. Он до
 будущего enqueue отклоняет timestamp-before-admission и balance-capped actual, сам выводит resolver
 request из exact actual reference и resolver manifest из registry-owned canonical evidence. Builder
@@ -1578,18 +1584,28 @@ builder получает resolved evidence только из одного cohere
 checked half-up применению legacy multiplier к `official_hold_nano`, typed input отклоняется до
 write. Funding-cap comparison остаётся отдельным более поздним контрактом, как описано в 3B1c.3.
 
-Ограничения этой безопасной точки, которые обязаны быть закрыты до live bridge:
+Состояние prerequisites и оставшиеся ограничения перед live bridge:
 
 - raw snapshot constructor доказывает canonical bytes и provider/modifier shape, но сам не может
   доказать provenance пары model/tariff; production builder обязан принимать identity только из
   доставленного provider-owned canonicalizer `metering`, а не из HTTP/client strings;
-- `admission_ts` и `tariff_priced_ts` имеют общий порядок и входят в digest, но freshness первого
-  admission ещё не связана с trusted runtime clock; bridge обязан фиксировать их на первой попытке
-  до money mutation и на replay использовать сохранённые значения;
-- terminal reservation сейчас удаляется maintenance через 30 дней вместе со snapshot по CASCADE,
-  после чего request ID технически можно использовать снова. До live activation нужен отдельный
-  выбор: durable tombstone либо явно ограниченный и наблюдаемый idempotency window; текущий dormant
-  API нельзя описывать как бесконечную дедупликацию;
+- `admission_ts` и `tariff_priced_ts` имеют общий порядок и входят в digest. Для atomic snapshot API
+  принят bounded replay contract: `admission_ts` сверяется с trusted runtime clock до открытия
+  денежной транзакции, повторно после потенциального DB/advisory-lock ожидания и непосредственно до
+  money mutation. Timestamp из будущего и возраст `>= 24h` дают отдельный typed conflict, который
+  не создаёт и не изменяет reservation, snapshot, ledger или balance; уже существующие historical
+  rows при replay остаются нетронутыми. Bridge фиксирует timestamp один раз до первой попытки;
+  retry и queued work не имеют права генерировать новый;
+- terminal reservation и её actual/shadow children хранятся 30 дней от terminal `settled_ts`,
+  независимо от retention ledger/usage. Этот срок строго больше 24-часового replay window и
+  проверяется server-side compile-time invariant; сам registry до транзакции отклоняет cutoff
+  свежее `trusted now - 30d`. Maintenance атомарно считает удалённые actual и shadow rows до их FK
+  cascade и выводит bounded counts в retention log;
+- это намеренно не бесконечная дедупликация и не durable tombstone. Денежный `request_id` создаётся
+  только внутри engine через CSPRNG UUIDv4 и никогда не берётся из client/upstream identity. Внутри
+  24 часов exact payload возвращает прежний active snapshot; после окна запрос fail closed до денег.
+  Внешние request IDs для atomic bridge запрещены, а любая будущая durable queue обязана иметь
+  `max_age < 24h`;
 - новый API намеренно сохраняет legacy backend money gates: SQLite требует полного покрытия hold,
   PostgreSQL сохраняет принятый overdraft floor. Поэтому parity означает одинаковые atomic
   snapshot/replay/conflict invariants, но пока не одинаковый `NotReserved` outcome. Изменение этой
@@ -1610,6 +1626,9 @@ producer, не создаёт active heads/policies и не пишет productio
 - snapshot создаётся из тех же canonical/tariff/multiplier/hold данных, которыми выполнен reserve;
 - exact retry проверяет весь canonical payload; тот же payload возвращает сохранённые
   reservation/snapshot, mismatch откатывает транзакцию и fail closed;
+- bounded replay допускается только при возрасте `< 24h` от неизменяемого `admission_ts`.
+  Expired/future timestamp отклоняется typed conflict до денег; bridge не заменяет request ID и не
+  освежает timestamp. Terminal request lifecycle хранится 30 дней независимо от analytics history;
 - cancellation до commit не оставляет ни одной строки, а cancellation/lost response после commit
   безопасно восстанавливается exact replay;
 - SQLite пишет snapshot только внутри существующего single-writer billing path. Второй SQLite
@@ -1648,7 +1667,7 @@ policy read/resolve и shadow-evaluation write выполняются после
   oversized/unknown/ambiguous identity пропускается fail-open с typed low-cardinality counter;
 - capacity, concurrency, timeout, max queue age, string/item byte limits, `sample_bp`, token-bucket
   rate budget и DB connection budget — обязательные явные числа rollout config/runbook, а не
-  неограниченные defaults;
+  неограниченные defaults. `max queue age` обязан быть строго меньше 24-часового replay window;
 - просроченный по max queue age item не разрешается против более нового состояния и учитывается
   отдельным typed counter;
 - shadow timeout/cancel/read/write error не отменяет reserve, не меняет settlement и не влияет на
@@ -1967,6 +1986,15 @@ durable evaluation rows выборочно сверены с actual snapshots; b
 - Served alias сохраняет canonical policy identity.
 - Served canonical mismatch вызывает invariant path.
 - Retry request ID не получает новый snapshot.
+- Atomic legacy replay принимает возраст только `< 24h`; ровно `24h`, более старый или будущий
+  `admission_ts` даёт typed conflict до любой денежной мутации.
+- Внутри replay window exact payload возвращает исходный active snapshot и исходные timestamps;
+  после окна request ID не переиспользуется с новым snapshot.
+- Terminal reservation и actual/shadow rows хранятся 30 дней независимо от ledger/usage retention;
+  `maintenance_prune` сообщает точное число удалённых cascade children и сам не трогает ledger;
+  отдельный retention ledger/usage остаётся самостоятельным.
+- Денежный request ID atomic bridge — только внутренний CSPRNG UUIDv4; client/upstream ID не
+  участвует в idempotency identity.
 
 ### 28.8. Версии, миграции и blue-green
 

@@ -10,10 +10,44 @@ use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 
 pub const LEGACY_SCALAR_SNAPSHOT_SCHEMA_VERSION: i64 = 1;
+/// Maximum supported replay age for a live legacy-scalar snapshot.
+///
+/// Engine request IDs are internal CSPRNG UUIDv4 values and are never accepted from a client or
+/// upstream. One day is orders of magnitude longer than the bounded actor retry and one-hour
+/// reservation lease, while remaining strictly below the independent 30-day lifecycle retention.
+/// That gap prevents a prune/replay race at the retention boundary without permanent tombstones.
+pub const LEGACY_SCALAR_REPLAY_MAX_AGE_SECS: i64 = 24 * 60 * 60;
+/// Minimum retention for terminal request machinery that owns pricing snapshot children.
+pub const PRICING_REQUEST_LIFECYCLE_MIN_RETENTION_SECS: i64 = 30 * 24 * 60 * 60;
+const _: () =
+    assert!(PRICING_REQUEST_LIFECYCLE_MIN_RETENTION_SECS > LEGACY_SCALAR_REPLAY_MAX_AGE_SECS);
 const SNAPSHOT_ID_MAX_BYTES: usize = 512;
 const TARIFF_ID_MAX_BYTES: usize = 256;
 const PREMIUM_MODIFIERS_MAX_BYTES: usize = 1_024;
 const SNAPSHOT_DIGEST_DOMAIN: &[u8] = b"claude-api/pricing/legacy-scalar-admission-snapshot/v1\0";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LegacyScalarIdempotencyWindowError {
+    InvalidTrustedTimestamp,
+    AdmissionFromFuture,
+    Expired,
+}
+
+pub(crate) fn validate_request_lifecycle_prune_cutoff(
+    older_than_ts: i64,
+    trusted_now_ts: i64,
+) -> Result<()> {
+    if trusted_now_ts <= 0 {
+        bail!("trusted request lifecycle retention clock is invalid");
+    }
+    let newest_safe_cutoff = trusted_now_ts
+        .checked_sub(PRICING_REQUEST_LIFECYCLE_MIN_RETENTION_SECS)
+        .context("request lifecycle retention cutoff overflow")?;
+    if older_than_ts > newest_safe_cutoff {
+        bail!("request lifecycle cutoff violates minimum pricing retention");
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -381,6 +415,31 @@ impl LegacyScalarAdmissionSnapshot {
         Ok(())
     }
 
+    /// Validate the bounded live-replay contract against a trusted runtime timestamp.
+    ///
+    /// This is deliberately separate from structural/digest validation: historical rows remain
+    /// readable forever, while only a live reserve attempt is constrained by the retention-backed
+    /// replay window. The boundary is exclusive: an age equal to 24 hours is expired. Terminal
+    /// request machinery is retained for 30 days, leaving a deliberate safety gap before pruning.
+    pub fn validate_idempotency_window_at(
+        &self,
+        trusted_now_ts: i64,
+    ) -> std::result::Result<(), LegacyScalarIdempotencyWindowError> {
+        if trusted_now_ts <= 0 {
+            return Err(LegacyScalarIdempotencyWindowError::InvalidTrustedTimestamp);
+        }
+        let age = trusted_now_ts
+            .checked_sub(self.admission_ts)
+            .ok_or(LegacyScalarIdempotencyWindowError::AdmissionFromFuture)?;
+        if age < 0 {
+            return Err(LegacyScalarIdempotencyWindowError::AdmissionFromFuture);
+        }
+        if age >= LEGACY_SCALAR_REPLAY_MAX_AGE_SECS {
+            return Err(LegacyScalarIdempotencyWindowError::Expired);
+        }
+        Ok(())
+    }
+
     pub(crate) fn from_stored(
         schema_version: i64,
         input: LegacyScalarAdmissionSnapshotInput,
@@ -447,6 +506,8 @@ pub enum LegacyScalarReserveConflict {
     ExistingNonLegacySnapshot,
     SnapshotPayload,
     TerminalReservation,
+    ExpiredIdempotencyWindow,
+    AdmissionTimestampInFuture,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -766,5 +827,46 @@ mod tests {
         let mut input = anthropic_input();
         input.tariff_priced_ts = input.admission_ts + 1;
         assert!(LegacyScalarAdmissionSnapshot::new(input).is_err());
+    }
+
+    #[test]
+    fn live_idempotency_window_is_typed_and_expires_at_the_replay_boundary() {
+        let snapshot = LegacyScalarAdmissionSnapshot::new(anthropic_input()).unwrap();
+        let admitted = snapshot.admission_ts();
+
+        assert_eq!(snapshot.validate_idempotency_window_at(admitted), Ok(()));
+        assert_eq!(
+            snapshot
+                .validate_idempotency_window_at(admitted + LEGACY_SCALAR_REPLAY_MAX_AGE_SECS - 1),
+            Ok(())
+        );
+        assert_eq!(
+            snapshot.validate_idempotency_window_at(admitted + LEGACY_SCALAR_REPLAY_MAX_AGE_SECS),
+            Err(LegacyScalarIdempotencyWindowError::Expired)
+        );
+        assert_eq!(
+            snapshot.validate_idempotency_window_at(admitted - 1),
+            Err(LegacyScalarIdempotencyWindowError::AdmissionFromFuture)
+        );
+        assert_eq!(
+            snapshot.validate_idempotency_window_at(0),
+            Err(LegacyScalarIdempotencyWindowError::InvalidTrustedTimestamp)
+        );
+    }
+
+    #[test]
+    fn request_lifecycle_prune_cutoff_enforces_the_retention_gap() {
+        let trusted_now = PRICING_REQUEST_LIFECYCLE_MIN_RETENTION_SECS + 1_000;
+        assert!(validate_request_lifecycle_prune_cutoff(
+            trusted_now - PRICING_REQUEST_LIFECYCLE_MIN_RETENTION_SECS,
+            trusted_now,
+        )
+        .is_ok());
+        assert!(validate_request_lifecycle_prune_cutoff(
+            trusted_now - PRICING_REQUEST_LIFECYCLE_MIN_RETENTION_SECS + 1,
+            trusted_now,
+        )
+        .is_err());
+        assert!(validate_request_lifecycle_prune_cutoff(0, 0).is_err());
     }
 }

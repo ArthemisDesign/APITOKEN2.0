@@ -2695,12 +2695,29 @@ pub fn sqlite_reserve_request_with_legacy_snapshot(
     if key.trim().is_empty() || lease_secs <= 0 {
         anyhow::bail!("invalid SQLite legacy snapshot reservation parameters");
     }
+    let window_conflict = |trusted_now_ts| -> Result<Option<Conflict>> {
+        match snapshot.validate_idempotency_window_at(trusted_now_ts) {
+            Ok(()) => Ok(None),
+            Err(pricing::LegacyScalarIdempotencyWindowError::Expired) => {
+                Ok(Some(Conflict::ExpiredIdempotencyWindow))
+            }
+            Err(pricing::LegacyScalarIdempotencyWindowError::AdmissionFromFuture) => {
+                Ok(Some(Conflict::AdmissionTimestampInFuture))
+            }
+            Err(pricing::LegacyScalarIdempotencyWindowError::InvalidTrustedTimestamp) => {
+                anyhow::bail!("trusted SQLite reservation clock is invalid")
+            }
+        }
+    };
+    if let Some(conflict) = window_conflict(now())? {
+        return Ok(Outcome::Conflict(conflict));
+    }
 
     let request_id = snapshot.request_id.as_str();
     let account_id = snapshot.account_id.as_str();
     let hold_nano = snapshot.charged_hold_nano;
     let tx = conn.unchecked_transaction()?;
-    let existing = tx.query_row(
+    let existing = match tx.query_row(
         "SELECT account_id,key,hold_nano,state,balance_after_reserve_nano \
          FROM billing_reservations WHERE request_id=?1",
         rusqlite::params![request_id],
@@ -2713,34 +2730,38 @@ pub fn sqlite_reserve_request_with_legacy_snapshot(
                 row.get::<_, i64>(4)?,
             ))
         },
-    );
-    match existing {
-        Ok((stored_account, stored_key, stored_hold, state, balance)) => {
-            let outcome =
-                if stored_account != account_id || stored_key != key || stored_hold != hold_nano {
-                    Outcome::Conflict(Conflict::ReservationIdentity)
-                } else if state != "reserved" && state != "delivering" {
-                    Outcome::Conflict(Conflict::TerminalReservation)
-                } else {
-                    match pricing::sqlite_legacy_scalar_snapshot_lookup(&tx, request_id)? {
-                        Lookup::Missing => {
-                            Outcome::Conflict(Conflict::ExistingReservationWithoutSnapshot)
-                        }
-                        Lookup::NonLegacy => Outcome::Conflict(Conflict::ExistingNonLegacySnapshot),
-                        Lookup::Legacy(stored) if stored.as_ref() == snapshot => {
-                            Outcome::Unchanged(Receipt {
-                                balance_after_reserve_nano: balance,
-                                snapshot: *stored,
-                            })
-                        }
-                        Lookup::Legacy(_) => Outcome::Conflict(Conflict::SnapshotPayload),
-                    }
-                };
-            tx.commit()?;
-            return Ok(outcome);
-        }
-        Err(rusqlite::Error::QueryReturnedNoRows) => {}
+    ) {
+        Ok(row) => Some(row),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
         Err(error) => return Err(error.into()),
+    };
+    if let Some(conflict) = window_conflict(now())? {
+        tx.rollback()?;
+        return Ok(Outcome::Conflict(conflict));
+    }
+    if let Some((stored_account, stored_key, stored_hold, state, balance)) = existing {
+        let outcome = if stored_account != account_id
+            || stored_key != key
+            || stored_hold != hold_nano
+        {
+            Outcome::Conflict(Conflict::ReservationIdentity)
+        } else if state != "reserved" && state != "delivering" {
+            Outcome::Conflict(Conflict::TerminalReservation)
+        } else {
+            match pricing::sqlite_legacy_scalar_snapshot_lookup(&tx, request_id)? {
+                Lookup::Missing => Outcome::Conflict(Conflict::ExistingReservationWithoutSnapshot),
+                Lookup::NonLegacy => Outcome::Conflict(Conflict::ExistingNonLegacySnapshot),
+                Lookup::Legacy(stored) if stored.as_ref() == snapshot => {
+                    Outcome::Unchanged(Receipt {
+                        balance_after_reserve_nano: balance,
+                        snapshot: *stored,
+                    })
+                }
+                Lookup::Legacy(_) => Outcome::Conflict(Conflict::SnapshotPayload),
+            }
+        };
+        tx.commit()?;
+        return Ok(outcome);
     }
 
     let Some(balance) = account_reserve_for_key(&tx, account_id, key, hold_nano)? else {
@@ -3061,22 +3082,47 @@ pub fn sqlite_maintenance_prune(
     conn: &Connection,
     older_than_ts: i64,
 ) -> Result<crate::pg::MaintenanceReport> {
-    let outbox = conn.execute(
+    pricing::validate_request_lifecycle_prune_cutoff(older_than_ts, now())?;
+    let tx = conn.unchecked_transaction()?;
+    let outbox = tx.execute(
         "DELETE FROM billing_settlement_outbox WHERE request_id IN ( \
            SELECT request_id FROM billing_settlement_outbox WHERE state='done' AND committed_ts<?1 \
-           ORDER BY committed_ts LIMIT 5000)",
+           ORDER BY committed_ts,request_id LIMIT 5000)",
         rusqlite::params![older_than_ts],
     )?;
-    let reservations = conn.execute(
+    let (pricing_snapshots_cascaded, pricing_shadow_evaluations_cascaded) = tx.query_row(
+        "WITH doomed AS ( \
+           SELECT r.request_id FROM billing_reservations r \
+           WHERE r.state='settled' AND r.settled_ts<?1 \
+             AND r.request_id NOT IN (SELECT request_id FROM billing_settlement_outbox) \
+           ORDER BY r.settled_ts,r.request_id LIMIT 5000 \
+         ) \
+         SELECT \
+           (SELECT COUNT(*) FROM pricing_admission_snapshots s \
+             WHERE EXISTS (SELECT 1 FROM doomed d WHERE d.request_id=s.request_id)), \
+           (SELECT COUNT(*) FROM pricing_shadow_admission_evaluations e \
+             WHERE EXISTS (SELECT 1 FROM doomed d WHERE d.request_id=e.request_id))",
+        rusqlite::params![older_than_ts],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)? as usize,
+                row.get::<_, i64>(1)? as usize,
+            ))
+        },
+    )?;
+    let reservations = tx.execute(
         "DELETE FROM billing_reservations WHERE request_id IN ( \
            SELECT request_id FROM billing_reservations WHERE state='settled' AND settled_ts<?1 \
              AND request_id NOT IN (SELECT request_id FROM billing_settlement_outbox) \
-           ORDER BY settled_ts LIMIT 5000)",
+           ORDER BY settled_ts,request_id LIMIT 5000)",
         rusqlite::params![older_than_ts],
     )?;
+    tx.commit()?;
     Ok(crate::pg::MaintenanceReport {
         outbox,
         reservations,
+        pricing_snapshots_cascaded,
+        pricing_shadow_evaluations_cascaded,
         ..Default::default()
     })
 }
@@ -4786,6 +4832,22 @@ mod tests {
         official_hold_nano: i64,
         charged_hold_nano: i64,
     ) -> pricing::LegacyScalarAdmissionSnapshot {
+        legacy_snapshot_at(
+            request_id,
+            account_id,
+            official_hold_nano,
+            charged_hold_nano,
+            now(),
+        )
+    }
+
+    fn legacy_snapshot_at(
+        request_id: &str,
+        account_id: &str,
+        official_hold_nano: i64,
+        charged_hold_nano: i64,
+        admission_ts: i64,
+    ) -> pricing::LegacyScalarAdmissionSnapshot {
         pricing::LegacyScalarAdmissionSnapshot::new(pricing::LegacyScalarAdmissionSnapshotInput {
             request_id: request_id.into(),
             account_id: account_id.into(),
@@ -4794,8 +4856,8 @@ mod tests {
             canonical_model_id: "claude-sonnet-5".into(),
             alias_generation: 1,
             tariff_schedule_id: "anthropic/standard/sonnet-current/v1".into(),
-            tariff_priced_ts: 1_788_220_800,
-            admission_ts: 1_788_220_801,
+            tariff_priced_ts: admission_ts,
+            admission_ts,
             payable_multiplier_bp: 2_000,
             official_hold_nano,
             charged_hold_nano,
@@ -4814,6 +4876,7 @@ mod tests {
         official_hold_nano: i64,
         charged_hold_nano: i64,
     ) -> pricing::LegacyScalarAdmissionSnapshot {
+        let admission_ts = now();
         pricing::LegacyScalarAdmissionSnapshot::new(pricing::LegacyScalarAdmissionSnapshotInput {
             request_id: request_id.into(),
             account_id: account_id.into(),
@@ -4822,8 +4885,8 @@ mod tests {
             canonical_model_id: "gpt-5.6-sol".into(),
             alias_generation: 1,
             tariff_schedule_id: "openai/gpt-5.6-sol/epoch-0/v1".into(),
-            tariff_priced_ts: 1_788_220_800,
-            admission_ts: 1_788_220_801,
+            tariff_priced_ts: admission_ts,
+            admission_ts,
             payable_multiplier_bp: 2_000,
             official_hold_nano,
             charged_hold_nano,
@@ -5257,6 +5320,192 @@ mod tests {
                 )
                 .unwrap(),
             (0, 0)
+        );
+    }
+
+    #[test]
+    fn sqlite_legacy_snapshot_rejects_outside_replay_window_before_money() {
+        use pricing::{LegacyScalarReserveConflict as Conflict, LegacyScalarReserveOutcome as O};
+
+        let c = db();
+        acct_with_key(&c, "window-account", "window-key", 1_000, 2_000);
+        let baseline_ledger = c
+            .query_row("SELECT COUNT(*) FROM ledger", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
+        let current = now();
+        let expired = legacy_snapshot_at(
+            "expired-window-request",
+            "window-account",
+            500,
+            100,
+            current - 2 * pricing::LEGACY_SCALAR_REPLAY_MAX_AGE_SECS,
+        );
+        assert_eq!(
+            sqlite_reserve_request_with_legacy_snapshot(&c, "window-key", 60, &expired).unwrap(),
+            O::Conflict(Conflict::ExpiredIdempotencyWindow)
+        );
+
+        let future = legacy_snapshot_at(
+            "future-window-request",
+            "window-account",
+            500,
+            100,
+            current + 2 * pricing::LEGACY_SCALAR_REPLAY_MAX_AGE_SECS,
+        );
+        assert_eq!(
+            sqlite_reserve_request_with_legacy_snapshot(&c, "window-key", 60, &future).unwrap(),
+            O::Conflict(Conflict::AdmissionTimestampInFuture)
+        );
+
+        assert_eq!(
+            c.query_row(
+                "SELECT balance_nano,reserved_nano FROM accounts WHERE id='window-account'",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .unwrap(),
+            (1_000, 0)
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT reserved_nano FROM api_keys WHERE key='window-key'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT
+                   (SELECT COUNT(*) FROM billing_reservations),
+                   (SELECT COUNT(*) FROM pricing_admission_snapshots),
+                   (SELECT COUNT(*) FROM ledger)",
+                [],
+                |row| Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                )),
+            )
+            .unwrap(),
+            (0, 0, baseline_ledger)
+        );
+    }
+
+    #[test]
+    fn sqlite_maintenance_reports_pricing_rows_removed_by_terminal_cascade() {
+        use pricing::{LegacyScalarReserveOutcome as O, PricingShadowEvaluationWrite as W};
+
+        let c = db();
+        acct_with_key(&c, "retention-account", "retention-key", 1_000, 2_000);
+        let snapshot = legacy_snapshot("retention-request", "retention-account", 500, 100);
+        assert!(matches!(
+            sqlite_reserve_request_with_legacy_snapshot(&c, "retention-key", 60, &snapshot)
+                .unwrap(),
+            O::Inserted(_)
+        ));
+
+        let actual = pricing::ShadowActualSnapshotRef::from_snapshot(&snapshot).unwrap();
+        let manifest = pricing::PricingRuntimeManifestEvidence::new(
+            1,
+            vec![pricing::PricingRuntimeCapabilityEvidence::new(
+                pricing::PRICING_SCHEMA_VERSION,
+                1,
+                "retention-capability-digest",
+            )
+            .unwrap()],
+        )
+        .unwrap();
+        let evaluation = pricing::PricingShadowAdmissionEvaluationInput::new(
+            actual,
+            pricing::PRICING_SCHEMA_VERSION,
+            manifest,
+            snapshot.admission_ts(),
+            snapshot.admission_ts(),
+            pricing::PricingShadowEvaluationOutcome::ReadError {
+                reason: pricing::PricingShadowReadErrorCode::PricingReadFailed,
+            },
+            pricing::ShadowDiagnosticContext::empty(),
+        )
+        .unwrap();
+        assert!(matches!(
+            pricing::sqlite_insert_pricing_shadow_admission_evaluation(&c, &evaluation).unwrap(),
+            W::Inserted(_)
+        ));
+
+        sqlite_settle_request(
+            &c,
+            "retention-request",
+            "retention-account",
+            "retention-key",
+            100,
+            10,
+            Some("retention-settle"),
+            None,
+        )
+        .unwrap();
+        assert!(sqlite_maintenance_prune(&c, now()).is_err());
+        assert_eq!(
+            c.query_row(
+                "SELECT \
+                   (SELECT COUNT(*) FROM billing_reservations \
+                     WHERE request_id='retention-request'), \
+                   (SELECT COUNT(*) FROM pricing_admission_snapshots \
+                     WHERE request_id='retention-request'), \
+                   (SELECT COUNT(*) FROM pricing_shadow_admission_evaluations \
+                     WHERE request_id='retention-request')",
+                [],
+                |row| Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?
+                )),
+            )
+            .unwrap(),
+            (1, 1, 1)
+        );
+        c.execute(
+            "UPDATE billing_reservations SET settled_ts=100 WHERE request_id='retention-request'",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "UPDATE billing_settlement_outbox SET committed_ts=100,state='done' \
+             WHERE request_id='retention-request'",
+            [],
+        )
+        .unwrap();
+        let ledger_before = c
+            .query_row("SELECT COUNT(*) FROM ledger", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
+
+        let report = sqlite_maintenance_prune(&c, 200).unwrap();
+        assert_eq!(report.outbox, 1);
+        assert_eq!(report.reservations, 1);
+        assert_eq!(report.pricing_snapshots_cascaded, 1);
+        assert_eq!(report.pricing_shadow_evaluations_cascaded, 1);
+        assert_eq!(
+            c.query_row(
+                "SELECT
+                   (SELECT COUNT(*) FROM billing_reservations),
+                   (SELECT COUNT(*) FROM pricing_admission_snapshots),
+                   (SELECT COUNT(*) FROM pricing_shadow_admission_evaluations),
+                   (SELECT COUNT(*) FROM ledger)",
+                [],
+                |row| Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                )),
+            )
+            .unwrap(),
+            (0, 0, 0, ledger_before)
         );
     }
 

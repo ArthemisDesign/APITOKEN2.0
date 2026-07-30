@@ -21,13 +21,17 @@ pub use shadow::{
     PricingShadowResolved, PricingShadowResolvedInput, ShadowActualSnapshotRef,
     ShadowDiagnosticContext, ShadowEvaluationDigestV1,
 };
-pub(crate) use snapshots::{validate_legacy_snapshot_request_id, LegacyScalarSnapshotLookup};
+pub(crate) use snapshots::{
+    validate_legacy_snapshot_request_id, validate_request_lifecycle_prune_cutoff,
+    LegacyScalarSnapshotLookup,
+};
 pub use snapshots::{
     CanonicalDigestV1, LegacyPremiumModifiers, LegacyScalarAdmissionSnapshot,
-    LegacyScalarAdmissionSnapshotInput, LegacyScalarReserveConflict, LegacyScalarReserveOutcome,
-    LegacyScalarReserveReceipt, SnapshotAnthropicInferenceGeo, SnapshotAnthropicSpeed,
-    SnapshotOpenAiContextTier, SnapshotOpenAiServiceTier, SnapshotProvider,
-    LEGACY_SCALAR_SNAPSHOT_SCHEMA_VERSION,
+    LegacyScalarAdmissionSnapshotInput, LegacyScalarIdempotencyWindowError,
+    LegacyScalarReserveConflict, LegacyScalarReserveOutcome, LegacyScalarReserveReceipt,
+    SnapshotAnthropicInferenceGeo, SnapshotAnthropicSpeed, SnapshotOpenAiContextTier,
+    SnapshotOpenAiServiceTier, SnapshotProvider, LEGACY_SCALAR_REPLAY_MAX_AGE_SECS,
+    LEGACY_SCALAR_SNAPSHOT_SCHEMA_VERSION, PRICING_REQUEST_LIFECYCLE_MIN_RETENTION_SECS,
 };
 pub(crate) use sqlite::{
     sqlite_insert_legacy_scalar_admission_snapshot, sqlite_legacy_scalar_snapshot_lookup,
