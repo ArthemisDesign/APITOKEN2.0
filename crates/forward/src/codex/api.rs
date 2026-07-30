@@ -3301,7 +3301,7 @@ pub(super) fn insert_extra_headers(response: &mut Response, headers: Vec<(&'stat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codex::{CodexConfig, CodexPrices};
+    use crate::codex::{CodexConfig, CodexPrices, CodexTransport};
     use std::collections::BTreeMap;
 
     #[test]
@@ -3496,6 +3496,7 @@ mod tests {
         std::fs::write(&ownership_lock, []).unwrap();
         CodexGateway::new(CodexConfig {
             enabled: true,
+            transport: CodexTransport::OwnedChild,
             ownership_lock_file: ownership_lock.to_str().unwrap().to_string(),
             binary: "/tmp/codex".to_string(),
             binary_sha256: "0".repeat(64),

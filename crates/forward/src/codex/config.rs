@@ -10,6 +10,24 @@ use std::collections::BTreeMap;
 /// declares a price of its own; it receives the resolved rates in this config.
 pub use metering::CodexPrices;
 
+/// How the gateway reaches one official Codex app-server.
+///
+/// `OwnedChild` preserves the single-process deployment and test harness. `SharedDaemonProxy`
+/// carries the official websocket protocol through a disposable byte proxy to the home-local Unix
+/// socket; the separately supervised app-server is then the only process that owns the
+/// authenticated home, so two HTTP generations may overlap during a health-gated cutover.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodexTransport {
+    OwnedChild,
+    SharedDaemonProxy,
+}
+
+impl CodexTransport {
+    pub fn owns_home(self) -> bool {
+        matches!(self, Self::OwnedChild)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodexModel {
     /// Public OpenAI-compatible model id.
@@ -54,8 +72,11 @@ pub struct CodexHomeSpec {
 #[derive(Clone, Debug)]
 pub struct CodexConfig {
     pub enabled: bool,
+    pub transport: CodexTransport,
     /// Pre-provisioned ownership fence shared by every process that can serve these homes. Its
     /// parent must not be writable by the service account, so replacing a home cannot bypass it.
+    /// Acquired only in `OwnedChild` mode; shared-daemon mode leaves home ownership to the
+    /// independently supervised app-server cohort.
     pub ownership_lock_file: String,
     /// Absolute path to the pinned Codex binary.
     pub binary: String,

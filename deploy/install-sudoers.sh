@@ -153,8 +153,41 @@ require_permitted 'OpenAI provider stop' /usr/bin/systemctl stop claude-api-open
 require_permitted 'OpenAI provider enable' /usr/bin/systemctl enable claude-api-openai.service
 require_permitted 'OpenAI provider drain signal' \
   /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-openai.service
+require_permitted 'OpenAI target start' /usr/bin/systemctl start claude-api-openai@8797.service
+require_permitted 'OpenAI old-slot stop' /usr/bin/systemctl stop claude-api-openai@8793.service
+require_permitted 'OpenAI target enable' /usr/bin/systemctl enable claude-api-openai@8797.service
+require_permitted 'OpenAI reverse target start' /usr/bin/systemctl start claude-api-openai@8793.service
+require_permitted 'OpenAI reverse old-slot stop' /usr/bin/systemctl stop claude-api-openai@8797.service
+require_permitted 'OpenAI slot drain signal' \
+  /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-openai@8793.service
+require_permitted 'Codex reconciler timer start' \
+  /usr/bin/systemctl start claude-api-codex-app-servers.timer
+require_permitted 'Codex reconciler timer stop' \
+  /usr/bin/systemctl stop claude-api-codex-app-servers.timer
+require_permitted 'Codex reconciler timer enable' \
+  /usr/bin/systemctl enable claude-api-codex-app-servers.timer
+require_permitted 'Codex reconciler timer disable' \
+  /usr/bin/systemctl disable claude-api-codex-app-servers.timer
 require_permitted 'legacy Codex home migration' \
   /usr/local/lib/apitoken-watchdog/controller/codex-homes-migrate.sh --apply
+require_permitted 'Codex app-server reconciliation' \
+  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh reconcile
+require_permitted 'Codex ownership transition preparation' \
+  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh prepare-transition
+require_permitted 'Codex ownership transition commit' \
+  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh commit-transition
+require_permitted 'Codex ownership transition rollback' \
+  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh abort-transition
+require_permitted 'Codex legacy transition preparation' \
+  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh prepare-legacy-transition
+require_permitted 'Codex legacy transition commit' \
+  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh commit-legacy-transition
+require_permitted 'Codex legacy transition rollback' \
+  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh abort-legacy-transition
+require_permitted 'Codex app-server verification' \
+  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh verify
+require_permitted 'Codex legacy-owner verification' \
+  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh verify-legacy
 require_permitted 'Gemini provider restart' /usr/bin/systemctl restart claude-api-gemini.service
 require_permitted 'Gemini provider stop' /usr/bin/systemctl stop claude-api-gemini.service
 require_permitted 'Gemini provider enable' /usr/bin/systemctl enable claude-api-gemini.service
@@ -185,6 +218,10 @@ require_permitted 'engine release removal' /usr/bin/rm -rf --one-file-system -- 
 require_permitted 'commerce release removal' /usr/bin/rm -rf --one-file-system -- "/opt/apitoken/releases/$sample_sha"
 require_permitted 'caddy validation' /usr/bin/caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile
 require_permitted 'OpenAI unit probe' /usr/bin/test -f /etc/systemd/system/claude-api-openai.service
+require_permitted 'OpenAI slot-template probe' \
+  /usr/bin/test -f /etc/systemd/system/claude-api-openai@.service
+require_permitted 'Codex reconciler timer probe' \
+  /usr/bin/test -f /etc/systemd/system/claude-api-codex-app-servers.timer
 require_permitted 'Gemini unit probe' /usr/bin/test -f /etc/systemd/system/claude-api-gemini.service
 require_permitted 'Anthropic unit probe' \
   /usr/bin/test -f /etc/systemd/system/claude-api-anthropic@.service

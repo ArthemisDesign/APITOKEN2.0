@@ -1,0 +1,21 @@
+[Unit]
+Description=Reconcile the authenticated Codex app-server cohort
+After=network-online.target
+Wants=network-online.target
+Before=claude-api-openai@8793.service claude-api-openai@8797.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# Never create daemon owners under a release whose gateway cannot use their Unix sockets.
+ExecCondition=/usr/bin/test -f /srv/claude-api/releases/current/.openai-bluegreen-v1
+ExecCondition=/usr/bin/test ! -L /srv/claude-api/releases/current/.openai-bluegreen-v1
+ExecCondition=/usr/bin/grep -Fxq openai-bluegreen-v1 /srv/claude-api/releases/current/.openai-bluegreen-v1
+ExecStart=/usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh reconcile
+TimeoutStartSec=1800
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/srv/claude-api/data/codex-homes /run/apitoken/codex-app-servers /run/apitoken/codex-app-server-control

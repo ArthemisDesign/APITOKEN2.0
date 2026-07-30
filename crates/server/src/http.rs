@@ -1601,14 +1601,20 @@ async fn health() -> Json<serde_json::Value> {
 fn readiness_snapshot(
     accepting: &AtomicBool,
     authority_ready: &AtomicBool,
+    provider_ready: Option<bool>,
 ) -> (StatusCode, serde_json::Value) {
-    if accepting.load(Ordering::Acquire) && authority_ready.load(Ordering::Acquire) {
+    if accepting.load(Ordering::Acquire)
+        && authority_ready.load(Ordering::Acquire)
+        && provider_ready.unwrap_or(true)
+    {
         (StatusCode::OK, json!({ "ready": true }))
     } else {
         let reason = if !accepting.load(Ordering::Acquire) {
             "draining"
-        } else {
+        } else if !authority_ready.load(Ordering::Acquire) {
             "authority_unavailable"
+        } else {
+            "provider_unavailable"
         };
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1618,7 +1624,28 @@ fn readiness_snapshot(
 }
 
 async fn ready(State(state): State<HttpState>) -> Response {
-    let (status, body) = readiness_snapshot(&state.accepting, &state.app.authority_ready);
+    // Only the dedicated OpenAI slots use provider liveness for load-balancer admission. Their
+    // preflight has already authenticated at least one daemon, and this cached snapshot prevents a
+    // dead proxy generation from remaining Caddy-ready. `codex=None` deliberately stays ready so
+    // the provider kill switch can serve its stable OpenAI-shaped disabled envelope.
+    let provider_ready = if state.app.provider == forward::ProviderMode::OpenAi {
+        match &state.app.codex {
+            Some(codex) => {
+                let status = codex.operational_status().await;
+                Some(
+                    status
+                        .homes
+                        .iter()
+                        .any(|home| home.process_live && home.auth_ok),
+                )
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+    let (status, body) =
+        readiness_snapshot(&state.accepting, &state.app.authority_ready, provider_ready);
     (status, Json(body)).into_response()
 }
 
@@ -1868,13 +1895,13 @@ mod tests {
         let accepting = AtomicBool::new(true);
         let authority_ready = AtomicBool::new(true);
         assert_eq!(
-            readiness_snapshot(&accepting, &authority_ready),
+            readiness_snapshot(&accepting, &authority_ready, None),
             (StatusCode::OK, json!({"ready": true}))
         );
 
         accepting.store(false, Ordering::Release);
         assert_eq!(
-            readiness_snapshot(&accepting, &authority_ready),
+            readiness_snapshot(&accepting, &authority_ready, Some(true)),
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({"ready": false, "reason": "draining"}),
@@ -1883,10 +1910,18 @@ mod tests {
         accepting.store(true, Ordering::Release);
         authority_ready.store(false, Ordering::Release);
         assert_eq!(
-            readiness_snapshot(&accepting, &authority_ready),
+            readiness_snapshot(&accepting, &authority_ready, Some(true)),
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({"ready": false, "reason": "authority_unavailable"}),
+            )
+        );
+        authority_ready.store(true, Ordering::Release);
+        assert_eq!(
+            readiness_snapshot(&accepting, &authority_ready, Some(false)),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"ready": false, "reason": "provider_unavailable"}),
             )
         );
     }

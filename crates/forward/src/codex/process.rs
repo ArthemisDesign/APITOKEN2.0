@@ -1,20 +1,36 @@
-//! Multiplexed newline-delimited JSON-RPC transport for `codex app-server`.
+//! Multiplexed JSON-RPC transport for `codex app-server`.
+//!
+//! The legacy owner uses newline-delimited JSON over a private stdio child. Blue-green gateway
+//! slots use the official websocket control protocol through `codex app-server proxy`, leaving the
+//! separately supervised Unix-socket daemon as the only owner of each authenticated home.
 
-use super::{CodexConfig, CodexHomeSpec};
+use super::{CodexConfig, CodexHomeSpec, CodexTransport};
+use futures_util::stream::{SplitSink, SplitStream};
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
-use std::io::Read;
-use std::path::Path;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use std::task::{Context, Poll};
+use tokio::io::{
+    AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
+    ReadBuf,
+};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot, watch, Mutex};
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{client_async_with_config, WebSocketStream};
 
 const MAX_JSONRPC_LINE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ORPHAN_EVENTS_PER_THREAD: usize = 64;
+const APP_SERVER_RUNTIME_DIR: &str = "/run/apitoken/codex-app-servers";
+const APP_SERVER_READY_MARKER: &str = "openai-codex-client-v1";
 const PROCESS_GROUP_REAP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 const PROCESS_GROUP_REAP_POLL: std::time::Duration = std::time::Duration::from_millis(10);
 
@@ -158,6 +174,46 @@ pub(crate) struct TurnEvents {
     closed: watch::Receiver<Option<ProcessError>>,
 }
 
+/// Bidirectional stdio of the official byte-preserving proxy. The bytes carried here are a normal
+/// websocket HTTP upgrade followed by websocket frames; JSONL is never written directly to it.
+struct ChildProxyIo {
+    stdout: ChildStdout,
+    stdin: ChildStdin,
+}
+
+impl AsyncRead for ChildProxyIo {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().stdout).poll_read(cx, buffer)
+    }
+}
+
+impl AsyncWrite for ChildProxyIo {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.get_mut().stdin).poll_write(cx, buffer)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().stdin).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().stdin).poll_shutdown(cx)
+    }
+}
+
+enum AppServerWriter {
+    JsonLines(ChildStdin),
+    WebSocket(SplitSink<WebSocketStream<ChildProxyIo>, Message>),
+}
+
 impl TurnEvents {
     /// Receive the next turn event while observing transport closure out of band.
     ///
@@ -236,11 +292,24 @@ impl ProcessShared {
 
 pub struct CodexProcess {
     cfg: Arc<CodexConfig>,
-    writer: Mutex<ChildStdin>,
+    home: String,
+    writer: Mutex<AppServerWriter>,
     shared: Arc<ProcessShared>,
     ready: AtomicBool,
     next_id: AtomicU64,
-    child: Mutex<Child>,
+    child: Mutex<ChildLifecycle>,
+    /// A root-validated lease used by the daemon roller. It appears only after initialization and
+    /// authentication succeed, and disappears only after the proxy process has been reaped.
+    ready_marker: Option<PathBuf>,
+}
+
+/// Child ownership must survive cancellation of a request/invalidation future. Once shutdown
+/// starts, a detached reaper owns the OS child and publishes one cloneable terminal result. A
+/// later shutdown call therefore waits for the same reaper instead of either spawning beside an
+/// unreaped home owner or abandoning a zombie until the gateway process exits.
+enum ChildLifecycle {
+    Running(Child),
+    Reaping(watch::Receiver<Option<Result<(), ProcessError>>>),
 }
 
 impl CodexProcess {
@@ -253,6 +322,14 @@ impl CodexProcess {
         verify_version(&cfg, &spec.path).await?;
 
         let mut command = child_command(&cfg, spec);
+        let client_lease = match cfg.transport {
+            CodexTransport::OwnedChild => None,
+            CodexTransport::SharedDaemonProxy => {
+                let lease = new_client_lease()?;
+                command.env("CLAUDE_API_CODEX_CLIENT_LEASE", &lease);
+                Some(lease)
+            }
+        };
         isolate_process_group(&mut command);
         let mut child = command
             .stdin(Stdio::piped())
@@ -261,6 +338,22 @@ impl CodexProcess {
             .kill_on_drop(true)
             .spawn()
             .map_err(|error| ProcessError::Spawn(error.to_string()))?;
+        let ready_marker = match cfg.transport {
+            CodexTransport::OwnedChild => None,
+            CodexTransport::SharedDaemonProxy => {
+                let proxy_pid = child.id().ok_or_else(|| {
+                    ProcessError::Spawn("shared proxy process id was unavailable".to_string())
+                })?;
+                Some(shared_client_ready_marker(
+                    &spec.path,
+                    std::process::id(),
+                    proxy_pid,
+                    client_lease.as_deref().ok_or_else(|| {
+                        ProcessError::Spawn("shared client lease was unavailable".to_string())
+                    })?,
+                ))
+            }
+        };
         let stdin = child
             .stdin
             .take()
@@ -275,16 +368,49 @@ impl CodexProcess {
             .ok_or_else(|| ProcessError::Spawn("stderr pipe was unavailable".to_string()))?;
 
         let shared = Arc::new(ProcessShared::new());
-        tokio::spawn(reader_loop(BufReader::new(stdout), shared.clone()));
         tokio::spawn(stderr_loop(BufReader::new(stderr)));
+        let writer = match cfg.transport {
+            CodexTransport::OwnedChild => {
+                tokio::spawn(reader_loop(BufReader::new(stdout), shared.clone()));
+                AppServerWriter::JsonLines(stdin)
+            }
+            CodexTransport::SharedDaemonProxy => {
+                let proxy = ChildProxyIo { stdout, stdin };
+                let websocket_config = WebSocketConfig::default()
+                    .max_message_size(Some(MAX_JSONRPC_LINE_BYTES))
+                    .max_frame_size(Some(MAX_JSONRPC_LINE_BYTES));
+                let connect =
+                    client_async_with_config("ws://localhost/", proxy, Some(websocket_config));
+                let (websocket, _response) = tokio::time::timeout(
+                    std::time::Duration::from_millis(cfg.startup_timeout_ms.max(1)),
+                    connect,
+                )
+                .await
+                .map_err(|_| ProcessError::Timeout("shared app-server websocket handshake"))?
+                .map_err(|error| {
+                    ProcessError::Protocol(format!(
+                        "shared app-server websocket handshake failed: {error}"
+                    ))
+                })?;
+                let (writer, reader) = websocket.split();
+                tokio::spawn(websocket_reader_loop(
+                    reader,
+                    shared.clone(),
+                    ready_marker.clone(),
+                ));
+                AppServerWriter::WebSocket(writer)
+            }
+        };
 
         let process = Self {
             cfg,
-            writer: Mutex::new(stdin),
+            home: spec.path.clone(),
+            writer: Mutex::new(writer),
             shared,
             ready: AtomicBool::new(false),
             next_id: AtomicU64::new(1),
-            child: Mutex::new(child),
+            child: Mutex::new(ChildLifecycle::Running(child)),
+            ready_marker,
         };
         Ok(process)
     }
@@ -300,6 +426,15 @@ impl CodexProcess {
             );
         }
         self.ready.store(true, Ordering::Release);
+        if let Err(error) = self.publish_ready_marker().await {
+            self.ready.store(false, Ordering::Release);
+            return Err(error);
+        }
+        if !self.is_live() {
+            self.ready.store(false, Ordering::Release);
+            let _ = self.remove_ready_marker().await;
+            return Err(ProcessError::Closed);
+        }
         Ok(())
     }
 
@@ -314,22 +449,42 @@ impl CodexProcess {
     /// Poison one transport generation before a replacement can use the same `CODEX_HOME`.
     pub(crate) async fn shutdown(&self) -> Result<(), ProcessError> {
         self.ready.store(false, Ordering::Release);
-        let mut child = self.child.lock().await;
-        let process_group = child.id();
-        let group_result = kill_process_group(process_group);
-        let _ = child.start_kill();
+        let mut reaper = {
+            let mut lifecycle = self.child.lock().await;
+            match &*lifecycle {
+                ChildLifecycle::Reaping(receiver) => receiver.clone(),
+                ChildLifecycle::Running(_) => {
+                    let (finished, receiver) = watch::channel(None);
+                    let previous = std::mem::replace(
+                        &mut *lifecycle,
+                        ChildLifecycle::Reaping(receiver.clone()),
+                    );
+                    let ChildLifecycle::Running(mut child) = previous else {
+                        unreachable!("running child changed while lifecycle lock was held")
+                    };
+                    let process_group = child.id();
+                    let group_result = kill_process_group(process_group);
+                    let _ = child.start_kill();
+                    let marker = self.ready_marker.clone();
+                    tokio::spawn(async move {
+                        let result = reap_child(child, process_group, marker, group_result).await;
+                        finished.send_replace(Some(result));
+                    });
+                    receiver
+                }
+            }
+        };
         self.shared.close(ProcessError::Closed).await;
-        let wait_result = child
-            .wait()
-            .await
-            .map_err(|error| ProcessError::Spawn(format!("failed to reap Codex child: {error}")));
-        group_result?;
-        wait_result?;
-        // `Child::wait` reaps only the app-server itself. A killed helper can remain briefly as an
-        // orphaned zombie until the host reaper collects it; during that window `kill -0` still
-        // sees the process group. Do not return from shutdown while any descendant is observable.
-        wait_for_process_group_exit(process_group).await?;
-        Ok(())
+        loop {
+            if let Some(result) = reaper.borrow().clone() {
+                return result;
+            }
+            if reaper.changed().await.is_err() {
+                return Err(ProcessError::Spawn(
+                    "Codex child reaper exited without a result".to_string(),
+                ));
+            }
+        }
     }
 
     pub async fn request(
@@ -466,8 +621,17 @@ impl CodexProcess {
                 "mcpServerOpenaiFormElicitation": false
             }
         });
-        self.request_with_timeout("initialize", params, self.cfg.startup_timeout_ms)
+        let response = self
+            .request_with_timeout("initialize", params, self.cfg.startup_timeout_ms)
             .await?;
+        if self.cfg.transport == CodexTransport::SharedDaemonProxy {
+            let actual_home = response.get("codexHome").and_then(Value::as_str);
+            if actual_home != Some(self.home.as_str()) {
+                return Err(ProcessError::Protocol(
+                    "shared app-server answered for an unexpected Codex home".to_string(),
+                ));
+            }
+        }
         self.notify("initialized", None).await
     }
 
@@ -496,6 +660,15 @@ impl CodexProcess {
                 "Codex rate-limit snapshot unavailable [{}]",
                 error.diagnostic_class()
             );
+        }
+        if !self.is_live() {
+            let _ = self.remove_ready_marker().await;
+            return Err(ProcessError::Closed);
+        }
+        self.publish_ready_marker().await?;
+        if !self.is_live() {
+            let _ = self.remove_ready_marker().await;
+            return Err(ProcessError::Closed);
         }
         Ok(())
     }
@@ -540,25 +713,53 @@ fn validate_subscription_account(response: &Value) -> Result<(), ProcessError> {
 }
 
 impl CodexProcess {
+    async fn publish_ready_marker(&self) -> Result<(), ProcessError> {
+        let Some(marker) = self.ready_marker.clone() else {
+            return Ok(());
+        };
+        tokio::task::spawn_blocking(move || publish_ready_marker(&marker))
+            .await
+            .map_err(|error| ProcessError::Spawn(format!("ready-marker task failed: {error}")))?
+    }
+
+    async fn remove_ready_marker(&self) -> Result<(), ProcessError> {
+        remove_ready_marker_path(self.ready_marker.clone()).await
+    }
+
     async fn write_value(&self, value: &Value) -> Result<(), ProcessError> {
         if !self.is_live() {
             return Err(ProcessError::Closed);
         }
-        let mut encoded =
-            serde_json::to_vec(value).map_err(|error| ProcessError::Protocol(error.to_string()))?;
+        let encoded = serde_json::to_string(value)
+            .map_err(|error| ProcessError::Protocol(error.to_string()))?;
         if encoded.len() > MAX_JSONRPC_LINE_BYTES {
             return Err(ProcessError::Protocol(
                 "outgoing JSON-RPC frame exceeded 32 MiB".to_string(),
             ));
         }
-        encoded.push(b'\n');
         let mut writer = self.writer.lock().await;
-        writer.write_all(&encoded).await.map_err(|error| {
-            ProcessError::Protocol(format!("failed to write app-server stdin: {error}"))
-        })?;
-        writer.flush().await.map_err(|error| {
-            ProcessError::Protocol(format!("failed to flush app-server stdin: {error}"))
-        })
+        match &mut *writer {
+            AppServerWriter::JsonLines(writer) => {
+                writer
+                    .write_all(encoded.as_bytes())
+                    .await
+                    .map_err(|error| {
+                        ProcessError::Protocol(format!("failed to write app-server stdin: {error}"))
+                    })?;
+                writer.write_all(b"\n").await.map_err(|error| {
+                    ProcessError::Protocol(format!("failed to write app-server stdin: {error}"))
+                })?;
+                writer.flush().await.map_err(|error| {
+                    ProcessError::Protocol(format!("failed to flush app-server stdin: {error}"))
+                })
+            }
+            AppServerWriter::WebSocket(writer) => writer
+                .send(Message::Text(encoded.into()))
+                .await
+                .map_err(|error| {
+                    ProcessError::Protocol(format!("failed to write app-server websocket: {error}"))
+                }),
+        }
     }
 }
 
@@ -743,6 +944,38 @@ fn kill_process_group(pid: Option<u32>) -> Result<(), ProcessError> {
     }
 }
 
+async fn reap_child(
+    mut child: Child,
+    process_group: Option<u32>,
+    ready_marker: Option<PathBuf>,
+    group_result: Result<(), ProcessError>,
+) -> Result<(), ProcessError> {
+    let wait_result = child
+        .wait()
+        .await
+        .map_err(|error| ProcessError::Spawn(format!("failed to reap Codex child: {error}")));
+    // `Child::wait` reaps only the app-server itself. A killed helper can remain briefly as an
+    // orphaned zombie until the host reaper collects it; during that window `kill -0` still sees
+    // the process group. Do not publish completion while any descendant is observable.
+    let reap_result = wait_for_process_group_exit(process_group).await;
+    let marker_result = remove_ready_marker_path(ready_marker).await;
+    group_result?;
+    wait_result?;
+    reap_result?;
+    marker_result
+}
+
+async fn remove_ready_marker_path(marker: Option<PathBuf>) -> Result<(), ProcessError> {
+    let Some(marker) = marker else {
+        return Ok(());
+    };
+    tokio::task::spawn_blocking(move || remove_ready_marker(&marker))
+        .await
+        .map_err(|error| {
+            ProcessError::Spawn(format!("ready-marker cleanup task failed: {error}"))
+        })?
+}
+
 async fn wait_for_process_group_exit(pid: Option<u32>) -> Result<(), ProcessError> {
     #[cfg(unix)]
     {
@@ -789,34 +1022,185 @@ fn child_command(cfg: &CodexConfig, spec: &CodexHomeSpec) -> Command {
         .env("NO_COLOR", "1")
         .env("TERM", "dumb")
         .current_dir(&cfg.work_dir);
-    match &spec.proxy {
-        // A dedicated egress for this account. One address serving every ChatGPT profile is itself
-        // a fleet signal, exactly as it is on the Claude side. Only the standard proxy variables
-        // are set — no TLS or user-agent impersonation is added, so this changes where the official
-        // client connects from and nothing about how it identifies itself.
-        Some(proxy) => {
-            for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
-                command.env(name, proxy);
+    match cfg.transport {
+        CodexTransport::OwnedChild => {
+            match &spec.proxy {
+                // A dedicated egress for this account. One address serving every ChatGPT profile
+                // is itself a fleet signal, exactly as it is on the Claude side.
+                Some(proxy) => {
+                    for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+                        command.env(name, proxy);
+                    }
+                    for name in ["http_proxy", "https_proxy", "all_proxy"] {
+                        command.env(name, proxy);
+                    }
+                    if let Some(no_proxy) = cfg.child_proxy_env.get("NO_PROXY") {
+                        command.env("NO_PROXY", no_proxy);
+                        command.env("no_proxy", no_proxy);
+                    }
+                }
+                None => {
+                    for (name, value) in &cfg.child_proxy_env {
+                        command.env(name, value);
+                    }
+                }
             }
-            for name in ["http_proxy", "https_proxy", "all_proxy"] {
-                command.env(name, proxy);
+            // Keep model-visible context as close to a normal API call as app-server permits. The
+            // pinned build additionally disables built-in native tools for this client name.
+            for override_value in app_server_config_overrides() {
+                command.arg("--config").arg(override_value);
             }
-            // The shared NO_PROXY still applies: it carves out destinations, it does not select one.
-            if let Some(no_proxy) = cfg.child_proxy_env.get("NO_PROXY") {
-                command.env("NO_PROXY", no_proxy);
-                command.env("no_proxy", no_proxy);
-            }
+            command.arg("app-server").arg("--listen").arg("stdio://");
         }
-        None => {
-            for (name, value) in &cfg.child_proxy_env {
-                command.env(name, value);
-            }
+        CodexTransport::SharedDaemonProxy => {
+            // Network egress and the authenticated store belong exclusively to the separately
+            // supervised daemon. This child is only the official byte-preserving websocket/UDS
+            // bridge; it inherits neither proxy credentials nor any gateway secret.
+            let socket = shared_daemon_socket(&spec.path);
+            command
+                .arg("app-server")
+                .arg("proxy")
+                .arg("--sock")
+                .arg(socket);
         }
     }
-    // Keep model-visible context as close to a normal API call as app-server permits. The pinned
-    // build additionally disables built-in native tools for this client name; customer functions
-    // supplied as dynamic tools remain available.
-    for override_value in [
+    command
+}
+
+fn shared_daemon_socket(home: &str) -> std::path::PathBuf {
+    Path::new(APP_SERVER_RUNTIME_DIR).join(format!("{}.sock", shared_daemon_id(home)))
+}
+
+fn shared_daemon_id(home: &str) -> String {
+    let name = Path::new(home)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(home);
+    let digest = Sha256::digest(name.as_bytes());
+    digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn new_client_lease() -> Result<String, ProcessError> {
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random)
+        .map_err(|_| ProcessError::Spawn("could not generate shared client lease".to_string()))?;
+    Ok(random.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn shared_client_ready_marker(
+    home: &str,
+    gateway_pid: u32,
+    proxy_pid: u32,
+    lease: &str,
+) -> PathBuf {
+    Path::new(APP_SERVER_RUNTIME_DIR).join(format!(
+        "{}.client.{gateway_pid}.{proxy_pid}.{lease}.ready",
+        shared_daemon_id(home)
+    ))
+}
+
+fn publish_ready_marker(marker: &Path) -> Result<(), ProcessError> {
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let parent = marker.parent().ok_or_else(|| {
+        ProcessError::Spawn("shared ready-marker parent was unavailable".to_string())
+    })?;
+    let parent_metadata = std::fs::symlink_metadata(parent).map_err(|error| {
+        ProcessError::Spawn(format!(
+            "shared ready-marker directory was unavailable: {error}"
+        ))
+    })?;
+    if !parent_metadata.is_dir() || parent_metadata.file_type().is_symlink() {
+        return Err(ProcessError::Spawn(
+            "shared ready-marker directory was unsafe".to_string(),
+        ));
+    }
+    if ready_marker_is_valid(marker)? {
+        return Ok(());
+    }
+    remove_ready_marker(marker)?;
+    let temporary = marker.with_extension("ready.tmp");
+    remove_ready_marker(&temporary)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(&temporary).map_err(|error| {
+        ProcessError::Spawn(format!("could not create shared ready marker: {error}"))
+    })?;
+    if let Err(error) = writeln!(file, "{APP_SERVER_READY_MARKER}")
+        .and_then(|()| file.sync_all())
+        .and_then(|()| std::fs::rename(&temporary, marker))
+    {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(ProcessError::Spawn(format!(
+            "could not publish shared ready marker: {error}"
+        )));
+    }
+    Ok(())
+}
+
+fn ready_marker_is_valid(marker: &Path) -> Result<bool, ProcessError> {
+    let metadata = match std::fs::symlink_metadata(marker) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(ProcessError::Spawn(format!(
+                "could not inspect shared ready marker: {error}"
+            )))
+        }
+    };
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(ProcessError::Spawn(
+            "shared ready-marker path was unsafe".to_string(),
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o777 != 0o600 {
+            return Err(ProcessError::Spawn(
+                "shared ready-marker permissions were unsafe".to_string(),
+            ));
+        }
+    }
+    let contents = std::fs::read_to_string(marker).map_err(|error| {
+        ProcessError::Spawn(format!("could not read shared ready marker: {error}"))
+    })?;
+    if contents != format!("{APP_SERVER_READY_MARKER}\n") {
+        return Err(ProcessError::Spawn(
+            "shared ready-marker contents were invalid".to_string(),
+        ));
+    }
+    Ok(true)
+}
+
+fn remove_ready_marker(marker: &Path) -> Result<(), ProcessError> {
+    let metadata = match std::fs::symlink_metadata(marker) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(ProcessError::Spawn(format!(
+                "could not inspect shared ready marker: {error}"
+            )))
+        }
+    };
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(ProcessError::Spawn(
+            "shared ready-marker path was unsafe".to_string(),
+        ));
+    }
+    std::fs::remove_file(marker).map_err(|error| {
+        ProcessError::Spawn(format!("could not remove shared ready marker: {error}"))
+    })
+}
+
+pub(crate) fn app_server_config_overrides() -> [&'static str; 10] {
+    [
         "include_permissions_instructions=false",
         "include_apps_instructions=false",
         "include_collaboration_mode_instructions=false",
@@ -827,11 +1211,7 @@ fn child_command(cfg: &CodexConfig, spec: &CodexHomeSpec) -> Command {
         "features.multi_agent_v2=false",
         "project_doc_max_bytes=0",
         "mcp_servers={}",
-    ] {
-        command.arg("--config").arg(override_value);
-    }
-    command.arg("app-server").arg("--listen").arg("stdio://");
-    command
+    ]
 }
 
 async fn reader_loop<R>(mut reader: R, shared: Arc<ProcessShared>)
@@ -852,22 +1232,88 @@ where
             shared.close(ProcessError::Closed).await;
             return;
         }
-        let value: Value = match serde_json::from_slice(&line) {
-            Ok(value) => value,
-            Err(error) => {
-                shared
-                    .close(ProcessError::Protocol(format!(
-                        "invalid JSON-RPC frame: {error}"
-                    )))
-                    .await;
-                return;
-            }
-        };
-        if let Err(error) = dispatch_value(&shared, value).await {
+        if let Err(error) = decode_and_dispatch(&shared, &line).await {
             shared.close(error).await;
             return;
         }
     }
+}
+
+async fn websocket_reader_loop(
+    mut reader: SplitStream<WebSocketStream<ChildProxyIo>>,
+    shared: Arc<ProcessShared>,
+    ready_marker: Option<PathBuf>,
+) {
+    loop {
+        let message = match reader.next().await {
+            Some(Ok(message)) => message,
+            Some(Err(error)) => {
+                close_shared_websocket(
+                    &shared,
+                    ProcessError::Protocol(format!("failed to read app-server websocket: {error}")),
+                    ready_marker.clone(),
+                )
+                .await;
+                return;
+            }
+            None => {
+                close_shared_websocket(&shared, ProcessError::Closed, ready_marker.clone()).await;
+                return;
+            }
+        };
+        match message {
+            Message::Text(payload) => {
+                if payload.len() > MAX_JSONRPC_LINE_BYTES {
+                    close_shared_websocket(
+                        &shared,
+                        ProcessError::Protocol(
+                            "incoming JSON-RPC frame exceeded 32 MiB".to_string(),
+                        ),
+                        ready_marker.clone(),
+                    )
+                    .await;
+                    return;
+                }
+                if let Err(error) = decode_and_dispatch(&shared, payload.as_bytes()).await {
+                    close_shared_websocket(&shared, error, ready_marker.clone()).await;
+                    return;
+                }
+            }
+            Message::Binary(_) => {
+                close_shared_websocket(
+                    &shared,
+                    ProcessError::Protocol(
+                        "app-server websocket emitted a binary JSON-RPC frame".to_string(),
+                    ),
+                    ready_marker.clone(),
+                )
+                .await;
+                return;
+            }
+            Message::Close(_) => {
+                close_shared_websocket(&shared, ProcessError::Closed, ready_marker.clone()).await;
+                return;
+            }
+            Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
+        }
+    }
+}
+
+async fn close_shared_websocket(
+    shared: &ProcessShared,
+    error: ProcessError,
+    ready_marker: Option<PathBuf>,
+) {
+    // Host-side rolling decisions must stop counting this authenticated client as soon as its
+    // control channel dies, even before the next health pass invalidates and reaps the proxy.
+    shared.close(error).await;
+    let _ = remove_ready_marker_path(ready_marker).await;
+}
+
+async fn decode_and_dispatch(shared: &ProcessShared, payload: &[u8]) -> Result<(), ProcessError> {
+    let value = serde_json::from_slice(payload)
+        .map_err(|error| ProcessError::Protocol(format!("invalid JSON-RPC frame: {error}")))?;
+    dispatch_value(shared, value).await
 }
 
 /// Read one newline-delimited frame without allowing `read_until` to allocate past the protocol
@@ -1019,6 +1465,276 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    struct LiveTempTree(PathBuf);
+
+    impl Drop for LiveTempTree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn command_config(transport: CodexTransport) -> CodexConfig {
+        CodexConfig {
+            enabled: true,
+            transport,
+            ownership_lock_file: "/run/apitoken/codex-home.lock".to_string(),
+            binary: "/opt/codex".to_string(),
+            binary_sha256: "0".repeat(64),
+            expected_version: "codex-cli test".to_string(),
+            homes: vec!["/srv/codex/home-a".to_string()],
+            homes_dir: None,
+            work_dir: "/srv/codex/work".to_string(),
+            startup_timeout_ms: 1_000,
+            request_timeout_ms: 1_000,
+            turn_timeout_ms: 1_000,
+            max_concurrent_turns: 4,
+            admit_below_used_percent: 95,
+            window_cap_usd_prior: 1_500.0,
+            health_probe_interval_secs: 300,
+            reserve_overhead_tokens: 0,
+            history_ttl_secs: 60,
+            history_local_cap: 16,
+            history_redis_url: None,
+            history_secret: None,
+            history_redis_timeout_ms: 100,
+            child_proxy_env: BTreeMap::from([
+                ("HTTPS_PROXY".to_string(), "http://fleet-proxy".to_string()),
+                ("NO_PROXY".to_string(), "127.0.0.1".to_string()),
+            ]),
+            models: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn shared_daemon_transport_uses_only_the_official_websocket_proxy() {
+        let spec = CodexHomeSpec {
+            path: "/srv/codex/home-a".to_string(),
+            id: "home-a".to_string(),
+            proxy: Some("http://account-proxy".to_string()),
+        };
+        let command = child_command(&command_config(CodexTransport::SharedDaemonProxy), &spec);
+        let command = command.as_std();
+        let args = command
+            .get_args()
+            .map(|value| value.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(args[..3], ["app-server", "proxy", "--sock"]);
+        assert_eq!(args[3], shared_daemon_socket(&spec.path).to_string_lossy());
+        assert_eq!(
+            args[3],
+            "/run/apitoken/codex-app-servers/746e810f65f2551f.sock"
+        );
+        assert!(args[3].starts_with("/run/apitoken/codex-app-servers/"));
+        assert!(args[3].ends_with(".sock"));
+        assert!(args[3].len() < 80);
+        assert_eq!(
+            shared_client_ready_marker(
+                &spec.path,
+                123,
+                456,
+                "0123456789abcdef0123456789abcdef"
+            ),
+            Path::new(
+                "/run/apitoken/codex-app-servers/746e810f65f2551f.client.123.456.0123456789abcdef0123456789abcdef.ready"
+            )
+        );
+        let env = command
+            .get_envs()
+            .filter_map(|(name, value)| {
+                value.map(|value| (name.to_string_lossy(), value.to_string_lossy()))
+            })
+            .collect::<Vec<_>>();
+        assert!(!env.iter().any(|(name, _)| name.contains("PROXY")));
+    }
+
+    #[test]
+    fn shared_ready_marker_is_atomic_idempotent_and_removable() {
+        let suffix = new_client_lease().expect("unique marker-test suffix");
+        let root = std::env::temp_dir().join(format!("codex-ready-{suffix}"));
+        std::fs::create_dir(&root).expect("create marker-test root");
+        let _cleanup = LiveTempTree(root.clone());
+        let marker = root.join("client.ready");
+
+        publish_ready_marker(&marker).expect("publish marker");
+        assert!(ready_marker_is_valid(&marker).expect("validate marker"));
+        publish_ready_marker(&marker).expect("idempotent publish");
+        remove_ready_marker(&marker).expect("remove marker");
+        assert!(!ready_marker_is_valid(&marker).expect("marker absent"));
+    }
+
+    #[tokio::test]
+    async fn shared_transport_closure_revokes_its_authenticated_client_marker() {
+        let suffix = new_client_lease().expect("unique marker-test suffix");
+        let root = std::env::temp_dir().join(format!("codex-close-{suffix}"));
+        std::fs::create_dir(&root).expect("create marker-test root");
+        let _cleanup = LiveTempTree(root.clone());
+        let marker = root.join("client.ready");
+        publish_ready_marker(&marker).expect("publish marker");
+        let shared = ProcessShared::new();
+
+        close_shared_websocket(&shared, ProcessError::Closed, Some(marker.clone())).await;
+
+        assert!(!shared.live.load(Ordering::Acquire));
+        assert!(!marker.exists());
+    }
+
+    /// Exact-protocol smoke for a locally installed official Codex binary. It is manual because CI
+    /// does not carry that platform binary; pin upgrades run it with both variables set.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "requires CODEX_LIVE_BIN and a short real CODEX_LIVE_TMP_ROOT"]
+    async fn live_official_proxy_speaks_the_websocket_control_protocol() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let binary =
+            PathBuf::from(std::env::var_os("CODEX_LIVE_BIN").expect("CODEX_LIVE_BIN must be set"));
+        let temporary_parent = PathBuf::from(
+            std::env::var_os("CODEX_LIVE_TMP_ROOT")
+                .expect("CODEX_LIVE_TMP_ROOT must be a short real directory"),
+        );
+        let suffix = new_client_lease().expect("unique live-test suffix");
+        let root = temporary_parent.join(format!("codex-ws-{}", &suffix[..8]));
+        std::fs::create_dir(&root).expect("create live-test root");
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+            .expect("secure live-test root");
+        let _cleanup = LiveTempTree(root.clone());
+        let home = root.join("home");
+        std::fs::create_dir(&home).expect("create live-test home");
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700))
+            .expect("secure live-test home");
+        let socket = root.join("a.sock");
+
+        let mut server_command = Command::new(&binary);
+        server_command
+            .env_clear()
+            .env("CODEX_HOME", &home)
+            .env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+            .current_dir(&home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        for value in app_server_config_overrides() {
+            server_command.arg("--config").arg(value);
+        }
+        server_command
+            .arg("app-server")
+            .arg("--listen")
+            .arg(format!("unix://{}", socket.display()));
+        let mut server = server_command.spawn().expect("start official app-server");
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !socket.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("official app-server socket did not appear");
+
+        let mut proxy_command = Command::new(&binary);
+        proxy_command
+            .env_clear()
+            .env("CODEX_HOME", &home)
+            .env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+            .arg("app-server")
+            .arg("proxy")
+            .arg("--sock")
+            .arg(&socket)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let mut proxy = proxy_command.spawn().expect("start official stdio proxy");
+        let proxy_io = ChildProxyIo {
+            stdout: proxy.stdout.take().expect("proxy stdout"),
+            stdin: proxy.stdin.take().expect("proxy stdin"),
+        };
+        let websocket_config = WebSocketConfig::default()
+            .max_message_size(Some(MAX_JSONRPC_LINE_BYTES))
+            .max_frame_size(Some(MAX_JSONRPC_LINE_BYTES));
+        let (mut websocket, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client_async_with_config("ws://localhost/", proxy_io, Some(websocket_config)),
+        )
+        .await
+        .expect("official proxy websocket handshake timed out")
+        .expect("official proxy websocket handshake failed");
+        websocket
+            .send(Message::Text(
+                json!({
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {
+                            "name": "apitoken_openai_compat",
+                            "title": "API Token live transport test",
+                            "version": env!("CARGO_PKG_VERSION")
+                        },
+                        "capabilities": {"experimentalApi": true}
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("send initialize");
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let message = websocket
+                    .next()
+                    .await
+                    .expect("official websocket closed")
+                    .expect("official websocket read failed");
+                if let Message::Text(payload) = message {
+                    let value: Value = serde_json::from_str(payload.as_ref()).expect("JSON-RPC");
+                    if value.get("id").and_then(Value::as_u64) == Some(1) {
+                        return value;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("initialize response timed out");
+        assert_eq!(
+            response
+                .pointer("/result/codexHome")
+                .and_then(Value::as_str),
+            home.to_str()
+        );
+        websocket
+            .send(Message::Text(
+                json!({"method": "initialized"}).to_string().into(),
+            ))
+            .await
+            .expect("send initialized");
+        let _ = websocket.close(None).await;
+        let _ = proxy.start_kill();
+        let _ = proxy.wait().await;
+        let _ = server.start_kill();
+        let _ = server.wait().await;
+    }
+
+    #[test]
+    fn owned_child_keeps_the_hardened_app_server_configuration() {
+        let spec = CodexHomeSpec {
+            path: "/srv/codex/home-a".to_string(),
+            id: "home-a".to_string(),
+            proxy: None,
+        };
+        let command = child_command(&command_config(CodexTransport::OwnedChild), &spec);
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|value| value.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert!(args
+            .windows(3)
+            .any(|args| args == ["app-server", "--listen", "stdio://"]));
+        for expected in app_server_config_overrides() {
+            assert!(args.iter().any(|arg| arg == expected));
+        }
+    }
 
     #[test]
     fn account_read_accepts_official_chatgpt_requires_auth_semantics() {

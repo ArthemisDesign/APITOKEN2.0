@@ -58,6 +58,8 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/controller/engine-bluegreen.sh
   install -o root -g root -m 0755 "$ROOT/deploy/codex-homes-migrate.sh" \
     /usr/local/lib/apitoken-watchdog/controller/codex-homes-migrate.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/codex-app-servers.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh
   # Required by the watchdog's post-admission recovery path.
   install -o root -g root -m 0755 "$ROOT/deploy/rollback.sh" \
     /usr/local/lib/apitoken-watchdog/controller/rollback.sh
@@ -70,7 +72,7 @@ install_controller_definitions() {
 install_systemd_definitions() {
   command -v systemctl >/dev/null || { echo 'systemd is required' >&2; return 1; }
   command -v systemd-tmpfiles >/dev/null || { echo 'systemd-tmpfiles is required' >&2; return 1; }
-  local restart_authbot=0
+  local restart_authbot=0 engine_current
   # The watchdog's `ProtectSystem=full` namespace keeps /etc/tmpfiles.d read-only even after sudo.
   # Stage the exact candidate input under the fixed root-owned controller path; a manager-spawned
   # root oneshot below publishes it from a fresh namespace, just like the sudoers installer.
@@ -83,7 +85,7 @@ install_systemd_definitions() {
     apitoken-deploy-watchdog.service apitoken-deploy-watchdog.timer \
     apitoken-candidate-validator.service apitoken-candidate-validator.timer \
     apitoken-sudoers-install.service apitoken-tmpfiles-install.service \
-    apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-gemini.service claude-api-backup.service claude-api-backup.timer \
+    apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-codex-app-server@.service claude-api-codex-app-servers.service claude-api-codex-app-servers.timer claude-api-gemini.service claude-api-backup.service claude-api-backup.timer \
     claude-api-fingerprint.service claude-api-fingerprint.timer \
     apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \
     apitoken-openkeys.service \
@@ -97,6 +99,17 @@ install_systemd_definitions() {
     install -o root -g root -m 0644 "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"
   done
   systemctl daemon-reload
+  engine_current=$(readlink -f -- /srv/claude-api/releases/current 2>/dev/null || true)
+  if [[ -n $engine_current \
+      && -f "$engine_current/.openai-bluegreen-v1" \
+      && ! -L "$engine_current/.openai-bluegreen-v1" \
+      && $(<"$engine_current/.openai-bluegreen-v1") == openai-bluegreen-v1 ]]; then
+    systemctl enable --now claude-api-codex-app-servers.timer
+  else
+    # A legacy binary ignores shared-daemon transport. Keep the timer disarmed across reboot so it
+    # cannot race the singleton and create two owners of the same auth.json.
+    systemctl disable --now claude-api-codex-app-servers.timer
+  fi
   if (( restart_authbot )); then
     # Unit contract changes must take effect; ordinary binary-only engine deploys still preserve
     # in-flight device authorization in deploy.sh.

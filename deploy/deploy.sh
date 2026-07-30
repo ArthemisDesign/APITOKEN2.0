@@ -230,6 +230,10 @@ validate_engine_stage() {
     || die "staged engine Gemini capability marker is missing"
   [[ $(<"$directory/.gemini-provider-v1") == gemini-provider-v1 ]] \
     || die "staged engine Gemini capability marker is invalid"
+  [[ -f "$directory/.openai-bluegreen-v1" && ! -L "$directory/.openai-bluegreen-v1" ]] \
+    || die "staged engine OpenAI blue-green capability marker is missing"
+  [[ $(<"$directory/.openai-bluegreen-v1") == openai-bluegreen-v1 ]] \
+    || die "staged engine OpenAI blue-green capability marker is invalid"
 }
 
 # Restart the subscription bot only when the binary it is running differs from the one just shipped.
@@ -383,9 +387,11 @@ prepare_engine_release() {
   if [[ "$DRY_RUN" == "1" ]]; then
     log "dry-run: would write $ENGINE_STAGE/.provider-runtime-v1"
     log "dry-run: would write $ENGINE_STAGE/.gemini-provider-v1"
+    log "dry-run: would write $ENGINE_STAGE/.openai-bluegreen-v1"
   else
     printf '%s\n' provider-runtime-v1 >"$ENGINE_STAGE/.provider-runtime-v1"
     printf '%s\n' gemini-provider-v1 >"$ENGINE_STAGE/.gemini-provider-v1"
+    printf '%s\n' openai-bluegreen-v1 >"$ENGINE_STAGE/.openai-bluegreen-v1"
   fi
   if [[ "$DRY_RUN" != "1" ]]; then
     validate_engine_stage "$ENGINE_STAGE"

@@ -836,7 +836,7 @@ async fn send_update(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::codex::{CodexConfig, CodexPrices};
+    use crate::codex::{CodexConfig, CodexPrices, CodexTransport};
     use sha2::{Digest, Sha256};
     use std::collections::BTreeMap;
     use std::os::unix::fs::PermissionsExt;
@@ -945,7 +945,7 @@ if [ "$mode" = "descendant" ]; then
   printf '%s\n' "$!" > "$CODEX_HOME/helper-pid"
 fi
 generation=0
-if [ "$mode" = "thread_start_timeout_once" ] || [ "$mode" = "turn_start_timeout_once" ] || [ "$mode" = "startup_cancel_once" ]; then
+if [ "$mode" = "thread_start_timeout_once" ] || [ "$mode" = "turn_start_timeout_once" ] || [ "$mode" = "startup_cancel_once" ] || [ "$mode" = "invalidate_cancel" ]; then
   generation_file="$CODEX_HOME/generation"
   if [ -f "$generation_file" ]; then
     generation=$(cat "$generation_file")
@@ -1069,6 +1069,7 @@ done
         std::fs::write(&ownership_lock, []).unwrap();
         let config = CodexConfig {
             enabled: true,
+            transport: CodexTransport::OwnedChild,
             ownership_lock_file: ownership_lock.to_str().unwrap().to_string(),
             binary: binary.to_str().unwrap().to_string(),
             binary_sha256: digest,
@@ -1132,6 +1133,7 @@ done
         }
         let config = CodexConfig {
             enabled: true,
+            transport: CodexTransport::OwnedChild,
             ownership_lock_file: ownership_lock.to_str().unwrap().to_string(),
             binary: binary.to_str().unwrap().to_string(),
             binary_sha256: digest,
@@ -1650,6 +1652,72 @@ done
             .await;
 
         assert!(matches!(turn.await.unwrap(), Err(ProcessError::Closed)));
+    }
+
+    #[tokio::test]
+    async fn shutdown_deadline_is_hard_even_if_a_tracked_task_never_exits() {
+        let (gateway, _workspace) = fake_gateway("text");
+        let permit = gateway.track_background_task().unwrap();
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            gateway.shutdown_until(Some(
+                tokio::time::Instant::now() + std::time::Duration::from_millis(25),
+            )),
+        )
+        .await
+        .expect("shutdown waited without a bound after its advertised deadline");
+
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn cancelled_invalidation_cannot_overlap_process_generations() {
+        let (gateway, workspace) = fake_gateway("invalidate_cancel");
+        let home = gateway.homes().await.into_iter().next().unwrap();
+        let process = home.process().await.unwrap();
+        let pids = workspace.root.join("generation-pids");
+        let first_pid = std::fs::read_to_string(&pids)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .parse::<u32>()
+            .unwrap();
+
+        let invalidating_home = home.clone();
+        let invalidating_process = process.clone();
+        let invalidation = tokio::spawn(async move {
+            invalidating_home.invalidate(&invalidating_process).await;
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if !process.is_live() {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("invalidation did not begin shutting down the old generation");
+        invalidation.abort();
+        let _ = invalidation.await;
+
+        tokio::time::timeout(std::time::Duration::from_secs(3), home.process())
+            .await
+            .expect("replacement remained fenced after the detached reaper completed")
+            .unwrap();
+        assert!(
+            !process_exists(first_pid),
+            "a replacement became ready before the cancelled invalidation reaped its predecessor"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&pids).unwrap().lines().count(),
+            2,
+            "exactly one replacement generation must be started"
+        );
+
+        gateway.shutdown().await;
     }
 
     #[tokio::test]

@@ -2,7 +2,7 @@
 //! [`forward::ProxyConfig`]. Единственное место в проекте, где читается env.
 
 use forward::{
-    CodexConfig, CodexModel, GeminiConfig, GeminiModel, ProviderMode, ProxyConfig,
+    CodexConfig, CodexModel, CodexTransport, GeminiConfig, GeminiModel, ProviderMode, ProxyConfig,
     CLAUDE_CODE_IDENTITY,
 };
 use std::{collections::BTreeMap, env, net::IpAddr};
@@ -50,16 +50,26 @@ fn ev_or(k: &str, d: &str) -> String {
 }
 
 const OPENAI_DRAIN_DEADLINE_SECS: u64 = 30;
+/// Shared slots have already been removed from Caddy before systemd stops them. Preserve a full
+/// ten-minute Codex turn plus settlement margin; the 660-second unit timeout still bounds a broken
+/// process without delaying or endangering the replacement slot.
+const OPENAI_SHARED_DRAIN_DEADLINE_SECS: u64 = 620;
 
-/// Codex turns can legally run for ten minutes, so a generic 540-second graceful drain makes a
-/// singleton OpenAI unit look dead for almost its complete systemd stop timeout. Bound only the
-/// OpenAI surface: after this window its gateway cancels residual turns, releases billing holds and
-/// reaps both app-server process groups before the ownership lock changes hands.
-fn provider_drain_deadline(provider: ProviderMode, configured: u64) -> u64 {
-    if provider.serves_openai() {
-        configured.min(OPENAI_DRAIN_DEADLINE_SECS)
-    } else {
-        configured
+/// A legacy gateway owns the authenticated app-server children, so systemd cannot start its
+/// replacement while it drains; cap that compatibility path to keep emergency recovery bounded.
+/// Blue-green HTTP slots own only disposable proxies and may use the normal long graceful drain:
+/// their replacement is already authenticated and serving through Caddy before the old slot stops.
+fn provider_drain_deadline(
+    provider: ProviderMode,
+    transport: Option<CodexTransport>,
+    configured: u64,
+) -> u64 {
+    match (provider.serves_openai(), transport) {
+        (true, Some(CodexTransport::SharedDaemonProxy)) => {
+            configured.max(OPENAI_SHARED_DRAIN_DEADLINE_SECS)
+        }
+        (true, _) => configured.min(OPENAI_DRAIN_DEADLINE_SECS),
+        (false, _) => configured,
     }
 }
 fn ev_bool(k: &str, d: bool) -> bool {
@@ -85,6 +95,21 @@ fn parse_provider_mode(value: Option<&str>) -> Result<ProviderMode, String> {
         "gemini" => Ok(ProviderMode::Gemini),
         other => Err(format!(
             "CLAUDE_API_PROVIDER={other:?}: expected combined, anthropic, openai, or gemini"
+        )),
+    }
+}
+
+fn parse_codex_transport(value: Option<&str>) -> Result<CodexTransport, String> {
+    match value
+        .unwrap_or("owned-child")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "owned-child" => Ok(CodexTransport::OwnedChild),
+        "shared-daemon" => Ok(CodexTransport::SharedDaemonProxy),
+        other => Err(format!(
+            "CLAUDE_API_CODEX_TRANSPORT={other:?}: expected owned-child or shared-daemon"
         )),
     }
 }
@@ -476,6 +501,8 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
 
     Some(CodexConfig {
         enabled: true,
+        transport: parse_codex_transport(ev("CLAUDE_API_CODEX_TRANSPORT").as_deref())
+            .unwrap_or_else(|error| panic!("{error}")),
         ownership_lock_file: "/run/apitoken/codex-home.lock".to_string(),
         binary: ev_or(
             "CLAUDE_API_CODEX_BIN",
@@ -674,11 +701,13 @@ impl Settings {
             reserve7d: ev_frac("CLAUDE_API_RESERVE_7D", 0.03),
             reserve_jitter: ev_frac("CLAUDE_API_RESERVE_JITTER", 0.02),
             // Fail-closed clamps: readiness-delay ≤ 30с; общий drain-deadline в [5, 595]с.
-            // Singleton OpenAI дополнительно ограничен 30с: затем Codex отменяет остаток turns;
-            // запас до TimeoutStopSec=660 остаётся на reap и обязательный billing flush.
+            // Legacy singleton OpenAI ограничен 30с: новый owner не может стартовать до его stop.
+            // Shared-daemon slots получают полный 620с drain: новый slot уже авторизован и
+            // обслуживает трафик, поэтому старый может спокойно закончить десятиминутный turn.
             readiness_delay_secs: bounded_u64("CLAUDE_API_READINESS_DELAY_SECS", 3, 0, 30),
             drain_deadline_secs: provider_drain_deadline(
                 provider,
+                codex.as_ref().map(|config| config.transport),
                 bounded_u64("CLAUDE_API_DRAIN_DEADLINE_SECS", 540, 5, 595),
             ),
             // Потолок параллельных запросов на подписку. Дефолт 6 (человеческий конверт/анти-бан).
@@ -821,12 +850,47 @@ mod tests {
     }
 
     #[test]
-    fn openai_shutdown_cannot_wait_for_a_ten_minute_turn() {
-        assert_eq!(provider_drain_deadline(ProviderMode::OpenAi, 540), 30);
-        assert_eq!(provider_drain_deadline(ProviderMode::Combined, 595), 30);
-        assert_eq!(provider_drain_deadline(ProviderMode::OpenAi, 12), 12);
-        assert_eq!(provider_drain_deadline(ProviderMode::Anthropic, 540), 540);
-        assert_eq!(provider_drain_deadline(ProviderMode::Gemini, 540), 540);
+    fn codex_transport_requires_an_explicit_bounded_mode() {
+        assert_eq!(parse_codex_transport(None), Ok(CodexTransport::OwnedChild));
+        assert_eq!(
+            parse_codex_transport(Some(" SHARED-DAEMON ")),
+            Ok(CodexTransport::SharedDaemonProxy)
+        );
+        assert!(parse_codex_transport(Some("proxy")).is_err());
+        assert!(parse_codex_transport(Some("stdio")).is_err());
+    }
+
+    #[test]
+    fn only_a_home_owning_openai_singleton_gets_the_emergency_drain_cap() {
+        assert_eq!(
+            provider_drain_deadline(ProviderMode::OpenAi, Some(CodexTransport::OwnedChild), 540),
+            30
+        );
+        assert_eq!(
+            provider_drain_deadline(
+                ProviderMode::Combined,
+                Some(CodexTransport::OwnedChild),
+                595
+            ),
+            30
+        );
+        assert_eq!(
+            provider_drain_deadline(
+                ProviderMode::OpenAi,
+                Some(CodexTransport::SharedDaemonProxy),
+                540
+            ),
+            620
+        );
+        assert_eq!(provider_drain_deadline(ProviderMode::OpenAi, None, 12), 12);
+        assert_eq!(
+            provider_drain_deadline(ProviderMode::Anthropic, None, 540),
+            540
+        );
+        assert_eq!(
+            provider_drain_deadline(ProviderMode::Gemini, None, 540),
+            540
+        );
     }
 
     #[test]

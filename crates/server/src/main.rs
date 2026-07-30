@@ -1017,6 +1017,7 @@ async fn serve() -> Result<()> {
             .context("validate Codex provider")?;
         eprintln!("Codex app-server provider preflight passed");
         tokio::spawn(poller::codex_health_loop(gateway.clone()));
+        spawn_codex_reconcile_signal(gateway.clone());
         Some(gateway)
     } else {
         None
@@ -1321,3 +1322,24 @@ fn spawn_pre_drain_signal(accepting: Arc<AtomicBool>) {
 
 #[cfg(not(unix))]
 fn spawn_pre_drain_signal(_accepting: Arc<AtomicBool>) {}
+
+/// SIGUSR2 is the per-home drain handshake with the Codex app-server supervisor. Rediscovery first
+/// removes a fenced home from selection, then waits for its admitted turns and closes that slot's
+/// official websocket bridge. The supervisor does not restart the daemon until those proxies are
+/// gone.
+#[cfg(unix)]
+fn spawn_codex_reconcile_signal(gateway: Arc<forward::CodexGateway>) {
+    tokio::spawn(async move {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined2()) {
+            Ok(mut signal) => {
+                while signal.recv().await.is_some() {
+                    gateway.probe_health().await;
+                }
+            }
+            Err(e) => eprintln!("⚠ SIGUSR2 Codex reconcile handler unavailable: {e}"),
+        }
+    });
+}
+
+#[cfg(not(unix))]
+fn spawn_codex_reconcile_signal(_gateway: Arc<forward::CodexGateway>) {}

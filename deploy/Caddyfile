@@ -178,11 +178,13 @@ http://127.0.0.1:8790 {
 	}
 }
 
-# Stable OpenAI origin over the dedicated fixed-provider singleton.
+# Stable OpenAI origin over health-gated blue-green HTTP slots. Both slots may overlap because the
+# authenticated homes are owned by the separate Unix-socket app-server cohort.
 http://127.0.0.1:8792 {
 	bind 127.0.0.1
 
-	reverse_proxy 127.0.0.1:8793 {
+	reverse_proxy 127.0.0.1:8793 127.0.0.1:8797 {
+		lb_policy round_robin
 		lb_try_duration 2s
 		lb_try_interval 100ms
 

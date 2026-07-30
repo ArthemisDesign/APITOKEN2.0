@@ -34,6 +34,7 @@ INFRASTRUCTURE_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-infrastructure.s
 RETENTION_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-retention.sh
 SALES_RUNNER=/usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh
 OPENKEYS_RUNNER=/usr/local/lib/apitoken-watchdog/controller/openkeys-deploy.sh
+CODEX_APP_SERVERS_HELPER=/usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh
 GITHUB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-github
 WATCHDOG_LOCK=/run/lock/apitoken-watchdog.lock
 CANDIDATE_VALIDATOR_LOCK=/run/lock/apitoken-candidate-validator.lock
@@ -476,7 +477,8 @@ live_release_shas() {
   local unit pid resolved name
   for unit in claude-api.service claude-api@8787.service claude-api@8788.service \
     claude-api-anthropic@8787.service claude-api-anthropic@8788.service \
-    claude-api-openai.service claude-api-gemini.service claude-authbot.service \
+    claude-api-openai.service claude-api-openai@8793.service claude-api-openai@8797.service \
+    claude-api-gemini.service claude-authbot.service \
     apitoken-api@3000.service apitoken-api@3001.service \
     apitoken-worker.service apitoken-content-studio.service; do
     systemctl is-active --quiet "$unit" || continue
@@ -643,6 +645,7 @@ test_static_lane() {
     wd_log "running deployment and merge-workflow regression suites"
     run_as_ci bash "$candidate/deploy/lib.test.sh"
     run_as_ci bash "$candidate/deploy/codex-homes-migrate.test.sh"
+    run_as_ci bash "$candidate/deploy/codex-app-servers.test.sh"
     run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"
     run_as_ci bash "$candidate/deploy/watchdog-codex-promote.test.sh"
     run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"
@@ -1266,9 +1269,13 @@ engine_runtime_aligned() {
   local sha=$1 expected current legacy_active=0 legacy_enabled=0 stable_status
   local active_8787=0 ready_8787=0 current_8787=0 enabled_8787=0
   local active_8788=0 ready_8788=0 current_8788=0 enabled_8788=0
-  local openai_active=0 openai_ready=0 openai_current=0 openai_enabled=0 openai_stable_status
+  local openai_active_8793=0 openai_ready_8793=0 openai_current_8793=0 openai_enabled_8793=0
+  local openai_active_8797=0 openai_ready_8797=0 openai_current_8797=0 openai_enabled_8797=0
+  local openai_legacy_active=0 openai_legacy_ready=0 openai_legacy_current=0
+  local openai_legacy_enabled=0 openai_shared_supported=0 openai_stable_status
+  local codex_timer_active=0 codex_timer_enabled=0
   local gemini_supported=0 gemini_active=0 gemini_ready=0 gemini_current=0 gemini_enabled=0 gemini_stable_status
-  local port unit pid executable status combined_unit
+  local port unit pid executable status combined_unit environment
 
   expected="$ENGINE_RELEASE_ROOT/$sha"
   current=$(readlink -f -- "$ENGINE_RELEASE_ROOT/current")
@@ -1306,20 +1313,47 @@ engine_runtime_aligned() {
     systemctl is-active --quiet "$combined_unit" && legacy_active=1
     systemctl is-enabled --quiet "$combined_unit" && legacy_enabled=1
   done
-  unit=claude-api-openai.service
-  systemctl is-active --quiet "$unit" && openai_active=1
-  systemctl is-enabled --quiet "$unit" && openai_enabled=1
+  for port in 8793 8797; do
+    unit="claude-api-openai@$port.service"
+    local openai_active=0 openai_ready=0 openai_selected=0 openai_enabled=0
+    systemctl is-active --quiet "$unit" && openai_active=1
+    systemctl is-enabled --quiet "$unit" && openai_enabled=1
+    status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+      "http://127.0.0.1:$port/ready" 2>/dev/null || true)
+    [[ $status == 200 ]] && openai_ready=1
+    if (( openai_active == 1 )); then
+      pid=$(systemctl show "$unit" -p MainPID --value)
+      if [[ $pid =~ ^[1-9][0-9]*$ ]]; then
+        executable=$(readlink -f -- "/proc/$pid/exe" 2>/dev/null || true)
+        environment=$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null || true)
+        if [[ $executable == "$expected/claude-api" ]] \
+            && grep -Fxq 'CLAUDE_API_PROVIDER=openai' <<<"$environment" \
+            && grep -Fxq 'CLAUDE_API_CODEX_TRANSPORT=shared-daemon' <<<"$environment"; then
+          openai_selected=1
+        fi
+      fi
+    fi
+    if [[ $port == 8793 ]]; then
+      openai_active_8793=$openai_active; openai_ready_8793=$openai_ready
+      openai_current_8793=$openai_selected; openai_enabled_8793=$openai_enabled
+    else
+      openai_active_8797=$openai_active; openai_ready_8797=$openai_ready
+      openai_current_8797=$openai_selected; openai_enabled_8797=$openai_enabled
+    fi
+  done
+  systemctl is-active --quiet claude-api-openai.service && openai_legacy_active=1
+  systemctl is-enabled --quiet claude-api-openai.service && openai_legacy_enabled=1
   status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
     http://127.0.0.1:8793/ready 2>/dev/null || true)
-  [[ $status == 200 ]] && openai_ready=1
-  if (( openai_active == 1 )); then
-    pid=$(systemctl show "$unit" -p MainPID --value)
+  [[ $status == 200 && $openai_legacy_active == 1 ]] && openai_legacy_ready=1
+  if (( openai_legacy_active == 1 )); then
+    pid=$(systemctl show claude-api-openai.service -p MainPID --value)
     if [[ $pid =~ ^[1-9][0-9]*$ ]]; then
       executable=$(readlink -f -- "/proc/$pid/exe" 2>/dev/null || true)
       if [[ $executable == "$expected/claude-api" ]] \
           && tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null \
             | grep -Fxq 'CLAUDE_API_PROVIDER=openai'; then
-        openai_current=1
+        openai_legacy_current=1
       fi
     fi
   fi
@@ -1327,6 +1361,13 @@ engine_runtime_aligned() {
     http://127.0.0.1:8790/ready 2>/dev/null || true)
   openai_stable_status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
     http://127.0.0.1:8792/ready 2>/dev/null || true)
+  if [[ -e "$expected/.openai-bluegreen-v1" || -L "$expected/.openai-bluegreen-v1" ]]; then
+    [[ -f "$expected/.openai-bluegreen-v1" && ! -L "$expected/.openai-bluegreen-v1" \
+        && $(<"$expected/.openai-bluegreen-v1") == openai-bluegreen-v1 ]] || return 1
+    openai_shared_supported=1
+  fi
+  systemctl is-active --quiet claude-api-codex-app-servers.timer && codex_timer_active=1
+  systemctl is-enabled --quiet claude-api-codex-app-servers.timer && codex_timer_enabled=1
   [[ -f "$expected/.gemini-provider-v1" \
       && $(<"$expected/.gemini-provider-v1") == gemini-provider-v1 ]] && gemini_supported=1
   unit=claude-api-gemini.service
@@ -1348,10 +1389,32 @@ engine_runtime_aligned() {
   fi
   gemini_stable_status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
     http://127.0.0.1:8794/ready 2>/dev/null || true)
-  ENGINE_RUNTIME_DETAIL="anthropic[8787=$active_8787:$ready_8787:$current_8787:$enabled_8787 8788=$active_8788:$ready_8788:$current_8788:$enabled_8788 stable=${stable_status:-unreachable}] openai=$openai_active:$openai_ready:$openai_current:$openai_enabled:${openai_stable_status:-unreachable} gemini=$gemini_supported:$gemini_active:$gemini_ready:$gemini_current:$gemini_enabled:${gemini_stable_status:-unreachable} legacy=$legacy_active:$legacy_enabled"
+  ENGINE_RUNTIME_DETAIL="anthropic[8787=$active_8787:$ready_8787:$current_8787:$enabled_8787 8788=$active_8788:$ready_8788:$current_8788:$enabled_8788 stable=${stable_status:-unreachable}] openai[shared=$openai_shared_supported 8793=$openai_active_8793:$openai_ready_8793:$openai_current_8793:$openai_enabled_8793 8797=$openai_active_8797:$openai_ready_8797:$openai_current_8797:$openai_enabled_8797 stable=${openai_stable_status:-unreachable} legacy=$openai_legacy_active:$openai_legacy_ready:$openai_legacy_current:$openai_legacy_enabled timer=$codex_timer_active:$codex_timer_enabled] gemini=$gemini_supported:$gemini_active:$gemini_ready:$gemini_current:$gemini_enabled:${gemini_stable_status:-unreachable} legacy=$legacy_active:$legacy_enabled"
   [[ $stable_status == 200 ]] || return 1
-  [[ $openai_stable_status == 200 && $openai_active == 1 && $openai_ready == 1 \
-      && $openai_current == 1 && $openai_enabled == 1 ]] || return 1
+  [[ $openai_stable_status == 200 ]] || return 1
+  if (( openai_shared_supported == 0 )); then
+    (( openai_legacy_active == 1 && openai_legacy_ready == 1 \
+      && openai_legacy_current == 1 && openai_legacy_enabled == 1 \
+      && openai_active_8793 == 0 && openai_current_8793 == 0 && openai_enabled_8793 == 0 \
+      && openai_active_8797 == 0 && openai_ready_8797 == 0 \
+      && openai_current_8797 == 0 && openai_enabled_8797 == 0 \
+      && codex_timer_active == 0 && codex_timer_enabled == 0 )) || return 1
+    sudo -n "$CODEX_APP_SERVERS_HELPER" verify-legacy >/dev/null 2>&1 || return 1
+  else
+    (( openai_legacy_active == 0 && openai_legacy_enabled == 0 )) || return 1
+    (( codex_timer_active == 1 && codex_timer_enabled == 1 )) || return 1
+    if (( openai_active_8793 == 1 )); then
+      (( openai_ready_8793 == 1 && openai_current_8793 == 1 && openai_enabled_8793 == 1 \
+        && openai_active_8797 == 0 && openai_ready_8797 == 0 \
+        && openai_current_8797 == 0 && openai_enabled_8797 == 0 )) || return 1
+    else
+      (( openai_active_8797 == 1 && openai_ready_8797 == 1 \
+        && openai_current_8797 == 1 && openai_enabled_8797 == 1 \
+        && openai_active_8793 == 0 && openai_ready_8793 == 0 \
+        && openai_current_8793 == 0 && openai_enabled_8793 == 0 )) || return 1
+    fi
+    sudo -n "$CODEX_APP_SERVERS_HELPER" verify >/dev/null 2>&1 || return 1
+  fi
   if (( gemini_supported == 1 )); then
     [[ $gemini_stable_status == 200 && $gemini_active == 1 && $gemini_ready == 1 \
         && $gemini_current == 1 && $gemini_enabled == 1 ]] || return 1

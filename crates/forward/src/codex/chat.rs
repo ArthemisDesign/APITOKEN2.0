@@ -1372,7 +1372,7 @@ impl Stream for ChatReceiverStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codex::{CodexConfig, CodexModel, CodexPrices};
+    use crate::codex::{CodexConfig, CodexModel, CodexPrices, CodexTransport};
     use std::collections::BTreeMap;
 
     fn gateway() -> CodexGateway {
@@ -1381,6 +1381,7 @@ mod tests {
         std::fs::write(&ownership_lock, []).unwrap();
         CodexGateway::new(CodexConfig {
             enabled: true,
+            transport: CodexTransport::OwnedChild,
             ownership_lock_file: ownership_lock.to_str().unwrap().to_string(),
             binary: "/tmp/codex".to_string(),
             binary_sha256: "0".repeat(64),

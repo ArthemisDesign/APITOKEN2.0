@@ -17,6 +17,9 @@ use std::path::Path;
 const AUTH_STORE: &str = "auth.json";
 /// Optional per-home egress, written by whoever provisioned the account.
 const PROXY_FILE: &str = "proxy.url";
+/// Host-supervisor fence used while one daemon drains before a rolling restart.
+const DAEMON_DRAIN_FILE: &str = ".app-server-draining";
+const DAEMON_DRAIN_SENTINEL: &str = "openai-bluegreen-drain-v1";
 
 /// Stable, non-identifying id for a home directory.
 ///
@@ -50,7 +53,8 @@ fn read_proxy(dir: &Path) -> Result<Option<String>, String> {
             return Err("proxy file is readable by other users".to_string());
         }
     }
-    let value = std::fs::read_to_string(&path).map_err(|_| "proxy file is unreadable".to_string())?;
+    let value =
+        std::fs::read_to_string(&path).map_err(|_| "proxy file is unreadable".to_string())?;
     let value = value.trim().to_string();
     if value.is_empty() {
         return Ok(None);
@@ -71,15 +75,47 @@ fn is_authenticated(dir: &Path) -> bool {
     dir.join(AUTH_STORE).is_file()
 }
 
+/// Fail closed while the host supervisor drains this home. The hot-path check prevents a request
+/// from racing with the signal-driven rediscovery; malformed or exposed markers also drain rather
+/// than accidentally admitting work during an uncertain ownership transition.
+pub(crate) fn daemon_draining(dir: &Path) -> bool {
+    let path = dir.join(DAEMON_DRAIN_FILE);
+    let meta = match std::fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(_) => return true,
+    };
+    if !meta.file_type().is_file() {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o077 != 0 {
+            return true;
+        }
+    }
+    std::fs::read_to_string(path)
+        .map(|value| value.trim() == DAEMON_DRAIN_SENTINEL)
+        .unwrap_or(true)
+}
+
 /// Build one spec from an explicitly configured home path.
 ///
 /// Explicit homes are trusted to exist: they are named by an operator, so a missing auth store is
 /// reported by preflight and the health probe rather than silently dropping the home.
-pub(crate) fn explicit_spec(path: &str) -> CodexHomeSpec {
-    let proxy = read_proxy(Path::new(path)).unwrap_or_else(|reason| {
-        eprintln!("Codex home {} ignoring its proxy file: {reason}", home_id(path));
+pub(crate) fn explicit_spec(path: &str, inspect_proxy: bool) -> CodexHomeSpec {
+    let proxy = if inspect_proxy {
+        read_proxy(Path::new(path)).unwrap_or_else(|reason| {
+            eprintln!(
+                "Codex home {} ignoring its proxy file: {reason}",
+                home_id(path)
+            );
+            None
+        })
+    } else {
         None
-    });
+    };
     CodexHomeSpec {
         path: path.to_string(),
         id: home_id(path),
@@ -92,7 +128,7 @@ pub(crate) fn explicit_spec(path: &str) -> CodexHomeSpec {
 /// A missing directory is not an error: it simply means no account has been purchased yet. An
 /// unreadable entry, or one whose proxy secret is exposed, is skipped with a diagnostic that names
 /// the home only by its non-identifying id.
-pub(crate) fn scan(dir: &str) -> Vec<CodexHomeSpec> {
+pub(crate) fn scan(dir: &str, inspect_proxy: bool) -> Vec<CodexHomeSpec> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
@@ -117,18 +153,24 @@ pub(crate) fn scan(dir: &str) -> Vec<CodexHomeSpec> {
             // has finished buying.
             continue;
         }
+        if !inspect_proxy && daemon_draining(&path) {
+            continue;
+        }
         let Some(path_str) = path.to_str().map(str::to_string) else {
             continue;
         };
-        let proxy = match read_proxy(&path) {
-            Ok(proxy) => proxy,
-            Err(reason) => {
-                eprintln!(
-                    "Codex home {} excluded from the pool: {reason}",
-                    home_id(&path_str)
-                );
-                continue;
-            }
+        let proxy = match inspect_proxy {
+            false => None,
+            true => match read_proxy(&path) {
+                Ok(proxy) => proxy,
+                Err(reason) => {
+                    eprintln!(
+                        "Codex home {} excluded from the pool: {reason}",
+                        home_id(&path_str)
+                    );
+                    continue;
+                }
+            },
         };
         found.push((
             name,
@@ -148,10 +190,18 @@ pub(crate) fn scan(dir: &str) -> Vec<CodexHomeSpec> {
 ///
 /// A path configured explicitly and also present in the scanned directory is kept once, so moving
 /// the original single-home deployment under the pool directory cannot double-count its capacity.
-pub(crate) fn discover(homes: &[String], homes_dir: Option<&str>) -> Vec<CodexHomeSpec> {
-    let mut specs: Vec<CodexHomeSpec> = homes.iter().map(|path| explicit_spec(path)).collect();
+pub(crate) fn discover(
+    homes: &[String],
+    homes_dir: Option<&str>,
+    inspect_proxy: bool,
+) -> Vec<CodexHomeSpec> {
+    let mut specs: Vec<CodexHomeSpec> = homes
+        .iter()
+        .filter(|path| inspect_proxy || !daemon_draining(Path::new(path)))
+        .map(|path| explicit_spec(path, inspect_proxy))
+        .collect();
     if let Some(dir) = homes_dir {
-        for spec in scan(dir) {
+        for spec in scan(dir, inspect_proxy) {
             if !specs.iter().any(|existing| existing.path == spec.path) {
                 specs.push(spec);
             }
@@ -207,14 +257,14 @@ mod tests {
         home(&ws.0, "bought", true);
         home(&ws.0, "in-progress", false);
         std::fs::write(ws.0.join("loose-file"), "x").unwrap();
-        let found = scan(ws.0.to_str().unwrap());
+        let found = scan(ws.0.to_str().unwrap(), true);
         assert_eq!(found.len(), 1);
         assert!(found[0].path.ends_with("bought"));
     }
 
     #[test]
     fn a_missing_directory_is_an_empty_pool_not_an_error() {
-        assert!(scan("/nonexistent/codex/homes").is_empty());
+        assert!(scan("/nonexistent/codex/homes", true).is_empty());
     }
 
     #[test]
@@ -222,16 +272,20 @@ mod tests {
         let ws = workspace();
         home(&ws.0, "b-account", true);
         home(&ws.0, "a-account", true);
-        let first = scan(ws.0.to_str().unwrap());
-        let second = scan(ws.0.to_str().unwrap());
+        let first = scan(ws.0.to_str().unwrap(), true);
+        let second = scan(ws.0.to_str().unwrap(), true);
         assert_eq!(first, second);
         assert!(first[0].path.ends_with("a-account"));
         // Adding a home must not change an existing home's id, or every dashboard and alert would
         // re-label whenever an account is purchased.
         home(&ws.0, "aa-inserted", true);
-        let third = scan(ws.0.to_str().unwrap());
+        let third = scan(ws.0.to_str().unwrap(), true);
         let a_before = &first[0].id;
-        let a_after = &third.iter().find(|s| s.path.ends_with("a-account")).unwrap().id;
+        let a_after = &third
+            .iter()
+            .find(|s| s.path.ends_with("a-account"))
+            .unwrap()
+            .id;
         assert_eq!(a_before, a_after);
         for spec in &third {
             assert_eq!(spec.id.len(), 8);
@@ -245,10 +299,10 @@ mod tests {
         let ws = workspace();
         let dir = home(&ws.0, "leaky", true);
         write_proxy(&dir, "http://user:pass@example.test:8080", 0o644);
-        assert!(scan(ws.0.to_str().unwrap()).is_empty());
+        assert!(scan(ws.0.to_str().unwrap(), true).is_empty());
 
         write_proxy(&dir, "http://user:pass@example.test:8080", 0o600);
-        let found = scan(ws.0.to_str().unwrap());
+        let found = scan(ws.0.to_str().unwrap(), true);
         assert_eq!(found.len(), 1);
         assert_eq!(
             found[0].proxy.as_deref(),
@@ -262,7 +316,7 @@ mod tests {
         let ws = workspace();
         let dir = home(&ws.0, "weird", true);
         write_proxy(&dir, "ftp://example.test:21", 0o600);
-        assert!(scan(ws.0.to_str().unwrap()).is_empty());
+        assert!(scan(ws.0.to_str().unwrap(), true).is_empty());
     }
 
     #[cfg(unix)]
@@ -271,7 +325,7 @@ mod tests {
         let ws = workspace();
         let dir = home(&ws.0, "plain", true);
         write_proxy(&dir, "\n", 0o600);
-        let found = scan(ws.0.to_str().unwrap());
+        let found = scan(ws.0.to_str().unwrap(), true);
         assert_eq!(found.len(), 1);
         assert!(found[0].proxy.is_none());
     }
@@ -281,7 +335,51 @@ mod tests {
         let ws = workspace();
         let dir = home(&ws.0, "shared", true);
         let explicit = vec![dir.to_str().unwrap().to_string()];
-        let all = discover(&explicit, Some(ws.0.to_str().unwrap()));
+        let all = discover(&explicit, Some(ws.0.to_str().unwrap()), true);
         assert_eq!(all.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shared_daemon_discovery_does_not_reparse_the_daemons_proxy_secret() {
+        let ws = workspace();
+        let dir = home(&ws.0, "daemon-owned", true);
+        write_proxy(&dir, "disabled://blue-green-transition", 0o600);
+
+        let found = scan(ws.0.to_str().unwrap(), false);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].proxy.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shared_daemon_drain_marker_excludes_explicit_and_scanned_homes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let ws = workspace();
+        let drained = home(&ws.0, "drained", true);
+        let ready = home(&ws.0, "ready", true);
+        let marker = drained.join(DAEMON_DRAIN_FILE);
+        std::fs::write(&marker, format!("{DAEMON_DRAIN_SENTINEL}\n")).unwrap();
+        std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let explicit = vec![drained.to_str().unwrap().to_string()];
+        let found = discover(&explicit, Some(ws.0.to_str().unwrap()), false);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path, ready.to_str().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn malformed_drain_marker_fails_closed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let ws = workspace();
+        let drained = home(&ws.0, "drained", true);
+        let marker = drained.join(DAEMON_DRAIN_FILE);
+        std::fs::write(&marker, "unexpected\n").unwrap();
+        std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert!(scan(ws.0.to_str().unwrap(), false).is_empty());
     }
 }

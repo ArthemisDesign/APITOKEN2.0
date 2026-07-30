@@ -124,6 +124,7 @@ am_gate_deployment() (
   fi
   bash "$ROOT/deploy/lib.test.sh"
   bash "$ROOT/deploy/codex-homes-migrate.test.sh"
+  bash "$ROOT/deploy/codex-app-servers.test.sh"
   bash "$ROOT/deploy/sccache-cargo.test.sh"
   bash "$ROOT/deploy/next-cache.test.sh"
   bash "$ROOT/deploy/typescript-scope.test.sh"
@@ -158,6 +159,7 @@ am_range_changes_local_gate() {
   while IFS= read -r path; do
     case "$path" in
       deploy/agent-merge.sh|deploy/agent-merge.suite.sh|deploy/watchdog-lib.sh|\
+      deploy/codex-app-servers.sh|deploy/codex-app-servers.test.sh|\
       deploy/sccache-cargo.sh|deploy/sccache-cargo.test.sh|\
       deploy/next-cache.sh|deploy/next-cache.test.sh|\
       deploy/typescript-scope.mjs|deploy/typescript-scope.test.sh|\

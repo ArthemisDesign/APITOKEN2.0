@@ -583,7 +583,7 @@ wd_verification_plan_has() {
 
 wd_path_is_engine() {
   case "$1" in
-    crates/*|vendor/*|Cargo.toml|Cargo.lock|config.env.example|server.env.example|schema/*|tests/*|tools/refresh-fingerprint.sh|tools/codex-app-server/*|systemd/claude-api.service|systemd/claude-api@.service|systemd/claude-api-anthropic@.service|systemd/claude-api-openai.service|systemd/claude-api-gemini.service)
+    crates/*|vendor/*|Cargo.toml|Cargo.lock|config.env.example|server.env.example|schema/*|tests/*|tools/refresh-fingerprint.sh|tools/codex-app-server/*|deploy/codex-app-servers.sh|systemd/claude-api.service|systemd/claude-api@.service|systemd/claude-api-anthropic@.service|systemd/claude-api-openai.service|systemd/claude-api-openai@.service|systemd/claude-api-codex-app-server@.service|systemd/claude-api-codex-app-servers.service|systemd/claude-api-codex-app-servers.timer|systemd/claude-api-gemini.service)
       return 0
       ;;
     *) return 1 ;;
@@ -700,7 +700,8 @@ wd_path_is_systemd_definition() {
     systemd/apitoken-sudoers-install.service|systemd/apitoken-tmpfiles-install.service|\
     systemd/apitoken-postgres.service|systemd/apitoken-affinity-redis.service|\
     systemd/apitoken-worker.service|systemd/apitoken-content-studio.service|\
-    systemd/claude-api.service|systemd/claude-api@.service|systemd/claude-api-anthropic@.service|systemd/claude-api-openai.service|systemd/claude-api-gemini.service|\
+    systemd/claude-api.service|systemd/claude-api@.service|systemd/claude-api-anthropic@.service|systemd/claude-api-openai.service|systemd/claude-api-openai@.service|\
+    systemd/claude-api-codex-app-server@.service|systemd/claude-api-codex-app-servers.service|systemd/claude-api-codex-app-servers.timer|systemd/claude-api-gemini.service|\
     systemd/claude-api-backup.service|\
     systemd/claude-api-backup.timer|systemd/claude-api-fingerprint.service|\
     systemd/claude-api-fingerprint.timer|systemd/apitoken-sales-api.service|\
@@ -737,7 +738,7 @@ wd_path_is_controller_definition() {
     deploy/watchdog-github.sh|deploy/watchdog-control.sh|\
     deploy/deploy.sh|deploy/lib.sh|deploy/commerce-release-bundle.sh|\
     deploy/release-tree-digest.mjs|deploy/content-studio-start.sh|\
-    deploy/api-bluegreen.sh|deploy/engine-bluegreen.sh|deploy/codex-homes-migrate.sh|\
+    deploy/api-bluegreen.sh|deploy/engine-bluegreen.sh|deploy/codex-homes-migrate.sh|deploy/codex-app-servers.sh|\
     deploy/rollback.sh|deploy/sales-deploy.sh|deploy/openkeys-deploy.sh)
       return 0
       ;;

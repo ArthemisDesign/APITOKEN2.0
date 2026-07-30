@@ -1,0 +1,27 @@
+# One official Unix-socket app-server owns one authenticated home. The opaque instance id is a
+# digest of the home basename; the root reconciler resolves it without putting account labels in
+# unit names or logs.
+[Unit]
+Description=Codex app-server home owner %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+EnvironmentFile=-/srv/claude-api/data/config.env
+EnvironmentFile=-/srv/claude-api/data/server.env
+WorkingDirectory=/srv/claude-api/data/codex/work
+ExecStart=/usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh serve %i
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=660
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/srv/claude-api/data/codex-homes /run/apitoken/codex-app-servers
+MemoryMax=1G

@@ -1,7 +1,9 @@
 //! OpenAI-compatible text API backed by the official Codex app-server protocol.
 //!
-//! The transport speaks newline-delimited JSON-RPC v2 to pinned Codex children. It never reads or
-//! replays ChatGPT bearer tokens: authentication remains owned by the official Codex profiles.
+//! A legacy single-owner gateway speaks newline-delimited JSON-RPC v2 to private pinned Codex
+//! children. Blue-green gateway slots speak the official websocket control protocol through
+//! disposable `app-server proxy` bridges to separately supervised pinned daemons. Neither mode
+//! reads or replays ChatGPT bearer tokens: authentication remains owned by official Codex profiles.
 
 mod api;
 mod billing;
@@ -20,7 +22,7 @@ pub use api::{
 };
 pub use calibration::WindowCalibration;
 pub use chat::completions as openai_chat_completions;
-pub use config::{CodexConfig, CodexHomeSpec, CodexModel, CodexPrices};
+pub use config::{CodexConfig, CodexHomeSpec, CodexModel, CodexPrices, CodexTransport};
 pub use history::{HistoryError, StoredHistory};
 pub(crate) use process::{AppServerEvent, CodexProcess, ProcessError};
 pub use process::{CodexRateLimitWindow, CodexRateLimits};
@@ -110,6 +112,9 @@ const DEFAULT_LIMIT_RETRY_SECS: u64 = 60;
 /// Detached public stream tasks are bounded by the server-wide admission limit in practice. This
 /// larger private semaphore provides a quiescence barrier without imposing a lower runtime cap.
 const MAX_BACKGROUND_TASKS: u32 = 1_000_000;
+/// Once the server's advertised drain deadline has expired, cleanup itself must also be bounded.
+/// systemd cannot start the replacement singleton while the old main PID remains in `deactivating`.
+const FORCED_SHUTDOWN_CLEANUP_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[derive(Debug)]
 struct ProviderLock {
@@ -245,8 +250,8 @@ pub(crate) struct CodexHome {
     order: AtomicUsize,
     cfg: Arc<CodexConfig>,
     process: Mutex<Option<Arc<CodexProcess>>>,
-    process_start: Mutex<()>,
-    retired: AtomicBool,
+    process_start: Arc<Mutex<()>>,
+    retired: Arc<AtomicBool>,
     /// The pinned app-server processes one model turn at a time. Additional customers wait on this
     /// gate rather than receiving a local 429 or sending a second `thread/start` that the child
     /// cannot acknowledge while sampling. Every home has its own gate, so the pool still runs one
@@ -276,8 +281,8 @@ impl CodexHome {
             order: AtomicUsize::new(order),
             cfg,
             process: Mutex::new(None),
-            process_start: Mutex::new(()),
-            retired: AtomicBool::new(false),
+            process_start: Arc::new(Mutex::new(())),
+            retired: Arc::new(AtomicBool::new(false)),
             turn_gate: Arc::new(Semaphore::new(1)),
             inflight: Arc::new(AtomicUsize::new(0)),
             turns_idle: Arc::new(Notify::new()),
@@ -384,6 +389,11 @@ impl CodexHome {
     /// Return a live, subscription-authenticated process. Startup is serialized per home, but
     /// normal JSON-RPC requests and independent turns are multiplexed over the same child.
     pub(crate) async fn process(&self) -> Result<Arc<CodexProcess>, ProcessError> {
+        if self.cfg.transport == CodexTransport::SharedDaemonProxy
+            && discovery::daemon_draining(std::path::Path::new(&self.spec.path))
+        {
+            return Err(ProcessError::Closed);
+        }
         if !self.identity_is_current() {
             self.retired.store(true, Ordering::Release);
         }
@@ -395,7 +405,7 @@ impl CodexHome {
             }
         }
 
-        let _start = self.process_start.lock().await;
+        let _start = self.process_start.clone().lock_owned().await;
         if !self.identity_is_current() {
             self.retired.store(true, Ordering::Release);
         }
@@ -446,7 +456,7 @@ impl CodexHome {
         self.retired.store(true, Ordering::Release);
         // A turn can invalidate its process, so wait for all turn guards before taking process_start.
         self.wait_for_turns().await;
-        let _start = self.process_start.lock().await;
+        let _start = self.process_start.clone().lock_owned().await;
         let process = self.process.lock().await.take();
         if let Some(process) = process {
             process.shutdown().await?;
@@ -464,7 +474,7 @@ impl CodexHome {
     }
 
     pub(crate) async fn invalidate(&self, process: &Arc<CodexProcess>) {
-        let _start = self.process_start.lock().await;
+        let start = self.process_start.clone().lock_owned().await;
         // Claim this generation before awaiting shutdown. Concurrent failed turns can all observe
         // the same dead child; only one may kill/reap it. Clearing the published pointer first also
         // prevents a new selector from attaching work to a generation already being retired.
@@ -483,8 +493,29 @@ impl CodexHome {
         if !claimed {
             return;
         }
-        if let Err(error) = process.shutdown().await {
-            self.retired.store(true, Ordering::Release);
+        let process = process.clone();
+        let retired = self.retired.clone();
+        let shutdown = tokio::spawn(async move {
+            // Keep the per-home generation fence held even if the request that noticed the dead
+            // transport is cancelled by shutdown. A replacement cannot start until the detached,
+            // cancellation-safe child reaper has completed.
+            let _start = start;
+            let result = process.shutdown().await;
+            if result.is_err() {
+                retired.store(true, Ordering::Release);
+            }
+            result
+        });
+        let result = match shutdown.await {
+            Ok(result) => result,
+            Err(error) => {
+                self.retired.store(true, Ordering::Release);
+                Err(ProcessError::Spawn(format!(
+                    "Codex invalidation task failed: {error}"
+                )))
+            }
+        };
+        if let Err(error) = result {
             eprintln!(
                 "Codex child invalidation failed [{}]",
                 error.diagnostic_class()
@@ -731,12 +762,16 @@ pub struct CodexGateway {
     /// Declared last so Rust drops every home/child before releasing the process-wide fence.
     /// A per-home fence can split a multi-home pool between two provider generations, while this
     /// fixed root-owned path cannot be replaced by a home rename or authbot publication.
-    _ownership_lock: ProviderLock,
+    _ownership_lock: Option<ProviderLock>,
 }
 
 impl CodexGateway {
     pub fn new(cfg: CodexConfig) -> anyhow::Result<Self> {
-        let ownership_lock = acquire_provider_lock(&cfg.ownership_lock_file)?;
+        let ownership_lock = cfg
+            .transport
+            .owns_home()
+            .then(|| acquire_provider_lock(&cfg.ownership_lock_file))
+            .transpose()?;
         let history = HistoryStore::new(
             cfg.history_redis_url.as_deref(),
             cfg.history_secret.as_deref(),
@@ -750,7 +785,11 @@ impl CodexGateway {
             );
         }
         let cfg = Arc::new(cfg);
-        let specs = discovery::discover(&cfg.homes, cfg.homes_dir.as_deref());
+        let specs = discovery::discover(
+            &cfg.homes,
+            cfg.homes_dir.as_deref(),
+            cfg.transport.owns_home(),
+        );
         if specs.is_empty() {
             anyhow::bail!("Codex provider found no authenticated CODEX_HOME to serve from");
         }
@@ -788,7 +827,11 @@ impl CodexGateway {
             if self.shutting_down.load(Ordering::Acquire) {
                 return;
             }
-            let specs = discovery::discover(&self.cfg.homes, self.cfg.homes_dir.as_deref());
+            let specs = discovery::discover(
+                &self.cfg.homes,
+                self.cfg.homes_dir.as_deref(),
+                self.cfg.transport.owns_home(),
+            );
             if specs.is_empty() {
                 // Never empty the pool from a scan: a transient unreadable directory would otherwise
                 // take the whole provider down while the previous homes were still serving.
@@ -913,6 +956,7 @@ impl CodexGateway {
 
     pub async fn shutdown_until(&self, deadline: Option<tokio::time::Instant>) {
         self.shutting_down.store(true, Ordering::Release);
+        let cleanup_deadline = deadline.map(|deadline| deadline + FORCED_SHUTDOWN_CLEANUP_GRACE);
         let barrier = self
             .background_tasks
             .clone()
@@ -922,20 +966,45 @@ impl CodexGateway {
                 Ok(permit) => permit.ok(),
                 Err(_) => {
                     self.abort_active_turns();
-                    self.background_tasks
-                        .clone()
-                        .acquire_many_owned(MAX_BACKGROUND_TASKS)
-                        .await
-                        .ok()
+                    // A task can be stuck on downstream backpressure or in cancellation cleanup.
+                    // Waiting for its semaphore permit again without a deadline recreated the
+                    // ten-minute singleton outage this deadline exists to prevent.
+                    eprintln!(
+                        "Codex forced shutdown: abandoning residual tracked tasks after deadline"
+                    );
+                    None
                 }
             },
             None => barrier.await.ok(),
         };
         // Also cancel an untracked provider operation such as a health probe before retirement.
         self.abort_active_turns();
-        let _reconcile = self.rediscover_lock.lock().await;
+        let _reconcile = match cleanup_deadline {
+            Some(deadline) => match tokio::time::timeout_at(deadline, self.rediscover_lock.lock())
+                .await
+            {
+                Ok(guard) => guard,
+                Err(_) => {
+                    eprintln!("Codex forced shutdown: rediscovery lock exceeded cleanup deadline");
+                    return;
+                }
+            },
+            None => self.rediscover_lock.lock().await,
+        };
         for home in self.homes().await {
-            if let Err(error) = home.retire().await {
+            let result = match cleanup_deadline {
+                Some(deadline) => match tokio::time::timeout_at(deadline, home.retire()).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        eprintln!(
+                            "Codex forced shutdown: child cleanup exceeded the hard deadline"
+                        );
+                        break;
+                    }
+                },
+                None => home.retire().await,
+            };
+            if let Err(error) = result {
                 eprintln!("Codex child shutdown failed [{}]", error.diagnostic_class());
             }
         }
@@ -972,6 +1041,11 @@ impl CodexGateway {
         let mut soonest: Option<i64> = None;
         for home in &pool_homes {
             if home.retired.load(Ordering::Acquire) {
+                continue;
+            }
+            if self.cfg.transport == CodexTransport::SharedDaemonProxy
+                && discovery::daemon_draining(std::path::Path::new(home.path()))
+            {
                 continue;
             }
             if exclude.iter().any(|id| id == home.id()) {
