@@ -211,20 +211,21 @@ launcher:
 - redacts child stderr and never logs account identity, credentials, prompts or response bodies.
 
 When the provider is enabled, server startup must complete that binary attestation, app-server
-initialization and `account/read` subscription check before the slot can become ready. Compatibility
-owned-child mode retains its one-home floor; production shared-daemon slots require at least two
-independently authenticated homes in both startup preflight and `/ready`. They also attempt an
-initial rate-limit snapshot without making that observability endpoint a hard availability
-dependency. A failed Codex activation therefore cannot be promoted while the previous slot is still
-healthy. Requiring *every* home to pass would reintroduce a different single point of failure — one
-expired device login would block every future deployment — so a failing extra home starts
-quarantined and is reported by `CodexHomeUnauthenticated` instead.
+initialization and `account/read` subscription check before the slot can become ready. Every
+transport has a one-home service floor: a single working subscription remains routable instead of
+becoming a synthetic 503 because no spare account exists. Slots also attempt an initial rate-limit
+snapshot without making that observability endpoint a hard availability dependency. A failed Codex
+activation therefore cannot be promoted while the previous slot is still healthy. Requiring every
+discovered home at startup would let one expired device login block the service, so a failing extra
+home starts quarantined and is reported by `CodexHomeUnauthenticated` instead.
 
-OpenAI blue-green admission is observational: the candidate must retain that redundant cohort
-through every live HTTP generation for the full stability window before the old slot is drained.
-The gate sends no transport signal and performs no repair. A separate desired-topology change may
-ask Rust gateways to rediscover sockets, but the signal is restricted to each unit's `MainPID`;
-signalling the whole cgroup would also kill the authenticated proxy children.
+OpenAI blue-green admission is observational and capacity-preserving like the Claude cutover: every
+live HTTP generation must expose the exact same opaque authenticated-home set for the full stability
+window before the old slot is drained. One equal home is valid; a candidate subset of the old pool
+is not. The gate also fences the exact gateway process generations, sends no transport signal and
+performs no repair. A separate desired-topology change may ask Rust gateways to rediscover sockets,
+but the signal is restricted to each unit's `MainPID`; signalling the whole cgroup would also kill
+the authenticated proxy children.
 
 A background health loop re-reads `account/read` and the rate-limit snapshot for every home on
 `CLAUDE_API_CODEX_HEALTH_INTERVAL_SECS`. A device login expires with no traffic on it, so without

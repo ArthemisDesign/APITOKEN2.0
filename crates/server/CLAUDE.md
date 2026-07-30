@@ -60,8 +60,10 @@
   `control_authed` (admin|control) ⊂ `readonly_authed` (admin|control|panel).
 - `/health` без авторизации (голый liveness); `/pool` — `authed`; `/capacity`,`/metrics` —
   `readonly_authed`; `/admin/*` — `control_authed`.
-- Fixed OpenAI `/ready` дополнительно проверяет provider snapshot: legacy owned-child требует один
-  live+authenticated home, shared-daemon — минимум два; деградация ниже порога снимает слот из Caddy.
+- Fixed OpenAI `/ready` дополнительно проверяет provider snapshot: любой transport требует хотя бы
+  один live+authenticated home. Одна рабочая подписка остаётся реальной ёмкостью и не превращается
+  в 503 из-за размера пула; deploy отдельно требует точного паритета authenticated-home set старого
+  и нового gateway на всём cutover-окне.
 - `/metrics` публикует privacy-safe affinity counters, включая soft cache-root hits/writes; raw client
   IDs, prompt content, account IDs и subscription IDs в Redis/метрики не попадают.
 - **loopback-доверие — только явный opt-in** `CLAUDE_API_TRUST_LOOPBACK=1` + реальный loopback-bind

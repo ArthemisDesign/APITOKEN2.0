@@ -48,12 +48,12 @@ production_socket=/run/apitoken/codex-app-servers/$rotating_id.sock
 (( ${#production_socket} < 80 )) \
   || fail 'app-server socket path lost its cross-platform length bound'
 
-seeds=$(codex_as_select_transition_seeds "$records" 2) \
-  || fail 'a redundant discovered-only transition cohort was not selected'
-[[ $(grep -c . <<<"$seeds") == 2 && $seeds != *"$legacy_id"* \
-    && $seeds == *"$rotating_id"* && $seeds == *"$standby_id"* ]] \
-  || fail 'the transition cohort was not exactly the two discovered-only homes'
-if codex_as_select_transition_seeds "$legacy_id"$'\t''legacy-account' 2 >/dev/null; then
+seeds=$(codex_as_select_transition_seeds "$records" 1) \
+  || fail 'a disjoint ownership-migration seed was not selected'
+[[ $(grep -c . <<<"$seeds") == 1 && $seeds != *"$legacy_id"* \
+    && $seeds == *"$rotating_id"* ]] \
+  || fail 'the transition seed was not the first discovered-only home'
+if codex_as_select_transition_seeds "$legacy_id"$'\t''legacy-account' 1 >/dev/null; then
   fail 'transition cohort selection accepted only the legacy explicit home'
 fi
 
@@ -138,6 +138,9 @@ serve_body=$(sed -n '/^codex_as_serve()/,/^}/p' "$ROOT/deploy/codex-app-servers.
   chmod 0600 "$marker"
   [[ $(codex_as_home_ready_client_count "$proxy_home") == 1 ]] \
     || fail 'authenticated websocket client lease was not counted'
+  codex_as_unit_healthy() { [[ $1 == "$rotating_id" ]]; }
+  [[ $(codex_as_gateway_ready_home_ids "$fixture_gateway_pid") == "$rotating_id" ]] \
+    || fail 'gateway readiness did not resolve the authenticated marker to its opaque home id'
   printf 'CODEX_HOME=%s\0CLAUDE_API_CODEX_CLIENT_LEASE=%032d\0' "$proxy_home" 0 \
     >"$CODEX_AS_PROC_ROOT/$fixture_proxy_pid/environ"
   [[ $(codex_as_home_ready_client_count "$proxy_home") == 0 ]] \
@@ -185,6 +188,42 @@ for boot_state in enabled enabled-runtime linked linked-runtime alias generated 
   fi
 done
 
+# A single authenticated subscription is service capacity. Blue-green safety comes from requiring
+# the candidate to expose the exact same opaque home set as the old gateway, not from inventing a
+# two-account readiness floor. A subset (or a different singleton) must never pass as parity.
+(
+  # shellcheck source=deploy/codex-app-servers.sh
+  source "$ROOT/deploy/codex-app-servers.sh"
+  [[ $CODEX_AS_MIN_READY == 1 ]] \
+    || fail 'shared service readiness still hides a single working subscription'
+  [[ $CODEX_AS_MIGRATION_SEED_COUNT == 1 ]] \
+    || fail 'one-time legacy migration requires more than its single disjoint ownership seed'
+  codex_as_gateway_main_pids() { printf '101\n202\n'; }
+  parity_shape=single
+  codex_as_gateway_ready_home_ids() {
+    case "$parity_shape:$1" in
+      single:101|single:202) printf 'home-a\n' ;;
+      subset:101) printf 'home-a\nhome-b\nhome-c\n' ;;
+      subset:202) printf 'home-a\nhome-b\n' ;;
+      different:101) printf 'home-a\n' ;;
+      different:202) printf 'home-b\n' ;;
+      full:101|full:202) printf 'home-a\nhome-b\nhome-c\n' ;;
+      *) return 1 ;;
+    esac
+  }
+  [[ $(codex_as_cutover_ready_home_count) == 1 ]] \
+    || fail 'equal single-home generations were rejected'
+  parity_shape=subset
+  [[ $(codex_as_cutover_ready_home_count) == 0 ]] \
+    || fail 'candidate subset was accepted as old-generation capacity parity'
+  parity_shape=different
+  [[ $(codex_as_cutover_ready_home_count) == 0 ]] \
+    || fail 'different single homes were accepted as capacity parity'
+  parity_shape=full
+  [[ $(codex_as_cutover_ready_home_count) == 3 ]] \
+    || fail 'equal full cohorts were not preserved across generations'
+)
+
 # SIGUSR2 belongs exclusively to the Rust gateway handler. `systemctl kill` targets the entire
 # cgroup unless `--kill-whom=main` is explicit, which would terminate every authenticated Codex
 # proxy child at once and reproduce the production outage.
@@ -211,7 +250,7 @@ done
 )
 
 # Cutover admission is a read-only assertion, not a repair mechanism. Starting the candidate has
-# already created its clients; the deployment gate may only observe that the redundant cohort stays
+# already created its clients; the deployment gate may only observe that the same cohort stays
 # attached. The same lifecycle boundary must reject an incomplete desired snapshot before invoking
 # any start/roll/retire mutation.
 (
@@ -237,21 +276,20 @@ done
   }
   codex_as_admit_cutover || fail 'observational cutover admission rejected a stable cohort'
 
-  CODEX_AS_MIN_READY=2
-  codex_as_home_records() { printf '1111111111111111\tonly-home\n'; }
+  codex_as_home_records() { return 0; }
   codex_as_start_or_roll() { fail 'incomplete desired snapshot mutated the serving cohort'; }
   if codex_as_reconcile >/dev/null 2>&1; then
-    fail 'reconciliation accepted a desired snapshot below the redundancy floor'
+    fail 'reconciliation accepted a desired snapshot below the one-home service floor'
   fi
 )
 
-# One expired/disconnected account is excluded instead of failing an otherwise redundant cohort.
-# The same fixture must still fail closed when fewer than two authenticated homes remain.
+# One expired/disconnected account is excluded instead of failing the remaining authenticated
+# capacity. The helper still supports a stricter caller-supplied threshold in isolation.
 (
   # shellcheck source=deploy/codex-app-servers.sh
   source "$ROOT/deploy/codex-app-servers.sh"
   CODEX_AS_READY_TIMEOUT=3
-  CODEX_AS_MIN_READY=2
+  CODEX_AS_MIN_READY=1
   codex_as_gateway_active_count() { printf '1\n'; }
   codex_as_home_records() {
     printf '1111111111111111\tready-one\n'
@@ -264,15 +302,15 @@ done
     [[ $1 == */expired ]] && printf '0\n' || printf '1\n'
   }
   [[ $(codex_as_wait_ready_cohort) == 2 ]] \
-    || fail 'one expired account rejected a redundant authenticated cohort'
+    || fail 'one expired account rejected the remaining authenticated cohort'
   CODEX_AS_MIN_READY=3
   if codex_as_wait_ready_cohort >/dev/null; then
-    fail 'cohort readiness passed without the required authenticated redundancy'
+    fail 'cohort readiness ignored its caller-supplied threshold'
   fi
 
   # A transient dip resets the ordinary convergence streak; two good samples before the dip cannot
   # be combined with later samples to manufacture a stable result.
-  CODEX_AS_MIN_READY=2
+  CODEX_AS_MIN_READY=1
   CODEX_AS_READY_TIMEOUT=8
   stability_calls=$TEMP/stability-calls
   : >"$stability_calls"
@@ -281,14 +319,14 @@ done
     call=$(wc -l <"$stability_calls" | tr -d '[:space:]')
     printf 'x\n' >>"$stability_calls"
     case "$call" in
-      2) printf '1\n' ;;
-      *) printf '2\n' ;;
+      2) printf '0\n' ;;
+      *) printf '1\n' ;;
     esac
   }
-  [[ $(codex_as_wait_ready_cohort 3) == 2 ]] \
+  [[ $(codex_as_wait_ready_cohort 3) == 1 ]] \
     || fail 'stable cohort did not recover after a transient dip'
   (( $(wc -l <"$stability_calls") >= 6 )) \
-    || fail 'cutover stability streak did not reset after losing redundancy'
+    || fail 'cutover stability streak did not reset after losing all authenticated capacity'
 )
 
 # Cutover policy is measured in monotonic elapsed seconds, not in the number of expensive full-pool
@@ -298,7 +336,7 @@ done
   # shellcheck source=deploy/codex-app-servers.sh
   source "$ROOT/deploy/codex-app-servers.sh"
   CODEX_AS_READY_TIMEOUT=30
-  CODEX_AS_MIN_READY=2
+  CODEX_AS_MIN_READY=1
   monotonic_clock=$TEMP/monotonic-clock
   elapsed_calls=$TEMP/elapsed-calls
   printf '0\n' >"$monotonic_clock"
@@ -311,19 +349,19 @@ done
     printf '%s\n' "$(( current + amount ))" >"$monotonic_clock"
   }
   codex_as_wait_tick() { codex_as_advance_clock 1; }
-  codex_as_authenticated_home_count() {
+  codex_as_cutover_ready_home_count() {
     local call
     call=$(wc -l <"$elapsed_calls" | tr -d '[:space:]')
     printf 'x\n' >>"$elapsed_calls"
     # Model the real host: validating the full cohort itself takes multiple seconds.
     codex_as_advance_clock 2
     case "$call" in
-      2) printf '1\n' ;;
-      *) printf '2\n' ;;
+      2) printf '0\n' ;;
+      *) printf '1\n' ;;
     esac
   }
   expected_owners=$'slot-a=101\nslot-b=202'
-  [[ $(codex_as_wait_ready_cohort_stable 5 "$expected_owners") == 2 ]] \
+  [[ $(codex_as_wait_ready_cohort_stable 5 "$expected_owners") == 1 ]] \
     || fail 'elapsed cutover window did not recover after a transient dip'
   [[ $(<"$monotonic_clock") == 17 ]] \
     || fail 'cutover stability was counted as samples instead of monotonic elapsed time'
@@ -351,8 +389,8 @@ done
 
 # Exercise the first singleton-to-daemon handoff as an availability state machine. The fixture
 # systemctl checks the invariant after every start/stop/restart: either the singleton is active, or
-# an active shared gateway has both transition daemons. A future reordering that removes the legacy
-# anchor before redundant ownership exists therefore fails this test rather than reaching production.
+# an active shared gateway has the disjoint transition seed. A future reordering that removes the
+# legacy anchor before replacement capacity exists therefore fails this test before production.
 (
   # Restore the real helper functions after the focused rolling-update stubs above.
   # shellcheck source=deploy/codex-app-servers.sh
@@ -387,8 +425,7 @@ done
     'esac' \
     'if [ -f "$state/active.$CODEX_AS_TEST_LEGACY_UNIT" ]; then exit 0; fi' \
     'if [ -f "$state/active.$CODEX_AS_TEST_SHARED_UNIT" ] &&' \
-    '   [ -f "$state/active.$CODEX_AS_TEST_ROTATING_DAEMON" ] &&' \
-    '   [ -f "$state/active.$CODEX_AS_TEST_STANDBY_DAEMON" ]; then exit 0; fi' \
+    '   [ -f "$state/active.$CODEX_AS_TEST_ROTATING_DAEMON" ]; then exit 0; fi' \
     'printf "availability invariant failed after %s\n" "$command" >&2' \
     'exit 42' >"$forward_systemctl"
   chmod 0700 "$forward_systemctl"
@@ -422,12 +459,12 @@ done
   [[ -f "$systemd_state/active.$legacy_unit" \
       && ! -f "$systemd_state/active.$legacy_daemon" \
       && -f "$systemd_state/active.$rotating_daemon" \
-      && -f "$systemd_state/active.$standby_daemon" ]] \
-    || fail 'redundant transition cohort was not admitted beside the singleton'
+      && ! -f "$systemd_state/active.$standby_daemon" ]] \
+    || fail 'disjoint transition seed was not admitted beside the singleton'
   transition_ids=$(codex_as_transition_home_ids | sort | tr '\n' ' ')
-  expected_transition_ids=$(printf '%s\n%s\n' "$rotating_id" "$standby_id" | sort | tr '\n' ' ')
+  expected_transition_ids=$(printf '%s\n' "$rotating_id" | sort | tr '\n' ' ')
   [[ $transition_ids == "$expected_transition_ids" ]] \
-    || fail 'persisted transition state did not contain both daemon homes'
+    || fail 'persisted transition state did not contain the disjoint daemon seed'
   touch "$systemd_state/active.$shared_unit"
   "$forward_systemctl" stop "$legacy_unit" \
     || fail 'stopping the singleton created an ownerless OpenAI state'

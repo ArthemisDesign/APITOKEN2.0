@@ -27,15 +27,14 @@ impl CodexTransport {
         matches!(self, Self::OwnedChild)
     }
 
-    /// Number of independently authenticated homes required before an HTTP generation may enter
-    /// load-balancer rotation. A legacy owner cannot overlap another owner and therefore preserves
-    /// its one-home compatibility floor. Shared-daemon slots are specifically built for redundant
-    /// blue-green admission: accepting one home would turn that home into the exact single point of
-    /// failure the split topology is meant to remove.
+    /// Number of authenticated homes required for this provider generation to serve traffic.
+    /// One working subscription is real capacity and must never be hidden merely because the pool
+    /// has no spare. Blue-green safety is a comparison between old and candidate cohorts, not an
+    /// arbitrary fleet-size policy in process readiness.
     pub const fn minimum_ready_homes(self) -> usize {
         match self {
             Self::OwnedChild => 1,
-            Self::SharedDaemonProxy => 2,
+            Self::SharedDaemonProxy => 1,
         }
     }
 }
@@ -146,8 +145,8 @@ mod tests {
     use super::CodexTransport;
 
     #[test]
-    fn shared_transport_requires_redundant_http_admission() {
+    fn every_transport_preserves_a_single_working_subscription() {
         assert_eq!(CodexTransport::OwnedChild.minimum_ready_homes(), 1);
-        assert_eq!(CodexTransport::SharedDaemonProxy.minimum_ready_homes(), 2);
+        assert_eq!(CodexTransport::SharedDaemonProxy.minimum_ready_homes(), 1);
     }
 }

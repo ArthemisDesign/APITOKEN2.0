@@ -1170,12 +1170,12 @@ impl CodexGateway {
     /// Verify the pinned executable, start app-server, complete protocol initialization and prove
     /// that each dedicated profile is authenticated with a ChatGPT subscription.
     ///
-    /// Legacy owned-child mode keeps its one-home compatibility floor. Shared-daemon HTTP slots
-    /// require two independently authenticated homes, but not *every* discovered home: one expired
-    /// device login must not block a redundant deployment. A home that fails here starts
-    /// quarantined and is reported by the health metrics and `CodexHomeUnauthenticated` alert
-    /// instead. Returning only a diagnostic class keeps account metadata, paths and child messages
-    /// out of composition logs.
+    /// Every transport keeps a one-home service floor: a single working subscription is still
+    /// customer capacity. Blue-green compares the candidate's authenticated home set with the old
+    /// generation outside this process; it must not encode rollout redundancy by making a healthy
+    /// one-home runtime return 503. A home that fails here starts quarantined and is reported by the
+    /// health metrics and `CodexHomeUnauthenticated` alert instead. Returning only a diagnostic
+    /// class keeps account metadata, paths and child messages out of composition logs.
     pub async fn preflight(&self) -> anyhow::Result<()> {
         let mut healthy = 0usize;
         let mut last_class = "closed";

@@ -687,17 +687,17 @@ if [[ $DRY_RUN == 0 ]]; then
     || post_admission_die "stable OpenAI origin lost readiness while admitting the target"
 fi
 if [[ $OPENAI_LEGACY_TARGET == 0 ]]; then
-  # The old origin remains fully ready while the candidate proves that at least two authenticated
-  # daemon clients remain attached throughout an observational stability window. This gate sends no
-  # signals and performs no repair: candidate startup either established the invariant or cutover
-  # fails while the old generation remains untouched.
+  # The old origin remains fully ready while the candidate proves that both HTTP generations expose
+  # the same authenticated-home set throughout an observational stability window. One shared home
+  # is valid; losing any home is not. This gate sends no signals and performs no repair: candidate
+  # startup either established the invariant or cutover fails while the old generation is untouched.
   privileged_command "$CODEX_APP_SERVERS_HELPER" admit-cutover \
-    || post_admission_die "OpenAI target failed redundant cohort admission"
+    || post_admission_die "OpenAI target failed authenticated-capacity parity admission"
   if [[ $DRY_RUN == 0 ]]; then
     openai_target_serves_current \
-      || post_admission_die "OpenAI target lost readiness during redundant cohort admission"
+      || post_admission_die "OpenAI target lost readiness during capacity parity admission"
     stable_openai_ready \
-      || post_admission_die "stable OpenAI origin lost readiness during redundant cohort admission"
+      || post_admission_die "stable OpenAI origin lost readiness during capacity parity admission"
   fi
 fi
 # Make the admitted candidate boot-durable before touching the old availability anchor. A failure

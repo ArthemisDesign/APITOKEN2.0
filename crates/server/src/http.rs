@@ -1632,9 +1632,10 @@ fn codex_provider_ready(
 
 async fn ready(State(state): State<HttpState>) -> Response {
     // Only the dedicated OpenAI slots use provider liveness for load-balancer admission. A shared
-    // blue-green generation needs two independently authenticated homes; admitting a one-home
-    // generation would make the deployment itself a single-point outage. `codex=None` deliberately
-    // stays ready so the provider kill switch can serve its stable OpenAI-shaped disabled envelope.
+    // generation remains useful with one authenticated home, exactly like the Claude pool: rollout
+    // safety comes from old/candidate cohort parity while both generations overlap, not from hiding
+    // valid capacity behind a fixed fleet-size threshold. `codex=None` deliberately stays ready so
+    // the provider kill switch can serve its stable OpenAI-shaped disabled envelope.
     let provider_ready = if state.app.provider == forward::ProviderMode::OpenAi {
         match &state.app.codex {
             Some(codex) => {
@@ -1934,15 +1935,15 @@ mod tests {
     }
 
     #[test]
-    fn shared_openai_readiness_never_admits_a_single_home() {
+    fn openai_readiness_preserves_a_single_working_home() {
         assert!(codex_provider_ready(forward::CodexTransport::OwnedChild, 1));
-        assert!(!codex_provider_ready(
+        assert!(codex_provider_ready(
             forward::CodexTransport::SharedDaemonProxy,
             1
         ));
-        assert!(codex_provider_ready(
+        assert!(!codex_provider_ready(
             forward::CodexTransport::SharedDaemonProxy,
-            2
+            0
         ));
     }
 

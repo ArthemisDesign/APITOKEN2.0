@@ -22,7 +22,12 @@ CODEX_AS_READY_TIMEOUT=${CODEX_AS_READY_TIMEOUT:-180}
 # SIGUSR2-coordinated daemon rolls complete much sooner but share this conservative ceiling.
 CODEX_AS_RETIRE_TIMEOUT=${CODEX_AS_RETIRE_TIMEOUT:-960}
 CODEX_AS_SERVICE_USER=${CODEX_AS_SERVICE_USER:-deploy}
-CODEX_AS_MIN_READY=${CODEX_AS_MIN_READY:-2}
+# Service availability is not a fleet-size policy. One authenticated home is useful capacity and
+# must remain routable. Normal shared blue-green compares the exact old/candidate home sets. The
+# historical singleton-to-daemon migration needs one *different* seed only because two processes
+# may not own the same auth.json during that one-time handoff.
+CODEX_AS_MIN_READY=1
+CODEX_AS_MIGRATION_SEED_COUNT=1
 # A cutover gate is deliberately much stricter than routine reconciliation. Both HTTP generations
 # stay in Caddy while the candidate proves that its authenticated clients survive real health probes
 # for a full minute; the production protocol failures that motivated this guard appeared after the
@@ -528,12 +533,12 @@ codex_as_proxy_matches_client() {
   return 1
 }
 
-# Count only authenticated websocket clients, not proxy processes that have merely spawned. Each
-# marker is published after initialize + account/read and names both the gateway and proxy PIDs.
-# A per-process random lease prevents PID reuse from manufacturing readiness.
-codex_as_home_ready_client_count() {
+# List the live gateway generations through which one home has completed websocket initialization
+# and account/read. A marker names both gateway and proxy PIDs; its random per-process lease prevents
+# PID reuse from manufacturing readiness.
+codex_as_home_ready_gateway_pids() {
   local home=$1 name id marker base gateway_pid proxy_pid lease owner expected_uid expected_gid
-  local gateway_pid_lines active_pids=' ' counted=' ' count=0
+  local gateway_pid_lines active_pids=' ' counted=' '
   name=${home##*/}
   id=$(codex_as_home_id "$name") || return 1
   owner=$(codex_as_expected_owner) || return 1
@@ -561,8 +566,53 @@ codex_as_home_ready_client_count() {
     fi
     [[ $counted != *" $gateway_pid "* ]] || continue
     counted+="$gateway_pid "
-    count=$((count + 1))
+    printf '%s\n' "$gateway_pid"
   done
+}
+
+# Count only authenticated websocket clients, not proxy processes that have merely spawned.
+codex_as_home_ready_client_count() {
+  local gateway_pids count
+  gateway_pids=$(codex_as_home_ready_gateway_pids "$1") || return 1
+  count=$(grep -c . <<<"$gateway_pids" || true)
+  printf '%s\n' "$count"
+}
+
+# Authenticated home IDs visible through one exact HTTP gateway generation. IDs are opaque and
+# emitted in deterministic desired-roster order, so sets can be compared without exposing accounts.
+codex_as_gateway_ready_home_ids() {
+  local gateway_pid=$1 id name home gateway_pids
+  [[ $gateway_pid =~ ^[1-9][0-9]*$ ]] || return 1
+  while IFS=$'\t' read -r id name; do
+    home=$CODEX_AS_HOMES_DIR/$name
+    codex_as_home_draining "$home" && continue
+    codex_as_unit_healthy "$id" || continue
+    gateway_pids=$(codex_as_home_ready_gateway_pids "$home") || return 1
+    grep -Fxq -- "$gateway_pid" <<<"$gateway_pids" || continue
+    printf '%s\n' "$id"
+  done < <(codex_as_home_records)
+}
+
+# Return the cohort size only when every live shared gateway sees the exact same authenticated home
+# set. This is the OpenAI equivalent of Claude's two HTTP generations reading the same live pool:
+# one home is sufficient, but a candidate missing any home that the old generation can serve never
+# earns cutover ownership.
+codex_as_cutover_ready_home_count() {
+  local gateway_pids gateway_pid ids reference='' seen=0 count
+  gateway_pids=$(codex_as_gateway_main_pids) || return 1
+  [[ -n $gateway_pids ]] || { printf '0\n'; return 0; }
+  while IFS= read -r gateway_pid; do
+    [[ $gateway_pid =~ ^[1-9][0-9]*$ ]] || return 1
+    ids=$(codex_as_gateway_ready_home_ids "$gateway_pid") || return 1
+    if (( seen == 0 )); then
+      reference=$ids
+      seen=1
+    elif [[ $ids != "$reference" ]]; then
+      printf '0\n'
+      return 0
+    fi
+  done <<<"$gateway_pids"
+  count=$(grep -c . <<<"$reference" || true)
   printf '%s\n' "$count"
 }
 
@@ -637,9 +687,9 @@ codex_as_authenticated_home_count() {
 }
 
 # A newly expired account must not turn an otherwise safe engine rollout into an availability
-# incident. Wait for a minimum authenticated cohort rather than requiring every discovered home,
-# while still requiring each counted home to be attached to every live HTTP generation. Two ready
-# homes are the default because one can then be drained while its peer continues serving.
+# incident. Wait for at least one authenticated home, while requiring every counted home to be
+# attached to every live HTTP generation. Rolling a daemon remains separately guarded by
+# `codex_as_start_or_roll`, which refuses to restart the last serving home.
 codex_as_wait_ready_cohort() {
   local required_consecutive=${1:-2}
   local ready consecutive=0 deadline=$(( $(date +%s) + CODEX_AS_READY_TIMEOUT ))
@@ -659,7 +709,7 @@ codex_as_wait_ready_cohort() {
   return 1
 }
 
-# Prove that a redundant authenticated cohort stays continuously ready for an elapsed interval.
+# Prove that the same authenticated cohort stays continuously ready for an elapsed interval.
 # A health observation is intentionally expensive: it validates every marker, gateway MainPID,
 # proxy parent, lease, and CODEX_HOME. Counting observations as seconds made a 60-second policy take
 # roughly 180 seconds in production and collide with its own deadline. Track monotonic elapsed time
@@ -676,7 +726,7 @@ codex_as_wait_ready_cohort_stable() {
     (( now <= deadline )) || return 1
     owners=$(codex_as_cutover_owner_snapshot) || return 1
     [[ $owners == "$expected_owners" ]] || return 1
-    ready=$(codex_as_authenticated_home_count) || return 1
+    ready=$(codex_as_cutover_ready_home_count) || return 1
     # Fence both sides of the expensive full-cohort observation. A gateway generation that exits
     # or restarts during the query is a failed candidate, even if systemd has already replaced it.
     owners=$(codex_as_cutover_owner_snapshot) || return 1
@@ -717,15 +767,15 @@ codex_as_admit_cutover() {
       || { codex_as_fail 'legacy overlap has the wrong ownership transition'; return 1; }
     ids=$(codex_as_transition_home_ids) || return 1
     transition_count=$(grep -c . <<<"$ids" || true)
-    (( transition_count >= CODEX_AS_MIN_READY )) \
-      || { codex_as_fail 'legacy overlap has no redundant daemon cohort'; return 1; }
+    (( transition_count >= CODEX_AS_MIGRATION_SEED_COUNT )) \
+      || { codex_as_fail 'legacy overlap has no disjoint daemon migration seed'; return 1; }
   fi
   # Admission is deliberately observational. Candidate startup already discovers the persistent
   # daemon sockets; a deployment gate must not send signals, restart transports, or issue account
   # RPCs against sessions that are already working.
   ready=$(codex_as_wait_ready_cohort_stable \
     "$CODEX_AS_CUTOVER_STABILITY_SECONDS" "$owners") \
-    || { codex_as_fail "$CODEX_AS_MIN_READY authenticated app-servers did not remain attached for ${CODEX_AS_CUTOVER_STABILITY_SECONDS}s"; return 1; }
+    || { codex_as_fail 'old and candidate gateways did not retain the same authenticated Codex cohort throughout cutover admission'; return 1; }
   codex_as_log "$ready app-server(s) survived the ${CODEX_AS_CUTOVER_STABILITY_SECONDS}s cutover admission window across $gateways gateway(s)"
 }
 
@@ -1040,20 +1090,20 @@ codex_as_prepare_transition() {
   "$CODEX_AS_SYSTEMCTL" is-active --quiet "$CODEX_AS_LEGACY_UNIT" >/dev/null 2>&1 \
     || { codex_as_fail 'legacy OpenAI owner is not active'; return 1; }
   codex_as_load_desired || return 1
-  [[ $CODEX_AS_MIN_READY =~ ^[1-9][0-9]*$ ]] \
-    || { codex_as_fail 'minimum ready app-server count is malformed'; return 1; }
+  [[ $CODEX_AS_MIGRATION_SEED_COUNT =~ ^[1-9][0-9]*$ ]] \
+    || { codex_as_fail 'migration seed count is malformed'; return 1; }
   records=$(codex_as_home_records) || return 1
   count=$(grep -c . <<<"$records" || true)
-  (( count >= CODEX_AS_MIN_READY + 1 )) \
-    || { codex_as_fail "$CODEX_AS_MIN_READY transition homes plus the legacy anchor are required for zero-downtime migration"; return 1; }
+  (( count >= CODEX_AS_MIGRATION_SEED_COUNT + 1 )) \
+    || { codex_as_fail "$CODEX_AS_MIGRATION_SEED_COUNT disjoint seed plus the legacy anchor are required for the one-time ownership migration"; return 1; }
   legacy_seed=$(codex_as_select_legacy_seed "$records") \
     || { codex_as_fail 'the explicitly configured legacy anchor is unavailable'; return 1; }
   IFS=$'\t' read -r legacy_id legacy_name <<<"$legacy_seed"
   legacy_home=$CODEX_AS_HOMES_DIR/$legacy_name
   codex_as_home_has_process "$legacy_home" \
     || { codex_as_fail 'the legacy anchor does not own its explicit home'; return 1; }
-  seeds=$(codex_as_select_transition_seeds "$records" "$CODEX_AS_MIN_READY") \
-    || { codex_as_fail "fewer than $CODEX_AS_MIN_READY discovered-only homes can form the transition cohort"; return 1; }
+  seeds=$(codex_as_select_transition_seeds "$records" "$CODEX_AS_MIGRATION_SEED_COUNT") \
+    || { codex_as_fail "no discovered-only home can seed the one-time ownership migration"; return 1; }
   owner=$(codex_as_expected_owner) || return 1
   read -r expected_uid expected_gid <<<"$owner"
   codex_as_secure_control_dir || return 1

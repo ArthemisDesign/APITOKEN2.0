@@ -96,8 +96,9 @@ Caddy health-routes that origin to the active engine slot.
 After the Stage-2 database cutover, use `deploy.sh --engine-bluegreen` followed by
 `engine-bluegreen.sh`. That controller owns the provider cohort: it rolls the Anthropic pair, the
 two OpenAI HTTP slots over a persistent per-home Codex daemon cohort, and the isolated Gemini
-runtime from one selected SHA. An OpenAI candidate cannot drain its predecessor until two
-authenticated homes remain attached throughout the cutover stability window. Gemini is enabled
+runtime from one selected SHA. An OpenAI candidate cannot drain its predecessor until the old and
+candidate HTTP generations expose the exact same opaque home set throughout the cutover stability
+window. A single equal working home is sufficient; a candidate subset is not. Gemini is enabled
 only for releases carrying its capability marker; rollback to an older release stops it. Legacy
 restart mode refuses to run while the
 PostgreSQL credential is active.
