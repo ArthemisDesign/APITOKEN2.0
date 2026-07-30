@@ -1103,6 +1103,51 @@ async fn read_upstream_body(response: TransportResponse) -> Result<Bytes, ()> {
     Ok(Bytes::from(body))
 }
 
+/// TEMPORARY streaming-diagnostic (secret-safe). The gateway deliberately collapses the private
+/// Code Assist error envelope to a public status class, which hides why the Antigravity streaming
+/// method is rejected while the identical non-streaming body is accepted. Log ONLY the public
+/// google.rpc `code`/`status` and a project/profile-scrubbed, truncated `message` so the exact
+/// rejection reason is observable in the journal. Remove together with the streaming fix.
+fn debug_log_upstream_rejection(
+    op: &str,
+    http_status: StatusCode,
+    body: &[u8],
+    project: &str,
+    profile_id: &str,
+) {
+    let (code, status, message) = serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            let error = value.get("error")?;
+            Some((
+                error.get("code").and_then(Value::as_i64).unwrap_or(0),
+                error
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            ))
+        })
+        .unwrap_or((0, String::new(), String::new()));
+    let mut scrubbed = message;
+    if !project.is_empty() {
+        scrubbed = scrubbed.replace(project, "<project>");
+    }
+    if !profile_id.is_empty() {
+        scrubbed = scrubbed.replace(profile_id, "<profile>");
+    }
+    let scrubbed: String = scrubbed.chars().take(240).collect();
+    eprintln!(
+        "GEMINI-DIAG upstream rejection op={op} http={} code={code} status={status} msg={scrubbed}",
+        http_status.as_u16()
+    );
+}
+
 async fn stream_response(
     gateway: Arc<GeminiGateway>,
     metrics: Arc<Metrics>,
@@ -1826,6 +1871,13 @@ async fn api_inner(
                 return Ok(translated_response(status, &response_headers, native_body));
             }
             _ if status.is_client_error() => {
+                debug_log_upstream_rejection(
+                    suffix,
+                    status,
+                    &response_body,
+                    &project,
+                    profile.id(),
+                );
                 // The private Code Assist error envelope can contain account, project, plan or
                 // internal endpoint details. Preserve only the public status class.
                 profile.mark_healthy_for(&model.id);
