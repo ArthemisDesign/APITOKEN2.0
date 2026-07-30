@@ -13,10 +13,10 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use forward::{
-    authed, client_key, control_authed, forward, gemini_api, openai_chat_completions,
+    authed, client_keys, control_authed, forward, gemini_api, openai_chat_completions,
     openai_delete_response, openai_get_response, openai_input_tokens, openai_model, openai_models,
-    openai_response_input_items, openai_responses, readonly_authed, AppState, Metrics,
-    TerminalErrorReason,
+    openai_response_input_items, openai_responses, readonly_authed, resolve_client_key,
+    resolve_client_keys, AppState, Metrics, TerminalErrorReason,
 };
 use serde_json::{json, Value};
 use std::net::SocketAddr;
@@ -293,7 +293,7 @@ async fn audit_customer_error(
     request: Request,
     next: Next,
 ) -> Response {
-    let key = client_key(request.headers());
+    let keys = client_keys(request.headers());
     let method = request.method().clone();
     let uri = request.uri().clone();
     let response = next.run(request).await;
@@ -312,10 +312,10 @@ async fn audit_customer_error(
         .get("retry-after")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok());
-    let Some(key) = key else {
+    let Some(billing) = &state.app.billing else {
         return response;
     };
-    let Some(billing) = &state.app.billing else {
+    let Ok(Some((key, _))) = resolve_client_keys(billing, &keys).await else {
         return response;
     };
     let Ok(Some(key_row)) = billing.get(&key).await else {
@@ -1505,17 +1505,28 @@ async fn balance(State(app): State<AppState>, headers: HeaderMap) -> Response {
                 .into_response()
         }
     };
-    let key = match client_key(&headers) {
-        Some(k) => k,
-        None => {
+    if client_keys(&headers).is_empty() {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "no api key"})),
+        )
+            .into_response();
+    }
+    // Любой валидный credential → аккаунт → общий баланс; невалидный соседний заголовок не затмевает его.
+    let (key, auth) = match resolve_client_key(billing, &headers).await {
+        Ok(Some(resolved)) => resolved,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown key"}))).into_response()
+        }
+        Err(error) => {
+            eprintln!("billing authorization lookup failed: {error:#}");
             return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({"error": "no api key"})),
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "billing authority unavailable"})),
             )
-                .into_response()
+                .into_response();
         }
     };
-    // ключ → аккаунт → баланс аккаунта (общий на все ключи юзера) + расход именно этого ключа
     let krow = match billing.get(&key).await {
         Ok(row) => row,
         Err(error) => {
@@ -1527,21 +1538,10 @@ async fn balance(State(app): State<AppState>, headers: HeaderMap) -> Response {
                 .into_response();
         }
     };
-    let acct = match billing.key_auth(&key).await {
-        Ok(Some(a)) if a.active_at(pool::now()) => match billing.account(&a.account_id).await {
-            Ok(account) => account,
-            Err(error) => {
-                eprintln!("billing account lookup failed: {error:#}");
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(json!({"error": "billing authority unavailable"})),
-                )
-                    .into_response();
-            }
-        },
-        Ok(None) | Ok(Some(_)) => None,
+    let acct = match billing.account(&auth.account_id).await {
+        Ok(account) => account,
         Err(error) => {
-            eprintln!("billing authorization lookup failed: {error:#}");
+            eprintln!("billing account lookup failed: {error:#}");
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({"error": "billing authority unavailable"})),

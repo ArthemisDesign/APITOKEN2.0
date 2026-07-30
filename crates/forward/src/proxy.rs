@@ -251,27 +251,34 @@ fn skip_resp_header(name: &str) -> bool {
         || name == "anthropic-account-id"
 }
 
-/// Клиентский ключ из запроса (x-api-key, Gemini x-goog-api-key либо Bearer). Публично — используется и в `server`
-/// для эндпоинта `/balance`.
-pub fn client_key(headers: &HeaderMap) -> Option<String> {
-    if let Some(v) = headers.get("x-api-key").and_then(|v| v.to_str().ok()) {
-        let key = v.trim();
-        if !key.is_empty() {
-            return Some(key.to_string());
+/// Все клиентские credential из запроса. Claude Code может одновременно прислать
+/// `x-api-key` из унаследованного `ANTHROPIC_API_KEY` и `Authorization: Bearer` из
+/// `ANTHROPIC_AUTH_TOKEN`. Ни один заголовок не имеет приоритета: возвращаем уникальный
+/// отсортированный набор, чтобы выбор валидной биллинговой identity не зависел от
+/// типа или порядка заголовков. Публично используется `server` для `/balance` и audit.
+pub fn client_keys(headers: &HeaderMap) -> Vec<String> {
+    let mut keys = std::collections::BTreeSet::new();
+    for name in ["x-api-key", "x-goog-api-key"] {
+        for value in headers.get_all(name).iter() {
+            if let Ok(value) = value.to_str() {
+                let key = value.trim();
+                if !key.is_empty() {
+                    keys.insert(key.to_string());
+                }
+            }
         }
     }
-    if let Some(v) = headers.get("x-goog-api-key").and_then(|v| v.to_str().ok()) {
-        let key = v.trim();
-        if !key.is_empty() {
-            return Some(key.to_string());
+    for value in headers.get_all("authorization").iter() {
+        let Ok(value) = value.to_str() else { continue };
+        let Some((scheme, token)) = value.trim().split_once(char::is_whitespace) else {
+            continue;
+        };
+        let token = token.trim();
+        if scheme.eq_ignore_ascii_case("bearer") && !token.is_empty() {
+            keys.insert(token.to_string());
         }
     }
-    let a = headers.get("authorization").and_then(|v| v.to_str().ok())?;
-    a.strip_prefix("Bearer ")
-        .or_else(|| a.strip_prefix("bearer "))
-        .map(str::trim)
-        .filter(|key| !key.is_empty())
-        .map(str::to_string)
+    keys.into_iter().collect()
 }
 
 /// Админ-доступ: env-ключи `CLAUDE_API_KEYS`, либо loopback-пир ТОЛЬКО если `trust_loopback`
@@ -295,25 +302,27 @@ pub fn authed(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> bool {
     if app.cfg.api_keys.is_empty() {
         return app.cfg.trust_loopback && peer.ip().is_loopback();
     }
-    match client_key(headers) {
-        // fold (не any/short-circuit): проверяем все ключи в константное время каждый.
-        Some(k) => app
-            .cfg
-            .api_keys
-            .iter()
-            .fold(false, |ok, x| ok | ct_eq(x.as_bytes(), k.as_bytes())),
-        None => false,
-    }
+    matching_key(headers, &app.cfg.api_keys).is_some()
 }
 
 /// Совпал ли клиентский ключ с любым из `allow` (constant-time по каждому). Пустой `allow` → false.
 fn key_in(headers: &HeaderMap, allow: &[String]) -> bool {
-    match client_key(headers) {
-        Some(k) => allow
-            .iter()
-            .fold(false, |ok, x| ok | ct_eq(x.as_bytes(), k.as_bytes())),
-        None => false,
+    matching_key(headers, allow).is_some()
+}
+
+/// Детерминированно вернуть любой допущенный credential. Все пары всё равно
+/// сравниваются: невалидный `x-api-key` не может затмить валидный Bearer и наоборот.
+fn matching_key(headers: &HeaderMap, allow: &[String]) -> Option<String> {
+    let mut matched = None;
+    for candidate in client_keys(headers) {
+        let candidate_matches = allow.iter().fold(false, |ok, allowed| {
+            ok | ct_eq(allowed.as_bytes(), candidate.as_bytes())
+        });
+        if candidate_matches && matched.is_none() {
+            matched = Some(candidate);
+        }
     }
+    matched
 }
 
 /// Control-плоскость (`/admin/*`): admin-ключ ИЛИ control-ключ ИЛИ (нет ни того ни другого →
@@ -373,17 +382,19 @@ impl Authz {
 /// (админ-трафик не грузит биллинг-мьютекс). Только если не админ — клиентский ключ → аккаунт
 /// (ОДНА DB-выборка, несёт баланс для резерва → без повторного чтения).
 pub(crate) async fn authorize(app: &AppState, headers: &HeaderMap, peer: &SocketAddr) -> Authz {
-    if authed(app, headers, peer) {
+    if let Some(credential) = matching_key(headers, &app.cfg.api_keys) {
         return Authz::Admin {
-            affinity_scope: client_key(headers).unwrap_or_else(|| "loopback-admin".to_string()),
+            affinity_scope: credential,
         };
     }
-    if let (Some(billing), Some(k)) = (&app.billing, client_key(headers)) {
-        match billing.key_auth(&k).await {
-            Ok(Some(a)) => {
-                if !a.active_at(pool::now()) {
-                    return Authz::Unauthorized;
-                }
+    if app.cfg.api_keys.is_empty() && app.cfg.trust_loopback && peer.ip().is_loopback() {
+        return Authz::Admin {
+            affinity_scope: "loopback-admin".to_string(),
+        };
+    }
+    if let Some(billing) = &app.billing {
+        match resolve_client_key(billing, headers).await {
+            Ok(Some((k, a))) => {
                 let available_nano = a
                     .spend_limit_nano
                     .map(|limit| {
@@ -409,6 +420,39 @@ pub(crate) async fn authorize(app: &AppState, headers: &HeaderMap, peer: &Socket
         }
     }
     Authz::Unauthorized
+}
+
+/// Резолв любого валидного метерного credential. Порядок детерминирован самими
+/// значениями, а не типом заголовка. Ошибка authority не затмит уже найденный валидный
+/// ключ; но если ни один не подтверждён, транзиентный сбой остаётся 503, а не ложным 401.
+pub async fn resolve_client_key(
+    billing: &crate::billing::AsyncBilling,
+    headers: &HeaderMap,
+) -> anyhow::Result<Option<(String, registry::KeyAuth)>> {
+    resolve_client_keys(billing, &client_keys(headers)).await
+}
+
+/// Тот же OR-резолв для middleware, который должен извлечь credential до передачи request дальше.
+pub async fn resolve_client_keys(
+    billing: &crate::billing::AsyncBilling,
+    keys: &[String],
+) -> anyhow::Result<Option<(String, registry::KeyAuth)>> {
+    let mut first_error = None;
+    for key in keys {
+        match billing.key_auth(key).await {
+            Ok(Some(auth)) if auth.active_at(pool::now()) => return Ok(Some((key.clone(), auth))),
+            Ok(Some(_)) | Ok(None) => {}
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(None),
+    }
 }
 
 /// Anthropic-подобная ошибка (чтобы SDK-клиент видел привычную форму).
@@ -1878,6 +1922,119 @@ mod tests {
         assert!(!ct_eq(b"secret-key", b"secret-keX"));
         assert!(!ct_eq(b"short", b"longer-key")); // разная длина
         assert!(ct_eq(b"", b""));
+    }
+
+    #[test]
+    fn every_client_credential_participates_without_header_priority() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", "stale-x-key".parse().unwrap());
+        headers.insert("authorization", "bEaReR valid-bearer-key".parse().unwrap());
+        headers.insert("x-goog-api-key", "stale-google-key".parse().unwrap());
+
+        assert_eq!(
+            client_keys(&headers),
+            vec![
+                "stale-google-key".to_string(),
+                "stale-x-key".to_string(),
+                "valid-bearer-key".to_string(),
+            ]
+        );
+        assert_eq!(
+            matching_key(&headers, &["valid-bearer-key".to_string()]),
+            Some("valid-bearer-key".to_string())
+        );
+
+        headers.insert("x-api-key", "valid-x-key".parse().unwrap());
+        headers.insert("authorization", "Bearer stale-bearer-key".parse().unwrap());
+        assert_eq!(
+            matching_key(&headers, &["valid-x-key".to_string()]),
+            Some("valid-x-key".to_string())
+        );
+
+        headers.insert("x-goog-api-key", "valid-x-key".parse().unwrap());
+        assert_eq!(
+            client_keys(&headers)
+                .iter()
+                .filter(|key| key.as_str() == "valid-x-key")
+                .count(),
+            1,
+            "the same credential in two headers must be checked only once"
+        );
+    }
+
+    #[tokio::test]
+    async fn metered_auth_accepts_any_valid_credential_deterministically() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-any-valid-auth-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let billing =
+            crate::billing::AsyncBilling::start(path.to_string_lossy().into_owned(), 1).unwrap();
+        billing
+            .create_account("acct-a", None, 10_000)
+            .await
+            .unwrap();
+        billing
+            .create_account("acct-z", None, 10_000)
+            .await
+            .unwrap();
+        billing
+            .issue_key("a-valid", "acct-a", None, None, None)
+            .await
+            .unwrap();
+        billing
+            .issue_key("z-valid", "acct-z", None, None, None)
+            .await
+            .unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", "stale".parse().unwrap());
+        headers.insert("authorization", "Bearer z-valid".parse().unwrap());
+        let (key, auth) = resolve_client_key(&billing, &headers)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (key.as_str(), auth.account_id.as_str()),
+            ("z-valid", "acct-z")
+        );
+
+        headers.insert("x-api-key", "z-valid".parse().unwrap());
+        headers.insert("authorization", "Bearer stale".parse().unwrap());
+        let (key, auth) = resolve_client_key(&billing, &headers)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (key.as_str(), auth.account_id.as_str()),
+            ("z-valid", "acct-z")
+        );
+
+        // Если валидны оба, выбор зависит от канонического набора значений, а не от типа заголовка.
+        headers.insert("x-api-key", "z-valid".parse().unwrap());
+        headers.insert("authorization", "Bearer a-valid".parse().unwrap());
+        let first = resolve_client_key(&billing, &headers)
+            .await
+            .unwrap()
+            .unwrap();
+        headers.insert("x-api-key", "a-valid".parse().unwrap());
+        headers.insert("authorization", "Bearer z-valid".parse().unwrap());
+        let second = resolve_client_key(&billing, &headers)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.0, "a-valid");
+        assert_eq!(second.0, "a-valid");
+        assert_eq!(first.1.account_id, second.1.account_id);
+
+        drop(billing);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

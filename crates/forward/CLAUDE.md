@@ -19,6 +19,9 @@
 (`create_account`/`issue_key`/`account_status`/`key_status_by_id`) через ТОТ ЖЕ single-writer (без гонок).
 Pricing sync uses the same actors: multiplier writes go through the writer and cursor ledger reads
 through a reader; HTTP code never opens the authority directly.
+Credential в `x-api-key`, `x-goog-api-key` и `Authorization: Bearer` имеют OR-семантику без
+приоритета заголовка: достаточно любого валидного. Это критично для Claude Code,
+который может одновременно прислать stale `ANTHROPIC_API_KEY` и актуальный `ANTHROPIC_AUTH_TOKEN`.
 
 **Multi-provider pricing Stage 3B1b (`pricing.rs`) — dormant:** pure fail-closed resolver consumes
 one transactionally materialized `registry::pricing::PricingReadBundle` (including the live legacy
