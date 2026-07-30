@@ -18,7 +18,8 @@ use axum::Router;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use gemini_credential::{
-    decode_envelope, encode_envelope, CredentialKeyring, GeminiCredential, SealedCredential,
+    decode_envelope, encode_envelope, CredentialKeyring, GeminiCredential, OAuthKind,
+    SealedCredential,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -538,24 +539,34 @@ async fn finish_oauth(
             let _ = state.store.set_want(session.chat_id, "");
             let _ = state.store.set_hproxy(session.chat_id, "");
             let _ = state.store.set_hproxy_order(session.chat_id, 0);
+            let seller_outcome = if profile.migrated {
+                "переведена на Antigravity"
+            } else {
+                "подключена"
+            };
             let _ = state
                 .bot
                 .send(
                     session.chat_id,
                     &format!(
-                        "✅ <b>Gemini-подписка подключена.</b> План: <b>{}</b>. Профиль <code>{}</code> опубликован в отдельном Gemini-пуле.",
+                        "✅ <b>Gemini-подписка {seller_outcome}.</b> План: <b>{}</b>. Профиль <code>{}</code> опубликован в отдельном Gemini-пуле.",
                         plan_label(&profile.plan),
                         profile.id
                     ),
                 )
                 .await;
             for admin in &state.config.admins_id {
+                let admin_outcome = if profile.migrated {
+                    "переведён на Antigravity; профиль обновлён атомарно"
+                } else {
+                    "получен; аккаунт добавлен в пул"
+                };
                 let _ = state
                     .bot
                     .send(
                         *admin,
                         &format!(
-                            "✅ <b>Gemini-доступ получен</b>: аккаунт <code>{}</code>, план <b>{}</b>, отдельный прокси: {}. Аккаунт добавлен в пул.",
+                            "✅ <b>Gemini-доступ {admin_outcome}</b>: аккаунт <code>{}</code>, план <b>{}</b>, отдельный прокси: {}.",
                             profile.id,
                             plan_label(&profile.plan),
                             if profile.has_proxy { "да" } else { "нет" }
@@ -680,6 +691,7 @@ enum Failure {
     UnsupportedPlan,
     Duplicate,
     DuplicateProxy,
+    MigrationProxyMismatch,
     Storage,
 }
 
@@ -692,6 +704,7 @@ impl Failure {
             Self::UnsupportedPlan => "unsupported_plan",
             Self::Duplicate => "duplicate_account",
             Self::DuplicateProxy => "duplicate_proxy",
+            Self::MigrationProxyMismatch => "migration_proxy_mismatch",
             Self::Storage => "storage",
         }
     }
@@ -704,6 +717,7 @@ impl Failure {
             Self::UnsupportedPlan => "❌ На этом Google-аккаунте не найдена активная подписка из оффера. Проверь, что нужный тариф активирован именно на этом аккаунте, затем начни подключение заново.",
             Self::Duplicate => "❌ Эта Google-подписка уже присутствует в пуле.",
             Self::DuplicateProxy => "❌ Этот прокси уже закреплён за другим Gemini-профилем. Для подписки нужен отдельный прокси.",
+            Self::MigrationProxyMismatch => "❌ Для перехода на Antigravity используй тот же прокси, который уже закреплён за этой Google-подпиской.",
             Self::Storage => "⚠️ Подписка проверена, но добавить аккаунт не получилось. Администратор уведомлён; повторять действия пока не нужно.",
         }
     }
@@ -775,6 +789,7 @@ struct PublishedProfile {
     id: String,
     plan: String,
     has_proxy: bool,
+    migrated: bool,
 }
 
 async fn complete(
@@ -932,11 +947,13 @@ async fn complete(
         .await
         .map_err(|_| Failure::Storage)?;
     match &published {
+        Ok(profile) if profile.migrated => eprintln!(
+            "[gemini-oauth] chat={} atomically migrated profile {} to Antigravity (plan {})",
+            session.chat_id, profile.id, plan_label(&profile.plan)
+        ),
         Ok(profile) => eprintln!(
             "[gemini-oauth] chat={} sealed and published profile {} (plan {}) into the Gemini roster",
-            session.chat_id,
-            profile.id,
-            plan_label(&profile.plan)
+            session.chat_id, profile.id, plan_label(&profile.plan)
         ),
         Err(failure) => eprintln!(
             "[gemini-oauth] chat={} sealing/publishing the profile failed: {}",
@@ -1252,7 +1269,7 @@ fn publish(
     root: &Path,
     keyring: &CredentialKeyring,
     active_key_id: &str,
-    credential: GeminiCredential,
+    mut credential: GeminiCredential,
 ) -> Result<PublishedProfile, Failure> {
     let credentials_dir = root.join("credentials");
     private_dir(root).map_err(|_| Failure::Storage)?;
@@ -1268,6 +1285,7 @@ fn publish(
     let mut subjects = HashSet::new();
     let mut proxies = HashSet::new();
     let mut proxy_orders = HashSet::new();
+    let mut migration = None;
     for profile in &roster.profiles {
         gemini_credential::validate_profile_id(&profile.id).map_err(|_| Failure::Storage)?;
         if !ids.insert(profile.id.clone()) {
@@ -1287,17 +1305,61 @@ fn publish(
             return Err(Failure::Storage);
         }
         let existing_proxy = normalize_proxy_url(&existing.proxy).map_err(|_| Failure::Storage)?;
-        if !proxies.insert(existing_proxy) {
+        if !proxies.insert(existing_proxy.clone()) {
             return Err(Failure::Storage);
         }
         if existing.proxy_order_id > 0 && !proxy_orders.insert(existing.proxy_order_id) {
             return Err(Failure::Storage);
         }
-    }
-    if subjects.contains(&credential.subject) {
-        return Err(Failure::Duplicate);
+        if existing.subject == credential.subject {
+            if migration.is_some() {
+                return Err(Failure::Storage);
+            }
+            migration = Some((profile.id.clone(), expected_path, existing, existing_proxy));
+        }
     }
     let candidate_proxy = normalize_proxy_url(&credential.proxy).map_err(|_| Failure::Storage)?;
+    if let Some((profile_id, credential_path, existing, existing_proxy)) = migration {
+        let existing_kind = existing.oauth_kind().map_err(|_| Failure::Storage)?;
+        let candidate_kind = credential.oauth_kind().map_err(|_| Failure::Storage)?;
+        if existing_kind != OAuthKind::LegacyGeminiCli || candidate_kind != OAuthKind::Antigravity {
+            return Err(Failure::Duplicate);
+        }
+        if candidate_proxy != existing_proxy {
+            return Err(Failure::MigrationProxyMismatch);
+        }
+        if existing.proxy_order_id > 0 {
+            if credential.proxy_order_id > 0 && credential.proxy_order_id != existing.proxy_order_id
+            {
+                return Err(Failure::MigrationProxyMismatch);
+            }
+            credential.proxy_order_id = existing.proxy_order_id;
+            credential.issued_at = existing.issued_at;
+        }
+        if !proxies.remove(&existing_proxy) {
+            return Err(Failure::Storage);
+        }
+        if existing.proxy_order_id > 0 && !proxy_orders.remove(&existing.proxy_order_id) {
+            return Err(Failure::Storage);
+        }
+        if proxies.contains(&candidate_proxy) {
+            return Err(Failure::DuplicateProxy);
+        }
+        if credential.proxy_order_id > 0 && proxy_orders.contains(&credential.proxy_order_id) {
+            return Err(Failure::DuplicateProxy);
+        }
+        let envelope = keyring
+            .seal(active_key_id, &profile_id, &credential)
+            .map_err(|_| Failure::Storage)?;
+        let encoded = encode_envelope(&envelope).map_err(|_| Failure::Storage)?;
+        atomic_private_replace(&credential_path, &encoded).map_err(|_| Failure::Storage)?;
+        return Ok(PublishedProfile {
+            id: profile_id,
+            plan: credential.plan.clone(),
+            has_proxy: !credential.proxy.is_empty(),
+            migrated: true,
+        });
+    }
     if proxies.contains(&candidate_proxy) {
         return Err(Failure::DuplicateProxy);
     }
@@ -1331,6 +1393,7 @@ fn publish(
         id: profile_id,
         plan: credential.plan.clone(),
         has_proxy: !credential.proxy.is_empty(),
+        migrated: false,
     })
 }
 
@@ -1746,6 +1809,7 @@ mod tests {
             Failure::UnsupportedPlan,
             Failure::Duplicate,
             Failure::DuplicateProxy,
+            Failure::MigrationProxyMismatch,
             Failure::Storage,
         ] {
             for internal_term in [
@@ -1794,6 +1858,91 @@ mod tests {
             publish(&root, &ring, "current", credential("subject-2")),
             Err(Failure::DuplicateProxy)
         ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn publication_migrates_legacy_profile_in_place_to_antigravity() {
+        let (root, ring) = fixture();
+        let mut legacy = credential("migration-subject");
+        legacy.oauth_client_id = gemini_credential::GEMINI_OFFICIAL_OAUTH_CLIENT_ID.into();
+        legacy.oauth_client_secret = gemini_credential::GEMINI_OFFICIAL_OAUTH_CLIENT_SECRET.into();
+        let published = publish(&root, &ring, "current", legacy).unwrap();
+        assert!(!published.migrated);
+
+        let roster_path = root.join("profiles.json");
+        let roster_before = fs::read(&roster_path).unwrap();
+        let credential_path = root
+            .join("credentials")
+            .join(format!("{}.json", published.id));
+
+        let mut antigravity = credential("migration-subject");
+        antigravity.proxy = "http://user:pass@127.0.0.1:8080/".into();
+        antigravity.proxy_order_id = 0;
+        antigravity.issued_at = 999;
+        antigravity.access_token = "new-access-token-value".into();
+        antigravity.refresh_token = "new-refresh-token-value".into();
+        let migrated = publish(&root, &ring, "current", antigravity).unwrap();
+
+        assert!(migrated.migrated);
+        assert_eq!(migrated.id, published.id);
+        assert_eq!(fs::read(&roster_path).unwrap(), roster_before);
+        let envelope = decode_envelope(&fs::read(&credential_path).unwrap()).unwrap();
+        let opened = ring.open(&migrated.id, &envelope).unwrap();
+        assert_eq!(opened.oauth_kind().unwrap(), OAuthKind::Antigravity);
+        assert_eq!(opened.proxy_order_id, 42);
+        assert_eq!(opened.issued_at, 100);
+        assert_eq!(opened.access_token, "new-access-token-value");
+        assert_eq!(opened.refresh_token, "new-refresh-token-value");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn publication_rejects_existing_antigravity_profile_without_mutation() {
+        let (root, ring) = fixture();
+        let published =
+            publish(&root, &ring, "current", credential("antigravity-duplicate")).unwrap();
+        let roster_path = root.join("profiles.json");
+        let credential_path = root
+            .join("credentials")
+            .join(format!("{}.json", published.id));
+        let roster_before = fs::read(&roster_path).unwrap();
+        let credential_before = fs::read(&credential_path).unwrap();
+
+        let mut duplicate = credential("antigravity-duplicate");
+        duplicate.access_token = "replacement-access-token".into();
+        duplicate.refresh_token = "replacement-refresh-token".into();
+        assert!(matches!(
+            publish(&root, &ring, "current", duplicate),
+            Err(Failure::Duplicate)
+        ));
+        assert_eq!(fs::read(&roster_path).unwrap(), roster_before);
+        assert_eq!(fs::read(&credential_path).unwrap(), credential_before);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn publication_rejects_legacy_migration_through_a_different_proxy() {
+        let (root, ring) = fixture();
+        let mut legacy = credential("proxy-mismatch-subject");
+        legacy.oauth_client_id = gemini_credential::GEMINI_OFFICIAL_OAUTH_CLIENT_ID.into();
+        legacy.oauth_client_secret = gemini_credential::GEMINI_OFFICIAL_OAUTH_CLIENT_SECRET.into();
+        let published = publish(&root, &ring, "current", legacy).unwrap();
+        let roster_path = root.join("profiles.json");
+        let credential_path = root
+            .join("credentials")
+            .join(format!("{}.json", published.id));
+        let roster_before = fs::read(&roster_path).unwrap();
+        let credential_before = fs::read(&credential_path).unwrap();
+
+        let mut migration = credential("proxy-mismatch-subject");
+        migration.proxy = "http://user:pass@127.0.0.2:8080".into();
+        assert!(matches!(
+            publish(&root, &ring, "current", migration),
+            Err(Failure::MigrationProxyMismatch)
+        ));
+        assert_eq!(fs::read(&roster_path).unwrap(), roster_before);
+        assert_eq!(fs::read(&credential_path).unwrap(), credential_before);
         let _ = fs::remove_dir_all(root);
     }
 

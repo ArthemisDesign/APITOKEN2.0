@@ -72,11 +72,15 @@ Gemini ждёт отдельного подтверждения «Аккаунт
    несовместимые Workspace и unknown future paid tiers fail-closed. Меню создания оффера показывает
    только Google AI Pro/Ultra; организационные tier продолжают распознаваться для совместимости
    старых callback и фактической проверки плана после OAuth.
-5. Google subject — quota identity: дубликаты запрещены даже при другом project/file. Email,
-   subject, project, tier, OAuth secret/token и authenticated proxy живут только внутри AEAD.
+5. Google subject — quota identity: дубликаты запрещены даже при другом project/file. Единственное
+   исключение — односторонний переход уже опубликованного `LegacyGeminiCli` credential на
+   `Antigravity` для того же subject и того же канонического proxy. Antigravity→Antigravity,
+   обратный переход и смена proxy fail-closed. Email, subject, project, tier, OAuth secret/token и
+   authenticated proxy живут только внутри AEAD.
 6. Credential envelopes и `profiles.json` — `0600`, каталоги — `0700`, symlink/alternate path
-   запрещены. Сначала envelope, затем atomic roster rename+fsync. Startup rewrap переводит старые
-   envelopes на active kid, сохраняя online key rotation.
+   запрещены. Новая публикация пишет сначала envelope, затем atomic roster rename+fsync. Миграция
+   сохраняет opaque profile id, roster и существующий IPRoyal lifecycle, атомарно заменяя только
+   envelope. Startup rewrap переводит старые envelopes на active kid, сохраняя online key rotation.
 **Секреты:** `AUTH_BOT_TOKEN`, ключ BSC-выплат, Claude/Gemini credentials и прокси — только в
 `authbot.env` или закрытых runtime-файлах (вне репо). Не коммитить, не печатать.
 

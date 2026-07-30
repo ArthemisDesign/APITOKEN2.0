@@ -70,13 +70,17 @@ result is an OAuth credential for the internal Cloud Code/Antigravity gateway.
 7. Auth Bot validates verified Google userinfo, calls Antigravity `loadCodeAssist`, completes
    `onboardUser` when required, and re-loads the actual tier/project. Control-plane calls fall back
    only among the three reviewed Cloud Code hosts.
-8. Unknown/free/duplicate Google subjects and reused proxy URLs fail closed. Proxy URLs are
-   canonicalized before duplicate comparison, so spelling differences such as an explicit default
-   port or equivalent percent-encoded credentials cannot place one egress identity into rotation
-   twice. Paid-plan admission matches reviewed tier labels exactly rather than accepting a future
-   tier merely because its name contains `pro` or `ultra`. A valid paid profile is sealed and
-   published atomically; the runtime discovers it on the health loop without restart and refreshes
-   tokens with the official per-profile OAuth material.
+8. Unknown/free Google subjects and reused proxy URLs fail closed. A duplicate subject is rejected
+   except for a one-way migration of that subject's existing legacy Gemini CLI credential to
+   Antigravity through the same canonical proxy. The migration preserves the opaque profile id,
+   roster bytes and existing IPRoyal lifecycle metadata, and atomically replaces only the sealed
+   credential; an existing Antigravity credential, reverse transition or proxy mismatch remains an
+   error. Proxy URLs are canonicalized before comparison, so spelling differences such as an
+   explicit default port or equivalent percent-encoded credentials cannot place one egress identity
+   into rotation twice. Paid-plan admission matches reviewed tier labels exactly rather than
+   accepting a future tier merely because its name contains `pro` or `ultra`. A valid paid profile
+   is sealed and published atomically; the runtime discovers it on the health loop without restart
+   and refreshes tokens with the official per-profile OAuth material.
 
 Auth Bot's token exchange, userinfo, `loadCodeAssist` and onboarding use the same bounded Node helper
 source as the runtime through the seller's dedicated authenticated proxy. The wire identity is
@@ -340,6 +344,7 @@ the same endpoint into the unified `admin.apitoken.sale` subscription page throu
 `127.0.0.1:8794`.
 
 Expected safety properties are covered by tests for envelope AAD/key rotation, duplicate subject
-rejection, hot roster reload, query/header credential stripping, Code Assist wrapper/credit removal,
-bounded response parsing, quota/auth/transport rotation, concurrent 401 single-flight refresh,
-affinity, split SSE translation, no post-event retry, disconnect drain and shutdown settlement.
+rejection, in-place legacy-to-Antigravity migration with proxy/lifecycle preservation, hot roster
+reload, query/header credential stripping, Code Assist wrapper/credit removal, bounded response
+parsing, quota/auth/transport rotation, concurrent 401 single-flight refresh, affinity, split SSE
+translation, no post-event retry, disconnect drain and shutdown settlement.
