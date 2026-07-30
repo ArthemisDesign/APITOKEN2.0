@@ -48,6 +48,8 @@
 - `main.rs` — clap CLI: `serve` и `sub add/add-file/list/rm/status/proxy/fleet/set-plan/detect-plan/health`.
 
 **Инварианты:**
+- При старте PostgreSQL authority только read-only проверяет применённую схему; DDL выполняется
+  отдельным `db migrate-engine` до запуска слота blue-green.
 - Новую env-переменную заводи ТОЛЬКО тут и прокидывай дальше через конфиг-структуры.
 - Dormant snapshot bridge preflight читает только здесь
   `CLAUDE_API_PRICING_BRIDGE_ENABLED`/`CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP`. Default строго

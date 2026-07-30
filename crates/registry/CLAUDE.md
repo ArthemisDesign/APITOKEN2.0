@@ -2,6 +2,9 @@
 
 **Роль:** engine-owned PostgreSQL authority. SQLite is a one-time migration source and emergency audit snapshot.
 
+PostgreSQL schema DDL is an explicit operation (`claude-api db migrate-engine`), not a service-start
+side effect. `serve` may only perform the read-only schema verification before claiming an owner.
+
 **Владелец-ветка:** `comp/registry`.
 
 **Границы (жёстко):**

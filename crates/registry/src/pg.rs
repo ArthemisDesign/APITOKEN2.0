@@ -23,6 +23,21 @@ const MIGRATION_0007: &str = include_str!("../migrations_pg/0007_multi_discount_
 const MIGRATION_0008: &str = include_str!("../migrations_pg/0008_catalog_policy_lineage.sql");
 const MIGRATION_0009: &str = include_str!("../migrations_pg/0009_pricing_shadow_admission.sql");
 
+/// Highest PostgreSQL schema version understood by this engine build.
+pub const CURRENT_SCHEMA_VERSION: i64 = 9;
+
+const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
+    (1, MIGRATION_0001),
+    (2, MIGRATION_0002),
+    (3, MIGRATION_0003),
+    (4, MIGRATION_0004),
+    (5, MIGRATION_0005),
+    (6, MIGRATION_0006),
+    (7, MIGRATION_0007),
+    (8, MIGRATION_0008),
+    (9, MIGRATION_0009),
+];
+
 #[cfg(test)]
 pub(crate) const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_441;
 
@@ -203,28 +218,41 @@ impl PgStore {
         Ok(Self { client })
     }
 
-    pub fn migrate(&mut self) -> Result<()> {
+    fn apply_migration(&mut self, version: i64, sql: &str) -> Result<()> {
         let mut tx = self.client.transaction()?;
         tx.query_one("SELECT pg_advisory_xact_lock(836214912670::bigint)", &[])?;
-        tx.batch_execute(MIGRATION_0001)
-            .context("apply engine PostgreSQL migration 0001")?;
-        tx.batch_execute(MIGRATION_0002)
-            .context("apply engine PostgreSQL migration 0002")?;
-        tx.batch_execute(MIGRATION_0003)
-            .context("apply engine PostgreSQL migration 0003")?;
-        tx.batch_execute(MIGRATION_0004)
-            .context("apply engine PostgreSQL migration 0004")?;
-        tx.batch_execute(MIGRATION_0005)
-            .context("apply engine PostgreSQL migration 0005")?;
-        tx.batch_execute(MIGRATION_0006)
-            .context("apply engine PostgreSQL migration 0006")?;
-        tx.batch_execute(MIGRATION_0007)
-            .context("apply engine PostgreSQL migration 0007")?;
-        tx.batch_execute(MIGRATION_0008)
-            .context("apply engine PostgreSQL migration 0008")?;
-        tx.batch_execute(MIGRATION_0009)
-            .context("apply engine PostgreSQL migration 0009")?;
+
+        let migrations_table_exists: bool = tx
+            .query_one(
+                "SELECT to_regclass('public.engine_schema_migrations') IS NOT NULL",
+                &[],
+            )?
+            .get(0);
+        let already_applied = if migrations_table_exists {
+            tx.query_opt(
+                "SELECT 1 FROM engine_schema_migrations WHERE version=$1",
+                &[&version],
+            )?
+            .is_some()
+        } else {
+            false
+        };
+
+        if !already_applied {
+            tx.batch_execute(sql)
+                .with_context(|| format!("apply engine PostgreSQL migration {version:04}"))?;
+        }
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Apply pending migrations explicitly. Each migration has its own transaction so a DDL
+    /// lock acquired by one version cannot be held while a later version waits on another table.
+    /// The advisory transaction lock still serializes concurrent migration runners.
+    pub fn migrate(&mut self) -> Result<()> {
+        for &(version, sql) in ENGINE_MIGRATIONS {
+            self.apply_migration(version, sql)?;
+        }
         Ok(())
     }
 
@@ -236,6 +264,31 @@ impl PgStore {
                 &[],
             )?
             .get(0))
+    }
+
+    /// Verify the already-installed schema without issuing any DDL. Startup uses this guard;
+    /// schema changes belong to the explicit `db migrate-engine` operation.
+    pub fn verify_schema(&mut self) -> Result<()> {
+        let migrations_table_exists: bool = self
+            .client
+            .query_one(
+                "SELECT to_regclass('public.engine_schema_migrations') IS NOT NULL",
+                &[],
+            )?
+            .get(0);
+        if !migrations_table_exists {
+            bail!(
+                "engine PostgreSQL schema is missing; run `claude-api db migrate-engine` before starting the engine"
+            );
+        }
+
+        let version = self.schema_version()?;
+        if version < CURRENT_SCHEMA_VERSION {
+            bail!(
+                "engine PostgreSQL schema version {version} is older than required {CURRENT_SCHEMA_VERSION}; run `claude-api db migrate-engine`"
+            );
+        }
+        Ok(())
     }
 
     pub fn claim_instance(&mut self, instance_id: &str, ttl_secs: i64) -> Result<Owner> {
@@ -3813,6 +3866,15 @@ mod tests {
                 &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn engine_migration_plan_is_contiguous() {
+        let versions: Vec<_> = ENGINE_MIGRATIONS
+            .iter()
+            .map(|(version, _)| *version)
+            .collect();
+        assert_eq!(versions, (1..=CURRENT_SCHEMA_VERSION).collect::<Vec<_>>());
     }
 
     /// Run with an isolated database, for example:

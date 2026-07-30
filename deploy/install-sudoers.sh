@@ -206,6 +206,8 @@ require_permitted 'content studio enable' /usr/bin/systemctl enable apitoken-con
 require_permitted 'unit introspection' /usr/bin/systemctl show apitoken-api@3000.service
 require_permitted 'backup runner' /usr/local/lib/apitoken-watchdog/watchdog-backup.sh "$sample_sha"
 require_permitted 'migration runner' /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh "$sample_sha"
+require_permitted 'engine schema migration runner' \
+  /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh "$sample_sha"
 require_permitted 'retention helper' /usr/local/lib/apitoken-watchdog/watchdog-retention.sh 10
 require_permitted 'Codex promotion helper' \
   /usr/local/lib/apitoken-watchdog/watchdog-codex-promote.sh "$sample_sha"

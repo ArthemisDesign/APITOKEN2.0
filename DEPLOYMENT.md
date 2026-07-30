@@ -188,9 +188,10 @@ cancel that timer once the policy is active. Either let it fire and re-run the i
 - Never edit a finalized directory below `/opt/apitoken/releases` or `/srv/claude-api/releases`.
 - Commerce migrations are append-only, expand/contract, and forward-only; the watchdog backs up and
   applies them automatically before application cutover. Binary rollback never reverses them.
-- Engine migrations are ordered, transactional, advisory-locked, and forward-only. They run only in
-  the inactive candidate after a backup; readiness failure prevents Caddy admission and preserves
-  the old slot. Never edit an already-applied engine migration.
+- Engine migrations are ordered, advisory-locked, per-version transactional, and forward-only. The
+  fixed root migration helper applies them before the inactive candidate starts while the old slot
+  remains serving; readiness failure prevents Caddy admission and preserves the old slot. Engine
+  startup only verifies the schema and never issues DDL. Never edit an already-applied migration.
 - The one-time SQLite-to-PostgreSQL cutover is complete. Do not rerun it for a normal release.
 
 ## Local pre-push test gate
@@ -239,7 +240,8 @@ deploy/engine-bluegreen.sh
 ```
 
 Phase 1 builds and finalizes `/srv/claude-api/releases/<sha>`, then atomically selects it without
-touching either provider. Phase 2 starts the inactive 8787/8788 Anthropic slot, proves its exact
+touching either provider. Before Phase 2 starts a slot, `engine-bluegreen.sh` applies pending engine
+PostgreSQL migrations through the fixed root helper. Phase 2 then starts the inactive 8787/8788 Anthropic slot, proves its exact
 `MainPID`, binary and startup-fixed mode, admits it through Caddy, flips the old slot to 503 readiness
 with `SIGUSR1`, and fully stops its cgroup. It then gracefully restarts
 `claude-api-openai.service` and, for releases carrying `.gemini-provider-v1`,

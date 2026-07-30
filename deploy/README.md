@@ -103,6 +103,10 @@ equal working home is sufficient; a candidate subset is not. Gemini is enabled
 only for releases carrying its capability marker; rollback to an older release stops it. Legacy
 restart mode refuses to run while the
 PostgreSQL credential is active.
+Before any target slot is started, `engine-bluegreen.sh` invokes the fixed root-owned
+`engine-migrate.sh` helper for the selected release. Engine startup only verifies the installed
+schema and never runs DDL; pending migrations are applied explicitly, one version transaction at a
+time, while the existing slot remains the serving fallback.
 Paid Gemini project/key provisioning is outside release artifacts and is documented in
 [`docs/GEMINI_PROVIDER.md`](../docs/GEMINI_PROVIDER.md).
 `api-bluegreen.sh` similarly owns commerce slots; `--with-worker` restarts the single worker and

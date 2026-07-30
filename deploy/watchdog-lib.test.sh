@@ -710,6 +710,7 @@ for controller_definition in \
   deploy/content-studio-start.sh \
   deploy/api-bluegreen.sh \
   deploy/engine-bluegreen.sh \
+  deploy/engine-migrate.sh \
   deploy/codex-homes-migrate.sh \
   deploy/rollback.sh \
   deploy/sales-deploy.sh \
@@ -2139,6 +2140,14 @@ grep -Fq 'DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}' 
 grep -Fq 'DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}' \
   "$ROOT/deploy/api-bluegreen.sh" \
   || wd_die 'backend controller lost the shared deploy lock'
+grep -Fq 'ENGINE_MIGRATION_HELPER=/usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh' \
+  "$ROOT/deploy/engine-bluegreen.sh" \
+  || wd_die 'engine controller has no fixed schema migration helper'
+grep -Fq 'controller/engine-migrate.sh' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'watchdog installer does not install the engine schema migration helper'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh [0-9a-f]*' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'deploy user cannot invoke the fixed engine schema migration helper'
 
 # Core releases promote the frozen candidate, while manual deployments retain their fallback build.
 grep -Fq -- '--tested-candidate "$(candidate_for "$sha")"' "$ROOT/deploy/watchdog.sh" \

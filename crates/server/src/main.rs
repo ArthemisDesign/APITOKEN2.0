@@ -158,7 +158,9 @@ enum DbOp {
         #[arg(long)]
         sqlite: Option<String>,
     },
-    /// Apply/verify the PostgreSQL schema without importing data.
+    /// Apply pending engine PostgreSQL migrations without importing data.
+    MigrateEngine,
+    /// Verify the already-installed PostgreSQL schema without issuing DDL.
     VerifyPostgres,
 }
 
@@ -317,9 +319,9 @@ fn db_cmd(op: DbOp) -> Result<()> {
         .as_deref()
         .context("CLAUDE_API_DATABASE_URL is required for PostgreSQL database commands")?;
     let mut pg = registry::pg::PgStore::connect(url)?;
-    pg.migrate()?;
     match op {
         DbOp::MigratePostgres { sqlite } => {
+            pg.migrate()?;
             let source = sqlite.unwrap_or(s.db_path);
             let report = pg.import_sqlite(&source)?;
             println!(
@@ -329,7 +331,16 @@ fn db_cmd(op: DbOp) -> Result<()> {
                 report.reserved_nano,
             );
         }
+        DbOp::MigrateEngine => {
+            pg.migrate()?;
+            pg.verify_schema()?;
+            println!(
+                "✓ engine PostgreSQL schema migrated to version {}",
+                pg.schema_version()?
+            );
+        }
         DbOp::VerifyPostgres => {
+            pg.verify_schema()?;
             let version = pg.schema_version()?;
             let totals = pg.billing_totals()?;
             println!(
@@ -899,7 +910,7 @@ async fn serve() -> Result<()> {
     let (owner, subs, recovery, pool_rows, health_rows, sqlite_reconcile) =
         tokio::task::spawn_blocking(move || {
             let mut db = startup_authority.connect()?;
-            db.migrate()?;
+            db.verify_schema()?;
             let owner = db.claim_instance(&startup_instance, 30)?;
             let mut recovery = registry::pg::ReconcileReport::default();
             if let Some(current) = owner.as_ref() {

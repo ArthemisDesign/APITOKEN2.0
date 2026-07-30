@@ -56,6 +56,12 @@ impl Authority {
         }
         Ok(())
     }
+    pub fn verify_schema(&mut self) -> Result<()> {
+        if let Self::Postgres(pg) = self {
+            pg.verify_schema()?;
+        }
+        Ok(())
+    }
     pub fn claim_instance(&mut self, instance_id: &str, ttl_secs: i64) -> Result<Option<Owner>> {
         match self {
             Self::Sqlite(_) => Ok(None),

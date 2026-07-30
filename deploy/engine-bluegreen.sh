@@ -33,6 +33,7 @@ OPENAI_CAPABILITY_MARKER=.openai-bluegreen-v1
 OPENAI_STABLE_READY_URL=${OPENAI_STABLE_READY_URL:-http://127.0.0.1:8792/ready}
 CODEX_HOME_MIGRATION_HELPER=/usr/local/lib/apitoken-watchdog/controller/codex-homes-migrate.sh
 CODEX_APP_SERVERS_HELPER=/usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh
+ENGINE_MIGRATION_HELPER=/usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh
 CODEX_APP_SERVERS_TIMER=claude-api-codex-app-servers.timer
 CODEX_LEGACY_HOME=/srv/claude-api/data/codex/home
 CODEX_MIGRATED_HOME=/srv/claude-api/data/codex-homes/mikala1158qqq-gmail-com
@@ -433,6 +434,8 @@ ENGINE_RELEASE_ROOT=$(canonicalize_release_root "$ENGINE_RELEASE_ROOT" /srv/clau
 log "preflighting PostgreSQL engine blue-green cutover (dry-run=$DRY_RUN target=${REQUESTED_TARGET_PORT:-auto})"
 acquire_deploy_lock "$DEPLOY_LOCK_FILE"
 privileged_command test -s "$POSTGRES_ENV" || die "PostgreSQL authority is not active: $POSTGRES_ENV"
+privileged_command test -x "$ENGINE_MIGRATION_HELPER" \
+  || die "engine schema migration helper is missing or not executable"
 privileged_command test -f /etc/systemd/system/claude-api-anthropic@.service \
   || die "fixed Anthropic slot template is not installed"
 privileged_command test -f /etc/systemd/system/claude-api@.service \
@@ -508,6 +511,13 @@ if [[ -e "$PREVIOUS_RELEASE/$OPENAI_CAPABILITY_MARKER" \
 fi
 if [[ $OPENAI_SHARED_SUPPORTED == 0 && $OPENAI_PREVIOUS_SHARED_SUPPORTED == 0 ]]; then
   die 'legacy OpenAI rollback requires a previous shared-daemon release as its availability anchor'
+fi
+
+if [[ $DRY_RUN == 1 ]]; then
+  log "dry-run: would apply pending engine PostgreSQL migrations for $(basename -- "$CURRENT_RELEASE")"
+else
+  privileged_command "$ENGINE_MIGRATION_HELPER" "$(basename -- "$CURRENT_RELEASE")" \
+    || die "engine PostgreSQL migration failed; refusing to start the new engine slot"
 fi
 
 READY_8787=0; READY_8788=0

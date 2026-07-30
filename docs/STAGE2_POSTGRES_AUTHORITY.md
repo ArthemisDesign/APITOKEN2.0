@@ -88,6 +88,12 @@ API/worker Control calls. OpenAI and Gemini traffic never traverse that listener
 8794 respectively. The provider controller requires 8790 before, during, and after Anthropic drain,
 then exact-release gates both singletons and their stable origins before committing the cohort.
 
+Engine service startup is read-only with respect to schema: it verifies that the installed
+`engine_schema_migrations` version is supported and fails readiness if it is not. Pending engine DDL
+is applied only by the fixed `engine-migrate.sh` helper during the blue-green controller's
+pre-admission phase, so a routine restart cannot repeat migration DDL against live settlement
+writes.
+
 Every process uses a distinct `CLAUDE_API_INSTANCE_ID`. PostgreSQL remains authoritative for shared
 customer balances, request reservations, settlement and fencing across all provider processes. Codex adds a
 host-local invariant: the OpenAI process takes `/run/apitoken/codex-home.lock` before discovering any
