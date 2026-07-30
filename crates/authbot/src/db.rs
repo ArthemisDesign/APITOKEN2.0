@@ -21,8 +21,8 @@ pub struct UserRow {
     pub status: String,    // new | pending | approved | rejected | pending_admin
     pub role: String,      // "" | admin
     pub address: String,   // BEP-20
-    pub want: String,      // ожидаемый ввод (reg_address | ho_* | cx_* | gm_gproxy | gm_wait)
-    pub hproxy: String,    // прокси аккаунта при передаче доступа (handover)
+    pub want: String, // ожидаемый ввод (reg_address | ho_* | cx_* | gm_gproxy | gm_ready | gm_wait)
+    pub hproxy: String, // прокси аккаунта при передаче доступа (handover)
     pub hproxy_order: i64, // IPRoyal order id за handover-прокси (0 = ручной/внешний)
 }
 
@@ -298,8 +298,8 @@ impl Store {
     }
 
     /// Normalize every removed Gemini custom-client wizard state to the single official-CLI proxy
-    /// step. A retained bot-issued proxy lets the next seller message start OAuth immediately;
-    /// otherwise the bot asks for a fresh manual proxy.
+    /// step. A retained bot-issued proxy lets the bot show account preparation without asking for
+    /// the proxy again; authorization starts only after the seller confirms that the account is ready.
     pub fn recover_legacy_gemini_handoffs(&self) -> Result<usize> {
         Ok(self.c.lock().unwrap().execute(
             "UPDATE users SET want='gm_gproxy' WHERE want IN ('gm_proxy','gm_auth','gm_gid','gm_gsecret')",

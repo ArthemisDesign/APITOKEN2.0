@@ -246,11 +246,11 @@ pub enum StartError {
 impl StartError {
     pub fn public_message(&self) -> &'static str {
         match self {
-            Self::Proxy => "Прокси не прошёл безопасную проверку. Пришли корректный HTTP(S) URL без path/query/fragment.",
+            Self::Proxy => "Не удалось проверить прокси. Пришли его ещё раз в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.",
             Self::Random | Self::State => {
-                "Не удалось создать защищённую OAuth-сессию. Попробуй ещё раз."
+                "Не удалось подготовить ссылку авторизации. Нажми «Аккаунт готов — продолжить» ещё раз."
             }
-            Self::Url => "Gemini OAuth временно неверно настроен. Администратор уже уведомлён.",
+            Self::Url => "Подключение Gemini временно недоступно. Администратор уже уведомлён.",
         }
     }
 }
@@ -522,7 +522,7 @@ async fn finish_oauth(
                     .send(
                         *admin,
                         &format!(
-                            "✅ <b>Gemini OAuth получен</b>: <code>{}</code>, план <b>{}</b>, отдельный прокси: {}. Identity и токены не публиковались.",
+                            "✅ <b>Gemini-доступ получен</b>: аккаунт <code>{}</code>, план <b>{}</b>, отдельный прокси: {}. Аккаунт добавлен в пул.",
                             profile.id,
                             plan_label(&profile.plan),
                             if profile.has_proxy { "да" } else { "нет" }
@@ -553,7 +553,7 @@ fn code_form(state: &str) -> Response {
     // break out of its quoted attribute. The authorization code is submitted only in the POST body
     // and therefore stays out of Telegram, browser history, referrers and ordinary access logs.
     let body = format!(
-        "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Завершить Gemini OAuth</title><h1>Завершить подключение Gemini</h1><p>Скопируйте одноразовый код со страницы Google Code Assist и вставьте его ниже.</p><form method=post action=\"/oauth/callback\"><input type=hidden name=state value=\"{state}\"><p><label>Код авторизации<br><input name=code required autofocus autocomplete=off maxlength=4096 size=56></label></p><button type=submit>Подключить подписку</button></form><p>Код отправляется напрямую Auth Bot и не попадает в Telegram.</p>"
+        "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Подключить Gemini</title><h1>Завершить подключение Gemini</h1><p>Скопируйте одноразовый код со страницы Google и вставьте его ниже.</p><form method=post action=\"/oauth/callback\"><input type=hidden name=state value=\"{state}\"><p><label>Код авторизации<br><input name=code required autofocus autocomplete=off maxlength=4096 size=56></label></p><button type=submit>Подключить подписку</button></form><p>Код отправляется напрямую Auth Bot и не попадает в Telegram.</p>"
     );
     secure_html(StatusCode::OK, body, true)
 }
@@ -667,14 +667,14 @@ impl Failure {
 
     fn public_message(self) -> &'static str {
         match self {
-            Self::Authorization => "❌ Google отклонил или завершил OAuth-сессию. Пришли прокси ещё раз — бот создаст новую официальную ссылку Gemini CLI.",
-            Self::CodeAssistApiDisabled => "❌ Google не открыл Code Assist для официального OAuth-сеанса Gemini CLI. Включать API в своём Cloud-проекте не нужно. Пришли прокси ещё раз; если ошибка повторится, администратор проверит ответ Google.",
+            Self::Authorization => "❌ Google не подтвердил вход или ссылка истекла. Пришли прокси ещё раз — бот начнёт авторизацию заново.",
+            Self::CodeAssistApiDisabled => "❌ Google не разрешил подключить этот аккаунт. Пришли прокси ещё раз; если ошибка повторится, администратор проверит причину.",
             Self::Proxy => "❌ Не удалось использовать закреплённый прокси. Проверь его и пришли ещё раз.",
-            Self::Temporary => "⚠️ Google временно не завершил проверку. Подожди немного и пришли прокси ещё раз для новой OAuth-сессии.",
-            Self::UnsupportedPlan => "❌ Аккаунт авторизован, но совместимая подписка не обнаружена. Поддерживаются Google AI Pro/Ultra, Code Assist Standard/Enterprise и Workspace AI Ultra; Google AI Plus и другие Workspace AI планы не дают этот Code Assist tier.",
+            Self::Temporary => "⚠️ Google временно не завершил проверку. Подожди немного и пришли прокси ещё раз, чтобы начать авторизацию заново.",
+            Self::UnsupportedPlan => "❌ На этом Google-аккаунте не найдена активная подписка из оффера. Проверь, что нужный тариф активирован именно на этом аккаунте, затем начни подключение заново.",
             Self::Duplicate => "❌ Эта Google-подписка уже присутствует в пуле.",
             Self::DuplicateProxy => "❌ Этот прокси уже закреплён за другим Gemini-профилем. Для подписки нужен отдельный прокси.",
-            Self::Storage => "⚠️ Подписка проверена, но защищённая публикация не завершилась. Токен не попал в roster; администратор уведомлён.",
+            Self::Storage => "⚠️ Подписка проверена, но добавить аккаунт не получилось. Администратор уведомлён; повторять действия пока не нужно.",
         }
     }
 
@@ -1550,7 +1550,32 @@ mod tests {
         );
         assert!(Failure::CodeAssistApiDisabled
             .public_message()
-            .contains("официального OAuth-сеанса Gemini CLI"));
+            .contains("администратор проверит причину"));
+        for failure in [
+            Failure::Authorization,
+            Failure::CodeAssistApiDisabled,
+            Failure::Proxy,
+            Failure::Temporary,
+            Failure::UnsupportedPlan,
+            Failure::Duplicate,
+            Failure::DuplicateProxy,
+            Failure::Storage,
+        ] {
+            for internal_term in [
+                "OAuth-клиент",
+                "Cloud API",
+                "consumer project",
+                "managed project",
+                "roster",
+                "Client ID",
+                "Client secret",
+            ] {
+                assert!(
+                    !failure.public_message().contains(internal_term),
+                    "seller error contains internal term {internal_term}"
+                );
+            }
+        }
         assert_eq!(
             classify_google_http_failure(403, "permission denied"),
             Failure::Authorization
