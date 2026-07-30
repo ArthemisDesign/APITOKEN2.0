@@ -65,6 +65,16 @@
   выбирает чистый resolver в `forward`.
   Runtime callers, billing actor command, telemetry, readiness и writes пока запрещены. Нельзя
   заменять bundle последовательностью трёх `active_*` reads — это может смешать поколения.
+- **Stage 3B1a shadow schema — dormant:** PostgreSQL migration `0009` и SQLite parity создают
+  отдельную immutable `pricing_shadow_admission_evaluations`. Она не подменяет actual
+  `pricing_admission_snapshots`: shadow-строка ссылается на уже зафиксированный actual snapshot и
+  хранит обе lineage-пары (`policy_*` и `admission_*`), runtime manifest, scalar comparison и typed
+  outcome. Dependency capability pins exact-связаны с immutable catalog/switch versions; runtime
+  manifest обозначает поддерживаемый набор, поэтому будущий insert API обязан проверить membership
+  всех pins до записи. Миграция не устанавливает writer/caller, heads, policies или данные. Будущий
+  insert API обязан быть exact-idempotent по `request_id + evaluation_digest`; отличный digest —
+  conflict, а не update. Live shadow запрещён до отдельного bounded worker и атомарного actual
+  snapshot + reserve.
 
 **Инварианты:**
 - Токен разрешается из колонки `token` (inline) ИЛИ файла `token_file`. `import_sqlite` refuses a

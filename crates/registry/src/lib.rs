@@ -494,6 +494,372 @@ FOR EACH ROW
 BEGIN
     SELECT RAISE(ABORT, 'pricing admission snapshots are immutable');
 END;
+
+CREATE UNIQUE INDEX IF NOT EXISTS pricing_admission_snapshots_shadow_actual_identity
+    ON pricing_admission_snapshots(
+        request_id,account_id,snapshot_kind,provider_id,requested_model_id,canonical_model_id,
+        alias_generation,payable_multiplier_bp,official_hold_nano,charged_hold_nano,snapshot_digest
+    );
+CREATE TABLE IF NOT EXISTS pricing_shadow_admission_evaluations (
+    request_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    actual_snapshot_kind TEXT NOT NULL CHECK (actual_snapshot_kind = 'legacy_scalar'),
+    actual_snapshot_digest TEXT NOT NULL CHECK (actual_snapshot_digest <> ''),
+    provider_id TEXT NOT NULL CHECK (provider_id <> ''),
+    requested_model_id TEXT NOT NULL CHECK (requested_model_id <> ''),
+    canonical_model_id TEXT NOT NULL CHECK (canonical_model_id <> ''),
+    alias_generation INTEGER NOT NULL CHECK (alias_generation > 0),
+    evaluator_schema_version INTEGER NOT NULL CHECK (evaluator_schema_version > 0),
+    runtime_manifest_generation INTEGER NOT NULL CHECK (runtime_manifest_generation > 0),
+    runtime_manifest_digest TEXT NOT NULL CHECK (runtime_manifest_digest <> ''),
+    enqueued_ts INTEGER NOT NULL CHECK (enqueued_ts > 0),
+    evaluated_ts INTEGER NOT NULL CHECK (evaluated_ts > 0),
+    outcome TEXT NOT NULL CHECK (outcome IN ('resolved', 'rejected', 'read_error')),
+    reason_code TEXT,
+    authorized_multiplier_bp INTEGER NOT NULL
+        CHECK (authorized_multiplier_bp BETWEEN 0 AND 10000),
+    observed_multiplier_bp INTEGER CHECK (observed_multiplier_bp BETWEEN 0 AND 10000),
+    official_hold_nano INTEGER NOT NULL CHECK (official_hold_nano >= 0),
+    legacy_hold_nano INTEGER NOT NULL CHECK (legacy_hold_nano >= 0),
+    product_id TEXT,
+    account_class TEXT CHECK (account_class IN ('b2c', 'b2b', 'openkeys', 'service')),
+    effective_policy_version INTEGER CHECK (effective_policy_version > 0),
+    policy_id TEXT,
+    policy_version INTEGER CHECK (policy_version > 0),
+    source_policy_digest TEXT,
+    policy_digest TEXT,
+    policy_schema_version INTEGER CHECK (policy_schema_version > 0),
+    policy_catalog_generation INTEGER CHECK (policy_catalog_generation > 0),
+    policy_catalog_schema_version INTEGER CHECK (policy_catalog_schema_version > 0),
+    policy_catalog_capability_generation INTEGER
+        CHECK (policy_catalog_capability_generation > 0),
+    policy_catalog_capability_digest TEXT,
+    policy_catalog_digest TEXT,
+    policy_switch_generation INTEGER CHECK (policy_switch_generation > 0),
+    policy_switch_schema_version INTEGER CHECK (policy_switch_schema_version > 0),
+    policy_switch_capability_generation INTEGER
+        CHECK (policy_switch_capability_generation > 0),
+    policy_switch_capability_digest TEXT,
+    policy_switch_digest TEXT,
+    admission_catalog_generation INTEGER CHECK (admission_catalog_generation > 0),
+    admission_catalog_schema_version INTEGER CHECK (admission_catalog_schema_version > 0),
+    admission_catalog_capability_generation INTEGER
+        CHECK (admission_catalog_capability_generation > 0),
+    admission_catalog_capability_digest TEXT,
+    admission_catalog_digest TEXT,
+    admission_switch_generation INTEGER CHECK (admission_switch_generation > 0),
+    admission_switch_schema_version INTEGER CHECK (admission_switch_schema_version > 0),
+    admission_switch_capability_generation INTEGER
+        CHECK (admission_switch_capability_generation > 0),
+    admission_switch_capability_digest TEXT,
+    admission_switch_digest TEXT,
+    rule_id TEXT,
+    rule_digest TEXT,
+    rule_scope TEXT CHECK (rule_scope IN ('provider', 'model')),
+    pricing_mode TEXT CHECK (pricing_mode IN ('track', 'discount')),
+    rule_origin TEXT CHECK (rule_origin IN ('managed', 'legacy')),
+    discount_bps INTEGER,
+    payable_multiplier_bp INTEGER CHECK (payable_multiplier_bp BETWEEN 0 AND 10000),
+    track_eligible INTEGER CHECK (track_eligible IN (0, 1)),
+    retention_eligible INTEGER CHECK (retention_eligible IN (0, 1)),
+    commission_eligible INTEGER CHECK (commission_eligible IN (0, 1)),
+    policy_hold_nano INTEGER CHECK (policy_hold_nano >= 0),
+    comparison_result TEXT NOT NULL
+        CHECK (comparison_result IN ('equal', 'different', 'not_comparable')),
+    -- Best-effort, non-authoritative diagnostics. Immutable identity belongs in typed columns.
+    diagnostic_context TEXT NOT NULL
+        CHECK (json_valid(diagnostic_context) AND json_type(diagnostic_context) = 'object'),
+    evaluation_digest TEXT NOT NULL CHECK (evaluation_digest <> ''),
+    UNIQUE (request_id, account_id),
+    FOREIGN KEY (
+        request_id,account_id,actual_snapshot_kind,provider_id,requested_model_id,
+        canonical_model_id,alias_generation,authorized_multiplier_bp,official_hold_nano,
+        legacy_hold_nano,actual_snapshot_digest
+    ) REFERENCES pricing_admission_snapshots(
+        request_id,account_id,snapshot_kind,provider_id,requested_model_id,canonical_model_id,
+        alias_generation,payable_multiplier_bp,official_hold_nano,charged_hold_nano,snapshot_digest
+    ) ON DELETE CASCADE,
+    FOREIGN KEY (
+        account_id,
+        effective_policy_version,
+        policy_id,
+        policy_version,
+        source_policy_digest,
+        product_id,
+        account_class,
+        policy_schema_version,
+        policy_catalog_generation,
+        policy_switch_generation,
+        policy_digest
+    ) REFERENCES account_policy_versions(
+        account_id,
+        effective_version,
+        policy_id,
+        policy_version,
+        source_policy_digest,
+        product_id,
+        account_class,
+        schema_version,
+        catalog_generation,
+        switch_generation,
+        content_digest
+    ) ON DELETE RESTRICT,
+    FOREIGN KEY (account_id, effective_policy_version, rule_id, rule_digest)
+        REFERENCES account_policy_rules(account_id, effective_version, rule_id, rule_digest)
+        ON DELETE RESTRICT,
+    FOREIGN KEY (
+        product_id,
+        policy_catalog_generation,
+        provider_id,
+        canonical_model_id
+    ) REFERENCES pricing_catalog_entries(
+        product_id,
+        generation,
+        provider_id,
+        canonical_model_id
+    ) ON DELETE RESTRICT,
+    FOREIGN KEY (
+        product_id,
+        policy_catalog_generation,
+        policy_catalog_schema_version,
+        policy_catalog_capability_generation,
+        policy_catalog_capability_digest,
+        policy_catalog_digest
+    ) REFERENCES pricing_catalog_versions(
+        product_id,
+        generation,
+        schema_version,
+        capability_generation,
+        capability_digest,
+        content_digest
+    ) ON DELETE RESTRICT,
+    FOREIGN KEY (
+        policy_switch_generation,
+        policy_switch_schema_version,
+        policy_switch_capability_generation,
+        policy_switch_capability_digest,
+        policy_switch_digest
+    ) REFERENCES provider_switch_versions(
+        generation,
+        schema_version,
+        capability_generation,
+        capability_digest,
+        content_digest
+    ) ON DELETE RESTRICT,
+    FOREIGN KEY (
+        product_id,
+        admission_catalog_generation,
+        provider_id,
+        canonical_model_id
+    ) REFERENCES pricing_catalog_entries(
+        product_id,
+        generation,
+        provider_id,
+        canonical_model_id
+    ) ON DELETE RESTRICT,
+    FOREIGN KEY (
+        product_id,
+        admission_catalog_generation,
+        admission_catalog_schema_version,
+        admission_catalog_capability_generation,
+        admission_catalog_capability_digest,
+        admission_catalog_digest
+    ) REFERENCES pricing_catalog_versions(
+        product_id,
+        generation,
+        schema_version,
+        capability_generation,
+        capability_digest,
+        content_digest
+    ) ON DELETE RESTRICT,
+    FOREIGN KEY (
+        admission_switch_generation,
+        admission_switch_schema_version,
+        admission_switch_capability_generation,
+        admission_switch_capability_digest,
+        admission_switch_digest
+    ) REFERENCES provider_switch_versions(
+        generation,
+        schema_version,
+        capability_generation,
+        capability_digest,
+        content_digest
+    ) ON DELETE RESTRICT,
+    CHECK (evaluated_ts >= enqueued_ts),
+    CHECK (
+        (
+            outcome = 'resolved'
+            AND reason_code IS NULL
+            AND observed_multiplier_bp IS NOT NULL
+            AND product_id IS NOT NULL AND product_id <> ''
+            AND account_class IS NOT NULL
+            AND effective_policy_version IS NOT NULL
+            AND policy_id IS NOT NULL AND policy_id <> ''
+            AND policy_version IS NOT NULL
+            AND source_policy_digest IS NOT NULL AND source_policy_digest <> ''
+            AND policy_digest IS NOT NULL AND policy_digest <> ''
+            AND policy_schema_version IS NOT NULL
+            AND policy_schema_version = evaluator_schema_version
+            AND policy_catalog_generation IS NOT NULL
+            AND policy_catalog_schema_version IS NOT NULL
+            AND policy_catalog_schema_version = policy_schema_version
+            AND policy_catalog_capability_generation IS NOT NULL
+            AND policy_catalog_capability_digest IS NOT NULL
+            AND policy_catalog_capability_digest <> ''
+            AND policy_catalog_digest IS NOT NULL AND policy_catalog_digest <> ''
+            AND policy_switch_generation IS NOT NULL
+            AND policy_switch_schema_version IS NOT NULL
+            AND policy_switch_schema_version = policy_schema_version
+            AND policy_switch_capability_generation IS NOT NULL
+            AND policy_switch_capability_generation = policy_catalog_capability_generation
+            AND policy_switch_capability_digest IS NOT NULL
+            AND policy_switch_capability_digest <> ''
+            AND policy_switch_capability_digest = policy_catalog_capability_digest
+            AND policy_switch_digest IS NOT NULL AND policy_switch_digest <> ''
+            AND admission_catalog_generation IS NOT NULL
+            AND admission_catalog_schema_version IS NOT NULL
+            AND admission_catalog_schema_version = evaluator_schema_version
+            AND admission_catalog_capability_generation IS NOT NULL
+            AND admission_catalog_capability_digest IS NOT NULL
+            AND admission_catalog_capability_digest <> ''
+            AND admission_catalog_digest IS NOT NULL AND admission_catalog_digest <> ''
+            AND admission_switch_generation IS NOT NULL
+            AND admission_switch_schema_version IS NOT NULL
+            AND admission_switch_schema_version = evaluator_schema_version
+            AND admission_switch_capability_generation IS NOT NULL
+            AND admission_switch_capability_digest IS NOT NULL
+            AND admission_switch_capability_digest <> ''
+            AND admission_switch_digest IS NOT NULL AND admission_switch_digest <> ''
+            AND rule_id IS NOT NULL AND rule_id <> ''
+            AND rule_digest IS NOT NULL AND rule_digest <> ''
+            AND rule_scope IS NOT NULL
+            AND pricing_mode IS NOT NULL
+            AND rule_origin IS NOT NULL
+            AND payable_multiplier_bp IS NOT NULL
+            AND track_eligible IS NOT NULL
+            AND retention_eligible IS NOT NULL
+            AND commission_eligible IS NOT NULL
+            AND policy_hold_nano IS NOT NULL
+            AND (
+                (comparison_result = 'equal' AND policy_hold_nano = legacy_hold_nano)
+                OR (comparison_result = 'different' AND policy_hold_nano <> legacy_hold_nano)
+            )
+            AND (
+                (
+                    pricing_mode = 'track'
+                    AND rule_origin = 'managed'
+                    AND discount_bps IS NULL
+                    AND track_eligible = 1
+                    AND retention_eligible = 1
+                )
+                OR (
+                    pricing_mode = 'discount'
+                    AND rule_origin = 'managed'
+                    AND discount_bps IS NOT NULL
+                    AND discount_bps BETWEEN 0 AND 9500
+                    AND discount_bps % 100 = 0
+                    AND payable_multiplier_bp = 10000 - discount_bps
+                    AND track_eligible = 0
+                    AND retention_eligible = 0
+                    AND commission_eligible = 0
+                )
+                OR (
+                    pricing_mode = 'discount'
+                    AND rule_origin = 'legacy'
+                    AND discount_bps IS NULL
+                    AND payable_multiplier_bp BETWEEN 1 AND 10000
+                    AND track_eligible = 0
+                    AND retention_eligible = 0
+                    AND commission_eligible = 0
+                )
+            )
+        )
+        OR (
+            outcome IN ('rejected', 'read_error')
+            AND reason_code IS NOT NULL AND reason_code <> ''
+            AND (
+                (outcome = 'rejected' AND observed_multiplier_bp IS NOT NULL)
+                OR (outcome = 'read_error' AND observed_multiplier_bp IS NULL)
+            )
+            AND product_id IS NULL
+            AND account_class IS NULL
+            AND effective_policy_version IS NULL
+            AND policy_id IS NULL
+            AND policy_version IS NULL
+            AND source_policy_digest IS NULL
+            AND policy_digest IS NULL
+            AND policy_schema_version IS NULL
+            AND policy_catalog_generation IS NULL
+            AND policy_catalog_schema_version IS NULL
+            AND policy_catalog_capability_generation IS NULL
+            AND policy_catalog_capability_digest IS NULL
+            AND policy_catalog_digest IS NULL
+            AND policy_switch_generation IS NULL
+            AND policy_switch_schema_version IS NULL
+            AND policy_switch_capability_generation IS NULL
+            AND policy_switch_capability_digest IS NULL
+            AND policy_switch_digest IS NULL
+            AND admission_catalog_generation IS NULL
+            AND admission_catalog_schema_version IS NULL
+            AND admission_catalog_capability_generation IS NULL
+            AND admission_catalog_capability_digest IS NULL
+            AND admission_catalog_digest IS NULL
+            AND admission_switch_generation IS NULL
+            AND admission_switch_schema_version IS NULL
+            AND admission_switch_capability_generation IS NULL
+            AND admission_switch_capability_digest IS NULL
+            AND admission_switch_digest IS NULL
+            AND rule_id IS NULL
+            AND rule_digest IS NULL
+            AND rule_scope IS NULL
+            AND pricing_mode IS NULL
+            AND rule_origin IS NULL
+            AND discount_bps IS NULL
+            AND payable_multiplier_bp IS NULL
+            AND track_eligible IS NULL
+            AND retention_eligible IS NULL
+            AND commission_eligible IS NULL
+            AND policy_hold_nano IS NULL
+            AND comparison_result = 'not_comparable'
+        )
+    ),
+    CHECK (commission_eligible IS NOT 1 OR pricing_mode = 'track')
+);
+CREATE INDEX IF NOT EXISTS pricing_shadow_admission_evaluations_time
+    ON pricing_shadow_admission_evaluations(evaluated_ts, outcome);
+CREATE INDEX IF NOT EXISTS pricing_shadow_admission_evaluations_account
+    ON pricing_shadow_admission_evaluations(account_id, evaluated_ts);
+CREATE TRIGGER IF NOT EXISTS pricing_shadow_admission_evaluations_rule_identity
+BEFORE INSERT ON pricing_shadow_admission_evaluations
+FOR EACH ROW
+WHEN NEW.outcome = 'resolved' AND NOT EXISTS (
+    SELECT 1
+    FROM account_policy_rules AS rule
+    WHERE rule.account_id = NEW.account_id
+      AND rule.effective_version = NEW.effective_policy_version
+      AND rule.rule_id = NEW.rule_id
+      AND rule.rule_digest = NEW.rule_digest
+      AND rule.scope_type = NEW.rule_scope
+      AND rule.provider_id = NEW.provider_id
+      AND rule.canonical_model_id IS
+          CASE WHEN NEW.rule_scope = 'model' THEN NEW.canonical_model_id ELSE NULL END
+      AND rule.pricing_mode = NEW.pricing_mode
+      AND rule.rule_origin = NEW.rule_origin
+      AND rule.discount_bps IS NEW.discount_bps
+      AND rule.payable_multiplier_bp = NEW.payable_multiplier_bp
+      AND rule.track_eligible = NEW.track_eligible
+      AND rule.retention_eligible = NEW.retention_eligible
+      AND rule.commission_eligible = NEW.commission_eligible
+)
+BEGIN
+    SELECT RAISE(ABORT, 'pricing shadow admission rule identity does not match immutable policy rule');
+END;
+CREATE TRIGGER IF NOT EXISTS pricing_shadow_admission_evaluations_immutable_update
+BEFORE UPDATE ON pricing_shadow_admission_evaluations
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'pricing shadow admission evaluations are immutable');
+END;
 CREATE TABLE IF NOT EXISTS reservation_funding_allocations (
     request_id TEXT NOT NULL,
     account_id TEXT NOT NULL,
@@ -841,6 +1207,24 @@ fn install_pricing_policy_schema(conn: &Connection) -> Result<()> {
         "TEXT",
     )?;
     ensure_sqlite_column(conn, "account_policy_versions", "account_class", "TEXT")?;
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS pricing_catalog_versions_shadow_identity
+             ON pricing_catalog_versions(
+                 product_id,generation,schema_version,capability_generation,capability_digest,
+                 content_digest
+             );
+         CREATE UNIQUE INDEX IF NOT EXISTS provider_switch_versions_shadow_identity
+             ON provider_switch_versions(
+                 generation,schema_version,capability_generation,capability_digest,content_digest
+             );
+         CREATE UNIQUE INDEX IF NOT EXISTS account_policy_versions_shadow_identity
+             ON account_policy_versions(
+                 account_id,effective_version,policy_id,policy_version,source_policy_digest,
+                 product_id,account_class,schema_version,catalog_generation,switch_generation,
+                 content_digest
+             );",
+    )
+    .context("install SQLite shadow attribution identity indexes")?;
     install_sqlite_runtime_pin_guards(conn)?;
 
     ensure_sqlite_column(conn, "billing_settlement_outbox", "provider", "TEXT")?;
@@ -3304,6 +3688,7 @@ mod tests {
             "account_policy_bindings",
             "funding_buckets",
             "pricing_admission_snapshots",
+            "pricing_shadow_admission_evaluations",
         ] {
             let count: i64 = c
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
@@ -3487,6 +3872,12 @@ mod tests {
         .unwrap();
 
         migrate_pricing_policy_schema(&c).unwrap();
+        let foreign_key_violations: i64 = c
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(foreign_key_violations, 0);
         account_create(&c, "upgraded-policy-account", None, 2000).unwrap();
         c.execute_batch(
             "INSERT INTO pricing_catalog_versions(
@@ -3803,6 +4194,350 @@ mod tests {
     }
 
     #[test]
+    fn pricing_shadow_admission_requires_exact_actual_capability_and_rule_identity() {
+        let c = db();
+        account_create(&c, "shadow-account", None, 2000).unwrap();
+        c.execute_batch(
+            "INSERT INTO pricing_catalog_versions(
+                 product_id,generation,schema_version,capability_generation,capability_digest,
+                 content_digest,created_ts
+             ) VALUES('main',1,1,1,'capability-digest','catalog-digest',1);
+             INSERT INTO pricing_catalog_entries(
+                 product_id,generation,provider_id,canonical_model_id,enabled
+             ) VALUES('main',1,'anthropic','claude-test',1);
+             INSERT INTO provider_switch_versions(
+                 generation,schema_version,capability_generation,capability_digest,
+                 content_digest,created_ts
+             ) VALUES(1,1,1,'capability-digest','switch-digest',1);
+             INSERT INTO account_policy_versions(
+                 account_id,effective_version,policy_id,policy_version,source_policy_digest,
+                 owner_type,owner_id,account_class,product_id,schema_version,catalog_generation,
+                 switch_generation,content_digest,replacement_locked,created_ts
+             ) VALUES(
+                 'shadow-account',1,'b2c:global',1,'source-policy','global_b2c','global','b2c',
+                 'main',1,1,1,'policy-digest',0,1
+             );
+             INSERT INTO account_policy_rules(
+                 account_id,effective_version,rule_id,rule_digest,scope_type,provider_id,
+                 canonical_model_id,pricing_mode,rule_origin,discount_bps,payable_multiplier_bp,
+                 track_eligible,retention_eligible,commission_eligible
+             ) VALUES(
+                 'shadow-account',1,'anthropic-provider','rule-digest','provider','anthropic',NULL,
+                 'discount','managed',6000,4000,0,0,0
+             );
+             INSERT INTO billing_reservations(
+                 request_id,account_id,key,hold_nano,state,balance_after_reserve_nano,
+                 lease_until,created_ts,updated_ts
+             ) VALUES('shadow-request','shadow-account','key',100,'reserved',0,100,1,1);
+             INSERT INTO pricing_admission_snapshots(
+                 request_id,account_id,snapshot_kind,schema_version,provider_id,
+                 requested_model_id,canonical_model_id,alias_generation,pricing_mode,rule_origin,
+                 payable_multiplier_bp,tariff_schedule_id,tariff_priced_ts,admission_ts,
+                 official_hold_nano,charged_hold_nano,premium_modifiers,snapshot_digest
+             ) VALUES(
+                 'shadow-request','shadow-account','legacy_scalar',1,'anthropic',
+                 'claude-test','claude-test',1,'legacy_scalar','legacy',2000,
+                 'legacy-tariff',1,1,100,20,'{}','actual-digest'
+             );",
+        )
+        .unwrap();
+
+        let resolved_shadow_sql = "INSERT INTO pricing_shadow_admission_evaluations(
+                 request_id,account_id,actual_snapshot_kind,actual_snapshot_digest,provider_id,
+                 requested_model_id,canonical_model_id,alias_generation,evaluator_schema_version,
+                 runtime_manifest_generation,runtime_manifest_digest,enqueued_ts,evaluated_ts,
+                 outcome,authorized_multiplier_bp,observed_multiplier_bp,official_hold_nano,
+                 legacy_hold_nano,product_id,account_class,effective_policy_version,policy_id,
+                 policy_version,source_policy_digest,policy_digest,policy_schema_version,
+                 policy_catalog_generation,policy_catalog_schema_version,
+                 policy_catalog_capability_generation,policy_catalog_capability_digest,
+                 policy_catalog_digest,policy_switch_generation,policy_switch_schema_version,
+                 policy_switch_capability_generation,policy_switch_capability_digest,
+                 policy_switch_digest,admission_catalog_generation,admission_catalog_schema_version,
+                 admission_catalog_capability_generation,admission_catalog_capability_digest,
+                 admission_catalog_digest,admission_switch_generation,admission_switch_schema_version,
+                 admission_switch_capability_generation,admission_switch_capability_digest,
+                 admission_switch_digest,rule_id,rule_digest,rule_scope,pricing_mode,rule_origin,
+                 discount_bps,payable_multiplier_bp,track_eligible,retention_eligible,
+                 commission_eligible,policy_hold_nano,comparison_result,diagnostic_context,
+                 evaluation_digest
+             ) VALUES(
+                 'shadow-request','shadow-account','legacy_scalar',?1,?2,
+                 'claude-test','claude-test',1,1,1,'runtime-manifest',1,2,
+                 'resolved',?3,2000,?4,?5,'main','b2c',1,'b2c:global',1,
+                 'source-policy','policy-digest',1,1,
+                 CASE WHEN ?11='policy_catalog_schema_version' THEN NULL ELSE 1 END,
+                 CASE WHEN ?11='policy_catalog_capability_generation' THEN NULL ELSE 1 END,
+                 CASE WHEN ?11='policy_catalog_capability_digest' THEN NULL ELSE ?6 END,
+                 'catalog-digest',1,
+                 CASE WHEN ?11='policy_switch_schema_version' THEN NULL ELSE 1 END,
+                 CASE WHEN ?11='policy_switch_capability_generation' THEN NULL ELSE 1 END,
+                 CASE WHEN ?11='policy_switch_capability_digest' THEN NULL ELSE ?6 END,
+                 'switch-digest',1,
+                 CASE WHEN ?11='admission_catalog_schema_version' THEN NULL ELSE 1 END,
+                 CASE WHEN ?11='admission_catalog_capability_generation' THEN NULL ELSE 1 END,
+                 CASE WHEN ?11='admission_catalog_capability_digest' THEN NULL ELSE ?6 END,
+                 'catalog-digest',1,
+                 CASE WHEN ?11='admission_switch_schema_version' THEN NULL ELSE 1 END,
+                 CASE WHEN ?11='admission_switch_capability_generation' THEN NULL ELSE 1 END,
+                 CASE WHEN ?11='admission_switch_capability_digest' THEN NULL ELSE ?6 END,
+                 'switch-digest','anthropic-provider','rule-digest','provider',
+                 'discount','managed',?7,?8,0,0,0,?9,'different','{}',?10
+             )";
+        let assert_rejected = |actual_digest: &str,
+                               provider: &str,
+                               authorized_multiplier_bp: i64,
+                               official_hold_nano: i64,
+                               legacy_hold_nano: i64,
+                               capability_digest: &str,
+                               discount_bps: i64,
+                               payable_multiplier_bp: i64,
+                               evaluation_digest: &str| {
+            assert!(c
+                .execute(
+                    resolved_shadow_sql,
+                    rusqlite::params![
+                        actual_digest,
+                        provider,
+                        authorized_multiplier_bp,
+                        official_hold_nano,
+                        legacy_hold_nano,
+                        capability_digest,
+                        discount_bps,
+                        payable_multiplier_bp,
+                        40_i64,
+                        evaluation_digest,
+                        ""
+                    ],
+                )
+                .is_err());
+        };
+        assert_rejected(
+            "wrong-actual-digest",
+            "anthropic",
+            2000,
+            100,
+            20,
+            "capability-digest",
+            6000,
+            4000,
+            "wrong-actual-digest",
+        );
+        assert_rejected(
+            "actual-digest",
+            "openai",
+            2000,
+            100,
+            20,
+            "capability-digest",
+            6000,
+            4000,
+            "wrong-actual-provider",
+        );
+        assert_rejected(
+            "actual-digest",
+            "anthropic",
+            2001,
+            100,
+            20,
+            "capability-digest",
+            6000,
+            4000,
+            "wrong-actual-multiplier",
+        );
+        assert_rejected(
+            "actual-digest",
+            "anthropic",
+            2000,
+            101,
+            20,
+            "capability-digest",
+            6000,
+            4000,
+            "wrong-official-hold",
+        );
+        assert_rejected(
+            "actual-digest",
+            "anthropic",
+            2000,
+            100,
+            21,
+            "capability-digest",
+            6000,
+            4000,
+            "wrong-legacy-hold",
+        );
+        assert_rejected(
+            "actual-digest",
+            "anthropic",
+            2000,
+            100,
+            20,
+            "wrong-capability",
+            6000,
+            4000,
+            "wrong-capability",
+        );
+        assert_rejected(
+            "actual-digest",
+            "anthropic",
+            2000,
+            100,
+            20,
+            "capability-digest",
+            5000,
+            5000,
+            "wrong-rule-economics",
+        );
+        for null_field in [
+            "policy_catalog_schema_version",
+            "policy_catalog_capability_generation",
+            "policy_catalog_capability_digest",
+            "policy_switch_schema_version",
+            "policy_switch_capability_generation",
+            "policy_switch_capability_digest",
+            "admission_catalog_schema_version",
+            "admission_catalog_capability_generation",
+            "admission_catalog_capability_digest",
+            "admission_switch_schema_version",
+            "admission_switch_capability_generation",
+            "admission_switch_capability_digest",
+        ] {
+            assert!(c
+                .execute(
+                    resolved_shadow_sql,
+                    rusqlite::params![
+                        "actual-digest",
+                        "anthropic",
+                        2000_i64,
+                        100_i64,
+                        20_i64,
+                        "capability-digest",
+                        6000_i64,
+                        4000_i64,
+                        40_i64,
+                        null_field,
+                        null_field
+                    ],
+                )
+                .is_err());
+        }
+
+        let valid = rusqlite::params![
+            "actual-digest",
+            "anthropic",
+            2000_i64,
+            100_i64,
+            20_i64,
+            "capability-digest",
+            6000_i64,
+            4000_i64,
+            40_i64,
+            "shadow-evaluation",
+            ""
+        ];
+        c.execute(resolved_shadow_sql, valid).unwrap();
+        assert!(c
+            .execute(
+                resolved_shadow_sql,
+                rusqlite::params![
+                    "actual-digest",
+                    "anthropic",
+                    2000_i64,
+                    100_i64,
+                    20_i64,
+                    "capability-digest",
+                    6000_i64,
+                    4000_i64,
+                    40_i64,
+                    "shadow-evaluation",
+                    ""
+                ],
+            )
+            .is_err());
+        assert!(c
+            .execute(
+                "UPDATE pricing_shadow_admission_evaluations
+                 SET evaluation_digest='replacement' WHERE request_id='shadow-request'",
+                [],
+            )
+            .is_err());
+
+        for request_id in ["shadow-read-error", "shadow-rejected"] {
+            c.execute(
+                "INSERT INTO billing_reservations(
+                     request_id,account_id,key,hold_nano,state,balance_after_reserve_nano,
+                     lease_until,created_ts,updated_ts
+                 ) VALUES(?1,'shadow-account','key',100,'reserved',0,100,1,1)",
+                [request_id],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO pricing_admission_snapshots(
+                     request_id,account_id,snapshot_kind,schema_version,provider_id,
+                     requested_model_id,canonical_model_id,alias_generation,pricing_mode,rule_origin,
+                     payable_multiplier_bp,tariff_schedule_id,tariff_priced_ts,admission_ts,
+                     official_hold_nano,charged_hold_nano,premium_modifiers,snapshot_digest
+                 ) VALUES(
+                     ?1,'shadow-account','legacy_scalar',1,'anthropic','claude-test','claude-test',1,
+                     'legacy_scalar','legacy',2000,'legacy-tariff',1,1,100,20,'{}','failure-actual'
+                 )",
+                [request_id],
+            )
+            .unwrap();
+        }
+        let failure_shadow_sql = "INSERT INTO pricing_shadow_admission_evaluations(
+                 request_id,account_id,actual_snapshot_kind,actual_snapshot_digest,provider_id,
+                 requested_model_id,canonical_model_id,alias_generation,evaluator_schema_version,
+                 runtime_manifest_generation,runtime_manifest_digest,enqueued_ts,evaluated_ts,
+                 outcome,reason_code,authorized_multiplier_bp,observed_multiplier_bp,
+                 official_hold_nano,legacy_hold_nano,comparison_result,diagnostic_context,
+                 evaluation_digest
+             ) VALUES(
+                 ?1,'shadow-account','legacy_scalar','failure-actual','anthropic',
+                 'claude-test','claude-test',1,1,1,'runtime-manifest',1,2,
+                 ?2,'authority_read',2000,?3,100,20,'not_comparable','{}',?4
+             )";
+        assert!(c
+            .execute(
+                failure_shadow_sql,
+                rusqlite::params![
+                    "shadow-read-error",
+                    "rejected",
+                    Option::<i64>::None,
+                    "missing-rejected-observation"
+                ],
+            )
+            .is_err());
+        c.execute(
+            failure_shadow_sql,
+            rusqlite::params![
+                "shadow-read-error",
+                "read_error",
+                Option::<i64>::None,
+                "read-error"
+            ],
+        )
+        .unwrap();
+        assert!(c
+            .execute(
+                failure_shadow_sql,
+                rusqlite::params![
+                    "shadow-rejected",
+                    "read_error",
+                    Some(2000_i64),
+                    "unexpected-read-observation"
+                ],
+            )
+            .is_err());
+        c.execute(
+            failure_shadow_sql,
+            rusqlite::params!["shadow-rejected", "rejected", Some(2000_i64), "rejected"],
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn pricing_snapshots_and_funding_allocations_are_account_scoped() {
         let c = db();
         let foreign_keys: bool = c
@@ -3842,6 +4577,34 @@ mod tests {
             .execute(
                 "UPDATE pricing_admission_snapshots
                  SET charged_hold_nano=21 WHERE request_id='request-a'",
+                [],
+            )
+            .is_err());
+        let rejected_shadow_sql = "INSERT INTO pricing_shadow_admission_evaluations(
+                 request_id,account_id,actual_snapshot_kind,actual_snapshot_digest,
+                 provider_id,requested_model_id,canonical_model_id,
+                 alias_generation,evaluator_schema_version,runtime_manifest_generation,
+                 runtime_manifest_digest,enqueued_ts,evaluated_ts,outcome,reason_code,
+                 authorized_multiplier_bp,observed_multiplier_bp,official_hold_nano,legacy_hold_nano,
+                 comparison_result,diagnostic_context,evaluation_digest
+             ) VALUES(?1,?2,'legacy_scalar','snapshot','anthropic','claude-test','claude-test',1,1,1,
+                 'runtime-manifest',1,2,'rejected','no_policy_binding',2000,2000,100,20,
+                 'not_comparable','{}','shadow-rejected')";
+        assert!(c
+            .execute(
+                rejected_shadow_sql,
+                rusqlite::params!["request-a", "account-b"],
+            )
+            .is_err());
+        c.execute(
+            rejected_shadow_sql,
+            rusqlite::params!["request-a", "account-a"],
+        )
+        .unwrap();
+        assert!(c
+            .execute(
+                "UPDATE pricing_shadow_admission_evaluations
+                 SET reason_code='different_reason' WHERE request_id='request-a'",
                 [],
             )
             .is_err());

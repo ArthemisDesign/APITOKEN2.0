@@ -21,6 +21,7 @@ const MIGRATION_0005: &str = include_str!("../migrations_pg/0005_provider_attrib
 const MIGRATION_0006: &str = include_str!("../migrations_pg/0006_multi_discount_expand.sql");
 const MIGRATION_0007: &str = include_str!("../migrations_pg/0007_multi_discount_runtime_pins.sql");
 const MIGRATION_0008: &str = include_str!("../migrations_pg/0008_catalog_policy_lineage.sql");
+const MIGRATION_0009: &str = include_str!("../migrations_pg/0009_pricing_shadow_admission.sql");
 
 #[cfg(test)]
 pub(crate) const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_441;
@@ -219,6 +220,8 @@ impl PgStore {
             .context("apply engine PostgreSQL migration 0007")?;
         tx.batch_execute(MIGRATION_0008)
             .context("apply engine PostgreSQL migration 0008")?;
+        tx.batch_execute(MIGRATION_0009)
+            .context("apply engine PostgreSQL migration 0009")?;
         tx.commit()?;
         Ok(())
     }
@@ -1700,6 +1703,7 @@ impl PgStore {
                + (SELECT COUNT(*) FROM account_policy_bindings)
                + (SELECT COUNT(*) FROM funding_buckets)
                + (SELECT COUNT(*) FROM pricing_admission_snapshots)
+               + (SELECT COUNT(*) FROM pricing_shadow_admission_evaluations)
                + (SELECT COUNT(*) FROM reservation_funding_allocations)
                + (SELECT COUNT(*) FROM ledger_funding_allocations)",
             [],
@@ -1765,6 +1769,7 @@ impl PgStore {
                    + (SELECT COUNT(*) FROM account_policy_bindings)
                    + (SELECT COUNT(*) FROM funding_buckets)
                    + (SELECT COUNT(*) FROM pricing_admission_snapshots)
+                   + (SELECT COUNT(*) FROM pricing_shadow_admission_evaluations)
                    + (SELECT COUNT(*) FROM reservation_funding_allocations)
                    + (SELECT COUNT(*) FROM ledger_funding_allocations)
                  )::bigint",
@@ -2342,9 +2347,9 @@ mod tests {
             .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
             .unwrap();
         pg.migrate().unwrap();
-        assert_eq!(pg.schema_version().unwrap(), 8);
+        assert_eq!(pg.schema_version().unwrap(), 9);
         pg.migrate().unwrap();
-        assert_eq!(pg.schema_version().unwrap(), 8);
+        assert_eq!(pg.schema_version().unwrap(), 9);
         let runtime_pin_constraints: i64 = pg
             .client
             .query_one(
@@ -2384,13 +2389,15 @@ mod tests {
                 "SELECT COUNT(*)::bigint FROM pg_trigger \
                  WHERE tgname IN ('pricing_snapshot_reservation_account', \
                                   'pricing_snapshot_immutable_update', \
+                                  'pricing_shadow_admission_evaluation_rule_identity', \
+                                  'pricing_shadow_admission_evaluation_immutable_update', \
                                   'ledger_funding_allocation_account') \
                    AND NOT tgisinternal",
                 &[],
             )
             .unwrap()
             .get(0);
-        assert_eq!(trigger_count, 3);
+        assert_eq!(trigger_count, 5);
         let seeded_policy_rows: i64 = pg
             .client
             .query_one(
@@ -2398,7 +2405,8 @@ mod tests {
                       + (SELECT COUNT(*) FROM provider_switch_versions) \
                       + (SELECT COUNT(*) FROM account_policy_versions) \
                       + (SELECT COUNT(*) FROM funding_buckets) \
-                      + (SELECT COUNT(*) FROM pricing_admission_snapshots)",
+                      + (SELECT COUNT(*) FROM pricing_admission_snapshots) \
+                      + (SELECT COUNT(*) FROM pricing_shadow_admission_evaluations)",
                 &[],
             )
             .unwrap()
@@ -2456,6 +2464,53 @@ mod tests {
             .execute(
                 "UPDATE pricing_admission_snapshots
                  SET charged_hold_nano=21 WHERE request_id='schema-request'",
+                &[],
+            )
+            .is_err());
+        assert!(pg
+            .client
+            .execute(
+                "INSERT INTO pricing_shadow_admission_evaluations(
+                     request_id,account_id,actual_snapshot_kind,actual_snapshot_digest,
+                     provider_id,requested_model_id,canonical_model_id,
+                     alias_generation,evaluator_schema_version,runtime_manifest_generation,
+                     runtime_manifest_digest,enqueued_ts,evaluated_ts,outcome,reason_code,
+                     authorized_multiplier_bp,observed_multiplier_bp,official_hold_nano,
+                     legacy_hold_nano,
+                     comparison_result,diagnostic_context,evaluation_digest
+                 ) VALUES(
+                     'schema-request','schema-b','legacy_scalar','snapshot',
+                     'anthropic','claude-test','claude-test',
+                     1,1,1,'runtime-manifest',1,2,'rejected','no_policy_binding',
+                     2000,2000,100,20,'not_comparable','{}'::jsonb,'shadow-rejected'
+                 )",
+                &[],
+            )
+            .is_err());
+        pg.client
+            .execute(
+                "INSERT INTO pricing_shadow_admission_evaluations(
+                     request_id,account_id,actual_snapshot_kind,actual_snapshot_digest,
+                     provider_id,requested_model_id,canonical_model_id,
+                     alias_generation,evaluator_schema_version,runtime_manifest_generation,
+                     runtime_manifest_digest,enqueued_ts,evaluated_ts,outcome,reason_code,
+                     authorized_multiplier_bp,observed_multiplier_bp,official_hold_nano,
+                     legacy_hold_nano,
+                     comparison_result,diagnostic_context,evaluation_digest
+                 ) VALUES(
+                     'schema-request','schema-a','legacy_scalar','snapshot',
+                     'anthropic','claude-test','claude-test',
+                     1,1,1,'runtime-manifest',1,2,'rejected','no_policy_binding',
+                     2000,2000,100,20,'not_comparable','{}'::jsonb,'shadow-rejected'
+                 )",
+                &[],
+            )
+            .unwrap();
+        assert!(pg
+            .client
+            .execute(
+                "UPDATE pricing_shadow_admission_evaluations
+                 SET reason_code='different_reason' WHERE request_id='schema-request'",
                 &[],
             )
             .is_err());
@@ -2578,10 +2633,15 @@ mod tests {
                  INSERT INTO reservations(
                      request_id,account_id,key,hold_nano,balance_after_reserve_nano,
                      owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts
-                 ) VALUES(
-                     'schema-policy-request','schema-a','schema-key',100,0,
-                     'schema-engine',1,100,'reserved',1,1
-                 );
+                 ) VALUES
+                     (
+                         'schema-policy-request','schema-a','schema-key',100,0,
+                         'schema-engine',1,100,'reserved',1,1
+                     ),
+                     (
+                         'schema-shadow-request','schema-a','schema-key',100,0,
+                         'schema-engine',1,100,'reserved',1,1
+                     );
                  INSERT INTO pricing_admission_snapshots(
                      request_id,account_id,snapshot_kind,schema_version,provider_id,product_id,
                      account_class,requested_model_id,canonical_model_id,alias_generation,
@@ -2596,7 +2656,329 @@ mod tests {
                      'b2c','claude-test','claude-test',1,'managed-rule','managed-rule-digest',
                      'provider','discount','managed',6000,4000,'schema-policy',1,1,'policy',1,1,
                      'tariff',1,1,100,40,false,false,false,'{}'::jsonb,'policy-snapshot'
+                 );
+                 INSERT INTO pricing_admission_snapshots(
+                     request_id,account_id,snapshot_kind,schema_version,provider_id,
+                     requested_model_id,canonical_model_id,alias_generation,pricing_mode,
+                     rule_origin,payable_multiplier_bp,tariff_schedule_id,tariff_priced_ts,
+                     admission_ts,official_hold_nano,charged_hold_nano,premium_modifiers,
+                     snapshot_digest
+                 ) VALUES(
+                     'schema-shadow-request','schema-a','legacy_scalar',1,'anthropic',
+                     'claude-test','claude-test',1,'legacy_scalar','legacy',2000,
+                     'legacy-tariff',1,1,100,20,'{}'::jsonb,'actual-snapshot'
                  );",
+            )
+            .unwrap();
+        let resolved_shadow_sql = "INSERT INTO pricing_shadow_admission_evaluations(
+                 request_id,account_id,actual_snapshot_kind,actual_snapshot_digest,provider_id,
+                 requested_model_id,canonical_model_id,alias_generation,evaluator_schema_version,
+                 runtime_manifest_generation,runtime_manifest_digest,enqueued_ts,evaluated_ts,
+                 outcome,authorized_multiplier_bp,observed_multiplier_bp,official_hold_nano,
+                 legacy_hold_nano,product_id,account_class,effective_policy_version,policy_id,
+                 policy_version,source_policy_digest,policy_digest,policy_schema_version,
+                 policy_catalog_generation,policy_catalog_schema_version,
+                 policy_catalog_capability_generation,policy_catalog_capability_digest,
+                 policy_catalog_digest,policy_switch_generation,policy_switch_schema_version,
+                 policy_switch_capability_generation,policy_switch_capability_digest,
+                 policy_switch_digest,admission_catalog_generation,admission_catalog_schema_version,
+                 admission_catalog_capability_generation,admission_catalog_capability_digest,
+                 admission_catalog_digest,admission_switch_generation,admission_switch_schema_version,
+                 admission_switch_capability_generation,admission_switch_capability_digest,
+                 admission_switch_digest,rule_id,rule_digest,rule_scope,pricing_mode,rule_origin,
+                 discount_bps,payable_multiplier_bp,track_eligible,retention_eligible,
+                 commission_eligible,policy_hold_nano,comparison_result,diagnostic_context,
+                 evaluation_digest
+             ) VALUES(
+                 'schema-shadow-request','schema-a','legacy_scalar',$1,$2,
+                 'claude-test','claude-test',1,1,1,'runtime-manifest',1,2,
+                 'resolved',$3,2000,$4,$5,'schema-main','b2c',1,'schema-policy',1,
+                 'source-policy','policy',1,1,
+                 CASE WHEN $11='policy_catalog_schema_version' THEN NULL ELSE 1 END,
+                 CASE WHEN $11='policy_catalog_capability_generation' THEN NULL ELSE 1 END,
+                 CASE WHEN $11='policy_catalog_capability_digest' THEN NULL ELSE $6 END,
+                 'catalog',1,
+                 CASE WHEN $11='policy_switch_schema_version' THEN NULL ELSE 1 END,
+                 CASE WHEN $11='policy_switch_capability_generation' THEN NULL ELSE 1 END,
+                 CASE WHEN $11='policy_switch_capability_digest' THEN NULL ELSE $6 END,
+                 'switch',1,
+                 CASE WHEN $11='admission_catalog_schema_version' THEN NULL ELSE 1 END,
+                 CASE WHEN $11='admission_catalog_capability_generation' THEN NULL ELSE 1 END,
+                 CASE WHEN $11='admission_catalog_capability_digest' THEN NULL ELSE $6 END,
+                 'catalog',1,
+                 CASE WHEN $11='admission_switch_schema_version' THEN NULL ELSE 1 END,
+                 CASE WHEN $11='admission_switch_capability_generation' THEN NULL ELSE 1 END,
+                 CASE WHEN $11='admission_switch_capability_digest' THEN NULL ELSE $6 END,
+                 'switch','managed-rule','managed-rule-digest','provider',
+                 'discount','managed',$7,$8,false,false,false,$9,'different','{}'::jsonb,$10
+             )";
+        let mut assert_shadow_rejected =
+            |actual_digest: &str,
+             provider: &str,
+             authorized_multiplier_bp: i64,
+             official_hold_nano: i64,
+             legacy_hold_nano: i64,
+             capability_digest: &str,
+             discount_bps: i64,
+             payable_multiplier_bp: i64,
+             evaluation_digest: &str| {
+                assert!(pg
+                    .client
+                    .execute(
+                        resolved_shadow_sql,
+                        &[
+                            &actual_digest,
+                            &provider,
+                            &authorized_multiplier_bp,
+                            &official_hold_nano,
+                            &legacy_hold_nano,
+                            &capability_digest,
+                            &discount_bps,
+                            &payable_multiplier_bp,
+                            &40_i64,
+                            &evaluation_digest,
+                            &"",
+                        ],
+                    )
+                    .is_err());
+            };
+        assert_shadow_rejected(
+            "wrong-actual-snapshot",
+            "anthropic",
+            2000,
+            100,
+            20,
+            "capability",
+            6000,
+            4000,
+            "wrong-actual-digest",
+        );
+        assert_shadow_rejected(
+            "actual-snapshot",
+            "openai",
+            2000,
+            100,
+            20,
+            "capability",
+            6000,
+            4000,
+            "wrong-actual-provider",
+        );
+        assert_shadow_rejected(
+            "actual-snapshot",
+            "anthropic",
+            2001,
+            100,
+            20,
+            "capability",
+            6000,
+            4000,
+            "wrong-actual-multiplier",
+        );
+        assert_shadow_rejected(
+            "actual-snapshot",
+            "anthropic",
+            2000,
+            101,
+            20,
+            "capability",
+            6000,
+            4000,
+            "wrong-official-hold",
+        );
+        assert_shadow_rejected(
+            "actual-snapshot",
+            "anthropic",
+            2000,
+            100,
+            21,
+            "capability",
+            6000,
+            4000,
+            "wrong-legacy-hold",
+        );
+        assert_shadow_rejected(
+            "actual-snapshot",
+            "anthropic",
+            2000,
+            100,
+            20,
+            "wrong-capability",
+            6000,
+            4000,
+            "wrong-capability",
+        );
+        assert_shadow_rejected(
+            "actual-snapshot",
+            "anthropic",
+            2000,
+            100,
+            20,
+            "capability",
+            5000,
+            5000,
+            "wrong-rule-economics",
+        );
+        for null_field in [
+            "policy_catalog_schema_version",
+            "policy_catalog_capability_generation",
+            "policy_catalog_capability_digest",
+            "policy_switch_schema_version",
+            "policy_switch_capability_generation",
+            "policy_switch_capability_digest",
+            "admission_catalog_schema_version",
+            "admission_catalog_capability_generation",
+            "admission_catalog_capability_digest",
+            "admission_switch_schema_version",
+            "admission_switch_capability_generation",
+            "admission_switch_capability_digest",
+        ] {
+            assert!(pg
+                .client
+                .execute(
+                    resolved_shadow_sql,
+                    &[
+                        &"actual-snapshot",
+                        &"anthropic",
+                        &2000_i64,
+                        &100_i64,
+                        &20_i64,
+                        &"capability",
+                        &6000_i64,
+                        &4000_i64,
+                        &40_i64,
+                        &null_field,
+                        &null_field,
+                    ],
+                )
+                .is_err());
+        }
+        pg.client
+            .execute(
+                resolved_shadow_sql,
+                &[
+                    &"actual-snapshot",
+                    &"anthropic",
+                    &2000_i64,
+                    &100_i64,
+                    &20_i64,
+                    &"capability",
+                    &6000_i64,
+                    &4000_i64,
+                    &40_i64,
+                    &"shadow-resolved",
+                    &"",
+                ],
+            )
+            .unwrap();
+        assert!(pg
+            .client
+            .execute(
+                resolved_shadow_sql,
+                &[
+                    &"actual-snapshot",
+                    &"anthropic",
+                    &2000_i64,
+                    &100_i64,
+                    &20_i64,
+                    &"capability",
+                    &6000_i64,
+                    &4000_i64,
+                    &40_i64,
+                    &"shadow-resolved",
+                    &"",
+                ],
+            )
+            .is_err());
+        pg.client
+            .batch_execute(
+                "INSERT INTO reservations(
+                     request_id,account_id,key,hold_nano,balance_after_reserve_nano,
+                     owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts
+                 ) VALUES
+                     (
+                         'schema-shadow-read-error','schema-a','schema-key',100,0,
+                         'schema-engine',1,100,'reserved',1,1
+                     ),
+                     (
+                         'schema-shadow-rejected','schema-a','schema-key',100,0,
+                         'schema-engine',1,100,'reserved',1,1
+                     );
+                 INSERT INTO pricing_admission_snapshots(
+                     request_id,account_id,snapshot_kind,schema_version,provider_id,
+                     requested_model_id,canonical_model_id,alias_generation,pricing_mode,
+                     rule_origin,payable_multiplier_bp,tariff_schedule_id,tariff_priced_ts,
+                     admission_ts,official_hold_nano,charged_hold_nano,premium_modifiers,
+                     snapshot_digest
+                 ) VALUES
+                     (
+                         'schema-shadow-read-error','schema-a','legacy_scalar',1,'anthropic',
+                         'claude-test','claude-test',1,'legacy_scalar','legacy',2000,
+                         'legacy-tariff',1,1,100,20,'{}'::jsonb,'failure-actual'
+                     ),
+                     (
+                         'schema-shadow-rejected','schema-a','legacy_scalar',1,'anthropic',
+                         'claude-test','claude-test',1,'legacy_scalar','legacy',2000,
+                         'legacy-tariff',1,1,100,20,'{}'::jsonb,'failure-actual'
+                     );",
+            )
+            .unwrap();
+        let failure_shadow_sql = "INSERT INTO pricing_shadow_admission_evaluations(
+                 request_id,account_id,actual_snapshot_kind,actual_snapshot_digest,provider_id,
+                 requested_model_id,canonical_model_id,alias_generation,evaluator_schema_version,
+                 runtime_manifest_generation,runtime_manifest_digest,enqueued_ts,evaluated_ts,
+                 outcome,reason_code,authorized_multiplier_bp,observed_multiplier_bp,
+                 official_hold_nano,legacy_hold_nano,comparison_result,diagnostic_context,
+                 evaluation_digest
+             ) VALUES(
+                 $1,'schema-a','legacy_scalar','failure-actual','anthropic',
+                 'claude-test','claude-test',1,1,1,'runtime-manifest',1,2,
+                 $2,'authority_read',2000,$3,100,20,'not_comparable','{}'::jsonb,$4
+             )";
+        assert!(pg
+            .client
+            .execute(
+                failure_shadow_sql,
+                &[
+                    &"schema-shadow-read-error",
+                    &"rejected",
+                    &Option::<i64>::None,
+                    &"missing-rejected-observation",
+                ],
+            )
+            .is_err());
+        pg.client
+            .execute(
+                failure_shadow_sql,
+                &[
+                    &"schema-shadow-read-error",
+                    &"read_error",
+                    &Option::<i64>::None,
+                    &"read-error",
+                ],
+            )
+            .unwrap();
+        assert!(pg
+            .client
+            .execute(
+                failure_shadow_sql,
+                &[
+                    &"schema-shadow-rejected",
+                    &"read_error",
+                    &Some(2000_i64),
+                    &"unexpected-read-observation",
+                ],
+            )
+            .is_err());
+        pg.client
+            .execute(
+                failure_shadow_sql,
+                &[
+                    &"schema-shadow-rejected",
+                    &"rejected",
+                    &Some(2000_i64),
+                    &"rejected",
+                ],
             )
             .unwrap();
         pg.client.batch_execute(

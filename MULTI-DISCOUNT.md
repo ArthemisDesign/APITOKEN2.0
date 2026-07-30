@@ -1,12 +1,14 @@
 # Контракт мультипровайдерных скидок и политик доступа
 
 Статус: продуктовые решения для первой версии согласованы. Expand-only schema foundation этапов
-1–2 (`engine 0006`–`0008`, `commerce 0022`–`0023`, `OpenKeys 0007`) и Stage 3A dormant
-registry-only persistence/CAS уже доставлены. Текущая ревизия ограничена безопасным Stage 3B0:
-чистый resolver и единое транзакционное read-bundle API без runtime callers, production reads,
-активаций, backfill, денежных записей или изменения клиентского traffic. Production shadow,
-Control API, синхронизация commerce, funding cutover и strict enforcement остаются последующими
-этапами.
+1–2 (`engine 0006`–`0008`, `commerce 0022`–`0023`, `OpenKeys 0007`), Stage 3A dormant
+registry-only persistence/CAS и Stage 3B0 dormant resolver/read bundle уже доставлены. По
+договорённости от 2026-07-30 следующий безопасный объём разделён на два независимых checkpoint:
+3B1a — одна expand-only таблица immutable shadow attribution без writer, и 3B1b — пассивный
+dual-lineage resolver/capability foundation без runtime caller. Работа останавливается после их
+delivery. Первый потенциально аварийный шаг — подключение shadow к live admission — в этот объём
+не входит. Control API, синхронизация commerce, funding cutover и strict enforcement также остаются
+последующими этапами.
 
 Последнее продуктовое обсуждение и фиксация безопасной границы: 2026-07-30.
 
@@ -16,9 +18,10 @@ Control API, синхронизация commerce, funding cutover и strict enfo
 writers, модели и миграции. Семантика продукта, зафиксированная в этом документе, при этом не
 должна меняться молча из-за изменений реализации.
 
-Stage 3B0 начат в отдельном worktree от подтверждённого зелёного Stage 3A/master
-`a9a8dd233fdd737f5e0f87adc31bddb4e4766817`. Его delivery SHA и результаты gate фиксируются в
-handoff после merge; migrations `0006`–`0008` в этом checkpoint не меняются.
+Stage 3B0 доставлен commit `4bf19d2807e16bb60d9b91b886464a5f561c124a`. Stage 3B1a начат в
+отдельном worktree от master `32c97c548231ea23666f0ecb261302c6beca1b4d`; его delivery SHA и
+результаты gate фиксируются в handoff после merge. Существующие migrations `0006`–`0008` не
+переписываются; 3B1a добавляет только новую migration `0009`.
 
 Этот документ описывает целевое поведение, которое заменит текущий единый множитель цены на аккаунт.
 Он не утверждает, что описанное поведение уже работает в production. До завершения перехода
@@ -1332,11 +1335,11 @@ Checkpoint считается безопасным для остановки т�
 - не считать старт Stage 3B разрешением на backfill, activation, key issuance или traffic cutover:
   эти действия остаются отдельными более поздними решениями rollout.
 
-### Этап 3B0. Dormant resolver foundation — текущая безопасная граница
+### Этап 3B0. Dormant resolver foundation — доставленный безопасный baseline
 
-По договорённости от 2026-07-30 работа останавливается после максимально полного checkpoint, который
-не меняет production behavior и не требует аварийного исправления при нехватке рабочего ресурса.
-Stage 3B0 включает только:
+Первоначальная безопасная граница от 2026-07-30 была зафиксирована на максимально полном
+checkpoint, который не меняет production behavior и не требует аварийного исправления при нехватке
+рабочего ресурса. Stage 3B0 доставлен в таком виде и включает только:
 
 - чистый backend-neutral resolver без DB, HTTP, env, времени и глобального состояния;
 - typed resolved/rejected outcomes и низкокардинальные reason codes без account/key IDs;
@@ -1369,7 +1372,46 @@ Checkpoint Stage 3B0 считается безопасным для остано
 6. Merge выполнен только через `deploy/agent-merge.sh`, а exact delivery SHA получил зелёный
    `deploy/watchdog`.
 
-### Этап 3B1. Production shadow — только после отдельного разрешения и окна работ
+### Этап 3B1a. Dormant shadow attribution schema — разрешённый безопасный checkpoint
+
+Stage 3B1a устраняет только проблему честного хранения будущего shadow-результата:
+
+- migration `engine 0009` и SQLite parity добавляют отдельную immutable
+  `pricing_shadow_admission_evaluations`;
+- каждая строка exact-ссылкой подтверждает уже записанный actual `legacy_scalar` snapshot, включая
+  provider/model/alias, фактический multiplier, official/charged hold и snapshot digest;
+- resolved outcome хранит полную policy и admission lineage: schema/capability generations и
+  digests, catalog/switch targets, immutable policy/rule identity, eligibility и сравнение hold;
+- `runtime_manifest_generation/digest` идентифицируют весь поддерживаемый runtime-набор, а каждая
+  dependency отдельно хранит свой capability pin; будущий insert API обязан проверить, что все эти
+  pins входят в manifest, до durable write;
+- `rejected` и `read_error` различаются typed outcome/reason; diagnostic JSON остаётся
+  неавторитетным и не может заменять typed identity;
+- схема не создаёт данные, heads, bindings, writer, очередь, actor command, HTTP route, telemetry,
+  readiness gate или live caller;
+- повторная запись в будущем обязана быть exact-idempotent по `request_id + evaluation_digest`;
+  другой digest означает conflict, а не update.
+
+Checkpoint 3B1a доставляется отдельным migration-first коммитом и должен получить зелёные SQLite,
+реальные PostgreSQL 16/18 matrices, полный repository gate и `deploy/watchdog` до зависимого кода.
+Предыдущий binary полностью совместим с этой пустой additive-таблицей.
+
+### Этап 3B1b. Dormant dual-lineage resolver — последний разрешённый безопасный checkpoint
+
+После зелёной migration `0009` можно отдельным коммитом расширить только пассивные read/types/tests:
+
+- policy всегда проверяется по своим immutable pinned catalog/switch dependencies;
+- текущие admission catalog/switch heads читаются в том же snapshot и отдельно ограничивают новые
+  модели и provider switches, не требуя ошибочного равенства current heads policy pins;
+- runtime поддерживает явный набор совместимых `(schema, capability generation, digest)`, чтобы
+  choreography `C1/S1/P1 → C2/S1/P1 → C2/S2/P1 → C2/S2/P2` не создавала ложный outage;
+- resolver сохраняет обе lineage-пары, остаётся pure/dormant и вызывается только тестами;
+- не добавляются actor commands, фоновые workers, HTTP, writes, active data или traffic changes.
+
+После delivery 3B1b работа останавливается. Capability/catalog/policy seed и activation также не
+входят в этот checkpoint.
+
+### Этап 3B1c. Production shadow — только после отдельного разрешения и окна работ
 
 Первый потенциально аварийный шаг начинается при подключении policy read к live admission path.
 Даже fail-open shadow добавляет работу на каждый запрос и может вызвать DB/read-queue saturation,
@@ -1381,7 +1423,7 @@ latency, cancellation amplification или error/log storm. Поэтому до 
 - писать `pricing_admission_snapshots`, attribution в reservation/outbox/usage/ledger;
 - создавать active heads/bindings, Control API writers, backfill или sync jobs.
 
-Перед Stage 3B1 требуется устранить или явно принять три найденных архитектурных риска:
+Перед Stage 3B1c требуется устранить или явно принять три найденных архитектурных риска:
 
 1. Единственные global catalog/switch heads и множество account bindings создают несовместимое окно
    при choreography `catalog → switches → policies`. Для strict zero-downtime нужен atomic release
@@ -1395,7 +1437,7 @@ latency, cancellation amplification или error/log storm. Поэтому до 
    запуска он не существует. Его скрытие/блокировка меняет production traffic и выполняется отдельным
    контролируемым изменением, а не маскируется dormant resolver-ом.
 
-Когда Stage 3B1 будет разрешён, shadow следует выполнять через bounded неблокирующую очередь
+Когда Stage 3B1c будет разрешён, shadow следует выполнять через bounded неблокирующую очередь
 (`try_send` + drop counter), без account/key/model IDs в metric labels и без влияния на readiness.
 Полезные counters: outcome по provider/reason, resolved mode/scope, scalar-policy mismatch,
 authority read errors, dropped shadow work и runtime capability/schema generation.
