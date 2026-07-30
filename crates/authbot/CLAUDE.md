@@ -77,6 +77,9 @@
   AEAD keyring и активный ключ публикации/rotation.
 - `AUTH_BOT_IPROYAL_KEY` — авто-выпуск прокси (пусто = ручной ввод).
 
+Фоновый lifecycle-контроль обновляет срок прокси и при необходимости продлевает тот же IPRoyal
+allocation, но не отправляет периодические отчёты «Контроль прокси» в Telegram.
+
 **Деплой:** watchdog собирает бот вместе с движком и кладёт протестированный бинарь в immutable
 engine release; `claude-authbot.service` запускает `/srv/claude-api/releases/current/authbot`.
 Изменённый бинарь перезапускается после promotion. На startup потерянный in-memory Claude child

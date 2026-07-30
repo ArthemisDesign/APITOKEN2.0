@@ -189,16 +189,16 @@ fn iso_to_unix(s: &str) -> i64 {
 }
 
 /// Stable-egress контроль прокси: маппит IP прокси подписки → срок из IPRoyal (список заказов),
-/// пишет `proxy_expire` в реестр (сырой SQL — колонку создаёт движок в общей БД), алертит админам о
-/// истекающих (<3д) / осиротевших (нет в IPRoyal). Provider traffic эта проверка не создаёт.
-async fn proxy_lifecycle_loop(bot: Bot, cfg: Arc<Config>) {
+/// пишет `proxy_expire` в реестр и продлевает истекающие allocations без смены IP.
+/// Provider traffic и Telegram-уведомления эта проверка не создаёт.
+async fn proxy_lifecycle_loop(cfg: Arc<Config>) {
     if cfg.iproyal_key.is_empty() {
         eprintln!("proxy-lifecycle: AUTH_BOT_IPROYAL_KEY пуст — контроль прокси выключен");
         return;
     }
     let ipr = iproyal::Iproyal::new(&cfg.iproyal_key);
     loop {
-        proxy_check_once(&bot, &cfg, &ipr).await;
+        proxy_check_once(&cfg, &ipr).await;
         tokio::time::sleep(std::time::Duration::from_secs(1800)).await; // 30 мин (IPRoyal API, не Anthropic)
     }
 }
@@ -242,7 +242,7 @@ async fn write_proxy_expire(
     .await;
 }
 
-async fn proxy_check_once(bot: &Bot, cfg: &Config, ipr: &iproyal::Iproyal) {
+async fn proxy_check_once(cfg: &Config, ipr: &iproyal::Iproyal) {
     let orders = match ipr.list_isp_orders().await {
         Ok(o) => o,
         Err(e) => {
@@ -408,13 +408,10 @@ async fn proxy_check_once(bot: &Bot, cfg: &Config, ipr: &iproyal::Iproyal) {
         }
     }
     if !alerts.is_empty() {
-        let mut msg = String::from("🔌 <b>Контроль прокси</b> (стабильный egress, тот же IP):\n");
-        for (email, why) in &alerts {
-            msg.push_str(&format!("• <code>{email}</code> — {why}\n"));
-        }
-        for id in &cfg.admins_id {
-            let _ = bot.send(*id, &msg).await;
-        }
+        eprintln!(
+            "proxy-lifecycle: suppressed {} Telegram notification item(s)",
+            alerts.len()
+        );
     }
 }
 
@@ -479,10 +476,12 @@ async fn main() -> Result<()> {
         eprintln!("⚠️ AUTH_BOT_ADMIN пуст — админ не задан");
     }
 
-    // Stable-egress контроль прокси: срок из IPRoyal → реестр (панель показывает «прокси до»),
-    // алерты об истекающих/осиротевших. Не создаёт provider traffic. Раз в 30 мин.
-    tokio::spawn(proxy_lifecycle_loop(bot.clone(), cfg.clone()));
-    eprintln!("proxy-lifecycle: контроль прокси запущен (IPRoyal, 30 мин)");
+    // Stable-egress контроль прокси: срок из IPRoyal → реестр (панель показывает «прокси до»)
+    // и продление того же IP. Telegram-уведомления не отправляет. Раз в 30 мин.
+    tokio::spawn(proxy_lifecycle_loop(cfg.clone()));
+    eprintln!(
+        "proxy-lifecycle: контроль прокси запущен без Telegram-уведомлений (IPRoyal, 30 мин)"
+    );
 
     let mut gemini_callback = if cfg.gemini_oauth.is_some() {
         let (oauth_bot, oauth_store, oauth_cfg) = (bot.clone(), store.clone(), cfg.clone());
