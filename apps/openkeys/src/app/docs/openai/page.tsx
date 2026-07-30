@@ -1,7 +1,7 @@
-import { OpenAiDocsPortal } from "./openai-docs-portal";
+import { redirect } from "next/navigation";
+import { OFFICIAL_DOCS_OPENAI_URL } from "@/lib/connect-commands";
 
-export const metadata = { title: "GPT / OpenAI API connection guide — apiToken" };
-
+/** Ссылка из выдач ключей должна жить вечно; ведём на GPT-раздел официальных доков. */
 export default function OpenAiDocsPage() {
-  return <OpenAiDocsPortal />;
+  redirect(OFFICIAL_DOCS_OPENAI_URL);
 }

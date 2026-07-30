@@ -1,7 +1,7 @@
-import { DocsPortal } from "../docs-portal";
+import { redirect } from "next/navigation";
+import { OFFICIAL_DOCS_URL } from "@/lib/connect-commands";
 
-export const metadata = { title: "Claude API connection guide — apiToken" };
-
+/** Ссылка из выдач ключей должна жить вечно; ведём на официальные полные доки. */
 export default function ClaudeDocsPage() {
-  return <DocsPortal />;
+  redirect(OFFICIAL_DOCS_URL);
 }

@@ -1,7 +1,10 @@
-import { ConnectionDocsHub } from "./connection-docs-hub";
+import { redirect } from "next/navigation";
+import { OFFICIAL_DOCS_URL } from "@/lib/connect-commands";
 
-export const metadata = { title: "Connect Claude and GPT — apiToken" };
-
+/**
+ * Полные публичные доки живут на apitoken.sale и не требуют логина; OpenKeys
+ * не поддерживает собственную копию, чтобы инструкции не расходились.
+ */
 export default function DocsPage() {
-  return <ConnectionDocsHub />;
+  redirect(OFFICIAL_DOCS_URL);
 }

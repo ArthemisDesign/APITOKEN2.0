@@ -26,6 +26,7 @@ import {
 import { buildUtcUsageSeries } from "@/lib/usage-series";
 import { aggregateUsageProviders, usageProviderOf } from "@/lib/usage-providers";
 import { UNIVERSAL_CONNECTIONS } from "@/lib/universal-key";
+import { QuickConnectDock } from "@/components/quick-connect-dock";
 
 const copy = {
   en: {
@@ -295,6 +296,8 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
             </button>
           </div>
         </div>
+
+        <QuickConnectDock defaultExpanded />
 
         <div className="overview-primary-grid">
           <article className="card overview-balance-card">

@@ -4,24 +4,24 @@ import Link from "next/link";
 import { useState } from "react";
 import { BrandMark, LanguageToggle, ThemeToggle, useLanguage } from "@/components/chrome";
 
-export type ShellSection = "profile" | "docs" | "claudeDocs" | "openaiDocs" | "support" | "stock" | "monitor";
+export type ShellSection = "profile" | "docs" | "support" | "stock" | "monitor";
 
 interface NavItem {
   section: ShellSection;
   href: string;
   label: { en: string; ru: string };
   icon: string;
+  external?: boolean;
 }
 
 /**
  * Два разных контура, и смешивать их нельзя: покупателю нечего делать в админке,
  * а админу незачем уходить из неё в клиентские страницы посреди работы.
+ * Полные доки живут на apitoken.sale без логина — своих копий инструкций нет.
  */
 const CLIENT_NAV: NavItem[] = [
   { section: "profile", href: "/profile", label: { en: "Key usage", ru: "Расход ключа" }, icon: "◧" },
-  { section: "docs", href: "/docs", label: { en: "Connect", ru: "Как подключить" }, icon: "◎" },
-  { section: "claudeDocs", href: "/docs/claude", label: { en: "Claude API", ru: "Claude API" }, icon: "❑" },
-  { section: "openaiDocs", href: "/docs/openai", label: { en: "GPT / OpenAI", ru: "GPT / OpenAI" }, icon: "◇" },
+  { section: "docs", href: "https://apitoken.sale/docs", label: { en: "Full docs", ru: "Документация" }, icon: "◎", external: true },
   { section: "support", href: "/support", label: { en: "Support", ru: "Поддержка" }, icon: "◌" },
 ];
 
@@ -45,7 +45,7 @@ export function AppShell({
   const [sideOpen, setSideOpen] = useState(false);
   const { language } = useLanguage();
   const isAdmin = section === "stock" || section === "monitor";
-  const nav: Array<{ section: ShellSection; href: string; label: string; icon: string }> = isAdmin
+  const nav: Array<{ section: ShellSection; href: string; label: string; icon: string; external?: boolean }> = isAdmin
     ? ADMIN_NAV
     : CLIENT_NAV.map((item) => ({ ...item, label: item.label[language] }));
 
@@ -60,14 +60,21 @@ export function AppShell({
         <nav className="side-nav">
           {nav.map((item) => (
             <div key={item.section} className="side-nav-item">
-              <Link
-                className={`side-link ${section === item.section ? "on" : ""}`}
-                aria-current={section === item.section ? "page" : undefined}
-                href={item.href}
-              >
-                <span className="si">{item.icon}</span>
-                <span>{item.label}</span>
-              </Link>
+              {item.external ? (
+                <a className="side-link" href={item.href} target="_blank" rel="noreferrer">
+                  <span className="si">{item.icon}</span>
+                  <span>{item.label} ↗</span>
+                </a>
+              ) : (
+                <Link
+                  className={`side-link ${section === item.section ? "on" : ""}`}
+                  aria-current={section === item.section ? "page" : undefined}
+                  href={item.href}
+                >
+                  <span className="si">{item.icon}</span>
+                  <span>{item.label}</span>
+                </Link>
+              )}
             </div>
           ))}
         </nav>
