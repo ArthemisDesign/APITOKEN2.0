@@ -15,6 +15,8 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 const MAX_JSONRPC_LINE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ORPHAN_EVENTS_PER_THREAD: usize = 64;
+const PROCESS_GROUP_REAP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const PROCESS_GROUP_REAP_POLL: std::time::Duration = std::time::Duration::from_millis(10);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessError {
@@ -286,7 +288,8 @@ impl CodexProcess {
     pub(crate) async fn shutdown(&self) -> Result<(), ProcessError> {
         self.ready.store(false, Ordering::Release);
         let mut child = self.child.lock().await;
-        let group_result = kill_process_group(child.id());
+        let process_group = child.id();
+        let group_result = kill_process_group(process_group);
         let _ = child.start_kill();
         self.shared.close(ProcessError::Closed).await;
         let wait_result = child
@@ -295,6 +298,10 @@ impl CodexProcess {
             .map_err(|error| ProcessError::Spawn(format!("failed to reap Codex child: {error}")));
         group_result?;
         wait_result?;
+        // `Child::wait` reaps only the app-server itself. A killed helper can remain briefly as an
+        // orphaned zombie until the host reaper collects it; during that window `kill -0` still
+        // sees the process group. Do not return from shutdown while any descendant is observable.
+        wait_for_process_group_exit(process_group).await?;
         Ok(())
     }
 
@@ -696,6 +703,43 @@ fn kill_process_group(pid: Option<u32>) -> Result<(), ProcessError> {
         return Err(ProcessError::Spawn(format!(
             "failed to kill Codex process group: {error}"
         )));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        Ok(())
+    }
+}
+
+async fn wait_for_process_group_exit(pid: Option<u32>) -> Result<(), ProcessError> {
+    #[cfg(unix)]
+    {
+        let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) else {
+            return Ok(());
+        };
+        let wait = async {
+            loop {
+                if unsafe { libc::kill(-pid, 0) } == -1 {
+                    let error = std::io::Error::last_os_error();
+                    match error.raw_os_error() {
+                        Some(libc::ESRCH) => return Ok(()),
+                        // The group still exists but belongs to another uid. This should not occur
+                        // for a Codex child; treating it as present keeps shutdown fail-closed.
+                        Some(libc::EPERM) => {}
+                        Some(libc::EINTR) => continue,
+                        _ => {
+                            return Err(ProcessError::Spawn(format!(
+                                "failed to observe Codex process group: {error}"
+                            )))
+                        }
+                    }
+                }
+                tokio::time::sleep(PROCESS_GROUP_REAP_POLL).await;
+            }
+        };
+        return tokio::time::timeout(PROCESS_GROUP_REAP_TIMEOUT, wait)
+            .await
+            .map_err(|_| ProcessError::Spawn("Codex process group was not reaped".to_string()))?;
     }
     #[cfg(not(unix))]
     {
