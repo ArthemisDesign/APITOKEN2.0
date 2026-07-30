@@ -47,6 +47,20 @@ codex_as_log() { printf '[codex-app-servers] %s\n' "$*"; }
 codex_as_warn() { printf '[codex-app-servers] WARNING: %s\n' "$*" >&2; }
 codex_as_fail() { printf '[codex-app-servers] ERROR: %s\n' "$*" >&2; return 1; }
 codex_as_is_root() { [[ ${EUID:-$(id -u)} -eq 0 ]]; }
+# Cutover stability is elapsed-time policy, not a number of health queries. `/proc/uptime` is
+# monotonic on the Linux host and therefore cannot move backwards during an NTP correction. Bash's
+# process-local elapsed clock keeps the helper testable on non-Linux developer machines.
+codex_as_monotonic_seconds() {
+  local uptime ignored
+  if [[ -r /proc/uptime ]]; then
+    read -r uptime ignored </proc/uptime || return 1
+    [[ $uptime =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+    printf '%s\n' "${uptime%%.*}"
+  else
+    printf '%s\n' "$SECONDS"
+  fi
+}
+codex_as_wait_tick() { sleep 1; }
 codex_as_secure_control_dir() {
   mkdir -p -- "$CODEX_AS_CONTROL_DIR" \
     && chown root:root "$CODEX_AS_CONTROL_DIR" \
@@ -470,6 +484,26 @@ codex_as_gateway_main_pids() {
   done
 }
 
+# Exact availability owners that must survive one cutover admission unchanged. A unit name keeps
+# the snapshot unambiguous even if the kernel later reuses a PID. The legacy singleton is included
+# only during the one-time ownership migration where it remains the old traffic anchor.
+codex_as_cutover_owner_snapshot() {
+  local unit pid
+  for unit in $CODEX_AS_GATEWAY_UNITS; do
+    [[ $unit =~ ^claude-api-openai@[0-9]+\.service$ ]] || return 1
+    "$CODEX_AS_SYSTEMCTL" is-active --quiet "$unit" >/dev/null 2>&1 || continue
+    pid=$("$CODEX_AS_SYSTEMCTL" show -p MainPID --value "$unit" 2>/dev/null) || return 1
+    [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
+    printf '%s=%s\n' "$unit" "$pid"
+  done
+  if "$CODEX_AS_SYSTEMCTL" is-active --quiet "$CODEX_AS_LEGACY_UNIT" >/dev/null 2>&1; then
+    pid=$("$CODEX_AS_SYSTEMCTL" show -p MainPID --value "$CODEX_AS_LEGACY_UNIT" 2>/dev/null) \
+      || return 1
+    [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
+    printf '%s=%s\n' "$CODEX_AS_LEGACY_UNIT" "$pid"
+  fi
+}
+
 codex_as_proxy_matches_client() {
   local proxy_pid=$1 gateway_pid=$2 home=$3 lease=$4 entry found_home=0 found_lease=0
   local -a args
@@ -625,13 +659,53 @@ codex_as_wait_ready_cohort() {
   return 1
 }
 
+# Prove that a redundant authenticated cohort stays continuously ready for an elapsed interval.
+# A health observation is intentionally expensive: it validates every marker, gateway MainPID,
+# proxy parent, lease, and CODEX_HOME. Counting observations as seconds made a 60-second policy take
+# roughly 180 seconds in production and collide with its own deadline. Track monotonic elapsed time
+# instead; an unhealthy observation resets the interval, while observation cost counts naturally.
+codex_as_wait_ready_cohort_stable() {
+  local stable_seconds=$1 expected_owners=${2:-} owners ready now stable_since=-1
+  local deadline=$(( $(codex_as_monotonic_seconds) + CODEX_AS_READY_TIMEOUT ))
+  [[ $CODEX_AS_MIN_READY =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ $stable_seconds =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ -n $expected_owners ]] || return 1
+  (( stable_seconds < CODEX_AS_READY_TIMEOUT )) || return 1
+  while true; do
+    now=$(codex_as_monotonic_seconds) || return 1
+    (( now <= deadline )) || return 1
+    owners=$(codex_as_cutover_owner_snapshot) || return 1
+    [[ $owners == "$expected_owners" ]] || return 1
+    ready=$(codex_as_authenticated_home_count) || return 1
+    # Fence both sides of the expensive full-cohort observation. A gateway generation that exits
+    # or restarts during the query is a failed candidate, even if systemd has already replaced it.
+    owners=$(codex_as_cutover_owner_snapshot) || return 1
+    [[ $owners == "$expected_owners" ]] || return 1
+    now=$(codex_as_monotonic_seconds) || return 1
+    (( now <= deadline )) || return 1
+    if (( ready >= CODEX_AS_MIN_READY )); then
+      (( stable_since >= 0 )) || stable_since=$now
+      if (( now - stable_since >= stable_seconds )); then
+        printf '%s\n' "$ready"
+        return 0
+      fi
+    else
+      stable_since=-1
+    fi
+    codex_as_wait_tick
+  done
+}
+
 codex_as_admit_cutover() {
-  local gateways ready mode ids transition_count
+  local gateways owners ready mode ids transition_count
   codex_as_is_root \
     || { codex_as_fail 'cutover admission must run as root'; return 1; }
   [[ $CODEX_AS_CUTOVER_STABILITY_SECONDS =~ ^[1-9][0-9]*$ ]] \
     || { codex_as_fail 'cutover stability window is malformed'; return 1; }
   codex_as_load_desired || return 1
+  owners=$(codex_as_cutover_owner_snapshot) || return 1
+  [[ -n $owners ]] \
+    || { codex_as_fail 'cutover has no stable gateway ownership snapshot'; return 1; }
   gateways=$(codex_as_gateway_active_count) || return 1
   (( gateways >= 1 )) \
     || { codex_as_fail 'no shared OpenAI gateway is active for cutover admission'; return 1; }
@@ -649,7 +723,8 @@ codex_as_admit_cutover() {
   # Admission is deliberately observational. Candidate startup already discovers the persistent
   # daemon sockets; a deployment gate must not send signals, restart transports, or issue account
   # RPCs against sessions that are already working.
-  ready=$(codex_as_wait_ready_cohort "$CODEX_AS_CUTOVER_STABILITY_SECONDS") \
+  ready=$(codex_as_wait_ready_cohort_stable \
+    "$CODEX_AS_CUTOVER_STABILITY_SECONDS" "$owners") \
     || { codex_as_fail "$CODEX_AS_MIN_READY authenticated app-servers did not remain attached for ${CODEX_AS_CUTOVER_STABILITY_SECONDS}s"; return 1; }
   codex_as_log "$ready app-server(s) survived the ${CODEX_AS_CUTOVER_STABILITY_SECONDS}s cutover admission window across $gateways gateway(s)"
 }

@@ -225,9 +225,14 @@ done
   codex_as_is_root() { return 0; }
   codex_as_load_desired() { return 0; }
   codex_as_gateway_active_count() { printf '2\n'; }
+  codex_as_cutover_owner_snapshot() {
+    printf 'claude-api-openai@8793.service=101\nclaude-api-openai@8797.service=202\n'
+  }
   codex_as_signal_gateways() { fail 'cutover admission mutated live gateway clients'; }
-  codex_as_wait_ready_cohort() {
+  codex_as_wait_ready_cohort_stable() {
     [[ $1 == 3 ]] || fail 'cutover admission ignored its stability window'
+    [[ $2 == $'claude-api-openai@8793.service=101\nclaude-api-openai@8797.service=202' ]] \
+      || fail 'cutover admission did not fence the original gateway owners'
     printf '2\n'
   }
   codex_as_admit_cutover || fail 'observational cutover admission rejected a stable cohort'
@@ -265,8 +270,8 @@ done
     fail 'cohort readiness passed without the required authenticated redundancy'
   fi
 
-  # A transient dip resets the entire cutover streak; two good samples before the dip cannot be
-  # combined with later samples to manufacture a stable admission window.
+  # A transient dip resets the ordinary convergence streak; two good samples before the dip cannot
+  # be combined with later samples to manufacture a stable result.
   CODEX_AS_MIN_READY=2
   CODEX_AS_READY_TIMEOUT=8
   stability_calls=$TEMP/stability-calls
@@ -284,6 +289,64 @@ done
     || fail 'stable cohort did not recover after a transient dip'
   (( $(wc -l <"$stability_calls") >= 6 )) \
     || fail 'cutover stability streak did not reset after losing redundancy'
+)
+
+# Cutover policy is measured in monotonic elapsed seconds, not in the number of expensive full-pool
+# observations. Observation cost counts toward a genuinely continuous healthy interval, and one
+# unhealthy observation resets the elapsed clock rather than merely decrementing a sample counter.
+(
+  # shellcheck source=deploy/codex-app-servers.sh
+  source "$ROOT/deploy/codex-app-servers.sh"
+  CODEX_AS_READY_TIMEOUT=30
+  CODEX_AS_MIN_READY=2
+  monotonic_clock=$TEMP/monotonic-clock
+  elapsed_calls=$TEMP/elapsed-calls
+  printf '0\n' >"$monotonic_clock"
+  : >"$elapsed_calls"
+  codex_as_monotonic_seconds() { cat "$monotonic_clock"; }
+  codex_as_cutover_owner_snapshot() { printf 'slot-a=101\nslot-b=202\n'; }
+  codex_as_advance_clock() {
+    local amount=$1 current
+    current=$(<"$monotonic_clock")
+    printf '%s\n' "$(( current + amount ))" >"$monotonic_clock"
+  }
+  codex_as_wait_tick() { codex_as_advance_clock 1; }
+  codex_as_authenticated_home_count() {
+    local call
+    call=$(wc -l <"$elapsed_calls" | tr -d '[:space:]')
+    printf 'x\n' >>"$elapsed_calls"
+    # Model the real host: validating the full cohort itself takes multiple seconds.
+    codex_as_advance_clock 2
+    case "$call" in
+      2) printf '1\n' ;;
+      *) printf '2\n' ;;
+    esac
+  }
+  expected_owners=$'slot-a=101\nslot-b=202'
+  [[ $(codex_as_wait_ready_cohort_stable 5 "$expected_owners") == 2 ]] \
+    || fail 'elapsed cutover window did not recover after a transient dip'
+  [[ $(<"$monotonic_clock") == 17 ]] \
+    || fail 'cutover stability was counted as samples instead of monotonic elapsed time'
+  [[ $(wc -l <"$elapsed_calls" | tr -d '[:space:]') == 6 ]] \
+    || fail 'unhealthy observation did not reset the elapsed cutover interval'
+
+  # A systemd restart can restore the same ready count with new clients. It is still not the same
+  # continuously healthy generation and must fail this admission instead of resetting its timer.
+  owner_calls=$TEMP/owner-calls
+  : >"$owner_calls"
+  codex_as_cutover_owner_snapshot() {
+    local call
+    call=$(wc -l <"$owner_calls" | tr -d '[:space:]')
+    printf 'x\n' >>"$owner_calls"
+    if (( call < 2 )); then
+      printf '%s\n' "$expected_owners"
+    else
+      printf 'slot-a=101\nslot-b=303\n'
+    fi
+  }
+  if codex_as_wait_ready_cohort_stable 5 "$expected_owners" >/dev/null; then
+    fail 'cutover admitted a restarted gateway generation'
+  fi
 )
 
 # Exercise the first singleton-to-daemon handoff as an availability state machine. The fixture
