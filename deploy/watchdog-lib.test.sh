@@ -685,6 +685,9 @@ if wd_path_is_caddy deploy/watchdog.sh; then
 fi
 wd_path_is_systemd_definition systemd/apitoken-deploy-watchdog.service
 wd_path_is_systemd_definition systemd/apitoken-tmpfiles-install.service
+wd_path_is_systemd_definition systemd/apitoken-sysctl-install.service
+wd_path_is_systemd_definition systemd/sysctl-apitoken-redis.conf
+wd_path_is_systemd_definition deploy/install-sysctl.sh
 wd_path_is_systemd_definition deploy/install-tmpfiles.sh
 wd_path_is_systemd_definition systemd/claude-api.service
 wd_path_is_systemd_definition systemd/claude-api-openai.service
@@ -1293,6 +1296,37 @@ done
 grep -Fq 'systemd-tmpfiles --create "$TARGET"' "$ROOT/deploy/install-tmpfiles.sh"
 grep -Fq 'CLAUDE_API_AFFINITY_SECRET' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'apitoken-affinity-redis.service' "$ROOT/deploy/install-watchdog.sh"
+grep -Fq 'if (( REDIS_RESTART_REQUIRED )); then' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'Redis activation is not fenced by an exact definition change'
+[[ $(grep -Fc 'systemctl restart apitoken-affinity-redis.service' \
+  "$ROOT/deploy/install-watchdog.sh") -eq 1 ]] \
+  || wd_die 'Redis has an unconditional or duplicate restart path'
+grep -Fq 'cmp -s "$ROOT/deploy/affinity-redis.compose.yaml" "$redis_compose_target"' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'Redis compose changes do not request a restart'
+grep -Fq 'cmp -s "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'Redis unit changes do not request a restart'
+grep -Fxq 'vm.overcommit_memory = 1' "$ROOT/systemd/sysctl-apitoken-redis.conf" \
+  || wd_die 'Redis overcommit policy is not pinned'
+grep -Fq '"$SYSCTL" --load "$TARGET"' "$ROOT/deploy/install-sysctl.sh" \
+  || wd_die 'Redis sysctl installer does not apply the persistent policy immediately'
+# Exercise the installer's real activation fence with a fake systemctl. Unrelated full/systemd
+# transactions must preserve the live container, while an exact Redis definition change performs
+# one restart after keeping the unit enabled.
+eval "$(sed -n '/^activate_redis_definition()/,/^}/p' "$ROOT/deploy/install-watchdog.sh")"
+redis_systemctl_log="$TEMP/redis-systemctl.log"
+systemctl() { printf '%s\n' "$*" >>"$redis_systemctl_log"; }
+REDIS_RESTART_REQUIRED=0
+activate_redis_definition >/dev/null
+[[ $(<"$redis_systemctl_log") == 'enable apitoken-affinity-redis.service' ]] \
+  || wd_die 'unchanged infrastructure restarted Redis'
+: >"$redis_systemctl_log"
+REDIS_RESTART_REQUIRED=1
+activate_redis_definition >/dev/null
+[[ $(<"$redis_systemctl_log") == $'enable apitoken-affinity-redis.service\nrestart apitoken-affinity-redis.service' ]] \
+  || wd_die 'changed Redis definitions did not enable and restart exactly once'
+unset -f systemctl activate_redis_definition
 ! grep -Fq 'partners.panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'crm.panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 [[ $(grep -Fc 'import managed_admin_auth' "$ROOT/deploy/Caddyfile") -ge 5 ]]
@@ -1937,6 +1971,12 @@ grep -Fxq 'ExecStart=/usr/local/lib/apitoken-watchdog/install-sudoers.sh' \
 grep -Fxq 'ExecStart=/usr/local/lib/apitoken-watchdog/install-tmpfiles.sh' \
   "$ROOT/systemd/apitoken-tmpfiles-install.service" \
   || wd_die 'the isolated tmpfiles installer unit does not run the fixed root-owned installer'
+grep -Fxq 'ExecStart=/usr/local/lib/apitoken-watchdog/install-sysctl.sh' \
+  "$ROOT/systemd/apitoken-sysctl-install.service" \
+  || wd_die 'the isolated sysctl installer unit does not run the fixed root-owned installer'
+grep -Fxq 'ReadWritePaths=/etc/sysctl.d' \
+  "$ROOT/systemd/apitoken-sysctl-install.service" \
+  || wd_die 'the isolated sysctl installer cannot publish its fixed definition'
 grep -Fxq 'ReadWritePaths=/etc/tmpfiles.d' \
   "$ROOT/systemd/apitoken-tmpfiles-install.service" \
   || wd_die 'the isolated tmpfiles installer cannot publish its fixed definition'
@@ -1953,6 +1993,11 @@ tmpfiles_start_line=$(grep -nF 'systemctl start apitoken-tmpfiles-install.servic
 [[ -n $tmpfiles_reload_line && -n $tmpfiles_start_line \
     && $tmpfiles_start_line -gt $tmpfiles_reload_line ]] \
   || wd_die 'the isolated tmpfiles installer is not started after daemon-reload'
+sysctl_start_line=$(grep -nF 'systemctl start apitoken-sysctl-install.service' \
+  "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+[[ -n $tmpfiles_reload_line && -n $sysctl_start_line \
+    && $sysctl_start_line -gt $tmpfiles_reload_line ]] \
+  || wd_die 'the isolated sysctl installer is not started after daemon-reload'
 if grep -Fxq '/usr/local/lib/apitoken-watchdog/install-sudoers.sh' \
   "$ROOT/deploy/install-watchdog.sh"; then
   wd_die 'the sudoers installer runs inside the watchdog read-only mount namespace'

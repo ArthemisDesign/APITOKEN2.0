@@ -226,6 +226,10 @@ cascading damage while the condition persists.
 Check `apitoken-affinity-redis.service`, its container health and disk space. Engine traffic is
 intentionally fail-open on local affinity, so restore Redis without restarting healthy engine slots;
 expect only a temporary reduction in cross-slot prompt-cache hits.
+Infrastructure delivery preserves a healthy Redis container unless
+`systemd/apitoken-affinity-redis.service` or `deploy/affinity-redis.compose.yaml` changed. The managed
+sysctl definition also keeps `vm.overcommit_memory=1`, allowing Redis background persistence to fork
+without a false allocation refusal; verify it with `sysctl vm.overcommit_memory`.
 
 ## CodexProviderDown
 

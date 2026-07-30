@@ -4,6 +4,7 @@ set -euo pipefail
 # One-time root installer for the host-local, free GitHub polling watchdog.
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'run as root' >&2; exit 1; }
 INSTALL_MODE=full
+REDIS_RESTART_REQUIRED=0
 case "${1:-}" in
   '') ;;
   --controller-only) INSTALL_MODE=controller ;;
@@ -16,6 +17,15 @@ esac
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=deploy/watchdog-lib.sh
 source "$ROOT/deploy/watchdog-lib.sh"
+
+activate_redis_definition() {
+  systemctl enable apitoken-affinity-redis.service
+  if (( REDIS_RESTART_REQUIRED )); then
+    systemctl restart apitoken-affinity-redis.service
+  else
+    echo 'Redis definitions unchanged; preserving the running affinity cache'
+  fi
+}
 
 install_controller_definitions() {
   install -d -o root -g root -m 0755 \
@@ -82,16 +92,28 @@ install_systemd_definitions() {
     /usr/local/lib/apitoken-watchdog/install-tmpfiles.sh
   install -o root -g root -m 0644 "$ROOT/systemd/apitoken-tmpfiles.conf" \
     /usr/local/lib/apitoken-watchdog/apitoken-tmpfiles.conf
+  install -o root -g root -m 0755 "$ROOT/deploy/install-sysctl.sh" \
+    /usr/local/lib/apitoken-watchdog/install-sysctl.sh
+  install -o root -g root -m 0644 "$ROOT/systemd/sysctl-apitoken-redis.conf" \
+    /usr/local/lib/apitoken-watchdog/sysctl-apitoken-redis.conf
   for unit in \
     apitoken-api@.service \
     apitoken-deploy-watchdog.service apitoken-deploy-watchdog.timer \
     apitoken-candidate-validator.service apitoken-candidate-validator.timer \
     apitoken-sudoers-install.service apitoken-tmpfiles-install.service \
+    apitoken-sysctl-install.service \
     apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-codex-app-server@.service claude-api-codex-app-servers.service claude-api-codex-app-servers-ready.target claude-api-codex-app-servers.timer claude-api-gemini.service claude-api-backup.service claude-api-backup.timer \
     claude-api-fingerprint.service claude-api-fingerprint.timer \
     apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \
     apitoken-openkeys.service \
     apitoken-monitoring-collector.service apitoken-monitoring-collector.timer; do
+    if [[ $unit == apitoken-affinity-redis.service ]]; then
+      [[ ! -L "/etc/systemd/system/$unit" ]] \
+        || { echo "/etc/systemd/system/$unit must not be a symlink" >&2; return 1; }
+      if ! cmp -s "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"; then
+        REDIS_RESTART_REQUIRED=1
+      fi
+    fi
     if [[ "$unit" == claude-authbot.service \
       && -f "/etc/systemd/system/$unit" \
       && ! -L "/etc/systemd/system/$unit" ]] \
@@ -118,6 +140,7 @@ install_systemd_definitions() {
     systemctl try-restart claude-authbot.service
   fi
   systemctl start apitoken-tmpfiles-install.service
+  systemctl start apitoken-sysctl-install.service
 
   # Journald storage must be an explicit decision rather than a side effect of boot ordering. Under
   # the default `Storage=auto` journald picks volatile-vs-persistent once at start by testing
@@ -153,6 +176,7 @@ case "$INSTALL_MODE" in
     ;;
   systemd)
     install_systemd_definitions
+    activate_redis_definition
     echo 'production systemd definitions installed'
     exit 0
     ;;
@@ -207,8 +231,14 @@ install -o root -g root -m 0644 "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
 install -o root -g root -m 0755 "$ROOT/deploy/apitoken-db-dump" /usr/local/lib/apitoken-watchdog/apitoken-db-dump
 install -o root -g root -m 0644 "$ROOT/deploy/commerce-postgres.compose.yaml" \
   /usr/local/lib/apitoken-watchdog/controller/commerce-postgres.compose.yaml
+redis_compose_target=/usr/local/lib/apitoken-watchdog/controller/affinity-redis.compose.yaml
+[[ ! -L $redis_compose_target ]] \
+  || { echo "$redis_compose_target must not be a symlink" >&2; exit 1; }
+if ! cmp -s "$ROOT/deploy/affinity-redis.compose.yaml" "$redis_compose_target"; then
+  REDIS_RESTART_REQUIRED=1
+fi
 install -o root -g root -m 0644 "$ROOT/deploy/affinity-redis.compose.yaml" \
-  /usr/local/lib/apitoken-watchdog/controller/affinity-redis.compose.yaml
+  "$redis_compose_target"
 install_systemd_definitions
 
 # Shared affinity is deliberately ephemeral, but its keyed identifiers and Redis password must be
@@ -226,6 +256,7 @@ chown deploy:deploy "$server_env"
 chmod 0600 "$server_env"
 if ! grep -Eq '^CLAUDE_API_REDIS_PASSWORD=.+$' "$server_env"; then
   printf 'CLAUDE_API_REDIS_PASSWORD=%s\n' "$(openssl rand -hex 32)" >>"$server_env"
+  REDIS_RESTART_REQUIRED=1
 fi
 if ! grep -Eq '^CLAUDE_API_AFFINITY_SECRET=.+$' "$server_env"; then
   printf 'CLAUDE_API_AFFINITY_SECRET=%s\n' "$(openssl rand -hex 32)" >>"$server_env"
@@ -304,8 +335,7 @@ systemctl daemon-reload
 # required and forbidden privilege as `deploy`, and restores the old policy on any failure.
 systemctl start apitoken-sudoers-install.service
 install_monitoring_definitions
-systemctl enable apitoken-affinity-redis.service
-systemctl restart apitoken-affinity-redis.service
+activate_redis_definition
 systemctl enable --now apitoken-candidate-validator.timer
 systemctl enable --now apitoken-deploy-watchdog.timer
 echo 'production watchdog and parallel candidate validator installed; verify with: sudo apitoken-watchdog status'

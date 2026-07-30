@@ -698,6 +698,7 @@ wd_path_is_systemd_definition() {
     systemd/apitoken-deploy-watchdog.service|systemd/apitoken-deploy-watchdog.timer|\
     systemd/apitoken-candidate-validator.service|systemd/apitoken-candidate-validator.timer|\
     systemd/apitoken-sudoers-install.service|systemd/apitoken-tmpfiles-install.service|\
+    systemd/apitoken-sysctl-install.service|\
     systemd/apitoken-postgres.service|systemd/apitoken-affinity-redis.service|\
     systemd/apitoken-worker.service|systemd/apitoken-content-studio.service|\
     systemd/claude-api.service|systemd/claude-api@.service|systemd/claude-api-anthropic@.service|systemd/claude-api-openai.service|systemd/claude-api-openai@.service|\
@@ -708,7 +709,8 @@ wd_path_is_systemd_definition() {
     systemd/apitoken-sales-web.service|systemd/claude-authbot.service|\
     systemd/apitoken-openkeys.service|systemd/apitoken-monitoring-collector.service|\
     systemd/apitoken-monitoring-collector.timer|systemd/journald-apitoken.conf|\
-    systemd/apitoken-tmpfiles.conf|deploy/install-tmpfiles.sh)
+    systemd/apitoken-tmpfiles.conf|systemd/sysctl-apitoken-redis.conf|\
+    deploy/install-tmpfiles.sh|deploy/install-sysctl.sh)
       return 0
       ;;
     *) return 1 ;;
