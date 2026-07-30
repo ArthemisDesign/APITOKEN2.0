@@ -1142,8 +1142,20 @@ fn debug_log_upstream_rejection(
         scrubbed = scrubbed.replace(profile_id, "<profile>");
     }
     let scrubbed: String = scrubbed.chars().take(240).collect();
+    // Google's generic "Request contains an invalid argument." carries the field-level cause in
+    // error.details[].fieldViolations; capture the whole scrubbed envelope (bounded) so the exact
+    // rejected argument is visible without a second deploy.
+    let mut raw = String::from_utf8_lossy(body).into_owned();
+    if !project.is_empty() {
+        raw = raw.replace(project, "<project>");
+    }
+    if !profile_id.is_empty() {
+        raw = raw.replace(profile_id, "<profile>");
+    }
+    let raw: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let raw: String = raw.chars().take(700).collect();
     eprintln!(
-        "GEMINI-DIAG upstream rejection op={op} http={} code={code} status={status} msg={scrubbed}",
+        "GEMINI-DIAG upstream rejection op={op} http={} code={code} status={status} msg={scrubbed} body={raw}",
         http_status.as_u16()
     );
 }
