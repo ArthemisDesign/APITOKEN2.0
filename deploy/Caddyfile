@@ -240,7 +240,7 @@ admin.apitoken.sale {
 	# script-src hash covers the single inline script in admin-panel.html. Update it whenever that
 	# script changes; styles remain inline because live utilization bars use bounded width values.
 	header {
-		Content-Security-Policy "default-src 'none'; script-src 'sha256-io6/HGGOuF1oRfDEtnL628GSOwRIkGbB+NWqSyz/3xA='; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'; object-src 'none'"
+		Content-Security-Policy "default-src 'none'; script-src 'sha256-oai/SLSyQLrMH4rvAOBmm698rZNIU8tpgrg/kdq80bg='; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'; object-src 'none'"
 		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
 		X-Robots-Tag "noindex, nofollow, noarchive"
 	}
@@ -266,6 +266,15 @@ admin.apitoken.sale {
 		reverse_proxy 127.0.0.1:8791 {
 			header_up Host 127.0.0.1:8791
 			header_up x-admin-key "<ADMIN_COMMERCIAL_KEY_PLACEHOLDER>"
+		}
+	}
+	# OpenKeys owns batch labels and key-to-batch relationships. This path is reachable only
+	# after managed_admin_auth; Caddy injects the server credential and the verified actor.
+	handle_path /openkeys-admin/* {
+		rewrite * /api/internal/admin{uri}
+		reverse_proxy 127.0.0.1:3410 {
+			header_up Host openkeys.apitoken.sale
+			header_up X-OpenKeys-Control-Key "<OPENKEYS_INTERNAL_KEY_PLACEHOLDER>"
 		}
 	}
 	handle_path /partner-admin/* {
@@ -334,7 +343,14 @@ openkeys.apitoken.sale {
 	request_body {
 		max_size 32KB
 	}
-	reverse_proxy 127.0.0.1:3410
+	# The central-admin bridge is loopback-only through admin.apitoken.sale. Do not expose the
+	# credential-gated handler on the public customer/admin hostname.
+	handle /api/internal/* {
+		respond 404
+	}
+	handle {
+		reverse_proxy 127.0.0.1:3410
+	}
 }
 
 crm.apitoken.sale {

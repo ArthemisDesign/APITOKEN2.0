@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { listBatches, listKeys, markKeyDelivered, removeAllStock, removeKey } from "@/lib/keys";
+import { listKeys, markKeyDelivered, removeAllStock, removeKey } from "@/lib/keys";
 import { currentAdmin } from "@/lib/session";
 import { guardRequest, readJsonLimited } from "@/lib/request-guard";
 import { parseApiType } from "@/lib/api-product";
@@ -11,12 +11,14 @@ function unauthorized(): NextResponse {
   return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 }
 
-export async function GET(): Promise<NextResponse> {
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export async function GET(request: Request): Promise<NextResponse> {
   const admin = await currentAdmin();
   if (!admin) return unauthorized();
-
-  const [keys, batches] = await Promise.all([listKeys(admin), listBatches(admin)]);
-  return NextResponse.json({ admin, keys, batches });
+  const batchId = new URL(request.url).searchParams.get("batchId") ?? "";
+  if (!UUID.test(batchId)) return NextResponse.json({ error: "invalid_batch" }, { status: 400 });
+  return NextResponse.json({ admin, keys: await listKeys(admin, batchId) });
 }
 
 /** Отметка «выдан» или снятие со склада. Чужие ключи недоступны. */
@@ -26,7 +28,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   const admin = await currentAdmin();
   if (!admin) return unauthorized();
 
-  let body: { id?: unknown; action?: unknown; apiType?: unknown };
+  let body: { id?: unknown; action?: unknown; apiType?: unknown; batchId?: unknown };
   try {
     body = await readJsonLimited<typeof body>(request);
   } catch {
@@ -39,10 +41,11 @@ export async function POST(request: Request): Promise<NextResponse> {
   try {
     if (action === "remove_all") {
       const apiType = body.apiType === undefined ? undefined : parseApiType(body.apiType);
-      if (body.apiType !== undefined && !apiType) {
+      const batchId = body.batchId === undefined ? undefined : typeof body.batchId === "string" ? body.batchId : "";
+      if ((body.apiType !== undefined && !apiType) || (batchId !== undefined && !UUID.test(batchId))) {
         return NextResponse.json({ error: "invalid_body" }, { status: 400 });
       }
-      return NextResponse.json({ ok: true, removed: await removeAllStock(admin, apiType ?? undefined) });
+      return NextResponse.json({ ok: true, removed: await removeAllStock(admin, apiType ?? undefined, batchId) });
     }
     if (!id || (action !== "deliver" && action !== "remove")) {
       return NextResponse.json({ error: "invalid_body" }, { status: 400 });

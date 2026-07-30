@@ -17,6 +17,8 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
                            ├─ /codex-subs              → OpenAI origin :8792 (+ control key)
                           ├─ /admin/*                 → commerce balancer :8791 /v1/admin/*
                           │                              (+ commerce admin key + actor)
+                          ├─ /openkeys-admin/*        → OpenKeys :3410 /api/internal/admin/*
+                          │                              (+ server-side control key + actor)
                           └─ /partner-admin/*         → sales-api :3100 /v1/admin/*
                                                          (+ sales admin key)
 ```
@@ -48,6 +50,11 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
 - Partner-данные читаются через sales admin API. Main admin получает только server-side proxy;
   отдельная полная партнёрская админка остаётся тем же sales-web `/admin` на
   `admin.partners.apitoken.sale`.
+- OpenKeys остаётся отдельным bounded context со своей PostgreSQL. Единая панель читает его
+  маскированный каталог через `/openkeys-admin/*`: Caddy пропускает маршрут только после
+  managed-admin auth, инжектит проверенного actor и server-side credential. Публичный
+  `openkeys.apitoken.sale/api/internal/*` всегда возвращает `404`; полные `sk-pool` и складской
+  шифротекст во внутренний контракт не входят.
 - CRM-код находится в отдельном репозитории. Main admin показывает его engine service account
   с handle `crm-parsing` и ссылку на `crm.apitoken.sale`.
 - Независимые read-источники деградируют отдельно: ошибка одного API не заменяет всю страницу.
@@ -69,6 +76,10 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
   main-admin от lockout.
 - Пользователи: серверный поиск/фильтры и bounded pagination, live баланс/расход, платежи, ключи,
   тир, 2FA, начисление баланса, revoke всех сессий, сброс 2FA, enable/disable.
+- OpenKeys: отдельный список выпущенных ключей с обязательным отображением метки/партии/продавца,
+  серверными фильтрами по партии, статусу и использованию (`unused`, `used`, `exhausted`, no-live),
+  bounded pagination и обратимым enable/disable. Live-балансы читаются batch-запросами движка,
+  а не N+1 по каждому ключу.
 - Деньги: подтверждённые платежи, состояние engine credit, незавершённые checkout.
 - B2B: одноразовые invite-ссылки с индивидуальной скидкой. Email необязателен: с email ссылка
   привязана к адресу и письмо атомарно ставится в durable outbox; без email панель создаёт
@@ -107,9 +118,11 @@ actor, причина, старая и новая ставка записыва�
    `@admin_data` Caddy.
 2. Commerce: endpoint за `AdminGuard`; `/admin/*` уже проксируется в `/v1/admin/*`.
 3. Sales: endpoint за `AdminKeyGuard`; main admin использует `/partner-admin/*`.
-4. UI: вкладка/ветка `refresh()` в `admin-panel.html`. Частичный источник должен показывать
+4. OpenKeys: internal endpoint проверяет credential, инжектированный Caddy после human gate;
+   публичный OpenKeys vhost обязан блокировать `/api/internal/*`.
+5. UI: вкладка/ветка `refresh()` в `admin-panel.html`. Частичный источник должен показывать
    degraded state, а не просить секрет у оператора.
-5. Деплой: обычный push в master. Watchdog применяет Caddy, проверяет marker HTML, 401 human-auth
+6. Деплой: обычный push в master. Watchdog применяет Caddy, проверяет marker HTML, 401 human-auth
    gate на четырёх active managed hosts и отсутствие трёх retired hosts.
 
 ## Секреты
@@ -118,6 +131,7 @@ actor, причина, старая и новая ставка записыва�
 |---|---|---|
 | admin password hashes + domain grants | commerce PostgreSQL | `apps/api` internal auth |
 | engine control key | live Caddy + engine env | `control_authed` |
+| OpenKeys internal credential (тот же engine control key) | live Caddy + `openkeys.env` | OpenKeys internal route |
 | `COMMERCIAL_ADMIN_KEY` | live Caddy + commerce env | `AdminGuard` |
 | `SALES_ADMIN_KEY` | live Caddy + sales env | `AdminKeyGuard` |
 

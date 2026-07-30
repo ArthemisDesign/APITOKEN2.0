@@ -13,11 +13,24 @@ function unauthorized(): NextResponse {
   return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 }
 
-export async function GET(): Promise<NextResponse> {
+function pageInteger(value: string | null, fallback: number, min: number, max: number): number | null {
+  if (value === null || value === "") return fallback;
+  if (!/^\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= min && parsed <= max ? parsed : null;
+}
+
+export async function GET(request: Request): Promise<NextResponse> {
   const admin = await currentAdmin();
   if (!admin) return unauthorized();
-
-  return NextResponse.json({ batches: await listBatches(admin) });
+  const params = new URL(request.url).searchParams;
+  const limit = pageInteger(params.get("limit"), 20, 1, 50);
+  const offset = pageInteger(params.get("offset"), 0, 0, 100_000);
+  const q = (params.get("q") ?? "").trim();
+  if (limit === null || offset === null || q.length > 80) {
+    return NextResponse.json({ error: "invalid_query" }, { status: 400 });
+  }
+  return NextResponse.json({ admin, ...(await listBatches(admin, { limit, offset, q })) });
 }
 
 export async function POST(request: Request): Promise<NextResponse> {

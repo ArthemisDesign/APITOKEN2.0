@@ -159,7 +159,7 @@ main{padding:18px 14px 50px}.page-head h1{font-size:19px}.form{grid-template-col
 @media(max-width:620px){.cards,.form,.domain-grid{grid-template-columns:1fr}.card .value{font-size:23px}}
 </style>
 </head>
-<body data-admin-panel-version="13">
+<body data-admin-panel-version="14">
 <div id="app"></div>
 <div id="error-center" class="error-center" aria-live="polite"></div>
 <script>
@@ -170,7 +170,7 @@ const errorCenter=document.getElementById('error-center');
 const NAV=[
   {group:'Обзор',items:[['dashboard','Сводка','▣']]},
   {group:'Инфраструктура',items:[['subs','Подписки','◍'],['system','Система','⌘']]},
-  {group:'Клиенты',items:[['users','Пользователи','◉'],['accounts','Аккаунты','▤'],['business','B2B','◇']]},
+  {group:'Клиенты',items:[['users','Пользователи','◉'],['accounts','Аккаунты','▤'],['openkeys','OpenKeys','◈'],['business','B2B','◇']]},
   {group:'Деньги',items:[['topups','Пополнения','＄']]},
   {group:'Управление',items:[['admins','Админы','⚿'],['audit','Аудит','≡']]}
 ];
@@ -178,6 +178,7 @@ const validTabs=NAV.flatMap(group=>group.items.map(item=>item[0]));
 const getTab=()=>validTabs.includes(location.hash.slice(1))?location.hash.slice(1):'dashboard';
 let tab=getTab(),timer=null,recoveryTimer=null,refreshController=null,usersCache=[],adminDomainFilter='',lastRefreshAt=0;
 let userPage={offset:0,limit:50,q:'',status:'',auth:''},partnerOffset=0,businessOffset=0;
+let openkeysPage={offset:0,limit:50,q:'',batch:'',status:'',usage:''};
 const failures=new Map();
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 // Встроенные модалки вместо window.prompt/confirm: браузеры (или галка «блокировать диалоги»)
@@ -240,6 +241,7 @@ const sourceName=path=>({
   '/admin/dashboard':'Коммерческая сводка','/overview':'Движок','/capacity':'Ёмкость флота','/subs':'Claude-подписки',
   '/codex-subs':'GPT-подписки','/partner-admin/overview':'Партнёрская сводка','/partner-admin/partner-analytics':'Партнёрские аккаунты',
   '/admin/users':'Пользователи','/admin/topups':'Пополнения','/admin/audit':'Аудит','/admin/business-invites':'B2B-инвайты',
+  '/openkeys-admin/keys':'Ключи OpenKeys',
   '/admin/admin-accounts':'Администраторы','/admin/admin-accounts/domains':'Домены администраторов','/spend-stats':'Статистика расхода'
 })[path.split('?')[0]]||path.split('?')[0];
 function renderFailures(){errorCenter.innerHTML=[...failures.entries()].filter(([,failure])=>!failure.dismissed).map(([key,failure])=>
@@ -270,7 +272,7 @@ function scheduleRefresh(){clearTimeout(timer);timer=null;const delay=tab==='sys
   if(delay)timer=setTimeout(()=>{if(document.hidden){scheduleRefresh();return}refresh()},delay)}
 async function refresh(options={}){clearTimeout(timer);refreshController?.abort();refreshController=new AbortController();tab=getTab();try{
   if(tab==='dashboard')await dashboard();if(tab==='subs')await subscriptions();if(tab==='system')await system();if(tab==='users')await users();
-  if(tab==='accounts')await accounts();if(tab==='business')await business();if(tab==='topups')await topups();if(tab==='admins')await admins();if(tab==='audit')await audit();
+  if(tab==='accounts')await accounts();if(tab==='openkeys')await openkeys();if(tab==='business')await business();if(tab==='topups')await topups();if(tab==='admins')await admins();if(tab==='audit')await audit();
 }catch(error){if(error?.name!=='AbortError'&&!document.getElementById('shell'))showLoading()}finally{scheduleRefresh()}}
 addEventListener('hashchange',()=>{tab=getTab();showLoading();refresh()});
 addEventListener('visibilitychange',()=>{if(!document.hidden&&Date.now()-lastRefreshAt>30000)refresh()});
@@ -516,6 +518,37 @@ async function accounts(){const partnerLimit=50,[overview,dashboardData,partners
     (partnerRows||empty(6))+'</tbody></table></div></div>'+pager(partnerOffset,partnerLimit,partnerTotal,'partners')+'<footer>Все '+commerceTotal+' commerce-аккаунтов доступны с действиями на странице <a class="link" href="#users">«Пользователи»</a>; полный partner workflow остаётся на admin.partners.apitoken.sale.</footer>';
   shell('Аккаунты','engine, commerce, partner и CRM в одном реестре',body,pill(count(commerceTotal+engine.length+partnerTotal,'запись','записи','записей'),crm?'ok':'warn'));
   document.querySelectorAll('[data-page=partners]').forEach(button=>button.onclick=()=>{partnerOffset=Number(button.dataset.offset)||0;refresh({force:true})})}
+
+/* ── OpenKeys: партии, live-расход и управление ключами ──── */
+async function openkeys(){const params=new URLSearchParams({limit:String(openkeysPage.limit),offset:String(openkeysPage.offset)});
+  if(openkeysPage.q)params.set('q',openkeysPage.q);if(openkeysPage.batch)params.set('batch',openkeysPage.batch);
+  if(openkeysPage.status)params.set('status',openkeysPage.status);if(openkeysPage.usage)params.set('usage',openkeysPage.usage);
+  const data=await api('/openkeys-admin/keys?'+params).catch(()=>null);
+  if(!data){shell('OpenKeys','выпущенные через OpenKeys ключи, партии и live-использование','<div class="banner warn"><span class="dot warn"></span><div><b>Каталог OpenKeys временно недоступен</b><span class="muted">Остальные разделы продолжают работать. Источник проверяется автоматически.</span></div></div>',pill('degraded','warn'));return}
+  if(openkeysPage.offset>=data.total&&data.total>0){openkeysPage.offset=Math.max(0,Math.floor((data.total-1)/openkeysPage.limit)*openkeysPage.limit);return openkeys()}
+  const summary=data.summary||{},usageLabel={unused:'не использовался',used:'используется',exhausted:'исчерпан',unavailable:'нет live-данных'};
+  const batchOptions='<option value="">все партии</option>'+(data.batches||[]).map(batch=>'<option value="'+esc(batch.id)+'" '+(openkeysPage.batch===batch.id?'selected':'')+'>'+esc(batch.label||'Без метки')+' · '+esc(batch.createdBy)+' · '+date(batch.createdAt)+'</option>').join('');
+  const rows=(data.rows||[]).map(item=>{const usage=item.usagePercent==null?pill(usageLabel[item.usageState]||'нет данных','warn'):
+      '<div>'+percentBar(Math.min(100,item.usagePercent))+'</div><div class="sub">'+item.usagePercent+'% · '+esc(usageLabel[item.usageState]||item.usageState)+'</div>';
+    const state=pill(item.enabled?'активен':'отключён',item.enabled?'ok':'bad')+'<div class="sub">'+(item.status==='delivered'?'выдан':'на складе')+'</div>';
+    const action='<button class="btn '+(item.enabled?'bad':'')+'" data-openkey="'+esc(item.id)+'" data-enabled="'+(item.enabled?'1':'0')+'" data-label="'+esc(item.batchLabel||item.keyMasked)+'">'+(item.enabled?'отключить':'включить')+'</button>';
+    return '<tr><td class="left"><b class="mono">'+esc(item.keyMasked)+'</b><div class="sub mono">'+esc(item.id)+'</div></td><td class="left"><b>'+esc(item.batchLabel||'Без метки')+'</b><div class="sub mono">'+esc(item.batchId)+' · '+esc(item.createdBy)+'</div></td><td>'+state+'</td><td>'+usage+'</td><td><b>'+(item.spentNano==null?'—':nanoMoney(item.spentNano))+'</b></td><td>'+(item.remainingNano==null?'—':nanoMoney(item.remainingNano))+'</td><td>'+nanoMoney(item.faceValueNano)+'</td><td>'+date(item.deliveredAt||item.createdAt,true)+'</td><td><a class="link" href="'+esc(item.viewUrl)+'" target="_blank" rel="noreferrer">профиль ↗</a></td><td>'+action+'</td></tr>'}).join('');
+  const statusOptions='<option value="">любой статус</option><option value="active" '+(openkeysPage.status==='active'?'selected':'')+'>активные</option><option value="disabled" '+(openkeysPage.status==='disabled'?'selected':'')+'>отключённые</option>';
+  const usageOptions='<option value="">любое использование</option><option value="unused" '+(openkeysPage.usage==='unused'?'selected':'')+'>не использовались</option><option value="used" '+(openkeysPage.usage==='used'?'selected':'')+'>используются</option><option value="exhausted" '+(openkeysPage.usage==='exhausted'?'selected':'')+'>исчерпаны</option><option value="unavailable" '+(openkeysPage.usage==='unavailable'?'selected':'')+'>нет live-данных</option>';
+  const warning=data.truncated?'<div class="banner warn"><span class="dot warn"></span><div><b>Каталог достиг защитного лимита</b><span class="muted">Фильтр применяется к 10 000 последним ключам. Уточните партию или поиск.</span></div></div>':'';
+  const body=warning+'<div class="cards">'+card('ключи',data.total,'после текущих фильтров')+card('активны / отключены',(summary.active||0)+' / '+(summary.disabled||0),'управление обратимо')+
+    card('используются',(summary.used||0),'не трогали '+(summary.unused||0)+' · исчерпаны '+(summary.exhausted||0))+card('потрачено',nanoMoney(summary.spentNano),'остаток '+nanoMoney(summary.remainingNano))+'</div>'+
+    '<div class="sect"><h2>Каталог ключей</h2><span class="sect-sub">метка и партия всегда видны</span></div><form id="openkeys-filter" class="toolbar"><label class="sr-only" for="ok-search">Поиск OpenKeys</label><input id="ok-search" type="search" value="'+esc(openkeysPage.q)+'" placeholder="метка, маска ключа, продавец или ID партии…">'+
+    '<label class="sr-only" for="ok-batch">Партия</label><select id="ok-batch">'+batchOptions+'</select><label class="sr-only" for="ok-usage">Использование</label><select id="ok-usage">'+usageOptions+'</select><label class="sr-only" for="ok-status">Статус</label><select id="ok-status">'+statusOptions+'</select><button class="btn" type="submit">Применить</button></form>'+
+    '<div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">ключ</th><th class="left">метка · партия</th><th>состояние</th><th>использование</th><th>потрачено</th><th>остаток</th><th>номинал</th><th>событие</th><th>профиль</th><th>действие</th></tr></thead><tbody>'+(rows||empty(10))+'</tbody></table></div></div>'+pager(openkeysPage.offset,openkeysPage.limit,data.total,'openkeys')+
+    '<footer>Live-балансы читаются bounded batch-запросами, поэтому раздел не создаёт по два запроса на каждый ключ. Полные секреты здесь никогда не передаются. Выпуск и выдача партий остаются в <a class="link" href="https://openkeys.apitoken.sale/admin" target="_blank" rel="noreferrer">OpenKeys admin ↗</a>.</footer>';
+  shell('OpenKeys','отдельный реестр выпущенных ключей с фильтром по использованию',body,pill(count(data.total,'ключ','ключа','ключей'),(summary.disabled||summary.exhausted)?'warn':'ok'));bindOpenkeys()}
+function bindOpenkeys(){const form=document.getElementById('openkeys-filter');form.onsubmit=event=>{event.preventDefault();openkeysPage={...openkeysPage,offset:0,q:document.getElementById('ok-search').value.trim(),batch:document.getElementById('ok-batch').value,usage:document.getElementById('ok-usage').value,status:document.getElementById('ok-status').value};refresh({force:true})};
+  ['ok-batch','ok-usage','ok-status'].forEach(id=>document.getElementById(id).onchange=()=>form.requestSubmit());
+  document.querySelectorAll('[data-page=openkeys]').forEach(button=>button.onclick=()=>{openkeysPage.offset=Number(button.dataset.offset)||0;refresh({force:true})});
+  document.querySelectorAll('[data-openkey]').forEach(button=>button.onclick=async()=>{const enabled=button.dataset.enabled==='1',next=!enabled;
+    const values=await dialog({title:(next?'Включить ':'Отключить ')+(button.dataset.label||'ключ'),message:next?'Ключ снова начнёт принимать запросы.':'Запросы перестанут проходить, но ключ и история останутся в системе.',confirmLabel:next?'Включить':'Отключить',danger:!next});
+    if(!values)return;button.disabled=true;try{await send('/openkeys-admin/keys','POST',{id:button.dataset.openkey,enabled:next});toast(next?'Ключ включён.':'Ключ отключён.');await refresh({force:true})}catch(error){toast(error.message,'bad');button.disabled=false}})}
 
 /* ── Пользователи ────────────────────────────────────────── */
 async function users(){const params=new URLSearchParams({limit:String(userPage.limit),offset:String(userPage.offset)});

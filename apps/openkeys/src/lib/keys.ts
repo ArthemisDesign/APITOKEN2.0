@@ -1,9 +1,16 @@
 import "server-only";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { EngineUsage } from "@claude-api/contracts";
+import type { EngineAccount, EngineUsage } from "@claude-api/contracts";
 import { openkeysBatches, openkeysIssuanceJobs, openkeysKeys } from "@claude-api/openkeys-db";
-import { and, desc, eq, inArray, isNull, lt, or } from "drizzle-orm";
+import { and, count, desc, eq, ilike, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { apiTypeOf, type ApiType } from "./api-product";
+import {
+  adminUsagePercent,
+  classifyAdminUsage,
+  matchesAdminUsage,
+  type AdminUsageFilter,
+  type AdminUsageState,
+} from "./admin-directory";
 import { loadConfig } from "./config";
 import { getDatabase } from "./db";
 import { getEngineClient } from "./engine";
@@ -392,10 +399,11 @@ export interface StockKey {
   keyMasked: string;
   viewUrl: string;
   faceValue: string;
-  /** Номинал строкой нанодолларов — по нему группируем склад. */
+  /** Номинал строкой нанодолларов для точного отображения и расчётов. */
   faceValueNano: string;
   apiType: ApiType;
   label: string | null;
+  enabled: boolean;
   createdAt: string;
   deliveredAt: string | null;
 }
@@ -405,10 +413,11 @@ function stockStatusOf(row: { deliveredAt: Date | null }): StockStatus {
 }
 
 /**
- * Склад и история одним запросом: строк мало, а порядок нужен общий.
- * Видно только то, что выпустил сам админ — партии принадлежат тому, кто их создал.
+ * Склад и история выбранной партии. Партия содержит не больше 100 ключей, поэтому
+ * здесь не нужна ещё одна пагинация; главное — не расшифровывать сотни чужих партий.
+ * Видно только то, что выпустил сам админ.
  */
-export async function listKeys(createdBy: string, limit = 500): Promise<StockKey[]> {
+export async function listKeys(createdBy: string, batchId: string, limit = MAX_BATCH_QUANTITY): Promise<StockKey[]> {
   await reconcileIssuanceJobs();
   const config = loadConfig();
   const { db } = getDatabase();
@@ -422,6 +431,7 @@ export async function listKeys(createdBy: string, limit = 500): Promise<StockKey
       faceValueNano: openkeysKeys.faceValueNano,
       createdAt: openkeysKeys.createdAt,
       deliveredAt: openkeysKeys.deliveredAt,
+      enabled: openkeysKeys.status,
 
       secretCiphertext: openkeysKeys.secretCiphertext,
       secretNonce: openkeysKeys.secretNonce,
@@ -432,7 +442,11 @@ export async function listKeys(createdBy: string, limit = 500): Promise<StockKey
     })
     .from(openkeysKeys)
     .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
-    .where(and(eq(openkeysBatches.createdBy, createdBy), isNull(openkeysKeys.removedAt)))
+    .where(and(
+      eq(openkeysBatches.createdBy, createdBy),
+      eq(openkeysBatches.id, batchId),
+      isNull(openkeysKeys.removedAt),
+    ))
     .orderBy(desc(openkeysKeys.createdAt))
     .limit(limit);
 
@@ -457,9 +471,9 @@ export async function listKeys(createdBy: string, limit = 500): Promise<StockKey
       faceValueNano: row.faceValueNano.toString(),
       apiType: apiTypeOf(row.apiType),
       label: row.label,
+      enabled: row.enabled !== "disabled",
       createdAt: row.createdAt.toISOString(),
       deliveredAt: row.deliveredAt?.toISOString() ?? null,
-
     };
   });
 }
@@ -528,7 +542,7 @@ export async function removeKey(id: string, createdBy: string): Promise<boolean>
  * Удаление всего склада разом. Ключи отключаются по одному: частичный успех
  * лучше, чем отказ целиком, поэтому счётчик показывает, сколько реально ушло.
  */
-export async function removeAllStock(createdBy: string, apiType?: ApiType): Promise<number> {
+export async function removeAllStock(createdBy: string, apiType?: ApiType, batchId?: string): Promise<number> {
   const { db } = getDatabase();
   const rows = await db
     .select({ id: openkeysKeys.id, engineKeyId: openkeysKeys.engineKeyId })
@@ -536,6 +550,7 @@ export async function removeAllStock(createdBy: string, apiType?: ApiType): Prom
     .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
     .where(and(
       eq(openkeysBatches.createdBy, createdBy),
+      batchId ? eq(openkeysBatches.id, batchId) : undefined,
       isNull(openkeysKeys.deliveredAt),
       isNull(openkeysKeys.removedAt),
       apiType === "anthropic"
@@ -573,6 +588,8 @@ export async function removeAllStock(createdBy: string, apiType?: ApiType): Prom
 
 export interface MonitorRow {
   id: string;
+  batchId: string;
+  batchLabel: string | null;
   status: StockStatus;
   keyMasked: string;
   label: string | null;
@@ -584,11 +601,33 @@ export interface MonitorRow {
   remaining: string | null;
   spent: string | null;
   spentNano: string | null;
-  enabled: boolean | null;
+  enabled: boolean;
 }
 
-/** Живой опрос движка идёт пачками: последовательно это минуты на полусотне ключей. */
-const MONITOR_CONCURRENCY = 8;
+const ENGINE_ACCOUNT_BATCH = 500;
+const ENGINE_BATCH_CONCURRENCY = 4;
+
+/** Один batch Control API заменяет два запроса на каждый ключ и не создаёт N+1 при росте склада. */
+async function loadEngineAccountMap(accountIds: string[]): Promise<Map<string, EngineAccount>> {
+  const unique = [...new Set(accountIds)];
+  const chunks: string[][] = [];
+  for (let offset = 0; offset < unique.length; offset += ENGINE_ACCOUNT_BATCH) {
+    chunks.push(unique.slice(offset, offset + ENGINE_ACCOUNT_BATCH));
+  }
+
+  const accounts = new Map<string, EngineAccount>();
+  const engine = getEngineClient();
+  for (let offset = 0; offset < chunks.length; offset += ENGINE_BATCH_CONCURRENCY) {
+    const settled = await Promise.allSettled(
+      chunks.slice(offset, offset + ENGINE_BATCH_CONCURRENCY).map((ids) => engine.getAccounts(ids)),
+    );
+    for (const result of settled) {
+      if (result.status !== "fulfilled") continue;
+      for (const account of result.value) accounts.set(account.account, account);
+    }
+  }
+  return accounts;
+}
 
 /**
  * Наблюдение за проданными ключами: остаток и расход берём напрямую у движка,
@@ -600,14 +639,15 @@ export async function loadKeyMonitor(createdBy: string, limit = 300): Promise<Mo
   const rows = await db
     .select({
       id: openkeysKeys.id,
+      batchId: openkeysKeys.batchId,
       keyMasked: openkeysKeys.keyMasked,
       viewToken: openkeysKeys.viewToken,
       engineAccountId: openkeysKeys.engineAccountId,
-      engineKeyId: openkeysKeys.engineKeyId,
       faceValueNano: openkeysKeys.faceValueNano,
       multBp: openkeysKeys.multBp,
       createdAt: openkeysKeys.createdAt,
       deliveredAt: openkeysKeys.deliveredAt,
+      enabled: openkeysKeys.status,
       label: openkeysBatches.label,
     })
     .from(openkeysKeys)
@@ -616,68 +656,49 @@ export async function loadKeyMonitor(createdBy: string, limit = 300): Promise<Mo
     .orderBy(desc(openkeysKeys.createdAt))
     .limit(limit);
 
-  const engine = getEngineClient();
-  const result: MonitorRow[] = [];
+  const accounts = await loadEngineAccountMap(rows.map((row) => row.engineAccountId));
+  return rows.map((row) => {
+    let remaining: string | null = null;
+    let spent: string | null = null;
+    let spentNano: string | null = null;
+    const account = accounts.get(row.engineAccountId);
 
-  for (let offset = 0; offset < rows.length; offset += MONITOR_CONCURRENCY) {
-    const slice = rows.slice(offset, offset + MONITOR_CONCURRENCY);
-    const loaded = await Promise.all(
-      slice.map(async (row) => {
-        let remaining: string | null = null;
-        let spent: string | null = null;
-        let spentNano: string | null = null;
-        let enabled: boolean | null = null;
+    if (account) {
+      remaining = formatUsd(officialRemainingNano(
+        BigInt(account.balance_nano),
+        BigInt(account.reserved_nano),
+        row.multBp,
+      ));
+      const spentOfficial = balanceToOfficialNano(BigInt(account.spent_nano), row.multBp);
+      spent = formatUsd(spentOfficial);
+      spentNano = spentOfficial.toString();
+    }
 
-        try {
-          const [account, keys] = await Promise.all([
-            engine.getAccount(row.engineAccountId),
-            engine.listKeys(row.engineAccountId),
-          ]);
-          remaining = formatUsd(officialRemainingNano(
-            BigInt(account.balance_nano),
-            BigInt(account.reserved_nano),
-            row.multBp,
-          ));
-          const spentOfficial = balanceToOfficialNano(BigInt(account.spent_nano), row.multBp);
-          spent = formatUsd(spentOfficial);
-          spentNano = spentOfficial.toString();
-          enabled = keys.find((key) => key.key_id === row.engineKeyId)?.status !== "disabled";
-        } catch {
-          // Недоступный аккаунт не должен прятать строку: сам ключ у нас есть,
-          // и админ должен видеть его в списке даже без свежих цифр.
-        }
-
-        return {
-          id: row.id,
-          status: stockStatusOf(row),
-          keyMasked: row.keyMasked,
-          label: row.label,
-          faceValue: formatUsd(row.faceValueNano, 0),
-          viewUrl: `${config.publicBaseUrl}/profile/${row.viewToken}`,
-          createdAt: row.createdAt.toISOString(),
-          deliveredAt: row.deliveredAt?.toISOString() ?? null,
-          remaining,
-          spent,
-          spentNano,
-          enabled,
-        };
-      }),
-    );
-    result.push(...loaded);
-  }
-
-  return result;
+    return {
+      id: row.id,
+      batchId: row.batchId,
+      batchLabel: row.label,
+      status: stockStatusOf(row),
+      keyMasked: row.keyMasked,
+      label: row.label,
+      faceValue: formatUsd(row.faceValueNano, 0),
+      viewUrl: `${config.publicBaseUrl}/profile/${row.viewToken}`,
+      createdAt: row.createdAt.toISOString(),
+      deliveredAt: row.deliveredAt?.toISOString() ?? null,
+      remaining,
+      spent,
+      spentNano,
+      enabled: row.enabled !== "disabled",
+    };
+  });
 }
 
-/** Включение и отключение ключа. Запись у нас остаётся — это не удаление. */
-export async function setKeyEnabled(id: string, createdBy: string, enabled: boolean): Promise<boolean> {
+async function applyKeyEnabled(id: string, enabled: boolean): Promise<boolean> {
   const { db } = getDatabase();
-  if (!(await ownsKey(id, createdBy))) return false;
-
   const [row] = await db
     .select({ engineKeyId: openkeysKeys.engineKeyId })
     .from(openkeysKeys)
-    .where(eq(openkeysKeys.id, id))
+    .where(and(eq(openkeysKeys.id, id), isNull(openkeysKeys.removedAt)))
     .limit(1);
   if (!row) return false;
 
@@ -689,31 +710,291 @@ export async function setKeyEnabled(id: string, createdBy: string, enabled: bool
   return true;
 }
 
+/** Включение и отключение ключа владельцем партии. Запись остаётся — это не удаление. */
+export async function setKeyEnabled(id: string, createdBy: string, enabled: boolean): Promise<boolean> {
+  if (!(await ownsKey(id, createdBy))) return false;
+  return applyKeyEnabled(id, enabled);
+}
+
+/** Центральная админка уже прошла managed-admin gate и может управлять любой партией. */
+export async function setKeyEnabledForInternalAdmin(id: string, enabled: boolean): Promise<boolean> {
+  return applyKeyEnabled(id, enabled);
+}
+
 export interface BatchSummary {
   id: string;
   label: string | null;
   faceValue: string;
   quantity: number;
   apiType: ApiType;
+  stockCount: number;
+  deliveredCount: number;
+  disabledCount: number;
   createdAt: string;
 }
 
-/** Партии этого админа. Состав партии страница берёт из общего списка ключей. */
-export async function listBatches(createdBy: string, limit = 200): Promise<BatchSummary[]> {
-  const { db } = getDatabase();
-  const rows = await db
-    .select()
-    .from(openkeysBatches)
-    .where(eq(openkeysBatches.createdBy, createdBy))
-    .orderBy(desc(openkeysBatches.createdAt))
-    .limit(limit);
+export interface BatchPage {
+  batches: BatchSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+  totals: {
+    stock: number;
+    delivered: number;
+    disabled: number;
+  };
+}
 
-  return rows.map((row) => ({
-    id: row.id,
-    label: row.label,
-    faceValue: formatUsd(row.faceValueNano, 0),
-    quantity: row.quantity,
-    apiType: apiTypeOf(row.apiType),
-    createdAt: row.createdAt.toISOString(),
-  }));
+/**
+ * Партии админа с серверным поиском и пагинацией. Счётчики считаются в PostgreSQL,
+ * поэтому список остаётся быстрым и не расшифровывает складские секреты.
+ */
+export async function listBatches(
+  createdBy: string,
+  options: { limit?: number; offset?: number; q?: string } = {},
+): Promise<BatchPage> {
+  const { db } = getDatabase();
+  const limit = Number.isInteger(options.limit) ? Math.min(50, Math.max(1, options.limit!)) : 20;
+  const offset = Number.isInteger(options.offset) ? Math.max(0, options.offset!) : 0;
+  const query = options.q?.trim().slice(0, 80) ?? "";
+  const owner = eq(openkeysBatches.createdBy, createdBy);
+  const where = query
+    ? and(owner, or(
+        ilike(openkeysBatches.label, `%${query}%`),
+        sql`${openkeysBatches.id}::text ILIKE ${`%${query}%`}`,
+      ))
+    : owner;
+
+  const [rows, totalRows, keyTotals] = await Promise.all([
+    db
+      .select({
+        id: openkeysBatches.id,
+        label: openkeysBatches.label,
+        faceValueNano: openkeysBatches.faceValueNano,
+        quantity: openkeysBatches.quantity,
+        apiType: openkeysBatches.apiType,
+        createdAt: openkeysBatches.createdAt,
+        stockCount: sql<number>`count(${openkeysKeys.id}) filter (where ${openkeysKeys.removedAt} is null and ${openkeysKeys.deliveredAt} is null)`.mapWith(Number),
+        deliveredCount: sql<number>`count(${openkeysKeys.id}) filter (where ${openkeysKeys.removedAt} is null and ${openkeysKeys.deliveredAt} is not null)`.mapWith(Number),
+        disabledCount: sql<number>`count(${openkeysKeys.id}) filter (where ${openkeysKeys.removedAt} is null and ${openkeysKeys.status} = 'disabled')`.mapWith(Number),
+      })
+      .from(openkeysBatches)
+      .leftJoin(openkeysKeys, eq(openkeysKeys.batchId, openkeysBatches.id))
+      .where(where)
+      .groupBy(openkeysBatches.id)
+      .orderBy(desc(openkeysBatches.createdAt))
+      .limit(limit)
+      .offset(offset),
+    db.select({ value: count() }).from(openkeysBatches).where(where),
+    db
+      .select({
+        stock: sql<number>`count(${openkeysKeys.id}) filter (where ${openkeysKeys.removedAt} is null and ${openkeysKeys.deliveredAt} is null)`.mapWith(Number),
+        delivered: sql<number>`count(${openkeysKeys.id}) filter (where ${openkeysKeys.removedAt} is null and ${openkeysKeys.deliveredAt} is not null)`.mapWith(Number),
+        disabled: sql<number>`count(${openkeysKeys.id}) filter (where ${openkeysKeys.removedAt} is null and ${openkeysKeys.status} = 'disabled')`.mapWith(Number),
+      })
+      .from(openkeysKeys)
+      .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
+      .where(owner),
+  ]);
+
+  return {
+    total: totalRows[0]?.value ?? 0,
+    limit,
+    offset,
+    totals: keyTotals[0] ?? { stock: 0, delivered: 0, disabled: 0 },
+    batches: rows.map((row) => ({
+      id: row.id,
+      label: row.label,
+      faceValue: formatUsd(row.faceValueNano, 0),
+      quantity: row.quantity,
+      apiType: apiTypeOf(row.apiType),
+      stockCount: row.stockCount,
+      deliveredCount: row.deliveredCount,
+      disabledCount: row.disabledCount,
+      createdAt: row.createdAt.toISOString(),
+    })),
+  };
+}
+
+export type AdminKeyStatusFilter = "all" | "active" | "disabled";
+
+export interface AdminKeyDirectoryQuery {
+  limit: number;
+  offset: number;
+  q: string;
+  batchId: string | null;
+  status: AdminKeyStatusFilter;
+  usage: AdminUsageFilter;
+}
+
+export interface AdminKeyDirectoryRow {
+  id: string;
+  batchId: string;
+  batchLabel: string | null;
+  createdBy: string;
+  keyMasked: string;
+  status: StockStatus;
+  enabled: boolean;
+  usageState: AdminUsageState;
+  usagePercent: number | null;
+  faceValueNano: string;
+  remainingNano: string | null;
+  spentNano: string | null;
+  viewUrl: string;
+  createdAt: string;
+  deliveredAt: string | null;
+}
+
+export interface AdminKeyDirectory {
+  rows: AdminKeyDirectoryRow[];
+  total: number;
+  limit: number;
+  offset: number;
+  truncated: boolean;
+  summary: {
+    active: number;
+    disabled: number;
+    unused: number;
+    used: number;
+    exhausted: number;
+    unavailable: number;
+    spentNano: string;
+    remainingNano: string;
+  };
+  batches: Array<{
+    id: string;
+    label: string | null;
+    createdBy: string;
+    createdAt: string;
+  }>;
+}
+
+const ADMIN_DIRECTORY_SCAN_LIMIT = 10_000;
+
+/**
+ * Закрытый каталог для единой админки. Метаданные читаются одним SQL, live-балансы —
+ * bounded batch-вызовами по 500 аккаунтов, затем usage-фильтр и пагинация применяются
+ * на сервере. Полные ключи и складской шифротекст в этот контракт не попадают.
+ */
+export async function loadAdminKeyDirectory(query: AdminKeyDirectoryQuery): Promise<AdminKeyDirectory> {
+  const config = loadConfig();
+  const { db } = getDatabase();
+  const search = query.q.trim().slice(0, 80);
+  const where = and(
+    isNull(openkeysKeys.removedAt),
+    query.batchId ? eq(openkeysBatches.id, query.batchId) : undefined,
+    query.status === "active" ? eq(openkeysKeys.status, "active") : undefined,
+    query.status === "disabled" ? eq(openkeysKeys.status, "disabled") : undefined,
+    search
+      ? or(
+          ilike(openkeysKeys.keyMasked, `%${search}%`),
+          ilike(openkeysBatches.label, `%${search}%`),
+          ilike(openkeysBatches.createdBy, `%${search}%`),
+          sql`${openkeysBatches.id}::text ILIKE ${`%${search}%`}`,
+        )
+      : undefined,
+  );
+
+  const [rawRows, rawBatches] = await Promise.all([
+    db
+      .select({
+        id: openkeysKeys.id,
+        batchId: openkeysKeys.batchId,
+        batchLabel: openkeysBatches.label,
+        createdBy: openkeysBatches.createdBy,
+        keyMasked: openkeysKeys.keyMasked,
+        viewToken: openkeysKeys.viewToken,
+        engineAccountId: openkeysKeys.engineAccountId,
+        faceValueNano: openkeysKeys.faceValueNano,
+        multBp: openkeysKeys.multBp,
+        enabled: openkeysKeys.status,
+        createdAt: openkeysKeys.createdAt,
+        deliveredAt: openkeysKeys.deliveredAt,
+      })
+      .from(openkeysKeys)
+      .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
+      .where(where)
+      .orderBy(desc(openkeysKeys.createdAt))
+      .limit(ADMIN_DIRECTORY_SCAN_LIMIT + 1),
+    db
+      .select({
+        id: openkeysBatches.id,
+        label: openkeysBatches.label,
+        createdBy: openkeysBatches.createdBy,
+        createdAt: openkeysBatches.createdAt,
+      })
+      .from(openkeysBatches)
+      .orderBy(desc(openkeysBatches.createdAt))
+      .limit(2_000),
+  ]);
+
+  const truncated = rawRows.length > ADMIN_DIRECTORY_SCAN_LIMIT;
+  const sourceRows = truncated ? rawRows.slice(0, ADMIN_DIRECTORY_SCAN_LIMIT) : rawRows;
+  const accounts = await loadEngineAccountMap(sourceRows.map((row) => row.engineAccountId));
+  const materialized: AdminKeyDirectoryRow[] = sourceRows.map((row) => {
+    const account = accounts.get(row.engineAccountId);
+    const faceValueNano = row.faceValueNano;
+    const spentNano = account === undefined
+      ? null
+      : balanceToOfficialNano(BigInt(account.spent_nano), row.multBp);
+    const remainingNano = account === undefined
+      ? null
+      : officialRemainingNano(BigInt(account.balance_nano), BigInt(account.reserved_nano), row.multBp);
+    const usageState = classifyAdminUsage(spentNano, remainingNano);
+    return {
+      id: row.id,
+      batchId: row.batchId,
+      batchLabel: row.batchLabel,
+      createdBy: row.createdBy,
+      keyMasked: row.keyMasked,
+      status: stockStatusOf(row),
+      // The control here is key-scoped. Account status is a separate engine concern and must not
+      // turn the key button into an "enable account" action that can never fulfil its label.
+      enabled: row.enabled !== "disabled",
+      usageState,
+      usagePercent: adminUsagePercent(spentNano, faceValueNano),
+      faceValueNano: faceValueNano.toString(),
+      remainingNano: remainingNano?.toString() ?? null,
+      spentNano: spentNano?.toString() ?? null,
+      viewUrl: `${config.publicBaseUrl}/profile/${row.viewToken}`,
+      createdAt: row.createdAt.toISOString(),
+      deliveredAt: row.deliveredAt?.toISOString() ?? null,
+    };
+  });
+  const filtered = materialized.filter((row) => matchesAdminUsage(row.usageState, query.usage));
+  let spentNano = 0n;
+  let remainingNano = 0n;
+  const summary = {
+    active: 0,
+    disabled: 0,
+    unused: 0,
+    used: 0,
+    exhausted: 0,
+    unavailable: 0,
+  };
+  for (const row of filtered) {
+    summary[row.enabled ? "active" : "disabled"] += 1;
+    summary[row.usageState] += 1;
+    if (row.spentNano !== null) spentNano += BigInt(row.spentNano);
+    if (row.remainingNano !== null) remainingNano += BigInt(row.remainingNano);
+  }
+
+  return {
+    rows: filtered.slice(query.offset, query.offset + query.limit),
+    total: filtered.length,
+    limit: query.limit,
+    offset: query.offset,
+    truncated,
+    summary: {
+      ...summary,
+      spentNano: spentNano.toString(),
+      remainingNano: remainingNano.toString(),
+    },
+    batches: rawBatches.map((batch) => ({
+      id: batch.id,
+      label: batch.label,
+      createdBy: batch.createdBy,
+      createdAt: batch.createdAt.toISOString(),
+    })),
+  };
 }

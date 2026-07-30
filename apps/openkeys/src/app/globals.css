@@ -2544,6 +2544,29 @@ body.app-body .bg-decor{display:none!important}
 .openkeys-danger{color:var(--danger)}
 .openkeys-danger:hover{border-color:var(--danger);color:var(--danger)}
 
+/* Admin workspace: batches are the only navigation/filter dimension. */
+.openkeys-admin-intro{position:relative;display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin:4px 0 18px;padding:28px 30px;border:1px solid var(--line);border-radius:16px;background:
+  radial-gradient(circle at 92% 8%,color-mix(in srgb,var(--accent) 16%,transparent),transparent 38%),var(--bg-card);overflow:hidden}
+.openkeys-admin-intro>div{max-width:760px}.openkeys-admin-intro h1{margin:9px 0 10px;font:720 clamp(25px,3vw,38px)/1.08 var(--font-mono);letter-spacing:-.045em;color:var(--txt)}
+.openkeys-admin-intro p{max-width:720px;margin:0;color:var(--txt-3);font:500 12px/1.7 var(--font-mono)}
+.openkeys-admin-stats{margin-bottom:20px}.openkeys-issue-card{margin:0 0 24px;padding:24px}.openkeys-issue-card .overview-card-head{margin-bottom:16px}
+.openkeys-batches-section{margin-top:28px}.openkeys-batch-toolbar{display:grid;grid-template-columns:minmax(240px,1fr) auto auto;gap:9px;margin-bottom:12px}
+.openkeys-batch-toolbar input{min-width:0;width:100%}.openkeys-batch-table tr.is-selected td{background:color-mix(in srgb,var(--accent) 8%,var(--bg-card))}
+.openkeys-batch-table td:first-child{min-width:220px}.openkeys-batch-id{display:block;margin-top:4px;color:var(--txt-4);font:500 10px/1.3 var(--font-mono)}
+.openkeys-pagination{display:flex;align-items:center;justify-content:flex-end;gap:9px;margin-top:12px;color:var(--txt-4);font:500 11px/1.4 var(--font-mono)}
+.openkeys-workspace-empty{display:grid;gap:7px;margin-top:28px}.openkeys-workspace-empty b{color:var(--txt);font-size:15px}.openkeys-workspace-empty span{color:var(--txt-3)}
+.openkeys-batch-workspace{margin-top:30px;padding-top:28px;border-top:1px solid var(--line)}
+.openkeys-workspace-head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:16px}
+.openkeys-workspace-head h2{margin:7px 0 5px;font:720 27px/1.1 var(--font-mono);letter-spacing:-.035em;color:var(--txt)}
+.openkeys-workspace-head p{margin:0;color:var(--txt-4);font:500 11px/1.5 var(--font-mono)}
+.openkeys-stock-head{align-items:flex-end;margin-top:30px}.openkeys-history-head{margin-top:42px}
+.openkeys-key-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.openkeys-key-card{display:grid;align-content:start;gap:13px;min-width:0;margin:0;padding:18px}
+.openkeys-key-card.is-disabled{border-color:color-mix(in srgb,var(--danger) 30%,var(--line));background:color-mix(in srgb,var(--danger) 3%,var(--bg-card))}
+.openkeys-key-secret{margin:0}.openkeys-key-meta{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--txt-4);font:500 10px/1.4 var(--font-mono)}
+.openkeys-key-meta a{color:var(--accent);text-decoration:none}.openkeys-key-meta a:hover{text-decoration:underline}
+@media(max-width:900px){.openkeys-key-grid{grid-template-columns:1fr}.openkeys-admin-intro,.openkeys-workspace-head{align-items:flex-start;flex-direction:column}}
+@media(max-width:620px){.openkeys-batch-toolbar{grid-template-columns:1fr 1fr}.openkeys-batch-toolbar input{grid-column:1/-1}.openkeys-pagination{justify-content:flex-start;flex-wrap:wrap}.openkeys-admin-intro{padding:22px}.openkeys-key-card{padding:15px}}
+
 /* Universal OpenKeys: one credential, two protocol-specific connection paths. */
 .openkeys-universal-banner{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:14px 0 20px}
 .openkeys-universal-banner b{color:var(--txt)}

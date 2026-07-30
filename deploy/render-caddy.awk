@@ -10,6 +10,14 @@ NR == FNR {
   admin_control_used++
   next
 }
+/<OPENKEYS_INTERNAL_KEY_PLACEHOLDER>/ {
+  if (control == "") exit 49
+  openkeyskey = control
+  sub(/header_up x-api-key/, "header_up X-OpenKeys-Control-Key", openkeyskey)
+  print openkeyskey
+  openkeys_internal_used++
+  next
+}
 /<ADMIN_AUTH_KEY_PLACEHOLDER>/ {
   if (commadmin == "") exit 48
   authkey = commadmin
@@ -38,8 +46,8 @@ NR == FNR {
 }
 { print }
 END {
-  # Control-ключ обслуживает ДВА admin-data upstream'а (Anthropic balancer и OpenAI origin
-  # для /codex-subs), поэтому его placeholder встречается несколько раз; остальные — ровно один.
-  if (admin_control_used < 1 || authkey_used != 1 || commadmin_used != 1 ||
+  # Control-ключ обслуживает admin-data upstream'ы и переиспользуется закрытым OpenKeys bridge
+  # под отдельным header name; остальные service credentials встречаются ровно один раз.
+  if (admin_control_used < 1 || openkeys_internal_used != 1 || authkey_used != 1 || commadmin_used != 1 ||
       admin_commadmin_used != 1 || salesadmin_used != 1) exit 43
 }

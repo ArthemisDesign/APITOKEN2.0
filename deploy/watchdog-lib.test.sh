@@ -1289,6 +1289,9 @@ grep -Fq 'https://gemini.api.apitoken.sale/v1beta/models/gemini-provider-probe:g
   "$ROOT/deploy/watchdog.sh"
 ! grep -Fq -- "-H 'X-Apitoken-Api-Plane: openai'" "$ROOT/deploy/watchdog.sh"
 grep -Fq '@commerce_admin path /admin/*' "$ROOT/deploy/Caddyfile"
+grep -Fq 'handle_path /openkeys-admin/*' "$ROOT/deploy/Caddyfile"
+grep -Fq 'handle /api/internal/*' "$ROOT/deploy/Caddyfile"
+grep -Fq 'header_up X-OpenKeys-Control-Key "<OPENKEYS_INTERNAL_KEY_PLACEHOLDER>"' "$ROOT/deploy/Caddyfile"
 grep -Fq 'handle_path /partner-admin/*' "$ROOT/deploy/Caddyfile"
 grep -Fq 'copy_headers X-Admin-Actor X-Admin-Account-Id' "$ROOT/deploy/Caddyfile"
 grep -Fq 'encode zstd gzip' "$ROOT/deploy/Caddyfile"
@@ -1863,6 +1866,7 @@ for rendered in "$rendered_once" "$rendered_twice"; do
   ! grep -Fq '$2y$' "$rendered"
   grep -Fq 'forward_auth 127.0.0.1:8791' "$rendered"
   [[ $(grep -Fc 'header_up x-api-key "test-control-secret"' "$rendered") == 2 ]]
+  [[ $(grep -Fc 'header_up X-OpenKeys-Control-Key "test-control-secret"' "$rendered") == 1 ]]
   [[ $(grep -Fc 'header_up x-admin-key "test-commerce-secret"' "$rendered") == 2 ]]
   [[ $(grep -Fc 'header_up X-Admin-Key "test-commerce-secret"' "$rendered") == 1 ]]
   [[ $(grep -Fc 'header_up x-sales-admin-key "test-sales-secret"' "$rendered") == 1 ]]

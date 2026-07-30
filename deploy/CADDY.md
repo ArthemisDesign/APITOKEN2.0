@@ -73,6 +73,12 @@ runtime was verified in production: 8792 now targets only 8793 and no API-plane 
 The watchdog resolves the OpenAI hostname to loopback and probes it over HTTPS, covering the public
 vhost boundary end to end.
 
+The unified admin's `/openkeys-admin/*` path is routed to the single-instance OpenKeys service on
+`127.0.0.1:3410` only after managed-admin authentication. Caddy injects the reused server-side
+engine control credential under the dedicated `X-OpenKeys-Control-Key` header; the browser never
+receives it. The public OpenKeys vhost returns `404` for `/api/internal/*`, so the internal catalog
+cannot be reached through the customer-facing hostname even with a forged actor header.
+
 Gemini is a second independent singleton: `gemini.api.apitoken.sale` targets stable loopback origin
 `127.0.0.1:8794`, which proxies only runtime `127.0.0.1:8795`. It never participates in the 8792
 bridge and never accepts the request-level API-plane marker. Its public matcher allows `/v1beta/*`,
