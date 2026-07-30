@@ -81,9 +81,17 @@ impl TurnRouting {
         )
     }
 
+    /// A shared cache root influences only the first placement of a new conversation. Once the
+    /// conversation has a binding, that binding remains the stronger cache-continuity signal.
+    fn places_cache_root(&self) -> bool {
+        self.resolution.is_none() && self.input.has_cache_root()
+    }
+
     /// Persist the affinity binding to the home that actually served the turn. Called only on
     /// success: a failed attempt must not pin a conversation to a home that could not serve it.
     async fn record_served(&mut self, served_home: &str) {
+        let new_cache_root_placement = self.places_cache_root();
+        let reused_warm_root = self.warm.iter().any(|home| home == served_home);
         match self.resolution.as_mut() {
             Some(resolution) => {
                 if resolution.home != served_home {
@@ -95,6 +103,10 @@ impl TurnRouting {
                 let resolution = self.store.claim(&self.input, served_home).await;
                 self.resolution = Some(resolution);
             }
+        }
+        if new_cache_root_placement {
+            self.store
+                .record_cache_root_placement(&self.input, reused_warm_root);
         }
         self.store.mark_cache_warm(&self.input, served_home);
     }
@@ -109,12 +121,60 @@ const AUTH_QUARANTINE_SECS: i64 = 900;
 const TRANSPORT_COOL_SECS: i64 = 10;
 /// Fallback wait advertised to a client when every home is limited but no window published a reset.
 const DEFAULT_LIMIT_RETRY_SECS: u64 = 60;
+/// Match the Claude fleet's cache-root fanout: one shared prompt prefix is deliberately warmed on
+/// two competitive homes so independent sessions do not collapse onto the first subscription.
+const CACHE_ROOT_MIN_WARM_HOMES: usize = 2;
+/// Reuse cache warmth only while the candidate retains at least this share of the fleet's best
+/// remaining provider capacity. This is a comparison, never a time window or an availability gate.
+const CACHE_ROOT_MIN_CAPACITY_RATIO: f64 = 0.70;
 /// Detached public stream tasks are bounded by the server-wide admission limit in practice. This
 /// larger private semaphore provides a quiescence barrier without imposing a lower runtime cap.
 const MAX_BACKGROUND_TASKS: u32 = 1_000_000;
 /// Once the server's advertised drain deadline has expired, cleanup itself must also be bounded.
 /// systemd cannot start the replacement singleton while the old main PID remains in `deactivating`.
 const FORCED_SHUTDOWN_CLEANUP_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
+#[derive(Clone, Copy, Debug)]
+struct CacheRootCandidate {
+    warm: bool,
+    free_capacity: f64,
+}
+
+/// Candidates arrive best-first. Seed a second competitive cache copy, then prefer a warm copy
+/// while it remains close enough to the global capacity leader. The returned index is an immediate
+/// placement decision; no sampling count, timer, background repair or minimum live-home quorum is
+/// involved.
+fn cache_root_primary_index(candidates: &[CacheRootCandidate]) -> usize {
+    debug_assert!(!candidates.is_empty());
+    let global_free = candidates[0].free_capacity.max(0.0);
+    let competitive = |candidate: &CacheRootCandidate| {
+        candidate.free_capacity.max(0.0) >= global_free * CACHE_ROOT_MIN_CAPACITY_RATIO
+    };
+    let warm_count = candidates.iter().filter(|candidate| candidate.warm).count();
+
+    if warm_count < CACHE_ROOT_MIN_WARM_HOMES {
+        if let Some((index, candidate)) = candidates
+            .iter()
+            .enumerate()
+            .find(|(_, candidate)| !candidate.warm)
+        {
+            if competitive(candidate) {
+                return index;
+            }
+        }
+    }
+
+    if let Some((index, candidate)) = candidates
+        .iter()
+        .enumerate()
+        .find(|(_, candidate)| candidate.warm)
+    {
+        if competitive(candidate) {
+            return index;
+        }
+    }
+    0
+}
 
 #[derive(Debug)]
 struct ProviderLock {
@@ -601,6 +661,29 @@ impl CodexHome {
         }
     }
 
+    /// Remaining official-price capacity on the most constrained reported window. This is the
+    /// Codex equivalent of Claude pool's `placement_free`: calibrated capacity when available,
+    /// otherwise the duration-scaled prior. Missing observational data stays fail-open and uses the
+    /// configured weekly prior, matching the existing unknown-utilisation placement behavior.
+    fn placement_free_usd(&self, limits: Option<&CodexRateLimits>) -> f64 {
+        let Some(limits) = limits else {
+            return self.cfg.window_cap_usd_prior.max(0.0);
+        };
+        let primary = limits.primary.as_ref().map(|window| {
+            self.capacity_report("primary", window, &self.calib_primary)
+                .remaining_usd
+        });
+        let secondary = limits.secondary.as_ref().map(|window| {
+            self.capacity_report("secondary", window, &self.calib_secondary)
+                .remaining_usd
+        });
+        match (primary, secondary) {
+            (Some(primary), Some(secondary)) => primary.min(secondary).max(0.0),
+            (Some(remaining), None) | (None, Some(remaining)) => remaining.max(0.0),
+            (None, None) => self.cfg.window_cap_usd_prior.max(0.0),
+        }
+    }
+
     /// Whether the cached snapshot says this home is inside the configured window headroom.
     ///
     /// A missing snapshot is treated as available on purpose: the rate-limit endpoint is
@@ -664,6 +747,59 @@ mod provider_lock_tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_HOME: AtomicU64 = AtomicU64::new(1);
+
+    #[test]
+    fn cache_root_seeds_a_second_competitive_home() {
+        let candidates = [
+            CacheRootCandidate {
+                warm: true,
+                free_capacity: 90.0,
+            },
+            CacheRootCandidate {
+                warm: false,
+                free_capacity: 80.0,
+            },
+        ];
+        assert_eq!(cache_root_primary_index(&candidates), 1);
+    }
+
+    #[test]
+    fn cache_root_prefers_a_warm_home_when_capacity_is_close() {
+        let candidates = [
+            CacheRootCandidate {
+                warm: false,
+                free_capacity: 90.0,
+            },
+            CacheRootCandidate {
+                warm: true,
+                free_capacity: 80.0,
+            },
+            CacheRootCandidate {
+                warm: true,
+                free_capacity: 75.0,
+            },
+        ];
+        assert_eq!(cache_root_primary_index(&candidates), 1);
+    }
+
+    #[test]
+    fn cache_root_yields_to_materially_better_cold_capacity() {
+        let candidates = [
+            CacheRootCandidate {
+                warm: false,
+                free_capacity: 90.0,
+            },
+            CacheRootCandidate {
+                warm: true,
+                free_capacity: 60.0,
+            },
+            CacheRootCandidate {
+                warm: true,
+                free_capacity: 50.0,
+            },
+        ];
+        assert_eq!(cache_root_primary_index(&candidates), 0);
+    }
 
     fn workspace(label: &str) -> std::path::PathBuf {
         let suffix = NEXT_HOME.fetch_add(1, Ordering::Relaxed);
@@ -1017,18 +1153,18 @@ impl CodexGateway {
     /// Choose a usable home and take one of its turn slots.
     ///
     /// Selection is cache-first, mirroring the Claude fleet: a conversation pinned to a `preferred`
-    /// home reuses that home's warm OpenAI prompt cache; failing that, a home already holding this
-    /// request's shared system/tools cache root (`warm`) is preferred; only then does it fall back to
-    /// the least-loaded home (lowest observed window utilisation, then fewest in-flight turns), which
-    /// spreads load away from a subscription approaching its limit before it hits the wall. With a
-    /// single-home pool every branch resolves to that one home, so affinity is a no-op until the pool
-    /// grows. `exclude` drops homes already tried this request, so a spill or retry never re-pins the
-    /// preferred home that just failed.
+    /// home reuses that home's warm OpenAI prompt cache. A new shared cache root is seeded onto two
+    /// competitive homes, then reuses a warm home only while it retains at least 70% of the fleet's
+    /// best remaining capacity. Otherwise the request immediately uses the global capacity leader.
+    /// With a single-home pool every branch resolves to that one home, so affinity is a no-op until
+    /// the pool grows. `exclude` drops homes already tried this request, so a spill or retry never
+    /// re-pins the preferred home that just failed.
     async fn select_home(
         &self,
         exclude: &[String],
         preferred: Option<&str>,
         warm: &[String],
+        place_cache_root: bool,
         advance_cursor: bool,
     ) -> HomeSelection {
         if self.shutting_down.load(Ordering::Acquire) {
@@ -1063,10 +1199,8 @@ impl CodexGateway {
                 soonest = Some(soonest.map_or(ready_at, |v: i64| v.min(ready_at)));
                 continue;
             }
-            let used = limits
-                .and_then(|limits: CodexRateLimits| limits.max_used_percent())
-                .unwrap_or(0);
-            candidates.push((used, home.inflight(), home.clone()));
+            let free_capacity = home.placement_free_usd(limits.as_ref());
+            candidates.push((free_capacity, home.inflight(), home.clone()));
         }
         if candidates.is_empty() {
             return HomeSelection::Unavailable { ready_at: soonest };
@@ -1081,23 +1215,44 @@ impl CodexGateway {
             self.selection_cursor.load(Ordering::Relaxed)
         } as usize
             % width;
-        candidates.sort_by_key(|(used, inflight, home)| {
-            let rotated_order = (home.order() + width - cursor) % width;
-            (*used, *inflight, rotated_order)
-        });
-        // 1) The conversation's pinned home, if it is currently usable. 2) Otherwise the least-loaded
-        // home that already holds this request's shared cache root. 3) Otherwise the least-loaded home.
+        candidates.sort_by(
+            |(free_a, inflight_a, home_a), (free_b, inflight_b, home_b)| {
+                let rotated_a = (home_a.order() + width - cursor) % width;
+                let rotated_b = (home_b.order() + width - cursor) % width;
+                free_b
+                    .total_cmp(free_a)
+                    .then_with(|| inflight_a.cmp(inflight_b))
+                    .then_with(|| rotated_a.cmp(&rotated_b))
+            },
+        );
+        // A resolved conversation is a hard first choice. A new shared root uses the exact same
+        // two-replica/capacity-ratio policy as Claude; this only selects an ordering and never waits
+        // for replicas or makes them an availability requirement.
         let mut ordered: Vec<Arc<CodexHome>> = Vec::with_capacity(candidates.len());
         if let Some(id) = preferred {
             if let Some((_, _, home)) = candidates.iter().find(|(_, _, home)| home.id() == id) {
                 ordered.push(home.clone());
             }
+        } else if place_cache_root {
+            let placement = candidates
+                .iter()
+                .map(|(free_capacity, _, home)| CacheRootCandidate {
+                    warm: warm.iter().any(|id| id == home.id()),
+                    free_capacity: *free_capacity,
+                })
+                .collect::<Vec<_>>();
+            let primary = cache_root_primary_index(&placement);
+            ordered.push(candidates[primary].2.clone());
         }
-        for (_, _, home) in &candidates {
-            if warm.iter().any(|id| id == home.id())
-                && !ordered.iter().any(|chosen| Arc::ptr_eq(chosen, home))
-            {
-                ordered.push(home.clone());
+        // If the primary choice is currently sampling, another warm copy is the next best spill;
+        // remaining candidates stay in global capacity order.
+        if place_cache_root {
+            for (_, _, home) in &candidates {
+                if warm.iter().any(|id| id == home.id())
+                    && !ordered.iter().any(|chosen| Arc::ptr_eq(chosen, home))
+                {
+                    ordered.push(home.clone());
+                }
             }
         }
         for (_, _, home) in candidates {
@@ -1136,7 +1291,7 @@ impl CodexGateway {
     /// same selection a real turn would and releases the acquired load slot immediately. A home can
     /// still exhaust between this check and the turn; that rare race stays an in-stream failure.
     pub(crate) async fn preflight_capacity(&self) -> Result<(), ProcessError> {
-        match self.select_home(&[], None, &[], false).await {
+        match self.select_home(&[], None, &[], false, false).await {
             HomeSelection::Ready(_home, _slot) => Ok(()),
             HomeSelection::Unavailable { ready_at } => Err(ProcessError::UsageLimitExceeded {
                 retry_after: ready_at

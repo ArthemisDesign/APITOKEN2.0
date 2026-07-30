@@ -352,12 +352,17 @@ flow above.
 Home selection is cache-first, mirroring the Claude fleet's affinity layer: a conversation is pinned
 to the home that first served it (via the shared `AffinityStore`, keyed by the same tenant scope and
 projected onto the same canonical shape through `infer_codex`), so a follow-up request reuses that
-home's warm OpenAI prompt cache instead of being spread by load. A new conversation prefers a home
-already holding the shared system/tools cache root, then the least-loaded home. Affinity is a
-fail-open optimization — local L1 plus the optional shared Redis L2 — and is a no-op while the pool
-holds a single home. Fixed provider processes derive separate affinity keys from the shared secret,
-so Anthropic and OpenAI session aliases cannot overwrite each other's Redis placement.
-Candidates tied on window utilisation and in-flight turns use an atomic rotating discovery-order
+home's warm OpenAI prompt cache instead of being spread by load. A shared system/tools cache root
+immediately seeds two competitive homes when the pool has them; after that, a warm home is preferred
+only while its remaining calibrated-or-prior USD capacity is at least 70% of the fleet leader.
+Otherwise placement uses the global capacity leader immediately. This is neither a timer nor a
+readiness quorum: one working home serves normally, and no background repair process is involved.
+OpenAI root warmth uses
+the provider's 30-minute default retention while Anthropic retains its own 5m/1h cache-control TTLs.
+Affinity is a fail-open optimization — local L1 plus the optional shared Redis L2 — and is a no-op
+while the pool holds a single home. Fixed provider processes derive separate affinity keys from the
+shared secret, so Anthropic and OpenAI session aliases cannot overwrite each other's Redis placement.
+Candidates tied on remaining capacity and in-flight turns use an atomic rotating discovery-order
 cursor. This spreads both sequential traffic and simultaneous selectors instead of herding every
 equal snapshot onto the first configured subscription.
 The selected lineage also supplies the upstream `prompt_cache_key`, so cache placement and

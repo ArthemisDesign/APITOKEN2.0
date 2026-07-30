@@ -19,6 +19,7 @@ const REDIS_ROOT_PREFIX: &str = "claude-api:aff:v2";
 const DEFAULT_LOCAL_CAP: usize = 100_000;
 const CACHE_ROOT_MIN_BYTES: usize = 4 * 1024;
 const CACHE_ROOT_TTL_5M: u64 = 5 * 60;
+const CACHE_ROOT_TTL_30M: u64 = 30 * 60;
 const CACHE_ROOT_TTL_1H: u64 = 60 * 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,7 +94,7 @@ impl AffinityInput {
         }
     }
 
-    fn has_cache_root(&self) -> bool {
+    pub(crate) fn has_cache_root(&self) -> bool {
         self.cache_root.is_some()
     }
 
@@ -404,7 +405,16 @@ impl AffinityStore {
             // remain keyed digests rather than customer identifiers.
             "session_id": prompt_cache_key,
         });
-        self.infer(account_scope, headers, &body)
+        let mut input = self.infer(account_scope, headers, &body)?;
+        // Anthropic's ephemeral cache_control defaults to five minutes, while the OpenAI prompt
+        // cache used by these models defaults to 30-minute retention. Keep the placement hint for
+        // that same 30 minutes so an OpenAI cache line does not disappear from routing merely
+        // because it passed through the shared Claude lineage code.
+        // This affects only the fail-open warm-home hint; conversation affinity has its own TTL.
+        if let Some(root) = input.cache_root.as_mut() {
+            root.ttl_secs = CACHE_ROOT_TTL_30M;
+        }
+        Some(input)
     }
 
     /// Project a native Gemini request onto the provider-independent cache lineage. Only keyed
@@ -1313,6 +1323,43 @@ mod tests {
         assert_eq!(first_key.len(), 129);
         assert!(!first_key.contains("acct-1"));
         assert!(!first_key.contains("customer-cache-key"));
+    }
+
+    #[test]
+    fn codex_cache_root_uses_the_openai_default_retention() {
+        let store = store();
+        let instructions = "stable OpenAI prompt root ".repeat(256);
+        let items = vec![json!({"role":"user","content":"first"})];
+        let input = store
+            .infer_codex(
+                "acct-1",
+                &HeaderMap::new(),
+                "gpt-5.6",
+                Some(&instructions),
+                &[],
+                &items,
+                None,
+            )
+            .unwrap();
+        assert_eq!(input.cache_root.unwrap().ttl_secs, CACHE_ROOT_TTL_30M);
+    }
+
+    #[test]
+    fn anthropic_cache_root_keeps_its_five_minute_default() {
+        let store = store();
+        let system = "stable Anthropic prompt root ".repeat(256);
+        let input = store
+            .infer(
+                "acct-1",
+                &HeaderMap::new(),
+                &json!({
+                    "model":"claude-test",
+                    "system":system,
+                    "messages":[{"role":"user","content":"first"}]
+                }),
+            )
+            .unwrap();
+        assert_eq!(input.cache_root.unwrap().ttl_secs, CACHE_ROOT_TTL_5M);
     }
 
     #[tokio::test]

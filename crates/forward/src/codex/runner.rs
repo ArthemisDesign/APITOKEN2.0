@@ -144,7 +144,11 @@ impl CodexGateway {
                 .as_ref()
                 .map(|routing| routing.warm.as_slice())
                 .unwrap_or(&[]);
-            let (home, slot) = match self.select_home(&tried, preferred, warm, true).await {
+            let place_cache_root = routing.as_ref().is_some_and(TurnRouting::places_cache_root);
+            let (home, slot) = match self
+                .select_home(&tried, preferred, warm, place_cache_root, true)
+                .await
+            {
                 HomeSelection::Ready(home, slot) => (home, slot),
                 HomeSelection::Unavailable { ready_at } => {
                     return Err(
@@ -2296,6 +2300,67 @@ done
             store.resolve(&other_tenant).await.is_none(),
             "a different tenant must not inherit the pinned home"
         );
+    }
+
+    #[tokio::test]
+    async fn shared_cache_root_immediately_seeds_two_homes_then_reuses_warmth() {
+        use crate::affinity::AffinityStore;
+        use axum::http::HeaderMap;
+        let (gateway, _workspace, logs) = fake_pool_gateway(&["text", "text"]);
+        gateway.preflight().await.unwrap();
+        let store = Arc::new(AffinityStore::new(None, Some("secret"), 600, 300, 50).unwrap());
+        let instructions = "stable shared OpenAI instruction root ".repeat(192);
+
+        for message in ["independent one", "independent two", "independent three"] {
+            let items = vec![json!({
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": message}]
+            })];
+            let input = store
+                .infer_codex(
+                    "tenant",
+                    &HeaderMap::new(),
+                    "gpt-5.6",
+                    Some(&instructions),
+                    &[],
+                    &items,
+                    None,
+                )
+                .unwrap();
+            let resolution = store.resolve(&input).await;
+            assert!(
+                resolution.is_none(),
+                "independent transcripts must not inherit a conversation pin"
+            );
+            let warm = store.warm_homes(&input).await;
+            let routing = TurnRouting::new(store.clone(), input, resolution, warm);
+            let mut request = turn_request(test_model());
+            request.developer_instructions = Some(instructions.clone());
+            request.dynamic_tools.clear();
+            gateway
+                .run_turn(request, None, Some(routing))
+                .await
+                .unwrap();
+        }
+
+        let turn_counts = logs
+            .iter()
+            .map(|log| {
+                logged_requests(log)
+                    .iter()
+                    .filter(|request| request["method"] == "turn/start")
+                    .count()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(turn_counts.iter().sum::<usize>(), 3);
+        assert!(
+            turn_counts.iter().all(|count| *count > 0),
+            "the second independent session must seed the other competitive home"
+        );
+        let stats = store.stats();
+        assert_eq!(stats.cache_root_cold_placements, 2);
+        assert_eq!(stats.cache_root_warm_placements, 1);
     }
 
     #[tokio::test]

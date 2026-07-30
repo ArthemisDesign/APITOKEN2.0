@@ -164,10 +164,14 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    загрузки для выбора, не потолок. `CLAUDE_API_CODEX_MAX_CONCURRENT` больше не режет (оставлен для
    совместимости env); единственный глобальный потолок — общий с Claude `AppState::concurrency`.
    **Выбор — cache-first (как `affinity.rs`):** сначала home, к которому закреплён этот разговор
-   (`AffinityStore::resolve` через `infer_codex` → тот же стор/Redis-namespace, что у Claude), затем
-   warm-home общего cache-root, затем наименее загруженный по (usedPercent, inflight). Равные по
-   обоим сигналам кандидаты обязаны чередоваться через атомарный cursor: discovery order нельзя
-   превращать в постоянный приоритет или burst-herd на первый home. После успеха
+   (`AffinityStore::resolve` через `infer_codex` → тот же стор/Redis-namespace, что у Claude).
+   Новый общий cache-root без ожиданий прогревается на двух конкурентных homes; затем тёплый home
+   выбирается, пока его свободная calibrated/prior USD-ёмкость не хуже 70% лучшей во флоте, иначе
+   запрос сразу идёт на глобально лучший. Это soft placement, а не readiness/quorum: один рабочий
+   home всегда обслуживает трафик, фонового repair-сервиса и временных окон нет. OpenAI root warmth
+   живёт 30 минут (provider default), Claude cache_control сохраняет собственные 5m/1h TTL. Равные
+   по capacity и in-flight кандидаты обязаны чередоваться через атомарный cursor: discovery order
+   нельзя превращать в постоянный приоритет или burst-herd на первый home. После успеха
    `run_turn` пишет обслуживший home обратно (`claim`/`remember`/`rebind`/`mark_cache_warm`), чтобы
    продолжение разговора попало на тот же тёплый кеш. Affinity — fail-open оптимизация (с пулом из 1
    home — no-op). Классификация вины как в `proxy.rs`: usage-limit/auth → вина АККАУНТА (cooling до
