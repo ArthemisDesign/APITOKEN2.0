@@ -1308,6 +1308,9 @@ grep -Fq 'Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=
 admin_script_hash=$(node -e 'const fs=require("fs"),crypto=require("crypto");const html=fs.readFileSync(process.argv[1],"utf8");const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];process.stdout.write(crypto.createHash("sha256").update(script).digest("base64"))' \
   "$ROOT/crates/server/src/admin-panel.html")
 grep -Fq "script-src 'sha256-$admin_script_hash'" "$ROOT/deploy/Caddyfile"
+admin_csp=$(grep -F "script-src 'sha256-$admin_script_hash'" "$ROOT/deploy/Caddyfile")
+(( $(grep -o "sha256-[^']*" <<<"$admin_csp" | wc -l) == 2 )) \
+  || wd_die 'admin CSP must allow the current and immediately previous tested panel scripts'
 ! grep -Fq 'header_up x-admin-actor' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'header_up x-admin-account-id' "$ROOT/deploy/Caddyfile"
 [[ $(grep -Fc 'reverse_proxy 127.0.0.1:3000 127.0.0.1:3001' "$ROOT/deploy/Caddyfile") == 1 ]]
