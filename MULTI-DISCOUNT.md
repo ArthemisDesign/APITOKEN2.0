@@ -3,13 +3,14 @@
 Статус: продуктовые решения для первой версии согласованы. Expand-only schema foundation этапов
 1–2 (`engine 0006`–`0008`, `commerce 0022`–`0023`, `OpenKeys 0007`), Stage 3A dormant
 registry-only persistence/CAS, Stage 3B0 dormant resolver/read bundle и Stage 3B1a dormant shadow
-schema уже доставлены. Эта ревизия завершает последний согласованный безопасный checkpoint 3B1b:
-пассивный dual-lineage read/resolver и runtime capability manifest без runtime caller. После его
-delivery работа останавливается. Первый потенциально аварийный шаг — подключение shadow к live
-admission — в этот объём не входит. Control API, синхронизация commerce, funding cutover и strict
-enforcement также остаются последующими этапами.
+schema уже доставлены. Stage 3B1b — пассивный dual-lineage read/resolver и runtime capability
+manifest без runtime caller — также доставлен. 2026-07-30 владелец продукта явно снял прежнюю
+остановку после 3B1b и полностью авторизовал дальнейшую реализацию этого документа до завершения
+этапов 3B1c–11. Авторизация не отменяет поэтапную доставку, migration-first, maintenance windows,
+наблюдение, rollback gates и отдельное подтверждение фактической policy-assignment matrix перед
+изменением production-данных.
 
-Последнее продуктовое обсуждение и фиксация безопасной границы: 2026-07-30.
+Последнее продуктовое обсуждение и полная авторизация продолжения: 2026-07-30.
 
 Карта реализации перед Stage 3A повторно сверена с `origin/master` на коммите
 `1d8600ce574b3a4ff010612132cdd84b910bf61e` от 2026-07-30. Репозиторий развивается непрерывно,
@@ -20,13 +21,38 @@ writers, модели и миграции. Семантика продукта, 
 Stage 3B0 доставлен commit `4bf19d2807e16bb60d9b91b886464a5f561c124a`. Stage 3B1a доставлен
 commit `a0402a67f53b0e16db43750c50ab42e36870a10a`: engine deployment и общий watchdog зелёные.
 Существующие migrations `0006`–`0008` не переписывались; 3B1a добавил только migration `0009`.
-Точный delivery SHA и результаты gate для содержащей эту ревизию Stage 3B1b фиксируются в handoff
-после merge, поскольку commit не может надёжно ссылаться на собственный будущий SHA.
+Stage 3B1b реализован commit `8b2c4c89b461f01239bc6767fe5fd3534103865b`; его неизменённое
+содержимое вошло в production через descendant `62afbd1eaa76f360e103ccf0f6822ea337959b58`, для которого
+`deploy/tests`, `deploy/engine` и `deploy/watchdog` зелёные.
 
 Этот документ описывает целевое поведение, которое заменит текущий единый множитель цены на аккаунт.
 Он не утверждает, что описанное поведение уже работает в production. До завершения перехода
 фактические live-контракты описаны в `PRICING.md`, `CONTROL_API.md`,
 `COMMERCIAL_BACKEND.md` и документации конкретных приложений.
+
+## 0. Статус авторизации и обязательный порядок продолжения
+
+Владелец продукта санкционировал полный переход к целевому контракту, включая production shadow,
+Control API, durable commerce synchronization, backfill, funding migration, OpenKeys cutover,
+strict enforcement, UI/public launch и поздний cleanup. Это разрешение означает, что агенту не
+нужно повторно спрашивать, можно ли реализовывать следующий уже описанный этап. Оно не является
+разрешением объединять рискованные фазы или считать непроверенное состояние готовым.
+
+Обязательный порядок остаётся таким:
+
+1. Каждый schema-expand доставляется отдельным первым коммитом и получает зелёные migration/deploy
+   gates до зависимого кода.
+2. Dormant plumbing, production shadow, data activation, money cutover и strict enforcement —
+   разные delivery checkpoints; один зелёный checkpoint не доказывает следующий.
+3. Любой live checkpoint сначала получает тестовую матрицу, bounded resource model, наблюдаемые
+   stop-критерии и проверенный rollback path. Красный SHA не ретраится вслепую.
+4. Перед Stage 5 отдельно просматривается фактический список B2B/service/OpenKeys аккаунтов и
+   утверждается точное назначение policy каждому из них. Полная авторизация проекта не разрешает
+   угадывать эту production-data matrix.
+5. Денежные сверки выполняются только integer/nanoUSD и должны сходиться для каждого аккаунта, а не
+   только агрегатом.
+6. Несвязанные production-инциденты и provider runtime/deployment изменения вне pricing-контракта
+   не входят в scope и не смешиваются с multi-discount коммитами.
 
 ## 1. Главный результат
 
@@ -1396,7 +1422,7 @@ Checkpoint 3B1a доставлен отдельным migration-first комми
 PostgreSQL 16/18 matrices, полного repository gate и `deploy/watchdog`. Предыдущий binary полностью
 совместим с этой пустой additive-таблицей.
 
-### Этап 3B1b. Dormant dual-lineage resolver — последний разрешённый безопасный checkpoint
+### Этап 3B1b. Dormant dual-lineage resolver — доставленный безопасный checkpoint
 
 После зелёной migration `0009` отдельный application-коммит расширяет только пассивные
 read/types/tests:
@@ -1423,14 +1449,17 @@ read/types/tests:
 - resolver остаётся pure/dormant и вызывается только тестами;
 - не добавляются actor commands, фоновые workers, HTTP, writes, active data или traffic changes.
 
-После delivery 3B1b работа останавливается. В частности, этот checkpoint не создаёт runtime
-manifest instance/config, capability/catalog/policy seed, activation, shadow writer или очередь.
+Историческая остановка после delivery 3B1b выполнена и дала проверенную точку восстановления.
+После явной авторизации 2026-07-30 работа продолжается, но сам checkpoint по-прежнему не создаёт
+runtime manifest instance/config, capability/catalog/policy seed, activation, shadow writer или
+очередь: эти изменения начинаются отдельными следующими коммитами.
 
-### Этап 3B1c. Production shadow — только после отдельного разрешения и окна работ
+### Этап 3B1c. Production shadow — авторизован, activation только в контролируемом окне
 
 Первый потенциально аварийный шаг начинается при подключении policy read к live admission path.
-Даже fail-open shadow добавляет работу на каждый запрос и может вызвать DB/read-queue saturation,
-latency, cancellation amplification или error/log storm. Поэтому до отдельного решения запрещено:
+Его реализация теперь разрешена, но даже fail-open shadow добавляет работу на каждый запрос и может
+вызвать DB/read-queue saturation, latency, cancellation amplification или error/log storm. До
+доставки перечисленных ниже страховок по-прежнему запрещено:
 
 - вызывать resolver из `authorize`, Anthropic proxy, Codex или Gemini admission;
 - добавлять новый read к reserve/settle или менять денежную транзакцию;
@@ -1438,7 +1467,8 @@ latency, cancellation amplification или error/log storm. Поэтому до 
 - писать `pricing_admission_snapshots`, attribution в reservation/outbox/usage/ledger;
 - создавать active heads/bindings, Control API writers, backfill или sync jobs.
 
-Перед Stage 3B1c требуется устранить или явно принять три найденных архитектурных риска:
+Перед live activation Stage 3B1c требуется устранить или явно принять три найденных архитектурных
+риска:
 
 1. Единственные global catalog/switch heads и множество account bindings создают несовместимое окно
    при choreography `catalog → switches → policies`. Для strict zero-downtime нужен atomic release
@@ -1452,10 +1482,172 @@ latency, cancellation amplification или error/log storm. Поэтому до 
    запуска он не существует. Его скрытие/блокировка меняет production traffic и выполняется отдельным
    контролируемым изменением, а не маскируется dormant resolver-ом.
 
-Когда Stage 3B1c будет разрешён, shadow следует выполнять через bounded неблокирующую очередь
-(`try_send` + drop counter), без account/key/model IDs в metric labels и без влияния на readiness.
-Полезные counters: outcome по provider/reason, resolved mode/scope, scalar-policy mismatch,
-authority read errors, dropped shadow work и runtime capability/schema generation.
+Для Stage 3B1c приняты следующие решения по этим рискам:
+
+1. Доставленный dual-lineage resolver поддерживает штатное окно
+   `C1/S1/P1 → C2/S1/P1 → C2/S2/P1 → C2/S2/P2` и fail closed на произвольной третьей lineage.
+   Этого достаточно для shadow; strict rollback floor и запрет отката на policy-incapable binary
+   остаются обязательными до Stage 9.
+2. Доставленная отдельная immutable таблица `pricing_shadow_admission_evaluations` используется
+   только как shadow attribution и exact-ссылается на actual legacy snapshot. Она не меняет
+   reservation/settlement и не подменяет `pricing_admission_snapshots`.
+3. `RuntimePricingManifest` не является provider allow-list: его member подтверждает только точную
+   schema/capability identity. Поэтому shadow ограничивает fixed-plane producer значениями
+   `anthropic|openai`; Gemini не получает catalog entry, policy rule, seed или enqueue path и
+   остаётся вне коммерческого продукта. Его технический runtime не меняется этим этапом.
+
+#### 3B1c.1. Dormant exact contracts и persistence API
+
+Первым application-checkpoint без production caller добавляются:
+
+- typed `LegacyScalarAdmissionSnapshot`, который содержит `schema_version`, exact request/account
+  identity, runtime-fixed provider, requested/canonical model, `alias_generation`, immutable
+  `tariff_schedule_id`, tariff/admission timestamps, scalar multiplier, official/charged hold,
+  request-side premium modifiers и versioned `snapshot_digest`;
+- provider-owned versioned canonicalizer/admission-identity API. Он возвращает exact
+  `(requested_model_id, canonical_model_id, alias_generation, tariff_schedule_id)` и не принимает
+  provider identity из клиентского header/body. Неизвестная или неоднозначная identity не
+  угадывается;
+- exact-idempotent registry insert/read API для actual `legacy_scalar` snapshot и отдельно для
+  `pricing_shadow_admission_evaluations`;
+- trusted runtime manifest, собранный server composition из versioned application config, а не из
+  HTTP request, headers или модели клиента;
+- typed shadow work item только с необходимыми internal identities и exact actual snapshot
+  reference;
+- versioned canonical encoding с отдельным domain separator для каждого digest.
+  `snapshot_digest` включает все authoritative typed snapshot fields, в том числе schema,
+  request/account/provider/model/alias/tariff identities, зафиксированные timestamps, multiplier,
+  amounts и canonical premium modifiers. Первая попытка фиксирует timestamps; replay сначала читает
+  сохранённую строку и повторно использует их, а не генерирует новые;
+- `evaluation_digest` включает все semantic typed identities, outcome/reason, amounts,
+  policy/rule/lineage, manifest identity и actual snapshot digest, но исключает `enqueued_ts`,
+  `evaluated_ts`, diagnostic JSON и сам digest;
+- unit/SQLite/real-PostgreSQL tests exact replay, conflict, FK/integrity,
+  resolved/rejected/read-error outcomes, canonicalization и dual-lineage attribution.
+
+Этот dormant scope доставляется минимум тремя независимыми application-коммитами: pure tariff/model
+identity в `metering`; registry snapshot/evaluation persistence и atomic API при сохранении старых
+reserve wrappers; pure shadow evaluation builder в `forward` без DB/config/AppState/callers. Новая
+migration для них не нужна: actual schema уже доставлена в `0006`, shadow schema — в `0009`.
+
+Same request + тот же canonical payload возвращает уже сохранённую строку после lost ACK. Любое
+изменение authoritative typed поля даёт typed conflict, а не update. Этот checkpoint не имеет live
+producer, не создаёт active heads/policies и не пишет production-строк.
+
+#### 3B1c.2. Atomic legacy snapshot bridge
+
+До shadow enqueue отдельный production checkpoint делает actual legacy lineage полной:
+
+- versioned deterministic sampler и проверки canonicalization/размера выполняются до любой money
+  mutation. Not-sampled, unknown/ambiguous или oversized запрос идёт через byte-identical legacy
+  reserve без snapshot, никогда не enqueue-ится и учитывается bounded reason counter;
+- reservation и `LegacyScalarAdmissionSnapshot` вставляются атомарно одной registry-транзакцией;
+- snapshot создаётся из тех же canonical/tariff/multiplier/hold данных, которыми выполнен reserve;
+- exact retry проверяет весь canonical payload; тот же payload возвращает сохранённые
+  reservation/snapshot, mismatch откатывает транзакцию и fail closed;
+- cancellation до commit не оставляет ни одной строки, а cancellation/lost response после commit
+  безопасно восстанавливается exact replay;
+- SQLite пишет snapshot только внутри существующего single-writer billing path. Второй SQLite
+  writer/connection для этой задачи запрещён;
+- этот checkpoint не читает policy, не запускает resolver, не меняет формулу hold/settlement и не
+  использует snapshot как источник решения admission.
+
+Snapshot этого этапа доказывает только reserve-time legacy identity. Stage 3B1c не переводит
+settlement на pinned tariff schedule и не выдаёт этот snapshot за уже реализованное end-to-end
+tariff pinning: текущий settlement сохраняется без изменения до отдельного денежного checkpoint.
+
+Это единственный новый critical-path write в Stage 3B1c. Его failure атомарно откатывает reserve;
+после входа в eligible bridge DB/constraint failure не делает fallback-второй reserve с тем же
+request ID, а включает stop-критерий. Bridge сначала доставляется выключенным, затем включается и
+наблюдается отдельно от shadow worker. SQLite и PostgreSQL tests обязаны покрывать deterministic
+sampling/fallback, transaction rollback, cancellation, exact replay/conflict и отсутствие orphan
+reservation/snapshot.
+
+#### 3B1c.3. PostgreSQL-only bounded evaluation-time shadow
+
+Live admission может отправить shadow work только после успешного atomic reserve+snapshot. Сам
+policy read/resolve и shadow-evaluation write выполняются после admission вне request critical path:
+
+- production producer/worker разрешён только для PostgreSQL и использует отдельный строго
+  ограниченный read connection budget; evaluation insert идёт через существующего registry writer,
+  а не создаёт второй write-owner. SQLite сохраняет schema/API parity и tests, но live producer там
+  выключен;
+- один `try_send`, никогда `send().await`; заполненная или закрытая очередь только увеличивает
+  low-cardinality drop counter и не меняет клиентский ответ;
+- до clone/enqueue проверяются hard limits каждой строки и общего encoded work-item size;
+  oversized/unknown/ambiguous identity пропускается fail-open с typed low-cardinality counter;
+- capacity, concurrency, timeout, max queue age, string/item byte limits, `sample_bp`, token-bucket
+  rate budget и DB connection budget — обязательные явные числа rollout config/runbook, а не
+  неограниченные defaults;
+- просроченный по max queue age item не разрешается против более нового состояния и учитывается
+  отдельным typed counter;
+- shadow timeout/cancel/read/write error не отменяет reserve, не меняет settlement и не влияет на
+  `/ready`, provider/model availability или HTTP status;
+- повторный request ID с тем же `evaluation_digest` возвращает durable row; другой semantic result
+  означает typed conflict и operator alert, а не update;
+- account/key/request/model IDs запрещены в metric labels и не печатаются в error storm;
+- вход разрешён только fixed plane `anthropic|openai`; неизвестный provider и Gemini не enqueue-ятся;
+- никакой shadow outcome не читается обратно live billing/admission кодом.
+
+Worker не репарсит request и не репрайсит его по текущему времени. `policy_hold_nano` вычисляется
+только из immutable `actual.official_hold_nano` и resolved payable multiplier через единый checked
+integer/nanoUSD helper с тем же rounding contract, что admission. Overflow или невалидная сумма —
+typed evaluation error, а не приблизительный float-результат.
+
+Если `charged_hold_nano` был ограничен доступным balance и поэтому не равен обычному применению
+scalar multiplier к `official_hold_nano`, первый rollout не enqueue-ит такой запрос, учитывает его
+отдельным typed counter и не записывает ложный policy rejection/mismatch. Точная funding-cap
+comparison semantics добавляется отдельным checkpoint до Stage 8.
+
+Этот shadow отражает policy/head state на `evaluated_ts`, а не гарантированно на `admission_ts`.
+Queue age/lag наблюдается явно; строки, пересекающие activation window, не используются как
+доказательство parity для cutover. Для Stage 8 требуется либо заморозить policy/head updates на
+validation window, либо до reserve фиксировать exact policy/head identity отдельным совместимым
+checkpoint.
+
+Bounded counters: enqueue accepted/dropped/expired/oversized, outcome
+`resolved|rejected|read_error`, fixed provider, typed rejection/error reason, resolved pricing
+mode/scope, scalar-policy mismatch, authority read/write error и idempotent replay/conflict.
+Schema/capability generations запрещены как metric labels: текущая identity доступна через
+ограниченный gauge/info и защищённые structured data. Высококардинальные identities остаются только
+в durable attribution.
+
+До Stage 5 active bindings/policies ещё отсутствуют, поэтому ранний shadow в основном проверяет
+transport, bounds, persistence и ожидаемые typed rejections. Он не считается доказательством
+финансового parity; такое доказательство относится к Stage 8 после утверждённого backfill.
+
+#### 3B1c.4. Rollout и stop-критерии
+
+`bridge_enabled`, bridge sample, `shadow_enabled`, shadow sample и все лимиты читаются только в
+`crates/server/src/config.rs`, по умолчанию выключены, fail-closed валидируются при старте и
+передаются вниз typed-конфигурацией. `forward`/`registry` не читают env.
+
+Rollout выполняется отдельными production SHA/config checkpoints: dormant contracts/APIs → atomic
+legacy snapshot bridge disabled → bridge на малом sample → bridge на целевом sample → PostgreSQL
+worker с producer disabled → малый shadow sample → расширенный sample → 100% shadow. Значения всех
+лимитов и допустимых отклонений фиксируются до activation. Между ступенями обязательно наблюдается
+полный пиковый интервал трафика. Переход запрещён без baseline по admission/reserve latency, billing
+queue, DB connections/locks, error rate и CPU/memory.
+
+До шага `100% shadow` bridge обязан покрыть 100% eligible fixed-plane traffic. Здесь `100% shadow`
+означает каждый snapshot-bearing eligible запрос; not-eligible legacy fallback остаётся видимым
+отдельными coverage counters и не выдаётся за проверенный shadow.
+
+Bridge или shadow producer немедленно выключается соответствующим независимым рубильником при любом
+из событий:
+
+- клиентский status/body/readiness или фактический charge зависит от shadow outcome;
+- sustained shadow queue saturation/drop ratio выше заранее записанного допуска;
+- любой DB/constraint failure после входа запроса в eligible atomic bridge;
+- DB pool/lock pressure, admission/reserve p95/p99 или customer 5xx заметно ухудшились относительно
+  baseline;
+- возникает idempotency conflict, invariant violation или непрерывный read/write error storm;
+- actual snapshot reference либо resolved lineage невозможно доказать durable-данными.
+
+Exit gate Stage 3B1c: atomic actual snapshots проходят per-request сверку с reservations; shadow
+работает на согласованном sample, не влияет на клиентов и деньги; bounded counters стабильны;
+durable evaluation rows выборочно сверены с actual snapshots; bridge и producer отключаются
+независимыми операционными шагами без rollback schema.
 
 ### Этап 3C. Versioned Control API без strict enforcement
 
