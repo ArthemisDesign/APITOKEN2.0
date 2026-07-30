@@ -22,9 +22,10 @@ const MIGRATION_0006: &str = include_str!("../migrations_pg/0006_multi_discount_
 const MIGRATION_0007: &str = include_str!("../migrations_pg/0007_multi_discount_runtime_pins.sql");
 const MIGRATION_0008: &str = include_str!("../migrations_pg/0008_catalog_policy_lineage.sql");
 const MIGRATION_0009: &str = include_str!("../migrations_pg/0009_pricing_shadow_admission.sql");
+const MIGRATION_0010: &str = include_str!("../migrations_pg/0010_codex_window_calibration.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 9;
+pub const CURRENT_SCHEMA_VERSION: i64 = 10;
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (1, MIGRATION_0001),
@@ -36,6 +37,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (7, MIGRATION_0007),
     (8, MIGRATION_0008),
     (9, MIGRATION_0009),
+    (10, MIGRATION_0010),
 ];
 
 #[cfg(test)]
@@ -3904,9 +3906,9 @@ mod tests {
             .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
             .unwrap();
         pg.migrate().unwrap();
-        assert_eq!(pg.schema_version().unwrap(), 9);
+        assert_eq!(pg.schema_version().unwrap(), 10);
         pg.migrate().unwrap();
-        assert_eq!(pg.schema_version().unwrap(), 9);
+        assert_eq!(pg.schema_version().unwrap(), 10);
         let runtime_pin_constraints: i64 = pg
             .client
             .query_one(

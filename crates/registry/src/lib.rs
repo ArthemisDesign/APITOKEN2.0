@@ -1079,6 +1079,55 @@ pub fn open(path: &str) -> Result<Connection> {
          reset5 INTEGER, reset7 INTEGER, calib_n INTEGER, updated_ts INTEGER)",
         [],
     )?;
+    // OpenAI/Codex calibration is based exclusively on durable, real gateway spend paired with
+    // provider-reported window duration/reset snapshots. These tables intentionally contain no
+    // configured capacity prior or fixed 5-hour/7-day slots.
+    c.execute_batch(
+        "CREATE TABLE IF NOT EXISTS codex_home_spend( \
+           home_id TEXT PRIMARY KEY, \
+           spent_nano INTEGER NOT NULL DEFAULT 0 CHECK(spent_nano >= 0), \
+           updated_ts INTEGER NOT NULL); \
+         CREATE TABLE IF NOT EXISTS codex_window_calibrations( \
+           home_id TEXT NOT NULL, \
+           window_duration_mins INTEGER NOT NULL CHECK(window_duration_mins > 0), \
+           resets_at INTEGER NOT NULL CHECK(resets_at > 0), \
+           anchor_used_percent INTEGER NOT NULL CHECK(anchor_used_percent BETWEEN 0 AND 100), \
+           anchor_spend_nano INTEGER NOT NULL CHECK(anchor_spend_nano >= 0), \
+           used_percent INTEGER NOT NULL CHECK(used_percent BETWEEN 0 AND 100), \
+           observed_at INTEGER NOT NULL CHECK(observed_at > 0), \
+           sum_used_sq INTEGER NOT NULL DEFAULT 0 CHECK(sum_used_sq >= 0), \
+           sum_used_spend_nano INTEGER NOT NULL DEFAULT 0 CHECK(sum_used_spend_nano >= 0), \
+           observed_points INTEGER NOT NULL DEFAULT 0 CHECK(observed_points >= 0), \
+           samples INTEGER NOT NULL DEFAULT 0 CHECK(samples >= 0), \
+           current_capacity_nano INTEGER CHECK(current_capacity_nano IS NULL OR current_capacity_nano >= 0), \
+           current_low_nano INTEGER CHECK(current_low_nano IS NULL OR current_low_nano >= 0), \
+           current_high_nano INTEGER CHECK(current_high_nano IS NULL OR current_high_nano >= 0), \
+           current_confidence_bp INTEGER NOT NULL DEFAULT 0 CHECK(current_confidence_bp BETWEEN 0 AND 10000), \
+           last_capacity_nano INTEGER CHECK(last_capacity_nano IS NULL OR last_capacity_nano >= 0), \
+           last_low_nano INTEGER CHECK(last_low_nano IS NULL OR last_low_nano >= 0), \
+           last_high_nano INTEGER CHECK(last_high_nano IS NULL OR last_high_nano >= 0), \
+           last_confidence_bp INTEGER NOT NULL DEFAULT 0 CHECK(last_confidence_bp BETWEEN 0 AND 10000), \
+           last_measured_at INTEGER CHECK(last_measured_at IS NULL OR last_measured_at > 0), \
+           estimator_version INTEGER NOT NULL DEFAULT 1 CHECK(estimator_version > 0), \
+           version INTEGER NOT NULL DEFAULT 0 CHECK(version >= 0), \
+           updated_ts INTEGER NOT NULL, \
+           PRIMARY KEY(home_id,window_duration_mins), \
+           CHECK(current_low_nano IS NULL OR current_capacity_nano IS NOT NULL), \
+           CHECK(current_high_nano IS NULL OR current_capacity_nano IS NOT NULL), \
+           CHECK(last_low_nano IS NULL OR last_capacity_nano IS NOT NULL), \
+           CHECK(last_high_nano IS NULL OR last_capacity_nano IS NOT NULL)); \
+         CREATE TABLE IF NOT EXISTS codex_window_observations( \
+           id INTEGER PRIMARY KEY AUTOINCREMENT, \
+           home_id TEXT NOT NULL, \
+           window_duration_mins INTEGER NOT NULL CHECK(window_duration_mins > 0), \
+           resets_at INTEGER NOT NULL CHECK(resets_at > 0), \
+           observed_at INTEGER NOT NULL CHECK(observed_at > 0), \
+           used_percent INTEGER NOT NULL CHECK(used_percent BETWEEN 0 AND 100), \
+           gateway_spend_nano INTEGER NOT NULL CHECK(gateway_spend_nano >= 0), \
+           UNIQUE(home_id,window_duration_mins,resets_at,observed_at,used_percent,gateway_spend_nano)); \
+         CREATE INDEX IF NOT EXISTS codex_window_observations_window \
+           ON codex_window_observations(home_id,window_duration_mins,resets_at,observed_at);",
+    )?;
     // Разбивка расхода по токенам/моделям для клиентских дашбордов (per-request). НЕ money-БД:
     // авторитет денег — accounts.balance_nano + ledger. Эта таблица — аналитика (что реально
     // потрачено по корзинам токенов и моделям), пишется рядом с charge, обрезается по ретенции.
@@ -4839,6 +4888,31 @@ mod tests {
         assert_eq!(got[0].cooling_until, 222222);
         assert!((got[0].cap5h_usd - 50.0).abs() < 1e-9);
         assert_eq!(got[0].calib_n, 4);
+    }
+
+    #[test]
+    fn codex_calibration_schema_has_no_capacity_prior() {
+        let c = db();
+        let tables: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ( \
+                   'codex_home_spend','codex_window_calibrations','codex_window_observations')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 3);
+
+        let columns = c
+            .prepare("SELECT name FROM pragma_table_info('codex_window_calibrations')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(!columns.iter().any(|name| name.contains("prior")));
+        assert!(columns.contains(&"window_duration_mins".to_owned()));
+        assert!(columns.contains(&"resets_at".to_owned()));
     }
 
     // хелпер: аккаунт с балансом + ключ под ним (ref=None — админ-сид, не платёж, без дедупа)
