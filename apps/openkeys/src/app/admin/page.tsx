@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import {
   OPENKEYS_PUBLIC_ORIGIN,
@@ -349,12 +349,41 @@ export default function AdminPage() {
     );
   }
 
-  const selectedBatch = batches.find((batch) => batch.id === openBatch) ?? null;
-  const stock = keys.filter((key) => key.status === "stock");
-  const history = keys.filter((key) => key.status === "delivered");
-  const handoverKeys = stock.filter((key) => key.secret && key.enabled);
   const firstBatchNumber = batchTotal === 0 ? 0 : batchOffset + 1;
   const lastBatchNumber = Math.min(batchOffset + batchLimit, batchTotal);
+
+  function batchWorkspace(batch: BatchRow) {
+    const stock = keys.filter((key) => key.status === "stock");
+    const history = keys.filter((key) => key.status === "delivered");
+    const handoverKeys = stock.filter((key) => key.secret && key.enabled);
+
+    return (
+      <section className="openkeys-batch-workspace" aria-label={`Открытая партия ${batch.label ?? batch.id}`}>
+        <div className="openkeys-workspace-head">
+          <div><span className="eyebrow">Открытая партия</span><h2>{batch.label ?? "Без метки"}</h2><p>{batch.createdAt.slice(0, 10)} · {batch.faceValue} · {keys.length} ключей в системе</p></div>
+          <button className="btn btn-ghost btn-sm" type="button" onClick={() => chooseBatch(null)}>Скрыть партию</button>
+        </div>
+
+        <div className="banner openkeys-universal-banner"><b>Один универсальный ключ</b><span>Claude: {UNIVERSAL_CONNECTIONS.claude.baseUrl} · GPT: {UNIVERSAL_CONNECTIONS.openai.baseUrl} · профиль: {OPENKEYS_PUBLIC_ORIGIN}/profile/…</span></div>
+
+        <div className="dsec-head analytics-heading openkeys-stock-head">
+          <div><h2>Ключи на складе · {stock.length}</h2><p>{handoverKeys.length} готовы к продаже; отключённые остаются видимыми. Полная инструкция — в сообщении покупателю.</p></div>
+          <div className="openkeys-group-actions">
+            {handoverKeys.length ? <><CopyButton value={handoverKeys.map((key) => universalKeyHandoverText(key)).join("\n\n———\n\n")} label={`Сообщения · ${handoverKeys.length}`} primary /><CopyButton value={handoverKeys.flatMap((key) => key.secret ? [key.secret] : []).join("\n")} label="Только ключи" /></> : null}
+            {stock.length ? <button className="btn btn-ghost btn-sm openkeys-danger" type="button" disabled={busy} onClick={() => void removeBatchStock(stock.length)}>Удалить остаток</button> : null}
+          </div>
+        </div>
+        {stock.length === 0 ? <div className="empty-box">В этой партии на складе ничего не осталось</div> : <div className="openkeys-key-grid">{stock.map((key) => <KeyCard key={key.id} keyRow={key} busy={busy} onUpdate={updateKey} />)}</div>}
+
+        <div className="dsec-head analytics-heading openkeys-history-head"><div><h2>История партии · {history.length}</h2><p>Выданные ключи остаются видимыми по маске, метке и ссылке на профиль.</p></div></div>
+        <div className="table-scroll openkeys-history-table" role="region" tabIndex={0} aria-label="История выбранной партии">
+          <table className="mtable"><thead><tr><th>Ключ</th><th>Метка</th><th>Состояние</th><th className="tnum">Номинал</th><th className="tnum">Выпущен</th><th className="tnum">Выдан</th><th>Профиль</th></tr></thead>
+            <tbody>{history.length === 0 ? <tr><td colSpan={7} className="empty-cell">В этой партии ещё ничего не выдано</td></tr> : history.map((key) => <tr key={key.id}><td><code className="key-mask">{key.keyMasked}</code></td><td><b>{key.label ?? "Без метки"}</b></td><td><span className={`pill ${key.enabled ? "pill-good" : "pill-muted"}`}>{key.enabled ? "выдан" : "отключён"}</span></td><td className="tnum">{key.faceValue}</td><td className="tnum">{key.createdAt.slice(0, 10)}</td><td className="tnum">{key.deliveredAt?.slice(0, 10) ?? "—"}</td><td><a href={key.viewUrl} target="_blank" rel="noreferrer">открыть ↗</a></td></tr>)}</tbody>
+          </table>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <AppShell
@@ -376,7 +405,7 @@ export default function AdminPage() {
           <div>
             <span className="eyebrow">Рабочее место продавца</span>
             <h1>Каждая продажа остаётся в своей партии</h1>
-            <p>Выберите выпуск ниже: склад, массовое копирование и история откроются только для него. Повторный клик скрывает партию.</p>
+            <p>Откройте выпуск ниже: склад, массовое копирование и история появятся сразу под его строкой. Повторный клик скрывает партию.</p>
           </div>
           <span className="chip">{admin ?? "admin"}</span>
         </div>
@@ -421,11 +450,14 @@ export default function AdminPage() {
                 {batches.length === 0 ? <tr><td colSpan={8} className="empty-cell">{batchQuery ? "По этому фильтру партий нет" : "Пока ничего не выпускали"}</td></tr> : batches.map((batch) => {
                   const expanded = openBatch === batch.id;
                   return (
-                    <tr key={batch.id} className={expanded ? "is-selected" : ""}>
-                      <td><b>{batch.label ?? "Без метки"}</b><code className="openkeys-batch-id">{batch.id.slice(0, 8)}</code></td>
-                      <td>{batch.createdAt.slice(0, 10)}</td><td className="tnum">{batch.faceValue}</td><td className="tnum">{batch.quantity}</td><td className="tnum"><b>{batch.stockCount}</b></td><td className="tnum">{batch.deliveredCount}</td><td className="tnum">{batch.disabledCount}</td>
-                      <td><button className={`btn btn-sm ${expanded ? "btn-primary" : "btn-ghost"}`} type="button" aria-expanded={expanded} onClick={() => { if (expanded) chooseBatch(null); else void refresh({ batchId: batch.id }); }}>{expanded ? "Скрыть" : "Открыть"}</button></td>
-                    </tr>
+                    <Fragment key={batch.id}>
+                      <tr className={expanded ? "is-selected" : ""}>
+                        <td><b>{batch.label ?? "Без метки"}</b><code className="openkeys-batch-id">{batch.id.slice(0, 8)}</code></td>
+                        <td>{batch.createdAt.slice(0, 10)}</td><td className="tnum">{batch.faceValue}</td><td className="tnum">{batch.quantity}</td><td className="tnum"><b>{batch.stockCount}</b></td><td className="tnum">{batch.deliveredCount}</td><td className="tnum">{batch.disabledCount}</td>
+                        <td><button className={`btn btn-sm ${expanded ? "btn-primary" : "btn-ghost"}`} type="button" aria-expanded={expanded} aria-controls={expanded ? `openkeys-batch-${batch.id}` : undefined} onClick={() => { if (expanded) chooseBatch(null); else { chooseBatch(null); void refresh({ batchId: batch.id }); } }}>{expanded ? "Скрыть" : "Открыть"}</button></td>
+                      </tr>
+                      {expanded ? <tr className="openkeys-batch-detail-row"><td id={`openkeys-batch-${batch.id}`} className="openkeys-batch-detail-cell" colSpan={8}>{batchWorkspace(batch)}</td></tr> : null}
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -438,34 +470,6 @@ export default function AdminPage() {
           </div>
         </section>
 
-        {!openBatch ? (
-          <div className="empty-box openkeys-workspace-empty"><b>Выберите партию</b><span>Откройте нужную строку выше — здесь появятся только её ключи. Партию можно снова скрыть.</span></div>
-        ) : (
-          <section className="openkeys-batch-workspace">
-            <div className="openkeys-workspace-head">
-              <div><span className="eyebrow">Открытая партия</span><h2>{selectedBatch?.label ?? "Партия ключей"}</h2><p>{selectedBatch?.createdAt.slice(0, 10) ?? ""} · {selectedBatch?.faceValue ?? ""} · {keys.length} ключей в системе</p></div>
-              <button className="btn btn-ghost btn-sm" type="button" onClick={() => chooseBatch(null)}>Скрыть партию</button>
-            </div>
-
-            <div className="banner openkeys-universal-banner"><b>Один универсальный ключ</b><span>Claude: {UNIVERSAL_CONNECTIONS.claude.baseUrl} · GPT: {UNIVERSAL_CONNECTIONS.openai.baseUrl} · профиль: {OPENKEYS_PUBLIC_ORIGIN}/profile/…</span></div>
-
-            <div className="dsec-head analytics-heading openkeys-stock-head">
-              <div><h2>Ключи на складе · {stock.length}</h2><p>{handoverKeys.length} готовы к продаже; отключённые остаются видимыми. Полная инструкция — в сообщении покупателю.</p></div>
-              <div className="openkeys-group-actions">
-                {handoverKeys.length ? <><CopyButton value={handoverKeys.map((key) => universalKeyHandoverText(key)).join("\n\n———\n\n")} label={`Сообщения · ${handoverKeys.length}`} primary /><CopyButton value={handoverKeys.flatMap((key) => key.secret ? [key.secret] : []).join("\n")} label="Только ключи" /></> : null}
-                {stock.length ? <button className="btn btn-ghost btn-sm openkeys-danger" type="button" disabled={busy} onClick={() => void removeBatchStock(stock.length)}>Удалить остаток</button> : null}
-              </div>
-            </div>
-            {stock.length === 0 ? <div className="empty-box">В этой партии на складе ничего не осталось</div> : <div className="openkeys-key-grid">{stock.map((key) => <KeyCard key={key.id} keyRow={key} busy={busy} onUpdate={updateKey} />)}</div>}
-
-            <div className="dsec-head analytics-heading openkeys-history-head"><div><h2>История партии · {history.length}</h2><p>Выданные ключи остаются видимыми по маске, метке и ссылке на профиль.</p></div></div>
-            <div className="table-scroll" role="region" tabIndex={0} aria-label="История выбранной партии">
-              <table className="mtable"><thead><tr><th>Ключ</th><th>Метка</th><th>Состояние</th><th className="tnum">Номинал</th><th className="tnum">Выпущен</th><th className="tnum">Выдан</th><th>Профиль</th></tr></thead>
-                <tbody>{history.length === 0 ? <tr><td colSpan={7} className="empty-cell">В этой партии ещё ничего не выдано</td></tr> : history.map((key) => <tr key={key.id}><td><code className="key-mask">{key.keyMasked}</code></td><td><b>{key.label ?? "Без метки"}</b></td><td><span className={`pill ${key.enabled ? "pill-good" : "pill-muted"}`}>{key.enabled ? "выдан" : "отключён"}</span></td><td className="tnum">{key.faceValue}</td><td className="tnum">{key.createdAt.slice(0, 10)}</td><td className="tnum">{key.deliveredAt?.slice(0, 10) ?? "—"}</td><td><a href={key.viewUrl} target="_blank" rel="noreferrer">открыть ↗</a></td></tr>)}</tbody>
-              </table>
-            </div>
-          </section>
-        )}
       </div></div>
     </AppShell>
   );

@@ -2551,10 +2551,14 @@ body.app-body .bg-decor{display:none!important}
 .openkeys-admin-intro p{max-width:720px;margin:0;color:var(--txt-3);font:500 12px/1.7 var(--font-mono)}
 .openkeys-admin-stats{margin-bottom:20px}.openkeys-issue-card{margin:0 0 24px;padding:24px}.openkeys-issue-card .overview-card-head{margin-bottom:16px}
 .openkeys-batches-section{margin-top:28px}.openkeys-batch-toolbar{display:grid;grid-template-columns:minmax(240px,1fr) auto auto;gap:9px;margin-bottom:12px}
-.openkeys-batch-toolbar input{min-width:0;width:100%}.openkeys-batch-table tr.is-selected td{background:color-mix(in srgb,var(--accent) 8%,var(--bg-card))}
-.openkeys-batch-table td:first-child{min-width:220px}.openkeys-batch-id{display:block;margin-top:4px;color:var(--txt-4);font:500 10px/1.3 var(--font-mono)}
+.openkeys-batch-toolbar input{min-width:0;width:100%}.openkeys-batch-table>tbody>tr.is-selected>td{background:color-mix(in srgb,var(--accent) 8%,var(--bg-card))}
+.openkeys-batch-table>tbody>tr>td:first-child{min-width:220px}.openkeys-batch-id{display:block;margin-top:4px;color:var(--txt-4);font:500 10px/1.3 var(--font-mono)}
+.openkeys-batch-table .openkeys-batch-detail-cell{padding:0;min-width:0;background:color-mix(in srgb,var(--accent) 3%,var(--bg-card));border-bottom:1px solid var(--line-strong)}
+.openkeys-batch-table .openkeys-batch-detail-row:hover>.openkeys-batch-detail-cell{background:color-mix(in srgb,var(--accent) 3%,var(--bg-card))}
+.openkeys-batch-detail-cell .openkeys-batch-workspace{margin:0;padding:28px 24px 32px;border-top:0}
+.openkeys-batch-detail-cell .openkeys-history-table td{background:var(--bg-card)}
+.openkeys-batch-detail-cell .openkeys-history-table tr:hover td{background:var(--accent-soft)}
 .openkeys-pagination{display:flex;align-items:center;justify-content:flex-end;gap:9px;margin-top:12px;color:var(--txt-4);font:500 11px/1.4 var(--font-mono)}
-.openkeys-workspace-empty{display:grid;gap:7px;margin-top:28px}.openkeys-workspace-empty b{color:var(--txt);font-size:15px}.openkeys-workspace-empty span{color:var(--txt-3)}
 .openkeys-batch-workspace{margin-top:30px;padding-top:28px;border-top:1px solid var(--line)}
 .openkeys-workspace-head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:16px}
 .openkeys-workspace-head h2{margin:7px 0 5px;font:720 27px/1.1 var(--font-mono);letter-spacing:-.035em;color:var(--txt)}
@@ -2565,7 +2569,7 @@ body.app-body .bg-decor{display:none!important}
 .openkeys-key-secret{margin:0}.openkeys-key-meta{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--txt-4);font:500 10px/1.4 var(--font-mono)}
 .openkeys-key-meta a{color:var(--accent);text-decoration:none}.openkeys-key-meta a:hover{text-decoration:underline}
 @media(max-width:900px){.openkeys-key-grid{grid-template-columns:1fr}.openkeys-admin-intro,.openkeys-workspace-head{align-items:flex-start;flex-direction:column}}
-@media(max-width:620px){.openkeys-batch-toolbar{grid-template-columns:1fr 1fr}.openkeys-batch-toolbar input{grid-column:1/-1}.openkeys-pagination{justify-content:flex-start;flex-wrap:wrap}.openkeys-admin-intro{padding:22px}.openkeys-key-card{padding:15px}}
+@media(max-width:620px){.openkeys-batch-toolbar{grid-template-columns:1fr 1fr}.openkeys-batch-toolbar input{grid-column:1/-1}.openkeys-pagination{justify-content:flex-start;flex-wrap:wrap}.openkeys-admin-intro{padding:22px}.openkeys-batch-detail-cell .openkeys-batch-workspace{padding:22px 16px 26px}.openkeys-key-card{padding:15px}}
 
 /* Universal OpenKeys: one credential, two protocol-specific connection paths. */
 .openkeys-universal-banner{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:14px 0 20px}
