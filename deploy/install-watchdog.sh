@@ -85,7 +85,7 @@ install_systemd_definitions() {
     apitoken-deploy-watchdog.service apitoken-deploy-watchdog.timer \
     apitoken-candidate-validator.service apitoken-candidate-validator.timer \
     apitoken-sudoers-install.service apitoken-tmpfiles-install.service \
-    apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-codex-app-server@.service claude-api-codex-app-servers.service claude-api-codex-app-servers.timer claude-api-gemini.service claude-api-backup.service claude-api-backup.timer \
+    apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-codex-app-server@.service claude-api-codex-app-servers.service claude-api-codex-app-servers-ready.target claude-api-codex-app-servers.timer claude-api-gemini.service claude-api-backup.service claude-api-backup.timer \
     claude-api-fingerprint.service claude-api-fingerprint.timer \
     apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \
     apitoken-openkeys.service \

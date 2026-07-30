@@ -223,10 +223,13 @@ OpenAI blue-green admission is observational and capacity-preserving like the Cl
 live HTTP generation must expose the exact same opaque authenticated-home set before the old slot is
 drained. Parity is a readiness condition with no minimum soak interval: the first complete snapshot
 admits the candidate. One equal home is valid; a candidate subset of the old pool is not. The gate
-also fences the exact gateway process generations, sends no transport signal and
-performs no repair. A separate desired-topology change may ask Rust gateways to rediscover sockets,
+also fences the exact gateway process generations, sends no transport signal, takes no daemon
+lifecycle lock and performs no repair. It observes authenticated clients attached to the actually
+serving persistent daemons, so a safe 0.N-1 -> 0.N app-server roll is not a prerequisite for the
+HTTP cutover. A separate desired-topology or pin change may ask Rust gateways to rediscover sockets,
 but the signal is restricted to each unit's `MainPID`; signalling the whole cgroup would also kill
-the authenticated proxy children.
+the authenticated proxy children. Individual daemon rolls remain sequential and preserve their
+running turns, while their total duration cannot fail or roll back an otherwise healthy deployment.
 
 A background health loop re-reads `account/read` and the rate-limit snapshot for every home on
 `CLAUDE_API_CODEX_HEALTH_INTERVAL_SECS`. A device login expires with no traffic on it, so without

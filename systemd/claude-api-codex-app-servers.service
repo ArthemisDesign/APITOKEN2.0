@@ -2,7 +2,7 @@
 Description=Reconcile the authenticated Codex app-server cohort
 After=network-online.target
 Wants=network-online.target
-Before=claude-api-openai@8793.service claude-api-openai@8797.service
+Before=claude-api-codex-app-servers-ready.target
 
 [Service]
 Type=oneshot
@@ -13,7 +13,10 @@ ExecCondition=/usr/bin/test -f /srv/claude-api/releases/current/.openai-bluegree
 ExecCondition=/usr/bin/test ! -L /srv/claude-api/releases/current/.openai-bluegreen-v1
 ExecCondition=/usr/bin/grep -Fxq openai-bluegreen-v1 /srv/claude-api/releases/current/.openai-bluegreen-v1
 ExecStart=/usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh reconcile
-TimeoutStartSec=1800
+# Every individual daemon restart is bounded by its own unit. Total reconciliation duration scales
+# with the number of homes that are still finishing real turns and must not become a fleet-wide
+# wall-clock failure halfway through a safe sequential roll.
+TimeoutStartSec=infinity
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

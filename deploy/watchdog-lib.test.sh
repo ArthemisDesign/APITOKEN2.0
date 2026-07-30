@@ -1197,9 +1197,21 @@ grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-openai@.service"
 grep -Fq 'CLAUDE_API_CODEX_TRANSPORT=shared-daemon' \
   "$ROOT/systemd/claude-api-openai@.service" \
   || wd_die 'OpenAI blue-green slots can launch direct home owners'
-grep -Fq 'Requires=claude-api-codex-app-servers.service' \
+grep -Fq 'Requires=claude-api-codex-app-servers-ready.target' \
   "$ROOT/systemd/claude-api-openai@.service" \
-  || wd_die 'OpenAI slots can start before the app-server cohort reconciles'
+  || wd_die 'OpenAI slots lost their one-time app-server boot barrier'
+! grep -Fq 'Requires=claude-api-codex-app-servers.service' \
+  "$ROOT/systemd/claude-api-openai@.service" \
+  || wd_die 'OpenAI slot activation can still queue behind a timer-driven daemon reconciliation'
+grep -Fxq 'Requires=claude-api-codex-app-servers.service' \
+  "$ROOT/systemd/claude-api-codex-app-servers-ready.target" \
+  || wd_die 'Codex boot barrier does not require initial daemon reconciliation'
+grep -Fxq 'After=claude-api-codex-app-servers.service' \
+  "$ROOT/systemd/claude-api-codex-app-servers-ready.target" \
+  || wd_die 'Codex boot barrier can activate before initial daemon reconciliation'
+grep -Fxq 'Before=claude-api-codex-app-servers-ready.target' \
+  "$ROOT/systemd/claude-api-codex-app-servers.service" \
+  || wd_die 'initial daemon reconciliation is not ordered before its boot barrier'
 for guarded_shared_unit in systemd/claude-api-openai@.service \
   systemd/claude-api-codex-app-servers.service; do
   grep -Fq 'ExecCondition=/usr/bin/test ! -L /srv/claude-api/releases/current/.openai-bluegreen-v1' \
@@ -1214,6 +1226,8 @@ grep -Fxq 'ExecStart=/usr/local/lib/apitoken-watchdog/controller/codex-app-serve
   || wd_die 'authenticated Codex homes lack independent official app-server owners'
 grep -Fxq 'User=root' "$ROOT/systemd/claude-api-codex-app-servers.service" \
   || wd_die 'Codex app-server reconciliation cannot mutate ownership fences'
+grep -Fxq 'TimeoutStartSec=infinity' "$ROOT/systemd/claude-api-codex-app-servers.service" \
+  || wd_die 'a fleet-wide timer can abort a safe sequential Codex daemon roll'
 grep -Fxq 'OnUnitActiveSec=30s' "$ROOT/systemd/claude-api-codex-app-servers.timer" \
   || wd_die 'new authenticated Codex homes do not join the daemon cohort automatically'
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-gemini.service"
@@ -1487,6 +1501,12 @@ openai_commit_line=$(grep -nF '"$CODEX_APP_SERVERS_HELPER" commit-transition' \
     && $openai_start_line -lt $openai_admit_line && $openai_admit_line -lt $openai_enable_line \
     && $openai_enable_line -lt $openai_drain_line ]] \
   || wd_die 'OpenAI can drain the old slot before redundant admission and boot durability'
+[[ $(grep -Fc '"$CODEX_APP_SERVERS_HELPER" admit-cutover' "$provider_controller") == 2 ]] \
+  || wd_die 'OpenAI cutover does not re-observe serving capacity after ownership commit'
+! grep -Fq '"$CODEX_APP_SERVERS_HELPER" reconcile' "$provider_controller" \
+  || wd_die 'HTTP blue-green still starts or waits for a stateful Codex daemon roll'
+! grep -Fq '"$CODEX_APP_SERVERS_HELPER" verify \' "$provider_controller" \
+  || wd_die 'HTTP blue-green still requires full daemon-pin convergence'
 grep -Fq 'unit_release_binding_ok engine "$unit" "$ENGINE_RELEASE_ROOT" "$CURRENT_RELEASE" anthropic' \
   "$provider_controller" || wd_die "Anthropic slot gate does not prove provider mode"
 grep -Fq 'unit_release_binding_ok engine "$OPENAI_LEGACY_UNIT" "$ENGINE_RELEASE_ROOT"' \

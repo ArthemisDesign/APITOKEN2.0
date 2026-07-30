@@ -624,8 +624,11 @@ else
       systemctl_command stop "$OPENAI_LEGACY_UNIT" \
         || post_admission_die "could not stop unready legacy OpenAI runtime"
     fi
-    privileged_command "$CODEX_APP_SERVERS_HELPER" reconcile \
-      || post_admission_die "Codex app-server cohort did not reconcile"
+    # Persistent app-servers are a separate availability domain from the two HTTP generations.
+    # Never start or wait for a daemon roll here: a busy official app-server may correctly spend
+    # the remainder of its in-flight turn draining, while both gateway slots can already use the
+    # serving cohort. The lock-free admission gate below proves actual cross-version transport and
+    # authenticated-home parity before any OpenAI traffic anchor is touched.
     OPENAI_READY_8793=0; OPENAI_READY_8797=0
     OPENAI_CURRENT_8793=0; OPENAI_CURRENT_8797=0
     openai_unit_for_ready_port 8793 >/dev/null && OPENAI_READY_8793=1
@@ -751,8 +754,10 @@ else
     privileged_command "$CODEX_APP_SERVERS_HELPER" commit-transition \
       || post_admission_die "could not commit Codex ownership transition"
   fi
-  privileged_command "$CODEX_APP_SERVERS_HELPER" verify \
-    || post_admission_die "Codex app-server cohort failed final convergence verification"
+  # Re-observe the committed serving cohort, but do not require daemon-version convergence. Pin
+  # rollout is intentionally independent and cannot hold the HTTP deployment hostage.
+  privileged_command "$CODEX_APP_SERVERS_HELPER" admit-cutover \
+    || post_admission_die "committed OpenAI target lost authenticated serving capacity"
   systemctl_command enable "$CODEX_APP_SERVERS_TIMER" \
     || post_admission_die 'could not enable Codex app-server reconciliation'
   systemctl_command start "$CODEX_APP_SERVERS_TIMER" \

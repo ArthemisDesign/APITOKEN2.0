@@ -96,14 +96,18 @@ official Unix-socket app-server per authenticated home below both HTTP generatio
 must expose exactly the same opaque authenticated-home set as the old generation. This parity is a
 readiness condition, not a soak timer: admission returns on the first complete process-fenced
 snapshot; one equal working home is valid, while any candidate subset is rejected. Only then is the
-old HTTP slot pre-drained and stopped. Candidate admission is purely observational.
+old HTTP slot pre-drained and stopped. Candidate admission is purely observational and uses the
+cohort that is actually serving both gateway generations; it does not require those persistent
+daemons to have already converged to a newly promoted Codex binary pin.
 When an actual daemon topology change separately requires rediscovery, its signal is sent strictly
 to the Rust `MainPID`—never its proxy children—and a steady-state timer pass performs no signalling.
 
 Established OpenAI streams remain on the old HTTP slot during pre-drain and may finish through the
 shared server deadline. The persistent app-server daemon is not restarted by the HTTP cutover, so
 the replacement generation reuses the same authenticated Codex state without taking ownership of
-the home or interrupting unrelated sessions.
+the home or interrupting unrelated sessions. Daemon pin convergence is serialized independently;
+an app-server that is finishing a real turn cannot hold the gateway deployment lock or make a
+healthy HTTP candidate roll back.
 
 The commerce API and worker use `http://127.0.0.1:8790`, a loopback-only Caddy listener over the
 Anthropic slots. They must never address a deployment slot, the OpenAI origin, or the Gemini origin.

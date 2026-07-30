@@ -562,13 +562,16 @@ codex_as_home_ready_client_count() {
 
 # Authenticated home IDs visible through one exact HTTP gateway generation. IDs are opaque and
 # emitted in deterministic desired-roster order, so sets can be compared without exposing accounts.
+# Cutover observes actual serving compatibility, not convergence to the newly promoted Codex pin:
+# the persistent daemon cohort deliberately outlives HTTP releases, and successful authenticated
+# clients from both gateway generations are the compatibility proof during a rolling pin update.
 codex_as_gateway_ready_home_ids() {
   local gateway_pid=$1 id name home gateway_pids
   [[ $gateway_pid =~ ^[1-9][0-9]*$ ]] || return 1
   while IFS=$'\t' read -r id name; do
     home=$CODEX_AS_HOMES_DIR/$name
     codex_as_home_draining "$home" && continue
-    codex_as_unit_healthy "$id" || continue
+    codex_as_unit_serving "$id" || continue
     gateway_pids=$(codex_as_home_ready_gateway_pids "$home") || return 1
     grep -Fxq -- "$gateway_pid" <<<"$gateway_pids" || continue
     printf '%s\n' "$id"
@@ -723,7 +726,6 @@ codex_as_admit_cutover() {
   local gateways owners ready mode ids transition_count
   codex_as_is_root \
     || { codex_as_fail 'cutover admission must run as root'; return 1; }
-  codex_as_load_desired || return 1
   owners=$(codex_as_cutover_owner_snapshot) || return 1
   [[ -n $owners ]] \
     || { codex_as_fail 'cutover has no stable gateway ownership snapshot'; return 1; }
@@ -1376,7 +1378,15 @@ codex_as_verify() {
 
 codex_as_main() {
   local command=${1:-}
-  if [[ $command != serve ]]; then codex_as_acquire_lifecycle_lock || return 1; fi
+  # Candidate admission is deliberately lock-free and observational. A daemon roll can spend the
+  # complete lifetime of an already-running turn inside systemctl restart; making HTTP blue-green
+  # queue behind that lifecycle lock couples two independent availability domains and can turn a
+  # healthy rolling update into a false deploy failure. Owner snapshots and authenticated-client
+  # parity fence the observation itself.
+  case "$command" in
+    serve|admit-cutover) ;;
+    *) codex_as_acquire_lifecycle_lock || return 1 ;;
+  esac
   case "$command" in
     serve) [[ $# == 2 ]] || { codex_as_fail 'usage: codex-app-servers.sh serve <opaque-id>'; return 1; }; codex_as_serve "$2" ;;
     reconcile) [[ $# == 1 ]] || { codex_as_fail 'usage: codex-app-servers.sh reconcile'; return 1; }; codex_as_reconcile ;;

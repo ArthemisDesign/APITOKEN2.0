@@ -2,9 +2,9 @@
 # carry websocket bytes only; authenticated CODEX_HOME ownership stays in the daemon template.
 [Unit]
 Description=claude-api OpenAI-compatible gateway slot on port %i
-After=network-online.target apitoken-affinity-redis.service claude-api-codex-app-servers.service
+After=network-online.target apitoken-affinity-redis.service claude-api-codex-app-servers-ready.target
 Wants=network-online.target apitoken-affinity-redis.service
-Requires=claude-api-codex-app-servers.service
+Requires=claude-api-codex-app-servers-ready.target
 
 [Service]
 Type=simple

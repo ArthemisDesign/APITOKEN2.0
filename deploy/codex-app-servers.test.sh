@@ -138,7 +138,9 @@ serve_body=$(sed -n '/^codex_as_serve()/,/^}/p' "$ROOT/deploy/codex-app-servers.
   chmod 0600 "$marker"
   [[ $(codex_as_home_ready_client_count "$proxy_home") == 1 ]] \
     || fail 'authenticated websocket client lease was not counted'
-  codex_as_unit_healthy() { [[ $1 == "$rotating_id" ]]; }
+  # The old pin is still legitimate serving capacity while a new pin rolls behind it. Successful
+  # authenticated clients from both gateway generations prove protocol compatibility.
+  codex_as_unit_serving() { [[ $1 == "$rotating_id" ]]; }
   [[ $(codex_as_gateway_ready_home_ids "$fixture_gateway_pid") == "$rotating_id" ]] \
     || fail 'gateway readiness did not resolve the authenticated marker to its opaque home id'
   printf 'CODEX_HOME=%s\0CLAUDE_API_CODEX_CLIENT_LEASE=%032d\0' "$proxy_home" 0 \
@@ -261,7 +263,8 @@ done
   chmod 0700 "$observer_systemctl"
   CODEX_AS_SYSTEMCTL=$observer_systemctl
   codex_as_is_root() { return 0; }
-  codex_as_load_desired() { return 0; }
+  load_desired_calls=0
+  codex_as_load_desired() { load_desired_calls=$((load_desired_calls + 1)); }
   codex_as_gateway_active_count() { printf '2\n'; }
   codex_as_cutover_owner_snapshot() {
     printf 'claude-api-openai@8793.service=101\nclaude-api-openai@8797.service=202\n'
@@ -272,7 +275,11 @@ done
       || fail 'cutover admission did not fence the original gateway owners'
     printf '2\n'
   }
-  codex_as_admit_cutover || fail 'observational cutover admission rejected exact capacity parity'
+  codex_as_acquire_lifecycle_lock() { fail 'observational cutover admission waited for the daemon lifecycle lock'; }
+  codex_as_main admit-cutover \
+    || fail 'lock-free observational cutover admission rejected exact capacity parity'
+  (( load_desired_calls == 0 )) \
+    || fail 'observational cutover admission depended on desired pin convergence'
 
   codex_as_home_records() { return 0; }
   codex_as_start_or_roll() { fail 'incomplete desired snapshot mutated the serving cohort'; }

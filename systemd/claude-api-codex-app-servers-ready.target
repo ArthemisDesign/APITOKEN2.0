@@ -1,0 +1,7 @@
+[Unit]
+Description=Initial authenticated Codex app-server cohort is ready
+Requires=claude-api-codex-app-servers.service
+After=claude-api-codex-app-servers.service
+
+# This target is a one-time boot barrier. Once active, later gateway starts do not inherit ordering
+# against timer-driven reconciliations of the underlying oneshot service.
