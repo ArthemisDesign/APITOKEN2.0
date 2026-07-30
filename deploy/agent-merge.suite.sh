@@ -445,6 +445,7 @@ for sccache_contract in \
   'continuing uncached' \
   'CARGO_INCREMENTAL=0' \
   'CARGO_BUILD_BUILD_DIR' \
+  'workspace-path-hash' \
   'SCCACHE_CACHE_SIZE' \
   'SCCACHE_VERSION=0.15.0'; do
   grep -Fq -- "$sccache_contract" "$ROOT/deploy/sccache-cargo.sh" \

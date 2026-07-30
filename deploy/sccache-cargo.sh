@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Run a Cargo command through a repository-shared sccache.
 #
-# The pinned binary, sccache objects, and Cargo intermediate build directory live under the clone's
-# git-common-dir. Every linked worktree reuses them while keeping its final target directory local.
+# The pinned binary, sccache objects, and Cargo intermediate build directories live under the
+# clone's git-common-dir. Compiler objects are shared, while Cargo fingerprints and linked
+# artifacts are isolated by workspace path so concurrent worktrees can never cross-link revisions.
 set -euo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -110,7 +111,7 @@ sc_worktree_bases() {
   printf '\n'
 }
 
-sc_cargo_supports_shared_build_dir() {
+sc_cargo_supports_build_dir() {
   local version major minor
   version=$(cargo --version 2>/dev/null | awk '{print $2}')
   major=${version%%.*}
@@ -178,6 +179,7 @@ sc_start_server_serialized() (
 (( $# > 0 )) || sc_die 'pass the Cargo command to run'
 if [[ ${SCCACHE_DISABLE:-0} == 1 ]]; then
   sc_log 'cache disabled explicitly'
+  unset CARGO_BUILD_BUILD_DIR
   exec "$@"
 fi
 
@@ -185,27 +187,35 @@ common_dir=$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>
   || sc_die 'cannot resolve the repository git-common-dir'
 if ! sccache_bin=$(sc_resolve_binary "$common_dir"); then
   sc_log 'WARNING: sccache is unavailable; continuing with the uncached Cargo command'
+  unset CARGO_BUILD_BUILD_DIR
   exec "$@"
 fi
 
 cache_dir=${SCCACHE_DIR:-"$common_dir/codex-tools/sccache-cache"}
+# Cargo fingerprints path dependencies by package identity, not by the source revision in every
+# linked worktree. A single static build-dir can therefore pair tests from one worktree with an
+# rlib compiled from another. Cargo expands this stable template to one cache per canonical
+# workspace path while sccache continues to share content-addressed compiler objects clone-wide.
 build_dir=${CARGO_BUILD_BUILD_DIR:-"$common_dir/codex-tools/cargo-build"}
+if [[ $build_dir != *'{workspace-path-hash}'* ]]; then
+  build_dir="${build_dir%/}/{workspace-path-hash}"
+fi
 base_dirs=${SCCACHE_BASEDIRS:-$(sc_worktree_bases)}
 [[ -n $base_dirs ]] || base_dirs=$ROOT
 server_id=$(printf '%s' "$base_dirs" | cksum | awk '{print $1}')
 server_uds=${SCCACHE_SERVER_UDS:-"/tmp/claude-api-sccache-$(id -u)-$server_id.sock"}
 build_env=()
 mkdir -p "$cache_dir" "$common_dir/codex-tools"
-if sc_cargo_supports_shared_build_dir; then
-  mkdir -p "$build_dir"
+if sc_cargo_supports_build_dir; then
   build_env=("CARGO_BUILD_BUILD_DIR=$build_dir")
-  sc_log "using $("$sccache_bin" --version) with shared compiler and Cargo build caches"
+  sc_log "using $("$sccache_bin" --version) with shared compiler cache and workspace-isolated Cargo build cache"
 else
-  sc_log "using $("$sccache_bin" --version); Cargo before 1.91 cannot share its build directory"
+  sc_log "using $("$sccache_bin" --version); Cargo before 1.91 cannot relocate its build directory"
 fi
 server_lock="$common_dir/codex-tools/sccache-server-$server_id.lock"
 if ! sc_start_server_serialized "$server_lock"; then
   sc_log 'WARNING: shared sccache server did not become ready; continuing uncached'
+  unset CARGO_BUILD_BUILD_DIR
   exec "$@"
 fi
 exec env \

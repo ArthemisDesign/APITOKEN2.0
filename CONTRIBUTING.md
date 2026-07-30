@@ -53,10 +53,12 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    validated `.next/cache` archives under the clone's git common directory, so fresh worktrees can
    reuse compiler state; a missing, corrupt, or unsafe archive is simply a cache miss. Rust
    compilation goes through a
-   checksum-pinned `sccache`; its binary, 10 GiB object cache, and Cargo 1.91+ intermediate build
-   directory live in the clone's git common directory and are reused by all linked worktrees. Final
-   Cargo targets remain local to each worktree. The wrapper falls back to uncached Cargo if its
-   one-time bootstrap is unavailable; set `SCCACHE_DISABLE=1` for an explicit uncached run.
+   checksum-pinned `sccache`; its binary and 10 GiB content-addressed object cache are reused by all
+   linked worktrees. Cargo 1.91+ intermediate build directories also live under the clone's git
+   common directory, but are keyed by Cargo's canonical workspace-path hash: fingerprints and
+   linked artifacts from different worktrees must never mix. The wrapper falls back to uncached
+   Cargo if its one-time bootstrap is unavailable; set `SCCACHE_DISABLE=1` for an explicit uncached
+   run.
 
 5. Push the branch and land it with `./deploy/agent-merge.sh` (add `--allow-primary-tree` when you
    work in a plain clone rather than a worktree). That script is the only supported way to reach
