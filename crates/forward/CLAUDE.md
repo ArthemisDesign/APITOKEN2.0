@@ -20,14 +20,20 @@
 Pricing sync uses the same actors: multiplier writes go through the writer and cursor ledger reads
 through a reader; HTTP code never opens the authority directly.
 
-**Multi-provider pricing Stage 3B0 (`pricing.rs`) — dormant:** pure fail-closed resolver consumes
+**Multi-provider pricing Stage 3B1b (`pricing.rs`) — dormant:** pure fail-closed resolver consumes
 one transactionally materialized `registry::pricing::PricingReadBundle` (including the live legacy
-scalar) plus provider-fixed runtime and canonical model identities. Exact model rule replaces
-provider rule; schema/capability/head,
-catalog and master/segment switch mismatches return stable typed reasons. The module has no DB,
-HTTP, env, time, metrics or runtime caller. Do not wire it into `authorize`, provider admission,
-reserve/settle, `/ready` or snapshots without a separate production-shadow rollout: even a read-only
-call adds per-request DB/queue/latency risk, and the actual charge remains legacy scalar.
+scalar, exact policy dependencies and current admission heads), provider-fixed identities and a
+runtime-owned manifest of exact `(schema, capability generation, digest)` tuples. Policy and
+admission catalog/switch gates are independent: current heads need not equal policy pins, and a
+mixed `C2/S1/P1` rollout must keep the old common model available while the policy lineage still
+blocks a new C2-only model. The S1 catalog pin is accepted beside C2 only while it matches the
+policy's C1 catalog; malformed `C2/S1/P2` fails closed. Exact model rule replaces provider rule.
+Resolved output preserves both lineage pairs plus manifest identity;
+malformed/missing/schema/capability/model/switch failures use stable typed reasons. The module has
+no DB, HTTP, env, time, metrics, manifest instance or runtime caller. Do not wire it into
+`authorize`, provider admission, reserve/settle, `/ready` or snapshots without a separate
+production-shadow rollout: even a read-only call adds per-request DB/queue/latency risk, and the
+actual charge remains legacy scalar.
 
 **Биллинг (async, `billing.rs` + tee-метеринг `meter.rs`):** авторизация (`authorize`, async):
 env-админ проверяется ПЕРВЫМ в памяти; иначе клиентский ключ → `key_account` (JOIN ключ→аккаунт)

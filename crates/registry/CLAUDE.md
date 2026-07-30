@@ -55,16 +55,19 @@
   identity; policy хранит полные catalog/switch/capability/source pins. `Strict` здесь fail-closed,
   legacy OpenKeys replacement-locked и сверяется с live `accounts.mult_bp`, current OpenKeys только
   1:1 без model-rules. До Stage 3B у API нет runtime/HTTP writer и production activation. Будущий
-  resolver обязан на каждом чтении повторно проверить exact dependency heads и fail closed при
-  рассогласовании; отдельные catalog → switches → policy heads не являются общей транзакцией.
-- **Stage 3B0 snapshot read — тоже dormant:** `pricing_read_bundle(account_id)` за одну read-only
-  транзакцию возвращает live `accounts.mult_bp`, binding/active policy и текущие active
-  catalog/switch heads: SQLite через deferred snapshot, PostgreSQL через `REPEATABLE READ READ
-  ONLY`. Scalar входит в тот же snapshot, иначе legacy OpenKeys validation гоняется с multiplier
-  writer. Registry только материализует данные и различает `Unbound/Inactive/Active`; правило
-  выбирает чистый resolver в `forward`.
-  Runtime callers, billing actor command, telemetry, readiness и writes пока запрещены. Нельзя
-  заменять bundle последовательностью трёх `active_*` reads — это может смешать поколения.
+  resolver обязан на каждом чтении проверить exact immutable policy dependencies и независимо
+  применить текущие admission heads. Current heads не обязаны равняться policy pins: отдельные
+  catalog → switches → policy activations не являются общей транзакцией.
+- **Stage 3B0/3B1b snapshot read — dormant:** `pricing_read_bundle(account_id)` за одну read-only
+  транзакцию возвращает live `accounts.mult_bp`, binding/active policy, exact immutable
+  `policy_catalog/policy_switches` и текущие `admission_catalog/admission_switches`: SQLite через
+  deferred snapshot, PostgreSQL через `REPEATABLE READ READ ONLY`. Active policy обязана найти обе
+  pinned dependencies или read падает как integrity error; inactive binding получает только
+  admission heads, unbound account — ни одной пары. Scalar входит в тот же snapshot, иначе legacy
+  OpenKeys validation гоняется с multiplier writer. Registry только материализует данные;
+  независимые policy/admission gates выполняет чистый resolver в `forward`. Нельзя собирать bundle
+  последовательностью отдельных `active_*`/`*_by_generation` reads — это смешивает поколения.
+  Runtime callers, billing actor command, telemetry, readiness и writes пока запрещены.
 - **Stage 3B1a shadow schema — dormant:** PostgreSQL migration `0009` и SQLite parity создают
   отдельную immutable `pricing_shadow_admission_evaluations`. Она не подменяет actual
   `pricing_admission_snapshots`: shadow-строка ссылается на уже зафиксированный actual snapshot и

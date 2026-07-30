@@ -2,13 +2,12 @@
 
 Статус: продуктовые решения для первой версии согласованы. Expand-only schema foundation этапов
 1–2 (`engine 0006`–`0008`, `commerce 0022`–`0023`, `OpenKeys 0007`), Stage 3A dormant
-registry-only persistence/CAS и Stage 3B0 dormant resolver/read bundle уже доставлены. По
-договорённости от 2026-07-30 следующий безопасный объём разделён на два независимых checkpoint:
-3B1a — одна expand-only таблица immutable shadow attribution без writer, и 3B1b — пассивный
-dual-lineage resolver/capability foundation без runtime caller. Работа останавливается после их
-delivery. Первый потенциально аварийный шаг — подключение shadow к live admission — в этот объём
-не входит. Control API, синхронизация commerce, funding cutover и strict enforcement также остаются
-последующими этапами.
+registry-only persistence/CAS, Stage 3B0 dormant resolver/read bundle и Stage 3B1a dormant shadow
+schema уже доставлены. Эта ревизия завершает последний согласованный безопасный checkpoint 3B1b:
+пассивный dual-lineage read/resolver и runtime capability manifest без runtime caller. После его
+delivery работа останавливается. Первый потенциально аварийный шаг — подключение shadow к live
+admission — в этот объём не входит. Control API, синхронизация commerce, funding cutover и strict
+enforcement также остаются последующими этапами.
 
 Последнее продуктовое обсуждение и фиксация безопасной границы: 2026-07-30.
 
@@ -18,10 +17,11 @@ delivery. Первый потенциально аварийный шаг — п
 writers, модели и миграции. Семантика продукта, зафиксированная в этом документе, при этом не
 должна меняться молча из-за изменений реализации.
 
-Stage 3B0 доставлен commit `4bf19d2807e16bb60d9b91b886464a5f561c124a`. Stage 3B1a начат в
-отдельном worktree от master `32c97c548231ea23666f0ecb261302c6beca1b4d`; его delivery SHA и
-результаты gate фиксируются в handoff после merge. Существующие migrations `0006`–`0008` не
-переписываются; 3B1a добавляет только новую migration `0009`.
+Stage 3B0 доставлен commit `4bf19d2807e16bb60d9b91b886464a5f561c124a`. Stage 3B1a доставлен
+commit `a0402a67f53b0e16db43750c50ab42e36870a10a`: engine deployment и общий watchdog зелёные.
+Существующие migrations `0006`–`0008` не переписывались; 3B1a добавил только migration `0009`.
+Точный delivery SHA и результаты gate для содержащей эту ревизию Stage 3B1b фиксируются в handoff
+после merge, поскольку commit не может надёжно ссылаться на собственный будущий SHA.
 
 Этот документ описывает целевое поведение, которое заменит текущий единый множитель цены на аккаунт.
 Он не утверждает, что описанное поведение уже работает в production. До завершения перехода
@@ -1372,7 +1372,7 @@ Checkpoint Stage 3B0 считается безопасным для остано
 6. Merge выполнен только через `deploy/agent-merge.sh`, а exact delivery SHA получил зелёный
    `deploy/watchdog`.
 
-### Этап 3B1a. Dormant shadow attribution schema — разрешённый безопасный checkpoint
+### Этап 3B1a. Dormant shadow attribution schema — доставленный безопасный checkpoint
 
 Stage 3B1a устраняет только проблему честного хранения будущего shadow-результата:
 
@@ -1392,24 +1392,39 @@ Stage 3B1a устраняет только проблему честного х�
 - повторная запись в будущем обязана быть exact-idempotent по `request_id + evaluation_digest`;
   другой digest означает conflict, а не update.
 
-Checkpoint 3B1a доставляется отдельным migration-first коммитом и должен получить зелёные SQLite,
-реальные PostgreSQL 16/18 matrices, полный repository gate и `deploy/watchdog` до зависимого кода.
-Предыдущий binary полностью совместим с этой пустой additive-таблицей.
+Checkpoint 3B1a доставлен отдельным migration-first коммитом после зелёных SQLite, реальных
+PostgreSQL 16/18 matrices, полного repository gate и `deploy/watchdog`. Предыдущий binary полностью
+совместим с этой пустой additive-таблицей.
 
 ### Этап 3B1b. Dormant dual-lineage resolver — последний разрешённый безопасный checkpoint
 
-После зелёной migration `0009` можно отдельным коммитом расширить только пассивные read/types/tests:
+После зелёной migration `0009` отдельный application-коммит расширяет только пассивные
+read/types/tests:
 
-- policy всегда проверяется по своим immutable pinned catalog/switch dependencies;
-- текущие admission catalog/switch heads читаются в том же snapshot и отдельно ограничивают новые
-  модели и provider switches, не требуя ошибочного равенства current heads policy pins;
-- runtime поддерживает явный набор совместимых `(schema, capability generation, digest)`, чтобы
-  choreography `C1/S1/P1 → C2/S1/P1 → C2/S2/P1 → C2/S2/P2` не создавала ложный outage;
-- resolver сохраняет обе lineage-пары, остаётся pure/dormant и вызывается только тестами;
+- `PricingReadBundle` явно разделяет `policy_catalog/policy_switches` и
+  `admission_catalog/admission_switches`; активная policy получает exact immutable dependencies,
+  inactive binding — только текущие admission heads, unbound account — ни одной пары;
+- все четыре зависимости читаются вместе с live scalar в исходном SQLite deferred snapshot или
+  PostgreSQL `REPEATABLE READ READ ONLY`; зависящий код не собирает bundle отдельными Authority
+  вызовами;
+- policy всегда валидируется и гейтит provider/model по своим pinned dependencies, а текущая
+  admission-пара независимо повторяет catalog и master/scoped-switch gate;
+- admission heads не обязаны равняться policy pins, а scoped switch текущего S1 не обязан ссылаться
+  на уже активированный C2. Именно это сохраняет старую общую модель во всей choreography
+  `C1/S1/P1 → C2/S1/P1 → C2/S2/P1 → C2/S2/P2`; S1 pin принимается рядом с C2 только пока он
+  совпадает со старым policy catalog C1, поэтому нарушенный `C2/S1/P2` fail closed; новая модель из
+  C2 остаётся недоступной до P2;
+- runtime manifest имеет собственные generation/digest и явный набор совместимых точных
+  `(schema, capability generation, capability digest)`; membership проверяется отдельно для
+  catalog и switches обеих lineage, совпадения только номера generation недостаточно;
+- resolved result сохраняет evaluator/policy schema, manifest identity и обе полные lineage-пары;
+  malformed manifest, отсутствующие зависимости и независимые policy/admission отказы имеют
+  стабильные низкокардинальные typed reasons;
+- resolver остаётся pure/dormant и вызывается только тестами;
 - не добавляются actor commands, фоновые workers, HTTP, writes, active data или traffic changes.
 
-После delivery 3B1b работа останавливается. Capability/catalog/policy seed и activation также не
-входят в этот checkpoint.
+После delivery 3B1b работа останавливается. В частности, этот checkpoint не создаёт runtime
+manifest instance/config, capability/catalog/policy seed, activation, shadow writer или очередь.
 
 ### Этап 3B1c. Production shadow — только после отдельного разрешения и окна работ
 

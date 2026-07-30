@@ -1,9 +1,10 @@
 //! Typed, backend-neutral persistence contract for versioned multi-provider pricing.
 //!
 //! Stage 3A stores immutable catalog, switch and account-policy versions and changes their explicit
-//! heads with compare-and-set. Stage 3B0 adds one transactionally coherent, read-only bundle for a
-//! pure resolver in `forward`. Nothing here participates in live request admission, charging, key
-//! issuance, HTTP, policy resolution, or production shadow execution.
+//! heads with compare-and-set. Stage 3B adds one transactionally coherent, read-only bundle for a
+//! pure resolver in `forward`, including both the immutable dependencies pinned by the active
+//! policy and the independently moving admission heads. Nothing here participates in live request
+//! admission, charging, key issuance, HTTP, policy resolution, or production shadow execution.
 
 pub(crate) mod postgres;
 mod sqlite;
@@ -207,20 +208,24 @@ pub enum PricingPolicySnapshot {
     Active(ActiveAccountPolicy),
 }
 
-/// Live account scalar, current policy, catalog and switch heads from one database snapshot.
+/// Live account scalar, current policy and both pricing lineages from one database snapshot.
 ///
-/// `catalog` and `switches` intentionally describe the active heads, not the immutable versions
-/// pinned by an active policy. A future pure resolver can therefore compare the policy pins with
-/// these independently moving heads and fail closed on a partially activated generation. An
-/// unbound account has no product from which to select a catalog, so both head fields are `None`.
+/// `policy_catalog` and `policy_switches` are the exact immutable versions pinned by an active
+/// policy. `admission_catalog` and `admission_switches` are the independently moving active heads
+/// which constrain new admissions. Keeping both pairs prevents normal catalog -> switches ->
+/// policy choreography from making the older active policy internally inconsistent. An unbound
+/// account has no product context, so all dependency fields are `None`; an inactive binding has
+/// no policy dependencies and uses its bound product to read whichever admission heads exist.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PricingReadBundle {
     pub account_id: String,
     /// Live legacy scalar read in the same transaction as policy/catalog/switch state.
     pub account_multiplier_bp: i64,
     pub policy: PricingPolicySnapshot,
-    pub catalog: Option<PricingCatalogSpec>,
-    pub switches: Option<ProviderSwitchSpec>,
+    pub policy_catalog: Option<PricingCatalogSpec>,
+    pub policy_switches: Option<ProviderSwitchSpec>,
+    pub admission_catalog: Option<PricingCatalogSpec>,
+    pub admission_switches: Option<ProviderSwitchSpec>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

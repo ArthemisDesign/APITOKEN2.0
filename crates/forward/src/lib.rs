@@ -42,8 +42,9 @@ pub use gemini::{
 pub use keylimiter::KeyLimiter;
 pub use metrics::Metrics;
 pub use pricing::{
-    resolve_pricing, PricingResolution, PricingResolutionRejection, PricingResolutionRequest,
-    ResolvedPricingRule, RuntimePricingCapability,
+    resolve_pricing, PricingDependencyKind, PricingResolution, PricingResolutionLineage,
+    PricingResolutionRejection, PricingResolutionRequest, ResolvedPricingDependency,
+    ResolvedPricingLineage, ResolvedPricingRule, RuntimePricingCapability, RuntimePricingManifest,
 };
 pub use proxy::{
     authed, client_key, control_authed, forward, readonly_authed, TerminalErrorReason,

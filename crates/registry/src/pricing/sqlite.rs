@@ -798,8 +798,8 @@ pub fn sqlite_active_account_policy(
     }))
 }
 
-/// Read the account scalar, policy binding and independently moving heads from one SQLite
-/// snapshot.
+/// Read the account scalar, policy binding, its exact dependencies and independently moving
+/// admission heads from one SQLite snapshot.
 ///
 /// The transaction is deferred because this path is strictly read-only. Its first query pins the
 /// SQLite snapshot, while Stage 3A activations continue to use `BEGIN IMMEDIATE`. Consequently a
@@ -826,8 +826,10 @@ pub fn sqlite_pricing_read_bundle(
             account_id: account_id.to_owned(),
             account_multiplier_bp,
             policy: PricingPolicySnapshot::Unbound,
-            catalog: None,
-            switches: None,
+            policy_catalog: None,
+            policy_switches: None,
+            admission_catalog: None,
+            admission_switches: None,
         };
         transaction
             .commit()
@@ -836,12 +838,16 @@ pub fn sqlite_pricing_read_bundle(
     };
 
     let product_id = stored_binding.product_id.clone();
-    let policy = match stored_binding.active_target.as_ref() {
-        None => PricingPolicySnapshot::Inactive {
-            product_id: product_id.clone(),
-            account_class: stored_binding.account_class,
-            binding: stored_binding.binding,
-        },
+    let (policy, policy_catalog, policy_switches) = match stored_binding.active_target.as_ref() {
+        None => (
+            PricingPolicySnapshot::Inactive {
+                product_id: product_id.clone(),
+                account_class: stored_binding.account_class,
+                binding: stored_binding.binding,
+            },
+            None,
+            None,
+        ),
         Some(target) => {
             let policy =
                 sqlite_account_policy_by_version(&transaction, account_id, target.version)?
@@ -860,20 +866,46 @@ pub fn sqlite_pricing_read_bundle(
                     "SQLite account policy binding identity does not match its active policy"
                 ));
             }
-            PricingPolicySnapshot::Active(ActiveAccountPolicy {
-                policy,
-                binding: stored_binding.binding,
-            })
+            let policy_catalog = sqlite_pricing_catalog_by_generation(
+                &transaction,
+                &policy.product_id,
+                policy.catalog_generation,
+            )?
+            .ok_or_else(|| {
+                anyhow!(
+                    "SQLite active account policy references missing catalog {:?}/{}",
+                    policy.product_id,
+                    policy.catalog_generation
+                )
+            })?;
+            let policy_switches =
+                sqlite_provider_switches_by_generation(&transaction, policy.switch_generation)?
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "SQLite active account policy references missing switch generation {}",
+                            policy.switch_generation
+                        )
+                    })?;
+            (
+                PricingPolicySnapshot::Active(ActiveAccountPolicy {
+                    policy,
+                    binding: stored_binding.binding,
+                }),
+                Some(policy_catalog),
+                Some(policy_switches),
+            )
         }
     };
-    let catalog = sqlite_active_pricing_catalog(&transaction, &product_id)?;
-    let switches = sqlite_active_provider_switches(&transaction)?;
+    let admission_catalog = sqlite_active_pricing_catalog(&transaction, &product_id)?;
+    let admission_switches = sqlite_active_provider_switches(&transaction)?;
     let bundle = PricingReadBundle {
         account_id: account_id.to_owned(),
         account_multiplier_bp,
         policy,
-        catalog,
-        switches,
+        policy_catalog,
+        policy_switches,
+        admission_catalog,
+        admission_switches,
     };
     transaction
         .commit()
@@ -2030,12 +2062,15 @@ mod tests {
     }
 
     #[test]
-    fn pricing_read_bundle_preserves_policy_state_and_exposes_current_heads() {
+    fn pricing_read_bundle_preserves_dual_lineage_through_activation_choreography() {
         let conn = crate::open(":memory:").unwrap();
         assert!(sqlite_pricing_read_bundle(&conn, "missing-account").is_err());
         account_create(&conn, "bundle-unbound", None, 8_000).unwrap();
         account_create(&conn, "bundle-active", None, 8_000).unwrap();
         prepare_active_b2b_dependencies(&conn);
+
+        let catalog_v1 = normalize_catalog(&catalog("main", 1, "main-catalog-1"));
+        let switches_v1 = normalize_switches(&b2b_switches(1, 1, "b2b-switches-1"));
 
         assert_eq!(
             sqlite_pricing_read_bundle(&conn, "bundle-unbound").unwrap(),
@@ -2043,14 +2078,16 @@ mod tests {
                 account_id: "bundle-unbound".to_owned(),
                 account_multiplier_bp: 8_000,
                 policy: PricingPolicySnapshot::Unbound,
-                catalog: None,
-                switches: None,
+                policy_catalog: None,
+                policy_switches: None,
+                admission_catalog: None,
+                admission_switches: None,
             }
         );
 
-        let policy = b2b_policy("bundle-active", 1, "bundle-policy-1");
+        let policy_v1 = b2b_policy("bundle-active", 1, "bundle-policy-1");
         assert_eq!(
-            sqlite_prepare_account_policy(&conn, &policy).unwrap(),
+            sqlite_prepare_account_policy(&conn, &policy_v1).unwrap(),
             PricingMutation::Stored
         );
         let inactive = legacy_binding();
@@ -2068,8 +2105,6 @@ mod tests {
         )
         .unwrap();
 
-        let catalog_v1 = normalize_catalog(&catalog("main", 1, "main-catalog-1"));
-        let switches_v1 = normalize_switches(&b2b_switches(1, 1, "b2b-switches-1"));
         assert_eq!(
             sqlite_pricing_read_bundle(&conn, "bundle-active").unwrap(),
             PricingReadBundle {
@@ -2080,22 +2115,24 @@ mod tests {
                     account_class: AccountClass::B2b,
                     binding: inactive.clone(),
                 },
-                catalog: Some(catalog_v1.clone()),
-                switches: Some(switches_v1.clone()),
+                policy_catalog: None,
+                policy_switches: None,
+                admission_catalog: Some(catalog_v1.clone()),
+                admission_switches: Some(switches_v1.clone()),
             }
         );
 
         let active_binding = shadow_binding();
-        let activation = AccountPolicyActivationSpec {
-            account_id: policy.account_id.clone(),
-            effective_version: policy.effective_version,
-            content_digest: policy.content_digest.clone(),
+        let activation_v1 = AccountPolicyActivationSpec {
+            account_id: policy_v1.account_id.clone(),
+            effective_version: policy_v1.effective_version,
+            content_digest: policy_v1.content_digest.clone(),
             binding: active_binding.clone(),
         };
         assert_eq!(
             sqlite_activate_account_policy(
                 &conn,
-                &activation,
+                &activation_v1,
                 &PolicyActiveExpectation::Inactive(inactive),
             )
             .unwrap(),
@@ -2107,15 +2144,18 @@ mod tests {
                 account_id: "bundle-active".to_owned(),
                 account_multiplier_bp: 8_000,
                 policy: PricingPolicySnapshot::Active(ActiveAccountPolicy {
-                    policy: normalize_policy(&policy),
-                    binding: active_binding,
+                    policy: normalize_policy(&policy_v1),
+                    binding: active_binding.clone(),
                 }),
-                catalog: Some(catalog_v1.clone()),
-                switches: Some(switches_v1),
+                policy_catalog: Some(catalog_v1.clone()),
+                policy_switches: Some(switches_v1.clone()),
+                admission_catalog: Some(catalog_v1.clone()),
+                admission_switches: Some(switches_v1.clone()),
             }
         );
 
-        let catalog_v2 = catalog("main", 2, "main-catalog-2");
+        // C1/S1/P1 -> C2/S1/P1: admission advances while policy dependencies stay pinned.
+        let catalog_v2 = normalize_catalog(&catalog("main", 2, "main-catalog-2"));
         assert_eq!(
             sqlite_prepare_pricing_catalog(&conn, &catalog_v2).unwrap(),
             PricingMutation::Stored
@@ -2130,10 +2170,9 @@ mod tests {
             .unwrap(),
             PricingMutation::Applied
         );
-        let torn = sqlite_pricing_read_bundle(&conn, "bundle-active").unwrap();
-        assert_eq!(torn.account_id, "bundle-active");
+        let c2_s1_p1 = sqlite_pricing_read_bundle(&conn, "bundle-active").unwrap();
         assert!(matches!(
-            torn.policy,
+            c2_s1_p1.policy,
             PricingPolicySnapshot::Active(ActiveAccountPolicy {
                 policy: AccountPolicySpec {
                     catalog_generation: 1,
@@ -2143,10 +2182,83 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(torn.catalog, Some(normalize_catalog(&catalog_v2)));
+        assert_eq!(c2_s1_p1.policy_catalog, Some(catalog_v1.clone()));
+        assert_eq!(c2_s1_p1.policy_switches, Some(switches_v1.clone()));
+        assert_eq!(c2_s1_p1.admission_catalog, Some(catalog_v2.clone()));
+        assert_eq!(c2_s1_p1.admission_switches, Some(switches_v1.clone()));
+
+        // C2/S1/P1 -> C2/S2/P1: switches catch up without rewriting P1 lineage.
+        let switches_v2 = normalize_switches(&b2b_switches(2, 2, "b2b-switches-2"));
         assert_eq!(
-            torn.switches,
-            Some(normalize_switches(&b2b_switches(1, 1, "b2b-switches-1",)))
+            sqlite_prepare_provider_switches(&conn, &switches_v2).unwrap(),
+            PricingMutation::Stored
+        );
+        assert_eq!(
+            sqlite_activate_provider_switches(
+                &conn,
+                &switches_v2.target(),
+                &ActiveExpectation::Exact(switches_v1.target()),
+            )
+            .unwrap(),
+            PricingMutation::Applied
+        );
+        let c2_s2_p1 = sqlite_pricing_read_bundle(&conn, "bundle-active").unwrap();
+        assert!(matches!(
+            c2_s2_p1.policy,
+            PricingPolicySnapshot::Active(ActiveAccountPolicy {
+                policy: AccountPolicySpec {
+                    catalog_generation: 1,
+                    switch_generation: 1,
+                    ..
+                },
+                ..
+            })
+        ));
+        assert_eq!(c2_s2_p1.policy_catalog, Some(catalog_v1));
+        assert_eq!(c2_s2_p1.policy_switches, Some(switches_v1));
+        assert_eq!(c2_s2_p1.admission_catalog, Some(catalog_v2.clone()));
+        assert_eq!(c2_s2_p1.admission_switches, Some(switches_v2.clone()));
+
+        // C2/S2/P1 -> C2/S2/P2: the policy changes only after both dependencies are active.
+        let mut policy_v2 = b2b_policy("bundle-active", 2, "bundle-policy-2");
+        policy_v2.catalog_generation = 2;
+        policy_v2.switch_generation = 2;
+        assert_eq!(
+            sqlite_prepare_account_policy(&conn, &policy_v2).unwrap(),
+            PricingMutation::Stored
+        );
+        let activation_v2 = AccountPolicyActivationSpec {
+            account_id: policy_v2.account_id.clone(),
+            effective_version: policy_v2.effective_version,
+            content_digest: policy_v2.content_digest.clone(),
+            binding: active_binding.clone(),
+        };
+        assert_eq!(
+            sqlite_activate_account_policy(
+                &conn,
+                &activation_v2,
+                &PolicyActiveExpectation::Exact(ActivePolicyTarget {
+                    target: policy_v1.target(),
+                    binding: active_binding.clone(),
+                }),
+            )
+            .unwrap(),
+            PricingMutation::Applied
+        );
+        assert_eq!(
+            sqlite_pricing_read_bundle(&conn, "bundle-active").unwrap(),
+            PricingReadBundle {
+                account_id: "bundle-active".to_owned(),
+                account_multiplier_bp: 8_000,
+                policy: PricingPolicySnapshot::Active(ActiveAccountPolicy {
+                    policy: normalize_policy(&policy_v2),
+                    binding: active_binding,
+                }),
+                policy_catalog: Some(catalog_v2.clone()),
+                policy_switches: Some(switches_v2.clone()),
+                admission_catalog: Some(catalog_v2),
+                admission_switches: Some(switches_v2),
+            }
         );
     }
 
