@@ -4,7 +4,7 @@ use super::config::{GeminiConfig, GeminiProfileSpec, GeminiProfilesFile};
 use super::transport::{attest_node_binary, ProfileTransport, TransportRequest, TransportResponse};
 use anyhow::{bail, Context};
 use futures_util::StreamExt;
-use gemini_credential::{decode_envelope, GeminiCredential, SecretString};
+use gemini_credential::{decode_envelope, GeminiCredential, OAuthKind, SecretString};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -77,10 +77,11 @@ pub(crate) struct GeminiProfile {
     source: GeminiProfileSpec,
     fingerprint: [u8; 32],
     id: String,
+    oauth_kind: OAuthKind,
     credential: tokio::sync::Mutex<GeminiCredential>,
     transport: ProfileTransport,
     google_api_client: String,
-    google_auth_user_agent: String,
+    refresh_user_agent: String,
     inflight: AtomicUsize,
     cooling_until: AtomicI64,
     authenticated: AtomicBool,
@@ -98,6 +99,7 @@ struct GeminiQuotaSnapshot {
 impl GeminiProfile {
     fn new(mut loaded: LoadedProfile, cfg: &GeminiConfig) -> anyhow::Result<Self> {
         gemini_credential::validate_profile_id(&loaded.source.id)?;
+        let oauth_kind = loaded.credential.oauth_kind()?;
         if loaded.credential.proxy.trim().is_empty() && cfg.upstream.starts_with("https://") {
             bail!("Gemini production profile requires a dedicated proxy");
         }
@@ -110,10 +112,11 @@ impl GeminiProfile {
             id: loaded.source.id.clone(),
             source: loaded.source,
             fingerprint: loaded.fingerprint,
+            oauth_kind,
             credential: tokio::sync::Mutex::new(loaded.credential),
             transport,
             google_api_client: cfg.google_api_client(),
-            google_auth_user_agent: cfg.google_auth_user_agent(),
+            refresh_user_agent: cfg.refresh_user_agent(oauth_kind),
             inflight: AtomicUsize::new(0),
             cooling_until: AtomicI64::new(0),
             authenticated: AtomicBool::new(true),
@@ -125,6 +128,10 @@ impl GeminiProfile {
 
     pub(crate) fn id(&self) -> &str {
         &self.id
+    }
+
+    pub(crate) fn oauth_kind(&self) -> OAuthKind {
+        self.oauth_kind
     }
 
     fn matches(&self, loaded: &LoadedProfile) -> bool {
@@ -147,11 +154,13 @@ impl GeminiProfile {
             ),
             ("content-type", SecretString::new(content_type.to_string())),
             ("user-agent", SecretString::new(user_agent.to_string())),
-            (
+        ];
+        if self.oauth_kind == OAuthKind::LegacyGeminiCli {
+            headers.push((
                 "x-goog-api-client",
                 SecretString::new(self.google_api_client.clone()),
-            ),
-        ];
+            ));
+        }
         if let Some(accept) = accept {
             headers.push(("accept", SecretString::new(accept.to_string())));
         }
@@ -209,26 +218,27 @@ impl GeminiProfile {
             ])
             .map_err(|_| TokenError::Invalid)?,
         );
+        let mut headers = vec![
+            (
+                "content-type",
+                SecretString::new("application/x-www-form-urlencoded;charset=UTF-8".to_string()),
+            ),
+            (
+                "user-agent",
+                SecretString::new(self.refresh_user_agent.clone()),
+            ),
+        ];
+        if self.oauth_kind == OAuthKind::LegacyGeminiCli {
+            headers.push((
+                "x-goog-api-client",
+                SecretString::new(self.google_api_client.clone()),
+            ));
+        }
         let response = self
             .transport
             .send(TransportRequest {
                 url: &credential.token_uri,
-                headers: vec![
-                    (
-                        "content-type",
-                        SecretString::new(
-                            "application/x-www-form-urlencoded;charset=UTF-8".to_string(),
-                        ),
-                    ),
-                    (
-                        "user-agent",
-                        SecretString::new(self.google_auth_user_agent.clone()),
-                    ),
-                    (
-                        "x-goog-api-client",
-                        SecretString::new(self.google_api_client.clone()),
-                    ),
-                ],
+                headers,
                 body: bytes::Bytes::copy_from_slice(form.as_bytes()),
             })
             .await
@@ -433,24 +443,30 @@ impl GeminiProfile {
             Err(TokenError::Temporary) => return ProbeResult::Temporary,
         };
         for attempt in 0..=1 {
-            let url = format!("{}/v1internal:loadCodeAssist", cfg.upstream);
+            let url = format!(
+                "{}/v1internal:loadCodeAssist",
+                cfg.upstream_for(self.oauth_kind)
+            );
             let project = self.project_id().await;
-            let body = json!({
-                "cloudaicompanionProject": project,
-                "metadata": {
-                    "ideType": "IDE_UNSPECIFIED",
-                    "platform": "PLATFORM_UNSPECIFIED",
-                    "pluginType": "GEMINI",
-                    "duetProject": project
-                },
-                "mode": "HEALTH_CHECK"
-            });
+            let body = match self.oauth_kind {
+                OAuthKind::Antigravity => json!({"metadata": {"ideType": "ANTIGRAVITY"}}),
+                OAuthKind::LegacyGeminiCli => json!({
+                    "cloudaicompanionProject": project,
+                    "metadata": {
+                        "ideType": "IDE_UNSPECIFIED",
+                        "platform": "PLATFORM_UNSPECIFIED",
+                        "pluginType": "GEMINI",
+                        "duetProject": project
+                    },
+                    "mode": "HEALTH_CHECK"
+                }),
+            };
             let response = self
                 .request(
                     &url,
                     &token,
-                    &cfg.background_user_agent(),
-                    Some("application/json"),
+                    &cfg.background_user_agent(self.oauth_kind),
+                    (self.oauth_kind == OAuthKind::LegacyGeminiCli).then_some("application/json"),
                     "application/json",
                     bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
                 )
@@ -480,14 +496,21 @@ impl GeminiProfile {
     }
 
     async fn refresh_quota(&self, cfg: &GeminiConfig, token: &str) {
-        let url = format!("{}/v1internal:retrieveUserQuota", cfg.upstream);
+        let operation = match self.oauth_kind {
+            OAuthKind::Antigravity => "fetchAvailableModels",
+            OAuthKind::LegacyGeminiCli => "retrieveUserQuota",
+        };
+        let url = format!(
+            "{}/v1internal:{operation}",
+            cfg.upstream_for(self.oauth_kind)
+        );
         let body = json!({"project": self.project_id().await});
         let response = self
             .request(
                 &url,
                 token,
-                &cfg.background_user_agent(),
-                Some("application/json"),
+                &cfg.background_user_agent(self.oauth_kind),
+                (self.oauth_kind == OAuthKind::LegacyGeminiCli).then_some("application/json"),
                 "application/json",
                 bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
             )
@@ -505,15 +528,30 @@ impl GeminiProfile {
         let Ok(bytes) = response.bytes_limited(256 * 1024).await else {
             return;
         };
-        let Ok(document) = serde_json::from_slice::<QuotaResponse>(&bytes) else {
-            return;
+        let mut buckets = match self.oauth_kind {
+            OAuthKind::Antigravity => {
+                let Ok(document) = serde_json::from_slice::<AvailableModelsResponse>(&bytes) else {
+                    return;
+                };
+                document
+                    .models
+                    .into_iter()
+                    .filter_map(|(model_id, model)| model.sanitized(model_id))
+                    .take(256)
+                    .collect::<Vec<_>>()
+            }
+            OAuthKind::LegacyGeminiCli => {
+                let Ok(document) = serde_json::from_slice::<QuotaResponse>(&bytes) else {
+                    return;
+                };
+                document
+                    .buckets
+                    .into_iter()
+                    .filter_map(QuotaBucket::sanitized)
+                    .take(256)
+                    .collect::<Vec<_>>()
+            }
         };
-        let mut buckets = document
-            .buckets
-            .into_iter()
-            .filter_map(QuotaBucket::sanitized)
-            .take(256)
-            .collect::<Vec<_>>();
         buckets.sort_by(|left, right| left.model_id.cmp(&right.model_id));
         *self
             .quota
@@ -549,28 +587,56 @@ struct QuotaBucket {
     token_type: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AvailableModelsResponse {
+    #[serde(default)]
+    models: HashMap<String, AvailableModel>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AvailableModel {
+    quota_info: Option<AvailableModelQuota>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AvailableModelQuota {
+    remaining_fraction: Option<f64>,
+    reset_time: Option<String>,
+}
+
+impl AvailableModel {
+    fn sanitized(self, model_id: String) -> Option<GeminiQuotaBucketStatus> {
+        if !valid_model_id(&model_id) {
+            return None;
+        }
+        let quota = self.quota_info;
+        Some(GeminiQuotaBucketStatus {
+            model_id,
+            remaining_amount: None,
+            remaining_fraction: quota
+                .as_ref()
+                .and_then(|quota| quota.remaining_fraction)
+                .filter(|value| value.is_finite())
+                .map(|value| value.clamp(0.0, 1.0)),
+            reset_time: bounded_quota_text(quota.and_then(|quota| quota.reset_time)),
+            token_type: Some("antigravity_model".to_string()),
+        })
+    }
+}
+
 impl QuotaBucket {
     fn sanitized(self) -> Option<GeminiQuotaBucketStatus> {
         let model_id = self.model_id?;
-        if model_id.is_empty()
-            || model_id.len() > 128
-            || !model_id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-        {
+        if !valid_model_id(&model_id) {
             return None;
         }
         let remaining_fraction = self
             .remaining_fraction
             .filter(|value| value.is_finite())
             .map(|value| value.clamp(0.0, 1.0));
-        let bounded_text = |value: Option<String>| {
-            value.filter(|value| {
-                !value.is_empty()
-                    && value.len() <= 128
-                    && value.bytes().all(|byte| byte.is_ascii_graphic())
-            })
-        };
         Some(GeminiQuotaBucketStatus {
             model_id,
             remaining_amount: self
@@ -578,10 +644,24 @@ impl QuotaBucket {
                 .as_deref()
                 .and_then(|value| value.parse::<u64>().ok()),
             remaining_fraction,
-            reset_time: bounded_text(self.reset_time),
-            token_type: bounded_text(self.token_type),
+            reset_time: bounded_quota_text(self.reset_time),
+            token_type: bounded_quota_text(self.token_type),
         })
     }
+}
+
+fn valid_model_id(model_id: &str) -> bool {
+    !model_id.is_empty()
+        && model_id.len() <= 128
+        && model_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn bounded_quota_text(value: Option<String>) -> Option<String> {
+    value.filter(|value| {
+        !value.is_empty() && value.len() <= 128 && value.bytes().all(|byte| byte.is_ascii_graphic())
+    })
 }
 
 fn parse_rfc3339_seconds(value: &str) -> Option<i64> {
@@ -795,12 +875,14 @@ impl GeminiGateway {
             bail!("Gemini model allowlist is empty");
         }
         if cfg.upstream.starts_with("https://") {
-            if cfg.cli_version != gemini_credential::GEMINI_CLI_VERSION
+            if cfg.antigravity_version != gemini_credential::ANTIGRAVITY_VERSION
                 || cfg.node_binary != gemini_credential::GEMINI_NODE_BINARY
                 || cfg.node_version != gemini_credential::GEMINI_NODE_VERSION
                 || cfg.node_sha256 != gemini_credential::GEMINI_NODE_SHA256
             {
-                bail!("Gemini production wire profile does not match the reviewed CLI/Node tuple");
+                bail!(
+                    "Gemini production wire profile does not match the reviewed Antigravity/Node tuple"
+                );
             }
             attest_node_binary(&cfg)?;
         }
@@ -1245,7 +1327,7 @@ mod tests {
             default_rate_limit_cool_secs: 60,
             health_probe_interval_secs: 60,
             reserve_overhead_tokens: 10,
-            cli_version: "0.53.0".to_string(),
+            antigravity_version: gemini_credential::ANTIGRAVITY_VERSION.to_string(),
             node_binary: "/usr/bin/node".to_string(),
             node_version: "v24.18.0".to_string(),
             node_sha256: "0".repeat(64),
@@ -1366,6 +1448,39 @@ mod tests {
         let loaded = load_profiles(&cfg).unwrap().pop().unwrap();
         let error = GeminiProfile::new(loaded, &cfg).err().unwrap();
         assert!(error.to_string().contains("requires a dedicated proxy"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn antigravity_and_legacy_credentials_keep_distinct_pinned_wire_profiles() {
+        let (dir, ring) = fixture();
+        let roster = dir.join("profiles.json");
+        let mut cfg = config(&roster, ring);
+        cfg.upstream = "https://daily-cloudcode-pa.sandbox.googleapis.com".into();
+
+        assert_eq!(
+            cfg.upstream_for(OAuthKind::Antigravity),
+            "https://daily-cloudcode-pa.sandbox.googleapis.com"
+        );
+        assert_eq!(
+            cfg.upstream_for(OAuthKind::LegacyGeminiCli),
+            super::super::config::LEGACY_GEMINI_UPSTREAM
+        );
+        assert_eq!(
+            cfg.user_agent(OAuthKind::Antigravity, "gemini-test"),
+            "antigravity/hub/2.2.1 darwin/arm64"
+        );
+        assert!(cfg
+            .user_agent(OAuthKind::LegacyGeminiCli, "gemini-test")
+            .starts_with("GeminiCLI/0.53.0/gemini-test "));
+        assert_eq!(
+            cfg.refresh_user_agent(OAuthKind::Antigravity),
+            "Go-http-client/2.0"
+        );
+        assert_eq!(
+            cfg.refresh_user_agent(OAuthKind::LegacyGeminiCli),
+            "google-api-nodejs-client/10.9.0"
+        );
         let _ = fs::remove_dir_all(dir);
     }
 

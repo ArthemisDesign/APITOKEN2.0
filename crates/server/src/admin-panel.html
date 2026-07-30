@@ -423,7 +423,7 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
     '<div class="tscroll"><table><thead><tr><th class="left">профиль</th><th>статус</th><th class="left">модель</th><th>доступность</th><th>квота</th><th>сброс</th><th>тип</th><th>probe / quota</th></tr></thead><tbody>'+(geminiRows||empty(8))+'</tbody></table></div>';
   const transport=gemini?.transport||{};
   const geminiDetails=geminiDown||geminiOff?'':'<details><summary>Gemini transport fingerprint и cache/affinity</summary><div class="tcard"><div class="tscroll"><table><tbody>'+
-    '<tr><th class="left">Gemini CLI</th><td class="left mono">'+esc(transport.cli_version||'—')+'</td><th class="left">Node</th><td class="left mono">'+esc(transport.node_version||'—')+' · '+esc(transport.http_version||'—')+'</td></tr>'+
+    '<tr><th class="left">Antigravity</th><td class="left mono">'+esc(transport.antigravity_version||'—')+'</td><th class="left">Node</th><td class="left mono">'+esc(transport.node_version||'—')+' · '+esc(transport.http_version||'—')+'</td></tr>'+
     '<tr><th class="left">transport profile</th><td class="left mono">'+esc(transport.profile||'—')+'</td><th class="left">Node SHA-256</th><td class="left mono">'+esc(transport.node_sha256||'—')+'</td></tr>'+
     '<tr><th class="left">expected JA3</th><td class="left mono">'+esc(transport.expected_ja3||'—')+'</td><th class="left">expected JA4</th><td class="left mono">'+esc(transport.expected_ja4||'—')+'</td></tr>'+
     '<tr><th class="left">userinfo fetch</th><td class="left mono">'+esc(transport.userinfo_profile||'—')+' · '+esc(transport.userinfo_http_version||'—')+'</td><th class="left">Undici JA3 / JA4</th><td class="left mono">'+esc(transport.userinfo_expected_ja3||'—')+' / '+esc(transport.userinfo_expected_ja4||'—')+'</td></tr>'+
@@ -437,7 +437,7 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
     '<div class="sect"><h2>GPT</h2><span class="sect-sub">OpenAI Codex · app-server homes</span></div>'+
     '<div class="cards">'+gptCards+'</div>'+
     '<div class="tcard" style="margin-top:12px">'+gptTable+'</div>'+
-    '<div class="sect"><h2>Gemini</h2><span class="sect-sub">Google Code Assist OAuth · официальный Gemini CLI transport и quota catalogue</span></div>'+
+    '<div class="sect"><h2>Gemini</h2><span class="sect-sub">Antigravity OAuth · Cloud Code transport, quota catalogue и legacy-миграция</span></div>'+
     '<div class="cards">'+geminiCards+'</div>'+
     '<div class="tcard" style="margin-top:12px">'+geminiTable+'</div>'+geminiDetails+
     '<footer>Обновление каждые 10с, пока вкладка видима · «доступно» учитывает cooling и официальные reset times · «пик» — истинный максимум ёмкости на дистанции (не EMA) · «прайор» — окно ещё не откалибровано реальным расходом. Email и Google identity намеренно не выводятся.</footer>';

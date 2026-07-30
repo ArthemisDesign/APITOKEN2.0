@@ -157,7 +157,7 @@ impl Client {
         self.request_profile(method, url, headers, body, None).await
     }
 
-    /// Exact global-fetch path used only by Gemini CLI's fetchAndCacheUserInfo().
+    /// Independently attested global-fetch path used only for verified Google userinfo.
     pub async fn fetch_userinfo(
         &mut self,
         url: &str,

@@ -1,9 +1,9 @@
-//! Google OAuth producer for paid Gemini Code Assist subscriptions.
+//! Google OAuth producer for paid Antigravity-backed Gemini subscriptions.
 //!
 //! Browser authorization and the HTTPS code-entry form are state+PKCE protected. Only the resulting
 //! encrypted credential envelope is published; account email, Google subject, refresh token,
 //! authenticated proxy and PKCE material never enter the roster, Telegram messages, filenames or
-//! logs. The installed-app client metadata is public upstream Gemini CLI application identity.
+//! logs. The installed-app client metadata is Google's public Antigravity application identity.
 
 use crate::db::{GeminiOAuthSession, Store};
 use crate::gemini_transport::{Client as GeminiHttpClient, Method as GeminiHttpMethod};
@@ -36,18 +36,19 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 const AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = gemini_credential::GEMINI_OFFICIAL_TOKEN_URI;
 const USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v2/userinfo";
-const CODE_ASSIST_URL: &str = "https://cloudcode-pa.googleapis.com";
-// Public installed-application OAuth identity embedded by the official Gemini CLI. Google
-// explicitly documents installed-app client secrets as non-confidential; keeping the exact pair
-// lets the authorization code consume Code Assist through Gemini CLI's registered consumer project
-// instead of an unrelated seller/operator Cloud project.
-const OFFICIAL_CLI_CLIENT_ID: &str = gemini_credential::GEMINI_OFFICIAL_OAUTH_CLIENT_ID;
-const OFFICIAL_CLI_CLIENT_SECRET: &str = gemini_credential::GEMINI_OFFICIAL_OAUTH_CLIENT_SECRET;
-const OFFICIAL_CLI_REDIRECT_URI: &str = "https://codeassist.google.com/authcode";
+const CODE_ASSIST_PROD_URL: &str = "https://cloudcode-pa.googleapis.com";
+const CODE_ASSIST_DAILY_URL: &str = "https://daily-cloudcode-pa.googleapis.com";
+const CODE_ASSIST_SANDBOX_URL: &str = "https://daily-cloudcode-pa.sandbox.googleapis.com";
+// Public installed-application OAuth identity embedded by Antigravity. Google installed-app
+// secrets are non-confidential application metadata; sealing the exact pair and redirect with the
+// PKCE transaction prevents a callback from changing consumer identity mid-flight.
+const ANTIGRAVITY_CLIENT_ID: &str = gemini_credential::ANTIGRAVITY_OAUTH_CLIENT_ID;
+const ANTIGRAVITY_CLIENT_SECRET: &str = gemini_credential::ANTIGRAVITY_OAUTH_CLIENT_SECRET;
+const ANTIGRAVITY_REDIRECT_URI: &str = gemini_credential::ANTIGRAVITY_REDIRECT_URI;
 const OAUTH_SESSION_SECS: i64 = 1200;
 const MAX_ONBOARD_POLLS: usize = 24;
 
-const SCOPES: &str = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile";
+const SCOPES: &str = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs";
 
 #[derive(Deserialize, Serialize, Zeroize, ZeroizeOnDrop)]
 #[serde(deny_unknown_fields)]
@@ -73,9 +74,8 @@ pub struct IproyalLease {
 
 #[derive(Clone)]
 pub struct Config {
-    // Public HTTPS form where the seller submits the one-use code displayed by Google's official
-    // Code Assist redirect page. Despite the legacy env name, this is not sent to Google as the
-    // OAuth redirect URI for new sessions.
+    // Public HTTPS form where the seller submits the localhost callback URL produced by Google.
+    // Despite the legacy env name, this is not sent to Google as the OAuth redirect URI.
     pub redirect_uri: String,
     pub bind: SocketAddr,
     root: PathBuf,
@@ -260,9 +260,9 @@ pub struct AuthorizationLinks {
     pub submit_url: String,
 }
 
-/// Create a restart-safe, one-use PKCE transaction using the public installed-app identity from the
-/// official Gemini CLI. The seller authorizes at Google, then submits the displayed one-use code
-/// through our HTTPS form; neither link contains a token or OAuth client secret.
+/// Create a restart-safe, one-use PKCE transaction using the public Antigravity installed-app
+/// identity. Google redirects the seller's isolated browser to a registered localhost URL; the
+/// seller copies that full URL into our HTTPS form. Neither link contains a token or client secret.
 pub fn begin(
     store: &Store,
     config: &Config,
@@ -285,9 +285,9 @@ pub fn begin(
         verifier,
         proxy,
         proxy_order_id,
-        client_id: OFFICIAL_CLI_CLIENT_ID.to_string(),
-        client_secret: OFFICIAL_CLI_CLIENT_SECRET.to_string(),
-        redirect_uri: OFFICIAL_CLI_REDIRECT_URI.to_string(),
+        client_id: ANTIGRAVITY_CLIENT_ID.to_string(),
+        client_secret: ANTIGRAVITY_CLIENT_SECRET.to_string(),
+        redirect_uri: ANTIGRAVITY_REDIRECT_URI.to_string(),
     };
     let payload = Zeroizing::new(serde_json::to_string(&pending).map_err(|_| StartError::State)?);
     let sealed_payload = config
@@ -307,8 +307,8 @@ pub fn begin(
     let mut url = reqwest::Url::parse(AUTHORIZE_URL).map_err(|_| StartError::Url)?;
     url.query_pairs_mut()
         .append_pair("response_type", "code")
-        .append_pair("client_id", OFFICIAL_CLI_CLIENT_ID)
-        .append_pair("redirect_uri", OFFICIAL_CLI_REDIRECT_URI)
+        .append_pair("client_id", ANTIGRAVITY_CLIENT_ID)
+        .append_pair("redirect_uri", ANTIGRAVITY_REDIRECT_URI)
         .append_pair("scope", SCOPES)
         .append_pair("access_type", "offline")
         .append_pair("prompt", "consent")
@@ -350,6 +350,47 @@ struct CodeSubmission {
     state: String,
 }
 
+fn submitted_authorization_code(value: &str, expected_state: &str) -> Option<String> {
+    let value = value.trim();
+    if valid_oauth_value(value, 4_096)
+        && !value.contains("://")
+        && !value
+            .bytes()
+            .any(|byte| matches!(byte, b'&' | b'=' | b'?' | b'#'))
+    {
+        return Some(value.to_string());
+    }
+    let url = reqwest::Url::parse(value).ok()?;
+    if url.scheme() != "http"
+        || url.host_str() != Some("localhost")
+        || url.port_or_known_default() != Some(51_121)
+        || url.path() != "/oauth-callback"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    let mut code = None;
+    let mut state = None;
+    let mut error = None;
+    for (name, value) in url.query_pairs() {
+        match name.as_ref() {
+            "code" if code.is_none() => code = Some(value.into_owned()),
+            "code" => return None,
+            "state" if state.is_none() => state = Some(value.into_owned()),
+            "state" => return None,
+            "error" if error.is_none() => error = Some(value.into_owned()),
+            "error" => return None,
+            _ => {}
+        }
+    }
+    if error.is_some() || state.as_deref() != Some(expected_state) {
+        return None;
+    }
+    code.filter(|code| valid_oauth_value(code, 4_096))
+}
+
 pub async fn serve(bot: Bot, store: Arc<Store>, config: Arc<BotConfig>) -> anyhow::Result<()> {
     let oauth = config
         .gemini_oauth
@@ -359,8 +400,8 @@ pub async fn serve(bot: Bot, store: Arc<Store>, config: Arc<BotConfig>) -> anyho
         .await
         .context("bind Gemini OAuth callback")?;
     let app = Router::new()
-        // New official-CLI sessions use GET to render a no-store form and POST to submit the
-        // one-use code. GET with code/error remains for short-lived compatibility with hosted
+        // New Antigravity sessions use GET to render a no-store form and POST to submit the
+        // localhost callback URL. GET with code/error remains for short-lived compatibility with hosted
         // callbacks that were already in flight when this version deployed.
         .route("/oauth/callback", get(callback).post(submit_code))
         .layer(DefaultBodyLimit::max(16 * 1024))
@@ -415,10 +456,11 @@ async fn submit_code(
     State(state): State<CallbackState>,
     Form(submission): Form<CodeSubmission>,
 ) -> Response {
+    let code = submitted_authorization_code(&submission.code, &submission.state);
     finish_oauth(
         &state,
         Some(submission.state.as_str()),
-        Some(submission.code.trim()),
+        code.as_deref(),
         None,
     )
     .await
@@ -544,7 +586,7 @@ fn code_form(state: &str) -> Response {
     // break out of its quoted attribute. The authorization code is submitted only in the POST body
     // and therefore stays out of Telegram, browser history, referrers and ordinary access logs.
     let body = format!(
-        "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Подключить Gemini</title><h1>Завершить подключение Gemini</h1><p>Скопируйте одноразовый код со страницы Google и вставьте его ниже.</p><form method=post action=\"/oauth/callback\"><input type=hidden name=state value=\"{state}\"><p><label>Код авторизации<br><input name=code required autofocus autocomplete=off maxlength=4096 size=56></label></p><button type=submit>Подключить подписку</button></form><p>Код отправляется напрямую Auth Bot и не попадает в Telegram.</p>"
+        "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Подключить Gemini</title><h1>Завершить подключение Gemini</h1><p>После согласия Google перенаправит браузер на <code>localhost</code>; страница может не открыться — это нормально. Скопируйте <b>весь адрес</b> из адресной строки и вставьте ниже.</p><form method=post action=\"/oauth/callback\"><input type=hidden name=state value=\"{state}\"><p><label>Полный localhost callback URL<br><input name=code required autofocus autocomplete=off maxlength=4096 size=72 placeholder=\"http://localhost:51121/oauth-callback?state=…&amp;code=…\"></label></p><button type=submit>Подключить подписку</button></form><p>URL отправляется напрямую Auth Bot по HTTPS и не попадает в Telegram.</p>"
     );
     secure_html(StatusCode::OK, body, true)
 }
@@ -595,8 +637,8 @@ fn secure_html(status: StatusCode, body: String, allow_form: bool) -> Response {
 
 async fn fail_callback(state: &CallbackState, session: &GeminiOAuthSession, failure: Failure) {
     let _ = state.store.fail_gemini_oauth(&session.state);
-    // The one-use code and its encrypted PKCE transaction cannot be retried. Restart from the
-    // account proxy; Auth Bot will create a fresh official Gemini CLI authorization session.
+    // The authorization code and its encrypted PKCE transaction cannot be retried. Restart from
+    // the account proxy; Auth Bot will create a fresh Antigravity authorization session.
     let _ = state.store.set_want(session.chat_id, "gm_gproxy");
     let _ = state
         .bot
@@ -657,7 +699,7 @@ impl Failure {
     fn public_message(self) -> &'static str {
         match self {
             Self::Authorization => "❌ Google не подтвердил вход или ссылка истекла. Пришли прокси ещё раз — бот начнёт авторизацию заново.",
-            Self::CodeAssistApiDisabled => "❌ Google не разрешил подключить этот аккаунт через официальный Gemini CLI OAuth. Включать API в своём Cloud-проекте не нужно. Пришли прокси ещё раз; если ошибка повторится, администратор проверит причину.",
+            Self::CodeAssistApiDisabled => "❌ Google не разрешил подключить этот аккаунт через Antigravity OAuth. Включать API в своём Cloud-проекте не нужно. Пришли прокси ещё раз; если ошибка повторится, администратор проверит причину.",
             Self::Temporary => "⚠️ Google временно не завершил проверку. Подожди немного и пришли прокси ещё раз, чтобы начать авторизацию заново.",
             Self::UnsupportedPlan => "❌ На этом Google-аккаунте не найдена активная подписка из оффера. Проверь, что нужный тариф активирован именно на этом аккаунте, затем начни подключение заново.",
             Self::Duplicate => "❌ Эта Google-подписка уже присутствует в пуле.",
@@ -672,7 +714,7 @@ impl Failure {
 
     fn operator_message(self) -> &'static str {
         match self {
-            Self::CodeAssistApiDisabled => "⚠️ Официальный Gemini CLI OAuth завершился, но cloudcode-pa отклонил consumer project. Проверь bounded diagnostic в journalctl; пользовательский Cloud API включать не нужно.",
+            Self::CodeAssistApiDisabled => "⚠️ Antigravity OAuth завершился, но Cloud Code gateway отклонил consumer identity. Проверь bounded diagnostic в journalctl; пользовательский Cloud API включать не нужно.",
             _ => "⚠️ Gemini OAuth publication failed closed. Проверь права AUTH_BOT_GEMINI_DIR, profiles.json и совпадение credential keyring; секреты не логировались.",
         }
     }
@@ -717,9 +759,9 @@ struct LoadCodeAssistResponse {
 
 #[derive(Deserialize)]
 struct OperationResponse {
-    name: Option<String>,
     #[serde(default)]
     done: bool,
+    response: Option<Value>,
 }
 
 struct ResolvedAccount {
@@ -769,14 +811,6 @@ async fn complete(
         }
     };
     let form = token_exchange_form(client_id, verifier, code, redirect_uri, client_secret)?;
-    let google_auth_user_agent = format!(
-        "google-api-nodejs-client/{}",
-        gemini_credential::GEMINI_GOOGLE_AUTH_LIBRARY_VERSION
-    );
-    let google_api_client = format!(
-        "gl-node/{}",
-        gemini_credential::GEMINI_NODE_VERSION.trim_start_matches('v')
-    );
     let response = client
         .request(
             GeminiHttpMethod::Post,
@@ -786,8 +820,7 @@ async fn complete(
                     "content-type",
                     "application/x-www-form-urlencoded;charset=UTF-8",
                 ),
-                ("user-agent", &google_auth_user_agent),
-                ("x-goog-api-client", &google_api_client),
+                ("user-agent", "Go-http-client/2.0"),
             ],
             form.as_bytes(),
         )
@@ -853,7 +886,7 @@ async fn complete(
         Ok(resolved) => resolved,
         Err(failure) => {
             eprintln!(
-                "[gemini-oauth] chat={} Code Assist tier/project resolution failed: {}",
+                "[gemini-oauth] chat={} Antigravity tier/project resolution failed: {}",
                 session.chat_id,
                 failure.code()
             );
@@ -923,65 +956,17 @@ async fn resolve_account(
     access_token: &str,
 ) -> Result<ResolvedAccount, Failure> {
     let mut loaded = load_code_assist(client, access_token).await?;
-    if project_from_value(loaded.cloudaicompanion_project.as_ref()).is_none()
-        && loaded.current_tier.is_none()
-    {
+    if project_from_value(loaded.cloudaicompanion_project.as_ref()).is_none() {
         let tier = loaded
             .allowed_tiers
             .iter()
             .find(|tier| tier.is_default)
+            .or(loaded.current_tier.as_ref())
+            .or_else(|| loaded.allowed_tiers.first())
             .cloned()
             .ok_or(Failure::UnsupportedPlan)?;
         let tier_id = tier.id.as_deref().ok_or(Failure::UnsupportedPlan)?;
-        let operation = post_json::<OperationResponse>(
-            client,
-            access_token,
-            &format!("{CODE_ASSIST_URL}/v1internal:onboardUser"),
-            &json!({
-                "tierId": tier_id,
-                "metadata": client_metadata(None),
-            }),
-        )
-        .await?;
-        if !operation.done {
-            let name = operation.name.ok_or(Failure::Temporary)?;
-            if !valid_operation_name(&name) {
-                return Err(Failure::Temporary);
-            }
-            let mut done = false;
-            for _ in 0..MAX_ONBOARD_POLLS {
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                let url = format!("{CODE_ASSIST_URL}/v1internal/{name}");
-                let authorization = Zeroizing::new(format!("Bearer {access_token}"));
-                let user_agent = gemini_cli_user_agent();
-                let google_api_client = google_api_client();
-                let response = client
-                    .request(
-                        GeminiHttpMethod::Get,
-                        &url,
-                        &code_assist_headers(
-                            authorization.as_str(),
-                            &user_agent,
-                            &google_api_client,
-                        ),
-                        &[],
-                    )
-                    .await
-                    .map_err(|_| Failure::Temporary)?;
-                if !(200..300).contains(&response.status) {
-                    return Err(Failure::Temporary);
-                }
-                let operation: OperationResponse =
-                    serde_json::from_slice(&response.body).map_err(|_| Failure::Temporary)?;
-                if operation.done {
-                    done = true;
-                    break;
-                }
-            }
-            if !done {
-                return Err(Failure::Temporary);
-            }
-        }
+        onboard_antigravity(client, access_token, tier_id).await?;
         loaded = load_code_assist(client, access_token).await?;
     }
     let project_id = project_from_value(loaded.cloudaicompanion_project.as_ref())
@@ -1005,38 +990,114 @@ async fn load_code_assist(
     client: &mut GeminiHttpClient,
     access_token: &str,
 ) -> Result<LoadCodeAssistResponse, Failure> {
-    post_json(
-        client,
-        access_token,
-        &format!("{CODE_ASSIST_URL}/v1internal:loadCodeAssist"),
-        &load_code_assist_request_body(),
-    )
-    .await
+    for base in [
+        CODE_ASSIST_PROD_URL,
+        CODE_ASSIST_SANDBOX_URL,
+        CODE_ASSIST_DAILY_URL,
+    ] {
+        match post_antigravity_json(
+            client,
+            access_token,
+            &format!("{base}/v1internal:loadCodeAssist"),
+            &load_code_assist_request_body(),
+            false,
+        )
+        .await
+        {
+            Ok(response) => return Ok(response),
+            Err(Failure::Temporary) => continue,
+            Err(failure) => return Err(failure),
+        }
+    }
+    Err(Failure::Temporary)
 }
 
 fn load_code_assist_request_body() -> Value {
-    // Exact setupUser request for the official manual OAuth flow before a managed project exists.
-    // Undefined JS properties are absent on the wire; do not invent a custom eligibility mode.
+    // Minimal official Antigravity control-plane discovery body.
     json!({"metadata": client_metadata(None)})
 }
 
-async fn post_json<T: for<'de> Deserialize<'de>>(
+async fn onboard_antigravity(
+    client: &mut GeminiHttpClient,
+    access_token: &str,
+    tier_id: &str,
+) -> Result<(), Failure> {
+    let body = onboard_request_body(tier_id);
+    for base in [
+        CODE_ASSIST_SANDBOX_URL,
+        CODE_ASSIST_DAILY_URL,
+        CODE_ASSIST_PROD_URL,
+    ] {
+        for poll in 0..MAX_ONBOARD_POLLS {
+            if poll > 0 {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+            match post_antigravity_json::<OperationResponse>(
+                client,
+                access_token,
+                &format!("{base}/v1internal:onboardUser"),
+                &body,
+                true,
+            )
+            .await
+            {
+                Ok(operation) if operation.done => {
+                    if operation
+                        .response
+                        .as_ref()
+                        .and_then(|response| {
+                            project_from_value(response.get("cloudaicompanionProject"))
+                        })
+                        .is_some()
+                    {
+                        return Ok(());
+                    }
+                    break;
+                }
+                Ok(_) => continue,
+                Err(Failure::Temporary) => {
+                    break;
+                }
+                Err(failure) => return Err(failure),
+            }
+        }
+    }
+    Err(Failure::Temporary)
+}
+
+fn onboard_request_body(tier_id: &str) -> Value {
+    json!({
+        "tier_id": tier_id,
+        "metadata": antigravity_control_metadata(),
+    })
+}
+
+async fn post_antigravity_json<T: for<'de> Deserialize<'de>>(
     client: &mut GeminiHttpClient,
     access_token: &str,
     url: &str,
     body: &Value,
+    control_plane: bool,
 ) -> Result<T, Failure> {
     let authorization = Zeroizing::new(format!("Bearer {access_token}"));
-    let user_agent = gemini_cli_user_agent();
-    let google_api_client = google_api_client();
+    let user_agent = if control_plane {
+        antigravity_control_user_agent()
+    } else {
+        antigravity_user_agent()
+    };
+    let google_api_client = control_plane.then_some(gemini_credential::ANTIGRAVITY_GOOG_API_CLIENT);
     let encoded = Zeroizing::new(serde_json::to_vec(body).map_err(|_| Failure::Temporary)?);
+    let mut headers = vec![
+        ("accept", "*/*"),
+        ("authorization", authorization.as_str()),
+        ("content-type", "application/json"),
+        ("user-agent", user_agent.as_str()),
+    ];
+    if let Some(google_api_client) = google_api_client {
+        headers.push(("x-goog-api-client", google_api_client));
+    }
     let response = client
-        .request(
-            GeminiHttpMethod::Post,
-            url,
-            &code_assist_headers(authorization.as_str(), &user_agent, &google_api_client),
-            &encoded,
-        )
+        .request(GeminiHttpMethod::Post, url, &headers, &encoded)
         .await
         .map_err(|_| Failure::Temporary)?;
     if !(200..300).contains(&response.status) {
@@ -1052,12 +1113,19 @@ async fn post_json<T: for<'de> Deserialize<'de>>(
     serde_json::from_slice(&response.body).map_err(|_| Failure::Temporary)
 }
 
-fn gemini_cli_user_agent() -> String {
+fn antigravity_user_agent() -> String {
     format!(
-        "GeminiCLI/{}/{} (linux; x64; cli) google-api-nodejs-client/{}",
-        gemini_credential::GEMINI_CLI_VERSION,
-        gemini_credential::GEMINI_CLI_DEFAULT_MODEL,
-        gemini_credential::GEMINI_GOOGLE_AUTH_LIBRARY_VERSION,
+        "antigravity/hub/{} {}",
+        gemini_credential::ANTIGRAVITY_VERSION,
+        gemini_credential::ANTIGRAVITY_PLATFORM,
+    )
+}
+
+fn antigravity_control_user_agent() -> String {
+    format!(
+        "{} google-api-nodejs-client/{}",
+        antigravity_user_agent(),
+        gemini_credential::ANTIGRAVITY_NODE_API_CLIENT_VERSION,
     )
 }
 
@@ -1068,15 +1136,15 @@ fn token_exchange_form(
     redirect_uri: &str,
     client_secret: &str,
 ) -> Result<Zeroizing<String>, Failure> {
-    // google-auth-library 10.9.0 OAuth2Client.getTokenAsync inserts these fields in this order.
-    // serde_urlencoded preserves the sequence, including the library's form escaping.
+    // Antigravity's Go client uses url.Values.Encode(), which sorts these keys lexically.
+    // serde_urlencoded preserves the sequence, including form escaping.
     serde_urlencoded::to_string([
         ("client_id", client_id),
-        ("code_verifier", verifier),
+        ("client_secret", client_secret),
         ("code", code),
+        ("code_verifier", verifier),
         ("grant_type", "authorization_code"),
         ("redirect_uri", redirect_uri),
-        ("client_secret", client_secret),
     ])
     .map(Zeroizing::new)
     .map_err(|_| Failure::Authorization)
@@ -1085,29 +1153,6 @@ fn token_exchange_form(
 fn official_userinfo_headers(authorization: &str) -> [(&'static str, &str); 1] {
     // fetchAndCacheUserInfo supplies only Authorization; global fetch adds its own Undici defaults.
     [("Authorization", authorization)]
-}
-
-fn code_assist_headers<'a>(
-    authorization: &'a str,
-    user_agent: &'a str,
-    google_api_client: &'a str,
-) -> [(&'static str, &'a str); 5] {
-    // CodeAssistServer sets Content-Type even for operation GETs and asks gaxios for JSON, which
-    // adds Accept. OAuth2Client then contributes authorization and its two runtime identity fields.
-    [
-        ("accept", "application/json"),
-        ("authorization", authorization),
-        ("content-type", "application/json"),
-        ("user-agent", user_agent),
-        ("x-goog-api-client", google_api_client),
-    ]
-}
-
-fn google_api_client() -> String {
-    format!(
-        "gl-node/{}",
-        gemini_credential::GEMINI_NODE_VERSION.trim_start_matches('v')
-    )
 }
 
 fn classify_google_http_failure(status: u16, detail: &str) -> Failure {
@@ -1126,9 +1171,7 @@ fn classify_google_http_failure(status: u16, detail: &str) -> Failure {
 
 fn client_metadata(project: Option<&str>) -> Value {
     let mut value = json!({
-        "ideType": "IDE_UNSPECIFIED",
-        "platform": "PLATFORM_UNSPECIFIED",
-        "pluginType": "GEMINI"
+        "ideType": "ANTIGRAVITY"
     });
     if let Some(project) = project {
         value["duetProject"] = Value::String(project.to_string());
@@ -1136,12 +1179,12 @@ fn client_metadata(project: Option<&str>) -> Value {
     value
 }
 
-fn valid_operation_name(name: &str) -> bool {
-    name.starts_with("operations/")
-        && name.len() <= 512
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.'))
+fn antigravity_control_metadata() -> Value {
+    json!({
+        "ide_type": "ANTIGRAVITY",
+        "ide_version": gemini_credential::ANTIGRAVITY_VERSION,
+        "ide_name": "antigravity",
+    })
 }
 
 fn project_from_value(value: Option<&Value>) -> Option<String> {
@@ -1358,8 +1401,8 @@ mod tests {
             access_token: "access-token-value".into(),
             refresh_token: "refresh-token-value".into(),
             expires_at: 1_000,
-            oauth_client_id: OFFICIAL_CLI_CLIENT_ID.into(),
-            oauth_client_secret: OFFICIAL_CLI_CLIENT_SECRET.into(),
+            oauth_client_id: ANTIGRAVITY_CLIENT_ID.into(),
+            oauth_client_secret: ANTIGRAVITY_CLIENT_SECRET.into(),
             token_uri: TOKEN_URL.into(),
             subject: subject.into(),
             email: "owner@example.com".into(),
@@ -1386,7 +1429,7 @@ mod tests {
     }
 
     #[test]
-    fn official_cli_oauth_needs_no_operator_or_seller_client() {
+    fn antigravity_oauth_needs_no_operator_or_seller_client() {
         let (root, ring) = fixture();
         let store = Store::open(root.join("state").join("authbot.db").to_str().unwrap()).unwrap();
         let config = Config::new(
@@ -1402,47 +1445,63 @@ mod tests {
         let authorize = reqwest::Url::parse(&links.authorize_url).unwrap();
         assert!(authorize
             .query_pairs()
-            .any(|(name, value)| name == "client_id" && value == OFFICIAL_CLI_CLIENT_ID));
+            .any(|(name, value)| name == "client_id" && value == ANTIGRAVITY_CLIENT_ID));
         assert!(authorize
             .query_pairs()
-            .any(|(name, value)| { name == "redirect_uri" && value == OFFICIAL_CLI_REDIRECT_URI }));
+            .any(|(name, value)| { name == "redirect_uri" && value == ANTIGRAVITY_REDIRECT_URI }));
         assert!(links
             .submit_url
             .starts_with("https://gemini.example/oauth/callback?state="));
     }
 
     #[test]
-    fn onboarding_wire_identity_matches_the_pinned_official_cli() {
+    fn onboarding_wire_identity_matches_antigravity() {
         assert_eq!(
-            gemini_cli_user_agent(),
-            "GeminiCLI/0.53.0/gemini-2.5-pro (linux; x64; cli) google-api-nodejs-client/10.9.0"
+            antigravity_user_agent(),
+            "antigravity/hub/2.2.1 darwin/arm64"
         );
-        assert_eq!(google_api_client(), "gl-node/24.18.0");
+        assert_eq!(
+            antigravity_control_user_agent(),
+            "antigravity/hub/2.2.1 darwin/arm64 google-api-nodejs-client/10.3.0"
+        );
         assert_eq!(
             load_code_assist_request_body(),
+            json!({"metadata": {"ideType": "ANTIGRAVITY"}})
+        );
+        assert_eq!(
+            antigravity_control_metadata(),
             json!({
+                "ide_type": "ANTIGRAVITY",
+                "ide_version": "2.2.1",
+                "ide_name": "antigravity"
+            })
+        );
+        assert_eq!(
+            onboard_request_body("paid-tier"),
+            json!({
+                "tier_id": "paid-tier",
                 "metadata": {
-                    "ideType": "IDE_UNSPECIFIED",
-                    "platform": "PLATFORM_UNSPECIFIED",
-                    "pluginType": "GEMINI"
+                    "ide_type": "ANTIGRAVITY",
+                    "ide_version": "2.2.1",
+                    "ide_name": "antigravity"
                 }
             })
         );
     }
 
     #[test]
-    fn oauth_token_form_order_matches_google_auth_library_10_9_0() {
+    fn oauth_token_form_order_matches_antigravity_go_client() {
         let form = token_exchange_form(
             "client id",
             "verifier/value",
             "code+value",
-            "https://codeassist.google.com/authcode",
+            ANTIGRAVITY_REDIRECT_URI,
             "client-secret",
         )
         .unwrap();
         assert_eq!(
             form.as_str(),
-            "client_id=client+id&code_verifier=verifier%2Fvalue&code=code%2Bvalue&grant_type=authorization_code&redirect_uri=https%3A%2F%2Fcodeassist.google.com%2Fauthcode&client_secret=client-secret"
+            "client_id=client+id&client_secret=client-secret&code=code%2Bvalue&code_verifier=verifier%2Fvalue&grant_type=authorization_code&redirect_uri=http%3A%2F%2Flocalhost%3A51121%2Foauth-callback"
         );
     }
 
@@ -1451,20 +1510,6 @@ mod tests {
         assert_eq!(
             official_userinfo_headers("Bearer redacted"),
             [("Authorization", "Bearer redacted")]
-        );
-    }
-
-    #[test]
-    fn code_assist_post_and_operation_get_share_the_official_json_headers() {
-        assert_eq!(
-            code_assist_headers("Bearer redacted", "GeminiCLI/test", "gl-node/test"),
-            [
-                ("accept", "application/json"),
-                ("authorization", "Bearer redacted"),
-                ("content-type", "application/json"),
-                ("user-agent", "GeminiCLI/test"),
-                ("x-goog-api-client", "gl-node/test"),
-            ]
         );
     }
 
@@ -1485,12 +1530,12 @@ mod tests {
         let proxy = "http://user:pass@127.0.0.1:8080";
         let links = begin(&store, &config, 42, proxy, 777).unwrap();
         assert!(!links.authorize_url.contains("user:pass"));
-        assert!(!links.authorize_url.contains(OFFICIAL_CLI_CLIENT_SECRET));
+        assert!(!links.authorize_url.contains(ANTIGRAVITY_CLIENT_SECRET));
         assert!(!links.submit_url.contains("user:pass"));
         let url = reqwest::Url::parse(&links.authorize_url).unwrap();
         assert!(url
             .query_pairs()
-            .any(|(name, value)| { name == "client_id" && value == OFFICIAL_CLI_CLIENT_ID }));
+            .any(|(name, value)| { name == "client_id" && value == ANTIGRAVITY_CLIENT_ID }));
         let state = url
             .query_pairs()
             .find_map(|(name, value)| (name == "state").then(|| value.into_owned()))
@@ -1500,7 +1545,7 @@ mod tests {
             .any(|(name, value)| { name == "code_challenge_method" && value == "S256" }));
         let session = store.claim_gemini_oauth(&state).unwrap().unwrap();
         assert!(!session.sealed_payload.contains("user:pass"));
-        assert!(!session.sealed_payload.contains(OFFICIAL_CLI_CLIENT_SECRET));
+        assert!(!session.sealed_payload.contains(ANTIGRAVITY_CLIENT_SECRET));
         let envelope: SealedCredential = serde_json::from_str(&session.sealed_payload).unwrap();
         let decrypted = config
             .keyring
@@ -1509,9 +1554,9 @@ mod tests {
         let pending: PendingOAuthSecret = serde_json::from_str(decrypted.as_str()).unwrap();
         assert_eq!(pending.proxy, format!("{proxy}/"));
         assert_eq!(pending.proxy_order_id, 777);
-        assert_eq!(pending.client_id, OFFICIAL_CLI_CLIENT_ID);
-        assert_eq!(pending.client_secret, OFFICIAL_CLI_CLIENT_SECRET);
-        assert_eq!(pending.redirect_uri, OFFICIAL_CLI_REDIRECT_URI);
+        assert_eq!(pending.client_id, ANTIGRAVITY_CLIENT_ID);
+        assert_eq!(pending.client_secret, ANTIGRAVITY_CLIENT_SECRET);
+        assert_eq!(pending.redirect_uri, ANTIGRAVITY_REDIRECT_URI);
         assert!(valid_oauth_value(&pending.verifier, 256));
         assert!(!session.sealed_payload.contains(&pending.verifier));
         for path in [
@@ -1578,6 +1623,36 @@ mod tests {
             .unwrap();
         assert!(csp.contains("form-action 'self'"));
         assert_eq!(response.headers()["referrer-policy"], "no-referrer");
+    }
+
+    #[test]
+    fn localhost_callback_submission_is_state_bound() {
+        let state = "A".repeat(43);
+        let callback = format!(
+            "http://localhost:51121/oauth-callback?state={state}&code=4%2Fsecret-code&scope=x"
+        );
+        assert_eq!(
+            submitted_authorization_code(&callback, &state).as_deref(),
+            Some("4/secret-code")
+        );
+        assert!(submitted_authorization_code(&callback, &"B".repeat(43)).is_none());
+        assert!(submitted_authorization_code(
+            &format!("https://localhost:51121/oauth-callback?state={state}&code=x"),
+            &state
+        )
+        .is_none());
+        assert_eq!(
+            submitted_authorization_code("4/direct-code", &state).as_deref(),
+            Some("4/direct-code")
+        );
+        for ambiguous in [
+            format!("http://localhost:51121/oauth-callback?state={state}&state={state}&code=x"),
+            format!("http://localhost:51121/oauth-callback?state={state}&code=x&code=y"),
+            format!("http://localhost:51121/oauth-callback?state={state}&error=x&error=y"),
+        ] {
+            assert!(submitted_authorization_code(&ambiguous, &state).is_none());
+        }
+        assert!(submitted_authorization_code("state=x&code=y", &state).is_none());
     }
 
     #[test]

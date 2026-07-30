@@ -17,12 +17,12 @@
 **Три принципиально разных сценария передачи доступа** (`handoff_kind` выбирает ветку по продукту
 оффера — это единственное место, где они расходятся):
 
-| | Claude | ChatGPT (Codex) | Gemini Code Assist OAuth |
+| | Claude | ChatGPT (Codex) | Gemini via Antigravity OAuth |
 |---|---|---|---|
 | Результат | `sk-ant-oat01-…` | ничего, что нам можно читать | refresh/access token + Google subject/project/tier |
 | Чем становится покупка | строка в реестре | каталог `CODEX_HOME` | AEAD envelope + opaque запись в `profiles.json` |
 | Модуль | `setup_token.rs` | `codex_login.rs` | `gemini_oauth.rs` |
-| Шаги продавца | ссылка → `code#state` | ссылка + одноразовый код | прокси → официальный Gemini CLI OAuth → одноразовый код в HTTPS-форму |
+| Шаги продавца | ссылка → `code#state` | ссылка + одноразовый код | прокси → Antigravity OAuth → полный localhost callback URL в HTTPS-форму |
 | Как движок узнаёт | reload реестра | скан homes | atomic roster refresh на health-loop |
 
 Каждый Claude/ChatGPT/Gemini-оффер сразу объясняет новичку весь будущий путь. После выплаты бот
@@ -47,20 +47,24 @@ Gemini ждёт отдельного подтверждения «Аккаунт
    `AUTH_BOT_CODEX_HOMES_DIR` — вся его часть контракта.
 
 **Инварианты Gemini-ветки (критично):**
-1. OAuth использует публичный installed-application client id/secret из официального Gemini CLI и
-   его фиксированный redirect `https://codeassist.google.com/authcode`. Продавец не создаёт Cloud
+1. OAuth использует публичный installed-application client id/secret Antigravity и фиксированный
+   redirect `http://localhost:51121/oauth-callback`. Продавец не создаёт Cloud
    OAuth-клиент и не включает private API в своём проекте. Всегда `state` + PKCE S256; а
    client id/secret и redirect, использованные при старте, seal-ятся
    вместе с транзакцией, чтобы token exchange не мог сменить identity.
-2. Token exchange, userinfo, `loadCodeAssist`, onboarding и operation poll идут через тот же source
+2. Token exchange, userinfo, `loadCodeAssist` и повторяемый до `done` onboarding идут через тот же source
    `node_transport.cjs`, что runtime: SHA-pinned `/usr/bin/node` v24.18.0 Linux/x64, per-account
-   authenticated CONNECT и `env_clear`. Token/Code Assist повторяют gaxios/google-auth-library
-   10.9.0; userinfo отдельно повторяет официальный global fetch через attested Node-internal Undici
+   authenticated CONNECT и `env_clear`. HTTP identity pinned к Antigravity 2.2.1: control plane
+   использует `antigravity/hub/2.2.1 darwin/arm64`, onboarding добавляет
+   `google-api-nodejs-client/10.3.0`, token exchange — `Go-http-client/2.0`; userinfo идёт через
+   attested Node-internal Undici
    dispatcher (его headers, pooling и ClientHello нельзя подменять gaxios-профилем). Proxy/bearer/form
-   существуют в zeroizing IPC buffers; Rust TLS и ambient proxy не участвуют. `loadCodeAssist`/
-   onboard bodies повторяют Gemini CLI 0.53.0 без custom `client-metadata` header или выдуманного mode.
-3. OAuth code/tokens никогда не идут через Telegram. Google показывает одноразовый code на своей
-   Code Assist странице; продавец POST-ит его через no-store HTTPS-форму Auth Bot. Короткоживущий
+   существуют в zeroizing IPC buffers; Rust TLS и ambient proxy не участвуют. `loadCodeAssist`
+   передаёт `ideType=ANTIGRAVITY`, а onboarding — Antigravity ide name/version metadata.
+3. OAuth code/tokens никогда не идут через Telegram. После Google redirect страница localhost может
+   не открыться; продавец копирует полный URL из адресной строки и POST-ит его через no-store
+   HTTPS-форму Auth Bot. Parser проверяет exact HTTP localhost:51121 path, callback state и
+   отсутствие credentials/fragment/OAuth error. Короткоживущий
    proxy в SQLite только как XChaCha20-Poly1305 envelope, привязанный AAD к одноразовому state;
    form/callback claim одноразовый.
 4. До публикации проверяются verified userinfo и `loadCodeAssist`; принимаются только известные
@@ -91,7 +95,7 @@ Gemini ждёт отдельного подтверждения «Аккаунт
   `<этот каталог>/profiles.json`.
 - `AUTH_BOT_GEMINI_REDIRECT_URI`, `AUTH_BOT_GEMINI_OAUTH_BIND` — публичная HTTPS-форма приёма
   одноразового кода (`…/oauth/callback`) + её loopback bind. Legacy-название redirect сохранено для
-  совместимости env; Google получает фиксированный redirect официального Gemini CLI.
+  совместимости env; Google получает фиксированный localhost redirect Antigravity.
 - `AUTH_BOT_GEMINI_CREDENTIAL_KEYS`, `AUTH_BOT_GEMINI_CREDENTIAL_ACTIVE_KID` — общий с runtime
   AEAD keyring и активный ключ публикации/rotation.
 - `AUTH_BOT_IPROYAL_KEY` — авто-выпуск прокси (пусто = ручной ввод).

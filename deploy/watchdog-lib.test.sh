@@ -1236,14 +1236,14 @@ grep -Fq 'CLAUDE_API_PROVIDER=gemini CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST
 grep -Fq 'CLAUDE_API_INSTANCE_ID=%H:engine:gemini' "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'CLAUDE_API_GEMINI_MODELS=gemini-3.1-flash-lite,gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite' \
   "$ROOT/systemd/claude-api-gemini.service"
-grep -Fq 'CLAUDE_API_GEMINI_CLI_VERSION=0.53.0' "$ROOT/systemd/claude-api-gemini.service"
+grep -Fq 'CLAUDE_API_GEMINI_ANTIGRAVITY_VERSION=2.2.1' "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'CLAUDE_API_GEMINI_NODE_BINARY=/usr/bin/node' "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'CLAUDE_API_GEMINI_NODE_VERSION=v24.18.0' "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'CLAUDE_API_GEMINI_NODE_SHA256=41a74efb34cbde5c7632cdac0cf8bd1a14d0b8d73dc1e82755014d9a9ce70f5c' \
   "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'CLAUDE_API_GEMINI_PROFILES_FILE=/srv/claude-api/data/gemini/profiles.json' \
   "$ROOT/systemd/claude-api-gemini.service"
-grep -Fq 'CLAUDE_API_GEMINI_UPSTREAM=https://cloudcode-pa.googleapis.com' \
+grep -Fq 'CLAUDE_API_GEMINI_UPSTREAM=https://daily-cloudcode-pa.sandbox.googleapis.com' \
   "$ROOT/systemd/claude-api-gemini.service"
 grep -Fxq 'ReadOnlyPaths=/srv/claude-api/data/gemini' \
   "$ROOT/systemd/claude-api-gemini.service"

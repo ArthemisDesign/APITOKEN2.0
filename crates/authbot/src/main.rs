@@ -81,7 +81,7 @@ fn gemini_oauth_config(gemini_dir: &str) -> Result<Option<gemini_oauth::Config>>
         return Ok(None);
     }
     // Intake is gated only on the AEAD keyring. Authorization uses the public installed-app OAuth
-    // identity embedded by the official Gemini CLI, so no operator/seller client is configured.
+    // identity embedded by Antigravity, so no operator/seller OAuth client is configured.
     let keyring = gemini_credential::CredentialKeyring::parse(
         &keys.ok_or_else(|| anyhow!("AUTH_BOT_GEMINI_CREDENTIAL_KEYS не задан"))?,
     )?;

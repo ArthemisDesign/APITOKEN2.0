@@ -1,4 +1,4 @@
-//! Native Gemini-compatible surface backed by encrypted paid Code Assist OAuth profiles.
+//! Native Gemini-compatible surface backed by encrypted paid Antigravity OAuth profiles.
 
 mod api;
 mod billing;

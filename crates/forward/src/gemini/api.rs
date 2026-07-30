@@ -14,6 +14,7 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use futures_util::StreamExt;
+use gemini_credential::OAuthKind;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::convert::Infallible;
@@ -105,7 +106,7 @@ fn base64url(bytes: &[u8]) -> String {
     out
 }
 
-/// Gemini CLI keeps one UUID-shaped session id for a conversation. Derive the same stable shape
+/// Both reviewed Cloud Code wrappers keep one UUID-shaped session id for a conversation. Derive it
 /// from the affinity layer's keyed digest: growing histories keep their resolved lineage, while
 /// different tenants or explicit sessions cannot collide through caller-controlled plaintext.
 fn session_id_from_lineage(lineage: &str) -> String {
@@ -119,7 +120,7 @@ fn session_id_from_lineage(lineage: &str) -> String {
     )
 }
 
-/// Interactive Gemini CLI identifies one top-level human turn as
+/// The legacy Gemini CLI wrapper identifies one top-level human turn as
 /// `<session UUID>########<prompt count>`. Tool-result-only user contents stay inside the current
 /// turn, so count only user contents that carry at least one non-function-response part. Native API
 /// clients do not expose Gemini CLI's in-memory counter; transcript-derived ordinal is the closest
@@ -688,11 +689,13 @@ fn translated_response(status: StatusCode, _headers: &HeaderMap, body: Bytes) ->
 
 fn wrap_code_assist_request(
     operation: Operation,
+    oauth_kind: OAuthKind,
     model: &str,
     project: &str,
     native: &Value,
     user_prompt_id: &str,
     session_id: Option<&str>,
+    request_id: Option<&str>,
 ) -> Result<Bytes, ApiError> {
     let wrapped = match operation {
         Operation::Generate | Operation::StreamGenerate => {
@@ -715,14 +718,28 @@ fn wrap_code_assist_request(
                 }
             }
             if let Some(session_id) = session_id {
-                request.insert("session_id".to_string(), json!(session_id));
+                let field = match oauth_kind {
+                    OAuthKind::Antigravity => "sessionId",
+                    OAuthKind::LegacyGeminiCli => "session_id",
+                };
+                request.insert(field.to_string(), json!(session_id));
             }
-            json!({
-                "model": model,
-                "project": project,
-                "user_prompt_id": user_prompt_id,
-                "request": request,
-            })
+            match oauth_kind {
+                OAuthKind::Antigravity => json!({
+                    "model": model,
+                    "project": project,
+                    "request": request,
+                    "userAgent": "antigravity",
+                    "requestType": "agent",
+                    "requestId": request_id.unwrap_or_default(),
+                }),
+                OAuthKind::LegacyGeminiCli => json!({
+                    "model": model,
+                    "project": project,
+                    "user_prompt_id": user_prompt_id,
+                    "request": request,
+                }),
+            }
         }
         Operation::CountTokens => {
             let native = native
@@ -1062,7 +1079,9 @@ async fn send_upstream(
             url,
             &access_token,
             user_agent,
-            (!url.contains(":streamGenerateContent")).then_some("application/json"),
+            (profile.oauth_kind() == OAuthKind::LegacyGeminiCli
+                && !url.contains(":streamGenerateContent"))
+            .then_some("application/json"),
             "application/json",
             body,
         )
@@ -1403,7 +1422,6 @@ async fn api_inner(
         .model(model_id)
         .cloned()
         .ok_or_else(ApiError::not_found)?;
-    let upstream_user_agent = gateway.config().user_agent(&model.id);
     if route.operation == Operation::Model {
         // A native GetModel ignores query parameters entirely.
         let _admission = pending.without_reserve();
@@ -1459,6 +1477,9 @@ async fn api_inner(
         .as_deref()
         .map(|session_id| official_user_prompt_id(session_id, &value))
         .unwrap_or_default();
+    // Antigravity expects a fresh request id, but rotation must not turn one customer request into
+    // multiple logical agent turns. Generate it once before selecting the first subscription.
+    let upstream_request_id = generation.then(|| format!("agent-{}", crate::fresh_request_id()));
     let admission = if matches!(
         route.operation,
         Operation::Generate | Operation::StreamGenerate
@@ -1482,12 +1503,6 @@ async fn api_inner(
         Operation::CountTokens => "countTokens",
         Operation::Models | Operation::Model => unreachable!(),
     };
-    let mut url = format!("{}/v1internal:{suffix}", gateway.config().upstream);
-    if !query.is_empty() {
-        url.push('?');
-        url.push_str(&query);
-    }
-
     let mut excluded = HashSet::new();
     let mut transport_failures = 0usize;
     let mut saw_quota = false;
@@ -1512,14 +1527,26 @@ async fn api_inner(
             };
         };
         let profile = lease.profile().clone();
+        let oauth_kind = profile.oauth_kind();
+        let upstream_user_agent = gateway.config().user_agent(oauth_kind, &model.id);
+        let mut url = format!(
+            "{}/v1internal:{suffix}",
+            gateway.config().upstream_for(oauth_kind)
+        );
+        if !query.is_empty() {
+            url.push('?');
+            url.push_str(&query);
+        }
         let project = profile.project_id().await;
         let upstream_body = wrap_code_assist_request(
             route.operation,
+            oauth_kind,
             &model.id,
             &project,
             &value,
             &user_prompt_id,
             upstream_session_id.as_deref(),
+            upstream_request_id.as_deref(),
         )?;
         let (mut response, rejected_token) = match send_upstream(
             &profile,
@@ -2089,7 +2116,13 @@ mod tests {
         proxies: &[Option<&str>],
         max_transport_retries: usize,
     ) -> GatewayFixture {
-        gateway_fixture_with_token_uri(upstream, proxies, max_transport_retries, None)
+        gateway_fixture_with_oauth_kind(
+            upstream,
+            proxies,
+            max_transport_retries,
+            None,
+            OAuthKind::LegacyGeminiCli,
+        )
     }
 
     fn gateway_fixture_with_token_uri(
@@ -2097,6 +2130,22 @@ mod tests {
         proxies: &[Option<&str>],
         max_transport_retries: usize,
         token_uri: Option<&str>,
+    ) -> GatewayFixture {
+        gateway_fixture_with_oauth_kind(
+            upstream,
+            proxies,
+            max_transport_retries,
+            token_uri,
+            OAuthKind::LegacyGeminiCli,
+        )
+    }
+
+    fn gateway_fixture_with_oauth_kind(
+        upstream: &str,
+        proxies: &[Option<&str>],
+        max_transport_retries: usize,
+        token_uri: Option<&str>,
+        oauth_kind: OAuthKind,
     ) -> GatewayFixture {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2118,14 +2167,23 @@ mod tests {
         for (index, proxy) in proxies.iter().enumerate() {
             let profile_id = format!("profile_{}", (b'a' + index as u8) as char);
             let credential_file = credential_directory.join(format!("{profile_id}.json"));
+            let (oauth_client_id, oauth_client_secret) = match oauth_kind {
+                OAuthKind::Antigravity => (
+                    gemini_credential::ANTIGRAVITY_OAUTH_CLIENT_ID,
+                    gemini_credential::ANTIGRAVITY_OAUTH_CLIENT_SECRET,
+                ),
+                OAuthKind::LegacyGeminiCli => (
+                    gemini_credential::GEMINI_OFFICIAL_OAUTH_CLIENT_ID,
+                    gemini_credential::GEMINI_OFFICIAL_OAUTH_CLIENT_SECRET,
+                ),
+            };
             let credential = GeminiCredential {
                 version: 1,
                 access_token: keys[index].to_string(),
                 refresh_token: format!("refresh-token-value-{index}"),
                 expires_at: pool::now() + 3_600,
-                oauth_client_id: gemini_credential::GEMINI_OFFICIAL_OAUTH_CLIENT_ID.to_string(),
-                oauth_client_secret: gemini_credential::GEMINI_OFFICIAL_OAUTH_CLIENT_SECRET
-                    .to_string(),
+                oauth_client_id: oauth_client_id.to_string(),
+                oauth_client_secret: oauth_client_secret.to_string(),
                 token_uri: token_uri
                     .unwrap_or("https://oauth2.googleapis.com/token")
                     .to_string(),
@@ -2188,7 +2246,7 @@ mod tests {
             default_rate_limit_cool_secs: 60,
             health_probe_interval_secs: 60,
             reserve_overhead_tokens: 10,
-            cli_version: "0.53.0".to_string(),
+            antigravity_version: gemini_credential::ANTIGRAVITY_VERSION.to_string(),
             node_binary: "/usr/bin/node".to_string(),
             node_version: "v24.18.0".to_string(),
             node_sha256: "0".repeat(64),
@@ -2746,6 +2804,182 @@ mod tests {
         assert!(seen[0].client_metadata.is_empty());
         assert_eq!(seen[0].google_api_client, "gl-node/24.18.0");
         assert!(!seen[0].has_private_client_headers);
+    }
+
+    #[tokio::test]
+    async fn antigravity_generation_uses_agent_wrapper_and_keeps_ids_across_rotation() {
+        let server = start_mock(MockState::with_replies([
+            (
+                PROFILE_A_KEY,
+                vec![MockReply::json(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    json!({"error": {"message": "private quota"}}),
+                )],
+            ),
+            (
+                PROFILE_B_KEY,
+                vec![MockReply::json(
+                    StatusCode::OK,
+                    json!({"candidates": [], "usageMetadata": {}}),
+                )],
+            ),
+        ]))
+        .await;
+        let fixture = gateway_fixture_with_oauth_kind(
+            &server.upstream,
+            &[None, None],
+            1,
+            None,
+            OAuthKind::Antigravity,
+        );
+        let response = invoke(
+            app_state(fixture.gateway.clone(), None),
+            json!({"contents": [{"role": "user", "parts": [{"text": "hello"}]}]}),
+            false,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let seen = server.state.seen();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0].credential, PROFILE_A_KEY);
+        assert_eq!(seen[1].credential, PROFILE_B_KEY);
+        let bodies = seen
+            .iter()
+            .map(|request| serde_json::from_slice::<Value>(&request.body).unwrap())
+            .collect::<Vec<_>>();
+        for (index, body) in bodies.iter().enumerate() {
+            assert_eq!(body["userAgent"], "antigravity");
+            assert_eq!(body["requestType"], "agent");
+            assert_eq!(body["project"], format!("paid-project-{:02}", index + 1));
+            assert!(body.get("user_prompt_id").is_none());
+            assert!(body["request"].get("session_id").is_none());
+            assert!(body["request"]["sessionId"].as_str().is_some());
+            assert!(body["requestId"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("agent-") && value.len() > 16));
+        }
+        assert_eq!(bodies[0]["requestId"], bodies[1]["requestId"]);
+        assert_eq!(
+            bodies[0]["request"]["sessionId"],
+            bodies[1]["request"]["sessionId"]
+        );
+        assert!(seen.iter().all(|request| {
+            request.user_agent == "antigravity/hub/2.2.1 darwin/arm64"
+                && request.google_api_client.is_empty()
+        }));
+    }
+
+    #[tokio::test]
+    async fn antigravity_refresh_uses_go_identity_without_legacy_google_header() {
+        let refreshed = "antigravity-refreshed-access-token";
+        let server = start_mock(MockState::with_replies([
+            (
+                PROFILE_A_KEY,
+                vec![MockReply::json(
+                    StatusCode::UNAUTHORIZED,
+                    json!({"error": {"message": "expired"}}),
+                )],
+            ),
+            (
+                "",
+                vec![MockReply::Json {
+                    status: StatusCode::OK,
+                    body: json!({"access_token": refreshed, "expires_in": 3600}),
+                    retry_after: None,
+                }],
+            ),
+            (
+                refreshed,
+                vec![MockReply::json(
+                    StatusCode::OK,
+                    json!({"candidates": [], "usageMetadata": {}}),
+                )],
+            ),
+        ]))
+        .await;
+        let token_uri = format!("{}/token", server.upstream);
+        let fixture = gateway_fixture_with_oauth_kind(
+            &server.upstream,
+            &[None],
+            1,
+            Some(&token_uri),
+            OAuthKind::Antigravity,
+        );
+        let response = invoke(
+            app_state(fixture.gateway.clone(), None),
+            json!({"contents": []}),
+            false,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let seen = server.state.seen();
+        let refresh = seen
+            .iter()
+            .find(|request| request.uri == "/token")
+            .expect("one token refresh request");
+        assert_eq!(refresh.user_agent, "Go-http-client/2.0");
+        assert!(refresh.google_api_client.is_empty());
+    }
+
+    #[tokio::test]
+    async fn antigravity_health_fetches_model_quotas_and_cools_explicit_zero() {
+        let server = start_mock(MockState::with_replies([(
+            PROFILE_A_KEY,
+            vec![
+                MockReply::Json {
+                    status: StatusCode::OK,
+                    body: json!({"cloudaicompanionProject": "paid-project-01"}),
+                    retry_after: None,
+                },
+                MockReply::Json {
+                    status: StatusCode::OK,
+                    body: json!({
+                        "models": {
+                            "gemini-integration-model": {
+                                "displayName": "Gemini Integration Model",
+                                "quotaInfo": {
+                                    "remainingFraction": 0.0,
+                                    "resetTime": "2099-01-01T00:00:00Z"
+                                }
+                            }
+                        }
+                    }),
+                    retry_after: None,
+                },
+            ],
+        )]))
+        .await;
+        let fixture = gateway_fixture_with_oauth_kind(
+            &server.upstream,
+            &[None],
+            1,
+            None,
+            OAuthKind::Antigravity,
+        );
+        fixture.gateway.probe_health().await;
+
+        let seen = server.state.seen();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0].uri, "/v1internal:loadCodeAssist");
+        assert_eq!(seen[1].uri, "/v1internal:fetchAvailableModels");
+        let load_body: Value = serde_json::from_slice(&seen[0].body).unwrap();
+        assert_eq!(load_body, json!({"metadata": {"ideType": "ANTIGRAVITY"}}));
+        let quota_body: Value = serde_json::from_slice(&seen[1].body).unwrap();
+        assert_eq!(quota_body, json!({"project": "paid-project-01"}));
+        assert!(seen.iter().all(|request| {
+            request.user_agent == "antigravity/hub/2.2.1 darwin/arm64"
+                && request.google_api_client.is_empty()
+        }));
+
+        let status = fixture.gateway.operational_status().await;
+        assert_eq!(status.models[0].available, 0);
+        assert_eq!(status.profiles[0].quotas.len(), 1);
+        let quota = &status.profiles[0].quotas[0];
+        assert_eq!(quota.model_id, "gemini-integration-model");
+        assert_eq!(quota.remaining_fraction, Some(0.0));
+        assert_eq!(quota.reset_time.as_deref(), Some("2099-01-01T00:00:00Z"));
+        assert_eq!(quota.token_type.as_deref(), Some("antigravity_model"));
     }
 
     #[tokio::test]

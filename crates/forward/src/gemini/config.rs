@@ -14,6 +14,7 @@ pub const GEMINI_NODE_FETCH_EXPECTED_JA3: &str = "d67b094811e5145139d7cea5f01430
 pub const GEMINI_NODE_FETCH_EXPECTED_JA4: &str = "t13d5212h1_b262b3658495_8e6e362c5eac";
 pub const GEMINI_GOOGLE_AUTH_LIBRARY_VERSION: &str =
     gemini_credential::GEMINI_GOOGLE_AUTH_LIBRARY_VERSION;
+pub const LEGACY_GEMINI_UPSTREAM: &str = "https://cloudcode-pa.googleapis.com";
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -55,9 +56,9 @@ pub struct GeminiConfig {
     pub default_rate_limit_cool_secs: i64,
     pub health_probe_interval_secs: u64,
     pub reserve_overhead_tokens: u64,
-    /// Public Gemini CLI release used to shape the Code Assist User-Agent. The transport remains
-    /// owned by this gateway; only the documented CLI application header is mirrored.
-    pub cli_version: String,
+    /// Public Antigravity release used to shape the Cloud Code User-Agent. Legacy credentials keep
+    /// their reviewed Gemini CLI identity until the sealed roster naturally migrates.
+    pub antigravity_version: String,
     /// Exact official Node/OpenSSL runtime used by Gemini CLI's gaxios/node-fetch path. Production
     /// startup verifies the binary SHA and every helper handshake verifies version/platform/arch.
     pub node_binary: String,
@@ -70,30 +71,53 @@ impl GeminiConfig {
         self.models.iter().find(|model| model.id == id)
     }
 
-    pub fn user_agent(&self, model: &str) -> String {
-        // OAuth2Client's request interceptor appends this library token on the actual wire. Merely
-        // copying contentGenerator.ts's pre-interceptor string is observably incomplete.
-        format!(
-            "GeminiCLI/{}/{model} (linux; x64; cli) google-api-nodejs-client/{}",
-            self.cli_version, GEMINI_GOOGLE_AUTH_LIBRARY_VERSION
-        )
+    pub fn upstream_for(&self, oauth_kind: gemini_credential::OAuthKind) -> &str {
+        // A literal loopback is an explicitly opted-in integration-test endpoint and must observe
+        // both wire variants. Production legacy credentials remain pinned to their original host.
+        if self.upstream.starts_with("http://") {
+            return &self.upstream;
+        }
+        match oauth_kind {
+            gemini_credential::OAuthKind::Antigravity => &self.upstream,
+            gemini_credential::OAuthKind::LegacyGeminiCli => LEGACY_GEMINI_UPSTREAM,
+        }
+    }
+
+    pub fn user_agent(&self, oauth_kind: gemini_credential::OAuthKind, model: &str) -> String {
+        match oauth_kind {
+            gemini_credential::OAuthKind::Antigravity => format!(
+                "antigravity/hub/{} {}",
+                self.antigravity_version,
+                gemini_credential::ANTIGRAVITY_PLATFORM
+            ),
+            gemini_credential::OAuthKind::LegacyGeminiCli => {
+                // OAuth2Client's request interceptor appends this library token on the actual wire.
+                format!(
+                    "GeminiCLI/{}/{model} (linux; x64; cli) google-api-nodejs-client/{}",
+                    gemini_credential::GEMINI_CLI_VERSION,
+                    GEMINI_GOOGLE_AUTH_LIBRARY_VERSION
+                )
+            }
+        }
     }
 
     pub fn google_api_client(&self) -> String {
         format!("gl-node/{}", self.node_version.trim_start_matches('v'))
     }
 
-    pub fn google_auth_user_agent(&self) -> String {
-        format!(
-            "google-api-nodejs-client/{}",
-            GEMINI_GOOGLE_AUTH_LIBRARY_VERSION
-        )
+    pub fn refresh_user_agent(&self, oauth_kind: gemini_credential::OAuthKind) -> String {
+        match oauth_kind {
+            gemini_credential::OAuthKind::Antigravity => "Go-http-client/2.0".to_string(),
+            gemini_credential::OAuthKind::LegacyGeminiCli => format!(
+                "google-api-nodejs-client/{}",
+                GEMINI_GOOGLE_AUTH_LIBRARY_VERSION
+            ),
+        }
     }
 
-    pub fn background_user_agent(&self) -> String {
-        // setupUser/loadCodeAssist and quota refresh inherit the CLI's resolved current model. The
-        // stable release default is 2.5 Pro; using allowlist order here would make a config reorder
-        // observable on otherwise model-free background calls.
-        self.user_agent(gemini_credential::GEMINI_CLI_DEFAULT_MODEL)
+    pub fn background_user_agent(&self, oauth_kind: gemini_credential::OAuthKind) -> String {
+        // Legacy model-free calls inherit the CLI's resolved current model. Antigravity ignores the
+        // model argument, but sharing the selector keeps the migration branch explicit.
+        self.user_agent(oauth_kind, gemini_credential::GEMINI_CLI_DEFAULT_MODEL)
     }
 }

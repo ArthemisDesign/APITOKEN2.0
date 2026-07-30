@@ -19,9 +19,9 @@ const CREDENTIAL_VERSION: u8 = 1;
 const AAD_PREFIX: &[u8] = b"apitoken/gemini-oauth-credential/v1\0";
 const SECRET_AAD_PREFIX: &[u8] = b"apitoken/gemini-oauth-pending-secret/v1\0";
 
-/// One reviewed official Gemini CLI wire profile shared by the OAuth producer and runtime. Node's
-/// distribution build affects OpenSSL ClientHello, so version text and executable digest are an
-/// inseparable attestation tuple rather than independently configurable hints.
+/// Legacy Gemini CLI wire profile retained so already sealed credentials remain usable during the
+/// Antigravity migration. Node's distribution build affects OpenSSL ClientHello, so version text
+/// and executable digest are an inseparable attestation tuple.
 pub const GEMINI_CLI_VERSION: &str = "0.53.0";
 pub const GEMINI_CLI_DEFAULT_MODEL: &str = "gemini-2.5-pro";
 pub const GEMINI_GOOGLE_AUTH_LIBRARY_VERSION: &str = "10.9.0";
@@ -36,6 +36,25 @@ pub const GEMINI_OFFICIAL_OAUTH_CLIENT_ID: &str =
     "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
 pub const GEMINI_OFFICIAL_OAUTH_CLIENT_SECRET: &str = "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";
 pub const GEMINI_OFFICIAL_TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
+
+/// Public installed-application identity embedded by Google's Antigravity client. As with the
+/// legacy Gemini CLI identity above, the installed-app secret is application metadata rather than
+/// a confidential server credential. Keeping both exact pairs lets the runtime migrate a live
+/// roster without accepting arbitrary Google OAuth clients.
+pub const ANTIGRAVITY_OAUTH_CLIENT_ID: &str =
+    "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
+pub const ANTIGRAVITY_OAUTH_CLIENT_SECRET: &str = "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";
+pub const ANTIGRAVITY_REDIRECT_URI: &str = "http://localhost:51121/oauth-callback";
+pub const ANTIGRAVITY_VERSION: &str = "2.2.1";
+pub const ANTIGRAVITY_PLATFORM: &str = "darwin/arm64";
+pub const ANTIGRAVITY_NODE_API_CLIENT_VERSION: &str = "10.3.0";
+pub const ANTIGRAVITY_GOOG_API_CLIENT: &str = "gl-node/22.21.1";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OAuthKind {
+    Antigravity,
+    LegacyGeminiCli,
+}
 
 /// Heap string that overwrites its buffer on drop. Use for short-lived token/proxy clones outside
 /// the long-lived credential envelope.
@@ -79,6 +98,21 @@ impl std::fmt::Debug for GeminiCredential {
 }
 
 impl GeminiCredential {
+    pub fn oauth_kind(&self) -> anyhow::Result<OAuthKind> {
+        match (
+            self.oauth_client_id.as_str(),
+            self.oauth_client_secret.as_str(),
+        ) {
+            (ANTIGRAVITY_OAUTH_CLIENT_ID, ANTIGRAVITY_OAUTH_CLIENT_SECRET) => {
+                Ok(OAuthKind::Antigravity)
+            }
+            (GEMINI_OFFICIAL_OAUTH_CLIENT_ID, GEMINI_OFFICIAL_OAUTH_CLIENT_SECRET) => {
+                Ok(OAuthKind::LegacyGeminiCli)
+            }
+            _ => bail!("Gemini OAuth application identity is not a pinned client"),
+        }
+    }
+
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.version != CREDENTIAL_VERSION {
             bail!("unsupported Gemini credential version");
@@ -87,11 +121,7 @@ impl GeminiCredential {
         bounded_secret(&self.refresh_token, 8, 16_384, "refresh token")?;
         bounded_text(&self.oauth_client_id, 8, 1_024, "OAuth client id")?;
         bounded_secret(&self.oauth_client_secret, 1, 4_096, "OAuth client secret")?;
-        if self.oauth_client_id != GEMINI_OFFICIAL_OAUTH_CLIENT_ID
-            || self.oauth_client_secret != GEMINI_OFFICIAL_OAUTH_CLIENT_SECRET
-        {
-            bail!("Gemini OAuth application identity is not the pinned official CLI client");
-        }
+        self.oauth_kind()?;
         let test_loopback = cfg!(feature = "test-loopback-token-uri")
             && (self.token_uri.starts_with("http://127.0.0.1:")
                 || self.token_uri.starts_with("http://[::1]:"));
@@ -529,8 +559,8 @@ mod tests {
             access_token: "access-token-value".into(),
             refresh_token: "refresh-token-value".into(),
             expires_at: 123,
-            oauth_client_id: GEMINI_OFFICIAL_OAUTH_CLIENT_ID.into(),
-            oauth_client_secret: GEMINI_OFFICIAL_OAUTH_CLIENT_SECRET.into(),
+            oauth_client_id: ANTIGRAVITY_OAUTH_CLIENT_ID.into(),
+            oauth_client_secret: ANTIGRAVITY_OAUTH_CLIENT_SECRET.into(),
             token_uri: GEMINI_OFFICIAL_TOKEN_URI.into(),
             subject: "google-subject".into(),
             email: "owner@example.com".into(),
@@ -575,6 +605,19 @@ mod tests {
         let mut candidate = credential();
         candidate.oauth_client_id = "another-client.apps.googleusercontent.com".into();
         assert!(candidate.validate().is_err());
+
+        let mut candidate = credential();
+        candidate.oauth_client_id = GEMINI_OFFICIAL_OAUTH_CLIENT_ID.into();
+        candidate.oauth_client_secret = GEMINI_OFFICIAL_OAUTH_CLIENT_SECRET.into();
+        assert_eq!(candidate.oauth_kind().unwrap(), OAuthKind::LegacyGeminiCli);
+        assert!(candidate.validate().is_ok());
+
+        let mut candidate = credential();
+        candidate.oauth_client_id = GEMINI_OFFICIAL_OAUTH_CLIENT_ID.into();
+        assert!(
+            candidate.validate().is_err(),
+            "mixed OAuth identities must fail closed"
+        );
 
         let mut candidate = credential();
         candidate.tier_name = "Future Pro Trial".into();

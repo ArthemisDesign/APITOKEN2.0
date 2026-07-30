@@ -140,9 +140,10 @@ Watchdog автоматически создаёт Redis/affinity secrets и у�
 [`docs/CODEX_APP_SERVER.md`](docs/CODEX_APP_SERVER.md). Он выключен по умолчанию и не изменяет
 существующий Claude-маршрут на `https://api.apitoken.sale`.
 
-Gemini использует только billing-enabled Google Developer API projects — по одному независимому
-project/API key на профиль — и отдаёт native `/v1beta` API. Gemini CLI OAuth не проксируется.
-Provisioning, ротация, metering и runbook описаны в
+Gemini использует отдельный пул платных Google-подписок, авторизованных через Antigravity OAuth с
+PKCE. Runtime преобразует native `/v1beta` запросы во внутренний Cloud Code protocol, сохраняет
+sticky affinity и вращает аккаунты при исчерпании квоты; Developer API key из подписки не извлекается.
+Provisioning, legacy-миграция, ротация, metering и runbook описаны в
 [`docs/GEMINI_PROVIDER.md`](docs/GEMINI_PROVIDER.md).
 
 ## Безопасность

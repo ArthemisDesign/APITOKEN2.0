@@ -58,7 +58,7 @@
 - Управляющие эндпоинты (`/health`, `/pool`, `/capacity`, `/gemini-subs`, `/admin/*`) — здесь;
   остальное → форвардинг. `/gemini-subs` существует только в fixed Gemini runtime, гейтится
   `readonly_authed` и сериализует opaque ids/quota/cooling плюс отдельные gaxios и Undici transport
-  attestations без Google identity, project/proxy/OAuth.
+  attestations и Antigravity version без Google identity, project/proxy/OAuth.
 - **Три класса ключей (разделение секретов):** `CLAUDE_API_KEYS` (forwarding-admin: неметеренный /v1
   + всё), `CLAUDE_API_CONTROL_KEY` (control-плоскость `/admin/*`: аккаунты/деньги, для коммерции),
   `CLAUDE_API_PANEL_KEY` (read-only дашборды `/capacity`,`/metrics`). Гейты: `authed` (admin) ⊂
@@ -79,6 +79,7 @@
   прерывает upstream read, task settle-ит последний usage snapshot и пересекает semaphore barrier.
   Billing FIFO-flush разрешён только после этого. Gemini health/preflight/network живут в `forward`,
   а env/upstream pin и startup-fixed service composition — только здесь. Production unit обязан
-  argv-level pin-ить CLI version + Node binary/version/SHA после shared EnvironmentFile.
+  argv-level pin-ить Antigravity version + Cloud Code host + Node binary/version/SHA после shared
+  EnvironmentFile.
 
 **Проверка:** `cargo build -p claude-api`; `cargo run -p claude-api -- serve`.

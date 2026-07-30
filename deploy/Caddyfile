@@ -254,7 +254,7 @@ admin.apitoken.sale {
 	# rollback from turning the panel into a CSP-blocked white screen. Styles remain inline because
 	# live utilization bars use bounded width values. Do not add unsafe-inline for scripts.
 	header {
-		Content-Security-Policy "default-src 'none'; script-src 'sha256-ul2YYpict5PvcZ16ZhoSqSzAMZD4cigIj59D7BPdGB8=' 'sha256-rmww5uNDLOREPHpg+5m2JrRmFm+wxWFLIhqmrVjOvKY='; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'; object-src 'none'"
+		Content-Security-Policy "default-src 'none'; script-src 'sha256-gwTxvpMW4/t2PcbB9llIOHLOUQ1pARUSZZAMZJeCAiw=' 'sha256-ul2YYpict5PvcZ16ZhoSqSzAMZD4cigIj59D7BPdGB8='; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'; object-src 'none'"
 		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
 		X-Robots-Tag "noindex, nofollow, noarchive"
 	}

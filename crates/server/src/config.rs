@@ -276,12 +276,17 @@ fn validate_gemini_upstream(v: &str, allow_insecure_loopback: bool) -> Result<St
                 .to_string(),
         );
     }
-    if scheme.eq_ignore_ascii_case("https")
-        && authority
-            .as_str()
-            .eq_ignore_ascii_case("cloudcode-pa.googleapis.com")
-    {
-        return Ok("https://cloudcode-pa.googleapis.com".to_string());
+    if scheme.eq_ignore_ascii_case("https") {
+        let canonical = [
+            "daily-cloudcode-pa.sandbox.googleapis.com",
+            "daily-cloudcode-pa.googleapis.com",
+            "cloudcode-pa.googleapis.com",
+        ]
+        .into_iter()
+        .find(|allowed| authority.as_str().eq_ignore_ascii_case(allowed));
+        if let Some(host) = canonical {
+            return Ok(format!("https://{host}"));
+        }
     }
     let host = authority.host();
     let literal = host
@@ -294,7 +299,7 @@ fn validate_gemini_upstream(v: &str, allow_insecure_loopback: bool) -> Result<St
     if allow_insecure_loopback && scheme.eq_ignore_ascii_case("http") && loopback {
         return Ok(v.trim_end_matches('/').to_string());
     }
-    Err("CLAUDE_API_GEMINI_UPSTREAM: only https://cloudcode-pa.googleapis.com is allowed; literal HTTP loopback requires CLAUDE_API_GEMINI_ALLOW_INSECURE_LOOPBACK_UPSTREAM=1".to_string())
+    Err("CLAUDE_API_GEMINI_UPSTREAM: only official Antigravity Cloud Code hosts are allowed; literal HTTP loopback requires CLAUDE_API_GEMINI_ALLOW_INSECURE_LOOPBACK_UPSTREAM=1".to_string())
 }
 
 fn gemini_config() -> Option<GeminiConfig> {
@@ -350,7 +355,7 @@ fn gemini_config() -> Option<GeminiConfig> {
     let upstream = validate_gemini_upstream(
         &ev_or(
             "CLAUDE_API_GEMINI_UPSTREAM",
-            "https://cloudcode-pa.googleapis.com",
+            "https://daily-cloudcode-pa.sandbox.googleapis.com",
         ),
         ev_opt_in("CLAUDE_API_GEMINI_ALLOW_INSECURE_LOOPBACK_UPSTREAM"),
     )
@@ -395,9 +400,9 @@ fn gemini_config() -> Option<GeminiConfig> {
             0,
             262_144,
         ),
-        cli_version: ev_or(
-            "CLAUDE_API_GEMINI_CLI_VERSION",
-            gemini_credential::GEMINI_CLI_VERSION,
+        antigravity_version: ev_or(
+            "CLAUDE_API_GEMINI_ANTIGRAVITY_VERSION",
+            gemini_credential::ANTIGRAVITY_VERSION,
         ),
         node_binary: ev_or(
             "CLAUDE_API_GEMINI_NODE_BINARY",
@@ -1006,6 +1011,14 @@ mod tests {
         assert!(validate_upstream("https://user@api.anthropic.com", false).is_err());
         assert!(validate_upstream("http://localhost:18080", true).is_err());
 
+        assert_eq!(
+            validate_gemini_upstream("https://daily-cloudcode-pa.sandbox.googleapis.com/", false),
+            Ok("https://daily-cloudcode-pa.sandbox.googleapis.com".to_string()),
+        );
+        assert_eq!(
+            validate_gemini_upstream("https://daily-cloudcode-pa.googleapis.com", false),
+            Ok("https://daily-cloudcode-pa.googleapis.com".to_string()),
+        );
         assert_eq!(
             validate_gemini_upstream("https://cloudcode-pa.googleapis.com/", false),
             Ok("https://cloudcode-pa.googleapis.com".to_string()),

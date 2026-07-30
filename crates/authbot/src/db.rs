@@ -107,7 +107,7 @@ impl Store {
                                                                                       // Legacy Developer-API builds added `hproject`. It is intentionally ignored: OAuth
                                                                                       // identity/project data now exists only inside the encrypted credential envelope.
         let _ = c.execute("ALTER TABLE users ADD COLUMN hproject TEXT DEFAULT ''", []);
-        // IPRoyal order behind a bot-issued handover proxy, kept until official Gemini CLI OAuth
+        // IPRoyal order behind a bot-issued handover proxy, kept until Antigravity OAuth
         // seals the proxy/order pair into its one-use PKCE session.
         let _ = c.execute(
             "ALTER TABLE users ADD COLUMN hproxy_order INTEGER DEFAULT 0",

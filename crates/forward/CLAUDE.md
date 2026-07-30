@@ -286,9 +286,10 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    включая percent encoding, запрещён.
 3. Production HTTPS принадлежит persistent per-profile Node helper: exact pinned
    `/usr/bin/node` v24.18.0 Linux/x64 + SHA-256, native OpenSSL, HTTP/1.1 и authenticated CONNECT.
-   Generation/quota/probe/token refresh используют gaxios wire Gemini CLI 0.53.0 +
-   google-auth-library 10.9.0; OAuth userinfo использует отдельный official global-fetch/Undici
-   профиль того же SHA-pinned Node. Никакой approximate BoringSSL impersonation или ambient proxy/env.
+   Новые profiles используют Antigravity 2.2.1 UA, `Go-http-client/2.0` refresh и не посылают
+   legacy `x-goog-api-client`; старые Gemini CLI credentials сохраняют прежний wire до миграции.
+   OAuth userinfo использует отдельный global-fetch/Undici профиль того же SHA-pinned Node. Никакой
+   approximate BoringSSL impersonation или ambient proxy/env.
    Helper получает proxy secret только первым IPC frame, multiplexes bounded NDJSON, reaps process
    group и может restart-нуться только до upstream headers. Outbound frames, inbound NDJSON/base64
    staging, OAuth response collections и short-lived header/form strings zeroized. Loopback mocks
@@ -296,16 +297,17 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
 4. Профиль владеет отдельным transport/proxy/inflight/cooling/auth и single-flight token refresh.
    Первый 401 → один refresh+retry того же profile; повторный 401/403 → auth quarantine. 429 →
    model-specific profile cooling по Retry-After/RetryInfo/quota reset и ротация без
-   transport-бюджета; health probe не стирает generation cooling. `retrieveUserQuota` публикует
-   sanitized model catalogue: explicit zero блокирует модель до самого позднего reset среди всех
-   exhausted dimensions, stale/missing bucket fail-open.
+   transport-бюджета; health probe не стирает generation cooling. Antigravity
+   `fetchAvailableModels` публикует sanitized model catalogue: explicit zero блокирует модель до
+   reset, stale/missing bucket fail-open. Legacy profiles продолжают `retrieveUserQuota`.
    Network/
    408/409/425/5xx → короткий cooling и ограниченный transport retry; остальные 4xx не вращаются.
    Если были quota failures — итог 429; только auth/transport failures — 503; уже cooling pool — 429.
 5. Code Assist request wrapper строится сервером; caller не может inject project/session identity.
-   `request.session_id` — UUID из keyed tenant-scoped affinity lineage: стабилен для растущего чата,
-   изолирован между tenant/explicit session и не содержит raw id; `user_prompt_id` повторяет
-   официальный `<session UUID>########<human-turn ordinal>` (tool-result-only contents не считаются).
+   Для Antigravity `request.sessionId` — UUID из keyed tenant-scoped affinity lineage, а top-level
+   `requestId=agent-<uuid>` создаётся один раз до rotation; wrapper также фиксирует
+   `userAgent=antigravity` и `requestType=agent`. Legacy profiles сохраняют `request.session_id` и
+   `user_prompt_id=<session UUID>########<human-turn ordinal>`.
    Response/SSE отдаёт только `.response` (+ responseId), никогда wrapper/credits/private headers.
    Retry разрешён только до первого переведённого native SSE event. Stream startup bounded по
    time/bytes/chunks, а после первого public event ограничено число подряд идущих private/accounting

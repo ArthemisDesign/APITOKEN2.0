@@ -3,7 +3,7 @@
 Gemini is a third, isolated provider surface:
 
 ```text
-official CLI code-entry form         public native API
+Antigravity OAuth handoff            public native API
 gemini.api.apitoken.sale/oauth/...   gemini.api.apitoken.sale/v1beta/...
                  │                                  │
                  ▼                                  ▼
@@ -13,7 +13,7 @@ authbot 127.0.0.1:8796              Caddy stable origin 127.0.0.1:8794
                                       claude-api-gemini.service :8795
                                                     │
                                                     ▼
-                                      cloudcode-pa.googleapis.com
+                         daily-cloudcode-pa.sandbox.googleapis.com
 ```
 
 The Gemini runtime, router, OAuth credentials, proxy clients, health/cooling state and deployment
@@ -33,8 +33,8 @@ Authbot asks Google for the actual tier and accepts only known Code Assist-compa
 | Workspace | Workspace AI Ultra | `workspace_ai_ultra` |
 
 The product buttons expose exactly these five lines. Google AI Plus, free Individual, Workspace AI
-Standard/Plus, AI Expanded and unknown future paid tiers fail closed because the official Gemini CLI
-quota document does not list them as compatible. The user's choice never overrides Google's tier
+Standard/Plus, AI Expanded and unknown future paid tiers fail closed because they are not in the
+reviewed paid Antigravity/Code Assist allowlist. The user's choice never overrides Google's tier
 response.
 
 Daily request limits are owned and enforced by Google. Current official documentation lists 1,500
@@ -43,31 +43,33 @@ limits and available models can change and are not contractual capacity for this
 
 ## OAuth and publication flow
 
-Auth Bot mirrors the official Gemini CLI manual OAuth flow. It uses the public installed-application
-OAuth identity embedded in Gemini CLI and Google's fixed Code Assist redirect, so the Code Assist
-request is attributed to the registered Gemini CLI consumer project rather than an unrelated seller
-or operator Cloud project. Sellers do not create OAuth clients and do not enable private APIs.
-The source of truth is Gemini CLI's
-[`packages/core/src/code_assist/oauth2.ts`](https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/code_assist/oauth2.ts).
+Auth Bot mirrors Antigravity's installed-application OAuth flow with PKCE. It uses Antigravity's
+public OAuth client identity and fixed loopback redirect; it does not derive a Gemini Developer API
+key from the subscription. Sellers do not create OAuth clients or operator Cloud projects. The
+result is an OAuth credential for the internal Cloud Code/Antigravity gateway.
 
 1. The seller submits only the account's dedicated proxy. When Auth Bot issues the proxy, OAuth
    starts immediately after issuance.
 2. Auth Bot creates 256-bit `state`, a PKCE S256 verifier/challenge and a twenty-minute SQLite
    session.
-3. The PKCE verifier, proxy, official installed-app client material and fixed exchange redirect are
+3. The PKCE verifier, proxy, Antigravity installed-app client material and fixed exchange redirect are
    immediately moved into one XChaCha20-Poly1305 envelope bound to `state`; no plaintext value is
    retained in the Gemini OAuth row or SQLite WAL.
-4. Telegram receives two non-secret links: Google's authorization URL and the Auth Bot code-entry
+4. Telegram receives two non-secret links: Google's authorization URL and the Auth Bot completion
    form. The seller opens Google in the account's browser profile through the same dedicated proxy;
    the server cannot enforce the browser's egress.
-5. Google redirects to `https://codeassist.google.com/authcode` and displays the one-use code. The
-   seller pastes it into the no-store Auth Bot form at
-   `https://gemini.api.apitoken.sale/oauth/callback?state=…`. The form POST keeps the code out of
-   Telegram, URL query strings, browser history, referrers and ordinary access logs.
+5. Google redirects the browser to `http://localhost:51121/oauth-callback`. No local listener is
+   required: a browser connection error is expected. The seller copies the complete callback URL
+   from the address bar and pastes it into the no-store form at
+   `https://gemini.api.apitoken.sale/oauth/callback?state=…`. The parser accepts only the exact HTTP
+   localhost host, port and path, rejects credentials/fragments/OAuth errors and requires callback
+   `state` to match the hidden form state. The form POST keeps the code out of Telegram and access
+   log query strings. A raw authorization code remains accepted only for in-flight compatibility.
 6. Auth Bot claims `state` exactly once and exchanges the code server-to-server through the account
    proxy with the same PKCE verifier, official client identity and Google redirect used at start.
-7. Auth Bot validates verified Google userinfo, calls `loadCodeAssist`, completes Google's default
-   onboarding when required, and re-loads the actual tier/project.
+7. Auth Bot validates verified Google userinfo, calls Antigravity `loadCodeAssist`, completes
+   `onboardUser` when required, and re-loads the actual tier/project. Control-plane calls fall back
+   only among the three reviewed Cloud Code hosts.
 8. Unknown/free/duplicate Google subjects and reused proxy URLs fail closed. Proxy URLs are
    canonicalized before duplicate comparison, so spelling differences such as an explicit default
    port or equivalent percent-encoded credentials cannot place one egress identity into rotation
@@ -76,11 +78,12 @@ The source of truth is Gemini CLI's
    published atomically; the runtime discovers it on the health loop without restart and refreshes
    tokens with the official per-profile OAuth material.
 
-Auth Bot's token exchange, userinfo, `loadCodeAssist`, onboarding and operation polling use the same
-attested Node helper source as the runtime, through the seller's dedicated authenticated proxy.
-Google Auth calls carry the 10.9.0 library headers; Code Assist calls carry the Gemini CLI 0.53.0
-default-model identity and official setup/onboarding bodies. There is no custom eligibility mode,
-`client-metadata` header, Rust TLS fallback or ambient proxy path.
+Auth Bot's token exchange, userinfo, `loadCodeAssist` and onboarding use the same bounded Node helper
+source as the runtime through the seller's dedicated authenticated proxy. The wire identity is
+pinned to reviewed Antigravity 2.2.1: runtime/control calls use
+`antigravity/hub/2.2.1 darwin/arm64`, onboarding appends
+`google-api-nodejs-client/10.3.0`, and token exchange uses `Go-http-client/2.0`. There is no ambient
+proxy path or arbitrary OAuth client.
 
 Required OAuth scopes:
 
@@ -88,9 +91,11 @@ Required OAuth scopes:
 https://www.googleapis.com/auth/cloud-platform
 https://www.googleapis.com/auth/userinfo.email
 https://www.googleapis.com/auth/userinfo.profile
+https://www.googleapis.com/auth/cclog
+https://www.googleapis.com/auth/experimentsandconfigs
 ```
 
-The installed-app client id/secret is public upstream Gemini CLI application metadata, not an
+The installed-app client id/secret is public upstream Antigravity application metadata, not an
 operator secret. Account access tokens, refresh tokens, PKCE verifiers, identity, proxy credentials
 and encrypted-roster keys remain secret and must never enter the repository, command line, systemd
 unit, Telegram or logs.
@@ -190,16 +195,18 @@ CLAUDE_API_GEMINI_CREDENTIAL_KEYS=current:<64-hex>[,old:<64-hex>]
 CLAUDE_API_GEMINI_MODELS=gemini-3.1-flash-lite,gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite
 ```
 
-`CLAUDE_API_GEMINI_UPSTREAM` is pinned to `https://cloudcode-pa.googleapis.com`. Literal HTTP
-loopback is available only behind the explicit test opt-in; arbitrary hosts, userinfo, path, query
-and fragment are rejected. The production systemd `ExecStart` additionally pins the roster path,
-Google origin and insecure-loopback switch after all shared environment files, so those deployment
-boundaries cannot drift through `config.env`.
+`CLAUDE_API_GEMINI_UPSTREAM` defaults to and is production-pinned at
+`https://daily-cloudcode-pa.sandbox.googleapis.com`. The validator also recognizes only the daily
+and production Cloud Code hosts. Literal HTTP loopback is available only behind the explicit test
+opt-in; arbitrary hosts, ports, userinfo, path, query and fragment are rejected. Legacy Gemini CLI
+credentials ignore the Antigravity default and remain pinned to
+`https://cloudcode-pa.googleapis.com`. The production systemd `ExecStart` pins the roster path,
+Antigravity origin and insecure-loopback switch after all shared environment files.
 
 The same argv-level boundary pins the attested official runtime profile:
 
 ```text
-CLAUDE_API_GEMINI_CLI_VERSION=0.53.0
+CLAUDE_API_GEMINI_ANTIGRAVITY_VERSION=2.2.1
 CLAUDE_API_GEMINI_NODE_BINARY=/usr/bin/node
 CLAUDE_API_GEMINI_NODE_VERSION=v24.18.0
 CLAUDE_API_GEMINI_NODE_SHA256=41a74efb34cbde5c7632cdac0cf8bd1a14d0b8d73dc1e82755014d9a9ce70f5c
@@ -225,9 +232,10 @@ OPTIONS *                                                 (CORS preflight, unaut
 Query credentials are forbidden. The customer's `x-goog-api-key`, `x-api-key` or Bearer token
 authorizes this gateway and is never sent to Google. Client Authorization, User-Agent,
 `client-metadata`, Google project/client headers and forwarding/IP headers are stripped. Runtime
-requests use the actual Gemini CLI 0.53.0 wire identity, including OAuth2Client's appended
-`google-api-nodejs-client/10.9.0` token and `x-goog-api-client: gl-node/24.18.0`. Production HTTPS
-generation, quota retrieval, health probes and access-token refresh run through a persistent,
+new profiles use the pinned Antigravity 2.2.1 wire identity and do not emit the legacy
+`x-goog-api-client` header. Antigravity refresh uses `Go-http-client/2.0`; generation and control
+calls use `antigravity/hub/2.2.1 darwin/arm64`. Production HTTPS generation, quota retrieval, health
+probes and access-token refresh run through a persistent,
 per-profile Node helper and native Node/OpenSSL `https`; there is no approximate Rust/BoringSSL TLS
 emulation. The authenticated proxy is supplied in the first private IPC frame, never argv or env.
 Serialized outbound frames, inbound NDJSON/base64 staging, OAuth response collections and
@@ -236,16 +244,15 @@ CONNECT through that profile's proxy. Direct host egress and ambient proxy/TLS e
 absent. Literal loopback mocks remain on the Rust test transport and cannot be enabled for a
 non-loopback origin.
 
-The exact production observation for `/usr/bin/node` v24.18.0 on Linux x64 has two official
-HTTP/1.1 profiles. Gaxios/`https` (generation, quota, probe and token requests) is JA3
-`944d1e1858cd278718f8a46b65d3212f`, JA4 `t13d5211_b262b3658495_8e6e362c5eac`. Gemini CLI's global
-fetch userinfo path is independently reproduced with the Node-internal Undici dispatcher and is JA3
+The exact gateway transport observation for `/usr/bin/node` v24.18.0 on Linux x64 has two pinned
+HTTP/1.1 profiles. The `https` path (generation, quota, probe and token requests) is JA3
+`944d1e1858cd278718f8a46b65d3212f`, JA4 `t13d5211_b262b3658495_8e6e362c5eac`. The global-fetch
+userinfo path is independently reproduced with the Node-internal Undici dispatcher and is JA3
 `d67b094811e5145139d7cea5f014309f`, JA4 `t13d5212h1_b262b3658495_8e6e362c5eac`; its target headers
 are the official `Authorization`, `accept: */*`, `accept-language: *`, `sec-fetch-mode: cors`,
 `user-agent: node`, `accept-encoding: br, gzip, deflate` sequence. Both observations were made
-through HTTP CONNECT using the SHA-pinned production binary. They attest transport equivalence to
-the pinned official runtime paths; they are not a promise that Google will never apply account,
-quota or abuse policy.
+through HTTP CONNECT using the SHA-pinned production binary. They attest the gateway's transport
+stability; they are not a promise that Google will never apply account, quota or abuse policy.
 
 The public surface is shaped to be indistinguishable from `generativelanguage.googleapis.com` on the
 client side: proto-JSON snake_case aliases are accepted (and canonicalized) alongside camelCase; a
@@ -259,10 +266,10 @@ CORS headers so a browser SDK can call the gateway. Balance exhaustion remains t
 For every request the runtime:
 
 - resolves opaque tenant-bound prompt affinity and prefers the same subscription;
-- derives a UUID-shaped upstream `request.session_id` from the keyed affinity lineage: it stays
+- derives a UUID-shaped upstream `request.sessionId` from the keyed affinity lineage: it stays
   stable across a growing conversation, changes for another explicit session or tenant, and never
-  exposes a raw tenant/session value; `user_prompt_id` follows Gemini CLI's
-  `<session UUID>########<human-turn ordinal>` shape, excluding tool-result-only contents;
+  exposes a raw tenant/session value; one `agent-<uuid>` request id is created before rotation and
+  reused for every retry of that customer request;
 - decrypts the selected project/proxy only in memory;
 - obtains an access token with a per-profile single-flight mutex and 120-second expiry skew;
 - wraps the native body for `v1internal:{generateContent,streamGenerateContent,countTokens}`;
@@ -271,8 +278,9 @@ For every request the runtime:
 - surfaces a mid-stream upstream error as a sanitized native error element rather than a clean
   truncation;
 - caps response bodies and pending stream frames at 32 MiB;
-- periodically calls official `v1internal:retrieveUserQuota`, keeps a sanitized per-model catalogue,
-  and cools only the exhausted model/profile pair until Google's reset time;
+- periodically calls Antigravity `v1internal:fetchAvailableModels`, keeps a sanitized per-model
+  `remainingFraction`/`resetTime` catalogue, and cools only the exhausted model/profile pair until
+  Google's reset time;
 - reserves customer balance before upstream delivery and settles from native `usageMetadata`.
   A metered non-stream success without authoritative non-zero usage is withheld and refunded; once
   streaming bytes have been delivered, missing final usage settles the conservative hold and emits
@@ -305,13 +313,14 @@ After delivery starts, the request never jumps accounts. A downstream disconnect
 delivery but continues bounded upstream drain to the final usage snapshot; shutdown tracks these
 tasks, aborts at the deadline and settles the last known usage before exit.
 
-Health probes call `loadCodeAssist` in `HEALTH_CHECK` mode and do not spend a model request. Empty
+Antigravity health probes call `loadCodeAssist` with `metadata.ideType=ANTIGRAVITY` and do not spend
+a model request. Empty
 rosters may boot so Auth Bot can publish the first profile. Bad reloads leave the current pool intact.
 Probe success does not clear a generation model's independent 429 cooling. A fresh official quota
 snapshot is authoritative for catalogued models; a stale/missing bucket fails open, while an explicit
-zero in any request/token quota dimension blocks that model until the latest parsed RFC3339 reset
-among all exhausted dimensions. A positive second dimension never overrides an explicit exhausted
-one.
+zero blocks that model until its parsed RFC3339 reset. Legacy Gemini CLI profiles keep their former
+`HEALTH_CHECK`, `retrieveUserQuota`, `request.session_id`, `user_prompt_id` and Google library
+headers so an existing sealed roster remains usable during migration.
 
 ## Operations
 
@@ -325,8 +334,8 @@ curl --resolve gemini.api.apitoken.sale:443:127.0.0.1 \
 ```
 
 `/gemini-subs` is read-only-key protected and exposes only opaque profile ids, model availability,
-sanitized quota/cooling timestamps, affinity counters, missing-usage count and both attested gaxios
-and Undici transport versions/hashes. Subject, email, project, proxy and OAuth material are never serialized. Caddy maps
+sanitized quota/cooling timestamps, affinity counters, missing-usage count and pinned HTTPS/Undici
+transport versions/hashes. Subject, email, project, proxy and OAuth material are never serialized. Caddy maps
 the same endpoint into the unified `admin.apitoken.sale` subscription page through stable origin
 `127.0.0.1:8794`.
 

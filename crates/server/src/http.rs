@@ -1560,7 +1560,7 @@ async fn gemini_subs(
         "models": models,
         "profiles": profiles,
         "transport": {
-            "cli_version": gemini.config().cli_version,
+            "antigravity_version": gemini.config().antigravity_version,
             "profile": forward::GEMINI_NODE_TRANSPORT_PROFILE,
             "node_version": gemini.config().node_version,
             "node_sha256": gemini.config().node_sha256,

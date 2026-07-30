@@ -1,6 +1,6 @@
 'use strict';
 
-// Minimal, dependency-free transport companion for the official Gemini CLI network profile.
+// Minimal, dependency-free transport companion for the reviewed Cloud Code network profile.
 // The Rust parent attests the exact Node executable before this source is evaluated. Requests use
 // Node's native HTTPS/TLS implementation; no browser/BoringSSL impersonation options are applied.
 const http = require('node:http');

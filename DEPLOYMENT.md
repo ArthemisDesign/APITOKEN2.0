@@ -275,7 +275,7 @@ systemctl status claude-api-gemini.service
 The Anthropic slot alternates. Consumers must never hard-code 8787 or 8788; commerce always uses
 `http://127.0.0.1:8790`. OpenAI clients use only their public hostname; 8792/8793 remain loopback.
 Gemini clients use only `gemini.api.apitoken.sale`; its stable 8794 and runtime 8795 are loopback.
-Provision paid project profiles first as documented in `docs/GEMINI_PROVIDER.md`.
+Provision paid Antigravity OAuth profiles first as documented in `docs/GEMINI_PROVIDER.md`.
 
 ## Manual recovery: deploy the commerce API
 

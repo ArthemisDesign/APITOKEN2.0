@@ -1,4 +1,4 @@
-//! Attested official-Node transport for Gemini CLI's Code Assist surface.
+//! SHA-pinned Node transport for the private Cloud Code surface.
 //!
 //! Production requests never approximate Node/OpenSSL through the Claude BoringSSL stack. Every
 //! encrypted profile owns one persistent, multiplexed helper process whose exact executable is

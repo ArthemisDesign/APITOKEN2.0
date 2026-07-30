@@ -279,7 +279,7 @@ Only `gemini.api.apitoken.sale` is affected; do not restart healthy Claude or Op
 Check `claude-api-gemini.service`, direct readiness on 8795, stable readiness on 8794, and the unit
 journal. Verify that both credential keyrings match, the roster is
 readable, every envelope has the exact `credentials/<profile-id>.json` non-symlink 0600 path, and at
-least one profile passes `loadCodeAssist` health. Never decrypt or print an envelope while testing. Repair according to
+least one profile passes Antigravity `loadCodeAssist` health. Never decrypt or print an envelope while testing. Repair according to
 `docs/GEMINI_PROVIDER.md` and use the health-gated engine controller to restart the service.
 
 If the surface must be withdrawn during investigation, stop `claude-api-gemini.service` through the
