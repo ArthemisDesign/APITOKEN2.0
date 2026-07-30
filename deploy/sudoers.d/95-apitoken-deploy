@@ -185,6 +185,7 @@ Cmnd_Alias APITOKEN_CADDY = \
 Cmnd_Alias APITOKEN_PROBE = \
     /usr/bin/test -f /etc/apitoken/api.env, \
     /usr/bin/test -s /srv/claude-api/data/engine-postgres.env, \
+    /usr/bin/test -x /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh, \
     /usr/bin/test -f /etc/systemd/system/claude-api-anthropic@.service, \
     /usr/bin/test -f /etc/systemd/system/claude-api@.service, \
     /usr/bin/test -f /etc/systemd/system/claude-api-openai.service, \

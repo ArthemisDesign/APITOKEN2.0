@@ -2148,6 +2148,9 @@ grep -Fq 'controller/engine-migrate.sh' "$ROOT/deploy/install-watchdog.sh" \
 grep -Fq '/usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh [0-9a-f]*' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   || wd_die 'deploy user cannot invoke the fixed engine schema migration helper'
+grep -Fq '/usr/bin/test -x /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'deploy user cannot probe the fixed engine schema migration helper'
 
 # Core releases promote the frozen candidate, while manual deployments retain their fallback build.
 grep -Fq -- '--tested-candidate "$(candidate_for "$sha")"' "$ROOT/deploy/watchdog.sh" \

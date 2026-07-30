@@ -208,6 +208,8 @@ require_permitted 'backup runner' /usr/local/lib/apitoken-watchdog/watchdog-back
 require_permitted 'migration runner' /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh "$sample_sha"
 require_permitted 'engine schema migration runner' \
   /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh "$sample_sha"
+require_permitted 'engine schema migration helper probe' \
+  /usr/bin/test -x /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh
 require_permitted 'retention helper' /usr/local/lib/apitoken-watchdog/watchdog-retention.sh 10
 require_permitted 'Codex promotion helper' \
   /usr/local/lib/apitoken-watchdog/watchdog-codex-promote.sh "$sample_sha"
