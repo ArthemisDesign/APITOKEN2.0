@@ -7,13 +7,14 @@ import {
   buildAgentHandoff,
   buildClaudeCodeCommands,
   buildCodexCommands,
+  type SetupShell,
 } from "@/lib/connect-commands";
 
 const copy = {
   en: {
     eyebrow: "Quick setup",
     title: "Connect your coding tool",
-    text: "One key for both APIs. Save the environment variables in ~/.zshrc, reload it, and run Claude Code or Codex.",
+    text: "One key for both APIs. Pick the tool and your system, copy the setup, and run it in the terminal.",
     statePill: "Setup template",
     stepOne: "Paste your key",
     stepTwo: "Copy commands",
@@ -21,6 +22,11 @@ const copy = {
     stepThreeCodex: "Run Codex",
     tabClaude: "Claude Code",
     tabCodex: "Codex · OpenAI",
+    toolLabel: "Tool",
+    osLabel: "System",
+    osMac: "macOS / Linux",
+    osPowershell: "Windows · PowerShell",
+    osCmd: "Windows · CMD",
     terminal: "Terminal setup",
     copyTemplate: "Copy setup template",
     terminalCopied: "Setup copied",
@@ -30,11 +36,12 @@ const copy = {
     briefCopied: "Brief copied",
     openDocs: "Open full docs",
     note: "Replace YOUR_SK_POOL_API_KEY with your sk-pool key — the commands save it in ~/.zshrc for new terminals.",
+    noteWin: "Replace YOUR_SK_POOL_API_KEY with your sk-pool key. setx keeps it for new terminal windows; the set/$env: lines apply it right away.",
   },
   ru: {
     eyebrow: "Быстрая настройка",
     title: "Подключите инструмент разработки",
-    text: "Один ключ для обоих API. Сохраните переменные окружения в ~/.zshrc, перезагрузите его и запустите Claude Code или Codex.",
+    text: "Один ключ для обоих API. Выберите инструмент и систему, скопируйте команды и запустите их в терминале.",
     statePill: "Шаблон настройки",
     stepOne: "Вставьте ключ",
     stepTwo: "Скопируйте команды",
@@ -42,6 +49,11 @@ const copy = {
     stepThreeCodex: "Запустите Codex",
     tabClaude: "Claude Code",
     tabCodex: "Codex · OpenAI",
+    toolLabel: "Инструмент",
+    osLabel: "Система",
+    osMac: "macOS / Linux",
+    osPowershell: "Windows · PowerShell",
+    osCmd: "Windows · CMD",
     terminal: "Настройка терминала",
     copyTemplate: "Скопировать шаблон",
     terminalCopied: "Настройка скопирована",
@@ -51,6 +63,7 @@ const copy = {
     briefCopied: "Задание скопировано",
     openDocs: "Открыть полные доки",
     note: "Замените YOUR_SK_POOL_API_KEY на ваш ключ sk-pool — команды сохранят его в ~/.zshrc для новых терминалов.",
+    noteWin: "Замените YOUR_SK_POOL_API_KEY на ваш ключ sk-pool. setx сохранит его для новых окон терминала; строки set/$env: включают его сразу.",
   },
 } as const;
 
@@ -86,8 +99,15 @@ export function QuickConnectDock({ defaultExpanded = false }: { defaultExpanded?
   const t = copy[language];
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [surface, setSurface] = useState<"claude" | "codex">("claude");
-  const terminalCommands = surface === "claude" ? buildClaudeCodeCommands() : buildCodexCommands();
+  const [shell, setShell] = useState<SetupShell>("zsh");
+  const terminalCommands = surface === "claude" ? buildClaudeCodeCommands(null, shell) : buildCodexCommands(null, shell);
   const handoff = buildAgentHandoff({ language });
+  const shellOptions: Array<{ id: SetupShell; label: string }> = [
+    { id: "zsh", label: t.osMac },
+    { id: "powershell", label: t.osPowershell },
+    { id: "cmd", label: t.osCmd },
+  ];
+  const shellTag = shell === "zsh" ? "zsh" : shell === "powershell" ? "PowerShell" : "CMD";
 
   return (
     <aside className={`agent-connect-dock${expanded ? " is-open" : ""}`} aria-labelledby="agent-connect-title">
@@ -104,13 +124,26 @@ export function QuickConnectDock({ defaultExpanded = false }: { defaultExpanded?
             <span><b>2</b>{t.stepTwo}</span><i>→</i>
             <span><b>3</b>{surface === "claude" ? t.stepThreeClaude : t.stepThreeCodex}</span>
           </div>
-          <div className="agent-connect-tabs" role="group" aria-label={t.terminal}>
-            <button type="button" className={surface === "claude" ? "active" : ""} aria-pressed={surface === "claude"} onClick={() => setSurface("claude")}>{t.tabClaude}</button>
-            <button type="button" className={surface === "codex" ? "active" : ""} aria-pressed={surface === "codex"} onClick={() => setSurface("codex")}>{t.tabCodex}</button>
+          <div className="agent-connect-controls">
+            <div className="agent-connect-control">
+              <span>{t.toolLabel}</span>
+              <div className="agent-connect-tabs" role="group" aria-label={t.toolLabel}>
+                <button type="button" className={surface === "claude" ? "active" : ""} aria-pressed={surface === "claude"} onClick={() => setSurface("claude")}>{t.tabClaude}</button>
+                <button type="button" className={surface === "codex" ? "active" : ""} aria-pressed={surface === "codex"} onClick={() => setSurface("codex")}>{t.tabCodex}</button>
+              </div>
+            </div>
+            <div className="agent-connect-control">
+              <span>{t.osLabel}</span>
+              <div className="agent-connect-tabs" role="group" aria-label={t.osLabel}>
+                {shellOptions.map((option) => (
+                  <button key={option.id} type="button" className={shell === option.id ? "active" : ""} aria-pressed={shell === option.id} onClick={() => setShell(option.id)}>{option.label}</button>
+                ))}
+              </div>
+            </div>
           </div>
           <div className="agent-terminal" aria-label={t.terminal}>
             <div className="agent-terminal-head">
-              <span><i /><i /><i />{t.terminal}</span>
+              <span><i /><i /><i />{t.terminal} · {shellTag}</span>
               <DockCopyButton value={terminalCommands} className="agent-connect-copy" label={t.copyTemplate} copiedLabel={t.terminalCopied} />
             </div>
             <pre><TerminalCommands commands={terminalCommands} /></pre>
@@ -122,7 +155,7 @@ export function QuickConnectDock({ defaultExpanded = false }: { defaultExpanded?
               <a className="btn btn-ghost btn-sm" href={OFFICIAL_DOCS_URL} target="_blank" rel="noreferrer">{t.openDocs} ↗</a>
             </div>
           </div>
-          <p className="agent-connect-note"><span aria-hidden="true">ⓘ</span><span>{t.note}</span></p>
+          <p className="agent-connect-note"><span aria-hidden="true">ⓘ</span><span>{shell === "zsh" ? t.note : t.noteWin}</span></p>
         </div>
       )}
     </aside>

@@ -10,25 +10,69 @@ export const OPENAI_DEFAULT_MODEL = "gpt-5.6-sol";
 const PUBLIC_SITE_ORIGIN = "https://apitoken.sale";
 const API_KEY_PLACEHOLDER = "YOUR_SK_POOL_API_KEY";
 
-export function buildClaudeCodeCommands(apiKey?: string | null): string {
-  const key = apiKey?.trim() || API_KEY_PLACEHOLDER;
-  return `echo 'export ANTHROPIC_BASE_URL="${CLAUDE_API_BASE_URL}"' >> ~/.zshrc
-echo 'export ANTHROPIC_API_KEY="${key}"' >> ~/.zshrc
-source ~/.zshrc
-claude`;
-}
+/**
+ * zsh persists via ~/.zshrc; on Windows setx writes future terminals only, so the
+ * PowerShell/CMD variants also set the variable for the current window — otherwise the
+ * final `claude`/`codex` line would start unconfigured and confuse the first run.
+ */
+export type SetupShell = "zsh" | "powershell" | "cmd";
 
-export function buildCodexCommands(apiKey?: string | null): string {
-  const key = apiKey?.trim() || API_KEY_PLACEHOLDER;
-  return `mkdir -p ~/.codex && cat > ~/.codex/apitoken.config.toml << 'EOF'
-model = "${OPENAI_DEFAULT_MODEL}"
+const CODEX_PROFILE_TOML = `model = "${OPENAI_DEFAULT_MODEL}"
 model_provider = "apitoken"
 
 [model_providers.apitoken]
 name = "apiToken.sale"
 base_url = "${OPENAI_API_BASE_URL}"
 wire_api = "responses"
-env_key = "APITOKEN_API_KEY"
+env_key = "APITOKEN_API_KEY"`;
+
+export function buildClaudeCodeCommands(apiKey?: string | null, shell: SetupShell = "zsh"): string {
+  const key = apiKey?.trim() || API_KEY_PLACEHOLDER;
+  if (shell === "powershell") {
+    return `setx ANTHROPIC_BASE_URL "${CLAUDE_API_BASE_URL}"
+setx ANTHROPIC_API_KEY "${key}"
+$env:ANTHROPIC_BASE_URL = "${CLAUDE_API_BASE_URL}"
+$env:ANTHROPIC_API_KEY = "${key}"
+claude`;
+  }
+  if (shell === "cmd") {
+    return `setx ANTHROPIC_BASE_URL "${CLAUDE_API_BASE_URL}"
+setx ANTHROPIC_API_KEY "${key}"
+set ANTHROPIC_BASE_URL=${CLAUDE_API_BASE_URL}
+set ANTHROPIC_API_KEY=${key}
+claude`;
+  }
+  return `echo 'export ANTHROPIC_BASE_URL="${CLAUDE_API_BASE_URL}"' >> ~/.zshrc
+echo 'export ANTHROPIC_API_KEY="${key}"' >> ~/.zshrc
+source ~/.zshrc
+claude`;
+}
+
+export function buildCodexCommands(apiKey?: string | null, shell: SetupShell = "zsh"): string {
+  const key = apiKey?.trim() || API_KEY_PLACEHOLDER;
+  if (shell === "powershell") {
+    return `New-Item -ItemType Directory -Force "$HOME\\.codex" | Out-Null
+@'
+${CODEX_PROFILE_TOML}
+'@ | Set-Content "$HOME\\.codex\\apitoken.config.toml"
+setx APITOKEN_API_KEY "${key}"
+$env:APITOKEN_API_KEY = "${key}"
+codex --profile apitoken`;
+  }
+  if (shell === "cmd") {
+    const tomlEchoes = CODEX_PROFILE_TOML.split("\n")
+      .map((line) => (line === "" ? "echo." : `echo ${line}`))
+      .join("\n");
+    return `mkdir "%USERPROFILE%\\.codex" 2>nul
+(
+${tomlEchoes}
+) > "%USERPROFILE%\\.codex\\apitoken.config.toml"
+setx APITOKEN_API_KEY "${key}"
+set APITOKEN_API_KEY=${key}
+codex --profile apitoken`;
+  }
+  return `mkdir -p ~/.codex && cat > ~/.codex/apitoken.config.toml << 'EOF'
+${CODEX_PROFILE_TOML}
 EOF
 echo 'export APITOKEN_API_KEY="${key}"' >> ~/.zshrc
 source ~/.zshrc

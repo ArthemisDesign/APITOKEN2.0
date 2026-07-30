@@ -31,6 +31,19 @@ claude`);
     expect(publicDocsUrl("/docs")).toBe("https://apitoken.sale/docs");
     expect(publicDocsUrl("https://docs.example.com/claude")).toBe("https://docs.example.com/claude");
   });
+
+  it("configures both future and current terminals on Windows", () => {
+    for (const shell of ["powershell", "cmd"] as const) {
+      const commands = buildClaudeCodeCommands("sk-pool-test-secret", shell);
+      // setx alone would leave the current window unconfigured and the final `claude` line broken.
+      expect(commands).toContain('setx ANTHROPIC_BASE_URL "https://api.apitoken.sale"');
+      expect(commands).toContain('setx ANTHROPIC_API_KEY "sk-pool-test-secret"');
+      expect(commands.trim().endsWith("claude")).toBe(true);
+      expect(commands).not.toContain("~/.zshrc");
+    }
+    expect(buildClaudeCodeCommands("sk-pool-test-secret", "powershell")).toContain('$env:ANTHROPIC_API_KEY = "sk-pool-test-secret"');
+    expect(buildClaudeCodeCommands("sk-pool-test-secret", "cmd")).toContain("set ANTHROPIC_API_KEY=sk-pool-test-secret");
+  });
 });
 
 describe("Codex connection setup", () => {
@@ -52,6 +65,23 @@ describe("Codex connection setup", () => {
     expect(commands).toContain("YOUR_SK_POOL_API_KEY");
     // The profile references the environment variable by name only — the secret never enters TOML.
     expect(commands).not.toContain("APITOKEN_API_KEY = ");
+  });
+
+  it("writes the same profile on Windows without zsh syntax", () => {
+    const powershell = buildCodexCommands("sk-pool-test-secret", "powershell");
+    expect(powershell).toContain("Set-Content");
+    expect(powershell).toContain('$env:APITOKEN_API_KEY = "sk-pool-test-secret"');
+
+    const cmd = buildCodexCommands("sk-pool-test-secret", "cmd");
+    expect(cmd).toContain('echo base_url = "https://openai.api.apitoken.sale/v1"');
+    expect(cmd).toContain("set APITOKEN_API_KEY=sk-pool-test-secret");
+
+    for (const commands of [powershell, cmd]) {
+      expect(commands).toContain('wire_api = "responses"');
+      expect(commands.trim().endsWith("codex --profile apitoken")).toBe(true);
+      expect(commands).not.toContain("~/.zshrc");
+      expect(commands).not.toContain("<< 'EOF'");
+    }
   });
 });
 

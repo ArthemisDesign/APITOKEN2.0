@@ -685,6 +685,9 @@ footer{padding:64px 0 40px;border-bottom:0}
 .agent-connect-state i{width:6px;height:6px;border-radius:50%;background:var(--txt-4)}.agent-connect-state.ready{border-color:rgba(22,163,74,.24);background:rgba(22,163,74,.07);color:#16a34a}.agent-connect-state.ready i{background:#16a34a}
 .agent-connect-chevron{color:var(--txt-4);font-size:17px;transition:transform .18s}.agent-connect-dock.is-open .agent-connect-chevron{transform:rotate(180deg)}
 .agent-connect-body{display:grid;gap:16px;padding:18px;border-top:1px solid var(--line);background:color-mix(in srgb,var(--bg-soft) 36%,var(--bg-card))}
+.agent-connect-controls{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px 22px}
+.agent-connect-control{display:grid;gap:5px}
+.agent-connect-control>span{font:600 8px var(--font-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--txt-4)}
 .agent-connect-tabs{display:inline-flex;justify-self:start;gap:4px;padding:3px;border:1px solid var(--line);border-radius:8px;background:var(--bg-soft)}
 .agent-connect-tabs button{padding:6px 12px;border:0;border-radius:6px;background:transparent;color:var(--txt-3);font:700 11px var(--font-mono);cursor:pointer;transition:background .15s,color .15s}
 .agent-connect-tabs button:hover{color:var(--txt)}
