@@ -113,6 +113,8 @@ fn admin_quick_tier(text: &str) -> Option<&'static str> {
         "📦 Claude Pro" => Some("Claude Pro"),
         "📦 Claude 5x" => Some("Claude 5x"),
         "📦 Claude 20x" => Some("Claude 20x"),
+        "📦 ChatGPT Plus" => Some("ChatGPT Plus"),
+        "📦 ChatGPT Pro" => Some("ChatGPT Pro"),
         "📦 Google AI Pro" | "📦 Gemini Pro" => Some("Google AI Pro"),
         "📦 Google AI Ultra" | "📦 Gemini Ultra" => Some("Google AI Ultra"),
         "📦 Code Assist Standard" | "📦 Code Assist Std" => Some("Code Assist Standard"),
@@ -127,6 +129,7 @@ fn admin_quick_tier(text: &str) -> Option<&'static str> {
 fn admin_home_kb() -> Vec<Vec<&'static str>> {
     vec![
         vec!["📦 Claude Pro", "📦 Claude 5x", "📦 Claude 20x"],
+        vec!["📦 ChatGPT Plus", "📦 ChatGPT Pro"],
         vec!["📦 Google AI Pro", "📦 Google AI Ultra"],
         vec!["🛠 Панель"],
     ]
@@ -160,12 +163,87 @@ async fn notify_admins(bot: &Bot, cfg: &Config, text: &str, kb: Option<&Keyboard
     }
 }
 
+const CLAUDE_OFFER_GUIDE: &str = "🧭 <b>Что нужно будет сделать после принятия</b>\n\
+1. Дождаться выплаты и персонального HTTP-прокси от бота.\n\
+2. Создать <b>новый чистый профиль</b> в антидетект-браузере и подключить к нему этот прокси.\n\
+3. Только через этот профиль самостоятельно зарегистрировать новый аккаунт Claude и активировать тариф из оффера.\n\
+4. Прислать боту email аккаунта, открыть ссылку авторизации в том же профиле и вернуть полный callback-адрес.\n\n\
+⚠️ <b>Не регистрируй и не открывай аккаунт до получения прокси.</b> До завершения не меняй профиль, прокси или устройство. Пароль, cookie, банковские данные и коды из почты бот не просит.";
+
+const CODEX_OFFER_GUIDE: &str = "🧭 <b>Что нужно будет сделать после принятия</b>\n\
+1. Дождаться выплаты и персонального HTTP-прокси от бота.\n\
+2. Создать <b>новый чистый профиль</b> в антидетект-браузере и подключить к нему этот прокси.\n\
+3. Только через этот профиль самостоятельно зарегистрировать новый аккаунт ChatGPT и активировать Plus/Pro из оффера.\n\
+4. Прислать боту email, открыть ссылку OpenAI в том же профиле и ввести выданный одноразовый код.\n\n\
+⚠️ <b>Не регистрируй и не открывай аккаунт до получения прокси.</b> До завершения не меняй профиль, прокси или устройство. Пароль, cookie, банковские данные и коды из почты бот не просит.";
+
+const CLAUDE_ACCOUNT_SETUP: &str = "🧩 <b>Этап 2 из 3 — подготовь аккаунт Claude</b>\n\n\
+1️⃣ Открой антидетект-браузер (например, Dolphin или AdsPower) и создай <b>новый чистый профиль</b>. Не используй обычный браузер, старый профиль или телефон.\n\n\
+2️⃣ В настройках профиля выбери тип прокси <b>HTTP</b> и вставь данные, которые бот прислал выше. Если браузер просит отдельные поля, строка <code>ip:port:user:pass</code> означает: IP — первое поле, порт — второе, логин — третье, пароль — четвёртое. Нажми проверку и продолжай только если прокси работает и IP изменился. Дополнительный VPN не включай.\n\n\
+3️⃣ В этом же профиле открой <code>https://claude.ai</code> и самостоятельно зарегистрируй <b>новый</b> аккаунт. Если Google-аккаунта ещё нет, сначала создай его на <code>https://accounts.google.com</code> внутри этого же профиля, затем на Claude выбери «Continue with Google». Если входишь по email — подтверди письмо, не выходя из профиля.\n\n\
+4️⃣ Подключи тариф, указанный в оффере, и проверь, что Claude открывается. Не меняй прокси и не закрывай профиль: он ещё понадобится для авторизации.\n\n\
+5️⃣ Когда всё готово, пришли сюда <b>точный email аккаунта Claude</b> одним сообщением. Больше ничего присылать не нужно.";
+
+const CODEX_ACCOUNT_SETUP: &str = "🧩 <b>Этап 2 из 3 — подготовь аккаунт ChatGPT</b>\n\n\
+1️⃣ Открой антидетект-браузер (например, Dolphin или AdsPower) и создай <b>новый чистый профиль</b>. Не используй обычный браузер, старый профиль или телефон.\n\n\
+2️⃣ В настройках профиля выбери тип прокси <b>HTTP</b> и вставь данные, которые бот прислал выше. Если браузер просит отдельные поля, строка <code>ip:port:user:pass</code> означает: IP — первое поле, порт — второе, логин — третье, пароль — четвёртое. Нажми проверку и продолжай только если прокси работает и IP изменился. Дополнительный VPN не включай.\n\n\
+3️⃣ В этом же профиле открой <code>https://chatgpt.com</code> и самостоятельно зарегистрируй <b>новый</b> аккаунт. Если Google-аккаунта ещё нет, сначала создай его на <code>https://accounts.google.com</code> внутри этого же профиля, затем на ChatGPT выбери «Continue with Google». Если входишь по email — подтверди письмо, не выходя из профиля.\n\n\
+4️⃣ Активируй подписку Plus или Pro из оффера и проверь, что ChatGPT открывается. Не меняй прокси и не закрывай профиль: он ещё понадобится для подтверждения входа.\n\n\
+5️⃣ Когда всё готово, пришли сюда <b>точный email аккаунта ChatGPT</b> одним сообщением. Больше ничего присылать не нужно.";
+
+const CLAUDE_MANUAL_PROXY: &str = "⚠️ Автоматически выдать прокси сейчас не получилось.\n\n\
+🔐 <b>Этап 1 из 3 — пришли HTTP-прокси для аккаунта Claude</b>\n\
+Одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.\n\n\
+Не регистрируй аккаунт до подтверждения прокси ботом: регистрация и дальнейшая авторизация должны пройти с одного IP.";
+
+const CODEX_MANUAL_PROXY: &str = "⚠️ Автоматически выдать прокси сейчас не получилось.\n\n\
+🔐 <b>Этап 1 из 3 — пришли HTTP-прокси для аккаунта ChatGPT</b>\n\
+Одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.\n\n\
+Не регистрируй аккаунт до подтверждения прокси ботом: регистрация и дальнейшая авторизация должны пройти с одного IP.";
+
+fn seller_offer_guide(product: &str) -> &'static str {
+    match handoff_kind(product) {
+        HandoffKind::Claude => CLAUDE_OFFER_GUIDE,
+        HandoffKind::Codex => CODEX_OFFER_GUIDE,
+        HandoffKind::Gemini => "",
+    }
+}
+
+fn account_setup_prompt(step: &str) -> &'static str {
+    match step {
+        "cx_email" => CODEX_ACCOUNT_SETUP,
+        "ho_email" => CLAUDE_ACCOUNT_SETUP,
+        _ => "",
+    }
+}
+
+fn manual_proxy_prompt(step: &str) -> &'static str {
+    match step {
+        "cx_proxy" => CODEX_MANUAL_PROXY,
+        _ => CLAUDE_MANUAL_PROXY,
+    }
+}
+
+fn accepted_next_step(product: &str) -> &'static str {
+    match handoff_kind(product) {
+        HandoffKind::Claude => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай Claude-аккаунт.</b>",
+        HandoffKind::Codex => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай ChatGPT-аккаунт.</b>",
+        HandoffKind::Gemini => "После подтверждения выплаты бот выдаст прокси и пошагово проведёт через официальный Gemini CLI OAuth.",
+    }
+}
+
 fn offer_text(o: &crate::db::Offer) -> String {
+    let guide = seller_offer_guide(&o.product);
     format!(
-        "📦 <b>Оффер #{}</b>\nПродукт: <b>{}</b>\nЦена: <b>{}</b>",
+        "📦 <b>Оффер #{}</b>\nПродукт: <b>{}</b>\nЦена: <b>{}</b>{}",
         o.id,
         esc(&o.product),
-        esc(&o.price)
+        esc(&o.price),
+        if guide.is_empty() {
+            String::new()
+        } else {
+            format!("\n\n{guide}")
+        }
     )
 }
 
@@ -402,11 +480,13 @@ pub async fn on_message(
             "ho_proxy" => {
                 let purl = proxy_url(text);
                 if purl.is_empty() {
-                    let _ = bot.send(chat, "Не похоже на прокси. Пришли <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.").await;
+                    let _ = bot.send(chat, "🤔 Не разобрал прокси. Пришли его одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.").await;
                 } else {
                     let _ = store.set_hproxy(chat, &purl);
                     let _ = store.set_want(chat, "ho_email");
-                    let _ = bot.send(chat, "Прокси принят ✅\n<b>Шаг 2/3.</b> Пришли <b>email</b> аккаунта Claude.").await;
+                    let _ = bot
+                        .send(chat, &format!("✅ Прокси принят и закреплён за аккаунтом.\n\n{CLAUDE_ACCOUNT_SETUP}"))
+                        .await;
                 }
             }
             "ho_email" => {
@@ -424,11 +504,13 @@ pub async fn on_message(
             "cx_proxy" => {
                 let purl = proxy_url(text);
                 if purl.is_empty() {
-                    let _ = bot.send(chat, "Не похоже на прокси. Пришли <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.").await;
+                    let _ = bot.send(chat, "🤔 Не разобрал прокси. Пришли его одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.").await;
                 } else {
                     let _ = store.set_hproxy(chat, &purl);
                     let _ = store.set_want(chat, "cx_email");
-                    let _ = bot.send(chat, "Прокси принят ✅\n<b>Шаг 2/3.</b> Пришли <b>email</b> аккаунта ChatGPT.").await;
+                    let _ = bot
+                        .send(chat, &format!("✅ Прокси принят и закреплён за аккаунтом.\n\n{CODEX_ACCOUNT_SETUP}"))
+                        .await;
                 }
             }
             "cx_email" => {
@@ -626,8 +708,12 @@ async fn do_start_token(bot: &Bot, cfg: &Arc<Config>, chat: i64, email: &str, pr
                 .send(
                     chat,
                     &format!(
-            "🔗 <b>Шаг 3/3.</b> Открой ссылку, залогинься нужным аккаунтом, затем пришли \
-             <b>адрес callback целиком</b> (или строку <code>code#state</code>):\n\n{}", esc(&url)),
+            "🔗 <b>Этап 3 из 3 — передай доступ Claude</b>\n\n\
+             1️⃣ Не закрывая подготовленный антидетект-профиль и не меняя прокси, открой ссылку ниже. <b>Не открывай её в Telegram, обычном браузере или на телефоне.</b>\n\n\
+             2️⃣ Войди именно в новый Claude-аккаунт и подтверди доступ.\n\n\
+             3️⃣ После подтверждения браузер перейдёт на callback-страницу. Даже если она пустая или не открылась, скопируй <b>весь адрес из адресной строки</b> — от <code>https://</code> до конца, вместе с <code>code</code> и <code>state</code>.\n\n\
+             4️⃣ Пришли этот адрес сюда одним сообщением. Пароль, cookie и коды из email не присылай.\n\n\
+             <b>Ссылка авторизации:</b>\n{}", esc(&url)),
                 )
                 .await;
             true
@@ -839,9 +925,13 @@ async fn start_codex_handoff(
     };
     let _ = store.set_want(chat, "");
     let _ = bot.send(chat, &format!(
-        "🔗 <b>Шаг 3/3.</b> Открой ссылку, войди нужным аккаунтом ChatGPT и введи одноразовый код:\n\n\
-         {url}\n\nКод: <code>{code}</code>\n\n\
-         Код живёт 15 минут. Как только подтвердишь вход — сообщу здесь, ничего присылать не нужно.",
+        "🔗 <b>Этап 3 из 3 — подтверди доступ ChatGPT</b>\n\n\
+         1️⃣ Не закрывая подготовленный антидетект-профиль и не меняя прокси, открой ссылку ниже. <b>Не открывай её в Telegram, обычном браузере или на телефоне.</b>\n\n\
+         2️⃣ Войди именно в новый аккаунт ChatGPT.\n\n\
+         3️⃣ Введи одноразовый код, который указан ниже, и подтверди вход.\n\n\
+         4️⃣ Вернись в бот и просто подожди: ничего отправлять сюда не нужно, бот сам увидит подтверждение.\n\n\
+         <b>Ссылка OpenAI:</b>\n{url}\n\n<b>Одноразовый код:</b> <code>{code}</code>\n\n\
+         ⏱ Код действует 15 минут. Пароль, cookie и коды из email боту не нужны.",
         url = esc(&auth.url), code = esc(&auth.code))).await;
 
     let (bot2, store2, cfg2) = (bot.clone(), store.clone(), cfg.clone());
@@ -890,7 +980,8 @@ async fn start_codex_handoff(
 }
 
 /// После оплаты (сумма > $10): авто-выпуск UK ISP прокси через IPRoyal и красивая выдача
-/// продавцу. Ставит его в шаг ho_email. При ошибке — фолбэк на ручной ввод прокси продавцом.
+/// продавцу. Переводит сценарий на подготовку аккаунта соответствующего продукта. При ошибке —
+/// фолбэк на ручной ввод прокси продавцом.
 async fn deliver_issued_proxy(
     bot: &Bot,
     store: &Arc<Store>,
@@ -926,15 +1017,10 @@ async fn deliver_issued_proxy(
             }
             let _ = store.set_want(seller_chat, next_step);
             let next_prompt = match next_step {
-                "cx_email" => {
-                    "<b>Шаг 2/3.</b> Зайди в аккаунт ChatGPT через этот прокси (HTTP) и пришли <b>email</b> аккаунта."
-                }
                 "gm_gproxy" => {
                     "Прокси закреплён за твоим Gemini-профилем ✅\nСейчас бот выдаст официальную ссылку Gemini CLI; создавать OAuth-клиент или включать Cloud API не нужно."
                 }
-                _ => {
-                    "<b>Шаг 2/3.</b> Зайди в аккаунт Claude через этот прокси (HTTP) и пришли <b>email</b> аккаунта."
-                }
+                _ => account_setup_prompt(next_step),
             };
             let _ = bot
                 .send(
@@ -962,8 +1048,7 @@ async fn deliver_issued_proxy(
             let prompt = if proxy_step == "gm_gproxy" {
                 GEMINI_STEP_PROXY.to_string()
             } else {
-                "⚠️ Авто-выпуск прокси временно не удался. <b>Передача доступа, шаг 1/3.</b>\n\
-                 Пришли <b>прокси</b> аккаунта: <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.".to_string()
+                manual_proxy_prompt(proxy_step).to_string()
             };
             let _ = bot.send(seller_chat, &prompt).await;
             notify_admins(bot, cfg, &format!(
@@ -1162,9 +1247,9 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                             )
                         } else {
                             format!(
-                                "💸 <b>Оплата отправлена!</b> tx: <code>{}</code>\n\n<b>Передача доступа, шаг 1/3.</b>\n\
-                             Пришли <b>прокси</b> аккаунта одним сообщением: <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.",
-                                esc(&hash)
+                                "💸 <b>Оплата отправлена!</b> tx: <code>{}</code>\n\n{}",
+                                esc(&hash),
+                                manual_proxy_prompt(proxy_step)
                             )
                         };
                         let _ = bot.send(seller_chat, &seller_prompt).await;
@@ -1204,7 +1289,15 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                 let prod = o.as_ref().map(|x| x.product.clone()).unwrap_or_default();
                 if rec.address.is_empty() {
                     let _ = store.set_want(chat, "reg_address");
-                    let _ = bot.send(chat, "Принято! Сначала пришли <b>BEP-20</b> адрес (<code>0x…</code>) для выплаты.").await;
+                    let _ = bot
+                        .send(
+                            chat,
+                            &format!(
+                                "✅ <b>Оффер принят!</b>\n\n<b>Сейчас:</b> пришли одним сообщением свой BEP-20 адрес (<code>0x…</code>) для выплаты.\n\n<b>Затем:</b> {}",
+                                accepted_next_step(&prod)
+                            ),
+                        )
+                        .await;
                     notify_admins(
                         bot,
                         cfg,
@@ -1220,7 +1313,10 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                     let _ = bot
                         .send(
                             chat,
-                            "✅ Принято! Передал администратору на подтверждение оплаты.",
+                            &format!(
+                                "✅ <b>Оффер принят!</b> Адрес для выплаты уже сохранён.\n\n⏳ Ожидай подтверждение оплаты. {}",
+                                accepted_next_step(&prod)
+                            ),
                         )
                         .await;
                     let pay_kb: Keyboard =
@@ -1351,6 +1447,49 @@ mod tests {
             assert_eq!(admin_quick_tier(button), Some(product));
             assert_eq!(handoff_kind(product), HandoffKind::Gemini);
         }
+    }
+
+    #[test]
+    fn persistent_admin_keyboard_exposes_both_chatgpt_products() {
+        let buttons = admin_home_kb().into_iter().flatten().collect::<Vec<_>>();
+        for (button, product) in [
+            ("📦 ChatGPT Plus", "ChatGPT Plus"),
+            ("📦 ChatGPT Pro", "ChatGPT Pro"),
+        ] {
+            assert!(buttons.contains(&button), "missing ChatGPT button {button}");
+            assert_eq!(admin_quick_tier(button), Some(product));
+            assert_eq!(handoff_kind(product), HandoffKind::Codex);
+        }
+    }
+
+    #[test]
+    fn claude_and_chatgpt_offers_prepare_a_first_time_seller() {
+        let store = store();
+        let claude_id = store.create_offer("Claude Pro", "$20", 1, 2).unwrap();
+        let chatgpt_id = store.create_offer("ChatGPT Plus", "$20", 1, 2).unwrap();
+        let claude = offer_text(&store.get_offer(claude_id).unwrap().unwrap());
+        let chatgpt = offer_text(&store.get_offer(chatgpt_id).unwrap().unwrap());
+
+        for guide in [&claude, &chatgpt] {
+            assert!(guide.contains("антидетект-браузере"));
+            assert!(guide.contains("персонального HTTP-прокси"));
+            assert!(guide.contains("Не регистрируй и не открывай аккаунт"));
+            assert!(guide.contains("Пароль, cookie, банковские данные"));
+        }
+        assert!(claude.contains("callback-адрес"));
+        assert!(chatgpt.contains("одноразовый код"));
+
+        for setup in [CLAUDE_ACCOUNT_SETUP, CODEX_ACCOUNT_SETUP] {
+            assert!(setup.contains("новый чистый профиль"));
+            assert!(setup.contains("Continue with Google"));
+            assert!(setup.contains("https://accounts.google.com"));
+            assert!(setup.contains("IP — первое поле"));
+            assert!(setup.contains("Дополнительный VPN не включай"));
+            assert!(setup.contains("точный email"));
+            assert!(setup.chars().count() < 3_500, "Telegram prompt is too long");
+        }
+        assert!(CLAUDE_ACCOUNT_SETUP.contains("https://claude.ai"));
+        assert!(CODEX_ACCOUNT_SETUP.contains("https://chatgpt.com"));
     }
 
     #[test]
