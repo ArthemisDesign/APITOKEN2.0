@@ -1062,3 +1062,26 @@ body.app-body .bg-decor{display:none!important}
 .qs-code .tok-com{color:#7f848e;font-style:italic}
 .qs-code .tok-var{color:#e06c75}
 .qs-code .tok-num{color:#d19a66}
+
+/* provider detail view */
+.provider-card-clickable{cursor:pointer;transition:border-color .15s}
+.provider-card-clickable:hover{border-color:var(--accent-line)}
+.provider-back{font-family:var(--font-mono);font-size:13px;margin-bottom:18px;display:inline-block}
+.provider-detail-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px}
+.provider-mark-lg{width:38px;height:38px;border-radius:11px;font-size:18px}
+.provider-detail-title h2{font-size:24px;margin:0 0 6px}
+.provider-detail-head .qs-open-btn{margin-left:auto}
+.provider-detail-desc{margin-top:4px}
+.provider-chips{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:18px 0 26px}
+.provider-chip{background:var(--bg-card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;
+  display:flex;flex-direction:column;gap:4px}
+.provider-chip span{font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt-4)}
+.provider-chip b{font-size:14px;color:var(--txt)}
+.provider-models-title{font-size:18px;margin:0 0 4px}
+.provider-models-table{min-width:880px}
+.provider-models-table td{vertical-align:top}
+.provider-model-name{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.provider-model-name .model-tier{margin-left:0}
+.provider-model-id{display:flex;align-items:center;gap:6px}
+.provider-models-table .tnum b{color:var(--txt)}
+.provider-models-table .tnum s{color:var(--txt-4);font-weight:400;margin-left:5px}
