@@ -11,15 +11,17 @@ const mocks = vi.hoisted(() => {
     }
   }
 
+  const replace = vi.fn();
   return {
     me: vi.fn(),
-    replace: vi.fn(),
+    replace,
+    router: { replace },
     MockApiError,
   };
 });
 
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ replace: mocks.replace }),
+  useRouter: () => mocks.router,
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -49,6 +51,8 @@ describe("AuthEntryGuard", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    vi.clearAllTimers();
+    vi.useRealTimers();
   });
 
   it("keeps the auth form hidden while the session check is pending, then redirects an authenticated user", async () => {
@@ -77,13 +81,35 @@ describe("AuthEntryGuard", () => {
     expect(mocks.replace).not.toHaveBeenCalled();
   });
 
-  it("does not expose the auth form when the session check fails unexpectedly", async () => {
+  it("shows the auth form when the session check fails unexpectedly", async () => {
     mocks.me.mockRejectedValue(new mocks.MockApiError("Service unavailable", 503));
 
     await renderGuard(root);
 
-    expect(container.textContent).toContain("We couldn’t check your session");
-    expect(container.textContent).not.toContain("login form");
+    expect(container.textContent).toContain("login form");
+    expect(mocks.replace).not.toHaveBeenCalled();
+  });
+
+  it("shows the auth form after a timeout and ignores a late session response", async () => {
+    vi.useFakeTimers();
+    let resolveSession!: (value: unknown) => void;
+    let sessionSignal: AbortSignal | undefined;
+    mocks.me.mockImplementation((signal?: AbortSignal) => {
+      sessionSignal = signal;
+      return new Promise((resolve) => {
+        resolveSession = resolve;
+      });
+    });
+
+    await renderGuard(root);
+    expect(container.textContent).toContain("Checking your session");
+
+    await act(async () => vi.advanceTimersByTimeAsync(5_000));
+
+    expect(sessionSignal?.aborted).toBe(true);
+    expect(container.textContent).toContain("login form");
+
+    await act(async () => resolveSession({ user: { id: "user-1" } }));
     expect(mocks.replace).not.toHaveBeenCalled();
   });
 });

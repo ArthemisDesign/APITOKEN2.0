@@ -2,9 +2,11 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { api, ApiError } from "@/lib/api";
+import { api } from "@/lib/api";
 
-type AuthEntryPhase = "checking" | "anonymous" | "error";
+const SESSION_CHECK_TIMEOUT_MS = 5_000;
+
+type AuthEntryPhase = "checking" | "anonymous";
 
 export function AuthEntryGuard({
   children,
@@ -17,49 +19,40 @@ export function AuthEntryGuard({
 }) {
   const router = useRouter();
   const [phase, setPhase] = useState<AuthEntryPhase>("checking");
-  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    let finished = false;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => {
+      finished = true;
+      controller.abort();
+      if (!cancelled) setPhase("anonymous");
+    }, SESSION_CHECK_TIMEOUT_MS);
 
-    api.me()
+    api.me(controller.signal)
       .then(() => {
-        if (!cancelled) router.replace(dashboardHref);
+        if (cancelled || finished) return;
+        finished = true;
+        router.replace(dashboardHref);
       })
-      .catch((error: unknown) => {
-        if (cancelled) return;
-        setPhase(error instanceof ApiError && error.status === 401 ? "anonymous" : "error");
+      .catch(() => {
+        if (cancelled || finished) return;
+        finished = true;
+        setPhase("anonymous");
+      })
+      .finally(() => {
+        window.clearTimeout(timeout);
       });
 
     return () => {
       cancelled = true;
+      window.clearTimeout(timeout);
+      controller.abort();
     };
-  }, [attempt, dashboardHref, router]);
+  }, [dashboardHref, router]);
 
   if (phase === "anonymous") return children;
-
-  if (phase === "error") {
-    return (
-      <div className="auth-session-check" role="alert">
-        <h1>{language === "ru" ? "Не удалось проверить сессию" : "We couldn’t check your session"}</h1>
-        <p className="sub">
-          {language === "ru"
-            ? "Проверьте подключение и повторите попытку."
-            : "Check your connection and try again."}
-        </p>
-        <button
-          className="btn btn-primary"
-          type="button"
-          onClick={() => {
-            setPhase("checking");
-            setAttempt((current) => current + 1);
-          }}
-        >
-          {language === "ru" ? "Повторить" : "Try again"}
-        </button>
-      </div>
-    );
-  }
 
   return (
     <div className="auth-session-check auth-entry-skeleton" role="status" aria-live="polite">
