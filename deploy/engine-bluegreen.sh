@@ -687,10 +687,10 @@ if [[ $DRY_RUN == 0 ]]; then
     || post_admission_die "stable OpenAI origin lost readiness while admitting the target"
 fi
 if [[ $OPENAI_LEGACY_TARGET == 0 ]]; then
-  # The old origin remains fully ready while the candidate proves that both HTTP generations expose
-  # the same authenticated-home set throughout an observational stability window. One shared home
-  # is valid; losing any home is not. This gate sends no signals and performs no repair: candidate
-  # startup either established the invariant or cutover fails while the old generation is untouched.
+  # Exact authenticated-home parity is part of candidate readiness, not a time-based soak. The old
+  # origin remains fully ready while clients converge; admission returns on the first process-fenced
+  # exact match. One shared home is valid, but a subset is not. The gate sends no signals and performs
+  # no repair: candidate startup either establishes the invariant or cutover fails with old untouched.
   privileged_command "$CODEX_APP_SERVERS_HELPER" admit-cutover \
     || post_admission_die "OpenAI target failed authenticated-capacity parity admission"
   if [[ $DRY_RUN == 0 ]]; then

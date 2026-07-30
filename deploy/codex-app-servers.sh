@@ -28,11 +28,6 @@ CODEX_AS_SERVICE_USER=${CODEX_AS_SERVICE_USER:-deploy}
 # may not own the same auth.json during that one-time handoff.
 CODEX_AS_MIN_READY=1
 CODEX_AS_MIGRATION_SEED_COUNT=1
-# A cutover gate is deliberately much stricter than routine reconciliation. Both HTTP generations
-# stay in Caddy while the candidate proves that its authenticated clients survive real health probes
-# for a full minute; the production protocol failures that motivated this guard appeared after the
-# old two-second check had already passed.
-CODEX_AS_CUTOVER_STABILITY_SECONDS=${CODEX_AS_CUTOVER_STABILITY_SECONDS:-60}
 CODEX_AS_LOCK_TIMEOUT=${CODEX_AS_LOCK_TIMEOUT:-1200}
 CODEX_AS_LEGACY_EXPLICIT_HOME_NAME=${CODEX_AS_LEGACY_EXPLICIT_HOME_NAME:-mikala1158qqq-gmail-com}
 CODEX_AS_PROXY_FILE=proxy.url
@@ -52,19 +47,6 @@ codex_as_log() { printf '[codex-app-servers] %s\n' "$*"; }
 codex_as_warn() { printf '[codex-app-servers] WARNING: %s\n' "$*" >&2; }
 codex_as_fail() { printf '[codex-app-servers] ERROR: %s\n' "$*" >&2; return 1; }
 codex_as_is_root() { [[ ${EUID:-$(id -u)} -eq 0 ]]; }
-# Cutover stability is elapsed-time policy, not a number of health queries. `/proc/uptime` is
-# monotonic on the Linux host and therefore cannot move backwards during an NTP correction. Bash's
-# process-local elapsed clock keeps the helper testable on non-Linux developer machines.
-codex_as_monotonic_seconds() {
-  local uptime ignored
-  if [[ -r /proc/uptime ]]; then
-    read -r uptime ignored </proc/uptime || return 1
-    [[ $uptime =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
-    printf '%s\n' "${uptime%%.*}"
-  else
-    printf '%s\n' "$SECONDS"
-  fi
-}
 codex_as_wait_tick() { sleep 1; }
 codex_as_secure_control_dir() {
   mkdir -p -- "$CODEX_AS_CONTROL_DIR" \
@@ -709,21 +691,18 @@ codex_as_wait_ready_cohort() {
   return 1
 }
 
-# Prove that the same authenticated cohort stays continuously ready for an elapsed interval.
-# A health observation is intentionally expensive: it validates every marker, gateway MainPID,
-# proxy parent, lease, and CODEX_HOME. Counting observations as seconds made a 60-second policy take
-# roughly 180 seconds in production and collide with its own deadline. Track monotonic elapsed time
-# instead; an unhealthy observation resets the interval, while observation cost counts naturally.
-codex_as_wait_ready_cohort_stable() {
-  local stable_seconds=$1 expected_owners=${2:-} owners ready now stable_since=-1
-  local deadline=$(( $(codex_as_monotonic_seconds) + CODEX_AS_READY_TIMEOUT ))
+# Treat exact authenticated capacity parity as candidate readiness, just as the Claude controller
+# waits for its candidate readiness endpoint. There is no minimum soak interval: retry only while
+# clients are still converging, then return on the first complete, process-fenced parity snapshot.
+# If either gateway generation restarts, fail closed instead of silently adopting a replacement.
+codex_as_wait_cutover_capacity_parity() {
+  local expected_owners=${1:-} owners ready
+  local deadline
   [[ $CODEX_AS_MIN_READY =~ ^[1-9][0-9]*$ ]] || return 1
-  [[ $stable_seconds =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ $CODEX_AS_READY_TIMEOUT =~ ^[1-9][0-9]*$ ]] || return 1
   [[ -n $expected_owners ]] || return 1
-  (( stable_seconds < CODEX_AS_READY_TIMEOUT )) || return 1
-  while true; do
-    now=$(codex_as_monotonic_seconds) || return 1
-    (( now <= deadline )) || return 1
+  deadline=$(( $(date +%s) + CODEX_AS_READY_TIMEOUT ))
+  while (( $(date +%s) < deadline )); do
     owners=$(codex_as_cutover_owner_snapshot) || return 1
     [[ $owners == "$expected_owners" ]] || return 1
     ready=$(codex_as_cutover_ready_home_count) || return 1
@@ -731,27 +710,19 @@ codex_as_wait_ready_cohort_stable() {
     # or restarts during the query is a failed candidate, even if systemd has already replaced it.
     owners=$(codex_as_cutover_owner_snapshot) || return 1
     [[ $owners == "$expected_owners" ]] || return 1
-    now=$(codex_as_monotonic_seconds) || return 1
-    (( now <= deadline )) || return 1
     if (( ready >= CODEX_AS_MIN_READY )); then
-      (( stable_since >= 0 )) || stable_since=$now
-      if (( now - stable_since >= stable_seconds )); then
-        printf '%s\n' "$ready"
-        return 0
-      fi
-    else
-      stable_since=-1
+      printf '%s\n' "$ready"
+      return 0
     fi
     codex_as_wait_tick
   done
+  return 1
 }
 
 codex_as_admit_cutover() {
   local gateways owners ready mode ids transition_count
   codex_as_is_root \
     || { codex_as_fail 'cutover admission must run as root'; return 1; }
-  [[ $CODEX_AS_CUTOVER_STABILITY_SECONDS =~ ^[1-9][0-9]*$ ]] \
-    || { codex_as_fail 'cutover stability window is malformed'; return 1; }
   codex_as_load_desired || return 1
   owners=$(codex_as_cutover_owner_snapshot) || return 1
   [[ -n $owners ]] \
@@ -773,10 +744,9 @@ codex_as_admit_cutover() {
   # Admission is deliberately observational. Candidate startup already discovers the persistent
   # daemon sockets; a deployment gate must not send signals, restart transports, or issue account
   # RPCs against sessions that are already working.
-  ready=$(codex_as_wait_ready_cohort_stable \
-    "$CODEX_AS_CUTOVER_STABILITY_SECONDS" "$owners") \
-    || { codex_as_fail 'old and candidate gateways did not retain the same authenticated Codex cohort throughout cutover admission'; return 1; }
-  codex_as_log "$ready app-server(s) survived the ${CODEX_AS_CUTOVER_STABILITY_SECONDS}s cutover admission window across $gateways gateway(s)"
+  ready=$(codex_as_wait_cutover_capacity_parity "$owners") \
+    || { codex_as_fail 'candidate did not reach authenticated-capacity parity with the old Codex gateway'; return 1; }
+  codex_as_log "$ready app-server(s) reached authenticated-capacity parity across $gateways gateway(s)"
 }
 
 codex_as_start_or_roll() {

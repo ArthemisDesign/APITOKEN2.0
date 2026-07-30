@@ -63,7 +63,7 @@
 - Fixed OpenAI `/ready` дополнительно проверяет provider snapshot: любой transport требует хотя бы
   один live+authenticated home. Одна рабочая подписка остаётся реальной ёмкостью и не превращается
   в 503 из-за размера пула; deploy отдельно требует точного паритета authenticated-home set старого
-  и нового gateway на всём cutover-окне.
+  и нового gateway как readiness-условие перед cutover, без минимального soak-интервала.
 - `/metrics` публикует privacy-safe affinity counters, включая soft cache-root hits/writes; raw client
   IDs, prompt content, account IDs и subscription IDs в Redis/метрики не попадают.
 - **loopback-доверие — только явный opt-in** `CLAUDE_API_TRUST_LOOPBACK=1` + реальный loopback-bind

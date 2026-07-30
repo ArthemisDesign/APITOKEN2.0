@@ -93,9 +93,10 @@ the old slot return 503 readiness, waits for depooling, then sends SIGTERM so es
 drain under the systemd deadline. Only after the old cgroup is fully stopped does the first split
 start OpenAI, preventing overlap with a legacy combined process. Shared OpenAI releases keep one
 official Unix-socket app-server per authenticated home below both HTTP generations. The candidate
-must expose exactly the same opaque authenticated-home set as the old generation for a full
-stability window; one equal working home is valid, while any candidate subset is rejected. Only
-then is the old HTTP slot pre-drained and stopped. Candidate admission is purely observational.
+must expose exactly the same opaque authenticated-home set as the old generation. This parity is a
+readiness condition, not a soak timer: admission returns on the first complete process-fenced
+snapshot; one equal working home is valid, while any candidate subset is rejected. Only then is the
+old HTTP slot pre-drained and stopped. Candidate admission is purely observational.
 When an actual daemon topology change separately requires rediscovery, its signal is sent strictly
 to the Rust `MainPID`—never its proxy children—and a steady-state timer pass performs no signalling.
 

@@ -220,9 +220,10 @@ discovered home at startup would let one expired device login block the service,
 home starts quarantined and is reported by `CodexHomeUnauthenticated` instead.
 
 OpenAI blue-green admission is observational and capacity-preserving like the Claude cutover: every
-live HTTP generation must expose the exact same opaque authenticated-home set for the full stability
-window before the old slot is drained. One equal home is valid; a candidate subset of the old pool
-is not. The gate also fences the exact gateway process generations, sends no transport signal and
+live HTTP generation must expose the exact same opaque authenticated-home set before the old slot is
+drained. Parity is a readiness condition with no minimum soak interval: the first complete snapshot
+admits the candidate. One equal home is valid; a candidate subset of the old pool is not. The gate
+also fences the exact gateway process generations, sends no transport signal and
 performs no repair. A separate desired-topology change may ask Rust gateways to rediscover sockets,
 but the signal is restricted to each unit's `MainPID`; signalling the whole cgroup would also kill
 the authenticated proxy children.

@@ -97,8 +97,9 @@ After the Stage-2 database cutover, use `deploy.sh --engine-bluegreen` followed 
 `engine-bluegreen.sh`. That controller owns the provider cohort: it rolls the Anthropic pair, the
 two OpenAI HTTP slots over a persistent per-home Codex daemon cohort, and the isolated Gemini
 runtime from one selected SHA. An OpenAI candidate cannot drain its predecessor until the old and
-candidate HTTP generations expose the exact same opaque home set throughout the cutover stability
-window. A single equal working home is sufficient; a candidate subset is not. Gemini is enabled
+candidate HTTP generations expose the exact same opaque home set. Parity is candidate readiness,
+not a minimum-duration soak: the first complete process-fenced match admits the candidate. A single
+equal working home is sufficient; a candidate subset is not. Gemini is enabled
 only for releases carrying its capability marker; rollback to an older release stops it. Legacy
 restart mode refuses to run while the
 PostgreSQL credential is active.

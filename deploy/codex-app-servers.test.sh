@@ -250,8 +250,8 @@ done
 )
 
 # Cutover admission is a read-only assertion, not a repair mechanism. Starting the candidate has
-# already created its clients; the deployment gate may only observe that the same cohort stays
-# attached. The same lifecycle boundary must reject an incomplete desired snapshot before invoking
+# already created its clients; the deployment gate may only observe exact capacity parity. The same
+# lifecycle boundary must reject an incomplete desired snapshot before invoking
 # any start/roll/retire mutation.
 (
   # shellcheck source=deploy/codex-app-servers.sh
@@ -260,7 +260,6 @@ done
   printf '%s\n' '#!/bin/sh' 'exit 1' >"$observer_systemctl"
   chmod 0700 "$observer_systemctl"
   CODEX_AS_SYSTEMCTL=$observer_systemctl
-  CODEX_AS_CUTOVER_STABILITY_SECONDS=3
   codex_as_is_root() { return 0; }
   codex_as_load_desired() { return 0; }
   codex_as_gateway_active_count() { printf '2\n'; }
@@ -268,13 +267,12 @@ done
     printf 'claude-api-openai@8793.service=101\nclaude-api-openai@8797.service=202\n'
   }
   codex_as_signal_gateways() { fail 'cutover admission mutated live gateway clients'; }
-  codex_as_wait_ready_cohort_stable() {
-    [[ $1 == 3 ]] || fail 'cutover admission ignored its stability window'
-    [[ $2 == $'claude-api-openai@8793.service=101\nclaude-api-openai@8797.service=202' ]] \
+  codex_as_wait_cutover_capacity_parity() {
+    [[ $1 == $'claude-api-openai@8793.service=101\nclaude-api-openai@8797.service=202' ]] \
       || fail 'cutover admission did not fence the original gateway owners'
     printf '2\n'
   }
-  codex_as_admit_cutover || fail 'observational cutover admission rejected a stable cohort'
+  codex_as_admit_cutover || fail 'observational cutover admission rejected exact capacity parity'
 
   codex_as_home_records() { return 0; }
   codex_as_start_or_roll() { fail 'incomplete desired snapshot mutated the serving cohort'; }
@@ -312,12 +310,12 @@ done
   # be combined with later samples to manufacture a stable result.
   CODEX_AS_MIN_READY=1
   CODEX_AS_READY_TIMEOUT=8
-  stability_calls=$TEMP/stability-calls
-  : >"$stability_calls"
+  convergence_calls=$TEMP/convergence-calls
+  : >"$convergence_calls"
   codex_as_authenticated_home_count() {
     local call
-    call=$(wc -l <"$stability_calls" | tr -d '[:space:]')
-    printf 'x\n' >>"$stability_calls"
+    call=$(wc -l <"$convergence_calls" | tr -d '[:space:]')
+    printf 'x\n' >>"$convergence_calls"
     case "$call" in
       2) printf '0\n' ;;
       *) printf '1\n' ;;
@@ -325,64 +323,53 @@ done
   }
   [[ $(codex_as_wait_ready_cohort 3) == 1 ]] \
     || fail 'stable cohort did not recover after a transient dip'
-  (( $(wc -l <"$stability_calls") >= 6 )) \
-    || fail 'cutover stability streak did not reset after losing all authenticated capacity'
+  (( $(wc -l <"$convergence_calls") >= 6 )) \
+    || fail 'readiness convergence streak did not reset after losing all authenticated capacity'
 )
 
-# Cutover policy is measured in monotonic elapsed seconds, not in the number of expensive full-pool
-# observations. Observation cost counts toward a genuinely continuous healthy interval, and one
-# unhealthy observation resets the elapsed clock rather than merely decrementing a sample counter.
+# Exact capacity parity is candidate readiness, not a soak window. Retry while proxy clients are
+# still converging, return on the first complete process-fenced snapshot, and fail closed if either
+# gateway generation is replaced during an observation.
 (
   # shellcheck source=deploy/codex-app-servers.sh
   source "$ROOT/deploy/codex-app-servers.sh"
-  CODEX_AS_READY_TIMEOUT=30
+  CODEX_AS_READY_TIMEOUT=5
   CODEX_AS_MIN_READY=1
-  monotonic_clock=$TEMP/monotonic-clock
-  elapsed_calls=$TEMP/elapsed-calls
-  printf '0\n' >"$monotonic_clock"
-  : >"$elapsed_calls"
-  codex_as_monotonic_seconds() { cat "$monotonic_clock"; }
+  parity_calls=$TEMP/parity-calls
+  : >"$parity_calls"
   codex_as_cutover_owner_snapshot() { printf 'slot-a=101\nslot-b=202\n'; }
-  codex_as_advance_clock() {
-    local amount=$1 current
-    current=$(<"$monotonic_clock")
-    printf '%s\n' "$(( current + amount ))" >"$monotonic_clock"
-  }
-  codex_as_wait_tick() { codex_as_advance_clock 1; }
+  codex_as_wait_tick() { :; }
   codex_as_cutover_ready_home_count() {
     local call
-    call=$(wc -l <"$elapsed_calls" | tr -d '[:space:]')
-    printf 'x\n' >>"$elapsed_calls"
-    # Model the real host: validating the full cohort itself takes multiple seconds.
-    codex_as_advance_clock 2
+    call=$(wc -l <"$parity_calls" | tr -d '[:space:]')
+    printf 'x\n' >>"$parity_calls"
     case "$call" in
-      2) printf '0\n' ;;
-      *) printf '1\n' ;;
+      0) printf '0\n' ;;
+      *) printf '3\n' ;;
     esac
   }
   expected_owners=$'slot-a=101\nslot-b=202'
-  [[ $(codex_as_wait_ready_cohort_stable 5 "$expected_owners") == 1 ]] \
-    || fail 'elapsed cutover window did not recover after a transient dip'
-  [[ $(<"$monotonic_clock") == 17 ]] \
-    || fail 'cutover stability was counted as samples instead of monotonic elapsed time'
-  [[ $(wc -l <"$elapsed_calls" | tr -d '[:space:]') == 6 ]] \
-    || fail 'unhealthy observation did not reset the elapsed cutover interval'
+  [[ $(codex_as_wait_cutover_capacity_parity "$expected_owners") == 3 ]] \
+    || fail 'cutover readiness did not admit the first exact capacity match'
+  [[ $(wc -l <"$parity_calls" | tr -d '[:space:]') == 2 ]] \
+    || fail 'cutover added a soak interval after exact capacity parity'
 
-  # A systemd restart can restore the same ready count with new clients. It is still not the same
-  # continuously healthy generation and must fail this admission instead of resetting its timer.
+  # A systemd restart can restore the same ready count with new clients. It is still a different
+  # generation and must fail this admission instead of adopting the replacement.
   owner_calls=$TEMP/owner-calls
   : >"$owner_calls"
   codex_as_cutover_owner_snapshot() {
     local call
     call=$(wc -l <"$owner_calls" | tr -d '[:space:]')
     printf 'x\n' >>"$owner_calls"
-    if (( call < 2 )); then
+    if (( call == 0 )); then
       printf '%s\n' "$expected_owners"
     else
       printf 'slot-a=101\nslot-b=303\n'
     fi
   }
-  if codex_as_wait_ready_cohort_stable 5 "$expected_owners" >/dev/null; then
+  codex_as_cutover_ready_home_count() { printf '3\n'; }
+  if codex_as_wait_cutover_capacity_parity "$expected_owners" >/dev/null; then
     fail 'cutover admitted a restarted gateway generation'
   fi
 )
