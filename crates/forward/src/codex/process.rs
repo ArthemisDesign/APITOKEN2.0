@@ -217,23 +217,35 @@ enum AppServerWriter {
 impl TurnEvents {
     /// Receive the next turn event while observing transport closure out of band.
     ///
-    /// The per-turn event queue is deliberately bounded. Transport closure must not compete for a
-    /// slot in that queue: a noisy or abandoned turn could otherwise delay shutdown behind hundreds
-    /// of stale events and keep its in-flight guard pinned after the app-server has already died.
+    /// The per-turn event queue is deliberately bounded and EOF is carried out of band, so closure
+    /// can never be blocked on a full queue. Events already accepted from the transport must still
+    /// be delivered before EOF: otherwise a final model delta followed immediately by process exit
+    /// can be hidden from the runner, which would incorrectly classify the attempt as replaceable
+    /// and retry it on another subscription after output has already reached the client.
     pub(crate) async fn recv(&mut self) -> Result<AppServerEvent, ProcessError> {
         loop {
+            match self.receiver.try_recv() {
+                Ok(event) => return Ok(event),
+                Err(mpsc::error::TryRecvError::Empty) => {}
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    return Err(self.closed.borrow().clone().unwrap_or(ProcessError::Closed));
+                }
+            }
             if let Some(error) = self.closed.borrow().clone() {
                 return Err(error);
             }
             tokio::select! {
                 biased;
+                event = self.receiver.recv() => {
+                    return event.ok_or(ProcessError::Closed);
+                }
                 changed = self.closed.changed() => {
                     if changed.is_err() {
                         return Err(ProcessError::Closed);
                     }
-                }
-                event = self.receiver.recv() => {
-                    return event.ok_or(ProcessError::Closed);
+                    // Re-check the queue before returning the terminal error. The transport reader
+                    // routes stdout frames before it publishes EOF, and that ordering is part of
+                    // the public streaming contract.
                 }
             }
         }
@@ -1892,7 +1904,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transport_closure_bypasses_a_full_turn_event_queue() {
+    async fn transport_closure_preserves_events_that_preceded_eof() {
         let shared = ProcessShared::new();
         let (sender, receiver) = mpsc::channel(1);
         sender
@@ -1913,6 +1925,10 @@ mod tests {
 
         shared.close(ProcessError::Closed).await;
 
+        assert!(matches!(
+            events.recv().await,
+            Ok(AppServerEvent::Notification { method, .. }) if method == "test/noisy"
+        ));
         assert!(matches!(events.recv().await, Err(ProcessError::Closed)));
     }
 }
